@@ -1,0 +1,13 @@
+.timeline-clip-control-tooltip {
+  min-width: 52px;
+  padding: 4px 7px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 4px;
+  background: var(--theme-surface-overlay, rgba(12, 14, 22, 0.94));
+  color: var(--theme-text);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.32);
+  font: 600 10px/1.2 var(--theme-font-family, Inter, sans-serif);
+  text-align: center;
+  white-space: nowrap;
+  user-select: none;
+}

@@ -63,49 +63,50 @@ describe('Phase E layout mutations', () => {
 
   it('removeNode removes the selected node subtree', () => {
     const layout = cloneCompressorLayout()
-    const next = removeNode(layout, 'knob-grid')
+    const next = removeNode(layout, 'shape-knobs')
 
-    expect(findNode(next, 'knob-grid')).toBeNull()
+    expect(findNode(next, 'shape-knobs')).toBeNull()
     expect(findNode(next, 'k-threshold')).toBeNull()
-    expect(findNode(layout, 'knob-grid')).toBeTruthy()
+    expect(findNode(layout, 'shape-knobs')).toBeTruthy()
   })
 
   it('duplicateNode regenerates ids for a nested subtree', () => {
     const layout = cloneCompressorLayout()
-    const next = duplicateNode(layout, 'knob-grid')
-    const rootChildren = next.root.children
-    const originalIndex = rootChildren.findIndex(child => child.id === 'knob-grid')
-    const duplicate = rootChildren[originalIndex + 1]
+    const next = duplicateNode(layout, 'shape-knobs')
+    const siblings = findNode(next, 'shape-col').children
+    const originalIndex = siblings.findIndex(child => child.id === 'shape-knobs')
+    const duplicate = siblings[originalIndex + 1]
 
-    expect(duplicate.id).toBe('group')
-    expect(duplicate.children).toHaveLength(10)
-    expect(new Set(duplicate.children.map(child => child.id)).size).toBe(10)
+    expect(duplicate.id).toBe('row')
+    expect(duplicate.children).toHaveLength(3)
+    expect(new Set(duplicate.children.map(child => child.id)).size).toBe(3)
     expect(duplicate.children.map(child => child.id)).not.toContain('k-threshold')
     expect(findNode(next, 'k-threshold')).toBeTruthy()
   })
 
   it('moveNode refuses moving a node into its own descendant', () => {
     const layout = cloneCompressorLayout()
-    // The shipped layout keeps all containers as siblings under root, so
-    // nest a fresh row inside knob-grid to build an ancestor/descendant pair.
-    const nested = addChild(layout, 'knob-grid', { type: 'row', children: [] })
 
-    expect(() => moveNode(nested, 'knob-grid', 'row', 0)).toThrow(/descendant/i)
+    expect(() => moveNode(layout, 'body', 'shape-col', 0)).toThrow(/descendant/i)
   })
 
   it('reorderSibling moves node up and down', () => {
     const layout = cloneCompressorLayout()
     const up = reorderSibling(layout, 'detect-row', 'up')
-    expect(up.root.children.map(child => child.id)).toEqual(['viz-row', 'detect-row', 'body', 'knob-grid'])
+    expect(findNode(up, 'shape-col').children.map(child => child.id))
+      .toEqual(['detect-row', 'shape-knobs'])
 
     const down = reorderSibling(up, 'detect-row', 'down')
-    expect(down.root.children.map(child => child.id)).toEqual(['viz-row', 'body', 'detect-row', 'knob-grid'])
+    expect(findNode(down, 'shape-col').children.map(child => child.id))
+      .toEqual(['shape-knobs', 'detect-row'])
   })
 
   it('wrapInContainer rejects non-contiguous siblings', () => {
     const layout = cloneCompressorLayout()
 
-    expect(() => wrapInContainer(layout, ['viz-row', 'detect-row'], 'group')).toThrow(/contiguous/i)
+    // shape-col and time-col are body children 0 and 2 — body-divider sits
+    // between them.
+    expect(() => wrapInContainer(layout, ['shape-col', 'time-col'], 'group')).toThrow(/contiguous/i)
   })
 
   it('regenerateSubtreeIds strips validator annotations from cloned data', () => {

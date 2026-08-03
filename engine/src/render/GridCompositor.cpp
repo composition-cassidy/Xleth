@@ -3,6 +3,7 @@
 #include <algorithm>
 #include <atomic>
 #include <cassert>
+#include <cmath>
 #include <cstdio>
 #include <cstring>
 
@@ -19,6 +20,8 @@
 #include "shaders/FX_VibratoSwirlPS.h"
 #include "shaders/FX_ScratchWaveSmearPS.h"
 #include "shaders/FX_ChromaKeyPS.h"
+#include "shaders/FX_OutlinePS.h"
+#include "shaders/FX_DropShadowPS.h"
 #include "shaders/SnapshotTransitionPS.h"
 
 #include "model/TimelineTypes.h"  // VisualEffect
@@ -423,6 +426,50 @@ bool GridCompositor::createPipelineState()
                      static_cast<unsigned int>(hr));
         return false;
     }
+
+    // ── Darkening blends for the Drop Shadow quad ───────────────────────────
+    // The shadow is drawn behind the cell as its own quad straight into the
+    // output target, which is what makes these modes real — they operate on the
+    // actual backdrop (a fullscreen layer, a lower-z cell), something no pass
+    // inside the per-cell effect chain can reach.
+    //
+    // FX_DropShadow.hlsl emits a different value per mode so a fixed-function
+    // blend can finish the arithmetic; the pairing is:
+    //   Multiply    emits lerp(1,c,a)  ->  DEST_COLOR / ZERO       = dst * lerp(1,c,a)
+    //   Darken      emits lerp(1,c,a)  ->  ONE / ONE, OP_MIN       = min(lerp(1,c,a), dst)
+    //   LinearBurn  emits (1-c)*a      ->  ONE / ONE, REV_SUBTRACT = dst - (1-c)*a
+    // Change one side without the other and the shadow silently renders wrong.
+    //
+    // Alpha is the same in all three — ONE / INV_SRC_ALPHA, i.e. ordinary
+    // coverage accumulation — so a shadow still shows up while the backdrop is
+    // transparent instead of being multiplied out of existence.
+    auto makeShadowBlend = [this](D3D11_BLEND srcRGB, D3D11_BLEND dstRGB,
+                                  D3D11_BLEND_OP opRGB, const char* label,
+                                  Microsoft::WRL::ComPtr<ID3D11BlendState>& out) -> bool {
+        D3D11_BLEND_DESC desc = {};
+        desc.RenderTarget[0].BlendEnable           = TRUE;
+        desc.RenderTarget[0].SrcBlend              = srcRGB;
+        desc.RenderTarget[0].DestBlend             = dstRGB;
+        desc.RenderTarget[0].BlendOp               = opRGB;
+        desc.RenderTarget[0].SrcBlendAlpha         = D3D11_BLEND_ONE;
+        desc.RenderTarget[0].DestBlendAlpha        = D3D11_BLEND_INV_SRC_ALPHA;
+        desc.RenderTarget[0].BlendOpAlpha          = D3D11_BLEND_OP_ADD;
+        desc.RenderTarget[0].RenderTargetWriteMask = D3D11_COLOR_WRITE_ENABLE_ALL;
+        HRESULT bhr = device_->CreateBlendState(&desc, &out);
+        if (FAILED(bhr)) {
+            std::fprintf(stderr, "[Compositor] Failed to create %s blend state, HR=0x%08X\n",
+                         label, static_cast<unsigned int>(bhr));
+            return false;
+        }
+        return true;
+    };
+
+    if (!makeShadowBlend(D3D11_BLEND_DEST_COLOR, D3D11_BLEND_ZERO, D3D11_BLEND_OP_ADD,
+                         "shadow multiply", shadowMultiplyBlendState_)) return false;
+    if (!makeShadowBlend(D3D11_BLEND_ONE, D3D11_BLEND_ONE, D3D11_BLEND_OP_MIN,
+                         "shadow darken", shadowDarkenBlendState_)) return false;
+    if (!makeShadowBlend(D3D11_BLEND_ONE, D3D11_BLEND_ONE, D3D11_BLEND_OP_REV_SUBTRACT,
+                         "shadow linear burn", shadowLinearBurnBlendState_)) return false;
 
     // Linear sampler with clamp
     D3D11_SAMPLER_DESC samplerDesc = {};
@@ -857,6 +904,48 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
             }
         }
 
+        // ── Terminal expansion stage 1: Outline ─────────────────────────────
+        // Layer styles, not pixel filters — see the block comment above
+        // applyOutlineStage. The stroke lives outside the cell's own bounds, so
+        // this is the one place a cell's composite rect grows. Both stages follow
+        // the global preview bypass: unlike the keyer they only add decoration, so
+        // skipping them for speed leaves the composite correct, just plainer.
+        //
+        // `contentPx` tracks how many texels of `cellSRV` map onto the drawn rect,
+        // which is what lets the Drop Shadow stage convert its pixel radii into
+        // output-UV whether or not a stroke already grew the rect.
+        int   contentPxW    = std::max(1, static_cast<int>(rw * width_));
+        int   contentPxH    = std::max(1, static_cast<int>(rh * height_));
+        float cellCornerRad = req.cornerRadius;
+
+        if (!effectsBypass_) {
+            int outlinePad = 0;
+            ID3D11ShaderResourceView* strokedSRV = applyOutlineStage(
+                cellSRV, contentPxW, contentPxH, req.visualChain,
+                cellCornerRad, outlinePad);
+            if (strokedSRV != cellSRV) {
+                cellSRV = strokedSRV;
+                // Grow the rect by exactly the pad. One texel of that target spans
+                // 1/width_ of canvas-UV — it was sized rw*width_ across a span of
+                // rw — so the stroke composites pixel-for-pixel instead of being
+                // resampled. Done before the canvas-fit mapping below, matching how
+                // the target was sized in the first place.
+                const float padU = static_cast<float>(outlinePad) / static_cast<float>(width_);
+                const float padV = static_cast<float>(outlinePad) / static_cast<float>(height_);
+                rx -= padU;
+                ry -= padV;
+                rw += padU * 2.0f;
+                rh += padV * 2.0f;
+                contentPxW += outlinePad * 2;
+                contentPxH += outlinePad * 2;
+                // The stage folded the corner rounding into its padded target.
+                // Leaving it on here would round the PADDED boundary instead and
+                // leave the video's own corners square.
+                cellCornerRad = 0.0f;
+                restoreMainPipelineState(activeRTV);
+            }
+        }
+
         // Map the cell rect from canvas-UV into output-UV. Identity viewport is
         // a no-op (legacy fill); a non-identity viewport realizes crop/letterbox.
         rx = canvasFitX_ + rx * canvasFitW_;
@@ -864,8 +953,18 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
         rw *= canvasFitW_;
         rh *= canvasFitH_;
 
+        // ── Terminal expansion stage 2: Drop Shadow ─────────────────────────
+        // Drawn here, immediately before the cell, so it lands on top of every
+        // lower-z request already composited and underneath this cell — which is
+        // what a shadow is. Needs the output-UV rect, hence its position after the
+        // canvas-fit mapping.
+        if (!effectsBypass_) {
+            drawDropShadowLayers(cellSRV, contentPxW, contentPxH, req,
+                                 rx, ry, rw, rh, cellCornerRad, activeRTV);
+        }
+
         drawCell(cellSRV, rx, ry, rw, rh,
-                 req.opacity, req.orientation, req.cornerRadius);
+                 req.opacity, req.orientation, cellCornerRad);
     }
 
     // Unbind render target to allow subsequent SRV reads
@@ -887,7 +986,15 @@ RTPool::RTPair& GridCompositor::acquireTransitionTargets()
 
 void GridCompositor::transitionPass(ID3D11ShaderResourceView* srvA,
                                     ID3D11ShaderResourceView* srvB,
-                                    int mode, float t, float angleRad)
+                                    int mode, float t, float angleRad,
+                                    float edgeSoftness, float zoomAmount,
+                                    int dissolveGrainPx,
+                                    float radialOriginX, float radialOriginY,
+                                    int pixelateMaxBlockPx,
+                                    float glitchIntensity, int glitchBlockPx,
+                                    float blurRadiusPx,
+                                    float displacementAmount, float displacementScale,
+                                    int effectSeed)
 {
     if (!initialized_ || !srvA || !srvB ||
         !effectShaders_.transitionPS || !effectShaders_.transitionCB) {
@@ -923,6 +1030,18 @@ void GridCompositor::transitionPass(ID3D11ShaderResourceView* srvA,
     constants.mode     = mode;
     constants.t        = t;
     constants.angleRad = angleRad;
+    constants.edgeSoftness = edgeSoftness;
+    constants.zoomAmount = zoomAmount;
+    constants.dissolveGrainPx = static_cast<float>(dissolveGrainPx);
+    constants.radialOriginX = radialOriginX;
+    constants.radialOriginY = radialOriginY;
+    constants.pixelateMaxBlockPx = static_cast<float>(pixelateMaxBlockPx);
+    constants.glitchIntensity = glitchIntensity;
+    constants.glitchBlockPx = static_cast<float>(glitchBlockPx);
+    constants.blurRadiusPx = blurRadiusPx;
+    constants.displacementAmount = displacementAmount;
+    constants.displacementScale = displacementScale;
+    constants.effectSeed = effectSeed;
     D3D11_MAPPED_SUBRESOURCE mapped{};
     if (FAILED(deviceCtx_->Map(effectShaders_.transitionCB.Get(), 0,
                                D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
@@ -1525,6 +1644,20 @@ bool EffectShaderCache::init(ID3D11Device* device)
         return false;
     }
 
+    hr = device->CreatePixelShader(g_FX_OutlinePS, sizeof(g_FX_OutlinePS),
+                                   nullptr, &outlinePS);
+    if (FAILED(hr)) {
+        std::fprintf(stderr, "[EffectShaders] Failed: Outline PS\n");
+        return false;
+    }
+
+    hr = device->CreatePixelShader(g_FX_DropShadowPS, sizeof(g_FX_DropShadowPS),
+                                   nullptr, &dropShadowPS);
+    if (FAILED(hr)) {
+        std::fprintf(stderr, "[EffectShaders] Failed: DropShadow PS\n");
+        return false;
+    }
+
     hr = device->CreatePixelShader(g_SnapshotTransitionPS, sizeof(g_SnapshotTransitionPS),
                                    nullptr, &transitionPS);
     if (FAILED(hr)) {
@@ -1542,11 +1675,17 @@ bool EffectShaderCache::init(ID3D11Device* device)
     if (!createEffectCB(device, 32, scratchWaveSmearCB, "ScratchWaveSmear")) return false;
     // 32 bytes = params[0..7]: keyRGB + tolerance | softness, spill, choke, edgeBlur.
     if (!createEffectCB(device, 32, chromaKeyCB,   "ChromaKey"))         return false;
+    // The two expansion stages upload a resolved struct, not raw params[], so
+    // these sizes come from the structs rather than a param count.
+    if (!createEffectCB(device, sizeof(OutlineConstants), outlineCB, "Outline"))
+        return false;
+    if (!createEffectCB(device, sizeof(DropShadowConstants), dropShadowCB, "DropShadow"))
+        return false;
     if (!createEffectCB(device, sizeof(TransitionConstants), transitionCB,
                         "SnapshotTransition")) return false;
 
     initialized = true;
-    std::fprintf(stderr, "[EffectShaders] All 9 effect shaders + CBs created\n");
+    std::fprintf(stderr, "[EffectShaders] All 11 effect shaders + CBs created\n");
     return true;
 }
 
@@ -1560,6 +1699,8 @@ void EffectShaderCache::shutdown()
     vibratoSwirlPS.Reset();
     scratchWaveSmearPS.Reset();
     chromaKeyPS.Reset();
+    outlinePS.Reset();
+    dropShadowPS.Reset();
     transitionPS.Reset();
     desatCB.Reset();
     tintCB.Reset();
@@ -1569,6 +1710,8 @@ void EffectShaderCache::shutdown()
     vibratoSwirlCB.Reset();
     scratchWaveSmearCB.Reset();
     chromaKeyCB.Reset();
+    outlineCB.Reset();
+    dropShadowCB.Reset();
     transitionCB.Reset();
     initialized = false;
 }
@@ -1762,6 +1905,22 @@ static bool isChainEffectBypassExempt(VisualEffect::Type type)
     return type == VisualEffect::Type::ChromaKey;
 }
 
+// True for the two chainable effects that are handled AFTER the chain, by
+// applyOutlineStage / drawDropShadowLayers, rather than as a pass inside it.
+//
+// Outline and Drop Shadow draw outside the source's own bounds, so they need a
+// padded render target and a correspondingly grown composite rect — neither of
+// which a ping-pong pass over a cell-sized target can express. Running them last
+// also gets the semantics right: the stroke traces the finished cell rather than
+// whatever the chain happened to look like at that index, and the shadow is cast
+// by the shape the viewer actually sees. Skipped here so a chain that holds
+// nothing else still takes processEffectChain's zero-cost fast path.
+static bool isTerminalStageEffect(VisualEffect::Type type)
+{
+    return type == VisualEffect::Type::Outline
+        || type == VisualEffect::Type::DropShadow;
+}
+
 ID3D11ShaderResourceView* GridCompositor::processEffectChain(
     ID3D11ShaderResourceView* sourceSRV,
     int cellWidth, int cellHeight,
@@ -1779,6 +1938,7 @@ ID3D11ShaderResourceView* GridCompositor::processEffectChain(
     bool anyActive = false;
     for (const auto& fx : chain) {
         if (fx.bypassed) continue;
+        if (isTerminalStageEffect(fx.type)) continue;
         if (effectsBypass_ && !isChainEffectBypassExempt(fx.type)) continue;
         anyActive = true;
         break;
@@ -1869,6 +2029,8 @@ ID3D11ShaderResourceView* GridCompositor::processEffectChain(
 
     for (const auto& fx : chain) {
         if (fx.bypassed) continue;
+        // Handled after the chain, in a padded target of their own.
+        if (isTerminalStageEffect(fx.type)) continue;
         // Global preview bypass skips every pass except the exempt ones.
         if (effectsBypass_ && !isChainEffectBypassExempt(fx.type)) continue;
 
@@ -1898,6 +2060,12 @@ ID3D11ShaderResourceView* GridCompositor::processEffectChain(
                 // below; see the canonical layout on VisualEffect.
                 fxPS = effectShaders_.chromaKeyPS.Get();
                 fxCB = effectShaders_.chromaKeyCB.Get();
+                break;
+            case VisualEffect::Type::Outline:
+            case VisualEffect::Type::DropShadow:
+                // Unreachable — skipped by isTerminalStageEffect above. Listed so
+                // this switch stays exhaustive over VisualEffect::Type and a
+                // future effect cannot be added without the compiler noticing.
                 break;
             case VisualEffect::Type::ZoomPanRotation: {
                 // Upload animated values from req (or static params[] fallback).
@@ -1970,7 +2138,8 @@ ID3D11ShaderResourceView* GridCompositor::processEffectChain(
     // active while the slide TV ramp is non-zero. tvRampIntensity is the
     // per-frame animated value (peak * (1 - t)); the other 6 params shape the
     // distortion and stay constant for the ramp's duration.
-    if (req.tvRampIntensity > 0.0001f && effectShaders_.tvSimulatorPS) {
+    // Cosmetic, so it follows the global preview bypass like the rest of the chain.
+    if (!effectsBypass_ && req.tvRampIntensity > 0.0001f && effectShaders_.tvSimulatorPS) {
         // Pack into the TVSimConstants layout used by the chain TV pass.
         // (Mirror the params[0..6] order; params[7] is the unused tvPad slot.)
         float slideTvParams[8] = {
@@ -2016,4 +2185,388 @@ ID3D11ShaderResourceView* GridCompositor::processEffectChain(
 
     // currentSrc now points to the SRV of whichever RT has the final output
     return currentSrc;
+}
+
+// ===========================================================================
+// Terminal expansion stages — Outline and Drop Shadow
+//
+// Both are layer styles: they draw OUTSIDE the source's own bounds. That single
+// property is why they cannot be ordinary chain passes. A chain pass renders
+// into a cell-sized target that the source already fills edge to edge, so a
+// stroke or an offset shadow would have nowhere to land — it would be clipped
+// away entirely, or (worse) only become visible after the user shrank the video
+// by some other means. So each stage renders into a target padded by exactly the
+// radius it needs and reports that pad back, and compositeFrame grows the cell's
+// composite rect to match. The decoration therefore spills into the inter-cell
+// gap, which is where a user expects an outline between two tiles to live.
+// ===========================================================================
+
+namespace {
+
+// Ceiling on the padding a single stage will add, in texels. A pad this large
+// already doubles a 4x4 cell's render target; the cap exists so a slider dragged
+// to an extreme cannot make the pool allocate an absurd texture per cell.
+constexpr int kMaxStagePadPx = 128;
+
+// Padding is rounded UP to a multiple of this before a target is acquired.
+//
+// RTPool keys on (width, height, slot) and never evicts — it is built for sizes
+// that change only when the grid layout does. These two stages are the first
+// whose target size depends on a PARAM, so without quantising, every distinct
+// thickness or distance a user settles on would strand another pair of textures
+// for the rest of the session. Rounding to 16 collapses the whole useful range
+// into a handful of sizes. The extra padding is transparent and harmless: the
+// stage reports the padding it actually used, so the composite rect always
+// matches its target exactly.
+constexpr int kStagePadQuantum = 16;
+
+int quantizeStagePad(int neededPx)
+{
+    if (neededPx <= 0) return 0;
+    const int q = ((neededPx + kStagePadQuantum - 1) / kStagePadQuantum) * kStagePadQuantum;
+    return std::min(q, kMaxStagePadPx);
+}
+
+// The Drop Shadow's size and softness are authored as 0..1 (the user thinks in
+// "how much", not in texels — 0% keeps the silhouette's exact shape, 100% is the
+// widest bulge / softest edge the effect offers). These map them to radii. Both
+// are documented on VisualEffect by name, so changing them changes what a saved
+// project looks like: treat them as part of the format.
+constexpr float kMaxShadowInflatePx = 32.0f;
+constexpr float kMaxShadowBlurPx    = 32.0f;
+
+float clamp01(float v)
+{
+    if (!(v > 0.0f)) return 0.0f;      // also catches NaN
+    return (v < 1.0f) ? v : 1.0f;
+}
+
+// Texels of padding one Outline needs around the content. The +2 covers the
+// shader's half-pixel anti-aliasing on the outer edge of the band plus the
+// one-texel granularity of its distance search, so a hard stroke never gets
+// clipped by its own render target.
+int outlinePadPx(const VisualEffect& fx)
+{
+    const float thickness = fx.params[3];
+    if (!(thickness > 0.0f) || !(fx.params[5] > 0.0f)) return 0;   // no width or invisible
+    return static_cast<int>(std::ceil(thickness)) + 2;
+}
+
+// Map a screen-space direction into the sample space GridComposite.hlsl reads,
+// so a mirrored or rotated cell's shadow still falls the way the angle says.
+//
+// The composite pixel shader maps cell-local UV L to sample UV S = M(L), so a
+// feature sitting at sample position S shows up at M^-1(S) on screen. Offsetting
+// the silhouette lookup by M(d) therefore makes the shadow appear at exactly d.
+// Without this, a horizontally flipped cell — which this app does constantly —
+// would throw its shadow to the opposite side of the requested angle.
+//
+// Known limit: for the two rotate-90 orientations the composite maps UV directly,
+// so on a non-square cell the axis swap also swaps the aspect and the on-screen
+// angle is skewed away from the authored one. The direction is still correct.
+void orientDirection(int orientation, float dx, float dy, float& ox, float& oy)
+{
+    switch (orientation) {
+        case 1: ox = -dx; oy =  dy; break;   // mirror horizontal
+        case 2: ox =  dx; oy = -dy; break;   // mirror vertical
+        case 3: ox = -dx; oy = -dy; break;   // rotate 180
+        case 4: ox =  dy; oy = -dx; break;   // rotate 90 CW:  S = (L.y, 1-L.x)
+        case 5: ox = -dy; oy =  dx; break;   // rotate 90 CCW: S = (1-L.y, L.x)
+        default: ox = dx; oy = dy; break;    // identity
+    }
+}
+
+}  // namespace
+
+// ---------------------------------------------------------------------------
+// setInsetBlitConstants — CellConstants for a centred, un-scaled blit
+//
+// Puts the content in the middle of a padded target and leaves the border at the
+// clear colour: the composite PS discards everything outside cellRect, so the
+// surrounding texels keep their transparent (0,0,0,0) clear and the distance
+// searches in FX_Outline / FX_DropShadow can walk into them and correctly read
+// "background".
+//
+// cornerRadius is deliberately left at zero. The composite PS derives its
+// pixel-space geometry from the OUTPUT dimensions times cellRect, which for a
+// padded cell target is the wrong aspect ratio, so the rounding would come out
+// elliptical. The two effect shaders do it in real texels instead (xlShapeMask).
+// ---------------------------------------------------------------------------
+void GridCompositor::setInsetBlitConstants(int targetW, int targetH,
+                                           int contentW, int contentH)
+{
+    const float tw = static_cast<float>(std::max(1, targetW));
+    const float th = static_cast<float>(std::max(1, targetH));
+
+    D3D11_MAPPED_SUBRESOURCE mapped{};
+    if (FAILED(deviceCtx_->Map(constantBuffer_.Get(), 0,
+                               D3D11_MAP_WRITE_DISCARD, 0, &mapped)))
+        return;
+
+    CellConstants cb{};
+    cb.cellRect[2]  = static_cast<float>(contentW) / tw;
+    cb.cellRect[3]  = static_cast<float>(contentH) / th;
+    cb.cellRect[0]  = (1.0f - cb.cellRect[2]) * 0.5f;
+    cb.cellRect[1]  = (1.0f - cb.cellRect[3]) * 0.5f;
+    cb.opacity      = 1.0f;
+    cb.orientation  = 0;      // any flip is applied by the final drawCell
+    cb.cornerRadius = 0.0f;
+    std::memcpy(mapped.pData, &cb, sizeof(cb));
+    deviceCtx_->Unmap(constantBuffer_.Get(), 0);
+}
+
+ID3D11ShaderResourceView* GridCompositor::applyOutlineStage(
+    ID3D11ShaderResourceView* sourceSRV,
+    int contentWidth, int contentHeight,
+    const std::vector<VisualEffect>& chain,
+    float cornerRadius,
+    int& outPadPx)
+{
+    outPadPx = 0;
+    if (!initialized_ || !effectShaders_.initialized || !sourceSRV) return sourceSRV;
+    if (!effectShaders_.outlinePS || !effectShaders_.outlineCB)     return sourceSRV;
+    if (contentWidth <= 0 || contentHeight <= 0)                    return sourceSRV;
+
+    // Several Outlines on one track nest, innermost first, so each one measures
+    // from the previous one's outer edge and their pads add.
+    int totalPad = 0;
+    int strokeCount = 0;
+    for (const auto& fx : chain) {
+        if (fx.bypassed || fx.type != VisualEffect::Type::Outline) continue;
+        const int p = outlinePadPx(fx);
+        if (p <= 0) continue;
+        totalPad += p;
+        ++strokeCount;
+    }
+    if (strokeCount == 0) return sourceSRV;
+    totalPad = quantizeStagePad(totalPad);
+
+    const int rtW = contentWidth  + totalPad * 2;
+    const int rtH = contentHeight + totalPad * 2;
+
+    RTPool::RTPair& rtp = rtPool_.acquire(device_, rtW, rtH, kOutlineRtSlot);
+    if (!rtp.rtvA || !rtp.rtvB || !rtp.srvA || !rtp.srvB) return sourceSRV;
+
+    const float clearColor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    const float blendFactor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+
+    D3D11_VIEWPORT vp{};
+    vp.Width    = static_cast<float>(rtW);
+    vp.Height   = static_cast<float>(rtH);
+    vp.MinDepth = 0.0f;
+    vp.MaxDepth = 1.0f;
+    deviceCtx_->RSSetViewports(1, &vp);
+
+    // Straight-alpha discipline, same as processEffectChain: this stage runs
+    // downstream of a keyer and emits alpha < 1 on every stroke edge, so blending
+    // against a cleared target would premultiply RGB that drawCell then multiplies
+    // by alpha a second time.
+    deviceCtx_->OMSetBlendState(opaqueBlendState_.Get(), blendFactor, 0xFFFFFFFF);
+
+    // Step 1: blit the finished cell into the middle of RT_A.
+    deviceCtx_->ClearRenderTargetView(rtp.rtvA.Get(), clearColor);
+    deviceCtx_->OMSetRenderTargets(1, rtp.rtvA.GetAddressOf(), nullptr);
+    deviceCtx_->PSSetShader(pixelShader_.Get(), nullptr, 0);
+    deviceCtx_->PSSetConstantBuffers(0, 1, constantBuffer_.GetAddressOf());
+    deviceCtx_->PSSetSamplers(0, 1, samplerState_.GetAddressOf());
+    setInsetBlitConstants(rtW, rtH, contentWidth, contentHeight);
+    drawEffectPass(sourceSRV);
+
+    ID3D11RenderTargetView* nullRTV = nullptr;
+    deviceCtx_->OMSetRenderTargets(1, &nullRTV, nullptr);
+
+    // Step 2: one pass per stroke, ping-ponging within the padded pair.
+    ID3D11ShaderResourceView* currentSrc = rtp.srvA.Get();
+    ID3D11RenderTargetView*   currentDst = rtp.rtvB.Get();
+    ID3D11ShaderResourceView* nextSrc    = rtp.srvB.Get();
+    ID3D11RenderTargetView*   nextDst    = rtp.rtvA.Get();
+
+    bool firstStroke = true;
+    for (const auto& fx : chain) {
+        if (fx.bypassed || fx.type != VisualEffect::Type::Outline) continue;
+        if (outlinePadPx(fx) <= 0) continue;
+
+        OutlineConstants cb{};
+        cb.color[0]       = clamp01(fx.params[0]);
+        cb.color[1]       = clamp01(fx.params[1]);
+        cb.color[2]       = clamp01(fx.params[2]);
+        cb.thicknessPx    = std::max(0.0f, fx.params[3]);
+        cb.softness       = clamp01(fx.params[4]);
+        cb.opacity        = clamp01(fx.params[5]);
+        cb.alphaThreshold = clamp01(fx.params[6]);
+        cb.texelW         = 1.0f / static_cast<float>(rtW);
+        cb.texelH         = 1.0f / static_cast<float>(rtH);
+        cb.innerHalfW     = static_cast<float>(contentWidth)  * 0.5f;
+        cb.innerHalfH     = static_cast<float>(contentHeight) * 0.5f;
+        // Only the innermost stroke owns the corner rounding. By the second pass
+        // the content region includes the first stroke, so re-applying the mask
+        // would clip that stroke back to the rounded inner rect.
+        cb.cornerRadiusPx = firstStroke
+            ? std::max(0.0f, cornerRadius) *
+                  static_cast<float>(std::min(contentWidth, contentHeight))
+            : 0.0f;
+
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (SUCCEEDED(deviceCtx_->Map(effectShaders_.outlineCB.Get(), 0,
+                                      D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+            std::memcpy(mapped.pData, &cb, sizeof(cb));
+            deviceCtx_->Unmap(effectShaders_.outlineCB.Get(), 0);
+        }
+        ID3D11Buffer* fxCB = effectShaders_.outlineCB.Get();
+        deviceCtx_->PSSetConstantBuffers(2, 1, &fxCB);
+
+        deviceCtx_->PSSetShader(effectShaders_.outlinePS.Get(), nullptr, 0);
+        deviceCtx_->ClearRenderTargetView(currentDst, clearColor);
+        deviceCtx_->OMSetRenderTargets(1, &currentDst, nullptr);
+        drawEffectPass(currentSrc);
+        deviceCtx_->OMSetRenderTargets(1, &nullRTV, nullptr);
+
+        std::swap(currentSrc, nextSrc);
+        std::swap(currentDst, nextDst);
+        firstStroke = false;
+    }
+
+    ID3D11ShaderResourceView* nullSRV = nullptr;
+    deviceCtx_->PSSetShaderResources(0, 1, &nullSRV);
+    deviceCtx_->OMSetBlendState(blendState_.Get(), blendFactor, 0xFFFFFFFF);
+
+    outPadPx = totalPad;
+    return currentSrc;
+}
+
+void GridCompositor::drawDropShadowLayers(
+    ID3D11ShaderResourceView* cellSRV,
+    int contentWidth, int contentHeight,
+    const CellFrameRequest& req,
+    float rectX, float rectY, float rectW, float rectH,
+    float cornerRadius,
+    ID3D11RenderTargetView* activeRTV)
+{
+    if (!initialized_ || !effectShaders_.initialized || !cellSRV)          return;
+    if (!effectShaders_.dropShadowPS || !effectShaders_.dropShadowCB)      return;
+    if (contentWidth <= 0 || contentHeight <= 0)                           return;
+    if (!(rectW > 0.0f) || !(rectH > 0.0f))                                return;
+
+    const float clearColor[4]  = { 0.0f, 0.0f, 0.0f, 0.0f };
+    const float blendFactor[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+
+    for (const auto& fx : req.visualChain) {
+        if (fx.bypassed || fx.type != VisualEffect::Type::DropShadow) continue;
+
+        const float distancePx = std::max(0.0f, fx.params[3]);
+        const float inflatePx  = clamp01(fx.params[5]) * kMaxShadowInflatePx;
+        const float blurPx     = clamp01(fx.params[6]) * kMaxShadowBlurPx;
+        // The cell's own opacity scales the shadow: a half-transparent tile
+        // casting a fully opaque shadow reads as two unrelated objects.
+        const float opacity    = clamp01(fx.params[7]) * clamp01(req.opacity);
+        if (!(opacity > 0.0f)) continue;
+
+        // Room for the offset, the bulge and the feather, plus the same two
+        // texels of slack the Outline stage takes.
+        const int pad = quantizeStagePad(
+            static_cast<int>(std::ceil(distancePx + inflatePx + blurPx)) + 2);
+
+        const int rtW = contentWidth  + pad * 2;
+        const int rtH = contentHeight + pad * 2;
+
+        RTPool::RTPair& rtp = rtPool_.acquire(device_, rtW, rtH, kDropShadowRtSlot);
+        if (!rtp.rtvA || !rtp.rtvB || !rtp.srvA || !rtp.srvB) continue;
+
+        D3D11_VIEWPORT vp{};
+        vp.Width    = static_cast<float>(rtW);
+        vp.Height   = static_cast<float>(rtH);
+        vp.MinDepth = 0.0f;
+        vp.MaxDepth = 1.0f;
+        deviceCtx_->RSSetViewports(1, &vp);
+        deviceCtx_->OMSetBlendState(opaqueBlendState_.Get(), blendFactor, 0xFFFFFFFF);
+
+        // Step 1: blit the cell into the middle of RT_A. Only its alpha matters
+        // here — RT_A is read purely as a silhouette.
+        deviceCtx_->ClearRenderTargetView(rtp.rtvA.Get(), clearColor);
+        deviceCtx_->OMSetRenderTargets(1, rtp.rtvA.GetAddressOf(), nullptr);
+        deviceCtx_->PSSetShader(pixelShader_.Get(), nullptr, 0);
+        deviceCtx_->PSSetConstantBuffers(0, 1, constantBuffer_.GetAddressOf());
+        deviceCtx_->PSSetSamplers(0, 1, samplerState_.GetAddressOf());
+        setInsetBlitConstants(rtW, rtH, contentWidth, contentHeight);
+        drawEffectPass(cellSRV);
+
+        ID3D11RenderTargetView* nullRTV = nullptr;
+        deviceCtx_->OMSetRenderTargets(1, &nullRTV, nullptr);
+
+        // Step 2: build the shadow layer into RT_B.
+        DropShadowConstants cb{};
+        cb.color[0]       = clamp01(fx.params[0]);
+        cb.color[1]       = clamp01(fx.params[1]);
+        cb.color[2]       = clamp01(fx.params[2]);
+        cb.opacity        = opacity;
+        cb.inflatePx      = inflatePx;
+        cb.blurPx         = blurPx;
+        cb.texelW         = 1.0f / static_cast<float>(rtW);
+        cb.texelH         = 1.0f / static_cast<float>(rtH);
+        cb.alphaThreshold = clamp01(fx.params[9]);
+        cb.blendMode      = static_cast<float>(std::lround(fx.params[8]));
+        cb.innerHalfW     = static_cast<float>(contentWidth)  * 0.5f;
+        cb.innerHalfH     = static_cast<float>(contentHeight) * 0.5f;
+        cb.cornerRadiusPx = std::max(0.0f, cornerRadius) *
+                            static_cast<float>(std::min(contentWidth, contentHeight));
+
+        // 0 deg casts to the right and the angle advances clockwise on screen.
+        // Output V grows downward, so +sin already points down — no sign flip.
+        const float angleRad = fx.params[4] * 0.017453292f;   // pi/180
+        float dirX = 0.0f, dirY = 0.0f;
+        orientDirection(req.orientation, std::cos(angleRad), std::sin(angleRad),
+                        dirX, dirY);
+        cb.offsetU = dirX * distancePx * cb.texelW;
+        cb.offsetV = dirY * distancePx * cb.texelH;
+
+        D3D11_MAPPED_SUBRESOURCE mapped{};
+        if (SUCCEEDED(deviceCtx_->Map(effectShaders_.dropShadowCB.Get(), 0,
+                                      D3D11_MAP_WRITE_DISCARD, 0, &mapped))) {
+            std::memcpy(mapped.pData, &cb, sizeof(cb));
+            deviceCtx_->Unmap(effectShaders_.dropShadowCB.Get(), 0);
+        }
+        ID3D11Buffer* fxCB = effectShaders_.dropShadowCB.Get();
+        deviceCtx_->PSSetConstantBuffers(2, 1, &fxCB);
+
+        deviceCtx_->PSSetShader(effectShaders_.dropShadowPS.Get(), nullptr, 0);
+        deviceCtx_->ClearRenderTargetView(rtp.rtvB.Get(), clearColor);
+        deviceCtx_->OMSetRenderTargets(1, rtp.rtvB.GetAddressOf(), nullptr);
+        drawEffectPass(rtp.srvA.Get());
+        deviceCtx_->OMSetRenderTargets(1, &nullRTV, nullptr);
+
+        ID3D11ShaderResourceView* nullSRV = nullptr;
+        deviceCtx_->PSSetShaderResources(0, 1, &nullSRV);
+
+        // Step 3: draw the layer behind the cell, in the mode's own blend.
+        //
+        // One shadow-target texel spans rectW/contentWidth of output-UV: the
+        // content region maps 1:1 onto the cell's drawn rect, and the pad extends
+        // it at the same density, so the offset the shader applied in texels lands
+        // as exactly that many output pixels.
+        restoreMainPipelineState(activeRTV);
+
+        ID3D11BlendState* shadowBlend = blendState_.Get();   // 0 = Normal
+        switch (static_cast<int>(cb.blendMode)) {
+            case 1: shadowBlend = shadowMultiplyBlendState_.Get();   break;
+            case 2: shadowBlend = shadowDarkenBlendState_.Get();     break;
+            case 3: shadowBlend = shadowLinearBurnBlendState_.Get(); break;
+            default: break;
+        }
+        deviceCtx_->OMSetBlendState(shadowBlend, blendFactor, 0xFFFFFFFF);
+
+        const float padU = static_cast<float>(pad) * (rectW / static_cast<float>(contentWidth));
+        const float padV = static_cast<float>(pad) * (rectH / static_cast<float>(contentHeight));
+
+        // Opacity is already folded into the layer's own alpha (and, for the
+        // darkening modes, into its RGB), so this draw must pass 1.0 — scaling
+        // alpha here would leave the baked RGB inconsistent with it.
+        drawCell(rtp.srvB.Get(),
+                 rectX - padU, rectY - padV,
+                 rectW + padU * 2.0f, rectH + padV * 2.0f,
+                 1.0f, req.orientation, 0.0f);
+
+        // Back to the ordinary composite blend for the cell itself (and for any
+        // further shadow on this track, which re-selects its own).
+        deviceCtx_->OMSetBlendState(blendState_.Get(), blendFactor, 0xFFFFFFFF);
+    }
 }

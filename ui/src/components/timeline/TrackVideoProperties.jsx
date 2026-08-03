@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { ChevronLeft, RefreshCw, Layers } from 'lucide-react'
+import { ChevronLeft } from 'lucide-react'
 import { timelineEvents } from '../../timelineEvents.js'
 import TrackFlipSection from './TrackFlipSection.jsx'
 import CornerRadiusControl from '../grid/CornerRadiusControl.jsx'
@@ -8,6 +8,7 @@ import VisualFXSection from '../grid/VisualFXSection.jsx'
 import SlideNoteEffectSection from '../grid/SlideNoteEffectSection.jsx'
 import { getTrackPlacement, placementBadgeLabel, setFullscreenPlacementMode } from './trackPlacement.js'
 import { HOLD_THRESHOLD_UNLIMITED, formatHoldThreshold } from './holdLastFrame.js'
+import { rangeFillStyle } from '../../utils/sliderHelpers.js'
 
 const notify     = () => timelineEvents.dispatchEvent(new Event('timeline-tracks-changed'))
 const notifyGrid = () => timelineEvents.dispatchEvent(new Event('timeline-grid-changed'))
@@ -233,152 +234,154 @@ export default function TrackVideoProperties({ trackId, onBack }) {
 
   return (
     <div className="grid-tab tvp-root">
-      {breadcrumb}
+      <div className="tvp-content">
+        {breadcrumb}
 
-      <div className="tvp-summary-row" aria-label="Track video summary">
-        <span className={`tvp-summary-chip tvp-summary-chip--${placement.kind}`}>
-          <span className="tvp-summary-label">Placement</span>
-          <span>{placementLabel}</span>
-        </span>
-        <span className={`tvp-summary-chip${track.videoFlipConfig?.enabled ? ' active' : ''}`}>
-          <span className="tvp-summary-label">Flip</span>
-          <span>{track.videoFlipConfig?.enabled ? 'On' : 'Off'}</span>
-        </span>
-        <span className={`tvp-summary-chip${hold ? ' active' : ''}`}>
-          <span className="tvp-summary-label">Hold</span>
-          <span>{hold ? formatHoldThreshold(thresholdBeats) : 'Off'}</span>
-        </span>
-        <span className={`tvp-summary-chip${visualFxCount > 0 ? ' active' : ''}`}>
-          <span className="tvp-summary-label">FX</span>
-          <span>{visualFxCount}</span>
-        </span>
-      </div>
-
-      {/* ── Flip cycle ──────────────────────────────────────────────────── */}
-      <div className="grid-tab-section tvp-section">
-        <div className="tvp-section-title">
-          <RefreshCw size={13} aria-hidden="true" />
-          <span>Video Flip</span>
+        <div className="tvp-summary-row" aria-label="Track video summary">
+          <span className={`tvp-summary-chip tvp-summary-chip--${placement.kind}`}>
+            <span className="tvp-summary-label">Placement</span>
+            <span>{placementLabel}</span>
+          </span>
+          <span className={`tvp-summary-chip${track.videoFlipConfig?.enabled ? ' active' : ''}`}>
+            <span className="tvp-summary-label">Flip</span>
+            <span>{track.videoFlipConfig?.enabled ? 'On' : 'Off'}</span>
+          </span>
+          <span className={`tvp-summary-chip${hold ? ' active' : ''}`}>
+            <span className="tvp-summary-label">Hold</span>
+            <span>{hold ? formatHoldThreshold(thresholdBeats) : 'Off'}</span>
+          </span>
+          <span className={`tvp-summary-chip${visualFxCount > 0 ? ' active' : ''}`}>
+            <span className="tvp-summary-label">FX</span>
+            <span>{visualFxCount}</span>
+          </span>
         </div>
-        <TrackFlipSection track={track} onCommit={handleCommitFlip} />
-      </div>
 
-      {/* ── Hold Last Frame ─────────────────────────────────────────────── */}
-      <div className="grid-tab-section tvp-section">
-        <label className="tvp-checkbox-row">
-          <input
-            className="tvp-checkbox"
-            type="checkbox"
-            checked={hold}
-            onChange={(e) => handleToggleHold(e.target.checked)}
-          />
-          <span>Hold Last Frame</span>
-          <span className="tvp-hint">(freeze the final frame after the clip ends)</span>
-        </label>
+        {/* ── Flip cycle ────────────────────────────────────────────────── */}
+        <div className="grid-tab-section tvp-section">
+          <div className="tvp-section-title"><span>Video Flip</span></div>
+          <TrackFlipSection track={track} onCommit={handleCommitFlip} />
+        </div>
 
-        {/* Threshold — only meaningful while the hold itself is on. */}
-        {hold && (
-          <div className="tvp-hold-threshold" role="group" aria-label="Hold Last Frame threshold">
-            <label className="tvp-checkbox-row tvp-hold-threshold-unlimited">
+        {/* ── Hold Last Frame ───────────────────────────────────────────── */}
+        <div className="grid-tab-section tvp-section">
+          <div className="tvp-section-title"><span>Hold Last Frame</span></div>
+          <div className="tvp-section-body">
+            <label className="tvp-checkbox-row">
               <input
                 className="tvp-checkbox"
                 type="checkbox"
-                checked={thresholdIsUnlimited}
-                onChange={(e) => commitThreshold(
-                  e.target.checked ? HOLD_THRESHOLD_UNLIMITED : 4)}
+                checked={hold}
+                onChange={(e) => handleToggleHold(e.target.checked)}
               />
-              <span>Unlimited</span>
-              <span className="tvp-hint">(hold until the next clip)</span>
+              <span>Enabled</span>
+              <span className="tvp-hint">(freeze the final frame after the clip ends)</span>
             </label>
 
-            {!thresholdIsUnlimited && (
-              <label className="tvp-hold-threshold-field">
-                <span>Hold for</span>
-                <input
-                  className="tvp-hold-threshold-input"
-                  type="number"
-                  min="0"
-                  step="0.25"
-                  value={thresholdDraft}
-                  aria-label="Hold Last Frame threshold in beats"
-                  onChange={(e) => setThresholdDraft(e.target.value)}
-                  onBlur={commitThresholdDraft}
-                  onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
-                />
-                <span>beats, then cut</span>
-              </label>
+            {/* Threshold — only meaningful while the hold itself is on. */}
+            {hold && (
+              <div className="tvp-hold-threshold" role="group" aria-label="Hold Last Frame threshold">
+                <label className="tvp-checkbox-row tvp-hold-threshold-unlimited">
+                  <input
+                    className="tvp-checkbox"
+                    type="checkbox"
+                    checked={thresholdIsUnlimited}
+                    onChange={(e) => commitThreshold(
+                      e.target.checked ? HOLD_THRESHOLD_UNLIMITED : 4)}
+                  />
+                  <span>Unlimited</span>
+                  <span className="tvp-hint">(hold until the next clip)</span>
+                </label>
+
+                {!thresholdIsUnlimited && (
+                  <label className="tvp-hold-threshold-field">
+                    <span>Hold for</span>
+                    <input
+                      className="tvp-hold-threshold-input"
+                      type="number"
+                      min="0"
+                      step="0.25"
+                      value={thresholdDraft}
+                      aria-label="Hold Last Frame threshold in beats"
+                      onChange={(e) => setThresholdDraft(e.target.value)}
+                      onBlur={commitThresholdDraft}
+                      onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
+                    />
+                    <span>beats, then cut</span>
+                  </label>
+                )}
+              </div>
             )}
+          </div>
+        </div>
+
+        {/* ── Fullscreen opacity — fullscreen-placed tracks only ────────── */}
+        {isFullscreen && (
+          <div className="grid-tab-section tvp-section">
+            <div className="tvp-section-title"><span>Fullscreen Layer</span></div>
+            <div className="tvp-section-body">
+              <div className="tvp-placement-toggle" role="group" aria-label="Fullscreen placement (hold-through-gap)">
+                <button
+                  type="button"
+                  className={`tvp-placement-toggle-btn${placement.kind === 'behind' ? ' active' : ''}`}
+                  onClick={() => handleSetPlacementMode('behind')}
+                >
+                  Behind
+                </button>
+                <button
+                  type="button"
+                  className={`tvp-placement-toggle-btn${placement.kind === 'front' ? ' active' : ''}`}
+                  onClick={() => handleSetPlacementMode('front')}
+                >
+                  Front
+                </button>
+              </div>
+              <div className="tvp-opacity-row">
+                <label className="tvp-opacity-label" htmlFor="tvp-fs-opacity">Opacity</label>
+                <input
+                  id="tvp-fs-opacity"
+                  type="range" min={0} max={1} step={0.01}
+                  value={opacityDraft}
+                  style={rangeFillStyle(opacityDraft, 0, 1)}
+                  onChange={(e) => setOpacityDraft(Number(e.target.value))}
+                  onPointerUp={(e) => commitFsOpacity(Number(e.currentTarget.value))}
+                  onKeyUp={(e) => commitFsOpacity(Number(e.currentTarget.value))}
+                  aria-label="Fullscreen layer opacity"
+                />
+                <span className="tvp-opacity-val">{Math.round(opacityDraft * 100)}%</span>
+              </div>
+            </div>
+          </div>
+        )}
+
+        {/* ── Corner Radius + per-track Gap ─────────────────────────────── */}
+        <div className="grid-tab-section tvp-section">
+          <div className="tvp-section-title"><span>Layout</span></div>
+          <div className="grid-tab-track-sliders">
+            <CornerRadiusControl
+              track={track}
+              fetchTracks={fetchTracks}
+              applyCornerRadiusToAll={applyCornerRadiusToAll}
+            />
+            <CustomGapControl
+              track={track}
+              gapScale={gapScale}
+              fetchTracks={fetchTracks}
+            />
+          </div>
+        </div>
+
+        {/* ── Visual FX ──────────────────────────────────────────────────── */}
+        <div className="grid-tab-section tvp-section">
+          <VisualFXSection track={track} fetchTracks={fetchTracks} />
+        </div>
+
+        {/* ── Slide Note FX — Pattern tracks only ───────────────────────── */}
+        {track.type === 'Pattern' && (
+          <div className="grid-tab-section tvp-section">
+            <SlideNoteEffectSection track={track} fetchTracks={fetchTracks} />
           </div>
         )}
       </div>
-
-      {/* ── Fullscreen opacity — fullscreen-placed tracks only ──────────── */}
-      {isFullscreen && (
-        <div className="grid-tab-section tvp-section">
-          <div className="tvp-section-title">
-            <Layers size={13} aria-hidden="true" />
-            <span>Fullscreen Layer</span>
-          </div>
-          <div className="tvp-placement-toggle" role="group" aria-label="Fullscreen placement (hold-through-gap)">
-            <button
-              type="button"
-              className={`tvp-placement-toggle-btn${placement.kind === 'behind' ? ' active' : ''}`}
-              onClick={() => handleSetPlacementMode('behind')}
-            >
-              Behind
-            </button>
-            <button
-              type="button"
-              className={`tvp-placement-toggle-btn${placement.kind === 'front' ? ' active' : ''}`}
-              onClick={() => handleSetPlacementMode('front')}
-            >
-              Front
-            </button>
-          </div>
-          <div className="tvp-opacity-row">
-            <label className="tvp-opacity-label" htmlFor="tvp-fs-opacity">Opacity</label>
-            <input
-              id="tvp-fs-opacity"
-              type="range" min={0} max={1} step={0.01}
-              value={opacityDraft}
-              onChange={(e) => setOpacityDraft(Number(e.target.value))}
-              onPointerUp={(e) => commitFsOpacity(Number(e.currentTarget.value))}
-              onKeyUp={(e) => commitFsOpacity(Number(e.currentTarget.value))}
-              aria-label="Fullscreen layer opacity"
-            />
-            <span className="tvp-opacity-val">{Math.round(opacityDraft * 100)}%</span>
-          </div>
-        </div>
-      )}
-
-      {/* ── Corner Radius + per-track Gap ───────────────────────────────── */}
-      <div className="grid-tab-section tvp-section">
-        <div className="tvp-section-title"><span>Layout</span></div>
-        <div className="grid-tab-track-sliders">
-          <CornerRadiusControl
-            track={track}
-            fetchTracks={fetchTracks}
-            applyCornerRadiusToAll={applyCornerRadiusToAll}
-          />
-          <CustomGapControl
-            track={track}
-            gapScale={gapScale}
-            fetchTracks={fetchTracks}
-          />
-        </div>
-      </div>
-
-      {/* ── Visual FX ───────────────────────────────────────────────────── */}
-      <div className="grid-tab-section tvp-section">
-        <VisualFXSection track={track} fetchTracks={fetchTracks} />
-      </div>
-
-      {/* ── Slide Note FX — Pattern tracks only ─────────────────────────── */}
-      {track.type === 'Pattern' && (
-        <div className="grid-tab-section tvp-section">
-          <SlideNoteEffectSection track={track} fetchTracks={fetchTracks} />
-        </div>
-      )}
     </div>
   )
 }

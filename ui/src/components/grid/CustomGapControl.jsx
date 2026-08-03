@@ -1,4 +1,4 @@
-import { snapToZero } from '../../utils/sliderHelpers.js'
+import { snapToZero, rangeFillStyle } from '../../utils/sliderHelpers.js'
 
 export default function CustomGapControl({ track, gapScale, fetchTracks }) {
   const hasOverride = (track.gapScaleOverride ?? -1) >= 0
@@ -28,6 +28,7 @@ export default function CustomGapControl({ track, gapScale, fetchTracks }) {
           className="grid-tab-gap-slider"
           type="range" min={0} max={0.5} step={0.01}
           defaultValue={track.gapScaleOverride ?? 0}
+          style={rangeFillStyle(track.gapScaleOverride ?? 0, 0, 0.5)}
           onPointerUp={async (e) => {
             const v = snapToZero(parseFloat(e.target.value))
             await window.xleth?.timeline?.setTrackGapScaleOverride(track.id, v)

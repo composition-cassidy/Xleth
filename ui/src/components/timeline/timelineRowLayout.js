@@ -27,6 +27,7 @@ import { DEFAULT_TRACK_HEIGHT, TRACK_HEIGHT } from '../../constants/timeline.js'
 // room for a clip body + a small curve preview, but visibly subordinate to the
 // parent track row.
 export const MACRO_LANE_HEIGHT = 36
+export const FOLDER_ROW_HEIGHT = 32
 
 function readLanes(graphState) {
   return Array.isArray(graphState?.macroAutomationLanes) ? graphState.macroAutomationLanes : []
@@ -48,15 +49,22 @@ export function buildTimelineRows({
   tracks,
   graphStates = {},
   collapsed = null,
+  folderLayout = null,
   trackHeight = TRACK_HEIGHT,
   macroLaneHeight = Math.round(MACRO_LANE_HEIGHT * trackHeight / DEFAULT_TRACK_HEIGHT),
+  folderRowHeight = FOLDER_ROW_HEIGHT,
 } = {}) {
   const rows = []
   if (!Array.isArray(tracks)) return rows
   const collapsedSet = collapsed instanceof Set ? collapsed : null
 
   let y = 0
-  tracks.forEach((track, trackIndex) => {
+  let visibleTrackIndex = 0
+  const trackById = new Map(tracks.map(track => [track.id, track]))
+  const folderById = new Map((folderLayout?.folders ?? []).map(folder => [folder.id, folder]))
+
+  const appendTrack = (track) => {
+    const trackIndex = visibleTrackIndex++
     const trackId = track?.id
     rows.push({
       id: `track:${trackId}`,
@@ -100,7 +108,38 @@ export function buildTimelineRows({
       })
       y += macroLaneHeight
     }
-  })
+  }
+
+  const rootOrder = Array.isArray(folderLayout?.rootOrder)
+    ? folderLayout.rootOrder
+    : tracks.map(track => ({ kind: 'track', id: track.id }))
+  for (const item of rootOrder) {
+    if (item.kind === 'track') {
+      const track = trackById.get(item.id)
+      if (track) appendTrack(track)
+      continue
+    }
+    const folder = folderById.get(item.id)
+    if (!folder) continue
+    rows.push({
+      id: `folder:${folder.id}`,
+      rowType: 'folder',
+      laneKind: 'folder',
+      folderId: folder.id,
+      label: folder.name,
+      collapsed: folder.collapsed === true,
+      memberCount: folder.trackIds.length,
+      y,
+      height: folderRowHeight,
+      visible: true,
+    })
+    y += folderRowHeight
+    if (folder.collapsed) continue
+    for (const trackId of folder.trackIds) {
+      const track = trackById.get(trackId)
+      if (track) appendTrack(track)
+    }
+  }
 
   return rows
 }
@@ -108,10 +147,11 @@ export function buildTimelineRows({
 // Derives a layout "view" over the rows that the canvas + tools consult. Keeps
 // the `trackIndex → y` and `y → trackIndex` conversions in one place so the
 // shifted geometry is identical everywhere.
-export function buildTrackLayout({ tracks, graphStates = {}, collapsed = null, trackHeight = TRACK_HEIGHT } = {}) {
-  const rows = buildTimelineRows({ tracks, graphStates, collapsed, trackHeight })
+export function buildTrackLayout({ tracks, graphStates = {}, collapsed = null, folderLayout = null, trackHeight = TRACK_HEIGHT } = {}) {
+  const rows = buildTimelineRows({ tracks, graphStates, collapsed, folderLayout, trackHeight })
   const trackRows = rows.filter((r) => r.rowType === 'track')
   const macroRows = rows.filter((r) => r.rowType === 'macroAutomation')
+  const folderRows = rows.filter((r) => r.rowType === 'folder')
   const trackCount = trackRows.length
 
   // y top per track index.
@@ -137,6 +177,7 @@ export function buildTrackLayout({ tracks, graphStates = {}, collapsed = null, t
     if (y < 0) return 0
     for (const r of rows) {
       if (y >= r.y && y < r.y + r.height) {
+        if (r.rowType === 'folder') return -1
         return r.rowType === 'track' ? r.trackIndex : r.parentTrackIndex
       }
     }
@@ -155,12 +196,15 @@ export function buildTrackLayout({ tracks, graphStates = {}, collapsed = null, t
     rows,
     trackRows,
     macroRows,
+    folderRows,
     trackCount,
     totalHeight,
     trackTops,
     trackTop,
     trackIndexAtY,
     macroRowAtY,
+    folderRowAtY: (y) => folderRows.find(r => y >= r.y && y < r.y + r.height) ?? null,
     getMacroRows: () => macroRows,
+    getFolderRows: () => folderRows,
   }
 }

@@ -564,42 +564,68 @@ function drawGainBadge(ctx, x, y, w, h, ring, theme) {
   ctx.restore()
 }
 
+// Single filled/stroked output envelope — the shipped "one big shape" look:
+// no dB scale, no grid, no numeric readout. A vertical gradient (solid near
+// the curve, fading toward the baseline) stands in for the scale so the
+// shape alone communicates "loud near the top of a transient".
+function drawOutputEnvelope(ctx, x, y, w, h, columns, theme) {
+  if (!columns || columns.length === 0) return
+  if (h < 4) return
+
+  const lineColor = (theme && theme.text) ? theme.text : COLORS.output
+
+  ctx.save()
+  ctx.translate(x, y)
+
+  ctx.beginPath()
+  ctx.moveTo(columns[0].x, h)
+  ctx.lineTo(columns[0].x, transientLevelToY(columns[0].outputDb, h))
+  for (let i = 1; i < columns.length; i++) {
+    ctx.lineTo(columns[i].x, transientLevelToY(columns[i].outputDb, h))
+  }
+  ctx.lineTo(columns[columns.length - 1].x, h)
+  ctx.closePath()
+
+  const gradient = typeof ctx.createLinearGradient === 'function'
+    ? ctx.createLinearGradient(0, 0, 0, h)
+    : null
+  if (gradient) {
+    gradient.addColorStop(0, lineColor)
+    gradient.addColorStop(1, 'transparent')
+    ctx.globalAlpha = 0.38
+    ctx.fillStyle = gradient
+  } else {
+    ctx.globalAlpha = 0.22
+    ctx.fillStyle = lineColor
+  }
+  ctx.fill()
+  ctx.globalAlpha = 1
+
+  ctx.restore()
+
+  strokeLinePath(ctx, columns, (c) => transientLevelToY(c.outputDb, h), lineColor, 2, 0.92)
+}
+
 // ── Top-level painters (preset entry points) ────────────────────────────────
 
-export function drawTransientShaper(ctx, w, h, ring, theme, params) {
+export function drawTransientShaper(ctx, w, h, ring, theme) {
   if (!ctx || w < 4 || h < 4) return
   fillBackground(ctx, w, h, theme)
 
   const columns = buildTransientDisplayHistory(ring, w)
-  const hasEnvelope = columns.some((c) => c.hasEnvelope !== false)
 
-  // Two-row layout: top = level/envelope strip, bottom = signed gain-change.
-  // When the canvas is short, collapse into a single combined band.
-  if (h >= 120) {
-    const topH    = Math.round(h * 0.62)
-    const gainH   = h - topH - 4
-    const gainY   = topH + 4
+  // Two-band layout: a large filled envelope on top, a thin signed
+  // gain-change strip below. Neither band draws a dB scale, grid lines, or
+  // numeric readouts — the shape is the whole story.
+  const wantsGainStrip = h >= 90
+  const gainH = wantsGainStrip ? Math.max(28, Math.round(h * 0.2)) : 0
+  const gapPx = wantsGainStrip ? 6 : 0
+  const topH  = wantsGainStrip ? h - gainH - gapPx : h
+  const gainY = topH + gapPx
 
-    drawLevelGrid(ctx, 0, 0, w, topH, theme)
-
-    const last = ring && typeof ring.last === 'function' ? ring.last() : null
-    const thresholdDb = (params && Number.isFinite(params.threshold))
-      ? params.threshold
-      : (last && Number.isFinite(last.thresholdDb) ? last.thresholdDb : null)
-    if (thresholdDb !== null) {
-      drawThresholdLine(ctx, 0, 0, w, topH, theme, thresholdDb)
-    }
-
-    drawEnvelopeLayer(ctx, 0, 0, w, topH, columns, hasEnvelope, theme)
-    drawInputOutputLayer(ctx, 0, 0, w, topH, columns, theme)
+  drawOutputEnvelope(ctx, 0, 0, w, topH, columns, theme)
+  if (wantsGainStrip) {
     drawGainChangeStrip(ctx, 0, gainY, w, gainH, columns, theme)
-    drawGainBadge(ctx, 0, 0, w, h, ring, theme)
-  } else {
-    // Compact mode — overlay gain-change on top of envelope strip.
-    drawLevelGrid(ctx, 0, 0, w, h, theme)
-    drawEnvelopeLayer(ctx, 0, 0, w, h, columns, hasEnvelope, theme)
-    drawInputOutputLayer(ctx, 0, 0, w, h, columns, theme)
-    drawGainChangeStrip(ctx, 0, 0, w, h, columns, theme)
   }
 }
 

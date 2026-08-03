@@ -2,6 +2,7 @@
 #include "AnimationManager.h"
 #include "FrameRateMath.h"
 
+#include "audio/ClipFade.h"
 #include "model/Timeline.h"
 #include "model/ClipVideoModulationTiming.h"
 #include "model/ClipCompanionFxBuilder.h"
@@ -23,6 +24,19 @@ bool isVideoModulationCompatible(const VideoEvent& event) noexcept
                event.clipStretchRatio,
                event.clipFormantPreserve,
                event.modulation);
+}
+
+float videoEventFadeGain(const VideoEvent& event, double beatPos) noexcept
+{
+    if (!(event.durationBeats > 0.0) || !std::isfinite(event.durationBeats))
+        return 1.0f;
+    const float progress = static_cast<float>(
+        (beatPos - event.startBeat) / event.durationBeats);
+    return evaluateClipFadeGain(
+        progress,
+        event.fadeInPercent, event.fadeOutPercent,
+        event.fadeInX1, event.fadeInY1, event.fadeInX2, event.fadeInY2,
+        event.fadeOutX1, event.fadeOutY1, event.fadeOutX2, event.fadeOutY2);
 }
 
 xleth::clipmod::VideoModulationTimingContext makeVideoTimingContext(
@@ -350,7 +364,8 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
         req.sourcePath       = pickedPath;
         req.sourceId         = ev->sourceId;
         req.sourceFrameIndex = pickedFrame;
-        req.opacity          = std::min(1.0f, std::max(0.0f, slotOpacity * ev->opacity));
+        const float fadeGain = videoEventFadeGain(*ev, beatPos);
+        req.opacity          = std::clamp(slotOpacity * ev->opacity * fadeGain, 0.0f, 1.0f);
         // Flip v2: VideoFlipApplier already resolved stateIndex/orientation per
         // event during the build pass. The shader consumes `orientation` directly;
         // stateIndex is propagated for analytics/debug only.
@@ -471,6 +486,7 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
             s.lastFrame       = r.sourceFrameIndex;
             s.lastPath        = r.sourcePath;
             s.lastOrientation = r.orientation;
+            s.suppressAfterFadeOut = ev->fadeOutPercent > 0.0f;
             s.lastClipEndBeat = ev->startBeat + ev->durationBeats;
         } else {
             auto it = fullscreenHoldByTrack_.find(fl.trackId);
@@ -481,7 +497,7 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
             // round-trip and no tempo lookup. Negative threshold = unlimited,
             // which short-circuits to the pre-threshold behavior untouched.
             //
-            // Only reached once the clip has actually ended, so the hold still
+            // Only reached once the clip has actually ended, so the hold always
             // fills a gap shorter than the threshold exactly as it did before.
             bool holdExpired = false;
             if (it != fullscreenHoldByTrack_.end() && trk
@@ -489,8 +505,10 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
                 holdExpired = (beatPos - it->second.lastClipEndBeat)
                             > trk->videoHoldLastFrameThresholdBeats;
             }
+
             if (it != fullscreenHoldByTrack_.end() && it->second.lastFrame >= 0
                 && trk && trk->videoHoldLastFrame
+                && !it->second.suppressAfterFadeOut
                 && !holdExpired) {
                 std::fprintf(stderr, "[FrameCollector] FS-behind gap (track %d): hold=ON frame=%lld\n",
                              fl.trackId, (long long)it->second.lastFrame);

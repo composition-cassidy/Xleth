@@ -11526,9 +11526,9 @@ html.fx-drag-active * {
 
 .eq-panel {
   position: fixed;
-  background: var(--xleth-eq-bg-panel);
-  border: 1px solid var(--xleth-eq-border);
-  border-radius: var(--xleth-eq-radius-md);
+  background: var(--xleth-flat-panel);
+  border: 1px solid var(--xleth-flat-border);
+  border-radius: 0;
   font-family: var(--xleth-eq-font-family);
   font-size: calc(var(--xleth-eq-font-size-base) * var(--xleth-eq-font-size-scale));
   display: flex;
@@ -11537,17 +11537,29 @@ html.fx-drag-active * {
   min-width: 480px;
   max-width: 720px;
   width: 640px;
-  box-shadow: 0 -4px 24px rgba(0,0,0,0.5);
+  box-shadow: var(--theme-depth-hard-shadow);
+  color: var(--xleth-flat-text);
+  user-select: none;
 }
 
 .eq-panel-header {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--xleth-eq-border);
+  gap: 10px;
+  height: 34px;
+  flex-shrink: 0;
+  padding: 0 6px 0 12px;
+  background: var(--xleth-flat-chrome);
+  border-bottom: 1px solid var(--xleth-flat-border);
   cursor: grab;
-  user-select: none;
+}
+
+.eq-panel-header::before {
+  content: '';
+  width: 3px;
+  height: 14px;
+  background: var(--xleth-flat-accent);
+  flex-shrink: 0;
 }
 
 .eq-panel-header:active {
@@ -11555,29 +11567,30 @@ html.fx-drag-active * {
 }
 
 .eq-panel-title {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--xleth-eq-text-primary);
   flex: 1;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--xleth-flat-text);
 }
 
 .eq-panel-close {
-  width: 20px;
-  height: 20px;
-  border: none;
-  background: none;
-  color: var(--xleth-eq-text-tertiary);
-  font-size: 16px;
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--xleth-flat-text-muted);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--xleth-eq-radius-sm);
+  flex-shrink: 0;
 }
 
 .eq-panel-close:hover {
-  color: var(--xleth-eq-text-primary);
-  background: var(--theme-fx-surface-tint-subtle);
+  color: var(--xleth-flat-text);
+  background: var(--xleth-flat-section);
 }
 
 /* SVG display */
@@ -11604,35 +11617,6 @@ html.fx-drag-active * {
   position: relative;
   flex: 1 1 auto;
   min-width: 0;
-}
-
-/* EQ-A.1: right-side output peak meter */
-.eq-output-meter {
-  width: 20px;
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: stretch;
-  border-left: 1px solid var(--xleth-eq-border);
-  background: var(--xleth-eq-bg-plot);
-  padding: 4px 0 2px;
-}
-
-.eq-output-meter canvas {
-  flex: 1 1 auto;
-  display: block;
-}
-
-.eq-output-meter-label {
-  flex-shrink: 0;
-  font-size: 7px;
-  line-height: 1;
-  color: var(--xleth-eq-grid-label);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-  margin-top: 3px;
-  user-select: none;
 }
 
 .eq-plot-bg {
@@ -11932,120 +11916,133 @@ html.fx-drag-active * {
 .eq-band-popup {
   position: fixed;
   z-index: 400;
-  min-width: 168px;
-  padding: 8px 10px 10px;
+  min-width: 216px;
   font-family: var(--xleth-eq-font-family);
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  overflow: hidden;
 }
 
 .eq-band-popup-header {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
+  padding: 10px 12px 9px;
+  border-bottom: 1px solid var(--xleth-flat-border);
 }
 
 .eq-band-popup-color {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   flex-shrink: 0;
 }
 
 .eq-band-popup-title {
-  font-size: 10px;
-  font-weight: 600;
-  color: var(--xleth-eq-text-primary);
   flex: 1;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--xleth-flat-text);
 }
 
 .eq-band-popup-close {
-  width: 16px;
-  height: 16px;
-  border: none;
-  background: none;
-  color: var(--xleth-eq-text-tertiary);
-  font-size: 14px;
-  line-height: 1;
+  width: 18px;
+  height: 18px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--xleth-flat-text-muted);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--xleth-eq-radius-sm);
   flex-shrink: 0;
 }
 
 .eq-band-popup-close:hover {
-  color: var(--xleth-eq-text-primary);
-  background: var(--theme-fx-surface-tint-subtle);
+  color: var(--xleth-flat-text);
+  background: var(--xleth-flat-section);
 }
 
 .eq-band-popup-controls {
   display: flex;
-  align-items: flex-start;
-  gap: 10px;
+  align-items: stretch;
+  gap: 1px;
+  background: var(--xleth-flat-border);
+}
+
+.eq-band-popup-controls > * {
+  background: var(--xleth-flat-panel);
 }
 
 .eq-band-popup-primary {
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+  gap: 5px;
   flex-shrink: 0;
+  padding: 10px 12px;
 }
 
 .eq-band-popup-power {
-  width: 20px;
-  height: 20px;
-  border: 1px solid var(--xleth-eq-border);
-  background: none;
-  color: var(--xleth-eq-text-tertiary);
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--xleth-flat-border-strong);
+  border-radius: 0;
+  background: var(--xleth-flat-well);
+  color: var(--xleth-flat-text-muted);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--xleth-eq-radius-sm);
+  flex-shrink: 0;
 }
 
 .eq-band-popup-power.active {
-  color: var(--xleth-eq-accent);
-  border-color: var(--xleth-eq-accent);
+  color: var(--xleth-flat-accent);
+  border-color: var(--xleth-flat-accent);
 }
 
 .eq-band-popup-power:hover {
-  background: var(--theme-fx-surface-tint-subtle);
+  color: var(--xleth-flat-text);
+  border-color: var(--xleth-flat-border-strong);
+  background: var(--xleth-flat-section);
 }
 
 .eq-band-popup-selects {
   display: flex;
   flex-direction: column;
-  gap: 5px;
+  justify-content: center;
+  gap: 6px;
   flex: 1;
   min-width: 0;
+  padding: 10px 12px;
 }
 
-.eq-band-popup-select {
+.xleth-select-trigger.eq-band-popup-select {
   width: 100%;
   height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--xleth-flat-border-strong);
+  border-radius: 0;
+  background: var(--xleth-flat-well);
+  color: var(--xleth-flat-text-secondary);
   font-size: 9px;
-  background: var(--xleth-eq-bg-row-alt);
-  color: var(--xleth-eq-text-secondary);
-  border: 1px solid var(--xleth-eq-border);
-  border-radius: var(--xleth-eq-radius-sm);
-  padding: 0 4px;
-  cursor: pointer;
   font-family: var(--xleth-eq-font-family);
+  box-shadow: none;
 }
 
-.eq-band-popup-select:focus {
-  border-color: var(--xleth-eq-accent);
-  outline: none;
+.xleth-select-trigger.eq-band-popup-select:hover,
+.xleth-select-trigger.eq-band-popup-select[aria-expanded="true"] {
+  color: var(--xleth-flat-text);
+  border-color: var(--xleth-flat-accent);
+  background: var(--xleth-flat-well);
 }
 
 .eq-band-popup-extend {
-  border-top: 1px solid var(--xleth-eq-border);
-  padding-top: 8px;
+  border-top: 1px solid var(--xleth-flat-border);
+  padding: 9px 12px;
 }
 
 /* The extension's own SelectedBandInspector adds its own left accent/padding
@@ -12058,35 +12055,41 @@ html.fx-drag-active * {
 .eq-band-popup-footer {
   display: flex;
   align-items: center;
-  gap: 5px;
-  border-top: 1px solid var(--xleth-eq-border);
-  padding-top: 8px;
+  gap: 6px;
+  border-top: 1px solid var(--xleth-flat-border);
+  padding: 9px 12px 11px;
 }
 
 .eq-band-popup-footer button {
   flex: 1;
-  height: 20px;
+  height: 24px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
   font-size: 9px;
-  font-weight: 500;
-  color: var(--xleth-eq-text-secondary);
-  background: none;
-  border: 1px solid var(--xleth-eq-border);
-  border-radius: var(--xleth-eq-radius-sm);
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--xleth-flat-text-secondary);
+  background: transparent;
+  border: 1px solid var(--xleth-flat-border-strong);
+  border-radius: 0;
   cursor: pointer;
   font-family: var(--xleth-eq-font-family);
 }
 
 .eq-band-popup-footer button:hover {
-  border-color: var(--xleth-eq-accent);
-  color: var(--xleth-eq-accent);
+  border-color: var(--xleth-flat-accent);
+  color: var(--xleth-flat-accent);
 }
 
 .eq-band-popup-footer button.danger {
-  color: var(--xleth-eq-gr-cut);
+  color: var(--xleth-eq-danger);
 }
 
 .eq-band-popup-footer button.danger:hover {
-  border-color: var(--xleth-eq-gr-cut);
+  border-color: var(--xleth-eq-danger);
+  color: var(--xleth-eq-danger);
 }
 
 .eq-band-popup-confirm {
@@ -12095,7 +12098,8 @@ html.fx-drag-active * {
   gap: 6px;
   width: 100%;
   font-size: 9px;
-  color: var(--xleth-eq-gr-cut);
+  font-weight: 600;
+  color: var(--xleth-eq-danger);
 }
 
 .eq-band-popup-confirm span {
@@ -12103,19 +12107,19 @@ html.fx-drag-active * {
 }
 
 .eq-band-popup-confirm button {
-  height: 18px;
+  height: 20px;
   padding: 0 8px;
   font-size: 8px;
-  border: 1px solid var(--xleth-eq-border);
-  border-radius: var(--xleth-eq-radius-sm);
-  background: none;
-  color: var(--xleth-eq-text-secondary);
+  border: 1px solid var(--xleth-flat-border-strong);
+  border-radius: 0;
+  background: transparent;
+  color: var(--xleth-flat-text-secondary);
   cursor: pointer;
 }
 
 .eq-band-popup-confirm button:hover {
-  border-color: var(--xleth-eq-accent);
-  color: var(--xleth-eq-accent);
+  border-color: var(--xleth-flat-accent);
+  color: var(--xleth-flat-accent);
 }
 
 /* â”€â”€ Node Editor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
@@ -13354,41 +13358,42 @@ html.fx-drag-active * {
 
 /* â”€â”€ Delay Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
+/* Flat, square, hard-shadowed floating panel. Surfaces step
+   well -> panel -> chrome; the accent appears only on live state. */
 .delay-panel {
   position: fixed;
-  background: var(--theme-bg-primary);
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: var(--radius-md);
+  z-index: 200;
+  width: 700px;
   display: flex;
   flex-direction: column;
-  z-index: 200;
-  width: 520px;
-  box-shadow: var(--theme-fx-plugin-shadow-top);
+  border: 1px solid var(--xleth-flat-border);
+  border-radius: 0;
+  background: var(--xleth-flat-panel);
+  box-shadow: var(--theme-depth-hard-shadow);
+  color: var(--xleth-flat-text);
+  font-family: var(--xleth-global-font-family);
   user-select: none;
 }
 
-/* Tapehead visualizer */
-.delay-viz-wrap {
-  width: 100%;
-  height: 150px;
-  overflow: hidden;
-  border-bottom: 1px solid var(--theme-border-subtle);
-  background: var(--theme-bg-inset, #0d0d14);
-  flex-shrink: 0;
-}
-
-.delay-viz-canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
-}
+/* ── Header ──────────────────────────────────────────────────────────────── */
 
 .delay-panel-header {
   display: flex;
   align-items: center;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--theme-border-subtle);
+  gap: 10px;
+  height: 34px;
+  padding: 0 6px 0 12px;
+  background: var(--xleth-flat-chrome);
+  border-bottom: 1px solid var(--xleth-flat-border);
   cursor: grab;
+}
+
+.delay-panel-header::before {
+  content: '';
+  width: 3px;
+  height: 14px;
+  background: var(--xleth-flat-accent);
+  flex-shrink: 0;
 }
 
 .delay-panel-header:active {
@@ -13397,171 +13402,330 @@ html.fx-drag-active * {
 
 .delay-panel-title {
   font-size: 11px;
-  font-weight: 600;
-  color: var(--theme-text);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--xleth-flat-text);
+}
+
+.delay-panel-sub {
   flex: 1;
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  color: var(--xleth-flat-text-muted);
 }
 
 .delay-panel-close {
-  width: 20px;
-  height: 20px;
-  border: none;
-  background: none;
-  color: var(--theme-text-subtle);
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--xleth-flat-text-muted);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-sm);
+  flex-shrink: 0;
 }
 
 .delay-panel-close:hover {
-  color: var(--theme-text);
-  background: var(--theme-fx-surface-tint-subtle);
+  color: var(--xleth-flat-text);
+  background: var(--xleth-flat-section);
 }
 
-/* Sync row */
-.delay-sync-row {
+/* ── Stage: the dominant echo-field visualization ────────────────────────── */
+
+.delay-stage {
+  height: 236px;
+  overflow: hidden;
+  background: var(--xleth-flat-well);
+  border-bottom: 1px solid var(--xleth-flat-border);
+  flex-shrink: 0;
+}
+
+.delay-stage-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ── Strip: one flat control row, no titles ──────────────────────────────── */
+/* 1px gaps double as divider hairlines between the three top-level cells
+   (mix / time-group / right-group) — same trick the old tiered grid used. */
+.delay-strip {
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+  background: var(--xleth-flat-border);
+}
+
+.delay-strip > * {
+  background: var(--xleth-flat-panel);
+}
+
+/* ── Time group: the two taps, their per-tap mode dropdowns, and the ─────── */
+/* ── stereo-mode selector spanning beneath both ──────────────────────────── */
+
+.delay-strip-time {
+  display: flex;
+  flex-direction: column;
+  flex-shrink: 0;
+}
+
+.delay-strip-time-knobs {
+  display: flex;
+  gap: 18px;
+  padding: 14px 16px 8px;
+  justify-content: center;
+}
+
+.delay-time-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 5px;
+  width: 84px;
+}
+
+.delay-time-chan {
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--xleth-flat-text-muted);
+}
+
+.delay-time-cell.is-synced .delay-time-chan {
+  color: var(--xleth-flat-accent);
+}
+
+.delay-time-sub {
+  font-size: 8.5px;
+  letter-spacing: 0.06em;
+  color: var(--xleth-flat-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Single mode: the R cell mirrors L and never writes time_r/sync_div_r; its
+   mode dropdown is unmounted entirely rather than just disabled. */
+.delay-time-cell.is-locked {
+  opacity: 0.5;
+}
+
+.delay-time-cell.is-locked .delay-time-chan {
+  color: var(--xleth-flat-text-subtle);
+}
+
+.delay-time-cell.is-locked .delay-time-knob {
+  pointer-events: none;
+}
+
+.xleth-select-trigger.delay-mode-select {
+  width: 100%;
+  height: 20px;
+  padding: 0 5px;
+  border: 1px solid var(--xleth-flat-border-strong);
+  border-radius: 0;
+  background: var(--xleth-flat-well);
+  color: var(--xleth-flat-text-secondary);
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.xleth-select-trigger.delay-mode-select:hover {
+  color: var(--xleth-flat-text);
+  border-color: var(--xleth-flat-accent);
+}
+
+.delay-time-cell.is-synced .xleth-select-trigger.delay-mode-select {
+  color: var(--xleth-flat-text);
+  border-color: var(--xleth-flat-accent);
+}
+
+.delay-strip-stereo-mode {
+  display: flex;
+  justify-content: center;
+  padding: 4px 16px 14px;
+}
+
+.xleth-select-trigger.delay-stereo-mode-select {
+  width: 128px;
+  height: 22px;
+  padding: 0 6px;
+  border: 1px solid var(--xleth-flat-border-strong);
+  border-radius: 0;
+  background: var(--xleth-flat-well);
+  color: var(--xleth-flat-text-secondary);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-align: center;
+}
+
+.xleth-select-trigger.delay-stereo-mode-select:hover {
+  color: var(--xleth-flat-text);
+  border-color: var(--xleth-flat-accent);
+}
+
+/* ── Right group: FEEDBACK / MOD RATE / MOD DEPTH, then WIDTH / DUCK ─────── */
+/* ── beside the compact filter curve ─────────────────────────────────────── */
+
+.delay-strip-right {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+.delay-strip-primary-knobs {
+  display: flex;
+  gap: 22px;
+  padding: 14px 18px 8px;
+}
+
+.delay-strip-secondary {
   display: flex;
   align-items: center;
-  flex-wrap: nowrap;
-  gap: 6px;
-  padding: 6px 12px;
-  border-bottom: 1px solid var(--theme-border-subtle);
+  gap: 14px;
+  padding: 6px 18px 14px;
+  flex: 1;
+  min-height: 0;
 }
 
-.delay-sync-label {
-  font-size: 10px;
-  color: var(--theme-text-subtle);
-  margin-right: 2px;
-  flex-shrink: 0;
-}
+/* ── Mix fader ───────────────────────────────────────────────────────────── */
 
-.delay-sync-btn {
-  font-size: 9px;
-  padding: 2px 8px;
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--theme-bg-secondary);
-  color: var(--theme-text-subtle);
-  cursor: pointer;
-  transition: all 0.1s;
-  flex-shrink: 0;
-}
-
-.delay-sync-btn:hover {
-  color: var(--theme-text);
-  border-color: var(--theme-text-subtle);
-}
-
-.delay-sync-btn.active {
-  background: var(--theme-accent);
-  color: #000;
-  border-color: var(--theme-accent);
-}
-
-/* Channel label (L / R) */
-.delay-sync-chan-label {
-  font-size: 9px;
-  color: var(--theme-text-subtle);
-  flex-shrink: 0;
-  margin-left: 6px;
-}
-
-/* Note value dropdown (1/1, 1/2, 1/4, 1/8, 1/16) */
-.delay-note-select {
-  width: 52px;
-  height: 20px;
-  font-size: 9px;
-  background: var(--theme-bg-surface);
-  color: var(--theme-text-muted);
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: var(--radius-sm);
-  padding: 0 2px;
-  cursor: pointer;
-  flex-shrink: 0;
-}
-
-.delay-note-select:disabled {
-  opacity: 0.4;
-  cursor: default;
-}
-
-.delay-note-select:focus {
-  border-color: var(--theme-accent);
-  outline: none;
-}
-
-/* Feel button group (Str / Dot / Tri) */
-.delay-feel-group {
+.delay-mix {
   display: flex;
-  gap: 2px;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 10px 12px;
+  width: 56px;
   flex-shrink: 0;
 }
 
-.delay-feel-btn {
+.delay-mix-track {
+  position: relative;
+  width: 14px;
+  flex: 1;
+  min-height: 110px;
+  background: var(--xleth-flat-well);
+  border: 1px solid var(--xleth-flat-border-strong);
+  border-radius: 0;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.delay-mix-track:focus-visible {
+  outline: 1px solid var(--xleth-flat-accent);
+  outline-offset: 1px;
+}
+
+.delay-mix-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--xleth-flat-accent);
+  pointer-events: none;
+}
+
+.delay-mix-thumb {
+  position: absolute;
+  left: -3px;
+  right: -3px;
+  height: 3px;
+  margin-bottom: -1px;
+  background: var(--xleth-flat-text);
+  pointer-events: none;
+}
+
+.delay-mix-value {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--xleth-flat-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.delay-unit {
   font-size: 8px;
-  padding: 2px 5px;
-  height: 20px;
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: var(--radius-sm);
-  background: var(--theme-bg-secondary);
-  color: var(--theme-text-subtle);
-  cursor: pointer;
-  transition: all 0.1s;
-  line-height: 1;
+  color: var(--xleth-flat-text-muted);
+  margin-left: 1px;
 }
 
-.delay-feel-btn:hover:not(:disabled) {
-  color: var(--theme-text);
-  border-color: var(--theme-text-subtle);
-}
-
-.delay-feel-btn.active {
-  background: var(--theme-accent);
-  color: #000;
-  border-color: var(--theme-accent);
-}
-
-.delay-feel-btn:disabled {
-  opacity: 0.25;
-  cursor: default;
-}
-
-/* Knob grid */
-.delay-knob-grid {
-  display: grid;
-  grid-template-columns: repeat(5, 1fr);
-  gap: 8px;
-  padding: 12px;
+.delay-mix-label {
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--xleth-flat-text-muted);
 }
 
 .delay-knob-cell {
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.delay-knob-value {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--xleth-flat-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.delay-filter {
+  flex: 1;
+  min-width: 130px;
+  height: 68px;
+  border: 1px solid var(--xleth-flat-border-strong);
+  background: var(--xleth-flat-well);
+}
+
+.delay-filter-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
 }
 
 /* â”€â”€ Reverb Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .reverb-panel {
   position: fixed;
-  background: var(--theme-bg-primary);
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: var(--radius-md);
+  z-index: 200;
+  width: 700px;
   display: flex;
   flex-direction: column;
-  z-index: 200;
-  width: 480px;
-  box-shadow: var(--theme-fx-plugin-shadow-top);
+  border: 1px solid var(--xleth-flat-border);
+  border-radius: 0;
+  background: var(--xleth-flat-panel);
+  box-shadow: var(--theme-depth-hard-shadow);
+  color: var(--xleth-flat-text);
+  font-family: var(--xleth-global-font-family);
   user-select: none;
 }
+
+/* ── Header ──────────────────────────────────────────────────────────────── */
 
 .reverb-panel-header {
   display: flex;
   align-items: center;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--theme-border-subtle);
+  gap: 10px;
+  height: 34px;
+  padding: 0 6px 0 12px;
+  background: var(--xleth-flat-chrome);
+  border-bottom: 1px solid var(--xleth-flat-border);
   cursor: grab;
+}
+
+.reverb-panel-header::before {
+  content: '';
+  width: 3px;
+  height: 14px;
+  background: var(--xleth-flat-accent);
+  flex-shrink: 0;
 }
 
 .reverb-panel-header:active {
@@ -13570,127 +13734,287 @@ html.fx-drag-active * {
 
 .reverb-panel-title {
   font-size: 11px;
-  font-weight: 600;
-  color: var(--theme-text);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--xleth-flat-text);
+}
+
+/* Names the backend that is actually running — including the LEGACY FDN path
+   Generic falls into at RING TAME 0. */
+.reverb-panel-sub {
   flex: 1;
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  color: var(--xleth-flat-text-muted);
 }
 
 .reverb-panel-close {
-  width: 20px;
-  height: 20px;
-  border: none;
-  background: none;
-  color: var(--theme-text-subtle);
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--xleth-flat-text-muted);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-sm);
+  flex-shrink: 0;
 }
 
 .reverb-panel-close:hover {
-  color: var(--theme-text);
-  background: var(--theme-fx-surface-tint-subtle);
+  color: var(--xleth-flat-text);
+  background: var(--xleth-flat-section);
 }
 
-/* Reverb style selector — segmented row above the visualizer.
-   Stage 2: all four options route to the Generic FDN backend; the visual
-   selection is meaningful for persistence but does not yet alter DSP. */
+/* ── Style selector ──────────────────────────────────────────────────────── */
+/* Four genuinely different engine backends, not four presets — see the
+   STYLE_OPTIONS comment in ReverbPanel.jsx. Accent marks the active one and
+   nothing else; the hue is the panel accent, same as every other control. */
+
 .reverb-style-row {
   display: flex;
-  gap: 4px;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--theme-border-subtle);
-  background: var(--theme-bg-primary);
+  gap: 1px;
+  padding: 0;
+  background: var(--xleth-flat-border);
+  border-bottom: 1px solid var(--xleth-flat-border);
 }
 
 .reverb-style-button {
   flex: 1;
-  padding: 4px 0;
+  height: 24px;
+  padding: 0;
+  font-family: inherit;
   font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  color: var(--theme-text-subtle);
-  background: rgba(255, 255, 255, 0.025);
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: var(--radius-sm);
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--xleth-flat-text-muted);
+  background: var(--xleth-flat-panel);
+  border: 0;
+  border-radius: 0;
   cursor: pointer;
-  transition: color 90ms linear, background 90ms linear, border-color 90ms linear;
 }
 
 .reverb-style-button:hover {
-  color: var(--theme-text);
-  background: rgba(210, 148, 40, 0.08);
+  color: var(--xleth-flat-text);
 }
 
-.reverb-style-button-active {
-  color: rgb(255, 198, 65);
-  background: rgba(210, 148, 40, 0.16);
-  border-color: rgba(210, 148, 40, 0.55);
-  box-shadow: inset 0 0 0 1px rgba(255, 198, 65, 0.18);
+.reverb-style-button.is-active {
+  color: var(--xleth-flat-accent-text);
+  background: var(--xleth-flat-accent);
 }
 
-.reverb-style-button-active:hover {
-  color: rgb(255, 218, 110);
-  background: rgba(210, 148, 40, 0.22);
+.reverb-style-button:focus-visible {
+  outline: 1px solid var(--xleth-flat-accent);
+  outline-offset: -2px;
 }
 
-.reverb-knob-grid {
-  padding: 12px 12px 4px;
-}
+/* ── Stage: the dominant decay-field visualization ───────────────────────── */
 
-.reverb-knob-row {
-  display: flex;
-  justify-content: center;
-  gap: 8px;
-  margin-bottom: 8px;
-}
-
-.reverb-knob-cell {
-  display: flex;
-  justify-content: center;
-}
-
-.reverb-mix-row {
-  display: flex;
-  justify-content: center;
-  padding: 0 12px 12px;
-}
-
-.reverb-viz-wrap {
-  height: 230px;
-  background: var(--theme-bg-inset, #0d0d14);
-  border-bottom: 1px solid var(--theme-border-subtle, rgba(255, 255, 255, 0.08));
+.reverb-stage {
+  height: 250px;
   overflow: hidden;
+  background: var(--xleth-flat-well);
+  border-bottom: 1px solid var(--xleth-flat-border);
+  flex-shrink: 0;
 }
 
-.reverb-viz-canvas {
+.reverb-stage-canvas {
   display: block;
   width: 100%;
   height: 100%;
 }
 
-/* â”€â”€ Chorus Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* ── Strip: one flat control column set, no titles ───────────────────────── */
+/* The 1px gap doubles as a divider hairline between the mix fader and the
+   knob group — same trick the Delay strip uses. */
+
+.reverb-strip {
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+  background: var(--xleth-flat-border);
+}
+
+.reverb-strip > * {
+  background: var(--xleth-flat-panel);
+}
+
+.reverb-strip-right {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+}
+
+/* DECAY / SIZE / DAMPING — the three that define the space. */
+.reverb-strip-primary {
+  display: flex;
+  gap: 26px;
+  padding: 14px 24px 6px;
+  justify-content: space-between;
+}
+
+/* PRE-DELAY / ER LEVEL / LATE LEVEL / RING TAME. */
+.reverb-strip-secondary {
+  display: flex;
+  gap: 20px;
+  padding: 6px 24px;
+  justify-content: space-between;
+}
+
+/* MOD RATE / MOD DEPTH beside the filter curve. */
+.reverb-strip-tertiary {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 6px 18px 14px;
+  flex: 1;
+  min-height: 0;
+}
+
+/* ── Mix fader ───────────────────────────────────────────────────────────── */
+
+.reverb-mix {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 10px 12px;
+  width: 56px;
+  flex-shrink: 0;
+}
+
+.reverb-mix-track {
+  position: relative;
+  width: 14px;
+  flex: 1;
+  min-height: 110px;
+  background: var(--xleth-flat-well);
+  border: 1px solid var(--xleth-flat-border-strong);
+  border-radius: 0;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.reverb-mix-track:focus-visible {
+  outline: 1px solid var(--xleth-flat-accent);
+  outline-offset: 1px;
+}
+
+.reverb-mix-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--xleth-flat-accent);
+  pointer-events: none;
+}
+
+.reverb-mix-thumb {
+  position: absolute;
+  left: -3px;
+  right: -3px;
+  height: 3px;
+  margin-bottom: -1px;
+  background: var(--xleth-flat-text);
+  pointer-events: none;
+}
+
+.reverb-mix-value {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--xleth-flat-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.reverb-unit {
+  font-size: 8px;
+  color: var(--xleth-flat-text-muted);
+  margin-left: 1px;
+}
+
+.reverb-mix-label {
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--xleth-flat-text-muted);
+}
+
+/* ── Knob cells ──────────────────────────────────────────────────────────── */
+
+.reverb-knob-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.reverb-knob-value {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--xleth-flat-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.reverb-knob-cell--sm .reverb-knob-value {
+  font-size: 8.5px;
+}
+
+/* ── Filter curve ────────────────────────────────────────────────────────── */
+
+.reverb-filter {
+  flex: 1;
+  min-width: 150px;
+  height: 74px;
+  border: 1px solid var(--xleth-flat-border-strong);
+  background: var(--xleth-flat-well);
+}
+
+.reverb-filter-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ── Chorus Panel ─────────────────────────────────────────────────────────── */
 
 .chorus-panel {
   position: fixed;
-  background: var(--theme-bg-primary);
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: var(--radius-md);
+  z-index: 200;
+  width: 560px;
   display: flex;
   flex-direction: column;
-  z-index: 200;
-  width: 420px;
-  box-shadow: var(--theme-fx-plugin-shadow-top);
+  border: 1px solid var(--xleth-flat-border);
+  border-radius: 0;
+  background: var(--xleth-flat-panel);
+  box-shadow: var(--theme-depth-hard-shadow);
+  color: var(--xleth-flat-text);
+  font-family: var(--xleth-global-font-family);
   user-select: none;
 }
+
+/* ── Header ──────────────────────────────────────────────────────────────── */
 
 .chorus-panel-header {
   display: flex;
   align-items: center;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--theme-border-subtle);
+  gap: 10px;
+  height: 34px;
+  padding: 0 6px 0 12px;
+  background: var(--xleth-flat-chrome);
+  border-bottom: 1px solid var(--xleth-flat-border);
   cursor: grab;
+}
+
+.chorus-panel-header::before {
+  content: '';
+  width: 3px;
+  height: 14px;
+  background: var(--xleth-flat-accent);
+  flex-shrink: 0;
 }
 
 .chorus-panel-header:active {
@@ -13698,47 +14022,39 @@ html.fx-drag-active * {
 }
 
 .chorus-panel-title {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--theme-text);
   flex: 1;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--xleth-flat-text);
 }
 
 .chorus-panel-close {
-  width: 20px;
-  height: 20px;
-  border: none;
-  background: none;
-  color: var(--theme-text-subtle);
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--xleth-flat-text-muted);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-sm);
+  flex-shrink: 0;
 }
 
 .chorus-panel-close:hover {
-  color: var(--theme-text);
-  background: var(--theme-fx-surface-tint-subtle);
+  color: var(--xleth-flat-text);
+  background: var(--xleth-flat-section);
 }
 
-.chorus-knob-grid {
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  gap: 8px;
-  padding: 12px;
-}
+/* ── Stage: the dominant orbit visualization ─────────────────────────────── */
 
-.chorus-knob-cell {
-  display: flex;
-  justify-content: center;
-}
-
-.chorus-viz-wrap {
-  height: 210px;
-  background: var(--theme-bg-inset, #0d0d14);
-  border-bottom: 1px solid var(--theme-border-subtle, rgba(255, 255, 255, 0.08));
+.chorus-stage {
+  height: 200px;
   overflow: hidden;
+  background: var(--xleth-flat-well);
+  border-bottom: 1px solid var(--xleth-flat-border);
   flex-shrink: 0;
 }
 
@@ -13748,12 +14064,128 @@ html.fx-drag-active * {
   height: 100%;
 }
 
+/* ── Strip: one flat control row, no titles ──────────────────────────────── */
+/* 1px gaps double as divider hairlines between the three top-level cells
+   (mix / primary / secondary) — same trick the Delay panel's strip uses. */
+.chorus-strip {
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+  background: var(--xleth-flat-border);
+}
+
+.chorus-strip > * {
+  background: var(--xleth-flat-panel);
+}
+
+.chorus-strip-primary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+  padding: 14px 20px;
+  flex-shrink: 0;
+}
+
+.chorus-strip-secondary {
+  display: flex;
+  align-items: center;
+  justify-content: space-around;
+  gap: 14px;
+  padding: 14px 18px;
+  flex: 1;
+  min-width: 0;
+}
+
+.chorus-knob-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.chorus-knob-value {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--xleth-flat-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Mix fader ───────────────────────────────────────────────────────────── */
+
+.chorus-mix {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 10px 12px;
+  width: 56px;
+  flex-shrink: 0;
+}
+
+.chorus-mix-track {
+  position: relative;
+  width: 14px;
+  flex: 1;
+  min-height: 96px;
+  background: var(--xleth-flat-well);
+  border: 1px solid var(--xleth-flat-border-strong);
+  border-radius: 0;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.chorus-mix-track:focus-visible {
+  outline: 1px solid var(--xleth-flat-accent);
+  outline-offset: 1px;
+}
+
+.chorus-mix-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--xleth-flat-accent);
+  pointer-events: none;
+}
+
+.chorus-mix-thumb {
+  position: absolute;
+  left: -3px;
+  right: -3px;
+  height: 3px;
+  margin-bottom: -1px;
+  background: var(--xleth-flat-text);
+  pointer-events: none;
+}
+
+.chorus-mix-value {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--xleth-flat-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.chorus-unit {
+  font-size: 8px;
+  color: var(--xleth-flat-text-muted);
+  margin-left: 1px;
+}
+
+.chorus-mix-label {
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--xleth-flat-text-muted);
+}
+
 /* ── UniFlange Panel ──────────────────────────────────────────────────────── */
 
 .uniflange-panel {
   position: fixed;
   z-index: 200;
-  width: 552px;
+  width: 820px;
   display: flex;
   flex-direction: column;
   border: 1px solid var(--xleth-flat-border);
@@ -13815,6 +14247,38 @@ html.fx-drag-active * {
   background: var(--xleth-flat-section);
 }
 
+/* ── Body: dry waveform | fader strip | wet waveform ─────────────────────── */
+
+.uniflange-panel-body {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 10px;
+}
+
+.uniflange-wave {
+  flex: 1 1 auto;
+  min-width: 80px;
+  max-width: 200px;
+  height: 168px;
+  align-self: center;
+}
+
+.uniflange-wave svg {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.uniflange-wave-dry svg path {
+  opacity: 0.9;
+}
+
+.uniflange-wave-wet svg {
+  filter: drop-shadow(0 0 3px rgba(255, 255, 255, 0.75)) drop-shadow(0 0 9px rgba(255, 255, 255, 0.35));
+}
+
 /* ── Fader row: single Flangus-order strip, one column per parameter ──────── */
 
 .uniflange-fader-row {
@@ -13823,14 +14287,40 @@ html.fx-drag-active * {
   justify-content: center;
   gap: 10px;
   padding: 18px 20px 16px;
+  flex-shrink: 0;
 }
 
 .uniflange-fader-cell {
+  position: relative;
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 6px;
   flex-shrink: 0;
+}
+
+.uniflange-fader-label-wrap {
+  cursor: default;
+}
+
+.uniflange-fader-help {
+  position: absolute;
+  bottom: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  width: 190px;
+  padding: 8px 10px;
+  background: var(--xleth-flat-chrome);
+  border: 1px solid var(--xleth-flat-border-strong);
+  color: var(--xleth-flat-text);
+  font-size: 10px;
+  font-weight: 500;
+  line-height: 1.45;
+  letter-spacing: 0.01em;
+  text-align: left;
+  box-shadow: var(--theme-depth-hard-shadow);
+  z-index: 20;
+  pointer-events: none;
 }
 
 .uniflange-fader-track,
@@ -13913,28 +14403,42 @@ html.fx-drag-active * {
   font-variant-numeric: tabular-nums;
 }
 
-
 /* â”€â”€ Flanger Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .flanger-panel {
   position: fixed;
-  background: var(--theme-bg-primary);
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: var(--radius-md);
+  z-index: 200;
+  width: 480px;
   display: flex;
   flex-direction: column;
-  z-index: 200;
-  width: 420px;
-  box-shadow: var(--theme-fx-plugin-shadow-top);
+  border: 1px solid var(--xleth-flat-border);
+  border-radius: 0;
+  background: var(--xleth-flat-panel);
+  box-shadow: var(--theme-depth-hard-shadow);
+  color: var(--xleth-flat-text);
+  font-family: var(--xleth-global-font-family);
   user-select: none;
 }
+
+/* ── Header ──────────────────────────────────────────────────────────────── */
 
 .flanger-panel-header {
   display: flex;
   align-items: center;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--theme-border-subtle);
+  gap: 10px;
+  height: 34px;
+  padding: 0 6px 0 12px;
+  background: var(--xleth-flat-chrome);
+  border-bottom: 1px solid var(--xleth-flat-border);
   cursor: grab;
+}
+
+.flanger-panel-header::before {
+  content: '';
+  width: 3px;
+  height: 14px;
+  background: var(--xleth-flat-accent);
+  flex-shrink: 0;
 }
 
 .flanger-panel-header:active {
@@ -13942,91 +14446,209 @@ html.fx-drag-active * {
 }
 
 .flanger-panel-title {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--theme-text);
   flex: 1;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--xleth-flat-text);
 }
 
 .flanger-panel-close {
-  width: 20px;
-  height: 20px;
-  border: none;
-  background: none;
-  color: var(--theme-text-subtle);
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--xleth-flat-text-muted);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-sm);
-}
-
-.flanger-panel-close:hover {
-  color: var(--theme-text);
-  background: var(--theme-fx-surface-tint-subtle);
-}
-
-.flanger-viz-wrap {
-  height: 200px;
-  background: var(--theme-bg-inset, #0d0d14);
-  border-bottom: 1px solid var(--theme-border-subtle, rgba(255, 255, 255, 0.08));
-  overflow: hidden;
   flex-shrink: 0;
 }
 
-.flanger-viz-canvas {
+.flanger-panel-close:hover {
+  color: var(--xleth-flat-text);
+  background: var(--xleth-flat-section);
+}
+
+/* ── Stage: the dominant comb/sweep visualization ────────────────────────── */
+
+.flanger-stage {
+  height: 200px;
+  overflow: hidden;
+  background: var(--xleth-flat-well);
+  border-bottom: 1px solid var(--xleth-flat-border);
+  flex-shrink: 0;
+}
+
+.flanger-stage-canvas {
   display: block;
   width: 100%;
   height: 100%;
 }
 
-.flanger-knob-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-  padding: 12px;
+/* ── Strip: one flat control row, no titles ──────────────────────────────── */
+/* 1px gaps double as divider hairlines between the three top-level cells
+   (mix / primary knobs / secondary knobs) — same trick the Delay panel uses. */
+.flanger-strip {
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+  background: var(--xleth-flat-border);
+}
+
+.flanger-strip > * {
+  background: var(--xleth-flat-panel);
+}
+
+/* ── Mix fader ───────────────────────────────────────────────────────────── */
+
+.flanger-mix {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 10px 12px;
+  width: 56px;
+  flex-shrink: 0;
+}
+
+.flanger-mix-track {
+  position: relative;
+  width: 14px;
+  flex: 1;
+  min-height: 110px;
+  background: var(--xleth-flat-well);
+  border: 1px solid var(--xleth-flat-border-strong);
+  border-radius: 0;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.flanger-mix-track:focus-visible {
+  outline: 1px solid var(--xleth-flat-accent);
+  outline-offset: 1px;
+}
+
+.flanger-mix-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--xleth-flat-accent);
+  pointer-events: none;
+}
+
+.flanger-mix-thumb {
+  position: absolute;
+  left: -3px;
+  right: -3px;
+  height: 3px;
+  margin-bottom: -1px;
+  background: var(--xleth-flat-text);
+  pointer-events: none;
+}
+
+.flanger-mix-value {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--xleth-flat-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.flanger-unit {
+  font-size: 8px;
+  color: var(--xleth-flat-text-muted);
+  margin-left: 1px;
+}
+
+.flanger-mix-label {
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--xleth-flat-text-muted);
+}
+
+/* ── Primary knobs: RATE / DEPTH — larger, fixed-width group ─────────────── */
+
+.flanger-strip-primary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 26px;
+  padding: 16px 22px;
+  flex-shrink: 0;
+}
+
+/* ── Secondary knobs: DELAY / FEEDBACK / WIDTH — fills the remaining width ─ */
+/* flex: 1 + space-evenly distributes the three cells across whatever room is
+   left, so the row never leaves an orphaned gap on the right edge. */
+
+.flanger-strip-secondary {
+  display: flex;
+  align-items: center;
+  justify-content: space-evenly;
+  gap: 12px;
+  padding: 16px 20px;
+  flex: 1;
+  min-width: 0;
 }
 
 .flanger-knob-cell {
   display: flex;
-  justify-content: center;
-}
-
-/* â”€â”€ Phaser Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
-
-.phaser-viz-wrap {
-  height: 200px;
-  background: var(--theme-bg-inset, #0d0d14);
-  border-bottom: 1px solid var(--theme-border-subtle, rgba(255, 255, 255, 0.08));
-  overflow: hidden;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
   flex-shrink: 0;
 }
 
-.phaser-viz-canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
+.flanger-knob-value {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--xleth-flat-text-secondary);
+  font-variant-numeric: tabular-nums;
 }
+
+/* â”€â”€ Phaser Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* Two-zone layout matching the Delay panel standard: stage on top, one flat
+   control strip below. No fixed width — a positioned flex container with
+   width:auto shrink-to-fits its content, so the panel is exactly as wide as
+   its controls need and never carries dead space. */
 
 .phaser-panel {
   position: fixed;
-  background: var(--theme-bg-primary);
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: var(--radius-md);
+  z-index: 200;
   display: flex;
   flex-direction: column;
-  z-index: 200;
-  width: 480px;
-  box-shadow: 0 -4px 24px rgba(0,0,0,0.5);
+  border: 1px solid var(--xleth-flat-border);
+  border-radius: 0;
+  background: var(--xleth-flat-panel);
+  box-shadow: var(--theme-depth-hard-shadow);
+  color: var(--xleth-flat-text);
+  font-family: var(--xleth-global-font-family);
   user-select: none;
 }
+
+/* ── Header ──────────────────────────────────────────────────────────────── */
 
 .phaser-panel-header {
   display: flex;
   align-items: center;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--theme-border-subtle);
+  gap: 10px;
+  height: 34px;
+  padding: 0 6px 0 12px;
+  background: var(--xleth-flat-chrome);
+  border-bottom: 1px solid var(--xleth-flat-border);
   cursor: grab;
+}
+
+.phaser-panel-header::before {
+  content: '';
+  width: 3px;
+  height: 14px;
+  background: var(--xleth-flat-accent);
+  flex-shrink: 0;
 }
 
 .phaser-panel-header:active {
@@ -14035,75 +14657,205 @@ html.fx-drag-active * {
 
 .phaser-panel-title {
   font-size: 11px;
-  font-weight: 600;
-  color: var(--theme-text);
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--xleth-flat-text);
+}
+
+.phaser-panel-sub {
   flex: 1;
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  color: var(--xleth-flat-text-muted);
 }
 
 .phaser-panel-close {
-  width: 20px;
-  height: 20px;
-  border: none;
-  background: none;
-  color: var(--theme-text-subtle);
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--xleth-flat-text-muted);
   cursor: pointer;
   display: flex;
   align-items: center;
   justify-content: center;
-  border-radius: var(--radius-sm);
+  flex-shrink: 0;
 }
 
 .phaser-panel-close:hover {
-  color: var(--theme-text);
-  background: var(--theme-fx-surface-tint-subtle);
+  color: var(--xleth-flat-text);
+  background: var(--xleth-flat-section);
 }
 
-.phaser-knob-grid {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 8px;
-  padding: 12px;
+/* ── Stage: the notch-sweep visualizer, doubles as the FREQ LOW/HIGH control ─ */
+
+.phaser-stage {
+  height: 176px;
+  overflow: hidden;
+  background: var(--xleth-flat-well);
+  border-bottom: 1px solid var(--xleth-flat-border);
+  flex-shrink: 0;
 }
+
+.phaser-stage-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ── Strip: one flat control row, no titles ──────────────────────────────── */
+/* 1px gap doubles as a divider hairline between the mix fader and the knob
+   group — same trick the Delay panel's strip uses. */
+.phaser-strip {
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+  background: var(--xleth-flat-border);
+}
+
+.phaser-strip > * {
+  background: var(--xleth-flat-panel);
+}
+
+.phaser-strip-right {
+  display: flex;
+  flex-direction: column;
+}
+
+.phaser-strip-primary-knobs {
+  display: flex;
+  justify-content: center;
+  gap: 26px;
+  padding: 14px 22px 8px;
+}
+
+.phaser-strip-secondary {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 18px;
+  padding: 8px 22px 14px;
+}
+
+/* ── Mix fader ───────────────────────────────────────────────────────────── */
+
+.phaser-mix {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  padding: 14px 10px 12px;
+  width: 56px;
+  flex-shrink: 0;
+}
+
+.phaser-mix-track {
+  position: relative;
+  width: 14px;
+  flex: 1;
+  min-height: 110px;
+  background: var(--xleth-flat-well);
+  border: 1px solid var(--xleth-flat-border-strong);
+  border-radius: 0;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.phaser-mix-track:focus-visible {
+  outline: 1px solid var(--xleth-flat-accent);
+  outline-offset: 1px;
+}
+
+.phaser-mix-fill {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: var(--xleth-flat-accent);
+  pointer-events: none;
+}
+
+.phaser-mix-thumb {
+  position: absolute;
+  left: -3px;
+  right: -3px;
+  height: 3px;
+  margin-bottom: -1px;
+  background: var(--xleth-flat-text);
+  pointer-events: none;
+}
+
+.phaser-mix-value {
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--xleth-flat-text);
+  font-variant-numeric: tabular-nums;
+}
+
+.phaser-unit {
+  font-size: 8px;
+  color: var(--xleth-flat-text-muted);
+  margin-left: 1px;
+}
+
+.phaser-mix-label {
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--xleth-flat-text-muted);
+}
+
+/* ── Knobs + Stages select ───────────────────────────────────────────────── */
 
 .phaser-knob-cell {
   display: flex;
-  justify-content: center;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.phaser-knob-value {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--xleth-flat-text-secondary);
+  font-variant-numeric: tabular-nums;
 }
 
 .phaser-stages-cell {
+  display: flex;
   flex-direction: column;
   align-items: center;
-  justify-content: center;
   gap: 6px;
+  flex-shrink: 0;
 }
 
-.phaser-stages-label {
-  font-size: 9px;
+.xleth-select-trigger.phaser-stages-select {
+  width: 62px;
+  height: 28px;
+  padding: 0 6px;
+  border: 1px solid var(--xleth-flat-border-strong);
+  border-radius: 0;
+  background: var(--xleth-flat-well);
+  color: var(--xleth-flat-text-secondary);
+  font-size: 10px;
   font-weight: 600;
-  letter-spacing: 0.06em;
-  color: var(--theme-text-subtle);
-  text-transform: uppercase;
-}
-
-.phaser-stages-select {
-  background: var(--theme-bg-secondary);
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: var(--radius-sm);
-  color: var(--theme-text);
-  font-size: 11px;
-  padding: 4px 8px;
-  cursor: pointer;
-  width: 56px;
+  letter-spacing: 0.04em;
   text-align: center;
 }
 
-.phaser-stages-select:hover {
-  border-color: var(--theme-accent);
+.xleth-select-trigger.phaser-stages-select:hover {
+  color: var(--xleth-flat-text);
+  border-color: var(--xleth-flat-accent);
 }
 
-.phaser-stages-select:focus {
-  outline: none;
-  border-color: var(--theme-accent);
+.phaser-stages-label {
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--xleth-flat-text-muted);
 }
 
 /* â”€â”€ OTT (Overdone) Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
@@ -20919,6 +21671,14 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   box-shadow: none;
   color: var(--xleth-flat-text-secondary);
   font-family: var(--xleth-global-font-family);
+}
+
+/* Per-band accent stripe — thickens just the left edge and lets JS set its
+   color to the band's own orb color (inline style), tying the popup back to
+   its band. Declared after the shared rule above so it wins the
+   equal-specificity cascade against that rule's `border` shorthand. */
+.eq-band-popup {
+  border-left-width: 3px;
 }
 
 .fx-dropdown {

@@ -17,6 +17,15 @@ import { normalizeTrackPalette, TRACK_PALETTE_FALLBACK } from './trackColorResol
 import { getRegionPlaybackDurationSec } from './regionDuration.js'
 import { getSyllableDisplayNumber } from '../SyllableSplitter/syllableModel.js'
 import { getHoldThresholdTicks } from './holdLastFrame.js'
+import {
+  CLIP_CONTROL_DEFAULTS,
+  CLIP_GAIN_MAX_VELOCITY,
+  computeClipControlGeometry,
+  getClipControlVisibility,
+  normalizeClipControlSpec,
+  normalizeClipFades,
+  shouldDrawFadeOverlay,
+} from './clipControlSpec.js'
 
 // Default engine sample rate (used for spp computation when no per-region rate is known)
 const DEFAULT_SR = 48000
@@ -216,6 +225,12 @@ export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null
     ctx.fillStyle = withAlpha(p.laneSeparator, 0.10)
     for (const r of trackLayout.rows) {
       if (r.rowType !== 'macroAutomation') continue
+      if (r.y >= h) break
+      ctx.fillRect(0, r.y, w, r.height)
+    }
+    ctx.fillStyle = withAlpha(p.laneSeparator, 0.22)
+    for (const r of trackLayout.rows) {
+      if (r.rowType !== 'folder') continue
       if (r.y >= h) break
       ctx.fillRect(0, r.y, w, r.height)
     }
@@ -689,13 +704,6 @@ export function drawHoldZones(
 const CLIP_PAD = 2         // top/bottom padding within track lane
 const CLIP_TEXT_PAD = 6    // horizontal text padding inside clip
 const HANDLE_W = 4         // resize handle width (selected only)
-const CLIP_VOLUME_MAX = 2
-const CLIP_CONTROL_MIN_W = 42
-const CLIP_VOLUME_PILL_W = 34
-const CLIP_VOLUME_PILL_H = 16
-const CLIP_FADE_TRIANGLE_W = 24
-const CLIP_FADE_TRIANGLE_H = 18
-
 // ── Pass 5D internal block layout ───────────────────────────────────────────
 // Reserved title-strip + measured truncation + bottom-right metadata chips.
 // Drawing-only; never affects outer block geometry, hit-testing, or behavior.
@@ -836,11 +844,74 @@ function roundedRect(ctx, x, y, w, h, r) {
   ctx.closePath()
 }
 
-function drawClipInlineControls(ctx, clip, x, y, clipW, clipH, baseHex, selected, activeControl = null) {
-  if (clipW < CLIP_CONTROL_MIN_W || clipH < 30) return
+export function drawClipFadeOverlay(
+  ctx, clip, x, y, clipW, clipH, selected, overlayColor,
+  controlSpec = CLIP_CONTROL_DEFAULTS, fadeValues = null,
+) {
+  const spec = normalizeClipControlSpec(controlSpec)
+  const fades = fadeValues || normalizeClipFades(clip)
+  const fadeInPercent = clampNumber(fades.fadeInPercent, 0, 100)
+  const fadeOutPercent = clampNumber(fades.fadeOutPercent, 0, 100)
+  if (!shouldDrawFadeOverlay({ ...clip, fadeInPercent, fadeOutPercent }, selected, spec) || clipW <= 4) return
+
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(x, y, clipW, clipH)
+  ctx.clip()
+  ctx.fillStyle = overlayColor
+  ctx.globalAlpha = spec.fade.overlayAlpha
+
+  if (fadeInPercent > 0) {
+    const fadeInPx = clipW * fadeInPercent / 100
+    const steps = Math.min(
+      Math.max(Math.ceil(fadeInPx / spec.fade.overlayPixelsPerStep), spec.fade.overlayMinSteps),
+      spec.fade.overlayMaxSteps,
+    )
+    const x1 = clip.fadeInX1 ?? 0, y1 = clip.fadeInY1 ?? 0
+    const x2 = clip.fadeInX2 ?? 1, y2 = clip.fadeInY2 ?? 1
+    ctx.beginPath()
+    ctx.moveTo(x, y)
+    for (let i = 0; i <= steps; i++) {
+      const frac = i / steps
+      const gain = _bezierGain(frac, x1, y1, x2, y2)
+      ctx.lineTo(x + frac * fadeInPx, y + clipH * (1 - gain))
+    }
+    ctx.lineTo(x + fadeInPx, y)
+    ctx.closePath()
+    ctx.fill()
+  }
+
+  if (fadeOutPercent > 0) {
+    const fadeOutPx = clipW * fadeOutPercent / 100
+    const steps = Math.min(
+      Math.max(Math.ceil(fadeOutPx / spec.fade.overlayPixelsPerStep), spec.fade.overlayMinSteps),
+      spec.fade.overlayMaxSteps,
+    )
+    const x1 = clip.fadeOutX1 ?? 0, y1 = clip.fadeOutY1 ?? 0
+    const x2 = clip.fadeOutX2 ?? 1, y2 = clip.fadeOutY2 ?? 1
+    ctx.beginPath()
+    ctx.moveTo(x + clipW, y)
+    for (let i = 0; i <= steps; i++) {
+      const frac = i / steps
+      const gain = _bezierGain(frac, x1, y1, x2, y2)
+      ctx.lineTo(x + clipW - frac * fadeOutPx, y + clipH * (1 - gain))
+    }
+    ctx.lineTo(x + clipW - fadeOutPx, y)
+    ctx.closePath()
+    ctx.fill()
+  }
+
+  ctx.restore()
+}
+
+export function drawClipInlineControls(
+  ctx, clip, x, y, clipW, clipH, baseHex, selected,
+  activeControl = null, hoveredControl = null, controlSpec = CLIP_CONTROL_DEFAULTS,
+) {
+  const spec = normalizeClipControlSpec(controlSpec)
 
   const draftValue = activeControl?.clipId === clip.id ? activeControl.value : null
-  const committedFades = _normalizedClipFadePercents(clip)
+  const committedFades = normalizeClipFades(clip)
   const fadeInPercent = activeControl?.clipId === clip.id && activeControl.kind === 'fadeIn'
     ? clampNumber(draftValue, 0, Math.max(0, 100 - committedFades.fadeOutPercent))
     : committedFades.fadeInPercent
@@ -848,26 +919,29 @@ function drawClipInlineControls(ctx, clip, x, y, clipW, clipH, baseHex, selected
     ? clampNumber(draftValue, 0, Math.max(0, 100 - committedFades.fadeInPercent))
     : committedFades.fadeOutPercent
   const velocity = activeControl?.clipId === clip.id && activeControl.kind === 'volume'
-    ? clampNumber(draftValue, 0, CLIP_VOLUME_MAX)
-    : clampNumber(clip.velocity ?? 1, 0, CLIP_VOLUME_MAX)
+    ? clampNumber(draftValue, 0, CLIP_GAIN_MAX_VELOCITY)
+    : clampNumber(clip.velocity ?? 1, 0, CLIP_GAIN_MAX_VELOCITY)
 
-  const accent = mixHex(baseHex, { r: 255, g: 255, b: 255 }, 0.42)
-  const dark = mixHex(baseHex, { r: 0, g: 0, b: 0 }, 0.70)
-  const lineY = Math.round(y + 18 + (1 - velocity / CLIP_VOLUME_MAX) * Math.max(8, clipH - 30)) + 0.5
-  const pillX = Math.round(x + clipW / 2 - CLIP_VOLUME_PILL_W / 2)
-  const pillY = Math.round(lineY - CLIP_VOLUME_PILL_H / 2)
-  const fadeInX = x + clipW * clampNumber(fadeInPercent, 0, 100) / 100
-  const fadeOutX = x + clipW - clipW * clampNumber(fadeOutPercent, 0, 100) / 100
-  const triW = Math.min(CLIP_FADE_TRIANGLE_W, Math.max(12, clipW * 0.45))
-  const bottom = y + clipH
-  const triH = Math.min(CLIP_FADE_TRIANGLE_H, clipH * 0.36)
-  const fadeInLeft = fadeInX <= x + triW ? x : Math.min(x + clipW - triW, fadeInX - triW)
-  const fadeInRight = fadeInLeft + triW
-  const fadeOutRight = fadeOutX >= x + clipW - triW ? x + clipW : Math.max(x + triW, fadeOutX + triW)
-  const fadeOutLeft = fadeOutRight - triW
-  const isActiveFadeIn = activeControl?.clipId === clip.id && activeControl.kind === 'fadeIn'
-  const isActiveFadeOut = activeControl?.clipId === clip.id && activeControl.kind === 'fadeOut'
-  const isActiveVolume = activeControl?.clipId === clip.id && activeControl.kind === 'volume'
+  const activeKind = activeControl?.clipId === clip.id ? activeControl.kind : null
+  const hoveredKind = hoveredControl?.clipId === clip.id ? hoveredControl.kind : null
+  const visibility = getClipControlVisibility({ selected, hoveredKind, activeKind }, spec)
+  const geometry = computeClipControlGeometry({
+    clip,
+    rect: { x, y, w: clipW, h: clipH },
+    values: { velocity, fades: { fadeInPercent, fadeOutPercent } },
+    spec,
+  })
+  if (!geometry.eligible || (!visibility.gainLine && !visibility.handles)) return
+
+  const accent = mixHex(baseHex, { r: 255, g: 255, b: 255 }, spec.appearance.accentMixToWhite)
+  const dark = mixHex(baseHex, { r: 0, g: 0, b: 0 }, spec.appearance.darkMixToBlack)
+  const lineY = geometry.gain.lineY
+  const { x: pillX, y: pillY, w: pillW, h: pillH } = geometry.gain.pill
+  const isActiveFadeIn = activeKind === 'fadeIn'
+  const isActiveFadeOut = activeKind === 'fadeOut'
+  const isActiveVolume = activeKind === 'volume'
+  const isActive = Boolean(activeKind)
+  const isHovered = Boolean(hoveredKind)
   const isUnity = Math.abs(velocity - 1) < 0.0005
 
   ctx.save()
@@ -875,64 +949,145 @@ function drawClipInlineControls(ctx, clip, x, y, clipW, clipH, baseHex, selected
   ctx.rect(x, y, clipW, clipH)
   ctx.clip()
 
-  ctx.fillStyle = dark
-  ctx.globalAlpha = selected ? 0.96 : 0.88
-  ctx.shadowColor = accent
-  ctx.shadowBlur = isActiveFadeIn || isActiveFadeOut ? 8 : 4
-  ctx.beginPath()
-  ctx.moveTo(fadeInLeft, bottom)
-  ctx.lineTo(fadeInRight, bottom)
-  ctx.lineTo(fadeInLeft, Math.max(y, bottom - triH))
-  ctx.closePath()
-  ctx.fill()
-  ctx.beginPath()
-  ctx.moveTo(fadeOutRight, bottom)
-  ctx.lineTo(fadeOutLeft, bottom)
-  ctx.lineTo(fadeOutRight, Math.max(y, bottom - triH))
-  ctx.closePath()
-  ctx.fill()
-  ctx.shadowBlur = 0
-
-  ctx.globalAlpha = selected ? 0.95 : 0.80
-  ctx.fillStyle = accent
-  ctx.shadowColor = accent
-  ctx.shadowBlur = selected ? 5 : 3
-  ctx.fillRect(x, y + 1, 3, clipH - 2)
-  ctx.fillRect(x + clipW - 3, y + 1, 3, clipH - 2)
-  ctx.shadowBlur = 0
-
-  ctx.globalAlpha = selected ? 0.86 : 0.62
-  ctx.strokeStyle = accent
-  ctx.lineWidth = 2
-  ctx.shadowColor = accent
-  ctx.shadowBlur = isActiveVolume || isUnity ? 7 : 3
-  ctx.beginPath()
-  ctx.moveTo(x, lineY)
-  ctx.lineTo(x + clipW, lineY)
-  ctx.stroke()
-  ctx.shadowBlur = 0
-
-  ctx.globalAlpha = 1
-  ctx.fillStyle = mixHex(baseHex, { r: 255, g: 255, b: 255 }, selected ? 0.54 : 0.45)
-  ctx.strokeStyle = 'rgba(0,0,0,0.45)'
-  ctx.lineWidth = 1
-  ctx.shadowColor = isUnity ? 'rgba(255,255,255,0.78)' : accent
-  ctx.shadowBlur = isActiveVolume || isUnity ? 9 : 4
-  roundedRect(ctx, pillX, pillY, CLIP_VOLUME_PILL_W, CLIP_VOLUME_PILL_H, 7)
-  ctx.fill()
-  ctx.stroke()
-  ctx.shadowBlur = 0
-
-  ctx.strokeStyle = 'rgba(14,15,24,0.82)'
-  ctx.lineWidth = 2
-  for (let i = 0; i < 5; i++) {
-    const gx = pillX + 9 + i * 4
-    const top = pillY + 5 + (i % 2)
-    const bottomLine = pillY + CLIP_VOLUME_PILL_H - 5
+  if (visibility.handles) {
+    ctx.fillStyle = dark
+    ctx.globalAlpha = isActive
+      ? spec.appearance.fadeActiveAlpha
+      : (isHovered
+          ? spec.appearance.fadeHoverAlpha
+          : (selected ? spec.appearance.fadeSelectedAlpha : spec.appearance.fadeIdleAlpha))
+    ctx.strokeStyle = `rgba(255,255,255,${spec.appearance.fadeStrokeAlpha})`
+    ctx.lineWidth = spec.appearance.fadeStrokeWidth
+    ctx.shadowColor = accent
+    ctx.shadowBlur = isActiveFadeIn || isActiveFadeOut
+      ? spec.appearance.fadeActiveShadowBlur
+      : (isHovered
+          ? spec.appearance.fadeHoverShadowBlur
+          : (selected ? spec.appearance.fadeSelectedShadowBlur : spec.appearance.fadeIdleShadowBlur))
+    const fadeInWedge = geometry.fadeIn.wedge
     ctx.beginPath()
-    ctx.moveTo(gx, top)
-    ctx.lineTo(gx, bottomLine)
+    ctx.moveTo(fadeInWedge.left, fadeInWedge.bottom)
+    ctx.lineTo(fadeInWedge.right, fadeInWedge.bottom)
+    ctx.lineTo(fadeInWedge.left, fadeInWedge.top)
+    ctx.closePath()
+    ctx.fill()
+    if (spec.appearance.fadeStrokeWidth > 0) ctx.stroke()
+    const fadeOutWedge = geometry.fadeOut.wedge
+    ctx.beginPath()
+    ctx.moveTo(fadeOutWedge.right, fadeOutWedge.bottom)
+    ctx.lineTo(fadeOutWedge.left, fadeOutWedge.bottom)
+    ctx.lineTo(fadeOutWedge.right, fadeOutWedge.top)
+    ctx.closePath()
+    ctx.fill()
+    if (spec.appearance.fadeStrokeWidth > 0) ctx.stroke()
+    ctx.shadowBlur = 0
+
+    if (spec.gain.edgeRailWidth > 0) {
+      ctx.globalAlpha = isActive
+        ? spec.appearance.railActiveAlpha
+        : (isHovered
+            ? spec.appearance.railHoverAlpha
+            : (selected ? spec.appearance.railSelectedAlpha : spec.appearance.railIdleAlpha))
+      ctx.fillStyle = accent
+      ctx.shadowColor = accent
+      ctx.shadowBlur = isActive
+        ? spec.appearance.railActiveShadowBlur
+        : (isHovered
+            ? spec.appearance.railHoverShadowBlur
+            : (selected ? spec.appearance.railSelectedShadowBlur : spec.appearance.railIdleShadowBlur))
+      const railY = y + spec.gain.edgeRailInsetY
+      const railH = Math.max(0, clipH - spec.gain.edgeRailInsetY * 2)
+      ctx.fillRect(x, railY, spec.gain.edgeRailWidth, railH)
+      ctx.fillRect(x + clipW - spec.gain.edgeRailWidth, railY, spec.gain.edgeRailWidth, railH)
+      ctx.shadowBlur = 0
+    }
+  }
+
+  if (visibility.gainLine) {
+    ctx.globalAlpha = isActiveVolume
+      ? spec.appearance.lineActiveAlpha
+      : (isHovered
+          ? spec.appearance.lineHoverAlpha
+          : (selected ? spec.appearance.lineSelectedAlpha : spec.appearance.lineIdleAlpha))
+    ctx.strokeStyle = accent
+    ctx.lineWidth = spec.gain.lineWidth
+    ctx.shadowColor = accent
+    ctx.shadowBlur = isActiveVolume
+      ? spec.appearance.lineActiveShadowBlur
+      : (isHovered
+          ? spec.appearance.lineHoverShadowBlur
+          : (selected ? spec.appearance.lineSelectedShadowBlur : spec.appearance.lineIdleShadowBlur))
+    ctx.beginPath()
+    ctx.moveTo(x, lineY)
+    ctx.lineTo(x + clipW, lineY)
     ctx.stroke()
+    ctx.shadowBlur = 0
+  }
+
+  if (visibility.handles) {
+    ctx.globalAlpha = 1
+    const pillMix = isActiveVolume
+      ? spec.appearance.pillActiveMixToWhite
+      : (hoveredKind === 'volume'
+          ? spec.appearance.pillHoverMixToWhite
+          : (selected ? spec.appearance.pillSelectedMixToWhite : spec.appearance.pillIdleMixToWhite))
+    ctx.fillStyle = mixHex(baseHex, { r: 255, g: 255, b: 255 }, pillMix)
+    ctx.strokeStyle = `rgba(0,0,0,${spec.appearance.pillStrokeAlpha})`
+    ctx.lineWidth = spec.appearance.pillStrokeWidth
+    ctx.shadowColor = isUnity ? `rgba(255,255,255,${spec.appearance.unityShadowAlpha})` : accent
+    ctx.shadowBlur = isActiveVolume
+      ? spec.appearance.pillActiveShadowBlur
+      : (hoveredKind === 'volume'
+          ? spec.appearance.pillHoverShadowBlur
+          : (selected ? spec.appearance.pillSelectedShadowBlur : spec.appearance.pillIdleShadowBlur))
+    roundedRect(ctx, pillX, pillY, pillW, pillH, spec.gain.pillRadius)
+    ctx.fill()
+    if (spec.appearance.pillStrokeWidth > 0) ctx.stroke()
+    ctx.shadowBlur = 0
+
+    ctx.strokeStyle = `rgba(14,15,24,${spec.appearance.glyphAlpha})`
+    ctx.lineWidth = spec.gain.glyphLineWidth
+    for (let i = 0; i < spec.gain.glyphCount; i++) {
+      const gx = pillX + spec.gain.glyphStartX + i * spec.gain.glyphSpacing
+      const top = pillY + spec.gain.glyphTopInset + (i % 2) * spec.gain.glyphAlternation
+      const bottomLine = pillY + pillH - spec.gain.glyphBottomInset
+      ctx.beginPath()
+      ctx.moveTo(gx, Math.min(top, bottomLine))
+      ctx.lineTo(gx, bottomLine)
+      ctx.stroke()
+    }
+  }
+
+  if (spec.debug.showPaintBounds) {
+    ctx.globalAlpha = 0.9
+    ctx.strokeStyle = '#FF4FD8'
+    ctx.lineWidth = 1
+    ctx.strokeRect(x + 0.5, y + 0.5, Math.max(0, clipW - 1), Math.max(0, clipH - 1))
+  }
+  if (spec.debug.showHitRegions) {
+    ctx.globalAlpha = 0.28
+    ctx.fillStyle = '#FFD84F'
+    const pill = geometry.gain.pill
+    ctx.fillRect(
+      pill.x - spec.interaction.gainHitSlopX,
+      pill.y - spec.interaction.gainHitSlopY,
+      pill.w + spec.interaction.gainHitSlopX * 2,
+      pill.h + spec.interaction.gainHitSlopY * 2,
+    )
+    ctx.fillStyle = '#4FFFE1'
+    const hitY = y + clipH - spec.interaction.fadeHitHeight
+    const hitW = (spec.interaction.fadeHandleHalfWidth + spec.interaction.fadeExtraSlop) * 2
+    ctx.fillRect(geometry.fadeIn.anchor.x - hitW / 2, hitY, hitW, spec.interaction.fadeHitHeight)
+    ctx.fillRect(geometry.fadeOut.anchor.x - hitW / 2, hitY, hitW, spec.interaction.fadeHitHeight)
+  }
+  if (spec.debug.showAnchors) {
+    ctx.globalAlpha = 1
+    ctx.fillStyle = '#FFFFFF'
+    for (const anchor of [geometry.gain.anchor, geometry.fadeIn.anchor, geometry.fadeOut.anchor]) {
+      ctx.beginPath()
+      ctx.arc(anchor.x, anchor.y, 2.5, 0, Math.PI * 2)
+      ctx.fill()
+    }
   }
 
   ctx.restore()
@@ -983,11 +1138,13 @@ function drawMetadataChips(ctx, chips, area, palette, { handleReserveRight = 0, 
   }
 }
 
-export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, regions, selectedClipIds, waveformCache, hiResCache, clipPeakCache, bpm, mutedTrackIds, palette = null, timelineDisplaySettings = null, trackColorById = null, trackLayout = null, activeClipControl = null) {
+export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, regions, selectedClipIds, waveformCache, hiResCache, clipPeakCache, bpm, mutedTrackIds, palette = null, timelineDisplaySettings = null, trackColorById = null, trackLayout = null, activeClipControl = null, clipControlOptions = null) {
   ctx.clearRect(0, 0, w, h)
   if (!clips || clips.length === 0) return
   const p = palette ?? resolveTimelinePalette()
   const ds = normalizeTimelineDisplaySettings(timelineDisplaySettings)
+  const controlSpec = normalizeClipControlSpec(clipControlOptions?.spec || CLIP_CONTROL_DEFAULTS)
+  const hoveredClipControl = clipControlOptions?.hoveredControl || null
   const wfMode = ds.timelineShowWaveforms
   const wfMinW = wfMode === 'always' ? 16 : 24
 
@@ -1207,54 +1364,18 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
     }
 
     // ── Fade overlay ──────────────────────────────────────────────────────
-    const { fadeInPercent, fadeOutPercent } = _normalizedClipFadePercents(clip)
+    const committedFades = normalizeClipFades(clip)
+    const fadeInPercent = activeClipControl?.clipId === clip.id && activeClipControl.kind === 'fadeIn'
+      ? clampNumber(activeClipControl.value, 0, Math.max(0, 100 - committedFades.fadeOutPercent))
+      : committedFades.fadeInPercent
+    const fadeOutPercent = activeClipControl?.clipId === clip.id && activeClipControl.kind === 'fadeOut'
+      ? clampNumber(activeClipControl.value, 0, Math.max(0, 100 - committedFades.fadeInPercent))
+      : committedFades.fadeOutPercent
 
-    if ((fadeInPercent > 0 || fadeOutPercent > 0) && clipW > 4) {
-      ctx.save()
-      ctx.beginPath()
-      ctx.rect(x, y, clipW, clipH)
-      ctx.clip()
-
-      ctx.fillStyle = p.clipFadeOverlay
-
-      // Fade-in overlay
-      if (fadeInPercent > 0) {
-        const fadeInPx = clipW * Math.min(100, Math.max(0, fadeInPercent)) / 100
-        const steps = Math.min(Math.max(Math.ceil(fadeInPx / 2), 8), 64)
-        const x1 = clip.fadeInX1 ?? 0, y1 = clip.fadeInY1 ?? 0
-        const x2 = clip.fadeInX2 ?? 1, y2 = clip.fadeInY2 ?? 1
-        ctx.beginPath()
-        ctx.moveTo(x, y)
-        for (let i = 0; i <= steps; i++) {
-          const frac = i / steps
-          const g = _bezierGain(frac, x1, y1, x2, y2)
-          ctx.lineTo(x + frac * fadeInPx, y + clipH * (1 - g))
-        }
-        ctx.lineTo(x + fadeInPx, y)
-        ctx.closePath()
-        ctx.fill()
-      }
-
-      // Fade-out overlay
-      if (fadeOutPercent > 0) {
-        const fadeOutPx = clipW * Math.min(100, Math.max(0, fadeOutPercent)) / 100
-        const steps = Math.min(Math.max(Math.ceil(fadeOutPx / 2), 8), 64)
-        const x1 = clip.fadeOutX1 ?? 0, y1 = clip.fadeOutY1 ?? 0
-        const x2 = clip.fadeOutX2 ?? 1, y2 = clip.fadeOutY2 ?? 1
-        ctx.beginPath()
-        ctx.moveTo(x + clipW, y)
-        for (let i = 0; i <= steps; i++) {
-          const frac = i / steps
-          const g = _bezierGain(frac, x1, y1, x2, y2)
-          ctx.lineTo(x + clipW - frac * fadeOutPx, y + clipH * (1 - g))
-        }
-        ctx.lineTo(x + clipW - fadeOutPx, y)
-        ctx.closePath()
-        ctx.fill()
-      }
-
-      ctx.restore()
-    }
+    drawClipFadeOverlay(
+      ctx, clip, x, y, clipW, clipH, selected, p.clipFadeOverlay,
+      controlSpec, { fadeInPercent, fadeOutPercent },
+    )
 
     // ── Pass 5D: title strip + name + metadata chips ─────────────────────
     // Tiny clips (<= 24px) show body/border/handles only.
@@ -1342,7 +1463,10 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
 
     // ── Resize handles (selected only) ────────────────────────────────────
     // Drawn last so they always sit on top of strip + chips.
-    drawClipInlineControls(ctx, clip, x, y, clipW, clipH, hex, selected, activeClipControl)
+    drawClipInlineControls(
+      ctx, clip, x, y, clipW, clipH, hex, selected,
+      activeClipControl, hoveredClipControl, controlSpec,
+    )
 
     if (selected && clipW > HANDLE_W * 3) {
       ctx.fillStyle = hexToRgba(hex, 1.0)

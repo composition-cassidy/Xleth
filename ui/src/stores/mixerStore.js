@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { flatTrackLayout, normalizeTrackLayout } from '../components/timeline/trackFolderLayout.js'
 import { timelineEvents } from '../timelineEvents.js'
 import { createPeakEntry, prunePeakSnapshotTracks } from '../components/mixer/meterTelemetry.js'
 
@@ -291,6 +292,7 @@ export const peaksSnapshot = {
 const useMixerStore = create((set, get) => ({
   tracks: {},       // { [trackId]: { id, name, volume, pan, spread, muted, solo, visualOnly, type } }
   trackOrder: [],   // [id, ...]
+  trackLayout: flatTrackLayout([]),
   outputRoutes: {}, // { [sourceTrackId]: targetTrackId }, -1 = Master
   sidechainRoutes: [], // [{ routeId, sourceTrackId, targetTrackId, targetEffectInstanceId, ... }]
   routingError: null,
@@ -310,8 +312,12 @@ const useMixerStore = create((set, get) => ({
 
   init: async () => {
     try {
-      const list = await window.xleth?.timeline?.getTracks()
+      const [list, rawLayout] = await Promise.all([
+        window.xleth?.timeline?.getTracks(),
+        window.xleth?.timeline?.getTrackLayout?.(),
+      ])
       if (!Array.isArray(list)) return
+      const trackLayout = normalizeTrackLayout(rawLayout, list)
       const prev = get().tracks
       const tracks = {}
       const trackOrder = []
@@ -340,6 +346,7 @@ const useMixerStore = create((set, get) => ({
       set(s => ({
         tracks,
         trackOrder,
+        trackLayout,
         outputRoutes,
         routingError: null,
         selectedChainKey: resolveSelectedMixerChainKey(s.selectedChainKey, trackOrder),
@@ -775,9 +782,10 @@ const useMixerStore = create((set, get) => ({
     get().setEffectExternalSidechain({ ...request, requireExternalParam: true }, options),
 
   // One-way sync from timeline fetches — only muted/solo/name/order/routes, NOT vol/pan/spread
-  syncFromTimeline: (list) => {
+  syncFromTimeline: (list, rawLayout = null) => {
     if (!Array.isArray(list)) return
     set(s => {
+      const trackLayout = normalizeTrackLayout(rawLayout ?? s.trackLayout, list)
       const tracks = { ...s.tracks }
       const trackOrder = []
       const outputRoutes = { ...s.outputRoutes }
@@ -816,6 +824,7 @@ const useMixerStore = create((set, get) => ({
       return {
         tracks,
         trackOrder,
+        trackLayout,
         outputRoutes,
         sidechainRoutes: nextSidechainRoutes,
         routingError: null,

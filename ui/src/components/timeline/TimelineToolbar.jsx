@@ -1,5 +1,5 @@
 import { useState, useRef } from 'react'
-import { MousePointer2, Pencil, Scissors, Trash2, Plus, AlignJustify, Layers } from 'lucide-react'
+import { MousePointer2, Pencil, Scissors, Trash2, Plus, AlignJustify, FolderPlus, Layers } from 'lucide-react'
 import { labelHexColor } from '../../constants/labels.js'
 import { getSelectableSyllables } from '../SyllableSplitter/syllableModel.js'
 import useTimelineDisplayStore from '../../stores/timelineDisplayStore.js'
@@ -21,6 +21,8 @@ export default function TimelineToolbar({
   onSnapGranularityChange,
   pixelsPerBeat,
   onAddTrack,
+  onAddFolder,
+  selectedTrackCount = 0,
   pencilTemplate,
   onSelectSyllable,
   declickMs,
@@ -214,6 +216,11 @@ export default function TimelineToolbar({
         <span className="timeline-zoom-display">
           {pixelsPerBeat.toFixed(0)} px/beat
         </span>
+        <button className="tab-icon-btn" title={selectedTrackCount > 0
+          ? `Create folder with ${selectedTrackCount} selected track${selectedTrackCount === 1 ? '' : 's'}`
+          : 'Create empty track folder'} onClick={onAddFolder}>
+          <FolderPlus size={14} />
+        </button>
         <button className="tab-icon-btn" title="Add track" onClick={onAddTrack}>
           <Plus size={14} />
         </button>

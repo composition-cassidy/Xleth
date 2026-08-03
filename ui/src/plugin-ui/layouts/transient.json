@@ -4,16 +4,17 @@
   "pluginId": "transientproc",
   "name": "Default Transient Processor Layout",
   "panel": {
-    "preferredSize": { "width": 540, "height": 440 }
+    "preferredSize": { "width": 540, "height": 460 }
   },
   "root": {
     "id": "root",
     "type": "panel",
+    "style": { "gapPx": 0 },
     "children": [
       {
         "id": "viz-row",
         "type": "row",
-        "style": { "paddingPx": [12, 12, 6, 12] },
+        "style": { "paddingPx": [12, 12, 8, 12] },
         "children": [
           {
             "id": "transient-viz",
@@ -22,43 +23,21 @@
             "props": {
               "source": "transient.shaper",
               "preset": "transientShaper",
-              "heightPx": 240
+              "heightPx": 292
             }
-          }
-        ]
-      },
-      {
-        "id": "mode-row",
-        "type": "row",
-        "style": { "paddingPx": [6, 12, 6, 12], "gapPx": 6, "align": "center", "justify": "center" },
-        "props": { "variant": "borderTop" },
-        "children": [
-          { "id": "mode-label", "type": "label", "props": { "text": "Mode:", "variant": "muted" } },
-          {
-            "id": "btn-mode-envelope",
-            "type": "toggle",
-            "props": { "param": "midi_detect", "mode": "discreteValue", "valueWhenOn": 0, "label": "Envelope" }
-          },
-          {
-            "id": "btn-mode-midi",
-            "type": "toggle",
-            "props": { "param": "midi_detect", "mode": "discreteValue", "valueWhenOn": 1, "label": "MIDI" }
           }
         ]
       },
       {
         "id": "body",
         "type": "row",
-        "style": { "paddingPx": [12, 10, 8, 10], "gapPx": 0, "align": "start" },
+        "style": { "paddingPx": [4, 16, 16, 16], "gapPx": 28, "align": "start", "justify": "center" },
         "children": [
-          { "id": "s-attack",  "type": "compressorSlider", "style": { "growsToFill": true }, "props": { "param": "attack",       "label": "ATTACK",  "format": "pct0" } },
-          { "id": "s-sustain", "type": "compressorSlider", "style": { "growsToFill": true }, "props": { "param": "sustain",      "label": "SUSTAIN", "format": "pct0" } },
-          { "id": "tdiv-1", "type": "spacer", "style": { "widthPx": 18, "heightPx": 122 } },
-          { "id": "s-speed",   "type": "compressorSlider", "style": { "growsToFill": true }, "props": { "param": "attack_speed", "label": "SPEED",   "format": "ms1"  } },
-          { "id": "tdiv-2", "type": "spacer", "style": { "widthPx": 18, "heightPx": 122 } },
-          { "id": "s-thresh",  "type": "compressorSlider", "style": { "growsToFill": true }, "props": { "param": "threshold",    "label": "THRESH",  "format": "dB1"  } },
-          { "id": "tdiv-3", "type": "spacer", "style": { "widthPx": 18, "heightPx": 122 } },
-          { "id": "dry-wet",   "type": "compressorDryWet", "style": { "widthPx": 124 }, "props": { "mixParam": "mix", "dryParam": "dry", "wetParam": "wet", "linkParam": "mix_linked" } }
+          { "id": "k-attack",    "type": "knob", "props": { "param": "attack",       "label": "ATTACK",    "size": 56, "format": "pct0", "appearance": { "preset": "mixer-ring", "sizePreset": "inherit" } } },
+          { "id": "k-sustain",   "type": "knob", "props": { "param": "sustain",      "label": "SUSTAIN",   "size": 56, "format": "pct0", "appearance": { "preset": "mixer-ring", "sizePreset": "inherit" } } },
+          { "id": "k-speed",     "type": "knob", "props": { "param": "attack_speed", "label": "SPEED",     "size": 56, "format": "ms1",  "appearance": { "preset": "mixer-ring", "sizePreset": "inherit" } } },
+          { "id": "k-threshold", "type": "knob", "props": { "param": "threshold",    "label": "THRESHOLD", "size": 56, "format": "dB1",  "appearance": { "preset": "mixer-ring", "sizePreset": "inherit" } } },
+          { "id": "k-mix",       "type": "knob", "props": { "param": "mix",          "label": "MIX",       "size": 56, "format": "pct0", "appearance": { "preset": "mixer-ring", "sizePreset": "inherit" } } }
         ]
       }
     ]

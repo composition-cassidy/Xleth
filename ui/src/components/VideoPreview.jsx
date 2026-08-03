@@ -586,8 +586,9 @@ export default function VideoPreview() {
   })
 
   // Keep CSS vars in sync whenever the canvas output dimensions change.
-  // --xleth-canvas-aspect drives the overlay's aspect-ratio.
-  // --xleth-canvas-content-width drives the dock's alignment width.
+  // The content bounds match the canvas's object-fit: contain rectangle, so
+  // both the grid overlay and dock line up with the visible preview rather
+  // than the larger letterboxed canvas area.
   useEffect(() => {
     const wrapper    = wrapperRef.current
     const canvasArea = canvasAreaRef.current
@@ -600,12 +601,13 @@ export default function VideoPreview() {
       '--xleth-canvas-aspect',
       outputDims.w > 0 ? `${outputDims.w} / ${outputDims.h}` : '16 / 9'
     )
-    // Recalculate content width immediately so the dock stays aligned even
-    // when a dimension change doesn't trigger a container resize.
+    // Recalculate content bounds immediately so the overlay and dock stay
+    // aligned even when a dimension change doesn't trigger a container resize.
     if (canvasArea) {
       const { width, height } = canvasArea.getBoundingClientRect()
-      if (width > 0) {
+      if (width > 0 && height > 0) {
         wrapper.style.setProperty('--xleth-canvas-content-width', `${Math.min(width, height * aspect)}px`)
+        wrapper.style.setProperty('--xleth-canvas-content-height', `${Math.min(height, width / aspect)}px`)
       }
     }
   }, [outputDims])
@@ -619,8 +621,9 @@ export default function VideoPreview() {
     if (!canvasArea || !wrapper) return
     const observer = new ResizeObserver(([entry]) => {
       const { width, height } = entry.contentRect
-      const w = Math.min(width, height * canvasAspectRef.current)
-      wrapper.style.setProperty('--xleth-canvas-content-width', `${w}px`)
+      const aspect = canvasAspectRef.current
+      wrapper.style.setProperty('--xleth-canvas-content-width', `${Math.min(width, height * aspect)}px`)
+      wrapper.style.setProperty('--xleth-canvas-content-height', `${Math.min(height, width / aspect)}px`)
     })
     observer.observe(canvasArea)
     return () => observer.disconnect()

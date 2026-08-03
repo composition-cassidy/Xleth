@@ -1,10 +1,13 @@
 #pragma once
 
 #include "audio/XlethEffectBase.h"
+#include "audio/viz/DynamicsVizCollector.h"
+#include "audio/viz/DynamicsVizFrame.h"
 #include <juce_dsp/juce_dsp.h>
 
 #include <algorithm>
 #include <cmath>
+#include <memory>
 
 // ─── UniFlangeEffect ──────────────────────────────────────────────────────────
 // Fruity-Flangus-style unison/ensemble generator. NOT a flanger: no feedback
@@ -217,6 +220,9 @@ public:
         hDry_    = resolveSmoothed("dry");
         hWet_    = resolveSmoothed("wet");
 
+        vizSampleClock_ = 0;
+        vizAccum_.reset();
+
 #ifdef XLETH_DEBUG
         DBG("[UniFlange] prepareToPlay sr=" + juce::String(sampleRate)
             + " blockSize=" + juce::String(maxBlockSize)
@@ -232,6 +238,9 @@ public:
         masterPhase_ = 0.0f;
         for (int v = 0; v < kMaxVoices; ++v)
             voiceEnv_[v] = 0.0f;
+
+        vizSampleClock_ = 0;
+        vizAccum_.reset();
     }
 
     // ── getTailLengthSeconds ─────────────────────────────────────────────────
@@ -240,6 +249,23 @@ public:
     double getTailLengthSeconds() const override
     {
         return static_cast<double>(kMaxDelayMs) / 1000.0;
+    }
+
+    // ── Visualization (dry/wet waveform preview, opt-in per instance) ───────
+    void setVisualizationEnabled(bool enabled) override;
+    std::uint32_t getVisualizationType() const override
+    {
+        return xleth::viz::kVizTypeUniFlange;
+    }
+    std::uint32_t getVisualizationSchemaVersion() const override
+    {
+        return xleth::viz::kDynamicsVizSchemaVersion;
+    }
+    std::size_t drainVizFrames(std::uint8_t* out, std::size_t maxBytes) override
+    {
+        if (!vizCollector_)
+            return 0;
+        return vizCollector_->drain(out, maxBytes);
     }
 
     // ── processEffect ────────────────────────────────────────────────────────
@@ -355,6 +381,13 @@ public:
 
             peakL = std::max(peakL, std::abs(outL));
             peakR = std::max(peakR, std::abs(outR));
+
+            if (auto* vizCol = vizActive_.load(std::memory_order_acquire))
+            {
+                vizAccum_.observe(monoIn, 0.5f * (outL + outR));
+                ++vizSampleClock_;
+                vizAccum_.advance(vizSampleClock_, *vizCol);
+            }
         }
 
 #ifdef XLETH_DEBUG
@@ -434,4 +467,32 @@ private:
 
     // ── Handle-based smoother access (Phase 4 CPU pass) ──────────────────────
     SmoothedHandle hDepth_, hDelay_, hSpread_, hCross_, hDry_, hWet_;
+
+    // ── Dry/wet waveform visualization (opt-in, main-thread enable/disable) ──
+    std::unique_ptr<xleth::viz::DynamicsVizCollector<xleth::viz::UniFlangeBucket>>
+        vizCollector_;
+    std::atomic<xleth::viz::DynamicsVizCollector<xleth::viz::UniFlangeBucket>*>
+        vizActive_{nullptr};
+    xleth::viz::UniFlangeBucketAccumulator vizAccum_;
+    std::uint64_t vizSampleClock_ = 0;
 };
+
+inline void UniFlangeEffect::setVisualizationEnabled(bool enabled)
+{
+    if (enabled)
+    {
+        if (!vizCollector_)
+        {
+            vizCollector_ = std::make_unique<
+                xleth::viz::DynamicsVizCollector<xleth::viz::UniFlangeBucket>>(
+                    xleth::viz::kDynamicsVizBucketSize,
+                    xleth::viz::kDynamicsVizRingDepth,
+                    xleth::viz::kVizTypeUniFlange);
+        }
+        vizActive_.store(vizCollector_.get(), std::memory_order_release);
+    }
+    else
+    {
+        vizActive_.store(nullptr, std::memory_order_release);
+    }
+}

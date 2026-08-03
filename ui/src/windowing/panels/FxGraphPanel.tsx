@@ -349,14 +349,12 @@ export function FxGraphPanelContent({
             <ChainAsGraphPreview chain={chain} vstPlugins={vstPlugins} />
           )}
 
-          {showPersistedPreview && graphModeActive && (
+          {/* FXG.3-l — the pill in the header is the single "FX Graph owns this
+              track" indicator; this block only ever surfaces notices the pill
+              doesn't carry (sidechain route problems, the last graph action's
+              rejection reason). */}
+          {showPersistedPreview && graphModeActive && (sidechainRouteNotice || graphActionNotice) && (
             <div className="xleth-fx-graph-panel__mode-active" role="status">
-              <div className="xleth-fx-graph-panel__mode-active-title">
-                FX Graph Mode Active
-              </div>
-              <p className="xleth-fx-graph-panel__mode-copy">
-                {describeGraphRuntimeStatus(graphRuntimeStatus)}
-              </p>
               {/* FXG-SC.6D — surface route reconcile failures so the user knows when
                   a sidechain route could not be created or the source is missing. */}
               {sidechainRouteNotice && (

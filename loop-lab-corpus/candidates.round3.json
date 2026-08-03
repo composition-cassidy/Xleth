@@ -1,0 +1,2723 @@
+{
+  "schema": "xleth.loop-optimizer.candidates/1",
+  "dataset": "..\\..\\loop-lab-corpus\\dataset.json",
+  "selection": "gold",
+  "rank_by": "perceptual",
+  "top_k": 0,
+  "metric_names": [
+    "click",
+    "hollow",
+    "wobble",
+    "chorusing",
+    "flam",
+    "timbre_jump",
+    "cents_err_per_loop"
+  ],
+  "samples": [
+    {
+      "sample_id": "hard_tuned_vocal_0001",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0001.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 72,
+      "file_sample_rate": 44100,
+      "file_num_samples": 36320,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 91.71393878352512,
+      "window": {
+        "start": 12241,
+        "end": 24215
+      },
+      "arms": [
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 11920,
+            "end": 21574,
+            "xfade": 1884
+          },
+          "loop_engine": {
+            "start": 12974,
+            "end": 23482,
+            "xfade": 2051
+          },
+          "metrics": {
+            "click": 0.961108782354436,
+            "hollow": 1.5891958519646434,
+            "wobble": 0.42756237847304945,
+            "chorusing": 12.620416464593312,
+            "flam": 0.0,
+            "timbre_jump": 0.6832081455312322,
+            "cents_err_per_loop": 3.959039414384059
+          },
+          "engine": {
+            "eff_xfade": 2051,
+            "wrap_advance": 8457,
+            "period_multiple": 92
+          }
+        },
+        {
+          "arm_id": "policy",
+          "provenance": "policy",
+          "rank": null,
+          "loop": {
+            "start": 10632,
+            "end": 22934,
+            "xfade": 1348
+          },
+          "loop_engine": {
+            "start": 11572,
+            "end": 24962,
+            "xfade": 1467
+          },
+          "metrics": {
+            "click": 0.7781576008201914,
+            "hollow": 0.9663312580728501,
+            "wobble": 0.417336973116365,
+            "chorusing": 12.301135164337715,
+            "flam": 0.0,
+            "timbre_jump": 0.8800700677945235,
+            "cents_err_per_loop": 0.027291965080230417
+          },
+          "engine": {
+            "eff_xfade": 1467,
+            "wrap_advance": 11923,
+            "period_multiple": 130
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 13039,
+            "end": 20131,
+            "xfade": 886
+          },
+          "loop_engine": {
+            "start": 14192,
+            "end": 21911,
+            "xfade": 964
+          },
+          "metrics": {
+            "click": 0.9999999767994836,
+            "hollow": 1.4954993107822379,
+            "wobble": 0.4182510140233389,
+            "chorusing": 13.087556674722522,
+            "flam": 0.0,
+            "timbre_jump": 0.8812222188281174,
+            "cents_err_per_loop": -8.138902966177513
+          },
+          "engine": {
+            "eff_xfade": 964,
+            "wrap_advance": 6755,
+            "period_multiple": 74
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0002",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0002.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 62,
+      "file_sample_rate": 44100,
+      "file_num_samples": 52736,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 163.45793221436728,
+      "window": {
+        "start": 21686,
+        "end": 38724
+      },
+      "arms": [
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 21124,
+            "end": 34378,
+            "xfade": 6384
+          },
+          "loop_engine": {
+            "start": 22992,
+            "end": 37418,
+            "xfade": 6949
+          },
+          "metrics": {
+            "click": 0.9694683627381492,
+            "hollow": 1.5525729019695147,
+            "wobble": 0.1810024946314601,
+            "chorusing": 7.902999963822788,
+            "flam": 0.0,
+            "timbre_jump": 1.476374406835455,
+            "cents_err_per_loop": -9.712460878851887
+          },
+          "engine": {
+            "eff_xfade": 6949,
+            "wrap_advance": 7477,
+            "period_multiple": 46
+          }
+        },
+        {
+          "arm_id": "policy",
+          "provenance": "policy",
+          "rank": null,
+          "loop": {
+            "start": 28237,
+            "end": 36196,
+            "xfade": 2403
+          },
+          "loop_engine": {
+            "start": 30734,
+            "end": 39397,
+            "xfade": 2615
+          },
+          "metrics": {
+            "click": 1.2570554599549255,
+            "hollow": 0.16175580755844696,
+            "wobble": 0.17152459352497293,
+            "chorusing": 6.116247789275537,
+            "flam": 0.0,
+            "timbre_jump": 0.29123718592663045,
+            "cents_err_per_loop": 0.01617545454730351
+          },
+          "engine": {
+            "eff_xfade": 2615,
+            "wrap_advance": 6048,
+            "period_multiple": 37
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 22671,
+            "end": 32391,
+            "xfade": 1215
+          },
+          "loop_engine": {
+            "start": 24676,
+            "end": 35256,
+            "xfade": 1322
+          },
+          "metrics": {
+            "click": 0.9692162099862633,
+            "hollow": 2.5415443536953966,
+            "wobble": 0.2523016121349666,
+            "chorusing": 7.079364014665924,
+            "flam": 0.0,
+            "timbre_jump": 0.4276187592803669,
+            "cents_err_per_loop": -11.016895103420756
+          },
+          "engine": {
+            "eff_xfade": 1322,
+            "wrap_advance": 9258,
+            "period_multiple": 57
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0003",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0003.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 48,
+      "file_sample_rate": 44100,
+      "file_num_samples": 100352,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 366.93122248730015,
+      "window": {
+        "start": 24372,
+        "end": 66951
+      },
+      "arms": [
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 25088,
+            "end": 58815,
+            "xfade": 16863
+          },
+          "loop_engine": {
+            "start": 27307,
+            "end": 64016,
+            "xfade": 18354
+          },
+          "metrics": {
+            "click": 1.0693884771199893,
+            "hollow": 1.5133565392702857,
+            "wobble": 0.13245315866031612,
+            "chorusing": 3.278671294984313,
+            "flam": 10.604166666666668,
+            "timbre_jump": 0.8292862091120927,
+            "cents_err_per_loop": 0.7961333875199456
+          },
+          "engine": {
+            "eff_xfade": 18354,
+            "wrap_advance": 18355,
+            "period_multiple": 50
+          }
+        },
+        {
+          "arm_id": "policy",
+          "provenance": "policy",
+          "rank": null,
+          "loop": {
+            "start": 20047,
+            "end": 63535,
+            "xfade": 5394
+          },
+          "loop_engine": {
+            "start": 21820,
+            "end": 69154,
+            "xfade": 5871
+          },
+          "metrics": {
+            "click": 1.0009765504799442,
+            "hollow": 0.0648947545004827,
+            "wobble": 0.10629488194831037,
+            "chorusing": 3.151406834175691,
+            "flam": 0.0,
+            "timbre_jump": 1.1874473371787597,
+            "cents_err_per_loop": -0.009525709499371086
+          },
+          "engine": {
+            "eff_xfade": 5871,
+            "wrap_advance": 41463,
+            "period_multiple": 113
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 29051,
+            "end": 57120,
+            "xfade": 3508
+          },
+          "loop_engine": {
+            "start": 31620,
+            "end": 62171,
+            "xfade": 3818
+          },
+          "metrics": {
+            "click": 1.000000040590647,
+            "hollow": 3.3282780334943984,
+            "wobble": 0.06347969660806813,
+            "chorusing": 7.555797774497124,
+            "flam": 0.0,
+            "timbre_jump": 1.1445921702300053,
+            "cents_err_per_loop": -3.4275503069808084
+          },
+          "engine": {
+            "eff_xfade": 3818,
+            "wrap_advance": 26733,
+            "period_multiple": 73
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0004",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0004.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 60,
+      "file_sample_rate": 44100,
+      "file_num_samples": 18944,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 183.408171066427,
+      "window": {
+        "start": 3673,
+        "end": 14746
+      },
+      "arms": [
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 4722,
+            "end": 12200,
+            "xfade": 3419
+          },
+          "loop_engine": {
+            "start": 5140,
+            "end": 13279,
+            "xfade": 3721
+          },
+          "metrics": {
+            "click": 0.8544611624141413,
+            "hollow": 2.607712075878564,
+            "wobble": 0.19760250196875906,
+            "chorusing": 5.420864295334763,
+            "flam": 0.0,
+            "timbre_jump": 1.9040627429506023,
+            "cents_err_per_loop": 6.361318322948649
+          },
+          "engine": {
+            "eff_xfade": 3721,
+            "wrap_advance": 4418,
+            "period_multiple": 24
+          }
+        },
+        {
+          "arm_id": "policy",
+          "provenance": "policy",
+          "rank": null,
+          "loop": {
+            "start": 5370,
+            "end": 12953,
+            "xfade": 2697
+          },
+          "loop_engine": {
+            "start": 5845,
+            "end": 14098,
+            "xfade": 2935
+          },
+          "metrics": {
+            "click": 0.8428025732725418,
+            "hollow": 0.7921269093808293,
+            "wobble": 0.18418327233106363,
+            "chorusing": 2.8897081414433625,
+            "flam": 0.0,
+            "timbre_jump": 0.8977223051819586,
+            "cents_err_per_loop": -0.2724447618790795
+          },
+          "engine": {
+            "eff_xfade": 2935,
+            "wrap_advance": 5318,
+            "period_multiple": 29
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 5560,
+            "end": 11181,
+            "xfade": 702
+          },
+          "loop_engine": {
+            "start": 6052,
+            "end": 12170,
+            "xfade": 764
+          },
+          "metrics": {
+            "click": 0.8661681966433745,
+            "hollow": null,
+            "wobble": 0.30163826160318097,
+            "chorusing": 6.847568920813451,
+            "flam": 0.0,
+            "timbre_jump": 0.5991459375079972,
+            "cents_err_per_loop": 11.407589377853315
+          },
+          "engine": {
+            "eff_xfade": 764,
+            "wrap_advance": 5354,
+            "period_multiple": 29
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0005",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0005.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 60,
+      "file_sample_rate": 44100,
+      "file_num_samples": 46080,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 183.29939469083752,
+      "window": {
+        "start": 9649,
+        "end": 23603
+      },
+      "arms": [
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 10212,
+            "end": 20338,
+            "xfade": 5063
+          },
+          "loop_engine": {
+            "start": 11115,
+            "end": 22137,
+            "xfade": 5511
+          },
+          "metrics": {
+            "click": 0.792737018155678,
+            "hollow": 1.6485857308416347,
+            "wobble": 0.1621259788040852,
+            "chorusing": 8.459198369306629,
+            "flam": 18.083333333333336,
+            "timbre_jump": 2.8538667336645225,
+            "cents_err_per_loop": 3.779525726468835
+          },
+          "engine": {
+            "eff_xfade": 5511,
+            "wrap_advance": 5511,
+            "period_multiple": 30
+          }
+        },
+        {
+          "arm_id": "policy",
+          "provenance": "policy",
+          "rank": null,
+          "loop": {
+            "start": 8864,
+            "end": 21663,
+            "xfade": 2695
+          },
+          "loop_engine": {
+            "start": 9648,
+            "end": 23579,
+            "xfade": 2933
+          },
+          "metrics": {
+            "click": 0.9999999394836667,
+            "hollow": 0.7288739723359399,
+            "wobble": 0.19188344839788,
+            "chorusing": 11.642586376355828,
+            "flam": 0.0,
+            "timbre_jump": 0.7816746687062842,
+            "cents_err_per_loop": 0.005717040712140138
+          },
+          "engine": {
+            "eff_xfade": 2933,
+            "wrap_advance": 10998,
+            "period_multiple": 60
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 11354,
+            "end": 18841,
+            "xfade": 935
+          },
+          "loop_engine": {
+            "start": 12358,
+            "end": 20507,
+            "xfade": 1018
+          },
+          "metrics": {
+            "click": 0.9999999394836667,
+            "hollow": null,
+            "wobble": 0.13244738080223586,
+            "chorusing": 13.43508080206424,
+            "flam": 0.0,
+            "timbre_jump": 0.685417236261833,
+            "cents_err_per_loop": -4.286089980704549
+          },
+          "engine": {
+            "eff_xfade": 1018,
+            "wrap_advance": 7131,
+            "period_multiple": 39
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0006",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0006.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 64,
+      "file_sample_rate": 44100,
+      "file_num_samples": 51200,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 145.6258760292774,
+      "window": {
+        "start": 5393,
+        "end": 35440
+      },
+      "arms": [
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 6025,
+            "end": 31490,
+            "xfade": 12732
+          },
+          "loop_engine": {
+            "start": 6558,
+            "end": 34275,
+            "xfade": 13858
+          },
+          "metrics": {
+            "click": 0.9361081800094581,
+            "hollow": 2.757324898917971,
+            "wobble": 0.017622268093168688,
+            "chorusing": 2.641987042724431,
+            "flam": 0.0,
+            "timbre_jump": 1.0736640142549114,
+            "cents_err_per_loop": 3.0684193448238832
+          },
+          "engine": {
+            "eff_xfade": 13858,
+            "wrap_advance": 13859,
+            "period_multiple": 95
+          }
+        },
+        {
+          "arm_id": "policy",
+          "provenance": "policy",
+          "rank": null,
+          "loop": {
+            "start": 2214,
+            "end": 35127,
+            "xfade": 2141
+          },
+          "loop_engine": {
+            "start": 2410,
+            "end": 38234,
+            "xfade": 2330
+          },
+          "metrics": {
+            "click": 1.1259261141233952,
+            "hollow": 0.8725674455987024,
+            "wobble": 0.04698869495999966,
+            "chorusing": 8.92237771756482,
+            "flam": 0.0,
+            "timbre_jump": 1.215317882767436,
+            "cents_err_per_loop": 0.0025075499822026026
+          },
+          "engine": {
+            "eff_xfade": 2330,
+            "wrap_advance": 33494,
+            "period_multiple": 230
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 8918,
+            "end": 27714,
+            "xfade": 2349
+          },
+          "loop_engine": {
+            "start": 9707,
+            "end": 30165,
+            "xfade": 2557
+          },
+          "metrics": {
+            "click": 1.2606960609412117,
+            "hollow": 0.5979686447224569,
+            "wobble": 0.0995140466183159,
+            "chorusing": 5.607387435441411,
+            "flam": 0.0,
+            "timbre_jump": 1.0831797248774488,
+            "cents_err_per_loop": -1.0618335955001852
+          },
+          "engine": {
+            "eff_xfade": 2557,
+            "wrap_advance": 17901,
+            "period_multiple": 123
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0007",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0007.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 58,
+      "file_sample_rate": 44100,
+      "file_num_samples": 34304,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 205.97144252334078,
+      "window": {
+        "start": 7686,
+        "end": 29651
+      },
+      "arms": [
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 8576,
+            "end": 25728,
+            "xfade": 7296
+          },
+          "loop_engine": {
+            "start": 9334,
+            "end": 28003,
+            "xfade": 7941
+          },
+          "metrics": {
+            "click": 0.931887617741357,
+            "hollow": 0.9429085290162654,
+            "wobble": 0.0912427366548438,
+            "chorusing": 12.168034737713544,
+            "flam": 0.0,
+            "timbre_jump": 0.6188222314568322,
+            "cents_err_per_loop": 2.823946959979363
+          },
+          "engine": {
+            "eff_xfade": 7941,
+            "wrap_advance": 10728,
+            "period_multiple": 52
+          }
+        },
+        {
+          "arm_id": "policy",
+          "provenance": "policy",
+          "rank": null,
+          "loop": {
+            "start": 6067,
+            "end": 22152,
+            "xfade": 3028
+          },
+          "loop_engine": {
+            "start": 6603,
+            "end": 24111,
+            "xfade": 3296
+          },
+          "metrics": {
+            "click": 1.0411235446777236,
+            "hollow": 0.2720546764676901,
+            "wobble": 0.11330968049532338,
+            "chorusing": 4.1881332963084414,
+            "flam": 0.0,
+            "timbre_jump": 0.9254590192006799,
+            "cents_err_per_loop": -0.0035976924151351086
+          },
+          "engine": {
+            "eff_xfade": 3296,
+            "wrap_advance": 14212,
+            "period_multiple": 69
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 10537,
+            "end": 23177,
+            "xfade": 1579
+          },
+          "loop_engine": {
+            "start": 11469,
+            "end": 25227,
+            "xfade": 1719
+          },
+          "metrics": {
+            "click": 0.9999999326197377,
+            "hollow": 1.849927855131009,
+            "wobble": 0.09116761547053903,
+            "chorusing": 2.0901204459499754,
+            "flam": 0.0,
+            "timbre_jump": 1.0129035764091057,
+            "cents_err_per_loop": 13.375718092216353
+          },
+          "engine": {
+            "eff_xfade": 1719,
+            "wrap_advance": 12039,
+            "period_multiple": 58
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0008",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0008.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 71,
+      "file_sample_rate": 44100,
+      "file_num_samples": 44544,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 97.17287528885362,
+      "window": {
+        "start": 13156,
+        "end": 27152
+      },
+      "arms": [
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 12802,
+            "end": 24231,
+            "xfade": 2048
+          },
+          "loop_engine": {
+            "start": 13934,
+            "end": 26374,
+            "xfade": 2229
+          },
+          "metrics": {
+            "click": 1.0178696825208482,
+            "hollow": 1.616167964276487,
+            "wobble": 0.09409113375099662,
+            "chorusing": 4.413493454523507,
+            "flam": 0.0,
+            "timbre_jump": 1.0681910497531646,
+            "cents_err_per_loop": 1.3311245498728261
+          },
+          "engine": {
+            "eff_xfade": 2229,
+            "wrap_advance": 10211,
+            "period_multiple": 105
+          }
+        },
+        {
+          "arm_id": "policy",
+          "provenance": "policy",
+          "rank": null,
+          "loop": {
+            "start": 11124,
+            "end": 25855,
+            "xfade": 1429
+          },
+          "loop_engine": {
+            "start": 12108,
+            "end": 28142,
+            "xfade": 1555
+          },
+          "metrics": {
+            "click": 0.999999931741433,
+            "hollow": 0.006133889306497793,
+            "wobble": 0.05948150985219101,
+            "chorusing": 11.542508482063345,
+            "flam": 0.0,
+            "timbre_jump": 0.9278608086919147,
+            "cents_err_per_loop": 0.02888586265329578
+          },
+          "engine": {
+            "eff_xfade": 1555,
+            "wrap_advance": 14479,
+            "period_multiple": 149
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 14189,
+            "end": 23635,
+            "xfade": 1181
+          },
+          "loop_engine": {
+            "start": 15444,
+            "end": 25725,
+            "xfade": 1285
+          },
+          "metrics": {
+            "click": 1.0187988623163708,
+            "hollow": 2.4796715218764414,
+            "wobble": 0.036318943623850394,
+            "chorusing": 10.969372063917287,
+            "flam": 0.0,
+            "timbre_jump": 0.8806465589097937,
+            "cents_err_per_loop": -7.887141852531142
+          },
+          "engine": {
+            "eff_xfade": 1285,
+            "wrap_advance": 8996,
+            "period_multiple": 93
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0009",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0009.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 72,
+      "file_sample_rate": 44100,
+      "file_num_samples": 47104,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 91.73919039746944,
+      "window": {
+        "start": 16358,
+        "end": 25447
+      },
+      "arms": [
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 15703,
+            "end": 22705,
+            "xfade": 2048
+          },
+          "loop_engine": {
+            "start": 17092,
+            "end": 24713,
+            "xfade": 2229
+          },
+          "metrics": {
+            "click": 0.958063294662701,
+            "hollow": 2.2210920420557883,
+            "wobble": 0.1639023454067113,
+            "chorusing": 5.290387564365985,
+            "flam": 0.0,
+            "timbre_jump": 0.7403018838134298,
+            "cents_err_per_loop": -6.605446432801625
+          },
+          "engine": {
+            "eff_xfade": 2229,
+            "wrap_advance": 5392,
+            "period_multiple": 59
+          }
+        },
+        {
+          "arm_id": "policy",
+          "provenance": "policy",
+          "rank": null,
+          "loop": {
+            "start": 14686,
+            "end": 23620,
+            "xfade": 1349
+          },
+          "loop_engine": {
+            "start": 15985,
+            "end": 25709,
+            "xfade": 1468
+          },
+          "metrics": {
+            "click": 1.1385283817375291,
+            "hollow": 0.3632789839445675,
+            "wobble": 0.10782260209796893,
+            "chorusing": 6.5235204260109025,
+            "flam": 0.0,
+            "timbre_jump": 0.6808535136069249,
+            "cents_err_per_loop": -0.1105337045272466
+          },
+          "engine": {
+            "eff_xfade": 1468,
+            "wrap_advance": 8256,
+            "period_multiple": 90
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 16559,
+            "end": 22337,
+            "xfade": 722
+          },
+          "loop_engine": {
+            "start": 18023,
+            "end": 24312,
+            "xfade": 786
+          },
+          "metrics": {
+            "click": 1.021387825446981,
+            "hollow": 0.4940026560211229,
+            "wobble": 0.10702752114626002,
+            "chorusing": 8.332272525594268,
+            "flam": 0.0,
+            "timbre_jump": 0.6237564211691158,
+            "cents_err_per_loop": -0.42510335181155795
+          },
+          "engine": {
+            "eff_xfade": 786,
+            "wrap_advance": 5503,
+            "period_multiple": 60
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0010",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0010.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 63,
+      "file_sample_rate": 44100,
+      "file_num_samples": 47616,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 154.2947699733074,
+      "window": {
+        "start": 11723,
+        "end": 40104
+      },
+      "arms": [
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 11904,
+            "end": 35712,
+            "xfade": 11904
+          },
+          "loop_engine": {
+            "start": 12957,
+            "end": 38870,
+            "xfade": 12957
+          },
+          "metrics": {
+            "click": 0.9099959715705079,
+            "hollow": 1.3823316022171748,
+            "wobble": 0.11345837468772127,
+            "chorusing": 3.5140891679645727,
+            "flam": 0.0,
+            "timbre_jump": 1.3836464312231693,
+            "cents_err_per_loop": -0.5024055518182707
+          },
+          "engine": {
+            "eff_xfade": 12956,
+            "wrap_advance": 12957,
+            "period_multiple": 84
+          }
+        },
+        {
+          "arm_id": "policy",
+          "provenance": "policy",
+          "rank": null,
+          "loop": {
+            "start": 8360,
+            "end": 39121,
+            "xfade": 2268
+          },
+          "loop_engine": {
+            "start": 9099,
+            "end": 42581,
+            "xfade": 2469
+          },
+          "metrics": {
+            "click": 1.1374481020144211,
+            "hollow": 0.047698485228885416,
+            "wobble": 0.10666909224207008,
+            "chorusing": 3.7921244788909334,
+            "flam": 0.0,
+            "timbre_jump": 0.8600434850413032,
+            "cents_err_per_loop": -0.01388669521473053
+          },
+          "engine": {
+            "eff_xfade": 2469,
+            "wrap_advance": 31013,
+            "period_multiple": 201
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 17138,
+            "end": 33368,
+            "xfade": 2029
+          },
+          "loop_engine": {
+            "start": 18654,
+            "end": 36319,
+            "xfade": 2208
+          },
+          "metrics": {
+            "click": 0.9999999185303979,
+            "hollow": 2.086742651483944,
+            "wobble": 0.13043271541292556,
+            "chorusing": 6.179322257431133,
+            "flam": 0.0,
+            "timbre_jump": 0.9229093440734578,
+            "cents_err_per_loop": 3.08541320330806
+          },
+          "engine": {
+            "eff_xfade": 2208,
+            "wrap_advance": 15457,
+            "period_multiple": 100
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0011",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0011.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 62,
+      "file_sample_rate": 44100,
+      "file_num_samples": 17408,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 163.4208179116814,
+      "window": {
+        "start": 7530,
+        "end": 14580
+      },
+      "arms": [
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 8119,
+            "end": 12195,
+            "xfade": 784
+          },
+          "loop_engine": {
+            "start": 8837,
+            "end": 13273,
+            "xfade": 853
+          },
+          "metrics": {
+            "click": 1.0578735615121009,
+            "hollow": null,
+            "wobble": 0.19825414775206363,
+            "chorusing": 20.72697571603905,
+            "flam": 0.0,
+            "timbre_jump": 0.7600192354461835,
+            "cents_err_per_loop": -5.912709554381686
+          },
+          "engine": {
+            "eff_xfade": 853,
+            "wrap_advance": 3583,
+            "period_multiple": 22
+          }
+        },
+        {
+          "arm_id": "policy",
+          "provenance": "policy",
+          "rank": null,
+          "loop": {
+            "start": 7550,
+            "end": 12655,
+            "xfade": 2403
+          },
+          "loop_engine": {
+            "start": 8218,
+            "end": 13774,
+            "xfade": 2615
+          },
+          "metrics": {
+            "click": 1.1907744881243691,
+            "hollow": 0.16958843274538118,
+            "wobble": 0.1480300165853142,
+            "chorusing": 3.95219363546882,
+            "flam": 0.0,
+            "timbre_jump": 1.4699426027408018,
+            "cents_err_per_loop": -0.33828010880614295
+          },
+          "engine": {
+            "eff_xfade": 2615,
+            "wrap_advance": 2941,
+            "period_multiple": 18
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 9012,
+            "end": 11783,
+            "xfade": 346
+          },
+          "loop_engine": {
+            "start": 9809,
+            "end": 12825,
+            "xfade": 377
+          },
+          "metrics": {
+            "click": 1.0326791516133997,
+            "hollow": null,
+            "wobble": 0.11935288807243635,
+            "chorusing": 34.35835457198013,
+            "flam": 0.0,
+            "timbre_jump": 1.1209943413198589,
+            "cents_err_per_loop": 15.99320134901379
+          },
+          "engine": {
+            "eff_xfade": 377,
+            "wrap_advance": 2639,
+            "period_multiple": 16
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0012",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0012.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 55,
+      "file_sample_rate": 44100,
+      "file_num_samples": 54784,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 244.9015417677707,
+      "window": {
+        "start": 9084,
+        "end": 17424
+      },
+      "arms": [
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 10147,
+            "end": 14208,
+            "xfade": 244
+          },
+          "loop_engine": {
+            "start": 11044,
+            "end": 15464,
+            "xfade": 266
+          },
+          "metrics": {
+            "click": 0.9999999026235245,
+            "hollow": null,
+            "wobble": 0.02099815723830681,
+            "chorusing": null,
+            "flam": 0.0,
+            "timbre_jump": 0.28772147503054896,
+            "cents_err_per_loop": -3.8824638471506345
+          },
+          "engine": {
+            "eff_xfade": 266,
+            "wrap_advance": 4154,
+            "period_multiple": 17
+          }
+        },
+        {
+          "arm_id": "policy",
+          "provenance": "policy",
+          "rank": null,
+          "loop": {
+            "start": 9572,
+            "end": 14522,
+            "xfade": 2475
+          },
+          "loop_engine": {
+            "start": 10418,
+            "end": 15806,
+            "xfade": 2694
+          },
+          "metrics": {
+            "click": 1.3022662504179152,
+            "hollow": 0.0,
+            "wobble": 0.13196834630008442,
+            "chorusing": 1.5572982856442577,
+            "flam": 0.0,
+            "timbre_jump": 1.0673084228369074,
+            "cents_err_per_loop": 0.05336482968663707
+          },
+          "engine": {
+            "eff_xfade": 2694,
+            "wrap_advance": 2694,
+            "period_multiple": 11
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 11033,
+            "end": 13799,
+            "xfade": 345
+          },
+          "loop_engine": {
+            "start": 12009,
+            "end": 15019,
+            "xfade": 376
+          },
+          "metrics": {
+            "click": 0.9969489814407557,
+            "hollow": null,
+            "wobble": 0.031463879481610446,
+            "chorusing": null,
+            "flam": 0.0,
+            "timbre_jump": 0.7538266508106992,
+            "cents_err_per_loop": -38.94004141725989
+          },
+          "engine": {
+            "eff_xfade": 376,
+            "wrap_advance": 2634,
+            "period_multiple": 11
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0013",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0013.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 48,
+      "file_sample_rate": 44100,
+      "file_num_samples": 58880,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 366.7950647575703,
+      "window": {
+        "start": 8655,
+        "end": 32905
+      },
+      "arms": [
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 10647,
+            "end": 27536,
+            "xfade": 3766
+          },
+          "loop_engine": {
+            "start": 11589,
+            "end": 29971,
+            "xfade": 4099
+          },
+          "metrics": {
+            "click": 1.3439343806264135,
+            "hollow": 1.933998996391,
+            "wobble": 0.032448107670854195,
+            "chorusing": 1.3198866115780283,
+            "flam": 0.0,
+            "timbre_jump": 0.8046174843568419,
+            "cents_err_per_loop": -2.6654662835012646
+          },
+          "engine": {
+            "eff_xfade": 4099,
+            "wrap_advance": 14283,
+            "period_multiple": 39
+          }
+        },
+        {
+          "arm_id": "policy",
+          "provenance": "policy",
+          "rank": null,
+          "loop": {
+            "start": 8114,
+            "end": 28334,
+            "xfade": 5392
+          },
+          "loop_engine": {
+            "start": 8832,
+            "end": 30840,
+            "xfade": 5869
+          },
+          "metrics": {
+            "click": 1.2758564489992605,
+            "hollow": 0.5655985969515246,
+            "wobble": 0.18689051653538188,
+            "chorusing": 2.0191241520659413,
+            "flam": 0.0,
+            "timbre_jump": 0.8155158989900831,
+            "cents_err_per_loop": 0.0018397567564379354
+          },
+          "engine": {
+            "eff_xfade": 5869,
+            "wrap_advance": 16139,
+            "period_multiple": 44
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 14321,
+            "end": 25843,
+            "xfade": 1440
+          },
+          "loop_engine": {
+            "start": 15587,
+            "end": 28128,
+            "xfade": 1567
+          },
+          "metrics": {
+            "click": 1.0876481805727924,
+            "hollow": null,
+            "wobble": 0.037096720156472134,
+            "chorusing": 1.2507791818107734,
+            "flam": 0.0,
+            "timbre_jump": 0.9593088435188049,
+            "cents_err_per_loop": -4.702982948171714
+          },
+          "engine": {
+            "eff_xfade": 1567,
+            "wrap_advance": 10974,
+            "period_multiple": 30
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0014",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0014.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 57,
+      "file_sample_rate": 44100,
+      "file_num_samples": 35328,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 218.66088933734255,
+      "window": {
+        "start": 7865,
+        "end": 37057
+      },
+      "arms": [
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 8832,
+            "end": 32440,
+            "xfade": 8832
+          },
+          "loop_engine": {
+            "start": 9613,
+            "end": 35309,
+            "xfade": 9613
+          },
+          "metrics": {
+            "click": 0.7343169400997658,
+            "hollow": 1.3473155639970373,
+            "wobble": 0.1543660141404097,
+            "chorusing": 6.553732326028313,
+            "flam": 0.0,
+            "timbre_jump": 0.9440435053606904,
+            "cents_err_per_loop": -10.506997807640058
+          },
+          "engine": {
+            "eff_xfade": 9613,
+            "wrap_advance": 16083,
+            "period_multiple": 74
+          }
+        },
+        {
+          "arm_id": "policy",
+          "provenance": "policy",
+          "rank": null,
+          "loop": {
+            "start": 5675,
+            "end": 34604,
+            "xfade": 3215
+          },
+          "loop_engine": {
+            "start": 6177,
+            "end": 37664,
+            "xfade": 3499
+          },
+          "metrics": {
+            "click": 1.0000000219647547,
+            "hollow": 0.8470277445761947,
+            "wobble": 0.2944851766123681,
+            "chorusing": 8.490832839806405,
+            "flam": 0.0,
+            "timbre_jump": 1.146819080221163,
+            "cents_err_per_loop": -0.036732055757022535
+          },
+          "engine": {
+            "eff_xfade": 3499,
+            "wrap_advance": 27988,
+            "period_multiple": 128
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 13948,
+            "end": 30083,
+            "xfade": 2017
+          },
+          "loop_engine": {
+            "start": 15182,
+            "end": 32743,
+            "xfade": 2195
+          },
+          "metrics": {
+            "click": 0.8854965009107656,
+            "hollow": 1.248801682955346,
+            "wobble": 0.19950057350616782,
+            "chorusing": 10.00453029869482,
+            "flam": 0.0,
+            "timbre_jump": 0.8718648480197309,
+            "cents_err_per_loop": 6.743562014926012
+          },
+          "engine": {
+            "eff_xfade": 2195,
+            "wrap_advance": 15366,
+            "period_multiple": 70
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0015",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0015.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 62,
+      "file_sample_rate": 44100,
+      "file_num_samples": 21504,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 163.3960616531025,
+      "window": {
+        "start": 8253,
+        "end": 18689
+      },
+      "arms": [
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 8783,
+            "end": 15970,
+            "xfade": 1644
+          },
+          "loop_engine": {
+            "start": 9560,
+            "end": 17382,
+            "xfade": 1789
+          },
+          "metrics": {
+            "click": 0.9999999363469059,
+            "hollow": 2.447855032818317,
+            "wobble": 0.1416257198049098,
+            "chorusing": 4.6430610088082505,
+            "flam": 0.0,
+            "timbre_jump": 0.5079488177908239,
+            "cents_err_per_loop": -3.627478678355218
+          },
+          "engine": {
+            "eff_xfade": 1789,
+            "wrap_advance": 6033,
+            "period_multiple": 37
+          }
+        },
+        {
+          "arm_id": "policy",
+          "provenance": "policy",
+          "rank": null,
+          "loop": {
+            "start": 7706,
+            "end": 16863,
+            "xfade": 2402
+          },
+          "loop_engine": {
+            "start": 8387,
+            "end": 18354,
+            "xfade": 2614
+          },
+          "metrics": {
+            "click": 1.2300130106437586,
+            "hollow": 0.06204397423483228,
+            "wobble": 0.19233439333404506,
+            "chorusing": 5.600205729915595,
+            "flam": 0.0,
+            "timbre_jump": 0.567633642438795,
+            "cents_err_per_loop": 0.04172755455995045
+          },
+          "engine": {
+            "eff_xfade": 2614,
+            "wrap_advance": 7353,
+            "period_multiple": 45
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 10335,
+            "end": 15255,
+            "xfade": 615
+          },
+          "loop_engine": {
+            "start": 11249,
+            "end": 16604,
+            "xfade": 669
+          },
+          "metrics": {
+            "click": 0.9999999363469048,
+            "hollow": null,
+            "wobble": 0.08244701412346717,
+            "chorusing": 8.719538700990446,
+            "flam": 0.0,
+            "timbre_jump": 0.5635587792379338,
+            "cents_err_per_loop": -19.28298787274918
+          },
+          "engine": {
+            "eff_xfade": 669,
+            "wrap_advance": 4686,
+            "period_multiple": 29
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0016",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0016.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 52,
+      "file_sample_rate": 44100,
+      "file_num_samples": 59904,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 291.1419582864956,
+      "window": {
+        "start": 13970,
+        "end": 46807
+      },
+      "arms": [
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 14976,
+            "end": 40863,
+            "xfade": 2048
+          },
+          "loop_engine": {
+            "start": 16300,
+            "end": 44477,
+            "xfade": 2229
+          },
+          "metrics": {
+            "click": 1.0000000540103207,
+            "hollow": 2.5215811348431605,
+            "wobble": 0.10916316013972555,
+            "chorusing": 3.8033677845199843,
+            "flam": 0.0,
+            "timbre_jump": 0.4235379127508964,
+            "cents_err_per_loop": 2.4279989971454596
+          },
+          "engine": {
+            "eff_xfade": 2229,
+            "wrap_advance": 25948,
+            "period_multiple": 89
+          }
+        },
+        {
+          "arm_id": "policy",
+          "provenance": "policy",
+          "rank": null,
+          "loop": {
+            "start": 11293,
+            "end": 44462,
+            "xfade": 4280
+          },
+          "loop_engine": {
+            "start": 12292,
+            "end": 48394,
+            "xfade": 4658
+          },
+          "metrics": {
+            "click": 0.9784887143603589,
+            "hollow": 0.605042032068678,
+            "wobble": 0.20148859261876204,
+            "chorusing": 7.05932381883457,
+            "flam": 0.0,
+            "timbre_jump": 0.6553790610680408,
+            "cents_err_per_loop": 0.036806736483510294
+          },
+          "engine": {
+            "eff_xfade": 4658,
+            "wrap_advance": 31444,
+            "period_multiple": 108
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 20546,
+            "end": 38298,
+            "xfade": 2219
+          },
+          "loop_engine": {
+            "start": 22363,
+            "end": 41685,
+            "xfade": 2415
+          },
+          "metrics": {
+            "click": 1.000000054010536,
+            "hollow": 1.4288060786019523,
+            "wobble": 0.10552947951826604,
+            "chorusing": 10.573586221189402,
+            "flam": 0.0,
+            "timbre_jump": 0.37599974790468654,
+            "cents_err_per_loop": 2.127735823395677
+          },
+          "engine": {
+            "eff_xfade": 2415,
+            "wrap_advance": 16907,
+            "period_multiple": 58
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0017",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0017.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 57,
+      "file_sample_rate": 44100,
+      "file_num_samples": 9702,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 218.21809721467707,
+      "window": {
+        "start": 1742,
+        "end": 7854
+      },
+      "arms": [
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 3205,
+            "end": 5612,
+            "xfade": 1202
+          },
+          "loop_engine": {
+            "start": 3488,
+            "end": 6108,
+            "xfade": 1308
+          },
+          "metrics": {
+            "click": 0.9981181703484245,
+            "hollow": 0.0,
+            "wobble": 0.11351076482137477,
+            "chorusing": 4.883756662700773,
+            "flam": 0.0,
+            "timbre_jump": 2.2646837393054526,
+            "cents_err_per_loop": 3.555074682155892
+          },
+          "engine": {
+            "eff_xfade": 1308,
+            "wrap_advance": 1312,
+            "period_multiple": 6
+          }
+        },
+        {
+          "arm_id": "policy",
+          "provenance": "policy",
+          "rank": null,
+          "loop": {
+            "start": 2916,
+            "end": 5723,
+            "xfade": 1203
+          },
+          "loop_engine": {
+            "start": 3174,
+            "end": 6229,
+            "xfade": 1309
+          },
+          "metrics": {
+            "click": 1.1769485312801882,
+            "hollow": 0.0,
+            "wobble": 0.19022705209713428,
+            "chorusing": 0.7964975964270276,
+            "flam": 0.0,
+            "timbre_jump": 1.710740928036601,
+            "cents_err_per_loop": 0.25308236117104205
+          },
+          "engine": {
+            "eff_xfade": 1309,
+            "wrap_advance": 1746,
+            "period_multiple": 8
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 3721,
+            "end": 5374,
+            "xfade": 206
+          },
+          "loop_engine": {
+            "start": 4050,
+            "end": 5849,
+            "xfade": 224
+          },
+          "metrics": {
+            "click": 0.9285169535618626,
+            "hollow": null,
+            "wobble": 0.028914847261279394,
+            "chorusing": null,
+            "flam": 0.0,
+            "timbre_jump": 1.2919125953965553,
+            "cents_err_per_loop": 52.98509946628747
+          },
+          "engine": {
+            "eff_xfade": 224,
+            "wrap_advance": 1575,
+            "period_multiple": 7
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0018",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0018.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 69,
+      "file_sample_rate": 44100,
+      "file_num_samples": 80896,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 109.12401582377804,
+      "window": {
+        "start": 26982,
+        "end": 71594
+      },
+      "arms": [
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 25592,
+            "end": 64975,
+            "xfade": 9695
+          },
+          "loop_engine": {
+            "start": 27855,
+            "end": 70721,
+            "xfade": 10552
+          },
+          "metrics": {
+            "click": 0.694452099486126,
+            "hollow": 1.2685189478766696,
+            "wobble": 0.2947913420173372,
+            "chorusing": 6.725590095134073,
+            "flam": 0.0,
+            "timbre_jump": 1.2887842443353694,
+            "cents_err_per_loop": 0.7122334802493767
+          },
+          "engine": {
+            "eff_xfade": 10552,
+            "wrap_advance": 32314,
+            "period_multiple": 296
+          }
+        },
+        {
+          "arm_id": "policy",
+          "provenance": "policy",
+          "rank": null,
+          "loop": {
+            "start": 20335,
+            "end": 67255,
+            "xfade": 1604
+          },
+          "loop_engine": {
+            "start": 22133,
+            "end": 73203,
+            "xfade": 1746
+          },
+          "metrics": {
+            "click": 0.9999999633808588,
+            "hollow": 0.6146705702557327,
+            "wobble": 0.2841965811754026,
+            "chorusing": 3.8071001278995067,
+            "flam": 0.0,
+            "timbre_jump": 1.7407521856643755,
+            "cents_err_per_loop": -0.001935803438422275
+          },
+          "engine": {
+            "eff_xfade": 1746,
+            "wrap_advance": 49324,
+            "period_multiple": 452
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 34496,
+            "end": 60908,
+            "xfade": 3301
+          },
+          "loop_engine": {
+            "start": 37547,
+            "end": 66294,
+            "xfade": 3593
+          },
+          "metrics": {
+            "click": 1.0097721082389417,
+            "hollow": 1.1795105652108449,
+            "wobble": 0.28852380521088494,
+            "chorusing": 7.182044326351031,
+            "flam": 0.0,
+            "timbre_jump": 1.4458401923724555,
+            "cents_err_per_loop": -3.6883893577828384
+          },
+          "engine": {
+            "eff_xfade": 3593,
+            "wrap_advance": 25154,
+            "period_multiple": 231
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0019",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0019.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 62,
+      "file_sample_rate": 44100,
+      "file_num_samples": 30720,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 163.35353721134678,
+      "window": {
+        "start": 2707,
+        "end": 6798
+      },
+      "arms": [
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 3688,
+            "end": 5045,
+            "xfade": 605
+          },
+          "loop_engine": {
+            "start": 4014,
+            "end": 5491,
+            "xfade": 659
+          },
+          "metrics": {
+            "click": 1.10122884822709,
+            "hollow": null,
+            "wobble": 0.15891775883728018,
+            "chorusing": 3.8643355989596593,
+            "flam": 0.0,
+            "timbre_jump": 1.5271964403385017,
+            "cents_err_per_loop": 2.6100641455255302
+          },
+          "engine": {
+            "eff_xfade": 659,
+            "wrap_advance": 818,
+            "period_multiple": 5
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 3994,
+            "end": 4979,
+            "xfade": 123
+          },
+          "loop_engine": {
+            "start": 4347,
+            "end": 5419,
+            "xfade": 134
+          },
+          "metrics": {
+            "click": 0.9846755372544173,
+            "hollow": null,
+            "wobble": 0.04273741814476608,
+            "chorusing": null,
+            "flam": 0.0,
+            "timbre_jump": 2.1451142100058775,
+            "cents_err_per_loop": -76.04672736667408
+          },
+          "engine": {
+            "eff_xfade": 134,
+            "wrap_advance": 938,
+            "period_multiple": 6
+          }
+        }
+      ],
+      "notes": [
+        "gold region too short for a policy arm; none emitted"
+      ]
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0020",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0020.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 67,
+      "file_sample_rate": 48000,
+      "file_num_samples": 39032,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 122.4595161193241,
+      "window": {
+        "start": 14963,
+        "end": 29144
+      },
+      "arms": [
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 15942,
+            "end": 28165,
+            "xfade": 6112
+          },
+          "loop_engine": {
+            "start": 15942,
+            "end": 28165,
+            "xfade": 6112
+          },
+          "metrics": {
+            "click": 0.8441791229463047,
+            "hollow": 2.182128175381649,
+            "wobble": 0.06061694619985898,
+            "chorusing": 3.139035208322623,
+            "flam": 0.0,
+            "timbre_jump": 2.0598316399077183,
+            "cents_err_per_loop": -3.106126959834429
+          },
+          "engine": {
+            "eff_xfade": 6111,
+            "wrap_advance": 6112,
+            "period_multiple": 50
+          }
+        },
+        {
+          "arm_id": "policy",
+          "provenance": "policy",
+          "rank": null,
+          "loop": {
+            "start": 14184,
+            "end": 29859,
+            "xfade": 1959
+          },
+          "loop_engine": {
+            "start": 14184,
+            "end": 29859,
+            "xfade": 1959
+          },
+          "metrics": {
+            "click": 1.0254189620626706,
+            "hollow": 0.6803437058394306,
+            "wobble": 0.10646187760468732,
+            "chorusing": 9.449486818198066,
+            "flam": 0.0,
+            "timbre_jump": 0.9966858383150055,
+            "cents_err_per_loop": 0.06742738057328318
+          },
+          "engine": {
+            "eff_xfade": 1959,
+            "wrap_advance": 13716,
+            "period_multiple": 112
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 18687,
+            "end": 26958,
+            "xfade": 1033
+          },
+          "loop_engine": {
+            "start": 18687,
+            "end": 26958,
+            "xfade": 1033
+          },
+          "metrics": {
+            "click": 1.0,
+            "hollow": 1.3187088752811813,
+            "wobble": 0.06547921447142185,
+            "chorusing": 3.8021782659228744,
+            "flam": 0.0,
+            "timbre_jump": 0.8594728985002422,
+            "cents_err_per_loop": 3.08551873977377
+          },
+          "engine": {
+            "eff_xfade": 1033,
+            "wrap_advance": 7238,
+            "period_multiple": 59
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "natural_vocal_0022",
+      "file": "corpus/Natural vocal/natural_vocal_0022.wav",
+      "class": "Natural vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 72,
+      "file_sample_rate": 44100,
+      "file_num_samples": 45568,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 183.41098660100835,
+      "window": {
+        "start": 21236,
+        "end": 35677
+      },
+      "arms": [
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 20858,
+            "end": 31430,
+            "xfade": 2441
+          },
+          "loop_engine": {
+            "start": 22703,
+            "end": 34210,
+            "xfade": 2657
+          },
+          "metrics": {
+            "click": 1.0000000293006115,
+            "hollow": 2.7804888040542086,
+            "wobble": 0.073293341357232,
+            "chorusing": 4.57980047645974,
+            "flam": 0.0,
+            "timbre_jump": 0.37432513312345944,
+            "cents_err_per_loop": 9.075585818558952
+          },
+          "engine": {
+            "eff_xfade": 2657,
+            "wrap_advance": 8850,
+            "period_multiple": 48
+          }
+        },
+        {
+          "arm_id": "policy",
+          "provenance": "policy",
+          "rank": null,
+          "loop": {
+            "start": 19274,
+            "end": 32754,
+            "xfade": 2697
+          },
+          "loop_engine": {
+            "start": 20978,
+            "end": 35651,
+            "xfade": 2935
+          },
+          "metrics": {
+            "click": 1.1429977193616288,
+            "hollow": 0.2522249418918781,
+            "wobble": 0.10664370992425536,
+            "chorusing": 4.02346787253007,
+            "flam": 0.0,
+            "timbre_jump": 0.3620051286036652,
+            "cents_err_per_loop": -0.04470981254276682
+          },
+          "engine": {
+            "eff_xfade": 2935,
+            "wrap_advance": 11738,
+            "period_multiple": 64
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 22316,
+            "end": 30194,
+            "xfade": 984
+          },
+          "loop_engine": {
+            "start": 24289,
+            "end": 32864,
+            "xfade": 1071
+          },
+          "metrics": {
+            "click": 1.0000000293006115,
+            "hollow": 1.6270059477865928,
+            "wobble": 0.09547932790820884,
+            "chorusing": 7.446785092664118,
+            "flam": 0.0,
+            "timbre_jump": 0.33510989356480625,
+            "cents_err_per_loop": -3.652971668568398
+          },
+          "engine": {
+            "eff_xfade": 1071,
+            "wrap_advance": 7504,
+            "period_multiple": 41
+          }
+        }
+      ],
+      "notes": [
+        "declared root_note=72 (523.25 Hz) disagrees with the measured 261.72 Hz by -1 octave(s); analysis uses the measurement"
+      ]
+    },
+    {
+      "sample_id": "natural_vocal_0023",
+      "file": "corpus/Natural vocal/natural_vocal_0023.wav",
+      "class": "Natural vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 67,
+      "file_sample_rate": 44100,
+      "file_num_samples": 54784,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 122.52002179534706,
+      "window": {
+        "start": 31770,
+        "end": 49346
+      },
+      "arms": [
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 30090,
+            "end": 44435,
+            "xfade": 7172
+          },
+          "loop_engine": {
+            "start": 32751,
+            "end": 48365,
+            "xfade": 7806
+          },
+          "metrics": {
+            "click": 0.693769654082373,
+            "hollow": 3.289892702784172,
+            "wobble": 0.2786011951951159,
+            "chorusing": 4.942327185163108,
+            "flam": 0.0,
+            "timbre_jump": 2.7354443084613806,
+            "cents_err_per_loop": -7.363657086547624
+          },
+          "engine": {
+            "eff_xfade": 7806,
+            "wrap_advance": 7808,
+            "period_multiple": 64
+          }
+        },
+        {
+          "arm_id": "policy",
+          "provenance": "policy",
+          "rank": null,
+          "loop": {
+            "start": 27948,
+            "end": 46072,
+            "xfade": 1801
+          },
+          "loop_engine": {
+            "start": 30420,
+            "end": 50146,
+            "xfade": 1960
+          },
+          "metrics": {
+            "click": 1.0316331642779675,
+            "hollow": 0.6606609894873491,
+            "wobble": 0.1910349824673638,
+            "chorusing": 5.596134180195993,
+            "flam": 0.0,
+            "timbre_jump": 0.7728480910630563,
+            "cents_err_per_loop": 0.05816089851937776
+          },
+          "engine": {
+            "eff_xfade": 1960,
+            "wrap_advance": 17766,
+            "period_multiple": 145
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 32055,
+            "end": 42818,
+            "xfade": 1345
+          },
+          "loop_engine": {
+            "start": 34890,
+            "end": 46605,
+            "xfade": 1464
+          },
+          "metrics": {
+            "click": 0.9348381891251387,
+            "hollow": 2.2308257047462203,
+            "wobble": 0.0595627818930953,
+            "chorusing": 13.36421490754885,
+            "flam": 0.0,
+            "timbre_jump": 0.8745690239225941,
+            "cents_err_per_loop": -6.856929716014551
+          },
+          "engine": {
+            "eff_xfade": 1464,
+            "wrap_advance": 10251,
+            "period_multiple": 84
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "natural_vocal_0024",
+      "file": "corpus/Natural vocal/natural_vocal_0024.wav",
+      "class": "Natural vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 64,
+      "file_sample_rate": 44100,
+      "file_num_samples": 54784,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 145.76315735347896,
+      "window": {
+        "start": 28211,
+        "end": 51257
+      },
+      "arms": [
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 26990,
+            "end": 46021,
+            "xfade": 9515
+          },
+          "loop_engine": {
+            "start": 29377,
+            "end": 50091,
+            "xfade": 10356
+          },
+          "metrics": {
+            "click": 0.8274387240191804,
+            "hollow": 0.3410605767100239,
+            "wobble": 0.12723264443444973,
+            "chorusing": 2.7624589931178245,
+            "flam": 0.0,
+            "timbre_jump": 2.7824487479520297,
+            "cents_err_per_loop": 1.474103116255526
+          },
+          "engine": {
+            "eff_xfade": 10356,
+            "wrap_advance": 10358,
+            "period_multiple": 71
+          }
+        },
+        {
+          "arm_id": "policy",
+          "provenance": "policy",
+          "rank": null,
+          "loop": {
+            "start": 25161,
+            "end": 48730,
+            "xfade": 2143
+          },
+          "loop_engine": {
+            "start": 27386,
+            "end": 53040,
+            "xfade": 2332
+          },
+          "metrics": {
+            "click": 1.0000001021873577,
+            "hollow": 1.2880906889523056,
+            "wobble": 0.045505381771046786,
+            "chorusing": 5.8698486725798364,
+            "flam": 0.0,
+            "timbre_jump": 0.8325579201622333,
+            "cents_err_per_loop": -0.007807427554613906
+          },
+          "engine": {
+            "eff_xfade": 2332,
+            "wrap_advance": 23322,
+            "period_multiple": 160
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 29643,
+            "end": 43780,
+            "xfade": 1767
+          },
+          "loop_engine": {
+            "start": 32264,
+            "end": 47652,
+            "xfade": 1923
+          },
+          "metrics": {
+            "click": 0.7983640078455616,
+            "hollow": 2.1954924939917926,
+            "wobble": 0.029398492947793366,
+            "chorusing": 5.849400106383677,
+            "flam": 0.0,
+            "timbre_jump": 0.6802501345213251,
+            "cents_err_per_loop": 7.058818763281606
+          },
+          "engine": {
+            "eff_xfade": 1923,
+            "wrap_advance": 13465,
+            "period_multiple": 92
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "natural_vocal_0025",
+      "file": "corpus/Natural vocal/natural_vocal_0025.wav",
+      "class": "Natural vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 61,
+      "file_sample_rate": 44100,
+      "file_num_samples": 54784,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 173.76988944339945,
+      "window": {
+        "start": 13519,
+        "end": 46110
+      },
+      "arms": [
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 13696,
+            "end": 41088,
+            "xfade": 13696
+          },
+          "loop_engine": {
+            "start": 14907,
+            "end": 44722,
+            "xfade": 14907
+          },
+          "metrics": {
+            "click": 0.9060600647325834,
+            "hollow": 0.8639184515691227,
+            "wobble": 0.09058651133678222,
+            "chorusing": 5.992390435842161,
+            "flam": 8.4375,
+            "timbre_jump": 3.2339949679047852,
+            "cents_err_per_loop": -4.199948119438131
+          },
+          "engine": {
+            "eff_xfade": 14907,
+            "wrap_advance": 14908,
+            "period_multiple": 86
+          }
+        },
+        {
+          "arm_id": "policy",
+          "provenance": "policy",
+          "rank": null,
+          "loop": {
+            "start": 16591,
+            "end": 42933,
+            "xfade": 2554
+          },
+          "loop_engine": {
+            "start": 18058,
+            "end": 46730,
+            "xfade": 2780
+          },
+          "metrics": {
+            "click": 0.9174522269447296,
+            "hollow": 1.1911801102900625,
+            "wobble": 0.26211651519278056,
+            "chorusing": 7.077861504393479,
+            "flam": 0.0,
+            "timbre_jump": 1.3430138422619913,
+            "cents_err_per_loop": 0.019154736607447587
+          },
+          "engine": {
+            "eff_xfade": 2780,
+            "wrap_advance": 25892,
+            "period_multiple": 149
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 17492,
+            "end": 37873,
+            "xfade": 2547
+          },
+          "loop_engine": {
+            "start": 19039,
+            "end": 41222,
+            "xfade": 2772
+          },
+          "metrics": {
+            "click": 0.8209500406140314,
+            "hollow": 1.0827962283799728,
+            "wobble": 0.24192887422894377,
+            "chorusing": 8.892782542706286,
+            "flam": 0.0,
+            "timbre_jump": 0.9501313992637975,
+            "cents_err_per_loop": -4.562885704165993
+          },
+          "engine": {
+            "eff_xfade": 2772,
+            "wrap_advance": 19411,
+            "period_multiple": 112
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "natural_vocal_0026",
+      "file": "corpus/Natural vocal/natural_vocal_0026.wav",
+      "class": "Natural vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 60,
+      "file_sample_rate": 44100,
+      "file_num_samples": 30208,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 182.8128718375678,
+      "window": {
+        "start": 10418,
+        "end": 18292
+      },
+      "arms": [
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 10918,
+            "end": 15459,
+            "xfade": 0
+          },
+          "loop_engine": {
+            "start": 11884,
+            "end": 16826,
+            "xfade": 0
+          },
+          "metrics": {
+            "click": 1.0000000035233856,
+            "hollow": null,
+            "wobble": 0.04059147397778236,
+            "chorusing": null,
+            "flam": null,
+            "timbre_jump": 0.4004687902278057,
+            "cents_err_per_loop": 2.121539271100836
+          },
+          "engine": {
+            "eff_xfade": 0,
+            "wrap_advance": 4942,
+            "period_multiple": 27
+          }
+        },
+        {
+          "arm_id": "policy",
+          "provenance": "policy",
+          "rank": null,
+          "loop": {
+            "start": 10259,
+            "end": 15970,
+            "xfade": 2687
+          },
+          "loop_engine": {
+            "start": 11166,
+            "end": 17382,
+            "xfade": 2925
+          },
+          "metrics": {
+            "click": 1.2998351277773006,
+            "hollow": 0.0,
+            "wobble": 0.17704940776003206,
+            "chorusing": 1.1502108113928464,
+            "flam": 0.0,
+            "timbre_jump": 2.016737702791954,
+            "cents_err_per_loop": 0.19375909116586973
+          },
+          "engine": {
+            "eff_xfade": 2925,
+            "wrap_advance": 3291,
+            "period_multiple": 18
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 11558,
+            "end": 15004,
+            "xfade": 430
+          },
+          "loop_engine": {
+            "start": 12580,
+            "end": 16331,
+            "xfade": 468
+          },
+          "metrics": {
+            "click": 1.333415356329516,
+            "hollow": null,
+            "wobble": 0.08645945014425137,
+            "chorusing": 9.337632629687834,
+            "flam": 0.0,
+            "timbre_jump": 0.8745981109289112,
+            "cents_err_per_loop": -4.019772770476081
+          },
+          "engine": {
+            "eff_xfade": 468,
+            "wrap_advance": 3283,
+            "period_multiple": 18
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "natural_vocal_0027",
+      "file": "corpus/Natural vocal/natural_vocal_0027.wav",
+      "class": "Natural vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 52,
+      "file_sample_rate": 44100,
+      "file_num_samples": 30208,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 290.72792762586624,
+      "window": {
+        "start": 7519,
+        "end": 16828
+      },
+      "arms": [
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 9048,
+            "end": 13321,
+            "xfade": 0
+          },
+          "loop_engine": {
+            "start": 9848,
+            "end": 14499,
+            "xfade": 0
+          },
+          "metrics": {
+            "click": 0.9999999898771407,
+            "hollow": null,
+            "wobble": 0.04028408918717259,
+            "chorusing": null,
+            "flam": null,
+            "timbre_jump": 0.4502233407233564,
+            "cents_err_per_loop": -0.24075619328222408
+          },
+          "engine": {
+            "eff_xfade": 0,
+            "wrap_advance": 4651,
+            "period_multiple": 16
+          }
+        },
+        {
+          "arm_id": "policy",
+          "provenance": "policy",
+          "rank": null,
+          "loop": {
+            "start": 8521,
+            "end": 13597,
+            "xfade": 2404
+          },
+          "loop_engine": {
+            "start": 9275,
+            "end": 14799,
+            "xfade": 2617
+          },
+          "metrics": {
+            "click": 1.4302723224465184,
+            "hollow": 0.0,
+            "wobble": 0.13916338555851654,
+            "chorusing": 2.369852541522701,
+            "flam": 0.0,
+            "timbre_jump": 1.412481919154818,
+            "cents_err_per_loop": -0.16631212416584804
+          },
+          "engine": {
+            "eff_xfade": 2617,
+            "wrap_advance": 2907,
+            "period_multiple": 10
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 9647,
+            "end": 12949,
+            "xfade": 413
+          },
+          "loop_engine": {
+            "start": 10500,
+            "end": 14094,
+            "xfade": 449
+          },
+          "metrics": {
+            "click": 0.9898184266738576,
+            "hollow": null,
+            "wobble": 0.07347188018537372,
+            "chorusing": null,
+            "flam": 0.0,
+            "timbre_jump": 0.7183490960758677,
+            "cents_err_per_loop": -28.935805867590695
+          },
+          "engine": {
+            "eff_xfade": 449,
+            "wrap_advance": 3145,
+            "period_multiple": 11
+          }
+        }
+      ],
+      "notes": []
+    }
+  ]
+}

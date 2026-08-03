@@ -38,6 +38,10 @@ export default function CompressorSliderNode({ node }) {
   const label = props.label ?? meta.label
   const title = `${label}: ${formatFn(value)}`
   const inlineStyle = styleToCSS(style)
+  // 'rail' swaps the filled box for a thin rail with a wide flat thumb. Opt-in
+  // per node so the layouts already using the boxed look are untouched.
+  const isRail = props.variant === 'rail'
+  const rootClass = `pluginui-compressor-slider${isRail ? ' pluginui-compressor-slider--rail' : ''}`
 
   const commitFromPointer = useCallback((event) => {
     const next = valueFromPointer(event, event.currentTarget, meta.min, meta.max)
@@ -81,7 +85,7 @@ export default function CompressorSliderNode({ node }) {
 
   return (
     <div
-      className="pluginui-compressor-slider"
+      className={rootClass}
       style={inlineStyle}
       data-pluginui-id={node.id}
       title={title}
@@ -102,7 +106,9 @@ export default function CompressorSliderNode({ node }) {
         onDoubleClick={handleDoubleClick}
         onKeyDown={handleKeyDown}
       >
-        <div className="pluginui-compressor-slider-fill" style={{ height: `${pct}%` }} />
+        {isRail
+          ? <div className="pluginui-compressor-slider-thumb" style={{ bottom: `${pct}%` }} />
+          : <div className="pluginui-compressor-slider-fill" style={{ height: `${pct}%` }} />}
       </div>
       <div className="pluginui-compressor-slider-label">{label}</div>
     </div>

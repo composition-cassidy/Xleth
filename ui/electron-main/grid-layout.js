@@ -51,7 +51,10 @@ function init(deps) {
     safeHandler(() => callWorker('timeline_listCues')));
 
   // Set a cue's boundary animation (offsets in ticks). transition is
-  // { enabled, startOffsetTicks, endOffsetTicks, type, freezeOutgoing, geomAngleDeg };
+  // { enabled, startOffsetTicks, endOffsetTicks, type, geomAngleDeg,
+  //   edgeSoftness, zoomAmount, dissolveGrainPx, radialOriginX, radialOriginY,
+  //   pixelateMaxBlockPx, glitchIntensity, glitchBlockPx, blurRadiusPx,
+  //   displacementAmount, displacementScale, effectSeed, easing };
   // enabled=false is a hard cut. Returns the updated cue list.
   ipcMain.handle('xleth:timeline:setCueTransition',
     safeHandler((_, tick, transition) => callWorker('timeline_setCueTransition', [tick, transition])));

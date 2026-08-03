@@ -17,11 +17,15 @@
 // dependency so it can be unit tested on CPU (see test/test_timeline.cpp). This
 // is the ONLY sample-domain code in Slice 2: offsets live in ticks on the model
 // and are converted tick->sample via RenderClock::ppqToSample by the caller
-// before this function is reached. Preview and export share this one path, which
-// is what guarantees they match frame for frame.
+// before this function is reached. Optional two-half cubic Bezier shaping is
+// evaluated here too; preview and export share this one path, which guarantees
+// they match frame for frame.
 // ---------------------------------------------------------------------------
 
+#include <algorithm>
 #include <cstdint>
+
+#include "model/TimelineTypes.h"
 
 namespace xleth {
 
@@ -67,6 +71,50 @@ inline double progressForSample(int64_t s,
     const double t = 0.5 + 0.5 * static_cast<double>(s - pinSample)
                               / static_cast<double>(endSample - pinSample);
     return t < 0.0 ? 0.0 : (t > 1.0 ? 1.0 : t);
+}
+
+// Evaluate a CSS-style cubic Bezier easing at the supplied normalized time.
+// X is inverted with a fixed-count binary search, keeping preview and export
+// deterministic while accepting the full bounded CSS control-point domain.
+inline double evaluateSnapshotTransitionBezier(
+    double x, SnapshotTransitionEasingCurve curve) {
+    if (x <= 0.0) return 0.0;
+    if (x >= 1.0) return 1.0;
+    curve.normalize();
+    if (curve.isLinear()) return x;
+
+    const auto bezier = [](double u, double p1, double p2) {
+        const double inv = 1.0 - u;
+        return 3.0 * inv * inv * u * p1
+             + 3.0 * inv * u * u * p2
+             + u * u * u;
+    };
+
+    double lo = 0.0;
+    double hi = 1.0;
+    for (int i = 0; i < 32; ++i) {
+        const double mid = (lo + hi) * 0.5;
+        if (bezier(mid, curve.x1, curve.x2) < x) lo = mid;
+        else                                      hi = mid;
+    }
+    const double y = bezier((lo + hi) * 0.5, curve.y1, curve.y2);
+    return std::clamp(y, 0.0, 1.0);
+}
+
+// Shape the two halves independently while keeping the cue pin an exact 50%
+// blend point. Linear default curves are therefore byte-for-byte identity.
+inline double applySnapshotTransitionEasing(
+    double linearProgress,
+    const SnapshotTransitionEasingCurve& startToPin,
+    const SnapshotTransitionEasingCurve& pinToEnd) {
+    if (linearProgress <= 0.0) return 0.0;
+    if (linearProgress >= 1.0) return 1.0;
+    if (linearProgress == 0.5) return 0.5;
+    if (linearProgress < 0.5) {
+        return 0.5 * evaluateSnapshotTransitionBezier(linearProgress * 2.0, startToPin);
+    }
+    return 0.5 + 0.5 * evaluateSnapshotTransitionBezier(
+        (linearProgress - 0.5) * 2.0, pinToEnd);
 }
 
 } // namespace xleth

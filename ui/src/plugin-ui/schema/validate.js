@@ -18,6 +18,7 @@ const ALLOWED_TYPES = new Set([
   'panel', 'group', 'row', 'column', 'tabGroup',
   'knob', 'toggle', 'button', 'meter', 'visualizer', 'label', 'spacer',
   'compressorCurve', 'compressorSlider', 'compressorHSlider', 'compressorDryWet', 'compressorLookahead',
+  'overdoneBandStack', 'overdoneCrossovers',
   // Freeform-A additions:
   'freeformLayer',
   'decorText', 'decorLine', 'decorShape', 'decal',
@@ -535,6 +536,35 @@ function validateNodeProps(node, errors, manifest) {
         p.dryParam || 'dry',
         p.wetParam || 'wet',
         p.linkParam || 'mix_linked',
+      ]
+      for (const paramId of bindings) {
+        if (manifest && !manifest.params[paramId]) {
+          node._invalid = true
+          errors.push({ nodeId: node.id, code: 'UNKNOWN_PARAM', message: `Unknown param "${paramId}" for plugin "${manifest.pluginId}"` })
+        }
+      }
+      break
+    }
+
+    case 'overdoneBandStack': {
+      const bindings = [
+        p.lowParam || 'gain_low',
+        p.midParam || 'gain_mid',
+        p.highParam || 'gain_high',
+      ]
+      for (const paramId of bindings) {
+        if (manifest && !manifest.params[paramId]) {
+          node._invalid = true
+          errors.push({ nodeId: node.id, code: 'UNKNOWN_PARAM', message: `Unknown param "${paramId}" for plugin "${manifest.pluginId}"` })
+        }
+      }
+      break
+    }
+
+    case 'overdoneCrossovers': {
+      const bindings = [
+        p.lowParam || 'xover_low',
+        p.highParam || 'xover_high',
       ]
       for (const paramId of bindings) {
         if (manifest && !manifest.params[paramId]) {

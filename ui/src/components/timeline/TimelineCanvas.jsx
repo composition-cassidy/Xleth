@@ -12,45 +12,19 @@ import { createPencilTool } from './tools/pencilTool.js'
 import { createSplitTool } from './tools/splitTool.js'
 import { createDeleteTool } from './tools/deleteTool.js'
 import { didMiddleMousePanStart } from './middleMousePan.js'
+import './clipControls.css'
+import {
+  CLIP_CONTROL_DEFAULTS,
+  applyFadeDrag,
+  applyGainDrag,
+  clipControlCursor,
+  formatClipControlValue,
+  hitTestClipControl as hitTestClipControlGeometry,
+  normalizeClipControlSpec,
+  normalizeClipFades,
+} from './clipControlSpec.js'
 
 const PLAYHEAD_LINE_WIDTH = 1
-const CLIP_VOLUME_MIN = 0
-const CLIP_VOLUME_MAX = 2
-const CLIP_CONTROL_MIN_WIDTH = 34
-const CLIP_VOLUME_PILL_W = 34
-const CLIP_VOLUME_PILL_H = 16
-const CLIP_FADE_HIT_H = 24
-const CLIP_FADE_HANDLE_W = 24
-const CLIP_VOLUME_SNAP_DB = 0.8
-
-function clamp(value, min, max) {
-  const n = Number(value)
-  if (!Number.isFinite(n)) return min
-  return Math.min(max, Math.max(min, n))
-}
-
-function normalizedClipFades(clip) {
-  let fadeInPercent = clamp(clip?.fadeInPercent ?? 0, 0, 100)
-  let fadeOutPercent = clamp(clip?.fadeOutPercent ?? 0, 0, 100)
-  const total = fadeInPercent + fadeOutPercent
-  if (total > 100) {
-    const scale = 100 / total
-    fadeInPercent *= scale
-    fadeOutPercent *= scale
-  }
-  return { fadeInPercent, fadeOutPercent }
-}
-
-function velocityToDb(value) {
-  const velocity = Number(value)
-  if (!Number.isFinite(velocity) || velocity <= 0) return -Infinity
-  return 20 * Math.log10(velocity)
-}
-
-function snapVelocityToUnity(value) {
-  const velocity = clamp(value, CLIP_VOLUME_MIN, CLIP_VOLUME_MAX)
-  return Math.abs(velocityToDb(velocity)) <= CLIP_VOLUME_SNAP_DB ? 1 : velocity
-}
 
 /**
  * Three-layer canvas: background (grid), content (clips), overlay (drop preview + tool).
@@ -72,6 +46,8 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     onRequestClipContextMenu,
     onRequestPatternBlockContextMenu,
     onSetClipVelocity, onSetClipFade,
+    onBeginClipControlEdit, onPreviewClipControlEdit, onCommitClipControlEdit, onCancelClipControlEdit,
+    clipControlSpec = CLIP_CONTROL_DEFAULTS,
     onMiddleMousePan,
     setSelectedClipIds,
     // Focus pivot (track-of-row under pointer) — fires on mouse-down/right-click
@@ -110,6 +86,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   const selectedBlockIdsRef = useRef(selectedBlockIds)
   const currentPatternIdByTrackRef = useRef(currentPatternIdByTrack)
   const timelineDisplaySettingsRef = useRef(timelineDisplaySettings)
+  const clipControlSpecRef = useRef(normalizeClipControlSpec(clipControlSpec))
 
   // FXG.4-h-r1: hold the derived row layout in a ref so the canvas hot draw
   // path + tools read the current track/lane geometry without re-creating tools.
@@ -143,6 +120,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   selectedBlockIdsRef.current = selectedBlockIds
   currentPatternIdByTrackRef.current = currentPatternIdByTrack
   timelineDisplaySettingsRef.current = timelineDisplaySettings
+  clipControlSpecRef.current = normalizeClipControlSpec(clipControlSpec)
 
   // ── Tool instance ref ────────────────────────────────────────────────────
   const toolRef = useRef(null)
@@ -152,6 +130,8 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   // during drag/resize without touching the canvas hot path.
   const [isDraggingState, setIsDraggingState] = useState(false)
   const [isMiddlePanningState, setIsMiddlePanningState] = useState(false)
+  const [clipControlCursorState, setClipControlCursorState] = useState(null)
+  const [clipControlTooltip, setClipControlTooltip] = useState(null)
 
   // ── Inline pattern-block rename overlay ──────────────────────────────────
   const [renamingBlock, setRenamingBlock] = useState(null) // { patternId, x, y, w, h, initial }
@@ -171,6 +151,8 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   const [copiedTooltip, setCopiedTooltip] = useState(null) // { x, y }
   const copiedTooltipTimer = useRef(null)
   const clipControlDraftRef = useRef(null)
+  const hoveredClipControlRef = useRef(null)
+  const clipControlCancelRef = useRef(null)
   const clipControlHandlersRef = useRef({ hitTest: null, beginDrag: null })
 
   function showCopiedTooltip(x, y) {
@@ -244,7 +226,8 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       selectedRef.current, waveformCacheRef?.current, hiResCacheRef?.current, clipPeakCacheRef?.current, bpmRef?.current,
       mutedTrackIds, palette,
       timelineDisplaySettingsRef.current, trackColorById, trackLayoutRef.current,
-      clipControlDraftRef.current
+      clipControlDraftRef.current,
+      { spec: clipControlSpecRef.current, hoveredControl: hoveredClipControlRef.current }
     )
     drawPatternBlocks(
       ctx, w, h,
@@ -418,6 +401,14 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   useEffect(() => {
     redrawGrid('snap-granularity')
   }, [snapGranularity])
+
+  useEffect(() => {
+    redrawContent('clip-control-spec')
+  }, [clipControlSpec])
+
+  useEffect(() => () => {
+    clipControlCancelRef.current?.('unmount')
+  }, [])
 
   // ── Redraw when notation ghost clips change ───────────────────────────────
   useEffect(() => {
@@ -630,17 +621,64 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     window.addEventListener('keyup', onWindowKeyUp)
   }, [activeTool, buildPencilTemplateFromHitClip, getLocalXY, onMiddleMousePan, onSetPencilTemplate, onFocusTrack])
 
+  const updateHoveredClipControl = useCallback((hit) => {
+    const next = hit ? { clipId: hit.clip.id, kind: hit.kind } : null
+    const previous = hoveredClipControlRef.current
+    if (previous?.clipId === next?.clipId && previous?.kind === next?.kind) return
+    hoveredClipControlRef.current = next
+    setClipControlCursorState(clipControlCursor(next?.kind))
+    redrawContent('clip-control-hover')
+  }, [])
+
   const handleMouseMove = useCallback((e) => {
     // Only handle hover (non-dragging) moves here; dragging is captured on window
     if (isDraggingRef.current) return
     const pos = getLocalXY(e)
     if (!pos) return
+    const hit = activeTool !== 'pencil'
+      ? clipControlHandlersRef.current.hitTest?.(pos.localX, pos.localY)
+      : null
+    updateHoveredClipControl(hit)
     toolRef.current?.onMouseMove(pos.localX, pos.localY, e)
-  }, [getLocalXY])
+  }, [activeTool, getLocalXY, updateHoveredClipControl])
+
+  const handleMouseLeave = useCallback(() => {
+    if (!isDraggingRef.current) updateHoveredClipControl(null)
+  }, [updateHoveredClipControl])
 
   const handleDoubleClick = useCallback((e) => {
     const pos = getLocalXY(e)
     if (!pos) return
+    if (activeTool !== 'pencil') {
+      const hit = clipControlHandlersRef.current.hitTest?.(pos.localX, pos.localY)
+      if (hit) {
+        e.preventDefault()
+        e.stopPropagation()
+        const patch = hit.kind === 'volume'
+          ? { velocity: 1 }
+          : (hit.kind === 'fadeIn' ? { fadeInPercent: 0 } : { fadeOutPercent: 0 })
+        const commitReset = async () => {
+          let session = null
+          try {
+            session = await onBeginClipControlEdit?.(hit.clip.id)
+            if (session?.sessionId && onCommitClipControlEdit) {
+              await onCommitClipControlEdit(session.sessionId, patch)
+            } else if (hit.kind === 'volume') {
+              await onSetClipVelocity?.(hit.clip.id, 1)
+            } else {
+              await onSetClipFade?.(hit.clip.id, patch)
+            }
+          } catch (err) {
+            console.warn('[TimelineCanvas] clip control reset failed', err)
+            if (session?.sessionId && onCancelClipControlEdit) {
+              try { await onCancelClipControlEdit(session.sessionId) } catch { /* already stale */ }
+            }
+          }
+        }
+        void commitReset()
+        return
+      }
+    }
     const beat = pixelToBeat(pos.localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
     const trackIndex = trackIndexAtLocalY(pos.localY)
     const tks = tracksRef.current
@@ -680,7 +718,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
         return
       }
     }
-  }, [getLocalXY, onOpenPianoRoll])
+  }, [activeTool, getLocalXY, onBeginClipControlEdit, onCancelClipControlEdit, onCommitClipControlEdit, onOpenPianoRoll, onSetClipFade, onSetClipVelocity])
 
   const handleContextMenu = useCallback((e) => {
     const pos = getLocalXY(e)
@@ -733,7 +771,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   }, [clips, tracks, scrollOffset, pixelsPerBeat, onOpenClipFxQuickMenu, trackLayout])
 
   const hitTestClipControl = useCallback((localX, localY) => {
-    if (!onSetClipVelocity && !onSetClipFade) return null
+    if (!onSetClipVelocity && !onSetClipFade && !onBeginClipControlEdit) return null
     const clipList = clipsRef.current || []
     const trackList = tracksRef.current || []
     const ppb = pixelsPerBeatRef.current
@@ -746,51 +784,20 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       const track = trackList[trackIdx]
       if (track?.type === 'Pattern') continue
       const rect = getClipRect(clip, trackIdToIndex, so, ppb, trackLayoutRef.current)
-      if (!rect || rect.w < CLIP_CONTROL_MIN_WIDTH) continue
-      if (localX < rect.x - 6 || localX > rect.x + rect.w + 6) continue
-      if (localY < rect.y || localY > rect.y + rect.h) continue
-
-      const fades = normalizedClipFades(clip)
-      const volumeRange = Math.max(8, rect.h - 30)
-      const volumeY = rect.y + 18 + (1 - clamp(clip.velocity ?? 1, CLIP_VOLUME_MIN, CLIP_VOLUME_MAX) / CLIP_VOLUME_MAX) * volumeRange
-      const volumeX = rect.x + rect.w / 2
-      const fadeInX = rect.x + rect.w * fades.fadeInPercent / 100
-      const fadeOutX = rect.x + rect.w - rect.w * fades.fadeOutPercent / 100
-      const bottomHit = localY >= rect.y + rect.h - CLIP_FADE_HIT_H
-
-      if (onSetClipVelocity &&
-          Math.abs(localX - volumeX) <= CLIP_VOLUME_PILL_W / 2 + 6 &&
-          Math.abs(localY - volumeY) <= CLIP_VOLUME_PILL_H / 2 + 7) {
-        return { clip, rect, kind: 'volume', fades }
-      }
-      if (onSetClipFade && bottomHit &&
-          localX >= Math.max(rect.x - 4, fadeInX - CLIP_FADE_HANDLE_W - 6) &&
-          localX <= Math.min(rect.x + rect.w + 4, fadeInX + CLIP_FADE_HANDLE_W + 6)) {
-        return { clip, rect, kind: 'fadeIn', fades }
-      }
-      if (onSetClipFade && bottomHit &&
-          localX <= Math.min(rect.x + rect.w + 4, fadeOutX + CLIP_FADE_HANDLE_W + 6) &&
-          localX >= Math.max(rect.x - 4, fadeOutX - CLIP_FADE_HANDLE_W - 6)) {
-        return { clip, rect, kind: 'fadeOut', fades }
-      }
+      if (!rect) continue
+      const result = hitTestClipControlGeometry({
+        localX,
+        localY,
+        clip,
+        rect,
+        spec: clipControlSpecRef.current,
+        allowGain: Boolean(onSetClipVelocity || onBeginClipControlEdit),
+        allowFade: Boolean(onSetClipFade || onBeginClipControlEdit),
+      })
+      if (result) return { ...result, clip, rect, fades: normalizeClipFades(clip) }
     }
     return null
-  }, [onSetClipFade, onSetClipVelocity])
-
-  const readClipControlValue = useCallback((hit, localX, localY) => {
-    if (!hit) return 0
-    if (hit.kind === 'volume') {
-      const range = Math.max(8, hit.rect.h - 30)
-      const norm = clamp((localY - hit.rect.y - 18) / range, 0, 1)
-      return snapVelocityToUnity((1 - norm) * CLIP_VOLUME_MAX)
-    }
-    if (hit.kind === 'fadeIn') {
-      const maxFade = Math.max(0, 100 - hit.fades.fadeOutPercent)
-      return clamp(((localX - hit.rect.x) / hit.rect.w) * 100, 0, maxFade)
-    }
-    const maxFade = Math.max(0, 100 - hit.fades.fadeInPercent)
-    return clamp(((hit.rect.x + hit.rect.w - localX) / hit.rect.w) * 100, 0, maxFade)
-  }, [])
+  }, [onBeginClipControlEdit, onSetClipFade, onSetClipVelocity])
 
   const beginClipControlDrag = useCallback((hit, startEvent) => {
     if (!hit) return false
@@ -800,45 +807,164 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     onFocusTrack?.(hit.clip.trackId)
     isDraggingRef.current = true
     setIsDraggingState(true)
+    setClipControlCursorState(clipControlCursor(hit.kind))
+    hoveredClipControlRef.current = { clipId: hit.clip.id, kind: hit.kind }
 
-    const setDraftFromEvent = (event) => {
-      const p = getLocalXY(event)
-      if (!p) return clipControlDraftRef.current?.value ?? 0
-      const value = readClipControlValue(hit, p.localX, p.localY)
+    const startValue = hit.kind === 'volume'
+      ? Number(hit.clip.velocity ?? 1)
+      : Number(hit.kind === 'fadeIn' ? hit.fades.fadeInPercent : hit.fades.fadeOutPercent)
+    const oppositeFade = hit.kind === 'fadeIn' ? hit.fades.fadeOutPercent : hit.fades.fadeInPercent
+    const startClientX = startEvent.clientX
+    const startClientY = startEvent.clientY
+    let previewRaf = null
+    let pendingPreviewPatch = null
+    let ended = false
+
+    const sessionPromise = onBeginClipControlEdit
+      ? Promise.resolve(onBeginClipControlEdit(hit.clip.id)).catch((err) => {
+          console.warn('[TimelineCanvas] begin clip control edit failed', err)
+          return null
+        })
+      : Promise.resolve(null)
+
+    const patchForValue = (value) => {
+      if (hit.kind === 'volume') return { velocity: Number(value.toFixed(6)) }
+      if (hit.kind === 'fadeIn') return { fadeInPercent: Number(value.toFixed(4)) }
+      return { fadeOutPercent: Number(value.toFixed(4)) }
+    }
+
+    const flushPreview = () => {
+      previewRaf = null
+      const patch = pendingPreviewPatch
+      pendingPreviewPatch = null
+      if (!patch || ended || !onPreviewClipControlEdit) return
+      sessionPromise.then((session) => {
+        if (ended || !session?.sessionId) return
+        return onPreviewClipControlEdit(session.sessionId, patch)
+      }).catch((err) => console.warn('[TimelineCanvas] clip control preview failed', err))
+    }
+
+    const schedulePreview = (value) => {
+      if (!onPreviewClipControlEdit) return
+      pendingPreviewPatch = patchForValue(value)
+      if (previewRaf == null) previewRaf = requestAnimationFrame(flushPreview)
+    }
+
+    const setDraftFromEvent = (event, preview = true) => {
+      const dx = event.clientX - startClientX
+      const dy = event.clientY - startClientY
+      const value = hit.kind === 'volume'
+        ? applyGainDrag(startValue, dy, event, clipControlSpecRef.current)
+        : applyFadeDrag(hit.kind, startValue, oppositeFade, dx, hit.rect.w, event, clipControlSpecRef.current)
       clipControlDraftRef.current = { clipId: hit.clip.id, kind: hit.kind, value }
+      const p = getLocalXY(event)
+      if (p) {
+        setClipControlTooltip({
+          x: p.localX,
+          y: p.localY,
+          text: formatClipControlValue(hit.kind, value, clipControlSpecRef.current),
+        })
+      }
       redrawContent('clip-control-drag')
+      if (preview) schedulePreview(value)
       return value
     }
 
-    setDraftFromEvent(startEvent)
+    clipControlDraftRef.current = { clipId: hit.clip.id, kind: hit.kind, value: startValue }
+    setDraftFromEvent(startEvent, false)
 
     const onWindowMove = (event) => {
       setDraftFromEvent(event)
     }
-    const onWindowUp = async (event) => {
+
+    const removeListeners = () => {
       window.removeEventListener('mousemove', onWindowMove)
       window.removeEventListener('mouseup', onWindowUp)
-      const value = setDraftFromEvent(event)
+      window.removeEventListener('keydown', onWindowKeyDown)
+      window.removeEventListener('blur', onWindowBlur)
+    }
+
+    const clearInteraction = () => {
       clipControlDraftRef.current = null
+      clipControlCancelRef.current = null
       isDraggingRef.current = false
       setIsDraggingState(false)
+      setClipControlTooltip(null)
+      const hovered = hoveredClipControlRef.current
+      setClipControlCursorState(clipControlCursor(hovered?.kind))
       redrawContent('clip-control-commit')
+    }
+
+    const cancelDrag = (reason = 'cancel') => {
+      if (ended) return
+      ended = true
+      removeListeners()
+      if (previewRaf != null) cancelAnimationFrame(previewRaf)
+      previewRaf = null
+      pendingPreviewPatch = null
+      sessionPromise.then((session) => {
+        if (session?.sessionId) return onCancelClipControlEdit?.(session.sessionId)
+        return null
+      }).catch((err) => console.warn(`[TimelineCanvas] clip control ${reason} restore failed`, err))
+      clearInteraction()
+    }
+
+    const onWindowUp = async (event) => {
+      if (ended) return
+      const value = setDraftFromEvent(event, false)
+      ended = true
+      removeListeners()
+      if (previewRaf != null) cancelAnimationFrame(previewRaf)
+      previewRaf = null
+      pendingPreviewPatch = null
       try {
-        if (hit.kind === 'volume') {
-          await onSetClipVelocity?.(hit.clip.id, Number(value.toFixed(3)))
+        const session = await sessionPromise
+        if (session?.sessionId && onCommitClipControlEdit) {
+          await onCommitClipControlEdit(session.sessionId, patchForValue(value))
+        } else if (hit.kind === 'volume') {
+          await onSetClipVelocity?.(hit.clip.id, Number(value.toFixed(6)))
         } else if (hit.kind === 'fadeIn') {
-          await onSetClipFade?.(hit.clip.id, { fadeInPercent: Number(value.toFixed(2)) })
+          await onSetClipFade?.(hit.clip.id, { fadeInPercent: Number(value.toFixed(4)) })
         } else {
-          await onSetClipFade?.(hit.clip.id, { fadeOutPercent: Number(value.toFixed(2)) })
+          await onSetClipFade?.(hit.clip.id, { fadeOutPercent: Number(value.toFixed(4)) })
         }
       } catch (err) {
         console.warn('[TimelineCanvas] clip control commit failed', err)
+        const session = await sessionPromise
+        if (session?.sessionId && onCancelClipControlEdit) {
+          try { await onCancelClipControlEdit(session.sessionId) } catch { /* already stale */ }
+        }
+      } finally {
+        clearInteraction()
       }
     }
+
+    const onWindowKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        event.preventDefault()
+        event.stopPropagation()
+        cancelDrag('escape')
+      }
+    }
+    const onWindowBlur = () => cancelDrag('blur')
+
+    clipControlCancelRef.current = cancelDrag
     window.addEventListener('mousemove', onWindowMove)
     window.addEventListener('mouseup', onWindowUp)
+    window.addEventListener('keydown', onWindowKeyDown)
+    window.addEventListener('blur', onWindowBlur)
     return true
-  }, [getLocalXY, onFocusTrack, onSetClipFade, onSetClipVelocity, readClipControlValue, setSelectedClipIds])
+  }, [
+    getLocalXY,
+    onBeginClipControlEdit,
+    onCancelClipControlEdit,
+    onCommitClipControlEdit,
+    onFocusTrack,
+    onPreviewClipControlEdit,
+    onSetClipFade,
+    onSetClipVelocity,
+    setSelectedClipIds,
+  ])
 
   clipControlHandlersRef.current.hitTest = hitTestClipControl
   clipControlHandlersRef.current.beginDrag = beginClipControlDrag
@@ -852,9 +978,10 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       ref={containerRef}
       className="timeline-canvas-container"
       data-tool={activeTool}
-      style={{ minHeight: contentH, cursor: isMiddlePanningState ? 'grabbing' : undefined }}
+      style={{ minHeight: contentH, cursor: isMiddlePanningState ? 'grabbing' : (clipControlCursorState || undefined) }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
+      onMouseLeave={handleMouseLeave}
       onDoubleClick={handleDoubleClick}
       onContextMenu={handleContextMenu}
       onDragOver={handleDragOver}
@@ -947,6 +1074,20 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
           }}
         >
           Copied!
+        </div>
+      )}
+      {clipControlTooltip && (
+        <div
+          className="timeline-clip-control-tooltip"
+          style={{
+            position: 'absolute',
+            left: clipControlTooltip.x + clipControlSpecRef.current.tooltip.offsetX,
+            top: clipControlTooltip.y + clipControlSpecRef.current.tooltip.offsetY,
+            pointerEvents: 'none',
+            zIndex: 24,
+          }}
+        >
+          {clipControlTooltip.text}
         </div>
       )}
       {renamingBlock && (

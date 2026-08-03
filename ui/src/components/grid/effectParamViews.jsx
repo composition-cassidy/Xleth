@@ -12,7 +12,7 @@
 //     config doesn't own (slide duration is owned by durationMode +
 //     fixedDurationMs in SlideNoteEffectSection).
 import { Fragment } from 'react'
-import { snapToZero, snapToOne } from '../../utils/sliderHelpers.js'
+import { snapToZero, snapToOne, rangeFillStyle } from '../../utils/sliderHelpers.js'
 import XlethSelect from '../common/XlethSelect.jsx'
 
 const EASING_OPTIONS = [
@@ -46,6 +46,7 @@ export function BounceParamsView({ value, onChange, hideDuration = false, hideEn
       <span />
       <label>Dist</label>
       <input type="range" min={0} max={1} step={0.01} defaultValue={distance}
+        style={rangeFillStyle(distance, 0, 1)}
         onPointerUp={(e) => onChange({ distance: parseFloat(e.target.value) })} />
       <span>{distance.toFixed(2)}</span>
       {!hideDuration && (
@@ -82,6 +83,7 @@ export function ZprParamsView({ value, onChange, hideDuration = false, hideEnabl
     <div className="fx-params-grid">
       <label>Target Zoom</label>
       <input type="range" min={0.25} max={4} step={0.01} defaultValue={targetZoom}
+        style={rangeFillStyle(targetZoom, 0.25, 4)}
         onPointerUp={(e) => onChange({ targetZoom: snapToOne(parseFloat(e.target.value)) })} />
       <span>{targetZoom.toFixed(2)}×</span>
       {!hideDuration && (
@@ -94,14 +96,17 @@ export function ZprParamsView({ value, onChange, hideDuration = false, hideEnabl
       )}
       <label>Start Zoom</label>
       <input type="range" min={0.25} max={4} step={0.01} defaultValue={startZoom}
+        style={rangeFillStyle(startZoom, 0.25, 4)}
         onPointerUp={(e) => onChange({ startZoom: snapToOne(parseFloat(e.target.value)) })} />
       <span>{startZoom.toFixed(2)}×</span>
       <label>Pan X</label>
       <input type="range" min={-1} max={1} step={0.01} defaultValue={targetPanX}
+        style={rangeFillStyle(targetPanX, -1, 1)}
         onPointerUp={(e) => onChange({ targetPanX: snapToZero(parseFloat(e.target.value)) })} />
       <span>{targetPanX.toFixed(2)}</span>
       <label>Pan Y</label>
       <input type="range" min={-1} max={1} step={0.01} defaultValue={targetPanY}
+        style={rangeFillStyle(targetPanY, -1, 1)}
         onPointerUp={(e) => onChange({ targetPanY: snapToZero(parseFloat(e.target.value)) })} />
       <span>{targetPanY.toFixed(2)}</span>
       <label>Rotation°</label>
@@ -120,6 +125,7 @@ export function ZprParamsView({ value, onChange, hideDuration = false, hideEnabl
       {zoomEasing === 3 && (<>
         <label>Overshoot</label>
         <input type="range" min={0.5} max={3} step={0.01} defaultValue={overshoot}
+          style={rangeFillStyle(overshoot, 0.5, 3)}
           onPointerUp={(e) => onChange({ overshoot: parseFloat(e.target.value) })} />
         <span>{overshoot.toFixed(2)}</span>
       </>)}
@@ -151,6 +157,7 @@ export function TvSimulatorParamsView({ value, onChange }) {
           <Fragment key={key}>
             <label>{label}</label>
             <input type="range" min={min} max={max} step={step} defaultValue={val}
+              style={rangeFillStyle(val, min, max)}
               onPointerUp={(e) => onChange({ [key]: parseFloat(e.target.value) })} />
             <span>{fmt(val)}</span>
           </Fragment>

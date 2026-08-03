@@ -1,13 +1,15 @@
 import {
   useCallback, useEffect, useMemo, useRef, useState,
 } from 'react'
-import { Lock, Plus } from 'lucide-react'
+import { ChevronDown, ChevronRight, Folder, Lock, Plus } from 'lucide-react'
 import XlethPanelHeader from '../common/XlethPanelHeader.jsx'
 import TimelineRuler from './TimelineRuler.jsx'
 import TimelineScrollbar from './TimelineScrollbar.jsx'
 import VideoMirrorCanvas, { CUE_LANE_HEIGHT } from './VideoMirrorCanvas.jsx'
 import { resolveTimelinePalette } from './timelineDrawing.js'
 import { buildResolvedTrackColorMap } from './trackColorResolver.js'
+import { buildTrackLayout } from './timelineRowLayout.js'
+import { normalizeTrackLayout, visibleTracksForLayout } from './trackFolderLayout.js'
 import useTimelineZoom from '../../hooks/useTimelineZoom.js'
 import useTimelineScroll from '../../hooks/useTimelineScroll.js'
 import useSnapStore from '../../stores/snapStore.js'
@@ -50,6 +52,7 @@ export default function VideoMirrorTimeline() {
 
   // ── Timeline data (read-only) ──────────────────────────────────────────────
   const [tracks, setTracks] = useState([])
+  const [folderLayout, setFolderLayout] = useState(null)
   const [clips, setClips] = useState([])
   const [regions, setRegions] = useState({})
   const [patternBlocks, setPatternBlocks] = useState([])
@@ -73,8 +76,12 @@ export default function VideoMirrorTimeline() {
   // ── Fetchers (same IPC reads TimelineView uses) ────────────────────────────
   const fetchTracks = useCallback(async () => {
     try {
-      const t = await window.xleth?.timeline?.getTracks()
+      const [t, layout] = await Promise.all([
+        window.xleth?.timeline?.getTracks(),
+        window.xleth?.timeline?.getTrackLayout?.(),
+      ])
       if (Array.isArray(t)) setTracks(t)
+      if (layout) setFolderLayout(layout)
     } catch { /* engine not ready */ }
   }, [])
 
@@ -151,20 +158,27 @@ export default function VideoMirrorTimeline() {
     const onGrid = () => { fetchCues(); fetchSnapshots() }
 
     timelineEvents.addEventListener('timeline-tracks-changed', onTracks)
+    timelineEvents.addEventListener('timeline-track-layout-changed', onTracks)
     timelineEvents.addEventListener('timeline-clips-changed', onClips)
     timelineEvents.addEventListener('timeline-regions-changed', onRegions)
     timelineEvents.addEventListener('timeline-pattern-blocks-changed', onPatternBlocks)
     timelineEvents.addEventListener('timeline-patterns-changed', onPatterns)
     timelineEvents.addEventListener('timeline-pattern-changed', onPatterns)
     timelineEvents.addEventListener('timeline-grid-changed', onGrid)
+    const offProjectLoaded = window.xleth?.onProjectLoaded?.(() => {
+      fetchTracks(); fetchClips(); fetchRegions(); fetchPatternBlocks(); fetchPatterns()
+      fetchCues(); fetchSnapshots()
+    })
     return () => {
       timelineEvents.removeEventListener('timeline-tracks-changed', onTracks)
+      timelineEvents.removeEventListener('timeline-track-layout-changed', onTracks)
       timelineEvents.removeEventListener('timeline-clips-changed', onClips)
       timelineEvents.removeEventListener('timeline-regions-changed', onRegions)
       timelineEvents.removeEventListener('timeline-pattern-blocks-changed', onPatternBlocks)
       timelineEvents.removeEventListener('timeline-patterns-changed', onPatterns)
       timelineEvents.removeEventListener('timeline-pattern-changed', onPatterns)
       timelineEvents.removeEventListener('timeline-grid-changed', onGrid)
+      offProjectLoaded?.()
     }
   }, [fetchTracks, fetchClips, fetchRegions, fetchPatternBlocks, fetchPatterns, fetchCues, fetchSnapshots])
 
@@ -224,7 +238,7 @@ export default function VideoMirrorTimeline() {
 
   // Replace the boundary animation on the cue at `tick`. The caller (the
   // Start/End handles + popover in VideoMirrorCanvas) always passes the full
-  // six-field transition object because setCueTransition replaces the whole
+  // complete transition object because setCueTransition replaces the whole
   // transition; missing fields would revert to engine defaults. The engine
   // renders the result through the shm preview seam — the UI never animates it.
   const handleSetCueTransition = useCallback((tick, transition) => (
@@ -288,6 +302,19 @@ export default function VideoMirrorTimeline() {
     }
   }, [zoomAtCursor, applyScroll, scrollBy, pixelsPerBeatRef, scrollOffsetRef])
 
+  const normalizedFolderLayout = useMemo(
+    () => normalizeTrackLayout(folderLayout, tracks),
+    [folderLayout, tracks],
+  )
+  const visibleTracks = useMemo(
+    () => visibleTracksForLayout(normalizedFolderLayout, tracks),
+    [normalizedFolderLayout, tracks],
+  )
+  const mirrorTrackLayout = useMemo(
+    () => buildTrackLayout({ tracks: visibleTracks, folderLayout: normalizedFolderLayout }),
+    [visibleTracks, normalizedFolderLayout],
+  )
+
   // ── Redraw on zoom / scroll / data changes ─────────────────────────────────
   useEffect(() => {
     canvasRef.current?.redraw()
@@ -297,7 +324,7 @@ export default function VideoMirrorTimeline() {
 
   useEffect(() => {
     canvasRef.current?.redraw()
-  }, [tracks, clips, regions, patternBlocks, patterns, themeRev])
+  }, [visibleTracks, mirrorTrackLayout, clips, regions, patternBlocks, patterns, themeRev])
 
   // ── Song length + max horizontal scroll ────────────────────────────────────
   const totalBeats = useMemo(() => {
@@ -371,20 +398,36 @@ export default function VideoMirrorTimeline() {
               <Plus size={12} aria-hidden="true" />
             </button>
           </div>
-          {tracks.length === 0 ? (
+          {mirrorTrackLayout.rows.length === 0 ? (
             <div className="vmt-empty-headers" style={{ height: TRACK_HEIGHT }}>
               No tracks
             </div>
           ) : (
-            tracks.map((t) => (
-              <div key={t.id} className="vmt-track-header" style={{ height: TRACK_HEIGHT }}>
-                <span
-                  className="vmt-track-swatch"
-                  style={{ background: trackColorById[t.id] || 'var(--theme-text-muted)' }}
-                />
-                <span className="vmt-track-name" title={t.name}>{t.name}</span>
-              </div>
-            ))
+            mirrorTrackLayout.rows.map((row) => {
+              if (row.rowType === 'folder') {
+                return (
+                  <div key={row.id} className="vmt-folder-header" style={{ height: row.height }}>
+                    {row.collapsed
+                      ? <ChevronRight size={12} aria-hidden="true" />
+                      : <ChevronDown size={12} aria-hidden="true" />}
+                    <Folder size={13} aria-hidden="true" />
+                    <span className="vmt-track-name" title={row.label}>{row.label}</span>
+                    <span className="vmt-folder-count">{row.memberCount}</span>
+                  </div>
+                )
+              }
+              const track = visibleTracks[row.trackIndex]
+              if (!track) return null
+              return (
+                <div key={row.id} className="vmt-track-header" style={{ height: row.height }}>
+                  <span
+                    className="vmt-track-swatch"
+                    style={{ background: trackColorById[track.id] || 'var(--theme-text-muted)' }}
+                  />
+                  <span className="vmt-track-name" title={track.name}>{track.name}</span>
+                </div>
+              )
+            })
           )}
         </div>
 
@@ -405,7 +448,8 @@ export default function VideoMirrorTimeline() {
               pixelsPerBeatRef={pixelsPerBeatRef}
               scrollOffsetRef={scrollOffsetRef}
               playheadBeatRef={playheadBeatRef}
-              tracks={tracks}
+              tracks={visibleTracks}
+              trackLayout={mirrorTrackLayout}
               clips={clips}
               regions={regions}
               patternBlocks={patternBlocks}

@@ -21,6 +21,7 @@ export const VIZ_TYPE = Object.freeze({
   TRANSIENT:  'transient',
   MULTIBAND:  'multiband',
   RESONANCE:  'resonance',
+  UNIFLANGE:  'uniflange',
 })
 
 // ── Bucket layouts ──────────────────────────────────────────────────────────
@@ -190,6 +191,33 @@ export const RESONANCE_BUCKET = Object.freeze({
   }),
 })
 
+// UniFlangeBucket — 32 bytes total. Mirrors UniFlangeBucket in
+// engine/src/audio/viz/DynamicsVizFrame.h. Unlike the other bucket types,
+// these four fields are SIGNED LINEAR amplitude (not dB, not abs peak) —
+// min/max sample excursion over the bucket — so the UI can draw a real
+// above/below-center waveform shape for the dry (pre-effect) and wet
+// (post cross-mix, pre dry/wet blend) taps.
+//
+//   uint64  sampleClock     @  0
+//   uint32  bucketSamples   @  8
+//   uint32  flags           @ 12
+//   float32 dryMin          @ 16
+//   float32 dryMax          @ 20
+//   float32 wetMin          @ 24
+//   float32 wetMax          @ 28
+export const UNIFLANGE_BUCKET = Object.freeze({
+  sizeBytes: 32,
+  fields: Object.freeze({
+    sampleClock:   { offset:  0, type: 'u64'   },
+    bucketSamples: { offset:  8, type: 'u32'   },
+    flags:         { offset: 12, type: 'u32'   },
+    dryMin:        { offset: 16, type: 'float' },
+    dryMax:        { offset: 20, type: 'float' },
+    wetMin:        { offset: 24, type: 'float' },
+    wetMax:        { offset: 28, type: 'float' },
+  }),
+})
+
 // ── Defensive parser ────────────────────────────────────────────────────────
 //
 // parseDrainResponse(resp, expectedType) verifies the payload metadata and
@@ -230,6 +258,9 @@ export function parseDrainResponse(resp, expectedType = VIZ_TYPE.COMPRESSOR) {
   } else if (expectedType === VIZ_TYPE.RESONANCE) {
     expectedSize = RESONANCE_BUCKET.sizeBytes
     fields = RESONANCE_BUCKET.fields
+  } else if (expectedType === VIZ_TYPE.UNIFLANGE) {
+    expectedSize = UNIFLANGE_BUCKET.sizeBytes
+    fields = UNIFLANGE_BUCKET.fields
   }
   if (expectedSize === 0 || fields === null) {
     return { ok: false, reason: `unsupported-type:${expectedType}` }

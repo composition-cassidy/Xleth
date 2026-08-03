@@ -11,6 +11,7 @@ import { useUserKnobPresetsStore } from '../../appearance/useUserKnobPresetsStor
 
 const KNOB_ENUM_KEYS = [
   'sizePreset',
+  'glyph',
   'cap',
   'ring',
   'pointer',
@@ -553,6 +554,7 @@ function AppearanceTokenRow({ nodeType, appearanceKey, value, error, disabled, o
 function enumKeyLabel(key) {
   switch (key) {
     case 'sizePreset': return 'Size'
+    case 'glyph': return 'Glyph'
     case 'cap': return 'Cap'
     case 'ring': return 'Ring'
     case 'pointer': return 'Pointer'

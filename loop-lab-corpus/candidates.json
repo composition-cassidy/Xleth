@@ -1,0 +1,4151 @@
+{
+  "schema": "xleth.loop-optimizer.candidates/1",
+  "dataset": "..\\..\\loop-lab-corpus\\dataset.json",
+  "selection": "auto",
+  "rank_by": "seam_step",
+  "top_k": 3,
+  "metric_names": [
+    "seam_step",
+    "seam_ncc",
+    "zero_lag_corr",
+    "cents_err_per_loop",
+    "rms_ripple_db",
+    "spectral_dist"
+  ],
+  "samples": [
+    {
+      "sample_id": "hard_tuned_vocal_0001",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0001.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 72,
+      "file_sample_rate": 44100,
+      "file_num_samples": 36320,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 91.71045480068119,
+      "window": {
+        "start": 9216,
+        "end": 16896
+      },
+      "arms": [
+        {
+          "arm_id": "optimizer_1",
+          "provenance": "optimizer",
+          "rank": 1,
+          "loop": {
+            "start": 11490,
+            "end": 14692,
+            "xfade": 927
+          },
+          "loop_engine": {
+            "start": 12506,
+            "end": 15991,
+            "xfade": 1009
+          },
+          "metrics": {
+            "seam_step": 0.003123125960579663,
+            "seam_ncc": 0.9910257081348675,
+            "zero_lag_corr": 0.9241545395207457,
+            "cents_err_per_loop": -0.1274463111962273,
+            "rms_ripple_db": 3.167439405832231,
+            "spectral_dist": 7.374018945434545
+          },
+          "engine": {
+            "eff_xfade": 1009,
+            "wrap_advance": 2476,
+            "period_multiple": 27
+          }
+        },
+        {
+          "arm_id": "optimizer_2",
+          "provenance": "optimizer",
+          "rank": 2,
+          "loop": {
+            "start": 11908,
+            "end": 14352,
+            "xfade": 1095
+          },
+          "loop_engine": {
+            "start": 12961,
+            "end": 15621,
+            "xfade": 1192
+          },
+          "metrics": {
+            "seam_step": 0.003384093829724994,
+            "seam_ncc": 0.9827409442054682,
+            "zero_lag_corr": 0.9506191236435045,
+            "cents_err_per_loop": 0.7463406397038891,
+            "rms_ripple_db": -3.055280666746433,
+            "spectral_dist": 5.336327316795308
+          },
+          "engine": {
+            "eff_xfade": 1192,
+            "wrap_advance": 1468,
+            "period_multiple": 16
+          }
+        },
+        {
+          "arm_id": "optimizer_3",
+          "provenance": "optimizer",
+          "rank": 3,
+          "loop": {
+            "start": 11405,
+            "end": 13596,
+            "xfade": 1012
+          },
+          "loop_engine": {
+            "start": 12414,
+            "end": 14798,
+            "xfade": 1101
+          },
+          "metrics": {
+            "seam_step": 0.003846879289698658,
+            "seam_ncc": 0.991112880522191,
+            "zero_lag_corr": 0.9448016254604887,
+            "cents_err_per_loop": -1.2765231336573437,
+            "rms_ripple_db": -2.773883261591986,
+            "spectral_dist": 5.509022746140987
+          },
+          "engine": {
+            "eff_xfade": 1101,
+            "wrap_advance": 1283,
+            "period_multiple": 14
+          }
+        },
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 11920,
+            "end": 21574,
+            "xfade": 1884
+          },
+          "loop_engine": {
+            "start": 12974,
+            "end": 23482,
+            "xfade": 2051
+          },
+          "metrics": {
+            "seam_step": 0.025749114534760646,
+            "seam_ncc": 0.9811669997266443,
+            "zero_lag_corr": -0.19253894066824312,
+            "cents_err_per_loop": 4.024805909326496,
+            "rms_ripple_db": -6.3720182283379865,
+            "spectral_dist": 9.811472570237031
+          },
+          "engine": {
+            "eff_xfade": 2051,
+            "wrap_advance": 8457,
+            "period_multiple": 92
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 13039,
+            "end": 20131,
+            "xfade": 886
+          },
+          "loop_engine": {
+            "start": 14192,
+            "end": 21911,
+            "xfade": 964
+          },
+          "metrics": {
+            "seam_step": 0.393993640633925,
+            "seam_ncc": 0.9836286348504598,
+            "zero_lag_corr": -0.1925606496021642,
+            "cents_err_per_loop": -8.073136471234823,
+            "rms_ripple_db": -7.49984657446265,
+            "spectral_dist": 8.545827800901792
+          },
+          "engine": {
+            "eff_xfade": 964,
+            "wrap_advance": 6755,
+            "period_multiple": 74
+          }
+        }
+      ],
+      "notes": [
+        "gold [12974,23482) lies outside the detected window [9216,16896) \u2014 the tool cannot reach gold in this mode"
+      ]
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0002",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0002.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 62,
+      "file_sample_rate": 44100,
+      "file_num_samples": 52736,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 163.30055638785643,
+      "window": {
+        "start": 14336,
+        "end": 38400
+      },
+      "arms": [
+        {
+          "arm_id": "optimizer_1",
+          "provenance": "optimizer",
+          "rank": 1,
+          "loop": {
+            "start": 22056,
+            "end": 28207,
+            "xfade": 600
+          },
+          "loop_engine": {
+            "start": 24006,
+            "end": 30701,
+            "xfade": 653
+          },
+          "metrics": {
+            "seam_step": 0.0014520168541036851,
+            "seam_ncc": 0.9654292579207818,
+            "zero_lag_corr": 0.9419684377207352,
+            "cents_err_per_loop": -0.03455165722280242,
+            "rms_ripple_db": 2.497456184903531,
+            "spectral_dist": 6.804047504718707
+          },
+          "engine": {
+            "eff_xfade": 653,
+            "wrap_advance": 6042,
+            "period_multiple": 37
+          }
+        },
+        {
+          "arm_id": "optimizer_2",
+          "provenance": "optimizer",
+          "rank": 2,
+          "loop": {
+            "start": 22056,
+            "end": 28207,
+            "xfade": 1951
+          },
+          "loop_engine": {
+            "start": 24006,
+            "end": 30701,
+            "xfade": 2123
+          },
+          "metrics": {
+            "seam_step": 0.0027075746155189482,
+            "seam_ncc": 0.9584203592553381,
+            "zero_lag_corr": 0.783230290358264,
+            "cents_err_per_loop": -0.15735598776339751,
+            "rms_ripple_db": 1.8953200010522722,
+            "spectral_dist": 7.836262085003599
+          },
+          "engine": {
+            "eff_xfade": 2123,
+            "wrap_advance": 4572,
+            "period_multiple": 28
+          }
+        },
+        {
+          "arm_id": "optimizer_3",
+          "provenance": "optimizer",
+          "rank": 3,
+          "loop": {
+            "start": 22056,
+            "end": 28207,
+            "xfade": 2251
+          },
+          "loop_engine": {
+            "start": 24006,
+            "end": 30701,
+            "xfade": 2450
+          },
+          "metrics": {
+            "seam_step": 0.002754862224511428,
+            "seam_ncc": 0.9888813904997978,
+            "zero_lag_corr": 0.7107482456751251,
+            "cents_err_per_loop": -0.3321310168418551,
+            "rms_ripple_db": 1.7336720406770154,
+            "spectral_dist": 6.918923498920346
+          },
+          "engine": {
+            "eff_xfade": 2450,
+            "wrap_advance": 4245,
+            "period_multiple": 26
+          }
+        },
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 21124,
+            "end": 34378,
+            "xfade": 6384
+          },
+          "loop_engine": {
+            "start": 22992,
+            "end": 37418,
+            "xfade": 6949
+          },
+          "metrics": {
+            "seam_step": 0.2435577524827746,
+            "seam_ncc": 0.9904690343145756,
+            "zero_lag_corr": 0.09297277482364848,
+            "cents_err_per_loop": -8.04484139886417,
+            "rms_ripple_db": -2.3873399365501276,
+            "spectral_dist": 5.899058683559343
+          },
+          "engine": {
+            "eff_xfade": 6949,
+            "wrap_advance": 7477,
+            "period_multiple": 46
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 22671,
+            "end": 32391,
+            "xfade": 1215
+          },
+          "loop_engine": {
+            "start": 24676,
+            "end": 35256,
+            "xfade": 1322
+          },
+          "metrics": {
+            "seam_step": 0.039949915606668294,
+            "seam_ncc": 0.9864728810492346,
+            "zero_lag_corr": -0.5238418789588534,
+            "cents_err_per_loop": -9.349275623432879,
+            "rms_ripple_db": -5.945030553367005,
+            "spectral_dist": 12.495813794262874
+          },
+          "engine": {
+            "eff_xfade": 1322,
+            "wrap_advance": 9258,
+            "period_multiple": 57
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0003",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0003.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 48,
+      "file_sample_rate": 44100,
+      "file_num_samples": 100352,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 366.8824741417738,
+      "window": {
+        "start": 3072,
+        "end": 97280
+      },
+      "arms": [
+        {
+          "arm_id": "optimizer_1",
+          "provenance": "optimizer",
+          "rank": 1,
+          "loop": {
+            "start": 16534,
+            "end": 32713,
+            "xfade": 5056
+          },
+          "loop_engine": {
+            "start": 17996,
+            "end": 35606,
+            "xfade": 5503
+          },
+          "metrics": {
+            "seam_step": 0.0004328928928172693,
+            "seam_ncc": 0.9879034988953265,
+            "zero_lag_corr": 0.9442771712609997,
+            "cents_err_per_loop": -0.017394714944601906,
+            "rms_ripple_db": 3.070088433295484,
+            "spectral_dist": 7.12848365019026
+          },
+          "engine": {
+            "eff_xfade": 5503,
+            "wrap_advance": 12107,
+            "period_multiple": 33
+          }
+        },
+        {
+          "arm_id": "optimizer_2",
+          "provenance": "optimizer",
+          "rank": 2,
+          "loop": {
+            "start": 16197,
+            "end": 32713,
+            "xfade": 5393
+          },
+          "loop_engine": {
+            "start": 17629,
+            "end": 35606,
+            "xfade": 5870
+          },
+          "metrics": {
+            "seam_step": 0.00044388871697135515,
+            "seam_ncc": 0.9879519518880762,
+            "zero_lag_corr": 0.9461884937592768,
+            "cents_err_per_loop": -0.017394714944601906,
+            "rms_ripple_db": 3.0891319863592233,
+            "spectral_dist": 7.296842209081329
+          },
+          "engine": {
+            "eff_xfade": 5870,
+            "wrap_advance": 12107,
+            "period_multiple": 33
+          }
+        },
+        {
+          "arm_id": "optimizer_3",
+          "provenance": "optimizer",
+          "rank": 3,
+          "loop": {
+            "start": 2844,
+            "end": 86438,
+            "xfade": 5056
+          },
+          "loop_engine": {
+            "start": 3095,
+            "end": 94082,
+            "xfade": 5503
+          },
+          "metrics": {
+            "seam_step": 0.0009410614019332282,
+            "seam_ncc": 0.987883764350214,
+            "zero_lag_corr": 0.5209800680690867,
+            "cents_err_per_loop": 0.007767219251320975,
+            "rms_ripple_db": -4.564243652505514,
+            "spectral_dist": 9.478143014450948
+          },
+          "engine": {
+            "eff_xfade": 5503,
+            "wrap_advance": 85484,
+            "period_multiple": 233
+          }
+        },
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 25088,
+            "end": 58815,
+            "xfade": 16863
+          },
+          "loop_engine": {
+            "start": 27307,
+            "end": 64016,
+            "xfade": 18354
+          },
+          "metrics": {
+            "seam_step": 0.06234747349461714,
+            "seam_ncc": 0.998741026751824,
+            "zero_lag_corr": 0.8342150762802959,
+            "cents_err_per_loop": 1.0261503417487412,
+            "rms_ripple_db": -2.2500853806228753,
+            "spectral_dist": 7.476681390292919
+          },
+          "engine": {
+            "eff_xfade": 18354,
+            "wrap_advance": 18355,
+            "period_multiple": 50
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 29051,
+            "end": 57120,
+            "xfade": 3508
+          },
+          "loop_engine": {
+            "start": 31620,
+            "end": 62171,
+            "xfade": 3818
+          },
+          "metrics": {
+            "seam_step": 0.04107188468478584,
+            "seam_ncc": 0.9960639690332257,
+            "zero_lag_corr": 0.4881666350206142,
+            "cents_err_per_loop": -3.1975333527520005,
+            "rms_ripple_db": 2.0502832288813972,
+            "spectral_dist": 8.97230300538632
+          },
+          "engine": {
+            "eff_xfade": 3818,
+            "wrap_advance": 26733,
+            "period_multiple": 73
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0004",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0004.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 60,
+      "file_sample_rate": 44100,
+      "file_num_samples": 18944,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 183.4662111485934,
+      "window": {
+        "start": 15360,
+        "end": 18432
+      },
+      "arms": [
+        {
+          "arm_id": "optimizer_1",
+          "provenance": "optimizer",
+          "rank": 1,
+          "loop": {
+            "start": 15748,
+            "end": 16423,
+            "xfade": 337
+          },
+          "loop_engine": {
+            "start": 17141,
+            "end": 17875,
+            "xfade": 367
+          },
+          "metrics": {
+            "seam_step": 0.002851616901396395,
+            "seam_ncc": 0.9617910253813798,
+            "zero_lag_corr": 0.9678214408497292,
+            "cents_err_per_loop": 0.3188108791605247,
+            "rms_ripple_db": -2.423634910123757,
+            "spectral_dist": 4.669256164879683
+          },
+          "engine": {
+            "eff_xfade": 367,
+            "wrap_advance": 367,
+            "period_multiple": 2
+          }
+        },
+        {
+          "arm_id": "optimizer_2",
+          "provenance": "optimizer",
+          "rank": 2,
+          "loop": {
+            "start": 14254,
+            "end": 16277,
+            "xfade": 842
+          },
+          "loop_engine": {
+            "start": 15515,
+            "end": 17717,
+            "xfade": 917
+          },
+          "metrics": {
+            "seam_step": 0.01052482959144365,
+            "seam_ncc": 0.9482285223226946,
+            "zero_lag_corr": 0.8886907292427866,
+            "cents_err_per_loop": 0.992573895669028,
+            "rms_ripple_db": -2.258980247368787,
+            "spectral_dist": 4.602305369139072
+          },
+          "engine": {
+            "eff_xfade": 917,
+            "wrap_advance": 1285,
+            "period_multiple": 7
+          }
+        },
+        {
+          "arm_id": "optimizer_3",
+          "provenance": "optimizer",
+          "rank": 3,
+          "loop": {
+            "start": 14254,
+            "end": 16277,
+            "xfade": 674
+          },
+          "loop_engine": {
+            "start": 15515,
+            "end": 17717,
+            "xfade": 734
+          },
+          "metrics": {
+            "seam_step": 0.011437004455745097,
+            "seam_ncc": 0.8915944694694773,
+            "zero_lag_corr": 0.9488773836581712,
+            "cents_err_per_loop": 0.3188108791605247,
+            "rms_ripple_db": 2.4473280184954134,
+            "spectral_dist": 5.374745938837762
+          },
+          "engine": {
+            "eff_xfade": 734,
+            "wrap_advance": 1468,
+            "period_multiple": 8
+          }
+        },
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 4722,
+            "end": 12200,
+            "xfade": 3419
+          },
+          "loop_engine": {
+            "start": 5140,
+            "end": 13279,
+            "xfade": 3721
+          },
+          "metrics": {
+            "seam_step": 0.0274661503123653,
+            "seam_ncc": 0.9725115527216104,
+            "zero_lag_corr": -0.18918081716555837,
+            "cents_err_per_loop": 5.813550628247533,
+            "rms_ripple_db": -2.6483878616235006,
+            "spectral_dist": 6.076484161884968
+          },
+          "engine": {
+            "eff_xfade": 3721,
+            "wrap_advance": 4418,
+            "period_multiple": 24
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 5560,
+            "end": 11097,
+            "xfade": 692
+          },
+          "loop_engine": {
+            "start": 6052,
+            "end": 12078,
+            "xfade": 753
+          },
+          "metrics": {
+            "seam_step": 0.07572766792024758,
+            "seam_ncc": 0.8919335976657324,
+            "zero_lag_corr": -0.4237427507295768,
+            "cents_err_per_loop": -15.531949029982284,
+            "rms_ripple_db": 3.6384011136665024,
+            "spectral_dist": 7.549646504405697
+          },
+          "engine": {
+            "eff_xfade": 753,
+            "wrap_advance": 5273,
+            "period_multiple": 29
+          }
+        }
+      ],
+      "notes": [
+        "gold [5140,13279) lies outside the detected window [15360,18432) \u2014 the tool cannot reach gold in this mode"
+      ]
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0005",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0005.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 60,
+      "file_sample_rate": 44100,
+      "file_num_samples": 46080,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 183.2279962332035,
+      "window": {
+        "start": 2048,
+        "end": 18944
+      },
+      "arms": [
+        {
+          "arm_id": "optimizer_1",
+          "provenance": "optimizer",
+          "rank": 1,
+          "loop": {
+            "start": 7201,
+            "end": 16965,
+            "xfade": 2525
+          },
+          "loop_engine": {
+            "start": 7838,
+            "end": 18465,
+            "xfade": 2748
+          },
+          "metrics": {
+            "seam_step": 0.0017669128819330893,
+            "seam_ncc": 0.8003377757488732,
+            "zero_lag_corr": 0.735559093632658,
+            "cents_err_per_loop": 0.04310274312329436,
+            "rms_ripple_db": -3.1134080017332044,
+            "spectral_dist": 7.896650974398412
+          },
+          "engine": {
+            "eff_xfade": 2748,
+            "wrap_advance": 7879,
+            "period_multiple": 43
+          }
+        },
+        {
+          "arm_id": "optimizer_2",
+          "provenance": "optimizer",
+          "rank": 2,
+          "loop": {
+            "start": 5004,
+            "end": 16451,
+            "xfade": 336
+          },
+          "loop_engine": {
+            "start": 5446,
+            "end": 17906,
+            "xfade": 366
+          },
+          "metrics": {
+            "seam_step": 0.0026426665370876444,
+            "seam_ncc": 0.971522043758543,
+            "zero_lag_corr": 0.706185788234795,
+            "cents_err_per_loop": 0.136318018811564,
+            "rms_ripple_db": 2.536443703494153,
+            "spectral_dist": 7.772675286496394
+          },
+          "engine": {
+            "eff_xfade": 366,
+            "wrap_advance": 12094,
+            "period_multiple": 66
+          }
+        },
+        {
+          "arm_id": "optimizer_3",
+          "provenance": "optimizer",
+          "rank": 3,
+          "loop": {
+            "start": 4916,
+            "end": 17036,
+            "xfade": 1515
+          },
+          "loop_engine": {
+            "start": 5351,
+            "end": 18543,
+            "xfade": 1649
+          },
+          "metrics": {
+            "seam_step": 0.0030701464757673345,
+            "seam_ncc": 0.9833021241813203,
+            "zero_lag_corr": 0.561748261869589,
+            "cents_err_per_loop": -0.05455673872123193,
+            "rms_ripple_db": 2.985070028325188,
+            "spectral_dist": 7.282244377866468
+          },
+          "engine": {
+            "eff_xfade": 1649,
+            "wrap_advance": 11543,
+            "period_multiple": 63
+          }
+        },
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 10212,
+            "end": 20338,
+            "xfade": 5063
+          },
+          "loop_engine": {
+            "start": 11115,
+            "end": 22137,
+            "xfade": 5511
+          },
+          "metrics": {
+            "seam_step": 0.01312390927965389,
+            "seam_ncc": 0.9761669951693388,
+            "zero_lag_corr": -0.061868819410945505,
+            "cents_err_per_loop": 4.45400433587769,
+            "rms_ripple_db": -2.770031911906614,
+            "spectral_dist": 6.723047553076465
+          },
+          "engine": {
+            "eff_xfade": 5511,
+            "wrap_advance": 5511,
+            "period_multiple": 30
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 11354,
+            "end": 18841,
+            "xfade": 935
+          },
+          "loop_engine": {
+            "start": 12358,
+            "end": 20507,
+            "xfade": 1018
+          },
+          "metrics": {
+            "seam_step": 0.11072536316427595,
+            "seam_ncc": 0.9340575067198504,
+            "zero_lag_corr": -0.20751980182050325,
+            "cents_err_per_loop": -3.6116113712959006,
+            "rms_ripple_db": -2.771460660123388,
+            "spectral_dist": 8.18490532659114
+          },
+          "engine": {
+            "eff_xfade": 1018,
+            "wrap_advance": 7131,
+            "period_multiple": 39
+          }
+        }
+      ],
+      "notes": [
+        "gold [11115,22137) lies outside the detected window [2048,18944) \u2014 the tool cannot reach gold in this mode"
+      ]
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0006",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0006.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 64,
+      "file_sample_rate": 44100,
+      "file_num_samples": 51200,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 145.65001397586036,
+      "window": {
+        "start": 1024,
+        "end": 52224
+      },
+      "arms": [
+        {
+          "arm_id": "optimizer_1",
+          "provenance": "optimizer",
+          "rank": 1,
+          "loop": {
+            "start": 31077,
+            "end": 40043,
+            "xfade": 2141
+          },
+          "loop_engine": {
+            "start": 33825,
+            "end": 43584,
+            "xfade": 2330
+          },
+          "metrics": {
+            "seam_step": 0.0026497290872744012,
+            "seam_ncc": 0.9626533881547114,
+            "zero_lag_corr": 0.9627125753755843,
+            "cents_err_per_loop": 0.19792691101844634,
+            "rms_ripple_db": 2.918239527925831,
+            "spectral_dist": 5.703290119409486
+          },
+          "engine": {
+            "eff_xfade": 2330,
+            "wrap_advance": 7429,
+            "period_multiple": 51
+          }
+        },
+        {
+          "arm_id": "optimizer_2",
+          "provenance": "optimizer",
+          "rank": 2,
+          "loop": {
+            "start": 2325,
+            "end": 44745,
+            "xfade": 1873
+          },
+          "loop_engine": {
+            "start": 2531,
+            "end": 48702,
+            "xfade": 2039
+          },
+          "metrics": {
+            "seam_step": 0.003811382448142026,
+            "seam_ncc": 0.9882701473007767,
+            "zero_lag_corr": 0.7461294345497698,
+            "cents_err_per_loop": 0.001795307520133044,
+            "rms_ripple_db": -1.4608742214536472,
+            "spectral_dist": 7.445716701138048
+          },
+          "engine": {
+            "eff_xfade": 2039,
+            "wrap_advance": 44132,
+            "period_multiple": 303
+          }
+        },
+        {
+          "arm_id": "optimizer_3",
+          "provenance": "optimizer",
+          "rank": 3,
+          "loop": {
+            "start": 2325,
+            "end": 45146,
+            "xfade": 1873
+          },
+          "loop_engine": {
+            "start": 2531,
+            "end": 49139,
+            "xfade": 2039
+          },
+          "metrics": {
+            "seam_step": 0.003813522070603011,
+            "seam_ncc": 0.9882984289734327,
+            "zero_lag_corr": 0.7596578124565478,
+            "cents_err_per_loop": 0.0037182742344700824,
+            "rms_ripple_db": -1.4601731832848688,
+            "spectral_dist": 7.451538356999178
+          },
+          "engine": {
+            "eff_xfade": 2039,
+            "wrap_advance": 44569,
+            "period_multiple": 306
+          }
+        },
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 6025,
+            "end": 31490,
+            "xfade": 12732
+          },
+          "loop_engine": {
+            "start": 6558,
+            "end": 34275,
+            "xfade": 13858
+          },
+          "metrics": {
+            "seam_step": 0.10466043428977195,
+            "seam_ncc": 0.9738706323740655,
+            "zero_lag_corr": -0.1289644690173253,
+            "cents_err_per_loop": 2.7814856401917907,
+            "rms_ripple_db": 0.8734155006302677,
+            "spectral_dist": 7.822016231053357
+          },
+          "engine": {
+            "eff_xfade": 13858,
+            "wrap_advance": 13859,
+            "period_multiple": 95
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 8918,
+            "end": 27714,
+            "xfade": 2349
+          },
+          "loop_engine": {
+            "start": 9707,
+            "end": 30165,
+            "xfade": 2557
+          },
+          "metrics": {
+            "seam_step": 0.12468608931652791,
+            "seam_ncc": 0.9861871126981651,
+            "zero_lag_corr": 0.8938070136772492,
+            "cents_err_per_loop": -1.3487673001324827,
+            "rms_ripple_db": 2.718805445162755,
+            "spectral_dist": 8.199469599124988
+          },
+          "engine": {
+            "eff_xfade": 2557,
+            "wrap_advance": 17901,
+            "period_multiple": 123
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0007",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0007.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 58,
+      "file_sample_rate": 44100,
+      "file_num_samples": 34304,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 205.94683525955452,
+      "window": {
+        "start": 3072,
+        "end": 35328
+      },
+      "arms": [
+        {
+          "arm_id": "optimizer_1",
+          "provenance": "optimizer",
+          "rank": 1,
+          "loop": {
+            "start": 11373,
+            "end": 15536,
+            "xfade": 1514
+          },
+          "loop_engine": {
+            "start": 12379,
+            "end": 16910,
+            "xfade": 1648
+          },
+          "metrics": {
+            "seam_step": 0.0007561417132442715,
+            "seam_ncc": 0.9688520279230995,
+            "zero_lag_corr": 0.8381713813797453,
+            "cents_err_per_loop": -0.15353655776301,
+            "rms_ripple_db": 1.9465218564957765,
+            "spectral_dist": 7.704145151456748
+          },
+          "engine": {
+            "eff_xfade": 1648,
+            "wrap_advance": 2883,
+            "period_multiple": 14
+          }
+        },
+        {
+          "arm_id": "optimizer_2",
+          "provenance": "optimizer",
+          "rank": 2,
+          "loop": {
+            "start": 11184,
+            "end": 19131,
+            "xfade": 1703
+          },
+          "loop_engine": {
+            "start": 12173,
+            "end": 20823,
+            "xfade": 1854
+          },
+          "metrics": {
+            "seam_step": 0.0009728209556658187,
+            "seam_ncc": 0.9689573761219789,
+            "zero_lag_corr": 0.8209448837130856,
+            "cents_err_per_loop": -0.06255449160523568,
+            "rms_ripple_db": 1.8460444842638393,
+            "spectral_dist": 8.256933189919724
+          },
+          "engine": {
+            "eff_xfade": 1854,
+            "wrap_advance": 6796,
+            "period_multiple": 33
+          }
+        },
+        {
+          "arm_id": "optimizer_3",
+          "provenance": "optimizer",
+          "rank": 3,
+          "loop": {
+            "start": 7593,
+            "end": 19136,
+            "xfade": 1892
+          },
+          "loop_engine": {
+            "start": 8265,
+            "end": 20828,
+            "xfade": 2059
+          },
+          "metrics": {
+            "seam_step": 0.0011719208241640537,
+            "seam_ncc": 0.9779108410135924,
+            "zero_lag_corr": 0.8031325481015159,
+            "cents_err_per_loop": 0.11725482314375937,
+            "rms_ripple_db": 2.3121221311009994,
+            "spectral_dist": 7.549496422919967
+          },
+          "engine": {
+            "eff_xfade": 2059,
+            "wrap_advance": 10504,
+            "period_multiple": 51
+          }
+        },
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 8576,
+            "end": 25728,
+            "xfade": 7296
+          },
+          "loop_engine": {
+            "start": 9334,
+            "end": 28003,
+            "xfade": 7941
+          },
+          "metrics": {
+            "seam_step": 0.24079421941064982,
+            "seam_ncc": 0.9805890653441838,
+            "zero_lag_corr": 0.18182326215290512,
+            "cents_err_per_loop": 3.0307886335321466,
+            "rms_ripple_db": 2.0452956033500573,
+            "spectral_dist": 5.699112503996173
+          },
+          "engine": {
+            "eff_xfade": 7941,
+            "wrap_advance": 10728,
+            "period_multiple": 52
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 10537,
+            "end": 23177,
+            "xfade": 1579
+          },
+          "loop_engine": {
+            "start": 11469,
+            "end": 25227,
+            "xfade": 1719
+          },
+          "metrics": {
+            "seam_step": 0.01276831359350477,
+            "seam_ncc": 0.9308404052173028,
+            "zero_lag_corr": 0.15562434438955766,
+            "cents_err_per_loop": 13.58255976576958,
+            "rms_ripple_db": 1.690927963289357,
+            "spectral_dist": 9.120842057280587
+          },
+          "engine": {
+            "eff_xfade": 1719,
+            "wrap_advance": 12039,
+            "period_multiple": 58
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0008",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0008.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 71,
+      "file_sample_rate": 44100,
+      "file_num_samples": 44544,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 97.21644516690243,
+      "window": {
+        "start": 2560,
+        "end": 46592
+      },
+      "arms": [
+        {
+          "arm_id": "optimizer_1",
+          "provenance": "optimizer",
+          "rank": 1,
+          "loop": {
+            "start": 5092,
+            "end": 29386,
+            "xfade": 1161
+          },
+          "loop_engine": {
+            "start": 5542,
+            "end": 31985,
+            "xfade": 1264
+          },
+          "metrics": {
+            "seam_step": 0.00029473318483040466,
+            "seam_ncc": 0.9813961450879881,
+            "zero_lag_corr": 0.9237839481387669,
+            "cents_err_per_loop": -0.004077167084237612,
+            "rms_ripple_db": -2.374554457896771,
+            "spectral_dist": 8.30939866349554
+          },
+          "engine": {
+            "eff_xfade": 1264,
+            "wrap_advance": 25179,
+            "period_multiple": 259
+          }
+        },
+        {
+          "arm_id": "optimizer_2",
+          "provenance": "optimizer",
+          "rank": 2,
+          "loop": {
+            "start": 4365,
+            "end": 29463,
+            "xfade": 1340
+          },
+          "loop_engine": {
+            "start": 4751,
+            "end": 32069,
+            "xfade": 1458
+          },
+          "metrics": {
+            "seam_step": 0.0004965098988719456,
+            "seam_ncc": 0.9844070142259348,
+            "zero_lag_corr": 0.9542197316821154,
+            "cents_err_per_loop": 0.028491660912352952,
+            "rms_ripple_db": -3.6338640638412096,
+            "spectral_dist": 7.2284549527660555
+          },
+          "engine": {
+            "eff_xfade": 1458,
+            "wrap_advance": 25860,
+            "period_multiple": 266
+          }
+        },
+        {
+          "arm_id": "optimizer_3",
+          "provenance": "optimizer",
+          "rank": 3,
+          "loop": {
+            "start": 4632,
+            "end": 30535,
+            "xfade": 1072
+          },
+          "loop_engine": {
+            "start": 5042,
+            "end": 33235,
+            "xfade": 1167
+          },
+          "metrics": {
+            "seam_step": 0.0005404160144998401,
+            "seam_ncc": 0.983365621358843,
+            "zero_lag_corr": 0.9076677986451784,
+            "cents_err_per_loop": -0.011002352587037571,
+            "rms_ripple_db": -3.4813724897398473,
+            "spectral_dist": 7.42373290516537
+          },
+          "engine": {
+            "eff_xfade": 1167,
+            "wrap_advance": 27026,
+            "period_multiple": 278
+          }
+        },
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 12802,
+            "end": 24231,
+            "xfade": 2048
+          },
+          "loop_engine": {
+            "start": 13934,
+            "end": 26374,
+            "xfade": 2229
+          },
+          "metrics": {
+            "seam_step": 0.04168219718997593,
+            "seam_ncc": 0.965371042499407,
+            "zero_lag_corr": 0.48406940614096644,
+            "cents_err_per_loop": 0.5550566313468029,
+            "rms_ripple_db": -2.3754660452450174,
+            "spectral_dist": 6.331758080648388
+          },
+          "engine": {
+            "eff_xfade": 2229,
+            "wrap_advance": 10211,
+            "period_multiple": 105
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 14189,
+            "end": 23635,
+            "xfade": 1181
+          },
+          "loop_engine": {
+            "start": 15444,
+            "end": 25725,
+            "xfade": 1285
+          },
+          "metrics": {
+            "seam_step": 0.07317857935874562,
+            "seam_ncc": 0.899766328280335,
+            "zero_lag_corr": -0.08350529332149703,
+            "cents_err_per_loop": -8.663209771057627,
+            "rms_ripple_db": -1.8380415724909134,
+            "spectral_dist": 6.017973931247558
+          },
+          "engine": {
+            "eff_xfade": 1285,
+            "wrap_advance": 8996,
+            "period_multiple": 93
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0009",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0009.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 72,
+      "file_sample_rate": 44100,
+      "file_num_samples": 47104,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 91.73832116965761,
+      "window": {
+        "start": 19968,
+        "end": 49152
+      },
+      "arms": [
+        {
+          "arm_id": "optimizer_1",
+          "provenance": "optimizer",
+          "rank": 1,
+          "loop": {
+            "start": 18363,
+            "end": 35473,
+            "xfade": 168
+          },
+          "loop_engine": {
+            "start": 19987,
+            "end": 38610,
+            "xfade": 183
+          },
+          "metrics": {
+            "seam_step": 0.0005743133177175287,
+            "seam_ncc": 0.7928053321947705,
+            "zero_lag_corr": 0.558662657353667,
+            "cents_err_per_loop": 0.05609184963476693,
+            "rms_ripple_db": 1.799739733794057,
+            "spectral_dist": 7.931934276433153
+          },
+          "engine": {
+            "eff_xfade": 183,
+            "wrap_advance": 18440,
+            "period_multiple": 201
+          }
+        },
+        {
+          "arm_id": "optimizer_2",
+          "provenance": "optimizer",
+          "rank": 2,
+          "loop": {
+            "start": 18363,
+            "end": 36147,
+            "xfade": 168
+          },
+          "loop_engine": {
+            "start": 19987,
+            "end": 39344,
+            "xfade": 183
+          },
+          "metrics": {
+            "seam_step": 0.001433517181309738,
+            "seam_ncc": 0.7906474781606978,
+            "zero_lag_corr": 0.48997267405533007,
+            "cents_err_per_loop": 0.062380766142803336,
+            "rms_ripple_db": 1.9846614473188084,
+            "spectral_dist": 7.280173612116652
+          },
+          "engine": {
+            "eff_xfade": 183,
+            "wrap_advance": 19174,
+            "period_multiple": 209
+          }
+        },
+        {
+          "arm_id": "optimizer_3",
+          "provenance": "optimizer",
+          "rank": 3,
+          "loop": {
+            "start": 41385,
+            "end": 42565,
+            "xfade": 422
+          },
+          "loop_engine": {
+            "start": 45045,
+            "end": 46329,
+            "xfade": 459
+          },
+          "metrics": {
+            "seam_step": 0.0028392709316506,
+            "seam_ncc": 0.9794028844915148,
+            "zero_lag_corr": 0.9440734667536399,
+            "cents_err_per_loop": -1.3527518866524053,
+            "rms_ripple_db": 3.6330579756258037,
+            "spectral_dist": 5.29082802006093
+          },
+          "engine": {
+            "eff_xfade": 459,
+            "wrap_advance": 825,
+            "period_multiple": 9
+          }
+        },
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 15703,
+            "end": 22705,
+            "xfade": 2048
+          },
+          "loop_engine": {
+            "start": 17092,
+            "end": 24713,
+            "xfade": 2229
+          },
+          "metrics": {
+            "seam_step": 0.9131787807591061,
+            "seam_ncc": 0.8994376299362828,
+            "zero_lag_corr": -0.5025981009416389,
+            "cents_err_per_loop": -6.5890429316705355,
+            "rms_ripple_db": -3.573183147532912,
+            "spectral_dist": 3.6524882204924505
+          },
+          "engine": {
+            "eff_xfade": 2229,
+            "wrap_advance": 5392,
+            "period_multiple": 59
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 16559,
+            "end": 22337,
+            "xfade": 722
+          },
+          "loop_engine": {
+            "start": 18023,
+            "end": 24312,
+            "xfade": 786
+          },
+          "metrics": {
+            "seam_step": 0.3006294547072749,
+            "seam_ncc": 0.9711207335740039,
+            "zero_lag_corr": 0.7330146205475224,
+            "cents_err_per_loop": -0.40869985068035564,
+            "rms_ripple_db": 2.6827170505604583,
+            "spectral_dist": 5.919365844389485
+          },
+          "engine": {
+            "eff_xfade": 786,
+            "wrap_advance": 5503,
+            "period_multiple": 60
+          }
+        }
+      ],
+      "notes": [
+        "gold [17092,24713) lies outside the detected window [19968,49152) \u2014 the tool cannot reach gold in this mode"
+      ]
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0010",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0010.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 63,
+      "file_sample_rate": 44100,
+      "file_num_samples": 47616,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 154.29785895376364,
+      "window": {
+        "start": 2560,
+        "end": 48640
+      },
+      "arms": [
+        {
+          "arm_id": "optimizer_1",
+          "provenance": "optimizer",
+          "rank": 1,
+          "loop": {
+            "start": 13037,
+            "end": 32884,
+            "xfade": 284
+          },
+          "loop_engine": {
+            "start": 14190,
+            "end": 35792,
+            "xfade": 309
+          },
+          "metrics": {
+            "seam_step": 0.0009028307829845551,
+            "seam_ncc": 0.9718360434861607,
+            "zero_lag_corr": 0.9370772227078479,
+            "cents_err_per_loop": -0.008499280485419322,
+            "rms_ripple_db": 2.852557881490827,
+            "spectral_dist": 6.528041741127947
+          },
+          "engine": {
+            "eff_xfade": 309,
+            "wrap_advance": 21293,
+            "period_multiple": 138
+          }
+        },
+        {
+          "arm_id": "optimizer_2",
+          "provenance": "optimizer",
+          "rank": 2,
+          "loop": {
+            "start": 12470,
+            "end": 33592,
+            "xfade": 851
+          },
+          "loop_engine": {
+            "start": 13573,
+            "end": 36563,
+            "xfade": 926
+          },
+          "metrics": {
+            "seam_step": 0.0010837982283104113,
+            "seam_ncc": 0.9773433930926045,
+            "zero_lag_corr": 0.9294657206486089,
+            "cents_err_per_loop": -0.04659379772826195,
+            "rms_ripple_db": 2.5889000656051975,
+            "spectral_dist": 6.481091182485628
+          },
+          "engine": {
+            "eff_xfade": 926,
+            "wrap_advance": 22064,
+            "period_multiple": 143
+          }
+        },
+        {
+          "arm_id": "optimizer_3",
+          "provenance": "optimizer",
+          "rank": 3,
+          "loop": {
+            "start": 11336,
+            "end": 32884,
+            "xfade": 1984
+          },
+          "loop_engine": {
+            "start": 12339,
+            "end": 35792,
+            "xfade": 2160
+          },
+          "metrics": {
+            "seam_step": 0.0012710103008545142,
+            "seam_ncc": 0.9800265180776504,
+            "zero_lag_corr": 0.9209263344831525,
+            "cents_err_per_loop": -0.008499280485419322,
+            "rms_ripple_db": 2.489185395592731,
+            "spectral_dist": 7.245981406780415
+          },
+          "engine": {
+            "eff_xfade": 2160,
+            "wrap_advance": 21293,
+            "period_multiple": 138
+          }
+        },
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 11904,
+            "end": 35712,
+            "xfade": 11904
+          },
+          "loop_engine": {
+            "start": 12957,
+            "end": 38870,
+            "xfade": 12957
+          },
+          "metrics": {
+            "seam_step": 0.03757559958552204,
+            "seam_ncc": 0.9932971381881123,
+            "zero_lag_corr": 0.8624833337711335,
+            "cents_err_per_loop": -0.5370645011359706,
+            "rms_ripple_db": -1.8980190894563334,
+            "spectral_dist": 6.364053663498039
+          },
+          "engine": {
+            "eff_xfade": 12956,
+            "wrap_advance": 12957,
+            "period_multiple": 84
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 17138,
+            "end": 33368,
+            "xfade": 2029
+          },
+          "loop_engine": {
+            "start": 18654,
+            "end": 36319,
+            "xfade": 2208
+          },
+          "metrics": {
+            "seam_step": 0.27380511574938377,
+            "seam_ncc": 0.9915946903087206,
+            "zero_lag_corr": -0.5790639994805894,
+            "cents_err_per_loop": 3.0507542539905184,
+            "rms_ripple_db": -4.224054441732058,
+            "spectral_dist": 6.241553603901837
+          },
+          "engine": {
+            "eff_xfade": 2208,
+            "wrap_advance": 15457,
+            "period_multiple": 100
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0011",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0011.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 62,
+      "file_sample_rate": 44100,
+      "file_num_samples": 17408,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 163.4084330676336,
+      "window": {
+        "start": 5120,
+        "end": 16384
+      },
+      "arms": [
+        {
+          "arm_id": "optimizer_1",
+          "provenance": "optimizer",
+          "rank": 1,
+          "loop": {
+            "start": 7313,
+            "end": 13619,
+            "xfade": 1351
+          },
+          "loop_engine": {
+            "start": 7960,
+            "end": 14823,
+            "xfade": 1471
+          },
+          "metrics": {
+            "seam_step": 0.0009905323006135338,
+            "seam_ncc": 0.990269205101646,
+            "zero_lag_corr": 0.8890895182146239,
+            "cents_err_per_loop": -0.15356033815132145,
+            "rms_ripple_db": 2.6360039307885526,
+            "spectral_dist": 5.668066377412957
+          },
+          "engine": {
+            "eff_xfade": 1471,
+            "wrap_advance": 5392,
+            "period_multiple": 33
+          }
+        },
+        {
+          "arm_id": "optimizer_2",
+          "provenance": "optimizer",
+          "rank": 2,
+          "loop": {
+            "start": 9325,
+            "end": 12478,
+            "xfade": 150
+          },
+          "loop_engine": {
+            "start": 10150,
+            "end": 13582,
+            "xfade": 163
+          },
+          "metrics": {
+            "seam_step": 0.002159322183756099,
+            "seam_ncc": 0.9871383771594252,
+            "zero_lag_corr": 0.9851798649350755,
+            "cents_err_per_loop": 0.440325729646967,
+            "rms_ripple_db": 2.2990277438282494,
+            "spectral_dist": 5.047508139049199
+          },
+          "engine": {
+            "eff_xfade": 163,
+            "wrap_advance": 3269,
+            "period_multiple": 20
+          }
+        },
+        {
+          "arm_id": "optimizer_3",
+          "provenance": "optimizer",
+          "rank": 3,
+          "loop": {
+            "start": 6533,
+            "end": 14039,
+            "xfade": 2252
+          },
+          "loop_engine": {
+            "start": 7111,
+            "end": 15281,
+            "xfade": 2451
+          },
+          "metrics": {
+            "seam_step": 0.002213688071291549,
+            "seam_ncc": 0.9940327569463536,
+            "zero_lag_corr": 0.87291046171364,
+            "cents_err_per_loop": -0.0893466162520827,
+            "rms_ripple_db": 2.5540253554122883,
+            "spectral_dist": 5.795739394627878
+          },
+          "engine": {
+            "eff_xfade": 2451,
+            "wrap_advance": 5719,
+            "period_multiple": 35
+          }
+        },
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 8119,
+            "end": 12195,
+            "xfade": 784
+          },
+          "loop_engine": {
+            "start": 8837,
+            "end": 13273,
+            "xfade": 853
+          },
+          "metrics": {
+            "seam_step": 0.015418593912100442,
+            "seam_ncc": 0.9928805376206443,
+            "zero_lag_corr": -0.703055539141098,
+            "cents_err_per_loop": -5.7815030381106896,
+            "rms_ripple_db": -5.816532882334762,
+            "spectral_dist": 5.223039899839771
+          },
+          "engine": {
+            "eff_xfade": 853,
+            "wrap_advance": 3583,
+            "period_multiple": 22
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 9012,
+            "end": 11783,
+            "xfade": 346
+          },
+          "loop_engine": {
+            "start": 9809,
+            "end": 12825,
+            "xfade": 377
+          },
+          "metrics": {
+            "seam_step": 0.05126979333691028,
+            "seam_ncc": 0.8986213172686234,
+            "zero_lag_corr": -0.6191782419239767,
+            "cents_err_per_loop": 16.124407865284784,
+            "rms_ripple_db": -4.740726032541046,
+            "spectral_dist": 4.9999979844588
+          },
+          "engine": {
+            "eff_xfade": 377,
+            "wrap_advance": 2639,
+            "period_multiple": 16
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0012",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0012.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 55,
+      "file_sample_rate": 44100,
+      "file_num_samples": 54784,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 245.01051470013834,
+      "window": {
+        "start": 20992,
+        "end": 24064
+      },
+      "arms": [
+        {
+          "arm_id": "optimizer_1",
+          "provenance": "optimizer",
+          "rank": 1,
+          "loop": {
+            "start": 20460,
+            "end": 21810,
+            "xfade": 225
+          },
+          "loop_engine": {
+            "start": 22269,
+            "end": 23739,
+            "xfade": 245
+          },
+          "metrics": {
+            "seam_step": 0.007251245116866921,
+            "seam_ncc": 0.9688018496432433,
+            "zero_lag_corr": 0.9307772987118035,
+            "cents_err_per_loop": -0.0742980256624984,
+            "rms_ripple_db": 1.2231748536395197,
+            "spectral_dist": 4.34691361403248
+          },
+          "engine": {
+            "eff_xfade": 245,
+            "wrap_advance": 1225,
+            "period_multiple": 5
+          }
+        },
+        {
+          "arm_id": "optimizer_2",
+          "provenance": "optimizer",
+          "rank": 2,
+          "loop": {
+            "start": 19393,
+            "end": 21869,
+            "xfade": 450
+          },
+          "loop_engine": {
+            "start": 21108,
+            "end": 23803,
+            "xfade": 490
+          },
+          "metrics": {
+            "seam_step": 0.014491927894244656,
+            "seam_ncc": 0.973785471992203,
+            "zero_lag_corr": 0.9332313006072336,
+            "cents_err_per_loop": -0.07429802566230617,
+            "rms_ripple_db": 1.3005358590452314,
+            "spectral_dist": 4.670116066796419
+          },
+          "engine": {
+            "eff_xfade": 490,
+            "wrap_advance": 2205,
+            "period_multiple": 9
+          }
+        },
+        {
+          "arm_id": "optimizer_3",
+          "provenance": "optimizer",
+          "rank": 3,
+          "loop": {
+            "start": 20518,
+            "end": 21193,
+            "xfade": 225
+          },
+          "loop_engine": {
+            "start": 22332,
+            "end": 23067,
+            "xfade": 245
+          },
+          "metrics": {
+            "seam_step": 0.01655868550311279,
+            "seam_ncc": 0.9634448063823766,
+            "zero_lag_corr": 0.9972678488434614,
+            "cents_err_per_loop": -0.0742980256624984,
+            "rms_ripple_db": -1.0409334311871392,
+            "spectral_dist": 5.344459823232544
+          },
+          "engine": {
+            "eff_xfade": 245,
+            "wrap_advance": 490,
+            "period_multiple": 2
+          }
+        },
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 10147,
+            "end": 14208,
+            "xfade": 244
+          },
+          "loop_engine": {
+            "start": 11044,
+            "end": 15464,
+            "xfade": 266
+          },
+          "metrics": {
+            "seam_step": 0.22391392382494188,
+            "seam_ncc": 0.43162094209679414,
+            "zero_lag_corr": -0.06080354088021854,
+            "cents_err_per_loop": -4.652633315577308,
+            "rms_ripple_db": 2.0435603542583105,
+            "spectral_dist": 5.319084643978161
+          },
+          "engine": {
+            "eff_xfade": 266,
+            "wrap_advance": 4154,
+            "period_multiple": 17
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 11033,
+            "end": 13799,
+            "xfade": 345
+          },
+          "loop_engine": {
+            "start": 12009,
+            "end": 15019,
+            "xfade": 376
+          },
+          "metrics": {
+            "seam_step": 0.026228079304350203,
+            "seam_ncc": 0.9135335867772169,
+            "zero_lag_corr": -0.23596744108389314,
+            "cents_err_per_loop": -39.7102108856865,
+            "rms_ripple_db": 1.6000624609633292,
+            "spectral_dist": 5.624914729609516
+          },
+          "engine": {
+            "eff_xfade": 376,
+            "wrap_advance": 2634,
+            "period_multiple": 11
+          }
+        }
+      ],
+      "notes": [
+        "gold [11044,15464) lies outside the detected window [20992,24064) \u2014 the tool cannot reach gold in this mode"
+      ]
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0013",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0013.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 48,
+      "file_sample_rate": 44100,
+      "file_num_samples": 58880,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 366.8048797120332,
+      "window": {
+        "start": 3584,
+        "end": 29696
+      },
+      "arms": [
+        {
+          "arm_id": "optimizer_1",
+          "provenance": "optimizer",
+          "rank": 1,
+          "loop": {
+            "start": 3821,
+            "end": 26400,
+            "xfade": 1348
+          },
+          "loop_engine": {
+            "start": 4159,
+            "end": 28735,
+            "xfade": 1467
+          },
+          "metrics": {
+            "seam_step": 0.0006988998732761976,
+            "seam_ncc": 0.9926673540264667,
+            "zero_lag_corr": 0.701897102269649,
+            "cents_err_per_loop": 0.02191892543115305,
+            "rms_ripple_db": 2.284513333849599,
+            "spectral_dist": 7.148436123683967
+          },
+          "engine": {
+            "eff_xfade": 1467,
+            "wrap_advance": 23109,
+            "period_multiple": 63
+          }
+        },
+        {
+          "arm_id": "optimizer_2",
+          "provenance": "optimizer",
+          "rank": 2,
+          "loop": {
+            "start": 6235,
+            "end": 26792,
+            "xfade": 4718
+          },
+          "loop_engine": {
+            "start": 6786,
+            "end": 29161,
+            "xfade": 5135
+          },
+          "metrics": {
+            "seam_step": 0.0011516578311688667,
+            "seam_ncc": 0.9988075705002092,
+            "zero_lag_corr": 0.8856270452566515,
+            "cents_err_per_loop": 0.017137045920387308,
+            "rms_ripple_db": 2.796108669583823,
+            "spectral_dist": 7.403957790307438
+          },
+          "engine": {
+            "eff_xfade": 5135,
+            "wrap_advance": 17240,
+            "period_multiple": 47
+          }
+        },
+        {
+          "arm_id": "optimizer_3",
+          "provenance": "optimizer",
+          "rank": 3,
+          "loop": {
+            "start": 6653,
+            "end": 26873,
+            "xfade": 337
+          },
+          "loop_engine": {
+            "start": 7241,
+            "end": 29249,
+            "xfade": 367
+          },
+          "metrics": {
+            "seam_step": 0.0012211214382422209,
+            "seam_ncc": 0.9272197516058344,
+            "zero_lag_corr": 0.8447292667657519,
+            "cents_err_per_loop": -0.03903076484012482,
+            "rms_ripple_db": 1.7974950267748377,
+            "spectral_dist": 7.177237855079734
+          },
+          "engine": {
+            "eff_xfade": 367,
+            "wrap_advance": 21641,
+            "period_multiple": 59
+          }
+        },
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 10647,
+            "end": 27536,
+            "xfade": 3766
+          },
+          "loop_engine": {
+            "start": 11589,
+            "end": 29971,
+            "xfade": 4099
+          },
+          "metrics": {
+            "seam_step": 0.08384395579842188,
+            "seam_ncc": 0.9875093177138141,
+            "zero_lag_corr": -0.011087203905121976,
+            "cents_err_per_loop": -2.7117912143722696,
+            "rms_ripple_db": 0.6366616471470199,
+            "spectral_dist": 6.74026777324201
+          },
+          "engine": {
+            "eff_xfade": 4099,
+            "wrap_advance": 14283,
+            "period_multiple": 39
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 14321,
+            "end": 25843,
+            "xfade": 1440
+          },
+          "loop_engine": {
+            "start": 15587,
+            "end": 28128,
+            "xfade": 1567
+          },
+          "metrics": {
+            "seam_step": 0.029842426449136105,
+            "seam_ncc": 0.9755080304505173,
+            "zero_lag_corr": -0.17978290325737503,
+            "cents_err_per_loop": -4.749307879042324,
+            "rms_ripple_db": -0.9744139529567746,
+            "spectral_dist": 5.331212984817294
+          },
+          "engine": {
+            "eff_xfade": 1567,
+            "wrap_advance": 10974,
+            "period_multiple": 30
+          }
+        }
+      ],
+      "notes": [
+        "gold [11589,29971) lies outside the detected window [3584,29696) \u2014 the tool cannot reach gold in this mode"
+      ]
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0014",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0014.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 57,
+      "file_sample_rate": 44100,
+      "file_num_samples": 35328,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 218.48793293327975,
+      "window": {
+        "start": 2048,
+        "end": 36864
+      },
+      "arms": [
+        {
+          "arm_id": "optimizer_1",
+          "provenance": "optimizer",
+          "rank": 1,
+          "loop": {
+            "start": 14540,
+            "end": 27588,
+            "xfade": 1606
+          },
+          "loop_engine": {
+            "start": 15826,
+            "end": 30028,
+            "xfade": 1748
+          },
+          "metrics": {
+            "seam_step": 0.000256796179765871,
+            "seam_ncc": 0.965621724204713,
+            "zero_lag_corr": 0.8298267854245083,
+            "cents_err_per_loop": 0.02610949765753925,
+            "rms_ripple_db": 4.298460697320388,
+            "spectral_dist": 5.830250077996257
+          },
+          "engine": {
+            "eff_xfade": 1748,
+            "wrap_advance": 12454,
+            "period_multiple": 57
+          }
+        },
+        {
+          "arm_id": "optimizer_2",
+          "provenance": "optimizer",
+          "rank": 2,
+          "loop": {
+            "start": 5106,
+            "end": 23976,
+            "xfade": 803
+          },
+          "loop_engine": {
+            "start": 5558,
+            "end": 26096,
+            "xfade": 874
+          },
+          "metrics": {
+            "seam_step": 0.0028935968458399684,
+            "seam_ncc": 0.8063632645201847,
+            "zero_lag_corr": 0.3827232495162946,
+            "cents_err_per_loop": 0.00757469420469385,
+            "rms_ripple_db": 4.901485264863002,
+            "spectral_dist": 6.569866858643735
+          },
+          "engine": {
+            "eff_xfade": 874,
+            "wrap_advance": 19664,
+            "period_multiple": 90
+          }
+        },
+        {
+          "arm_id": "optimizer_3",
+          "provenance": "optimizer",
+          "rank": 3,
+          "loop": {
+            "start": 20762,
+            "end": 24576,
+            "xfade": 1204
+          },
+          "loop_engine": {
+            "start": 22598,
+            "end": 26749,
+            "xfade": 1311
+          },
+          "metrics": {
+            "seam_step": 0.0032427729307327687,
+            "seam_ncc": 0.9101822219208379,
+            "zero_lag_corr": 0.9086688226998348,
+            "cents_err_per_loop": -0.20915465623682014,
+            "rms_ripple_db": 2.3440286874040432,
+            "spectral_dist": 5.530624883842992
+          },
+          "engine": {
+            "eff_xfade": 1311,
+            "wrap_advance": 2840,
+            "period_multiple": 13
+          }
+        },
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 8832,
+            "end": 32440,
+            "xfade": 8832
+          },
+          "loop_engine": {
+            "start": 9613,
+            "end": 35309,
+            "xfade": 9613
+          },
+          "metrics": {
+            "seam_step": 0.08338869594233252,
+            "seam_ncc": 0.9644612456297801,
+            "zero_lag_corr": 0.12435931875997148,
+            "cents_err_per_loop": -9.137084331555872,
+            "rms_ripple_db": -2.9212203210078966,
+            "spectral_dist": 7.57931835793962
+          },
+          "engine": {
+            "eff_xfade": 9613,
+            "wrap_advance": 16083,
+            "period_multiple": 74
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 13948,
+            "end": 30083,
+            "xfade": 2017
+          },
+          "loop_engine": {
+            "start": 15182,
+            "end": 32743,
+            "xfade": 2195
+          },
+          "metrics": {
+            "seam_step": 0.09565626672317458,
+            "seam_ncc": 0.9531493193653164,
+            "zero_lag_corr": 0.47703406586279296,
+            "cents_err_per_loop": 8.113475491010252,
+            "rms_ripple_db": 3.7191786574621384,
+            "spectral_dist": 6.557509767234944
+          },
+          "engine": {
+            "eff_xfade": 2195,
+            "wrap_advance": 15366,
+            "period_multiple": 70
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0015",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0015.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 62,
+      "file_sample_rate": 44100,
+      "file_num_samples": 21504,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 163.35791467630898,
+      "window": {
+        "start": 3584,
+        "end": 19456
+      },
+      "arms": [
+        {
+          "arm_id": "optimizer_1",
+          "provenance": "optimizer",
+          "rank": 1,
+          "loop": {
+            "start": 6602,
+            "end": 16357,
+            "xfade": 450
+          },
+          "loop_engine": {
+            "start": 7186,
+            "end": 17804,
+            "xfade": 490
+          },
+          "metrics": {
+            "seam_step": 0.0033671500387711215,
+            "seam_ncc": 0.9551625295641455,
+            "zero_lag_corr": 0.9280781313096371,
+            "cents_err_per_loop": -0.03259877743584144,
+            "rms_ripple_db": -1.763334638121876,
+            "spectral_dist": 7.1105558167705825
+          },
+          "engine": {
+            "eff_xfade": 490,
+            "wrap_advance": 10128,
+            "period_multiple": 62
+          }
+        },
+        {
+          "arm_id": "optimizer_2",
+          "provenance": "optimizer",
+          "rank": 2,
+          "loop": {
+            "start": 13084,
+            "end": 14585,
+            "xfade": 600
+          },
+          "loop_engine": {
+            "start": 14241,
+            "end": 15875,
+            "xfade": 653
+          },
+          "metrics": {
+            "seam_step": 0.003518500054697619,
+            "seam_ncc": 0.9544623284146377,
+            "zero_lag_corr": 0.9521296812313316,
+            "cents_err_per_loop": 1.5051369705039281,
+            "rms_ripple_db": -2.1655625061970163,
+            "spectral_dist": 6.097351897802507
+          },
+          "engine": {
+            "eff_xfade": 653,
+            "wrap_advance": 981,
+            "period_multiple": 6
+          }
+        },
+        {
+          "arm_id": "optimizer_3",
+          "provenance": "optimizer",
+          "rank": 3,
+          "loop": {
+            "start": 7690,
+            "end": 14894,
+            "xfade": 900
+          },
+          "loop_engine": {
+            "start": 8370,
+            "end": 16211,
+            "xfade": 980
+          },
+          "metrics": {
+            "seam_step": 0.0036989079653782335,
+            "seam_ncc": 0.960498495529572,
+            "zero_lag_corr": 0.8752900502800804,
+            "cents_err_per_loop": -0.008179602312812931,
+            "rms_ripple_db": 4.188464945942301,
+            "spectral_dist": 7.770844072680234
+          },
+          "engine": {
+            "eff_xfade": 980,
+            "wrap_advance": 6861,
+            "period_multiple": 42
+          }
+        },
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 8783,
+            "end": 15970,
+            "xfade": 1644
+          },
+          "loop_engine": {
+            "start": 9560,
+            "end": 17382,
+            "xfade": 1789
+          },
+          "metrics": {
+            "seam_step": 0.23348992146693126,
+            "seam_ncc": 0.9170309878555457,
+            "zero_lag_corr": -0.4197095045824093,
+            "cents_err_per_loop": -3.2232519501250327,
+            "rms_ripple_db": -2.9089347324912036,
+            "spectral_dist": 7.778490304336784
+          },
+          "engine": {
+            "eff_xfade": 1789,
+            "wrap_advance": 6033,
+            "period_multiple": 37
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 10335,
+            "end": 15255,
+            "xfade": 615
+          },
+          "loop_engine": {
+            "start": 11249,
+            "end": 16604,
+            "xfade": 669
+          },
+          "metrics": {
+            "seam_step": 0.035095568343069865,
+            "seam_ncc": 0.9367554858146833,
+            "zero_lag_corr": 0.31085535842269685,
+            "cents_err_per_loop": -18.878761144518933,
+            "rms_ripple_db": 2.0515562796375066,
+            "spectral_dist": 6.9218622501058285
+          },
+          "engine": {
+            "eff_xfade": 669,
+            "wrap_advance": 4686,
+            "period_multiple": 29
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0016",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0016.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 52,
+      "file_sample_rate": 44100,
+      "file_num_samples": 59904,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 291.21713123841266,
+      "window": {
+        "start": 8704,
+        "end": 47616
+      },
+      "arms": [
+        {
+          "arm_id": "optimizer_1",
+          "provenance": "optimizer",
+          "rank": 1,
+          "loop": {
+            "start": 13862,
+            "end": 36872,
+            "xfade": 803
+          },
+          "loop_engine": {
+            "start": 15088,
+            "end": 40133,
+            "xfade": 874
+          },
+          "metrics": {
+            "seam_step": 0.00021296014644751345,
+            "seam_ncc": 0.9916566084815515,
+            "zero_lag_corr": 0.983181521024396,
+            "cents_err_per_loop": -0.0015680577255990599,
+            "rms_ripple_db": 3.270892253575799,
+            "spectral_dist": 7.04543196567926
+          },
+          "engine": {
+            "eff_xfade": 874,
+            "wrap_advance": 24171,
+            "period_multiple": 83
+          }
+        },
+        {
+          "arm_id": "optimizer_2",
+          "provenance": "optimizer",
+          "rank": 2,
+          "loop": {
+            "start": 13862,
+            "end": 36872,
+            "xfade": 267
+          },
+          "loop_engine": {
+            "start": 15088,
+            "end": 40133,
+            "xfade": 291
+          },
+          "metrics": {
+            "seam_step": 0.00024448119906374894,
+            "seam_ncc": 0.9893559951204214,
+            "zero_lag_corr": 0.9826893912924632,
+            "cents_err_per_loop": 0.038035584764874696,
+            "rms_ripple_db": 1.9611492265891624,
+            "spectral_dist": 6.636788120009059
+          },
+          "engine": {
+            "eff_xfade": 291,
+            "wrap_advance": 24754,
+            "period_multiple": 85
+          }
+        },
+        {
+          "arm_id": "optimizer_3",
+          "provenance": "optimizer",
+          "rank": 3,
+          "loop": {
+            "start": 23188,
+            "end": 42720,
+            "xfade": 1338
+          },
+          "loop_engine": {
+            "start": 25239,
+            "end": 46498,
+            "xfade": 1456
+          },
+          "metrics": {
+            "seam_step": 0.0003204799183585338,
+            "seam_ncc": 0.9981514339597966,
+            "zero_lag_corr": 0.9353870028088008,
+            "cents_err_per_loop": 0.02055110961620164,
+            "rms_ripple_db": 3.872940193423951,
+            "spectral_dist": 6.35731536598124
+          },
+          "engine": {
+            "eff_xfade": 1456,
+            "wrap_advance": 19803,
+            "period_multiple": 68
+          }
+        },
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 14976,
+            "end": 40863,
+            "xfade": 2048
+          },
+          "loop_engine": {
+            "start": 16300,
+            "end": 44477,
+            "xfade": 2229
+          },
+          "metrics": {
+            "seam_step": 0.008650173290675148,
+            "seam_ncc": 0.9864240225646285,
+            "zero_lag_corr": -0.5902226061411656,
+            "cents_err_per_loop": 1.9810514797413041,
+            "rms_ripple_db": -3.6082616362011413,
+            "spectral_dist": 5.39785547974429
+          },
+          "engine": {
+            "eff_xfade": 2229,
+            "wrap_advance": 25948,
+            "period_multiple": 89
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 20546,
+            "end": 38298,
+            "xfade": 2219
+          },
+          "loop_engine": {
+            "start": 22363,
+            "end": 41685,
+            "xfade": 2415
+          },
+          "metrics": {
+            "seam_step": 0.07395165487680407,
+            "seam_ncc": 0.9950999250666496,
+            "zero_lag_corr": 0.2431037256359458,
+            "cents_err_per_loop": 1.6807883059909523,
+            "rms_ripple_db": 2.102879714102015,
+            "spectral_dist": 8.620602647783166
+          },
+          "engine": {
+            "eff_xfade": 2415,
+            "wrap_advance": 16907,
+            "period_multiple": 58
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0017",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0017.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 57,
+      "file_sample_rate": 44100,
+      "file_num_samples": 9702,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 218.22621389209695,
+      "window": {
+        "start": 1024,
+        "end": 8192
+      },
+      "arms": [
+        {
+          "arm_id": "optimizer_1",
+          "provenance": "optimizer",
+          "rank": 1,
+          "loop": {
+            "start": 4002,
+            "end": 6408,
+            "xfade": 602
+          },
+          "loop_engine": {
+            "start": 4356,
+            "end": 6975,
+            "xfade": 655
+          },
+          "metrics": {
+            "seam_step": 0.0014565480003625923,
+            "seam_ncc": 0.9900741934433167,
+            "zero_lag_corr": 0.9458877928801899,
+            "cents_err_per_loop": -0.03166703888997011,
+            "rms_ripple_db": 2.3905531696085753,
+            "spectral_dist": 5.738945950113214
+          },
+          "engine": {
+            "eff_xfade": 655,
+            "wrap_advance": 1964,
+            "period_multiple": 9
+          }
+        },
+        {
+          "arm_id": "optimizer_2",
+          "provenance": "optimizer",
+          "rank": 2,
+          "loop": {
+            "start": 2801,
+            "end": 6410,
+            "xfade": 602
+          },
+          "loop_engine": {
+            "start": 3049,
+            "end": 6977,
+            "xfade": 655
+          },
+          "metrics": {
+            "seam_step": 0.0036271173607562044,
+            "seam_ncc": 0.9937341261211807,
+            "zero_lag_corr": 0.8830937254911833,
+            "cents_err_per_loop": -0.2079727622529378,
+            "rms_ripple_db": 2.450061342084176,
+            "spectral_dist": 5.508704665200614
+          },
+          "engine": {
+            "eff_xfade": 655,
+            "wrap_advance": 3273,
+            "period_multiple": 15
+          }
+        },
+        {
+          "arm_id": "optimizer_3",
+          "provenance": "optimizer",
+          "rank": 3,
+          "loop": {
+            "start": 3252,
+            "end": 6661,
+            "xfade": 802
+          },
+          "loop_engine": {
+            "start": 3540,
+            "end": 7250,
+            "xfade": 873
+          },
+          "metrics": {
+            "seam_step": 0.004582255789514242,
+            "seam_ncc": 0.9864049187107431,
+            "zero_lag_corr": 0.9066467121971125,
+            "cents_err_per_loop": 0.0361380741731295,
+            "rms_ripple_db": 2.665613838817165,
+            "spectral_dist": 6.8027829380786775
+          },
+          "engine": {
+            "eff_xfade": 873,
+            "wrap_advance": 2837,
+            "period_multiple": 13
+          }
+        },
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 3205,
+            "end": 5612,
+            "xfade": 1202
+          },
+          "loop_engine": {
+            "start": 3488,
+            "end": 6108,
+            "xfade": 1308
+          },
+          "metrics": {
+            "seam_step": 0.030496699357505788,
+            "seam_ncc": 0.9593400244161128,
+            "zero_lag_corr": 0.7176074571682772,
+            "cents_err_per_loop": 3.4906821905659444,
+            "rms_ripple_db": -1.6994586751626242,
+            "spectral_dist": 5.216638592577164
+          },
+          "engine": {
+            "eff_xfade": 1308,
+            "wrap_advance": 1312,
+            "period_multiple": 6
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 3721,
+            "end": 5374,
+            "xfade": 206
+          },
+          "loop_engine": {
+            "start": 4050,
+            "end": 5849,
+            "xfade": 224
+          },
+          "metrics": {
+            "seam_step": 0.00616881575413272,
+            "seam_ncc": 0.5791912893118124,
+            "zero_lag_corr": -0.19487742472025948,
+            "cents_err_per_loop": 52.92070697469765,
+            "rms_ripple_db": -2.927699415613242,
+            "spectral_dist": 5.614894129735623
+          },
+          "engine": {
+            "eff_xfade": 224,
+            "wrap_advance": 1575,
+            "period_multiple": 7
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0018",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0018.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 69,
+      "file_sample_rate": 44100,
+      "file_num_samples": 80896,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 109.1232770310784,
+      "window": {
+        "start": 11264,
+        "end": 69632
+      },
+      "arms": [
+        {
+          "arm_id": "optimizer_1",
+          "provenance": "optimizer",
+          "rank": 1,
+          "loop": {
+            "start": 13865,
+            "end": 62390,
+            "xfade": 1002
+          },
+          "loop_engine": {
+            "start": 15091,
+            "end": 67907,
+            "xfade": 1091
+          },
+          "metrics": {
+            "seam_step": 0.0007303734975364607,
+            "seam_ncc": 0.9924917488638054,
+            "zero_lag_corr": 0.6967874713124175,
+            "cents_err_per_loop": 0.01896710815268742,
+            "rms_ripple_db": -2.516245070359335,
+            "spectral_dist": 9.243452696125278
+          },
+          "engine": {
+            "eff_xfade": 1091,
+            "wrap_advance": 51725,
+            "period_multiple": 474
+          }
+        },
+        {
+          "arm_id": "optimizer_2",
+          "provenance": "optimizer",
+          "rank": 2,
+          "loop": {
+            "start": 13449,
+            "end": 63778,
+            "xfade": 300
+          },
+          "loop_engine": {
+            "start": 14638,
+            "end": 69418,
+            "xfade": 327
+          },
+          "metrics": {
+            "seam_step": 0.0009870881114576685,
+            "seam_ncc": 0.9881163630643697,
+            "zero_lag_corr": 0.4926440500583371,
+            "cents_err_per_loop": 0.015412178135769136,
+            "rms_ripple_db": -1.8816528141015507,
+            "spectral_dist": 9.637220279011856
+          },
+          "engine": {
+            "eff_xfade": 327,
+            "wrap_advance": 54453,
+            "period_multiple": 499
+          }
+        },
+        {
+          "arm_id": "optimizer_3",
+          "provenance": "optimizer",
+          "rank": 3,
+          "loop": {
+            "start": 18136,
+            "end": 36884,
+            "xfade": 1203
+          },
+          "loop_engine": {
+            "start": 19740,
+            "end": 40146,
+            "xfade": 1309
+          },
+          "metrics": {
+            "seam_step": 0.0011760399203032323,
+            "seam_ncc": 0.9837299637779116,
+            "zero_lag_corr": 0.7922745775322151,
+            "cents_err_per_loop": 0.038666462434582695,
+            "rms_ripple_db": -4.520725998786545,
+            "spectral_dist": 9.637469088035507
+          },
+          "engine": {
+            "eff_xfade": 1309,
+            "wrap_advance": 19097,
+            "period_multiple": 175
+          }
+        },
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 25592,
+            "end": 64975,
+            "xfade": 9695
+          },
+          "loop_engine": {
+            "start": 27855,
+            "end": 70721,
+            "xfade": 10552
+          },
+          "metrics": {
+            "seam_step": 0.15180610616154117,
+            "seam_ncc": 0.9709944965754317,
+            "zero_lag_corr": -0.041969938319581276,
+            "cents_err_per_loop": 0.7239543411139356,
+            "rms_ripple_db": 4.575973016336924,
+            "spectral_dist": 9.791560710901917
+          },
+          "engine": {
+            "eff_xfade": 10552,
+            "wrap_advance": 32314,
+            "period_multiple": 296
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 34496,
+            "end": 60908,
+            "xfade": 3301
+          },
+          "loop_engine": {
+            "start": 37547,
+            "end": 66294,
+            "xfade": 3593
+          },
+          "metrics": {
+            "seam_step": 0.014452465004714005,
+            "seam_ncc": 0.96523147355388,
+            "zero_lag_corr": 0.07460957333055811,
+            "cents_err_per_loop": -3.676668496918134,
+            "rms_ripple_db": 2.8107802850615204,
+            "spectral_dist": 13.37780073306242
+          },
+          "engine": {
+            "eff_xfade": 3593,
+            "wrap_advance": 25154,
+            "period_multiple": 231
+          }
+        }
+      ],
+      "notes": [
+        "gold [27855,70721) lies outside the detected window [11264,69632) \u2014 the tool cannot reach gold in this mode"
+      ]
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0019",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0019.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 62,
+      "file_sample_rate": 44100,
+      "file_num_samples": 30720,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 163.35353721134678,
+      "window": {
+        "start": 19968,
+        "end": 27136
+      },
+      "arms": [
+        {
+          "arm_id": "optimizer_1",
+          "provenance": "optimizer",
+          "rank": 1,
+          "loop": {
+            "start": 20264,
+            "end": 24616,
+            "xfade": 2101
+          },
+          "loop_engine": {
+            "start": 22056,
+            "end": 26793,
+            "xfade": 2287
+          },
+          "metrics": {
+            "seam_step": 0.008265408445250387,
+            "seam_ncc": 0.9395111379840895,
+            "zero_lag_corr": 0.8078950704258184,
+            "cents_err_per_loop": -0.2141355820410421,
+            "rms_ripple_db": -2.100292809052517,
+            "spectral_dist": 5.621137566436407
+          },
+          "engine": {
+            "eff_xfade": 2287,
+            "wrap_advance": 2450,
+            "period_multiple": 15
+          }
+        },
+        {
+          "arm_id": "optimizer_2",
+          "provenance": "optimizer",
+          "rank": 2,
+          "loop": {
+            "start": 21163,
+            "end": 24315,
+            "xfade": 1201
+          },
+          "loop_engine": {
+            "start": 23035,
+            "end": 26465,
+            "xfade": 1307
+          },
+          "metrics": {
+            "seam_step": 0.010138510921255317,
+            "seam_ncc": 0.9421445127730164,
+            "zero_lag_corr": 0.7819702250931225,
+            "cents_err_per_loop": -0.48593620259584597,
+            "rms_ripple_db": -1.853468636432093,
+            "spectral_dist": 5.685317755467965
+          },
+          "engine": {
+            "eff_xfade": 1307,
+            "wrap_advance": 2123,
+            "period_multiple": 13
+          }
+        },
+        {
+          "arm_id": "optimizer_3",
+          "provenance": "optimizer",
+          "rank": 3,
+          "loop": {
+            "start": 20794,
+            "end": 24546,
+            "xfade": 150
+          },
+          "loop_engine": {
+            "start": 22633,
+            "end": 26717,
+            "xfade": 163
+          },
+          "metrics": {
+            "seam_step": 0.011203217783798609,
+            "seam_ncc": 0.9275373362828307,
+            "zero_lag_corr": 0.8078811876778728,
+            "cents_err_per_loop": 0.2274494347813432,
+            "rms_ripple_db": 3.2138146521156425,
+            "spectral_dist": 6.911153463727608
+          },
+          "engine": {
+            "eff_xfade": 163,
+            "wrap_advance": 3921,
+            "period_multiple": 24
+          }
+        },
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 3688,
+            "end": 5045,
+            "xfade": 605
+          },
+          "loop_engine": {
+            "start": 4014,
+            "end": 5491,
+            "xfade": 659
+          },
+          "metrics": {
+            "seam_step": 0.23401186630805723,
+            "seam_ncc": 0.885374417405249,
+            "zero_lag_corr": 0.6693989156598793,
+            "cents_err_per_loop": 2.6100641455255302,
+            "rms_ripple_db": 1.721023210806056,
+            "spectral_dist": 4.88744048005053
+          },
+          "engine": {
+            "eff_xfade": 659,
+            "wrap_advance": 818,
+            "period_multiple": 5
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 3994,
+            "end": 4979,
+            "xfade": 123
+          },
+          "loop_engine": {
+            "start": 4347,
+            "end": 5419,
+            "xfade": 134
+          },
+          "metrics": {
+            "seam_step": 0.46962284407164645,
+            "seam_ncc": 0.13013925807707954,
+            "zero_lag_corr": -0.09244575348050642,
+            "cents_err_per_loop": -76.04672736667408,
+            "rms_ripple_db": 1.6810661939038694,
+            "spectral_dist": 6.369131320904801
+          },
+          "engine": {
+            "eff_xfade": 134,
+            "wrap_advance": 938,
+            "period_multiple": 6
+          }
+        }
+      ],
+      "notes": [
+        "gold [4014,5491) lies outside the detected window [19968,27136) \u2014 the tool cannot reach gold in this mode"
+      ]
+    },
+    {
+      "sample_id": "hard_tuned_vocal_0020",
+      "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0020.wav",
+      "class": "Hard-tuned vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 67,
+      "file_sample_rate": 48000,
+      "file_num_samples": 39032,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 122.38719759811386,
+      "window": {
+        "start": 4096,
+        "end": 6144
+      },
+      "arms": [
+        {
+          "arm_id": "optimizer_1",
+          "provenance": "optimizer",
+          "rank": 1,
+          "loop": {
+            "start": 4185,
+            "end": 6021,
+            "xfade": 122
+          },
+          "loop_engine": {
+            "start": 4185,
+            "end": 6021,
+            "xfade": 122
+          },
+          "metrics": {
+            "seam_step": 0.016445036804960598,
+            "seam_ncc": 0.8929686981066096,
+            "zero_lag_corr": 0.8516171836498398,
+            "cents_err_per_loop": 0.585156626104205,
+            "rms_ripple_db": -1.3778640708523568,
+            "spectral_dist": 7.2723646073672565
+          },
+          "engine": {
+            "eff_xfade": 122,
+            "wrap_advance": 1714,
+            "period_multiple": 14
+          }
+        },
+        {
+          "arm_id": "optimizer_2",
+          "provenance": "optimizer",
+          "rank": 2,
+          "loop": {
+            "start": 4393,
+            "end": 5984,
+            "xfade": 122
+          },
+          "loop_engine": {
+            "start": 4393,
+            "end": 5984,
+            "xfade": 122
+          },
+          "metrics": {
+            "seam_step": 0.020054767639395153,
+            "seam_ncc": 0.9029490569394311,
+            "zero_lag_corr": 0.9612791474920701,
+            "cents_err_per_loop": 0.4168059623776735,
+            "rms_ripple_db": 1.8610442181385636,
+            "spectral_dist": 6.4110940035279524
+          },
+          "engine": {
+            "eff_xfade": 122,
+            "wrap_advance": 1469,
+            "period_multiple": 12
+          }
+        },
+        {
+          "arm_id": "optimizer_3",
+          "provenance": "optimizer",
+          "rank": 3,
+          "loop": {
+            "start": 4185,
+            "end": 6021,
+            "xfade": 367
+          },
+          "loop_engine": {
+            "start": 4185,
+            "end": 6021,
+            "xfade": 367
+          },
+          "metrics": {
+            "seam_step": 0.02096201363330939,
+            "seam_ncc": 0.9519796138407598,
+            "zero_lag_corr": 0.8951803978626836,
+            "cents_err_per_loop": 0.4168059623776735,
+            "rms_ripple_db": 2.3087205065465874,
+            "spectral_dist": 7.003274168013911
+          },
+          "engine": {
+            "eff_xfade": 367,
+            "wrap_advance": 1469,
+            "period_multiple": 12
+          }
+        },
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 15942,
+            "end": 28165,
+            "xfade": 6112
+          },
+          "loop_engine": {
+            "start": 15942,
+            "end": 28165,
+            "xfade": 6112
+          },
+          "metrics": {
+            "seam_step": 0.25177703177529775,
+            "seam_ncc": 0.9959482716557607,
+            "zero_lag_corr": 0.27457523683852647,
+            "cents_err_per_loop": -2.083443926541724,
+            "rms_ripple_db": 0.9735633569996449,
+            "spectral_dist": 6.138403506061779
+          },
+          "engine": {
+            "eff_xfade": 6111,
+            "wrap_advance": 6112,
+            "period_multiple": 50
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 18687,
+            "end": 26958,
+            "xfade": 1033
+          },
+          "loop_engine": {
+            "start": 18687,
+            "end": 26958,
+            "xfade": 1033
+          },
+          "metrics": {
+            "seam_step": 0.11988795847473406,
+            "seam_ncc": 0.9785826447484369,
+            "zero_lag_corr": 0.38978110342680317,
+            "cents_err_per_loop": 4.1082017730663996,
+            "rms_ripple_db": 1.4776869852601866,
+            "spectral_dist": 7.8237685006879
+          },
+          "engine": {
+            "eff_xfade": 1033,
+            "wrap_advance": 7238,
+            "period_multiple": 59
+          }
+        }
+      ],
+      "notes": [
+        "gold [15942,28165) lies outside the detected window [4096,6144) \u2014 the tool cannot reach gold in this mode"
+      ]
+    },
+    {
+      "sample_id": "natural_vocal_0022",
+      "file": "corpus/Natural vocal/natural_vocal_0022.wav",
+      "class": "Natural vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 72,
+      "file_sample_rate": 44100,
+      "file_num_samples": 45568,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 183.40525425793584,
+      "window": {
+        "start": 11776,
+        "end": 46592
+      },
+      "arms": [
+        {
+          "arm_id": "optimizer_1",
+          "provenance": "optimizer",
+          "rank": 1,
+          "loop": {
+            "start": 13823,
+            "end": 42636,
+            "xfade": 168
+          },
+          "loop_engine": {
+            "start": 15045,
+            "end": 46407,
+            "xfade": 183
+          },
+          "metrics": {
+            "seam_step": 0.0014154133835201927,
+            "seam_ncc": 0.8893355568958489,
+            "zero_lag_corr": 0.8128524486584947,
+            "cents_err_per_loop": 0.005928824677071147,
+            "rms_ripple_db": -1.303367156943822,
+            "spectral_dist": 8.58354803831617
+          },
+          "engine": {
+            "eff_xfade": 183,
+            "wrap_advance": 31179,
+            "period_multiple": 170
+          }
+        },
+        {
+          "arm_id": "optimizer_2",
+          "provenance": "optimizer",
+          "rank": 2,
+          "loop": {
+            "start": 16044,
+            "end": 39466,
+            "xfade": 2696
+          },
+          "loop_engine": {
+            "start": 17463,
+            "end": 42956,
+            "xfade": 2934
+          },
+          "metrics": {
+            "seam_step": 0.0014488325090613687,
+            "seam_ncc": 0.9226894322590804,
+            "zero_lag_corr": 0.43924576109425273,
+            "cents_err_per_loop": 0.011797378712813604,
+            "rms_ripple_db": 2.2261697868859005,
+            "spectral_dist": 11.88112609997397
+          },
+          "engine": {
+            "eff_xfade": 2934,
+            "wrap_advance": 22559,
+            "period_multiple": 123
+          }
+        },
+        {
+          "arm_id": "optimizer_3",
+          "provenance": "optimizer",
+          "rank": 3,
+          "loop": {
+            "start": 17392,
+            "end": 37949,
+            "xfade": 1348
+          },
+          "loop_engine": {
+            "start": 18930,
+            "end": 41305,
+            "xfade": 1467
+          },
+          "metrics": {
+            "seam_step": 0.001576643465282958,
+            "seam_ncc": 0.9269149981654097,
+            "zero_lag_corr": 0.5782397892364313,
+            "cents_err_per_loop": -0.016476404657351472,
+            "rms_ripple_db": 1.8263526991332437,
+            "spectral_dist": 10.813103151297184
+          },
+          "engine": {
+            "eff_xfade": 1467,
+            "wrap_advance": 20908,
+            "period_multiple": 114
+          }
+        },
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 20858,
+            "end": 31430,
+            "xfade": 2441
+          },
+          "loop_engine": {
+            "start": 22703,
+            "end": 34210,
+            "xfade": 2657
+          },
+          "metrics": {
+            "seam_step": 0.09559805408192874,
+            "seam_ncc": 0.9484812048615546,
+            "zero_lag_corr": 0.1157764251570229,
+            "cents_err_per_loop": 9.129694805040607,
+            "rms_ripple_db": -1.8601097243556652,
+            "spectral_dist": 10.113962387752295
+          },
+          "engine": {
+            "eff_xfade": 2657,
+            "wrap_advance": 8850,
+            "period_multiple": 48
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 22316,
+            "end": 30194,
+            "xfade": 984
+          },
+          "loop_engine": {
+            "start": 24289,
+            "end": 32864,
+            "xfade": 1071
+          },
+          "metrics": {
+            "seam_step": 0.09611229023159963,
+            "seam_ncc": 0.941498869409795,
+            "zero_lag_corr": -0.4108397009034738,
+            "cents_err_per_loop": -3.598862682087371,
+            "rms_ripple_db": -2.954072343135914,
+            "spectral_dist": 8.567368048370016
+          },
+          "engine": {
+            "eff_xfade": 1071,
+            "wrap_advance": 7504,
+            "period_multiple": 41
+          }
+        }
+      ],
+      "notes": [
+        "declared root_note=72 (523.25 Hz) disagrees with the measured 261.72 Hz by -1 octave(s); analysis uses the measurement"
+      ]
+    },
+    {
+      "sample_id": "natural_vocal_0023",
+      "file": "corpus/Natural vocal/natural_vocal_0023.wav",
+      "class": "Natural vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 67,
+      "file_sample_rate": 44100,
+      "file_num_samples": 54784,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 122.33984697011188,
+      "window": {
+        "start": 1024,
+        "end": 3584
+      },
+      "arms": [
+        {
+          "arm_id": "optimizer_1",
+          "provenance": "optimizer",
+          "rank": 1,
+          "loop": {
+            "start": 1412,
+            "end": 3098,
+            "xfade": 786
+          },
+          "loop_engine": {
+            "start": 1537,
+            "end": 3372,
+            "xfade": 856
+          },
+          "metrics": {
+            "seam_step": 0.0036150708820316614,
+            "seam_ncc": 0.9452583833966284,
+            "zero_lag_corr": 0.8759408872453118,
+            "cents_err_per_loop": 0.49737989698859186,
+            "rms_ripple_db": 2.61345748699,
+            "spectral_dist": 5.0102773293394876
+          },
+          "engine": {
+            "eff_xfade": 856,
+            "wrap_advance": 979,
+            "period_multiple": 8
+          }
+        },
+        {
+          "arm_id": "optimizer_2",
+          "provenance": "optimizer",
+          "rank": 2,
+          "loop": {
+            "start": 1184,
+            "end": 3095,
+            "xfade": 449
+          },
+          "loop_engine": {
+            "start": 1289,
+            "end": 3369,
+            "xfade": 489
+          },
+          "metrics": {
+            "seam_step": 0.0047804072859015225,
+            "seam_ncc": 0.9608479076699963,
+            "zero_lag_corr": 0.6960917750637847,
+            "cents_err_per_loop": 0.6334030005010417,
+            "rms_ripple_db": 3.4196772640642936,
+            "spectral_dist": 6.531069646383873
+          },
+          "engine": {
+            "eff_xfade": 489,
+            "wrap_advance": 1591,
+            "period_multiple": 13
+          }
+        },
+        {
+          "arm_id": "optimizer_3",
+          "provenance": "optimizer",
+          "rank": 3,
+          "loop": {
+            "start": 1075,
+            "end": 3098,
+            "xfade": 449
+          },
+          "loop_engine": {
+            "start": 1170,
+            "end": 3372,
+            "xfade": 489
+          },
+          "metrics": {
+            "seam_step": 0.024378185030842586,
+            "seam_ncc": 0.9753662224310172,
+            "zero_lag_corr": 0.5637076440370382,
+            "cents_err_per_loop": 0.244737204228524,
+            "rms_ripple_db": 3.428695588777275,
+            "spectral_dist": 6.1426945553477745
+          },
+          "engine": {
+            "eff_xfade": 489,
+            "wrap_advance": 1713,
+            "period_multiple": 14
+          }
+        },
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 30090,
+            "end": 44435,
+            "xfade": 7172
+          },
+          "loop_engine": {
+            "start": 32751,
+            "end": 48365,
+            "xfade": 7806
+          },
+          "metrics": {
+            "seam_step": 0.16107558120020893,
+            "seam_ncc": 0.995192184410705,
+            "zero_lag_corr": -0.5829688329783121,
+            "cents_err_per_loop": -4.8158745519819925,
+            "rms_ripple_db": 3.2508863974879283,
+            "spectral_dist": 8.087027731343019
+          },
+          "engine": {
+            "eff_xfade": 7806,
+            "wrap_advance": 7808,
+            "period_multiple": 64
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 32055,
+            "end": 42762,
+            "xfade": 1338
+          },
+          "loop_engine": {
+            "start": 34890,
+            "end": 46544,
+            "xfade": 1456
+          },
+          "metrics": {
+            "seam_step": 0.06240354893525823,
+            "seam_ncc": 0.9856031275453796,
+            "zero_lag_corr": -0.7964198409039621,
+            "cents_err_per_loop": 7.450349910516085,
+            "rms_ripple_db": -7.02602206654233,
+            "spectral_dist": 9.434500621749317
+          },
+          "engine": {
+            "eff_xfade": 1456,
+            "wrap_advance": 10198,
+            "period_multiple": 83
+          }
+        }
+      ],
+      "notes": [
+        "gold [32751,48365) lies outside the detected window [1024,3584) \u2014 the tool cannot reach gold in this mode"
+      ]
+    },
+    {
+      "sample_id": "natural_vocal_0024",
+      "file": "corpus/Natural vocal/natural_vocal_0024.wav",
+      "class": "Natural vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 64,
+      "file_sample_rate": 44100,
+      "file_num_samples": 54784,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 145.4486019584054,
+      "window": {
+        "start": 1024,
+        "end": 3584
+      },
+      "arms": [
+        {
+          "arm_id": "optimizer_1",
+          "provenance": "optimizer",
+          "rank": 1,
+          "loop": {
+            "start": 2339,
+            "end": 2874,
+            "xfade": 133
+          },
+          "loop_engine": {
+            "start": 2546,
+            "end": 3128,
+            "xfade": 145
+          },
+          "metrics": {
+            "seam_step": 0.006340184614783044,
+            "seam_ncc": 0.9748075789098964,
+            "zero_lag_corr": 0.9507237189582092,
+            "cents_err_per_loop": 2.593619498103847,
+            "rms_ripple_db": -2.4002096270017512,
+            "spectral_dist": 5.306585438497954
+          },
+          "engine": {
+            "eff_xfade": 145,
+            "wrap_advance": 437,
+            "period_multiple": 3
+          }
+        },
+        {
+          "arm_id": "optimizer_2",
+          "provenance": "optimizer",
+          "rank": 2,
+          "loop": {
+            "start": 1611,
+            "end": 3081,
+            "xfade": 668
+          },
+          "loop_engine": {
+            "start": 1754,
+            "end": 3354,
+            "xfade": 727
+          },
+          "metrics": {
+            "seam_step": 0.006410793058696584,
+            "seam_ncc": 0.9480010183631425,
+            "zero_lag_corr": 0.8658742070477549,
+            "cents_err_per_loop": 0.6116684527139901,
+            "rms_ripple_db": -1.584763351016053,
+            "spectral_dist": 4.942923769184743
+          },
+          "engine": {
+            "eff_xfade": 727,
+            "wrap_advance": 873,
+            "period_multiple": 6
+          }
+        },
+        {
+          "arm_id": "optimizer_3",
+          "provenance": "optimizer",
+          "rank": 3,
+          "loop": {
+            "start": 1521,
+            "end": 3124,
+            "xfade": 401
+          },
+          "loop_engine": {
+            "start": 1655,
+            "end": 3400,
+            "xfade": 436
+          },
+          "metrics": {
+            "seam_step": 0.013560464398284868,
+            "seam_ncc": 0.9409508638764041,
+            "zero_lag_corr": 0.8513600601388787,
+            "cents_err_per_loop": -0.04948643371270117,
+            "rms_ripple_db": -2.1252217736081214,
+            "spectral_dist": 5.804210612812114
+          },
+          "engine": {
+            "eff_xfade": 436,
+            "wrap_advance": 1309,
+            "period_multiple": 9
+          }
+        },
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 26990,
+            "end": 46021,
+            "xfade": 9515
+          },
+          "loop_engine": {
+            "start": 29377,
+            "end": 50091,
+            "xfade": 10356
+          },
+          "metrics": {
+            "seam_step": 0.150831766105479,
+            "seam_ncc": 0.9931240751306346,
+            "zero_lag_corr": 0.7017174427003958,
+            "cents_err_per_loop": 5.214125314172842,
+            "rms_ripple_db": -1.9843408792181343,
+            "spectral_dist": 8.414364138935358
+          },
+          "engine": {
+            "eff_xfade": 10356,
+            "wrap_advance": 10358,
+            "period_multiple": 71
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 29643,
+            "end": 43780,
+            "xfade": 1767
+          },
+          "loop_engine": {
+            "start": 32264,
+            "end": 47652,
+            "xfade": 1923
+          },
+          "metrics": {
+            "seam_step": 0.031349616787757856,
+            "seam_ncc": 0.9774020509623436,
+            "zero_lag_corr": -0.0008410591450332224,
+            "cents_err_per_loop": -7.917385100023309,
+            "rms_ripple_db": -1.0099090599743235,
+            "spectral_dist": 8.52551186767558
+          },
+          "engine": {
+            "eff_xfade": 1923,
+            "wrap_advance": 13465,
+            "period_multiple": 93
+          }
+        }
+      ],
+      "notes": [
+        "gold [29377,50091) lies outside the detected window [1024,3584) \u2014 the tool cannot reach gold in this mode"
+      ]
+    },
+    {
+      "sample_id": "natural_vocal_0025",
+      "file": "corpus/Natural vocal/natural_vocal_0025.wav",
+      "class": "Natural vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 61,
+      "file_sample_rate": 44100,
+      "file_num_samples": 54784,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 170.71438741772414,
+      "window": {
+        "start": 2048,
+        "end": 9216
+      },
+      "arms": [
+        {
+          "arm_id": "optimizer_1",
+          "provenance": "optimizer",
+          "rank": 1,
+          "loop": {
+            "start": 3595,
+            "end": 4850,
+            "xfade": 470
+          },
+          "loop_engine": {
+            "start": 3913,
+            "end": 5279,
+            "xfade": 512
+          },
+          "metrics": {
+            "seam_step": 0.007848246392159931,
+            "seam_ncc": 0.9573919001910526,
+            "zero_lag_corr": 0.9645389859060559,
+            "cents_err_per_loop": 0.8679893206839956,
+            "rms_ripple_db": 2.4154182406848075,
+            "spectral_dist": 7.497968305593411
+          },
+          "engine": {
+            "eff_xfade": 512,
+            "wrap_advance": 854,
+            "period_multiple": 5
+          }
+        },
+        {
+          "arm_id": "optimizer_2",
+          "provenance": "optimizer",
+          "rank": 2,
+          "loop": {
+            "start": 3038,
+            "end": 5547,
+            "xfade": 313
+          },
+          "loop_engine": {
+            "start": 3307,
+            "end": 6038,
+            "xfade": 341
+          },
+          "metrics": {
+            "seam_step": 0.014137640955054327,
+            "seam_ncc": 0.9846097110352813,
+            "zero_lag_corr": 0.9547614455954981,
+            "cents_err_per_loop": -0.0010313864614576393,
+            "rms_ripple_db": 2.6296624717954815,
+            "spectral_dist": 7.227332481989455
+          },
+          "engine": {
+            "eff_xfade": 341,
+            "wrap_advance": 2390,
+            "period_multiple": 14
+          }
+        },
+        {
+          "arm_id": "optimizer_3",
+          "provenance": "optimizer",
+          "rank": 3,
+          "loop": {
+            "start": 3179,
+            "end": 5218,
+            "xfade": 157
+          },
+          "loop_engine": {
+            "start": 3460,
+            "end": 5679,
+            "xfade": 171
+          },
+          "metrics": {
+            "seam_step": 0.015058135979505768,
+            "seam_ncc": 0.9857606130285681,
+            "zero_lag_corr": 0.9702637584281913,
+            "cents_err_per_loop": -0.4840092244571873,
+            "rms_ripple_db": 2.459799650368319,
+            "spectral_dist": 7.203239280194935
+          },
+          "engine": {
+            "eff_xfade": 171,
+            "wrap_advance": 2048,
+            "period_multiple": 12
+          }
+        },
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 13696,
+            "end": 41088,
+            "xfade": 13696
+          },
+          "loop_engine": {
+            "start": 14907,
+            "end": 44722,
+            "xfade": 14907
+          },
+          "metrics": {
+            "seam_step": 0.05206300077623644,
+            "seam_ncc": 0.9503370994759776,
+            "zero_lag_corr": -0.11230295935361827,
+            "cents_err_per_loop": 6.497721097076393,
+            "rms_ripple_db": -1.918046923142285,
+            "spectral_dist": 8.024887843987983
+          },
+          "engine": {
+            "eff_xfade": 14907,
+            "wrap_advance": 14908,
+            "period_multiple": 87
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 17492,
+            "end": 37951,
+            "xfade": 2557
+          },
+          "loop_engine": {
+            "start": 19039,
+            "end": 41307,
+            "xfade": 2783
+          },
+          "metrics": {
+            "seam_step": 0.4661770717166138,
+            "seam_ncc": 0.5343049705660411,
+            "zero_lag_corr": 0.153575218093727,
+            "cents_err_per_loop": 2.0945479109199967,
+            "rms_ripple_db": -3.8545006845580954,
+            "spectral_dist": 12.569889378492425
+          },
+          "engine": {
+            "eff_xfade": 2783,
+            "wrap_advance": 19485,
+            "period_multiple": 114
+          }
+        }
+      ],
+      "notes": [
+        "gold [14907,44722) lies outside the detected window [2048,9216) \u2014 the tool cannot reach gold in this mode"
+      ]
+    },
+    {
+      "sample_id": "natural_vocal_0026",
+      "file": "corpus/Natural vocal/natural_vocal_0026.wav",
+      "class": "Natural vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 60,
+      "file_sample_rate": 44100,
+      "file_num_samples": 30208,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 183.21350436030744,
+      "window": {
+        "start": 2048,
+        "end": 31232
+      },
+      "arms": [
+        {
+          "arm_id": "optimizer_1",
+          "provenance": "optimizer",
+          "rank": 1,
+          "loop": {
+            "start": 1968,
+            "end": 21830,
+            "xfade": 1683
+          },
+          "loop_engine": {
+            "start": 2142,
+            "end": 23761,
+            "xfade": 1832
+          },
+          "metrics": {
+            "seam_step": 0.00036389137128408375,
+            "seam_ncc": 0.9495808181234389,
+            "zero_lag_corr": 0.6119454060015007,
+            "cents_err_per_loop": -0.0051158177718441345,
+            "rms_ripple_db": 3.83698684043593,
+            "spectral_dist": 10.828458068717387
+          },
+          "engine": {
+            "eff_xfade": 1832,
+            "wrap_advance": 19787,
+            "period_multiple": 108
+          }
+        },
+        {
+          "arm_id": "optimizer_2",
+          "provenance": "optimizer",
+          "rank": 2,
+          "loop": {
+            "start": 1996,
+            "end": 23711,
+            "xfade": 1851
+          },
+          "loop_engine": {
+            "start": 2173,
+            "end": 25808,
+            "xfade": 2015
+          },
+          "metrics": {
+            "seam_step": 0.000403258865244767,
+            "seam_ncc": 0.9957823621638225,
+            "zero_lag_corr": 0.21544467835665151,
+            "cents_err_per_loop": 0.06458099775562291,
+            "rms_ripple_db": 1.906289908319378,
+            "spectral_dist": 12.241553038533327
+          },
+          "engine": {
+            "eff_xfade": 2015,
+            "wrap_advance": 21620,
+            "period_multiple": 118
+          }
+        },
+        {
+          "arm_id": "optimizer_3",
+          "provenance": "optimizer",
+          "rank": 3,
+          "loop": {
+            "start": 2136,
+            "end": 21494,
+            "xfade": 1515
+          },
+          "loop_engine": {
+            "start": 2325,
+            "end": 23395,
+            "xfade": 1649
+          },
+          "metrics": {
+            "seam_step": 0.00047697276616052596,
+            "seam_ncc": 0.947807011563464,
+            "zero_lag_corr": 0.6649558587580648,
+            "cents_err_per_loop": 0.032852646840971444,
+            "rms_ripple_db": 3.642156935962164,
+            "spectral_dist": 10.40152689681988
+          },
+          "engine": {
+            "eff_xfade": 1649,
+            "wrap_advance": 19421,
+            "period_multiple": 106
+          }
+        },
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 10918,
+            "end": 15459,
+            "xfade": 0
+          },
+          "loop_engine": {
+            "start": 11884,
+            "end": 16826,
+            "xfade": 0
+          },
+          "metrics": {
+            "seam_step": 0.041494997561926754,
+            "seam_ncc": 0.5349752796751003,
+            "zero_lag_corr": null,
+            "cents_err_per_loop": -1.6682911160707035,
+            "rms_ripple_db": -1.6378239745692507,
+            "spectral_dist": 8.015373678095502
+          },
+          "engine": {
+            "eff_xfade": 0,
+            "wrap_advance": 4942,
+            "period_multiple": 27
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 11558,
+            "end": 15005,
+            "xfade": 431
+          },
+          "loop_engine": {
+            "start": 12580,
+            "end": 16332,
+            "xfade": 469
+          },
+          "metrics": {
+            "seam_step": 0.25248227816730645,
+            "seam_ncc": 0.9748549178308326,
+            "zero_lag_corr": 0.6160373218713401,
+            "cents_err_per_loop": -7.80960315764813,
+            "rms_ripple_db": 2.144125385221665,
+            "spectral_dist": 4.7684663275149415
+          },
+          "engine": {
+            "eff_xfade": 469,
+            "wrap_advance": 3283,
+            "period_multiple": 18
+          }
+        }
+      ],
+      "notes": []
+    },
+    {
+      "sample_id": "natural_vocal_0027",
+      "file": "corpus/Natural vocal/natural_vocal_0027.wav",
+      "class": "Natural vocal",
+      "behavior_family": "stable_periodic",
+      "root_note": 52,
+      "file_sample_rate": 44100,
+      "file_num_samples": 30208,
+      "engine_sample_rate": 48000.0,
+      "period_engine": 291.14615983587595,
+      "window": {
+        "start": 2560,
+        "end": 28160
+      },
+      "arms": [
+        {
+          "arm_id": "optimizer_1",
+          "provenance": "optimizer",
+          "rank": 1,
+          "loop": {
+            "start": 2670,
+            "end": 22464,
+            "xfade": 4012
+          },
+          "loop_engine": {
+            "start": 2906,
+            "end": 24451,
+            "xfade": 4367
+          },
+          "metrics": {
+            "seam_step": 0.0010983407698416906,
+            "seam_ncc": 0.9832625748817007,
+            "zero_lag_corr": 0.11944623615587145,
+            "cents_err_per_loop": 0.03795188050954652,
+            "rms_ripple_db": 2.069178951658857,
+            "spectral_dist": 10.236104439044993
+          },
+          "engine": {
+            "eff_xfade": 4367,
+            "wrap_advance": 17178,
+            "period_multiple": 59
+          }
+        },
+        {
+          "arm_id": "optimizer_2",
+          "provenance": "optimizer",
+          "rank": 2,
+          "loop": {
+            "start": 3472,
+            "end": 18986,
+            "xfade": 3210
+          },
+          "loop_engine": {
+            "start": 3779,
+            "end": 20665,
+            "xfade": 3494
+          },
+          "metrics": {
+            "seam_step": 0.0012311303542932115,
+            "seam_ncc": 0.9793789234422331,
+            "zero_lag_corr": 0.24428314407169954,
+            "cents_err_per_loop": -0.09350795789459865,
+            "rms_ripple_db": 4.002158261337557,
+            "spectral_dist": 9.952058571475302
+          },
+          "engine": {
+            "eff_xfade": 3494,
+            "wrap_advance": 13392,
+            "period_multiple": 46
+          }
+        },
+        {
+          "arm_id": "optimizer_3",
+          "provenance": "optimizer",
+          "rank": 3,
+          "loop": {
+            "start": 3472,
+            "end": 19254,
+            "xfade": 3210
+          },
+          "loop_engine": {
+            "start": 3779,
+            "end": 20957,
+            "xfade": 3494
+          },
+          "metrics": {
+            "seam_step": 0.0012421238527860888,
+            "seam_ncc": 0.9782876863965765,
+            "zero_lag_corr": 0.24281757850603047,
+            "cents_err_per_loop": 0.01650875842330165,
+            "rms_ripple_db": 4.3045588907822205,
+            "spectral_dist": 10.123596205344036
+          },
+          "engine": {
+            "eff_xfade": 3494,
+            "wrap_advance": 13684,
+            "period_multiple": 47
+          }
+        },
+        {
+          "arm_id": "gold",
+          "provenance": "gold",
+          "rank": null,
+          "loop": {
+            "start": 9048,
+            "end": 13321,
+            "xfade": 0
+          },
+          "loop_engine": {
+            "start": 9848,
+            "end": 14499,
+            "xfade": 0
+          },
+          "metrics": {
+            "seam_step": 0.21575224867103873,
+            "seam_ncc": 0.9269260730888962,
+            "zero_lag_corr": null,
+            "cents_err_per_loop": -2.7294663203579987,
+            "rms_ripple_db": 0.2971513533014873,
+            "spectral_dist": 12.412269229055564
+          },
+          "engine": {
+            "eff_xfade": 0,
+            "wrap_advance": 4651,
+            "period_multiple": 16
+          }
+        },
+        {
+          "arm_id": "naive",
+          "provenance": "naive",
+          "rank": null,
+          "loop": {
+            "start": 9647,
+            "end": 12816,
+            "xfade": 396
+          },
+          "loop_engine": {
+            "start": 10500,
+            "end": 13949,
+            "xfade": 431
+          },
+          "metrics": {
+            "seam_step": 0.036168542922484545,
+            "seam_ncc": 0.7979644258561215,
+            "zero_lag_corr": 0.055032875113640585,
+            "cents_err_per_loop": 62.219059017293624,
+            "rms_ripple_db": -1.6687500862797966,
+            "spectral_dist": 5.862472461207131
+          },
+          "engine": {
+            "eff_xfade": 431,
+            "wrap_advance": 3018,
+            "period_multiple": 10
+          }
+        }
+      ],
+      "notes": []
+    }
+  ]
+}

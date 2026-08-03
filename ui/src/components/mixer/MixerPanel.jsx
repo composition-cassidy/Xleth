@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useMemo, useRef } from 'react'
 import useMixerStore, { peaksSnapshot } from '../../stores/mixerStore.js'
 import useTimelineFocusStore from '../../stores/timelineFocusStore.js'
 import { timelineEvents } from '../../timelineEvents.js'
@@ -6,15 +6,12 @@ import { clearAllMeterTelemetry, mergeMeterTelemetry } from './meterTelemetry.js
 import MixerStrip from './MixerStrip.jsx'
 import MasterStrip from './MasterStrip.jsx'
 import SelectedEffectRack from './SelectedEffectRack.jsx'
-// Stock effect editor panels are NOT rendered here. They live in the global
-// EffectEditorHost (mounted at the app root) so they are never a DOM descendant
-// of the Mixer's floating PanelFrame and cannot be clipped/trapped by it.
-// The Mixer only *requests* an editor via the effect store's open() (see
-// EffectModule.jsx / effectEditorOpeners.js).
+import { buildMixerFolderLayout } from './mixerFolderLayout.js'
 
 export default function MixerPanel() {
   const visible = useMixerStore(s => s.visible)
   const trackOrder = useMixerStore(s => s.trackOrder)
+  const trackLayout = useMixerStore(s => s.trackLayout)
   const tracks = useMixerStore(s => s.tracks)
   const selectedChainKey = useMixerStore(s => s.selectedChainKey)
   const setSelectedChainKey = useMixerStore(s => s.setSelectedChainKey)
@@ -25,24 +22,28 @@ export default function MixerPanel() {
   const focusedTrackId = useTimelineFocusStore(s => s.focusedTrackId)
   const previousFocusedTrackIdRef = useRef(null)
 
-  // Init on mount + when tracks change
   useEffect(() => {
     if (!visible) return
     init()
     const onTracksChanged = async () => {
       try {
-        const list = await window.xleth?.timeline?.getTracks()
-        if (Array.isArray(list)) syncFromTimeline(list)
+        const [list, layout] = await Promise.all([
+          window.xleth?.timeline?.getTracks(),
+          window.xleth?.timeline?.getTrackLayout?.(),
+        ])
+        if (Array.isArray(list)) syncFromTimeline(list, layout)
         await refreshRouting()
       } catch {}
     }
     timelineEvents.addEventListener('timeline-tracks-changed', onTracksChanged)
+    timelineEvents.addEventListener('timeline-track-layout-changed', onTracksChanged)
     timelineEvents.addEventListener('timeline-routing-changed', onTracksChanged)
     timelineEvents.addEventListener('timeline-clips-changed', onTracksChanged)
     timelineEvents.addEventListener('timeline-patterns-changed', onTracksChanged)
     const offProjectLoaded = window.xleth?.onProjectLoaded?.(onTracksChanged)
     return () => {
       timelineEvents.removeEventListener('timeline-tracks-changed', onTracksChanged)
+      timelineEvents.removeEventListener('timeline-track-layout-changed', onTracksChanged)
       timelineEvents.removeEventListener('timeline-routing-changed', onTracksChanged)
       timelineEvents.removeEventListener('timeline-clips-changed', onTracksChanged)
       timelineEvents.removeEventListener('timeline-patterns-changed', onTracksChanged)
@@ -55,22 +56,18 @@ export default function MixerPanel() {
     const previousFocusedTrackId = previousFocusedTrackIdRef.current
     previousFocusedTrackIdRef.current = focusedTrackId
     if (focusedTrackId == null || !tracks[focusedTrackId]) return
-    if (focusedTrackId !== previousFocusedTrackId) {
-      setSelectedChainKey(String(focusedTrackId))
-    }
+    if (focusedTrackId !== previousFocusedTrackId) setSelectedChainKey(String(focusedTrackId))
   }, [visible, focusedTrackId, tracks, setSelectedChainKey])
 
   useEffect(() => {
     if (!visible || selectedChainKey === 'master') return
     if (selectedChainKey != null && tracks[Number(selectedChainKey)]) return
-
     const fallbackTrackId = focusedTrackId != null && tracks[focusedTrackId]
       ? focusedTrackId
       : trackOrder[0]
     setSelectedChainKey(fallbackTrackId == null ? null : String(fallbackTrackId))
   }, [visible, selectedChainKey, focusedTrackId, tracks, trackOrder, setSelectedChainKey])
 
-  // Peak polling — sequential async loop, 1 IPC call per cycle
   useEffect(() => {
     if (!visible) return
     let polling = true
@@ -78,19 +75,12 @@ export default function MixerPanel() {
       while (polling) {
         try {
           const data = await window.xleth?.audio?.getAllPeaks()
-          if (data) {
-            mergeMeterTelemetry(peaksSnapshot, data, performance.now())
-          } else {
-            clearAllMeterTelemetry(peaksSnapshot)
-          }
+          if (data) mergeMeterTelemetry(peaksSnapshot, data, performance.now())
+          else clearAllMeterTelemetry(peaksSnapshot)
         } catch {
           clearAllMeterTelemetry(peaksSnapshot)
         }
-        // 125 ms ≈ 8 Hz.  Previously 50 ms (20 Hz): getAllPeaks acquires a lock
-        // shared with the audio thread.  Under complex projects (9-10 tracks,
-        // effects) 20 Hz causes message-thread back-pressure
-        // and audio underruns.  8 Hz is imperceptible on a peak meter.
-        await new Promise(r => setTimeout(r, 125))
+        await new Promise(resolve => setTimeout(resolve, 125))
       }
     })()
     return () => {
@@ -98,6 +88,10 @@ export default function MixerPanel() {
       clearAllMeterTelemetry(peaksSnapshot)
     }
   }, [visible])
+
+  const mixerLayout = useMemo(() => {
+    return buildMixerFolderLayout(trackLayout, tracks)
+  }, [trackLayout, tracks])
 
   if (!visible) return null
 
@@ -109,14 +103,47 @@ export default function MixerPanel() {
             {routingError}
           </span>
         )}
-        <SelectedEffectRack />
-        <div className="mixer-tracks-scroll">
-          {trackOrder.length === 0
-            ? <div className="mixer-empty-state">No tracks — add tracks in the timeline</div>
-            : trackOrder.map(id => <MixerStrip key={id} trackId={id} />)
-          }
-        </div>
-        <MasterStrip />
+        {mixerLayout.hasFolderHeaders ? (
+          <>
+            <div className="mixer-offset-column mixer-offset-column--rack">
+              <div className="mixer-folder-spacer" aria-hidden="true" />
+              <SelectedEffectRack />
+            </div>
+            <div className="mixer-tracks-scroll mixer-tracks-scroll--foldered">
+              {mixerLayout.items.map(item => item.kind === 'folder' ? (
+                <section key={`folder-${item.folder.id}`} className="mixer-folder-group">
+                  <div className="mixer-folder-header" title={item.folder.name}>
+                    <span>{item.folder.name}</span>
+                    <span className="mixer-folder-count">{item.trackIds.length}</span>
+                  </div>
+                  <div className="mixer-folder-strips">
+                    {item.trackIds.map(id => <MixerStrip key={id} trackId={id} />)}
+                  </div>
+                </section>
+              ) : (
+                <div key={`track-${item.id}`} className="mixer-channel-column">
+                  <div className="mixer-folder-spacer" aria-hidden="true" />
+                  <MixerStrip trackId={item.id} />
+                </div>
+              ))}
+            </div>
+            <div className="mixer-offset-column mixer-offset-column--master">
+              <div className="mixer-folder-spacer" aria-hidden="true" />
+              <MasterStrip />
+            </div>
+          </>
+        ) : (
+          <>
+            <SelectedEffectRack />
+            <div className="mixer-tracks-scroll">
+              {trackOrder.length === 0
+                ? <div className="mixer-empty-state">No tracks — add tracks in the timeline</div>
+                : trackOrder.map(id => <MixerStrip key={id} trackId={id} />)
+              }
+            </div>
+            <MasterStrip />
+          </>
+        )}
       </div>
     </div>
   )

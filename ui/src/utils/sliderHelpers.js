@@ -75,3 +75,15 @@ export function withSnapZero(setter, threshold = 0.025) {
 export function withSnapOne(setter, threshold = 0.025) {
   return (v) => setter(snapToOne(v, threshold))
 }
+
+/**
+ * Inline style for a range input's value-proportional fill. Renders as a CSS
+ * custom property (`--val`) that the flat-pass slider CSS reads to paint the
+ * track up to the current value — see `input[type=range]` rules in app.css.
+ * Purely decorative: these sliders are uncontrolled (defaultValue), so the
+ * fill only recomputes on re-render, same cadence as their existing readouts.
+ */
+export function rangeFillStyle(value, min, max) {
+  const pct = max > min ? ((value - min) / (max - min)) * 100 : 0
+  return { '--val': `${Math.min(100, Math.max(0, pct))}%` }
+}

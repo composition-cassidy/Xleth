@@ -7,14 +7,18 @@
 
 import React, { useState, useRef, useLayoutEffect, useEffect } from 'react'
 import { createPortal } from 'react-dom'
-import { Power } from 'lucide-react'
+import { Power, X, Copy, RotateCcw, Trash2 } from 'lucide-react'
 import { BAND_TYPES, BAND_MODES, BAND_COLORS } from '../../stores/eqStore.js'
 import { Q_FIELD } from './eqInspectorConfig.js'
 import EqInspectorKnob from './EqInspectorKnob.jsx'
 import SelectedBandInspector from './SelectedBandInspector.jsx'
+import XlethSelect from '../common/XlethSelect.jsx'
 
 const ANCHOR_OFFSET = 14
 const VIEWPORT_MARGIN = 8
+
+// Static — BAND_TYPES never changes at runtime.
+const BAND_TYPE_OPTIONS = BAND_TYPES.map((label, i) => ({ value: i, label }))
 
 export default function EqBandPopup({
   band, bandIndex, anchor,
@@ -26,6 +30,11 @@ export default function EqBandPopup({
   const [confirmDelete, setConfirmDelete] = useState(false)
   const confirmTimerRef = useRef(null)
   const color = BAND_COLORS[bandIndex % BAND_COLORS.length]
+  const modeOptions = BAND_MODES.map((label, i) => ({
+    value: i,
+    label,
+    disabled: (i === 1 && linPhase) || (i === 2 && (linPhase || oversample > 0)),
+  }))
 
   // Position near the orb, flipping/clamping to the actual viewport (not the
   // eq-panel's bounds) once the real rendered size is known.
@@ -90,13 +99,19 @@ export default function EqBandPopup({
     <div
       ref={popRef}
       className="eq-band-popup"
-      style={{ left: anchor.x + ANCHOR_OFFSET, top: anchor.y + ANCHOR_OFFSET }}
+      style={{
+        left: anchor.x + ANCHOR_OFFSET,
+        top: anchor.y + ANCHOR_OFFSET,
+        borderLeftColor: color,
+      }}
       onMouseDown={(e) => e.stopPropagation()}
     >
       <div className="eq-band-popup-header">
         <span className="eq-band-popup-color" style={{ background: color }} />
         <span className="eq-band-popup-title">Band {bandIndex + 1}</span>
-        <button className="eq-band-popup-close" onClick={onClose} title="Close">&times;</button>
+        <button className="eq-band-popup-close" onClick={onClose} title="Close">
+          <X size={13} />
+        </button>
       </div>
 
       <div className="eq-band-popup-controls">
@@ -116,29 +131,21 @@ export default function EqBandPopup({
         </div>
 
         <div className="eq-band-popup-selects">
-          <select
+          <XlethSelect
             className="eq-band-popup-select"
+            ariaLabel="Band type"
             value={band.type}
-            onChange={(e) => setBandParam(bandIndex, 'type', Number(e.target.value))}
-          >
-            {BAND_TYPES.map((label, i) => (
-              <option key={i} value={i}>{label}</option>
-            ))}
-          </select>
+            options={BAND_TYPE_OPTIONS}
+            onChange={(value) => setBandParam(bandIndex, 'type', value)}
+          />
 
-          <select
+          <XlethSelect
             className="eq-band-popup-select"
+            ariaLabel="Band mode"
             value={band.mode || 0}
-            onChange={(e) => setBandParam(bandIndex, 'mode', Number(e.target.value))}
-          >
-            {BAND_MODES.map((label, i) => (
-              <option
-                key={i}
-                value={i}
-                disabled={(i === 1 && linPhase) || (i === 2 && (linPhase || oversample > 0))}
-              >{label}</option>
-            ))}
-          </select>
+            options={modeOptions}
+            onChange={(value) => setBandParam(bandIndex, 'mode', value)}
+          />
         </div>
       </div>
 
@@ -164,9 +171,9 @@ export default function EqBandPopup({
           </div>
         ) : (
           <>
-            <button onClick={handleDuplicate}>Duplicate</button>
-            <button onClick={handleReset}>Reset</button>
-            <button className="danger" onClick={handleDeleteRequest}>Delete</button>
+            <button onClick={handleDuplicate}><Copy size={12} /><span>Duplicate</span></button>
+            <button onClick={handleReset}><RotateCcw size={12} /><span>Reset</span></button>
+            <button className="danger" onClick={handleDeleteRequest}><Trash2 size={12} /><span>Delete</span></button>
           </>
         )}
       </div>

@@ -27,6 +27,20 @@ struct VideoEvent {
     float width, height;    // Size on screen
     float opacity;          // Transparency
 
+    // User-authored clip fade envelope. Clip-track events populate these from
+    // Clip; pattern/note events keep the zero-fade defaults. The video paths
+    // evaluate them dynamically at the current timeline position.
+    float fadeInPercent  = 0.0f;
+    float fadeOutPercent = 0.0f;
+    float fadeInX1  = 0.0f;
+    float fadeInY1  = 0.0f;
+    float fadeInX2  = 1.0f;
+    float fadeInY2  = 1.0f;
+    float fadeOutX1 = 0.0f;
+    float fadeOutY1 = 0.0f;
+    float fadeOutX2 = 1.0f;
+    float fadeOutY2 = 1.0f;
+
     // Per-track running counter (counts ALL trigger events including chords).
     // Kept for analytics and future modifiers that need a chord-inclusive index.
     // The shader no longer reads this — `orientation` is consumed instead.

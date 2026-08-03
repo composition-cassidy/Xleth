@@ -53,7 +53,7 @@ static void sourceFromJson(const nlohmann::json& j, SourceMedia& s) {
     j.at("width").get_to(s.width);
     j.at("height").get_to(s.height);
     j.at("fps").get_to(s.fps);
-    // Exact frame rate â€” ADDITIVE to the legacy float, which is still written so
+    // Exact frame rate — ADDITIVE to the legacy float, which is still written so
     // older builds can read projects written by this one. Absent in projects
     // saved before the field existed; rateFromSource() reconstructs the rational
     // from the float in that case, so a zero here is not an error.
@@ -202,6 +202,8 @@ std::vector<const SampleRegion*> Timeline::getRegionsByLabel(SampleLabel label) 
 int Timeline::addTrack(TrackInfo track) {
     track.id = getNextId();
     m_tracks[track.id] = track;
+    m_trackRootOrder.push_back({TrackLayoutItem::Kind::Track, track.id});
+    syncTrackOrdersFromLayout();
     std::cout << "[Timeline] Added track id=" << track.id
               << " name=\"" << track.name << "\""
               << " order=" << track.order
@@ -242,8 +244,44 @@ bool Timeline::setTrackOrder(const std::vector<int>& trackIdsInOrder) {
             return false;
     }
 
-    for (size_t i = 0; i < trackIdsInOrder.size(); ++i)
-        m_tracks[trackIdsInOrder[i]].order = static_cast<int>(i);
+    // Preserve folder membership for legacy callers. Member order follows the
+    // supplied flat list; each non-empty folder is emitted when its first member
+    // appears. Empty folders retain their previous root slot.
+    std::map<int, int> folderByTrack;
+    for (const auto& [folderId, folder] : m_trackFolders)
+        for (int trackId : folder.trackIds)
+            folderByTrack[trackId] = folderId;
+
+    std::map<int, std::vector<int>> reorderedMembers;
+    for (int trackId : trackIdsInOrder) {
+        auto fit = folderByTrack.find(trackId);
+        if (fit != folderByTrack.end())
+            reorderedMembers[fit->second].push_back(trackId);
+    }
+    for (auto& [folderId, folder] : m_trackFolders)
+        if (!folder.trackIds.empty())
+            folder.trackIds = reorderedMembers[folderId];
+
+    std::vector<TrackLayoutItem> nextRoot;
+    std::set<int> emittedFolders;
+    for (int trackId : trackIdsInOrder) {
+        auto fit = folderByTrack.find(trackId);
+        if (fit == folderByTrack.end()) {
+            nextRoot.push_back({TrackLayoutItem::Kind::Track, trackId});
+        } else if (emittedFolders.insert(fit->second).second) {
+            nextRoot.push_back({TrackLayoutItem::Kind::Folder, fit->second});
+        }
+    }
+    for (size_t i = 0; i < m_trackRootOrder.size(); ++i) {
+        const auto& item = m_trackRootOrder[i];
+        auto fit = m_trackFolders.find(item.id);
+        if (item.kind != TrackLayoutItem::Kind::Folder || fit == m_trackFolders.end()
+            || !fit->second.trackIds.empty())
+            continue;
+        nextRoot.insert(nextRoot.begin() + std::min(i, nextRoot.size()), item);
+    }
+    m_trackRootOrder = std::move(nextRoot);
+    syncTrackOrdersFromLayout();
     return true;
 }
 
@@ -256,7 +294,187 @@ bool Timeline::removeTrack(int id) {
     std::cout << "[Timeline] Removed track id=" << id
               << " name=\"" << it->second.name << "\"\n";
     m_tracks.erase(it);
+    m_trackRootOrder.erase(
+        std::remove_if(m_trackRootOrder.begin(), m_trackRootOrder.end(),
+            [id](const TrackLayoutItem& item) {
+                return item.kind == TrackLayoutItem::Kind::Track && item.id == id;
+            }),
+        m_trackRootOrder.end());
+    for (auto& [folderId, folder] : m_trackFolders) {
+        folder.trackIds.erase(std::remove(folder.trackIds.begin(), folder.trackIds.end(), id),
+                              folder.trackIds.end());
+    }
+    syncTrackOrdersFromLayout();
     return true;
+}
+
+TrackLayout Timeline::getTrackLayout() const {
+    TrackLayout layout;
+    layout.rootOrder = m_trackRootOrder;
+    layout.folders.reserve(m_trackFolders.size());
+    std::set<int> emitted;
+    for (const auto& item : m_trackRootOrder) {
+        if (item.kind != TrackLayoutItem::Kind::Folder) continue;
+        auto it = m_trackFolders.find(item.id);
+        if (it != m_trackFolders.end() && emitted.insert(item.id).second)
+            layout.folders.push_back(it->second);
+    }
+    for (const auto& [folderId, folder] : m_trackFolders)
+        if (emitted.insert(folderId).second)
+            layout.folders.push_back(folder);
+    return layout;
+}
+
+bool Timeline::validateTrackLayout(const TrackLayout& layout, bool requireKnownFolders) const {
+    std::map<int, const TrackFolder*> folders;
+    for (const auto& folder : layout.folders) {
+        if (folder.id <= 0 || folder.name.find_first_not_of(" \t\r\n") == std::string::npos
+            || m_tracks.count(folder.id) != 0
+            || !folders.emplace(folder.id, &folder).second)
+            return false;
+    }
+    if (requireKnownFolders) {
+        if (folders.size() != m_trackFolders.size()) return false;
+        for (const auto& [folderId, folder] : folders)
+            if (m_trackFolders.count(folderId) == 0) return false;
+    }
+
+    std::set<int> seenFolders;
+    std::set<int> seenTracks;
+    for (const auto& item : layout.rootOrder) {
+        if (item.kind == TrackLayoutItem::Kind::Track) {
+            if (m_tracks.find(item.id) == m_tracks.end() || !seenTracks.insert(item.id).second)
+                return false;
+        } else {
+            auto fit = folders.find(item.id);
+            if (fit == folders.end() || !seenFolders.insert(item.id).second)
+                return false;
+            for (int trackId : fit->second->trackIds) {
+                if (m_tracks.find(trackId) == m_tracks.end() || !seenTracks.insert(trackId).second)
+                    return false;
+            }
+        }
+    }
+    return seenFolders.size() == folders.size() && seenTracks.size() == m_tracks.size();
+}
+
+bool Timeline::setTrackLayout(const TrackLayout& layout) {
+    if (!validateTrackLayout(layout)) return false;
+    return restoreTrackLayout(layout);
+}
+
+bool Timeline::restoreTrackLayout(const TrackLayout& layout) {
+    if (!validateTrackLayout(layout, false)) return false;
+    m_trackFolders.clear();
+    for (const auto& folder : layout.folders) {
+        m_trackFolders.emplace(folder.id, folder);
+        m_nextId = std::max(m_nextId, folder.id + 1);
+    }
+    m_trackRootOrder = layout.rootOrder;
+    syncTrackOrdersFromLayout();
+    return true;
+}
+
+int Timeline::createTrackFolder(std::string name, const std::vector<int>& trackIds,
+                                int rootIndex) {
+    if (name.find_first_not_of(" \t\r\n") == std::string::npos) return -1;
+    std::set<int> requested;
+    for (int trackId : trackIds) {
+        if (m_tracks.find(trackId) == m_tracks.end() || !requested.insert(trackId).second)
+            return -1;
+    }
+
+    for (auto& [folderId, folder] : m_trackFolders) {
+        folder.trackIds.erase(
+            std::remove_if(folder.trackIds.begin(), folder.trackIds.end(),
+                [&requested](int trackId) { return requested.count(trackId) != 0; }),
+            folder.trackIds.end());
+    }
+    m_trackRootOrder.erase(
+        std::remove_if(m_trackRootOrder.begin(), m_trackRootOrder.end(),
+            [&requested](const TrackLayoutItem& item) {
+                return item.kind == TrackLayoutItem::Kind::Track
+                    && requested.count(item.id) != 0;
+            }),
+        m_trackRootOrder.end());
+
+    TrackFolder folder;
+    folder.id = getNextId();
+    folder.name = std::move(name);
+    folder.trackIds = trackIds;
+    m_trackFolders.emplace(folder.id, folder);
+    const size_t insertAt = static_cast<size_t>(std::clamp(rootIndex, 0,
+        static_cast<int>(m_trackRootOrder.size())));
+    m_trackRootOrder.insert(m_trackRootOrder.begin() + insertAt,
+                            {TrackLayoutItem::Kind::Folder, folder.id});
+    syncTrackOrdersFromLayout();
+    return folder.id;
+}
+
+bool Timeline::setTrackFolderName(int folderId, const std::string& name) {
+    auto it = m_trackFolders.find(folderId);
+    if (it == m_trackFolders.end()
+        || name.find_first_not_of(" \t\r\n") == std::string::npos) return false;
+    it->second.name = name;
+    return true;
+}
+
+bool Timeline::setTrackFolderCollapsed(int folderId, bool collapsed) {
+    auto it = m_trackFolders.find(folderId);
+    if (it == m_trackFolders.end()) return false;
+    it->second.collapsed = collapsed;
+    return true;
+}
+
+bool Timeline::removeTrackFolder(int folderId) {
+    auto fit = m_trackFolders.find(folderId);
+    if (fit == m_trackFolders.end()) return false;
+    auto rootIt = std::find_if(m_trackRootOrder.begin(), m_trackRootOrder.end(),
+        [folderId](const TrackLayoutItem& item) {
+            return item.kind == TrackLayoutItem::Kind::Folder && item.id == folderId;
+        });
+    if (rootIt == m_trackRootOrder.end()) return false;
+    const size_t index = static_cast<size_t>(std::distance(m_trackRootOrder.begin(), rootIt));
+    m_trackRootOrder.erase(rootIt);
+    std::vector<TrackLayoutItem> ungrouped;
+    ungrouped.reserve(fit->second.trackIds.size());
+    for (int trackId : fit->second.trackIds)
+        ungrouped.push_back({TrackLayoutItem::Kind::Track, trackId});
+    m_trackRootOrder.insert(m_trackRootOrder.begin() + index, ungrouped.begin(), ungrouped.end());
+    m_trackFolders.erase(fit);
+    syncTrackOrdersFromLayout();
+    return true;
+}
+
+void Timeline::syncTrackOrdersFromLayout() {
+    int order = 0;
+    for (const auto& item : m_trackRootOrder) {
+        if (item.kind == TrackLayoutItem::Kind::Track) {
+            auto it = m_tracks.find(item.id);
+            if (it != m_tracks.end()) it->second.order = order++;
+            continue;
+        }
+        auto fit = m_trackFolders.find(item.id);
+        if (fit == m_trackFolders.end()) continue;
+        for (int trackId : fit->second.trackIds) {
+            auto it = m_tracks.find(trackId);
+            if (it != m_tracks.end()) it->second.order = order++;
+        }
+    }
+}
+
+void Timeline::rebuildFlatTrackLayout() {
+    m_trackFolders.clear();
+    m_trackRootOrder.clear();
+    std::vector<const TrackInfo*> ordered;
+    ordered.reserve(m_tracks.size());
+    for (const auto& [id, track] : m_tracks) ordered.push_back(&track);
+    std::stable_sort(ordered.begin(), ordered.end(), [](const TrackInfo* a, const TrackInfo* b) {
+        return a->order != b->order ? a->order < b->order : a->id < b->id;
+    });
+    for (const TrackInfo* track : ordered)
+        m_trackRootOrder.push_back({TrackLayoutItem::Kind::Track, track->id});
+    syncTrackOrdersFromLayout();
 }
 
 // ─── Clips ────────────────────────────────────────────────────────────────────
@@ -1040,6 +1258,36 @@ int Timeline::addVisualEffect(int trackId, VisualEffect::Type type)
             fx.params[6] = 0.0f;    // matte choke  (output px, off)
             fx.params[7] = 0.0f;    // edge blur    (output px, off)
             break;
+        case VisualEffect::Type::Outline:
+            // White, 3 px, hard. White rather than black so the stroke reads
+            // against the dark backdrop a keyed cutout usually sits on, and a
+            // non-zero thickness so the effect is visible the moment it is added
+            // — with thickness 0 the shader early-returns the source untouched
+            // and the effect would look broken rather than neutral.
+            fx.params[0] = 1.0f;    // colorR
+            fx.params[1] = 1.0f;    // colorG
+            fx.params[2] = 1.0f;    // colorB
+            fx.params[3] = 3.0f;    // thickness (cell px)
+            fx.params[4] = 0.0f;    // softness  (hard edge)
+            fx.params[5] = 1.0f;    // opacity
+            fx.params[6] = 0.95f;   // alphaThreshold — see the note on VisualEffect
+            break;
+        case VisualEffect::Type::DropShadow:
+            // Black, 8 px down-right, slightly soft, Multiply at 60%. Deliberately
+            // a conventional shadow rather than a neutral one: size 0 keeps the
+            // silhouette's exact shape, and a shadow with distance 0 AND size 0
+            // would sit entirely behind the cell and look like nothing happened.
+            fx.params[0] = 0.0f;    // colorR
+            fx.params[1] = 0.0f;    // colorG
+            fx.params[2] = 0.0f;    // colorB
+            fx.params[3] = 8.0f;    // distance (cell px)
+            fx.params[4] = 45.0f;   // angle° — 0 = right, clockwise, so 45 = down-right
+            fx.params[5] = 0.0f;    // size (inflate off — same shape as the subject)
+            fx.params[6] = 0.35f;   // softness (feather)
+            fx.params[7] = 0.60f;   // opacity
+            fx.params[8] = 1.0f;    // blendMode = Multiply
+            fx.params[9] = 0.95f;   // alphaThreshold — see the note on VisualEffect
+            break;
         default:
             break;
     }
@@ -1376,6 +1624,7 @@ void Timeline::setCueTransition(TickTime cueTick, const SnapshotTransition& tr) 
         [](const GridCue& c, TickTime tk) { return c.tick < tk; });
     if (pos == m_gridCues.end() || !(pos->tick == cueTick)) return;  // no cue here
     pos->transition = tr;
+    pos->transition.normalize();
 }
 
 // ── Time-based transition resolution (RENDER path only) ───────────────────────
@@ -1404,8 +1653,21 @@ Timeline::ResolvedTransition Timeline::transitionAt(TickTime t) const {
     out.startTick      = TickTime{ winner->tick.ticks - tr.startOffsetTicks };
     out.endTick        = TickTime{ winner->tick.ticks + tr.endOffsetTicks };
     out.type           = tr.type;
-    out.freezeOutgoing = tr.freezeOutgoing;
     out.geomAngleDeg   = tr.geomAngleDeg;
+    out.edgeSoftness   = tr.edgeSoftness;
+    out.zoomAmount     = tr.zoomAmount;
+    out.dissolveGrainPx = tr.dissolveGrainPx;
+    out.radialOriginX = tr.radialOriginX;
+    out.radialOriginY = tr.radialOriginY;
+    out.pixelateMaxBlockPx = tr.pixelateMaxBlockPx;
+    out.glitchIntensity = tr.glitchIntensity;
+    out.glitchBlockPx = tr.glitchBlockPx;
+    out.blurRadiusPx = tr.blurRadiusPx;
+    out.displacementAmount = tr.displacementAmount;
+    out.displacementScale = tr.displacementScale;
+    out.effectSeed = tr.effectSeed;
+    out.startToPinEasing = tr.startToPinEasing;
+    out.pinToEndEasing   = tr.pinToEndEasing;
 
     // Outgoing = the arrangement just BEFORE the pin; incoming = at the pin. Each
     // resolves through gridLayoutAt (by value), so layoutA/layoutB carry their own
@@ -1585,6 +1847,25 @@ bool Timeline::restoreClip(const Clip& clip) {
 
 bool Timeline::restoreTrack(const TrackInfo& track) {
     m_tracks[track.id] = track;
+    bool represented = false;
+    for (const auto& item : m_trackRootOrder) {
+        if (item.kind == TrackLayoutItem::Kind::Track && item.id == track.id) {
+            represented = true;
+            break;
+        }
+    }
+    if (!represented) {
+        for (const auto& [folderId, folder] : m_trackFolders) {
+            if (std::find(folder.trackIds.begin(), folder.trackIds.end(), track.id)
+                != folder.trackIds.end()) {
+                represented = true;
+                break;
+            }
+        }
+    }
+    if (!represented)
+        m_trackRootOrder.push_back({TrackLayoutItem::Kind::Track, track.id});
+    syncTrackOrdersFromLayout();
     if (track.id >= m_nextId) m_nextId = track.id + 1;
     std::cout << "[Timeline] Restored track id=" << track.id
               << " name=\"" << track.name << "\"\n";
@@ -1665,6 +1946,26 @@ nlohmann::json Timeline::toJSON() const {
         nlohmann::json tj = t;  // ADL calls to_json(j, const TrackInfo&)
         j["tracks"].push_back(tj);
     }
+
+    const TrackLayout trackLayout = getTrackLayout();
+    nlohmann::json layoutJson;
+    layoutJson["rootOrder"] = nlohmann::json::array();
+    for (const auto& item : trackLayout.rootOrder) {
+        layoutJson["rootOrder"].push_back({
+            {"kind", item.kind == TrackLayoutItem::Kind::Folder ? "folder" : "track"},
+            {"id", item.id},
+        });
+    }
+    layoutJson["folders"] = nlohmann::json::array();
+    for (const auto& folder : trackLayout.folders) {
+        layoutJson["folders"].push_back({
+            {"id", folder.id},
+            {"name", folder.name},
+            {"collapsed", folder.collapsed},
+            {"trackIds", folder.trackIds},
+        });
+    }
+    j["trackLayout"] = std::move(layoutJson);
 
     j["clips"] = nlohmann::json::array();
     for (const auto& [id, c] : m_clips) {
@@ -1770,8 +2071,44 @@ nlohmann::json Timeline::toJSON() const {
             tj["startOffsetTicks"] = cue.transition.startOffsetTicks;
             tj["endOffsetTicks"]   = cue.transition.endOffsetTicks;
             tj["type"]             = snapshotTransitionTypeToString(cue.transition.type);
-            tj["freezeOutgoing"]   = cue.transition.freezeOutgoing;
             tj["geomAngleDeg"]     = cue.transition.geomAngleDeg;
+            if (cue.transition.edgeSoftness != SnapshotTransition::kDefaultEdgeSoftness)
+                tj["edgeSoftness"] = cue.transition.edgeSoftness;
+            if (cue.transition.zoomAmount != SnapshotTransition::kDefaultZoomAmount)
+                tj["zoomAmount"] = cue.transition.zoomAmount;
+            if (cue.transition.dissolveGrainPx != SnapshotTransition::kDefaultDissolveGrainPx)
+                tj["dissolveGrainPx"] = cue.transition.dissolveGrainPx;
+            if (cue.transition.radialOriginX != SnapshotTransition::kDefaultRadialOriginX)
+                tj["radialOriginX"] = cue.transition.radialOriginX;
+            if (cue.transition.radialOriginY != SnapshotTransition::kDefaultRadialOriginY)
+                tj["radialOriginY"] = cue.transition.radialOriginY;
+            if (cue.transition.pixelateMaxBlockPx != SnapshotTransition::kDefaultPixelateMaxBlockPx)
+                tj["pixelateMaxBlockPx"] = cue.transition.pixelateMaxBlockPx;
+            if (cue.transition.glitchIntensity != SnapshotTransition::kDefaultGlitchIntensity)
+                tj["glitchIntensity"] = cue.transition.glitchIntensity;
+            if (cue.transition.glitchBlockPx != SnapshotTransition::kDefaultGlitchBlockPx)
+                tj["glitchBlockPx"] = cue.transition.glitchBlockPx;
+            if (cue.transition.blurRadiusPx != SnapshotTransition::kDefaultBlurRadiusPx)
+                tj["blurRadiusPx"] = cue.transition.blurRadiusPx;
+            if (cue.transition.displacementAmount != SnapshotTransition::kDefaultDisplacementAmount)
+                tj["displacementAmount"] = cue.transition.displacementAmount;
+            if (cue.transition.displacementScale != SnapshotTransition::kDefaultDisplacementScale)
+                tj["displacementScale"] = cue.transition.displacementScale;
+            if (cue.transition.effectSeed != SnapshotTransition::kDefaultEffectSeed)
+                tj["effectSeed"] = cue.transition.effectSeed;
+            if (!cue.transition.startToPinEasing.isLinear()
+                || !cue.transition.pinToEndEasing.isLinear()) {
+                const auto curveJson = [](const SnapshotTransitionEasingCurve& curve) {
+                    return nlohmann::json{
+                        {"x1", curve.x1}, {"y1", curve.y1},
+                        {"x2", curve.x2}, {"y2", curve.y2},
+                    };
+                };
+                tj["easing"] = {
+                    {"startToPin", curveJson(cue.transition.startToPinEasing)},
+                    {"pinToEnd", curveJson(cue.transition.pinToEndEasing)},
+                };
+            }
             cj["transition"] = std::move(tj);
         }
         gl["cues"].push_back(std::move(cj));
@@ -1839,10 +2176,58 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
         }
 
         m_tracks.clear();
+        m_trackFolders.clear();
+        m_trackRootOrder.clear();
         for (const auto& t : j.at("tracks")) {
             TrackInfo track = t.get<TrackInfo>();  // ADL from_json
             m_tracks[track.id] = track;
         }
+
+        bool loadedTrackLayout = false;
+        if (j.contains("trackLayout") && j.at("trackLayout").is_object()) {
+            try {
+                const auto& lj = j.at("trackLayout");
+                TrackLayout layout;
+                if (!lj.contains("rootOrder") || !lj.at("rootOrder").is_array()
+                    || !lj.contains("folders") || !lj.at("folders").is_array())
+                    throw std::runtime_error("trackLayout arrays missing");
+                for (const auto& itemJson : lj.at("rootOrder")) {
+                    const std::string kind = itemJson.at("kind").get<std::string>();
+                    if (kind != "track" && kind != "folder")
+                        throw std::runtime_error("unknown trackLayout item kind");
+                    layout.rootOrder.push_back({
+                        kind == "folder" ? TrackLayoutItem::Kind::Folder
+                                         : TrackLayoutItem::Kind::Track,
+                        itemJson.at("id").get<int>(),
+                    });
+                }
+                for (const auto& folderJson : lj.at("folders")) {
+                    TrackFolder folder;
+                    folder.id = folderJson.at("id").get<int>();
+                    folder.name = folderJson.at("name").get<std::string>();
+                    folder.collapsed = folderJson.value("collapsed", false);
+                    folder.trackIds = folderJson.at("trackIds").get<std::vector<int>>();
+                    layout.folders.push_back(std::move(folder));
+                }
+                loadedTrackLayout = validateTrackLayout(layout, false);
+                if (loadedTrackLayout) {
+                    m_trackFolders.clear();
+                    for (const auto& folder : layout.folders) {
+                        m_trackFolders.emplace(folder.id, folder);
+                        m_nextId = std::max(m_nextId, folder.id + 1);
+                    }
+                    m_trackRootOrder = layout.rootOrder;
+                    syncTrackOrdersFromLayout();
+                }
+                if (!loadedTrackLayout)
+                    std::cerr << "[Timeline] WARNING invalid trackLayout; using flat track order\n";
+            } catch (const std::exception& e) {
+                std::cerr << "[Timeline] WARNING malformed trackLayout (" << e.what()
+                          << "); using flat track order\n";
+            }
+        }
+        if (!loadedTrackLayout)
+            rebuildFlatTrackLayout();
 
         m_clips.clear();
         // Project-load bulk insert: intentionally bypasses addClip/restoreClip
@@ -1966,8 +2351,42 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
                         tr.endOffsetTicks   = tj.value("endOffsetTicks",   int64_t{0});
                         tr.type             = stringToSnapshotTransitionType(
                                                   tj.value("type", std::string("crossfade")));
-                        tr.freezeOutgoing   = tj.value("freezeOutgoing", true);
                         tr.geomAngleDeg     = tj.value("geomAngleDeg", 0.0f);
+                        tr.edgeSoftness     = tj.value("edgeSoftness", SnapshotTransition::kDefaultEdgeSoftness);
+                        tr.zoomAmount       = tj.value("zoomAmount", SnapshotTransition::kDefaultZoomAmount);
+                        tr.dissolveGrainPx  = tj.value("dissolveGrainPx", SnapshotTransition::kDefaultDissolveGrainPx);
+                        tr.radialOriginX    = tj.value("radialOriginX", SnapshotTransition::kDefaultRadialOriginX);
+                        tr.radialOriginY    = tj.value("radialOriginY", SnapshotTransition::kDefaultRadialOriginY);
+                        tr.pixelateMaxBlockPx = tj.value("pixelateMaxBlockPx", SnapshotTransition::kDefaultPixelateMaxBlockPx);
+                        tr.glitchIntensity  = tj.value("glitchIntensity", SnapshotTransition::kDefaultGlitchIntensity);
+                        tr.glitchBlockPx    = tj.value("glitchBlockPx", SnapshotTransition::kDefaultGlitchBlockPx);
+                        tr.blurRadiusPx     = tj.value("blurRadiusPx", SnapshotTransition::kDefaultBlurRadiusPx);
+                        tr.displacementAmount = tj.value("displacementAmount", SnapshotTransition::kDefaultDisplacementAmount);
+                        tr.displacementScale  = tj.value("displacementScale", SnapshotTransition::kDefaultDisplacementScale);
+                        tr.effectSeed       = tj.value("effectSeed", SnapshotTransition::kDefaultEffectSeed);
+                        if (tj.contains("easing") && tj.at("easing").is_object()) {
+                            const auto& easing = tj.at("easing");
+                            const auto readCurve = [](const nlohmann::json& parent,
+                                                      const char* key,
+                                                      SnapshotTransitionEasingCurve& out) {
+                                if (!parent.contains(key) || !parent.at(key).is_object()) return;
+                                const auto& src = parent.at(key);
+                                if (!src.contains("x1") || !src.at("x1").is_number()
+                                    || !src.contains("y1") || !src.at("y1").is_number()
+                                    || !src.contains("x2") || !src.at("x2").is_number()
+                                    || !src.contains("y2") || !src.at("y2").is_number()) return;
+                                SnapshotTransitionEasingCurve parsed;
+                                parsed.x1 = src.at("x1").get<float>();
+                                parsed.y1 = src.at("y1").get<float>();
+                                parsed.x2 = src.at("x2").get<float>();
+                                parsed.y2 = src.at("y2").get<float>();
+                                parsed.normalize();
+                                out = parsed;
+                            };
+                            readCurve(easing, "startToPin", tr.startToPinEasing);
+                            readCurve(easing, "pinToEnd", tr.pinToEndEasing);
+                        }
+                        tr.normalize();
                         cue.transition = tr;
                     }
                     m_gridCues.push_back(std::move(cue));
@@ -2238,6 +2657,8 @@ void Timeline::clear() {
     m_sources.clear();
     m_regions.clear();
     m_tracks.clear();
+    m_trackFolders.clear();
+    m_trackRootOrder.clear();
     m_clips.clear();
     m_patterns.clear();
     m_patternBlocks.clear();

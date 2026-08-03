@@ -380,7 +380,6 @@ function buildVisualPreviewDiagnosticText({ engine, extras, settings, gpuInfo })
     out.push(`    FrameOutput dimensions:     ${engine.frameOutputWidth} × ${engine.frameOutputHeight}`);
     out.push(`    FrameOutput buffer size:    ${engine.frameOutputBufferSize} bytes (per half)`);
     out.push(`    FrameOutput current index:  ${engine.frameOutputCurrentIndex} (0 or 1; should change as engine swaps)`);
-    out.push(`    Shared-memory name:         ${FRAME_SHM_NAME}`);
   }
   out.push('');
 
@@ -474,7 +473,8 @@ function buildVisualPreviewDiagnosticText({ engine, extras, settings, gpuInfo })
       out.push('      OR the underlying CSS background — that explains a white/black/themed surface.');
     } else if (preview.mode === 'shm-error') {
       out.push('    ✗ openFrameShm() threw → OpenFileMappingA failed (engine mapping not created yet,');
-      out.push('      or FRAME_SHM_NAME mismatch). Same fallback-color story as no-shm above.');
+      out.push('      or the renderer and engine disagree on the shared-memory name). Same');
+      out.push('      fallback-color story as no-shm above.');
     } else if (rxFrames === 0 && engineWroteFrames) {
       out.push('    ✗ Engine wrote frames but renderer received ZERO. Either the index never changed');
       out.push('      from the renderer\'s view (stale shared-memory mapping?) or the tick loop never ran.');
@@ -635,7 +635,7 @@ function buildVisualPreviewDiagnosticText({ engine, extras, settings, gpuInfo })
   out.push('    fallback for the main preview.');
   out.push('  • If section 4 shows readbackValid > 0 and section 5 shows framesReceived === 0,');
   out.push('    the failure is between the engine writing to the file mapping and the renderer');
-  out.push('    reading from it — check shm_helper.node load and FRAME_SHM_NAME match.');
+  out.push('    reading from it — check shm_helper.node load and that the renderer and engine agree on the shared-memory name.');
   out.push('  • All GPUs start on FastImmediate (blocking Map, no DO_NOT_WAIT, ~0-2ms on NVIDIA).');
   out.push('    If avgReadbackMs>8, fatalInvalids>3, or yield<25% in a 60-frame window,');
   out.push('    the engine auto-switches to AsyncQueued (DO_NOT_WAIT ring, 5 slots).');

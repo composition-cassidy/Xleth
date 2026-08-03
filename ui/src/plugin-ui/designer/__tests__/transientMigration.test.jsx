@@ -218,8 +218,9 @@ describe('Transient shipped layout contains no Compressor / Limiter visualizer s
   it('Limiter and Compressor shipped layouts still have their own visualizer sources (no regression)', () => {
     const limiterSources = collectVizSources(SHIPPED_LAYOUTS.limiter.root)
     expect(limiterSources.some(src => src.startsWith('limiter.'))).toBe(true)
-    const compressorSources = collectVizSources(SHIPPED_LAYOUTS.compressor.root)
-    expect(compressorSources.some(src => src.startsWith('compressor.'))).toBe(true)
+    // The Compressor's display is the dedicated compressorCurve node, not a
+    // generic visualizer, so it has no viz source of its own to check.
+    expect(collectNodeTypes(SHIPPED_LAYOUTS.compressor.root)).toContain('compressorCurve')
   })
 })
 

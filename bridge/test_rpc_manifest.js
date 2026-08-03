@@ -87,6 +87,50 @@ async function main() {
   const locked = addon.timeline_getTempoLocked();
   assert(typeof locked === 'boolean', `timeline_getTempoLocked() returns boolean (got ${typeof locked})`);
 
+  const trackA = addon.timeline_addTrack({ name: 'A', order: 0 });
+  const trackB = addon.timeline_addTrack({ name: 'B', order: 1 });
+  const trackC = addon.timeline_addTrack({ name: 'C', order: 2 });
+  const flatLayout = addon.timeline_getTrackLayout();
+  assert(flatLayout.folders.length === 0 && flatLayout.rootOrder.length === 3,
+    'timeline_getTrackLayout() synthesizes the flat root layout');
+
+  const folderId = addon.timeline_createTrackFolder({
+    name: 'Folder 1', trackIds: [trackA, trackB], rootIndex: 0,
+  });
+  let folderLayout = addon.timeline_getTrackLayout();
+  assert(folderId > 0 && folderLayout.folders[0].trackIds.join(',') === `${trackA},${trackB}`,
+    'timeline_createTrackFolder() groups members through generated dispatch');
+  assert(addon.timeline_setTrackFolderName(folderId, 'Renamed') === true,
+    'timeline_setTrackFolderName() dispatches');
+  assert(addon.timeline_setTrackFolderCollapsed(folderId, true) === true,
+    'timeline_setTrackFolderCollapsed() dispatches');
+
+  folderLayout = addon.timeline_getTrackLayout();
+  folderLayout.rootOrder = [
+    { kind: 'track', id: trackC },
+    { kind: 'folder', id: folderId },
+  ];
+  folderLayout.folders[0].trackIds = [trackB, trackA];
+  assert(addon.timeline_setTrackLayout(folderLayout) === true,
+    'timeline_setTrackLayout() atomically reorders root items and members');
+  assert(addon.timeline_getTracks().map(track => track.id).join(',') === `${trackC},${trackB},${trackA}`,
+    'folder layout flattening updates canonical track order');
+
+  const invalidLayout = JSON.parse(JSON.stringify(folderLayout));
+  invalidLayout.rootOrder.push({ kind: 'track', id: trackC });
+  assert(addon.timeline_setTrackLayout(invalidLayout) === false,
+    'timeline_setTrackLayout() rejects duplicate entities atomically');
+  assert(addon.timeline_removeTrackFolder(folderId) === true,
+    'timeline_removeTrackFolder() ungroups without deleting tracks');
+  assert(addon.timeline_getTracks().length === 3 && addon.timeline_getTrackLayout().folders.length === 0,
+    'folder removal retains all mixer/timeline tracks');
+  addon.undo_undo();
+  assert(addon.timeline_getTrackLayout().folders[0]?.id === folderId,
+    'folder removal undo restores exact folder identity');
+  addon.undo_redo();
+  assert(addon.timeline_getTrackLayout().folders.length === 0,
+    'folder removal redo ungroups again');
+
   // Binary frame path: no video is loaded, so we only assert the generated
   // dispatch reaches the handler and returns without throwing. The Buffer
   // transport itself stays hand-written in ui/addon-worker.js by design.

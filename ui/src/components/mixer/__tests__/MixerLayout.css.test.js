@@ -20,6 +20,18 @@ describe('Mixer layout CSS', () => {
     expect(tracksScrollRule).toMatch(/overflow-y:\s*hidden\s*;/)
   })
 
+  it('reserves one equal 28px folder lane across every mixer column', () => {
+    const css = readAppCss()
+    const spacerRule = cssRule(css, '.mixer-folder-spacer,\n.mixer-folder-header')
+    const folderStripsRule = cssRule(css, '.mixer-folder-strips')
+    const offsetColumnRule = cssRule(css, '.mixer-folder-group,\n.mixer-channel-column,\n.mixer-offset-column')
+
+    expect(spacerRule).toMatch(/height:\s*28px\s*;/)
+    expect(spacerRule).toMatch(/min-height:\s*28px\s*;/)
+    expect(folderStripsRule).toMatch(/flex:\s*1\s*;/)
+    expect(offsetColumnRule).toMatch(/flex-direction:\s*column\s*;/)
+  })
+
   it('lets the selected effect rack list use vertical scrolling instead of row limits', () => {
     const css = readAppCss()
     const effectChainListRule = cssRule(css, '.effect-chain-list')

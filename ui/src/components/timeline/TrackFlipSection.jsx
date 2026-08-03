@@ -231,110 +231,115 @@ export default function TrackFlipSection({ track, onCommit }) {
         className="track-flip-body"
         style={{ opacity: disabled ? 0.45 : 1, pointerEvents: disabled ? 'none' : 'auto' }}
       >
-
-        {/* ── 2. Flipping Style row ─────────────────────────────────────── */}
-        <SectionLabel>Flipping Style</SectionLabel>
-        <div
-          className="track-flip-state-list"
-          role="listbox"
-          aria-label="Flip states"
-          onKeyDown={(e) => onCardsKeyDown(e, displayStates, removeState, setPickerForCard)}
-        >
-          {displayStates.map((st, idx) => (
-            <StateCard
-              key={st.id}
-              state={st}
-              index={idx}
-              isStart={idx === config.startStateIndex}
-              canDelete={displayStates.length > 1}
-              onPick={(anchor) => setPickerForCard({ index: idx, anchor })}
-              onDelete={() => removeState(idx)}
-              onDragStart={(e) => handleDragStart(st.id, idx, e)}
-              onDragOver={() => handleDragOver(idx)}
-            />
-          ))}
-          <button
-            className="track-flip-add-state"
-            aria-label="Add state"
-            disabled={displayStates.length >= MAX_FLIP_STATES}
-            onClick={addState}
-            title={displayStates.length >= MAX_FLIP_STATES
-              ? `Maximum ${MAX_FLIP_STATES} states`
-              : 'Add state'}
-          >
-            <Plus size={13} />
-          </button>
-        </div>
-
-        {/* ── 3. Modifier ───────────────────────────────────────────────── */}
-        <SectionLabel>Modifier</SectionLabel>
-        <div className="track-flip-control-row">
-          <select
-            className="track-flip-select"
-            value={config.modifier?.type ?? 'every-note'}
-            onChange={(e) => setModifierType(e.target.value)}
-          >
-            {MODIFIER_TYPES.map((t) => (
-              <option key={t} value={t}>{MODIFIER_TYPE_LABELS[t]}</option>
-            ))}
-          </select>
-        </div>
-
-        {config.modifier?.type === 'specific-pitches' && (
-          <PitchListEditor
-            pitches={config.modifier.config?.pitches ?? []}
-            onChange={setPitches}
-          />
-        )}
-
-        {config.modifier?.type === 'every-n-beats' && (
-          <div className="track-flip-control-row">
-            <NumberStepper
-              label="N"
-              value={clampInt(config.modifier.config?.n ?? 1, 1, 32)}
-              min={1}
-              max={32}
-              onChange={setN}
-              ariaLabel="Beats per advance"
-            />
-            <select
-              className="track-flip-select"
-              value={config.modifier.config?.subdivision ?? 'beat'}
-              onChange={(e) => setSubdivision(e.target.value)}
-              aria-label="Subdivision"
+        <div className="track-flip-columns">
+          <div className="track-flip-col-main">
+            {/* ── 2. Flipping Style row ───────────────────────────────────── */}
+            <SectionLabel>Flipping Style</SectionLabel>
+            <div
+              className="track-flip-state-list"
+              role="listbox"
+              aria-label="Flip states"
+              onKeyDown={(e) => onCardsKeyDown(e, displayStates, removeState, setPickerForCard)}
             >
-              <option value="beat">beat</option>
-              <option value="bar">bar</option>
-            </select>
+              {displayStates.map((st, idx) => (
+                <StateCard
+                  key={st.id}
+                  state={st}
+                  index={idx}
+                  isStart={idx === config.startStateIndex}
+                  canDelete={displayStates.length > 1}
+                  onPick={(anchor) => setPickerForCard({ index: idx, anchor })}
+                  onDelete={() => removeState(idx)}
+                  onDragStart={(e) => handleDragStart(st.id, idx, e)}
+                  onDragOver={() => handleDragOver(idx)}
+                />
+              ))}
+              <button
+                className="track-flip-add-state"
+                aria-label="Add state"
+                disabled={displayStates.length >= MAX_FLIP_STATES}
+                onClick={addState}
+                title={displayStates.length >= MAX_FLIP_STATES
+                  ? `Maximum ${MAX_FLIP_STATES} states`
+                  : 'Add state'}
+              >
+                <Plus size={13} />
+              </button>
+            </div>
+
+            {/* ── 3. Modifier ─────────────────────────────────────────────── */}
+            <SectionLabel>Modifier</SectionLabel>
+            <div className="track-flip-control-row">
+              <select
+                className="track-flip-select"
+                value={config.modifier?.type ?? 'every-note'}
+                onChange={(e) => setModifierType(e.target.value)}
+              >
+                {MODIFIER_TYPES.map((t) => (
+                  <option key={t} value={t}>{MODIFIER_TYPE_LABELS[t]}</option>
+                ))}
+              </select>
+            </div>
+
+            {config.modifier?.type === 'specific-pitches' && (
+              <PitchListEditor
+                pitches={config.modifier.config?.pitches ?? []}
+                onChange={setPitches}
+              />
+            )}
+
+            {config.modifier?.type === 'every-n-beats' && (
+              <div className="track-flip-control-row">
+                <NumberStepper
+                  label="N"
+                  value={clampInt(config.modifier.config?.n ?? 1, 1, 32)}
+                  min={1}
+                  max={32}
+                  onChange={setN}
+                  ariaLabel="Beats per advance"
+                />
+                <select
+                  className="track-flip-select"
+                  value={config.modifier.config?.subdivision ?? 'beat'}
+                  onChange={(e) => setSubdivision(e.target.value)}
+                  aria-label="Subdivision"
+                >
+                  <option value="beat">beat</option>
+                  <option value="bar">bar</option>
+                </select>
+              </div>
+            )}
+
+            {/* ── 4. Start state ──────────────────────────────────────────── */}
+            <SectionLabel>Start State</SectionLabel>
+            <div className="track-flip-control-row">
+              <NumberStepper
+                label="#"
+                // 1-indexed in the UI, 0-indexed in the config (spec §6.2 row 4).
+                value={config.startStateIndex + 1}
+                min={1}
+                max={config.states.length}
+                onChange={(v) => setStartStateIndex((v | 0) - 1)}
+                ariaLabel="Start state index (1-based)"
+              />
+              <span className="track-flip-muted">
+                of {config.states.length}
+              </span>
+            </div>
           </div>
-        )}
 
-        {/* ── 4. Start state ────────────────────────────────────────────── */}
-        <SectionLabel>Start State</SectionLabel>
-        <div className="track-flip-control-row">
-          <NumberStepper
-            label="#"
-            // 1-indexed in the UI, 0-indexed in the config (spec §6.2 row 4).
-            value={config.startStateIndex + 1}
-            min={1}
-            max={config.states.length}
-            onChange={(v) => setStartStateIndex((v | 0) - 1)}
-            ariaLabel="Start state index (1-based)"
-          />
-          <span className="track-flip-muted">
-            of {config.states.length}
-          </span>
-        </div>
-
-        {/* ── 5. Live preview hint ─────────────────────────────────────── */}
-        <SectionLabel>Live Preview (next 8 ordinals)</SectionLabel>
-        <div
-          className="track-flip-preview"
-          aria-label="Live preview of resolved flip states"
-        >
-          {previewItems.map((it, i) => (
-            <PreviewChip key={i} item={it} />
-          ))}
+          <div className="track-flip-col-preview">
+            {/* ── 5. Live preview hint ────────────────────────────────────── */}
+            <SectionLabel>Live Preview (next 8 ordinals)</SectionLabel>
+            <div
+              className="track-flip-preview"
+              aria-label="Live preview of resolved flip states"
+            >
+              {previewItems.map((it, i) => (
+                <PreviewChip key={i} item={it} />
+              ))}
+            </div>
+          </div>
         </div>
       </div>
 

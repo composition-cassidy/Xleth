@@ -25,6 +25,7 @@ import {
   TRANSIENT_BUCKET,
   MULTIBAND_BUCKET,
   RESONANCE_BUCKET,
+  UNIFLANGE_BUCKET,
 } from '../../constants/dynamicsViz.js'
 
 const TARGET_HZ          = 30
@@ -49,6 +50,7 @@ function bucketLayoutFor(vizType) {
   if (vizType === VIZ_TYPE.TRANSIENT) return TRANSIENT_BUCKET
   if (vizType === VIZ_TYPE.MULTIBAND) return MULTIBAND_BUCKET
   if (vizType === VIZ_TYPE.RESONANCE) return RESONANCE_BUCKET
+  if (vizType === VIZ_TYPE.UNIFLANGE) return UNIFLANGE_BUCKET
   return COMPRESSOR_BUCKET
 }
 

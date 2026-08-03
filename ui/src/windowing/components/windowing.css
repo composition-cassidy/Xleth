@@ -877,6 +877,17 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   grid-template-rows: auto 1fr;
 }
 
+/* FXG.3-l — explicit row placement, not position-based auto-placement: the
+ * "FX Graph Mode Active" notice block that used to always occupy row 1 is now
+ * only rendered when there's an actual notice, so the canvas (previously
+ * implicitly falling into row 2 because it was the second child) must be
+ * pinned to the fill row itself or it collapses to auto-height and leaves the
+ * rest of the panel blank whenever no notice sibling is present. */
+.xleth-fx-graph-panel__surface-inner:has(.xleth-graph-state-preview) .xleth-graph-state-preview {
+  grid-row: 2;
+  min-height: 0;
+}
+
 .xleth-fx-graph-panel__mode-action,
 .xleth-fx-graph-panel__mode-active {
   display: grid;
@@ -1292,10 +1303,12 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   opacity: 0.75;
 }
 
-/* FXG.4-e/f — Macro -> Parameter links read as control cables, distinct from
- * audio cables: warning-tinted (matching macro nodes/ports) and dashed. */
+/* FXG.4-e/f — Macro/Envelope -> Parameter links read as control cables, distinct
+ * from audio cables: dashed, and tinted with a lighter/higher-contrast derivation
+ * of the panel accent (--theme-accent-active) rather than an unrelated warning
+ * hue, so the modulation identity stays inside the monochromatic accent theme. */
 .xleth-graph-state-preview__edge--parameter {
-  stroke: color-mix(in srgb, var(--theme-warning) 64%, var(--theme-border-strong));
+  stroke: color-mix(in srgb, var(--theme-accent-active) 64%, var(--theme-border-strong));
   stroke-dasharray: 4 4;
   stroke-width: 1.5;
 }
@@ -1338,16 +1351,28 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   pointer-events: auto;
 }
 
-.xleth-graph-state-preview__canvas[data-connecting-kind="macro"] .xleth-graph-state-preview__parameter-port {
+.xleth-graph-state-preview__canvas[data-connecting-kind="macro"] .xleth-graph-state-preview__parameter-port,
+.xleth-graph-state-preview__canvas[data-connecting-kind="envelope"] .xleth-graph-state-preview__parameter-port {
   cursor: copy;
 }
 
+/* FXG.3-l — Track Input/Output are fixed routing endpoints, not processor
+ * nodes: no Edit/Remove actions (enforced in the node template) and a
+ * distinct "socket" treatment — a stronger neutral border, a flatter tinted
+ * fill, and a small-caps label — so they read as terminals to plug into
+ * rather than cards you configure. */
 .xleth-graph-state-preview__node--track-input,
 .xleth-graph-state-preview__node--track-output {
-  /* FXG.3-l — protected routing endpoints read as distinct from processor
-   * nodes via a tinted surface plus a stronger endpoint border. */
-  border-color: color-mix(in srgb, var(--theme-panel-node) 60%, var(--theme-border-subtle));
+  border-color: color-mix(in srgb, var(--theme-panel-node) 70%, var(--theme-border-strong));
   background: color-mix(in srgb, var(--theme-panel-node) 14%, var(--theme-bg-primary));
+}
+
+.xleth-graph-state-preview__node--track-input .xleth-graph-state-preview__node-title,
+.xleth-graph-state-preview__node--track-output .xleth-graph-state-preview__node-title {
+  color: var(--theme-text-muted);
+  font-size: 11px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
 }
 
 .xleth-graph-state-preview__node--effect {
@@ -1359,13 +1384,15 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 }
 
 .xleth-graph-state-preview__node--parameter-drop-target {
-  border-color: color-mix(in srgb, var(--theme-warning) 58%, var(--theme-border-strong));
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-warning) 22%, transparent);
+  border-color: color-mix(in srgb, var(--theme-accent-active) 58%, var(--theme-border-strong));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-accent-active) 22%, transparent);
 }
 
+/* Macro is a control-source node, styled with the same modulation accent as its
+ * outgoing edges and as the Envelope control source below. */
 .xleth-graph-state-preview__node--macro {
-  border-color: color-mix(in srgb, var(--theme-warning) 44%, var(--theme-border-subtle));
-  background: color-mix(in srgb, var(--theme-warning) 9%, var(--theme-bg-primary));
+  border-color: color-mix(in srgb, var(--theme-accent-active) 44%, var(--theme-border-subtle));
+  background: color-mix(in srgb, var(--theme-accent-active) 9%, var(--theme-bg-primary));
 }
 
 .xleth-graph-state-preview__node--unknown {
@@ -1453,15 +1480,15 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 
 .xleth-graph-state-preview__parameter-port--hovered {
   color: var(--theme-text);
-  background: color-mix(in srgb, var(--theme-warning) 16%, transparent);
-  outline: 1px solid color-mix(in srgb, var(--theme-warning) 66%, var(--theme-border-strong));
+  background: color-mix(in srgb, var(--theme-accent-active) 16%, transparent);
+  outline: 1px solid color-mix(in srgb, var(--theme-accent-active) 66%, var(--theme-border-strong));
   outline-offset: 1px;
 }
 
 .xleth-graph-state-preview__parameter-port--hovered .xleth-graph-state-preview__parameter-port-dot {
-  border-color: var(--theme-warning);
-  background: color-mix(in srgb, var(--theme-warning) 58%, var(--theme-bg-surface));
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-warning) 20%, transparent);
+  border-color: var(--theme-accent-active);
+  background: color-mix(in srgb, var(--theme-accent-active) 58%, var(--theme-bg-surface));
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--theme-accent-active) 20%, transparent);
 }
 
 .xleth-graph-state-preview__macro-label {
@@ -1502,7 +1529,7 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 .xleth-graph-state-preview__macro-slider {
   min-width: 0;
   width: 100%;
-  accent-color: var(--theme-warning);
+  accent-color: var(--theme-accent-active);
   pointer-events: auto;
 }
 
@@ -1525,10 +1552,13 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 }
 
 /* EVC-R3 — Envelope Modulator node. A graph-owned parameter-modulation source
- * with compact AHDSR controls. No hardcoded colors; light/dark follow tokens. */
+ * with compact AHDSR controls. Tinted with the same modulation accent
+ * (--theme-accent-active) as Macro and the parameter edges they both drive —
+ * no hardcoded colors, and no unrelated success/green hue in this
+ * monochromatic accent theme. */
 .xleth-graph-state-preview__node--envelope {
-  border-color: color-mix(in srgb, var(--theme-success) 44%, var(--theme-border-subtle));
-  background: color-mix(in srgb, var(--theme-success) 8%, var(--theme-bg-primary));
+  border-color: color-mix(in srgb, var(--theme-accent-active) 44%, var(--theme-border-subtle));
+  background: color-mix(in srgb, var(--theme-accent-active) 8%, var(--theme-bg-primary));
 }
 
 .xleth-graph-state-preview__envelope-body {
@@ -1553,9 +1583,9 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 .xleth-graph-state-preview__envelope-pill {
   min-width: 0;
   padding: 2px 5px;
-  border: 1px solid color-mix(in srgb, var(--theme-success) 22%, var(--theme-border-subtle));
+  border: 1px solid color-mix(in srgb, var(--theme-accent-active) 22%, var(--theme-border-subtle));
   border-radius: var(--theme-chrome-radius-sm);
-  background: color-mix(in srgb, var(--theme-success) 8%, var(--theme-bg-surface));
+  background: color-mix(in srgb, var(--theme-accent-active) 8%, var(--theme-bg-surface));
   color: var(--theme-text);
   font-size: 9px;
   font-weight: 750;
@@ -1587,9 +1617,9 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 .xleth-graph-state-preview__envelope-preview {
   width: 100%;
   height: auto;
-  border: 1px solid color-mix(in srgb, var(--theme-success) 26%, var(--theme-border-subtle));
+  border: 1px solid color-mix(in srgb, var(--theme-accent-active) 26%, var(--theme-border-subtle));
   border-radius: var(--theme-chrome-radius-sm);
-  background: color-mix(in srgb, var(--theme-success) 6%, var(--theme-bg-surface));
+  background: color-mix(in srgb, var(--theme-accent-active) 6%, var(--theme-bg-surface));
 }
 
 .xleth-graph-state-preview__envelope-preview--editable {
@@ -1603,14 +1633,14 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 }
 
 .xleth-graph-state-preview__envelope-preview-curve {
-  stroke: var(--theme-success);
+  stroke: var(--theme-accent-active);
   stroke-width: 1.6;
   stroke-linejoin: round;
   stroke-linecap: round;
 }
 
 .xleth-graph-state-preview__envelope-handle {
-  fill: color-mix(in srgb, var(--theme-success) 72%, var(--theme-bg-surface));
+  fill: color-mix(in srgb, var(--theme-accent-active) 72%, var(--theme-bg-surface));
   stroke: var(--theme-border-strong);
   stroke-width: 1;
   cursor: grab;
@@ -1622,14 +1652,15 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   outline-offset: 2px;
 }
 
-.xleth-graph-state-preview__envelope-edit-button,
+/* The Edit/Done toggle now reuses .node-edit (see EnvelopeNodeBody) — only the
+ * nested "Advanced" disclosure keeps this quieter modulation-accent treatment. */
 .xleth-graph-state-preview__envelope-disclosure {
   width: fit-content;
   min-width: 0;
   padding: 3px 7px;
-  border: 1px solid color-mix(in srgb, var(--theme-success) 35%, var(--theme-border-subtle));
+  border: 1px solid color-mix(in srgb, var(--theme-accent-active) 35%, var(--theme-border-subtle));
   border-radius: var(--theme-chrome-radius-sm);
-  background: color-mix(in srgb, var(--theme-success) 10%, var(--theme-bg-surface));
+  background: color-mix(in srgb, var(--theme-accent-active) 10%, var(--theme-bg-surface));
   color: var(--theme-text);
   font: inherit;
   font-size: 10px;
@@ -1638,13 +1669,11 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   pointer-events: auto;
 }
 
-.xleth-graph-state-preview__envelope-edit-button:hover,
 .xleth-graph-state-preview__envelope-disclosure:hover {
-  border-color: color-mix(in srgb, var(--theme-success) 62%, var(--theme-border-strong));
-  background: color-mix(in srgb, var(--theme-success) 18%, var(--theme-bg-surface));
+  border-color: color-mix(in srgb, var(--theme-accent-active) 62%, var(--theme-border-strong));
+  background: color-mix(in srgb, var(--theme-accent-active) 18%, var(--theme-bg-surface));
 }
 
-.xleth-graph-state-preview__envelope-edit-button:focus-visible,
 .xleth-graph-state-preview__envelope-disclosure:focus-visible {
   outline: 1px solid var(--theme-border-focus);
   outline-offset: 1px;
@@ -1656,7 +1685,7 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   min-width: 0;
   margin-top: 1px;
   padding-top: 6px;
-  border-top: 1px solid color-mix(in srgb, var(--theme-success) 24%, var(--theme-border-subtle));
+  border-top: 1px solid color-mix(in srgb, var(--theme-accent-active) 24%, var(--theme-border-subtle));
 }
 
 .xleth-graph-state-preview__envelope-grid {
@@ -1676,8 +1705,9 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   min-width: 0;
 }
 
-/* EVC-R2-r3 — slide-note opt-in toggle. Reuses the envelope success accent and the
-   shared field-label typography so it stays consistent with the rest of the editor. */
+/* EVC-R2-r3 — slide-note opt-in toggle. Reuses the envelope's modulation accent
+   and the shared field-label typography so it stays consistent with the rest of
+   the editor. */
 .xleth-graph-state-preview__envelope-checkbox {
   display: flex;
   align-items: center;
@@ -1688,7 +1718,7 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 
 .xleth-graph-state-preview__envelope-checkbox-input {
   flex: none;
-  accent-color: var(--theme-success);
+  accent-color: var(--theme-accent-active);
   pointer-events: auto;
 }
 
@@ -1753,7 +1783,7 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 .xleth-graph-state-preview__envelope-slider {
   min-width: 0;
   width: 100%;
-  accent-color: var(--theme-success);
+  accent-color: var(--theme-accent-active);
   pointer-events: auto;
 }
 
@@ -1762,17 +1792,7 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   gap: 5px;
   min-width: 0;
   padding-top: 5px;
-  border-top: 1px solid color-mix(in srgb, var(--theme-success) 20%, var(--theme-border-subtle));
-}
-
-.xleth-graph-state-preview__action-button--envelope {
-  border-color: color-mix(in srgb, var(--theme-success) 45%, var(--theme-border-subtle));
-  background: color-mix(in srgb, var(--theme-success) 16%, var(--theme-bg-surface));
-}
-
-.xleth-graph-state-preview__action-button--envelope:hover {
-  border-color: var(--theme-success);
-  background: color-mix(in srgb, var(--theme-success) 26%, var(--theme-bg-surface));
+  border-top: 1px solid color-mix(in srgb, var(--theme-accent-active) 20%, var(--theme-border-subtle));
 }
 
 .xleth-graph-state-preview__handle {
@@ -1797,15 +1817,16 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 .xleth-graph-state-preview__handle--control-out {
   width: 10px;
   height: 10px;
-  border-color: color-mix(in srgb, var(--theme-warning) 70%, var(--theme-border-strong));
-  background: color-mix(in srgb, var(--theme-warning) 36%, var(--theme-bg-surface));
-  box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-warning) 15%, transparent);
+  border-color: color-mix(in srgb, var(--theme-accent-active) 70%, var(--theme-border-strong));
+  background: color-mix(in srgb, var(--theme-accent-active) 36%, var(--theme-bg-surface));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-accent-active) 15%, transparent);
 }
 
 /* FXG-SC.6B — Sidechain Input affordances. Sidechain key cables/handles/ports read
- * distinctly from audio (solid accent) and parameter (dashed warning) cables: they use
- * the success token with a dotted stroke, so a key link is visually unmistakable as
- * "a compressor key jack", not a send/bus/output route. All colors are theme tokens. */
+ * distinctly from audio (solid accent) and modulation (dashed accent-active)
+ * cables: they use the success token with a dotted stroke, so a key link is
+ * visually unmistakable as "a compressor key jack", not a send/bus/output route.
+ * All colors are theme tokens. */
 .xleth-graph-state-preview__handle--sidechain-out {
   width: 10px;
   height: 10px;
@@ -1822,21 +1843,6 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 
 .xleth-graph-state-preview__node--sidechain-input {
   border-color: color-mix(in srgb, var(--theme-success) 40%, var(--theme-border-subtle));
-}
-
-.xleth-graph-state-preview__action-button--sidechain {
-  border-color: color-mix(in srgb, var(--theme-success) 45%, var(--theme-border-subtle));
-  background: color-mix(in srgb, var(--theme-success) 16%, var(--theme-bg-surface));
-}
-
-.xleth-graph-state-preview__action-button--sidechain:hover {
-  border-color: var(--theme-success);
-  background: color-mix(in srgb, var(--theme-success) 26%, var(--theme-bg-surface));
-}
-
-.xleth-graph-state-preview__action-button--sidechain:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 .xleth-graph-state-preview__sidechain-source {
@@ -1935,6 +1941,10 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   cursor: copy;
 }
 
+/* Toolbar hierarchy: Add Effect Node is the one primary (accent-filled) action.
+ * Add Macro / Add Envelope / Add Sidechain Input are secondary — a quiet ghost
+ * treatment via the --secondary modifier below — so the toolbar reads as one
+ * emphasized action plus supporting ones, not four equally loud buttons. */
 .xleth-graph-state-preview__action-button {
   padding: 6px 10px;
   border: 1px solid color-mix(in srgb, var(--theme-accent) 45%, var(--theme-border-subtle));
@@ -1957,6 +1967,23 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   outline-offset: 1px;
 }
 
+.xleth-graph-state-preview__action-button--secondary {
+  border-color: var(--theme-border-subtle);
+  background: transparent;
+  color: var(--theme-text-muted);
+}
+
+.xleth-graph-state-preview__action-button--secondary:hover {
+  border-color: var(--theme-border-strong);
+  background: var(--theme-bg-interactive-hover);
+  color: var(--theme-text);
+}
+
+.xleth-graph-state-preview__action-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
 .xleth-graph-state-preview__handle--connect-source {
   pointer-events: auto;
   cursor: crosshair;
@@ -1968,16 +1995,17 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   background: var(--theme-accent);
 }
 
-/* Macro controlOut as a parameter-link drag source keeps its warning identity
- * (it links to parameters, not audio) while gaining the connect affordance. */
+/* Macro/Envelope controlOut as a parameter-link drag source keeps its modulation
+ * identity (it links to parameters, not audio) while gaining the connect
+ * affordance. */
 .xleth-graph-state-preview__handle--connect-parameter-source {
   cursor: crosshair;
-  border-color: color-mix(in srgb, var(--theme-warning) 70%, var(--theme-border-strong));
-  background: color-mix(in srgb, var(--theme-warning) 55%, var(--theme-bg-surface));
+  border-color: color-mix(in srgb, var(--theme-accent-active) 70%, var(--theme-border-strong));
+  background: color-mix(in srgb, var(--theme-accent-active) 55%, var(--theme-bg-surface));
 }
 
 .xleth-graph-state-preview__handle--connect-parameter-source:hover {
-  background: var(--theme-warning);
+  background: var(--theme-accent-active);
 }
 
 .xleth-graph-state-preview__node--connect-source {
@@ -2057,8 +2085,9 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   opacity: 0.85;
 }
 
-.xleth-graph-state-preview__canvas[data-connecting-kind="macro"] .xleth-graph-state-preview__edge--connecting {
-  stroke: color-mix(in srgb, var(--theme-warning) 70%, var(--theme-border-strong));
+.xleth-graph-state-preview__canvas[data-connecting-kind="macro"] .xleth-graph-state-preview__edge--connecting,
+.xleth-graph-state-preview__canvas[data-connecting-kind="envelope"] .xleth-graph-state-preview__edge--connecting {
+  stroke: color-mix(in srgb, var(--theme-accent-active) 70%, var(--theme-border-strong));
 }
 
 .xleth-graph-state-preview__overlay {
@@ -2105,11 +2134,11 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 }
 
 .xleth-graph-state-preview__disconnect--parameter {
-  border-color: color-mix(in srgb, var(--theme-warning) 50%, var(--theme-border-strong));
+  border-color: color-mix(in srgb, var(--theme-accent-active) 50%, var(--theme-border-strong));
 }
 
 .xleth-graph-state-preview__disconnect--parameter:hover {
-  border-color: var(--theme-warning);
+  border-color: var(--theme-accent-active);
 }
 
 .xleth-graph-state-preview__disconnect:focus-visible {

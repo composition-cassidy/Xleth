@@ -26,6 +26,12 @@
 //   gain_low    -12–12 dB     low band trim  (Linear 20ms)
 //   gain_mid    -12–12 dB     mid band trim  (Linear 20ms)
 //   gain_high   -12–12 dB     high band trim  (Linear 20ms)
+//   inputGain   -24–24 dB     pre-processing input gain  (one-pole ~15ms, linear domain)
+//   outputGain  -24–24 dB     post-processing output gain  (one-pole ~15ms, linear domain)
+//
+// inputGain/outputGain are converted from dB to linear once per block (not
+// per sample) and ramped with a one-pole smoother in the linear domain, so
+// the audio-thread cost per sample is a single multiply-add per stage.
 //
 // Metering slots:
 //   0 — L output peak
@@ -48,6 +54,11 @@ public:
         registerSmoothedParam("gain_low",   SmoothType::Linear,         20.0f);
         registerSmoothedParam("gain_mid",   SmoothType::Linear,         20.0f);
         registerSmoothedParam("gain_high",  SmoothType::Linear,         20.0f);
+        // inputGain/outputGain are NOT registered through the generic
+        // (dB-domain) smoother above: converting a smoothed dB value to
+        // linear would require a pow() per sample. Instead they're smoothed
+        // directly in the linear domain via a bespoke one-pole ramp — see
+        // inputGainLin_/outputGainLin_ below.
     }
 
     // ── prepareEffect ───────────────────────────────────────────────────────
@@ -92,6 +103,20 @@ public:
         hGainMid_   = resolveSmoothed("gain_mid");
         hGainHigh_  = resolveSmoothed("gain_high");
 
+        // Input/output gain: resolve raw APVTS pointers once, compute the
+        // one-pole ramp coefficient for this sample rate, and snap the
+        // smoothed state to the current value (no fade-in on prepare).
+        inputGainParamPtr_  = apvts_.getRawParameterValue("inputGain");
+        outputGainParamPtr_ = apvts_.getRawParameterValue("outputGain");
+        gainRampAlpha_ = 1.0f - std::exp(-1.0f / (kGainRampMs * 0.001f
+                                                   * static_cast<float>(sampleRate)));
+        const float inGainDB  = inputGainParamPtr_  ? inputGainParamPtr_->load()  : 0.0f;
+        const float outGainDB = outputGainParamPtr_ ? outputGainParamPtr_->load() : 0.0f;
+        inputGainTargetLin_  = juce::Decibels::decibelsToGain(inGainDB);
+        outputGainTargetLin_ = juce::Decibels::decibelsToGain(outGainDB);
+        inputGainLin_  = inputGainTargetLin_;
+        outputGainLin_ = outputGainTargetLin_;
+
 #ifdef XLETH_DEBUG
         const float timePct = getSmoothedValue("time");
         const float tScale  = std::max(timePct / 50.0f, 0.002f);
@@ -120,6 +145,11 @@ public:
 
         vizSampleClock_ = 0;
         vizAccum_.reset();
+
+        // Snap the linear gain ramp to its current target — avoids a
+        // spurious fade-in if resetEffect() runs without a fresh prepare.
+        inputGainLin_  = inputGainTargetLin_;
+        outputGainLin_ = outputGainTargetLin_;
     }
 
     // ── Visualization (XlethEffectBase overrides) ───────────────────────────
@@ -150,6 +180,12 @@ public:
         crossover2_.setCutoffFrequency(std::max(xHi, 200.0f));
         allpassComp_.setCutoffFrequency(std::max(xHi, 200.0f));
 
+        // dB → linear conversion happens once per block, not per sample.
+        const float inGainDB  = inputGainParamPtr_  ? inputGainParamPtr_->load()  : 0.0f;
+        const float outGainDB = outputGainParamPtr_ ? outputGainParamPtr_->load() : 0.0f;
+        inputGainTargetLin_  = juce::Decibels::decibelsToGain(inGainDB);
+        outputGainTargetLin_ = juce::Decibels::decibelsToGain(outGainDB);
+
         float peakL = 0.0f, peakR = 0.0f;
         float maxGR[3] = {};
 
@@ -174,6 +210,11 @@ public:
             const float gMid    = hGainMid_.next();
             const float gHigh   = hGainHigh_.next();
 
+            // One-pole ramp in the linear domain — the whole per-sample cost
+            // of input/output gain is this plus the two multiplies below.
+            inputGainLin_  += gainRampAlpha_ * (inputGainTargetLin_  - inputGainLin_);
+            outputGainLin_ += gainRampAlpha_ * (outputGainTargetLin_ - outputGainLin_);
+
             // Time scaling: at 50% = 1x base values, 0% = near-zero, 100% = 2x
             const float timeScale = std::max(timePct / 50.0f, 0.002f);
 
@@ -191,8 +232,10 @@ public:
             float bandL[3], bandR[3];
             float vizGlobalInPeak = 0.0f;
             {
-                const float inL = buffer.getSample(0, s);
-                const float inR = numCh > 1 ? buffer.getSample(1, s) : inL;
+                const float rawL = buffer.getSample(0, s);
+                const float rawR = numCh > 1 ? buffer.getSample(1, s) : rawL;
+                const float inL = rawL * inputGainLin_;
+                const float inR = rawR * inputGainLin_;
                 vizGlobalInPeak = std::max(std::abs(inL), std::abs(inR));
 
                 float lowL, midHighL, midL, highL;
@@ -282,8 +325,8 @@ public:
             // Audio always passes through the crossover (no dry/wet mix) so
             // phase stays coherent. Depth already scaled the compression amount.
             const float masterLin = std::pow(10.0f, (kMasterOutDB * depthNorm) / 20.0f);
-            const float outL = (bandL[0] + bandL[1] + bandL[2]) * masterLin;
-            const float outR = (bandR[0] + bandR[1] + bandR[2]) * masterLin;
+            const float outL = (bandL[0] + bandL[1] + bandL[2]) * masterLin * outputGainLin_;
+            const float outR = (bandR[0] + bandR[1] + bandR[2]) * masterLin * outputGainLin_;
 
             buffer.setSample(0, s, outL);
             if (numCh > 1) buffer.setSample(1, s, outR);
@@ -394,6 +437,12 @@ private:
                 Nar{-12.0f,  12.0f,   0.0f, 1.0f}, 0.0f,    "dB"),
             std::make_unique<Apf>(Pid{"gain_high",  1}, "High Gain",
                 Nar{-12.0f,  12.0f,   0.0f, 1.0f}, 0.0f,    "dB"),
+            // UI-first parameters: persisted via APVTS state but not yet
+            // consumed by the DSP (audio-path wiring is a separate task).
+            std::make_unique<Apf>(Pid{"inputGain",  1}, "Input Gain",
+                Nar{-24.0f,  24.0f,   0.1f, 1.0f}, 0.0f,    "dB"),
+            std::make_unique<Apf>(Pid{"outputGain", 1}, "Output Gain",
+                Nar{-24.0f,  24.0f,   0.1f, 1.0f}, 0.0f,    "dB"),
         };
     }
 
@@ -423,6 +472,16 @@ private:
     // ── Handle-based smoother access (Phase 4 CPU pass) ──────────────────────
     SmoothedHandle hDepth_, hTime_, hXoverLow_, hXoverHigh_,
                    hGainLow_, hGainMid_, hGainHigh_;
+
+    // ── Input/output gain (bespoke linear-domain one-pole ramp) ──────────────
+    static constexpr float kGainRampMs = 15.0f;
+    std::atomic<float>* inputGainParamPtr_  = nullptr;
+    std::atomic<float>* outputGainParamPtr_ = nullptr;
+    float gainRampAlpha_        = 0.0f;
+    float inputGainTargetLin_   = 1.0f;
+    float outputGainTargetLin_  = 1.0f;
+    float inputGainLin_         = 1.0f;
+    float outputGainLin_        = 1.0f;
 };
 
 // ── setVisualizationEnabled ─────────────────────────────────────────────────

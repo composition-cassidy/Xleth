@@ -431,9 +431,12 @@ function warnFxgConversion(warn, trackId, reason, details = {}) {
 // Mutations commit graphState first; FXG.3-c-b then syncs only supported
 // linear graph-mode routing to the engine.
 
-const GRAPH_MUTATION_GRID_COLUMNS = 3
 const GRAPH_MUTATION_GRID_ORIGIN_X = 80
-const GRAPH_MUTATION_GRID_ORIGIN_Y = 132
+// Matches chainToGraphState's NODE_Y so a node appended via the toolbar lands on
+// the same baseline as the serial chain produced by the initial chain->graph
+// conversion, instead of a different hardcoded Y (previously 132, which put
+// every store-added effect node off the existing chain's row).
+const GRAPH_MUTATION_GRID_BASELINE_Y = 0
 const GRAPH_MUTATION_GRID_STEP_X = 180
 const GRAPH_MUTATION_GRID_STEP_Y = 96
 
@@ -447,37 +450,34 @@ function generateGraphInstanceId(idFactory) {
 }
 
 // addGraphEffectNode's own fallback stacks new nodes on the trackOutput column,
-// so the store supplies an explicit staggered position derived from the current
-// effect-node count to avoid overlap.
+// so the store supplies an explicit position derived from the current
+// effect-node count to avoid overlap. Effect nodes form the serial audio chain,
+// so they all stay on one row (the baseline) instead of wrapping into a 2D grid
+// — a chain of more than a handful of effects previously drifted onto a second
+// row partway through.
 function computeNextEffectNodePosition(graphState) {
   const effectCount = graphState.nodes.filter((node) => node.type === 'effect').length
-  const column = effectCount % GRAPH_MUTATION_GRID_COLUMNS
-  const row = Math.floor(effectCount / GRAPH_MUTATION_GRID_COLUMNS)
   return {
-    x: GRAPH_MUTATION_GRID_ORIGIN_X + column * GRAPH_MUTATION_GRID_STEP_X,
-    y: GRAPH_MUTATION_GRID_ORIGIN_Y + row * GRAPH_MUTATION_GRID_STEP_Y,
+    x: GRAPH_MUTATION_GRID_ORIGIN_X + effectCount * GRAPH_MUTATION_GRID_STEP_X,
+    y: GRAPH_MUTATION_GRID_BASELINE_Y,
   }
 }
 
 function computeNextMacroNodePosition(graphState) {
   const macroCount = graphState.nodes.filter((node) => node.type === 'macro').length
-  const column = macroCount % GRAPH_MUTATION_GRID_COLUMNS
-  const row = Math.floor(macroCount / GRAPH_MUTATION_GRID_COLUMNS)
   return {
-    x: GRAPH_MUTATION_GRID_ORIGIN_X + column * GRAPH_MUTATION_GRID_STEP_X,
-    y: GRAPH_MUTATION_GRID_ORIGIN_Y + (row + 1) * GRAPH_MUTATION_GRID_STEP_Y,
+    x: GRAPH_MUTATION_GRID_ORIGIN_X + macroCount * GRAPH_MUTATION_GRID_STEP_X,
+    y: GRAPH_MUTATION_GRID_BASELINE_Y + GRAPH_MUTATION_GRID_STEP_Y,
   }
 }
 
-// EVC.2 — stagger envelope nodes on their own grid row below the macro row so a
+// EVC.2 — stagger envelope nodes on their own row below the macro row so a
 // freshly added envelope node never overlaps existing nodes.
 function computeNextEnvelopeNodePosition(graphState) {
   const envelopeCount = graphState.nodes.filter((node) => node.type === 'envelope').length
-  const column = envelopeCount % GRAPH_MUTATION_GRID_COLUMNS
-  const row = Math.floor(envelopeCount / GRAPH_MUTATION_GRID_COLUMNS)
   return {
-    x: GRAPH_MUTATION_GRID_ORIGIN_X + column * GRAPH_MUTATION_GRID_STEP_X,
-    y: GRAPH_MUTATION_GRID_ORIGIN_Y + (row + 2) * GRAPH_MUTATION_GRID_STEP_Y,
+    x: GRAPH_MUTATION_GRID_ORIGIN_X + envelopeCount * GRAPH_MUTATION_GRID_STEP_X,
+    y: GRAPH_MUTATION_GRID_BASELINE_Y + GRAPH_MUTATION_GRID_STEP_Y * 2,
   }
 }
 

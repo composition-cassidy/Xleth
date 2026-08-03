@@ -95,7 +95,10 @@ describe('Visual-B plugin UI knob runtime appearance', () => {
     expect(result.ok).toBe(true)
     expect(result.errors).toEqual([])
 
+    // Layouts predating the tokenized appearance work carry no props.appearance
+    // at all — strip it to reproduce that shape against the current layout.
     const threshold = findNode(result.doc, 'k-threshold')
+    delete threshold.props.appearance
     const html = renderToStaticMarkup(
       <PluginUIContext.Provider value={buildPluginContext()}>
         <KnobNode node={threshold} />

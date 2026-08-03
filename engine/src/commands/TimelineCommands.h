@@ -288,6 +288,7 @@ public:
     std::string describe() const override;
 private:
     TrackInfo                 track_;
+    TrackLayout               oldTrackLayout_;
     std::vector<Clip>         clips_;         // all clips on the track
     std::vector<PatternBlock> patternBlocks_; // all pattern-blocks on the track
     // Grid cascade snapshots — restored in undo().
@@ -496,7 +497,77 @@ public:
     std::string describe() const override;
 private:
     std::vector<int>             trackIdsInOrder_;
-    std::unordered_map<int, int> oldOrdersByTrackId_;
+    TrackLayout                  oldTrackLayout_;
+};
+
+// One undo step for any atomic root-order/folder-membership drag operation.
+class SetTrackLayoutCommand : public Command {
+public:
+    SetTrackLayoutCommand(TrackLayout newLayout, const Timeline& timeline,
+                          std::string description = "Rearrange Track Folders");
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    TrackLayout oldLayout_;
+    TrackLayout newLayout_;
+    std::string description_;
+};
+
+class CreateTrackFolderCommand : public Command {
+public:
+    CreateTrackFolderCommand(std::string name, std::vector<int> trackIds,
+                             int rootIndex, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    int folderId() const { return folderId_; }
+private:
+    std::string name_;
+    std::vector<int> trackIds_;
+    int rootIndex_ = 0;
+    int folderId_ = -1;
+    bool firstExecute_ = true;
+    TrackLayout oldLayout_;
+    TrackLayout createdLayout_;
+};
+
+class RenameTrackFolderCommand : public Command {
+public:
+    RenameTrackFolderCommand(int folderId, std::string name, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int folderId_;
+    std::string oldName_;
+    std::string newName_;
+};
+
+class SetTrackFolderCollapsedCommand : public Command {
+public:
+    SetTrackFolderCollapsedCommand(int folderId, bool collapsed, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int folderId_;
+    bool oldCollapsed_;
+    bool newCollapsed_;
+};
+
+class RemoveTrackFolderCommand : public Command {
+public:
+    RemoveTrackFolderCommand(int folderId, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int folderId_;
+    std::string folderName_;
+    TrackLayout oldLayout_;
+    TrackLayout ungroupedLayout_;
+    bool firstExecute_ = true;
 };
 
 // ─── SetTrackOutputRouteCommand ───────────────────────────────────────────────

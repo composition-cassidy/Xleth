@@ -359,6 +359,17 @@ std::vector<VideoEvent> OfflineRenderer::buildVideoEvents(
         ev.width           = track->videoW;
         ev.height          = track->videoH;
         ev.opacity         = track->videoOpacity * clip->velocity;
+        ev.fadeInPercent   = clip->fadeInPercent;
+        ev.fadeOutPercent  = clip->fadeOutPercent;
+        normalizeClipFadePercents(ev.fadeInPercent, ev.fadeOutPercent);
+        ev.fadeInX1        = clip->fadeInX1;
+        ev.fadeInY1        = clip->fadeInY1;
+        ev.fadeInX2        = clip->fadeInX2;
+        ev.fadeInY2        = clip->fadeInY2;
+        ev.fadeOutX1       = clip->fadeOutX1;
+        ev.fadeOutY1       = clip->fadeOutY1;
+        ev.fadeOutX2       = clip->fadeOutX2;
+        ev.fadeOutY2       = clip->fadeOutY2;
         const int clipEmissionOrder = noteCounterPerTrack_clip++;
         ev.globalNoteIndex = clipEmissionOrder;
         ev.hasSourceTriggerOrder = true;
@@ -939,11 +950,6 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
     double  prevBeat = -1.0;  // for slide-event beat-crossing dispatch
 
     const auto renderStartTime = std::chrono::steady_clock::now();
-    const GridLayout& grid = timeline_.getGridLayout();
-
-    // [Slice 3b] Outgoing-snapshot freeze cache for transition windows. Persists
-    // across the whole export so a frozen A composited once at the pin is reused.
-    xleth::TransitionFreezeState transitionFreeze;
 
     while (currentSample < renderEnd && audioSamplesWritten < totalSamples) {
         // ── Check cancel every buffer ────────────────────────────────────
@@ -1029,6 +1035,10 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
                 const int64_t localFrameSample = RenderClock::videoFrameToSample(
                     f, sampleRate, fps);
                 const int64_t projectFrameSample = startSample + localFrameSample;
+                const int64_t projectFrameTick = RenderClock::sampleToPPQ(
+                    projectFrameSample, sampleRate, bpm);
+                const GridLayout frameGrid = timeline_.gridLayoutAt(
+                    TickTime{ projectFrameTick });
 
                 // ── Slide-note beat-crossing dispatch ───────────────────
                 // Compute current beat from the absolute project frame sample and fire
@@ -1103,10 +1113,8 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
                     // path below runs unchanged.
                     bool didTransition = false;
                     {
-                        const int64_t txTick = RenderClock::sampleToPPQ(
-                            projectFrameSample, sampleRate, bpm);
                         const Timeline::ResolvedTransition tx =
-                            timeline_.transitionAt(TickTime{ txTick });
+                            timeline_.transitionAt(TickTime{ projectFrameTick });
                         if (tx.active) {
                             xleth::SnapshotTransitionFrameCtx txCtx;
                             txCtx.sampleRate          = sampleRate;
@@ -1127,9 +1135,7 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
                             };
                             didTransition = xleth::renderSnapshotTransition(
                                 tx, timeline_, videoEvents, compositor, collector,
-                                cache, txCtx, decodeMisses, transitionFreeze);
-                        } else {
-                            transitionFreeze.invalidate();
+                                cache, txCtx, decodeMisses);
                         }
                     }
                     if (!didTransition) {
@@ -1139,8 +1145,8 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
                         const float currentTime = static_cast<float>(
                             RenderClock::sampleToSeconds(projectFrameSample, sampleRate));
                         compositor.compositeFrame(requests, cache,
-                                                  grid.columns, grid.rows,
-                                                  currentTime, grid.gapScale);
+                                                  frameGrid.columns, frameGrid.rows,
+                                                  currentTime, frameGrid.gapScale);
                     }
 
                     // Readback composited pixels from GPU
@@ -1632,9 +1638,6 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
     int     iterationCount = 0;
     double  prevBeat = -1.0;
 
-    // [Slice 3b] Outgoing-snapshot freeze cache — see renderImpl for rationale.
-    xleth::TransitionFreezeState transitionFreeze;
-
     while (audioSamplesWritten < totalSamples) {
         if (progress_.cancelRequested.load()) {
             muxer.finalize();
@@ -1674,6 +1677,10 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
                 animMgr.advanceAll(frameDurationMs);
                 const int64_t localFrameSample = RenderClock::videoFrameToSample(f, sampleRate, fps);
                 const int64_t projectFrameSample = startSample + localFrameSample;
+                const int64_t projectFrameTick = RenderClock::sampleToPPQ(
+                    projectFrameSample, sampleRate, bpm);
+                const GridLayout frameGrid = timeline_.gridLayoutAt(
+                    TickTime{ projectFrameTick });
 
                 {
                     const int64_t currentPpq = RenderClock::sampleToPPQ(
@@ -1721,10 +1728,8 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
                     // Same shared path as renderImpl / preview (export==preview).
                     bool didTransition = false;
                     {
-                        const int64_t txTick = RenderClock::sampleToPPQ(
-                            projectFrameSample, sampleRate, bpm);
                         const Timeline::ResolvedTransition tx =
-                            timeline_.transitionAt(TickTime{ txTick });
+                            timeline_.transitionAt(TickTime{ projectFrameTick });
                         if (tx.active) {
                             xleth::SnapshotTransitionFrameCtx txCtx;
                             txCtx.sampleRate          = sampleRate;
@@ -1745,16 +1750,15 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
                             };
                             didTransition = xleth::renderSnapshotTransition(
                                 tx, timeline_, videoEvents, compositor, collector,
-                                cache, txCtx, decodeMisses, transitionFreeze);
-                        } else {
-                            transitionFreeze.invalidate();
+                                cache, txCtx, decodeMisses);
                         }
                     }
                     if (!didTransition) {
                         const float currentTime = static_cast<float>(
                             RenderClock::sampleToSeconds(projectFrameSample, sampleRate));
-                        compositor.compositeFrame(requests, cache, grid.columns, grid.rows,
-                                                  currentTime, grid.gapScale);
+                        compositor.compositeFrame(requests, cache,
+                                                  frameGrid.columns, frameGrid.rows,
+                                                  currentTime, frameGrid.gapScale);
                     }
                     auto readback = compositor.readback();
                     ++videoFramesAttempted;

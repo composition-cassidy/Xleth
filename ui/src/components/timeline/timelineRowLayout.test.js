@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { TRACK_HEIGHT } from '../../constants/timeline.js'
 import {
   MACRO_LANE_HEIGHT,
+  FOLDER_ROW_HEIGHT,
   macroLaneLabel,
   buildTimelineRows,
   buildTrackLayout,
@@ -186,5 +187,32 @@ describe('buildTrackLayout', () => {
     expect(layout.totalHeight).toBe(3 * TRACK_HEIGHT)
     expect(layout.trackTop(2)).toBe(2 * TRACK_HEIGHT)
     expect(layout.getMacroRows()).toHaveLength(0)
+  })
+
+  it('inserts folder rows, rejects folder hit-testing, and hides collapsed members and lanes', () => {
+    const expandedFolderLayout = {
+      rootOrder: [
+        { kind: 'folder', id: 'f1' },
+        { kind: 'track', id: 't3' },
+      ],
+      folders: [{ id: 'f1', name: 'Folder 1', collapsed: false, trackIds: ['t1', 't2'] }],
+    }
+    const expanded = buildTrackLayout({ tracks, graphStates, folderLayout: expandedFolderLayout })
+    expect(expanded.rows[0]).toMatchObject({ rowType: 'folder', folderId: 'f1', height: FOLDER_ROW_HEIGHT })
+    expect(expanded.trackTop(0)).toBe(FOLDER_ROW_HEIGHT)
+    expect(expanded.trackIndexAtY(4)).toBe(-1)
+    expect(expanded.folderRowAtY(4)).toMatchObject({ folderId: 'f1' })
+
+    const collapsed = buildTrackLayout({
+      tracks,
+      graphStates,
+      folderLayout: {
+        ...expandedFolderLayout,
+        folders: [{ ...expandedFolderLayout.folders[0], collapsed: true }],
+      },
+    })
+    expect(collapsed.rows.map(row => row.rowType)).toEqual(['folder', 'track'])
+    expect(collapsed.trackRows[0].trackId).toBe('t3')
+    expect(collapsed.getMacroRows()).toHaveLength(0)
   })
 })

@@ -186,12 +186,34 @@ static void verifyVideoInFlightEvent()
     clip.regionId = regionId;
     clip.position = TickTime::fromBeats(0.0);
     clip.duration = TickTime::fromBeats(16.0);
+    // Deliberately overlap percentages so event construction must normalize
+    // them while preserving both custom curves.
+    clip.fadeInPercent = 80.0f;
+    clip.fadeOutPercent = 80.0f;
+    clip.fadeInX1 = 0.15f;
+    clip.fadeInY1 = 0.05f;
+    clip.fadeInX2 = 0.70f;
+    clip.fadeInY2 = 0.90f;
+    clip.fadeOutX1 = 0.20f;
+    clip.fadeOutY1 = 0.10f;
+    clip.fadeOutX2 = 0.80f;
+    clip.fadeOutY2 = 0.95f;
     timeline.addClip(clip);
 
     auto events = OfflineRenderer::buildVideoEvents(timeline);
     assert(events.size() == 1);
     // Event start beat is ABSOLUTE (0), not shifted to the window start.
     assert(std::abs(events[0].startBeat - 0.0) < 1e-6 && "video events keep absolute start beats");
+    assert(std::abs(events[0].fadeInPercent - 50.0f) < 1.0e-6f);
+    assert(std::abs(events[0].fadeOutPercent - 50.0f) < 1.0e-6f);
+    assert(std::abs(events[0].fadeInX1 - 0.15f) < 1.0e-6f);
+    assert(std::abs(events[0].fadeInY1 - 0.05f) < 1.0e-6f);
+    assert(std::abs(events[0].fadeInX2 - 0.70f) < 1.0e-6f);
+    assert(std::abs(events[0].fadeInY2 - 0.90f) < 1.0e-6f);
+    assert(std::abs(events[0].fadeOutX1 - 0.20f) < 1.0e-6f);
+    assert(std::abs(events[0].fadeOutY1 - 0.10f) < 1.0e-6f);
+    assert(std::abs(events[0].fadeOutX2 - 0.80f) < 1.0e-6f);
+    assert(std::abs(events[0].fadeOutY2 - 0.95f) < 1.0e-6f);
 
     // Scoped window starts at beat 8 → 4.0s → 192000 samples @ 120bpm/48kHz.
     // Output frame 0 maps to the absolute window start via projectStartSample,
@@ -299,6 +321,98 @@ int main()
         assert(events[1].globalNoteIndex == 1);
 
         std::fprintf(stderr, "[TEST:Renderer] Test 1: PASSED\n");
+    }
+
+    // ── Test 1b: Syllable clips anchor video to the syllable ────────────
+    // Regression: the render path used to derive sourceStartTime from
+    // regionOffset alone, so every syllable clip's VIDEO stayed pinned to the
+    // region head while its AUDIO (MixEngine adds syl.startTime) played the
+    // right syllable. Preview built events elsewhere and was unaffected, so the
+    // desync only showed up in exports.
+    {
+        std::fprintf(stderr, "\n[TEST:Renderer] --- Test 1b: Syllable clip video anchor ---\n");
+
+        Timeline timeline(140.0, 48000.0);
+
+        SourceMedia src;
+        src.filePath    = "syllable_source.mp4";
+        src.hasVideo    = true;
+        src.fps         = 24.0;
+        src.duration    = 200.0;
+        src.totalFrames = 4800;
+        src.width       = 320;
+        src.height      = 240;
+        int sourceId = timeline.addSource(src);
+
+        SampleRegion region;
+        region.sourceId  = sourceId;
+        region.name      = "Quote";
+        region.startTime = 100.0;
+        region.endTime   = 103.0;
+        region.syllables = {
+            { 0.00, 1.00, 1, "" },
+            { 1.00, 2.25, 2, "" },
+            { 2.25, 3.00, 3, "" },
+        };
+        int regionId = timeline.addRegion(region);
+
+        TrackInfo track;
+        track.name         = "Chorus";
+        track.videoOpacity = 1.0f;
+        int trackId = timeline.addTrack(track);
+
+        // Whole-region clip (syllableIndex -1) — unchanged behaviour.
+        Clip whole;
+        whole.trackId  = trackId;
+        whole.regionId = regionId;
+        whole.position = TickTime::fromBeats(0.0);
+        whole.duration = TickTime::fromBeats(1.0);
+        timeline.addClip(whole);
+
+        // Syllable 2, no extra regionOffset.
+        Clip syl2;
+        syl2.trackId       = trackId;
+        syl2.regionId      = regionId;
+        syl2.position      = TickTime::fromBeats(1.0);
+        syl2.duration      = TickTime::fromBeats(1.0);
+        syl2.syllableIndex = 1;
+        timeline.addClip(syl2);
+
+        // Syllable 3 PLUS a one-beat regionOffset — the two must stack, exactly
+        // as MixEngine stacks them for the audio readhead.
+        Clip syl3;
+        syl3.trackId       = trackId;
+        syl3.regionId      = regionId;
+        syl3.position      = TickTime::fromBeats(2.0);
+        syl3.duration      = TickTime::fromBeats(1.0);
+        syl3.syllableIndex = 2;
+        syl3.regionOffset  = TickTime::fromBeats(1.0);
+        timeline.addClip(syl3);
+
+        // Out-of-range syllableIndex must fall back to the region head, never
+        // read past the end of the syllables vector.
+        Clip bogus;
+        bogus.trackId       = trackId;
+        bogus.regionId      = regionId;
+        bogus.position      = TickTime::fromBeats(3.0);
+        bogus.duration      = TickTime::fromBeats(1.0);
+        bogus.syllableIndex = 99;
+        timeline.addClip(bogus);
+
+        auto events = OfflineRenderer::buildVideoEvents(timeline);
+        assert(events.size() == 4 && "4 clips → 4 events");
+
+        const double beatSec = 60.0 / 140.0;
+        assert(std::abs(events[0].sourceStartTime - 100.0) < 1e-9
+               && "whole-region clip starts at the region head");
+        assert(std::abs(events[1].sourceStartTime - 101.0) < 1e-9
+               && "syllable clip starts at region->startTime + syl.startTime");
+        assert(std::abs(events[2].sourceStartTime - (100.0 + 2.25 + beatSec)) < 1e-9
+               && "syllable offset and regionOffset stack");
+        assert(std::abs(events[3].sourceStartTime - 100.0) < 1e-9
+               && "out-of-range syllableIndex falls back to the region head");
+
+        std::fprintf(stderr, "[TEST:Renderer] Test 1b: PASSED\n");
     }
 
     // ── Test 2: Build events from pattern blocks ────────────────────────

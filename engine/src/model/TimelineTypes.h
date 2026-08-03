@@ -94,13 +94,13 @@ struct SourceMedia {
     int         height      = 0;
     double      fps         = 0.0;
 
-    // â”€â”€ Exact frame rate â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+    // ── Exact frame rate ─────────────────────────────────────────────────────
     // fps above is a lossy view of this. 23.976 fps is really 24000/1001, and a
-    // double cannot survive the time â†’ frame â†’ PTS round trip without drifting:
+    // double cannot survive the time → frame → PTS round trip without drifting:
     // deriving a frame duration from the double is what produced the
     // depth-proportional video desync (see engine/src/render/FrameRateMath.h).
     // Populated from the stream's r_frame_rate at import. Zero for projects
-    // written before this field existed and for audio-only sources â€” callers
+    // written before this field existed and for audio-only sources — callers
     // must go through xleth::frametiming::rateFromSource(), which reconstructs
     // the rational from the legacy double in that case.
     int         fpsNum      = 0;
@@ -891,7 +891,9 @@ struct VisualEffect {
         BrightnessContrast = 2,
         TVSimulator        = 3,
         ZoomPanRotation    = 4,
-        ChromaKey          = 5
+        ChromaKey          = 5,
+        Outline            = 6,
+        DropShadow         = 7
     };
     Type type   = Type::Desaturation;
     bool bypassed = false;
@@ -921,6 +923,48 @@ struct VisualEffect {
     //     dimensions, and plumbing cell dims through is out of scope for v1.
     //     A cell smaller than the full output therefore erodes/feathers by
     //     proportionally fewer of its own texels than the slider label implies.
+    //
+    // Outline:            [0]=colorR [1]=colorG [2]=colorB  (stroke colour, 0..1)
+    //                     [3]=thickness      stroke width, in CELL pixels
+    //                     [4]=softness       0..1 fraction of the thickness feathered
+    //                                        (0 = hard edge, 1 = glow)
+    //                     [5]=opacity        0..1
+    //                     [6]=alphaThreshold 0..1 — alpha at or below this is background,
+    //                                        so it is what the stroke traces around
+    // DropShadow:         [0]=colorR [1]=colorG [2]=colorB  (shadow colour, 0..1)
+    //                     [3]=distance       offset length, in CELL pixels
+    //                     [4]=angle          degrees; 0 casts right and angles advance
+    //                                        CLOCKWISE on screen (90 = straight down),
+    //                                        so the classic down-right shadow is 45
+    //                     [5]=size           0..1 inflate/spread — 0 keeps the silhouette's
+    //                                        exact shape, 1 bulges it out by kMaxInflatePx
+    //                     [6]=softness       0..1 feather — 0 is a hard-edged shape,
+    //                                        1 feathers by kMaxBlurPx
+    //                     [7]=opacity        0..1
+    //                     [8]=blendMode      rounded to an int: 0=Normal 1=Multiply
+    //                                        2=Darken 3=LinearBurn
+    //                     [9]=alphaThreshold 0..1 — alpha at or below this casts no shadow
+    //   ^ CANONICAL LAYOUTS for both. Hand-duplicated, no registry — keep in sync with:
+    //       1. engine/src/render/shaders/FX_Outline.hlsl    (cbuffer OutlineConstants, b2)
+    //          engine/src/render/shaders/FX_DropShadow.hlsl (cbuffer DropShadowConstants, b2)
+    //       2. engine/src/render/GridCompositor.h   (Outline/DropShadowConstants structs)
+    //          engine/src/render/GridCompositor.cpp (applyExpansionStage — NOT the
+    //          processEffectChain switch; see below)
+    //       3. ui/src/components/grid/ChainableEffectParams.jsx (fx.type 6 / 7 panels)
+    //
+    //   These two are LAYER STYLES, not pixel filters, and that makes them unlike
+    //   every other entry above in three ways worth knowing before touching them:
+    //     • They draw OUTSIDE the source's own bounds, so they run in a render
+    //       target padded by the radius they need, and the cell's final composite
+    //       rect is grown to match. Nothing else in the chain changes the rect.
+    //     • They are TERMINAL: applied after the chain, the standalone ZPR pass,
+    //       the ping-pong crossfade and companion FX, so the stroke traces — and
+    //       the shadow is cast by — the finished cell. Moving them within the
+    //       chain therefore does not change the result; when both are present the
+    //       outline is applied first and the shadow is cast by the outlined shape.
+    //     • Their spatial radii are in TRUE cell pixels, not the output pixels
+    //       ChromaKey's choke/edgeBlur use, because the padded target's real
+    //       dimensions are passed down in the constant buffer.
     float params[16] = {};
 };
 
@@ -1062,6 +1106,28 @@ struct SidechainRoute {
 };
 
 // ─── TrackInfo ────────────────────────────────────────────────────────────────
+// UI-only, one-level track-folder arrangement. Folders never participate in
+// audio routing or rendering; flattening this layout yields the legacy visible
+// TrackInfo::order consumed by the rest of the engine.
+
+struct TrackFolder {
+    int              id = 0;
+    std::string      name;
+    bool             collapsed = false;
+    std::vector<int> trackIds;
+};
+
+struct TrackLayoutItem {
+    enum class Kind { Track, Folder };
+    Kind kind = Kind::Track;
+    int  id = 0;
+};
+
+struct TrackLayout {
+    std::vector<TrackLayoutItem> rootOrder;
+    std::vector<TrackFolder>     folders;
+};
+
 // Metadata for a sequencer track, including both audio mix and video layout.
 
 struct TrackInfo {
@@ -1102,7 +1168,7 @@ struct TrackInfo {
     //
     // kHoldLastFrameThresholdUnlimited (-1) = hold indefinitely until the next
     // clip appears — the pre-threshold behavior, and the value old project
-    // files load as, so existing projects behave exactly as before.
+    // files load as, so existing projects are bit-identical.
     //
     // Any value >= 0 is finite: once (currentBeat - clipEndBeat) exceeds it the
     // cell is treated as a plain gap (fully invisible — no dim, no fade), i.e.
@@ -1338,14 +1404,111 @@ struct GridSnapshot {
 // Offsets are stored in TICKS (snap-native, tempo-stable), NOT samples; the
 // render path converts tick->sample via RenderClock::ppqToSample only at
 // resolve time (Slice 3). This struct carries no sample-domain state.
+struct SnapshotTransitionEasingCurve {
+    float x1 = 0.0f;
+    float y1 = 0.0f;
+    float x2 = 1.0f;
+    float y2 = 1.0f;
+
+    void normalize() noexcept {
+        if (!std::isfinite(x1) || !std::isfinite(y1)
+            || !std::isfinite(x2) || !std::isfinite(y2)) {
+            *this = {};
+            return;
+        }
+        x1 = std::clamp(x1, 0.0f, 1.0f);
+        y1 = std::clamp(y1, 0.0f, 1.0f);
+        x2 = std::clamp(x2, 0.0f, 1.0f);
+        y2 = std::clamp(y2, 0.0f, 1.0f);
+    }
+
+    bool isLinear() const noexcept {
+        return x1 == 0.0f && y1 == 0.0f && x2 == 1.0f && y2 == 1.0f;
+    }
+};
+
 struct SnapshotTransition {
+    static constexpr float kDefaultEdgeSoftness = 0.0f;
+    static constexpr float kMaxEdgeSoftness = 0.10f;
+    static constexpr float kDefaultZoomAmount = 0.12f;
+    static constexpr float kMaxZoomAmount = 0.30f;
+    static constexpr int   kDefaultDissolveGrainPx = 1;
+    static constexpr int   kMaxDissolveGrainPx = 8;
+    static constexpr float kDefaultRadialOriginX = 0.5f;
+    static constexpr float kDefaultRadialOriginY = 0.5f;
+    static constexpr int   kDefaultPixelateMaxBlockPx = 32;
+    static constexpr int   kMaxPixelateMaxBlockPx = 128;
+    static constexpr float kDefaultGlitchIntensity = 0.65f;
+    static constexpr int   kDefaultGlitchBlockPx = 24;
+    static constexpr int   kMaxGlitchBlockPx = 128;
+    static constexpr float kDefaultBlurRadiusPx = 16.0f;
+    static constexpr float kMaxBlurRadiusPx = 48.0f;
+    static constexpr float kDefaultDisplacementAmount = 0.06f;
+    static constexpr float kMaxDisplacementAmount = 0.20f;
+    static constexpr float kDefaultDisplacementScale = 6.0f;
+    static constexpr float kMaxDisplacementScale = 24.0f;
+    static constexpr int   kDefaultEffectSeed = 0;
+    static constexpr int   kMaxEffectSeed = 65535;
+
     bool     enabled          = false;  // false = hard cut (also true when both offsets == 0)
     int64_t  startOffsetTicks = 0;      // Start handle distance BEFORE the pin (>= 0)
     int64_t  endOffsetTicks   = 0;      // End handle distance AFTER  the pin (>= 0)
-    enum class Type { Crossfade, LineSweep, Push, Slide, Zoom, Dissolve, OutThenIn }
+    enum class Type {
+        Crossfade, LineSweep, Push, Slide, Zoom, Dissolve, OutThenIn,
+        RadialReveal, Pixelate, Glitch, BlurThrough, Displacement
+    }
              type = Type::Crossfade;
-    bool     freezeOutgoing   = true;   // composite outgoing snapshot once, hold RT; only incoming advances
-    float    geomAngleDeg     = 0.0f;   // typeGeometry (e.g. sweep angle) — fixed default for v1
+    float    geomAngleDeg     = 0.0f;   // incoming direction: 0=left, 90=top, 180=right, 270=bottom
+    float    edgeSoftness     = kDefaultEdgeSoftness;
+    float    zoomAmount       = kDefaultZoomAmount;
+    int      dissolveGrainPx  = kDefaultDissolveGrainPx;
+    float    radialOriginX    = kDefaultRadialOriginX;
+    float    radialOriginY    = kDefaultRadialOriginY;
+    int      pixelateMaxBlockPx = kDefaultPixelateMaxBlockPx;
+    float    glitchIntensity  = kDefaultGlitchIntensity;
+    int      glitchBlockPx    = kDefaultGlitchBlockPx;
+    float    blurRadiusPx     = kDefaultBlurRadiusPx;
+    float    displacementAmount = kDefaultDisplacementAmount;
+    float    displacementScale  = kDefaultDisplacementScale;
+    int      effectSeed       = kDefaultEffectSeed;
+    // Independent CSS-style cubic Bezier curves for each side of the fixed pin.
+    // Both use P0=(0,0), P3=(1,1); these fields store editable P1/P2.
+    SnapshotTransitionEasingCurve startToPinEasing{};
+    SnapshotTransitionEasingCurve pinToEndEasing{};
+
+    void normalize() noexcept {
+        startOffsetTicks = std::max<int64_t>(0, startOffsetTicks);
+        endOffsetTicks   = std::max<int64_t>(0, endOffsetTicks);
+
+        if (!std::isfinite(geomAngleDeg)) {
+            geomAngleDeg = 0.0f;
+        } else {
+            geomAngleDeg = std::fmod(geomAngleDeg, 360.0f);
+            if (geomAngleDeg < 0.0f) geomAngleDeg += 360.0f;
+        }
+        if (!std::isfinite(edgeSoftness)) edgeSoftness = kDefaultEdgeSoftness;
+        if (!std::isfinite(zoomAmount)) zoomAmount = kDefaultZoomAmount;
+        if (!std::isfinite(radialOriginX)) radialOriginX = kDefaultRadialOriginX;
+        if (!std::isfinite(radialOriginY)) radialOriginY = kDefaultRadialOriginY;
+        if (!std::isfinite(glitchIntensity)) glitchIntensity = kDefaultGlitchIntensity;
+        if (!std::isfinite(blurRadiusPx)) blurRadiusPx = kDefaultBlurRadiusPx;
+        if (!std::isfinite(displacementAmount)) displacementAmount = kDefaultDisplacementAmount;
+        if (!std::isfinite(displacementScale)) displacementScale = kDefaultDisplacementScale;
+        edgeSoftness = std::clamp(edgeSoftness, 0.0f, kMaxEdgeSoftness);
+        zoomAmount = std::clamp(zoomAmount, 0.0f, kMaxZoomAmount);
+        dissolveGrainPx = std::clamp(dissolveGrainPx, 1, kMaxDissolveGrainPx);
+        radialOriginX = std::clamp(radialOriginX, 0.0f, 1.0f);
+        radialOriginY = std::clamp(radialOriginY, 0.0f, 1.0f);
+        pixelateMaxBlockPx = std::clamp(pixelateMaxBlockPx, 1, kMaxPixelateMaxBlockPx);
+        glitchIntensity = std::clamp(glitchIntensity, 0.0f, 1.0f);
+        glitchBlockPx = std::clamp(glitchBlockPx, 4, kMaxGlitchBlockPx);
+        blurRadiusPx = std::clamp(blurRadiusPx, 0.0f, kMaxBlurRadiusPx);
+        displacementAmount = std::clamp(displacementAmount, 0.0f, kMaxDisplacementAmount);
+        displacementScale = std::clamp(displacementScale, 1.0f, kMaxDisplacementScale);
+        effectSeed = std::clamp(effectSeed, 0, kMaxEffectSeed);
+        startToPinEasing.normalize();
+        pinToEndEasing.normalize();
+    }
 };
 
 inline std::string snapshotTransitionTypeToString(SnapshotTransition::Type t) {
@@ -1357,6 +1520,11 @@ inline std::string snapshotTransitionTypeToString(SnapshotTransition::Type t) {
         case SnapshotTransition::Type::Zoom:      return "zoom";
         case SnapshotTransition::Type::Dissolve:  return "dissolve";
         case SnapshotTransition::Type::OutThenIn: return "outThenIn";
+        case SnapshotTransition::Type::RadialReveal: return "radialReveal";
+        case SnapshotTransition::Type::Pixelate:     return "pixelate";
+        case SnapshotTransition::Type::Glitch:       return "glitch";
+        case SnapshotTransition::Type::BlurThrough:  return "blurThrough";
+        case SnapshotTransition::Type::Displacement: return "displacement";
         default:                                  return "crossfade";
     }
 }
@@ -1368,6 +1536,11 @@ inline SnapshotTransition::Type stringToSnapshotTransitionType(const std::string
     if (s == "zoom")      return SnapshotTransition::Type::Zoom;
     if (s == "dissolve")  return SnapshotTransition::Type::Dissolve;
     if (s == "outThenIn") return SnapshotTransition::Type::OutThenIn;
+    if (s == "radialReveal") return SnapshotTransition::Type::RadialReveal;
+    if (s == "pixelate")     return SnapshotTransition::Type::Pixelate;
+    if (s == "glitch")       return SnapshotTransition::Type::Glitch;
+    if (s == "blurThrough")  return SnapshotTransition::Type::BlurThrough;
+    if (s == "displacement") return SnapshotTransition::Type::Displacement;
     return SnapshotTransition::Type::Crossfade;
 }
 
@@ -1405,7 +1578,11 @@ struct GridCue {
 //     cues: [ GridCue, ... ] }                                    // time automation
 //
 // Each cue is { tick, snapshotId } and MAY carry an additive `transition` object
-// { enabled, startOffsetTicks, endOffsetTicks, type, freezeOutgoing, geomAngleDeg }
+// { enabled, startOffsetTicks, endOffsetTicks, type, geomAngleDeg,
+//   edgeSoftness, zoomAmount, dissolveGrainPx, radialOriginX, radialOriginY,
+//   pixelateMaxBlockPx, glitchIntensity, glitchBlockPx, blurRadiusPx,
+//   displacementAmount, displacementScale, effectSeed,
+//   easing: { startToPin: {x1,y1,x2,y2}, pinToEnd: {x1,y1,x2,y2} } }
 // describing the boundary animation at that cue. The transition object is written
 // ONLY when enabled (omitted entirely for a hard cut) and defaults to a hard cut
 // when absent, so projects saved before transitions existed load unchanged.

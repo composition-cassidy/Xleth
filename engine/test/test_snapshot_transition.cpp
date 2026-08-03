@@ -12,11 +12,13 @@
 
 // Force assert even in Release builds (NDEBUG is defined).
 #undef NDEBUG
+#include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <set>
 #include <string>
 #include <vector>
 
@@ -154,6 +156,42 @@ FrameCacheEntry makeSolidEntry(ID3D11Device* device, const Color& c, int w, int 
     return entry;
 }
 
+FrameCacheEntry makePatternEntry(ID3D11Device* device, int w, int h)
+{
+    constexpr Color colors[] = {
+        {240, 30, 30, 255}, {30, 220, 60, 255},
+        {30, 80, 230, 255}, {230, 210, 30, 255},
+    };
+    std::vector<uint8_t> pixels(static_cast<size_t>(w) * h * 4);
+    for (int y = 0; y < h; ++y) {
+        for (int x = 0; x < w; ++x) {
+            const Color& c = colors[std::min(3, x * 4 / w)];
+            const size_t i = (static_cast<size_t>(y) * w + x) * 4;
+            pixels[i + 0] = c.b;
+            pixels[i + 1] = c.g;
+            pixels[i + 2] = c.r;
+            pixels[i + 3] = c.a;
+        }
+    }
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width = (UINT)w; desc.Height = (UINT)h;
+    desc.MipLevels = 1; desc.ArraySize = 1;
+    desc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage = D3D11_USAGE_DEFAULT;
+    desc.BindFlags = D3D11_BIND_SHADER_RESOURCE;
+    D3D11_SUBRESOURCE_DATA init = {};
+    init.pSysMem = pixels.data();
+    init.SysMemPitch = (UINT)(w * 4);
+
+    FrameCacheEntry entry;
+    assert(SUCCEEDED(device->CreateTexture2D(&desc, &init, &entry.texture)));
+    assert(SUCCEEDED(device->CreateShaderResourceView(entry.texture.Get(), nullptr, &entry.srv)));
+    entry.width = w; entry.height = h;
+    entry.memorySizeBytes = static_cast<size_t>(w) * h * 4;
+    return entry;
+}
+
 // FNV-1a over the tightly-packed pixel region (ignore stride padding so two
 // readbacks from the same target hash identically iff their content matches).
 uint64_t hashBuffer(const ReadbackBuffer& b)
@@ -204,16 +242,16 @@ int main()
     fillTarget(context, targets.rtvA.Get(), colorA);
     fillTarget(context, targets.rtvB.Get(), colorB);
 
-    compositor.transitionPass(targets.srvA.Get(), targets.srvB.Get(), 0, 0.0f, 0.0f);
+    compositor.transitionPass(targets.srvA.Get(), targets.srvB.Get(), 0, 0.0f, 0.0f, 0.0f, 0.12f, 1);
     assertEveryPixel(compositor.readback(), colorA, 0);
 
-    compositor.transitionPass(targets.srvA.Get(), targets.srvB.Get(), 0, 1.0f, 0.0f);
+    compositor.transitionPass(targets.srvA.Get(), targets.srvB.Get(), 0, 1.0f, 0.0f, 0.0f, 0.12f, 1);
     assertEveryPixel(compositor.readback(), colorB, 0);
 
-    compositor.transitionPass(targets.srvA.Get(), targets.srvB.Get(), 0, 0.5f, 0.0f);
+    compositor.transitionPass(targets.srvA.Get(), targets.srvB.Get(), 0, 0.5f, 0.0f, 0.0f, 0.12f, 1);
     assertEveryPixel(compositor.readback(), channelAverage(colorA, colorB), 1);
 
-    compositor.transitionPass(targets.srvA.Get(), targets.srvB.Get(), 1, 0.5f, 0.0f);
+    compositor.transitionPass(targets.srvA.Get(), targets.srvB.Get(), 1, 0.5f, 0.0f, 0.0f, 0.12f, 1);
     const ReadbackBuffer sweep = compositor.readback();
     assert(sweep.valid);
     const Color left = pixelAt(sweep, kWidth / 4, kHeight / 2);
@@ -221,6 +259,139 @@ int main()
     assert(colorNear(left, colorB, 0));
     assert(colorNear(right, colorA, 0));
     assert(!colorNear(left, right, 0));
+
+    // Angle convention: 0° reveals B left→right, 180° right→left; 90°
+    // reveals top→bottom and 270° bottom→top. These are the four cardinal
+    // direction presets that the free-angle UI snaps to.
+    constexpr float kPi = 3.14159265358979323846f;
+    compositor.transitionPass(targets.srvA.Get(), targets.srvB.Get(), 1, 0.5f, kPi, 0.0f, 0.12f, 1);
+    const ReadbackBuffer reverseHorizontal = compositor.readback();
+    assert(colorNear(pixelAt(reverseHorizontal, kWidth / 4, kHeight / 2), colorA, 0));
+    assert(colorNear(pixelAt(reverseHorizontal, 3 * kWidth / 4, kHeight / 2), colorB, 0));
+
+    compositor.transitionPass(targets.srvA.Get(), targets.srvB.Get(), 1, 0.5f, kPi / 2.0f, 0.0f, 0.12f, 1);
+    const ReadbackBuffer topDown = compositor.readback();
+    assert(colorNear(pixelAt(topDown, kWidth / 2, kHeight / 4), colorB, 0));
+    assert(colorNear(pixelAt(topDown, kWidth / 2, 3 * kHeight / 4), colorA, 0));
+
+    compositor.transitionPass(targets.srvA.Get(), targets.srvB.Get(), 1, 0.5f, 3.0f * kPi / 2.0f, 0.0f, 0.12f, 1);
+    const ReadbackBuffer bottomUp = compositor.readback();
+    assert(colorNear(pixelAt(bottomUp, kWidth / 2, kHeight / 4), colorA, 0));
+    assert(colorNear(pixelAt(bottomUp, kWidth / 2, 3 * kHeight / 4), colorB, 0));
+
+    auto pass = [&](ID3D11ShaderResourceView* a, ID3D11ShaderResourceView* b,
+                    int mode, float progress, float angle = 0.0f,
+                    float softness = 0.0f, float zoom = 0.12f, int grain = 1,
+                    float radialX = 0.5f, float radialY = 0.5f,
+                    int pixelateBlock = 32, float glitch = 0.65f,
+                    int glitchBlock = 24, float blur = 16.0f,
+                    float displacement = 0.06f, float displacementScale = 6.0f,
+                    int seed = 0) {
+        compositor.transitionPass(a, b, mode, progress, angle, softness, zoom, grain,
+                                  radialX, radialY, pixelateBlock, glitch, glitchBlock,
+                                  blur, displacement, displacementScale, seed);
+        return compositor.readback();
+    };
+
+    // Every mode has byte-exact shoulders, including mask/feather modes.
+    for (int mode = 0; mode <= 11; ++mode) {
+        assertEveryPixel(pass(targets.srvA.Get(), targets.srvB.Get(), mode, 0.0f), colorA, 0);
+        assertEveryPixel(pass(targets.srvA.Get(), targets.srvB.Get(), mode, 1.0f), colorB, 0);
+    }
+
+    // Patterned inputs distinguish Push (A moves) from Slide Over (A stays put).
+    FrameCacheEntry patternA = makePatternEntry(device, kWidth, kHeight);
+    FrameCacheEntry patternB = makePatternEntry(device, kWidth, kHeight);
+    const ReadbackBuffer pushed = pass(patternA.srv.Get(), patternB.srv.Get(), 2, 0.5f);
+    const ReadbackBuffer slid = pass(patternA.srv.Get(), patternB.srv.Get(), 3, 0.5f);
+    assert(!colorNear(pixelAt(pushed, 3 * kWidth / 4, kHeight / 2),
+                      pixelAt(slid, 3 * kWidth / 4, kHeight / 2), 0)
+           && "Push must translate outgoing A while Slide keeps A stationary");
+
+    // Feathering produces a real blend band without changing the shoulders.
+    const ReadbackBuffer feathered = pass(
+        targets.srvA.Get(), targets.srvB.Get(), 1, 0.5f, 0.0f, 0.10f);
+    const Color featherPixel = pixelAt(feathered, kWidth / 2 - 3, kHeight / 2);
+    assert(!colorNear(featherPixel, colorA, 0) && !colorNear(featherPixel, colorB, 0));
+
+    // Zoom amount changes geometry when the source contains spatial detail.
+    const uint64_t nativeZoomHash = hashBuffer(pass(
+        patternA.srv.Get(), patternA.srv.Get(), 4, 0.5f, 0.0f, 0.0f, 0.0f));
+    const uint64_t strongZoomHash = hashBuffer(pass(
+        patternA.srv.Get(), patternA.srv.Get(), 4, 0.5f, 0.0f, 0.0f, 0.30f));
+    assert(nativeZoomHash != strongZoomHash && "Zoom amount must alter patterned geometry");
+
+    // Dissolve is a stable spatial mask: repeatable at a fixed grain, with a
+    // different distribution when grain size changes and roughly half B at t=.5.
+    const ReadbackBuffer dissolve1 = pass(
+        targets.srvA.Get(), targets.srvB.Get(), 5, 0.5f, 0.0f, 0.0f, 0.12f, 1);
+    const uint64_t dissolveHash1 = hashBuffer(dissolve1);
+    const uint64_t dissolveHash2 = hashBuffer(pass(
+        targets.srvA.Get(), targets.srvB.Get(), 5, 0.5f, 0.0f, 0.0f, 0.12f, 1));
+    assert(dissolveHash1 == dissolveHash2 && "Dissolve mask must not shimmer");
+    int bPixels = 0;
+    for (int y = 0; y < kHeight; ++y)
+        for (int x = 0; x < kWidth; ++x)
+            if (colorNear(pixelAt(dissolve1, x, y), colorB, 0)) ++bPixels;
+    assert(bPixels > kWidth * kHeight / 3 && bPixels < 2 * kWidth * kHeight / 3);
+    const uint64_t coarseDissolveHash = hashBuffer(pass(
+        targets.srvA.Get(), targets.srvB.Get(), 5, 0.5f, 0.0f, 0.0f, 0.12f, 8));
+    assert(coarseDissolveHash != dissolveHash1 && "Dissolve grain must alter the mask");
+
+    // Out-Then-In lands on exact opaque black at the fixed pin.
+    constexpr Color opaqueBlack{0, 0, 0, 255};
+    assertEveryPixel(pass(targets.srvA.Get(), targets.srvB.Get(), 6, 0.5f), opaqueBlack, 0);
+
+    // Radial reveal opens from the authored origin and retains A beyond the radius.
+    const ReadbackBuffer radial = pass(
+        targets.srvA.Get(), targets.srvB.Get(), 7, 0.35f,
+        0.0f, 0.0f, 0.12f, 1, 0.5f, 0.5f);
+    assert(colorNear(pixelAt(radial, kWidth / 2, kHeight / 2), colorB, 0));
+    assert(colorNear(pixelAt(radial, 0, 0), colorA, 0));
+    const uint64_t shiftedRadialHash = hashBuffer(pass(
+        targets.srvA.Get(), targets.srvB.Get(), 7, 0.35f,
+        0.0f, 0.0f, 0.12f, 1, 0.2f, 0.7f));
+    assert(shiftedRadialHash != hashBuffer(radial) && "Radial origin must move the reveal");
+
+    // Pixelate, blur, glitch, and displacement all alter patterned geometry.
+    const uint64_t unmodifiedPatternHash = hashBuffer(pass(
+        patternA.srv.Get(), patternA.srv.Get(), 0, 0.5f));
+    const uint64_t pixelatedHash = hashBuffer(pass(
+        patternA.srv.Get(), patternA.srv.Get(), 8, 0.5f,
+        0.0f, 0.0f, 0.12f, 1, 0.5f, 0.5f, 48));
+    assert(pixelatedHash != unmodifiedPatternHash && "Pixelate must quantize patterned UVs");
+
+    const uint64_t glitchHash1 = hashBuffer(pass(
+        patternA.srv.Get(), patternA.srv.Get(), 9, 0.5f,
+        0.0f, 0.0f, 0.12f, 1, 0.5f, 0.5f, 32, 0.9f, 16, 16.0f,
+        0.06f, 6.0f, 7));
+    const uint64_t glitchHash2 = hashBuffer(pass(
+        patternA.srv.Get(), patternA.srv.Get(), 9, 0.5f,
+        0.0f, 0.0f, 0.12f, 1, 0.5f, 0.5f, 32, 0.9f, 16, 16.0f,
+        0.06f, 6.0f, 7));
+    const uint64_t alternateGlitchHash = hashBuffer(pass(
+        patternA.srv.Get(), patternA.srv.Get(), 9, 0.5f,
+        0.0f, 0.0f, 0.12f, 1, 0.5f, 0.5f, 32, 0.9f, 16, 16.0f,
+        0.06f, 6.0f, 91));
+    assert(glitchHash1 == glitchHash2 && "Glitch must be deterministic for a fixed seed");
+    assert(glitchHash1 != alternateGlitchHash && "Glitch seed must change its pattern");
+
+    const uint64_t blurredHash = hashBuffer(pass(
+        patternA.srv.Get(), patternA.srv.Get(), 10, 0.5f,
+        kPi / 4.0f, 0.0f, 0.12f, 1, 0.5f, 0.5f, 32, 0.65f, 24, 32.0f));
+    assert(blurredHash != unmodifiedPatternHash && "Blur Through must blur spatial detail");
+
+    const uint64_t displacementHash1 = hashBuffer(pass(
+        patternA.srv.Get(), patternA.srv.Get(), 11, 0.5f,
+        0.0f, 0.0f, 0.12f, 1, 0.5f, 0.5f, 32, 0.65f, 24, 16.0f,
+        0.15f, 8.0f, 3));
+    const uint64_t displacementHash2 = hashBuffer(pass(
+        patternA.srv.Get(), patternA.srv.Get(), 11, 0.5f,
+        0.0f, 0.0f, 0.12f, 1, 0.5f, 0.5f, 32, 0.65f, 24, 16.0f,
+        0.15f, 8.0f, 3));
+    assert(displacementHash1 == displacementHash2
+           && displacementHash1 != unmodifiedPatternHash
+           && "Displacement must be stable and alter patterned geometry");
 
     // ────────────────────────────────────────────────────────────────────────
     // Phase 3b: preview==export determinism across a real transition window.
@@ -277,7 +448,8 @@ int main()
         tr.startOffsetTicks = TickTime::fromBeats(1.0).ticks;
         tr.endOffsetTicks   = TickTime::fromBeats(1.0).ticks;
         tr.type             = SnapshotTransition::Type::Crossfade;
-        tr.freezeOutgoing   = true;   // exercise the freeze cache
+        tr.startToPinEasing = {0.42f, 0.0f, 1.0f, 1.0f};
+        tr.pinToEndEasing   = {0.0f, 0.0f, 0.58f, 1.0f};
         tl.setCueTransition(pinTick, tr);
 
         // Both tracks active across the whole window.
@@ -291,9 +463,13 @@ int main()
 
         FrameCollector collector;
         RenderFrameCache cache;
+        std::set<int64_t> decodedAFrames;
+        std::set<int64_t> decodedBFrames;
         auto decodeMisses = [&](const std::vector<FrameCacheKey>& misses) {
             for (const auto& k : misses) {
                 const Color c = (k.sourcePath == "A.mp4") ? colorRed : colorBlue;
+                if (k.sourcePath == "A.mp4") decodedAFrames.insert(k.frameIndex);
+                if (k.sourcePath == "B.mp4") decodedBFrames.insert(k.frameIndex);
                 cache.put(k, makeSolidEntry(device, c, 64, 64));
             }
         };
@@ -323,8 +499,6 @@ int main()
         const int64_t fLo = RenderClock::sampleToVideoFrame(startSample, sampleRate, fps) - 2;
         const int64_t fHi = RenderClock::sampleToVideoFrame(endSample,   sampleRate, fps) + 2;
 
-        xleth::TransitionFreezeState freezeP;   // preview-path freeze cache
-        xleth::TransitionFreezeState freezeE;   // export-path freeze cache
         int comparedFrames = 0;
         int blendFrames    = 0;
         for (int64_t f = fLo; f <= fHi; ++f) {
@@ -336,14 +510,14 @@ int main()
             // PREVIEW framing: stopped scrub to absolute sample S (frame 0 origin).
             const bool okP = xleth::renderSnapshotTransition(
                 rt, tl, evs, compositor, collector, cache,
-                makeCtx(/*frameIdx=*/0, /*projStart=*/S), decodeMisses, freezeP);
+                makeCtx(/*frameIdx=*/0, /*projStart=*/S), decodeMisses);
             assert(okP && "preview transition must render inside the window");
             const uint64_t hP = hashBuffer(compositor.readback());
 
             // EXPORT framing: full-project export, frame index f from origin 0.
             const bool okE = xleth::renderSnapshotTransition(
                 rt, tl, evs, compositor, collector, cache,
-                makeCtx(/*frameIdx=*/f, /*projStart=*/0), decodeMisses, freezeE);
+                makeCtx(/*frameIdx=*/f, /*projStart=*/0), decodeMisses);
             assert(okE && "export transition must render inside the window");
             const uint64_t hE = hashBuffer(compositor.readback());
 
@@ -360,9 +534,77 @@ int main()
         }
         assert(comparedFrames > 4 && "window should span several frames");
         assert(blendFrames    > 0 && "window should contain interior blend frames");
+        assert(decodedAFrames.size() > 2
+               && "outgoing snapshot A must request multiple live source frames");
+        assert(decodedBFrames.size() > 2
+               && "incoming snapshot B must request multiple live source frames");
+        assert(decodedAFrames == decodedBFrames
+               && "A and B must advance from the same absolute project time");
         std::fprintf(stderr,
-            "[TEST:SnapshotTransition] preview==export over %d frames (%d interior): PASSED\n",
-            comparedFrames, blendFrames);
+            "[TEST:SnapshotTransition] preview==export over %d frames (%d interior), "
+            "%zu live frames per snapshot: PASSED\n",
+            comparedFrames, blendFrames, decodedAFrames.size());
+
+        // Sample all twelve shader modes at both shoulders and three interior
+        // positions. Each pair uses different preview/export framing for the
+        // same absolute project sample and must remain byte-identical.
+        const SnapshotTransition::Type allTypes[] = {
+            SnapshotTransition::Type::Crossfade, SnapshotTransition::Type::LineSweep,
+            SnapshotTransition::Type::Push, SnapshotTransition::Type::Slide,
+            SnapshotTransition::Type::Zoom, SnapshotTransition::Type::Dissolve,
+            SnapshotTransition::Type::OutThenIn,
+            SnapshotTransition::Type::RadialReveal, SnapshotTransition::Type::Pixelate,
+            SnapshotTransition::Type::Glitch, SnapshotTransition::Type::BlurThrough,
+            SnapshotTransition::Type::Displacement,
+        };
+        const int64_t samples[] = {
+            startSample,
+            startSample + (pinSample - startSample) / 2,
+            pinSample,
+            pinSample + (endSample - pinSample) / 2,
+            endSample,
+        };
+        int modeComparisons = 0;
+        for (const auto type : allTypes) {
+            tr.type = type;
+            tr.geomAngleDeg = 90.0f;
+            tr.edgeSoftness = 0.025f;
+            tr.zoomAmount = 0.2f;
+            tr.dissolveGrainPx = 5;
+            tr.radialOriginX = 0.3f;
+            tr.radialOriginY = 0.7f;
+            tr.pixelateMaxBlockPx = 40;
+            tr.glitchIntensity = 0.8f;
+            tr.glitchBlockPx = 18;
+            tr.blurRadiusPx = 24.0f;
+            tr.displacementAmount = 0.12f;
+            tr.displacementScale = 9.0f;
+            tr.effectSeed = 23;
+            tl.setCueTransition(pinTick, tr);
+            for (const int64_t S : samples) {
+                const TickTime tick{ RenderClock::sampleToPPQ(S, sampleRate, bpm) };
+                const Timeline::ResolvedTransition rt = tl.transitionAt(tick);
+                assert(rt.active);
+                assert(xleth::renderSnapshotTransition(
+                    rt, tl, evs, compositor, collector, cache,
+                    makeCtx(0, S), decodeMisses));
+                const uint64_t previewHash = hashBuffer(compositor.readback());
+
+                const int64_t frame = RenderClock::sampleToVideoFrame(S, sampleRate, fps);
+                const int64_t frameSample = RenderClock::videoFrameToSample(frame, sampleRate, fps);
+                assert(xleth::renderSnapshotTransition(
+                    rt, tl, evs, compositor, collector, cache,
+                    makeCtx(frame, S - frameSample), decodeMisses));
+                const uint64_t exportHash = hashBuffer(compositor.readback());
+                assert(previewHash == exportHash && "every transition mode must be preview/export exact");
+                ++modeComparisons;
+            }
+        }
+        assert(modeComparisons == 60);
+        tr.type = SnapshotTransition::Type::Crossfade;
+        tr.geomAngleDeg = 0.0f;
+        tr.edgeSoftness = 0.0f;
+        tl.setCueTransition(pinTick, tr);
 
         // Explicit t=0 / t=0.5 / t=1 checks at exact samples (preview framing).
         // t=0 at the Start shoulder → pure outgoing A (red).
@@ -372,7 +614,7 @@ int main()
             assert(rt.active);
             assert(xleth::renderSnapshotTransition(
                 rt, tl, evs, compositor, collector, cache,
-                makeCtx(0, startSample), decodeMisses, freezeP));
+                makeCtx(0, startSample), decodeMisses));
             const ReadbackBuffer rb = compositor.readback();
             const Color mid = pixelAt(rb, rb.width / 2, rb.height / 2);
             assert(colorNear(mid, colorRed, 4) && "t=0 must be the outgoing snapshot");
@@ -385,7 +627,7 @@ int main()
             assert(rt.active);
             assert(xleth::renderSnapshotTransition(
                 rt, tl, evs, compositor, collector, cache,
-                makeCtx(0, endSample), decodeMisses, freezeP));
+                makeCtx(0, endSample), decodeMisses));
             const ReadbackBuffer rb = compositor.readback();
             const Color mid = pixelAt(rb, rb.width / 2, rb.height / 2);
             assert(colorNear(mid, colorBlue, 4) && "t=1 must be the incoming snapshot");
@@ -397,7 +639,7 @@ int main()
             assert(rt.active);
             assert(xleth::renderSnapshotTransition(
                 rt, tl, evs, compositor, collector, cache,
-                makeCtx(0, pinSample), decodeMisses, freezeP));
+                makeCtx(0, pinSample), decodeMisses));
             const ReadbackBuffer rb = compositor.readback();
             const Color mid = pixelAt(rb, rb.width / 2, rb.height / 2);
             const Color expected = channelAverage(colorRed, colorBlue);

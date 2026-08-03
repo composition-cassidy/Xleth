@@ -152,8 +152,11 @@ describe('EqBandPopup', () => {
       band: makeStaticBand(), bandIndex: 0, linPhase: true, oversample: 0,
       setBandParam: vi.fn(), removeBand: vi.fn(), duplicateBand: vi.fn(), onClose: vi.fn(),
     })
-    const modeSelect = document.body.querySelectorAll('.eq-band-popup-select')[1]
-    const options = Array.from(modeSelect.querySelectorAll('option'))
+    const modeTrigger = document.body.querySelectorAll('.eq-band-popup-select')[1]
+    await act(async () => {
+      modeTrigger.dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
+    })
+    const options = Array.from(document.body.querySelectorAll('.xleth-select-popup .xleth-select-option'))
     expect(options[1].disabled).toBe(true)  // Dynamic
     expect(options[2].disabled).toBe(true)  // Spectral (linPhase also blocks it)
     expect(options[0].disabled).toBe(false) // Static always enabled
@@ -166,8 +169,11 @@ describe('EqBandPopup', () => {
       band: makeStaticBand(), bandIndex: 0, linPhase: false, oversample: 1,
       setBandParam: vi.fn(), removeBand: vi.fn(), duplicateBand: vi.fn(), onClose: vi.fn(),
     })
-    const modeSelect = document.body.querySelectorAll('.eq-band-popup-select')[1]
-    const options = Array.from(modeSelect.querySelectorAll('option'))
+    const modeTrigger = document.body.querySelectorAll('.eq-band-popup-select')[1]
+    await act(async () => {
+      modeTrigger.dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
+    })
+    const options = Array.from(document.body.querySelectorAll('.xleth-select-popup .xleth-select-option'))
     expect(options[1].disabled).toBe(false) // Dynamic unaffected by oversample
     expect(options[2].disabled).toBe(true)  // Spectral blocked by oversample
     await unmountRoot(root)
@@ -198,10 +204,13 @@ describe('EqBandPopup', () => {
       removeBand: vi.fn(), duplicateBand: vi.fn(), onClose: vi.fn(),
     })
 
-    const typeSelect = document.body.querySelectorAll('.eq-band-popup-select')[0]
+    const typeTrigger = document.body.querySelectorAll('.eq-band-popup-select')[0]
     await act(async () => {
-      typeSelect.value = '4' // High Pass
-      typeSelect.dispatchEvent(new window.Event('change', { bubbles: true }))
+      typeTrigger.dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
+    })
+    const option = document.body.querySelector('.xleth-select-popup [data-value="4"]') // High Pass
+    await act(async () => {
+      option.dispatchEvent(new window.MouseEvent('click', { bubbles: true }))
     })
     expect(setBandParam).toHaveBeenCalledWith(1, 'type', 4)
     await unmountRoot(root)

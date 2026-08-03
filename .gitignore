@@ -66,6 +66,7 @@ thumbs.db
 *.ai
 *.svg
 *.png
+!ui/tests/clip-controls/snapshots/*.png
 *.lnk
 *.skill
 *.mp3
@@ -99,6 +100,7 @@ fsc_test/
 # on every run (timestamps/ids churn), so they are generated, not fixtures.
 bridge/_test_*/
 bridge/_tmp_*
+ui/tests/clip-controls/.output/
 
 # Design working files (PSDs etc. — not shipped source)
 art/

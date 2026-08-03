@@ -47,6 +47,20 @@ public:
     std::vector<const TrackInfo*> getAllTracks() const;
     bool                         setTrackOrder(const std::vector<int>& trackIdsInOrder);
     bool                         removeTrack(int id);
+    TrackLayout                  getTrackLayout() const;
+    bool                         setTrackLayout(const TrackLayout& layout);
+    // Command/project restoration path: accepts a structurally valid snapshot
+    // whose folder set differs from the current state (for create/delete undo).
+    bool                         restoreTrackLayout(const TrackLayout& layout);
+    bool                         isTrackLayoutValid(const TrackLayout& layout) const {
+        return validateTrackLayout(layout);
+    }
+    int                          createTrackFolder(std::string name,
+                                                   const std::vector<int>& trackIds,
+                                                   int rootIndex);
+    bool                         setTrackFolderName(int folderId, const std::string& name);
+    bool                         setTrackFolderCollapsed(int folderId, bool collapsed);
+    bool                         removeTrackFolder(int folderId);
 
     // ── Clips ─────────────────────────────────────────────────────────────────
     int                        addClip(Clip clip);
@@ -151,8 +165,21 @@ public:
         TickTime startTick{};                 // pinTick - transition.startOffsetTicks
         TickTime endTick{};                   // pinTick + transition.endOffsetTicks
         SnapshotTransition::Type type = SnapshotTransition::Type::Crossfade;
-        bool     freezeOutgoing = true;
         float    geomAngleDeg = 0.0f;
+        float    edgeSoftness = SnapshotTransition::kDefaultEdgeSoftness;
+        float    zoomAmount = SnapshotTransition::kDefaultZoomAmount;
+        int      dissolveGrainPx = SnapshotTransition::kDefaultDissolveGrainPx;
+        float    radialOriginX = SnapshotTransition::kDefaultRadialOriginX;
+        float    radialOriginY = SnapshotTransition::kDefaultRadialOriginY;
+        int      pixelateMaxBlockPx = SnapshotTransition::kDefaultPixelateMaxBlockPx;
+        float    glitchIntensity = SnapshotTransition::kDefaultGlitchIntensity;
+        int      glitchBlockPx = SnapshotTransition::kDefaultGlitchBlockPx;
+        float    blurRadiusPx = SnapshotTransition::kDefaultBlurRadiusPx;
+        float    displacementAmount = SnapshotTransition::kDefaultDisplacementAmount;
+        float    displacementScale = SnapshotTransition::kDefaultDisplacementScale;
+        int      effectSeed = SnapshotTransition::kDefaultEffectSeed;
+        SnapshotTransitionEasingCurve startToPinEasing{};
+        SnapshotTransitionEasingCurve pinToEndEasing{};
         GridLayout layoutA;                   // outgoing snapshot = gridLayoutAt(pinTick - 1)
         GridLayout layoutB;                   // incoming snapshot = gridLayoutAt(pinTick)
     };
@@ -341,6 +368,9 @@ private:
     // cue resolver and the default-snapshot fallback.
     const GridSnapshot* findSnapshot(const std::string& id) const;
     int getNextId();
+    bool validateTrackLayout(const TrackLayout& layout, bool requireKnownFolders = true) const;
+    void syncTrackOrdersFromLayout();
+    void rebuildFlatTrackLayout();
 
     // Derived-state helpers: keep pattern.length in sync with its notes, and
     // cascade that length change to blocks that were in-sync (not manually trimmed).
@@ -359,6 +389,8 @@ private:
     std::map<int, TrackInfo>    m_tracks;
     // Preview-only, not persisted — see setVisualEffectChainPreviewMuted above.
     std::unordered_set<int>     m_previewMutedChainTrackIds;
+    std::map<int, TrackFolder>  m_trackFolders;
+    std::vector<TrackLayoutItem> m_trackRootOrder;
     std::map<int, Clip>         m_clips;
     std::map<int, Pattern>      m_patterns;
     std::map<int, PatternBlock> m_patternBlocks;

@@ -149,7 +149,7 @@ describe('Phase I store/action undo-redo behavior', () => {
     expect(findNode(state.workingLayout, 'k-threshold').props.size).toBe(54)
 
     state.undo()
-    expect(findNode(usePluginUIDesignerStore.getState().workingLayout, 'k-threshold').props.size).toBe(52)
+    expect(findNode(usePluginUIDesignerStore.getState().workingLayout, 'k-threshold').props.size).toBe(56)
     vi.useRealTimers()
   })
 

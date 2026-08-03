@@ -349,9 +349,10 @@ describe('PanelFrame render paths', () => {
       />,
     );
 
-    expect(html).toContain('FX Graph Mode Active');
-    expect(html).toContain('Graph routing is enabled for connected paths.');
-    expect(countText(html, 'Graph routing is enabled for connected paths.')).toBe(1);
+    // FXG.3-l — the header pill is the single mode indicator; the runtime-status
+    // copy ("Graph routing is enabled...") no longer duplicates it in the body.
+    expect(html).not.toContain('FX Graph Mode Active');
+    expect(html).not.toContain('Graph routing is enabled for connected paths.');
     expect(html).toContain('Read-only persisted FX graph preview');
     expect(html).toContain('Track Input');
     expect(html).toContain('Persisted EQ');
@@ -620,9 +621,11 @@ describe('PanelFrame render paths', () => {
       });
 
       const validHtml = renderToStaticMarkup(<FxGraphPanel />);
-      expect(validHtml).toContain('FX Graph Mode Active');
+      // FXG.3-l — no more duplicate "FX Graph Mode Active" body copy; the header
+      // pill ("FX Graph owns this track") is the sole mode indicator.
+      expect(validHtml).not.toContain('FX Graph Mode Active');
+      expect(validHtml).toContain('FX Graph owns this track');
       expect(validHtml).toContain('Persisted EQ');
-      expect(countText(validHtml, 'Graph routing is enabled for connected paths.')).toBe(1);
 
       useEffectChainStore.setState({
         chains: {},

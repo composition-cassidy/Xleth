@@ -189,6 +189,33 @@ std::unique_ptr<Timeline>       g_timeline;
 std::unique_ptr<UndoManager>    g_undoManager;
 std::unique_ptr<ProjectManager> g_projectManager;
 
+// Clip gain/fade drags are previewed directly on the model so the audio engine
+// can audition them without flooding undo history.  There is deliberately only
+// one session: renderer messages are ordered, and the monotonically increasing
+// id lets us reject late animation-frame previews after commit/cancel.
+struct ClipControlEditSession {
+    uint32_t sessionId = 0;
+    int clipId = -1;
+    float initialVelocity = 1.0f;
+    float initialFadeInPercent = 0.0f;
+    float initialFadeOutPercent = 0.0f;
+};
+
+std::unique_ptr<ClipControlEditSession> g_clipControlEdit;
+uint32_t g_nextClipControlEditSessionId = 1;
+
+static void restoreAndClearClipControlEdit()
+{
+    if (g_clipControlEdit && g_timeline) {
+        if (Clip* clip = g_timeline->getClipMutable(g_clipControlEdit->clipId)) {
+            clip->velocity = g_clipControlEdit->initialVelocity;
+            clip->fadeInPercent = g_clipControlEdit->initialFadeInPercent;
+            clip->fadeOutPercent = g_clipControlEdit->initialFadeOutPercent;
+        }
+    }
+    g_clipControlEdit.reset();
+}
+
 // Phase 1B — FrameServer (fast frame extraction for SamplePicker)
 std::unique_ptr<FrameServer> g_frameServer;
 
@@ -219,6 +246,18 @@ std::thread       videoThread;
 std::atomic<bool> videoRunning{false};
 std::atomic<uint64_t> videoThreadCompletedTicks{0};
 std::atomic<bool> g_previewDirty{false};  // set by bridge functions to force a re-render while stopped
+// Set when SyncManager's VideoEvent list has been dropped and needs rebuilding
+// before the preview can render anything.
+//
+// The video tick gates ALL rendering on `!events.empty()`, and
+// rebuildVideoEventsFromClips() used to run in exactly one place: transport
+// play(). So loading a project (or clearing / new-project), each of which calls
+// clearEvents(), left the preview unable to draw a single frame until the user
+// pressed play — and because the gate sits downstream of g_previewDirty, every
+// parameter edit made while paused was silently swallowed: the dirty flag was
+// consumed, the empty-events gate rejected the render, and nothing refreshed.
+// The video thread now rebuilds on demand when this is set.
+std::atomic<bool> g_videoEventsDirty{false};
 std::atomic<uint64_t> g_latestStoppedPreviewSeq{0};
 std::atomic<uint64_t> g_pendingStoppedPreviewSeq{0};
 std::atomic<uint64_t> g_publishedStoppedPreviewSeq{0};
@@ -241,11 +280,6 @@ std::unique_ptr<RenderFrameCache>   g_previewRenderCache;
 std::unique_ptr<RenderVideoDecoder> g_previewRenderDecoder;
 std::unique_ptr<AnimationManager>   g_previewAnimMgr;
 std::unique_ptr<FrameCollector>     g_previewCollector;
-
-// [Slice 3b] Freeze cache for the outgoing snapshot during a live-preview
-// transition window. Touched only on the video/preview tick under
-// g_previewCompositorMutex; invalidated when no window is active or the pin moves.
-xleth::TransitionFreezeState        g_previewTransitionFreeze;
 
 std::mutex          g_previewCompositorMutex;
 std::atomic<bool>   g_previewCompositorReady{false};
@@ -1306,6 +1340,17 @@ static void rebuildVideoEventsFromClips() {
             ev.x = 0.0f; ev.y = 0.0f;
             ev.width = 1.0f; ev.height = 1.0f;
             ev.opacity = clipTrack->videoOpacity * clip->velocity;
+            ev.fadeInPercent = clip->fadeInPercent;
+            ev.fadeOutPercent = clip->fadeOutPercent;
+            normalizeClipFadePercents(ev.fadeInPercent, ev.fadeOutPercent);
+            ev.fadeInX1 = clip->fadeInX1;
+            ev.fadeInY1 = clip->fadeInY1;
+            ev.fadeInX2 = clip->fadeInX2;
+            ev.fadeInY2 = clip->fadeInY2;
+            ev.fadeOutX1 = clip->fadeOutX1;
+            ev.fadeOutY1 = clip->fadeOutY1;
+            ev.fadeOutX2 = clip->fadeOutX2;
+            ev.fadeOutY2 = clip->fadeOutY2;
             const int clipEmissionOrder = counter++;
             ev.globalNoteIndex = clipEmissionOrder;
             ev.hasSourceTriggerOrder = true;
@@ -3217,6 +3262,13 @@ static void videoThreadBody()
     static StageTimer s_collectTimer, s_resolveTimer, s_decodeTimer,
                       s_compositeTimer, s_swizzleTimer, s_tickTimer;
 
+    // Latch: one event-rebuild attempt per "wanted a stopped render but the event
+    // list was empty" episode. Bounds the self-heal below — a project that
+    // genuinely has no video clips has legitimately empty events, and retrying
+    // every tick would rebuild forever at tick rate for no benefit. Cleared as
+    // soon as a render actually runs. Video-thread-local, so a plain bool.
+    bool rebuildTriedForEmptyEvents = false;
+
     while (videoRunning) {
         g_previewDiag.videoTickCount.fetch_add(1, std::memory_order_relaxed);
         // Drain any finished proxy transcodes and install new region
@@ -3230,6 +3282,24 @@ static void videoThreadBody()
         // Install any finished whole-source preview-proxy builds (source-keyed).
         // Same lock rationale — do it before locking syncEventsMutex.
         drainSourcePreviewResults();
+
+        // Rebuild SyncManager's VideoEvent list if something dropped it (project
+        // load, new project, clear timeline). MUST be before the lock below —
+        // rebuildVideoEventsFromClips() takes syncEventsMutex itself.
+        //
+        // This is what lets a paused preview reflect edits. Every render below is
+        // gated on `!events.empty()`, and the rebuild used to happen only inside
+        // transport play(), so between a load and the first play the preview could
+        // not draw at all: parameter edits set g_previewDirty, the tick consumed
+        // it, the empty-events gate rejected the render, and the flag was gone.
+        // Rebuilding here closes that hole without making the user press play.
+        // Coalesced to at most one rebuild per tick by the exchange.
+        if (g_videoEventsDirty.exchange(false, std::memory_order_acq_rel)) {
+            rebuildVideoEventsFromClips();
+            // Draw immediately rather than waiting for the next thing to happen
+            // to mark the preview dirty.
+            g_previewDirty.store(true, std::memory_order_release);
+        }
 
         double tickBeatPos = -1.0;
         {
@@ -3278,6 +3348,8 @@ static void videoThreadBody()
                 g_previewDiag.gatePreviewPausedTicks.fetch_add(1, std::memory_order_relaxed);
 
             if ((isPlaying || forceRender) && !events.empty()) {
+                // A render is going ahead, so the self-heal latch below is spent.
+                rebuildTriedForEmptyEvents = false;
 
                 const bool previewPaused =
                     g_previewPauseForExport || g_previewPauseForVisibility
@@ -3286,10 +3358,8 @@ static void videoThreadBody()
                 // [PreviewUnify] GPU compositor path
                 if (g_previewCompositorReady && !previewPaused) {
                     g_previewDiag.compositorPathEntered.fetch_add(1, std::memory_order_relaxed);
-                    const GridLayout layout = g_timeline
+                    GridLayout layout = g_timeline
                         ? g_timeline->getGridLayout() : GridLayout{};
-                    g_previewDiag.lastLayoutColumns.store(layout.columns, std::memory_order_relaxed);
-                    g_previewDiag.lastLayoutRows.store(layout.rows, std::memory_order_relaxed);
 
                     // Wall-clock delta for animation (cap at 200ms for debugger pauses)
                     auto now = std::chrono::steady_clock::now();
@@ -3332,8 +3402,16 @@ static void videoThreadBody()
                     const int64_t frameProjectTick = RenderClock::sampleToPPQ(
                         frameProjectSample, sampleRate, previewBpm);
                     Timeline::ResolvedTransition previewTransition;
-                    if (g_timeline)
+                    if (g_timeline) {
+                        // Settled frames must use the snapshot resolved at this
+                        // timeline tick. FrameCollector already does this for the
+                        // requests; keep the compositor geometry in lockstep instead
+                        // of leaking the editor's active snapshot into playback.
+                        layout = g_timeline->gridLayoutAt(TickTime{ frameProjectTick });
                         previewTransition = g_timeline->transitionAt(TickTime{ frameProjectTick });
+                    }
+                    g_previewDiag.lastLayoutColumns.store(layout.columns, std::memory_order_relaxed);
+                    g_previewDiag.lastLayoutRows.store(layout.rows, std::memory_order_relaxed);
 
                     // ── Slide-note beat-crossing dispatch ─────────────
                     // Fire SlideAnimationEvents whose startBeat fell between
@@ -3583,12 +3661,7 @@ static void videoThreadBody()
                                 previewTransition, *g_timeline,
                                 syncManager->getEvents(),
                                 *g_previewCompositor, *g_previewCollector,
-                                *g_previewRenderCache, txCtx, decodeMisses,
-                                g_previewTransitionFreeze);
-                        } else {
-                            // No active window — drop any held frozen outgoing frame
-                            // so a later re-entry recomposites A (Edge: seek-out).
-                            g_previewTransitionFreeze.invalidate();
+                                *g_previewRenderCache, txCtx, decodeMisses);
                         }
                         if (!didTransition) {
                             g_previewCompositor->compositeFrame(
@@ -4002,6 +4075,23 @@ static void videoThreadBody()
 #endif
 
             } else if (!isPlaying && forceRender) {
+                // Something asked for a stopped render and we could not do it —
+                // reaching here with forceRender set means `events` was empty.
+                //
+                // Self-heal: the event list is built from the clips on demand, and
+                // before this it was only ever built by transport play(). A user
+                // who assembles a project and tweaks an effect without pressing
+                // play would otherwise get a permanently blank preview, with each
+                // edit consuming the dirty flag and drawing nothing. Ask for a
+                // rebuild and re-arm the flag so the next tick draws the frame
+                // instead of losing it. Latched to a single attempt so a project
+                // with no video clips at all does not rebuild every tick.
+                if (!rebuildTriedForEmptyEvents) {
+                    rebuildTriedForEmptyEvents = true;
+                    g_videoEventsDirty.store(true, std::memory_order_release);
+                    g_previewDirty.store(true, std::memory_order_release);
+                }
+
                 bool canPublishBlack = true;
                 if (hasStoppedPreviewRequest) {
                     const uint64_t latestSeq =
@@ -4374,6 +4464,7 @@ void Shutdown(const JsonApi::CallbackInfo& info)
 
     // Phase 1 teardown (before audioEngine, after video thread)
     g_undoManager.reset();
+    restoreAndClearClipControlEdit();
     g_timeline.reset();
     g_projectManager.reset();
     std::fprintf(stderr, "[BridgeShutdown] project state released\n");
@@ -4574,6 +4665,9 @@ void Play(const JsonApi::CallbackInfo& info)
         audioEngine->getMixEngine().rebuildAllSamplers();
         const auto tSamplersDone = std::chrono::steady_clock::now();
         rebuildVideoEventsFromClips();
+        // This IS the rebuild the video thread would otherwise do for a pending
+        // request, so retire the flag instead of leaving a redundant pass queued.
+        g_videoEventsDirty.store(false, std::memory_order_release);
         const auto tVideoDone = std::chrono::steady_clock::now();
         std::cout << "[StartLatencyTrace] rebuildAllSamplers = "
                   << std::chrono::duration<double, std::milli>(tSamplersDone - tRebuildStart).count()
@@ -5070,6 +5164,8 @@ void ClearTimeline(const JsonApi::CallbackInfo& info)
         decoderOwner.clear();
         decoderPtrs.clear();
     }
+    // Events are gone; the video thread must rebuild them before it can draw.
+    g_videoEventsDirty.store(true, std::memory_order_release);
 
     if (frameCache) frameCache->clear();
 
@@ -5139,6 +5235,7 @@ JsonApi::Value Project_Create(const JsonApi::CallbackInfo& info)
     std::string name = info[1].As<JsonApi::String>().Utf8Value();
     BridgeCallLog log("project.create");
 
+    restoreAndClearClipControlEdit();
     bool ok = g_projectManager->createProject(dir, name);
     log.done(ok ? "true" : "false");
     return JsonApi::Boolean::New(env, ok);
@@ -5152,6 +5249,12 @@ JsonApi::Value Project_Save(const JsonApi::CallbackInfo& info)
         return env.Undefined();
     }
     BridgeCallLog log("project.save");
+    // A transient preview is intentionally not serializable. Autosave retries
+    // on its next interval after the pointer gesture commits or cancels.
+    if (g_clipControlEdit) {
+        log.done("deferred: clip control edit active");
+        return JsonApi::Boolean::New(env, false);
+    }
     nlohmann::json effectChains, masterChain;
     if (audioEngine) {
         auto& mix   = audioEngine->getMixEngine();
@@ -5179,6 +5282,10 @@ JsonApi::Value Project_SaveAs(const JsonApi::CallbackInfo& info)
     std::string dir  = info[0].As<JsonApi::String>().Utf8Value();
     std::string name = info[1].As<JsonApi::String>().Utf8Value();
     BridgeCallLog log("project.saveAs");
+    if (g_clipControlEdit) {
+        log.done("deferred: clip control edit active");
+        return JsonApi::Boolean::New(env, false);
+    }
     nlohmann::json effectChains, masterChain;
     if (audioEngine) {
         auto& mix   = audioEngine->getMixEngine();
@@ -5237,6 +5344,7 @@ JsonApi::Value Project_NewBlank(const JsonApi::CallbackInfo& info)
     }
 
     BridgeCallLog log("project.newBlank");
+    restoreAndClearClipControlEdit();
 
     // 1. Stop playback (Transport::stop rewinds position to 0) and silence
     //    any sustained sampler voices so there is no audible carry-over.
@@ -5335,7 +5443,10 @@ JsonApi::Value Project_NewBlank(const JsonApi::CallbackInfo& info)
     // 11. Savepoint on the blank state — isDirty() must return false now.
     if (g_undoManager) g_undoManager->markSavepoint();
 
-    // 12. Request a preview repaint so any stale frame is cleared.
+    // 12. Request a preview repaint so any stale frame is cleared. The events
+    //     dropped in step 6 must be rebuilt first, or the repaint is gated off by
+    //     the video tick's empty-events check and the dirty flag is wasted.
+    g_videoEventsDirty.store(true, std::memory_order_release);
     g_previewDirty.store(true);
 
     log.done("true");
@@ -5367,6 +5478,7 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
     std::string dir = info[0].As<JsonApi::String>().Utf8Value();
     BridgeCallLog log("project.load");
 
+    restoreAndClearClipControlEdit();
     auto loaded = g_projectManager->loadProject(dir);
     if (!loaded) {
         log.done("false");
@@ -5488,6 +5600,12 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
         decoderPtrs.clear();
         if (frameCache) frameCache->clear();
     }
+    // The loaded project's events have to be rebuilt before the preview can draw
+    // anything at all. Without this a just-opened project shows a blank preview,
+    // and — because the video tick's empty-events check sits downstream of
+    // g_previewDirty — every parameter edit made before the first play is
+    // silently dropped rather than refreshing the preview.
+    g_videoEventsDirty.store(true, std::memory_order_release);
 
     // [PreviewUnify] Clear GPU render pipeline state on project load
     {
@@ -5910,6 +6028,9 @@ JsonApi::Value Timeline_GetRegionsByLabel(const JsonApi::CallbackInfo& info)
     return arr;
 }
 
+static JsonApi::Object trackLayoutToJs(JsonApi::Env env, const TrackLayout& layout);
+static bool jsToTrackLayout(const JsonApi::Value& value, TrackLayout& layout);
+
 JsonApi::Value Timeline_GetTracks(const JsonApi::CallbackInfo& info)
 {
     IPC_TIME_START;
@@ -5926,6 +6047,16 @@ JsonApi::Value Timeline_GetTracks(const JsonApi::CallbackInfo& info)
         arr.Set(static_cast<uint32_t>(i), trackToJs(env, *tracks[i]));
     IPC_TIME_END("timeline_getTracks");
     return arr;
+}
+
+JsonApi::Value Timeline_GetTrackLayout(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!g_timeline) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    return trackLayoutToJs(env, g_timeline->getTrackLayout());
 }
 
 JsonApi::Value Timeline_GetClips(const JsonApi::CallbackInfo& info)
@@ -6257,6 +6388,14 @@ JsonApi::Value Timeline_ListSnapshots(const JsonApi::CallbackInfo& info) {
 // number. Exact integers are lossless up to 2^53, i.e. ~9.0e15 ticks
 // (~9.4e12 quarter-notes @ 960 PPQ) — far above any realistic timeline.
 static JsonApi::Value gridCuesToJs(JsonApi::Env env, const std::vector<GridCue>& cues) {
+    const auto easingCurveToJs = [env](const SnapshotTransitionEasingCurve& curve) {
+        JsonApi::Object result = JsonApi::Object::New(env);
+        result.Set("x1", JsonApi::Number::New(env, curve.x1));
+        result.Set("y1", JsonApi::Number::New(env, curve.y1));
+        result.Set("x2", JsonApi::Number::New(env, curve.x2));
+        result.Set("y2", JsonApi::Number::New(env, curve.y2));
+        return result;
+    };
     JsonApi::Array result = JsonApi::Array::New(env, cues.size());
     for (size_t i = 0; i < cues.size(); ++i) {
         JsonApi::Object item = JsonApi::Object::New(env);
@@ -6270,8 +6409,23 @@ static JsonApi::Value gridCuesToJs(JsonApi::Env env, const std::vector<GridCue>&
         trJs.Set("startOffsetTicks", JsonApi::Number::New(env, static_cast<double>(tr.startOffsetTicks)));
         trJs.Set("endOffsetTicks",   JsonApi::Number::New(env, static_cast<double>(tr.endOffsetTicks)));
         trJs.Set("type",             JsonApi::String::New(env, snapshotTransitionTypeToString(tr.type)));
-        trJs.Set("freezeOutgoing",   JsonApi::Boolean::New(env, tr.freezeOutgoing));
         trJs.Set("geomAngleDeg",     JsonApi::Number::New(env, static_cast<double>(tr.geomAngleDeg)));
+        trJs.Set("edgeSoftness",     JsonApi::Number::New(env, static_cast<double>(tr.edgeSoftness)));
+        trJs.Set("zoomAmount",       JsonApi::Number::New(env, static_cast<double>(tr.zoomAmount)));
+        trJs.Set("dissolveGrainPx",  JsonApi::Number::New(env, static_cast<double>(tr.dissolveGrainPx)));
+        trJs.Set("radialOriginX",    JsonApi::Number::New(env, static_cast<double>(tr.radialOriginX)));
+        trJs.Set("radialOriginY",    JsonApi::Number::New(env, static_cast<double>(tr.radialOriginY)));
+        trJs.Set("pixelateMaxBlockPx", JsonApi::Number::New(env, static_cast<double>(tr.pixelateMaxBlockPx)));
+        trJs.Set("glitchIntensity",  JsonApi::Number::New(env, static_cast<double>(tr.glitchIntensity)));
+        trJs.Set("glitchBlockPx",    JsonApi::Number::New(env, static_cast<double>(tr.glitchBlockPx)));
+        trJs.Set("blurRadiusPx",     JsonApi::Number::New(env, static_cast<double>(tr.blurRadiusPx)));
+        trJs.Set("displacementAmount", JsonApi::Number::New(env, static_cast<double>(tr.displacementAmount)));
+        trJs.Set("displacementScale", JsonApi::Number::New(env, static_cast<double>(tr.displacementScale)));
+        trJs.Set("effectSeed",       JsonApi::Number::New(env, static_cast<double>(tr.effectSeed)));
+        JsonApi::Object easingJs = JsonApi::Object::New(env);
+        easingJs.Set("startToPin", easingCurveToJs(tr.startToPinEasing));
+        easingJs.Set("pinToEnd", easingCurveToJs(tr.pinToEndEasing));
+        trJs.Set("easing", easingJs);
         item.Set("transition", trJs);
         result.Set(static_cast<uint32_t>(i), item);
     }
@@ -6356,7 +6510,11 @@ JsonApi::Value Timeline_ListCues(const JsonApi::CallbackInfo& info) {
 
 // timeline_setCueTransition(tick: number, transition: object) → GridCue[] (post-mutation)
 // Replaces the boundary animation on the cue at `tick`. The transition object is
-// { enabled, startOffsetTicks, endOffsetTicks, type, freezeOutgoing, geomAngleDeg };
+// { enabled, startOffsetTicks, endOffsetTicks, type, geomAngleDeg,
+//   edgeSoftness, zoomAmount, dissolveGrainPx, radialOriginX, radialOriginY,
+//   pixelateMaxBlockPx, glitchIntensity, glitchBlockPx, blurRadiusPx,
+//   displacementAmount, displacementScale, effectSeed,
+//   easing: { startToPin: {x1,y1,x2,y2}, pinToEnd: {x1,y1,x2,y2} } };
 // missing fields fall back to the SnapshotTransition defaults (a disabled/hard-cut
 // transition). No-op in the engine if no cue exists at that exact tick. Returns the
 // resulting cue list so the renderer refreshes in one round-trip (mirrors
@@ -6378,16 +6536,76 @@ JsonApi::Value Timeline_SetCueTransition(const JsonApi::CallbackInfo& info) {
     SnapshotTransition tr;  // defaults = disabled hard cut
     if (trJs.Has("enabled") && trJs.Get("enabled").IsBoolean())
         tr.enabled = trJs.Get("enabled").As<JsonApi::Boolean>().Value();
-    if (trJs.Has("startOffsetTicks") && trJs.Get("startOffsetTicks").IsNumber())
-        tr.startOffsetTicks = static_cast<int64_t>(trJs.Get("startOffsetTicks").As<JsonApi::Number>().DoubleValue());
-    if (trJs.Has("endOffsetTicks") && trJs.Get("endOffsetTicks").IsNumber())
-        tr.endOffsetTicks = static_cast<int64_t>(trJs.Get("endOffsetTicks").As<JsonApi::Number>().DoubleValue());
+    if (trJs.Has("startOffsetTicks") && trJs.Get("startOffsetTicks").IsNumber()) {
+        const double value = trJs.Get("startOffsetTicks").As<JsonApi::Number>().DoubleValue();
+        if (std::isfinite(value)) {
+            tr.startOffsetTicks = static_cast<int64_t>(
+                std::clamp(value, -9007199254740991.0, 9007199254740991.0));
+        }
+    }
+    if (trJs.Has("endOffsetTicks") && trJs.Get("endOffsetTicks").IsNumber()) {
+        const double value = trJs.Get("endOffsetTicks").As<JsonApi::Number>().DoubleValue();
+        if (std::isfinite(value)) {
+            tr.endOffsetTicks = static_cast<int64_t>(
+                std::clamp(value, -9007199254740991.0, 9007199254740991.0));
+        }
+    }
     if (trJs.Has("type") && trJs.Get("type").IsString())
         tr.type = stringToSnapshotTransitionType(trJs.Get("type").As<JsonApi::String>().Utf8Value());
-    if (trJs.Has("freezeOutgoing") && trJs.Get("freezeOutgoing").IsBoolean())
-        tr.freezeOutgoing = trJs.Get("freezeOutgoing").As<JsonApi::Boolean>().Value();
     if (trJs.Has("geomAngleDeg") && trJs.Get("geomAngleDeg").IsNumber())
         tr.geomAngleDeg = static_cast<float>(trJs.Get("geomAngleDeg").As<JsonApi::Number>().DoubleValue());
+    if (trJs.Has("edgeSoftness") && trJs.Get("edgeSoftness").IsNumber())
+        tr.edgeSoftness = static_cast<float>(trJs.Get("edgeSoftness").As<JsonApi::Number>().DoubleValue());
+    if (trJs.Has("zoomAmount") && trJs.Get("zoomAmount").IsNumber())
+        tr.zoomAmount = static_cast<float>(trJs.Get("zoomAmount").As<JsonApi::Number>().DoubleValue());
+    if (trJs.Has("dissolveGrainPx") && trJs.Get("dissolveGrainPx").IsNumber()) {
+        const double value = trJs.Get("dissolveGrainPx").As<JsonApi::Number>().DoubleValue();
+        if (std::isfinite(value)) {
+            tr.dissolveGrainPx = static_cast<int>(std::lround(std::clamp(value, 1.0, 8.0)));
+        }
+    }
+    const auto readFloat = [&trJs](const char* key, float& out) {
+        if (!trJs.Has(key) || !trJs.Get(key).IsNumber()) return;
+        const double value = trJs.Get(key).As<JsonApi::Number>().DoubleValue();
+        if (std::isfinite(value)) out = static_cast<float>(value);
+    };
+    const auto readInt = [&trJs](const char* key, int& out, double minValue, double maxValue) {
+        if (!trJs.Has(key) || !trJs.Get(key).IsNumber()) return;
+        const double value = trJs.Get(key).As<JsonApi::Number>().DoubleValue();
+        if (std::isfinite(value)) {
+            out = static_cast<int>(std::lround(std::clamp(value, minValue, maxValue)));
+        }
+    };
+    readFloat("radialOriginX", tr.radialOriginX);
+    readFloat("radialOriginY", tr.radialOriginY);
+    readInt("pixelateMaxBlockPx", tr.pixelateMaxBlockPx, 1.0, 128.0);
+    readFloat("glitchIntensity", tr.glitchIntensity);
+    readInt("glitchBlockPx", tr.glitchBlockPx, 4.0, 128.0);
+    readFloat("blurRadiusPx", tr.blurRadiusPx);
+    readFloat("displacementAmount", tr.displacementAmount);
+    readFloat("displacementScale", tr.displacementScale);
+    readInt("effectSeed", tr.effectSeed, 0.0, 65535.0);
+    if (trJs.Has("easing") && trJs.Get("easing").IsObject()) {
+        JsonApi::Object easingJs = trJs.Get("easing").As<JsonApi::Object>();
+        const auto readCurve = [&easingJs](const char* key,
+                                           SnapshotTransitionEasingCurve& out) {
+            if (!easingJs.Has(key) || !easingJs.Get(key).IsObject()) return;
+            JsonApi::Object curveJs = easingJs.Get(key).As<JsonApi::Object>();
+            if (!curveJs.Has("x1") || !curveJs.Get("x1").IsNumber()
+                || !curveJs.Has("y1") || !curveJs.Get("y1").IsNumber()
+                || !curveJs.Has("x2") || !curveJs.Get("x2").IsNumber()
+                || !curveJs.Has("y2") || !curveJs.Get("y2").IsNumber()) return;
+            SnapshotTransitionEasingCurve parsed;
+            parsed.x1 = static_cast<float>(curveJs.Get("x1").As<JsonApi::Number>().DoubleValue());
+            parsed.y1 = static_cast<float>(curveJs.Get("y1").As<JsonApi::Number>().DoubleValue());
+            parsed.x2 = static_cast<float>(curveJs.Get("x2").As<JsonApi::Number>().DoubleValue());
+            parsed.y2 = static_cast<float>(curveJs.Get("y2").As<JsonApi::Number>().DoubleValue());
+            parsed.normalize();
+            out = parsed;
+        };
+        readCurve("startToPin", tr.startToPinEasing);
+        readCurve("pinToEnd", tr.pinToEndEasing);
+    }
 
     std::lock_guard<std::mutex> lock(syncEventsMutex);
     g_timeline->setCueTransition(tick, tr);
@@ -7089,6 +7307,138 @@ JsonApi::Value Timeline_SetTrackOrder(const JsonApi::CallbackInfo& info)
     return JsonApi::Boolean::New(env, true);
 }
 
+JsonApi::Value Timeline_SetTrackLayout(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    TrackLayout layout;
+    if (info.Length() < 1 || !jsToTrackLayout(info[0], layout)) {
+        JsonApi::TypeError::New(env, "timeline_setTrackLayout({ rootOrder, folders })")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (!g_timeline->isTrackLayoutValid(layout))
+        return JsonApi::Boolean::New(env, false);
+    g_undoManager->execute(
+        std::make_unique<SetTrackLayoutCommand>(std::move(layout), *g_timeline),
+        *g_timeline);
+    return JsonApi::Boolean::New(env, true);
+}
+
+JsonApi::Value Timeline_CreateTrackFolder(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsObject()) {
+        JsonApi::TypeError::New(env,
+            "timeline_createTrackFolder({ name, trackIds?, rootIndex? })")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    JsonApi::Object payload = info[0].As<JsonApi::Object>();
+    if (!payload.Has("name") || !payload.Get("name").IsString())
+        return JsonApi::Number::New(env, -1);
+    std::string name = payload.Get("name").As<JsonApi::String>().Utf8Value();
+    const auto first = name.find_first_not_of(" \t\r\n");
+    const auto last = name.find_last_not_of(" \t\r\n");
+    if (first == std::string::npos) return JsonApi::Number::New(env, -1);
+    name = name.substr(first, last - first + 1);
+
+    std::vector<int> trackIds;
+    if (payload.Has("trackIds")) {
+        if (!payload.Get("trackIds").IsArray()) return JsonApi::Number::New(env, -1);
+        JsonApi::Array ids = payload.Get("trackIds").As<JsonApi::Array>();
+        std::set<int> seen;
+        for (uint32_t i = 0; i < ids.Length(); ++i) {
+            if (!ids.Get(i).IsNumber()) return JsonApi::Number::New(env, -1);
+            const int id = ids.Get(i).As<JsonApi::Number>().Int32Value();
+            if (!g_timeline->getTrack(id) || !seen.insert(id).second)
+                return JsonApi::Number::New(env, -1);
+            trackIds.push_back(id);
+        }
+    }
+    int rootIndex = static_cast<int>(g_timeline->getTrackLayout().rootOrder.size());
+    if (payload.Has("rootIndex")) {
+        if (!payload.Get("rootIndex").IsNumber()) return JsonApi::Number::New(env, -1);
+        rootIndex = payload.Get("rootIndex").As<JsonApi::Number>().Int32Value();
+    }
+    auto command = std::make_unique<CreateTrackFolderCommand>(
+        name, trackIds, rootIndex, *g_timeline);
+    auto* commandPtr = command.get();
+    g_undoManager->execute(std::move(command), *g_timeline);
+    return JsonApi::Number::New(env, commandPtr->folderId());
+}
+
+JsonApi::Value Timeline_SetTrackFolderName(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsString())
+        return JsonApi::Boolean::New(env, false);
+    const int folderId = info[0].As<JsonApi::Number>().Int32Value();
+    std::string name = info[1].As<JsonApi::String>().Utf8Value();
+    const auto first = name.find_first_not_of(" \t\r\n");
+    const auto last = name.find_last_not_of(" \t\r\n");
+    if (first == std::string::npos) return JsonApi::Boolean::New(env, false);
+    name = name.substr(first, last - first + 1);
+    bool exists = false;
+    for (const auto& folder : g_timeline->getTrackLayout().folders)
+        if (folder.id == folderId) exists = true;
+    if (!exists) return JsonApi::Boolean::New(env, false);
+    g_undoManager->execute(
+        std::make_unique<RenameTrackFolderCommand>(folderId, name, *g_timeline),
+        *g_timeline);
+    return JsonApi::Boolean::New(env, true);
+}
+
+JsonApi::Value Timeline_SetTrackFolderCollapsed(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsBoolean())
+        return JsonApi::Boolean::New(env, false);
+    const int folderId = info[0].As<JsonApi::Number>().Int32Value();
+    bool exists = false;
+    for (const auto& folder : g_timeline->getTrackLayout().folders)
+        if (folder.id == folderId) exists = true;
+    if (!exists) return JsonApi::Boolean::New(env, false);
+    g_undoManager->execute(std::make_unique<SetTrackFolderCollapsedCommand>(
+        folderId, info[1].As<JsonApi::Boolean>().Value(), *g_timeline), *g_timeline);
+    return JsonApi::Boolean::New(env, true);
+}
+
+JsonApi::Value Timeline_RemoveTrackFolder(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsNumber())
+        return JsonApi::Boolean::New(env, false);
+    const int folderId = info[0].As<JsonApi::Number>().Int32Value();
+    bool exists = false;
+    for (const auto& folder : g_timeline->getTrackLayout().folders)
+        if (folder.id == folderId) exists = true;
+    if (!exists) return JsonApi::Boolean::New(env, false);
+    g_undoManager->execute(
+        std::make_unique<RemoveTrackFolderCommand>(folderId, *g_timeline),
+        *g_timeline);
+    return JsonApi::Boolean::New(env, true);
+}
+
 // timeline_setTrackName(trackId, name) — undo-tracked rename
 void Timeline_SetTrackName(const JsonApi::CallbackInfo& info)
 {
@@ -7284,6 +7634,11 @@ void Timeline_RemoveTrack(const JsonApi::CallbackInfo& info)
     }
     int id = info[0].As<JsonApi::Number>().Int32Value();
     BridgeCallLog log("timeline.removeTrack");
+    if (g_clipControlEdit) {
+        const Clip* editedClip = g_timeline->getClip(g_clipControlEdit->clipId);
+        if (!editedClip || editedClip->trackId == id)
+            restoreAndClearClipControlEdit();
+    }
     {
         // Cascades into grid slots / chorus / crash — hold syncEventsMutex
         // so the video thread sees a consistent GridLayout.
@@ -7531,6 +7886,8 @@ void Timeline_RemoveClip(const JsonApi::CallbackInfo& info)
     }
     int id = info[0].As<JsonApi::Number>().Int32Value();
     BridgeCallLog log("timeline.removeClip");
+    if (g_clipControlEdit && g_clipControlEdit->clipId == id)
+        restoreAndClearClipControlEdit();
     if (audioEngine)
         audioEngine->getMixEngine().invalidateClipCache(id, "removeClip");
     g_undoManager->execute(std::make_unique<RemoveClipCommand>(id, *g_timeline), *g_timeline);
@@ -7540,6 +7897,293 @@ void Timeline_RemoveClip(const JsonApi::CallbackInfo& info)
 // timeline_setClipParams(clipId: number, params: object) → clipObject
 // params: { pitchOffset?, pitchOffsetCents?, reversed?, stretchRatio?,
 //           stretchMethod?, formantPreserve?, fadeInPercent?, fadeOutPercent? }
+static SetClipParamsCommand::Params clipParamsFromClip(const Clip& clip)
+{
+    SetClipParamsCommand::Params p;
+    p.pitchOffsetSemis = clip.pitchOffset;
+    p.pitchOffsetCents = clip.pitchOffsetCents;
+    p.reversed = clip.reversed;
+    p.stretchRatio = clip.stretchRatio;
+    p.stretchMethod = clip.stretchMethod;
+    p.formantPreserve = clip.formantPreserve;
+    p.velocity = clip.velocity;
+    p.fadeInPercent = clip.fadeInPercent;
+    p.fadeOutPercent = clip.fadeOutPercent;
+    p.fadeInX1 = clip.fadeInX1;
+    p.fadeInY1 = clip.fadeInY1;
+    p.fadeInX2 = clip.fadeInX2;
+    p.fadeInY2 = clip.fadeInY2;
+    p.fadeOutX1 = clip.fadeOutX1;
+    p.fadeOutY1 = clip.fadeOutY1;
+    p.fadeOutX2 = clip.fadeOutX2;
+    p.fadeOutY2 = clip.fadeOutY2;
+    return p;
+}
+
+static JsonApi::Object trackLayoutToJs(JsonApi::Env env, const TrackLayout& layout) {
+    JsonApi::Object out = JsonApi::Object::New(env);
+    JsonApi::Array root = JsonApi::Array::New(env, layout.rootOrder.size());
+    for (uint32_t i = 0; i < static_cast<uint32_t>(layout.rootOrder.size()); ++i) {
+        const auto& item = layout.rootOrder[i];
+        JsonApi::Object row = JsonApi::Object::New(env);
+        row.Set("kind", JsonApi::String::New(env,
+            item.kind == TrackLayoutItem::Kind::Folder ? "folder" : "track"));
+        row.Set("id", JsonApi::Number::New(env, item.id));
+        root.Set(i, row);
+    }
+    JsonApi::Array folders = JsonApi::Array::New(env, layout.folders.size());
+    for (uint32_t i = 0; i < static_cast<uint32_t>(layout.folders.size()); ++i) {
+        const auto& folder = layout.folders[i];
+        JsonApi::Object row = JsonApi::Object::New(env);
+        row.Set("id", JsonApi::Number::New(env, folder.id));
+        row.Set("name", JsonApi::String::New(env, folder.name));
+        row.Set("collapsed", JsonApi::Boolean::New(env, folder.collapsed));
+        JsonApi::Array trackIds = JsonApi::Array::New(env, folder.trackIds.size());
+        for (uint32_t j = 0; j < static_cast<uint32_t>(folder.trackIds.size()); ++j)
+            trackIds.Set(j, JsonApi::Number::New(env, folder.trackIds[j]));
+        row.Set("trackIds", trackIds);
+        folders.Set(i, row);
+    }
+    out.Set("rootOrder", root);
+    out.Set("folders", folders);
+    return out;
+}
+
+static bool jsToTrackLayout(const JsonApi::Value& value, TrackLayout& layout) {
+    if (!value.IsObject()) return false;
+    JsonApi::Object object = value.As<JsonApi::Object>();
+    if (!object.Has("rootOrder") || !object.Get("rootOrder").IsArray()
+        || !object.Has("folders") || !object.Get("folders").IsArray())
+        return false;
+
+    TrackLayout parsed;
+    JsonApi::Array root = object.Get("rootOrder").As<JsonApi::Array>();
+    for (uint32_t i = 0; i < root.Length(); ++i) {
+        if (!root.Get(i).IsObject()) return false;
+        JsonApi::Object row = root.Get(i).As<JsonApi::Object>();
+        if (!row.Has("kind") || !row.Get("kind").IsString()
+            || !row.Has("id") || !row.Get("id").IsNumber())
+            return false;
+        const std::string kind = row.Get("kind").As<JsonApi::String>().Utf8Value();
+        if (kind != "track" && kind != "folder") return false;
+        parsed.rootOrder.push_back({
+            kind == "folder" ? TrackLayoutItem::Kind::Folder : TrackLayoutItem::Kind::Track,
+            row.Get("id").As<JsonApi::Number>().Int32Value(),
+        });
+    }
+
+    JsonApi::Array folders = object.Get("folders").As<JsonApi::Array>();
+    for (uint32_t i = 0; i < folders.Length(); ++i) {
+        if (!folders.Get(i).IsObject()) return false;
+        JsonApi::Object row = folders.Get(i).As<JsonApi::Object>();
+        if (!row.Has("id") || !row.Get("id").IsNumber()
+            || !row.Has("name") || !row.Get("name").IsString()
+            || !row.Has("trackIds") || !row.Get("trackIds").IsArray())
+            return false;
+        TrackFolder folder;
+        folder.id = row.Get("id").As<JsonApi::Number>().Int32Value();
+        folder.name = row.Get("name").As<JsonApi::String>().Utf8Value();
+        folder.collapsed = row.Has("collapsed") && row.Get("collapsed").IsBoolean()
+            ? row.Get("collapsed").As<JsonApi::Boolean>().Value() : false;
+        JsonApi::Array ids = row.Get("trackIds").As<JsonApi::Array>();
+        for (uint32_t j = 0; j < ids.Length(); ++j) {
+            if (!ids.Get(j).IsNumber()) return false;
+            folder.trackIds.push_back(ids.Get(j).As<JsonApi::Number>().Int32Value());
+        }
+        parsed.folders.push_back(std::move(folder));
+    }
+    layout = std::move(parsed);
+    return true;
+}
+
+static void applyClipControlPatch(Clip& clip, const JsonApi::Object& patch)
+{
+    bool fadeTouched = false;
+    if (patch.Has("velocity") && patch.Get("velocity").IsNumber()) {
+        const float value = patch.Get("velocity").As<JsonApi::Number>().FloatValue();
+        clip.velocity = std::isfinite(value) ? std::max(0.0f, std::min(2.0f, value)) : 1.0f;
+    }
+    if (patch.Has("fadeInPercent") && patch.Get("fadeInPercent").IsNumber()) {
+        fadeTouched = true;
+        const float value = patch.Get("fadeInPercent").As<JsonApi::Number>().FloatValue();
+        clip.fadeInPercent = std::isfinite(value) ? value : 0.0f;
+    }
+    if (patch.Has("fadeOutPercent") && patch.Get("fadeOutPercent").IsNumber()) {
+        fadeTouched = true;
+        const float value = patch.Get("fadeOutPercent").As<JsonApi::Number>().FloatValue();
+        clip.fadeOutPercent = std::isfinite(value) ? value : 0.0f;
+    }
+    if (fadeTouched)
+        normalizeClipFadePercents(clip.fadeInPercent, clip.fadeOutPercent);
+}
+
+static bool validateClipControlPatch(JsonApi::Env env, const JsonApi::Object& patch)
+{
+    const JsonApi::Array keys = patch.GetPropertyNames();
+    for (uint32_t i = 0; i < keys.Length(); ++i) {
+        const JsonApi::Value keyValue = keys.Get(i);
+        if (!keyValue.IsString()) continue;
+        const std::string key = keyValue.As<JsonApi::String>().Utf8Value();
+        if (key != "velocity" && key != "fadeInPercent" && key != "fadeOutPercent") {
+            JsonApi::TypeError::New(env, "Clip control patches accept only velocity, fadeInPercent, and fadeOutPercent")
+                .ThrowAsJavaScriptException();
+            return false;
+        }
+        if (!patch.Get(key).IsNumber()) {
+            JsonApi::TypeError::New(env, "Clip control patch values must be numbers")
+                .ThrowAsJavaScriptException();
+            return false;
+        }
+    }
+    return true;
+}
+
+static ClipControlEditSession* requireClipControlEdit(
+    JsonApi::Env env, const JsonApi::CallbackInfo& info, const char* signature)
+{
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return nullptr;
+    }
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        JsonApi::TypeError::New(env, signature).ThrowAsJavaScriptException();
+        return nullptr;
+    }
+    const uint32_t sessionId = info[0].As<JsonApi::Number>().Uint32Value();
+    if (!g_clipControlEdit || g_clipControlEdit->sessionId != sessionId) {
+        JsonApi::Error::New(env, "Stale clip control edit session")
+            .ThrowAsJavaScriptException();
+        return nullptr;
+    }
+    if (!g_timeline->getClip(g_clipControlEdit->clipId)) {
+        g_clipControlEdit.reset();
+        JsonApi::Error::New(env, "Clip control edit target no longer exists")
+            .ThrowAsJavaScriptException();
+        return nullptr;
+    }
+    return g_clipControlEdit.get();
+}
+
+JsonApi::Value Timeline_BeginClipControlEdit(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        JsonApi::TypeError::New(env, "timeline_beginClipControlEdit(clipId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    restoreAndClearClipControlEdit();
+    const int clipId = info[0].As<JsonApi::Number>().Int32Value();
+    const Clip* clip = g_timeline->getClip(clipId);
+    if (!clip) {
+        JsonApi::Error::New(env, "Clip not found").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    auto edit = std::make_unique<ClipControlEditSession>();
+    edit->sessionId = g_nextClipControlEditSessionId++;
+    if (edit->sessionId == 0)
+        edit->sessionId = g_nextClipControlEditSessionId++;
+    edit->clipId = clipId;
+    edit->initialVelocity = clip->velocity;
+    edit->initialFadeInPercent = clip->fadeInPercent;
+    edit->initialFadeOutPercent = clip->fadeOutPercent;
+
+    JsonApi::Object initial = JsonApi::Object::New(env);
+    initial.Set("velocity", JsonApi::Number::New(env, edit->initialVelocity));
+    initial.Set("fadeInPercent", JsonApi::Number::New(env, edit->initialFadeInPercent));
+    initial.Set("fadeOutPercent", JsonApi::Number::New(env, edit->initialFadeOutPercent));
+    JsonApi::Object result = JsonApi::Object::New(env);
+    result.Set("sessionId", JsonApi::Number::New(env, edit->sessionId));
+    result.Set("initial", initial);
+    g_clipControlEdit = std::move(edit);
+    return result;
+}
+
+JsonApi::Value Timeline_PreviewClipControlEdit(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    ClipControlEditSession* edit = requireClipControlEdit(
+        env, info, "timeline_previewClipControlEdit(sessionId: number, patch: object)");
+    if (!edit) return env.Undefined();
+    if (info.Length() < 2 || !info[1].IsObject()) {
+        JsonApi::TypeError::New(
+            env, "timeline_previewClipControlEdit(sessionId: number, patch: object)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    Clip* clip = g_timeline->getClipMutable(edit->clipId);
+    JsonApi::Object patch = info[1].As<JsonApi::Object>();
+    if (!validateClipControlPatch(env, patch)) return env.Undefined();
+    applyClipControlPatch(*clip, patch);
+    g_previewDirty.store(true);
+    return clipToJs(env, *clip);
+}
+
+JsonApi::Value Timeline_CancelClipControlEdit(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    ClipControlEditSession* edit = requireClipControlEdit(
+        env, info, "timeline_cancelClipControlEdit(sessionId: number)");
+    if (!edit) return env.Undefined();
+    const int clipId = edit->clipId;
+    restoreAndClearClipControlEdit();
+    g_previewDirty.store(true);
+    const Clip* clip = g_timeline->getClip(clipId);
+    return clip ? clipToJs(env, *clip) : env.Undefined();
+}
+
+JsonApi::Value Timeline_CommitClipControlEdit(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    ClipControlEditSession* edit = requireClipControlEdit(
+        env, info, "timeline_commitClipControlEdit(sessionId: number, finalPatch: object)");
+    if (!edit) return env.Undefined();
+    if (info.Length() < 2 || !info[1].IsObject()) {
+        JsonApi::TypeError::New(
+            env, "timeline_commitClipControlEdit(sessionId: number, finalPatch: object)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    Clip* preview = g_timeline->getClipMutable(edit->clipId);
+    JsonApi::Object finalPatch = info[1].As<JsonApi::Object>();
+    if (!validateClipControlPatch(env, finalPatch)) return env.Undefined();
+    applyClipControlPatch(*preview, finalPatch);
+    const int clipId = edit->clipId;
+    const float finalVelocity = preview->velocity;
+    const float finalFadeInPercent = preview->fadeInPercent;
+    const float finalFadeOutPercent = preview->fadeOutPercent;
+    const bool changed =
+        std::abs(finalVelocity - edit->initialVelocity) > 1.0e-6f ||
+        std::abs(finalFadeInPercent - edit->initialFadeInPercent) > 1.0e-5f ||
+        std::abs(finalFadeOutPercent - edit->initialFadeOutPercent) > 1.0e-5f;
+
+    restoreAndClearClipControlEdit();
+    if (changed) {
+        const Clip* baseline = g_timeline->getClip(clipId);
+        if (!baseline) {
+            JsonApi::Error::New(env, "Clip no longer exists").ThrowAsJavaScriptException();
+            return env.Undefined();
+        }
+        SetClipParamsCommand::Params params = clipParamsFromClip(*baseline);
+        params.velocity = finalVelocity;
+        params.fadeInPercent = finalFadeInPercent;
+        params.fadeOutPercent = finalFadeOutPercent;
+        g_undoManager->execute(
+            std::make_unique<SetClipParamsCommand>(clipId, params, *g_timeline),
+            *g_timeline);
+    }
+    g_previewDirty.store(true);
+    const Clip* committed = g_timeline->getClip(clipId);
+    return committed ? clipToJs(env, *committed) : env.Undefined();
+}
+
 JsonApi::Value Timeline_SetClipParams(const JsonApi::CallbackInfo& info)
 {
     JsonApi::Env env = info.Env();
@@ -7555,6 +8199,9 @@ JsonApi::Value Timeline_SetClipParams(const JsonApi::CallbackInfo& info)
 
     int clipId = info[0].As<JsonApi::Number>().Int32Value();
     BridgeCallLog log("timeline.setClipParams");
+
+    // A normal parameter command supersedes any in-flight transient preview.
+    restoreAndClearClipControlEdit();
 
     const Clip* existing = g_timeline->getClip(clipId);
     if (!existing) {
@@ -10504,8 +11151,8 @@ JsonApi::Value Timeline_AddVisualEffect(const JsonApi::CallbackInfo& info)
     // Keep this upper bound in lockstep with VisualEffect::Type (TimelineTypes.h).
     // A stale bound here fails as a RangeError that the UI's optional-chaining
     // bridge swallows silently, so the effect just never appears.
-    if (effectType < 0 || effectType > 5) {
-        JsonApi::RangeError::New(env, "effectType must be 0-5").ThrowAsJavaScriptException();
+    if (effectType < 0 || effectType > 7) {
+        JsonApi::RangeError::New(env, "effectType must be 0-7").ThrowAsJavaScriptException();
         return env.Undefined();
     }
     BridgeCallLog log("timeline.addVisualEffect");
@@ -10976,6 +11623,11 @@ void Timeline_RemoveRegion(const JsonApi::CallbackInfo& info)
     }
     int id = info[0].As<JsonApi::Number>().Int32Value();
     BridgeCallLog log("timeline.removeRegion");
+    if (g_clipControlEdit) {
+        const Clip* editedClip = g_timeline->getClip(g_clipControlEdit->clipId);
+        if (!editedClip || editedClip->regionId == id)
+            restoreAndClearClipControlEdit();
+    }
     g_undoManager->execute(std::make_unique<RemoveRegionCommand>(id, *g_timeline), *g_timeline);
     log.done();
 }
@@ -10992,6 +11644,7 @@ JsonApi::Value Undo_Undo(const JsonApi::CallbackInfo& info)
         return env.Undefined();
     }
     BridgeCallLog log("undo.undo");
+    restoreAndClearClipControlEdit();
     bool ok;
     {
         // Undo may touch GridLayout (grid-slot/chorus/crash/preview-fps commands) —
@@ -11019,6 +11672,7 @@ JsonApi::Value Undo_Redo(const JsonApi::CallbackInfo& info)
         return env.Undefined();
     }
     BridgeCallLog log("undo.redo");
+    restoreAndClearClipControlEdit();
     bool ok;
     {
         std::lock_guard<std::mutex> lock(syncEventsMutex);
@@ -12910,6 +13564,11 @@ JsonApi::Value Audio_DrainEffectVizFrames(const JsonApi::CallbackInfo& info)
     {
         bucketSize = sizeof(xleth::viz::ResonanceBucket);
         typeStr    = "resonance";
+    }
+    else if (typeTag == xleth::viz::kVizTypeUniFlange)
+    {
+        bucketSize = sizeof(xleth::viz::UniFlangeBucket);
+        typeStr    = "uniflange";
     }
 
     JsonApi::Object result = JsonApi::Object::New(env);

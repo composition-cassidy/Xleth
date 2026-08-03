@@ -28,6 +28,9 @@ default. Transitions are strictly opt-in.
   but 50% always lands on the pin.
 - Handles **snap to the musical grid** by default; holding **Alt** frees them from the grid (but
   they still quantize to whole samples internally — see determinism).
+- **Easing** = two bounded cubic Bézier curves shape the transition independently from Start→Pin
+  and Pin→End. Both default to linear. The split keeps the pin fixed at exactly 50% even when the
+  two halves use completely different curves.
 - **Style** = an "Animation Type" dropdown: crossfade, line sweep, push, slide, zoom, dissolve,
   and **out-then-in** (A animates out, then B animates in — a distinct style, NOT a different
   meaning for the handles).
@@ -42,6 +45,9 @@ and End sit at independent distances from the pin, the mapping from time→`t` i
 left tail spans `t` 0→0.5 over its own duration, the right tail spans 0.5→1 over its own duration.
 Both snapshots are rendered across the WHOLE window, which is what lets crossfade (and every other
 style) work uniformly.
+
+After the piecewise time mapping, each half is normalized to 0→1, shaped with its own CSS-style
+cubic Bézier, then scaled back into 0→0.5 or 0.5→1. Control coordinates are clamped to [0,1].
 
 ---
 
@@ -77,9 +83,9 @@ shader + its cbuffer, and the time→`t` mapping.
   mutable state" rule (the recent `Track::visualEffectChain` data-race fix). The transition path
   must not alias mutable snapshot/track state across the video thread.
 - **Cost bound**: inside the window both snapshots render (roughly double the work of a hard cut).
-  Default the **outgoing snapshot to FREEZE on its last frame** (composite A once, hold RT_A; only
-  B advances) — a per-style flag can opt into keeping A live for long crossfades. Respect the
-  Phase 0 perf floor (~0.25 ms GPU composite); the transition adds one pass, keep it cheap.
+  Keep **both outgoing and incoming snapshots live** at the same absolute project time throughout
+  the transition window. Respect the Phase 0 perf floor (~0.25 ms GPU composite); the transition
+  adds one additional snapshot composite plus one pass, so keep both paths allocation-free.
 - Do NOT conflate engine and renderer layers. Windows-only assumptions are fine.
 
 ---
@@ -95,8 +101,11 @@ transition: {
   startOffset:  samples,  // distance of Start handle BEFORE the pin (>= 0)
   endOffset:    samples,  // distance of End handle AFTER the pin (>= 0)
   type:         enum,     // crossfade | lineSweep | push | slide | zoom | dissolve | outThenIn
-  freezeOutgoing: bool,   // default true
   typeGeometry: {...},    // per-type params (e.g. sweep angle) — fixed defaults for v1
+  easing: {
+    startToPin: {x1, y1, x2, y2}, // default 0,0,1,1 (linear)
+    pinToEnd:   {x1, y1, x2, y2}, // default 0,0,1,1 (linear)
+  },
 }
 ```
 
@@ -119,7 +128,8 @@ output yet.
 
 **Prompt 3 — Engine two-RT transition pass.** Render A and B to separate RTs; add the parametric
 transition pixel shader + cbuffer (start with **crossfade + one directional line sweep**);
-freeze-outgoing default; wire `t` in. Verify preview==export with a deterministic pixel-hash test.
+keep A and B live at the same project time; wire `t` in. Verify preview==export with a
+deterministic pixel-hash test.
 
 **Prompt 4 — Timeline UI.** Draggable Start/End handles around the fixed pin in a dedicated thin
 transition strip; grid-snap with Alt-free; Animation Type dropdown; zero-length window = hard cut
@@ -150,8 +160,9 @@ Background:
     t=0.5; Start/End are user-dragged and may be asymmetric (piecewise time->t mapping).
   * t MUST come from RenderClock sample position (deterministic; preview must equal export).
   * Transition data is owned by the INCOMING snapshot as its "in" transition
-    { enabled, startOffset, endOffset, type, freezeOutgoing, typeGeometry }.
-  * Default freezeOutgoing = true (composite A once, hold; only B advances) to bound cost.
+    { enabled, startOffset, endOffset, type, typeGeometry }.
+  * Composite both outgoing A and incoming B at the same absolute project time for every frame
+    in the transition window; only the incoming snapshot remains after the window ends.
 
 Your tasks:
 1. LOCATE and report exact file paths + key structs/functions for:

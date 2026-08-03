@@ -78,12 +78,12 @@ describe('Visual-A appearance validator', () => {
 
   it('soft-flags and strips appearance on unsupported node types', () => {
     const layout = cloneCompressorLayout()
-    findNode(layout, 'detect-label').props.appearance = { textToken: 'text.muted' }
+    findNode(layout, 'body-divider').props = { appearance: { textToken: 'text.muted' } }
 
     const result = validate(layout, COMPRESSOR_MANIFEST)
 
     expect(errorCodes(result)).toContain('APPEARANCE_NOT_SUPPORTED')
-    expect(findNode(result.doc, 'detect-label').props.appearance).toBeUndefined()
+    expect(findNode(result.doc, 'body-divider').props.appearance).toBeUndefined()
     expect(isSaveAllowed(result)).toBe(false)
   })
 

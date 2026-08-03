@@ -24,9 +24,9 @@ describe('Overdone manifest registry', () => {
     expect(MANIFESTS.overdone).toBe(OVERDONE_MANIFEST)
   })
 
-  it('declares the Overdone parameter set used by the legacy panel and engine', () => {
+  it('declares the Overdone parameter set used by the panel and engine', () => {
     expect(Object.keys(OVERDONE_MANIFEST.params).sort())
-      .toEqual(['depth', 'gain_high', 'gain_low', 'gain_mid', 'time', 'xover_high', 'xover_low'])
+      .toEqual(['depth', 'gain_high', 'gain_low', 'gain_mid', 'inputGain', 'outputGain', 'time', 'xover_high', 'xover_low'])
     expect(OVERDONE_MANIFEST.params.depth.kind).toBe('continuous')
     expect(OVERDONE_MANIFEST.params.depth.min).toBe(0)
     expect(OVERDONE_MANIFEST.params.depth.max).toBe(100)
@@ -36,6 +36,18 @@ describe('Overdone manifest registry', () => {
     expect(OVERDONE_MANIFEST.params.xover_high.max).toBe(8000)
     expect(OVERDONE_MANIFEST.params.gain_low.min).toBe(-12)
     expect(OVERDONE_MANIFEST.params.gain_low.max).toBe(12)
+  })
+
+  it('declares the UI-first inputGain/outputGain params (±24 dB, default 0)', () => {
+    for (const id of ['inputGain', 'outputGain']) {
+      const meta = OVERDONE_MANIFEST.params[id]
+      expect(meta).toBeTruthy()
+      expect(meta.kind).toBe('continuous')
+      expect(meta.min).toBe(-24)
+      expect(meta.max).toBe(24)
+      expect(meta.defaultValue).toBe(0)
+      expect(meta.format).toBe('dB1_signed')
+    }
   })
 
   it('declares meter slots that match the engine effect (peaks + per-band GR)', () => {
@@ -84,14 +96,10 @@ describe('Overdone shipped layout registry', () => {
     expect(result.errors[0]?.code).toBe('PLUGIN_ID_MISMATCH')
   })
 
-  it('contains a multiband visualizer node bound to an overdone.* source', () => {
+  it('contains the band-stack and crossover display nodes', () => {
     const types = collectNodeTypes(SHIPPED_LAYOUTS.overdone.root)
-    expect(types).toContain('visualizer')
-
-    const vizNode = findVisualizerNode(SHIPPED_LAYOUTS.overdone.root)
-    expect(vizNode).toBeTruthy()
-    expect(vizNode.props?.source).toMatch(/^overdone\./)
-    expect(OVERDONE_MANIFEST.vizSources).toContain(vizNode.props.source)
+    expect(types).toContain('overdoneBandStack')
+    expect(types).toContain('overdoneCrossovers')
   })
 
   it('references only params declared by the Overdone manifest', () => {
@@ -102,14 +110,18 @@ describe('Overdone shipped layout registry', () => {
     }
   })
 
-  it('uses Compressor-style sliders for all Overdone controls', () => {
+  it('uses mixer-ring knobs for the top-row controls (Depth / Time / Input / Output)', () => {
     const types = collectNodeTypes(SHIPPED_LAYOUTS.overdone.root)
-    const sliderCount = types.filter(type => type === 'compressorSlider').length
-    expect(sliderCount).toBe(7)
-    expect(types).not.toContain('knob')
+    expect(types).not.toContain('compressorSlider')
+
+    const knobs = collectNodesByType(SHIPPED_LAYOUTS.overdone.root, 'knob')
+    expect(knobs.length).toBe(4)
+    for (const knob of knobs) {
+      expect(knob.props?.appearance?.preset).toBe('mixer-ring')
+    }
 
     const refs = collectParamRefs(SHIPPED_LAYOUTS.overdone.root).sort()
-    expect(refs).toEqual(['depth', 'gain_high', 'gain_low', 'gain_mid', 'time', 'xover_high', 'xover_low'])
+    expect(refs).toEqual(['depth', 'inputGain', 'outputGain', 'time'])
   })
 })
 
@@ -160,7 +172,7 @@ describe('Designer BindingPicker for Overdone', () => {
   it('lists Overdone params (not Compressor / Limiter / Transient params)', () => {
     const options = getParamPickerOptions(OVERDONE_MANIFEST, null)
     const values = options.map(o => o.value).sort()
-    expect(values).toEqual(['depth', 'gain_high', 'gain_low', 'gain_mid', 'time', 'xover_high', 'xover_low'])
+    expect(values).toEqual(['depth', 'gain_high', 'gain_low', 'gain_mid', 'inputGain', 'outputGain', 'time', 'xover_high', 'xover_low'])
     expect(values).not.toContain('ratio')
     expect(values).not.toContain('ceiling')
     expect(values).not.toContain('attack_speed')
@@ -220,15 +232,18 @@ describe('Designer persistence — Overdone writes to overdone override path', (
 // ── Cross-plugin visualizer leakage regression ───────────────────────────────
 
 describe('Overdone shipped layout contains no Compressor / Limiter / Transient visualizer sources', () => {
-  it('all viz sources in Overdone shipped layout are overdone.* (never compressor.* / limiter.* / transient.*)', () => {
+  it('renders band lanes through the dedicated overdoneBandStack node and has no foreign viz sources', () => {
+    // The band lanes render inside the overdoneBandStack node (which subscribes
+    // to overdone.bands internally), so the layout carries no generic
+    // visualizer nodes at all — nothing may leak from other plugins.
     const sources = collectVizSources(SHIPPED_LAYOUTS.overdone.root)
-    expect(sources.length).toBeGreaterThan(0)
     for (const src of sources) {
       expect(src.startsWith('compressor.')).toBe(false)
       expect(src.startsWith('limiter.')).toBe(false)
       expect(src.startsWith('transient.')).toBe(false)
       expect(src.startsWith('overdone.')).toBe(true)
     }
+    expect(collectNodeTypes(SHIPPED_LAYOUTS.overdone.root)).toContain('overdoneBandStack')
   })
 
   it('Overdone shipped layout validates cleanly against OVERDONE_MANIFEST with no UNKNOWN_VIZ_SOURCE errors', () => {
@@ -240,8 +255,9 @@ describe('Overdone shipped layout contains no Compressor / Limiter / Transient v
   })
 
   it('Compressor / Limiter / Transient shipped layouts still have their own visualizer sources (no regression)', () => {
-    const compressorSources = collectVizSources(SHIPPED_LAYOUTS.compressor.root)
-    expect(compressorSources.some(src => src.startsWith('compressor.'))).toBe(true)
+    // The Compressor's display is the dedicated compressorCurve node, not a
+    // generic visualizer, so it has no viz source of its own to check.
+    expect(collectNodeTypes(SHIPPED_LAYOUTS.compressor.root)).toContain('compressorCurve')
     const limiterSources = collectVizSources(SHIPPED_LAYOUTS.limiter.root)
     expect(limiterSources.some(src => src.startsWith('limiter.'))).toBe(true)
     const transientSources = collectVizSources(SHIPPED_LAYOUTS.transientproc.root)
@@ -306,16 +322,11 @@ function collectNodeTypes(node, out = []) {
   return out
 }
 
-function findVisualizerNode(node) {
-  if (!node) return null
-  if (node.type === 'visualizer') return node
-  if (Array.isArray(node.children)) {
-    for (const c of node.children) {
-      const found = findVisualizerNode(c)
-      if (found) return found
-    }
-  }
-  return null
+function collectNodesByType(node, type, out = []) {
+  if (!node) return out
+  if (node.type === type) out.push(node)
+  if (Array.isArray(node.children)) for (const c of node.children) collectNodesByType(c, type, out)
+  return out
 }
 
 function collectInvalidNodeIds(node, out = []) {

@@ -24,10 +24,9 @@ describe('Phase H persistence actions', () => {
 
   it('saveCurrentLayout rejects when validation blocks save', async () => {
     const invalid = cloneCompressorLayout()
-    // Point the first knob-grid knob (k-threshold) at a param the manifest
-    // does not declare; id lookup keeps this stable across layout reshuffles.
-    const knobGrid = invalid.root.children.find(child => child.id === 'knob-grid')
-    knobGrid.children[0].props.param = 'missing-param'
+    // Point one knob at a param the manifest does not declare; id lookup keeps
+    // this stable across layout reshuffles.
+    findNode(invalid, 'k-threshold').props.param = 'missing-param'
     usePluginUIDesignerStore.getState().setWorkingLayout(invalid)
 
     const result = await saveCurrentLayout()
@@ -212,4 +211,14 @@ function installPluginUiIpc(overrides = {}) {
 
 function cloneCompressorLayout() {
   return JSON.parse(JSON.stringify(SHIPPED_LAYOUTS.compressor))
+}
+
+function findNode(layoutOrNode, nodeId) {
+  const node = layoutOrNode.root || layoutOrNode
+  if (node.id === nodeId) return node
+  for (const child of node.children || []) {
+    const found = findNode(child, nodeId)
+    if (found) return found
+  }
+  return null
 }

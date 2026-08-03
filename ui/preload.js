@@ -164,7 +164,10 @@ window.xleth = ({
     removeCue:           (tick)                          => invoke('xleth:timeline:removeCue', tick),
     listCues:            ()                              => invoke('xleth:timeline:listCues'),
     // Set the boundary animation on the cue at `tick`. transition is
-    // { enabled, startOffsetTicks, endOffsetTicks, type, freezeOutgoing, geomAngleDeg }
+    // { enabled, startOffsetTicks, endOffsetTicks, type, geomAngleDeg,
+    //   edgeSoftness, zoomAmount, dissolveGrainPx, radialOriginX, radialOriginY,
+    //   pixelateMaxBlockPx, glitchIntensity, glitchBlockPx, blurRadiusPx,
+    //   displacementAmount, displacementScale, effectSeed, easing }
     // with offsets in ticks; enabled=false (or a zero-length window) is a hard cut.
     // Returns the updated cue list. No-op if no cue exists at that tick.
     setCueTransition:    (tick, transition)              => invoke('xleth:timeline:setCueTransition', tick, transition),

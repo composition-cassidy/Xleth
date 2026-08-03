@@ -294,6 +294,10 @@ const FALLBACK_NODE_SPACING_X = 204;
 const FALLBACK_NODE_Y = 0;
 const MIN_CANVAS_WIDTH = 460;
 const MIN_CANVAS_HEIGHT = 240;
+// FXG.3-l — matches the canvas background dot grid's `background-size` (see
+// .xleth-graph-state-preview__viewport in windowing.css) so a dragged node's
+// committed position always lands on a visible dot.
+const NODE_DRAG_SNAP = 22;
 const DEFAULT_VIEWPORT: GraphStateViewport = Object.freeze({ x: 0, y: 0, zoom: 1 });
 const ZOOM_BUTTON_STEP = 1.1;
 // Continuous zoom sensitivity: Math.exp(-deltaY * k).
@@ -2286,8 +2290,10 @@ export default function GraphStatePreview({
     event.preventDefault();
     const nextX = Math.max(0, drag.startGraphX + (event.clientX - drag.startClientX) / viewport.zoom);
     const nextY = Math.max(0, drag.startGraphY + (event.clientY - drag.startClientY) / viewport.zoom);
-    const roundedX = Math.round(nextX * 100) / 100;
-    const roundedY = Math.round(nextY * 100) / 100;
+    // FXG.3-l — snap to the dot grid so dragged nodes land on a shared baseline
+    // instead of drifting to arbitrary sub-pixel positions.
+    const roundedX = Math.round(nextX / NODE_DRAG_SNAP) * NODE_DRAG_SNAP;
+    const roundedY = Math.round(nextY / NODE_DRAG_SNAP) * NODE_DRAG_SNAP;
     drag.currentGraphX = roundedX;
     drag.currentGraphY = roundedY;
     setDragPreviewPosition({
@@ -2359,6 +2365,20 @@ export default function GraphStatePreview({
       zoom: result.zoom,
     });
   }, [model.nodes, onViewportChange]);
+
+  // FXG.3-l — fit the view once per track-open instead of restoring whatever zoom
+  // was last persisted, so a graph never loads at an arbitrary stored zoom (e.g.
+  // 74%). Guarded by trackId (not model/viewport) so this fires exactly once when
+  // the workspace opens or the selected track changes, and never fights a
+  // subsequent manual pan/zoom or re-fires on every node add/edit.
+  const fitOnOpenTrackRef = React.useRef<number | string | null | undefined>(undefined);
+  React.useEffect(() => {
+    if (!canEditViewport || model.empty) return;
+    if (fitOnOpenTrackRef.current === trackId) return;
+    fitOnOpenTrackRef.current = trackId;
+    const frame = requestAnimationFrame(() => handleFitView());
+    return () => cancelAnimationFrame(frame);
+  }, [canEditViewport, model.empty, trackId, handleFitView]);
 
   const handleResetView = React.useCallback(() => {
     onViewportChange?.({
@@ -2622,6 +2642,9 @@ export default function GraphStatePreview({
                   </button>
                 </>
               )}
+              {/* FXG.3-l — Add Effect Node is the primary toolbar action (accent-filled);
+                  the other three Add buttons are quiet secondary/ghost actions so the
+                  toolbar reads as one emphasized action plus supporting ones. */}
               {canAddNode && (
                 <button
                   className="xleth-graph-state-preview__action-button"
@@ -2633,7 +2656,7 @@ export default function GraphStatePreview({
               )}
               {canAddMacro && (
                 <button
-                  className="xleth-graph-state-preview__action-button xleth-graph-state-preview__action-button--macro"
+                  className="xleth-graph-state-preview__action-button xleth-graph-state-preview__action-button--secondary"
                   type="button"
                   onClick={onAddMacroNode}
                 >
@@ -2642,7 +2665,7 @@ export default function GraphStatePreview({
               )}
               {canAddEnvelope && (
                 <button
-                  className="xleth-graph-state-preview__action-button xleth-graph-state-preview__action-button--envelope"
+                  className="xleth-graph-state-preview__action-button xleth-graph-state-preview__action-button--secondary"
                   type="button"
                   onClick={onAddEnvelopeNode}
                 >
@@ -2651,7 +2674,7 @@ export default function GraphStatePreview({
               )}
               {canAddSidechainInput && (
                 <button
-                  className="xleth-graph-state-preview__action-button xleth-graph-state-preview__action-button--sidechain"
+                  className="xleth-graph-state-preview__action-button xleth-graph-state-preview__action-button--secondary"
                   type="button"
                   disabled={hasSidechainInputNode}
                   title={hasSidechainInputNode

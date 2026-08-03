@@ -25,7 +25,7 @@ describe('layoutMutations', () => {
     expect(next).not.toBe(layout)
     expect(findNode(next, 'k-threshold').props.label).toBe('Threshold Test')
     expect(findNode(next, 'k-threshold').props.size).toBe(64)
-    expect(findNode(layout, 'k-threshold').props.label).toBe('THRESH')
+    expect(findNode(layout, 'k-threshold').props.label).toBe('THRESHOLD')
     expect([...collectNodeIds(next)].sort()).toEqual(beforeIds)
     expect(findNode(next, 'btn-rms')).toBeTruthy()
   })

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useCallback, useRef } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useState, useCallback, useRef } from 'react'
 import { Layers, Plus } from 'lucide-react'
 import TrackHeaderList from './timeline/TrackHeaderList.jsx'
 import PatternListPanel from './timeline/PatternListPanel.jsx'
@@ -38,6 +38,18 @@ import {
 import { getRegime } from '../utils/waveformRenderer.js'
 import { getRegionPlaybackDurationSec } from './timeline/regionDuration.js'
 import { getClipRegionWaveformStartSec } from './timeline/timelineDrawing.js'
+import { normalizeTimelineClipboardPayloads } from './timeline/timelineClipboard.js'
+import {
+  flatTrackLayout,
+  moveFolderInLayout,
+  moveTracksInLayout,
+  nextFolderName,
+  normalizeTrackLayout,
+  rootIndexForSelectedTracks,
+  updateTrackSelection,
+  visibleTracksForLayout,
+} from './timeline/trackFolderLayout.js'
+import { CLIP_CONTROL_DEFAULTS } from './timeline/clipControlSpec.js'
 import { getSelectableSyllables } from './SyllableSplitter/syllableModel.js'
 import useSnapStore from '../stores/snapStore.js'
 import useTimelineDisplayStore from '../stores/timelineDisplayStore.js'
@@ -53,6 +65,11 @@ import { usePanelRegistry } from '../windowing/registry/PanelRegistry.ts'
 import useVideoTabStore from '../stores/useVideoTabStore.js'
 import { register as registerKeyboardBinding } from '../windowing/managers/KeyboardManager'
 import { registerEditorCommand } from '../windowing/managers/EditorCommandRegistry'
+
+const CLIP_CONTROL_TUNER_ENABLED = import.meta.env.VITE_XLETH_CLIP_CONTROL_TUNER === '1'
+const ClipControlTuner = CLIP_CONTROL_TUNER_ENABLED
+  ? lazy(() => import('./timeline/clipControlTuner/ClipControlTuner.jsx'))
+  : null
 
 // Combos the timeline panel claims. Listed once at module scope so the
 // useEffect that registers them stays empty-deps — handler reads fresh
@@ -727,6 +744,10 @@ export default function TimelineView({
 
   // ── Track state ────────────────────────────────────────────────────────────
   const [tracks, setTracks] = useState([])
+  const [folderLayout, setFolderLayout] = useState(() => flatTrackLayout([]))
+  const [selectedTrackIds, setSelectedTrackIds] = useState(new Set())
+  const [editingFolderId, setEditingFolderId] = useState(null)
+  const trackSelectionAnchorRef = useRef(null)
   const [trackHeight, setTrackHeight] = useState(DEFAULT_TRACK_HEIGHT)
 
   // FXG.4-h-r1: derive the flattened timeline row model (track rows + macro
@@ -734,10 +755,25 @@ export default function TimelineView({
   // the left header, and the macro lane layer so all four share one source of
   // truth for where each row sits. Recomputes only when tracks or graphStates
   // change — tracks with no lanes produce the original contiguous geometry.
-  const trackLayout = useMemo(
-    () => buildTrackLayout({ tracks, graphStates, trackHeight }),
-    [tracks, graphStates, trackHeight],
+  const normalizedFolderLayout = useMemo(
+    () => normalizeTrackLayout(folderLayout, tracks),
+    [folderLayout, tracks],
   )
+  const visibleTracks = useMemo(
+    () => visibleTracksForLayout(normalizedFolderLayout, tracks),
+    [normalizedFolderLayout, tracks],
+  )
+  const trackLayout = useMemo(
+    () => buildTrackLayout({ tracks, graphStates, folderLayout: normalizedFolderLayout, trackHeight }),
+    [tracks, graphStates, normalizedFolderLayout, trackHeight],
+  )
+  useEffect(() => {
+    const visibleIds = new Set(visibleTracks.map(track => track.id))
+    setSelectedTrackIds(previous => {
+      const next = new Set([...previous].filter(id => visibleIds.has(id)))
+      return next.size === previous.size ? previous : next
+    })
+  }, [visibleTracks])
 
   const [contextMenu, setContextMenu] = useState(null)
   // Phase G.4: compact quick-FX popover anchored to a clip's on-canvas FX badge
@@ -755,6 +791,8 @@ export default function TimelineView({
 
   // ── Clip state ─────────────────────────────────────────────────────────────
   const [clips, setClips] = useState([])
+  const [clipControlSpec, setClipControlSpec] = useState(CLIP_CONTROL_DEFAULTS)
+  const [clipControlTunerOpen, setClipControlTunerOpen] = useState(CLIP_CONTROL_TUNER_ENABLED)
   const [regions, setRegions] = useState({})        // { [id]: region }
   const [selectedClipIds, setSelectedClipIds] = useState(new Set())
   const clipsRef = useRef([])
@@ -959,11 +997,16 @@ export default function TimelineView({
 
   const fetchTracks = useCallback(async () => {
     try {
-      const t = await window.xleth?.timeline?.getTracks()
+      const [t, rawLayout] = await Promise.all([
+        window.xleth?.timeline?.getTracks(),
+        window.xleth?.timeline?.getTrackLayout?.(),
+      ])
       if (t) {
+        const nextLayout = normalizeTrackLayout(rawLayout, t)
         setTracks(t)
+        setFolderLayout(nextLayout)
         // Keep mixer in sync without an extra IPC round-trip
-        useMixerStore.getState().syncFromTimeline(t)
+        useMixerStore.getState().syncFromTimeline(t, nextLayout)
         // FX Graph edits are undo-tracked in the engine, so a global undo/redo can
         // revert a track's graphState underneath the renderer. This is the single
         // choke point every undo path already goes through; the resync no-ops
@@ -1128,6 +1171,10 @@ export default function TimelineView({
     timelineEvents.addEventListener('timeline-patterns-changed', onPatternsChanged)
     timelineEvents.addEventListener('timeline-pattern-blocks-changed', onPatternBlocksChanged)
     timelineEvents.addEventListener('timeline-pattern-changed', onPatternChanged)
+    const offProjectLoaded = window.xleth?.onProjectLoaded?.(() => {
+      loadedRegionAudioRef.current.clear()
+      fetchTracks(); fetchClips(); fetchRegions(); fetchSources(); fetchPatterns(); fetchPatternBlocks()
+    })
     return () => {
       timelineEvents.removeEventListener('timeline-tracks-changed', onTracksChanged)
       timelineEvents.removeEventListener('timeline-regions-changed', onRegionsChanged)
@@ -1136,6 +1183,7 @@ export default function TimelineView({
       timelineEvents.removeEventListener('timeline-patterns-changed', onPatternsChanged)
       timelineEvents.removeEventListener('timeline-pattern-blocks-changed', onPatternBlocksChanged)
       timelineEvents.removeEventListener('timeline-pattern-changed', onPatternChanged)
+      offProjectLoaded?.()
     }
   }, [fetchTracks, fetchClips, fetchRegions, fetchSources, fetchPatterns, fetchPatternBlocks])
 
@@ -1822,6 +1870,101 @@ export default function TimelineView({
   }, [markUserScrolling, scrollBy])
 
   // ── Track mutations ────────────────────────────────────────────────────────
+
+  const notifyTrackLayoutChanged = useCallback(() => {
+    timelineEvents.dispatchEvent(new Event('timeline-track-layout-changed'))
+    timelineEvents.dispatchEvent(new Event('timeline-tracks-changed'))
+  }, [])
+
+  const handleSelectTrack = useCallback((trackId, event) => {
+    const visibleIds = visibleTracks.map(track => track.id)
+    setSelectedTrackIds(previous => {
+      const result = updateTrackSelection({
+        selectedTrackIds: previous,
+        visibleTrackIds: visibleIds,
+        trackId,
+        anchorTrackId: trackSelectionAnchorRef.current,
+        toggle: event?.ctrlKey || event?.metaKey,
+        range: event?.shiftKey,
+      })
+      trackSelectionAnchorRef.current = result.anchorTrackId
+      return result.selectedTrackIds
+    })
+  }, [visibleTracks])
+
+  const handleAddFolder = useCallback(async () => {
+    const timeline = window.xleth?.timeline
+    if (!timeline?.createTrackFolder) return
+    const selectedInOrder = tracks.map(track => track.id).filter(id => selectedTrackIds.has(id))
+    const name = nextFolderName(normalizedFolderLayout.folders)
+    const rootIndex = selectedInOrder.length > 0
+      ? rootIndexForSelectedTracks(normalizedFolderLayout, selectedTrackIds)
+      : normalizedFolderLayout.rootOrder.length
+    try {
+      const folderId = await timeline.createTrackFolder({ name, trackIds: selectedInOrder, rootIndex })
+      if (folderId == null || folderId < 0) throw new Error('Folder creation rejected')
+      setSelectedTrackIds(new Set())
+      setEditingFolderId(folderId)
+      await fetchTracks()
+      notifyTrackLayoutChanged()
+    } catch (error) {
+      console.warn('[Timeline] createTrackFolder failed', error)
+    }
+  }, [fetchTracks, normalizedFolderLayout, notifyTrackLayoutChanged, selectedTrackIds, tracks])
+
+  const commitFolderLayout = useCallback(async (nextLayout) => {
+    setFolderLayout(nextLayout)
+    useMixerStore.getState().syncFromTimeline(tracks, nextLayout)
+    try {
+      const ok = await window.xleth?.timeline?.setTrackLayout?.(nextLayout)
+      if (ok === false) throw new Error('Layout rejected')
+      notifyTrackLayoutChanged()
+    } catch (error) {
+      console.warn('[Timeline] setTrackLayout failed', error)
+      await fetchTracks()
+    }
+  }, [fetchTracks, notifyTrackLayoutChanged, tracks])
+
+  const handleMoveFolderTracks = useCallback((trackIds, target) => {
+    commitFolderLayout(moveTracksInLayout(normalizedFolderLayout, trackIds, target))
+  }, [commitFolderLayout, normalizedFolderLayout])
+
+  const handleMoveFolder = useCallback((folderId, targetRootIndex) => {
+    commitFolderLayout(moveFolderInLayout(normalizedFolderLayout, folderId, targetRootIndex))
+  }, [commitFolderLayout, normalizedFolderLayout])
+
+  const handleToggleFolder = useCallback(async (folderId, collapsed) => {
+    try {
+      const ok = await window.xleth?.timeline?.setTrackFolderCollapsed?.(folderId, collapsed)
+      if (ok === false) throw new Error('Collapse rejected')
+      await fetchTracks()
+      notifyTrackLayoutChanged()
+    } catch (error) {
+      console.warn('[Timeline] setTrackFolderCollapsed failed', error)
+    }
+  }, [fetchTracks, notifyTrackLayoutChanged])
+
+  const handleRenameFolder = useCallback(async (folderId, name) => {
+    try {
+      const ok = await window.xleth?.timeline?.setTrackFolderName?.(folderId, name)
+      if (ok === false) throw new Error('Rename rejected')
+      await fetchTracks()
+      notifyTrackLayoutChanged()
+    } catch (error) {
+      console.warn('[Timeline] setTrackFolderName failed', error)
+    }
+  }, [fetchTracks, notifyTrackLayoutChanged])
+
+  const handleRemoveFolder = useCallback(async (folderId) => {
+    try {
+      const ok = await window.xleth?.timeline?.removeTrackFolder?.(folderId)
+      if (ok === false) throw new Error('Folder removal rejected')
+      await fetchTracks()
+      notifyTrackLayoutChanged()
+    } catch (error) {
+      console.warn('[Timeline] removeTrackFolder failed', error)
+    }
+  }, [fetchTracks, notifyTrackLayoutChanged])
 
   const handleAddTrack = useCallback(async () => {
     const num = nextTrackNum.current++
@@ -2646,8 +2789,8 @@ export default function TimelineView({
     e.preventDefault()
     e.dataTransfer.dropEffect = 'copy'
 
-    const trackIndex = Math.floor(localY / TRACK_HEIGHT)
-    if (trackIndex < 0 || trackIndex >= tracks.length) {
+    const trackIndex = trackLayout.trackIndexAtY(localY)
+    if (trackIndex < 0 || trackIndex >= visibleTracks.length) {
       dropPreviewRef.current = null
       canvasRef.current?.redrawOverlay()
       return
@@ -2694,7 +2837,7 @@ export default function TimelineView({
       name,
     }
     canvasRef.current?.redrawOverlay()
-  }, [tracks, regions])
+  }, [regions, trackLayout, visibleTracks])
 
   // ── Drop (create clip from dropped sample) ─────────────────────────────────
 
@@ -2709,16 +2852,16 @@ export default function TimelineView({
     if (!sourceRaw && !sampleRaw && !patternRaw) return
 
     const beat = pixelToBeat(localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-    const trackIndex = Math.floor(localY / TRACK_HEIGHT)
+    const trackIndex = trackLayout.trackIndexAtY(localY)
 
-    if (trackIndex < 0 || trackIndex >= tracks.length) {
+    if (trackIndex < 0 || trackIndex >= visibleTracks.length) {
       console.warn('[TimelineClips] WARNING: drop outside track area')
       return
     }
 
     const modifiers = { alt: e.altKey, shift: e.shiftKey }
     const snappedBeat = snapBeatToGrid(Math.max(0, beat), modifiers, snapGranularity)
-    const track = tracks[trackIndex]
+    const track = visibleTracks[trackIndex]
     const positionTicks = beatsToTicks(snappedBeat)
 
     // ── Pattern drop: create PatternBlock on Pattern-type track ─────────────
@@ -2866,7 +3009,7 @@ export default function TimelineView({
     } catch (err) {
       console.error('[TimelineClips] addClip failed:', err)
     }
-  }, [tracks, fetchClips, fetchPatterns, patterns, currentPatternIdByTrack, nextPatternName, setCurrentPatternIdByTrack])
+  }, [visibleTracks, trackLayout, fetchClips, fetchPatterns, patterns, currentPatternIdByTrack, nextPatternName, setCurrentPatternIdByTrack])
 
   // ── Drag leave (clear preview) ─────────────────────────────────────────────
 
@@ -2902,14 +3045,18 @@ export default function TimelineView({
           await window.xleth?.undo?.undo()
           console.log('[Keyboard] Undo')
         }
+        await fetchTracks()
         await fetchClips()
+        timelineEvents.dispatchEvent(new Event('timeline-track-layout-changed'))
         return
       }
       if ((e.key === 'y' && ctrl) || (e.key === 'z' && ctrl && e.shiftKey)) {
         e.preventDefault()
         e.stopPropagation()
         await window.xleth?.undo?.redo()
+        await fetchTracks()
         await fetchClips()
+        timelineEvents.dispatchEvent(new Event('timeline-track-layout-changed'))
         lastSplitUndoCountRef.current = 0
         console.log('[Keyboard] Redo')
         return
@@ -2936,15 +3083,21 @@ export default function TimelineView({
       if (e.key === 'c' && ctrl) {
         e.preventDefault()
         e.stopPropagation()
+
+        // Build both payloads before replacing the clipboard. Mixed clip/block
+        // selections are valid, and paste already supports replaying both.
+        let copiedClips = null
+        let copiedPatternBlocks = null
+
         if (selectedClipIds.size > 0) {
           const selectedClips = clipsRef.current
             .filter(c => selectedClipIds.has(c.id))
             .sort((a, b) => a.positionTicks - b.positionTicks)
           if (selectedClips.length > 0) {
             const basePosition = selectedClips[0].positionTicks
-            const trackOrder = tracks.map(t => t.id)
+            const trackOrder = visibleTracks.map(t => t.id)
             const baseTrackIdx = trackOrder.indexOf(selectedClips[0].trackId)
-            clipboardRef.current = selectedClips.map(clip => ({
+            copiedClips = selectedClips.map(clip => ({
               regionId: clip.regionId,
               trackId: clip.trackId,
               sourceTrackType: 'Clip',
@@ -2979,9 +3132,8 @@ export default function TimelineView({
             console.log(`[Keyboard] Copied ${selectedClips.length} clip(s)`)
             console.log('[ClipCopy] source clips (raw React state) =',
               JSON.stringify(selectedClips, null, 2))
-            console.log('[ClipCopy] clipboardRef =',
-              JSON.stringify(clipboardRef.current, null, 2))
-            patternBlockClipboardRef.current = null
+            console.log('[ClipCopy] clipboard payload =',
+              JSON.stringify(copiedClips, null, 2))
           }
         }
         if (selectedBlockIds.size > 0) {
@@ -2990,9 +3142,9 @@ export default function TimelineView({
             .sort((a, b) => a.positionTicks - b.positionTicks)
           if (selectedBlocks.length > 0) {
             const basePosition = selectedBlocks[0].positionTicks
-            const trackOrder = tracks.map(t => t.id)
+            const trackOrder = visibleTracks.map(t => t.id)
             const baseTrackIdx = trackOrder.indexOf(selectedBlocks[0].trackId)
-            patternBlockClipboardRef.current = selectedBlocks.map(block => {
+            copiedPatternBlocks = selectedBlocks.map(block => {
               const pattern = patterns[block.patternId]
               const srcRegionId = pattern?.regionId ?? -1
               const srcRegion = regions[srcRegionId]
@@ -3010,9 +3162,12 @@ export default function TimelineView({
               }
             })
             console.log(`[Keyboard] Copied ${selectedBlocks.length} pattern block(s)`)
-            clipboardRef.current = null
           }
         }
+
+        const nextClipboard = normalizeTimelineClipboardPayloads(copiedClips, copiedPatternBlocks)
+        clipboardRef.current = nextClipboard.clips
+        patternBlockClipboardRef.current = nextClipboard.patternBlocks
         return
       }
 
@@ -3050,7 +3205,7 @@ export default function TimelineView({
           // "paste lands where I'm focused" behavior when types are compatible,
           // and prevents silent type-mismatch skips when a Pattern track is
           // focused while clips are in the clipboard.
-          const trackOrder = tracks.map(t => t.id)
+          const trackOrder = visibleTracks.map(t => t.id)
           const focusId = focusedTrackIdRef.current
           const focusedTrackObj = focusId ? tracks.find(t => t.id === focusId) : null
           const expectedTypeForRebase = cb[0].sourceTrackType ?? 'Clip'
@@ -3137,7 +3292,7 @@ export default function TimelineView({
           // Same compatibility fallback as the clip-paste branch — if focused
           // track type doesn't match the clipboard's source type, rebase on
           // the source track instead of silently skipping every block.
-          const trackOrder = tracks.map(t => t.id)
+          const trackOrder = visibleTracks.map(t => t.id)
           const focusId = focusedTrackIdRef.current
           const focusedTrackObj = focusId ? tracks.find(t => t.id === focusId) : null
           const expectedTypeForRebase = pbcb[0].sourceTrackType ?? 'Pattern'
@@ -3416,6 +3571,35 @@ export default function TimelineView({
       console.error('[Timeline] setClipVelocity error:', err)
     }
   }, [fetchClips])
+
+  const mergeReturnedClip = useCallback((updated) => {
+    if (updated?.id == null) return
+    setClips((current) => current.map((clip) => (
+      clip.id === updated.id ? normalizeClipFadeFields({ ...clip, ...updated }) : clip
+    )))
+  }, [])
+
+  const handleBeginClipControlEdit = useCallback((clipId) => (
+    window.xleth.timeline.beginClipControlEdit(clipId)
+  ), [])
+
+  const handlePreviewClipControlEdit = useCallback(async (sessionId, patch) => {
+    // The canvas owns the visual draft. Avoid merging preview replies into React
+    // state because an already-sent frame may resolve after a final commit.
+    return window.xleth.timeline.previewClipControlEdit(sessionId, patch)
+  }, [])
+
+  const handleCommitClipControlEdit = useCallback(async (sessionId, finalPatch) => {
+    const updated = await window.xleth.timeline.commitClipControlEdit(sessionId, finalPatch)
+    mergeReturnedClip(updated)
+    return updated
+  }, [mergeReturnedClip])
+
+  const handleCancelClipControlEdit = useCallback(async (sessionId) => {
+    const restored = await window.xleth.timeline.cancelClipControlEdit(sessionId)
+    mergeReturnedClip(restored)
+    return restored
+  }, [mergeReturnedClip])
 
   const handleSetClipVibrato = useCallback(async (clipId, vibratoPatch) => {
     try {
@@ -3997,7 +4181,7 @@ export default function TimelineView({
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
-  const hasTracks = tracks.length > 0
+  const hasTracks = tracks.length > 0 || normalizedFolderLayout.folders.length > 0
 
   return (
     <div className="timeline-view" ref={timelineViewRef} tabIndex={-1}>
@@ -4011,6 +4195,8 @@ export default function TimelineView({
         onSnapGranularityChange={setSnapGranularity}
         pixelsPerBeat={pixelsPerBeat}
         onAddTrack={handleAddTrack}
+        onAddFolder={handleAddFolder}
+        selectedTrackCount={selectedTrackIds.size}
         pencilTemplate={pencilTemplate}
         onSelectSyllable={handleSelectSyllable}
         declickMs={declickMs}
@@ -4041,6 +4227,17 @@ export default function TimelineView({
             {/* Left: track headers */}
             <TrackHeaderList
               tracks={tracks}
+              folderLayout={normalizedFolderLayout}
+              selectedTrackIds={selectedTrackIds}
+              onSelectTrack={handleSelectTrack}
+              onClearSelection={() => setSelectedTrackIds(new Set())}
+              onMoveTracks={handleMoveFolderTracks}
+              onMoveFolder={handleMoveFolder}
+              onToggleFolder={handleToggleFolder}
+              onRenameFolder={handleRenameFolder}
+              onRemoveFolder={handleRemoveFolder}
+              editingFolderId={editingFolderId}
+              onFinishFolderEdit={(folderId) => setEditingFolderId(folderId ?? null)}
               patterns={patterns}
               currentPatternIdByTrack={currentPatternIdByTrack}
               focusedTrackId={focusedTrackId}
@@ -4051,7 +4248,6 @@ export default function TimelineView({
               onVisualOnly={handleVisualOnly}
               onRename={handleRename}
               onRemove={handleRemove}
-              onReorder={handleReorder}
               onRequestContextMenu={handleRequestTrackContextMenu}
               onSetTrackColor={handleSetTrackColor}
               scrollContainerRef={scrollContainerRef}
@@ -4103,14 +4299,14 @@ export default function TimelineView({
               >
                 <TimelineCanvas
                   ref={canvasRef}
-                  trackCount={tracks.length}
+                  trackCount={visibleTracks.length}
                   pixelsPerBeatRef={pixelsPerBeatRef}
                   scrollOffsetRef={scrollOffsetRef}
                   playheadBeatRef={playheadBeatRef}
                   onWheel={handleWheel}
                   clips={clips}
                   regions={regions}
-                  tracks={tracks}
+                  tracks={visibleTracks}
                   selectedClipIds={selectedClipIds}
                   dropPreviewRef={dropPreviewRef}
                   waveformCacheRef={waveformCacheRef}
@@ -4133,6 +4329,11 @@ export default function TimelineView({
                   onSplitClip={handleSplitClip}
                   onSetClipVelocity={handleSetClipVelocity}
                   onSetClipFade={handleSetClipFade}
+                  onBeginClipControlEdit={handleBeginClipControlEdit}
+                  onPreviewClipControlEdit={handlePreviewClipControlEdit}
+                  onCommitClipControlEdit={handleCommitClipControlEdit}
+                  onCancelClipControlEdit={handleCancelClipControlEdit}
+                  clipControlSpec={clipControlSpec}
                   onMiddleMousePan={handleMiddleMousePan}
                   onRequestClipContextMenu={(clipId, x, y) => {
                     setQuickFxMenu(null)
@@ -4204,6 +4405,26 @@ export default function TimelineView({
               <span>Add Track</span>
             </button>
           </div>
+        )}
+        {CLIP_CONTROL_TUNER_ENABLED && ClipControlTuner && (
+          clipControlTunerOpen ? (
+            <Suspense fallback={null}>
+              <ClipControlTuner
+                spec={clipControlSpec}
+                onSpecChange={setClipControlSpec}
+                onClose={() => setClipControlTunerOpen(false)}
+                pixelsPerBeat={pixelsPerBeat}
+              />
+            </Suspense>
+          ) : (
+            <button
+              type="button"
+              className="clip-control-tuner-launcher"
+              onClick={() => setClipControlTunerOpen(true)}
+            >
+              Clip control lab
+            </button>
+          )
         )}
       </div>
 

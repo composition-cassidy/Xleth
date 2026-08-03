@@ -717,6 +717,73 @@ export function drawLimiterRealtime(ctx, w, h, ring, theme, params) {
   drawOutputMeter(ctx, w - meterW, 0, meterW, h, ring, theme)
 }
 
+// Token color + alpha → rgba() string, so painters can fade theme colors
+// without hardcoding a palette. Same helper shape as CompressorCurveNode.
+function rgba(color, alpha) {
+  if (!color) return `rgba(255, 255, 255, ${alpha})`
+  const rgbaMatch = color.match(/^rgba\(([^)]+)\)$/i)
+  if (rgbaMatch) {
+    const parts = rgbaMatch[1].split(',').map((part) => part.trim())
+    return parts.length >= 3 ? `rgba(${parts[0]}, ${parts[1]}, ${parts[2]}, ${alpha})` : color
+  }
+  if (color.startsWith('rgb(')) return color.replace('rgb(', 'rgba(').replace(')', `, ${alpha})`)
+  const shortHex = color.trim().match(/^#([0-9a-f])([0-9a-f])([0-9a-f])$/i)
+  if (shortHex) {
+    const r = parseInt(shortHex[1] + shortHex[1], 16)
+    const g = parseInt(shortHex[2] + shortHex[2], 16)
+    const b = parseInt(shortHex[3] + shortHex[3], 16)
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`
+  }
+  const longHex = color.trim().match(/^#([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})$/i)
+  if (longHex) {
+    const r = parseInt(longHex[1], 16)
+    const g = parseInt(longHex[2], 16)
+    const b = parseInt(longHex[3], 16)
+    return `rgba(${r}, ${g}, ${b}, ${alpha})`
+  }
+  return color
+}
+
+// Redesign display: the input-level history as one full-width waveform fill
+// with a dotted accent ceiling rule. No grid, no meter strip, no GR labels —
+// the clean look from the Limiter redesign mockup. The waveform is the INPUT
+// level on purpose: its peaks crossing the ceiling line show what the limiter
+// will shave off.
+export function drawLimiterWaveform(ctx, w, h, ring, theme, params) {
+  if (!ctx || w < 4 || h < 4) return
+  fillBackground(ctx, w, h, theme)
+
+  const columns = buildLimiterDisplayHistory(ring, w, { columnWidthPx: 1 })
+  if (columns.length > 0) {
+    const yFor = (column) => limiterLevelToY(column.inputDb, h)
+    const fill = ctx.createLinearGradient(0, 0, 0, h)
+    fill.addColorStop(0, rgba(theme.textMuted, 0.55))
+    fill.addColorStop(0.55, rgba(theme.textMuted, 0.28))
+    fill.addColorStop(1, rgba(theme.textMuted, 0.03))
+    fillLevelEnvelope(ctx, columns, h, yFor, fill, 1)
+    strokeLinePath(ctx, columns, yFor, theme.text || '#e0e0e0', 1.6, 0.85)
+  }
+
+  const last = ring && typeof ring.last === 'function' ? ring.last() : null
+  const ceilingDb = params && Number.isFinite(params.ceiling)
+    ? params.ceiling
+    : (last && Number.isFinite(last.ceilingDb) ? last.ceilingDb : null)
+  if (ceilingDb === null) return
+
+  ctx.save()
+  ctx.globalAlpha = 0.9
+  ctx.strokeStyle = theme.accent || '#4ecdc4'
+  ctx.lineWidth = 2
+  ctx.setLineDash([2, 6])
+  const yy = limiterLevelToY(sanitizeLevelDb(ceilingDb), h) + 0.5
+  ctx.beginPath()
+  ctx.moveTo(0, yy)
+  ctx.lineTo(w, yy)
+  ctx.stroke()
+  ctx.setLineDash([])
+  ctx.restore()
+}
+
 export function drawLimiterGainReduction(ctx, w, h, ring, theme) {
   if (!ctx || w < 2 || h < 2) return
   fillBackground(ctx, w, h, theme)
@@ -732,6 +799,7 @@ export function drawLimiterMeterOnly(ctx, w, h, ring, theme) {
 
 export const LIMITER_PRESETS = Object.freeze({
   limiterRealtime: drawLimiterRealtime,
+  limiterWaveform: drawLimiterWaveform,
   limiterGainReduction: drawLimiterGainReduction,
   limiterMeterOnly: drawLimiterMeterOnly,
 })
@@ -739,6 +807,10 @@ export const LIMITER_PRESETS = Object.freeze({
 export const LIMITER_VISUALIZER_PRESETS = Object.freeze({
   limiterRealtime: Object.freeze({
     label: 'Limiter Realtime',
+    sources: ['limiter.realtime'],
+  }),
+  limiterWaveform: Object.freeze({
+    label: 'Limiter Waveform',
     sources: ['limiter.realtime'],
   }),
   limiterGainReduction: Object.freeze({

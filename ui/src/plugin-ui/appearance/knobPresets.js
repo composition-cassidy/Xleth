@@ -101,6 +101,30 @@ export const KNOB_PRESETS = {
     },
     className: 'pluginui-knob--hardware-cap',
   },
+  'mixer-ring': {
+    label: 'Mixer Ring',
+    description: 'Hollow recessed ring with an accent value arc — the Mixer Pan/Width knob.',
+    defaults: {
+      preset: 'mixer-ring',
+      sizePreset: 'standard',
+      // The rotary-arrow glyph draws its own body, groove and marker, so the
+      // cap/pointer/tick styles below are inert; they stay set to sane values
+      // so a designer switching away from this preset lands somewhere sensible.
+      glyph: 'rotary-arrow',
+      cap: 'flat-disk',
+      ring: 'metered-arc',
+      pointer: 'none',
+      ticks: 'none',
+      tickDensity: 'sparse',
+      valueReadout: 'hidden',
+      labelPlacement: 'bottom',
+      depth: 'raised',
+      surfaceToken: 'surface.control',
+      accentToken: 'accent.primary',
+      textToken: 'text.muted',
+    },
+    className: 'pluginui-knob--mixer-ring',
+  },
   'tiny-strip': {
     label: 'Tiny Strip',
     description: 'Space-saving strip knob defaults for crowded rows.',

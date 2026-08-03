@@ -4318,9 +4318,10 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
 
     const double sampleRateForPreview = transport.getSampleRate();
 
-    // When transport is stopped, still render any active sampler voices so
-    // note-preview (keyboard click) is audible. Skip the full clip/pattern
-    // pipeline — just mix sampler voices into a dedicated preview bus.
+    // When transport is stopped, render only the dedicated audition samplers.
+    // Playback samplers must stay behind the full track pipeline: summing them
+    // directly here would bypass track effects and mute/solo routing during the
+    // first release block after Stop/Pause.
     const bool isPlaying = transport.isPlaying();
     // Transport-stop transition: release any held notes so sustained envelopes
     // begin their release tail immediately instead of continuing to hold.
@@ -4361,14 +4362,6 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         previewBuffer_.clear(0, numSamples);
 
         const double previewBPM = transport.getBPM();
-        for (auto& kv : samplers_)
-        {
-            Sampler* s = kv.second.get();
-            if (s != nullptr && s->hasSample()) {
-                s->setBPM(previewBPM);
-                s->processBlock(previewBuffer_, numSamples, sampleRateForPreview);
-            }
-        }
         for (auto& kv : previewSamplers_)
         {
             Sampler* s = kv.second.get();

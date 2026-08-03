@@ -1018,6 +1018,106 @@ static void testDebugLog()
     CHECK(!log.pop(popped), "pop from empty returns false");
 }
 
+// ─── Test: stopped pattern playback never enters the audition bus ────────
+
+static void testPatternStopDoesNotLeakPlaybackSamplers()
+{
+    std::cout << "[pattern stop] playback samplers stay silent after transport pause\n";
+
+    const double bpm = 120.0;
+    const double sampleRate = 44100.0;
+    constexpr int blockSize = 512;
+
+    Timeline timeline(bpm, sampleRate);
+
+    TrackInfo track;
+    track.name = "Muted Pattern";
+    track.type = TrackInfo::Type::Pattern;
+    track.muted = true;
+    const int trackId = timeline.addTrack(track);
+
+    SampleRegion region;
+    region.name = "Sustained Tone";
+    region.releaseMs = 250.0f;
+    const int regionId = timeline.addRegion(region);
+
+    Pattern pattern;
+    pattern.name = "Stop Regression";
+    pattern.regionId = regionId;
+    pattern.length = TickTime::fromBeats(4.0);
+    const int patternId = timeline.addPattern(pattern);
+
+    PatternBlock patternBlock;
+    patternBlock.trackId = trackId;
+    patternBlock.patternId = patternId;
+    patternBlock.position = TickTime::fromBeats(0.0);
+    patternBlock.duration = TickTime::fromBeats(4.0);
+    CHECK(timeline.addPatternBlock(patternBlock) >= 0,
+          "pattern block should be created for stop regression");
+
+    const juce::File tempDir = makeTempTestDir("xleth_pattern_stop_test");
+    const juce::File wav = generateWav(
+        tempDir, "sustained_tone", sampleRate,
+        static_cast<int>(sampleRate), 440.0f, 0.6f);
+
+    SampleBank bank;
+    const int sampleId = bank.loadSample(wav, sampleRate);
+    CHECK(sampleId >= 0, "pattern stop regression sample should load");
+
+    MixEngine engine;
+    engine.setTimeline(&timeline);
+    engine.setSampleBank(&bank);
+    engine.mapRegionToSample(regionId, sampleId);
+    engine.rebuildAllSamplers();
+    engine.prepare(sampleRate, blockSize);
+
+    Sampler* playbackSampler = engine.getSamplerPtr(trackId, regionId);
+    CHECK(playbackSampler != nullptr, "pattern playback sampler should exist");
+    if (playbackSampler == nullptr)
+    {
+        tempDir.deleteRecursively();
+        return;
+    }
+
+    Transport transport;
+    transport.setSampleRate(sampleRate);
+    transport.setBPM(bpm);
+
+    // Model an in-flight pattern voice on a muted track. The playing block is
+    // silent because it passes through normal mute routing. The next callback
+    // after pause used to sum the releasing sampler straight to master.
+    playbackSampler->noteOn(60, 1.0f);
+    transport.play();
+
+    juce::AudioBuffer<float> block(2, blockSize);
+    block.clear();
+    engine.processBlock(block, blockSize, transport);
+    CHECK(block.getMagnitude(0, 0, blockSize) < 1.0e-6f,
+          "muted pattern track should be silent while playing");
+    transport.advance(blockSize);
+
+    transport.pause();
+    block.clear();
+    engine.processBlock(block, blockSize, transport);
+    CHECK(block.getMagnitude(0, 0, blockSize) < 1.0e-6f,
+          "first stopped block must not leak playback samplers around mute/effects");
+
+    // Dedicated piano-roll auditioning remains available while stopped.
+    engine.ensurePreviewSampler(regionId);
+    Sampler* previewSampler = engine.getPreviewSamplerPtr(regionId);
+    CHECK(previewSampler != nullptr, "dedicated preview sampler should exist");
+    if (previewSampler != nullptr)
+    {
+        previewSampler->noteOn(60, 1.0f);
+        block.clear();
+        engine.processBlock(block, blockSize, transport);
+        CHECK(block.getMagnitude(0, 0, blockSize) > 1.0e-3f,
+              "dedicated note preview should remain audible while stopped");
+    }
+
+    tempDir.deleteRecursively();
+}
+
 // ─── Test: EQ tail — no state-injection click at clip B start ────────────────
 // Two clips (2 kHz sine) with a 125 ms silence gap on a single track.
 // Bell EQ +12 dB at 2 kHz, Q=10 is active.
@@ -2358,6 +2458,7 @@ int main()
     testBasicRendering();
     testMute();
     testSolo();
+    testPatternStopDoesNotLeakPlaybackSamplers();
     testEQTailNoClick();
     testRealtimeVstReverbTailDrain();
     testTrackPdcTwoTrackImpulseAlignment();

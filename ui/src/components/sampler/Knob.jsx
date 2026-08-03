@@ -16,6 +16,9 @@ import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
 //   onCommit         (v) => void  — called on drag-end / blur of text input
 //   size             pixel diameter (default 52)
 //   dragRange        pixels of vertical travel = full min→max sweep (default 180)
+//   skew             JUCE NormalisableRange skew (default 1 = linear). Pass the
+//                    engine parameter's own skew so knob travel matches the
+//                    parameter curve — see the note above normFromValue().
 //   color            optional CSS color for value-arc + pointer line; default is --theme-border-focus
 //   appearance*      optional closed plugin-UI drawing props; omitted for legacy sampler use
 
@@ -30,6 +33,7 @@ export default function Knob({
   onCommit,
   size = 52,
   dragRange = 180,
+  skew = 1,
   color,
   appearancePreset,
   capStyle = 'encoder-cap',
@@ -55,7 +59,31 @@ export default function Knob({
 
   const clamp = useCallback((v) => Math.max(min, Math.min(max, v)), [min, max])
 
-  const fraction = (max - min) > 0 ? (clamp(value) - min) / (max - min) : 0
+  // ── Value ↔ knob-travel mapping ───────────────────────────────────────────
+  // Mirrors juce::NormalisableRange exactly:
+  //   toNorm(v)   = ((v - min) / (max - min)) ^ skew
+  //   fromNorm(x) = min + (max - min) * x ^ (1 / skew)
+  // A skew below 1 expands the low end, which is what engine params like the
+  // delay's time_l (skew 0.4) rely on: without it a linear knob buries every
+  // musically useful value in the bottom tenth of its travel.
+  //
+  // skew === 1 short-circuits to the plain linear expressions, so every
+  // existing caller (none of which pass skew) is bit-identical to before.
+  const effSkew = Number.isFinite(skew) && skew > 0 ? skew : 1
+  const span = max - min
+
+  const normFromValue = useCallback((v) => {
+    if (!(span > 0)) return 0
+    const p = (clamp(v) - min) / span
+    return effSkew === 1 || p <= 0 ? p : Math.pow(p, effSkew)
+  }, [clamp, min, span, effSkew])
+
+  const valueFromNorm = useCallback((x) => {
+    const p = Math.max(0, Math.min(1, x))
+    return min + span * (effSkew === 1 || p <= 0 ? p : Math.pow(p, 1 / effSkew))
+  }, [min, span, effSkew])
+
+  const fraction = normFromValue(value)
 
   // Draw the knob
   useEffect(() => {
@@ -145,17 +173,18 @@ export default function Knob({
     document.body.style.cursor = 'ns-resize'
   }, [value, clamp, defaultValue, min, onLiveChange, onCommit])
 
+  // Drag accumulates in NORMALISED space so a given pixel travel always moves
+  // the same fraction of the knob's sweep, whatever the skew.
   const handlePointerMove = useCallback((e) => {
     const d = dragRef.current
     if (!d) return
     const dy = d.startY - e.clientY
-    const range = max - min
     const sensitivity = (e.shiftKey || d.fine) ? 10 : 1
-    const delta = (dy / dragRange) * range / sensitivity
-    const next = clamp(d.startValue + delta)
+    const nextNorm = normFromValue(d.startValue) + (dy / dragRange) / sensitivity
+    const next = valueFromNorm(nextNorm)
     liveValueRef.current = next
     onLiveChange?.(next)
-  }, [max, min, dragRange, clamp, onLiveChange])
+  }, [dragRange, normFromValue, valueFromNorm, onLiveChange])
 
   const handlePointerUp = useCallback(() => {
     if (!dragRef.current) return
@@ -170,13 +199,11 @@ export default function Knob({
   // Scroll wheel
   const handleWheel = useCallback((e) => {
     e.preventDefault()
-    const range = max - min
     const sensitivity = e.shiftKey ? 500 : 100
-    const delta = -(e.deltaY / sensitivity) * range / 20
-    const next = clamp(value + delta)
+    const next = valueFromNorm(normFromValue(value) - (e.deltaY / sensitivity) / 20)
     onLiveChange?.(next)
     onCommit?.(next)
-  }, [value, clamp, max, min, onLiveChange, onCommit])
+  }, [value, normFromValue, valueFromNorm, onLiveChange, onCommit])
 
   // Edit mode — entered only via value label double-click, never the canvas.
   // Guard against accidental entry during an active drag.

@@ -7,6 +7,7 @@
 #include "render/VideoFlipApplier.h"
 #include "model/Timeline.h"
 #include "SyncManager.h"
+#include "audio/ClipFade.h"
 
 #include <algorithm>
 #include <cassert>
@@ -59,6 +60,13 @@ static const CellFrameRequest* findGridRequestForTrack(
             return &r;
     }
     return nullptr;
+}
+
+static void requireFadeTest(bool condition, const char* message)
+{
+    if (condition) return;
+    std::fprintf(stderr, "[TEST:FrameCollector] Fade assertion failed: %s\n", message);
+    std::abort();
 }
 
 // Release-safe check (this suite builds with NDEBUG, so bare assert() vanishes —
@@ -229,43 +237,138 @@ int main()
         std::fprintf(stderr, "[TEST:FrameCollector] Test 1: PASSED\n");
     }
 
-    // ── Test 1h: per-track hold-last-frame THRESHOLD (beats) ─────────────────
+    {
+        std::fprintf(stderr, "\n[TEST:FrameCollector] --- Test 1f: clip fade opacity ---\n");
+
+        const AVRational fps = {30, 1};
+        auto fadeEvents = events;
+        VideoEvent& faded = fadeEvents[1]; // slot opacity 0.8, event opacity 0.9
+        faded.fadeInPercent = 50.0f;
+
+        FrameCollector startCollector;
+        auto atStart = startCollector.collectRequests(0, timeline, 48000, fps, fadeEvents);
+        const CellFrameRequest* startReq = findGridRequestForTrack(atStart, trackIds[1]);
+        requireFadeTest(startReq && std::abs(startReq->opacity) < 1.0e-6f,
+                        "fade-in starts transparent");
+
+        // Frame 15 = 0.5s = 1.1666 beats at 140 BPM. The 4-beat event's 50%
+        // fade spans 2 beats, so linear fade gain is 1.1666 / 2.
+        constexpr int midFadeFrame = 15;
+        const double midBeat = (midFadeFrame / 30.0) * (140.0 / 60.0);
+        const float linearGain = static_cast<float>(midBeat / 2.0);
+        FrameCollector midCollector;
+        auto atMid = midCollector.collectRequests(
+            midFadeFrame, timeline, 48000, fps, fadeEvents);
+        const CellFrameRequest* midReq = findGridRequestForTrack(atMid, trackIds[1]);
+        requireFadeTest(midReq != nullptr, "mid-fade request exists");
+        requireFadeTest(std::abs(midReq->opacity - (0.8f * 0.9f * linearGain)) < 1.0e-4f,
+                        "linear fade multiplies placement and event opacity");
+
+        FrameCollector postCollector;
+        auto afterFade = postCollector.collectRequests(30, timeline, 48000, fps, fadeEvents);
+        const CellFrameRequest* postReq = findGridRequestForTrack(afterFade, trackIds[1]);
+        requireFadeTest(postReq && std::abs(postReq->opacity - 0.72f) < 1.0e-4f,
+                        "completed fade preserves base opacity");
+
+        // A custom curve uses the same Bezier evaluator as the audio LUT.
+        faded.fadeInX1 = 0.25f;
+        faded.fadeInY1 = 0.10f;
+        faded.fadeInX2 = 0.25f;
+        faded.fadeInY2 = 1.00f;
+        const float curvedGain = evaluateClipFadeBezier(
+            linearGain,
+            faded.fadeInX1, faded.fadeInY1, faded.fadeInX2, faded.fadeInY2);
+        FrameCollector curveCollector;
+        auto onCurve = curveCollector.collectRequests(
+            midFadeFrame, timeline, 48000, fps, fadeEvents);
+        const CellFrameRequest* curveReq = findGridRequestForTrack(onCurve, trackIds[1]);
+        requireFadeTest(curveReq != nullptr, "custom-curve request exists");
+        requireFadeTest(std::abs(curveReq->opacity - (0.8f * 0.9f * curvedGain)) < 1.0e-4f,
+                        "video follows audio Bezier evaluator");
+
+        // Frame 45 is beat 3.5, leaving 0.5 beat in a 2-beat fade-out.
+        faded.fadeInPercent = 0.0f;
+        faded.fadeOutPercent = 50.0f;
+        faded.fadeOutX1 = 0.0f;
+        faded.fadeOutY1 = 0.0f;
+        faded.fadeOutX2 = 1.0f;
+        faded.fadeOutY2 = 1.0f;
+        FrameCollector outCollector;
+        auto fadingOut = outCollector.collectRequests(45, timeline, 48000, fps, fadeEvents);
+        const CellFrameRequest* outReq = findGridRequestForTrack(fadingOut, trackIds[1]);
+        requireFadeTest(outReq && std::abs(outReq->opacity - (0.72f * 0.25f)) < 1.0e-4f,
+                        "fade-out follows remaining clip time");
+        requireFadeTest(evaluateClipFadeGain(
+            1.0f, 0.0f, 50.0f,
+            0.0f, 0.0f, 1.0f, 1.0f,
+            0.0f, 0.0f, 1.0f, 1.0f) == 0.0f,
+            "fade-out reaches zero at clip end");
+
+        // Pattern/note-style events retain zero-fade defaults.
+        requireFadeTest(events[0].fadeInPercent == 0.0f && events[0].fadeOutPercent == 0.0f,
+                        "pattern events retain zero-fade defaults");
+        std::fprintf(stderr, "[TEST:FrameCollector] Test 1f: PASSED\n");
+    }
+
+    {
+        std::fprintf(stderr, "\n[TEST:FrameCollector] --- Test 1g: fade-out vs hold ---\n");
+        TrackInfo* chorus = timeline.getTrackMutable(chorusTrackId);
+        requireFadeTest(chorus != nullptr, "fullscreen hold track exists");
+        chorus->videoHoldLastFrame = true;
+
+        VideoEvent fadingBackdrop = makeEvent(
+            chorusTrackId, srcAId, 0.0, 1.0, 2.0, 1.0f, 0);
+        fadingBackdrop.fadeOutPercent = 50.0f;
+        std::vector<VideoEvent> backdropEvents{fadingBackdrop};
+
+        FrameCollector collector;
+        const AVRational fps = {30, 1};
+        auto beforeEnd = collector.collectRequests(
+            12, timeline, 48000, fps, backdropEvents);
+        bool sawActiveBackdrop = false;
+        for (const auto& r : beforeEnd)
+            if (r.trackId == chorusTrackId) sawActiveBackdrop = true;
+        requireFadeTest(sawActiveBackdrop, "fading backdrop is active before event end");
+
+        // Frame 13 is beyond beat 1.0. Hold must not resurrect the faded clip.
+        auto afterEnd = collector.collectRequests(
+            13, timeline, 48000, fps, backdropEvents);
+        for (const auto& r : afterEnd)
+            requireFadeTest(r.trackId != chorusTrackId,
+                            "fade-out suppresses fullscreen hold after event end");
+
+        chorus->videoHoldLastFrame = false;
+        std::fprintf(stderr, "[TEST:FrameCollector] Test 1g: PASSED\n");
+    }
+
+    // ── Test 1h: per-track hold-last-frame THRESHOLD (beats) ──────────────────
     // A hold-enabled track may re-serve its held frame for at most
     // videoHoldLastFrameThresholdBeats after the producing clip ends; past that
     // the cell must behave exactly like a gap. Unlimited (< 0) must be
-    // identical to the pre-threshold behavior.
+    // bit-identical to the pre-threshold behavior.
     //
     // Exercised through collectRequests — the ONE path preview, offline export
     // and snapshot transitions all share — so passing here means all three cut
     // at the same musical position.
     {
         std::fprintf(stderr, "\n[TEST:FrameCollector] --- Test 1h: hold threshold ---\n");
-
-        // Release-safe check: this suite builds with NDEBUG, so a bare assert()
-        // compiles away and would silently pass.
-        auto requireHold = [](bool condition, const char* message) {
-            if (condition) return;
-            std::fprintf(stderr, "[TEST:FrameCollector] Hold-threshold assertion failed: %s\n", message);
-            std::abort();
-        };
-
         TrackInfo* chorus = timeline.getTrackMutable(chorusTrackId);
-        requireHold(chorus != nullptr, "hold-threshold track exists");
+        requireFadeTest(chorus != nullptr, "hold-threshold track exists");
         chorus->videoHoldLastFrame = true;
 
-        // Clip spans beats [0, 1). This timeline is 140bpm and the test renders
-        // at 30fps, so one beat is 90/7 frames: beat(frame) = frame * 7/90. The
-        // frame numbers below come off that mapping (no integer frame lands
-        // exactly on beat 1.0).
+        // Clip spans beats [0, 1). No fade, so nothing suppresses the hold.
+        // This timeline is 140bpm and the test renders at 30fps, so one beat is
+        // 90/7 frames: beat(frame) = frame * 7/90. The frame numbers below are
+        // chosen off that mapping (no integer frame lands exactly on beat 1.0).
         //   frame  7 -> beat 0.544 (in clip)   frame 25 -> beat 1.944 (+0.944)
         //   frame 13 -> beat 1.011 (+0.011)    frame 26 -> beat 2.022 (+1.022)
         //   frame 24 -> beat 1.867 (+0.867)    frame 45 -> beat 3.500 (+2.500)
-        std::vector<VideoEvent> holdEv{
+        std::vector<VideoEvent> ev{
             makeEvent(chorusTrackId, srcAId, 0.0, 1.0, 2.0, 1.0f, 0)};
-        const AVRational holdFps = {30, 1};
+        const AVRational fps = {30, 1};
 
         auto servesHold = [&](FrameCollector& c, int64_t frame) {
-            auto reqs = c.collectRequests(frame, timeline, 48000, holdFps, holdEv);
+            auto reqs = c.collectRequests(frame, timeline, 48000, fps, ev);
             for (const auto& r : reqs) if (r.trackId == chorusTrackId) return true;
             return false;
         };
@@ -279,29 +382,29 @@ int main()
             FrameCollector c;
             chorus->videoHoldLastFrameThresholdBeats =
                 TrackInfo::kHoldLastFrameThresholdUnlimited;
-            requireHold(servesHold(c, 7),  "unlimited: clip active mid-clip");
-            requireHold(servesHold(c, 13), "unlimited: holds just past clip end");
-            requireHold(servesHold(c, 45), "unlimited: still holds at +2.5 beats");
+            requireFadeTest(servesHold(c, 7),  "unlimited: clip active mid-clip");
+            requireFadeTest(servesHold(c, 13), "unlimited: holds just past clip end");
+            requireFadeTest(servesHold(c, 45), "unlimited: still holds at +2.5 beats");
         }
 
         // (b) Finite 1-beat threshold: holds up to +1 beat, cuts after.
         {
             FrameCollector c;
             chorus->videoHoldLastFrameThresholdBeats = 1.0;
-            requireHold(servesHold(c, 7),  "threshold=1: clip active mid-clip");
-            requireHold(servesHold(c, 13), "threshold=1: holds at +0.011 beats");
-            requireHold(servesHold(c, 24), "threshold=1: holds at +0.867 beats");
-            requireHold(servesHold(c, 25), "threshold=1: holds at +0.944 beats");
-            requireHold(!servesHold(c, 26), "threshold=1: CUT at +1.022 beats");
-            requireHold(!servesHold(c, 45), "threshold=1: still cut at +2.5 beats");
+            requireFadeTest(servesHold(c, 7),  "threshold=1: clip active mid-clip");
+            requireFadeTest(servesHold(c, 13), "threshold=1: holds at +0.011 beats");
+            requireFadeTest(servesHold(c, 24), "threshold=1: holds at +0.867 beats");
+            requireFadeTest(servesHold(c, 25), "threshold=1: holds at +0.944 beats");
+            requireFadeTest(!servesHold(c, 26), "threshold=1: CUT at +1.022 beats");
+            requireFadeTest(!servesHold(c, 45), "threshold=1: still cut at +2.5 beats");
         }
 
         // (c) Zero threshold: any elapsed time past the clip end is a gap.
         {
             FrameCollector c;
             chorus->videoHoldLastFrameThresholdBeats = 0.0;
-            requireHold(servesHold(c, 7),   "threshold=0: clip active mid-clip");
-            requireHold(!servesHold(c, 13), "threshold=0: cuts immediately past clip end");
+            requireFadeTest(servesHold(c, 7),   "threshold=0: clip active mid-clip");
+            requireFadeTest(!servesHold(c, 13), "threshold=0: cuts immediately past clip end");
         }
 
         // (d) A next clip arriving before the threshold expires fills the gap
@@ -313,13 +416,13 @@ int main()
                 makeEvent(chorusTrackId, srcAId, 0.0, 1.0, 2.0, 1.0f, 0),
                 makeEvent(chorusTrackId, srcAId, 1.5, 2.0, 2.0, 1.0f, 1)};
             auto serves2 = [&](int64_t frame) {
-                auto reqs = c.collectRequests(frame, timeline, 48000, holdFps, two);
+                auto reqs = c.collectRequests(frame, timeline, 48000, fps, two);
                 for (const auto& r : reqs) if (r.trackId == chorusTrackId) return true;
                 return false;
             };
-            requireHold(serves2(7),  "gap-filled: clip A active");
-            requireHold(serves2(15), "gap-filled: hold covers the 0.5-beat gap");
-            requireHold(serves2(30), "gap-filled: clip B active");
+            requireFadeTest(serves2(7),  "gap-filled: clip A active");
+            requireFadeTest(serves2(15), "gap-filled: hold covers the 0.5-beat gap");
+            requireFadeTest(serves2(30), "gap-filled: clip B active");
         }
 
         // (e) Threshold must be inert while hold is OFF — the untouched path.
@@ -327,8 +430,8 @@ int main()
             FrameCollector c;
             chorus->videoHoldLastFrame = false;
             chorus->videoHoldLastFrameThresholdBeats = 8.0;
-            requireHold(servesHold(c, 7),   "hold off: clip active mid-clip");
-            requireHold(!servesHold(c, 13), "hold off: gap at clip end regardless of threshold");
+            requireFadeTest(servesHold(c, 7),   "hold off: clip active mid-clip");
+            requireFadeTest(!servesHold(c, 13), "hold off: gap at clip end regardless of threshold");
         }
 
         chorus->videoHoldLastFrame = false;

@@ -4,43 +4,48 @@
   "pluginId": "overdone",
   "name": "Default Overdone Layout",
   "panel": {
-    "preferredSize": { "width": 540, "height": 408 }
+    "preferredSize": { "width": 540, "height": 482 }
   },
   "root": {
     "id": "root",
     "type": "panel",
+    "style": { "gapPx": 0 },
     "children": [
       {
-        "id": "viz-row",
+        "id": "top-row",
         "type": "row",
-        "style": { "paddingPx": [12, 12, 8, 12] },
+        "style": { "paddingPx": [14, 12, 6, 12], "gapPx": 20, "align": "start", "justify": "center" },
+        "children": [
+          { "id": "k-depth",  "type": "knob", "props": { "param": "depth",      "label": "DEPTH",  "size": 56, "format": "pct0",       "appearance": { "preset": "mixer-ring", "sizePreset": "inherit" } } },
+          { "id": "k-time",   "type": "knob", "props": { "param": "time",       "label": "TIME",   "size": 56, "format": "pct0",       "appearance": { "preset": "mixer-ring", "sizePreset": "inherit" } } },
+          { "id": "k-input",  "type": "knob", "props": { "param": "inputGain",  "label": "INPUT",  "size": 56, "format": "dB1_signed", "appearance": { "preset": "mixer-ring", "sizePreset": "inherit" } } },
+          { "id": "k-output", "type": "knob", "props": { "param": "outputGain", "label": "OUTPUT", "size": 56, "format": "dB1_signed", "appearance": { "preset": "mixer-ring", "sizePreset": "inherit" } } }
+        ]
+      },
+      {
+        "id": "bands-row",
+        "type": "row",
+        "style": { "paddingPx": [6, 12, 6, 12] },
         "children": [
           {
-            "id": "overdone-viz",
-            "type": "visualizer",
+            "id": "band-stack",
+            "type": "overdoneBandStack",
             "style": { "growsToFill": true },
-            "props": {
-              "source": "overdone.multiband",
-              "preset": "overdoneMultiband",
-              "heightPx": 214
-            }
+            "props": { "heightPx": 168 }
           }
         ]
       },
       {
-        "id": "body",
+        "id": "xover-row",
         "type": "row",
-        "style": { "paddingPx": [12, 10, 10, 10], "gapPx": 0, "align": "start", "justify": "center" },
+        "style": { "paddingPx": [6, 12, 12, 12] },
         "children": [
-          { "id": "s-depth",      "type": "compressorSlider", "style": { "widthPx": 58 }, "props": { "param": "depth",      "label": "DEPTH",    "format": "pct0" } },
-          { "id": "s-time",       "type": "compressorSlider", "style": { "widthPx": 58 }, "props": { "param": "time",       "label": "TIME",     "format": "pct0" } },
-          { "id": "divider-time-gain", "type": "spacer", "style": { "widthPx": 18, "heightPx": 122 } },
-          { "id": "s-gain-low",   "type": "compressorSlider", "style": { "widthPx": 58 }, "props": { "param": "gain_low",   "label": "LOW",      "format": "dB1_signed" } },
-          { "id": "s-gain-mid",   "type": "compressorSlider", "style": { "widthPx": 58 }, "props": { "param": "gain_mid",   "label": "MID",      "format": "dB1_signed" } },
-          { "id": "s-gain-high",  "type": "compressorSlider", "style": { "widthPx": 58 }, "props": { "param": "gain_high",  "label": "HIGH",     "format": "dB1_signed" } },
-          { "id": "divider-gain-xover", "type": "spacer", "style": { "widthPx": 18, "heightPx": 122 } },
-          { "id": "s-xover-low",  "type": "compressorSlider", "style": { "widthPx": 64 }, "props": { "param": "xover_low",  "label": "LO XOVER", "format": "hz_smart" } },
-          { "id": "s-xover-high", "type": "compressorSlider", "style": { "widthPx": 64 }, "props": { "param": "xover_high", "label": "HI XOVER", "format": "hz_smart" } }
+          {
+            "id": "xover-display",
+            "type": "overdoneCrossovers",
+            "style": { "growsToFill": true },
+            "props": { "heightPx": 132 }
+          }
         ]
       }
     ]

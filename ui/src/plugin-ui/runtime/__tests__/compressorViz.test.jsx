@@ -11,6 +11,8 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import compressorLayout from '../../layouts/compressor.json'
+import { COMPRESSOR_MANIFEST } from '../../manifests/compressor.js'
+import { validate } from '../../schema/validate.js'
 import {
   COMPRESSOR_DISPLAY,
   COMPRESSOR_PRESETS,
@@ -457,21 +459,51 @@ describe('Compressor preset registry', () => {
 // ── Layout JSON ─────────────────────────────────────────────────────────────
 
 describe('Compressor layout', () => {
-  it('parses and references known visualizer preset', () => {
-    expect(compressorLayout?.pluginId).toBe('compressor')
-    const root = compressorLayout?.root
-    expect(root?.type).toBe('panel')
+  function collectNodes(root) {
+    const out = []
     const queue = [root]
-    let viz = null
     while (queue.length) {
       const node = queue.shift()
       if (!node) continue
-      if (node.type === 'visualizer') { viz = node; break }
+      out.push(node)
       if (Array.isArray(node.children)) queue.push(...node.children)
     }
-    expect(viz).toBeTruthy()
-    expect(viz.props?.source).toBe('compressor.combined')
-    const preset = viz.props?.preset
-    expect(typeof COMPRESSOR_PRESETS[preset]).toBe('function')
+    return out
+  }
+
+  it('validates cleanly against the Compressor manifest', () => {
+    const result = validate(JSON.parse(JSON.stringify(compressorLayout)), COMPRESSOR_MANIFEST)
+    expect(result.ok).toBe(true)
+    expect(result.errors).toEqual([])
+    expect(collectNodes(result.doc.root).filter(n => n._invalid)).toEqual([])
+  })
+
+  it('drives the display from a compressorCurve bound to threshold/ratio/knee', () => {
+    expect(compressorLayout?.pluginId).toBe('compressor')
+    expect(compressorLayout?.root?.type).toBe('panel')
+
+    const curve = collectNodes(compressorLayout.root).find(n => n.type === 'compressorCurve')
+    expect(curve).toBeTruthy()
+    expect(curve.props?.thresholdParam).toBe('threshold')
+    expect(curve.props?.ratioParam).toBe('ratio')
+    expect(curve.props?.kneeParam).toBe('knee')
+  })
+
+  it('renames Makeup to GAIN in the UI without rebinding the parameter', () => {
+    const gain = collectNodes(compressorLayout.root).find(n => n.props?.label === 'GAIN')
+    expect(gain).toBeTruthy()
+    expect(gain.props.param).toBe('makeup')
+  })
+
+  it('drops the gain-reduction meter, the decal and the Detect caption', () => {
+    const nodes = collectNodes(compressorLayout.root)
+    expect(nodes.some(n => n.type === 'meter')).toBe(false)
+    expect(nodes.some(n => n.type === 'decal')).toBe(false)
+    expect(nodes.some(n => n.type === 'label')).toBe(false)
+  })
+
+  it('keeps the compressor painter registry intact for saved user layouts', () => {
+    expect(typeof COMPRESSOR_PRESETS.compressorCombined).toBe('function')
+    expect(typeof COMPRESSOR_PRESETS.compressorCombinedV2).toBe('function')
   })
 })

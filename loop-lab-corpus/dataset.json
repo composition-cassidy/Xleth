@@ -1,0 +1,470 @@
+[
+  {
+    "sample_id": "hard_tuned_vocal_0001",
+    "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0001.wav",
+    "class": "Hard-tuned vocal",
+    "instrument_name": null,
+    "behavior_family": "stable_periodic",
+    "source": "",
+    "root_note": 72,
+    "sample_rate": 44100,
+    "channels": 1,
+    "num_samples": 36320,
+    "gold_loop": {
+      "start": 11920,
+      "end": 21574,
+      "xfade": 1884
+    },
+    "measured_features": null
+  },
+  {
+    "sample_id": "hard_tuned_vocal_0002",
+    "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0002.wav",
+    "class": "Hard-tuned vocal",
+    "instrument_name": null,
+    "behavior_family": "stable_periodic",
+    "source": "",
+    "root_note": 62,
+    "sample_rate": 44100,
+    "channels": 1,
+    "num_samples": 52736,
+    "gold_loop": {
+      "start": 21124,
+      "end": 34378,
+      "xfade": 6384
+    },
+    "measured_features": null
+  },
+  {
+    "sample_id": "hard_tuned_vocal_0003",
+    "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0003.wav",
+    "class": "Hard-tuned vocal",
+    "instrument_name": null,
+    "behavior_family": "stable_periodic",
+    "source": "",
+    "root_note": 48,
+    "sample_rate": 44100,
+    "channels": 1,
+    "num_samples": 100352,
+    "gold_loop": {
+      "start": 25088,
+      "end": 58815,
+      "xfade": 16863
+    },
+    "measured_features": null
+  },
+  {
+    "sample_id": "hard_tuned_vocal_0004",
+    "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0004.wav",
+    "class": "Hard-tuned vocal",
+    "instrument_name": null,
+    "behavior_family": "stable_periodic",
+    "source": "",
+    "root_note": 60,
+    "sample_rate": 44100,
+    "channels": 1,
+    "num_samples": 18944,
+    "gold_loop": {
+      "start": 4722,
+      "end": 12200,
+      "xfade": 3419
+    },
+    "measured_features": null
+  },
+  {
+    "sample_id": "hard_tuned_vocal_0005",
+    "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0005.wav",
+    "class": "Hard-tuned vocal",
+    "instrument_name": null,
+    "behavior_family": "stable_periodic",
+    "source": "",
+    "root_note": 60,
+    "sample_rate": 44100,
+    "channels": 1,
+    "num_samples": 46080,
+    "gold_loop": {
+      "start": 10212,
+      "end": 20338,
+      "xfade": 5063
+    },
+    "measured_features": null
+  },
+  {
+    "sample_id": "hard_tuned_vocal_0006",
+    "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0006.wav",
+    "class": "Hard-tuned vocal",
+    "instrument_name": null,
+    "behavior_family": "stable_periodic",
+    "source": "",
+    "root_note": 64,
+    "sample_rate": 44100,
+    "channels": 1,
+    "num_samples": 51200,
+    "gold_loop": {
+      "start": 6025,
+      "end": 31490,
+      "xfade": 12732
+    },
+    "measured_features": null
+  },
+  {
+    "sample_id": "hard_tuned_vocal_0007",
+    "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0007.wav",
+    "class": "Hard-tuned vocal",
+    "instrument_name": null,
+    "behavior_family": "stable_periodic",
+    "source": "",
+    "root_note": 58,
+    "sample_rate": 44100,
+    "channels": 1,
+    "num_samples": 34304,
+    "gold_loop": {
+      "start": 8576,
+      "end": 25728,
+      "xfade": 7296
+    },
+    "measured_features": null
+  },
+  {
+    "sample_id": "hard_tuned_vocal_0008",
+    "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0008.wav",
+    "class": "Hard-tuned vocal",
+    "instrument_name": null,
+    "behavior_family": "stable_periodic",
+    "source": "",
+    "root_note": 71,
+    "sample_rate": 44100,
+    "channels": 1,
+    "num_samples": 44544,
+    "gold_loop": {
+      "start": 12802,
+      "end": 24231,
+      "xfade": 2048
+    },
+    "measured_features": null
+  },
+  {
+    "sample_id": "hard_tuned_vocal_0009",
+    "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0009.wav",
+    "class": "Hard-tuned vocal",
+    "instrument_name": null,
+    "behavior_family": "stable_periodic",
+    "source": "",
+    "root_note": 72,
+    "sample_rate": 44100,
+    "channels": 1,
+    "num_samples": 47104,
+    "gold_loop": {
+      "start": 15703,
+      "end": 22705,
+      "xfade": 2048
+    },
+    "measured_features": null
+  },
+  {
+    "sample_id": "hard_tuned_vocal_0010",
+    "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0010.wav",
+    "class": "Hard-tuned vocal",
+    "instrument_name": null,
+    "behavior_family": "stable_periodic",
+    "source": "",
+    "root_note": 63,
+    "sample_rate": 44100,
+    "channels": 1,
+    "num_samples": 47616,
+    "gold_loop": {
+      "start": 11904,
+      "end": 35712,
+      "xfade": 11904
+    },
+    "measured_features": null
+  },
+  {
+    "sample_id": "hard_tuned_vocal_0011",
+    "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0011.wav",
+    "class": "Hard-tuned vocal",
+    "instrument_name": null,
+    "behavior_family": "stable_periodic",
+    "source": "",
+    "root_note": 62,
+    "sample_rate": 44100,
+    "channels": 1,
+    "num_samples": 17408,
+    "gold_loop": {
+      "start": 8119,
+      "end": 12195,
+      "xfade": 784
+    },
+    "measured_features": null
+  },
+  {
+    "sample_id": "hard_tuned_vocal_0012",
+    "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0012.wav",
+    "class": "Hard-tuned vocal",
+    "instrument_name": null,
+    "behavior_family": "stable_periodic",
+    "source": "",
+    "root_note": 55,
+    "sample_rate": 44100,
+    "channels": 1,
+    "num_samples": 54784,
+    "gold_loop": {
+      "start": 10147,
+      "end": 14208,
+      "xfade": 244
+    },
+    "measured_features": null
+  },
+  {
+    "sample_id": "hard_tuned_vocal_0013",
+    "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0013.wav",
+    "class": "Hard-tuned vocal",
+    "instrument_name": null,
+    "behavior_family": "stable_periodic",
+    "source": "",
+    "root_note": 48,
+    "sample_rate": 44100,
+    "channels": 1,
+    "num_samples": 58880,
+    "gold_loop": {
+      "start": 10647,
+      "end": 27536,
+      "xfade": 3766
+    },
+    "measured_features": null
+  },
+  {
+    "sample_id": "hard_tuned_vocal_0014",
+    "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0014.wav",
+    "class": "Hard-tuned vocal",
+    "instrument_name": null,
+    "behavior_family": "stable_periodic",
+    "source": "",
+    "root_note": 57,
+    "sample_rate": 44100,
+    "channels": 1,
+    "num_samples": 35328,
+    "gold_loop": {
+      "start": 8832,
+      "end": 32440,
+      "xfade": 8832
+    },
+    "measured_features": null
+  },
+  {
+    "sample_id": "hard_tuned_vocal_0015",
+    "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0015.wav",
+    "class": "Hard-tuned vocal",
+    "instrument_name": null,
+    "behavior_family": "stable_periodic",
+    "source": "",
+    "root_note": 62,
+    "sample_rate": 44100,
+    "channels": 1,
+    "num_samples": 21504,
+    "gold_loop": {
+      "start": 8783,
+      "end": 15970,
+      "xfade": 1644
+    },
+    "measured_features": null
+  },
+  {
+    "sample_id": "hard_tuned_vocal_0016",
+    "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0016.wav",
+    "class": "Hard-tuned vocal",
+    "instrument_name": null,
+    "behavior_family": "stable_periodic",
+    "source": "",
+    "root_note": 52,
+    "sample_rate": 44100,
+    "channels": 1,
+    "num_samples": 59904,
+    "gold_loop": {
+      "start": 14976,
+      "end": 40863,
+      "xfade": 2048
+    },
+    "measured_features": null
+  },
+  {
+    "sample_id": "hard_tuned_vocal_0017",
+    "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0017.wav",
+    "class": "Hard-tuned vocal",
+    "instrument_name": null,
+    "behavior_family": "stable_periodic",
+    "source": "",
+    "root_note": 57,
+    "sample_rate": 44100,
+    "channels": 1,
+    "num_samples": 9702,
+    "gold_loop": {
+      "start": 3205,
+      "end": 5612,
+      "xfade": 1202
+    },
+    "measured_features": null
+  },
+  {
+    "sample_id": "hard_tuned_vocal_0018",
+    "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0018.wav",
+    "class": "Hard-tuned vocal",
+    "instrument_name": null,
+    "behavior_family": "stable_periodic",
+    "source": "",
+    "root_note": 69,
+    "sample_rate": 44100,
+    "channels": 1,
+    "num_samples": 80896,
+    "gold_loop": {
+      "start": 25592,
+      "end": 64975,
+      "xfade": 9695
+    },
+    "measured_features": null
+  },
+  {
+    "sample_id": "hard_tuned_vocal_0019",
+    "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0019.wav",
+    "class": "Hard-tuned vocal",
+    "instrument_name": null,
+    "behavior_family": "stable_periodic",
+    "source": "",
+    "root_note": 62,
+    "sample_rate": 44100,
+    "channels": 1,
+    "num_samples": 30720,
+    "gold_loop": {
+      "start": 3688,
+      "end": 5045,
+      "xfade": 605
+    },
+    "measured_features": null
+  },
+  {
+    "sample_id": "hard_tuned_vocal_0020",
+    "file": "corpus/Hard-tuned vocal/hard_tuned_vocal_0020.wav",
+    "class": "Hard-tuned vocal",
+    "instrument_name": null,
+    "behavior_family": "stable_periodic",
+    "source": "",
+    "root_note": 67,
+    "sample_rate": 48000,
+    "channels": 2,
+    "num_samples": 39032,
+    "gold_loop": {
+      "start": 15942,
+      "end": 28165,
+      "xfade": 6112
+    },
+    "measured_features": null
+  },
+  {
+    "sample_id": "natural_vocal_0022",
+    "file": "corpus/Natural vocal/natural_vocal_0022.wav",
+    "class": "Natural vocal",
+    "instrument_name": null,
+    "behavior_family": "stable_periodic",
+    "source": "",
+    "root_note": 72,
+    "sample_rate": 44100,
+    "channels": 1,
+    "num_samples": 45568,
+    "gold_loop": {
+      "start": 20858,
+      "end": 31430,
+      "xfade": 2441
+    },
+    "measured_features": null
+  },
+  {
+    "sample_id": "natural_vocal_0023",
+    "file": "corpus/Natural vocal/natural_vocal_0023.wav",
+    "class": "Natural vocal",
+    "instrument_name": null,
+    "behavior_family": "stable_periodic",
+    "source": "",
+    "root_note": 67,
+    "sample_rate": 44100,
+    "channels": 1,
+    "num_samples": 54784,
+    "gold_loop": {
+      "start": 30090,
+      "end": 44435,
+      "xfade": 7172
+    },
+    "measured_features": null
+  },
+  {
+    "sample_id": "natural_vocal_0024",
+    "file": "corpus/Natural vocal/natural_vocal_0024.wav",
+    "class": "Natural vocal",
+    "instrument_name": null,
+    "behavior_family": "stable_periodic",
+    "source": "",
+    "root_note": 64,
+    "sample_rate": 44100,
+    "channels": 1,
+    "num_samples": 54784,
+    "gold_loop": {
+      "start": 26990,
+      "end": 46021,
+      "xfade": 9515
+    },
+    "measured_features": null
+  },
+  {
+    "sample_id": "natural_vocal_0025",
+    "file": "corpus/Natural vocal/natural_vocal_0025.wav",
+    "class": "Natural vocal",
+    "instrument_name": null,
+    "behavior_family": "stable_periodic",
+    "source": "",
+    "root_note": 61,
+    "sample_rate": 44100,
+    "channels": 1,
+    "num_samples": 54784,
+    "gold_loop": {
+      "start": 13696,
+      "end": 41088,
+      "xfade": 13696
+    },
+    "measured_features": null
+  },
+  {
+    "sample_id": "natural_vocal_0026",
+    "file": "corpus/Natural vocal/natural_vocal_0026.wav",
+    "class": "Natural vocal",
+    "instrument_name": null,
+    "behavior_family": "stable_periodic",
+    "source": "",
+    "root_note": 60,
+    "sample_rate": 44100,
+    "channels": 1,
+    "num_samples": 30208,
+    "gold_loop": {
+      "start": 10918,
+      "end": 15459,
+      "xfade": 0
+    },
+    "measured_features": null
+  },
+  {
+    "sample_id": "natural_vocal_0027",
+    "file": "corpus/Natural vocal/natural_vocal_0027.wav",
+    "class": "Natural vocal",
+    "instrument_name": null,
+    "behavior_family": "stable_periodic",
+    "source": "",
+    "root_note": 52,
+    "sample_rate": 44100,
+    "channels": 1,
+    "num_samples": 30208,
+    "gold_loop": {
+      "start": 9048,
+      "end": 13321,
+      "xfade": 0
+    },
+    "measured_features": null
+  }
+]

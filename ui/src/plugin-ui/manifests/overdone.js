@@ -18,9 +18,13 @@ export const OVERDONE_MANIFEST = {
   //   gain_low   : -12..12 dB (default 0)               smoothed
   //   gain_mid   : -12..12 dB (default 0)               smoothed
   //   gain_high  : -12..12 dB (default 0)               smoothed
+//   inputGain  : -24..24 dB (default 0, step 0.1)     smoothed — UI-first, DSP wiring pending
+//   outputGain : -24..24 dB (default 0, step 0.1)     smoothed — UI-first, DSP wiring pending
   params: {
     depth:      { kind: 'continuous', min: 0,    max: 100,  defaultValue: 70,   format: 'pct0',     label: 'Depth' },
     time:       { kind: 'continuous', min: 0,    max: 100,  defaultValue: 50,   format: 'pct0',     label: 'Time' },
+    inputGain:  { kind: 'continuous', min: -24,  max: 24,   defaultValue: 0,    format: 'dB1_signed', label: 'Input' },
+    outputGain: { kind: 'continuous', min: -24,  max: 24,   defaultValue: 0,    format: 'dB1_signed', label: 'Output' },
     xover_low:  { kind: 'continuous', min: 40,   max: 400,  defaultValue: 88,   format: 'hz_smart', label: 'Lo Xover' },
     xover_high: { kind: 'continuous', min: 1000, max: 8000, defaultValue: 2500, format: 'hz_smart', label: 'Hi Xover' },
     gain_low:   { kind: 'continuous', min: -12,  max: 12,   defaultValue: 0,    format: 'dB1_signed', label: 'Low Gain' },

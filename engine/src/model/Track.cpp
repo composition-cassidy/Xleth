@@ -103,6 +103,8 @@ std::string visualEffectTypeToString(VisualEffect::Type t) {
         case VisualEffect::Type::TVSimulator:        return "TVSimulator";
         case VisualEffect::Type::ZoomPanRotation:    return "ZoomPanRotation";
         case VisualEffect::Type::ChromaKey:          return "ChromaKey";
+        case VisualEffect::Type::Outline:            return "Outline";
+        case VisualEffect::Type::DropShadow:         return "DropShadow";
     }
     return "Desaturation";
 }
@@ -113,6 +115,8 @@ VisualEffect::Type stringToVisualEffectType(const std::string& s) {
     if (s == "TVSimulator")        return VisualEffect::Type::TVSimulator;
     if (s == "ZoomPanRotation")    return VisualEffect::Type::ZoomPanRotation;
     if (s == "ChromaKey")          return VisualEffect::Type::ChromaKey;
+    if (s == "Outline")            return VisualEffect::Type::Outline;
+    if (s == "DropShadow")         return VisualEffect::Type::DropShadow;
     return VisualEffect::Type::Desaturation;
 }
 
@@ -168,6 +172,27 @@ nlohmann::json visualEffectParamsToNamedJson(VisualEffect::Type type,
             j["spill"]      = p[5];
             j["choke"]      = p[6];
             j["edgeBlur"]   = p[7];
+            break;
+        case VisualEffect::Type::Outline:
+            j["colorR"]         = p[0];
+            j["colorG"]         = p[1];
+            j["colorB"]         = p[2];
+            j["thickness"]      = p[3];
+            j["softness"]       = p[4];
+            j["opacity"]        = p[5];
+            j["alphaThreshold"] = p[6];
+            break;
+        case VisualEffect::Type::DropShadow:
+            j["colorR"]         = p[0];
+            j["colorG"]         = p[1];
+            j["colorB"]         = p[2];
+            j["distance"]       = p[3];
+            j["angle"]          = p[4];
+            j["size"]           = p[5];
+            j["softness"]       = p[6];
+            j["opacity"]        = p[7];
+            j["blendMode"]      = p[8];
+            j["alphaThreshold"] = p[9];
             break;
     }
     return j;
@@ -234,6 +259,35 @@ void visualEffectParamsFromNamedJson(VisualEffect::Type type,
             p[5] = j.value("spill",     0.50f);
             p[6] = j.value("choke",     0.0f);
             p[7] = j.value("edgeBlur",  0.0f);
+            break;
+        case VisualEffect::Type::Outline:
+            // Defaults mirror Timeline::addVisualEffect. A project written by a
+            // build that predates this effect cannot contain one, but a truncated
+            // or hand-edited params object can, and an all-zero fallback would
+            // load as thickness 0 — a stroke that silently does nothing.
+            p[0] = j.value("colorR",         1.0f);
+            p[1] = j.value("colorG",         1.0f);
+            p[2] = j.value("colorB",         1.0f);
+            p[3] = j.value("thickness",      3.0f);
+            p[4] = j.value("softness",       0.0f);
+            p[5] = j.value("opacity",        1.0f);
+            p[6] = j.value("alphaThreshold", 0.95f);
+            break;
+        case VisualEffect::Type::DropShadow:
+            // Same reasoning as Outline. alphaThreshold in particular must not
+            // fall back to 0: at 0 every pixel counts as foreground, so the
+            // shadow would be cast by the whole cell rectangle rather than by
+            // the keyed subject.
+            p[0] = j.value("colorR",         0.0f);
+            p[1] = j.value("colorG",         0.0f);
+            p[2] = j.value("colorB",         0.0f);
+            p[3] = j.value("distance",       8.0f);
+            p[4] = j.value("angle",          45.0f);
+            p[5] = j.value("size",           0.0f);
+            p[6] = j.value("softness",       0.35f);
+            p[7] = j.value("opacity",        0.60f);
+            p[8] = j.value("blendMode",      1.0f);
+            p[9] = j.value("alphaThreshold", 0.95f);
             break;
     }
 }

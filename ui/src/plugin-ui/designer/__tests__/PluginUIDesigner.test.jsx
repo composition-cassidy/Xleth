@@ -101,17 +101,23 @@ describe('PluginUIDesigner — Phase A–C skeleton', () => {
     const expected = [
       'root',
       'body',
-      'knob-grid',
+      'shape-col',
+      'shape-knobs',
       'k-threshold',
       'k-ratio',
+      'k-knee',
+      'time-col',
       'k-attack',
       'k-release',
-      'gr-meter',
+      'level-rails',
+      's-mix',
+      's-gain',
+      's-lookahead',
       'detect-row',
       'btn-peak',
       'btn-rms',
       'viz-row',
-      'compressor-viz',
+      'compressor-curve',
     ]
     for (const id of expected) {
       expect(html).toContain(`#${id}`)

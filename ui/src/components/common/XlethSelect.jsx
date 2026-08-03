@@ -219,22 +219,29 @@ export default function XlethSelect({
               || Object.is(option.value, value)
               || String(option.value) === String(value)
             const highlighted = index === highlightedIndex
+            const startsGroup = option.group && option.group !== options[index - 1]?.group
             return (
-              <button
-                key={`${String(option.value)}-${option.label}`}
-                ref={(node) => { optionRefs.current[index] = node }}
-                type="button"
-                role="option"
-                aria-selected={selected}
-                disabled={option.disabled}
-                data-value={String(option.value)}
-                className={`xleth-select-option${selected ? ' xleth-select-option--selected' : ''}${highlighted ? ' xleth-select-option--highlighted' : ''}`}
-                onMouseEnter={() => setHighlightedIndex(index)}
-                onClick={() => selectIndex(index)}
-              >
-                <span className="xleth-select-option-label">{option.label}</span>
-                {selected && <Check size={14} aria-hidden="true" />}
-              </button>
+              <React.Fragment key={`${String(option.value)}-${option.label}`}>
+                {startsGroup && (
+                  <div className="xleth-select-group-label" role="presentation">
+                    {option.group}
+                  </div>
+                )}
+                <button
+                  ref={(node) => { optionRefs.current[index] = node }}
+                  type="button"
+                  role="option"
+                  aria-selected={selected}
+                  disabled={option.disabled}
+                  data-value={String(option.value)}
+                  className={`xleth-select-option${selected ? ' xleth-select-option--selected' : ''}${highlighted ? ' xleth-select-option--highlighted' : ''}`}
+                  onMouseEnter={() => setHighlightedIndex(index)}
+                  onClick={() => selectIndex(index)}
+                >
+                  <span className="xleth-select-option-label">{option.label}</span>
+                  {selected && <Check size={14} aria-hidden="true" />}
+                </button>
+              </React.Fragment>
             )
           })}
         </div>,

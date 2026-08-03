@@ -582,4 +582,61 @@ private:
     uint32_t flags_           {0};
 };
 
+// ── UniFlange accumulator (audio-thread helper) ─────────────────────────────
+// Tracks per-bucket SIGNED linear min/max excursion for the dry (pre-effect)
+// and wet (post cross-mix, pre dry/wet blend) taps. Unlike the other
+// accumulators, this one does NOT convert to dB and does NOT track abs peak
+// — it keeps the true signed min and max so the UI can draw a real waveform
+// shape (above and below center) rather than a rectified level trace.
+// Composes with DynamicsVizCollector<UniFlangeBucket>.
+//
+// Usage per sample (audio thread):
+//     accum.observe(dry, wet);
+//     accum.advance(currentSampleClock, collector);
+class UniFlangeBucketAccumulator
+{
+public:
+    void reset() noexcept { *this = UniFlangeBucketAccumulator{}; }
+
+    inline void observe(float dry, float wet) noexcept
+    {
+        if (dry < dryMin_) dryMin_ = dry;
+        if (dry > dryMax_) dryMax_ = dry;
+        if (wet < wetMin_) wetMin_ = wet;
+        if (wet > wetMax_) wetMax_ = wet;
+        ++sampleCount_;
+    }
+
+    inline void advance(uint64_t bucketEndSampleClock,
+                        DynamicsVizCollector<UniFlangeBucket>& collector) noexcept
+    {
+        if (sampleCount_ >= collector.bucketSamples())
+        {
+            UniFlangeBucket b{};
+            b.hdr.sampleClock   = bucketEndSampleClock + 1u - sampleCount_;
+            b.hdr.bucketSamples = sampleCount_;
+            b.hdr.flags         = 0u;
+            b.dryMin            = dryMin_;
+            b.dryMax            = dryMax_;
+            b.wetMin            = wetMin_;
+            b.wetMax            = wetMax_;
+
+            (void) collector.push(b);
+
+            dryMin_      = std::numeric_limits<float>::infinity();
+            dryMax_      = -std::numeric_limits<float>::infinity();
+            wetMin_      = std::numeric_limits<float>::infinity();
+            wetMax_      = -std::numeric_limits<float>::infinity();
+            sampleCount_ = 0;
+        }
+    }
+
+private:
+    float    dryMin_      {std::numeric_limits<float>::infinity()};
+    float    dryMax_      {-std::numeric_limits<float>::infinity()};
+    float    wetMin_      {std::numeric_limits<float>::infinity()};
+    float    wetMax_      {-std::numeric_limits<float>::infinity()};
+    uint32_t sampleCount_ {0};
+};
+
 }} // namespace xleth::viz

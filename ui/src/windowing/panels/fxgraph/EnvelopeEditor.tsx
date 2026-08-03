@@ -698,8 +698,13 @@ export function EnvelopeNodeBody({
       {!expanded && <EnvelopeAhdsrGraph data={data} editable={false} />}
       <EnvelopeNodeSummary data={data} parameterCount={parameterCount} />
       {editable && (
+        // FXG.3-l — reuses the shared card template's primary Edit button style
+        // (the same class effect nodes use to open their editor) instead of a
+        // separate green-tinted control, so "Edit" reads as one consistent
+        // action across every node type even though this Edit toggles an inline
+        // AHDSR editor rather than opening an external plugin window.
         <button
-          className="xleth-graph-state-preview__envelope-edit-button"
+          className="xleth-graph-state-preview__node-edit"
           type="button"
           aria-expanded={expanded}
           aria-label={`${expanded ? 'Collapse' : 'Edit'} ${data.label} envelope`}

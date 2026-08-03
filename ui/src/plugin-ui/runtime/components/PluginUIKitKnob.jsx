@@ -36,11 +36,19 @@ export default function PluginUIKitKnob({
   onCommit,
   size = 52,
   dragRange = 150,
+  skew = 1,
   appearance: rawAppearance,
+  accentColor,
 }) {
   const model = buildPluginKnobRenderModel(rawAppearance, size)
   const { appearance, className, style, knobTokens, effectiveSize } = model
   const appearancePreset = rawAppearance != null ? appearance.preset : undefined
+
+  // An explicit accentColor (e.g. a band identity color) wins over the
+  // preset's accent token: drop the token so BaseKnob falls back to `color`.
+  const effectiveTokens = accentColor
+    ? { ...knobTokens, accentCssVar: null }
+    : knobTokens
 
   return (
     <div
@@ -59,6 +67,7 @@ export default function PluginUIKitKnob({
         onCommit={onCommit}
         size={effectiveSize}
         dragRange={dragRange}
+        skew={skew}
         appearancePreset={appearancePreset}
         capStyle={appearance.cap}
         ringStyle={appearance.ring}
@@ -68,7 +77,9 @@ export default function PluginUIKitKnob({
         valueReadout={appearance.valueReadout}
         labelPlacement={appearance.labelPlacement}
         depth={appearance.depth}
-        appearanceTokens={knobTokens}
+        glyph={appearance.glyph === 'rotary-arrow' ? 'rotary-arrow' : null}
+        appearanceTokens={effectiveTokens}
+        color={accentColor || undefined}
       />
     </div>
   )

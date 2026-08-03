@@ -11,6 +11,7 @@
 #include "audio/XlethDistortionEffect.h"
 #include "audio/XlethResonanceSuppressorEffect.h"
 #include "audio/XlethTransientProcEffect.h"
+#include "audio/XlethDelayEffect.h"
 #include "audio/viz/DynamicsVizFrame.h"
 
 #include <juce_audio_basics/juce_audio_basics.h>
@@ -3643,6 +3644,243 @@ static void testResonanceSuppressorVisualization()
           "RS disabled visualization should emit no new frames after drain");
 }
 
+// ─── Delay stereo_mode Tests ────────────────────────────────────────────────
+//
+// stereo_mode (0=Single, 1=Dual, 2=PingPong) selects how the two delay lines
+// relate. These tests drive an impulse through a fully-wet delay and assert
+// WHERE the echoes land per mode, which is the observable contract the UI and
+// existing projects depend on.
+
+namespace delaytest {
+
+constexpr double kSr    = 48000.0;
+constexpr int    kBlock = 512;
+
+// Configures a delay for impulse measurement: fully wet, no modulation, no
+// ducking, filters wide open. Params are set BEFORE prepare so the cascaded
+// delay-time smoother initialises at the right value.
+static void configureDelay(XlethDelayEffect& fx, float stereoMode,
+                           float timeL, float timeR, float widthPct)
+{
+    fx.setParameterValue("stereo_mode",  stereoMode);
+    fx.setParameterValue("time_l",       timeL);
+    fx.setParameterValue("time_r",       timeR);
+    fx.setParameterValue("stereo_width", widthPct);
+    fx.setParameterValue("sync",         0.0f);
+    fx.setParameterValue("mix",          100.0f);
+    fx.setParameterValue("feedback",     60.0f);
+    fx.setParameterValue("mod_depth",    0.0f);
+    fx.setParameterValue("duck_amount",  0.0f);
+    fx.setParameterValue("filter_lo",    20.0f);
+    fx.setParameterValue("filter_hi",    20000.0f);
+}
+
+// Runs `ms` of silence so every smoother (delay time, mix, width, feedback)
+// reaches its target before the impulse is measured.
+static void preRoll(XlethDelayEffect& fx, double ms)
+{
+    juce::AudioBuffer<float> buf(2, kBlock);
+    juce::MidiBuffer midi;
+    const int blocks = static_cast<int>((ms * 0.001 * kSr) / kBlock) + 1;
+    for (int b = 0; b < blocks; ++b)
+    {
+        buf.clear();
+        fx.processBlock(buf, midi);
+    }
+}
+
+// Sends a single-sample impulse on both channels, then captures `ms` of the
+// resulting tail into `outL` / `outR`.
+static void captureImpulseResponse(XlethDelayEffect& fx, double ms,
+                                   std::vector<float>& outL,
+                                   std::vector<float>& outR)
+{
+    const int total = static_cast<int>(ms * 0.001 * kSr);
+    outL.clear(); outR.clear();
+    outL.reserve(static_cast<std::size_t>(total));
+    outR.reserve(static_cast<std::size_t>(total));
+
+    juce::AudioBuffer<float> buf(2, kBlock);
+    juce::MidiBuffer midi;
+    bool impulseSent = false;
+
+    while (static_cast<int>(outL.size()) < total)
+    {
+        buf.clear();
+        if (!impulseSent) { buf.setSample(0, 0, 1.0f); buf.setSample(1, 0, 1.0f); impulseSent = true; }
+        fx.processBlock(buf, midi);
+        for (int s = 0; s < kBlock && static_cast<int>(outL.size()) < total; ++s)
+        {
+            outL.push_back(buf.getSample(0, s));
+            outR.push_back(buf.getSample(1, s));
+        }
+    }
+}
+
+// Peak |x| inside a millisecond window — the echo detector.
+static float peakInWindow(const std::vector<float>& sig, double startMs, double endMs)
+{
+    const int a = std::max(0, static_cast<int>(startMs * 0.001 * kSr));
+    const int b = std::min(static_cast<int>(sig.size()), static_cast<int>(endMs * 0.001 * kSr));
+    float peak = 0.0f;
+    for (int i = a; i < b; ++i) peak = std::max(peak, std::abs(sig[i]));
+    return peak;
+}
+
+// Summed energy inside a millisecond window.
+//
+// Used instead of peak height when comparing the two lanes' LEVELS. The delay
+// time smoother is a one-pole in float: it stops converging once c*(target-x)
+// falls below the ULP of x, which at a 200 ms target parks a lane that started
+// far away (time_r) a few samples off one that started on target (time_l).
+// That is pre-existing engine behaviour; energy over a window is insensitive to
+// it, whereas an interpolated impulse's peak height is not.
+static double energyInWindow(const std::vector<float>& sig, double startMs, double endMs)
+{
+    const int a = std::max(0, static_cast<int>(startMs * 0.001 * kSr));
+    const int b = std::min(static_cast<int>(sig.size()), static_cast<int>(endMs * 0.001 * kSr));
+    double e = 0.0;
+    for (int i = a; i < b; ++i) e += static_cast<double>(sig[i]) * sig[i];
+    return e;
+}
+
+} // namespace delaytest
+
+static void testDelayStereoModeParameter()
+{
+    std::cout << "  [Delay stereo_mode parameter]\n";
+    XlethDelayEffect fx;
+
+    const auto j = nlohmann::json::parse(fx.getParametersAsJSON());
+    CHECK(j.is_array(), "Delay getParametersAsJSON should return an array");
+
+    bool found = false;
+    for (const auto& p : j)
+    {
+        if (p.value("id", std::string()) != "stereo_mode") continue;
+        found = true;
+        CHECK_NEAR(p.value("min", -1.0f),     0.0f, 1e-6, "stereo_mode min should be 0");
+        CHECK_NEAR(p.value("max", -1.0f),     2.0f, 1e-6, "stereo_mode max should be 2");
+        CHECK_NEAR(p.value("default", -1.0f), 1.0f, 1e-6, "stereo_mode default should be 1 (Dual)");
+        CHECK_NEAR(p.value("value", -1.0f),   1.0f, 1e-6, "fresh Delay should read stereo_mode = Dual");
+    }
+    CHECK(found, "stereo_mode should surface through getParametersAsJSON");
+
+    // Round-trip every legal value through the same setter the bridge calls.
+    for (float mode : {0.0f, 2.0f, 1.0f})
+    {
+        CHECK(fx.setParameterValue("stereo_mode", mode),
+              "setParameterValue(stereo_mode) should return true");
+        CHECK_NEAR(fx.getParameterValue("stereo_mode"), mode, 1e-4,
+                   "stereo_mode should round-trip through the param system");
+    }
+
+    // APVTS XML round-trip — the path project save/load uses.
+    fx.setParameterValue("stereo_mode", 2.0f);
+    juce::MemoryBlock state;
+    fx.getStateInformation(state);
+    XlethDelayEffect restored;
+    restored.setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+    CHECK_NEAR(restored.getParameterValue("stereo_mode"), 2.0f, 1e-4,
+               "stereo_mode should survive a getState/setState round-trip");
+}
+
+static void testDelayStereoModeDual()
+{
+    std::cout << "  [Delay stereo_mode: Dual keeps L/R independent]\n";
+    using namespace delaytest;
+
+    XlethDelayEffect fx;
+    // width 0 => no cross-feed, so each lane is purely its own time.
+    configureDelay(fx, 1.0f, 100.0f, 250.0f, 0.0f);
+    fx.prepareToPlay(kSr, kBlock);
+    preRoll(fx, 1200.0);
+
+    std::vector<float> l, r;
+    captureImpulseResponse(fx, 600.0, l, r);
+
+    const float lAt100 = peakInWindow(l,  85.0, 115.0);
+    const float rAt250 = peakInWindow(r, 235.0, 265.0);
+    const float rAt100 = peakInWindow(r,  85.0, 115.0);
+    const float lAt250 = peakInWindow(l, 235.0, 265.0);
+
+    CHECK(lAt100 > 0.3f, "Dual: L echo should land at time_l (100 ms)");
+    CHECK(rAt250 > 0.3f, "Dual: R echo should land at time_r (250 ms)");
+    CHECK(rAt100 < 0.05f, "Dual with width=0: R should be silent at time_l");
+    CHECK(lAt250 < 0.05f, "Dual with width=0: L should be silent at time_r");
+}
+
+static void testDelayStereoModeSingle()
+{
+    std::cout << "  [Delay stereo_mode: Single spreads one time]\n";
+    using namespace delaytest;
+
+    // width 50 % => spread 100 ms total => L = 150 ms, R = 250 ms around t=200.
+    XlethDelayEffect fx;
+    configureDelay(fx, 0.0f, 200.0f, 999.0f, 50.0f);
+    fx.prepareToPlay(kSr, kBlock);
+    preRoll(fx, 1500.0);
+
+    std::vector<float> l, r;
+    captureImpulseResponse(fx, 600.0, l, r);
+
+    CHECK(peakInWindow(l, 135.0, 165.0) > 0.3f,
+          "Single: L echo should sit half a spread EARLY (150 ms)");
+    CHECK(peakInWindow(r, 235.0, 265.0) > 0.3f,
+          "Single: R echo should sit half a spread LATE (250 ms)");
+    CHECK(peakInWindow(l, 985.0, 1015.0) < 0.05f,
+          "Single: time_r must be ignored (no echo at 999 ms)");
+
+    // Zero spread collapses both lanes onto the same instant.
+    XlethDelayEffect flat;
+    configureDelay(flat, 0.0f, 200.0f, 999.0f, 0.0f);
+    flat.prepareToPlay(kSr, kBlock);
+    preRoll(flat, 1500.0);
+
+    std::vector<float> fl, fr;
+    captureImpulseResponse(flat, 600.0, fl, fr);
+    CHECK(peakInWindow(fl, 185.0, 215.0) > 0.3f && peakInWindow(fr, 185.0, 215.0) > 0.3f,
+          "Single at width=0: both lanes should echo at the single time (200 ms)");
+    CHECK(peakInWindow(fl, 130.0, 175.0) < 0.05f && peakInWindow(fr, 225.0, 270.0) < 0.05f,
+          "Single at width=0: the spread should collapse (nothing at 150 / 250 ms)");
+
+    // Level match, measured as window energy — see energyInWindow() for why the
+    // peak is the wrong statistic here.
+    const double flE = energyInWindow(fl, 185.0, 215.0);
+    const double frE = energyInWindow(fr, 185.0, 215.0);
+    CHECK(flE > 0.0 && frE > 0.0 && std::max(flE, frE) / std::min(flE, frE) < 1.5,
+          "Single at width=0: both lanes should carry comparable energy");
+}
+
+static void testDelayStereoModePingPong()
+{
+    std::cout << "  [Delay stereo_mode: PingPong alternates lanes]\n";
+    using namespace delaytest;
+
+    XlethDelayEffect fx;
+    // width 50 => wet mid/side left unaltered, so the alternation is unmasked.
+    configureDelay(fx, 2.0f, 120.0f, 999.0f, 50.0f);
+    fx.prepareToPlay(kSr, kBlock);
+    preRoll(fx, 1500.0);
+
+    std::vector<float> l, r;
+    captureImpulseResponse(fx, 700.0, l, r);
+
+    const float lFirst  = peakInWindow(l, 105.0, 135.0);   // 1st repeat  → L
+    const float rFirst  = peakInWindow(r, 105.0, 135.0);   // silent      → R
+    const float rSecond = peakInWindow(r, 225.0, 255.0);   // 2nd repeat  → R
+    const float lSecond = peakInWindow(l, 225.0, 255.0);   // silent      → L
+    const float lThird  = peakInWindow(l, 345.0, 375.0);   // 3rd repeat  → L
+
+    CHECK(lFirst  > 0.3f,  "PingPong: 1st repeat should be on L");
+    CHECK(rFirst  < 0.05f, "PingPong: R should be silent on the 1st repeat");
+    CHECK(rSecond > 0.1f,  "PingPong: 2nd repeat should hand off to R");
+    CHECK(lSecond < 0.05f, "PingPong: L should be silent on the 2nd repeat");
+    CHECK(lThird  > 0.03f, "PingPong: 3rd repeat should return to L");
+    CHECK(peakInWindow(r, 985.0, 1015.0) < 0.05f,
+          "PingPong: time_r must be ignored (no echo at 999 ms)");
+}
+
 static void testEQLayout()
 {
     std::cout << "  [EQ layout]\n";
@@ -4111,6 +4349,11 @@ int main()
     testResonanceSuppressorStereoModes();
     testResonanceSuppressorModeSwitching();
     testResonanceSuppressorVisualization();
+
+    testDelayStereoModeParameter();
+    testDelayStereoModeDual();
+    testDelayStereoModeSingle();
+    testDelayStereoModePingPong();
 
     std::cout << "\n=== test_eq ===\n";
     testEQLayout();

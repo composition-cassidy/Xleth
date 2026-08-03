@@ -93,7 +93,11 @@ export function PanelFrame({ id, children, titlebarContent }: PanelFrameProps) {
           data-panel-mode="docked"
           data-backdrop-fx-panel-rect="true"
           style={{ '--xleth-windowing-panel-color': panelTypeColorVar(id) } as CSSProperties}
-          onMouseDown={() => { focusPanel(id); panelRef.current?.focus(); }}
+          // Claim panel ownership before child controls can stop the bubble phase.
+          // Canvas clip handles and portaled menus intentionally stop mousedown;
+          // leaving this in bubble phase makes panel-scoped shortcuts depend on
+          // whichever panel happened to be focused previously.
+          onMouseDownCapture={() => { focusPanel(id); panelRef.current?.focus(); }}
         >
           <Titlebar id={id} focused={focused}>{titlebarContent}</Titlebar>
           <div className="xleth-panel-body">{children}</div>
@@ -132,7 +136,7 @@ export function PanelFrame({ id, children, titlebarContent }: PanelFrameProps) {
         data-focused={focused}
         data-backdrop-fx-panel-rect="true"
         style={frameStyle}
-        onMouseDown={() => { focusPanel(id); panelRef.current?.focus(); }}
+        onMouseDownCapture={() => { focusPanel(id); panelRef.current?.focus(); }}
       >
         <Titlebar id={id} focused={focused}>{titlebarContent}</Titlebar>
         <div className="xleth-panel-body">{children}</div>

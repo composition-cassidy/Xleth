@@ -18,6 +18,7 @@
 // Do not add one here; §10 says explicitly not to chase a deep null yet.
 
 #include "audio/UniFlangeEffect.h"
+#include "audio/viz/DynamicsVizFrame.h"
 
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_audio_processors/juce_audio_processors.h>
@@ -25,10 +26,14 @@
 #include <juce_events/juce_events.h>
 #include <juce_gui_basics/juce_gui_basics.h>
 
+#include <algorithm>
 #include <cmath>
+#include <cstdint>
+#include <cstring>
 #include <iostream>
 #include <random>
 #include <string>
+#include <vector>
 
 // ─── Test harness ─────────────────────────────────────────────────────────────
 
@@ -504,6 +509,102 @@ static void testParameterLayout()
     CHECK(fx.setParameterValue("mode",   1.0f),   "mode param should exist");
 }
 
+// ─── 8. Dry/wet visualization buckets ────────────────────────────────────────
+// The dry/wet waveform previews in the UniFlange mixer panel are backed by
+// the same per-effect DynamicsVizCollector pipeline used by Compressor /
+// Limiter / Transient / Overdone / Resonance Suppressor (see
+// engine/src/audio/viz/DynamicsVizFrame.h + DynamicsVizCollector.h). Unlike
+// those, UniFlangeBucket carries SIGNED LINEAR min/max (not dB, not abs
+// peak) for two taps: dry = pre-effect mono input, wet = post cross-mix
+// ensemble (pre dry/wet gain blend). Verify: disabled emits nothing; enabled
+// + non-silent input emits finite, correctly-ordered (min <= max) buckets
+// with real (non-zero) excursion on both taps; disabling again stops new
+// emissions.
+static void testDryWetVisualization()
+{
+    std::cout << "  [dry/wet visualization buckets]\n";
+    constexpr double kSR = 44100.0;
+    constexpr int    kBS = 512;
+
+    UniFlangeEffect fx;
+    fx.setParameterValue("order",  4.0f);
+    fx.setParameterValue("depth",  50.0f);
+    fx.setParameterValue("speed",  50.0f);
+    fx.setParameterValue("delay",  50.0f);
+    fx.setParameterValue("spread", 100.0f);
+    fx.setParameterValue("cross",  25.0f);
+    fx.setParameterValue("dry",    50.0f);
+    fx.setParameterValue("wet",    100.0f);
+    fx.setParameterValue("mode",   0.0f);
+    fx.prepareToPlay(kSR, kBS);
+
+    CHECK(fx.getVisualizationType() == xleth::viz::kVizTypeUniFlange,
+          "UniFlange viz type should be uniflange");
+    CHECK(fx.getVisualizationSchemaVersion() == xleth::viz::kDynamicsVizSchemaVersion,
+          "UniFlange viz schema should match DynamicsVizFrame");
+
+    std::vector<std::uint8_t> drainBuffer(sizeof(xleth::viz::UniFlangeBucket) * 256);
+    CHECK(fx.drainVizFrames(drainBuffer.data(), drainBuffer.size()) == 0,
+          "UniFlange disabled visualization should drain no frames");
+
+    juce::MidiBuffer midi;
+    double phase = 0.0;
+
+    fx.setVisualizationEnabled(true);
+
+    int remaining = static_cast<int>(kSR); // 1 second, plenty of buckets
+    while (remaining > 0)
+    {
+        const int n = std::min(kBS, remaining);
+        juce::AudioBuffer<float> block(2, n);
+        fillSine(block, 440.0, 0.3, kSR, phase);
+        fx.processBlock(block, midi);
+        CHECK(allFinite(block), "UniFlange visualization-enabled processing should keep audio finite");
+        remaining -= n;
+    }
+
+    const std::size_t bytes = fx.drainVizFrames(drainBuffer.data(), drainBuffer.size());
+    CHECK(bytes >= sizeof(xleth::viz::UniFlangeBucket),
+          "UniFlange enabled visualization should emit at least one bucket");
+    CHECK(bytes % sizeof(xleth::viz::UniFlangeBucket) == 0,
+          "UniFlange viz drain should return complete buckets");
+
+    const std::size_t count = bytes / sizeof(xleth::viz::UniFlangeBucket);
+    bool allFiniteBuckets = true;
+    bool allOrdered       = true;
+    float maxDrySpan = 0.0f;
+    float maxWetSpan = 0.0f;
+    for (std::size_t i = 0; i < count; ++i)
+    {
+        xleth::viz::UniFlangeBucket b{};
+        std::memcpy(&b, drainBuffer.data() + i * sizeof(b), sizeof(b));
+        allFiniteBuckets = allFiniteBuckets
+                        && std::isfinite(b.dryMin) && std::isfinite(b.dryMax)
+                        && std::isfinite(b.wetMin) && std::isfinite(b.wetMax);
+        allOrdered = allOrdered && b.dryMin <= b.dryMax && b.wetMin <= b.wetMax;
+        maxDrySpan = std::max(maxDrySpan, b.dryMax - b.dryMin);
+        maxWetSpan = std::max(maxWetSpan, b.wetMax - b.wetMin);
+    }
+
+    std::cout << "    viz bucket count / max dry span / max wet span: "
+              << count << " / " << maxDrySpan << " / " << maxWetSpan << "\n";
+
+    CHECK(allFiniteBuckets, "UniFlange viz buckets should be finite");
+    CHECK(allOrdered, "UniFlange viz buckets should have min <= max for both taps");
+    CHECK(maxDrySpan > 1.0e-4f, "UniFlange dry tap should show non-silent input activity");
+    CHECK(maxWetSpan > 1.0e-4f, "UniFlange wet tap should show non-silent ensemble activity");
+
+    while (fx.drainVizFrames(drainBuffer.data(), drainBuffer.size()) > 0) {}
+    fx.setVisualizationEnabled(false);
+
+    juce::AudioBuffer<float> tail(2, kBS);
+    fillSine(tail, 440.0, 0.3, kSR, phase);
+    fx.processBlock(tail, midi);
+    CHECK(allFinite(tail), "UniFlange visualization-disabled processing should keep audio finite");
+    CHECK(fx.drainVizFrames(drainBuffer.data(), drainBuffer.size()) == 0,
+          "UniFlange disabled visualization should emit no new frames after drain");
+}
+
 // ─── main ─────────────────────────────────────────────────────────────────────
 
 int main()
@@ -519,6 +620,7 @@ int main()
     testPanInvariance();
     testBoundsFuzz();
     testDryWetZeroSilence();
+    testDryWetVisualization();
 
     std::cout << "\nResults: " << g_passed << " passed, " << g_failed << " failed\n";
     if (g_failed > 0)

@@ -7,8 +7,9 @@ import PianoRollScrollbarV, { SCROLLBAR_V_WIDTH } from './PianoRollScrollbarV.js
 import PianoRollScrollbarH, { SCROLLBAR_H_HEIGHT } from './PianoRollScrollbarH.jsx'
 import { timelineEvents } from '../../timelineEvents.js'
 import { PPQ, snapBeatToGrid, beatsToTicks } from '../../constants/timeline.js'
-import usePianoRollStore from '../../stores/usePianoRollStore.js'
 import { registerEditorCommand } from '../../windowing/managers/EditorCommandRegistry'
+import { register as registerKeyboardBinding } from '../../windowing/managers/KeyboardManager'
+import { usePanelVisibility } from '../../windowing/contexts/PanelVisibilityContext'
 import { useToast } from '../Toast.jsx'
 
 // Map parsed FSC notes (engine 960-PPQ shape) onto Xleth's PatternNote JS shape.
@@ -79,12 +80,33 @@ const MIN_PX_PER_BEAT = 20
 const MAX_PX_PER_BEAT = 320
 const MIN_CONTENT_BEATS = 16 // minimum scrollable horizontal range
 
+const PIANO_ROLL_KEY_COMBOS = [
+  's', 'S', 'p', 'P', 'c', 'C', 'd', 'D',
+  'Ctrl+z', 'Ctrl+Z', 'Meta+z', 'Meta+Z',
+  'Ctrl+y', 'Ctrl+Y', 'Meta+y', 'Meta+Y',
+  'Ctrl+Shift+z', 'Ctrl+Shift+Z', 'Meta+Shift+z', 'Meta+Shift+Z',
+  'Ctrl+c', 'Ctrl+C', 'Meta+c', 'Meta+C',
+  'Ctrl+v', 'Ctrl+V', 'Meta+v', 'Meta+V',
+  'Ctrl+a', 'Ctrl+A', 'Meta+a', 'Meta+A',
+  'Delete', 'Backspace',
+  'ArrowUp', 'ArrowDown', 'Shift+ArrowUp', 'Shift+ArrowDown',
+  '0', '1', '2', '3', '4', '5', '6', '7', '8', '9',
+]
+
+// Editor-local clipboard fallback: note copy/paste must not depend on transient
+// Chromium clipboard permission or window-focus state.
+let pianoRollClipboard = null
+
+export function resetPianoRollClipboardForTest() {
+  pianoRollClipboard = null
+}
+
 export default function PianoRoll({
   patternId, onClose,
   onDetach, onDock, floating = false, onTitleMouseDown, onTitleDoubleClick,
   availablePatterns, currentPatternId, onSwitchPattern, onNewPattern,
 }) {
-  const activeCenterTab = usePianoRollStore((s) => s.activeCenterTab)
+  const { isVisible } = usePanelVisibility()
   const { showToast } = useToast()
   const [pattern, setPattern] = useState(null)
   const [regions, setRegions] = useState([])
@@ -290,17 +312,17 @@ export default function PianoRoll({
     }
   }, [clearPendingPreviewReleases, pattern?.regionId])
 
-  // Silence when the center tab navigates away from the piano roll.
+  // Silence only when the owning panel is hidden. PanelRegistry, not the
+  // legacy activeCenterTab flag, owns keyboard focus.
   useEffect(() => {
-    if (floating) return
-    if (activeCenterTab !== 'piano-roll') {
+    if (!isVisible) {
       const regionId = pattern?.regionId
       if (regionId != null && regionId >= 0) {
         try { window.xleth?.timeline?.previewAllNotesOff?.(regionId) } catch { /* ignore */ }
       }
       clearPendingPreviewReleases(false)
     }
-  }, [activeCenterTab, clearPendingPreviewReleases, floating, pattern?.regionId])
+  }, [clearPendingPreviewReleases, isVisible, pattern?.regionId])
 
   const handlePreviewNote = useCallback((pitch) => {
     const regionId = pattern?.regionId
@@ -324,18 +346,15 @@ export default function PianoRoll({
   }, [pattern?.regionId])
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────────
-  useEffect(() => {
-    const onKey = async (e) => {
-      const target = e.target
-      if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return
-      if (activeCenterTab !== 'piano-roll' && !floating) return
+  const pianoRollKeyHandlerRef = useRef(null)
+  pianoRollKeyHandlerRef.current = async (e) => {
 
       // Tool shortcuts
       if (!e.ctrlKey && !e.metaKey && !e.altKey) {
-        if (e.key === 's' || e.key === 'S') { setActiveTool('select'); e.stopPropagation(); return }
-        if (e.key === 'p' || e.key === 'P') { setActiveTool('pencil'); e.stopPropagation(); return }
-        if (e.key === 'c' || e.key === 'C') { setActiveTool('split');  e.stopPropagation(); return }
-        if (e.key === 'd' || e.key === 'D') { setActiveTool('delete'); e.stopPropagation(); return }
+        if (e.key === 's' || e.key === 'S') { e.preventDefault(); e.stopPropagation(); setActiveTool('select'); return }
+        if (e.key === 'p' || e.key === 'P') { e.preventDefault(); e.stopPropagation(); setActiveTool('pencil'); return }
+        if (e.key === 'c' || e.key === 'C') { e.preventDefault(); e.stopPropagation(); setActiveTool('split');  return }
+        if (e.key === 'd' || e.key === 'D') { e.preventDefault(); e.stopPropagation(); setActiveTool('delete'); return }
       }
 
       // Undo / Redo
@@ -377,8 +396,9 @@ export default function PianoRoll({
             velocity: n.velocity,
           })),
         }
+        pianoRollClipboard = payload
         try {
-          await navigator.clipboard.writeText(JSON.stringify(payload))
+          await navigator.clipboard?.writeText?.(JSON.stringify(payload))
         } catch (err) { console.warn('[PianoRoll] copy failed:', err.message) }
         return
       }
@@ -388,8 +408,11 @@ export default function PianoRoll({
         e.preventDefault()
         e.stopPropagation()
         try {
-          const text = await navigator.clipboard.readText()
-          const payload = JSON.parse(text)
+          let payload = pianoRollClipboard
+          if (!payload) {
+            const text = await navigator.clipboard?.readText?.()
+            payload = text ? JSON.parse(text) : null
+          }
           if (!payload || payload.type !== 'xleth-notes' || !Array.isArray(payload.notes)) return
           // Paste anchor: left edge of viewport snapped to the active grid.
           const pasteBeat = snapBeatToGrid(Math.max(0, scrollXRef.current / pixelsPerBeatRef.current), {})
@@ -451,6 +474,7 @@ export default function PianoRoll({
       if (/^[0-9]$/.test(e.key) && !e.ctrlKey && !e.metaKey && !e.altKey) {
         const ids = Array.from(selectedNoteIdsRef.current)
         if (ids.length === 0) return
+        e.preventDefault()
         e.stopPropagation()
         const k = parseInt(e.key, 10)
         const vel = k === 0 ? 1.0 : k / 10
@@ -460,9 +484,17 @@ export default function PianoRoll({
         notifyChanged()
       }
     }
-    window.addEventListener('keydown', onKey)
-    return () => window.removeEventListener('keydown', onKey)
-  }, [patternId, pattern, notifyChanged, activeCenterTab, floating])
+  useEffect(() => {
+    const dispatch = (e) => {
+      const pending = pianoRollKeyHandlerRef.current?.(e)
+      pending?.catch?.((err) => console.warn('[PianoRoll] shortcut failed:', err?.message || err))
+      return e.defaultPrevented ? 'handled' : undefined
+    }
+    const unsubscribers = PIANO_ROLL_KEY_COMBOS.map((combo) =>
+      registerKeyboardBinding({ scope: 'panel:pianoRoll', combo, handler: dispatch }),
+    )
+    return () => { unsubscribers.forEach((unsubscribe) => unsubscribe()) }
+  }, [])
 
   const handleZoomIn = useCallback(() => {
     setPixelsPerBeat((p) => Math.min(MAX_PX_PER_BEAT, p * 1.25))

@@ -5,9 +5,9 @@ import { timelineEvents } from '../../timelineEvents.js'
 import { TRACK_PALETTE_FALLBACK } from './trackColorResolver.js'
 
 export default function TrackHeader({
-  track, index, trackColor, currentPattern, isFocused,
+  track, index, trackColor, currentPattern, isFocused, isSelected,
   trackHeight = TRACK_HEIGHT,
-  onMute, onSolo, onVisualOnly, onRename, onRemove, onRequestContextMenu, onFocus,
+  onMute, onSolo, onVisualOnly, onRename, onRemove, onRequestContextMenu, onFocus, onSelect,
   onDragStart, onDragOver, onDrop,
   onOpenColorPicker,
 }) {
@@ -51,16 +51,17 @@ export default function TrackHeader({
 
   return (
     <div
-      className={`track-header${track.muted ? ' track-header--muted' : ''}${track.visualOnly ? ' track-header--visual-only' : ''}${isPatternTrack ? ' track-header--pattern' : ''}${isFocused ? ' track-header--focused' : ''}`}
+      className={`track-header${track.muted ? ' track-header--muted' : ''}${track.visualOnly ? ' track-header--visual-only' : ''}${isPatternTrack ? ' track-header--pattern' : ''}${isFocused ? ' track-header--focused' : ''}${isSelected ? ' track-header--selected' : ''}`}
       style={{
         height: trackHeight,
         '--track-header-fill': color,
       }}
       draggable
       onMouseDown={() => onFocus?.(track.id)}
-      onDragStart={(e) => onDragStart(e, index)}
-      onDragOver={(e) => onDragOver(e, index)}
-      onDrop={(e) => onDrop(e, index)}
+      onClick={(event) => onSelect?.(track.id, event)}
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
       onContextMenu={(e) => {
         e.preventDefault()
         onFocus?.(track.id)

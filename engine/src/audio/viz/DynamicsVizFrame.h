@@ -31,6 +31,7 @@ enum VisualizationType : uint32_t
     kVizTypeTransient  = 3,
     kVizTypeMultiband  = 4,   // 3-band dynamics (Overdone / OTT)
     kVizTypeResonance  = 5,   // Resonance Suppressor spectral buckets
+    kVizTypeUniFlange  = 6,   // UniFlange dry/wet waveform envelope
 };
 
 inline constexpr uint32_t kResonanceVizBucketCount = 128;
@@ -243,5 +244,31 @@ static_assert(std::is_trivially_copyable<ResonanceBucket>::value,
               "ResonanceBucket must be trivially copyable");
 static_assert(std::is_standard_layout<ResonanceBucket>::value,
               "ResonanceBucket must be standard layout");
+
+// ── UniFlange payload ────────────────────────────────────────────────────────
+// 16 bytes header + 4 floats (16 bytes) = 32 bytes total. 8-byte aligned.
+//
+// Unlike the other bucket types (which track peak |x| and report dB), this
+// bucket tracks SIGNED linear min/max excursion over the bucket for two taps:
+// the dry (pre-effect, mono-summed input) signal and the wet (post cross-mix,
+// pre dry/wet-gain-blend ensemble) signal. Linear + signed so the UI can draw
+// a real above/below-center waveform shape instead of a rectified level
+// trace. NOT dB, NOT abs — do not reuse the *ToDb() helpers from the other
+// accumulators against these fields.
+struct alignas(8) UniFlangeBucket
+{
+    BucketHeader hdr;
+    float dryMin;   // min sample value over bucket, pre-effect mono input
+    float dryMax;   // max sample value over bucket, pre-effect mono input
+    float wetMin;   // min sample value over bucket, post cross-mix ensemble
+    float wetMax;   // max sample value over bucket, post cross-mix ensemble
+};
+
+static_assert(sizeof(UniFlangeBucket) == 32, "UniFlangeBucket expected 32 bytes");
+static_assert(alignof(UniFlangeBucket) == 8, "UniFlangeBucket expected 8-byte alignment");
+static_assert(std::is_trivially_copyable<UniFlangeBucket>::value,
+              "UniFlangeBucket must be trivially copyable");
+static_assert(std::is_standard_layout<UniFlangeBucket>::value,
+              "UniFlangeBucket must be standard layout");
 
 }} // namespace xleth::viz

@@ -71,10 +71,22 @@ struct alignas(16) TransitionConstants {
     int   mode;
     float t;
     float angleRad;
-    float pad;
+    float edgeSoftness;
+    float zoomAmount;
+    float dissolveGrainPx;
+    float radialOriginX;
+    float radialOriginY;
+    float pixelateMaxBlockPx;
+    float glitchIntensity;
+    float glitchBlockPx;
+    float blurRadiusPx;
+    float displacementAmount;
+    float displacementScale;
+    int   effectSeed;
+    float pad0;
 };
 // [Safety audit: CB alignment] D3D11 constant buffers are 16-byte aligned.
-static_assert(sizeof(TransitionConstants) == 16, "TransitionConstants must be 16 bytes");
+static_assert(sizeof(TransitionConstants) == 64, "TransitionConstants must be 64 bytes");
 
 struct alignas(16) VibratoSwirlConstants {
     float amount;
@@ -99,6 +111,39 @@ struct alignas(16) ScratchWaveSmearConstants {
     float pad0;
 };
 static_assert(sizeof(ScratchWaveSmearConstants) == 32, "ScratchWaveSmearConstants must be 32 bytes");
+
+// Constant buffers for the two terminal expansion stages. Unlike every other
+// effect CB these are NOT a raw memcpy of VisualEffect::params[] — the CPU
+// resolves the user's params into render-target geometry first (texel size, the
+// content region's half-extents, distance+angle into a single UV offset), so the
+// shaders can work in true target pixels. Field order must match the matching
+// cbuffer in FX_Outline.hlsl / FX_DropShadow.hlsl exactly.
+struct alignas(16) OutlineConstants {
+    float color[3];         // stroke colour 0..1
+    float thicknessPx;      // stroke width, in target texels
+    float softness;         // 0..1 fraction of the thickness feathered
+    float opacity;          // 0..1
+    float alphaThreshold;   // alpha at or below this is background
+    float cornerRadiusPx;   // the cell's corner radius in texels; 0 = none
+    float texelW, texelH;   // 1/paddedWidth, 1/paddedHeight
+    float innerHalfW, innerHalfH;  // content half-extents, in texels
+};
+static_assert(sizeof(OutlineConstants) == 48, "OutlineConstants must be 48 bytes");
+
+struct alignas(16) DropShadowConstants {
+    float color[3];         // shadow colour 0..1
+    float opacity;          // param opacity * the cell's own opacity
+    float offsetU, offsetV; // distance+angle resolved to a UV offset
+    float inflatePx;        // dilation radius, in target texels
+    float blurPx;           // feather radius, in target texels
+    float texelW, texelH;   // 1/paddedWidth, 1/paddedHeight
+    float alphaThreshold;   // alpha at or below this casts no shadow
+    float blendMode;        // 0=Normal 1=Multiply 2=Darken 3=LinearBurn
+    float innerHalfW, innerHalfH;  // content half-extents, in texels
+    float cornerRadiusPx;   // the cell's corner radius in texels; 0 = none
+    float dropShadowPad0;
+};
+static_assert(sizeof(DropShadowConstants) == 64, "DropShadowConstants must be 64 bytes");
 
 // ---------------------------------------------------------------------------
 // RTPool — render target pairs for ping-pong effect chain processing
@@ -135,6 +180,8 @@ struct EffectShaderCache {
     Microsoft::WRL::ComPtr<ID3D11PixelShader> vibratoSwirlPS;
     Microsoft::WRL::ComPtr<ID3D11PixelShader> scratchWaveSmearPS;
     Microsoft::WRL::ComPtr<ID3D11PixelShader> chromaKeyPS;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> outlinePS;
+    Microsoft::WRL::ComPtr<ID3D11PixelShader> dropShadowPS;
     Microsoft::WRL::ComPtr<ID3D11PixelShader> transitionPS;
 
     // Per-effect constant buffers at b2 (small, updated per draw)
@@ -146,8 +193,10 @@ struct EffectShaderCache {
     Microsoft::WRL::ComPtr<ID3D11Buffer> vibratoSwirlCB;     // 32 bytes
     Microsoft::WRL::ComPtr<ID3D11Buffer> scratchWaveSmearCB; // 32 bytes
     Microsoft::WRL::ComPtr<ID3D11Buffer> chromaKeyCB;        // 32 bytes (params[0..7])
+    Microsoft::WRL::ComPtr<ID3D11Buffer> outlineCB;          // 48 bytes (OutlineConstants)
+    Microsoft::WRL::ComPtr<ID3D11Buffer> dropShadowCB;       // 64 bytes (DropShadowConstants)
     // [Safety audit: No per-frame allocation] Created once in init() and reused.
-    Microsoft::WRL::ComPtr<ID3D11Buffer> transitionCB;       // 16 bytes
+    Microsoft::WRL::ComPtr<ID3D11Buffer> transitionCB;       // 64 bytes
 
     bool initialized = false;
 
@@ -319,11 +368,18 @@ public:
      *  Requires a successfully initialized compositor. */
     RTPool::RTPair& acquireTransitionTargets();
 
-    /** Blend two whole-frame snapshot SRVs into the compositor's readback target.
-     *  mode 0 is a linear crossfade; mode 1 is an angle-directed line sweep. */
+    /** Blend two whole-frame snapshot SRVs into the compositor's readback target. */
     void transitionPass(ID3D11ShaderResourceView* srvA,
                         ID3D11ShaderResourceView* srvB,
-                        int mode, float t, float angleRad);
+                        int mode, float t, float angleRad,
+                        float edgeSoftness, float zoomAmount,
+                        int dissolveGrainPx,
+                        float radialOriginX = 0.5f, float radialOriginY = 0.5f,
+                        int pixelateMaxBlockPx = 32,
+                        float glitchIntensity = 0.65f, int glitchBlockPx = 24,
+                        float blurRadiusPx = 16.0f,
+                        float displacementAmount = 0.06f, float displacementScale = 6.0f,
+                        int effectSeed = 0);
 
     // ── Readback ───────────────────────────────────────────────────────────
 
@@ -365,6 +421,76 @@ public:
         const CellFrameRequest& req,
         float time,
         int rtSlot = 0);
+
+    // ── Terminal expansion stages (Outline, Drop Shadow) ───────────────────
+    //
+    // These two chainable effects are LAYER STYLES rather than pixel filters, and
+    // that is why they are not cases in processEffectChain's switch:
+    //
+    //   • They draw OUTSIDE the source's own bounds. A stroke on a cell that
+    //     already fills its target has nowhere to go, so each stage renders into
+    //     a target PADDED by the radius it needs and reports the pad back so the
+    //     caller can grow the cell's composite rect to match. No other effect
+    //     changes that rect.
+    //   • They are TERMINAL: applied after the chain, the standalone ZPR pass,
+    //     the ping-pong crossfade and companion FX, so the stroke traces — and
+    //     the shadow is cast by — the finished cell. Their position within the
+    //     chain therefore does not affect the result.
+    //
+    // Both follow the global preview bypass. Unlike Chroma Key they only add
+    // decoration, so skipping them for speed leaves the composite structurally
+    // correct rather than wrong.
+
+    /**
+     * Apply every active Outline in the chain, innermost first, into a padded
+     * render target. Several strokes nest and their pads add.
+     *
+     * @param sourceSRV      The finished cell texture
+     * @param contentWidth   Pixel width the cell's composite rect maps to
+     * @param contentHeight  Pixel height the cell's composite rect maps to
+     * @param chain          Visual effect chain from TrackInfo
+     * @param cornerRadius   The cell's corner radius, 0..1. Non-zero means this
+     *                       stage TAKES OVER the rounding (the caller must then
+     *                       pass 0 to drawCell) — applying it at the final
+     *                       composite would round the padded boundary and leave
+     *                       the video's own corners square.
+     * @param outPadPx       Out: texels of padding added on each side, 0 if the
+     *                       stage did not run
+     * @return SRV of the padded, stroked texture, or sourceSRV if nothing ran
+     */
+    ID3D11ShaderResourceView* applyOutlineStage(
+        ID3D11ShaderResourceView* sourceSRV,
+        int contentWidth, int contentHeight,
+        const std::vector<VisualEffect>& chain,
+        float cornerRadius,
+        int& outPadPx);
+
+    /**
+     * Build and immediately draw each active Drop Shadow BEHIND the cell.
+     *
+     * Drawn as its own quad rather than composited into the cell texture,
+     * because that is the only way the darkening blend modes can be real: a
+     * Multiply shadow has to multiply against whatever is behind the cell, and
+     * nothing inside the per-cell chain can see the backdrop. Leaves the main
+     * pipeline state restored and ready for the caller's drawCell.
+     *
+     * @param cellSRV        The finished (possibly stroked) cell texture
+     * @param contentWidth   Texels of cellSRV that map onto rectW
+     * @param contentHeight  Texels of cellSRV that map onto rectH
+     * @param req            Cell request — chain, orientation, opacity
+     * @param rectX/Y/W/H    The cell's composite rect in OUTPUT-UV space
+     * @param cornerRadius   The cell's corner radius, 0..1, so the shadow is cast
+     *                       by the rounded shape. Pass 0 when applyOutlineStage
+     *                       has already baked it into cellSRV.
+     * @param activeRTV      The output target to restore and draw into
+     */
+    void drawDropShadowLayers(
+        ID3D11ShaderResourceView* cellSRV,
+        int contentWidth, int contentHeight,
+        const CellFrameRequest& req,
+        float rectX, float rectY, float rectW, float rectH,
+        float cornerRadius,
+        ID3D11RenderTargetView* activeRTV);
 
 private:
     // ── Device references (not owned) ──────────────────────────────────────
@@ -416,6 +542,14 @@ private:
     // RGB verbatim instead of being premultiplied against a cleared target.
     // See the long comment in processEffectChain for why this matters.
     Microsoft::WRL::ComPtr<ID3D11BlendState>        opaqueBlendState_;
+    // Darkening blends for the Drop Shadow quad, which is drawn behind the cell
+    // straight into the output target. Each one pairs with a specific output form
+    // baked by FX_DropShadow.hlsl — see the emit table at the bottom of that
+    // shader; swapping a state without swapping the emit is silently wrong.
+    // "Normal" mode needs no state of its own: it is plain blendState_.
+    Microsoft::WRL::ComPtr<ID3D11BlendState>        shadowMultiplyBlendState_;
+    Microsoft::WRL::ComPtr<ID3D11BlendState>        shadowDarkenBlendState_;
+    Microsoft::WRL::ComPtr<ID3D11BlendState>        shadowLinearBurnBlendState_;
     Microsoft::WRL::ComPtr<ID3D11SamplerState>      samplerState_;
     Microsoft::WRL::ComPtr<ID3D11Buffer>             constantBuffer_;
     Microsoft::WRL::ComPtr<ID3D11Buffer>             globalConstantBuffer_;
@@ -431,15 +565,21 @@ private:
     //  2. Clean SRV state: unbind transition t0/t1 after the pass.
     //  3. Default-path regression: nullptr target resolves to renderTargetRTV_.
     //  4. No per-frame allocation: cache shader/CB and the slot-4 RTPair.
-    //  5. CB alignment: TransitionConstants is statically asserted to 16 bytes.
+    //  5. CB alignment: TransitionConstants is statically asserted to 64 bytes.
     //
     // RTPool encodes slot + dimensions in its key and has no fixed slot
     // capacity. Slot ownership in compositeFrame/processEffectChain:
     //   0 = track visual chain, 1 = standalone ZPR, 2 = ping-pong crossfade,
-    //   3 = companion FX, 4 = whole-frame snapshot transition.
+    //   3 = companion FX, 4 = whole-frame snapshot transition,
+    //   5 = Outline stage, 6 = Drop Shadow stage.
     static constexpr int kCompanionFxRtSlot = 3;
     // [Safety audit: No per-frame allocation] Slot 4 retains one full-frame pair.
     static constexpr int kTransitionRtSlot = 4;
+    // Slots 5 and 6 must differ from each other and from 0-3: the Drop Shadow
+    // stage samples the Outline stage's output while building its own, so sharing
+    // a slot would bind the same texture as both SRV and RTV.
+    static constexpr int kOutlineRtSlot    = 5;
+    static constexpr int kDropShadowRtSlot = 6;
 
     // ── Internal helpers ───────────────────────────────────────────────────
     bool createRenderTarget();
@@ -466,6 +606,12 @@ private:
     /** Draw a fullscreen pass with a specific pixel shader (for effect chain).
      *  Binds srv at t0, draws the quad. Caller must set the PS and CB beforehand. */
     void drawEffectPass(ID3D11ShaderResourceView* srv);
+
+    /** Write CellConstants for a centred, un-scaled blit of a contentW x contentH
+     *  region into a larger targetW x targetH render target, leaving the border at
+     *  the clear colour. Used by the two padded expansion stages so their distance
+     *  searches have transparent texels to walk into. */
+    void setInsetBlitConstants(int targetW, int targetH, int contentW, int contentH);
 
     void restoreMainPipelineState(ID3D11RenderTargetView* targetRTV = nullptr);
 

@@ -5,6 +5,7 @@
   "main": "main.js",
   "scripts": {
     "dev": "concurrently --kill-others \"vite\" \"wait-on http://localhost:5173 && electron .\"",
+    "dev:clip-controls": "set VITE_XLETH_CLIP_CONTROL_TUNER=1&& concurrently --kill-others \"vite --force\" \"wait-on http://localhost:5173 && electron .\"",
     "dev:designer": "set VITE_XLETH_PLUGIN_UI_DESIGNER=1&& concurrently --kill-others \"vite --force\" \"wait-on http://localhost:5173 && electron .\"",
     "build": "vite build",
     "build:designer": "set VITE_XLETH_PLUGIN_UI_DESIGNER=1&& vite build",
@@ -17,7 +18,9 @@
     "baseline:build": "vite build",
     "baseline:capture": "playwright test --update-snapshots --config playwright.config.ts",
     "baseline:check": "playwright test --config playwright.config.ts",
-    "baseline": "npm run baseline:build && npm run baseline:capture && npm run baseline:check"
+    "baseline": "npm run baseline:build && npm run baseline:capture && npm run baseline:check",
+    "baseline:clip-controls:capture": "playwright test --update-snapshots --config playwright.clip-controls.config.ts",
+    "baseline:clip-controls:check": "playwright test --config playwright.clip-controls.config.ts"
   },
   "dependencies": {
     "@fontsource/inter": "^5.2.8",

@@ -110,6 +110,7 @@ export function createSelectTool(deps) {
     const beatDelta = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
       - pixelToBeat(dragOriginX, scrollOffsetRef.current, pixelsPerBeatRef.current)
     const newTrackIndex = idxAtY(dragCurrentY)
+    const validTarget = newTrackIndex >= 0 && newTrackIndex < tracks.length
     const clampedTrackIdx = Math.max(0, Math.min(newTrackIndex, tracks.length - 1))
     const anchorTrackIdx = dragKind === 'block' ? dragBlockOrigTrackIdx : dragClipOrigTrackIdx
     const requestedTrackDelta = clampedTrackIdx - anchorTrackIdx
@@ -134,6 +135,7 @@ export function createSelectTool(deps) {
       tracks,
       beatDelta,
       trackDelta: destinationTypesMatch ? requestedTrackDelta : 0,
+      validTarget,
     }
   }
 
@@ -144,7 +146,8 @@ export function createSelectTool(deps) {
         ? [{ clip: dragClip, origBeat: dragClipOrigBeat, origTrackIdx: dragClipOrigTrackIdx }]
         : []
     if (items.length === 0) return []
-    const { tracks, beatDelta, trackDelta } = getDragDelta()
+    const { tracks, beatDelta, trackDelta, validTarget } = getDragDelta()
+    if (!validTarget) return []
 
     return items.map(({ clip, origBeat, origTrackIdx }) => {
       const positionTicks = beatsToTicks(snapBeatToGrid(
@@ -171,7 +174,8 @@ export function createSelectTool(deps) {
         ? [{ block: dragBlock, origBeat: dragBlockOrigBeat, origTrackIdx: dragBlockOrigTrackIdx }]
         : []
     if (items.length === 0) return []
-    const { tracks, beatDelta, trackDelta } = getDragDelta()
+    const { tracks, beatDelta, trackDelta, validTarget } = getDragDelta()
+    if (!validTarget) return []
 
     return items.map(({ block, origBeat, origTrackIdx }) => {
       const positionTicks = beatsToTicks(snapBeatToGrid(
@@ -601,6 +605,10 @@ export function createSelectTool(deps) {
         const beatDelta = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
           - pixelToBeat(dragOriginX, scrollOffsetRef.current, pixelsPerBeatRef.current)
         const newTrackIndex = idxAtY(dragCurrentY)
+        if (newTrackIndex < 0) {
+          resetDragState({ cancelled: true })
+          return
+        }
         const tracks = tracksRef.current
         const clampedTrackIdx = Math.max(0, Math.min(newTrackIndex, tracks.length - 1))
         const trackDelta = clampedTrackIdx - dragBlockOrigTrackIdx
@@ -659,6 +667,10 @@ export function createSelectTool(deps) {
         const beatDelta = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
           - pixelToBeat(dragOriginX, scrollOffsetRef.current, pixelsPerBeatRef.current)
         const newTrackIndex = idxAtY(dragCurrentY)
+        if (newTrackIndex < 0) {
+          resetDragState({ cancelled: true })
+          return
+        }
         const tracks = tracksRef.current
         const clampedTrackIdx = Math.max(0, Math.min(newTrackIndex, tracks.length - 1))
         const trackDelta = clampedTrackIdx - dragClipOrigTrackIdx
@@ -826,6 +838,7 @@ export function createSelectTool(deps) {
         const beatDelta = pixelToBeat(dragCurrentX, scrollOffset, ppb)
           - pixelToBeat(dragOriginX, scrollOffset, ppb)
         const newTrackIndex = idxAtY(dragCurrentY)
+        if (newTrackIndex < 0) return
         const tracks = tracksRef.current
         const clampedTrackIdx = Math.max(0, Math.min(newTrackIndex, (tracks?.length || 1) - 1))
         const trackDelta = clampedTrackIdx - dragBlockOrigTrackIdx

@@ -85,8 +85,9 @@ describe('Limiter shipped layout registry', () => {
   })
 
   it('references only meter slots declared by the Limiter manifest', () => {
+    // The redesigned layout ships no meter node; the membership check stays
+    // so a future meter re-introduction is still validated.
     const slots = collectMeterSlots(SHIPPED_LAYOUTS.limiter.root)
-    expect(slots.length).toBeGreaterThan(0)
     for (const slot of slots) {
       expect(LIMITER_MANIFEST.meterSlots).toContain(slot)
     }
@@ -247,9 +248,14 @@ describe('Limiter shipped layout contains no Compressor visualizer sources', () 
     expect(isSaveAllowed(result)).toBe(true)
   })
 
-  it('Compressor shipped layout still has a compressor.* visualizer source (no regression)', () => {
+  // The Compressor draws its display through the dedicated compressorCurve
+  // node rather than a generic visualizer, so the no-regression check is that
+  // it kept its own display and picked up nobody else's viz source.
+  it('Compressor shipped layout still owns its display (no regression)', () => {
+    const types = collectNodeTypes(SHIPPED_LAYOUTS.compressor.root)
+    expect(types).toContain('compressorCurve')
     const sources = collectVizSources(SHIPPED_LAYOUTS.compressor.root)
-    expect(sources.some(src => src.startsWith('compressor.'))).toBe(true)
+    expect(sources.some(src => src.startsWith('limiter.'))).toBe(false)
   })
 })
 

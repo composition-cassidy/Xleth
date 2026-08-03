@@ -84,8 +84,8 @@ handleAdd/Move/Remove/RepointCue :196-222, `useTimelineZoom` :46, `TimelineRuler
   ping-pong block :730-805 as the working "blit two SRVs into an RT, read back" reference.
   crossfade=`lerp(a,b,smooth(t))`; line sweep = angle-parameterized step/smoothstep from geometry.
 - **FrameCollector for both snapshots**: add optional layout/snapshot override to `collectRequests`
-  so caller forces A or B. reqB every frame; reqA once at entry (freeze) or per-frame if
-  `freezeOutgoing==false`. "Tagged" = caller keeps two vectors; no per-request tag field needed.
+  so caller forces A or B. reqA and reqB are both collected every frame from the same absolute
+  project time. "Tagged" = caller keeps two vectors; no per-request tag field needed.
 - **RenderClock / t** (RenderClock.h): all integer. `pinSample=ppqToSample(pinTick,sr,bpm)`;
   window `[pin−startOffset, pin+endOffset]`; frame at `S=projectStartSample+videoFrameToSample(f)`:
   `S≤start→0; start<S<pin→0.5·(S−start)/(pin−start); S=pin→0.5; pin<S<end→0.5+0.5·(S−pin)/(end−pin);
@@ -94,13 +94,12 @@ handleAdd/Move/Remove/RepointCue :196-222, `useTimelineZoom` :46, `TimelineRuler
 ## Task 3 — Risk flags
 1. **Data-race pattern — satisfiable.** `gridLayoutAt` already returns by value; snapshot/cue
    mutators already take `syncEventsMutex`; preview loop holds it around `collectRequests`. New
-   work: value-returning `transitionAt(tick)` copying pin/offsets/type/freeze/geom + both A/B
+   work: value-returning `transitionAt(tick)` copying pin/offsets/type/geom + both A/B
    `GridLayout`s under lock; transition mutators under the mutex; never stash `const GridCue*`/
    `const GridSnapshot*` across the two composite calls.
-2. **Freeze-frame determinism.** Frozen A must come from a fixed tick (pin or window-start) via
-   RenderClock, not "whatever frame we were on." Cache RT_A keyed on `pinSample`; invalidate on pin
-   change or seek outside window (stopped-preview scrub at XlethEngineService.cpp:3343).
-3. **Perf floor (~0.25ms).** freeze=true ⇒ ~2× hard cut; freeze=false ⇒ ~3×. Gate whole path on
+2. **Two-live-frame determinism.** A and B must both use the same RenderClock-derived absolute
+   project sample; neither path may use wall-clock time or a cached transition-entry frame.
+3. **Perf floor (~0.25ms).** Two live snapshot composites plus the blend pass cost ~3× hard cut. Gate whole path on
    `tick ∈ window && transition.enabled`. Compositor emits `fprintf(stderr,…)` per cell per frame
    (:504/:590/:649) — doubling requests doubles spew; keep transition path quiet.
 4. **`effectsBypass_` divergence.** Preview fast path skips effect chains (:341); export doesn't.
@@ -126,4 +125,4 @@ Slice 4 — timeline UI (Start/End handles around fixed pin + Animation Type edi
    latent cue-switch geometry bug too.
 
 Everything else (two-RT via RTPool, parametric PS from EffectShaderCache, t from RenderClock,
-freeze-outgoing default, transition-pass-before-readback) maps directly with no blockers.
+two live snapshots, transition-pass-before-readback) maps directly with no blockers.

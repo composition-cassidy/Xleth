@@ -1,4 +1,5 @@
 #include "SyncManager.h"
+#include "audio/ClipFade.h"
 #include "model/Timeline.h"
 #include "model/ClipVideoModulationTiming.h"
 #include "model/ClipCompanionFxBuilder.h"
@@ -30,6 +31,21 @@ bool isVideoModulationCompatible(const VideoEvent& event) noexcept
                event.clipFormantPreserve,
                event.modulation);
 }
+
+#ifndef XLETH_CORE_ONLY
+float videoEventFadeGain(const VideoEvent& event, double beatPos) noexcept
+{
+    if (!(event.durationBeats > 0.0) || !std::isfinite(event.durationBeats))
+        return 1.0f;
+    const float progress = static_cast<float>(
+        (beatPos - event.startBeat) / event.durationBeats);
+    return evaluateClipFadeGain(
+        progress,
+        event.fadeInPercent, event.fadeOutPercent,
+        event.fadeInX1, event.fadeInY1, event.fadeInX2, event.fadeInY2,
+        event.fadeOutX1, event.fadeOutY1, event.fadeOutX2, event.fadeOutY2);
+}
+#endif
 
 xleth::clipmod::VideoModulationTimingContext makeVideoTimingContext(
     const VideoEvent& event,
@@ -188,6 +204,10 @@ double SyncManager::videoTick()
         const auto timing = xleth::clipmod::evaluateVideoClipModulationTiming(
             event.modulation, timingCtx, isVideoModulationCompatible(event));
         double sourceTime = timing.sourceTimeSeconds;
+#ifndef XLETH_CORE_ONLY
+        const float eventOpacity = std::clamp(
+            event.opacity * videoEventFadeGain(event, audioTimeBeat), 0.0f, 1.0f);
+#endif
 
         // Pick the best decoder for this event:
         //   1. If a per-region proxy is available and the current sourceTime
@@ -246,7 +266,7 @@ double SyncManager::videoTick()
                 layer.y       = event.y;
                 layer.width   = event.width;
                 layer.height  = event.height;
-                layer.opacity = event.opacity;
+                layer.opacity = eventOpacity;
                 layer.zOrder  = event.layerIndex;
                 layer.visible = true;
                 layer.companionFx = xleth::clipmod::buildClipCompanionFxSnapshot(
@@ -326,7 +346,7 @@ double SyncManager::videoTick()
             layer.y       = event.y;
             layer.width   = event.width;
             layer.height  = event.height;
-            layer.opacity = event.opacity;
+            layer.opacity = eventOpacity;
             layer.zOrder  = event.layerIndex;
             layer.visible = true;
             layer.companionFx = xleth::clipmod::buildClipCompanionFxSnapshot(

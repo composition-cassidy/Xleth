@@ -14,6 +14,7 @@ const NC_ITEMS = [
 const CHAIN_NAMES = {
   0: 'Desaturation', 1: 'Tint', 2: 'Brightness & Contrast',
   3: 'TV Simulator', 4: 'Zoom/Pan/Rot (per-cell)', 5: 'Chroma Key',
+  6: 'Outline', 7: 'Drop Shadow',
 }
 
 export default function VisualFXSection({ track, fetchTracks }) {

@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, memo } from 'react'
+import { X } from 'lucide-react'
 import useEqStore, { BAND_TYPES, BAND_COLORS } from '../../stores/eqStore.js'
 import {
   SVG_W, SVG_H, PAD_L, PAD_R, PAD_T, PAD_B, PLOT_W, PLOT_H,
@@ -14,7 +15,6 @@ import {
   loadAnalyzerSettings, saveAnalyzerSettings,
 } from './eqAnalyzerSettings.js'
 import EqBandPopup from './EqBandPopup.jsx'
-import EqOutputMeter from './EqOutputMeter.jsx'
 
 // ── Constants ────────────────────────────────────────────────────────────────
 
@@ -174,7 +174,6 @@ export default function EqPanel() {
   const rafRef = useRef(null)
   const lastPollRef = useRef(0)
   const svgRef = useRef(null)
-  const meterPeaksRef = useRef({ l: 0, r: 0 })
   const responseCurveRef = useRef(null)
   const spectrumDataRef = useRef(null)   // latest spec data for hover readout
 
@@ -289,11 +288,10 @@ export default function EqPanel() {
 
       if (now - lastPollRef.current >= 33) {
         lastPollRef.current = now
-        const [resp, spec, gr, meterRaw] = await Promise.all([
+        const [resp, spec, gr] = await Promise.all([
           fetchResponseCurve(),
           fetchSpectrumData(),
           fetchBandGR(),
-          window.xleth?.audio?.getEffectMeter(target.trackId, target.nodeId),
         ])
         if (!active) return
         if (resp) {
@@ -317,12 +315,6 @@ export default function EqPanel() {
           }
         }
         if (gr) setBandGR(gr)
-        if (meterRaw != null) {
-          const meters = typeof meterRaw === 'string' ? JSON.parse(meterRaw) : meterRaw
-          if (Array.isArray(meters)) {
-            meterPeaksRef.current = { l: meters[0] ?? 0, r: meters[1] ?? 0 }
-          }
-        }
       }
       if (active) rafRef.current = requestAnimationFrame(poll)
     }
@@ -516,11 +508,13 @@ export default function EqPanel() {
           oversample / pre-spectrum / font popover) still exist in state
           above; only their button affordances were removed here. */}
       <div className="eq-panel-header" onMouseDown={handlePanelDragStart}>
-        <span className="eq-panel-title">Parametric EQ</span>
-        <button className="eq-panel-close" onClick={close} title="Close">&times;</button>
+        <span className="eq-panel-title">PARAMETRIC EQ</span>
+        <button className="eq-panel-close" onClick={close} title="Close">
+          <X size={13} />
+        </button>
       </div>
 
-      {/* SVG + right-side output meter */}
+      {/* Response curve / spectrum analyzer */}
       <div className="eq-graph-row">
         <div className="eq-svg-wrap">
         <svg ref={svgRef} className="eq-svg" viewBox={`0 0 ${SVG_W} ${SVG_H}`}
@@ -582,7 +576,6 @@ export default function EqPanel() {
             <div className="eq-hover-readout">{hoverReadout}</div>
           )}
         </div>
-        <EqOutputMeter peaksRef={meterPeaksRef} active={!!target} />
       </div>
 
       {/* Floating per-band popup — replaces the old bottom band table +

@@ -10,6 +10,7 @@
 #include <cassert>
 #include <cmath>
 #include <iostream>
+#include <limits>
 #include <string>
 
 // ─── Minimal test harness ─────────────────────────────────────────────────────
@@ -31,6 +32,90 @@ static int g_failed = 0;
     CHECK(std::abs((double)(a) - (double)(b)) < (tol), msg)
 
 // ─── Test sections ────────────────────────────────────────────────────────────
+
+static void testTrackFolders() {
+    std::cout << "[TF] Track folders, validation, and persistence\n";
+
+    Timeline timeline;
+    TrackInfo seed;
+    seed.name = "A";
+    const int a = timeline.addTrack(seed);
+    seed.name = "B";
+    const int b = timeline.addTrack(seed);
+    seed.name = "C";
+    const int c = timeline.addTrack(seed);
+
+    const int emptyId = timeline.createTrackFolder("Empty", {}, 3);
+    CHECK(emptyId > 0, "empty folder can be created");
+    CHECK(timeline.getTrackLayout().folders.size() == 1, "empty folder is retained");
+    CHECK(timeline.removeTrackFolder(emptyId), "empty folder can be removed");
+
+    const int folderId = timeline.createTrackFolder("Vocals", {b, c}, 1);
+    CHECK(folderId > 0, "populated folder can be created");
+    TrackLayout layout = timeline.getTrackLayout();
+    CHECK(layout.rootOrder.size() == 2, "folder replaces its member root rows");
+    CHECK(layout.folders.size() == 1 && layout.folders[0].trackIds.size() == 2,
+          "folder membership is persisted in the layout");
+
+    layout.rootOrder = {
+        {TrackLayoutItem::Kind::Folder, folderId},
+        {TrackLayoutItem::Kind::Track, a},
+    };
+    layout.folders[0].trackIds = {c, b};
+    layout.folders[0].collapsed = true;
+    CHECK(timeline.setTrackLayout(layout), "atomic membership/member reorder is accepted");
+    const auto ordered = timeline.getAllTracks();
+    CHECK(ordered.size() == 3 && ordered[0]->id == c && ordered[1]->id == b
+          && ordered[2]->id == a, "flattened layout is the canonical track order");
+    CHECK(ordered[0]->order == 0 && ordered[1]->order == 1 && ordered[2]->order == 2,
+          "TrackInfo.order follows the flattened layout");
+
+    TrackLayout invalid = layout;
+    invalid.rootOrder.push_back({TrackLayoutItem::Kind::Track, a});
+    CHECK(!timeline.setTrackLayout(invalid), "duplicate track is rejected atomically");
+    invalid = layout;
+    invalid.folders[0].trackIds.push_back(999999);
+    CHECK(!timeline.setTrackLayout(invalid), "unknown track is rejected atomically");
+    invalid = layout;
+    invalid.folders[0].id = folderId + 1000;
+    invalid.rootOrder[0].id = invalid.folders[0].id;
+    CHECK(!timeline.setTrackLayout(invalid), "unknown folder is rejected atomically");
+    invalid = layout;
+    invalid.rootOrder.pop_back();
+    CHECK(!timeline.setTrackLayout(invalid), "missing track is rejected atomically");
+
+    const nlohmann::json saved = timeline.toJSON();
+    Timeline loaded;
+    CHECK(loaded.fromJSON(saved), "folder project round-trips through JSON");
+    const TrackLayout loadedLayout = loaded.getTrackLayout();
+    CHECK(loadedLayout.folders.size() == 1
+          && loadedLayout.folders[0].name == "Vocals"
+          && loadedLayout.folders[0].collapsed
+          && loadedLayout.folders[0].trackIds == std::vector<int>({c, b}),
+          "folder name, collapse, and membership survive reload");
+
+    nlohmann::json legacy = saved;
+    legacy.erase("trackLayout");
+    Timeline legacyLoaded;
+    CHECK(legacyLoaded.fromJSON(legacy), "legacy project without trackLayout loads");
+    CHECK(legacyLoaded.getTrackLayout().folders.empty()
+          && legacyLoaded.getTrackLayout().rootOrder.size() == 3,
+          "legacy project synthesizes a flat root layout");
+
+    nlohmann::json malformed = saved;
+    malformed["trackLayout"]["rootOrder"].push_back({{"kind", "track"}, {"id", a}});
+    Timeline malformedLoaded;
+    CHECK(malformedLoaded.fromJSON(malformed), "malformed folder metadata does not fail load");
+    CHECK(malformedLoaded.getTrackLayout().folders.empty()
+          && malformedLoaded.getTrackLayout().rootOrder.size() == 3,
+          "malformed metadata falls back to the existing flat track order");
+
+    CHECK(timeline.removeTrackFolder(folderId), "folder can be deleted");
+    const TrackLayout ungrouped = timeline.getTrackLayout();
+    CHECK(ungrouped.folders.empty() && ungrouped.rootOrder.size() == 3
+          && ungrouped.rootOrder[0].id == c && ungrouped.rootOrder[1].id == b,
+          "deleting a folder ungroups members in place");
+}
 
 static void testTickTimeMath() {
     std::cout << "[1] TickTime math\n";
@@ -1102,10 +1187,41 @@ static void testProgressForSample() {
     // Out-of-order inputs (end < pin < start) fall back to degenerate tails, not junk.
     const double r = progressForSample(150, 200, 100, 50);
     CHECK(r >= 0.0 && r <= 1.0, "out-of-order window stays in [0,1]");
+
+    // ── Independent cubic Bezier easing on each side of the fixed pin. ───────
+    SnapshotTransitionEasingCurve linear;
+    SnapshotTransitionEasingCurve easeIn;
+    easeIn.x1 = 0.42f; easeIn.y1 = 0.0f; easeIn.x2 = 1.0f; easeIn.y2 = 1.0f;
+    SnapshotTransitionEasingCurve easeOut;
+    easeOut.x1 = 0.0f; easeOut.y1 = 0.0f; easeOut.x2 = 0.58f; easeOut.y2 = 1.0f;
+    using xleth::applySnapshotTransitionEasing;
+    CHECK_NEAR(applySnapshotTransitionEasing(0.0, linear, linear), 0.0, eps,
+               "linear easing preserves the start anchor");
+    CHECK_NEAR(applySnapshotTransitionEasing(0.25, linear, linear), 0.25, 1e-8,
+               "linear easing is identity on the left half");
+    CHECK_NEAR(applySnapshotTransitionEasing(0.5, easeIn, easeOut), 0.5, eps,
+               "custom easing preserves the exact 50% pin");
+    CHECK_NEAR(applySnapshotTransitionEasing(0.75, linear, linear), 0.75, 1e-8,
+               "linear easing is identity on the right half");
+    CHECK_NEAR(applySnapshotTransitionEasing(1.0, linear, linear), 1.0, eps,
+               "linear easing preserves the end anchor");
+    CHECK(applySnapshotTransitionEasing(0.25, easeIn, linear) < 0.25,
+          "start-to-pin ease-in delays only the left half");
+    CHECK_NEAR(applySnapshotTransitionEasing(0.75, easeIn, linear), 0.75, 1e-8,
+               "left easing does not affect the right half");
+    CHECK(applySnapshotTransitionEasing(0.75, linear, easeOut) > 0.75,
+          "pin-to-end ease-out advances only the right half");
+
+    CHECK_NEAR(applySnapshotTransitionEasing(
+                   progressForSample(100, 100, 100, 100), easeIn, easeOut),
+               1.0, eps, "Bezier shaping preserves a hard-cut step");
+    CHECK_NEAR(applySnapshotTransitionEasing(
+                   progressForSample(100, 100, 100, 200), easeIn, easeOut),
+               0.5, eps, "Bezier shaping preserves a zero-left pin");
 }
 
 // ─── Snapshot transition — cue.transition persistence + hard-cut omission ─────
-// setCueTransition round-trips every field; an enabled=false transition writes NO
+// setCueTransition round-trips every live field; an enabled=false transition writes NO
 // `transition` key (byte-compatible hard cut); a cue whose JSON lacks the key
 // loads as a hard cut. Proves the additive/back-compat persistence contract.
 static void testCueTransitionRoundTrip() {
@@ -1138,8 +1254,37 @@ static void testCueTransitionRoundTrip() {
     tr.startOffsetTicks = 480;
     tr.endOffsetTicks   = 240;
     tr.type             = SnapshotTransition::Type::LineSweep;
-    tr.freezeOutgoing   = false;
     tr.geomAngleDeg     = 45.0f;
+    tl.setCueTransition(TickTime{1920}, tr);
+
+    nlohmann::json linearSaved = tl.toJSON();
+    CHECK(!linearSaved["gridLayout"]["cues"][0]["transition"].contains("easing"),
+          "default linear easing is omitted from project JSON");
+    CHECK(!linearSaved["gridLayout"]["cues"][0]["transition"].contains("edgeSoftness")
+          && !linearSaved["gridLayout"]["cues"][0]["transition"].contains("zoomAmount")
+          && !linearSaved["gridLayout"]["cues"][0]["transition"].contains("dissolveGrainPx")
+          && !linearSaved["gridLayout"]["cues"][0]["transition"].contains("radialOriginX")
+          && !linearSaved["gridLayout"]["cues"][0]["transition"].contains("pixelateMaxBlockPx")
+          && !linearSaved["gridLayout"]["cues"][0]["transition"].contains("glitchIntensity")
+          && !linearSaved["gridLayout"]["cues"][0]["transition"].contains("blurRadiusPx")
+          && !linearSaved["gridLayout"]["cues"][0]["transition"].contains("displacementAmount")
+          && !linearSaved["gridLayout"]["cues"][0]["transition"].contains("effectSeed"),
+          "default curated parameters are omitted from project JSON");
+
+    tr.startToPinEasing = {0.42f, 0.0f, 1.0f, 1.0f};
+    tr.pinToEndEasing   = {0.0f, 0.0f, 0.58f, 1.0f};
+    tr.edgeSoftness     = 0.04f;
+    tr.zoomAmount       = 0.22f;
+    tr.dissolveGrainPx  = 6;
+    tr.radialOriginX    = 0.25f;
+    tr.radialOriginY    = 0.75f;
+    tr.pixelateMaxBlockPx = 48;
+    tr.glitchIntensity  = 0.8f;
+    tr.glitchBlockPx    = 40;
+    tr.blurRadiusPx     = 22.0f;
+    tr.displacementAmount = 0.11f;
+    tr.displacementScale = 9.0f;
+    tr.effectSeed       = 77;
     tl.setCueTransition(TickTime{1920}, tr);
 
     // setCueTransition is a no-op when no cue exists at that tick.
@@ -1154,8 +1299,23 @@ static void testCueTransitionRoundTrip() {
           && tj["startOffsetTicks"] == 480
           && tj["endOffsetTicks"] == 240
           && tj["type"] == "lineSweep"
-          && tj["freezeOutgoing"] == false
-          && std::abs(tj["geomAngleDeg"].get<double>() - 45.0) < 1e-6,
+          && !tj.contains("freezeOutgoing")
+          && std::abs(tj["geomAngleDeg"].get<double>() - 45.0) < 1e-6
+          && std::abs(tj["edgeSoftness"].get<double>() - 0.04) < 1e-6
+          && std::abs(tj["zoomAmount"].get<double>() - 0.22) < 1e-6
+          && tj["dissolveGrainPx"] == 6
+          && std::abs(tj["radialOriginX"].get<double>() - 0.25) < 1e-6
+          && std::abs(tj["radialOriginY"].get<double>() - 0.75) < 1e-6
+          && tj["pixelateMaxBlockPx"] == 48
+          && std::abs(tj["glitchIntensity"].get<double>() - 0.8) < 1e-6
+          && tj["glitchBlockPx"] == 40
+          && std::abs(tj["blurRadiusPx"].get<double>() - 22.0) < 1e-6
+          && std::abs(tj["displacementAmount"].get<double>() - 0.11) < 1e-6
+          && std::abs(tj["displacementScale"].get<double>() - 9.0) < 1e-6
+          && tj["effectSeed"] == 77
+          && tj.contains("easing")
+          && std::abs(tj["easing"]["startToPin"]["x1"].get<double>() - 0.42) < 1e-6
+          && std::abs(tj["easing"]["pinToEnd"]["x2"].get<double>() - 0.58) < 1e-6,
           "transition serializes every field");
 
     Timeline loaded;
@@ -1165,9 +1325,150 @@ static void testCueTransitionRoundTrip() {
           && rt.startOffsetTicks == 480
           && rt.endOffsetTicks == 240
           && rt.type == SnapshotTransition::Type::LineSweep
-          && rt.freezeOutgoing == false
-          && std::abs(rt.geomAngleDeg - 45.0f) < 1e-6f,
+          && std::abs(rt.geomAngleDeg - 45.0f) < 1e-6f
+          && std::abs(rt.edgeSoftness - 0.04f) < 1e-6f
+          && std::abs(rt.zoomAmount - 0.22f) < 1e-6f
+          && rt.dissolveGrainPx == 6
+          && std::abs(rt.radialOriginX - 0.25f) < 1e-6f
+          && std::abs(rt.radialOriginY - 0.75f) < 1e-6f
+          && rt.pixelateMaxBlockPx == 48
+          && std::abs(rt.glitchIntensity - 0.8f) < 1e-6f
+          && rt.glitchBlockPx == 40
+          && std::abs(rt.blurRadiusPx - 22.0f) < 1e-6f
+          && std::abs(rt.displacementAmount - 0.11f) < 1e-6f
+          && std::abs(rt.displacementScale - 9.0f) < 1e-6f
+          && rt.effectSeed == 77
+          && std::abs(rt.startToPinEasing.x1 - 0.42f) < 1e-6f
+          && std::abs(rt.pinToEndEasing.x2 - 0.58f) < 1e-6f,
           "every transition field round-trips through fromJSON");
+
+    // Projects written by older builds may contain the retired freezeOutgoing
+    // field. Both historical values are tolerated, ignored, and removed on save.
+    for (const bool legacyFreeze : {false, true}) {
+        nlohmann::json legacy = saved;
+        legacy["gridLayout"]["cues"][0]["transition"]["freezeOutgoing"] = legacyFreeze;
+        Timeline legacyLoaded;
+        CHECK(legacyLoaded.fromJSON(legacy),
+              "legacy freezeOutgoing project loads without error");
+        const nlohmann::json legacyResaved = legacyLoaded.toJSON();
+        CHECK(!legacyResaved["gridLayout"]["cues"][0]["transition"].contains("freezeOutgoing"),
+              "retired freezeOutgoing field is dropped when resaved");
+    }
+
+    // Each malformed half repairs independently; valid numeric coordinates clamp.
+    nlohmann::json malformed = saved;
+    malformed["gridLayout"]["cues"][0]["transition"]["easing"]["startToPin"] = {
+        {"x1", -2.0}, {"y1", 3.0}, {"x2", 0.25}, {"y2", 0.75},
+    };
+    malformed["gridLayout"]["cues"][0]["transition"]["easing"]["pinToEnd"].erase("y2");
+    Timeline repaired;
+    CHECK(repaired.fromJSON(malformed), "malformed transition easing loads safely");
+    const auto& repairedTr = repaired.getGridCues()[0].transition;
+    CHECK_NEAR(repairedTr.startToPinEasing.x1, 0.0f, 1e-6,
+               "out-of-range easing coordinate clamps low");
+    CHECK_NEAR(repairedTr.startToPinEasing.y1, 1.0f, 1e-6,
+               "out-of-range easing coordinate clamps high");
+    CHECK(repairedTr.pinToEndEasing.isLinear(),
+          "incomplete easing half repairs to linear independently");
+
+    // New parameter fields are additive. Older projects receive defaults, while
+    // invalid authored values are repaired centrally by SnapshotTransition::normalize.
+    nlohmann::json older = saved;
+    older["gridLayout"]["cues"][0]["transition"].erase("edgeSoftness");
+    older["gridLayout"]["cues"][0]["transition"].erase("zoomAmount");
+    older["gridLayout"]["cues"][0]["transition"].erase("dissolveGrainPx");
+    older["gridLayout"]["cues"][0]["transition"].erase("radialOriginX");
+    older["gridLayout"]["cues"][0]["transition"].erase("radialOriginY");
+    older["gridLayout"]["cues"][0]["transition"].erase("pixelateMaxBlockPx");
+    older["gridLayout"]["cues"][0]["transition"].erase("glitchIntensity");
+    older["gridLayout"]["cues"][0]["transition"].erase("glitchBlockPx");
+    older["gridLayout"]["cues"][0]["transition"].erase("blurRadiusPx");
+    older["gridLayout"]["cues"][0]["transition"].erase("displacementAmount");
+    older["gridLayout"]["cues"][0]["transition"].erase("displacementScale");
+    older["gridLayout"]["cues"][0]["transition"].erase("effectSeed");
+    Timeline olderLoaded;
+    CHECK(olderLoaded.fromJSON(older), "older transition project loads without new parameters");
+    const auto& olderTr = olderLoaded.getGridCues()[0].transition;
+    CHECK_NEAR(olderTr.edgeSoftness, SnapshotTransition::kDefaultEdgeSoftness, 1e-6,
+               "missing edge softness receives its default");
+    CHECK_NEAR(olderTr.zoomAmount, SnapshotTransition::kDefaultZoomAmount, 1e-6,
+               "missing zoom amount receives its default");
+    CHECK(olderTr.dissolveGrainPx == SnapshotTransition::kDefaultDissolveGrainPx,
+          "missing dissolve grain receives its default");
+    CHECK_NEAR(olderTr.radialOriginX, SnapshotTransition::kDefaultRadialOriginX, 1e-6,
+               "missing radial origin receives its default");
+    CHECK(olderTr.pixelateMaxBlockPx == SnapshotTransition::kDefaultPixelateMaxBlockPx,
+          "missing pixelate block size receives its default");
+    CHECK_NEAR(olderTr.glitchIntensity, SnapshotTransition::kDefaultGlitchIntensity, 1e-6,
+               "missing glitch intensity receives its default");
+    CHECK_NEAR(olderTr.blurRadiusPx, SnapshotTransition::kDefaultBlurRadiusPx, 1e-6,
+               "missing blur radius receives its default");
+    CHECK_NEAR(olderTr.displacementAmount, SnapshotTransition::kDefaultDisplacementAmount, 1e-6,
+               "missing displacement strength receives its default");
+    CHECK(olderTr.effectSeed == SnapshotTransition::kDefaultEffectSeed,
+          "missing procedural seed receives its default");
+
+    SnapshotTransition invalid = tr;
+    invalid.startOffsetTicks = -1;
+    invalid.endOffsetTicks = -2;
+    invalid.geomAngleDeg = -90.0f;
+    invalid.edgeSoftness = std::numeric_limits<float>::infinity();
+    invalid.zoomAmount = 99.0f;
+    invalid.dissolveGrainPx = 99;
+    invalid.radialOriginX = -1.0f;
+    invalid.radialOriginY = std::numeric_limits<float>::quiet_NaN();
+    invalid.pixelateMaxBlockPx = 999;
+    invalid.glitchIntensity = -2.0f;
+    invalid.glitchBlockPx = 1;
+    invalid.blurRadiusPx = 999.0f;
+    invalid.displacementAmount = std::numeric_limits<float>::infinity();
+    invalid.displacementScale = 0.0f;
+    invalid.effectSeed = 999999;
+    tl.setCueTransition(TickTime{1920}, invalid);
+    const auto& normalized = tl.getGridCues()[0].transition;
+    CHECK(normalized.startOffsetTicks == 0 && normalized.endOffsetTicks == 0,
+          "negative transition offsets clamp to zero");
+    CHECK_NEAR(normalized.geomAngleDeg, 270.0f, 1e-6,
+               "transition direction normalizes into 0..360");
+    CHECK_NEAR(normalized.edgeSoftness, SnapshotTransition::kDefaultEdgeSoftness, 1e-6,
+               "non-finite edge softness repairs to default");
+    CHECK_NEAR(normalized.zoomAmount, SnapshotTransition::kMaxZoomAmount, 1e-6,
+               "zoom amount clamps high");
+    CHECK(normalized.dissolveGrainPx == SnapshotTransition::kMaxDissolveGrainPx,
+          "dissolve grain clamps high");
+    CHECK_NEAR(normalized.radialOriginX, 0.0f, 1e-6,
+               "radial origin clamps low");
+    CHECK_NEAR(normalized.radialOriginY, SnapshotTransition::kDefaultRadialOriginY, 1e-6,
+               "non-finite radial origin repairs to default");
+    CHECK(normalized.pixelateMaxBlockPx == SnapshotTransition::kMaxPixelateMaxBlockPx,
+          "pixelate block size clamps high");
+    CHECK_NEAR(normalized.glitchIntensity, 0.0f, 1e-6,
+               "glitch intensity clamps low");
+    CHECK(normalized.glitchBlockPx == 4, "glitch slice height clamps low");
+    CHECK_NEAR(normalized.blurRadiusPx, SnapshotTransition::kMaxBlurRadiusPx, 1e-6,
+               "blur radius clamps high");
+    CHECK_NEAR(normalized.displacementAmount, SnapshotTransition::kDefaultDisplacementAmount, 1e-6,
+               "non-finite displacement strength repairs to default");
+    CHECK_NEAR(normalized.displacementScale, 1.0f, 1e-6,
+               "displacement scale clamps low");
+    CHECK(normalized.effectSeed == SnapshotTransition::kMaxEffectSeed,
+          "procedural seed clamps high");
+
+    const SnapshotTransition::Type allTypes[] = {
+        SnapshotTransition::Type::Crossfade, SnapshotTransition::Type::LineSweep,
+        SnapshotTransition::Type::Push, SnapshotTransition::Type::Slide,
+        SnapshotTransition::Type::Zoom, SnapshotTransition::Type::Dissolve,
+        SnapshotTransition::Type::OutThenIn,
+        SnapshotTransition::Type::RadialReveal, SnapshotTransition::Type::Pixelate,
+        SnapshotTransition::Type::Glitch, SnapshotTransition::Type::BlurThrough,
+        SnapshotTransition::Type::Displacement,
+    };
+    for (const auto type : allTypes) {
+        CHECK(stringToSnapshotTransitionType(snapshotTransitionTypeToString(type)) == type,
+              "every snapshot transition type string round-trips");
+    }
+    CHECK(stringToSnapshotTransitionType("futureUnknown") == SnapshotTransition::Type::Crossfade,
+          "unknown transition type safely falls back to crossfade");
 
     // Toggling back to disabled must drop the key again (hard-cut omission holds
     // after a prior enable).
@@ -1223,6 +1524,20 @@ static void testTransitionResolver() {
     tr.startOffsetTicks = 600;   // window start = 400
     tr.endOffsetTicks   = 200;   // window end   = 1200
     tr.type             = SnapshotTransition::Type::Crossfade;
+    tr.edgeSoftness     = 0.03f;
+    tr.zoomAmount       = 0.18f;
+    tr.dissolveGrainPx  = 4;
+    tr.radialOriginX    = 0.2f;
+    tr.radialOriginY    = 0.7f;
+    tr.pixelateMaxBlockPx = 42;
+    tr.glitchIntensity  = 0.75f;
+    tr.glitchBlockPx    = 36;
+    tr.blurRadiusPx     = 20.0f;
+    tr.displacementAmount = 0.1f;
+    tr.displacementScale = 8.0f;
+    tr.effectSeed       = 91;
+    tr.startToPinEasing = {0.42f, 0.0f, 1.0f, 1.0f};
+    tr.pinToEndEasing   = {0.0f, 0.0f, 0.58f, 1.0f};
     tl.setCueTransition(TickTime{1000}, tr);
 
     // Outside the window (both sides) → inactive.
@@ -1236,8 +1551,32 @@ static void testTransitionResolver() {
           && rt.startTick.ticks == 400
           && rt.endTick.ticks == 1200,
           "pin/start/end derive from cue tick + asymmetric offsets");
-    CHECK(rt.type == SnapshotTransition::Type::Crossfade && rt.freezeOutgoing == true,
-          "resolved type + freezeOutgoing copied from the cue");
+    CHECK(rt.type == SnapshotTransition::Type::Crossfade,
+          "resolved transition type copied from the cue");
+    CHECK_NEAR(rt.edgeSoftness, 0.03f, 1e-6,
+               "resolved edge softness copied from the cue");
+    CHECK_NEAR(rt.zoomAmount, 0.18f, 1e-6,
+               "resolved zoom amount copied from the cue");
+    CHECK(rt.dissolveGrainPx == 4,
+          "resolved dissolve grain copied from the cue");
+    CHECK_NEAR(rt.radialOriginX, 0.2f, 1e-6,
+               "resolved radial origin copied from the cue");
+    CHECK(rt.pixelateMaxBlockPx == 42,
+          "resolved pixelate block size copied from the cue");
+    CHECK_NEAR(rt.glitchIntensity, 0.75f, 1e-6,
+               "resolved glitch intensity copied from the cue");
+    CHECK(rt.glitchBlockPx == 36, "resolved glitch slice height copied from the cue");
+    CHECK_NEAR(rt.blurRadiusPx, 20.0f, 1e-6,
+               "resolved blur radius copied from the cue");
+    CHECK_NEAR(rt.displacementAmount, 0.1f, 1e-6,
+               "resolved displacement strength copied from the cue");
+    CHECK_NEAR(rt.displacementScale, 8.0f, 1e-6,
+               "resolved displacement scale copied from the cue");
+    CHECK(rt.effectSeed == 91, "resolved procedural seed copied from the cue");
+    CHECK_NEAR(rt.startToPinEasing.x1, 0.42f, 1e-6,
+               "resolved start-to-pin easing copied from the cue");
+    CHECK_NEAR(rt.pinToEndEasing.x2, 0.58f, 1e-6,
+               "resolved pin-to-end easing copied from the cue");
     CHECK(tl.transitionAt(TickTime{400}).active && tl.transitionAt(TickTime{1200}).active,
           "inclusive on both window boundaries");
     CHECK(tl.transitionAt(TickTime{700}).active,
@@ -1250,6 +1589,8 @@ static void testTransitionResolver() {
 
 int main() {
     std::cout << "=== Xleth Timeline Test Suite (Phase 1) ===\n\n";
+
+    testTrackFolders();
 
     // ── [1] TickTime math ─────────────────────────────────────────────────────
     testTickTimeMath();

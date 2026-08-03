@@ -12,7 +12,6 @@ import SettingsPanel from './components/SettingsPanel.jsx'
 import MissingPluginsDialog from './components/MissingPluginsDialog.jsx'
 import MissingMediaDialog from './components/MissingMediaDialog.jsx'
 import DevThemeSwitcher from './components/debug/DevThemeSwitcher.jsx'
-import LoopLabDevMount from './components/loopLab/LoopLabDevMount.jsx'
 import { ToastProvider, useToast } from './components/Toast.jsx'
 import UpdateBanner from './components/UpdateBanner.jsx'
 import { showUnsavedChangesDialog } from './components/UnsavedChangesDialog.jsx'
@@ -331,9 +330,13 @@ export async function handleXlethRootMenuAction(label, {
       break
     case 'Undo':
       await xl.undo.undo()
+      timelineEvents.dispatchEvent(new Event('timeline-tracks-changed'))
+      timelineEvents.dispatchEvent(new Event('timeline-track-layout-changed'))
       break
     case 'Redo':
       await xl.undo.redo()
+      timelineEvents.dispatchEvent(new Event('timeline-tracks-changed'))
+      timelineEvents.dispatchEvent(new Event('timeline-track-layout-changed'))
       break
     case 'Delete':
       await runEditorCommand('deleteSelected')
@@ -651,7 +654,6 @@ function XlethRootInner() {
         />
       )}
       <UpdateBanner />
-      {import.meta.env.DEV && <LoopLabDevMount />}
     </div>
   )
 }

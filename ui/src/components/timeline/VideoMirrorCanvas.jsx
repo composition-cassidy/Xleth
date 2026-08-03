@@ -1,6 +1,7 @@
 import {
   useEffect, useRef, useState, useCallback, useImperativeHandle, forwardRef,
 } from 'react'
+import { Trash2, X } from 'lucide-react'
 import {
   drawGrid, drawClips, drawPatternBlocks, drawHoldZones, resolveTimelinePalette, withAlpha,
 } from './timelineDrawing.js'
@@ -10,6 +11,10 @@ import {
 } from '../../constants/timeline.js'
 import { playheadClock } from '../../services/PlayheadClock.js'
 import XlethSelect from '../common/XlethSelect.jsx'
+import SnapshotTransitionBezierEditor, {
+  normalizeTransitionEasing,
+} from './SnapshotTransitionBezierEditor.jsx'
+import LineSweepDirectionControl, { normalizeLineSweepAngle } from './LineSweepDirectionControl.jsx'
 
 const PLAYHEAD_LINE_WIDTH = 1
 
@@ -28,14 +33,84 @@ export function mirrorTickToPixel(tick, scrollOffset, pixelsPerBeat) {
 // that change: startOffsetTicks / endOffsetTicks (>= 0, in TICKS). A hard cut is
 // both offsets 0 (the default); transitions are opt-in via the Enable toggle.
 
-// Only the two styles the engine renders distinctly in v1 are exposed. The
-// engine silently falls back every other Type to Crossfade, so surfacing
-// Zoom / Push / Slide / Dissolve / OutThenIn would misrepresent what actually
-// renders. Add each here as the engine gains a real shader for it.
+// Every persisted engine type has a distinct shader mode and an editor option.
+// Parameters remain in the full payload when types change so switching back
+// restores that type's previous curated settings.
 export const TRANSITION_TYPE_OPTIONS = [
-  { value: 'crossfade', label: 'Crossfade' },
-  { value: 'lineSweep', label: 'Line Sweep' },
+  { value: 'crossfade', label: 'Crossfade', group: 'Basic' },
+  { value: 'lineSweep', label: 'Line Sweep', group: 'Basic' },
+  { value: 'push', label: 'Push', group: 'Basic' },
+  { value: 'slide', label: 'Slide Over', group: 'Basic' },
+  { value: 'zoom', label: 'Zoom', group: 'Basic' },
+  { value: 'dissolve', label: 'Dissolve', group: 'Basic' },
+  { value: 'outThenIn', label: 'Out–Then–In', group: 'Basic' },
+  { value: 'radialReveal', label: 'Radial Reveal', group: 'Advanced' },
+  { value: 'pixelate', label: 'Pixelate', group: 'Advanced' },
+  { value: 'glitch', label: 'Glitch', group: 'Advanced' },
+  { value: 'blurThrough', label: 'Blur Through', group: 'Advanced' },
+  { value: 'displacement', label: 'Displacement', group: 'Advanced' },
 ]
+
+export const DEFAULT_TRANSITION_EDGE_SOFTNESS = 0
+export const DEFAULT_TRANSITION_ZOOM_AMOUNT = 0.12
+export const DEFAULT_TRANSITION_DISSOLVE_GRAIN_PX = 1
+export const DEFAULT_TRANSITION_RADIAL_ORIGIN = 0.5
+export const DEFAULT_TRANSITION_PIXELATE_MAX_BLOCK_PX = 32
+export const DEFAULT_TRANSITION_GLITCH_INTENSITY = 0.65
+export const DEFAULT_TRANSITION_GLITCH_BLOCK_PX = 24
+export const DEFAULT_TRANSITION_BLUR_RADIUS_PX = 16
+export const DEFAULT_TRANSITION_DISPLACEMENT_AMOUNT = 0.06
+export const DEFAULT_TRANSITION_DISPLACEMENT_SCALE = 6
+export const DEFAULT_TRANSITION_EFFECT_SEED = 0
+
+function clampFinite(value, min, max, fallback) {
+  const numeric = Number(value)
+  return Number.isFinite(numeric) ? Math.min(max, Math.max(min, numeric)) : fallback
+}
+
+export function normalizeTransitionEdgeSoftness(value) {
+  return clampFinite(value, 0, 0.10, DEFAULT_TRANSITION_EDGE_SOFTNESS)
+}
+
+export function normalizeTransitionZoomAmount(value) {
+  return clampFinite(value, 0, 0.30, DEFAULT_TRANSITION_ZOOM_AMOUNT)
+}
+
+export function normalizeTransitionDissolveGrain(value) {
+  return Math.round(clampFinite(value, 1, 8, DEFAULT_TRANSITION_DISSOLVE_GRAIN_PX))
+}
+
+export function normalizeTransitionRadialOrigin(value) {
+  return clampFinite(value, 0, 1, DEFAULT_TRANSITION_RADIAL_ORIGIN)
+}
+
+export function normalizeTransitionPixelateBlock(value) {
+  return Math.round(clampFinite(value, 1, 128, DEFAULT_TRANSITION_PIXELATE_MAX_BLOCK_PX))
+}
+
+export function normalizeTransitionGlitchIntensity(value) {
+  return clampFinite(value, 0, 1, DEFAULT_TRANSITION_GLITCH_INTENSITY)
+}
+
+export function normalizeTransitionGlitchBlock(value) {
+  return Math.round(clampFinite(value, 4, 128, DEFAULT_TRANSITION_GLITCH_BLOCK_PX))
+}
+
+export function normalizeTransitionBlurRadius(value) {
+  return clampFinite(value, 0, 48, DEFAULT_TRANSITION_BLUR_RADIUS_PX)
+}
+
+export function normalizeTransitionDisplacementAmount(value) {
+  return clampFinite(value, 0, 0.20, DEFAULT_TRANSITION_DISPLACEMENT_AMOUNT)
+}
+
+export function normalizeTransitionDisplacementScale(value) {
+  return clampFinite(value, 1, 24, DEFAULT_TRANSITION_DISPLACEMENT_SCALE)
+}
+
+export function normalizeTransitionEffectSeed(value) {
+  return Math.round(clampFinite(value, 0, 65535, DEFAULT_TRANSITION_EFFECT_SEED))
+}
 
 // Window seeded on both sides of the pin the moment a hard-cut cue is switched
 // to a transition, so the Start/End handles appear off the pin and are grabbable.
@@ -60,9 +135,9 @@ export function clampEndOffsetTicks(pinTick, handleTick) {
   return Math.max(0, handleTick - pinTick)
 }
 
-// Merge a partial edit into the FULL six-field transition object the engine
+// Merge a partial edit into the FULL transition object the engine
 // expects. setCueTransition replaces the whole transition (any omitted field
-// reverts to its engine default), so every write must send all six fields.
+// reverts to its engine default), so every write must preserve both easing halves.
 export function buildCueTransition(current, patch = {}) {
   const pick = (key, fallback) => (
     patch[key] !== undefined ? patch[key]
@@ -73,11 +148,23 @@ export function buildCueTransition(current, patch = {}) {
     startOffsetTicks: Math.max(0, Math.round(pick('startOffsetTicks', 0))),
     endOffsetTicks:   Math.max(0, Math.round(pick('endOffsetTicks', 0))),
     type:             pick('type', 'crossfade'),
-    freezeOutgoing:   !!pick('freezeOutgoing', true),
-    geomAngleDeg:     Number(pick('geomAngleDeg', 0)) || 0,
+    geomAngleDeg:     normalizeLineSweepAngle(pick('geomAngleDeg', 0)),
+    edgeSoftness:     normalizeTransitionEdgeSoftness(pick('edgeSoftness', DEFAULT_TRANSITION_EDGE_SOFTNESS)),
+    zoomAmount:       normalizeTransitionZoomAmount(pick('zoomAmount', DEFAULT_TRANSITION_ZOOM_AMOUNT)),
+    dissolveGrainPx:  normalizeTransitionDissolveGrain(pick('dissolveGrainPx', DEFAULT_TRANSITION_DISSOLVE_GRAIN_PX)),
+    radialOriginX:    normalizeTransitionRadialOrigin(pick('radialOriginX', DEFAULT_TRANSITION_RADIAL_ORIGIN)),
+    radialOriginY:    normalizeTransitionRadialOrigin(pick('radialOriginY', DEFAULT_TRANSITION_RADIAL_ORIGIN)),
+    pixelateMaxBlockPx: normalizeTransitionPixelateBlock(pick('pixelateMaxBlockPx', DEFAULT_TRANSITION_PIXELATE_MAX_BLOCK_PX)),
+    glitchIntensity:  normalizeTransitionGlitchIntensity(pick('glitchIntensity', DEFAULT_TRANSITION_GLITCH_INTENSITY)),
+    glitchBlockPx:    normalizeTransitionGlitchBlock(pick('glitchBlockPx', DEFAULT_TRANSITION_GLITCH_BLOCK_PX)),
+    blurRadiusPx:     normalizeTransitionBlurRadius(pick('blurRadiusPx', DEFAULT_TRANSITION_BLUR_RADIUS_PX)),
+    displacementAmount: normalizeTransitionDisplacementAmount(pick('displacementAmount', DEFAULT_TRANSITION_DISPLACEMENT_AMOUNT)),
+    displacementScale: normalizeTransitionDisplacementScale(pick('displacementScale', DEFAULT_TRANSITION_DISPLACEMENT_SCALE)),
+    effectSeed:       normalizeTransitionEffectSeed(pick('effectSeed', DEFAULT_TRANSITION_EFFECT_SEED)),
+    easing:           normalizeTransitionEasing(pick('easing', undefined)),
   }
   // Seed a visible window only when THIS edit is the one enabling a collapsed
-  // (hard-cut) transition — never when merely changing type/freeze later.
+  // (hard-cut) transition — never when merely changing another setting later.
   if (patch.enabled === true && merged.startOffsetTicks === 0 && merged.endOffsetTicks === 0) {
     merged.startOffsetTicks = DEFAULT_TRANSITION_WINDOW_TICKS
     merged.endOffsetTicks   = DEFAULT_TRANSITION_WINDOW_TICKS
@@ -85,8 +172,27 @@ export function buildCueTransition(current, patch = {}) {
   return merged
 }
 
+function TransitionParameterControl({ label, value, min, max, step, valueText, onChange }) {
+  return (
+    <label className="vmt-transition-parameter">
+      <span>{label}</span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+        aria-label={label}
+        aria-valuetext={valueText}
+      />
+      <output>{valueText}</output>
+    </label>
+  )
+}
+
 function CueMarker({
-  cue, x, laneWidth, snapshots, selected, onSelect, onMoveCue, onRemoveCue, onRepointCue,
+  cue, x, laneWidth, snapshots, selected, onSelect, onClose, onMoveCue, onRemoveCue, onRepointCue,
   onSetCueTransition, pixelsPerBeatRef, scrollOffsetRef, containerRef,
 }) {
   const markerRef = useRef(null)
@@ -133,6 +239,7 @@ function CueMarker({
   }, [containerRef, cue.tick, laneWidth, onMoveCue, onSelect, pixelsPerBeatRef, scrollOffsetRef, x])
 
   const options = snapshots.map((snapshot) => ({ value: snapshot.id, label: snapshot.name }))
+  const transitionType = cue.transition?.type || 'crossfade'
 
   return (
     <div
@@ -162,12 +269,21 @@ function CueMarker({
             />
             <button
               type="button"
-              className="vmt-delete-cue"
+              className="vmt-cue-action vmt-close-cue-editor"
+              onClick={onClose}
+              aria-label={'Close cue editor at tick ' + cue.tick}
+              title="Close"
+            >
+              <X size={14} strokeWidth={2.25} aria-hidden="true" />
+            </button>
+            <button
+              type="button"
+              className="vmt-cue-action vmt-delete-cue"
               onClick={() => onRemoveCue(cue.tick)}
               aria-label={'Delete cue at tick ' + cue.tick}
               title="Delete cue"
             >
-              ×
+              <Trash2 size={13} strokeWidth={2} aria-hidden="true" />
             </button>
           </div>
           {/* Boundary animation. The pin (this marker) stays put; only the
@@ -188,23 +304,205 @@ function CueMarker({
               <div className="vmt-transition-fields">
                 <XlethSelect
                   className="vmt-transition-type"
-                  value={cue.transition?.type || 'crossfade'}
+                  value={transitionType}
                   options={TRANSITION_TYPE_OPTIONS}
                   onChange={(type) => onSetCueTransition(
                     cue.tick, buildCueTransition(cue.transition, { type }),
                   )}
                   ariaLabel={'Animation type for cue at tick ' + cue.tick}
                 />
-                <label className="vmt-transition-row">
-                  <input
-                    type="checkbox"
-                    checked={cue.transition?.freezeOutgoing !== false}
-                    onChange={(e) => onSetCueTransition(
-                      cue.tick, buildCueTransition(cue.transition, { freezeOutgoing: e.target.checked }),
+                {['lineSweep', 'push', 'slide', 'blurThrough'].includes(transitionType) && (
+                  <LineSweepDirectionControl
+                    value={cue.transition?.geomAngleDeg}
+                    cardinalOnly={transitionType === 'push' || transitionType === 'slide'}
+                    ariaLabel={`${TRANSITION_TYPE_OPTIONS.find((option) => option.value === transitionType)?.label} direction`}
+                    onCommit={(geomAngleDeg) => onSetCueTransition(
+                      cue.tick, buildCueTransition(cue.transition, { geomAngleDeg }),
                     )}
                   />
-                  <span>Freeze outgoing</span>
-                </label>
+                )}
+                {transitionType === 'lineSweep' && (
+                  <TransitionParameterControl
+                    label="Feather"
+                    value={normalizeTransitionEdgeSoftness(cue.transition?.edgeSoftness)}
+                    min={0}
+                    max={0.10}
+                    step={0.005}
+                    valueText={`${Math.round(normalizeTransitionEdgeSoftness(cue.transition?.edgeSoftness) * 100)}%`}
+                    onChange={(edgeSoftness) => onSetCueTransition(
+                      cue.tick, buildCueTransition(cue.transition, { edgeSoftness }),
+                    )}
+                  />
+                )}
+                {transitionType === 'zoom' && (
+                  <TransitionParameterControl
+                    label="Zoom intensity"
+                    value={normalizeTransitionZoomAmount(cue.transition?.zoomAmount)}
+                    min={0}
+                    max={0.30}
+                    step={0.01}
+                    valueText={`${Math.round(normalizeTransitionZoomAmount(cue.transition?.zoomAmount) * 100)}%`}
+                    onChange={(zoomAmount) => onSetCueTransition(
+                      cue.tick, buildCueTransition(cue.transition, { zoomAmount }),
+                    )}
+                  />
+                )}
+                {transitionType === 'dissolve' && (
+                  <TransitionParameterControl
+                    label="Dissolve grain"
+                    value={normalizeTransitionDissolveGrain(cue.transition?.dissolveGrainPx)}
+                    min={1}
+                    max={8}
+                    step={1}
+                    valueText={`${normalizeTransitionDissolveGrain(cue.transition?.dissolveGrainPx)} px`}
+                    onChange={(dissolveGrainPx) => onSetCueTransition(
+                      cue.tick, buildCueTransition(cue.transition, { dissolveGrainPx }),
+                    )}
+                  />
+                )}
+                {transitionType === 'radialReveal' && (
+                  <>
+                    <TransitionParameterControl
+                      label="Origin X"
+                      value={normalizeTransitionRadialOrigin(cue.transition?.radialOriginX)}
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      valueText={`${Math.round(normalizeTransitionRadialOrigin(cue.transition?.radialOriginX) * 100)}%`}
+                      onChange={(radialOriginX) => onSetCueTransition(
+                        cue.tick, buildCueTransition(cue.transition, { radialOriginX }),
+                      )}
+                    />
+                    <TransitionParameterControl
+                      label="Origin Y"
+                      value={normalizeTransitionRadialOrigin(cue.transition?.radialOriginY)}
+                      min={0}
+                      max={1}
+                      step={0.01}
+                      valueText={`${Math.round(normalizeTransitionRadialOrigin(cue.transition?.radialOriginY) * 100)}%`}
+                      onChange={(radialOriginY) => onSetCueTransition(
+                        cue.tick, buildCueTransition(cue.transition, { radialOriginY }),
+                      )}
+                    />
+                    <TransitionParameterControl
+                      label="Feather"
+                      value={normalizeTransitionEdgeSoftness(cue.transition?.edgeSoftness)}
+                      min={0}
+                      max={0.10}
+                      step={0.005}
+                      valueText={`${Math.round(normalizeTransitionEdgeSoftness(cue.transition?.edgeSoftness) * 100)}%`}
+                      onChange={(edgeSoftness) => onSetCueTransition(
+                        cue.tick, buildCueTransition(cue.transition, { edgeSoftness }),
+                      )}
+                    />
+                  </>
+                )}
+                {transitionType === 'pixelate' && (
+                  <TransitionParameterControl
+                    label="Max block"
+                    value={normalizeTransitionPixelateBlock(cue.transition?.pixelateMaxBlockPx)}
+                    min={1}
+                    max={128}
+                    step={1}
+                    valueText={`${normalizeTransitionPixelateBlock(cue.transition?.pixelateMaxBlockPx)} px`}
+                    onChange={(pixelateMaxBlockPx) => onSetCueTransition(
+                      cue.tick, buildCueTransition(cue.transition, { pixelateMaxBlockPx }),
+                    )}
+                  />
+                )}
+                {transitionType === 'glitch' && (
+                  <>
+                    <TransitionParameterControl
+                      label="Intensity"
+                      value={normalizeTransitionGlitchIntensity(cue.transition?.glitchIntensity)}
+                      min={0}
+                      max={1}
+                      step={0.05}
+                      valueText={`${Math.round(normalizeTransitionGlitchIntensity(cue.transition?.glitchIntensity) * 100)}%`}
+                      onChange={(glitchIntensity) => onSetCueTransition(
+                        cue.tick, buildCueTransition(cue.transition, { glitchIntensity }),
+                      )}
+                    />
+                    <TransitionParameterControl
+                      label="Slice height"
+                      value={normalizeTransitionGlitchBlock(cue.transition?.glitchBlockPx)}
+                      min={4}
+                      max={128}
+                      step={1}
+                      valueText={`${normalizeTransitionGlitchBlock(cue.transition?.glitchBlockPx)} px`}
+                      onChange={(glitchBlockPx) => onSetCueTransition(
+                        cue.tick, buildCueTransition(cue.transition, { glitchBlockPx }),
+                      )}
+                    />
+                    <TransitionParameterControl
+                      label="Seed"
+                      value={normalizeTransitionEffectSeed(cue.transition?.effectSeed)}
+                      min={0}
+                      max={255}
+                      step={1}
+                      valueText={`${normalizeTransitionEffectSeed(cue.transition?.effectSeed)}`}
+                      onChange={(effectSeed) => onSetCueTransition(
+                        cue.tick, buildCueTransition(cue.transition, { effectSeed }),
+                      )}
+                    />
+                  </>
+                )}
+                {transitionType === 'blurThrough' && (
+                  <TransitionParameterControl
+                    label="Blur radius"
+                    value={normalizeTransitionBlurRadius(cue.transition?.blurRadiusPx)}
+                    min={0}
+                    max={48}
+                    step={1}
+                    valueText={`${Math.round(normalizeTransitionBlurRadius(cue.transition?.blurRadiusPx))} px`}
+                    onChange={(blurRadiusPx) => onSetCueTransition(
+                      cue.tick, buildCueTransition(cue.transition, { blurRadiusPx }),
+                    )}
+                  />
+                )}
+                {transitionType === 'displacement' && (
+                  <>
+                    <TransitionParameterControl
+                      label="Strength"
+                      value={normalizeTransitionDisplacementAmount(cue.transition?.displacementAmount)}
+                      min={0}
+                      max={0.20}
+                      step={0.01}
+                      valueText={`${Math.round(normalizeTransitionDisplacementAmount(cue.transition?.displacementAmount) * 100)}%`}
+                      onChange={(displacementAmount) => onSetCueTransition(
+                        cue.tick, buildCueTransition(cue.transition, { displacementAmount }),
+                      )}
+                    />
+                    <TransitionParameterControl
+                      label="Noise scale"
+                      value={normalizeTransitionDisplacementScale(cue.transition?.displacementScale)}
+                      min={1}
+                      max={24}
+                      step={0.5}
+                      valueText={`${normalizeTransitionDisplacementScale(cue.transition?.displacementScale).toFixed(1)}`}
+                      onChange={(displacementScale) => onSetCueTransition(
+                        cue.tick, buildCueTransition(cue.transition, { displacementScale }),
+                      )}
+                    />
+                    <TransitionParameterControl
+                      label="Seed"
+                      value={normalizeTransitionEffectSeed(cue.transition?.effectSeed)}
+                      min={0}
+                      max={255}
+                      step={1}
+                      valueText={`${normalizeTransitionEffectSeed(cue.transition?.effectSeed)}`}
+                      onChange={(effectSeed) => onSetCueTransition(
+                        cue.tick, buildCueTransition(cue.transition, { effectSeed }),
+                      )}
+                    />
+                  </>
+                )}
+                <SnapshotTransitionBezierEditor
+                  easing={cue.transition?.easing}
+                  onChange={(easing) => onSetCueTransition(
+                    cue.tick, buildCueTransition(cue.transition, { easing }),
+                  )}
+                />
               </div>
             )}
           </div>
@@ -241,7 +539,7 @@ function TransitionBand({
     e.preventDefault()
     e.stopPropagation()
     // Keep the outgoing offset fixed while dragging one handle; buildCueTransition
-    // supplies the full six-field object each write needs.
+    // supplies the complete transition object each write needs.
     let next = buildCueTransition(tr, { enabled: true })
     const paint = () => {
       const s = mirrorTickToPixel(Math.max(0, pinTick - next.startOffsetTicks), scrollOffsetRef.current, pixelsPerBeatRef.current)
@@ -393,6 +691,7 @@ function CueLane({
             snapshots={snapshots}
             selected={selectedTick === cue.tick}
             onSelect={setSelectedTick}
+            onClose={() => setSelectedTick(null)}
             onMoveCue={async (oldTick, newTick) => {
               const moved = await onMoveCue(oldTick, newTick)
               if (moved) setSelectedTick(newTick)
@@ -438,7 +737,7 @@ const EMPTY_SELECTION = new Set()
 const VideoMirrorCanvas = forwardRef(function VideoMirrorCanvas(
   {
     pixelsPerBeatRef, scrollOffsetRef, playheadBeatRef,
-    tracks, clips, regions, patternBlocks, patterns, bpmRef,
+    tracks, trackLayout = null, clips, regions, patternBlocks, patterns, bpmRef,
     cues = [], snapshots = [], defaultSnapshotId = '', totalBeats = 0,
     snapGranularity = '1/16', onScrub, onWheel,
     onMoveCue, onRemoveCue, onRepointCue, onSetCueTransition,
@@ -453,6 +752,7 @@ const VideoMirrorCanvas = forwardRef(function VideoMirrorCanvas(
 
   // Stable refs so the draw path never reads stale closures.
   const tracksRef = useRef(tracks)
+  const trackLayoutRef = useRef(trackLayout)
   const clipsRef = useRef(clips)
   const regionsRef = useRef(regions)
   const patternBlocksRef = useRef(patternBlocks)
@@ -460,6 +760,7 @@ const VideoMirrorCanvas = forwardRef(function VideoMirrorCanvas(
   const snapGranularityRef = useRef(snapGranularity)
   const trackIdToIndexRef = useRef({})
   tracksRef.current = tracks
+  trackLayoutRef.current = trackLayout
   clipsRef.current = clips
   regionsRef.current = regions
   patternBlocksRef.current = patternBlocks
@@ -499,7 +800,7 @@ const VideoMirrorCanvas = forwardRef(function VideoMirrorCanvas(
     drawGrid(
       ctx, w, h - CUE_LANE_HEIGHT,
       scrollOffsetRef.current, pixelsPerBeatRef.current,
-      tracksRef.current.length, tracksRef.current, palette, null,
+      tracksRef.current.length, tracksRef.current, palette, trackLayoutRef.current,
       snapGranularityRef.current,
     )
     ctx.restore()
@@ -535,7 +836,7 @@ const VideoMirrorCanvas = forwardRef(function VideoMirrorCanvas(
       scrollOffsetRef.current, pixelsPerBeatRef.current,
       clipsRef.current, tidx, regionsRef.current,
       EMPTY_SELECTION, {}, {}, {}, bpmRef?.current,
-      mutedTrackIds, palette, MIRROR_DISPLAY_SETTINGS, trackColorById, null,
+      mutedTrackIds, palette, MIRROR_DISPLAY_SETTINGS, trackColorById, trackLayoutRef.current,
     )
     // After drawClips — it owns the clearRect for this canvas, so anything
     // drawn before it is wiped. Hold zones only ever occupy the gap between a
@@ -544,13 +845,13 @@ const VideoMirrorCanvas = forwardRef(function VideoMirrorCanvas(
       ctx, w, h - CUE_LANE_HEIGHT,
       scrollOffsetRef.current, pixelsPerBeatRef.current,
       clipsRef.current, tidx, tracksRef.current,
-      palette, null,
+      palette, trackLayoutRef.current,
     )
     drawPatternBlocks(
       ctx, w, h - CUE_LANE_HEIGHT,
       scrollOffsetRef.current, pixelsPerBeatRef.current,
       patternBlocksRef.current, tidx, patternsRef.current, regionsRef.current,
-      EMPTY_SELECTION, mutedTrackIds, palette, MIRROR_DISPLAY_SETTINGS, trackColorById, null,
+      EMPTY_SELECTION, mutedTrackIds, palette, MIRROR_DISPLAY_SETTINGS, trackColorById, trackLayoutRef.current,
     )
     ctx.restore()
   }
@@ -658,7 +959,10 @@ const VideoMirrorCanvas = forwardRef(function VideoMirrorCanvas(
     window.addEventListener('mouseup', onUp)
   }, [seekFromClientX])
 
-  const contentH = Math.max(tracks.length * TRACK_HEIGHT + CUE_LANE_HEIGHT, TRACK_HEIGHT + CUE_LANE_HEIGHT)
+  const contentH = Math.max(
+    (trackLayout?.totalHeight ?? tracks.length * TRACK_HEIGHT) + CUE_LANE_HEIGHT,
+    TRACK_HEIGHT + CUE_LANE_HEIGHT,
+  )
 
   return (
     <div

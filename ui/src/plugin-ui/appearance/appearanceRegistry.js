@@ -65,6 +65,9 @@ const KNOB_ALLOWED_KEYS = {
   cap: ['default', 'flat-disk', 'soft-disk', 'hardware-cap', 'encoder-cap'],
   ring: ['default', 'none', 'metered-arc', 'full-track', 'split-track', 'thin-line'],
   pointer: ['default', 'line', 'needle', 'dot', 'notch', 'none'],
+  // 'rotary-arrow' swaps in the Mixer Pan/Width ring renderer, which draws its
+  // own body/groove/marker and ignores cap, pointer and tick styles.
+  glyph: ['none', 'rotary-arrow'],
   ticks: ['none', 'major', 'minor', 'numbered'],
   tickDensity: ['sparse', 'normal', 'dense'],
   valueReadout: ['below', 'center', 'tooltip', 'hidden'],
@@ -310,6 +313,10 @@ const ENUM_LABEL_OVERRIDES = {
       dot: 'Dot',
       notch: 'Notch',
       none: 'None',
+    },
+    glyph: {
+      none: 'None',
+      'rotary-arrow': 'Rotary Ring',
     },
     ticks: {
       none: 'None',

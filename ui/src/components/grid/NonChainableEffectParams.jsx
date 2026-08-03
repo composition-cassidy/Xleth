@@ -1,4 +1,4 @@
-import { snapToZero, snapToOne } from '../../utils/sliderHelpers.js'
+import { snapToZero, snapToOne, rangeFillStyle } from '../../utils/sliderHelpers.js'
 import { BounceParamsView, ZprParamsView } from './effectParamViews.jsx'
 
 async function applyBounce(trackId, current, patch) {
@@ -38,10 +38,12 @@ export default function NonChainableEffectParams({ kind, track, fetchTracks }) {
       <div className="fx-params-grid">
         <label>Region Start</label>
         <input type="range" min={0} max={1} step={0.01} defaultValue={p.regionStartPct??0.8}
+          style={rangeFillStyle(p.regionStartPct??0.8, 0, 1)}
           onPointerUp={async (e) => { await applyPP(track.id, p, { regionStartPct: parseFloat(e.target.value) }); fetchTracks() }} />
         <span>{((p.regionStartPct??0.8)*100).toFixed(0)}%</span>
         <label>Region End</label>
         <input type="range" min={0} max={1} step={0.01} defaultValue={p.regionEndPct??1.0}
+          style={rangeFillStyle(p.regionEndPct??1.0, 0, 1)}
           onPointerUp={async (e) => { await applyPP(track.id, p, { regionEndPct: snapToOne(parseFloat(e.target.value)) }); fetchTracks() }} />
         <span>{((p.regionEndPct??1.0)*100).toFixed(0)}%</span>
         <label>Crossfade Fr</label>
@@ -50,6 +52,7 @@ export default function NonChainableEffectParams({ kind, track, fetchTracks }) {
         <span />
         <label>Rev Speed</label>
         <input type="range" min={0.25} max={4} step={0.01} defaultValue={p.reverseSpeed??1.0}
+          style={rangeFillStyle(p.reverseSpeed??1.0, 0.25, 4)}
           onPointerUp={async (e) => { await applyPP(track.id, p, { reverseSpeed: snapToOne(parseFloat(e.target.value)) }); fetchTracks() }} />
         <span>{(p.reverseSpeed??1.0).toFixed(2)}×</span>
         <label>Max Loops</label>

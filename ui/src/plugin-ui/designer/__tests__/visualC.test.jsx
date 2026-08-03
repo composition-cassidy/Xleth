@@ -38,6 +38,7 @@ describe('Visual-C registry helpers', () => {
       'flat-minimal',
       'encoder',
       'hardware-cap',
+      'mixer-ring',
       'tiny-strip',
     ])
   })

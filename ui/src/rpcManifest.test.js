@@ -312,6 +312,13 @@ describe('attachRpcWrappers', () => {
     await target.timeline.setTrackMuted('t1', true);
     await target.timeline.setNoteSlide('p1', 'n1', true, 0.2, 0.8);
     await target.timeline.addRegion({ name: 'r' });
+    const layout = { rootOrder: [], folders: [] };
+    await target.timeline.getTrackLayout();
+    await target.timeline.setTrackLayout(layout);
+    await target.timeline.createTrackFolder({ name: 'Folder 1', trackIds: [], rootIndex: 0 });
+    await target.timeline.setTrackFolderName(9, 'Drums');
+    await target.timeline.setTrackFolderCollapsed(9, true);
+    await target.timeline.removeTrackFolder(9);
     await target.fsc.parse('/tmp/x.fsc');
 
     expect(calls).toContainEqual(['xleth:undo:undo']);
@@ -319,6 +326,15 @@ describe('attachRpcWrappers', () => {
     expect(calls).toContainEqual(['xleth:timeline:setTrackMuted', 't1', true]);
     expect(calls).toContainEqual(['xleth:timeline:setNoteSlide', 'p1', 'n1', true, 0.2, 0.8]);
     expect(calls).toContainEqual(['xleth:timeline:addRegion', { name: 'r' }]);
+    expect(calls).toContainEqual(['xleth:timeline:getTrackLayout']);
+    expect(calls).toContainEqual(['xleth:timeline:setTrackLayout', layout]);
+    expect(calls).toContainEqual([
+      'xleth:timeline:createTrackFolder',
+      { name: 'Folder 1', trackIds: [], rootIndex: 0 },
+    ]);
+    expect(calls).toContainEqual(['xleth:timeline:setTrackFolderName', 9, 'Drums']);
+    expect(calls).toContainEqual(['xleth:timeline:setTrackFolderCollapsed', 9, true]);
+    expect(calls).toContainEqual(['xleth:timeline:removeTrackFolder', 9]);
     expect(calls).toContainEqual(['xleth:fsc:parse', '/tmp/x.fsc']);
   });
 });

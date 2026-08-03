@@ -8,7 +8,27 @@ import { readDynamicsTheme } from '../visualizers/theme.js'
 import { softKneeOutputDb } from '../visualizers/scaling.js'
 
 const SCALE = Object.freeze({ minDb: -60, maxDb: 0 })
-const GRID_DB = Object.freeze([-60, -48, -36, -24, -12, 0])
+
+// Waveform fades. The display is one uninterrupted canvas now: the level
+// history spans the full width, including the stretch the transfer curve
+// crosses, so it needs to get out of the curve's way rather than be clipped
+// out of it.
+//   • horizontal — ramps in from the left edge and is fully opaque by the
+//     midpoint, which is where the curve's interesting region ends.
+//   • vertical — a gentle drop toward the bottom edge so the silhouette
+//     doesn't read as a solid block.
+const WAVE_FADE = Object.freeze({
+  horizontalCompleteAt: 0.5,
+  topAlpha: 0.6,
+  midAlpha: 0.3,
+  midStop: 0.55,
+  bottomAlpha: 0.02,
+})
+
+// Curve sampling step in CSS px. The soft-knee transfer function is C1
+// continuous, so a coarse sample fed through Catmull-Rom smoothing produces a
+// cleaner path than the old per-pixel polyline.
+const CURVE_STEP_PX = 3
 
 function finiteOr(value, fallback) {
   return Number.isFinite(value) ? value : fallback
@@ -76,62 +96,84 @@ function rgba(color, alpha) {
   return color
 }
 
-function drawGrid(ctx, plot, theme) {
-  ctx.save()
-  ctx.strokeStyle = theme.grid || '#333'
-  ctx.lineWidth = 1
-  ctx.globalAlpha = 0.34
-  ctx.beginPath()
-  for (const db of GRID_DB) {
-    const y = Math.round(dbToY(db, plot)) + 0.5
-    ctx.moveTo(plot.x, y)
-    ctx.lineTo(plot.x + plot.w, y)
-    const x = Math.round(dbToX(db, plot)) + 0.5
-    ctx.moveTo(x, plot.y)
-    ctx.lineTo(x, plot.y + plot.h)
-  }
-  ctx.stroke()
-  ctx.restore()
+// Alpha ramp applied to the waveform across the display width. Multiplied into
+// the vertical gradient's own alpha via globalAlpha, which is what makes the
+// two fades compose without an offscreen pass.
+function waveformFadeAt(x, plot) {
+  const span = Math.max(1, plot.w * WAVE_FADE.horizontalCompleteAt)
+  const t = clamp((x - plot.x) / span, 0, 1)
+  // Smoothstep rather than a straight ramp: a linear fade is already half
+  // opaque a quarter of the way in, which reads as "no fade at all".
+  return t * t * (3 - 2 * t)
 }
 
-function drawSpectrum(ctx, plot, ring, params, theme) {
+// The level history, drawn edge to edge as a filled silhouette with a lit top
+// edge. Columns are emitted at 1 CSS px so each one can carry its own
+// horizontal-fade alpha.
+function drawWaveform(ctx, plot, ring, theme) {
   const columns = buildCompressorDisplayHistory(ring, plot.w, { columnWidthPx: 1 })
-  if (!columns.length) return
+  if (columns.length < 2) return
+
+  const bottom = plot.y + plot.h
+  const fill = ctx.createLinearGradient(0, plot.y, 0, bottom)
+  fill.addColorStop(0, rgba(theme.textMuted || '#888', WAVE_FADE.topAlpha))
+  fill.addColorStop(WAVE_FADE.midStop, rgba(theme.textMuted || '#888', WAVE_FADE.midAlpha))
+  fill.addColorStop(1, rgba(theme.textMuted || '#888', WAVE_FADE.bottomAlpha))
 
   ctx.save()
-  ctx.strokeStyle = theme.accent || '#4ecdc4'
-  ctx.lineWidth = 1
-  for (const col of columns) {
+  ctx.fillStyle = fill
+
+  // Filled body — one bar per column so the horizontal fade can vary along x.
+  for (let i = 0; i < columns.length; i++) {
+    const col = columns[i]
     const x = plot.x + col.x
-    const inDb = finiteOr(col.inputDb, SCALE.minDb)
-    const predicted = softKneeOutputDb(inDb, params.threshold, params.ratio, params.knee, params.makeup)
-    const yIn = dbToY(inDb, plot)
-    const yOut = dbToY(predicted, plot)
-    const compressed = Math.max(0, yOut - yIn)
-    ctx.globalAlpha = compressed > 0.5 ? 0.46 : 0.78
+    const alpha = waveformFadeAt(x, plot)
+    if (alpha <= 0.002) continue
+    const next = columns[i + 1]
+    const width = next ? Math.max(1, (plot.x + next.x) - x) : 1
+    const y = dbToY(finiteOr(col.inputDb, SCALE.minDb), plot)
+    if (bottom - y < 0.5) continue
+    ctx.globalAlpha = alpha
+    ctx.fillRect(x, y, width, bottom - y)
+  }
+
+  // Lit top edge — drawn per segment so it shares the same fade.
+  ctx.lineWidth = 1.4
+  ctx.lineJoin = 'round'
+  ctx.lineCap = 'round'
+  ctx.strokeStyle = theme.text || '#e0e0e0'
+  for (let i = 1; i < columns.length; i++) {
+    const prev = columns[i - 1]
+    const col = columns[i]
+    const x0 = plot.x + prev.x
+    const x1 = plot.x + col.x
+    const alpha = waveformFadeAt(x1, plot)
+    if (alpha <= 0.002) continue
+    ctx.globalAlpha = alpha * 0.85
     ctx.beginPath()
-    ctx.moveTo(x, plot.y + plot.h)
-    ctx.lineTo(x, yOut)
+    ctx.moveTo(x0, dbToY(finiteOr(prev.inputDb, SCALE.minDb), plot))
+    ctx.lineTo(x1, dbToY(finiteOr(col.inputDb, SCALE.minDb), plot))
     ctx.stroke()
   }
   ctx.restore()
 }
 
-function drawKneeGradient(ctx, plot, params, theme) {
-  if (params.knee <= 0.01) return
-  const low = params.threshold - params.knee * 0.5
-  const high = params.threshold + params.knee * 0.5
-  const x0 = clamp(Math.min(dbToX(low, plot), dbToX(high, plot)), plot.x, plot.x + plot.w)
-  const x1 = clamp(Math.max(dbToX(low, plot), dbToX(high, plot)), plot.x, plot.x + plot.w)
-  if (x1 - x0 < 1) return
+// Live input-level marker — the thin vertical rule that tracks where the
+// current signal sits on the input axis. Suppressed when the ring is empty or
+// pinned to the floor so an idle panel stays clean.
+function drawInputMarker(ctx, plot, ring, theme) {
+  const bucket = typeof ring?.last === 'function' ? ring.last() : null
+  const inDb = bucket?.inLevelDb
+  if (!Number.isFinite(inDb) || inDb <= SCALE.minDb + 0.5) return
 
+  const x = dbToX(inDb, plot)
   ctx.save()
-  const grad = ctx.createLinearGradient(0, plot.y, 0, plot.y + plot.h)
-  grad.addColorStop(0, rgba(theme.accent || '#4ecdc4', 0.26))
-  grad.addColorStop(0.52, rgba(theme.accent || '#4ecdc4', 0.10))
-  grad.addColorStop(1, rgba(theme.accent || '#4ecdc4', 0))
-  ctx.fillStyle = grad
-  ctx.fillRect(x0, plot.y, x1 - x0, plot.h)
+  ctx.strokeStyle = rgba(theme.text || '#e0e0e0', 0.55)
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(x, plot.y)
+  ctx.lineTo(x, plot.y + plot.h)
+  ctx.stroke()
   ctx.restore()
 }
 
@@ -145,44 +187,79 @@ function curvePointForInput(inputDb, plot, params) {
   }
 }
 
-function drawCurve(ctx, plot, params, theme) {
-  ctx.save()
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.20)'
-  ctx.lineWidth = 1
-  ctx.setLineDash([4, 5])
-  ctx.beginPath()
-  ctx.moveTo(dbToX(SCALE.minDb, plot), dbToY(SCALE.minDb, plot))
-  ctx.lineTo(dbToX(SCALE.maxDb, plot), dbToY(SCALE.maxDb, plot))
-  ctx.stroke()
-  ctx.setLineDash([])
-  ctx.restore()
-
+function drawThresholdGuides(ctx, plot, params, theme) {
   const thresholdX = dbToX(params.threshold, plot)
   const thresholdY = dbToY(params.threshold, plot)
   ctx.save()
-  ctx.strokeStyle = 'rgba(255, 255, 255, 0.30)'
-  ctx.lineWidth = 1
-  ctx.setLineDash([2, 5])
+  ctx.strokeStyle = rgba(theme.accent || '#4ecdc4', 0.55)
+  ctx.lineWidth = 2
+  ctx.lineCap = 'butt'
+  ctx.setLineDash([2, 6])
   ctx.beginPath()
-  ctx.moveTo(thresholdX + 0.5, plot.y)
-  ctx.lineTo(thresholdX + 0.5, plot.y + plot.h)
-  ctx.moveTo(plot.x, thresholdY + 0.5)
-  ctx.lineTo(plot.x + plot.w, thresholdY + 0.5)
+  ctx.moveTo(thresholdX, plot.y)
+  ctx.lineTo(thresholdX, plot.y + plot.h)
+  ctx.moveTo(plot.x, thresholdY)
+  ctx.lineTo(plot.x + plot.w, thresholdY)
   ctx.stroke()
+  ctx.setLineDash([])
   ctx.restore()
+}
+
+// Catmull-Rom through the sampled points, emitted as cubic beziers. Keeps the
+// stroke a true vector path — no per-pixel stair-stepping, and the knee reads
+// as a curve instead of a chain of short segments.
+function traceSmoothPath(ctx, points) {
+  if (points.length < 2) return
+  ctx.moveTo(points[0].x, points[0].y)
+  if (points.length === 2) {
+    ctx.lineTo(points[1].x, points[1].y)
+    return
+  }
+  for (let i = 0; i < points.length - 1; i++) {
+    const p0 = points[i === 0 ? 0 : i - 1]
+    const p1 = points[i]
+    const p2 = points[i + 1]
+    const p3 = points[i + 2] ?? p2
+    ctx.bezierCurveTo(
+      p1.x + (p2.x - p0.x) / 6,
+      p1.y + (p2.y - p0.y) / 6,
+      p2.x - (p3.x - p1.x) / 6,
+      p2.y - (p3.y - p1.y) / 6,
+      p2.x,
+      p2.y,
+    )
+  }
+}
+
+function buildCurvePoints(plot, params) {
+  const points = []
+  const span = SCALE.maxDb - SCALE.minDb
+  const steps = Math.max(2, Math.ceil(plot.w / CURVE_STEP_PX))
+  for (let i = 0; i <= steps; i++) {
+    const inputDb = SCALE.minDb + (i / steps) * span
+    points.push(curvePointForInput(inputDb, plot, params))
+  }
+  return points
+}
+
+function drawCurve(ctx, plot, params, theme) {
+  const accent = theme.accent || '#4ecdc4'
+  const points = buildCurvePoints(plot, params)
 
   ctx.save()
-  ctx.strokeStyle = '#d7d9e2'
-  ctx.lineWidth = 2.2
   ctx.lineJoin = 'round'
   ctx.lineCap = 'round'
+
+  // Dim wide under-stroke, then the bright core. The pair softens the edge
+  // without a blur filter and keeps the line readable over the waveform.
   ctx.beginPath()
-  for (let px = 0; px <= plot.w; px++) {
-    const inputDb = SCALE.minDb + (px / Math.max(1, plot.w)) * (SCALE.maxDb - SCALE.minDb)
-    const pt = curvePointForInput(inputDb, plot, params)
-    if (px === 0) ctx.moveTo(pt.x, pt.y)
-    else ctx.lineTo(pt.x, pt.y)
-  }
+  traceSmoothPath(ctx, points)
+  ctx.strokeStyle = rgba(accent, 0.18)
+  ctx.lineWidth = 4
+  ctx.stroke()
+
+  ctx.strokeStyle = accent
+  ctx.lineWidth = 2.4
   ctx.stroke()
   ctx.restore()
 }
@@ -191,7 +268,9 @@ function buildHandles(plot, params) {
   const thresholdPoint = curvePointForInput(params.threshold, plot, params)
   const kneeInput = clamp(params.threshold - params.knee * 0.5, SCALE.minDb, SCALE.maxDb)
   const kneePoint = curvePointForInput(kneeInput, plot, params)
-  const ratioPoint = curvePointForInput(SCALE.maxDb, plot, params)
+  // Pulled a few px inside the right edge — the plot now runs to the frame, so
+  // a handle sitting exactly at maxDb would be drawn half-clipped.
+  const ratioPoint = curvePointForInput(xToDb(plot.x + plot.w - 12, plot), plot, params)
 
   return [
     { type: 'threshold', x: thresholdPoint.x, y: thresholdPoint.y, r: 9 },
@@ -200,30 +279,29 @@ function buildHandles(plot, params) {
   ]
 }
 
+// Quiet crosshair markers. The curve stays draggable, but the handles no
+// longer read as filled dots competing with the waveform behind them.
 function drawHandles(ctx, handles, theme) {
+  const accent = theme.accent || '#4ecdc4'
+  ctx.save()
+  ctx.lineWidth = 1.2
+  ctx.lineCap = 'round'
   for (const handle of handles) {
-    ctx.save()
-    ctx.fillStyle = handle.type === 'knee'
-      ? rgba(theme.accent || '#4ecdc4', 0.85)
-      : '#f8f8fb'
-    ctx.strokeStyle = handle.type === 'ratio'
-      ? rgba(theme.accent || '#4ecdc4', 0.9)
-      : 'rgba(255, 255, 255, 0.95)'
-    ctx.lineWidth = 1.4
+    ctx.strokeStyle = rgba(accent, 0.9)
+    ctx.fillStyle = rgba(theme.bgInset || '#0f0f0f', 0.85)
     ctx.beginPath()
-    if (handle.type === 'knee') {
-      ctx.moveTo(handle.x, handle.y - 6)
-      ctx.lineTo(handle.x + 6, handle.y)
-      ctx.lineTo(handle.x, handle.y + 6)
-      ctx.lineTo(handle.x - 6, handle.y)
-      ctx.closePath()
-    } else {
-      ctx.arc(handle.x, handle.y, 5.5, 0, Math.PI * 2)
-    }
+    ctx.arc(handle.x, handle.y, 4.5, 0, Math.PI * 2)
     ctx.fill()
     ctx.stroke()
-    ctx.restore()
+    ctx.beginPath()
+    ctx.moveTo(handle.x - 7, handle.y)
+    ctx.lineTo(handle.x + 7, handle.y)
+    ctx.moveTo(handle.x, handle.y - 7)
+    ctx.lineTo(handle.x, handle.y + 7)
+    ctx.strokeStyle = rgba(accent, 0.55)
+    ctx.stroke()
   }
+  ctx.restore()
 }
 
 function drawCurveEditor(ctx, w, h, ring, params, theme) {
@@ -231,16 +309,18 @@ function drawCurveEditor(ctx, w, h, ring, params, theme) {
   ctx.fillStyle = theme.bgInset || '#0f0f0f'
   ctx.fillRect(0, 0, w, h)
 
+  // Edge to edge: the waveform and the curve both run into the frame, so the
+  // plot is the whole canvas rather than an inset box.
   const plot = {
-    x: 8,
-    y: 8,
-    w: Math.max(1, w - 16),
-    h: Math.max(1, h - 16),
+    x: 0,
+    y: 0,
+    w: Math.max(1, w),
+    h: Math.max(1, h),
   }
 
-  drawGrid(ctx, plot, theme)
-  drawSpectrum(ctx, plot, ring, params, theme)
-  drawKneeGradient(ctx, plot, params, theme)
+  drawWaveform(ctx, plot, ring, theme)
+  drawInputMarker(ctx, plot, ring, theme)
+  drawThresholdGuides(ctx, plot, params, theme)
   drawCurve(ctx, plot, params, theme)
 
   const handles = buildHandles(plot, params)

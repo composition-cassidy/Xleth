@@ -1,5 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback, Component, Suspense, lazy } from 'react'
-import { X } from 'lucide-react'
+import { X, AudioWaveform, Piano } from 'lucide-react'
 import useTransientProcStore from '../../stores/transientProcStore.js'
 import Knob from '../sampler/Knob.jsx'
 import StockPluginRuntimeRenderer from '../../plugin-ui/runtime/StockPluginRuntimeRenderer.jsx'
@@ -233,6 +233,33 @@ export default function TransientProcPanel() {
   }))
   const panelDragRef = useRef(null)
 
+  // Title-bar mode toggle: drives the same 'midi_detect' param the runtime
+  // layout used to expose via a body-level Mode row. Read/written directly
+  // (outside the plugin-ui param context) since the header is chrome, not a
+  // layout node.
+  const [midiMode, setMidiMode] = useState(0)
+
+  useEffect(() => {
+    if (!target) return
+    setMidiMode(0)
+    ;(async () => {
+      try {
+        const raw  = await window.xleth?.audio?.getEffectParameters(target.trackId, target.nodeId)
+        const list = typeof raw === 'string' ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])
+        const midiParam = list.find(p => p.id === 'midi_detect')
+        if (midiParam) setMidiMode(Math.round(midiParam.value))
+      } catch (e) {
+        console.warn('[TransientProcPanel] mode hydrate failed:', e?.message)
+      }
+    })()
+  }, [target])
+
+  const setMode = useCallback((mode) => {
+    if (!target) return
+    setMidiMode(mode)
+    window.xleth?.audio?.setEffectParameter(target.trackId, target.nodeId, 'midi_detect', mode)
+  }, [target])
+
   const handlePanelMouseDown = useCallback((e) => {
     if (e.target.closest('button') || e.target.closest('input')) return
     e.preventDefault()
@@ -295,6 +322,26 @@ export default function TransientProcPanel() {
     <div className={panelCls} style={{ left: panelPos.x, top: panelPos.y }}>
       <div className="transientproc-panel-header" onMouseDown={handlePanelMouseDown}>
         <span className="transientproc-panel-title">Transient Processor</span>
+        <div className="transientproc-mode-toggle" role="group" aria-label="Detection mode">
+          <button
+            type="button"
+            className={`transientproc-mode-toggle-btn${midiMode === 0 ? ' active' : ''}`}
+            onClick={() => setMode(0)}
+            title="Envelope mode"
+            aria-pressed={midiMode === 0}
+          >
+            <AudioWaveform size={13} />
+          </button>
+          <button
+            type="button"
+            className={`transientproc-mode-toggle-btn${midiMode === 1 ? ' active' : ''}`}
+            onClick={() => setMode(1)}
+            title="MIDI mode"
+            aria-pressed={midiMode === 1}
+          >
+            <Piano size={13} />
+          </button>
+        </div>
         {DESIGNER_ENABLED && (
           <button
             className={`transientproc-panel-edit-ui${designerOpen ? ' transientproc-panel-edit-ui--active' : ''}`}

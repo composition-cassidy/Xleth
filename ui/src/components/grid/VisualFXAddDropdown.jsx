@@ -13,6 +13,8 @@ const C_ITEMS = [
   { typeId: 3, label: 'TV Simulator'            },
   { typeId: 4, label: 'Zoom/Pan/Rot (per-cell)' },
   { typeId: 5, label: 'Chroma Key'              },
+  { typeId: 6, label: 'Outline'                 },
+  { typeId: 7, label: 'Drop Shadow'             },
 ]
 
 export default function VisualFXAddDropdown({
