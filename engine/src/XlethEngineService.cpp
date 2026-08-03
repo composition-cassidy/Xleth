@@ -388,6 +388,22 @@ struct PreviewDiagCounters {
     std::atomic<int32_t>  deliveredFps     {0};  // frames written to shm in the last real second
     std::atomic<int32_t>  lastCellCount    {0};  // active cells (render requests) this tick
     std::atomic<int32_t>  maxCellCount     {0};  // peak active cells since start
+    // Cumulative SyncManager::videoTick() blocking-decode call count (mirrors
+    // SyncManager::getDecodeAttemptCount() every tick). MUST stay 0 for the
+    // lifetime of a .node (bridge/XLETH_CORE_ONLY) process — see the getter's
+    // doc comment in SyncManager.h and bridge/test_perf_regression.js, which
+    // asserts on this field.
+    std::atomic<int32_t>  syncManagerDecodeCount {0};
+    // Wall-clock cost of the syncManager->videoTick() call itself (µs),
+    // including the syncEventsMutex acquire. Distinct from lastTickUs/
+    // avgTickUs/maxTickUs above, which time a LATER, separate stage (the
+    // compositor pipeline, collect->shm copy) that only starts after
+    // videoTick() has already returned. Added alongside syncManagerDecodeCount
+    // to give bridge/test_perf_regression.js a direct budget on this call —
+    // see [[project_preview_fps_synctick_dead_decode]].
+    std::atomic<int32_t>  lastVideoTickUs  {0};
+    std::atomic<int32_t>  avgVideoTickUs   {0};
+    std::atomic<int32_t>  maxVideoTickUs   {0};
 };
 PreviewDiagCounters g_previewDiag;
 
@@ -3222,7 +3238,8 @@ static void videoThreadBody()
         }
     };
     static StageTimer s_collectTimer, s_resolveTimer, s_decodeTimer,
-                      s_compositeTimer, s_swizzleTimer, s_tickTimer;
+                      s_compositeTimer, s_swizzleTimer, s_tickTimer,
+                      s_videoTickTimer;
 
     // Latch: one event-rebuild attempt per "wanted a stopped render but the event
     // list was empty" episode. Bounds the self-heal below — a project that
@@ -3265,8 +3282,19 @@ static void videoThreadBody()
 
         double tickBeatPos = -1.0;
         {
+            // Timed separately from the s_*Timer family below: those all start
+            // AFTER this block (see tTickStart further down), so they never
+            // cover SyncManager::videoTick() itself. This is the only place
+            // that measures it — see bridge/test_perf_regression.js, which
+            // asserts a budget on lastVideoTickUs/avgVideoTickUs.
+            const auto tVideoTickStart = TickClock::now();
             std::lock_guard<std::mutex> lock(syncEventsMutex);
             tickBeatPos = syncManager->videoTick();
+            s_videoTickTimer.record(
+                tickUsBetween(tVideoTickStart, TickClock::now()),
+                g_previewDiag.lastVideoTickUs,
+                g_previewDiag.avgVideoTickUs,
+                g_previewDiag.maxVideoTickUs);
         }
 
         if (audioEngine && syncManager && frameOutput.isInitialized()) {
@@ -4084,6 +4112,8 @@ static void videoThreadBody()
             statsSnapshot.frameDrops  = syncManager->getFrameDropCount();
             statsSnapshot.cacheHitRate = frameCache->hitRate();
         }
+        g_previewDiag.syncManagerDecodeCount.store(
+            syncManager->getDecodeAttemptCount(), std::memory_order_relaxed);
 
         // Frame-pacing: sleep until the next frame deadline rather than
         // sleeping a full frame period after the tick work. This keeps the
@@ -16980,6 +17010,11 @@ JsonApi::Value Diag_GetVisualPreviewDiagnostic(const JsonApi::CallbackInfo& info
     c.Set("deliveredFps",    JsonApi::Number::New(env, g_previewDiag.deliveredFps.load()));
     c.Set("lastCellCount",   JsonApi::Number::New(env, g_previewDiag.lastCellCount.load()));
     c.Set("maxCellCount",    JsonApi::Number::New(env, g_previewDiag.maxCellCount.load()));
+    c.Set("syncManagerDecodeCount",
+          JsonApi::Number::New(env, g_previewDiag.syncManagerDecodeCount.load()));
+    c.Set("lastVideoTickUs", JsonApi::Number::New(env, g_previewDiag.lastVideoTickUs.load()));
+    c.Set("avgVideoTickUs",  JsonApi::Number::New(env, g_previewDiag.avgVideoTickUs.load()));
+    c.Set("maxVideoTickUs",  JsonApi::Number::New(env, g_previewDiag.maxVideoTickUs.load()));
     o.Set("counters", c);
 
     // ── Last-tick snapshot ───────────────────────────────────────────────────
