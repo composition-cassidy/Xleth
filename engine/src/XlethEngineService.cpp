@@ -285,44 +285,6 @@ static const VideoEvent* findActiveEventOnTrack(
     return best;
 }
 
-// Fetch the cached decoded frame for an event at beatPos. Returns nullptr
-// on any failure (no decoder, no cache entry). Does not decode — relies on
-// syncManager->videoTick() having already populated the cache this tick.
-static const CachedFrame* getCachedFrameForEvent(
-    const VideoEvent& ev, double beatPos, double bpm,
-    FrameKey* outKey = nullptr)
-{
-    if (ev.sourceId < 0 ||
-        static_cast<size_t>(ev.sourceId) >= decoderPtrs.size()) return nullptr;
-    VideoDecoder* dec = decoderPtrs[static_cast<size_t>(ev.sourceId)];
-    if (!dec || !dec->isOpen()) return nullptr;
-
-    const double beatsSince = beatPos - ev.startBeat;
-    const double secsSince  = beatsSince * (60.0 / bpm);
-    const double sourceTime = ev.sourceStartTime + secsSince;
-    const int    targetFrame = dec->timeToFrame(sourceTime);
-
-    FrameKey key = { ev.sourceId, targetFrame };
-    if (outKey) *outKey = key;
-    return frameCache ? frameCache->get(key) : nullptr;
-}
-
-// Look up a cached frame at an absolute source time (seconds).
-// Used for hold-last-frame clamping when the note sustains past trim end.
-static const CachedFrame* getCachedFrameAtSourceTime(
-    int sourceId, double sourceTimeSec,
-    FrameKey* outKey = nullptr)
-{
-    if (sourceId < 0 ||
-        static_cast<size_t>(sourceId) >= decoderPtrs.size()) return nullptr;
-    VideoDecoder* dec = decoderPtrs[static_cast<size_t>(sourceId)];
-    if (!dec || !dec->isOpen()) return nullptr;
-    const int targetFrame = dec->timeToFrame(sourceTimeSec);
-    FrameKey key = { sourceId, targetFrame };
-    if (outKey) *outKey = key;
-    return frameCache ? frameCache->get(key) : nullptr;
-}
-
 } // anonymous namespace
 
 // ─────────────────────────────────────────────────────────────────────────────

@@ -257,9 +257,18 @@ double SyncManager::videoTick()
         }
 #endif
 
+#ifndef XLETH_CORE_ONLY
         // 4d. Try frame cache — regionId is part of the key because a region
         // proxy produces a different picture than the original at the same
         // (sourceId, targetFrame) pair.
+        //
+        // Guarded on XLETH_CORE_ONLY: in the bridge (.node) build compositor_
+        // is always nullptr and the only consumer of `cached` is step 4f
+        // below (itself guarded), so decoding here would be pure dead work —
+        // a blocking decoder->seekAndDecode() (measured 100-330ms on scattered
+        // seeks) run on the frame-pacing thread under syncEventsMutex for a
+        // frame nobody reads. This was the entire cause of a 60->~17fps
+        // preview collapse on projects with many active video events.
         FrameKey key = { event.sourceId, targetFrame, cacheRegionId };
         const CachedFrame* cached = cache_.get(key);
 
@@ -308,7 +317,6 @@ double SyncManager::videoTick()
                 continue;
         }
 
-#ifndef XLETH_CORE_ONLY
         if (compositor_)
         {
             // 4f. Upload frame to compositor
