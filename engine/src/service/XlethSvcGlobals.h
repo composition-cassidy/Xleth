@@ -192,6 +192,22 @@ struct PreviewDiagCounters {
     std::atomic<int32_t>  deliveredFps     {0};  // frames written to shm in the last real second
     std::atomic<int32_t>  lastCellCount    {0};  // active cells (render requests) this tick
     std::atomic<int32_t>  maxCellCount     {0};  // peak active cells since start
+    // Cumulative SyncManager::videoTick() blocking-decode call count (mirrors
+    // SyncManager::getDecodeAttemptCount() every tick). MUST stay 0 for the
+    // lifetime of a .node (bridge/XLETH_CORE_ONLY) process — see the getter's
+    // doc comment in SyncManager.h and bridge/test_perf_regression.js, which
+    // asserts on this field.
+    std::atomic<int32_t>  syncManagerDecodeCount {0};
+    // Wall-clock cost of the syncManager->videoTick() call itself (µs),
+    // including the syncEventsMutex acquire. Distinct from lastTickUs/
+    // avgTickUs/maxTickUs above, which time a LATER, separate stage (the
+    // compositor pipeline, collect->shm copy) that only starts after
+    // videoTick() has already returned. Added alongside syncManagerDecodeCount
+    // to give bridge/test_perf_regression.js a direct budget on this call —
+    // see [[project_preview_fps_synctick_dead_decode]].
+    std::atomic<int32_t>  lastVideoTickUs  {0};
+    std::atomic<int32_t>  avgVideoTickUs   {0};
+    std::atomic<int32_t>  maxVideoTickUs   {0};
 };
 
 enum class PolicySwitchReason : int {

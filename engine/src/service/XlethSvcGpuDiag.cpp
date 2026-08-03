@@ -336,6 +336,11 @@ JsonApi::Value Diag_GetVisualPreviewDiagnostic(const JsonApi::CallbackInfo& info
     c.Set("deliveredFps",    JsonApi::Number::New(env, g_previewDiag.deliveredFps.load()));
     c.Set("lastCellCount",   JsonApi::Number::New(env, g_previewDiag.lastCellCount.load()));
     c.Set("maxCellCount",    JsonApi::Number::New(env, g_previewDiag.maxCellCount.load()));
+    c.Set("syncManagerDecodeCount",
+          JsonApi::Number::New(env, g_previewDiag.syncManagerDecodeCount.load()));
+    c.Set("lastVideoTickUs", JsonApi::Number::New(env, g_previewDiag.lastVideoTickUs.load()));
+    c.Set("avgVideoTickUs",  JsonApi::Number::New(env, g_previewDiag.avgVideoTickUs.load()));
+    c.Set("maxVideoTickUs",  JsonApi::Number::New(env, g_previewDiag.maxVideoTickUs.load()));
     o.Set("counters", c);
 
     // ── Last-tick snapshot ───────────────────────────────────────────────────

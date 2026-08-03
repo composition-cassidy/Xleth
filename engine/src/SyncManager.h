@@ -136,6 +136,15 @@ public:
     int    getFrameDropCount() const;
     double getCacheHitRate()   const;
 
+    // Cumulative count of decoder->seekAndDecode() calls made from videoTick()
+    // since construction (every cache-miss attempt, success or failure — same
+    // population as decodeTimeSamples_). That call site lives inside
+    // #ifndef XLETH_CORE_ONLY, so in the bridge (.node) build this must always
+    // read 0: nothing there ever consumes the decoded frame. A non-zero value
+    // in that build means the dead-decode preview-FPS regression (60fps ->
+    // ~17fps, fixed 3db1b33) has resurfaced — see bridge/test_perf_regression.js.
+    int    getDecodeAttemptCount() const;
+
 private:
     Transport&                  transport_;
     std::vector<VideoDecoder*>& decoders_;

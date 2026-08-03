@@ -409,6 +409,11 @@ int SyncManager::getFrameDropCount() const
     return frameDrops_;
 }
 
+int SyncManager::getDecodeAttemptCount() const
+{
+    return static_cast<int>(decodeTimeSamples_.size());
+}
+
 double SyncManager::getCacheHitRate() const
 {
     return cache_.hitRate();

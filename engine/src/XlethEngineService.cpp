@@ -2616,7 +2616,8 @@ static void videoThreadBody()
         }
     };
     static StageTimer s_collectTimer, s_resolveTimer, s_decodeTimer,
-                      s_compositeTimer, s_swizzleTimer, s_tickTimer;
+                      s_compositeTimer, s_swizzleTimer, s_tickTimer,
+                      s_videoTickTimer;
 
     while (videoRunning) {
         g_previewDiag.videoTickCount.fetch_add(1, std::memory_order_relaxed);
@@ -2634,8 +2635,19 @@ static void videoThreadBody()
 
         double tickBeatPos = -1.0;
         {
+            // Timed separately from the s_*Timer family below: those all start
+            // AFTER this block (see tTickStart further down), so they never
+            // cover SyncManager::videoTick() itself. This is the only place
+            // that measures it — see bridge/test_perf_regression.js, which
+            // asserts a budget on lastVideoTickUs/avgVideoTickUs.
+            const auto tVideoTickStart = TickClock::now();
             std::lock_guard<std::mutex> lock(syncEventsMutex);
             tickBeatPos = syncManager->videoTick();
+            s_videoTickTimer.record(
+                tickUsBetween(tVideoTickStart, TickClock::now()),
+                g_previewDiag.lastVideoTickUs,
+                g_previewDiag.avgVideoTickUs,
+                g_previewDiag.maxVideoTickUs);
         }
 
         if (audioEngine && syncManager && frameOutput.isInitialized()) {
@@ -3431,6 +3443,8 @@ static void videoThreadBody()
             statsSnapshot.frameDrops  = syncManager->getFrameDropCount();
             statsSnapshot.cacheHitRate = frameCache->hitRate();
         }
+        g_previewDiag.syncManagerDecodeCount.store(
+            syncManager->getDecodeAttemptCount(), std::memory_order_relaxed);
 
         // Frame-pacing: sleep until the next frame deadline rather than
         // sleeping a full frame period after the tick work. This keeps the
