@@ -368,6 +368,105 @@ static void testWindowMaxima(double sr)
     CHECK(brief.lra == 0.0, "1 s signal must report LRA 0, got " << brief.lra);
 }
 
+// ── Live M / S windows (the meter path) ──────────────────────────────────────
+// getCurrentMomentaryLufs / getCurrentShortTermLufs feed the master-bus meter.
+// Unlike the maxima in Results they must track the signal down as well as up,
+// so a level change has to move them within one window length.
+static void testLiveWindows(double sr)
+{
+    std::cout << "live momentary / short-term windows @ " << sr << " Hz\n";
+
+    // A steady -23 dBFS sine in both channels reads -23 LUFS (see the header's
+    // convention note). Fed in one shot, both windows are full at the end.
+    {
+        LoudnessAnalyzer a;
+        a.prepare(sr, 2);
+
+        const auto buf = makeSegments({{10.0, -23.0}}, sr);
+        a.processBlock(buf.getArrayOfReadPointers(), buf.getNumSamples());
+
+        const double m = a.getCurrentMomentaryLufs();
+        const double s = a.getCurrentShortTermLufs();
+        std::cout << "    steady -23 dBFS sine           M=" << std::fixed
+                  << std::setprecision(3) << m << "  S=" << s << "\n";
+
+        CHECK(std::abs(m + 23.0) < 0.1, "live M should be -23.0, got " << m);
+        CHECK(std::abs(s + 23.0) < 0.1, "live S should be -23.0, got " << s);
+    }
+
+    // Before a single 100 ms sub-block closes there is nothing to average.
+    {
+        LoudnessAnalyzer a;
+        a.prepare(sr, 2);
+        CHECK(a.getCurrentMomentaryLufs() == LoudnessAnalyzer::kNoMeasurement,
+              "M before any audio should be kNoMeasurement, got " << a.getCurrentMomentaryLufs());
+        CHECK(a.getCurrentShortTermLufs() == LoudnessAnalyzer::kNoMeasurement,
+              "S before any audio should be kNoMeasurement, got " << a.getCurrentShortTermLufs());
+
+        const auto brief = makeSegments({{0.05, -23.0}}, sr);   // half a sub-block
+        a.processBlock(brief.getArrayOfReadPointers(), brief.getNumSamples());
+        CHECK(a.getCurrentMomentaryLufs() == LoudnessAnalyzer::kNoMeasurement,
+              "M after 50 ms should still be kNoMeasurement, got " << a.getCurrentMomentaryLufs());
+    }
+
+    // The windows must fall, not latch. -23 for 10 s then -33 for 10 s: both
+    // live readings sit at the new level while both maxima stay at the old one.
+    {
+        LoudnessAnalyzer a;
+        a.prepare(sr, 2);
+
+        const auto buf = makeSegments({{10.0, -23.0}, {10.0, -33.0}}, sr);
+        a.processBlock(buf.getArrayOfReadPointers(), buf.getNumSamples());
+
+        const double m = a.getCurrentMomentaryLufs();
+        const double s = a.getCurrentShortTermLufs();
+        std::cout << "    -23 then -33 dBFS              M=" << std::fixed
+                  << std::setprecision(3) << m << "  S=" << s << "\n";
+
+        CHECK(std::abs(m + 33.0) < 0.1, "live M should follow down to -33.0, got " << m);
+        CHECK(std::abs(s + 33.0) < 0.1, "live S should follow down to -33.0, got " << s);
+
+        const auto r = a.getResults();
+        CHECK(std::abs(r.momentaryMax + 23.0) < 0.1,
+              "momentary MAX must stay at -23.0, got " << r.momentaryMax);
+    }
+
+    // Streaming in device-sized blocks must give the same answer as one shot —
+    // the meter is fed 512 samples at a time on the audio thread.
+    {
+        LoudnessAnalyzer a;
+        a.prepare(sr, 2);
+
+        const auto buf = makeSegments({{6.0, -20.0}}, sr);
+        const int  n   = buf.getNumSamples();
+        const float* const* src = buf.getArrayOfReadPointers();
+
+        for (int pos = 0; pos < n; pos += 512)
+        {
+            const float* chans[2] = { src[0] + pos, src[1] + pos };
+            a.processBlock(chans, std::min(512, n - pos));
+        }
+
+        CHECK(std::abs(a.getCurrentMomentaryLufs() + 20.0) < 0.1,
+              "block-fed live M should be -20.0, got " << a.getCurrentMomentaryLufs());
+        CHECK(std::abs(a.getCurrentShortTermLufs() + 20.0) < 0.1,
+              "block-fed live S should be -20.0, got " << a.getCurrentShortTermLufs());
+    }
+
+    // reset() drops the windows along with everything else.
+    {
+        LoudnessAnalyzer a;
+        a.prepare(sr, 2);
+        const auto buf = makeSegments({{5.0, -23.0}}, sr);
+        a.processBlock(buf.getArrayOfReadPointers(), buf.getNumSamples());
+        a.reset();
+        CHECK(a.getCurrentMomentaryLufs() == LoudnessAnalyzer::kNoMeasurement,
+              "M after reset should be kNoMeasurement, got " << a.getCurrentMomentaryLufs());
+        CHECK(a.getCurrentShortTermLufs() == LoudnessAnalyzer::kNoMeasurement,
+              "S after reset should be kNoMeasurement, got " << a.getCurrentShortTermLufs());
+    }
+}
+
 // ── True peak ────────────────────────────────────────────────────────────────
 static void testTruePeak(double sr)
 {
@@ -637,6 +736,12 @@ int main(int argc, char** argv)
     testLoudnessRange(kSR48);
     testLoudnessRange(kSR44);
     testWindowMaxima(kSR48);
+
+    // Both rates: the live meter windows are the one path that reads the
+    // sub-block history directly, so they get the same 44.1/48 pairing as the
+    // calibration.
+    testLiveWindows(kSR48);
+    testLiveWindows(kSR44);
 
     testTruePeak(kSR48);
     testTruePeak(kSR44);

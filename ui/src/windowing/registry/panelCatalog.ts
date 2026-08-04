@@ -102,7 +102,10 @@ export const PANEL_CATALOG = {
     typeColorToken: '--theme-panel-mixer',
     icon: SlidersHorizontal,
     fKey: 'F9',
-    defaultFloating: { x: 220, y: 420, width: 1040, height: 320 },
+    // +176 over the pre-loudness-meter default: the meter is a third pinned
+    // column beside the rack and master strip, and without the extra width it
+    // would eat the track area on a fresh layout.
+    defaultFloating: { x: 220, y: 420, width: 1216, height: 320 },
     keepAliveWhenHidden: false,
   },
   fxGraph: {

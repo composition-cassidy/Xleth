@@ -368,6 +368,42 @@ void LoudnessAnalyzer::closeSubBlock() noexcept
     }
 }
 
+// ── Live windows ─────────────────────────────────────────────────────────────
+
+double LoudnessAnalyzer::currentWindowLufs(int nSubBlocks) const noexcept
+{
+    if (!prepared_ || historyFilled_ <= 0 || nSubBlocks <= 0) return kNoMeasurement;
+
+    const auto ch = static_cast<std::size_t>(numChannels_);
+    const int  n  = static_cast<int>(std::min<std::int64_t>(historyFilled_, nSubBlocks));
+
+    // historyWrite_ already points at the slot the NEXT sub-block will take, so
+    // the most recently closed one sits one behind it.
+    int newest = historyWrite_ - 1;
+    if (newest < 0) newest += kSubBlocksPerShortTerm;
+
+    double energy = 0.0;
+    for (int s = 0; s < n; ++s)
+    {
+        int slot = newest - s;
+        if (slot < 0) slot += kSubBlocksPerShortTerm;
+        for (std::size_t c = 0; c < ch; ++c)   // G = 1.0 per channel
+            energy += history_[static_cast<std::size_t>(slot) * ch + c];
+    }
+
+    return energyToLufs(energy / (static_cast<double>(n) * static_cast<double>(subBlockSamples_)));
+}
+
+double LoudnessAnalyzer::getCurrentMomentaryLufs() const noexcept
+{
+    return currentWindowLufs(kSubBlocksPerMomentary);
+}
+
+double LoudnessAnalyzer::getCurrentShortTermLufs() const noexcept
+{
+    return currentWindowLufs(kSubBlocksPerShortTerm);
+}
+
 // ── Results ──────────────────────────────────────────────────────────────────
 
 LoudnessAnalyzer::Results LoudnessAnalyzer::getResults() const

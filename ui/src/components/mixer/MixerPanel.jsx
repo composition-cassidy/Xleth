@@ -5,6 +5,7 @@ import { timelineEvents } from '../../timelineEvents.js'
 import { clearAllMeterTelemetry, mergeMeterTelemetry } from './meterTelemetry.js'
 import MixerStrip from './MixerStrip.jsx'
 import MasterStrip from './MasterStrip.jsx'
+import MasterLoudnessMeter, { pollMasterLoudness } from '../MasterLoudnessMeter.jsx'
 import SelectedEffectRack from './SelectedEffectRack.jsx'
 import { buildMixerFolderLayout } from './mixerFolderLayout.js'
 
@@ -80,6 +81,9 @@ export default function MixerPanel() {
         } catch {
           clearAllMeterTelemetry(peaksSnapshot)
         }
+        // Same tick as the peak meters — the loudness panel deliberately has no
+        // timer of its own. Self-gating: no-ops unless it is mounted and on.
+        await pollMasterLoudness()
         await new Promise(resolve => setTimeout(resolve, 125))
       }
     })()
@@ -131,6 +135,10 @@ export default function MixerPanel() {
               <div className="mixer-folder-spacer" aria-hidden="true" />
               <MasterStrip />
             </div>
+            <div className="mixer-offset-column mixer-offset-column--loudness">
+              <div className="mixer-folder-spacer" aria-hidden="true" />
+              <MasterLoudnessMeter />
+            </div>
           </>
         ) : (
           <>
@@ -142,6 +150,7 @@ export default function MixerPanel() {
               }
             </div>
             <MasterStrip />
+            <MasterLoudnessMeter />
           </>
         )}
       </div>

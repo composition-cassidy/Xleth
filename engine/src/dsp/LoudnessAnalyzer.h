@@ -107,6 +107,22 @@ public:
     // The trailing partial 100 ms sub-block is not included, per spec.
     Results getResults() const;
 
+    // ── Live window readings (for a running meter) ───────────────────────────
+    // Results::momentaryMax / shortTermMax are running maxima; these are the
+    // *current* windows, which fall with the signal as well as rise. They are
+    // what an M/S bar meter displays.
+    //
+    // Averaged over however many 100 ms sub-blocks have closed so far, up to the
+    // window length — a short-term meter that stayed blank for the first three
+    // seconds of playback would read as broken, and on steady material the
+    // partial window gives the same answer as the full one anyway. Only once no
+    // sub-block at all has closed (or the signal is digital silence) do they
+    // report kNoMeasurement.
+    //
+    // Main-thread reads. noexcept, no allocation.
+    double getCurrentMomentaryLufs() const noexcept;   // 400 ms window
+    double getCurrentShortTermLufs() const noexcept;   // 3 s window
+
     // Offline convenience: measures a whole buffer in one call. Equivalent to
     // prepare() + a single processBlock() + getResults().
     static Results analyze(const juce::AudioBuffer<float>& buffer, double sampleRate);
@@ -174,6 +190,9 @@ private:
 
     // Flushes one completed 100 ms sub-block into the sliding windows.
     void closeSubBlock() noexcept;
+
+    // Loudness of the last min(nSubBlocks, closed sub-blocks) of history.
+    double currentWindowLufs(int nSubBlocks) const noexcept;
 
     static double energyToLufs(double energy) noexcept;
     static double binCentreLufs(int bin) noexcept;

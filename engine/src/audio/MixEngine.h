@@ -7,12 +7,14 @@
 #include "model/TimelineTypes.h"
 #include "model/Timeline.h"
 #include "model/EnvelopeParameterModulation.h"
+#include "model/LfoParameterModulation.h"
 #include "SampleBank.h"
 #include "Transport.h"
 #include "Sampler.h"
 #include "audio/AudioPerformanceTelemetry.h"
 #include "audio/ClipRenderCache.h"
 #include "audio/ClipModulatedReader.h"
+#include "dsp/LoudnessAnalyzer.h"
 
 #include <atomic>
 #include <limits>
@@ -222,6 +224,37 @@ public:
     // ── Peak meters (thread-safe reads) ──────────────────────────────────────
     float getMasterPeakL() const { return masterPeakL_.load(std::memory_order_relaxed); }
     float getMasterPeakR() const { return masterPeakR_.load(std::memory_order_relaxed); }
+
+    // ── Master loudness meter (BS.1770-4, opt-in) ────────────────────────────
+    // Taps the same point as DiagnosticTapPoint::PostMasterOutput — post master
+    // insert chain, post master fader — and feeds dsp/LoudnessAnalyzer, whose
+    // processBlock() is alloc-free and lock-free by design. Off by default: when
+    // disabled the audio path pays exactly one atomic load per block.
+    struct MasterLoudnessSnapshot
+    {
+        bool   enabled       = false;
+        // Live windows; fall with the signal. kNoMeasurement until the first
+        // 100 ms sub-block closes.
+        double momentary     = xleth::dsp::LoudnessAnalyzer::kNoMeasurement;  // 400 ms, LUFS
+        double shortTerm     = xleth::dsp::LoudnessAnalyzer::kNoMeasurement;  // 3 s, LUFS
+        // Cumulative since the last reset.
+        double integrated    = xleth::dsp::LoudnessAnalyzer::kNoMeasurement;  // LUFS
+        double momentaryMax  = xleth::dsp::LoudnessAnalyzer::kNoMeasurement;  // LUFS
+        double shortTermMax  = xleth::dsp::LoudnessAnalyzer::kNoMeasurement;  // LUFS
+        double lra           = 0.0;                                           // LU
+        double truePeakDbtp  = xleth::dsp::LoudnessAnalyzer::kNoMeasurement;  // dBTP
+    };
+
+    // Main thread. Enabling clears the previous measurement: resuming an
+    // integration across a gap would splice two disjoint spans of programme and
+    // restart the K-weighting filters from stale state.
+    void setMasterLoudnessEnabled(bool enabled);
+    bool isMasterLoudnessEnabled() const noexcept
+    {
+        return masterLoudnessEnabled_.load(std::memory_order_relaxed);
+    }
+    void resetMasterLoudness();                        // main thread
+    MasterLoudnessSnapshot getMasterLoudness() const;  // main thread (walks histograms)
 
     // ── Audio-health instrumentation (lock-free reads; never touch chainsMutex_) ──
     // [Underrun] Counts every processBlock where a clip needed a processed
@@ -744,6 +777,41 @@ private:
     // Peak meters
     std::atomic<float> masterPeakL_{0.0f};
     std::atomic<float> masterPeakR_{0.0f};
+
+    // ── Master loudness meter ───────────────────────────────────────────────
+    // masterLoudnessInUse_ is the audio thread's claim on the analyzer. It lets
+    // prepare()/reset() (main thread) mutate it without a lock the audio thread
+    // could ever block on: the audio thread publishes the claim and re-checks
+    // the enable flag, the main thread clears the flag and waits out the claim.
+    // Both sides need seq_cst on that store/load pair — with release/acquire the
+    // hardware may reorder the store past the load (StoreLoad is the one
+    // reordering x86 allows) and both threads would proceed.
+    xleth::dsp::LoudnessAnalyzer masterLoudness_;
+    std::atomic<bool>            masterLoudnessEnabled_{false};
+    std::atomic<bool>            masterLoudnessInUse_{false};
+
+    // Runs `fn` (which mutates masterLoudness_) with the audio-thread tap
+    // provably outside the analyzer. Main thread only.
+    template <typename Fn>
+    void withMasterLoudnessSuspended(Fn&& fn)
+    {
+        const bool wasEnabled = masterLoudnessEnabled_.exchange(false, std::memory_order_seq_cst);
+
+        // Only this (main) thread ever waits. Bounded so a wedged audio device
+        // cannot freeze the message thread; overrunning the bound is harmless
+        // because no buffer inside the analyzer changes size after the first
+        // prepare() — the worst case is one corrupted measurement block, never
+        // a dangling pointer.
+        for (int spin = 0;
+             spin < 100000 && masterLoudnessInUse_.load(std::memory_order_seq_cst);
+             ++spin)
+        {
+            std::this_thread::yield();
+        }
+
+        fn();
+        masterLoudnessEnabled_.store(wasEnabled, std::memory_order_release);
+    }
 
     // Master output volume (post-effect-chain, pre-clamp)
     std::atomic<float> masterVolume_{1.0f};

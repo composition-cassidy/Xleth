@@ -5374,6 +5374,9 @@ JsonApi::Value Project_NewBlank(const JsonApi::CallbackInfo& info)
         mix.closeAllPluginEditors();
         mix.destroyAllEffectChains();
         mix.clearRegionToSampleMap();
+        // The loudness meter integrates over programme material; carrying the
+        // old project's measurement into a blank one would be meaningless.
+        mix.resetMasterLoudness();
     }
 
     int newProjectGlobalStretchMethod = static_cast<int>(StretchMethod::PSOLA);
@@ -5492,8 +5495,14 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
     // Close all plugin editor windows from the previous project before
     // replacing the timeline — editors hold AudioProcessor* references that
     // will be dangling once the old chains are torn down.
-    if (audioEngine)
-        audioEngine->getMixEngine().closeAllPluginEditors();
+    if (audioEngine) {
+        auto& mix = audioEngine->getMixEngine();
+        mix.closeAllPluginEditors();
+        // Same reason as project_newBlank: the loudness meter's integrated /
+        // LRA / true-peak numbers belong to the project being closed, not the
+        // one being opened.
+        mix.resetMasterLoudness();
+    }
 
     *g_timeline = std::move(*loaded);
     if (g_undoManager) g_undoManager->clear();
@@ -11819,6 +11828,61 @@ JsonApi::Value Audio_GetMasterPeak(const JsonApi::CallbackInfo& info)
     o.Set("peakL", JsonApi::Number::New(env, audioEngine->getMixEngine().getMasterPeakL()));
     o.Set("peakR", JsonApi::Number::New(env, audioEngine->getMixEngine().getMasterPeakR()));
     return o;
+}
+
+// audio_getMasterLoudness() → { enabled, momentary, shortTerm, integrated,
+//                               momentaryMax, shortTermMax, lra, truePeakDbtp }
+// Every LUFS/dBTP field can be LoudnessAnalyzer::kNoMeasurement (-200.0), which
+// means "nothing measured yet" — a finite sentinel precisely so it survives JSON;
+// the UI renders it as an em dash.
+JsonApi::Value Audio_GetMasterLoudness(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const auto s = audioEngine->getMixEngine().getMasterLoudness();
+    JsonApi::Object o = JsonApi::Object::New(env);
+    o.Set("enabled",      JsonApi::Boolean::New(env, s.enabled));
+    o.Set("momentary",    JsonApi::Number::New(env, s.momentary));
+    o.Set("shortTerm",    JsonApi::Number::New(env, s.shortTerm));
+    o.Set("integrated",   JsonApi::Number::New(env, s.integrated));
+    o.Set("momentaryMax", JsonApi::Number::New(env, s.momentaryMax));
+    o.Set("shortTermMax", JsonApi::Number::New(env, s.shortTermMax));
+    o.Set("lra",          JsonApi::Number::New(env, s.lra));
+    o.Set("truePeakDbtp", JsonApi::Number::New(env, s.truePeakDbtp));
+    return o;
+}
+
+// audio_setMasterLoudnessEnabled(enabled) → boolean (the state now in effect)
+JsonApi::Value Audio_SetMasterLoudnessEnabled(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsBoolean()) {
+        JsonApi::TypeError::New(env, "audio_setMasterLoudnessEnabled(enabled: boolean)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    auto& mix = audioEngine->getMixEngine();
+    mix.setMasterLoudnessEnabled(info[0].As<JsonApi::Boolean>().Value());
+    return JsonApi::Boolean::New(env, mix.isMasterLoudnessEnabled());
+}
+
+// audio_resetMasterLoudness() → boolean
+JsonApi::Value Audio_ResetMasterLoudness(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    audioEngine->getMixEngine().resetMasterLoudness();
+    return JsonApi::Boolean::New(env, true);
 }
 
 // audio_getTrackPeak(trackId) → { peakL, peakR }

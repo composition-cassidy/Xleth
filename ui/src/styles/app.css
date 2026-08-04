@@ -9386,6 +9386,20 @@ html.fx-drag-active * {
   flex: 0 0 158px;
 }
 
+.mixer-offset-column--loudness {
+  width: 176px;
+  min-width: 176px;
+  flex: 0 0 176px;
+}
+
+.mixer-offset-column > .loudness-meter {
+  flex: 1;
+  height: auto;
+  min-height: 0;
+  width: 100%;
+  min-width: 0;
+}
+
 .mixer-offset-column > .selected-effect-rack,
 .mixer-offset-column > .mixer-strip,
 .mixer-channel-column > .mixer-strip,
@@ -9403,6 +9417,185 @@ html.fx-drag-active * {
 .mixer-offset-column--master > .mixer-strip--master {
   width: 100%;
   min-width: 0;
+}
+
+/* ── Master loudness meter (BS.1770-4) ───────────────────────────────────────
+ * Lives beside the master strip and matches its flat, square treatment. The
+ * --mx-* palette is scoped to the mixer panel, so every use carries the global
+ * token it aliases as a fallback — the component is not mixer-only by design. */
+
+.loudness-meter {
+  width: 176px;
+  min-width: 176px;
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 9px;
+  border-left: 1px solid var(--mx-bd2, var(--theme-border-strong));
+  background: var(--mx-s1, var(--theme-bg-primary));
+  user-select: none;
+}
+
+/* Off is the default state, so it reads as dormant rather than broken. */
+.loudness-meter--off .loudness-meter-bars,
+.loudness-meter--off .loudness-meter-readouts,
+.loudness-meter--off .loudness-meter-target {
+  opacity: 0.45;
+}
+
+.loudness-meter-header {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+}
+
+.loudness-meter-title {
+  flex: 1;
+  min-width: 0;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--mx-t2, var(--theme-text-muted));
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.loudness-meter-btn {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--mx-bd, var(--theme-border-subtle));
+  border-radius: 0;
+  background: var(--mx-s2, var(--theme-bg-surface));
+  color: var(--mx-t3, var(--theme-text-subtle));
+  cursor: pointer;
+}
+
+.loudness-meter-btn:hover {
+  color: var(--mx-t1, var(--theme-text));
+  border-color: var(--mx-bd2, var(--theme-border-strong));
+}
+
+.loudness-meter-btn--active {
+  color: var(--mx-ac, var(--theme-accent));
+  border-color: var(--mx-ac, var(--theme-accent));
+  background: var(--mx-acDim, transparent);
+}
+
+.loudness-meter-bars {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+}
+
+.loudness-meter-bar-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.loudness-meter-bar-label {
+  flex-shrink: 0;
+  width: 12px;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--mx-t3, var(--theme-text-subtle));
+}
+
+.loudness-meter-bar-track {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  height: 8px;
+  background: var(--mx-s0, var(--theme-bg-inset));
+  border: 1px solid var(--mx-bd, var(--theme-border-subtle));
+  overflow: hidden;
+}
+
+.loudness-meter-bar-fill {
+  height: 100%;
+  background: var(--mx-ac, var(--theme-accent));
+  transition: width 0.08s linear;
+}
+
+/* Platform target line, shared with the export dialog's picker. */
+.loudness-meter-bar-target {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  margin-left: -1px;
+  background: var(--mx-t1, var(--theme-text));
+}
+
+.loudness-meter-bar-value {
+  flex-shrink: 0;
+  width: 34px;
+  text-align: right;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--mx-t2, var(--theme-text-muted));
+}
+
+.loudness-meter-readouts {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.loudness-meter-readout {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 3px 6px;
+  background: var(--mx-s2, var(--theme-bg-surface));
+}
+
+.loudness-meter-readout-label {
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--mx-t3, var(--theme-text-subtle));
+}
+
+.loudness-meter-readout-value {
+  display: flex;
+  align-items: baseline;
+  gap: 3px;
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--mx-ac, var(--theme-accent));
+}
+
+.loudness-meter-readout-value--over {
+  color: var(--theme-danger);
+}
+
+.loudness-meter-unit {
+  font-size: 8.5px;
+  color: var(--mx-t4, var(--theme-text-placeholder));
+}
+
+.loudness-meter-target {
+  flex-shrink: 0;
+  margin-top: auto;
+  font-size: 9px;
+  line-height: 1.3;
+  color: var(--mx-t4, var(--theme-text-placeholder));
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .selected-effect-rack {

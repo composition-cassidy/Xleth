@@ -1929,6 +1929,18 @@ void MixEngine::prepare(double sampleRate, int maxBlockSize)
     resetLatencyCompensationState();
     pendingLatencyCompensationReset_.store(false, std::memory_order_relaxed);
 
+    // The K-weighting biquads are derived per sample rate, so the loudness meter
+    // has to follow the device across a rate change. Stereo: the master bus is
+    // always a stereo pair, and BS.1770-4's surround weights are out of scope.
+    // Allocates on the first call only — every buffer inside the analyzer is
+    // sized by channel count, not by rate. Kept outside the chainsMutex_ lock
+    // below so the audio thread is never waited on while holding it. Note this
+    // runs on the message thread when an export finishes (Audio_ExportGetProgress
+    // re-prepares with the device live), which is exactly why it is guarded.
+    withMasterLoudnessSuspended([this, sampleRate] {
+        masterLoudness_.prepare(sampleRate, 2);
+    });
+
     // Re-prepare any existing effect chains with the new sample rate / block size
     std::lock_guard<std::mutex> lock(chainsMutex_);
     for (auto& [id, chain] : effectChains_)
@@ -1952,6 +1964,52 @@ void MixEngine::setDiagnosticTapSink(DiagnosticTapSink* sink)
 {
     diagnosticTapSink_ = sink;
     diagnosticTapBlockIndex_ = 0;
+}
+
+// ── Master loudness meter ────────────────────────────────────────────────────
+
+void MixEngine::setMasterLoudnessEnabled(bool enabled)
+{
+    if (enabled == masterLoudnessEnabled_.load(std::memory_order_relaxed))
+        return;
+
+    if (!enabled)
+    {
+        masterLoudnessEnabled_.store(false, std::memory_order_release);
+        return;
+    }
+
+    // Clear before arming: an integration resumed across a gap would average two
+    // disjoint spans of programme into one number, and the K-weighting filters
+    // would start from state belonging to whatever was playing when the meter
+    // was switched off.
+    withMasterLoudnessSuspended([this] { masterLoudness_.reset(); });
+    masterLoudnessEnabled_.store(true, std::memory_order_release);
+}
+
+void MixEngine::resetMasterLoudness()
+{
+    withMasterLoudnessSuspended([this] { masterLoudness_.reset(); });
+}
+
+MixEngine::MasterLoudnessSnapshot MixEngine::getMasterLoudness() const
+{
+    MasterLoudnessSnapshot s;
+    s.enabled = masterLoudnessEnabled_.load(std::memory_order_relaxed);
+
+    // Read-only walk over state the audio thread is writing, exactly like the
+    // peak getters: values can straddle a block, which costs at most one frame
+    // of meter jitter. Nothing here can resize, so nothing here can dangle.
+    const auto r = masterLoudness_.getResults();
+    s.integrated   = r.integrated;
+    s.momentaryMax = r.momentaryMax;
+    s.shortTermMax = r.shortTermMax;
+    s.lra          = r.lra;
+    s.truePeakDbtp = r.truePeakDbtp;
+
+    s.momentary = masterLoudness_.getCurrentMomentaryLufs();
+    s.shortTerm = masterLoudness_.getCurrentShortTermLufs();
+    return s;
 }
 
 void MixEngine::setNonRealtime(bool nr)
@@ -5578,6 +5636,22 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         outputBuffer.applyGain(masterVol);
 
     emitBusDiagnosticTap(DiagnosticTapPoint::PostMasterOutput, outputBuffer);
+
+    // ── Master loudness meter (opt-in) ──────────────────────────────────────
+    // Same point as the PostMasterOutput tap above: post master insert chain,
+    // post master fader, pre safety clamp — what the mix actually measures.
+    // Disabled cost is the single acquire load below. When enabled, the claim
+    // published here is what lets prepare()/reset() mutate the analyzer from the
+    // message thread without this thread ever blocking; see MixEngine.h. The
+    // analyzer allocates only in prepare(), never here.
+    if (masterLoudnessEnabled_.load(std::memory_order_acquire)
+        && outputBuffer.getNumChannels() >= 2)
+    {
+        masterLoudnessInUse_.store(true, std::memory_order_seq_cst);
+        if (masterLoudnessEnabled_.load(std::memory_order_seq_cst))
+            masterLoudness_.processBlock(outputBuffer.getArrayOfReadPointers(), numSamples);
+        masterLoudnessInUse_.store(false, std::memory_order_seq_cst);
+    }
 
     // ── Clamp output to [-1, +1] (hard safety limit; replace with soft limiter in P3) ──
     for (int ch = 0; ch < outputBuffer.getNumChannels(); ++ch)
