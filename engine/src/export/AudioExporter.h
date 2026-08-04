@@ -2,6 +2,7 @@
 
 #include <juce_audio_basics/juce_audio_basics.h>
 
+#include "dsp/LoudnessAnalyzer.h" // xleth::dsp::LoudnessAnalyzer (BS.1770-4 measurement)
 #include "render/RenderScope.h"   // xleth::TailRenderPlan (Phase 3A tail policy)
 
 #include <atomic>
@@ -46,7 +47,74 @@ public:
         // bridge derives this from the project LoopRegion via
         // xleth::computeTailRenderPlan() at the export sample rate.
         xleth::TailRenderPlan tail{};
+
+        // ── Loudness normalisation (opt-in; see NormalizationReport below) ────
+        // Strictly off by default: with normalizationEnabled == false the render
+        // reaches the encoder byte-for-byte as it always has.
+        bool   normalizationEnabled = false;
+        double targetLufs           = -14.0;  // LUFS, integrated (BS.1770-4 §5)
+        double maxDbtp              = -1.0;   // dBTP ceiling, 4x-oversampled peak
+        // A render quieter than the target is only lifted when this is set —
+        // quiet material is far more often deliberate headroom than a mistake,
+        // and lifting it is the case that risks running out of peak headroom.
+        bool   allowUpwardGain      = false;
     };
+
+    // ─── Loudness normalisation ───────────────────────────────────────────────
+    // What the analyzer measured on the finished render, and the static gain
+    // plan derived from it. Two gain terms, both in dB and both applied as ONE
+    // multiplication over the whole buffer:
+    //   loudnessGainDb   — the trim toward targetLufs.
+    //   peakSafetyGainDb — extra attenuation (<= 0) so the true peak lands at or
+    //                      below maxDbtp after that trim.
+    //
+    // ── Why there is no limiter ──────────────────────────────────────────────
+    // The dBTP ceiling here is enforced by static attenuation only, never by a
+    // true-peak limiter. That is a deliberate choice, not a missing feature: a
+    // constant gain is perfectly transparent — it cannot pump, distort, or alter
+    // the dynamics or the loudness relationships the mix was built with, so the
+    // numbers in this report stay true of the exported file. The cost is that
+    // whenever the peak needs holding down, the whole export sits that much below
+    // the loudness target; the report says so explicitly (compare
+    // finalPredictedIntegratedLufs against targetLufs) rather than hiding it. The
+    // case that genuinely wants a limiter is upward normalisation of quiet
+    // material toward a loud target, where a few isolated transients can cost the
+    // whole render several dB. Adding a TP-limiting processor for that path is
+    // deferred future work; until it exists, upward gain is opt-in and is capped
+    // at the available peak headroom so the ceiling is never traded away.
+    struct NormalizationReport {
+        // False when the render was degenerate (silence, or too short for the
+        // gated measurement) or the planned gain was absurd — in both cases every
+        // gain below is 0 and the buffer is left untouched. A valid plan whose
+        // total gain works out to exactly 0 dB still reports applied = true.
+        bool   applied = false;
+
+        double measuredIntegratedLufs = xleth::dsp::LoudnessAnalyzer::kNoMeasurement;
+        double measuredTruePeakDbtp   = xleth::dsp::LoudnessAnalyzer::kNoMeasurement;
+
+        double loudnessGainDb   = 0.0;  // trim toward targetLufs
+        double peakSafetyGainDb = 0.0;  // extra static attenuation, <= 0
+
+        // Where the two gains put the measurements. Exact for the true peak (a
+        // static gain moves it by exactly that many dB) and, because LUFS is a
+        // pure log of scaled energy, for the integrated loudness too.
+        double finalPredictedIntegratedLufs = xleth::dsp::LoudnessAnalyzer::kNoMeasurement;
+        double finalPredictedTruePeakDbtp   = xleth::dsp::LoudnessAnalyzer::kNoMeasurement;
+    };
+
+    // Any |total gain| beyond this is treated as a degenerate measurement rather
+    // than obeyed — a 60 dB move is never a real normalisation of a real mix, and
+    // corrupting the export is worse than skipping the trim.
+    static constexpr double kMaxNormalizationGainDb = 60.0;
+
+    // Pure gain math for a normalizationEnabled render, split out from the render
+    // itself so the branch matrix is testable without an engine. integratedLufs
+    // and truePeakDbtp come straight from LoudnessAnalyzer::Results.
+    static NormalizationReport planNormalization(double integratedLufs,
+                                                 double truePeakDbtp,
+                                                 double targetLufs,
+                                                 double maxDbtp,
+                                                 bool allowUpwardGain);
 
     struct PrerollPlan {
         // Track-path latency term of the pre-roll. The MixEngine-driven
@@ -81,12 +149,19 @@ public:
     // to config.outputPath. progressCallback receives 0..1 as render+encode
     // progresses (render = 0..0.7, encode = 0.7..1.0). cancelFlag is checked
     // each block — set it to true to abort. Returns true on success.
+    //
+    // When config.normalizationEnabled is set, the finished render is measured
+    // and gain-trimmed in place between the render pass and the encoder — ONE
+    // render pass, never a second one. outNormalizationReport (optional) receives
+    // what was measured and applied; with normalization off it is left in its
+    // default applied = false state and the buffer is untouched.
     bool exportAudio(const Timeline& timeline,
                      const SampleBank& bank,
                      MixEngine& mixer,
                      const Config& config,
                      std::function<void(float)> progressCallback,
-                     std::atomic<bool>& cancelFlag);
+                     std::atomic<bool>& cancelFlag,
+                     NormalizationReport* outNormalizationReport = nullptr);
 
 private:
     // Offline render pass: drives MixEngine::processBlock() in 4096-sample

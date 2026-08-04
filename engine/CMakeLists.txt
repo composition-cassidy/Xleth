@@ -1716,6 +1716,43 @@ target_compile_definitions(test_loudness PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_export_normalization ────────────────────────────────────────────────
+# Loudness normalisation in export/AudioExporter: the pure gain plan
+# (AudioExporter::planNormalization) branch by branch, a closed loop that applies
+# the plan and re-measures it with dsp/LoudnessAnalyzer, and end-to-end exports on
+# both the Phase 3A tail path and the Phase 3B wrap path — where the invariants
+# are that normalizationEnabled = false leaves the render bit-identical and that
+# an enabled export differs from it by exactly one static gain.
+add_executable(test_export_normalization
+    test/test_export_normalization.cpp
+)
+
+target_link_libraries(test_export_normalization PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_devices
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_export_normalization PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+
 # ── hall_measure (reverb re-tune measurement + A/B render tool) ──────────────
 # Not a ctest test — a diagnostic/render tool for the ongoing stock-reverb
 # redesign (docs/plans/reverb-audit-and-redesign.md). Prints a backend's
@@ -2166,6 +2203,7 @@ set(XLETH_ENGINE_TESTS
     test_uniflange
     test_limiter
     test_loudness
+    test_export_normalization
     test_graph_effect_parameters
     test_frame_cache
     test_frame_collector

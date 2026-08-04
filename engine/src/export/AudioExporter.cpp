@@ -5,6 +5,7 @@
 #include "SampleBank.h"
 #include "Transport.h"
 #include "audio/MixEngine.h"
+#include "dsp/LoudnessAnalyzer.h"
 #include "render/RenderScope.h"
 
 #include <juce_audio_basics/juce_audio_basics.h>
@@ -21,6 +22,7 @@ extern "C" {
 }
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <iostream>
 #include <vector>
@@ -119,6 +121,69 @@ AudioExporter::PrerollPlan AudioExporter::computePrerollPlan(
     return computePrerollPlan(warmUpStartSample, captureStartSample,
                               latencySnapshot.maxPathLatencySamples,
                               latencySnapshot.masterInsertLatencySamples);
+}
+
+// ─── Loudness normalisation plan ─────────────────────────────────────────────
+
+AudioExporter::NormalizationReport AudioExporter::planNormalization(
+    double integratedLufs,
+    double truePeakDbtp,
+    double targetLufs,
+    double maxDbtp,
+    bool allowUpwardGain)
+{
+    using xleth::dsp::LoudnessAnalyzer;
+
+    NormalizationReport r;
+    r.measuredIntegratedLufs = integratedLufs;
+    r.measuredTruePeakDbtp   = truePeakDbtp;
+
+    // Degenerate render: LoudnessAnalyzer reports kNoMeasurement for silence, for
+    // material shorter than the 400 ms gating block, and for anything entirely
+    // below the absolute gate. There is no loudness to normalise toward a target,
+    // and treating the sentinel as a level would ask for a ~186 dB lift.
+    constexpr double kSentinelEps = 1.0e-6;
+    const double sentinelFloor = LoudnessAnalyzer::kNoMeasurement + kSentinelEps;
+    if (!std::isfinite(integratedLufs) || !std::isfinite(truePeakDbtp)
+        || integratedLufs <= sentinelFloor || truePeakDbtp <= sentinelFloor)
+        return r;   // applied = false, both gains 0
+
+    // 1. Trim toward the loudness target.
+    double loudnessGainDb = targetLufs - integratedLufs;
+    if (loudnessGainDb > 0.0) {
+        if (!allowUpwardGain) {
+            // Quieter than target and lifting is not allowed: leave it alone. The
+            // peak pass below still runs — a quiet-but-clipping render is a real
+            // combination, and the ceiling is not negotiable.
+            loudnessGainDb = 0.0;
+        } else {
+            // Never lift past the ceiling: the available true-peak headroom caps
+            // the lift, and if there is none the lift is simply 0 (this branch
+            // must not turn into an attenuation — that is peakSafetyGainDb's job).
+            const double headroomDb = maxDbtp - truePeakDbtp;
+            loudnessGainDb = std::max(0.0, std::min(loudnessGainDb, headroomDb));
+        }
+    }
+
+    // 2. Hold the true peak at or below the ceiling with static attenuation only
+    //    (see the header for why there is no limiter here).
+    const double predictedPeakDbtp = truePeakDbtp + loudnessGainDb;
+    const double peakSafetyGainDb  = (predictedPeakDbtp > maxDbtp)
+                                   ? (maxDbtp - predictedPeakDbtp)   // negative
+                                   : 0.0;
+
+    // 3. Sanity clamp. A move this large means the measurement, not the mix, is
+    //    wrong; skipping is recoverable, shipping a 60 dB error is not.
+    const double totalGainDb = loudnessGainDb + peakSafetyGainDb;
+    if (!std::isfinite(totalGainDb) || std::abs(totalGainDb) > kMaxNormalizationGainDb)
+        return r;   // applied = false, both gains 0
+
+    r.applied                     = true;
+    r.loudnessGainDb              = loudnessGainDb;
+    r.peakSafetyGainDb            = peakSafetyGainDb;
+    r.finalPredictedIntegratedLufs = integratedLufs + totalGainDb;
+    r.finalPredictedTruePeakDbtp   = truePeakDbtp   + totalGainDb;
+    return r;
 }
 
 // ─── Offline render pass ─────────────────────────────────────────────────────
@@ -601,7 +666,8 @@ bool AudioExporter::exportAudio(const Timeline& timeline,
                                  MixEngine& mixer,
                                  const Config& config,
                                  std::function<void(float)> progressCallback,
-                                 std::atomic<bool>& cancelFlag)
+                                 std::atomic<bool>& cancelFlag,
+                                 NormalizationReport* outNormalizationReport)
 {
     // 1. Compute beat range
     double startBeat = std::max(0.0, config.startBeat);
@@ -654,6 +720,37 @@ bool AudioExporter::exportAudio(const Timeline& timeline,
     if (renderedSamples < rendered.getNumSamples())
         rendered.setSize(2, renderedSamples, /*keepExisting*/ true, false, true);
 
-    // 3. Encode
+    // 3. Loudness normalisation (opt-in). Deliberately here, on the finished
+    //    buffer: `rendered` is now exactly what the encoder will see, so this one
+    //    site covers the Phase 3A tail path AND the Phase 3B wrap path (whose
+    //    fold has already happened — the folded region head is what ships, and
+    //    measuring before the fold would miss the seam energy). No second render
+    //    pass: measure, plan, scale in place, encode.
+    NormalizationReport normReport;
+    if (config.normalizationEnabled) {
+        // Allocates, but this is the offline export thread — never a realtime one.
+        const auto measured = xleth::dsp::LoudnessAnalyzer::analyze(
+            rendered, static_cast<double>(sr));
+
+        normReport = planNormalization(measured.integrated, measured.truePeakDbtp,
+                                       config.targetLufs, config.maxDbtp,
+                                       config.allowUpwardGain);
+
+        const double totalGainDb = normReport.loudnessGainDb + normReport.peakSafetyGainDb;
+        if (normReport.applied && totalGainDb != 0.0)
+            rendered.applyGain(static_cast<float>(std::pow(10.0, totalGainDb / 20.0)));
+
+        std::cout << "[AudioExporter] normalize: measured I=" << measured.integrated
+                  << " LUFS TP=" << measured.truePeakDbtp << " dBTP"
+                  << " → target=" << config.targetLufs
+                  << " ceiling=" << config.maxDbtp
+                  << " loudnessGain=" << normReport.loudnessGainDb
+                  << " peakSafety=" << normReport.peakSafetyGainDb
+                  << " applied=" << (normReport.applied ? "yes" : "no")
+                  << "\n" << std::flush;
+    }
+    if (outNormalizationReport) *outNormalizationReport = normReport;
+
+    // 4. Encode
     return encodeWithFFmpeg(rendered, config, progressCallback, cancelFlag);
 }
