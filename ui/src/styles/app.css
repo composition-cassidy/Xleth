@@ -3965,6 +3965,44 @@ html[data-xleth-backdrop="video"] .app-body {
   cursor: not-allowed;
 }
 
+/* ── Loudness normalization controls ───────────────────────────────────────── */
+.loudness-normalization-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.loudness-report {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 10px;
+  margin-top: 4px;
+  background: var(--theme-bg-secondary);
+  border: 1px solid var(--theme-border-subtle);
+}
+
+.loudness-report-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  color: var(--theme-text-muted);
+}
+
+.loudness-report-row span:last-child {
+  color: var(--theme-text);
+}
+
+.loudness-report-pass {
+  color: var(--theme-accent);
+  font-weight: 600;
+}
+
+.loudness-report-over {
+  color: var(--theme-danger);
+  font-weight: 600;
+}
+
 .export-progress {
   display: flex;
   flex-direction: column;

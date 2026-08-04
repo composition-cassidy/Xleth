@@ -657,6 +657,18 @@ struct ExportProgressSnapshot {
     std::string phase;         // "rendering" | "encoding" | "done" | "error" | "cancelled" | ""
     std::string outputPath;
     std::string error;
+
+    // Populated on the success path only (see Audio_ExportStart); left at
+    // hasNormalizationReport = false for a normalization-off, error, or
+    // cancelled render.
+    bool   hasNormalizationReport      = false;
+    bool   normalizationApplied        = false;
+    double normalizationMeasuredIntegratedLufs = 0.0;
+    double normalizationMeasuredTruePeakDbtp   = 0.0;
+    double normalizationLoudnessGainDb         = 0.0;
+    double normalizationPeakSafetyGainDb       = 0.0;
+    double normalizationFinalPredictedIntegratedLufs = 0.0;
+    double normalizationFinalPredictedTruePeakDbtp   = 0.0;
 };
 std::mutex                   g_exportStateMutex;
 ExportProgressSnapshot       g_exportProgress;
@@ -14690,6 +14702,14 @@ JsonApi::Value Audio_ExportStart(const JsonApi::CallbackInfo& info)
     if (o.Has("mp3Bitrate")) cfg.mp3Bitrate = o.Get("mp3Bitrate").As<JsonApi::Number>().Int32Value();
     if (o.Has("flacLevel"))  cfg.flacLevel  = o.Get("flacLevel").As<JsonApi::Number>().Int32Value();
 
+    // Loudness normalisation (opt-in; absent fields keep AudioExporter::Config's
+    // off-by-default values, so a caller that omits all four gets byte-identical
+    // behaviour to pre-normalization exports).
+    if (o.Has("normalizationEnabled")) cfg.normalizationEnabled = o.Get("normalizationEnabled").As<JsonApi::Boolean>().Value();
+    if (o.Has("targetLufs"))           cfg.targetLufs           = o.Get("targetLufs").As<JsonApi::Number>().DoubleValue();
+    if (o.Has("maxDbtp"))              cfg.maxDbtp              = o.Get("maxDbtp").As<JsonApi::Number>().DoubleValue();
+    if (o.Has("allowUpwardGain"))      cfg.allowUpwardGain      = o.Get("allowUpwardGain").As<JsonApi::Boolean>().Value();
+
     // Phase 2: render scope is derived from the project LoopRegion. startBeat /
     // endBeat (if present) are a debug-only bounds override, not a user range.
     {
@@ -14732,6 +14752,7 @@ JsonApi::Value Audio_ExportStart(const JsonApi::CallbackInfo& info)
         g_exportProgress.phase      = "rendering";
         g_exportProgress.outputPath = cfg.outputPath;
         g_exportProgress.error.clear();
+        g_exportProgress.hasNormalizationReport = false;
     }
     g_exportCancel.store(false);
     g_exportRunning.store(true);
@@ -14776,6 +14797,7 @@ JsonApi::Value Audio_ExportStart(const JsonApi::CallbackInfo& info)
         // thread above — do NOT repeat here (would re-trigger async rebuild).
 
         AudioExporter exporter;
+        AudioExporter::NormalizationReport normReport;
         bool ok = false;
         try {
             ok = exporter.exportAudio(
@@ -14788,7 +14810,8 @@ JsonApi::Value Audio_ExportStart(const JsonApi::CallbackInfo& info)
                     g_exportProgress.percent = p;
                     g_exportProgress.phase = (p < 0.7f) ? "rendering" : "encoding";
                 },
-                g_exportCancel
+                g_exportCancel,
+                &normReport
             );
         } catch (const std::exception& e) {
             std::lock_guard<std::mutex> lk(g_exportStateMutex);
@@ -14816,6 +14839,19 @@ JsonApi::Value Audio_ExportStart(const JsonApi::CallbackInfo& info)
             else if (ok)                    { g_exportProgress.phase = "done"; g_exportProgress.percent = 1.0f; }
             else if (g_exportProgress.phase != "cancelled") g_exportProgress.phase = "error";
             g_exportProgress.running = false;
+
+            if (ok && !g_exportCancel.load() && cfg.normalizationEnabled) {
+                g_exportProgress.hasNormalizationReport = true;
+                g_exportProgress.normalizationApplied   = normReport.applied;
+                g_exportProgress.normalizationMeasuredIntegratedLufs = normReport.measuredIntegratedLufs;
+                g_exportProgress.normalizationMeasuredTruePeakDbtp   = normReport.measuredTruePeakDbtp;
+                g_exportProgress.normalizationLoudnessGainDb         = normReport.loudnessGainDb;
+                g_exportProgress.normalizationPeakSafetyGainDb       = normReport.peakSafetyGainDb;
+                g_exportProgress.normalizationFinalPredictedIntegratedLufs = normReport.finalPredictedIntegratedLufs;
+                g_exportProgress.normalizationFinalPredictedTruePeakDbtp   = normReport.finalPredictedTruePeakDbtp;
+            } else {
+                g_exportProgress.hasNormalizationReport = false;
+            }
         }
         g_exportRunning.store(false);
 
@@ -14851,6 +14887,17 @@ JsonApi::Value Audio_ExportGetProgress(const JsonApi::CallbackInfo& info)
     o.Set("phase",      JsonApi::String::New(env, g_exportProgress.phase));
     o.Set("outputPath", JsonApi::String::New(env, g_exportProgress.outputPath));
     o.Set("error",      JsonApi::String::New(env, g_exportProgress.error));
+    if (g_exportProgress.hasNormalizationReport) {
+        JsonApi::Object norm = JsonApi::Object::New(env);
+        norm.Set("applied",                        JsonApi::Boolean::New(env, g_exportProgress.normalizationApplied));
+        norm.Set("measuredIntegratedLufs",         JsonApi::Number::New (env, g_exportProgress.normalizationMeasuredIntegratedLufs));
+        norm.Set("measuredTruePeakDbtp",           JsonApi::Number::New (env, g_exportProgress.normalizationMeasuredTruePeakDbtp));
+        norm.Set("loudnessGainDb",                 JsonApi::Number::New (env, g_exportProgress.normalizationLoudnessGainDb));
+        norm.Set("peakSafetyGainDb",                JsonApi::Number::New (env, g_exportProgress.normalizationPeakSafetyGainDb));
+        norm.Set("finalPredictedIntegratedLufs",   JsonApi::Number::New (env, g_exportProgress.normalizationFinalPredictedIntegratedLufs));
+        norm.Set("finalPredictedTruePeakDbtp",     JsonApi::Number::New (env, g_exportProgress.normalizationFinalPredictedTruePeakDbtp));
+        o.Set("normalization", norm);
+    }
     return o;
 }
 

@@ -3,6 +3,22 @@ import ProgressBar from './ProgressBar.jsx'
 import TailRenderControls from './TailRenderControls.jsx'
 import { BEATS_PER_BAR } from '../constants/timeline.js'
 import { getPickerPath, openFilePicker } from './filePicker/filePickerService.js'
+import { PLATFORM_TARGETS, DEFAULT_PLATFORM_TARGET } from '../constants/loudnessTargets.js'
+
+const LOUDNESS_TARGET_STORAGE_KEY = 'xleth.export.loudnessTarget'
+const NO_MEASUREMENT_SENTINEL = -200.0
+
+function formatLufs(v) {
+  return v <= NO_MEASUREMENT_SENTINEL ? '—' : `${v.toFixed(1)} LUFS`
+}
+
+function formatDb(v) {
+  return v <= NO_MEASUREMENT_SENTINEL ? '—' : `${v.toFixed(1)} dB`
+}
+
+function formatDbtp(v) {
+  return v <= NO_MEASUREMENT_SENTINEL ? '—' : `${v.toFixed(1)} dBTP`
+}
 
 // ── Audio export dialog ──────────────────────────────────────────────────────
 // Drives the C++ AudioExporter via the xleth.audio bridge. Subscribes to
@@ -18,9 +34,14 @@ export default function ExportDialog({ isOpen, onClose }) {
   const [endBar, setEndBar] = useState(0) // 0 = auto
   const [outputPath, setOutputPath] = useState('')
 
+  const [platformTarget, setPlatformTarget] = useState(DEFAULT_PLATFORM_TARGET)
+  const [customTargetLufs, setCustomTargetLufs] = useState(-14)
+  const [customMaxDbtp, setCustomMaxDbtp] = useState(-1)
+
   const [phase, setPhase] = useState('idle') // idle | running | done | error | cancelled
   const [progress, setProgress] = useState(0)
   const [errorMsg, setErrorMsg] = useState('')
+  const [normReport, setNormReport] = useState(null)
 
   // Subscribe to progress updates while dialog is open
   useEffect(() => {
@@ -31,7 +52,7 @@ export default function ExportDialog({ isOpen, onClose }) {
       if (p.running) {
         setPhase('running')
       } else {
-        if (p.phase === 'done')            { setPhase('done'); setProgress(1) }
+        if (p.phase === 'done')            { setPhase('done'); setProgress(1); setNormReport(p.normalization || null) }
         else if (p.phase === 'cancelled')  setPhase('cancelled')
         else                               { setPhase('error'); setErrorMsg(p.error || 'Export failed') }
       }
@@ -39,14 +60,23 @@ export default function ExportDialog({ isOpen, onClose }) {
     return unsub
   }, [isOpen])
 
-  // Reset ephemeral state whenever the dialog opens
+  // Reset ephemeral state whenever the dialog opens, and restore the last
+  // selected loudness platform target.
   useEffect(() => {
     if (isOpen) {
       setPhase('idle')
       setProgress(0)
       setErrorMsg('')
+      setNormReport(null)
+      const saved = localStorage.getItem(LOUDNESS_TARGET_STORAGE_KEY)
+      if (saved && PLATFORM_TARGETS[saved]) setPlatformTarget(saved)
     }
   }, [isOpen])
+
+  const selectPlatformTarget = useCallback((key) => {
+    setPlatformTarget(key)
+    localStorage.setItem(LOUDNESS_TARGET_STORAGE_KEY, key)
+  }, [])
 
   const browse = useCallback(async () => {
     const defName = `export.${format}`
@@ -81,6 +111,13 @@ export default function ExportDialog({ isOpen, onClose }) {
       mp3Bitrate: Number(mp3Bitrate),
       flacLevel: Number(flacLevel),
     }
+    if (platformTarget !== 'none') {
+      const target = PLATFORM_TARGETS[platformTarget]
+      cfg.normalizationEnabled = true
+      cfg.targetLufs = platformTarget === 'custom' ? Number(customTargetLufs) : target.targetLufs
+      cfg.maxDbtp = platformTarget === 'custom' ? Number(customMaxDbtp) : target.maxDbtp
+      cfg.allowUpwardGain = target.allowUpwardGain
+    }
     // Phase 2: the render scope derives from the project LoopRegion. The manual
     // Start/End Bar inputs are dev-only and sent solely as a debug bounds
     // override (the native side gates them too).
@@ -96,7 +133,8 @@ export default function ExportDialog({ isOpen, onClose }) {
       setPhase('error')
       setErrorMsg('Failed to start export (already running?)')
     }
-  }, [outputPath, format, sampleRate, bitDepth, mp3Bitrate, flacLevel, startBar, endBar])
+  }, [outputPath, format, sampleRate, bitDepth, mp3Bitrate, flacLevel, startBar, endBar,
+      platformTarget, customTargetLufs, customMaxDbtp])
 
   const cancel = useCallback(async () => {
     await window.xleth.audio.exportCancel()
@@ -110,6 +148,14 @@ export default function ExportDialog({ isOpen, onClose }) {
 
   const running = phase === 'running'
   const finished = phase === 'done' || phase === 'error' || phase === 'cancelled'
+
+  // The select is disabled while running, so platformTarget still reflects
+  // whatever ceiling was actually sent to the engine for this render.
+  const activeMaxDbtp = platformTarget === 'custom'
+    ? Number(customMaxDbtp)
+    : PLATFORM_TARGETS[platformTarget]?.maxDbtp ?? 0
+  const peakMeasured = normReport && normReport.finalPredictedTruePeakDbtp > NO_MEASUREMENT_SENTINEL
+  const peakPass = peakMeasured && normReport.finalPredictedTruePeakDbtp <= activeMaxDbtp
 
   return (
     <div className="export-dialog-backdrop" onClick={() => { if (!running) onClose() }}>
@@ -215,6 +261,57 @@ export default function ExportDialog({ isOpen, onClose }) {
           <div className="export-section-divider" />
           <TailRenderControls disabled={running} />
 
+          {/* ── Loudness normalization ────────────────────────────────── */}
+          <div className="export-section-divider" />
+          <div className="loudness-normalization-controls">
+            <div className="export-row">
+              <label>Loudness Normalization</label>
+              <select
+                value={platformTarget}
+                onChange={(e) => selectPlatformTarget(e.target.value)}
+                disabled={running}
+              >
+                {Object.entries(PLATFORM_TARGETS).map(([key, t]) => (
+                  <option key={key} value={key}>{t.label}</option>
+                ))}
+              </select>
+            </div>
+
+            {platformTarget === 'custom' && (
+              <div className="tail-advanced-fields" aria-label="Custom loudness target">
+                <div className="export-row tail-compact-row">
+                  <label htmlFor="loudness-target-lufs">Target LUFS</label>
+                  <input
+                    id="loudness-target-lufs"
+                    type="number"
+                    step={0.5}
+                    value={customTargetLufs}
+                    disabled={running}
+                    onChange={(e) => setCustomTargetLufs(e.target.value)}
+                  />
+                </div>
+                <div className="export-row tail-compact-row">
+                  <label htmlFor="loudness-max-dbtp">Ceiling (dBTP)</label>
+                  <input
+                    id="loudness-max-dbtp"
+                    type="number"
+                    step={0.1}
+                    max={0}
+                    value={customMaxDbtp}
+                    disabled={running}
+                    onChange={(e) => setCustomMaxDbtp(e.target.value)}
+                  />
+                </div>
+              </div>
+            )}
+
+            {platformTarget !== 'none' && (
+              <div className="tail-help">
+                Static gain only — no limiter. Protects against codec clipping on upload.
+              </div>
+            )}
+          </div>
+
           {/* ── Output path ────────────────────────────────────────────── */}
           <div className="export-row export-row-path">
             <label>Output File</label>
@@ -242,6 +339,42 @@ export default function ExportDialog({ isOpen, onClose }) {
                 {' '}
                 {running && `${Math.floor(progress * 100)}%`}
               </div>
+              {phase === 'done' && normReport && (
+                <div className="loudness-report">
+                  <div className="loudness-report-row">
+                    <span>Measured</span>
+                    <span>{formatLufs(normReport.measuredIntegratedLufs)}</span>
+                  </div>
+                  <div className="loudness-report-row">
+                    <span>Loudness gain</span>
+                    <span>{formatDb(normReport.loudnessGainDb)}</span>
+                  </div>
+                  {normReport.peakSafetyGainDb !== 0 && (
+                    <div className="loudness-report-row">
+                      <span>Peak safety gain</span>
+                      <span>{formatDb(normReport.peakSafetyGainDb)}</span>
+                    </div>
+                  )}
+                  <div className="loudness-report-row">
+                    <span>Final integrated</span>
+                    <span>{formatLufs(normReport.finalPredictedIntegratedLufs)}</span>
+                  </div>
+                  <div className="loudness-report-row">
+                    <span>Final true peak</span>
+                    <span>
+                      {formatDbtp(normReport.finalPredictedTruePeakDbtp)}
+                      {peakMeasured && (
+                        <>
+                          {' '}
+                          <span className={peakPass ? 'loudness-report-pass' : 'loudness-report-over'}>
+                            {peakPass ? 'PASS' : 'OVER'}
+                          </span>
+                        </>
+                      )}
+                    </span>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>
