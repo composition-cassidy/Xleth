@@ -274,6 +274,7 @@ add_library(XlethEngineCore STATIC
     src/audio/NamedAudioRing.cpp
     src/audio/WaveformMipmap.cpp
     src/dsp/DeclickEnvelope.cpp
+    src/dsp/LoudnessAnalyzer.cpp
     src/dsp/LoopAnalysis.cpp
     src/dsp/LoopOptimizer.cpp
     src/dsp/AutoLoopPolicy.cpp
@@ -1680,6 +1681,41 @@ target_compile_definitions(test_limiter PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_loudness ────────────────────────────────────────────────────────────
+# ITU-R BS.1770-4 loudness + EBU Tech 3341/3342 compliance for dsp/LoudnessAnalyzer.
+# Asserts the published 48 kHz K-weighting biquads against the coefficients this
+# code derives from the analog prototype (so the un-published 44.1 kHz path is
+# trustworthy too), then runs the EBU 3341 §2.1 calibration/gating signals and
+# the 3342 §3 loudness-range signals at BOTH 44100 and 48000. True peak, gate
+# isolation, streaming/offline equivalence and degenerate input are checked
+# against closed-form answers.
+add_executable(test_loudness
+    test/test_loudness.cpp
+)
+
+target_link_libraries(test_loudness PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_loudness PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── hall_measure (reverb re-tune measurement + A/B render tool) ──────────────
 # Not a ctest test — a diagnostic/render tool for the ongoing stock-reverb
 # redesign (docs/plans/reverb-audit-and-redesign.md). Prints a backend's
@@ -2129,6 +2165,7 @@ set(XLETH_ENGINE_TESTS
     test_reverb
     test_uniflange
     test_limiter
+    test_loudness
     test_graph_effect_parameters
     test_frame_cache
     test_frame_collector
