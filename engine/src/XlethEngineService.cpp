@@ -50,6 +50,7 @@
 #include "export/AudioExporter.h"
 #include "audio/WaveformMipmap.h"
 #include "dsp/AutoLoopPolicy.h"          // selection-first AUTO loop policy (policy v2 port)
+#include "audio/XlethApexEffect.h"
 #include "audio/XlethEQEffect.h"
 #include "audio/XlethWaveshaperEffect.h"
 #include "audio/SmartBalanceEffect.h"
@@ -8111,6 +8112,15 @@ JsonApi::Value Timeline_BeginClipControlEdit(const JsonApi::CallbackInfo& info)
     initial.Set("velocity", JsonApi::Number::New(env, edit->initialVelocity));
     initial.Set("fadeInPercent", JsonApi::Number::New(env, edit->initialFadeInPercent));
     initial.Set("fadeOutPercent", JsonApi::Number::New(env, edit->initialFadeOutPercent));
+    else if (typeTag == xleth::viz::kVizTypeApex)
+    {
+        // 4176 bytes/bucket — by far the largest payload here, because it
+        // carries a whole 2048-point FFT spectrum. APEX emits at ~43 Hz rather
+        // than the shared ~700 Hz cadence, so a 30 Hz drain still fetches only
+        // one or two buckets (≈ 8 KB), not a burst.
+        bucketSize = sizeof(xleth::viz::ApexBucket);
+        typeStr    = "apex";
+    }
     JsonApi::Object result = JsonApi::Object::New(env);
     result.Set("sessionId", JsonApi::Number::New(env, edit->sessionId));
     result.Set("initial", initial);
@@ -16716,6 +16726,224 @@ JsonApi::Value Audio_EQ_GetSampleRate(const JsonApi::CallbackInfo& info)
     auto* eq = getEQ(env, trackId, nodeId);
     if (!eq) return JsonApi::Number::New(env, 44100.0);
     return JsonApi::Number::New(env, eq->getSampleRate());
+}
+
+// ── APEX-specific host bridge functions ───────────────────────────────────────
+//
+// APEX's scalar parameters (LOW CUT, splits, slopes, LOOKAHEAD, BAND MIX, and
+// the eleven per-band knobs for each of LOW/MID/HIGH/MASTER) need NOTHING here
+// — they are ordinary APVTS parameters and already travel over the generic
+// audio_getEffectParameters / audio_setEffectParameter pair, which is also
+// what makes them latency-aware (MixEngine::setEffectParameter snapshots
+// getLatencySamples() around the write and re-plans PDC when LOOKAHEAD or a
+// saturation THRESH moves it).
+//
+// What DOES need a door is the dynamics curve: a variable-length node list plus
+// a per-segment tension list per band, which cannot travel through a scalar
+// parameter API. These four functions are that door — the same
+// subclass-specific pattern the EQ and Waveshaper already use.
+//
+// Curve state is NOT a separate persistence channel: setBandCurve writes into
+// an APEX_CURVES child of the APVTS ValueTree, and XlethEffectBase serialises
+// apvts_.copyState() verbatim, so curves ride the existing per-node base64
+// "state" field that AudioGraph::toJSON already writes into project.json.
+// Undo works the renderer-side way every other effect parameter does: capture
+// via apexGetBandCurve before the gesture, replay via apexSetBandCurve on undo.
+// getBandCurveJSON's output is a valid setBandCurveJSON input verbatim, which
+// is what makes that capture/replay pair exact.
+
+// Helper: retrieve the APEX effect from a track chain by trackId + nodeId.
+// trackId < 0 selects the master chain, matching the EQ/meter convention.
+static XlethApexEffect* getApex(int trackId, int nodeId)
+{
+    auto* base = (trackId < 0)
+        ? audioEngine->getMixEngine().getMasterEffectPtr(nodeId)
+        : audioEngine->getMixEngine().getEffectPtr(trackId, nodeId);
+    if (!base) return nullptr;
+    return dynamic_cast<XlethApexEffect*>(base);
+}
+
+// audio_apexGetCurves(trackId, nodeId) → JSON string
+//   {"bands":[{"band":0,"nodes":[{"in":…,"out":…},…],"tensions":[…]},…]}
+// Returns "{}" when the node is not an APEX instance, so a caller that guessed
+// wrong gets a parseable empty answer rather than an exception.
+JsonApi::Value Audio_Apex_GetCurves(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
+        JsonApi::TypeError::New(env, "audio_apexGetCurves(trackId: number, nodeId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int trackId = info[0].As<JsonApi::Number>().Int32Value();
+    const int nodeId  = info[1].As<JsonApi::Number>().Int32Value();
+    BridgeCallLog log("audio.apexGetCurves");
+
+    auto* apex = getApex(trackId, nodeId);
+    if (!apex) return JsonApi::String::New(env, "{}");
+    return JsonApi::String::New(env, apex->getAllCurvesJSON());
+}
+
+// audio_apexGetBandCurve(trackId, nodeId, band) → JSON string
+//   {"band":0,"nodes":[{"in":…,"out":…},…],"tensions":[…]}
+// band: 0=LOW, 1=MID, 2=HIGH, 3=MASTER.
+JsonApi::Value Audio_Apex_GetBandCurve(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsNumber()) {
+        JsonApi::TypeError::New(env,
+            "audio_apexGetBandCurve(trackId: number, nodeId: number, band: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int trackId = info[0].As<JsonApi::Number>().Int32Value();
+    const int nodeId  = info[1].As<JsonApi::Number>().Int32Value();
+    const int band    = info[2].As<JsonApi::Number>().Int32Value();
+    BridgeCallLog log("audio.apexGetBandCurve");
+
+    auto* apex = getApex(trackId, nodeId);
+    if (!apex) return JsonApi::String::New(env, "{}");
+    return JsonApi::String::New(env, apex->getBandCurveJSON(band));
+}
+
+// audio_apexSetBandCurve(trackId, nodeId, band, curveJson) → boolean
+//
+// curveJson: {"nodes":[{"in":…,"out":…},…],"tensions":[…]}. The engine
+// sanitises before it accepts: nodes are clamped to the -24…+12 dB box, sorted
+// by IN, de-duplicated, capped at 32, and a band left with fewer than two
+// nodes falls back to unity. So a malformed curve degrades to a valid one; it
+// never corrupts the LUT the audio thread is reading.
+JsonApi::Value Audio_Apex_SetBandCurve(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 4 || !info[0].IsNumber() || !info[1].IsNumber()
+        || !info[2].IsNumber() || !info[3].IsString()) {
+        JsonApi::TypeError::New(env,
+            "audio_apexSetBandCurve(trackId: number, nodeId: number, band: number, curveJson: string)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int trackId       = info[0].As<JsonApi::Number>().Int32Value();
+    const int nodeId        = info[1].As<JsonApi::Number>().Int32Value();
+    const int band          = info[2].As<JsonApi::Number>().Int32Value();
+    const std::string curve = info[3].As<JsonApi::String>().Utf8Value();
+    BridgeCallLog log("audio.apexSetBandCurve");
+
+    auto* apex = getApex(trackId, nodeId);
+    if (!apex) return JsonApi::Boolean::New(env, false);
+    return JsonApi::Boolean::New(env, apex->setBandCurveJSON(band, curve));
+}
+
+// audio_apexResetBandCurve(trackId, nodeId, band) → boolean
+JsonApi::Value Audio_Apex_ResetBandCurve(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsNumber()) {
+        JsonApi::TypeError::New(env,
+            "audio_apexResetBandCurve(trackId: number, nodeId: number, band: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int trackId = info[0].As<JsonApi::Number>().Int32Value();
+    const int nodeId  = info[1].As<JsonApi::Number>().Int32Value();
+    const int band    = info[2].As<JsonApi::Number>().Int32Value();
+    BridgeCallLog log("audio.apexResetBandCurve");
+
+    auto* apex = getApex(trackId, nodeId);
+    if (!apex) return JsonApi::Boolean::New(env, false);
+    return JsonApi::Boolean::New(env, apex->resetBandCurve(band));
+}
+
+// audio_getEffectLatency(trackId, nodeId) →
+//   { ok, pluginId, latencySamples, latencyMs, sampleRate,
+//     lookaheadSamples, saturationLatencySamples }
+//
+// Generic across every stock effect — latency is an AudioProcessor property,
+// not an APEX one — so any future latency-introducing effect gets a UI readout
+// for free. The last two fields are APEX-specific and are 0 for everything
+// else; they let the editor show WHY the number is what it is (LOOKAHEAD vs
+// the fixed 47-sample oversampler round trip).
+//
+// This is the reported, PDC-compensated latency: AudioGraph::computePDC()
+// already sums getLatencySamples() in topological order and inserts
+// DelayCompensationProcessor on the shorter wires, and
+// MixEngine::setEffectParameter re-plans whenever a parameter write changes
+// it. So the number here is the monitoring delay this effect CONTRIBUTES, not
+// an uncompensated timing error — parallel paths stay aligned; what the user
+// hears later is only the whole graph's output latency.
+//
+// Returns { ok: false } with zeroed fields when the node does not exist,
+// rather than throwing, so a UI polling a node that was just deleted does not
+// need a try/catch.
+JsonApi::Value Audio_GetEffectLatency(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
+        JsonApi::TypeError::New(env, "audio_getEffectLatency(trackId: number, nodeId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int trackId = info[0].As<JsonApi::Number>().Int32Value();
+    const int nodeId  = info[1].As<JsonApi::Number>().Int32Value();
+
+    auto& mix = audioEngine->getMixEngine();
+    auto* base = (trackId < 0) ? mix.getMasterEffectPtr(nodeId)
+                               : mix.getEffectPtr(trackId, nodeId);
+
+    const double sampleRate = mix.getPreparedSampleRate() > 0.0
+                            ? mix.getPreparedSampleRate() : 44100.0;
+
+    JsonApi::Object result = JsonApi::Object::New(env);
+    result.Set("sampleRate", JsonApi::Number::New(env, sampleRate));
+
+    if (!base)
+    {
+        result.Set("ok",                       JsonApi::Boolean::New(env, false));
+        result.Set("pluginId",                 JsonApi::String::New(env, ""));
+        result.Set("latencySamples",           JsonApi::Number::New(env, 0));
+        result.Set("latencyMs",                JsonApi::Number::New(env, 0.0));
+        result.Set("lookaheadSamples",         JsonApi::Number::New(env, 0));
+        result.Set("saturationLatencySamples", JsonApi::Number::New(env, 0));
+        return result;
+    }
+
+    const int latencySamples = base->getLatencySamples();
+    int lookaheadSamples     = 0;
+    int satLatencySamples    = 0;
+    if (auto* apex = dynamic_cast<XlethApexEffect*>(base))
+    {
+        lookaheadSamples  = apex->getLookaheadSamples();
+        satLatencySamples = apex->getSaturationLatencySamples();
+    }
+
+    result.Set("ok",             JsonApi::Boolean::New(env, true));
+    result.Set("pluginId",       JsonApi::String::New(env, base->getPluginId()));
+    result.Set("latencySamples", JsonApi::Number::New(env, latencySamples));
+    result.Set("latencyMs",      JsonApi::Number::New(env,
+        sampleRate > 0.0 ? (1000.0 * static_cast<double>(latencySamples) / sampleRate) : 0.0));
+    result.Set("lookaheadSamples",         JsonApi::Number::New(env, lookaheadSamples));
+    result.Set("saturationLatencySamples", JsonApi::Number::New(env, satLatencySamples));
+    return result;
 }
 
 // ── Waveshaper-specific host bridge functions ─────────────────────────────────────

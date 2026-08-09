@@ -22,6 +22,7 @@ export const VIZ_TYPE = Object.freeze({
   MULTIBAND:  'multiband',
   RESONANCE:  'resonance',
   UNIFLANGE:  'uniflange',
+  APEX:       'apex',
 })
 
 // ── Bucket layouts ──────────────────────────────────────────────────────────
@@ -218,6 +219,60 @@ export const UNIFLANGE_BUCKET = Object.freeze({
   }),
 })
 
+// ApexBucket — 4176 bytes total. Mirrors ApexBucket in
+// engine/src/audio/viz/DynamicsVizFrame.h.
+//
+// This bucket is much larger and much rarer than the others: it carries a
+// 2048-point FFT magnitude spectrum, so the engine emits one per >= 1024 audio
+// samples (~31-47 Hz) instead of the shared 64-sample (~700 Hz) cadence. A
+// 30 Hz drain therefore returns one or two buckets, not a burst.
+//
+// bucketSamples is 1024 rounded UP to the engine's block boundary, so it varies
+// with buffer size (441-sample blocks at 44.1 kHz give 1323). Read it; never
+// assume 1024.
+//
+//   uint64  sampleClock       @    0
+//   uint32  bucketSamples     @    8
+//   uint32  flags             @   12
+//   float32 inputPeakDb       @   16   (peak abs input, post LOW CUT)
+//   float32 outputPeakDb      @   20   (peak abs final output)
+//   float32 bandGrDb[4]       @   24   (max GR dB, positive = reduction)
+//   float32 bandOutDb[4]      @   40   (peak band output level, dB)
+//   float32 lookaheadSamples  @   56
+//   float32 latencySamples    @   60   (total reported = lookahead + sat OS)
+//   float32 splitLoHz         @   64
+//   float32 splitHiHz         @   68
+//   float32 sampleRate        @   72
+//   float32 spectrumBins      @   76   (valid entries in spectrum[])
+//   float32 spectrum[1024]    @   80   (magnitude dB, 0 dB = full-scale sine)
+//
+// Band order in bandGrDb / bandOutDb is LOW, MID, HIGH, MASTER.
+// spectrum[] is floored at -120 dB; bin i covers i * sampleRate / 2048 Hz.
+export const APEX_BUCKET = Object.freeze({
+  sizeBytes: 4176,
+  numBands: 4,
+  spectrumBins: 1024,
+  fftSize: 2048,
+  arrays: Object.freeze({
+    bandGrDb:  { offset: 24, count: 4 },
+    bandOutDb: { offset: 40, count: 4 },
+    spectrum:  { offset: 80, count: 1024 },
+  }),
+  fields: Object.freeze({
+    sampleClock:      { offset:  0, type: 'u64'   },
+    bucketSamples:    { offset:  8, type: 'u32'   },
+    flags:            { offset: 12, type: 'u32'   },
+    inputPeakDb:      { offset: 16, type: 'float' },
+    outputPeakDb:     { offset: 20, type: 'float' },
+    lookaheadSamples: { offset: 56, type: 'float' },
+    latencySamples:   { offset: 60, type: 'float' },
+    splitLoHz:        { offset: 64, type: 'float' },
+    splitHiHz:        { offset: 68, type: 'float' },
+    sampleRate:       { offset: 72, type: 'float' },
+    spectrumBins:     { offset: 76, type: 'float' },
+  }),
+})
+
 // ── Defensive parser ────────────────────────────────────────────────────────
 //
 // parseDrainResponse(resp, expectedType) verifies the payload metadata and
@@ -261,6 +316,9 @@ export function parseDrainResponse(resp, expectedType = VIZ_TYPE.COMPRESSOR) {
   } else if (expectedType === VIZ_TYPE.UNIFLANGE) {
     expectedSize = UNIFLANGE_BUCKET.sizeBytes
     fields = UNIFLANGE_BUCKET.fields
+  } else if (expectedType === VIZ_TYPE.APEX) {
+    expectedSize = APEX_BUCKET.sizeBytes
+    fields = APEX_BUCKET.fields
   }
   if (expectedSize === 0 || fields === null) {
     return { ok: false, reason: `unsupported-type:${expectedType}` }
@@ -324,6 +382,17 @@ export function parseDrainResponse(resp, expectedType = VIZ_TYPE.COMPRESSOR) {
       out.reduction = decodeFloatArray(base, RESONANCE_BUCKET.arrays.reduction, bucketCount)
       out.weighting = decodeFloatArray(base, RESONANCE_BUCKET.arrays.weighting, bucketCount)
     }
+    if (expectedType === VIZ_TYPE.APEX) {
+      // Trust the struct's own declared bin count over the compile-time
+      // constant, but never read past the array the layout describes.
+      const declaredBins = Number.isFinite(out.spectrumBins)
+        ? Math.round(out.spectrumBins)
+        : APEX_BUCKET.spectrumBins
+      const bins = Math.max(0, Math.min(APEX_BUCKET.spectrumBins, declaredBins))
+      out.bandGrDb  = decodeFloatArray(base, APEX_BUCKET.arrays.bandGrDb,  APEX_BUCKET.numBands)
+      out.bandOutDb = decodeFloatArray(base, APEX_BUCKET.arrays.bandOutDb, APEX_BUCKET.numBands)
+      out.spectrum  = decodeFloatArray(base, APEX_BUCKET.arrays.spectrum,  bins)
+    }
     return out
   }
 
@@ -381,4 +450,15 @@ export const RESONANCE_VIZ_SOURCES = Object.freeze({
   SPECTRUM:  'resonance.spectrum',
   REDUCTION: 'resonance.reduction',
   WEIGHTING: 'resonance.weighting',
+})
+
+// APEX source keys (manifest allow-list). Backed by the ApexBucket pipeline;
+// every source reads the SAME bucket — the engine emits one batched payload
+// per tick and the painters differ only in which slice of it they draw. Adding
+// a source here must never mean adding a second drain.
+export const APEX_VIZ_SOURCES = Object.freeze({
+  SPECTRUM:       'apex.spectrum',
+  GAIN_REDUCTION: 'apex.gainReduction',
+  BAND_LEVELS:    'apex.bandLevels',
+  COMBINED:       'apex.combined',
 })

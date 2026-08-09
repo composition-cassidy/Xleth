@@ -22,6 +22,12 @@ process.env.PATH = dllDir + ';' + process.env.PATH;
 
 const addon = require('./build/Release/xleth_native.node');
 
+// Mirrors kDynamicsVizSchemaVersion in engine/src/audio/viz/DynamicsVizFrame.h
+// and DYNAMICS_VIZ_SCHEMA_VERSION in ui/src/constants/dynamicsViz.js. Bump all
+// three together — the renderer's parser rejects a payload whose schema does
+// not match, so a drifted value here is a real, silent breakage.
+const EXPECTED_SCHEMA = 2;
+
 let passed = 0, failed = 0, total = 0;
 function ok(cond, label) {
   total++;
@@ -78,7 +84,7 @@ function addMaster(pluginId) {
   {
     const r = addon.audio_drainEffectVizFrames(-1, nodeId, 64);
     ok(r.type === 'compressor', `drain.type === "compressor" (got "${r.type}")`);
-    ok(r.schema === 1,           `drain.schema === 1 (got ${r.schema})`);
+    ok(r.schema === EXPECTED_SCHEMA, `drain.schema === ${EXPECTED_SCHEMA} (got ${r.schema})`);
     ok(r.bucketSize === 40,      `drain.bucketSize === 40 (got ${r.bucketSize})`);
     ok(typeof r.count === 'number', `drain.count is a number (got ${r.count})`);
     ok(r.frames instanceof ArrayBuffer, 'drain.frames is an ArrayBuffer');
@@ -193,7 +199,7 @@ function addMaster(pluginId) {
     {
       const r = addon.audio_drainEffectVizFrames(-1, limiterNodeId, 64);
       ok(r.type === 'limiter',  `limiter drain.type === "limiter" (got "${r.type}")`);
-      ok(r.schema === 1,        `limiter drain.schema === 1 (got ${r.schema})`);
+      ok(r.schema === EXPECTED_SCHEMA, `limiter drain.schema === ${EXPECTED_SCHEMA} (got ${r.schema})`);
       ok(r.bucketSize === 56,   `limiter drain.bucketSize === 56 (got ${r.bucketSize})`);
       ok(r.frames instanceof ArrayBuffer, 'limiter drain.frames is an ArrayBuffer');
       if (r.count > 0) {
@@ -257,7 +263,7 @@ function addMaster(pluginId) {
     {
       const r = addon.audio_drainEffectVizFrames(-1, transientNodeId, 64);
       ok(r.type === 'transient', `transient drain.type === "transient" (got "${r.type}")`);
-      ok(r.schema === 1,         `transient drain.schema === 1 (got ${r.schema})`);
+      ok(r.schema === EXPECTED_SCHEMA, `transient drain.schema === ${EXPECTED_SCHEMA} (got ${r.schema})`);
       ok(r.bucketSize === 56,    `transient drain.bucketSize === 56 (got ${r.bucketSize})`);
       ok(r.frames instanceof ArrayBuffer, 'transient drain.frames is an ArrayBuffer');
       if (r.count > 0) {
@@ -318,7 +324,7 @@ function addMaster(pluginId) {
     {
       const r = addon.audio_drainEffectVizFrames(-1, overdoneNodeId, 64);
       ok(r.type === 'multiband', `overdone drain.type === "multiband" (got "${r.type}")`);
-      ok(r.schema === 1,         `overdone drain.schema === 1 (got ${r.schema})`);
+      ok(r.schema === EXPECTED_SCHEMA, `overdone drain.schema === ${EXPECTED_SCHEMA} (got ${r.schema})`);
       ok(r.bucketSize === 80,    `overdone drain.bucketSize === 80 (got ${r.bucketSize})`);
       ok(r.frames instanceof ArrayBuffer, 'overdone drain.frames is an ArrayBuffer');
       if (r.count > 0) {

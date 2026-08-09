@@ -498,6 +498,198 @@ static void testStateRoundTrip()
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// Visualization payload contract
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// The bridge test (bridge/test_apex_bridge.js) proves the payload TRANSPORTS —
+// that a drain returns the right type tag, bucket size and cadence. It cannot
+// prove the payload is CORRECT, because a headless engine has no signal to
+// measure. This test does that half: it pushes a known tone through a known
+// configuration and reads the emitted buckets directly.
+//
+// The four things worth being wrong here, and how each is pinned:
+//   • the FFT reads the INPUT, not the lookahead-delayed dry leg — checked by
+//     running with a large LOOKAHEAD, which would shift the spectrum's source
+//     if the tap were on the wrong side of the ring;
+//   • the magnitude normalisation is calibrated — a 0 dBFS sine must read 0 dB,
+//     not N/4 (a plain unscaled FFT would read +54 dB here);
+//   • the peak lands in the bin the tone actually occupies;
+//   • gain reduction is reported POSITIVE, matching every other bucket type.
+static void testVisualizationPayload()
+{
+    XlethApexEffect a;
+
+    // A hard downward curve on the MASTER band so there is real gain reduction
+    // to report, plus a non-zero LOOKAHEAD so a spectrum tapped on the wrong
+    // side of the delay ring would be visibly different.
+    a.setParameterValue("lookahead", 15.0f);
+    a.setBandCurve(3,
+                   { { -24.0f, -24.0f }, { -12.0f, -18.0f }, { 12.0f, -12.0f } },
+                   { 0.0f, 0.0f });
+    a.prepareToPlay(kSR, kBlock);
+
+    // Disabled by default: a drain before any enable must be empty, and the
+    // audio path must not have touched a collector that does not exist.
+    std::vector<std::uint8_t> scratch(sizeof(xleth::viz::ApexBucket) * 8);
+    const bool emptyBeforeEnable =
+        a.drainVizFrames(scratch.data(), scratch.size()) == 0;
+
+    a.setVisualizationEnabled(true);
+
+    // 1 kHz at 0 dBFS. At kSR = 48000 with a 2048-point FFT the bin width is
+    // 23.4375 Hz, so 1 kHz lands exactly on bin 42 (42 * 23.4375 == 984.375 is
+    // the nearest bin centre; the Hann main lobe is 4 bins wide, so the peak
+    // is required to be within 2 bins rather than exactly on one).
+    constexpr double kToneHz = 1000.0;
+    juce::AudioBuffer<float> buf(2, kBlock);
+    juce::MidiBuffer midi;
+
+    // ~0.4 s — comfortably more than the 1024-sample bucket period, so many
+    // buckets are produced and the FFT history is fully primed with the tone.
+    const int totalSamples = static_cast<int>(kSR * 0.4);
+    for (int n = 0; n < totalSamples; n += kBlock)
+    {
+        for (int s = 0; s < kBlock; ++s)
+        {
+            const double t = static_cast<double>(n + s) / kSR;
+            const float  v = static_cast<float>(
+                std::sin(2.0 * juce::MathConstants<double>::pi * kToneHz * t));
+            buf.setSample(0, s, v);
+            buf.setSample(1, s, v);
+        }
+        a.processBlock(buf, midi);
+    }
+
+    // Drain everything the ring holds. The ring is only kApexVizRingDepth deep
+    // by design, so this keeps the newest buckets and silently drops older
+    // ones — which is exactly the intended overflow behaviour.
+    std::vector<std::uint8_t> raw(sizeof(xleth::viz::ApexBucket)
+                                  * xleth::viz::kApexVizRingDepth);
+    const std::size_t bytes = a.drainVizFrames(raw.data(), raw.size());
+    const std::size_t count = bytes / sizeof(xleth::viz::ApexBucket);
+
+    const bool gotBuckets    = count > 0;
+    const bool wholeBuckets  = (bytes % sizeof(xleth::viz::ApexBucket)) == 0;
+    const bool typeTag       = a.getVisualizationType() == xleth::viz::kVizTypeApex;
+    const bool bucketIs4176  = sizeof(xleth::viz::ApexBucket) == 4176;
+
+    bool  peakBinOk    = false;
+    bool  peakLevelOk  = false;
+    bool  grPositive   = false;
+    bool  latencyOk    = false;
+    bool  binCountOk   = false;
+    bool  bandLevelsOk = false;
+    float peakDb       = -999.0f;
+    int   peakBin      = -1;
+
+    if (gotBuckets)
+    {
+        // Use the LAST bucket: by then the 2048-sample FFT history is entirely
+        // tone, with no start-up silence left in the window.
+        const auto* b = reinterpret_cast<const xleth::viz::ApexBucket*>(
+            raw.data() + (count - 1) * sizeof(xleth::viz::ApexBucket));
+
+        binCountOk = std::abs(b->spectrumBins
+                              - static_cast<float>(xleth::viz::kApexVizSpectrumBins)) < 0.5f;
+
+        for (int k = 0; k < static_cast<int>(xleth::viz::kApexVizSpectrumBins); ++k)
+        {
+            if (b->spectrum[k] > peakDb) { peakDb = b->spectrum[k]; peakBin = k; }
+        }
+
+        const int expectedBin = static_cast<int>(std::lround(
+            kToneHz * static_cast<double>(xleth::viz::kApexVizFftSize) / kSR));
+        peakBinOk = std::abs(peakBin - expectedBin) <= 2;
+
+        // A full-scale sine must read 0 dB. 1.5 dB of slack covers the tone
+        // falling between bins (scalloping loss) — an uncalibrated FFT would
+        // be out by 20*log10(2048/4) = +54 dB, nowhere near this window.
+        peakLevelOk = std::abs(peakDb) < 1.5f;
+
+        // MASTER's curve maps everything to at most -12 dB out, so it is
+        // certainly reducing; the sign convention is what is under test.
+        grPositive = b->bandGrDb[3] > 1.0f;
+
+        latencyOk = std::abs(b->lookaheadSamples
+                             - static_cast<float>(a.getLookaheadSamples())) < 0.5f
+                 && std::abs(b->latencySamples
+                             - static_cast<float>(a.getReportedLatencySamples())) < 0.5f;
+
+        // Every band reports a finite level, and the summed input is loud.
+        bandLevelsOk = b->inputPeakDb > -3.0f && b->inputPeakDb < 1.0f;
+        for (int i = 0; i < 4; ++i)
+            bandLevelsOk = bandLevelsOk && std::isfinite(b->bandOutDb[i])
+                                        && std::isfinite(b->bandGrDb[i]);
+    }
+
+    // Disabling must stop the stream without disturbing audio.
+    a.setVisualizationEnabled(false);
+    for (int n = 0; n < 4 * kBlock; n += kBlock)
+    {
+        buf.clear();
+        a.processBlock(buf, midi);
+    }
+    const bool emptyAfterDisable =
+        a.drainVizFrames(scratch.data(), scratch.size()) == 0;
+
+    CHECK(bucketIs4176,      "ApexBucket is not 4176 bytes");
+    CHECK(typeTag,           "getVisualizationType() did not report kVizTypeApex");
+    CHECK(emptyBeforeEnable, "buckets were produced before visualization was enabled");
+    CHECK(gotBuckets,        "no viz buckets were produced while enabled");
+    CHECK(wholeBuckets,      "drainVizFrames returned a partial bucket");
+    CHECK(binCountOk,        "bucket did not declare kApexVizSpectrumBins bins");
+    CHECK(peakBinOk,         "spectrum peak is not at the tone's bin");
+    CHECK(peakLevelOk,       "0 dBFS sine did not read ~0 dB (normalisation is wrong)");
+    CHECK(grPositive,        "MASTER gain reduction was not reported as positive dB");
+    CHECK(latencyOk,         "bucket latency fields disagree with the effect");
+    CHECK(bandLevelsOk,      "per-band levels were not finite / input level wrong");
+    CHECK(emptyAfterDisable, "buckets were still produced after disable");
+
+    report("visualization payload (spectrum + GR + levels)",
+           bucketIs4176 && typeTag && emptyBeforeEnable && gotBuckets && wholeBuckets
+           && binCountOk && peakBinOk && peakLevelOk && grPositive && latencyOk
+           && bandLevelsOk && emptyAfterDisable,
+           "peakBin=" + std::to_string(peakBin)
+           + " peakDb=" + std::to_string(peakDb)
+           + " buckets=" + std::to_string(count));
+}
+
+// The all-bands curve getter must agree, band for band, with the per-band
+// getter — otherwise an editor that loads via one and undoes via the other
+// would silently desync.
+static void testAllCurvesJSON()
+{
+    XlethApexEffect a;
+    a.prepareToPlay(kSR, kBlock);
+
+    a.setBandCurve(0, { { -24.0f, -24.0f }, { 0.0f, -6.0f }, { 12.0f, -3.0f } },
+                      { 0.5f, -0.25f });
+    a.setBandCurve(2, { { -24.0f, -20.0f }, { 12.0f, 12.0f } }, { 0.9f });
+
+    const std::string all = a.getAllCurvesJSON();
+    nlohmann::json j = nlohmann::json::parse(all, nullptr, false);
+
+    bool ok = !j.is_discarded() && j.contains("bands") && j["bands"].is_array()
+           && j["bands"].size() == static_cast<std::size_t>(XlethApexEffect::kNumBands);
+
+    if (ok)
+    {
+        for (int b = 0; b < XlethApexEffect::kNumBands; ++b)
+        {
+            nlohmann::json per = nlohmann::json::parse(a.getBandCurveJSON(b), nullptr, false);
+            const auto& fromAll = j["bands"][static_cast<std::size_t>(b)];
+            ok = ok && !per.is_discarded()
+                    && fromAll["band"]     == b
+                    && fromAll["nodes"]    == per["nodes"]
+                    && fromAll["tensions"] == per["tensions"];
+        }
+    }
+
+    CHECK(ok, "getAllCurvesJSON disagrees with getBandCurveJSON");
+    report("all-bands curve JSON matches per-band JSON", ok, "");
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // (a) Band-split reconstruction
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -1024,6 +1216,8 @@ int main()
     testParameterSurface();
     testLatencyPublication();
     testStateRoundTrip();
+    testAllCurvesJSON();
+    testVisualizationPayload();
 
     std::cout << "\n=== test_apex_contract (a) band-split reconstruction ===\n";
     testReconstructionFlat();

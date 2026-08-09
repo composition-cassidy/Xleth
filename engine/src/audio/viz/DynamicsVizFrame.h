@@ -32,9 +32,16 @@ enum VisualizationType : uint32_t
     kVizTypeMultiband  = 4,   // 3-band dynamics (Overdone / OTT)
     kVizTypeResonance  = 5,   // Resonance Suppressor spectral buckets
     kVizTypeUniFlange  = 6,   // UniFlange dry/wet waveform envelope
+    kVizTypeApex       = 7,   // APEX multiband maximizer (4 bands + FFT spectrum)
 };
 
 inline constexpr uint32_t kResonanceVizBucketCount = 128;
+
+// APEX: positive-frequency magnitude bins of a 2048-point real FFT.
+// 2048/2 = 1024 bins spanning DC .. (Nyquist - binWidth).
+inline constexpr uint32_t kApexVizFftSize      = 2048;
+inline constexpr uint32_t kApexVizSpectrumBins = kApexVizFftSize / 2;
+inline constexpr uint32_t kApexVizNumBands     = 4;   // LOW, MID, HIGH, MASTER
 
 // ── Default cadence ──────────────────────────────────────────────────────────
 // Bucket size = 64 samples ≈ 1.45 ms @ 44.1 kHz, ≈ 1.33 ms @ 48 kHz.
@@ -270,5 +277,86 @@ static_assert(std::is_trivially_copyable<UniFlangeBucket>::value,
               "UniFlangeBucket must be trivially copyable");
 static_assert(std::is_standard_layout<UniFlangeBucket>::value,
               "UniFlangeBucket must be standard layout");
+
+// ── APEX payload (multiband maximizer) ───────────────────────────────────────
+// 16 bytes header + 16 metadata floats (64 bytes) + 1024 spectrum floats
+// (4096 bytes) = 4176 bytes total. 8-byte aligned. The spectrum array
+// therefore starts at byte 80.
+//
+// This bucket is DELIBERATELY much larger and much rarer than every other
+// bucket type in this file. The others emit one bucket per
+// kDynamicsVizBucketSize (64) samples — ~700/s — because they carry a handful
+// of scalars each. APEX carries a whole 2048-point FFT magnitude spectrum, so
+// it emits one bucket per kApexVizBucketSize samples instead (~30-43/s at
+// 44.1-48 kHz), which is exactly the ~30 Hz cadence the UI drains at. Emitting
+// it at the default 64-sample cadence would be ~3 MB/s of IPC for data no
+// display can use. Ring depth is scaled down to match (see kApexVizRingDepth).
+//
+// bandGrDb[b] is the MAXIMUM gain reduction over the bucket for band b as a
+// POSITIVE dB amount, matching the CompressorBucket / LimiterBucket convention
+// (positive = more reduction). Band order is LOW, MID, HIGH, MASTER — the same
+// order as xleth_apex::BandIndex, so index b here is band b there.
+//
+// bandOutDb[b] is the peak abs OUTPUT level of band b over the bucket, in dB.
+// For LOW/MID/HIGH this is measured after the band's full chain (curve gain,
+// saturation, post gain, stereo separation) and before the band sum; for
+// MASTER it is the effect's final stereo output. A band that is OFF or MUTED
+// reports its real (possibly silent) level — the audio path never fakes a
+// value.
+//
+// inputPeakDb is the peak abs input AFTER LOW CUT (the same signal the
+// spectrum is measured from, so the analysis display and the input meter
+// always agree). outputPeakDb is the final output peak.
+//
+// lookaheadSamples / latencySamples mirror the effect's published lookahead
+// and its TOTAL reported latency (lookahead + saturation oversampling) at
+// bucket end. They are carried here purely so the UI can label the analysis
+// display without a separate poll; audio_getEffectLatency is the authoritative
+// query.
+//
+// splitLoHz / splitHiHz are the crossover frequencies at bucket end, so the UI
+// can tint the spectrum's band regions without re-reading parameters.
+//
+// spectrum[i] is 20*log10(|X[i]|) of a Hann-windowed 2048-point real FFT of
+// the mono-summed post-LOW-CUT input, normalised so a full-scale sine reads
+// 0 dB, and floored at -120 dB. spectrumBins states how many entries are
+// valid (always kApexVizSpectrumBins today; a float so the whole struct stays
+// a uniform float block after the header).
+struct alignas(8) ApexBucket
+{
+    BucketHeader hdr;
+    float inputPeakDb;                    // peak |x| over bucket, post LOW CUT
+    float outputPeakDb;                   // peak |y| over bucket, final output
+    float bandGrDb  [kApexVizNumBands];   // max GR dB (positive = reduction)
+    float bandOutDb [kApexVizNumBands];   // peak band output level, dB
+    float lookaheadSamples;               // published LOOKAHEAD, in samples
+    float latencySamples;                 // total reported latency, in samples
+    float splitLoHz;                      // LOW|MID crossover at bucket end
+    float splitHiHz;                      // MID|HIGH crossover at bucket end
+    float sampleRate;                     // engine sample rate (Hz)
+    float spectrumBins;                   // valid entries in spectrum[]
+    float spectrum[kApexVizSpectrumBins]; // input magnitude spectrum, dB
+};
+
+static_assert(sizeof(ApexBucket) == 4176, "ApexBucket expected 4176 bytes");
+static_assert(alignof(ApexBucket) == 8, "ApexBucket expected 8-byte alignment");
+static_assert(std::is_trivially_copyable<ApexBucket>::value,
+              "ApexBucket must be trivially copyable");
+static_assert(std::is_standard_layout<ApexBucket>::value,
+              "ApexBucket must be standard layout");
+
+// APEX cadence. This is a MINIMUM, not an exact period: the accumulator flushes
+// at the first BLOCK boundary at or past kApexVizBucketSize samples, so a bucket
+// actually spans 1024..(1024 + blockSize - 1) samples and reports its true span
+// in hdr.bucketSamples. The realistic range is ~31-47 Hz (e.g. 441-sample blocks
+// at 44.1 kHz flush every 3 blocks = 1323 samples ≈ 33 Hz) — comfortably at or
+// above the UI's 30 Hz drain so no tick comes up empty, and low enough that the
+// FFT cost is negligible. Consumers must read hdr.bucketSamples rather than
+// assume 1024.
+//
+// Ring depth 16 ≈ 400 ms of headroom, which is > 10 drain intervals; the full
+// 1024-deep default would be a 4 MB allocation for buckets nothing would read.
+inline constexpr uint32_t kApexVizBucketSize = 1024;
+inline constexpr uint32_t kApexVizRingDepth  = 16;
 
 }} // namespace xleth::viz

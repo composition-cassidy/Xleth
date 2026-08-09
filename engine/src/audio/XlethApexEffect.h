@@ -1,7 +1,10 @@
 #pragma once
 
 #include "audio/ApexDsp.h"
+#include "audio/ApexVizAccumulator.h"
 #include "audio/XlethEffectBase.h"
+#include "audio/viz/DynamicsVizCollector.h"
+#include "audio/viz/DynamicsVizFrame.h"
 
 #include <juce_audio_basics/juce_audio_basics.h>
 
@@ -9,6 +12,7 @@
 #include <array>
 #include <atomic>
 #include <cmath>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -134,6 +138,27 @@ public:
 
     // Reset a band's curve to unity (flat, two pinned end nodes).
     bool resetBandCurve(int band);
+
+    // JSON form for ALL bands at once, so an editor opening only pays one
+    // bridge round trip instead of four:
+    //   {"bands":[{"band":0,"nodes":[…],"tensions":[…]}, …]}
+    std::string getAllCurvesJSON() const;
+
+    // ── Visualization (metering) ────────────────────────────────────────────
+    //
+    // APEX reuses the shared dynamics-viz pipeline (engine ring → N-API
+    // ArrayBuffer → renderer DataView) rather than adding a second mechanism.
+    // What differs is the CADENCE: the ApexBucket carries a 2048-point FFT
+    // spectrum, so it is emitted at kApexVizBucketSize (1024 samples ≈ 43 Hz)
+    // instead of the shared 64-sample rate — see DynamicsVizFrame.h. The ring
+    // is allocated on the first enable and published to the audio thread by a
+    // single atomic; while disabled, processEffect() pays one acquire-load.
+    void          setVisualizationEnabled(bool enabled) override;
+    std::uint32_t getVisualizationType() const override
+        { return xleth::viz::kVizTypeApex; }
+    std::uint32_t getVisualizationSchemaVersion() const override
+        { return xleth::viz::kDynamicsVizSchemaVersion; }
+    std::size_t   drainVizFrames(std::uint8_t* out, std::size_t maxBytes) override;
 
     // ── Diagnostics / tests ─────────────────────────────────────────────────
     int getReportedLatencySamples() const { return AudioProcessor::getLatencySamples(); }
@@ -288,6 +313,17 @@ private:
     std::array<float*, xleth_apex::LookaheadRing::kMaxLanes * 2> lanePtrs_ {};
 
     float bandGrDb_[kNumBands] {};
+
+    // ── Visualization state ─────────────────────────────────────────────────
+    // Lazily allocated on the first setVisualizationEnabled(true) and re-used
+    // on later enables. vizActive_ is the ONLY thing the audio thread reads —
+    // a null pointer there means "do no metering work at all", so every extra
+    // per-sample peak tracker below is gated on it.
+    std::unique_ptr<xleth::viz::DynamicsVizCollector<xleth::viz::ApexBucket>>
+        vizCollector_;
+    std::atomic<xleth::viz::DynamicsVizCollector<xleth::viz::ApexBucket>*>
+        vizActive_ { nullptr };
+    xleth::apexviz::ApexVizAccumulator vizAccum_;
 };
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -475,6 +511,10 @@ inline void XlethApexEffect::prepareEffect(double sampleRate, int maxBlockSize)
     updateLatency();
     ring_.snapDelay(static_cast<float>(lookaheadSamplesPub_.load(std::memory_order_relaxed)));
 
+    // Every viz allocation (Hann window, FFT history ring, FFT scratch) happens
+    // here, on the main thread, before any audio can reach the accumulator.
+    vizAccum_.prepare(sampleRate_);
+
     resetEffect();
 }
 
@@ -501,6 +541,45 @@ inline void XlethApexEffect::resetEffect()
     for (auto& s : sat_) s.reset();
     for (auto& e : env_) e.reset();
     for (auto& g : bandGrDb_) g = 0.0f;
+
+    vizAccum_.reset();
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
+// Visualization (main thread only)
+// ═════════════════════════════════════════════════════════════════════════════
+
+inline void XlethApexEffect::setVisualizationEnabled(bool enabled)
+{
+    if (enabled)
+    {
+        if (!vizCollector_)
+        {
+            vizCollector_ = std::make_unique<
+                xleth::viz::DynamicsVizCollector<xleth::viz::ApexBucket>>(
+                    xleth::viz::kApexVizBucketSize,
+                    xleth::viz::kApexVizRingDepth,
+                    xleth::viz::kVizTypeApex);
+        }
+        else
+        {
+            // Re-enabling after a close: drop whatever staled in the ring so the
+            // reopened editor does not paint a burst of history from last time.
+            vizCollector_->reset();
+        }
+        vizAccum_.reset();
+        vizActive_.store(vizCollector_.get(), std::memory_order_release);
+    }
+    else
+    {
+        vizActive_.store(nullptr, std::memory_order_release);
+    }
+}
+
+inline std::size_t XlethApexEffect::drainVizFrames(std::uint8_t* out, std::size_t maxBytes)
+{
+    if (!vizCollector_) return 0;
+    return vizCollector_->drain(out, maxBytes);
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -654,6 +733,26 @@ inline std::string XlethApexEffect::getBandCurveJSON(int band) const
     for (const auto& n : curves_[band].nodes)
         j["nodes"].push_back({ { "in", n.inDb }, { "out", n.outDb } });
     j["tensions"] = curves_[band].tensions;
+    return j.dump();
+}
+
+// One round trip for the whole editor. The per-band objects are byte-identical
+// to what getBandCurveJSON(b) returns, so an undo capture can take either form
+// and feed it straight back into setBandCurveJSON without translation.
+inline std::string XlethApexEffect::getAllCurvesJSON() const
+{
+    nlohmann::json j;
+    j["bands"] = nlohmann::json::array();
+    for (int b = 0; b < kNumBands; ++b)
+    {
+        nlohmann::json band;
+        band["band"]  = b;
+        band["nodes"] = nlohmann::json::array();
+        for (const auto& n : curves_[b].nodes)
+            band["nodes"].push_back({ { "in", n.inDb }, { "out", n.outDb } });
+        band["tensions"] = curves_[b].tensions;
+        j["bands"].push_back(std::move(band));
+    }
     return j.dump();
 }
 
@@ -1041,6 +1140,10 @@ inline void XlethApexEffect::processEffect(juce::AudioBuffer<float>& buffer,
     const int numCh      = buffer.getNumChannels();
     if (numSamples <= 0 || numCh <= 0 || numSamples > maxBlock_) return;
 
+    // Single acquire-load. Null (the common case — no editor open) means every
+    // metering tap below is skipped entirely.
+    auto* vizCol = vizActive_.load(std::memory_order_acquire);
+
     // ── Block-rate configuration ────────────────────────────────────────────
     const float lowCutHz = std::clamp(rawParam(pLowCut_, 0.0f), 0.0f, 100.0f);
     if (lowCutHz != lastLowCut_)
@@ -1105,6 +1208,14 @@ inline void XlethApexEffect::processEffect(juce::AudioBuffer<float>& buffer,
             inPeak = std::max(inPeak, std::max(std::abs(dryL[s]), std::abs(dryR[s])));
         }
     }
+
+    // ── Spectrum tap ────────────────────────────────────────────────────────
+    // Must happen HERE, not at the end: dryL/dryR are lanes 6 and 7 of the
+    // shared lookahead ring below, so after ring_.processBlock() they hold the
+    // delayed dry leg rather than the input. No FFT runs here — this only
+    // copies into a pre-allocated history ring; the transform itself happens
+    // once per ~1024 samples inside observeBlock().
+    if (vizCol) vizAccum_.pushInput(dryL, dryR, numSamples);
 
     // ── Crossover ───────────────────────────────────────────────────────────
     splitBands(dryL, dryR, numSamples);
@@ -1202,11 +1313,26 @@ inline void XlethApexEffect::processEffect(juce::AudioBuffer<float>& buffer,
     const bool fullWet = mixRamp_.isStatic(1.0f);
     const bool fullDry = mixRamp_.isStatic(0.0f);
 
+    // Per-band OUTPUT peaks for the viz payload — measured here because this is
+    // the one place all three post-chain band signals are already in registers.
+    // Gated on vizCol so a closed editor pays nothing for them.
+    float bandOutAbs[kNumBands] = { 0.0f, 0.0f, 0.0f, 0.0f };
+
     for (int s = 0; s < numSamples; ++s)
     {
         const float bl = b0L[s] + b1L[s] + b2L[s];
         const float br = b0R[s] + b1R[s] + b2R[s];
         bandPeak = std::max(bandPeak, std::max(std::abs(bl), std::abs(br)));
+
+        if (vizCol)
+        {
+            bandOutAbs[0] = std::max(bandOutAbs[0],
+                                     std::max(std::abs(b0L[s]), std::abs(b0R[s])));
+            bandOutAbs[1] = std::max(bandOutAbs[1],
+                                     std::max(std::abs(b1L[s]), std::abs(b1R[s])));
+            bandOutAbs[2] = std::max(bandOutAbs[2],
+                                     std::max(std::abs(b2L[s]), std::abs(b2R[s])));
+        }
 
         if (fullWet)
         {
@@ -1253,4 +1379,37 @@ inline void XlethApexEffect::processEffect(juce::AudioBuffer<float>& buffer,
     writeMeterValue(5, bandGrDb_[3]);
     writeMeterValue(6, inPeak);
     writeMeterValue(7, bandPeak);
+
+    // ── Batched viz payload ─────────────────────────────────────────────────
+    // One call per block; it emits a bucket only every kApexVizBucketSize
+    // samples (~43 Hz), and that emit is the only place the FFT runs. MASTER's
+    // "band output" is the effect's final output, which is exactly what the
+    // MASTER stage produced.
+    if (vizCol)
+    {
+        const float outPeak = std::max(peakL, outR ? peakR : peakL);
+        bandOutAbs[kNumBands - 1] = outPeak;
+
+        // Derived from the SAME two published atomics the audio thread already
+        // uses for its delays, not from AudioProcessor::getLatencySamples() —
+        // so the number the meter reports can never disagree with the delay
+        // this block actually applied, even mid-republish.
+        const int lookaheadSamples = lookaheadSamplesPub_.load(std::memory_order_relaxed);
+        const int mask             = satStageMask_.load(std::memory_order_relaxed);
+        const int totalLatency     = lookaheadSamples
+                                   + ((mask & 1) ? xleth_apex::kOsLatencySamples : 0)
+                                   + ((mask & 2) ? xleth_apex::kOsLatencySamples : 0);
+
+        vizAccum_.observeBlock(
+            numSamples,
+            inPeak,
+            outPeak,
+            bandGrDb_,
+            bandOutAbs,
+            static_cast<float>(lookaheadSamples),
+            static_cast<float>(totalLatency),
+            splitLoHz,
+            splitHiHz,
+            *vizCol);
+    }
 }

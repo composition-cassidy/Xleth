@@ -26,12 +26,32 @@ import {
   MULTIBAND_BUCKET,
   RESONANCE_BUCKET,
   UNIFLANGE_BUCKET,
+  APEX_BUCKET,
 } from '../../constants/dynamicsViz.js'
 
 const TARGET_HZ          = 30
 const TARGET_INTERVAL_MS = 1000 / TARGET_HZ
 const DRAIN_MAX_BUCKETS  = 256        // ~340 ms of buckets at 750 buckets/s
 const RING_CAPACITY      = 1024       // matches engine ring depth
+
+// APEX is the one viz type whose bucket is not a handful of scalars: it carries
+// a 1024-bin FFT spectrum (4176 bytes), and the engine emits it at ~31-47 Hz
+// instead of ~700 Hz. Both shared constants above are wrong for it in the
+// expensive direction — asking for 256 buckets would make the bridge allocate a
+// ~1 MB ArrayBuffer 30 times a second to return two buckets, and a 1024-deep
+// decoded ring would pin ~8 MB of JS arrays for 24 s of spectra nothing draws.
+// 8 per drain is 4x the ~2 buckets a 33 ms tick can actually produce, and 128
+// deep is ~3 s of gain-reduction history.
+const APEX_DRAIN_MAX_BUCKETS = 8
+const APEX_RING_CAPACITY     = 128
+
+function drainMaxBucketsFor(vizType) {
+  return vizType === VIZ_TYPE.APEX ? APEX_DRAIN_MAX_BUCKETS : DRAIN_MAX_BUCKETS
+}
+
+function ringCapacityFor(vizType) {
+  return vizType === VIZ_TYPE.APEX ? APEX_RING_CAPACITY : RING_CAPACITY
+}
 
 // ── Shared subscription registry ────────────────────────────────────────────
 //
@@ -51,6 +71,7 @@ function bucketLayoutFor(vizType) {
   if (vizType === VIZ_TYPE.MULTIBAND) return MULTIBAND_BUCKET
   if (vizType === VIZ_TYPE.RESONANCE) return RESONANCE_BUCKET
   if (vizType === VIZ_TYPE.UNIFLANGE) return UNIFLANGE_BUCKET
+  if (vizType === VIZ_TYPE.APEX)      return APEX_BUCKET
   return COMPRESSOR_BUCKET
 }
 
@@ -97,7 +118,7 @@ function acquire(trackId, nodeId, vizType) {
     nodeId,
     vizType,
     refCount: 1,
-    ring: makeRing(RING_CAPACITY),
+    ring: makeRing(ringCapacityFor(vizType)),
     epochObj: { value: 0 },
     schemaObj: { value: 0, type: VIZ_TYPE.UNKNOWN, ok: false, reason: 'pending' },
     rafId: 0,
@@ -160,7 +181,8 @@ function startPumpLoop(entry) {
         entry.schemaObj.ok     = false
         entry.schemaObj.reason = 'no-engine-api'
       } else {
-        Promise.resolve(api.drainEffectVizFrames(entry.trackId, entry.nodeId, DRAIN_MAX_BUCKETS))
+        Promise.resolve(
+          api.drainEffectVizFrames(entry.trackId, entry.nodeId, drainMaxBucketsFor(entry.vizType)))
           .then((resp) => {
             entry.inFlight = false
             if (entry.cancelled) return // stale: target changed/unmounted

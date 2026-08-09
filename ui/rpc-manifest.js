@@ -1591,6 +1591,54 @@ const METHODS = [
     returns: 'value',
     binary: null,
   },
+  // ── APEX curve state + generic effect latency ──
+  // APEX's ~50 scalar parameters need no entries here: they are ordinary APVTS
+  // parameters served by audio_getEffectParameters / audio_setEffectParameter.
+  // Only the per-band dynamics curve (variable-length node list + per-segment
+  // tensions) needs its own door, because it cannot travel through a scalar
+  // parameter API. Curve state persists via the effect's existing APVTS state
+  // blob — these methods are the live edit path, not a second save path.
+  // audio_getEffectLatency is deliberately generic across all stock effects.
+  {
+    method: 'audio_apexGetCurves',
+    channels: ['xleth:audio:apexGetCurves'],
+    api: { 'audio.apexGetCurves': 'xleth:audio:apexGetCurves' },
+    handler: 'Audio_Apex_GetCurves',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_apexGetBandCurve',
+    channels: ['xleth:audio:apexGetBandCurve'],
+    api: { 'audio.apexGetBandCurve': 'xleth:audio:apexGetBandCurve' },
+    handler: 'Audio_Apex_GetBandCurve',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_apexSetBandCurve',
+    channels: ['xleth:audio:apexSetBandCurve'],
+    api: { 'audio.apexSetBandCurve': 'xleth:audio:apexSetBandCurve' },
+    handler: 'Audio_Apex_SetBandCurve',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_apexResetBandCurve',
+    channels: ['xleth:audio:apexResetBandCurve'],
+    api: { 'audio.apexResetBandCurve': 'xleth:audio:apexResetBandCurve' },
+    handler: 'Audio_Apex_ResetBandCurve',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getEffectLatency',
+    channels: ['xleth:audio:getEffectLatency'],
+    api: { 'audio.getEffectLatency': 'xleth:audio:getEffectLatency' },
+    handler: 'Audio_GetEffectLatency',
+    returns: 'value',
+    binary: null,
+  },
   {
     method: 'audio_smartBalanceGetDebug',
     channels: ['xleth:audio:smartBalanceGetDebug'],
