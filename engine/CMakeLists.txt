@@ -1647,6 +1647,43 @@ target_compile_definitions(test_uniflange PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_apex ────────────────────────────────────────────────────────────────
+# DSP-core contract tests for XlethApexEffect (the APEX multiband maximizer).
+# Verifies: Linkwitz-Riley band-split reconstruction is magnitude-flat within
+# +/-0.5 dB for every LR2/LR4 slope combination, LOOKAHEAD introduces exactly
+# the latency APEX reports (impulse position AND a bit-exact band-leg shift),
+# the BAND MIX dry leg is sample-aligned with the band leg (null test against
+# the 0 %/100 % mean), 2x-oversampled saturation at +/-100 % leaves no aliasing
+# product above -60 dBFS below 20 kHz, MUTED is digital silence and OFF is
+# bit-transparent — plus the half-band oversampler primitive, curve-LUT
+# compilation, and the parameter / latency / state-serialization surface.
+add_executable(test_apex
+    test/test_apex.cpp
+)
+
+target_link_libraries(test_apex PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_apex PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_limiter ─────────────────────────────────────────────────────────────
 # Gain-computer tests for XlethLimiterEffect (two-stage transient + release).
 # Verifies: parameter/meter surface unchanged, brickwall ceiling under hard
@@ -2202,6 +2239,7 @@ set(XLETH_ENGINE_TESTS
     test_reverb
     test_uniflange
     test_limiter
+    test_apex
     test_loudness
     test_export_normalization
     test_graph_effect_parameters
