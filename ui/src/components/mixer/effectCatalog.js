@@ -16,6 +16,7 @@ export const EFFECT_CATEGORIES = [
     submenu: [
       { label: 'Compressor', id: 'compressor' },
       { label: 'Limiter', id: 'limiter' },
+      { label: 'APEX', id: 'apex' },
       { label: 'Overdone', id: 'overdone' },
       { label: 'Transient Proc', id: 'transientproc' },
       { label: 'Resonance Suppressor', id: 'resonancesuppressor' },

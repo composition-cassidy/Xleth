@@ -25,6 +25,7 @@ import useReverbStore from '../../stores/reverbStore.js'
 import useTransientProcStore from '../../stores/transientProcStore.js'
 import useSmartBalanceStore from '../../stores/smartBalanceStore.js'
 import useResonanceSuppressorStore from '../../stores/resonanceSuppressorStore.js'
+import useApexStore from '../../stores/apexStore.js'
 
 // Registry: pluginId -> opener(trackId, nodeId, storeKey)
 // Add one entry per effect that has a dedicated editor panel.
@@ -74,6 +75,9 @@ export const EFFECT_EDITORS = {
   resonancesuppressor: (trackId, nodeId, storeKey) => {
     useResonanceSuppressorStore.getState().open(trackId, nodeId, storeKey)
   },
+  apex: (trackId, nodeId, storeKey) => {
+    useApexStore.getState().open(trackId, nodeId, storeKey)
+  },
 }
 
 export const PLUGIN_NAMES = {
@@ -95,6 +99,7 @@ export const PLUGIN_NAMES = {
   reverb: 'Reverb',
   smartbalance: 'Smart Balance',
   resonancesuppressor: 'Resonance Suppressor',
+  apex: 'APEX',
 }
 
 export function resolveTrackId(storeKey) {

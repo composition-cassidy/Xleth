@@ -40,6 +40,7 @@ import ReverbPanel from './ReverbPanel.jsx'
 import TransientProcPanel from './TransientProcPanel.jsx'
 import SmartBalancePanel from './SmartBalancePanel.jsx'
 import ResonanceSuppressorPanel from './ResonanceSuppressorPanel.jsx'
+import ApexPanel from './ApexPanel.jsx'
 
 export default function EffectEditorHost() {
   return (
@@ -59,6 +60,7 @@ export default function EffectEditorHost() {
       <TransientProcPanel />
       <SmartBalancePanel />
       <ResonanceSuppressorPanel />
+      <ApexPanel />
     </div>
   )
 }

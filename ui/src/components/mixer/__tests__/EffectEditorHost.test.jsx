@@ -68,17 +68,19 @@ describe('EffectEditorHost ownership contract', () => {
     const { default: EqPanel } = await import('../EqPanel.jsx')
     const { default: CompressorPanel } = await import('../CompressorPanel.jsx')
     const { default: ResonanceSuppressorPanel } = await import('../ResonanceSuppressorPanel.jsx')
+    const { default: ApexPanel } = await import('../ApexPanel.jsx')
 
     const tree = EffectEditorHost() // hookless — safe to invoke directly
     expect(tree.props.className).toBe('effect-editor-host')
 
     const owned = collectOwnedComponents(tree.props.children)
-    // 15 stock editors, all real function components, hosted globally.
-    expect(owned).toHaveLength(15)
+    // 16 stock editors, all real function components, hosted globally.
+    expect(owned).toHaveLength(16)
     expect(owned.every((type) => typeof type === 'function')).toBe(true)
     expect(owned).toContain(EqPanel)
     expect(owned).toContain(CompressorPanel)
     expect(owned).toContain(ResonanceSuppressorPanel)
+    expect(owned).toContain(ApexPanel)
   })
 
   it('does NOT mount any stock editor inside the Mixer panel (anti-nesting guard)', () => {
@@ -102,6 +104,7 @@ describe('EffectEditorHost ownership contract', () => {
       'TransientProcPanel',
       'SmartBalancePanel',
       'ResonanceSuppressorPanel',
+      'ApexPanel',
     ]
     for (const panel of editorPanels) {
       // No import of, and no JSX element for, any stock editor panel.

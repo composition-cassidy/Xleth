@@ -26500,3 +26500,238 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   border-color: var(--theme-danger, #ef4444);
   background: var(--theme-danger, #ef4444);
 }
+
+/* ─── APEX editor window ──────────────────────────────────────────────────────
+   Flat, zero-radius, viewport-anchored floating panel (mounted by
+   EffectEditorHost). Accent is earned: neutral surfaces at rest, --theme-accent
+   only on the active band, solo/mute states, and gain-reduction activity. */
+.apex-panel {
+  position: fixed;
+  z-index: 200;
+  width: 720px;
+  display: flex;
+  flex-direction: column;
+  background: var(--xleth-flat-panel);
+  border: 1px solid var(--xleth-flat-border);
+  border-radius: 0;
+  box-shadow: var(--theme-depth-hard-shadow);
+  color: var(--xleth-flat-text);
+  user-select: none;
+  outline: none;
+  font-size: 11px;
+}
+
+.apex-panel-header {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  height: 34px;
+  flex-shrink: 0;
+  padding: 0 6px 0 12px;
+  background: var(--xleth-flat-chrome);
+  border-bottom: 1px solid var(--xleth-flat-border);
+  cursor: grab;
+}
+.apex-panel-header::before {
+  content: '';
+  align-self: center;
+  width: 3px;
+  height: 14px;
+  background: var(--xleth-flat-accent);
+  flex-shrink: 0;
+}
+.apex-panel-header:active { cursor: grabbing; }
+.apex-panel-title {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--xleth-flat-text);
+}
+.apex-panel-sub {
+  flex: 1;
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--xleth-flat-text-muted);
+}
+.apex-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  align-self: center;
+}
+.apex-icon-btn,
+.apex-panel-close {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--xleth-flat-text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.apex-icon-btn:hover:not(:disabled),
+.apex-panel-close:hover {
+  color: var(--xleth-flat-text);
+  background: var(--xleth-flat-section);
+}
+.apex-icon-btn:disabled { opacity: 0.3; cursor: default; }
+
+/* Top row — curve editor + analysis */
+.apex-top-row {
+  display: flex;
+  gap: 1px;
+  background: var(--xleth-flat-border);
+  padding: 1px;
+}
+.apex-curve-wrap,
+.apex-analysis-wrap {
+  flex: 1 1 0;
+  min-width: 0;
+  height: 210px;
+  background: var(--theme-bg-inset);
+}
+.apex-curve-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  cursor: crosshair;
+}
+
+/* Band selector */
+.apex-band-row {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 1px;
+  background: var(--xleth-flat-border);
+  border-top: 1px solid var(--xleth-flat-border);
+  border-bottom: 1px solid var(--xleth-flat-border);
+}
+.apex-band-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+  padding: 6px;
+  background: var(--xleth-flat-bg);
+}
+.apex-band-cell.selected {
+  background: var(--xleth-flat-section);
+  box-shadow: inset 0 2px 0 var(--theme-accent);
+}
+.apex-band-name {
+  border: 0;
+  background: transparent;
+  color: var(--xleth-flat-text-muted);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  text-align: left;
+  cursor: pointer;
+  padding: 0;
+}
+.apex-band-cell.selected .apex-band-name { color: var(--theme-accent); }
+
+.apex-band-state,
+.apex-det-toggle,
+.apex-slope-switch {
+  display: inline-flex;
+  gap: 1px;
+  background: var(--xleth-flat-border);
+  padding: 1px;
+  align-self: flex-start;
+}
+.apex-band-state { display: grid; grid-template-columns: repeat(4, 1fr); width: 100%; }
+.apex-seg-btn {
+  border: 0;
+  border-radius: 0;
+  background: var(--xleth-flat-bg);
+  color: var(--xleth-flat-text-muted);
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  padding: 3px 6px;
+  cursor: pointer;
+}
+.apex-seg-btn:hover { color: var(--xleth-flat-text); }
+.apex-seg-btn.active {
+  background: var(--xleth-flat-section);
+  color: var(--theme-accent);
+  box-shadow: inset 0 0 0 1px var(--theme-accent);
+}
+.apex-solo-btn {
+  border: 1px solid var(--xleth-flat-border);
+  border-radius: 0;
+  background: var(--xleth-flat-bg);
+  color: var(--xleth-flat-text-muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  padding: 3px 0;
+  cursor: pointer;
+}
+.apex-solo-btn:hover { color: var(--xleth-flat-text); }
+.apex-solo-btn.active {
+  background: var(--theme-accent);
+  border-color: var(--theme-accent);
+  color: var(--xleth-flat-accent-text, #0b0b0b);
+}
+.apex-solo-spacer { height: 21px; }
+
+/* Body */
+.apex-body {
+  display: flex;
+  gap: 1px;
+  background: var(--xleth-flat-border);
+}
+.apex-band-controls {
+  flex: 1 1 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 10px;
+  background: var(--xleth-flat-panel);
+}
+.apex-knob-row {
+  display: flex;
+  gap: 16px;
+  align-items: flex-start;
+}
+.apex-right-panel {
+  flex: 0 0 220px;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding: 12px 10px;
+  background: var(--xleth-flat-well);
+}
+.apex-knob-row--right { gap: 20px; }
+.apex-split-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.apex-inline-toggle {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding-top: 6px;
+}
+.apex-inline-label {
+  font-size: 9px;
+  letter-spacing: 0.06em;
+  color: var(--theme-fx-axis-label, var(--xleth-flat-text-muted));
+  text-transform: uppercase;
+}
+.apex-latency-readout {
+  align-self: flex-end;
+  font-size: 9px;
+  color: var(--xleth-flat-text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
