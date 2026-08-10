@@ -26909,15 +26909,6 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   background: var(--xleth-flat-section);
 }
 
-.gloss-preset-strip {
-  display: flex;
-  align-items: center;
-  padding: 4px 12px;
-  border-bottom: 1px solid var(--xleth-flat-border);
-  background: var(--xleth-flat-chrome);
-  flex-shrink: 0;
-}
-
 .gloss-body {
   display: flex;
   flex-direction: column;

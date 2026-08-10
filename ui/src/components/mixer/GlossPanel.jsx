@@ -2,7 +2,6 @@ import React, { useCallback, useEffect, useRef, useState } from 'react'
 import { X } from 'lucide-react'
 import useApexStore from '../../stores/apexStore.js'
 import PluginUIKitKnob from '../../plugin-ui/runtime/components/PluginUIKitKnob.jsx'
-import EffectPresetBar from '../../fx-presets/EffectPresetBar.jsx'
 import { loadPreset } from '../../fx-presets/presetManager.js'
 import { GLOBAL_KNOBS } from './apexGeometry.js'
 
@@ -15,12 +14,21 @@ import { GLOBAL_KNOBS } from './apexGeometry.js'
 // APEX fix propagates for free. This panel and ApexPanel share ONE store
 // (apexStore); the target's `skin` field selects which one renders.
 //
-// The face is: one giant AMOUNT knob bound to the engine BAND MIX parameter, and
-// four lettered banks (A/B/C/D) that each load a shipped factory APEX preset
-// through the preset system in one apply. AMOUNT stays independent of bank
-// selection — the factory bank files deliberately omit `bandmix`, so loading a
-// bank never moves the knob. The active letter reflects the last loaded snapshot;
-// it does not track later manual edits (matching Soundgoodizer).
+// The face is DELIBERATELY just two controls: one giant AMOUNT knob bound to the
+// engine BAND MIX parameter, and four lettered banks (A/B/C/D) that each load a
+// shipped factory APEX preset through the preset system in one apply. There is no
+// preset bar here on purpose — the banks ARE the preset surface for GLOSS; anyone
+// wanting the full library opens the same effect in APEX. AMOUNT stays independent
+// of bank selection: the factory bank files deliberately omit `bandmix`, so
+// loading a bank never moves the knob. The active letter reflects the last loaded
+// snapshot; it does not track later manual edits (matching Soundgoodizer).
+//
+// The bank files are also authored width-neutral (every `*_sep` is 0). STEREO SEP
+// is applied to the WET leg only, so a non-zero width makes the side channel take
+// a different, mix-dependent multiband weighting than the mid — which reads as
+// phasing/flanging through the middle of the AMOUNT sweep (worst near 40 %) on
+// decorrelated material. APEX keeps STEREO SEP in full; GLOSS's whole control IS
+// the blend, so its banks must be partial-mix-safe.
 //
 // Theming: CSS custom-property tokens only, no hardcoded hex; tokenValue() is
 // never called at module scope; flat, zero-border-radius; color is earned (the
@@ -89,18 +97,11 @@ function bankMatchesLive(bankParams, liveParams) {
   return true
 }
 
-function firstMatchingBankFromCache(liveParams) {
-  for (const bank of GLOSS_BANKS) {
-    if (bankMatchesLive(glossBankParamsCache.get(bank.slug), liveParams)) return bank.key
-  }
-  return null
-}
-
 export default function GlossPanel() {
   const target = useApexStore(s => s.target)
   const close = useApexStore(s => s.close)
   const amount = useApexStore(s => s.params[AMOUNT.id])
-  const setParamLocal = useApexStore(s => s.setParamLocal)
+  const previewParam = useApexStore(s => s.previewParam)
   const commitParam = useApexStore(s => s.commitParam)
   const applyPresetState = useApexStore(s => s.applyPresetState)
 
@@ -187,14 +188,6 @@ export default function GlossPanel() {
     }
   }, [target, busy, applyPresetState])
 
-  // The standard preset bar is an independent surface. Keep the lit letter honest
-  // when it applies (or undoes) a preset: light the matching bank, or clear it.
-  const handleBarApplied = useCallback((state) => {
-    applyPresetState(state)
-    const live = state?.params && typeof state.params === 'object' ? state.params : null
-    setActiveBank(live ? firstMatchingBankFromCache(live) : null)
-  }, [applyPresetState])
-
   if (!isGloss) return null
 
   const amountValue = Number.isFinite(amount) ? amount : AMOUNT.default
@@ -216,12 +209,6 @@ export default function GlossPanel() {
         </div>
       </div>
 
-      {/* Standard preset bar — GLOSS is an APEX-typed effect window, so it shares
-          APEX's preset library. The A–D banks are an addition, not a replacement. */}
-      <div className="gloss-preset-strip">
-        <EffectPresetBar effectType="apex" target={target} onApplied={handleBarApplied} />
-      </div>
-
       <div className="gloss-body">
         <div className="gloss-amount">
           <PluginUIKitKnob
@@ -231,7 +218,7 @@ export default function GlossPanel() {
             defaultValue={AMOUNT.default}
             label="AMOUNT"
             formatValue={AMOUNT.fmt}
-            onLiveChange={(nv) => setParamLocal(AMOUNT.id, nv)}
+            onLiveChange={(nv) => previewParam(AMOUNT.id, nv)}
             onCommit={(nv) => commitParam(AMOUNT.id, nv)}
             size={132}
             dragRange={180}

@@ -28,7 +28,7 @@ const SHORT_STATE = ['ON', 'CMP', 'MUT', 'OFF']
 
 function ApexKnob({ id, label, min, max, def, skew, fmt, bipolar, size = 46 }) {
   const value = useApexStore(s => s.params[id])
-  const setParamLocal = useApexStore(s => s.setParamLocal)
+  const previewParam = useApexStore(s => s.previewParam)
   const commitParam = useApexStore(s => s.commitParam)
   const v = Number.isFinite(value) ? value : def
   return (
@@ -40,7 +40,7 @@ function ApexKnob({ id, label, min, max, def, skew, fmt, bipolar, size = 46 }) {
       label={label}
       formatValue={fmt}
       skew={skew || 1}
-      onLiveChange={(nv) => setParamLocal(id, nv)}
+      onLiveChange={(nv) => previewParam(id, nv)}
       onCommit={(nv) => commitParam(id, nv)}
       size={size}
       dragRange={150}

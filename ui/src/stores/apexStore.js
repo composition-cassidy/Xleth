@@ -63,6 +63,31 @@ export function curveToJSON(curve) {
   })
 }
 
+// ── Drag-time (live) parameter writes ────────────────────────────────────────
+// A knob sweep has to be AUDIBLE while it moves, not only on release. But one
+// setEffectParameter per pointermove is an IPC storm on the JUCE message thread
+// (the exact failure the Reverb panel documents). Same proven solution here:
+// update local state every move, and coalesce the ENGINE write to at most one
+// per animation frame per parameter. Every APEX scalar is ramped over the block
+// engine-side (BlockRamp / mixRamp_), so a ~60 Hz stream of targets is smooth
+// and click-free rather than stepped.
+let livePending = null
+let liveFrame = 0
+
+const scheduleFrame = (fn) =>
+  (typeof requestAnimationFrame === 'function' ? requestAnimationFrame(fn) : setTimeout(fn, 16))
+const cancelFrame = (handle) => {
+  if (!handle) return
+  if (typeof cancelAnimationFrame === 'function') cancelAnimationFrame(handle)
+  else clearTimeout(handle)
+}
+
+function cancelLiveWrites() {
+  cancelFrame(liveFrame)
+  liveFrame = 0
+  livePending = null
+}
+
 const useApexStore = create((set, get) => ({
   // { trackId, nodeId, storeKey } | null
   target: null,
@@ -102,6 +127,9 @@ const useApexStore = create((set, get) => ({
   },
 
   close() {
+    // Drop any in-flight drag frame: it would otherwise land after the panel is
+    // gone and write to a node this store no longer addresses.
+    cancelLiveWrites()
     set({
       target: null,
       params: {},
@@ -171,10 +199,34 @@ const useApexStore = create((set, get) => ({
     set(s => ({ params: { ...s.params, [id]: value } }))
   },
 
+  // Drag-time write: local state immediately (so the knob and readout track the
+  // pointer at 60 fps) plus a frame-coalesced engine write, so the change is
+  // heard live during the gesture. Latency-moving params are NOT re-queried here
+  // — that stays on the commit, so a sweep never re-plans the graph per frame.
+  previewParam(id, value) {
+    set(s => ({ params: { ...s.params, [id]: value } }))
+    if (!get().target) return
+    livePending = { ...(livePending || {}), [id]: value }
+    if (liveFrame) return
+    liveFrame = scheduleFrame(() => {
+      liveFrame = 0
+      const pending = livePending
+      livePending = null
+      const t = get().target
+      if (!t || !pending) return
+      for (const [pid, v] of Object.entries(pending)) {
+        if (Number.isFinite(v)) audio()?.setEffectParameter(t.trackId, t.nodeId, pid, v)
+      }
+    })
+  },
+
   commitParam(id, value) {
     const t = get().target
     if (!t) return
     set(s => ({ params: { ...s.params, [id]: value } }))
+    // Drop any queued drag value for this id — the release is authoritative and
+    // must never be overwritten by a stale frame that lands after it.
+    if (livePending) delete livePending[id]
     audio()?.setEffectParameter(t.trackId, t.nodeId, id, value)
     // LOOKAHEAD and the four SAT THRESH knobs move the reported latency.
     if (id === 'lookahead' || id.endsWith('satth')) {
