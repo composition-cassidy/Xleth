@@ -3008,7 +3008,19 @@ const useEffectChainStore = create((set, get) => ({
     }))
 
     try {
-      await ipc(key, 'addEffect', 'addMasterEffect', pluginId, chain.length)
+      const raw = await ipc(key, 'addEffect', 'addMasterEffect', pluginId, chain.length)
+      // GLOSS is a dry-by-default skin over APEX: its AMOUNT (the engine BAND MIX
+      // parameter) opens at 0 %, not APEX's 100 %. Set it on the just-created node
+      // before the chain refresh so the panel shows 0 % from the first open.
+      if (pluginId === 'gloss') {
+        let nodeId = raw
+        if (typeof raw === 'string') { try { nodeId = JSON.parse(raw)?.nodeId } catch { nodeId = -1 } }
+        else if (raw && typeof raw === 'object') nodeId = raw.nodeId
+        if (Number.isInteger(nodeId) && nodeId >= 0) {
+          const trackId = key === 'master' ? -1 : Number(key)
+          globalThis.window?.xleth?.audio?.setEffectParameter?.(trackId, nodeId, 'bandmix', 0)
+        }
+      }
     } catch (e) {
       console.warn('[effectChainStore] addEffect failed:', e?.message)
     }

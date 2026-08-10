@@ -37,13 +37,25 @@ const GLOSS_BANKS = [
   { key: 'D', slug: 'gloss-d' },
 ]
 
-// AMOUNT is bound to the engine BAND MIX parameter (0–100 %).
+// AMOUNT is bound to the engine BAND MIX parameter (0–100 %). GLOSS opens fully
+// DRY, so its AMOUNT default is 0 % — unlike APEX's BAND MIX default of 100 %.
+// A fresh gloss node is created at 0 (effectChainStore.addEffect), and this is
+// also the knob's reset value and its pre-hydration display fallback.
 const AMOUNT = GLOBAL_KNOBS.bandmix
+const AMOUNT_DEFAULT = 0
 const AMOUNT_APPEARANCE = { preset: 'mixer-ring', sizePreset: 'inherit' }
 
 // factory bank param snapshots (bandmix stripped), loaded once and reused for
 // active-bank derivation across opens.
 const glossBankParamsCache = new Map()   // slug -> { id: value } | null
+
+// Session-scoped memory of the letter the user last loaded per open instance,
+// keyed by `${storeKey}:${nodeId}`. This is what makes the selection STICKY: the
+// lit letter reflects the last bank LOADED and is not re-derived from (possibly
+// edited) engine state, and it survives close/reopen within a session. It is not
+// persisted — a reloaded project reassigns node ids, so open() falls back to
+// matching the restored engine state against each bank snapshot.
+const glossSelectedBank = new Map()      // nodeKey -> 'A'|'B'|'C'|'D'
 
 function safeParseList(raw) {
   if (typeof raw === 'string') { try { return JSON.parse(raw) } catch { return [] } }
@@ -137,12 +149,16 @@ export default function GlossPanel() {
     }
   }, [])
 
-  // Derive the lit bank on open by matching the live engine state to each factory
-  // snapshot — this is how the selected letter survives a project save/load
-  // round-trip (the DSP state persists and still matches its bank). It runs only
-  // when the open instance changes, never on later manual edits.
+  // Resolve the lit bank whenever the open instance changes. Sticky session
+  // memory wins (the letter reflects the last bank LOADED on this instance and
+  // stays lit through close/reopen and later manual edits — matching
+  // Soundgoodizer). With no session memory — e.g. a freshly loaded project, whose
+  // node ids are new — fall back to matching the persisted engine state against
+  // each bank snapshot, which is how the selection survives save/load.
   useEffect(() => {
     if (!isGloss || !target) { setActiveBank(null); return }
+    const remembered = glossSelectedBank.get(nodeKey)
+    if (remembered) { setActiveBank(remembered); setErrorText(null); return }
     let cancelled = false
     setActiveBank(null)
     setErrorText(null)
@@ -157,7 +173,11 @@ export default function GlossPanel() {
       for (const bank of GLOSS_BANKS) {
         const bankParams = await loadBankParams(bank.slug)
         if (cancelled) return
-        if (bankMatchesLive(bankParams, live)) { setActiveBank(bank.key); return }
+        if (bankMatchesLive(bankParams, live)) {
+          glossSelectedBank.set(nodeKey, bank.key)   // remember the derived match too
+          setActiveBank(bank.key)
+          return
+        }
       }
     })()
     return () => { cancelled = true }
@@ -165,7 +185,8 @@ export default function GlossPanel() {
   }, [isGloss, nodeKey])
 
   // Load a bank through the preset system in one apply. The factory bank omits
-  // bandmix, so AMOUNT is untouched by design.
+  // bandmix, so AMOUNT is untouched by design. The choice is remembered for this
+  // instance so it stays lit until another letter is picked (never unselected).
   const applyBank = useCallback(async (bank) => {
     if (!target || busy) return
     setBusy(true)
@@ -173,17 +194,18 @@ export default function GlossPanel() {
     try {
       const { after } = await loadPreset('apex', 'factory', bank.slug, target)
       applyPresetState(after)
+      if (nodeKey) glossSelectedBank.set(nodeKey, bank.key)
       setActiveBank(bank.key)
     } catch (err) {
       setErrorText(err?.message || 'Failed to load bank')
     } finally {
       setBusy(false)
     }
-  }, [target, busy, applyPresetState])
+  }, [target, busy, applyPresetState, nodeKey])
 
   if (!isGloss) return null
 
-  const amountValue = Number.isFinite(amount) ? amount : AMOUNT.default
+  const amountValue = Number.isFinite(amount) ? amount : AMOUNT_DEFAULT
 
   return (
     <div
@@ -208,7 +230,7 @@ export default function GlossPanel() {
             value={amountValue}
             min={AMOUNT.min}
             max={AMOUNT.max}
-            defaultValue={AMOUNT.default}
+            defaultValue={AMOUNT_DEFAULT}
             label="AMOUNT"
             formatValue={AMOUNT.fmt}
             onLiveChange={(nv) => previewParam(AMOUNT.id, nv)}
