@@ -488,9 +488,20 @@ inline void XlethApexEffect::prepareEffect(double sampleRate, int maxBlockSize)
     const int maxLookahead = static_cast<int>(std::ceil(0.020 * sampleRate_)) + 2;
 
     ring_.prepare(maxLookahead, sampleRate_);
-    for (auto& d : bandOsDelay_) d.prepare(xleth_apex::kOsLatencySamples);
+    // FixedDelay::prepare only ALLOCATES; the delay length is 0 until setDelay().
+    // These three lines compensate the 2x saturator's kOsLatencySamples on every
+    // leg that is NOT running the oversampler in a given block — the dry BAND MIX
+    // leg, the non-saturating / OFF bands, and the master when bypassed. Without
+    // the setDelay() calls they passed audio through untouched, so a saturating
+    // band drifted kOsLatencySamples (47) ahead of the dry leg and the other
+    // bands: at partial BAND MIX the dry leg combed against the delayed band sum
+    // (first null ~510 Hz = fs / 2·47), heard as phasing/flanging worst near the
+    // middle of the blend and clean at 0 % / 100 %.
+    for (auto& d : bandOsDelay_) { d.prepare(xleth_apex::kOsLatencySamples); d.setDelay(xleth_apex::kOsLatencySamples); }
     dryOsDelay_.prepare(xleth_apex::kOsLatencySamples);
+    dryOsDelay_.setDelay(xleth_apex::kOsLatencySamples);
     masterOsDelay_.prepare(xleth_apex::kOsLatencySamples);
+    masterOsDelay_.setDelay(xleth_apex::kOsLatencySamples);
 
     bandBuf_.setSize(kNumSplitBands * 2, maxBlock_, false, true, true);
     dryBuf_ .setSize(2,                 maxBlock_, false, true, true);

@@ -23,13 +23,6 @@ import { GLOBAL_KNOBS } from './apexGeometry.js'
 // loading a bank never moves the knob. The active letter reflects the last loaded
 // snapshot; it does not track later manual edits (matching Soundgoodizer).
 //
-// The bank files are also authored width-neutral (every `*_sep` is 0). STEREO SEP
-// is applied to the WET leg only, so a non-zero width makes the side channel take
-// a different, mix-dependent multiband weighting than the mid — which reads as
-// phasing/flanging through the middle of the AMOUNT sweep (worst near 40 %) on
-// decorrelated material. APEX keeps STEREO SEP in full; GLOSS's whole control IS
-// the blend, so its banks must be partial-mix-safe.
-//
 // Theming: CSS custom-property tokens only, no hardcoded hex; tokenValue() is
 // never called at module scope; flat, zero-border-radius; color is earned (the
 // active bank and AMOUNT activity carry the accent). Drag discipline: the knob
