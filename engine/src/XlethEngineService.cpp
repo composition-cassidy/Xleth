@@ -52,6 +52,7 @@
 #include "dsp/AutoLoopPolicy.h"          // selection-first AUTO loop policy (policy v2 port)
 #include "audio/XlethApexEffect.h"
 #include "audio/XlethEQEffect.h"
+#include "audio/XlethFilterEffect.h"
 #include "audio/XlethWaveshaperEffect.h"
 #include "audio/SmartBalanceEffect.h"
 #include "audio/PluginRegistry.h"
@@ -16727,6 +16728,145 @@ JsonApi::Value Audio_EQ_GetSampleRate(const JsonApi::CallbackInfo& info)
     if (!eq) return JsonApi::Number::New(env, 44100.0);
     return JsonApi::Number::New(env, eq->getSampleRate());
 }
+
+// ── Xleth Filter host bridge functions ────────────────────────────────────────
+//
+// Every per-slot scalar (cutoff, q, gain, morph, drive, mix, slope, type, ...)
+// is an ordinary APVTS parameter and travels over the generic
+// audio_getEffectParameters / audio_setEffectParameter pair. What needs a door
+// of its own is the variable slot COUNT and the computed response curve.
+
+// Helper: retrieve the filter effect from a track chain by trackId + nodeId.
+static XlethFilterEffect* getFilter(JsonApi::Env /*env*/, int trackId, int nodeId)
+{
+    auto* base = (trackId < 0)
+        ? audioEngine->getMixEngine().getMasterEffectPtr(nodeId)
+        : audioEngine->getMixEngine().getEffectPtr(trackId, nodeId);
+    if (!base) return nullptr;
+    return dynamic_cast<XlethFilterEffect*>(base);
+}
+
+// audio_filterAddSlot(trackId, nodeId) → number (slot index or -1)
+JsonApi::Value Audio_Filter_AddSlot(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
+        JsonApi::TypeError::New(env, "audio_filterAddSlot(trackId: number, nodeId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int trackId = info[0].As<JsonApi::Number>().Int32Value();
+    const int nodeId  = info[1].As<JsonApi::Number>().Int32Value();
+    BridgeCallLog log("audio.filterAddSlot");
+
+    auto* filt = getFilter(env, trackId, nodeId);
+    if (!filt) return JsonApi::Number::New(env, -1);
+    return JsonApi::Number::New(env, filt->addSlot());
+}
+
+// audio_filterRemoveSlot(trackId, nodeId, slotIndex) → boolean
+JsonApi::Value Audio_Filter_RemoveSlot(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsNumber()) {
+        JsonApi::TypeError::New(env, "audio_filterRemoveSlot(trackId: number, nodeId: number, slotIndex: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int trackId   = info[0].As<JsonApi::Number>().Int32Value();
+    const int nodeId    = info[1].As<JsonApi::Number>().Int32Value();
+    const int slotIndex = info[2].As<JsonApi::Number>().Int32Value();
+    BridgeCallLog log("audio.filterRemoveSlot");
+
+    auto* filt = getFilter(env, trackId, nodeId);
+    if (!filt) return JsonApi::Boolean::New(env, false);
+    return JsonApi::Boolean::New(env, filt->removeSlot(slotIndex));
+}
+
+// audio_filterSetSlotParam(trackId, nodeId, slotIndex, paramName, value) → boolean
+JsonApi::Value Audio_Filter_SetSlotParam(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 5 || !info[0].IsNumber() || !info[1].IsNumber()
+        || !info[2].IsNumber() || !info[3].IsString() || !info[4].IsNumber()) {
+        JsonApi::TypeError::New(env, "audio_filterSetSlotParam(trackId, nodeId, slotIndex, paramName, value)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int trackId       = info[0].As<JsonApi::Number>().Int32Value();
+    const int nodeId        = info[1].As<JsonApi::Number>().Int32Value();
+    const int slotIndex     = info[2].As<JsonApi::Number>().Int32Value();
+    const std::string pName = info[3].As<JsonApi::String>().Utf8Value();
+    const float value       = info[4].As<JsonApi::Number>().FloatValue();
+    BridgeCallLog log("audio.filterSetSlotParam");
+
+    auto* filt = getFilter(env, trackId, nodeId);
+    if (!filt) return JsonApi::Boolean::New(env, false);
+    return JsonApi::Boolean::New(env, filt->setSlotParam(slotIndex, pName, value));
+}
+
+// audio_filterGetSlots(trackId, nodeId) → JSON string
+//   [{index, enabled, type, cutoff, q, gain, morph, slope, drive, mix, ...}, ...]
+JsonApi::Value Audio_Filter_GetSlots(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
+        JsonApi::TypeError::New(env, "audio_filterGetSlots(trackId: number, nodeId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int trackId = info[0].As<JsonApi::Number>().Int32Value();
+    const int nodeId  = info[1].As<JsonApi::Number>().Int32Value();
+
+    auto* filt = getFilter(env, trackId, nodeId);
+    if (!filt) return JsonApi::String::New(env, "[]");
+    return JsonApi::String::New(env, filt->getSlotsAsJSON());
+}
+
+// audio_filterGetResponseCurve(trackId, nodeId) → Float32Array (512 floats, dB)
+JsonApi::Value Audio_Filter_GetResponseCurve(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
+        JsonApi::TypeError::New(env, "audio_filterGetResponseCurve(trackId: number, nodeId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int trackId = info[0].As<JsonApi::Number>().Int32Value();
+    const int nodeId  = info[1].As<JsonApi::Number>().Int32Value();
+
+    constexpr int kSize = XlethFilterEffect::kResponseSize;
+    auto ab = JsonApi::ArrayBuffer::New(env, sizeof(float) * kSize);
+
+    auto* filt = getFilter(env, trackId, nodeId);
+    if (!filt) {
+        std::memset(ab.Data(), 0, ab.ByteLength());
+        return JsonApi::Float32Array::New(env, kSize, ab, 0);
+    }
+    filt->getResponseCurve(static_cast<float*>(ab.Data()), kSize);
+    return JsonApi::Float32Array::New(env, kSize, ab, 0);
+}
+
 
 // ── APEX-specific host bridge functions ───────────────────────────────────────
 //

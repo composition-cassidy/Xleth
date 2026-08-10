@@ -1684,6 +1684,43 @@ target_compile_definitions(test_apex PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_xlethfilter ─────────────────────────────────────────────────────────
+# DSP-core contract tests for XlethFilterEffect (the multi-slot TPT/Cytomic SVF
+# filter). Verifies the LP/HP/BP/notch/allpass/peak/shelf magnitudes against the
+# closed-form digital response of the prewarped SVF, that morph is click-free
+# and bounded across the whole sweep, that the 24/48 dB Butterworth cascades are
+# measurably steeper than 12 dB AND still -3 dB at fc, that self-oscillation
+# rings bounded without NaN, that a 100 Hz -> 10 kHz cutoff slam at Q = 20 stays
+# stable (the TB-303 case a direct-form biquad cannot survive), that add/remove
+# slot mid-stream is glitch-free and the slot count round-trips through state,
+# and that the response-curve RPC payload matches the audio path.
+add_executable(test_xlethfilter
+    test/test_xlethfilter.cpp
+)
+
+target_link_libraries(test_xlethfilter PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_xlethfilter PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_limiter ─────────────────────────────────────────────────────────────
 # Gain-computer tests for XlethLimiterEffect (two-stage transient + release).
 # Verifies: parameter/meter surface unchanged, brickwall ceiling under hard
@@ -2240,6 +2277,7 @@ set(XLETH_ENGINE_TESTS
     test_uniflange
     test_limiter
     test_apex
+    test_xlethfilter
     test_loudness
     test_export_normalization
     test_graph_effect_parameters

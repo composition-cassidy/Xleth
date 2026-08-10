@@ -1591,6 +1591,54 @@ const METHODS = [
     returns: 'value',
     binary: null,
   },
+  // ── Xleth Filter slot management ──
+  // Mirrors the EQ's five: the per-slot scalar params (cutoff, q, gain, morph,
+  // drive, mix, ...) are ordinary APVTS parameters served by the generic
+  // audio_getEffectParameters / audio_setEffectParameter pair. What needs its
+  // own door is the variable slot COUNT (add/remove, swap-with-last) and the
+  // computed response curve, neither of which fits a scalar parameter API.
+  {
+    method: 'audio_filterAddSlot',
+    channels: ['xleth:audio:filterAddSlot'],
+    api: { 'audio.filterAddSlot': 'xleth:audio:filterAddSlot' },
+    handler: 'Audio_Filter_AddSlot',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_filterRemoveSlot',
+    channels: ['xleth:audio:filterRemoveSlot'],
+    api: { 'audio.filterRemoveSlot': 'xleth:audio:filterRemoveSlot' },
+    handler: 'Audio_Filter_RemoveSlot',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_filterSetSlotParam',
+    channels: ['xleth:audio:filterSetSlotParam'],
+    api: { 'audio.filterSetSlotParam': 'xleth:audio:filterSetSlotParam' },
+    handler: 'Audio_Filter_SetSlotParam',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_filterGetSlots',
+    channels: ['xleth:audio:filterGetSlots'],
+    api: { 'audio.filterGetSlots': 'xleth:audio:filterGetSlots' },
+    handler: 'Audio_Filter_GetSlots',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_filterGetResponseCurve',
+    channels: ['xleth:audio:filterGetResponseCurve'],
+    api: { 'audio.filterGetResponseCurve': 'xleth:audio:filterGetResponseCurve' },
+    handler: 'Audio_Filter_GetResponseCurve',
+    returns: 'value',
+    binary: null,
+  },
+
+
   // ── APEX curve state + generic effect latency ──
   // APEX's ~50 scalar parameters need no entries here: they are ordinary APVTS
   // parameters served by audio_getEffectParameters / audio_setEffectParameter.
