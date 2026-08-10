@@ -105,7 +105,13 @@ public:
 
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout();
 
-    XlethApexEffect();
+    // The engine class is shared by two UI descriptors: "apex" (the full
+    // multiband editor) and "gloss" (the one-knob Soundgoodizer-style skin).
+    // Both are the SAME DSP — GLOSS is a distinct persisted pluginId so an
+    // instance's skin identity survives project save/load, and every APEX fix
+    // propagates automatically. Defaults to "apex" so existing call sites are
+    // unaffected; the factory passes "gloss" for the companion skin.
+    explicit XlethApexEffect(const std::string& pluginId = "apex");
 
     // ── AudioProcessor / XlethEffectBase overrides ──────────────────────────
     void prepareEffect(double sampleRate, int maxBlockSize) override;
@@ -421,8 +427,8 @@ inline juce::AudioProcessorValueTreeState::ParameterLayout XlethApexEffect::crea
 // Construction
 // ═════════════════════════════════════════════════════════════════════════════
 
-inline XlethApexEffect::XlethApexEffect()
-    : XlethEffectBase("apex", createLayout())
+inline XlethApexEffect::XlethApexEffect(const std::string& pluginId)
+    : XlethEffectBase(pluginId, createLayout())
 {
     // Seed every band with the unity (flat) curve and compile it, so the audio
     // thread always has a valid LUT even before the first prepareToPlay.

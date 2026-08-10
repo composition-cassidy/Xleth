@@ -83,9 +83,14 @@ const useApexStore = create((set, get) => ({
   undoStack: [],
   redoStack: [],
 
-  open(trackId, nodeId, storeKey) {
+  // `skin` selects which editor descriptor owns this instance: 'apex' (the full
+  // multiband editor, ApexPanel) or 'gloss' (the one-knob companion, GlossPanel).
+  // Both share this one store because they drive the SAME engine effect; the two
+  // panels each render only when the target's skin matches, so opening one never
+  // paints the other. Defaults to 'apex' so existing callers are unaffected.
+  open(trackId, nodeId, storeKey, skin = 'apex') {
     set({
-      target: { trackId, nodeId, storeKey },
+      target: { trackId, nodeId, storeKey, skin },
       selectedBand: 0,
       params: {},
       curves: [unityCurve(), unityCurve(), unityCurve(), unityCurve()],

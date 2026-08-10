@@ -202,7 +202,10 @@ export default function ApexPanel() {
     else if ((k === 'z' && e.shiftKey) || k === 'y') { e.preventDefault(); e.stopPropagation(); redoCurve() }
   }, [undoCurve, redoCurve])
 
-  if (!target) return null
+  // One store, two skins: the GLOSS companion (skin:'gloss') is drawn by
+  // GlossPanel. Render nothing here for a gloss-skinned target so opening GLOSS
+  // never also paints the full APEX editor.
+  if (!target || target.skin === 'gloss') return null
 
   const prefix = BAND_PREFIX[selectedBand]
   const knobById = (suffix) => BAND_KNOBS.find(k => k.suffix === suffix)

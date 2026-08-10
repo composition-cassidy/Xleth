@@ -41,6 +41,7 @@ import TransientProcPanel from './TransientProcPanel.jsx'
 import SmartBalancePanel from './SmartBalancePanel.jsx'
 import ResonanceSuppressorPanel from './ResonanceSuppressorPanel.jsx'
 import ApexPanel from './ApexPanel.jsx'
+import GlossPanel from './GlossPanel.jsx'
 
 export default function EffectEditorHost() {
   return (
@@ -61,6 +62,7 @@ export default function EffectEditorHost() {
       <SmartBalancePanel />
       <ResonanceSuppressorPanel />
       <ApexPanel />
+      <GlossPanel />
     </div>
   )
 }

@@ -76,7 +76,13 @@ export const EFFECT_EDITORS = {
     useResonanceSuppressorStore.getState().open(trackId, nodeId, storeKey)
   },
   apex: (trackId, nodeId, storeKey) => {
-    useApexStore.getState().open(trackId, nodeId, storeKey)
+    useApexStore.getState().open(trackId, nodeId, storeKey, 'apex')
+  },
+  // GLOSS is the one-knob companion skin over the SAME engine effect. It shares
+  // the APEX store but tags the target with skin:'gloss' so the GlossPanel (not
+  // ApexPanel) renders — the two skins are one store, addressed by target.skin.
+  gloss: (trackId, nodeId, storeKey) => {
+    useApexStore.getState().open(trackId, nodeId, storeKey, 'gloss')
   },
 }
 
@@ -100,6 +106,7 @@ export const PLUGIN_NAMES = {
   smartbalance: 'Smart Balance',
   resonancesuppressor: 'Resonance Suppressor',
   apex: 'APEX',
+  gloss: 'GLOSS',
 }
 
 export function resolveTrackId(storeKey) {

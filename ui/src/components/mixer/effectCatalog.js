@@ -17,6 +17,7 @@ export const EFFECT_CATEGORIES = [
       { label: 'Compressor', id: 'compressor' },
       { label: 'Limiter', id: 'limiter' },
       { label: 'APEX', id: 'apex' },
+      { label: 'GLOSS', id: 'gloss' },
       { label: 'Overdone', id: 'overdone' },
       { label: 'Transient Proc', id: 'transientproc' },
       { label: 'Resonance Suppressor', id: 'resonancesuppressor' },

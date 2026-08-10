@@ -2765,6 +2765,7 @@ std::unique_ptr<juce::AudioProcessor> AudioGraph::createEffect(const std::string
     if (pluginId == "resonancesuppressor") return std::make_unique<XlethResonanceSuppressorEffect>();
     if (pluginId == "smartbalance")  return std::make_unique<SmartBalanceEffect>();
     if (pluginId == "apex")          return std::make_unique<XlethApexEffect>();
+    if (pluginId == "gloss")         return std::make_unique<XlethApexEffect>("gloss");   // one-knob APEX skin — same DSP, distinct persisted id
 
     // VST3 fallback — look up in the plugin registry and instantiate.
     // The createPluginInstance call itself is guarded (some plugins fault on load).
