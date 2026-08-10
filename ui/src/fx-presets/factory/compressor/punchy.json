@@ -1,0 +1,19 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "compressor",
+  "name": "Punchy",
+  "author": "XLETH",
+  "created": "2026-08-10T00:00:00.000Z",
+  "state": {
+    "params": {
+      "threshold": -24,
+      "ratio": 4,
+      "attack": 5,
+      "release": 80,
+      "knee": 2,
+      "makeup": 3,
+      "mix": 100,
+      "detect_mode": 0
+    }
+  }
+}

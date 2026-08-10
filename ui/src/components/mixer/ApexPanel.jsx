@@ -4,6 +4,7 @@ import useApexStore, {
   BAND_NAMES, BAND_PREFIX, SPLIT_BANDS,
 } from '../../stores/apexStore.js'
 import Knob from '../sampler/Knob.jsx'
+import EffectPresetBar from '../../fx-presets/EffectPresetBar.jsx'
 import ApexCurveEditor from './ApexCurveEditor.jsx'
 import ApexAnalysis from './ApexAnalysis.jsx'
 import {
@@ -153,6 +154,7 @@ export default function ApexPanel() {
   const undoCurve = useApexStore(s => s.undoCurve)
   const redoCurve = useApexStore(s => s.redoCurve)
   const resetCurve = useApexStore(s => s.resetCurve)
+  const applyPresetState = useApexStore(s => s.applyPresetState)
   const canUndo = useApexStore(s => s.undoStack.length > 0)
   const canRedo = useApexStore(s => s.redoStack.length > 0)
   const latency = useApexStore(s => s.latency)
@@ -266,6 +268,15 @@ export default function ApexPanel() {
             <X size={13} />
           </button>
         </div>
+      </div>
+
+      {/* Preset bar — named save/load of the full APEX state (params + curves) */}
+      <div className="apex-preset-strip">
+        <EffectPresetBar
+          effectType="apex"
+          target={target}
+          onApplied={applyPresetState}
+        />
       </div>
 
       {/* Top: curve editor (left) + analysis (right) */}

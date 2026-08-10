@@ -1,0 +1,22 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "apex",
+  "name": "Gentle Glue",
+  "author": "XLETH",
+  "created": "2026-08-10T00:00:00.000Z",
+  "state": {
+    "params": {
+      "bandmix": 90,
+      "lookahead": 1.5,
+      "lo_state": 0,
+      "md_state": 0,
+      "hi_state": 0,
+      "ms_state": 0,
+      "ms_att": 15,
+      "ms_rel": 180,
+      "ms_satth": 6,
+      "ms_satcl": -4,
+      "ms_post": 1
+    }
+  }
+}

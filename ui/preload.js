@@ -461,6 +461,18 @@ window.xleth = ({
     listUser: ()            => invoke('xleth:theme:listUser'),
   },
 
+  // ── Stock-effect presets (named save/load of any stock effect's full state) ─
+  // Factory presets are bundled read-only (src/fx-presets/factory/<effectType>);
+  // user presets live in userData/fx-presets/<effectType>. Each method is a
+  // discrete action — never called during a drag. Explicitly wired here so the
+  // four-layer bridge's optional-chaining never silently swallows a typo.
+  fxPresets: {
+    list:   (effectType)                 => invoke('xleth:fxPreset:list', effectType),
+    load:   (effectType, source, slug)   => invoke('xleth:fxPreset:load', effectType, source, slug),
+    save:   (preset)                     => invoke('xleth:fxPreset:save', preset),
+    delete: (effectType, slug)           => invoke('xleth:fxPreset:delete', effectType, slug),
+  },
+
   // ── Stock plugin UI layouts ───────────────────────────────────────────────
   // User-override layouts live in userData/plugin-ui/<pluginId>.json.
   // Shipped defaults are bundled with the renderer and never written here.

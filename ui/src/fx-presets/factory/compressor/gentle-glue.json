@@ -1,0 +1,19 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "compressor",
+  "name": "Gentle Glue",
+  "author": "XLETH",
+  "created": "2026-08-10T00:00:00.000Z",
+  "state": {
+    "params": {
+      "threshold": -18,
+      "ratio": 2,
+      "attack": 30,
+      "release": 150,
+      "knee": 6,
+      "makeup": 2,
+      "mix": 100,
+      "detect_mode": 1
+    }
+  }
+}

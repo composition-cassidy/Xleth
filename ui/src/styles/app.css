@@ -26735,3 +26735,100 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+
+/* ── Effect preset bar (framework-level, every stock effect window) ──────────────
+   Flat, zero-radius, token-only. Lives in a panel header or runtime chrome; the
+   accent is earned — it only tints the confirm button when an overwrite is armed
+   and the danger token only shows on the mismatch/error line. */
+.fx-preset-bar {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+.fx-preset-bar__select {
+  height: 20px;
+  max-width: 150px;
+  border: 1px solid var(--xleth-flat-border);
+  border-radius: 0;
+  background: var(--xleth-flat-section);
+  color: var(--xleth-flat-text);
+  font-size: 10px;
+  padding: 0 4px;
+  cursor: pointer;
+}
+.fx-preset-bar__select:disabled { opacity: 0.4; cursor: default; }
+.fx-preset-bar__select:focus-visible { outline: 1px solid var(--xleth-flat-accent); outline-offset: -1px; }
+.fx-preset-bar__icon-btn {
+  width: 20px;
+  height: 20px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--xleth-flat-text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+.fx-preset-bar__icon-btn:hover:not(:disabled) {
+  color: var(--xleth-flat-text);
+  background: var(--xleth-flat-section);
+}
+.fx-preset-bar__icon-btn:disabled { opacity: 0.3; cursor: default; }
+.fx-preset-bar__icon-btn--warn { color: var(--xleth-flat-accent); }
+.fx-preset-bar__save-form {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  min-width: 0;
+}
+.fx-preset-bar__name-input {
+  height: 20px;
+  width: 130px;
+  min-width: 0;
+  border: 1px solid var(--xleth-flat-border-strong);
+  border-radius: 0;
+  background: var(--xleth-flat-well);
+  color: var(--xleth-flat-text);
+  font-size: 10px;
+  padding: 0 5px;
+}
+.fx-preset-bar__name-input::placeholder { color: var(--xleth-flat-text-subtle); }
+.fx-preset-bar__name-input:focus-visible { outline: 1px solid var(--xleth-flat-accent); outline-offset: -1px; }
+.fx-preset-bar__error {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  max-width: 220px;
+  padding-left: 4px;
+  color: var(--xleth-flat-danger);
+}
+.fx-preset-bar__error-text {
+  font-size: 9px;
+  line-height: 1.2;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Runtime host wrapper: preset strip above the generated plugin-ui layout. */
+.pluginui-runtime-root {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.pluginui-preset-bar {
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--xleth-flat-border);
+  background: var(--xleth-flat-chrome);
+}
+.apex-preset-strip {
+  display: flex;
+  align-items: center;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--xleth-flat-border);
+  background: var(--xleth-flat-chrome);
+  flex-shrink: 0;
+}

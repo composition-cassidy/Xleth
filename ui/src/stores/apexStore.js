@@ -266,6 +266,29 @@ const useApexStore = create((set, get) => ({
     audio()?.apexSetBandCurve(t.trackId, t.nodeId, band, curveToJSON(curve))
   },
 
+  // Mirror an applied preset's state blob into the store WITHOUT re-reading the
+  // engine (the preset adapter already wrote it). Used by the framework preset
+  // bar's onApplied for both load and its one-step undo. Merges so params/curves
+  // absent from a partial preset keep their current values; leaves the curve
+  // undo/redo stacks untouched (preset-load undo is the bar's own single step).
+  applyPresetState(state) {
+    if (!state || typeof state !== 'object') return
+    set(s => {
+      const params = (state.params && typeof state.params === 'object')
+        ? { ...s.params, ...state.params }
+        : s.params
+      let curves = s.curves
+      if (Array.isArray(state.curves)) {
+        curves = [...s.curves]
+        for (const c of state.curves) {
+          const idx = c?.band | 0
+          if (idx >= 0 && idx < 4) curves[idx] = normaliseCurve(c)
+        }
+      }
+      return { params, curves }
+    })
+  },
+
   undoCurve() {
     const { undoStack } = get()
     if (undoStack.length === 0) return

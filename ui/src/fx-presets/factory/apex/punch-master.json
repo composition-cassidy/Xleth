@@ -1,0 +1,19 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "apex",
+  "name": "Punch Master",
+  "author": "XLETH",
+  "created": "2026-08-10T00:00:00.000Z",
+  "state": {
+    "params": {
+      "bandmix": 100,
+      "lookahead": 0,
+      "ms_att": 3,
+      "ms_rel": 90,
+      "ms_satth": 12,
+      "ms_satcl": -2,
+      "ms_sep": 15,
+      "hi_pre": 1.5
+    }
+  }
+}

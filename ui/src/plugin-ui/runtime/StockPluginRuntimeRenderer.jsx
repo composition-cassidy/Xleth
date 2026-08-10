@@ -6,6 +6,7 @@ import { buildPlaceholderLayout } from './placeholderLayout.js'
 import { resolveComponent } from './registry.js'
 import { PluginUIContext } from './PluginUIContext.js'
 import { useMeterBus, useEffectMeterPolling } from './useEffectMeterPolling.js'
+import EffectPresetBar from '../../fx-presets/EffectPresetBar.jsx'
 
 // ── Unknown / invalid node placeholders ──────────────────────────────────────
 
@@ -170,6 +171,13 @@ export default function StockPluginRuntimeRenderer({
     window.xleth?.audio?.setEffectParameter(target.trackId, target.nodeId, paramId, value)
   }, [target])
 
+  // Sync local knob state from an applied preset (or its undo) — the adapter
+  // already wrote the engine, so this only mirrors the known blob into React.
+  const syncParamsFromPreset = useCallback((state) => {
+    if (!state || typeof state.params !== 'object') return
+    setParams(prev => ({ ...prev, ...state.params }))
+  }, [])
+
   // ── Context value (stable reference per render cycle) ──────────────────
 
   const ctx = useMemo(() => ({
@@ -211,7 +219,20 @@ export default function StockPluginRuntimeRenderer({
 
   return (
     <PluginUIContext.Provider value={ctx}>
-      {renderNode(activeLayout.root)}
+      <div className="pluginui-runtime-root">
+        {/* Framework-level preset bar — every plugin-ui-layout effect inherits it
+            here. Hidden while the Designer drives the renderer (override mode),
+            where the panel is a layout-editing surface, not a live effect. */}
+        {!overrideActive && (
+          <EffectPresetBar
+            effectType={pluginId}
+            target={target}
+            onApplied={syncParamsFromPreset}
+            className="pluginui-preset-bar"
+          />
+        )}
+        {renderNode(activeLayout.root)}
+      </div>
     </PluginUIContext.Provider>
   )
 }
