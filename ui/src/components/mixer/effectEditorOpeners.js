@@ -11,6 +11,7 @@
 // effectInstanceId. Neither path passes graphState's topology node.id.
 
 import useEqStore from '../../stores/eqStore.js'
+import useFilterStore from '../../stores/filterStore.js'
 import useCompressorStore from '../../stores/compressorStore.js'
 import useLimiterStore from '../../stores/limiterStore.js'
 import useDistortionStore from '../../stores/distortionStore.js'
@@ -32,6 +33,9 @@ import useApexStore from '../../stores/apexStore.js'
 export const EFFECT_EDITORS = {
   xletheq: (trackId, nodeId, storeKey) => {
     useEqStore.getState().open(trackId, nodeId, storeKey)
+  },
+  xlethfilter: (trackId, nodeId, storeKey) => {
+    useFilterStore.getState().open(trackId, nodeId, storeKey)
   },
   compressor: (trackId, nodeId, storeKey) => {
     useCompressorStore.getState().open(trackId, nodeId, storeKey)
@@ -80,10 +84,60 @@ export const EFFECT_EDITORS = {
   },
   // GLOSS is the one-knob companion skin over the SAME engine effect. It shares
   // the APEX store but tags the target with skin:'gloss' so the GlossPanel (not
-  // ApexPanel) renders — the two skins are one store, addressed by target.skin.
+  // ApexPanel) renders. Its own EFFECT_EDITOR_STORES entry is already covered by
+  // useApexStore below — the two skins are one store, so no second entry is needed.
   gloss: (trackId, nodeId, storeKey) => {
     useApexStore.getState().open(trackId, nodeId, storeKey, 'gloss')
   },
+}
+
+// Every stock-effect editor store shares the identity-agnostic
+// { target: { trackId, nodeId, storeKey } | null } shape with open()/close().
+// Listed here so a chain/graph mutation can close whichever editor panel is
+// pointing at an effect that no longer exists. Keep in lockstep with EFFECT_EDITORS.
+const EFFECT_EDITOR_STORES = [
+  useEqStore,
+  useFilterStore,
+  useCompressorStore,
+  useLimiterStore,
+  useDistortionStore,
+  useWaveshaperStore,
+  useDelayStore,
+  useUniFlangeStore,
+  useChorusStore,
+  useFlangerStore,
+  usePhaserStore,
+  useOverdoneStore,
+  useReverbStore,
+  useTransientProcStore,
+  useSmartBalanceStore,
+  useResonanceSuppressorStore,
+  useApexStore,
+]
+
+// Close any open stock-effect editor whose target addresses (storeKey, nodeId).
+// Called after an effect is removed from a chain / FX graph so its now-orphaned
+// editor panel does not linger on screen still addressing a dead engine node
+// (nodeId is unique per engine node, so unrelated open panels are left untouched).
+// Returns true if a panel was closed.
+export function closeEffectEditorForNode(storeKey, nodeId) {
+  let closed = false
+  for (const store of EFFECT_EDITOR_STORES) {
+    const target = store.getState().target
+    if (target && target.storeKey === storeKey && target.nodeId === nodeId) {
+      store.getState().close()
+      closed = true
+    }
+  }
+  return closed
+}
+
+// Close every open stock-effect editor. Used on project load, where all engine
+// nodeIds are reassigned and any open panel would otherwise address a stale node.
+export function closeAllEffectEditors() {
+  for (const store of EFFECT_EDITOR_STORES) {
+    if (store.getState().target) store.getState().close()
+  }
 }
 
 export const PLUGIN_NAMES = {

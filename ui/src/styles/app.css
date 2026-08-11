@@ -26963,3 +26963,301 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   color: var(--theme-danger);
   text-align: center;
 }
+
+/* ─── Xleth Filter panel ──────────────────────────────────────────────────────
+   Floating multi-slot filter editor. Same chrome conventions as the EQ /
+   Distortion editors; all colour flows through --theme-* tokens (no hex),
+   accent (#00b896 via --theme-accent) is spent only on live state. */
+.filter-panel {
+  position: fixed;
+  width: 620px;
+  background: var(--theme-bg-primary);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-md);
+  display: flex;
+  flex-direction: column;
+  z-index: 200;
+  box-shadow: var(--theme-fx-plugin-shadow-top);
+  user-select: none;
+}
+
+.filter-panel-header {
+  display: flex;
+  align-items: center;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--theme-border-subtle);
+  cursor: grab;
+}
+.filter-panel-header:active { cursor: grabbing; }
+
+.filter-panel-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--theme-text);
+  flex: 1;
+}
+
+.filter-panel-close {
+  width: 20px;
+  height: 20px;
+  border: none;
+  background: none;
+  color: var(--theme-text-subtle);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+}
+.filter-panel-close:hover {
+  color: var(--theme-text);
+  background: var(--theme-fx-surface-tint-subtle);
+}
+
+/* Slot strip */
+.filter-slot-strip {
+  display: flex;
+  gap: 4px;
+  padding: 8px 10px;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--theme-border-subtle);
+}
+
+.filter-slot-chip {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 4px 0 6px;
+  min-width: 66px;
+  background: var(--theme-bg-secondary);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: border-color 0.1s, box-shadow 0.1s;
+}
+.filter-slot-chip:hover { border-color: var(--theme-border-strong); }
+.filter-slot-chip.selected {
+  border-color: var(--theme-accent);
+  box-shadow: inset 0 0 0 1px var(--theme-accent);
+}
+.filter-slot-chip.disabled { opacity: 0.5; }
+.filter-slot-chip--ghost {
+  cursor: default;
+  pointer-events: none;
+  background: none;
+  border-style: dashed;
+  opacity: 0.25;
+}
+
+.filter-slot-enable {
+  width: 9px;
+  height: 9px;
+  padding: 0;
+  border-radius: 50%;
+  border: 1px solid var(--theme-border-strong);
+  background: transparent;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.filter-slot-enable.on {
+  background: var(--theme-accent);
+  border-color: var(--theme-accent);
+}
+
+.filter-slot-idx {
+  font-size: 9px;
+  font-weight: 700;
+  color: var(--theme-text-muted);
+}
+.filter-slot-type {
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: var(--theme-text-subtle);
+  flex: 1;
+}
+.filter-slot-chip.selected .filter-slot-type { color: var(--theme-text); }
+
+.filter-slot-remove {
+  width: 16px;
+  height: 16px;
+  border: none;
+  background: none;
+  color: var(--theme-text-subtle);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius-sm);
+  opacity: 0;
+}
+.filter-slot-chip:hover .filter-slot-remove { opacity: 1; }
+.filter-slot-remove:hover { color: var(--theme-danger); }
+
+.filter-slot-add {
+  width: 32px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--theme-border-strong);
+  background: none;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+}
+.filter-slot-add:hover {
+  color: var(--theme-accent);
+  border-color: var(--theme-accent);
+}
+
+/* Response curve */
+.filter-response-row {
+  height: 190px;
+  padding: 8px 10px;
+}
+.filter-response-canvas {
+  height: 100%;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+/* Selected-slot controls */
+.filter-slot-controls {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 12px 12px;
+}
+
+.filter-control-row {
+  display: flex;
+  align-items: flex-end;
+  gap: 18px;
+}
+.filter-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.filter-field-label {
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  color: var(--theme-text-muted);
+}
+
+.filter-type-select {
+  height: 26px;
+  min-width: 124px;
+  background: var(--theme-bg-secondary);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--theme-text);
+  font-size: 11px;
+  padding: 0 6px;
+  cursor: pointer;
+}
+.filter-type-select:hover { border-color: var(--theme-border-strong); }
+
+.filter-slope-seg { display: flex; gap: 2px; }
+.filter-slope-btn {
+  height: 26px;
+  min-width: 30px;
+  border: 1px solid var(--theme-border-subtle);
+  background: var(--theme-bg-secondary);
+  color: var(--theme-text-muted);
+  font-size: 10px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: background 0.1s, color 0.1s, border-color 0.1s;
+}
+.filter-slope-btn:hover { color: var(--theme-text); }
+.filter-slope-btn.active {
+  background: var(--theme-accent);
+  color: var(--theme-fg-inverse);
+  border-color: var(--theme-accent);
+}
+
+.filter-knob-row {
+  display: flex;
+  gap: 14px;
+  flex-wrap: wrap;
+  padding: 2px 0;
+}
+
+/* Modulation section */
+.filter-mod-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 8px 10px;
+  background: var(--theme-bg-inset);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm);
+}
+.filter-mod-section.is-active { border-color: var(--theme-accent); }
+
+.filter-mod-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.filter-mod-title {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--theme-text-muted);
+}
+.filter-mod-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--theme-border-strong);
+}
+.filter-mod-section.is-active .filter-mod-dot { background: var(--theme-accent); }
+.filter-mod-section.is-active .filter-mod-title { color: var(--theme-text); }
+.filter-mod-sub {
+  font-size: 9px;
+  color: var(--theme-text-subtle);
+}
+
+.filter-mod-depth {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.filter-depth-slider {
+  flex: 1;
+  height: 4px;
+  cursor: pointer;
+  accent-color: var(--theme-accent);
+}
+.filter-depth-readout {
+  min-width: 42px;
+  text-align: right;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--theme-text-muted);
+}
+.filter-mod-knob-row { gap: 12px; }
+
+.filter-mod-hint {
+  display: flex;
+  align-items: flex-start;
+  gap: 6px;
+  font-size: 9px;
+  line-height: 1.4;
+  color: var(--theme-text-subtle);
+}
+.filter-mod-hint svg { flex-shrink: 0; margin-top: 1px; }
+
+.filter-empty-state {
+  padding: 22px 12px;
+  text-align: center;
+  font-size: 11px;
+  color: var(--theme-text-subtle);
+}

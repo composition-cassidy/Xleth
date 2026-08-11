@@ -66,6 +66,7 @@ describe('EffectEditorHost ownership contract', () => {
   it('mounts every stock effect editor (including Parametric EQ) at the global host', async () => {
     const { default: EffectEditorHost } = await import('../EffectEditorHost.jsx')
     const { default: EqPanel } = await import('../EqPanel.jsx')
+    const { default: FilterPanel } = await import('../FilterPanel.jsx')
     const { default: CompressorPanel } = await import('../CompressorPanel.jsx')
     const { default: ResonanceSuppressorPanel } = await import('../ResonanceSuppressorPanel.jsx')
     const { default: ApexPanel } = await import('../ApexPanel.jsx')
@@ -74,11 +75,12 @@ describe('EffectEditorHost ownership contract', () => {
     expect(tree.props.className).toBe('effect-editor-host')
 
     const owned = collectOwnedComponents(tree.props.children)
-    // 17 stock editors, all real function components, hosted globally
+    // 18 stock editors, all real function components, hosted globally
     // (APEX + its one-knob GLOSS skin are two panels over one engine class).
-    expect(owned).toHaveLength(17)
+    expect(owned).toHaveLength(18)
     expect(owned.every((type) => typeof type === 'function')).toBe(true)
     expect(owned).toContain(EqPanel)
+    expect(owned).toContain(FilterPanel)
     expect(owned).toContain(CompressorPanel)
     expect(owned).toContain(ResonanceSuppressorPanel)
     expect(owned).toContain(ApexPanel)
@@ -91,6 +93,7 @@ describe('EffectEditorHost ownership contract', () => {
     const mixerSource = readFileSync(resolve(MIXER_DIR, 'MixerPanel.jsx'), 'utf8')
     const editorPanels = [
       'EqPanel',
+      'FilterPanel',
       'CompressorPanel',
       'LimiterPanel',
       'DistortionPanel',

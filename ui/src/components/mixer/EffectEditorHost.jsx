@@ -26,6 +26,7 @@
 
 import React from 'react'
 import EqPanel from './EqPanel.jsx'
+import FilterPanel from './FilterPanel.jsx'
 import CompressorPanel from './CompressorPanel.jsx'
 import LimiterPanel from './LimiterPanel.jsx'
 import DistortionPanel from './DistortionPanel.jsx'
@@ -47,6 +48,7 @@ export default function EffectEditorHost() {
   return (
     <div className="effect-editor-host" data-testid="effect-editor-host">
       <EqPanel />
+      <FilterPanel />
       <CompressorPanel />
       <LimiterPanel />
       <DistortionPanel />
