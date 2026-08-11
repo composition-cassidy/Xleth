@@ -1580,6 +1580,39 @@ target_compile_definitions(test_distortion PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_phanjer ─────────────────────────────────────────────────────────────
+# PhanjerEffect (parallel flanger + phaser with analytic collision leveling).
+# Verifies: the 23-id parameter contract, state round-trip, silence in all three
+# modes x five LFO shapes, a 192 kHz worst-case fuzz pass, the SMART-vs-WILD
+# leveling money test, and the pure resolveRateHz / computeCollisionMetric
+# helpers.
+add_executable(test_phanjer
+    test/test_phanjer.cpp
+)
+
+target_link_libraries(test_phanjer PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_phanjer PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_reverb ──────────────────────────────────────────────────────────────
 # Stage 0 regression lock for XlethReverbEffect (Generic FDN algorithm).
 # Verifies: parameter layout, finite output, wet non-zero, tail decay,
@@ -2310,6 +2343,7 @@ set(XLETH_ENGINE_TESTS
     test_chain_effect_identity
     test_pdc_stage1
     test_distortion
+    test_phanjer
     test_reverb
     test_uniflange
     test_limiter
