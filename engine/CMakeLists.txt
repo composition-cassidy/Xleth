@@ -1721,6 +1721,43 @@ target_compile_definitions(test_xlethfilter PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_xlethfilter_mod ─────────────────────────────────────────────────────
+# Modulation-layer contract tests for XlethFilterEffect: the per-slot in-effect
+# dynamics follower (detector -> ballistics -> exponential octave mapping ->
+# clamped sum), the 303 accent lag's accumulation across rapid transients, the
+# shallow Q route, and the proof that dyn_depth = 0 is bit-identical to having
+# no follower at all. Also verifies that EVERY s{i}_* parameter is reachable as
+# an FX-graph {"kind":"graph-parameter"} target and that driving s0_cutoff
+# through the real xleth::lfomod -> xleth::envmod mapping produces a bounded,
+# periodic sweep. Links EffectChainManager (Core) for the graph-parameter
+# surface and XlethEngineModel for the modulation evaluators.
+add_executable(test_xlethfilter_mod
+    test/test_xlethfilter_mod.cpp
+)
+
+target_link_libraries(test_xlethfilter_mod PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_xlethfilter_mod PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_limiter ─────────────────────────────────────────────────────────────
 # Gain-computer tests for XlethLimiterEffect (two-stage transient + release).
 # Verifies: parameter/meter surface unchanged, brickwall ceiling under hard
@@ -2278,6 +2315,7 @@ set(XLETH_ENGINE_TESTS
     test_limiter
     test_apex
     test_xlethfilter
+    test_xlethfilter_mod
     test_loudness
     test_export_normalization
     test_graph_effect_parameters

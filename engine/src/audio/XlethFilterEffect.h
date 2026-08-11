@@ -1,5 +1,6 @@
 #pragma once
 
+#include "audio/ApexDsp.h"
 #include "audio/XlethEffectBase.h"
 
 #include <algorithm>
@@ -103,6 +104,84 @@
 // swap-with-last on remove, slot count serialized as an XML attribute next to
 // the APVTS state — the XlethParametricEQ band pattern.
 //
+// ─── Modulation ─────────────────────────────────────────────────────────────
+//
+// TWO independent modulation sources reach every slot, and they compose:
+//
+//   1. The FX-graph envelope / LFO engine (xleth::envmod / xleth::lfomod).
+//      NOTHING is implemented here for it and nothing needs to be: every APVTS
+//      parameter of every stock effect is already a graph-parameter target
+//      (AudioGraph::getGraphEffectParameterDescriptors enumerates
+//      getParameters() with no per-plugin allowlist, and the UI's exposure
+//      registry — ui/src/fxgraph/graphParameterTarget.js +
+//      graphState.js normalizeExposedParameterPorts — is descriptor-driven, not
+//      plugin-keyed).  A graph edge writes the NORMALISED value, which for the
+//      log-skewed cutoff range means graph modulation already sweeps in
+//      approximately-octave space for free.  The engine writes those values off
+//      the audio thread into the APVTS; the per-parameter smoothers above turn
+//      them into per-sample ramps.  test_xlethfilter_mod.cpp proves the whole
+//      path end to end.
+//
+//   2. This file's own per-slot DYNAMICS FOLLOWER — the auto-wah / TB-303 path,
+//      which exists only because the graph engine structurally cannot see the
+//      audio stream.
+//
+// Dynamics follower, per slot (all of it inert unless s{i}_dyn_depth != 0):
+//
+//   Detector — the slot's OWN input (self-input; no sidechain in this version),
+//   stereo-linked PEAK.  Each channel first passes a fixed 30 Hz one-pole high
+//   pass so sub-bass cannot pin the envelope; the detector level is then
+//   max(|hpL|, |hpR|).  That feeds xleth_apex::EnvelopeFollower (ApexDsp.h) —
+//   branching attack/release with a 5 ms sustain-hold stage.  The follower runs
+//   PER SAMPLE (3 mul + a branch); its attack/release coefficients come from
+//   xleth_apex::onePoleCoeff at CONTROL-BLOCK rate and are cached against the
+//   raw ms values, so no std::exp ever runs per sample.
+//
+//   Mapping — the follower output e in [0,1] is turned into an octave-space
+//   offset and ADDED to the smoothed base cutoff's octaves (i.e. composed
+//   multiplicatively in Hz), then the SUM is clamped:
+//
+//       rangeOct = log2(maxHz / minHz)              (from s{i}_cut_min/_max)
+//       modOct   = depth * rangeOct * (e + 0.35 * accent)
+//       hz       = clamp(baseHz * 2^modOct,  [minHz, maxHz] ∩ [10, 0.45*fs])
+//
+//   The design doc writes this mapping in its absolute form,
+//   hz = minHz * (maxHz/minHz)^e.  That is exactly the special case of the
+//   formula above with baseHz == minHz and depth == +1 — the offset form is the
+//   one that can also honour a base cutoff parked anywhere else, which is what
+//   "compose multiplicatively with the base cutoff" requires.  cut_min/cut_max
+//   are therefore BOTH the sweep span and a hard clamp on the modulated result:
+//   a base cutoff of 10 kHz with cut_max = 3 kHz is pulled down to 3 kHz, never
+//   the other way round.  Only the SUM is clamped; the individual sources never
+//   are.  Negative depth inverts the sweep (loud input CLOSES the filter).
+//
+//   Q route — the same depth also drives Q by a fixed shallow ratio (0.25 of
+//   the full normalised/log Q span), the 303's env-mod-onto-resonance
+//   behaviour.  It is applied in log-Q space and clamped to the [0.5, 30] guard
+//   rails, and it deliberately does NOT feed the self-oscillation decision:
+//   self-osc stays a function of the user's own Q, so a loud transient can
+//   never trip the filter into oscillating.
+//
+//   303 accent lag — a leaky integrator (100 ms one-pole, inside the 47-150 ms
+//   RC window the 303's accent circuit sits in) that charges on each detected
+//   transient (follower output crossing 0.15 upward, re-armed below 0.06) and
+//   leaks continuously.  Crucially it does NOT reset between transients, so
+//   successive accents push the sweep progressively higher — the rising
+//   "distressed cry" of an acid run — and then decay away.  Its output is added
+//   into the octave-space mod sum BEFORE the clamp, scaled by the same depth,
+//   so depth = 0 leaves it inert too.
+//
+//   Update rate — the follower is per sample; ballistics coefficients, the
+//   octave/Q composition and the resulting SVF coefficients are per 32-sample
+//   control block, linearly interpolated per sample exactly like the base
+//   cutoff.  The composition ramps from the PREVIOUS block's mod value to this
+//   block's, so the modulation is continuous across block boundaries at the
+//   cost of one control block (0.7 ms at 44.1 kHz) of detector latency.
+//
+//   Everything is preallocated with the slot array in prepareEffect: no
+//   allocation, no locks, no logging and no per-sample transcendental on the
+//   audio path.
+//
 // pluginId: "xlethfilter"
 
 namespace xleth_filter
@@ -157,6 +236,16 @@ public:
     static constexpr double kDcBlockHz     = 2.0;
     static constexpr double kActivationMs  = 10.0;  // slot fade-in / fade-out
 
+    // ── Dynamics follower (see the modulation notes at the top of the file) ──
+    static constexpr double kDetectorHpHz    = 30.0;  // keeps sub-bass off the detector
+    static constexpr double kDetectorHoldMs  = 5.0;   // follower sustain-hold stage
+    static constexpr double kAccentLagMs     = 100.0; // 303 accent RC (47-150 ms band)
+    static constexpr float  kAccentOnLevel   = 0.15f; // transient trigger threshold
+    static constexpr float  kAccentOffLevel  = 0.06f; // re-arm threshold (hysteresis)
+    static constexpr float  kAccentCharge    = 0.5f;  // per-transient charge fraction
+    static constexpr double kAccentOctScale  = 0.35;  // full charge = 0.35 of the range
+    static constexpr double kQRouteRatio     = 0.25;  // depth -> Q, normalised span
+
     enum class SlotType : int {
         LP12 = 0, HP12 = 1, BP = 2, Notch = 3, Allpass = 4,
         Peak = 5, LowShelf = 6, HighShelf = 7, Morph = 8
@@ -182,6 +271,18 @@ public:
             registerSmoothedParam(paramId(i, "drive").toStdString(),
                                   SmoothType::Linear, 20.0f);
             registerSmoothedParam(paramId(i, "mix").toStdString(),
+                                  SmoothType::Linear, 20.0f);
+
+            // Dynamics range + depth are smoothed for the same reason the base
+            // cutoff is: dragging them while audio runs must glide, not step.
+            // Depth is BIPOLAR, so it must be Linear — the Multiplicative
+            // smoother clamps its target to >= 1e-6 and cannot represent a
+            // negative (ducking) depth at all.
+            registerSmoothedParam(paramId(i, "cut_min").toStdString(),
+                                  SmoothType::Multiplicative, 20.0f);
+            registerSmoothedParam(paramId(i, "cut_max").toStdString(),
+                                  SmoothType::Multiplicative, 20.0f);
+            registerSmoothedParam(paramId(i, "dyn_depth").toStdString(),
                                   SmoothType::Linear, 20.0f);
         }
     }
@@ -269,6 +370,38 @@ public:
 
     double getSampleRate() const { return sampleRate_.load(std::memory_order_relaxed); }
 
+    // ── Dynamics telemetry (audio thread writes once per control block, any
+    //    other thread reads) ───────────────────────────────────────────────────
+    // The EFFECTIVE cutoff / Q after the dynamics follower has been composed in
+    // and the sum clamped — i.e. what the SVF is actually running at, not what
+    // the parameter says.  Read-only; nothing in the DSP path consumes them.
+
+    float getSlotEffectiveCutoff(int slotIndex) const
+    {
+        if (slotIndex < 0 || slotIndex >= kMaxSlots) return 0.0f;
+        return slots_[slotIndex].effCutoffHz.load(std::memory_order_relaxed);
+    }
+
+    float getSlotEffectiveQ(int slotIndex) const
+    {
+        if (slotIndex < 0 || slotIndex >= kMaxSlots) return 0.0f;
+        return slots_[slotIndex].effQ.load(std::memory_order_relaxed);
+    }
+
+    // Follower output in [0,1] (0 whenever the follower is inert).
+    float getSlotDynamicEnvelope(int slotIndex) const
+    {
+        if (slotIndex < 0 || slotIndex >= kMaxSlots) return 0.0f;
+        return slots_[slotIndex].dynEnv.load(std::memory_order_relaxed);
+    }
+
+    // 303 accent-lag charge in [0,1] (0 whenever the follower is inert).
+    float getSlotAccentCharge(int slotIndex) const
+    {
+        if (slotIndex < 0 || slotIndex >= kMaxSlots) return 0.0f;
+        return slots_[slotIndex].dynAccent.load(std::memory_order_relaxed);
+    }
+
     // ── Slot info query (main thread, for N-API JSON) ────────────────────────
     std::string getSlotsAsJSON() const
     {
@@ -292,6 +425,11 @@ public:
             s["dyn_depth"]   = readParam(i, "dyn_depth");
             s["dyn_attack"]  = readParam(i, "dyn_attack");
             s["dyn_release"] = readParam(i, "dyn_release");
+            // Read-only dynamics telemetry (see getSlotEffectiveCutoff).
+            s["eff_cutoff"]  = slots_[i].effCutoffHz.load(std::memory_order_relaxed);
+            s["eff_q"]       = slots_[i].effQ.load(std::memory_order_relaxed);
+            s["dyn_env"]     = slots_[i].dynEnv.load(std::memory_order_relaxed);
+            s["dyn_accent"]  = slots_[i].dynAccent.load(std::memory_order_relaxed);
             arr.push_back(std::move(s));
         }
         return arr.dump();
@@ -428,9 +566,13 @@ public:
     {
         sampleRate_.store(sampleRate, std::memory_order_relaxed);
 
+        const double pi = juce::MathConstants<double>::pi;
+
         // 2 Hz first-order DC blocker pole.
-        const float dcR = static_cast<float>(
-            1.0 - (2.0 * juce::MathConstants<double>::pi * kDcBlockHz / sampleRate));
+        const float dcR = static_cast<float>(1.0 - (2.0 * pi * kDcBlockHz / sampleRate));
+        // 30 Hz first-order high pass on the DETECTOR path (same topology).
+        const float hpR = static_cast<float>(
+            std::clamp(1.0 - (2.0 * pi * kDetectorHpHz / sampleRate), 0.0, 0.999999));
 
         for (int i = 0; i < kMaxSlots; ++i)
         {
@@ -439,6 +581,19 @@ public:
             sl.enabledPtr = apvts_.getRawParameterValue(paramId(i, "enabled"));
             sl.typePtr    = apvts_.getRawParameterValue(paramId(i, "type"));
             sl.slopePtr   = apvts_.getRawParameterValue(paramId(i, "slope"));
+            sl.attackPtr  = apvts_.getRawParameterValue(paramId(i, "dyn_attack"));
+            sl.releasePtr = apvts_.getRawParameterValue(paramId(i, "dyn_release"));
+
+            // The dynamics follower and its accent lag are plain value members
+            // of the slot array — allocated here with everything else, never on
+            // the audio thread.
+            sl.dyn.hpR          = hpR;
+            sl.dyn.holdSamples  = std::max(1, static_cast<int>(
+                                      kDetectorHoldMs * 0.001 * sampleRate));
+            sl.dyn.leakCoef     = xleth_apex::onePoleCoeff(
+                                      static_cast<float>(kAccentLagMs), sampleRate);
+            // Force a coefficient recompute on the first block.
+            sl.dyn.lastAtkMs = sl.dyn.lastRelMs = -1.0f;
 
             // Handles resolved once here — never a string lookup on the audio path.
             sl.hCutoff = resolveSmoothed(paramId(i, "cutoff").toStdString());
@@ -447,6 +602,9 @@ public:
             sl.hMorph  = resolveSmoothed(paramId(i, "morph").toStdString());
             sl.hDrive  = resolveSmoothed(paramId(i, "drive").toStdString());
             sl.hMix    = resolveSmoothed(paramId(i, "mix").toStdString());
+            sl.hCutMin = resolveSmoothed(paramId(i, "cut_min").toStdString());
+            sl.hCutMax = resolveSmoothed(paramId(i, "cut_max").toStdString());
+            sl.hDepth  = resolveSmoothed(paramId(i, "dyn_depth").toStdString());
 
             sl.clearState();
         }
@@ -517,6 +675,13 @@ public:
                     auto& sl = slots_[s];
                     if (!sl.enabled) continue;
 
+                    // Detector sees this slot's INPUT, before the slot filters
+                    // it — self-input only (a sidechain source needs
+                    // withSidechainInput on the base ctor and is a deliberate
+                    // later increment).
+                    if (sl.dynActive)
+                        updateDetector(sl, l, r, chR != nullptr);
+
                     const float wet = sl.mix * sl.gate;
                     const float dry = 1.0f - wet;
 
@@ -581,6 +746,34 @@ private:
         const int iIdx = std::clamp(stageIndex, 0, kMaxStages - 1);
         const double q = kTable[sIdx][iIdx];
         return (q > 0.0) ? q : kNeutralQ;
+    }
+
+    // The dynamics sweep span: s{i}_cut_min / s{i}_cut_max clamped to the hard
+    // rails, with min < max forced.  A collapsed or inverted user range would
+    // otherwise make log2(hi/lo) zero or negative and quietly invert the sweep.
+    static void resolveDynRange(double mn, double mx, double sr,
+                                double& lo, double& hi)
+    {
+        const double nyq = sr * kNyquistFactor;
+        lo = clampCutoff(std::min(mn, mx), sr);
+        hi = clampCutoff(std::max(mn, mx), sr);
+        if (!(hi > lo))
+        {
+            hi = std::min(lo * 1.001, nyq);
+            lo = std::min(lo, hi / 1.001);
+        }
+    }
+
+    // The 303's shallow env-mod-onto-resonance route.  `dNorm` is an offset in
+    // NORMALISED (log) Q space, so the same depth means the same perceptual
+    // amount of resonance wherever the user has parked Q; the result is clamped
+    // to the same [kMinQ, kMaxQ] guard rails everything else uses.
+    static double applyQOffset(double q, double dNorm)
+    {
+        if (dNorm == 0.0) return q;
+        const double span = std::log(kMaxQ / kMinQ);
+        const double t    = std::log(std::clamp(q, kMinQ, kMaxQ) / kMinQ) / span;
+        return kMinQ * std::exp(std::clamp(t + dNorm, 0.0, 1.0) * span);
     }
 
     // Per-section Q: the Butterworth staging scaled by the user's Q relative to
@@ -738,13 +931,76 @@ private:
         }
     };
 
+    // ── Per-slot dynamics follower (the auto-wah / 303 path) ────────────────
+    // Everything here is a plain value member of SlotState, so it is allocated
+    // once with the slot array.  Nothing in it allocates, locks or logs.
+    struct DynState
+    {
+        xleth_apex::EnvelopeFollower follower;  // ApexDsp.h:518 — reused, not rebuilt
+
+        // Ballistics, recomputed at control-block rate ONLY (onePoleCoeff calls
+        // std::exp; XlethCompressorEffect.h:339-342 doing it per sample is the
+        // anti-example this cache exists to avoid).
+        float aCoef       = 0.0f;
+        float rCoef       = 0.0f;
+        float lastAtkMs   = -1.0f;
+        float lastRelMs   = -1.0f;
+        int   holdSamples = 1;
+
+        // 30 Hz detector high pass, per channel (y = x - x1 + R*y1).
+        float hpR = 0.9957f;
+        float hpX1[2]{}, hpY1[2]{};
+
+        // Follower output for the next control block's composition.
+        float env = 0.0f;
+
+        // 303 accent lag: charges on a rising transient, leaks continuously,
+        // and is NOT reset between transients.
+        float accent   = 0.0f;
+        float leakCoef = 0.0f;
+        bool  armed    = true;
+
+        // Previous block's composed values, so the ramp is continuous across
+        // block boundaries instead of stepping at every control block.
+        double modOctPrev  = 0.0;
+        double qOffsetPrev = 0.0;
+
+        void clear() noexcept
+        {
+            follower.reset();
+            hpX1[0] = hpX1[1] = 0.0f;
+            hpY1[0] = hpY1[1] = 0.0f;
+            env         = 0.0f;
+            accent      = 0.0f;
+            armed       = true;
+            modOctPrev  = 0.0;
+            qOffsetPrev = 0.0;
+        }
+    };
+
     struct SlotState
     {
         std::atomic<float>* enabledPtr = nullptr;
         std::atomic<float>* typePtr    = nullptr;
         std::atomic<float>* slopePtr   = nullptr;
+        std::atomic<float>* attackPtr  = nullptr;
+        std::atomic<float>* releasePtr = nullptr;
 
         SmoothedHandle hCutoff, hQ, hGain, hMorph, hDrive, hMix;
+        SmoothedHandle hCutMin, hCutMax, hDepth;
+
+        DynState dyn;
+        // False whenever s{i}_dyn_depth is exactly 0 at BOTH ends of the block:
+        // the whole follower path — detector, ballistics, accent lag, octave
+        // composition and Q route — is then skipped, so the slot is provably
+        // bit-identical to the same slot with no follower at all.
+        bool dynActive = false;
+
+        // Telemetry (audio thread stores, any thread loads).
+        std::atomic<float> effCutoffHz{0.0f};
+        std::atomic<float> effQ{0.0f};
+        std::atomic<float> dynEnv{0.0f};
+        std::atomic<float> dynAccent{0.0f};
 
         StageRT stages[kMaxStages];
 
@@ -780,12 +1036,16 @@ private:
             dcY1[0] = dcY1[1] = 0.0f;
             gate = 0.0f;
             dGate = 0.0f;
+            dyn.clear();
+            dynEnv.store(0.0f, std::memory_order_relaxed);
+            dynAccent.store(0.0f, std::memory_order_relaxed);
         }
 
         void skipSmoothers(int n)
         {
             hCutoff.skip(n); hQ.skip(n); hGain.skip(n);
             hMorph.skip(n);  hDrive.skip(n); hMix.skip(n);
+            hCutMin.skip(n); hCutMax.skip(n); hDepth.skip(n);
         }
 
         void advanceCoeffs()
@@ -853,6 +1113,9 @@ private:
         const double mp0  = sl.hMorph.current(),  mp1  = sl.hMorph.peekAfter(n);
         const double dr0  = sl.hDrive.current(),  dr1  = sl.hDrive.peekAfter(n);
         const double mx0  = sl.hMix.current(),    mx1  = sl.hMix.peekAfter(n);
+        const double dp0  = sl.hDepth.current(),  dp1  = sl.hDepth.peekAfter(n);
+        const double cmn  = sl.hCutMin.peekAfter(n);
+        const double cmx  = sl.hCutMax.peekAfter(n);
         sl.skipSmoothers(n);
 
         const int newStageCount = usesOnePole(type, slope) ? 1 : stageCountFor(type, slope);
@@ -867,13 +1130,87 @@ private:
 
         sl.onePole  = usesOnePole(type, slope);
         sl.highPass = (type == SlotType::HP12);
+        // Self-osc is decided from the USER's Q only.  Routing the dynamics
+        // follower into this decision would let a loud transient trip the
+        // filter into oscillating, which is not what a resonance sweep means.
         sl.selfOsc  = (std::max(q0, q1) >= kSelfOscQ);
+
+        // ── Dynamics follower composition (block rate) ───────────────────────
+        // The endpoints the coefficient math below actually uses.  When the
+        // follower is inert these stay EXACTLY the smoothed parameter values,
+        // so a depth-0 slot is bit-identical to one with no follower compiled
+        // in at all.
+        double cutA = cut0, cutB = cut1;
+        double qA   = q0,   qB   = q1;
+
+        sl.dynActive = (dp0 != 0.0 || dp1 != 0.0);
+
+        if (sl.dynActive)
+        {
+            auto& D = sl.dyn;
+
+            // Ballistics: onePoleCoeff calls std::exp, so it runs only when the
+            // ms value actually moved — never per sample.
+            const float atkMs = sl.attackPtr
+                ? sl.attackPtr->load(std::memory_order_relaxed) : 10.0f;
+            const float relMs = sl.releasePtr
+                ? sl.releasePtr->load(std::memory_order_relaxed) : 100.0f;
+            if (atkMs != D.lastAtkMs)
+            {
+                D.lastAtkMs = atkMs;
+                D.aCoef     = xleth_apex::onePoleCoeff(atkMs, sr);
+            }
+            if (relMs != D.lastRelMs)
+            {
+                D.lastRelMs = relMs;
+                D.rCoef     = xleth_apex::onePoleCoeff(relMs, sr);
+            }
+
+            double lo = kMinCutoffHz, hi = sr * kNyquistFactor;
+            resolveDynRange(cmn, cmx, sr, lo, hi);
+            const double rangeOct = std::log2(hi / lo);
+
+            const double depth  = std::clamp(dp1, -1.0, 1.0);
+            const double e      = std::clamp(static_cast<double>(D.env),    0.0, 1.0);
+            const double accent = std::clamp(static_cast<double>(D.accent), 0.0, 1.0);
+
+            // Octave-space offset, accent lag folded in BEFORE any clamping.
+            const double modOct = depth * rangeOct * (e + kAccentOctScale * accent);
+            const double qOff   = depth * e * kQRouteRatio;
+
+            // Ramp from the PREVIOUS block's composed value to this one so the
+            // modulation is continuous across control blocks.
+            cutA = std::clamp(cutA * std::exp2(D.modOctPrev), lo, hi);
+            cutB = std::clamp(cutB * std::exp2(modOct),       lo, hi);
+            qA   = applyQOffset(qA, D.qOffsetPrev);
+            qB   = applyQOffset(qB, qOff);
+
+            D.modOctPrev  = modOct;
+            D.qOffsetPrev = qOff;
+
+            sl.dynEnv.store(static_cast<float>(e), std::memory_order_relaxed);
+            sl.dynAccent.store(static_cast<float>(accent), std::memory_order_relaxed);
+        }
+        else
+        {
+            // Inert: the follower keeps no memory across a depth-0 stretch, so
+            // dialling depth back in always starts from silence rather than
+            // from a stale envelope.
+            sl.dyn.clear();
+            sl.dynEnv.store(0.0f, std::memory_order_relaxed);
+            sl.dynAccent.store(0.0f, std::memory_order_relaxed);
+        }
+
+        sl.effCutoffHz.store(static_cast<float>(clampCutoff(cutB, sr)),
+                             std::memory_order_relaxed);
+        sl.effQ.store(static_cast<float>(std::clamp(qB, kMinQ, kMaxQ)),
+                      std::memory_order_relaxed);
 
         if (sl.onePole)
         {
             const double pi = juce::MathConstants<double>::pi;
-            const double ga = std::tan(pi * clampCutoff(cut0, sr) / sr);
-            const double gb = std::tan(pi * clampCutoff(cut1, sr) / sr);
+            const double ga = std::tan(pi * clampCutoff(cutA, sr) / sr);
+            const double gb = std::tan(pi * clampCutoff(cutB, sr) / sr);
             const float  G0 = static_cast<float>(ga / (1.0 + ga));
             const float  G1 = static_cast<float>(gb / (1.0 + gb));
             sl.g1  = G0;
@@ -892,9 +1229,9 @@ private:
             for (int st = 0; st < sl.stageCount; ++st)
             {
                 StageDesign d0, d1;
-                designStage(d0, type, cut0, stageQ(q0, sl.stageCount, st),
+                designStage(d0, type, cutA, stageQ(qA, sl.stageCount, st),
                             gn0, mp0, sr, sl.selfOsc);
-                designStage(d1, type, cut1, stageQ(q1, sl.stageCount, st),
+                designStage(d1, type, cutB, stageQ(qB, sl.stageCount, st),
                             gn1, mp1, sr, sl.selfOsc);
 
                 auto& S = sl.stages[st];
@@ -945,6 +1282,51 @@ private:
         const float m1 = std::clamp(static_cast<float>(mx1), 0.0f, 1.0f);
         sl.mix  = m0;
         sl.dMix = (m1 - m0) * invN;
+    }
+
+    // One sample of the dynamics detector, fed the slot's OWN input (whatever
+    // the slots before it produced).  Everything here is mul/add/branch — no
+    // transcendental, no allocation, no branchy data structure.
+    static void updateDetector(SlotState& sl, float l, float r, bool stereo)
+    {
+        auto& D = sl.dyn;
+
+        // 30 Hz one-pole high pass per channel, so a kick's fundamental cannot
+        // sit on the envelope and pin the sweep wide open.
+        const float hl = l - D.hpX1[0] + D.hpR * D.hpY1[0];
+        D.hpX1[0] = l;
+        D.hpY1[0] = xleth_filter::flushDenormal(hl);
+
+        float det = std::abs(hl);
+        if (stereo)
+        {
+            const float hr = r - D.hpX1[1] + D.hpR * D.hpY1[1];
+            D.hpX1[1] = r;
+            D.hpY1[1] = xleth_filter::flushDenormal(hr);
+            det = std::max(det, std::abs(hr));   // stereo-LINKED peak
+        }
+
+        const float env = D.follower.process(det, D.aCoef, D.rCoef, D.holdSamples);
+        D.env = env;
+
+        // 303 accent lag.  It leaks every sample and charges a fixed fraction of
+        // its remaining headroom on each rising transient, so a run of accents
+        // stacks (each one starts from what the last one left behind) instead of
+        // retriggering from zero — that accumulation IS the rising acid cry.
+        D.accent -= D.leakCoef * D.accent;
+        if (D.armed)
+        {
+            if (env > kAccentOnLevel)
+            {
+                D.accent += kAccentCharge * (1.0f - D.accent);
+                D.armed   = false;
+            }
+        }
+        else if (env < kAccentOffLevel)
+        {
+            D.armed = true;
+        }
+        D.accent = xleth_filter::flushDenormal(D.accent);
     }
 
     // One sample through one slot's wet path (drive -> cascade -> DC block).
