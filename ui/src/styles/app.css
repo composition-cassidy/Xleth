@@ -15089,6 +15089,485 @@ html.fx-drag-active * {
   color: var(--xleth-flat-text-muted);
 }
 
+/* ── Phanjer Panel ─────────────────────────────────────────────────────────── */
+/* Parallel flanger + phaser hybrid. Three columns (FLANGER | centre | PHASER)
+   under a response strip, styled with the flat XLETH conventions — zero radius,
+   token colours, the hard depth shadow — not the original VST's navy/rounded
+   look. The two side columns carry their own accent token. */
+
+.phanjer-panel {
+  position: fixed;
+  z-index: 200;
+  width: 580px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--xleth-flat-border);
+  border-radius: 0;
+  background: var(--xleth-flat-panel);
+  box-shadow: var(--theme-depth-hard-shadow);
+  color: var(--xleth-flat-text);
+  font-family: var(--xleth-global-font-family);
+  user-select: none;
+}
+
+/* ── Header ──────────────────────────────────────────────────────────────── */
+
+.phanjer-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  height: 34px;
+  padding: 0 6px 0 12px;
+  background: var(--xleth-flat-chrome);
+  border-bottom: 1px solid var(--xleth-flat-border);
+  cursor: grab;
+}
+
+.phanjer-panel-header::before {
+  content: '';
+  width: 3px;
+  height: 14px;
+  background: var(--xleth-flat-accent);
+  flex-shrink: 0;
+}
+
+.phanjer-panel-header:active {
+  cursor: grabbing;
+}
+
+.phanjer-panel-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--xleth-flat-text);
+}
+
+.phanjer-header-spacer {
+  flex: 1;
+}
+
+.phanjer-mode-seg {
+  display: flex;
+  gap: 1px;
+  background: var(--xleth-flat-border);
+  border: 1px solid var(--xleth-flat-border-strong);
+}
+
+.phanjer-mode-btn {
+  border: 0;
+  border-radius: 0;
+  background: var(--xleth-flat-well);
+  color: var(--xleth-flat-text-muted);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.12em;
+  padding: 4px 9px;
+  cursor: pointer;
+}
+
+.phanjer-mode-btn:hover {
+  color: var(--xleth-flat-text);
+}
+
+.phanjer-mode-btn--active {
+  background: var(--xleth-flat-accent);
+  color: var(--xleth-flat-panel);
+}
+
+.phanjer-help-btn,
+.phanjer-panel-close {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--xleth-flat-text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.phanjer-help-btn:hover,
+.phanjer-panel-close:hover {
+  color: var(--xleth-flat-text);
+  background: var(--xleth-flat-section);
+}
+
+.phanjer-help-btn--active {
+  color: var(--xleth-flat-accent);
+}
+
+/* ── Response strip ──────────────────────────────────────────────────────── */
+
+.phanjer-response {
+  height: 90px;
+  overflow: hidden;
+  background: var(--xleth-flat-well);
+  border-bottom: 1px solid var(--xleth-flat-border);
+  flex-shrink: 0;
+}
+
+.phanjer-response-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+/* ── Body: three columns, 1px hairline dividers ──────────────────────────── */
+
+.phanjer-body {
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+  background: var(--xleth-flat-border);
+}
+
+.phanjer-col {
+  background: var(--xleth-flat-panel);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 12px 14px 14px;
+}
+
+.phanjer-col--flanger {
+  flex: 1;
+  --phanjer-accent: var(--theme-mod-phanjer-flanger);
+}
+
+.phanjer-col--phaser {
+  flex: 1;
+  --phanjer-accent: var(--theme-mod-phanjer-phaser);
+}
+
+.phanjer-col--center {
+  flex: 0 0 154px;
+  align-items: center;
+  gap: 14px;
+  --phanjer-accent: var(--xleth-flat-accent);
+}
+
+.phanjer-col-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: var(--xleth-flat-text-secondary);
+}
+
+.phanjer-col-title::before {
+  content: '';
+  width: 3px;
+  height: 11px;
+  background: var(--phanjer-accent);
+  flex-shrink: 0;
+}
+
+/* ── Knobs ───────────────────────────────────────────────────────────────── */
+
+.phanjer-knob-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 14px;
+  justify-items: center;
+}
+
+.phanjer-knob-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  flex-shrink: 0;
+}
+
+.phanjer-knob-cell--disabled {
+  opacity: 0.38;
+  pointer-events: none;
+}
+
+.phanjer-knob-value {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--xleth-flat-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.phanjer-center-knob {
+  display: flex;
+  justify-content: center;
+}
+
+/* ── LFO shape selector ──────────────────────────────────────────────────── */
+
+.phanjer-mini-title {
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--xleth-flat-text-muted);
+  text-align: center;
+  margin-bottom: 5px;
+}
+
+.phanjer-shape-block {
+  width: 100%;
+}
+
+.phanjer-shape-row {
+  display: flex;
+  gap: 1px;
+  background: var(--xleth-flat-border);
+  border: 1px solid var(--xleth-flat-border-strong);
+}
+
+.phanjer-shape-btn {
+  flex: 1;
+  border: 0;
+  border-radius: 0;
+  background: var(--xleth-flat-well);
+  color: var(--xleth-flat-text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 5px 0;
+}
+
+.phanjer-shape-btn:hover {
+  color: var(--xleth-flat-text);
+}
+
+.phanjer-shape-btn--active {
+  background: var(--xleth-flat-accent);
+  color: var(--xleth-flat-panel);
+}
+
+/* ── Horizontal sliders (DELAY / FREQ bounds) ────────────────────────────── */
+
+.phanjer-hslider {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.phanjer-hslider-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+}
+
+.phanjer-hslider-label {
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--xleth-flat-text-muted);
+}
+
+.phanjer-hslider-value {
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--xleth-flat-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.phanjer-hslider-track {
+  position: relative;
+  height: 8px;
+  background: var(--xleth-flat-well);
+  border: 1px solid var(--xleth-flat-border-strong);
+  border-radius: 0;
+  cursor: ew-resize;
+  touch-action: none;
+}
+
+.phanjer-hslider-track:focus-visible {
+  outline: 1px solid var(--xleth-flat-accent);
+  outline-offset: 1px;
+}
+
+.phanjer-hslider-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  background: var(--phanjer-accent, var(--xleth-flat-accent));
+  pointer-events: none;
+}
+
+.phanjer-hslider-thumb {
+  position: absolute;
+  top: -2px;
+  bottom: -2px;
+  width: 3px;
+  margin-left: -1px;
+  background: var(--xleth-flat-text);
+  pointer-events: none;
+}
+
+/* ── Stage stepper ───────────────────────────────────────────────────────── */
+
+.phanjer-stages {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.phanjer-stepper {
+  display: flex;
+  align-items: center;
+  gap: 1px;
+  background: var(--xleth-flat-border);
+  border: 1px solid var(--xleth-flat-border-strong);
+}
+
+.phanjer-step-btn {
+  width: 24px;
+  height: 22px;
+  border: 0;
+  border-radius: 0;
+  background: var(--xleth-flat-well);
+  color: var(--xleth-flat-text-secondary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.phanjer-step-btn:hover:not(:disabled) {
+  color: var(--xleth-flat-text);
+  background: var(--xleth-flat-section);
+}
+
+.phanjer-step-btn:disabled {
+  opacity: 0.32;
+  cursor: default;
+}
+
+.phanjer-step-value {
+  width: 26px;
+  text-align: center;
+  font-size: 11px;
+  font-weight: 700;
+  color: var(--xleth-flat-text);
+  background: var(--xleth-flat-well);
+  font-variant-numeric: tabular-nums;
+  align-self: stretch;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* ── Sync row ────────────────────────────────────────────────────────────── */
+
+.phanjer-sync-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.phanjer-sync-row--disabled {
+  opacity: 0.38;
+  pointer-events: none;
+}
+
+.phanjer-note-toggle {
+  width: 28px;
+  height: 24px;
+  flex-shrink: 0;
+  border: 1px solid var(--xleth-flat-border-strong);
+  border-radius: 0;
+  background: var(--xleth-flat-well);
+  color: var(--xleth-flat-text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.phanjer-note-toggle:hover {
+  color: var(--xleth-flat-text);
+}
+
+.phanjer-note-toggle--on {
+  background: var(--phanjer-accent, var(--xleth-flat-accent));
+  border-color: var(--phanjer-accent, var(--xleth-flat-accent));
+  color: var(--xleth-flat-panel);
+}
+
+.xleth-select-trigger.phanjer-mini-select {
+  flex: 1;
+  min-width: 0;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--xleth-flat-border-strong);
+  border-radius: 0;
+  background: var(--xleth-flat-well);
+  color: var(--xleth-flat-text-secondary);
+  font-size: 9.5px;
+  font-weight: 600;
+}
+
+.xleth-select-trigger.phanjer-mini-select:hover {
+  color: var(--xleth-flat-text);
+  border-color: var(--xleth-flat-accent);
+}
+
+/* ── HOW IT WORKS overlay ────────────────────────────────────────────────── */
+
+.phanjer-help {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  background: var(--xleth-flat-panel);
+  display: flex;
+  flex-direction: column;
+}
+
+.phanjer-help-head {
+  display: flex;
+  align-items: center;
+  height: 34px;
+  padding: 0 6px 0 12px;
+  background: var(--xleth-flat-chrome);
+  border-bottom: 1px solid var(--xleth-flat-border);
+}
+
+.phanjer-help-title {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--xleth-flat-text);
+}
+
+.phanjer-help-body {
+  flex: 1;
+  overflow-y: auto;
+  padding: 12px 16px 16px;
+}
+
+.phanjer-help-entry {
+  margin-bottom: 12px;
+}
+
+.phanjer-help-term {
+  font-size: 9.5px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--xleth-flat-accent);
+  margin-bottom: 3px;
+}
+
+.phanjer-help-text {
+  margin: 0;
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--xleth-flat-text-secondary);
+}
+
 /* â”€â”€ OTT (Overdone) Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .ott-panel {

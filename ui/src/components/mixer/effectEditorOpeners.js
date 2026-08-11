@@ -21,6 +21,7 @@ import useUniFlangeStore from '../../stores/uniFlangeStore.js'
 import useChorusStore from '../../stores/chorusStore.js'
 import useFlangerStore from '../../stores/flangerStore.js'
 import usePhaserStore from '../../stores/phaserStore.js'
+import usePhanjerStore from '../../stores/phanjerStore.js'
 import useOverdoneStore from '../../stores/overdoneStore.js'
 import useReverbStore from '../../stores/reverbStore.js'
 import useTransientProcStore from '../../stores/transientProcStore.js'
@@ -60,6 +61,9 @@ export const EFFECT_EDITORS = {
   },
   phaser: (trackId, nodeId, storeKey) => {
     usePhaserStore.getState().open(trackId, nodeId, storeKey)
+  },
+  phanjer: (trackId, nodeId, storeKey) => {
+    usePhanjerStore.getState().open(trackId, nodeId, storeKey)
   },
   overdone: (trackId, nodeId, storeKey) => {
     useOverdoneStore.getState().open(trackId, nodeId, storeKey)
@@ -107,6 +111,7 @@ const EFFECT_EDITOR_STORES = [
   useChorusStore,
   useFlangerStore,
   usePhaserStore,
+  usePhanjerStore,
   useOverdoneStore,
   useReverbStore,
   useTransientProcStore,

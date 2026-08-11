@@ -36,6 +36,7 @@ import UniFlangePanel from './UniFlangePanel.jsx'
 import ChorusPanel from './ChorusPanel.jsx'
 import FlangerPanel from './FlangerPanel.jsx'
 import PhaserPanel from './PhaserPanel.jsx'
+import PhanjerPanel from './PhanjerPanel.jsx'
 import OTTPanel from './OTTPanel.jsx'
 import ReverbPanel from './ReverbPanel.jsx'
 import TransientProcPanel from './TransientProcPanel.jsx'
@@ -58,6 +59,7 @@ export default function EffectEditorHost() {
       <ChorusPanel />
       <FlangerPanel />
       <PhaserPanel />
+      <PhanjerPanel />
       <OTTPanel />
       <ReverbPanel />
       <TransientProcPanel />
