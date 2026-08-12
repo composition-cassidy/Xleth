@@ -38,10 +38,23 @@ namespace xleth_apex {
 // ─── Constants ───────────────────────────────────────────────────────────────
 
 // Dynamics curve: node axes and compiled LUT resolution.
+//
+// kCurveMinDb is the SILENCE end of the authoring box, not a working floor:
+// -96 dBFS is below the noise floor of any 16-bit source, so the editor can
+// treat it as -inf and still store a finite number in the node table.  (It used
+// to be -24 dB, which meant the whole quiet half of the signal shared one
+// held-gain extrapolation and could not be shaped at all.)  The LUT is indexed
+// uniformly in dB over the box, so kLutSize is scaled with the wider span to
+// keep the step at ~0.05 dB.
 inline constexpr int   kMaxCurveNodes = 32;
-inline constexpr int   kLutSize       = 1024;
-inline constexpr float kCurveMinDb    = -24.0f;
+inline constexpr int   kLutSize       = 2048;
+inline constexpr float kCurveMinDb    = -96.0f;
 inline constexpr float kCurveMaxDb    =  12.0f;
+
+// Corner rounding: how far either side of a node the two adjacent segments are
+// cross-faded, as a fraction of the SHORTER neighbouring segment.  Must stay
+// below 0.5 so the windows of the two nodes bounding one segment never overlap.
+inline constexpr float kCornerRound = 0.28f;
 
 // Half-band FIR used by the 2x oversampled waveshaper.
 //
@@ -288,14 +301,164 @@ struct CurveLut
 // (0..1); tension -1..+1 with 0 == linear.  The warp is monotone and pinned at
 // both ends, so the compiled curve is always continuous and single-valued.
 //
-//   tension  0  -> w(t) = t          (straight segment)
-//   tension +1  -> w(t) = t^0.25     (bulges up: fast rise then flat — soft knee)
-//   tension -1  -> w(t) = t^4        (bulges down: flat then fast rise — hard knee)
+// This is a cubic Hermite with the END SLOPES driven by the tension:
+//
+//   tension  0  -> w'(0) = w'(1) = 1                 (straight segment)
+//   tension +1  -> w'(0) = 3, w'(1) = 0              (soft knee: fast then flat)
+//   tension -1  -> w'(0) = 0, w'(1) = 3              (hard knee: flat then fast)
+//
+// The slopes stay inside the Fritsch-Carlson monotonicity disc (s0^2 + s1^2 <= 9)
+// at every tension, so the warp never folds back on itself.
+//
+// Why not the old w(t) = t^(4^-tension) power warp: its slope at one end is
+// INFINITE for any non-zero tension, so a bent segment left its node vertically
+// and then snapped over — the "sharp bend" look.  A cubic has bounded slope at
+// both ends, which is what makes the drawn curve read as a curve.
+inline void warpEndSlopes(float tension, float& s0, float& s1) noexcept
+{
+    const float tau = std::clamp(tension, -1.0f, 1.0f);
+    s0 = (tau >= 0.0f) ? (1.0f + 2.0f * tau) : (1.0f + tau);
+    s1 = (tau >= 0.0f) ? (1.0f - tau)        : (1.0f - 2.0f * tau);
+}
+
 inline float tensionWarp(float t, float tension) noexcept
 {
     if (tension > -1.0e-4f && tension < 1.0e-4f) return t;
-    const float p = std::pow(4.0f, -std::clamp(tension, -1.0f, 1.0f));
-    return std::pow(std::clamp(t, 0.0f, 1.0f), p);
+
+    float s0 = 1.0f, s1 = 1.0f;
+    warpEndSlopes(tension, s0, s1);
+
+    const float a = s0 + s1 - 2.0f;
+    const float b = 3.0f - 2.0f * s0 - s1;
+    return ((a * t + b) * t + s0) * t;
+}
+
+// One segment's own shape, evaluated inside its own domain.
+inline float evalSegmentDb(const CurveNode& a, const CurveNode& b,
+                           float tension, float inDb) noexcept
+{
+    const float w = b.inDb - a.inDb;
+    const float t = (w > 1.0e-6f) ? (inDb - a.inDb) / w : 0.0f;
+    return a.outDb + (b.outDb - a.outDb) * tensionWarp(t, tension);
+}
+
+// Segment slope (dOut/dIn) at an arbitrary point inside the segment.  The warp
+// is a cubic, so its derivative is exact and cheap — no differencing.  It must
+// be taken AT THE WINDOW EDGE (not at the node) or the fillet below joins a
+// tensioned segment with a visible slope step.
+inline float segmentSlopeDb(const CurveNode& a, const CurveNode& b,
+                            float tension, float inDb) noexcept
+{
+    const float w = b.inDb - a.inDb;
+    if (w <= 1.0e-6f) return 0.0f;
+
+    float s0 = 1.0f, s1 = 1.0f;
+    warpEndSlopes(tension, s0, s1);
+    const float ca = s0 + s1 - 2.0f;
+    const float cb = 3.0f - 2.0f * s0 - s1;
+
+    const float t  = std::clamp((inDb - a.inDb) / w, 0.0f, 1.0f);
+    const float dw = (3.0f * ca * t + 2.0f * cb) * t + s0;
+    return ((b.outDb - a.outDb) / w) * dw;
+}
+
+inline float tensionAt(const float* tensions, int tensionCount, int seg) noexcept
+{
+    return (tensions != nullptr && seg >= 0 && seg < tensionCount) ? tensions[seg] : 0.0f;
+}
+
+// Half-width of the cross-fade window centred on interior node `i`, in dB.
+// Scaled by the SHORTER of the two segments meeting there so a short segment is
+// never swallowed, and capped by kCornerRound < 0.5 so the two windows inside
+// one segment can never overlap.
+inline float cornerRadius(const CurveNode* nodes, int count, int i) noexcept
+{
+    if (i <= 0 || i >= count - 1) return 0.0f;
+    const float lenL = nodes[i].inDb     - nodes[i - 1].inDb;
+    const float lenR = nodes[i + 1].inDb - nodes[i].inDb;
+    return kCornerRound * std::max(0.0f, std::min(lenL, lenR));
+}
+
+// Fillet across interior node `i`: a cubic Hermite over [x_i - r, x_i + r]
+// pinned to the two adjacent segments' own VALUES and SLOPES at the window
+// edges.  Both are matched exactly, so the curve is C1 everywhere — at the
+// window edges by construction, and across the node because the node is now
+// interior to one smooth polynomial instead of a meeting point of two.
+//
+// It also CUTS the corner rather than passing through it.  For the sharpest
+// case — two straight segments, e.g. "1:1 up to -12, flat above" — the Hermite
+// reduces to the parabola y0 + 2r*mL*u - r*mL*u^2, which touches the corner
+// only in the limit and never exceeds either segment.  A cross-fade of the two
+// segments could not do that: two functions that agree at the node average to
+// the node, which would push that limiter shape ABOVE its own authored ceiling
+// on the way in and give it >0 dB of gain on the way up to the knee.
+inline float filletDb(const CurveNode* nodes,
+                      const float*     tensions,
+                      int              tensionCount,
+                      int              i,
+                      float            r,
+                      float            inDb) noexcept
+{
+    const float x0 = nodes[i].inDb - r;
+    const float x2 = nodes[i].inDb + r;
+    const float span = x2 - x0;
+
+    const float tL = tensionAt(tensions, tensionCount, i - 1);
+    const float tR = tensionAt(tensions, tensionCount, i);
+
+    const float y0 = evalSegmentDb(nodes[i - 1], nodes[i], tL, x0);
+    const float y1 = evalSegmentDb(nodes[i], nodes[i + 1], tR, x2);
+
+    // Slopes at the window EDGES, w.r.t. the normalised window parameter.
+    const float m0 = segmentSlopeDb(nodes[i - 1], nodes[i],     tL, x0) * span;
+    const float m1 = segmentSlopeDb(nodes[i],     nodes[i + 1], tR, x2) * span;
+
+    const float u  = std::clamp((inDb - x0) / span, 0.0f, 1.0f);
+    const float u2 = u * u;
+    const float u3 = u2 * u;
+
+    return (2.0f * u3 - 3.0f * u2 + 1.0f) * y0
+         + (u3 - 2.0f * u2 + u)           * m0
+         + (-2.0f * u3 + 3.0f * u2)       * y1
+         + (u3 - u2)                      * m1;
+}
+
+// Evaluate the authored curve at an input level, in dB.
+//
+// Straight (or tensioned) segments are reproduced EXACTLY away from the nodes —
+// authoring "1:1 up to -12, flat above" still gives bit-honest unity gain below
+// the knee.  Only inside a small window around each interior node is the corner
+// replaced by the fillet above, which is where the old build's visible kinks
+// were.
+//
+// Outside the authored domain the endpoint GAIN is held (unity slope), so
+// silence is never amplified and hot signal gets no extra makeup.
+inline float evalCurveDb(const CurveNode* nodes,
+                         int              count,
+                         const float*     tensions,
+                         int              tensionCount,
+                         float            inDb) noexcept
+{
+    if (nodes == nullptr || count < 2) return inDb;
+    if (inDb <= nodes[0].inDb)         return inDb + (nodes[0].outDb - nodes[0].inDb);
+    if (inDb >= nodes[count - 1].inDb) return inDb + (nodes[count - 1].outDb - nodes[count - 1].inDb);
+
+    int seg = 0;
+    while (seg < count - 2 && inDb > nodes[seg + 1].inDb)
+        ++seg;
+
+    // Corner at the segment's LEFT node.
+    const float rL = cornerRadius(nodes, count, seg);
+    if (rL > 0.0f && inDb < nodes[seg].inDb + rL)
+        return filletDb(nodes, tensions, tensionCount, seg, rL, inDb);
+
+    // Corner at the segment's RIGHT node.
+    const float rR = cornerRadius(nodes, count, seg + 1);
+    if (rR > 0.0f && inDb > nodes[seg + 1].inDb - rR)
+        return filletDb(nodes, tensions, tensionCount, seg + 1, rR, inDb);
+
+    return evalSegmentDb(nodes[seg], nodes[seg + 1],
+                         tensionAt(tensions, tensionCount, seg), inDb);
 }
 
 // Compile nodes + per-segment tensions into a gain LUT.
@@ -324,36 +487,10 @@ inline void buildCurveLut(const CurveNode* nodes,
     constexpr float span = kCurveMaxDb - kCurveMinDb;
     constexpr float step = span / static_cast<float>(kLutSize - 1);
 
-    int seg = 0;
     for (int i = 0; i < kLutSize; ++i)
     {
-        const float inDb = kCurveMinDb + step * static_cast<float>(i);
-
-        // Advance to the segment containing inDb (nodes are pre-sorted by IN).
-        while (seg < count - 2 && inDb > nodes[seg + 1].inDb)
-            ++seg;
-
-        float outDb;
-        if (inDb <= nodes[0].inDb)
-        {
-            // Below the first node: hold the first node's GAIN.
-            outDb = inDb + (nodes[0].outDb - nodes[0].inDb);
-        }
-        else if (inDb >= nodes[count - 1].inDb)
-        {
-            // Above the last node: hold the last node's GAIN (unity slope).
-            outDb = inDb + (nodes[count - 1].outDb - nodes[count - 1].inDb);
-        }
-        else
-        {
-            const CurveNode& a = nodes[seg];
-            const CurveNode& b = nodes[seg + 1];
-            const float      w = b.inDb - a.inDb;
-            const float      t = (w > 1.0e-6f) ? (inDb - a.inDb) / w : 0.0f;
-            const float tension = (tensions != nullptr && seg < tensionCount)
-                                ? tensions[seg] : 0.0f;
-            outDb = a.outDb + (b.outDb - a.outDb) * tensionWarp(t, tension);
-        }
+        const float inDb  = kCurveMinDb + step * static_cast<float>(i);
+        const float outDb = evalCurveDb(nodes, count, tensions, tensionCount, inDb);
 
         // Store LINEAR gain = 10^((out - in)/20).
         out.gainLin[static_cast<std::size_t>(i)] = dbToGain(outDb - inDb);

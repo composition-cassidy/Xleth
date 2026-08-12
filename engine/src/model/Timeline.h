@@ -71,7 +71,7 @@ public:
     std::vector<const Clip*>   getClipsOnTrack(int trackId) const;
     // Returns clips whose position falls in [start, end)
     std::vector<const Clip*>   getClipsInRange(TickTime start, TickTime end) const;
-    bool                       moveClip(int clipId, TickTime newPosition);
+    bool                       moveClip(int clipId, int newTrackId, TickTime newPosition);
     bool                       resizeClip(int clipId, TickTime newDuration);
     bool                       resizeClipLeft(int clipId, TickTime newPosition, TickTime newDuration, TickTime newRegionOffset);
 

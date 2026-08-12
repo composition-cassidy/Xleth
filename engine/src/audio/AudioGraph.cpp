@@ -611,6 +611,22 @@ int AudioGraph::addEffect(const std::string& pluginId, int position)
     // If chain is empty, wire: input → node → output
     if (linearOrder_.empty())
     {
+        // An empty chain still passes audio, so removeEffect() leaves a direct
+        // input → output passthrough behind when the last effect is deleted.
+        // That wire is exactly the one this node is being spliced INTO, so it
+        // must be consumed here — the same erase the non-empty branch below
+        // performs on pred → succ.
+        //
+        // Without it the passthrough survives as a parallel DRY path summed
+        // with the new node's output, which is both an unintended blend and
+        // self-perpetuating: the resulting fan-out makes updateLinearOrder()
+        // bail (leaving linearOrder_ empty), so every later addEffect takes
+        // this branch too and stacks yet another parallel branch. For a
+        // phase-rotating effect — any multiband/crossover unit such as APEX —
+        // summing that dry path back in comb-filters the signal, which is how
+        // the bug was found.
+        eraseConnectionIfPresent(inUid, outUid);
+
         GraphConnection gc1;
         gc1.sourceNodeId = inUid;
         gc1.destNodeId   = uid;
@@ -636,17 +652,7 @@ int AudioGraph::addEffect(const std::string& pluginId, int position)
                        : linearOrder_[static_cast<size_t>(pos)];
 
         // Remove old pred → succ connection
-        WireId oldWid{pred, succ};
-        auto cit = connections_.find(oldWid);
-        if (cit != connections_.end())
-        {
-            if (cit->second.wire.gainNodeId.uid != 0)
-                graph_->removeNode(cit->second.wire.gainNodeId);
-            if (cit->second.wire.delayNodeId.uid != 0)
-                graph_->removeNode(cit->second.wire.delayNodeId);
-            connections_.erase(cit);
-            removeAdj(pred, succ);
-        }
+        eraseConnectionIfPresent(pred, succ);
 
         // Insert pred → uid → succ
         GraphConnection gc1;
@@ -679,6 +685,9 @@ int AudioGraph::addProcessorForTesting(const std::string& pluginId,
 
     if (linearOrder_.empty())
     {
+        // Consume the empty-chain passthrough — see addEffect().
+        eraseConnectionIfPresent(inUid, outUid);
+
         GraphConnection gc1;
         gc1.sourceNodeId = inUid;
         gc1.destNodeId   = uid;
@@ -701,17 +710,7 @@ int AudioGraph::addProcessorForTesting(const std::string& pluginId,
                        ? outUid
                        : linearOrder_[static_cast<size_t>(pos)];
 
-        WireId oldWid{pred, succ};
-        auto cit = connections_.find(oldWid);
-        if (cit != connections_.end())
-        {
-            if (cit->second.wire.gainNodeId.uid != 0)
-                graph_->removeNode(cit->second.wire.gainNodeId);
-            if (cit->second.wire.delayNodeId.uid != 0)
-                graph_->removeNode(cit->second.wire.delayNodeId);
-            connections_.erase(cit);
-            removeAdj(pred, succ);
-        }
+        eraseConnectionIfPresent(pred, succ);
 
         GraphConnection gc1;
         gc1.sourceNodeId = pred;
@@ -2403,6 +2402,20 @@ void AudioGraph::removeAdj(int src, int dst)
     rev.erase(std::remove(rev.begin(), rev.end(), src), rev.end());
 }
 
+void AudioGraph::eraseConnectionIfPresent(int src, int dst)
+{
+    auto cit = connections_.find(WireId{src, dst});
+    if (cit == connections_.end()) return;
+
+    if (cit->second.wire.gainNodeId.uid != 0)
+        graph_->removeNode(cit->second.wire.gainNodeId);
+    if (cit->second.wire.delayNodeId.uid != 0)
+        graph_->removeNode(cit->second.wire.delayNodeId);
+
+    connections_.erase(cit);
+    removeAdj(src, dst);
+}
+
 std::vector<int> AudioGraph::allNodeUids() const
 {
     std::vector<int> uids;
@@ -2422,6 +2435,37 @@ XlethEffectBase* AudioGraph::getEffect(int nodeId)
     if (it == nodes_.end()) return nullptr;
     auto* n = graph_->getNodeForId(it->second.apgNodeId);
     return n ? dynamic_cast<XlethEffectBase*>(n->getProcessor()) : nullptr;
+}
+
+void AudioGraph::deliverModulationGate(bool valid, std::int64_t gateStartSample,
+                                       std::int64_t gateEndSample)
+{
+    if (!graph_) return;
+    // Audio thread: iterate the node model in place (no allocation). Structural
+    // mutation only happens on the message thread under the chains lock, which
+    // the caller holds for the duration of the block, so this read is safe.
+    for (auto& kv : nodes_)
+    {
+        auto* n = graph_->getNodeForId(kv.second.apgNodeId);
+        if (n == nullptr) continue;
+        if (auto* fx = dynamic_cast<XlethEffectBase*>(n->getProcessor()))
+            fx->applyModulationGate(valid, gateStartSample, gateEndSample);
+    }
+}
+
+std::vector<XlethEffectBase*> AudioGraph::collectEffects() const
+{
+    std::vector<XlethEffectBase*> out;
+    if (!graph_) return out;
+    out.reserve(nodes_.size());
+    for (const auto& kv : nodes_)
+    {
+        auto* n = graph_->getNodeForId(kv.second.apgNodeId);
+        if (n == nullptr) continue;
+        if (auto* fx = dynamic_cast<XlethEffectBase*>(n->getProcessor()))
+            out.push_back(fx);
+    }
+    return out;
 }
 
 juce::AudioProcessor* AudioGraph::getProcessor(int nodeId)
@@ -2578,7 +2622,7 @@ nlohmann::json AudioGraph::getGraphEffectParameterDescriptors(int nodeId) const
     // Stock effect: enumerate from its own APVTS.
     if (auto* effect = self->getEffect(nodeId))
     {
-        return {
+        nlohmann::json out = {
             {"ok", true},
             {"engineNodeId", nodeId},
             {"effectKind", "stock"},
@@ -2586,6 +2630,15 @@ nlohmann::json AudioGraph::getGraphEffectParameterDescriptors(int nodeId) const
             {"pluginId", effect->getPluginId()},
             {"parameters", xleth::audio::buildGraphEffectParameterDescriptors(*effect, true)},
         };
+
+        // The EQ's parameter layout always registers all kMaxBands worth of
+        // APVTS params (a fixed layout is required), but only bandCount_ of
+        // them are actually in use. Report the real count so callers can tell
+        // active bands apart from dormant, not-yet-added ones.
+        if (auto* eq = dynamic_cast<XlethParametricEQ*>(effect))
+            out["bandCount"] = eq->getBandCount();
+
+        return out;
     }
 
     // Third-party plugin: enumerate from the hosted inner processor.

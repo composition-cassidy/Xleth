@@ -3,7 +3,11 @@ import { X, Plus, Info } from 'lucide-react'
 import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
 import useFilterStore, {
   SLOT_TYPES, SLOPES, MAX_SLOTS,
+  MOD_DESTS, LFO_SHAPES, LFO_SYNC_DIVISIONS,
+  MOD_KINDS, MOD_KIND_OFF, MOD_KIND_LFO, MOD_KIND_ENV, MOD_KIND_DYN,
+  MAX_MODS_PER_SLOT, modKindLabel, activeMods,
   typeUsesGain, typeUsesMorph, typeUsesSlope,
+  typeGainLabel, typeGainRange, typeMorphLabel,
 } from '../../stores/filterStore.js'
 import PluginUIKitKnob from '../../plugin-ui/runtime/components/PluginUIKitKnob.jsx'
 import {
@@ -13,16 +17,25 @@ import {
   slotResponseDb, responseFrequencies, RESPONSE_SIZE, FREQ_MIN, FREQ_MAX,
 } from './filterResponse.js'
 
+// XLETH FILTER editor window. Flat, zero-radius console laid out in the same
+// design language as the APEX panel: a chrome header with an accent tick + muted
+// subtitle, a slot rail, an inset graph well, then a sectioned control deck whose
+// columns are separated by 1px dividers (the border colour showing through a 1px
+// gap). Colour is earned — the teal accent only lights active slots, the active
+// slope, and live modulation. tokenValue() is never called at module scope.
+
 // ── Constants ────────────────────────────────────────────────────────────────
 
-// Same skews as the engine's createLayout(): the knob travel then matches each
-// parameter's own NormalisableRange curve.
+// Same skews as the engine's createLayout(): knob travel matches each param's
+// own NormalisableRange curve.
 const FREQ_SKEW = 0.23
 const Q_SKEW    = 0.18
 
+// The mixer-ring knob preset hides its own value readout, so each cell prints
+// the formatted value below — the APEX / Reverb / Delay convention.
 const KNOB_APPEARANCE = { preset: 'mixer-ring', sizePreset: 'inherit' }
 
-const TYPE_SHORT = ['LP', 'HP', 'BP', 'NOTCH', 'AP', 'PEAK', 'L.SHLF', 'H.SHLF', 'MORPH']
+const TYPE_SHORT = ['LP', 'HP', 'BP', 'NOTCH', 'AP', 'PEAK', 'L.SHELF', 'H.SHELF', 'MORPH']
 
 const DB_RANGE   = 24
 const GRID_FREQS = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
@@ -41,18 +54,35 @@ const fmtMix  = (v) => `${Math.round(v * 100)} %`
 const fmtMorph = (v) => v.toFixed(2)
 const fmtMs   = (v) => (v >= 100 ? `${Math.round(v)} ms` : `${v.toFixed(1)} ms`)
 
-// ── Slot strip ─────────────────────────────────────────────────────────────
+// ── Small building blocks ─────────────────────────────────────────────────────
 
-function SlotChip({ slot, index, selected, onSelect, onToggleEnabled, onRemove }) {
+// Stock mixer-ring knob with the formatted value printed below.
+function FilterKnob({ value, min, max, def, skew, label, fmt, onChange, size = 48 }) {
+  const v = Number.isFinite(value) ? value : def
+  return (
+    <div className="filter-knob-cell">
+      <PluginUIKitKnob
+        value={v} min={min} max={max} defaultValue={def} skew={skew || 1}
+        label={label} formatValue={fmt} appearance={KNOB_APPEARANCE}
+        size={size} dragRange={155}
+        onLiveChange={onChange} onCommit={onChange}
+      />
+      <div className="filter-knob-value">{fmt(v)}</div>
+    </div>
+  )
+}
+
+function SlotTab({ slot, index, selected, onSelect, onToggleEnabled, onRemove }) {
   const enabled = !!slot.enabled
   const type = clamp(Math.round(slot.type ?? 0), 0, 8)
   return (
     <div
-      className={`filter-slot-chip${selected ? ' selected' : ''}${enabled ? '' : ' disabled'}`}
+      className={`filter-slot-tab${selected ? ' selected' : ''}${enabled ? '' : ' silenced'}`}
       onClick={() => onSelect(index)}
       title={`Slot ${index + 1} — ${SLOT_TYPES[type].label}`}
     >
       <button
+        type="button"
         className={`filter-slot-enable${enabled ? ' on' : ''}`}
         onClick={(e) => { e.stopPropagation(); onToggleEnabled(index, !enabled) }}
         title={enabled ? 'Bypass slot' : 'Enable slot'}
@@ -61,6 +91,7 @@ function SlotChip({ slot, index, selected, onSelect, onToggleEnabled, onRemove }
       <span className="filter-slot-idx">S{index + 1}</span>
       <span className="filter-slot-type">{TYPE_SHORT[type]}</span>
       <button
+        type="button"
         className="filter-slot-remove"
         onClick={(e) => { e.stopPropagation(); onRemove(index) }}
         title="Remove slot"
@@ -80,7 +111,7 @@ function ResponseCurve({ slots, selectedSlotIndex, aggregateRef, version }) {
   const paint = useCallback(() => {
     const canvas = canvasRef.current
     if (!canvas) return
-    const size = syncCanvasSize(canvas, 560, 190)
+    const size = syncCanvasSize(canvas, 736, 176)
     if (!size) return
     const { cssW, cssH, dpr } = size
     const ctx = canvas.getContext('2d', { alpha: false })
@@ -137,7 +168,7 @@ function ResponseCurve({ slots, selectedSlotIndex, aggregateRef, version }) {
       ctx.fillText(`${db > 0 ? '+' : ''}${db}`, padL - 4, gy)
     }
 
-    // Per-slot faint guide curves (computed client-side, sum in dB to aggregate).
+    // Per-slot faint guide curves (client-side; sum in dB to the aggregate).
     const freqs = responseFrequencies(RESPONSE_SIZE)
     slots.forEach((slot, si) => {
       const curve = slotResponseDb(slot)
@@ -154,7 +185,7 @@ function ResponseCurve({ slots, selectedSlotIndex, aggregateRef, version }) {
       ctx.stroke()
     })
 
-    // Bold aggregate — the authoritative array from audio_filterGetResponseCurve.
+    // Bold aggregate — authoritative array from audio_filterGetResponseCurve.
     const agg = aggregateRef.current
     if (agg && agg.length > 1) {
       const n = Math.min(agg.length, RESPONSE_SIZE)
@@ -197,161 +228,435 @@ function ResponseCurve({ slots, selectedSlotIndex, aggregateRef, version }) {
   )
 }
 
-// ── Selected-slot controls ───────────────────────────────────────────────────
+// ── Per-slot modulator decks (LFO + Envelope) ─────────────────────────────────
 
-function SlotControls({ slot, index, onParam, onCutMin, onCutMax }) {
-  const type = clamp(Math.round(slot.type ?? 0), 0, 8)
-  const slope = clamp(Math.round(slot.slope ?? 1), 0, 3)
-  const depth = Number(slot.dyn_depth ?? 0)
-  const modActive = depth !== 0
-
+// Shared header: kind badge, a live dot, and the remove button. A lane's
+// EXISTENCE is now its on state — there is no separate toggle, because you add
+// exactly the modulators you want and remove the ones you don't.
+function ModHeader({ title, badge, onRemove }) {
   return (
-    <div className="filter-slot-controls">
-      {/* Type + slope row */}
-      <div className="filter-control-row filter-type-row">
-        <label className="filter-field">
-          <span className="filter-field-label">Type</span>
-          <select
-            className="filter-type-select"
-            value={type}
-            onChange={(e) => onParam(index, 'type', Number(e.target.value))}
-          >
-            {SLOT_TYPES.map(t => (
-              <option key={t.value} value={t.value}>{t.label}</option>
-            ))}
-          </select>
-        </label>
+    <div className="filter-col-title-row">
+      <span className="filter-mod-badge">{badge}</span>
+      <span className="filter-col-title">{title}</span>
+      <span className="filter-mod-dot" aria-hidden />
+      <button
+        type="button"
+        className="filter-mod-remove"
+        onClick={onRemove}
+        title="Remove this modulator"
+        aria-label={`Remove ${title}`}
+      >
+        <X size={13} />
+      </button>
+    </div>
+  )
+}
 
-        {typeUsesSlope(type) && (
-          <div className="filter-field">
-            <span className="filter-field-label">Slope&nbsp;(dB/oct)</span>
-            <div className="filter-slope-seg">
-              {SLOPES.map(s => (
-                <button
-                  key={s.value}
-                  className={`filter-slope-btn${slope === s.value ? ' active' : ''}`}
-                  onClick={() => onParam(index, 'slope', s.value)}
-                >
-                  {s.label}
-                </button>
-              ))}
-            </div>
-          </div>
-        )}
-      </div>
-
-      {/* Knob row — only the controls that affect the selected type. */}
-      <div className="filter-knob-row">
-        <PluginUIKitKnob
-          value={Number(slot.cutoff ?? 1000)} min={20} max={20000} defaultValue={1000}
-          skew={FREQ_SKEW} label="CUTOFF" formatValue={fmtHz} appearance={KNOB_APPEARANCE}
-          size={54} dragRange={160}
-          onLiveChange={(v) => onParam(index, 'cutoff', v)}
-          onCommit={(v) => onParam(index, 'cutoff', v)}
-        />
-        <PluginUIKitKnob
-          value={Number(slot.q ?? 0.7071)} min={0.5} max={30} defaultValue={0.7071}
-          skew={Q_SKEW} label="Q" formatValue={fmtQ} appearance={KNOB_APPEARANCE}
-          size={54} dragRange={160}
-          onLiveChange={(v) => onParam(index, 'q', v)}
-          onCommit={(v) => onParam(index, 'q', v)}
-        />
-        {typeUsesGain(type) && (
-          <PluginUIKitKnob
-            value={Number(slot.gain ?? 0)} min={-24} max={24} defaultValue={0}
-            label="GAIN" formatValue={fmtGain} appearance={KNOB_APPEARANCE}
-            size={54} dragRange={160}
-            onLiveChange={(v) => onParam(index, 'gain', v)}
-            onCommit={(v) => onParam(index, 'gain', v)}
-          />
-        )}
-        {typeUsesMorph(type) && (
-          <PluginUIKitKnob
-            value={Number(slot.morph ?? 0)} min={0} max={1} defaultValue={0}
-            label="MORPH" formatValue={fmtMorph} appearance={KNOB_APPEARANCE}
-            size={54} dragRange={160}
-            onLiveChange={(v) => onParam(index, 'morph', v)}
-            onCommit={(v) => onParam(index, 'morph', v)}
-          />
-        )}
-        <PluginUIKitKnob
-          value={Number(slot.drive ?? 0)} min={0} max={24} defaultValue={0}
-          label="DRIVE" formatValue={fmtDrive} appearance={KNOB_APPEARANCE}
-          size={54} dragRange={160}
-          onLiveChange={(v) => onParam(index, 'drive', v)}
-          onCommit={(v) => onParam(index, 'drive', v)}
-        />
-        <PluginUIKitKnob
-          value={Number(slot.mix ?? 1)} min={0} max={1} defaultValue={1}
-          label="MIX" formatValue={fmtMix} appearance={KNOB_APPEARANCE}
-          size={54} dragRange={160}
-          onLiveChange={(v) => onParam(index, 'mix', v)}
-          onCommit={(v) => onParam(index, 'mix', v)}
-        />
-      </div>
-
-      {/* Modulation — dynamics follower + the FX-graph routing note. */}
-      <div className={`filter-mod-section${modActive ? ' is-active' : ''}`}>
-        <div className="filter-mod-header">
-          <span className="filter-mod-title">Modulation</span>
-          <span className="filter-mod-dot" aria-hidden />
-          <span className="filter-mod-sub">dynamics follower</span>
-        </div>
-
-        <div className="filter-mod-depth">
-          <span className="filter-field-label">Depth</span>
-          <input
-            className="filter-depth-slider"
-            type="range" min={-1} max={1} step={0.01}
-            value={depth}
-            onChange={(e) => onParam(index, 'dyn_depth', Number(e.target.value))}
-          />
-          <span className="filter-depth-readout">
-            {depth > 0 ? '+' : ''}{depth.toFixed(2)}
-          </span>
-        </div>
-
-        <div className="filter-knob-row filter-mod-knob-row">
-          <PluginUIKitKnob
-            value={Number(slot.dyn_attack ?? 10)} min={0.1} max={100} defaultValue={10}
-            skew={0.4} label="ATTACK" formatValue={fmtMs} appearance={KNOB_APPEARANCE}
-            size={44} dragRange={150}
-            onLiveChange={(v) => onParam(index, 'dyn_attack', v)}
-            onCommit={(v) => onParam(index, 'dyn_attack', v)}
-          />
-          <PluginUIKitKnob
-            value={Number(slot.dyn_release ?? 100)} min={1} max={2000} defaultValue={100}
-            skew={0.4} label="RELEASE" formatValue={fmtMs} appearance={KNOB_APPEARANCE}
-            size={44} dragRange={150}
-            onLiveChange={(v) => onParam(index, 'dyn_release', v)}
-            onCommit={(v) => onParam(index, 'dyn_release', v)}
-          />
-          <PluginUIKitKnob
-            value={Number(slot.cut_min ?? 20)} min={20} max={20000} defaultValue={20}
-            skew={FREQ_SKEW} label="CUT MIN" formatValue={fmtHz} appearance={KNOB_APPEARANCE}
-            size={44} dragRange={150}
-            onLiveChange={(v) => onCutMin(index, v)}
-            onCommit={(v) => onCutMin(index, v)}
-          />
-          <PluginUIKitKnob
-            value={Number(slot.cut_max ?? 20000)} min={20} max={20000} defaultValue={20000}
-            skew={FREQ_SKEW} label="CUT MAX" formatValue={fmtHz} appearance={KNOB_APPEARANCE}
-            size={44} dragRange={150}
-            onLiveChange={(v) => onCutMax(index, v)}
-            onCommit={(v) => onCutMax(index, v)}
-          />
-        </div>
-
-        <div className="filter-mod-hint">
-          <Info size={12} />
-          <span>Envelope &amp; LFO modulation route through the FX graph — patch this slot's cutoff / Q there.</span>
-        </div>
+// Shared destination select + signed depth slider.
+function ModDestDepth({ dest, depth, onDest, onDepth }) {
+  return (
+    <div className="filter-mod-row">
+      <label className="filter-field filter-field--inline">
+        <span className="filter-field-label">Dest</span>
+        <select className="filter-select" value={dest}
+          onChange={(e) => onDest(Number(e.target.value))}>
+          {MOD_DESTS.map(d => <option key={d.value} value={d.value}>{d.label}</option>)}
+        </select>
+      </label>
+      <div className="filter-mod-depth">
+        <span className="filter-field-label">Depth</span>
+        <input className="filter-depth-slider" type="range" min={-1} max={1} step={0.01}
+          value={depth} onChange={(e) => onDepth(Number(e.target.value))} />
+        <span className="filter-depth-readout">{depth > 0 ? '+' : ''}{depth.toFixed(2)}</span>
       </div>
     </div>
   )
 }
 
-// ── Main panel ────────────────────────────────────────────────────────────────
+// Every deck below takes `mod` — one entry of the slot's `mods` array — and an
+// `onMod(paramName, value)` already bound to that lane, so none of them needs to
+// know its own lane index or build parameter names.
+
+function LfoBody({ mod, onMod }) {
+  const shape = clamp(Math.round(mod.shape ?? 0), 0, 5)
+  const sync = Math.round(mod.rate_mode ?? 1) !== 0
+  const syncVal = Number(mod.sync ?? 4)
+  const rateMs = Number(mod.rate_ms ?? 500)
+  const phase = Number(mod.phase ?? 0)
+  return (
+    <div className="filter-mod-row">
+      <label className="filter-field filter-field--inline">
+        <span className="filter-field-label">Shape</span>
+        <select className="filter-select" value={shape}
+          onChange={(e) => onMod('shape', Number(e.target.value))}>
+          {LFO_SHAPES.map(s => <option key={s.value} value={s.value}>{s.label}</option>)}
+        </select>
+      </label>
+      <div className="filter-field filter-field--inline">
+        <span className="filter-field-label">Rate</span>
+        <div className="filter-seg">
+          <button type="button" className={`filter-seg-btn${sync ? ' active' : ''}`}
+            onClick={() => onMod('rate_mode', 1)}>Sync</button>
+          <button type="button" className={`filter-seg-btn${!sync ? ' active' : ''}`}
+            onClick={() => onMod('rate_mode', 0)}>Free</button>
+        </div>
+      </div>
+      {sync ? (
+        <label className="filter-field filter-field--inline">
+          <span className="filter-field-label">Div</span>
+          <select className="filter-select" value={syncVal}
+            onChange={(e) => onMod('sync', Number(e.target.value))}>
+            {LFO_SYNC_DIVISIONS.map(d => <option key={d.value} value={d.value}>{d.label}</option>)}
+          </select>
+        </label>
+      ) : (
+        <FilterKnob value={rateMs} min={1} max={5000} def={500} skew={0.35}
+          label="RATE" fmt={fmtMs} size={44}
+          onChange={(v) => onMod('rate_ms', v)} />
+      )}
+      <FilterKnob value={phase} min={0} max={1} def={0} label="PHASE"
+        fmt={(v) => `${Math.round(v * 360)}°`} size={44}
+        onChange={(v) => onMod('phase', v)} />
+    </div>
+  )
+}
+
+// Static ADSR curve preview — draws A/H/D/S/R from the live envelope params.
+// Segment widths scale with each stage's ms; the held sustain gets a fixed
+// display slice (it has no intrinsic duration). Accent stroke over the well,
+// same visual language as the response graph above.
+function EnvViz({ attack, hold, decay, sustain, release }) {
+  const canvasRef = useRef(null)
+  const themeEpoch = useThemeEpoch()
+
+  const paint = useCallback(() => {
+    const canvas = canvasRef.current
+    if (!canvas) return
+    const size = syncCanvasSize(canvas, 360, 84)
+    if (!size) return
+    const { cssW, cssH, dpr } = size
+    const ctx = canvas.getContext('2d', { alpha: false })
+    if (!ctx) return
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    const th = readMixerCanvasTheme(canvas)
+
+    ctx.fillStyle = th.well
+    ctx.fillRect(0, 0, cssW, cssH)
+
+    const padL = 8, padR = 8, padT = 10, padB = 10
+    const plotW = Math.max(10, cssW - padL - padR)
+    const plotH = Math.max(10, cssH - padT - padB)
+    const yBot = padT + plotH
+    const yOf = (v) => yBot - clamp(v, 0, 1) * plotH
+
+    const a = Math.max(0, attack), h = Math.max(0, hold)
+    const d = Math.max(0, decay), r = Math.max(0, release)
+    const timeSum = a + h + d + r
+    const sustainFrac = 0.22
+    const timeFrac = 1 - sustainFrac
+    const wOf = (t, fallback) => (timeSum > 0 ? t / timeSum : fallback) * timeFrac * plotW
+    const wA = wOf(a, 0.34), wH = wOf(h, 0.0), wD = wOf(d, 0.33), wR = wOf(r, 0.33)
+    const wS = sustainFrac * plotW
+    const s = clamp(sustain, 0, 1)
+
+    let x = padL
+    const pts = [[x, yOf(0)]]
+    x += wA; pts.push([x, yOf(1)])
+    x += wH; pts.push([x, yOf(1)])
+    x += wD; pts.push([x, yOf(s)])
+    x += wS; pts.push([x, yOf(s)])
+    x += wR; pts.push([x, yOf(0)])
+
+    // Baseline + faint sustain guide line.
+    ctx.strokeStyle = withAlpha(th.border, 0.8)
+    ctx.lineWidth = 1
+    ctx.beginPath(); ctx.moveTo(padL, yBot + 0.5); ctx.lineTo(padL + plotW, yBot + 0.5); ctx.stroke()
+
+    // Fill under the curve.
+    ctx.beginPath()
+    ctx.moveTo(pts[0][0], yBot)
+    pts.forEach(p => ctx.lineTo(p[0], p[1]))
+    ctx.lineTo(pts[pts.length - 1][0], yBot)
+    ctx.closePath()
+    ctx.fillStyle = withAlpha(th.accent, 0.12)
+    ctx.fill()
+
+    // Stroke.
+    ctx.beginPath()
+    pts.forEach((p, i) => (i === 0 ? ctx.moveTo(p[0], p[1]) : ctx.lineTo(p[0], p[1])))
+    ctx.strokeStyle = th.accent
+    ctx.lineWidth = 2
+    ctx.lineJoin = 'round'
+    ctx.stroke()
+
+    // Stage nodes at the peak, sustain-start and sustain-end.
+    ctx.fillStyle = withAlpha(th.accent, 0.95)
+    for (const i of [1, 3, 4]) {
+      const p = pts[i]
+      ctx.beginPath(); ctx.arc(p[0], p[1], 2.2, 0, 2 * Math.PI); ctx.fill()
+    }
+  }, [attack, hold, decay, sustain, release, themeEpoch])
+
+  useEffect(() => { paint() }, [paint])
+  useEffect(() => {
+    const canvas = canvasRef.current
+    if (!canvas || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => paint())
+    ro.observe(canvas)
+    return () => ro.disconnect()
+  }, [paint])
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="filter-env-viz"
+      style={{ display: 'block', width: '100%', height: '100%' }}
+    />
+  )
+}
+
+function EnvBody({ mod, onMod }) {
+  const attack = Number(mod.attack ?? 5)
+  const hold = Number(mod.hold ?? 0)
+  const decay = Number(mod.decay ?? 120)
+  const sustain = Number(mod.sustain ?? 0.7)
+  const release = Number(mod.release ?? 200)
+  return (
+    <>
+      <div className="filter-env-body">
+        <div className="filter-knob-row filter-knob-row--left">
+          <FilterKnob value={attack} min={0} max={2000} def={5}
+            skew={0.4} label="ATTACK" fmt={fmtMs} size={44}
+            onChange={(v) => onMod('attack', v)} />
+          <FilterKnob value={hold} min={0} max={2000} def={0}
+            skew={0.4} label="HOLD" fmt={fmtMs} size={44}
+            onChange={(v) => onMod('hold', v)} />
+          <FilterKnob value={decay} min={0} max={2000} def={120}
+            skew={0.4} label="DECAY" fmt={fmtMs} size={44}
+            onChange={(v) => onMod('decay', v)} />
+          <FilterKnob value={sustain} min={0} max={1} def={0.7}
+            label="SUSTAIN" fmt={(v) => v.toFixed(2)} size={44}
+            onChange={(v) => onMod('sustain', v)} />
+          <FilterKnob value={release} min={0} max={5000} def={200}
+            skew={0.4} label="RELEASE" fmt={fmtMs} size={44}
+            onChange={(v) => onMod('release', v)} />
+        </div>
+        <div className="filter-env-viz-wrap">
+          <EnvViz attack={attack} hold={hold} decay={decay}
+            sustain={sustain} release={release} />
+        </div>
+      </div>
+      <label className="filter-slides-check">
+        <input type="checkbox" checked={!!mod.slides}
+          onChange={(e) => onMod('slides', e.target.checked ? 1 : 0)} />
+        <span>Trigger on slide notes</span>
+      </label>
+    </>
+  )
+}
+
+// The follower's ballistics plus ITS OWN sweep window. cut_min / cut_max are per
+// lane, so two followers on one slot can sweep different ranges.
+function DynBody({ mod, onCutMin, onCutMax, onMod }) {
+  return (
+    <div className="filter-knob-row filter-knob-row--left">
+      <FilterKnob value={Number(mod.dyn_attack ?? 10)} min={0.1} max={100} def={10}
+        skew={0.4} label="ATTACK" fmt={fmtMs} size={44}
+        onChange={(v) => onMod('dyn_attack', v)} />
+      <FilterKnob value={Number(mod.dyn_release ?? 100)} min={1} max={2000} def={100}
+        skew={0.4} label="RELEASE" fmt={fmtMs} size={44}
+        onChange={(v) => onMod('dyn_release', v)} />
+      <FilterKnob value={Number(mod.cut_min ?? 20)} min={20} max={20000} def={20}
+        skew={FREQ_SKEW} label="CUT MIN" fmt={fmtHz} size={44}
+        onChange={onCutMin} />
+      <FilterKnob value={Number(mod.cut_max ?? 20000)} min={20} max={20000} def={20000}
+        skew={FREQ_SKEW} label="CUT MAX" fmt={fmtHz} size={44}
+        onChange={onCutMax} />
+    </div>
+  )
+}
+
+// One modulator lane: header, the shared Dest + Depth row, then the body for
+// whichever kind this lane is.
+function ModDeck({ slotIndex, mod, onModParam, onRemove, onCutMin, onCutMax }) {
+  const lane = Number(mod.index ?? 0)
+  const kind = Number(mod.kind ?? MOD_KIND_OFF)
+  const dest = clamp(Math.round(mod.dest ?? 0), 0, 5)
+  const depth = Number(mod.depth ?? 0)
+  // A follower is depth-gated; the other two are live the moment they exist.
+  const active = kind === MOD_KIND_DYN ? depth !== 0 : true
+
+  const onMod = useCallback(
+    (name, value) => onModParam(slotIndex, lane, name, value),
+    [onModParam, slotIndex, lane])
+
+  return (
+    <div className={`filter-col filter-col-dyn filter-mod-lane${active ? ' is-active' : ''}`}>
+      <ModHeader
+        title={modKindLabel(kind)}
+        badge={`M${lane + 1}`}
+        onRemove={() => onRemove(slotIndex, lane)} />
+      <ModDestDepth dest={dest} depth={depth}
+        onDest={(v) => onMod('dest', v)}
+        onDepth={(v) => onMod('depth', v)} />
+      {kind === MOD_KIND_LFO && <LfoBody mod={mod} onMod={onMod} />}
+      {kind === MOD_KIND_ENV && <EnvBody mod={mod} onMod={onMod} />}
+      {kind === MOD_KIND_DYN && (
+        <DynBody mod={mod} onMod={onMod}
+          onCutMin={(v) => onCutMin(slotIndex, lane, v)}
+          onCutMax={(v) => onCutMax(slotIndex, lane, v)} />
+      )}
+    </div>
+  )
+}
+
+// The "+ Add Modulator" affordance: one button per kind, all disabled once the
+// slot's lanes are full.
+function AddModulatorBar({ slotIndex, used, onAdd }) {
+  const full = used >= MAX_MODS_PER_SLOT
+  return (
+    <div className="filter-mod-add">
+      <span className="filter-field-label">
+        Add modulator&nbsp;<span className="filter-mod-count">{used}/{MAX_MODS_PER_SLOT}</span>
+      </span>
+      <div className="filter-mod-add-btns">
+        {MOD_KINDS.map(k => (
+          <button
+            key={k.id}
+            type="button"
+            className="filter-mod-add-btn"
+            disabled={full}
+            title={full
+              ? `This slot already has ${MAX_MODS_PER_SLOT} modulators`
+              : k.blurb}
+            onClick={() => onAdd(slotIndex, k.value)}
+          >
+            <Plus size={12} />{k.label}
+          </button>
+        ))}
+      </div>
+    </div>
+  )
+}
+
+// ── Selected-slot control deck ────────────────────────────────────────────────
+
+function SlotControls({ slot, index, onParam, onModParam, onAddMod, onRemoveMod,
+                        onCutMin, onCutMax }) {
+  const type = clamp(Math.round(slot.type ?? 0), 0, 8)
+  const slope = clamp(Math.round(slot.slope ?? 1), 0, 3)
+  const mods = activeMods(slot)
+
+  return (
+    <>
+      {/* Deck row 1 — filter shaping */}
+      <div className="filter-deck">
+        <div className="filter-col filter-col-filter">
+          <div className="filter-col-title">Filter</div>
+          <label className="filter-field">
+            <span className="filter-field-label">Type</span>
+            <select
+              className="filter-select"
+              value={type}
+              onChange={(e) => onParam(index, 'type', Number(e.target.value))}
+            >
+              {SLOT_TYPES.map(t => (
+                <option key={t.value} value={t.value}>{t.label}</option>
+              ))}
+            </select>
+          </label>
+          {typeUsesSlope(type) && (
+            <div className="filter-field">
+              <span className="filter-field-label">Slope&nbsp;dB/oct</span>
+              <div className="filter-seg">
+                {SLOPES.map(s => (
+                  <button
+                    key={s.value}
+                    type="button"
+                    className={`filter-seg-btn${slope === s.value ? ' active' : ''}`}
+                    onClick={() => onParam(index, 'slope', s.value)}
+                  >
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="filter-col filter-col-tone">
+          <div className="filter-col-title">Tone</div>
+          <div className="filter-knob-row">
+            <FilterKnob value={Number(slot.cutoff ?? 1000)} min={20} max={20000} def={1000}
+              skew={FREQ_SKEW} label="CUTOFF" fmt={fmtHz}
+              onChange={(v) => onParam(index, 'cutoff', v)} />
+            <FilterKnob value={Number(slot.q ?? 0.7071)} min={0.5} max={30} def={0.7071}
+              skew={Q_SKEW} label="Q" fmt={fmtQ}
+              onChange={(v) => onParam(index, 'q', v)} />
+            {typeUsesGain(type) && (
+              <FilterKnob value={Number(slot.gain ?? 0)}
+                min={typeGainRange(type).min} max={typeGainRange(type).max} def={0}
+                label={typeGainLabel(type)} fmt={fmtGain}
+                onChange={(v) => onParam(index, 'gain', v)} />
+            )}
+            {typeUsesMorph(type) && (
+              <FilterKnob value={Number(slot.morph ?? 0)} min={0} max={1} def={0}
+                label={typeMorphLabel(type)} fmt={fmtMorph}
+                onChange={(v) => onParam(index, 'morph', v)} />
+            )}
+          </div>
+        </div>
+
+        <div className="filter-col filter-col-shape">
+          <div className="filter-col-title">Shape</div>
+          <div className="filter-knob-row">
+            <FilterKnob value={Number(slot.drive ?? 0)} min={0} max={24} def={0}
+              label="DRIVE" fmt={fmtDrive}
+              onChange={(v) => onParam(index, 'drive', v)} />
+            <FilterKnob value={Number(slot.mix ?? 1)} min={0} max={1} def={1}
+              label="MIX" fmt={fmtMix}
+              onChange={(v) => onParam(index, 'mix', v)} />
+          </div>
+        </div>
+      </div>
+
+      {/* Modulators — an addable list, any mix of kinds, any mix of targets */}
+      <div className="filter-deck">
+        <div className="filter-col filter-col-mods">
+          <AddModulatorBar slotIndex={index} used={mods.length} onAdd={onAddMod} />
+          <div className="filter-mod-hint">
+            <Info size={12} />
+            <span>
+              Every modulator composes live around this slot&apos;s knobs — no FX graph
+              needed. Add as many as you like and point each one at a different knob.
+            </span>
+          </div>
+          {mods.length === 0 && (
+            <div className="filter-mod-empty">
+              No modulators on this slot. Add an LFO, an Envelope or a Dynamics
+              follower above to start moving its knobs.
+            </div>
+          )}
+        </div>
+      </div>
+
+      {mods.map(mod => (
+        <div className="filter-deck" key={mod.index}>
+          <ModDeck
+            slotIndex={index}
+            mod={mod}
+            onModParam={onModParam}
+            onRemove={onRemoveMod}
+            onCutMin={onCutMin}
+            onCutMax={onCutMax}
+          />
+        </div>
+      ))}
+    </>
+  )
+}
+
+// ── Panel ─────────────────────────────────────────────────────────────────────
 
 export default function FilterPanel() {
   const target = useFilterStore(s => s.target)
@@ -361,13 +666,11 @@ export default function FilterPanel() {
   const close = useFilterStore(s => s.close)
 
   const [panelPos, setPanelPos] = useState(() => ({
-    x: Math.round(window.innerWidth / 2 - 310),
-    y: 90,
+    x: Math.round(window.innerWidth / 2 - 380),
+    y: 72,
   }))
   const panelDragRef = useRef(null)
 
-  // Bold aggregate curve (mutated by the debounced refresh, not reactive) plus a
-  // version counter that bumps to trigger a repaint when it lands.
   const aggregateRef = useRef(null)
   const [curveVersion, setCurveVersion] = useState(0)
   const refreshTimerRef = useRef(null)
@@ -388,8 +691,6 @@ export default function FilterPanel() {
     }, 100)
   }, [refreshCurve])
 
-  // Fetch the curve once when a target opens, then whenever the slot list
-  // identity changes (add/remove). Param edits schedule their own refresh.
   useEffect(() => {
     if (!target) return
     refreshCurve()
@@ -401,19 +702,36 @@ export default function FilterPanel() {
     }
   }, [target, refreshCurve])
 
-  // Param write → optimistic store update → debounced curve refresh.
   const handleParam = useCallback((i, paramName, value) => {
     useFilterStore.getState().setSlotParam(i, paramName, value)
     scheduleRefresh()
   }, [scheduleRefresh])
 
-  const handleCutMin = useCallback((i, value) => {
-    useFilterStore.getState().setCutMin(i, value)
+  const handleModParam = useCallback((i, lane, paramName, value) => {
+    useFilterStore.getState().setModParam(i, lane, paramName, value)
     scheduleRefresh()
   }, [scheduleRefresh])
 
-  const handleCutMax = useCallback((i, value) => {
-    useFilterStore.getState().setCutMax(i, value)
+  // Add / remove need a full refetch: the engine seeds a new lane with its
+  // kind's defaults, and those come back in the next getSlots payload.
+  const handleAddMod = useCallback(async (i, kind) => {
+    await useFilterStore.getState().addModulator(i, kind)
+    refreshCurve()
+  }, [refreshCurve])
+
+  const handleRemoveMod = useCallback(async (i, lane) => {
+    await useFilterStore.getState().removeModulator(i, lane)
+    await useFilterStore.getState().fetchSlots()
+    refreshCurve()
+  }, [refreshCurve])
+
+  const handleCutMin = useCallback((i, lane, value) => {
+    useFilterStore.getState().setCutMin(i, lane, value)
+    scheduleRefresh()
+  }, [scheduleRefresh])
+
+  const handleCutMax = useCallback((i, lane, value) => {
+    useFilterStore.getState().setCutMax(i, lane, value)
     scheduleRefresh()
   }, [scheduleRefresh])
 
@@ -432,8 +750,7 @@ export default function FilterPanel() {
     refreshCurve()
   }, [refreshCurve])
 
-  // Panel drag.
-  const handlePanelDragStart = useCallback((e) => {
+  const handleHeaderMouseDown = useCallback((e) => {
     if (e.target.closest('button') || e.target.closest('select') || e.target.closest('input')) return
     e.preventDefault()
     panelDragRef.current = {
@@ -447,8 +764,8 @@ export default function FilterPanel() {
       if (!panelDragRef.current) return
       const { startMouseX, startMouseY, startPanelX, startPanelY } = panelDragRef.current
       setPanelPos({
-        x: clamp(startPanelX + (e.clientX - startMouseX), -560, window.innerWidth - 100),
-        y: clamp(startPanelY + (e.clientY - startMouseY), 0, window.innerHeight - 100),
+        x: clamp(startPanelX + (e.clientX - startMouseX), -680, window.innerWidth - 100),
+        y: clamp(startPanelY + (e.clientY - startMouseY), 0, window.innerHeight - 80),
       })
     }
     const onUp = () => { panelDragRef.current = null }
@@ -466,19 +783,22 @@ export default function FilterPanel() {
 
   return (
     <div className="filter-panel" style={{ left: panelPos.x, top: panelPos.y }}>
-      <div className="filter-panel-header" onMouseDown={handlePanelDragStart}>
+      <div className="filter-panel-header" onMouseDown={handleHeaderMouseDown}>
         <span className="filter-panel-title">XLETH FILTER</span>
-        <button className="filter-panel-close" onClick={close} title="Close">
-          <X size={13} />
-        </button>
+        <span className="filter-panel-sub">multi-slot filter</span>
+        <div className="filter-header-actions">
+          <button type="button" className="filter-panel-close" onClick={close} title="Close">
+            <X size={13} />
+          </button>
+        </div>
       </div>
 
-      {/* Slot strip — up to 8 slots, an add button, then disabled ghosts. */}
-      <div className="filter-slot-strip">
+      {/* Slot rail */}
+      <div className="filter-slot-rail">
         {Array.from({ length: MAX_SLOTS }, (_, i) => {
           if (i < slots.length) {
             return (
-              <SlotChip
+              <SlotTab
                 key={i}
                 slot={slots[i]}
                 index={i}
@@ -491,31 +811,36 @@ export default function FilterPanel() {
           }
           if (i === slots.length) {
             return (
-              <button key={i} className="filter-slot-add" onClick={handleAddSlot} title="Add filter slot">
+              <button key={i} type="button" className="filter-slot-add" onClick={handleAddSlot} title="Add filter slot">
                 <Plus size={14} />
               </button>
             )
           }
-          return <div key={i} className="filter-slot-chip filter-slot-chip--ghost" aria-hidden />
+          return <div key={i} className="filter-slot-tab filter-slot-tab--ghost" aria-hidden />
         })}
       </div>
 
-      {/* Response curve. */}
-      <div className="filter-response-row">
-        <ResponseCurve
-          slots={slots}
-          selectedSlotIndex={selectedSlotIndex}
-          aggregateRef={aggregateRef}
-          version={curveVersion}
-        />
+      {/* Graph well */}
+      <div className="filter-graph-row">
+        <div className="filter-graph-wrap">
+          <ResponseCurve
+            slots={slots}
+            selectedSlotIndex={selectedSlotIndex}
+            aggregateRef={aggregateRef}
+            version={curveVersion}
+          />
+        </div>
       </div>
 
-      {/* Selected-slot controls, or an empty-state hint. */}
+      {/* Control deck / empty state */}
       {selected ? (
         <SlotControls
           slot={selected}
           index={selectedSlotIndex}
           onParam={handleParam}
+          onModParam={handleModParam}
+          onAddMod={handleAddMod}
+          onRemoveMod={handleRemoveMod}
           onCutMin={handleCutMin}
           onCutMax={handleCutMax}
         />

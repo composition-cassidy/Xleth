@@ -5,6 +5,17 @@ import {
   GRAPH_MACRO_OUTPUT_PORT,
   GRAPH_ENVELOPE_NODE_TYPE,
   GRAPH_ENVELOPE_OUTPUT_PORT,
+  GRAPH_LFO_NODE_TYPE,
+  GRAPH_LFO_OUTPUT_PORT,
+  LFO_NODE_DEFAULTS,
+  addGraphLfoNode,
+  createDefaultLfoNodeData,
+  isLfoGraphNode,
+  normalizeLfoNodeData,
+  updateGraphLfoNodeData,
+  canConnectLfoToParameter,
+  collectLfoParameterWrites,
+  connectLfoToParameter,
   GRAPH_MUTATION_REJECTION,
   GRAPH_PARAMETER_CURVE_BEZIER,
   GRAPH_PARAMETER_CURVE_LINEAR,
@@ -3387,6 +3398,751 @@ describe('EVC-R1 envelope → parameter links', () => {
     const payload = buildLinearGraphTopologyPayload(linked)
     expect(payload.nodes.some((node) => node.nodeId === 'env-1')).toBe(false)
     expect(payload.edges.some((edge) => edge.edgeId === 'p-env-mix')).toBe(false)
+    expect(analyzeLinearGraphTopology(linked)).toMatchObject({ ok: true })
+  })
+})
+
+// ── LFO Modulator node ──────────────────────────────────────────────────────
+
+function makeLfoNode(id = 'lfo-1', data = {}, position = { x: 80, y: 400 }) {
+  return { id, type: GRAPH_LFO_NODE_TYPE, position, data }
+}
+
+// A valid (input/effect/output) graph with one LFO node appended, so the
+// trackInput/trackOutput multiplicity invariant still holds.
+function makeGraphWithLfo(lfoOverrides = {}, position) {
+  const base = makeValidGraphState()
+  return {
+    ...base,
+    nodes: [...base.nodes, makeLfoNode('lfo-1', lfoOverrides, position)],
+  }
+}
+
+describe('LFO node data normalization (parameter modulator)', () => {
+  it('normalizeLfoNodeData applies all defaults for missing data', () => {
+    expect(normalizeLfoNodeData(undefined)).toEqual({
+      label: 'LFO',
+      waveform: LFO_NODE_DEFAULTS.waveform,
+      rateMode: 'free',
+      rateMs: 250,
+      syncDivision: 4,
+      phaseOffset: 0,
+    })
+  })
+
+  it('accepts a fully-specified valid payload unchanged', () => {
+    const waveform = [
+      { t: 0, v: 0 },
+      { t: 0.25, v: 1 },
+      { t: 0.5, v: 0 },
+      { t: 0.75, v: -1 },
+      { t: 1, v: 0 },
+    ]
+    const data = normalizeLfoNodeData({
+      label: 'Tremolo',
+      waveform,
+      rateMode: 'sync',
+      rateMs: 500,
+      syncDivision: 8,
+      phaseOffset: 0.25,
+    })
+    expect(data).toEqual({
+      label: 'Tremolo',
+      waveform,
+      rateMode: 'sync',
+      rateMs: 500,
+      syncDivision: 8,
+      phaseOffset: 0.25,
+    })
+  })
+
+  it('closed schema drops unknown fields (e.g. a stray legacy amount)', () => {
+    const data = normalizeLfoNodeData({ label: 'LFO', bogusField: 'nope', amount: 0.5 })
+    expect(data).not.toHaveProperty('bogusField')
+    expect(data).not.toHaveProperty('amount')
+  })
+
+  it('repairs a blank or non-string label to the default', () => {
+    expect(normalizeLfoNodeData({ label: '   ' }).label).toBe('LFO')
+    expect(normalizeLfoNodeData({ label: 123 }).label).toBe('LFO')
+  })
+
+  it('rateMode only accepts "sync"; anything else repairs to "free"', () => {
+    expect(normalizeLfoNodeData({ rateMode: 'sync' }).rateMode).toBe('sync')
+    expect(normalizeLfoNodeData({ rateMode: 'free' }).rateMode).toBe('free')
+    expect(normalizeLfoNodeData({ rateMode: 'bogus' }).rateMode).toBe('free')
+    expect(normalizeLfoNodeData({ rateMode: null }).rateMode).toBe('free')
+  })
+
+  it('clamps rateMs into [1, 60000] and repairs non-finite values to the default', () => {
+    expect(normalizeLfoNodeData({ rateMs: -5 }).rateMs).toBe(1)
+    expect(normalizeLfoNodeData({ rateMs: 999999 }).rateMs).toBe(60000)
+    expect(normalizeLfoNodeData({ rateMs: Number.NaN }).rateMs).toBe(250)
+    expect(normalizeLfoNodeData({ rateMs: Infinity }).rateMs).toBe(250)
+    expect(normalizeLfoNodeData({ rateMs: 'nope' }).rateMs).toBe(250)
+    expect(normalizeLfoNodeData({ rateMs: 80 }).rateMs).toBe(80)
+  })
+
+  it('syncDivision only accepts the closed straight-division set; anything else repairs to the default', () => {
+    for (const division of [0.125, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 64]) {
+      expect(normalizeLfoNodeData({ syncDivision: division }).syncDivision).toBe(division)
+    }
+    expect(normalizeLfoNodeData({ syncDivision: 3 }).syncDivision).toBe(4)
+    expect(normalizeLfoNodeData({ syncDivision: 0 }).syncDivision).toBe(4)
+    expect(normalizeLfoNodeData({ syncDivision: 128 }).syncDivision).toBe(4)
+    expect(normalizeLfoNodeData({ syncDivision: '4' }).syncDivision).toBe(4) // no string coercion
+  })
+
+  // The sub-1 entries are the multi-bar rates (0.5 = 2/1, 0.25 = 4/1, 0.125 = 8/1),
+  // added because 1/1 was still too fast for slow sweeps. They must survive as
+  // fractions: the engine reads syncDivision as a double and derives the cycle
+  // period as (4 / syncDivision) beats, so truncating any of them to an integer
+  // would collapse every multi-bar rate onto the same clamp floor.
+  it('accepts fractional multi-bar sync divisions without truncating them', () => {
+    expect(normalizeLfoNodeData({ syncDivision: 0.5 }).syncDivision).toBe(0.5)
+    expect(normalizeLfoNodeData({ syncDivision: 0.25 }).syncDivision).toBe(0.25)
+    expect(normalizeLfoNodeData({ syncDivision: 0.125 }).syncDivision).toBe(0.125)
+    // Still a closed set — an arbitrary fraction is not silently accepted.
+    expect(normalizeLfoNodeData({ syncDivision: 0.3 }).syncDivision).toBe(4)
+    expect(normalizeLfoNodeData({ syncDivision: 0.0625 }).syncDivision).toBe(4)
+  })
+
+  it('phaseOffset wraps into [0, 1) rather than falling back for any finite value', () => {
+    expect(normalizeLfoNodeData({ phaseOffset: 1.25 }).phaseOffset).toBeCloseTo(0.25)
+    expect(normalizeLfoNodeData({ phaseOffset: -0.25 }).phaseOffset).toBeCloseTo(0.75)
+    expect(normalizeLfoNodeData({ phaseOffset: 0.5 }).phaseOffset).toBe(0.5)
+    expect(normalizeLfoNodeData({ phaseOffset: Number.NaN }).phaseOffset).toBe(0)
+  })
+
+  describe('waveform breakpoint sanitization', () => {
+    it('a non-array waveform repairs to the default 33-point sine', () => {
+      expect(normalizeLfoNodeData({ waveform: 'nope' }).waveform).toEqual(LFO_NODE_DEFAULTS.waveform)
+      expect(normalizeLfoNodeData({ waveform: null }).waveform).toEqual(LFO_NODE_DEFAULTS.waveform)
+      expect(normalizeLfoNodeData({ waveform: {} }).waveform).toEqual(LFO_NODE_DEFAULTS.waveform)
+    })
+
+    it('an empty array, or an array with no valid points, repairs to the default', () => {
+      expect(normalizeLfoNodeData({ waveform: [] }).waveform).toEqual(LFO_NODE_DEFAULTS.waveform)
+      expect(normalizeLfoNodeData({ waveform: ['nope', 42, null] }).waveform).toEqual(LFO_NODE_DEFAULTS.waveform)
+    })
+
+    it('drops malformed points and clamps t/v on the survivors', () => {
+      const data = normalizeLfoNodeData({
+        waveform: [
+          { t: 0, v: 0 },
+          'not-a-point',
+          { t: 0.5, v: 5 }, // v out of range, clamps rather than drops
+          { t: -0.5, v: 0.25 }, // t out of range, clamps rather than drops
+          { t: Number.NaN, v: 0.5 }, // non-finite t, dropped entirely
+          { t: 1, v: 0 },
+        ],
+      })
+      expect(data.waveform).toEqual([
+        { t: 0, v: 0 },
+        { t: 0, v: 0.25 }, // clamped from t:-0.5, stable-sorts after the original t:0 point
+        { t: 0.5, v: 1 },
+        { t: 1, v: 0 },
+      ])
+    })
+
+    it('sorts unsorted points ascending by t', () => {
+      const data = normalizeLfoNodeData({
+        waveform: [
+          { t: 1, v: 0 },
+          { t: 0, v: 0.1 },
+          { t: 0.5, v: 0.9 },
+        ],
+      })
+      expect(data.waveform.map((p) => p.t)).toEqual([0, 0.5, 1])
+    })
+
+    it('synthesizes missing t=0/t=1 endpoints from the nearest surviving point', () => {
+      const data = normalizeLfoNodeData({
+        waveform: [
+          { t: 0.2, v: 0.5 },
+          { t: 0.8, v: -0.5 },
+        ],
+      })
+      expect(data.waveform[0]).toEqual({ t: 0, v: 0.5 })
+      expect(data.waveform.at(-1)).toEqual({ t: 1, v: -0.5 })
+    })
+  })
+
+  it('createDefaultLfoNodeData equals the documented defaults', () => {
+    expect(createDefaultLfoNodeData()).toEqual(LFO_NODE_DEFAULTS)
+  })
+
+  it('createDefaultLfoNodeData applies clamped overrides', () => {
+    const data = createDefaultLfoNodeData({ label: '  Square  ', rateMode: 'sync', syncDivision: 16 })
+    expect(data.label).toBe('Square')
+    expect(data.rateMode).toBe('sync')
+    expect(data.syncDivision).toBe(16)
+  })
+
+  it('isLfoGraphNode only matches lfo nodes', () => {
+    expect(isLfoGraphNode(makeLfoNode())).toBe(true)
+    expect(isLfoGraphNode({ type: 'effect' })).toBe(false)
+    expect(isLfoGraphNode({ type: GRAPH_MACRO_NODE_TYPE })).toBe(false)
+    expect(isLfoGraphNode({ type: GRAPH_ENVELOPE_NODE_TYPE })).toBe(false)
+    expect(isLfoGraphNode(null)).toBe(false)
+    expect(isLfoGraphNode(undefined)).toBe(false)
+  })
+})
+
+describe('LFO node loadGraphState integration', () => {
+  it('preserves a valid lfo node through load', () => {
+    const result = validateGraphState(makeGraphWithLfo({
+      label: 'Slow Sine',
+      rateMode: 'sync',
+      syncDivision: 2,
+      phaseOffset: 0.1,
+    }), '7')
+
+    expect(result.status).toBe('valid')
+    const lfo = result.graphState.nodes.find((n) => n.id === 'lfo-1')
+    expect(lfo.type).toBe(GRAPH_LFO_NODE_TYPE)
+    expect(lfo.data).toEqual({
+      label: 'Slow Sine',
+      waveform: LFO_NODE_DEFAULTS.waveform,
+      rateMode: 'sync',
+      rateMs: 250,
+      syncDivision: 2,
+      phaseOffset: 0.1,
+    })
+  })
+
+  it('repairs an lfo node whose data is not an object', () => {
+    const result = validateGraphState(makeGraphWithLfo(null), '7')
+    expect(result.status).toBe('valid')
+    const lfo = result.graphState.nodes.find((n) => n.id === 'lfo-1')
+    expect(lfo.data).toEqual(createDefaultLfoNodeData())
+  })
+
+  it('does not turn an lfo node into an effect node (no effectInstanceId required)', () => {
+    const result = validateGraphState(makeGraphWithLfo(), '7')
+    expect(result.status).toBe('valid')
+    const lfo = result.graphState.nodes.find((n) => n.id === 'lfo-1')
+    expect(lfo.type).toBe(GRAPH_LFO_NODE_TYPE)
+    expect(lfo.data).not.toHaveProperty('effectInstanceId')
+    expect(lfo.data).not.toHaveProperty('pluginId')
+    expect(lfo.data).not.toHaveProperty('exposedParameterPorts')
+  })
+
+  it('ignores lfo nodes in the audio topology payload', () => {
+    const result = validateGraphState(makeGraphWithLfo(), '7')
+    const payload = buildLinearGraphTopologyPayload(result.graphState)
+    expect(payload.nodes.some((node) => node.type === GRAPH_LFO_NODE_TYPE)).toBe(false)
+    expect(payload.nodes.some((node) => node.nodeId === 'lfo-1')).toBe(false)
+    // The linear input→effect→output path is still fully supported.
+    expect(analyzeLinearGraphTopology(result.graphState)).toMatchObject({ ok: true })
+  })
+
+  it('drops an audio edge that touches an lfo node', () => {
+    const withEdge = makeGraphWithLfo()
+    withEdge.edges = [
+      ...withEdge.edges,
+      {
+        id: 'bad-lfo-edge',
+        sourceNodeId: 'fx-1',
+        sourcePort: 'audioOut',
+        targetNodeId: 'lfo-1',
+        targetPort: 'audio',
+        type: 'audio',
+      },
+    ]
+    const result = validateGraphState(withEdge, '7')
+    expect(result.status).toBe('valid')
+    expect(result.graphState.edges.some((e) => e.id === 'bad-lfo-edge')).toBe(false)
+  })
+
+  it('leaves graphState without lfo nodes unchanged', () => {
+    const result = validateGraphState(makeValidGraphState(), '7')
+    expect(result.status).toBe('valid')
+    expect(result.graphState.nodes.some((n) => n.type === GRAPH_LFO_NODE_TYPE)).toBe(false)
+  })
+})
+
+describe('LFO node mutation helpers', () => {
+  it('addGraphLfoNode appends a defaulted lfo node immutably', () => {
+    const gs = makeGuardGraphState()
+    const result = addGraphLfoNode(gs, { idFactory: () => 'lfo-new' })
+
+    expect(result.ok).toBe(true)
+    const node = result.graphState.nodes.at(-1)
+    expect(node.id).toBe('lfo-new')
+    expect(node.type).toBe(GRAPH_LFO_NODE_TYPE)
+    expect(node.data).toEqual(createDefaultLfoNodeData())
+    expect(Number.isFinite(node.position.x) && Number.isFinite(node.position.y)).toBe(true)
+    // Immutability + preservation of unrelated fields/nodes/edges.
+    expect(gs.nodes.some((n) => n.id === 'lfo-new')).toBe(false)
+    expect(result.graphState.customField).toBe('preserved')
+    expect(result.graphState.edges).toHaveLength(gs.edges.length)
+  })
+
+  it('addGraphLfoNode applies data overrides and explicit position', () => {
+    const result = addGraphLfoNode(makeGuardGraphState(), {
+      idFactory: () => 'lfo-a',
+      position: { x: 12, y: 34 },
+      data: { label: 'Tremolo', rateMode: 'sync', syncDivision: 8 },
+    })
+    expect(result.ok).toBe(true)
+    const node = result.graphState.nodes.at(-1)
+    expect(node.position).toEqual({ x: 12, y: 34 })
+    expect(node.data.label).toBe('Tremolo')
+    expect(node.data.rateMode).toBe('sync')
+    expect(node.data.syncDivision).toBe(8)
+  })
+
+  it('addGraphLfoNode rejects an invalid graphState', () => {
+    expect(addGraphLfoNode(null)).toMatchObject({
+      ok: false,
+      reason: GRAPH_MUTATION_REJECTION.INVALID_GRAPH_STATE,
+    })
+  })
+
+  it('removeGraphNode can remove an lfo node (it is not protected)', () => {
+    const added = addGraphLfoNode(makeGuardGraphState(), { idFactory: () => 'lfo-a' })
+    expect(canRemoveGraphNode(added.graphState, 'lfo-a')).toEqual({ ok: true })
+    const removed = removeGraphNode(added.graphState, 'lfo-a')
+    expect(removed.ok).toBe(true)
+    expect(removed.graphState.nodes.some((n) => n.id === 'lfo-a')).toBe(false)
+  })
+
+  it('updateGraphLfoNodeData updates only the targeted lfo node', () => {
+    const added = addGraphLfoNode(makeGuardGraphState(), { idFactory: () => 'lfo-a' })
+    const result = updateGraphLfoNodeData(added.graphState, 'lfo-a', {
+      rateMode: 'sync',
+      syncDivision: 16,
+      phaseOffset: 0.3,
+    })
+
+    expect(result.ok).toBe(true)
+    const node = result.graphState.nodes.find((n) => n.id === 'lfo-a')
+    expect(node.data.rateMode).toBe('sync')
+    expect(node.data.syncDivision).toBe(16)
+    expect(node.data.phaseOffset).toBe(0.3)
+    // Unrelated lfo fields preserved.
+    expect(node.data.rateMs).toBe(LFO_NODE_DEFAULTS.rateMs)
+    expect(node.data.label).toBe(LFO_NODE_DEFAULTS.label)
+  })
+
+  it('updateGraphLfoNodeData preserves unrelated nodes and graphState fields', () => {
+    const added = addGraphLfoNode(makeGuardGraphState(), { idFactory: () => 'lfo-a' })
+    const before = added.graphState
+    const result = updateGraphLfoNodeData(before, 'lfo-a', { rateMs: 80 })
+
+    expect(result.ok).toBe(true)
+    expect(result.graphState.customField).toBe('preserved')
+    expect(result.graphState.viewport).toEqual(before.viewport)
+    expect(result.graphState.nodes.find((n) => n.id === 'fx-a')).toEqual(
+      before.nodes.find((n) => n.id === 'fx-a'),
+    )
+    expect(result.graphState.edges).toEqual(before.edges)
+    // Input graphState not mutated.
+    expect(before.nodes.find((n) => n.id === 'lfo-a').data.rateMs).toBe(LFO_NODE_DEFAULTS.rateMs)
+  })
+
+  it('updateGraphLfoNodeData rejects non-lfo and missing nodes', () => {
+    const added = addGraphLfoNode(makeGuardGraphState(), { idFactory: () => 'lfo-a' })
+    expect(updateGraphLfoNodeData(added.graphState, 'fx-a', { rateMs: 80 })).toEqual({
+      ok: false,
+      reason: GRAPH_MUTATION_REJECTION.UNKNOWN_NODE_TYPE,
+    })
+    expect(updateGraphLfoNodeData(added.graphState, 'missing', { rateMs: 80 })).toEqual({
+      ok: false,
+      reason: GRAPH_MUTATION_REJECTION.MISSING_NODE,
+    })
+    expect(updateGraphLfoNodeData(added.graphState, 'lfo-a', null)).toEqual({
+      ok: false,
+      reason: GRAPH_MUTATION_REJECTION.INVALID_LFO_PATCH,
+    })
+  })
+})
+
+describe('LFO nodes are not macro/envelope modulation endpoints (and vice versa)', () => {
+  // A graph with a macro node, an envelope node, an effect exposing a writable
+  // param, and an LFO node — so macro/envelope<->lfo cross-type links can be
+  // attempted directly.
+  function makeMacroEnvelopeLfoGraph() {
+    const base = makeValidGraphState()
+    return {
+      ...base,
+      nodes: [
+        base.nodes[0],
+        {
+          ...base.nodes[1],
+          data: {
+            ...base.nodes[1].data,
+            exposedParameterPorts: [
+              {
+                parameterId: 'mix',
+                parameterIndexFallback: 1,
+                nameSnapshot: 'Mix',
+                labelSnapshot: '%',
+                parameterIdIsFallback: false,
+                automatable: true,
+                readOnly: false,
+              },
+            ],
+          },
+        },
+        { id: 'macro-a', type: GRAPH_MACRO_NODE_TYPE, position: { x: 80, y: 120 }, data: { label: 'Macro 1', normalizedValue: 0.5 } },
+        makeEnvelopeNode('env-1'),
+        makeLfoNode('lfo-1'),
+        base.nodes[2],
+      ],
+    }
+  }
+
+  it('rejects an lfo node as a macro→parameter source and target', () => {
+    const gs = validateGraphState(makeMacroEnvelopeLfoGraph(), '7').graphState
+    expect(canConnectMacroToParameter(gs, {
+      sourceNodeId: 'lfo-1',
+      targetNodeId: 'fx-1',
+      parameterId: 'mix',
+    })).toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SOURCE_TYPE })
+    expect(canConnectMacroToParameter(gs, {
+      sourceNodeId: 'macro-a',
+      targetNodeId: 'lfo-1',
+      parameterId: 'mix',
+    })).toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_TARGET_TYPE })
+  })
+
+  it('rejects an lfo node as an envelope→parameter source and target', () => {
+    const gs = validateGraphState(makeMacroEnvelopeLfoGraph(), '7').graphState
+    expect(canConnectEnvelopeToParameter(gs, {
+      sourceNodeId: 'lfo-1',
+      targetNodeId: 'fx-1',
+      parameterId: 'mix',
+    })).toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SOURCE_TYPE })
+    expect(canConnectEnvelopeToParameter(gs, {
+      sourceNodeId: 'env-1',
+      targetNodeId: 'lfo-1',
+      parameterId: 'mix',
+    })).toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_TARGET_TYPE })
+  })
+
+  it('rejects a macro/envelope node as an lfo→parameter source, and an envelope node as target', () => {
+    const gs = validateGraphState(makeMacroEnvelopeLfoGraph(), '7').graphState
+    expect(canConnectLfoToParameter(gs, {
+      sourceNodeId: 'macro-a',
+      targetNodeId: 'fx-1',
+      parameterId: 'mix',
+    })).toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SOURCE_TYPE })
+    expect(canConnectLfoToParameter(gs, {
+      sourceNodeId: 'env-1',
+      targetNodeId: 'fx-1',
+      parameterId: 'mix',
+    })).toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SOURCE_TYPE })
+    expect(canConnectLfoToParameter(gs, {
+      sourceNodeId: 'lfo-1',
+      targetNodeId: 'env-1',
+      parameterId: 'mix',
+    })).toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_TARGET_TYPE })
+  })
+
+  it('rejects audio connections to/from an lfo node', () => {
+    const gs = validateGraphState(makeMacroEnvelopeLfoGraph(), '7').graphState
+    expect(canConnectGraphNodes(gs, 'lfo-1', 'output')).toEqual({
+      ok: false,
+      reason: GRAPH_MUTATION_REJECTION.INVALID_SOURCE_TYPE,
+    })
+    expect(canConnectGraphNodes(gs, 'input', 'lfo-1')).toEqual({
+      ok: false,
+      reason: GRAPH_MUTATION_REJECTION.INVALID_TARGET_TYPE,
+    })
+  })
+})
+
+describe('LFO → parameter links', () => {
+  // A graph with an effect exposing a writable param, a macro node, an envelope
+  // node, and an LFO node — so LFO→parameter links can be exercised alongside the
+  // macro/envelope paths and cross-type port collisions can be tested directly.
+  function makeLfoLinkGraph() {
+    const base = makeValidGraphState()
+    return {
+      ...base,
+      nodes: [
+        base.nodes[0],
+        {
+          ...base.nodes[1],
+          data: {
+            ...base.nodes[1].data,
+            exposedParameterPorts: [
+              {
+                parameterId: 'mix',
+                parameterIndexFallback: 1,
+                nameSnapshot: 'Mix',
+                labelSnapshot: '%',
+                parameterIdIsFallback: false,
+                automatable: true,
+                readOnly: false,
+              },
+            ],
+          },
+        },
+        { id: 'macro-a', type: GRAPH_MACRO_NODE_TYPE, position: { x: 80, y: 120 }, data: { label: 'Macro 1', normalizedValue: 0.5 } },
+        makeEnvelopeNode('env-1'),
+        makeLfoNode('lfo-1'),
+        base.nodes[2],
+      ],
+    }
+  }
+
+  function loadLfoLinkGraph() {
+    return validateGraphState(makeLfoLinkGraph(), '7').graphState
+  }
+
+  it('accepts a valid lfo controlOut → exposed effect parameter', () => {
+    const gs = loadLfoLinkGraph()
+    const check = canConnectLfoToParameter(gs, {
+      sourceNodeId: 'lfo-1',
+      targetNodeId: 'fx-1',
+      parameterId: 'mix',
+    })
+    expect(check.ok).toBe(true)
+    expect(check.targetPort).toBe('gpp:fx-1:mix')
+    expect(check.target.kind).toBe('graph-parameter')
+  })
+
+  it('rejects a non-control (effect) source', () => {
+    const gs = loadLfoLinkGraph()
+    expect(canConnectLfoToParameter(gs, {
+      sourceNodeId: 'fx-1',
+      targetNodeId: 'fx-1',
+      parameterId: 'mix',
+    })).toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.SELF_CONNECTION })
+    expect(canConnectLfoToParameter(gs, {
+      sourceNodeId: 'input',
+      targetNodeId: 'fx-1',
+      parameterId: 'mix',
+    })).toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SOURCE_TYPE })
+  })
+
+  it('rejects an lfo node as the target', () => {
+    const gs = loadLfoLinkGraph()
+    // lfo-1 → lfo-1 is a self link; use a second LFO to test the target gate.
+    const withSecondLfo = {
+      ...gs,
+      nodes: [...gs.nodes, makeLfoNode('lfo-2', {}, { x: 80, y: 440 })],
+    }
+    expect(canConnectLfoToParameter(withSecondLfo, {
+      sourceNodeId: 'lfo-1',
+      targetNodeId: 'lfo-2',
+      parameterId: 'mix',
+    })).toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_TARGET_TYPE })
+  })
+
+  it('rejects track I/O, macro, and envelope targets', () => {
+    const gs = loadLfoLinkGraph()
+    expect(canConnectLfoToParameter(gs, {
+      sourceNodeId: 'lfo-1',
+      targetNodeId: 'output',
+      parameterId: 'mix',
+    })).toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.PROTECTED_NODE })
+    expect(canConnectLfoToParameter(gs, {
+      sourceNodeId: 'lfo-1',
+      targetNodeId: 'macro-a',
+      parameterId: 'mix',
+    })).toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_TARGET_TYPE })
+    expect(canConnectLfoToParameter(gs, {
+      sourceNodeId: 'lfo-1',
+      targetNodeId: 'env-1',
+      parameterId: 'mix',
+    })).toEqual({ ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_TARGET_TYPE })
+  })
+
+  it('connectLfoToParameter creates a parameter edge with GraphParameterTarget + modulation mapping', () => {
+    const gs = loadLfoLinkGraph()
+    const result = connectLfoToParameter(gs, {
+      sourceNodeId: 'lfo-1',
+      targetNodeId: 'fx-1',
+      parameterId: 'mix',
+    }, { idFactory: () => 'p-lfo-mix' })
+
+    expect(result.ok).toBe(true)
+    const edge = result.graphState.edges.find((e) => e.id === 'p-lfo-mix')
+    expect(edge).toMatchObject({
+      sourceNodeId: 'lfo-1',
+      sourcePort: GRAPH_LFO_OUTPUT_PORT,
+      targetNodeId: 'fx-1',
+      targetPort: 'gpp:fx-1:mix',
+      type: 'parameter',
+    })
+    expect(edge.targetParameter.kind).toBe('graph-parameter')
+    // An lfo edge is created as a base + signed-depth MODULATION mapping, never the
+    // absolute range mapping a Macro edge uses.
+    expect(edge.mapping).toEqual({
+      kind: GRAPH_PARAMETER_MAPPING_MODULATION,
+      enabled: true,
+      base: 0,
+      depth: 1,
+      sourceMin: 0,
+      sourceMax: 1,
+      curve: { type: 'linear' },
+    })
+    expect(edge.mapping).not.toHaveProperty('targetMin')
+    expect(edge.mapping).not.toHaveProperty('targetMax')
+    // Never persists a raw engine node id.
+    expect(JSON.stringify(result.graphState.edges)).not.toContain('engineNodeId')
+  })
+
+  it('rejects a duplicate lfo→parameter link', () => {
+    const gs = loadLfoLinkGraph()
+    const once = connectLfoToParameter(gs, {
+      sourceNodeId: 'lfo-1',
+      targetNodeId: 'fx-1',
+      parameterId: 'mix',
+    }, { idFactory: () => 'p-lfo-mix' })
+    expect(once.ok).toBe(true)
+    expect(connectLfoToParameter(once.graphState, {
+      sourceNodeId: 'lfo-1',
+      targetNodeId: 'fx-1',
+      parameterId: 'mix',
+    })).toMatchObject({ ok: false, reason: GRAPH_MUTATION_REJECTION.DUPLICATE_EDGE })
+  })
+
+  it('rejects a second lfo driving a port a Macro already drives, and vice versa', () => {
+    const gs = loadLfoLinkGraph()
+    const macroFirst = connectMacroToParameter(gs, {
+      sourceNodeId: 'macro-a',
+      targetNodeId: 'fx-1',
+      parameterId: 'mix',
+    }, { idFactory: () => 'p-1' })
+    expect(macroFirst.ok).toBe(true)
+    expect(connectLfoToParameter(macroFirst.graphState, {
+      sourceNodeId: 'lfo-1',
+      targetNodeId: 'fx-1',
+      parameterId: 'mix',
+    }, { idFactory: () => 'p-2' })).toMatchObject({
+      ok: false,
+      reason: GRAPH_MUTATION_REJECTION.PARAMETER_ALREADY_DRIVEN,
+      existingEdgeId: 'p-1',
+    })
+
+    const lfoFirst = connectLfoToParameter(gs, {
+      sourceNodeId: 'lfo-1',
+      targetNodeId: 'fx-1',
+      parameterId: 'mix',
+    }, { idFactory: () => 'p-1' })
+    expect(lfoFirst.ok).toBe(true)
+    expect(connectMacroToParameter(lfoFirst.graphState, {
+      sourceNodeId: 'macro-a',
+      targetNodeId: 'fx-1',
+      parameterId: 'mix',
+    }, { idFactory: () => 'p-2' })).toMatchObject({
+      ok: false,
+      reason: GRAPH_MUTATION_REJECTION.PARAMETER_ALREADY_DRIVEN,
+      existingEdgeId: 'p-1',
+    })
+  })
+
+  it('rejects a second lfo driving a port an Envelope already drives, and vice versa', () => {
+    const gs = loadLfoLinkGraph()
+    const envFirst = connectEnvelopeToParameter(gs, {
+      sourceNodeId: 'env-1',
+      targetNodeId: 'fx-1',
+      parameterId: 'mix',
+    }, { idFactory: () => 'p-1' })
+    expect(envFirst.ok).toBe(true)
+    expect(connectLfoToParameter(envFirst.graphState, {
+      sourceNodeId: 'lfo-1',
+      targetNodeId: 'fx-1',
+      parameterId: 'mix',
+    }, { idFactory: () => 'p-2' })).toMatchObject({
+      ok: false,
+      reason: GRAPH_MUTATION_REJECTION.PARAMETER_ALREADY_DRIVEN,
+      existingEdgeId: 'p-1',
+    })
+
+    const lfoFirst = connectLfoToParameter(gs, {
+      sourceNodeId: 'lfo-1',
+      targetNodeId: 'fx-1',
+      parameterId: 'mix',
+    }, { idFactory: () => 'p-1' })
+    expect(lfoFirst.ok).toBe(true)
+    expect(connectEnvelopeToParameter(lfoFirst.graphState, {
+      sourceNodeId: 'env-1',
+      targetNodeId: 'fx-1',
+      parameterId: 'mix',
+    }, { idFactory: () => 'p-2' })).toMatchObject({
+      ok: false,
+      reason: GRAPH_MUTATION_REJECTION.PARAMETER_ALREADY_DRIVEN,
+      existingEdgeId: 'p-1',
+    })
+  })
+
+  it('rejects a second lfo driving a port another lfo already drives', () => {
+    const gs = loadLfoLinkGraph()
+    const withSecondLfo = {
+      ...gs,
+      nodes: [...gs.nodes, makeLfoNode('lfo-2', {}, { x: 80, y: 440 })],
+    }
+    const first = connectLfoToParameter(withSecondLfo, {
+      sourceNodeId: 'lfo-1',
+      targetNodeId: 'fx-1',
+      parameterId: 'mix',
+    }, { idFactory: () => 'p-1' })
+    expect(first.ok).toBe(true)
+    expect(connectLfoToParameter(first.graphState, {
+      sourceNodeId: 'lfo-2',
+      targetNodeId: 'fx-1',
+      parameterId: 'mix',
+    }, { idFactory: () => 'p-2' })).toMatchObject({
+      ok: false,
+      reason: GRAPH_MUTATION_REJECTION.PARAMETER_ALREADY_DRIVEN,
+      existingEdgeId: 'p-1',
+    })
+  })
+
+  it('collectLfoParameterWrites rescales the bipolar lfo output to unipolar before mapping', () => {
+    const gs = loadLfoLinkGraph()
+    const linked = connectLfoToParameter(gs, {
+      sourceNodeId: 'lfo-1',
+      targetNodeId: 'fx-1',
+      parameterId: 'mix',
+    }, { idFactory: () => 'p-lfo-mix' }).graphState
+
+    // Not yet linked on the unlinked graph — no writes.
+    expect(collectLfoParameterWrites(gs, 'lfo-1', 0).writes).toHaveLength(0)
+
+    // Default mapping (base 0, depth 1): the rescaled unipolar value passes through
+    // unchanged — bipolar -1/0/1 becomes unipolar 0/0.5/1.
+    expect(collectLfoParameterWrites(linked, 'lfo-1', -1).writes[0]).toMatchObject({ value: 0 })
+    expect(collectLfoParameterWrites(linked, 'lfo-1', 0).writes[0]).toMatchObject({ value: 0.5 })
+    expect(collectLfoParameterWrites(linked, 'lfo-1', 1).writes[0]).toMatchObject({ value: 1 })
+
+    // A non-lfo source id yields nothing.
+    expect(collectLfoParameterWrites(linked, 'macro-a', 0.5).writes).toHaveLength(0)
+  })
+
+  it('collectLfoParameterWrites applies a custom base/depth mapping around the rescaled input', () => {
+    const gs = loadLfoLinkGraph()
+    const linked = connectLfoToParameter(gs, {
+      sourceNodeId: 'lfo-1',
+      targetNodeId: 'fx-1',
+      parameterId: 'mix',
+    }, { idFactory: () => 'p-lfo-mix' }).graphState
+    // Tremolo-style mapping: base 0.8, depth -0.6 — the peak of the LFO dips the
+    // parameter below its authored value instead of pushing it above.
+    const tuned = updateParameterEdgeMapping(linked, 'p-lfo-mix', { base: 0.8, depth: -0.6 }).graphState
+
+    expect(collectLfoParameterWrites(tuned, 'lfo-1', -1).writes[0].value).toBeCloseTo(0.8)
+    expect(collectLfoParameterWrites(tuned, 'lfo-1', 1).writes[0].value).toBeCloseTo(0.2)
+    expect(collectLfoParameterWrites(tuned, 'lfo-1', 0).writes[0].value).toBeCloseTo(0.5)
+  })
+
+  it('ignores lfo nodes and lfo parameter edges in the audio topology', () => {
+    const gs = loadLfoLinkGraph()
+    const linked = connectLfoToParameter(gs, {
+      sourceNodeId: 'lfo-1',
+      targetNodeId: 'fx-1',
+      parameterId: 'mix',
+    }, { idFactory: () => 'p-lfo-mix' }).graphState
+
+    const payload = buildLinearGraphTopologyPayload(linked)
+    expect(payload.nodes.some((node) => node.nodeId === 'lfo-1')).toBe(false)
+    expect(payload.edges.some((edge) => edge.edgeId === 'p-lfo-mix')).toBe(false)
     expect(analyzeLinearGraphTopology(linked)).toMatchObject({ ok: true })
   })
 })

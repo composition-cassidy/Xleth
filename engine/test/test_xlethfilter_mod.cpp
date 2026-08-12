@@ -109,6 +109,11 @@ struct SlotSetup
     float release = 100.0f;
 };
 
+// The dynamics follower lives on modulator lane 0 throughout this file, so every
+// pre-lanes follower assertion below is really asserting that ONE lane of kind
+// Dyn behaves exactly like the fixed follower it replaced.
+static constexpr int kDynLane = 0;
+
 static int makeSlot(XlethFilterEffect& fx, const SlotSetup& s)
 {
     const int i = fx.addSlot();
@@ -118,11 +123,14 @@ static int makeSlot(XlethFilterEffect& fx, const SlotSetup& s)
     fx.setSlotParam(i, "slope",       static_cast<float>(s.slope));
     fx.setSlotParam(i, "mix",         1.0f);
     fx.setSlotParam(i, "enabled",     1.0f);
-    fx.setSlotParam(i, "cut_min",     s.cutMin);
-    fx.setSlotParam(i, "cut_max",     s.cutMax);
-    fx.setSlotParam(i, "dyn_depth",   s.depth);
-    fx.setSlotParam(i, "dyn_attack",  s.attack);
-    fx.setSlotParam(i, "dyn_release", s.release);
+    // Kind first: it resets the rest of the lane to that kind's defaults.
+    fx.setSlotParam(i, "m0_kind",        static_cast<float>(xleth_filter::ModKind::Dyn));
+    fx.setSlotParam(i, "m0_dest",        static_cast<float>(xleth_filter::ModDest::Cutoff));
+    fx.setSlotParam(i, "m0_cut_min",     s.cutMin);
+    fx.setSlotParam(i, "m0_cut_max",     s.cutMax);
+    fx.setSlotParam(i, "m0_depth",       s.depth);
+    fx.setSlotParam(i, "m0_dyn_attack",  s.attack);
+    fx.setSlotParam(i, "m0_dyn_release", s.release);
     return i;
 }
 
@@ -463,8 +471,10 @@ static void testGraphParameterExposure()
     CHECK(out.value("effectKind", std::string()) == "stock", "xlethfilter is a stock effect");
 
     const auto& params = out["parameters"];
-    CHECK(static_cast<int>(params.size()) == XlethFilterEffect::kMaxSlots * 14,
-          "all 14 params of all 8 slots are exposed, got " << params.size());
+    CHECK(static_cast<int>(params.size())
+              == XlethFilterEffect::kMaxSlots * XlethFilterEffect::kNumSlotParams,
+          "all " << XlethFilterEffect::kNumSlotParams
+              << " params of all 8 slots are exposed, got " << params.size());
 
     // Index by id so every slot suffix can be checked, including the five the
     // dynamics follower owns.
@@ -489,24 +499,44 @@ static void testGraphParameterExposure()
         for (const char* suffix : { "enabled", "type", "cutoff", "q", "gain",
                                     "morph", "slope", "drive", "mix",
                                     "cut_min", "cut_max", "dyn_depth",
-                                    "dyn_attack", "dyn_release" })
+                                    "dyn_attack", "dyn_release",
+                                    "lfo_on", "lfo_dest", "lfo_depth", "lfo_shape",
+                                    "lfo_rate_mode", "lfo_rate_ms", "lfo_sync", "lfo_phase",
+                                    "env_on", "env_dest", "env_depth", "env_attack",
+                                    "env_hold", "env_decay", "env_sustain",
+                                    "env_release", "env_slides" })
             if (!has("s" + std::to_string(i) + "_" + suffix)) everySlot = false;
     CHECK(everySlot,
-          "every slot exposes all nine DSP params plus the five dynamics params");
+          "every slot exposes the DSP + legacy dynamics/LFO/Envelope params");
+
+    // ...and every modulator lane of every slot is a graph target too, so an
+    // FX-graph edge can drive e.g. the depth of the third LFO on slot 5.
+    bool everyLane = true;
+    for (int i = 0; i < XlethFilterEffect::kMaxSlots; ++i)
+        for (int j = 0; j < xleth_filter::kMaxModsPerSlot; ++j)
+            for (const char* suffix : { "kind", "dest", "depth",
+                                        "shape", "rate_mode", "rate_ms", "sync", "phase",
+                                        "attack", "hold", "decay", "sustain", "release",
+                                        "slides", "dyn_attack", "dyn_release",
+                                        "cut_min", "cut_max" })
+                if (!has("s" + std::to_string(i) + "_m" + std::to_string(j) + "_" + suffix))
+                    everyLane = false;
+    CHECK(everyLane, "every modulator lane of every slot is an FX-graph target");
 
     // A graph edge addresses the target as {kind:"graph-parameter",
     // effectInstanceId, parameterId} and writes NORMALISED — exactly this call.
     const nlohmann::json set =
-        chain.setGraphEffectParameterNormalized("inst-filter", "s0_dyn_depth", 1.0f);
-    CHECK(set.value("ok", false), "a graph edge can write s0_dyn_depth");
+        chain.setGraphEffectParameterNormalized("inst-filter", "s0_m0_depth", 1.0f);
+    CHECK(set.value("ok", false), "a graph edge can write s0_m0_depth");
     const nlohmann::json readBack =
-        chain.getGraphEffectParameterValue("inst-filter", "s0_dyn_depth");
+        chain.getGraphEffectParameterValue("inst-filter", "s0_m0_depth");
     CHECK(std::abs(readBack.value("normalizedValue", -1.0) - 1.0) < 0.01,
           "the normalised write round-trips");
 
-    const nlohmann::json setCut =
-        chain.setGraphEffectParameterNormalized("inst-filter", "s7_cut_max", 0.25f);
-    CHECK(setCut.value("ok", false), "a graph edge can write the last slot's s7_cut_max");
+    const nlohmann::json setCut = chain.setGraphEffectParameterNormalized(
+        "inst-filter", "s7_m5_cut_max", 0.25f);
+    CHECK(setCut.value("ok", false),
+          "a graph edge can write the last slot's last lane, s7_m5_cut_max");
 }
 
 static void testLfoDrivesCutoff()
@@ -707,6 +737,488 @@ static void testNegativeDepthDucks()
           "the ducking sweep still respects cut_min, got " << loud.minCutoff << " Hz");
 }
 
+// ─── (h) In-effect LFO composes around the base cutoff ───────────────────────
+
+static void testInEffectLfoSweep()
+{
+    std::cout << "  [h: in-effect LFO sweeps cutoff at its free rate]\n";
+
+    XlethFilterEffect fx;
+    fx.prepareToPlay(kSR, 256);
+
+    SlotSetup s;
+    s.cutoff = 1000.0f; s.q = 0.7071f; s.depth = 0.0f;   // follower off
+    const int slot = makeSlot(fx, s);
+
+    // LFO on lane 1 (lane 0 is the follower makeSlot installs, left at depth 0).
+    fx.setSlotParam(slot, "m1_kind",      static_cast<float>(xleth_filter::ModKind::Lfo));
+    fx.setSlotParam(slot, "m1_dest",      0.0f);   // Cutoff
+    fx.setSlotParam(slot, "m1_depth",     1.0f);
+    fx.setSlotParam(slot, "m1_shape",     0.0f);   // Sine
+    fx.setSlotParam(slot, "m1_rate_mode", 0.0f);   // Free
+    fx.setSlotParam(slot, "m1_rate_ms",   500.0f); // 2 Hz
+    XlethEffectBase::setGlobalBPM(120.0);
+
+    juce::AudioBuffer<float> buf(2, 256);
+    juce::MidiBuffer midi;
+    int64_t pos = 0;
+
+    // Settle the depth/activation ramps first (transport still advancing).
+    for (int b = 0; b < 12; ++b)
+    {
+        XlethEffectBase::setGlobalTransportPositionSamples(pos);
+        buf.clear(); fx.processBlock(buf, midi); pos += 256;
+    }
+
+    std::vector<float> trace;
+    const int blocks = static_cast<int>(2.0 * kSR / 256);   // 2 s = 4 cycles
+    std::vector<float> out;
+    for (int b = 0; b < blocks; ++b)
+    {
+        XlethEffectBase::setGlobalTransportPositionSamples(pos);
+        for (int i = 0; i < 256; ++i) { buf.setSample(0, i, 0.1f); buf.setSample(1, i, 0.1f); }
+        fx.processBlock(buf, midi);
+        const float* p = buf.getReadPointer(0);
+        for (int i = 0; i < 256; ++i) out.push_back(p[i]);
+        trace.push_back(fx.getSlotEffectiveCutoff(slot));
+        pos += 256;
+    }
+
+    float lo = 1.0e9f, hi = 0.0f;
+    for (float c : trace) { lo = std::min(lo, c); hi = std::max(hi, c); }
+    const float mid = std::sqrt(lo * hi);
+    int crossings = 0;
+    for (size_t i = 1; i < trace.size(); ++i)
+        if (trace[i - 1] <= mid && trace[i] > mid) ++crossings;
+
+    std::cout << "      in-effect LFO cutoff " << lo << " .. " << hi
+              << " Hz over " << crossings << " cycles in 2 s\n";
+
+    CHECK(allFinite(out), "the in-effect LFO produces no NaN/inf");
+    CHECK(hi > lo * 4.0f, "the LFO sweeps the cutoff (" << lo << " .. " << hi << " Hz)");
+    CHECK(crossings >= 3 && crossings <= 5,
+          "the in-effect sweep is periodic at ~2 Hz, counted " << crossings);
+}
+
+// ─── (i) In-effect LFO/Envelope OFF is provably inert ────────────────────────
+
+static void testModulatorsOffAreInert()
+{
+    std::cout << "  [i: LFO/Env off is bit-identical regardless of their config]\n";
+
+    // `armed` has both modulators fully configured but toggled OFF; `plain` has
+    // them at defaults (also off). Both must be bit-identical.
+    XlethFilterEffect a, b;
+    a.prepareToPlay(kSR, 256);
+    b.prepareToPlay(kSR, 256);
+
+    SlotSetup s; s.cutoff = 1200.0f; s.depth = 0.0f;
+    const int sa = makeSlot(a, s);
+    const int sb = makeSlot(b, s);
+
+    // Configure a's lanes aggressively but leave every one of them at kind Off.
+    // Writing a lane's parameters without ever setting its kind must stay inert.
+    a.setSlotParam(sa, "m1_depth", 1.0f); a.setSlotParam(sa, "m1_dest", 0.0f);
+    a.setSlotParam(sa, "m1_rate_ms", 50.0f);
+    a.setSlotParam(sa, "m2_depth", 1.0f); a.setSlotParam(sa, "m2_dest", 0.0f);
+    a.setSlotParam(sa, "m2_attack", 1.0f); a.setSlotParam(sa, "m2_decay", 20.0f);
+    a.setSlotParam(sa, "m3_depth", 1.0f); a.setSlotParam(sa, "m3_dest", 1.0f);
+    XlethEffectBase::setGlobalBPM(120.0);
+    XlethEffectBase::setGlobalTransportPositionSamples(0);
+
+    ToneRunner runA{ a, sa, 256 };
+    ToneRunner runB{ b, sb, 256 };
+    std::vector<float> outA, outB;
+    // A carries a gate too — must still be ignored while env is off.
+    a.applyModulationGate(true, 0, 44100 * 10);
+    runA.run(22050, 200.0, 0.9f, 6000.0, 0.1f, outA, nullptr);
+    runB.run(22050, 200.0, 0.9f, 6000.0, 0.1f, outB, nullptr);
+
+    bool identical = (outA.size() == outB.size());
+    size_t firstDiff = 0;
+    for (size_t i = 0; identical && i < outA.size(); ++i)
+        if (outA[i] != outB[i]) { identical = false; firstDiff = i; }
+
+    CHECK(identical,
+          "LFO/Env toggled off leave the signal bit-identical even with a live "
+          "gate and full depth configured (first diff at " << firstDiff << ")");
+}
+
+// ─── (j) In-effect Envelope opens the filter on a gate ───────────────────────
+
+static void testInEffectEnvelopeGate()
+{
+    std::cout << "  [j: in-effect Envelope opens the cutoff while gated]\n";
+
+    XlethFilterEffect fx;
+    fx.prepareToPlay(kSR, 256);
+
+    SlotSetup s; s.cutoff = 500.0f; s.q = 0.7071f; s.depth = 0.0f;
+    const int slot = makeSlot(fx, s);
+
+    // Envelope on lane 1.
+    fx.setSlotParam(slot, "m1_kind",    static_cast<float>(xleth_filter::ModKind::Env));
+    fx.setSlotParam(slot, "m1_dest",    0.0f);   // Cutoff
+    fx.setSlotParam(slot, "m1_depth",   1.0f);
+    fx.setSlotParam(slot, "m1_attack",  1.0f);
+    fx.setSlotParam(slot, "m1_hold",    0.0f);
+    fx.setSlotParam(slot, "m1_decay",   30.0f);
+    fx.setSlotParam(slot, "m1_sustain", 1.0f);
+    fx.setSlotParam(slot, "m1_release", 30.0f);
+    XlethEffectBase::setGlobalBPM(120.0);
+
+    juce::AudioBuffer<float> buf(2, 256);
+    juce::MidiBuffer midi;
+    int64_t pos = 0;
+
+    // No gate: cutoff parked at base.
+    for (int b = 0; b < 12; ++b)
+    {
+        XlethEffectBase::setGlobalTransportPositionSamples(pos);
+        fx.applyModulationGate(false, 0, 0);
+        buf.clear(); fx.processBlock(buf, midi); pos += 256;
+    }
+    const float baseC = fx.getSlotEffectiveCutoff(slot);
+
+    // Gate open from here for a long time: the envelope rises to sustain and
+    // holds the cutoff wide open.
+    const int64_t gateStart = pos;
+    float peak = 0.0f;
+    for (int b = 0; b < 24; ++b)
+    {
+        XlethEffectBase::setGlobalTransportPositionSamples(pos);
+        fx.applyModulationGate(true, gateStart, gateStart + static_cast<int64_t>(kSR) * 10);
+        buf.clear(); fx.processBlock(buf, midi);
+        peak = std::max(peak, fx.getSlotEffectiveCutoff(slot));
+        pos += 256;
+    }
+
+    std::cout << "      base cutoff " << baseC << " Hz, gated peak " << peak << " Hz\n";
+
+    CHECK(std::abs(baseC - 500.0f) < 60.0f,
+          "no gate: the Envelope is at rest and the cutoff sits at its base ("
+              << baseC << " Hz)");
+    CHECK(peak > baseC * 4.0f,
+          "a note gate drives the Envelope and opens the cutoff (peak "
+              << peak << " Hz)");
+}
+
+// ─── (k) Several lanes at once ───────────────────────────────────────────────
+
+// Drive a slot for `seconds` of silence-free tone and report the min/max of the
+// two effective-parameter telemetry channels. Used to prove which knob a given
+// lane actually moved.
+struct LaneSweep { float cutLo = 1e9f, cutHi = 0.0f, qLo = 1e9f, qHi = 0.0f; };
+
+static LaneSweep runAndTrack(XlethFilterEffect& fx, int slot, double seconds)
+{
+    juce::AudioBuffer<float> buf(2, 256);
+    juce::MidiBuffer midi;
+    LaneSweep sw;
+    int64_t pos = 0;
+
+    // Let the activation + depth ramps arrive before measuring.
+    for (int b = 0; b < 24; ++b)
+    {
+        XlethEffectBase::setGlobalTransportPositionSamples(pos);
+        buf.clear(); fx.processBlock(buf, midi); pos += 256;
+    }
+    const int blocks = static_cast<int>(seconds * kSR / 256);
+    for (int b = 0; b < blocks; ++b)
+    {
+        XlethEffectBase::setGlobalTransportPositionSamples(pos);
+        for (int i = 0; i < 256; ++i) { buf.setSample(0, i, 0.1f); buf.setSample(1, i, 0.1f); }
+        fx.processBlock(buf, midi);
+        const float c = fx.getSlotEffectiveCutoff(slot);
+        const float q = fx.getSlotEffectiveQ(slot);
+        sw.cutLo = std::min(sw.cutLo, c); sw.cutHi = std::max(sw.cutHi, c);
+        sw.qLo   = std::min(sw.qLo,   q); sw.qHi   = std::max(sw.qHi,   q);
+        pos += 256;
+    }
+    return sw;
+}
+
+// Configure lane `j` as a free-running sine LFO on `dest`.
+static void makeLfoLane(XlethFilterEffect& fx, int slot, int j,
+                        xleth_filter::ModDest dest, float depth, float rateMs)
+{
+    fx.setSlotParam(slot, "m" + std::to_string(j) + "_kind",
+                    static_cast<float>(xleth_filter::ModKind::Lfo));
+    fx.setSlotParam(slot, "m" + std::to_string(j) + "_dest",      static_cast<float>(dest));
+    fx.setSlotParam(slot, "m" + std::to_string(j) + "_depth",     depth);
+    fx.setSlotParam(slot, "m" + std::to_string(j) + "_shape",     0.0f);   // Sine
+    fx.setSlotParam(slot, "m" + std::to_string(j) + "_rate_mode", 0.0f);   // Free
+    fx.setSlotParam(slot, "m" + std::to_string(j) + "_rate_ms",   rateMs);
+}
+
+// Two LFOs on DIFFERENT destinations each move only their own knob — the whole
+// point of the feature: an LFO on Q and something else on cutoff.
+static void testTwoLanesDifferentDests()
+{
+    std::cout << "  [k1: two LFO lanes on different destinations are independent]\n";
+
+    XlethEffectBase::setGlobalBPM(120.0);
+
+    // Reference: an LFO on cutoff only. Q must sit perfectly still.
+    XlethFilterEffect cutOnly;
+    cutOnly.prepareToPlay(kSR, 256);
+    SlotSetup s; s.cutoff = 1000.0f; s.q = 2.0f; s.depth = 0.0f;
+    const int scut = makeSlot(cutOnly, s);
+    makeLfoLane(cutOnly, scut, 1, xleth_filter::ModDest::Cutoff, 1.0f, 500.0f);
+    const LaneSweep a = runAndTrack(cutOnly, scut, 2.0);
+
+    // Reference: an LFO on Q only. Cutoff must sit perfectly still.
+    XlethFilterEffect qOnly;
+    qOnly.prepareToPlay(kSR, 256);
+    const int sq = makeSlot(qOnly, s);
+    makeLfoLane(qOnly, sq, 1, xleth_filter::ModDest::Q, 1.0f, 300.0f);
+    const LaneSweep b = runAndTrack(qOnly, sq, 2.0);
+
+    // Both at once, on separate lanes of one slot.
+    XlethFilterEffect both;
+    both.prepareToPlay(kSR, 256);
+    const int sb = makeSlot(both, s);
+    makeLfoLane(both, sb, 1, xleth_filter::ModDest::Cutoff, 1.0f, 500.0f);
+    makeLfoLane(both, sb, 2, xleth_filter::ModDest::Q,      1.0f, 300.0f);
+    const LaneSweep c = runAndTrack(both, sb, 2.0);
+
+    std::cout << "      cutoff-only: cut " << a.cutLo << ".." << a.cutHi
+              << "  q " << a.qLo << ".." << a.qHi << "\n"
+              << "      q-only:      cut " << b.cutLo << ".." << b.cutHi
+              << "  q " << b.qLo << ".." << b.qHi << "\n"
+              << "      both lanes:  cut " << c.cutLo << ".." << c.cutHi
+              << "  q " << c.qLo << ".." << c.qHi << "\n";
+
+    CHECK(a.cutHi > a.cutLo * 4.0f, "a lone cutoff LFO sweeps the cutoff");
+    CHECK(a.qHi - a.qLo < 1.0e-3f,  "a lone cutoff LFO leaves Q untouched");
+    CHECK(b.qHi > b.qLo * 1.5f,     "a lone Q LFO sweeps Q");
+    CHECK(b.cutHi - b.cutLo < 1.0f, "a lone Q LFO leaves the cutoff untouched");
+
+    // Running both changes neither one's range: the lanes do not interfere.
+    CHECK(std::abs(c.cutHi - a.cutHi) < a.cutHi * 0.02f
+       && std::abs(c.cutLo - a.cutLo) < a.cutHi * 0.02f,
+          "adding a Q lane does not disturb the cutoff lane's sweep ("
+              << c.cutLo << ".." << c.cutHi << " vs " << a.cutLo << ".." << a.cutHi << ")");
+    CHECK(std::abs(c.qHi - b.qHi) < 0.05f && std::abs(c.qLo - b.qLo) < 0.05f,
+          "adding a cutoff lane does not disturb the Q lane's sweep ("
+              << c.qLo << ".." << c.qHi << " vs " << b.qLo << ".." << b.qHi << ")");
+}
+
+// Two lanes aimed at the SAME destination compose rather than one winning.
+static void testTwoLanesSameDest()
+{
+    std::cout << "  [k2: two LFO lanes on one destination compose]\n";
+
+    XlethEffectBase::setGlobalBPM(120.0);
+    SlotSetup s; s.cutoff = 1000.0f; s.q = 0.7071f; s.depth = 0.0f;
+
+    XlethFilterEffect one;
+    one.prepareToPlay(kSR, 256);
+    const int s1 = makeSlot(one, s);
+    makeLfoLane(one, s1, 1, xleth_filter::ModDest::Cutoff, 0.4f, 500.0f);
+    const LaneSweep a = runAndTrack(one, s1, 2.0);
+
+    // A second identical lane, same phase and rate, must double the sweep in
+    // OCTAVE space — the domain applyModToDest folds cutoff contributions in.
+    XlethFilterEffect two;
+    two.prepareToPlay(kSR, 256);
+    const int s2 = makeSlot(two, s);
+    makeLfoLane(two, s2, 1, xleth_filter::ModDest::Cutoff, 0.4f, 500.0f);
+    makeLfoLane(two, s2, 2, xleth_filter::ModDest::Cutoff, 0.4f, 500.0f);
+    const LaneSweep b = runAndTrack(two, s2, 2.0);
+
+    const double octA = std::log2(a.cutHi / a.cutLo);
+    const double octB = std::log2(b.cutHi / b.cutLo);
+    std::cout << "      one lane " << a.cutLo << ".." << a.cutHi << " (" << octA
+              << " oct), two lanes " << b.cutLo << ".." << b.cutHi
+              << " (" << octB << " oct)\n";
+
+    CHECK(octA > 0.5, "one lane sweeps a measurable span");
+    CHECK(std::abs(octB - 2.0 * octA) < 0.15 * octA,
+          "two identical lanes on one destination sweep twice the octave span ("
+              << octB << " vs 2 x " << octA << ")");
+}
+
+// A lane can be removed and re-added, and removing one leaves the others alone.
+static void testLaneRemovalKeepsOthers()
+{
+    std::cout << "  [k3: removing one lane leaves the other lanes running]\n";
+
+    XlethEffectBase::setGlobalBPM(120.0);
+    SlotSetup s; s.cutoff = 1000.0f; s.q = 2.0f; s.depth = 0.0f;
+
+    XlethFilterEffect fx;
+    fx.prepareToPlay(kSR, 256);
+    const int slot = makeSlot(fx, s);
+    makeLfoLane(fx, slot, 1, xleth_filter::ModDest::Cutoff, 1.0f, 500.0f);
+    makeLfoLane(fx, slot, 2, xleth_filter::ModDest::Q,      1.0f, 300.0f);
+    const LaneSweep before = runAndTrack(fx, slot, 2.0);
+    CHECK(before.cutHi > before.cutLo * 4.0f && before.qHi > before.qLo * 1.5f,
+          "both lanes are running before the removal");
+
+    // Remove the Q lane — a single write of its kind.
+    fx.setSlotParam(slot, "m2_kind", static_cast<float>(xleth_filter::ModKind::Off));
+    const LaneSweep after = runAndTrack(fx, slot, 2.0);
+    std::cout << "      after removing the Q lane: cut " << after.cutLo << ".."
+              << after.cutHi << "  q " << after.qLo << ".." << after.qHi << "\n";
+
+    CHECK(after.qHi - after.qLo < 1.0e-3f, "the removed Q lane stopped modulating");
+    CHECK(after.cutHi > after.cutLo * 4.0f,
+          "the surviving cutoff lane still sweeps after its neighbour was removed");
+
+    // Re-adding it brings it back with that kind's defaults, not the old depth.
+    fx.setSlotParam(slot, "m2_kind", static_cast<float>(xleth_filter::ModKind::Lfo));
+    const nlohmann::json readd = nlohmann::json::parse(fx.getSlotsAsJSON());
+    CHECK(!readd.empty()
+       && std::abs(readd[slot]["mods"][2]["depth"].get<float>() - 0.5f) < 1.0e-4f,
+          "re-adding a lane resets it to its kind's default depth");
+}
+
+// Every lane Off is bit-identical to a filter that never had lanes configured.
+static void testAllLanesOffAreInert()
+{
+    std::cout << "  [k4: every lane Off is bit-identical to no modulation]\n";
+
+    SlotSetup s; s.cutoff = 1500.0f; s.q = 1.5f; s.depth = 0.0f;
+
+    XlethFilterEffect plain, armed;
+    plain.prepareToPlay(kSR, 256);
+    armed.prepareToPlay(kSR, 256);
+    const int sp = makeSlot(plain, s);
+    const int sa = makeSlot(armed, s);
+
+    // `armed` gets every lane fully configured and then switched back Off.
+    for (int j = 1; j < xleth_filter::kMaxModsPerSlot; ++j)
+    {
+        makeLfoLane(armed, sa, j, static_cast<xleth_filter::ModDest>(j % 6), 1.0f, 60.0f);
+        armed.setSlotParam(sa, "m" + std::to_string(j) + "_kind",
+                           static_cast<float>(xleth_filter::ModKind::Off));
+    }
+    armed.applyModulationGate(true, 0, 44100 * 10);
+    XlethEffectBase::setGlobalBPM(120.0);
+    XlethEffectBase::setGlobalTransportPositionSamples(0);
+
+    // Long enough that any activation gate has fully faded before comparing.
+    ToneRunner runP{ plain, sp, 256 };
+    ToneRunner runA{ armed, sa, 256 };
+    std::vector<float> outP, outA;
+    runP.settle(outP); runA.settle(outA);
+    outP.clear(); outA.clear();
+    runP.run(22050, 200.0, 0.9f, 6000.0, 0.1f, outP, nullptr);
+    runA.run(22050, 200.0, 0.9f, 6000.0, 0.1f, outA, nullptr);
+
+    bool identical = (outP.size() == outA.size());
+    size_t firstDiff = 0;
+    for (size_t i = 0; identical && i < outP.size(); ++i)
+        if (outP[i] != outA[i]) { identical = false; firstDiff = i; }
+
+    CHECK(identical,
+          "a slot whose lanes were all configured then switched Off is "
+          "bit-identical to one that never had any (first diff at " << firstDiff << ")");
+}
+
+// ─── (l) A pre-lanes project migrates into lanes ─────────────────────────────
+
+static void testLegacyStateMigration()
+{
+    std::cout << "  [l: a pre-lanes saved project folds into lanes]\n";
+
+    // Build a state block the way a build BEFORE modulator lanes would have
+    // saved it: the legacy fixed params set, and NO modSchema attribute.
+    XlethFilterEffect src;
+    src.prepareToPlay(kSR, 256);
+    const int i = src.addSlot();
+    src.setSlotParam(i, "cutoff", 800.0f);
+    src.setSlotParam(i, "cut_min", 300.0f);
+    src.setSlotParam(i, "cut_max", 6000.0f);
+    src.setSlotParam(i, "dyn_depth", 0.8f);
+    src.setSlotParam(i, "dyn_attack", 4.0f);
+    src.setSlotParam(i, "dyn_release", 90.0f);
+    src.setSlotParam(i, "lfo_on", 1.0f);
+    src.setSlotParam(i, "lfo_dest", static_cast<float>(xleth_filter::ModDest::Q));
+    src.setSlotParam(i, "lfo_depth", 0.75f);
+    src.setSlotParam(i, "lfo_rate_ms", 250.0f);
+    src.setSlotParam(i, "env_on", 1.0f);
+    src.setSlotParam(i, "env_dest", static_cast<float>(xleth_filter::ModDest::Drive));
+    src.setSlotParam(i, "env_depth", -0.4f);
+    src.setSlotParam(i, "env_decay", 45.0f);
+    src.setSlotParam(i, "env_slides", 1.0f);
+
+    juce::MemoryBlock blob;
+    src.getStateInformation(blob);
+
+    // Strip modSchema so this looks like a genuinely old project.
+    auto xml = juce::AudioProcessor::getXmlFromBinary(blob.getData(),
+                                                      static_cast<int>(blob.getSize()));
+    CHECK(xml != nullptr, "the saved state parses back as XML");
+    if (!xml) return;
+    xml->removeAttribute("modSchema");
+    juce::MemoryBlock legacy;
+    juce::AudioProcessor::copyXmlToBinary(*xml, legacy);
+
+    XlethFilterEffect dst;
+    dst.prepareToPlay(kSR, 256);
+    dst.setStateInformation(legacy.getData(), static_cast<int>(legacy.getSize()));
+
+    CHECK(dst.getSlotCount() == 1, "the migrated project still has its slot");
+
+    const nlohmann::json slots = nlohmann::json::parse(dst.getSlotsAsJSON());
+    CHECK(slots.size() == 1, "the migrated slot serializes back out");
+    if (slots.empty()) return;
+    const auto& mods = slots[0]["mods"];
+
+    // Lane order mirrors the old panel: follower, LFO, envelope.
+    CHECK(mods[0]["kind"] == static_cast<int>(xleth_filter::ModKind::Dyn),
+          "the legacy follower became lane 0");
+    CHECK(std::abs(mods[0]["depth"].get<float>() - 0.8f) < 1e-3f,
+          "the follower's depth carried over");
+    CHECK(std::abs(mods[0]["cut_min"].get<float>() - 300.0f) < 1.0f
+       && std::abs(mods[0]["cut_max"].get<float>() - 6000.0f) < 10.0f,
+          "the follower's sweep window carried over");
+    CHECK(std::abs(mods[0]["dyn_attack"].get<float>() - 4.0f) < 0.1f,
+          "the follower's ballistics carried over");
+
+    CHECK(mods[1]["kind"] == static_cast<int>(xleth_filter::ModKind::Lfo),
+          "the legacy LFO became lane 1");
+    CHECK(mods[1]["dest"] == static_cast<int>(xleth_filter::ModDest::Q),
+          "the LFO kept its destination");
+    CHECK(std::abs(mods[1]["depth"].get<float>() - 0.75f) < 1e-3f,
+          "the LFO kept its depth");
+    CHECK(std::abs(mods[1]["rate_ms"].get<float>() - 250.0f) < 1.0f,
+          "the LFO kept its rate");
+
+    CHECK(mods[2]["kind"] == static_cast<int>(xleth_filter::ModKind::Env),
+          "the legacy envelope became lane 2");
+    CHECK(mods[2]["dest"] == static_cast<int>(xleth_filter::ModDest::Drive),
+          "the envelope kept its destination");
+    CHECK(std::abs(mods[2]["depth"].get<float>() + 0.4f) < 1e-3f,
+          "the envelope kept its (negative) depth");
+    CHECK(mods[2]["slides"].get<bool>(), "the envelope kept its slide-note opt-in");
+
+    // The union query MixEngine uses must see the migrated envelope.
+    CHECK(dst.hasActiveEnvelopeModulator(),
+          "the migrated envelope is visible to the gate-timeline query");
+    CHECK(dst.envelopeWantsSlideNotes(),
+          "the migrated envelope's slide opt-in is visible too");
+
+    // Re-saving stamps the new schema, so it never migrates twice.
+    juce::MemoryBlock again;
+    dst.getStateInformation(again);
+    auto xml2 = juce::AudioProcessor::getXmlFromBinary(again.getData(),
+                                                       static_cast<int>(again.getSize()));
+    CHECK(xml2 && xml2->getIntAttribute("modSchema", 0) >= 1,
+          "a re-save stamps modSchema so migration cannot run twice");
+
+    XlethFilterEffect third;
+    third.prepareToPlay(kSR, 256);
+    third.setStateInformation(again.getData(), static_cast<int>(again.getSize()));
+    const nlohmann::json slots2 = nlohmann::json::parse(third.getSlotsAsJSON());
+    CHECK(!slots2.empty()
+       && slots2[0]["mods"][0]["kind"] == static_cast<int>(xleth_filter::ModKind::Dyn)
+       && slots2[0]["mods"][3]["kind"] == static_cast<int>(xleth_filter::ModKind::Off),
+          "reloading the migrated project is stable — three lanes, no duplicates");
+}
+
 // ─── main ────────────────────────────────────────────────────────────────────
 
 int main()
@@ -730,6 +1242,20 @@ int main()
 
     std::cout << "\n=== test_xlethfilter_mod_stability ===\n";
     testFastBallisticsStability();
+
+    std::cout << "\n=== test_xlethfilter_inmod (per-slot LFO + Envelope) ===\n";
+    testInEffectLfoSweep();
+    testModulatorsOffAreInert();
+    testInEffectEnvelopeGate();
+
+    std::cout << "\n=== test_xlethfilter_lanes (many modulators per slot) ===\n";
+    testTwoLanesDifferentDests();
+    testTwoLanesSameDest();
+    testLaneRemovalKeepsOthers();
+    testAllLanesOffAreInert();
+
+    std::cout << "\n=== test_xlethfilter_migration ===\n";
+    testLegacyStateMigration();
 
     std::cout << "\nResults: " << g_passed << " passed, " << g_failed << " failed\n";
     if (g_failed > 0)

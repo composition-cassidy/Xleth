@@ -170,6 +170,17 @@ public:
     // is not in this graph or the node does not hold an XlethEffectBase.
     XlethEffectBase* getEffect(int nodeId);
 
+    // Audio thread: deliver a per-track note/clip modulation gate to every stock
+    // effect in the graph via XlethEffectBase::applyModulationGate (a no-op for
+    // effects that don't consume it — only the Xleth Filter does). Iterates
+    // nodes_ in place; no allocation, no logging.
+    void deliverModulationGate(bool valid, std::int64_t gateStartSample,
+                               std::int64_t gateEndSample);
+
+    // Message thread: collect every stock effect (XlethEffectBase) in the graph.
+    // Allocates; used by the filter-envelope gate scan.
+    std::vector<XlethEffectBase*> collectEffects() const;
+
     // Returns the raw AudioProcessor for any node (stock XlethEffectBase OR
     // VST3 AudioPluginInstance).  Returns nullptr if nodeId is not found.
     juce::AudioProcessor* getProcessor(int nodeId);
@@ -461,6 +472,10 @@ private:
 
     void addAdj(int src, int dst);
     void removeAdj(int src, int dst);
+
+    // Drop the logical src -> dst connection (and any helper gain/delay nodes
+    // it owns) if it exists.  No-op when the pair is not connected.
+    void eraseConnectionIfPresent(int src, int dst);
 
     // All node uids (I/O + effect nodes) for algorithm iteration.
     std::vector<int> allNodeUids() const;

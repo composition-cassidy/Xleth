@@ -1352,7 +1352,8 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 }
 
 .xleth-graph-state-preview__canvas[data-connecting-kind="macro"] .xleth-graph-state-preview__parameter-port,
-.xleth-graph-state-preview__canvas[data-connecting-kind="envelope"] .xleth-graph-state-preview__parameter-port {
+.xleth-graph-state-preview__canvas[data-connecting-kind="envelope"] .xleth-graph-state-preview__parameter-port,
+.xleth-graph-state-preview__canvas[data-connecting-kind="lfo"] .xleth-graph-state-preview__parameter-port {
   cursor: copy;
 }
 
@@ -1557,6 +1558,14 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
  * no hardcoded colors, and no unrelated success/green hue in this
  * monochromatic accent theme. */
 .xleth-graph-state-preview__node--envelope {
+  border-color: color-mix(in srgb, var(--theme-accent-active) 44%, var(--theme-border-subtle));
+  background: color-mix(in srgb, var(--theme-accent-active) 8%, var(--theme-bg-primary));
+}
+
+/* LFO Modulator node. A graph-owned free-running parameter-modulation source,
+ * a sibling to Envelope. Same modulation-accent tint as Macro/Envelope and the
+ * parameter edges they all drive. */
+.xleth-graph-state-preview__node--lfo {
   border-color: color-mix(in srgb, var(--theme-accent-active) 44%, var(--theme-border-subtle));
   background: color-mix(in srgb, var(--theme-accent-active) 8%, var(--theme-bg-primary));
 }
@@ -1793,6 +1802,124 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   min-width: 0;
   padding-top: 5px;
   border-top: 1px solid color-mix(in srgb, var(--theme-accent-active) 20%, var(--theme-border-subtle));
+}
+
+/* LFO Modulator editor chrome. Field labels, the select, and the editor's grid
+ * container reuse the shared __envelope-* classes above (deliberate — CSS
+ * class sharing doesn't cost the decoupling that JS/C++ duplication buys).
+ * The pieces below are genuinely LFO-specific: the shape canvas, the preset
+ * buttons, and the rate-mode (Free/Sync) toggle. */
+.xleth-graph-state-preview__lfo-shape {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid color-mix(in srgb, var(--theme-accent-active) 26%, var(--theme-border-subtle));
+  border-radius: var(--theme-chrome-radius-sm);
+  background: color-mix(in srgb, var(--theme-accent-active) 6%, var(--theme-bg-surface));
+  cursor: default;
+  touch-action: none;
+}
+
+.xleth-graph-state-preview__lfo-shape--editable {
+  cursor: crosshair;
+}
+
+.xleth-graph-state-preview__lfo-body {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.xleth-graph-state-preview__lfo-editor {
+  display: grid;
+  gap: 8px;
+}
+
+.xleth-graph-state-preview__lfo-presets {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.xleth-graph-state-preview__lfo-preset {
+  padding: 2px 8px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--theme-chrome-radius-sm);
+  background: var(--theme-bg-surface);
+  color: var(--theme-text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1.3;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.xleth-graph-state-preview__lfo-preset:hover {
+  border-color: var(--theme-border-strong);
+  color: var(--theme-text);
+}
+
+.xleth-graph-state-preview__lfo-preset--active {
+  border-color: color-mix(in srgb, var(--theme-accent-active) 62%, var(--theme-border-strong));
+  background: color-mix(in srgb, var(--theme-accent-active) 22%, var(--theme-bg-surface));
+  color: var(--theme-text);
+}
+
+.xleth-graph-state-preview__lfo-preset-custom {
+  color: var(--theme-text-muted);
+  font-size: 9px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.xleth-graph-state-preview__lfo-rate {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+
+.xleth-graph-state-preview__lfo-rate-toggle {
+  display: flex;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--theme-chrome-radius-sm);
+  overflow: hidden;
+  width: fit-content;
+}
+
+.xleth-graph-state-preview__lfo-rate-toggle-button {
+  padding: 3px 10px;
+  border: none;
+  background: var(--theme-bg-surface);
+  color: var(--theme-text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  line-height: 1.3;
+  pointer-events: auto;
+  cursor: pointer;
+}
+
+.xleth-graph-state-preview__lfo-rate-toggle-button:hover {
+  color: var(--theme-text);
+}
+
+.xleth-graph-state-preview__lfo-rate-toggle-button--active {
+  background: color-mix(in srgb, var(--theme-accent-active) 22%, var(--theme-bg-surface));
+  color: var(--theme-text);
+}
+
+.xleth-graph-state-preview__lfo-sync-select-field {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.xleth-graph-state-preview__lfo-sync-select {
+  width: fit-content;
 }
 
 .xleth-graph-state-preview__handle {
@@ -2086,7 +2213,8 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 }
 
 .xleth-graph-state-preview__canvas[data-connecting-kind="macro"] .xleth-graph-state-preview__edge--connecting,
-.xleth-graph-state-preview__canvas[data-connecting-kind="envelope"] .xleth-graph-state-preview__edge--connecting {
+.xleth-graph-state-preview__canvas[data-connecting-kind="envelope"] .xleth-graph-state-preview__edge--connecting,
+.xleth-graph-state-preview__canvas[data-connecting-kind="lfo"] .xleth-graph-state-preview__edge--connecting {
   stroke: color-mix(in srgb, var(--theme-accent-active) 70%, var(--theme-border-strong));
 }
 

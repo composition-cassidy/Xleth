@@ -81,8 +81,9 @@ export const GRANULARITY_BEATS = {
 
 export function snapBeatToGrid(beat, modifiers = {}, granularity = '1/16') {
   if (modifiers.alt)   return beat                      // free (no snap)
-  if (modifiers.shift) return Math.round(beat * 8) / 8  // 32nd note override
   if (modifiers.ctrl)  return Math.round(beat * 2) / 2  // 8th note override
+  // Shift triggers duplicate-drag / stretch-resize elsewhere — it must not
+  // also silently override the user's chosen snap granularity.
   const div = 1 / (GRANULARITY_BEATS[granularity] ?? GRANULARITY_BEATS['1/16'])
   return Math.round(beat * div) / div
 }

@@ -1,10 +1,8 @@
 import { create } from 'zustand'
-import useEqStore from './eqStore.js'
-import useCompressorStore from './compressorStore.js'
-import useDistortionStore from './distortionStore.js'
-import useWaveshaperStore from './waveshaperStore.js'
-import useDelayStore from './delayStore.js'
-import useChorusStore from './chorusStore.js'
+import {
+  closeEffectEditorForNode,
+  closeAllEffectEditors,
+} from '../components/mixer/effectEditorOpeners.js'
 // FXG-SC.6C — reuse the proven mixer-chain sidechain transport helpers so graph
 // route reconciliation drives the SAME native SidechainRoute system, never a second
 // engine. normalizeSidechainRoutesFromRoutingSnapshot parses timeline.getRouting();
@@ -22,10 +20,13 @@ import {
   addGraphMacroNode,
   addGraphEnvelopeNode,
   updateGraphEnvelopeNodeData,
+  addGraphLfoNode,
+  updateGraphLfoNodeData,
   removeGraphNode,
   connectGraphNodes,
   connectMacroToParameter,
   connectEnvelopeToParameter,
+  connectLfoToParameter,
   disconnectGraphEdge,
   collectMacroParameterWrites,
   isParameterEdge,
@@ -481,6 +482,17 @@ function computeNextEnvelopeNodePosition(graphState) {
   }
 }
 
+// Stagger LFO nodes on their own row below the envelope row (mirrors
+// computeNextEnvelopeNodePosition) so a freshly added LFO node never overlaps
+// existing macro/envelope/effect nodes.
+function computeNextLfoNodePosition(graphState) {
+  const lfoCount = graphState.nodes.filter((node) => node.type === 'lfo').length
+  return {
+    x: GRAPH_MUTATION_GRID_ORIGIN_X + lfoCount * GRAPH_MUTATION_GRID_STEP_X,
+    y: GRAPH_MUTATION_GRID_BASELINE_Y + GRAPH_MUTATION_GRID_STEP_Y * 3,
+  }
+}
+
 function buildGraphEffectNodeDraft(graphState, nodeDraft, options = {}) {
   const draft = nodeDraft != null && typeof nodeDraft === 'object' ? nodeDraft : {}
   const effectInstanceId =
@@ -661,11 +673,14 @@ function graphRuntimeTopologyChanged(beforeGraphState, afterGraphState) {
     const { exposedParameterPorts, ...rest } = data
     return rest
   }
-  // EVC.2 / FXG-SC.6B — macro and envelope are control nodes and sidechainInput is a
-  // silent key source; none has audio topology impact, so all are excluded from the
-  // structural snapshot used to decide whether a runtime audio sync is needed.
+  // EVC.2 / FXG-SC.6B — macro, envelope, and lfo are control nodes and sidechainInput
+  // is a silent key source; none has audio topology impact, so all are excluded from
+  // the structural snapshot used to decide whether a runtime audio sync is needed.
+  // This closure is distinct from linearGraphTopology.js's exported NON_AUDIO_NODE_TYPES
+  // set — kept in sync by hand, not shared, same as the rest of this file's
+  // mirror-don't-generalize convention.
   const isNonAudioNodeType = (type) =>
-    type === 'macro' || type === 'envelope' || type === 'sidechainInput'
+    type === 'macro' || type === 'envelope' || type === 'lfo' || type === 'sidechainInput'
   const structuralSnapshot = (graphState) => ({
     nodes: Array.isArray(graphState?.nodes)
       ? graphState.nodes.filter((node) => !isNonAudioNodeType(node?.type)).map((node) => ({
@@ -1200,6 +1215,48 @@ async function captureEnvelopeModulationBase(get, key, graphState, connectionDra
     return Math.min(1, Math.max(0, raw))
   } catch (e) {
     ;(options.warn ?? console.warn)?.('[FXG] envelope modulation base capture failed', {
+      trackId: key,
+      effectInstanceId,
+      parameterId,
+      error: e?.message ?? e,
+    })
+    return null
+  }
+}
+
+// Reads the LIVE authored value of the parameter an LFO is about to be linked to, for
+// use as the modulation mapping's `base`. Literal mirror of
+// captureEnvelopeModulationBase: returns a 0..1 number, or null when the value cannot
+// be read (engine unavailable, plugin missing, parameter not found) so the caller can
+// fall back to the schema default instead of failing the link. The base is
+// SNAPSHOTTED, never re-read during drive, for the same feedback reason.
+async function captureLfoModulationBase(get, key, graphState, connectionDraft, options = {}) {
+  const parameterId = typeof connectionDraft?.parameterId === 'string'
+    ? connectionDraft.parameterId.trim()
+    : ''
+  if (!parameterId) return null
+
+  const targetNode = Array.isArray(graphState?.nodes)
+    ? graphState.nodes.find((node) => node?.id === connectionDraft?.targetNodeId)
+    : null
+  const effectInstanceId = typeof targetNode?.data?.effectInstanceId === 'string'
+    ? targetNode.data.effectInstanceId
+    : ''
+  if (!effectInstanceId) return null
+
+  try {
+    const result = await get().getGraphEffectParameterValue(
+      Number(key),
+      effectInstanceId,
+      parameterId,
+      options,
+    )
+    if (result?.ok !== true) return null
+    const raw = result.normalizedValue
+    if (!Number.isFinite(raw)) return null
+    return Math.min(1, Math.max(0, raw))
+  } catch (e) {
+    ;(options.warn ?? console.warn)?.('[FXG] lfo modulation base capture failed', {
       trackId: key,
       effectInstanceId,
       parameterId,
@@ -2240,6 +2297,74 @@ const useEffectChainStore = create((set, get) => ({
     return applied
   },
 
+  // Adds an inert graph-owned LFO Modulator node. Literal mirror of
+  // addGraphEnvelopeNodeForTrack: gated on graph mode (master/missing/chain-mode/
+  // missing graphState all reject), persists via timeline.setTrackGraphState, and
+  // records a graph-owned undo transaction. It performs NO audio runtime sync, NO
+  // graph effect hydration, creates/destroys NO graph-owned processors, never calls
+  // setGraphEffectParameterNormalized, and never touches effectChains/Mixer Chain.
+  // The LFO node does not execute in this phase — it is a persisted definition.
+  addGraphLfoNodeForTrack: async (trackId, options = {}) => {
+    const access = readGraphStateForMutation(get(), trackId)
+    if (!access.ok) return access
+
+    const opts = options != null && typeof options === 'object' ? options : {}
+    const position = normalizeGraphNodePosition(opts.position)
+      ?? computeNextLfoNodePosition(access.graphState)
+    const mutation = addGraphLfoNode(access.graphState, {
+      idFactory: opts.idFactory,
+      data: opts.data,
+      position,
+    })
+    if (!mutation.ok) return mutation
+
+    const applied = await applyGraphStateMutation(
+      set,
+      access.key,
+      mutation.graphState,
+      { ...opts, syncRuntime: false },
+    )
+    if (applied.ok) {
+      recordGraphEditTransaction(
+        set,
+        access.key,
+        'add_graph_lfo_node',
+        access.graphState,
+        applied.graphState,
+      )
+    }
+    return applied
+  },
+
+  // Patches an existing LFO node's inert data. Same graph-mode gate, persistence,
+  // and undo recording as the add action; no audio runtime sync and no
+  // effectChains/Mixer Chain involvement. Literal mirror of
+  // updateGraphEnvelopeNodeDataForTrack.
+  updateGraphLfoNodeDataForTrack: async (trackId, nodeId, patch, options = {}) => {
+    const access = readGraphStateForMutation(get(), trackId)
+    if (!access.ok) return access
+
+    const mutation = updateGraphLfoNodeData(access.graphState, nodeId, patch)
+    if (!mutation.ok) return mutation
+
+    const applied = await applyGraphStateMutation(
+      set,
+      access.key,
+      mutation.graphState,
+      { ...options, syncRuntime: false },
+    )
+    if (applied.ok) {
+      recordGraphEditTransaction(
+        set,
+        access.key,
+        'update_graph_lfo_node',
+        access.graphState,
+        applied.graphState,
+      )
+    }
+    return applied
+  },
+
   renameGraphMacroNodeForTrack: async (trackId, nodeId, label, options = {}) => {
     const access = readGraphStateForMutation(get(), trackId)
     if (!access.ok) return access
@@ -2323,6 +2448,9 @@ const useEffectChainStore = create((set, get) => ({
     )
     if (applied.ok && isEngineBacked) {
       clearSessionEngineNodeId(set, access.key, effectInstanceId)
+      // Graph-mode editors open through the same stock stores keyed by the engine
+      // nodeId; close the panel so it doesn't outlive the node it was editing.
+      closeEffectEditorForNode(access.key, engineNodeId)
     }
     if (applied.ok) {
       recordGraphEditTransaction(
@@ -2490,6 +2618,56 @@ const useEffectChainStore = create((set, get) => ({
       set,
       access.key,
       'connect_envelope_to_parameter',
+      access.graphState,
+      applied.graphState,
+    )
+
+    return { ...applied, edge: mutation.edge }
+  },
+
+  // Links an LFO controlOut to an exposed parameter input port. Literal mirror of
+  // connectEnvelopeToParameterForTrack: the parameter edge persists the
+  // GraphParameterTarget + a per-link MODULATION mapping (kind: 'modulation',
+  // value = clamp(base + depth * lfo)) rather than the absolute range mapping a
+  // Macro -> Parameter link uses. It is NOT an audio edge, so it never syncs audio
+  // topology and never touches effectChains. It is runtime-inert here too (no
+  // setGraphEffectParameterNormalized call) — the LFO's runtime drive lives in the
+  // engine.
+  //
+  // `base` is captured here from the parameter's LIVE authored value, same as the
+  // envelope path, so connecting an LFO never audibly jumps the parameter. A
+  // failed/unavailable read falls back to the schema default (0) rather than
+  // blocking the link.
+  connectLfoToParameterForTrack: async (trackId, connectionDraft, options = {}) => {
+    const access = readGraphStateForMutation(get(), trackId)
+    if (!access.ok) return access
+
+    const draft = connectionDraft != null && typeof connectionDraft === 'object' ? connectionDraft : {}
+    const draftMapping = draft.mapping != null && typeof draft.mapping === 'object' ? draft.mapping : {}
+    let capturedBase = null
+    if (!Number.isFinite(draftMapping.base)) {
+      capturedBase = await captureLfoModulationBase(get, access.key, access.graphState, draft, options)
+    }
+
+    const mutation = connectLfoToParameter(
+      access.graphState,
+      capturedBase == null ? draft : { ...draft, mapping: { ...draftMapping, base: capturedBase } },
+      { idFactory: options.idFactory },
+    )
+    if (!mutation.ok) return mutation
+
+    const applied = await applyGraphStateMutation(
+      set,
+      access.key,
+      mutation.graphState,
+      { ...options, syncRuntime: false },
+    )
+    if (!applied.ok) return applied
+
+    recordGraphEditTransaction(
+      set,
+      access.key,
+      'connect_lfo_to_parameter',
       access.graphState,
       applied.graphState,
     )
@@ -2821,6 +2999,11 @@ const useEffectChainStore = create((set, get) => ({
   // and persist graphState. Adding a drive action back here would recreate the exact
   // bug class the engine path removed — a renderer estimate of a clock it does not own,
   // and a second evaluator that can disagree with the one producing the audio.
+  //
+  // LFO-to-parameter modulation likewise has NO renderer drive action. Same as the
+  // Envelope, the LFO is engine-evaluated only, on the audio thread, against the
+  // authoritative transport position (engine/src/model/LfoParameterModulation.h +
+  // MixEngine::refreshLfoDefinitions) — there is no renderer-side clock estimate.
   // ── FXG.4-a graph-owned effect parameter descriptors ──────────────────────
   // Read/write normalized [0,1] parameters for a graph-owned effect node. These
   // are gated by fxMode === 'graph', address the engine by the stable
@@ -3037,6 +3220,10 @@ const useEffectChainStore = create((set, get) => ({
       chains: { ...state.chains, [key]: (state.chains[key] ?? []).filter((fx) => fx.nodeId !== nodeId) },
     }))
 
+    // The removed effect's engine node is gone; close its editor panel if open so
+    // it doesn't linger on screen addressing a now-dead nodeId.
+    closeEffectEditorForNode(key, nodeId)
+
     try {
       const ok = await ipc(key, 'removeEffect', 'removeMasterEffect', nodeId)
       if (ok === false) {
@@ -3124,13 +3311,8 @@ globalThis.window?.xleth?.onProjectLoaded?.(() => {
     graphHistories: {},
   })
 
-  // Close all open effect editor panels
-  useEqStore.getState().close()
-  useCompressorStore.getState().close()
-  useDistortionStore.getState().close()
-  useWaveshaperStore.getState().close()
-  useDelayStore.getState().close()
-  useChorusStore.getState().close()
+  // Close all open effect editor panels (they hold stale nodeIds in target)
+  closeAllEffectEditors()
 
   // Re-fetch every chain that was cached
   const { chains, fetchChain } = useEffectChainStore.getState()

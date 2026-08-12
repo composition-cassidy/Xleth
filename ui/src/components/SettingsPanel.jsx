@@ -12,7 +12,10 @@ import { resolveTheme, writeThemeToRoot } from '../theming/runtime/applyTheme'
 import {
   APPEARANCE_THEME_SLUG,
   DEFAULT_APPEARANCE_ACCENT,
+  DEFAULT_APPEARANCE_CONTRAST,
   DEFAULT_APPEARANCE_DARKNESS,
+  DEFAULT_APPEARANCE_HUE,
+  DEFAULT_APPEARANCE_SATURATION,
   buildAppearanceTheme,
   normalizeAccentHex,
 } from '../theming/runtime/appearanceTheme'
@@ -182,6 +185,9 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
   const appearancePersistTimerRef = useRef(null)
   const [accentColor, setAccentColor] = useState(DEFAULT_APPEARANCE_ACCENT)
   const [brightness, setBrightness] = useState(DEFAULT_APPEARANCE_DARKNESS)
+  const [chromeHue, setChromeHue] = useState(DEFAULT_APPEARANCE_HUE)
+  const [chromeSaturation, setChromeSaturation] = useState(DEFAULT_APPEARANCE_SATURATION)
+  const [textContrast, setTextContrast] = useState(DEFAULT_APPEARANCE_CONTRAST)
   const [activeCategory, setActiveCategory] = useState(() => normalizeCategory(initialCategory))
   const [projectStretchMethod, setProjectStretchMethod] = useState(null)
   const [defaultStretchMethod, setDefaultStretchMethod] = useState(null)
@@ -268,6 +274,21 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
     xl?.settings?.get?.('appearanceDarkness')?.then(v => {
       const n = Number(v)
       if (Number.isFinite(n)) setBrightness(Math.min(100, Math.max(0, n)))
+    }).catch(() => {})
+
+    xl?.settings?.get?.('appearanceHue')?.then(v => {
+      const n = Number(v)
+      if (Number.isFinite(n)) setChromeHue(Math.min(359, Math.max(0, n)))
+    }).catch(() => {})
+
+    xl?.settings?.get?.('appearanceSaturation')?.then(v => {
+      const n = Number(v)
+      if (Number.isFinite(n)) setChromeSaturation(Math.min(300, Math.max(0, n)))
+    }).catch(() => {})
+
+    xl?.settings?.get?.('appearanceContrast')?.then(v => {
+      const n = Number(v)
+      if (Number.isFinite(n)) setTextContrast(Math.min(160, Math.max(60, n)))
     }).catch(() => {})
 
     if (xl?.gpu?.getAvailableGpus) {
@@ -550,8 +571,8 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
     void setBackdropFxSettings(patch)
   }
 
-  const applyAppearance = useCallback((accent, darkness) => {
-    const file = buildAppearanceTheme(accent, darkness)
+  const applyAppearance = useCallback((accent, darkness, options = {}) => {
+    const file = buildAppearanceTheme(accent, darkness, options)
 
     // Live apply. Prefer the ThemeProvider so its applied-token tracking stays
     // in sync; fall back to writing :root directly when no provider is mounted
@@ -577,8 +598,21 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
       void xl?.settings?.set?.('activeTheme', APPEARANCE_THEME_SLUG)
       void xl?.settings?.set?.('appearanceAccent', accent)
       void xl?.settings?.set?.('appearanceDarkness', darkness)
+      void xl?.settings?.set?.('appearanceHue', options.hue ?? DEFAULT_APPEARANCE_HUE)
+      void xl?.settings?.set?.('appearanceSaturation', options.saturation ?? DEFAULT_APPEARANCE_SATURATION)
+      void xl?.settings?.set?.('appearanceContrast', options.contrast ?? DEFAULT_APPEARANCE_CONTRAST)
     }, 400)
   }, [themeContext])
+
+  // Every control feeds the same builder, so each handler passes the full knob
+  // set with its own value substituted. Keeps one source of truth for what the
+  // theme currently is, rather than four partial update paths.
+  const appearanceOptions = useCallback((patch = {}) => ({
+    hue: chromeHue,
+    saturation: chromeSaturation,
+    contrast: textContrast,
+    ...patch,
+  }), [chromeHue, chromeSaturation, textContrast])
 
   useEffect(() => () => {
     if (appearancePersistTimerRef.current) clearTimeout(appearancePersistTimerRef.current)
@@ -587,13 +621,31 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
   function handleAccentChange(event) {
     const next = normalizeAccentHex(event.target.value)
     setAccentColor(next)
-    applyAppearance(next, brightness)
+    applyAppearance(next, brightness, appearanceOptions())
   }
 
   function handleBrightnessChange(event) {
     const next = Math.min(100, Math.max(0, Number(event.target.value)))
     setBrightness(next)
-    applyAppearance(accentColor, next)
+    applyAppearance(accentColor, next, appearanceOptions())
+  }
+
+  function handleChromeHueChange(event) {
+    const next = Math.min(359, Math.max(0, Number(event.target.value)))
+    setChromeHue(next)
+    applyAppearance(accentColor, brightness, appearanceOptions({ hue: next }))
+  }
+
+  function handleChromeSaturationChange(event) {
+    const next = Math.min(300, Math.max(0, Number(event.target.value)))
+    setChromeSaturation(next)
+    applyAppearance(accentColor, brightness, appearanceOptions({ saturation: next }))
+  }
+
+  function handleTextContrastChange(event) {
+    const next = Math.min(160, Math.max(60, Number(event.target.value)))
+    setTextContrast(next)
+    applyAppearance(accentColor, brightness, appearanceOptions({ contrast: next }))
   }
 
   async function exportVisualPreviewDiagnostic() {
@@ -877,6 +929,70 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
                 aria-label="Brightness"
               />
               <span className="settings-panel-range-value">{brightness}%</span>
+            </div>
+          </SettingsRow>
+          <SettingsRow
+            label="Hue"
+            htmlFor="settings-appearance-hue"
+            description="Tints panels, text, and borders. Independent of the accent, so a warm chrome can carry a cool accent."
+          >
+            <div className="settings-panel-range-row">
+              <input
+                id="settings-appearance-hue"
+                type="range"
+                min="0"
+                max="359"
+                step="1"
+                className="settings-panel-range settings-panel-range--hue"
+                value={chromeHue}
+                onChange={handleChromeHueChange}
+                aria-label="Hue"
+              />
+              <span className="settings-panel-range-value">{chromeHue}&deg;</span>
+            </div>
+          </SettingsRow>
+          <SettingsRow
+            label="Saturation"
+            htmlFor="settings-appearance-saturation"
+            description="How strongly the hue reads. 0% is neutral grey; the default 100% is a faint cast."
+          >
+            <div className="settings-panel-range-row">
+              <input
+                id="settings-appearance-saturation"
+                type="range"
+                min="0"
+                max="300"
+                step="5"
+                className="settings-panel-range settings-panel-range--saturation"
+                // Track previews the chosen hue so the control shows what it does.
+                style={{
+                  '--range-track-image': `linear-gradient(to right, hsl(${chromeHue} 0% 45%), hsl(${chromeHue} 60% 45%))`,
+                }}
+                value={chromeSaturation}
+                onChange={handleChromeSaturationChange}
+                aria-label="Saturation"
+              />
+              <span className="settings-panel-range-value">{chromeSaturation}%</span>
+            </div>
+          </SettingsRow>
+          <SettingsRow
+            label="Text contrast"
+            htmlFor="settings-appearance-contrast"
+            description="Separation between text and its background. Body text stays above the WCAG AA floor at every setting."
+          >
+            <div className="settings-panel-range-row">
+              <input
+                id="settings-appearance-contrast"
+                type="range"
+                min="60"
+                max="160"
+                step="5"
+                className="settings-panel-range"
+                value={textContrast}
+                onChange={handleTextContrastChange}
+                aria-label="Text contrast"
+              />
+              <span className="settings-panel-range-value">{textContrast}%</span>
             </div>
           </SettingsRow>
         </SettingsSection>

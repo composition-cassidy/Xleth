@@ -148,6 +148,34 @@ public:
     // ── Global BPM (written by MixEngine once per block, read by any effect) ──
     static void setGlobalBPM(double bpm) { sBPM_.store(bpm, std::memory_order_relaxed); }
 
+    // ── Global transport position (written by MixEngine once per block, read by
+    //    any effect) ──────────────────────────────────────────────────────────
+    // Absolute render position in samples at the START of the current block, the
+    // same value the FX-graph LFO evaluates from (MixEngine::processBlock's
+    // `bufStart`). Lets an in-effect free-running LFO derive its phase without any
+    // per-effect plumbing — it is a single value shared by every effect this
+    // block, exactly like the BPM above. Only meaningful during playback (chains
+    // are not processed while stopped).
+    static void setGlobalTransportPositionSamples(int64_t pos)
+    {
+        sTransportPos_.store(pos, std::memory_order_relaxed);
+    }
+
+    // ── Per-track modulation gate (audio thread, set before this effect's
+    //    processBlock by MixEngine's per-track loop) ────────────────────────────
+    // Default no-op. Effects with a note/clip-triggered modulator (the Xleth
+    // Filter's per-slot Envelope) override this to receive the gate window that
+    // governs the current block for their track. Passed as plain scalars so the
+    // base and the effect-chain plumbing carry no dependency on xleth::envmod:
+    //   valid            — a gate governs this block (else the envelope is at rest)
+    //   gateStartSample  — absolute sample the governing gate opened
+    //   gateEndSample    — absolute sample it closes (>= a held note's query point
+    //                      while still open; the effect re-derives the ResolvedGate)
+    // Same audio thread, same block as processEffect (delivery happens immediately
+    // before the chain's processBlock), so no atomics are required by the override.
+    virtual void applyModulationGate(bool /*valid*/, int64_t /*gateStartSample*/,
+                                     int64_t /*gateEndSample*/) {}
+
     // ── Per-block MidiBuffer (set by AudioGraph before graph_->processBlock) ──
     // Audio-thread only.  Bypasses APG MIDI routing (no MIDI connections exist
     // in the graph); effects read onset events from this pointer instead.
@@ -556,6 +584,11 @@ protected:
 
     static double getGlobalBPM() { return sBPM_.load(std::memory_order_relaxed); }
 
+    static int64_t getGlobalTransportPositionSamples()
+    {
+        return sTransportPos_.load(std::memory_order_relaxed);
+    }
+
 private:
     // ── Bus construction ──────────────────────────────────────────────────────
     // All Xleth effects are stereo-in / stereo-out. When `withSidechainInput` is
@@ -735,6 +768,9 @@ private:
 
     // ── Global BPM (static, shared across all effect instances) ────────────
     static inline std::atomic<double> sBPM_{140.0};
+
+    // ── Global transport position in samples (static, shared) ──────────────
+    static inline std::atomic<int64_t> sTransportPos_{0};
 
     // ── Per-block MidiBuffer pointer (audio-thread only, single-threaded) ──
     static inline juce::MidiBuffer* sCurrentMidi_ = nullptr;

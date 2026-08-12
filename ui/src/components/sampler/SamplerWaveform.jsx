@@ -8,7 +8,8 @@ import { uiCanvasFont } from '../../styles/typography.js'
 const HANDLE_HIT = 8
 
 export default function SamplerWaveform({
-  regionId, numSamples,
+  regionId,
+  slotIndex = 0, numSamples,
   loopEnabled, loopStart, loopEnd,
   onCommitLoopPoints,
   smpStart = 0, smpLength = 0, declickSamples = 64,
@@ -63,7 +64,7 @@ export default function SamplerWaveform({
 
     async function fetchPeaks() {
       try {
-        const data = await window.xleth?.waveform?.getRegionPeaks?.(regionId, 0, -1, width, -1)
+        const data = await window.xleth?.waveform?.getRegionPeaks?.(regionId, 0, -1, width, -1, slotIndex)
         if (cancelled) return
         if (data && data.ready && data.peaks?.length > 0) {
           setPeaks(data.peaks)  // stride-3 [min,max,rms,...]
@@ -77,7 +78,7 @@ export default function SamplerWaveform({
     }
     fetchPeaks()
     return () => { cancelled = true }
-  }, [regionId, width])
+  }, [regionId, width, slotIndex])
 
   // Re-fetch when audio data changes (e.g. swap / future normalize / reverse)
   useEffect(() => {
@@ -86,7 +87,7 @@ export default function SamplerWaveform({
       if (e.detail?.regionId && e.detail.regionId !== regionId) return
       setPeaks(null)
       setLoadError(false)
-      window.xleth?.waveform?.getRegionPeaks?.(regionId, 0, -1, width, -1)
+      window.xleth?.waveform?.getRegionPeaks?.(regionId, 0, -1, width, -1, slotIndex)
         .then((data) => {
           if (data?.ready && data.peaks?.length > 0) setPeaks(data.peaks)
           else setLoadError(true)
@@ -95,7 +96,7 @@ export default function SamplerWaveform({
     }
     timelineEvents.addEventListener('timeline-sampler-changed', onChanged)
     return () => timelineEvents.removeEventListener('timeline-sampler-changed', onChanged)
-  }, [regionId, width])
+  }, [regionId, width, slotIndex])
 
   // Render waveform + all markers
   useEffect(() => {

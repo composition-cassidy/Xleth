@@ -312,9 +312,13 @@ const useMixerStore = create((set, get) => ({
 
   init: async () => {
     try {
-      const [list, rawLayout] = await Promise.all([
+      const [list, rawLayout, engineMasterVolume] = await Promise.all([
         window.xleth?.timeline?.getTracks(),
         window.xleth?.timeline?.getTrackLayout?.(),
+        // Master volume is engine-side state restored by project load, so the
+        // fader has to be read back rather than kept at its renderer default —
+        // otherwise it shows 0 dB for a project saved at any other level.
+        window.xleth?.audio?.getMasterVolume?.(),
       ])
       if (!Array.isArray(list)) return
       const trackLayout = normalizeTrackLayout(rawLayout, list)
@@ -350,6 +354,9 @@ const useMixerStore = create((set, get) => ({
         outputRoutes,
         routingError: null,
         selectedChainKey: resolveSelectedMixerChainKey(s.selectedChainKey, trackOrder),
+        master: Number.isFinite(engineMasterVolume)
+          ? { volume: engineMasterVolume }
+          : s.master,
       }))
       if (list.some(t => t?.outputRoute == null)) {
         await get().refreshRouting()
@@ -371,6 +378,19 @@ const useMixerStore = create((set, get) => ({
   setMasterVolume: (linearGain) => {
     set({ master: { volume: linearGain } })
     window.xleth?.audio?.setMasterVolume(linearGain)
+  },
+
+  // Pull the master fader up from the engine. Project load restores master
+  // volume engine-side, and the mixer's own init() only runs when the panel
+  // becomes visible — without this, a mixer that was already open keeps
+  // displaying (and on next save, re-persisting) the old project's level.
+  refreshMasterVolume: async () => {
+    try {
+      const volume = await window.xleth?.audio?.getMasterVolume?.()
+      if (Number.isFinite(volume)) set({ master: { volume } })
+    } catch (e) {
+      console.warn('[mixerStore] refreshMasterVolume failed:', e.message)
+    }
   },
 
   setPan: (trackId, pan) => {

@@ -3095,8 +3095,6 @@ export default function TimelineView({
             .sort((a, b) => a.positionTicks - b.positionTicks)
           if (selectedClips.length > 0) {
             const basePosition = selectedClips[0].positionTicks
-            const trackOrder = visibleTracks.map(t => t.id)
-            const baseTrackIdx = trackOrder.indexOf(selectedClips[0].trackId)
             copiedClips = selectedClips.map(clip => ({
               regionId: clip.regionId,
               trackId: clip.trackId,
@@ -3107,7 +3105,6 @@ export default function TimelineView({
               pitchOffset: clip.pitchOffset ?? 0,
               syllableIndex: clip.syllableIndex ?? -1,
               relativePosition: clip.positionTicks - basePosition,
-              relativeTrackIndex: trackOrder.indexOf(clip.trackId) - baseTrackIdx,
               // Non-fade playback modifiers (defaults match engine Clip struct)
               pitchOffsetCents: clip.pitchOffsetCents ?? 0,
               reversed: clip.reversed ?? false,
@@ -3142,8 +3139,6 @@ export default function TimelineView({
             .sort((a, b) => a.positionTicks - b.positionTicks)
           if (selectedBlocks.length > 0) {
             const basePosition = selectedBlocks[0].positionTicks
-            const trackOrder = visibleTracks.map(t => t.id)
-            const baseTrackIdx = trackOrder.indexOf(selectedBlocks[0].trackId)
             copiedPatternBlocks = selectedBlocks.map(block => {
               const pattern = patterns[block.patternId]
               const srcRegionId = pattern?.regionId ?? -1
@@ -3158,7 +3153,6 @@ export default function TimelineView({
                 offsetTicks: block.offsetTicks ?? 0,
                 loopEnabled: block.loopEnabled ?? false,
                 relativePosition: block.positionTicks - basePosition,
-                relativeTrackIndex: trackOrder.indexOf(block.trackId) - baseTrackIdx,
               }
             })
             console.log(`[Keyboard] Copied ${selectedBlocks.length} pattern block(s)`)
@@ -3177,9 +3171,9 @@ export default function TimelineView({
         e.stopPropagation()
 
         // Aggregated skip reasons — surfaced as a single toast at end of paste.
-        // 'typeMismatchClip'   = clip → non-Clip track under focus
-        // 'typeMismatchBlock'  = pattern block → non-Pattern track under focus
-        // 'overflow'           = relativeTrackIndex pushes past the last track
+        // 'typeMismatchClip'   = clip's original track is no longer a Clip track
+        // 'typeMismatchBlock'  = pattern block's original track is no longer a Pattern track
+        // 'overflow'           = the original track no longer exists
         const skipped = { typeMismatchClip: 0, typeMismatchBlock: 0, overflow: 0 }
 
         const cb = clipboardRef.current
@@ -3200,30 +3194,15 @@ export default function TimelineView({
           const predictedEndBeat = predictedEndTicks / PPQ
           handleSeek(predictedEndBeat)
 
-          // Rebase point: focused track if it matches the clipboard's source type,
-          // else fall back to the clipboard's source track. This preserves the
-          // "paste lands where I'm focused" behavior when types are compatible,
-          // and prevents silent type-mismatch skips when a Pattern track is
-          // focused while clips are in the clipboard.
-          const trackOrder = visibleTracks.map(t => t.id)
-          const focusId = focusedTrackIdRef.current
-          const focusedTrackObj = focusId ? tracks.find(t => t.id === focusId) : null
-          const expectedTypeForRebase = cb[0].sourceTrackType ?? 'Clip'
-          const focusUsable = !!focusedTrackObj && focusedTrackObj.type === expectedTypeForRebase
-          const baseTrackIdx = focusUsable
-            ? Math.max(0, trackOrder.indexOf(focusId))
-            : Math.max(0, trackOrder.indexOf(cb[0].trackId))
+          // Each clip always pastes back onto its own source track, regardless
+          // of which track is currently focused/selected — the clip's original
+          // trackId is the destination. Move it manually afterward if needed.
           try {
             const newIds = []
             const virtualClips = [...clipsRef.current]  // includes in-batch placements
             let pasteIdx = 0
             for (const item of cb) {
-              const targetTrackIdx = baseTrackIdx + item.relativeTrackIndex
-              if (targetTrackIdx < 0 || targetTrackIdx >= trackOrder.length) {
-                skipped.overflow++
-                continue
-              }
-              const trackId = trackOrder[targetTrackIdx]
+              const trackId = item.trackId
               const destTrack = tracks.find(t => t.id === trackId)
               if (!destTrack) { skipped.overflow++; continue }
               const expectedType = item.sourceTrackType ?? 'Clip'
@@ -3289,26 +3268,13 @@ export default function TimelineView({
           const predictedEndBeat = predictedEndTicks / PPQ
           handleSeek(predictedEndBeat)
 
-          // Same compatibility fallback as the clip-paste branch — if focused
-          // track type doesn't match the clipboard's source type, rebase on
-          // the source track instead of silently skipping every block.
-          const trackOrder = visibleTracks.map(t => t.id)
-          const focusId = focusedTrackIdRef.current
-          const focusedTrackObj = focusId ? tracks.find(t => t.id === focusId) : null
-          const expectedTypeForRebase = pbcb[0].sourceTrackType ?? 'Pattern'
-          const focusUsable = !!focusedTrackObj && focusedTrackObj.type === expectedTypeForRebase
-          const baseTrackIdx = focusUsable
-            ? Math.max(0, trackOrder.indexOf(focusId))
-            : Math.max(0, trackOrder.indexOf(pbcb[0].trackId))
+          // Each block always pastes back onto its own source track, regardless
+          // of which track is currently focused/selected — the block's original
+          // trackId is the destination. Move it manually afterward if needed.
           try {
             const newIds = []
             for (const item of pbcb) {
-              const targetTrackIdx = baseTrackIdx + item.relativeTrackIndex
-              if (targetTrackIdx < 0 || targetTrackIdx >= trackOrder.length) {
-                skipped.overflow++
-                continue
-              }
-              const destTrackId = trackOrder[targetTrackIdx]
+              const destTrackId = item.trackId
               const destTrack = tracks.find(t => t.id === destTrackId)
               if (!destTrack) { skipped.overflow++; continue }
               const expectedType = item.sourceTrackType ?? 'Pattern'
@@ -3341,15 +3307,15 @@ export default function TimelineView({
         const messages = []
         if (skipped.typeMismatchClip > 0) {
           const n = skipped.typeMismatchClip
-          messages.push(`${n} clip${n === 1 ? '' : 's'} skipped — focus an audio track to paste them`)
+          messages.push(`${n} clip${n === 1 ? '' : 's'} skipped — original track is no longer a Clip track`)
         }
         if (skipped.typeMismatchBlock > 0) {
           const n = skipped.typeMismatchBlock
-          messages.push(`${n} pattern block${n === 1 ? '' : 's'} skipped — focus a pattern track to paste them`)
+          messages.push(`${n} pattern block${n === 1 ? '' : 's'} skipped — original track is no longer a Pattern track`)
         }
         if (skipped.overflow > 0) {
           const n = skipped.overflow
-          messages.push(`${n} item${n === 1 ? '' : 's'} skipped — not enough tracks below focus`)
+          messages.push(`${n} item${n === 1 ? '' : 's'} skipped — original track no longer exists`)
         }
         if (messages.length > 0) showToast(messages.join(' · '), 'info')
         return

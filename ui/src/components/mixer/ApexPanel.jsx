@@ -3,18 +3,26 @@ import { X, Undo2, Redo2, RotateCcw } from 'lucide-react'
 import useApexStore, {
   BAND_NAMES, BAND_PREFIX, SPLIT_BANDS,
 } from '../../stores/apexStore.js'
-import Knob from '../sampler/Knob.jsx'
+import PluginUIKitKnob from '../../plugin-ui/runtime/components/PluginUIKitKnob.jsx'
 import EffectPresetBar from '../../fx-presets/EffectPresetBar.jsx'
 import ApexCurveEditor from './ApexCurveEditor.jsx'
 import ApexAnalysis from './ApexAnalysis.jsx'
+import { bandColor } from './apexBandColors.js'
 import {
   BAND_KNOBS, GLOBAL_KNOBS, BAND_STATES,
 } from './apexGeometry.js'
 
 // APEX editor window. Floating, viewport-anchored panel (mounted by the global
-// EffectEditorHost). Assembles the canvas curve editor + analysis display on
-// top, the band selector with per-band 4-state switch and SOLO, the per-band
-// knob rows, and the right-hand global panel.
+// EffectEditorHost). The control deck is laid out like FL Studio's Maximus: the
+// graph area on top (transfer curve + analysis), then a left-to-right console —
+// a vertical band rail (LOW/MID/HIGH/MASTER) and SOLO, a vertical ON/COMP OFF/
+// MUTED/OFF state switch beside the saturation trio, then GAIN, the dynamics
+// row, LMH delay/mix, and the crossover column.
+//
+// Knobs are the stock XLETH effect knob (PluginUIKitKnob, mixer-ring preset) —
+// the same control the Reverb / Delay / Flanger panels use — tinted with the
+// selected band's identity color (LOW red-orange / MID lime / HIGH aqua; MASTER
+// keeps the earned theme accent; see apexBandColors.js).
 //
 // Every scalar control follows the drag discipline: a knob previews locally
 // during a drag and commits one setEffectParameter on release; discrete controls
@@ -22,30 +30,41 @@ import {
 // store's local undo/redo stack (Undo/Redo in the header, or Ctrl+Z / Ctrl+Y
 // while the panel has focus). tokenValue() is never called at module scope.
 
-const SHORT_STATE = ['ON', 'CMP', 'MUT', 'OFF']
+const MIXER_RING_APPEARANCE = { preset: 'mixer-ring', sizePreset: 'inherit' }
+
+// Vertical state switch labels (spec 3 — same values BAND_STATES documents).
+const STATE_LABELS = ['ON', 'COMP OFF', 'MUTED', 'OFF']
 
 // ── Small building blocks ─────────────────────────────────────────────────────
 
-function ApexKnob({ id, label, min, max, def, skew, fmt, bipolar, size = 46 }) {
+// Stock effect knob (mixer-ring) with the value printed below — the mixer-ring
+// preset hides its own readout, so the panel renders it here (matching the
+// Delay / Reverb panels). `accentColor` tints the value arc with a band or
+// crossover identity color; omit it to fall back to the theme accent.
+function ApexKnob({ id, label, min, max, def, skew, fmt, accentColor, size = 50 }) {
   const value = useApexStore(s => s.params[id])
   const previewParam = useApexStore(s => s.previewParam)
   const commitParam = useApexStore(s => s.commitParam)
   const v = Number.isFinite(value) ? value : def
   return (
-    <Knob
-      value={v}
-      min={min}
-      max={max}
-      defaultValue={def}
-      label={label}
-      formatValue={fmt}
-      skew={skew || 1}
-      onLiveChange={(nv) => previewParam(id, nv)}
-      onCommit={(nv) => commitParam(id, nv)}
-      size={size}
-      dragRange={150}
-      ringStyle={bipolar ? 'split-track' : 'metered-arc'}
-    />
+    <div className="apex-knob-cell">
+      <PluginUIKitKnob
+        value={v}
+        min={min}
+        max={max}
+        defaultValue={def}
+        label={label}
+        formatValue={fmt}
+        skew={skew || 1}
+        onLiveChange={(nv) => previewParam(id, nv)}
+        onCommit={(nv) => commitParam(id, nv)}
+        size={size}
+        dragRange={150}
+        appearance={MIXER_RING_APPEARANCE}
+        accentColor={accentColor || undefined}
+      />
+      <div className="apex-knob-value">{fmt(v)}</div>
+    </div>
   )
 }
 
@@ -62,53 +81,73 @@ function SegButton({ active, onClick, title, children }) {
   )
 }
 
-// ── Band selector cell ────────────────────────────────────────────────────────
+// ── Band rail (vertical LOW / MID / HIGH / MASTER tabs) ───────────────────────
 
-function BandCell({ band }) {
+function BandTab({ band }) {
   const selected = useApexStore(s => s.selectedBand === band)
   const stateVal = useApexStore(s => s.params[BAND_PREFIX[band] + 'state'])
-  const soloVal = useApexStore(s => s.params[BAND_PREFIX[band] + 'solo'])
   const setSelectedBand = useApexStore(s => s.setSelectedBand)
-  const commitParam = useApexStore(s => s.commitParam)
-  const setSolo = useApexStore(s => s.setSolo)
-
   const st = Math.round(Number.isFinite(stateVal) ? stateVal : 0)
-  const isSolo = band < SPLIT_BANDS && soloVal > 0.5
+  const color = bandColor(band)
 
   return (
-    <div className={`apex-band-cell${selected ? ' selected' : ''}`}>
-      <button
-        type="button"
-        className="apex-band-name"
-        onClick={() => setSelectedBand(band)}
-        title={`Select ${BAND_NAMES[band]}`}
-      >
-        {BAND_NAMES[band]}
-      </button>
-      <div className="apex-band-state" role="group" aria-label={`${BAND_NAMES[band]} state`}>
-        {SHORT_STATE.map((lbl, idx) => (
-          <SegButton
-            key={idx}
-            active={st === idx}
-            onClick={() => commitParam(BAND_PREFIX[band] + 'state', idx)}
-            title={BAND_STATES[idx]}
-          >
-            {lbl}
-          </SegButton>
-        ))}
-      </div>
-      {band < SPLIT_BANDS ? (
+    <button
+      type="button"
+      className={`apex-band-tab${selected ? ' selected' : ''}${st >= 2 ? ' silenced' : ''}`}
+      style={color ? { '--apex-band-color': color } : undefined}
+      onClick={() => setSelectedBand(band)}
+      title={`Select ${BAND_NAMES[band]} · ${BAND_STATES[st]}`}
+    >
+      <span className="apex-band-tab-dot" />
+      <span className="apex-band-tab-name">{BAND_NAMES[band]}</span>
+    </button>
+  )
+}
+
+// One SOLO for the selected band (exclusive across L/M/H). MASTER has no solo.
+function SoloButton({ band }) {
+  const soloVal = useApexStore(s => s.params[BAND_PREFIX[band] + 'solo'])
+  const setSolo = useApexStore(s => s.setSolo)
+  const disabled = band >= SPLIT_BANDS
+  const isSolo = !disabled && soloVal > 0.5
+  return (
+    <button
+      type="button"
+      className={`apex-solo-btn${isSolo ? ' active' : ''}`}
+      disabled={disabled}
+      onClick={() => setSolo(band, !isSolo)}
+      title={disabled ? 'MASTER has no solo' : 'Solo (exclusive across L / M / H)'}
+    >
+      SOLO
+    </button>
+  )
+}
+
+// ── Vertical 4-state switch (ON / COMP OFF / MUTED / OFF) ──────────────────────
+
+function StateSwitch({ band }) {
+  const stateVal = useApexStore(s => s.params[BAND_PREFIX[band] + 'state'])
+  const commitParam = useApexStore(s => s.commitParam)
+  const st = Math.round(Number.isFinite(stateVal) ? stateVal : 0)
+  const color = bandColor(band)
+  return (
+    <div
+      className="apex-state-switch"
+      role="group"
+      aria-label={`${BAND_NAMES[band]} state`}
+      style={color ? { '--apex-band-color': color } : undefined}
+    >
+      {STATE_LABELS.map((lbl, idx) => (
         <button
+          key={idx}
           type="button"
-          className={`apex-solo-btn${isSolo ? ' active' : ''}`}
-          onClick={() => setSolo(band, !isSolo)}
-          title="Solo (exclusive across L/M/H)"
+          className={`apex-state-opt${st === idx ? ' active' : ''}`}
+          onClick={() => commitParam(BAND_PREFIX[band] + 'state', idx)}
+          title={lbl}
         >
-          SOLO
+          {lbl}
         </button>
-      ) : (
-        <span className="apex-solo-spacer" />
-      )}
+      ))}
     </div>
   )
 }
@@ -160,8 +199,8 @@ export default function ApexPanel() {
   const latency = useApexStore(s => s.latency)
 
   const [panelPos, setPanelPos] = useState(() => ({
-    x: Math.round(window.innerWidth / 2 - 360),
-    y: 64,
+    x: Math.round(window.innerWidth / 2 - 450),
+    y: 56,
   }))
   const panelDragRef = useRef(null)
 
@@ -179,7 +218,7 @@ export default function ApexPanel() {
       if (!panelDragRef.current) return
       const { startMouseX, startMouseY, startPanelX, startPanelY } = panelDragRef.current
       setPanelPos({
-        x: Math.max(-600, Math.min(window.innerWidth - 120, startPanelX + e.clientX - startMouseX)),
+        x: Math.max(-760, Math.min(window.innerWidth - 120, startPanelX + e.clientX - startMouseX)),
         y: Math.max(0, Math.min(window.innerHeight - 80, startPanelY + e.clientY - startMouseY)),
       })
     }
@@ -208,8 +247,9 @@ export default function ApexPanel() {
   if (!target || target.skin === 'gloss') return null
 
   const prefix = BAND_PREFIX[selectedBand]
+  const bandAccent = bandColor(selectedBand)
   const knobById = (suffix) => BAND_KNOBS.find(k => k.suffix === suffix)
-  const bandKnob = (suffix) => {
+  const bandKnob = (suffix, size) => {
     const k = knobById(suffix)
     return (
       <ApexKnob
@@ -221,7 +261,8 @@ export default function ApexPanel() {
         def={k.default}
         skew={k.skew}
         fmt={k.fmt}
-        bipolar={k.bipolar}
+        accentColor={bandAccent}
+        size={size}
       />
     )
   }
@@ -282,7 +323,7 @@ export default function ApexPanel() {
         />
       </div>
 
-      {/* Top: curve editor (left) + analysis (right) */}
+      {/* Top: curve editor (left) + analysis (right) — the Maximus graph area */}
       <div className="apex-top-row">
         <div className="apex-curve-wrap">
           <ApexCurveEditor />
@@ -292,68 +333,88 @@ export default function ApexPanel() {
         </div>
       </div>
 
-      {/* Band selector */}
-      <div className="apex-band-row">
-        {BAND_NAMES.map((_, band) => (
-          <BandCell key={band} band={band} />
-        ))}
-      </div>
+      {/* Maximus-style control deck */}
+      <div className="apex-deck">
 
-      {/* Body: per-band knob rows (left) + right global panel */}
-      <div className="apex-body">
-        <div className="apex-band-controls">
+        {/* Col 1 — band rail + SOLO */}
+        <div className="apex-col apex-col-bands">
+          <div className="apex-band-rail">
+            {BAND_NAMES.map((_, band) => (
+              <BandTab key={band} band={band} />
+            ))}
+          </div>
+          <SoloButton band={selectedBand} />
+        </div>
+
+        {/* Col 2 — state switch + saturation trio */}
+        <div className="apex-col apex-col-state">
+          <StateSwitch band={selectedBand} />
+          <div className="apex-knob-row apex-sat-row">
+            {bandKnob('satth', 42)}
+            {bandKnob('sep', 42)}
+            {bandKnob('satcl', 42)}
+          </div>
+        </div>
+
+        {/* Col 3 — gain */}
+        <div className="apex-col apex-col-gain">
+          <div className="apex-col-title">GAIN</div>
           <div className="apex-knob-row">
             {bandKnob('pre')}
             {bandKnob('post')}
           </div>
+        </div>
+
+        {/* Col 4 — dynamics + detection */}
+        <div className="apex-col apex-col-dyn">
           <div className="apex-knob-row">
             {bandKnob('att')}
             {bandKnob('rel')}
             {bandKnob('sus')}
-            <div className="apex-inline-toggle">
-              <DetectionToggle band={selectedBand} />
-              <span className="apex-inline-label">DETECT</span>
-            </div>
           </div>
-          <div className="apex-knob-row">
-            {bandKnob('satth')}
-            {bandKnob('satcl')}
-            {bandKnob('sep')}
+          <div className="apex-inline-toggle">
+            <DetectionToggle band={selectedBand} />
+            <span className="apex-inline-label">DETECT</span>
           </div>
         </div>
 
-        <div className="apex-right-panel">
-          <div className="apex-knob-row apex-knob-row--right">
-            <ApexKnob id={GLOBAL_KNOBS.lookahead.id} label={GLOBAL_KNOBS.lookahead.label}
-              min={GLOBAL_KNOBS.lookahead.min} max={GLOBAL_KNOBS.lookahead.max}
-              def={GLOBAL_KNOBS.lookahead.default} fmt={GLOBAL_KNOBS.lookahead.fmt} />
-            <ApexKnob id={GLOBAL_KNOBS.bandmix.id} label={GLOBAL_KNOBS.bandmix.label}
-              min={GLOBAL_KNOBS.bandmix.min} max={GLOBAL_KNOBS.bandmix.max}
-              def={GLOBAL_KNOBS.bandmix.default} fmt={GLOBAL_KNOBS.bandmix.fmt} />
-          </div>
+        {/* Col 5 — LMH lookahead / band mix */}
+        <div className="apex-col apex-col-lmh">
+          <ApexKnob id={GLOBAL_KNOBS.lookahead.id} label={GLOBAL_KNOBS.lookahead.label}
+            min={GLOBAL_KNOBS.lookahead.min} max={GLOBAL_KNOBS.lookahead.max}
+            def={GLOBAL_KNOBS.lookahead.default} fmt={GLOBAL_KNOBS.lookahead.fmt} />
+          <ApexKnob id={GLOBAL_KNOBS.bandmix.id} label={GLOBAL_KNOBS.bandmix.label}
+            min={GLOBAL_KNOBS.bandmix.min} max={GLOBAL_KNOBS.bandmix.max}
+            def={GLOBAL_KNOBS.bandmix.default} fmt={GLOBAL_KNOBS.bandmix.fmt} />
+        </div>
+
+        {/* Col 6 — crossover (LOW / HIGH split + slopes, LOW CUT) */}
+        <div className="apex-col apex-col-xover">
           <div className="apex-split-row">
             <ApexKnob id={GLOBAL_KNOBS.split_lo.id} label={GLOBAL_KNOBS.split_lo.label}
               min={GLOBAL_KNOBS.split_lo.min} max={GLOBAL_KNOBS.split_lo.max}
               def={GLOBAL_KNOBS.split_lo.default} skew={GLOBAL_KNOBS.split_lo.skew}
-              fmt={GLOBAL_KNOBS.split_lo.fmt} size={42} />
+              fmt={GLOBAL_KNOBS.split_lo.fmt} accentColor={bandColor(0)} size={42} />
             <SlopeSwitch id="slope_lo" />
           </div>
           <div className="apex-split-row">
             <ApexKnob id={GLOBAL_KNOBS.split_hi.id} label={GLOBAL_KNOBS.split_hi.label}
               min={GLOBAL_KNOBS.split_hi.min} max={GLOBAL_KNOBS.split_hi.max}
               def={GLOBAL_KNOBS.split_hi.default} skew={GLOBAL_KNOBS.split_hi.skew}
-              fmt={GLOBAL_KNOBS.split_hi.fmt} size={42} />
+              fmt={GLOBAL_KNOBS.split_hi.fmt} accentColor={bandColor(2)} size={42} />
             <SlopeSwitch id="slope_hi" />
           </div>
-          <div className="apex-knob-row apex-knob-row--right">
+          <div className="apex-split-row">
             <ApexKnob id={GLOBAL_KNOBS.lowcut.id} label={GLOBAL_KNOBS.lowcut.label}
               min={GLOBAL_KNOBS.lowcut.min} max={GLOBAL_KNOBS.lowcut.max}
-              def={GLOBAL_KNOBS.lowcut.default} fmt={GLOBAL_KNOBS.lowcut.fmt} size={42} />
+              def={GLOBAL_KNOBS.lowcut.default} fmt={GLOBAL_KNOBS.lowcut.fmt}
+              accentColor={bandColor(0)} size={42} />
             <div className="apex-latency-readout" title="Reported effect latency (lookahead + oversampling)">
               {latencyText}
             </div>
           </div>
         </div>
+
       </div>
     </div>
   )

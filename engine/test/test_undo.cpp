@@ -66,7 +66,7 @@ static void test1_addTrackAndClips() {
     region.startFrame    = 0;
     region.endFrame      = 3;
     region.audioFilePath = "/test/kick.wav";
-    region.rootNote      = 36;
+    region.slot(0).rootNote = 36;
     regId = tl.addRegion(region); // id = 1
 
     TrackInfo track;
@@ -116,10 +116,11 @@ static void test3_moveClipUndo() {
 
     auto clips = tl.getAllClips(); // sorted by id — [0] is first/oldest
     const int    clipId  = clips[0]->id;
+    const int    trackId = clips[0]->trackId;
     const TickTime origPos = clips[0]->position;
     const TickTime newPos  = TickTime::fromBeats(20.0);
 
-    um.execute(std::make_unique<MoveClipCommand>(clipId, newPos, tl), tl);
+    um.execute(std::make_unique<MoveClipCommand>(clipId, trackId, newPos, tl), tl);
     CHECK(tl.getClip(clipId)->position.ticks == newPos.ticks, "clip moved to new position");
 
     um.undo(tl);

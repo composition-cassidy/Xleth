@@ -11,6 +11,7 @@
 #include "audio/ClipFade.h"
 #include "audio/HermiteInterp.h"
 #include "audio/WorldStretchCache.h"
+#include "audio/SlotBakeCache.h"
 #include "dsp/DeclickEnvelope.h"
 #include "model/ClipModulationCompatibility.h"
 #include "XlethDebug.h"
@@ -368,6 +369,10 @@ MixEngine::MixEngine()
     // dispatch branch (worker thread) can reuse analysis across pitch toggles.
     worldStretchCache_ = std::make_unique<xleth::audio::WorldStretchCache>();
     clipRenderCache_.setWorldCache(worldStretchCache_.get());
+
+    // Per-slot PREP bake cache. Starts memory-only; the disk tier switches on
+    // once a project directory exists (setSlotBakeCacheDir).
+    slotBakeCache_ = std::make_unique<xleth::audio::SlotBakeCache>();
 
     // Create plugin registry (registers VST3 format manager).
     pluginRegistry_ = std::make_unique<PluginRegistry>();
@@ -1774,7 +1779,238 @@ std::unordered_map<int, int> MixEngine::getRegionToSampleMapSnapshot() const
     return regionToSampleMap_;
 }
 
+// ── Per-slot sample mapping (main thread) ────────────────────────────────────
+
+namespace {
+// Flat key for slotSampleMap_. Slot 0 is never stored (it resolves through the
+// region map), so the key space starts at slot 1.
+inline int slotMapKey(int regionId, int slotIndex) {
+    return regionId * MAX_SAMPLE_SLOTS + slotIndex;
+}
+} // namespace
+
+void MixEngine::mapRegionSlotToSample(int regionId, int slotIndex, int sampleBankId)
+{
+    if (regionId < 0 || slotIndex <= 0 || slotIndex >= MAX_SAMPLE_SLOTS) return;
+    slotSampleMap_[slotMapKey(regionId, slotIndex)] = sampleBankId;
+}
+
+int MixEngine::getSampleIdForRegionSlot(int regionId, int slotIndex) const
+{
+    // Slot 0 IS the region's audio — follows swaps automatically.
+    if (slotIndex <= 0) return getSampleIdForRegion(regionId);
+    auto it = slotSampleMap_.find(slotMapKey(regionId, slotIndex));
+    return it != slotSampleMap_.end() ? it->second : -1;
+}
+
+void MixEngine::unmapRegionSlot(int regionId, int slotIndex)
+{
+    if (slotIndex <= 0) return;
+    slotSampleMap_.erase(slotMapKey(regionId, slotIndex));
+}
+
+void MixEngine::unmapAllRegionSlots(int regionId)
+{
+    for (int i = 1; i < MAX_SAMPLE_SLOTS; ++i)
+        slotSampleMap_.erase(slotMapKey(regionId, i));
+}
+
 // ── Sampler lifecycle (main thread) ──────────────────────────────────────────
+
+std::unique_ptr<Sampler> MixEngine::buildSamplerForRegion(const SampleRegion& region)
+{
+    if (sampleBank_ == nullptr) return nullptr;
+
+    auto s = std::make_unique<Sampler>();
+
+    // ── Sampler-level (note-level) settings — unchanged by layering ──────────
+    s->setEnvelope(region.delayMs, region.attackMs, region.holdMs,
+                   region.decayMs, region.sustain, region.releaseMs,
+                   region.attackTension, region.decayTension, region.releaseTension);
+    s->setPitchEnvelope(region.pitchEnvDelayMs, region.pitchEnvAttackMs, region.pitchEnvHoldMs,
+                        region.pitchEnvDecayMs, region.pitchEnvSustain, region.pitchEnvReleaseMs,
+                        region.pitchEnvAttackTension, region.pitchEnvDecayTension, region.pitchEnvReleaseTension);
+    s->setPitchEnvEnabled(region.pitchEnvEnabled);
+    s->setPitchEnvAmount(region.pitchEnvAmount);
+    s->setCrossfadeMode(region.crossfadeEnabled);
+    s->setMonoMode(region.monoEnabled);
+    s->setVoiceCount(region.voiceCount);
+    s->setLegato(region.legatoEnabled);
+    s->setPortamento(region.portamentoEnabled, region.portamentoTimeMs,
+                     region.portamentoMode, region.portamentoCurve);
+    s->setArpeggiator(region.arpEnabled, region.arpTempoSync, region.arpDivision,
+                      region.arpFreeTimeMs, region.arpGate, region.arpRange,
+                      region.arpDirection);
+    s->setLfoVol(region.lfoVolEnabled, region.lfoVolAmount, region.lfoVolSpeedHz,
+                 region.lfoVolTempoSync, region.lfoVolTempoDivision,
+                 region.lfoVolAttackMs, region.lfoVolDelayMs, region.lfoVolWaveform);
+    s->setLfoPan(region.lfoPanEnabled, region.lfoPanAmount, region.lfoPanSpeedHz,
+                 region.lfoPanTempoSync, region.lfoPanTempoDivision,
+                 region.lfoPanAttackMs, region.lfoPanDelayMs, region.lfoPanWaveform);
+    s->setLfoPitch(region.lfoPitchEnabled, region.lfoPitchAmount, region.lfoPitchSpeedHz,
+                   region.lfoPitchTempoSync, region.lfoPitchTempoDivision,
+                   region.lfoPitchAttackMs, region.lfoPitchDelayMs, region.lfoPitchWaveform);
+    // Modulation system. Compiles the route graph and publishes it; an empty
+    // route list publishes nothing at all and costs the audio thread one null
+    // pointer test per block.
+    s->setModulation(region.modulation);
+
+    // ── Per-slot settings and PCM ────────────────────────────────────────────
+    const int nSlots = std::min(region.slotCount(), MAX_SAMPLE_SLOTS);
+    s->setSlotCount(nSlots);
+
+    bool anyAudio = false;
+    for (int i = 0; i < nSlots; ++i) {
+        const SampleSlot& sl = region.slot(i);
+
+        s->setSlotRootNote(i, sl.rootNote);
+        s->setSlotTuning(i, sl.octave, sl.semitone, sl.fine, sl.coarse);
+        s->setSlotLevel(i, sl.volume, sl.pan);
+        s->setSlotMuteSolo(i, sl.mute, sl.solo);
+        s->setSlotTrim(i, sl.smpStart, sl.smpLength, sl.declickMs,
+                       sl.fadeInMs, sl.fadeOutMs);
+        s->setSlotLoop(i, sl.loopEnabled, sl.loopStart, sl.loopEnd,
+                       sl.crossfadeSamples, sl.loopMode, sl.exitLoopOnRelease);
+        s->setSlotMangle(i, sl.mangleMode, sl.mangleAmount, sl.mangleMix);
+
+        // Slot 0 resolves via the region map (and so follows audio swaps);
+        // slots 1..7 use their own registered SampleBank id. A slot whose
+        // audio has not been loaded yet simply stays silent — the sampler is
+        // rebuilt once the load completes.
+        const int bankId = getSampleIdForRegionSlot(region.id, i);
+        if (bankId < 0) continue;
+        const auto* buf = sampleBank_->getSample(bankId);
+        if (buf == nullptr) continue;
+
+        const auto info = sampleBank_->getSampleInfo(bankId);
+        const double srcSR = info.originalSampleRate > 0.0
+                           ? info.originalSampleRate
+                           : 48000.0;
+
+        juce::AudioBuffer<float> working(*buf);
+        SampleProcessor::Flags fx{ sl.dcOffsetRemoved, sl.normalized,
+                                   sl.polarityReversed, sl.reversed };
+        SampleProcessor::applyFlags(working, fx);
+
+        // The raw (post-destructive-flag) audio is always what the slot is
+        // loaded with, so a slot with a pending or bypassed bake plays the
+        // real sample rather than silence.
+        s->loadSlotSample(i, working, srcSR, sl.rootNote);
+
+        // ── PREP bake ────────────────────────────────────────────────────────
+        // Bypassed at unity stretch and zero shift: no key, no hashing, no
+        // cache entry, no copy — which is precisely what makes a project made
+        // before PREP existed play bit-identically.
+        if (!sl.prepIsBypassed() && slotBakeCache_ != nullptr) {
+            const double bakeRate = info.bufferSampleRate > 0.0
+                                  ? info.bufferSampleRate : srcSR;
+            xleth::audio::BakeKey key;
+            // Hashing the POST-flag PCM makes the destructive flags part of the
+            // key without giving them their own fields.
+            key.sourceHash   = xleth::audio::SlotBakeCache::hashPCM(working);
+            key.algorithm    = sl.prepAlgorithm;
+            key.stretchMilli = static_cast<int32_t>(std::lround(sl.prepStretch * 1000.0f));
+            key.shiftCents   = static_cast<int32_t>(std::lround(sl.prepShiftCents));
+            key.sampleRateHz = static_cast<int32_t>(std::lround(bakeRate));
+            key.numChannels  = working.getNumChannels();
+
+            const int mapKey = slotMapKey(region.id, i);
+            if (auto baked = slotBakeCache_->lookup(key)) {
+                // Resident (memory tier) — the slot plays the baked buffer from
+                // its very first note, with no interim raw pass.
+                s->setSlotPreparedBuffer(i, baked);
+                publishedSlotBakes_[mapKey] = PreparedSlot{ baked, key.digest() };
+                pendingSlotBakes_.erase(mapKey);
+            } else {
+                // Miss. Queue the bake (a disk hit is resolved on the worker,
+                // so a reload after a restart still costs no DSP) and remember
+                // the key so drainSlotBakes() can publish it when it lands.
+                slotBakeCache_->submit(key, working);
+                pendingSlotBakes_[mapKey] =
+                    std::make_unique<xleth::audio::BakeKey>(key);
+            }
+        } else {
+            // PREP off (or turned off) — drop any stale pending bake so the
+            // drain does not later publish a buffer this slot no longer wants,
+            // and release the previous bake so the editor goes back to
+            // measuring and drawing the raw sample.
+            const int mapKey = slotMapKey(region.id, i);
+            pendingSlotBakes_.erase(mapKey);
+            publishedSlotBakes_.erase(mapKey);
+        }
+
+        anyAudio = true;
+    }
+
+    // No slot has audio yet — nothing to play. Callers treat null as "skip".
+    if (!anyAudio) return nullptr;
+    return s;
+}
+
+// ── Per-slot PREP bake (main thread) ─────────────────────────────────────────
+
+void MixEngine::setSlotBakeCacheDir(const std::string& dir)
+{
+    if (slotBakeCache_) slotBakeCache_->setCacheDir(dir);
+}
+
+void MixEngine::publishSlotBuffer(int regionId, int slotIndex,
+                                  std::shared_ptr<const juce::AudioBuffer<float>> buffer)
+{
+    // Every sampler that plays this region gets the swap: the per-track
+    // playback samplers and the preview sampler alike. Each swap is a single
+    // atomic store inside the Sampler — no rebuild, so notes already sounding
+    // keep their envelopes and simply start reading the new audio.
+    for (auto& [key, sampler] : samplers_)
+        if (key.regionId == regionId && sampler)
+            sampler->setSlotPreparedBuffer(slotIndex, buffer);
+
+    auto pv = previewSamplers_.find(regionId);
+    if (pv != previewSamplers_.end() && pv->second)
+        pv->second->setSlotPreparedBuffer(slotIndex, buffer);
+}
+
+bool MixEngine::drainSlotBakes()
+{
+    if (!slotBakeCache_ || pendingSlotBakes_.empty()) return false;
+
+    // Nothing has completed since the last drain — the common case, and the
+    // reason this is cheap enough to call from a UI poll.
+    const uint64_t epoch = slotBakeCache_->completionEpoch();
+    if (epoch == lastBakeEpoch_) return false;
+    lastBakeEpoch_ = epoch;
+
+    bool changed = false;
+    for (auto it = pendingSlotBakes_.begin(); it != pendingSlotBakes_.end(); ) {
+        const int regionId  = it->first / MAX_SAMPLE_SLOTS;
+        const int slotIndex = it->first % MAX_SAMPLE_SLOTS;
+        auto baked = it->second ? slotBakeCache_->lookup(*it->second) : nullptr;
+        if (!baked) { ++it; continue; }   // still baking
+
+        publishSlotBuffer(regionId, slotIndex, baked);
+        publishedSlotBakes_[it->first] = PreparedSlot{ baked, it->second->digest() };
+        it = pendingSlotBakes_.erase(it);
+        changed = true;
+    }
+    return changed;
+}
+
+MixEngine::PreparedSlot
+MixEngine::getPreparedSlotBuffer(int regionId, int slotIndex) const
+{
+    if (regionId < 0 || slotIndex < 0 || slotIndex >= MAX_SAMPLE_SLOTS) return {};
+    auto it = publishedSlotBakes_.find(slotMapKey(regionId, slotIndex));
+    return it != publishedSlotBakes_.end() ? it->second : PreparedSlot{};
+}
+
+std::vector<MixEngine::SlotBakeJobInfo> MixEngine::getPendingSlotBakes() const
+{
+    std::vector<SlotBakeJobInfo> out;
+    out.reserve(pendingSlotBakes_.size());
+    for (const auto& [flatKey, key] : pendingSlotBakes_)
+        out.push_back({ flatKey / MAX_SAMPLE_SLOTS, flatKey % MAX_SAMPLE_SLOTS });
+    return out;
+}
 
 void MixEngine::loadSamplerForTrackRegion(int trackId, int regionId)
 {
@@ -1788,54 +2024,8 @@ void MixEngine::loadSamplerForTrackRegion(int trackId, int regionId)
     const SampleRegion* region = timeline_->getRegion(regionId);
     if (region == nullptr) return;
 
-    const int sampleBankId = getSampleIdForRegion(regionId);
-    if (sampleBankId < 0) return;
-    const auto* buf = sampleBank_->getSample(sampleBankId);
-    if (buf == nullptr) return;
-
-    const auto info = sampleBank_->getSampleInfo(sampleBankId);
-    const double srcSR = info.originalSampleRate > 0.0
-                       ? info.originalSampleRate
-                       : 48000.0;
-
-    auto s = std::make_unique<Sampler>();
-    s->setRootNote(region->rootNote);
-    s->setEnvelope(region->delayMs, region->attackMs, region->holdMs,
-                   region->decayMs, region->sustain, region->releaseMs,
-                   region->attackTension, region->decayTension, region->releaseTension);
-    s->setPitchEnvelope(region->pitchEnvDelayMs, region->pitchEnvAttackMs, region->pitchEnvHoldMs,
-                        region->pitchEnvDecayMs, region->pitchEnvSustain, region->pitchEnvReleaseMs,
-                        region->pitchEnvAttackTension, region->pitchEnvDecayTension, region->pitchEnvReleaseTension);
-    s->setPitchEnvEnabled(region->pitchEnvEnabled);
-    s->setPitchEnvAmount(region->pitchEnvAmount);
-    s->setLoopPoints(region->loopEnabled, region->loopStart, region->loopEnd);
-    s->setCrossfadeMode(region->crossfadeEnabled);
-    s->setSmpStart(region->smpStart);
-    s->setSmpLength(region->smpLength);
-    s->setDeclickMs(region->declickMs);
-    s->setFadeIn(region->fadeInMs);
-    s->setFadeOut(region->fadeOutMs);
-    s->setCrossfadeSamples(region->crossfadeSamples);
-    s->setMonoMode(region->monoEnabled);
-    s->setPortamento(region->portamentoEnabled, region->portamentoTimeMs);
-    s->setArpeggiator(region->arpEnabled, region->arpTempoSync, region->arpDivision,
-                      region->arpFreeTimeMs, region->arpGate, region->arpRange,
-                      region->arpDirection);
-    s->setLfoVol(region->lfoVolEnabled, region->lfoVolAmount, region->lfoVolSpeedHz,
-                 region->lfoVolTempoSync, region->lfoVolTempoDivision,
-                 region->lfoVolAttackMs, region->lfoVolDelayMs, region->lfoVolWaveform);
-    s->setLfoPan(region->lfoPanEnabled, region->lfoPanAmount, region->lfoPanSpeedHz,
-                 region->lfoPanTempoSync, region->lfoPanTempoDivision,
-                 region->lfoPanAttackMs, region->lfoPanDelayMs, region->lfoPanWaveform);
-    s->setLfoPitch(region->lfoPitchEnabled, region->lfoPitchAmount, region->lfoPitchSpeedHz,
-                   region->lfoPitchTempoSync, region->lfoPitchTempoDivision,
-                   region->lfoPitchAttackMs, region->lfoPitchDelayMs, region->lfoPitchWaveform);
-
-    juce::AudioBuffer<float> working(*buf);
-    SampleProcessor::Flags fx{ region->dcOffsetRemoved, region->normalized,
-                               region->polarityReversed, region->reversed };
-    SampleProcessor::applyFlags(working, fx);
-    s->loadSample(working, srcSR, region->rootNote);
+    auto s = buildSamplerForRegion(*region);
+    if (s == nullptr) return;
 
     samplers_[{trackId, regionId}] = std::move(s);
 }
@@ -1863,6 +2053,8 @@ void MixEngine::unloadSamplersForRegion(int regionId)
         else
             ++it;
     }
+    // The region is gone, so its slot→sample registrations are dead too.
+    unmapAllRegionSlots(regionId);
 }
 
 void MixEngine::silenceAllSamplers()
@@ -2070,6 +2262,11 @@ void MixEngine::setTrackSpread(int trackId, float spread)
 void MixEngine::setMasterVolume(float volume)
 {
     masterVolume_.store(volume, std::memory_order_relaxed);
+}
+
+float MixEngine::getMasterVolume() const
+{
+    return masterVolume_.load(std::memory_order_relaxed);
 }
 
 void MixEngine::setClipBoundaryFadeSamples(int n)
@@ -2355,6 +2552,12 @@ void MixEngine::syncTrackSlotsFromTimeline(bool snapVolumeSmoothers)
     // has to be rebuilt whenever the slot params are resynced (which is what every
     // mute/solo/volume mutation already calls).
     refreshEnvelopeDefinitions();
+
+    // LFO definitions don't depend on mute/solo (audibility is a runtime,
+    // per-block concern in evaluateLfoModulation — see its comment), but they
+    // do depend on graphState, which can change alongside the same edits that
+    // call this function. Rebuilding here keeps it as current as Envelope's.
+    refreshLfoDefinitions();
 }
 
 void MixEngine::syncSidechainTargetBuses()
@@ -2415,54 +2618,8 @@ void MixEngine::ensurePreviewSampler(int regionId)
         return;
     }
 
-    const int sampleBankId = getSampleIdForRegion(regionId);
-    if (sampleBankId < 0) return;
-    const auto* buf = sampleBank_->getSample(sampleBankId);
-    if (buf == nullptr) return;
-
-    const auto info = sampleBank_->getSampleInfo(sampleBankId);
-    const double srcSR = info.originalSampleRate > 0.0
-                       ? info.originalSampleRate
-                       : 48000.0;
-
-    auto s = std::make_unique<Sampler>();
-    s->setRootNote(r->rootNote);
-    s->setEnvelope(r->delayMs, r->attackMs, r->holdMs,
-                   r->decayMs, r->sustain, r->releaseMs,
-                   r->attackTension, r->decayTension, r->releaseTension);
-    s->setPitchEnvelope(r->pitchEnvDelayMs, r->pitchEnvAttackMs, r->pitchEnvHoldMs,
-                        r->pitchEnvDecayMs, r->pitchEnvSustain, r->pitchEnvReleaseMs,
-                        r->pitchEnvAttackTension, r->pitchEnvDecayTension, r->pitchEnvReleaseTension);
-    s->setPitchEnvEnabled(r->pitchEnvEnabled);
-    s->setPitchEnvAmount(r->pitchEnvAmount);
-    s->setLoopPoints(r->loopEnabled, r->loopStart, r->loopEnd);
-    s->setCrossfadeMode(r->crossfadeEnabled);
-    s->setSmpStart(r->smpStart);
-    s->setSmpLength(r->smpLength);
-    s->setDeclickMs(r->declickMs);
-    s->setFadeIn(r->fadeInMs);
-    s->setFadeOut(r->fadeOutMs);
-    s->setCrossfadeSamples(r->crossfadeSamples);
-    s->setMonoMode(r->monoEnabled);
-    s->setPortamento(r->portamentoEnabled, r->portamentoTimeMs);
-    s->setArpeggiator(r->arpEnabled, r->arpTempoSync, r->arpDivision,
-                      r->arpFreeTimeMs, r->arpGate, r->arpRange,
-                      r->arpDirection);
-    s->setLfoVol(r->lfoVolEnabled, r->lfoVolAmount, r->lfoVolSpeedHz,
-                 r->lfoVolTempoSync, r->lfoVolTempoDivision,
-                 r->lfoVolAttackMs, r->lfoVolDelayMs, r->lfoVolWaveform);
-    s->setLfoPan(r->lfoPanEnabled, r->lfoPanAmount, r->lfoPanSpeedHz,
-                 r->lfoPanTempoSync, r->lfoPanTempoDivision,
-                 r->lfoPanAttackMs, r->lfoPanDelayMs, r->lfoPanWaveform);
-    s->setLfoPitch(r->lfoPitchEnabled, r->lfoPitchAmount, r->lfoPitchSpeedHz,
-                   r->lfoPitchTempoSync, r->lfoPitchTempoDivision,
-                   r->lfoPitchAttackMs, r->lfoPitchDelayMs, r->lfoPitchWaveform);
-
-    juce::AudioBuffer<float> working(*buf);
-    SampleProcessor::Flags fx{ r->dcOffsetRemoved, r->normalized,
-                               r->polarityReversed, r->reversed };
-    SampleProcessor::applyFlags(working, fx);
-    s->loadSample(working, srcSR, r->rootNote);
+    auto s = buildSamplerForRegion(*r);
+    if (s == nullptr) return;
 
     previewSamplers_[regionId] = std::move(s);
 }
@@ -3280,6 +3437,13 @@ void MixEngine::refreshEnvelopeDefinitions()
     // Parse + gate derivation happens entirely here, on the message thread.
     auto next = xleth::envmod::buildEnvelopeModulationSnapshot(*timeline_);
 
+    // Augment the snapshot with the in-effect filter Envelope's per-track gates —
+    // a live effect-chain concern the model-side builder can't see. Safe to
+    // mutate: `next` is uniquely held and not yet published.
+    if (next)
+        populateFilterEnvelopeGates(
+            *std::const_pointer_cast<xleth::envmod::EnvelopeModulationSnapshot>(next));
+
     std::lock_guard<std::mutex> lock(envelopeSnapshotMutex_);
 
     // Publish, then retire the previous snapshot with the epoch observed NOW.
@@ -3311,6 +3475,59 @@ void MixEngine::refreshEnvelopeDefinitions()
         envelopeSnapshotRetired_.end());
 }
 
+void MixEngine::populateFilterEnvelopeGates(xleth::envmod::EnvelopeModulationSnapshot& snapshot)
+{
+    if (timeline_ == nullptr) return;
+
+    // Gather (trackId, wantSlides) for every chain holding a filter with an
+    // active Envelope modulator UNDER the chains lock, then release it before the
+    // (allocating) gate build so the audio thread's per-block try_lock is never
+    // starved by a long timeline scan. No caller of refreshEnvelopeDefinitions
+    // holds chainsMutex_, so this cannot deadlock.
+    struct Req { int trackId; bool wantSlides; };
+    std::vector<Req> reqs;
+    {
+        std::lock_guard<std::mutex> lock(chainsMutex_);
+        for (auto& kv : effectChains_)
+        {
+            if (!kv.second) continue;
+            bool wantSlides = false;
+            if (kv.second->anyFilterHasActiveEnvelope(wantSlides))
+                reqs.push_back({ kv.first, wantSlides });
+        }
+    }
+
+    for (const auto& r : reqs)
+    {
+        auto build = xleth::envmod::buildTrackGateIntervals(*timeline_, r.trackId, r.wantSlides);
+        snapshot.filterTrackGates[r.trackId] =
+            xleth::envmod::buildGateTimeline(std::move(build.intervals));
+    }
+}
+
+void MixEngine::resolveFilterGatesFromSnapshot(
+    const xleth::envmod::EnvelopeModulationSnapshot& snapshot,
+    int64_t positionSamples, double bpm, double sampleRate, bool atRest) noexcept
+{
+    filterGateCount_ = 0;
+    // On stop-release (atRest) or with no valid clock, leave no gates — every
+    // filter Envelope then reads invalid → env 0 → exactly its base.
+    if (atRest || !(bpm > 0.0) || !(sampleRate > 0.0)) return;
+
+    for (const auto& kv : snapshot.filterTrackGates)
+    {
+        if (filterGateCount_ >= kMaxTracks) break;
+        const auto view = xleth::envmod::makeGateView(kv.second);
+        const auto rg = xleth::envmod::resolveActiveGateAtSample(
+            view, positionSamples, bpm, sampleRate);
+        auto& e   = filterGates_[filterGateCount_++];
+        e.trackId = kv.first;
+        e.valid   = rg.valid;
+        e.start   = rg.gateStartSample;
+        e.end     = rg.gateEndSample;
+    }
+}
+
 std::shared_ptr<const xleth::envmod::EnvelopeModulationSnapshot>
 MixEngine::getEnvelopeModulationSnapshotForTesting() const
 {
@@ -3340,7 +3557,13 @@ void MixEngine::evaluateEnvelopeModulation(int64_t positionSamples,
     } inBlockScope{envelopeAudioInBlock_};
 
     const auto* snapshot = envelopeSnapshotLive_.load(std::memory_order_acquire);
-    if (snapshot == nullptr) return;
+    if (snapshot == nullptr) { filterGateCount_ = 0; return; }
+
+    // In-effect filter Envelope gates ride the SAME snapshot + epoch guard.
+    // Resolved before the mailbox early-outs below because a project can carry
+    // filter envelopes with no graph envelopes at all (empty mailbox path).
+    resolveFilterGatesFromSnapshot(*snapshot, positionSamples, bpm, sampleRate, atRest);
+
     if (snapshot->mailboxes == nullptr || snapshot->mailboxCount <= 0) return;
     if (!(bpm > 0.0) || !(sampleRate > 0.0)) return;
 
@@ -3442,9 +3665,14 @@ void MixEngine::startEnvelopeApplierThread()
         while (envelopeApplierRunning_.load(std::memory_order_acquire))
         {
             const int written = applyPendingEnvelopeModulation();
+            // LFO modulation drains into disjoint parameter targets through the
+            // same value-only setter, guarded by the same chainsMutex_ — riding
+            // this thread costs nothing but a second, cheap mailbox scan, so no
+            // second applier thread is started for it.
+            const int lfoWritten = applyPendingLfoModulation();
             // Back off when idle so a stopped transport costs almost nothing,
             // and stay tight while modulation is actually moving.
-            std::this_thread::sleep_for(written > 0 ? std::chrono::milliseconds(1)
+            std::this_thread::sleep_for((written > 0 || lfoWritten > 0) ? std::chrono::milliseconds(1)
                                                    : std::chrono::milliseconds(10));
         }
     });
@@ -3455,6 +3683,195 @@ void MixEngine::stopEnvelopeApplierThread()
     if (!envelopeApplierRunning_.exchange(false)) return;
     if (envelopeApplierThread_.joinable())
         envelopeApplierThread_.join();
+}
+
+// ── FX Graph LFO Modulator → parameter modulation ─────────────────────────────
+
+void MixEngine::refreshLfoDefinitions()
+{
+    if (timeline_ == nullptr) {
+        std::lock_guard<std::mutex> lock(lfoSnapshotMutex_);
+        lfoSnapshotLive_.store(nullptr, std::memory_order_release);
+        if (lfoSnapshotOwner_) {
+            lfoSnapshotRetired_.emplace_back(
+                std::move(lfoSnapshotOwner_),
+                lfoAudioEpoch_.load(std::memory_order_acquire));
+        }
+        return;
+    }
+
+    // Parse happens entirely here, on the message thread. Unlike the Envelope
+    // snapshot, this does NOT derive gates or audibility — see
+    // buildLfoModulationSnapshot's doc comment.
+    auto next = xleth::lfomod::buildLfoModulationSnapshot(*timeline_);
+
+    std::lock_guard<std::mutex> lock(lfoSnapshotMutex_);
+
+    // Publish, then retire the previous snapshot with the epoch observed NOW.
+    // Same ordering argument as refreshEnvelopeDefinitions above.
+    auto previous = std::move(lfoSnapshotOwner_);
+    lfoSnapshotOwner_ = next;
+    lfoSnapshotLive_.store(next.get(), std::memory_order_release);
+
+    const std::uint64_t epochAtPublish = lfoAudioEpoch_.load(std::memory_order_acquire);
+    if (previous)
+        lfoSnapshotRetired_.emplace_back(std::move(previous), epochAtPublish);
+
+    const std::uint64_t epochNow = lfoAudioEpoch_.load(std::memory_order_acquire);
+    const bool inBlock = lfoAudioInBlock_.load(std::memory_order_acquire);
+    lfoSnapshotRetired_.erase(
+        std::remove_if(lfoSnapshotRetired_.begin(), lfoSnapshotRetired_.end(),
+                       [epochNow, inBlock](const auto& entry) {
+                           return epochNow > entry.second || !inBlock;
+                       }),
+        lfoSnapshotRetired_.end());
+}
+
+std::shared_ptr<const xleth::lfomod::LfoModulationSnapshot>
+MixEngine::getLfoModulationSnapshotForTesting() const
+{
+    std::lock_guard<std::mutex> lock(lfoSnapshotMutex_);
+    return lfoSnapshotOwner_;
+}
+
+void MixEngine::evaluateLfoModulation(int64_t positionSamples,
+                                      double  bpm,
+                                      double  sampleRate,
+                                      bool    atRest) noexcept
+{
+    // Same epoch-bump + single-atomic-load discipline as evaluateEnvelopeModulation.
+    lfoAudioEpoch_.fetch_add(1, std::memory_order_acq_rel);
+
+    struct InBlockScope
+    {
+        std::atomic<bool>& flag;
+        explicit InBlockScope(std::atomic<bool>& f) : flag(f)
+        {
+            flag.store(true, std::memory_order_release);
+        }
+        ~InBlockScope() { flag.store(false, std::memory_order_release); }
+    } inBlockScope{lfoAudioInBlock_};
+
+    const auto* snapshot = lfoSnapshotLive_.load(std::memory_order_acquire);
+    if (snapshot == nullptr) return;
+    if (snapshot->mailboxes == nullptr || snapshot->mailboxCount <= 0) return;
+    if (!atRest && (!(bpm > 0.0) || !(sampleRate > 0.0))) return;
+
+    // Route-aware mute/solo audibility, computed fresh every block. Unlike
+    // Envelope (which bakes this into the snapshot at PREPARE time via
+    // omitted gates), buildLfoModulationSnapshot deliberately does NOT
+    // consult mute/solo — an LFO's neutral bipolar-0 sample rescales to
+    // unipolar 0.5, which does not generally equal `base`, so "go inert"
+    // cannot be expressed by omitting structure the way Envelope's gate
+    // timeline can. This mirrors buildEnvelopeModulationSnapshot's own use
+    // of xleth::buildRoutePlan, just moved from PREPARE time to EVALUATE
+    // time, once per block. timeline_->getAllTracks() allocates a small
+    // vector; processBlock already does the same on this thread each block
+    // (see its own routePlan build a few lines below the per-block call
+    // site), so this is an existing, accepted trade-off in this file, not a
+    // new one.
+    xleth::RoutePlanSlotInput routeInputs[xleth::RoutePlan::kMaxSlots];
+    int slotCount = 0;
+    if (timeline_ != nullptr) {
+        const auto allTracks = timeline_->getAllTracks();
+        for (const auto* t : allTracks) {
+            if (t == nullptr || slotCount >= xleth::RoutePlan::kMaxSlots) continue;
+            routeInputs[slotCount].trackId             = t->id;
+            routeInputs[slotCount].outputTargetTrackId = t->outputRoute.targetTrackId;
+            routeInputs[slotCount].muted               = t->muted;
+            routeInputs[slotCount].solo                = t->solo;
+            routeInputs[slotCount].visualOnly          = t->visualOnly;
+            ++slotCount;
+        }
+    }
+    xleth::RoutePlan routePlan;
+    xleth::buildRoutePlan(routeInputs, slotCount, routePlan);
+
+    const auto isTrackAudible = [&routeInputs, &routePlan, slotCount](int trackId) noexcept -> bool {
+        for (int i = 0; i < slotCount; ++i)
+            if (routeInputs[i].trackId == trackId)
+                return routePlan.audible[i];
+        return false; // track not found (deleted this block) -> treat as inaudible
+    };
+
+    const int edgeCount = static_cast<int>(snapshot->edges.size());
+
+    for (const auto& lfoEntry : snapshot->lfos)
+    {
+        for (int i = 0; i < lfoEntry.edgeCount; ++i)
+        {
+            const int edgeIndex = lfoEntry.edgeOffset + i;
+            if (edgeIndex < 0 || edgeIndex >= edgeCount) break;
+
+            const auto& edge = snapshot->edges[edgeIndex];
+            if (edge.mailboxIndex < 0 || edge.mailboxIndex >= snapshot->mailboxCount) continue;
+
+            const auto& target = snapshot->mailboxTargets[static_cast<std::size_t>(edge.mailboxIndex)];
+            const bool inert = atRest || !isTrackAudible(target.trackId);
+
+            double value;
+            if (inert) {
+                // Bypass evaluateModulationMapping entirely: an LFO's neutral
+                // sample does not generally map to `base`, so the only correct
+                // "settle" value is the authored base itself, written directly.
+                value = edge.mapping.base;
+            } else {
+                const double bipolar = xleth::lfomod::evaluateLfoAtPosition(
+                    lfoEntry.shape, positionSamples, bpm, sampleRate);
+                const double unipolar = (bipolar + 1.0) * 0.5;
+                value = xleth::envmod::evaluateModulationMapping(edge.mapping, unipolar);
+            }
+
+            auto& mailbox = snapshot->mailboxes[edge.mailboxIndex];
+            mailbox.value.store(static_cast<float>(value), std::memory_order_relaxed);
+            mailbox.seq.fetch_add(1, std::memory_order_release);
+        }
+    }
+}
+
+int MixEngine::applyPendingLfoModulation()
+{
+    std::shared_ptr<const xleth::lfomod::LfoModulationSnapshot> snapshot;
+    {
+        std::lock_guard<std::mutex> lock(lfoSnapshotMutex_);
+        snapshot = lfoSnapshotOwner_;
+    }
+    if (!snapshot || snapshot->mailboxCount <= 0 || snapshot->mailboxes == nullptr)
+        return 0;
+
+    if (lfoDrainedSnapshot_ != snapshot) {
+        lfoDrainedSnapshot_ = snapshot;
+        lfoDrainedSeqs_.assign(static_cast<std::size_t>(snapshot->mailboxCount), 0u);
+    }
+
+    int written = 0;
+    for (int i = 0; i < snapshot->mailboxCount; ++i)
+    {
+        const std::uint32_t seq = snapshot->mailboxes[i].seq.load(std::memory_order_acquire);
+        if (seq == 0) continue;
+        if (seq == lfoDrainedSeqs_[static_cast<std::size_t>(i)]) continue;
+        lfoDrainedSeqs_[static_cast<std::size_t>(i)] = seq;
+
+        const float value = snapshot->mailboxes[i].value.load(std::memory_order_relaxed);
+        const auto& target = snapshot->mailboxTargets[static_cast<std::size_t>(i)];
+
+        LfoApplierKey key;
+        key.trackId          = target.trackId;
+        key.effectInstanceId = target.effectInstanceId;
+        key.parameterId      = target.parameterId;
+
+        auto it = lfoAppliedValues_.find(key);
+        if (it != lfoAppliedValues_.end() && std::fabs(it->second - value) <= 1.0e-5f)
+            continue;
+
+        if (setGraphEffectParameterNormalizedValueOnly(
+                target.trackId, target.effectInstanceId, target.parameterId, value)) {
+            lfoAppliedValues_[key] = value;
+            ++written;
+        }
+    }
+
+    return written;
 }
 
 std::string MixEngine::getEffectParameters(int trackId, int nodeId) const
@@ -4407,6 +4824,15 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                                    transport.getBPM(),
                                    transport.getSampleRate(),
                                    /*atRest=*/true);
+
+        // LFO stop RELEASE. atRest=true forces every edge onto its authored
+        // `base` directly (bypassing evaluateModulationMapping — see
+        // evaluateLfoModulation's comment for why an LFO's neutral sample
+        // can't be used the way Envelope's env==0 is).
+        evaluateLfoModulation(transport.getRenderPositionSamples(),
+                              transport.getBPM(),
+                              transport.getSampleRate(),
+                              /*atRest=*/true);
     }
     wasPlaying_ = isPlaying;
 
@@ -4458,6 +4884,11 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     const int64_t bufStart  = position;
     const int64_t bufEnd    = position + numSamples;
 
+    // Publish this block's absolute start position so any effect with an
+    // in-effect free-running LFO (the Xleth Filter's per-slot LFO) derives its
+    // phase from the same clock the FX-graph LFO uses — no per-effect plumbing.
+    XlethEffectBase::setGlobalTransportPositionSamples(bufStart);
+
     // Envelope Controller → parameter modulation, evaluated on the authoritative
     // clock. Placed here, before any track or effect processing, so the values
     // published for this block belong to this block's transport position.
@@ -4468,6 +4899,11 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     // function of position — so the first rendered sample after Play is already
     // correct, a loop wrap cannot over-run, and a seek lands at the right phase.
     evaluateEnvelopeModulation(bufStart, bpm, sampleRate, /*atRest=*/false);
+
+    // LFO Modulator → parameter modulation, evaluated at the same point for
+    // the same reason (see comment above): this block's transport position,
+    // before any track or effect processing.
+    evaluateLfoModulation(bufStart, bpm, sampleRate, /*atRest=*/false);
 
     auto* diagnosticTapSink = diagnosticTapSink_;
     const uint64_t diagnosticBlockIndex =
@@ -5415,6 +5851,20 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                         key.getNumChannels() > 1 ? key.getReadPointer(1)
                                                  : key.getReadPointer(0),
                         numSamples);
+                }
+
+                // Deliver this track's note/clip gate to any in-effect Envelope
+                // modulators (Xleth Filter) before the chain runs this block.
+                // Only tracks with an active filter envelope appear in
+                // filterGates_, so non-filter chains are never touched.
+                for (int gi = 0; gi < filterGateCount_; ++gi)
+                {
+                    if (filterGates_[gi].trackId == track->id)
+                    {
+                        chainIt->second->deliverModulationGate(
+                            filterGates_[gi].valid, filterGates_[gi].start, filterGates_[gi].end);
+                        break;
+                    }
                 }
 
                 const uint64_t chainStartNs = rtDiagEnabled ? steadyNowNs() : 0;

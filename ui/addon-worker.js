@@ -43,6 +43,12 @@ if (!dllDir) {
 const ffmpegDir = process.env.XLETH_FFMPEG_DIR;
 const pathEntries = [dllDir];
 if (ffmpegDir && fs.existsSync(ffmpegDir)) pathEntries.push(ffmpegDir);
+// Dev builds: the addon's FFmpeg/GLEW/GLFW runtime DLLs live in the vcpkg install
+// tree, not next to the .node — a bridge rebuild wipes any copies out of Release.
+// Add that dir so the addon loads without a manual DLL copy. No-op when packaged
+// (the dir doesn't exist; the DLLs are bundled alongside the .node instead).
+const vcpkgBinDir = path.join(__dirname, '..', 'build', 'vcpkg_installed', 'x64-windows', 'bin');
+if (fs.existsSync(vcpkgBinDir)) pathEntries.push(vcpkgBinDir);
 if (process.env.PATH) pathEntries.push(process.env.PATH);
 process.env.PATH = pathEntries.join(path.delimiter);
 

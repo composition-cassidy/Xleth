@@ -19,8 +19,15 @@ describe('timeline coordinate helpers', () => {
 
   it('keeps modifier snap overrides intact', () => {
     expect(snapBeatToGrid(24.37, { alt: true }, 'Bar')).toBe(24.37)
-    expect(snapBeatToGrid(24.37, { shift: true }, 'Bar')).toBe(24.375)
     expect(snapBeatToGrid(24.37, { ctrl: true }, 'Bar')).toBe(24.5)
+  })
+
+  it('shift does not override the active granularity (correlates with global snap)', () => {
+    expect(snapBeatToGrid(24.37, { shift: true }, 'Bar')).toBe(24)
+    expect(snapBeatToGrid(24.37, { shift: true }, 'Half')).toBe(24)
+    expect(snapBeatToGrid(24.37, { shift: true }, '1/8')).toBe(24.5)
+    expect(snapBeatToGrid(24.37, { shift: true }, '1/64')).toBe(24.375)
+    expect(snapBeatToGrid(24.37, { shift: true }, 'Bar')).toBe(snapBeatToGrid(24.37, {}, 'Bar'))
   })
 
   it('places a 1px DOM playhead on the same pixel column as canvas grid lines', () => {

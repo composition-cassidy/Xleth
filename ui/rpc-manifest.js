@@ -1057,6 +1057,69 @@ const METHODS = [
     binary: null,
   },
   {
+    // ── Sampler modulation (6 ENV + 6 LFO + VELO + NOTE + routes) ──────────
+    // A PATCH: only the keys you send change, except `routes`, which replaces
+    // the whole list when present (a route has no stable identity). Routes the
+    // engine rejects as invalid are counted in the reply's `rejectedRoutes`
+    // rather than silently dropped. Undoable — routes through the same
+    // SetSamplerSettingsCommand as every other sampler edit.
+    method: 'timeline_setSamplerModulation',
+    channels: ['xleth:timeline:setSamplerModulation'],
+    api: { 'timeline.setSamplerModulation': 'xleth:timeline:setSamplerModulation' },
+    handler: 'Timeline_SetSamplerModulation',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_getSamplerModulation',
+    channels: ['xleth:timeline:getSamplerModulation'],
+    api: { 'timeline.getSamplerModulation': 'xleth:timeline:getSamplerModulation' },
+    handler: 'Timeline_GetSamplerModulation',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // ── Sample slots (8-slot layered sampler) ──────────────────────────────
+    // Slot 0 is the region's own audio and has no loader here — changing it is
+    // audio_swapRegionAudio's job. Slots 1..7 own a file in the project's
+    // slots/ dir. All three route through SetSamplerSettingsCommand, so add /
+    // remove / retarget are single-step undoable.
+    method: 'timeline_addSampleSlot',
+    channels: ['xleth:timeline:addSampleSlot'],
+    api: { 'timeline.addSampleSlot': 'xleth:timeline:addSampleSlot' },
+    handler: 'Timeline_AddSampleSlot',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_removeSampleSlot',
+    channels: ['xleth:timeline:removeSampleSlot'],
+    api: { 'timeline.removeSampleSlot': 'xleth:timeline:removeSampleSlot' },
+    handler: 'Timeline_RemoveSampleSlot',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_setSlotAudio',
+    channels: ['xleth:timeline:setSlotAudio'],
+    api: { 'timeline.setSlotAudio': 'xleth:timeline:setSlotAudio' },
+    handler: 'Timeline_SetSlotAudio',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // Per-slot PREP bake status, and the main-thread pump that publishes
+    // finished bakes into the live samplers. The sampler editor polls this
+    // while its PREP indicator is up; `changed: true` means a baked buffer was
+    // just swapped in and the waveform / sample length should be refetched.
+    method: 'timeline_getSlotBakeStatus',
+    channels: ['xleth:timeline:getSlotBakeStatus'],
+    api: { 'timeline.getSlotBakeStatus': 'xleth:timeline:getSlotBakeStatus' },
+    handler: 'Timeline_GetSlotBakeStatus',
+    returns: 'value',
+    binary: null,
+  },
+  {
     method: 'timeline_getPatternAudioInfo',
     channels: ['xleth:timeline:getPatternAudioInfo'],
     api: { 'timeline.getPatternAudioInfo': 'xleth:timeline:getPatternAudioInfo' },
@@ -1355,6 +1418,14 @@ const METHODS = [
     binary: null,
   },
   {
+    method: 'audio_getMasterVolume',
+    channels: ['xleth:audio:getMasterVolume'],
+    api: { 'audio.getMasterVolume': 'xleth:audio:getMasterVolume' },
+    handler: 'Audio_GetMasterVolume',
+    returns: 'value',
+    binary: null,
+  },
+  {
     method: 'audio_getOutputDevices',
     channels: ['xleth:audio:getOutputDevices'],
     api: { 'audio.getOutputDevices': 'xleth:audio:getOutputDevices' },
@@ -1591,6 +1662,7 @@ const METHODS = [
     returns: 'value',
     binary: null,
   },
+
   // ── Xleth Filter slot management ──
   // Mirrors the EQ's five: the per-slot scalar params (cutoff, q, gain, morph,
   // drive, mix, ...) are ordinary APVTS parameters served by the generic
@@ -1637,7 +1709,6 @@ const METHODS = [
     returns: 'value',
     binary: null,
   },
-
 
   // ── APEX curve state + generic effect latency ──
   // APEX's ~50 scalar parameters need no entries here: they are ordinary APVTS

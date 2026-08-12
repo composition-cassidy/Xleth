@@ -1807,7 +1807,7 @@ export function drawGhostPreview(ctx, w, h, scrollOffset, ppb, ghost, palette = 
  * read from a separate ref; never touches clipsRef.
  *
  * @param {CanvasRenderingContext2D} ctx
- * @param {Array}    ghostClips     Array of { syllableIndex, startTick, audioOffsetPercent }
+ * @param {Array}    ghostClips     Array of { syllableIndex, startTick, lengthTicks, audioOffsetPercent }
  * @param {Array}    clips          Real clip array for collision detection (read-only)
  * @param {Function} tickToPixelFn  (tick: number) => x pixel
  * @param {Function} trackYFn       (syllableIndex: number) => track top y pixel (raw, no padding)
@@ -1825,10 +1825,11 @@ export function drawGhostClips(ctx, ghostClips, clips, tickToPixelFn, trackYFn, 
 
   for (const gc of ghostClips) {
     const { syllableIndex, startTick } = gc
+    const lengthTicks = gc.lengthTicks || 240  // fall back to a 16th note
     const color = palette[syllableIndex % palette.length] || p.accent
 
     const x = tickToPixelFn(startTick)
-    const w = tickToPixelFn(startTick + 240) - x  // one 16th note visual width
+    const w = tickToPixelFn(startTick + lengthTicks) - x
     const y = trackYFn(syllableIndex) + GHOST_CLIP_PAD
     const h = TRACK_HEIGHT - GHOST_CLIP_PAD * 2
 

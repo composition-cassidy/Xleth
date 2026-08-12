@@ -8,8 +8,8 @@
 // parser reads each one back, which fails loudly on any single-field drift.
 //
 // The engine side is pinned separately by engine/test/test_apex.cpp
-// (static_assert sizeof(ApexBucket) == 4176 plus a live payload check), and the
-// two are tied together by the shared 4176 constant asserted here.
+// (static_assert sizeof(ApexBucket) == 4192 plus a live payload check), and the
+// two are tied together by the shared 4192 constant asserted here.
 
 import { describe, it, expect } from 'vitest'
 import { parseDrainResponse, VIZ_TYPE, APEX_BUCKET, DYNAMICS_VIZ_SCHEMA_VERSION }
@@ -21,13 +21,13 @@ import { parseDrainResponse, VIZ_TYPE, APEX_BUCKET, DYNAMICS_VIZ_SCHEMA_VERSION 
 const OFF = {
   sampleClock: 0, bucketSamples: 8, flags: 12,
   inputPeakDb: 16, outputPeakDb: 20,
-  bandGrDb: 24, bandOutDb: 40,
-  lookaheadSamples: 56, latencySamples: 60,
-  splitLoHz: 64, splitHiHz: 68,
-  sampleRate: 72, spectrumBins: 76,
-  spectrum: 80,
+  bandGrDb: 24, bandOutDb: 40, bandInDb: 56,
+  lookaheadSamples: 72, latencySamples: 76,
+  splitLoHz: 80, splitHiHz: 84,
+  sampleRate: 88, spectrumBins: 92,
+  spectrum: 96,
 }
-const SIZE = 4176
+const SIZE = 4192
 const BINS = 1024
 const LE = true
 
@@ -37,6 +37,7 @@ function makeBucket(overrides = {}) {
     inputPeakDb: -6.5, outputPeakDb: -3.25,
     bandGrDb: [1.5, 2.5, 3.5, 4.5],
     bandOutDb: [-10, -20, -30, -40],
+    bandInDb: [-4, -14, -24, -34],
     lookaheadSamples: 551, latencySamples: 645,
     splitLoHz: 320, splitHiHz: 5500,
     sampleRate: 44100, spectrumBins: BINS,
@@ -52,6 +53,7 @@ function makeBucket(overrides = {}) {
   for (let i = 0; i < 4; i++) {
     dv.setFloat32(OFF.bandGrDb + i * 4, v.bandGrDb[i], LE)
     dv.setFloat32(OFF.bandOutDb + i * 4, v.bandOutDb[i], LE)
+    dv.setFloat32(OFF.bandInDb + i * 4, v.bandInDb[i], LE)
   }
   dv.setFloat32(OFF.lookaheadSamples, v.lookaheadSamples, LE)
   dv.setFloat32(OFF.latencySamples, v.latencySamples, LE)
@@ -80,15 +82,16 @@ describe('APEX_BUCKET layout', () => {
     expect(APEX_BUCKET.spectrumBins).toBe(BINS)
     expect(APEX_BUCKET.fftSize).toBe(2048)
     expect(APEX_BUCKET.numBands).toBe(4)
-    // 16-byte header + 16 metadata floats (64 B) + 1024 spectrum floats.
-    expect(16 + 16 * 4 + BINS * 4).toBe(SIZE)
-    // ...which is also why the spectrum array starts at byte 80.
-    expect(OFF.spectrum).toBe(16 + 16 * 4)
+    // 16-byte header + 20 metadata floats (80 B) + 1024 spectrum floats.
+    expect(16 + 20 * 4 + BINS * 4).toBe(SIZE)
+    // ...which is also why the spectrum array starts at byte 96.
+    expect(OFF.spectrum).toBe(16 + 20 * 4)
   })
 
   it('declares every field at its C++ byte offset', () => {
     for (const [name, offset] of Object.entries(OFF)) {
-      if (name === 'spectrum' || name === 'bandGrDb' || name === 'bandOutDb') {
+      if (name === 'spectrum' || name === 'bandGrDb' || name === 'bandOutDb'
+          || name === 'bandInDb') {
         expect(APEX_BUCKET.arrays[name].offset, `array ${name}`).toBe(offset)
       } else {
         expect(APEX_BUCKET.fields[name].offset, `field ${name}`).toBe(offset)
@@ -97,6 +100,7 @@ describe('APEX_BUCKET layout', () => {
     expect(APEX_BUCKET.arrays.spectrum.count).toBe(BINS)
     expect(APEX_BUCKET.arrays.bandGrDb.count).toBe(4)
     expect(APEX_BUCKET.arrays.bandOutDb.count).toBe(4)
+    expect(APEX_BUCKET.arrays.bandInDb.count).toBe(4)
   })
 
   it('exposes apex on the VIZ_TYPE enum', () => {
@@ -127,6 +131,8 @@ describe('parseDrainResponse (apex)', () => {
     expect(b.bandOutDb).toHaveLength(4)
     v.bandGrDb.forEach((x, i) => expect(b.bandGrDb[i]).toBeCloseTo(x, 4))
     v.bandOutDb.forEach((x, i) => expect(b.bandOutDb[i]).toBeCloseTo(x, 4))
+    expect(b.bandInDb).toHaveLength(4)
+    v.bandInDb.forEach((x, i) => expect(b.bandInDb[i]).toBeCloseTo(x, 4))
 
     expect(b.spectrum).toHaveLength(BINS)
     expect(b.spectrum[0]).toBeCloseTo(-120, 3)

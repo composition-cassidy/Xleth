@@ -110,7 +110,7 @@ static int addVideoSourceAndRegion(Timeline& tl) {
     region.startFrame    = 0;
     region.endFrame      = 30;
     region.audioFilePath = "/fake/test.wav";
-    region.rootNote      = 60;
+    region.slot(0).rootNote = 60;
     return tl.addRegion(region);
 }
 

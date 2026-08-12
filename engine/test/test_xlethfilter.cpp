@@ -146,11 +146,14 @@ static void testParameterSurface()
     XlethFilterEffect fx;
     fx.prepareToPlay(kSR, kBS);
 
-    // 14 declared params per slot x 8 slots — including the five reserved for
-    // the modulation prompt, so the layout does not change under saved projects.
-    CHECK(fx.getParameters().size() == XlethFilterEffect::kMaxSlots * 14,
-          "layout declares 14 params for each of 8 slots, got "
-              << fx.getParameters().size());
+    // kNumSlotParams declared params per slot x 8 slots. Asserted against the
+    // constant rather than a literal so that adding a slot param has to touch
+    // createLayout(), slotParamNames() and the constant together — the three
+    // that must agree — instead of quietly breaking this test.
+    CHECK(fx.getParameters().size()
+              == XlethFilterEffect::kMaxSlots * XlethFilterEffect::kNumSlotParams,
+          "layout declares " << XlethFilterEffect::kNumSlotParams
+              << " params for each of 8 slots, got " << fx.getParameters().size());
 
     const std::string paramJson = fx.getParametersAsJSON();
     for (const char* id : { "s0_enabled", "s0_type", "s0_cutoff", "s0_q",

@@ -340,6 +340,7 @@ export default function VideoOverviewTab() {
 
   return (
     <div className="grid-tab video-overview-tab">
+      <div className="vot-content">
       {/* ── Grid Layout: columns×rows + link + gap + preview ── */}
       <div className="grid-tab-section gsp-compact-section">
         <XlethPanelHeader title="Grid Layout">
@@ -470,6 +471,7 @@ export default function VideoOverviewTab() {
             <span>Clear Layout</span>
           </XlethButton>
         </div>
+      </div>
       </div>
 
       <div className="vot-timeline-section">

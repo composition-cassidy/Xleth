@@ -1,4 +1,5 @@
 import React from 'react';
+import { createPortal } from 'react-dom';
 import {
   buildExposeParameterMenuGroups,
   describeParamFailure,
@@ -23,6 +24,12 @@ import {
   type EnvelopeNodeData,
   type EnvelopeNodePatch,
 } from './EnvelopeEditor';
+import {
+  LfoNodeBody,
+  readLfoNodeData,
+  type LfoNodeData,
+  type LfoNodePatch,
+} from './LfoEditor';
 
 // FXG.4-g — Bezier mapping editor types.
 type BezierPoint = { x: number; y: number };
@@ -152,7 +159,7 @@ export interface GraphStateViewport {
   zoom?: number;
 }
 
-type PreviewNodeKind = 'trackInput' | 'trackOutput' | 'effect' | 'macro' | 'envelope' | 'sidechainInput' | 'unknown';
+type PreviewNodeKind = 'trackInput' | 'trackOutput' | 'effect' | 'macro' | 'envelope' | 'lfo' | 'sidechainInput' | 'unknown';
 type PreviewEdgeKind = 'audio' | 'parameter' | 'sidechain' | 'unknown';
 
 // FXG-SC.6B — eligible sidechain source track (mirrors mixerStore.getEligibleSidechainSources).
@@ -176,6 +183,10 @@ interface PositionedNode {
   envelope: EnvelopeNodeData | null;
   // EVC-R3 — compact envelope summary count of outgoing parameter links.
   envelopeParameterEdgeCount: number;
+  // Normalized LFO definition, present only on lfo nodes. Mirrors envelope.
+  lfo: LfoNodeData | null;
+  // Compact LFO summary count of outgoing parameter links.
+  lfoParameterEdgeCount: number;
   // FXG-SC.6B — true only for effect nodes that can receive a sidechain key (stock
   // compressor, non-missing/crashed, with an effectInstanceId). Drives the sidechainIn port.
   sidechainTarget: boolean;
@@ -240,6 +251,9 @@ interface GraphStatePreviewProps {
   // EVC.3 — envelope node add/edit affordances (graph mode only).
   onAddEnvelopeNode?: () => void;
   onUpdateEnvelope?: (nodeId: string, patch: EnvelopeNodePatch) => void;
+  // LFO node add/edit affordances (graph mode only). Mirrors envelope.
+  onAddLfoNode?: () => void;
+  onUpdateLfo?: (nodeId: string, patch: LfoNodePatch) => void;
   // FXG-SC.6B — Sidechain Input node add + source selection + key linking.
   onAddSidechainInput?: () => void;
   onSetSidechainInputSource?: (nodeId: string, sourceTrackId: number | null) => void;
@@ -250,6 +264,8 @@ interface GraphStatePreviewProps {
   onConnectMacroToParameter?: (macroNodeId: string, targetNodeId: string, parameterId: string) => void;
   // EVC-R1 — link an Envelope controlOut to an exposed parameter input port.
   onConnectEnvelopeToParameter?: (envelopeNodeId: string, targetNodeId: string, parameterId: string) => void;
+  // Link an LFO controlOut to an exposed parameter input port. Mirrors envelope.
+  onConnectLfoToParameter?: (lfoNodeId: string, targetNodeId: string, parameterId: string) => void;
   onDisconnectEdge?: (edgeId: string) => void;
   onEditNode?: (nodeId: string) => void;
   onUpdateMacroValue?: (nodeId: string, value: number) => void;
@@ -282,6 +298,11 @@ const NODE_HEIGHT = 74;
 // visually, but this estimate keeps normal graph layouts dense.
 const ENVELOPE_NODE_WIDTH = 236;
 const ENVELOPE_NODE_CONTENT_HEIGHT = 112;
+// LFO nodes are compact by default like Envelope. The expanded editor (shape
+// graph + preset row + rate controls) can grow visually, but this estimate
+// keeps normal graph layouts dense.
+const LFO_NODE_WIDTH = 236;
+const LFO_NODE_CONTENT_HEIGHT = 132;
 const PARAMETER_PORT_ROW_HEIGHT = 18;
 const PARAMETER_PORT_SECTION_TOP = 8;
 const PARAMETER_PORT_SECTION_BOTTOM = 10;
@@ -374,6 +395,7 @@ function resolvePreviewNodeType(type: string): PreviewNodeKind {
     type === 'effect' ||
     type === 'macro' ||
     type === 'envelope' ||
+    type === 'lfo' ||
     type === 'sidechainInput'
   ) {
     return type;
@@ -448,6 +470,7 @@ interface ResolvedNodeText {
   parameterPorts: GraphExposedParameterPort[];
   macroValue: number | null;
   envelope: EnvelopeNodeData | null;
+  lfo: LfoNodeData | null;
   editable: boolean;
   sidechainTarget: boolean;
   sidechainSourceTrackId: number | null;
@@ -467,6 +490,7 @@ function resolveNodeText(node: GraphStateNode): ResolvedNodeText {
     parameterPorts: [],
     macroValue: null,
     envelope: null,
+    lfo: null,
     editable: false,
     sidechainTarget: false,
     sidechainSourceTrackId: null,
@@ -533,6 +557,21 @@ function resolveNodeText(node: GraphStateNode): ResolvedNodeText {
     };
   }
 
+  if (type === 'lfo') {
+    // A free-running breakpoint control source (like Envelope/Macro): no
+    // effectInstanceId, no plugin metadata, no parameter input ports, no macro
+    // value — but it does expose a single `controlOut` port that links to
+    // exposed effect parameters. The normalized data drives the summary/
+    // preview and the compact editor.
+    const lfo = readLfoNodeData(data);
+    return {
+      ...base,
+      label: lfo.label,
+      secondaryText: 'LFO Modulator',
+      lfo,
+    };
+  }
+
   if (type === 'sidechainInput') {
     // FXG-SC.6B — the Sidechain Input node: a protected, non-audible key source with a
     // selected source track. Its only port is a `sidechainOut` output handle. The
@@ -585,6 +624,7 @@ function makeVirtualAnchorNode(
     graphX: x - PREVIEW_PADDING_X,
     graphY: FALLBACK_NODE_Y,
     envelopeParameterEdgeCount: 0,
+    lfoParameterEdgeCount: 0,
     virtual: true,
   };
 }
@@ -610,6 +650,9 @@ function nodeHeightForText(text: ReturnType<typeof resolveNodeText>) {
   if (text.envelope) {
     return NODE_HEIGHT + ENVELOPE_NODE_CONTENT_HEIGHT;
   }
+  if (text.lfo) {
+    return NODE_HEIGHT + LFO_NODE_CONTENT_HEIGHT;
+  }
   return nodeHeightForPorts(text.parameterPorts.length)
     + (text.macroValue == null ? 0 : 38)
     + (text.sidechainTarget ? SIDECHAIN_PORT_SECTION_HEIGHT : 0)
@@ -618,6 +661,7 @@ function nodeHeightForText(text: ReturnType<typeof resolveNodeText>) {
 
 function nodeWidthForType(type: PreviewNodeKind) {
   if (type === 'envelope') return ENVELOPE_NODE_WIDTH;
+  if (type === 'lfo') return LFO_NODE_WIDTH;
   if (type === 'sidechainInput') return ENVELOPE_NODE_WIDTH;
   return NODE_WIDTH;
 }
@@ -678,6 +722,7 @@ function normalizePositionedNodes(nodes: GraphStateNode[], options: PreviewModel
       graphX: position.x,
       graphY: position.y,
       envelopeParameterEdgeCount: 0,
+      lfoParameterEdgeCount: 0,
     };
   });
 }
@@ -700,6 +745,27 @@ function applyEnvelopeParameterEdgeCounts(nodes: PositionedNode[], edges: GraphS
   const counts = countEnvelopeParameterEdges(edges, nodes);
   return nodes.map((node) => node.type === 'envelope'
     ? { ...node, envelopeParameterEdgeCount: counts.get(node.id) ?? 0 }
+    : node);
+}
+
+function countLfoParameterEdges(edges: GraphStateEdge[], nodes: PositionedNode[]) {
+  const lfoNodeIds = new Set(
+    nodes.filter((node) => node.type === 'lfo').map((node) => node.id),
+  );
+  const counts = new Map<string, number>();
+  for (const edge of edges) {
+    if (edge.type !== 'parameter') continue;
+    if (edge.sourcePort !== 'controlOut') continue;
+    if (!lfoNodeIds.has(edge.sourceNodeId)) continue;
+    counts.set(edge.sourceNodeId, (counts.get(edge.sourceNodeId) ?? 0) + 1);
+  }
+  return counts;
+}
+
+function applyLfoParameterEdgeCounts(nodes: PositionedNode[], edges: GraphStateEdge[]) {
+  const counts = countLfoParameterEdges(edges, nodes);
+  return nodes.map((node) => node.type === 'lfo'
+    ? { ...node, lfoParameterEdgeCount: counts.get(node.id) ?? 0 }
     : node);
 }
 
@@ -902,8 +968,11 @@ export function buildGraphStatePreviewModel(
 ): PreviewModel {
   const sourceNodes = Array.isArray(graphState?.nodes) ? graphState.nodes : [];
   const sourceEdges = Array.isArray(graphState?.edges) ? graphState.edges : [];
-  const nodes = applyEnvelopeParameterEdgeCounts(
-    normalizePositionedNodes(sourceNodes, options),
+  const nodes = applyLfoParameterEdgeCounts(
+    applyEnvelopeParameterEdgeCounts(
+      normalizePositionedNodes(sourceNodes, options),
+      sourceEdges,
+    ),
     sourceEdges,
   );
   const edges = sourceNodes.length === 0
@@ -950,6 +1019,7 @@ export function GraphStatePreviewNode({
   connectEnabled,
   connectParameterEnabled = false,
   connectEnvelopeParameterEnabled = false,
+  connectLfoParameterEnabled = false,
   connectSidechainEnabled = false,
   connectActive,
   hoveredParameterPortId = null,
@@ -971,6 +1041,7 @@ export function GraphStatePreviewNode({
   onMacroValueCommit,
   onMacroRenameCommit,
   onEnvelopeUpdate,
+  onLfoUpdate,
   onSetSidechainSource,
 }: {
   node: PositionedNode;
@@ -978,6 +1049,8 @@ export function GraphStatePreviewNode({
   connectEnabled: boolean;
   connectParameterEnabled?: boolean;
   connectEnvelopeParameterEnabled?: boolean;
+  // Enables the LFO node's controlOut handle as a parameter-link drag source.
+  connectLfoParameterEnabled?: boolean;
   // FXG-SC.6B — enables the Sidechain Input node's sidechainOut handle as a drag source.
   connectSidechainEnabled?: boolean;
   connectActive: boolean;
@@ -1003,6 +1076,8 @@ export function GraphStatePreviewNode({
   onMacroRenameCommit?: (nodeId: string, label: string) => void;
   // EVC.3 — envelope node edit callback. When absent, the envelope renders read-only.
   onEnvelopeUpdate?: (nodeId: string, patch: EnvelopeNodePatch) => void;
+  // LFO node edit callback. When absent, the LFO renders read-only. Mirrors envelope.
+  onLfoUpdate?: (nodeId: string, patch: LfoNodePatch) => void;
   // FXG-SC.6B — Sidechain Input source selector callback.
   onSetSidechainSource?: (nodeId: string, sourceTrackId: number | null) => void;
 }) {
@@ -1021,9 +1096,13 @@ export function GraphStatePreviewNode({
   // expose NO audio handles and NO parameter input ports, but DO expose a single
   // `controlOut` port that drags to an exposed parameter port (parameter edge).
   const isEnvelope = node.type === 'envelope';
+  // An LFO node is a control-source definition like Macro/Envelope: no audio
+  // handles, no parameter input ports, but it does expose a single
+  // `controlOut` port that drags to an exposed parameter port.
+  const isLfo = node.type === 'lfo';
   // A control source emits a `controlOut` that links to exposed effect parameters.
-  const isControlSource = isMacro || isEnvelope;
-  const controlSourceKind = isMacro ? 'macro' : isEnvelope ? 'envelope' : null;
+  const isControlSource = isMacro || isEnvelope || isLfo;
+  const controlSourceKind = isMacro ? 'macro' : isEnvelope ? 'envelope' : isLfo ? 'lfo' : null;
   const style: React.CSSProperties = {
     left: node.x,
     top: node.y,
@@ -1037,7 +1116,9 @@ export function GraphStatePreviewNode({
     connectEnabled && !isControlSource && !node.virtual && typeof onConnectPointerDown === 'function';
   const interactiveControlOut =
     !node.virtual && typeof onConnectPointerDown === 'function' &&
-    ((isMacro && connectParameterEnabled) || (isEnvelope && connectEnvelopeParameterEnabled));
+    ((isMacro && connectParameterEnabled) ||
+      (isEnvelope && connectEnvelopeParameterEnabled) ||
+      (isLfo && connectLfoParameterEnabled));
   const interactiveOut = interactiveAudioOut || interactiveControlOut;
   // FXG-SC.6B — the Sidechain Input node's sidechainOut is interactive when sidechain
   // linking is enabled. It is its own connect-source kind, separate from audio/control.
@@ -1045,7 +1126,7 @@ export function GraphStatePreviewNode({
     isSidechainInput && connectSidechainEnabled && !node.virtual && typeof onConnectPointerDown === 'function';
   const showRemove =
     canRemove &&
-    (node.type === 'effect' || node.type === 'macro' || node.type === 'envelope') &&
+    (node.type === 'effect' || node.type === 'macro' || node.type === 'envelope' || node.type === 'lfo') &&
     !node.virtual &&
     typeof onRemove === 'function';
   // Edit appears on every real effect node; placeholder/data-only nodes show a
@@ -1087,7 +1168,7 @@ export function GraphStatePreviewNode({
       onPointerCancel={onPointerCancel}
       onContextMenu={canOpenContextMenu ? (event) => onNodeContextMenu?.(event, node) : undefined}
     >
-      {node.type !== 'trackInput' && node.type !== 'macro' && !isEnvelope && !isSidechainInput && (
+      {node.type !== 'trackInput' && node.type !== 'macro' && !isEnvelope && !isLfo && !isSidechainInput && (
         <span
           className="xleth-graph-state-preview__handle xleth-graph-state-preview__handle--in"
           aria-hidden="true"
@@ -1264,6 +1345,18 @@ export function GraphStatePreviewNode({
           onChange={
             typeof onEnvelopeUpdate === 'function'
               ? (patch) => onEnvelopeUpdate(node.id, patch)
+              : null
+          }
+        />
+      )}
+      {isLfo && node.lfo && (
+        <LfoNodeBody
+          nodeId={node.id}
+          data={node.lfo}
+          parameterCount={node.lfoParameterEdgeCount}
+          onChange={
+            typeof onLfoUpdate === 'function'
+              ? (patch) => onLfoUpdate(node.id, patch)
               : null
           }
         />
@@ -1812,6 +1905,7 @@ export function GraphParameterContextMenu({
     effectKind: result?.effectKind,
     pluginFormat: result?.pluginFormat,
     resultPluginId: result?.pluginId,
+    bandCount: result?.bandCount,
   }, search);
   const visibleParameterCount = parameterGroups.reduce(
     (count, group) => count + group.parameters.length,
@@ -1947,6 +2041,8 @@ export default function GraphStatePreview({
   onAddMacroNode,
   onAddEnvelopeNode,
   onUpdateEnvelope,
+  onAddLfoNode,
+  onUpdateLfo,
   onAddSidechainInput,
   onSetSidechainInputSource,
   onConnectSidechain,
@@ -1955,6 +2051,7 @@ export default function GraphStatePreview({
   onConnectNodes,
   onConnectMacroToParameter,
   onConnectEnvelopeToParameter,
+  onConnectLfoToParameter,
   onDisconnectEdge,
   onEditNode,
   onUpdateMacroValue,
@@ -1993,7 +2090,7 @@ export default function GraphStatePreview({
   const connectRef = React.useRef<{
     pointerId: number;
     sourceNodeId: string;
-    sourceKind: 'audio' | 'macro' | 'envelope' | 'sidechain';
+    sourceKind: 'audio' | 'macro' | 'envelope' | 'lfo' | 'sidechain';
   } | null>(null);
   const hoveredParameterTargetRef = React.useRef<ParameterDropTarget | null>(null);
   // FXG-SC.6B — sidechain drag hover target (effect sidechainIn port).
@@ -2061,6 +2158,8 @@ export default function GraphStatePreview({
   const canAddMacro = typeof onAddMacroNode === 'function';
   const canAddEnvelope = typeof onAddEnvelopeNode === 'function';
   const canEditEnvelope = typeof onUpdateEnvelope === 'function';
+  const canAddLfo = typeof onAddLfoNode === 'function';
+  const canEditLfo = typeof onUpdateLfo === 'function';
   // FXG-SC.6B — sidechain affordances are graph-mode only (wired by the panel).
   const canAddSidechainInput = typeof onAddSidechainInput === 'function';
   const canSetSidechainSource = typeof onSetSidechainInputSource === 'function';
@@ -2072,6 +2171,7 @@ export default function GraphStatePreview({
   const canConnect = typeof onConnectNodes === 'function';
   const canConnectParameters = typeof onConnectMacroToParameter === 'function';
   const canConnectEnvelopeParameters = typeof onConnectEnvelopeToParameter === 'function';
+  const canConnectLfoParameters = typeof onConnectLfoToParameter === 'function';
   const canDisconnect = typeof onDisconnectEdge === 'function';
   const canEditMappings = typeof onUpdateParameterEdgeMapping === 'function';
   const canExposeParameters =
@@ -2087,7 +2187,7 @@ export default function GraphStatePreview({
   const canUseGraphHistory =
     typeof onUndoGraphEdit === 'function' || typeof onRedoGraphEdit === 'function';
   const showToolbar =
-    canEditViewport || canAddNode || canAddMacro || canAddEnvelope || canAddSidechainInput || canUseGraphHistory;
+    canEditViewport || canAddNode || canAddMacro || canAddEnvelope || canAddLfo || canAddSidechainInput || canUseGraphHistory;
 
   const closeContextMenu = React.useCallback(() => {
     setContextMenu(null);
@@ -2450,8 +2550,8 @@ export default function GraphStatePreview({
 
   const updateHoveredParameterTarget = React.useCallback((event: React.PointerEvent<HTMLSpanElement>) => {
     const connect = connectRef.current;
-    // Parameter-drop highlighting applies to both control sources (macro/envelope).
-    const isControlSource = connect?.sourceKind === 'macro' || connect?.sourceKind === 'envelope';
+    // Parameter-drop highlighting applies to every control source (macro/envelope/lfo).
+    const isControlSource = connect?.sourceKind === 'macro' || connect?.sourceKind === 'envelope' || connect?.sourceKind === 'lfo';
     if (!connect || connect.pointerId !== event.pointerId || !isControlSource) return;
 
     const dropElement = typeof document !== 'undefined'
@@ -2485,14 +2585,17 @@ export default function GraphStatePreview({
   ) => {
     const isMacro = node.type === 'macro';
     const isEnvelope = node.type === 'envelope';
+    const isLfo = node.type === 'lfo';
     const isSidechainInput = node.type === 'sidechainInput';
     const allowed = isMacro
       ? canConnectParameters
       : isEnvelope
         ? canConnectEnvelopeParameters
-        : isSidechainInput
-          ? canConnectSidechain
-          : canConnect;
+        : isLfo
+          ? canConnectLfoParameters
+          : isSidechainInput
+            ? canConnectSidechain
+            : canConnect;
     if (!allowed || node.virtual || event.button !== 0) return;
 
     event.preventDefault();
@@ -2501,7 +2604,7 @@ export default function GraphStatePreview({
     connectRef.current = {
       pointerId: event.pointerId,
       sourceNodeId: node.id,
-      sourceKind: isMacro ? 'macro' : isEnvelope ? 'envelope' : isSidechainInput ? 'sidechain' : 'audio',
+      sourceKind: isMacro ? 'macro' : isEnvelope ? 'envelope' : isLfo ? 'lfo' : isSidechainInput ? 'sidechain' : 'audio',
     };
     hoveredParameterTargetRef.current = null;
     hoveredSidechainTargetRef.current = null;
@@ -2509,7 +2612,7 @@ export default function GraphStatePreview({
     setConnectPoint(toCanvasPoint(event.clientX, event.clientY));
     setHoveredParameterTarget(null);
     setHoveredSidechainTarget(null);
-  }, [canConnect, canConnectParameters, canConnectEnvelopeParameters, canConnectSidechain, toCanvasPoint]);
+  }, [canConnect, canConnectParameters, canConnectEnvelopeParameters, canConnectLfoParameters, canConnectSidechain, toCanvasPoint]);
 
   const handleConnectPointerMove = React.useCallback((event: React.PointerEvent<HTMLSpanElement>) => {
     const connect = connectRef.current;
@@ -2531,14 +2634,16 @@ export default function GraphStatePreview({
       ? document.elementFromPoint(event.clientX, event.clientY)
       : null;
 
-    // Control-source controlOut (macro/envelope) → exposed parameter input port
-    // creates a parameter edge. The drop must land on the highlighted parameter
-    // port; node bodies and audio handles no-op.
-    if (connect.sourceKind === 'macro' || connect.sourceKind === 'envelope') {
+    // Control-source controlOut (macro/envelope/lfo) → exposed parameter input
+    // port creates a parameter edge. The drop must land on the highlighted
+    // parameter port; node bodies and audio handles no-op.
+    if (connect.sourceKind === 'macro' || connect.sourceKind === 'envelope' || connect.sourceKind === 'lfo') {
       const target = hoveredParameterTargetRef.current;
       const onConnect = connect.sourceKind === 'macro'
         ? onConnectMacroToParameter
-        : onConnectEnvelopeToParameter;
+        : connect.sourceKind === 'envelope'
+          ? onConnectEnvelopeToParameter
+          : onConnectLfoToParameter;
 
       resetConnect(event);
 
@@ -2569,7 +2674,7 @@ export default function GraphStatePreview({
     if (!parameterDropTarget && onConnectNodes && targetNodeId && targetNodeId !== sourceNodeId) {
       onConnectNodes(sourceNodeId, targetNodeId);
     }
-  }, [onConnectMacroToParameter, onConnectEnvelopeToParameter, onConnectSidechain, onConnectNodes, resetConnect]);
+  }, [onConnectMacroToParameter, onConnectEnvelopeToParameter, onConnectLfoToParameter, onConnectSidechain, onConnectNodes, resetConnect]);
 
   const connectingNode = connectingFromNodeId
     ? model.nodes.find((node) => node.id === connectingFromNodeId)
@@ -2670,6 +2775,15 @@ export default function GraphStatePreview({
                   onClick={onAddEnvelopeNode}
                 >
                   Add Envelope
+                </button>
+              )}
+              {canAddLfo && (
+                <button
+                  className="xleth-graph-state-preview__action-button xleth-graph-state-preview__action-button--secondary"
+                  type="button"
+                  onClick={onAddLfoNode}
+                >
+                  Add LFO
                 </button>
               )}
               {canAddSidechainInput && (
@@ -2787,6 +2901,7 @@ export default function GraphStatePreview({
                   connectEnabled={canConnect}
                   connectParameterEnabled={canConnectParameters}
                   connectEnvelopeParameterEnabled={canConnectEnvelopeParameters}
+                  connectLfoParameterEnabled={canConnectLfoParameters}
                   connectSidechainEnabled={canConnectSidechain}
                   connectActive={connectingFromNodeId === node.id}
                   hoveredParameterPortId={hoveredParameterTarget?.nodeId === node.id ? hoveredParameterTarget.portId : null}
@@ -2798,16 +2913,17 @@ export default function GraphStatePreview({
                   onPointerMove={canDragNodes ? handleNodePointerMove : undefined}
                   onPointerUp={canDragNodes ? finishDrag : undefined}
                   onPointerCancel={canDragNodes ? cancelDrag : undefined}
-                  onConnectPointerDown={canConnect || canConnectParameters || canConnectEnvelopeParameters || canConnectSidechain ? handleConnectPointerDown : undefined}
-                  onConnectPointerMove={canConnect || canConnectParameters || canConnectEnvelopeParameters || canConnectSidechain ? handleConnectPointerMove : undefined}
-                  onConnectPointerUp={canConnect || canConnectParameters || canConnectEnvelopeParameters || canConnectSidechain ? handleConnectPointerUp : undefined}
-                  onConnectPointerCancel={canConnect || canConnectParameters || canConnectEnvelopeParameters || canConnectSidechain ? resetConnect : undefined}
+                  onConnectPointerDown={canConnect || canConnectParameters || canConnectEnvelopeParameters || canConnectLfoParameters || canConnectSidechain ? handleConnectPointerDown : undefined}
+                  onConnectPointerMove={canConnect || canConnectParameters || canConnectEnvelopeParameters || canConnectLfoParameters || canConnectSidechain ? handleConnectPointerMove : undefined}
+                  onConnectPointerUp={canConnect || canConnectParameters || canConnectEnvelopeParameters || canConnectLfoParameters || canConnectSidechain ? handleConnectPointerUp : undefined}
+                  onConnectPointerCancel={canConnect || canConnectParameters || canConnectEnvelopeParameters || canConnectLfoParameters || canConnectSidechain ? resetConnect : undefined}
                   onNodeContextMenu={(canExposeParameters || canMacroAutomation) ? handleNodeContextMenu : undefined}
                   onRemove={canRemoveNode ? onRemoveNode : undefined}
                   onEdit={canEditNode ? onEditNode : undefined}
                   onMacroValueCommit={onUpdateMacroValue}
                   onMacroRenameCommit={onRenameMacroNode}
                   onEnvelopeUpdate={canEditEnvelope ? onUpdateEnvelope : undefined}
+                  onLfoUpdate={canEditLfo ? onUpdateLfo : undefined}
                   onSetSidechainSource={canSetSidechainSource ? onSetSidechainInputSource : undefined}
                 />
               ))}
@@ -2869,7 +2985,14 @@ export default function GraphStatePreview({
               </div>
             )}
           </div>
-          {contextMenu && (
+          {contextMenu && typeof document !== 'undefined' && createPortal(
+            // Portaled to document.body: a floating panel's frame is positioned via
+            // CSS `transform` (see PanelFrame.tsx), which makes it the containing
+            // block for any `position: fixed` descendant. Left inline, this menu's
+            // clientX/clientY-based coordinates would resolve against the panel's
+            // own box instead of the viewport, landing off-target (or off-screen)
+            // whenever the FX Graph panel isn't maximized. Mirrors the fix already
+            // applied to EffectEditorHost (see AppShell.tsx).
             <GraphParameterContextMenu
               node={contextMenu.node}
               x={contextMenu.x}
@@ -2897,9 +3020,10 @@ export default function GraphStatePreview({
               onShowAutomationLane={onShowMacroAutomationLane ? handleShowAutomationLane : undefined}
               onHideAutomationLane={onHideMacroAutomationLane ? handleHideAutomationLane : undefined}
               onCreateAutomationClip={onCreateMacroAutomationClip ? handleCreateAutomationClip : undefined}
-            />
+            />,
+            document.body,
           )}
-          {mappingEditorState && canEditMappings && (() => {
+          {mappingEditorState && canEditMappings && typeof document !== 'undefined' && (() => {
             const meEdge = graphState?.edges?.find((e) => e.id === mappingEditorState.edgeId);
             if (!meEdge || meEdge.type !== 'parameter') return null;
             const sourceNode = model.nodes.find((n) => n.id === meEdge.sourceNodeId);
@@ -2910,7 +3034,10 @@ export default function GraphStatePreview({
               ?? (meEdge.targetParameter as Record<string, unknown> | null | undefined)?.parameterId as string
               ?? 'Parameter';
             const tgtLabel = targetNode ? `${targetNode.label} / ${paramId}` : paramId;
-            return (
+            // Same containing-block trap as the context menu above — portal past
+            // the floating panel's transformed frame so fixed positioning resolves
+            // against the viewport regardless of panel mode.
+            return createPortal(
               <ParameterEdgeMappingEditor
                 edgeId={mappingEditorState.edgeId}
                 edge={meEdge}
@@ -2922,7 +3049,8 @@ export default function GraphStatePreview({
                   void Promise.resolve(onUpdateParameterEdgeMapping?.(edgeId, patch));
                 }}
                 onClose={() => setMappingEditorState(null)}
-              />
+              />,
+              document.body,
             );
           })()}
         </div>

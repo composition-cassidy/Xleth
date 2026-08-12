@@ -43,6 +43,7 @@ class XlethEffectBase;
 namespace juce { class AudioProcessor; }
 namespace xleth { struct RoutePlan; struct RoutePdcPlan; }
 namespace xleth::audio { class WorldStretchCache; }
+namespace xleth::audio { class SlotBakeCache; struct BakeKey; }
 
 // ─── Debug log queue (lock-free, single-producer / single-consumer) ──────────
 
@@ -112,6 +113,17 @@ public:
     // Main-thread read only; the map is mutated from the main thread.
     std::unordered_map<int, int> getRegionToSampleMapSnapshot() const;
 
+    // ── Per-slot sample mapping (main thread) ────────────────────────────────
+    // Slot 0 always plays the region's own audio, so it resolves through the
+    // regular region→sample map. Slots 1..7 carry independent audio files and
+    // get their own SampleBank ids, registered here as {regionId, slotIndex}.
+    // Keeping slot 0 out of this table means a region audio swap keeps working
+    // untouched: it remaps the region, and slot 0 follows automatically.
+    void mapRegionSlotToSample(int regionId, int slotIndex, int sampleBankId);
+    int  getSampleIdForRegionSlot(int regionId, int slotIndex) const;
+    void unmapRegionSlot(int regionId, int slotIndex);
+    void unmapAllRegionSlots(int regionId);
+
     // ── Sampler lifecycle (main thread) ──────────────────────────────────────
     // Samplers are keyed by {trackId, regionId}: pattern tracks are sample-
     // agnostic containers, but each PatternBlock on a track references a
@@ -147,6 +159,46 @@ public:
     // SmoothedValue is not thread-safe; setCurrentAndTargetValue() called inside
     // this function is not safe to race with the audio thread's getNextValue().
     void rebuildAllSamplers();
+
+    // ── Per-slot PREP bake (main thread) ─────────────────────────────────────
+    // The sampler's offline time-stretch / pitch-shift stage. buildSamplerForRegion
+    // consults the cache for every slot whose PREP is not bypassed: on a hit the
+    // slot is loaded with the baked buffer, on a miss the slot plays its RAW
+    // audio and an async bake is queued. When that bake lands,
+    // drainSlotBakes() swaps the buffer in under the live voices.
+
+    // Where the disk tier writes. Call on project create / load / save-as.
+    // Empty (unsaved project) leaves the cache memory-only.
+    void setSlotBakeCacheDir(const std::string& dir);
+
+    // Main-thread pump. Publishes every bake that has completed since the last
+    // call into the samplers that need it, and returns true when at least one
+    // slot changed — the caller uses that to tell the UI to refetch. Cheap and
+    // safe to call at any rate: it early-outs on an unchanged completion epoch.
+    bool drainSlotBakes();
+
+    // {regionId, slotIndex} pairs with a bake still in flight. Drives the
+    // editor's loading indicator.
+    struct SlotBakeJobInfo { int regionId; int slotIndex; };
+    std::vector<SlotBakeJobInfo> getPendingSlotBakes() const;
+
+    // The buffer a slot is actually PLAYING, when that is a PREP bake rather
+    // than the raw sample; nullptr when PREP is bypassed or has not landed yet.
+    //
+    // This is what the editor must measure and draw against: trim, loop points
+    // and fades are all indices into THIS buffer, so a stretched slot whose
+    // editor still reported raw length would place every loop point wrong.
+    struct PreparedSlot {
+        std::shared_ptr<const juce::AudioBuffer<float>> buffer;
+        // The bake's content key. Callers that cache anything derived from the
+        // buffer (the editor's waveform mipmap) key it on this, so a new bake
+        // is a new derived entry rather than a mutation of a live one.
+        uint64_t digest = 0;
+    };
+    PreparedSlot getPreparedSlotBuffer(int regionId, int slotIndex) const;
+
+    // Test/observability hooks.
+    xleth::audio::SlotBakeCache* slotBakeCache() { return slotBakeCache_.get(); }
 
     // True if a Sampler is currently loaded for this pair. Main thread only.
     bool hasSampler(int trackId, int regionId) const;
@@ -440,6 +492,9 @@ public:
     void setTrackPan   (int trackId, float pan);      // -1..+1  (caller must clamp)
     void setTrackSpread(int trackId, float spread);   // 0..2
     void setMasterVolume(float volume);               // 0..1+
+    // Read back for project persistence — master volume lives only here, so
+    // saveProject has to ask MixEngine for it.
+    float getMasterVolume() const;
 
     // Global clip boundary fade. Precomputed from declickMs * sampleRate / 1000.
     // 0 = disabled (zero overhead on audio thread). Call from main thread only.
@@ -705,6 +760,47 @@ public:
     // Test/diagnostic read of the live snapshot. Never call from the audio thread.
     std::shared_ptr<const xleth::envmod::EnvelopeModulationSnapshot>
     getEnvelopeModulationSnapshotForTesting() const;
+
+    // ── FX Graph LFO Modulator → parameter modulation ────────────────────
+    //
+    // Sibling of the Envelope block above — same three-thread split, same
+    // epoch-RCU publish discipline — but for the FREE-RUNNING LFO source
+    // instead of the triggered Envelope. See LfoParameterModulation.h's
+    // header-top note for the one real behavioral difference: an LFO has no
+    // rest state that naturally maps to `base`, so "go inert" (transport
+    // stopped, or the owning track currently inaudible) is handled explicitly
+    // inside evaluateLfoModulation rather than falling out of the snapshot's
+    // structure the way Envelope's omitted gates do.
+    //
+    //   message  refreshLfoDefinitions() parses graphState and publishes an
+    //            immutable snapshot (no gate/audibility derivation — see
+    //            buildLfoModulationSnapshot's doc comment).
+    //   audio    processBlock() reads the snapshot, resolves per-edge
+    //            audibility, and writes mailbox atomics.
+    //   applier  applyPendingLfoModulation() drains mailboxes into
+    //            parameters. Rides the SAME background thread as the
+    //            Envelope applier — see startEnvelopeApplierThread's loop
+    //            body — no second thread is spun up for LFO.
+
+    // Rebuild and publish the LFO snapshot from the current Timeline. Call
+    // after any mutation that can change an LFO definition or its edges:
+    // graphState set, fxMode change, project load, undo/redo. Cheap and
+    // idempotent when nothing changed. NEVER call from processBlock (audio
+    // thread) — it allocates.
+    void refreshLfoDefinitions();
+
+    // Drain every mailbox whose value the audio thread has updated since the
+    // last drain, and write it to its graph-owned effect parameter through
+    // the value-only path above. Returns the number of parameters written.
+    //
+    // Public so tests can drive the applier deterministically instead of
+    // racing a background thread; the applier thread calls exactly this.
+    // Main/applier thread only.
+    int applyPendingLfoModulation();
+
+    // Test/diagnostic read of the live snapshot. Never call from the audio thread.
+    std::shared_ptr<const xleth::lfomod::LfoModulationSnapshot>
+    getLfoModulationSnapshotForTesting() const;
 
     // ── Effect parameter / meter access (main thread only) ──────────────
     // Per-track: returns "[]" / false / "[0,0,0,0]" if chain/node not found.
@@ -984,6 +1080,88 @@ private:
     void startEnvelopeApplierThread();
     void stopEnvelopeApplierThread();
 
+    // ── Xleth Filter in-effect Envelope gates (audio + message threads) ──────
+    // The per-slot Envelope modulator lives INSIDE the filter effect, but its
+    // note/clip gate is a timeline fact the effect cannot derive. MixEngine
+    // resolves the gate per block (from the per-track gate timelines carried on
+    // the envelope snapshot — EnvelopeModulationSnapshot::filterTrackGates) and
+    // pushes it into the track's filter effects before their chain runs.
+    struct FilterGate
+    {
+        int          trackId = -1;
+        bool         valid   = false;
+        std::int64_t start   = 0;
+        std::int64_t end     = 0;
+    };
+    FilterGate filterGates_[kMaxTracks];
+    int        filterGateCount_ = 0;
+
+    // MESSAGE THREAD. Build a note/clip gate timeline for every track whose chain
+    // holds a filter with an active Envelope modulator and store them on the
+    // (freshly built) envelope snapshot. Reuses buildTrackGateIntervals.
+    void populateFilterEnvelopeGates(xleth::envmod::EnvelopeModulationSnapshot& snapshot);
+
+    // AUDIO THREAD. Resolve each filter-track gate at this block's position into
+    // filterGates_ (read later in the per-track chain loop). Called from inside
+    // evaluateEnvelopeModulation, under its snapshot epoch guard.
+    void resolveFilterGatesFromSnapshot(const xleth::envmod::EnvelopeModulationSnapshot& snapshot,
+                                        int64_t positionSamples, double bpm,
+                                        double sampleRate, bool atRest) noexcept;
+
+    // ── LFO Modulator → parameter modulation state ───────────────────────
+    //
+    // Same epoch-based RCU discipline as the Envelope block above — see its
+    // comment for the full ordering argument, which applies unchanged here
+    // with lfo* in place of envelope*.
+    std::atomic<const xleth::lfomod::LfoModulationSnapshot*> lfoSnapshotLive_{nullptr};
+    std::atomic<std::uint64_t> lfoAudioEpoch_{0};
+    std::atomic<bool> lfoAudioInBlock_{false};
+    std::shared_ptr<const xleth::lfomod::LfoModulationSnapshot> lfoSnapshotOwner_;
+    std::vector<std::pair<std::shared_ptr<const xleth::lfomod::LfoModulationSnapshot>,
+                          std::uint64_t>> lfoSnapshotRetired_;
+    mutable std::mutex lfoSnapshotMutex_;   // message/applier threads only
+
+    // Applier-side last-written value, keyed by target identity (NOT by mailbox
+    // index) — same rationale as EnvelopeApplierKey above.
+    struct LfoApplierKey
+    {
+        int         trackId = -1;
+        std::string effectInstanceId;
+        std::string parameterId;
+        bool operator==(const LfoApplierKey& o) const
+        {
+            return trackId == o.trackId
+                && effectInstanceId == o.effectInstanceId
+                && parameterId == o.parameterId;
+        }
+    };
+    struct LfoApplierKeyHash
+    {
+        std::size_t operator()(const LfoApplierKey& k) const
+        {
+            std::size_t h = std::hash<int>{}(k.trackId);
+            h ^= std::hash<std::string>{}(k.effectInstanceId) + 0x9e3779b9 + (h << 6) + (h >> 2);
+            h ^= std::hash<std::string>{}(k.parameterId) + 0x9e3779b9 + (h << 6) + (h >> 2);
+            return h;
+        }
+    };
+    std::unordered_map<LfoApplierKey, float, LfoApplierKeyHash> lfoAppliedValues_;
+    // Per-mailbox seq last drained — same reset-on-snapshot-change rationale as
+    // envelopeDrainedSeqs_/envelopeDrainedSnapshot_ above.
+    std::vector<std::uint32_t> lfoDrainedSeqs_;
+    std::shared_ptr<const xleth::lfomod::LfoModulationSnapshot> lfoDrainedSnapshot_;
+
+    // AUDIO THREAD. Evaluate every published LFO at this block's transport
+    // position and publish the mapped values. Unlike Envelope, `atRest` is not
+    // the only "go inert" trigger: a per-edge audibility check (mute/solo, via
+    // xleth::buildRoutePlan) ALSO forces the inert path, because an LFO's
+    // neutral sample does not rescale to `base` the way Envelope's env==0
+    // does. See LfoParameterModulation.h's header-top note.
+    void evaluateLfoModulation(int64_t positionSamples,
+                               double  bpm,
+                               double  sampleRate,
+                               bool    atRest) noexcept;
+
     struct RealtimeDiagnosticsState
     {
         std::atomic<bool> enabled{false};
@@ -1153,6 +1331,15 @@ public:
 private:
     std::unordered_map<TrackRegionKey, std::unique_ptr<Sampler>, TrackRegionKeyHash> samplers_;
 
+    // {regionId, slotIndex} → SampleBank id, for slots 1..7 only (see
+    // mapRegionSlotToSample). Keyed by regionId*MAX_SAMPLE_SLOTS + slotIndex.
+    std::unordered_map<int, int> slotSampleMap_;
+
+    // Shared builder behind loadSamplerForTrackRegion and ensurePreviewSampler:
+    // pushes every region setting (sampler-level and per-slot) plus each slot's
+    // PCM into a freshly constructed Sampler.
+    std::unique_ptr<Sampler> buildSamplerForRegion(const SampleRegion& region);
+
     // Preview samplers, keyed by regionId. Dedicated to piano-roll and
     // MiniKeyboard auditioning — decoupled from per-track playback so a
     // preview note never competes with timeline voices on the same region.
@@ -1211,6 +1398,33 @@ private:
     // Content-keyed WORLD vocoder cache, consulted by the WORLD branch of
     // ClipRenderJob (worker thread). Lifetime tied to MixEngine.
     std::unique_ptr<xleth::audio::WorldStretchCache> worldStretchCache_;
+
+    // ── Per-slot PREP bake ───────────────────────────────────────────────────
+    // Content-keyed, disk-backed cache for the sampler's stretch/shift bake.
+    // Held by pointer so MixEngine.h need not pull in the DSP headers.
+    std::unique_ptr<xleth::audio::SlotBakeCache> slotBakeCache_;
+
+    // Bakes queued but not yet published, keyed by regionId*MAX_SAMPLE_SLOTS +
+    // slotIndex — the same flat key slotSampleMap_ uses. Main thread only.
+    // The stored key is what drainSlotBakes() re-looks-up when the cache's
+    // completion epoch moves, which is why no per-job callback is needed.
+    std::unordered_map<int, std::unique_ptr<xleth::audio::BakeKey>> pendingSlotBakes_;
+
+    // Completion epoch observed at the last drain. A drain whose epoch is
+    // unchanged has nothing to publish and returns immediately.
+    uint64_t lastBakeEpoch_ = 0;
+
+    // The bake each slot is currently PLAYING, same flat key. A strong
+    // reference, deliberately: the cache's LRU may evict an entry at any time,
+    // and the editor's waveform mipmap holds a RAW pointer into this buffer, so
+    // something has to guarantee it outlives the mipmap. Erased when a slot's
+    // PREP is bypassed, or replaced when a new bake supersedes it.
+    std::unordered_map<int, PreparedSlot> publishedSlotBakes_;
+
+    // Push `buffer` into every live sampler (playback and preview) that plays
+    // this region's slot. nullptr restores the slot's raw audio.
+    void publishSlotBuffer(int regionId, int slotIndex,
+                           std::shared_ptr<const juce::AudioBuffer<float>> buffer);
 
     void findActiveClips(int64_t bufferStart, int64_t bufferEnd,
                          double bpm, double sampleRate);

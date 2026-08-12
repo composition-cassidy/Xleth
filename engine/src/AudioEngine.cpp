@@ -37,6 +37,68 @@ namespace {
 } // namespace
 #endif
 
+// ── Suspend/resume notification via runtime DLL load ──────────────────────────
+// PowerRegisterSuspendResumeNotification with DEVICE_NOTIFY_CALLBACK needs no
+// HWND and no message pump, which matters here: the engine is a headless addon
+// worker with no window to receive WM_POWERBROADCAST. Declared locally (rather
+// than pulling in powrprof.h / linking powrprof.lib) to match the avrt.dll
+// pattern above and keep the build inputs unchanged.
+#if JUCE_WINDOWS
+namespace {
+    constexpr DWORD kDeviceNotifyCallback   = 2;      // DEVICE_NOTIFY_CALLBACK
+    constexpr ULONG kPbtApmResumeSuspend    = 0x0007; // PBT_APMRESUMESUSPEND
+    constexpr ULONG kPbtApmResumeAutomatic  = 0x0012; // PBT_APMRESUMEAUTOMATIC
+
+    // Layout-compatible with DEVICE_NOTIFY_SUBSCRIBE_PARAMETERS.
+    struct XlethPowerNotifySubscribe
+    {
+        ULONG (CALLBACK* callback)(PVOID, ULONG, PVOID);
+        PVOID context;
+    };
+
+    using PowerRegisterFn   = DWORD (WINAPI*)(DWORD, PVOID, PHANDLE);
+    using PowerUnregisterFn = DWORD (WINAPI*)(HANDLE);
+
+    PowerRegisterFn   g_powerRegister   = nullptr;
+    PowerUnregisterFn g_powerUnregister = nullptr;
+    bool              g_powrprofTried   = false;
+
+    void loadPowrprof()
+    {
+        if (g_powrprofTried) return;
+        g_powrprofTried = true;
+        HMODULE lib = LoadLibraryA("powrprof.dll");
+        if (lib)
+        {
+            g_powerRegister = reinterpret_cast<PowerRegisterFn>(
+                GetProcAddress(lib, "PowerRegisterSuspendResumeNotification"));
+            g_powerUnregister = reinterpret_cast<PowerUnregisterFn>(
+                GetProcAddress(lib, "PowerUnregisterSuspendResumeNotification"));
+        }
+    }
+} // namespace
+#endif
+
+// Watchdog tuning. The starvation window has to clear the largest buffer period
+// the engine will ever open (kMaxBuf @ kFallback ≈ 10.7 ms) by a wide margin so
+// an ordinary scheduling hiccup can never be read as a dead device.
+static constexpr int64_t kCallbackStarvationMs       = 500;
+// A resume event is strong evidence the device is already gone, so react faster
+// — but still long enough that a poll landing between two healthy buffers does
+// not trigger a pointless reopen.
+static constexpr int64_t kCallbackStarvationResumeMs = 150;
+static constexpr int64_t kRecoveryRetryMs            = 2000;
+// After this many consecutive failures the device is presumed genuinely absent
+// (interface unplugged and not coming back); back off so we stop churning.
+static constexpr int     kRecoveryBackoffAfter       = 5;
+static constexpr int64_t kRecoveryBackoffMs          = 10000;
+
+static int64_t steadyNowMs()
+{
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+               std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 static constexpr int    kTargetBuf  = 256;
 static constexpr int    kMaxBuf     = 512;
 static constexpr double kTargetRate = 44100.0;
@@ -154,6 +216,205 @@ bool AudioEngine::initialize(bool recordToFile)
 
     dm.addAudioCallback(this);
     initialized_ = true;
+
+    watchdogLastCounter_    = callbackCounter_.load(std::memory_order_relaxed);
+    watchdogLastProgressMs_ = steadyNowMs();
+    registerPowerNotification();
+
+    return true;
+}
+
+#if JUCE_WINDOWS
+// Runs on an OS-owned thread: raise a flag and nothing else. Touching the device
+// manager from here would race the message thread.
+static ULONG CALLBACK xlethOnPowerEvent(PVOID context, ULONG type, PVOID)
+{
+    if ((type == kPbtApmResumeAutomatic || type == kPbtApmResumeSuspend)
+        && context != nullptr)
+    {
+        static_cast<AudioEngine*>(context)->notifySystemResume();
+    }
+    return 0; // ERROR_SUCCESS
+}
+#endif
+
+// ─────────────────────────────────────────────────────────────────────────────
+void AudioEngine::registerPowerNotification()
+{
+#if JUCE_WINDOWS
+    if (powerNotifyHandle_ != nullptr) return;
+
+    loadPowrprof();
+    if (g_powerRegister == nullptr) return;
+
+    XlethPowerNotifySubscribe params {};
+    params.callback = &xlethOnPowerEvent;
+    params.context  = this;
+
+    HANDLE handle = nullptr;
+    if (g_powerRegister(kDeviceNotifyCallback, &params, &handle) == 0 && handle != nullptr)
+    {
+        powerNotifyHandle_ = handle;
+    }
+    else
+    {
+        // Non-fatal: the watchdog still recovers, just after the full
+        // starvation window instead of the shortened post-resume one.
+        std::cerr << "[AudioEngine] Suspend/resume notification unavailable — "
+                     "falling back to watchdog-only recovery.\n" << std::flush;
+    }
+#endif
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+void AudioEngine::unregisterPowerNotification()
+{
+#if JUCE_WINDOWS
+    if (powerNotifyHandle_ != nullptr && g_powerUnregister != nullptr)
+        g_powerUnregister(static_cast<HANDLE>(powerNotifyHandle_));
+#endif
+    powerNotifyHandle_ = nullptr;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Pure policy — no device access, no clock read. See AudioEngine.h.
+bool AudioEngine::shouldAttemptRecovery(const WatchdogInputs& in)
+{
+    // A deliberate detach (export) is not a dead device.
+    if (in.suspended)    return false;
+    // The callback ran since the last poll — the driver is alive.
+    if (in.counterMoved) return false;
+
+    const int64_t threshold = in.resumeArmed ? kCallbackStarvationResumeMs
+                                             : kCallbackStarvationMs;
+    if (in.msSinceProgress < threshold) return false;
+
+    // Backing off after repeated failures.
+    if (in.msUntilNextAttempt > 0) return false;
+
+    return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Message/RPC thread only. See the contract in AudioEngine.h.
+bool AudioEngine::checkDeviceHealth()
+{
+    if (!initialized_) return false;
+
+    const int64_t now = steadyNowMs();
+
+    if (resumeFromSleepPending_.exchange(false, std::memory_order_acq_rel))
+        watchdogResumeArmed_ = true;
+
+    // A deliberate detach (export) is not a dead device — re-baseline and wait.
+    if (callbackSuspended_.load(std::memory_order_acquire))
+    {
+        watchdogLastCounter_    = callbackCounter_.load(std::memory_order_relaxed);
+        watchdogLastProgressMs_ = now;
+        watchdogResumeArmed_    = false;
+        return false;
+    }
+
+    const uint64_t counter = callbackCounter_.load(std::memory_order_relaxed);
+    if (counter != watchdogLastCounter_)
+    {
+        watchdogLastCounter_    = counter;
+        watchdogLastProgressMs_ = now;
+        watchdogResumeArmed_    = false;
+        watchdogFailedAttempts_ = 0;
+        return false;
+    }
+
+    const int64_t starvedMs = now - watchdogLastProgressMs_;
+
+    WatchdogInputs inputs;
+    inputs.suspended          = false;          // handled above
+    inputs.counterMoved       = false;          // handled above
+    inputs.resumeArmed        = watchdogResumeArmed_;
+    inputs.msSinceProgress    = starvedMs;
+    inputs.msUntilNextAttempt = watchdogNextAttemptMs_ - now;
+
+    if (!shouldAttemptRecovery(inputs)) return false;
+
+    // With no device present at all the retry loop runs indefinitely; log the
+    // first few rounds in full, then only occasionally, so a machine with no
+    // audio hardware does not bury the rest of the log.
+    const bool verbose = watchdogFailedAttempts_ < 3
+                      || watchdogFailedAttempts_ % 30 == 0;
+
+    if (verbose)
+        std::cerr << "[AudioEngine] Audio callback starved for " << starvedMs
+                  << " ms" << (watchdogResumeArmed_ ? " (after system resume)" : "")
+                  << " — reopening device.\n" << std::flush;
+
+    watchdogResumeArmed_ = false;
+    const bool recovered = reopenAudioDevice();
+
+    if (recovered)
+    {
+        watchdogFailedAttempts_ = 0;
+        watchdogNextAttemptMs_  = now + kRecoveryRetryMs;
+        // Re-baseline so the next poll judges the *new* device, and give the
+        // reopened driver a full starvation window to produce its first block.
+        watchdogLastCounter_    = callbackCounter_.load(std::memory_order_relaxed);
+        watchdogLastProgressMs_ = now;
+
+        std::cout << "[AudioEngine] Device recovered: "
+                  << getCurrentOutputDevice() << " @ " << sampleRate_ << " Hz / "
+                  << bufferSize_ << " samples\n" << std::flush;
+    }
+    else
+    {
+        ++watchdogFailedAttempts_;
+        watchdogNextAttemptMs_ = now + (watchdogFailedAttempts_ >= kRecoveryBackoffAfter
+                                            ? kRecoveryBackoffMs
+                                            : kRecoveryRetryMs);
+        if (verbose)
+            std::cerr << "[AudioEngine] Device reopen failed (attempt "
+                      << watchdogFailedAttempts_ << ") — no audio device available.\n"
+                      << std::flush;
+    }
+
+    return recovered;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Message/RPC thread only.
+bool AudioEngine::reopenAudioDevice()
+{
+    juce::AudioDeviceManager::AudioDeviceSetup setup;
+    deviceManager_.getAudioDeviceSetup(setup);
+
+    deviceManager_.removeAudioCallback(this);
+    deviceManager_.closeAudioDevice();
+
+    // The device list itself can change across suspend/resume, so a stale scan
+    // would keep handing back the invalidated endpoint.
+    if (auto* type = deviceManager_.getCurrentDeviceTypeObject())
+        type->scanForDevices();
+
+    juce::String error = deviceManager_.setAudioDeviceSetup(setup, true);
+
+    if (error.isNotEmpty() || deviceManager_.getCurrentAudioDevice() == nullptr)
+    {
+        // The previous endpoint is gone for good (or came back renamed) — take
+        // whatever the OS now calls the default rather than leaving it silent.
+        error = deviceManager_.initialiseWithDefaultDevices(0, 2);
+    }
+
+    auto* device = deviceManager_.getCurrentAudioDevice();
+    if (device == nullptr)
+    {
+        // Keep the callback attached: if the device returns later, JUCE starts
+        // driving it again on its own and the watchdog sees the counter move.
+        deviceManager_.addAudioCallback(this);
+        return false;
+    }
+
+    // addAudioCallback re-runs audioDeviceAboutToStart, which republishes
+    // sampleRate_/bufferSize_, retunes the transport and re-prepares MixEngine
+    // against the (possibly different) reopened device.
+    deviceManager_.addAudioCallback(this);
     return true;
 }
 
@@ -162,6 +423,7 @@ void AudioEngine::shutdown()
 {
     if (!initialized_) return;
 
+    unregisterPowerNotification();
     deviceManager_.removeAudioCallback(this);
     deviceManager_.closeAudioDevice();
     livePresentationDeviceOutputLatencySamples_.store(0, std::memory_order_release);
@@ -484,6 +746,10 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
 
     // Advance master clock — always last, after all processing
     transport_.advance(numSamples);
+
+    // Device-health heartbeat. Relaxed is sufficient: the watchdog only needs to
+    // observe that the value changed, never a happens-before on anything else.
+    callbackCounter_.fetch_add(1, std::memory_order_relaxed);
 
     if (rtDiagEnabled)
     {

@@ -1,6 +1,7 @@
 #include "audio/EffectChainManager.h"
 #include "audio/AudioGraph.h"
 #include "audio/PluginRegistry.h"
+#include "audio/XlethFilterEffect.h"
 
 #include <functional>
 #include <unordered_map>
@@ -714,6 +715,30 @@ bool EffectChainManager::refreshGuardedPluginLatency(
 XlethEffectBase* EffectChainManager::getEffect(int nodeId)
 {
     return graph_->getEffect(nodeId);
+}
+
+void EffectChainManager::deliverModulationGate(bool valid, std::int64_t gateStartSample,
+                                               std::int64_t gateEndSample)
+{
+    if (graph_) graph_->deliverModulationGate(valid, gateStartSample, gateEndSample);
+}
+
+bool EffectChainManager::anyFilterHasActiveEnvelope(bool& wantSlidesOut) const
+{
+    wantSlidesOut = false;
+    if (!graph_) return false;
+    bool any = false;
+    for (auto* fx : graph_->collectEffects())
+    {
+        auto* filt = dynamic_cast<XlethFilterEffect*>(fx);
+        if (filt == nullptr) continue;
+        if (filt->hasActiveEnvelopeModulator())
+        {
+            any = true;
+            if (filt->envelopeWantsSlideNotes()) wantSlidesOut = true;
+        }
+    }
+    return any;
 }
 
 juce::AudioProcessor* EffectChainManager::getProcessor(int nodeId)

@@ -23,6 +23,7 @@
 #include "ProxyTranscoder.h"
 #include "SampleBank.h"
 #include "audio/SampleProcessor.h"
+#include "audio/MangleDsp.h"          // MANGLE mode-id validation for jsPatchSlot
 #include "SyncManager.h"
 #include "render/ArpVideoExpander.h"
 #include "render/VideoFlipApplier.h"
@@ -900,6 +901,17 @@ static void refreshSamplerForRegion(int regionId)
     mix.rebuildAllSamplers();
 }
 
+// Point the per-slot PREP bake cache at the active project's audio cache dir.
+// Called wherever the project directory can change (create / load / save-as /
+// reset-to-blank). An empty dir — an untitled project — leaves the cache
+// memory-only, so nothing is written outside a real project folder.
+static void syncSlotBakeCacheDir()
+{
+    if (!audioEngine || !g_projectManager) return;
+    audioEngine->getMixEngine().setSlotBakeCacheDir(
+        g_projectManager->getAudioCacheDir());
+}
+
 // Full snapshot of a region's current sampler state as a SamplerSettings, so a
 // command that means to change only a few fields still round-trips the rest
 // unchanged. Mirrors the field-by-field copy at the head of
@@ -908,7 +920,7 @@ static void refreshSamplerForRegion(int regionId)
 static SamplerSettings samplerSettingsFromRegion(const SampleRegion& r)
 {
     SamplerSettings s;
-    s.rootNote         = r.rootNote;
+    s.slots            = r.slots;
     s.attackMs         = r.attackMs;
     s.decayMs          = r.decayMs;
     s.sustain          = r.sustain;
@@ -929,23 +941,14 @@ static SamplerSettings samplerSettingsFromRegion(const SampleRegion& r)
     s.pitchEnvAttackTension = r.pitchEnvAttackTension;
     s.pitchEnvDecayTension  = r.pitchEnvDecayTension;
     s.pitchEnvReleaseTension = r.pitchEnvReleaseTension;
-    s.loopEnabled      = r.loopEnabled;
-    s.loopStart        = r.loopStart;
-    s.loopEnd          = r.loopEnd;
     s.crossfadeEnabled = r.crossfadeEnabled;
-    s.smpStart         = r.smpStart;
-    s.smpLength        = r.smpLength;
-    s.declickMs        = r.declickMs;
-    s.fadeInMs         = r.fadeInMs;
-    s.fadeOutMs        = r.fadeOutMs;
-    s.crossfadeSamples = r.crossfadeSamples;
-    s.dcOffsetRemoved  = r.dcOffsetRemoved;
-    s.normalized       = r.normalized;
-    s.polarityReversed = r.polarityReversed;
-    s.reversed         = r.reversed;
     s.monoEnabled       = r.monoEnabled;
     s.portamentoEnabled = r.portamentoEnabled;
     s.portamentoTimeMs  = r.portamentoTimeMs;
+    s.portamentoMode    = r.portamentoMode;
+    s.portamentoCurve   = r.portamentoCurve;
+    s.legatoEnabled     = r.legatoEnabled;
+    s.voiceCount        = r.voiceCount;
     s.arpEnabled        = r.arpEnabled;
     s.arpTempoSync      = r.arpTempoSync;
     s.arpDivision       = r.arpDivision;
@@ -977,6 +980,7 @@ static SamplerSettings samplerSettingsFromRegion(const SampleRegion& r)
     s.lfoPitchAttackMs      = r.lfoPitchAttackMs;
     s.lfoPitchDelayMs       = r.lfoPitchDelayMs;
     s.lfoPitchWaveform      = r.lfoPitchWaveform;
+    s.modulation            = r.modulation;
     return s;
 }
 
@@ -1080,6 +1084,50 @@ JsonApi::Value Cache_GetWorldActiveJobIds(const JsonApi::CallbackInfo& info)
     for (size_t i = 0; i < ids.size(); ++i)
         arr.Set(static_cast<uint32_t>(i), JsonApi::Number::New(env, ids[i]));
     return arr;
+}
+
+// ── Per-slot PREP bake indicator ─────────────────────────────────────────────
+
+// timeline_getSlotBakeStatus(regionId?: number)
+//   → { pending: [{regionId, slotIndex}], changed: boolean }
+//
+// Doubles as the MAIN-THREAD PUMP for the bake pipeline: it drains completed
+// bakes into the live samplers before reporting. That is deliberate — it is the
+// one place guaranteed to run on the main thread while a bake is outstanding,
+// since the editor polls it exactly while its loading indicator is up. `changed`
+// tells the caller a buffer was just swapped in, so it can refetch the waveform
+// and the (now baked-length) sample bounds.
+//
+// Omit regionId to report every pending bake; pass one to filter.
+JsonApi::Value Timeline_GetSlotBakeStatus(const JsonApi::CallbackInfo& info)
+{
+    auto env = info.Env();
+    JsonApi::Object out = JsonApi::Object::New(env);
+    if (!audioEngine) {
+        out.Set("pending", JsonApi::Array::New(env, 0));
+        out.Set("changed", JsonApi::Boolean::New(env, false));
+        return out;
+    }
+
+    const int filterRegion = (info.Length() >= 1 && info[0].IsNumber())
+                           ? info[0].As<JsonApi::Number>().Int32Value() : -1;
+
+    auto& mix = audioEngine->getMixEngine();
+    const bool changed = mix.drainSlotBakes();
+
+    const auto jobs = mix.getPendingSlotBakes();
+    JsonApi::Array arr = JsonApi::Array::New(env);
+    uint32_t n = 0;
+    for (const auto& j : jobs) {
+        if (filterRegion >= 0 && j.regionId != filterRegion) continue;
+        JsonApi::Object o = JsonApi::Object::New(env);
+        o.Set("regionId",  JsonApi::Number::New(env, j.regionId));
+        o.Set("slotIndex", JsonApi::Number::New(env, j.slotIndex));
+        arr.Set(n++, o);
+    }
+    out.Set("pending", arr);
+    out.Set("changed", JsonApi::Boolean::New(env, changed));
+    return out;
 }
 
 // ── Global clip-processing defaults bridge functions ─────────────────────────
@@ -2841,6 +2889,408 @@ static SampleRegion::Syllable jsToSyllable(const JsonApi::Object& o) {
     return s;
 }
 
+// ─── SampleSlot ↔ JS ─────────────────────────────────────────────────────────
+// Each slot is exposed as a plain object inside the region's `slots` array.
+// Slot 0's fields are ALSO mirrored flat on the region (rootNote/smpStart/
+// loop*/fade*/declickMs/destructive flags) so every pre-slot consumer — the
+// Sample tab, the waveform editor, the AUTO-loop handler — keeps reading the
+// same keys it always did.
+
+// ─── Sampler modulation ⇄ JS ─────────────────────────────────────────────────
+// The wire shape mirrors the JSON on disk one-for-one — same keys, same enum
+// indices, same tolerant reads — so a config that survives a save/load round
+// trip survives a bridge round trip and vice versa.
+//
+// Every reader is a PATCH: an absent key leaves the current value alone. That
+// is what lets the UI send `{lfos:[{},{rateHz:4}]}` to change one LFO's rate
+// without having to echo back the other five.
+
+static JsonApi::Object modTimeToJs(JsonApi::Env env, const xleth::sampmod::ModTime& t) {
+    JsonApi::Object o = JsonApi::Object::New(env);
+    o.Set("ms",        JsonApi::Number::New(env, t.ms));
+    o.Set("noteValue", JsonApi::Number::New(env, t.noteValue));
+    o.Set("triplet",   JsonApi::Boolean::New(env, t.triplet));
+    o.Set("dotted",    JsonApi::Boolean::New(env, t.dotted));
+    return o;
+}
+
+static void jsPatchModTime(const JsonApi::Object& o, xleth::sampmod::ModTime& t) {
+    if (o.Has("ms") && o.Get("ms").IsNumber())
+        t.ms = o.Get("ms").As<JsonApi::Number>().FloatValue();
+    if (o.Has("noteValue") && o.Get("noteValue").IsNumber()) {
+        const int v = o.Get("noteValue").As<JsonApi::Number>().Int32Value();
+        if (v >= 0 && v < xleth::sampmod::kNumNoteValues) t.noteValue = v;
+    }
+    if (o.Has("triplet") && o.Get("triplet").IsBoolean())
+        t.triplet = o.Get("triplet").As<JsonApi::Boolean>().Value();
+    if (o.Has("dotted") && o.Get("dotted").IsBoolean())
+        t.dotted = o.Get("dotted").As<JsonApi::Boolean>().Value();
+}
+
+// Patch a nested time parameter only when the key really is an object.
+static void jsPatchNestedTime(const JsonApi::Object& o, const char* key,
+                              xleth::sampmod::ModTime& t) {
+    if (o.Has(key) && o.Get(key).IsObject())
+        jsPatchModTime(o.Get(key).As<JsonApi::Object>(), t);
+}
+
+static float jsF(const JsonApi::Object& o, const char* key, float dflt) {
+    if (o.Has(key) && o.Get(key).IsNumber())
+        return o.Get(key).As<JsonApi::Number>().FloatValue();
+    return dflt;
+}
+static int jsI(const JsonApi::Object& o, const char* key, int dflt) {
+    if (o.Has(key) && o.Get(key).IsNumber())
+        return o.Get(key).As<JsonApi::Number>().Int32Value();
+    return dflt;
+}
+static bool jsB(const JsonApi::Object& o, const char* key, bool dflt) {
+    if (o.Has(key) && o.Get(key).IsBoolean())
+        return o.Get(key).As<JsonApi::Boolean>().Value();
+    return dflt;
+}
+static int jsEnum(const JsonApi::Object& o, const char* key, int dflt, int count) {
+    const int v = jsI(o, key, dflt);
+    return (v >= 0 && v < count) ? v : dflt;
+}
+
+static JsonApi::Object modEnvToJs(JsonApi::Env env, const xleth::sampmod::ModEnvConfig& c) {
+    JsonApi::Object o = JsonApi::Object::New(env);
+    o.Set("tempoSync",      JsonApi::Boolean::New(env, c.tempoSync));
+    o.Set("delay",          modTimeToJs(env, c.delay));
+    o.Set("attack",         modTimeToJs(env, c.attack));
+    o.Set("hold",           modTimeToJs(env, c.hold));
+    o.Set("decay",          modTimeToJs(env, c.decay));
+    o.Set("release",        modTimeToJs(env, c.release));
+    o.Set("sustainPct",     JsonApi::Number::New(env, c.sustainPct));
+    o.Set("attackTension",  JsonApi::Number::New(env, c.attackTension));
+    o.Set("decayTension",   JsonApi::Number::New(env, c.decayTension));
+    o.Set("releaseTension", JsonApi::Number::New(env, c.releaseTension));
+    o.Set("outputAmount",   JsonApi::Number::New(env, c.outputAmount));
+    return o;
+}
+
+static void jsPatchModEnv(const JsonApi::Object& o, xleth::sampmod::ModEnvConfig& c) {
+    c.tempoSync = jsB(o, "tempoSync", c.tempoSync);
+    jsPatchNestedTime(o, "delay",   c.delay);
+    jsPatchNestedTime(o, "attack",  c.attack);
+    jsPatchNestedTime(o, "hold",    c.hold);
+    jsPatchNestedTime(o, "decay",   c.decay);
+    jsPatchNestedTime(o, "release", c.release);
+    c.sustainPct     = std::clamp(jsF(o, "sustainPct", c.sustainPct), 0.0f, 100.0f);
+    c.attackTension  = std::clamp(jsF(o, "attackTension",  c.attackTension),  -1.0f, 1.0f);
+    c.decayTension   = std::clamp(jsF(o, "decayTension",   c.decayTension),   -1.0f, 1.0f);
+    c.releaseTension = std::clamp(jsF(o, "releaseTension", c.releaseTension), -1.0f, 1.0f);
+    c.outputAmount   = std::clamp(jsF(o, "outputAmount", c.outputAmount), -1.0f, 1.0f);
+}
+
+static JsonApi::Object modLfoToJs(JsonApi::Env env, const xleth::sampmod::ModLfoConfig& c) {
+    JsonApi::Object o = JsonApi::Object::New(env);
+    const int n = std::clamp(c.numPoints, 0, xleth::sampmod::kMaxLfoPoints);
+    JsonApi::Array pts = JsonApi::Array::New(env, static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i) {
+        JsonApi::Object p = JsonApi::Object::New(env);
+        p.Set("t",       JsonApi::Number::New(env, c.points[(size_t)i].time));
+        p.Set("v",       JsonApi::Number::New(env, c.points[(size_t)i].value));
+        p.Set("seg",     JsonApi::Number::New(env, c.points[(size_t)i].segment));
+        p.Set("tension", JsonApi::Number::New(env, c.points[(size_t)i].tension));
+        pts.Set((uint32_t)i, p);
+    }
+    o.Set("points",       pts);
+    o.Set("tempoSync",    JsonApi::Boolean::New(env, c.tempoSync));
+    o.Set("rateHz",       JsonApi::Number::New(env, c.rateHz));
+    o.Set("syncRate",     modTimeToJs(env, c.syncRate));
+    o.Set("rise",         modTimeToJs(env, c.rise));
+    o.Set("delay",        modTimeToJs(env, c.delay));
+    o.Set("smooth",       JsonApi::Number::New(env, c.smooth));
+    o.Set("phase",        JsonApi::Number::New(env, c.phase));
+    o.Set("behavior",     JsonApi::Number::New(env, c.behavior));
+    o.Set("mono",         JsonApi::Boolean::New(env, c.mono));
+    o.Set("outputAmount", JsonApi::Number::New(env, c.outputAmount));
+    return o;
+}
+
+static void jsPatchModLfo(const JsonApi::Object& o, xleth::sampmod::ModLfoConfig& c) {
+    if (o.Has("points") && o.Get("points").IsArray()) {
+        JsonApi::Array a = o.Get("points").As<JsonApi::Array>();
+        c.numPoints = 0;
+        for (uint32_t i = 0; i < a.Length(); ++i) {
+            if (c.numPoints >= xleth::sampmod::kMaxLfoPoints) break;
+            if (!a.Get(i).IsObject()) continue;
+            JsonApi::Object p = a.Get(i).As<JsonApi::Object>();
+            xleth::sampmod::LfoPoint pt;
+            pt.time    = std::clamp(jsF(p, "t", 0.0f), 0.0f, 1.0f);
+            pt.value   = std::clamp(jsF(p, "v", 0.0f), -1.0f, 1.0f);
+            pt.segment = jsEnum(p, "seg", static_cast<int>(xleth::sampmod::LfoSegment::Line), 3);
+            pt.tension = std::clamp(jsF(p, "tension", 0.0f), -1.0f, 1.0f);
+            c.points[(size_t)c.numPoints++] = pt;
+        }
+        // The evaluator assumes ordered points; sorting here means the UI never
+        // has to guarantee insertion order.
+        std::stable_sort(c.points.begin(), c.points.begin() + c.numPoints,
+                         [](const xleth::sampmod::LfoPoint& a,
+                            const xleth::sampmod::LfoPoint& b) { return a.time < b.time; });
+    }
+    c.tempoSync = jsB(o, "tempoSync", c.tempoSync);
+    c.rateHz    = std::clamp(jsF(o, "rateHz", c.rateHz), 0.01f, 40.0f);
+    jsPatchNestedTime(o, "syncRate", c.syncRate);
+    jsPatchNestedTime(o, "rise",     c.rise);
+    jsPatchNestedTime(o, "delay",    c.delay);
+    c.smooth       = std::clamp(jsF(o, "smooth", c.smooth), 0.0f, 100.0f);
+    c.phase        = std::clamp(jsF(o, "phase",  c.phase),  0.0f, 100.0f);
+    c.behavior     = jsEnum(o, "behavior", c.behavior, 3);
+    c.mono         = jsB(o, "mono", c.mono);
+    c.outputAmount = std::clamp(jsF(o, "outputAmount", c.outputAmount), -1.0f, 1.0f);
+}
+
+static JsonApi::Object modCurveToJs(JsonApi::Env env, const xleth::sampmod::ModCurveConfig& c) {
+    JsonApi::Object o = JsonApi::Object::New(env);
+    const int n = std::clamp(c.numPoints, 0, xleth::sampmod::kMaxCurvePoints);
+    JsonApi::Array pts = JsonApi::Array::New(env, static_cast<size_t>(n));
+    for (int i = 0; i < n; ++i) {
+        JsonApi::Object p = JsonApi::Object::New(env);
+        p.Set("x",       JsonApi::Number::New(env, c.points[(size_t)i].x));
+        p.Set("y",       JsonApi::Number::New(env, c.points[(size_t)i].y));
+        p.Set("tension", JsonApi::Number::New(env, c.points[(size_t)i].tension));
+        pts.Set((uint32_t)i, p);
+    }
+    o.Set("points",       pts);
+    o.Set("outputAmount", JsonApi::Number::New(env, c.outputAmount));
+    return o;
+}
+
+static void jsPatchModCurve(const JsonApi::Object& o, xleth::sampmod::ModCurveConfig& c) {
+    if (o.Has("points") && o.Get("points").IsArray()) {
+        JsonApi::Array a = o.Get("points").As<JsonApi::Array>();
+        c.numPoints = 0;
+        for (uint32_t i = 0; i < a.Length(); ++i) {
+            if (c.numPoints >= xleth::sampmod::kMaxCurvePoints) break;
+            if (!a.Get(i).IsObject()) continue;
+            JsonApi::Object p = a.Get(i).As<JsonApi::Object>();
+            xleth::sampmod::CurvePoint pt;
+            pt.x       = std::clamp(jsF(p, "x", 0.0f), 0.0f, 1.0f);
+            pt.y       = std::clamp(jsF(p, "y", 0.0f), 0.0f, 1.0f);
+            pt.tension = std::clamp(jsF(p, "tension", 0.0f), -1.0f, 1.0f);
+            c.points[(size_t)c.numPoints++] = pt;
+        }
+        std::stable_sort(c.points.begin(), c.points.begin() + c.numPoints,
+                         [](const xleth::sampmod::CurvePoint& a,
+                            const xleth::sampmod::CurvePoint& b) { return a.x < b.x; });
+    }
+    c.outputAmount = std::clamp(jsF(o, "outputAmount", c.outputAmount), -1.0f, 1.0f);
+}
+
+static JsonApi::Object modConfigToJs(JsonApi::Env env, const xleth::sampmod::ModConfig& c) {
+    JsonApi::Object o = JsonApi::Object::New(env);
+
+    JsonApi::Array envs = JsonApi::Array::New(env, xleth::sampmod::kNumEnvs);
+    for (int i = 0; i < xleth::sampmod::kNumEnvs; ++i)
+        envs.Set((uint32_t)i, modEnvToJs(env, c.envs[(size_t)i]));
+    o.Set("envs", envs);
+
+    JsonApi::Array lfos = JsonApi::Array::New(env, xleth::sampmod::kNumLfos);
+    for (int i = 0; i < xleth::sampmod::kNumLfos; ++i)
+        lfos.Set((uint32_t)i, modLfoToJs(env, c.lfos[(size_t)i]));
+    o.Set("lfos", lfos);
+
+    o.Set("velo", modCurveToJs(env, c.velo));
+    o.Set("note", modCurveToJs(env, c.note));
+
+    const int nr = std::clamp(c.numRoutes, 0, xleth::sampmod::kMaxRoutes);
+    JsonApi::Array routes = JsonApi::Array::New(env, static_cast<size_t>(nr));
+    for (int i = 0; i < nr; ++i) {
+        const auto& r = c.routes[(size_t)i];
+        JsonApi::Object ro = JsonApi::Object::New(env);
+        ro.Set("source",  JsonApi::Number::New(env, r.source));
+        ro.Set("target",  JsonApi::Number::New(env, r.target));
+        ro.Set("index",   JsonApi::Number::New(env, r.index));
+        ro.Set("stage",   JsonApi::Number::New(env, r.stage));
+        ro.Set("amount",  JsonApi::Number::New(env, r.amount));
+        ro.Set("bipolar", JsonApi::Boolean::New(env, r.bipolar));
+        routes.Set((uint32_t)i, ro);
+    }
+    o.Set("routes", routes);
+    return o;
+}
+
+// Returns the number of routes the caller SENT that were rejected as invalid,
+// so the handler can report it rather than silently dropping them — an invalid
+// route is almost always a UI bug and a silent drop is how it stays hidden.
+static int jsPatchModConfig(const JsonApi::Object& o, xleth::sampmod::ModConfig& c) {
+    int rejected = 0;
+
+    if (o.Has("envs") && o.Get("envs").IsArray()) {
+        JsonApi::Array a = o.Get("envs").As<JsonApi::Array>();
+        for (uint32_t i = 0; i < a.Length() && i < (uint32_t)xleth::sampmod::kNumEnvs; ++i)
+            if (a.Get(i).IsObject())
+                jsPatchModEnv(a.Get(i).As<JsonApi::Object>(), c.envs[(size_t)i]);
+    }
+    if (o.Has("lfos") && o.Get("lfos").IsArray()) {
+        JsonApi::Array a = o.Get("lfos").As<JsonApi::Array>();
+        for (uint32_t i = 0; i < a.Length() && i < (uint32_t)xleth::sampmod::kNumLfos; ++i)
+            if (a.Get(i).IsObject())
+                jsPatchModLfo(a.Get(i).As<JsonApi::Object>(), c.lfos[(size_t)i]);
+    }
+    if (o.Has("velo") && o.Get("velo").IsObject())
+        jsPatchModCurve(o.Get("velo").As<JsonApi::Object>(), c.velo);
+    if (o.Has("note") && o.Get("note").IsObject())
+        jsPatchModCurve(o.Get("note").As<JsonApi::Object>(), c.note);
+
+    // The route list is REPLACED wholesale when present — a route has no stable
+    // identity, so patching one by position would silently retarget it.
+    if (o.Has("routes") && o.Get("routes").IsArray()) {
+        JsonApi::Array a = o.Get("routes").As<JsonApi::Array>();
+        c.numRoutes = 0;
+        for (uint32_t i = 0; i < a.Length(); ++i) {
+            if (c.numRoutes >= xleth::sampmod::kMaxRoutes) { ++rejected; continue; }
+            if (!a.Get(i).IsObject()) { ++rejected; continue; }
+            JsonApi::Object ro = a.Get(i).As<JsonApi::Object>();
+            xleth::sampmod::ModRoute r;
+            r.source  = jsI(ro, "source", -1);
+            r.target  = jsEnum(ro, "target", 0, static_cast<int>(xleth::sampmod::ModTarget::Count));
+            r.index   = jsI(ro, "index", 0);
+            r.stage   = jsI(ro, "stage", 0);
+            r.amount  = std::clamp(jsF(ro, "amount", 0.0f), -1.0f, 1.0f);
+            r.bipolar = jsB(ro, "bipolar", false);
+            if (!xleth::sampmod::isRouteValid(r)) { ++rejected; continue; }
+            c.routes[(size_t)c.numRoutes++] = r;
+        }
+    }
+    return rejected;
+}
+
+static JsonApi::Object slotToJs(JsonApi::Env env, const SampleSlot& s) {
+    JsonApi::Object o = JsonApi::Object::New(env);
+    o.Set("audioFilePath",    JsonApi::String::New(env, s.audioFilePath));
+    o.Set("name",             JsonApi::String::New(env, s.name));
+    o.Set("rootNote",         JsonApi::Number::New(env, s.rootNote));
+    o.Set("octave",           JsonApi::Number::New(env, s.octave));
+    o.Set("semitone",         JsonApi::Number::New(env, s.semitone));
+    o.Set("fine",             JsonApi::Number::New(env, s.fine));
+    o.Set("coarse",           JsonApi::Number::New(env, s.coarse));
+    o.Set("volume",           JsonApi::Number::New(env, s.volume));
+    o.Set("pan",              JsonApi::Number::New(env, s.pan));
+    o.Set("mute",             JsonApi::Boolean::New(env, s.mute));
+    o.Set("solo",             JsonApi::Boolean::New(env, s.solo));
+    o.Set("smpStart",         JsonApi::Number::New(env, static_cast<double>(s.smpStart)));
+    o.Set("smpLength",        JsonApi::Number::New(env, static_cast<double>(s.smpLength)));
+    o.Set("declickMs",        JsonApi::Number::New(env, s.declickMs));
+    o.Set("fadeInMs",         JsonApi::Number::New(env, s.fadeInMs));
+    o.Set("fadeOutMs",        JsonApi::Number::New(env, s.fadeOutMs));
+    o.Set("loopEnabled",      JsonApi::Boolean::New(env, s.loopEnabled));
+    o.Set("loopStart",        JsonApi::Number::New(env, static_cast<double>(s.loopStart)));
+    o.Set("loopEnd",          JsonApi::Number::New(env, static_cast<double>(s.loopEnd)));
+    o.Set("crossfadeSamples", JsonApi::Number::New(env, static_cast<double>(s.crossfadeSamples)));
+    o.Set("loopMode",          JsonApi::Number::New(env, s.loopMode));
+    o.Set("exitLoopOnRelease", JsonApi::Boolean::New(env, s.exitLoopOnRelease));
+    o.Set("mangleMode",        JsonApi::Number::New(env, s.mangleMode));
+    o.Set("mangleAmount",      JsonApi::Number::New(env, s.mangleAmount));
+    o.Set("mangleMix",         JsonApi::Number::New(env, s.mangleMix));
+    o.Set("prepAlgorithm",     JsonApi::Number::New(env, s.prepAlgorithm));
+    o.Set("prepStretch",       JsonApi::Number::New(env, s.prepStretch));
+    o.Set("prepShiftCents",    JsonApi::Number::New(env, s.prepShiftCents));
+    o.Set("dcOffsetRemoved",  JsonApi::Boolean::New(env, s.dcOffsetRemoved));
+    o.Set("normalized",       JsonApi::Boolean::New(env, s.normalized));
+    o.Set("polarityReversed", JsonApi::Boolean::New(env, s.polarityReversed));
+    o.Set("reversed",         JsonApi::Boolean::New(env, s.reversed));
+    return o;
+}
+
+// Reads whichever keys are present onto `s`, leaving the rest untouched — so
+// the same helper serves a full slot object and a one-field patch.
+//
+// `identity` gates the two keys whose names COLLIDE with region-level fields:
+// `name` and `audioFilePath` mean the region's name/path on a region object but
+// the slot's on a slot object. Pass false when patching flat from a region or a
+// sampler-settings payload, or slot 0 would inherit the region's name — which
+// is exactly what the first GUI smoke run surfaced.
+static void jsPatchSlot(const JsonApi::Object& o, SampleSlot& s, bool identity = true) {
+    if (identity && o.Has("audioFilePath") && o.Get("audioFilePath").IsString())
+        s.audioFilePath = o.Get("audioFilePath").As<JsonApi::String>().Utf8Value();
+    if (identity && o.Has("name") && o.Get("name").IsString())
+        s.name = o.Get("name").As<JsonApi::String>().Utf8Value();
+    if (o.Has("rootNote") && o.Get("rootNote").IsNumber())
+        s.rootNote = o.Get("rootNote").As<JsonApi::Number>().Int32Value();
+    if (o.Has("octave") && o.Get("octave").IsNumber())
+        s.octave = std::clamp(o.Get("octave").As<JsonApi::Number>().Int32Value(), -4, 4);
+    if (o.Has("semitone") && o.Get("semitone").IsNumber())
+        s.semitone = std::clamp(o.Get("semitone").As<JsonApi::Number>().Int32Value(), -12, 12);
+    if (o.Has("fine") && o.Get("fine").IsNumber())
+        s.fine = std::clamp(o.Get("fine").As<JsonApi::Number>().FloatValue(), -100.0f, 100.0f);
+    if (o.Has("coarse") && o.Get("coarse").IsNumber())
+        s.coarse = std::clamp(o.Get("coarse").As<JsonApi::Number>().Int32Value(), -48, 48);
+    if (o.Has("volume") && o.Get("volume").IsNumber())
+        s.volume = std::clamp(o.Get("volume").As<JsonApi::Number>().FloatValue(), 0.0f, 2.0f);
+    if (o.Has("pan") && o.Get("pan").IsNumber())
+        s.pan = std::clamp(o.Get("pan").As<JsonApi::Number>().FloatValue(), -1.0f, 1.0f);
+    if (o.Has("mute") && o.Get("mute").IsBoolean())
+        s.mute = o.Get("mute").As<JsonApi::Boolean>().Value();
+    if (o.Has("solo") && o.Get("solo").IsBoolean())
+        s.solo = o.Get("solo").As<JsonApi::Boolean>().Value();
+    if (o.Has("smpStart") && o.Get("smpStart").IsNumber())
+        s.smpStart = static_cast<int64_t>(o.Get("smpStart").As<JsonApi::Number>().DoubleValue());
+    if (o.Has("smpLength") && o.Get("smpLength").IsNumber())
+        s.smpLength = static_cast<int64_t>(o.Get("smpLength").As<JsonApi::Number>().DoubleValue());
+    if (o.Has("declickMs") && o.Get("declickMs").IsNumber())
+        s.declickMs = o.Get("declickMs").As<JsonApi::Number>().FloatValue();
+    if (o.Has("fadeInMs") && o.Get("fadeInMs").IsNumber())
+        s.fadeInMs = o.Get("fadeInMs").As<JsonApi::Number>().FloatValue();
+    if (o.Has("fadeOutMs") && o.Get("fadeOutMs").IsNumber())
+        s.fadeOutMs = o.Get("fadeOutMs").As<JsonApi::Number>().FloatValue();
+    if (o.Has("loopEnabled") && o.Get("loopEnabled").IsBoolean())
+        s.loopEnabled = o.Get("loopEnabled").As<JsonApi::Boolean>().Value();
+    if (o.Has("loopStart") && o.Get("loopStart").IsNumber())
+        s.loopStart = static_cast<int64_t>(o.Get("loopStart").As<JsonApi::Number>().DoubleValue());
+    if (o.Has("loopEnd") && o.Get("loopEnd").IsNumber())
+        s.loopEnd = static_cast<int64_t>(o.Get("loopEnd").As<JsonApi::Number>().DoubleValue());
+    if (o.Has("crossfadeSamples") && o.Get("crossfadeSamples").IsNumber())
+        s.crossfadeSamples = static_cast<int64_t>(o.Get("crossfadeSamples").As<JsonApi::Number>().DoubleValue());
+    // loopMode is an ENUM, so an unknown value falls back to Forward rather
+    // than clamping — clamping 99 would silently hand the user Reverse, a mode
+    // they never asked for. Matches Sampler::setSlotLoop's own guard.
+    if (o.Has("loopMode") && o.Get("loopMode").IsNumber()) {
+        const int m = o.Get("loopMode").As<JsonApi::Number>().Int32Value();
+        s.loopMode = (m >= static_cast<int>(SampleLoopMode::Forward)
+                   && m <= static_cast<int>(SampleLoopMode::Reverse))
+                   ? m : static_cast<int>(SampleLoopMode::Forward);
+    }
+    if (o.Has("exitLoopOnRelease") && o.Get("exitLoopOnRelease").IsBoolean())
+        s.exitLoopOnRelease = o.Get("exitLoopOnRelease").As<JsonApi::Boolean>().Value();
+    // MANGLE. mangleMode is an ENUM — same reasoning as loopMode above: an
+    // unknown id falls back to Off (no effect) rather than clamping the user
+    // into whichever mode happens to sit at the end of the list.
+    if (o.Has("mangleMode") && o.Get("mangleMode").IsNumber()) {
+        const int m = o.Get("mangleMode").As<JsonApi::Number>().Int32Value();
+        s.mangleMode = xleth::mangle::isValidMode(m) ? m : 0;
+    }
+    if (o.Has("mangleAmount") && o.Get("mangleAmount").IsNumber())
+        s.mangleAmount = std::clamp(o.Get("mangleAmount").As<JsonApi::Number>().FloatValue(),
+                                    0.0f, 1.0f);
+    if (o.Has("mangleMix") && o.Get("mangleMix").IsNumber())
+        s.mangleMix = std::clamp(o.Get("mangleMix").As<JsonApi::Number>().FloatValue(),
+                                 0.0f, 1.0f);
+    // PREP. prepAlgorithm is clamped to the five real renderers — Global (0) is
+    // the timeline's "inherit the preference" sentinel and means nothing here.
+    if (o.Has("prepAlgorithm") && o.Get("prepAlgorithm").IsNumber())
+        s.prepAlgorithm = std::clamp(o.Get("prepAlgorithm").As<JsonApi::Number>().Int32Value(),
+                                     static_cast<int>(StretchMethod::PSOLA),
+                                     static_cast<int>(StretchMethod::WORLD));
+    if (o.Has("prepStretch") && o.Get("prepStretch").IsNumber())
+        s.prepStretch = std::clamp(o.Get("prepStretch").As<JsonApi::Number>().FloatValue(),
+                                   0.25f, 4.0f);
+    if (o.Has("prepShiftCents") && o.Get("prepShiftCents").IsNumber())
+        s.prepShiftCents = std::clamp(o.Get("prepShiftCents").As<JsonApi::Number>().FloatValue(),
+                                      -2400.0f, 2400.0f);
+    if (o.Has("dcOffsetRemoved") && o.Get("dcOffsetRemoved").IsBoolean())
+        s.dcOffsetRemoved = o.Get("dcOffsetRemoved").As<JsonApi::Boolean>().Value();
+    if (o.Has("normalized") && o.Get("normalized").IsBoolean())
+        s.normalized = o.Get("normalized").As<JsonApi::Boolean>().Value();
+    if (o.Has("polarityReversed") && o.Get("polarityReversed").IsBoolean())
+        s.polarityReversed = o.Get("polarityReversed").As<JsonApi::Boolean>().Value();
+    if (o.Has("reversed") && o.Get("reversed").IsBoolean())
+        s.reversed = o.Get("reversed").As<JsonApi::Boolean>().Value();
+}
+
 static JsonApi::Object regionToJs(JsonApi::Env env, const SampleRegion& r) {
     JsonApi::Object o = JsonApi::Object::New(env);
     o.Set("id",            JsonApi::Number::New(env, r.id));
@@ -2859,7 +3309,30 @@ static JsonApi::Object regionToJs(JsonApi::Env env, const SampleRegion& r) {
     o.Set("hasSwappedVideo",              JsonApi::Boolean::New(env, r.hasSwappedVideo));
     o.Set("swappedVideoDurationSec",      JsonApi::Number::New(env, r.swappedVideoDurationSec));
     o.Set("swappedVideoDurationMismatch", JsonApi::Boolean::New(env, r.swappedVideoDurationMismatch));
-    o.Set("rootNote",         JsonApi::Number::New(env, r.rootNote));
+    // Slot array (authoritative) + slot-0 flat mirror (back-compat).
+    {
+        const int n = r.slotCount();
+        JsonApi::Array slotsArr = JsonApi::Array::New(env, static_cast<size_t>(n));
+        for (int i = 0; i < n; ++i)
+            slotsArr.Set(static_cast<uint32_t>(i), slotToJs(env, r.slot(i)));
+        o.Set("slots", slotsArr);
+
+        const SampleSlot& s0 = r.slot(0);
+        o.Set("rootNote",         JsonApi::Number::New(env, s0.rootNote));
+        o.Set("smpStart",         JsonApi::Number::New(env, static_cast<double>(s0.smpStart)));
+        o.Set("smpLength",        JsonApi::Number::New(env, static_cast<double>(s0.smpLength)));
+        o.Set("declickMs",        JsonApi::Number::New(env, s0.declickMs));
+        o.Set("fadeInMs",         JsonApi::Number::New(env, s0.fadeInMs));
+        o.Set("fadeOutMs",        JsonApi::Number::New(env, s0.fadeOutMs));
+        o.Set("loopEnabled",      JsonApi::Boolean::New(env, s0.loopEnabled));
+        o.Set("loopStart",        JsonApi::Number::New(env, static_cast<double>(s0.loopStart)));
+        o.Set("loopEnd",          JsonApi::Number::New(env, static_cast<double>(s0.loopEnd)));
+        o.Set("crossfadeSamples", JsonApi::Number::New(env, static_cast<double>(s0.crossfadeSamples)));
+        o.Set("dcOffsetRemoved",  JsonApi::Boolean::New(env, s0.dcOffsetRemoved));
+        o.Set("normalized",       JsonApi::Boolean::New(env, s0.normalized));
+        o.Set("polarityReversed", JsonApi::Boolean::New(env, s0.polarityReversed));
+        o.Set("reversed",         JsonApi::Boolean::New(env, s0.reversed));
+    }
     o.Set("attackMs",         JsonApi::Number::New(env, r.attackMs));
     o.Set("decayMs",          JsonApi::Number::New(env, r.decayMs));
     o.Set("sustain",          JsonApi::Number::New(env, r.sustain));
@@ -2880,23 +3353,14 @@ static JsonApi::Object regionToJs(JsonApi::Env env, const SampleRegion& r) {
     o.Set("pitchEnvAttackTension",  JsonApi::Number::New(env, r.pitchEnvAttackTension));
     o.Set("pitchEnvDecayTension",   JsonApi::Number::New(env, r.pitchEnvDecayTension));
     o.Set("pitchEnvReleaseTension", JsonApi::Number::New(env, r.pitchEnvReleaseTension));
-    o.Set("loopEnabled",      JsonApi::Boolean::New(env, r.loopEnabled));
-    o.Set("loopStart",        JsonApi::Number::New(env, static_cast<double>(r.loopStart)));
-    o.Set("loopEnd",          JsonApi::Number::New(env, static_cast<double>(r.loopEnd)));
     o.Set("crossfadeEnabled", JsonApi::Boolean::New(env, r.crossfadeEnabled));
-    o.Set("smpStart",         JsonApi::Number::New(env, static_cast<double>(r.smpStart)));
-    o.Set("smpLength",        JsonApi::Number::New(env, static_cast<double>(r.smpLength)));
-    o.Set("declickMs",        JsonApi::Number::New(env, r.declickMs));
-    o.Set("fadeInMs",         JsonApi::Number::New(env, r.fadeInMs));
-    o.Set("fadeOutMs",        JsonApi::Number::New(env, r.fadeOutMs));
-    o.Set("crossfadeSamples", JsonApi::Number::New(env, static_cast<double>(r.crossfadeSamples)));
-    o.Set("dcOffsetRemoved",  JsonApi::Boolean::New(env, r.dcOffsetRemoved));
-    o.Set("normalized",       JsonApi::Boolean::New(env, r.normalized));
-    o.Set("polarityReversed", JsonApi::Boolean::New(env, r.polarityReversed));
-    o.Set("reversed",         JsonApi::Boolean::New(env, r.reversed));
     o.Set("monoEnabled",       JsonApi::Boolean::New(env, r.monoEnabled));
     o.Set("portamentoEnabled", JsonApi::Boolean::New(env, r.portamentoEnabled));
     o.Set("portamentoTimeMs",  JsonApi::Number::New(env, r.portamentoTimeMs));
+    o.Set("portamentoMode",    JsonApi::Number::New(env, r.portamentoMode));
+    o.Set("portamentoCurve",   JsonApi::Number::New(env, r.portamentoCurve));
+    o.Set("legatoEnabled",     JsonApi::Boolean::New(env, r.legatoEnabled));
+    o.Set("voiceCount",        JsonApi::Number::New(env, r.voiceCount));
     o.Set("arpEnabled",        JsonApi::Boolean::New(env, r.arpEnabled));
     o.Set("arpTempoSync",      JsonApi::Boolean::New(env, r.arpTempoSync));
     o.Set("arpDivision",       JsonApi::Number::New(env, r.arpDivision));
@@ -2942,6 +3406,9 @@ static JsonApi::Object regionToJs(JsonApi::Env env, const SampleRegion& r) {
     o.Set("lfoPitchAttackMs",      JsonApi::Number::New(env, r.lfoPitchAttackMs));
     o.Set("lfoPitchDelayMs",       JsonApi::Number::New(env, r.lfoPitchDelayMs));
     o.Set("lfoPitchWaveform",      serializeLfoWaveform(r.lfoPitchWaveform));
+    // Modulation system. Always present, so the UI can read the current config
+    // straight off a region fetch rather than needing a second round trip.
+    o.Set("modulation",            modConfigToJs(env, r.modulation));
     JsonApi::Array arr = JsonApi::Array::New(env, r.syllables.size());
     for (size_t i = 0; i < r.syllables.size(); ++i)
         arr.Set((uint32_t)i, syllableToJs(env, r.syllables[i]));
@@ -3177,8 +3644,21 @@ static SampleRegion jsToRegion(const JsonApi::Object& o) {
         r.endFrame   = o.Get("endFrame").As<JsonApi::Number>().Int32Value();
     if (o.Has("audioFilePath") && o.Get("audioFilePath").IsString())
         r.audioFilePath = o.Get("audioFilePath").As<JsonApi::String>().Utf8Value();
-    if (o.Has("rootNote")      && o.Get("rootNote").IsNumber())
-        r.rootNote = o.Get("rootNote").As<JsonApi::Number>().Int32Value();
+    // Slots: a full `slots` array replaces the list; otherwise any flat
+    // per-sample keys patch slot 0 (the pre-slot call shape).
+    if (o.Has("slots") && o.Get("slots").IsArray()) {
+        JsonApi::Array arr = o.Get("slots").As<JsonApi::Array>();
+        r.slots.clear();
+        for (uint32_t i = 0; i < arr.Length() && r.slots.size() < MAX_SAMPLE_SLOTS; ++i) {
+            if (!arr.Get(i).IsObject()) continue;
+            SampleSlot s;
+            jsPatchSlot(arr.Get(i).As<JsonApi::Object>(), s);
+            r.slots.push_back(std::move(s));
+        }
+        if (r.slots.empty()) r.slots.emplace_back();
+    } else {
+        jsPatchSlot(o, r.slot(0), /*identity=*/false);
+    }
     if (o.Has("syllables") && o.Get("syllables").IsArray()) {
         JsonApi::Array arr = o.Get("syllables").As<JsonApi::Array>();
         r.syllables.reserve(arr.Length());
@@ -4302,6 +4782,7 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
         auto* ae = audioEngine.get();
         g_undoManager->setPostMutationHook([ae] {
             if (ae) ae->getMixEngine().refreshEnvelopeDefinitions();
+            if (ae) ae->getMixEngine().refreshLfoDefinitions();
         });
     }
 
@@ -4501,6 +4982,51 @@ static void triggerMipmapGeneration(int sampleBankId,
     g_mipmapCache->generateFromBuffer(
         std::to_string(sampleBankId), buf, sr,
         juce::File(juce::String(sourcePath)), saveXlpeak);
+}
+
+// ─── PREP-baked slot waveforms ───────────────────────────────────────────────
+// A slot with an active PREP bake plays a DIFFERENT buffer from the one in the
+// SampleBank, at a different length. Everything the editor measures or draws
+// has to follow it there, or a stretched slot's loop markers would sit at
+// indices that mean nothing in the audio actually being played.
+//
+// The mipmap is keyed by the bake's CONTENT digest, never by slot: a new bake
+// therefore lands on a fresh key instead of mutating a live entry. That matters
+// because WaveformMipmapCache hands a raw source pointer to a detached
+// generation thread — removing an entry out from under it would be a
+// use-after-free. The cost is one retained mipmap per distinct bake per
+// session (peak data, not PCM), which is bounded by how many PREP settings the
+// user actually commits.
+//
+// Lifetime of the underlying audio is MixEngine's job: publishedSlotBakes_
+// holds a strong reference for exactly as long as the slot plays that bake.
+
+static std::string preparedMipmapKey(uint64_t digest)
+{
+    char buf[32];
+    std::snprintf(buf, sizeof(buf), "prep_%016llx",
+                  static_cast<unsigned long long>(digest));
+    return std::string(buf);
+}
+
+// Returns the mipmap key for a slot's active bake, or empty when PREP is
+// bypassed / the bake has not landed. Generates the mipmap on first ask.
+static std::string ensurePreparedSlotMipmap(int regionId, int slotIndex)
+{
+    if (!audioEngine || !g_mipmapCache) return {};
+    const auto prepared =
+        audioEngine->getMixEngine().getPreparedSlotBuffer(regionId, slotIndex);
+    if (!prepared.buffer || prepared.buffer->getNumSamples() == 0) return {};
+
+    const std::string key = preparedMipmapKey(prepared.digest);
+    if (g_mipmapCache->get(key) == nullptr) {
+        const int sr = audioEngine ? static_cast<int>(audioEngine->getSampleRate()) : 44100;
+        // No source file and no .xlpeak: a bake is derived audio, so there is
+        // nothing on disk whose peaks would match it.
+        g_mipmapCache->generateFromBuffer(key, prepared.buffer.get(), sr,
+                                          juce::File(), /*saveXlpeak=*/false);
+    }
+    return key;
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -4768,6 +5294,11 @@ JsonApi::Value GetTransportState(const JsonApi::CallbackInfo& info)
         JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
         return JsonApi::Object::New(env);
     }
+
+    // Device-health watchdog tick. getTransportState is the engine's highest-rate
+    // poll and runs on the RPC (message) thread, which is exactly the thread
+    // checkDeviceHealth() requires. On a healthy device this is two atomic loads.
+    audioEngine->checkDeviceHealth();
 
     Transport& t = audioEngine->getTransport();
     const double sampleRate = t.getSampleRate();
@@ -5243,6 +5774,7 @@ JsonApi::Value Project_Create(const JsonApi::CallbackInfo& info)
 
     restoreAndClearClipControlEdit();
     bool ok = g_projectManager->createProject(dir, name);
+    if (ok) syncSlotBakeCacheDir();
     log.done(ok ? "true" : "false");
     return JsonApi::Boolean::New(env, ok);
 }
@@ -5262,12 +5794,14 @@ JsonApi::Value Project_Save(const JsonApi::CallbackInfo& info)
         return JsonApi::Boolean::New(env, false);
     }
     nlohmann::json effectChains, masterChain;
+    float masterVolume = 1.0f;
     if (audioEngine) {
         auto& mix   = audioEngine->getMixEngine();
         effectChains = buildEffectChainsJSON(mix, *g_timeline);
         masterChain  = mix.getMasterEffectChainJSON();
+        masterVolume = mix.getMasterVolume();
     }
-    bool ok = g_projectManager->saveProject(*g_timeline, effectChains, masterChain);
+    bool ok = g_projectManager->saveProject(*g_timeline, effectChains, masterChain, masterVolume);
     if (ok && g_undoManager) g_undoManager->markSavepoint();
     log.done(ok ? "true" : "false");
     return JsonApi::Boolean::New(env, ok);
@@ -5293,12 +5827,16 @@ JsonApi::Value Project_SaveAs(const JsonApi::CallbackInfo& info)
         return JsonApi::Boolean::New(env, false);
     }
     nlohmann::json effectChains, masterChain;
+    float masterVolume = 1.0f;
     if (audioEngine) {
         auto& mix   = audioEngine->getMixEngine();
         effectChains = buildEffectChainsJSON(mix, *g_timeline);
         masterChain  = mix.getMasterEffectChainJSON();
+        masterVolume = mix.getMasterVolume();
     }
-    bool ok = g_projectManager->saveProjectAs(dir, name, *g_timeline, effectChains, masterChain);
+    bool ok = g_projectManager->saveProjectAs(dir, name, *g_timeline, effectChains, masterChain,
+                                              masterVolume);
+    if (ok) syncSlotBakeCacheDir();
     if (ok && g_undoManager) g_undoManager->markSavepoint();
     log.done(ok ? "true" : "false");
     return JsonApi::Boolean::New(env, ok);
@@ -5448,6 +5986,7 @@ JsonApi::Value Project_NewBlank(const JsonApi::CallbackInfo& info)
 
     // 10. Reset ProjectManager (project dir / name / timestamps).
     g_projectManager->resetToBlank();
+    syncSlotBakeCacheDir();   // no dir → bake cache goes memory-only
 
     // 11. Savepoint on the blank state — isDirty() must return false now.
     if (g_undoManager) g_undoManager->markSavepoint();
@@ -5493,13 +6032,29 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
         log.done("false");
         return JsonApi::Boolean::New(env, false);
     }
+    // Before the samplers are rebuilt below: a slot whose bake file survived in
+    // the project's cache folder is then a disk HIT and costs no DSP, and one
+    // whose file was deleted rebakes without anyone having to ask.
+    syncSlotBakeCacheDir();
 
     // Close all plugin editor windows from the previous project before
     // replacing the timeline — editors hold AudioProcessor* references that
     // will be dangling once the old chains are torn down.
+    //
+    // Then actually tear the old chains down. Without this, effect chains from
+    // the previously-open project leak into the newly-loaded one: the restore
+    // pass below only *adds* chains present in the new project.json, so any
+    // chain the new project doesn't mention silently keeps playing the old
+    // project's plugins. The master chain is the visible case — it is written
+    // only when non-empty, so loading a project with a clean master left the
+    // previous project's master effects in place, making master look global.
+    // Runs on the message thread (N-API call), same as project_newBlank's
+    // teardown, so the JUCE graph rebuild is synchronous — see the export
+    // teardown bug for why off-message-thread rebuilds never complete.
     if (audioEngine) {
         auto& mix = audioEngine->getMixEngine();
         mix.closeAllPluginEditors();
+        mix.destroyAllEffectChains();
         // Same reason as project_newBlank: the loudness meter's integrated /
         // LRA / true-peak numbers belong to the project being closed, not the
         // one being opened.
@@ -5580,6 +6135,29 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
                     fflush(stderr);
                     mix.mapRegionToSample(region->id, sid);
                 }
+
+                // Layers 1..7 carry their own file in the project's slots/ dir.
+                // Slot 0 needs nothing here — it plays the region audio decoded
+                // just above. A slot whose file went missing stays silent
+                // rather than failing the whole load.
+                mix.unmapAllRegionSlots(region->id);
+                for (int si = 1; si < region->slotCount(); ++si) {
+                    const std::string& slotPath = region->slot(si).audioFilePath;
+                    if (slotPath.empty()) continue;
+                    const auto probed = probeAudioInfo(slotPath);
+                    const double slotEnd = probed.duration > 0.0 ? probed.duration : 3600.0;
+                    const int slotSid = sampleBank->loadSampleFromSource(
+                        slotPath, 0.0, slotEnd, engineRate);
+                    if (slotSid < 0) {
+                        std::fprintf(stderr,
+                            "[project_load] region %d slot %d: failed to decode '%s' "
+                            "— layer will be silent\n",
+                            region->id, si, slotPath.c_str());
+                        continue;
+                    }
+                    triggerMipmapGeneration(slotSid, slotPath, /*saveXlpeak=*/true);
+                    mix.mapRegionSlotToSample(region->id, si, slotSid);
+                }
             }
         }
 
@@ -5598,6 +6176,10 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
             const auto& masterChain = g_projectManager->getLoadedMasterEffectChain();
             if (masterChain.is_object() && !masterChain.is_null())
                 mix.loadMasterEffectChainFromJSON(masterChain);
+            // Master fader gain — defaults to 1.0 for projects saved before it
+            // was persisted, so this always lands on a definite value rather
+            // than inheriting the previous project's level.
+            mix.setMasterVolume(g_projectManager->getLoadedMasterVolume());
         }
         audioEngine->refreshLivePresentationLatency();
     }
@@ -7547,11 +8129,14 @@ JsonApi::Value Timeline_SetTrackGraphState(const JsonApi::CallbackInfo& info)
     } else {
         ok = g_timeline->setTrackGraphState(trackId, graphState);
         // The engine still stores graphState opaquely — it is never interpreted here.
-        // But the Envelope Controller's DEFINITION lives inside it, so the engine-side
-        // envelope snapshot has to be rebuilt whenever it changes. On the undoable path
-        // the UndoManager post-mutation hook does this for execute/undo/redo alike.
-        if (ok && audioEngine)
+        // But the Envelope Controller's and LFO Modulator's DEFINITIONS live inside
+        // it, so the engine-side snapshots have to be rebuilt whenever it changes.
+        // On the undoable path the UndoManager post-mutation hook does this for
+        // execute/undo/redo alike.
+        if (ok && audioEngine) {
             audioEngine->getMixEngine().refreshEnvelopeDefinitions();
+            audioEngine->getMixEngine().refreshLfoDefinitions();
+        }
     }
     log.done(ok ? (undoable ? "stored" : "stored(no-undo)") : "track-not-found");
     return JsonApi::Boolean::New(env, ok);
@@ -8113,15 +8698,6 @@ JsonApi::Value Timeline_BeginClipControlEdit(const JsonApi::CallbackInfo& info)
     initial.Set("velocity", JsonApi::Number::New(env, edit->initialVelocity));
     initial.Set("fadeInPercent", JsonApi::Number::New(env, edit->initialFadeInPercent));
     initial.Set("fadeOutPercent", JsonApi::Number::New(env, edit->initialFadeOutPercent));
-    else if (typeTag == xleth::viz::kVizTypeApex)
-    {
-        // 4176 bytes/bucket — by far the largest payload here, because it
-        // carries a whole 2048-point FFT spectrum. APEX emits at ~43 Hz rather
-        // than the shared ~700 Hz cadence, so a 30 Hz drain still fetches only
-        // one or two buckets (≈ 8 KB), not a burst.
-        bucketSize = sizeof(xleth::viz::ApexBucket);
-        typeStr    = "apex";
-    }
     JsonApi::Object result = JsonApi::Object::New(env);
     result.Set("sessionId", JsonApi::Number::New(env, edit->sessionId));
     result.Set("initial", initial);
@@ -8372,7 +8948,8 @@ JsonApi::Value Timeline_SetClipModulation(const JsonApi::CallbackInfo& info)
 }
 
 // timeline_moveClip(id, trackId, posTicks)
-// trackId is accepted but not yet used (Timeline::moveClip only moves position).
+// trackId is the destination Clip track (enables cross-track clip moves);
+// Timeline::moveClip rejects a Pattern-track destination.
 void Timeline_MoveClip(const JsonApi::CallbackInfo& info)
 {
     JsonApi::Env env = info.Env();
@@ -8386,12 +8963,12 @@ void Timeline_MoveClip(const JsonApi::CallbackInfo& info)
         return;
     }
     int     id       = info[0].As<JsonApi::Number>().Int32Value();
-    // info[1] = trackId — reserved for future cross-track moves
+    int     trackId  = info[1].As<JsonApi::Number>().Int32Value();
     int64_t posTicks = static_cast<int64_t>(info[2].As<JsonApi::Number>().DoubleValue());
     BridgeCallLog log("timeline.moveClip");
 
     TickTime newPos; newPos.ticks = posTicks;
-    g_undoManager->execute(std::make_unique<MoveClipCommand>(id, newPos, *g_timeline), *g_timeline);
+    g_undoManager->execute(std::make_unique<MoveClipCommand>(id, trackId, newPos, *g_timeline), *g_timeline);
     if (audioEngine) audioEngine->getMixEngine().invalidateClipCache(id, "moveClip");
     log.done();
 }
@@ -8821,17 +9398,44 @@ JsonApi::Value Timeline_GetRegionAudioInfo(const JsonApi::CallbackInfo& info)
         return env.Undefined();
     }
     int regionId = info[0].As<JsonApi::Number>().Int32Value();
+    // Optional trailing slotIndex: the Sample tab reports the SELECTED slot so
+    // its waveform, length and rate describe the layer being edited. Omitted
+    // ⇒ slot 0, the pre-slot behaviour.
+    const int slotIndex = (info.Length() >= 2 && info[1].IsNumber())
+                        ? info[1].As<JsonApi::Number>().Int32Value() : 0;
     const SampleRegion* r = g_timeline->getRegion(regionId);
     if (!r) return env.Null();
 
     const double engineSR = audioEngine->getSampleRate();
-    const int sampleBankId = audioEngine->getMixEngine().getSampleIdForRegion(regionId);
+    const int sampleBankId =
+        audioEngine->getMixEngine().getSampleIdForRegionSlot(regionId, slotIndex);
 
     JsonApi::Object out = JsonApi::Object::New(env);
-    out.Set("audioFilePath",      r->audioFilePath);
+    out.Set("audioFilePath",
+            slotIndex > 0 ? r->slot(slotIndex).audioFilePath : r->audioFilePath);
+    out.Set("slotIndex",          slotIndex);
     out.Set("engineSampleRate",   engineSR);
 
-    if (sampleBankId >= 0 && sampleBank != nullptr) {
+    // A slot with an active PREP bake plays the BAKED buffer, so its length is
+    // the one every trim / loop index is measured against. Reporting the raw
+    // length here would put the editor's knob ranges — and so its loop points —
+    // in the wrong coordinate space entirely.
+    const auto prepared =
+        audioEngine->getMixEngine().getPreparedSlotBuffer(regionId, slotIndex);
+    out.Set("prepared", JsonApi::Boolean::New(env, prepared.buffer != nullptr));
+
+    if (prepared.buffer != nullptr) {
+        const auto sInfo = (sampleBankId >= 0 && sampleBank != nullptr)
+                         ? sampleBank->getSampleInfo(sampleBankId)
+                         : SampleBank::SampleInfo{};
+        const int numSamples = prepared.buffer->getNumSamples();
+        const double duration = engineSR > 0.0
+                              ? static_cast<double>(numSamples) / engineSR : 0.0;
+        out.Set("numSamples",         numSamples);
+        out.Set("originalSampleRate", sInfo.originalSampleRate);
+        out.Set("duration",           duration);
+        out.Set("rawNumSamples",      sInfo.numSamples);   // what the bake started from
+    } else if (sampleBankId >= 0 && sampleBank != nullptr) {
         const auto sInfo = sampleBank->getSampleInfo(sampleBankId);
         const double duration = engineSR > 0.0
                               ? static_cast<double>(sInfo.numSamples) / engineSR
@@ -8839,10 +9443,12 @@ JsonApi::Value Timeline_GetRegionAudioInfo(const JsonApi::CallbackInfo& info)
         out.Set("numSamples",         sInfo.numSamples);
         out.Set("originalSampleRate", sInfo.originalSampleRate);
         out.Set("duration",           duration);
+        out.Set("rawNumSamples",      sInfo.numSamples);
     } else {
         out.Set("numSamples",         0);
         out.Set("originalSampleRate", 0);
         out.Set("duration",           0.0);
+        out.Set("rawNumSamples",      0);
     }
     return out;
 }
@@ -8874,9 +9480,10 @@ void wfbLog(const char* fmt, ...) {
 // DC removal and normalize require the actual buffer data and cannot be
 // applied to pre-computed peaks — see TODO comments below.
 static void applyPeakTransforms(float* peaks, int numCols,
-                                 const SampleRegion* region)
+                                 const SampleRegion* region, int slotIndex = 0)
 {
     if (!region) return;
+    const SampleSlot& slot = region->slot(slotIndex);
 
     // TODO: DC removal shifts all samples by a constant, but the offset is
     // computed dynamically from the full buffer (mean of all samples).  The
@@ -8889,7 +9496,7 @@ static void applyPeakTransforms(float* peaks, int numCols,
     // to avoid per-query overhead.  Peaks will appear un-normalized.
 
     // Polarity invert: negate min/max and swap them.  RMS is unaffected.
-    if (region->polarityReversed) {
+    if (slot.polarityReversed) {
         for (int i = 0; i < numCols; ++i) {
             const int idx = i * 3;
             const float oldMin = peaks[idx];
@@ -8901,7 +9508,7 @@ static void applyPeakTransforms(float* peaks, int numCols,
     }
 
     // Reverse: reverse the order of [min,max,rms] triples.
-    if (region->reversed) {
+    if (slot.reversed) {
         for (int i = 0; i < numCols / 2; ++i) {
             const int a = i * 3;
             const int b = (numCols - 1 - i) * 3;
@@ -8947,22 +9554,43 @@ JsonApi::Value Waveform_GetRegionPeaks(const JsonApi::CallbackInfo& info)
     const double endTime      = info[2].As<JsonApi::Number>().DoubleValue();
     const int    targetPixels = std::max(1, std::min(info[3].As<JsonApi::Number>().Int32Value(), 16000));
     const int    channel      = info[4].As<JsonApi::Number>().Int32Value();
+    // Optional 6th arg: which slot's audio to draw (default 0).
+    const int    slotIndex    = (info.Length() >= 6 && info[5].IsNumber())
+                              ? info[5].As<JsonApi::Number>().Int32Value() : 0;
 
-    WFB_LOG("getRegionPeaks: region=%d t=%.3f–%.3f px=%d ch=%d",
-            regionId, startTime, endTime, targetPixels, channel);
+    WFB_LOG("getRegionPeaks: region=%d t=%.3f–%.3f px=%d ch=%d slot=%d",
+            regionId, startTime, endTime, targetPixels, channel, slotIndex);
 
     // ── Look up mipmap ───────────────────────────────────────────────────
-    const int sampleBankId =
-        audioEngine->getMixEngine().getSampleIdForRegion(regionId);
-    if (sampleBankId < 0) {
-        WFB_LOG("getRegionPeaks: region %d -> sampleBankId=-1 (not mapped)", regionId);
-        return makeResult(false);
-    }
+    // A PREP-baked slot draws its BAKED audio: that is what plays, and what the
+    // trim and loop markers overlaid on this waveform are indices into. Falls
+    // back to the raw SampleBank mipmap when PREP is bypassed or still baking.
+    const std::string prepKey = ensurePreparedSlotMipmap(regionId, slotIndex);
+    const bool usingPrepared  = !prepKey.empty();
 
-    auto* mm = g_mipmapCache->get(std::to_string(sampleBankId));
-    if (!mm) {
-        WFB_LOG("getRegionPeaks: region %d -> sampleBankId=%d, mipmap not ready", regionId, sampleBankId);
-        return makeResult(false);
+    int sampleBankId = -1;
+    WaveformMipmap* mm = nullptr;
+
+    if (usingPrepared) {
+        mm = g_mipmapCache->get(prepKey);
+        if (!mm) {
+            // Generation is still running on its background thread.
+            WFB_LOG("getRegionPeaks: region %d slot %d prep mipmap not ready",
+                    regionId, slotIndex);
+            return makeResult(false);
+        }
+    } else {
+        sampleBankId =
+            audioEngine->getMixEngine().getSampleIdForRegionSlot(regionId, slotIndex);
+        if (sampleBankId < 0) {
+            WFB_LOG("getRegionPeaks: region %d -> sampleBankId=-1 (not mapped)", regionId);
+            return makeResult(false);
+        }
+        mm = g_mipmapCache->get(std::to_string(sampleBankId));
+        if (!mm) {
+            WFB_LOG("getRegionPeaks: region %d -> sampleBankId=%d, mipmap not ready", regionId, sampleBankId);
+            return makeResult(false);
+        }
     }
 
     const int sr = mm->getSampleRate();
@@ -9029,8 +9657,13 @@ JsonApi::Value Waveform_GetRegionPeaks(const JsonApi::CallbackInfo& info)
     }
 
     // ── Apply SampleProcessor display transforms ─────────────────────────
-    const SampleRegion* region = g_timeline->getRegion(regionId);
-    applyPeakTransforms(outBuf, cols, region);
+    // Only for the RAW mipmap. The destructive flags are applied to the buffer
+    // BEFORE it is handed to the bake, so a prepared mipmap already has them
+    // baked in — re-applying here would reverse a reversed sample back again.
+    if (!usingPrepared) {
+        const SampleRegion* region = g_timeline->getRegion(regionId);
+        applyPeakTransforms(outBuf, cols, region, slotIndex);
+    }
 
     // ── Return result ────────────────────────────────────────────────────
     auto result = JsonApi::Object::New(env);
@@ -9069,9 +9702,12 @@ JsonApi::Value Waveform_GetRawSamples(const JsonApi::CallbackInfo& info)
     const int64_t startSample = static_cast<int64_t>(info[1].As<JsonApi::Number>().DoubleValue());
     const int64_t endSample   = static_cast<int64_t>(info[2].As<JsonApi::Number>().DoubleValue());
     const int     channel     = info[3].As<JsonApi::Number>().Int32Value();
+    // Optional 5th arg: which slot's audio to read (default 0).
+    const int     slotIndex   = (info.Length() >= 5 && info[4].IsNumber())
+                              ? info[4].As<JsonApi::Number>().Int32Value() : 0;
 
     const int sampleBankId =
-        audioEngine->getMixEngine().getSampleIdForRegion(regionId);
+        audioEngine->getMixEngine().getSampleIdForRegionSlot(regionId, slotIndex);
     if (sampleBankId < 0) return makeEmpty();
 
     auto* mm = g_mipmapCache->get(std::to_string(sampleBankId));
@@ -9106,14 +9742,16 @@ JsonApi::Value Waveform_GetRawSamples(const JsonApi::CallbackInfo& info)
         }
     }
 
-    // Apply polarity/reverse transforms
+    // Apply polarity/reverse transforms (per-slot: each layer carries its own
+    // destructive flags).
     const SampleRegion* region = g_timeline->getRegion(regionId);
     if (region) {
-        if (region->polarityReversed) {
+        const SampleSlot& dispSlot = region->slot(slotIndex);
+        if (dispSlot.polarityReversed) {
             for (int i = 0; i < written; ++i)
                 outBuf[i] = -outBuf[i];
         }
-        if (region->reversed) {
+        if (dispSlot.reversed) {
             std::reverse(outBuf, outBuf + written);
         }
     }
@@ -9480,7 +10118,7 @@ void Timeline_UpdateSamplerSettings(const JsonApi::CallbackInfo& info)
 
     // Start from the region's current settings so caller can supply a partial object.
     SamplerSettings s;
-    s.rootNote         = r->rootNote;
+    s.slots            = r->slots;
     s.attackMs         = r->attackMs;
     s.decayMs          = r->decayMs;
     s.sustain          = r->sustain;
@@ -9501,23 +10139,14 @@ void Timeline_UpdateSamplerSettings(const JsonApi::CallbackInfo& info)
     s.pitchEnvAttackTension = r->pitchEnvAttackTension;
     s.pitchEnvDecayTension  = r->pitchEnvDecayTension;
     s.pitchEnvReleaseTension = r->pitchEnvReleaseTension;
-    s.loopEnabled      = r->loopEnabled;
-    s.loopStart        = r->loopStart;
-    s.loopEnd          = r->loopEnd;
     s.crossfadeEnabled = r->crossfadeEnabled;
-    s.smpStart         = r->smpStart;
-    s.smpLength        = r->smpLength;
-    s.declickMs         = r->declickMs;
-    s.fadeInMs         = r->fadeInMs;
-    s.fadeOutMs        = r->fadeOutMs;
-    s.crossfadeSamples = r->crossfadeSamples;
-    s.dcOffsetRemoved  = r->dcOffsetRemoved;
-    s.normalized       = r->normalized;
-    s.polarityReversed = r->polarityReversed;
-    s.reversed         = r->reversed;
     s.monoEnabled       = r->monoEnabled;
     s.portamentoEnabled = r->portamentoEnabled;
     s.portamentoTimeMs  = r->portamentoTimeMs;
+    s.portamentoMode    = r->portamentoMode;
+    s.portamentoCurve   = r->portamentoCurve;
+    s.legatoEnabled     = r->legatoEnabled;
+    s.voiceCount        = r->voiceCount;
     s.arpEnabled        = r->arpEnabled;
     s.arpTempoSync      = r->arpTempoSync;
     s.arpDivision       = r->arpDivision;
@@ -9550,8 +10179,30 @@ void Timeline_UpdateSamplerSettings(const JsonApi::CallbackInfo& info)
     s.lfoPitchAttackMs      = r->lfoPitchAttackMs;
     s.lfoPitchDelayMs       = r->lfoPitchDelayMs;
     s.lfoPitchWaveform      = r->lfoPitchWaveform;
-    if (o.Has("rootNote")         && o.Get("rootNote").IsNumber())
-        s.rootNote         = o.Get("rootNote").As<JsonApi::Number>().Int32Value();
+    s.modulation            = r->modulation;
+    // ── Slot targeting ───────────────────────────────────────────────────────
+    // A full `slots` array replaces the whole list (used by the slot list for
+    // add/remove/reorder). Otherwise the flat per-sample keys patch ONE slot:
+    // `slotIndex` if given, else slot 0 — which is exactly the pre-slot call
+    // shape, so the existing Sample tab keeps working unchanged.
+    if (o.Has("slots") && o.Get("slots").IsArray()) {
+        JsonApi::Array arr = o.Get("slots").As<JsonApi::Array>();
+        s.slots.clear();
+        for (uint32_t i = 0; i < arr.Length() && s.slots.size() < MAX_SAMPLE_SLOTS; ++i) {
+            if (!arr.Get(i).IsObject()) continue;
+            SampleSlot slot;
+            jsPatchSlot(arr.Get(i).As<JsonApi::Object>(), slot);
+            s.slots.push_back(std::move(slot));
+        }
+        if (s.slots.empty()) s.slots.emplace_back();
+    } else {
+        int slotIndex = 0;
+        if (o.Has("slotIndex") && o.Get("slotIndex").IsNumber())
+            slotIndex = o.Get("slotIndex").As<JsonApi::Number>().Int32Value();
+        if (s.slots.empty()) s.slots.emplace_back();
+        if (slotIndex < 0 || slotIndex >= static_cast<int>(s.slots.size())) slotIndex = 0;
+        jsPatchSlot(o, s.slots[static_cast<size_t>(slotIndex)], /*identity=*/false);
+    }
     if (o.Has("attackMs")         && o.Get("attackMs").IsNumber())
         s.attackMs         = o.Get("attackMs").As<JsonApi::Number>().FloatValue();
     if (o.Has("decayMs")          && o.Get("decayMs").IsNumber())
@@ -9592,40 +10243,22 @@ void Timeline_UpdateSamplerSettings(const JsonApi::CallbackInfo& info)
         s.pitchEnvDecayTension   = o.Get("pitchEnvDecayTension").As<JsonApi::Number>().FloatValue();
     if (o.Has("pitchEnvReleaseTension") && o.Get("pitchEnvReleaseTension").IsNumber())
         s.pitchEnvReleaseTension = o.Get("pitchEnvReleaseTension").As<JsonApi::Number>().FloatValue();
-    if (o.Has("loopEnabled")      && o.Get("loopEnabled").IsBoolean())
-        s.loopEnabled      = o.Get("loopEnabled").As<JsonApi::Boolean>().Value();
-    if (o.Has("loopStart")        && o.Get("loopStart").IsNumber())
-        s.loopStart        = static_cast<int64_t>(o.Get("loopStart").As<JsonApi::Number>().DoubleValue());
-    if (o.Has("loopEnd")          && o.Get("loopEnd").IsNumber())
-        s.loopEnd          = static_cast<int64_t>(o.Get("loopEnd").As<JsonApi::Number>().DoubleValue());
     if (o.Has("crossfadeEnabled") && o.Get("crossfadeEnabled").IsBoolean())
         s.crossfadeEnabled = o.Get("crossfadeEnabled").As<JsonApi::Boolean>().Value();
-    if (o.Has("smpStart")       && o.Get("smpStart").IsNumber())
-        s.smpStart       = static_cast<int64_t>(o.Get("smpStart").As<JsonApi::Number>().DoubleValue());
-    if (o.Has("smpLength")      && o.Get("smpLength").IsNumber())
-        s.smpLength      = static_cast<int64_t>(o.Get("smpLength").As<JsonApi::Number>().DoubleValue());
-    if (o.Has("declickMs")      && o.Get("declickMs").IsNumber())
-        s.declickMs      = o.Get("declickMs").As<JsonApi::Number>().FloatValue();
-    if (o.Has("fadeInMs")  && o.Get("fadeInMs").IsNumber())
-        s.fadeInMs  = o.Get("fadeInMs").As<JsonApi::Number>().FloatValue();
-    if (o.Has("fadeOutMs") && o.Get("fadeOutMs").IsNumber())
-        s.fadeOutMs = o.Get("fadeOutMs").As<JsonApi::Number>().FloatValue();
-    if (o.Has("crossfadeSamples") && o.Get("crossfadeSamples").IsNumber())
-        s.crossfadeSamples = static_cast<int64_t>(o.Get("crossfadeSamples").As<JsonApi::Number>().DoubleValue());
-    if (o.Has("dcOffsetRemoved")  && o.Get("dcOffsetRemoved").IsBoolean())
-        s.dcOffsetRemoved  = o.Get("dcOffsetRemoved").As<JsonApi::Boolean>().Value();
-    if (o.Has("normalized")       && o.Get("normalized").IsBoolean())
-        s.normalized       = o.Get("normalized").As<JsonApi::Boolean>().Value();
-    if (o.Has("polarityReversed") && o.Get("polarityReversed").IsBoolean())
-        s.polarityReversed = o.Get("polarityReversed").As<JsonApi::Boolean>().Value();
-    if (o.Has("reversed")         && o.Get("reversed").IsBoolean())
-        s.reversed         = o.Get("reversed").As<JsonApi::Boolean>().Value();
     if (o.Has("monoEnabled")       && o.Get("monoEnabled").IsBoolean())
         s.monoEnabled       = o.Get("monoEnabled").As<JsonApi::Boolean>().Value();
     if (o.Has("portamentoEnabled") && o.Get("portamentoEnabled").IsBoolean())
         s.portamentoEnabled = o.Get("portamentoEnabled").As<JsonApi::Boolean>().Value();
     if (o.Has("portamentoTimeMs")  && o.Get("portamentoTimeMs").IsNumber())
         s.portamentoTimeMs  = o.Get("portamentoTimeMs").As<JsonApi::Number>().FloatValue();
+    if (o.Has("portamentoMode")    && o.Get("portamentoMode").IsNumber())
+        s.portamentoMode    = o.Get("portamentoMode").As<JsonApi::Number>().Int32Value();
+    if (o.Has("portamentoCurve")   && o.Get("portamentoCurve").IsNumber())
+        s.portamentoCurve   = o.Get("portamentoCurve").As<JsonApi::Number>().FloatValue();
+    if (o.Has("legatoEnabled")     && o.Get("legatoEnabled").IsBoolean())
+        s.legatoEnabled     = o.Get("legatoEnabled").As<JsonApi::Boolean>().Value();
+    if (o.Has("voiceCount")        && o.Get("voiceCount").IsNumber())
+        s.voiceCount        = o.Get("voiceCount").As<JsonApi::Number>().Int32Value();
     if (o.Has("arpEnabled")        && o.Get("arpEnabled").IsBoolean())
         s.arpEnabled        = o.Get("arpEnabled").As<JsonApi::Boolean>().Value();
     if (o.Has("arpTempoSync")      && o.Get("arpTempoSync").IsBoolean())
@@ -9705,13 +10338,79 @@ void Timeline_UpdateSamplerSettings(const JsonApi::CallbackInfo& info)
         s.lfoPitchDelayMs       = o.Get("lfoPitchDelayMs").As<JsonApi::Number>().FloatValue();
     parseLfoWaveform("lfoPitchWaveform", s.lfoPitchWaveform);
 
+    // Modulation system. Accepted here as well as through the dedicated
+    // timeline_setSamplerModulation call, so a panel that already sends one
+    // bulk settings object does not need a second RPC.
+    if (o.Has("modulation") && o.Get("modulation").IsObject())
+        jsPatchModConfig(o.Get("modulation").As<JsonApi::Object>(), s.modulation);
+
     g_undoManager->execute(std::make_unique<SetSamplerSettingsCommand>(regionId, s, *g_timeline),
                            *g_timeline);
     refreshSamplerForRegion(regionId);
     log.done();
 }
 
-// timeline_autoLoopForSelection(regionId, selStart?, selEnd?)
+// ─── Timeline_SetSamplerModulation ───────────────────────────────────────────
+// Patch a sampler's modulation config. Routes through the SAME undoable
+// SetSamplerSettingsCommand as every other sampler edit, so one Ctrl+Z restores
+// the previous config wholesale — including a route list the user had just
+// cleared. Returns the number of routes that were rejected as invalid plus the
+// number that survived, so a UI bug shows up as a number instead of silence.
+JsonApi::Value Timeline_SetSamplerModulation(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsObject()) {
+        JsonApi::TypeError::New(env,
+            "timeline_setSamplerModulation(regionId: number, modulation: object)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int regionId = info[0].As<JsonApi::Number>().Int32Value();
+    const SampleRegion* r = g_timeline->getRegion(regionId);
+    if (!r) {
+        JsonApi::Error::New(env, "Region not found.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    SamplerSettings s = samplerSettingsFromRegion(*r);
+    const int rejected = jsPatchModConfig(info[1].As<JsonApi::Object>(), s.modulation);
+
+    g_undoManager->execute(
+        std::make_unique<SetSamplerSettingsCommand>(regionId, s, *g_timeline), *g_timeline);
+    refreshSamplerForRegion(regionId);
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("routeCount",     JsonApi::Number::New(env, s.modulation.numRoutes));
+    out.Set("rejectedRoutes", JsonApi::Number::New(env, rejected));
+    return out;
+}
+
+// ─── Timeline_GetSamplerModulation ───────────────────────────────────────────
+JsonApi::Value Timeline_GetSamplerModulation(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        JsonApi::TypeError::New(env, "timeline_getSamplerModulation(regionId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const SampleRegion* r = g_timeline->getRegion(info[0].As<JsonApi::Number>().Int32Value());
+    if (!r) {
+        JsonApi::Error::New(env, "Region not found.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    return modConfigToJs(env, r->modulation);
+}
+
+// timeline_autoLoopForSelection(regionId, selStart?, selEnd?, slotIndex?)
 //   → { valid, loopStart, loopEnd, crossfadeSamples, period, periodMultiple,
 //       spanDriftCents, driftCutCents, spansConsidered, spansKept, longestSpan,
 //       sampleDurationSec, engineSampleRate, gatesBound: string[], reason }
@@ -9735,7 +10434,7 @@ JsonApi::Value Timeline_AutoLoopForSelection(const JsonApi::CallbackInfo& info)
         return env.Undefined();
     }
     if (info.Length() < 1 || !info[0].IsNumber()) {
-        JsonApi::TypeError::New(env, "timeline_autoLoopForSelection(regionId, selStart?, selEnd?)")
+        JsonApi::TypeError::New(env, "timeline_autoLoopForSelection(regionId, selStart?, selEnd?, slotIndex?)")
             .ThrowAsJavaScriptException();
         return env.Undefined();
     }
@@ -9743,8 +10442,14 @@ JsonApi::Value Timeline_AutoLoopForSelection(const JsonApi::CallbackInfo& info)
     const SampleRegion* r = g_timeline->getRegion(regionId);
     if (!r) { JsonApi::Error::New(env, "Region not found.").ThrowAsJavaScriptException(); return env.Undefined(); }
 
+    // Optional 4th arg: which slot to analyse and write the loop onto.
+    // Omitted ⇒ slot 0 (the pre-slot behaviour).
+    const int slotIndex = (info.Length() >= 4 && info[3].IsNumber())
+                        ? info[3].As<JsonApi::Number>().Int32Value() : 0;
+
     const double engineSR = audioEngine->getSampleRate();
-    const int sampleBankId = audioEngine->getMixEngine().getSampleIdForRegion(regionId);
+    const int sampleBankId =
+        audioEngine->getMixEngine().getSampleIdForRegionSlot(regionId, slotIndex);
     const juce::AudioBuffer<float>* buf =
         sampleBankId >= 0 ? sampleBank->getSample(sampleBankId) : nullptr;
 
@@ -9806,11 +10511,16 @@ JsonApi::Value Timeline_AutoLoopForSelection(const JsonApi::CallbackInfo& info)
 
     if (res.valid) {
         SamplerSettings s = samplerSettingsFromRegion(*r);
-        s.loopEnabled      = true;
+        // Loop points are per-slot; sustained mode is sampler-level.
         s.crossfadeEnabled = true;
-        s.loopStart        = res.loopStart;
-        s.loopEnd          = res.loopEnd;
-        s.crossfadeSamples = res.crossfadeSamples;
+        if (s.slots.empty()) s.slots.emplace_back();
+        const int target = (slotIndex >= 0 && slotIndex < static_cast<int>(s.slots.size()))
+                         ? slotIndex : 0;
+        SampleSlot& sl = s.slots[static_cast<size_t>(target)];
+        sl.loopEnabled      = true;
+        sl.loopStart        = res.loopStart;
+        sl.loopEnd          = res.loopEnd;
+        sl.crossfadeSamples = res.crossfadeSamples;
         g_undoManager->execute(std::make_unique<SetSamplerSettingsCommand>(regionId, s, *g_timeline),
                                *g_timeline);
         refreshSamplerForRegion(regionId);
@@ -13344,6 +14054,16 @@ JsonApi::Value Audio_SetMasterVolume(const JsonApi::CallbackInfo& info)
     return env.Undefined();
 }
 
+// audio_getMasterVolume() → number
+// Lets the renderer's mixer read the master fader back after a project load
+// restores it (master volume is engine-side state with no Timeline field).
+JsonApi::Value Audio_GetMasterVolume(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised()) return JsonApi::Number::New(env, 1.0);
+    return JsonApi::Number::New(env, audioEngine->getMixEngine().getMasterVolume());
+}
+
 // ── Effect chain management ─────────────────────────────────────────────────
 
 // audio_addEffect(trackId, pluginId, position) → { nodeId: number }
@@ -13648,6 +14368,15 @@ JsonApi::Value Audio_DrainEffectVizFrames(const JsonApi::CallbackInfo& info)
     {
         bucketSize = sizeof(xleth::viz::UniFlangeBucket);
         typeStr    = "uniflange";
+    }
+    else if (typeTag == xleth::viz::kVizTypeApex)
+    {
+        // 4192 bytes/bucket — by far the largest payload here, because it
+        // carries a whole 2048-point FFT spectrum. APEX emits at ~43 Hz rather
+        // than the shared ~700 Hz cadence, so a 30 Hz drain still fetches only
+        // one or two buckets (≈ 8 KB), not a burst.
+        bucketSize = sizeof(xleth::viz::ApexBucket);
+        typeStr    = "apex";
     }
 
     JsonApi::Object result = JsonApi::Object::New(env);
@@ -15438,8 +16167,9 @@ JsonApi::Value Audio_ExportRegion(const JsonApi::CallbackInfo& info)
     writer.reset(); // flush + close file
 
     // Append smpl chunk with root note (file must be closed first)
-    if (region->rootNote >= 0)
-        appendSmplChunk(outFile, region->rootNote, static_cast<double>(nativeRate));
+    // Slot 0 is the region's own audio, which is what this export writes.
+    if (region->slot(0).rootNote >= 0)
+        appendSmplChunk(outFile, region->slot(0).rootNote, static_cast<double>(nativeRate));
 
     const double duration = region->endTime - region->startTime;
     log.done(filename);
@@ -15631,6 +16361,216 @@ JsonApi::Value Audio_LoadRegionAudio(const JsonApi::CallbackInfo& info)
 
     log.done(std::to_string(sampleId));
     return JsonApi::Number::New(env, sampleId);
+}
+
+// ─── Sample slots (layers) ───────────────────────────────────────────────────
+// Slot 0 always plays the region's own audio, so it has no dedicated loader —
+// changing it is what audio_swapRegionAudio already does, and that path is
+// untouched by these handlers. Slots 1..7 own an independent file copied into
+// the project's slots/ directory.
+//
+// Every one of these mutates the Timeline through UndoManager
+// (SetSamplerSettingsCommand carries the whole slot vector), so add / remove /
+// retarget are all undoable in one step.
+
+// Copy `srcPath` into the project's slots/ dir, decode it into SampleBank, and
+// register it for {regionId, slotIndex}. Returns the destination path, or an
+// empty string on failure (with `err` set).
+static std::string installSlotAudio(int regionId, int slotIndex,
+                                    const std::string& srcPath,
+                                    std::string& err)
+{
+    if (!g_projectManager || !g_projectManager->hasProjectDir()) {
+        err = "No project directory — save project first.";
+        return {};
+    }
+    if (!sampleBank || !audioEngine || !g_timeline) {
+        err = "Engine not initialised.";
+        return {};
+    }
+
+    auto srcFile = juce::File(juce::String(srcPath));
+    if (!srcFile.existsAsFile()) { err = "Audio file not found."; return {}; }
+
+    // Namespace the copy by region+slot so two slots that load the same file
+    // (or the same slot reloaded) never collide in slots/.
+    const std::string destName = "r" + std::to_string(regionId)
+                               + "_s" + std::to_string(slotIndex) + "_"
+                               + srcFile.getFileName().toStdString();
+    const std::string destPath = g_projectManager->getSlotsDir() + "/" + destName;
+
+    auto destFile = juce::File(juce::String(destPath));
+    destFile.getParentDirectory().createDirectory();
+    if (destFile.existsAsFile()) destFile.deleteFile();
+    if (!srcFile.copyFileTo(destFile)) { err = "File copy to slots/ failed."; return {}; }
+
+    // Probe first: passing a huge endTime makes SampleBank reserve a buffer for
+    // that duration, which blows the allocator.
+    const auto probed = probeAudioInfo(destPath);
+    const double endT = probed.duration > 0.0 ? probed.duration : 3600.0;
+    const double engineRate = audioEngine->getSampleRate();
+
+    const int sampleId = sampleBank->loadSampleFromSource(destPath, 0.0, endT, engineRate);
+    if (sampleId < 0) { err = "Failed to decode slot audio."; return {}; }
+    triggerMipmapGeneration(sampleId, destPath, /*saveXlpeak=*/true);
+
+    audioEngine->getMixEngine().mapRegionSlotToSample(regionId, slotIndex, sampleId);
+    return destPath;
+}
+
+// timeline_addSampleSlot(regionId, filePath) → { success, slotIndex?, error? }
+// Appends a new layer carrying its own audio. Fails when the region already
+// holds MAX_SAMPLE_SLOTS layers.
+JsonApi::Value Timeline_AddSampleSlot(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    auto fail = [&](const char* msg) -> JsonApi::Value {
+        JsonApi::Object o = JsonApi::Object::New(env);
+        o.Set("success", JsonApi::Boolean::New(env, false));
+        o.Set("error",   JsonApi::String::New(env, msg));
+        return o;
+    };
+
+    if (!isInitialised() || !g_timeline || !g_undoManager) return fail("Engine not initialised.");
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsString())
+        return fail("timeline_addSampleSlot(regionId: number, filePath: string)");
+
+    const int regionId = info[0].As<JsonApi::Number>().Int32Value();
+    const std::string srcPath = info[1].As<JsonApi::String>().Utf8Value();
+    BridgeCallLog log("timeline.addSampleSlot");
+
+    const SampleRegion* r = g_timeline->getRegion(regionId);
+    if (!r) return fail("Region not found.");
+    if (r->slotCount() >= MAX_SAMPLE_SLOTS) return fail("All 8 slots are in use.");
+
+    const int newIndex = r->slotCount();
+
+    std::string err;
+    const std::string destPath = installSlotAudio(regionId, newIndex, srcPath, err);
+    if (destPath.empty()) return fail(err.c_str());
+
+    SamplerSettings s = samplerSettingsFromRegion(*r);
+    SampleSlot slot;
+    slot.audioFilePath = destPath;
+    slot.name = juce::File(juce::String(destPath)).getFileNameWithoutExtension().toStdString();
+    // A fresh layer starts neutral: same root note as slot 0 so it plays in
+    // unison until the user tunes it.
+    slot.rootNote = r->slot(0).rootNote;
+    s.slots.push_back(std::move(slot));
+
+    g_undoManager->execute(
+        std::make_unique<SetSamplerSettingsCommand>(regionId, s, *g_timeline), *g_timeline);
+    refreshSamplerForRegion(regionId);
+
+    log.done("slot " + std::to_string(newIndex));
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("success",   JsonApi::Boolean::New(env, true));
+    out.Set("slotIndex", JsonApi::Number::New(env, newIndex));
+    return out;
+}
+
+// timeline_removeSampleSlot(regionId, slotIndex) → { success, error? }
+// Slot 0 cannot be removed — it IS the region's own sample.
+JsonApi::Value Timeline_RemoveSampleSlot(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    auto fail = [&](const char* msg) -> JsonApi::Value {
+        JsonApi::Object o = JsonApi::Object::New(env);
+        o.Set("success", JsonApi::Boolean::New(env, false));
+        o.Set("error",   JsonApi::String::New(env, msg));
+        return o;
+    };
+
+    if (!isInitialised() || !g_timeline || !g_undoManager) return fail("Engine not initialised.");
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber())
+        return fail("timeline_removeSampleSlot(regionId: number, slotIndex: number)");
+
+    const int regionId  = info[0].As<JsonApi::Number>().Int32Value();
+    const int slotIndex = info[1].As<JsonApi::Number>().Int32Value();
+    BridgeCallLog log("timeline.removeSampleSlot");
+
+    const SampleRegion* r = g_timeline->getRegion(regionId);
+    if (!r) return fail("Region not found.");
+    if (slotIndex <= 0) return fail("Slot 1 holds the region's own sample and cannot be removed.");
+    if (slotIndex >= r->slotCount()) return fail("Slot index out of range.");
+
+    SamplerSettings s = samplerSettingsFromRegion(*r);
+    s.slots.erase(s.slots.begin() + slotIndex);
+    if (s.slots.empty()) s.slots.emplace_back();
+
+    g_undoManager->execute(
+        std::make_unique<SetSamplerSettingsCommand>(regionId, s, *g_timeline), *g_timeline);
+
+    // Removing a slot shifts every higher slot down by one, so the whole
+    // {regionId, slot} → SampleBank table for this region is rebuilt from the
+    // post-command slot list rather than patched.
+    auto& mix = audioEngine->getMixEngine();
+    mix.unmapAllRegionSlots(regionId);
+    if (const SampleRegion* updated = g_timeline->getRegion(regionId)) {
+        for (int i = 1; i < updated->slotCount(); ++i) {
+            const std::string& path = updated->slot(i).audioFilePath;
+            if (path.empty()) continue;
+            std::string err;
+            installSlotAudio(regionId, i, path, err);
+        }
+    }
+    refreshSamplerForRegion(regionId);
+
+    log.done("slot " + std::to_string(slotIndex));
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("success", JsonApi::Boolean::New(env, true));
+    return out;
+}
+
+// timeline_setSlotAudio(regionId, slotIndex, filePath) → { success, error? }
+// Retargets one layer's audio, leaving that slot's tuning/level/trim/loop —
+// and every other slot — untouched. Slot 0 is rejected: swapping the region's
+// own audio is audio_swapRegionAudio's job.
+JsonApi::Value Timeline_SetSlotAudio(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    auto fail = [&](const char* msg) -> JsonApi::Value {
+        JsonApi::Object o = JsonApi::Object::New(env);
+        o.Set("success", JsonApi::Boolean::New(env, false));
+        o.Set("error",   JsonApi::String::New(env, msg));
+        return o;
+    };
+
+    if (!isInitialised() || !g_timeline || !g_undoManager) return fail("Engine not initialised.");
+    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsString())
+        return fail("timeline_setSlotAudio(regionId: number, slotIndex: number, filePath: string)");
+
+    const int regionId  = info[0].As<JsonApi::Number>().Int32Value();
+    const int slotIndex = info[1].As<JsonApi::Number>().Int32Value();
+    const std::string srcPath = info[2].As<JsonApi::String>().Utf8Value();
+    BridgeCallLog log("timeline.setSlotAudio");
+
+    const SampleRegion* r = g_timeline->getRegion(regionId);
+    if (!r) return fail("Region not found.");
+    if (slotIndex <= 0) return fail("Use audio_swapRegionAudio to change slot 1's audio.");
+    if (slotIndex >= r->slotCount()) return fail("Slot index out of range.");
+
+    std::string err;
+    const std::string destPath = installSlotAudio(regionId, slotIndex, srcPath, err);
+    if (destPath.empty()) return fail(err.c_str());
+
+    SamplerSettings s = samplerSettingsFromRegion(*r);
+    // Audio only — the slot keeps every setting it already had.
+    s.slots[static_cast<size_t>(slotIndex)].audioFilePath = destPath;
+    s.slots[static_cast<size_t>(slotIndex)].name =
+        juce::File(juce::String(destPath)).getFileNameWithoutExtension().toStdString();
+
+    g_undoManager->execute(
+        std::make_unique<SetSamplerSettingsCommand>(regionId, s, *g_timeline), *g_timeline);
+    refreshSamplerForRegion(regionId);
+
+    log.done("slot " + std::to_string(slotIndex));
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("success", JsonApi::Boolean::New(env, true));
+    return out;
 }
 
 // audio_probeAudioDuration(filePath) → number (seconds, 0 on failure)
@@ -15897,10 +16837,10 @@ JsonApi::Value Video_ExportRegion(const JsonApi::CallbackInfo& info)
     double cutInSec  = region->startTime;
     double cutOutSec = region->endTime;
     if (engineRate > 0.0) {
-        cutInSec = region->startTime + static_cast<double>(region->smpStart) / engineRate;
-        if (region->smpLength > 0) {
+        cutInSec = region->startTime + static_cast<double>(region->slot(0).smpStart) / engineRate;
+        if (region->slot(0).smpLength > 0) {
             cutOutSec = cutInSec
-                      + static_cast<double>(region->smpLength) / engineRate;
+                      + static_cast<double>(region->slot(0).smpLength) / engineRate;
         }
     }
     cutInSec  = std::clamp(cutInSec,  region->startTime, region->endTime);
@@ -15909,7 +16849,8 @@ JsonApi::Value Video_ExportRegion(const JsonApi::CallbackInfo& info)
 
     std::cout << "[Video Export] region=" << regionId
               << " engineRate=" << engineRate << "Hz"
-              << " smpStart=" << region->smpStart << " smpLength=" << region->smpLength
+              << " smpStart=" << region->slot(0).smpStart
+              << " smpLength=" << region->slot(0).smpLength
               << " -> cut [" << cutInSec << ", " << cutOutSec << ") of "
               << source->filePath << "\n";
 
@@ -16814,7 +17755,15 @@ JsonApi::Value Audio_Filter_SetSlotParam(const JsonApi::CallbackInfo& info)
 
     auto* filt = getFilter(env, trackId, nodeId);
     if (!filt) return JsonApi::Boolean::New(env, false);
-    return JsonApi::Boolean::New(env, filt->setSlotParam(slotIndex, pName, value));
+    const bool ok = filt->setSlotParam(slotIndex, pName, value);
+
+    // Enabling/disabling a per-slot Envelope changes which tracks need a note/clip
+    // gate timeline built, so the engine-side envelope snapshot must be rebuilt.
+    // (The ADSR/destination/depth values do NOT affect gates and need no rebuild.)
+    if (ok && pName == "env_on" && audioEngine)
+        audioEngine->getMixEngine().refreshEnvelopeDefinitions();
+
+    return JsonApi::Boolean::New(env, ok);
 }
 
 // audio_filterGetSlots(trackId, nodeId) → JSON string
@@ -16866,7 +17815,6 @@ JsonApi::Value Audio_Filter_GetResponseCurve(const JsonApi::CallbackInfo& info)
     filt->getResponseCurve(static_cast<float*>(ab.Data()), kSize);
     return JsonApi::Float32Array::New(env, kSize, ab, 0);
 }
-
 
 // ── APEX-specific host bridge functions ───────────────────────────────────────
 //

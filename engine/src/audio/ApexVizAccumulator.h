@@ -142,6 +142,7 @@ public:
                       float        outPeak,
                       const float* bandGrDb,
                       const float* bandOutAbs,
+                      const float* bandInAbs,
                       float        lookaheadSamples,
                       float        latencySamples,
                       float        splitLoHz,
@@ -157,6 +158,7 @@ public:
         {
             if (bandGrDb   && bandGrDb[b]   > maxGrDb_[b])      maxGrDb_[b]      = bandGrDb[b];
             if (bandOutAbs && bandOutAbs[b] > peakAbsBand_[b])  peakAbsBand_[b]  = bandOutAbs[b];
+            if (bandInAbs  && bandInAbs[b]  > peakAbsBandIn_[b]) peakAbsBandIn_[b] = bandInAbs[b];
         }
         lastLookahead_ = lookaheadSamples;
         lastLatency_   = latencySamples;
@@ -180,6 +182,7 @@ public:
         {
             bucket.bandGrDb [b] = maxGrDb_[b];
             bucket.bandOutDb[b] = absToDb(peakAbsBand_[b]);
+            bucket.bandInDb [b] = absToDb(peakAbsBandIn_[b]);
         }
         bucket.lookaheadSamples = lastLookahead_;
         bucket.latencySamples   = lastLatency_;
@@ -203,8 +206,9 @@ private:
         peakAbsOut_ = 0.0f;
         for (int b = 0; b < kNumBands; ++b)
         {
-            maxGrDb_[b]     = 0.0f;
-            peakAbsBand_[b] = 0.0f;
+            maxGrDb_[b]       = 0.0f;
+            peakAbsBand_[b]   = 0.0f;
+            peakAbsBandIn_[b] = 0.0f;
         }
         sampleCount_ = 0;
     }
@@ -254,6 +258,7 @@ private:
     float peakAbsOut_         = 0.0f;
     float maxGrDb_[kNumBands] {};
     float peakAbsBand_[kNumBands] {};
+    float peakAbsBandIn_[kNumBands] {};
     float lastLookahead_      = 0.0f;
     float lastLatency_        = 0.0f;
     float lastSplitLo_        = 200.0f;

@@ -70,9 +70,24 @@ function resolveSystemNodeExe() {
 }
 
 // High-frequency polling methods — suppress routine logs for these
-const SILENT_METHODS = new Set(['getFrameRGBA', 'getCurrentFrame', 'getFrameBuffer', 'getTransportState', 'audio_getAllPeaks', 'audio_getRealtimeDiagnostics', 'audio_getAudioPerformanceTelemetry', 'getAudioPerformanceTelemetry', 'audio_setTrackVolume', 'audio_setTrackPan', 'audio_setTrackSpread', 'audio_setMasterVolume', 'cache_getWorldActiveJobs']);
+const SILENT_METHODS = new Set(['getFrameRGBA', 'getCurrentFrame', 'getFrameBuffer', 'getTransportState', 'audio_getAllPeaks', 'audio_getRealtimeDiagnostics', 'audio_getAudioPerformanceTelemetry', 'getAudioPerformanceTelemetry', 'audio_setTrackVolume', 'audio_setTrackPan', 'audio_setTrackSpread', 'audio_setMasterVolume', 'audio_getMasterLoudness', 'cache_getWorldActiveJobs']);
 // Last known transport state — only log when it actually changes
 let lastTransportStateStr = null;
+
+// Per-frame / per-voice / per-sample debug prints the engine emits to stderr.
+// They are pure diagnostics (some gated behind XLETH_DEBUG, some unconditional)
+// and, at playback rates, drown out everything useful. Drop them at the
+// forwarding boundary so the console/startup.log stay readable. Real engine
+// errors carry other tags and pass through untouched. To see them again,
+// remove a tag from this list (or clear it).
+const NOISY_ENGINE_TAGS = [
+  '[VoiceExit]', '[VoiceWrite]', '[ProcVoice]', '[PatternTrig]', '[NoteOffDiag]',
+  '[RenderClock]', '[FrameCollector]', '[RenderFrameCache]', '[Compositor]',
+  '[VisualFX]', '[RenderDecoder]',
+];
+function isNoisyEngineLine(line) {
+  return NOISY_ENGINE_TAGS.some((tag) => line.includes(tag));
+}
 
 async function startWorker() {
   const bridgeDir = runtimeResource('bridge');
@@ -123,11 +138,11 @@ async function startWorker() {
     // Forward C++ stdout/stderr into startup.log so proxy/engine logs are visible
     worker.stdout.on('data', (chunk) => {
       const lines = chunk.toString().split(/\r?\n/);
-      for (const line of lines) { if (line) log(`[engine] ${line}`); }
+      for (const line of lines) { if (line && !isNoisyEngineLine(line)) log(`[engine] ${line}`); }
     });
     worker.stderr.on('data', (chunk) => {
       const lines = chunk.toString().split(/\r?\n/);
-      for (const line of lines) { if (line) log(`[engine:err] ${line}`); }
+      for (const line of lines) { if (line && !isNoisyEngineLine(line)) log(`[engine:err] ${line}`); }
     });
     let resolved = false;
     worker.on('message', (msg) => {

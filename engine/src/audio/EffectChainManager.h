@@ -188,6 +188,17 @@ public:
     // Direct access to the effect processor (for subclass-specific APIs like EQ).
     XlethEffectBase* getEffect(int nodeId);
 
+    // Audio thread: forward a per-track note/clip modulation gate to every effect
+    // in this chain (a no-op for effects that don't consume it — only the Xleth
+    // Filter's per-slot Envelope does). No allocation.
+    void deliverModulationGate(bool valid, std::int64_t gateStartSample,
+                               std::int64_t gateEndSample);
+
+    // Main thread: true iff this chain holds an Xleth Filter with an enabled
+    // per-slot Envelope modulator; `wantSlidesOut` is set to the slide-note
+    // opt-in union across those filters (the gate is per-track).
+    bool anyFilterHasActiveEnvelope(bool& wantSlidesOut) const;
+
     // Returns the raw AudioProcessor for any node (stock or VST3).
     // Used by PluginEditorHost to obtain the processor for GUI creation.
     juce::AudioProcessor* getProcessor(int nodeId);

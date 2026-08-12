@@ -22,7 +22,10 @@ export const SPLIT_BANDS  = 3   // LOW / MID / HIGH have SOLO; MASTER does not
 export const MASTER_BAND  = 3
 
 // Curve authoring box (spec 4.3 / engine ApexDsp.h kCurveMinDb..kCurveMaxDb).
-export const CURVE_MIN_DB = -24
+// CURVE_MIN_DB is the SILENCE end, not a working floor: -96 dBFS is below the
+// noise floor of any real source, so the editor draws it as -inf while still
+// storing a finite number in the node table. Must equal kCurveMinDb.
+export const CURVE_MIN_DB = -96
 export const CURVE_MAX_DB = 12
 export const MAX_NODES    = 32
 

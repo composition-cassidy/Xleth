@@ -19,8 +19,32 @@
 // Source media files are referenced by absolute path and are NOT copied.
 // If a source file moves, validateMedia() reports it as missing.
 
+// ─── Project schema version ───────────────────────────────────────────────────
+// Written as project.json["schema_version"]. Absent ⇒ 1.
+//   1 — single sample per sampler; per-sample state lived as top-level scalars
+//       on each region (rootNote/smpStart/loop*/fade*/declickMs/destructive flags).
+//   2 — 8-slot layered sampler. Per-sample state moved onto SampleRegion::slots;
+//       v1 regions migrate losslessly into slot 0 (see SampleRegion.cpp from_json).
+//   3 — Sampler modulation system: SampleRegion::modulation carries 6 envelopes,
+//       6 LFOs, the VELO/NOTE response curves and the route list. A v2 region
+//       has no "modulation" key at all, which reads back as an empty route list
+//       — an exact bypass — so the migration is lossless and silent. The legacy
+//       ADSR / pitch envelope / three drawable LFOs are UNTOUCHED by this
+//       version: they still load, save and sound exactly as in v2.
+// Loading an older schema migrates in memory and re-saves at the current version.
+// 4 — sampler modulation unified. The hardcoded pitch envelope and the three
+//     drawable VOL/PAN/PITCH LFOs are gone; their state migrates into the
+//     general ENV/LFO source bank and route list on load. See
+//     model/SamplerLegacyMigration.h for the mapping and the one place it is
+//     deliberately not bit-exact.
+inline constexpr int XLETH_PROJECT_SCHEMA_VERSION = 4;
+
 class ProjectManager {
 public:
+    // Schema version of the most recently loaded project (1 when the file
+    // predates the key). Lets callers report/telemeter a migration.
+    int loadedSchemaVersion() const { return loadedSchemaVersion_; }
+
     // Create a new project at projectDir with the given name.
     // Creates the directory structure and writes an initial empty project.json.
     bool createProject(const std::string& projectDir, const std::string& projectName);
@@ -28,9 +52,12 @@ public:
     // Serialize the given timeline to project.json in the active project dir.
     // Pass non-empty effectChains / masterEffectChain JSON to persist effect chains
     // inside project.json (under "effectChains" and "masterEffectChain" keys).
+    // masterVolume is a MixEngine-only value (no Timeline field backs it), so it
+    // has to be passed in explicitly to be persisted.
     bool saveProject(const Timeline& timeline,
                      const nlohmann::json& effectChains     = nlohmann::json::object(),
-                     const nlohmann::json& masterEffectChain = nlohmann::json());
+                     const nlohmann::json& masterEffectChain = nlohmann::json(),
+                     float masterVolume = 1.0f);
 
     // Save the timeline to a NEW project directory with a NEW name.
     // Creates the directory structure (same as createProject) and writes
@@ -41,7 +68,8 @@ public:
                        const std::string& newProjectName,
                        const Timeline& timeline,
                        const nlohmann::json& effectChains      = nlohmann::json::object(),
-                       const nlohmann::json& masterEffectChain = nlohmann::json());
+                       const nlohmann::json& masterEffectChain = nlohmann::json(),
+                       float masterVolume = 1.0f);
 
     // Whether a project directory has been set (via create/load/saveAs).
     bool hasProjectDir() const;
@@ -60,6 +88,10 @@ public:
     // Returns the master effect chain JSON read during the last successful
     // loadProject() call. Returns an empty/null JSON if not present.
     const nlohmann::json& getLoadedMasterEffectChain() const;
+
+    // Master fader gain read during the last successful loadProject().
+    // Defaults to 1.0 (0 dB) for projects saved before it was persisted.
+    float getLoadedMasterVolume() const;
 
     // Per-media validation result. Covers both Media Pool sources and the
     // per-region swapped/extracted audio that lives inside the project folder.
@@ -107,6 +139,13 @@ public:
     std::string getExportsDir()  const;
     std::string getSwappedDir()  const;
     std::string getMediaDir()    const;   // <projectDir>/media (consolidated sources)
+    std::string getSlotsDir()    const;   // <projectDir>/slots (per-slot layer audio)
+
+    // <projectDir>/cache/audio — derived audio the project can always rebuild:
+    // today, the sampler's per-slot PREP bakes. Safe to delete at any time;
+    // anything missing is simply re-rendered on next use. Empty when no
+    // project directory is set.
+    std::string getAudioCacheDir() const;
 
     // Clear the active project directory / name so subsequent save() calls
     // act as "untitled" until createProject / saveProjectAs / loadProject
@@ -117,11 +156,13 @@ private:
     std::string projectDir_;
     std::string projectName_;
     std::string createdAt_;
+    int         loadedSchemaVersion_ = XLETH_PROJECT_SCHEMA_VERSION;
 
     // Populated by loadProject(); consumed by the caller (bridge) to apply
     // effect chains to MixEngine after track routing is set up.
     nlohmann::json loadedEffectChains_      = nlohmann::json::object();
     nlohmann::json loadedMasterEffectChain_ = nlohmann::json();
+    float          loadedMasterVolume_      = 1.0f;
 
     void        ensureDirectories();
     std::string projectFilePath() const;

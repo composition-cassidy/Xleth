@@ -7,6 +7,8 @@
 #include "project/ProjectManager.h"
 #include "model/Timeline.h"
 #include "model/TimelineTypes.h"
+#include "model/SampleRegion.h"
+#include <cmath>
 #include <filesystem>
 #include <fstream>
 #include <iostream>
@@ -94,7 +96,7 @@ int main() {
     region.startFrame   = 0;
     region.endFrame     = 3;
     region.audioFilePath = "/fake/audio/kick.wav";
-    region.rootNote     = 36;
+    region.slot(0).rootNote = 36;
     region.hasSwappedAudio = false;
     const int regId = tl.addRegion(region);
 
@@ -495,6 +497,242 @@ int main() {
         const GridLayout& wgl = weirdTl.getGridLayout();
         CHECK((wgl.canvasWidth % 2) == 0,                 "odd canvasWidth normalized to even");
         CHECK(wgl.canvasHeight <= kCanvasMaxHeight,       "oversize canvasHeight clamped to range");
+    }
+
+    // ── Test 5.75: track folders round-trip through saveProject/loadProject ───
+    // Regression for the bug where ProjectManager::saveProject/loadProject
+    // translated project.json fields but silently dropped "trackLayout", so
+    // folders vanished (tracks reverted to flat order) on the very next load
+    // even though Timeline::toJSON/fromJSON already round-tripped it fine.
+    std::cout << "\n[5.75] track folders round-trip through the project file\n";
+    {
+        const int folderId = tl.createTrackFolder("Drums", {trkId, patternTrackId}, 0);
+        REQUIRE(folderId >= 0, "createTrackFolder returned a valid id");
+
+        ProjectManager pm6;
+        REQUIRE(pm6.createProject(tempDir, "TrackLayoutRoundTrip"),
+                "createProject for track-layout round-trip returned false");
+        REQUIRE(pm6.saveProject(tl), "saveProject with track folder returned false");
+
+        // The folder must actually be present on disk, not just in memory.
+        std::ifstream f(tempDir + "/project.json");
+        json onDisk; f >> onDisk;
+        CHECK(onDisk.contains("trackLayout"), "project.json contains a trackLayout key");
+        CHECK(onDisk.value("trackLayout", json::object()).value("folders", json::array()).size() == 1,
+              "project.json trackLayout has the saved folder");
+
+        ProjectManager pm7;
+        auto loaded = pm7.loadProject(tempDir);
+        REQUIRE(loaded.has_value(), "loadProject with track folder returned nullopt");
+        const TrackLayout loadedLayout = loaded->getTrackLayout();
+        CHECK(loadedLayout.folders.size() == 1,
+              "loaded timeline still has the folder (not flattened)");
+        if (!loadedLayout.folders.empty()) {
+            CHECK(loadedLayout.folders[0].name == "Drums",
+                  "loaded folder keeps its name");
+            CHECK(loadedLayout.folders[0].trackIds.size() == 2,
+                  "loaded folder keeps both member tracks");
+        }
+    }
+
+    // ── Test 5.9: master volume round-trips and defaults for legacy projects ──
+    // Master volume lives only in MixEngine (no Timeline field), so it was never
+    // written to project.json at all — every load silently inherited whatever
+    // the previously-open project had left in the engine.
+    std::cout << "\n[5.9] master volume — round-trip + legacy default\n";
+    {
+        ProjectManager pm8;
+        REQUIRE(pm8.createProject(tempDir, "MasterVolumeRoundTrip"),
+                "createProject for master-volume round-trip returned false");
+        REQUIRE(pm8.saveProject(tl, json::object(), json(), 0.35f),
+                "saveProject with master volume returned false");
+
+        ProjectManager pm9;
+        auto loaded = pm9.loadProject(tempDir);
+        REQUIRE(loaded.has_value(), "loadProject with master volume returned nullopt");
+        CHECK(std::abs(pm9.getLoadedMasterVolume() - 0.35f) < 1e-6f,
+              "master volume survives the save/load round trip");
+
+        // A project saved before masterVolume existed must load at unity gain,
+        // not inherit the 0.35 from the load above.
+        std::ifstream in(tempDir + "/project.json");
+        json legacy; in >> legacy; in.close();
+        legacy.erase("masterVolume");
+        std::ofstream out(tempDir + "/project.json");
+        out << legacy.dump(4); out.close();
+
+        auto legacyLoaded = pm9.loadProject(tempDir);
+        REQUIRE(legacyLoaded.has_value(), "loadProject of legacy project returned nullopt");
+        CHECK(std::abs(pm9.getLoadedMasterVolume() - 1.0f) < 1e-6f,
+              "legacy project without masterVolume defaults to unity, not the stale value");
+    }
+
+    // ── Test 5.95: BehindGrid hold-last-frame survives save/load round trip ──
+    // Regression for the bug where a user turning "Hold Last Frame" off for a
+    // BehindGrid backdrop track would see it silently turn back on every time
+    // the project was reopened. Root cause: Timeline::fromJSON's post-load
+    // migration step force-set videoHoldLastFrame=true for every BehindGrid
+    // track unconditionally, discarding whatever was actually saved.
+    std::cout << "\n[5.95] BehindGrid track's hold-last-frame survives project reload\n";
+    {
+        FullscreenLayer backdrop;
+        backdrop.trackId   = trkId;
+        backdrop.placement = FullscreenLayerPlacement::BehindGrid;
+        tl.setFullscreenLayers({backdrop});
+        REQUIRE(tl.getTrackMutable(trkId) != nullptr, "backdrop track exists");
+        CHECK(tl.getTrackMutable(trkId)->videoHoldLastFrame,
+              "assigning a track as BehindGrid auto-enables hold-last-frame");
+
+        // User explicitly turns it off.
+        REQUIRE(tl.setTrackVideoHoldLastFrame(trkId, false),
+                "setTrackVideoHoldLastFrame(false) returned false");
+        CHECK(!tl.getTrackMutable(trkId)->videoHoldLastFrame,
+              "hold-last-frame is off before saving");
+
+        ProjectManager pmHold;
+        REQUIRE(pmHold.createProject(tempDir, "HoldLastFrameRoundTrip"),
+                "createProject for hold-last-frame round-trip returned false");
+        REQUIRE(pmHold.saveProject(tl), "saveProject with hold-last-frame off returned false");
+
+        ProjectManager pmHoldReload;
+        auto loaded = pmHoldReload.loadProject(tempDir);
+        REQUIRE(loaded.has_value(), "loadProject with hold-last-frame off returned nullopt");
+        const TrackInfo* loadedTrack = loaded->getTrack(trkId);
+        REQUIRE(loadedTrack != nullptr, "backdrop track survives the reload");
+        CHECK(!loadedTrack->videoHoldLastFrame,
+              "hold-last-frame stays off after reopening the project (was clobbered back to true)");
+
+        // Re-applying the same fullscreen layer set within a session (any
+        // unrelated grid edit does this) must not clobber it either.
+        loaded->setFullscreenLayers({backdrop});
+        CHECK(!loaded->getTrack(trkId)->videoHoldLastFrame,
+              "hold-last-frame survives an unrelated setFullscreenLayers call on the same layer set");
+    }
+
+    // ── Test 7: sample-slot migration + roundtrip ────────────────────────────
+    // Schema 1 stored one sample per region as top-level scalars. Schema 2
+    // moves that state onto SampleRegion::slots. A v1 project must load with
+    // its sample in slot 0 and EVERY value preserved, or legacy projects
+    // change how they sound.
+    std::cout << "\n[7] sample slots — legacy migration + save/load roundtrip\n";
+    {
+        // A hand-built schema-1 region: no "slots" key, per-sample state flat.
+        nlohmann::json legacy = {
+            {"id", 7}, {"sourceId", 1}, {"name", "LegacyKick"},
+            {"label", "Kick"}, {"customLabelName", ""},
+            {"startTime", 0.0}, {"endTime", 0.5},
+            {"startFrame", 0},  {"endFrame", 12},
+            {"audioFilePath", "/fake/legacy.wav"},
+            {"swappedAudioPath", ""}, {"hasSwappedAudio", false},
+            {"syllables", nlohmann::json::array()},
+            // per-sample state that must land on slot 0
+            {"rootNote", 42},
+            {"smpStart", 1234}, {"smpLength", 5678},
+            {"declickMs", 2.5}, {"fadeInMs", 7.5}, {"fadeOutMs", 9.5},
+            {"loopEnabled", true}, {"loopStart", 100}, {"loopEnd", 900},
+            {"crossfadeSamples", 64},
+            {"dcOffsetRemoved", true}, {"normalized", true},
+            {"polarityReversed", true}, {"reversed", true},
+            // sampler-level state that must stay on the region
+            {"crossfadeEnabled", true}, {"attackMs", 12.0}, {"releaseMs", 34.0}
+        };
+
+        SampleRegion migrated = legacy.get<SampleRegion>();
+
+        CHECK(migrated.slotCount() == 1, "migration: legacy region yields exactly 1 slot");
+        const SampleSlot& m = migrated.slot(0);
+        CHECK(m.rootNote == 42,            "migration: rootNote -> slot 0");
+        CHECK(m.smpStart == 1234,          "migration: smpStart -> slot 0");
+        CHECK(m.smpLength == 5678,         "migration: smpLength -> slot 0");
+        CHECK(std::abs(m.declickMs - 2.5f) < 1e-6, "migration: declickMs -> slot 0");
+        CHECK(std::abs(m.fadeInMs  - 7.5f) < 1e-6, "migration: fadeInMs -> slot 0");
+        CHECK(std::abs(m.fadeOutMs - 9.5f) < 1e-6, "migration: fadeOutMs -> slot 0");
+        CHECK(m.loopEnabled,               "migration: loopEnabled -> slot 0");
+        CHECK(m.loopStart == 100,          "migration: loopStart -> slot 0");
+        CHECK(m.loopEnd   == 900,          "migration: loopEnd -> slot 0");
+        CHECK(m.crossfadeSamples == 64,    "migration: crossfadeSamples -> slot 0");
+        CHECK(m.dcOffsetRemoved,           "migration: dcOffsetRemoved -> slot 0");
+        CHECK(m.normalized,                "migration: normalized -> slot 0");
+        CHECK(m.polarityReversed,          "migration: polarityReversed -> slot 0");
+        CHECK(m.reversed,                  "migration: reversed -> slot 0");
+        // Sampler-level fields stay on the region.
+        CHECK(migrated.crossfadeEnabled,   "migration: crossfadeEnabled stays sampler-level");
+        CHECK(std::abs(migrated.attackMs - 12.0f) < 1e-6, "migration: attackMs stays sampler-level");
+
+        // Neutral tuning/level: a migrated legacy slot must be a no-op layer,
+        // otherwise the project would not sound identical.
+        CHECK(std::abs(m.tuningSemitones()) < 1e-12, "migration: tuning is neutral (0 semitones)");
+        CHECK(std::abs(m.volume - 1.0f) < 1e-6, "migration: volume is unity");
+        CHECK(std::abs(m.pan) < 1e-6,           "migration: pan is centred");
+        CHECK(!m.mute && !m.solo,               "migration: not muted or solo'd");
+
+        // ── Multi-slot save → load roundtrip ─────────────────────────────────
+        SampleRegion multi = migrated;
+        SampleSlot layer;
+        layer.audioFilePath = "/fake/slots/layer2.wav";
+        layer.name     = "Layer2";
+        layer.rootNote = 60;
+        layer.octave   = -2;  layer.semitone = 5;
+        layer.fine     = -33.5f; layer.coarse = 7;
+        layer.volume   = 0.375f; layer.pan = -0.75f;
+        layer.mute     = true;   layer.solo = false;
+        layer.smpStart = 11; layer.smpLength = 22;
+        layer.declickMs = 3.5f; layer.fadeInMs = 1.5f; layer.fadeOutMs = 2.5f;
+        layer.loopEnabled = true; layer.loopStart = 5; layer.loopEnd = 500;
+        layer.crossfadeSamples = 32;
+        layer.reversed = true;
+        multi.slots.push_back(layer);
+
+        nlohmann::json saved = multi;
+        CHECK(saved.contains("slots") && saved["slots"].is_array(),
+              "roundtrip: region serialises a slots array");
+        CHECK(saved["slots"].size() == 2, "roundtrip: both slots written");
+
+        SampleRegion reloaded = saved.get<SampleRegion>();
+        CHECK(reloaded.slotCount() == 2, "roundtrip: 2 slots restored");
+
+        const SampleSlot& a = reloaded.slot(0);
+        CHECK(a.rootNote == 42 && a.smpStart == 1234 && a.smpLength == 5678,
+              "roundtrip: slot 0 trim/root preserved");
+        CHECK(a.loopEnabled && a.loopStart == 100 && a.loopEnd == 900
+              && a.crossfadeSamples == 64, "roundtrip: slot 0 loop preserved");
+        CHECK(a.dcOffsetRemoved && a.normalized && a.polarityReversed && a.reversed,
+              "roundtrip: slot 0 destructive flags preserved");
+
+        const SampleSlot& b = reloaded.slot(1);
+        CHECK(b.audioFilePath == "/fake/slots/layer2.wav",
+              "roundtrip: slot 1 audio path preserved");
+        CHECK(b.name == "Layer2",         "roundtrip: slot 1 name preserved");
+        CHECK(b.rootNote == 60,           "roundtrip: slot 1 rootNote preserved");
+        CHECK(b.octave == -2 && b.semitone == 5 && b.coarse == 7,
+              "roundtrip: slot 1 integer tuning preserved");
+        CHECK(std::abs(b.fine + 33.5f) < 1e-6, "roundtrip: slot 1 fine preserved");
+        CHECK(std::abs(b.volume - 0.375f) < 1e-6, "roundtrip: slot 1 volume preserved");
+        CHECK(std::abs(b.pan + 0.75f) < 1e-6,     "roundtrip: slot 1 pan preserved");
+        CHECK(b.mute && !b.solo,          "roundtrip: slot 1 mute/solo preserved");
+        CHECK(b.smpStart == 11 && b.smpLength == 22,
+              "roundtrip: slot 1 trim preserved");
+        CHECK(b.loopEnabled && b.loopStart == 5 && b.loopEnd == 500
+              && b.crossfadeSamples == 32, "roundtrip: slot 1 loop preserved");
+        CHECK(b.reversed, "roundtrip: slot 1 reversed preserved");
+        CHECK(std::abs(b.tuningSemitones() - (-24.0 + 5.0 + 7.0 - 0.335)) < 1e-6,
+              "roundtrip: slot 1 combined tuning survives the trip");
+
+        // Re-serialising the reloaded region must be byte-identical: proves the
+        // roundtrip has no lossy field.
+        nlohmann::json resaved = reloaded;
+        CHECK(resaved["slots"] == saved["slots"],
+              "roundtrip: save -> load -> save is stable");
+
+        // A malformed region with an empty slots array must still yield one slot.
+        nlohmann::json broken = saved;
+        broken["slots"] = nlohmann::json::array();
+        SampleRegion repaired = broken.get<SampleRegion>();
+        CHECK(repaired.slotCount() == 1, "roundtrip: empty slots array repaired to 1 slot");
+
+        // Schema version is written and is the current one.
+        CHECK(XLETH_PROJECT_SCHEMA_VERSION >= 2,
+              "schema: project schema version bumped for slots");
     }
 
     // Test 6: clean up temp directory.

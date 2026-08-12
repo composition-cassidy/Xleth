@@ -2,9 +2,11 @@ import { useEffect, useState, useCallback, useRef } from 'react'
 import { timelineEvents } from '../../timelineEvents.js'
 import RootNotePicker from './RootNotePicker.jsx'
 import SamplerWaveform from './SamplerWaveform.jsx'
+import SlotList, { MAX_SLOTS } from './SlotList.jsx'
 import EnvelopeEditor from './EnvelopeEditor.jsx'
 import Knob from './Knob.jsx'
 import LfoSection from './LfoSection.jsx'
+import ModulationRack from './modulation/ModulationRack.jsx'
 import { tokenValue } from '../../theming/tokenValue.ts'
 import { nudgeEventFor, applyRecordFor } from './autoLoopTelemetry.js'
 
@@ -20,6 +22,137 @@ const ARP_DIR_ICONS = {
   sticky: <path d="M4,3 L7,1 L10,3 M7,1 L7,7 M4,12 L7,14 L10,12 M7,14 L7,8 M5,7.5 L9,7.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>,
 }
 
+// PREP algorithms. Values are engine StretchMethod ids — the same five the
+// timeline's clip stretch uses. Ordered by how often they are the right answer,
+// not by id.
+const PREP_ALGOS = [
+  { v: 2, l: 'Rubber Band' },
+  { v: 3, l: 'WSOLA' },
+  { v: 1, l: 'TD-PSOLA' },
+  { v: 5, l: 'WORLD' },
+  { v: 4, l: 'Phase Vocoder' },
+]
+
+// SampleLoopMode: 0 = Forward, 1 = PingPong, 2 = Reverse.
+const LOOP_MODES = [
+  { v: 0, l: 'FWD' },
+  { v: 1, l: 'P-P' },
+  { v: 2, l: 'REV' },
+]
+
+// ── MANGLE ────────────────────────────────────────────────────────────────
+// Per-note, per-slot warp FX. Ids MUST match xleth::mangle::Mode in
+// engine/src/audio/MangleDsp.h — they are persisted in the project file, so
+// the enum is append-only and this list mirrors it 1:1.
+//
+// Mode 0 (Off) is the bypass and lives outside the groups so it is always the
+// first option, whatever the group order.
+const MANGLE_OFF = 0
+const MANGLE_GROUPS = [
+  {
+    label: 'Alt',
+    modes: [
+      { v: 1,  l: 'Sync' },
+      { v: 2,  l: 'Bend +' },
+      { v: 3,  l: 'Bend −' },
+      { v: 4,  l: 'Bend +/−' },
+      { v: 5,  l: 'PWM' },
+      { v: 6,  l: 'Asym +' },
+      { v: 7,  l: 'Asym −' },
+      { v: 8,  l: 'Asym +/−' },
+      { v: 9,  l: 'Flip' },
+      { v: 10, l: 'Mirror' },
+      { v: 11, l: 'Quantize' },
+      { v: 12, l: 'Even' },
+      { v: 13, l: 'Odd' },
+    ],
+  },
+  {
+    label: 'Filter',
+    modes: [
+      { v: 14, l: 'LPF' },
+      { v: 15, l: 'HPF' },
+      { v: 16, l: 'BPF' },
+      { v: 17, l: 'Notch' },
+    ],
+  },
+  {
+    label: 'Distortion',
+    modes: [
+      { v: 18, l: 'Tube' },
+      { v: 19, l: 'Soft Clip' },
+      { v: 20, l: 'Hard Clip' },
+      { v: 21, l: 'Diode 1' },
+      { v: 22, l: 'Diode 2' },
+      { v: 23, l: 'Linear Fold' },
+      { v: 24, l: 'Sine Fold' },
+      { v: 25, l: 'Zero-Square' },
+      { v: 26, l: 'Asym' },
+      { v: 27, l: 'Rectify' },
+      { v: 28, l: 'Sine Shaper' },
+      { v: 29, l: 'Stomp Box' },
+      { v: 30, l: 'Tape Sat.' },
+      { v: 31, l: 'Soft Sat.' },
+    ],
+  },
+  {
+    label: 'Modulation',
+    modes: [
+      { v: 32, l: 'FM' },
+      { v: 33, l: 'PD' },
+      { v: 34, l: 'AM' },
+      { v: 35, l: 'RM' },
+    ],
+  },
+]
+
+// One-line hints, keyed by mode id. The ALT and MODULATION groups in
+// particular are not self-describing from their names alone.
+const MANGLE_HINTS = {
+  1: 'Oscillator hard sync — the read head snaps back once per note cycle',
+  2: 'Read phase bent toward the start of the sample',
+  3: 'Read phase bent toward the end of the sample',
+  4: 'Read phase bent outward from the midpoint',
+  5: 'Read head advances then stalls each cycle — hollow, square-like',
+  6: 'Each note period skewed fast-then-slow',
+  7: 'Each note period skewed slow-then-fast',
+  8: 'Skew direction alternates every cycle',
+  9: 'Read direction reverses partway through each cycle',
+  10: 'Read head ping-pongs inside a local window',
+  11: 'Bit-depth reduction, 16 bits down to 1',
+  12: 'Comb against a half-period-delayed copy — even harmonics',
+  13: 'Comb against an inverted half-period copy — odd harmonics',
+  14: 'Low pass, cutoff key-tracked and swept by Amount',
+  15: 'High pass, cutoff key-tracked and swept by Amount',
+  16: 'Band pass, centre key-tracked and swept by Amount',
+  17: 'Notch, centre key-tracked and swept by Amount',
+  27: 'Amount blends half-wave to full-wave rectification',
+  32: 'Sine at the note frequency modulates read speed — vibrato to growl',
+  33: 'Casio-style per-cycle phase kink',
+  34: 'Unipolar tremolo at audio rate',
+  35: 'Bipolar ring modulation at the note frequency',
+}
+
+const mangleModeLabel = (v) => {
+  if (!v) return 'Off'
+  for (const g of MANGLE_GROUPS) {
+    const hit = g.modes.find((m) => m.v === v)
+    if (hit) return hit.l
+  }
+  return 'Off'
+}
+
+// The FILTER group sweeps cutoff AROUND a key-tracked base, so its Amount
+// midpoint (not its minimum) is the neutral setting. Every other group treats
+// Amount 0 as "off", which is worth telling the user rather than making them
+// discover it by ear.
+const mangleAmountIsBipolar = (v) => v >= 14 && v <= 17
+
+// PREP is bypassed at unity stretch and zero shift — mirrors the engine's
+// SampleSlot::prepIsBypassed(), which is what decides whether a bake runs.
+const prepIsBypassed = (s) =>
+  Math.abs((s.prepStretch ?? 1) - 1) < 1e-6 && Math.abs(s.prepShiftCents ?? 0) < 1e-6
+
 const TDIVS = ['1/1', '1/2', '1/4', '1/8', '1/16', '1/32', '1/64']
 const TDIV_VALUES = { '1/1': 1, '1/2': 2, '1/4': 4, '1/8': 8, '1/16': 16, '1/32': 32, '1/64': 64 }
 const TDIV_LABELS = { 1: '1/1', 2: '1/2', 4: '1/4', 8: '1/8', 16: '1/16', 32: '1/32', 64: '1/64' }
@@ -33,6 +166,9 @@ const emptySettings = {
   pitchEnvDecayMs: 0, pitchEnvSustain: 0, pitchEnvReleaseMs: 0,
   pitchEnvAttackTension: 0, pitchEnvDecayTension: 0, pitchEnvReleaseTension: 0,
   loopEnabled: false, loopStart: 0, loopEnd: 0,
+  loopMode: 0, exitLoopOnRelease: false,
+  mangleMode: 0, mangleAmount: 0, mangleMix: 1,
+  prepAlgorithm: 2, prepStretch: 1, prepShiftCents: 0,
   crossfadeEnabled: true,
   smpStart: 0, smpLength: 0, declickMs: 1.5,
   fadeInMs: 0, fadeOutMs: 0,
@@ -122,6 +258,39 @@ function Sel({ val, set, opts }) {
   )
 }
 
+// Select over {v, l} pairs (Sel above is string-only, and PREP's options carry
+// numeric engine ids that must survive the round trip).
+function SelKV({ val, set, opts }) {
+  return (
+    <select
+      value={String(val)}
+      onChange={(e) => set(Number(e.target.value))}
+      className="sampler-select"
+    >
+      {opts.map((o) => <option key={o.v} value={o.v}>{o.l}</option>)}
+    </select>
+  )
+}
+
+// Select over grouped {label, modes:[{v,l}]} — MANGLE's four families are what
+// make a 36-entry list navigable, so the grouping is structural, not decor.
+function SelGrouped({ val, set, groups, offLabel, className }) {
+  return (
+    <select
+      value={String(val)}
+      onChange={(e) => set(Number(e.target.value))}
+      className={className || 'sampler-select'}
+    >
+      <option value={MANGLE_OFF}>{offLabel}</option>
+      {groups.map((g) => (
+        <optgroup key={g.label} label={g.label}>
+          {g.modes.map((o) => <option key={o.v} value={o.v}>{o.l}</option>)}
+        </optgroup>
+      ))}
+    </select>
+  )
+}
+
 function SectionLabel({ children }) {
   return (
     <div className="sampler-section-label">{children}</div>
@@ -149,21 +318,48 @@ export default function SamplerPanelContent({ regionId, onClose }) {
   const [envTab, setEnvTab] = useState('env')
   const [region, setRegion] = useState(null)
   const [audioInfo, setAudioInfo] = useState(null)
+  // Project tempo — the modulation rack needs it to display BPM-synced times.
+  const [bpm, setBpm] = useState(140)
   const [settings, setSettings] = useState(emptySettings)
   const settingsRef = useRef(settings)
   settingsRef.current = settings
 
+  // ── Sample slots ──────────────────────────────────────────────────────────
+  // `slots` mirrors the engine's slot list. Mini-control drags mutate it
+  // LOCALLY for preview; the commit on mouseup is the only thing that reaches
+  // IPC. `selectedSlot` is what the Sample tab's waveform/trim/loop editor and
+  // the root-note picker bind to.
+  const [slots, setSlots] = useState([{}])
+  const [selectedSlot, setSelectedSlot] = useState(0)
+  const [slotBusy, setSlotBusy] = useState(false)
+  const selectedSlotRef = useRef(0)
+  selectedSlotRef.current = selectedSlot
+  const slotsRef = useRef(slots)
+  slotsRef.current = slots
+
   const fetchAll = useCallback(async () => {
     try {
+      const slotIdx = selectedSlotRef.current
       const [regions, ai] = await Promise.all([
         window.xleth?.timeline?.getRegions?.(),
-        window.xleth?.timeline?.getRegionAudioInfo?.(regionId),
+        window.xleth?.timeline?.getRegionAudioInfo?.(regionId, slotIdx),
       ])
       const r = Array.isArray(regions) ? regions.find((x) => x.id === regionId) : null
       if (r) {
         setRegion(r)
+        // Slot list, clamped to the engine's ceiling. The engine guarantees at
+        // least one slot; the fallback keeps the UI alive if that ever fails.
+        const rawSlots = Array.isArray(r.slots) && r.slots.length ? r.slots : [{}]
+        const nextSlots = rawSlots.slice(0, MAX_SLOTS)
+        setSlots(nextSlots)
+        // A removed slot can leave the selection past the end.
+        const sel = Math.min(slotIdx, nextSlots.length - 1)
+        if (sel !== slotIdx) setSelectedSlot(sel)
+        // Per-slot fields come from the SELECTED slot, so the Sample tab's
+        // waveform / trim / loop editor edits that layer.
+        const sl = nextSlots[sel] || {}
         setSettings({
-          rootNote: r.rootNote,
+          rootNote: sl.rootNote ?? 60,
           delayMs: r.delayMs ?? 0,
           attackMs: r.attackMs,
           holdMs: r.holdMs ?? 0,
@@ -184,20 +380,30 @@ export default function SamplerPanelContent({ regionId, onClose }) {
           pitchEnvAttackTension: r.pitchEnvAttackTension ?? 0,
           pitchEnvDecayTension: r.pitchEnvDecayTension ?? 0,
           pitchEnvReleaseTension: r.pitchEnvReleaseTension ?? 0,
-          loopEnabled: r.loopEnabled,
-          loopStart: r.loopStart,
-          loopEnd: r.loopEnd,
+          loopEnabled: !!sl.loopEnabled,
+          loopStart: sl.loopStart ?? 0,
+          loopEnd: sl.loopEnd ?? 0,
+          loopMode: sl.loopMode ?? 0,
+          exitLoopOnRelease: !!sl.exitLoopOnRelease,
+          // MANGLE is per-slot, so it follows the selected layer like trim and
+          // loop do. Mix defaults to 1 (fully wet) to match the engine.
+          mangleMode: sl.mangleMode ?? 0,
+          mangleAmount: sl.mangleAmount ?? 0,
+          mangleMix: sl.mangleMix ?? 1,
+          prepAlgorithm: sl.prepAlgorithm ?? 2,
+          prepStretch: sl.prepStretch ?? 1,
+          prepShiftCents: sl.prepShiftCents ?? 0,
           crossfadeEnabled: r.crossfadeEnabled ?? true,
-          smpStart: r.smpStart ?? 0,
-          smpLength: r.smpLength ?? 0,
-          declickMs: r.declickMs ?? 1.5,
-          fadeInMs: r.fadeInMs ?? 0,
-          fadeOutMs: r.fadeOutMs ?? 0,
-          crossfadeSamples: r.crossfadeSamples ?? 5000,
-          dcOffsetRemoved: !!r.dcOffsetRemoved,
-          normalized: !!r.normalized,
-          polarityReversed: !!r.polarityReversed,
-          reversed: !!r.reversed,
+          smpStart: sl.smpStart ?? 0,
+          smpLength: sl.smpLength ?? 0,
+          declickMs: sl.declickMs ?? 1.5,
+          fadeInMs: sl.fadeInMs ?? 0,
+          fadeOutMs: sl.fadeOutMs ?? 0,
+          crossfadeSamples: sl.crossfadeSamples ?? 5000,
+          dcOffsetRemoved: !!sl.dcOffsetRemoved,
+          normalized: !!sl.normalized,
+          polarityReversed: !!sl.polarityReversed,
+          reversed: !!sl.reversed,
           monoEnabled: !!r.monoEnabled,
           portamentoEnabled: !!r.portamentoEnabled,
           portamentoTimeMs: r.portamentoTimeMs ?? 100,
@@ -238,7 +444,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
     } catch (e) {
       console.warn('[SamplerPanelContent] fetch failed:', e.message)
     }
-  }, [regionId])
+  }, [regionId, selectedSlot])
 
   useEffect(() => {
     fetchAll()
@@ -257,6 +463,22 @@ export default function SamplerPanelContent({ regionId, onClose }) {
     window.addEventListener('keydown', onKey)
     return () => window.removeEventListener('keydown', onKey)
   }, [onClose])
+
+  // Project tempo for the modulation rack's BPM read-outs. Refresh on the same
+  // event the transport dispatches so a tempo change is reflected live.
+  useEffect(() => {
+    let cancelled = false
+    const readBpm = async () => {
+      try {
+        const v = await window.xleth?.timeline?.getBPM?.()
+        if (!cancelled && typeof v === 'number' && v > 0) setBpm(v)
+      } catch { /* keep the default */ }
+    }
+    readBpm()
+    const onBpm = () => readBpm()
+    timelineEvents.addEventListener('timeline-bpm-changed', onBpm)
+    return () => { cancelled = true; timelineEvents.removeEventListener('timeline-bpm-changed', onBpm) }
+  }, [])
 
   useEffect(() => {
     if (regionId == null) return
@@ -316,11 +538,111 @@ export default function SamplerPanelContent({ regionId, onClose }) {
     if (regionId == null) return
     maybeLogNudge(partial)
     try {
-      await window.xleth?.timeline?.updateSamplerSettings(regionId, partial)
+      // slotIndex routes the flat per-sample keys (trim / loop / fades / root
+      // note / destructive flags) onto the selected layer. Sampler-level keys
+      // in the same payload ignore it.
+      await window.xleth?.timeline?.updateSamplerSettings(regionId,
+        { ...partial, slotIndex: selectedSlotRef.current })
       timelineEvents.dispatchEvent(new CustomEvent('timeline-sampler-changed', { detail: { regionId } }))
       timelineEvents.dispatchEvent(new CustomEvent('timeline-pattern-changed', { detail: {} }))
     } catch (e) { console.warn('[SamplerPanelContent] updateSamplerSettings failed:', e.message) }
   }, [regionId, maybeLogNudge])
+
+  // ── Slot handlers ─────────────────────────────────────────────────────────
+  // Mini-drag preview: LOCAL state only. No IPC while the pointer is down.
+  const previewSlotField = useCallback((slotIdx, field, value) => {
+    setSlots((prev) => prev.map((sl, i) => (i === slotIdx ? { ...sl, [field]: value } : sl)))
+  }, [])
+
+  // Single commit on mouseup. Sends the whole slot list so the engine's
+  // undo command captures one coherent before/after pair.
+  const commitSlotField = useCallback(async (slotIdx, field, value) => {
+    if (regionId == null) return
+    const next = slotsRef.current.map((sl, i) => (i === slotIdx ? { ...sl, [field]: value } : sl))
+    setSlots(next)
+    try {
+      await window.xleth?.timeline?.updateSamplerSettings(regionId, { slots: next })
+      timelineEvents.dispatchEvent(new CustomEvent('timeline-sampler-changed', { detail: { regionId } }))
+    } catch (e) {
+      console.warn('[SamplerPanelContent] slot commit failed:', e.message)
+    }
+  }, [regionId])
+
+  const toggleSlotFlag = useCallback((slotIdx, flag) => {
+    const cur = slotsRef.current[slotIdx]
+    if (!cur) return
+    commitSlotField(slotIdx, flag, !cur[flag])
+  }, [commitSlotField])
+
+  // Pick an audio file. Reuses the app's established audio picker (the same
+  // one region swap uses), so slot loading accepts the same WAV input and
+  // defaults to the project's exports/ dir. Returns a path or null.
+  const pickAudioFile = useCallback(async () => {
+    const res = await window.xleth?.audio?.openSwapAudioDialog?.()
+    return typeof res === 'string' && res ? res : null
+  }, [])
+
+  const addSlot = useCallback(async () => {
+    if (regionId == null || slotsRef.current.length >= MAX_SLOTS) return
+    const filePath = await pickAudioFile()
+    if (!filePath) return
+    setSlotBusy(true)
+    try {
+      const r = await window.xleth?.timeline?.addSampleSlot?.(regionId, filePath)
+      if (r && r.success === false) {
+        console.warn('[SamplerPanelContent] addSampleSlot failed:', r.error)
+      } else if (r && typeof r.slotIndex === 'number') {
+        setSelectedSlot(r.slotIndex)
+      }
+      timelineEvents.dispatchEvent(new CustomEvent('timeline-sampler-changed', { detail: { regionId } }))
+    } catch (e) {
+      console.warn('[SamplerPanelContent] addSampleSlot threw:', e.message)
+    } finally {
+      setSlotBusy(false)
+      fetchAll()
+    }
+  }, [regionId, pickAudioFile, fetchAll])
+
+  const swapSlot = useCallback(async (slotIdx) => {
+    if (regionId == null) return
+    const filePath = await pickAudioFile()
+    if (!filePath) return
+    setSlotBusy(true)
+    try {
+      // Slot 1 IS the region's audio — swapping it leaves its settings and
+      // every other slot untouched, which is exactly what swapRegionAudio does.
+      const r = slotIdx === 0
+        ? await window.xleth?.audio?.swapRegionAudio?.(regionId, filePath)
+        : await window.xleth?.timeline?.setSlotAudio?.(regionId, slotIdx, filePath)
+      if (r && r.success === false) {
+        console.warn('[SamplerPanelContent] slot swap failed:', r.error)
+      }
+      timelineEvents.dispatchEvent(new CustomEvent('timeline-sampler-changed', { detail: { regionId } }))
+    } catch (e) {
+      console.warn('[SamplerPanelContent] slot swap threw:', e.message)
+    } finally {
+      setSlotBusy(false)
+      fetchAll()
+    }
+  }, [regionId, pickAudioFile, fetchAll])
+
+  const removeSlot = useCallback(async (slotIdx) => {
+    if (regionId == null || slotIdx <= 0) return
+    setSlotBusy(true)
+    try {
+      const r = await window.xleth?.timeline?.removeSampleSlot?.(regionId, slotIdx)
+      if (r && r.success === false) {
+        console.warn('[SamplerPanelContent] removeSampleSlot failed:', r.error)
+      }
+      setSelectedSlot((cur) => (cur >= slotIdx ? Math.max(0, cur - 1) : cur))
+      timelineEvents.dispatchEvent(new CustomEvent('timeline-sampler-changed', { detail: { regionId } }))
+    } catch (e) {
+      console.warn('[SamplerPanelContent] removeSampleSlot threw:', e.message)
+    } finally {
+      setSlotBusy(false)
+      fetchAll()
+    }
+  }, [regionId, fetchAll])
 
   const setField = useCallback((field, val) => {
     setSettings((s) => ({ ...s, [field]: val }))
@@ -365,6 +687,54 @@ export default function SamplerPanelContent({ regionId, onClose }) {
     commit({ smpStart, smpLength })
   }, [commit, setFields])
 
+  // ── PREP bake watch ───────────────────────────────────────────────────────
+  // A PREP commit queues an offline bake in the engine. getSlotBakeStatus is
+  // both the status read AND the engine's main-thread pump for publishing a
+  // finished bake into the live samplers, so we poll it while a bake could be
+  // outstanding. `changed` means a baked buffer was just swapped in — the
+  // waveform and the sample length both move, so refetch.
+  //
+  // The watch is armed by a commit (not by the poll finding work), because a
+  // job takes a moment to register: polling only while `pending` is non-empty
+  // would stop before the first job appeared.
+  const [prepBusy, setPrepBusy] = useState(false)
+  const [prepWatch, setPrepWatch] = useState(0)
+
+  useEffect(() => {
+    if (regionId == null || prepWatch === 0) return
+    let cancelled = false
+    let idleRounds = 0
+    const timer = setInterval(async () => {
+      if (cancelled) return
+      try {
+        const st = await window.xleth?.timeline?.getSlotBakeStatus?.(regionId)
+        if (cancelled) return
+        const pending = Array.isArray(st?.pending) ? st.pending.length : 0
+        setPrepBusy(pending > 0)
+        if (st?.changed) fetchAll()
+        // Two consecutive empty polls means the queue really is drained, not
+        // that we looked before the job registered.
+        idleRounds = pending > 0 ? 0 : idleRounds + 1
+        if (idleRounds >= 2) { cancelled = true; clearInterval(timer); setPrepBusy(false) }
+      } catch (e) {
+        cancelled = true
+        clearInterval(timer)
+        setPrepBusy(false)
+        console.warn('[SamplerPanelContent] getSlotBakeStatus failed:', e?.message)
+      }
+    }, 250)
+    return () => { cancelled = true; clearInterval(timer) }
+  }, [regionId, prepWatch, fetchAll])
+
+  // Commit a PREP parameter and arm the bake watch. Separate from commitField
+  // so only the three parameters that trigger a bake pay for the polling.
+  const commitPrep = useCallback((partial) => {
+    setFields(partial)
+    commit(partial)
+    setPrepBusy(true)
+    setPrepWatch((n) => n + 1)
+  }, [commit, setFields])
+
   const [autoBusy, setAutoBusy] = useState(false)
 
   // AUTO loop: snap a period-aligned, formant-stable loop inside the current
@@ -380,7 +750,11 @@ export default function SamplerPanelContent({ regionId, onClose }) {
     const selEnd = hasTrim ? (s.smpStart || 0) + s.smpLength : total
     setAutoBusy(true)
     try {
-      const res = await window.xleth?.timeline?.autoLoopForSelection?.(regionId, selStart, selEnd)
+      // AUTO must analyse AND write the SELECTED slot. Without the 4th arg the
+      // engine defaults to slot 0, so hitting AUTO on any layer silently
+      // re-looped the region's own sample instead.
+      const res = await window.xleth?.timeline?.autoLoopForSelection?.(
+        regionId, selStart, selEnd, selectedSlotRef.current)
       if (!res || !res.valid) {
         console.warn('[AUTO] no loop found:', res?.reason || 'unavailable')
         return
@@ -431,8 +805,27 @@ export default function SamplerPanelContent({ regionId, onClose }) {
   const sourceName = (audioInfo?.audioFilePath || '').split(/[\\/]/).pop() || ''
   const sourceDuration = audioInfo?.duration ?? (sampleRate > 0 ? numSamples / sampleRate : 0)
 
+  const prepBypassed = prepIsBypassed(settings)
+  // Mirrors the engine's bypass gate (MangleDsp.h makeRuntime): mode Off or
+  // mix 0 means the render loop never enters the MANGLE path at all, so the
+  // card carries no accent in either case.
+  const mangleOn = (settings.mangleMode ?? 0) !== MANGLE_OFF && (settings.mangleMix ?? 1) > 0
+
   const renderSample = () => (
     <div className="sampler-page sampler-page--sample">
+      <SlotList
+        slots={slots}
+        selectedSlot={selectedSlot}
+        onSelectSlot={setSelectedSlot}
+        onPreviewSlotField={previewSlotField}
+        onCommitSlotField={commitSlotField}
+        onToggleMute={(i) => toggleSlotFlag(i, 'mute')}
+        onToggleSolo={(i) => toggleSlotFlag(i, 'solo')}
+        onAddSlot={addSlot}
+        onSwapSlot={swapSlot}
+        onRemoveSlot={removeSlot}
+        busy={slotBusy}
+      />
       <section className="sampler-waveform-block">
         <div className="sampler-waveform-meta">
           <span className="sampler-waveform-name" title={sourceName}>{sourceName}</span>
@@ -441,6 +834,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
         <div className="sampler-waveform-well">
           <SamplerWaveform
           regionId={regionId}
+          slotIndex={selectedSlot}
           numSamples={numSamples}
           loopEnabled={settings.loopEnabled}
           loopStart={settings.loopStart}
@@ -458,6 +852,59 @@ export default function SamplerPanelContent({ regionId, onClose }) {
             height={WAVE_HEIGHT}
             responsive
           />
+        </div>
+      </section>
+
+      {/* PREP sits between the raw file and everything below it: the bake it
+          produces is the buffer trim, loop, fades and the waveform above all
+          work against. Placed here so the panel reads in pipeline order. */}
+      <section className={`sampler-range-card sampler-range-card--prep${prepBypassed ? ' is-bypassed' : ''}`}>
+        <header>
+          <i /><span>Prep</span>
+          {prepBusy && <span className="sampler-prep-busy">baking…</span>}
+          <button
+            type="button"
+            onClick={() => commitPrep({ prepStretch: 1, prepShiftCents: 0 })}
+            disabled={prepBypassed}
+            title="Return to unity stretch and zero shift — the slot plays its raw sample with no bake"
+          >
+            Reset
+          </button>
+        </header>
+        <div className="sampler-prep-body">
+          <label className="sampler-prep-algo">
+            <span>Algorithm</span>
+            <SelKV
+              val={settings.prepAlgorithm}
+              set={(v) => commitPrep({ prepAlgorithm: v })}
+              opts={PREP_ALGOS}
+            />
+          </label>
+          <SamplerKnob
+            label="Stretch"
+            value={settings.prepStretch * 100}
+            min={25} max={400} defaultValue={100}
+            size={42}
+            color={accentPanel}
+            formatValue={(v) => `${Math.round(v)}%`}
+            onLiveChange={(v) => setField('prepStretch', Math.round(v) / 100)}
+            onCommit={(v) => commitPrep({ prepStretch: Math.round(v) / 100 })}
+          />
+          <SamplerKnob
+            label="Shift"
+            value={settings.prepShiftCents}
+            min={-2400} max={2400} defaultValue={0}
+            size={42}
+            color={accentPanel}
+            formatValue={(v) => `${v > 0 ? '+' : ''}${Math.round(v)}c`}
+            onLiveChange={(v) => setField('prepShiftCents', Math.round(v))}
+            onCommit={(v) => commitPrep({ prepShiftCents: Math.round(v) })}
+          />
+          <span className="sampler-prep-note">
+            {prepBypassed
+              ? 'Bypassed — raw sample, no bake'
+              : 'Baked once, off the audio thread'}
+          </span>
         </div>
       </section>
 
@@ -604,8 +1051,78 @@ export default function SamplerPanelContent({ regionId, onClose }) {
           }}
         />
           </div>
+          <div className="sampler-loop-mode-row">
+            <Seg
+              sm
+              opts={LOOP_MODES}
+              val={settings.loopMode ?? 0}
+              set={(v) => commitField('loopMode', v)}
+            />
+            <Chk
+              val={settings.exitLoopOnRelease}
+              set={(v) => commitField('exitLoopOnRelease', v)}
+              label="Exit on release"
+            />
+          </div>
         </section>
       </div>
+
+      {/* MANGLE sits last in the playback chain and is the only stage that is
+          per NOTE rather than per slot-render: every sounding note gets its own
+          effect instance before the voices sum. Placed after trim/loop because
+          that is the order the audio actually travels. */}
+      <section className={`sampler-range-card sampler-range-card--mangle${mangleOn ? '' : ' is-bypassed'}`}>
+        <header>
+          <i /><span>Mangle</span>
+          {mangleOn && <span className="sampler-mangle-tag">per note</span>}
+          <button
+            type="button"
+            onClick={() => commit({ mangleMode: MANGLE_OFF })}
+            disabled={!mangleOn}
+            title="Bypass MANGLE for this slot — the stream is passed through untouched"
+          >
+            Off
+          </button>
+        </header>
+        <div className="sampler-mangle-body">
+          <label className="sampler-prep-algo sampler-mangle-mode">
+            <span>Mode</span>
+            <SelGrouped
+              val={settings.mangleMode ?? 0}
+              set={(v) => commitField('mangleMode', v)}
+              groups={MANGLE_GROUPS}
+              offLabel="Off"
+            />
+          </label>
+          <SamplerKnob
+            label="Amount"
+            value={(settings.mangleAmount ?? 0) * 100}
+            min={0} max={100}
+            defaultValue={mangleAmountIsBipolar(settings.mangleMode) ? 50 : 0}
+            size={42}
+            color={mangleOn ? accentPanel : muted}
+            formatValue={(v) => `${Math.round(v)}%`}
+            onLiveChange={(v) => setField('mangleAmount', Math.round(v) / 100)}
+            onCommit={(v) => commit({ mangleAmount: Math.round(v) / 100 })}
+          />
+          <SamplerKnob
+            label="Mix"
+            value={(settings.mangleMix ?? 1) * 100}
+            min={0} max={100} defaultValue={100}
+            size={42}
+            color={mangleOn ? accentPanel : muted}
+            formatValue={(v) => `${Math.round(v)}%`}
+            onLiveChange={(v) => setField('mangleMix', Math.round(v) / 100)}
+            onCommit={(v) => commit({ mangleMix: Math.round(v) / 100 })}
+          />
+          <span className="sampler-prep-note sampler-mangle-note">
+            {!mangleOn
+              ? 'Bypassed — stream passed through untouched'
+              : (MANGLE_HINTS[settings.mangleMode]
+                 || `${mangleModeLabel(settings.mangleMode)} — Amount drives, Mix blends`)}
+          </span>
+        </div>
+      </section>
 
       <section className="sampler-card sampler-process-card">
         <SectionLabel>Process (applies immediately)</SectionLabel>
@@ -877,7 +1394,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
       <div className="sampler-panel-tabbar">
         <div className="sampler-panel-tabs">
           <Tabs
-            tabs={[{ id: 'sample', label: 'Sample' }, { id: 'playback', label: 'Playback' }]}
+            tabs={[{ id: 'sample', label: 'Sample' }, { id: 'playback', label: 'Playback' }, { id: 'mod', label: 'Modulation' }]}
             active={tab}
             onSelect={setTab}
           />
@@ -885,7 +1402,9 @@ export default function SamplerPanelContent({ regionId, onClose }) {
       </div>
       <div className="sampler-panel-scroll">
         <div className="sampler-panel-content">
-          {tab === 'sample' ? renderSample() : renderPlayback()}
+          {tab === 'sample' && renderSample()}
+          {tab === 'playback' && renderPlayback()}
+          {tab === 'mod' && <ModulationRack regionId={regionId} bpm={bpm} />}
         </div>
       </div>
     </div>

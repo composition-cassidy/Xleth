@@ -277,13 +277,14 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // non-monotonic domain would be a real corruption.
   {
     api.apexSetBand(TRACK, nodeId, 0, JSON.stringify({
-      nodes: [{ in: 12, out: 40 }, { in: -50, out: -50 }, { in: 0, out: 0 }, { in: 0, out: 9 }],
+      nodes: [{ in: 12, out: 40 }, { in: -150, out: -150 }, { in: 0, out: 0 }, { in: 0, out: 9 }],
       tensions: [5, -5],
     }));
     const s = JSON.parse(api.apexGetBand(TRACK, nodeId, 0));
     const sorted   = s.nodes.every((n, i) => i === 0 || n.in > s.nodes[i - 1].in);
-    const clamped  = s.nodes.every((n) => n.in >= -24.001 && n.in <= 12.001
-                                       && n.out >= -24.001 && n.out <= 12.001);
+    // Box is [-96, +12] dB: -96 is the silence end, not a working floor.
+    const clamped  = s.nodes.every((n) => n.in >= -96.001 && n.in <= 12.001
+                                       && n.out >= -96.001 && n.out <= 12.001);
     const tensOk   = s.tensions.length === s.nodes.length - 1
                   && s.tensions.every((t) => t >= -1.001 && t <= 1.001);
     const deduped  = s.nodes.length === 3; // the duplicate in:0 is dropped
@@ -295,10 +296,10 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   {
     ok(api.apexResetBand(TRACK, nodeId, 0) === true, 'apexResetBandCurve → true');
     const u = JSON.parse(api.apexGetBand(TRACK, nodeId, 0));
-    ok(u.nodes.length === 2 && u.nodes[0].in === -24 && u.nodes[0].out === -24
+    ok(u.nodes.length === 2 && u.nodes[0].in === -96 && u.nodes[0].out === -96
        && u.nodes[1].in === 12 && u.nodes[1].out === 12
        && u.tensions.length === 1 && u.tensions[0] === 0,
-       'reset produces the unity curve (-24,-24)→(12,12), tension 0');
+       'reset produces the unity curve (-96,-96)→(12,12), tension 0');
     // Put the real curve back for the save/load test below.
     api.apexSetBand(TRACK, nodeId, 0,
       JSON.stringify({ nodes: CURVES[0].nodes, tensions: CURVES[0].tensions }));
@@ -364,7 +365,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
   // ── 5. Metering payload ───────────────────────────────────────────────────
   group('5. batched metering payload at ~30 Hz');
 
-  const APEX_BUCKET_BYTES = 4176;
+  const APEX_BUCKET_BYTES = 4192;
 
   // Before enable: well-formed empty payload, never a throw.
   {
@@ -434,21 +435,23 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
         outputPeakDb:     dv.getFloat32(20, LE),
         bandGrDb:         [0, 1, 2, 3].map((i) => dv.getFloat32(24 + i * 4, LE)),
         bandOutDb:        [0, 1, 2, 3].map((i) => dv.getFloat32(40 + i * 4, LE)),
-        lookaheadSamples: dv.getFloat32(56, LE),
-        latencySamples:   dv.getFloat32(60, LE),
-        splitLoHz:        dv.getFloat32(64, LE),
-        splitHiHz:        dv.getFloat32(68, LE),
-        sampleRate:       dv.getFloat32(72, LE),
-        spectrumBins:     dv.getFloat32(76, LE),
+        bandInDb:         [0, 1, 2, 3].map((i) => dv.getFloat32(56 + i * 4, LE)),
+        lookaheadSamples: dv.getFloat32(72, LE),
+        latencySamples:   dv.getFloat32(76, LE),
+        splitLoHz:        dv.getFloat32(80, LE),
+        splitHiHz:        dv.getFloat32(84, LE),
+        sampleRate:       dv.getFloat32(88, LE),
+        spectrumBins:     dv.getFloat32(92, LE),
       };
       const spectrum = [];
-      for (let i = 0; i < 1024; i++) spectrum.push(dv.getFloat32(80 + i * 4, LE));
+      for (let i = 0; i < 1024; i++) spectrum.push(dv.getFloat32(96 + i * 4, LE));
 
       console.log('\n  ── sample metering payload (one bucket, decoded) ──');
       console.log('  ' + JSON.stringify({
         ...b,
         bandGrDb:  b.bandGrDb.map((v) => +v.toFixed(2)),
         bandOutDb: b.bandOutDb.map((v) => +v.toFixed(2)),
+        bandInDb:  b.bandInDb.map((v) => +v.toFixed(2)),
         spectrum:  `Float32[${spectrum.length}] first8=[${
           spectrum.slice(0, 8).map((v) => v.toFixed(1)).join(', ')}] ...`,
       }, null, 0));
@@ -472,6 +475,18 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
       ok(Math.abs(b.sampleRate - api.getLatency(TRACK, nodeId).sampleRate) < 1,
          `payload sampleRate ${b.sampleRate} matches the engine`);
       ok(b.bandGrDb.every((v) => v >= 0), 'per-band gain reduction is reported as positive dB');
+      // bandInDb is what the curve editor puts its moving dot on: the level the
+      // band's transfer curve was actually read at. With a live 0 dBFS-ish tone
+      // every band must report a real level, and never a level above the input.
+      ok(b.bandInDb.length === 4 && b.bandInDb.every((v) => Number.isFinite(v) && v <= 12),
+         `per-band detector level decodes (${b.bandInDb.map((v) => v.toFixed(1)).join(', ')} dB)`);
+      // This harness plays an empty timeline, so the honest check is that the
+      // detector agrees with the input rather than inventing a level: silence
+      // in, silence out; signal in, a MASTER reading at or below that input.
+      ok(b.inputPeakDb <= -119 ? b.bandInDb.every((v) => v <= -119)
+                               : b.bandInDb[3] <= b.inputPeakDb + 0.5,
+         `MASTER detector level tracks the input (in ${b.inputPeakDb.toFixed(1)}, ` +
+         `det ${b.bandInDb[3].toFixed(1)} dB)`);
     }
   }
 

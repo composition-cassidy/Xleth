@@ -9,8 +9,6 @@ import { editCursor } from '../../services/EditCursor.js';
 import { PPQ } from '../../constants/timeline.js';
 import { timelineEvents } from '../../timelineEvents.js';
 
-const TICKS_PER_16TH = 240;
-
 declare const window: Window & {
   xleth?: {
     timeline?: {
@@ -32,7 +30,7 @@ function QuickNotationContent({ onClose }: { onClose: () => void }) {
   const [previewOn, setPreviewOn] = useState(true);
   const [symbolKeyOpen, setSymbolKeyOpen] = useState(false);
   const [parseResult, setParseResult] = useState<{
-    placements: Array<{ syllableIndex: number; startTick: number; audioOffsetPercent: number }>;
+    placements: Array<{ syllableIndex: number; startTick: number; lengthTicks: number; audioOffsetPercent: number }>;
     errors: Array<{ char: string; position: number; reason: string }>;
     totalTicks: number;
   }>({ placements: [], errors: [], totalTicks: 0 });
@@ -79,7 +77,7 @@ function QuickNotationContent({ onClose }: { onClose: () => void }) {
       trackId: focusedTrackId,
       regionId,
       positionTicks: placement.startTick + cursorTick,
-      durationTicks: TICKS_PER_16TH,
+      durationTicks: placement.lengthTicks,
       regionOffsetTicks: Math.round(placement.audioOffsetPercent * regionDurationTicks / 100),
       syllableIndex: placement.syllableIndex,
     }));

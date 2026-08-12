@@ -11,12 +11,15 @@ const TICKS_PER_32ND = 120
  * @param {number} offsetPercent audioOffsetPercent for modifier tokens (', #, x)
  * @returns {{ placements: Array, errors: Array, totalTicks: number }}
  *
+ * Each placement carries a `lengthTicks` — the clip's true duration, so a 32nd
+ * symbol trims the sample to a 32nd rather than inheriting the 16th default.
+ *
  * Token grammar (base unit = 16th note = 240 ticks at 960 PPQ):
  *   N          digit 1–9, 16th note (240t), audioOffsetPercent = 0
  *   N*         8th note (480t), audioOffsetPercent = 0
  *   N**        quarter (960t), etc. (each * doubles duration)
  *   N'  N#     32nd note (120t), audioOffsetPercent = offsetPercent
- *   Nx         TWO 32nd clips back-to-back at offsetPercent, 240t total
+ *   Nx         TWO 32nd clips (120t each) back-to-back at offsetPercent, 240t total
  *   _          16th rest (240t, no placement)
  *   /          32nd rest (120t, no placement)
  *   ~          no-op, zero ticks
@@ -60,7 +63,7 @@ export function parseNotation(str, syllableCount, cursorTick, offsetPercent) {
         while (i < str.length && str[i] === '*') { starCount++; i++ }
         const durationTicks = TICKS_PER_16TH * Math.pow(2, starCount)
         if (syllableIndex < syllableCount) {
-          placements.push({ syllableIndex, startTick: tick, audioOffsetPercent: 0 })
+          placements.push({ syllableIndex, startTick: tick, lengthTicks: durationTicks, audioOffsetPercent: 0 })
         } else {
           errors.push({ char, position, reason: `Syllable ${syllableIndex + 1} out of range` })
         }
@@ -72,7 +75,7 @@ export function parseNotation(str, syllableCount, cursorTick, offsetPercent) {
       if (i < str.length && (str[i] === "'" || str[i] === '#')) {
         i++
         if (syllableIndex < syllableCount) {
-          placements.push({ syllableIndex, startTick: tick, audioOffsetPercent: offsetPercent })
+          placements.push({ syllableIndex, startTick: tick, lengthTicks: TICKS_PER_32ND, audioOffsetPercent: offsetPercent })
         } else {
           errors.push({ char, position, reason: `Syllable ${syllableIndex + 1} out of range` })
         }
@@ -84,8 +87,8 @@ export function parseNotation(str, syllableCount, cursorTick, offsetPercent) {
       if (i < str.length && str[i] === 'x') {
         i++
         if (syllableIndex < syllableCount) {
-          placements.push({ syllableIndex, startTick: tick, audioOffsetPercent: offsetPercent })
-          placements.push({ syllableIndex, startTick: tick + TICKS_PER_32ND, audioOffsetPercent: offsetPercent })
+          placements.push({ syllableIndex, startTick: tick, lengthTicks: TICKS_PER_32ND, audioOffsetPercent: offsetPercent })
+          placements.push({ syllableIndex, startTick: tick + TICKS_PER_32ND, lengthTicks: TICKS_PER_32ND, audioOffsetPercent: offsetPercent })
         } else {
           errors.push({ char, position, reason: `Syllable ${syllableIndex + 1} out of range` })
         }
@@ -95,7 +98,7 @@ export function parseNotation(str, syllableCount, cursorTick, offsetPercent) {
 
       // Plain N — 16th note, audioOffsetPercent = 0
       if (syllableIndex < syllableCount) {
-        placements.push({ syllableIndex, startTick: tick, audioOffsetPercent: 0 })
+        placements.push({ syllableIndex, startTick: tick, lengthTicks: TICKS_PER_16TH, audioOffsetPercent: 0 })
       } else {
         errors.push({ char, position, reason: `Syllable ${syllableIndex + 1} out of range` })
       }

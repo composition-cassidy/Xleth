@@ -3,6 +3,7 @@
 #include <cmath>
 #include <iostream>
 #include <set>
+#include <unordered_map>
 
 namespace {
 int sanitizeProjectGlobalStretchMethod(int method) {
@@ -586,17 +587,32 @@ std::vector<const Clip*> Timeline::getClipsInRange(TickTime start, TickTime end)
     return out;
 }
 
-bool Timeline::moveClip(int clipId, TickTime newPosition) {
+bool Timeline::moveClip(int clipId, int newTrackId, TickTime newPosition) {
     auto it = m_clips.find(clipId);
     if (it == m_clips.end()) {
         std::cout << "[Timeline] ERROR moveClip: id=" << clipId << " not found\n";
         return false;
     }
+    auto trackIt = m_tracks.find(newTrackId);
+    if (trackIt == m_tracks.end()) {
+        std::cout << "[Timeline] ERROR moveClip: trackId="
+                  << newTrackId << " not found\n";
+        return false;
+    }
+    // Clips live only on Clip tracks — refuse a cross-move onto a Pattern
+    // track (pattern tracks exchange PatternBlocks, not Clips).
+    if (trackIt->second.type == TrackInfo::Type::Pattern) {
+        std::cout << "[Timeline] ERROR moveClip: trackId=" << newTrackId
+                  << " is a Pattern track; clips cannot move onto pattern tracks\n";
+        return false;
+    }
+    int oldTrackId  = it->second.trackId;
     TickTime oldPos = it->second.position;
+    it->second.trackId  = newTrackId;
     it->second.position = newPosition;
     std::cout << "[Timeline] Moved clip id=" << clipId
-              << " from=" << oldPos.ticks
-              << " to=" << newPosition.ticks << "\n";
+              << " track " << oldTrackId << "→" << newTrackId
+              << " pos " << oldPos.ticks << "→" << newPosition.ticks << "\n";
     return true;
 }
 
@@ -1474,10 +1490,18 @@ void Timeline::materializeActive() {
         }
     }
     m_activeSnapshotName = it->name;
+    std::set<int> oldBehindGrid;
+    for (const auto& layer : m_gridLayout.fullscreenLayers)
+        if (layer.placement == FullscreenLayerPlacement::BehindGrid && layer.trackId >= 0)
+            oldBehindGrid.insert(layer.trackId);
     applyGridSnapshot(m_gridLayout, *it);
+    // Same "newly BehindGrid" guard as setFullscreenLayers() — switching
+    // snapshots must not re-force hold-last-frame on a track that was
+    // already playing that role (and may have been explicitly turned off).
     for (const auto& layer : m_gridLayout.fullscreenLayers) {
         if (layer.placement != FullscreenLayerPlacement::BehindGrid
             || layer.trackId < 0) continue;
+        if (oldBehindGrid.count(layer.trackId)) continue;
         auto track = m_tracks.find(layer.trackId);
         if (track != m_tracks.end()) track->second.videoHoldLastFrame = true;
     }
@@ -1769,13 +1793,21 @@ Timeline::PlacementKind Timeline::setPlacementZOrder(int trackId, int zOrder) {
 }
 
 void Timeline::setFullscreenLayers(std::vector<FullscreenLayer> layers) {
+    std::set<int> oldBehindGrid;
+    for (const auto& fl : m_gridLayout.fullscreenLayers)
+        if (fl.placement == FullscreenLayerPlacement::BehindGrid && fl.trackId >= 0)
+            oldBehindGrid.insert(fl.trackId);
     m_gridLayout.fullscreenLayers = std::move(layers);
     syncActiveToVector();
-    // Auto-enable hold-last-frame on every BehindGrid layer's track — every
-    // Sparta Remix expects the backdrop to persist through gaps.
+    // Auto-enable hold-last-frame the moment a track newly becomes a
+    // BehindGrid layer — every Sparta Remix expects a fresh backdrop to
+    // persist through gaps. Tracks that were already BehindGrid are left
+    // alone so a user's explicit "off" survives further layer edits instead
+    // of being re-forced on every call.
     for (const auto& fl : m_gridLayout.fullscreenLayers) {
         if (fl.placement != FullscreenLayerPlacement::BehindGrid) continue;
         if (fl.trackId < 0) continue;
+        if (oldBehindGrid.count(fl.trackId)) continue;
         auto it = m_tracks.find(fl.trackId);
         if (it != m_tracks.end())
             it->second.videoHoldLastFrame = true;
@@ -1798,9 +1830,19 @@ void Timeline::removeFullscreenLayersForTrack(int trackId) {
 void Timeline::restoreFullscreenLayer(size_t index, const FullscreenLayer& layer) {
     auto& v = m_gridLayout.fullscreenLayers;
     if (index > v.size()) index = v.size();
+    // Same "newly BehindGrid" guard as setFullscreenLayers(): only default
+    // hold-last-frame on if the track isn't already playing that role
+    // elsewhere in the layer list (e.g. duplicate restore).
+    const bool alreadyBehindGrid = layer.placement == FullscreenLayerPlacement::BehindGrid
+        && layer.trackId >= 0
+        && std::any_of(v.begin(), v.end(), [&](const FullscreenLayer& fl) {
+               return fl.trackId == layer.trackId
+                   && fl.placement == FullscreenLayerPlacement::BehindGrid;
+           });
     v.insert(v.begin() + static_cast<std::ptrdiff_t>(index), layer);
     syncActiveToVector();
-    if (layer.placement == FullscreenLayerPlacement::BehindGrid && layer.trackId >= 0) {
+    if (!alreadyBehindGrid && layer.placement == FullscreenLayerPlacement::BehindGrid
+        && layer.trackId >= 0) {
         auto it = m_tracks.find(layer.trackId);
         if (it != m_tracks.end())
             it->second.videoHoldLastFrame = true;
@@ -2178,8 +2220,14 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
         m_tracks.clear();
         m_trackFolders.clear();
         m_trackRootOrder.clear();
+        // Remember which tracks had an explicit videoHoldLastFrame key in the
+        // saved file (true OR false) so the BehindGrid migration default below
+        // never clobbers a value the user actually saved.
+        std::unordered_map<int, bool> explicitHoldByTrackId;
         for (const auto& t : j.at("tracks")) {
             TrackInfo track = t.get<TrackInfo>();  // ADL from_json
+            if (t.contains("videoHoldLastFrame"))
+                explicitHoldByTrackId[track.id] = track.videoHoldLastFrame;
             m_tracks[track.id] = track;
         }
 
@@ -2270,14 +2318,17 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
                     continue;
                 }
                 migratedRegions.insert(p.regionId);
-                if (pj.contains("rootNote"))         pj.at("rootNote").get_to(r.rootNote);
+                // Per-sample fields land on slot 0 — the same destination the
+                // region-level legacy migration uses (SampleRegion.cpp from_json).
+                SampleSlot& s0 = r.slot(0);
+                if (pj.contains("rootNote"))         pj.at("rootNote").get_to(s0.rootNote);
+                if (pj.contains("loopEnabled"))      pj.at("loopEnabled").get_to(s0.loopEnabled);
+                if (pj.contains("loopStart"))        pj.at("loopStart").get_to(s0.loopStart);
+                if (pj.contains("loopEnd"))          pj.at("loopEnd").get_to(s0.loopEnd);
                 if (pj.contains("attackMs"))         pj.at("attackMs").get_to(r.attackMs);
                 if (pj.contains("decayMs"))          pj.at("decayMs").get_to(r.decayMs);
                 if (pj.contains("sustain"))          pj.at("sustain").get_to(r.sustain);
                 if (pj.contains("releaseMs"))        pj.at("releaseMs").get_to(r.releaseMs);
-                if (pj.contains("loopEnabled"))      pj.at("loopEnabled").get_to(r.loopEnabled);
-                if (pj.contains("loopStart"))        pj.at("loopStart").get_to(r.loopStart);
-                if (pj.contains("loopEnd"))          pj.at("loopEnd").get_to(r.loopEnd);
                 if (pj.contains("crossfadeEnabled")) pj.at("crossfadeEnabled").get_to(r.crossfadeEnabled);
             }
         }
@@ -2571,14 +2622,21 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
             }
 
             // ── Post-processing shared by both formats ────────────────────────
-            // Auto-enable hold-last-frame on every BehindGrid track (the
-            // setFullscreenLayers() invariant) without going through the setter
-            // — the setter logs and we don't want to double-log on load.
+            // Restore each BehindGrid track's saved videoHoldLastFrame value —
+            // materializeActive() (called above for the snapshot-container
+            // format) may have force-enabled it while projecting a snapshot,
+            // which must not override what the user actually saved. Files
+            // that predate this field (no explicit key) still get the
+            // BehindGrid migration default of on, matching legacy behavior.
             for (const auto& fl : m_gridLayout.fullscreenLayers) {
                 if (fl.placement != FullscreenLayerPlacement::BehindGrid) continue;
                 if (fl.trackId < 0) continue;
                 auto it = m_tracks.find(fl.trackId);
-                if (it != m_tracks.end()) it->second.videoHoldLastFrame = true;
+                if (it == m_tracks.end()) continue;
+                auto explicitIt = explicitHoldByTrackId.find(fl.trackId);
+                it->second.videoHoldLastFrame = (explicitIt != explicitHoldByTrackId.end())
+                    ? explicitIt->second
+                    : true;
             }
 
             // ── zOrder migration (lossless) ──────────────────────────────────

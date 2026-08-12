@@ -62,9 +62,9 @@ std::string RemoveClipCommand::describe() const {
 
 // ─── MoveClipCommand ──────────────────────────────────────────────────────────
 
-MoveClipCommand::MoveClipCommand(int clipId, TickTime newPosition,
+MoveClipCommand::MoveClipCommand(int clipId, int newTrackId, TickTime newPosition,
                                  const Timeline& timeline)
-    : clipId_(clipId), newPosition_(newPosition)
+    : clipId_(clipId), newTrackId_(newTrackId), newPosition_(newPosition)
 {
     const Clip* c = timeline.getClip(clipId);
     if (c) {
@@ -78,11 +78,11 @@ MoveClipCommand::MoveClipCommand(int clipId, TickTime newPosition,
 }
 
 void MoveClipCommand::execute(Timeline& timeline) {
-    timeline.moveClip(clipId_, newPosition_);
+    timeline.moveClip(clipId_, newTrackId_, newPosition_);
 }
 
 void MoveClipCommand::undo(Timeline& timeline) {
-    timeline.moveClip(clipId_, oldPosition_);
+    timeline.moveClip(clipId_, oldTrackId_, oldPosition_);
 }
 
 std::string MoveClipCommand::describe() const {
@@ -1568,7 +1568,7 @@ SetSamplerSettingsCommand::SetSamplerSettingsCommand(int regionId,
 {
     const SampleRegion* r = timeline.getRegion(regionId);
     if (r) {
-        oldSettings_.rootNote         = r->rootNote;
+        oldSettings_.slots            = r->slots;
         oldSettings_.attackMs         = r->attackMs;
         oldSettings_.decayMs          = r->decayMs;
         oldSettings_.sustain          = r->sustain;
@@ -1589,23 +1589,14 @@ SetSamplerSettingsCommand::SetSamplerSettingsCommand(int regionId,
         oldSettings_.pitchEnvAttackTension = r->pitchEnvAttackTension;
         oldSettings_.pitchEnvDecayTension  = r->pitchEnvDecayTension;
         oldSettings_.pitchEnvReleaseTension = r->pitchEnvReleaseTension;
-        oldSettings_.loopEnabled      = r->loopEnabled;
-        oldSettings_.loopStart        = r->loopStart;
-        oldSettings_.loopEnd          = r->loopEnd;
         oldSettings_.crossfadeEnabled = r->crossfadeEnabled;
-        oldSettings_.smpStart         = r->smpStart;
-        oldSettings_.smpLength        = r->smpLength;
-        oldSettings_.declickMs         = r->declickMs;
-        oldSettings_.fadeInMs         = r->fadeInMs;
-        oldSettings_.fadeOutMs        = r->fadeOutMs;
-        oldSettings_.crossfadeSamples = r->crossfadeSamples;
-        oldSettings_.dcOffsetRemoved  = r->dcOffsetRemoved;
-        oldSettings_.normalized       = r->normalized;
-        oldSettings_.polarityReversed = r->polarityReversed;
-        oldSettings_.reversed         = r->reversed;
         oldSettings_.monoEnabled       = r->monoEnabled;
         oldSettings_.portamentoEnabled = r->portamentoEnabled;
         oldSettings_.portamentoTimeMs  = r->portamentoTimeMs;
+        oldSettings_.portamentoMode    = r->portamentoMode;
+        oldSettings_.portamentoCurve   = r->portamentoCurve;
+        oldSettings_.legatoEnabled     = r->legatoEnabled;
+        oldSettings_.voiceCount        = r->voiceCount;
         oldSettings_.arpEnabled        = r->arpEnabled;
         oldSettings_.arpTempoSync      = r->arpTempoSync;
         oldSettings_.arpDivision       = r->arpDivision;
@@ -1638,6 +1629,7 @@ SetSamplerSettingsCommand::SetSamplerSettingsCommand(int regionId,
         oldSettings_.lfoPitchAttackMs      = r->lfoPitchAttackMs;
         oldSettings_.lfoPitchDelayMs       = r->lfoPitchDelayMs;
         oldSettings_.lfoPitchWaveform      = r->lfoPitchWaveform;
+        oldSettings_.modulation            = r->modulation;
     } else {
         std::cerr << "[Undo] ERROR SetSamplerSettingsCommand: region id=" << regionId
                   << " not found in timeline\n";
@@ -1645,7 +1637,8 @@ SetSamplerSettingsCommand::SetSamplerSettingsCommand(int regionId,
 }
 
 static void applySamplerSettings(SampleRegion* r, const SamplerSettings& s) {
-    r->rootNote         = s.rootNote;
+    r->slots            = s.slots;
+    if (r->slots.empty()) r->slots.emplace_back();   // invariant: never zero slots
     r->attackMs         = s.attackMs;
     r->decayMs          = s.decayMs;
     r->sustain          = s.sustain;
@@ -1666,23 +1659,14 @@ static void applySamplerSettings(SampleRegion* r, const SamplerSettings& s) {
     r->pitchEnvAttackTension = s.pitchEnvAttackTension;
     r->pitchEnvDecayTension  = s.pitchEnvDecayTension;
     r->pitchEnvReleaseTension = s.pitchEnvReleaseTension;
-    r->loopEnabled      = s.loopEnabled;
-    r->loopStart        = s.loopStart;
-    r->loopEnd          = s.loopEnd;
     r->crossfadeEnabled = s.crossfadeEnabled;
-    r->smpStart         = s.smpStart;
-    r->smpLength        = s.smpLength;
-    r->declickMs         = s.declickMs;
-    r->fadeInMs         = s.fadeInMs;
-    r->fadeOutMs        = s.fadeOutMs;
-    r->crossfadeSamples = s.crossfadeSamples;
-    r->dcOffsetRemoved  = s.dcOffsetRemoved;
-    r->normalized       = s.normalized;
-    r->polarityReversed = s.polarityReversed;
-    r->reversed         = s.reversed;
     r->monoEnabled       = s.monoEnabled;
     r->portamentoEnabled = s.portamentoEnabled;
     r->portamentoTimeMs  = s.portamentoTimeMs;
+    r->portamentoMode    = s.portamentoMode;
+    r->portamentoCurve   = s.portamentoCurve;
+    r->legatoEnabled     = s.legatoEnabled;
+    r->voiceCount        = s.voiceCount;
     r->arpEnabled        = s.arpEnabled;
     r->arpTempoSync      = s.arpTempoSync;
     r->arpDivision       = s.arpDivision;
@@ -1715,6 +1699,7 @@ static void applySamplerSettings(SampleRegion* r, const SamplerSettings& s) {
     r->lfoPitchAttackMs      = s.lfoPitchAttackMs;
     r->lfoPitchDelayMs       = s.lfoPitchDelayMs;
     r->lfoPitchWaveform      = s.lfoPitchWaveform;
+    r->modulation            = s.modulation;
 }
 
 void SetSamplerSettingsCommand::execute(Timeline& timeline) {

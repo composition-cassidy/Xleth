@@ -10,8 +10,11 @@
 //   (a) band-split reconstruction is magnitude-flat within +/-0.5 dB with every
 //       band at COMP OFF and BAND MIX at 100 %, for all four LR2/LR4 slope
 //       combinations
+//   (a2) a PARTIAL BAND MIX is phase-matched, not just magnitude-flat: with
+//       every band at COMP OFF the response stays flat within +/-0.5 dB at 25 /
+//       50 / 75 % mix too (before the dry-leg allpass this combed to -70..-89 dB)
 //   (b) LOOKAHEAD at 10 ms introduces exactly the reported latency — proven
-//       twice: as a literal impulse position on the BAND MIX dry leg, and as a
+//       twice: as the onset position of the BAND MIX dry leg, and as a
 //       bit-exact shift of the band leg
 //   (c) the dry leg of BAND MIX is sample-aligned with the band leg — proven as
 //       a null test between the 50 % render and the arithmetic mean of the
@@ -348,9 +351,107 @@ static void testCurveLutCompilation()
         // A non-zero tension must actually bend the curve.
         const bool bends = std::abs(xleth_apex::tensionWarp(0.5f, 1.0f)
                                     - xleth_apex::tensionWarp(0.5f, 0.0f)) > 0.1f;
-        CHECK(ok,    "tension warp is not monotone / pinned");
-        CHECK(bends, "tension has no effect on the segment shape");
-        report("curve: per-segment tension", ok && bends, "");
+        // ...with BOUNDED end slopes. The old power warp (t^(4^-tension)) had
+        // an INFINITE slope at one end for any non-zero tension, which is what
+        // made bent segments leave their node vertically and then snap over.
+        bool bounded = true;
+        for (float tension : { -1.0f, -0.5f, 0.5f, 1.0f })
+        {
+            constexpr float h = 1.0e-4f;
+            const float s0 = (xleth_apex::tensionWarp(h, tension)
+                              - xleth_apex::tensionWarp(0.0f, tension)) / h;
+            const float s1 = (xleth_apex::tensionWarp(1.0f, tension)
+                              - xleth_apex::tensionWarp(1.0f - h, tension)) / h;
+            bounded = bounded && s0 >= -0.01f && s0 <= 3.01f
+                              && s1 >= -0.01f && s1 <= 3.01f;
+        }
+        CHECK(ok,      "tension warp is not monotone / pinned");
+        CHECK(bends,   "tension has no effect on the segment shape");
+        CHECK(bounded, "tension warp has an unbounded end slope");
+        report("curve: per-segment tension", ok && bends && bounded, "");
+    }
+
+    // Corner rounding. The editor's complaint was visible kinks at the nodes;
+    // the fix must round them WITHOUT softening the straight parts and WITHOUT
+    // letting the curve escape past either segment (a maximizer that exceeds
+    // its own authored ceiling on the way into the knee is worse than a kink).
+    {
+        const std::vector<CurveNode> nodes = {
+            { xleth_apex::kCurveMinDb, xleth_apex::kCurveMinDb },
+            { -12.0f, -12.0f },
+            { 12.0f, -12.0f }
+        };
+        const std::vector<float> tens = { 0.0f, 0.0f };
+
+        auto eval = [&](float db)
+        {
+            return xleth_apex::evalCurveDb(nodes.data(), 3, tens.data(), 2, db);
+        };
+
+        // Straight parts stay EXACT outside the corner window
+        // (0.28 * min(84, 24) = 6.7 dB).
+        bool exact = true;
+        for (float db : { -60.0f, -40.0f, -30.0f, -22.0f })
+            exact = exact && std::abs(eval(db) - db) < 1.0e-3f;
+        for (float db : { 0.0f, 6.0f, 11.0f })
+            exact = exact && std::abs(eval(db) + 12.0f) < 1.0e-3f;
+
+        // The corner is CUT, not passed through, and never overshot.
+        const bool cuts = eval(-12.0f) < -12.0f && eval(-12.0f) > -14.0f;
+        bool inside = true;
+        for (float db = xleth_apex::kCurveMinDb; db <= 12.0f; db += 0.05f)
+        {
+            const float v = eval(db);
+            inside = inside && v <= -12.0f + 1.0e-3f && v <= db + 1.0e-3f;
+        }
+
+        // No kink: consecutive slopes may differ only by curvature.
+        constexpr float h = 0.02f;
+        float worst = 0.0f, prevSlope = 0.0f;
+        bool  first = true;
+        for (float db = xleth_apex::kCurveMinDb; db < 11.9f; db += h)
+        {
+            const float slope = (eval(db + h) - eval(db)) / h;
+            if (!first) worst = std::max(worst, std::abs(slope - prevSlope));
+            prevSlope = slope;
+            first = false;
+        }
+        const bool smooth = worst < 0.02f;
+
+        CHECK(exact,  "corner rounding softened a straight segment");
+        CHECK(cuts,   "corner is not rounded at the node");
+        CHECK(inside, "rounded corner overshoots past a segment");
+        CHECK(smooth, "curve still has a slope discontinuity at a node");
+        report("curve: corners are rounded, not kinked",
+               exact && cuts && inside && smooth,
+               "max slope step " + std::to_string(worst));
+    }
+
+    // The authoring box must reach down to (effective) silence: a node placed
+    // at -60 dB has to shape the gain there, which the old -24 dB floor made
+    // impossible — everything below -24 shared one held-gain extrapolation.
+    {
+        const std::vector<CurveNode> nodes = {
+            { xleth_apex::kCurveMinDb, xleth_apex::kCurveMinDb },
+            { -60.0f, -40.0f },
+            { 12.0f, 12.0f }
+        };
+        const std::vector<float> tens = { 0.0f, 0.0f };
+        xleth_apex::CurveLut lut;
+        xleth_apex::buildCurveLut(nodes.data(), 3, tens.data(), 2, lut);
+
+        const bool floorIsDeep = xleth_apex::kCurveMinDb <= -90.0f;
+        // -80 dB in sits on the first segment, clear of the fillet window
+        // around the -60 node: out = -96 + 56 * (16/36) = -71.11, i.e. +8.89 dB
+        // of upward gain. Under the old -24 dB floor this whole region was
+        // pinned to the endpoint gain and could not be shaped at all.
+        const float gAt80 = xleth_apex::gainToDb(lut.lookup(-80.0f));
+        const bool shapesQuiet = std::abs(gAt80 - 8.889f) < 0.3f;
+        CHECK(floorIsDeep,  "curve floor is not deep enough to read as silence");
+        CHECK(shapesQuiet,  "a node below -24 dB does not shape the gain there");
+        report("curve: authoring box reaches silence",
+               floorIsDeep && shapesQuiet,
+               std::to_string(gAt80) + " dB at -80 in");
     }
 }
 
@@ -571,7 +672,7 @@ static void testVisualizationPayload()
     const bool gotBuckets    = count > 0;
     const bool wholeBuckets  = (bytes % sizeof(xleth::viz::ApexBucket)) == 0;
     const bool typeTag       = a.getVisualizationType() == xleth::viz::kVizTypeApex;
-    const bool bucketIs4176  = sizeof(xleth::viz::ApexBucket) == 4176;
+    const bool bucketIs4192  = sizeof(xleth::viz::ApexBucket) == 4192;
 
     bool  peakBinOk    = false;
     bool  peakLevelOk  = false;
@@ -632,7 +733,7 @@ static void testVisualizationPayload()
     const bool emptyAfterDisable =
         a.drainVizFrames(scratch.data(), scratch.size()) == 0;
 
-    CHECK(bucketIs4176,      "ApexBucket is not 4176 bytes");
+    CHECK(bucketIs4192,      "ApexBucket is not 4192 bytes");
     CHECK(typeTag,           "getVisualizationType() did not report kVizTypeApex");
     CHECK(emptyBeforeEnable, "buckets were produced before visualization was enabled");
     CHECK(gotBuckets,        "no viz buckets were produced while enabled");
@@ -646,7 +747,7 @@ static void testVisualizationPayload()
     CHECK(emptyAfterDisable, "buckets were still produced after disable");
 
     report("visualization payload (spectrum + GR + levels)",
-           bucketIs4176 && typeTag && emptyBeforeEnable && gotBuckets && wholeBuckets
+           bucketIs4192 && typeTag && emptyBeforeEnable && gotBuckets && wholeBuckets
            && binCountOk && peakBinOk && peakLevelOk && grPositive && latencyOk
            && bandLevelsOk && emptyAfterDisable,
            "peakBin=" + std::to_string(peakBin)
@@ -743,6 +844,73 @@ static void testReconstructionFlat()
 }
 
 // ═════════════════════════════════════════════════════════════════════════════
+// (a2) Partial BAND MIX is phase-matched (no comb filtering)
+// ═════════════════════════════════════════════════════════════════════════════
+//
+// The parallel BAND MIX blends the dry leg against the summed L/M/H output.  The
+// band sum carries the crossover's allpass phase; magnitude-flat reconstruction
+// (test (a)) only guarantees the endpoints — at 100 % it IS the band sum, at 0 %
+// it WAS the raw input.  In between, blending a signal against a phase-shifted
+// copy of itself combs: before the dry leg was passed through the matching
+// crossover allpass, a 50 % mix notched the spectrum to -70..-89 dB (verified
+// numerically against the biquad transfer functions).
+//
+// With the dry leg phase-matched, both legs share ONE phase response, so with
+// every band at COMP OFF (unity) the response stays flat within +/-0.5 dB at
+// EVERY mix setting, not merely at 100 %.  This is the direct regression guard
+// for the "frequency splitter phasing" fix: under the old code it fails by tens
+// of dB; the tight +/-0.5 dB bound is what makes it a real proof rather than a
+// vacuous one.
+static void testPartialMixFlat()
+{
+    constexpr int order = 15;                 // 32768 samples
+    constexpr int n     = 1 << order;
+
+    struct Case { float slopeLo, slopeHi; const char* name; };
+    const Case cases[] = {
+        { 1.0f, 1.0f, "LR4/LR4" },
+        { 0.0f, 0.0f, "LR2/LR2" },
+        { 0.0f, 1.0f, "LR2/LR4" },
+        { 1.0f, 0.0f, "LR4/LR2" },
+    };
+    const float mixes[] = { 25.0f, 50.0f, 75.0f };
+
+    // magnitudeDb() normalises for a SINE (factor 2/N); a unit impulse reads
+    // 20*log10(2/N) for a flat response — the reference used in test (a).
+    const float refDb = 20.0f * std::log10(2.0f / static_cast<float>(n));
+
+    const int lo = static_cast<int>(std::ceil(20.0     * n / kSR));
+    const int hi = static_cast<int>(std::floor(20000.0 * n / kSR));
+
+    for (const auto& c : cases)
+        for (const float mix : mixes)
+        {
+            auto ir = renderImpulse(n, [&c, mix](XlethApexEffect& a)
+            {
+                setStateAll(a, 1.0f);                     // COMP OFF on every band
+                a.setParameterValue("bandmix",  mix);
+                a.setParameterValue("slope_lo", c.slopeLo);
+                a.setParameterValue("slope_hi", c.slopeHi);
+                a.setParameterValue("split_lo", 200.0f);
+                a.setParameterValue("split_hi", 2000.0f);
+            });
+
+            const auto db = magnitudeDb(ir.l, order);
+
+            float worst = 0.0f;
+            for (int k = lo; k <= hi; ++k)
+                worst = std::max(worst, std::abs(db[static_cast<std::size_t>(k)] - refDb));
+
+            const std::string tag = std::string(c.name) + " @ "
+                                  + std::to_string(static_cast<int>(mix)) + "%";
+            const bool ok = worst <= 0.5f;
+            CHECK(ok, std::string("partial BAND MIX combs the spectrum: ") + tag);
+            report((std::string("(a2) partial mix flat +/-0.5 dB — ") + tag).c_str(),
+                   ok, "worst deviation " + std::to_string(worst) + " dB");
+        }
+}
+
+// ═════════════════════════════════════════════════════════════════════════════
 // (b) LOOKAHEAD latency
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -750,7 +918,11 @@ static void testLookaheadLatency()
 {
     const int expected = static_cast<int>(std::lround(0.010 * kSR));   // 480
 
-    // -- dry leg: a literal impulse, so the delay is directly readable --------
+    // -- dry leg: onset position reads the delay directly --------------------
+    // The BAND MIX dry leg is now the crossover ALLPASS of the input (so the
+    // parallel blend is phase-matched and cannot comb), not a bare impulse — but
+    // an allpass is causal, so its FIRST non-zero sample still lands exactly at
+    // the reported latency, and everything before it is exact silence.
     {
         XlethApexEffect probe;
         probe.setParameterValue("lookahead", 10.0f);
@@ -760,28 +932,28 @@ static void testLookaheadLatency()
         auto ir = renderImpulse(4096, [](XlethApexEffect& a)
         {
             a.setParameterValue("lookahead", 10.0f);
-            a.setParameterValue("bandmix",    0.0f);    // pure dry leg
+            a.setParameterValue("bandmix",    0.0f);    // pure (phase-matched) dry leg
             setStateAll(a, 3.0f);                       // every band OFF
         });
 
-        int   peakIdx = -1;
-        float peak = 0.0f, energyElsewhere = 0.0f;
+        int onset = -1;
         for (std::size_t i = 0; i < ir.l.size(); ++i)
-            if (std::abs(ir.l[i]) > peak) { peak = std::abs(ir.l[i]); peakIdx = static_cast<int>(i); }
-        for (std::size_t i = 0; i < ir.l.size(); ++i)
-            if (static_cast<int>(i) != peakIdx) energyElsewhere += std::abs(ir.l[i]);
+            if (std::abs(ir.l[i]) > 1.0e-9f) { onset = static_cast<int>(i); break; }
+
+        bool leadingSilent = true;
+        for (int i = 0; i < expected; ++i)
+            leadingSilent = leadingSilent && ir.l[static_cast<std::size_t>(i)] == 0.0f;
 
         const bool okReported = reported == expected;
-        const bool okPos      = peakIdx == expected;
-        const bool okClean    = std::abs(peak - 1.0f) < 1.0e-6f && energyElsewhere < 1.0e-6f;
+        const bool okOnset    = onset == expected;
 
         CHECK(okReported, "10 ms LOOKAHEAD is not reported as 480 samples at 48 kHz");
-        CHECK(okPos,      "dry leg impulse does not arrive at the reported latency");
-        CHECK(okClean,    "dry leg is not a clean unit impulse");
-        report("(b) LOOKAHEAD 10 ms == reported latency (dry-leg impulse)",
-               okReported && okPos && okClean,
-               "reported " + std::to_string(reported) + ", impulse at "
-               + std::to_string(peakIdx));
+        CHECK(okOnset,      "dry leg does not begin at the reported latency");
+        CHECK(leadingSilent, "dry leg has energy before the reported latency");
+        report("(b) LOOKAHEAD 10 ms == reported latency (dry-leg onset)",
+               okReported && okOnset && leadingSilent,
+               "reported " + std::to_string(reported) + ", onset at "
+               + std::to_string(onset));
     }
 
     // -- band leg: the whole band path must shift by exactly the same amount --
@@ -1204,6 +1376,62 @@ static void testOutputIsFiniteUnderStress()
 
 // ═════════════════════════════════════════════════════════════════════════════
 
+// (a3) A partial BAND MIX must stay phase-matched when a band is SATURATING, not
+// only when every band is COMP OFF. The 2x saturator adds kOsLatencySamples of
+// group delay to whichever band is saturating; the dry BAND MIX leg and the
+// non-saturating bands compensate with a matching FixedDelay. If that
+// compensation is missing (the delay allocated but never setDelay()'d, so it
+// passes through at 0 delay), the saturating band drifts kOsLatencySamples ahead
+// and the dry leg combs against it at partial mix — first null at fs / 2·47 ≈
+// 510 Hz, tens of dB deep, and completely invisible to the COMP-OFF (a2) test.
+// A small impulse keeps the shaper in its near-linear region so this isolates
+// the oversampler's DELAY, not its distortion.
+static void testPartialMixFlatWithSaturation()
+{
+    constexpr int order = 15;                 // 32768 samples
+    constexpr int n     = 1 << order;
+    const float   amp   = 1.0e-3f;            // near-linear through the saturator
+
+    const float mixes[] = { 25.0f, 50.0f, 75.0f };
+    // Exercise each split band saturating in turn (the misalignment is per-band).
+    const int satBands[] = { 0, 1, 2 };
+
+    const char* bandName[3] = { "LOW", "MID", "HIGH" };
+    const int lo = static_cast<int>(std::ceil(120.0  * n / kSR));   // above the low split
+    const int hi = static_cast<int>(std::floor(2000.0 * n / kSR));  // below the oversampler's HF rolloff
+
+    for (const int sb : satBands)
+        for (const float mix : mixes)
+        {
+            auto out = render(n, [sb, mix](XlethApexEffect& a)
+            {
+                setStateAll(a, 1.0f);                        // COMP OFF everywhere
+                a.setParameterValue("split_lo", 200.0f);
+                a.setParameterValue("split_hi", 2000.0f);
+                a.setParameterValue("bandmix",  mix);
+                a.setParameterValue(XlethApexEffect::bandParamId(sb, "satth"), -50.0f); // amount 0.5
+            }, [amp](int i, float& l, float& r){ l = r = (i == 0) ? amp : 0.0f; });
+
+            const auto db = magnitudeDb(out.l, order);
+
+            // Flatness across a band where dry and wet are both essentially flat:
+            // a 47-sample comb null sits at ~510 Hz, right inside [120, 2000].
+            float mean = 0.0f; int c = 0;
+            for (int k = lo; k <= hi; ++k) { mean += db[static_cast<std::size_t>(k)]; ++c; }
+            mean /= static_cast<float>(std::max(c, 1));
+            float worst = 0.0f;
+            for (int k = lo; k <= hi; ++k)
+                worst = std::max(worst, std::abs(db[static_cast<std::size_t>(k)] - mean));
+
+            const std::string tag = std::string(bandName[sb]) + " sat @ "
+                                  + std::to_string(static_cast<int>(mix)) + "%";
+            const bool ok = worst <= 0.5f;
+            CHECK(ok, std::string("saturating band combs the partial mix: ") + tag);
+            report((std::string("(a3) partial mix flat with saturation +/-0.5 dB — ") + tag).c_str(),
+                   ok, "worst deviation " + std::to_string(worst) + " dB");
+        }
+}
+
 int main()
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
@@ -1221,6 +1449,12 @@ int main()
 
     std::cout << "\n=== test_apex_contract (a) band-split reconstruction ===\n";
     testReconstructionFlat();
+
+    std::cout << "\n=== test_apex_contract (a2) partial BAND MIX is phase-matched ===\n";
+    testPartialMixFlat();
+
+    std::cout << "\n=== test_apex_contract (a3) partial BAND MIX flat with saturation ===\n";
+    testPartialMixFlatWithSaturation();
 
     std::cout << "\n=== test_apex_contract (b) lookahead latency ===\n";
     testLookaheadLatency();

@@ -37,16 +37,18 @@ private:
 };
 
 // ─── MoveClipCommand ──────────────────────────────────────────────────────────
-// Stores the old track and position so undo() can move back.
+// Stores the old track and position so undo() can move back. Supports
+// cross-track moves (clip → another Clip track) as well as pure repositioning.
 
 class MoveClipCommand : public Command {
 public:
-    MoveClipCommand(int clipId, TickTime newPosition, const Timeline& timeline);
+    MoveClipCommand(int clipId, int newTrackId, TickTime newPosition, const Timeline& timeline);
     void execute(Timeline& timeline) override;
     void undo(Timeline& timeline) override;
     std::string describe() const override;
 private:
     int      clipId_;
+    int      newTrackId_;
     int      oldTrackId_;
     TickTime oldPosition_;
     TickTime newPosition_;
@@ -788,7 +790,12 @@ private:
 // Grouped sampler settings used by SetSamplerSettingsCommand.
 
 struct SamplerSettings {
-    int     rootNote         = 60;
+    // Full slot list. Carried wholesale so ONE command covers every slot
+    // mutation — per-slot parameter edits, adding a layer, removing a layer —
+    // and undo is a straight restore of the previous vector. Always at least
+    // one entry (slot 0).
+    std::vector<SampleSlot> slots { SampleSlot{} };
+
     float   attackMs         = 0.0f;
     float   decayMs          = 0.0f;
     float   sustain          = 1.0f;
@@ -809,23 +816,14 @@ struct SamplerSettings {
     float   pitchEnvAttackTension = 0.0f;
     float   pitchEnvDecayTension  = 0.0f;
     float   pitchEnvReleaseTension = 0.0f;
-    bool    loopEnabled      = false;
-    int64_t loopStart        = 0;
-    int64_t loopEnd          = 0;
     bool    crossfadeEnabled = false;
-    int64_t smpStart         = 0;
-    int64_t smpLength        = 0;
-    float   declickMs        = 1.5f;
-    float   fadeInMs         = 0.0f;
-    float   fadeOutMs        = 0.0f;
-    int64_t crossfadeSamples = 0;
-    bool    dcOffsetRemoved  = false;
-    bool    normalized       = false;
-    bool    polarityReversed = false;
-    bool    reversed         = false;
     bool    monoEnabled       = false;
     bool    portamentoEnabled = false;
     float   portamentoTimeMs  = 100.0f;
+    int     portamentoMode    = 0;       // 0 = Always, 1 = Scaled
+    float   portamentoCurve   = 0.0f;    // -1..+1, 0 = linear
+    bool    legatoEnabled     = false;
+    int     voiceCount        = 32;      // simultaneous NOTES, 1..32
     bool    arpEnabled        = false;
     bool    arpTempoSync      = true;
     int     arpDivision       = 8;
@@ -860,6 +858,12 @@ struct SamplerSettings {
     float lfoPitchAttackMs      = 0.0f;
     float lfoPitchDelayMs       = 0.0f;
     std::vector<SampleRegion::LfoBreakpoint> lfoPitchWaveform;
+
+    // Modulation system. Carried wholesale like `slots` above, so ONE command
+    // covers a route add, a route removal and an envelope edit alike, and undo
+    // is a straight restore of the previous config. Fixed-size arrays, so the
+    // copy is a memcpy with no allocation.
+    xleth::sampmod::ModConfig modulation;
 };
 
 // ─── AddPatternCommand ────────────────────────────────────────────────────────

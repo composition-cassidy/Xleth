@@ -32,6 +32,11 @@ import {
   mapEnvelopeGraphDragToPatch,
   readEnvelopeNodeData,
 } from './EnvelopeEditor';
+import {
+  LfoNodeBody,
+  formatLfoParameterCount,
+  readLfoNodeData,
+} from './LfoEditor';
 
 function inputNode(position = { x: 0, y: 0 }): GraphStateNode {
   return { id: 'input', type: 'trackInput', position, data: {} };
@@ -784,7 +789,7 @@ describe('GraphStatePreview', () => {
     expect(html).toContain('disabled');
   });
 
-  it('curates the Xleth EQ exposure menu to three normal editable bands with friendly labels', () => {
+  it('curates the Xleth EQ exposure menu to normal editable bands with friendly labels, scaling to however many bands are present', () => {
     const node = buildGraphStatePreviewModel(graphState([
       inputNode(),
       effectNode('eq', 'Parametric EQ', 0, { x: 260, y: 0 }, { pluginId: 'xletheq' }),
@@ -831,16 +836,100 @@ describe('GraphStatePreview', () => {
     expect(html).toContain('Band 0');
     expect(html).toContain('Band 1');
     expect(html).toContain('Band 2');
+    // Band 3 only has a freq param in this fixture, but it must still surface —
+    // the menu is not allowed to cap out at a fixed band count.
+    expect(html).toContain('Band 3');
     expect(html).toContain('Frequency');
     expect(html).toContain('Gain');
     expect(html).toContain('Q');
     expect(html).toContain('Type');
     expect(html).toContain('Enabled');
-    expect(countText(html, 'role="menuitemcheckbox"')).toBe(15);
+    expect(countText(html, 'role="menuitemcheckbox"')).toBe(16);
     expect(html).not.toContain('B0 Spec Sens');
     expect(html).not.toContain('B0 Dyn Attack');
-    expect(html).not.toContain('B3 Freq');
     expect(html).not.toContain('Linear Phase');
+  });
+
+  // The engine's EQ param layout always registers all kMaxBands=16 bands'
+  // worth of APVTS params regardless of how many are actually in use, so
+  // these fixtures build the full 16-band set and rely on `bandCount` (the
+  // instance's real, active band count) to say how many should surface.
+  function allEqBandParameters() {
+    const params: { parameterId: string; parameterIndex: number; name: string; automatable: true; readOnly: false }[] = [];
+    for (let band = 0; band < 16; band += 1) {
+      for (const [i, suffix] of ['freq', 'gain', 'q', 'type', 'enabled'].entries()) {
+        params.push({
+          parameterId: `b${band}_${suffix}`,
+          parameterIndex: band * 5 + i,
+          name: `B${band} ${suffix}`,
+          automatable: true,
+          readOnly: false,
+        });
+      }
+    }
+    return params;
+  }
+
+  it('exposes every active band the EQ reports, not just the first few', () => {
+    const node = buildGraphStatePreviewModel(graphState([
+      inputNode(),
+      effectNode('eq', 'Parametric EQ', 0, { x: 260, y: 0 }, { pluginId: 'xletheq' }),
+      outputNode({ x: 520, y: 0 }),
+    ], [])).nodes.find((candidate) => candidate.id === 'eq')!;
+    const html = renderToStaticMarkup(
+      <GraphParameterContextMenu
+        node={node}
+        x={12}
+        y={24}
+        result={{
+          ok: true,
+          effectKind: 'stock',
+          pluginFormat: 'stock',
+          pluginId: 'xletheq',
+          parameters: allEqBandParameters(),
+          bandCount: 6,
+        }}
+        canEdit
+        canRemove
+      />,
+    );
+
+    for (const band of [0, 1, 2, 3, 4, 5]) {
+      expect(html).toContain(`Band ${band}`);
+    }
+    expect(countText(html, 'role="menuitemcheckbox"')).toBe(6 * 5);
+  });
+
+  it('does not offer dormant bands beyond the EQ instance\'s active band count', () => {
+    const node = buildGraphStatePreviewModel(graphState([
+      inputNode(),
+      effectNode('eq', 'Parametric EQ', 0, { x: 260, y: 0 }, { pluginId: 'xletheq' }),
+      outputNode({ x: 520, y: 0 }),
+    ], [])).nodes.find((candidate) => candidate.id === 'eq')!;
+    // Mirrors the reported bug: a 1-band EQ instance where the engine still
+    // reports all 16 band slots' params. Only Band 0 should be offered.
+    const html = renderToStaticMarkup(
+      <GraphParameterContextMenu
+        node={node}
+        x={12}
+        y={24}
+        result={{
+          ok: true,
+          effectKind: 'stock',
+          pluginFormat: 'stock',
+          pluginId: 'xletheq',
+          parameters: allEqBandParameters(),
+          bandCount: 1,
+        }}
+        canEdit
+        canRemove
+      />,
+    );
+
+    expect(html).toContain('Band 0');
+    expect(html).not.toContain('Band 1');
+    expect(html).not.toContain('Band 15');
+    expect(countText(html, 'role="menuitemcheckbox"')).toBe(5);
   });
 
   it('keeps curated EQ menu items bound to their original parameter descriptors', () => {
@@ -2016,6 +2105,276 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
   });
 });
 
+// LFO Modulator node UI (renderer-only, inert) — literal mirror of the envelope
+// node fixtures above.
+function lfoNode(
+  id = 'lfo-a',
+  data: Record<string, unknown> = {},
+  position = { x: 260, y: 0 },
+): GraphStateNode {
+  return { id, type: 'lfo', position, data };
+}
+
+function lfoGraph(data: Record<string, unknown> = {}): GraphStateDocument {
+  return graphState(
+    [inputNode(), lfoNode('lfo-a', data), outputNode({ x: 560, y: 0 })],
+    [],
+  );
+}
+
+function renderLfoNodeMarkup(
+  overrides: Partial<Parameters<typeof GraphStatePreviewNode>[0]> = {},
+) {
+  const node = buildGraphStatePreviewModel(lfoGraph())
+    .nodes.find((candidate) => candidate.id === 'lfo-a')!;
+  return renderToStaticMarkup(
+    GraphStatePreviewNode({
+      node,
+      dragging: false,
+      connectEnabled: true,
+      connectParameterEnabled: true,
+      connectActive: false,
+      canRemove: true,
+      canEdit: true,
+      ...overrides,
+    }),
+  );
+}
+
+describe('GraphStatePreview lfo nodes', () => {
+  it('renders an lfo node with label and modulator identity', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview graphState={lfoGraph({ label: 'Tremolo' })} onUpdateLfo={vi.fn()} />,
+    );
+    expect(html).toContain('data-node-type="lfo"');
+    expect(html).toContain('xleth-graph-state-preview__node--lfo');
+    expect(html).toContain('Tremolo');
+    expect(html).toContain('LFO Modulator');
+  });
+
+  it('renders the rate/params summary', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={lfoGraph({ rateMode: 'free', rateMs: 80 })}
+        onUpdateLfo={vi.fn()}
+      />,
+    );
+    expect(html).toContain('Free 80 ms');
+    expect(html).toContain('0 params');
+  });
+
+  it('renders the sync rate summary using the division label', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={lfoGraph({ rateMode: 'sync', syncDivision: 8 })}
+        onUpdateLfo={vi.fn()}
+      />,
+    );
+    expect(html).toContain('Sync 1/8');
+  });
+
+  it('summarizes outgoing lfo parameter connections compactly (edge-count badge)', () => {
+    const source = graphState(
+      [
+        inputNode(),
+        lfoNode('lfo-a', {}, { x: 120, y: 140 }),
+        effectNode('fx-a', 'Filter', 0, { x: 360, y: 0 }, {
+          exposedParameterPorts: [
+            { parameterId: 'cutoff', parameterIndexFallback: 0, nameSnapshot: 'Cutoff', labelSnapshot: null, parameterIdIsFallback: false, automatable: true, readOnly: false },
+            { parameterId: 'resonance', parameterIndexFallback: 1, nameSnapshot: 'Resonance', labelSnapshot: null, parameterIdIsFallback: false, automatable: true, readOnly: false },
+          ],
+        }),
+        outputNode({ x: 620, y: 0 }),
+      ],
+      [
+        { id: 'pe-a', sourceNodeId: 'lfo-a', sourcePort: 'controlOut', targetNodeId: 'fx-a', targetPort: 'gpp:fx-a:cutoff', type: 'parameter', targetParameter: { parameterId: 'cutoff' } },
+        { id: 'pe-b', sourceNodeId: 'lfo-a', sourcePort: 'controlOut', targetNodeId: 'fx-a', targetPort: 'gpp:fx-a:resonance', type: 'parameter', targetParameter: { parameterId: 'resonance' } },
+      ],
+    );
+    const html = renderToStaticMarkup(<GraphStatePreview graphState={source} onUpdateLfo={vi.fn()} />);
+    expect(html).toContain('2 params');
+    expect(formatLfoParameterCount(1)).toBe('1 param');
+  });
+
+  it('renders the compact waveform graph by default', () => {
+    const html = renderLfoNodeMarkup({ onLfoUpdate: vi.fn() });
+    expect(html).toContain('xleth-graph-state-preview__lfo-shape');
+    expect(html).toContain('LFO waveform graph');
+  });
+
+  it('exposes a controlOut handle but no audio handles and no parameter input ports', () => {
+    const html = renderLfoNodeMarkup({ onLfoUpdate: vi.fn() });
+    // LFO is a control source: it has a controlOut, not an audio in handle.
+    expect(html).not.toContain('xleth-graph-state-preview__handle--in');
+    expect(html).toContain('xleth-graph-state-preview__handle--control-out');
+    expect(html).toContain('data-control-output="true"');
+    expect(html).toContain('data-control-port-id="lfo:lfo-a:controlOut"');
+    expect(html).toContain('data-control-port-type="lfo-output"');
+    // It still has no exposed parameter INPUT ports of its own.
+    expect(html).not.toContain('data-parameter-port-type');
+  });
+
+  it('makes the controlOut a parameter-link drag source only when lfo linking is enabled', () => {
+    const lfoNodeModel = buildGraphStatePreviewModel(lfoGraph())
+      .nodes.find((candidate) => candidate.id === 'lfo-a')!;
+    const linkable = renderToStaticMarkup(GraphStatePreviewNode({
+      node: lfoNodeModel,
+      dragging: false,
+      connectEnabled: false,
+      connectParameterEnabled: false,
+      connectLfoParameterEnabled: true,
+      connectActive: false,
+      canRemove: false,
+      canEdit: false,
+      onConnectPointerDown: vi.fn(),
+    }));
+    expect(linkable).toContain('data-connect-source="true"');
+    expect(linkable).toContain('data-connect-source-kind="lfo"');
+    expect(linkable).toContain('xleth-graph-state-preview__handle--connect-parameter-source');
+
+    const staticHtml = renderToStaticMarkup(GraphStatePreviewNode({
+      node: lfoNodeModel,
+      dragging: false,
+      connectEnabled: false,
+      connectParameterEnabled: false,
+      connectLfoParameterEnabled: false,
+      connectActive: false,
+      canRemove: false,
+      canEdit: false,
+    }));
+    expect(staticHtml).toContain('data-control-output="true"');
+    expect(staticHtml).not.toContain('data-connect-source-kind="lfo"');
+    expect(staticHtml).not.toContain('xleth-graph-state-preview__handle--connect-parameter-source');
+  });
+
+  it('routes an lfo controlOut pointer-down through the connect handler', () => {
+    const lfoNodeModel = buildGraphStatePreviewModel(lfoGraph())
+      .nodes.find((candidate) => candidate.id === 'lfo-a')!;
+    const onConnectPointerDown = vi.fn();
+    const element = GraphStatePreviewNode({
+      node: lfoNodeModel,
+      dragging: false,
+      connectEnabled: false,
+      connectParameterEnabled: false,
+      connectLfoParameterEnabled: true,
+      connectActive: false,
+      canRemove: false,
+      canEdit: false,
+      onConnectPointerDown,
+    });
+    const handle = findElementByClass(element, 'xleth-graph-state-preview__handle--connect-parameter-source')!;
+    expect(handle).toBeTruthy();
+    expect(handle.props['data-connect-source-kind']).toBe('lfo');
+    expect(handle.props['data-control-port-id']).toBe('lfo:lfo-a:controlOut');
+    handle.props.onPointerDown({ button: 0 });
+    expect(onConnectPointerDown).toHaveBeenCalledWith({ button: 0 }, lfoNodeModel);
+  });
+
+  // Regression lock for the showRemove fix (GraphStatePreview.tsx's showRemove
+  // condition must include node.type === 'lfo' — without it, an LFO node can
+  // never be deleted).
+  it('stays draggable and removable like other editable nodes (showRemove regression lock)', () => {
+    const html = renderLfoNodeMarkup({
+      onLfoUpdate: vi.fn(),
+      onRemove: vi.fn(),
+      onPointerDown: vi.fn(),
+    });
+    expect(html).toContain('aria-label="Remove LFO"');
+    expect(html).toContain('xleth-graph-state-preview__node--draggable');
+  });
+
+  it('never renders a stray audio input handle on an lfo node', () => {
+    // Regression lock for the inbound-handle-suppression fix: LFO nodes must not
+    // render the generic audio "in" handle other non-trackInput/non-macro nodes get.
+    const html = renderLfoNodeMarkup({ onLfoUpdate: vi.fn() });
+    expect(html).not.toContain('xleth-graph-state-preview__handle--in');
+  });
+
+  it('defaults to compact layout and keeps the long editor collapsed', () => {
+    const editableHtml = renderLfoNodeMarkup({ onLfoUpdate: vi.fn() });
+    const readOnlyHtml = renderLfoNodeMarkup({ onLfoUpdate: undefined });
+    expect(editableHtml).toContain('LFO compact summary');
+    expect(editableHtml).toContain('Edit LFO LFO');
+    expect(editableHtml).not.toContain('xleth-graph-state-preview__lfo-editor');
+    expect(readOnlyHtml).toContain('xleth-graph-state-preview__lfo-shape');
+    expect(readOnlyHtml).toContain('LFO compact summary');
+    expect(readOnlyHtml).not.toContain('Edit LFO LFO');
+    expect(readOnlyHtml).not.toContain('xleth-graph-state-preview__lfo-editor');
+  });
+
+  it('edit toggle: expanded edit mode shows the shape graph, presets, and rate controls', () => {
+    const html = renderToStaticMarkup(
+      <LfoNodeBody
+        nodeId="lfo-a"
+        data={readLfoNodeData({})}
+        onChange={vi.fn()}
+        defaultExpanded
+      />,
+    );
+    expect(html).toContain('xleth-graph-state-preview__lfo-editor');
+    expect(html).toContain('Editable LFO waveform graph');
+    expect(html).toContain('LFO waveform presets');
+    expect(html).toContain('LFO rate mode');
+    expect(html).toContain('>Sine<');
+    expect(html).toContain('>Triangle<');
+    expect(html).toContain('>Square<');
+  });
+
+  it('read-only/no-callback mode does not expose editing controls even if expanded is requested', () => {
+    const html = renderToStaticMarkup(
+      <LfoNodeBody
+        nodeId="lfo-a"
+        data={readLfoNodeData({})}
+        onChange={null}
+        defaultExpanded
+      />,
+    );
+    expect(html).toContain('LFO waveform graph');
+    expect(html).not.toContain('Editable LFO waveform graph');
+    expect(html).not.toContain('xleth-graph-state-preview__lfo-editor');
+    expect(html).not.toContain('Edit LFO LFO');
+  });
+
+  it('renders Add LFO only when its action is provided', () => {
+    const source = graphState([inputNode(), outputNode()], []);
+    const editableHtml = renderToStaticMarkup(
+      <GraphStatePreview graphState={source} onAddLfoNode={vi.fn()} />,
+    );
+    const readOnlyHtml = renderToStaticMarkup(<GraphStatePreview graphState={source} />);
+    expect(editableHtml).toContain('Add LFO');
+    expect(readOnlyHtml).not.toContain('Add LFO');
+  });
+
+  it('still renders effect, macro, and envelope nodes alongside lfo nodes', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState(
+          [
+            inputNode(),
+            effectNode('comp', 'Compressor', 0, { x: 240, y: 0 }),
+            macroNode('macro-a', 'Drive', 0.5, { x: 240, y: 160 }),
+            envelopeNode('env-a', { label: 'Voice Env' }, { x: 240, y: 320 }),
+            lfoNode('lfo-a', { label: 'Wobble' }, { x: 240, y: 480 }),
+            outputNode({ x: 560, y: 0 }),
+          ],
+          [],
+        )}
+        onUpdateEnvelope={vi.fn()}
+        onUpdateLfo={vi.fn()}
+        onUpdateMacroValue={vi.fn()}
+      />,
+    );
+    expect(html).toContain('data-node-type="effect"');
+    expect(html).toContain('data-node-type="macro"');
+    expect(html).toContain('data-node-type="envelope"');
+    expect(html).toContain('data-node-type="lfo"');
+    expect(html).toContain('Compressor');
+    expect(html).toContain('Drive');
+    expect(html).toContain('Voice Env');
+    expect(html).toContain('Wobble');
+  });
+});
+
 // ---------------------------------------------------------------------------
 // FXG-VP.1 — Viewport Zoom and Pan
 // ---------------------------------------------------------------------------
@@ -2096,6 +2455,52 @@ describe('EVC-R4 ParameterEdgeMappingEditor — modulation vs range', () => {
   it('shows a negative depth sweeping downward from base', () => {
     // base 0.8, depth -0.6 -> 80% / 50% / 20%.
     const html = render(makeModulationEdge({ base: 0.8, depth: -0.6 }));
+    expect(html).toContain('80%');
+    expect(html).toContain('50%');
+    expect(html).toContain('20%');
+  });
+
+  // Regression lock: the plan's design decision #4 validation found
+  // ParameterEdgeMappingEditor is fully generic over mapping.kind === 'modulation'
+  // and never inspects the edge's source node type — so an LFO-sourced edge (which
+  // also carries a modulation mapping, per connectLfoToParameter) must render
+  // identically to an Envelope-sourced one, with no code changes needed. This test
+  // exercises that path directly with an LFO source to lock the finding in.
+  it('renders identically for an LFO-sourced edge — the editor never inspects source node type', () => {
+    const lfoSourcedEdge = {
+      ...makeParameterEdge({
+        kind: 'modulation',
+        enabled: true,
+        base: 0.8,
+        depth: -0.6,
+        sourceMin: 0,
+        sourceMax: 1,
+        curve: { type: 'linear' },
+      }),
+      sourceNodeId: 'lfo-a',
+      sourcePort: 'controlOut',
+    };
+    const html = renderToStaticMarkup(
+      <ParameterEdgeMappingEditor
+        edgeId="p-edge"
+        edge={lfoSourcedEdge}
+        sourceLabel="Wobble LFO"
+        targetLabel="Filter / Cutoff"
+        x={0}
+        y={0}
+        onUpdate={vi.fn()}
+        onClose={vi.fn()}
+      />,
+    );
+    expect(html).toContain('Wobble LFO');
+    expect(html).toContain('aria-label="Modulation base"');
+    expect(html).toContain('aria-label="Modulation depth"');
+    expect(html).toContain('>Base<');
+    expect(html).toContain('>Depth<');
+    expect(html).not.toContain('aria-label="Target min"');
+    expect(html).not.toContain('aria-label="Target max"');
+    expect(html).not.toContain('Output Range');
+    // Same base/depth-anchored preview math as the envelope case (80% / 50% / 20%).
     expect(html).toContain('80%');
     expect(html).toContain('50%');
     expect(html).toContain('20%');

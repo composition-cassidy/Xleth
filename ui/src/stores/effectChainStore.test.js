@@ -2864,6 +2864,271 @@ describe('effectChainStore FX mode safety gate', () => {
     })
   })
 
+  // ── LFO Modulator node actions (literal mirror of the envelope actions above) ──
+  describe('graph lfo node actions', () => {
+    it('rejects adding an lfo node while Mixer Chain owns the track', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      const graphState = makePositionedGraphState('7')
+      useEffectChainStore.setState({
+        fxModes: { '7': 'chain' },
+        graphStates: { '7': graphState },
+        graphStateStatuses: { '7': { status: 'valid', graphState, warnings: [] } },
+      })
+
+      await expect(
+        useEffectChainStore.getState().addGraphLfoNodeForTrack('7'),
+      ).resolves.toMatchObject({ ok: false, reason: 'not_graph_mode' })
+
+      expect(useEffectChainStore.getState().graphStates['7']).toBe(graphState)
+      expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+      expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+    })
+
+    it('rejects adding an lfo node to the master track', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      await expect(
+        useEffectChainStore.getState().addGraphLfoNodeForTrack('master'),
+      ).resolves.toMatchObject({ ok: false, reason: 'master_track' })
+      expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    })
+
+    it('adds an lfo node in graph mode, persists, records undo, and touches no engine APIs', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      const baseChain = seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))
+
+      const result = await useEffectChainStore.getState()
+        .addGraphLfoNodeForTrack('7', { idFactory: () => 'lfo-gen-0' })
+
+      expect(result.ok).toBe(true)
+      const state = useEffectChainStore.getState()
+      const next = state.graphStates['7']
+      const lfo = next.nodes.find((node) => node.id === 'lfo-gen-0')
+      expect(lfo).toMatchObject({
+        type: 'lfo',
+        data: {
+          label: 'LFO',
+          rateMode: 'free',
+          rateMs: 250,
+          syncDivision: 4,
+          phaseOffset: 0,
+        },
+      })
+      // Closed schema — no stray legacy/envelope-shaped fields ever leak in.
+      expect(lfo.data).not.toHaveProperty('amount')
+      expect(lfo.data).not.toHaveProperty('triggerSource')
+      expect(Number.isFinite(lfo.position.x) && Number.isFinite(lfo.position.y)).toBe(true)
+      // Persisted via setTrackGraphState; no audio sync; chains/effect APIs untouched.
+      // Compared through a JSON round-trip: stripRuntimeGraphStateMetadata (cloneJson)
+      // persists a JSON-cloned copy, which normalizes the default sine waveform's
+      // closing point from -0 (Math.sin(2*PI) is a tiny negative float) to 0 — the
+      // same value numerically, just not Object.is-identical to the in-memory copy.
+      expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, JSON.parse(JSON.stringify(next)), true)
+      expect(state.chains['7']).toBe(baseChain)
+      expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+      expect(audio.addGraphEffectNode).not.toHaveBeenCalled()
+      expect(audio.hydrateGraphEffectNodes).not.toHaveBeenCalled()
+      expect(audio.setGraphEffectParameterNormalized).not.toHaveBeenCalled()
+      expect(state.graphHistories['7'].undoStack.at(-1)).toMatchObject({ label: 'add_graph_lfo_node' })
+    })
+
+    it('applies data overrides when adding an lfo node', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))
+
+      const result = await useEffectChainStore.getState().addGraphLfoNodeForTrack('7', {
+        idFactory: () => 'lfo-a',
+        data: { label: 'Tremolo', rateMode: 'sync', syncDivision: 8, phaseOffset: 0.25 },
+      })
+
+      expect(result.ok).toBe(true)
+      const lfo = useEffectChainStore.getState().graphStates['7'].nodes.find((n) => n.id === 'lfo-a')
+      expect(lfo.data).toMatchObject({ label: 'Tremolo', rateMode: 'sync', syncDivision: 8, phaseOffset: 0.25 })
+    })
+
+    it('rejects updating an lfo node while Mixer Chain owns the track', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      const graphState = makePositionedGraphState('7', {
+        nodes: [
+          ...makePositionedGraphState('7').nodes,
+          { id: 'lfo-a', type: 'lfo', position: { x: 80, y: 480 }, data: {} },
+        ],
+      })
+      useEffectChainStore.setState({
+        fxModes: { '7': 'chain' },
+        graphStates: { '7': graphState },
+        graphStateStatuses: { '7': { status: 'valid', graphState, warnings: [] } },
+      })
+
+      await expect(
+        useEffectChainStore.getState().updateGraphLfoNodeDataForTrack('7', 'lfo-a', { rateMs: 80 }),
+      ).resolves.toMatchObject({ ok: false, reason: 'not_graph_mode' })
+      expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    })
+
+    it('updates lfo data in graph mode, persists, records undo, and supports undo/redo', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      const graphState = makePositionedGraphState('7', {
+        nodes: [
+          ...makePositionedGraphState('7').nodes,
+          { id: 'lfo-a', type: 'lfo', position: { x: 80, y: 480 }, data: { rateMs: 250 } },
+        ],
+      })
+      const baseChain = seedGraphMode(useEffectChainStore, graphState)
+
+      const result = await useEffectChainStore.getState()
+        .updateGraphLfoNodeDataForTrack('7', 'lfo-a', { rateMode: 'sync', syncDivision: 16, phaseOffset: 0.4 })
+
+      expect(result.ok).toBe(true)
+      let state = useEffectChainStore.getState()
+      let lfo = state.graphStates['7'].nodes.find((n) => n.id === 'lfo-a')
+      expect(lfo.data).toMatchObject({ rateMode: 'sync', syncDivision: 16, phaseOffset: 0.4 })
+      // See the JSON round-trip note above (-0 vs 0 in the default sine waveform).
+      expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, JSON.parse(JSON.stringify(state.graphStates['7'])), true)
+      expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+      expect(audio.setGraphEffectParameterNormalized).not.toHaveBeenCalled()
+      expect(state.chains['7']).toBe(baseChain)
+      expect(state.graphHistories['7'].undoStack.at(-1)).toMatchObject({ label: 'update_graph_lfo_node' })
+
+      const undo = await useEffectChainStore.getState().undoGraphEditForTrack('7')
+      expect(undo.ok).toBe(true)
+      state = useEffectChainStore.getState()
+      lfo = state.graphStates['7'].nodes.find((n) => n.id === 'lfo-a')
+      expect(lfo.data.rateMode).toBe('free')
+      expect(lfo.data.syncDivision).toBe(4)
+
+      const redo = await useEffectChainStore.getState().redoGraphEditForTrack('7')
+      expect(redo.ok).toBe(true)
+      lfo = useEffectChainStore.getState().graphStates['7'].nodes.find((n) => n.id === 'lfo-a')
+      expect(lfo.data.rateMode).toBe('sync')
+      // Undo/redo of a control node never resyncs the audio topology.
+      expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+    })
+
+    it('rejects updating a non-lfo node', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))
+
+      await expect(
+        useEffectChainStore.getState().updateGraphLfoNodeDataForTrack('7', 'fx-1', { rateMs: 80 }),
+      ).resolves.toMatchObject({ ok: false, reason: 'unknown_node_type' })
+      expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    })
+
+    it('never mutates effectChains for either lfo action', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      const baseChain = seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))
+
+      await useEffectChainStore.getState().addGraphLfoNodeForTrack('7', { idFactory: () => 'lfo-a' })
+      await useEffectChainStore.getState().updateGraphLfoNodeDataForTrack('7', 'lfo-a', { rateMs: 80 })
+
+      const state = useEffectChainStore.getState()
+      expect(state.chains['7']).toBe(baseChain)
+      expect(audio.addEffect).not.toHaveBeenCalled()
+      expect(audio.removeEffect).not.toHaveBeenCalled()
+      expect(audio.moveEffect).not.toHaveBeenCalled()
+    })
+  })
+
+  // ── LFO → parameter links (literal mirror of connectEnvelopeToParameterForTrack) ──
+  describe('connectLfoToParameterForTrack', () => {
+    // A macro-link graph (effect with exposed 'mix') plus an lfo node.
+    function makeLfoLinkGraphState(trackId = '7') {
+      const base = makeMacroLinkGraphState(trackId)
+      return {
+        ...base,
+        nodes: [...base.nodes, { id: 'lfo-a', type: 'lfo', position: { x: 80, y: 420 }, data: {} }],
+      }
+    }
+
+    it('rejects linking while Mixer Chain owns the track', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      const graphState = makeLfoLinkGraphState('7')
+      useEffectChainStore.setState({
+        fxModes: { '7': 'chain' },
+        graphStates: { '7': graphState },
+        graphStateStatuses: { '7': { status: 'valid', graphState, warnings: [] } },
+      })
+
+      await expect(
+        useEffectChainStore.getState().connectLfoToParameterForTrack('7', {
+          sourceNodeId: 'lfo-a', targetNodeId: 'fx-1', parameterId: 'mix',
+        }),
+      ).resolves.toMatchObject({ ok: false, reason: 'not_graph_mode' })
+      expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    })
+
+    it('rejects linking on the master track', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      await expect(
+        useEffectChainStore.getState().connectLfoToParameterForTrack('master', {
+          sourceNodeId: 'lfo-a', targetNodeId: 'fx-1', parameterId: 'mix',
+        }),
+      ).resolves.toMatchObject({ ok: false })
+      expect(timeline.setTrackGraphState).not.toHaveBeenCalled()
+    })
+
+    it('links an LFO controlOut to a parameter, persists, records undo, and never drives the parameter', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      const baseChain = seedGraphMode(useEffectChainStore, makeLfoLinkGraphState('7'))
+
+      const result = await useEffectChainStore.getState().connectLfoToParameterForTrack('7', {
+        sourceNodeId: 'lfo-a',
+        targetNodeId: 'fx-1',
+        parameterId: 'mix',
+      }, { idFactory: () => 'p-lfo-mix' })
+
+      expect(result.ok).toBe(true)
+      const state = useEffectChainStore.getState()
+      const next = state.graphStates['7']
+      const edge = next.edges.find((e) => e.id === 'p-lfo-mix')
+      expect(edge).toMatchObject({
+        sourceNodeId: 'lfo-a',
+        sourcePort: 'controlOut',
+        targetNodeId: 'fx-1',
+        targetPort: 'gpp:fx-1:mix',
+        type: 'parameter',
+      })
+      expect(edge.targetParameter.kind).toBe('graph-parameter')
+      // `base` is captured from the parameter's LIVE authored value (0.5 in the engine
+      // mock) so linking the lfo leaves the parameter exactly where the user set it.
+      expect(edge.mapping).toEqual({
+        kind: 'modulation',
+        enabled: true,
+        base: 0.5,
+        depth: 1,
+        sourceMin: 0,
+        sourceMax: 1,
+        curve: { type: 'linear' },
+      })
+      expect(audio.getGraphEffectParameterValue).toHaveBeenCalledWith(7, 'effect-1', 'mix')
+      expect(JSON.stringify(next.edges)).not.toContain('engineNodeId')
+      // Persisted, undoable, no audio sync, chains untouched.
+      // See the JSON round-trip note above (-0 vs 0 in the lfo node's default sine waveform).
+      expect(timeline.setTrackGraphState).toHaveBeenCalledWith(7, JSON.parse(JSON.stringify(next)), true)
+      expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+      expect(state.chains['7']).toBe(baseChain)
+      expect(state.graphHistories['7'].undoStack.at(-1)).toMatchObject({ label: 'connect_lfo_to_parameter' })
+      // Stage A is runtime-inert: the LFO never writes the parameter from the renderer
+      // (real drive is engine-evaluated, Stage B).
+      expect(audio.setGraphEffectParameterNormalized).not.toHaveBeenCalled()
+    })
+
+    it('never mutates effectChains when linking', async () => {
+      const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+      const baseChain = seedGraphMode(useEffectChainStore, makeLfoLinkGraphState('7'))
+
+      await useEffectChainStore.getState().connectLfoToParameterForTrack('7', {
+        sourceNodeId: 'lfo-a', targetNodeId: 'fx-1', parameterId: 'mix',
+      }, { idFactory: () => 'p-lfo-mix' })
+
+      const state = useEffectChainStore.getState()
+      expect(state.chains['7']).toBe(baseChain)
+      expect(audio.addEffect).not.toHaveBeenCalled()
+      expect(audio.removeEffect).not.toHaveBeenCalled()
+      expect(audio.moveEffect).not.toHaveBeenCalled()
+    })
+  })
+
   // ── FXG.4-h parent-attached macro automation lanes ────────────────────────
   describe('macro automation lanes', () => {
     const idFactory = () => 'fixed-clip-id'

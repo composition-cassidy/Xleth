@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react'
 import { tokenValue } from '../../theming/tokenValue.ts'
 import useApexStore from '../../stores/apexStore.js'
 import { MASTER_BAND } from '../../stores/apexStore.js'
+import { bandColorOr } from './apexBandColors.js'
 import { useDynamicsVizSubscription } from '../../plugin-ui/runtime/useDynamicsVizSubscription.js'
 import { VIZ_TYPE } from '../../constants/dynamicsViz.js'
 import {
@@ -114,7 +115,11 @@ export default function ApexAnalysis() {
       ]
       for (const r of regions) {
         const selected = r.band === selBand
-        ctx.fillStyle = selected ? withAlpha(c.accent, 0.10) : withAlpha(c.region, 0.035)
+        // Each band region wears its own identity color (LOW red-orange / MID
+        // lime / HIGH aqua). The selected band's wash is stronger so it still
+        // reads as "the one being edited".
+        const bandTint = bandColorOr(r.band, c.accent)
+        ctx.fillStyle = withAlpha(bandTint, selected ? 0.16 : 0.05)
         ctx.fillRect(r.x0, plot.y, Math.max(0, r.x1 - r.x0), plot.h)
       }
 
@@ -183,12 +188,13 @@ export default function ApexAnalysis() {
         const gr = Math.max(0, bandGr[r.band] || 0)
         const frac = clamp(gr / GR_FULL, 0, 1)
         const w = Math.max(0, r.x1 - r.x0)
+        const grColor = bandColorOr(r.band, c.accent)
         if (frac > 0.001) {
-          ctx.fillStyle = withAlpha(c.accent, 0.18 + 0.5 * frac)
+          ctx.fillStyle = withAlpha(grColor, 0.18 + 0.5 * frac)
           ctx.fillRect(r.x0, plot.y, w, barMaxH * frac)
         }
         if (gr >= 0.1 && w > 24) {
-          ctx.fillStyle = withAlpha(c.accent, 0.95)
+          ctx.fillStyle = withAlpha(grColor, 0.95)
           ctx.font = '9px system-ui, sans-serif'
           ctx.fillText(`-${gr.toFixed(1)}`, r.x0 + w / 2, plot.y + 2)
         }

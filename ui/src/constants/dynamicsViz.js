@@ -9,7 +9,7 @@
 // time on the C++ side. We re-state them here so the parser can use a
 // DataView without copying — the payload arrives as an ArrayBuffer over IPC.
 
-export const DYNAMICS_VIZ_SCHEMA_VERSION = 2
+export const DYNAMICS_VIZ_SCHEMA_VERSION = 3
 
 // Type-tag strings (must match the strings the bridge emits in the drain
 // response: "compressor" → kVizTypeCompressor, "limiter" → kVizTypeLimiter,
@@ -219,7 +219,7 @@ export const UNIFLANGE_BUCKET = Object.freeze({
   }),
 })
 
-// ApexBucket — 4176 bytes total. Mirrors ApexBucket in
+// ApexBucket — 4192 bytes total. Mirrors ApexBucket in
 // engine/src/audio/viz/DynamicsVizFrame.h.
 //
 // This bucket is much larger and much rarer than the others: it carries a
@@ -238,25 +238,32 @@ export const UNIFLANGE_BUCKET = Object.freeze({
 //   float32 outputPeakDb      @   20   (peak abs final output)
 //   float32 bandGrDb[4]       @   24   (max GR dB, positive = reduction)
 //   float32 bandOutDb[4]      @   40   (peak band output level, dB)
-//   float32 lookaheadSamples  @   56
-//   float32 latencySamples    @   60   (total reported = lookahead + sat OS)
-//   float32 splitLoHz         @   64
-//   float32 splitHiHz         @   68
-//   float32 sampleRate        @   72
-//   float32 spectrumBins      @   76   (valid entries in spectrum[])
-//   float32 spectrum[1024]    @   80   (magnitude dB, 0 dB = full-scale sine)
+//   float32 bandInDb[4]       @   56   (max band DETECTOR level, dB)
+//   float32 lookaheadSamples  @   72
+//   float32 latencySamples    @   76   (total reported = lookahead + sat OS)
+//   float32 splitLoHz         @   80
+//   float32 splitHiHz         @   84
+//   float32 sampleRate        @   88
+//   float32 spectrumBins      @   92   (valid entries in spectrum[])
+//   float32 spectrum[1024]    @   96   (magnitude dB, 0 dB = full-scale sine)
 //
-// Band order in bandGrDb / bandOutDb is LOW, MID, HIGH, MASTER.
+// bandInDb[b] is the level band b's transfer curve was actually looked up with
+// (post PRE GAIN, pre curve gain), carrying that band's detector ballistics —
+// i.e. the X coordinate of the moving dot on the curve editor. COMP OFF reports
+// the plain band peak; OFF / MUTED report -120.
+//
+// Band order in bandGrDb / bandOutDb / bandInDb is LOW, MID, HIGH, MASTER.
 // spectrum[] is floored at -120 dB; bin i covers i * sampleRate / 2048 Hz.
 export const APEX_BUCKET = Object.freeze({
-  sizeBytes: 4176,
+  sizeBytes: 4192,
   numBands: 4,
   spectrumBins: 1024,
   fftSize: 2048,
   arrays: Object.freeze({
     bandGrDb:  { offset: 24, count: 4 },
     bandOutDb: { offset: 40, count: 4 },
-    spectrum:  { offset: 80, count: 1024 },
+    bandInDb:  { offset: 56, count: 4 },
+    spectrum:  { offset: 96, count: 1024 },
   }),
   fields: Object.freeze({
     sampleClock:      { offset:  0, type: 'u64'   },
@@ -264,12 +271,12 @@ export const APEX_BUCKET = Object.freeze({
     flags:            { offset: 12, type: 'u32'   },
     inputPeakDb:      { offset: 16, type: 'float' },
     outputPeakDb:     { offset: 20, type: 'float' },
-    lookaheadSamples: { offset: 56, type: 'float' },
-    latencySamples:   { offset: 60, type: 'float' },
-    splitLoHz:        { offset: 64, type: 'float' },
-    splitHiHz:        { offset: 68, type: 'float' },
-    sampleRate:       { offset: 72, type: 'float' },
-    spectrumBins:     { offset: 76, type: 'float' },
+    lookaheadSamples: { offset: 72, type: 'float' },
+    latencySamples:   { offset: 76, type: 'float' },
+    splitLoHz:        { offset: 80, type: 'float' },
+    splitHiHz:        { offset: 84, type: 'float' },
+    sampleRate:       { offset: 88, type: 'float' },
+    spectrumBins:     { offset: 92, type: 'float' },
   }),
 })
 
@@ -391,6 +398,7 @@ export function parseDrainResponse(resp, expectedType = VIZ_TYPE.COMPRESSOR) {
       const bins = Math.max(0, Math.min(APEX_BUCKET.spectrumBins, declaredBins))
       out.bandGrDb  = decodeFloatArray(base, APEX_BUCKET.arrays.bandGrDb,  APEX_BUCKET.numBands)
       out.bandOutDb = decodeFloatArray(base, APEX_BUCKET.arrays.bandOutDb, APEX_BUCKET.numBands)
+      out.bandInDb  = decodeFloatArray(base, APEX_BUCKET.arrays.bandInDb,  APEX_BUCKET.numBands)
       out.spectrum  = decodeFloatArray(base, APEX_BUCKET.arrays.spectrum,  bins)
     }
     return out

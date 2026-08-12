@@ -238,7 +238,7 @@ private:
         return p ? p->load(std::memory_order_relaxed) : fallback;
     }
 
-    void splitBands(const float* inL, const float* inR, int numSamples);
+    void splitBands(float* dryL, float* dryR, int numSamples);
     void runBandStage(int band, BandBlockConfig& cfg, int numSamples);
     void runMasterStage(BandBlockConfig& cfg, int numSamples);
     BandBlockConfig makeBandConfig(int band, bool anySolo, int numSamples);
@@ -288,6 +288,16 @@ private:
     xleth_apex::LrSplit    splitHi_;      // MID  | HIGH
     xleth_apex::LrSplit    apComp_;       // phase compensation for the LOW band
 
+    // Dry-leg phase compensation for BAND MIX.  The summed L/M/H output carries
+    // the crossover's allpass phase (allpass_hi ∘ allpass_lo); the dry leg it is
+    // blended against must carry the SAME phase or the parallel blend combs the
+    // two into deep spectral notches.  These two splits, configured identically
+    // to splitLo_/splitHi_ and summed, reproduce that exact allpass on the dry
+    // leg — magnitude-flat and phase-matched by construction, for LR2 and LR4
+    // alike.  See splitBands().
+    xleth_apex::LrSplit    dryApLo_;      // allpass_lo of the dry leg
+    xleth_apex::LrSplit    dryApHi_;      // allpass_hi of the dry leg
+
     xleth_apex::LookaheadRing ring_;
     xleth_apex::FixedDelay    bandOsDelay_[kNumSplitBands];   // when a band is not saturating
     xleth_apex::FixedDelay    dryOsDelay_;
@@ -319,6 +329,13 @@ private:
     std::array<float*, xleth_apex::LookaheadRing::kMaxLanes * 2> lanePtrs_ {};
 
     float bandGrDb_[kNumBands] {};
+
+    // Max DETECTOR level (linear) per band over the block — the exact value the
+    // band's transfer curve was looked up with, published so the editor can put
+    // the moving dot on the curve it is editing rather than on a guess derived
+    // from output level minus gain reduction.  Written unconditionally: it is
+    // one std::max per sample next to a LUT lookup that already costs far more.
+    float bandInAbs_[kNumBands] {};
 
     // ── Visualization state ─────────────────────────────────────────────────
     // Lazily allocated on the first setVisualizationEnabled(true) and re-used
@@ -549,6 +566,8 @@ inline void XlethApexEffect::resetEffect()
     splitLo_.reset();
     splitHi_.reset();
     apComp_ .reset();
+    dryApLo_.reset();
+    dryApHi_.reset();
 
     ring_.reset();
     for (auto& d : bandOsDelay_) d.reset();
@@ -558,6 +577,7 @@ inline void XlethApexEffect::resetEffect()
     for (auto& s : sat_) s.reset();
     for (auto& e : env_) e.reset();
     for (auto& g : bandGrDb_) g = 0.0f;
+    for (auto& l : bandInAbs_) l = 0.0f;
 
     vizAccum_.reset();
 }
@@ -924,7 +944,8 @@ XlethApexEffect::makeBandConfig(int band, bool anySolo, int numSamples)
     return cfg;
 }
 
-// Split the (already low-cut) stereo input into the three band buffers.
+// Split the (already low-cut) stereo input into the three band buffers, and
+// replace the dry leg IN PLACE with its phase-matched copy for BAND MIX.
 //
 // The LOW band is passed through apComp_ — a second crossover configured
 // identically to the HIGH split — and its two outputs summed.  By construction
@@ -933,10 +954,24 @@ XlethApexEffect::makeBandConfig(int band, bool anySolo, int numSamples)
 //     low + mid + high == apComp(splitLo.lo) + apComp(splitLo.hi)
 //                      == allpass_hi( allpass_lo( input ) )
 //
-// i.e. magnitude-flat reconstruction, which is what makes the parallel BAND MIX
-// blend meaningful.  Deriving the allpass coefficients separately would risk a
-// mismatch with the split actually in use; running the split itself cannot.
-inline void XlethApexEffect::splitBands(const float* inL, const float* inR, int numSamples)
+// i.e. magnitude-flat reconstruction.  But magnitude-flat is NOT enough for the
+// parallel BAND MIX blend: the band sum also carries the crossover's ALLPASS
+// PHASE, so blending it against the raw (only time-aligned) input combs the two
+// into deep spectral notches — measured at -70 to -89 dB at 50 % mix.  The dry
+// leg must therefore be given the SAME phase, not merely the same magnitude and
+// delay.  dryApLo_/dryApHi_ (configured identically to splitLo_/splitHi_ and
+// summed) reproduce allpass_hi(allpass_lo(dry)) on the dry leg exactly, so at
+// EVERY mix setting both legs share one phase response and the blend is a clean,
+// notch-free amplitude/dynamics morph.  Running the splits themselves rather
+// than deriving allpass coefficients keeps this correct by construction for
+// either order.
+//
+// The overwrite is safe under aliasing (dryL/dryR are the split's own input):
+// each sample reads x = dry[s] once, then writes the allpassed value back to
+// dry[s] only after every read of that sample is done.  The FFT spectrum tap and
+// the input-peak meter both run on the raw dry BEFORE this call, so they still
+// observe the true input.
+inline void XlethApexEffect::splitBands(float* dryL, float* dryR, int numSamples)
 {
     float* lowL  = bandBuf_.getWritePointer(0);
     float* lowR  = bandBuf_.getWritePointer(1);
@@ -949,15 +984,23 @@ inline void XlethApexEffect::splitBands(const float* inL, const float* inR, int 
     {
         float lo, hi, a, b;
 
-        splitLo_.process(0, inL[s], lo, hi);
+        const float xL = dryL[s];
+        splitLo_.process(0, xL, lo, hi);
         apComp_ .process(0, lo, a, b);
         lowL[s] = a + b;
         splitHi_.process(0, hi, midL[s], highL[s]);
+        dryApLo_.process(0, xL, a, b);          // allpass_lo(dry)
+        dryApHi_.process(0, a + b, a, b);        // allpass_hi(allpass_lo(dry))
+        dryL[s] = a + b;
 
-        splitLo_.process(1, inR[s], lo, hi);
+        const float xR = dryR[s];
+        splitLo_.process(1, xR, lo, hi);
         apComp_ .process(1, lo, a, b);
         lowR[s] = a + b;
         splitHi_.process(1, hi, midR[s], highR[s]);
+        dryApLo_.process(1, xR, a, b);
+        dryApHi_.process(1, a + b, a, b);
+        dryR[s] = a + b;
     }
 }
 
@@ -1060,7 +1103,8 @@ inline void XlethApexEffect::runMasterStage(BandBlockConfig& cfg, int numSamples
         preRamp_ [band].finish();
         postRamp_[band].finish();
         sepRamp_ [band].finish();
-        bandGrDb_[band] = 0.0f;
+        bandGrDb_[band]  = 0.0f;
+        bandInAbs_[band] = 0.0f;
         if (masterOsStage) masterOsDelay_.processBlock(chans, 2, numSamples);
         return;
     }
@@ -1070,7 +1114,8 @@ inline void XlethApexEffect::runMasterStage(BandBlockConfig& cfg, int numSamples
         preRamp_ [band].finish();
         postRamp_[band].finish();
         sepRamp_ [band].finish();
-        bandGrDb_[band] = 0.0f;
+        bandGrDb_[band]  = 0.0f;
+        bandInAbs_[band] = 0.0f;
         // Still pay the published saturation latency so the reported number
         // stays honest regardless of band state.
         if (masterOsStage) masterOsDelay_.processBlock(chans, 2, numSamples);
@@ -1091,6 +1136,7 @@ inline void XlethApexEffect::runMasterStage(BandBlockConfig& cfg, int numSamples
 
     // ── Envelope + curve gain (MASTER has no lookahead, so it is in-line) ────
     float minGain = 1.0f;
+    float maxEnv  = 0.0f;
     if (cfg.applyDynamics)
     {
         const int slot = curves_[band].activeSlot.load(std::memory_order_acquire);
@@ -1106,13 +1152,23 @@ inline void XlethApexEffect::runMasterStage(BandBlockConfig& cfg, int numSamples
             const float e  = env_[band].process(level, cfg.aCoef, cfg.rCoef, cfg.holdSamples);
             const float g  = lut.lookup(xleth_apex::gainToDb(e));
             minGain = std::min(minGain, g);
+            maxEnv  = std::max(maxEnv, e);
             chans[0][s] = l * g;
             chans[1][s] = r * g;
         }
 
         curves_[band].inUseSlot.store(-1, std::memory_order_release);
     }
-    bandGrDb_[band] = -xleth_apex::gainToDb(minGain);
+    else
+    {
+        // COMP OFF — no detector, so report the plain post-PRE-GAIN peak.
+        // Gated like every other metering tap: closed editor pays nothing.
+        if (vizActive_.load(std::memory_order_relaxed) != nullptr)
+            for (int s = 0; s < numSamples; ++s)
+            maxEnv = std::max(maxEnv, std::max(std::abs(chans[0][s]), std::abs(chans[1][s])));
+    }
+    bandGrDb_[band]  = -xleth_apex::gainToDb(minGain);
+    bandInAbs_[band] = maxEnv;
 
     // ── SAT ─────────────────────────────────────────────────────────────────
     if (masterOsStage)
@@ -1177,6 +1233,7 @@ inline void XlethApexEffect::processEffect(juce::AudioBuffer<float>& buffer,
     if (splitLoHz != lastSplitLo_ || slopeLo != lastSlopeLo_)
     {
         splitLo_.configure(splitLoHz, sampleRate_, slopeLo);
+        dryApLo_.configure(splitLoHz, sampleRate_, slopeLo);   // phase-match the dry leg
         lastSplitLo_ = splitLoHz;
         lastSlopeLo_ = slopeLo;
     }
@@ -1184,6 +1241,7 @@ inline void XlethApexEffect::processEffect(juce::AudioBuffer<float>& buffer,
     {
         splitHi_.configure(splitHiHz, sampleRate_, slopeHi);
         apComp_ .configure(splitHiHz, sampleRate_, slopeHi);
+        dryApHi_.configure(splitHiHz, sampleRate_, slopeHi);   // phase-match the dry leg
         lastSplitHi_ = splitHiHz;
         lastSlopeHi_ = slopeHi;
     }
@@ -1227,9 +1285,10 @@ inline void XlethApexEffect::processEffect(juce::AudioBuffer<float>& buffer,
     }
 
     // ── Spectrum tap ────────────────────────────────────────────────────────
-    // Must happen HERE, not at the end: dryL/dryR are lanes 6 and 7 of the
-    // shared lookahead ring below, so after ring_.processBlock() they hold the
-    // delayed dry leg rather than the input. No FFT runs here — this only
+    // Must happen HERE, not at the end: splitBands() below overwrites dryL/dryR
+    // with the phase-matched crossover allpass, and dryL/dryR are then lanes 6
+    // and 7 of the shared lookahead ring, so afterwards they hold the delayed,
+    // allpassed dry leg rather than the raw input. No FFT runs here — this only
     // copies into a pre-allocated history ring; the transform itself happens
     // once per ~1024 samples inside observeBlock().
     if (vizCol) vizAccum_.pushInput(dryL, dryR, numSamples);
@@ -1248,7 +1307,8 @@ inline void XlethApexEffect::processEffect(juce::AudioBuffer<float>& buffer,
             // OFF skips its DSP entirely; MUTED is zeroed after the ring (the
             // ring must still see the real signal so unmuting is click-free).
             preRamp_[b].finish();
-            bandGrDb_[b] = 0.0f;
+            bandGrDb_[b]  = 0.0f;
+            bandInAbs_[b] = 0.0f;
             continue;
         }
 
@@ -1266,6 +1326,13 @@ inline void XlethApexEffect::processEffect(juce::AudioBuffer<float>& buffer,
         if (!cfg[b].applyDynamics)
         {
             bandGrDb_[b] = 0.0f;
+            // COMP OFF still feeds the level display: with no detector running,
+            // the honest "curve input" is the band's plain post-PRE-GAIN peak.
+            float peak = 0.0f;
+            if (vizCol)
+                for (int s = 0; s < numSamples; ++s)
+                    peak = std::max(peak, std::max(std::abs(l[s]), std::abs(r[s])));
+            bandInAbs_[b] = peak;
             continue;
         }
 
@@ -1275,6 +1342,7 @@ inline void XlethApexEffect::processEffect(juce::AudioBuffer<float>& buffer,
 
         float* g = gainBuf_[b].data();
         float  minGain = 1.0f;
+        float  maxEnv  = 0.0f;
         for (int s = 0; s < numSamples; ++s)
         {
             const float level = cfg[b].rms ? env_[b].rmsLevel(l[s], r[s], rmsCoef_)
@@ -1283,14 +1351,18 @@ inline void XlethApexEffect::processEffect(juce::AudioBuffer<float>& buffer,
                                             cfg[b].holdSamples);
             g[s] = lut.lookup(xleth_apex::gainToDb(e));
             minGain = std::min(minGain, g[s]);
+            maxEnv  = std::max(maxEnv, e);
         }
         curves_[b].inUseSlot.store(-1, std::memory_order_release);
-        bandGrDb_[b] = -xleth_apex::gainToDb(minGain);
+        bandGrDb_[b]  = -xleth_apex::gainToDb(minGain);
+        bandInAbs_[b] = maxEnv;
     }
 
     // ── Shared LOOKAHEAD delay: LOW, MID, HIGH and the BAND MIX dry leg ──────
     // One ring, one write position, one ramped delay value — which is exactly
-    // why the dry leg can never drift out of alignment with the band legs.
+    // why the dry leg can never drift out of TIME alignment with the band legs.
+    // (PHASE alignment is already handled: splitBands() replaced the dry leg
+    // with the crossover allpass, so it matches the band sum's phase too.)
     lanePtrs_[0] = bandBuf_.getWritePointer(0);
     lanePtrs_[1] = bandBuf_.getWritePointer(1);
     lanePtrs_[2] = bandBuf_.getWritePointer(2);
@@ -1423,6 +1495,7 @@ inline void XlethApexEffect::processEffect(juce::AudioBuffer<float>& buffer,
             outPeak,
             bandGrDb_,
             bandOutAbs,
+            bandInAbs_,
             static_cast<float>(lookaheadSamples),
             static_cast<float>(totalLatency),
             splitLoHz,

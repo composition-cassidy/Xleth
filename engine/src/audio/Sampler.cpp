@@ -6,14 +6,184 @@
 #include <cmath>
 #include <limits>
 
+// The modulation config declares its own slot ceiling so the model layer does
+// not have to include TimelineTypes.h. They must never drift apart.
+static_assert(xleth::sampmod::kMaxModSlots == MAX_SAMPLE_SLOTS,
+              "kMaxModSlots must mirror MAX_SAMPLE_SLOTS");
+
+// ─── Slot configuration (main thread) ────────────────────────────────────────
+
+void Sampler::setSlotCount(int count)
+{
+    const int clamped = std::clamp(count, 1, MAX_SAMPLE_SLOTS);
+    // Dropped slots release their PCM so a later grow can't resurrect stale
+    // audio under fresh settings.
+    for (int i = clamped; i < MAX_SAMPLE_SLOTS; ++i)
+        slots_[static_cast<size_t>(i)].reset();
+    slotCount_ = clamped;
+    refreshSoloCache();
+}
+
+void Sampler::loadSlotSample(int slotIndex,
+                             const juce::AudioBuffer<float>& audioData,
+                             double sourceSampleRate, int rootNote)
+{
+    if (slotIndex < 0 || slotIndex >= MAX_SAMPLE_SLOTS) return;
+    auto& s = slots_[static_cast<size_t>(slotIndex)];
+    // Own a private copy: the caller's buffer is a working copy that dies when
+    // buildSamplerForRegion returns. Loading a raw sample also drops any PREP
+    // buffer left from the previous audio — the bake that produced it was keyed
+    // to PCM this slot no longer holds.
+    auto owned = std::make_shared<juce::AudioBuffer<float>>();
+    owned->makeCopyOf(audioData, true);
+    s.raw = owned;
+    s.publish(owned);
+    s.sourceSampleRate = (sourceSampleRate > 0.0) ? sourceSampleRate : 48000.0;
+    s.rootNote         = rootNote;
+    if (slotIndex >= slotCount_) slotCount_ = slotIndex + 1;
+}
+
+void Sampler::setSlotPreparedBuffer(int slotIndex,
+                                    std::shared_ptr<const juce::AudioBuffer<float>> prepared)
+{
+    if (slotIndex < 0 || slotIndex >= MAX_SAMPLE_SLOTS) return;
+    auto& s = slots_[static_cast<size_t>(slotIndex)];
+    // nullptr = PREP cleared / bypassed → fall back to the raw sample.
+    s.publish(prepared ? prepared : s.raw);
+}
+
+void Sampler::clearSlotSample(int slotIndex)
+{
+    if (slotIndex < 0 || slotIndex >= MAX_SAMPLE_SLOTS) return;
+    auto& s = slots_[static_cast<size_t>(slotIndex)];
+    s.publish(nullptr);
+    s.raw.reset();
+}
+
+void Sampler::setSlotTuning(int slotIndex, int octave, int semitone,
+                            float fineCents, int coarse)
+{
+    if (slotIndex < 0 || slotIndex >= MAX_SAMPLE_SLOTS) return;
+    // Same summation as SampleSlot::tuningSemitones() — keep the two in step.
+    slots_[static_cast<size_t>(slotIndex)].tuningSemitones =
+          static_cast<double>(std::clamp(octave,   -4,  4)) * 12.0
+        + static_cast<double>(std::clamp(semitone, -12, 12))
+        + static_cast<double>(std::clamp(coarse,   -48, 48))
+        + static_cast<double>(std::clamp(fineCents, -100.0f, 100.0f)) / 100.0;
+}
+
+void Sampler::setSlotLevel(int slotIndex, float volume, float pan)
+{
+    if (slotIndex < 0 || slotIndex >= MAX_SAMPLE_SLOTS) return;
+    auto& s = slots_[static_cast<size_t>(slotIndex)];
+    s.volume = std::clamp(volume, 0.0f, 2.0f);
+    s.pan    = std::clamp(pan,   -1.0f, 1.0f);
+}
+
+void Sampler::setSlotMuteSolo(int slotIndex, bool mute, bool solo)
+{
+    if (slotIndex < 0 || slotIndex >= MAX_SAMPLE_SLOTS) return;
+    auto& s = slots_[static_cast<size_t>(slotIndex)];
+    s.mute = mute;
+    s.solo = solo;
+    refreshSoloCache();
+}
+
+void Sampler::setSlotTrim(int slotIndex, int64_t smpStart, int64_t smpLength,
+                          float declickMs, float fadeInMs, float fadeOutMs)
+{
+    if (slotIndex < 0 || slotIndex >= MAX_SAMPLE_SLOTS) return;
+    auto& s = slots_[static_cast<size_t>(slotIndex)];
+    s.smpStart  = std::max<int64_t>(0, smpStart);
+    s.smpLength = std::max<int64_t>(0, smpLength);
+    s.declickMs = std::max(0.0f, declickMs);
+    s.fadeInMs  = std::max(0.0f, fadeInMs);
+    s.fadeOutMs = std::max(0.0f, fadeOutMs);
+}
+
+void Sampler::setSlotLoop(int slotIndex, bool loopEnabled, int64_t loopStart,
+                          int64_t loopEnd, int64_t crossfadeSamples,
+                          int loopMode, bool exitLoopOnRelease)
+{
+    if (slotIndex < 0 || slotIndex >= MAX_SAMPLE_SLOTS) return;
+    auto& s = slots_[static_cast<size_t>(slotIndex)];
+    s.loopEnabled      = loopEnabled;
+    s.loopStart        = std::max<int64_t>(0, loopStart);
+    s.loopEnd          = std::max<int64_t>(0, loopEnd);
+    s.crossfadeSamples = std::max<int64_t>(0, crossfadeSamples);
+    // An out-of-range mode falls back to Forward rather than indexing off the
+    // end of the enum — a malformed project must not change how audio reads.
+    s.loopMode = (loopMode >= static_cast<int>(SampleLoopMode::Forward)
+               && loopMode <= static_cast<int>(SampleLoopMode::Reverse))
+               ? loopMode : static_cast<int>(SampleLoopMode::Forward);
+    s.exitLoopOnRelease = exitLoopOnRelease;
+}
+
+void Sampler::setSlotRootNote(int slotIndex, int rootNote)
+{
+    if (slotIndex < 0 || slotIndex >= MAX_SAMPLE_SLOTS) return;
+    slots_[static_cast<size_t>(slotIndex)].rootNote = rootNote;
+}
+
+void Sampler::setSlotMangle(int slotIndex, int mode, float amount, float mix)
+{
+    if (slotIndex < 0 || slotIndex >= MAX_SAMPLE_SLOTS) return;
+    auto& s = slots_[static_cast<size_t>(slotIndex)];
+    // Same guard shape as setSlotLoop's: an unknown mode id is a malformed
+    // project, and the safe answer is "no effect", not "some other effect".
+    s.mangleMode   = xleth::mangle::isValidMode(mode) ? mode : 0;
+    s.mangleAmount = std::clamp(amount, 0.0f, 1.0f);
+    s.mangleMix    = std::clamp(mix,    0.0f, 1.0f);
+}
+
+bool Sampler::slotHasAudio(int slotIndex) const
+{
+    if (slotIndex < 0 || slotIndex >= slotCount_) return false;
+    return slots_[static_cast<size_t>(slotIndex)].hasAudio();
+}
+
+bool Sampler::slotSounds(int slotIndex) const
+{
+    if (slotIndex < 0 || slotIndex >= slotCount_) return false;
+    const auto& s = slots_[static_cast<size_t>(slotIndex)];
+    if (!s.hasAudio()) return false;
+    // Solo wins over mute: once anything is solo'd, only solo'd slots sound
+    // regardless of their own mute flag (mixer semantics).
+    if (anySolo_) return s.solo;
+    return !s.mute;
+}
+
+void Sampler::refreshSoloCache()
+{
+    anySolo_ = false;
+    for (int i = 0; i < slotCount_; ++i)
+        if (slots_[static_cast<size_t>(i)].solo) { anySolo_ = true; return; }
+}
+
+bool Sampler::hasSample() const
+{
+    for (int i = 0; i < slotCount_; ++i)
+        if (slots_[static_cast<size_t>(i)].hasAudio()) return true;
+    return false;
+}
+
+int Sampler::activeStreamCount() const
+{
+    int n = 0;
+    for (const auto& v : voices_) {
+        if (!v.active) continue;
+        for (int i = 0; i < v.numStreams; ++i)
+            if (v.streams[static_cast<size_t>(i)].active) ++n;
+    }
+    return n;
+}
+
 // ─── Configuration (main thread) ─────────────────────────────────────────────
 
 void Sampler::loadSample(const juce::AudioBuffer<float>& audioData,
                          double sourceSampleRate, int rootNote)
 {
-    sampleData_.makeCopyOf(audioData, true);
-    sourceSampleRate_ = (sourceSampleRate > 0.0) ? sourceSampleRate : 48000.0;
-    rootNote_         = rootNote;
+    loadSlotSample(0, audioData, sourceSampleRate, rootNote);
 }
 
 void Sampler::setADSR(float attackMs, float decayMs, float sustain, float releaseMs)
@@ -61,44 +231,33 @@ void Sampler::setPitchEnvAmount(float semitones)
     pitchEnvAmount_ = std::clamp(semitones, -48.0f, 48.0f);
 }
 
-void Sampler::setLoopPoints(bool enabled, int64_t loopStart, int64_t loopEnd)
-{
-    loopEnabled_ = enabled;
-    loopStart_   = std::max<int64_t>(0, loopStart);
-    loopEnd_     = std::max<int64_t>(0, loopEnd);
-}
-
 void Sampler::setCrossfadeMode(bool enabled)
 {
     crossfadeEnabled_ = enabled;
 }
 
-void Sampler::setRootNote(int note)
+// ── Slot-0 aliases ──────────────────────────────────────────────────────────
+// Per-slot state lives on the slots; these forward to slot 0 so single-sample
+// callers keep working verbatim.
+
+void Sampler::setLoopPoints(bool enabled, int64_t loopStart, int64_t loopEnd)
 {
-    rootNote_ = note;
+    auto& s = slots_[0];
+    s.loopEnabled = enabled;
+    s.loopStart   = std::max<int64_t>(0, loopStart);
+    s.loopEnd     = std::max<int64_t>(0, loopEnd);
 }
 
-void Sampler::setSmpStart(int64_t start)
-{
-    smpStart_ = std::max<int64_t>(0, start);
-}
-
-void Sampler::setSmpLength(int64_t length)
-{
-    smpLength_ = std::max<int64_t>(0, length);
-}
-
-void Sampler::setDeclickMs(float ms)
-{
-    declickMs_ = std::max(0.0f, ms);
-}
-
-void Sampler::setFadeIn(float ms)  { fadeInMs_  = std::max(0.0f, ms); }
-void Sampler::setFadeOut(float ms) { fadeOutMs_ = std::max(0.0f, ms); }
+void Sampler::setRootNote(int note)      { slots_[0].rootNote  = note; }
+void Sampler::setSmpStart(int64_t start) { slots_[0].smpStart  = std::max<int64_t>(0, start); }
+void Sampler::setSmpLength(int64_t len)  { slots_[0].smpLength = std::max<int64_t>(0, len); }
+void Sampler::setDeclickMs(float ms)     { slots_[0].declickMs = std::max(0.0f, ms); }
+void Sampler::setFadeIn(float ms)        { slots_[0].fadeInMs  = std::max(0.0f, ms); }
+void Sampler::setFadeOut(float ms)       { slots_[0].fadeOutMs = std::max(0.0f, ms); }
 
 void Sampler::setCrossfadeSamples(int64_t samples)
 {
-    crossfadeSamples_ = std::max<int64_t>(0, samples);
+    slots_[0].crossfadeSamples = std::max<int64_t>(0, samples);
 }
 
 void Sampler::setMonoMode(bool enabled)
@@ -106,10 +265,100 @@ void Sampler::setMonoMode(bool enabled)
     monoEnabled_ = enabled;
 }
 
-void Sampler::setPortamento(bool enabled, float timeMs)
+void Sampler::setPortamento(bool enabled, float timeMs, int mode, float curve)
 {
     portamentoEnabled_ = enabled;
     portamentoTimeMs_  = std::max(0.0f, timeMs);
+    portamentoMode_    = (mode == 1) ? 1 : 0;
+    portamentoCurve_   = std::clamp(curve, -1.0f, 1.0f);
+}
+
+void Sampler::setVoiceCount(int count)
+{
+    voiceCount_ = std::clamp(count, 1, MAX_VOICES);
+}
+
+void Sampler::setLegato(bool enabled)
+{
+    legatoEnabled_ = enabled;
+}
+
+// ─── Portamento geometry ────────────────────────────────────────────────────
+// ALWAYS spends portamentoTimeMs on every glide; SCALED spends it per OCTAVE,
+// so a semitone step takes a twelfth of the time a full octave does and the
+// glide RATE is what stays constant.
+//
+// The rate is expressed against slot 0's source rate for the same reason the
+// original implementation did: portamentoRemaining counts down once per
+// rendered sample, so the two must agree on what a "sample" is.
+double Sampler::portamentoSamplesFor(double semitones) const
+{
+    if (!portamentoEnabled_) return 0.0;
+    const double interval = std::abs(semitones);
+    if (interval < 1.0e-9) return 0.0;
+
+    double ms = static_cast<double>(portamentoTimeMs_);
+    if (portamentoMode_ == 1) ms *= interval / 12.0;
+    if (ms <= 0.0) return 0.0;
+
+    return ms * 0.001 * slots_[0].sourceSampleRate;
+}
+
+void Sampler::beginPortamento(Voice& v, int target)
+{
+    const double samples =
+        portamentoSamplesFor(static_cast<double>(target) - v.currentPitchF);
+
+    v.targetPitch = target;
+    if (samples <= 0.0) {
+        // No glide: land immediately. Clearing `total` as well keeps the
+        // shaped-interpolation branch in processVoice inert.
+        v.currentPitchF       = static_cast<double>(target);
+        v.portamentoRemaining = 0.0;
+        v.portamentoTotal     = 0.0;
+        return;
+    }
+
+    v.portamentoSourceF   = v.currentPitchF;
+    v.portamentoTotal     = samples;
+    v.portamentoRemaining = samples;
+}
+
+// ─── Voice budget ───────────────────────────────────────────────────────────
+// The NOTE-count twin of enforceStreamBudget, and deliberately the same rule:
+// oldest held note first, released rather than hard-killed, releasing notes
+// excluded from the count because they are a draining tail rather than a
+// sustaining cost. Running both means whichever cap binds first does the
+// stealing, and they can never disagree about the victim.
+void Sampler::enforceVoiceBudget()
+{
+    auto heldNotes = [this]() {
+        int n = 0;
+        for (const auto& v : voices_) {
+            if (!v.active || !v.noteHeld) continue;
+            if (v.envStage == Voice::EnvStage::Release
+                || v.envStage == Voice::EnvStage::Off) continue;
+            ++n;
+        }
+        return n;
+    };
+
+    while (heldNotes() + 1 > voiceCount_)
+    {
+        Voice* oldest = nullptr;
+        for (auto& v : voices_)
+        {
+            if (!v.active || !v.noteHeld) continue;
+            if (v.envStage == Voice::EnvStage::Release
+                || v.envStage == Voice::EnvStage::Off) continue;
+            if (oldest == nullptr || v.spawnCounter < oldest->spawnCounter)
+                oldest = &v;
+        }
+        // Everything left is already releasing: let the new note through
+        // rather than dropping it, exactly as the stream budget does.
+        if (oldest == nullptr) return;
+        releaseVoice(*oldest);
+    }
 }
 
 void Sampler::setArpeggiator(bool enabled, bool tempoSync, int division,
@@ -162,6 +411,193 @@ void Sampler::setLfoPitch(bool enabled, float amount, float speedHz, bool tempoS
     c.tempoSync = tempoSync; c.tempoDivision = std::max(1, tempoDivision);
     c.attackMs = std::max(0.0f, attackMs); c.delayMs = std::max(0.0f, delayMs);
     c.waveform = waveform;
+}
+
+// ─── Modulation system — publication (main thread) ───────────────────────────
+
+void Sampler::setModulation(const xleth::sampmod::ModConfig& cfg)
+{
+    modConfig_ = cfg;
+
+    // An empty route list publishes a NULL graph rather than an inert one, so
+    // the audio thread's bypass is a single null pointer test — no scan over
+    // fourteen sources that would all resolve to nothing.
+    if (cfg.isBypassed()) {
+        auto prev = modGraph_.exchange(nullptr, std::memory_order_acq_rel);
+        if (prev) {
+            modGraphRetired_[static_cast<size_t>(modGraphRetiredNext_)] = std::move(prev);
+            modGraphRetiredNext_ = (modGraphRetiredNext_ + 1) % kModGraphRetained;
+        }
+        return;
+    }
+
+    auto compiled = std::make_shared<xleth::sampmod::CompiledModGraph>();
+    xleth::sampmod::compileModGraph(cfg, *compiled);
+
+    // Publish, then retain what was there. A voice that is mid-block still
+    // holds the old graph through its own shared_ptr; keeping the last few
+    // published graphs alive on the MAIN thread guarantees the final release
+    // never lands on the audio thread. Same reasoning as Slot::publish.
+    auto prev = modGraph_.exchange(
+        ModGraphPtr(std::const_pointer_cast<const xleth::sampmod::CompiledModGraph>(compiled)),
+        std::memory_order_acq_rel);
+    if (prev) {
+        modGraphRetired_[static_cast<size_t>(modGraphRetiredNext_)] = std::move(prev);
+        modGraphRetiredNext_ = (modGraphRetiredNext_ + 1) % kModGraphRetained;
+    }
+}
+
+// ─── Modulation system — global (FREE / MONO) sources ────────────────────────
+//
+// Runs once per processBlock, before any voice. Advances the shared bank over
+// every control block this buffer spans and caches each block's values, so all
+// voices in the buffer read the same instance at the same point in time.
+
+void Sampler::advanceGlobalModulation(const xleth::sampmod::CompiledModGraph& g,
+                                      int numSamples, double engineSampleRate)
+{
+    namespace sm = xleth::sampmod;
+    const double dt = static_cast<double>(sm::kControlBlockSamples) / engineSampleRate;
+
+    // ── Transport anchoring for FREE sources ─────────────────────────────────
+    // A FREE instance "runs for the timeline", so a SEEK must move it. A seek
+    // shows up as an absolute position that matches neither the contiguous
+    // continuation of the last buffer nor the last position we saw (which is
+    // how a preview render — where the position never moves at all — is told
+    // apart from a real jump, so previews do not re-anchor every buffer).
+    if (modAbsSeen_
+        && currentAbsSample_ != modExpectedAbs_
+        && currentAbsSample_ != modLastAbs_)
+    {
+        const double posSec = static_cast<double>(currentAbsSample_) / engineSampleRate;
+        for (int l = 0; l < sm::kNumLfos; ++l) {
+            const int k = sm::kLfoSource0 + l;
+            if (!g.isGlobal[static_cast<size_t>(k)]) continue;
+            if (g.cfg.lfos[static_cast<size_t>(l)].behavior
+                != static_cast<int>(sm::LfoBehavior::Free)) continue;
+
+            const auto& c = g.cfg.lfos[static_cast<size_t>(l)];
+            double rate;
+            if (c.tempoSync) {
+                const double period = sm::modTimeSeconds(c.syncRate, true, bpm_);
+                rate = (period > 1.0e-9) ? (1.0 / period) : 1.0;
+            } else {
+                rate = static_cast<double>(c.rateHz);
+            }
+            rate = std::clamp(rate, 1.0e-4, 400.0);
+
+            auto& st = modGlobalBank_.lfos[static_cast<size_t>(l)];
+            st.phase      = posSec * rate;
+            st.phase     -= std::floor(st.phase);
+            st.elapsedSec = posSec;
+            st.done       = false;
+        }
+    }
+    modLastAbs_     = currentAbsSample_;
+    modExpectedAbs_ = currentAbsSample_ + numSamples;
+    modAbsSeen_     = true;
+
+    // ── Advance one control block per block this buffer covers ───────────────
+    const int64_t firstBlock = modSampleClock_ / sm::kControlBlockSamples;
+    const int64_t lastBlock  = (modSampleClock_ + numSamples - 1) / sm::kControlBlockSamples;
+    const int     nBlocks    = static_cast<int>(
+        std::min<int64_t>(lastBlock - firstBlock + 1, kMaxCtrlBlocksPerBuffer));
+
+    modCacheFirstBlock_    = firstBlock;
+    modCacheCount_         = nBlocks;
+    modBufferStartClock_   = modSampleClock_;
+
+    for (int b = 0; b < nBlocks; ++b)
+    {
+        // A buffer that does not start on a control-block boundary re-enters
+        // the block the previous buffer already advanced. Advancing it again
+        // would run the global sources fast, so it is only re-cached.
+        const int64_t blockIdx = firstBlock + b;
+        if (blockIdx >= modBlocksDone_) {
+            sm::modBankSnapshot(modGlobalBank_);
+            // Per-voice sources a global source depends on: read the newest
+            // voice's snapshot. Always one control block old, exactly as the
+            // cycle rule documents.
+            for (int k = 0; k < sm::kNumSources; ++k) {
+                if (g.isGlobal[static_cast<size_t>(k)]) continue;
+                modGlobalBank_.value[static_cast<size_t>(k)] =
+                    modLatestVoiceValue_[static_cast<size_t>(k)];
+                modGlobalBank_.amount[static_cast<size_t>(k)] =
+                    modLatestVoiceAmount_[static_cast<size_t>(k)];
+            }
+            sm::advanceModBank(g, modGlobalBank_, /*evalGlobal=*/true, bpm_, dt);
+            modBlocksDone_ = blockIdx + 1;
+        }
+        modGlobalCacheValue_[static_cast<size_t>(b)]  = modGlobalBank_.value;
+        modGlobalCacheAmount_[static_cast<size_t>(b)] = modGlobalBank_.amount;
+    }
+
+    modSampleClock_ += numSamples;
+}
+
+// ─── Modulation system — one voice, one control block ────────────────────────
+
+void Sampler::evaluateVoiceModulation(Voice& v,
+                                      const xleth::sampmod::CompiledModGraph& g,
+                                      int sampleInBuffer, double engineSampleRate)
+{
+    namespace sm = xleth::sampmod;
+    const double dt = static_cast<double>(sm::kControlBlockSamples) / engineSampleRate;
+
+    sm::modBankSnapshot(v.modBank);
+
+    // Pull the global instances' values for this point in the buffer. Clamped
+    // rather than wrapped: a buffer longer than the cache simply holds the last
+    // cached block, which degrades the control rate but never reads garbage.
+    if (modCacheCount_ > 0) {
+        const int64_t clk = modBufferStartClock_ + sampleInBuffer;
+        int ci = static_cast<int>(clk / sm::kControlBlockSamples - modCacheFirstBlock_);
+        ci = std::clamp(ci, 0, modCacheCount_ - 1);
+        const auto& gv = modGlobalCacheValue_[static_cast<size_t>(ci)];
+        const auto& ga = modGlobalCacheAmount_[static_cast<size_t>(ci)];
+        for (int k = 0; k < sm::kNumSources; ++k) {
+            if (!g.isGlobal[static_cast<size_t>(k)]) continue;
+            v.modBank.value[static_cast<size_t>(k)]  = gv[static_cast<size_t>(k)];
+            v.modBank.amount[static_cast<size_t>(k)] = ga[static_cast<size_t>(k)];
+        }
+    }
+
+    sm::advanceModBank(g, v.modBank, /*evalGlobal=*/false, bpm_, dt);
+    sm::accumulateModOffsets(g, v.modBank, v.modOffsets);
+
+    // Publish this voice's per-voice sources for any route feeding a global
+    // source, newest voice wins.
+    if (v.spawnCounter >= modLatestVoiceSpawn_) {
+        modLatestVoiceSpawn_ = v.spawnCounter;
+        for (int k = 0; k < sm::kNumSources; ++k) {
+            if (g.isGlobal[static_cast<size_t>(k)]) continue;
+            modLatestVoiceValue_[static_cast<size_t>(k)]  = v.modBank.value[static_cast<size_t>(k)];
+            modLatestVoiceAmount_[static_cast<size_t>(k)] = v.modBank.amount[static_cast<size_t>(k)];
+        }
+    }
+
+    // ── Resolve the parameters the render loop reads directly ────────────────
+    static constexpr float kPiF = 3.14159265358979323846f;
+    static constexpr float kSqrt2 = 1.41421356237f;
+
+    v.modMasterGain = sm::applyTargetLaw(
+        static_cast<int>(sm::ModTarget::MasterVolume), 1.0f, v.modOffsets.masterVolume);
+
+    const float masterPan = g.masterPanRouted
+        ? sm::applyTargetLaw(static_cast<int>(sm::ModTarget::MasterPan), 0.0f,
+                             v.modOffsets.masterPan)
+        : 0.0f;
+
+    for (int i = 0; i < slotCount_; ++i)
+    {
+        if (!g.slotPanRouted[static_cast<size_t>(i)] && !g.masterPanRouted) continue;
+        const float base = slots_[static_cast<size_t>(i)].pan;
+        const float p = std::clamp(base + v.modOffsets.pan[static_cast<size_t>(i)] + masterPan,
+                                   -1.0f, 1.0f);
+        const float angle = (p + 1.0f) * 0.5f;
+        v.modPanL[static_cast<size_t>(i)] = kSqrt2 * std::cos(angle * kPiF * 0.5f);
+        v.modPanR[static_cast<size_t>(i)] = kSqrt2 * std::sin(angle * kPiF * 0.5f);
+    }
 }
 
 // ── LFO evaluation ─────────────────────────────────────────────────────────
@@ -239,16 +675,13 @@ void Sampler::allNotesOff()
     //
     // Functionally equivalent to fireNoteOff(pitch, 0, force=true) on every
     // active voice, but inlined so the audio thread does no map lookups.
+    // Releasing at note level releases ALL of that note's layers together —
+    // there is no path that leaves one layer of a note sounding on its own.
     for (auto& v : voices_)
     {
         if (!v.active) continue;
         if (v.envStage == Voice::EnvStage::Off) continue;  // already dead
-        v.noteHeld          = false;
-        v.releaseStartLevel = v.envLevel;    // envelope continuity
-        v.envStage          = Voice::EnvStage::Release;
-        v.envPosition       = 0.0;
-        v.pitchEnvStage     = Voice::EnvStage::Release;
-        v.pitchEnvPosition  = 0.0;
+        releaseVoice(v);
     }
     // Control-plane state reset (unchanged).
     arp_.reset();
@@ -271,13 +704,54 @@ void Sampler::releaseVoicesSpawnedInRange(int64_t startSample, int64_t endSample
         if (v.spawnAbsSample < 0) continue;
         if (v.spawnAbsSample < startSample) continue;
         if (v.spawnAbsSample >= endSample)  continue;
-        v.noteHeld          = false;
-        v.releaseStartLevel = v.envLevel;
-        v.envStage          = Voice::EnvStage::Release;
-        v.envPosition       = 0.0;
-        v.pitchEnvStage     = Voice::EnvStage::Release;
-        v.pitchEnvPosition  = 0.0;
+        releaseVoice(v);
     }
+}
+
+// Hand one note to its release envelope. Envelope continuity (capturing
+// envLevel into releaseStartLevel) is what keeps this click-free, which is why
+// stealing uses it rather than clearing `active`.
+void Sampler::releaseVoice(Voice& v)
+{
+    v.noteHeld          = false;
+    v.releaseStartLevel = v.envLevel;
+    v.envStage          = Voice::EnvStage::Release;
+    v.envPosition       = 0.0;
+    v.pitchEnvStage     = Voice::EnvStage::Release;
+    v.pitchEnvPosition  = 0.0;
+    // The modulation envelopes release with the amplitude envelope. Static, so
+    // it takes no graph — the bank always exists on the voice.
+    xleth::sampmod::modReleaseVoice(v.modBank);
+}
+
+bool Sampler::armExitLoopTail(Voice& v)
+{
+    // Only streams that are ACTUALLY looping right now matter: a layer that
+    // already ran past its loop, or never had one, imposes no condition and
+    // needs no tail.
+    int looping = 0;
+    int optedIn = 0;
+    for (int i = 0; i < v.numStreams; ++i) {
+        const auto& st = v.streams[static_cast<size_t>(i)];
+        if (!st.active || st.finished || st.loopLeft) continue;
+        const Slot& sl = slots_[static_cast<size_t>(st.slotIndex)];
+        const int64_t effLoopEnd   = (sl.loopEnd > 0) ? sl.loopEnd : 0;
+        const bool    hasLoopRange = (effLoopEnd == 0) || (effLoopEnd > sl.loopStart);
+        if (!(crossfadeEnabled_ && sl.loopEnabled && hasLoopRange)) continue;
+        ++looping;
+        if (sl.exitLoopOnRelease) ++optedIn;
+    }
+    // No loop to exit, or a mixed note — fall back to the ordinary release.
+    // Arming a mixed note would leave the non-opted layer looping forever with
+    // no release queued to end it.
+    if (looping == 0 || optedIn != looping) return false;
+
+    for (int i = 0; i < v.numStreams; ++i) {
+        auto& st = v.streams[static_cast<size_t>(i)];
+        if (!st.active || st.finished || st.loopLeft) continue;
+        st.exiting = true;
+    }
+    return true;
 }
 
 int Sampler::activeVoiceCount() const
@@ -330,7 +804,205 @@ int Sampler::debugFirstActiveVoiceIndex() const
     return -1;
 }
 
+int Sampler::debugVoiceStreamCount(int voiceIdx) const
+{
+    if (voiceIdx < 0 || voiceIdx >= MAX_VOICES) return 0;
+    const Voice& v = voices_[static_cast<size_t>(voiceIdx)];
+    if (!v.active) return 0;
+    int n = 0;
+    for (int i = 0; i < v.numStreams; ++i)
+        if (v.streams[static_cast<size_t>(i)].active) ++n;
+    return n;
+}
+
+int Sampler::debugVoiceStreamSlot(int voiceIdx, int streamIdx) const
+{
+    if (voiceIdx < 0 || voiceIdx >= MAX_VOICES) return -1;
+    const Voice& v = voices_[static_cast<size_t>(voiceIdx)];
+    if (streamIdx < 0 || streamIdx >= v.numStreams) return -1;
+    const auto& st = v.streams[static_cast<size_t>(streamIdx)];
+    return st.active ? st.slotIndex : -1;
+}
+
+// ─── Modulation introspection (test-only) ────────────────────────────────────
+
+float Sampler::debugModVoiceSource(int voiceIdx, int sourceIdx) const
+{
+    if (voiceIdx < 0 || voiceIdx >= MAX_VOICES) return 0.0f;
+    if (sourceIdx < 0 || sourceIdx >= xleth::sampmod::kNumSources) return 0.0f;
+    return voices_[static_cast<size_t>(voiceIdx)]
+               .modBank.value[static_cast<size_t>(sourceIdx)];
+}
+
+float Sampler::debugModGlobalSource(int sourceIdx) const
+{
+    if (sourceIdx < 0 || sourceIdx >= xleth::sampmod::kNumSources) return 0.0f;
+    return modGlobalBank_.value[static_cast<size_t>(sourceIdx)];
+}
+
+float Sampler::debugModVoiceSlotSemis(int voiceIdx, int slotIdx) const
+{
+    if (voiceIdx < 0 || voiceIdx >= MAX_VOICES) return 0.0f;
+    if (slotIdx < 0 || slotIdx >= MAX_SAMPLE_SLOTS) return 0.0f;
+    return voices_[static_cast<size_t>(voiceIdx)]
+               .modOffsets.semis[static_cast<size_t>(slotIdx)];
+}
+
+float Sampler::debugModVoiceSlotVolume(int voiceIdx, int slotIdx) const
+{
+    if (voiceIdx < 0 || voiceIdx >= MAX_VOICES) return 0.0f;
+    if (slotIdx < 0 || slotIdx >= MAX_SAMPLE_SLOTS) return 0.0f;
+    return std::clamp(slots_[static_cast<size_t>(slotIdx)].volume
+                      + voices_[static_cast<size_t>(voiceIdx)]
+                            .modOffsets.volume[static_cast<size_t>(slotIdx)],
+                      0.0f, 2.0f);
+}
+
+float Sampler::debugModVoiceSlotPan(int voiceIdx, int slotIdx) const
+{
+    if (voiceIdx < 0 || voiceIdx >= MAX_VOICES) return 0.0f;
+    if (slotIdx < 0 || slotIdx >= MAX_SAMPLE_SLOTS) return 0.0f;
+    return std::clamp(slots_[static_cast<size_t>(slotIdx)].pan
+                      + voices_[static_cast<size_t>(voiceIdx)]
+                            .modOffsets.pan[static_cast<size_t>(slotIdx)],
+                      -1.0f, 1.0f);
+}
+
+float Sampler::debugModVoiceMasterVolume(int voiceIdx) const
+{
+    if (voiceIdx < 0 || voiceIdx >= MAX_VOICES) return 1.0f;
+    return voices_[static_cast<size_t>(voiceIdx)].modMasterGain;
+}
+
+int Sampler::debugModEvalPosition(int sourceIdx) const
+{
+    const ModGraphPtr g = modGraph_.load(std::memory_order_acquire);
+    if (!g || sourceIdx < 0 || sourceIdx >= xleth::sampmod::kNumSources) return -1;
+    return g->evalPos[static_cast<size_t>(sourceIdx)];
+}
+
+bool Sampler::debugModRouteDeferred(int routeIdx) const
+{
+    const ModGraphPtr g = modGraph_.load(std::memory_order_acquire);
+    if (!g || routeIdx < 0 || routeIdx >= g->numRoutes) return false;
+    return g->routes[static_cast<size_t>(routeIdx)].deferred;
+}
+
+bool Sampler::debugModHasCycle() const
+{
+    const ModGraphPtr g = modGraph_.load(std::memory_order_acquire);
+    return g && g->anyCycle;
+}
+
+int Sampler::debugModEnvStage(int voiceIdx, int envIdx) const
+{
+    if (voiceIdx < 0 || voiceIdx >= MAX_VOICES) return -1;
+    if (envIdx < 0 || envIdx >= xleth::sampmod::kNumEnvs) return -1;
+    return voices_[static_cast<size_t>(voiceIdx)]
+               .modBank.envs[static_cast<size_t>(envIdx)].stage;
+}
+
 // ─── Voice allocation ────────────────────────────────────────────────────────
+
+// ─── Stream allocation ───────────────────────────────────────────────────────
+
+int Sampler::soundingSlotCount() const
+{
+    int n = 0;
+    for (int i = 0; i < slotCount_; ++i)
+        if (slotSounds(i)) ++n;
+    return n;
+}
+
+void Sampler::armStreams(Voice& v)
+{
+    // Bind one stream per sounding slot, each starting at its own trim start.
+    // Slots that are silent right now (no audio, muted, or not solo'd while
+    // something else is) simply get no stream — toggling mute/solo therefore
+    // affects the NEXT note, not notes already sounding.
+    v.numStreams = 0;
+    for (int i = 0; i < slotCount_ && v.numStreams < MAX_SAMPLE_SLOTS; ++i)
+    {
+        if (!slotSounds(i)) continue;
+        auto& st = v.streams[static_cast<size_t>(v.numStreams++)];
+        st.active       = true;
+        st.slotIndex    = i;
+        st.playPosition = static_cast<double>(slots_[static_cast<size_t>(i)].smpStart);
+        st.finished     = false;
+        // Every stream enters forward, whatever the loop mode: Reverse and
+        // PingPong only flip direction once the head first reaches loopEnd, so
+        // the pre-loop region always plays in order.
+        st.dir          = 1;
+        st.exiting      = false;
+        st.loopLeft     = false;
+        // Filter integrators, DC blockers and the note-cycle anchor all start
+        // from zero, so a recycled stream cannot leak the previous note's
+        // MANGLE state into this one as a transient.
+        st.mangle.reset();
+    }
+    // Clear the tail so a recycled voice can't expose stale stream state.
+    for (int i = v.numStreams; i < MAX_SAMPLE_SLOTS; ++i)
+        v.streams[static_cast<size_t>(i)] = Voice::Stream{};
+}
+
+void Sampler::enforceStreamBudget(int needed)
+{
+    // Release whole notes, oldest first (lowest spawnCounter), until `needed`
+    // more streams fit under MAX_STREAMS. Note granularity is deliberate: a
+    // chord must never lose one layer and change timbre — it loses whole notes.
+    //
+    // The budget is accounted against HELD streams, not all sounding ones.
+    // Stealing is click-free precisely because a stolen note is handed to its
+    // release envelope rather than hard-killed, so its streams keep rendering
+    // for the release duration. Counting those against the budget would make
+    // one new note cascade into stealing every note on the sampler. Held
+    // streams are the ones that would sustain indefinitely, so they are what
+    // the cap has to govern; released streams are a bounded, draining tail.
+    if (needed <= 0) return;
+
+    // Held streams: notes the user is still holding, excluding anything already
+    // heading for silence.
+    auto heldStreams = [this]() {
+        int n = 0;
+        for (const auto& v : voices_) {
+            if (!v.active || !v.noteHeld) continue;
+            if (v.envStage == Voice::EnvStage::Release
+                || v.envStage == Voice::EnvStage::Off) continue;
+            for (int i = 0; i < v.numStreams; ++i)
+                if (v.streams[static_cast<size_t>(i)].active) ++n;
+        }
+        return n;
+    };
+
+    int budget = heldStreams();
+    while (budget + needed > MAX_STREAMS)
+    {
+        Voice* oldest = nullptr;
+        for (auto& v : voices_)
+        {
+            if (!v.active || !v.noteHeld) continue;
+            if (v.envStage == Voice::EnvStage::Release
+                || v.envStage == Voice::EnvStage::Off) continue;
+            if (oldest == nullptr || v.spawnCounter < oldest->spawnCounter)
+                oldest = &v;
+        }
+        // Nothing left that stealing can free (every remaining note is already
+        // releasing). Let the new note through rather than dropping it — the
+        // releasing notes will free their streams shortly.
+        if (oldest == nullptr) return;
+
+        int freed = 0;
+        for (int i = 0; i < oldest->numStreams; ++i)
+            if (oldest->streams[static_cast<size_t>(i)].active) ++freed;
+
+        releaseVoice(*oldest);
+        budget -= freed;
+        // Defensive: a note with zero active streams would not shrink the
+        // budget and would spin here. Cannot happen (armStreams guarantees
+        // at least one), but the audio thread must never loop unbounded.
+        if (freed <= 0) return;
+    }
+}
 
 Sampler::Voice* Sampler::findFreeVoice()
 {
@@ -363,7 +1035,18 @@ Sampler::Voice* Sampler::findActiveMonoVoice()
 
 void Sampler::noteOn(int midiNote, float velocity, int sampleOffset)
 {
-    if (sampleData_.getNumSamples() <= 0) return;
+    if (!hasSample()) return;
+
+    // ── MONO modulation sources ──────────────────────────────────────────────
+    // A MONO source is ONE shared instance, so it retriggers on the note that
+    // STARTS a group — the first note-on while the sampler is silent — not on
+    // every note of a chord. FREE instances are transport-anchored and are
+    // never retriggered by a note. Checked before the arpeggiator intercept so
+    // an arpeggiated sampler behaves the same way.
+    if (activeVoiceCount() == 0) {
+        const ModGraphPtr graph = modGraph_.load(std::memory_order_acquire);
+        if (graph) xleth::sampmod::modTriggerMonoGlobals(*graph, modGlobalBank_);
+    }
 
     // Arpeggiator intercept: feed notes to arp, not voices
     if (arp_.enabled) {
@@ -381,15 +1064,22 @@ void Sampler::noteOn(int midiNote, float velocity, int sampleOffset)
         monoHeldNotes_.push_back(midiNote);
 
         Voice* active = findActiveMonoVoice();
-        if (active && portamentoEnabled_) {
-            // Slide to new pitch instead of restarting
-            active->targetPitch         = midiNote;
-            active->midiNote            = midiNote;
-            active->velocity            = vel;
-            active->portamentoRemaining = static_cast<double>(portamentoTimeMs_)
-                                          * 0.001 * sourceSampleRate_;
+        // A note arriving while the previous one still sounds is a LEGATO or
+        // PORTAMENTO event: the voice is retuned rather than respawned. Which
+        // of the two is enabled decides only whether that retune glides —
+        // legato alone retunes instantly, portamento alone already behaved this
+        // way, and both together is a glide with no envelope restart.
+        const bool retune = (active != nullptr) && (portamentoEnabled_ || legatoEnabled_);
+        if (retune) {
+            active->midiNote = midiNote;
+            active->velocity = vel;
             active->noteHeld = true;
-            // If the voice was releasing (key had been lifted), retrigger envelope
+            // No-op glide when portamento is off, which lands the pitch
+            // immediately — exactly what a non-gliding legato retune is.
+            beginPortamento(*active, midiNote);
+            // A voice already heading for silence must still restart its
+            // envelopes: retuning one that is on its way to zero would produce
+            // nothing. A still-sounding voice keeps them, and THAT is legato.
             if (active->envStage == Voice::EnvStage::Release
                 || active->envStage == Voice::EnvStage::Off) {
                 active->envStage     = Voice::EnvStage::Delay;
@@ -403,11 +1093,12 @@ void Sampler::noteOn(int midiNote, float velocity, int sampleOffset)
             // Hard retrigger: restart the voice at new pitch
             active->midiNote     = midiNote;
             active->velocity     = vel;
-            active->playPosition = static_cast<double>(smpStart_);
+            // Re-arm every layer from its own trim start.
+            armStreams(*active);
             active->currentPitchF = static_cast<double>(midiNote);
             active->targetPitch   = midiNote;
             active->portamentoRemaining = 0.0;
-            active->pitchRatio   = std::pow(2.0, (midiNote - rootNote_) / 12.0);
+            active->pitchRatio   = std::pow(2.0, (midiNote - slots_[0].rootNote) / 12.0);
             active->envStage     = Voice::EnvStage::Delay;
             active->envLevel     = 0.0f;
             active->envPosition  = 0.0;
@@ -421,8 +1112,9 @@ void Sampler::noteOn(int midiNote, float velocity, int sampleOffset)
             active->slideElapsedSamples  = 0.0;
             active->slideDurationSamples = 0.0;
             active->slideOnsetSample     = 0;
-            // Semantic re-spawn: envelope restarts from Delay, playPosition reset
-            // to smpStart_. Issue fresh identity so findVoiceForNote's
+            // Semantic re-spawn: envelope restarts from Delay, every stream's
+            // read head reset to its slot's trim start. Issue fresh identity so
+            // findVoiceForNote's
             // oldest-held-first ranking treats this as a new voice.
             active->spawnCounter   = nextSpawnCounter_++;
             active->spawnAbsSample = (currentAbsSample_ > 0)
@@ -448,11 +1140,9 @@ void Sampler::noteOn(int midiNote, float velocity, int sampleOffset)
             // findVoiceForNote returned a different voice — e.g. duplicate
             // pitch retrigger — this is defense in depth).
             v->slideActive = false;
-            v->currentPitchF       = static_cast<double>(lastNotePitch_);
-            v->targetPitch         = midiNote;
-            v->portamentoRemaining = static_cast<double>(portamentoTimeMs_)
-                                     * 0.001 * sourceSampleRate_;
-            v->pitchRatio = std::pow(2.0, (v->currentPitchF - rootNote_) / 12.0);
+            v->currentPitchF = static_cast<double>(lastNotePitch_);
+            beginPortamento(*v, midiNote);
+            v->pitchRatio = std::pow(2.0, (v->currentPitchF - slots_[0].rootNote) / 12.0);
         }
     } else {
         fireNoteOn(midiNote, vel, sampleOffset);
@@ -483,16 +1173,11 @@ void Sampler::noteOff(int midiNote, int sampleOffset, bool force)
             const int returnNote = monoHeldNotes_.back();
             Voice* active = findActiveMonoVoice();
             if (active) {
-                active->targetPitch = returnNote;
-                active->midiNote    = returnNote;
-                if (portamentoEnabled_) {
-                    active->portamentoRemaining = static_cast<double>(portamentoTimeMs_)
-                                                  * 0.001 * sourceSampleRate_;
-                } else {
-                    // Instant pitch jump to return note
-                    active->currentPitchF       = static_cast<double>(returnNote);
-                    active->portamentoRemaining = 0.0;
-                }
+                active->midiNote = returnNote;
+                // Glides when portamento is on, jumps instantly when it is
+                // not — the same two cases the hand-rolled branch covered,
+                // now sharing the ALWAYS/SCALED and CURVE handling.
+                beginPortamento(*active, returnNote);
                 lastNotePitch_ = returnNote;
                 // Do NOT retrigger envelope — legato note-return
             }
@@ -512,7 +1197,18 @@ void Sampler::noteOff(int midiNote, int sampleOffset, bool force)
 
 void Sampler::fireNoteOn(int midiNote, float velocity, int sampleOffset)
 {
-    if (sampleData_.getNumSamples() <= 0) return;
+    if (!hasSample()) return;
+
+    // Make room BEFORE picking a voice: enforceStreamBudget releases whole
+    // notes, which can also free the voice slot findFreeVoice would otherwise
+    // have had to steal.
+    const int needed = soundingSlotCount();
+    if (needed <= 0) return;            // every slot muted / not solo'd
+    enforceStreamBudget(needed);
+    // The NOTE cap is independent of the stream cap — an 8-layer sampler is
+    // bound by streams long before voiceCount_, a 1-layer sampler the other way
+    // round — so both run and whichever binds first steals.
+    enforceVoiceBudget();
 
     Voice* v = findFreeVoice();
     if (v == nullptr) return;
@@ -520,11 +1216,13 @@ void Sampler::fireNoteOn(int midiNote, float velocity, int sampleOffset)
     v->active       = true;
     v->midiNote     = midiNote;
     v->velocity     = velocity;
-    v->playPosition = static_cast<double>(smpStart_);
-    v->pitchRatio   = std::pow(2.0, (midiNote - rootNote_) / 12.0);
+    armStreams(*v);
+    v->pitchRatio   = std::pow(2.0, (midiNote - slots_[0].rootNote) / 12.0);
     v->currentPitchF       = static_cast<double>(midiNote);
     v->targetPitch         = midiNote;
     v->portamentoRemaining = 0.0;
+    v->portamentoTotal     = 0.0;
+    v->portamentoSourceF   = static_cast<double>(midiNote);
     v->envStage     = Voice::EnvStage::Delay;
     v->envLevel     = 0.0f;
     v->envPosition  = 0.0;
@@ -550,6 +1248,23 @@ void Sampler::fireNoteOn(int midiNote, float velocity, int sampleOffset)
     v->spawnAbsSample = (currentAbsSample_ > 0)
                         ? currentAbsSample_ + sampleOffset
                         : -1;
+
+    // ── Modulation: arm this voice's half of the system ──────────────────────
+    // Every per-voice source restarts here. modCountdown = 0 forces the first
+    // control-block evaluation on the voice's very first sample, so an
+    // envelope's attack starts exactly at the onset rather than up to 32
+    // samples late. All state is already allocated inside the Voice — a
+    // note-on never touches the heap.
+    v->modCountdown = 0;
+    v->modOffsets.clear();
+    v->modMasterGain = 1.0f;
+    // Named local: the graph must outlive the trigger call, and a temporary
+    // shared_ptr in the condition would be destroyed before the body ran.
+    const ModGraphPtr graph = modGraph_.load(std::memory_order_acquire);
+    if (graph) {
+        xleth::sampmod::modTriggerVoice(*graph, v->modBank, velocity,
+                                        static_cast<float>(midiNote) / 127.0f);
+    }
 }
 
 void Sampler::fireNoteOff(int midiNote, int sampleOffset, bool force)
@@ -563,6 +1278,21 @@ void Sampler::fireNoteOff(int midiNote, int sampleOffset, bool force)
     if (v == nullptr) return;
 
     v->noteHeld      = false;
+
+    // EXIT-LOOP-ON-RELEASE: the note leaves its loop after the current pass and
+    // runs on to the end of the trim region. No amplitude release is queued —
+    // the note holds sustain through the tail and releases through the existing
+    // "every layer has run out" path in processVoice. Queuing a release here
+    // would fade out exactly the tail this option exists to expose.
+    //
+    // Deliberately honoured for forced (pattern-sequencer) note-offs too: a
+    // drawn note ending IS a release. Stealing and allNotesOff go through
+    // releaseVoice() instead, which never grants a tail.
+    if (armExitLoopTail(*v)) {
+        v->releaseSample = -1;
+        return;
+    }
+
     // Defer the envStage → Release transition to processVoice at sample sampleOffset.
     // This makes the release boundary sample-accurate within the buffer.
     jassert(sampleOffset >= 0);
@@ -856,71 +1586,206 @@ float Sampler::advancePitchEnvelope(Voice& v, double engineSampleRate)
 
 // ─── processVoice / processBlock ─────────────────────────────────────────────
 
+// Per-stream geometry, resolved once per processVoice call from the stream's
+// slot. Plain POD on the stack — no allocation on the audio thread.
+namespace {
+struct StreamGeometry
+{
+    const juce::AudioBuffer<float>* data = nullptr;
+    int      nCh        = 0;
+    int      nFrames    = 0;
+    double   srRatio    = 1.0;      // slot source rate / engine rate
+    double   rootNote   = 60.0;
+    double   tuning     = 0.0;      // semitones
+    float    volume     = 1.0f;
+    float    panL       = 1.0f;
+    float    panR       = 1.0f;
+    int64_t  smpStart   = 0;
+    int64_t  clampedEnd = 0;
+    int      effDeclick = 0;
+    int64_t  fadeInN    = 0;
+    int64_t  fadeOutN   = 0;
+    bool     useLoop    = false;
+    int64_t  loopStart  = 0;
+    int64_t  loopEnd    = 0;
+    int64_t  xfade      = 0;
+    double   xfadeStart = 0.0;
+    int      loopMode   = static_cast<int>(SampleLoopMode::Forward);
+
+    // MANGLE, resolved once per block per stream. `mangle.active` false means
+    // the render loop takes the pre-MANGLE path verbatim.
+    xleth::mangle::Runtime mangle{};
+    // Legal read-head window for a MANGLE-bent head. Precomputed so the inner
+    // loop clamps against a pair that is ordered BY CONSTRUCTION — a degenerate
+    // trim (clampedEnd == smpStart) would otherwise hand std::clamp lo > hi,
+    // which is undefined behaviour.
+    double   readLo     = 0.0;
+    double   readHi     = 0.0;
+};
+} // namespace
+
 void Sampler::processVoice(Voice& v,
                            juce::AudioBuffer<float>& out,
                            int numSamples,
                            double engineSampleRate)
 {
-    const int nCh     = sampleData_.getNumChannels();
-    const int nFrames = sampleData_.getNumSamples();
-    if (nCh <= 0 || nFrames <= 0) { v.active = false; return; }
+    if (v.numStreams <= 0) { v.active = false; return; }
 #ifdef XLETH_DEBUG
     if (v.onsetSample != 0)
-        fprintf(stderr, "[ProcVoice] entry onset=%d numSamples=%d\n",
-                v.onsetSample, numSamples);
+        fprintf(stderr, "[ProcVoice] entry onset=%d numSamples=%d streams=%d\n",
+                v.onsetSample, numSamples, v.numStreams);
 #endif
 
     const int outChannels = out.getNumChannels();
     if (outChannels <= 0) return;
 
-    const double srRatio = sourceSampleRate_ / engineSampleRate;
-    const bool   usePitchEnv = pitchEnvEnabled_ && std::abs(pitchEnvAmount_) > 0.001f;
+    const bool usePitchEnv = pitchEnvEnabled_ && std::abs(pitchEnvAmount_) > 0.001f;
 
     static constexpr float kPi = 3.14159265358979323846f;
 
-    // Trim end: smpStart_ + effective length, clamped to buffer bounds.
-    const int64_t effEnd = smpStart_ +
-        (smpLength_ > 0 ? smpLength_ : static_cast<int64_t>(nFrames) - smpStart_);
-    const int64_t clampedEnd = std::min(effEnd, static_cast<int64_t>(nFrames));
-    // Declick width (ms → samples at source rate), clamped so fades never overlap.
-    const int declickN   = xleth::dsp::DeclickEnvelope::msToSamples(declickMs_, sourceSampleRate_);
-    const int effDeclick = std::min(declickN,
-        static_cast<int>((clampedEnd - smpStart_) / 2));
+    // Sounding note frequency at block entry. MANGLE's key-tracked filter
+    // cutoff is designed from this once per block (block-rate coefficients,
+    // the same convention the effect base class uses) rather than chasing the
+    // per-sample pitch modulation — one tan() per block instead of per sample.
+    const double noteHzAtBlockEntry = 440.0 * std::pow(2.0, (v.currentPitchF - 69.0) / 12.0);
 
-    // Effective loop end: if loopEnd_ == 0, treat as end of sample.
-    const int64_t effLoopEnd = (loopEnd_ > 0)
-        ? std::min<int64_t>(loopEnd_, nFrames)
-        : static_cast<int64_t>(nFrames);
-    const int64_t effLoopStart = std::min<int64_t>(loopStart_, effLoopEnd);
-    const bool    useLoop      = crossfadeEnabled_ && loopEnabled_
-                                  && effLoopEnd > effLoopStart;
+    // ── Resolve every stream's geometry up front ─────────────────────────────
+    // heldBuffers keeps each stream's published buffer alive for the duration
+    // of this call (see the load below); geo holds the raw pointers the render
+    // loop reads through.
+    std::array<StreamGeometry, MAX_SAMPLE_SLOTS> geo{};
+    std::array<Slot::BufferPtr, MAX_SAMPLE_SLOTS> heldBuffers{};
+    int liveStreams = 0;
+    for (int i = 0; i < v.numStreams; ++i)
+    {
+        auto& st = v.streams[static_cast<size_t>(i)];
+        if (!st.active) continue;
+        const Slot& sl = slots_[static_cast<size_t>(st.slotIndex)];
 
-    // Loop crossfade width. Clamp so:
-    //  - the two ends can never overlap inside the loop
-    //  - the fade-out read [loopEnd-N, loopEnd] stays inside the trim region
-    //  - the fade-in source [loopStart, loopStart+N] stays inside the trim region
-    int64_t effXfade = 0;
-    if (useLoop && crossfadeSamples_ > 0) {
-        effXfade = crossfadeSamples_;
-        effXfade = std::min<int64_t>(effXfade, (effLoopEnd - effLoopStart) / 2);
-        effXfade = std::min<int64_t>(effXfade, effLoopEnd   - smpStart_);
-        effXfade = std::min<int64_t>(effXfade, clampedEnd   - effLoopStart);
-        if (effXfade < 0) effXfade = 0;
+        // Pin the slot's published buffer for the whole block. Holding the
+        // shared_ptr here — not just the raw pointer in the geometry — is what
+        // makes a PREP bake landing mid-note safe: the swap can retire the old
+        // buffer, but it cannot free it while this read head still points into
+        // it. One atomic refcount bump per stream per block.
+        auto& held = heldBuffers[static_cast<size_t>(i)];
+        held = sl.data.load(std::memory_order_acquire);
+        const int nCh     = held ? held->getNumChannels() : 0;
+        const int nFrames = held ? held->getNumSamples()  : 0;
+        if (nCh <= 0 || nFrames <= 0) { st.active = false; st.finished = true; continue; }
+
+        auto& g = geo[static_cast<size_t>(i)];
+        g.data     = held.get();
+        g.nCh      = nCh;
+        g.nFrames  = nFrames;
+        g.srRatio  = sl.sourceSampleRate / engineSampleRate;
+        g.rootNote = static_cast<double>(sl.rootNote);
+        g.tuning   = sl.tuningSemitones;
+        g.volume   = sl.volume;
+        // Constant-power slot pan, NORMALISED so centre is unity gain.
+        // The raw cos/sin law gives 0.707 per side at centre (-3 dB), which
+        // would quietly attenuate every pre-slot project by 3 dB the moment
+        // slot pan was introduced. Scaling by sqrt(2) puts pan=0 at exactly
+        // 1.0 — so a legacy single-sample region is bit-identical — while
+        // keeping total power constant as the layer is swept.
+        {
+            static constexpr float kSqrt2 = 1.41421356237f;
+            const float panAngle = (std::clamp(sl.pan, -1.0f, 1.0f) + 1.0f) * 0.5f;
+            g.panL = kSqrt2 * cosf(panAngle * kPi * 0.5f);
+            g.panR = kSqrt2 * sinf(panAngle * kPi * 0.5f);
+        }
+
+        // Trim end: smpStart + effective length, clamped to buffer bounds.
+        g.smpStart = sl.smpStart;
+        const int64_t effEnd = sl.smpStart +
+            (sl.smpLength > 0 ? sl.smpLength
+                              : static_cast<int64_t>(nFrames) - sl.smpStart);
+        g.clampedEnd = std::min(effEnd, static_cast<int64_t>(nFrames));
+
+        // Declick width (ms → samples at this slot's source rate), clamped so
+        // the two edge fades can never overlap.
+        const int declickN = xleth::dsp::DeclickEnvelope::msToSamples(
+            sl.declickMs, sl.sourceSampleRate);
+        g.effDeclick = std::min(declickN,
+            static_cast<int>((g.clampedEnd - g.smpStart) / 2));
+
+        g.fadeInN  = static_cast<int64_t>(sl.fadeInMs  * 0.001 * sl.sourceSampleRate);
+        g.fadeOutN = static_cast<int64_t>(sl.fadeOutMs * 0.001 * sl.sourceSampleRate);
+
+        // Effective loop end: 0 means "end of sample".
+        const int64_t effLoopEnd = (sl.loopEnd > 0)
+            ? std::min<int64_t>(sl.loopEnd, nFrames)
+            : static_cast<int64_t>(nFrames);
+        const int64_t effLoopStart = std::min<int64_t>(sl.loopStart, effLoopEnd);
+        g.useLoop   = crossfadeEnabled_ && sl.loopEnabled && effLoopEnd > effLoopStart;
+        g.loopStart = effLoopStart;
+        g.loopEnd   = effLoopEnd;
+        g.loopMode  = sl.loopMode;
+
+        // Loop crossfade width. Clamp so:
+        //  - the two ends can never overlap inside the loop
+        //  - the fade-out read [loopEnd-N, loopEnd] stays inside the trim region
+        //  - the fade-in source [loopStart, loopStart+N] stays inside the trim region
+        //
+        // PingPong takes no crossfade: it reflects rather than jumps, so the
+        // seam is already value-continuous and blending would only smear it.
+        const bool pingPong = (g.loopMode == static_cast<int>(SampleLoopMode::PingPong));
+        if (g.useLoop && !pingPong && sl.crossfadeSamples > 0) {
+            int64_t x = sl.crossfadeSamples;
+            x = std::min<int64_t>(x, (effLoopEnd - effLoopStart) / 2);
+            x = std::min<int64_t>(x, effLoopEnd    - g.smpStart);
+            x = std::min<int64_t>(x, g.clampedEnd  - effLoopStart);
+            g.xfade = std::max<int64_t>(0, x);
+        }
+        g.xfadeStart = static_cast<double>(effLoopEnd - g.xfade);
+
+        // ── MANGLE runtime ───────────────────────────────────────────────────
+        // cycleLen (source samples per note cycle) collapses to srcSR / K, with
+        // K the frequency the slot's own root note and tuning define. It is
+        // therefore a per-block constant independent of the live stride — which
+        // is what makes `phase * cycleLen` advance by exactly `stride` per
+        // sample and every mode's A = 0 case an exact identity. See MangleDsp.h.
+        g.readLo = static_cast<double>(g.smpStart);
+        g.readHi = std::max(g.readLo, static_cast<double>(g.clampedEnd) - 1.0);
+
+        const double K = 440.0 * std::pow(2.0, (sl.rootNote - sl.tuningSemitones - 69.0) / 12.0);
+        const double cycleLen = (K > 1.0e-6) ? (sl.sourceSampleRate / K) : 0.0;
+        g.mangle = xleth::mangle::makeRuntime(
+            sl.mangleMode, sl.mangleAmount, sl.mangleMix,
+            noteHzAtBlockEntry, cycleLen,
+            static_cast<double>(g.smpStart),
+            static_cast<double>(g.clampedEnd - g.smpStart),
+            engineSampleRate);
+
+        ++liveStreams;
     }
-    const double  xfadeStart = static_cast<double>(effLoopEnd - effXfade);
+    if (liveStreams == 0) { v.active = false; return; }
 
-    // Inline interpolated read helper (no alloc, audio-thread safe).
-    // 4-point cubic Hermite — dramatically reduces aliasing artifacts
-    // that become audible when pitch LFO modulates stride.
-    auto readInterp = [&](double pos, int srcCh) -> float {
+    // ── Seed the modulated pan gains from the unmodulated geometry ───────────
+    // Indexed by SLOT, not by stream: a muted slot gets no stream at all, so
+    // the two indices diverge the moment one layer is silent. The render loop
+    // reads v.modPanL/R unconditionally, so seeding them here makes an unrouted
+    // slot cost one array read per sample instead of a branch, and
+    // evaluateVoiceModulation only overwrites the slots a pan route touches.
+    for (int i = 0; i < v.numStreams; ++i) {
+        const auto& st = v.streams[static_cast<size_t>(i)];
+        if (!st.active) continue;
+        const auto& gi = geo[static_cast<size_t>(i)];
+        v.modPanL[static_cast<size_t>(st.slotIndex)] = gi.panL;
+        v.modPanR[static_cast<size_t>(st.slotIndex)] = gi.panR;
+    }
+    const xleth::sampmod::CompiledModGraph* const mod = modActive_;
+
+    // 4-point cubic Hermite read. Dramatically reduces the aliasing that
+    // becomes audible when the pitch LFO modulates stride.
+    auto readInterp = [](const StreamGeometry& g, double pos, int srcCh) -> float {
         const int i0 = static_cast<int>(pos);
-        if (i0 < 0 || i0 >= nFrames) return 0.0f;
+        if (i0 < 0 || i0 >= g.nFrames) return 0.0f;
         const float f = static_cast<float>(pos - i0);
 
         auto clampGet = [&](int idx) -> float {
             if (idx < 0) idx = 0;
-            else if (idx >= nFrames) idx = nFrames - 1;
-            return sampleData_.getSample(srcCh, idx);
+            else if (idx >= g.nFrames) idx = g.nFrames - 1;
+            return g.data->getSample(srcCh, idx);
         };
 
         const float ym1 = clampGet(i0 - 1);
@@ -938,12 +1803,6 @@ void Sampler::processVoice(Voice& v,
 
     for (int s = v.onsetSample; s < numSamples; ++s)
     {
-#ifdef XLETH_DEBUG
-        if (v.onsetSample != 0 && s == v.onsetSample) {
-            fprintf(stderr, "[VoiceWrite] first_s=%d numSamples=%d playPos=%f\n",
-                    s, numSamples, v.playPosition);
-        }
-#endif
         // Deferred release: transition to Release at the scheduled sub-buffer sample.
         // Must run before advanceEnvelope so the Release stage takes effect on sample s.
         if (v.releaseSample >= 0 && s >= v.releaseSample) {
@@ -952,12 +1811,60 @@ void Sampler::processVoice(Voice& v,
             v.pitchEnvStage    = Voice::EnvStage::Release;
             v.pitchEnvPosition = 0.0;
             v.releaseSample  = -1;
+            xleth::sampmod::modReleaseVoice(v.modBank);
         }
 
+        // ── MODULATION CONTROL BLOCK ─────────────────────────────────────────
+        // Every source is re-evaluated once per kControlBlockSamples (32) and
+        // its result held for the block. The counter is VOICE-relative, so an
+        // envelope reaches its sustain after the same number of samples
+        // whatever buffer size the host hands us.
+        //
+        // MANGLE amount/mix are the one target that has to reach back into the
+        // per-block geometry, so the affected slots' runtimes are re-designed
+        // here — only where a route exists, which is what keeps an unmodulated
+        // MANGLE slot at its original one-design-per-block cost.
+        if (mod != nullptr)
+        {
+            if (v.modCountdown <= 0)
+            {
+                evaluateVoiceModulation(v, *mod, s, engineSampleRate);
+                v.modCountdown = xleth::sampmod::kControlBlockSamples;
+
+                if (mod->anyMangleRouted)
+                {
+                    for (int i = 0; i < v.numStreams; ++i)
+                    {
+                        auto& st = v.streams[static_cast<size_t>(i)];
+                        if (!st.active) continue;
+                        const size_t si = static_cast<size_t>(st.slotIndex);
+                        if (!mod->slotMangleRouted[si]) continue;
+                        const Slot& sl = slots_[si];
+                        auto& gm = geo[static_cast<size_t>(i)];
+                        const float amt = std::clamp(
+                            sl.mangleAmount + v.modOffsets.mangleAmount[si], 0.0f, 1.0f);
+                        const float mix = std::clamp(
+                            sl.mangleMix + v.modOffsets.mangleMix[si], 0.0f, 1.0f);
+                        const double K = 440.0 * std::pow(
+                            2.0, (sl.rootNote - sl.tuningSemitones - 69.0) / 12.0);
+                        const double cycleLen = (K > 1.0e-6) ? (sl.sourceSampleRate / K) : 0.0;
+                        gm.mangle = xleth::mangle::makeRuntime(
+                            sl.mangleMode, amt, mix,
+                            noteHzAtBlockEntry, cycleLen,
+                            static_cast<double>(gm.smpStart),
+                            static_cast<double>(gm.clampedEnd - gm.smpStart),
+                            engineSampleRate);
+                    }
+                }
+            }
+            --v.modCountdown;
+        }
+
+        // ── NOTE-LEVEL MODULATION (shared by every layer of this note) ───────
         const float envGain = advanceEnvelope(v, engineSampleRate);
 
         // ── FL-STYLE GROUP SLIDE (overrides portamento; updates currentPitchF) ─
-        // Modulates the voice's base pitch directly. Pitch envelope and pitch
+        // Modulates the note's base pitch directly. Pitch envelope and pitch
         // LFO continue to add semitones below as additive modulation layers,
         // so they are NOT baked into the slide curve. The sub-buffer gate
         // (slideOnsetSample) defers slide stepping until the slide-note's
@@ -983,14 +1890,26 @@ void Sampler::processVoice(Voice& v,
             }
         }
         // ── PORTAMENTO (updates currentPitchF only; skipped while sliding) ──
+        // Shaped interpolation from the captured source pitch rather than a
+        // per-sample step toward the target. The two agree EXACTLY at curve 0:
+        // the old step form moved (target - current)/remaining each sample,
+        // which telescopes to source + delta·k/N — precisely what this computes
+        // when shapeTension is the identity. A non-zero curve is expressible
+        // only in this form, since a per-sample step can describe nothing but a
+        // linear ramp.
         else if (v.portamentoRemaining > 0.0) {
-            const double step = (static_cast<double>(v.targetPitch) - v.currentPitchF)
-                                / v.portamentoRemaining;
-            v.currentPitchF += step;
             v.portamentoRemaining -= 1.0;
             if (v.portamentoRemaining <= 0.0) {
-                v.currentPitchF = static_cast<double>(v.targetPitch);
+                v.currentPitchF       = static_cast<double>(v.targetPitch);
                 v.portamentoRemaining = 0.0;
+                v.portamentoTotal     = 0.0;
+            } else if (v.portamentoTotal > 0.0) {
+                const float frac = static_cast<float>(
+                    1.0 - v.portamentoRemaining / v.portamentoTotal);
+                const double shaped =
+                    static_cast<double>(shapeTension(frac, portamentoCurve_));
+                v.currentPitchF = v.portamentoSourceF
+                    + (static_cast<double>(v.targetPitch) - v.portamentoSourceF) * shaped;
             }
         }
 
@@ -1007,135 +1926,295 @@ void Sampler::processVoice(Voice& v,
             pitchOffsetSemitones += static_cast<double>(lfoPitchConfig_.amount) * lfoPitchMod;
         }
 
-        // ── COMPUTE STRIDE FRESH (const — no reuse from previous sample)
-        const double currentPitchRatio = std::pow(2.0, (v.currentPitchF - rootNote_) / 12.0);
-        const double modulatedRatio = currentPitchRatio * std::pow(2.0, pitchOffsetSemitones / 12.0);
-        const double stride = modulatedRatio * srRatio;
+        // ── ADVANCE VOL/PAN LFOs (note-level, once per sample) ───────
+        const float lfoVolMod = advanceLfo(lfoVolConfig_, v.lfoVolState, engineSampleRate);
+        const float lfoPanMod = advanceLfo(lfoPanConfig_, v.lfoPanState, engineSampleRate);
 
-        // ── ADVANCE VOL/PAN LFOs ─────────────────────────────────────
-        const float lfoVolMod  = advanceLfo(lfoVolConfig_,  v.lfoVolState,  engineSampleRate);
-        const float lfoPanMod  = advanceLfo(lfoPanConfig_,  v.lfoPanState,  engineSampleRate);
-
-        // End-of-sample / loop handling.
-        if (useLoop)
-        {
-            if (v.playPosition >= static_cast<double>(effLoopEnd))
-            {
-                // FL-style wrap: the first `effXfade` samples of the loop
-                // region are only heard as the crossfade's fade-in source,
-                // so wrap past them to avoid content repetition.
-                const double over = v.playPosition - static_cast<double>(effLoopEnd);
-                v.playPosition = static_cast<double>(effLoopStart + effXfade) + over;
-            }
-        }
-        else
-        {
-            // No loop: on reaching trim end, enter Release (if not already).
-            if (v.playPosition >= static_cast<double>(clampedEnd - 1))
-            {
-                if (v.envStage != Voice::EnvStage::Release
-                    && v.envStage != Voice::EnvStage::Off)
-                {
-                    v.envStage    = Voice::EnvStage::Release;
-                    v.envPosition = 0.0;
-                }
-            }
-        }
-
-        // Bounds check — emit silence if playPosition is outside the buffer.
-        {
-            const int idx0 = static_cast<int>(v.playPosition);
-            if (idx0 < 0 || idx0 >= nFrames)
-            {
-                if (v.envStage == Voice::EnvStage::Off) { v.active = false; return; }
-                continue;
-            }
-        }
-
-        // Hann-window declick at trim start and end (via shared LUT).
-        float declickGain = 1.0f;
-        if (effDeclick > 0)
-        {
-            const int posFromStart = static_cast<int>(v.playPosition - static_cast<double>(smpStart_));
-            const int posFromEnd   = static_cast<int>(static_cast<double>(clampedEnd) - v.playPosition);
-            declickGain = xleth::dsp::DeclickEnvelope::fadeIn(posFromStart, effDeclick)
-                        * xleth::dsp::DeclickEnvelope::fadeOut(posFromEnd, effDeclick);
-        }
-
-        // Linear fade in/out (user-controlled, applied after declick).
-        float fadeGain = 1.0f;
-        if (fadeInMs_ > 0.0f)
-        {
-            const int64_t fadeInSamples = static_cast<int64_t>(fadeInMs_ * 0.001 * sourceSampleRate_);
-            if (fadeInSamples > 0)
-            {
-                const int64_t relPos = static_cast<int64_t>(v.playPosition) - smpStart_;
-                if (relPos < fadeInSamples)
-                    fadeGain *= std::max(0.0f, static_cast<float>(relPos)
-                                               / static_cast<float>(fadeInSamples));
-            }
-        }
-        if (fadeOutMs_ > 0.0f)
-        {
-            const int64_t fadeOutSamples = static_cast<int64_t>(fadeOutMs_ * 0.001 * sourceSampleRate_);
-            if (fadeOutSamples > 0)
-            {
-                const int64_t distFromEnd = clampedEnd - static_cast<int64_t>(v.playPosition);
-                if (distFromEnd < fadeOutSamples)
-                    fadeGain *= std::max(0.0f, static_cast<float>(distFromEnd)
-                                               / static_cast<float>(fadeOutSamples));
-            }
-        }
-
-        // Loop crossfade: blend current position with loop-start offset so the
-        // wrap from loopEnd → loopStart is amplitude-matched.
-        const bool inXfade = (effXfade > 0 && v.playPosition >= xfadeStart);
-        float fadeOutX = 1.0f, fadeInX = 0.0f;
-        double loopSrcPos = 0.0;
-        if (inXfade)
-        {
-            float progress = static_cast<float>(
-                (v.playPosition - xfadeStart) / static_cast<double>(effXfade));
-            if (progress > 1.0f) progress = 1.0f;
-            fadeOutX    = cosf(progress * kPi * 0.5f);
-            fadeInX     = sinf(progress * kPi * 0.5f);
-            loopSrcPos  = static_cast<double>(effLoopStart)
-                        + (v.playPosition - xfadeStart);
-        }
-
-        // Volume LFO gain
         const float volLfoGain = lfoVolConfig_.enabled
             ? std::max(0.0f, 1.0f + lfoVolMod * lfoVolConfig_.amount) : 1.0f;
 
-        // Panning LFO (equal-power stereo pan)
-        float panL = 1.0f, panR = 1.0f;
+        float lfoPanL = 1.0f, lfoPanR = 1.0f;
         if (lfoPanConfig_.enabled && std::abs(lfoPanConfig_.amount) > 0.001f) {
             const float panOffset = lfoPanMod * lfoPanConfig_.amount; // -1..+1
-            const float panAngle  = (panOffset + 1.0f) * 0.5f;       //  0..1
-            panL = cosf(panAngle * kPi * 0.5f);
-            panR = sinf(panAngle * kPi * 0.5f);
+            const float panAngle  = (panOffset + 1.0f) * 0.5f;        //  0..1
+            lfoPanL = cosf(panAngle * kPi * 0.5f);
+            lfoPanR = sinf(panAngle * kPi * 0.5f);
         }
 
-        for (int ch = 0; ch < std::min(2, outChannels); ++ch)
+        // ── PER-STREAM RENDER ────────────────────────────────────────────────
+        int stillRunning = 0;
+        for (int i = 0; i < v.numStreams; ++i)
         {
-            const int srcCh = std::min(ch, nCh - 1);
-            float sample = readInterp(v.playPosition, srcCh);
+            auto& st = v.streams[static_cast<size_t>(i)];
+            if (!st.active) continue;
+            const StreamGeometry& g = geo[static_cast<size_t>(i)];
+            if (g.data == nullptr) continue;
+
+            // Combined tuning: note pitch, this slot's root note, and the
+            // slot's summed oct/sem/fine/coarse, plus the note-level pitch
+            // modulation. One pow per stream per sample, as before.
+            //
+            // The modulation matrix folds SEM, COARSE and FINE into ONE
+            // per-slot semitone offset (FINE already converted from cents), so
+            // routing all three costs a single extra add here.
+            const double semis = (v.currentPitchF - g.rootNote)
+                               + g.tuning + pitchOffsetSemitones
+                               + static_cast<double>(
+                                     v.modOffsets.semis[static_cast<size_t>(st.slotIndex)]);
+            const double stride = std::pow(2.0, semis / 12.0) * g.srRatio;
+
+            // ── End-of-sample / loop handling ───────────────────────────────
+            // `loopLeft` means an exit-on-release tail is running: the stream
+            // has left its loop for good and behaves like a non-looping layer.
+            const bool looping = g.useLoop && !st.loopLeft;
+            if (looping)
+            {
+                if (st.dir > 0 && st.playPosition >= static_cast<double>(g.loopEnd))
+                {
+                    const double over = st.playPosition - static_cast<double>(g.loopEnd);
+                    if (st.exiting) {
+                        // The forward pass just completed. Leave the loop and
+                        // keep going — playPosition already sits past loopEnd,
+                        // so the tail continues into the rest of the sample.
+                        st.loopLeft = true;
+                    } else if (g.loopMode == static_cast<int>(SampleLoopMode::Forward)) {
+                        // FL-style wrap: the first `xfade` samples of the loop
+                        // region are only heard as the crossfade's fade-in
+                        // source, so wrap past them to avoid content repetition.
+                        st.playPosition = static_cast<double>(g.loopStart + g.xfade) + over;
+                    } else {
+                        // PingPong and Reverse both REFLECT at the top: the
+                        // head turns around and starts descending from loopEnd.
+                        st.dir = -1;
+                        st.playPosition = static_cast<double>(g.loopEnd) - over;
+                    }
+                }
+                else if (st.dir < 0 && st.playPosition <= static_cast<double>(g.loopStart))
+                {
+                    const double under = static_cast<double>(g.loopStart) - st.playPosition;
+                    if (st.exiting) {
+                        // The backward pass just completed. Turn around and run
+                        // forward out of the loop to the end of the sample.
+                        st.loopLeft     = true;
+                        st.dir          = 1;
+                        st.playPosition = static_cast<double>(g.loopStart) + under;
+                    } else if (g.loopMode == static_cast<int>(SampleLoopMode::PingPong)) {
+                        // Reflect at the bottom — back to forward.
+                        st.dir          = 1;
+                        st.playPosition = static_cast<double>(g.loopStart) + under;
+                    } else {
+                        // Reverse: jump back up to the top and descend again.
+                        // Mirrors the forward wrap — stop `xfade` short of
+                        // loopEnd, since those samples are only heard as the
+                        // (mirrored) crossfade's fade-in source.
+                        st.playPosition = static_cast<double>(g.loopEnd - g.xfade) - under;
+                    }
+                }
+            }
+            else if (st.dir > 0 && st.playPosition >= static_cast<double>(g.clampedEnd - 1))
+            {
+                // This layer has run out. Mark it finished; the NOTE only
+                // releases once every layer has, so a short layer never cuts a
+                // long one short.
+                st.finished = true;
+            }
+            else if (st.dir < 0 && st.playPosition <= static_cast<double>(g.smpStart))
+            {
+                // A backward head that is no longer looping has nowhere left to
+                // go. Only reachable if the loop was disabled mid-note.
+                st.finished = true;
+            }
+
+            // Bounds check — emit silence if the read head left the buffer.
+            const int idx0 = static_cast<int>(st.playPosition);
+            if (idx0 < 0 || idx0 >= g.nFrames) { st.active = false; st.finished = true; continue; }
+
+            // Hann-window declick at trim start and end (via shared LUT).
+            float declickGain = 1.0f;
+            if (g.effDeclick > 0)
+            {
+                const int posFromStart = static_cast<int>(st.playPosition - static_cast<double>(g.smpStart));
+                const int posFromEnd   = static_cast<int>(static_cast<double>(g.clampedEnd) - st.playPosition);
+                declickGain = xleth::dsp::DeclickEnvelope::fadeIn(posFromStart, g.effDeclick)
+                            * xleth::dsp::DeclickEnvelope::fadeOut(posFromEnd, g.effDeclick);
+            }
+
+            // Linear fade in/out (user-controlled, applied after declick).
+            float fadeGain = 1.0f;
+            if (g.fadeInN > 0)
+            {
+                const int64_t relPos = static_cast<int64_t>(st.playPosition) - g.smpStart;
+                if (relPos < g.fadeInN)
+                    fadeGain *= std::max(0.0f, static_cast<float>(relPos)
+                                               / static_cast<float>(g.fadeInN));
+            }
+            if (g.fadeOutN > 0)
+            {
+                const int64_t distFromEnd = g.clampedEnd - static_cast<int64_t>(st.playPosition);
+                if (distFromEnd < g.fadeOutN)
+                    fadeGain *= std::max(0.0f, static_cast<float>(distFromEnd)
+                                               / static_cast<float>(g.fadeOutN));
+            }
+
+            // Loop crossfade: blend the approach to the wrap with the content
+            // the head is about to jump to, so the seam is amplitude-matched.
+            //
+            // Forward runs up to loopEnd and blends toward loopStart — the
+            // original expression, unchanged, which is what keeps a Forward
+            // loop bit-identical to the pre-loop-mode sampler.
+            //
+            // Reverse is its exact mirror: descending toward loopStart, blend
+            // toward the content just below loopEnd. PingPong reflects instead
+            // of jumping, so it never gets here (its xfade is clamped to 0).
+            const bool xfadeArmed = (g.xfade > 0 && !st.loopLeft);
+            const bool inXfade    = xfadeArmed
+                                  && (st.dir > 0
+                                      ? st.playPosition >= g.xfadeStart
+                                      : st.playPosition <= static_cast<double>(g.loopStart + g.xfade));
+            float fadeOutX = 1.0f, fadeInX = 0.0f;
+            double loopSrcPos = 0.0;
             if (inXfade)
             {
-                const float loopStartSample = readInterp(loopSrcPos, srcCh);
-                sample = sample * fadeOutX + loopStartSample * fadeInX;
+                if (st.dir > 0) {
+                    float progress = static_cast<float>(
+                        (st.playPosition - g.xfadeStart) / static_cast<double>(g.xfade));
+                    if (progress > 1.0f) progress = 1.0f;
+                    fadeOutX   = cosf(progress * kPi * 0.5f);
+                    fadeInX    = sinf(progress * kPi * 0.5f);
+                    loopSrcPos = static_cast<double>(g.loopStart)
+                               + (st.playPosition - g.xfadeStart);
+                } else {
+                    const double travelled = static_cast<double>(g.loopStart + g.xfade)
+                                           - st.playPosition;
+                    float progress = static_cast<float>(
+                        travelled / static_cast<double>(g.xfade));
+                    if (progress > 1.0f) progress = 1.0f;
+                    fadeOutX   = cosf(progress * kPi * 0.5f);
+                    fadeInX    = sinf(progress * kPi * 0.5f);
+                    loopSrcPos = static_cast<double>(g.loopEnd) - travelled;
+                }
             }
-            const float panGain = (ch == 0) ? panL : panR;
-            out.addSample(ch, s, sample * envGain * v.velocity * declickGain * fadeGain * volLfoGain * panGain);
+
+            // Modulated slot volume replaces (rather than scales) the slot's
+            // own gain, so an amount of 1.0 on a slot sitting at 1.0 reaches
+            // 2.0 exactly — the target's documented span — instead of squaring.
+            // modMasterGain is the sampler master, base 1.0.
+            const float slotGain = std::clamp(
+                g.volume + v.modOffsets.volume[static_cast<size_t>(st.slotIndex)],
+                0.0f, 2.0f);
+            const float common = envGain * v.velocity * declickGain * fadeGain
+                               * volLfoGain * slotGain * v.modMasterGain;
+
+            // ── MANGLE (per-note, per-slot warp FX) ─────────────────────────
+            // Runs entirely INSIDE this stream, before the voice sums into
+            // `out` — which is the whole feature: a chord through TUBE gets one
+            // shaper per note, not one shaper on the summed chord.
+            //
+            // `tick` bends only where the head is READ FROM. st.playPosition is
+            // never written here, so the loop state machine, the trim-end test,
+            // the declick/fade envelopes and the crossfade above all keep
+            // driving the canonical head exactly as they did pre-MANGLE.
+            const bool mangleOn = g.mangle.active;
+            xleth::mangle::Tick mt;
+            double wetPos = st.playPosition;
+            bool   wetPosMoved = false;
+            if (mangleOn)
+            {
+                mt = xleth::mangle::tick(g.mangle, st.mangle, st.playPosition, stride);
+                if (mt.posOffset != 0.0)
+                {
+                    // A bent head must stay inside the trim window: the ALT
+                    // modes deliberately run backwards and stall, and nothing
+                    // downstream re-checks the bound.
+                    wetPos = std::clamp(st.playPosition + mt.posOffset,
+                                        g.readLo, g.readHi);
+                    wetPosMoved = true;
+                }
+            }
+
+            for (int ch = 0; ch < std::min(2, outChannels); ++ch)
+            {
+                const int srcCh = std::min(ch, g.nCh - 1);
+                float sample = readInterp(g, st.playPosition, srcCh);
+                if (inXfade)
+                {
+                    const float loopStartSample = readInterp(g, loopSrcPos, srcCh);
+                    sample = sample * fadeOutX + loopStartSample * fadeInX;
+                }
+
+                if (mangleOn)
+                {
+                    // Wet leg. A sample-domain mode reuses the dry read
+                    // outright, so FILTER / DISTORTION cost exactly one extra
+                    // shaper call and no extra interpolation.
+                    float wet = sample;
+                    if (wetPosMoved)
+                    {
+                        wet = readInterp(g, wetPos, srcCh);
+                        if (inXfade)
+                        {
+                            // Carry the same bend into the crossfade's source
+                            // read, or the seam would fight the read head.
+                            const double srcBent = std::clamp(
+                                loopSrcPos + mt.posOffset, g.readLo, g.readHi);
+                            wet = wet * fadeOutX + readInterp(g, srcBent, srcCh) * fadeInX;
+                        }
+                    }
+
+                    // ODD / EVEN: comb against a second head half a note period
+                    // back. Realised as a read, not a delay line — 32 voices x
+                    // 8 slots of preallocated Stream make a per-stream ring
+                    // long enough for a bass note prohibitively large.
+                    if (mt.combDepth > 0.0f)
+                    {
+                        const double combPos = std::clamp(
+                            wetPos + mt.combOffset, g.readLo, g.readHi);
+                        const float delayed = readInterp(g, combPos, srcCh);
+                        wet = (wet + mt.combSign * mt.combDepth * delayed)
+                            / (1.0f + mt.combDepth);
+                    }
+
+                    wet = xleth::mangle::shapeSample(g.mangle, st.mangle, wet, ch)
+                        * mt.ampGain;
+
+                    sample += (wet - sample) * g.mangle.mix;
+                }
+
+                // Slot pan and pan-LFO compose multiplicatively per side.
+                // v.modPanL/R IS the slot's constant-power pan — seeded from
+                // the geometry and re-derived at control rate wherever a pan
+                // route (slot or master) moves it.
+                const size_t pi = static_cast<size_t>(st.slotIndex);
+                const float panGain = (ch == 0) ? (v.modPanL[pi] * lfoPanL)
+                                                : (v.modPanR[pi] * lfoPanR);
+                out.addSample(ch, s, sample * common * panGain);
+            }
+
+            // dir is +1 for every forward read — including every Forward loop
+            // and every post-loop tail — so this is the original advance in
+            // all pre-existing configurations.
+            st.playPosition += stride * static_cast<double>(st.dir);
+            if (!st.finished) ++stillRunning;
         }
 
-        v.playPosition += stride;
+        // A non-looping note releases only once EVERY layer has run out.
+        if (stillRunning == 0 && v.envStage != Voice::EnvStage::Release
+            && v.envStage != Voice::EnvStage::Off)
+        {
+            v.envStage    = Voice::EnvStage::Release;
+            v.envPosition = 0.0;
+            xleth::sampmod::modReleaseVoice(v.modBank);
+        }
 
-        if (v.envStage == Voice::EnvStage::Off) { v.active = false; return; }
+        if (v.envStage == Voice::EnvStage::Off) {
+            v.active = false;
+            for (auto& st : v.streams) st.active = false;
+            return;
+        }
     }
 #ifdef XLETH_DEBUG
-    fprintf(stderr, "[VoiceExit] wrote_from=%d to=%d playPos=%f\n",
-            v.onsetSample, numSamples - 1, v.playPosition);
+    fprintf(stderr, "[VoiceExit] wrote_from=%d to=%d streams=%d\n",
+            v.onsetSample, numSamples - 1, v.numStreams);
 #endif
     v.onsetSample      = 0;
     // Slide gate is sub-buffer only: if the slide started in this block, the
@@ -1151,9 +2230,19 @@ void Sampler::processBlock(juce::AudioBuffer<float>& outputBuffer,
         outputBuffer.clear();
         return;
     }
-    if (sampleData_.getNumSamples() <= 0) return;
+    if (!hasSample()) return;
     if (numSamples <= 0) return;
     if (engineSampleRate <= 0.0) return;
+
+    // ── Modulation graph: ONE atomic load for the whole block ────────────────
+    // Held in a member for the duration so processVoice reads a stable
+    // topology; a main-thread setModulation() during this call publishes a new
+    // graph that the NEXT block picks up. Null graph = no routes = exact
+    // bypass, and nothing below the null test ever runs.
+    modHeld_   = modGraph_.load(std::memory_order_acquire);
+    modActive_ = modHeld_.get();
+    if (modActive_ != nullptr)
+        advanceGlobalModulation(*modActive_, numSamples, engineSampleRate);
 
     // Arpeggiator: generate note events for this block before rendering voices.
     // Block-granular (same accuracy as pattern note triggering).

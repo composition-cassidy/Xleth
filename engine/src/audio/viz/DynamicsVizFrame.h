@@ -20,7 +20,7 @@
 namespace xleth { namespace viz {
 
 // ── Schema version (bump on any struct layout change) ───────────────────────
-inline constexpr uint32_t kDynamicsVizSchemaVersion = 2;
+inline constexpr uint32_t kDynamicsVizSchemaVersion = 3;
 
 // ── Visualization type tag (used by the bridge to label payload) ────────────
 enum VisualizationType : uint32_t
@@ -279,9 +279,9 @@ static_assert(std::is_standard_layout<UniFlangeBucket>::value,
               "UniFlangeBucket must be standard layout");
 
 // ── APEX payload (multiband maximizer) ───────────────────────────────────────
-// 16 bytes header + 16 metadata floats (64 bytes) + 1024 spectrum floats
-// (4096 bytes) = 4176 bytes total. 8-byte aligned. The spectrum array
-// therefore starts at byte 80.
+// 16 bytes header + 20 metadata floats (80 bytes) + 1024 spectrum floats
+// (4096 bytes) = 4192 bytes total. 8-byte aligned. The spectrum array
+// therefore starts at byte 96.
 //
 // This bucket is DELIBERATELY much larger and much rarer than every other
 // bucket type in this file. The others emit one bucket per
@@ -296,6 +296,15 @@ static_assert(std::is_standard_layout<UniFlangeBucket>::value,
 // POSITIVE dB amount, matching the CompressorBucket / LimiterBucket convention
 // (positive = more reduction). Band order is LOW, MID, HIGH, MASTER — the same
 // order as xleth_apex::BandIndex, so index b here is band b there.
+//
+// bandInDb[b] is the level the band's transfer curve was actually READ at over
+// the bucket, in dB: the maximum of band b's detector envelope (post PRE GAIN,
+// pre curve gain), i.e. the X coordinate of the moving dot on the curve editor.
+// It is a DETECTOR level, not a raw peak, so it carries the band's ATT/REL/
+// SUSTAIN ballistics and PEAK/RMS mode — which is the whole point: the number
+// drawn on the curve is the number the curve was evaluated with. A band whose
+// dynamics are bypassed (COMP OFF) reports its plain post-PRE-GAIN peak, and a
+// band that is OFF or MUTED reports -120 dB.
 //
 // bandOutDb[b] is the peak abs OUTPUT level of band b over the bucket, in dB.
 // For LOW/MID/HIGH this is measured after the band's full chain (curve gain,
@@ -329,6 +338,7 @@ struct alignas(8) ApexBucket
     float outputPeakDb;                   // peak |y| over bucket, final output
     float bandGrDb  [kApexVizNumBands];   // max GR dB (positive = reduction)
     float bandOutDb [kApexVizNumBands];   // peak band output level, dB
+    float bandInDb  [kApexVizNumBands];   // max band detector level, dB
     float lookaheadSamples;               // published LOOKAHEAD, in samples
     float latencySamples;                 // total reported latency, in samples
     float splitLoHz;                      // LOW|MID crossover at bucket end
@@ -338,7 +348,7 @@ struct alignas(8) ApexBucket
     float spectrum[kApexVizSpectrumBins]; // input magnitude spectrum, dB
 };
 
-static_assert(sizeof(ApexBucket) == 4176, "ApexBucket expected 4176 bytes");
+static_assert(sizeof(ApexBucket) == 4192, "ApexBucket expected 4192 bytes");
 static_assert(alignof(ApexBucket) == 8, "ApexBucket expected 8-byte alignment");
 static_assert(std::is_trivially_copyable<ApexBucket>::value,
               "ApexBucket must be trivially copyable");

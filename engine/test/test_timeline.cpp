@@ -1642,27 +1642,27 @@ int main() {
     SampleRegion kick{};
     kick.sourceId = srcId1; kick.name = "Kick01"; kick.label = SampleLabel::Kick;
     kick.startTime = 0.0; kick.endTime = 0.1; kick.startFrame = 0; kick.endFrame = 3;
-    kick.audioFilePath = "/samples/kick01.wav"; kick.rootNote = 36;
+    kick.audioFilePath = "/samples/kick01.wav"; kick.slot(0).rootNote = 36;
 
     SampleRegion snare{};
     snare.sourceId = srcId1; snare.name = "Snare01"; snare.label = SampleLabel::Snare;
     snare.startTime = 1.0; snare.endTime = 1.15; snare.startFrame = 30; snare.endFrame = 34;
-    snare.audioFilePath = "/samples/snare01.wav"; snare.rootNote = 38;
+    snare.audioFilePath = "/samples/snare01.wav"; snare.slot(0).rootNote = 38;
 
     SampleRegion hihat{};
     hihat.sourceId = srcId1; hihat.name = "HiHat01"; hihat.label = SampleLabel::HiHat;
     hihat.startTime = 2.0; hihat.endTime = 2.05; hihat.startFrame = 60; hihat.endFrame = 61;
-    hihat.audioFilePath = "/samples/hihat01.wav"; hihat.rootNote = 42;
+    hihat.audioFilePath = "/samples/hihat01.wav"; hihat.slot(0).rootNote = 42;
 
     SampleRegion pitch{};
     pitch.sourceId = srcId1; pitch.name = "Pitch01"; pitch.label = SampleLabel::Pitch;
     pitch.startTime = 3.0; pitch.endTime = 3.5; pitch.startFrame = 90; pitch.endFrame = 105;
-    pitch.audioFilePath = "/samples/pitch01.wav"; pitch.rootNote = 60;
+    pitch.audioFilePath = "/samples/pitch01.wav"; pitch.slot(0).rootNote = 60;
 
     SampleRegion quote{};
     quote.sourceId = srcId2; quote.name = "Quote_Sparta"; quote.label = SampleLabel::Quote;
     quote.startTime = 0.0; quote.endTime = 1.0; quote.startFrame = 0; quote.endFrame = 25;
-    quote.audioFilePath = "/samples/sparta.wav"; quote.rootNote = 60;
+    quote.audioFilePath = "/samples/sparta.wav"; quote.slot(0).rootNote = 60;
     quote.syllables = {
         {0.0,  0.25, 0, "Spar"},
         {0.25, 0.5,  1, "ta"},
@@ -1826,9 +1826,10 @@ int main() {
     std::cout << "[11] moveClip\n";
     int movedId     = clipIds[1];   // was at tick 960
     TickTime newPos = TickTime::fromBars(8);
-    CHECK( tl.moveClip(movedId, newPos),             "moveClip returns true");
+    int movedTrack  = tl.getClip(movedId)->trackId;
+    CHECK( tl.moveClip(movedId, movedTrack, newPos), "moveClip returns true");
     CHECK( tl.getClip(movedId)->position == newPos,  "clip at new position");
-    CHECK(!tl.moveClip(999, newPos),                  "moveClip invalid id returns false");
+    CHECK(!tl.moveClip(999, movedTrack, newPos),      "moveClip invalid id returns false");
 
     // ── [12] resizeClip ───────────────────────────────────────────────────────
     std::cout << "[12] resizeClip\n";

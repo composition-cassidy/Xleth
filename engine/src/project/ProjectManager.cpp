@@ -94,6 +94,8 @@ void ProjectManager::ensureDirectories() {
     fs::create_directories(getProxiesDir());
     fs::create_directories(getExportsDir());
     fs::create_directories(getSwappedDir());
+    fs::create_directories(getSlotsDir());
+    fs::create_directories(getAudioCacheDir());
 }
 
 // ─── Directory Accessors ──────────────────────────────────────────────────────
@@ -116,6 +118,17 @@ std::string ProjectManager::getSwappedDir()  const {
 
 std::string ProjectManager::getMediaDir()    const {
     return (fs::path(projectDir_) / "media").string();
+}
+
+std::string ProjectManager::getSlotsDir()    const {
+    return (fs::path(projectDir_) / "slots").string();
+}
+
+std::string ProjectManager::getAudioCacheDir() const {
+    // Empty when no project directory is set, which the bake cache reads as
+    // "memory only" — an untitled project has nowhere to write yet.
+    if (projectDir_.empty()) return {};
+    return (fs::path(projectDir_) / "cache" / "audio").string();
 }
 
 // ─── createProject ────────────────────────────────────────────────────────────
@@ -150,7 +163,8 @@ bool ProjectManager::createProject(const std::string& projectDir,
 
 bool ProjectManager::saveProject(const Timeline& timeline,
                                   const nlohmann::json& effectChains,
-                                  const nlohmann::json& masterEffectChain) {
+                                  const nlohmann::json& masterEffectChain,
+                                  float masterVolume) {
     // NOTE (Prompt 11): Preview performance settings (previewResolutionScale,
     // previewEffectsBypass) are workstation-local by design and persisted via
     // the Electron settings store (xleth-settings.json), NOT in project.json.
@@ -177,6 +191,7 @@ bool ProjectManager::saveProject(const Timeline& timeline,
 
     json j;
     j["xleth_version"]  = XLETH_VERSION;
+    j["schema_version"] = XLETH_PROJECT_SCHEMA_VERSION;
     j["project_name"]   = projectName_;
     j["created_at"]     = createdAt_.empty() ? currentTimestamp() : createdAt_;
     j["modified_at"]    = currentTimestamp();
@@ -190,9 +205,14 @@ bool ProjectManager::saveProject(const Timeline& timeline,
     j["patterns"]       = tl.value("patterns",      json::array());
     j["patternBlocks"]  = tl.value("patternBlocks", json::array());
     j["gridLayout"]     = tl.value("gridLayout", json::object());
+    j["trackLayout"]    = tl.value("trackLayout", json::object());
     j["declickMs"]      = tl.value("declickMs", 0.0);
     j["globalStretchMethod"] = tl.value("globalStretchMethod", 1);
     j["custom_labels"]  = customLabels;
+    // Master fader gain. Always written (unlike the master effect chain, which is
+    // omitted when empty) so loading a project always restores a definite value
+    // instead of inheriting the previously-open project's master level.
+    j["masterVolume"]   = masterVolume;
 
     // Effect chains — only written when non-empty (keeps project files clean)
     if (effectChains.is_object() && !effectChains.empty())
@@ -230,7 +250,8 @@ bool ProjectManager::saveProjectAs(const std::string& newProjectDir,
                                    const std::string& newProjectName,
                                    const Timeline& timeline,
                                    const nlohmann::json& effectChains,
-                                   const nlohmann::json& masterEffectChain) {
+                                   const nlohmann::json& masterEffectChain,
+                                   float masterVolume) {
     if (newProjectDir.empty()) {
         std::cerr << "[Project] ERROR saveProjectAs: empty directory\n";
         return false;
@@ -252,7 +273,7 @@ bool ProjectManager::saveProjectAs(const std::string& newProjectDir,
         return false;
     }
 
-    return saveProject(timeline, effectChains, masterEffectChain);
+    return saveProject(timeline, effectChains, masterEffectChain, masterVolume);
 }
 
 bool ProjectManager::hasProjectDir() const {
@@ -267,6 +288,7 @@ void ProjectManager::resetToBlank() {
     createdAt_.clear();
     loadedEffectChains_      = nlohmann::json::object();
     loadedMasterEffectChain_ = nlohmann::json();
+    loadedMasterVolume_      = 1.0f;
 }
 
 // ─── loadProject ──────────────────────────────────────────────────────────────
@@ -277,6 +299,7 @@ std::optional<Timeline> ProjectManager::loadProject(const std::string& projectDi
     // Reset so stale data from a previous load is never returned on failure.
     loadedEffectChains_      = nlohmann::json::object();
     loadedMasterEffectChain_ = nlohmann::json();
+    loadedMasterVolume_      = 1.0f;
 
     projectDir_ = projectDir;
     ensureDirectories();
@@ -305,6 +328,20 @@ std::optional<Timeline> ProjectManager::loadProject(const std::string& projectDi
     projectName_ = j.value("project_name", "Untitled");
     createdAt_   = j.value("created_at", "");
 
+    // Schema version. Absent ⇒ 1 (pre-slot, single-sample sampler): every
+    // region's per-sample state is migrated into slot 0 by
+    // from_json(SampleRegion) and the project re-saves at the current version.
+    loadedSchemaVersion_ = j.value("schema_version", 1);
+    if (loadedSchemaVersion_ > XLETH_PROJECT_SCHEMA_VERSION) {
+        std::cerr << "[Project] WARNING loadProject: project schema v"
+                  << loadedSchemaVersion_ << " is newer than this build (v"
+                  << XLETH_PROJECT_SCHEMA_VERSION
+                  << ") — unknown fields will be dropped on save\n";
+    } else if (loadedSchemaVersion_ < XLETH_PROJECT_SCHEMA_VERSION) {
+        std::cout << "[Project] migrating project schema v" << loadedSchemaVersion_
+                  << " → v" << XLETH_PROJECT_SCHEMA_VERSION << "\n";
+    }
+
     // Translate project.json keys → the format Timeline::fromJSON expects
     json tl;
     tl["bpm"]        = j.value("bpm", 140.0);
@@ -327,6 +364,7 @@ std::optional<Timeline> ProjectManager::loadProject(const std::string& projectDi
     tl["patterns"]      = j.value("patterns",      json::array());
     tl["patternBlocks"] = j.value("patternBlocks", json::array());
     if (j.contains("gridLayout")) tl["gridLayout"] = j["gridLayout"];
+    if (j.contains("trackLayout")) tl["trackLayout"] = j["trackLayout"];
     tl["declickMs"] = j.value("declickMs", 0.0);
     tl["globalStretchMethod"] = j.value("globalStretchMethod", 1);
 
@@ -353,6 +391,9 @@ std::optional<Timeline> ProjectManager::loadProject(const std::string& projectDi
         loadedEffectChains_ = j["effectChains"];
     if (j.contains("masterEffectChain") && j["masterEffectChain"].is_object())
         loadedMasterEffectChain_ = j["masterEffectChain"];
+    // Absent in projects saved before master volume was persisted → 1.0 (0 dB).
+    if (j.contains("masterVolume") && j["masterVolume"].is_number())
+        loadedMasterVolume_ = j["masterVolume"].get<float>();
 
     // Heal in-project asset paths (swapped/exports/media/proxies) that broke
     // because the project moved. External sources that can't be found here stay
@@ -379,6 +420,10 @@ const nlohmann::json& ProjectManager::getLoadedMasterEffectChain() const {
     return loadedMasterEffectChain_;
 }
 
+float ProjectManager::getLoadedMasterVolume() const {
+    return loadedMasterVolume_;
+}
+
 // ─── Path resolution (relink-on-load) ─────────────────────────────────────────
 
 std::optional<std::string>
@@ -403,7 +448,7 @@ ProjectManager::resolveMediaPath(const std::string& stored) const {
 
     // 3. In-project subfolder tail: an absolute path from another machine still
     //    carries ".../swapped/foo.wav"; rebuild that tail from the current dir.
-    static const char* kSubdirs[] = { "media", "swapped", "exports", "proxies" };
+    static const char* kSubdirs[] = { "media", "swapped", "exports", "proxies", "slots" };
     for (const char* sub : kSubdirs) {
         const std::string needle = std::string("/") + sub + "/";
         size_t tailStart = std::string::npos;
@@ -420,7 +465,7 @@ ProjectManager::resolveMediaPath(const std::string& stored) const {
 
     // 4. Last resort: basename match inside the in-project asset folders.
     const std::string base = filenameFromUtf8Path(stored);
-    for (const std::string& dir : { getMediaDir(), getSwappedDir(), getExportsDir() }) {
+    for (const std::string& dir : { getMediaDir(), getSwappedDir(), getExportsDir(), getSlotsDir() }) {
         const std::string candidate = dir + "/" + base;
         if (fileExistsUtf8(candidate))
             return candidate;

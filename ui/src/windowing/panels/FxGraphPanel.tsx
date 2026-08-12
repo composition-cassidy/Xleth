@@ -159,6 +159,9 @@ export interface FxGraphPanelContentProps {
   // EVC.3 — envelope node add/edit (graph mode only).
   onAddGraphEnvelopeNode?: () => void;
   onUpdateGraphEnvelope?: (nodeId: string, patch: Record<string, unknown>) => void;
+  // LFO node add/edit (graph mode only). Mirrors envelope.
+  onAddGraphLfoNode?: () => void;
+  onUpdateGraphLfo?: (nodeId: string, patch: Record<string, unknown>) => void;
   // FXG-SC.6B — Sidechain Input node add + source selection + key linking (graph mode only).
   onAddGraphSidechainInput?: () => void;
   onSetGraphSidechainInputSource?: (nodeId: string, sourceTrackId: number | null) => void;
@@ -168,6 +171,8 @@ export interface FxGraphPanelContentProps {
   onConnectGraphNodes?: (sourceNodeId: string, targetNodeId: string) => void;
   onConnectGraphMacroToParameter?: (macroNodeId: string, targetNodeId: string, parameterId: string) => void;
   onConnectGraphEnvelopeToParameter?: (envelopeNodeId: string, targetNodeId: string, parameterId: string) => void;
+  // Link an LFO controlOut to an exposed effect parameter. Mirrors envelope.
+  onConnectGraphLfoToParameter?: (lfoNodeId: string, targetNodeId: string, parameterId: string) => void;
   onDisconnectGraphEdge?: (edgeId: string) => void;
   onEditGraphNode?: (nodeId: string) => void;
   onUpdateGraphMacroValue?: (nodeId: string, value: number) => void;
@@ -246,6 +251,8 @@ export function FxGraphPanelContent({
   onAddGraphMacroNode,
   onAddGraphEnvelopeNode,
   onUpdateGraphEnvelope,
+  onAddGraphLfoNode,
+  onUpdateGraphLfo,
   onAddGraphSidechainInput,
   onSetGraphSidechainInputSource,
   onConnectGraphSidechain,
@@ -254,6 +261,7 @@ export function FxGraphPanelContent({
   onConnectGraphNodes,
   onConnectGraphMacroToParameter,
   onConnectGraphEnvelopeToParameter,
+  onConnectGraphLfoToParameter,
   onDisconnectGraphEdge,
   onEditGraphNode,
   onUpdateGraphMacroValue,
@@ -380,6 +388,8 @@ export function FxGraphPanelContent({
               onAddMacroNode={graphModeActive ? onAddGraphMacroNode : undefined}
               onAddEnvelopeNode={graphModeActive ? onAddGraphEnvelopeNode : undefined}
               onUpdateEnvelope={graphModeActive ? onUpdateGraphEnvelope : undefined}
+              onAddLfoNode={graphModeActive ? onAddGraphLfoNode : undefined}
+              onUpdateLfo={graphModeActive ? onUpdateGraphLfo : undefined}
               onAddSidechainInput={graphModeActive ? onAddGraphSidechainInput : undefined}
               onSetSidechainInputSource={graphModeActive ? onSetGraphSidechainInputSource : undefined}
               onConnectSidechain={graphModeActive ? onConnectGraphSidechain : undefined}
@@ -388,6 +398,7 @@ export function FxGraphPanelContent({
               onConnectNodes={graphModeActive ? onConnectGraphNodes : undefined}
               onConnectMacroToParameter={graphModeActive ? onConnectGraphMacroToParameter : undefined}
               onConnectEnvelopeToParameter={graphModeActive ? onConnectGraphEnvelopeToParameter : undefined}
+              onConnectLfoToParameter={graphModeActive ? onConnectGraphLfoToParameter : undefined}
               onDisconnectEdge={graphModeActive ? onDisconnectGraphEdge : undefined}
               onEditNode={graphModeActive ? onEditGraphNode : undefined}
               onUpdateMacroValue={graphModeActive ? onUpdateGraphMacroValue : undefined}
@@ -566,6 +577,8 @@ export default function FxGraphPanel() {
   const addGraphMacroNodeForTrack = useEffectChainStore((state) => state.addGraphMacroNodeForTrack);
   const addGraphEnvelopeNodeForTrack = useEffectChainStore((state) => state.addGraphEnvelopeNodeForTrack);
   const updateGraphEnvelopeNodeDataForTrack = useEffectChainStore((state) => state.updateGraphEnvelopeNodeDataForTrack);
+  const addGraphLfoNodeForTrack = useEffectChainStore((state) => state.addGraphLfoNodeForTrack);
+  const updateGraphLfoNodeDataForTrack = useEffectChainStore((state) => state.updateGraphLfoNodeDataForTrack);
   // FXG-SC.6B — Sidechain Input store actions.
   const addSidechainInputNodeForTrack = useEffectChainStore((state) => state.addSidechainInputNodeForTrack);
   const setSidechainInputSourceForTrack = useEffectChainStore((state) => state.setSidechainInputSourceForTrack);
@@ -575,6 +588,7 @@ export default function FxGraphPanel() {
   const connectGraphNodesForTrack = useEffectChainStore((state) => state.connectGraphNodesForTrack);
   const connectMacroToParameterForTrack = useEffectChainStore((state) => state.connectMacroToParameterForTrack);
   const connectEnvelopeToParameterForTrack = useEffectChainStore((state) => state.connectEnvelopeToParameterForTrack);
+  const connectLfoToParameterForTrack = useEffectChainStore((state) => state.connectLfoToParameterForTrack);
   const disconnectGraphEdgeForTrack = useEffectChainStore((state) => state.disconnectGraphEdgeForTrack);
   const updateGraphMacroValueForTrack = useEffectChainStore((state) => state.updateGraphMacroValueForTrack);
   const renameGraphMacroNodeForTrack = useEffectChainStore((state) => state.renameGraphMacroNodeForTrack);
@@ -699,6 +713,26 @@ export default function FxGraphPanel() {
     const result = await updateGraphEnvelopeNodeDataForTrack(selectedTrack.id, nodeId, patch);
     setGraphActionNotice(describeGraphMutationResult(result));
   }, [fxMode, selectedTrack?.id, updateGraphEnvelopeNodeDataForTrack]);
+
+  // Add an inert LFO Modulator node. Graph-mode gated; the store action persists
+  // graphState, records undo, and performs NO audio runtime sync. Mirrors the
+  // Envelope add handler above.
+  const handleAddGraphLfoNode = useCallback(async () => {
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    const result = await addGraphLfoNodeForTrack(selectedTrack.id);
+    setGraphActionNotice(describeGraphMutationResult(result));
+  }, [addGraphLfoNodeForTrack, fxMode, selectedTrack?.id]);
+
+  // Patch an LFO node's inert data. The store action clamps/repairs the patch
+  // through normalizeLfoNodeData; it never touches effectChains or audio.
+  const handleUpdateGraphLfo = useCallback(async (
+    nodeId: string,
+    patch: Record<string, unknown>,
+  ) => {
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    const result = await updateGraphLfoNodeDataForTrack(selectedTrack.id, nodeId, patch);
+    setGraphActionNotice(describeGraphMutationResult(result));
+  }, [fxMode, selectedTrack?.id, updateGraphLfoNodeDataForTrack]);
 
   // FXG-SC.6B — add the protected Sidechain Input node. Graph-mode gated; the store
   // action persists graphState, records undo, and performs NO audio runtime sync, NO
@@ -825,6 +859,23 @@ export default function FxGraphPanel() {
     });
     setGraphActionNotice(describeGraphMutationResult(result));
   }, [connectEnvelopeToParameterForTrack, fxMode, selectedTrack?.id]);
+
+  // Link an LFO controlOut to an exposed effect parameter. Mirrors the envelope
+  // handler; runtime-inert (the store action records the edge but never drives
+  // the parameter — that lives in the engine, see LfoParameterModulation.h).
+  const handleConnectGraphLfoToParameter = useCallback(async (
+    lfoNodeId: string,
+    targetNodeId: string,
+    parameterId: string,
+  ) => {
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    const result = await connectLfoToParameterForTrack(selectedTrack.id, {
+      sourceNodeId: lfoNodeId,
+      targetNodeId,
+      parameterId,
+    });
+    setGraphActionNotice(describeGraphMutationResult(result));
+  }, [connectLfoToParameterForTrack, fxMode, selectedTrack?.id]);
 
   const handleDisconnectGraphEdge = useCallback(async (edgeId: string) => {
     if (selectedTrack?.id == null || fxMode !== 'graph') return;
@@ -974,6 +1025,8 @@ export default function FxGraphPanel() {
         onAddGraphMacroNode={handleAddGraphMacroNode}
         onAddGraphEnvelopeNode={handleAddGraphEnvelopeNode}
         onUpdateGraphEnvelope={handleUpdateGraphEnvelope}
+        onAddGraphLfoNode={handleAddGraphLfoNode}
+        onUpdateGraphLfo={handleUpdateGraphLfo}
         onAddGraphSidechainInput={handleAddGraphSidechainInput}
         onSetGraphSidechainInputSource={handleSetGraphSidechainInputSource}
         onConnectGraphSidechain={handleConnectGraphSidechain}
@@ -982,6 +1035,7 @@ export default function FxGraphPanel() {
         onConnectGraphNodes={handleConnectGraphNodes}
         onConnectGraphMacroToParameter={handleConnectGraphMacroToParameter}
         onConnectGraphEnvelopeToParameter={handleConnectGraphEnvelopeToParameter}
+        onConnectGraphLfoToParameter={handleConnectGraphLfoToParameter}
         onDisconnectGraphEdge={handleDisconnectGraphEdge}
         onEditGraphNode={handleEditGraphNode}
         onUpdateGraphMacroValue={handleUpdateGraphMacroValue}

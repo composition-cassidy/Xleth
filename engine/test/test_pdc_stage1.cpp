@@ -812,6 +812,102 @@ static void testAudioGraphLatencyEpochAndTopology()
           "AudioGraph topology output node should report cached output latency");
 }
 
+// Regression: removing the last effect heals the chain to a direct
+// input -> output passthrough (correct — an empty chain must pass audio), but
+// addEffect() used to leave that wire in place when it spliced the next effect
+// in, producing input -> output AND input -> fx -> output: an unintended
+// parallel DRY path summed with the processed signal.
+//
+// It was also self-perpetuating. The extra wire gives the input node a fan-out
+// of 2, so updateLinearOrder() bails and leaves linearOrder_ empty; every
+// later addEffect then takes the "empty chain" branch again and stacks yet
+// another parallel branch (observed in the wild as a master bus running
+// dry + distortion + EQ all in parallel).
+//
+// Audibly this is a comb filter, because a summed dry path beats against the
+// processed one. With a phase-rotating effect such as the APEX multiband
+// maximizer — magnitude-flat but allpass — a real project measured a -78 dB
+// null at 533 Hz with 27.8 % of the spectrum cut by more than 6 dB.
+static void testAudioGraphAddEffectConsumesPassthrough()
+{
+    std::cout << "[Graph] addEffect consumes the empty-chain passthrough\n";
+
+    auto edgeExists = [](const nlohmann::json& topology, int src, int dst)
+    {
+        for (const auto& c : topology.value("connections", nlohmann::json::array()))
+            if (c.value("source", -1) == src && c.value("dest", -1) == dst)
+                return true;
+        return false;
+    };
+    auto edgeCount = [](const nlohmann::json& topology)
+    {
+        return topology.value("connections", nlohmann::json::array()).size();
+    };
+    auto ioNodeId = [](const nlohmann::json& topology, const char* which)
+    {
+        for (const auto& n : topology.value("nodes", nlohmann::json::array()))
+            if (n.value("pluginId", "") == which) return n.value("nodeId", -1);
+        return -1;
+    };
+
+    AudioGraph graph;
+    graph.init(48000.0, 512);
+
+    const auto topo0 = graph.getGraphTopology();
+    const int inId  = ioNodeId(topo0, "__input__");
+    const int outId = ioNodeId(topo0, "__output__");
+    CHECK(inId >= 0 && outId >= 0, "topology should expose the I/O node ids");
+
+    // 1) Baseline. A freshly init()ed graph has no wires at all, so this only
+    //    establishes the healthy shape the checks below compare against — the
+    //    bug needs the passthrough that step 2 creates.
+    const int a = graph.addEffect("xletheq", 0);
+    CHECK(a >= 0, "addEffect should add the first effect");
+    {
+        const auto t = graph.getGraphTopology();
+        CHECK(!edgeExists(t, inId, outId),
+              "first addEffect must not leave a raw input->output dry path");
+        CHECK(edgeExists(t, inId, a) && edgeExists(t, a, outId),
+              "first effect should be spliced input->fx->output");
+        CHECK(graph.isGraphLinear(), "a single spliced effect must stay linear");
+    }
+
+    // 2) Remove it — the chain heals back to the passthrough.
+    CHECK(graph.removeEffect(a), "removeEffect should remove the only effect");
+    CHECK(edgeExists(graph.getGraphTopology(), inId, outId),
+          "removing the last effect should heal input->output");
+
+    // 3) Re-add: this is the exact sequence that used to corrupt the chain.
+    const int b = graph.addEffect("xletheq", 0);
+    CHECK(b >= 0, "addEffect should re-add after a removal");
+    {
+        const auto t = graph.getGraphTopology();
+        CHECK(!edgeExists(t, inId, outId),
+              "re-adding an effect must consume the healed input->output passthrough");
+        CHECK(edgeExists(t, inId, b) && edgeExists(t, b, outId),
+              "re-added effect should be spliced input->fx->output");
+        CHECK(edgeCount(t) == 2,
+              "a one-effect chain should have exactly two wires");
+        CHECK(graph.isGraphLinear(),
+              "re-adding an effect must not make the graph non-linear");
+    }
+
+    // 4) The perpetuation guard: a second effect must splice in series, not
+    //    fan out from the input as a third parallel branch.
+    const int c = graph.addEffect("xletheq", 1);
+    CHECK(c >= 0, "addEffect should add a second effect");
+    {
+        const auto t = graph.getGraphTopology();
+        CHECK(!edgeExists(t, inId, outId), "no dry path should reappear");
+        CHECK(!edgeExists(t, inId, c),
+              "the second effect must not fan out directly from the input");
+        CHECK(edgeExists(t, inId, b) && edgeExists(t, b, c) && edgeExists(t, c, outId),
+              "two effects should form input->b->c->output");
+        CHECK(edgeCount(t) == 3, "a two-effect chain should have exactly three wires");
+        CHECK(graph.isGraphLinear(), "a two-effect serial chain must be linear");
+    }
+}
+
 static void testAudioGraphLatencyChangePropagation()
 {
     std::cout << "[Graph] XlethEQ latency-change propagation\n";
@@ -2342,6 +2438,7 @@ int main()
     testGuardedPluginWrapperLatencyRefreshContract();
     testDynamicBuiltinLatencyParameterAndStateRestore();
     testAudioGraphLatencyEpochAndTopology();
+    testAudioGraphAddEffectConsumesPassthrough();
     testAudioGraphLatencyChangePropagation();
     testAudioGraphThirdPartyLatencyRefreshPropagation();
     testAudioGraphThirdPartyProgramStateBypassAndEditorRoutes();

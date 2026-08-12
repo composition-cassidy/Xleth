@@ -206,6 +206,8 @@ endif()
 # Defined BEFORE XlethEngineCore because MixEngine depends on Timeline/Clip/Track.
 add_library(XlethEngineModel STATIC
     src/model/SampleRegion.cpp
+    src/model/SamplerModulationConfig.cpp
+    src/model/SamplerLegacyMigration.cpp
     src/model/Track.cpp
     src/model/Clip.cpp
     src/model/Pattern.cpp
@@ -213,6 +215,7 @@ add_library(XlethEngineModel STATIC
     src/model/Timeline.cpp
     src/model/VideoFlipResolver.cpp
     src/model/EnvelopeParameterModulation.cpp
+    src/model/LfoParameterModulation.cpp
     src/model/ClipModulationEvaluator.cpp
     src/model/ClipCompanionFxBuilder.cpp
     src/import/FscScoreParser.cpp
@@ -284,6 +287,7 @@ add_library(XlethEngineCore STATIC
     src/dsp/PhaseVocoder.cpp
     src/dsp/WORLD.cpp
     src/audio/WorldStretchCache.cpp
+    src/audio/SlotBakeCache.cpp
     src/video/FrameOutput.cpp
     src/video/FrameServer.cpp
     src/FrameCache.cpp
@@ -529,6 +533,20 @@ add_executable(test_envelope_parameter_modulation
 )
 
 target_link_libraries(test_envelope_parameter_modulation PRIVATE
+    XlethEngineModel
+)
+
+# ── test_lfo_parameter_modulation ─────────────────────────────────────────────
+# Pure evaluator for the FX Graph LFO Modulator as a graph-owned parameter
+# modulation source: graphState parse, tempo-sync/free rate, waveform evaluation,
+# position purity, and the base + signed-depth mapping. Model-only — links
+# solely against XlethEngineModel. The MixEngine integration is covered by
+# test_lfo_modulation_engine.
+add_executable(test_lfo_parameter_modulation
+    test/test_lfo_parameter_modulation.cpp
+)
+
+target_link_libraries(test_lfo_parameter_modulation PRIVATE
     XlethEngineModel
 )
 
@@ -825,6 +843,40 @@ target_compile_definitions(test_envelope_modulation_engine PRIVATE
 )
 
 target_link_options(test_envelope_modulation_engine PRIVATE /STACK:8388608)
+
+# ── test_lfo_modulation_engine ────────────────────────────────────────────────
+# MixEngine-level tests for the FX Graph LFO Modulator → parameter modulation
+# path: snapshot construction (graph mode / chain mode), audio-thread published
+# values across play-start/oscillation, the stop and mute/solo "go inert"
+# behaviors, and the RCU concurrent snapshot-swap stress test. Same link/stack
+# shape as test_envelope_modulation_engine.
+add_executable(test_lfo_modulation_engine
+    test/test_lfo_modulation_engine.cpp
+)
+
+target_link_libraries(test_lfo_modulation_engine PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_lfo_modulation_engine PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+target_link_options(test_lfo_modulation_engine PRIVATE /STACK:8388608)
 
 # ── test_mixer_bus_routing ───────────────────────────────────────────────────
 # Prompt 2B: audible output-route bus summing in MixEngine::processBlock.
@@ -1246,6 +1298,128 @@ target_compile_definitions(test_sampler PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_sampler_legacy_migration ────────────────────────────────────────────
+# Schema 3 → 4 migration of the hardcoded pitch envelope and the three drawable
+# LFOs into the general route list, plus the voicing cap and the bipolar ring
+# math the routing UI draws against.
+add_executable(test_sampler_legacy_migration
+    test/test_sampler_legacy_migration.cpp
+)
+
+target_link_libraries(test_sampler_legacy_migration PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_sampler_legacy_migration PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_sampler_modulation ──────────────────────────────────────────────────
+# The modulation system: 6 envelopes, 6 LFOs, VELO/NOTE response curves and the
+# route graph. Exercises the pure evaluators in SamplerModulation.h directly
+# (timing, shape, graph ordering, cycle latency) AND a real Sampler rendering
+# audio, plus the JSON schema round trip.
+add_executable(test_sampler_modulation
+    test/test_sampler_modulation.cpp
+)
+
+target_link_libraries(test_sampler_modulation PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_sampler_modulation PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_mangle ──────────────────────────────────────────────────────────────
+# MANGLE, the per-note per-slot warp FX: the pure shapers and read-head planner
+# in MangleDsp.h driven directly, plus the per-note claim asserted through a
+# real Sampler (chord == sum of independently mangled notes).
+add_executable(test_mangle
+    test/test_mangle.cpp
+)
+
+target_link_libraries(test_mangle PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_mangle PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+# ── test_slot_prep ───────────────────────────────────────────────────────────
+# Per-slot PREP: SlotBakeCache determinism / disk tier / rebuild-on-missing-file,
+# and the Sampler's three loop modes plus exit-loop-on-release. Sampler and cache
+# are exercised directly — no Timeline / MixEngine.
+add_executable(test_slot_prep
+    test/test_slot_prep.cpp
+)
+
+target_link_libraries(test_slot_prep PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_slot_prep PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_world_stretch ───────────────────────────────────────────────────────
 # Verifies WORLD vocoder DSP (pitch shift + time stretch) and the
 # WorldStretchCache LRU (hit, miss, multi-variant). No MixEngine required.
@@ -1553,6 +1727,37 @@ target_compile_definitions(test_pdc_stage1 PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# Audio device-health watchdog policy. Drives the pure decision function, so it
+# needs no audio hardware and is safe on headless CI.
+add_executable(test_device_watchdog
+    test/test_device_watchdog.cpp
+)
+
+target_link_libraries(test_device_watchdog PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_devices
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_device_watchdog PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 add_executable(test_distortion
     test/test_distortion.cpp
 )
@@ -1754,6 +1959,44 @@ target_compile_definitions(test_xlethfilter PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_xlethfilter_analog ──────────────────────────────────────────────────
+# Contract tests for the analog-modelled and character slot types layered on top
+# of the SVF core: the moog24 transistor ladder (steeper than the 12 dB SVF,
+# bounded at k = 4), the acid303 diode ladder (measurably a DIFFERENT filter from
+# the moog at identical settings, and stable through an envelope-speed cutoff
+# slam at high resonance), Sallen-Key (real resonant peak, gentler self-osc onset
+# than a ladder), the Steiner-Parker injection modes (including the proof that
+# HP-node injection reduces EXACTLY to lp12), the comb (peaks at fs/M, T60 decay
+# matching the derived loop gain), the formant bank (an ah->ee morph really does
+# move F1 from 730 Hz to 270 Hz, click-free) and the tilt EQ. Also prints a
+# per-type CPU cost table against the lp12 baseline.
+add_executable(test_xlethfilter_analog
+    test/test_xlethfilter_analog.cpp
+)
+
+target_link_libraries(test_xlethfilter_analog PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_xlethfilter_analog PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_xlethfilter_mod ─────────────────────────────────────────────────────
 # Modulation-layer contract tests for XlethFilterEffect: the per-slot in-effect
 # dynamics follower (detector -> ballistics -> exponential octave mapping ->
@@ -1895,7 +2138,6 @@ target_compile_definitions(test_export_normalization PRIVATE
     JUCE_USE_WINDOWS_MEDIA_FORMAT=0
     JUCE_STANDALONE_APPLICATION=1
 )
-
 
 # ── hall_measure (reverb re-tune measurement + A/B render tool) ──────────────
 # Not a ctest test — a diagnostic/render tool for the ongoing stock-reverb
@@ -2309,6 +2551,8 @@ set(XLETH_ENGINE_TESTS
     test_video_flip_resolver
     test_envelope_parameter_modulation
     test_envelope_modulation_engine
+    test_lfo_parameter_modulation
+    test_lfo_modulation_engine
     test_canvas_fit
     test_video_flip_applier
     test_flip_determinism
@@ -2332,6 +2576,10 @@ set(XLETH_ENGINE_TESTS
     test_audio_telemetry
     test_audio_perf_scenarios
     test_sampler
+    test_sampler_legacy_migration
+    test_sampler_modulation
+    test_mangle
+    test_slot_prep
     test_world_stretch
     test_tdpsola
     test_loop_analysis
@@ -2342,6 +2590,7 @@ set(XLETH_ENGINE_TESTS
     test_effects
     test_chain_effect_identity
     test_pdc_stage1
+    test_device_watchdog
     test_distortion
     test_phanjer
     test_reverb
@@ -2349,6 +2598,7 @@ set(XLETH_ENGINE_TESTS
     test_limiter
     test_apex
     test_xlethfilter
+    test_xlethfilter_analog
     test_xlethfilter_mod
     test_loudness
     test_export_normalization

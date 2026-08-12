@@ -26,7 +26,7 @@ const addon = require('./build/Release/xleth_native.node');
 // and DYNAMICS_VIZ_SCHEMA_VERSION in ui/src/constants/dynamicsViz.js. Bump all
 // three together — the renderer's parser rejects a payload whose schema does
 // not match, so a drifted value here is a real, silent breakage.
-const EXPECTED_SCHEMA = 2;
+const EXPECTED_SCHEMA = 3;
 
 let passed = 0, failed = 0, total = 0;
 function ok(cond, label) {

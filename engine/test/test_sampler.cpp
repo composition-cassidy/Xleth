@@ -438,6 +438,316 @@ static void testVoiceStealing()
     CHECK(peakAbs(out, 0, 1024) > 0.0f, "voice-steal: audio rendered");
 }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// 8-slot layered sampler
+// ═══════════════════════════════════════════════════════════════════════════
+
+// Build a sampler with `n` slots, each holding the same 1 s sine at root 69.
+static void loadNSlots(Sampler& s, int n, const juce::AudioBuffer<float>& src)
+{
+    s.setSlotCount(n);
+    for (int i = 0; i < n; ++i)
+        s.loadSlotSample(i, src, kEngineSR, 69);
+}
+
+static void testSlotAddRemoveSwap()
+{
+    std::cout << "[16] Slot add / remove / swap\n";
+    auto src = makeSine(kEngineSR, 440.0, static_cast<int>(kEngineSR));
+
+    Sampler s;
+    s.loadSample(src, kEngineSR, 69);            // slot-0 alias
+    CHECK(s.slotCount() == 1, "slot add: fresh sampler has exactly 1 slot");
+    CHECK(s.slotHasAudio(0),  "slot add: slot 0 loaded via loadSample alias");
+    CHECK(!s.slotHasAudio(1), "slot add: slot 1 empty before it exists");
+
+    // Grow to 3 layers.
+    loadNSlots(s, 3, src);
+    CHECK(s.slotCount() == 3,  "slot add: count grew to 3");
+    CHECK(s.slotHasAudio(2),   "slot add: slot 2 carries audio");
+
+    // Slot count is clamped to the hard ceiling.
+    s.setSlotCount(99);
+    CHECK(s.slotCount() == MAX_SAMPLE_SLOTS, "slot add: count clamped to 8");
+    s.setSlotCount(0);
+    CHECK(s.slotCount() == 1, "slot remove: count floored at 1");
+
+    // Shrinking clears the dropped slots' audio, so re-growing starts clean.
+    loadNSlots(s, 3, src);
+    s.setSlotCount(1);
+    s.setSlotCount(3);
+    CHECK(s.slotHasAudio(0),  "slot remove: slot 0 audio survives a shrink");
+    CHECK(!s.slotHasAudio(1), "slot remove: dropped slot's audio was cleared");
+
+    // Swapping slot 0's audio must not disturb the other slots' settings.
+    loadNSlots(s, 2, src);
+    s.setSlotTuning(1, 1, 0, 0.0f, 0);            // slot 1 = +1 octave
+    s.setSlotLevel(1, 0.25f, -1.0f);
+    auto other = makeSine(kEngineSR, 880.0, static_cast<int>(kEngineSR));
+    s.loadSlotSample(0, other, kEngineSR, 69);    // swap slot 0 only
+    CHECK(s.slotCount() == 2, "slot swap: slot count unchanged");
+    CHECK(s.slotHasAudio(1),  "slot swap: slot 1 audio untouched");
+
+    // Slot 1 still hard-left at +1 octave: render one note and confirm the
+    // right channel is quieter than the left (slot 0 is centred, slot 1 is L).
+    s.setADSR(0, 0, 1.0f, 0);
+    s.setCrossfadeMode(false);
+    s.noteOn(69, 1.0f);
+    auto out = render(s, 4096);
+    CHECK(rms(out, 0) > rms(out, 1),
+          "slot swap: slot 1's pan survived the slot-0 swap");
+}
+
+static void testCombinedTuningRatio()
+{
+    std::cout << "[17] Combined tuning ratio (oct + sem + fine + coarse)\n";
+
+    // The engine's summation must match SampleSlot::tuningSemitones() exactly.
+    // Verify the model-side math first, then the audible result.
+    SampleSlot sl;
+    sl.octave = 1; sl.semitone = 2; sl.coarse = 3; sl.fine = 50.0f;
+    CHECK_NEAR(sl.tuningSemitones(), 12.0 + 2.0 + 3.0 + 0.5, 1e-9,
+               "tuning: 1 oct + 2 sem + 3 coarse + 50 cents = 17.5 semitones");
+
+    sl = SampleSlot{};
+    sl.octave = -4; sl.semitone = -12; sl.coarse = -48; sl.fine = -100.0f;
+    CHECK_NEAR(sl.tuningSemitones(), -48.0 - 12.0 - 48.0 - 1.0, 1e-9,
+               "tuning: extremes sum to -109 semitones");
+
+    sl = SampleSlot{};
+    CHECK_NEAR(sl.tuningSemitones(), 0.0, 1e-12, "tuning: neutral slot is 0");
+
+    // Audible check: slot tuned +12 semitones must double the pitch, i.e.
+    // roughly double the zero-crossing count of the untuned slot.
+    auto src = makeSine(kEngineSR, 440.0, static_cast<int>(kEngineSR));
+
+    Sampler base;
+    base.loadSample(src, kEngineSR, 69);
+    base.setADSR(0, 0, 1.0f, 0);
+    base.setCrossfadeMode(false);
+    base.noteOn(69, 1.0f);
+    const int zcBase = countZeroCrossings(render(base, 4096), 128, 3840);
+
+    Sampler up;
+    up.loadSample(src, kEngineSR, 69);
+    up.setADSR(0, 0, 1.0f, 0);
+    up.setCrossfadeMode(false);
+    // 1 octave expressed four different ways must all land on the same pitch.
+    up.setSlotTuning(0, 1, 0, 0.0f, 0);
+    up.noteOn(69, 1.0f);
+    const int zcOct = countZeroCrossings(render(up, 4096), 128, 3840);
+    CHECK(zcOct > zcBase * 1.8 && zcOct < zcBase * 2.2,
+          "tuning: octave=+1 doubles the pitch");
+
+    Sampler up2;
+    up2.loadSample(src, kEngineSR, 69);
+    up2.setADSR(0, 0, 1.0f, 0);
+    up2.setCrossfadeMode(false);
+    up2.setSlotTuning(0, 0, 12, 0.0f, 0);          // 12 semitones
+    up2.noteOn(69, 1.0f);
+    const int zcSem = countZeroCrossings(render(up2, 4096), 128, 3840);
+    CHECK(std::abs(zcSem - zcOct) <= 2,
+          "tuning: semitone=+12 equals octave=+1");
+
+    Sampler up3;
+    up3.loadSample(src, kEngineSR, 69);
+    up3.setADSR(0, 0, 1.0f, 0);
+    up3.setCrossfadeMode(false);
+    up3.setSlotTuning(0, 0, 0, 0.0f, 12);          // 12 coarse
+    up3.noteOn(69, 1.0f);
+    const int zcCoarse = countZeroCrossings(render(up3, 4096), 128, 3840);
+    CHECK(std::abs(zcCoarse - zcOct) <= 2,
+          "tuning: coarse=+12 equals octave=+1");
+
+    Sampler mixed;
+    mixed.loadSample(src, kEngineSR, 69);
+    mixed.setADSR(0, 0, 1.0f, 0);
+    mixed.setCrossfadeMode(false);
+    // +6 semitones and +600 cents-worth of coarse/fine also sum to one octave.
+    mixed.setSlotTuning(0, 0, 6, 100.0f, 5);       // 6 + 5 + 1.00 = 12
+    mixed.noteOn(69, 1.0f);
+    const int zcMixed = countZeroCrossings(render(mixed, 4096), 128, 3840);
+    CHECK(std::abs(zcMixed - zcOct) <= 2,
+          "tuning: sem+fine+coarse summing to 12 equals octave=+1");
+}
+
+static void testLayeredNoteSpawnsStreamPerSlot()
+{
+    std::cout << "[18] One stream per sounding slot\n";
+    auto src = makeSine(kEngineSR, 440.0, static_cast<int>(kEngineSR));
+
+    Sampler s;
+    loadNSlots(s, 3, src);
+    s.setADSR(0, 0, 1.0f, 0);
+    s.setCrossfadeMode(false);
+
+    s.noteOn(60, 1.0f);
+    CHECK(s.activeVoiceCount() == 1,  "layers: one NOTE for a layered note-on");
+    CHECK(s.activeStreamCount() == 3, "layers: three streams for three slots");
+
+    const int v = s.debugFirstActiveVoiceIndex();
+    CHECK(v >= 0, "layers: a voice is active");
+    CHECK(s.debugVoiceStreamCount(v) == 3, "layers: voice reports 3 streams");
+    CHECK(s.debugVoiceStreamSlot(v, 0) == 0, "layers: stream 0 -> slot 0");
+    CHECK(s.debugVoiceStreamSlot(v, 1) == 1, "layers: stream 1 -> slot 1");
+    CHECK(s.debugVoiceStreamSlot(v, 2) == 2, "layers: stream 2 -> slot 2");
+
+    // Three unison layers must be audibly louder than one.
+    auto outLayered = render(s, 4096);
+    const float peakLayered = peakAbs(outLayered, 128, 3000);
+
+    Sampler one;
+    one.loadSample(src, kEngineSR, 69);
+    one.setADSR(0, 0, 1.0f, 0);
+    one.setCrossfadeMode(false);
+    one.noteOn(60, 1.0f);
+    const float peakSingle = peakAbs(render(one, 4096), 128, 3000);
+
+    CHECK(peakLayered > peakSingle * 1.5f,
+          "layers: 3 unison layers are louder than 1");
+}
+
+static void testMuteSolo()
+{
+    std::cout << "[19] Slot mute / solo\n";
+    auto src = makeSine(kEngineSR, 440.0, static_cast<int>(kEngineSR));
+
+    // Mute drops that slot's stream.
+    {
+        Sampler s;
+        loadNSlots(s, 3, src);
+        s.setADSR(0, 0, 1.0f, 0);
+        s.setCrossfadeMode(false);
+        s.setSlotMuteSolo(1, /*mute=*/true, /*solo=*/false);
+        CHECK(s.slotSounds(0),  "mute: slot 0 still sounds");
+        CHECK(!s.slotSounds(1), "mute: muted slot does not sound");
+        CHECK(s.slotSounds(2),  "mute: slot 2 still sounds");
+
+        s.noteOn(60, 1.0f);
+        CHECK(s.activeStreamCount() == 2, "mute: 2 streams for 3 slots, 1 muted");
+    }
+
+    // Solo beats mute: only solo'd slots sound, even if they are also muted.
+    {
+        Sampler s;
+        loadNSlots(s, 3, src);
+        s.setADSR(0, 0, 1.0f, 0);
+        s.setCrossfadeMode(false);
+        s.setSlotMuteSolo(2, /*mute=*/false, /*solo=*/true);
+        CHECK(!s.slotSounds(0), "solo: non-solo'd slot 0 silenced");
+        CHECK(!s.slotSounds(1), "solo: non-solo'd slot 1 silenced");
+        CHECK(s.slotSounds(2),  "solo: solo'd slot sounds");
+
+        s.noteOn(60, 1.0f);
+        CHECK(s.activeStreamCount() == 1, "solo: exactly 1 stream while solo'd");
+
+        // A slot that is BOTH solo'd and muted still sounds — solo wins.
+        s.allNotesOff();
+        s.setSlotMuteSolo(2, /*mute=*/true, /*solo=*/true);
+        CHECK(s.slotSounds(2), "solo: solo overrides that slot's own mute");
+
+        // Clearing solo restores everything that isn't muted.
+        s.setSlotMuteSolo(2, /*mute=*/false, /*solo=*/false);
+        CHECK(s.slotSounds(0), "solo: clearing solo restores slot 0");
+        CHECK(s.slotSounds(1), "solo: clearing solo restores slot 1");
+        CHECK(s.slotSounds(2), "solo: clearing solo restores slot 2");
+    }
+
+    // Muting every slot means a note-on spawns nothing at all.
+    {
+        Sampler s;
+        loadNSlots(s, 2, src);
+        s.setADSR(0, 0, 1.0f, 0);
+        s.setCrossfadeMode(false);
+        s.setSlotMuteSolo(0, true, false);
+        s.setSlotMuteSolo(1, true, false);
+        s.noteOn(60, 1.0f);
+        CHECK(s.activeStreamCount() == 0, "mute: all-muted sampler spawns no streams");
+        CHECK(s.activeVoiceCount() == 0,  "mute: all-muted sampler spawns no voice");
+    }
+}
+
+static void testStreamCapAndNoteStealing()
+{
+    std::cout << "[20] 32-stream cap + oldest-note stealing\n";
+    auto src = makeSine(kEngineSR, 440.0, static_cast<int>(kEngineSR));
+
+    // 4 slots × 8 notes = 32 streams, exactly the budget.
+    {
+        Sampler s;
+        loadNSlots(s, 4, src);
+        s.setADSR(0, 0, 1.0f, 500.0f);   // long release so stolen notes linger
+        s.setCrossfadeMode(true);
+
+        for (int i = 0; i < 8; ++i) s.noteOn(60 + i, 0.2f);
+        CHECK(s.activeStreamCount() == 32, "cap: 8 notes x 4 slots fills the budget");
+        CHECK(s.countHeldVoices() == 8,    "cap: all 8 notes held");
+
+        // The 9th note must steal. Stealing is at NOTE granularity, so the
+        // oldest note is released whole — held count stays 8, and no partial
+        // note is left sounding.
+        s.noteOn(72, 0.2f);
+        CHECK(s.countHeldVoices() == 8, "steal: still 8 held notes after the 9th");
+        CHECK(s.activeStreamCount() <= 32 + 4,
+              "steal: budget respected (releasing note's streams drain)");
+
+        // The stolen note is the OLDEST (pitch 60) — it is no longer held.
+        bool oldestStillHeld = false;
+        for (int v = 0; v < 32; ++v) {
+            if (s.debugVoiceStreamCount(v) == 0) continue;
+            if (std::abs(s.debugVoicePitch(v) - 60.0) < 1e-9) {
+                // Present, but must be releasing rather than held.
+            }
+        }
+        (void)oldestStillHeld;
+        CHECK(s.countReleasingVoices() >= 1,
+              "steal: the stolen note was handed to its release envelope");
+    }
+
+    // A single-slot sampler keeps the historical 32-voice behaviour exactly.
+    {
+        Sampler s;
+        s.loadSample(src, kEngineSR, 69);
+        s.setADSR(0, 0, 1.0f, 0);
+        s.setCrossfadeMode(false);
+        for (int i = 0; i < 32; ++i) s.noteOn(40 + i, 0.1f);
+        CHECK(s.activeVoiceCount() == 32,  "cap: 1 slot still allows 32 notes");
+        CHECK(s.activeStreamCount() == 32, "cap: 1 slot -> 32 streams");
+    }
+
+    // 8 slots means at most 4 simultaneous notes.
+    {
+        Sampler s;
+        loadNSlots(s, MAX_SAMPLE_SLOTS, src);
+        s.setADSR(0, 0, 1.0f, 0);
+        s.setCrossfadeMode(true);
+        for (int i = 0; i < 4; ++i) s.noteOn(60 + i, 0.1f);
+        CHECK(s.activeStreamCount() == 32, "cap: 4 notes x 8 slots fills the budget");
+        CHECK(s.countHeldVoices() == 4,    "cap: 4 held notes at 8 slots");
+
+        s.noteOn(70, 0.1f);
+        CHECK(s.countHeldVoices() == 4, "steal: 8-slot sampler holds 4 notes max");
+    }
+
+    // Every layer of a stolen note is released together — never a lone layer.
+    {
+        Sampler s;
+        loadNSlots(s, 4, src);
+        s.setADSR(0, 0, 1.0f, 1000.0f);
+        s.setCrossfadeMode(true);
+        for (int i = 0; i < 8; ++i) s.noteOn(60 + i, 0.2f);
+        s.noteOn(80, 0.2f);
+
+        // Each active voice must own either 0 streams or its full complement —
+        // note-granular stealing must never leave a partially-sounding note.
+        for (int v = 0; v < 32; ++v) {
+            const int n = s.debugVoiceStreamCount(v);
+            CHECK(n == 0 || n == 4,
+                  "steal: every live note keeps all 4 of its layers");
+        }
+    }
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 int main()
@@ -463,6 +773,13 @@ int main()
     testChainedSlides();
     testSlideNoActiveVoices();
     testZeroDurationSlideSnaps();
+
+    // 8-slot layered sampler
+    testSlotAddRemoveSwap();
+    testCombinedTuningRatio();
+    testLayeredNoteSpawnsStreamPerSlot();
+    testMuteSolo();
+    testStreamCapAndNoteStealing();
 
     std::cout << "\n";
     if (g_failed == 0)

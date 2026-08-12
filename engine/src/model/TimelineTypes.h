@@ -1,4 +1,6 @@
 #pragma once
+#include "SamplerModulationConfig.h"
+
 #include <algorithm>
 #include <atomic>
 #include <cmath>
@@ -149,6 +151,142 @@ struct SourceMedia {
     std::unordered_map<int, std::string> thumbnailPaths;
 };
 
+// ─── SampleSlot ───────────────────────────────────────────────────────────────
+// One layer of a sampler. A SampleRegion owns 1..MAX_SAMPLE_SLOTS of these;
+// every sounding slot spawns its own resampling stream on each note-on, so a
+// single note plays all slots stacked (see Sampler::noteOn).
+//
+// Slot 0 is special ONLY in where its audio comes from: it always plays the
+// region's own audio (source range, or swappedAudioPath when hasSwappedAudio).
+// Slots 1..7 carry their own `audioFilePath`, an independent file copied into
+// the project's slots/ directory. Everything else — tuning, level, trim, loop,
+// destructive flags — is symmetric across all slots.
+//
+// Swapping the region's audio therefore rebinds slot 0's PCM and touches no
+// slot's settings and no other slot at all.
+
+// ─── SampleLoopMode ───────────────────────────────────────────────────────────
+// How a slot's read head traverses [loopStart, loopEnd) once it arrives there.
+//   Forward  — wrap loopEnd → loopStart (the historical behaviour, crossfaded).
+//   PingPong — reflect at both ends. The seam is value-continuous by
+//              construction, so it takes no crossfade.
+//   Reverse  — descend loopEnd → loopStart, then wrap back up to loopEnd. The
+//              wrap is a genuine discontinuity, so the forward crossfade is
+//              applied mirrored around the loop.
+enum class SampleLoopMode : int {
+    Forward  = 0,
+    PingPong = 1,
+    Reverse  = 2
+};
+
+struct SampleSlot {
+    // ── Audio identity ───────────────────────────────────────────────────────
+    // Empty for slot 0 (its PCM comes from the region). Absolute path into the
+    // project's slots/ dir for slots 1..7.
+    std::string audioFilePath;
+    std::string name;                    // display label; falls back to filename
+
+    // ── Tuning ───────────────────────────────────────────────────────────────
+    // The four controls are independent and SUM into one pitch offset:
+    //   semitoneOffset = octave*12 + semitone + coarse + fine/100
+    // applied on top of (midiNote - rootNote). See SampleSlot::tuningSemitones().
+    int   rootNote = 60;                 // MIDI note the sample is recorded at
+    int   octave   = 0;                  // ±4 octaves
+    int   semitone = 0;                  // ±12 semitones
+    float fine     = 0.0f;               // ±100 cents
+    int   coarse   = 0;                  // ±48 semitones
+
+    // ── Level ────────────────────────────────────────────────────────────────
+    float volume = 1.0f;                 // 0..2 linear gain
+    float pan    = 0.0f;                 // -1 = hard L, 0 = centre, +1 = hard R
+    bool  mute   = false;
+    bool  solo   = false;                // any slot solo'd ⇒ only solo'd slots sound
+
+    // ── Trim + declick (source samples / ms) ─────────────────────────────────
+    int64_t smpStart  = 0;               // playback start offset
+    int64_t smpLength = 0;               // 0 = full from smpStart to end
+    float   declickMs = 1.5f;            // Hann fade width at trim edges
+    float   fadeInMs  = 0.0f;            // linear fade-in
+    float   fadeOutMs = 0.0f;            // linear fade-out
+
+    // ── Loop ─────────────────────────────────────────────────────────────────
+    // Only takes effect when the region is in sustained mode
+    // (SampleRegion::crossfadeEnabled) — one-shot layers play to completion.
+    bool    loopEnabled      = false;
+    int64_t loopStart        = 0;
+    int64_t loopEnd          = 0;        // 0 = end of sample
+    int64_t crossfadeSamples = 0;        // FL-style loop crossfade width
+    int     loopMode         = static_cast<int>(SampleLoopMode::Forward);
+
+    // Release inside a loop finishes the CURRENT pass, then plays on to the end
+    // of the trim region instead of looping forever. While that tail runs the
+    // note holds its sustain level — the amplitude release only begins once
+    // every layer has run out, which is the existing end-of-sample path.
+    bool    exitLoopOnRelease = false;
+
+    // ── MANGLE (per-note, per-slot warp FX) ──────────────────────────────────
+    // A warp effect instantiated PER STREAM — one per note per slot — so it
+    // runs before the voices of a chord sum. That is what separates it from a
+    // mixer insert, which only ever sees the already-summed chord.
+    //
+    // mangleMode is an xleth::mangle::Mode id (0 = Off). Ids are persisted, so
+    // the enum is append-only. Amount and mix are 0..1.
+    //
+    // Off is the default, so every project made before MANGLE existed loads
+    // bit-identical. Mix defaults to 1.0 (fully wet) so that a user who picks
+    // a mode hears it immediately rather than having to find a second knob.
+    int   mangleMode   = 0;
+    float mangleAmount = 0.0f;
+    float mangleMix    = 1.0f;
+
+    // ── PREP (offline time-stretch / pitch-shift bake) ───────────────────────
+    // Runs ONCE, off the audio thread, producing a new buffer that everything
+    // downstream — trim, loop, fades, declick, and the waveform the editor
+    // draws — then treats as the slot's sample. Live tuning (OCT/SEM/FINE/
+    // COARSE) still happens at play time on top of the baked buffer.
+    //
+    // prepAlgorithm holds a StretchMethod value (1=PSOLA, 2=Rubber, 3=WSOLA,
+    // 4=PhaseVocoder, 5=WORLD); it is stored as int for the same reason
+    // CacheKey::stretchMethod is — the enum is declared further down this file.
+    //
+    // At stretch == 1.0 and shift == 0 cents the bake is BYPASSED outright:
+    // no DSP, no copy, no cache entry. That is what keeps every project made
+    // before PREP existed bit-identical, whatever prepAlgorithm happens to say.
+    int   prepAlgorithm  = 2;            // StretchMethod::Rubber
+    float prepStretch    = 1.0f;         // output length multiplier (1.0 = 100%)
+    float prepShiftCents = 0.0f;         // pitch shift, cents
+
+    // ── Precomputed (destructive) effects ────────────────────────────────────
+    // Applied once to this slot's buffer copy at sampler-load time, BEFORE the
+    // PREP bake — so they are part of the bake's input and therefore part of
+    // its cache key (which digests the post-flag PCM).
+    bool dcOffsetRemoved  = false;
+    bool normalized       = false;
+    bool polarityReversed = false;
+    bool reversed         = false;
+
+    // True when PREP would be a no-op. The single definition of the bypass
+    // test — engine, cache and tests all ask this, so "unity is passthrough"
+    // can never drift between them.
+    bool prepIsBypassed() const {
+        return std::abs(prepStretch - 1.0f) < 1e-6f
+            && std::abs(prepShiftCents)     < 1e-6f;
+    }
+
+    // Total tuning offset in semitones (fine is cents). Pure function of the
+    // four tuning controls — the single definition used by engine, tests and
+    // the UI's mirrored math.
+    double tuningSemitones() const {
+        return static_cast<double>(octave) * 12.0
+             + static_cast<double>(semitone)
+             + static_cast<double>(coarse)
+             + static_cast<double>(fine) / 100.0;
+    }
+};
+
+// Hard ceiling on layers per sampler. Slot 0 always exists.
+inline constexpr int MAX_SAMPLE_SLOTS = 8;
+
 // ─── SampleRegion ─────────────────────────────────────────────────────────────
 // A marked region from a SourceMedia file — the fundamental sample unit.
 // Carries both audio (audioFilePath) and video frame range (startFrame/endFrame).
@@ -169,7 +307,6 @@ struct SampleRegion {
     std::string audioFilePath;
     std::string swappedAudioPath;
 
-    int  rootNote        = 60;   // MIDI note (from WAV smpl chunk, default C4)
     bool hasSwappedAudio = false;
 
     // Probed duration (seconds) of the swapped audio file. 0 when no swap or when probe failed.
@@ -201,34 +338,57 @@ struct SampleRegion {
     float pitchEnvDecayTension   = 0.0f;
     float pitchEnvReleaseTension = 0.0f;
 
-    // Loop points (in samples, relative to region audio start)
-    bool    loopEnabled = false;         // false = one-shot mode
-    int64_t loopStart   = 0;
-    int64_t loopEnd     = 0;             // 0 = end of sample
-
-    // Crossfade / sustained mode
+    // Crossfade / sustained mode. Sampler-level, NOT per-slot: it decides
+    // whether a note releases on note-off at all, which is a property of the
+    // note rather than of any one layer. Per-slot looping lives on SampleSlot.
     bool    crossfadeEnabled = false;    // false = one-shot (plays to completion)
                                          // true  = sustained (follows note duration)
 
-    // Trim points (in source samples, 0-indexed)
-    int64_t smpStart       = 0;          // playback start offset
-    int64_t smpLength      = 0;          // 0 = full from smpStart to end
-    float   declickMs      = 1.5f;       // Hann fade width at trim edges (ms; sample-rate independent)
-    float   fadeInMs       = 0.0f;       // linear fade-in duration (ms)
-    float   fadeOutMs      = 0.0f;       // linear fade-out duration (ms)
-    int64_t crossfadeSamples = 0;        // FL-style loop crossfade width (source samples)
-
-    // Precomputed (destructive) effects — applied once to the buffer copy at
-    // sampler-load time. Toggling off re-copies from SampleBank.
-    bool    dcOffsetRemoved  = false;
-    bool    normalized       = false;
-    bool    polarityReversed = false;
-    bool    reversed         = false;
+    // ── Sample slots (layers) ────────────────────────────────────────────────
+    // Invariant: always at least 1 entry, never more than MAX_SAMPLE_SLOTS.
+    // slots[0] plays the region's own audio; slots[1..] carry their own files.
+    // Root note, trim, loop, fades and the destructive flags all live here —
+    // legacy projects load their single-sample state into slots[0], which is
+    // why this phase's migration is lossless (see SampleRegion.cpp from_json).
+    std::vector<SampleSlot> slots { SampleSlot{} };
 
     // Playback modes
     bool    monoEnabled       = false;
     bool    portamentoEnabled = false;
     float   portamentoTimeMs  = 100.0f;
+
+    // ── Voicing ──────────────────────────────────────────────────────────────
+    // voiceCount caps simultaneous NOTES. It is deliberately NOT the same limit
+    // as the engine's 32-STREAM cap, and the two interact multiplicatively:
+    // every note spawns one stream per SOUNDING slot, so
+    //
+    //     effective polyphony = min(voiceCount, MAX_STREAMS / soundingSlots)
+    //
+    // An 8-layer sampler therefore tops out at 4 simultaneous notes however
+    // high voiceCount is set, while a single-layer sampler reaches the full 32.
+    // Setting voiceCount above that ceiling is harmless rather than an error —
+    // the stream budget simply releases the oldest NOTE first (never a lone
+    // layer), which is the same click-free stealing rule that already governed
+    // the 32-stream cap. Lowering voiceCount steals by the same path, so the
+    // two limits never disagree about which note dies.
+    int     voiceCount        = 32;     // 1..32 simultaneous notes (POLY)
+
+    // MONO only. A legato note reuses the sounding voice WITHOUT restarting its
+    // envelopes or its read heads — it only retunes. Without portamento that is
+    // an instant retune; with it, the glide is the slide. Ignored in poly mode,
+    // where every note is its own voice by definition.
+    bool    legatoEnabled     = false;
+
+    // ALWAYS (0) — the glide always takes portamentoTimeMs, whatever the
+    //              interval. A semitone and two octaves take the same time.
+    // SCALED (1) — portamentoTimeMs is the time PER OCTAVE, so the glide rate
+    //              is constant and wide leaps take proportionally longer.
+    int     portamentoMode    = 0;
+    // Shapes the glide. 0 = linear (bit-identical to the pre-curve behaviour),
+    // positive covers most of the interval early, negative late. Same tension
+    // law as every envelope segment in the sampler.
+    float   portamentoCurve   = 0.0f;   // -1..+1
+
     bool    arpEnabled        = false;
     bool    arpTempoSync      = true;
     int     arpDivision       = 8;       // musical division (4=quarter, 8=eighth, 16=16th)
@@ -273,6 +433,15 @@ struct SampleRegion {
     float lfoPitchDelayMs       = 0.0f;
     std::vector<LfoBreakpoint> lfoPitchWaveform;
 
+    // ── Modulation system (6 ENV + 6 LFO + VELO + NOTE + routes) ─────────────
+    // Lives alongside — not instead of — the legacy ADSR, pitch envelope and
+    // three drawable LFOs above. Those keep working exactly as they did; the
+    // new system is additive until a later phase retires them.
+    //
+    // An empty route list is an exact bypass, which is why a project written
+    // before this field existed loads and renders bit-identically.
+    xleth::sampmod::ModConfig modulation;
+
     struct Syllable {
         double      startTime = 0.0;
         double      endTime   = 0.0;
@@ -314,6 +483,30 @@ struct SampleRegion {
     int    getFrameCount() const { return endFrame - startFrame + 1; }
     bool   isQuote()       const { return label == SampleLabel::Quote; }
     bool   hasSyllables()  const { return !syllables.empty(); }
+
+    // ── Slot access ──────────────────────────────────────────────────────────
+    // Repairs the "always at least one slot" invariant on read, so a region
+    // deserialized from a malformed file can never hand out a dangling slot.
+    int slotCount() const {
+        return slots.empty() ? 1 : static_cast<int>(slots.size());
+    }
+    SampleSlot& slot(int index) {
+        if (slots.empty()) slots.emplace_back();
+        if (index < 0 || index >= static_cast<int>(slots.size())) index = 0;
+        return slots[static_cast<size_t>(index)];
+    }
+    const SampleSlot& slot(int index) const {
+        static const SampleSlot kFallback{};
+        if (slots.empty()) return kFallback;
+        if (index < 0 || index >= static_cast<int>(slots.size())) index = 0;
+        return slots[static_cast<size_t>(index)];
+    }
+    // True when any slot is solo'd — the audio path then sounds ONLY solo'd
+    // slots (and mute is ignored on them, matching mixer solo semantics).
+    bool anySlotSolo() const {
+        for (const auto& s : slots) if (s.solo) return true;
+        return false;
+    }
 };
 
 // ─── StretchMethod ────────────────────────────────────────────────────────────

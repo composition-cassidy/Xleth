@@ -3,9 +3,12 @@ import { tokenValue } from '../../theming/tokenValue.ts'
 import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
 import useApexStore from '../../stores/apexStore.js'
 import { BAND_NAMES } from '../../stores/apexStore.js'
+import { bandColorOr } from './apexBandColors.js'
+import { useDynamicsVizSubscription } from '../../plugin-ui/runtime/useDynamicsVizSubscription.js'
+import { VIZ_TYPE } from '../../constants/dynamicsViz.js'
 import {
-  CURVE_MIN_DB, CURVE_MAX_DB, MAX_NODES, clamp,
-  evalCurveAt, tensionWarp,
+  CURVE_MIN_DB, CURVE_MAX_DB, CURVE_DB_TICKS, CURVE_LABEL_ORDER, MAX_NODES, clamp,
+  evalCurveAt, tensionForMidpoint,
   inDbToX, xToInDb, outDbToY, yToOutDb, segmentHandlePoint,
 } from './apexGeometry.js'
 
@@ -22,6 +25,13 @@ import {
 // node, right-click a node to delete it, drag or wheel a segment handle to set
 // that segment's tension. End nodes pin the ends (their input is fixed at the
 // box edges); interior nodes move on both axes between their neighbours.
+//
+// Live level (spec 7.1, Maximus-style): the ~33 Hz ApexBucket carries the level
+// the SELECTED band's transfer curve was actually read at (bandInDb), so the
+// signal can be drawn on the curve itself — a fill up to the current input, a
+// dot riding the curve, and edge meters whose extent is that same level. The
+// meter is read straight off the viz ring inside the rAF loop; it never enters
+// React state, so incoming audio does not re-render anything.
 
 const PAD_L = 30
 const PAD_R = 12
@@ -30,7 +40,13 @@ const PAD_B = 18
 const NODE_HIT_R = 11
 const HANDLE_HIT_R = 9
 const MIN_IN_GAP = 0.25   // dB — keeps nodes strictly increasing in input
-const CURVE_SAMPLES = 160
+const CURVE_PX_STEP = 2   // curve is sampled per this many CSS px of width
+const METER_W = 4         // edge meter thickness, CSS px
+const SILENT_DB = -119    // engine reports -120 for "nothing here"
+// Peak-style ballistics for the level dot: jump to a louder reading at once,
+// fall back smoothly so a 33 Hz payload does not look like a strobe.
+const LEVEL_FALL = 0.22
+const LEVEL_STALE_MS = 400   // no fresh bucket for this long = transport stopped
 
 // Last-resort canvas fallbacks (tokens are the source of truth; these only
 // apply before ThemeProvider has written :root, matching the Knob/visualizer
@@ -76,6 +92,14 @@ export default function ApexCurveEditor() {
   const snapshotCurve = useApexStore(s => s.snapshotCurve)
   const themeEpoch = useThemeEpoch()
 
+  const trackId = useApexStore(s => s.target?.trackId ?? null)
+  const nodeId = useApexStore(s => s.target?.nodeId ?? null)
+  const sub = useDynamicsVizSubscription(trackId, nodeId, VIZ_TYPE.APEX)
+  const subRef = useRef(sub)
+  subRef.current = sub
+  // Smoothed level state, mutated in the draw loop only (never React state).
+  const levelRef = useRef({ db: SILENT_DB, clock: -1, stampMs: 0 })
+
   const canvasRef = useRef(null)
   const [dims, setDims] = useState({ w: 0, h: 0 })
   // Local drag preview: null when idle, else the in-flight curve. Draw source of
@@ -108,6 +132,11 @@ export default function ApexCurveEditor() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
     const c = readColors(canvas)
+    // The transfer curve wears the selected band's identity color (LOW red-orange
+    // / MID lime / HIGH aqua); MASTER keeps the earned theme accent. Everything
+    // drawn in "accent" below — fill, crosshair, meters, curve, nodes, dot —
+    // follows the band.
+    c.accent = bandColorOr(band, c.accent)
     const plot = plotOf(cssW, cssH)
     const curve = curveRef.current
 
@@ -115,24 +144,37 @@ export default function ApexCurveEditor() {
     ctx.fillStyle = c.bg
     ctx.fillRect(0, 0, cssW, cssH)
 
-    // Grid — dB lines at -24, -12, 0, +12 on both axes.
-    const lines = [-24, -12, 0, 12]
+    // Grid — every tick gets its lines; labels are placed in PRIORITY order and
+    // a later one is dropped if it would collide, because the axis is
+    // level-proportional and the low ticks crowd together near silence. Without
+    // the priority pass the tail (-72) would win over -24 just by being last.
     ctx.lineWidth = 1
     ctx.font = '9px system-ui, sans-serif'
     ctx.textBaseline = 'middle'
-    for (const db of lines) {
+    for (const db of CURVE_DB_TICKS) {
       const y = outDbToY(db, plot)
-      ctx.strokeStyle = db === 0 ? c.gridZero : c.grid
-      ctx.beginPath(); ctx.moveTo(plot.x, y + 0.5); ctx.lineTo(plot.x + plot.w, y + 0.5); ctx.stroke()
-      ctx.fillStyle = c.text
-      ctx.textAlign = 'right'
-      ctx.fillText(db > 0 ? `+${db}` : `${db}`, plot.x - 4, y)
       const x = inDbToX(db, plot)
       ctx.strokeStyle = db === 0 ? c.gridZero : c.grid
+      ctx.beginPath(); ctx.moveTo(plot.x, y + 0.5); ctx.lineTo(plot.x + plot.w, y + 0.5); ctx.stroke()
       ctx.beginPath(); ctx.moveTo(x + 0.5, plot.y); ctx.lineTo(x + 0.5, plot.y + plot.h); ctx.stroke()
     }
+    ctx.textAlign = 'right'
+    const placed = []
+    const place = (y, text, alpha) => {
+      if (placed.some(p => Math.abs(p - y) < 10)) return
+      placed.push(y)
+      ctx.fillStyle = alpha ? withAlpha(c.text, alpha) : c.text
+      ctx.fillText(text, plot.x - 4, y)
+    }
+    // The box edge IS silence — the whole point of the level-proportional axis,
+    // so it is labelled first and never dropped.
+    place(plot.y + plot.h - 4, '-∞', 0.75)
+    for (const db of CURVE_LABEL_ORDER) {
+      place(outDbToY(db, plot), db > 0 ? `+${db}` : `${db}`)
+    }
 
-    // Unity reference diagonal (out == in).
+    // Unity reference diagonal (out == in — a straight diagonal because both
+    // axes share one mapping).
     ctx.strokeStyle = withAlpha(c.unity, 0.6)
     ctx.setLineDash([3, 3])
     ctx.beginPath()
@@ -141,17 +183,66 @@ export default function ApexCurveEditor() {
     ctx.stroke()
     ctx.setLineDash([])
 
-    // Transfer curve (sampled through the exact engine evaluator).
+    // Transfer curve (sampled through the exact engine evaluator). Sampling is
+    // uniform in SCREEN X, not in dB: on a level-proportional axis a dB-uniform
+    // sweep would put almost every sample in the right-hand third.
+    const steps = Math.max(24, Math.ceil(plot.w / CURVE_PX_STEP))
+    const curvePt = (i) => {
+      const px = plot.x + (i / steps) * plot.w
+      const inDb = xToInDb(px, plot)
+      const outDb = clamp(evalCurveAt(curve, inDb), CURVE_MIN_DB, CURVE_MAX_DB)
+      return { x: px, y: outDbToY(outDb, plot) }
+    }
+
+    // ── Live level (Maximus-style) ────────────────────────────────────────────
+    // Everything the signal draws sits UNDER the curve and the nodes.
+    const lvl = levelRef.current
+    const showLevel = lvl.db > SILENT_DB
+    if (showLevel) {
+      const inDb = clamp(lvl.db, CURVE_MIN_DB, CURVE_MAX_DB)
+      const outDb = clamp(evalCurveAt(curve, inDb), CURVE_MIN_DB, CURVE_MAX_DB)
+      const lx = inDbToX(inDb, plot)
+      const ly = outDbToY(outDb, plot)
+      const bottom = plot.y + plot.h
+
+      // Filled area under the curve, from silence up to the current input.
+      ctx.beginPath()
+      ctx.moveTo(plot.x, bottom)
+      for (let i = 0; i <= steps; i++) {
+        const p = curvePt(i)
+        if (p.x > lx) break
+        ctx.lineTo(p.x, p.y)
+      }
+      ctx.lineTo(lx, ly)
+      ctx.lineTo(lx, bottom)
+      ctx.closePath()
+      ctx.fillStyle = withAlpha(c.accent, 0.16)
+      ctx.fill()
+
+      // Crosshair: input on X, the output the curve maps it to on Y.
+      ctx.strokeStyle = withAlpha(c.accent, 0.4)
+      ctx.lineWidth = 1
+      ctx.setLineDash([2, 3])
+      ctx.beginPath()
+      ctx.moveTo(lx + 0.5, bottom); ctx.lineTo(lx + 0.5, ly)
+      ctx.moveTo(plot.x, ly + 0.5); ctx.lineTo(lx, ly + 0.5)
+      ctx.stroke()
+      ctx.setLineDash([])
+
+      // Edge meters — the bar length is the same level the crosshair marks, so
+      // the graph and the meter can never disagree.
+      ctx.fillStyle = withAlpha(c.accent, 0.55)
+      ctx.fillRect(plot.x, bottom - METER_W, lx - plot.x, METER_W)          // input, bottom
+      ctx.fillRect(plot.x, ly, METER_W, bottom - ly)                        // output, left
+    }
+
     ctx.strokeStyle = c.accent
     ctx.lineWidth = 2
     ctx.lineJoin = 'round'
     ctx.beginPath()
-    for (let i = 0; i <= CURVE_SAMPLES; i++) {
-      const inDb = CURVE_MIN_DB + (i / CURVE_SAMPLES) * (CURVE_MAX_DB - CURVE_MIN_DB)
-      const outDb = clamp(evalCurveAt(curve, inDb), CURVE_MIN_DB, CURVE_MAX_DB)
-      const x = inDbToX(inDb, plot)
-      const y = outDbToY(outDb, plot)
-      if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y)
+    for (let i = 0; i <= steps; i++) {
+      const p = curvePt(i)
+      if (i === 0) ctx.moveTo(p.x, p.y); else ctx.lineTo(p.x, p.y)
     }
     ctx.stroke()
 
@@ -186,12 +277,33 @@ export default function ApexCurveEditor() {
       ctx.stroke()
     }
 
-    // Band label (bottom-right, muted).
+    // The level dot rides ON the curve, so it is drawn last — over the nodes.
+    if (showLevel) {
+      const inDb = clamp(lvl.db, CURVE_MIN_DB, CURVE_MAX_DB)
+      const outDb = clamp(evalCurveAt(curve, inDb), CURVE_MIN_DB, CURVE_MAX_DB)
+      const lx = inDbToX(inDb, plot)
+      const ly = outDbToY(outDb, plot)
+      ctx.beginPath()
+      ctx.arc(lx, ly, 3.5, 0, Math.PI * 2)
+      ctx.fillStyle = c.nodeStroke
+      ctx.fill()
+      ctx.lineWidth = 2
+      ctx.strokeStyle = c.accent
+      ctx.stroke()
+    }
+
+    // Band label (bottom-right, muted) — replaced by the live reading while
+    // signal is flowing, so the number and the dot are always the same number.
     ctx.fillStyle = withAlpha(c.text, 0.9)
     ctx.textAlign = 'right'
     ctx.textBaseline = 'bottom'
     ctx.font = '9px system-ui, sans-serif'
-    ctx.fillText(`${BAND_NAMES[band]} · IN→OUT dB`, plot.x + plot.w, cssH - 4)
+    const label = showLevel
+      ? `${BAND_NAMES[band]} · ${lvl.db.toFixed(1)} → `
+        + `${clamp(evalCurveAt(curve, clamp(lvl.db, CURVE_MIN_DB, CURVE_MAX_DB)),
+                   CURVE_MIN_DB, CURVE_MAX_DB).toFixed(1)} dB`
+      : `${BAND_NAMES[band]} · IN→OUT dB`
+    ctx.fillText(label, plot.x + plot.w, cssH - 4)
   }, [band, plotOf])
 
   const drawRef = useRef(draw)
@@ -210,6 +322,46 @@ export default function ApexCurveEditor() {
     })
     ro.observe(canvas)
     return () => ro.disconnect()
+  }, [])
+
+  // ── Live level loop ────────────────────────────────────────────────────────
+  //
+  // One rAF loop owns the level ballistics AND the repaint. It reads only the
+  // newest bucket (the ring is drained by the subscription hook at ~30 Hz) and
+  // keeps everything in a ref, so audio never triggers a React render — the
+  // same contract ApexAnalysis follows. A bucket carries a sampleClock, so a
+  // stalled stream (transport stopped) is detectable and the level fades out
+  // instead of freezing a stale dot on the curve.
+  useEffect(() => {
+    let raf = 0
+    let cancelled = false
+    const tick = () => {
+      if (cancelled) return
+      const bucket = subRef.current?.ringRef?.current?.last?.() || null
+      const lvl = levelRef.current
+      const now = (typeof performance !== 'undefined' ? performance.now() : Date.now())
+      const b = useApexStore.getState().selectedBand
+
+      let target = SILENT_DB
+      if (bucket && Array.isArray(bucket.bandInDb)) {
+        if (bucket.sampleClock !== lvl.clock) {
+          lvl.clock = bucket.sampleClock
+          lvl.stampMs = now
+        }
+        const fresh = now - lvl.stampMs < LEVEL_STALE_MS
+        const v = Number(bucket.bandInDb[b])
+        if (fresh && Number.isFinite(v)) target = v
+      }
+
+      // Peak ballistics: instant rise, smooth fall.
+      lvl.db = target > lvl.db ? target : lvl.db + (target - lvl.db) * LEVEL_FALL
+      if (lvl.db < SILENT_DB) lvl.db = SILENT_DB
+
+      drawRef.current()
+      raf = requestAnimationFrame(tick)
+    }
+    raf = requestAnimationFrame(tick)
+    return () => { cancelled = true; cancelAnimationFrame(raf) }
   }, [])
 
   // ── Hit-testing (canvas CSS-pixel coordinates) ─────────────────────────────
@@ -299,12 +451,10 @@ export default function ApexCurveEditor() {
       const b = next.nodes[d.seg + 1]
       const dOut = b.out - a.out
       if (Math.abs(dOut) > 1.0) {
-        // Follow the cursor: invert the warp at the segment midpoint.
+        // Follow the cursor: the warp at the segment midpoint is exactly
+        // 0.5 + 0.375*tension, so this inverts in closed form.
         const targetOut = yToOutDb(my, plot)
-        let f = (targetOut - a.out) / dOut
-        f = clamp(f, 0.001, 0.999)
-        const p = Math.log(f) / Math.log(0.5)
-        next.tensions[d.seg] = clamp(-Math.log(p) / Math.log(4), -1, 1)
+        next.tensions[d.seg] = tensionForMidpoint((targetOut - a.out) / dOut)
       } else {
         // Near-flat segment: map vertical travel to a tension delta.
         const dy = d.startY - my

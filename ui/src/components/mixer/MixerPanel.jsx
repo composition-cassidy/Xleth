@@ -20,6 +20,7 @@ export default function MixerPanel() {
   const init = useMixerStore(s => s.init)
   const syncFromTimeline = useMixerStore(s => s.syncFromTimeline)
   const refreshRouting = useMixerStore(s => s.refreshRouting)
+  const refreshMasterVolume = useMixerStore(s => s.refreshMasterVolume)
   const focusedTrackId = useTimelineFocusStore(s => s.focusedTrackId)
   const previousFocusedTrackIdRef = useRef(null)
 
@@ -41,7 +42,13 @@ export default function MixerPanel() {
     timelineEvents.addEventListener('timeline-routing-changed', onTracksChanged)
     timelineEvents.addEventListener('timeline-clips-changed', onTracksChanged)
     timelineEvents.addEventListener('timeline-patterns-changed', onTracksChanged)
-    const offProjectLoaded = window.xleth?.onProjectLoaded?.(onTracksChanged)
+    const onProjectLoaded = async () => {
+      await onTracksChanged()
+      // Master volume is not part of the track list, so the tracks-changed
+      // path never picks it up — refresh it explicitly on project load.
+      await refreshMasterVolume()
+    }
+    const offProjectLoaded = window.xleth?.onProjectLoaded?.(onProjectLoaded)
     return () => {
       timelineEvents.removeEventListener('timeline-tracks-changed', onTracksChanged)
       timelineEvents.removeEventListener('timeline-track-layout-changed', onTracksChanged)
@@ -50,7 +57,7 @@ export default function MixerPanel() {
       timelineEvents.removeEventListener('timeline-patterns-changed', onTracksChanged)
       offProjectLoaded?.()
     }
-  }, [visible, init, syncFromTimeline, refreshRouting])
+  }, [visible, init, syncFromTimeline, refreshRouting, refreshMasterVolume])
 
   useEffect(() => {
     if (!visible) return

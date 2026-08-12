@@ -33,6 +33,17 @@ export const GRAPH_ENVELOPE_NODE_TYPE = 'envelope'
 // controlOut (both are control sources for parameter edges).
 export const GRAPH_ENVELOPE_OUTPUT_PORT = 'controlOut'
 
+// LFO Modulator node. A graph-owned control-source node, a sibling to Macro and
+// Envelope (NOT an effect node). It carries an inert breakpoint waveform + rate
+// definition (persisted/normalized renderer-side only) and a `controlOut` port that
+// links to exposed effect parameters through the same parameter-edge/GraphParameterTarget
+// path Macro and Envelope use. Runtime evaluation lives in the engine, mirroring the
+// Envelope's model — see engine/src/model/LfoParameterModulation.h.
+export const GRAPH_LFO_NODE_TYPE = 'lfo'
+// Same port name as Macro/Envelope's controlOut (all are control sources for
+// parameter edges).
+export const GRAPH_LFO_OUTPUT_PORT = 'controlOut'
+
 // FXG-SC.6B — FX Graph Sidechain Input node. A protected, non-audible, graph-owned
 // node that represents the selected source track's incoming silent sidechain key.
 // It is NOT an effect processor: it owns no effectInstanceId, hydrates no engine
@@ -90,6 +101,7 @@ const NODE_TYPES = new Set([
   'effect',
   GRAPH_MACRO_NODE_TYPE,
   GRAPH_ENVELOPE_NODE_TYPE,
+  GRAPH_LFO_NODE_TYPE,
   GRAPH_SIDECHAIN_INPUT_NODE_TYPE,
 ])
 const EDGE_TYPES = new Set(['audio', 'parameter', GRAPH_SIDECHAIN_EDGE_TYPE])
@@ -658,6 +670,165 @@ function validateEnvelopeNodeData(node, trackId, warnings) {
 }
 
 // ---------------------------------------------------------------------------
+// LFO Modulator node data model (renderer-only)
+//
+// An LFO node owns a free-running breakpoint waveform + rate definition. It is NOT
+// an effect node: it has no effectInstanceId, owns no plugin metadata, hydrates no
+// graph-owned processor, and never participates in audio topology sync. Parent
+// ownership is graphState.trackId, same single-source-of-truth rule as Envelope. The
+// node is a continuous parameter-modulation source whose links live on parameter
+// edges (GraphParameterTarget), not on the node. The data shape normalizes to a
+// stable, closed schema; malformed or missing fields repair to defaults.
+// ---------------------------------------------------------------------------
+
+// 33-point sine, {t,v}[], t = i/32 for i in 0..32 (so t=0 and t=1 are both present),
+// v = sin(2*PI*t) rounded to 4 decimals — the same breakpoint-resolution convention
+// as the Sampler's LfoWaveformCanvas.jsx yToBackend (COMMIT_SAMPLES=32 + a closing
+// point). This module does not import that file; it only matches its output shape.
+function buildDefaultLfoWaveform() {
+  const points = []
+  for (let i = 0; i <= 32; i++) {
+    const t = i / 32
+    const v = Math.sin(2 * Math.PI * t)
+    points.push({ t: Number(t.toFixed(4)), v: Number(v.toFixed(4)) })
+  }
+  return points
+}
+
+// Straight note divisions, slowest first. Values are the note DENOMINATOR, so the
+// cycle period is (4 / syncDivision) beats — a larger number is a faster LFO.
+// Fractional entries below 1 are the multi-bar rates (0.5 = 2/1 = two whole notes
+// = 8 beats, 0.25 = 4/1, 0.125 = 8/1), which is how the engine expresses cycles
+// slower than a single whole note without a second unit field.
+const LFO_SYNC_DIVISIONS = Object.freeze([0.125, 0.25, 0.5, 1, 2, 4, 8, 16, 32, 64])
+
+export const LFO_NODE_DEFAULTS = Object.freeze({
+  label: 'LFO',
+  waveform: Object.freeze(buildDefaultLfoWaveform()),
+  rateMode: 'free',
+  rateMs: 250,
+  syncDivision: 4,
+  phaseOffset: 0,
+})
+
+function normalizeLfoLabel(value) {
+  const label = typeof value === 'string' ? value.trim() : ''
+  return label.length > 0 ? label : LFO_NODE_DEFAULTS.label
+}
+
+// rateMs is the FREE-mode period in milliseconds (NOT Hz), clamped to a sane
+// positive range.
+function clampLfoRateMs(value, fallback) {
+  if (!Number.isFinite(value)) return fallback
+  return Math.min(60000, Math.max(1, value))
+}
+
+// syncDivision must be one of the supported straight note divisions; anything else
+// repairs to the default (no snap-to-nearest — a closed set, not a range).
+function clampLfoSyncDivision(value, fallback) {
+  return LFO_SYNC_DIVISIONS.includes(value) ? value : fallback
+}
+
+// phaseOffset clamps to [0,1) by wrapping (not falling back) any other finite value,
+// so e.g. 1.25 repairs to 0.25 and -0.25 repairs to 0.75.
+function clampLfoPhaseOffset(value, fallback) {
+  if (!Number.isFinite(value)) return fallback
+  const wrapped = value % 1
+  return wrapped < 0 ? wrapped + 1 : wrapped
+}
+
+function normalizeLfoRateMode(value) {
+  return value === 'sync' ? 'sync' : 'free'
+}
+
+function clampLfoWaveformTime(value) {
+  return Number.isFinite(value) ? Math.min(1, Math.max(0, value)) : null
+}
+
+function clampLfoWaveformValue(value) {
+  return Number.isFinite(value) ? Math.min(1, Math.max(-1, value)) : null
+}
+
+function normalizeLfoWaveformPoint(rawPoint) {
+  if (!isPlainObject(rawPoint)) return null
+  const t = clampLfoWaveformTime(rawPoint.t)
+  const v = clampLfoWaveformValue(rawPoint.v)
+  if (t === null || v === null) return null
+  return { t, v }
+}
+
+// Normalizes a raw waveform into the closed breakpoint schema: an ascending-sorted
+// array of {t,v} points with t clamped to [0,1] and v clamped to [-1,1], always
+// including t=0 and t=1 endpoints. Malformed points (non-object, non-finite t/v) are
+// dropped; a malformed or empty waveform (after dropping) repairs to the default
+// 33-point sine.
+function normalizeLfoWaveform(rawWaveform) {
+  if (!Array.isArray(rawWaveform)) return LFO_NODE_DEFAULTS.waveform
+
+  const points = rawWaveform
+    .map(normalizeLfoWaveformPoint)
+    .filter((point) => point !== null)
+    .sort((a, b) => a.t - b.t)
+
+  if (points.length === 0) return LFO_NODE_DEFAULTS.waveform
+
+  if (points[0].t !== 0) points.unshift({ t: 0, v: points[0].v })
+  if (points[points.length - 1].t !== 1) points.push({ t: 1, v: points[points.length - 1].v })
+
+  return points
+}
+
+// Normalizes raw LFO node data into the stable closed schema. Missing or malformed
+// input repairs to defaults; provided values are clamped/repaired. The returned
+// object is a closed shape: only the fields below survive, anything else on the
+// input is dropped, mirroring normalizeEnvelopeNodeData's convention.
+export function normalizeLfoNodeData(rawData) {
+  const raw = isPlainObject(rawData) ? rawData : {}
+
+  return {
+    label: normalizeLfoLabel(raw.label),
+    waveform: normalizeLfoWaveform(raw.waveform),
+    rateMode: normalizeLfoRateMode(raw.rateMode),
+    rateMs: clampLfoRateMs(raw.rateMs, LFO_NODE_DEFAULTS.rateMs),
+    syncDivision: clampLfoSyncDivision(raw.syncDivision, LFO_NODE_DEFAULTS.syncDivision),
+    phaseOffset: clampLfoPhaseOffset(raw.phaseOffset, LFO_NODE_DEFAULTS.phaseOffset),
+  }
+}
+
+// Builds a fully-defaulted LFO node data object, applying optional overrides through
+// the same normalization (so overrides are clamped/repaired too).
+export function createDefaultLfoNodeData(overrides = {}) {
+  return normalizeLfoNodeData(isPlainObject(overrides) ? overrides : {})
+}
+
+// True only for graph-owned LFO nodes.
+export function isLfoGraphNode(node) {
+  return isPlainObject(node) && node.type === GRAPH_LFO_NODE_TYPE
+}
+
+// Shallow-merges an update patch into current LFO data, then re-normalizes. The LFO
+// schema is flat, so a plain shallow spread is sufficient; normalization drops any
+// stale/unknown keys in the patch. Exported (unlike mergeEnvelopeNodeData) so the LFO
+// edit panel can build patches without re-deriving this merge.
+export function mergeLfoNodeData(currentData, patch) {
+  return { ...currentData, ...patch }
+}
+
+// Validates+normalizes a raw LFO node during graphState load, mirroring
+// validateEnvelopeNodeData's signature/behavior exactly (node, trackId, warnings) so
+// it plugs into the same normalizeNode type-dispatch. Exported (unlike
+// validateEnvelopeNodeData) so later stages can reuse it directly.
+export function validateLfoNodeData(node, trackId, warnings) {
+  const normalized = normalizeLfoNodeData(node.data)
+  if (!isPlainObject(node.data)) {
+    warnings.push(makeWarning('invalidLfoNodeData', trackId, 'invalid lfo node data; using defaults', { nodeId: node.id }))
+  } else if (JSON.stringify(normalized) !== JSON.stringify(node.data)) {
+    warnings.push(makeWarning('repairedLfoNodeData', trackId, 'lfo node data repaired', { nodeId: node.id }))
+  }
+  return normalized
+}
+
+// ---------------------------------------------------------------------------
 // FXG-SC.6B — Sidechain Input node data model (renderer-only)
 //
 // The node's persisted data is intentionally tiny: a display `label` and a selected
@@ -966,6 +1137,17 @@ function normalizeNode(node, trackId, warnings, fallbackPosition, rawGraphState)
     }
   }
 
+  if (node.type === GRAPH_LFO_NODE_TYPE) {
+    return {
+      ok: true,
+      node: withNodePosition({
+        id: node.id,
+        type: GRAPH_LFO_NODE_TYPE,
+        data: validateLfoNodeData(node, trackId, warnings),
+      }, position),
+    }
+  }
+
   if (node.type === GRAPH_SIDECHAIN_INPUT_NODE_TYPE) {
     return {
       ok: true,
@@ -1060,6 +1242,20 @@ function normalizeEdge(edge, nodeIds, nodeById, trackId, warnings, rawNodeById) 
       targetNodeId: edge.targetNodeId,
     }))
     return { ok: false, reason: 'invalid_envelope_audio_edge', drop: true }
+  }
+
+  // LFO nodes are control/modulation-source nodes; they never carry audio. Drop any
+  // audio edge touching an LFO node, mirroring macro/envelope nodes.
+  if (
+    edge.type === 'audio' &&
+    (sourceNodeType === GRAPH_LFO_NODE_TYPE || targetNodeType === GRAPH_LFO_NODE_TYPE)
+  ) {
+    warnings.push(makeWarning('invalidLfoAudioEdge', trackId, 'audio edge involving lfo node dropped', {
+      edgeId: edge.id,
+      sourceNodeId: edge.sourceNodeId,
+      targetNodeId: edge.targetNodeId,
+    }))
+    return { ok: false, reason: 'invalid_lfo_audio_edge', drop: true }
   }
 
   // FXG-SC.6B — sidechain edges are key links, NOT audio. A valid one goes from a
@@ -1433,6 +1629,8 @@ export const GRAPH_MUTATION_REJECTION = Object.freeze({
   INVALID_MACRO_VALUE: 'invalid_macro_value',
   // EVC.2 — envelope node data patch validation
   INVALID_ENVELOPE_PATCH: 'invalid_envelope_patch',
+  // LFO node data patch validation
+  INVALID_LFO_PATCH: 'invalid_lfo_patch',
   // FXG.4-e/f — Macro -> Parameter link validation
   INVALID_PARAMETER_TARGET: 'invalid_parameter_target',
   MISSING_EFFECT_INSTANCE: 'missing_effect_instance',
@@ -1515,6 +1713,13 @@ export function canConnectGraphNodes(graphState, sourceNodeId, targetNodeId, opt
     return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SOURCE_TYPE }
   }
   if (edgeType === 'audio' && targetNode.type === GRAPH_ENVELOPE_NODE_TYPE) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_TARGET_TYPE }
+  }
+  // LFO nodes carry no audio, same as macro/envelope nodes.
+  if (edgeType === 'audio' && sourceNode.type === GRAPH_LFO_NODE_TYPE) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SOURCE_TYPE }
+  }
+  if (edgeType === 'audio' && targetNode.type === GRAPH_LFO_NODE_TYPE) {
     return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_TARGET_TYPE }
   }
   // FXG-SC.6B — the Sidechain Input node carries no audible audio. It never
@@ -1728,6 +1933,83 @@ export function updateGraphEnvelopeNodeData(graphState, nodeId, patch) {
 
   const currentData = normalizeEnvelopeNodeData(node.data)
   const nextData = normalizeEnvelopeNodeData(mergeEnvelopeNodeData(currentData, patch))
+
+  return {
+    ok: true,
+    graphState: {
+      ...graphState,
+      nodes: graphState.nodes.map((candidate) => (
+        candidate.id === nodeId
+          ? { ...candidate, data: nextData }
+          : candidate
+      )),
+    },
+  }
+}
+
+// Adds an inert LFO control node to graphState. Literal mirror of
+// addGraphEnvelopeNode: a stable generated id (idFactory pattern) and a finite
+// position, defaulting to the trackOutput column when none is supplied. It creates
+// NO edges and is not protected (removable by removeGraphNode). options:
+// { idFactory?, position?, data? } where data is an optional partial override of the
+// LFO data (clamped/repaired).
+export function addGraphLfoNode(graphState, options = {}) {
+  const editCheck = validateGraphStateForEditing(graphState)
+  if (!editCheck.ok) return editCheck
+
+  const opts = isPlainObject(options) ? options : {}
+  const data = createDefaultLfoNodeData(opts.data)
+
+  let position = opts.position
+  if (
+    !isPlainObject(position) ||
+    !Number.isFinite(position.x) ||
+    !Number.isFinite(position.y)
+  ) {
+    const outputIndex = graphState.nodes.findIndex((n) => n.type === 'trackOutput')
+    const insertIndex = outputIndex >= 0 ? outputIndex : graphState.nodes.length
+    position = { x: insertIndex * FALLBACK_NODE_SPACING_X, y: FALLBACK_NODE_Y }
+  }
+
+  const newNode = {
+    id: generateMutationId(opts.idFactory),
+    type: GRAPH_LFO_NODE_TYPE,
+    position: { x: position.x, y: position.y },
+    data,
+  }
+
+  return {
+    ok: true,
+    graphState: {
+      ...graphState,
+      nodes: [...graphState.nodes, newNode],
+    },
+  }
+}
+
+// Updates an LFO node's data with a partial patch (immutably). Literal mirror of
+// updateGraphEnvelopeNodeData: only LFO nodes are eligible — a missing node returns
+// MISSING_NODE and a non-LFO node returns UNKNOWN_NODE_TYPE. The patch is merged over
+// the current (normalized) data and re-normalized, so unrelated LFO fields and all
+// other graphState fields/nodes are preserved.
+export function updateGraphLfoNodeData(graphState, nodeId, patch) {
+  const editCheck = validateGraphStateForEditing(graphState)
+  if (!editCheck.ok) return editCheck
+  if (typeof nodeId !== 'string' || nodeId.length === 0) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_NODE }
+  }
+  if (!isPlainObject(patch)) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_LFO_PATCH }
+  }
+
+  const node = graphState.nodes.find((candidate) => candidate.id === nodeId)
+  if (!node) return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_NODE }
+  if (node.type !== GRAPH_LFO_NODE_TYPE) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.UNKNOWN_NODE_TYPE }
+  }
+
+  const currentData = normalizeLfoNodeData(node.data)
+  const nextData = normalizeLfoNodeData(mergeLfoNodeData(currentData, patch))
 
   return {
     ok: true,
@@ -2269,6 +2551,213 @@ export function collectEnvelopeParameterWrites(graphState, envelopeNodeId, envel
   for (const edge of graphState.edges) {
     if (edge.type !== 'parameter') continue
     if (edge.sourceNodeId !== envelopeNodeId) continue
+
+    const evaluation = evaluateParameterMapping(edge.mapping, value)
+    if (!evaluation.enabled) {
+      skipped.push({ edgeId: edge.id, reason: 'disabled' })
+      continue
+    }
+
+    const target = normalizeGraphParameterTarget(edge.targetParameter)
+    if (!target) {
+      skipped.push({ edgeId: edge.id, reason: 'invalid_target' })
+      continue
+    }
+
+    const resolution = resolveGraphParameterTarget(graphState, target)
+    if (resolution.status !== 'ok') {
+      skipped.push({ edgeId: edge.id, reason: resolution.status })
+      continue
+    }
+    if (resolution.exposedPort?.readOnly === true || resolution.exposedPort?.automatable === false) {
+      skipped.push({ edgeId: edge.id, reason: 'read_only' })
+      continue
+    }
+
+    writes.push({
+      edgeId: edge.id,
+      effectInstanceId: target.effectInstanceId,
+      parameterId: target.parameterId,
+      value: evaluation.value,
+    })
+  }
+
+  return { writes, skipped }
+}
+
+// ---------------------------------------------------------------------------
+// LFO -> Parameter links
+//
+// An LFO node is a control source like Macro/Envelope: its `controlOut` port links to
+// an exposed parameter input port on an effect node through a `parameter` edge. Like
+// an Envelope edge, an LFO edge's mapping is the base + signed-depth MODULATION
+// mapping (kind: 'modulation') — the parameter keeps its own authored value (`base`)
+// and the LFO offsets it by `depth * lfo`. These helpers deliberately mirror
+// canConnectEnvelopeToParameter / connectEnvelopeToParameter rather than generalizing
+// them, so the established Macro/Envelope paths are never disturbed. Disconnect
+// reuses disconnectParameterEdge (source-agnostic).
+//
+// RUNTIME LIVES IN THE ENGINE. Like the Envelope, the LFO is evaluated on the audio
+// thread against the authoritative transport position — see
+// engine/src/model/LfoParameterModulation.h and MixEngine::refreshLfoDefinitions. The
+// renderer's only runtime role is to persist the definition in graphState, which the
+// engine already reads. There is deliberately no renderer drive path for the LFO
+// either: it is engine-evaluated only, with no renderer-side wall-clock estimate of
+// the transport, the same reasoning as the Envelope.
+// ---------------------------------------------------------------------------
+
+export function canConnectLfoToParameter(graphState, connectionDraft) {
+  const editCheck = validateGraphStateForEditing(graphState)
+  if (!editCheck.ok) return editCheck
+
+  if (!isPlainObject(connectionDraft)) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_CONNECTION_DRAFT }
+  }
+
+  const { sourceNodeId, targetNodeId } = connectionDraft
+  const parameterId = typeof connectionDraft.parameterId === 'string'
+    ? connectionDraft.parameterId.trim()
+    : ''
+
+  const sourceNode = graphState.nodes.find((n) => n.id === sourceNodeId)
+  const targetNode = graphState.nodes.find((n) => n.id === targetNodeId)
+
+  if (!sourceNode) return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_SOURCE_NODE }
+  if (!targetNode) return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_TARGET_NODE }
+  if (sourceNodeId === targetNodeId) return { ok: false, reason: GRAPH_MUTATION_REJECTION.SELF_CONNECTION }
+
+  // Source must be an LFO control node. Effect/macro/envelope nodes cannot source an
+  // LFO parameter edge.
+  if (sourceNode.type !== GRAPH_LFO_NODE_TYPE) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SOURCE_TYPE }
+  }
+  // Target must be an effect node. Protected Track I/O, macro, envelope, and LFO
+  // nodes are invalid targets (only effects expose writable parameters).
+  if (isProtectedGraphNodeType(targetNode.type)) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.PROTECTED_NODE }
+  }
+  if (targetNode.type !== 'effect') {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_TARGET_TYPE }
+  }
+
+  if (!parameterId) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_PARAMETER_TARGET }
+  }
+
+  const effectInstanceId = readEffectInstanceId(targetNode)
+  if (!effectInstanceId) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_EFFECT_INSTANCE }
+  }
+
+  const exposedPorts = normalizeExposedParameterPorts(targetNode.data?.exposedParameterPorts)
+  const exposedPort = exposedPorts.find((port) => port.parameterId === parameterId)
+  if (!exposedPort) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.PARAMETER_NOT_EXPOSED }
+  }
+  // Read-only / non-automatable parameters cannot be driven.
+  if (exposedPort.readOnly === true || exposedPort.automatable === false) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.PARAMETER_READ_ONLY }
+  }
+
+  const target = createGraphParameterTargetFromExposedPort({
+    graphNode: targetNode,
+    effectInstanceId,
+    exposedPort,
+  })
+  if (!target) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_PARAMETER_TARGET }
+  }
+
+  const targetPort = buildGraphParameterPortId(targetNodeId, parameterId)
+  if (!targetPort) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_PARAMETER_TARGET }
+  }
+
+  // One driver per parameter port — same rule as the Macro/Envelope path, including a
+  // Macro or Envelope already driving this port (see findExistingParameterPortDriver).
+  const existingDriver = findExistingParameterPortDriver(graphState, targetNodeId, targetPort)
+  if (existingDriver) {
+    return {
+      ok: false,
+      reason: existingDriver.sourceNodeId === sourceNodeId
+        ? GRAPH_MUTATION_REJECTION.DUPLICATE_EDGE
+        : GRAPH_MUTATION_REJECTION.PARAMETER_ALREADY_DRIVEN,
+      existingEdgeId: existingDriver.id,
+    }
+  }
+
+  return { ok: true, target, targetPort, exposedPort }
+}
+
+export function connectLfoToParameter(graphState, connectionDraft, options = {}) {
+  const check = canConnectLfoToParameter(graphState, connectionDraft)
+  if (!check.ok) return check
+
+  const newEdge = {
+    id: generateMutationId(options.idFactory),
+    sourceNodeId: connectionDraft.sourceNodeId,
+    sourcePort: GRAPH_LFO_OUTPUT_PORT,
+    targetNodeId: connectionDraft.targetNodeId,
+    targetPort: check.targetPort,
+    type: 'parameter',
+    targetParameter: check.target,
+    // An LFO edge is a MODULATION mapping: value = clamp(base + depth * lfo). `kind`
+    // is forced here (never taken from the draft) so an LFO edge can only ever be
+    // created in the modulation shape. The caller supplies `base` = the parameter's
+    // live authored value, so linking an LFO leaves the parameter exactly where it was.
+    mapping: normalizeParameterMapping({
+      ...(isPlainObject(connectionDraft.mapping) ? connectionDraft.mapping : {}),
+      kind: GRAPH_PARAMETER_MAPPING_MODULATION,
+    }),
+  }
+
+  return {
+    ok: true,
+    edge: newEdge,
+    graphState: {
+      ...graphState,
+      edges: [...graphState.edges, newEdge],
+    },
+  }
+}
+
+// Pure resolver: given an LFO node id and a bipolar LFO output value (-1..1), returns
+// the parameter writes its enabled outgoing parameter edges produce, mapped through
+// each edge's mapping. Mirrors collectEnvelopeParameterWrites's role as a pure,
+// non-runtime parity reference — the engine evaluates and applies LFO modulation (see
+// engine/src/model/LfoParameterModulation.h); this must never become a runtime drive
+// path.
+//
+// Unlike the Envelope (whose native 0..1 output already lines up with
+// evaluateModulationMapping's expected unipolar input), the LFO's native output is
+// BIPOLAR [-1,1] and is rescaled to unipolar (v+1)/2 before mapping, matching the
+// engine-side evaluator's convention. Note this function does NOT implement the
+// "go inert when stopped/muted" bypass — that is real, non-mirrorable engine logic
+// (see the plan's design decision on why unipolar 0.5 != base in general); it is
+// purely a mapping-shape parity reference for a caller-supplied LFO value.
+export function collectLfoParameterWrites(graphState, lfoNodeId, lfoValue) {
+  const writes = []
+  const skipped = []
+
+  if (
+    !isPlainObject(graphState) ||
+    !Array.isArray(graphState.nodes) ||
+    !Array.isArray(graphState.edges)
+  ) {
+    return { writes, skipped }
+  }
+
+  const lfoNode = graphState.nodes.find((node) => node.id === lfoNodeId)
+  if (!lfoNode || lfoNode.type !== GRAPH_LFO_NODE_TYPE) {
+    return { writes, skipped }
+  }
+
+  const bipolar = Number.isFinite(lfoValue) ? Math.min(1, Math.max(-1, lfoValue)) : 0
+  const value = (bipolar + 1) / 2
+
+  for (const edge of graphState.edges) {
+    if (edge.type !== 'parameter') continue
+    if (edge.sourceNodeId !== lfoNodeId) continue
 
     const evaluation = evaluateParameterMapping(edge.mapping, value)
     if (!evaluation.enabled) {

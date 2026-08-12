@@ -1,9 +1,9 @@
 const RUNTIME_NODE_TYPES = new Set(['trackInput', 'trackOutput', 'effect', 'unknown'])
-// Nodes excluded from the runtime audio topology payload entirely: macro/envelope are
-// control sources (EVC.2) and sidechainInput is a silent key source (FXG-SC.6B). None
-// of them carry audible audio, so none is sent as a runtime audio node. Sidechain
+// Nodes excluded from the runtime audio topology payload entirely: macro/envelope/lfo
+// are control sources (EVC.2) and sidechainInput is a silent key source (FXG-SC.6B).
+// None of them carry audible audio, so none is sent as a runtime audio node. Sidechain
 // edges (edge.type === 'sidechain') are likewise dropped by the audio-edge filter below.
-const NON_AUDIO_NODE_TYPES = new Set(['macro', 'envelope', 'sidechainInput'])
+const NON_AUDIO_NODE_TYPES = new Set(['macro', 'envelope', 'lfo', 'sidechainInput'])
 
 function readString(value) {
   return typeof value === 'string' && value.length > 0 ? value : ''

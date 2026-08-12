@@ -49,6 +49,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 #include <nlohmann/json.hpp>
@@ -367,6 +368,17 @@ struct EnvelopeModulationSnapshot {
     std::unique_ptr<EnvelopeMailbox[]>  mailboxes;
     int                                 mailboxCount = 0;
     std::vector<EnvelopeMailboxTarget>  mailboxTargets;
+
+    // Per-track note/clip gate timelines for the Xleth Filter's IN-EFFECT
+    // per-slot Envelope modulator (NOT the FX-graph envelopes above). Populated
+    // by MixEngine after buildEnvelopeModulationSnapshot — only MixEngine knows
+    // which live effect chains hold a filter with an active envelope — so this
+    // field rides the envelope snapshot's existing epoch-RCU lifetime rather than
+    // adding a second published structure. Keyed by trackId. The audio thread
+    // resolves a ResolvedGate from these each block and pushes it into the
+    // track's filter effects (XlethEffectBase::applyModulationGate). Independent
+    // of `empty()` above, which only governs the graph-envelope mailbox path.
+    std::unordered_map<int, GateTimeline> filterTrackGates;
 
     bool empty() const { return envelopes.empty() || edges.empty(); }
 };

@@ -43,6 +43,11 @@ export interface GraphParameterResult {
   pluginFormat?: string;
   pluginId?: string;
   parameters?: GraphEffectParameterDescriptor[];
+  // Present for the stock EQ: the number of bands actually in use on this
+  // instance (the engine's param layout always registers every band slot
+  // the plugin supports, so the parameter list alone can't tell active
+  // bands apart from ones the user never added).
+  bandCount?: number;
 }
 
 export interface EffectNodeOption {
@@ -56,6 +61,7 @@ export interface GraphParameterExposureContext {
   effectKind?: string | null;
   pluginFormat?: string | null;
   resultPluginId?: string | null;
+  bandCount?: number | null;
 }
 
 export interface GraphExposeParameterMenuItem {
@@ -98,7 +104,30 @@ const EQ_EXPOSURE_CONTROLS = [
   { suffix: 'type', label: 'Type' },
   { suffix: 'enabled', label: 'Enabled' },
 ] as const;
-const EQ_EXPOSURE_BANDS = [0, 1, 2] as const;
+const EQ_BAND_PARAM_ID = /^b(\d+)_/;
+
+// The engine's EQ param layout always registers every band slot the plugin
+// supports (so parameter ids alone can't tell an active band from one the
+// user never added). When the engine reports the instance's real bandCount,
+// clamp to it; otherwise fall back to whatever `bN_*` ids are present so
+// older engine responses without the field still degrade gracefully.
+function collectEqBandIndices(
+  parameters: GraphEffectParameterDescriptor[],
+  activeBandCount?: number | null,
+): number[] {
+  const indices = new Set<number>();
+  for (const parameter of parameters) {
+    const match = typeof parameter.parameterId === 'string'
+      ? parameter.parameterId.match(EQ_BAND_PARAM_ID)
+      : null;
+    if (match) indices.add(Number(match[1]));
+  }
+  const sorted = Array.from(indices).sort((a, b) => a - b);
+  if (typeof activeBandCount !== 'number' || !Number.isFinite(activeBandCount)) {
+    return sorted;
+  }
+  return sorted.filter((bandIndex) => bandIndex < activeBandCount);
+}
 
 function normalizeIdentity(value: unknown) {
   return typeof value === 'string' && value.trim().length > 0
@@ -150,7 +179,7 @@ export function buildExposeParameterMenuGroups(
         .map((parameter) => [parameter.parameterId, parameter]),
     );
 
-    return EQ_EXPOSURE_BANDS
+    return collectEqBandIndices(source, context.bandCount)
       .map((bandIndex) => {
         const groupLabel = `Band ${bandIndex}`;
         const menuItems = EQ_EXPOSURE_CONTROLS
