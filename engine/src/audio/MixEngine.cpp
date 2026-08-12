@@ -1871,7 +1871,13 @@ std::unique_ptr<Sampler> MixEngine::buildSamplerForRegion(const SampleRegion& re
                        sl.fadeInMs, sl.fadeOutMs);
         s->setSlotLoop(i, sl.loopEnabled, sl.loopStart, sl.loopEnd,
                        sl.crossfadeSamples, sl.loopMode, sl.exitLoopOnRelease);
-        s->setSlotMangle(i, sl.mangleMode, sl.mangleAmount, sl.mangleMix);
+        // MANGLE chain: convert the model instances to the engine's config and
+        // publish the whole chain by one atomic swap.
+        std::vector<xleth::mangle::InstanceConfig> mangleChain;
+        mangleChain.reserve(sl.mangleChain.size());
+        for (const auto& mi : sl.mangleChain)
+            mangleChain.push_back({ mi.mode, mi.amount, mi.mix, mi.bypass });
+        s->setSlotMangleChain(i, mangleChain);
 
         // Slot 0 resolves via the region map (and so follows audio swaps);
         // slots 1..7 use their own registered SampleBank id. A slot whose

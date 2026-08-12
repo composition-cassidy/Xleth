@@ -33,11 +33,18 @@
 //       version: they still load, save and sound exactly as in v2.
 // Loading an older schema migrates in memory and re-saves at the current version.
 // 4 — sampler modulation unified. The hardcoded pitch envelope and the three
-//     drawable VOL/PAN/PITCH LFOs are gone; their state migrates into the
-//     general ENV/LFO source bank and route list on load. See
-//     model/SamplerLegacyMigration.h for the mapping and the one place it is
-//     deliberately not bit-exact.
-inline constexpr int XLETH_PROJECT_SCHEMA_VERSION = 4;
+//     drawable VOL/PAN/PITCH LFOs migrate into the general ENV/LFO source bank
+//     and route list on load, and the amplitude DAHDSR is mirrored into ENV 1
+//     (it stays the VCA and the voice-lifecycle gate, so it is NOT a route).
+//     See model/SamplerLegacyMigration.h for the mapping and the one place it
+//     is deliberately not bit-exact.
+//     NOTE: the legacy fields themselves are still present and still drive the
+//     engine — removing them is a follow-up. Until then a v4+ project carries
+//     BOTH, and the migration's numRoutes == 0 gate is what stops it re-running
+//     over routes the user has since edited.
+// v5: per-slot MANGLE chain. A single MANGLE (schema ≤4 mangleMode/Amount/Mix)
+//     migrates to a one-instance chain with identical sound on load.
+inline constexpr int XLETH_PROJECT_SCHEMA_VERSION = 5;
 
 class ProjectManager {
 public:

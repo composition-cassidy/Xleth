@@ -84,12 +84,23 @@ public:
                      int loopMode = 0, bool exitLoopOnRelease = false);
     void setSlotRootNote(int slotIndex, int rootNote);
 
-    // ── MANGLE (per-note, per-slot warp FX) ──────────────────────────────────
-    // mode is an xleth::mangle::Mode id; amount and mix are 0..1. The effect
-    // instantiates PER STREAM — one per note per slot — so a chord is shaped
-    // note by note before the voices sum. mode = Off or mix = 0 is a genuine
-    // bypass: the render loop never enters the MANGLE path at all.
-    // Out-of-range mode ids fall back to Off rather than indexing off the enum.
+    // ── MANGLE (per-note, per-slot warp FX chain) ────────────────────────────
+    // A slot holds an ORDERED CHAIN of up to xleth::mangle::kMaxInstances warp
+    // units; the output of instance N feeds instance N+1, so order is audible.
+    // Every instance instantiates PER STREAM — one per note per slot — so a
+    // chord is shaped note by note before the voices sum. A bypassed or Off
+    // instance costs the render loop nothing.
+    //
+    // setSlotMangleChain publishes the whole chain by one atomic swap (realtime
+    // safe; never mutates config on the audio thread). Instances past the cap
+    // are dropped; out-of-range mode ids fall back to Off. An empty chain (or
+    // all-Off) publishes null and is a genuine bypass.
+    void setSlotMangleChain(int slotIndex,
+                            const std::vector<xleth::mangle::InstanceConfig>& chain);
+
+    // Convenience: set a slot's chain to a SINGLE instance. Kept so existing
+    // single-MANGLE call sites and the test suite read unchanged — and it is
+    // exactly the legacy-migration shape (one instance == the old single MANGLE).
     void setSlotMangle(int slotIndex, int mode, float amount, float mix);
 
     // ── PREP bake publication (main thread) ──────────────────────────────────
@@ -249,6 +260,9 @@ public:
     int    debugVoiceStreamCount(int voiceIdx) const;
     // Slot index driving stream `streamIdx` of voice `voiceIdx`, or -1.
     int    debugVoiceStreamSlot(int voiceIdx, int streamIdx) const;
+    // Instances in a slot's published MANGLE chain (0 when none/null). Used by
+    // the chain tests to assert the 4-instance cap and add/remove counts.
+    int    debugSlotMangleCount(int slotIndex) const;
 
     // ── Modulation introspection (test-only) ─────────────────────────────────
     // Raw source output (natural range: ±1 for LFOs, 0..1 otherwise) as of the
@@ -329,12 +343,34 @@ private:
         int     loopMode          = static_cast<int>(SampleLoopMode::Forward);
         bool    exitLoopOnRelease = false;
 
-        // MANGLE. Mode Off (0) is the default, so a slot that has never been
-        // mangled costs exactly nothing. Mix defaults to fully wet so that
-        // picking a mode is immediately audible.
-        int   mangleMode   = 0;
-        float mangleAmount = 0.0f;
-        float mangleMix    = 1.0f;
+        // MANGLE chain. A slot holds an ORDERED CHAIN of up to kMaxInstances
+        // MANGLE units, published to the audio thread by the SAME atomic-pointer
+        // swap Slot::data uses above: the main thread builds an immutable
+        // ChainConfig and stores it, the audio thread loads it once per stream
+        // per block. A null pointer (the default) is a genuine bypass — a slot
+        // that has never been mangled costs exactly nothing. Add / remove /
+        // reorder is one atomic store; nothing mutates the config on the audio
+        // thread.
+        using ChainPtr = std::shared_ptr<const xleth::mangle::ChainConfig>;
+        std::atomic<ChainPtr> mangleChain{};
+
+        // Retire the last kMangleRetained published chains on the MAIN thread so
+        // a swap can never drop the last reference to a config an in-flight
+        // render is reading — mirrors the `retired` ring for `data`. A tiny POD
+        // free is not a real-time hazard, but this keeps the whole chain
+        // lifecycle off the audio thread as the contract requires.
+        static constexpr int kMangleRetained = 4;
+        std::array<ChainPtr, kMangleRetained> mangleRetired{};   // main thread only
+        int                                   mangleRetiredNext = 0;
+
+        // Publish `next` and retire whatever was there. Main thread only.
+        void publishMangle(ChainPtr next) {
+            auto prev = mangleChain.exchange(std::move(next), std::memory_order_acq_rel);
+            if (prev) {
+                mangleRetired[static_cast<size_t>(mangleRetiredNext)] = std::move(prev);
+                mangleRetiredNext = (mangleRetiredNext + 1) % kMangleRetained;
+            }
+        }
 
         bool hasAudio() const {
             const auto d = data.load(std::memory_order_acquire);
@@ -367,9 +403,9 @@ private:
             crossfadeSamples  = 0;
             loopMode          = static_cast<int>(SampleLoopMode::Forward);
             exitLoopOnRelease = false;
-            mangleMode        = 0;
-            mangleAmount      = 0.0f;
-            mangleMix         = 1.0f;
+            publishMangle(nullptr);
+            for (auto& r : mangleRetired) r.reset();
+            mangleRetiredNext = 0;
         }
     };
 
@@ -466,10 +502,11 @@ private:
             // both the wrap and the loop crossfade for the rest of the note.
             bool   loopLeft     = false;
 
-            // MANGLE state — preallocated with the stream, so switching modes
-            // mid-note is a plain integer write with no allocation. Reset at
-            // every true (re)spawn in armStreams().
-            xleth::mangle::State mangle{};
+            // MANGLE chain state — one State per instance, preallocated with the
+            // stream, so switching modes or adding an instance mid-note is a
+            // plain config swap with no allocation. All reset at every true
+            // (re)spawn in armStreams().
+            std::array<xleth::mangle::State, xleth::mangle::kMaxInstances> mangle{};
         };
         std::array<Stream, MAX_SAMPLE_SLOTS> streams{};
         int numStreams = 0;                // count of entries in use (active or finished)

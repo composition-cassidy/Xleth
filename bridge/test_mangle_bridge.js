@@ -1,7 +1,7 @@
 'use strict';
 //
-// bridge/test_mangle_bridge.js — end-to-end contract test for MANGLE, the
-// per-note per-slot warp FX.
+// bridge/test_mangle_bridge.js — end-to-end contract test for the MANGLE chain,
+// the ordered per-note per-slot warp-FX stack.
 //
 // Covers the failure mode this four-layer bridge is prone to: a field that
 // exists on the C++ struct but never actually crosses one of the four layers,
@@ -10,15 +10,18 @@
 // the engine — or off disk — rather than trusting a setter's return value.
 //
 //   1. the addon exports the entry point the panel calls,
-//   2. a fresh slot reports the documented defaults (Off / 0 / fully wet), so
-//      every pre-MANGLE project is unchanged,
-//   3. mode / amount / mix round-trip per slot via timeline_getRegions(),
-//   4. MANGLE is genuinely PER SLOT — writing slot 1 leaves slot 0 alone,
-//   5. out-of-range writes are rejected (mode -> Off) or clamped (amount/mix),
-//   6. undo/redo restores the exact prior triple,
-//   7. save -> load round-trips it, and project.json really carries the keys,
-//   8. a project file with slots but NO mangle keys loads as Off — the
-//      backward-compatibility guarantee for existing projects.
+//   2. a fresh slot reports an EMPTY chain, so every pre-MANGLE project is
+//      unchanged,
+//   3. a whole ordered chain (mode/amount/mix/bypass per instance) round-trips
+//      per slot via timeline_getRegions(), ORDER preserved,
+//   4. the chain is genuinely PER SLOT — writing slot 1 leaves slot 0 alone,
+//   5. out-of-range writes are rejected (mode -> Off), clamped (amount/mix) and
+//      capped (a >4-instance chain is truncated to 4),
+//   6. undo/redo restores the exact prior chain,
+//   7. save -> load round-trips it, and project.json really carries mangleChain,
+//   8. a LEGACY project file (single mangleMode/amount/mix, no mangleChain)
+//      migrates on load to a one-instance chain, and a slot with no MANGLE keys
+//      at all loads as an empty chain — the backward-compatibility guarantee.
 //
 // Run after rebuilding the native addon:
 //   cd bridge && node test_mangle_bridge.js
@@ -73,19 +76,42 @@ const MODE_TUBE       = 18;
 const MODE_RM         = 35;
 const MODE_COUNT      = 36;
 
+const MANGLE_MAX = 4;   // mirrors xleth::mangle::kMaxInstances
+
 function slotsOf(addon, regionId) {
   const r = addon.timeline_getRegions().find((x) => x.id === regionId);
   return (r && Array.isArray(r.slots)) ? r.slots : [];
 }
 
-function mangleOf(addon, regionId, slotIndex) {
+// The slot's MANGLE chain as an array of { mode, amount, mix, bypass }.
+function chainOf(addon, regionId, slotIndex) {
   const s = slotsOf(addon, regionId)[slotIndex];
   if (!s) return null;
-  return { mode: s.mangleMode, amount: s.mangleAmount, mix: s.mangleMix };
+  return Array.isArray(s.mangleChain) ? s.mangleChain : null;
 }
 
-function setMangle(addon, regionId, slotIndex, patch) {
+function ci(mode, amount = 0, mix = 1, bypass = false) {
+  return { mode, amount, mix, bypass };
+}
+
+function setChain(addon, regionId, slotIndex, chain) {
+  addon.timeline_updateSamplerSettings(regionId, { slotIndex, mangleChain: chain });
+}
+
+function setSlotKey(addon, regionId, slotIndex, patch) {
   addon.timeline_updateSamplerSettings(regionId, Object.assign({ slotIndex }, patch));
+}
+
+// Deep-equal a read-back chain against an expected one (order-sensitive).
+function chainEquals(got, expected) {
+  if (!Array.isArray(got) || got.length !== expected.length) return false;
+  for (let i = 0; i < expected.length; i++) {
+    const a = got[i], b = expected[i];
+    if (!a || a.mode !== b.mode || !!a.bypass !== !!b.bypass) return false;
+    if (Math.abs(a.amount - b.amount) > 1e-5) return false;
+    if (Math.abs(a.mix - b.mix) > 1e-5) return false;
+  }
+  return true;
 }
 
 function main() {
@@ -113,117 +139,100 @@ function main() {
 
   // ── 2. Defaults ───────────────────────────────────────────────────────────
   console.log('\n[ defaults on a fresh slot ]');
-  const def = mangleOf(addon, regionId, 0);
-  assert(def !== null, 'the region exposes a slots array with slot 0');
-  assert(def && def.mode === MODE_OFF,
-    `a fresh slot defaults to Off (got ${def && def.mode})`);
-  assert(def && def.amount === 0,
-    `a fresh slot defaults to amount 0 (got ${def && def.amount})`);
-  assert(def && def.mix === 1,
-    `a fresh slot defaults to fully wet mix 1 (got ${def && def.mix})`);
+  const def = chainOf(addon, regionId, 0);
+  assert(def !== null, 'the region exposes a slots array with slot 0 carrying a mangleChain');
+  assert(Array.isArray(def) && def.length === 0,
+    `a fresh slot defaults to an EMPTY chain (got ${JSON.stringify(def)})`);
 
-  // ── 3. Round-trip ─────────────────────────────────────────────────────────
+  // ── 3. Whole-chain round-trip, order preserved ────────────────────────────
   console.log('\n[ set -> read-back through the engine ]');
-  for (const mode of [MODE_SYNC, MODE_QUANTIZE, MODE_LPF, MODE_TUBE, MODE_RM]) {
-    setMangle(addon, regionId, 0, { mangleMode: mode });
-    const got = mangleOf(addon, regionId, 0);
-    assert(got && got.mode === mode,
-      `mangleMode ${mode} round-trips (got ${got && got.mode})`);
+  const chainA = [
+    ci(MODE_TUBE, 0.8, 1.0, false),
+    ci(MODE_LPF,  0.3, 0.9, false),
+    ci(MODE_RM,   0.5, 0.7, true),
+  ];
+  setChain(addon, regionId, 0, chainA);
+  {
+    const got = chainOf(addon, regionId, 0);
+    assert(chainEquals(got, chainA),
+      `a 3-instance chain round-trips in order (got ${JSON.stringify(got)})`);
+    assert(got[2].bypass === true, 'the bypass flag round-trips per instance');
   }
 
-  setMangle(addon, regionId, 0, { mangleAmount: 0.75, mangleMix: 0.4 });
-  {
-    const got = mangleOf(addon, regionId, 0);
-    near(got.amount, 0.75, 1e-6, 'mangleAmount 0.75 round-trips');
-    near(got.mix,    0.40, 1e-6, 'mangleMix 0.4 round-trips');
-    assert(got.mode === MODE_RM,
-      `a partial patch leaves the other MANGLE keys alone (mode still ${MODE_RM}, got ${got.mode})`);
-  }
+  // Reorder is just a different array — the engine keeps whatever order it is given.
+  const chainReordered = [chainA[1], chainA[0], chainA[2]];
+  setChain(addon, regionId, 0, chainReordered);
+  assert(chainEquals(chainOf(addon, regionId, 0), chainReordered),
+    'reordering the chain round-trips with the new order');
 
-  // A partial patch must not disturb unrelated slot state either.
-  setMangle(addon, regionId, 0, { rootNote: 55 });
+  // A partial patch to an unrelated key must not disturb the chain.
+  setSlotKey(addon, regionId, 0, { rootNote: 55 });
   {
-    const got = mangleOf(addon, regionId, 0);
-    assert(got.mode === MODE_RM && Math.abs(got.amount - 0.75) < 1e-6,
-      'patching an unrelated slot key leaves MANGLE untouched');
-    assert(slotsOf(addon, regionId)[0].rootNote === 55,
-      'the unrelated key itself still applied');
+    const got = chainOf(addon, regionId, 0);
+    assert(chainEquals(got, chainReordered),
+      'patching an unrelated slot key leaves the MANGLE chain untouched');
+    assert(slotsOf(addon, regionId)[0].rootNote === 55, 'the unrelated key itself still applied');
   }
 
   // ── 4. Per-slot isolation ─────────────────────────────────────────────────
-  // MANGLE is per SLOT, so a second layer must carry its own settings. This is
-  // the assertion that would fail if slotIndex were ignored and every write
-  // landed on slot 0.
   console.log('\n[ per-slot isolation ]');
   const twoSlots = slotsOf(addon, regionId).slice();
-  twoSlots.push(Object.assign({}, twoSlots[0], {
-    mangleMode: MODE_OFF, mangleAmount: 0, mangleMix: 1,
-  }));
+  twoSlots.push(Object.assign({}, twoSlots[0], { mangleChain: [] }));
   addon.timeline_updateSamplerSettings(regionId, { slots: twoSlots });
   assert(slotsOf(addon, regionId).length === 2, 'the region now has two slots');
 
-  setMangle(addon, regionId, 1, { mangleMode: MODE_LPF, mangleAmount: 0.2, mangleMix: 0.9 });
+  const slot1Chain = [ci(MODE_SYNC, 0.2, 0.9, false)];
+  setChain(addon, regionId, 1, slot1Chain);
   {
-    const s0 = mangleOf(addon, regionId, 0);
-    const s1 = mangleOf(addon, regionId, 1);
-    assert(s1.mode === MODE_LPF, `slot 1 took the write (got ${s1.mode})`);
-    near(s1.amount, 0.2, 1e-6, 'slot 1 amount');
-    near(s1.mix,    0.9, 1e-6, 'slot 1 mix');
-    assert(s0.mode === MODE_RM,
-      `slot 0 was NOT disturbed by a slot-1 write (expected ${MODE_RM}, got ${s0.mode})`);
-    near(s0.amount, 0.75, 1e-6, 'slot 0 amount was not disturbed');
+    const s0 = chainOf(addon, regionId, 0);
+    const s1 = chainOf(addon, regionId, 1);
+    assert(chainEquals(s1, slot1Chain), `slot 1 took the write (got ${JSON.stringify(s1)})`);
+    assert(chainEquals(s0, chainReordered),
+      `slot 0's chain was NOT disturbed by a slot-1 write (got ${JSON.stringify(s0)})`);
   }
 
-  // ── 5. Validation ─────────────────────────────────────────────────────────
-  console.log('\n[ out-of-range input ]');
-  setMangle(addon, regionId, 0, { mangleMode: 9999 });
-  assert(mangleOf(addon, regionId, 0).mode === MODE_OFF,
+  // ── 5. Validation: bad ids, clamping and the 4-instance cap ───────────────
+  console.log('\n[ out-of-range input + cap ]');
+  setChain(addon, regionId, 0, [ci(9999, 0.5, 0.5)]);
+  assert(chainOf(addon, regionId, 0)[0].mode === MODE_OFF,
     'an unknown mode id falls back to Off rather than picking some other effect');
 
-  setMangle(addon, regionId, 0, { mangleMode: MODE_COUNT });
-  assert(mangleOf(addon, regionId, 0).mode === MODE_OFF,
-    'the one-past-the-end id is rejected too');
-
-  setMangle(addon, regionId, 0, { mangleMode: -1 });
-  assert(mangleOf(addon, regionId, 0).mode === MODE_OFF,
-    'a negative mode id is rejected');
-
-  setMangle(addon, regionId, 0, { mangleMode: MODE_TUBE, mangleAmount: 5, mangleMix: -3 });
+  setChain(addon, regionId, 0, [ci(MODE_TUBE, 5, -3)]);
   {
-    const got = mangleOf(addon, regionId, 0);
-    assert(got.mode === MODE_TUBE, 'a valid mode still applies alongside bad neighbours');
+    const got = chainOf(addon, regionId, 0)[0];
+    assert(got.mode === MODE_TUBE, 'a valid mode applies');
     near(got.amount, 1, 1e-6, 'amount above 1 clamps to 1');
     near(got.mix,    0, 1e-6, 'mix below 0 clamps to 0');
   }
 
+  const sixChain = [];
+  for (let i = 0; i < 6; i++) sixChain.push(ci(MODE_LPF, 0.5, 1.0));
+  setChain(addon, regionId, 0, sixChain);
+  assert(chainOf(addon, regionId, 0).length === MANGLE_MAX,
+    `a >4-instance chain is capped to ${MANGLE_MAX} (got ${chainOf(addon, regionId, 0).length})`);
+
   // ── 6. Undo / redo ────────────────────────────────────────────────────────
   console.log('\n[ undo / redo ]');
-  setMangle(addon, regionId, 0, { mangleMode: MODE_SYNC, mangleAmount: 0.5, mangleMix: 1 });
-  const before = mangleOf(addon, regionId, 0);
-  assert(before.mode === MODE_SYNC, 'set(SYNC) applied');
+  const beforeChain = [ci(MODE_SYNC, 0.5, 1.0)];
+  setChain(addon, regionId, 0, beforeChain);
+  assert(chainEquals(chainOf(addon, regionId, 0), beforeChain), 'set(SYNC chain) applied');
 
-  setMangle(addon, regionId, 0, { mangleMode: MODE_QUANTIZE, mangleAmount: 0.9, mangleMix: 0.3 });
-  assert(mangleOf(addon, regionId, 0).mode === MODE_QUANTIZE, 'set(QUANTIZE) applied');
+  const afterChain = [ci(MODE_QUANTIZE, 0.9, 0.3), ci(MODE_TUBE, 0.4, 1.0)];
+  setChain(addon, regionId, 0, afterChain);
+  assert(chainEquals(chainOf(addon, regionId, 0), afterChain), 'set(2-instance chain) applied');
 
   addon.undo_undo();
-  {
-    const got = mangleOf(addon, regionId, 0);
-    assert(got.mode === before.mode, `undo restores the mode (got ${got.mode})`);
-    near(got.amount, before.amount, 1e-6, 'undo restores the amount');
-    near(got.mix,    before.mix,    1e-6, 'undo restores the mix');
-  }
+  assert(chainEquals(chainOf(addon, regionId, 0), beforeChain),
+    `undo restores the prior chain (got ${JSON.stringify(chainOf(addon, regionId, 0))})`);
 
   addon.undo_redo();
-  {
-    const got = mangleOf(addon, regionId, 0);
-    assert(got.mode === MODE_QUANTIZE, `redo re-applies the mode (got ${got.mode})`);
-    near(got.amount, 0.9, 1e-6, 'redo re-applies the amount');
-    near(got.mix,    0.3, 1e-6, 'redo re-applies the mix');
-  }
+  assert(chainEquals(chainOf(addon, regionId, 0), afterChain),
+    `redo re-applies the chain (got ${JSON.stringify(chainOf(addon, regionId, 0))})`);
 
   // ── 7. Persistence ────────────────────────────────────────────────────────
   console.log('\n[ save -> load round-trip ]');
-  setMangle(addon, regionId, 0, { mangleMode: MODE_TUBE, mangleAmount: 0.62, mangleMix: 0.81 });
+  const persistChain = [ci(MODE_TUBE, 0.62, 0.81, false), ci(MODE_LPF, 0.4, 1.0, true)];
+  setChain(addon, regionId, 0, persistChain);
   assert(addon.project_save() === true, 'project_save() returns true');
 
   const projectJsonPath = path.join(PROJECT_DIR, 'project.json');
@@ -231,50 +240,49 @@ function main() {
   const savedRegion = (saved.regions || []).find((r) => r.id === regionId);
   const savedSlot = savedRegion && savedRegion.slots && savedRegion.slots[0];
   assert(!!savedSlot, 'project.json carries the region slots array');
-  assert(savedSlot && savedSlot.mangleMode === MODE_TUBE,
-    `project.json persists mangleMode (got ${savedSlot && savedSlot.mangleMode})`);
-  near(savedSlot ? savedSlot.mangleAmount : NaN, 0.62, 1e-5,
-    'project.json persists mangleAmount');
-  near(savedSlot ? savedSlot.mangleMix : NaN, 0.81, 1e-5,
-    'project.json persists mangleMix');
+  assert(savedSlot && Array.isArray(savedSlot.mangleChain) && savedSlot.mangleChain.length === 2,
+    `project.json persists the mangleChain array (got ${savedSlot && JSON.stringify(savedSlot.mangleChain)})`);
+  assert(savedSlot && savedSlot.mangleChain[0].mode === MODE_TUBE
+    && savedSlot.mangleChain[1].bypass === true,
+    'project.json preserves per-instance mode + bypass');
+  assert(saved.schema_version >= 5, `project.json schema_version is >= 5 (got ${saved.schema_version})`);
 
   assert(addon.project_load(PROJECT_DIR) === true, 'project_load() returns true');
   {
-    const got = mangleOf(addon, regionId, 0);
-    assert(got && got.mode === MODE_TUBE,
-      `mangleMode survives save -> load (got ${got && got.mode})`);
-    near(got.amount, 0.62, 1e-5, 'mangleAmount survives save -> load');
-    near(got.mix,    0.81, 1e-5, 'mangleMix survives save -> load');
-    // Slot 1's own MANGLE must have survived independently.
-    const s1 = mangleOf(addon, regionId, 1);
-    assert(s1 && s1.mode === MODE_LPF,
-      `slot 1 keeps its own mode across save -> load (got ${s1 && s1.mode})`);
+    const got = chainOf(addon, regionId, 0);
+    assert(chainEquals(got, persistChain),
+      `the chain survives save -> load (got ${JSON.stringify(got)})`);
+    // Slot 1's own chain must have survived independently.
+    assert(chainEquals(chainOf(addon, regionId, 1), slot1Chain),
+      `slot 1 keeps its own chain across save -> load (got ${JSON.stringify(chainOf(addon, regionId, 1))})`);
   }
 
-  // ── 8. Backward compatibility ─────────────────────────────────────────────
-  // The real guarantee: a project written before MANGLE existed has no mangle
-  // keys at all, and must load as Off — a genuine bypass, not some mode 0
-  // that happens to do something.
-  console.log('\n[ legacy project (no mangle keys) loads as Off ]');
+  // ── 8. Backward compatibility + migration ─────────────────────────────────
+  // A schema<=4 project stored ONE MANGLE as flat mangleMode/amount/mix keys.
+  // Loading migrates that to a one-instance chain with identical values; a slot
+  // with NO mangle keys at all migrates to an empty chain.
+  console.log('\n[ legacy single-MANGLE migrates to a one-instance chain ]');
   const legacy = JSON.parse(fs.readFileSync(projectJsonPath, 'utf8'));
-  for (const r of legacy.regions || []) {
-    for (const s of r.slots || []) {
-      delete s.mangleMode;
-      delete s.mangleAmount;
-      delete s.mangleMix;
-    }
-  }
+  legacy.regions.forEach((r, ri) => {
+    (r.slots || []).forEach((s, si) => {
+      delete s.mangleChain;
+      if (ri === 0 && si === 0) {
+        // Slot 0: a legacy single MANGLE.
+        s.mangleMode = MODE_TUBE; s.mangleAmount = 0.62; s.mangleMix = 0.81;
+      }
+      // Every other slot: no mangle keys at all (pre-MANGLE).
+    });
+  });
   fs.writeFileSync(projectJsonPath, JSON.stringify(legacy, null, 2), 'utf8');
   assert(addon.project_load(PROJECT_DIR) === true,
     'project_load() of the legacy state returns true');
   {
-    const got = mangleOf(addon, regionId, 0);
-    assert(got && got.mode === MODE_OFF,
-      `a slot with no mangle keys loads as Off (got ${got && got.mode})`);
-    assert(got && got.amount === 0,
-      `...with amount 0 (got ${got && got.amount})`);
-    assert(got && got.mix === 1,
-      `...and the fully-wet mix default (got ${got && got.mix})`);
+    const got = chainOf(addon, regionId, 0);
+    assert(chainEquals(got, [ci(MODE_TUBE, 0.62, 0.81, false)]),
+      `a legacy single MANGLE migrates to a one-instance chain (got ${JSON.stringify(got)})`);
+    const s1 = chainOf(addon, regionId, 1);
+    assert(Array.isArray(s1) && s1.length === 0,
+      `a slot with no mangle keys migrates to an empty chain (got ${JSON.stringify(s1)})`);
   }
 
   // ── Summary ───────────────────────────────────────────────────────────────

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <cstdint>
 
@@ -293,11 +294,50 @@ inline float shapeSoftSat(float x, float a) noexcept {
     return std::tanh(x * d) / std::tanh(d);
 }
 
+// ─── Chain configuration ─────────────────────────────────────────────────────
+// A slot no longer holds one MANGLE — it holds an ORDERED CHAIN of up to
+// kMaxInstances of them. The chain is a signal-processing stack: the output of
+// instance N feeds instance N+1, so the ORDER is audible (HARD CLIP → LPF is
+// not LPF → HARD CLIP). A single-instance chain reduces to exactly the
+// pre-chain single-MANGLE render, which is what makes the legacy migration
+// bit-identical.
+//
+// A position-domain instance (Sync, Bend, FM, …) bends the READ HEAD, so its
+// input is always the source buffer, not the previous instance's sample — it
+// re-reads the source at its bent position and blends that in by its own mix.
+// Each instance ticks its cycle phase against the CANONICAL read head (they do
+// not compose read positions), so every instance's math is identical to the
+// single-instance case regardless of where it sits in the chain.
+//
+// The config is immutable once built and published to the audio thread by a
+// single atomic pointer swap (the same model Slot::data and the modulation
+// graph use), so add / remove / reorder is a lock-free, allocation-free swap on
+// the audio side and a bypassed or Off instance costs the render loop nothing.
+inline constexpr int kMaxInstances = 4;
+
+struct InstanceConfig
+{
+    int   mode   = 0;      // xleth::mangle::Mode id (Off = 0)
+    float amount = 0.0f;   // 0..1
+    float mix    = 1.0f;   // 0..1 (defaults fully wet: picking a mode is audible)
+    bool  bypass = false;  // true ⇒ the instance is skipped entirely, at no cost
+};
+
+struct ChainConfig
+{
+    std::array<InstanceConfig, kMaxInstances> inst{};
+    int count = 0;         // live instances, 0..kMaxInstances (order = chain order)
+};
+
 // ─── Per-stream state ────────────────────────────────────────────────────────
 // Lives inside the sampler's preallocated Stream. ~80 bytes; with 32 voices x 8
 // slots that is ~20 KB for the whole sampler, which is why the ODD/EVEN comb is
 // a SECOND READ HEAD rather than a delay line — a per-stream ring long enough
 // for a half period at the bottom of the keyboard would have been ~8 MB.
+//
+// A CHAIN needs one State per instance (kMaxInstances of them per stream), since
+// each instance carries its own note-cycle phase, filter integrators and DC
+// blockers — all reset together at voice start.
 
 struct State
 {

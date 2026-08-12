@@ -179,6 +179,16 @@ enum class SampleLoopMode : int {
     Reverse  = 2
 };
 
+// One MANGLE unit in a slot's ordered chain. The model mirrors the engine's
+// xleth::mangle::InstanceConfig; MixEngine converts one to the other when it
+// syncs a slot into its Sampler.
+struct MangleInstance {
+    int   mode   = 0;      // xleth::mangle::Mode id (0 = Off). Persisted; enum is append-only.
+    float amount = 0.0f;   // 0..1
+    float mix    = 1.0f;   // 0..1 (fully wet by default, so picking a mode is audible)
+    bool  bypass = false;  // true ⇒ the instance is skipped, at no cost
+};
+
 struct SampleSlot {
     // ── Audio identity ───────────────────────────────────────────────────────
     // Empty for slot 0 (its PCM comes from the region). Absolute path into the
@@ -224,20 +234,18 @@ struct SampleSlot {
     // every layer has run out, which is the existing end-of-sample path.
     bool    exitLoopOnRelease = false;
 
-    // ── MANGLE (per-note, per-slot warp FX) ──────────────────────────────────
-    // A warp effect instantiated PER STREAM — one per note per slot — so it
-    // runs before the voices of a chord sum. That is what separates it from a
-    // mixer insert, which only ever sees the already-summed chord.
+    // ── MANGLE chain (per-note, per-slot warp FX) ─────────────────────────────
+    // An ORDERED CHAIN of up to xleth::mangle::kMaxInstances warp units, each
+    // instantiated PER STREAM — one per note per slot — so it runs before the
+    // voices of a chord sum. That is what separates it from a mixer insert,
+    // which only ever sees the already-summed chord. The output of instance N
+    // feeds instance N+1, so order is audible.
     //
-    // mangleMode is an xleth::mangle::Mode id (0 = Off). Ids are persisted, so
-    // the enum is append-only. Amount and mix are 0..1.
-    //
-    // Off is the default, so every project made before MANGLE existed loads
-    // bit-identical. Mix defaults to 1.0 (fully wet) so that a user who picks
-    // a mode hears it immediately rather than having to find a second knob.
-    int   mangleMode   = 0;
-    float mangleAmount = 0.0f;
-    float mangleMix    = 1.0f;
+    // Empty by default, so every project made before MANGLE existed loads
+    // bit-identical. A project saved before the chain existed carries the single
+    // mangleMode / mangleAmount / mangleMix keys; SampleRegion's from_json
+    // migrates them to a one-instance chain with identical sound (see there).
+    std::vector<MangleInstance> mangleChain;
 
     // ── PREP (offline time-stretch / pitch-shift bake) ───────────────────────
     // Runs ONCE, off the audio thread, producing a new buffer that everything

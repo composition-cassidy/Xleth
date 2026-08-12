@@ -24772,17 +24772,130 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   background: var(--sampler-t4);
 }
 
+/* The body is now a vertical stack: one row per chain instance, then the
+   add-another control, then the hint. */
 .sampler-mangle-body {
   display: flex;
-  align-items: center;
-  gap: 14px;
+  flex-direction: column;
+  gap: 8px;
   padding: 8px 10px;
+}
+
+/* One instance row: reorder | mode | AMOUNT | MIX | actions. Flat and dense so
+   up to four stack without ballooning the card. */
+.sampler-mangle-inst {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 6px 8px;
+  border: 1px solid var(--sampler-bd);
+  background: var(--sampler-s2);
+}
+
+/* An active instance carries the teal accent (meaningful state); a bypassed one
+   dims and drops it. */
+.sampler-mangle-inst.is-active {
+  border-color: color-mix(in srgb, var(--theme-accent) 30%, transparent);
+  background: color-mix(in srgb, var(--theme-accent) 7%, transparent);
+}
+.sampler-mangle-inst.is-bypassed {
+  opacity: 0.55;
+}
+
+.sampler-mangle-order {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.sampler-mangle-move {
+  width: 18px;
+  height: 15px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--sampler-bd);
+  background: var(--sampler-s1);
+  color: var(--sampler-t3);
+  font-size: 9px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.sampler-mangle-move:hover:not(:disabled) {
+  color: var(--sampler-t1);
+  border-color: color-mix(in srgb, var(--theme-accent) 40%, transparent);
+}
+.sampler-mangle-move:disabled {
+  opacity: 0.3;
+  cursor: default;
 }
 
 /* The mode list is 36 entries across four groups, so it needs more room than
    the PREP algorithm select. */
 .sampler-mangle-mode .sampler-select {
   min-width: 132px;
+}
+
+.sampler-mangle-inst-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+}
+
+/* Bypass toggle: teal when the instance is ON (meaningful state), neutral when
+   bypassed. */
+.sampler-mangle-bypass {
+  min-width: 30px;
+  height: 20px;
+  border: 1px solid var(--sampler-bd);
+  background: var(--sampler-s1);
+  color: var(--sampler-t3);
+  font-size: 9px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+  padding: 0 6px;
+}
+.sampler-mangle-bypass.is-on {
+  color: var(--theme-accent);
+  border-color: color-mix(in srgb, var(--theme-accent) 45%, transparent);
+}
+
+.sampler-mangle-remove {
+  width: 20px;
+  height: 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--sampler-bd);
+  background: var(--sampler-s1);
+  color: var(--sampler-t3);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.sampler-mangle-remove:hover {
+  color: var(--sampler-t1);
+  border-color: color-mix(in srgb, var(--theme-accent) 40%, transparent);
+}
+
+/* The big "add another" control from the mockup. Full-width, flat, dashed so it
+   reads as an empty slot to fill. */
+.sampler-mangle-add {
+  height: 30px;
+  border: 1px dashed var(--sampler-bd);
+  background: transparent;
+  color: var(--sampler-t3);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  padding: 0;
+}
+.sampler-mangle-add:hover {
+  color: var(--theme-accent);
+  border-color: color-mix(in srgb, var(--theme-accent) 45%, transparent);
 }
 
 /* Live state, not decor: this is the one label that tells the user MANGLE is
@@ -24796,14 +24909,8 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
 }
 
 .sampler-mangle-note {
-  max-width: 340px;
-  text-align: right;
+  text-align: left;
   line-height: 1.35;
-}
-
-.sampler-range-card--mangle > header button:disabled {
-  opacity: 0.4;
-  cursor: default;
 }
 
 /* ── Loop mode + exit-on-release ──────────────────────────────────────────── */

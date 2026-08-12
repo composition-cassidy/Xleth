@@ -46,9 +46,6 @@ void to_json(nlohmann::json& j, const SampleSlot& s) {
         {"crossfadeSamples", s.crossfadeSamples},
         {"loopMode",         s.loopMode},
         {"exitLoopOnRelease", s.exitLoopOnRelease},
-        {"mangleMode",       s.mangleMode},
-        {"mangleAmount",     s.mangleAmount},
-        {"mangleMix",        s.mangleMix},
         {"prepAlgorithm",    s.prepAlgorithm},
         {"prepStretch",      s.prepStretch},
         {"prepShiftCents",   s.prepShiftCents},
@@ -57,6 +54,19 @@ void to_json(nlohmann::json& j, const SampleSlot& s) {
         {"polarityReversed", s.polarityReversed},
         {"reversed",         s.reversed}
     };
+
+    // MANGLE chain (schema 5+). Written as an ordered array; each entry is one
+    // instance. An empty chain writes an empty array — a slot with no MANGLE.
+    nlohmann::json chain = nlohmann::json::array();
+    for (const auto& mi : s.mangleChain) {
+        chain.push_back({
+            {"mode",   mi.mode},
+            {"amount", mi.amount},
+            {"mix",    mi.mix},
+            {"bypass", mi.bypass}
+        });
+    }
+    j["mangleChain"] = std::move(chain);
 }
 
 void from_json(const nlohmann::json& j, SampleSlot& s) {
@@ -85,11 +95,34 @@ void from_json(const nlohmann::json& j, SampleSlot& s) {
     // old behaviour, so a legacy slot deserializes to a bit-identical player.
     s.loopMode          = j.value("loopMode",          s.loopMode);
     s.exitLoopOnRelease = j.value("exitLoopOnRelease", s.exitLoopOnRelease);
-    // MANGLE is absent on every pre-MANGLE project; the default is mode Off,
-    // which is a genuine bypass, so those slots deserialize bit-identical.
-    s.mangleMode        = j.value("mangleMode",        s.mangleMode);
-    s.mangleAmount      = j.value("mangleAmount",      s.mangleAmount);
-    s.mangleMix         = j.value("mangleMix",         s.mangleMix);
+    // MANGLE chain (schema 5+). Three cases, in priority order:
+    //  1. "mangleChain" present  → read the ordered array directly.
+    //  2. legacy "mangleMode"    → migrate the single MANGLE to a one-instance
+    //     chain with identical values (and therefore identical sound); a legacy
+    //     mode of Off migrates to an EMPTY chain, which is the same silent
+    //     bypass without carrying a phantom Off instance into the new UI.
+    //  3. neither (pre-MANGLE)   → empty chain, i.e. no MANGLE. Bit-identical.
+    s.mangleChain.clear();
+    if (j.contains("mangleChain") && j.at("mangleChain").is_array()) {
+        for (const auto& e : j.at("mangleChain")) {
+            MangleInstance mi;
+            mi.mode   = e.value("mode",   0);
+            mi.amount = e.value("amount", 0.0f);
+            mi.mix    = e.value("mix",    1.0f);
+            mi.bypass = e.value("bypass", false);
+            s.mangleChain.push_back(mi);
+        }
+    } else if (j.contains("mangleMode")) {
+        const int mode = j.value("mangleMode", 0);
+        if (mode != 0) {
+            MangleInstance mi;
+            mi.mode   = mode;
+            mi.amount = j.value("mangleAmount", 0.0f);
+            mi.mix    = j.value("mangleMix",    1.0f);
+            mi.bypass = false;
+            s.mangleChain.push_back(mi);
+        }
+    }
     s.prepAlgorithm     = j.value("prepAlgorithm",     s.prepAlgorithm);
     s.prepStretch       = j.value("prepStretch",       s.prepStretch);
     s.prepShiftCents    = j.value("prepShiftCents",    s.prepShiftCents);
@@ -353,7 +386,23 @@ void from_json(const nlohmann::json& j, SampleRegion& r) {
         int occupied = 0;
         for (const auto& s : r.slots) if (!s.audioFilePath.empty()) ++occupied;
         if (occupied == 0) occupied = 1;   // slot 0 plays the region's own audio
-        xleth::samplegacy::migrateLegacyModulation(j, occupied, 120.0, r.modulation);
+        if (xleth::samplegacy::migrateLegacyModulation(j, occupied, 120.0, r.modulation))
+        {
+            // Migration MOVES the state, it does not copy it. The legacy engine
+            // paths in MixEngine::buildSamplerForRegion are still live, so
+            // leaving these enabled would apply the pitch envelope and all three
+            // LFOs TWICE — once through the legacy path and once through the
+            // routes just created. Disabling them here is what makes a migrated
+            // project sound the same rather than doubly modulated.
+            //
+            // Only the superseded systems are cleared. The amplitude DAHDSR
+            // above is untouched: it remains the VCA and the voice-lifecycle
+            // gate, and ENV 1 merely mirrors it.
+            r.pitchEnvEnabled = false;
+            r.lfoVolEnabled   = false;
+            r.lfoPanEnabled   = false;
+            r.lfoPitchEnabled = false;
+        }
     }
 
     // ENV 1 is a derived VIEW of the amplitude envelope — the amp scalars above

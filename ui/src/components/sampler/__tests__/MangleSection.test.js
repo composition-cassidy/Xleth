@@ -125,51 +125,75 @@ describe('MANGLE mode catalogue', () => {
   })
 })
 
-describe('MANGLE panel section', () => {
+describe('MANGLE chain panel section', () => {
   const src = readUiSource('components/sampler/SamplerPanelContent.jsx')
 
-  it('renders a mode dropdown plus AMOUNT and MIX knobs', () => {
+  it('renders a mode dropdown plus AMOUNT and MIX knobs per instance', () => {
     expect(src).toContain('sampler-range-card--mangle')
     expect(src).toContain('<SelGrouped')
     expect(src).toContain('groups={MANGLE_GROUPS}')
-    expect(src).toMatch(/label="Amount"[\s\S]{0,400}mangleAmount/)
-    expect(src).toMatch(/label="Mix"[\s\S]{0,400}mangleMix/)
+    // Knobs bind to the per-instance chain field, not a flat slot scalar.
+    expect(src).toMatch(/label="Amount"[\s\S]{0,400}previewChainField\(i, 'amount'/)
+    expect(src).toMatch(/label="Mix"[\s\S]{0,400}previewChainField\(i, 'mix'/)
+  })
+
+  it('offers add / remove / reorder / bypass chain controls', () => {
+    expect(src).toContain('sampler-mangle-add')
+    expect(src).toContain('addMangleInstance')
+    expect(src).toContain('removeMangleInstance')
+    expect(src).toContain('moveMangleInstance')
+    expect(src).toContain('sampler-mangle-bypass')
+  })
+
+  it('caps the chain at the engine instance limit', () => {
+    // The UI cap must match xleth::mangle::kMaxInstances or the engine would
+    // silently drop instances the UI let the user add.
+    expect(src).toMatch(/const MANGLE_MAX = (\d+)/)
+    const uiCap = Number(src.match(/const MANGLE_MAX = (\d+)/)[1])
+    const engine = readEngineSource('audio/MangleDsp.h')
+    const engineCap = Number(engine.match(/kMaxInstances\s*=\s*(\d+)/)[1])
+    expect(uiCap).toBe(engineCap)
+    // The add button hides at the cap; commitChain clamps as a backstop.
+    expect(src).toContain('mangleChain.length < MANGLE_MAX')
+    expect(src).toContain('chain.slice(0, MANGLE_MAX)')
   })
 
   it('drag-previews locally and commits once on mouseup', () => {
-    // onLiveChange is local state only; onCommit is the single IPC write. A
-    // knob that committed on every drag frame would flood the undo stack.
+    // onLiveChange is local state only (previewChainField); onCommit is the
+    // single IPC write (commitChainField). A knob that committed every drag
+    // frame would flood the undo stack.
     const amount = src.match(/label="Amount"[\s\S]*?\/>/)?.[0] ?? ''
     const mix = src.match(/label="Mix"[\s\S]*?\/>/)?.[0] ?? ''
     for (const knob of [amount, mix]) {
-      expect(knob).toMatch(/onLiveChange=\{\(v\) => setField\(/)
-      expect(knob).toMatch(/onCommit=\{\(v\) => commit\(/)
+      expect(knob).toMatch(/onLiveChange=\{\(v\) => previewChainField\(/)
+      expect(knob).toMatch(/onCommit=\{\(v\) => commitChainField\(/)
     }
   })
 
-  it('routes MANGLE through the per-slot commit path', () => {
-    // commit() stamps slotIndex, so MANGLE follows the selected layer the way
-    // trim and loop do. Reading it back must come from the slot, not the region.
-    expect(src).toContain('mangleMode: sl.mangleMode ?? 0')
-    expect(src).toContain('mangleAmount: sl.mangleAmount ?? 0')
-    expect(src).toContain('mangleMix: sl.mangleMix ?? 1')
-    expect(src).toContain("commitField('mangleMode', v)")
+  it('routes MANGLE through the per-slot commit path as an ordered array', () => {
+    // The chain reads off the SLOT (so it follows the selected layer), is copied
+    // instance-by-instance, and every edit commits the full array under one
+    // slotIndex so the engine gets one atomic swap and one undo entry.
+    expect(src).toContain('mangleChain: Array.isArray(sl.mangleChain)')
+    expect(src).toContain("commit({ mangleChain: next })")
+    expect(src).toContain("commitChainField(i, 'mode', v)")
   })
 
-  it('defaults to Off with a fully wet mix, matching the engine', () => {
-    expect(src).toContain('mangleMode: 0, mangleAmount: 0, mangleMix: 1')
+  it('defaults to an empty chain, matching the engine model', () => {
+    expect(src).toContain('mangleChain: [],')
     const engine = readEngineSource('model/TimelineTypes.h')
-    expect(engine).toMatch(/int\s+mangleMode\s*=\s*0;/)
-    expect(engine).toMatch(/float\s+mangleAmount\s*=\s*0\.0f;/)
-    expect(engine).toMatch(/float\s+mangleMix\s*=\s*1\.0f;/)
+    expect(engine).toMatch(/std::vector<MangleInstance>\s+mangleChain;/)
   })
 
   it('mirrors the engine bypass gate for the accent state', () => {
-    // The card must go quiet in BOTH bypass cases the engine recognises,
-    // otherwise the UI claims an effect is running when it is not.
-    const gate = src.match(/const mangleOn = ([^\n]*)/)?.[1] ?? ''
+    // The card carries the accent only when an instance has a real mode, is not
+    // bypassed, and mixes in — exactly makeRuntime's gate — and only if ANY
+    // instance in the chain is live.
+    const gate = src.match(/const mangleInstanceActive = \(mi\) =>([\s\S]*?)\n  const mangleOn/)?.[1] ?? ''
     expect(gate).toContain('MANGLE_OFF')
-    expect(gate).toContain('mangleMix')
+    expect(gate).toContain('bypass')
+    expect(gate).toContain('mix')
+    expect(src).toContain('const mangleOn = mangleChain.some(mangleInstanceActive)')
   })
 
   it('never calls tokenValue() at module scope', () => {
@@ -186,6 +210,9 @@ describe('MANGLE section CSS', () => {
       '.sampler-range-card--mangle',
       '.sampler-range-card--mangle.is-bypassed',
       '.sampler-mangle-tag',
+      '.sampler-mangle-inst',
+      '.sampler-mangle-inst.is-active',
+      '.sampler-mangle-add',
     ]) {
       const rule = cssRule(css, selector)
       expect(rule, `${selector} should exist`).not.toBe('')
@@ -200,13 +227,19 @@ describe('MANGLE section CSS', () => {
     const bypassed = cssRule(css, '.sampler-range-card--mangle.is-bypassed')
     expect(bypassed).toContain('var(--sampler-bd)')
     expect(bypassed).toContain('var(--sampler-s2)')
-    // Active carries the teal accent.
+    // Active card + active instance + the "per note" tag carry the teal accent.
     expect(cssRule(css, '.sampler-range-card--mangle')).toContain('var(--theme-accent)')
+    expect(cssRule(css, '.sampler-mangle-inst.is-active')).toContain('var(--theme-accent)')
     expect(cssRule(css, '.sampler-mangle-tag')).toContain('var(--theme-accent)')
   })
 
+  it('lights the bypass toggle with the accent only when the instance is on', () => {
+    expect(cssRule(css, '.sampler-mangle-bypass.is-on')).toContain('var(--theme-accent)')
+  })
+
   it('stays flat — no rounded corners introduced', () => {
-    const body = cssRule(css, '.sampler-mangle-body')
-    expect(body).not.toMatch(/border-radius:\s*[1-9]/)
+    for (const selector of ['.sampler-mangle-body', '.sampler-mangle-inst', '.sampler-mangle-add']) {
+      expect(cssRule(css, selector)).not.toMatch(/border-radius:\s*[1-9]/)
+    }
   })
 })

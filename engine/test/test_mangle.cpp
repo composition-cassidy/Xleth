@@ -13,10 +13,13 @@
 
 #include "audio/Sampler.h"
 #include "audio/MangleDsp.h"
+#include "model/SampleRegion.h"
 
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_core/juce_core.h>
 #include <juce_gui_basics/juce_gui_basics.h>
+
+#include <nlohmann/json.hpp>
 
 #include <algorithm>
 #include <chrono>
@@ -769,6 +772,311 @@ static void testPerfSmoke32Streams()
           "32 worst-case streams ran at only " << realtimeFactor << "x realtime");
 }
 
+// ─── 4. Chain (ordered per-slot MANGLE stack) ────────────────────────────────
+
+// Render one sampler holding `pcm` in slot 0 with MANGLE chain `chain`.
+static juce::AudioBuffer<float> renderChain(const juce::AudioBuffer<float>& pcm,
+                                            const std::vector<mg::InstanceConfig>& chain,
+                                            const std::vector<int>& notes, int numSamples,
+                                            int rootNote = 60)
+{
+    Sampler s; configureSampler(s, pcm, rootNote);
+    s.setSlotMangleChain(0, chain);
+    return render(s, notes, numSamples);
+}
+
+// Max absolute per-sample difference between two renders.
+static double maxDiff(const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b)
+{
+    double d = 0.0;
+    const int n  = std::min(a.getNumSamples(),  b.getNumSamples());
+    const int ch = std::min(a.getNumChannels(), b.getNumChannels());
+    for (int c = 0; c < ch; ++c)
+        for (int i = 0; i < n; ++i)
+            d = std::max(d, std::abs(static_cast<double>(a.getSample(c, i))
+                                   - static_cast<double>(b.getSample(c, i))));
+    return d;
+}
+
+static bool anySubnormal(const juce::AudioBuffer<float>& b)
+{
+    for (int c = 0; c < b.getNumChannels(); ++c)
+        for (int i = 0; i < b.getNumSamples(); ++i) {
+            const float x = b.getSample(c, i);
+            if (x != 0.0f && std::fpclassify(x) == FP_SUBNORMAL) return true;
+        }
+    return false;
+}
+
+static void testChainOrderMatters()
+{
+    std::cout << "TEST: chain order is audible (HARD CLIP <-> LPF non-commutative)\n";
+
+    const auto pcm = makeSine(kEngineSR, 220.0, 48000, 0.5f);
+    constexpr int N = 8192;
+
+    const mg::InstanceConfig clip{ static_cast<int>(mg::Mode::HardClip), 0.7f, 1.0f, false };
+    const mg::InstanceConfig lpf { static_cast<int>(mg::Mode::Lpf),      0.5f, 1.0f, false };
+
+    auto clipThenLpf = renderChain(pcm, { clip, lpf }, { 60 }, N);
+    auto lpfThenClip = renderChain(pcm, { lpf, clip }, { 60 }, N);
+    auto dry         = renderChain(pcm, {},            { 60 }, N);
+
+    CHECK(allFinite(clipThenLpf) && allFinite(lpfThenClip),
+          "chain render produced non-finite output");
+
+    // The whole feature: clip→filter must not equal filter→clip. Clipping first
+    // generates harmonics the filter then removes; filtering first removes highs
+    // the clipper then regenerates — two different spectra, hence two waveforms.
+    const double order = maxDiff(clipThenLpf, lpfThenClip);
+    CHECK(order > 0.02, "HARD CLIP->LPF must differ from LPF->HARD CLIP, max diff " << order);
+
+    // Anti-vacuity: neither order is a silent no-op.
+    CHECK(maxDiff(clipThenLpf, dry) > 0.02, "clip->lpf did not change the signal");
+    CHECK(maxDiff(lpfThenClip, dry) > 0.02, "lpf->clip did not change the signal");
+}
+
+static void testChainBypassPassthrough()
+{
+    std::cout << "TEST: bypassed instance is a free passthrough\n";
+
+    const auto pcm = makeSine(kEngineSR, 220.0, 48000, 0.5f);
+    constexpr int N = 4096;
+
+    // A single bypassed (but loud) instance is bit-identical to no MANGLE.
+    const mg::InstanceConfig clipBypassed{ static_cast<int>(mg::Mode::HardClip), 1.0f, 1.0f, true };
+    auto dry = renderChain(pcm, {}, { 60 }, N);
+    auto byp = renderChain(pcm, { clipBypassed }, { 60 }, N);
+    CHECK(maxDiff(dry, byp) == 0.0,
+          "a bypassed instance must be bit-identical to no MANGLE, diff " << maxDiff(dry, byp));
+
+    // A bypassed instance in the MIDDLE of the chain changes nothing:
+    // [TUBE, LPF(bypassed)] == [TUBE].
+    const mg::InstanceConfig tube{ static_cast<int>(mg::Mode::Tube), 0.8f, 1.0f, false };
+    const mg::InstanceConfig lpfBypassed{ static_cast<int>(mg::Mode::Lpf), 0.5f, 1.0f, true };
+    auto tubeOnly = renderChain(pcm, { tube }, { 60 }, N);
+    auto tubeLpfB = renderChain(pcm, { tube, lpfBypassed }, { 60 }, N);
+    CHECK(maxDiff(tubeOnly, tubeLpfB) == 0.0,
+          "a bypassed instance changed the sound, diff " << maxDiff(tubeOnly, tubeLpfB));
+
+    // Anti-vacuity: the SAME LPF un-bypassed DOES change [TUBE, LPF].
+    const mg::InstanceConfig lpfOn{ static_cast<int>(mg::Mode::Lpf), 0.0f, 1.0f, false };
+    auto tubeLpfOn = renderChain(pcm, { tube, lpfOn }, { 60 }, N);
+    CHECK(maxDiff(tubeOnly, tubeLpfOn) > 0.02,
+          "un-bypassing LPF should change the sound (else the bypass test is vacuous)");
+}
+
+static void testChainFourInstanceCap()
+{
+    std::cout << "TEST: chain caps at 4 instances\n";
+
+    const auto pcm = makeSine(kEngineSR, 220.0, 48000, 0.5f);
+
+    // The published count is capped to kMaxInstances.
+    Sampler s; configureSampler(s, pcm);
+    std::vector<mg::InstanceConfig> six(
+        6, mg::InstanceConfig{ static_cast<int>(mg::Mode::SoftSat), 0.5f, 1.0f, false });
+    s.setSlotMangleChain(0, six);
+    CHECK(s.debugSlotMangleCount(0) == mg::kMaxInstances,
+          "6-instance chain should cap to " << mg::kMaxInstances
+          << ", got " << s.debugSlotMangleCount(0));
+
+    std::vector<mg::InstanceConfig> four(
+        4, mg::InstanceConfig{ static_cast<int>(mg::Mode::SoftSat), 0.5f, 1.0f, false });
+    s.setSlotMangleChain(0, four);
+    CHECK(s.debugSlotMangleCount(0) == 4, "4-instance chain should keep all 4");
+
+    // Behavioural proof: an audible instance in the 5th slot is dropped, while
+    // the same instance in the 4th slot applies. (Off instances pad the front.)
+    const mg::InstanceConfig off { 0, 0.0f, 1.0f, false };
+    const mg::InstanceConfig clip{ static_cast<int>(mg::Mode::HardClip), 1.0f, 1.0f, false };
+
+    auto dry  = renderChain(pcm, {},                         { 60 }, 4096);
+    auto out5 = renderChain(pcm, { off, off, off, off, clip }, { 60 }, 4096);  // 5th dropped
+    auto out4 = renderChain(pcm, { off, off, off, clip },      { 60 }, 4096);  // 4th kept
+
+    CHECK(maxDiff(out5, dry) == 0.0,
+          "the 5th instance must be dropped (output should equal dry), diff " << maxDiff(out5, dry));
+    CHECK(maxDiff(out4, dry) > 0.02,
+          "the 4th instance must apply (else the cap test is vacuous), diff " << maxDiff(out4, dry));
+}
+
+static void testChainReorderUnderPlayback()
+{
+    std::cout << "TEST: add / remove / reorder under playback stays stable\n";
+
+    const auto pcm = makeSine(kEngineSR, 300.0, 48000, 0.5f);
+    Sampler s; configureSampler(s, pcm);
+    s.noteOn(60, 1.0f, 0);
+    s.noteOn(67, 1.0f, 0);
+
+    const mg::InstanceConfig tube{ static_cast<int>(mg::Mode::Tube),     0.8f, 1.0f, false };
+    const mg::InstanceConfig lpf { static_cast<int>(mg::Mode::Lpf),      0.3f, 1.0f, false };
+    const mg::InstanceConfig clip{ static_cast<int>(mg::Mode::HardClip), 0.6f, 1.0f, false };
+    const mg::InstanceConfig fm  { static_cast<int>(mg::Mode::Fm),       0.5f, 1.0f, false };
+
+    const std::vector<std::vector<mg::InstanceConfig>> steps = {
+        { tube },
+        { tube, lpf },
+        { tube, lpf, clip },
+        { lpf, clip, tube },            // reorder
+        { lpf, clip, tube, fm },        // add (4 = cap)
+        { clip, tube },                 // remove two + reorder
+        { },                            // clear
+    };
+
+    juce::AudioBuffer<float> out(2, 256);
+    bool finite = true;
+    float pk = 0.0f;
+    for (const auto& cfg : steps) {
+        s.setSlotMangleChain(0, cfg);
+        CHECK(s.debugSlotMangleCount(0) == static_cast<int>(cfg.size()),
+              "published chain count mismatch after an edit");
+        for (int b = 0; b < 8; ++b) {   // several blocks per edit, so a swap lands mid-note
+            out.clear();
+            s.processBlock(out, 256, kEngineSR);
+            if (!allFinite(out)) finite = false;
+            pk = std::max(pk, peakAbs(out));
+        }
+    }
+    CHECK(finite, "reconfiguring the chain under playback produced non-finite output");
+    CHECK(pk < 8.0f,   "reconfiguring the chain under playback peaked at " << pk);
+    CHECK(pk > 0.001f, "reconfiguring the chain under playback went silent");
+}
+
+static void testChainMigrationRoundtrip()
+{
+    std::cout << "TEST: single MANGLE -> one-instance chain migration + roundtrip\n";
+
+    // (a) A legacy slot carrying the single mangleMode/amount/mix keys migrates
+    //     to a one-instance chain with identical values.
+    nlohmann::json legacy = {
+        {"mangleMode",   static_cast<int>(mg::Mode::HardClip)},
+        {"mangleAmount", 0.5f},
+        {"mangleMix",    0.8f}
+    };
+    SampleSlot s1; from_json(legacy, s1);
+    CHECK(s1.mangleChain.size() == 1, "legacy single MANGLE should migrate to one instance");
+    if (s1.mangleChain.size() == 1) {
+        CHECK(s1.mangleChain[0].mode == static_cast<int>(mg::Mode::HardClip), "migrated mode mismatch");
+        CHECK_NEAR(s1.mangleChain[0].amount, 0.5f, 1e-6, "migrated amount mismatch");
+        CHECK_NEAR(s1.mangleChain[0].mix,    0.8f, 1e-6, "migrated mix mismatch");
+        CHECK(!s1.mangleChain[0].bypass, "migrated instance must not be bypassed");
+    }
+
+    // (b) A legacy Off migrates to an EMPTY chain — no phantom instance.
+    nlohmann::json legacyOff = { {"mangleMode", 0}, {"mangleAmount", 1.0f}, {"mangleMix", 1.0f} };
+    SampleSlot s2; from_json(legacyOff, s2);
+    CHECK(s2.mangleChain.empty(), "legacy Off should migrate to an empty chain");
+
+    // (c) Pre-MANGLE (no keys at all) => empty chain.
+    nlohmann::json bare = { {"rootNote", 60} };
+    SampleSlot s3; from_json(bare, s3);
+    CHECK(s3.mangleChain.empty(), "pre-MANGLE slot should have an empty chain");
+
+    // (d) Roundtrip: serialise the migrated slot, deserialise again, identical —
+    //     and the legacy scalar keys are gone.
+    nlohmann::json out; to_json(out, s1);
+    CHECK(out.contains("mangleChain") && out["mangleChain"].is_array()
+          && out["mangleChain"].size() == 1, "serialised slot should carry a one-entry mangleChain");
+    CHECK(!out.contains("mangleMode"), "serialised slot must not carry the legacy scalar keys");
+    SampleSlot s1b; from_json(out, s1b);
+    CHECK(s1b.mangleChain.size() == 1
+          && s1b.mangleChain[0].mode == s1.mangleChain[0].mode
+          && std::abs(s1b.mangleChain[0].amount - s1.mangleChain[0].amount) < 1e-6f
+          && std::abs(s1b.mangleChain[0].mix    - s1.mangleChain[0].mix)    < 1e-6f,
+          "chain did not survive a to_json/from_json roundtrip");
+
+    // (e) Audio identity: the migrated one-instance chain sounds EXACTLY like the
+    //     old single MANGLE set through setSlotMangle, end to end through the
+    //     sampler — the whole point of a bit-identical migration.
+    const auto pcm = makeSine(kEngineSR, 220.0, 48000, 0.5f);
+    constexpr int N = 4096;
+
+    // Amount 0.8 → clip threshold 0.24, well under the 0.5 sine peak, so the
+    // clipper genuinely engages (0.5 amount would sit above the peak and do
+    // nothing, making the identity below vacuous).
+    Sampler viaSingle; configureSampler(viaSingle, pcm);
+    viaSingle.setSlotMangle(0, static_cast<int>(mg::Mode::HardClip), 0.8f, 0.9f);
+    auto a = render(viaSingle, { 60 }, N);
+
+    auto b = renderChain(pcm,
+        { mg::InstanceConfig{ static_cast<int>(mg::Mode::HardClip), 0.8f, 0.9f, false } },
+        { 60 }, N);
+    CHECK(maxDiff(a, b) == 0.0,
+          "one-instance chain must be bit-identical to the single-MANGLE API, diff " << maxDiff(a, b));
+
+    auto dry = renderChain(pcm, {}, { 60 }, N);
+    CHECK(maxDiff(a, dry) > 0.02, "the migrated HARD CLIP should change the signal (else vacuous)");
+}
+
+static void testChainNoDenormals32x4()
+{
+    std::cout << "TEST: no denormals at 32 streams x 4 instances worst case\n";
+
+    const auto pcm = makeSine(kEngineSR, 220.0, 48000, 0.4f);
+
+    // Four state-carrying modes — two recursive filters and two DC-blocked
+    // distortions — the ones most likely to ring down into subnormals as a note
+    // decays. MangleDsp flushes each instance's state, so the perf floor below
+    // is the real denormal assertion: a subnormal storm across 128 recursive
+    // filters (32 streams x 4) would crater the realtime factor by 10-100x.
+    const std::vector<mg::InstanceConfig> chain = {
+        { static_cast<int>(mg::Mode::Lpf),      0.4f, 1.0f, false },
+        { static_cast<int>(mg::Mode::Tube),     0.8f, 1.0f, false },
+        { static_cast<int>(mg::Mode::Hpf),      0.6f, 1.0f, false },
+        { static_cast<int>(mg::Mode::StompBox), 0.7f, 1.0f, false },
+    };
+
+    Sampler s;
+    s.setSlotCount(8);
+    for (int i = 0; i < 8; ++i) {
+        s.loadSlotSample(i, pcm, kEngineSR, 60);
+        s.setSlotRootNote(i, 60);
+        s.setSlotTrim(i, 0, 0, 0.0f, 0.0f, 0.0f);
+        s.setSlotLevel(i, 0.2f, 0.0f);
+        s.setSlotMangleChain(i, chain);
+    }
+    // A short release so the tail decays toward zero — the denormal danger zone.
+    s.setADSR(0.0f, 0.0f, 1.0f, 30.0f);
+    s.setCrossfadeMode(true);
+
+    for (int n : { 48, 55, 60, 67 }) s.noteOn(n, 1.0f, 0);
+    CHECK(s.activeStreamCount() == 32, "expected 32 streams, got " << s.activeStreamCount());
+
+    constexpr int kBlock = 512;
+    juce::AudioBuffer<float> out(2, kBlock);
+    bool finite = true, sub = false;
+    float pk = 0.0f;
+
+    const auto t0 = std::chrono::steady_clock::now();
+    // Sustain, then release and let the tail ring down for ~1 s.
+    for (int b = 0; b < 20; ++b) {
+        out.clear(); s.processBlock(out, kBlock, kEngineSR);
+        finite &= allFinite(out); pk = std::max(pk, peakAbs(out));
+        if (b < 15) sub |= anySubnormal(out);   // scan the healthy sustain, not the fade-out
+    }
+    for (int n : { 48, 55, 60, 67 }) s.noteOff(n, 0, false);
+    for (int b = 0; b < 100; ++b) {
+        out.clear(); s.processBlock(out, kBlock, kEngineSR);
+        finite &= allFinite(out); pk = std::max(pk, peakAbs(out));
+    }
+    const auto t1 = std::chrono::steady_clock::now();
+
+    const double ms       = std::chrono::duration<double, std::milli>(t1 - t0).count();
+    const double audioMs  = (120 * kBlock) / kEngineSR * 1000.0;
+    const double rtFactor = audioMs / ms;
+    std::cout << "        rendered " << audioMs << " ms in " << ms
+              << " ms  (" << rtFactor << "x realtime)\n";
+
+    CHECK(finite, "32x4 worst-case render produced non-finite output");
+    CHECK(!sub,   "32x4 worst-case render produced subnormals in the healthy sustain region");
+    CHECK(pk > 0.01f, "32x4 render was silent — the perf/denormal check would be vacuous");
+    CHECK(pk < 8.0f,  "32x4 render peaked at " << pk);
+    CHECK(rtFactor > 3.0,
+          "32x4 worst-case ran at only " << rtFactor << "x realtime — a denormal storm regressed the flush");
+}
+
 // ─── main ────────────────────────────────────────────────────────────────────
 
 int main()
@@ -797,6 +1105,14 @@ int main()
     testChordIsSumOfNotes();
     testModeSwitchNeedsNoRealloc();
     testPerfSmoke32Streams();
+
+    // Chain (ordered per-slot stack)
+    testChainOrderMatters();
+    testChainBypassPassthrough();
+    testChainFourInstanceCap();
+    testChainReorderUnderPlayback();
+    testChainMigrationRoundtrip();
+    testChainNoDenormals32x4();
 
     std::cout << "\n";
     if (g_failed == 0)

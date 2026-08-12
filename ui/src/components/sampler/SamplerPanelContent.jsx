@@ -48,6 +48,8 @@ const LOOP_MODES = [
 // Mode 0 (Off) is the bypass and lives outside the groups so it is always the
 // first option, whatever the group order.
 const MANGLE_OFF = 0
+// Chain cap — MUST match xleth::mangle::kMaxInstances in engine/src/audio/MangleDsp.h.
+const MANGLE_MAX = 4
 const MANGLE_GROUPS = [
   {
     label: 'Alt',
@@ -167,7 +169,7 @@ const emptySettings = {
   pitchEnvAttackTension: 0, pitchEnvDecayTension: 0, pitchEnvReleaseTension: 0,
   loopEnabled: false, loopStart: 0, loopEnd: 0,
   loopMode: 0, exitLoopOnRelease: false,
-  mangleMode: 0, mangleAmount: 0, mangleMix: 1,
+  mangleChain: [],
   prepAlgorithm: 2, prepStretch: 1, prepShiftCents: 0,
   crossfadeEnabled: true,
   smpStart: 0, smpLength: 0, declickMs: 1.5,
@@ -385,11 +387,17 @@ export default function SamplerPanelContent({ regionId, onClose }) {
           loopEnd: sl.loopEnd ?? 0,
           loopMode: sl.loopMode ?? 0,
           exitLoopOnRelease: !!sl.exitLoopOnRelease,
-          // MANGLE is per-slot, so it follows the selected layer like trim and
-          // loop do. Mix defaults to 1 (fully wet) to match the engine.
-          mangleMode: sl.mangleMode ?? 0,
-          mangleAmount: sl.mangleAmount ?? 0,
-          mangleMix: sl.mangleMix ?? 1,
+          // MANGLE is per-slot, so its chain follows the selected layer like
+          // trim and loop do. Copied instance-by-instance so panel edits never
+          // mutate the fetched slot object in place.
+          mangleChain: Array.isArray(sl.mangleChain)
+            ? sl.mangleChain.map((mi) => ({
+                mode: mi.mode ?? 0,
+                amount: mi.amount ?? 0,
+                mix: mi.mix ?? 1,
+                bypass: !!mi.bypass,
+              }))
+            : [],
           prepAlgorithm: sl.prepAlgorithm ?? 2,
           prepStretch: sl.prepStretch ?? 1,
           prepShiftCents: sl.prepShiftCents ?? 0,
@@ -656,6 +664,52 @@ export default function SamplerPanelContent({ regionId, onClose }) {
     commit({ [field]: val })
   }, [commit])
 
+  // ── MANGLE chain editing ──────────────────────────────────────────────────
+  // The whole ordered array is the unit of truth: every add / remove / reorder /
+  // field edit rebuilds it and commits the FULL array under one slotIndex, so
+  // the engine's undo captures one coherent before/after and the audio thread
+  // gets exactly one atomic chain swap. The panel always shows at least one row;
+  // an empty committed chain renders a virtual Off instance that materialises
+  // the moment the user gives it a mode.
+  const mangleBaseChain = useCallback(() => {
+    const c = settingsRef.current.mangleChain
+    return Array.isArray(c) && c.length
+      ? c
+      : [{ mode: MANGLE_OFF, amount: 0, mix: 1, bypass: false }]
+  }, [])
+  const commitChain = useCallback((chain) => {
+    const next = chain.slice(0, MANGLE_MAX)
+    setSettings((s) => ({ ...s, mangleChain: next }))
+    commit({ mangleChain: next })
+  }, [commit])
+  // Local-only preview during a knob drag — no IPC until mouseup.
+  const previewChainField = useCallback((idx, field, val) => {
+    setSettings((s) => {
+      const base = (Array.isArray(s.mangleChain) && s.mangleChain.length)
+        ? s.mangleChain
+        : [{ mode: MANGLE_OFF, amount: 0, mix: 1, bypass: false }]
+      return { ...s, mangleChain: base.map((mi, i) => (i === idx ? { ...mi, [field]: val } : mi)) }
+    })
+  }, [])
+  const commitChainField = useCallback((idx, field, val) => {
+    commitChain(mangleBaseChain().map((mi, i) => (i === idx ? { ...mi, [field]: val } : mi)))
+  }, [commitChain, mangleBaseChain])
+  const addMangleInstance = useCallback(() => {
+    const base = mangleBaseChain()
+    if (base.length >= MANGLE_MAX) return
+    commitChain([...base, { mode: MANGLE_OFF, amount: 0, mix: 1, bypass: false }])
+  }, [commitChain, mangleBaseChain])
+  const removeMangleInstance = useCallback((idx) => {
+    commitChain(mangleBaseChain().filter((_, i) => i !== idx))
+  }, [commitChain, mangleBaseChain])
+  const moveMangleInstance = useCallback((idx, dir) => {
+    const base = mangleBaseChain().slice()
+    const j = idx + dir
+    if (j < 0 || j >= base.length) return
+    ;[base[idx], base[j]] = [base[j], base[idx]]
+    commitChain(base)
+  }, [commitChain, mangleBaseChain])
+
   const commitEnvelope = useCallback(() => {
     const s = settingsRef.current
     if (envTab === 'pitch') {
@@ -806,10 +860,17 @@ export default function SamplerPanelContent({ regionId, onClose }) {
   const sourceDuration = audioInfo?.duration ?? (sampleRate > 0 ? numSamples / sampleRate : 0)
 
   const prepBypassed = prepIsBypassed(settings)
-  // Mirrors the engine's bypass gate (MangleDsp.h makeRuntime): mode Off or
-  // mix 0 means the render loop never enters the MANGLE path at all, so the
-  // card carries no accent in either case.
-  const mangleOn = (settings.mangleMode ?? 0) !== MANGLE_OFF && (settings.mangleMix ?? 1) > 0
+  // The chain as edited, always ≥1 row: an empty committed chain shows one
+  // virtual Off instance that materialises the moment it is given a mode.
+  const mangleChain = (Array.isArray(settings.mangleChain) && settings.mangleChain.length)
+    ? settings.mangleChain
+    : [{ mode: MANGLE_OFF, amount: 0, mix: 1, bypass: false }]
+  // An instance runs only when it has a real mode, is not bypassed, and mixes
+  // in — the same gate MangleDsp.h makeRuntime applies. The card carries the
+  // accent when ANY instance in the chain is live.
+  const mangleInstanceActive = (mi) =>
+    (mi?.mode ?? 0) !== MANGLE_OFF && !mi?.bypass && (mi?.mix ?? 1) > 0
+  const mangleOn = mangleChain.some(mangleInstanceActive)
 
   const renderSample = () => (
     <div className="sampler-page sampler-page--sample">
@@ -1075,51 +1136,104 @@ export default function SamplerPanelContent({ regionId, onClose }) {
         <header>
           <i /><span>Mangle</span>
           {mangleOn && <span className="sampler-mangle-tag">per note</span>}
-          <button
-            type="button"
-            onClick={() => commit({ mangleMode: MANGLE_OFF })}
-            disabled={!mangleOn}
-            title="Bypass MANGLE for this slot — the stream is passed through untouched"
-          >
-            Off
-          </button>
         </header>
         <div className="sampler-mangle-body">
-          <label className="sampler-prep-algo sampler-mangle-mode">
-            <span>Mode</span>
-            <SelGrouped
-              val={settings.mangleMode ?? 0}
-              set={(v) => commitField('mangleMode', v)}
-              groups={MANGLE_GROUPS}
-              offLabel="Off"
-            />
-          </label>
-          <SamplerKnob
-            label="Amount"
-            value={(settings.mangleAmount ?? 0) * 100}
-            min={0} max={100}
-            defaultValue={mangleAmountIsBipolar(settings.mangleMode) ? 50 : 0}
-            size={42}
-            color={mangleOn ? accentPanel : muted}
-            formatValue={(v) => `${Math.round(v)}%`}
-            onLiveChange={(v) => setField('mangleAmount', Math.round(v) / 100)}
-            onCommit={(v) => commit({ mangleAmount: Math.round(v) / 100 })}
-          />
-          <SamplerKnob
-            label="Mix"
-            value={(settings.mangleMix ?? 1) * 100}
-            min={0} max={100} defaultValue={100}
-            size={42}
-            color={mangleOn ? accentPanel : muted}
-            formatValue={(v) => `${Math.round(v)}%`}
-            onLiveChange={(v) => setField('mangleMix', Math.round(v) / 100)}
-            onCommit={(v) => commit({ mangleMix: Math.round(v) / 100 })}
-          />
+          {/* One row per instance. The chain is an ordered stack — the output of
+              instance N feeds N+1 — so reorder is audible. Each row: reorder /
+              MODE / AMOUNT / MIX / bypass / remove; a "+" appends another. */}
+          {mangleChain.map((inst, i) => {
+            const instMode = inst.mode ?? 0
+            const instActive = mangleInstanceActive(inst)
+            const knobColor = instActive ? accentPanel : muted
+            return (
+              <div
+                key={i}
+                className={`sampler-mangle-inst${inst.bypass ? ' is-bypassed' : ''}${instActive ? ' is-active' : ''}`}
+              >
+                <div className="sampler-mangle-order">
+                  <button
+                    type="button" className="sampler-mangle-move"
+                    disabled={i === 0} aria-label="Move earlier in the chain"
+                    title="Move earlier in the chain"
+                    onClick={() => moveMangleInstance(i, -1)}
+                  >↑</button>
+                  <button
+                    type="button" className="sampler-mangle-move"
+                    disabled={i === mangleChain.length - 1} aria-label="Move later in the chain"
+                    title="Move later in the chain"
+                    onClick={() => moveMangleInstance(i, 1)}
+                  >↓</button>
+                </div>
+                <label className="sampler-prep-algo sampler-mangle-mode">
+                  <span>Mode</span>
+                  <SelGrouped
+                    val={instMode}
+                    set={(v) => commitChainField(i, 'mode', v)}
+                    groups={MANGLE_GROUPS}
+                    offLabel="Off"
+                  />
+                </label>
+                <SamplerKnob
+                  label="Amount"
+                  value={(inst.amount ?? 0) * 100}
+                  min={0} max={100}
+                  defaultValue={mangleAmountIsBipolar(instMode) ? 50 : 0}
+                  size={42}
+                  color={knobColor}
+                  formatValue={(v) => `${Math.round(v)}%`}
+                  onLiveChange={(v) => previewChainField(i, 'amount', Math.round(v) / 100)}
+                  onCommit={(v) => commitChainField(i, 'amount', Math.round(v) / 100)}
+                />
+                <SamplerKnob
+                  label="Mix"
+                  value={(inst.mix ?? 1) * 100}
+                  min={0} max={100} defaultValue={100}
+                  size={42}
+                  color={knobColor}
+                  formatValue={(v) => `${Math.round(v)}%`}
+                  onLiveChange={(v) => previewChainField(i, 'mix', Math.round(v) / 100)}
+                  onCommit={(v) => commitChainField(i, 'mix', Math.round(v) / 100)}
+                />
+                <div className="sampler-mangle-inst-actions">
+                  <button
+                    type="button"
+                    className={`sampler-mangle-bypass${inst.bypass ? '' : ' is-on'}`}
+                    aria-pressed={!inst.bypass}
+                    title={inst.bypass ? 'Bypassed — click to enable this instance'
+                                       : 'Bypass this instance (skipped, at no cost)'}
+                    onClick={() => commitChainField(i, 'bypass', !inst.bypass)}
+                  >
+                    {inst.bypass ? 'byp' : 'on'}
+                  </button>
+                  <button
+                    type="button" className="sampler-mangle-remove"
+                    aria-label="Remove this instance" title="Remove this instance"
+                    onClick={() => removeMangleInstance(i)}
+                  >×</button>
+                </div>
+              </div>
+            )
+          })}
+          {mangleChain.length < MANGLE_MAX && (
+            <button
+              type="button" className="sampler-mangle-add"
+              aria-label="Add another MANGLE to the chain"
+              title="Add another MANGLE to the chain"
+              onClick={addMangleInstance}
+            >+</button>
+          )}
           <span className="sampler-prep-note sampler-mangle-note">
-            {!mangleOn
-              ? 'Bypassed — stream passed through untouched'
-              : (MANGLE_HINTS[settings.mangleMode]
-                 || `${mangleModeLabel(settings.mangleMode)} — Amount drives, Mix blends`)}
+            {(() => {
+              const live = mangleChain.filter(mangleInstanceActive)
+              if (live.length === 0) return 'Bypassed — stream passed through untouched'
+              // One instance: show its specific hint. A chain: show the ordered
+              // stack so the audible left-to-right signal flow is explicit.
+              if (live.length === 1) {
+                return MANGLE_HINTS[live[0].mode]
+                  || `${mangleModeLabel(live[0].mode)} — Amount drives, Mix blends`
+              }
+              return `${live.map((mi) => mangleModeLabel(mi.mode)).join(' → ')} — per-note chain, order is audible`
+            })()}
           </span>
         </div>
       </section>

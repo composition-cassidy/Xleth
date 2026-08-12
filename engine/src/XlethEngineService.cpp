@@ -3183,9 +3183,18 @@ static JsonApi::Object slotToJs(JsonApi::Env env, const SampleSlot& s) {
     o.Set("crossfadeSamples", JsonApi::Number::New(env, static_cast<double>(s.crossfadeSamples)));
     o.Set("loopMode",          JsonApi::Number::New(env, s.loopMode));
     o.Set("exitLoopOnRelease", JsonApi::Boolean::New(env, s.exitLoopOnRelease));
-    o.Set("mangleMode",        JsonApi::Number::New(env, s.mangleMode));
-    o.Set("mangleAmount",      JsonApi::Number::New(env, s.mangleAmount));
-    o.Set("mangleMix",         JsonApi::Number::New(env, s.mangleMix));
+    // MANGLE chain — an ordered array of { mode, amount, mix, bypass }.
+    JsonApi::Array mangleChain = JsonApi::Array::New(env, s.mangleChain.size());
+    for (size_t k = 0; k < s.mangleChain.size(); ++k) {
+        const auto& mi = s.mangleChain[k];
+        JsonApi::Object e = JsonApi::Object::New(env);
+        e.Set("mode",   JsonApi::Number::New(env, mi.mode));
+        e.Set("amount", JsonApi::Number::New(env, mi.amount));
+        e.Set("mix",    JsonApi::Number::New(env, mi.mix));
+        e.Set("bypass", JsonApi::Boolean::New(env, mi.bypass));
+        mangleChain.Set(static_cast<uint32_t>(k), e);
+    }
+    o.Set("mangleChain", mangleChain);
     o.Set("prepAlgorithm",     JsonApi::Number::New(env, s.prepAlgorithm));
     o.Set("prepStretch",       JsonApi::Number::New(env, s.prepStretch));
     o.Set("prepShiftCents",    JsonApi::Number::New(env, s.prepShiftCents));
@@ -3256,19 +3265,35 @@ static void jsPatchSlot(const JsonApi::Object& o, SampleSlot& s, bool identity =
     }
     if (o.Has("exitLoopOnRelease") && o.Get("exitLoopOnRelease").IsBoolean())
         s.exitLoopOnRelease = o.Get("exitLoopOnRelease").As<JsonApi::Boolean>().Value();
-    // MANGLE. mangleMode is an ENUM — same reasoning as loopMode above: an
-    // unknown id falls back to Off (no effect) rather than clamping the user
-    // into whichever mode happens to sit at the end of the list.
-    if (o.Has("mangleMode") && o.Get("mangleMode").IsNumber()) {
-        const int m = o.Get("mangleMode").As<JsonApi::Number>().Int32Value();
-        s.mangleMode = xleth::mangle::isValidMode(m) ? m : 0;
+    // MANGLE chain. When the key is present it REPLACES the whole chain (the
+    // UI always sends the full ordered array), so add / remove / reorder are
+    // all just "send the new array". Absent ⇒ the chain is left untouched, so
+    // this stays a valid one-field patch. Each mode id is an ENUM — an unknown
+    // id falls back to Off (no effect) rather than the last mode in the list.
+    if (o.Has("mangleChain") && o.Get("mangleChain").IsArray()) {
+        JsonApi::Array arr = o.Get("mangleChain").As<JsonApi::Array>();
+        s.mangleChain.clear();
+        const uint32_t n = arr.Length();
+        for (uint32_t k = 0;
+             k < n && s.mangleChain.size() < static_cast<size_t>(xleth::mangle::kMaxInstances);
+             ++k) {
+            JsonApi::Value ev = arr.Get(k);
+            if (!ev.IsObject()) continue;
+            JsonApi::Object e = ev.As<JsonApi::Object>();
+            MangleInstance mi;
+            if (e.Has("mode") && e.Get("mode").IsNumber()) {
+                const int m = e.Get("mode").As<JsonApi::Number>().Int32Value();
+                mi.mode = xleth::mangle::isValidMode(m) ? m : 0;
+            }
+            if (e.Has("amount") && e.Get("amount").IsNumber())
+                mi.amount = std::clamp(e.Get("amount").As<JsonApi::Number>().FloatValue(), 0.0f, 1.0f);
+            if (e.Has("mix") && e.Get("mix").IsNumber())
+                mi.mix = std::clamp(e.Get("mix").As<JsonApi::Number>().FloatValue(), 0.0f, 1.0f);
+            if (e.Has("bypass") && e.Get("bypass").IsBoolean())
+                mi.bypass = e.Get("bypass").As<JsonApi::Boolean>().Value();
+            s.mangleChain.push_back(mi);
+        }
     }
-    if (o.Has("mangleAmount") && o.Get("mangleAmount").IsNumber())
-        s.mangleAmount = std::clamp(o.Get("mangleAmount").As<JsonApi::Number>().FloatValue(),
-                                    0.0f, 1.0f);
-    if (o.Has("mangleMix") && o.Get("mangleMix").IsNumber())
-        s.mangleMix = std::clamp(o.Get("mangleMix").As<JsonApi::Number>().FloatValue(),
-                                 0.0f, 1.0f);
     // PREP. prepAlgorithm is clamped to the five real renderers — Global (0) is
     // the timeline's "inherit the preference" sentinel and means nothing here.
     if (o.Has("prepAlgorithm") && o.Get("prepAlgorithm").IsNumber())

@@ -31,7 +31,12 @@ const noopCtx = () => new Proxy({}, {
 
 const REGION_ID = 7
 
-// One slot carrying MANGLE, shaped like the engine's slotToJs() output.
+// One MANGLE instance, shaped like the engine's slotToJs() chain entry.
+function inst(mode, amount = 0, mix = 1, bypass = false) {
+  return { mode, amount, mix, bypass }
+}
+
+// One slot carrying a MANGLE chain, shaped like the engine's slotToJs() output.
 function makeSlot(overrides = {}) {
   return {
     audioFilePath: 'C:/x.wav', name: 'Layer 1', rootNote: 60,
@@ -40,7 +45,7 @@ function makeSlot(overrides = {}) {
     smpStart: 0, smpLength: 0, declickMs: 1.5, fadeInMs: 0, fadeOutMs: 0,
     loopEnabled: false, loopStart: 0, loopEnd: 0, crossfadeSamples: 0,
     loopMode: 0, exitLoopOnRelease: false,
-    mangleMode: 0, mangleAmount: 0, mangleMix: 1,
+    mangleChain: [],
     prepAlgorithm: 2, prepStretch: 1, prepShiftCents: 0,
     dcOffsetRemoved: false, normalized: false, polarityReversed: false, reversed: false,
     ...overrides,
@@ -113,7 +118,19 @@ async function mount(slots = [makeSlot()]) {
 }
 
 const mangleCard = () => container.querySelector('.sampler-range-card--mangle')
-const modeSelect = () => mangleCard().querySelector('select')
+const rows = () => [...mangleCard().querySelectorAll('.sampler-mangle-inst')]
+const modeSelect = (row = 0) => rows()[row].querySelector('select')
+const addButton = () => mangleCard().querySelector('.sampler-mangle-add')
+const lastCommit = (key) => [...commits].reverse().find((c) => key in c.payload)
+
+async function pickMode(row, value) {
+  const select = modeSelect(row)
+  await act(async () => {
+    select.value = String(value)
+    select.dispatchEvent(new Event('change', { bubbles: true }))
+  })
+  await act(async () => { await Promise.resolve() })
+}
 
 describe('MANGLE section renders', () => {
   it('mounts the panel and shows the MANGLE card', async () => {
@@ -157,83 +174,126 @@ describe('MANGLE section renders', () => {
     expect(mangleCard().textContent).not.toContain('per note')
   })
 
-  it('reads MANGLE off the slot, not the region', async () => {
+  it('reads the chain off the slot, not the region', async () => {
     // 18 = Tube. If the panel read the region instead of the slot this would
     // fall back to Off.
-    await mount([makeSlot({ mangleMode: 18, mangleAmount: 0.5, mangleMix: 0.75 })])
+    await mount([makeSlot({ mangleChain: [inst(18, 0.5, 0.75)] })])
     expect(modeSelect().value).toBe('18')
     expect(mangleCard().className).not.toContain('is-bypassed')
     expect(mangleCard().textContent).toContain('per note')
   })
 
-  it('goes quiet when mix is 0 even with a mode selected, matching the engine gate', async () => {
-    await mount([makeSlot({ mangleMode: 18, mangleAmount: 1, mangleMix: 0 })])
+  it('goes quiet when an instance mixes 0, matching the engine gate', async () => {
+    await mount([makeSlot({ mangleChain: [inst(18, 1, 0)] })])
     expect(modeSelect().value).toBe('18')
     expect(mangleCard().className).toContain('is-bypassed')
   })
 
-  it('follows the selected slot', async () => {
-    // Slot 0 is Off, slot 1 is LPF. The panel opens on slot 0.
-    await mount([makeSlot(), makeSlot({ name: 'Layer 2', mangleMode: 14 })])
-    expect(modeSelect().value).toBe('0')
+  it('goes quiet when the only instance is bypassed', async () => {
+    await mount([makeSlot({ mangleChain: [inst(18, 1, 1, true)] })])
+    expect(mangleCard().className).toContain('is-bypassed')
   })
 
-  it('commits a mode change through IPC with the slot index attached', async () => {
-    await mount()
-    const select = modeSelect()
-    await act(async () => {
-      select.value = '20'   // Hard Clip
-      select.dispatchEvent(new Event('change', { bubbles: true }))
-    })
-    await act(async () => { await Promise.resolve() })
+  it('follows the selected slot', async () => {
+    // Slot 0 is empty (virtual Off), slot 1 is LPF. The panel opens on slot 0.
+    await mount([makeSlot(), makeSlot({ name: 'Layer 2', mangleChain: [inst(14)] })])
+    expect(modeSelect().value).toBe('0')
+    expect(mangleCard().className).toContain('is-bypassed')
+  })
 
-    const write = commits.find((c) => 'mangleMode' in c.payload)
-    expect(write, 'a mangleMode commit should have reached IPC').toBeTruthy()
+  it('commits a mode change as the full chain array with the slot index attached', async () => {
+    await mount()
+    await pickMode(0, 20)   // Hard Clip
+
+    const write = lastCommit('mangleChain')
+    expect(write, 'a mangleChain commit should have reached IPC').toBeTruthy()
     expect(write.regionId).toBe(REGION_ID)
-    expect(write.payload.mangleMode).toBe(20)
-    // slotIndex is what routes the flat key onto the selected layer.
+    expect(Array.isArray(write.payload.mangleChain)).toBe(true)
+    expect(write.payload.mangleChain).toHaveLength(1)
+    expect(write.payload.mangleChain[0].mode).toBe(20)
+    // slotIndex is what routes the array onto the selected layer.
     expect(write.payload.slotIndex).toBe(0)
   })
 
   it('lights the accent immediately after a mode is picked', async () => {
     await mount()
-    const select = modeSelect()
-    await act(async () => {
-      select.value = '18'
-      select.dispatchEvent(new Event('change', { bubbles: true }))
-    })
-    await act(async () => { await Promise.resolve() })
+    await pickMode(0, 18)
     expect(mangleCard().className).not.toContain('is-bypassed')
-    // The hint text must track the selection rather than staying generic.
     expect(mangleCard().textContent).not.toContain('Bypassed')
   })
 
-  it('shows the per-mode hint for a mode that has one', async () => {
-    await mount([makeSlot({ mangleMode: 1 })])   // Sync
+  it('shows the per-mode hint for a single-instance chain', async () => {
+    await mount([makeSlot({ mangleChain: [inst(1)] })])   // Sync
     expect(mangleCard().textContent).toContain('hard sync')
   })
 
-  it('the Off button bypasses without touching amount or mix', async () => {
-    await mount([makeSlot({ mangleMode: 18, mangleAmount: 0.5, mangleMix: 0.75 })])
-    const offBtn = [...mangleCard().querySelectorAll('button')]
-      .find((b) => b.textContent.trim() === 'Off')
-    expect(offBtn).toBeTruthy()
-    expect(offBtn.disabled).toBe(false)
+  it('adds an instance via the + control, up to the cap', async () => {
+    await mount([makeSlot({ mangleChain: [inst(18)] })])
+    expect(rows()).toHaveLength(1)
 
-    await act(async () => { offBtn.click() })
+    await act(async () => { addButton().click() })
     await act(async () => { await Promise.resolve() })
 
-    const write = commits.find((c) => 'mangleMode' in c.payload)
-    expect(write).toBeTruthy()
-    expect(write.payload.mangleMode).toBe(0)
-    expect(write.payload).not.toHaveProperty('mangleAmount')
-    expect(write.payload).not.toHaveProperty('mangleMix')
+    expect(rows()).toHaveLength(2)
+    const write = lastCommit('mangleChain')
+    expect(write.payload.mangleChain).toHaveLength(2)
+    expect(write.payload.mangleChain[0].mode).toBe(18)   // existing instance preserved
+    expect(write.payload.mangleChain[1].mode).toBe(0)    // new one starts Off
+
+    // Fill to the cap (4); the + control then disappears.
+    await act(async () => { addButton().click() })
+    await act(async () => { addButton().click() })
+    await act(async () => { await Promise.resolve() })
+    expect(rows()).toHaveLength(4)
+    expect(addButton()).toBeNull()
   })
 
-  it('disables the Off button when already bypassed', async () => {
-    await mount()
-    const offBtn = [...mangleCard().querySelectorAll('button')]
-      .find((b) => b.textContent.trim() === 'Off')
-    expect(offBtn.disabled).toBe(true)
+  it('bypasses one instance without disturbing the others', async () => {
+    await mount([makeSlot({ mangleChain: [inst(18, 0.5, 0.75), inst(14, 0.3, 1)] })])
+    const bypassBtn = rows()[0].querySelector('.sampler-mangle-bypass')
+    expect(bypassBtn).toBeTruthy()
+    expect(bypassBtn.getAttribute('aria-pressed')).toBe('true')   // on == pressed
+
+    await act(async () => { bypassBtn.click() })
+    await act(async () => { await Promise.resolve() })
+
+    const write = lastCommit('mangleChain')
+    expect(write.payload.mangleChain[0].bypass).toBe(true)
+    expect(write.payload.mangleChain[0].mode).toBe(18)   // mode untouched
+    expect(write.payload.mangleChain[1].bypass).toBe(false)
+  })
+
+  it('removes an instance', async () => {
+    await mount([makeSlot({ mangleChain: [inst(18), inst(14)] })])
+    expect(rows()).toHaveLength(2)
+
+    await act(async () => { rows()[0].querySelector('.sampler-mangle-remove').click() })
+    await act(async () => { await Promise.resolve() })
+
+    expect(rows()).toHaveLength(1)
+    const write = lastCommit('mangleChain')
+    expect(write.payload.mangleChain).toHaveLength(1)
+    expect(write.payload.mangleChain[0].mode).toBe(14)   // the survivor
+  })
+
+  it('reorders instances, which the engine renders in order', async () => {
+    await mount([makeSlot({ mangleChain: [inst(20, 0.7, 1), inst(14, 0.5, 1)] })])
+    // Row 0 move-down (the second .sampler-mangle-move in the row).
+    const moves = rows()[0].querySelectorAll('.sampler-mangle-move')
+    expect(moves).toHaveLength(2)
+    const down = moves[1]
+    expect(down.disabled).toBe(false)
+
+    await act(async () => { down.click() })
+    await act(async () => { await Promise.resolve() })
+
+    const write = lastCommit('mangleChain')
+    expect(write.payload.mangleChain.map((m) => m.mode)).toEqual([14, 20])
+  })
+
+  it('shows the ordered chain summary for multiple active instances', async () => {
+    await mount([makeSlot({ mangleChain: [inst(18, 0.8, 1), inst(14, 0.4, 1)] })])
+    // Tube -> LPF, in chain order.
+    expect(mangleCard().textContent).toContain('Tube → LPF')
   })
 })

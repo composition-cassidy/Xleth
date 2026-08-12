@@ -125,15 +125,40 @@ void Sampler::setSlotRootNote(int slotIndex, int rootNote)
     slots_[static_cast<size_t>(slotIndex)].rootNote = rootNote;
 }
 
-void Sampler::setSlotMangle(int slotIndex, int mode, float amount, float mix)
+void Sampler::setSlotMangleChain(int slotIndex,
+                                 const std::vector<xleth::mangle::InstanceConfig>& chain)
 {
     if (slotIndex < 0 || slotIndex >= MAX_SAMPLE_SLOTS) return;
     auto& s = slots_[static_cast<size_t>(slotIndex)];
-    // Same guard shape as setSlotLoop's: an unknown mode id is a malformed
-    // project, and the safe answer is "no effect", not "some other effect".
-    s.mangleMode   = xleth::mangle::isValidMode(mode) ? mode : 0;
-    s.mangleAmount = std::clamp(amount, 0.0f, 1.0f);
-    s.mangleMix    = std::clamp(mix,    0.0f, 1.0f);
+
+    // Build the immutable config on the main thread. Instances are copied in
+    // chain order and clamped; ids are validated the same way setSlotLoop
+    // guards its mode — an unknown id is a malformed project, and the safe
+    // answer is "no effect", not "some other effect".
+    auto cfg = std::make_shared<xleth::mangle::ChainConfig>();
+    int n = 0;
+    for (const auto& in : chain) {
+        if (n >= xleth::mangle::kMaxInstances) break;
+        auto& d = cfg->inst[static_cast<size_t>(n)];
+        d.mode   = xleth::mangle::isValidMode(in.mode) ? in.mode : 0;
+        d.amount = std::clamp(in.amount, 0.0f, 1.0f);
+        d.mix    = std::clamp(in.mix,    0.0f, 1.0f);
+        d.bypass = in.bypass;
+        ++n;
+    }
+    cfg->count = n;
+
+    // An empty chain publishes null — the audio thread's fast bypass path.
+    if (n == 0) { s.publishMangle(nullptr); return; }
+    s.publishMangle(std::move(cfg));
+}
+
+void Sampler::setSlotMangle(int slotIndex, int mode, float amount, float mix)
+{
+    // A single MANGLE is a one-instance chain — exactly the legacy shape, so
+    // single-sample callers and the test suite are unchanged.
+    setSlotMangleChain(slotIndex,
+                       { xleth::mangle::InstanceConfig{ mode, amount, mix, false } });
 }
 
 bool Sampler::slotHasAudio(int slotIndex) const
@@ -824,6 +849,14 @@ int Sampler::debugVoiceStreamSlot(int voiceIdx, int streamIdx) const
     return st.active ? st.slotIndex : -1;
 }
 
+int Sampler::debugSlotMangleCount(int slotIndex) const
+{
+    if (slotIndex < 0 || slotIndex >= MAX_SAMPLE_SLOTS) return 0;
+    const auto chain = slots_[static_cast<size_t>(slotIndex)]
+                           .mangleChain.load(std::memory_order_acquire);
+    return chain ? chain->count : 0;
+}
+
 // ─── Modulation introspection (test-only) ────────────────────────────────────
 
 float Sampler::debugModVoiceSource(int voiceIdx, int sourceIdx) const
@@ -936,9 +969,9 @@ void Sampler::armStreams(Voice& v)
         st.exiting      = false;
         st.loopLeft     = false;
         // Filter integrators, DC blockers and the note-cycle anchor all start
-        // from zero, so a recycled stream cannot leak the previous note's
-        // MANGLE state into this one as a transient.
-        st.mangle.reset();
+        // from zero for every chain instance, so a recycled stream cannot leak
+        // the previous note's MANGLE state into this one as a transient.
+        for (auto& m : st.mangle) m.reset();
     }
     // Clear the tail so a recycled voice can't expose stale stream state.
     for (int i = v.numStreams; i < MAX_SAMPLE_SLOTS; ++i)
@@ -1612,9 +1645,16 @@ struct StreamGeometry
     double   xfadeStart = 0.0;
     int      loopMode   = static_cast<int>(SampleLoopMode::Forward);
 
-    // MANGLE, resolved once per block per stream. `mangle.active` false means
-    // the render loop takes the pre-MANGLE path verbatim.
-    xleth::mangle::Runtime mangle{};
+    // MANGLE chain, resolved once per block per stream. Each entry is one
+    // instance's per-block runtime; `mangleAny` false means no instance is
+    // active and the render loop takes the pre-MANGLE path verbatim.
+    std::array<xleth::mangle::Runtime, xleth::mangle::kMaxInstances> mangle{};
+    int  mangleCount = 0;
+    bool mangleAny   = false;
+    // The unmodulated instance-0 config, kept so the modulation control block
+    // can re-design instance 0 (the modulation target) without reloading the
+    // published chain on the audio thread.
+    xleth::mangle::InstanceConfig mangleBase0{};
     // Legal read-head window for a MANGLE-bent head. Precomputed so the inner
     // loop clamps against a pair that is ordered BY CONSTRUCTION — a degenerate
     // trim (clampedEnd == smpStart) would otherwise hand std::clamp lo > hi,
@@ -1749,12 +1789,36 @@ void Sampler::processVoice(Voice& v,
 
         const double K = 440.0 * std::pow(2.0, (sl.rootNote - sl.tuningSemitones - 69.0) / 12.0);
         const double cycleLen = (K > 1.0e-6) ? (sl.sourceSampleRate / K) : 0.0;
-        g.mangle = xleth::mangle::makeRuntime(
-            sl.mangleMode, sl.mangleAmount, sl.mangleMix,
-            noteHzAtBlockEntry, cycleLen,
-            static_cast<double>(g.smpStart),
-            static_cast<double>(g.clampedEnd - g.smpStart),
-            engineSampleRate);
+
+        // Load the slot's published chain once and design a runtime per
+        // instance. Bypassed instances get a default (inactive) runtime, so the
+        // render loop skips them for free. The shared_ptr is held only for this
+        // iteration — makeRuntime copies every value it needs into the Runtime,
+        // so nothing points back into the config during the block, and the
+        // main-thread retirement ring keeps the audio thread from ever dropping
+        // the last reference.
+        g.mangleCount = 0;
+        g.mangleAny   = false;
+        g.mangleBase0 = xleth::mangle::InstanceConfig{};
+        if (auto chain = sl.mangleChain.load(std::memory_order_acquire)) {
+            const int nInst = std::min(chain->count, xleth::mangle::kMaxInstances);
+            for (int k = 0; k < nInst; ++k) {
+                const auto& in = chain->inst[static_cast<size_t>(k)];
+                if (in.bypass) {
+                    g.mangle[static_cast<size_t>(k)] = xleth::mangle::Runtime{};
+                } else {
+                    g.mangle[static_cast<size_t>(k)] = xleth::mangle::makeRuntime(
+                        in.mode, in.amount, in.mix,
+                        noteHzAtBlockEntry, cycleLen,
+                        static_cast<double>(g.smpStart),
+                        static_cast<double>(g.clampedEnd - g.smpStart),
+                        engineSampleRate);
+                }
+                if (g.mangle[static_cast<size_t>(k)].active) g.mangleAny = true;
+            }
+            g.mangleCount = nInst;
+            if (nInst > 0) g.mangleBase0 = chain->inst[0];
+        }
 
         ++liveStreams;
     }
@@ -1824,6 +1888,11 @@ void Sampler::processVoice(Voice& v,
         // per-block geometry, so the affected slots' runtimes are re-designed
         // here — only where a route exists, which is what keeps an unmodulated
         // MANGLE slot at its original one-design-per-block cost.
+        //
+        // The modulation target is per-SLOT (SlotMangleAmount / SlotMangleMix),
+        // so with a chain it drives INSTANCE 0 — the slot's primary MANGLE. That
+        // keeps a migrated single MANGLE (one-instance chain) modulated exactly
+        // as before, and leaves the modulation system itself untouched.
         if (mod != nullptr)
         {
             if (v.modCountdown <= 0)
@@ -1841,19 +1910,24 @@ void Sampler::processVoice(Voice& v,
                         if (!mod->slotMangleRouted[si]) continue;
                         const Slot& sl = slots_[si];
                         auto& gm = geo[static_cast<size_t>(i)];
+                        // No instance 0, or it is bypassed / Off ⇒ nothing to
+                        // modulate; the route simply has no effect this block.
+                        if (gm.mangleCount <= 0 || gm.mangleBase0.bypass
+                            || gm.mangleBase0.mode == 0) continue;
                         const float amt = std::clamp(
-                            sl.mangleAmount + v.modOffsets.mangleAmount[si], 0.0f, 1.0f);
+                            gm.mangleBase0.amount + v.modOffsets.mangleAmount[si], 0.0f, 1.0f);
                         const float mix = std::clamp(
-                            sl.mangleMix + v.modOffsets.mangleMix[si], 0.0f, 1.0f);
+                            gm.mangleBase0.mix + v.modOffsets.mangleMix[si], 0.0f, 1.0f);
                         const double K = 440.0 * std::pow(
                             2.0, (sl.rootNote - sl.tuningSemitones - 69.0) / 12.0);
                         const double cycleLen = (K > 1.0e-6) ? (sl.sourceSampleRate / K) : 0.0;
-                        gm.mangle = xleth::mangle::makeRuntime(
-                            sl.mangleMode, amt, mix,
+                        gm.mangle[0] = xleth::mangle::makeRuntime(
+                            gm.mangleBase0.mode, amt, mix,
                             noteHzAtBlockEntry, cycleLen,
                             static_cast<double>(gm.smpStart),
                             static_cast<double>(gm.clampedEnd - gm.smpStart),
                             engineSampleRate);
+                        gm.mangleAny = gm.mangleAny || gm.mangle[0].active;
                     }
                 }
             }
@@ -2105,30 +2179,41 @@ void Sampler::processVoice(Voice& v,
             const float common = envGain * v.velocity * declickGain * fadeGain
                                * volLfoGain * slotGain * v.modMasterGain;
 
-            // ── MANGLE (per-note, per-slot warp FX) ─────────────────────────
+            // ── MANGLE chain (per-note, per-slot warp FX) ───────────────────
             // Runs entirely INSIDE this stream, before the voice sums into
-            // `out` — which is the whole feature: a chord through TUBE gets one
-            // shaper per note, not one shaper on the summed chord.
+            // `out`: a chord through TUBE gets one shaper per note, not one on
+            // the summed chord. The chain is a stack — the output of instance N
+            // feeds instance N+1, so order is audible.
             //
-            // `tick` bends only where the head is READ FROM. st.playPosition is
+            // `tick` bends only where the head is READ FROM; st.playPosition is
             // never written here, so the loop state machine, the trim-end test,
             // the declick/fade envelopes and the crossfade above all keep
-            // driving the canonical head exactly as they did pre-MANGLE.
-            const bool mangleOn = g.mangle.active;
-            xleth::mangle::Tick mt;
-            double wetPos = st.playPosition;
-            bool   wetPosMoved = false;
-            if (mangleOn)
+            // driving the canonical head exactly as pre-MANGLE. Every instance
+            // ticks against that CANONICAL head (positions do not compose) and
+            // is resolved ONCE per sample here — tick advances phase — before
+            // the per-channel shaping below.
+            const bool mangleAny = g.mangleAny;
+            std::array<xleth::mangle::Tick,   xleth::mangle::kMaxInstances> mt{};
+            std::array<double, xleth::mangle::kMaxInstances> wetPos{};
+            std::array<bool,   xleth::mangle::kMaxInstances> wetPosMoved{};
+            if (mangleAny)
             {
-                mt = xleth::mangle::tick(g.mangle, st.mangle, st.playPosition, stride);
-                if (mt.posOffset != 0.0)
+                for (int k = 0; k < g.mangleCount; ++k)
                 {
-                    // A bent head must stay inside the trim window: the ALT
-                    // modes deliberately run backwards and stall, and nothing
-                    // downstream re-checks the bound.
-                    wetPos = std::clamp(st.playPosition + mt.posOffset,
-                                        g.readLo, g.readHi);
-                    wetPosMoved = true;
+                    const size_t ik = static_cast<size_t>(k);
+                    if (!g.mangle[ik].active) continue;
+                    mt[ik] = xleth::mangle::tick(g.mangle[ik], st.mangle[ik],
+                                                 st.playPosition, stride);
+                    wetPos[ik] = st.playPosition;
+                    if (mt[ik].posOffset != 0.0)
+                    {
+                        // A bent head must stay inside the trim window: the ALT
+                        // modes deliberately run backwards and stall, and nothing
+                        // downstream re-checks the bound.
+                        wetPos[ik] = std::clamp(st.playPosition + mt[ik].posOffset,
+                                                g.readLo, g.readHi);
+                        wetPosMoved[ik] = true;
+                    }
                 }
             }
 
@@ -2142,42 +2227,54 @@ void Sampler::processVoice(Voice& v,
                     sample = sample * fadeOutX + loopStartSample * fadeInX;
                 }
 
-                if (mangleOn)
+                if (mangleAny)
                 {
-                    // Wet leg. A sample-domain mode reuses the dry read
-                    // outright, so FILTER / DISTORTION cost exactly one extra
-                    // shaper call and no extra interpolation.
-                    float wet = sample;
-                    if (wetPosMoved)
+                    // Walk the chain in order: each active instance transforms
+                    // the running `sample` and blends it back by its own mix, so
+                    // the output of instance N feeds instance N+1. A one-instance
+                    // chain is exactly the pre-chain single-MANGLE render.
+                    for (int k = 0; k < g.mangleCount; ++k)
                     {
-                        wet = readInterp(g, wetPos, srcCh);
-                        if (inXfade)
+                        const size_t ik = static_cast<size_t>(k);
+                        const auto& rt = g.mangle[ik];
+                        if (!rt.active) continue;
+
+                        // A sample-domain mode reuses the running value outright,
+                        // so FILTER / DISTORTION cost one extra shaper call and
+                        // no extra interpolation. A position-domain mode instead
+                        // re-reads the SOURCE at its bent head — its input is the
+                        // buffer, not the previous instance's sample.
+                        float wet = sample;
+                        if (wetPosMoved[ik])
                         {
-                            // Carry the same bend into the crossfade's source
-                            // read, or the seam would fight the read head.
-                            const double srcBent = std::clamp(
-                                loopSrcPos + mt.posOffset, g.readLo, g.readHi);
-                            wet = wet * fadeOutX + readInterp(g, srcBent, srcCh) * fadeInX;
+                            wet = readInterp(g, wetPos[ik], srcCh);
+                            if (inXfade)
+                            {
+                                // Carry the same bend into the crossfade's source
+                                // read, or the seam would fight the read head.
+                                const double srcBent = std::clamp(
+                                    loopSrcPos + mt[ik].posOffset, g.readLo, g.readHi);
+                                wet = wet * fadeOutX + readInterp(g, srcBent, srcCh) * fadeInX;
+                            }
                         }
+
+                        // ODD / EVEN: comb against a second head half a note
+                        // period back. A read, not a delay line — a per-stream
+                        // ring long enough for a bass note would be prohibitive.
+                        if (mt[ik].combDepth > 0.0f)
+                        {
+                            const double combPos = std::clamp(
+                                wetPos[ik] + mt[ik].combOffset, g.readLo, g.readHi);
+                            const float delayed = readInterp(g, combPos, srcCh);
+                            wet = (wet + mt[ik].combSign * mt[ik].combDepth * delayed)
+                                / (1.0f + mt[ik].combDepth);
+                        }
+
+                        wet = xleth::mangle::shapeSample(rt, st.mangle[ik], wet, ch)
+                            * mt[ik].ampGain;
+
+                        sample += (wet - sample) * rt.mix;
                     }
-
-                    // ODD / EVEN: comb against a second head half a note period
-                    // back. Realised as a read, not a delay line — 32 voices x
-                    // 8 slots of preallocated Stream make a per-stream ring
-                    // long enough for a bass note prohibitively large.
-                    if (mt.combDepth > 0.0f)
-                    {
-                        const double combPos = std::clamp(
-                            wetPos + mt.combOffset, g.readLo, g.readHi);
-                        const float delayed = readInterp(g, combPos, srcCh);
-                        wet = (wet + mt.combSign * mt.combDepth * delayed)
-                            / (1.0f + mt.combDepth);
-                    }
-
-                    wet = xleth::mangle::shapeSample(g.mangle, st.mangle, wet, ch)
-                        * mt.ampGain;
-
-                    sample += (wet - sample) * g.mangle.mix;
                 }
 
                 // Slot pan and pan-LFO compose multiplicatively per side.
@@ -2212,10 +2309,8 @@ void Sampler::processVoice(Voice& v,
             return;
         }
     }
-#ifdef XLETH_DEBUG
-    fprintf(stderr, "[VoiceExit] wrote_from=%d to=%d streams=%d\n",
-            v.onsetSample, numSamples - 1, v.numStreams);
-#endif
+    // (Removed an XLETH_DEBUG-gated fprintf here: debug-gated or not, stderr I/O
+    // on the audio render path is a real-time violation.)
     v.onsetSample      = 0;
     // Slide gate is sub-buffer only: if the slide started in this block, the
     // gate has already been honoured; subsequent blocks should not re-gate.
