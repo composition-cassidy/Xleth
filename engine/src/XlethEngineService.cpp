@@ -3096,6 +3096,15 @@ static JsonApi::Object modConfigToJs(JsonApi::Env env, const xleth::sampmod::Mod
     o.Set("velo", modCurveToJs(env, c.velo));
     o.Set("note", modCurveToJs(env, c.note));
 
+    JsonApi::Array envPresent = JsonApi::Array::New(env, xleth::sampmod::kNumEnvs);
+    for (int i = 0; i < xleth::sampmod::kNumEnvs; ++i)
+        envPresent.Set((uint32_t)i, JsonApi::Boolean::New(env, c.envPresent[(size_t)i]));
+    o.Set("envPresent", envPresent);
+    JsonApi::Array lfoPresent = JsonApi::Array::New(env, xleth::sampmod::kNumLfos);
+    for (int i = 0; i < xleth::sampmod::kNumLfos; ++i)
+        lfoPresent.Set((uint32_t)i, JsonApi::Boolean::New(env, c.lfoPresent[(size_t)i]));
+    o.Set("lfoPresent", lfoPresent);
+
     const int nr = std::clamp(c.numRoutes, 0, xleth::sampmod::kMaxRoutes);
     JsonApi::Array routes = JsonApi::Array::New(env, static_cast<size_t>(nr));
     for (int i = 0; i < nr; ++i) {
@@ -3136,6 +3145,22 @@ static int jsPatchModConfig(const JsonApi::Object& o, xleth::sampmod::ModConfig&
     if (o.Has("note") && o.Get("note").IsObject())
         jsPatchModCurve(o.Get("note").As<JsonApi::Object>(), c.note);
 
+    // Source presence. Replaced wholesale when the key is present, position by
+    // position; a shorter array leaves the tail at its previous value, which is
+    // the tolerant behaviour every other field here follows.
+    if (o.Has("envPresent") && o.Get("envPresent").IsArray()) {
+        JsonApi::Array a = o.Get("envPresent").As<JsonApi::Array>();
+        for (uint32_t i = 0; i < a.Length() && i < (uint32_t)xleth::sampmod::kNumEnvs; ++i)
+            if (a.Get(i).IsBoolean())
+                c.envPresent[(size_t)i] = a.Get(i).As<JsonApi::Boolean>().Value();
+    }
+    if (o.Has("lfoPresent") && o.Get("lfoPresent").IsArray()) {
+        JsonApi::Array a = o.Get("lfoPresent").As<JsonApi::Array>();
+        for (uint32_t i = 0; i < a.Length() && i < (uint32_t)xleth::sampmod::kNumLfos; ++i)
+            if (a.Get(i).IsBoolean())
+                c.lfoPresent[(size_t)i] = a.Get(i).As<JsonApi::Boolean>().Value();
+    }
+
     // The route list is REPLACED wholesale when present — a route has no stable
     // identity, so patching one by position would silently retarget it.
     if (o.Has("routes") && o.Get("routes").IsArray()) {
@@ -3156,6 +3181,9 @@ static int jsPatchModConfig(const JsonApi::Object& o, xleth::sampmod::ModConfig&
             c.routes[(size_t)c.numRoutes++] = r;
         }
     }
+
+    // ENV 0 (the amp envelope) must always exist, whatever the payload said.
+    c.enforceInvariants();
     return rejected;
 }
 

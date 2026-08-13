@@ -55,8 +55,13 @@ export function Titlebar({ id, focused, children }: TitlebarProps) {
     beginDrag(id, event.clientX, event.clientY, floatingX, floatingY);
   };
 
+  // A fixed-size panel (resizable === false) never maximizes — no control, and
+  // a double-click on its titlebar does nothing.
+  const canMaximize = entry.resizable !== false;
+
   const toggleTitlebarMaximize = (event: MouseEvent<HTMLDivElement>) => {
     if (isTitlebarControlTarget(event.target)) return;
+    if (!canMaximize) return;
     if (mode === 'maximized') restorePanel(id);
     else if (mode === 'floating') maximizePanel(id);
   };
@@ -90,18 +95,20 @@ export function Titlebar({ id, focused, children }: TitlebarProps) {
         >
           <Minus aria-hidden="true" strokeWidth={2} />
         </XlethIconButton>
-        <XlethIconButton
-          type="button"
-          className="xleth-windowing-control-button"
-          aria-label={mode === 'maximized' ? `Restore ${entry.title}` : `Maximize ${entry.title}`}
-          title={mode === 'maximized' ? `Restore ${entry.title}` : `Maximize ${entry.title}`}
-          onMouseDown={stopControlMouseDown}
-          onClick={toggleMaximize}
-        >
-          {mode === 'maximized'
-            ? <Square aria-hidden="true" strokeWidth={2} />
-            : <Maximize2 aria-hidden="true" strokeWidth={2} />}
-        </XlethIconButton>
+        {canMaximize ? (
+          <XlethIconButton
+            type="button"
+            className="xleth-windowing-control-button"
+            aria-label={mode === 'maximized' ? `Restore ${entry.title}` : `Maximize ${entry.title}`}
+            title={mode === 'maximized' ? `Restore ${entry.title}` : `Maximize ${entry.title}`}
+            onMouseDown={stopControlMouseDown}
+            onClick={toggleMaximize}
+          >
+            {mode === 'maximized'
+              ? <Square aria-hidden="true" strokeWidth={2} />
+              : <Maximize2 aria-hidden="true" strokeWidth={2} />}
+          </XlethIconButton>
+        ) : null}
         <XlethIconButton
           type="button"
           className="xleth-windowing-control-button"

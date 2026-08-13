@@ -243,6 +243,9 @@ bool migrateLegacyModulation(const nlohmann::json& j,
             for (int s = 0; s < slots; ++s)
                 addRoute(cfg, sm::kEnvSource0 + 1, sm::ModTarget::SlotSem, s, amount, false);
         }
+        // The shape is carried over even at zero amount, so the source EXISTS as
+        // far as the tray is concerned regardless of whether a route was added.
+        cfg.envPresent[1] = true;
         migrated = true;
     }
 
@@ -254,6 +257,7 @@ bool migrateLegacyModulation(const nlohmann::json& j,
         const LegacyLfo l = readLegacyLfo(j, "lfoVol", bpm);
         if (l.enabled) {
             cfg.lfos[0] = l.cfg;
+            cfg.lfoPresent[0] = true;
             if (std::abs(l.amount) > 1.0e-6f)
                 addRoute(cfg, sm::kLfoSource0 + 0, sm::ModTarget::MasterVolume, 0,
                          l.amount, true);
@@ -271,6 +275,7 @@ bool migrateLegacyModulation(const nlohmann::json& j,
         const LegacyLfo l = readLegacyLfo(j, "lfoPan", bpm);
         if (l.enabled) {
             cfg.lfos[1] = l.cfg;
+            cfg.lfoPresent[1] = true;
             if (std::abs(l.amount) > 1.0e-6f)
                 addRoute(cfg, sm::kLfoSource0 + 1, sm::ModTarget::MasterPan, 0,
                          l.amount, true);
@@ -285,6 +290,7 @@ bool migrateLegacyModulation(const nlohmann::json& j,
         const LegacyLfo l = readLegacyLfo(j, "lfoPitch", bpm);
         if (l.enabled) {
             cfg.lfos[2] = l.cfg;
+            cfg.lfoPresent[2] = true;
             if (std::abs(l.amount) > 1.0e-6f) {
                 const float amount = l.amount / 48.0f;
                 for (int s = 0; s < slots; ++s)

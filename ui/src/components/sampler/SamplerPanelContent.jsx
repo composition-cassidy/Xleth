@@ -6,7 +6,7 @@ import SlotList, { MAX_SLOTS } from './SlotList.jsx'
 import EnvelopeEditor from './EnvelopeEditor.jsx'
 import Knob from './Knob.jsx'
 import LfoSection from './LfoSection.jsx'
-import ModulationRack from './modulation/ModulationRack.jsx'
+import SamplerModTray from './modulation/SamplerModTray.jsx'
 import { tokenValue } from '../../theming/tokenValue.ts'
 import { nudgeEventFor, applyRecordFor } from './autoLoopTelemetry.js'
 
@@ -316,7 +316,7 @@ function ProcessButton({ label, active, onClick, children }) {
 
 // ── Main ──────────────────────────────────────────────────────────────────
 export default function SamplerPanelContent({ regionId, onClose }) {
-  const [tab, setTab] = useState('sample')
+  const [tab, setTab] = useState('main')
   const [envTab, setEnvTab] = useState('env')
   const [region, setRegion] = useState(null)
   const [audioInfo, setAudioInfo] = useState(null)
@@ -969,12 +969,19 @@ export default function SamplerPanelContent({ regionId, onClose }) {
         </div>
       </section>
 
-      <div className="sampler-identity-row">
-        <section className="sampler-card sampler-root-card">
-          <SectionLabel>Root Note</SectionLabel>
-          <RootNotePicker value={settings.rootNote} onChange={(midi) => commitField('rootNote', midi)} />
-        </section>
+      {/* PROCESS applies destructively to the baked buffer, so it reads directly
+          under PREP and above the trim/loop stages that work on its output. */}
+      <section className="sampler-card sampler-process-card">
+        <SectionLabel>Process (applies immediately)</SectionLabel>
+        <div className="sampler-process-row">
+          <ProcessButton label="Remove DC Offset" active={!!settings.dcOffsetRemoved} onClick={() => commitField('dcOffsetRemoved', !settings.dcOffsetRemoved)}><span aria-hidden>-</span></ProcessButton>
+          <ProcessButton label="Normalize" active={!!settings.normalized} onClick={() => commitField('normalized', !settings.normalized)}><span aria-hidden>~</span></ProcessButton>
+          <ProcessButton label="Reverse Polarity" active={!!settings.polarityReversed} onClick={() => commitField('polarityReversed', !settings.polarityReversed)}><span aria-hidden>+/-</span></ProcessButton>
+          <ProcessButton label="Reverse" active={!!settings.reversed} onClick={() => commitField('reversed', !settings.reversed)}><span aria-hidden>&lt;&gt;</span></ProcessButton>
+        </div>
+      </section>
 
+      <div className="sampler-identity-row">
         <section className="sampler-card sampler-mode-card">
           <SectionLabel>Mode</SectionLabel>
           <Seg
@@ -1238,15 +1245,6 @@ export default function SamplerPanelContent({ regionId, onClose }) {
         </div>
       </section>
 
-      <section className="sampler-card sampler-process-card">
-        <SectionLabel>Process (applies immediately)</SectionLabel>
-        <div className="sampler-process-row">
-          <ProcessButton label="Remove DC Offset" active={!!settings.dcOffsetRemoved} onClick={() => commitField('dcOffsetRemoved', !settings.dcOffsetRemoved)}><span aria-hidden>-</span></ProcessButton>
-          <ProcessButton label="Normalize" active={!!settings.normalized} onClick={() => commitField('normalized', !settings.normalized)}><span aria-hidden>~</span></ProcessButton>
-          <ProcessButton label="Reverse Polarity" active={!!settings.polarityReversed} onClick={() => commitField('polarityReversed', !settings.polarityReversed)}><span aria-hidden>+/-</span></ProcessButton>
-          <ProcessButton label="Reverse" active={!!settings.reversed} onClick={() => commitField('reversed', !settings.reversed)}><span aria-hidden>&lt;&gt;</span></ProcessButton>
-        </div>
-      </section>
     </div>
   )
 
@@ -1372,6 +1370,13 @@ export default function SamplerPanelContent({ regionId, onClose }) {
     return (
       <div className="sampler-page sampler-page--playback">
         <div className="sampler-playback-grid sampler-voice-panel">
+          {/* Root note lives on the playback tab (moved off the main tab): it
+              picks the pitch a note plays the sample at, alongside voicing. */}
+          <div className="sampler-module sampler-root-module">
+            <SectionLabel>Root Note</SectionLabel>
+            <RootNotePicker value={settings.rootNote} onChange={(midi) => commitField('rootNote', midi)} />
+          </div>
+
           {/* Voice + Portamento */}
           <div className="sampler-module sampler-voice-module" style={{ minWidth: 148 }}>
             <SectionLabel>Voice</SectionLabel>
@@ -1508,7 +1513,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
       <div className="sampler-panel-tabbar">
         <div className="sampler-panel-tabs">
           <Tabs
-            tabs={[{ id: 'sample', label: 'Sample' }, { id: 'playback', label: 'Playback' }, { id: 'mod', label: 'Modulation' }]}
+            tabs={[{ id: 'main', label: 'main' }, { id: 'playback', label: 'playback' }]}
             active={tab}
             onSelect={setTab}
           />
@@ -1516,11 +1521,13 @@ export default function SamplerPanelContent({ regionId, onClose }) {
       </div>
       <div className="sampler-panel-scroll">
         <div className="sampler-panel-content">
-          {tab === 'sample' && renderSample()}
+          {tab === 'main' && renderSample()}
           {tab === 'playback' && renderPlayback()}
-          {tab === 'mod' && <ModulationRack regionId={regionId} bpm={bpm} />}
         </div>
       </div>
+      {/* Modulation lives in a pull-out tray on the window's right edge instead
+          of a tab, so an ENV/LFO sits beside the knobs it drives. */}
+      <SamplerModTray regionId={regionId} bpm={bpm} />
     </div>
   )
 }

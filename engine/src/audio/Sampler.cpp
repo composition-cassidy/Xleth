@@ -10,6 +10,8 @@
 // not have to include TimelineTypes.h. They must never drift apart.
 static_assert(xleth::sampmod::kMaxModSlots == MAX_SAMPLE_SLOTS,
               "kMaxModSlots must mirror MAX_SAMPLE_SLOTS");
+static_assert(xleth::sampmod::kMaxMangleInstances == xleth::mangle::kMaxInstances,
+              "kMaxMangleInstances must mirror xleth::mangle::kMaxInstances");
 
 // ─── Slot configuration (main thread) ────────────────────────────────────────
 
@@ -1651,10 +1653,11 @@ struct StreamGeometry
     std::array<xleth::mangle::Runtime, xleth::mangle::kMaxInstances> mangle{};
     int  mangleCount = 0;
     bool mangleAny   = false;
-    // The unmodulated instance-0 config, kept so the modulation control block
-    // can re-design instance 0 (the modulation target) without reloading the
-    // published chain on the audio thread.
-    xleth::mangle::InstanceConfig mangleBase0{};
+    // The unmodulated per-instance configs, kept so the modulation control block
+    // can re-design any modulated instance (SlotMangleAmount/Mix carry a `stage`
+    // that names the instance) without reloading the published chain on the
+    // audio thread.
+    std::array<xleth::mangle::InstanceConfig, xleth::mangle::kMaxInstances> mangleBase{};
     // Legal read-head window for a MANGLE-bent head. Precomputed so the inner
     // loop clamps against a pair that is ordered BY CONSTRUCTION — a degenerate
     // trim (clampedEnd == smpStart) would otherwise hand std::clamp lo > hi,
@@ -1799,11 +1802,12 @@ void Sampler::processVoice(Voice& v,
         // the last reference.
         g.mangleCount = 0;
         g.mangleAny   = false;
-        g.mangleBase0 = xleth::mangle::InstanceConfig{};
+        g.mangleBase.fill(xleth::mangle::InstanceConfig{});
         if (auto chain = sl.mangleChain.load(std::memory_order_acquire)) {
             const int nInst = std::min(chain->count, xleth::mangle::kMaxInstances);
             for (int k = 0; k < nInst; ++k) {
                 const auto& in = chain->inst[static_cast<size_t>(k)];
+                g.mangleBase[static_cast<size_t>(k)] = in;
                 if (in.bypass) {
                     g.mangle[static_cast<size_t>(k)] = xleth::mangle::Runtime{};
                 } else {
@@ -1817,7 +1821,6 @@ void Sampler::processVoice(Voice& v,
                 if (g.mangle[static_cast<size_t>(k)].active) g.mangleAny = true;
             }
             g.mangleCount = nInst;
-            if (nInst > 0) g.mangleBase0 = chain->inst[0];
         }
 
         ++liveStreams;
@@ -1889,10 +1892,10 @@ void Sampler::processVoice(Voice& v,
         // here — only where a route exists, which is what keeps an unmodulated
         // MANGLE slot at its original one-design-per-block cost.
         //
-        // The modulation target is per-SLOT (SlotMangleAmount / SlotMangleMix),
-        // so with a chain it drives INSTANCE 0 — the slot's primary MANGLE. That
-        // keeps a migrated single MANGLE (one-instance chain) modulated exactly
-        // as before, and leaves the modulation system itself untouched.
+        // MANGLE modulation is per-SLOT and per chain INSTANCE: a route's `stage`
+        // names which instance its SlotMangleAmount/Mix offset lands on
+        // (v.modOffsets.mangleAmount[slot][instance]). A migrated single MANGLE
+        // (a one-instance chain) is instance 0, modulated exactly as before.
         if (mod != nullptr)
         {
             if (v.modCountdown <= 0)
@@ -1910,24 +1913,29 @@ void Sampler::processVoice(Voice& v,
                         if (!mod->slotMangleRouted[si]) continue;
                         const Slot& sl = slots_[si];
                         auto& gm = geo[static_cast<size_t>(i)];
-                        // No instance 0, or it is bypassed / Off ⇒ nothing to
-                        // modulate; the route simply has no effect this block.
-                        if (gm.mangleCount <= 0 || gm.mangleBase0.bypass
-                            || gm.mangleBase0.mode == 0) continue;
-                        const float amt = std::clamp(
-                            gm.mangleBase0.amount + v.modOffsets.mangleAmount[si], 0.0f, 1.0f);
-                        const float mix = std::clamp(
-                            gm.mangleBase0.mix + v.modOffsets.mangleMix[si], 0.0f, 1.0f);
+                        if (gm.mangleCount <= 0) continue;
                         const double K = 440.0 * std::pow(
                             2.0, (sl.rootNote - sl.tuningSemitones - 69.0) / 12.0);
                         const double cycleLen = (K > 1.0e-6) ? (sl.sourceSampleRate / K) : 0.0;
-                        gm.mangle[0] = xleth::mangle::makeRuntime(
-                            gm.mangleBase0.mode, amt, mix,
-                            noteHzAtBlockEntry, cycleLen,
-                            static_cast<double>(gm.smpStart),
-                            static_cast<double>(gm.clampedEnd - gm.smpStart),
-                            engineSampleRate);
-                        gm.mangleAny = gm.mangleAny || gm.mangle[0].active;
+                        // Re-design every active instance from its own base plus
+                        // that instance's accumulated offset. A bypassed / Off
+                        // instance has nothing to modulate and is left alone.
+                        for (int k = 0; k < gm.mangleCount && k < xleth::mangle::kMaxInstances; ++k)
+                        {
+                            const auto& base = gm.mangleBase[static_cast<size_t>(k)];
+                            if (base.bypass || base.mode == 0) continue;
+                            const float amt = std::clamp(
+                                base.amount + v.modOffsets.mangleAmount[si][static_cast<size_t>(k)], 0.0f, 1.0f);
+                            const float mix = std::clamp(
+                                base.mix + v.modOffsets.mangleMix[si][static_cast<size_t>(k)], 0.0f, 1.0f);
+                            gm.mangle[static_cast<size_t>(k)] = xleth::mangle::makeRuntime(
+                                base.mode, amt, mix,
+                                noteHzAtBlockEntry, cycleLen,
+                                static_cast<double>(gm.smpStart),
+                                static_cast<double>(gm.clampedEnd - gm.smpStart),
+                                engineSampleRate);
+                            gm.mangleAny = gm.mangleAny || gm.mangle[static_cast<size_t>(k)].active;
+                        }
                     }
                 }
             }

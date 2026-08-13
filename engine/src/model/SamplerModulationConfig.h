@@ -76,6 +76,13 @@ inline constexpr int kControlBlockSamples = 32;
 // Sampler.cpp static_asserts that the two agree.
 inline constexpr int kMaxModSlots = 8;
 
+// Mirror of xleth::mangle::kMaxInstances (the per-slot MANGLE chain cap).
+// Declared here for the same reason as kMaxModSlots — this header must not pull
+// in MangleDsp.h — and Sampler.cpp static_asserts the two agree. It is the range
+// of ModRoute::stage when the target is SlotMangleAmount / SlotMangleMix: for
+// those two targets `stage` selects WHICH chain instance the offset lands on.
+inline constexpr int kMaxMangleInstances = 4;
+
 // ── Note values ──────────────────────────────────────────────────────────────
 // 32 bars → 1/256, expressed in BEATS (4/4: one bar = 4 beats). TRIPLET scales
 // by 2/3, DOTTED by 3/2; both together is a dotted triplet, which is legal and
@@ -297,6 +304,25 @@ struct ModConfig {
     ModCurveConfig velo;
     ModCurveConfig note;
 
+    // ── Source presence ──────────────────────────────────────────────────────
+    // Which ENV / LFO sources currently EXIST as far as the user is concerned.
+    // The engine pools all six of each, but the UI adds and removes them one at
+    // a time; presence is that add/remove state, saved so a project reopens with
+    // exactly the sources the user built.
+    //
+    // Presence is a UI + persistence concern ONLY — the audio path keys off the
+    // route list, never these flags. A source with no routes is silent whether
+    // present or not, and removing a source is what strips its routes (done by
+    // the caller before committing), so the two can never disagree audibly.
+    //
+    // ENV 0 is the amp envelope / voice-lifecycle gate — it always exists and
+    // cannot be removed; enforceInvariants() re-asserts that after any patch.
+    // VELO and NOTE are fixed sources with no presence flag. A default-
+    // constructed config has only ENV 0 present, matching "a fresh sampler
+    // starts with just ENV 1".
+    std::array<bool, kNumEnvs> envPresent{ { true, false, false, false, false, false } };
+    std::array<bool, kNumLfos> lfoPresent{ { false, false, false, false, false, false } };
+
     int numRoutes = 0;
     std::array<ModRoute, kMaxRoutes> routes{};
 
@@ -304,6 +330,27 @@ struct ModConfig {
     // undo command hold two of them and the audio thread read one through a
     // single atomic pointer load.
     bool isBypassed() const noexcept { return numRoutes <= 0; }
+
+    bool isEnvPresent(int i) const noexcept
+    { return i >= 0 && i < kNumEnvs && envPresent[static_cast<size_t>(i)]; }
+    bool isLfoPresent(int i) const noexcept
+    { return i >= 0 && i < kNumLfos && lfoPresent[static_cast<size_t>(i)]; }
+
+    // Whether the flat source index (ENV 0..5, LFO 6..11, VELO 12, NOTE 13)
+    // names a source that currently exists. VELO / NOTE are always present.
+    bool isSourcePresent(int source) const noexcept
+    {
+        if (source >= kEnvSource0 && source < kLfoSource0)
+            return isEnvPresent(source - kEnvSource0);
+        if (source >= kLfoSource0 && source < kVeloSource)
+            return isLfoPresent(source - kLfoSource0);
+        return source == kVeloSource || source == kNoteSource;
+    }
+
+    // ENV 0 must always be present. Cheap to re-assert, so every patch path
+    // calls it rather than trusting callers not to clear the one flag they must
+    // never clear.
+    void enforceInvariants() noexcept { envPresent[0] = true; }
 };
 
 // A route is only meaningful if it names a real source, a real target, and —
@@ -331,6 +378,13 @@ inline bool isRouteValid(const ModRoute& r) noexcept
         }
     } else if (r.target <= static_cast<int>(ModTarget::SlotMangleMix)) {
         if (r.index < 0 || r.index >= kMaxModSlots) return false;
+        // For the two MANGLE targets `stage` selects the chain instance; every
+        // other slot target ignores it (and leaves it 0). An out-of-range
+        // instance is a UI bug, so reject rather than silently clamp.
+        if ((r.target == static_cast<int>(ModTarget::SlotMangleAmount)
+             || r.target == static_cast<int>(ModTarget::SlotMangleMix))
+            && (r.stage < 0 || r.stage >= kMaxMangleInstances))
+            return false;
     }
     return true;
 }

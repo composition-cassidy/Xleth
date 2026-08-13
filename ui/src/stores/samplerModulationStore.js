@@ -2,6 +2,7 @@ import { create } from 'zustand'
 import { timelineEvents } from '../timelineEvents.js'
 import {
   NUM_ENVS, NUM_LFOS, NOTEVAL_OFF, BEHAVIOR_FREE,
+  ENV_SOURCE_0, LFO_SOURCE_0, routeReferencesSource,
 } from '../components/sampler/modulation/modConstants.js'
 
 // ── Sampler modulation store ─────────────────────────────────────────────────
@@ -69,11 +70,25 @@ function normalizeConfig(cfg) {
     if (!Array.isArray(l.points)) l.points = defaultLfo().points
     lfos.push(l)
   }
+  // Source presence. ENV 0 (the amp envelope) is always present; a missing key
+  // falls back to "only ENV 1", matching a fresh sampler — the engine already
+  // reports legacy projects as all-present, so this default only bites when the
+  // bridge returns nothing at all.
+  const envPresent = []
+  for (let i = 0; i < NUM_ENVS; i++)
+    envPresent.push(Array.isArray(c.envPresent) ? !!c.envPresent[i] : i === 0)
+  envPresent[0] = true
+  const lfoPresent = []
+  for (let i = 0; i < NUM_LFOS; i++)
+    lfoPresent.push(Array.isArray(c.lfoPresent) ? !!c.lfoPresent[i] : false)
+
   return {
     envs,
     lfos,
     velo: { ...defaultCurve(), ...(c.velo || {}) },
     note: { ...defaultCurve(), ...(c.note || {}) },
+    envPresent,
+    lfoPresent,
     routes: Array.isArray(c.routes) ? c.routes : [],
   }
 }
@@ -139,6 +154,51 @@ const useSamplerModulationStore = create((set, get) => ({
   setEnv: (idx, patch) => { get().previewEnv(idx, patch); return get().commit() },
   setLfo: (idx, patch) => { get().previewLfo(idx, patch); return get().commit() },
   setCurve: (which, patch) => { get().previewCurve(which, patch); return get().commit() },
+
+  // ── Dynamic sources — add / remove ENV & LFO ────────────────────────────────
+  // Each op mutates presence (and, for a removal, the route list) then commits
+  // ONCE, so the engine's SetSamplerSettingsCommand captures the whole change as
+  // a single undoable step — one Ctrl+Z restores both the source and its routes.
+  // Removing a source keeps its stored config so re-adding brings it back; only
+  // the routes referencing it are pruned, because a route to an absent source
+  // would be silently dropped by the engine anyway.
+  addEnv: () => {
+    const cfg = get().config
+    if (!cfg) return
+    const i = cfg.envPresent.findIndex((p) => !p)
+    if (i < 0) return   // all six already present
+    const envPresent = cfg.envPresent.slice(); envPresent[i] = true
+    set({ config: { ...cfg, envPresent } })
+    return get().commit()
+  },
+  removeEnv: (i) => {
+    const cfg = get().config
+    if (!cfg || i === 0) return   // ENV 1 is the amp envelope — never removable
+    if (!cfg.envPresent[i]) return
+    const envPresent = cfg.envPresent.slice(); envPresent[i] = false
+    const source = ENV_SOURCE_0 + i
+    const routes = cfg.routes.filter((r) => !routeReferencesSource(r, source))
+    set({ config: { ...cfg, envPresent, routes } })
+    return get().commit()
+  },
+  addLfo: () => {
+    const cfg = get().config
+    if (!cfg) return
+    const i = cfg.lfoPresent.findIndex((p) => !p)
+    if (i < 0) return
+    const lfoPresent = cfg.lfoPresent.slice(); lfoPresent[i] = true
+    set({ config: { ...cfg, lfoPresent } })
+    return get().commit()
+  },
+  removeLfo: (i) => {
+    const cfg = get().config
+    if (!cfg || !cfg.lfoPresent[i]) return
+    const lfoPresent = cfg.lfoPresent.slice(); lfoPresent[i] = false
+    const source = LFO_SOURCE_0 + i
+    const routes = cfg.routes.filter((r) => !routeReferencesSource(r, source))
+    set({ config: { ...cfg, lfoPresent, routes } })
+    return get().commit()
+  },
 }))
 
 export default useSamplerModulationStore

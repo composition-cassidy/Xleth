@@ -140,7 +140,9 @@ export function PanelFrame({ id, children, titlebarContent }: PanelFrameProps) {
       >
         <Titlebar id={id} focused={focused}>{titlebarContent}</Titlebar>
         <div className="xleth-panel-body">{children}</div>
-        {renderPath === 'floating' ? <ResizeHandles id={id} /> : null}
+        {renderPath === 'floating' && PANEL_CATALOG[id].resizable !== false
+          ? <ResizeHandles id={id} />
+          : null}
       </section>
     </PanelVisibilityProvider>
   );

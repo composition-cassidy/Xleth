@@ -255,13 +255,40 @@ void to_json(nlohmann::json& j, const ModConfig& c)
     for (int i = 0; i < std::clamp(c.numRoutes, 0, kMaxRoutes); ++i)
         routes.push_back(c.routes[static_cast<size_t>(i)]);
 
+    nlohmann::json envPresent = nlohmann::json::array();
+    for (bool p : c.envPresent) envPresent.push_back(p);
+    nlohmann::json lfoPresent = nlohmann::json::array();
+    for (bool p : c.lfoPresent) lfoPresent.push_back(p);
+
     j = nlohmann::json{
-        {"envs",   envs},
-        {"lfos",   lfos},
-        {"velo",   c.velo},
-        {"note",   c.note},
-        {"routes", routes}
+        {"envs",       envs},
+        {"lfos",       lfos},
+        {"velo",       c.velo},
+        {"note",       c.note},
+        {"envPresent", envPresent},
+        {"lfoPresent", lfoPresent},
+        {"routes",     routes}
     };
+}
+
+// Read a presence array, tolerant of a missing key. `legacyAllPresent` is what
+// a project written before this system existed gets: the old build showed a
+// fixed rack where every source was editable, so "all present" preserves that
+// exactly rather than making sources a user configured silently disappear.
+static void readPresence(const nlohmann::json& j, const char* key,
+                         bool* out, int count, bool legacyAllPresent)
+{
+    auto it = j.find(key);
+    if (it == j.end() || !it->is_array()) {
+        for (int i = 0; i < count; ++i) out[i] = legacyAllPresent;
+        return;
+    }
+    for (int i = 0; i < count; ++i) {
+        const auto& a = *it;
+        out[i] = (i < static_cast<int>(a.size()) && a[static_cast<size_t>(i)].is_boolean())
+                     ? a[static_cast<size_t>(i)].get<bool>()
+                     : false;
+    }
 }
 
 void from_json(const nlohmann::json& j, ModConfig& c)
@@ -291,6 +318,12 @@ void from_json(const nlohmann::json& j, ModConfig& c)
     auto note = j.find("note");
     if (note != j.end()) from_json(*note, c.note);
 
+    // Presence: a blob with the keys reads them verbatim; a legacy blob without
+    // them reads as all-present (see readPresence). enforceInvariants() below
+    // re-asserts ENV 0 regardless of what any of the above set.
+    readPresence(j, "envPresent", c.envPresent.data(), kNumEnvs, /*legacyAllPresent*/ true);
+    readPresence(j, "lfoPresent", c.lfoPresent.data(), kNumLfos, /*legacyAllPresent*/ true);
+
     auto routes = j.find("routes");
     if (routes != j.end() && routes->is_array()) {
         c.numRoutes = 0;
@@ -305,6 +338,8 @@ void from_json(const nlohmann::json& j, ModConfig& c)
             c.routes[static_cast<size_t>(c.numRoutes++)] = r;
         }
     }
+
+    c.enforceInvariants();
 }
 
 } // namespace xleth::sampmod

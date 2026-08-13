@@ -1373,6 +1373,74 @@ static void testSchemaRoundTrip()
     CHECK(brokenBack.modulation.numRoutes == 0, "a malformed modulation block yields defaults");
 }
 
+// Source presence — which ENV/LFO sources exist. A default config has only
+// ENV 0; presence survives the round trip; ENV 0 is always forced present; and a
+// legacy blob with no presence keys reads as all-present so nothing a user built
+// before this system vanishes.
+static void testSourcePresence()
+{
+    std::cout << "Source presence — add / remove state\n";
+
+    // Default: only ENV 1 (index 0) exists; every LFO starts absent.
+    sm::ModConfig fresh;
+    CHECK(fresh.envPresent[0], "a fresh config has ENV 1 present");
+    CHECK(!fresh.envPresent[1] && !fresh.envPresent[5], "a fresh config has ENV 2-6 absent");
+    CHECK(!fresh.lfoPresent[0] && !fresh.lfoPresent[5], "a fresh config has every LFO absent");
+    CHECK(fresh.isSourcePresent(sm::kEnvSource0), "isSourcePresent sees ENV 1");
+    CHECK(!fresh.isSourcePresent(sm::kLfoSource0), "isSourcePresent sees LFO 1 as absent");
+    CHECK(fresh.isSourcePresent(sm::kVeloSource) && fresh.isSourcePresent(sm::kNoteSource),
+          "VELO and NOTE are always present");
+
+    // A fresh config with only ENV 1 and no routes is a bypass — proof the
+    // voice-lifecycle path is untouched by every other source being absent.
+    CHECK(fresh.isBypassed(), "only ENV 1 present + no routes is an exact bypass");
+
+    // Presence survives the round trip.
+    sm::ModConfig c;
+    c.envPresent = { true, false, true, false, false, true };
+    c.lfoPresent = { true, false, false, true, false, false };
+    nlohmann::json j = c;
+    sm::ModConfig back;
+    sm::from_json(j, back);
+    CHECK(back.envPresent == c.envPresent, "envPresent survives the round trip");
+    CHECK(back.lfoPresent == c.lfoPresent, "lfoPresent survives the round trip");
+
+    // ENV 0 is forced present even if a payload cleared it.
+    sm::ModConfig cleared;
+    cleared.envPresent[0] = false;
+    cleared.enforceInvariants();
+    CHECK(cleared.envPresent[0], "enforceInvariants re-asserts ENV 1");
+    nlohmann::json jc = c;
+    jc["envPresent"][0] = false;          // a hostile blob turns ENV 1 off
+    sm::ModConfig hostile;
+    sm::from_json(jc, hostile);
+    CHECK(hostile.envPresent[0], "from_json forces ENV 1 present regardless of the blob");
+
+    // A legacy blob has no presence keys: it must read as ALL present so a
+    // project built on the old fixed rack keeps every source it had.
+    nlohmann::json legacy = c;
+    legacy.erase("envPresent");
+    legacy.erase("lfoPresent");
+    sm::ModConfig legacyBack;
+    sm::from_json(legacy, legacyBack);
+    bool allEnv = true, allLfo = true;
+    for (int i = 0; i < sm::kNumEnvs; ++i) allEnv = allEnv && legacyBack.envPresent[i];
+    for (int i = 0; i < sm::kNumLfos; ++i) allLfo = allLfo && legacyBack.lfoPresent[i];
+    CHECK(allEnv && allLfo, "a legacy blob (no presence keys) reads as all-present");
+
+    // Presence also survives a whole-region round trip.
+    SampleRegion r;
+    r.id = 9;
+    r.modulation = c;
+    nlohmann::json rj = r;
+    SampleRegion rBack;
+    from_json(rj, rBack);
+    CHECK(rBack.modulation.envPresent == c.envPresent,
+          "envPresent survives a SampleRegion round trip");
+    CHECK(rBack.modulation.lfoPresent == c.lfoPresent,
+          "lfoPresent survives a SampleRegion round trip");
+}
+
 // ─── main ────────────────────────────────────────────────────────────────────
 
 int main()
@@ -1413,6 +1481,7 @@ int main()
     testMasterVolumeAndPanTargets();
 
     testSchemaRoundTrip();
+    testSourcePresence();
 
     std::cout << "\n";
     if (g_failed == 0) {

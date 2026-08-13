@@ -57,6 +57,10 @@ export interface PanelCatalogEntry {
   fKey?: 'F5' | 'F6' | 'F7' | 'F8' | 'F9' | 'F10' | 'F11' | 'F12';
   defaultFloating: FloatingDimensions;
   keepAliveWhenHidden: boolean;
+  // When false, the panel opens at a fixed size and cannot be resized or
+  // maximized: no resize handles, no maximize control, no double-click maximize.
+  // Omitted (undefined) means resizable, the default for every other panel.
+  resizable?: boolean;
 }
 
 export const PANEL_CATALOG = {
@@ -132,8 +136,10 @@ export const PANEL_CATALOG = {
     typeColorToken: '--theme-panel-mixer',
     icon: AudioWaveform,
     fKey: 'F12',
-    defaultFloating: { x: 340, y: 100, width: 680, height: 520 },
+    // Fixed size per the mockup — see resizable:false below.
+    defaultFloating: { x: 340, y: 100, width: 700, height: 600 },
     keepAliveWhenHidden: false,
+    resizable: false,
   },
   quickNotation: {
     id: 'quickNotation',

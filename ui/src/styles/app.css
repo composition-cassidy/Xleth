@@ -28478,6 +28478,137 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   color: var(--xleth-flat-text-subtle);
 }
 
+/* ── Sampler modulation tray (portaled to <body>, glued to the panel's right
+   edge) ──────────────────────────────────────────────────────────────────────
+   Flat, zero-radius, tokens only. The tray + its zigzag handle carry the hard
+   flat drop shadow; accent shows only on state (open handle, add/remove hover).
+   Width is sized so the reused ENV/LFO canvases (460px) fit without clipping. */
+.sampler-mod-tray {
+  --mod-env: var(--theme-sampler-mod-color-volume);
+  --mod-lfo: var(--theme-sampler-mod-color-pan);
+  --mod-velo: var(--theme-sampler-mod-color-pitch);
+  --mod-note: var(--theme-accent);
+  position: fixed;
+  z-index: calc(var(--xleth-z-window-floating-base, 1000) + 599);
+  width: 520px;
+  box-sizing: border-box;
+  border: 1px solid var(--xleth-flat-border);
+  border-left: 0;
+  border-radius: 0;
+  background: var(--xleth-flat-panel);
+  box-shadow: 4px 5px 0 rgba(0, 0, 0, 0.5);
+  overflow: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateX(-8px);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+
+.sampler-mod-tray.is-open {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateX(0);
+}
+
+.sampler-mod-tray-handle {
+  position: fixed;
+  transform: translateY(-50%);
+  z-index: calc(var(--xleth-z-window-floating-base, 1000) + 600);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 54px;
+  padding: 0;
+  border: 1px solid var(--xleth-flat-border);
+  border-left: 0;
+  border-radius: 0;
+  background: var(--xleth-flat-panel);
+  color: var(--xleth-flat-text-secondary);
+  box-shadow: 4px 5px 0 rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+}
+
+.sampler-mod-tray-handle:hover { color: var(--xleth-flat-text); }
+.sampler-mod-tray-handle.is-open { color: var(--theme-accent); }
+
+.sampler-mod-tray-scroll {
+  height: 100%;
+  overflow-y: auto;
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.sampler-mod-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.sampler-mod-section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--xleth-flat-border);
+  font-size: 11px;
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--xleth-flat-text);
+}
+
+.sampler-mod-add-src,
+.sampler-mod-remove-src {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid var(--xleth-flat-border);
+  border-radius: 0;
+  background: var(--xleth-flat-well);
+  color: var(--xleth-flat-text-secondary);
+  font-size: 14px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sampler-mod-add-src:hover:not(:disabled),
+.sampler-mod-remove-src:hover {
+  color: var(--xleth-flat-text);
+  border-color: var(--theme-accent);
+}
+
+.sampler-mod-add-src:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.sampler-mod-src-card {
+  border: 1px solid var(--xleth-flat-border);
+  border-left: 3px solid var(--card-color);
+  border-radius: 0;
+  background: var(--xleth-flat-well);
+  padding: 8px;
+}
+
+.sampler-mod-src-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--xleth-flat-text);
+}
+
 /* ── Sampler modulation rack (ENV/LFO/VELO/NOTE) ──────────────────────────────
    Flat, zero-radius, tokens only. Source colours come from theme mod-color
    tokens so the palette stays theme-driven; accent appears only on meaningful

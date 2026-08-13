@@ -462,15 +462,18 @@ struct ModOffsets {
     std::array<float, kMaxModSlots> volume{};
     std::array<float, kMaxModSlots> pan{};
     std::array<float, kMaxModSlots> semis{};        // SEM + COARSE + FINE/100
-    std::array<float, kMaxModSlots> mangleAmount{};
-    std::array<float, kMaxModSlots> mangleMix{};
+    // MANGLE amount/mix are per SLOT and per chain INSTANCE — a route's `stage`
+    // selects which of the (up to 4) instances in that slot's chain it moves.
+    std::array<std::array<float, kMaxMangleInstances>, kMaxModSlots> mangleAmount{};
+    std::array<std::array<float, kMaxMangleInstances>, kMaxModSlots> mangleMix{};
     float masterVolume = 0.0f;
     float masterPan    = 0.0f;
 
     void clear() noexcept
     {
         volume.fill(0.0f); pan.fill(0.0f); semis.fill(0.0f);
-        mangleAmount.fill(0.0f); mangleMix.fill(0.0f);
+        for (auto& a : mangleAmount) a.fill(0.0f);
+        for (auto& a : mangleMix)    a.fill(0.0f);
         masterVolume = 0.0f; masterPan = 0.0f;
     }
 };
@@ -705,14 +708,15 @@ inline void accumulateModOffsets(const CompiledModGraph& g,
         const size_t s   = static_cast<size_t>(r.source);
         const float  off = routeOffset(r, bank.value[s], bank.amount[s]);
         const size_t si  = static_cast<size_t>(std::clamp(r.index, 0, kMaxModSlots - 1));
+        const size_t mi  = static_cast<size_t>(std::clamp(r.stage, 0, kMaxMangleInstances - 1));
         switch (static_cast<ModTarget>(r.target)) {
             case ModTarget::SlotVolume:       out.volume[si]       += off; break;
             case ModTarget::SlotPan:          out.pan[si]          += off; break;
             case ModTarget::SlotSem:          out.semis[si]        += off; break;
             case ModTarget::SlotCoarse:       out.semis[si]        += off; break;
             case ModTarget::SlotFine:         out.semis[si]        += off * 0.01f; break;
-            case ModTarget::SlotMangleAmount: out.mangleAmount[si] += off; break;
-            case ModTarget::SlotMangleMix:    out.mangleMix[si]    += off; break;
+            case ModTarget::SlotMangleAmount: out.mangleAmount[si][mi] += off; break;
+            case ModTarget::SlotMangleMix:    out.mangleMix[si][mi]    += off; break;
             case ModTarget::MasterVolume:     out.masterVolume     += off; break;
             case ModTarget::MasterPan:        out.masterPan        += off; break;
             default: break;

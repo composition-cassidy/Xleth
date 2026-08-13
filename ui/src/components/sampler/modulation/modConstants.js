@@ -19,6 +19,25 @@ export const NUM_SOURCES = NOTE_SOURCE + 1             // 14
 export const MAX_LFO_POINTS = 32
 export const MAX_CURVE_POINTS = 32
 
+// ── Modulation targets (index = engine ModTarget; append-only) ───────────────
+// Only the cross-modulation boundary is needed here: a route whose target moves
+// ANOTHER source's parameter carries that source in `index`, so removing a
+// source has to drop those routes too, not just the ones that originate there.
+export const TARGET_SRC_RATE = 10        // first cross-mod target
+export const TARGET_ENV_STAGE_TIME = 16  // last cross-mod target
+
+export function isCrossModTarget(target) {
+  return target >= TARGET_SRC_RATE && target <= TARGET_ENV_STAGE_TIME
+}
+
+// True if a route touches `source` at all — as its origin, or (cross-mod) as the
+// target source it modulates. Used to prune routes when a source is removed.
+export function routeReferencesSource(route, source) {
+  if (!route) return false
+  if (route.source === source) return true
+  return isCrossModTarget(route.target) && route.index === source
+}
+
 // ── LFO segment types (index = engine LfoSegment) ────────────────────────────
 export const SEG_STEP = 0
 export const SEG_LINE = 1

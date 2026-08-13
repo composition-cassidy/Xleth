@@ -330,6 +330,19 @@ static void testLegacyRegionRoundtrip()
           "4 routes migrated, got " + std::to_string(r.modulation.numRoutes));
     CHECK(!r.modulation.isBypassed(), "a migrated region is no longer bypassed");
 
+    // ── No double application ────────────────────────────────────────────────
+    // The legacy engine paths are still wired up in MixEngine, so migration has
+    // to MOVE the state rather than copy it. If these stayed enabled, a
+    // migrated project would run its pitch envelope and all three LFOs twice —
+    // once legacy, once through the new routes — which is the failure mode that
+    // sounds "nearly right" and would survive a casual listen.
+    CHECK(!r.pitchEnvEnabled, "legacy pitch envelope disabled after migration");
+    CHECK(!r.lfoVolEnabled,   "legacy VOL LFO disabled after migration");
+    CHECK(!r.lfoPanEnabled,   "legacy PAN LFO disabled after migration");
+    CHECK(!r.lfoPitchEnabled, "legacy PITCH LFO disabled after migration");
+    // The amp envelope is NOT superseded — it is still the VCA.
+    CHECK_NEAR(r.attackMs, 12.0, 1e-6, "amp envelope survives migration untouched");
+
     // Voicing defaults are the pre-voicing behaviour, so an old project is
     // unchanged by the new controls existing.
     CHECK(r.voiceCount == 32, "legacy project defaults to 32 voices");
