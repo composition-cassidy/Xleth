@@ -28609,6 +28609,24 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   color: var(--xleth-flat-text);
 }
 
+/* Voicing: the editable POLY count on the playback tab. Flat, zero-radius. */
+.sampler-voice-count {
+  width: 42px;
+  padding: 2px 4px;
+  border: 1px solid var(--xleth-flat-border);
+  border-radius: 0;
+  background: var(--xleth-flat-well);
+  color: var(--xleth-flat-text);
+  font-size: 11px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.sampler-voice-count:focus {
+  outline: none;
+  border-color: var(--theme-accent);
+}
+
 /* ── Sampler modulation rack (ENV/LFO/VELO/NOTE) ──────────────────────────────
    Flat, zero-radius, tokens only. Source colours come from theme mod-color
    tokens so the palette stays theme-driven; accent appears only on meaningful

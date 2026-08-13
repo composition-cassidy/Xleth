@@ -3,9 +3,7 @@ import { timelineEvents } from '../../timelineEvents.js'
 import RootNotePicker from './RootNotePicker.jsx'
 import SamplerWaveform from './SamplerWaveform.jsx'
 import SlotList, { MAX_SLOTS } from './SlotList.jsx'
-import EnvelopeEditor from './EnvelopeEditor.jsx'
 import Knob from './Knob.jsx'
-import LfoSection from './LfoSection.jsx'
 import SamplerModTray from './modulation/SamplerModTray.jsx'
 import { tokenValue } from '../../theming/tokenValue.ts'
 import { nudgeEventFor, applyRecordFor } from './autoLoopTelemetry.js'
@@ -159,14 +157,17 @@ const TDIVS = ['1/1', '1/2', '1/4', '1/8', '1/16', '1/32', '1/64']
 const TDIV_VALUES = { '1/1': 1, '1/2': 2, '1/4': 4, '1/8': 8, '1/16': 16, '1/32': 32, '1/64': 64 }
 const TDIV_LABELS = { 1: '1/1', 2: '1/2', 4: '1/4', 8: '1/8', 16: '1/16', 32: '1/32', 64: '1/64' }
 
+// Voice count is clamped to the engine's [1, 32] polyphony window.
+const clampVoiceCount = (v) => {
+  const n = Math.round(Number(v))
+  if (!Number.isFinite(n)) return 32
+  return Math.max(1, Math.min(32, n))
+}
+
+// The amp/pitch envelopes and three drawable LFOs are gone — ENV 1 is the amp
+// envelope and every other envelope/LFO is a modulation source in the tray.
 const emptySettings = {
   rootNote: 60,
-  delayMs: 0, attackMs: 0, holdMs: 0, decayMs: 0, sustain: 1.0, releaseMs: 50,
-  attackTension: 0, decayTension: 0, releaseTension: 0,
-  pitchEnvEnabled: false, pitchEnvAmount: 0,
-  pitchEnvDelayMs: 0, pitchEnvAttackMs: 0, pitchEnvHoldMs: 0,
-  pitchEnvDecayMs: 0, pitchEnvSustain: 0, pitchEnvReleaseMs: 0,
-  pitchEnvAttackTension: 0, pitchEnvDecayTension: 0, pitchEnvReleaseTension: 0,
   loopEnabled: false, loopStart: 0, loopEnd: 0,
   loopMode: 0, exitLoopOnRelease: false,
   mangleChain: [],
@@ -177,17 +178,9 @@ const emptySettings = {
   crossfadeSamples: 5000,
   dcOffsetRemoved: false, normalized: false, polarityReversed: false, reversed: false,
   monoEnabled: false, portamentoEnabled: false, portamentoTimeMs: 100,
+  voiceCount: 32, legatoEnabled: false, portamentoMode: 0, portamentoCurve: 0,
   arpEnabled: false, arpTempoSync: true, arpDivision: 8,
   arpFreeTimeMs: 125, arpGate: 0.8, arpRange: 1, arpDirection: 0,
-  lfoVolEnabled: false, lfoVolAmount: 0, lfoVolSpeedHz: 1,
-  lfoVolTempoSync: false, lfoVolTempoDivision: 4,
-  lfoVolAttackMs: 0, lfoVolDelayMs: 0, lfoVolWaveform: [],
-  lfoPanEnabled: false, lfoPanAmount: 0, lfoPanSpeedHz: 1,
-  lfoPanTempoSync: false, lfoPanTempoDivision: 4,
-  lfoPanAttackMs: 0, lfoPanDelayMs: 0, lfoPanWaveform: [],
-  lfoPitchEnabled: false, lfoPitchAmount: 0, lfoPitchSpeedHz: 1,
-  lfoPitchTempoSync: false, lfoPitchTempoDivision: 4,
-  lfoPitchAttackMs: 0, lfoPitchDelayMs: 0, lfoPitchWaveform: [],
 }
 
 // ── Layout primitives styled per mock ─────────────────────────────────────
@@ -317,7 +310,6 @@ function ProcessButton({ label, active, onClick, children }) {
 // ── Main ──────────────────────────────────────────────────────────────────
 export default function SamplerPanelContent({ regionId, onClose }) {
   const [tab, setTab] = useState('main')
-  const [envTab, setEnvTab] = useState('env')
   const [region, setRegion] = useState(null)
   const [audioInfo, setAudioInfo] = useState(null)
   // Project tempo — the modulation rack needs it to display BPM-synced times.
@@ -362,26 +354,6 @@ export default function SamplerPanelContent({ regionId, onClose }) {
         const sl = nextSlots[sel] || {}
         setSettings({
           rootNote: sl.rootNote ?? 60,
-          delayMs: r.delayMs ?? 0,
-          attackMs: r.attackMs,
-          holdMs: r.holdMs ?? 0,
-          decayMs: r.decayMs,
-          sustain: r.sustain,
-          releaseMs: r.releaseMs,
-          attackTension: r.attackTension ?? 0,
-          decayTension: r.decayTension ?? 0,
-          releaseTension: r.releaseTension ?? 0,
-          pitchEnvEnabled: !!r.pitchEnvEnabled,
-          pitchEnvAmount: r.pitchEnvAmount ?? 0,
-          pitchEnvDelayMs: r.pitchEnvDelayMs ?? 0,
-          pitchEnvAttackMs: r.pitchEnvAttackMs ?? 0,
-          pitchEnvHoldMs: r.pitchEnvHoldMs ?? 0,
-          pitchEnvDecayMs: r.pitchEnvDecayMs ?? 0,
-          pitchEnvSustain: r.pitchEnvSustain ?? 0,
-          pitchEnvReleaseMs: r.pitchEnvReleaseMs ?? 0,
-          pitchEnvAttackTension: r.pitchEnvAttackTension ?? 0,
-          pitchEnvDecayTension: r.pitchEnvDecayTension ?? 0,
-          pitchEnvReleaseTension: r.pitchEnvReleaseTension ?? 0,
           loopEnabled: !!sl.loopEnabled,
           loopStart: sl.loopStart ?? 0,
           loopEnd: sl.loopEnd ?? 0,
@@ -415,6 +387,10 @@ export default function SamplerPanelContent({ regionId, onClose }) {
           monoEnabled: !!r.monoEnabled,
           portamentoEnabled: !!r.portamentoEnabled,
           portamentoTimeMs: r.portamentoTimeMs ?? 100,
+          voiceCount: clampVoiceCount(r.voiceCount ?? 32),
+          legatoEnabled: !!r.legatoEnabled,
+          portamentoMode: r.portamentoMode ?? 0,
+          portamentoCurve: r.portamentoCurve ?? 0,
           arpEnabled: !!r.arpEnabled,
           arpTempoSync: r.arpTempoSync !== false,
           arpDivision: r.arpDivision ?? 8,
@@ -422,30 +398,6 @@ export default function SamplerPanelContent({ regionId, onClose }) {
           arpGate: r.arpGate ?? 0.8,
           arpRange: r.arpRange ?? 1,
           arpDirection: r.arpDirection ?? 0,
-          lfoVolEnabled: !!r.lfoVolEnabled,
-          lfoVolAmount: r.lfoVolAmount ?? 0,
-          lfoVolSpeedHz: r.lfoVolSpeedHz ?? 1,
-          lfoVolTempoSync: !!r.lfoVolTempoSync,
-          lfoVolTempoDivision: r.lfoVolTempoDivision ?? 4,
-          lfoVolAttackMs: r.lfoVolAttackMs ?? 0,
-          lfoVolDelayMs: r.lfoVolDelayMs ?? 0,
-          lfoVolWaveform: Array.isArray(r.lfoVolWaveform) ? r.lfoVolWaveform : [],
-          lfoPanEnabled: !!r.lfoPanEnabled,
-          lfoPanAmount: r.lfoPanAmount ?? 0,
-          lfoPanSpeedHz: r.lfoPanSpeedHz ?? 1,
-          lfoPanTempoSync: !!r.lfoPanTempoSync,
-          lfoPanTempoDivision: r.lfoPanTempoDivision ?? 4,
-          lfoPanAttackMs: r.lfoPanAttackMs ?? 0,
-          lfoPanDelayMs: r.lfoPanDelayMs ?? 0,
-          lfoPanWaveform: Array.isArray(r.lfoPanWaveform) ? r.lfoPanWaveform : [],
-          lfoPitchEnabled: !!r.lfoPitchEnabled,
-          lfoPitchAmount: r.lfoPitchAmount ?? 0,
-          lfoPitchSpeedHz: r.lfoPitchSpeedHz ?? 1,
-          lfoPitchTempoSync: !!r.lfoPitchTempoSync,
-          lfoPitchTempoDivision: r.lfoPitchTempoDivision ?? 4,
-          lfoPitchAttackMs: r.lfoPitchAttackMs ?? 0,
-          lfoPitchDelayMs: r.lfoPitchDelayMs ?? 0,
-          lfoPitchWaveform: Array.isArray(r.lfoPitchWaveform) ? r.lfoPitchWaveform : [],
         })
       }
       if (ai) setAudioInfo(ai)
@@ -709,27 +661,6 @@ export default function SamplerPanelContent({ regionId, onClose }) {
     ;[base[idx], base[j]] = [base[j], base[idx]]
     commitChain(base)
   }, [commitChain, mangleBaseChain])
-
-  const commitEnvelope = useCallback(() => {
-    const s = settingsRef.current
-    if (envTab === 'pitch') {
-      commit({
-        pitchEnvDelayMs: s.pitchEnvDelayMs, pitchEnvAttackMs: s.pitchEnvAttackMs,
-        pitchEnvHoldMs: s.pitchEnvHoldMs, pitchEnvDecayMs: s.pitchEnvDecayMs,
-        pitchEnvSustain: s.pitchEnvSustain, pitchEnvReleaseMs: s.pitchEnvReleaseMs,
-        pitchEnvAttackTension: s.pitchEnvAttackTension,
-        pitchEnvDecayTension: s.pitchEnvDecayTension,
-        pitchEnvReleaseTension: s.pitchEnvReleaseTension,
-      })
-    } else {
-      commit({
-        delayMs: s.delayMs, attackMs: s.attackMs, holdMs: s.holdMs,
-        decayMs: s.decayMs, sustain: s.sustain, releaseMs: s.releaseMs,
-        attackTension: s.attackTension, decayTension: s.decayTension,
-        releaseTension: s.releaseTension,
-      })
-    }
-  }, [commit, envTab])
 
   const commitLoopPoints = useCallback(({ loopStart, loopEnd }) => {
     setFields({ loopStart, loopEnd })
@@ -1248,122 +1179,6 @@ export default function SamplerPanelContent({ regionId, onClose }) {
     </div>
   )
 
-  const renderEnv = () => {
-    const isPitch = envTab === 'pitch'
-    const f = (name) => isPitch ? `pitchEnv${name[0].toUpperCase()}${name.slice(1)}` : name
-    const envColor = isPitch
-      ? tokenValue('--theme-sampler-mod-color-pitch')
-      : tokenValue('--theme-sampler-mod-color-volume')
-    const dimmed = isPitch && !settings.pitchEnvEnabled
-
-    return (
-      <div className="sampler-env-body">
-        {isPitch && (
-          <div className="sampler-control-rail sampler-control-rail--compact">
-            <Chk val={settings.pitchEnvEnabled} set={(v) => commitField('pitchEnvEnabled', v)} label="Enable" />
-            <SamplerKnob
-              label="Amount"
-              value={settings.pitchEnvAmount}
-              min={-48} max={48} defaultValue={0}
-              size={42}
-              color={envColor}
-              formatValue={(v) => `${v > 0 ? '+' : ''}${v.toFixed(1)}st`}
-              onLiveChange={(v) => setField('pitchEnvAmount', Number(v.toFixed(1)))}
-              onCommit={(v) => commit({ pitchEnvAmount: Number(v.toFixed(1)) })}
-            />
-            <span style={{ fontSize: 9, color: muted }}>±48 semitones</span>
-          </div>
-        )}
-
-        <div className={dimmed ? 'sampler-dimmed' : undefined}>
-          <div className="sampler-env-grid">
-            <div className="sampler-graph-well">
-              <EnvelopeEditor
-                delayMs={settings[f('delayMs')]}
-                attackMs={settings[f('attackMs')]}
-                holdMs={settings[f('holdMs')]}
-                decayMs={settings[f('decayMs')]}
-                sustain={settings[f('sustain')]}
-                releaseMs={settings[f('releaseMs')]}
-                attackTension={settings[f('attackTension')]}
-                decayTension={settings[f('decayTension')]}
-                releaseTension={settings[f('releaseTension')]}
-                color={envColor}
-                onLiveChange={(partial) => {
-                  if (isPitch) {
-                    const mapped = {}
-                    for (const [k, v] of Object.entries(partial))
-                      mapped[`pitchEnv${k[0].toUpperCase()}${k.slice(1)}`] = v
-                    setFields(mapped)
-                  } else {
-                    setFields(partial)
-                  }
-                }}
-                onCommit={commitEnvelope}
-                width={520}
-                height={120}
-              />
-            </div>
-
-            <div className="sampler-knob-bank">
-              <div className="sampler-knob-row">
-                <SamplerKnob label="DEL" value={settings[f('delayMs')]} min={0} max={5000} defaultValue={0}
-                  size={36} color={envColor} formatValue={(v) => `${Math.round(v)}`}
-                  onLiveChange={(v) => setField(f('delayMs'), Math.round(v))}
-                  onCommit={(v) => commit({ [f('delayMs')]: Math.round(v) })} />
-                <SamplerKnob label="ATK" value={settings[f('attackMs')]} min={0} max={5000} defaultValue={0}
-                  size={36} color={envColor} formatValue={(v) => `${Math.round(v)}`}
-                  onLiveChange={(v) => setField(f('attackMs'), Math.round(v))}
-                  onCommit={(v) => commit({ [f('attackMs')]: Math.round(v) })} />
-                <SamplerKnob label="HLD" value={settings[f('holdMs')]} min={0} max={5000} defaultValue={0}
-                  size={36} color={envColor} formatValue={(v) => `${Math.round(v)}`}
-                  onLiveChange={(v) => setField(f('holdMs'), Math.round(v))}
-                  onCommit={(v) => commit({ [f('holdMs')]: Math.round(v) })} />
-                <SamplerKnob label="DEC" value={settings[f('decayMs')]} min={0} max={5000} defaultValue={0}
-                  size={36} color={envColor} formatValue={(v) => `${Math.round(v)}`}
-                  onLiveChange={(v) => setField(f('decayMs'), Math.round(v))}
-                  onCommit={(v) => commit({ [f('decayMs')]: Math.round(v) })} />
-                <SamplerKnob label="SUS" value={settings[f('sustain')] * 100} min={0} max={100}
-                  defaultValue={isPitch ? 0 : 100}
-                  size={36} color={envColor} formatValue={(v) => `${Math.round(v)}%`}
-                  onLiveChange={(v) => setField(f('sustain'), Math.round(v) / 100)}
-                  onCommit={(v) => commit({ [f('sustain')]: Math.round(v) / 100 })} />
-                <SamplerKnob label="REL" value={settings[f('releaseMs')]} min={0} max={5000}
-                  defaultValue={isPitch ? 0 : 50}
-                  size={36} color={envColor} formatValue={(v) => `${Math.round(v)}`}
-                  onLiveChange={(v) => setField(f('releaseMs'), Math.round(v))}
-                  onCommit={(v) => commit({ [f('releaseMs')]: Math.round(v) })} />
-              </div>
-
-              <div className="sampler-knob-row sampler-knob-row--tension">
-                <SamplerKnob label="ATK T" value={settings[f('attackTension')]} min={-1} max={1} defaultValue={0}
-                  size={28} dragRange={120} color={'var(--theme-accent)'} capStyle='soft-disk'
-                  formatValue={(v) => v.toFixed(2)}
-                  onLiveChange={(v) => setField(f('attackTension'), Number(v.toFixed(3)))}
-                  onCommit={(v) => commit({ [f('attackTension')]: Number(v.toFixed(3)) })} />
-                <SamplerKnob label="DEC T" value={settings[f('decayTension')]} min={-1} max={1} defaultValue={0}
-                  size={28} dragRange={120} color={'var(--theme-accent)'} capStyle='soft-disk'
-                  formatValue={(v) => v.toFixed(2)}
-                  onLiveChange={(v) => setField(f('decayTension'), Number(v.toFixed(3)))}
-                  onCommit={(v) => commit({ [f('decayTension')]: Number(v.toFixed(3)) })} />
-                <SamplerKnob label="REL T" value={settings[f('releaseTension')]} min={-1} max={1} defaultValue={0}
-                  size={28} dragRange={120} color={'var(--theme-accent)'} capStyle='soft-disk'
-                  formatValue={(v) => v.toFixed(2)}
-                  onLiveChange={(v) => setField(f('releaseTension'), Number(v.toFixed(3)))}
-                  onCommit={(v) => commit({ [f('releaseTension')]: Number(v.toFixed(3)) })} />
-                <div style={{ display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', paddingBottom: 10 }}>
-                  <span style={{ ...lblStyle, fontSize: 8 }}>Tension</span>
-                </div>
-              </div>
-            </div>
-          </div>
-
-          {/* Embedded LFO sub-section — only relevant under Env tab */}
-        </div>
-      </div>
-    )
-  }
-
   const renderPlayback = () => {
     const arpDirIdx = Math.max(0, Math.min(3, settings.arpDirection ?? 0))
     const arpDirId = ARP_DIRS[arpDirIdx]
@@ -1377,30 +1192,70 @@ export default function SamplerPanelContent({ regionId, onClose }) {
             <RootNotePicker value={settings.rootNote} onChange={(midi) => commitField('rootNote', midi)} />
           </div>
 
-          {/* Voice + Portamento */}
-          <div className="sampler-module sampler-voice-module" style={{ minWidth: 148 }}>
+          {/* Voice — poly count / mono / legato / portamento */}
+          <div className="sampler-module sampler-voice-module" style={{ minWidth: 190 }}>
             <SectionLabel>Voice</SectionLabel>
-            <Seg
-              opts={[{ v: 'mono', l: 'Mono' }, { v: 'poly', l: 'Poly' }]}
-              val={settings.monoEnabled ? 'mono' : 'poly'}
-              set={(v) => commitField('monoEnabled', v === 'mono')}
-            />
-            <SamplerKnob
-              value={settings.portamentoTimeMs}
-              min={0} max={2000} defaultValue={0}
-              size={48}
-              color={settings.portamentoTimeMs > 0 ? accentPanel : 'var(--theme-text-muted)'}
-              label="Porta Time"
-              formatValue={(v) => `${Math.round(v)}ms`}
-              onLiveChange={(v) => {
-                const ms = Math.round(v)
-                setFields({ portamentoTimeMs: ms, portamentoEnabled: ms > 0 })
-              }}
-              onCommit={(v) => {
-                const ms = Math.round(v)
-                commit({ portamentoTimeMs: ms, portamentoEnabled: ms > 0 })
-              }}
-            />
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+              <Seg
+                opts={[{ v: 'mono', l: 'Mono' }, { v: 'poly', l: 'Poly' }]}
+                val={settings.monoEnabled ? 'mono' : 'poly'}
+                set={(v) => commitField('monoEnabled', v === 'mono')}
+              />
+              {/* POLY carries an editable voice count; MONO is a single voice. */}
+              <label style={{ display: 'flex', alignItems: 'center', gap: 4, ...lblStyle,
+                opacity: settings.monoEnabled ? 0.35 : 1,
+                pointerEvents: settings.monoEnabled ? 'none' : undefined }}>
+                Voices
+                <input
+                  type="number" min={1} max={32}
+                  className="sampler-voice-count"
+                  value={settings.voiceCount}
+                  onChange={(e) => setField('voiceCount', clampVoiceCount(e.target.value))}
+                  onBlur={(e) => commit({ voiceCount: clampVoiceCount(e.target.value) })}
+                  onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
+                />
+              </label>
+            </div>
+            <div style={{ marginTop: 8 }}>
+              <Chk val={settings.legatoEnabled} set={(v) => commitField('legatoEnabled', v)} label="Legato" />
+            </div>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, marginTop: 8 }}>
+              <SamplerKnob
+                value={settings.portamentoTimeMs}
+                min={0} max={2000} defaultValue={0}
+                size={44}
+                color={settings.portamentoTimeMs > 0 ? accentPanel : 'var(--theme-text-muted)'}
+                label="Porta"
+                formatValue={(v) => `${Math.round(v)}ms`}
+                onLiveChange={(v) => {
+                  const ms = Math.round(v)
+                  setFields({ portamentoTimeMs: ms, portamentoEnabled: ms > 0 })
+                }}
+                onCommit={(v) => {
+                  const ms = Math.round(v)
+                  commit({ portamentoTimeMs: ms, portamentoEnabled: ms > 0 })
+                }}
+              />
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
+                <span style={lblStyle}>Glide</span>
+                <Seg
+                  sm
+                  opts={[{ v: 0, l: 'Always' }, { v: 1, l: 'Scaled' }]}
+                  val={settings.portamentoMode ?? 0}
+                  set={(v) => commitField('portamentoMode', v)}
+                />
+              </div>
+              <SamplerKnob
+                label="Curve"
+                value={settings.portamentoCurve ?? 0}
+                min={-1} max={1} defaultValue={0}
+                size={28} dragRange={120} capStyle="soft-disk"
+                color="var(--theme-accent)"
+                formatValue={(v) => v.toFixed(2)}
+                onLiveChange={(v) => setField('portamentoCurve', Number(v.toFixed(3)))}
+                onCommit={(v) => commit({ portamentoCurve: Number(v.toFixed(3)) })}
+              />
+            </div>
           </div>
 
           {/* Arpeggiator */}
@@ -1488,22 +1343,9 @@ export default function SamplerPanelContent({ regionId, onClose }) {
             </div>
           </div>
         </div>
-
-        {/* Envelope + LFO card */}
-        <div className="sampler-module sampler-env-module">
-          <Tabs
-            tabs={[{ id: 'env', label: 'Envelope' }, { id: 'pitch', label: 'Pitch Envelope' }]}
-            active={envTab}
-            onSelect={setEnvTab}
-            sm
-          />
-          <div style={{ marginTop: 10 }}>
-            {renderEnv()}
-          </div>
-        </div>
-        <div className="sampler-module sampler-lfo-module">
-          <LfoSection settings={settings} setField={setField} setFields={setFields} commit={commit} />
-        </div>
+        {/* The legacy Envelope / Pitch-Envelope / Vol-Pan-Pitch LFO cards used to
+            live here. They are gone — ENV 1 is the amp envelope and every other
+            envelope/LFO is a modulation source in the pull-out tray. */}
       </div>
     )
   }

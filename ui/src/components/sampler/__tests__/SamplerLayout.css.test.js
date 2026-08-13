@@ -27,7 +27,11 @@ describe('Sampler layout CSS', () => {
     expect(source).toContain('sampler-range-card--loop')
     expect(source).toContain('className="sampler-process-row"')
     expect(source).toContain('sampler-voice-panel')
-    expect(source).toContain('sampler-lfo-module')
+    // The legacy Envelope / Pitch-Env / LFO cards are gone; the playback tab now
+    // carries the voicing controls (poly count + legato + portamento glide).
+    expect(source).not.toContain('sampler-lfo-module')
+    expect(source).not.toContain('sampler-env-module')
+    expect(source).toContain('sampler-voice-count')
     expect(source).toContain('responsive')
     expect(source).not.toContain('sampler-panel-region-label')
     expect(source).not.toContain("|| region?.name")
@@ -64,17 +68,12 @@ describe('Sampler layout CSS', () => {
 
   it('keeps the existing rotary knob appearance contract intact', () => {
     const samplerSource = readUiSource('components/sampler/SamplerPanelContent.jsx')
-    const lfoSource = readUiSource('components/sampler/LfoSection.jsx')
 
-    for (const source of [samplerSource, lfoSource]) {
-      expect(source).toContain('SAMPLER_KNOB_APPEARANCE')
-      expect(source).toContain("tickStyle: 'none'")
-      expect(source).toContain("glyph: 'rotary-arrow'")
-      expect(source).toContain('<SamplerKnob')
-    }
-
+    expect(samplerSource).toContain('SAMPLER_KNOB_APPEARANCE')
+    expect(samplerSource).toContain("tickStyle: 'none'")
+    expect(samplerSource).toContain("glyph: 'rotary-arrow'")
+    expect(samplerSource).toContain('<SamplerKnob')
     expect(samplerSource).toContain('accentGlow: false')
-    expect(lfoSource).toContain('accentGlow: true')
   })
 
   it('uses container-responsive wrapping at the retained default panel size', () => {
