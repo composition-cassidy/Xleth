@@ -1093,7 +1093,12 @@ static void testEmptyConfigIsExactBypass()
         Sampler s;
         prepareSampler(s);
         sm::ModConfig cfg;
-        for (int i = 0; i < sm::kNumEnvs; ++i) cfg.envs[static_cast<size_t>(i)].attack.ms = 50.0f;
+        // ENV 1 IS the amp VCA now, so mirror the envelope prepareSampler set
+        // (attack 0, release 5 ms) — otherwise setModulation would legitimately
+        // change the amplitude contour. Every OTHER source is mangled to prove a
+        // source with no route leaves the render untouched.
+        cfg.envs[0].release.ms = 5.0f;
+        for (int i = 1; i < sm::kNumEnvs; ++i) cfg.envs[static_cast<size_t>(i)].attack.ms = 50.0f;
         for (int i = 0; i < sm::kNumLfos; ++i) cfg.lfos[static_cast<size_t>(i)] = squareLfo(5.0f);
         // No routes.
         s.setModulation(cfg);
@@ -1108,23 +1113,103 @@ static void testEmptyConfigIsExactBypass()
             maxDiff = std::max(maxDiff, std::abs(a.getSample(ch, i) - b.getSample(ch, i)));
     CHECK(maxDiff == 0.0f, "a zero-route config is sample-identical to no config at all"
                            " (max diff " << maxDiff << ")");
+}
 
-    // The legacy drawable LFOs keep working alongside the new system: enabling
-    // the old volume LFO must still change the render even with a modulation
-    // graph published.
-    juce::AudioBuffer<float> c;
-    {
+// ─── Per-instance MANGLE routing ─────────────────────────────────────────────
+
+static void testMangleInstanceRouting()
+{
+    std::cout << "MANGLE modulation — a route's stage selects the chain instance\n";
+
+    // Validity: `stage` is the instance index for the two MANGLE targets, so it
+    // must be in [0, kMaxMangleInstances).
+    CHECK(sm::isRouteValid(route(sm::kLfoSource0, sm::ModTarget::SlotMangleAmount,
+                                 0, 0.5f, false, 2)),
+          "a SlotMangleAmount route to instance 2 is valid");
+    CHECK(!sm::isRouteValid(route(sm::kLfoSource0, sm::ModTarget::SlotMangleAmount,
+                                  0, 0.5f, false, sm::kMaxMangleInstances)),
+          "a SlotMangleAmount route to an out-of-range instance is rejected");
+    CHECK(!sm::isRouteValid(route(sm::kLfoSource0, sm::ModTarget::SlotMangleMix,
+                                  0, 0.5f, false, -1)),
+          "a negative instance is rejected");
+
+    // The accumulated offset must land on the addressed slot AND instance, and
+    // touch nothing else — the whole point of the per-instance dimension.
+    sm::ModConfig cfg;
+    cfg.lfos[0] = constantLfo(1.0f);   // steady +1 source
+    addRoute(cfg, route(sm::kLfoSource0, sm::ModTarget::SlotMangleAmount,
+                        /*slot*/1, 0.5f, /*bipolar*/false, /*stage=instance*/2));
+    sm::CompiledModGraph g;
+    sm::compileModGraph(cfg, g);
+
+    sm::ModSourceBank bank;
+    sm::modBankSnapshot(bank);
+    sm::advanceModBank(g, bank, true, 120.0, kCtrlDt);
+    sm::ModOffsets off;
+    sm::accumulateModOffsets(g, bank, off);
+
+    // Unipolar LFO: (raw+1)/2 = 1; offset = amount·outAmt·1·span(1) = 0.5.
+    CHECK_NEAR(off.mangleAmount[1][2], 0.5, 1e-4,
+               "the offset lands on slot 1, instance 2 (got " << off.mangleAmount[1][2] << ")");
+    CHECK(off.mangleAmount[1][0] == 0.0f && off.mangleAmount[1][1] == 0.0f
+          && off.mangleAmount[1][3] == 0.0f,
+          "no other instance of the same slot is touched");
+    CHECK(off.mangleAmount[0][2] == 0.0f, "no other slot is touched");
+    CHECK(off.mangleMix[1][2] == 0.0f, "an Amount route does not move Mix");
+}
+
+// ─── ENV 1 IS the amp VCA ────────────────────────────────────────────────────
+
+static void testAmpEnvViaEnv1MatchesSetEnvelope()
+{
+    std::cout << "Amp envelope — ENV 1 drives the VCA identically to setEnvelope\n";
+
+    // The same DAHDSR applied two ways must render SAMPLE-IDENTICALLY:
+    //   (a) the direct setEnvelope() the VCA has always used, and
+    //   (b) ENV 1 (envs[0]) driving the VCA through setModulation().
+    // This is the automated form of "a legacy-migrated amp envelope sounds the
+    // same through ENV 1" — attack, decay, sustain AND the release tail.
+    const float dl = 0.0f, at = 8.0f, ho = 3.0f, de = 40.0f, su = 0.6f, re = 75.0f;
+
+    auto renderBoth = [&](bool viaEnv1) {
         Sampler s;
-        prepareSampler(s);
-        sm::ModConfig cfg;
-        addRoute(cfg, route(sm::kEnvSource0, sm::ModTarget::SlotPan, 0, 0.1f));
-        s.setModulation(cfg);
-        s.setLfoVol(true, 0.9f, 6.0f, false, 4, 0.0f, 0.0f, {});
-        s.noteOn(64, 0.9f);
-        c = render(s, 8192);
-    }
-    CHECK(std::abs(rmsRange(c, 0, 0, 8192) - rmsRange(a, 0, 0, 8192)) > 1e-4,
-          "the legacy volume LFO still takes effect with a modulation graph live");
+        s.loadSample(makeSine(kEngineSR, 220.0, static_cast<int>(kEngineSR)), kEngineSR, 60);
+        s.setCrossfadeMode(true);
+        if (viaEnv1) {
+            sm::ModConfig cfg;
+            cfg.envs[0].delay.ms   = dl;
+            cfg.envs[0].attack.ms  = at;
+            cfg.envs[0].hold.ms    = ho;
+            cfg.envs[0].decay.ms   = de;
+            cfg.envs[0].sustainPct = su * 100.0f;
+            cfg.envs[0].release.ms = re;
+            s.setModulation(cfg);            // derives the VCA from ENV 1
+        } else {
+            s.setEnvelope(dl, at, ho, de, su, re, 0.0f, 0.0f, 0.0f);
+        }
+        juce::AudioBuffer<float> out(2, 12000);
+        out.clear();
+        s.noteOn(60, 1.0f, 0);
+        s.processBlock(out, 6000, kEngineSR);      // through attack/decay into sustain
+        s.noteOff(60, 0);
+        juce::AudioBuffer<float> tail(2, 6000);
+        tail.clear();
+        s.processBlock(tail, 6000, kEngineSR);     // the release tail
+        for (int ch = 0; ch < 2; ++ch)
+            out.copyFrom(ch, 6000, tail, ch, 0, 6000);
+        return out;
+    };
+
+    juce::AudioBuffer<float> direct = renderBoth(false);
+    juce::AudioBuffer<float> env1   = renderBoth(true);
+
+    float maxDiff = 0.0f;
+    for (int ch = 0; ch < 2; ++ch)
+        for (int i = 0; i < direct.getNumSamples(); ++i)
+            maxDiff = std::max(maxDiff,
+                std::abs(direct.getSample(ch, i) - env1.getSample(ch, i)));
+    CHECK(maxDiff == 0.0f,
+          "ENV 1 reproduces the amp envelope exactly (max diff " << maxDiff << ")");
 }
 
 // ─── End-to-end: audible vibrato ─────────────────────────────────────────────
@@ -1477,6 +1562,8 @@ int main()
     testRouteValidation();
 
     testEmptyConfigIsExactBypass();
+    testMangleInstanceRouting();
+    testAmpEnvViaEnv1MatchesSetEnvelope();
     testAudibleVibrato();
     testMasterVolumeAndPanTargets();
 

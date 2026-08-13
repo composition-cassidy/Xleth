@@ -1,4 +1,5 @@
 #include "Timeline.h"
+#include "SamplerLegacyMigration.h"
 #include <algorithm>
 #include <cmath>
 #include <iostream>
@@ -2325,10 +2326,10 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
                 if (pj.contains("loopEnabled"))      pj.at("loopEnabled").get_to(s0.loopEnabled);
                 if (pj.contains("loopStart"))        pj.at("loopStart").get_to(s0.loopStart);
                 if (pj.contains("loopEnd"))          pj.at("loopEnd").get_to(s0.loopEnd);
-                if (pj.contains("attackMs"))         pj.at("attackMs").get_to(r.attackMs);
-                if (pj.contains("decayMs"))          pj.at("decayMs").get_to(r.decayMs);
-                if (pj.contains("sustain"))          pj.at("sustain").get_to(r.sustain);
-                if (pj.contains("releaseMs"))        pj.at("releaseMs").get_to(r.releaseMs);
+                // The amp envelope lives in the modulation config (ENV 1) now, so
+                // migrate the pattern's legacy amp keys straight into it.
+                if (pj.contains("attackMs"))
+                    xleth::samplegacy::migrateLegacyAmpEnvelope(pj, r.modulation);
                 if (pj.contains("crossfadeEnabled")) pj.at("crossfadeEnabled").get_to(r.crossfadeEnabled);
             }
         }

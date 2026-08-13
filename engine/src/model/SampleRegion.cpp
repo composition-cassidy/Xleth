@@ -147,26 +147,6 @@ void to_json(nlohmann::json& j, const SampleRegion& r) {
         {"swappedAudioPath", r.swappedAudioPath},
         {"hasSwappedAudio",  r.hasSwappedAudio},
         {"swappedAudioDurationSec", r.swappedAudioDurationSec},
-        {"attackMs",         r.attackMs},
-        {"decayMs",          r.decayMs},
-        {"sustain",          r.sustain},
-        {"releaseMs",        r.releaseMs},
-        {"delayMs",          r.delayMs},
-        {"holdMs",           r.holdMs},
-        {"attackTension",    r.attackTension},
-        {"decayTension",     r.decayTension},
-        {"releaseTension",   r.releaseTension},
-        {"pitchEnvEnabled",        r.pitchEnvEnabled},
-        {"pitchEnvAmount",         r.pitchEnvAmount},
-        {"pitchEnvDelayMs",        r.pitchEnvDelayMs},
-        {"pitchEnvAttackMs",       r.pitchEnvAttackMs},
-        {"pitchEnvHoldMs",         r.pitchEnvHoldMs},
-        {"pitchEnvDecayMs",        r.pitchEnvDecayMs},
-        {"pitchEnvSustain",        r.pitchEnvSustain},
-        {"pitchEnvReleaseMs",      r.pitchEnvReleaseMs},
-        {"pitchEnvAttackTension",  r.pitchEnvAttackTension},
-        {"pitchEnvDecayTension",   r.pitchEnvDecayTension},
-        {"pitchEnvReleaseTension", r.pitchEnvReleaseTension},
         {"crossfadeEnabled", r.crossfadeEnabled},
         {"slots",            r.slots},
         {"monoEnabled",       r.monoEnabled},
@@ -195,42 +175,6 @@ void to_json(nlohmann::json& j, const SampleRegion& r) {
         {"swappedVideoWidth",            r.swappedVideoWidth},
         {"swappedVideoHeight",           r.swappedVideoHeight}
     };
-    // LFO waveform arrays (serialised separately since nlohmann::json
-    // doesn't know about LfoBreakpoint).
-    auto serializeWaveform = [](const std::vector<SampleRegion::LfoBreakpoint>& wf) {
-        nlohmann::json arr = nlohmann::json::array();
-        for (const auto& bp : wf)
-            arr.push_back({{"t", bp.time}, {"v", bp.value}});
-        return arr;
-    };
-    // Volume LFO
-    j["lfoVolEnabled"]       = r.lfoVolEnabled;
-    j["lfoVolAmount"]        = r.lfoVolAmount;
-    j["lfoVolSpeedHz"]       = r.lfoVolSpeedHz;
-    j["lfoVolTempoSync"]     = r.lfoVolTempoSync;
-    j["lfoVolTempoDivision"] = r.lfoVolTempoDivision;
-    j["lfoVolAttackMs"]      = r.lfoVolAttackMs;
-    j["lfoVolDelayMs"]       = r.lfoVolDelayMs;
-    j["lfoVolWaveform"]      = serializeWaveform(r.lfoVolWaveform);
-    // Panning LFO
-    j["lfoPanEnabled"]       = r.lfoPanEnabled;
-    j["lfoPanAmount"]        = r.lfoPanAmount;
-    j["lfoPanSpeedHz"]       = r.lfoPanSpeedHz;
-    j["lfoPanTempoSync"]     = r.lfoPanTempoSync;
-    j["lfoPanTempoDivision"] = r.lfoPanTempoDivision;
-    j["lfoPanAttackMs"]      = r.lfoPanAttackMs;
-    j["lfoPanDelayMs"]       = r.lfoPanDelayMs;
-    j["lfoPanWaveform"]      = serializeWaveform(r.lfoPanWaveform);
-    // Pitch LFO
-    j["lfoPitchEnabled"]       = r.lfoPitchEnabled;
-    j["lfoPitchAmount"]        = r.lfoPitchAmount;
-    j["lfoPitchSpeedHz"]       = r.lfoPitchSpeedHz;
-    j["lfoPitchTempoSync"]     = r.lfoPitchTempoSync;
-    j["lfoPitchTempoDivision"] = r.lfoPitchTempoDivision;
-    j["lfoPitchAttackMs"]      = r.lfoPitchAttackMs;
-    j["lfoPitchDelayMs"]       = r.lfoPitchDelayMs;
-    j["lfoPitchWaveform"]      = serializeWaveform(r.lfoPitchWaveform);
-
     // ── Modulation system (schema 3) ─────────────────────────────────────────
     // Always written, even when bypassed: the reader is tolerant of a missing
     // key (that is how schema-2 projects load), but a round trip through this
@@ -254,29 +198,9 @@ void from_json(const nlohmann::json& j, SampleRegion& r) {
     if (j.contains("swappedAudioDurationSec"))
         j.at("swappedAudioDurationSec").get_to(r.swappedAudioDurationSec);
     // else: defaults to 0; project_load migration probes the file and fills it in.
-    // Sampler settings (added in sampler-per-region refactor). Defaults keep
-    // legacy projects loading cleanly; Timeline's loader migrates any fields
-    // that old projects still carry on Pattern onto the matching region.
-    if (j.contains("attackMs"))         j.at("attackMs").get_to(r.attackMs);
-    if (j.contains("decayMs"))          j.at("decayMs").get_to(r.decayMs);
-    if (j.contains("sustain"))          j.at("sustain").get_to(r.sustain);
-    if (j.contains("releaseMs"))        j.at("releaseMs").get_to(r.releaseMs);
-    if (j.contains("delayMs"))          j.at("delayMs").get_to(r.delayMs);
-    if (j.contains("holdMs"))           j.at("holdMs").get_to(r.holdMs);
-    if (j.contains("attackTension"))    j.at("attackTension").get_to(r.attackTension);
-    if (j.contains("decayTension"))     j.at("decayTension").get_to(r.decayTension);
-    if (j.contains("releaseTension"))   j.at("releaseTension").get_to(r.releaseTension);
-    if (j.contains("pitchEnvEnabled"))        j.at("pitchEnvEnabled").get_to(r.pitchEnvEnabled);
-    if (j.contains("pitchEnvAmount"))         j.at("pitchEnvAmount").get_to(r.pitchEnvAmount);
-    if (j.contains("pitchEnvDelayMs"))        j.at("pitchEnvDelayMs").get_to(r.pitchEnvDelayMs);
-    if (j.contains("pitchEnvAttackMs"))       j.at("pitchEnvAttackMs").get_to(r.pitchEnvAttackMs);
-    if (j.contains("pitchEnvHoldMs"))         j.at("pitchEnvHoldMs").get_to(r.pitchEnvHoldMs);
-    if (j.contains("pitchEnvDecayMs"))        j.at("pitchEnvDecayMs").get_to(r.pitchEnvDecayMs);
-    if (j.contains("pitchEnvSustain"))        j.at("pitchEnvSustain").get_to(r.pitchEnvSustain);
-    if (j.contains("pitchEnvReleaseMs"))      j.at("pitchEnvReleaseMs").get_to(r.pitchEnvReleaseMs);
-    if (j.contains("pitchEnvAttackTension"))  j.at("pitchEnvAttackTension").get_to(r.pitchEnvAttackTension);
-    if (j.contains("pitchEnvDecayTension"))   j.at("pitchEnvDecayTension").get_to(r.pitchEnvDecayTension);
-    if (j.contains("pitchEnvReleaseTension")) j.at("pitchEnvReleaseTension").get_to(r.pitchEnvReleaseTension);
+    // The amp/pitch envelopes and three drawable LFOs are no longer struct
+    // fields — they live in the modulation config and are migrated in from the
+    // raw legacy JSON keys below (SamplerLegacyMigration).
     if (j.contains("crossfadeEnabled")) j.at("crossfadeEnabled").get_to(r.crossfadeEnabled);
 
     // ── Sample slots ─────────────────────────────────────────────────────────
@@ -333,85 +257,34 @@ void from_json(const nlohmann::json& j, SampleRegion& r) {
     if (j.contains("arpGate"))           j.at("arpGate").get_to(r.arpGate);
     if (j.contains("arpRange"))          j.at("arpRange").get_to(r.arpRange);
     if (j.contains("arpDirection"))      j.at("arpDirection").get_to(r.arpDirection);
-    // LFO deserialization
-    auto deserializeWaveform = [](const nlohmann::json& arr, std::vector<SampleRegion::LfoBreakpoint>& out) {
-        out.clear();
-        for (const auto& bp : arr) {
-            SampleRegion::LfoBreakpoint pt;
-            pt.time  = bp.value("t", 0.0f);
-            pt.value = bp.value("v", 0.0f);
-            out.push_back(pt);
-        }
-    };
-    // Volume LFO
-    if (j.contains("lfoVolEnabled"))       j.at("lfoVolEnabled").get_to(r.lfoVolEnabled);
-    if (j.contains("lfoVolAmount"))        j.at("lfoVolAmount").get_to(r.lfoVolAmount);
-    if (j.contains("lfoVolSpeedHz"))       j.at("lfoVolSpeedHz").get_to(r.lfoVolSpeedHz);
-    if (j.contains("lfoVolTempoSync"))     j.at("lfoVolTempoSync").get_to(r.lfoVolTempoSync);
-    if (j.contains("lfoVolTempoDivision")) j.at("lfoVolTempoDivision").get_to(r.lfoVolTempoDivision);
-    if (j.contains("lfoVolAttackMs"))      j.at("lfoVolAttackMs").get_to(r.lfoVolAttackMs);
-    if (j.contains("lfoVolDelayMs"))       j.at("lfoVolDelayMs").get_to(r.lfoVolDelayMs);
-    if (j.contains("lfoVolWaveform"))      deserializeWaveform(j["lfoVolWaveform"], r.lfoVolWaveform);
-    // Panning LFO
-    if (j.contains("lfoPanEnabled"))       j.at("lfoPanEnabled").get_to(r.lfoPanEnabled);
-    if (j.contains("lfoPanAmount"))        j.at("lfoPanAmount").get_to(r.lfoPanAmount);
-    if (j.contains("lfoPanSpeedHz"))       j.at("lfoPanSpeedHz").get_to(r.lfoPanSpeedHz);
-    if (j.contains("lfoPanTempoSync"))     j.at("lfoPanTempoSync").get_to(r.lfoPanTempoSync);
-    if (j.contains("lfoPanTempoDivision")) j.at("lfoPanTempoDivision").get_to(r.lfoPanTempoDivision);
-    if (j.contains("lfoPanAttackMs"))      j.at("lfoPanAttackMs").get_to(r.lfoPanAttackMs);
-    if (j.contains("lfoPanDelayMs"))       j.at("lfoPanDelayMs").get_to(r.lfoPanDelayMs);
-    if (j.contains("lfoPanWaveform"))      deserializeWaveform(j["lfoPanWaveform"], r.lfoPanWaveform);
-    // Pitch LFO
-    if (j.contains("lfoPitchEnabled"))       j.at("lfoPitchEnabled").get_to(r.lfoPitchEnabled);
-    if (j.contains("lfoPitchAmount"))        j.at("lfoPitchAmount").get_to(r.lfoPitchAmount);
-    if (j.contains("lfoPitchSpeedHz"))       j.at("lfoPitchSpeedHz").get_to(r.lfoPitchSpeedHz);
-    if (j.contains("lfoPitchTempoSync"))     j.at("lfoPitchTempoSync").get_to(r.lfoPitchTempoSync);
-    if (j.contains("lfoPitchTempoDivision")) j.at("lfoPitchTempoDivision").get_to(r.lfoPitchTempoDivision);
-    if (j.contains("lfoPitchAttackMs"))      j.at("lfoPitchAttackMs").get_to(r.lfoPitchAttackMs);
-    if (j.contains("lfoPitchDelayMs"))       j.at("lfoPitchDelayMs").get_to(r.lfoPitchDelayMs);
-    if (j.contains("lfoPitchWaveform"))      deserializeWaveform(j["lfoPitchWaveform"], r.lfoPitchWaveform);
-    // Modulation system (schema 3). Absent on every schema-2 project, which
+    // Modulation system (schema 3+). Absent on every schema-2 project, which
     // leaves the default empty route list — an exact bypass.
     if (j.contains("modulation")) xleth::sampmod::from_json(j["modulation"], r.modulation);
 
-    // ── Schema 3 → 4 migration ───────────────────────────────────────────────
-    // Reads the LEGACY KEYS straight out of `j`, so it keeps working after the
-    // struct fields are gone. Gated on the region carrying no routes yet, which
-    // makes it idempotent and stops it from ever clobbering routes a user built
-    // in the new system. Schema 4 files no longer WRITE the legacy keys, so on
-    // those hasLegacyModulation() is false and this costs four map lookups.
+    // ── Legacy amp envelope → ENV 1 (the VCA source) ─────────────────────────
+    // The amplitude DAHDSR used to be flat region scalars; it is ENV 1 now. A
+    // project saved before that move carries "attackMs" etc. in its JSON, so
+    // migrate them into envs[0]. Files saved after the move omit those keys, so
+    // the ENV 1 loaded from "modulation" above stands — presence of the key is
+    // the version discriminator, and it never clobbers a user-edited ENV 1.
+    if (j.contains("attackMs"))
+        xleth::samplegacy::migrateLegacyAmpEnvelope(j, r.modulation);
+
+    // ── Legacy pitch envelope + 3 drawable LFOs → routes ─────────────────────
+    // Reads the LEGACY KEYS straight out of `j`, so it keeps working now that
+    // the struct fields are gone. Idempotent: gated on the region carrying no
+    // routes yet, so it never clobbers routes a user built in the new system.
+    // Post-migration files omit the legacy keys, so hasLegacyModulation() is
+    // false and this costs a few map lookups. The legacy engine paths are gone,
+    // so there is nothing left to disable to avoid double application.
     if (r.modulation.numRoutes == 0
         && xleth::samplegacy::hasLegacyModulation(j))
     {
         int occupied = 0;
         for (const auto& s : r.slots) if (!s.audioFilePath.empty()) ++occupied;
         if (occupied == 0) occupied = 1;   // slot 0 plays the region's own audio
-        if (xleth::samplegacy::migrateLegacyModulation(j, occupied, 120.0, r.modulation))
-        {
-            // Migration MOVES the state, it does not copy it. The legacy engine
-            // paths in MixEngine::buildSamplerForRegion are still live, so
-            // leaving these enabled would apply the pitch envelope and all three
-            // LFOs TWICE — once through the legacy path and once through the
-            // routes just created. Disabling them here is what makes a migrated
-            // project sound the same rather than doubly modulated.
-            //
-            // Only the superseded systems are cleared. The amplitude DAHDSR
-            // above is untouched: it remains the VCA and the voice-lifecycle
-            // gate, and ENV 1 merely mirrors it.
-            r.pitchEnvEnabled = false;
-            r.lfoVolEnabled   = false;
-            r.lfoPanEnabled   = false;
-            r.lfoPitchEnabled = false;
-        }
+        xleth::samplegacy::migrateLegacyModulation(j, occupied, 120.0, r.modulation);
     }
-
-    // ENV 1 is a derived VIEW of the amplitude envelope — the amp scalars above
-    // remain its storage of record and the VCA keeps driving amplitude and
-    // voice lifecycle. Syncing on every load (not just legacy ones) is what
-    // keeps the rack's ENV 1 showing the envelope that is actually sounding.
-    xleth::samplegacy::syncAmpEnvelopeToEnv1(
-        r.delayMs, r.attackMs, r.holdMs, r.decayMs, r.sustain, r.releaseMs,
-        r.attackTension, r.decayTension, r.releaseTension, r.modulation);
 
     j.at("syllables").get_to(r.syllables);
     // On-demand proxy fields (added in proxy redesign). Default values on

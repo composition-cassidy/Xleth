@@ -316,12 +316,10 @@ static void testLegacyRegionRoundtrip()
     SampleRegion r;
     from_json(legacyRegionJson(), r);
 
-    // The amp envelope is untouched storage-of-record...
-    CHECK_NEAR(r.attackMs,  12.0, 1e-6, "amp attack survives load unchanged");
-    CHECK_NEAR(r.releaseMs, 75.0, 1e-6, "amp release survives load unchanged");
-    // ...and is visible as ENV 1.
-    CHECK_NEAR(r.modulation.envs[0].attack.ms, 12.0, 1e-6, "ENV 1 shows the amp attack");
-    CHECK_NEAR(r.modulation.envs[0].sustainPct, 60.0, 1e-4, "ENV 1 shows the amp sustain");
+    // The amp envelope migrated into ENV 1 (its new home + the VCA source).
+    CHECK_NEAR(r.modulation.envs[0].attack.ms,   12.0, 1e-6, "ENV 1 carries the amp attack");
+    CHECK_NEAR(r.modulation.envs[0].release.ms,  75.0, 1e-6, "ENV 1 carries the amp release");
+    CHECK_NEAR(r.modulation.envs[0].sustainPct,  60.0, 1e-4, "ENV 1 carries the amp sustain");
 
     // Every legacy source produced its routes. Slot 0 always counts as
     // occupied (it plays the region's own audio), so: 1 pitch-env route +
@@ -330,18 +328,9 @@ static void testLegacyRegionRoundtrip()
           "4 routes migrated, got " + std::to_string(r.modulation.numRoutes));
     CHECK(!r.modulation.isBypassed(), "a migrated region is no longer bypassed");
 
-    // ── No double application ────────────────────────────────────────────────
-    // The legacy engine paths are still wired up in MixEngine, so migration has
-    // to MOVE the state rather than copy it. If these stayed enabled, a
-    // migrated project would run its pitch envelope and all three LFOs twice —
-    // once legacy, once through the new routes — which is the failure mode that
-    // sounds "nearly right" and would survive a casual listen.
-    CHECK(!r.pitchEnvEnabled, "legacy pitch envelope disabled after migration");
-    CHECK(!r.lfoVolEnabled,   "legacy VOL LFO disabled after migration");
-    CHECK(!r.lfoPanEnabled,   "legacy PAN LFO disabled after migration");
-    CHECK(!r.lfoPitchEnabled, "legacy PITCH LFO disabled after migration");
-    // The amp envelope is NOT superseded — it is still the VCA.
-    CHECK_NEAR(r.attackMs, 12.0, 1e-6, "amp envelope survives migration untouched");
+    // The legacy pitch envelope + three LFOs are GONE as engine paths; migration
+    // moved them wholly into routes, so there is no legacy state left to double-
+    // apply. The route count above is the proof they migrated exactly once.
 
     // Voicing defaults are the pre-voicing behaviour, so an old project is
     // unchanged by the new controls existing.
@@ -360,9 +349,10 @@ static void testMigratedProjectStaysAudible()
 
     Sampler s;
     s.loadSample(makeSine(kEngineSR, 220.0, static_cast<int>(kEngineSR)), kEngineSR, 60);
-    s.setEnvelope(r.delayMs, r.attackMs, r.holdMs, r.decayMs, r.sustain, r.releaseMs,
-                  r.attackTension, r.decayTension, r.releaseTension);
     s.setCrossfadeMode(true);
+    // setModulation now derives the amp VCA from ENV 1 (envs[0]), which the
+    // migration above populated from the legacy amp keys — so this alone gives
+    // the migrated project its amplitude envelope.
     s.setModulation(r.modulation);
 
     juce::AudioBuffer<float> out(2, 4096);

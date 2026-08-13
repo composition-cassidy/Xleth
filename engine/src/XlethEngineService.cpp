@@ -921,26 +921,6 @@ static SamplerSettings samplerSettingsFromRegion(const SampleRegion& r)
 {
     SamplerSettings s;
     s.slots            = r.slots;
-    s.attackMs         = r.attackMs;
-    s.decayMs          = r.decayMs;
-    s.sustain          = r.sustain;
-    s.releaseMs        = r.releaseMs;
-    s.delayMs          = r.delayMs;
-    s.holdMs           = r.holdMs;
-    s.attackTension    = r.attackTension;
-    s.decayTension     = r.decayTension;
-    s.releaseTension   = r.releaseTension;
-    s.pitchEnvEnabled       = r.pitchEnvEnabled;
-    s.pitchEnvAmount        = r.pitchEnvAmount;
-    s.pitchEnvDelayMs       = r.pitchEnvDelayMs;
-    s.pitchEnvAttackMs      = r.pitchEnvAttackMs;
-    s.pitchEnvHoldMs        = r.pitchEnvHoldMs;
-    s.pitchEnvDecayMs       = r.pitchEnvDecayMs;
-    s.pitchEnvSustain       = r.pitchEnvSustain;
-    s.pitchEnvReleaseMs     = r.pitchEnvReleaseMs;
-    s.pitchEnvAttackTension = r.pitchEnvAttackTension;
-    s.pitchEnvDecayTension  = r.pitchEnvDecayTension;
-    s.pitchEnvReleaseTension = r.pitchEnvReleaseTension;
     s.crossfadeEnabled = r.crossfadeEnabled;
     s.monoEnabled       = r.monoEnabled;
     s.portamentoEnabled = r.portamentoEnabled;
@@ -956,30 +936,6 @@ static SamplerSettings samplerSettingsFromRegion(const SampleRegion& r)
     s.arpGate           = r.arpGate;
     s.arpRange          = r.arpRange;
     s.arpDirection      = r.arpDirection;
-    s.lfoVolEnabled       = r.lfoVolEnabled;
-    s.lfoVolAmount        = r.lfoVolAmount;
-    s.lfoVolSpeedHz       = r.lfoVolSpeedHz;
-    s.lfoVolTempoSync     = r.lfoVolTempoSync;
-    s.lfoVolTempoDivision = r.lfoVolTempoDivision;
-    s.lfoVolAttackMs      = r.lfoVolAttackMs;
-    s.lfoVolDelayMs       = r.lfoVolDelayMs;
-    s.lfoVolWaveform      = r.lfoVolWaveform;
-    s.lfoPanEnabled       = r.lfoPanEnabled;
-    s.lfoPanAmount        = r.lfoPanAmount;
-    s.lfoPanSpeedHz       = r.lfoPanSpeedHz;
-    s.lfoPanTempoSync     = r.lfoPanTempoSync;
-    s.lfoPanTempoDivision = r.lfoPanTempoDivision;
-    s.lfoPanAttackMs      = r.lfoPanAttackMs;
-    s.lfoPanDelayMs       = r.lfoPanDelayMs;
-    s.lfoPanWaveform      = r.lfoPanWaveform;
-    s.lfoPitchEnabled       = r.lfoPitchEnabled;
-    s.lfoPitchAmount        = r.lfoPitchAmount;
-    s.lfoPitchSpeedHz       = r.lfoPitchSpeedHz;
-    s.lfoPitchTempoSync     = r.lfoPitchTempoSync;
-    s.lfoPitchTempoDivision = r.lfoPitchTempoDivision;
-    s.lfoPitchAttackMs      = r.lfoPitchAttackMs;
-    s.lfoPitchDelayMs       = r.lfoPitchDelayMs;
-    s.lfoPitchWaveform      = r.lfoPitchWaveform;
     s.modulation            = r.modulation;
     return s;
 }
@@ -3386,26 +3342,6 @@ static JsonApi::Object regionToJs(JsonApi::Env env, const SampleRegion& r) {
         o.Set("polarityReversed", JsonApi::Boolean::New(env, s0.polarityReversed));
         o.Set("reversed",         JsonApi::Boolean::New(env, s0.reversed));
     }
-    o.Set("attackMs",         JsonApi::Number::New(env, r.attackMs));
-    o.Set("decayMs",          JsonApi::Number::New(env, r.decayMs));
-    o.Set("sustain",          JsonApi::Number::New(env, r.sustain));
-    o.Set("releaseMs",        JsonApi::Number::New(env, r.releaseMs));
-    o.Set("delayMs",          JsonApi::Number::New(env, r.delayMs));
-    o.Set("holdMs",           JsonApi::Number::New(env, r.holdMs));
-    o.Set("attackTension",    JsonApi::Number::New(env, r.attackTension));
-    o.Set("decayTension",     JsonApi::Number::New(env, r.decayTension));
-    o.Set("releaseTension",   JsonApi::Number::New(env, r.releaseTension));
-    o.Set("pitchEnvEnabled",        JsonApi::Boolean::New(env, r.pitchEnvEnabled));
-    o.Set("pitchEnvAmount",         JsonApi::Number::New(env, r.pitchEnvAmount));
-    o.Set("pitchEnvDelayMs",        JsonApi::Number::New(env, r.pitchEnvDelayMs));
-    o.Set("pitchEnvAttackMs",       JsonApi::Number::New(env, r.pitchEnvAttackMs));
-    o.Set("pitchEnvHoldMs",         JsonApi::Number::New(env, r.pitchEnvHoldMs));
-    o.Set("pitchEnvDecayMs",        JsonApi::Number::New(env, r.pitchEnvDecayMs));
-    o.Set("pitchEnvSustain",        JsonApi::Number::New(env, r.pitchEnvSustain));
-    o.Set("pitchEnvReleaseMs",      JsonApi::Number::New(env, r.pitchEnvReleaseMs));
-    o.Set("pitchEnvAttackTension",  JsonApi::Number::New(env, r.pitchEnvAttackTension));
-    o.Set("pitchEnvDecayTension",   JsonApi::Number::New(env, r.pitchEnvDecayTension));
-    o.Set("pitchEnvReleaseTension", JsonApi::Number::New(env, r.pitchEnvReleaseTension));
     o.Set("crossfadeEnabled", JsonApi::Boolean::New(env, r.crossfadeEnabled));
     o.Set("monoEnabled",       JsonApi::Boolean::New(env, r.monoEnabled));
     o.Set("portamentoEnabled", JsonApi::Boolean::New(env, r.portamentoEnabled));
@@ -3421,44 +3357,6 @@ static JsonApi::Object regionToJs(JsonApi::Env env, const SampleRegion& r) {
     o.Set("arpGate",           JsonApi::Number::New(env, r.arpGate));
     o.Set("arpRange",          JsonApi::Number::New(env, r.arpRange));
     o.Set("arpDirection",      JsonApi::Number::New(env, r.arpDirection));
-    // ── LFO ─────────────────────────────────────────────────────────────────
-    auto serializeLfoWaveform = [&](const std::vector<SampleRegion::LfoBreakpoint>& wf) {
-        JsonApi::Array a = JsonApi::Array::New(env, wf.size());
-        for (size_t i = 0; i < wf.size(); ++i) {
-            JsonApi::Object pt = JsonApi::Object::New(env);
-            pt.Set("t", JsonApi::Number::New(env, wf[i].time));
-            pt.Set("v", JsonApi::Number::New(env, wf[i].value));
-            a.Set((uint32_t)i, pt);
-        }
-        return a;
-    };
-    // Volume LFO
-    o.Set("lfoVolEnabled",       JsonApi::Boolean::New(env, r.lfoVolEnabled));
-    o.Set("lfoVolAmount",        JsonApi::Number::New(env, r.lfoVolAmount));
-    o.Set("lfoVolSpeedHz",       JsonApi::Number::New(env, r.lfoVolSpeedHz));
-    o.Set("lfoVolTempoSync",     JsonApi::Boolean::New(env, r.lfoVolTempoSync));
-    o.Set("lfoVolTempoDivision", JsonApi::Number::New(env, r.lfoVolTempoDivision));
-    o.Set("lfoVolAttackMs",      JsonApi::Number::New(env, r.lfoVolAttackMs));
-    o.Set("lfoVolDelayMs",       JsonApi::Number::New(env, r.lfoVolDelayMs));
-    o.Set("lfoVolWaveform",      serializeLfoWaveform(r.lfoVolWaveform));
-    // Panning LFO
-    o.Set("lfoPanEnabled",       JsonApi::Boolean::New(env, r.lfoPanEnabled));
-    o.Set("lfoPanAmount",        JsonApi::Number::New(env, r.lfoPanAmount));
-    o.Set("lfoPanSpeedHz",       JsonApi::Number::New(env, r.lfoPanSpeedHz));
-    o.Set("lfoPanTempoSync",     JsonApi::Boolean::New(env, r.lfoPanTempoSync));
-    o.Set("lfoPanTempoDivision", JsonApi::Number::New(env, r.lfoPanTempoDivision));
-    o.Set("lfoPanAttackMs",      JsonApi::Number::New(env, r.lfoPanAttackMs));
-    o.Set("lfoPanDelayMs",       JsonApi::Number::New(env, r.lfoPanDelayMs));
-    o.Set("lfoPanWaveform",      serializeLfoWaveform(r.lfoPanWaveform));
-    // Pitch LFO
-    o.Set("lfoPitchEnabled",       JsonApi::Boolean::New(env, r.lfoPitchEnabled));
-    o.Set("lfoPitchAmount",        JsonApi::Number::New(env, r.lfoPitchAmount));
-    o.Set("lfoPitchSpeedHz",       JsonApi::Number::New(env, r.lfoPitchSpeedHz));
-    o.Set("lfoPitchTempoSync",     JsonApi::Boolean::New(env, r.lfoPitchTempoSync));
-    o.Set("lfoPitchTempoDivision", JsonApi::Number::New(env, r.lfoPitchTempoDivision));
-    o.Set("lfoPitchAttackMs",      JsonApi::Number::New(env, r.lfoPitchAttackMs));
-    o.Set("lfoPitchDelayMs",       JsonApi::Number::New(env, r.lfoPitchDelayMs));
-    o.Set("lfoPitchWaveform",      serializeLfoWaveform(r.lfoPitchWaveform));
     // Modulation system. Always present, so the UI can read the current config
     // straight off a region fetch rather than needing a second round trip.
     o.Set("modulation",            modConfigToJs(env, r.modulation));
@@ -10172,26 +10070,6 @@ void Timeline_UpdateSamplerSettings(const JsonApi::CallbackInfo& info)
     // Start from the region's current settings so caller can supply a partial object.
     SamplerSettings s;
     s.slots            = r->slots;
-    s.attackMs         = r->attackMs;
-    s.decayMs          = r->decayMs;
-    s.sustain          = r->sustain;
-    s.releaseMs        = r->releaseMs;
-    s.delayMs          = r->delayMs;
-    s.holdMs           = r->holdMs;
-    s.attackTension    = r->attackTension;
-    s.decayTension     = r->decayTension;
-    s.releaseTension   = r->releaseTension;
-    s.pitchEnvEnabled       = r->pitchEnvEnabled;
-    s.pitchEnvAmount        = r->pitchEnvAmount;
-    s.pitchEnvDelayMs       = r->pitchEnvDelayMs;
-    s.pitchEnvAttackMs      = r->pitchEnvAttackMs;
-    s.pitchEnvHoldMs        = r->pitchEnvHoldMs;
-    s.pitchEnvDecayMs       = r->pitchEnvDecayMs;
-    s.pitchEnvSustain       = r->pitchEnvSustain;
-    s.pitchEnvReleaseMs     = r->pitchEnvReleaseMs;
-    s.pitchEnvAttackTension = r->pitchEnvAttackTension;
-    s.pitchEnvDecayTension  = r->pitchEnvDecayTension;
-    s.pitchEnvReleaseTension = r->pitchEnvReleaseTension;
     s.crossfadeEnabled = r->crossfadeEnabled;
     s.monoEnabled       = r->monoEnabled;
     s.portamentoEnabled = r->portamentoEnabled;
@@ -10207,31 +10085,6 @@ void Timeline_UpdateSamplerSettings(const JsonApi::CallbackInfo& info)
     s.arpGate           = r->arpGate;
     s.arpRange          = r->arpRange;
     s.arpDirection      = r->arpDirection;
-    // LFO — initial copy
-    s.lfoVolEnabled       = r->lfoVolEnabled;
-    s.lfoVolAmount        = r->lfoVolAmount;
-    s.lfoVolSpeedHz       = r->lfoVolSpeedHz;
-    s.lfoVolTempoSync     = r->lfoVolTempoSync;
-    s.lfoVolTempoDivision = r->lfoVolTempoDivision;
-    s.lfoVolAttackMs      = r->lfoVolAttackMs;
-    s.lfoVolDelayMs       = r->lfoVolDelayMs;
-    s.lfoVolWaveform      = r->lfoVolWaveform;
-    s.lfoPanEnabled       = r->lfoPanEnabled;
-    s.lfoPanAmount        = r->lfoPanAmount;
-    s.lfoPanSpeedHz       = r->lfoPanSpeedHz;
-    s.lfoPanTempoSync     = r->lfoPanTempoSync;
-    s.lfoPanTempoDivision = r->lfoPanTempoDivision;
-    s.lfoPanAttackMs      = r->lfoPanAttackMs;
-    s.lfoPanDelayMs       = r->lfoPanDelayMs;
-    s.lfoPanWaveform      = r->lfoPanWaveform;
-    s.lfoPitchEnabled       = r->lfoPitchEnabled;
-    s.lfoPitchAmount        = r->lfoPitchAmount;
-    s.lfoPitchSpeedHz       = r->lfoPitchSpeedHz;
-    s.lfoPitchTempoSync     = r->lfoPitchTempoSync;
-    s.lfoPitchTempoDivision = r->lfoPitchTempoDivision;
-    s.lfoPitchAttackMs      = r->lfoPitchAttackMs;
-    s.lfoPitchDelayMs       = r->lfoPitchDelayMs;
-    s.lfoPitchWaveform      = r->lfoPitchWaveform;
     s.modulation            = r->modulation;
     // ── Slot targeting ───────────────────────────────────────────────────────
     // A full `slots` array replaces the whole list (used by the slot list for
@@ -10256,46 +10109,9 @@ void Timeline_UpdateSamplerSettings(const JsonApi::CallbackInfo& info)
         if (slotIndex < 0 || slotIndex >= static_cast<int>(s.slots.size())) slotIndex = 0;
         jsPatchSlot(o, s.slots[static_cast<size_t>(slotIndex)], /*identity=*/false);
     }
-    if (o.Has("attackMs")         && o.Get("attackMs").IsNumber())
-        s.attackMs         = o.Get("attackMs").As<JsonApi::Number>().FloatValue();
-    if (o.Has("decayMs")          && o.Get("decayMs").IsNumber())
-        s.decayMs          = o.Get("decayMs").As<JsonApi::Number>().FloatValue();
-    if (o.Has("sustain")          && o.Get("sustain").IsNumber())
-        s.sustain          = o.Get("sustain").As<JsonApi::Number>().FloatValue();
-    if (o.Has("releaseMs")        && o.Get("releaseMs").IsNumber())
-        s.releaseMs        = o.Get("releaseMs").As<JsonApi::Number>().FloatValue();
-    if (o.Has("delayMs")          && o.Get("delayMs").IsNumber())
-        s.delayMs          = o.Get("delayMs").As<JsonApi::Number>().FloatValue();
-    if (o.Has("holdMs")           && o.Get("holdMs").IsNumber())
-        s.holdMs           = o.Get("holdMs").As<JsonApi::Number>().FloatValue();
-    if (o.Has("attackTension")    && o.Get("attackTension").IsNumber())
-        s.attackTension    = o.Get("attackTension").As<JsonApi::Number>().FloatValue();
-    if (o.Has("decayTension")     && o.Get("decayTension").IsNumber())
-        s.decayTension     = o.Get("decayTension").As<JsonApi::Number>().FloatValue();
-    if (o.Has("releaseTension")   && o.Get("releaseTension").IsNumber())
-        s.releaseTension   = o.Get("releaseTension").As<JsonApi::Number>().FloatValue();
-    if (o.Has("pitchEnvEnabled")        && o.Get("pitchEnvEnabled").IsBoolean())
-        s.pitchEnvEnabled        = o.Get("pitchEnvEnabled").As<JsonApi::Boolean>().Value();
-    if (o.Has("pitchEnvAmount")         && o.Get("pitchEnvAmount").IsNumber())
-        s.pitchEnvAmount         = o.Get("pitchEnvAmount").As<JsonApi::Number>().FloatValue();
-    if (o.Has("pitchEnvDelayMs")        && o.Get("pitchEnvDelayMs").IsNumber())
-        s.pitchEnvDelayMs        = o.Get("pitchEnvDelayMs").As<JsonApi::Number>().FloatValue();
-    if (o.Has("pitchEnvAttackMs")       && o.Get("pitchEnvAttackMs").IsNumber())
-        s.pitchEnvAttackMs       = o.Get("pitchEnvAttackMs").As<JsonApi::Number>().FloatValue();
-    if (o.Has("pitchEnvHoldMs")         && o.Get("pitchEnvHoldMs").IsNumber())
-        s.pitchEnvHoldMs         = o.Get("pitchEnvHoldMs").As<JsonApi::Number>().FloatValue();
-    if (o.Has("pitchEnvDecayMs")        && o.Get("pitchEnvDecayMs").IsNumber())
-        s.pitchEnvDecayMs        = o.Get("pitchEnvDecayMs").As<JsonApi::Number>().FloatValue();
-    if (o.Has("pitchEnvSustain")        && o.Get("pitchEnvSustain").IsNumber())
-        s.pitchEnvSustain        = o.Get("pitchEnvSustain").As<JsonApi::Number>().FloatValue();
-    if (o.Has("pitchEnvReleaseMs")      && o.Get("pitchEnvReleaseMs").IsNumber())
-        s.pitchEnvReleaseMs      = o.Get("pitchEnvReleaseMs").As<JsonApi::Number>().FloatValue();
-    if (o.Has("pitchEnvAttackTension")  && o.Get("pitchEnvAttackTension").IsNumber())
-        s.pitchEnvAttackTension  = o.Get("pitchEnvAttackTension").As<JsonApi::Number>().FloatValue();
-    if (o.Has("pitchEnvDecayTension")   && o.Get("pitchEnvDecayTension").IsNumber())
-        s.pitchEnvDecayTension   = o.Get("pitchEnvDecayTension").As<JsonApi::Number>().FloatValue();
-    if (o.Has("pitchEnvReleaseTension") && o.Get("pitchEnvReleaseTension").IsNumber())
-        s.pitchEnvReleaseTension = o.Get("pitchEnvReleaseTension").As<JsonApi::Number>().FloatValue();
+    // The amp/pitch envelopes and three drawable LFOs are gone from the region —
+    // they are the modulation system's job now (setSamplerModulation). Any old
+    // keys a stale caller still sends are simply ignored.
     if (o.Has("crossfadeEnabled") && o.Get("crossfadeEnabled").IsBoolean())
         s.crossfadeEnabled = o.Get("crossfadeEnabled").As<JsonApi::Boolean>().Value();
     if (o.Has("monoEnabled")       && o.Get("monoEnabled").IsBoolean())
@@ -10326,70 +10142,6 @@ void Timeline_UpdateSamplerSettings(const JsonApi::CallbackInfo& info)
         s.arpRange          = o.Get("arpRange").As<JsonApi::Number>().Int32Value();
     if (o.Has("arpDirection")      && o.Get("arpDirection").IsNumber())
         s.arpDirection      = o.Get("arpDirection").As<JsonApi::Number>().Int32Value();
-    // ── LFO merge ───────────────────────────────────────────────────────────
-    auto parseLfoWaveform = [&](const char* key, std::vector<SampleRegion::LfoBreakpoint>& out) {
-        if (o.Has(key) && o.Get(key).IsArray()) {
-            JsonApi::Array a = o.Get(key).As<JsonApi::Array>();
-            out.clear();
-            out.reserve(a.Length());
-            for (uint32_t i = 0; i < a.Length(); ++i) {
-                if (!a.Get(i).IsObject()) continue;
-                JsonApi::Object pt = a.Get(i).As<JsonApi::Object>();
-                SampleRegion::LfoBreakpoint bp;
-                bp.time  = pt.Has("t") && pt.Get("t").IsNumber() ? pt.Get("t").As<JsonApi::Number>().FloatValue() : 0.0f;
-                bp.value = pt.Has("v") && pt.Get("v").IsNumber() ? pt.Get("v").As<JsonApi::Number>().FloatValue() : 0.0f;
-                out.push_back(bp);
-            }
-        }
-    };
-    // Volume LFO
-    if (o.Has("lfoVolEnabled")       && o.Get("lfoVolEnabled").IsBoolean())
-        s.lfoVolEnabled       = o.Get("lfoVolEnabled").As<JsonApi::Boolean>().Value();
-    if (o.Has("lfoVolAmount")        && o.Get("lfoVolAmount").IsNumber())
-        s.lfoVolAmount        = o.Get("lfoVolAmount").As<JsonApi::Number>().FloatValue();
-    if (o.Has("lfoVolSpeedHz")       && o.Get("lfoVolSpeedHz").IsNumber())
-        s.lfoVolSpeedHz       = o.Get("lfoVolSpeedHz").As<JsonApi::Number>().FloatValue();
-    if (o.Has("lfoVolTempoSync")     && o.Get("lfoVolTempoSync").IsBoolean())
-        s.lfoVolTempoSync     = o.Get("lfoVolTempoSync").As<JsonApi::Boolean>().Value();
-    if (o.Has("lfoVolTempoDivision") && o.Get("lfoVolTempoDivision").IsNumber())
-        s.lfoVolTempoDivision = o.Get("lfoVolTempoDivision").As<JsonApi::Number>().Int32Value();
-    if (o.Has("lfoVolAttackMs")      && o.Get("lfoVolAttackMs").IsNumber())
-        s.lfoVolAttackMs      = o.Get("lfoVolAttackMs").As<JsonApi::Number>().FloatValue();
-    if (o.Has("lfoVolDelayMs")       && o.Get("lfoVolDelayMs").IsNumber())
-        s.lfoVolDelayMs       = o.Get("lfoVolDelayMs").As<JsonApi::Number>().FloatValue();
-    parseLfoWaveform("lfoVolWaveform", s.lfoVolWaveform);
-    // Panning LFO
-    if (o.Has("lfoPanEnabled")       && o.Get("lfoPanEnabled").IsBoolean())
-        s.lfoPanEnabled       = o.Get("lfoPanEnabled").As<JsonApi::Boolean>().Value();
-    if (o.Has("lfoPanAmount")        && o.Get("lfoPanAmount").IsNumber())
-        s.lfoPanAmount        = o.Get("lfoPanAmount").As<JsonApi::Number>().FloatValue();
-    if (o.Has("lfoPanSpeedHz")       && o.Get("lfoPanSpeedHz").IsNumber())
-        s.lfoPanSpeedHz       = o.Get("lfoPanSpeedHz").As<JsonApi::Number>().FloatValue();
-    if (o.Has("lfoPanTempoSync")     && o.Get("lfoPanTempoSync").IsBoolean())
-        s.lfoPanTempoSync     = o.Get("lfoPanTempoSync").As<JsonApi::Boolean>().Value();
-    if (o.Has("lfoPanTempoDivision") && o.Get("lfoPanTempoDivision").IsNumber())
-        s.lfoPanTempoDivision = o.Get("lfoPanTempoDivision").As<JsonApi::Number>().Int32Value();
-    if (o.Has("lfoPanAttackMs")      && o.Get("lfoPanAttackMs").IsNumber())
-        s.lfoPanAttackMs      = o.Get("lfoPanAttackMs").As<JsonApi::Number>().FloatValue();
-    if (o.Has("lfoPanDelayMs")       && o.Get("lfoPanDelayMs").IsNumber())
-        s.lfoPanDelayMs       = o.Get("lfoPanDelayMs").As<JsonApi::Number>().FloatValue();
-    parseLfoWaveform("lfoPanWaveform", s.lfoPanWaveform);
-    // Pitch LFO
-    if (o.Has("lfoPitchEnabled")       && o.Get("lfoPitchEnabled").IsBoolean())
-        s.lfoPitchEnabled       = o.Get("lfoPitchEnabled").As<JsonApi::Boolean>().Value();
-    if (o.Has("lfoPitchAmount")        && o.Get("lfoPitchAmount").IsNumber())
-        s.lfoPitchAmount        = o.Get("lfoPitchAmount").As<JsonApi::Number>().FloatValue();
-    if (o.Has("lfoPitchSpeedHz")       && o.Get("lfoPitchSpeedHz").IsNumber())
-        s.lfoPitchSpeedHz       = o.Get("lfoPitchSpeedHz").As<JsonApi::Number>().FloatValue();
-    if (o.Has("lfoPitchTempoSync")     && o.Get("lfoPitchTempoSync").IsBoolean())
-        s.lfoPitchTempoSync     = o.Get("lfoPitchTempoSync").As<JsonApi::Boolean>().Value();
-    if (o.Has("lfoPitchTempoDivision") && o.Get("lfoPitchTempoDivision").IsNumber())
-        s.lfoPitchTempoDivision = o.Get("lfoPitchTempoDivision").As<JsonApi::Number>().Int32Value();
-    if (o.Has("lfoPitchAttackMs")      && o.Get("lfoPitchAttackMs").IsNumber())
-        s.lfoPitchAttackMs      = o.Get("lfoPitchAttackMs").As<JsonApi::Number>().FloatValue();
-    if (o.Has("lfoPitchDelayMs")       && o.Get("lfoPitchDelayMs").IsNumber())
-        s.lfoPitchDelayMs       = o.Get("lfoPitchDelayMs").As<JsonApi::Number>().FloatValue();
-    parseLfoWaveform("lfoPitchWaveform", s.lfoPitchWaveform);
 
     // Modulation system. Accepted here as well as through the dedicated
     // timeline_setSamplerModulation call, so a panel that already sends one

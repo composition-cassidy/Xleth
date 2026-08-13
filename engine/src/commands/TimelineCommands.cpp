@@ -1569,26 +1569,6 @@ SetSamplerSettingsCommand::SetSamplerSettingsCommand(int regionId,
     const SampleRegion* r = timeline.getRegion(regionId);
     if (r) {
         oldSettings_.slots            = r->slots;
-        oldSettings_.attackMs         = r->attackMs;
-        oldSettings_.decayMs          = r->decayMs;
-        oldSettings_.sustain          = r->sustain;
-        oldSettings_.releaseMs        = r->releaseMs;
-        oldSettings_.delayMs          = r->delayMs;
-        oldSettings_.holdMs           = r->holdMs;
-        oldSettings_.attackTension    = r->attackTension;
-        oldSettings_.decayTension     = r->decayTension;
-        oldSettings_.releaseTension   = r->releaseTension;
-        oldSettings_.pitchEnvEnabled       = r->pitchEnvEnabled;
-        oldSettings_.pitchEnvAmount        = r->pitchEnvAmount;
-        oldSettings_.pitchEnvDelayMs       = r->pitchEnvDelayMs;
-        oldSettings_.pitchEnvAttackMs      = r->pitchEnvAttackMs;
-        oldSettings_.pitchEnvHoldMs        = r->pitchEnvHoldMs;
-        oldSettings_.pitchEnvDecayMs       = r->pitchEnvDecayMs;
-        oldSettings_.pitchEnvSustain       = r->pitchEnvSustain;
-        oldSettings_.pitchEnvReleaseMs     = r->pitchEnvReleaseMs;
-        oldSettings_.pitchEnvAttackTension = r->pitchEnvAttackTension;
-        oldSettings_.pitchEnvDecayTension  = r->pitchEnvDecayTension;
-        oldSettings_.pitchEnvReleaseTension = r->pitchEnvReleaseTension;
         oldSettings_.crossfadeEnabled = r->crossfadeEnabled;
         oldSettings_.monoEnabled       = r->monoEnabled;
         oldSettings_.portamentoEnabled = r->portamentoEnabled;
@@ -1604,31 +1584,6 @@ SetSamplerSettingsCommand::SetSamplerSettingsCommand(int regionId,
         oldSettings_.arpGate           = r->arpGate;
         oldSettings_.arpRange          = r->arpRange;
         oldSettings_.arpDirection      = r->arpDirection;
-        // LFO
-        oldSettings_.lfoVolEnabled       = r->lfoVolEnabled;
-        oldSettings_.lfoVolAmount        = r->lfoVolAmount;
-        oldSettings_.lfoVolSpeedHz       = r->lfoVolSpeedHz;
-        oldSettings_.lfoVolTempoSync     = r->lfoVolTempoSync;
-        oldSettings_.lfoVolTempoDivision = r->lfoVolTempoDivision;
-        oldSettings_.lfoVolAttackMs      = r->lfoVolAttackMs;
-        oldSettings_.lfoVolDelayMs       = r->lfoVolDelayMs;
-        oldSettings_.lfoVolWaveform      = r->lfoVolWaveform;
-        oldSettings_.lfoPanEnabled       = r->lfoPanEnabled;
-        oldSettings_.lfoPanAmount        = r->lfoPanAmount;
-        oldSettings_.lfoPanSpeedHz       = r->lfoPanSpeedHz;
-        oldSettings_.lfoPanTempoSync     = r->lfoPanTempoSync;
-        oldSettings_.lfoPanTempoDivision = r->lfoPanTempoDivision;
-        oldSettings_.lfoPanAttackMs      = r->lfoPanAttackMs;
-        oldSettings_.lfoPanDelayMs       = r->lfoPanDelayMs;
-        oldSettings_.lfoPanWaveform      = r->lfoPanWaveform;
-        oldSettings_.lfoPitchEnabled       = r->lfoPitchEnabled;
-        oldSettings_.lfoPitchAmount        = r->lfoPitchAmount;
-        oldSettings_.lfoPitchSpeedHz       = r->lfoPitchSpeedHz;
-        oldSettings_.lfoPitchTempoSync     = r->lfoPitchTempoSync;
-        oldSettings_.lfoPitchTempoDivision = r->lfoPitchTempoDivision;
-        oldSettings_.lfoPitchAttackMs      = r->lfoPitchAttackMs;
-        oldSettings_.lfoPitchDelayMs       = r->lfoPitchDelayMs;
-        oldSettings_.lfoPitchWaveform      = r->lfoPitchWaveform;
         oldSettings_.modulation            = r->modulation;
     } else {
         std::cerr << "[Undo] ERROR SetSamplerSettingsCommand: region id=" << regionId
@@ -1639,26 +1594,6 @@ SetSamplerSettingsCommand::SetSamplerSettingsCommand(int regionId,
 static void applySamplerSettings(SampleRegion* r, const SamplerSettings& s) {
     r->slots            = s.slots;
     if (r->slots.empty()) r->slots.emplace_back();   // invariant: never zero slots
-    r->attackMs         = s.attackMs;
-    r->decayMs          = s.decayMs;
-    r->sustain          = s.sustain;
-    r->releaseMs        = s.releaseMs;
-    r->delayMs          = s.delayMs;
-    r->holdMs           = s.holdMs;
-    r->attackTension    = s.attackTension;
-    r->decayTension     = s.decayTension;
-    r->releaseTension   = s.releaseTension;
-    r->pitchEnvEnabled       = s.pitchEnvEnabled;
-    r->pitchEnvAmount        = s.pitchEnvAmount;
-    r->pitchEnvDelayMs       = s.pitchEnvDelayMs;
-    r->pitchEnvAttackMs      = s.pitchEnvAttackMs;
-    r->pitchEnvHoldMs        = s.pitchEnvHoldMs;
-    r->pitchEnvDecayMs       = s.pitchEnvDecayMs;
-    r->pitchEnvSustain       = s.pitchEnvSustain;
-    r->pitchEnvReleaseMs     = s.pitchEnvReleaseMs;
-    r->pitchEnvAttackTension = s.pitchEnvAttackTension;
-    r->pitchEnvDecayTension  = s.pitchEnvDecayTension;
-    r->pitchEnvReleaseTension = s.pitchEnvReleaseTension;
     r->crossfadeEnabled = s.crossfadeEnabled;
     r->monoEnabled       = s.monoEnabled;
     r->portamentoEnabled = s.portamentoEnabled;
@@ -1674,31 +1609,6 @@ static void applySamplerSettings(SampleRegion* r, const SamplerSettings& s) {
     r->arpGate           = s.arpGate;
     r->arpRange          = s.arpRange;
     r->arpDirection      = s.arpDirection;
-    // LFO
-    r->lfoVolEnabled       = s.lfoVolEnabled;
-    r->lfoVolAmount        = s.lfoVolAmount;
-    r->lfoVolSpeedHz       = s.lfoVolSpeedHz;
-    r->lfoVolTempoSync     = s.lfoVolTempoSync;
-    r->lfoVolTempoDivision = s.lfoVolTempoDivision;
-    r->lfoVolAttackMs      = s.lfoVolAttackMs;
-    r->lfoVolDelayMs       = s.lfoVolDelayMs;
-    r->lfoVolWaveform      = s.lfoVolWaveform;
-    r->lfoPanEnabled       = s.lfoPanEnabled;
-    r->lfoPanAmount        = s.lfoPanAmount;
-    r->lfoPanSpeedHz       = s.lfoPanSpeedHz;
-    r->lfoPanTempoSync     = s.lfoPanTempoSync;
-    r->lfoPanTempoDivision = s.lfoPanTempoDivision;
-    r->lfoPanAttackMs      = s.lfoPanAttackMs;
-    r->lfoPanDelayMs       = s.lfoPanDelayMs;
-    r->lfoPanWaveform      = s.lfoPanWaveform;
-    r->lfoPitchEnabled       = s.lfoPitchEnabled;
-    r->lfoPitchAmount        = s.lfoPitchAmount;
-    r->lfoPitchSpeedHz       = s.lfoPitchSpeedHz;
-    r->lfoPitchTempoSync     = s.lfoPitchTempoSync;
-    r->lfoPitchTempoDivision = s.lfoPitchTempoDivision;
-    r->lfoPitchAttackMs      = s.lfoPitchAttackMs;
-    r->lfoPitchDelayMs       = s.lfoPitchDelayMs;
-    r->lfoPitchWaveform      = s.lfoPitchWaveform;
     r->modulation            = s.modulation;
 }
 

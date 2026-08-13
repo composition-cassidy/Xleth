@@ -796,26 +796,8 @@ struct SamplerSettings {
     // one entry (slot 0).
     std::vector<SampleSlot> slots { SampleSlot{} };
 
-    float   attackMs         = 0.0f;
-    float   decayMs          = 0.0f;
-    float   sustain          = 1.0f;
-    float   releaseMs        = 50.0f;
-    float   delayMs          = 0.0f;
-    float   holdMs           = 0.0f;
-    float   attackTension    = 0.0f;
-    float   decayTension     = 0.0f;
-    float   releaseTension   = 0.0f;
-    bool    pitchEnvEnabled       = false;
-    float   pitchEnvAmount        = 0.0f;
-    float   pitchEnvDelayMs       = 0.0f;
-    float   pitchEnvAttackMs      = 0.0f;
-    float   pitchEnvHoldMs        = 0.0f;
-    float   pitchEnvDecayMs       = 0.0f;
-    float   pitchEnvSustain       = 0.0f;
-    float   pitchEnvReleaseMs     = 0.0f;
-    float   pitchEnvAttackTension = 0.0f;
-    float   pitchEnvDecayTension  = 0.0f;
-    float   pitchEnvReleaseTension = 0.0f;
+    // The amp/pitch envelopes and three drawable LFOs are gone — they live in
+    // `modulation` below now (ENV 1 is the amp VCA; pitch env + LFOs are routes).
     bool    crossfadeEnabled = false;
     bool    monoEnabled       = false;
     bool    portamentoEnabled = false;
@@ -831,33 +813,6 @@ struct SamplerSettings {
     float   arpGate           = 0.8f;
     int     arpRange          = 1;
     int     arpDirection      = 0;
-    // LFO — Volume
-    bool  lfoVolEnabled       = false;
-    float lfoVolAmount        = 0.0f;
-    float lfoVolSpeedHz       = 1.0f;
-    bool  lfoVolTempoSync     = false;
-    int   lfoVolTempoDivision = 4;
-    float lfoVolAttackMs      = 0.0f;
-    float lfoVolDelayMs       = 0.0f;
-    std::vector<SampleRegion::LfoBreakpoint> lfoVolWaveform;
-    // LFO — Panning
-    bool  lfoPanEnabled       = false;
-    float lfoPanAmount        = 0.0f;
-    float lfoPanSpeedHz       = 1.0f;
-    bool  lfoPanTempoSync     = false;
-    int   lfoPanTempoDivision = 4;
-    float lfoPanAttackMs      = 0.0f;
-    float lfoPanDelayMs       = 0.0f;
-    std::vector<SampleRegion::LfoBreakpoint> lfoPanWaveform;
-    // LFO — Pitch
-    bool  lfoPitchEnabled       = false;
-    float lfoPitchAmount        = 0.0f;
-    float lfoPitchSpeedHz       = 1.0f;
-    bool  lfoPitchTempoSync     = false;
-    int   lfoPitchTempoDivision = 4;
-    float lfoPitchAttackMs      = 0.0f;
-    float lfoPitchDelayMs       = 0.0f;
-    std::vector<SampleRegion::LfoBreakpoint> lfoPitchWaveform;
 
     // Modulation system. Carried wholesale like `slots` above, so ONE command
     // covers a route add, a route removal and an envelope edit alike, and undo

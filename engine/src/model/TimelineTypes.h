@@ -323,28 +323,12 @@ struct SampleRegion {
 
     // ── Sampler settings (per-instrument; shared across all patterns that bind
     //    to this region). These describe how the sample is played back.
-    float attackMs        = 0.0f;
-    float decayMs         = 0.0f;
-    float sustain         = 1.0f;
-    float releaseMs       = 50.0f;
-    float delayMs         = 0.0f;
-    float holdMs          = 0.0f;
-    float attackTension   = 0.0f;   // -1..+1 (0 = linear)
-    float decayTension    = 0.0f;
-    float releaseTension  = 0.0f;
-
-    // Pitch envelope (modulates playback rate)
-    bool  pitchEnvEnabled        = false;
-    float pitchEnvAmount         = 0.0f;   // semitones, -48..+48
-    float pitchEnvDelayMs        = 0.0f;
-    float pitchEnvAttackMs       = 0.0f;
-    float pitchEnvHoldMs         = 0.0f;
-    float pitchEnvDecayMs        = 0.0f;
-    float pitchEnvSustain        = 0.0f;   // 0 = no pitch mod at sustain
-    float pitchEnvReleaseMs      = 0.0f;
-    float pitchEnvAttackTension  = 0.0f;
-    float pitchEnvDecayTension   = 0.0f;
-    float pitchEnvReleaseTension = 0.0f;
+    //
+    // The amplitude DAHDSR and the pitch envelope used to live here as flat
+    // scalars; they now live in the modulation system — ENV 1 (envs[0]) is the
+    // amp VCA and the pitch envelope is an ENV → SlotSem route. A project made
+    // before this move carries the old keys in JSON; SampleRegion::from_json
+    // migrates them into the modulation config at load (see SamplerLegacyMigration).
 
     // Crossfade / sustained mode. Sampler-level, NOT per-slot: it decides
     // whether a note releases on note-off at all, which is a property of the
@@ -405,49 +389,20 @@ struct SampleRegion {
     int     arpRange          = 1;       // octave range (1=stay, 2=+1 oct, etc.)
     int     arpDirection      = 0;       // 0=Up, 1=Down, 2=UpDown, 3=UpDownSticky
 
-    // ── LFO (per-target: Volume, Panning, Pitch) ────────────────────────────
+    // A 2-float breakpoint shape, shared with ClipModulation::Vibrato. The
+    // sampler's three legacy drawable LFOs (Volume / Panning / Pitch) that used
+    // it are gone — they are modulation routes now — but the type stays because
+    // the clip Vibrato still draws its custom shape with it.
     struct LfoBreakpoint {
         float time  = 0.0f;   // 0..1 (position within one cycle)
         float value = 0.0f;   // -1..+1
     };
 
-    // Volume LFO
-    bool  lfoVolEnabled       = false;
-    float lfoVolAmount        = 0.0f;   // 0..1 multiplier depth
-    float lfoVolSpeedHz       = 1.0f;
-    bool  lfoVolTempoSync     = false;
-    int   lfoVolTempoDivision = 4;      // 1=whole, 2=half, 4=quarter, 8=eighth, 16=16th
-    float lfoVolAttackMs      = 0.0f;
-    float lfoVolDelayMs       = 0.0f;
-    std::vector<LfoBreakpoint> lfoVolWaveform;
-
-    // Panning LFO
-    bool  lfoPanEnabled       = false;
-    float lfoPanAmount        = 0.0f;   // 0..1 pan range
-    float lfoPanSpeedHz       = 1.0f;
-    bool  lfoPanTempoSync     = false;
-    int   lfoPanTempoDivision = 4;
-    float lfoPanAttackMs      = 0.0f;
-    float lfoPanDelayMs       = 0.0f;
-    std::vector<LfoBreakpoint> lfoPanWaveform;
-
-    // Pitch LFO
-    bool  lfoPitchEnabled       = false;
-    float lfoPitchAmount        = 0.0f; // semitones, -48..+48
-    float lfoPitchSpeedHz       = 1.0f;
-    bool  lfoPitchTempoSync     = false;
-    int   lfoPitchTempoDivision = 4;
-    float lfoPitchAttackMs      = 0.0f;
-    float lfoPitchDelayMs       = 0.0f;
-    std::vector<LfoBreakpoint> lfoPitchWaveform;
-
     // ── Modulation system (6 ENV + 6 LFO + VELO + NOTE + routes) ─────────────
-    // Lives alongside — not instead of — the legacy ADSR, pitch envelope and
-    // three drawable LFOs above. Those keep working exactly as they did; the
-    // new system is additive until a later phase retires them.
-    //
-    // An empty route list is an exact bypass, which is why a project written
-    // before this field existed loads and renders bit-identically.
+    // The sampler's ONLY envelope/LFO system now. ENV 1 is the amplitude VCA;
+    // the old pitch envelope and three drawable LFOs are ENV/LFO → route pairs.
+    // A project written before this system existed loads with an empty route
+    // list (an exact bypass) and its legacy scalars migrated in from raw JSON.
     xleth::sampmod::ModConfig modulation;
 
     struct Syllable {

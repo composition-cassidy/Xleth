@@ -1038,7 +1038,7 @@ static void testPatternStopDoesNotLeakPlaybackSamplers()
 
     SampleRegion region;
     region.name = "Sustained Tone";
-    region.releaseMs = 250.0f;
+    region.modulation.envs[0].release.ms = 250.0f;  // amp release (ENV 1 is the VCA)
     const int regionId = timeline.addRegion(region);
 
     Pattern pattern;

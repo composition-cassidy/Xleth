@@ -205,6 +205,23 @@ void syncAmpEnvelopeToEnv1(float delayMs, float attackMs, float holdMs,
     e.outputAmount   = 1.0f;
 }
 
+void migrateLegacyAmpEnvelope(const nlohmann::json& j, sm::ModConfig& cfg)
+{
+    // The defaults mirror the old SampleRegion amp-env defaults so a project
+    // that saved only some of the keys still migrates to the same envelope.
+    syncAmpEnvelopeToEnv1(
+        readFloat(j, "delayMs",         0.0f),
+        readFloat(j, "attackMs",        0.0f),
+        readFloat(j, "holdMs",          0.0f),
+        readFloat(j, "decayMs",         0.0f),
+        readFloat(j, "sustain",         1.0f),
+        readFloat(j, "releaseMs",      50.0f),
+        readFloat(j, "attackTension",   0.0f),
+        readFloat(j, "decayTension",    0.0f),
+        readFloat(j, "releaseTension",  0.0f),
+        cfg);
+}
+
 bool migrateLegacyModulation(const nlohmann::json& j,
                              int occupiedSlots,
                              double bpm,

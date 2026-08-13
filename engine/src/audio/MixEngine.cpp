@@ -1824,14 +1824,11 @@ std::unique_ptr<Sampler> MixEngine::buildSamplerForRegion(const SampleRegion& re
     auto s = std::make_unique<Sampler>();
 
     // ── Sampler-level (note-level) settings — unchanged by layering ──────────
-    s->setEnvelope(region.delayMs, region.attackMs, region.holdMs,
-                   region.decayMs, region.sustain, region.releaseMs,
-                   region.attackTension, region.decayTension, region.releaseTension);
-    s->setPitchEnvelope(region.pitchEnvDelayMs, region.pitchEnvAttackMs, region.pitchEnvHoldMs,
-                        region.pitchEnvDecayMs, region.pitchEnvSustain, region.pitchEnvReleaseMs,
-                        region.pitchEnvAttackTension, region.pitchEnvDecayTension, region.pitchEnvReleaseTension);
-    s->setPitchEnvEnabled(region.pitchEnvEnabled);
-    s->setPitchEnvAmount(region.pitchEnvAmount);
+    // The amp envelope, pitch envelope and the three per-note LFOs are gone as
+    // dedicated region paths: the amp DAHDSR is now driven by modulation ENV 1
+    // (applied inside setModulation below), and pitch/vol/pan modulation is
+    // expressed as routes. A legacy project's old envelopes and LFOs arrive here
+    // already converted to ENV 1 + routes by SampleRegion's load-time migration.
     s->setCrossfadeMode(region.crossfadeEnabled);
     s->setMonoMode(region.monoEnabled);
     s->setVoiceCount(region.voiceCount);
@@ -1841,18 +1838,9 @@ std::unique_ptr<Sampler> MixEngine::buildSamplerForRegion(const SampleRegion& re
     s->setArpeggiator(region.arpEnabled, region.arpTempoSync, region.arpDivision,
                       region.arpFreeTimeMs, region.arpGate, region.arpRange,
                       region.arpDirection);
-    s->setLfoVol(region.lfoVolEnabled, region.lfoVolAmount, region.lfoVolSpeedHz,
-                 region.lfoVolTempoSync, region.lfoVolTempoDivision,
-                 region.lfoVolAttackMs, region.lfoVolDelayMs, region.lfoVolWaveform);
-    s->setLfoPan(region.lfoPanEnabled, region.lfoPanAmount, region.lfoPanSpeedHz,
-                 region.lfoPanTempoSync, region.lfoPanTempoDivision,
-                 region.lfoPanAttackMs, region.lfoPanDelayMs, region.lfoPanWaveform);
-    s->setLfoPitch(region.lfoPitchEnabled, region.lfoPitchAmount, region.lfoPitchSpeedHz,
-                   region.lfoPitchTempoSync, region.lfoPitchTempoDivision,
-                   region.lfoPitchAttackMs, region.lfoPitchDelayMs, region.lfoPitchWaveform);
     // Modulation system. Compiles the route graph and publishes it; an empty
     // route list publishes nothing at all and costs the audio thread one null
-    // pointer test per block.
+    // pointer test per block. Also derives the amp VCA from ENV 1.
     s->setModulation(region.modulation);
 
     // ── Per-slot settings and PCM ────────────────────────────────────────────

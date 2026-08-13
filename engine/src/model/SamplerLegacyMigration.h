@@ -78,13 +78,19 @@ bool migrateLegacyModulation(const nlohmann::json& j,
 // True when `j` carries any schema-3 sampler modulation keys at all.
 bool hasLegacyModulation(const nlohmann::json& j) noexcept;
 
-// Mirror an amplitude DAHDSR into ENV 1 so the new rack can display and route
-// it. Runs for EVERY load, not just legacy ones — envs[0] is a derived view of
-// the amp envelope, and the amp scalars stay its storage of record.
+// Write an amplitude DAHDSR into ENV 1 (envs[0]) — its new home and the VCA's
+// source of truth. Called only during legacy migration; a post-migration
+// project persists envs[0] directly.
 void syncAmpEnvelopeToEnv1(float delayMs, float attackMs, float holdMs,
                            float decayMs, float sustain, float releaseMs,
                            float attackTension, float decayTension,
                            float releaseTension,
                            xleth::sampmod::ModConfig& cfg) noexcept;
+
+// Migrate a legacy amp envelope straight from the raw JSON keys ("attackMs",
+// "delayMs", … "releaseTension") into ENV 1. Called when `j` still carries the
+// legacy amp keys — i.e. a project saved before ENV 1 became the amp envelope.
+void migrateLegacyAmpEnvelope(const nlohmann::json& j,
+                              xleth::sampmod::ModConfig& cfg);
 
 } // namespace xleth::samplegacy

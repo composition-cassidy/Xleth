@@ -127,15 +127,13 @@ public:
     void loadSample(const juce::AudioBuffer<float>& audioData,
                     double sourceSampleRate, int rootNote);
 
+    // The amplitude DAHDSR. Kept for the test suite and used internally by
+    // applyAmpEnvFromMod_ — ENV 1 (the modulation system) is the amp envelope's
+    // UI now, but the DSP is unchanged.
     void setADSR(float attackMs, float decayMs, float sustain, float releaseMs);
     void setEnvelope(float delayMs, float attackMs, float holdMs,
                      float decayMs, float sustain, float releaseMs,
                      float attackTension, float decayTension, float releaseTension);
-    void setPitchEnvelope(float delayMs, float attackMs, float holdMs,
-                          float decayMs, float sustain, float releaseMs,
-                          float attackTension, float decayTension, float releaseTension);
-    void setPitchEnvEnabled(bool enabled);
-    void setPitchEnvAmount(float semitones);
     // Sampler-level: decides whether note-off releases at all.
     void setCrossfadeMode(bool enabled);   // false = one-shot, true = sustained
 
@@ -172,17 +170,6 @@ public:
     void setArpeggiator(bool enabled, bool tempoSync, int division,
                         float freeTimeMs, float gate, int range, int direction);
     void setBPM(double bpm);
-
-    // ── LFO configuration ───────────────────────────────────────────────────
-    void setLfoVol(bool enabled, float amount, float speedHz, bool tempoSync,
-                   int tempoDivision, float attackMs, float delayMs,
-                   const std::vector<SampleRegion::LfoBreakpoint>& waveform);
-    void setLfoPan(bool enabled, float amount, float speedHz, bool tempoSync,
-                   int tempoDivision, float attackMs, float delayMs,
-                   const std::vector<SampleRegion::LfoBreakpoint>& waveform);
-    void setLfoPitch(bool enabled, float amount, float speedHz, bool tempoSync,
-                     int tempoDivision, float attackMs, float delayMs,
-                     const std::vector<SampleRegion::LfoBreakpoint>& waveform);
 
     // ── Modulation system (6 ENV + 6 LFO + VELO + NOTE + route list) ─────────
     // MAIN THREAD ONLY. Compiles the config into an immutable graph and
@@ -425,18 +412,11 @@ private:
     float   decayTension_   = 0.0f;
     float   releaseTension_ = 0.0f;
 
-    // Pitch envelope (modulates playback rate)
-    float   pitchEnvDelayMs_        = 0.0f;
-    float   pitchEnvAttackMs_       = 0.0f;
-    float   pitchEnvHoldMs_         = 0.0f;
-    float   pitchEnvDecayMs_        = 0.0f;
-    float   pitchEnvSustain_        = 0.0f;  // 0.0 = no pitch mod at sustain
-    float   pitchEnvReleaseMs_      = 0.0f;
-    float   pitchEnvAttackTension_  = 0.0f;
-    float   pitchEnvDecayTension_   = 0.0f;
-    float   pitchEnvReleaseTension_ = 0.0f;
-    float   pitchEnvAmount_         = 0.0f;  // semitones, -48..+48
-    bool    pitchEnvEnabled_        = false;
+    // Fill the amplitude DAHDSR (the members above) from modulation ENV 1
+    // (modConfig_.envs[0]), converting its ModTimes to milliseconds at bpm_.
+    // ENV 1 is the amp envelope's home now that the legacy per-region scalars
+    // are gone; called whenever the config or tempo changes.
+    void applyAmpEnvFromMod_();
 
     bool    crossfadeEnabled_ = false;     // one-shot vs sustained (sampler-level)
 
@@ -456,21 +436,6 @@ private:
 
     // Mono held-note stack (most recent at back, max 16)
     std::vector<int> monoHeldNotes_;
-
-    // ── LFO configuration (one per target) ──────────────────────────────────
-    struct LfoConfig {
-        bool  enabled       = false;
-        float amount        = 0.0f;
-        float speedHz       = 1.0f;
-        bool  tempoSync     = false;
-        int   tempoDivision = 4;
-        float attackMs      = 0.0f;
-        float delayMs       = 0.0f;
-        std::vector<SampleRegion::LfoBreakpoint> waveform;
-    };
-    LfoConfig lfoVolConfig_;
-    LfoConfig lfoPanConfig_;
-    LfoConfig lfoPitchConfig_;
 
     // ── Voice = one NOTE ─────────────────────────────────────────────────────
     // A Voice carries all note-level modulation (envelopes, LFOs, portamento,
@@ -538,28 +503,15 @@ private:
         float  slideCurveCy         = 0.5f;
         int    slideOnsetSample     = 0;    // sub-buffer gate; reset to 0 each block (mirrors onsetSample)
 
+        // The amplitude DAHDSR is the VCA and the voice-lifecycle gate. Its
+        // parameters are sourced from modulation ENV 1 (see applyAmpEnvFromMod_);
+        // this per-voice state is the running envelope for one note.
         enum class EnvStage { Delay, Attack, Hold, Decay, Sustain, Release, Off };
         EnvStage envStage         = EnvStage::Off;
         float    envLevel         = 0.0f;
         float    releaseStartLevel = 0.0f; // envLevel captured at moment Release began
         double   envPosition      = 0.0;   // samples elapsed in current stage
         bool     noteHeld         = false;
-
-        // Pitch envelope (same stage machine)
-        EnvStage pitchEnvStage             = EnvStage::Off;
-        float    pitchEnvLevel             = 0.0f;
-        float    pitchEnvReleaseStartLevel = 0.0f;
-        double   pitchEnvPosition          = 0.0;
-
-        // LFO per-voice state (one per target)
-        struct LfoState {
-            double phase          = 0.0;
-            double delayRemaining = -1.0;  // -1 = uninitialized sentinel
-            double attackProgress = 0.0;
-        };
-        LfoState lfoVolState;
-        LfoState lfoPanState;
-        LfoState lfoPitchState;
 
         int onsetSample   = 0;  // sub-buffer onset: processVoice skips output for [0, onsetSample), reset to 0 after first block
         int releaseSample = -1; // sub-buffer sample at which to enter Release; -1 = none queued
@@ -699,11 +651,6 @@ private:
                         int numSamples,
                         double engineSampleRate);
     float  advanceEnvelope(Voice& v, double engineSampleRate);
-    float  advancePitchEnvelope(Voice& v, double engineSampleRate);
-
-    // LFO helpers
-    static float evaluateLfoWaveform(const std::vector<SampleRegion::LfoBreakpoint>& waveform, float phase);
-    float advanceLfo(const LfoConfig& config, Voice::LfoState& state, double engineSampleRate) const;
 
     // ── Modulation helpers ───────────────────────────────────────────────────
     // Advance the global bank over every control block this buffer spans and

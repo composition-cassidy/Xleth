@@ -233,30 +233,6 @@ void Sampler::setEnvelope(float delayMs, float attackMs, float holdMs,
     releaseTension_ = std::clamp(releaseTension, -1.0f, 1.0f);
 }
 
-void Sampler::setPitchEnvelope(float delayMs, float attackMs, float holdMs,
-                               float decayMs, float sustain, float releaseMs,
-                               float attackTension, float decayTension, float releaseTension)
-{
-    pitchEnvDelayMs_        = std::max(0.0f, delayMs);
-    pitchEnvAttackMs_       = std::max(0.0f, attackMs);
-    pitchEnvHoldMs_         = std::max(0.0f, holdMs);
-    pitchEnvDecayMs_        = std::max(0.0f, decayMs);
-    pitchEnvSustain_        = std::clamp(sustain, 0.0f, 1.0f);
-    pitchEnvReleaseMs_      = std::max(0.0f, releaseMs);
-    pitchEnvAttackTension_  = std::clamp(attackTension,  -1.0f, 1.0f);
-    pitchEnvDecayTension_   = std::clamp(decayTension,   -1.0f, 1.0f);
-    pitchEnvReleaseTension_ = std::clamp(releaseTension, -1.0f, 1.0f);
-}
-
-void Sampler::setPitchEnvEnabled(bool enabled)
-{
-    pitchEnvEnabled_ = enabled;
-}
-
-void Sampler::setPitchEnvAmount(float semitones)
-{
-    pitchEnvAmount_ = std::clamp(semitones, -48.0f, 48.0f);
-}
 
 void Sampler::setCrossfadeMode(bool enabled)
 {
@@ -403,41 +379,23 @@ void Sampler::setArpeggiator(bool enabled, bool tempoSync, int division,
 void Sampler::setBPM(double bpm)
 {
     bpm_ = bpm > 0.0 ? bpm : 140.0;
+    // A tempo-synced amp envelope (ENV 1 in BPM mode) scales with the tempo, so
+    // re-derive its milliseconds whenever the tempo moves.
+    applyAmpEnvFromMod_();
 }
 
-// ── LFO configuration ──────────────────────────────────────────────────────
-
-void Sampler::setLfoVol(bool enabled, float amount, float speedHz, bool tempoSync,
-                        int tempoDivision, float attackMs, float delayMs,
-                        const std::vector<SampleRegion::LfoBreakpoint>& waveform)
+// Amp DAHDSR ← modulation ENV 1. ENV 1 is the amplitude envelope's home now that
+// the per-region amp scalars are gone; its ModTimes convert to ms at bpm_.
+void Sampler::applyAmpEnvFromMod_()
 {
-    auto& c = lfoVolConfig_;
-    c.enabled = enabled; c.amount = amount; c.speedHz = std::max(0.01f, speedHz);
-    c.tempoSync = tempoSync; c.tempoDivision = std::max(1, tempoDivision);
-    c.attackMs = std::max(0.0f, attackMs); c.delayMs = std::max(0.0f, delayMs);
-    c.waveform = waveform;
-}
-
-void Sampler::setLfoPan(bool enabled, float amount, float speedHz, bool tempoSync,
-                        int tempoDivision, float attackMs, float delayMs,
-                        const std::vector<SampleRegion::LfoBreakpoint>& waveform)
-{
-    auto& c = lfoPanConfig_;
-    c.enabled = enabled; c.amount = amount; c.speedHz = std::max(0.01f, speedHz);
-    c.tempoSync = tempoSync; c.tempoDivision = std::max(1, tempoDivision);
-    c.attackMs = std::max(0.0f, attackMs); c.delayMs = std::max(0.0f, delayMs);
-    c.waveform = waveform;
-}
-
-void Sampler::setLfoPitch(bool enabled, float amount, float speedHz, bool tempoSync,
-                          int tempoDivision, float attackMs, float delayMs,
-                          const std::vector<SampleRegion::LfoBreakpoint>& waveform)
-{
-    auto& c = lfoPitchConfig_;
-    c.enabled = enabled; c.amount = amount; c.speedHz = std::max(0.01f, speedHz);
-    c.tempoSync = tempoSync; c.tempoDivision = std::max(1, tempoDivision);
-    c.attackMs = std::max(0.0f, attackMs); c.delayMs = std::max(0.0f, delayMs);
-    c.waveform = waveform;
+    const xleth::sampmod::ModEnvConfig& e = modConfig_.envs[0];
+    const bool sync = e.tempoSync;
+    auto ms = [&](const xleth::sampmod::ModTime& t) {
+        return static_cast<float>(xleth::sampmod::modTimeSeconds(t, sync, bpm_) * 1000.0);
+    };
+    setEnvelope(ms(e.delay), ms(e.attack), ms(e.hold), ms(e.decay),
+                e.sustainPct * 0.01f, ms(e.release),
+                e.attackTension, e.decayTension, e.releaseTension);
 }
 
 // ─── Modulation system — publication (main thread) ───────────────────────────
@@ -445,6 +403,10 @@ void Sampler::setLfoPitch(bool enabled, float amount, float speedHz, bool tempoS
 void Sampler::setModulation(const xleth::sampmod::ModConfig& cfg)
 {
     modConfig_ = cfg;
+
+    // ENV 1 (envs[0]) is the amplitude envelope — re-derive the VCA DAHDSR from
+    // it on every config change so editing ENV 1 in the tray is audible.
+    applyAmpEnvFromMod_();
 
     // An empty route list publishes a NULL graph rather than an inert one, so
     // the audio thread's bypass is a single null pointer test — no scan over
@@ -627,69 +589,6 @@ void Sampler::evaluateVoiceModulation(Voice& v,
     }
 }
 
-// ── LFO evaluation ─────────────────────────────────────────────────────────
-
-float Sampler::evaluateLfoWaveform(const std::vector<SampleRegion::LfoBreakpoint>& waveform,
-                                   float phase)
-{
-    if (waveform.empty())
-        return std::sin(phase * 6.2831853f);
-    if (waveform.size() == 1)
-        return waveform[0].value;
-
-    phase = phase - std::floor(phase); // wrap to [0,1)
-
-    // Linear scan for bracketing breakpoints (waveform is small, <64 points)
-    for (size_t i = 0; i + 1 < waveform.size(); ++i) {
-        if (phase <= waveform[i + 1].time) {
-            const float span = waveform[i + 1].time - waveform[i].time;
-            if (span < 1e-9f) return waveform[i].value;
-            const float frac = (phase - waveform[i].time) / span;
-            return waveform[i].value + (waveform[i + 1].value - waveform[i].value) * frac;
-        }
-    }
-    return waveform.back().value;
-}
-
-float Sampler::advanceLfo(const LfoConfig& config, Voice::LfoState& state,
-                          double engineSampleRate) const
-{
-    if (!config.enabled) return 0.0f;
-
-    // Lazy delay initialisation (sentinel = -1)
-    if (state.delayRemaining < 0.0)
-        state.delayRemaining = config.delayMs * engineSampleRate * 0.001;
-
-    // Delay phase
-    if (state.delayRemaining > 0.0) {
-        state.delayRemaining -= 1.0;
-        return 0.0f;
-    }
-
-    // Compute cycle frequency
-    double cycleHz = static_cast<double>(config.speedHz);
-    if (config.tempoSync)
-        cycleHz = (bpm_ / 60.0) * (4.0 / config.tempoDivision);
-
-    // Advance phase
-    state.phase += cycleHz / engineSampleRate;
-    if (state.phase >= 1.0) state.phase -= std::floor(state.phase);
-
-    // Evaluate waveform
-    float mod = evaluateLfoWaveform(config.waveform, static_cast<float>(state.phase));
-
-    // Attack fade-in
-    if (config.attackMs > 0.0f && state.attackProgress < 1.0) {
-        const double attackSamples = config.attackMs * engineSampleRate * 0.001;
-        if (attackSamples > 0.0)
-            state.attackProgress += 1.0 / attackSamples;
-        if (state.attackProgress > 1.0) state.attackProgress = 1.0;
-        mod *= static_cast<float>(state.attackProgress);
-    }
-
-    return mod;
-}
-
 void Sampler::allNotesOff()
 {
     // Fix B: release-envelope semantics, not hard-kill. The prior
@@ -744,8 +643,6 @@ void Sampler::releaseVoice(Voice& v)
     v.releaseStartLevel = v.envLevel;
     v.envStage          = Voice::EnvStage::Release;
     v.envPosition       = 0.0;
-    v.pitchEnvStage     = Voice::EnvStage::Release;
-    v.pitchEnvPosition  = 0.0;
     // The modulation envelopes release with the amplitude envelope. Static, so
     // it takes no graph — the bank always exists on the voice.
     xleth::sampmod::modReleaseVoice(v.modBank);
@@ -1120,9 +1017,6 @@ void Sampler::noteOn(int midiNote, float velocity, int sampleOffset)
                 active->envStage     = Voice::EnvStage::Delay;
                 active->envLevel     = 0.0f;
                 active->envPosition  = 0.0;
-                active->pitchEnvStage    = Voice::EnvStage::Delay;
-                active->pitchEnvLevel    = 0.0f;
-                active->pitchEnvPosition = 0.0;
             }
         } else if (active) {
             // Hard retrigger: restart the voice at new pitch
@@ -1138,9 +1032,6 @@ void Sampler::noteOn(int midiNote, float velocity, int sampleOffset)
             active->envLevel     = 0.0f;
             active->envPosition  = 0.0;
             active->noteHeld     = true;
-            active->pitchEnvStage    = Voice::EnvStage::Delay;
-            active->pitchEnvLevel    = 0.0f;
-            active->pitchEnvPosition = 0.0;
             active->onsetSample      = sampleOffset;
             // Hard retrigger cancels any in-flight slide on this voice.
             active->slideActive          = false;
@@ -1262,12 +1153,6 @@ void Sampler::fireNoteOn(int midiNote, float velocity, int sampleOffset)
     v->envLevel     = 0.0f;
     v->envPosition  = 0.0;
     v->noteHeld     = true;
-    v->pitchEnvStage    = Voice::EnvStage::Delay;
-    v->pitchEnvLevel    = 0.0f;
-    v->pitchEnvPosition = 0.0;
-    v->lfoVolState   = Voice::LfoState{};
-    v->lfoPanState   = Voice::LfoState{};
-    v->lfoPitchState = Voice::LfoState{};
     v->onsetSample   = sampleOffset;
     v->releaseSample = -1;
     // Recycled voices must not inherit stale slide state.
@@ -1516,109 +1401,6 @@ float Sampler::advanceEnvelope(Voice& v, double engineSampleRate)
     return v.envLevel;
 }
 
-// ─── Pitch envelope (same DAHDSR FSM, operating on pitchEnv* voice state) ────
-
-float Sampler::advancePitchEnvelope(Voice& v, double engineSampleRate)
-{
-    const double msToSamples    = engineSampleRate * 0.001;
-    const double delaySamples   = pitchEnvDelayMs_   * msToSamples;
-    const double attackSamples  = pitchEnvAttackMs_  * msToSamples;
-    const double holdSamples    = pitchEnvHoldMs_    * msToSamples;
-    const double decaySamples   = pitchEnvDecayMs_   * msToSamples;
-    const double releaseSamples = pitchEnvReleaseMs_ * msToSamples;
-
-    switch (v.pitchEnvStage)
-    {
-        case Voice::EnvStage::Delay:
-        {
-            v.pitchEnvLevel = 0.0f;
-            if (delaySamples <= 0.0 || v.pitchEnvPosition >= delaySamples) {
-                v.pitchEnvStage    = Voice::EnvStage::Attack;
-                v.pitchEnvPosition = 0.0;
-            }
-            break;
-        }
-        case Voice::EnvStage::Attack:
-        {
-            if (attackSamples <= 0.0) {
-                v.pitchEnvLevel    = 1.0f;
-                v.pitchEnvStage    = Voice::EnvStage::Hold;
-                v.pitchEnvPosition = 0.0;
-            } else {
-                const float frac = static_cast<float>(
-                    std::min(1.0, v.pitchEnvPosition / attackSamples));
-                v.pitchEnvLevel = shapeTension(frac, pitchEnvAttackTension_);
-                if (v.pitchEnvPosition >= attackSamples) {
-                    v.pitchEnvLevel    = 1.0f;
-                    v.pitchEnvStage    = Voice::EnvStage::Hold;
-                    v.pitchEnvPosition = 0.0;
-                }
-            }
-            break;
-        }
-        case Voice::EnvStage::Hold:
-        {
-            v.pitchEnvLevel = 1.0f;
-            if (holdSamples <= 0.0 || v.pitchEnvPosition >= holdSamples) {
-                v.pitchEnvStage    = Voice::EnvStage::Decay;
-                v.pitchEnvPosition = 0.0;
-            }
-            break;
-        }
-        case Voice::EnvStage::Decay:
-        {
-            if (decaySamples <= 0.0) {
-                v.pitchEnvLevel    = pitchEnvSustain_;
-                v.pitchEnvStage    = Voice::EnvStage::Sustain;
-                v.pitchEnvPosition = 0.0;
-            } else {
-                const float frac = static_cast<float>(
-                    std::min(1.0, v.pitchEnvPosition / decaySamples));
-                const float shaped = shapeTension(frac, pitchEnvDecayTension_);
-                v.pitchEnvLevel = 1.0f - (1.0f - pitchEnvSustain_) * shaped;
-                if (v.pitchEnvPosition >= decaySamples) {
-                    v.pitchEnvLevel    = pitchEnvSustain_;
-                    v.pitchEnvStage    = Voice::EnvStage::Sustain;
-                    v.pitchEnvPosition = 0.0;
-                }
-            }
-            break;
-        }
-        case Voice::EnvStage::Sustain:
-        {
-            v.pitchEnvLevel = pitchEnvSustain_;
-            break;
-        }
-        case Voice::EnvStage::Release:
-        {
-            if (releaseSamples <= 0.0) {
-                v.pitchEnvLevel    = 0.0f;
-                v.pitchEnvStage    = Voice::EnvStage::Off;
-            } else {
-                if (v.pitchEnvPosition == 0.0) v.pitchEnvReleaseStartLevel = v.pitchEnvLevel;
-                const float frac = static_cast<float>(
-                    std::min(1.0, v.pitchEnvPosition / releaseSamples));
-                const float shaped = shapeTension(frac, pitchEnvReleaseTension_);
-                v.pitchEnvLevel = v.pitchEnvReleaseStartLevel * (1.0f - shaped);
-                if (v.pitchEnvPosition >= releaseSamples) {
-                    v.pitchEnvLevel    = 0.0f;
-                    v.pitchEnvStage    = Voice::EnvStage::Off;
-                }
-            }
-            break;
-        }
-        case Voice::EnvStage::Off:
-        default:
-            v.pitchEnvLevel = 0.0f;
-            break;
-    }
-
-    v.pitchEnvPosition += 1.0;
-    if (v.pitchEnvLevel < 0.0f) v.pitchEnvLevel = 0.0f;
-    if (v.pitchEnvLevel > 1.0f) v.pitchEnvLevel = 1.0f;
-    return v.pitchEnvLevel;
-}
-
 // ─── processVoice / processBlock ─────────────────────────────────────────────
 
 // Per-stream geometry, resolved once per processVoice call from the stream's
@@ -1681,8 +1463,6 @@ void Sampler::processVoice(Voice& v,
 
     const int outChannels = out.getNumChannels();
     if (outChannels <= 0) return;
-
-    const bool usePitchEnv = pitchEnvEnabled_ && std::abs(pitchEnvAmount_) > 0.001f;
 
     static constexpr float kPi = 3.14159265358979323846f;
 
@@ -1875,8 +1655,6 @@ void Sampler::processVoice(Voice& v,
         if (v.releaseSample >= 0 && s >= v.releaseSample) {
             v.envStage       = Voice::EnvStage::Release;
             v.envPosition    = 0.0;
-            v.pitchEnvStage    = Voice::EnvStage::Release;
-            v.pitchEnvPosition = 0.0;
             v.releaseSample  = -1;
             xleth::sampmod::modReleaseVoice(v.modBank);
         }
@@ -1995,33 +1773,13 @@ void Sampler::processVoice(Voice& v,
             }
         }
 
-        // ── COLLECT PITCH OFFSETS (semitones, independent) ───────────
-        double pitchOffsetSemitones = 0.0;
-
-        if (usePitchEnv) {
-            const float pitchEnvGain = advancePitchEnvelope(v, engineSampleRate);
-            pitchOffsetSemitones += static_cast<double>(pitchEnvAmount_) * pitchEnvGain;
-        }
-
-        const float lfoPitchMod = advanceLfo(lfoPitchConfig_, v.lfoPitchState, engineSampleRate);
-        if (lfoPitchConfig_.enabled && std::abs(lfoPitchConfig_.amount) > 0.001f) {
-            pitchOffsetSemitones += static_cast<double>(lfoPitchConfig_.amount) * lfoPitchMod;
-        }
-
-        // ── ADVANCE VOL/PAN LFOs (note-level, once per sample) ───────
-        const float lfoVolMod = advanceLfo(lfoVolConfig_, v.lfoVolState, engineSampleRate);
-        const float lfoPanMod = advanceLfo(lfoPanConfig_, v.lfoPanState, engineSampleRate);
-
-        const float volLfoGain = lfoVolConfig_.enabled
-            ? std::max(0.0f, 1.0f + lfoVolMod * lfoVolConfig_.amount) : 1.0f;
-
-        float lfoPanL = 1.0f, lfoPanR = 1.0f;
-        if (lfoPanConfig_.enabled && std::abs(lfoPanConfig_.amount) > 0.001f) {
-            const float panOffset = lfoPanMod * lfoPanConfig_.amount; // -1..+1
-            const float panAngle  = (panOffset + 1.0f) * 0.5f;        //  0..1
-            lfoPanL = cosf(panAngle * kPi * 0.5f);
-            lfoPanR = sinf(panAngle * kPi * 0.5f);
-        }
+        // Note-level pitch / vol / pan modulation is now the modulation
+        // system's job (modOffsets, applied per-slot below). The legacy per-note
+        // pitch envelope and the three legacy LFOs are gone; these neutral
+        // values keep the downstream mix arithmetic unchanged.
+        const double pitchOffsetSemitones = 0.0;
+        const float  volLfoGain = 1.0f;
+        const float  lfoPanL = 1.0f, lfoPanR = 1.0f;
 
         // ── PER-STREAM RENDER ────────────────────────────────────────────────
         int stillRunning = 0;

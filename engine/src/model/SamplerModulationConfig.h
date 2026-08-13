@@ -326,6 +326,15 @@ struct ModConfig {
     int numRoutes = 0;
     std::array<ModRoute, kMaxRoutes> routes{};
 
+    // ENV 1 is the amplitude VCA, so its default must equal the sampler's old
+    // amp-envelope default (instant attack, full sustain, a 50 ms release) —
+    // otherwise a fresh region would click on note-off and a bypass config would
+    // not render identically to no config at all. Every other field keeps its
+    // in-class default. A user-declared default constructor leaves the type
+    // trivially COPYABLE (only trivial default-construction is given up), so the
+    // atomic-swap contract below is unaffected.
+    ModConfig() noexcept { envs[0].release.ms = 50.0f; }
+
     // Fixed-size arrays make this trivially copyable, which is what lets the
     // undo command hold two of them and the audio thread read one through a
     // single atomic pointer load.
