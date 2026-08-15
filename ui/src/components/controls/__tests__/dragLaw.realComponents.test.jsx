@@ -57,7 +57,7 @@ function stubCapture(el) {
 
 function pointer(type, init) {
   const e = new Event(type, { bubbles: true })
-  Object.assign(e, { clientX: 0, clientY: 0, pointerId: 1, shiftKey: false, ctrlKey: false, metaKey: false, ...init })
+  Object.assign(e, { clientX: 0, clientY: 0, pointerId: 1, shiftKey: false, ctrlKey: false, metaKey: false, button: 0, ...init })
   return e
 }
 
@@ -92,28 +92,43 @@ describe('Knob — mid-drag shift toggle does not jump the value', () => {
   })
 })
 
+// VolumeFader now renders the shared Fader primitive (ui/src/components/
+// controls/Fader.jsx), which batches pointermoves into one dragLaw update per
+// animation frame — see Fader.test.jsx. Every move here needs a flushed
+// frame before its effect on `seen` can be asserted.
+async function flushFrame() {
+  await act(async () => {
+    await new Promise((resolve) => requestAnimationFrame(resolve))
+  })
+}
+
 describe('VolumeFader — mid-drag shift toggle does not jump the value', () => {
   it('holds steady when shift is pressed and released at the same pointer position', async () => {
     const seen = []
     const c = await mount(<VolumeFader value={1.0} onChange={(v) => seen.push(v)} />)
-    const el = c.querySelector('.mixer-fader')
+    const el = c.querySelector('.xleth-fader')
     stubCapture(el)
-    // jsdom reports clientHeight as 0 by default; the fader falls back to a
-    // 160px groove height in that case (see getGrooveHeight), which is fine
-    // for exercising the rebase — we only need the ANCHOR to hold.
+    // jsdom has no ResizeObserver-backed layout, so the groove measures 0px
+    // and Fader falls back to its `length` prop (default 160px) for
+    // dragRange — fine for exercising the rebase, which only needs the
+    // ANCHOR to hold, not a specific pixel-to-value mapping.
 
     act(() => { el.dispatchEvent(pointer('pointerdown', { clientY: 200 })) })
     act(() => { el.dispatchEvent(pointer('pointermove', { clientY: 170 })) })
+    await flushFrame()
     const beforeShift = seen.at(-1)
     expect(Number.isFinite(beforeShift)).toBe(true)
 
     act(() => { el.dispatchEvent(pointer('pointermove', { clientY: 170, shiftKey: true })) })
+    await flushFrame()
     expect(seen.at(-1)).toBeCloseTo(beforeShift, 6)
 
     act(() => { el.dispatchEvent(pointer('pointermove', { clientY: 160, shiftKey: true })) })
+    await flushFrame()
     const afterFineStep = seen.at(-1)
 
     act(() => { el.dispatchEvent(pointer('pointermove', { clientY: 160, shiftKey: false })) })
+    await flushFrame()
     expect(seen.at(-1)).toBeCloseTo(afterFineStep, 6)
 
     act(() => { el.dispatchEvent(pointer('pointerup', { clientY: 160 })) })

@@ -10369,76 +10369,211 @@ html.fx-drag-active * {
   top: 0;
 }
 
-/* â”€â”€ Volume fader â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* â”€â”€ Fader primitive (shared) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ * ui/src/components/controls/Fader.jsx â€” the vertical/horizontal sibling to
+ * Knob.jsx, used directly by both the mixer's VolumeFader.jsx and MasterStrip.
+ * Its own surface/border/groove/fill tokens, monochromatic off the teal
+ * accent, never text tokens (the old hand-rolled mixer fader painted its fill
+ * and thumb in placeholder/subtle TEXT grey, which read as washed-out â€” see
+ * SLIDER_FEEL_SPEC.md Â§3.4). Flat, zero border-radius, no gradients/glow. */
+:root {
+  --fader-accent: #00b896;
+  --fader-cap-bg: #1b1e24;
+  --fader-cap-bg-hover: color-mix(in srgb, var(--fader-accent) 10%, #1b1e24);
+  --fader-cap-bg-active: color-mix(in srgb, var(--fader-accent) 32%, #1b1e24);
+  --fader-cap-border: #33383f;
+  --fader-cap-border-active: var(--fader-accent);
+  --fader-groove-bg: #0c0e12;
+  --fader-groove-border: #262a31;
+  --fader-fill: var(--fader-accent);
+  --fader-detent: color-mix(in srgb, var(--fader-accent) 70%, #ffffff);
+}
 
-.mixer-fader {
-  position: relative;
-  width: 22px;
-  flex-shrink: 0;
-  cursor: ns-resize;
+.xleth-fader-wrap {
   display: flex;
-  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  user-select: none;
 }
 
-.mixer-fader-groove {
+.xleth-fader-wrap--vertical { flex-direction: column; }
+.xleth-fader-wrap--horizontal { flex-direction: row; }
+
+.xleth-fader {
+  position: relative;
+  flex-shrink: 0;
+  touch-action: none;
+}
+
+.xleth-fader--vertical {
+  width: var(--fader-thickness, 22px);
+  height: var(--fader-length, 160px);
+  cursor: ns-resize;
+}
+
+.xleth-fader--horizontal {
+  height: var(--fader-thickness, 22px);
+  width: var(--fader-length, 160px);
+  cursor: ew-resize;
+}
+
+/* fill mode: stretch to the parent flex row/column's cross-axis space (e.g.
+ * the mixer fader, which has always tracked the strip's available height)
+ * instead of a fixed `length`. resolveDragRange() still measures the real
+ * laid-out groove at drag time, so sensitivity always matches the pixels. */
+.xleth-fader-wrap--fill {
+  /* Width/thickness stays intrinsic (set by .xleth-fader--vertical below) —
+   * only the cross-axis stretch from the parent row (align-items: stretch)
+   * gives this its height; no flex-grow, so it doesn't widen and swallow
+   * layout space meant for siblings like the peak meter. */
+  min-height: 0;
+  align-self: stretch;
+}
+
+.xleth-fader--fill.xleth-fader--vertical {
+  flex: 1 1 auto;
+  height: auto;
+  min-height: 0;
+}
+
+.xleth-fader--fill.xleth-fader--horizontal {
+  flex: 1 1 auto;
+  width: auto;
+  min-width: 0;
+}
+
+.xleth-fader-groove {
   position: absolute;
-  left: 50%;
-  transform: translateX(-50%);
-  width: 3px;
-  background: var(--mx-s0);
+  background: var(--fader-groove-bg);
+  box-shadow: inset 0 0 0 1px var(--fader-groove-border);
   border-radius: 0;
-  box-shadow: inset 0 0 0 1px var(--mx-bd2);
-  overflow: hidden;
 }
 
-.mixer-fader-fill {
+.xleth-fader--vertical .xleth-fader-groove {
+  left: 50%;
+  top: 7px;
+  bottom: 7px;
+  width: 3px;
+  transform: translateX(-50%);
+}
+
+.xleth-fader--horizontal .xleth-fader-groove {
+  top: 50%;
+  left: 7px;
+  right: 7px;
+  height: 3px;
+  transform: translateY(-50%);
+}
+
+.xleth-fader-fill {
   position: absolute;
+  background: var(--fader-fill);
+  opacity: 0.85;
+  border-radius: 0;
+}
+
+.xleth-fader--vertical .xleth-fader-fill {
   left: 0;
   right: 0;
   bottom: 0;
-  border-radius: 0;
-  background: var(--mx-t4);
-  opacity: 0.8;
-  box-shadow: none;
 }
 
-.mixer-fader-unity {
-  position: absolute;
-  left: -4px;
-  width: 13px;
-  height: 1px;
-  background: var(--mx-t4);
-  z-index: 1;
+.xleth-fader--horizontal .xleth-fader-fill {
+  top: 0;
+  bottom: 0;
+  left: 0;
 }
 
-.mixer-fader-thumb {
+.xleth-fader-detent {
   position: absolute;
-  left: 50%;
-  transform: translate(-50%, -50%);
-  width: 25px;
-  height: 7px;
-  background: var(--mx-t3);
-  border: none;
-  border-top: 1px solid var(--mx-t1);
-  border-radius: 0;
+  background: var(--fader-detent);
   pointer-events: none;
-  display: flex;
-  align-items: center;
-  justify-content: center;
+}
+
+.xleth-fader--vertical .xleth-fader-detent {
+  left: -4px;
+  width: 11px;
+  height: 1px;
+  transform: translateY(50%);
+}
+
+.xleth-fader--horizontal .xleth-fader-detent {
+  top: -4px;
+  height: 11px;
+  width: 1px;
+  transform: translateX(-50%);
+}
+
+.xleth-fader-thumb {
+  position: absolute;
+  background: var(--fader-cap-bg);
+  border: none;
+  pointer-events: none;
   z-index: 2;
-  transition: background var(--transition-fast), border-color var(--transition-fast);
-  box-shadow: none;
+  transition: background var(--transition-fast, 120ms), border-color var(--transition-fast, 120ms);
+  /* Krasen's hard-shadow convention (flat, zero-blur) â€” gives the cap the
+   * physical weight the old text-grey thumb never had. */
+  box-shadow: 4px 5px 0 rgba(0, 0, 0, 0.5);
 }
 
-.mixer-fader-thumb-line {
-  display: none;
+/* Cross-axis size matches --fader-thickness exactly (not a wider constant) â€”
+ * the thumb used to be 25px across a 22px hit area, so 1.5px of visible cap
+ * on each edge sat outside .xleth-fader's own box and never received pointer
+ * events (pointer-events is none on the thumb itself; the root element is
+ * what's listening). Tying it to the same var keeps the grabbable region and
+ * the painted cap identical for any thickness the caller passes. */
+.xleth-fader--vertical .xleth-fader-thumb {
+  left: 50%;
+  width: var(--fader-thickness, 22px);
+  height: 7px;
+  border-top: 1px solid var(--fader-cap-border);
+  transform: translate(-50%, -50%);
 }
 
-.mixer-fader-thumb.active,
-.mixer-fader:hover .mixer-fader-thumb {
-  background: var(--mx-t2);
-  border-top-color: #ffffff;
-  box-shadow: none;
+.xleth-fader--horizontal .xleth-fader-thumb {
+  top: 50%;
+  width: 7px;
+  height: var(--fader-thickness, 22px);
+  border-left: 1px solid var(--fader-cap-border);
+  transform: translate(-50%, -50%);
+}
+
+.xleth-fader.is-hovered .xleth-fader-thumb {
+  background: var(--fader-cap-bg-hover);
+}
+
+.xleth-fader.is-grabbed .xleth-fader-thumb {
+  background: var(--fader-cap-bg-active);
+  border-color: var(--fader-cap-border-active);
+}
+
+.xleth-fader-label {
+  font-size: 9px;
+  color: var(--theme-text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  font-weight: 500;
+}
+
+.xleth-fader-readout {
+  font-size: 10px;
+  color: var(--theme-text-muted);
+  text-align: center;
+  cursor: text;
+  font-variant-numeric: tabular-nums;
+  min-height: 12px;
+}
+
+.xleth-fader-readout-input {
+  width: 100%;
+  font-size: 10px;
+  text-align: center;
+  background: var(--theme-bg-primary);
+  color: var(--theme-text);
+  border: 1px solid var(--fader-accent);
+  border-radius: 0;
+  padding: 1px 2px;
+  outline: none;
 }
 
 /* â”€â”€ Effect Chain Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
@@ -17180,55 +17315,14 @@ html.fx-drag-active * {
   height: 100%;
 }
 
-.xleth-fader {
-  position: relative;
-  width: var(--theme-control-size-compact);
-  min-height: calc(var(--theme-control-size-compact) * 4);
-}
-
-.xleth-fader__rail {
-  position: absolute;
-  inset-block: calc(var(--theme-control-height-compact) / 2);
-  left: 50%;
-  width: calc(var(--theme-control-height-compact) / 5);
-  transform: translateX(-50%);
-  overflow: hidden;
-  border-radius: var(--theme-chrome-radius-md);
-  background: var(--theme-primitive-well-bg);
-  box-shadow: var(--theme-depth-well-inner-shadow);
-}
-
-.xleth-fader__fill {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: var(--theme-primitive-meter-idle);
-}
-
-.xleth-fader__thumb {
-  position: absolute;
-  left: 50%;
-  width: calc(var(--theme-control-height-compact) + var(--theme-control-gap-compact));
-  height: calc(var(--theme-control-height-compact) - var(--theme-control-gap-compact));
-  transform: translate(-50%, 50%);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--theme-primitive-control-border);
-  border-radius: var(--radius-sm);
-  background: var(--theme-primitive-control-bg);
-  box-shadow:
-    var(--theme-depth-hard-shadow),
-    var(--theme-depth-top-light-bevel);
-}
-
-.xleth-fader__thumb-line {
-  width: 50%;
-  height: var(--theme-chrome-underline-thickness);
-  border-radius: var(--theme-chrome-radius-sm);
-  background: var(--theme-text-muted);
-}
+/* A dead "generic primitive" .xleth-fader/.xleth-fader__* block used to live
+ * here (unused BEM-style scaffold, zero JSX consumers anywhere in the repo).
+ * It's been removed: its bare `.xleth-fader` selector had the same
+ * specificity as the REAL Fader primitive's `.xleth-fader--vertical` width
+ * rule (ui/src/components/controls/Fader.jsx) and, being later in the
+ * stylesheet, was silently winning the cascade — every Fader instance's hit
+ * box was actually sized by --theme-control-size-compact, not the
+ * --fader-thickness prop callers pass in. See VolumeFader/MasterStrip. */
 
 .xleth-select-trigger {
   display: inline-flex;
