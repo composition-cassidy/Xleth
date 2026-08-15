@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useState, useCallback } from 'react'
 import { tokenValue } from '../../theming/tokenValue.ts'
 import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
+import { useDragLaw } from '../controls/dragLaw.js'
 
 // Circular knob — FL-style vertical drag.
 // Drag up = increase, drag down = decrease. Shift = fine adjust (10x slower).
@@ -49,8 +50,6 @@ export default function Knob({
   glyph = null,
 }) {
   const canvasRef = useRef(null)
-  const dragRef = useRef(null) // { startY, startValue, fine }
-  const liveValueRef = useRef(value)
   const [editing, setEditing] = useState(false)
   const [editText, setEditText] = useState('')
   // Repaint the canvas when the active theme changes so the value-arc/pointer
@@ -152,66 +151,37 @@ export default function Knob({
     themeEpoch,
   ])
 
+  // The canonical drag law — grab-relative deltas, normalised accumulation
+  // through the skew curve, fixed dragRange, fine-mode rebase, wheel, reset,
+  // live/commit split — lives in the shared module so Knob and VolumeFader
+  // never drift apart. See ui/src/components/controls/dragLaw.js.
+  const drag = useDragLaw({
+    value,
+    toNorm: normFromValue,
+    fromNorm: valueFromNorm,
+    dragRange,
+    resetValue: defaultValue != null ? defaultValue : min,
+    onLiveChange,
+    onCommit,
+  })
+
   // Pointer-captured drag — replaces global window mouse listeners.
   // setPointerCapture ensures pointerup fires even when the pointer leaves the
   // window, eliminating zombie-drag on missed mouseup.
   // touch-action: none on the canvas prevents the browser from consuming
   // touch-pan gestures before pointermove fires.
-  const handlePointerDown = useCallback((e) => {
-    if (e.ctrlKey || e.metaKey) {
-      e.preventDefault()
-      const resetTo = defaultValue != null ? defaultValue : min
-      onLiveChange?.(resetTo)
-      onCommit?.(resetTo)
-      return
-    }
-    e.preventDefault()
-    try {
-      e.currentTarget.setPointerCapture(e.pointerId)
-    } catch (_) {}
-    dragRef.current = { startY: e.clientY, startValue: clamp(value), fine: e.shiftKey }
-    document.body.style.cursor = 'ns-resize'
-  }, [value, clamp, defaultValue, min, onLiveChange, onCommit])
-
-  // Drag accumulates in NORMALISED space so a given pixel travel always moves
-  // the same fraction of the knob's sweep, whatever the skew.
-  const handlePointerMove = useCallback((e) => {
-    const d = dragRef.current
-    if (!d) return
-    const dy = d.startY - e.clientY
-    const sensitivity = (e.shiftKey || d.fine) ? 10 : 1
-    const nextNorm = normFromValue(d.startValue) + (dy / dragRange) / sensitivity
-    const next = valueFromNorm(nextNorm)
-    liveValueRef.current = next
-    onLiveChange?.(next)
-  }, [dragRange, normFromValue, valueFromNorm, onLiveChange])
-
-  const handlePointerUp = useCallback(() => {
-    if (!dragRef.current) return
-    dragRef.current = null
-    document.body.style.cursor = ''
-    onCommit?.(liveValueRef.current)
-  }, [onCommit])
-
-  // Keep liveValueRef in sync when value changes externally (e.g. after fetchAll)
-  useEffect(() => { liveValueRef.current = value }, [value])
-
-  // Scroll wheel
-  const handleWheel = useCallback((e) => {
-    e.preventDefault()
-    const sensitivity = e.shiftKey ? 500 : 100
-    const next = valueFromNorm(normFromValue(value) - (e.deltaY / sensitivity) / 20)
-    onLiveChange?.(next)
-    onCommit?.(next)
-  }, [value, normFromValue, valueFromNorm, onLiveChange, onCommit])
+  const handlePointerDown = drag.onPointerDown
+  const handlePointerMove = drag.onPointerMove
+  const handlePointerUp = drag.onPointerUp
+  const handleWheel = drag.onWheel
 
   // Edit mode — entered only via value label double-click, never the canvas.
   // Guard against accidental entry during an active drag.
   const handleDoubleClick = useCallback(() => {
-    if (dragRef.current) return
+    if (drag.isDragging()) return
     setEditing(true)
     setEditText(String(Math.round(value)))
-  }, [value])
+  }, [value, drag.isDragging])
 
   const commitEdit = useCallback(() => {
     const n = Number(editText)

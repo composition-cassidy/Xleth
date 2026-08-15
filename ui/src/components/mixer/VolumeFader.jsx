@@ -1,4 +1,5 @@
-import { useRef, useEffect, useCallback, useState } from 'react'
+import { useRef, useCallback, useState } from 'react'
+import { useDragLaw } from '../controls/dragLaw.js'
 
 // ── Log taper mapping ───────────────────────────────────────────────────────
 // Fader position p ∈ [0,1] → dB → linear gain
@@ -41,82 +42,39 @@ function formatDB(gain) {
 
 const THUMB_H = 28
 
+// fromNorm for the drag law: fader position (0..1) → engine gain, through the
+// dB taper above. posToDB/dbToLinear stay untouched; this just composes them.
+function gainFromPos(pos) {
+  const db = posToDB(pos)
+  return db <= -96 ? 0 : dbToLinear(db)
+}
+
 export default function VolumeFader({ value, onChange }) {
   const containerRef = useRef(null)
-  const dragRef = useRef(null)
-  const liveRef = useRef(value)
-
-  useEffect(() => { liveRef.current = value }, [value])
 
   const getGrooveHeight = useCallback(() => {
     const el = containerRef.current
     return el ? el.clientHeight - THUMB_H : 160
   }, [])
 
+  // The canonical drag law (grab-relative deltas, normalised accumulation,
+  // fine-mode rebase, wheel, reset) lives in the shared module — see
+  // ui/src/components/controls/dragLaw.js. dragRange is the live groove
+  // height rather than a constant, so it tracks container resizes exactly
+  // as the old per-move getGrooveHeight() call did.
+  const drag = useDragLaw({
+    value,
+    toNorm: linearToPos,
+    fromNorm: gainFromPos,
+    dragRange: getGrooveHeight,
+    resetValue: 1.0,
+    onLiveChange: onChange,
+  })
+
   const posToY = useCallback((pos) => {
     const gh = getGrooveHeight()
     return (1 - pos) * gh
   }, [getGrooveHeight])
-
-  const yToPos = useCallback((y) => {
-    const gh = getGrooveHeight()
-    return Math.max(0, Math.min(1, 1 - y / gh))
-  }, [getGrooveHeight])
-
-  const handleMouseDown = useCallback((e) => {
-    // Ctrl/Cmd + click → reset to 0dB (gain 1.0)
-    if (e.ctrlKey || e.metaKey) {
-      e.preventDefault()
-      onChange?.(1.0)
-      return
-    }
-    e.preventDefault()
-    const rect = containerRef.current.getBoundingClientRect()
-    dragRef.current = {
-      startY: e.clientY,
-      startPos: linearToPos(value),
-      fine: e.shiftKey,
-    }
-    document.body.style.cursor = 'ns-resize'
-  }, [value, onChange])
-
-  useEffect(() => {
-    const onMove = (e) => {
-      const d = dragRef.current
-      if (!d) return
-      const gh = getGrooveHeight()
-      const dy = d.startY - e.clientY
-      const sensitivity = (e.shiftKey || d.fine) ? 10 : 1
-      const delta = (dy / gh) / sensitivity
-      const pos = Math.max(0, Math.min(1, d.startPos + delta))
-      const db = posToDB(pos)
-      const gain = db <= -96 ? 0 : dbToLinear(db)
-      liveRef.current = gain
-      onChange?.(gain)
-    }
-    const onUp = () => {
-      if (!dragRef.current) return
-      dragRef.current = null
-      document.body.style.cursor = ''
-    }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
-    return () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
-    }
-  }, [getGrooveHeight, onChange])
-
-  const handleWheel = useCallback((e) => {
-    e.preventDefault()
-    const pos = linearToPos(value)
-    const sensitivity = e.shiftKey ? 500 : 100
-    const delta = -(e.deltaY / sensitivity) / 20
-    const next = Math.max(0, Math.min(1, pos + delta))
-    const db = posToDB(next)
-    const gain = db <= -96 ? 0 : dbToLinear(db)
-    onChange?.(gain)
-  }, [value, onChange])
 
   const pos = linearToPos(value)
   const thumbY = posToY(pos)
@@ -125,8 +83,11 @@ export default function VolumeFader({ value, onChange }) {
     <div
       ref={containerRef}
       className="mixer-fader"
-      onMouseDown={handleMouseDown}
-      onWheel={handleWheel}
+      onPointerDown={drag.onPointerDown}
+      onPointerMove={drag.onPointerMove}
+      onPointerUp={drag.onPointerUp}
+      onPointerCancel={drag.onPointerCancel}
+      onWheel={drag.onWheel}
     >
       {/* Groove */}
       <div className="mixer-fader-groove" style={{ top: THUMB_H / 2, bottom: THUMB_H / 2 }}>
@@ -141,7 +102,7 @@ export default function VolumeFader({ value, onChange }) {
 
       {/* Thumb — centred on the value position (== top of the lit fill) */}
       <div
-        className={`mixer-fader-thumb ${dragRef.current ? 'active' : ''}`}
+        className={`mixer-fader-thumb ${drag.isDragging() ? 'active' : ''}`}
         style={{ top: thumbY + THUMB_H / 2 }}
       >
         <span className="mixer-fader-thumb-line" />
