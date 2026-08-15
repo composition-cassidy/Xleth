@@ -2,6 +2,7 @@ import { useCallback, useMemo, useRef } from 'react'
 import { usePluginUI } from '../PluginUIContext.js'
 import { resolveFormat } from '../formats.js'
 import { styleToCSS } from '../styleToCSS.js'
+import { useDragLaw } from '../../../components/controls/dragLaw.js'
 
 function clamp(value, min, max) {
   return Math.min(max, Math.max(min, value))
@@ -12,28 +13,76 @@ function valueToPercent(value, min, max) {
   return clamp((value - min) / span, 0, 1) * 100
 }
 
-function valueFromPointer(event, element, min, max) {
-  const rect = element.getBoundingClientRect()
-  const y = clamp(event.clientY - rect.top, 0, Math.max(1, rect.height))
-  const t = 1 - y / Math.max(1, rect.height)
-  return min + t * (max - min)
-}
-
 export default function CompressorSliderNode({ node }) {
   const { manifest, params, setParam } = usePluginUI()
   const { props = {}, style = {} } = node
   const paramId = props.param
   const meta = manifest?.params?.[paramId]
-  const draggingRef = useRef(false)
+  const trackRef = useRef(null)
 
   const formatFn = useMemo(
     () => resolveFormat(props.format || meta?.format),
     [props.format, meta?.format],
   )
 
+  const value = meta ? (params[paramId] ?? meta.defaultValue) : 0
+  const span = meta ? meta.max - meta.min : 1
+
+  // Grab-relative drag law (ui/src/components/controls/dragLaw.js) — the same
+  // rebasing-fine/reset/wheel/live-commit pipeline the sampler Knob and mixer
+  // Fader use. Wired directly (not via the Fader primitive) because this
+  // node's DOM/CSS contract (track/fill/thumb classNames, the rail variant)
+  // is bespoke to plugin-ui and shared with app.css; the drag law owns only
+  // the pointer-to-normalised-value math, so it drops in without touching
+  // markup or styling.
+  const toNorm = useCallback(
+    (v) => clamp((v - (meta?.min ?? 0)) / (span || 1), 0, 1),
+    [meta, span],
+  )
+  const fromNorm = useCallback(
+    (n) => (meta?.min ?? 0) + clamp(n, 0, 1) * span,
+    [meta, span],
+  )
+  const handleLiveChange = useCallback((v) => setParam(paramId, v), [paramId, setParam])
+  const handleCommit = useCallback((v) => setParam(paramId, v), [paramId, setParam])
+  const resolveDragRange = useCallback(() => trackRef.current?.clientHeight || 1, [])
+
+  const drag = useDragLaw({
+    value,
+    toNorm,
+    fromNorm,
+    dragRange: resolveDragRange,
+    resetValue: meta?.defaultValue,
+    onLiveChange: handleLiveChange,
+    onCommit: handleCommit,
+    axis: 'y',
+  })
+
+  const handlePointerUp = useCallback((event) => {
+    drag.onPointerUp()
+    event.currentTarget.releasePointerCapture?.(event.pointerId)
+  }, [drag])
+
+  const handleDoubleClick = useCallback(() => {
+    if (meta) setParam(paramId, meta.defaultValue)
+  }, [meta, paramId, setParam])
+
+  const handleKeyDown = useCallback((event) => {
+    if (!meta) return
+    const stepSpan = meta.max - meta.min
+    const step = stepSpan / (event.shiftKey ? 20 : 100)
+    let next = value
+    if (event.key === 'ArrowUp' || event.key === 'ArrowRight') next += step
+    else if (event.key === 'ArrowDown' || event.key === 'ArrowLeft') next -= step
+    else if (event.key === 'Home') next = meta.min
+    else if (event.key === 'End') next = meta.max
+    else return
+    setParam(paramId, clamp(next, meta.min, meta.max))
+    event.preventDefault()
+  }, [meta, paramId, setParam, value])
+
   if (!meta) return null
 
-  const value = params[paramId] ?? meta.defaultValue
   const pct = valueToPercent(value, meta.min, meta.max)
   const label = props.label ?? meta.label
   const title = `${label}: ${formatFn(value)}`
@@ -43,46 +92,6 @@ export default function CompressorSliderNode({ node }) {
   const isRail = props.variant === 'rail'
   const rootClass = `pluginui-compressor-slider${isRail ? ' pluginui-compressor-slider--rail' : ''}`
 
-  const commitFromPointer = useCallback((event) => {
-    const next = valueFromPointer(event, event.currentTarget, meta.min, meta.max)
-    setParam(paramId, clamp(next, meta.min, meta.max))
-  }, [meta.min, meta.max, paramId, setParam])
-
-  const handlePointerDown = useCallback((event) => {
-    draggingRef.current = true
-    event.currentTarget.setPointerCapture?.(event.pointerId)
-    commitFromPointer(event)
-    event.preventDefault()
-  }, [commitFromPointer])
-
-  const handlePointerMove = useCallback((event) => {
-    if (!draggingRef.current) return
-    commitFromPointer(event)
-    event.preventDefault()
-  }, [commitFromPointer])
-
-  const handlePointerUp = useCallback((event) => {
-    draggingRef.current = false
-    event.currentTarget.releasePointerCapture?.(event.pointerId)
-  }, [])
-
-  const handleDoubleClick = useCallback(() => {
-    setParam(paramId, meta.defaultValue)
-  }, [meta.defaultValue, paramId, setParam])
-
-  const handleKeyDown = useCallback((event) => {
-    const span = meta.max - meta.min
-    const step = span / (event.shiftKey ? 20 : 100)
-    let next = value
-    if (event.key === 'ArrowUp' || event.key === 'ArrowRight') next += step
-    else if (event.key === 'ArrowDown' || event.key === 'ArrowLeft') next -= step
-    else if (event.key === 'Home') next = meta.min
-    else if (event.key === 'End') next = meta.max
-    else return
-    setParam(paramId, clamp(next, meta.min, meta.max))
-    event.preventDefault()
-  }, [meta.min, meta.max, paramId, setParam, value])
-
   return (
     <div
       className={rootClass}
@@ -91,6 +100,7 @@ export default function CompressorSliderNode({ node }) {
       title={title}
     >
       <div
+        ref={trackRef}
         className="pluginui-compressor-slider-track"
         role="slider"
         tabIndex={0}
@@ -99,12 +109,13 @@ export default function CompressorSliderNode({ node }) {
         aria-valuemax={meta.max}
         aria-valuenow={Number(value.toFixed(3))}
         aria-valuetext={formatFn(value)}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
+        onPointerDown={drag.onPointerDown}
+        onPointerMove={drag.onPointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
         onDoubleClick={handleDoubleClick}
         onKeyDown={handleKeyDown}
+        onWheel={drag.onWheel}
       >
         {isRail
           ? <div className="pluginui-compressor-slider-thumb" style={{ bottom: `${pct}%` }} />

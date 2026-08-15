@@ -34,13 +34,15 @@ export function useDragLaw({
   resetValue,
   onLiveChange,
   onCommit,
+  axis = 'y',
+  fineMultiplier = 10,
 }) {
   // Refs so the returned handlers stay referentially stable across renders
   // while always reading the latest props/callbacks.
   const stateRef = useRef(null)
-  stateRef.current = { value, toNorm, fromNorm, dragRange, resetValue, onLiveChange, onCommit }
+  stateRef.current = { value, toNorm, fromNorm, dragRange, resetValue, onLiveChange, onCommit, axis, fineMultiplier }
 
-  const dragRef = useRef(null) // { startY, startNorm, initialFine, activeFine }
+  const dragRef = useRef(null) // { startPos, startNorm, initialFine, activeFine }
   const liveValueRef = useRef(value)
   liveValueRef.current = value
 
@@ -48,6 +50,18 @@ export function useDragLaw({
     const dr = stateRef.current.dragRange
     return (typeof dr === 'function' ? dr() : dr) || 1
   }
+
+  // axis 'y' (the default — knobs, vertical faders) reads clientY, where a
+  // drag UP increases the value. axis 'x' (horizontal faders) reads clientX,
+  // where a drag RIGHT increases the value.
+  const readPos = (e) => (stateRef.current.axis === 'x' ? e.clientX : e.clientY)
+
+  // Screen space is inverted relative to value space on the y axis (up = a
+  // SMALLER clientY, but a LARGER value), so `startPos - pos` gives the
+  // right sign there. On the x axis the two already agree (right = a
+  // LARGER clientX AND a larger value), so that same subtraction needs to
+  // be flipped or "drag right" would decrease the value.
+  const dirSign = () => (stateRef.current.axis === 'x' ? -1 : 1)
 
   const onPointerDown = useCallback((e) => {
     const s = stateRef.current
@@ -63,12 +77,12 @@ export function useDragLaw({
     try { e.currentTarget.setPointerCapture(e.pointerId) } catch (_) {}
     const startNorm = s.toNorm(s.value)
     dragRef.current = {
-      startY: e.clientY,
+      startPos: readPos(e),
       startNorm,
       initialFine: e.shiftKey,
       activeFine: e.shiftKey,
     }
-    document.body.style.cursor = 'ns-resize'
+    document.body.style.cursor = s.axis === 'x' ? 'ew-resize' : 'ns-resize'
   }, [])
 
   const onPointerMove = useCallback((e) => {
@@ -76,21 +90,24 @@ export function useDragLaw({
     if (!d) return
     const s = stateRef.current
     const dragRangePx = resolveDragRange()
+    const fineRatio = s.fineMultiplier
+    const pos = readPos(e)
 
+    const sign = dirSign()
     const isFineNow = e.shiftKey || d.initialFine
     if (isFineNow !== d.activeFine) {
       // Rebase: freeze the value the OLD sensitivity had reached under the
       // OLD anchor, then restart accumulation from here at the new ratio.
-      const dy = d.startY - e.clientY
-      const oldSensitivity = d.activeFine ? 10 : 1
-      d.startNorm = clamp01(d.startNorm + (dy / dragRangePx) / oldSensitivity)
-      d.startY = e.clientY
+      const delta = (d.startPos - pos) * sign
+      const oldSensitivity = d.activeFine ? fineRatio : 1
+      d.startNorm = clamp01(d.startNorm + (delta / dragRangePx) / oldSensitivity)
+      d.startPos = pos
       d.activeFine = isFineNow
     }
 
-    const dy = d.startY - e.clientY
-    const sensitivity = d.activeFine ? 10 : 1
-    const nextNorm = clamp01(d.startNorm + (dy / dragRangePx) / sensitivity)
+    const delta = (d.startPos - pos) * sign
+    const sensitivity = d.activeFine ? fineRatio : 1
+    const nextNorm = clamp01(d.startNorm + (delta / dragRangePx) / sensitivity)
     const next = s.fromNorm(nextNorm)
     liveValueRef.current = next
     s.onLiveChange?.(next)
@@ -117,6 +134,7 @@ export function useDragLaw({
   return {
     dragRef,
     isDragging: () => dragRef.current != null,
+    isFine: () => !!dragRef.current?.activeFine,
     onPointerDown,
     onPointerMove,
     onPointerUp,

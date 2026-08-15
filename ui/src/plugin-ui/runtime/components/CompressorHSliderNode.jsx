@@ -2,6 +2,7 @@ import { useCallback, useMemo, useRef } from 'react'
 import { usePluginUI } from '../PluginUIContext.js'
 import { resolveFormat } from '../formats.js'
 import { styleToCSS } from '../styleToCSS.js'
+import { useDragLaw } from '../../../components/controls/dragLaw.js'
 
 // Horizontal sibling of CompressorSliderNode — a flat rectangular track that
 // fills from the left. Used for TRIM in the Resonance Suppressor so it matches
@@ -16,48 +17,50 @@ function valueToPercent(value, min, max) {
   return clamp((value - min) / span, 0, 1) * 100
 }
 
-function valueFromPointer(event, element, min, max) {
-  const rect = element.getBoundingClientRect()
-  const x = clamp(event.clientX - rect.left, 0, Math.max(1, rect.width))
-  const t = x / Math.max(1, rect.width)
-  return min + t * (max - min)
-}
-
 export default function CompressorHSliderNode({ node }) {
   const { manifest, params, setParam } = usePluginUI()
   const { props = {}, style = {} } = node
   const paramId = props.param
   const meta = manifest?.params?.[paramId]
-  const draggingRef = useRef(false)
+  const trackRef = useRef(null)
 
   const formatFn = useMemo(
     () => resolveFormat(props.format || meta?.format),
     [props.format, meta?.format],
   )
 
-  const commitFromPointer = useCallback((event) => {
-    if (!meta) return
-    const next = valueFromPointer(event, event.currentTarget, meta.min, meta.max)
-    setParam(paramId, clamp(next, meta.min, meta.max))
-  }, [meta, paramId, setParam])
+  const value = meta ? (params[paramId] ?? meta.defaultValue) : 0
+  const span = meta ? meta.max - meta.min : 1
 
-  const handlePointerDown = useCallback((event) => {
-    draggingRef.current = true
-    event.currentTarget.setPointerCapture?.(event.pointerId)
-    commitFromPointer(event)
-    event.preventDefault()
-  }, [commitFromPointer])
+  // See CompressorSliderNode.jsx for why this is wired to the shared drag law
+  // (dragLaw.js) directly instead of the Fader primitive.
+  const toNorm = useCallback(
+    (v) => clamp((v - (meta?.min ?? 0)) / (span || 1), 0, 1),
+    [meta, span],
+  )
+  const fromNorm = useCallback(
+    (n) => (meta?.min ?? 0) + clamp(n, 0, 1) * span,
+    [meta, span],
+  )
+  const handleLiveChange = useCallback((v) => setParam(paramId, v), [paramId, setParam])
+  const handleCommit = useCallback((v) => setParam(paramId, v), [paramId, setParam])
+  const resolveDragRange = useCallback(() => trackRef.current?.clientWidth || 1, [])
 
-  const handlePointerMove = useCallback((event) => {
-    if (!draggingRef.current) return
-    commitFromPointer(event)
-    event.preventDefault()
-  }, [commitFromPointer])
+  const drag = useDragLaw({
+    value,
+    toNorm,
+    fromNorm,
+    dragRange: resolveDragRange,
+    resetValue: meta?.defaultValue,
+    onLiveChange: handleLiveChange,
+    onCommit: handleCommit,
+    axis: 'x',
+  })
 
   const handlePointerUp = useCallback((event) => {
-    draggingRef.current = false
+    drag.onPointerUp()
     event.currentTarget.releasePointerCapture?.(event.pointerId)
-  }, [])
+  }, [drag])
 
   const handleDoubleClick = useCallback(() => {
     if (meta) setParam(paramId, meta.defaultValue)
@@ -65,8 +68,8 @@ export default function CompressorHSliderNode({ node }) {
 
   const handleKeyDown = useCallback((event) => {
     if (!meta) return
-    const span = meta.max - meta.min
-    const step = span / (event.shiftKey ? 20 : 100)
+    const stepSpan = meta.max - meta.min
+    const step = stepSpan / (event.shiftKey ? 20 : 100)
     let next = params[paramId] ?? meta.defaultValue
     if (event.key === 'ArrowUp' || event.key === 'ArrowRight') next += step
     else if (event.key === 'ArrowDown' || event.key === 'ArrowLeft') next -= step
@@ -79,7 +82,6 @@ export default function CompressorHSliderNode({ node }) {
 
   if (!meta) return null
 
-  const value = params[paramId] ?? meta.defaultValue
   const pct = valueToPercent(value, meta.min, meta.max)
   const label = props.label ?? meta.label
   const readout = formatFn(value)
@@ -92,6 +94,7 @@ export default function CompressorHSliderNode({ node }) {
       title={`${label}: ${readout}`}
     >
       <div
+        ref={trackRef}
         className="pluginui-compressor-hslider-track"
         role="slider"
         tabIndex={0}
@@ -100,12 +103,13 @@ export default function CompressorHSliderNode({ node }) {
         aria-valuemax={meta.max}
         aria-valuenow={Number(value.toFixed(3))}
         aria-valuetext={readout}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
+        onPointerDown={drag.onPointerDown}
+        onPointerMove={drag.onPointerMove}
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
         onDoubleClick={handleDoubleClick}
         onKeyDown={handleKeyDown}
+        onWheel={drag.onWheel}
       >
         <div className="pluginui-compressor-hslider-fill" style={{ width: `${pct}%` }} />
       </div>
