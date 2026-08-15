@@ -8,6 +8,14 @@ import useEffectChainStore, { resolveFxMode } from '../../stores/effectChainStor
 
 const EMPTY_CHAIN = []
 
+// Live-resolved via Knob's canvas token path (readToken → getComputedStyle),
+// not a literal color — keeps the PAN/WIDTH arcs on the accent the catalog
+// already models (--theme-mixer-pan-knob-fill / --theme-mixer-width-knob-fill,
+// both refs of --theme-accent). Module-scope objects so the draw effect's
+// dependency array stays referentially stable across renders.
+const PAN_KNOB_TOKENS = { accentCssVar: '--theme-mixer-pan-knob-fill' }
+const WIDTH_KNOB_TOKENS = { accentCssVar: '--theme-mixer-width-knob-fill' }
+
 function FxBadge({ chain = EMPTY_CHAIN, fxMode = 'chain' }) {
   const graphModeActive = fxMode === 'graph'
   const empty = chain.length === 0
@@ -139,7 +147,7 @@ export default function MixerStrip({ trackId }) {
             valueReadout="hidden"
             tickStyle="none"
             glyph="rotary-arrow"
-            color="#7d7d7d"
+            appearanceTokens={PAN_KNOB_TOKENS}
           />
           <Knob
             value={track.spread}
@@ -154,7 +162,7 @@ export default function MixerStrip({ trackId }) {
             valueReadout="hidden"
             tickStyle="none"
             glyph="rotary-arrow"
-            color="#7d7d7d"
+            appearanceTokens={WIDTH_KNOB_TOKENS}
           />
         </div>
       </div>

@@ -10377,14 +10377,14 @@ html.fx-drag-active * {
  * and thumb in placeholder/subtle TEXT grey, which read as washed-out â€” see
  * SLIDER_FEEL_SPEC.md Â§3.4). Flat, zero border-radius, no gradients/glow. */
 :root {
-  --fader-accent: #00b896;
-  --fader-cap-bg: #1b1e24;
-  --fader-cap-bg-hover: color-mix(in srgb, var(--fader-accent) 10%, #1b1e24);
-  --fader-cap-bg-active: color-mix(in srgb, var(--fader-accent) 32%, #1b1e24);
-  --fader-cap-border: #33383f;
+  --fader-accent: var(--theme-accent);
+  --fader-cap-bg: var(--theme-bg-tertiary);
+  --fader-cap-bg-hover: color-mix(in srgb, var(--fader-accent) 10%, var(--theme-bg-tertiary));
+  --fader-cap-bg-active: color-mix(in srgb, var(--fader-accent) 32%, var(--theme-bg-tertiary));
+  --fader-cap-border: var(--theme-border-strong);
   --fader-cap-border-active: var(--fader-accent);
-  --fader-groove-bg: #0c0e12;
-  --fader-groove-border: #262a31;
+  --fader-groove-bg: var(--theme-bg-inset);
+  --fader-groove-border: var(--theme-border-subtle);
   --fader-fill: var(--fader-accent);
   --fader-detent: color-mix(in srgb, var(--fader-accent) 70%, #ffffff);
 }
