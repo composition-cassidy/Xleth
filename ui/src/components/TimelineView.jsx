@@ -10,6 +10,8 @@ import TimelineRuler from './timeline/TimelineRuler.jsx'
 import LoopRegionBar from './timeline/LoopRegionBar.jsx'
 import TimelineScrollbar from './timeline/TimelineScrollbar.jsx'
 import TimelineToolbar from './timeline/TimelineToolbar.jsx'
+import Fader from './controls/Fader.jsx'
+import { quantizedFromNorm } from '../utils/sliderHelpers.js'
 import { pixelsToViewportPan } from './timeline/middleMousePan.js'
 import ContextMenu from './ContextMenu.jsx'
 import XlethSelect from './common/XlethSelect.jsx'
@@ -390,23 +392,21 @@ function ClipSliderRow({ label, value, min, max, step, onCommit, onPreviewChange
   return (
     <div style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 6 }}>
       <span style={{ fontSize: 11, color: '#aaa', minWidth: 40 }}>{label}</span>
-      <input
-        type="range" min={min} max={max} step={step}
-        value={localVal}
-        onChange={(e) => {
-          const next = Number(e.target.value)
+      <Fader
+        orientation="horizontal" fill thickness={14}
+        value={localVal} min={min} max={max} defaultValue={localVal}
+        fromNorm={quantizedFromNorm(min, max, step)}
+        onLiveChange={(next) => {
           dragging.current = true
           setLocalVal(next)
           if (onPreviewChange) onPreviewChange(next)
         }}
-        onPointerUp={(e) => {
-          const v = Number(e.target.value)
+        onCommit={(v) => {
           dragging.current = false
           Promise.resolve(onCommit(v))
           // Draft is cleared by the parent when committed values refresh,
           // not here — clearing on pointer-up causes a one-frame flicker.
         }}
-        style={{ flex: 1, accentColor: 'var(--theme-border-focus)' }}
       />
       <span style={{ fontSize: 10, color: '#888', minWidth: 40, textAlign: 'right' }}>
         {formatValue(localVal)}
@@ -895,17 +895,15 @@ export default function TimelineView({
     window.addEventListener('mouseup', onUp)
   }, [timelineTrackHeaderWidth, setTimelineTrackHeaderWidth])
 
-  const [declickMs, setDeclickMs] = useState(0.5)
+  // Declick is engine-owned and no longer surfaced in the UI — the engine keeps
+  // applying its stored declick envelope; there is simply no control for it.
   const [globalStretchMethod, setGlobalStretchMethod] = useState(1) // 1=PSOLA,2=Rubber,3=WSOLA,4=PhaseVocoder,5=WORLD
-  const declickMountedRef = useRef(true)
+  const stretchMountedRef = useRef(true)
   useEffect(() => {
-    declickMountedRef.current = true
-    window.xleth?.timeline?.getDeclickMs()
-      .then(v => { if (declickMountedRef.current && v != null) setDeclickMs(v) })
-      .catch(() => {})
+    stretchMountedRef.current = true
     const refreshGlobalStretchMethod = () => {
       window.xleth?.timeline?.getGlobalStretchMethod()
-        .then(m => { if (declickMountedRef.current && m != null) setGlobalStretchMethod(m) })
+        .then(m => { if (stretchMountedRef.current && m != null) setGlobalStretchMethod(m) })
         .catch(() => {})
     }
     refreshGlobalStretchMethod()
@@ -918,15 +916,10 @@ export default function TimelineView({
     window.addEventListener('xleth:globalStretchMethod-changed', onGlobalStretchMethodChanged)
 
     return () => {
-      declickMountedRef.current = false
+      stretchMountedRef.current = false
       offProjectLoaded?.()
       window.removeEventListener('xleth:globalStretchMethod-changed', onGlobalStretchMethodChanged)
     }
-  }, [])
-  const handleDeclick = useCallback((v) => {
-    const clamped = Math.max(0, Math.min(5, v))
-    setDeclickMs(clamped)
-    window.xleth?.timeline?.setDeclickMs(clamped)
   }, [])
 
   // ── Loop region: refresh committed mirror on mount + project load ──────────
@@ -3974,11 +3967,11 @@ export default function TimelineView({
                               <>
                                 <div style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
                                   <span style={{ fontSize: 11, color: '#aaa', minWidth: 78 }}>Scratch Count</span>
-                                  <input
-                                    type="range" min={1} max={8} step={1}
-                                    value={babySettings.count}
-                                    onChange={(e) => updateBabyScratch({ count: clampScratchCount(e.target.value) })}
-                                    style={{ flex: 1, accentColor: 'var(--theme-border-focus)' }}
+                                  <Fader
+                                    orientation="horizontal" fill thickness={14}
+                                    value={babySettings.count} min={1} max={8} defaultValue={SCRATCH_BABY_DEFAULT_COUNT}
+                                    fromNorm={quantizedFromNorm(1, 8, 1)}
+                                    onLiveChange={(v) => updateBabyScratch({ count: clampScratchCount(v) })}
                                   />
                                   <input
                                     type="number" min={1} max={8} step={1}
@@ -4165,8 +4158,6 @@ export default function TimelineView({
         selectedTrackCount={selectedTrackIds.size}
         pencilTemplate={pencilTemplate}
         onSelectSyllable={handleSelectSyllable}
-        declickMs={declickMs}
-        onDeclickChange={handleDeclick}
         onOpenQuantize={() => setQuantizeOpen(true)}
         quantizeSelectionCount={selectedClipIds.size + selectedBlockIds.size}
         onOpenQuickNotation={handleOpenQuickNotation}
@@ -4524,11 +4515,11 @@ export default function TimelineView({
                   <>
                     <div style={{ padding: '4px 8px', display: 'flex', alignItems: 'center', gap: 6, fontSize: 12 }}>
                       <span style={{ fontSize: 11, color: '#aaa', minWidth: 78 }}>Scratch Count</span>
-                      <input
-                        type="range" min={1} max={8} step={1}
-                        value={babySettings.count}
-                        onChange={(e) => updateBabyScratch({ count: clampScratchCount(e.target.value) })}
-                        style={{ flex: 1, accentColor: 'var(--theme-border-focus)' }}
+                      <Fader
+                        orientation="horizontal" fill thickness={14}
+                        value={babySettings.count} min={1} max={8} defaultValue={SCRATCH_BABY_DEFAULT_COUNT}
+                        fromNorm={quantizedFromNorm(1, 8, 1)}
+                        onLiveChange={(v) => updateBabyScratch({ count: clampScratchCount(v) })}
                       />
                       <input
                         type="number" min={1} max={8} step={1}

@@ -8,7 +8,8 @@ import VisualFXSection from '../grid/VisualFXSection.jsx'
 import SlideNoteEffectSection from '../grid/SlideNoteEffectSection.jsx'
 import { getTrackPlacement, placementBadgeLabel, setFullscreenPlacementMode } from './trackPlacement.js'
 import { HOLD_THRESHOLD_UNLIMITED, formatHoldThreshold } from './holdLastFrame.js'
-import { rangeFillStyle } from '../../utils/sliderHelpers.js'
+import { quantizedFromNorm } from '../../utils/sliderHelpers.js'
+import Fader from '../controls/Fader.jsx'
 
 const notify     = () => timelineEvents.dispatchEvent(new Event('timeline-tracks-changed'))
 const notifyGrid = () => timelineEvents.dispatchEvent(new Event('timeline-grid-changed'))
@@ -337,15 +338,12 @@ export default function TrackVideoProperties({ trackId, onBack }) {
               </div>
               <div className="tvp-opacity-row">
                 <label className="tvp-opacity-label" htmlFor="tvp-fs-opacity">Opacity</label>
-                <input
-                  id="tvp-fs-opacity"
-                  type="range" min={0} max={1} step={0.01}
-                  value={opacityDraft}
-                  style={rangeFillStyle(opacityDraft, 0, 1)}
-                  onChange={(e) => setOpacityDraft(Number(e.target.value))}
-                  onPointerUp={(e) => commitFsOpacity(Number(e.currentTarget.value))}
-                  onKeyUp={(e) => commitFsOpacity(Number(e.currentTarget.value))}
-                  aria-label="Fullscreen layer opacity"
+                <Fader
+                  orientation="horizontal" fill thickness={14}
+                  value={opacityDraft} min={0} max={1} defaultValue={1}
+                  fromNorm={quantizedFromNorm(0, 1, 0.01)}
+                  onLiveChange={setOpacityDraft}
+                  onCommit={commitFsOpacity}
                 />
                 <span className="tvp-opacity-val">{Math.round(opacityDraft * 100)}%</span>
               </div>

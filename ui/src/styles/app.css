@@ -19773,6 +19773,19 @@ html, body, #root {
   accent-color: var(--theme-accent);
 }
 
+.pluginui-resonance-band-editor__control .xleth-fader-wrap {
+  grid-column: 1 / -1;
+  width: 100%;
+}
+
+/* The native inputs used the `disabled` attribute to block interaction while
+ * no band is selected; the shared Fader primitive has no disabled prop, so
+ * the same effect is applied here, scoped to the already-existing
+ * .is-disabled state on the controls container. */
+.pluginui-resonance-band-editor__controls.is-disabled .xleth-fader {
+  pointer-events: none;
+}
+
 .pluginui-resonance-band-editor__control output {
   color: var(--theme-text);
   text-align: right;
@@ -28424,6 +28437,10 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   height: 4px;
   cursor: pointer;
   accent-color: var(--theme-accent);
+}
+.filter-mod-depth .xleth-fader-wrap {
+  flex: 1;
+  min-width: 0;
 }
 .filter-depth-readout {
   min-width: 42px;

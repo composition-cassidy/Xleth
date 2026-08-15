@@ -1,9 +1,10 @@
 import { Fragment, useState } from 'react'
 import { Pipette } from 'lucide-react'
-import { snapToZero, snapToOne, rangeFillStyle } from '../../utils/sliderHelpers.js'
+import { snapToZero, snapToOne, quantizedFromNorm } from '../../utils/sliderHelpers.js'
 import { TvSimulatorParamsView, TV_FIELDS } from './effectParamViews.jsx'
 import { beginPick } from './chromaKeyEyedropper.js'
 import XlethSelect from '../common/XlethSelect.jsx'
+import Fader from '../controls/Fader.jsx'
 
 // Chain TV Simulator stores values in fx.params[0..6]; the shared view uses
 // a named-object shape. Map between the two.
@@ -115,17 +116,21 @@ function TerminalStageNote({ children }) {
 // every tick: each set() is one undoable engine command, so a live drag would
 // both storm the bridge and bury the undo stack.
 function SliderRows({ rows, params, set }) {
-  return rows.map(({ label, pi, min, max, step, def, fmt, title }) => (
-    <Fragment key={pi}>
-      <label title={title}>{label}</label>
-      <input type="range" min={min} max={max} step={step}
-        defaultValue={params?.[pi] ?? def}
-        style={rangeFillStyle(params?.[pi] ?? def, min, max)}
-        title={title}
-        onPointerUp={async (e) => set(pi, snapToZero(parseFloat(e.target.value)))} />
-      <span>{fmt(params?.[pi] ?? def)}</span>
-    </Fragment>
-  ))
+  return rows.map(({ label, pi, min, max, step, def, fmt, title }) => {
+    const value = params?.[pi] ?? def
+    return (
+      <Fragment key={pi}>
+        <label title={title}>{label}</label>
+        <Fader
+          orientation="horizontal" fill thickness={14}
+          value={value} min={min} max={max} defaultValue={def}
+          fromNorm={quantizedFromNorm(min, max, step)}
+          onCommit={(v) => set(pi, snapToZero(v))}
+        />
+        <span>{fmt(value)}</span>
+      </Fragment>
+    )
+  })
 }
 
 export default function ChainableEffectParams({ fx, trackId, fxIdx, fetchTracks }) {
@@ -288,10 +293,12 @@ export default function ChainableEffectParams({ fx, trackId, fxIdx, fetchTracks 
       {fx.type === 0 && (
         <>
           <label>Amount</label>
-          <input type="range" min={0} max={1} step={0.01}
-            defaultValue={fx.params?.[0] ?? 1}
-            style={rangeFillStyle(fx.params?.[0] ?? 1, 0, 1)}
-            onPointerUp={async (e) => set(0, snapToZero(parseFloat(e.target.value)))} />
+          <Fader
+            orientation="horizontal" fill thickness={14}
+            value={fx.params?.[0] ?? 1} min={0} max={1} defaultValue={1}
+            fromNorm={quantizedFromNorm(0, 1, 0.01)}
+            onCommit={(v) => set(0, snapToZero(v))}
+          />
           <span>{((fx.params?.[0] ?? 1) * 100).toFixed(0)}%</span>
         </>
       )}
@@ -314,22 +321,28 @@ export default function ChainableEffectParams({ fx, trackId, fxIdx, fetchTracks 
             }} />
           <span />
           <label>Strength</label>
-          <input type="range" min={0} max={1} step={0.01}
-            defaultValue={fx.params?.[3] ?? 0.5}
-            style={rangeFillStyle(fx.params?.[3] ?? 0.5, 0, 1)}
-            onPointerUp={async (e) => set(3, snapToZero(parseFloat(e.target.value)))} />
+          <Fader
+            orientation="horizontal" fill thickness={14}
+            value={fx.params?.[3] ?? 0.5} min={0} max={1} defaultValue={0.5}
+            fromNorm={quantizedFromNorm(0, 1, 0.01)}
+            onCommit={(v) => set(3, snapToZero(v))}
+          />
           <span>{((fx.params?.[3] ?? 0.5) * 100).toFixed(0)}%</span>
           <label>Floor</label>
-          <input type="range" min={0} max={1} step={0.01}
-            defaultValue={fx.params?.[4] ?? 0.15}
-            style={rangeFillStyle(fx.params?.[4] ?? 0.15, 0, 1)}
-            onPointerUp={async (e) => set(4, parseFloat(e.target.value))} />
+          <Fader
+            orientation="horizontal" fill thickness={14}
+            value={fx.params?.[4] ?? 0.15} min={0} max={1} defaultValue={0.15}
+            fromNorm={quantizedFromNorm(0, 1, 0.01)}
+            onCommit={(v) => set(4, v)}
+          />
           <span>{((fx.params?.[4] ?? 0.15) * 100).toFixed(0)}%</span>
           <label>Ceiling</label>
-          <input type="range" min={0} max={1} step={0.01}
-            defaultValue={fx.params?.[5] ?? 1.0}
-            style={rangeFillStyle(fx.params?.[5] ?? 1.0, 0, 1)}
-            onPointerUp={async (e) => set(5, parseFloat(e.target.value))} />
+          <Fader
+            orientation="horizontal" fill thickness={14}
+            value={fx.params?.[5] ?? 1.0} min={0} max={1} defaultValue={1.0}
+            fromNorm={quantizedFromNorm(0, 1, 0.01)}
+            onCommit={(v) => set(5, v)}
+          />
           <span>{((fx.params?.[5] ?? 1.0) * 100).toFixed(0)}%</span>
         </>
       )}
@@ -337,16 +350,20 @@ export default function ChainableEffectParams({ fx, trackId, fxIdx, fetchTracks 
       {fx.type === 2 && (
         <>
           <label>Brightness</label>
-          <input type="range" min={-1} max={1} step={0.01}
-            defaultValue={fx.params?.[0] ?? 0}
-            style={rangeFillStyle(fx.params?.[0] ?? 0, -1, 1)}
-            onPointerUp={async (e) => set(0, snapToZero(parseFloat(e.target.value)))} />
+          <Fader
+            orientation="horizontal" fill thickness={14}
+            value={fx.params?.[0] ?? 0} min={-1} max={1} defaultValue={0}
+            fromNorm={quantizedFromNorm(-1, 1, 0.01)}
+            onCommit={(v) => set(0, snapToZero(v))}
+          />
           <span>{((fx.params?.[0] ?? 0) * 100).toFixed(0)}%</span>
           <label>Contrast</label>
-          <input type="range" min={-1} max={1} step={0.01}
-            defaultValue={fx.params?.[1] ?? 0}
-            style={rangeFillStyle(fx.params?.[1] ?? 0, -1, 1)}
-            onPointerUp={async (e) => set(1, snapToZero(parseFloat(e.target.value)))} />
+          <Fader
+            orientation="horizontal" fill thickness={14}
+            value={fx.params?.[1] ?? 0} min={-1} max={1} defaultValue={0}
+            fromNorm={quantizedFromNorm(-1, 1, 0.01)}
+            onCommit={(v) => set(1, snapToZero(v))}
+          />
           <span>{((fx.params?.[1] ?? 0) * 100).toFixed(0)}%</span>
         </>
       )}
@@ -356,21 +373,25 @@ export default function ChainableEffectParams({ fx, trackId, fxIdx, fetchTracks 
         { label: 'Pan X',       pi: 4, min: -1,   max: 1,   step: 0.01, def: 0.0, fmt: v => v.toFixed(2),      snap0: true },
         { label: 'Pan Y',       pi: 5, min: -1,   max: 1,   step: 0.01, def: 0.0, fmt: v => v.toFixed(2),      snap0: true },
         { label: 'Rotation°',   pi: 7, min: -360, max: 360, step: 1,    def: 0.0, fmt: v => v.toFixed(0)+'°',  snap0: true },
-      ].map(({ label, pi, min, max, step, def, fmt, snap0, snap1 }) => (
-        <Fragment key={pi}>
-          <label>{label}</label>
-          <input type="range" min={min} max={max} step={step}
-            defaultValue={fx.params?.[pi] ?? def}
-            style={rangeFillStyle(fx.params?.[pi] ?? def, min, max)}
-            onPointerUp={async (e) => {
-              let v = parseFloat(e.target.value)
-              if (snap0) v = snapToZero(v)
-              if (snap1) v = snapToOne(v)
-              set(pi, v)
-            }} />
-          <span>{fmt(fx.params?.[pi] ?? def)}</span>
-        </Fragment>
-      ))}
+      ].map(({ label, pi, min, max, step, def, fmt, snap0, snap1 }) => {
+        const value = fx.params?.[pi] ?? def
+        return (
+          <Fragment key={pi}>
+            <label>{label}</label>
+            <Fader
+              orientation="horizontal" fill thickness={14}
+              value={value} min={min} max={max} defaultValue={def}
+              fromNorm={quantizedFromNorm(min, max, step)}
+              onCommit={(v) => {
+                if (snap0) v = snapToZero(v)
+                if (snap1) v = snapToOne(v)
+                set(pi, v)
+              }}
+            />
+            <span>{fmt(value)}</span>
+          </Fragment>
+        )
+      })}
 
     </div>
   )

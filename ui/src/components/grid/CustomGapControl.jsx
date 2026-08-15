@@ -1,4 +1,5 @@
-import { snapToZero, rangeFillStyle } from '../../utils/sliderHelpers.js'
+import { snapToZero, quantizedFromNorm } from '../../utils/sliderHelpers.js'
+import Fader from '../controls/Fader.jsx'
 
 export default function CustomGapControl({ track, gapScale, fetchTracks }) {
   const hasOverride = (track.gapScaleOverride ?? -1) >= 0
@@ -24,17 +25,21 @@ export default function CustomGapControl({ track, gapScale, fetchTracks }) {
         <span className="grid-tab-gap-readout">{displayPct}%</span>
       </div>
       {hasOverride ? (
-        <input
-          className="grid-tab-gap-slider"
-          type="range" min={0} max={0.5} step={0.01}
-          defaultValue={track.gapScaleOverride ?? 0}
-          style={rangeFillStyle(track.gapScaleOverride ?? 0, 0, 0.5)}
-          onPointerUp={async (e) => {
-            const v = snapToZero(parseFloat(e.target.value))
-            await window.xleth?.timeline?.setTrackGapScaleOverride(track.id, v)
-            fetchTracks()
-          }}
-        />
+        // Wrapped (rather than styling Fader's own root) so the existing
+        // .grid-tab-gap-slider layout rules — grid-column span in the flat
+        // grid variant, flex `order` in the Track Detail (.tvp-root) variant
+        // — still apply; Fader has no className passthrough.
+        <div className="grid-tab-gap-slider">
+          <Fader
+            orientation="horizontal" fill thickness={14}
+            value={track.gapScaleOverride ?? 0} min={0} max={0.5} defaultValue={0}
+            fromNorm={quantizedFromNorm(0, 0.5, 0.01)}
+            onCommit={async (v) => {
+              await window.xleth?.timeline?.setTrackGapScaleOverride(track.id, snapToZero(v))
+              fetchTracks()
+            }}
+          />
+        </div>
       ) : (
         <div className="grid-tab-gap-hint">
           using global: {Math.round((gapScale ?? 0) * 100)}%

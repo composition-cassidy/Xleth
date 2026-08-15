@@ -403,6 +403,45 @@ describe('VideoMirrorCanvas — Start/End handle drag', () => {
     }))
   }
 
+  // TransitionParameterControl now renders the shared Fader primitive (see
+  // ui/src/components/controls/Fader.jsx) instead of a native
+  // <input type="range">, so it has no aria-label/value to query or set
+  // directly. Faders carry no per-field attribute of their own — the label
+  // lives in the sibling <span> — so locate by that instead.
+  function faderRowFor(container, label) {
+    const rows = [...container.querySelectorAll('.vmt-transition-parameter')]
+    return rows.find((row) => row.querySelector('span')?.textContent === label) ?? null
+  }
+  function faderFor(container, label) {
+    return faderRowFor(container, label)?.querySelector('.xleth-fader') ?? null
+  }
+
+  // Fader batches pointermove into one dragLaw update per animation frame
+  // (see Fader.jsx) — every simulated move needs a flushed frame before its
+  // effect is observable.
+  async function flushFrame() {
+    await act(async () => {
+      await new Promise((resolve) => requestAnimationFrame(resolve))
+    })
+  }
+
+  // Drives a real grab-relative drag on a horizontal Fader from `from` to
+  // `to` within [min, max] and commits on release — the same gesture a user
+  // performs, replacing the old "set .value + dispatch input" shortcut that
+  // only worked on a native range input. dragRangePx=1000 matches this
+  // file's global clientWidth mock (see beforeEach), which Fader reads via
+  // resolveDragRange() for its horizontal fill-mode groove.
+  async function dragFaderTo(el, { min, max, from, to, dragRangePx = 1000 }) {
+    const startNorm = (from - min) / (max - min)
+    const targetNorm = (to - min) / (max - min)
+    const startX = 100
+    const endX = startX + (targetNorm - startNorm) * dragRangePx
+    await act(async () => { pointer('pointerdown', el, startX) })
+    await act(async () => { pointer('pointermove', el, endX) })
+    await flushFrame()
+    await act(async () => { pointer('pointerup', el, endX) })
+  }
+
   async function renderCanvas(onSetCueTransition, transition = INITIAL) {
     const onRemoveCue = vi.fn()
     const props = {
@@ -485,7 +524,7 @@ describe('VideoMirrorCanvas — Start/End handle drag', () => {
 
     const compass = container.querySelector('.vmt-line-sweep-compass')
     expect(compass).toBeTruthy()
-    expect(container.querySelector('input[aria-label="Feather"]')).toBeTruthy()
+    expect(faderFor(container, 'Feather')).toBeTruthy()
     expect(compass.getAttribute('aria-valuetext')).toBe('Custom direction, 45 degrees')
 
     // Compass center is (25, 25); this is 88° and must snap to 90°.
@@ -546,14 +585,11 @@ describe('VideoMirrorCanvas — Start/End handle drag', () => {
       pointer('pointerdown', marker, 0)
       pointer('pointerup', window, 0)
     })
-    const zoom = container.querySelector('input[aria-label="Zoom intensity"]')
+    const zoom = faderFor(container, 'Zoom intensity')
     expect(zoom).toBeTruthy()
-    expect(container.querySelector('input[aria-label="Dissolve grain"]')).toBeNull()
+    expect(faderFor(container, 'Dissolve grain')).toBeNull()
     expect(container.querySelector('.vmt-line-sweep-compass')).toBeNull()
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(zoom, '0.24')
-      zoom.dispatchEvent(new Event('input', { bubbles: true }))
-    })
+    await dragFaderTo(zoom, { min: 0, max: 0.30, from: 0.2, to: 0.24 })
     expect(onSetCueTransition.mock.calls.at(-1)[1].zoomAmount).toBe(0.24)
 
     onSetCueTransition.mockClear()
@@ -563,13 +599,10 @@ describe('VideoMirrorCanvas — Start/End handle drag', () => {
       pointer('pointerdown', marker, 0)
       pointer('pointerup', window, 0)
     })
-    const grain = container.querySelector('input[aria-label="Dissolve grain"]')
+    const grain = faderFor(container, 'Dissolve grain')
     expect(grain).toBeTruthy()
-    expect(container.querySelector('input[aria-label="Zoom intensity"]')).toBeNull()
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(grain, '7')
-      grain.dispatchEvent(new Event('input', { bubbles: true }))
-    })
+    expect(faderFor(container, 'Zoom intensity')).toBeNull()
+    await dragFaderTo(grain, { min: 1, max: 8, from: 5, to: 7 })
     expect(onSetCueTransition.mock.calls.at(-1)[1].dissolveGrainPx).toBe(7)
   })
 
@@ -585,9 +618,9 @@ describe('VideoMirrorCanvas — Start/End handle drag', () => {
     }
 
     await openEditor({ type: 'radialReveal', radialOriginX: 0.3, radialOriginY: 0.7 })
-    expect(container.querySelector('input[aria-label="Origin X"]')).toBeTruthy()
-    expect(container.querySelector('input[aria-label="Origin Y"]')).toBeTruthy()
-    expect(container.querySelector('input[aria-label="Feather"]')).toBeTruthy()
+    expect(faderFor(container, 'Origin X')).toBeTruthy()
+    expect(faderFor(container, 'Origin Y')).toBeTruthy()
+    expect(faderFor(container, 'Feather')).toBeTruthy()
     const typeSelect = container.querySelector('[aria-label^="Animation type for cue"]')
     await act(async () => { typeSelect.click() })
     expect([...document.querySelectorAll('.xleth-select-group-label')].map(node => node.textContent))
@@ -595,31 +628,28 @@ describe('VideoMirrorCanvas — Start/End handle drag', () => {
     expect(document.querySelector('[role="option"][data-value="displacement"]')).toBeTruthy()
 
     await openEditor({ type: 'pixelate', pixelateMaxBlockPx: 48 })
-    const maxBlock = container.querySelector('input[aria-label="Max block"]')
+    const maxBlock = faderFor(container, 'Max block')
     expect(maxBlock).toBeTruthy()
-    expect(container.querySelector('input[aria-label="Intensity"]')).toBeNull()
-    await act(async () => {
-      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(maxBlock, '64')
-      maxBlock.dispatchEvent(new Event('input', { bubbles: true }))
-    })
+    expect(faderFor(container, 'Intensity')).toBeNull()
+    await dragFaderTo(maxBlock, { min: 1, max: 128, from: 48, to: 64 })
     const pixelatePayload = onSetCueTransition.mock.calls.at(-1)[1]
     expect(pixelatePayload.pixelateMaxBlockPx).toBe(64)
     expect(Object.keys(pixelatePayload).sort()).toEqual([...TRANSITION_KEYS].sort())
 
     await openEditor({ type: 'glitch', effectSeed: 12 })
-    expect(container.querySelector('input[aria-label="Intensity"]')).toBeTruthy()
-    expect(container.querySelector('input[aria-label="Slice height"]')).toBeTruthy()
-    expect(container.querySelector('input[aria-label="Seed"]')).toBeTruthy()
+    expect(faderFor(container, 'Intensity')).toBeTruthy()
+    expect(faderFor(container, 'Slice height')).toBeTruthy()
+    expect(faderFor(container, 'Seed')).toBeTruthy()
 
     await openEditor({ type: 'blurThrough', geomAngleDeg: 33 })
-    expect(container.querySelector('input[aria-label="Blur radius"]')).toBeTruthy()
+    expect(faderFor(container, 'Blur radius')).toBeTruthy()
     expect(container.querySelector('.vmt-line-sweep-compass')?.getAttribute('aria-label'))
       .toBe('Blur Through direction')
 
     await openEditor({ type: 'displacement', displacementAmount: 0.1 })
-    expect(container.querySelector('input[aria-label="Strength"]')).toBeTruthy()
-    expect(container.querySelector('input[aria-label="Noise scale"]')).toBeTruthy()
-    expect(container.querySelector('input[aria-label="Seed"]')).toBeTruthy()
+    expect(faderFor(container, 'Strength')).toBeTruthy()
+    expect(faderFor(container, 'Noise scale')).toBeTruthy()
+    expect(faderFor(container, 'Seed')).toBeTruthy()
     expect(container.querySelector('.vmt-line-sweep-compass')).toBeNull()
   })
 

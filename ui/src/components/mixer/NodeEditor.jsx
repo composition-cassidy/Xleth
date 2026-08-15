@@ -13,6 +13,8 @@ import useNodeGraphStore from '../../stores/nodeGraphStore.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
 import TrackContextMenu from '../timeline/TrackContextMenu.jsx'
 import ContextMenu from '../ContextMenu.jsx'
+import Fader from '../controls/Fader.jsx'
+import { quantizedFromNorm } from '../../utils/sliderHelpers.js'
 
 // ── Plugin display names ────────────────────────────────────────────────────
 
@@ -259,8 +261,8 @@ export default function NodeEditor({ storeKey }) {
   }, [edgeMenu, storeKey, setWireMute, removeConnection, deleteNode])
 
   // Gain slider change
-  const handleGainChange = useCallback((e) => {
-    const val = Number(e.target.value) / 100
+  const handleGainChange = useCallback((pct) => {
+    const val = pct / 100
     setGainEditor(prev => prev ? { ...prev, gain: val } : null)
     if (gainEditor) {
       setWireGain(storeKey, gainEditor.srcId, gainEditor.dstId, val)
@@ -344,13 +346,11 @@ export default function NodeEditor({ storeKey }) {
           <div className="ne-gain-label">
             Gain: {Math.round(gainEditor.gain * 100)}%
           </div>
-          <input
-            type="range"
-            min={0}
-            max={200}
-            value={Math.round(gainEditor.gain * 100)}
-            onChange={handleGainChange}
-            className="ne-gain-slider"
+          <Fader
+            orientation="horizontal" fill thickness={14}
+            value={Math.round(gainEditor.gain * 100)} min={0} max={200} defaultValue={100}
+            fromNorm={quantizedFromNorm(0, 200, 1)}
+            onLiveChange={handleGainChange}
           />
         </div>
       )}

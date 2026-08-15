@@ -12,8 +12,9 @@
 //     config doesn't own (slide duration is owned by durationMode +
 //     fixedDurationMs in SlideNoteEffectSection).
 import { Fragment } from 'react'
-import { snapToZero, snapToOne, rangeFillStyle } from '../../utils/sliderHelpers.js'
+import { snapToZero, snapToOne, quantizedFromNorm } from '../../utils/sliderHelpers.js'
 import XlethSelect from '../common/XlethSelect.jsx'
+import Fader from '../controls/Fader.jsx'
 
 const EASING_OPTIONS = [
   { value: 0, label: 'Linear' },
@@ -45,9 +46,12 @@ export function BounceParamsView({ value, onChange, hideDuration = false, hideEn
       </div>
       <span />
       <label>Dist</label>
-      <input type="range" min={0} max={1} step={0.01} defaultValue={distance}
-        style={rangeFillStyle(distance, 0, 1)}
-        onPointerUp={(e) => onChange({ distance: parseFloat(e.target.value) })} />
+      <Fader
+        orientation="horizontal" fill thickness={14}
+        value={distance} min={0} max={1} defaultValue={0.15}
+        fromNorm={quantizedFromNorm(0, 1, 0.01)}
+        onCommit={(v) => onChange({ distance: v })}
+      />
       <span>{distance.toFixed(2)}</span>
       {!hideDuration && (
         <>
@@ -82,9 +86,12 @@ export function ZprParamsView({ value, onChange, hideDuration = false, hideEnabl
   return (
     <div className="fx-params-grid">
       <label>Target Zoom</label>
-      <input type="range" min={0.25} max={4} step={0.01} defaultValue={targetZoom}
-        style={rangeFillStyle(targetZoom, 0.25, 4)}
-        onPointerUp={(e) => onChange({ targetZoom: snapToOne(parseFloat(e.target.value)) })} />
+      <Fader
+        orientation="horizontal" fill thickness={14}
+        value={targetZoom} min={0.25} max={4} defaultValue={1}
+        fromNorm={quantizedFromNorm(0.25, 4, 0.01)}
+        onCommit={(v) => onChange({ targetZoom: snapToOne(v) })}
+      />
       <span>{targetZoom.toFixed(2)}×</span>
       {!hideDuration && (
         <>
@@ -95,19 +102,28 @@ export function ZprParamsView({ value, onChange, hideDuration = false, hideEnabl
         </>
       )}
       <label>Start Zoom</label>
-      <input type="range" min={0.25} max={4} step={0.01} defaultValue={startZoom}
-        style={rangeFillStyle(startZoom, 0.25, 4)}
-        onPointerUp={(e) => onChange({ startZoom: snapToOne(parseFloat(e.target.value)) })} />
+      <Fader
+        orientation="horizontal" fill thickness={14}
+        value={startZoom} min={0.25} max={4} defaultValue={1}
+        fromNorm={quantizedFromNorm(0.25, 4, 0.01)}
+        onCommit={(v) => onChange({ startZoom: snapToOne(v) })}
+      />
       <span>{startZoom.toFixed(2)}×</span>
       <label>Pan X</label>
-      <input type="range" min={-1} max={1} step={0.01} defaultValue={targetPanX}
-        style={rangeFillStyle(targetPanX, -1, 1)}
-        onPointerUp={(e) => onChange({ targetPanX: snapToZero(parseFloat(e.target.value)) })} />
+      <Fader
+        orientation="horizontal" fill thickness={14}
+        value={targetPanX} min={-1} max={1} defaultValue={0}
+        fromNorm={quantizedFromNorm(-1, 1, 0.01)}
+        onCommit={(v) => onChange({ targetPanX: snapToZero(v) })}
+      />
       <span>{targetPanX.toFixed(2)}</span>
       <label>Pan Y</label>
-      <input type="range" min={-1} max={1} step={0.01} defaultValue={targetPanY}
-        style={rangeFillStyle(targetPanY, -1, 1)}
-        onPointerUp={(e) => onChange({ targetPanY: snapToZero(parseFloat(e.target.value)) })} />
+      <Fader
+        orientation="horizontal" fill thickness={14}
+        value={targetPanY} min={-1} max={1} defaultValue={0}
+        fromNorm={quantizedFromNorm(-1, 1, 0.01)}
+        onCommit={(v) => onChange({ targetPanY: snapToZero(v) })}
+      />
       <span>{targetPanY.toFixed(2)}</span>
       <label>Rotation°</label>
       <input type="number" min={-360} max={360} step={1} defaultValue={targetRotation}
@@ -124,9 +140,12 @@ export function ZprParamsView({ value, onChange, hideDuration = false, hideEnabl
       <span />
       {zoomEasing === 3 && (<>
         <label>Overshoot</label>
-        <input type="range" min={0.5} max={3} step={0.01} defaultValue={overshoot}
-          style={rangeFillStyle(overshoot, 0.5, 3)}
-          onPointerUp={(e) => onChange({ overshoot: parseFloat(e.target.value) })} />
+        <Fader
+          orientation="horizontal" fill thickness={14}
+          value={overshoot} min={0.5} max={3} defaultValue={1.70158}
+          fromNorm={quantizedFromNorm(0.5, 3, 0.01)}
+          onCommit={(v) => onChange({ overshoot: v })}
+        />
         <span>{overshoot.toFixed(2)}</span>
       </>)}
     </div>
@@ -156,9 +175,12 @@ export function TvSimulatorParamsView({ value, onChange }) {
         return (
           <Fragment key={key}>
             <label>{label}</label>
-            <input type="range" min={min} max={max} step={step} defaultValue={val}
-              style={rangeFillStyle(val, min, max)}
-              onPointerUp={(e) => onChange({ [key]: parseFloat(e.target.value) })} />
+            <Fader
+              orientation="horizontal" fill thickness={14}
+              value={val} min={min} max={max} defaultValue={def}
+              fromNorm={quantizedFromNorm(min, max, step)}
+              onCommit={(next) => onChange({ [key]: next })}
+            />
             <span>{fmt(val)}</span>
           </Fragment>
         )

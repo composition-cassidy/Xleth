@@ -15,6 +15,8 @@ import SnapshotTransitionBezierEditor, {
   normalizeTransitionEasing,
 } from './SnapshotTransitionBezierEditor.jsx'
 import LineSweepDirectionControl, { normalizeLineSweepAngle } from './LineSweepDirectionControl.jsx'
+import Fader from '../controls/Fader.jsx'
+import { quantizedFromNorm } from '../../utils/sliderHelpers.js'
 
 const PLAYHEAD_LINE_WIDTH = 1
 
@@ -176,15 +178,11 @@ function TransitionParameterControl({ label, value, min, max, step, valueText, o
   return (
     <label className="vmt-transition-parameter">
       <span>{label}</span>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(event) => onChange(Number(event.target.value))}
-        aria-label={label}
-        aria-valuetext={valueText}
+      <Fader
+        orientation="horizontal" fill thickness={14}
+        value={value} min={min} max={max} defaultValue={value}
+        fromNorm={quantizedFromNorm(min, max, step)}
+        onLiveChange={onChange}
       />
       <output>{valueText}</output>
     </label>

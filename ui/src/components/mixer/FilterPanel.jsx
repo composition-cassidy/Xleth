@@ -10,6 +10,8 @@ import useFilterStore, {
   typeGainLabel, typeGainRange, typeMorphLabel,
 } from '../../stores/filterStore.js'
 import PluginUIKitKnob from '../../plugin-ui/runtime/components/PluginUIKitKnob.jsx'
+import Fader from '../controls/Fader.jsx'
+import { quantizedFromNorm } from '../../utils/sliderHelpers.js'
 import {
   readMixerCanvasTheme, withAlpha, syncCanvasSize, MONO, MONO_SM,
 } from './mixerCanvasTheme.js'
@@ -265,8 +267,12 @@ function ModDestDepth({ dest, depth, onDest, onDepth }) {
       </label>
       <div className="filter-mod-depth">
         <span className="filter-field-label">Depth</span>
-        <input className="filter-depth-slider" type="range" min={-1} max={1} step={0.01}
-          value={depth} onChange={(e) => onDepth(Number(e.target.value))} />
+        <Fader
+          orientation="horizontal" fill thickness={14}
+          value={depth} min={-1} max={1} defaultValue={0}
+          fromNorm={quantizedFromNorm(-1, 1, 0.01)}
+          onLiveChange={(v) => onDepth(v)}
+        />
         <span className="filter-depth-readout">{depth > 0 ? '+' : ''}{depth.toFixed(2)}</span>
       </div>
     </div>

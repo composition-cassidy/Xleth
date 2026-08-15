@@ -87,3 +87,20 @@ export function rangeFillStyle(value, min, max) {
   const pct = max > min ? ((value - min) / (max - min)) * 100 : 0
   return { '--val': `${Math.min(100, Math.max(0, pct))}%` }
 }
+
+/**
+ * Fader `fromNorm` for a param that has a fixed step, e.g. a former
+ * `<input type="range" step={step}>`. The shared Fader primitive
+ * (ui/src/components/controls/Fader.jsx) has no native step concept — it's a
+ * continuous grab-relative drag — so callers migrating a stepped native
+ * range reproduce the quantization here instead, keeping the exact same
+ * min/max/step contract the engine/bridge side expects.
+ */
+export function quantizedFromNorm(min, max, step) {
+  return (norm) => {
+    const raw = min + (max - min) * Math.max(0, Math.min(1, norm))
+    if (!step) return raw
+    const snapped = Math.round(raw / step) * step
+    return Math.min(max, Math.max(min, snapped))
+  }
+}

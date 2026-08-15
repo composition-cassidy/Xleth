@@ -8,6 +8,8 @@ import XlethSelect from '../common/XlethSelect.jsx'
 import VideoCanvasSettingsPopover from './VideoCanvasSettingsPopover.jsx'
 import VideoTrackList from './VideoTrackList.jsx'
 import VideoMirrorTimeline from './VideoMirrorTimeline.jsx'
+import Fader from '../controls/Fader.jsx'
+import { quantizedFromNorm } from '../../utils/sliderHelpers.js'
 
 const SUB_UNITS_PER_COLUMN = 8
 const SUB_UNITS_PER_ROW    = 8
@@ -420,18 +422,19 @@ export default function VideoOverviewTab() {
                       {Math.round((layout.gapScale ?? 0) * 100)}%
                     </span>
                   </div>
-                  <input
-                    className="gsp-gap-slider"
-                    type="range"
-                    min={0}
-                    max={GAP_MAX}
-                    step={0.01}
-                    value={layout.gapScale ?? 0}
-                    onChange={(e) => setLayout(l => ({ ...l, gapScale: Number(e.target.value) }))}
-                    onPointerUp={(e) => handleGapScaleChange(Number(e.currentTarget.value))}
-                    onKeyUp={(e) => handleGapScaleChange(Number(e.currentTarget.value))}
-                    aria-label="Grid gap"
-                  />
+                  {/* Wrapped (rather than styling Fader's own root) so the
+                      existing .gsp-gap-slider grid-placement rules across the
+                      panel's theme variants still apply; Fader has no
+                      className passthrough. */}
+                  <div className="gsp-gap-slider">
+                    <Fader
+                      orientation="horizontal" fill thickness={14}
+                      value={layout.gapScale ?? 0} min={0} max={GAP_MAX} defaultValue={0}
+                      fromNorm={quantizedFromNorm(0, GAP_MAX, 0.01)}
+                      onLiveChange={(v) => setLayout(l => ({ ...l, gapScale: v }))}
+                      onCommit={handleGapScaleChange}
+                    />
+                  </div>
                 </div>
               </div>
 

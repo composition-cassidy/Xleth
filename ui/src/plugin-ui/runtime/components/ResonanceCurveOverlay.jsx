@@ -6,6 +6,8 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { usePluginUI } from '../PluginUIContext.js'
+import Fader from '../../../components/controls/Fader.jsx'
+import { quantizedFromNorm } from '../../../utils/sliderHelpers.js'
 import {
   BAND_HANDLES,
   BAND_TYPE,
@@ -736,28 +738,25 @@ export function ResonanceBandEditorStrip({
 
         <label className="pluginui-resonance-band-editor__control">
           <span>Focus</span>
-          <input
-            type="range"
-            min="0"
-            max="1"
-            step="0.001"
+          <Fader
+            orientation="horizontal" fill thickness={14}
             value={band ? freqToEditorValue(band.freq) : freqToEditorValue(1000)}
-            disabled={disabled}
-            onChange={(e) => onChangeFreq?.(e.target.value)}
+            min={0} max={1} defaultValue={freqToEditorValue(1000)}
+            fromNorm={quantizedFromNorm(0, 1, 0.001)}
+            onLiveChange={(v) => onChangeFreq?.(v)}
           />
           <output>{band ? formatEditorFreq(band.freq) : '--'}</output>
         </label>
 
         <label className="pluginui-resonance-band-editor__control">
           <span>Sens</span>
-          <input
-            type="range"
-            min={BELL_GAIN_MIN_DB}
-            max={type === BAND_TYPE.BAND_REJECT ? 0 : BELL_GAIN_MAX_DB}
-            step="0.1"
+          <Fader
+            orientation="horizontal" fill thickness={14}
             value={gainForEditor}
-            disabled={disabled}
-            onChange={(e) => onChangeGain?.(e.target.value)}
+            min={BELL_GAIN_MIN_DB} max={type === BAND_TYPE.BAND_REJECT ? 0 : BELL_GAIN_MAX_DB}
+            defaultValue={0}
+            fromNorm={quantizedFromNorm(BELL_GAIN_MIN_DB, type === BAND_TYPE.BAND_REJECT ? 0 : BELL_GAIN_MAX_DB, 0.1)}
+            onLiveChange={(v) => onChangeGain?.(v)}
           />
           <output>{band ? formatEditorGain(gainForEditor) : '--'}</output>
         </label>
@@ -765,14 +764,11 @@ export function ResonanceBandEditorStrip({
         {showWidth && (
           <label className="pluginui-resonance-band-editor__control pluginui-resonance-band-editor__control--width">
             <span>Width</span>
-            <input
-              type="range"
-              min={BAND_Q_MIN}
-              max={BAND_Q_MAX}
-              step="0.01"
-              value={band.q}
-              disabled={disabled}
-              onChange={(e) => onChangeQ?.(e.target.value)}
+            <Fader
+              orientation="horizontal" fill thickness={14}
+              value={band.q} min={BAND_Q_MIN} max={BAND_Q_MAX} defaultValue={1}
+              fromNorm={quantizedFromNorm(BAND_Q_MIN, BAND_Q_MAX, 0.01)}
+              onLiveChange={(v) => onChangeQ?.(v)}
             />
             <output>{band.q.toFixed(2)}</output>
           </label>
