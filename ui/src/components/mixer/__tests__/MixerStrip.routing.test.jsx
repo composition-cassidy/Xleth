@@ -24,7 +24,7 @@ async function loadMixerStripFixture() {
     ),
     FaderReadout: ({ value }) => <div data-testid="fader-readout">{value}</div>,
   }))
-  vi.doMock('../../sampler/Knob.jsx', () => ({
+  vi.doMock('../PanWidthKnob.jsx', () => ({
     default: ({ label }) => <div data-testid={`knob-${label}`} />,
   }))
 
@@ -84,7 +84,7 @@ describe('MixerStrip output routing UI', () => {
     vi.doUnmock('../EffectChainPanel.jsx')
     vi.doUnmock('../PeakMeter.jsx')
     vi.doUnmock('../VolumeFader.jsx')
-    vi.doUnmock('../../sampler/Knob.jsx')
+    vi.doUnmock('../PanWidthKnob.jsx')
   })
 
   it('renders an Output selector showing Master by default', async () => {

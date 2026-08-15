@@ -1,20 +1,12 @@
 import React, { useCallback, useEffect } from 'react'
 import useMixerStore, { MASTER_OUTPUT_TARGET_ID, normalizeOutputTargetId } from '../../stores/mixerStore.js'
 import useTimelineFocusStore from '../../stores/timelineFocusStore.js'
-import Knob from '../sampler/Knob.jsx'
+import PanWidthKnob from './PanWidthKnob.jsx'
 import VolumeFader, { FaderReadout } from './VolumeFader.jsx'
 import PeakMeter from './PeakMeter.jsx'
 import useEffectChainStore, { resolveFxMode } from '../../stores/effectChainStore.js'
 
 const EMPTY_CHAIN = []
-
-// Live-resolved via Knob's canvas token path (readToken → getComputedStyle),
-// not a literal color — keeps the PAN/WIDTH arcs on the accent the catalog
-// already models (--theme-mixer-pan-knob-fill / --theme-mixer-width-knob-fill,
-// both refs of --theme-accent). Module-scope objects so the draw effect's
-// dependency array stays referentially stable across renders.
-const PAN_KNOB_TOKENS = { accentCssVar: '--theme-mixer-pan-knob-fill' }
-const WIDTH_KNOB_TOKENS = { accentCssVar: '--theme-mixer-width-knob-fill' }
 
 function FxBadge({ chain = EMPTY_CHAIN, fxMode = 'chain' }) {
   const graphModeActive = fxMode === 'graph'
@@ -134,7 +126,7 @@ export default function MixerStrip({ trackId }) {
           </div>
         </div>
         <div className="mixer-strip-knobs">
-          <Knob
+          <PanWidthKnob
             value={track.pan}
             min={-1}
             max={1}
@@ -144,12 +136,10 @@ export default function MixerStrip({ trackId }) {
             onCommit={handlePanCommit}
             size={28}
             dragRange={120}
-            valueReadout="hidden"
-            tickStyle="none"
-            glyph="rotary-arrow"
-            appearanceTokens={PAN_KNOB_TOKENS}
+            trackCssVar="--theme-mixer-pan-knob-track"
+            fillCssVar="--theme-mixer-pan-knob-fill"
           />
-          <Knob
+          <PanWidthKnob
             value={track.spread}
             min={0}
             max={2}
@@ -159,10 +149,8 @@ export default function MixerStrip({ trackId }) {
             onCommit={handleSpreadCommit}
             size={28}
             dragRange={120}
-            valueReadout="hidden"
-            tickStyle="none"
-            glyph="rotary-arrow"
-            appearanceTokens={WIDTH_KNOB_TOKENS}
+            trackCssVar="--theme-mixer-width-knob-track"
+            fillCssVar="--theme-mixer-width-knob-fill"
           />
         </div>
       </div>
