@@ -12,6 +12,7 @@ import {
   createDefaultBezierCurve,
   GRAPH_PARAMETER_CURVE_BEZIER,
   readParameterMappingKind,
+  canSpliceGraphNodeIntoEdge,
 } from '../../../fxgraph/graphState.js';
 import {
   clampGraphZoom,
@@ -30,6 +31,11 @@ import {
   type LfoNodeData,
   type LfoNodePatch,
 } from './LfoEditor';
+// Canvas empty-space "Add Plugin / Add Modulator" menu reuses the same
+// portal-based context-menu component/pattern as track headers (clamping,
+// outside-click/Escape close, submenu support) instead of inventing a second
+// menu system.
+import TrackContextMenu from '../../../components/timeline/TrackContextMenu.jsx';
 
 // FXG.4-g — Bezier mapping editor types.
 type BezierPoint = { x: number; y: number };
@@ -212,14 +218,21 @@ interface PositionedEdge {
   path: string;
   midX: number;
   midY: number;
+  // Splice hit-testing needs the raw endpoints (audio edges only) rather than
+  // re-deriving them from `path`. sourceNodeId/targetNodeId let a hit-tested
+  // edge be excluded when it's already connected to the node being dragged.
+  sourceNodeId?: string;
+  targetNodeId?: string;
+  sourceX?: number;
+  sourceY?: number;
+  targetX?: number;
+  targetY?: number;
 }
 
 interface PreviewModel {
   empty: boolean;
   nodes: PositionedNode[];
   edges: PositionedEdge[];
-  width: number;
-  height: number;
   bounds: {
     minX: number;
     minY: number;
@@ -246,21 +259,24 @@ interface GraphStatePreviewProps {
   notice?: string | null;
   onNodePositionChange?: (nodeId: string, position: { x: number; y: number }) => void;
   onViewportChange?: (viewport: GraphStateViewport) => void;
-  onAddEffectNode?: () => void;
-  onAddMacroNode?: () => void;
+  onAddEffectNode?: (position?: { x: number; y: number }) => void;
+  onAddMacroNode?: (position?: { x: number; y: number }) => void;
   // EVC.3 — envelope node add/edit affordances (graph mode only).
-  onAddEnvelopeNode?: () => void;
+  onAddEnvelopeNode?: (position?: { x: number; y: number }) => void;
   onUpdateEnvelope?: (nodeId: string, patch: EnvelopeNodePatch) => void;
   // LFO node add/edit affordances (graph mode only). Mirrors envelope.
-  onAddLfoNode?: () => void;
+  onAddLfoNode?: (position?: { x: number; y: number }) => void;
   onUpdateLfo?: (nodeId: string, patch: LfoNodePatch) => void;
   // FXG-SC.6B — Sidechain Input node add + source selection + key linking.
-  onAddSidechainInput?: () => void;
+  onAddSidechainInput?: (position?: { x: number; y: number }) => void;
   onSetSidechainInputSource?: (nodeId: string, sourceTrackId: number | null) => void;
   onConnectSidechain?: (sidechainInputNodeId: string, targetNodeId: string) => void;
   sidechainSources?: SidechainSourceOption[];
   onRemoveNode?: (nodeId: string) => void;
   onConnectNodes?: (sourceNodeId: string, targetNodeId: string) => void;
+  // Drag-drop splice: dropping a dragged node onto an audio cable removes it
+  // and reconnects it inline between the cable's endpoints, in one undo step.
+  onSpliceNodeIntoEdge?: (nodeId: string, edgeId: string, position: { x: number; y: number }) => void;
   onConnectMacroToParameter?: (macroNodeId: string, targetNodeId: string, parameterId: string) => void;
   // EVC-R1 — link an Envelope controlOut to an exposed parameter input port.
   onConnectEnvelopeToParameter?: (envelopeNodeId: string, targetNodeId: string, parameterId: string) => void;
@@ -310,15 +326,8 @@ const PARAMETER_PORT_SECTION_HEADER = 12;
 const PARAMETER_PORT_SECTION_ROW_GAP = 4;
 const PREVIEW_PADDING_X = 24;
 const PREVIEW_PADDING_Y = 24;
-const HANDLE_OUTSET = 8;
 const FALLBACK_NODE_SPACING_X = 204;
 const FALLBACK_NODE_Y = 0;
-const MIN_CANVAS_WIDTH = 460;
-const MIN_CANVAS_HEIGHT = 240;
-// FXG.3-l — matches the canvas background dot grid's `background-size` (see
-// .xleth-graph-state-preview__viewport in windowing.css) so a dragged node's
-// committed position always lands on a visible dot.
-const NODE_DRAG_SNAP = 22;
 const DEFAULT_VIEWPORT: GraphStateViewport = Object.freeze({ x: 0, y: 0, zoom: 1 });
 const ZOOM_BUTTON_STEP = 1.1;
 // Continuous zoom sensitivity: Math.exp(-deltaY * k).
@@ -782,6 +791,17 @@ function nodeOutPoint(node: PositionedNode) {
   return { x: node.x + node.width, y: node.y + node.height / 2 };
 }
 
+// FXG-connect-reach — the audio "in" side anchor, mirroring edgeEndpoints'
+// targetX logic (trackInput is the one node type whose audio-relevant edge
+// sits on its right instead of its left, but it's never an audio drop target
+// itself, so this only ever resolves to the plain left-edge case in practice).
+function nodeInPoint(node: PositionedNode) {
+  return {
+    x: node.type === 'trackInput' ? node.x + node.width : node.x,
+    y: node.y + node.height / 2,
+  };
+}
+
 function makeCurvePath(sourceX: number, sourceY: number, targetX: number, targetY: number) {
   const midpointX = sourceX + (targetX - sourceX) / 2;
   return [
@@ -793,6 +813,97 @@ function makeCurvePath(sourceX: number, sourceY: number, targetX: number, target
 function makeEdgePath(source: PositionedNode, target: PositionedNode) {
   const { sourceX, sourceY, targetX, targetY } = edgeEndpoints(source, target);
   return makeCurvePath(sourceX, sourceY, targetX, targetY);
+}
+
+// Splice-drop cable hit-testing. There's no existing geometric hit-test to
+// build on (the edge midpoint "×" button is just a DOM element positioned at
+// the linear midpoint, not a curve sample) — these sample the same cubic
+// bezier `makeCurvePath` draws and measure distance to the sampled polyline.
+const SPLICE_HIT_DISTANCE_PX = 18;
+const SPLICE_CURVE_SAMPLES = 16;
+
+function cubicBezierPointAt(
+  t: number,
+  x0: number, y0: number,
+  x1: number, y1: number,
+  x2: number, y2: number,
+  x3: number, y3: number,
+) {
+  const mt = 1 - t;
+  const a = mt * mt * mt;
+  const b = 3 * mt * mt * t;
+  const c = 3 * mt * t * t;
+  const d = t * t * t;
+  return {
+    x: a * x0 + b * x1 + c * x2 + d * x3,
+    y: a * y0 + b * y1 + c * y2 + d * y3,
+  };
+}
+
+function distanceToSegment(
+  px: number, py: number,
+  ax: number, ay: number,
+  bx: number, by: number,
+) {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lengthSq = dx * dx + dy * dy;
+  const t = lengthSq === 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lengthSq));
+  const cx = ax + t * dx;
+  const cy = ay + t * dy;
+  return Math.hypot(px - cx, py - cy);
+}
+
+// Distance from `point` to the same cubic bezier makeCurvePath renders for
+// an audio cable (control points at the horizontal midpoint, per makeCurvePath).
+export function distanceToAudioCableCurve(
+  point: { x: number; y: number },
+  sourceX: number, sourceY: number,
+  targetX: number, targetY: number,
+  samples = SPLICE_CURVE_SAMPLES,
+) {
+  const midpointX = sourceX + (targetX - sourceX) / 2;
+  let prevX = sourceX;
+  let prevY = sourceY;
+  let minDistance = Infinity;
+  for (let i = 1; i <= samples; i++) {
+    const t = i / samples;
+    const { x, y } = cubicBezierPointAt(t, sourceX, sourceY, midpointX, sourceY, midpointX, targetY, targetX, targetY);
+    const distance = distanceToSegment(point.x, point.y, prevX, prevY, x, y);
+    if (distance < minDistance) minDistance = distance;
+    prevX = x;
+    prevY = y;
+  }
+  return minDistance;
+}
+
+// Finds the nearest audio cable within SPLICE_HIT_DISTANCE_PX of `point`
+// (preview/graph-space coordinates, same space as PositionedNode.x/y).
+// `excludeNodeId` drops any cable already terminating at the dragged node —
+// dropping a node back onto its own cable is a no-op move, not a splice.
+export function findAudioCableAtPoint(
+  edges: PositionedEdge[],
+  point: { x: number; y: number },
+  options: { excludeNodeId?: string | null; maxDistance?: number } = {},
+): PositionedEdge | null {
+  const maxDistance = options.maxDistance ?? SPLICE_HIT_DISTANCE_PX;
+  let best: PositionedEdge | null = null;
+  let bestDistance = Infinity;
+  for (const edge of edges) {
+    if (edge.type !== 'audio') continue;
+    if (edge.sourceX == null || edge.sourceY == null || edge.targetX == null || edge.targetY == null) continue;
+    if (
+      options.excludeNodeId != null &&
+      (edge.sourceNodeId === options.excludeNodeId || edge.targetNodeId === options.excludeNodeId)
+    ) continue;
+
+    const distance = distanceToAudioCableCurve(point, edge.sourceX, edge.sourceY, edge.targetX, edge.targetY);
+    if (distance <= maxDistance && distance < bestDistance) {
+      bestDistance = distance;
+      best = edge;
+    }
+  }
+  return best;
 }
 
 // FXG.4-e/f — parameter edges land on a specific exposed parameter input port.
@@ -874,8 +985,70 @@ export function connectHighlightedSidechainDropTarget(
   return true;
 }
 
-function isElementLike(element: Element | null): element is Element {
-  return !!element && typeof element.closest === 'function';
+// FXG-connect-reach — an audio drop lands on any node that renders the
+// audio-input handle (trackOutput/effect; see the `.handle--in` render gate).
+// Landing inside a node that lacks it (macro/envelope/lfo/sidechainInput/
+// trackInput, or a parameter/sidechain port row within an otherwise-eligible
+// effect node) is not a valid audio target.
+export function resolveAudioDropTargetFromElement(
+  element: Element | null,
+  sourceNodeId?: string | null,
+): string | null {
+  if (!element || typeof element.closest !== 'function') return null;
+  const nodeElement = element.closest('[data-node-id]');
+  const nodeId = nodeElement?.getAttribute('data-node-id') ?? null;
+  if (!nodeId || nodeId === sourceNodeId) return null;
+  const hasAudioInput = typeof nodeElement?.querySelector === 'function'
+    && nodeElement.querySelector('[data-audio-port-type="audio-input"]') != null;
+  if (!hasAudioInput) return null;
+  return nodeId;
+}
+
+// FXG-connect-reach — releasing (or hovering) a cable near, but not exactly
+// on, a compatible port should still connect: this is what makes precise
+// dot-hunting unnecessary at low zoom. Distances are measured in *screen*
+// space (getBoundingClientRect, which reflects the canvas's CSS zoom
+// transform), so a fixed radius behaves the same at any zoom level.
+export const CONNECT_SNAP_RADIUS_PX = 24;
+
+function elementCenter(element: Element): { x: number; y: number } {
+  const rect = element.getBoundingClientRect();
+  return { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
+}
+
+export function findNearestPortWithinRadius(
+  candidates: Element[],
+  point: { x: number; y: number },
+  radius: number = CONNECT_SNAP_RADIUS_PX,
+): Element | null {
+  let best: Element | null = null;
+  let bestDistance = radius;
+  for (const candidate of candidates) {
+    if (typeof candidate.getBoundingClientRect !== 'function') continue;
+    const center = elementCenter(candidate);
+    const distance = Math.hypot(center.x - point.x, center.y - point.y);
+    if (distance <= bestDistance) {
+      bestDistance = distance;
+      best = candidate;
+    }
+  }
+  return best;
+}
+
+// FXG-connect-reach — every element matching `selector` under `root`, minus
+// any whose owning node is the connect source itself (never a valid target
+// for any connect kind: audio self-loops, and a control/sidechain source
+// never renders the port kinds it drags to in the first place).
+function queryCompatiblePorts(
+  root: ParentNode | null | undefined,
+  selector: string,
+  sourceNodeId: string | null,
+): Element[] {
+  if (!root || typeof root.querySelectorAll !== 'function') return [];
+  return Array.from(root.querySelectorAll(selector)).filter((candidate) => {
+    const nodeId = candidate.closest('[data-node-id]')?.getAttribute('data-node-id') ?? null;
+    return nodeId != null && nodeId !== sourceNodeId;
+  });
 }
 
 function readEdgeParameterId(edge: GraphStateEdge, targetNodeId: string): string | null {
@@ -956,6 +1129,9 @@ function normalizePositionedEdges(
       path: makeEdgePath(source, target),
       midX: (sourceX + targetX) / 2,
       midY: (sourceY + targetY) / 2,
+      ...(type === 'audio'
+        ? { sourceNodeId: source.id, targetNodeId: target.id, sourceX, sourceY, targetX, targetY }
+        : null),
     });
   }
 
@@ -995,8 +1171,6 @@ export function buildGraphStatePreviewModel(
     empty: sourceNodes.length === 0 && sourceEdges.length === 0,
     nodes,
     edges,
-    width: Math.ceil(Math.max(maxX + PREVIEW_PADDING_X + HANDLE_OUTSET, MIN_CANVAS_WIDTH)),
-    height: Math.ceil(Math.max(maxY + PREVIEW_PADDING_Y, MIN_CANVAS_HEIGHT)),
     bounds,
   };
 }
@@ -1013,6 +1187,22 @@ function roundViewport(value: number) {
   return Math.round(value * 100) / 100;
 }
 
+// Free placement: a dragged node's next graph-space position is the drag's
+// starting position plus the screen-space pointer delta converted to
+// graph-space via the current zoom. No clamping, no grid snapping — nodes can
+// land anywhere, including negative coordinates.
+export function computeNodeDragPosition(
+  drag: { startGraphX: number; startGraphY: number; startClientX: number; startClientY: number },
+  clientX: number,
+  clientY: number,
+  zoom: number,
+): { x: number; y: number } {
+  return {
+    x: drag.startGraphX + (clientX - drag.startClientX) / zoom,
+    y: drag.startGraphY + (clientY - drag.startClientY) / zoom,
+  };
+}
+
 export function GraphStatePreviewNode({
   node,
   dragging,
@@ -1024,9 +1214,9 @@ export function GraphStatePreviewNode({
   connectActive,
   hoveredParameterPortId = null,
   hoveredSidechainPort = false,
+  hoveredAudioTarget = false,
+  connectGuidance = null,
   sidechainSources = [],
-  canRemove,
-  canEdit,
   onPointerDown,
   onPointerMove,
   onPointerUp,
@@ -1036,7 +1226,6 @@ export function GraphStatePreviewNode({
   onConnectPointerUp,
   onConnectPointerCancel,
   onNodeContextMenu,
-  onRemove,
   onEdit,
   onMacroValueCommit,
   onMacroRenameCommit,
@@ -1057,10 +1246,14 @@ export function GraphStatePreviewNode({
   hoveredParameterPortId?: string | null;
   // FXG-SC.6B — true when a sidechain drag is hovering this effect node's sidechainIn port.
   hoveredSidechainPort?: boolean;
+  // FXG-connect-reach — true when an audio drag's snap target (exact hit, or
+  // nearest compatible node within the snap radius) is this node.
+  hoveredAudioTarget?: boolean;
+  // FXG-connect-reach — drag guidance: 'valid' glows the node as a legal drop
+  // target for the in-flight connect kind, 'invalid' dims it. null outside a drag.
+  connectGuidance?: 'valid' | 'invalid' | null;
   // FXG-SC.6B — eligible source tracks for the Sidechain Input source selector.
   sidechainSources?: SidechainSourceOption[];
-  canRemove: boolean;
-  canEdit: boolean;
   onPointerDown?: (event: React.PointerEvent<HTMLDivElement>, node: PositionedNode) => void;
   onPointerMove?: (event: React.PointerEvent<HTMLDivElement>) => void;
   onPointerUp?: (event: React.PointerEvent<HTMLDivElement>) => void;
@@ -1069,8 +1262,11 @@ export function GraphStatePreviewNode({
   onConnectPointerMove?: (event: React.PointerEvent<HTMLSpanElement>) => void;
   onConnectPointerUp?: (event: React.PointerEvent<HTMLSpanElement>) => void;
   onConnectPointerCancel?: (event: React.PointerEvent<HTMLSpanElement>) => void;
+  // Right-click on a node opens its context menu (Edit/Remove and, for
+  // effect/macro nodes, the richer parameter-exposure/automation menu).
   onNodeContextMenu?: (event: React.MouseEvent<HTMLDivElement>, node: PositionedNode) => void;
-  onRemove?: (nodeId: string) => void;
+  // Also wired to double-click on editable effect nodes — the same action as
+  // the context menu's Edit item.
   onEdit?: (nodeId: string) => void;
   onMacroValueCommit?: (nodeId: string, value: number) => void;
   onMacroRenameCommit?: (nodeId: string, label: string) => void;
@@ -1124,17 +1320,16 @@ export function GraphStatePreviewNode({
   // linking is enabled. It is its own connect-source kind, separate from audio/control.
   const interactiveSidechainOut =
     isSidechainInput && connectSidechainEnabled && !node.virtual && typeof onConnectPointerDown === 'function';
-  const showRemove =
-    canRemove &&
+  // Edit/Remove live in the right-click context menu (GraphParameterContextMenu),
+  // not as always-visible node-body buttons. Double-click mirrors the context
+  // menu's Edit action for editable effect nodes only — other node types have
+  // no external editor to open.
+  const canOpenContextMenu =
     (node.type === 'effect' || node.type === 'macro' || node.type === 'envelope' || node.type === 'lfo') &&
     !node.virtual &&
-    typeof onRemove === 'function';
-  // Edit appears on every real effect node; placeholder/data-only nodes show a
-  // disabled "not active yet" state so the affordance is discoverable but inert.
-  const showEdit =
-    canEdit && node.type === 'effect' && !node.virtual && typeof onEdit === 'function';
-  const canOpenContextMenu =
-    (node.type === 'effect' || node.type === 'macro') && !node.virtual && typeof onNodeContextMenu === 'function';
+    typeof onNodeContextMenu === 'function';
+  const canDoubleClickEdit =
+    node.type === 'effect' && node.editable && !node.virtual && typeof onEdit === 'function';
   const macroPercent = node.macroValue == null ? null : Math.round(node.macroValue * 100);
   const commitMacroValue = (event: React.SyntheticEvent<HTMLInputElement>) => {
     const nextValue = Number(event.currentTarget.value);
@@ -1153,10 +1348,15 @@ export function GraphStatePreviewNode({
         dragging ? 'xleth-graph-state-preview__node--dragging' : '',
         connectActive ? 'xleth-graph-state-preview__node--connect-source' : '',
         hoveredParameterPortId ? 'xleth-graph-state-preview__node--parameter-drop-target' : '',
+        hoveredAudioTarget ? 'xleth-graph-state-preview__node--audio-drop-target' : '',
+        connectGuidance === 'valid' ? 'xleth-graph-state-preview__node--connect-valid-target' : '',
+        connectGuidance === 'invalid' ? 'xleth-graph-state-preview__node--connect-invalid-target' : '',
       ].filter(Boolean).join(' ')}
       data-node-id={node.id}
       data-node-type={node.type}
       data-parameter-drop-node={hoveredParameterPortId ? 'true' : undefined}
+      data-audio-drop-node={hoveredAudioTarget ? 'true' : undefined}
+      data-connect-guidance={connectGuidance ?? undefined}
       data-preview-virtual={node.virtual ? 'true' : undefined}
       role="listitem"
       aria-label={node.label}
@@ -1167,10 +1367,12 @@ export function GraphStatePreviewNode({
       onPointerUp={onPointerUp}
       onPointerCancel={onPointerCancel}
       onContextMenu={canOpenContextMenu ? (event) => onNodeContextMenu?.(event, node) : undefined}
+      onDoubleClick={canDoubleClickEdit ? (event) => { event.stopPropagation(); onEdit?.(node.id); } : undefined}
     >
       {node.type !== 'trackInput' && node.type !== 'macro' && !isEnvelope && !isLfo && !isSidechainInput && (
         <span
           className="xleth-graph-state-preview__handle xleth-graph-state-preview__handle--in"
+          data-audio-port-type="audio-input"
           aria-hidden="true"
         />
       )}
@@ -1455,41 +1657,6 @@ export function GraphStatePreviewNode({
             <span className="xleth-graph-state-preview__sidechain-port-dot" aria-hidden="true" />
             <span className="xleth-graph-state-preview__sidechain-port-label">Sidechain</span>
           </span>
-        </span>
-      )}
-      {(showEdit || showRemove) && (
-        <span className="xleth-graph-state-preview__node-actions">
-          {showEdit && (
-            <button
-              className="xleth-graph-state-preview__node-edit"
-              type="button"
-              disabled={!node.editable}
-              data-active={node.editable ? 'true' : undefined}
-              aria-label={node.editable ? `Edit ${node.label}` : `${node.label} is not active yet`}
-              title={node.editable ? 'Open effect editor' : 'Effect is not active yet'}
-              onPointerDown={(event) => event.stopPropagation()}
-              onClick={(event) => {
-                event.stopPropagation();
-                if (node.editable) onEdit?.(node.id);
-              }}
-            >
-              Edit
-            </button>
-          )}
-          {showRemove && (
-            <button
-              className="xleth-graph-state-preview__node-remove"
-              type="button"
-              aria-label={`Remove ${node.label}`}
-              onPointerDown={(event) => event.stopPropagation()}
-              onClick={(event) => {
-                event.stopPropagation();
-                onRemove?.(node.id);
-              }}
-            >
-              Remove
-            </button>
-          )}
         </span>
       )}
     </div>
@@ -1899,6 +2066,34 @@ export function GraphParameterContextMenu({
     );
   }
 
+  // Envelope/LFO nodes are inert control-source definitions edited inline in
+  // the node body (EnvelopeNodeBody/LfoNodeBody) — the context menu offers
+  // only Remove; there is no external editor to open (no Edit item, mirroring
+  // the node body's former showEdit gate which excluded these types).
+  if (node.type === 'envelope' || node.type === 'lfo') {
+    return (
+      <div
+        className="xleth-graph-state-preview__context-menu"
+        role="menu"
+        aria-label={`${node.label} node menu`}
+        style={{ left: x, top: y }}
+        onPointerDown={(event) => event.stopPropagation()}
+        onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}
+      >
+        <div className="xleth-graph-state-preview__context-title">{node.label}</div>
+        <button
+          className="xleth-graph-state-preview__context-item"
+          type="button"
+          role="menuitem"
+          disabled={!canRemove}
+          onClick={onRemove}
+        >
+          Remove
+        </button>
+      </div>
+    );
+  }
+
   const parameters = result?.ok ? result.parameters ?? [] : [];
   const parameterGroups = buildExposeParameterMenuGroups(parameters, {
     pluginId: node.pluginId,
@@ -2049,6 +2244,7 @@ export default function GraphStatePreview({
   sidechainSources = [],
   onRemoveNode,
   onConnectNodes,
+  onSpliceNodeIntoEdge,
   onConnectMacroToParameter,
   onConnectEnvelopeToParameter,
   onConnectLfoToParameter,
@@ -2079,6 +2275,8 @@ export default function GraphStatePreview({
     startGraphY: number;
     currentGraphX: number;
     currentGraphY: number;
+    width: number;
+    height: number;
   } | null>(null);
   const panRef = React.useRef<{
     pointerId: number;
@@ -2095,6 +2293,9 @@ export default function GraphStatePreview({
   const hoveredParameterTargetRef = React.useRef<ParameterDropTarget | null>(null);
   // FXG-SC.6B — sidechain drag hover target (effect sidechainIn port).
   const hoveredSidechainTargetRef = React.useRef<SidechainDropTarget | null>(null);
+  // FXG-connect-reach — audio drag hover target (a node id, since an audio
+  // drop's target is the node body rather than a specific port).
+  const hoveredAudioTargetRef = React.useRef<string | null>(null);
   const spaceDownRef = React.useRef(false);
 
   React.useEffect(() => {
@@ -2119,11 +2320,22 @@ export default function GraphStatePreview({
   const [connectPoint, setConnectPoint] = React.useState<{ x: number; y: number } | null>(null);
   const [hoveredParameterTarget, setHoveredParameterTarget] = React.useState<ParameterDropTarget | null>(null);
   const [hoveredSidechainTarget, setHoveredSidechainTarget] = React.useState<SidechainDropTarget | null>(null);
+  const [hoveredAudioTarget, setHoveredAudioTarget] = React.useState<string | null>(null);
   const [contextMenu, setContextMenu] = React.useState<{
     node: PositionedNode;
     x: number;
     y: number;
   } | null>(null);
+  // Canvas empty-space right-click menu: "Add Plugin" / "Add Modulator", spawned
+  // at the click's graph position.
+  const [addMenu, setAddMenu] = React.useState<{
+    x: number;
+    y: number;
+    graphPosition: { x: number; y: number };
+  } | null>(null);
+  // The viewport at the moment either menu opened — panning/zooming away from it
+  // closes the menu (its screen anchor and graph-space spawn point are stale).
+  const menuOpenViewportRef = React.useRef<GraphStateViewport | null>(null);
   const [parameterResult, setParameterResult] = React.useState<GraphParameterResult | null>(null);
   const [parameterLoading, setParameterLoading] = React.useState(false);
   const [parameterSearch, setParameterSearch] = React.useState('');
@@ -2132,6 +2344,11 @@ export default function GraphStatePreview({
     x: number;
     y: number;
   } | null>(null);
+  // Splice-drop: the audio cable currently under the dragged node's center,
+  // highlighted as a drop target. Computed against `staticPreviewModel` below
+  // (the dragged node's own edges are excluded from candidates, so its
+  // in-flight preview position never affects which cable is under test).
+  const [spliceTargetEdgeId, setSpliceTargetEdgeId] = React.useState<string | null>(null);
   const model = React.useMemo(
     () => buildGraphStatePreviewModel(
       graphState,
@@ -2141,18 +2358,22 @@ export default function GraphStatePreview({
     ),
     [dragPreviewPosition, graphState],
   );
+  // Undragged edge geometry, used only for splice hit-testing — deliberately
+  // NOT recomputed from dragPreviewPosition (see spliceTargetEdgeId comment).
+  const staticPreviewModel = React.useMemo(
+    () => buildGraphStatePreviewModel(graphState),
+    [graphState],
+  );
   const viewport = React.useMemo(
     () => normalizeViewport(graphState?.viewport),
     [graphState?.viewport],
   );
 
   const canvasStyle: React.CSSProperties = {
-    width: model.width,
-    height: model.height,
     transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
   };
   const hasHeader = notice != null || model.empty;
-  const canDragNodes = typeof onNodePositionChange === 'function';
+  const canDragNodes = typeof onNodePositionChange === 'function' || typeof onSpliceNodeIntoEdge === 'function';
   const canEditViewport = typeof onViewportChange === 'function';
   const canAddNode = typeof onAddEffectNode === 'function';
   const canAddMacro = typeof onAddMacroNode === 'function';
@@ -2188,6 +2409,13 @@ export default function GraphStatePreview({
     typeof onUndoGraphEdit === 'function' || typeof onRedoGraphEdit === 'function';
   const showToolbar =
     canEditViewport || canAddNode || canAddMacro || canAddEnvelope || canAddLfo || canAddSidechainInput || canUseGraphHistory;
+  // The right-click node menu carries Edit/Remove (formerly always-visible node-body
+  // buttons) plus, for effect/macro nodes, the parameter-exposure/automation extras —
+  // so it must open whenever any of those affordances is wired, not only the extras.
+  const canOpenNodeMenu = canExposeParameters || canMacroAutomation || canRemoveNode || canEditNode;
+  // Canvas empty-space right-click: "Add Plugin" / "Add Modulator" menu.
+  const canAddAnything =
+    canAddNode || canAddMacro || canAddEnvelope || canAddLfo || canAddSidechainInput;
 
   const closeContextMenu = React.useCallback(() => {
     setContextMenu(null);
@@ -2195,6 +2423,25 @@ export default function GraphStatePreview({
     setParameterLoading(false);
     setParameterSearch('');
   }, []);
+
+  const closeAddMenu = React.useCallback(() => {
+    setAddMenu(null);
+  }, []);
+
+  // Pan/zoom invalidates a menu's screen anchor (and the add menu's graph-space
+  // spawn point), so either menu closes as soon as the viewport it opened under
+  // moves.
+  React.useEffect(() => {
+    if (!contextMenu && !addMenu) return;
+    const openedViewport = menuOpenViewportRef.current;
+    if (
+      openedViewport &&
+      (openedViewport.x !== viewport.x || openedViewport.y !== viewport.y || openedViewport.zoom !== viewport.zoom)
+    ) {
+      closeContextMenu();
+      closeAddMenu();
+    }
+  }, [viewport, contextMenu, addMenu, closeContextMenu, closeAddMenu]);
 
   React.useEffect(() => {
     if (!contextMenu) return undefined;
@@ -2281,18 +2528,23 @@ export default function GraphStatePreview({
     node: PositionedNode,
   ) => {
     // FXG.4-h — effect nodes open the parameter-exposure menu; macro nodes open the
-    // automation menu. Other node types (Track I/O) have no menu.
+    // automation menu; envelope/lfo nodes open a plain Edit/Remove menu. Other node
+    // types (Track I/O, Sidechain Input) have no menu.
     const isEffect = node.type === 'effect';
     const isMacro = node.type === 'macro';
-    if ((!isEffect && !isMacro) || node.virtual) return;
+    const isEnvelope = node.type === 'envelope';
+    const isLfo = node.type === 'lfo';
+    if ((!isEffect && !isMacro && !isEnvelope && !isLfo) || node.virtual) return;
     event.preventDefault();
     event.stopPropagation();
+    closeAddMenu();
+    menuOpenViewportRef.current = viewport;
     setContextMenu({
       node,
       x: event.clientX,
       y: event.clientY,
     });
-  }, []);
+  }, [closeAddMenu, viewport]);
 
   const handleShowAutomationLane = React.useCallback(() => {
     const node = contextMenu?.node;
@@ -2342,22 +2594,45 @@ export default function GraphStatePreview({
     dragRef.current = null;
     setDraggingNodeId(null);
     setDragPreviewPosition(null);
+    const targetEdgeId = spliceTargetEdgeId;
+    setSpliceTargetEdgeId(null);
 
-    if (
-      commitPosition &&
-      onNodePositionChange &&
-      (drag.currentGraphX !== drag.startGraphX || drag.currentGraphY !== drag.startGraphY)
-    ) {
-      onNodePositionChange(drag.nodeId, {
-        x: drag.currentGraphX,
-        y: drag.currentGraphY,
-      });
+    if (!commitPosition) return;
+    if (drag.currentGraphX === drag.startGraphX && drag.currentGraphY === drag.startGraphY) return;
+
+    const position = { x: drag.currentGraphX, y: drag.currentGraphY };
+    // A highlighted splice target wins over a plain move. Ports being
+    // occupied/incompatible clears spliceTargetEdgeId during drag (see
+    // handleNodePointerMove), so that case already falls through to a plain
+    // move here rather than needing a separate fallback branch.
+    if (targetEdgeId && onSpliceNodeIntoEdge) {
+      onSpliceNodeIntoEdge(drag.nodeId, targetEdgeId, position);
+      return;
     }
-  }, [onNodePositionChange]);
+    if (onNodePositionChange) {
+      onNodePositionChange(drag.nodeId, position);
+    }
+  }, [onNodePositionChange, onSpliceNodeIntoEdge, spliceTargetEdgeId]);
 
   const cancelDrag = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     finishDrag(event, false);
   }, [finishDrag]);
+
+  // Escape cancels an in-flight drag exactly like pointercancel: clearing
+  // dragRef makes the eventual pointerup a no-op (finishDrag's guard clause
+  // returns immediately when drag.pointerId no longer matches/exists), so the
+  // node snaps back and the graph is left untouched.
+  React.useEffect(() => {
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key !== 'Escape' || !dragRef.current) return;
+      dragRef.current = null;
+      setDraggingNodeId(null);
+      setDragPreviewPosition(null);
+      setSpliceTargetEdgeId(null);
+    }
+    document.addEventListener('keydown', handleEscape);
+    return () => document.removeEventListener('keydown', handleEscape);
+  }, []);
 
   const handleNodePointerDown = React.useCallback((
     event: React.PointerEvent<HTMLDivElement>,
@@ -2379,29 +2654,42 @@ export default function GraphStatePreview({
       startGraphY: node.graphY,
       currentGraphX: node.graphX,
       currentGraphY: node.graphY,
+      width: node.width,
+      height: node.height,
     };
     setDraggingNodeId(node.id);
   }, [canDragNodes]);
 
   const handleNodePointerMove = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     const drag = dragRef.current;
-    if (!drag || drag.pointerId !== event.pointerId || !onNodePositionChange) return;
+    if (!drag || drag.pointerId !== event.pointerId) return;
+    if (!onNodePositionChange && !onSpliceNodeIntoEdge) return;
 
     event.preventDefault();
-    const nextX = Math.max(0, drag.startGraphX + (event.clientX - drag.startClientX) / viewport.zoom);
-    const nextY = Math.max(0, drag.startGraphY + (event.clientY - drag.startClientY) / viewport.zoom);
-    // FXG.3-l — snap to the dot grid so dragged nodes land on a shared baseline
-    // instead of drifting to arbitrary sub-pixel positions.
-    const roundedX = Math.round(nextX / NODE_DRAG_SNAP) * NODE_DRAG_SNAP;
-    const roundedY = Math.round(nextY / NODE_DRAG_SNAP) * NODE_DRAG_SNAP;
-    drag.currentGraphX = roundedX;
-    drag.currentGraphY = roundedY;
+    const next = computeNodeDragPosition(drag, event.clientX, event.clientY, viewport.zoom);
+    drag.currentGraphX = next.x;
+    drag.currentGraphY = next.y;
     setDragPreviewPosition({
       nodeId: drag.nodeId,
-      x: roundedX,
-      y: roundedY,
+      x: next.x,
+      y: next.y,
     });
-  }, [onNodePositionChange, viewport.zoom]);
+
+    if (onSpliceNodeIntoEdge) {
+      const center = {
+        x: next.x + PREVIEW_PADDING_X + drag.width / 2,
+        y: next.y + PREVIEW_PADDING_Y + drag.height / 2,
+      };
+      const candidate = findAudioCableAtPoint(staticPreviewModel.edges, center, {
+        excludeNodeId: drag.nodeId,
+      });
+      if (candidate && canSpliceGraphNodeIntoEdge(graphState, { edgeId: candidate.id, nodeId: drag.nodeId }).ok) {
+        setSpliceTargetEdgeId(candidate.id);
+      } else {
+        setSpliceTargetEdgeId(null);
+      }
+    }
+  }, [graphState, onNodePositionChange, onSpliceNodeIntoEdge, staticPreviewModel, viewport.zoom]);
 
   const finishPan = React.useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (panRef.current?.pointerId === event.pointerId) {
@@ -2535,16 +2823,44 @@ export default function GraphStatePreview({
     onViewportChange({ x: roundViewport(next.x), y: roundViewport(next.y), zoom: next.zoom });
   }, [canEditViewport, onViewportChange, viewport]);
 
+  // Right-click on empty canvas space (not a node — those open their own menu
+  // via handleNodeContextMenu) opens the "Add Plugin" / "Add Modulator" menu at
+  // the click's graph position. toCanvasPoint already returns the canvas's own
+  // unscaled coordinate space (i.e. node.x/node.y), so subtracting the preview
+  // padding yields the same graph position a dropped node would persist.
+  const handleCanvasContextMenu = React.useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (!canAddAnything) return;
+    const target = event.target;
+    if (
+      typeof Element !== 'undefined' &&
+      target instanceof Element &&
+      target.closest('.xleth-graph-state-preview__node')
+    ) {
+      return;
+    }
+    event.preventDefault();
+    event.stopPropagation();
+    const point = toCanvasPoint(event.clientX, event.clientY);
+    const graphPosition = point
+      ? { x: point.x - PREVIEW_PADDING_X, y: point.y - PREVIEW_PADDING_Y }
+      : { x: 0, y: 0 };
+    closeContextMenu();
+    menuOpenViewportRef.current = viewport;
+    setAddMenu({ x: event.clientX, y: event.clientY, graphPosition });
+  }, [canAddAnything, toCanvasPoint, closeContextMenu, viewport]);
+
   const resetConnect = React.useCallback((event: React.PointerEvent<HTMLSpanElement>) => {
     if (connectRef.current?.pointerId === event.pointerId) {
       event.currentTarget.releasePointerCapture?.(event.pointerId);
       connectRef.current = null;
       hoveredParameterTargetRef.current = null;
       hoveredSidechainTargetRef.current = null;
+      hoveredAudioTargetRef.current = null;
       setConnectingFromNodeId(null);
       setConnectPoint(null);
       setHoveredParameterTarget(null);
       setHoveredSidechainTarget(null);
+      setHoveredAudioTarget(null);
     }
   }, []);
 
@@ -2554,10 +2870,22 @@ export default function GraphStatePreview({
     const isControlSource = connect?.sourceKind === 'macro' || connect?.sourceKind === 'envelope' || connect?.sourceKind === 'lfo';
     if (!connect || connect.pointerId !== event.pointerId || !isControlSource) return;
 
+    const point = { x: event.clientX, y: event.clientY };
     const dropElement = typeof document !== 'undefined'
-      ? document.elementFromPoint(event.clientX, event.clientY)
+      ? document.elementFromPoint(point.x, point.y)
       : null;
-    const nextTarget = resolveParameterDropTargetFromElement(dropElement, connect.sourceNodeId);
+    let nextTarget = resolveParameterDropTargetFromElement(dropElement, connect.sourceNodeId);
+    if (!nextTarget) {
+      const candidates = queryCompatiblePorts(
+        canvasRef.current,
+        '[data-parameter-port-type="parameter-input"][data-parameter-port-id]',
+        connect.sourceNodeId,
+      );
+      nextTarget = resolveParameterDropTargetFromElement(
+        findNearestPortWithinRadius(candidates, point),
+        connect.sourceNodeId,
+      );
+    }
     const previous = hoveredParameterTargetRef.current;
     if (previous?.portId === nextTarget?.portId) return;
     hoveredParameterTargetRef.current = nextTarget;
@@ -2569,14 +2897,54 @@ export default function GraphStatePreview({
     const connect = connectRef.current;
     if (!connect || connect.pointerId !== event.pointerId || connect.sourceKind !== 'sidechain') return;
 
+    const point = { x: event.clientX, y: event.clientY };
     const dropElement = typeof document !== 'undefined'
-      ? document.elementFromPoint(event.clientX, event.clientY)
+      ? document.elementFromPoint(point.x, point.y)
       : null;
-    const nextTarget = resolveSidechainDropTargetFromElement(dropElement, connect.sourceNodeId);
+    let nextTarget = resolveSidechainDropTargetFromElement(dropElement, connect.sourceNodeId);
+    if (!nextTarget) {
+      const candidates = queryCompatiblePorts(
+        canvasRef.current,
+        '[data-sidechain-port-type="sidechain-input"][data-sidechain-port-id]',
+        connect.sourceNodeId,
+      );
+      nextTarget = resolveSidechainDropTargetFromElement(
+        findNearestPortWithinRadius(candidates, point),
+        connect.sourceNodeId,
+      );
+    }
     const previous = hoveredSidechainTargetRef.current;
     if (previous?.portId === nextTarget?.portId) return;
     hoveredSidechainTargetRef.current = nextTarget;
     setHoveredSidechainTarget(nextTarget);
+  }, []);
+
+  // FXG-connect-reach — highlight the node an audio drag would land on: an
+  // exact hit first, then the nearest compatible node within the snap radius.
+  const updateHoveredAudioTarget = React.useCallback((event: React.PointerEvent<HTMLSpanElement>) => {
+    const connect = connectRef.current;
+    if (!connect || connect.pointerId !== event.pointerId || connect.sourceKind !== 'audio') return;
+
+    const point = { x: event.clientX, y: event.clientY };
+    const dropElement = typeof document !== 'undefined'
+      ? document.elementFromPoint(point.x, point.y)
+      : null;
+    let nextTarget = resolveAudioDropTargetFromElement(dropElement, connect.sourceNodeId);
+    if (!nextTarget) {
+      const candidates = queryCompatiblePorts(
+        canvasRef.current,
+        '[data-audio-port-type="audio-input"]',
+        connect.sourceNodeId,
+      );
+      nextTarget = resolveAudioDropTargetFromElement(
+        findNearestPortWithinRadius(candidates, point),
+        connect.sourceNodeId,
+      );
+    }
+    const previous = hoveredAudioTargetRef.current;
+    if (previous === nextTarget) return;
+    hoveredAudioTargetRef.current = nextTarget;
+    setHoveredAudioTarget(nextTarget);
   }, []);
 
   const handleConnectPointerDown = React.useCallback((
@@ -2608,10 +2976,12 @@ export default function GraphStatePreview({
     };
     hoveredParameterTargetRef.current = null;
     hoveredSidechainTargetRef.current = null;
+    hoveredAudioTargetRef.current = null;
     setConnectingFromNodeId(node.id);
     setConnectPoint(toCanvasPoint(event.clientX, event.clientY));
     setHoveredParameterTarget(null);
     setHoveredSidechainTarget(null);
+    setHoveredAudioTarget(null);
   }, [canConnect, canConnectParameters, canConnectEnvelopeParameters, canConnectLfoParameters, canConnectSidechain, toCanvasPoint]);
 
   const handleConnectPointerMove = React.useCallback((event: React.PointerEvent<HTMLSpanElement>) => {
@@ -2622,7 +2992,8 @@ export default function GraphStatePreview({
     setConnectPoint(toCanvasPoint(event.clientX, event.clientY));
     updateHoveredParameterTarget(event);
     updateHoveredSidechainTarget(event);
-  }, [toCanvasPoint, updateHoveredParameterTarget, updateHoveredSidechainTarget]);
+    updateHoveredAudioTarget(event);
+  }, [toCanvasPoint, updateHoveredParameterTarget, updateHoveredSidechainTarget, updateHoveredAudioTarget]);
 
   const handleConnectPointerUp = React.useCallback((event: React.PointerEvent<HTMLSpanElement>) => {
     const connect = connectRef.current;
@@ -2630,9 +3001,6 @@ export default function GraphStatePreview({
 
     event.preventDefault();
     const sourceNodeId = connect.sourceNodeId;
-    const dropElement = typeof document !== 'undefined'
-      ? document.elementFromPoint(event.clientX, event.clientY)
-      : null;
 
     // Control-source controlOut (macro/envelope/lfo) → exposed parameter input
     // port creates a parameter edge. The drop must land on the highlighted
@@ -2661,17 +3029,16 @@ export default function GraphStatePreview({
       return;
     }
 
-    // Audio out → node body creates an audio edge. Parameter ports are not valid
-    // audio targets, even though they sit inside effect nodes.
-    const parameterDropTarget = resolveParameterDropTargetFromElement(dropElement, sourceNodeId);
-    const targetNode = isElementLike(dropElement)
-      ? dropElement.closest('[data-node-id]')
-      : null;
-    const targetNodeId = targetNode?.getAttribute('data-node-id') ?? null;
+    // Audio out → a node that renders the audio-input handle creates an audio
+    // edge. The drop must land on (or, within the snap radius, near) the
+    // highlighted target; parameter/sidechain port rows and incompatible node
+    // types (macro/envelope/lfo/sidechainInput/trackInput) never resolve here
+    // since resolveAudioDropTargetFromElement gates on the audio-input handle.
+    const targetNodeId = hoveredAudioTargetRef.current;
 
     resetConnect(event);
 
-    if (!parameterDropTarget && onConnectNodes && targetNodeId && targetNodeId !== sourceNodeId) {
+    if (onConnectNodes && targetNodeId && targetNodeId !== sourceNodeId) {
       onConnectNodes(sourceNodeId, targetNodeId);
     }
   }, [onConnectMacroToParameter, onConnectEnvelopeToParameter, onConnectLfoToParameter, onConnectSidechain, onConnectNodes, resetConnect]);
@@ -2685,11 +3052,28 @@ export default function GraphStatePreview({
   const hoveredSidechainNode = hoveredSidechainTarget
     ? model.nodes.find((node) => node.id === hoveredSidechainTarget.nodeId)
     : undefined;
+  const hoveredAudioNode = hoveredAudioTarget
+    ? model.nodes.find((node) => node.id === hoveredAudioTarget)
+    : undefined;
   const displayedConnectPoint = hoveredParameterNode
     ? parameterPortAnchor(hoveredParameterNode, hoveredParameterTarget?.parameterId ?? null)
     : hoveredSidechainNode
       ? sidechainPortAnchor(hoveredSidechainNode)
-      : connectPoint;
+      : hoveredAudioNode
+        ? nodeInPoint(hoveredAudioNode)
+        : connectPoint;
+  // FXG-connect-reach — the active connect kind's compatibility rule, used to
+  // glow every legal drop target and dim the rest for the duration of the drag.
+  const connectSourceKind = connectingFromNodeId ? connectRef.current?.sourceKind ?? null : null;
+  const isValidConnectTargetNode = React.useCallback((node: PositionedNode): boolean => {
+    if (node.virtual) return false;
+    if (connectSourceKind === 'audio') return node.type === 'trackOutput' || node.type === 'effect';
+    if (connectSourceKind === 'macro' || connectSourceKind === 'envelope' || connectSourceKind === 'lfo') {
+      return node.parameterPorts.length > 0;
+    }
+    if (connectSourceKind === 'sidechain') return node.type === 'effect' && node.sidechainTarget;
+    return false;
+  }, [connectSourceKind]);
   const connectLinePath = connectingNode && displayedConnectPoint
     ? (() => {
         const start = nodeOutPoint(connectingNode);
@@ -2754,7 +3138,7 @@ export default function GraphStatePreview({
                 <button
                   className="xleth-graph-state-preview__action-button"
                   type="button"
-                  onClick={onAddEffectNode}
+                  onClick={() => onAddEffectNode?.()}
                 >
                   Add Effect Node
                 </button>
@@ -2763,7 +3147,7 @@ export default function GraphStatePreview({
                 <button
                   className="xleth-graph-state-preview__action-button xleth-graph-state-preview__action-button--secondary"
                   type="button"
-                  onClick={onAddMacroNode}
+                  onClick={() => onAddMacroNode?.()}
                 >
                   Add Macro
                 </button>
@@ -2772,7 +3156,7 @@ export default function GraphStatePreview({
                 <button
                   className="xleth-graph-state-preview__action-button xleth-graph-state-preview__action-button--secondary"
                   type="button"
-                  onClick={onAddEnvelopeNode}
+                  onClick={() => onAddEnvelopeNode?.()}
                 >
                   Add Envelope
                 </button>
@@ -2781,7 +3165,7 @@ export default function GraphStatePreview({
                 <button
                   className="xleth-graph-state-preview__action-button xleth-graph-state-preview__action-button--secondary"
                   type="button"
-                  onClick={onAddLfoNode}
+                  onClick={() => onAddLfoNode?.()}
                 >
                   Add LFO
                 </button>
@@ -2794,7 +3178,7 @@ export default function GraphStatePreview({
                   title={hasSidechainInputNode
                     ? 'This graph already has a Sidechain Input node'
                     : 'Add a Sidechain Input node'}
-                  onClick={onAddSidechainInput}
+                  onClick={() => onAddSidechainInput?.()}
                 >
                   Add Sidechain Input
                 </button>
@@ -2855,6 +3239,7 @@ export default function GraphStatePreview({
         onPointerUp={canEditViewport ? finishPan : undefined}
         onPointerCancel={canEditViewport ? finishPan : undefined}
         onWheel={canEditViewport ? handleWheel : undefined}
+        onContextMenu={canAddAnything ? handleCanvasContextMenu : undefined}
       >
         <div className="xleth-graph-state-preview__stage" data-preview-scroll-stage="true">
           <div
@@ -2868,17 +3253,19 @@ export default function GraphStatePreview({
           >
             <svg
               className="xleth-graph-state-preview__edges"
-              width={model.width}
-              height={model.height}
-              viewBox={`0 0 ${model.width} ${model.height}`}
               role="img"
               aria-label="Static graph cables"
             >
               {model.edges.map((edge) => (
                 <path
-                  className={`xleth-graph-state-preview__edge xleth-graph-state-preview__edge--${edge.type}`}
+                  className={[
+                    'xleth-graph-state-preview__edge',
+                    `xleth-graph-state-preview__edge--${edge.type}`,
+                    edge.id === spliceTargetEdgeId ? 'xleth-graph-state-preview__edge--splice-target' : '',
+                  ].filter(Boolean).join(' ')}
                   data-edge-id={edge.id}
                   data-edge-type={edge.type}
+                  data-splice-target={edge.id === spliceTargetEdgeId ? 'true' : undefined}
                   key={edge.id}
                   d={edge.path}
                   aria-label={edge.label}
@@ -2906,9 +3293,13 @@ export default function GraphStatePreview({
                   connectActive={connectingFromNodeId === node.id}
                   hoveredParameterPortId={hoveredParameterTarget?.nodeId === node.id ? hoveredParameterTarget.portId : null}
                   hoveredSidechainPort={hoveredSidechainTarget?.nodeId === node.id}
+                  hoveredAudioTarget={hoveredAudioTarget === node.id}
+                  connectGuidance={
+                    connectSourceKind && node.id !== connectingFromNodeId
+                      ? (isValidConnectTargetNode(node) ? 'valid' : 'invalid')
+                      : null
+                  }
                   sidechainSources={sidechainSources}
-                  canRemove={canRemoveNode}
-                  canEdit={canEditNode}
                   onPointerDown={canDragNodes ? handleNodePointerDown : undefined}
                   onPointerMove={canDragNodes ? handleNodePointerMove : undefined}
                   onPointerUp={canDragNodes ? finishDrag : undefined}
@@ -2917,8 +3308,7 @@ export default function GraphStatePreview({
                   onConnectPointerMove={canConnect || canConnectParameters || canConnectEnvelopeParameters || canConnectLfoParameters || canConnectSidechain ? handleConnectPointerMove : undefined}
                   onConnectPointerUp={canConnect || canConnectParameters || canConnectEnvelopeParameters || canConnectLfoParameters || canConnectSidechain ? handleConnectPointerUp : undefined}
                   onConnectPointerCancel={canConnect || canConnectParameters || canConnectEnvelopeParameters || canConnectLfoParameters || canConnectSidechain ? resetConnect : undefined}
-                  onNodeContextMenu={(canExposeParameters || canMacroAutomation) ? handleNodeContextMenu : undefined}
-                  onRemove={canRemoveNode ? onRemoveNode : undefined}
+                  onNodeContextMenu={canOpenNodeMenu ? handleNodeContextMenu : undefined}
                   onEdit={canEditNode ? onEditNode : undefined}
                   onMacroValueCommit={onUpdateMacroValue}
                   onMacroRenameCommit={onRenameMacroNode}
@@ -3022,6 +3412,43 @@ export default function GraphStatePreview({
               onCreateAutomationClip={onCreateMacroAutomationClip ? handleCreateAutomationClip : undefined}
             />,
             document.body,
+          )}
+          {addMenu && typeof document !== 'undefined' && (
+            <TrackContextMenu
+              x={addMenu.x}
+              y={addMenu.y}
+              onClose={closeAddMenu}
+              menuClassName="xleth-graph-state-preview__add-menu"
+              submenuClassName="xleth-graph-state-preview__add-menu"
+              items={[
+                ...(canAddNode ? [{
+                  label: 'Add Plugin',
+                  onClick: () => onAddEffectNode?.(addMenu.graphPosition),
+                }] : []),
+                ...((canAddMacro || canAddEnvelope || canAddLfo || canAddSidechainInput) ? [{
+                  label: 'Add Modulator',
+                  submenu: [
+                    ...(canAddMacro ? [{
+                      label: 'Macro',
+                      onClick: () => onAddMacroNode?.(addMenu.graphPosition),
+                    }] : []),
+                    ...(canAddEnvelope ? [{
+                      label: 'Envelope',
+                      onClick: () => onAddEnvelopeNode?.(addMenu.graphPosition),
+                    }] : []),
+                    ...(canAddLfo ? [{
+                      label: 'LFO',
+                      onClick: () => onAddLfoNode?.(addMenu.graphPosition),
+                    }] : []),
+                    ...(canAddSidechainInput ? [{
+                      label: 'Sidechain Input',
+                      disabled: hasSidechainInputNode,
+                      onClick: () => onAddSidechainInput?.(addMenu.graphPosition),
+                    }] : []),
+                  ],
+                }] : []),
+              ]}
+            />
           )}
           {mappingEditorState && canEditMappings && typeof document !== 'undefined' && (() => {
             const meEdge = graphState?.edges?.find((e) => e.id === mappingEditorState.edgeId);

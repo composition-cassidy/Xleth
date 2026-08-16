@@ -2403,6 +2403,81 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(audio.syncLinearGraphTopology).toHaveBeenCalledTimes(1)
   })
 
+  it('splices a dropped node inline on an audio cable as one undo step', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const graphState = {
+      ...graphWithTwoEffects('7'),
+      nodes: [
+        ...graphWithTwoEffects('7').nodes,
+        {
+          id: 'fx-3',
+          type: 'effect',
+          position: { x: 300, y: 400 },
+          data: {
+            effectInstanceId: 'effect-3',
+            pluginId: 'stock:reverb',
+            displayName: 'Reverb',
+            bypass: false,
+            missing: false,
+            crashed: false,
+            sourceChainSlotIndex: 2,
+          },
+        },
+      ],
+    }
+    seedGraphMode(useEffectChainStore, graphState)
+
+    let n = 0
+    const idFactory = () => `spliced-${++n}`
+    const result = await useEffectChainStore.getState().spliceGraphNodeIntoEdgeForTrack('7', {
+      edgeId: 'edge-1-2',
+      nodeId: 'fx-3',
+      position: { x: 300, y: 150 },
+    }, { idFactory })
+
+    expect(result.ok).toBe(true)
+    const spliced = useEffectChainStore.getState().graphStates['7']
+    expect(spliced.edges.find((e) => e.id === 'edge-1-2')).toBeUndefined()
+    expect(spliced.edges.find((e) => e.sourceNodeId === 'fx-1' && e.targetNodeId === 'fx-3')).toBeDefined()
+    expect(spliced.edges.find((e) => e.sourceNodeId === 'fx-3' && e.targetNodeId === 'fx-2')).toBeDefined()
+    expect(spliced.nodes.find((n2) => n2.id === 'fx-3').position).toEqual({ x: 300, y: 150 })
+    // Move + rewiring landed as exactly ONE history entry.
+    expect(useEffectChainStore.getState().graphHistories['7'].undoStack).toHaveLength(1)
+    expect(useEffectChainStore.getState().graphHistories['7'].undoStack.at(-1))
+      .toMatchObject({ label: 'splice_graph_node' })
+
+    const undo = await useEffectChainStore.getState().undoGraphEditForTrack('7')
+    expect(undo.ok).toBe(true)
+    const restored = useEffectChainStore.getState().graphStates['7']
+    // One undo restores BOTH the original cable and fx-3's original position.
+    expect(restored.edges.map((e) => e.id)).toEqual(['edge-1-2'])
+    expect(restored.nodes.find((n2) => n2.id === 'fx-3').position).toEqual({ x: 300, y: 400 })
+  })
+
+  it('falls back to a plain move when the splice would be invalid (incompatible endpoint)', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const graphState = makePositionedGraphState('7')
+    seedGraphMode(useEffectChainStore, graphState)
+
+    // 'output' (trackOutput) can source the upstream leg (input -> output),
+    // but a trackOutput node can never SOURCE the downstream leg
+    // (output -> fx-1) — the splice must reject rather than leave a
+    // half-applied rewire. The UI-level fallback (plain move via
+    // onNodePositionChange) is what a caller does with this rejection;
+    // this test asserts the store-level half of that contract: a rejected
+    // splice touches neither graphState nor graph history.
+    const result = await useEffectChainStore.getState().spliceGraphNodeIntoEdgeForTrack('7', {
+      edgeId: 'edge-1',
+      nodeId: 'output',
+      position: { x: 10, y: 10 },
+    })
+
+    expect(result.ok).toBe(false)
+    expect(result.reason).toBe('invalid_source_type')
+    expect(useEffectChainStore.getState().graphStates['7']).toBe(graphState)
+    expect(useEffectChainStore.getState().graphHistories['7']).toBeUndefined()
+  })
+
   it('clears redo after a new graph edit and keeps histories track scoped', async () => {
     const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
     const graph7 = makePositionedGraphState('7')

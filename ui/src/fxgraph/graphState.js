@@ -2134,6 +2134,95 @@ export function disconnectGraphEdge(graphState, edgeId) {
 }
 
 // ---------------------------------------------------------------------------
+// Drag-and-drop cable splice — dropping an existing node onto an audio cable
+// inserts it inline between the cable's two endpoints. This is pure
+// composition of the existing audio connect/disconnect APIs (disconnect the
+// cable, then reconnect it through the dropped node twice); it introduces no
+// new connection semantics or validation rules of its own — every accept/
+// reject decision still comes from canConnectGraphNodes.
+//
+// `canSpliceGraphNodeIntoEdge` never mutates: it disconnects/reconnects a
+// throwaway copy purely to ask "would both resulting connections be valid",
+// so the UI can preview a drop target while a node is still being dragged.
+// `spliceGraphNodeIntoEdge` performs the same sequence for real and returns
+// the final graphState as a single result, so a caller commits it in exactly
+// one undo transaction.
+// ---------------------------------------------------------------------------
+
+export function canSpliceGraphNodeIntoEdge(graphState, connectionDraft) {
+  const editCheck = validateGraphStateForEditing(graphState)
+  if (!editCheck.ok) return editCheck
+
+  if (!isPlainObject(connectionDraft)) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_CONNECTION_DRAFT }
+  }
+
+  const { edgeId, nodeId } = connectionDraft
+  if (typeof edgeId !== 'string' || edgeId.length === 0) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_EDGE }
+  }
+  if (typeof nodeId !== 'string' || nodeId.length === 0) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_NODE }
+  }
+
+  const edge = graphState.edges.find((candidate) => candidate.id === edgeId)
+  if (!edge) return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_EDGE }
+  // Splicing is an audio-cable-only gesture. Parameter/sidechain edges are
+  // out of scope (see module comment above connectGraphNodes).
+  if (edge.type !== 'audio') return { ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_CONNECTION_DRAFT }
+
+  const node = graphState.nodes.find((candidate) => candidate.id === nodeId)
+  if (!node) return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_NODE }
+
+  // Dropping a node onto a cable it already terminates is not a splice.
+  if (edge.sourceNodeId === nodeId || edge.targetNodeId === nodeId) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.SELF_CONNECTION }
+  }
+
+  const disconnected = disconnectGraphEdge(graphState, edgeId)
+  if (!disconnected.ok) return disconnected
+
+  const canConnectUpstream = canConnectGraphNodes(disconnected.graphState, edge.sourceNodeId, nodeId, { edgeType: 'audio' })
+  if (!canConnectUpstream.ok) return canConnectUpstream
+
+  // Reconnect upstream on the throwaway copy so the downstream check below
+  // sees the edge it would actually have to coexist with (matters for e.g.
+  // cycle detection, which depends on the full edge set).
+  const upstreamConnected = connectGraphNodes(disconnected.graphState, {
+    sourceNodeId: edge.sourceNodeId,
+    targetNodeId: nodeId,
+    edgeType: 'audio',
+  })
+  if (!upstreamConnected.ok) return upstreamConnected
+
+  const canConnectDownstream = canConnectGraphNodes(upstreamConnected.graphState, nodeId, edge.targetNodeId, { edgeType: 'audio' })
+  if (!canConnectDownstream.ok) return canConnectDownstream
+
+  return { ok: true, edge, disconnectedGraphState: disconnected.graphState }
+}
+
+export function spliceGraphNodeIntoEdge(graphState, connectionDraft, options = {}) {
+  const check = canSpliceGraphNodeIntoEdge(graphState, connectionDraft)
+  if (!check.ok) return check
+
+  const upstreamConnected = connectGraphNodes(check.disconnectedGraphState, {
+    sourceNodeId: check.edge.sourceNodeId,
+    targetNodeId: connectionDraft.nodeId,
+    edgeType: 'audio',
+  }, options)
+  if (!upstreamConnected.ok) return upstreamConnected
+
+  const downstreamConnected = connectGraphNodes(upstreamConnected.graphState, {
+    sourceNodeId: connectionDraft.nodeId,
+    targetNodeId: check.edge.targetNodeId,
+    edgeType: 'audio',
+  }, options)
+  if (!downstreamConnected.ok) return downstreamConnected
+
+  return { ok: true, graphState: downstreamConnected.graphState }
+}
+
+// ---------------------------------------------------------------------------
 // FXG.4-e/f — Macro -> Parameter links
 //
 // A parameter edge connects a Macro `controlOut` port to an exposed parameter

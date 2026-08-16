@@ -154,21 +154,24 @@ export interface FxGraphPanelContentProps {
   onRequestGraphMode?: () => void;
   onGraphNodePositionChange?: (nodeId: string, position: { x: number; y: number }) => void;
   onGraphViewportChange?: (viewport: GraphStateViewport) => void;
-  onAddGraphEffectNode?: () => void;
-  onAddGraphMacroNode?: () => void;
+  onAddGraphEffectNode?: (position?: { x: number; y: number }) => void;
+  onAddGraphMacroNode?: (position?: { x: number; y: number }) => void;
   // EVC.3 — envelope node add/edit (graph mode only).
-  onAddGraphEnvelopeNode?: () => void;
+  onAddGraphEnvelopeNode?: (position?: { x: number; y: number }) => void;
   onUpdateGraphEnvelope?: (nodeId: string, patch: Record<string, unknown>) => void;
   // LFO node add/edit (graph mode only). Mirrors envelope.
-  onAddGraphLfoNode?: () => void;
+  onAddGraphLfoNode?: (position?: { x: number; y: number }) => void;
   onUpdateGraphLfo?: (nodeId: string, patch: Record<string, unknown>) => void;
   // FXG-SC.6B — Sidechain Input node add + source selection + key linking (graph mode only).
-  onAddGraphSidechainInput?: () => void;
+  onAddGraphSidechainInput?: (position?: { x: number; y: number }) => void;
   onSetGraphSidechainInputSource?: (nodeId: string, sourceTrackId: number | null) => void;
   onConnectGraphSidechain?: (sidechainInputNodeId: string, targetNodeId: string) => void;
   sidechainSources?: { sourceTrackId: number; name: string }[];
   onRemoveGraphNode?: (nodeId: string) => void;
   onConnectGraphNodes?: (sourceNodeId: string, targetNodeId: string) => void;
+  // Drag-drop splice: dropping a dragged node onto an audio cable removes it
+  // and rewires the node inline between the cable's endpoints.
+  onSpliceGraphNodeIntoEdge?: (nodeId: string, edgeId: string, position: { x: number; y: number }) => void;
   onConnectGraphMacroToParameter?: (macroNodeId: string, targetNodeId: string, parameterId: string) => void;
   onConnectGraphEnvelopeToParameter?: (envelopeNodeId: string, targetNodeId: string, parameterId: string) => void;
   // Link an LFO controlOut to an exposed effect parameter. Mirrors envelope.
@@ -259,6 +262,7 @@ export function FxGraphPanelContent({
   sidechainSources = [],
   onRemoveGraphNode,
   onConnectGraphNodes,
+  onSpliceGraphNodeIntoEdge,
   onConnectGraphMacroToParameter,
   onConnectGraphEnvelopeToParameter,
   onConnectGraphLfoToParameter,
@@ -396,6 +400,7 @@ export function FxGraphPanelContent({
               sidechainSources={graphModeActive ? sidechainSources : undefined}
               onRemoveNode={graphModeActive ? onRemoveGraphNode : undefined}
               onConnectNodes={graphModeActive ? onConnectGraphNodes : undefined}
+              onSpliceNodeIntoEdge={graphModeActive ? onSpliceGraphNodeIntoEdge : undefined}
               onConnectMacroToParameter={graphModeActive ? onConnectGraphMacroToParameter : undefined}
               onConnectEnvelopeToParameter={graphModeActive ? onConnectGraphEnvelopeToParameter : undefined}
               onConnectLfoToParameter={graphModeActive ? onConnectGraphLfoToParameter : undefined}
@@ -586,6 +591,7 @@ export default function FxGraphPanel() {
   const disconnectSidechainEdgeForTrack = useEffectChainStore((state) => state.disconnectSidechainEdgeForTrack);
   const removeGraphNodeForTrack = useEffectChainStore((state) => state.removeGraphNodeForTrack);
   const connectGraphNodesForTrack = useEffectChainStore((state) => state.connectGraphNodesForTrack);
+  const spliceGraphNodeIntoEdgeForTrack = useEffectChainStore((state) => state.spliceGraphNodeIntoEdgeForTrack);
   const connectMacroToParameterForTrack = useEffectChainStore((state) => state.connectMacroToParameterForTrack);
   const connectEnvelopeToParameterForTrack = useEffectChainStore((state) => state.connectEnvelopeToParameterForTrack);
   const connectLfoToParameterForTrack = useEffectChainStore((state) => state.connectLfoToParameterForTrack);
@@ -665,18 +671,26 @@ export default function FxGraphPanel() {
   // FXG.3-e — the Add Effect Node button no longer drops a placeholder. It opens
   // the picker, which lists the same stock + scanned-VST catalog the Mixer Chain
   // exposes. Selecting an effect creates a real graph-owned effect node.
-  const handleOpenAddEffectPicker = useCallback(() => {
+  // The canvas "Add Plugin" context-menu item calls this same handler with the
+  // right-click's graph position; the picker resolves asynchronously, so the
+  // position is stashed in a ref and consumed once the user picks a plugin.
+  const pendingEffectPositionRef = useRef<{ x: number; y: number } | null>(null);
+  const handleOpenAddEffectPicker = useCallback((position?: { x: number; y: number }) => {
     if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    pendingEffectPositionRef.current = position ?? null;
     setGraphActionNotice(null);
     setPickerOpen(true);
   }, [fxMode, selectedTrack?.id]);
 
   const handleCancelAddEffectPicker = useCallback(() => {
+    pendingEffectPositionRef.current = null;
     setPickerOpen(false);
   }, []);
 
   const handleSelectGraphEffect = useCallback(async (selection: FxEffectPickerSelection) => {
     setPickerOpen(false);
+    const position = pendingEffectPositionRef.current;
+    pendingEffectPositionRef.current = null;
     if (selectedTrack?.id == null || fxMode !== 'graph') return;
     // Real pluginId + displayName → graph-owned node + graph-owned engine
     // processor + session effectInstanceId→engineNodeId mapping. The store
@@ -685,21 +699,22 @@ export default function FxGraphPanel() {
     const result = await addGraphEffectNodeForTrack(selectedTrack.id, {
       pluginId: selection.pluginId,
       displayName: selection.displayName,
+      ...(position ? { position } : {}),
     });
     setGraphActionNotice(describeGraphMutationResult(result));
   }, [addGraphEffectNodeForTrack, fxMode, selectedTrack?.id]);
 
-  const handleAddGraphMacroNode = useCallback(async () => {
+  const handleAddGraphMacroNode = useCallback(async (position?: { x: number; y: number }) => {
     if (selectedTrack?.id == null || fxMode !== 'graph') return;
-    const result = await addGraphMacroNodeForTrack(selectedTrack.id);
+    const result = await addGraphMacroNodeForTrack(selectedTrack.id, position ? { position } : {});
     setGraphActionNotice(describeGraphMutationResult(result));
   }, [addGraphMacroNodeForTrack, fxMode, selectedTrack?.id]);
 
   // EVC.3 — add an inert per-voice Envelope node. Graph-mode gated; the EVC.2 store
   // action persists graphState, records undo, and performs NO audio runtime sync.
-  const handleAddGraphEnvelopeNode = useCallback(async () => {
+  const handleAddGraphEnvelopeNode = useCallback(async (position?: { x: number; y: number }) => {
     if (selectedTrack?.id == null || fxMode !== 'graph') return;
-    const result = await addGraphEnvelopeNodeForTrack(selectedTrack.id);
+    const result = await addGraphEnvelopeNodeForTrack(selectedTrack.id, position ? { position } : {});
     setGraphActionNotice(describeGraphMutationResult(result));
   }, [addGraphEnvelopeNodeForTrack, fxMode, selectedTrack?.id]);
 
@@ -717,9 +732,9 @@ export default function FxGraphPanel() {
   // Add an inert LFO Modulator node. Graph-mode gated; the store action persists
   // graphState, records undo, and performs NO audio runtime sync. Mirrors the
   // Envelope add handler above.
-  const handleAddGraphLfoNode = useCallback(async () => {
+  const handleAddGraphLfoNode = useCallback(async (position?: { x: number; y: number }) => {
     if (selectedTrack?.id == null || fxMode !== 'graph') return;
-    const result = await addGraphLfoNodeForTrack(selectedTrack.id);
+    const result = await addGraphLfoNodeForTrack(selectedTrack.id, position ? { position } : {});
     setGraphActionNotice(describeGraphMutationResult(result));
   }, [addGraphLfoNodeForTrack, fxMode, selectedTrack?.id]);
 
@@ -738,10 +753,11 @@ export default function FxGraphPanel() {
   // action persists graphState, records undo, and performs NO audio runtime sync, NO
   // native route, and NO sc_external write. Pre-fills the source with the first
   // eligible track so a fresh node is immediately usable when one exists.
-  const handleAddGraphSidechainInput = useCallback(async () => {
+  const handleAddGraphSidechainInput = useCallback(async (position?: { x: number; y: number }) => {
     if (selectedTrack?.id == null || fxMode !== 'graph') return;
     const result = await addSidechainInputNodeForTrack(selectedTrack.id, {
       sourceTrackId: sidechainSources[0]?.sourceTrackId ?? null,
+      ...(position ? { position } : {}),
     });
     setGraphActionNotice(describeGraphMutationResult(result));
   }, [addSidechainInputNodeForTrack, fxMode, selectedTrack?.id, sidechainSources]);
@@ -828,6 +844,16 @@ export default function FxGraphPanel() {
     const result = await connectGraphNodesForTrack(selectedTrack.id, { sourceNodeId, targetNodeId });
     setGraphActionNotice(describeGraphMutationResult(result));
   }, [connectGraphNodesForTrack, fxMode, selectedTrack?.id]);
+
+  const handleSpliceGraphNodeIntoEdge = useCallback(async (
+    nodeId: string,
+    edgeId: string,
+    position: { x: number; y: number },
+  ) => {
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    const result = await spliceGraphNodeIntoEdgeForTrack(selectedTrack.id, { nodeId, edgeId, position });
+    setGraphActionNotice(describeGraphMutationResult(result));
+  }, [fxMode, selectedTrack?.id, spliceGraphNodeIntoEdgeForTrack]);
 
   const handleConnectGraphMacroToParameter = useCallback(async (
     macroNodeId: string,
@@ -1033,6 +1059,7 @@ export default function FxGraphPanel() {
         sidechainSources={sidechainSources}
         onRemoveGraphNode={handleRemoveGraphNode}
         onConnectGraphNodes={handleConnectGraphNodes}
+        onSpliceGraphNodeIntoEdge={handleSpliceGraphNodeIntoEdge}
         onConnectGraphMacroToParameter={handleConnectGraphMacroToParameter}
         onConnectGraphEnvelopeToParameter={handleConnectGraphEnvelopeToParameter}
         onConnectGraphLfoToParameter={handleConnectGraphLfoToParameter}

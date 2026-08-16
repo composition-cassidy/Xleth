@@ -42,6 +42,8 @@ import {
   collectMacroParameterWrites,
   collectEnvelopeParameterWrites,
   connectGraphNodes,
+  canSpliceGraphNodeIntoEdge,
+  spliceGraphNodeIntoEdge,
   connectMacroToParameter,
   connectEnvelopeToParameter,
   createDefaultBezierCurve,
@@ -301,6 +303,35 @@ describe('graphState schema validation', () => {
       ['input', { x: 12.5, y: 4 }],
       ['fx-1', { x: 314.25, y: 99.5 }],
       ['output', { x: 640, y: 8 }],
+    ])
+  })
+
+  it('FXG.5 — preserves negative node positions across validate and save/load round-trip', () => {
+    const raw = makeValidGraphState({
+      nodes: [
+        { id: 'input', type: 'trackInput', position: { x: -320, y: -180 } },
+        { ...makeEffectNode(), position: { x: -60, y: -18.5 } },
+        { id: 'output', type: 'trackOutput', position: { x: 200, y: 0 } },
+      ],
+    })
+
+    const validated = validateGraphState(raw, '7')
+    expect(validated.status).toBe('valid')
+    expect(validated.graphState.nodes.map((node) => [node.id, node.position])).toEqual([
+      ['input', { x: -320, y: -180 }],
+      ['fx-1', { x: -60, y: -18.5 }],
+      ['output', { x: 200, y: 0 }],
+    ])
+
+    const loaded = loadGraphState(raw, '7')
+    expect(loaded.status).toBe('valid')
+    const saved = saveGraphState(loaded.graphState)
+    const reloaded = loadGraphState(saved, '7')
+    expect(reloaded.status).toBe('valid')
+    expect(reloaded.graphState.nodes.map((node) => [node.id, node.position])).toEqual([
+      ['input', { x: -320, y: -180 }],
+      ['fx-1', { x: -60, y: -18.5 }],
+      ['output', { x: 200, y: 0 }],
     ])
   })
 
@@ -1559,6 +1590,140 @@ describe('graph mutation architecture guards', () => {
       disconnectGraphEdge(gs, 'e-1')
 
       expect(gs.edges).toHaveLength(originalEdgeCount)
+    })
+  })
+
+  describe('canSpliceGraphNodeIntoEdge / spliceGraphNodeIntoEdge', () => {
+    function makeSpliceGraphState(overrides = {}) {
+      return makeGuardGraphState({
+        nodes: [
+          { id: 'in', type: 'trackInput', position: { x: 0, y: 0 }, data: {} },
+          {
+            id: 'fx-a',
+            type: 'effect',
+            position: { x: 260, y: 0 },
+            data: {
+              effectInstanceId: 'inst-a',
+              pluginId: 'stock:eq',
+              displayName: 'EQ',
+              bypass: false,
+              missing: false,
+              crashed: false,
+              sourceChainSlotIndex: 0,
+            },
+          },
+          {
+            id: 'fx-b',
+            type: 'effect',
+            position: { x: 400, y: 120 },
+            data: {
+              effectInstanceId: 'inst-b',
+              pluginId: 'stock:reverb',
+              displayName: 'Reverb',
+              bypass: false,
+              missing: false,
+              crashed: false,
+              sourceChainSlotIndex: 1,
+            },
+          },
+          { id: 'out', type: 'trackOutput', position: { x: 520, y: 0 }, data: {} },
+        ],
+        ...overrides,
+      })
+    }
+
+    it('rejects a missing edgeId/nodeId', () => {
+      const gs = makeSpliceGraphState()
+      expect(canSpliceGraphNodeIntoEdge(gs, { edgeId: 'no-such-edge', nodeId: 'fx-b' })).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.MISSING_EDGE,
+      })
+      expect(canSpliceGraphNodeIntoEdge(gs, { edgeId: 'e-2', nodeId: 'no-such-node' })).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.MISSING_NODE,
+      })
+    })
+
+    it('rejects non-audio edges (parameter/sidechain out of scope)', () => {
+      const gs = makeSpliceGraphState({
+        edges: [
+          ...makeGuardGraphState().edges,
+          { id: 'p-1', sourceNodeId: 'fx-a', sourcePort: 'controlOut', targetNodeId: 'fx-b', targetPort: 'p:foo', type: 'parameter' },
+        ],
+      })
+      expect(canSpliceGraphNodeIntoEdge(gs, { edgeId: 'p-1', nodeId: 'fx-b' })).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.INVALID_CONNECTION_DRAFT,
+      })
+    })
+
+    it('rejects dropping a node onto a cable it already terminates', () => {
+      const gs = makeSpliceGraphState()
+      expect(canSpliceGraphNodeIntoEdge(gs, { edgeId: 'e-2', nodeId: 'fx-a' })).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.SELF_CONNECTION,
+      })
+      expect(canSpliceGraphNodeIntoEdge(gs, { edgeId: 'e-2', nodeId: 'out' })).toMatchObject({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.SELF_CONNECTION,
+      })
+    })
+
+    it('rejects a splice that would be invalid on either side of the reconnect', () => {
+      // 'out' (trackOutput) can source in->out fine, but can never source the
+      // downstream out->fx-a leg — trackOutput is never a valid audio source.
+      const gs = makeSpliceGraphState()
+      const result = canSpliceGraphNodeIntoEdge(gs, { edgeId: 'e-1', nodeId: 'out' })
+      expect(result).toMatchObject({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.INVALID_SOURCE_TYPE,
+      })
+    })
+
+    it('splices a node inline, removing the original edge and adding two new ones', () => {
+      const gs = makeSpliceGraphState()
+      const result = spliceGraphNodeIntoEdge(gs, { edgeId: 'e-2', nodeId: 'fx-b' })
+
+      expect(result.ok).toBe(true)
+      const edges = result.graphState.edges
+      expect(edges.find((e) => e.id === 'e-2')).toBeUndefined()
+      // e-1 (in -> fx-a) is untouched.
+      expect(edges.find((e) => e.id === 'e-1')).toMatchObject({ sourceNodeId: 'in', targetNodeId: 'fx-a' })
+      const upstream = edges.find((e) => e.sourceNodeId === 'fx-a' && e.targetNodeId === 'fx-b')
+      const downstream = edges.find((e) => e.sourceNodeId === 'fx-b' && e.targetNodeId === 'out')
+      expect(upstream).toBeDefined()
+      expect(downstream).toBeDefined()
+      expect(upstream.type).toBe('audio')
+      expect(downstream.type).toBe('audio')
+      expect(edges).toHaveLength(3)
+    })
+
+    it('assigns distinct ids to the two new edges via idFactory', () => {
+      const gs = makeSpliceGraphState()
+      let n = 0
+      const idFactory = () => `spliced-${++n}`
+      const result = spliceGraphNodeIntoEdge(gs, { edgeId: 'e-2', nodeId: 'fx-b' }, { idFactory })
+
+      expect(result.ok).toBe(true)
+      const newEdgeIds = result.graphState.edges.filter((e) => e.id.startsWith('spliced-')).map((e) => e.id)
+      expect(newEdgeIds.sort()).toEqual(['spliced-1', 'spliced-2'])
+    })
+
+    it('does not mutate the input graphState', () => {
+      const gs = makeSpliceGraphState()
+      const originalEdges = gs.edges
+      spliceGraphNodeIntoEdge(gs, { edgeId: 'e-2', nodeId: 'fx-b' })
+
+      expect(gs.edges).toBe(originalEdges)
+      expect(gs.edges).toHaveLength(2)
+    })
+
+    it('propagates an underlying rejection from spliceGraphNodeIntoEdge without partially mutating', () => {
+      const gs = makeSpliceGraphState()
+      const result = spliceGraphNodeIntoEdge(gs, { edgeId: 'e-1', nodeId: 'out' })
+
+      expect(result).toMatchObject({ ok: false, reason: GRAPH_MUTATION_REJECTION.INVALID_SOURCE_TYPE })
+      expect(result.graphState).toBeUndefined()
     })
   })
 })

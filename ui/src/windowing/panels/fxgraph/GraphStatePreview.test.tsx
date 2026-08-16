@@ -2,13 +2,19 @@ import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it, vi } from 'vitest';
 import GraphStatePreview, {
+  CONNECT_SNAP_RADIUS_PX,
   GraphParameterContextMenu,
   GraphStatePreviewNode,
   ParameterEdgeMappingEditor,
   buildGraphStatePreviewModel,
+  computeNodeDragPosition,
   connectHighlightedParameterDropTarget,
   connectHighlightedSidechainDropTarget,
+  distanceToAudioCableCurve,
   filterExposeParameterDescriptors,
+  findAudioCableAtPoint,
+  findNearestPortWithinRadius,
+  resolveAudioDropTargetFromElement,
   resolveParameterDropTargetFromElement,
   resolveSidechainDropTargetFromElement,
   type GraphStateDocument,
@@ -17,6 +23,7 @@ import GraphStatePreview, {
 } from './GraphStatePreview';
 import { buildExposeParameterMenuGroups } from './graphParameterUtils';
 import { createDefaultBezierCurve, GRAPH_PARAMETER_CURVE_BEZIER, GRAPH_PARAMETER_CURVE_LINEAR, normalizeEnvelopeNodeData } from '../../../fxgraph/graphState.js';
+import { fitGraphViewport } from '../../../fxgraph/graphViewport.js';
 import {
   EnvelopeAdvancedControls,
   EnvelopeAhdsrGraph,
@@ -337,7 +344,9 @@ describe('GraphStatePreview', () => {
     expect(html).toContain('data-control-output="true"');
     expect(html).toContain('data-control-port-id="macro:macro-a:controlOut"');
     expect(html).toContain('data-control-port-type="macro-output"');
-    expect(html).toContain('aria-label="Remove Energy"');
+    // Edit/Remove now live in the right-click context menu, not always-visible
+    // node-body buttons.
+    expect(html).not.toContain('aria-label="Remove Energy"');
     expect(html).not.toContain('Edit Energy');
     expect(html).not.toContain('Energy parameter inputs');
     expect(html).not.toContain('data-connect-source="true"');
@@ -554,78 +563,22 @@ describe('GraphStatePreview', () => {
     expect(dormantHtml).not.toContain('Redo graph edit');
   });
 
-  // --- FXG.3-b Edit button ---
+  // --- FXG.3-b / node-menu-c1 Edit is a context-menu item, not a node-body button ---
 
-  it('renders an enabled Edit button on real effect nodes when onEditNode is provided', () => {
-    const html = renderToStaticMarkup(
+  it('never renders a node-body Edit button, regardless of onEditNode or node state', () => {
+    const withEditor = renderToStaticMarkup(
       <GraphStatePreview
         graphState={graphState([
           inputNode(),
           effectNode('limiter', 'Limiter', 0, { x: 260, y: 0 }),
+          effectNode('ph', 'Effect Node', 1, { x: 260, y: 160 }, { pluginId: 'placeholder' }),
+          effectNode('rv', 'Reverb', 2, { x: 260, y: 320 }, { missing: true }),
           outputNode({ x: 520, y: 0 }),
         ], [])}
         onEditNode={vi.fn()}
       />,
     );
-
-    expect(html).toContain('xleth-graph-state-preview__node-edit');
-    expect(html).toContain('aria-label="Edit Limiter"');
-    expect(html).toContain('data-active="true"');
-    // The only buttons present are Edit buttons; a real effect node's is enabled.
-    expect(html).not.toContain('disabled');
-  });
-
-  it('does not render an Edit button on Track Input or Track Output', () => {
-    const html = renderToStaticMarkup(
-      <GraphStatePreview
-        graphState={graphState([
-          inputNode(),
-          effectNode('limiter', 'Limiter', 0, { x: 260, y: 0 }),
-          outputNode({ x: 520, y: 0 }),
-        ], [])}
-        onEditNode={vi.fn()}
-      />,
-    );
-
-    expect(html).not.toContain('Edit Track Input');
-    expect(html).not.toContain('Edit Track Output');
-  });
-
-  it('disables the Edit button for placeholder/data-only effect nodes', () => {
-    const html = renderToStaticMarkup(
-      <GraphStatePreview
-        graphState={graphState([
-          inputNode(),
-          effectNode('ph', 'Effect Node', 0, { x: 260, y: 0 }, { pluginId: 'placeholder' }),
-          outputNode({ x: 520, y: 0 }),
-        ], [])}
-        onEditNode={vi.fn()}
-      />,
-    );
-
-    expect(html).toContain('xleth-graph-state-preview__node-edit');
-    expect(html).toContain('disabled');
-    expect(html).toContain('is not active yet');
-  });
-
-  it('disables the Edit button for missing effect nodes', () => {
-    const html = renderToStaticMarkup(
-      <GraphStatePreview
-        graphState={graphState([
-          inputNode(),
-          effectNode('rv', 'Reverb', 0, { x: 260, y: 0 }, { missing: true }),
-          outputNode({ x: 520, y: 0 }),
-        ], [])}
-        onEditNode={vi.fn()}
-      />,
-    );
-
-    expect(html).toContain('xleth-graph-state-preview__node-edit');
-    expect(html).toContain('disabled');
-  });
-
-  it('renders no Edit button in read-only mode (onEditNode omitted)', () => {
-    const html = renderToStaticMarkup(
+    const readOnly = renderToStaticMarkup(
       <GraphStatePreview
         graphState={graphState([
           inputNode(),
@@ -635,7 +588,37 @@ describe('GraphStatePreview', () => {
       />,
     );
 
-    expect(html).not.toContain('xleth-graph-state-preview__node-edit');
+    expect(withEditor).not.toContain('xleth-graph-state-preview__node-edit');
+    expect(withEditor).not.toContain('aria-label="Edit Limiter"');
+    expect(readOnly).not.toContain('xleth-graph-state-preview__node-edit');
+  });
+
+  // Edit's enabled/disabled state now lives in GraphParameterContextMenu, wired
+  // to the node's right-click (handleNodeContextMenu / handleContextEdit).
+  it('enables the context-menu Edit item on real effect nodes, disables it for placeholder/missing effect nodes', () => {
+    const [realNode, placeholderNode, missingNode] = buildGraphStatePreviewModel(graphState([
+      inputNode(),
+      effectNode('limiter', 'Limiter', 0, { x: 260, y: 0 }),
+      effectNode('ph', 'Effect Node', 1, { x: 260, y: 160 }, { pluginId: 'placeholder' }),
+      effectNode('rv', 'Reverb', 2, { x: 260, y: 320 }, { missing: true }),
+      outputNode({ x: 520, y: 0 }),
+    ], [])).nodes.filter((node) => node.type === 'effect');
+
+    const realHtml = renderToStaticMarkup(
+      <GraphParameterContextMenu node={realNode} x={0} y={0} canEdit canRemove />,
+    );
+    const placeholderHtml = renderToStaticMarkup(
+      <GraphParameterContextMenu node={placeholderNode} x={0} y={0} canEdit canRemove />,
+    );
+    const missingHtml = renderToStaticMarkup(
+      <GraphParameterContextMenu node={missingNode} x={0} y={0} canEdit canRemove />,
+    );
+
+    expect(realHtml).toContain('role="menuitem"');
+    expect(realHtml).toContain('>Edit<');
+    expect(realHtml).not.toMatch(/disabled[^>]*>\s*Edit/);
+    expect(placeholderHtml).toMatch(/disabled[^>]*>\s*Edit/);
+    expect(missingHtml).toMatch(/disabled[^>]*>\s*Edit/);
   });
 
   // --- FXG.4-b parameter port exposure menu ---
@@ -989,7 +972,7 @@ describe('GraphStatePreview', () => {
 
   // --- FXG.3-l workspace polish guards ---
 
-  it('never renders a Remove control on protected Track Input or Track Output nodes', () => {
+  it('never renders a node-body Remove button on any node, including protected Track Input/Output', () => {
     const html = renderToStaticMarkup(
       <GraphStatePreview
         graphState={graphState([
@@ -1002,11 +985,32 @@ describe('GraphStatePreview', () => {
       />,
     );
 
-    // The effect node is removable...
-    expect(html).toContain('aria-label="Remove Limiter"');
-    // ...but the protected routing endpoints never expose a remove affordance.
+    // Remove now lives in the right-click context menu, never as a node-body button.
+    expect(html).not.toContain('aria-label="Remove Limiter"');
     expect(html).not.toContain('aria-label="Remove Track Input"');
     expect(html).not.toContain('aria-label="Remove Track Output"');
+  });
+
+  it('opens the context menu for effect/macro/envelope/lfo nodes but never for Track Input/Output or Sidechain Input', () => {
+    const model = buildGraphStatePreviewModel(graphState([
+      inputNode(),
+      effectNode('limiter', 'Limiter', 0, { x: 260, y: 0 }),
+      macroNode('macro-a', 'Macro 1', 0.5, { x: 260, y: 120 }),
+      outputNode({ x: 520, y: 0 }),
+    ], []));
+    const onNodeContextMenu = vi.fn();
+    const event = { preventDefault: vi.fn(), stopPropagation: vi.fn() } as unknown as React.MouseEvent<HTMLDivElement>;
+
+    for (const id of ['limiter', 'macro-a']) {
+      const node = model.nodes.find((candidate) => candidate.id === id)!;
+      const element = GraphStatePreviewNode({ node, dragging: false, connectEnabled: false, connectActive: false, onNodeContextMenu });
+      expect(element.props.onContextMenu).toBeDefined();
+    }
+    for (const id of ['input', 'output']) {
+      const node = model.nodes.find((candidate) => candidate.id === id)!;
+      const element = GraphStatePreviewNode({ node, dragging: false, connectEnabled: false, connectActive: false, onNodeContextMenu });
+      expect(element.props.onContextMenu).toBeUndefined();
+    }
   });
 
   it('keeps an accessible edge-delete button in the DOM when disconnect is enabled', () => {
@@ -1291,6 +1295,73 @@ describe('GraphStatePreview', () => {
 
     expect(connectHighlightedParameterDropTarget('macro-a', target, onConnect)).toBe(true);
     expect(onConnect).toHaveBeenCalledWith('macro-a', 'eq', 'b2_q');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Node right-click context menu (replaces the old node-body Edit/Remove
+// buttons) + double-click-to-edit.
+// ---------------------------------------------------------------------------
+
+describe('GraphStatePreview node context menu', () => {
+  it('renders a plain Remove-only menu for envelope and lfo nodes (no Edit, no Expose Parameter)', () => {
+    const envNode = buildGraphStatePreviewModel(envelopeGraph())
+      .nodes.find((candidate) => candidate.id === 'env-a')!;
+    const lfoNode = buildGraphStatePreviewModel(lfoGraph())
+      .nodes.find((candidate) => candidate.id === 'lfo-a')!;
+
+    const envHtml = renderToStaticMarkup(
+      <GraphParameterContextMenu node={envNode} x={0} y={0} canEdit canRemove onRemove={vi.fn()} />,
+    );
+    const lfoHtml = renderToStaticMarkup(
+      <GraphParameterContextMenu node={lfoNode} x={0} y={0} canEdit canRemove onRemove={vi.fn()} />,
+    );
+
+    for (const html of [envHtml, lfoHtml]) {
+      expect(html).toContain('>Remove<');
+      expect(html).not.toContain('>Edit<');
+      expect(html).not.toContain('Expose Parameter');
+    }
+  });
+
+  it('double-click wires to onEdit for an editable effect node, and stays wired off for others', () => {
+    const model = buildGraphStatePreviewModel(graphState([
+      inputNode(),
+      effectNode('limiter', 'Limiter', 0, { x: 260, y: 0 }),
+      effectNode('ph', 'Placeholder', 1, { x: 260, y: 160 }, { pluginId: 'placeholder' }),
+      macroNode('macro-a', 'Macro 1', 0.5, { x: 260, y: 320 }),
+      outputNode({ x: 520, y: 0 }),
+    ], []));
+    const onEdit = vi.fn();
+
+    const editableEffect = GraphStatePreviewNode({
+      node: model.nodes.find((n) => n.id === 'limiter')!,
+      dragging: false,
+      connectEnabled: false,
+      connectActive: false,
+      onEdit,
+    });
+    expect(editableEffect.props.onDoubleClick).toBeDefined();
+    editableEffect.props.onDoubleClick({ stopPropagation: vi.fn() });
+    expect(onEdit).toHaveBeenCalledWith('limiter');
+
+    const placeholderEffect = GraphStatePreviewNode({
+      node: model.nodes.find((n) => n.id === 'ph')!,
+      dragging: false,
+      connectEnabled: false,
+      connectActive: false,
+      onEdit,
+    });
+    expect(placeholderEffect.props.onDoubleClick).toBeUndefined();
+
+    const macro = GraphStatePreviewNode({
+      node: model.nodes.find((n) => n.id === 'macro-a')!,
+      dragging: false,
+      connectEnabled: false,
+      connectActive: false,
+      onEdit,
+    });
+    expect(macro.props.onDoubleClick).toBeUndefined();
   });
 });
 
@@ -1761,14 +1832,27 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
     expect(onConnectPointerDown).toHaveBeenCalledWith({ button: 0 }, envNode);
   });
 
-  it('stays draggable and removable like other editable nodes', () => {
+  it('stays draggable like other editable nodes, with Remove reachable via the context menu', () => {
+    const onNodeContextMenu = vi.fn();
     const html = renderEnvelopeNodeMarkup({
       onEnvelopeUpdate: vi.fn(),
-      onRemove: vi.fn(),
+      onNodeContextMenu,
       onPointerDown: vi.fn(),
     });
-    expect(html).toContain('aria-label="Remove Envelope"');
+    // No node-body Remove button — the context menu carries it instead.
+    expect(html).not.toContain('aria-label="Remove Envelope"');
     expect(html).toContain('xleth-graph-state-preview__node--draggable');
+
+    const node = buildGraphStatePreviewModel(envelopeGraph())
+      .nodes.find((candidate) => candidate.id === 'env-a')!;
+    const element = GraphStatePreviewNode({
+      node,
+      dragging: false,
+      connectEnabled: true,
+      connectActive: false,
+      onNodeContextMenu,
+    });
+    expect(element.props.onContextMenu).toBeDefined();
   });
 
   it('defaults to compact layout and keeps the long editor collapsed', () => {
@@ -2270,17 +2354,29 @@ describe('GraphStatePreview lfo nodes', () => {
     expect(onConnectPointerDown).toHaveBeenCalledWith({ button: 0 }, lfoNodeModel);
   });
 
-  // Regression lock for the showRemove fix (GraphStatePreview.tsx's showRemove
-  // condition must include node.type === 'lfo' — without it, an LFO node can
-  // never be deleted).
-  it('stays draggable and removable like other editable nodes (showRemove regression lock)', () => {
+  // Regression lock: an LFO node must stay reachable for deletion — now via the
+  // right-click context menu (canOpenContextMenu must include node.type === 'lfo')
+  // rather than a node-body Remove button.
+  it('stays draggable, with Remove reachable via the context menu (regression lock)', () => {
+    const onNodeContextMenu = vi.fn();
     const html = renderLfoNodeMarkup({
       onLfoUpdate: vi.fn(),
-      onRemove: vi.fn(),
+      onNodeContextMenu,
       onPointerDown: vi.fn(),
     });
-    expect(html).toContain('aria-label="Remove LFO"');
+    expect(html).not.toContain('aria-label="Remove LFO"');
     expect(html).toContain('xleth-graph-state-preview__node--draggable');
+
+    const node = buildGraphStatePreviewModel(lfoGraph())
+      .nodes.find((candidate) => candidate.id === 'lfo-a')!;
+    const element = GraphStatePreviewNode({
+      node,
+      dragging: false,
+      connectEnabled: true,
+      connectActive: false,
+      onNodeContextMenu,
+    });
+    expect(element.props.onContextMenu).toBeDefined();
   });
 
   it('never renders a stray audio input handle on an lfo node', () => {
@@ -2691,13 +2787,90 @@ describe('FXG-VP.1 viewport zoom and pan', () => {
 
   // ── Node drag delta under zoom ─────────────────────────────────────────────
 
-  it('node drag delta formula: screenDelta / zoom gives graph-space delta', () => {
+  it('computeNodeDragPosition converts screen-space delta to graph-space via zoom', () => {
+    const drag = { startGraphX: 100, startGraphY: 50, startClientX: 400, startClientY: 300 };
     // At zoom 0.5: 100px screen → 200 graph units
-    expect(100 / 0.5).toBe(200);
+    expect(computeNodeDragPosition(drag, 500, 300, 0.5)).toEqual({ x: 300, y: 50 });
     // At zoom 2.0: 100px screen → 50 graph units
-    expect(100 / 2.0).toBe(50);
+    expect(computeNodeDragPosition(drag, 500, 300, 2.0)).toEqual({ x: 150, y: 50 });
     // At zoom 1.0: 1:1
-    expect(150 / 1.0).toBe(150);
+    expect(computeNodeDragPosition(drag, 550, 350, 1.0)).toEqual({ x: 250, y: 100 });
+  });
+
+  // ── Splice-drop cable hit-testing ──────────────────────────────────────────
+
+  describe('splice-drop cable hit-testing', () => {
+    // input -> a -> output, all at graph y=0, so both cables are flat
+    // horizontal lines in preview space (easy to reason about distances).
+    function twoCableGraph(): GraphStateDocument {
+      return graphState(
+        [inputNode(), effectNode('a', 'A', 0, { x: 260, y: 0 }), outputNode({ x: 520, y: 0 })],
+        [audioEdge('e1', 'input', 'a'), audioEdge('e2', 'a', 'output')],
+      );
+    }
+
+    it('distanceToAudioCableCurve is ~0 on the cable and grows off it', () => {
+      const distanceOnLine = distanceToAudioCableCurve({ x: 228, y: 61 }, 172, 61, 284, 61);
+      expect(distanceOnLine).toBeCloseTo(0, 5);
+
+      const distanceOff = distanceToAudioCableCurve({ x: 228, y: 91 }, 172, 61, 284, 61);
+      expect(distanceOff).toBeCloseTo(30, 5);
+
+      const distanceFar = distanceToAudioCableCurve({ x: 5000, y: 5000 }, 172, 61, 284, 61);
+      expect(distanceFar).toBeGreaterThan(1000);
+    });
+
+    it('finds the nearest audio cable under a point within the hit radius', () => {
+      const model = buildGraphStatePreviewModel(twoCableGraph());
+
+      const onE1 = findAudioCableAtPoint(model.edges, { x: 228, y: 61 });
+      expect(onE1?.id).toBe('e1');
+
+      const onE2 = findAudioCableAtPoint(model.edges, { x: 488, y: 61 });
+      expect(onE2?.id).toBe('e2');
+
+      const onNeither = findAudioCableAtPoint(model.edges, { x: 5000, y: 5000 });
+      expect(onNeither).toBeNull();
+    });
+
+    it('respects maxDistance and does not hit-test beyond it', () => {
+      const model = buildGraphStatePreviewModel(twoCableGraph());
+      // 40px off the cable: found at a generous radius, missed at a tight one.
+      const nearMiss = { x: 228, y: 101 };
+      expect(findAudioCableAtPoint(model.edges, nearMiss, { maxDistance: 50 })?.id).toBe('e1');
+      expect(findAudioCableAtPoint(model.edges, nearMiss, { maxDistance: 5 })).toBeNull();
+    });
+
+    it('excludes cables already connected to the dragged node (self-splice guard)', () => {
+      const model = buildGraphStatePreviewModel(twoCableGraph());
+      // Both e1 and e2 terminate at 'a' — dragging 'a' itself must never
+      // resolve a splice target on either of its own cables.
+      expect(findAudioCableAtPoint(model.edges, { x: 228, y: 61 }, { excludeNodeId: 'a' })).toBeNull();
+      expect(findAudioCableAtPoint(model.edges, { x: 488, y: 61 }, { excludeNodeId: 'a' })).toBeNull();
+      // A third node dragged over either cable is unaffected.
+      expect(findAudioCableAtPoint(model.edges, { x: 228, y: 61 }, { excludeNodeId: 'other' })?.id).toBe('e1');
+    });
+
+    it('ignores non-audio edges', () => {
+      const gs: GraphStateDocument = {
+        schemaVersion: 1,
+        trackId: '7',
+        nodes: [
+          inputNode(),
+          effectNode('a', 'A', 0, { x: 260, y: 0 }, { exposedParameterPorts: [{
+            parameterId: 'mix', parameterIndexFallback: 0, nameSnapshot: 'Mix', labelSnapshot: null,
+            parameterIdIsFallback: false, automatable: true, readOnly: false,
+          }] }),
+          { id: 'macro-a', type: 'macro', position: { x: 260, y: 150 }, data: { label: 'Macro 1', normalizedValue: 0.5 } },
+        ],
+        edges: [{
+          id: 'p-1', sourceNodeId: 'macro-a', sourcePort: 'controlOut', targetNodeId: 'a', targetPort: 'param:mix', type: 'parameter',
+        }],
+      };
+      const model = buildGraphStatePreviewModel(gs);
+      const parameterEdge = model.edges.find((e) => e.id === 'p-1')!;
+      expect(findAudioCableAtPoint(model.edges, { x: parameterEdge.midX, y: parameterEdge.midY })).toBeNull();
+    });
   });
 
   // ── Zoom controls alongside existing toolbar buttons ──────────────────────
@@ -2732,6 +2905,114 @@ describe('FXG-VP.1 viewport zoom and pan', () => {
     );
     expect(html).toContain('Fit View');
     expect(html).toContain('Reset View');
+  });
+});
+
+describe('FXG.5 unbounded free node placement', () => {
+  // ── No clamp, no snap on the drag path ─────────────────────────────────────
+
+  it('computeNodeDragPosition allows negative graph-space coordinates (no origin wall)', () => {
+    const drag = { startGraphX: 20, startGraphY: 20, startClientX: 500, startClientY: 500 };
+    // Drag far up-left past the old (0,0) clamp.
+    const result = computeNodeDragPosition(drag, 100, 80, 1);
+    expect(result).toEqual({ x: -380, y: -400 });
+    expect(result.x).toBeLessThan(0);
+    expect(result.y).toBeLessThan(0);
+  });
+
+  it('computeNodeDragPosition never snaps to a grid — fractional positions survive exactly', () => {
+    const drag = { startGraphX: 0, startGraphY: 0, startClientX: 0, startClientY: 0 };
+    // 37px at zoom 1 is not a multiple of the old 22-unit snap grid.
+    const result = computeNodeDragPosition(drag, 37, -51, 1);
+    expect(result).toEqual({ x: 37, y: -51 });
+  });
+
+  // ── Model bounds and rendered positions honor negative coordinates ─────────
+
+  it('buildGraphStatePreviewModel bounds reflect true negative minX/minY (not clamped to 0)', () => {
+    const model = buildGraphStatePreviewModel(graphState([
+      inputNode({ x: -400, y: -300 }),
+      outputNode({ x: 200, y: 0 }),
+    ], []));
+
+    expect(model.bounds.minX).toBeLessThan(0);
+    expect(model.bounds.minY).toBeLessThan(0);
+    const input = model.nodes.find((node) => node.id === 'input');
+    expect(input?.graphX).toBe(-400);
+    expect(input?.graphY).toBe(-300);
+    expect(input?.x).toBeLessThan(0);
+    expect(input?.y).toBeLessThan(0);
+  });
+
+  it('renders a node at negative graph coordinates with a negative left/top style', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([
+          inputNode({ x: -500, y: -260 }),
+          outputNode({ x: 100, y: 0 }),
+        ], [])}
+      />,
+    );
+    expect(html).toMatch(/left:-4\d\d(\.\d+)?px/);
+    expect(html).toMatch(/top:-2\d\d(\.\d+)?px/);
+  });
+
+  // ── The canvas layer is an unbounded transform anchor, not a sized box ─────
+
+  it('the canvas transform layer carries no width/height — only pan/zoom transform', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([
+          inputNode({ x: -900, y: -700 }),
+          outputNode({ x: 900, y: 700 }),
+        ], [])}
+        onViewportChange={vi.fn()}
+      />,
+    );
+    const canvasMatch = html.match(/xleth-graph-state-preview__canvas"[^>]*style="([^"]*)"/);
+    expect(canvasMatch).not.toBeNull();
+    const canvasStyle = canvasMatch?.[1] ?? '';
+    expect(canvasStyle).toContain('transform:');
+    expect(canvasStyle).not.toMatch(/width:/);
+    expect(canvasStyle).not.toMatch(/height:/);
+  });
+
+  // ── Fit View frames negative-coordinate graphs correctly ───────────────────
+
+  it('fitGraphViewport centers a graph that spans negative and positive coordinates', () => {
+    const model = buildGraphStatePreviewModel(graphState([
+      inputNode({ x: -600, y: -400 }),
+      outputNode({ x: 600, y: 400 }),
+    ], []));
+
+    const result = fitGraphViewport(model.nodes, { width: 800, height: 600 });
+    expect(Number.isFinite(result.x)).toBe(true);
+    expect(Number.isFinite(result.y)).toBe(true);
+    expect(Number.isFinite(result.zoom)).toBe(true);
+    expect(result.zoom).toBeGreaterThan(0);
+
+    // The node bounds' midpoint (graph-space) must land at the container's
+    // center once the fitted viewport transform is applied.
+    const midGraphX = (model.bounds.minX + model.bounds.maxX) / 2;
+    const midGraphY = (model.bounds.minY + model.bounds.maxY) / 2;
+    const screenX = midGraphX * result.zoom + result.x;
+    const screenY = midGraphY * result.zoom + result.y;
+    expect(screenX).toBeCloseTo(400, 0);
+    expect(screenY).toBeCloseTo(300, 0);
+  });
+
+  it('fitGraphViewport handles a graph entirely in negative coordinates', () => {
+    const model = buildGraphStatePreviewModel(graphState([
+      inputNode({ x: -800, y: -600 }),
+      outputNode({ x: -400, y: -600 }),
+    ], []));
+
+    expect(model.bounds.maxX).toBeLessThan(0);
+    expect(model.bounds.maxY).toBeLessThan(0);
+    const result = fitGraphViewport(model.nodes, { width: 800, height: 600 });
+    expect(Number.isFinite(result.x)).toBe(true);
+    expect(Number.isFinite(result.y)).toBe(true);
+    expect(result.zoom).toBeGreaterThan(0);
   });
 });
 
@@ -3062,5 +3343,240 @@ describe('GraphStatePreview sidechain input (FXG-SC.6B)', () => {
       }),
     );
     expect(html).toContain('Track 99 (missing)');
+  });
+});
+
+// FXG-connect-reach — port hit areas usable at any zoom: proximity snap on
+// connect-drag move/drop (with mandatory compatibility filtering), and
+// highlight/dim drag guidance. This test file's vitest environment is plain
+// Node (no DOM/jsdom — see vitest.config.ts), so the connect-drag pointer
+// handlers themselves aren't exercised end-to-end here (they weren't
+// before this change either — see the elementFromPoint-stubbing tests above,
+// which cover only the pure resolve*FromElement helpers). These tests take
+// the same approach: fake Element-shaped objects exercising the pure,
+// exported geometry/compatibility functions the pointer handlers call.
+describe('FXG-connect-reach — proximity snap', () => {
+  function fakeRectElement(
+    cx: number,
+    cy: number,
+    attributes: Record<string, string | null> = {},
+    closestBySelector: Record<string, unknown> = {},
+    querySelectorBySelector: Record<string, unknown> = {},
+    // Selectors this element should resolve to *itself* for, mirroring how
+    // real DOM .closest() matches the starting element when it satisfies the
+    // selector (a port row's own compound [data-...-port-type][data-...-id]
+    // selector matches the row itself, not just an ancestor).
+    selfMatchSelectors: string[] = [],
+  ) {
+    const el: Record<string, unknown> = {
+      getAttribute: (name: string) => attributes[name] ?? null,
+      querySelector: (selector: string) => querySelectorBySelector[selector] ?? null,
+      getBoundingClientRect: () => ({
+        left: cx - 4, top: cy - 4, right: cx + 4, bottom: cy + 4,
+        width: 8, height: 8, x: cx - 4, y: cy - 4, toJSON() {},
+      }),
+    };
+    el.closest = (selector: string) =>
+      selfMatchSelectors.includes(selector) ? el : (closestBySelector[selector] ?? null);
+    return el as unknown as Element;
+  }
+
+  function fakeParameterPort(nodeId: string, parameterId: string, cx: number, cy: number) {
+    return fakeRectElement(cx, cy, {
+      'data-parameter-id': parameterId,
+      'data-parameter-port-id': `gpp:${nodeId}:${parameterId}`,
+    }, {
+      '[data-node-id]': { getAttribute: (n: string) => (n === 'data-node-id' ? nodeId : null) },
+    }, {}, ['[data-parameter-port-type="parameter-input"][data-parameter-port-id]']);
+  }
+
+  function fakeSidechainPort(nodeId: string, cx: number, cy: number) {
+    return fakeRectElement(cx, cy, {
+      'data-sidechain-port-id': `scp:${nodeId}:sidechainIn`,
+    }, {
+      '[data-node-id]': { getAttribute: (n: string) => (n === 'data-node-id' ? nodeId : null) },
+    }, {}, ['[data-sidechain-port-type="sidechain-input"][data-sidechain-port-id]']);
+  }
+
+  // The real audio-input candidate collected by queryCompatiblePorts IS the
+  // `[data-audio-port-type="audio-input"]` handle; resolveAudioDropTargetFromElement
+  // walks up to its owning node via closest, then re-queries that node for the
+  // same marker (present iff the node type renders `.handle--in` at all).
+  function fakeAudioCandidate(nodeId: string, hasAudioInput: boolean, cx: number, cy: number) {
+    return fakeRectElement(cx, cy, {}, {
+      '[data-node-id]': {
+        getAttribute: (n: string) => (n === 'data-node-id' ? nodeId : null),
+        querySelector: (sel: string) =>
+          (hasAudioInput && sel === '[data-audio-port-type="audio-input"]' ? {} : null),
+      },
+    });
+  }
+
+  it('exposes the documented snap radius', () => {
+    expect(CONNECT_SNAP_RADIUS_PX).toBe(24);
+  });
+
+  it('findNearestPortWithinRadius returns null when nothing is in range', () => {
+    expect(findNearestPortWithinRadius([], { x: 0, y: 0 })).toBeNull();
+    expect(findNearestPortWithinRadius([fakeRectElement(1000, 1000)], { x: 0, y: 0 })).toBeNull();
+  });
+
+  it('findNearestPortWithinRadius picks the geometrically closer of two in-range candidates', () => {
+    const farther = fakeRectElement(10, 0);
+    const closer = fakeRectElement(4, 0);
+    expect(findNearestPortWithinRadius([farther, closer], { x: 0, y: 0 })).toBe(closer);
+    // Order in the candidate list must not matter.
+    expect(findNearestPortWithinRadius([closer, farther], { x: 0, y: 0 })).toBe(closer);
+  });
+
+  it('findNearestPortWithinRadius respects a custom radius', () => {
+    const port = fakeRectElement(20, 0);
+    expect(findNearestPortWithinRadius([port], { x: 0, y: 0 }, 10)).toBeNull();
+    expect(findNearestPortWithinRadius([port], { x: 0, y: 0 }, 30)).toBe(port);
+  });
+
+  it('snaps a macro drop to a compatible parameter port within the radius', () => {
+    const target = fakeParameterPort('eq', 'mix', 10, 10);
+    const nearest = findNearestPortWithinRadius([target], { x: 0, y: 0 });
+    expect(resolveParameterDropTargetFromElement(nearest, 'macro-a')).toEqual({
+      nodeId: 'eq',
+      parameterId: 'mix',
+      portId: 'gpp:eq:mix',
+    });
+  });
+
+  it('does not connect a parameter drop left outside the snap radius', () => {
+    const target = fakeParameterPort('eq', 'mix', 100, 100);
+    const nearest = findNearestPortWithinRadius([target], { x: 0, y: 0 });
+    expect(nearest).toBeNull();
+    expect(resolveParameterDropTargetFromElement(nearest, 'macro-a')).toBeNull();
+  });
+
+  it('never snaps a parameter drop onto its own source node, even if geometrically nearest', () => {
+    const selfPort = fakeParameterPort('macro-a', 'mix', 5, 5);
+    const otherPort = fakeParameterPort('eq', 'mix', 50, 50);
+    const nearest = findNearestPortWithinRadius([selfPort, otherPort], { x: 0, y: 0 });
+    expect(nearest).toBe(selfPort);
+    expect(resolveParameterDropTargetFromElement(nearest, 'macro-a')).toBeNull();
+  });
+
+  it('snaps a sidechain drop to the compressor sidechainIn port within the radius', () => {
+    const target = fakeSidechainPort('fx-comp', 12, -12);
+    const nearest = findNearestPortWithinRadius([target], { x: 0, y: 0 });
+    expect(resolveSidechainDropTargetFromElement(nearest, 'sc')).toEqual({
+      nodeId: 'fx-comp',
+      portId: 'scp:fx-comp:sidechainIn',
+    });
+  });
+
+  it('does not connect a sidechain drop left outside the snap radius', () => {
+    const target = fakeSidechainPort('fx-comp', 500, 500);
+    const nearest = findNearestPortWithinRadius([target], { x: 0, y: 0 });
+    expect(nearest).toBeNull();
+    expect(resolveSidechainDropTargetFromElement(nearest, 'sc')).toBeNull();
+  });
+
+  it('snaps an audio drop to a compatible node within the radius', () => {
+    const target = fakeAudioCandidate('fx-comp', true, 15, 0);
+    const nearest = findNearestPortWithinRadius([target], { x: 0, y: 0 });
+    expect(resolveAudioDropTargetFromElement(nearest, 'input')).toBe('fx-comp');
+  });
+
+  it('rejects an audio drop snapped to the nearest node when that node has no audio-input handle', () => {
+    // A macro node (no audio in-handle) sits closer to the pointer than any
+    // real audio target would — compatibility filtering must still reject it.
+    const incompatible = fakeAudioCandidate('macro-a', false, 5, 0);
+    const nearest = findNearestPortWithinRadius([incompatible], { x: 0, y: 0 });
+    expect(nearest).toBe(incompatible);
+    expect(resolveAudioDropTargetFromElement(nearest, 'input')).toBeNull();
+  });
+
+  it('rejects an audio self-drop even within the snap radius', () => {
+    const selfNode = fakeAudioCandidate('fx-comp', true, 2, 0);
+    const nearest = findNearestPortWithinRadius([selfNode], { x: 0, y: 0 });
+    expect(resolveAudioDropTargetFromElement(nearest, 'fx-comp')).toBeNull();
+  });
+});
+
+describe('FXG-connect-reach — drag guidance and hit-area wiring', () => {
+  function fxCompNode() {
+    return buildGraphStatePreviewModel(
+      graphState([inputNode(), compressorNode(), outputNode({ x: 560, y: 0 })], []),
+    ).nodes.find((candidate) => candidate.id === 'fx-comp')!;
+  }
+
+  it('marks the audio in-handle with a stable data attribute for hit-testing', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([inputNode(), compressorNode(), outputNode({ x: 560, y: 0 })], [])}
+      />,
+    );
+    expect(html).toContain('data-audio-port-type="audio-input"');
+  });
+
+  it('glows a node marked as a valid connect target', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreviewNode
+        node={fxCompNode()}
+        dragging={false}
+        connectEnabled={false}
+        connectActive={false}
+        connectGuidance="valid"
+        canRemove={false}
+        canEdit={false}
+      />,
+    );
+    expect(html).toContain('data-connect-guidance="valid"');
+    expect(html).toContain('xleth-graph-state-preview__node--connect-valid-target');
+    expect(html).not.toContain('xleth-graph-state-preview__node--connect-invalid-target');
+  });
+
+  it('dims a node marked as an invalid connect target', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreviewNode
+        node={fxCompNode()}
+        dragging={false}
+        connectEnabled={false}
+        connectActive={false}
+        connectGuidance="invalid"
+        canRemove={false}
+        canEdit={false}
+      />,
+    );
+    expect(html).toContain('data-connect-guidance="invalid"');
+    expect(html).toContain('xleth-graph-state-preview__node--connect-invalid-target');
+    expect(html).not.toContain('xleth-graph-state-preview__node--connect-valid-target');
+  });
+
+  it('clears guidance classes outside a connect drag', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreviewNode
+        node={fxCompNode()}
+        dragging={false}
+        connectEnabled={false}
+        connectActive={false}
+        canRemove={false}
+        canEdit={false}
+      />,
+    );
+    expect(html).not.toContain('data-connect-guidance=');
+    expect(html).not.toContain('xleth-graph-state-preview__node--connect-valid-target');
+    expect(html).not.toContain('xleth-graph-state-preview__node--connect-invalid-target');
+  });
+
+  it('highlights the exact hovered audio drop target', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreviewNode
+        node={fxCompNode()}
+        dragging={false}
+        connectEnabled
+        connectActive={false}
+        hoveredAudioTarget
+        canRemove={false}
+        canEdit={false}
+      />,
+    );
+    expect(html).toContain('data-audio-drop-node="true"');
+    expect(html).toContain('xleth-graph-state-preview__node--audio-drop-target');
   });
 });

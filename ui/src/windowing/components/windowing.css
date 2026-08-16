@@ -1278,8 +1278,13 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 
 .xleth-graph-state-preview__edges,
 .xleth-graph-state-preview__nodes {
+  /* FXG.5 — the canvas layer is an unbounded transform anchor with no
+   * intrinsic size (see .xleth-graph-state-preview__canvas), so these can't
+   * use inset:0 to "fill" it. top/left:0 anchors both layers to the same
+   * (0,0) canvas-space origin that node/edge coordinates are drawn in. */
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
 }
 
 .xleth-graph-state-preview__edges {
@@ -1295,6 +1300,13 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 
 .xleth-graph-state-preview__edge--audio {
   stroke: color-mix(in srgb, var(--theme-accent) 44%, var(--theme-border-strong));
+}
+
+/* Drag-drop cable splice: highlights the audio cable under the dragged
+ * node's center as a valid drop target. */
+.xleth-graph-state-preview__edge--splice-target {
+  stroke: var(--theme-accent-active);
+  stroke-width: 4;
 }
 
 .xleth-graph-state-preview__edge--unknown {
@@ -1389,6 +1401,14 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-accent-active) 22%, transparent);
 }
 
+/* The precise audio drop target — mirrors --parameter-drop-target's treatment
+ * but in the audio accent, since an audio cable's target is the node body
+ * itself rather than a specific port row. */
+.xleth-graph-state-preview__node--audio-drop-target {
+  border-color: color-mix(in srgb, var(--theme-accent) 58%, var(--theme-border-strong));
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-accent) 22%, transparent);
+}
+
 /* Macro is a control-source node, styled with the same modulation accent as its
  * outgoing edges and as the Envelope control source below. */
 .xleth-graph-state-preview__node--macro {
@@ -1460,6 +1480,15 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   font-weight: 650;
   line-height: 1.2;
   pointer-events: none;
+}
+
+/* FXG-connect-reach — grow the row's hit area into the 4px inter-row gap
+ * (the row is already full-width, so only the vertical reach is tight).
+ * Transparent, inherits pointer-events from the row (auto only mid-drag). */
+.xleth-graph-state-preview__parameter-port::after {
+  content: '';
+  position: absolute;
+  inset: -8px 0;
 }
 
 .xleth-graph-state-preview__parameter-port-dot {
@@ -1933,6 +1962,16 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   transform: translateY(-50%);
 }
 
+/* FXG-connect-reach — the painted dot stays 8px (Playwright baselines pin its
+ * size); a transparent ::after enlarges the actual grab/hit target to ~24px so
+ * a cable can be grabbed without zooming in. Inherits pointer-events from the
+ * handle itself, so it's only hit-testable where the handle already was. */
+.xleth-graph-state-preview__handle::after {
+  content: '';
+  position: absolute;
+  inset: -8px;
+}
+
 .xleth-graph-state-preview__handle--in {
   left: -5px;
 }
@@ -2028,6 +2067,13 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   font-weight: 650;
   line-height: 1.2;
   pointer-events: none;
+}
+
+/* FXG-connect-reach — see the matching parameter-port rule; same rationale. */
+.xleth-graph-state-preview__sidechain-port::after {
+  content: '';
+  position: absolute;
+  inset: -8px 0;
 }
 
 .xleth-graph-state-preview__sidechain-port-dot {
@@ -2140,6 +2186,20 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   box-shadow: 0 0 0 1px color-mix(in srgb, var(--theme-accent) 50%, transparent);
 }
 
+/* Drag guidance — every node that could legally receive the in-flight cable
+ * (per the active connect kind's compatibility rule) gets an accent glow;
+ * everything else dims. The exact drop target still gets its own sharper
+ * --hovered treatment (parameter/sidechain port, or the node body itself for
+ * audio) once the pointer is within the snap radius. */
+.xleth-graph-state-preview__node--connect-valid-target {
+  border-color: var(--theme-accent-active);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-accent-active) 30%, transparent);
+}
+
+.xleth-graph-state-preview__node--connect-invalid-target {
+  opacity: 0.45;
+}
+
 .xleth-graph-state-preview__node-actions {
   order: 1;
   display: flex;
@@ -2219,8 +2279,11 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 }
 
 .xleth-graph-state-preview__overlay {
+  /* FXG.5 — see .xleth-graph-state-preview__edges/__nodes: the canvas layer
+   * has no intrinsic size, so anchor with top/left:0 rather than inset:0. */
   position: absolute;
-  inset: 0;
+  top: 0;
+  left: 0;
   pointer-events: none;
 }
 

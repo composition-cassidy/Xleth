@@ -24,6 +24,7 @@ import {
   updateGraphLfoNodeData,
   removeGraphNode,
   connectGraphNodes,
+  spliceGraphNodeIntoEdge,
   connectMacroToParameter,
   connectEnvelopeToParameter,
   connectLfoToParameter,
@@ -2483,6 +2484,47 @@ const useEffectChainStore = create((set, get) => ({
         set,
         access.key,
         'connect_graph_nodes',
+        access.graphState,
+        applied.graphState,
+      )
+    }
+    return applied
+  },
+
+  // Splice-drop: dropping a dragged node onto an audio cable removes that
+  // cable and rewires it through the dropped node. The node's final drop
+  // position (if given) is folded into the SAME pre-mutation graphState the
+  // splice reads from, so the move + the two-edge rewiring commit and record
+  // as exactly one recordGraphEditTransaction call — one undo step restores
+  // both the original cable and the node's original position.
+  spliceGraphNodeIntoEdgeForTrack: async (trackId, connectionDraft, options = {}) => {
+    const access = readGraphStateForMutation(get(), trackId)
+    if (!access.ok) return access
+
+    const draft = connectionDraft != null && typeof connectionDraft === 'object' ? connectionDraft : {}
+    const position = normalizeGraphNodePosition(draft.position)
+    const positionedGraphState = position == null
+      ? access.graphState
+      : {
+          ...access.graphState,
+          nodes: access.graphState.nodes.map((node) => (
+            node.id === draft.nodeId ? { ...node, position } : node
+          )),
+        }
+
+    const mutation = spliceGraphNodeIntoEdge(
+      positionedGraphState,
+      { edgeId: draft.edgeId, nodeId: draft.nodeId },
+      { idFactory: options.idFactory },
+    )
+    if (!mutation.ok) return mutation
+
+    const applied = await applyGraphStateMutation(set, access.key, mutation.graphState, options)
+    if (applied.ok) {
+      recordGraphEditTransaction(
+        set,
+        access.key,
+        'splice_graph_node',
         access.graphState,
         applied.graphState,
       )
