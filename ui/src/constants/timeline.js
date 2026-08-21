@@ -28,6 +28,14 @@ export function zoomTrackHeight(height, deltaY) {
 export const RULER_HEIGHT = 26
 export const HEADER_WIDTH = 188
 
+// Height of the "Add Track" footer row at the bottom of the header column.
+// It lives inside the same scrollable list as the track rows (its own
+// trailing "lane"), so the canvas side reserves an equal-height blank
+// spacer at the bottom of its scrollable content — otherwise the two
+// panels' scrollable content heights diverge and drift out of sync while
+// scrolling.
+export const ADD_TRACK_ROW_HEIGHT = 37
+
 // Zoom: pixels per beat
 export const MIN_PPB = 8       // ~4 bars visible at 1920px
 export const MAX_PPB = 50000   // sample-level zoom (≤0.5 spp at 48kHz/140BPM)

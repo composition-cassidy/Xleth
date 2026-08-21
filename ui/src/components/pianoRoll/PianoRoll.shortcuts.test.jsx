@@ -7,17 +7,24 @@ vi.mock('./PianoRollToolbar.jsx', () => ({ default: () => <div data-testid="tool
 vi.mock('./PianoRollKeyboard.jsx', () => ({
   PITCH_MIN: 0,
   PITCH_MAX: 127,
-  default: () => <div data-testid="keyboard" />,
+  default: React.forwardRef((props, ref) => <div data-testid="keyboard" />),
 }))
-vi.mock('./PianoRollCanvas.jsx', () => ({ default: () => <div data-testid="canvas" /> }))
-vi.mock('./VelocityLane.jsx', () => ({ default: () => <div data-testid="velocity" /> }))
+// Real PianoRollCanvas/VelocityLane are forwardRef (PianoRoll's view animator
+// calls .redraw() on them imperatively) — mock as forwardRef too, or React
+// warns "Function components cannot be given refs" for the ref PianoRoll passes.
+vi.mock('./PianoRollCanvas.jsx', () => ({
+  default: React.forwardRef((props, ref) => <div data-testid="canvas" />),
+}))
+vi.mock('./VelocityLane.jsx', () => ({
+  default: React.forwardRef((props, ref) => <div data-testid="velocity" />),
+}))
 vi.mock('./PianoRollScrollbarV.jsx', () => ({
   SCROLLBAR_V_WIDTH: 10,
-  default: () => <div data-testid="scroll-v" />,
+  default: React.forwardRef((props, ref) => <div data-testid="scroll-v" />),
 }))
 vi.mock('./PianoRollScrollbarH.jsx', () => ({
   SCROLLBAR_H_HEIGHT: 10,
-  default: () => <div data-testid="scroll-h" />,
+  default: React.forwardRef((props, ref) => <div data-testid="scroll-h" />),
 }))
 vi.mock('../Toast.jsx', () => ({ useToast: () => ({ showToast: vi.fn() }) }))
 

@@ -16,6 +16,7 @@
 
 #include <cstdio>
 #include <cstdint>
+#include <cstdlib>
 #include <cmath>
 #include <string>
 
@@ -355,6 +356,63 @@ int main()
             checkEq(timeToFrameFloor(t, kRate), n,
                     "anchor: exact frame-boundary offset selects that frame");
         }
+    }
+
+    // ── Timeline ticks ↔ source ticks (stretched-clip trim) ──────────────────
+    // regionOffset is SOURCE time, clip durations are TIMELINE time. Every edit
+    // that turns one into the other (split, left-edge trim, quantize start-trim)
+    // must go through these, or a stretched clip's right half starts too deep in
+    // the source and runs out of audio before its end.
+    {
+        using xleth::anchoring::sourceTicksForTimelineTicks;
+        using xleth::anchoring::timelineTicksForSourceTicks;
+
+        // Unity ratio is the identity — untouched projects cannot shift by a tick.
+        for (int64_t t : { int64_t(0), int64_t(1), int64_t(53), int64_t(960), int64_t(123457) }) {
+            checkTrue(sourceTicksForTimelineTicks(t, 1.0) == t,
+                      "domain: unity ratio is identity (source)");
+            checkTrue(timelineTicksForSourceTicks(t, 1.0) == t,
+                      "domain: unity ratio is identity (timeline)");
+        }
+
+        // The reported case: a 1.50× clip of 1 bar, split in half. The right half
+        // must advance 1920/1.5 = 1280 source ticks, NOT the 1920 timeline ticks
+        // the old code added (which overshot by 640 = a third of a bar).
+        checkEq((int)sourceTicksForTimelineTicks(1920, 1.5), 1280,
+                "domain: 1.50x, half a bar of timeline == 1280 source ticks");
+        checkEq((int)timelineTicksForSourceTicks(1280, 1.5), 1920,
+                "domain: 1280 source ticks at 1.50x == half a bar of timeline");
+
+        // Round-trip within a tick of rounding, across the ratio range the
+        // stretch commands clamp to (0.1 .. 20.0).
+        for (double r : { 0.1, 0.5, 0.75, 1.5, 2.0, 3.0, 8.0, 20.0 }) {
+            for (int64_t t : { int64_t(120), int64_t(960), int64_t(1920), int64_t(30720) }) {
+                const int64_t back = timelineTicksForSourceTicks(
+                    sourceTicksForTimelineTicks(t, r), r);
+                checkTrue(std::llabs(back - t) <= (int64_t)std::ceil(r),
+                          "domain: timeline -> source -> timeline round-trips");
+            }
+        }
+
+        // A split is a CUT: the two halves' source spans must tile the original's
+        // exactly, with no gap and no overlap beyond tick rounding.
+        {
+            const double r = 1.5;
+            const int64_t clipDur = 2400, leftDur = 1000, offset = 53;
+            const int64_t rightOffset = offset + sourceTicksForTimelineTicks(leftDur, r);
+            const int64_t wholeSource = sourceTicksForTimelineTicks(clipDur, r);
+            const int64_t rightSource = sourceTicksForTimelineTicks(clipDur - leftDur, r);
+            checkTrue(std::llabs((rightOffset + rightSource) - (offset + wholeSource)) <= 1,
+                      "domain: split halves tile the original source span");
+            checkTrue(rightOffset > offset && rightOffset < offset + wholeSource,
+                      "domain: split point lies strictly inside the source span");
+        }
+
+        // Degenerate ratios must not produce inf/NaN ticks.
+        checkTrue(sourceTicksForTimelineTicks(960, 0.0) == 960,
+                  "domain: ratio 0 degrades to unity, not a division by zero");
+        checkTrue(sourceTicksForTimelineTicks(960, -2.0) == 960,
+                  "domain: negative ratio degrades to unity");
     }
 
     // ── Summary ──────────────────────────────────────────────────────────────

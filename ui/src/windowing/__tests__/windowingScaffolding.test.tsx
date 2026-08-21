@@ -364,101 +364,17 @@ describe('PanelFrame render paths', () => {
     expect(html).not.toContain('xleth-chain-graph-preview');
   });
 
-  it('renders graph history controls only for active graph mode', () => {
-    const graphHtml = renderToStaticMarkup(
-      <FxGraphPanelContent
-        trackId={7}
-        trackLabel="Lead Vox"
-        fxMode="graph"
-        graphStateStatus="valid"
-        graphState={makeFxGraphState()}
-        canUndoGraphEdit={false}
-        canRedoGraphEdit
-        onUndoGraphEdit={vi.fn()}
-        onRedoGraphEdit={vi.fn()}
-      />,
-    );
-    const chainHtml = renderToStaticMarkup(
-      <FxGraphPanelContent
-        trackId={7}
-        trackLabel="Lead Vox"
-        fxMode="chain"
-        graphStateStatus="valid"
-        graphState={makeFxGraphState()}
-        canUndoGraphEdit
-        canRedoGraphEdit
-        onUndoGraphEdit={vi.fn()}
-        onRedoGraphEdit={vi.fn()}
-      />,
-    );
-
-    expect(graphHtml).toContain('aria-label="Undo graph edit"');
-    expect(graphHtml).toContain('aria-label="Redo graph edit"');
-    expect(countText(graphHtml, 'disabled')).toBe(1);
-    expect(chainHtml).not.toContain('Undo graph edit');
-    expect(chainHtml).not.toContain('Redo graph edit');
-  });
-
-  it('renders Add Macro only for active editable graph mode', () => {
-    const graphHtml = renderToStaticMarkup(
-      <FxGraphPanelContent
-        trackId={7}
-        trackLabel="Lead Vox"
-        fxMode="graph"
-        graphStateStatus="valid"
-        graphState={makeFxGraphState()}
-        onAddGraphMacroNode={vi.fn()}
-      />,
-    );
-    const chainHtml = renderToStaticMarkup(
-      <FxGraphPanelContent
-        trackId={7}
-        trackLabel="Lead Vox"
-        fxMode="chain"
-        graphStateStatus="valid"
-        graphState={makeFxGraphState()}
-        onAddGraphMacroNode={vi.fn()}
-      />,
-    );
-
-    expect(graphHtml).toContain('Add Macro');
-    expect(chainHtml).not.toContain('Add Macro');
-  });
-
-  it('wires the FXG-SC.6B Sidechain Input actions only in active graph mode', () => {
-    const graphHtml = renderToStaticMarkup(
-      <FxGraphPanelContent
-        trackId={7}
-        trackLabel="Bass"
-        fxMode="graph"
-        graphStateStatus="valid"
-        graphState={makeFxGraphState()}
-        onAddGraphSidechainInput={vi.fn()}
-        onSetGraphSidechainInputSource={vi.fn()}
-        onConnectGraphSidechain={vi.fn()}
-        sidechainSources={[{ sourceTrackId: 3, name: 'Kick' }]}
-      />,
-    );
-    const chainHtml = renderToStaticMarkup(
-      <FxGraphPanelContent
-        trackId={7}
-        trackLabel="Bass"
-        fxMode="chain"
-        graphStateStatus="valid"
-        graphState={makeFxGraphState()}
-        onAddGraphSidechainInput={vi.fn()}
-        onSetGraphSidechainInputSource={vi.fn()}
-        onConnectGraphSidechain={vi.fn()}
-        sidechainSources={[{ sourceTrackId: 3, name: 'Kick' }]}
-      />,
-    );
-
-    expect(graphHtml).toContain('Add Sidechain Input');
-    expect(chainHtml).not.toContain('Add Sidechain Input');
-    // The sidechain UI rides on the same FX Graph shell — no NodeEditor/React Flow revival.
-    expect(graphHtml).not.toContain('react-flow');
-    expect(graphHtml).not.toContain('NodeEditor');
-  });
+  // "Undo/Redo controls" and "Add Macro"/"Add Sidechain Input" only in active
+  // graph mode: the toolbar these rendered eagerly (so a static-markup render
+  // could see it) is gone. Undo/Redo is now keyboard-only (Ctrl+Z/Ctrl+Y,
+  // wired directly in FxGraphPanel and independent of fxMode via its own
+  // guard). Add Macro / Add Sidechain Input now live in the right-click canvas
+  // menu, which only opens on interaction — a static render can no longer
+  // observe whether it's wired, only that the closed menu isn't in the
+  // initial HTML either way. The fxMode-gated wiring itself is still real
+  // (see graphModeActive ? onAddGraphMacroNode : undefined in FxGraphPanel.tsx)
+  // and is exercised end-to-end by GraphStatePreviewAddMenu.test.tsx at the
+  // GraphStatePreview layer.
 
   it('renders a degraded graph-mode state when graphState is missing', () => {
     const html = renderToStaticMarkup(

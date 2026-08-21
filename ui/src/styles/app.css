@@ -108,8 +108,8 @@ html[data-xleth-backdrop="video"] #root {
 /* ── Scrollbar ────────────────────────────────────────────────────────────── */
 
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 16px;
+  height: 16px;
 }
 
 ::-webkit-scrollbar-track {
@@ -2594,63 +2594,32 @@ html[data-xleth-backdrop="video"] .app-body {
 .track-header {
   position: relative;
   display: flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 8px 0 var(--theme-timeline-track-stripe-width);
+  align-items: stretch;
+  gap: 0;
+  padding: 0;
   border-bottom: 1px solid var(--theme-border-subtle);
   user-select: none;
   cursor: default;
-  background: linear-gradient(
-    90deg,
-    color-mix(in srgb, var(--track-header-fill, var(--theme-timeline-track-color-stripe)) 6%, transparent) 0%,
-    transparent 64%
-  );
+  background: transparent;
   transition: background var(--transition-fast);
-}
-
-.track-header-identity-stripe {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: var(--theme-timeline-track-stripe-width);
-  background: var(--track-header-fill, var(--theme-timeline-track-color-stripe));
-  pointer-events: none;
-  z-index: 1;
-}
-
-.track-header-identity-stripe::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  height: var(--theme-timeline-track-stripe-top-height);
-  background: color-mix(in srgb, var(--track-header-fill, var(--theme-timeline-track-color-stripe)) 55%, white);
 }
 
 .track-header-focus-bar {
   position: absolute;
   top: 0;
   bottom: 0;
-  left: var(--theme-timeline-track-stripe-width);
+  left: 0;
   width: var(--theme-timeline-panel-accent-width);
   background: var(--theme-accent);
   pointer-events: none;
-  z-index: 2;
+  z-index: 3;
 }
 
 .track-header:hover {
-  background:
-    linear-gradient(
-      90deg,
-      color-mix(in srgb, var(--track-header-fill, var(--theme-timeline-track-color-stripe)) 6%, transparent) 0%,
-      transparent 64%
-    ),
-    var(--theme-bg-surface);
+  background: var(--theme-bg-surface);
 }
 
-.track-header--muted .track-header-left {
+.track-header--muted .track-header-block {
   opacity: 0.55;
 }
 
@@ -2662,49 +2631,87 @@ html[data-xleth-backdrop="video"] .app-body {
   opacity: 0.4;
 }
 
-.track-header-left {
-  display: flex;
-  align-items: center;
-  flex: 1;
+/* â”€â”€ Colored identity block â”€â”€ solid fill for Pattern tracks, a soft white
+   glow bleeding in from the right edge for Clip tracks. â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+.track-header-block {
+  position: relative;
+  flex: 1 1 auto;
   min-width: 0;
-  gap: 8px;
-  padding-left: 6px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 1px;
+  padding: 2px 8px 2px 10px;
   overflow: hidden;
+  background: var(--track-header-fill, var(--theme-timeline-track-color-stripe));
+  transition: background var(--transition-fast);
 }
 
-.track-header-color {
-  width: 3px;
-  height: 26px;
-  border-radius: 1.5px;
-  flex-shrink: 0;
+.track-header:not(.track-header--pattern) .track-header-block {
+  background: linear-gradient(
+    90deg,
+    var(--track-header-fill, var(--theme-timeline-track-color-stripe)) 55%,
+    color-mix(in srgb, var(--track-header-fill, var(--theme-timeline-track-color-stripe)) 55%, white 45%) 100%
+  );
 }
 
 .track-header-color-btn {
-  width: 3px;
-  height: 26px;
-  border-radius: 1.5px;
-  flex-shrink: 0;
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  width: 6px;
   border: none;
   padding: 0;
   cursor: pointer;
-  transition: width var(--transition-fast), box-shadow var(--transition-fast);
+  background: transparent;
+  transition: box-shadow var(--transition-fast);
 }
 
 .track-header-color-btn:hover {
-  width: 5px;
-  box-shadow: 0 0 0 1px rgba(255, 255, 255, 0.18);
+  box-shadow: inset 2px 0 0 rgba(0, 0, 0, 0.35);
 }
 
 .track-header-color-btn:focus-visible {
   outline: none;
-  box-shadow: var(--theme-depth-accent-ring);
+  box-shadow: inset 2px 0 0 rgba(0, 0, 0, 0.6);
+}
+
+.track-header-name-wrap {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+}
+
+/* Single hard-edged (unblurred) offset shadow — enough of a cue against
+   pale track colors without the heavy blob a full outline gave. */
+.track-header-menu-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 12px;
+  height: 14px;
+  border: none;
+  padding: 0;
+  background: transparent;
+  color: rgba(255, 255, 255, 0.5);
+  filter: drop-shadow(1px 1px 0 rgba(0, 0, 0, 0.35));
+  cursor: pointer;
+}
+
+.track-header-menu-btn:hover {
+  color: rgba(255, 255, 255, 0.9);
 }
 
 .track-header-name {
+  flex: 1 1 auto;
+  min-width: 0;
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 600;
   line-height: 1.2;
-  color: var(--theme-text);
+  color: #fff;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2715,14 +2722,52 @@ html[data-xleth-backdrop="video"] .app-body {
   flex: 1;
   min-width: 0;
   font-size: 12px;
-  font-weight: 500;
+  font-weight: 600;
   font-family: inherit;
-  color: var(--theme-text);
+  color: #fff;
   background: transparent;
   border: none;
-  border-bottom: 1px solid var(--theme-accent);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.6);
   outline: none;
   padding: 0;
+}
+
+/* The app-wide ".xleth-windowing-app *" guardrail resets text-shadow to
+   none at the same (0,1,0) specificity, so these need the extra class to
+   actually win the cascade. */
+.track-header .track-header-name,
+.track-header .track-header-name-input {
+  text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.35);
+}
+
+.track-header-hold-badge {
+  font-size: 8px;
+  font-weight: 700;
+  text-transform: uppercase;
+  color: #fff;
+  opacity: 0.85;
+  border: 1px solid currentColor;
+  border-radius: 2px;
+  padding: 0 2px;
+  line-height: 1.2;
+  flex-shrink: 0;
+}
+
+.track-header-type-icon {
+  display: flex;
+  align-items: center;
+  color: rgba(255, 255, 255, 0.62);
+  margin-top: 1px;
+  filter: drop-shadow(1px 1px 0 rgba(0, 0, 0, 0.35));
+}
+
+/* â”€â”€ M / S / V cluster â”€â”€ plain panel background, consistent with the mixer â”€â”€ */
+.track-header-controls {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 0 6px;
 }
 
 .track-header-btn {
@@ -2817,11 +2862,12 @@ html[data-xleth-backdrop="video"] .app-body {
 
 .timeline-add-track {
   display: flex;
+  flex-shrink: 0;
   align-items: center;
   justify-content: center;
   gap: 6px;
   width: 100%;
-  padding: 10px 8px;
+  padding: 0 8px;
   background: transparent;
   border: none;
   border-bottom: 1px solid var(--theme-border-subtle);
@@ -2852,8 +2898,10 @@ html[data-xleth-backdrop="video"] .app-body {
 
 /* ── Loop / render region bar (Vegas-style, in the ruler) ─────────────────── */
 
-/* Overlay spans the ruler width; only the region body/handles take pointer
-   events so ruler click-to-seek still works in the empty areas. */
+/* Overlay spans the full ruler height so the toggle tab (which hangs below
+   the thin bar) has room, but only the region body/handles/toggle take
+   pointer events — everywhere else in the ruler stays click-to-seek /
+   wheel-zoom, including the empty space directly under the loop range. */
 .loop-region-overlay {
   position: absolute;
   top: 0;
@@ -2887,23 +2935,25 @@ html[data-xleth-backdrop="video"] .app-body {
   cursor: grab;
   flex: 1 1 auto;
   min-width: 0;
-  display: flex;
-  align-items: center;
-  padding-left: 3px;
-  border-top: 1px solid var(--theme-accent);
-  border-bottom: 1px solid var(--theme-accent);
-  background: var(--theme-accent-bg-subtle);
+  background: var(--theme-accent);
+  opacity: 0.9;
 }
 
 .loop-region-bar__body:active { cursor: grabbing; }
 
+/* Small tab hanging just below the thin strip — the only part of the ruler
+   under the loop range that isn't free for normal seek/zoom. */
 .loop-region-bar__toggle {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  margin-top: 1px;
   pointer-events: auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 16px;
-  height: 16px;
+  width: 13px;
+  height: 13px;
   padding: 0;
   border: none;
   border-radius: 3px;
@@ -2919,9 +2969,7 @@ html[data-xleth-backdrop="video"] .app-body {
 
 /* Active (loopEnabled): clearly accented. */
 .loop-region-bar--active .loop-region-bar__edge { opacity: 1; }
-.loop-region-bar--active .loop-region-bar__body {
-  background: var(--theme-accent-bg-subtle);
-}
+.loop-region-bar--active .loop-region-bar__body { opacity: 1; }
 
 /* Inert (disabled): greyed but still fully draggable/resizable. */
 .loop-region-bar--inert .loop-region-bar__edge {
@@ -2929,10 +2977,8 @@ html[data-xleth-backdrop="video"] .app-body {
   opacity: 0.55;
 }
 .loop-region-bar--inert .loop-region-bar__body {
-  border-top-color: var(--theme-border-subtle);
-  border-bottom-color: var(--theme-border-subtle);
-  background: var(--theme-bg-elevated, transparent);
-  opacity: 0.7;
+  background: var(--theme-border-strong, var(--theme-border-subtle));
+  opacity: 0.5;
 }
 .loop-region-bar--inert .loop-region-bar__toggle { color: var(--theme-text-muted, var(--theme-text-secondary)); }
 
@@ -2959,7 +3005,7 @@ html[data-xleth-backdrop="video"] .app-body {
 /* â”€â”€ Horizontal scrollbar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .timeline-scrollbar {
-  height: 10px;
+  height: 18px;
   flex-shrink: 0;
   position: relative;
   background: var(--theme-bg-primary);
@@ -2969,11 +3015,11 @@ html[data-xleth-backdrop="video"] .app-body {
 
 .timeline-scrollbar-thumb {
   position: absolute;
-  top: 2px;
-  height: 6px;
+  top: 3px;
+  height: 12px;
   min-width: 20px;
   background: var(--theme-text-muted);
-  border-radius: 3px;
+  border-radius: 6px;
   cursor: grab;
   transition: background var(--transition-fast);
 }
@@ -4630,7 +4676,7 @@ html[data-xleth-backdrop="video"] .app-body {
   left: 0;
   right: 0;
   bottom: 0;
-  height: 10px;
+  height: 18px;
   background: var(--theme-bg-inset);
   border-top: 1px solid var(--theme-depth-well-border);
   cursor: pointer;
@@ -4926,7 +4972,7 @@ html[data-xleth-backdrop="video"] .app-body {
 }
 
 .marked-samples-rows::-webkit-scrollbar {
-  width: 10px;
+  width: 16px;
 }
 
 .marked-samples-rows::-webkit-scrollbar-track {
@@ -5701,7 +5747,7 @@ html[data-xleth-backdrop="video"] .app-body {
 }
 
 .grid-editor-dock-strip::-webkit-scrollbar {
-  height: 4px;
+  height: 10px;
 }
 
 .grid-editor-dock-strip::-webkit-scrollbar-track {
@@ -7718,7 +7764,7 @@ html.fx-drag-active * {
 /* Scroll position indicator below the canvas; shown only when zoomed in. */
 .syllable-splitter-scrollbar {
   position: relative;
-  height: 10px;
+  height: 18px;
   background: var(--theme-bg-inset);
   border-top: 1px solid var(--theme-depth-well-border);
   box-shadow: var(--theme-depth-well-top-shadow);
@@ -7759,8 +7805,8 @@ html.fx-drag-active * {
 
 .syllable-splitter-sections::-webkit-scrollbar,
 .syllable-splitter-modal-body::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 16px;
+  height: 16px;
 }
 
 .syllable-splitter-sections::-webkit-scrollbar-track,
@@ -8449,6 +8495,8 @@ html.fx-drag-active * {
 
 .piano-roll-pattern-select,
 .piano-roll-region-select,
+.piano-roll-scale-root,
+.piano-roll-scale-mode,
 .piano-roll-note-length {
   background: #0b0b0b;
   border: 1px solid #2a2a2a;
@@ -8466,10 +8514,15 @@ html.fx-drag-active * {
 
 .piano-roll-pattern-select:hover,
 .piano-roll-region-select:hover,
+.piano-roll-scale-root:hover,
+.piano-roll-scale-mode:hover,
 .piano-roll-note-length:hover {
   border-color: #3a3a3a;
   color: #d4d4d4;
 }
+
+.piano-roll-scale-root { max-width: 56px; padding: 0 4px; }
+.piano-roll-scale-mode { max-width: 130px; }
 
 /* ── Ruler ─────────────────────────────────────────────────────────────── */
 .piano-roll-ruler {
@@ -8572,49 +8625,6 @@ html.fx-drag-active * {
    Track header â€” Pattern track variant + sub-label
    â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
-.track-header--pattern .track-header-color,
-.track-header--pattern .track-header-color-btn {
-  border-radius: 1.5px;
-}
-
-.track-header-name-wrap {
-  flex: 1;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  overflow: hidden;
-}
-
-.track-header-subname {
-  font-size: 10px;
-  color: var(--theme-text-subtle);
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  opacity: 0.8;
-}
-
-.track-header-type-badge {
-  font-size: 9px;
-  color: var(--theme-text-subtle);
-  letter-spacing: 0.4px;
-  line-height: 1;
-  text-transform: uppercase;
-}
-
-.track-header-hold-badge {
-  font-size: 8px;
-  font-weight: 700;
-  text-transform: uppercase;
-  opacity: 0.65;
-  color: var(--theme-accent);
-  margin-left: 4px;
-  border: 1px solid currentColor;
-  border-radius: 2px;
-  padding: 0 2px;
-  line-height: 1.2;
-}
 
 .track-header-region-name {
   opacity: 0.9;
@@ -8907,8 +8917,8 @@ html.fx-drag-active * {
 }
 
 .sampler-panel-scroll::-webkit-scrollbar {
-  width: 12px;
-  height: 12px;
+  width: 18px;
+  height: 18px;
 }
 
 .sampler-panel-scroll::-webkit-scrollbar-thumb {
@@ -8929,6 +8939,58 @@ html.fx-drag-active * {
 .sampler-panel-content {
   min-width: 0;
   padding: 12px;
+}
+
+/* ── Main <-> Playback tab switch ─────────────────────────────────────────
+   Strictly sequential, not a crossfade: only one pane is ever mounted (see
+   SamplerPanelContent's tabAnimPhase state machine), so the outgoing pane
+   fully fades/slides away before the incoming one is even mounted — they
+   never overlap on screen, and the panel's own resize (driven by the
+   auto-shrink effect next to it) only kicks in once the swap happens, i.e.
+   after the outgoing pane is already gone. */
+@keyframes sampler-tab-exit-main {
+  from { opacity: 1; transform: translateY(0); }
+  to   { opacity: 0; transform: translateY(16px); }
+}
+
+@keyframes sampler-tab-enter-main {
+  from { opacity: 0; transform: translateY(16px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@keyframes sampler-tab-exit-playback {
+  from { opacity: 1; transform: translateX(0); }
+  to   { opacity: 0; transform: translateX(-28px); }
+}
+
+@keyframes sampler-tab-enter-playback {
+  from { opacity: 0; transform: translateX(-28px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+.sampler-tab-pane--exit-main {
+  animation: sampler-tab-exit-main 200ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+.sampler-tab-pane--enter-main {
+  animation: sampler-tab-enter-main 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+.sampler-tab-pane--exit-playback {
+  animation: sampler-tab-exit-playback 200ms cubic-bezier(0.4, 0, 1, 1) both;
+}
+
+.sampler-tab-pane--enter-playback {
+  animation: sampler-tab-enter-playback 240ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sampler-tab-pane--exit-main,
+  .sampler-tab-pane--enter-main,
+  .sampler-tab-pane--exit-playback,
+  .sampler-tab-pane--enter-playback {
+    animation: none;
+  }
 }
 
 .sampler-page,
@@ -9903,7 +9965,7 @@ html.fx-drag-active * {
 }
 
 .mixer-tracks-scroll::-webkit-scrollbar {
-  height: 8px;
+  height: 14px;
 }
 .mixer-tracks-scroll::-webkit-scrollbar-thumb {
   min-width: 44px;
@@ -10439,6 +10501,18 @@ html.fx-drag-active * {
 .xleth-fader--fill.xleth-fader--horizontal {
   flex: 1 1 auto;
   width: auto;
+  min-width: 0;
+}
+
+/* Horizontal fill additionally needs the WRAP (label + fader + readout row)
+ * to claim width in ITS parent flex row — unlike vertical fill, where the
+ * wrap only needs cross-axis stretch (above). Without this, a horizontal
+ * fill fader's groove/thumb (position: absolute, zero intrinsic width)
+ * collapses the whole control to ~0px in any plain flex row that doesn't
+ * separately give the wrap a flex-basis (e.g. XLETH Filter mod depth,
+ * clip Vibrato/Scratch context-menu sliders). */
+.xleth-fader-wrap--fill.xleth-fader-wrap--horizontal {
+  flex: 1 1 auto;
   min-width: 0;
 }
 
@@ -11017,7 +11091,7 @@ html.fx-drag-active * {
   overflow-y: auto;
   scrollbar-color: var(--xleth-flat-border-strong) transparent;
 }
-.xleth-panel-frame[data-panel-id="splitSyllables"] .syllable-splitter-sections::-webkit-scrollbar { width: 8px; }
+.xleth-panel-frame[data-panel-id="splitSyllables"] .syllable-splitter-sections::-webkit-scrollbar { width: 16px; }
 .xleth-panel-frame[data-panel-id="splitSyllables"] .syllable-splitter-sections::-webkit-scrollbar-track { border: 0; background: transparent; }
 .xleth-panel-frame[data-panel-id="splitSyllables"] .syllable-splitter-sections::-webkit-scrollbar-thumb { border: 0; border-radius: 0; background: var(--xleth-flat-border-strong); }
 .xleth-panel-frame[data-panel-id="splitSyllables"] .syllable-section-card {
@@ -11218,7 +11292,7 @@ html.fx-drag-active * {
 }
 
 .effect-chain-list::-webkit-scrollbar {
-  width: 8px;
+  width: 14px;
 }
 .effect-chain-list::-webkit-scrollbar-thumb {
   background: var(--mx-bd2);
@@ -11489,7 +11563,7 @@ html.fx-drag-active * {
 
 .effect-chain-add-menu.context-menu::-webkit-scrollbar,
 .effect-chain-add-submenu.context-menu::-webkit-scrollbar {
-  width: 8px;
+  width: 14px;
 }
 
 .effect-chain-add-menu.context-menu::-webkit-scrollbar-thumb,
@@ -11875,7 +11949,7 @@ html.fx-drag-active * {
   min-height: 60px;
 }
 
-.vst-browser-list::-webkit-scrollbar { width: 8px; }
+.vst-browser-list::-webkit-scrollbar { width: 14px; }
 .vst-browser-list::-webkit-scrollbar-thumb { background: var(--theme-border-default); border-radius: 4px; }
 .vst-browser-list::-webkit-scrollbar-track { background: var(--theme-bg-secondary); }
 
@@ -12081,6 +12155,16 @@ html.fx-drag-active * {
   --xleth-eq-accent:             var(--xleth-global-accent, var(--theme-accent));
   --xleth-eq-accent-dim:         #4A6A8A;
 
+  /* Channel routing tints (flat redesign) — a monochromatic derivation of
+     the live EQ accent hue via color-mix(), so every tint tracks theme
+     changes instead of being pinned to a fixed hex. Stereo is the accent
+     itself; the rest are lighter/darker mixes of that same color. */
+  --xleth-eq-ch-stereo:          var(--xleth-eq-accent);
+  --xleth-eq-ch-left:            color-mix(in srgb, var(--xleth-eq-accent) 65%, white 35%);
+  --xleth-eq-ch-right:           color-mix(in srgb, var(--xleth-eq-accent) 78%, black 22%);
+  --xleth-eq-ch-mid:             color-mix(in srgb, var(--xleth-eq-accent) 40%, white 60%);
+  --xleth-eq-ch-side:            color-mix(in srgb, var(--xleth-eq-accent) 88%, black 12%);
+
   /* Mode colors */
   --xleth-eq-mode-static:        var(--theme-accent);
   --xleth-eq-mode-dynamic:       #F0A3D0;
@@ -12171,11 +12255,18 @@ html.fx-drag-active * {
 }
 
 .eq-panel-title {
-  flex: 1;
   font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.14em;
   color: var(--xleth-flat-text);
+}
+
+.eq-panel-tag {
+  flex: 1;
+  font-size: 9px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  color: var(--xleth-eq-text-tertiary);
 }
 
 .eq-panel-close {
@@ -12207,14 +12298,12 @@ html.fx-drag-active * {
 }
 
 .eq-graph-row {
+  position: relative;
   display: flex;
   flex-direction: row;
   align-items: stretch;
   overflow: hidden;
-  /* Explicit height prevents the canvas-resize feedback loop:
-     EqOutputMeter reads parent height to size its backing store.
-     Without a definite height here, each frame grows the parent → loop. */
-  height: 220px;
+  height: 340px;
 }
 
 .eq-svg-wrap {
@@ -12483,7 +12572,7 @@ html.fx-drag-active * {
   white-space: nowrap;
   font-size: 9px;
   line-height: 1.1;
-  font-family: var(--xleth-eq-font-mono);
+  font-family: var(--xleth-eq-font-family);
   font-variant-numeric: tabular-nums;
   color: var(--xleth-eq-text-secondary);
 }
@@ -12724,6 +12813,488 @@ html.fx-drag-active * {
 .eq-band-popup-confirm button:hover {
   border-color: var(--xleth-flat-accent);
   color: var(--xleth-flat-accent);
+}
+
+/* -- EQ Panel footer (flat redesign) -- */
+
+.eq-panel-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  height: 32px;
+  padding: 0 14px;
+  flex-shrink: 0;
+  background: var(--xleth-flat-chrome);
+  border-top: 1px solid var(--xleth-flat-border);
+}
+
+.eq-panel-channel-legend {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.eq-panel-channel-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 9px;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--xleth-eq-text-secondary);
+}
+
+.eq-panel-channel-dot {
+  width: 6px;
+  height: 6px;
+  display: inline-block;
+}
+
+.eq-panel-status {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 9px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--xleth-eq-text-tertiary);
+  font-family: var(--xleth-eq-font-family);
+  font-variant-numeric: tabular-nums;
+}
+
+/* -- EQ Canvas (flat redesign display) -- */
+
+.eqc-wrap {
+  position: absolute;
+  inset: 0;
+  background: var(--xleth-eq-bg-plot);
+}
+
+.eqc-svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.eqc-plot-bg {
+  fill: var(--xleth-eq-bg-plot);
+  pointer-events: none;
+}
+
+.eqc-grid-line {
+  stroke: var(--xleth-eq-border);
+  stroke-width: 0.5;
+  stroke-dasharray: 2 4;
+  opacity: 0.6;
+}
+
+.eqc-grid-line-zero {
+  stroke: var(--xleth-flat-border-strong);
+  stroke-width: 0.8;
+}
+
+.eqc-grid-line-ana,
+.eqc-grid-line-resp {
+  stroke: var(--xleth-eq-grid);
+  stroke-width: 0.5;
+  opacity: 0.7;
+}
+
+.eqc-grid-label-x,
+.eqc-grid-label-ana,
+.eqc-grid-label-resp {
+  fill: var(--xleth-eq-text-tertiary);
+  font-size: 9px;
+  font-family: var(--xleth-eq-font-family);
+  font-variant-numeric: tabular-nums;
+}
+
+.eqc-grid-label-x {
+  text-anchor: middle;
+}
+
+.eqc-spectrum-fill {
+  fill: var(--xleth-eq-spec-post-fill);
+  stroke: var(--xleth-eq-spec-post-stroke);
+  stroke-width: 1;
+  pointer-events: none;
+}
+
+.eqc-spectrum-pre-fill {
+  fill: var(--xleth-eq-spec-pre-fill);
+  stroke: var(--xleth-eq-spec-pre-stroke);
+  stroke-width: 0.75;
+  pointer-events: none;
+}
+
+.eqc-spectrum-hold {
+  fill: none;
+  stroke: var(--xleth-eq-spec-maxhold);
+  stroke-width: 0.75;
+  opacity: 0.7;
+  pointer-events: none;
+}
+
+.eqc-spectrum-pre-hold {
+  fill: none;
+  stroke: var(--xleth-eq-spec-pre-stroke);
+  stroke-width: 0.75;
+  opacity: 0.55;
+  pointer-events: none;
+}
+
+.eqc-response-line {
+  fill: none;
+  stroke: var(--xleth-flat-text);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+
+.eqc-node-badge {
+  font-size: 9px;
+  font-weight: 700;
+  font-family: var(--xleth-eq-font-family);
+  letter-spacing: 0.06em;
+}
+
+.eqc-chip {
+  position: absolute;
+  transform: translateX(-50%);
+  pointer-events: none;
+  z-index: 10;
+  min-width: 96px;
+  padding: 8px 12px;
+  text-align: center;
+  background: var(--xleth-flat-panel);
+  border: 1px solid var(--xleth-flat-border);
+  border-top-width: 2px;
+  box-shadow: var(--theme-depth-hard-shadow);
+}
+
+.eqc-chip-freq {
+  font-size: 12px;
+  font-family: var(--xleth-eq-font-family);
+  font-variant-numeric: tabular-nums;
+  color: var(--xleth-flat-text);
+}
+
+.eqc-chip-note {
+  font-size: 9px;
+  font-family: var(--xleth-eq-font-family);
+  color: var(--xleth-eq-text-tertiary);
+}
+
+.eqc-chip-gain {
+  font-size: 10.5px;
+  font-family: var(--xleth-eq-font-family);
+  margin-top: 2px;
+  color: var(--xleth-flat-text);
+}
+
+.eqc-chip-q {
+  color: var(--xleth-eq-text-tertiary);
+}
+
+.eqc-chip-channel {
+  font-size: 8.5px;
+  letter-spacing: 0.2em;
+  text-transform: uppercase;
+  margin-top: 3px;
+  font-weight: 600;
+}
+
+/* Plain hover — a quiet subtext label, not a card. The full detail chip is
+   reserved for an actual selection ("only important if you really want to
+   take a closer look"). */
+.eqc-hover-label {
+  position: absolute;
+  transform: translate(-50%, -100%);
+  pointer-events: none;
+  z-index: 9;
+  font-size: 9.5px;
+  font-family: var(--xleth-eq-font-family);
+  font-variant-numeric: tabular-nums;
+  color: var(--xleth-eq-text-secondary);
+  text-shadow: 0 1px 2px rgba(0, 0, 0, 0.8);
+  white-space: nowrap;
+}
+
+.eqc-hover-readout {
+  position: absolute;
+  top: 10px;
+  right: 6px;
+  background: var(--xleth-flat-panel);
+  border: 1px solid var(--xleth-flat-border);
+  padding: 2px 7px;
+  font-size: 9px;
+  font-family: var(--xleth-eq-font-family);
+  font-variant-numeric: tabular-nums;
+  color: var(--xleth-eq-text-secondary);
+  pointer-events: none;
+  z-index: 10;
+  white-space: nowrap;
+}
+
+/* ── EQ Band Panel — a small popup anchored to the selected node, like every
+   other floating inspector in this app (NOT a bar docked across the display,
+   which ate most of the screen and could sit over the panel's own header). */
+
+.eqbp {
+  position: fixed;
+  z-index: 400;
+  display: flex;
+  flex-direction: column;
+  width: 260px;
+  background: var(--xleth-flat-panel);
+  border: 1px solid var(--xleth-flat-border);
+  border-left-width: 3px;
+  box-shadow: var(--theme-depth-hard-shadow);
+  font-family: var(--xleth-eq-font-family);
+}
+
+.eqbp-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 6px 7px 10px;
+  border-bottom: 1px solid var(--xleth-flat-border);
+}
+
+.eqbp-header-dot {
+  width: 6px;
+  height: 6px;
+  display: inline-block;
+  flex-shrink: 0;
+}
+
+.eqbp-header-title {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--xleth-flat-text);
+}
+
+.eqbp-header-count {
+  flex: 1;
+  font-size: 8.5px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--xleth-eq-text-tertiary);
+  text-align: right;
+}
+
+.eqbp-close {
+  width: 18px;
+  height: 18px;
+  border: 0;
+  background: transparent;
+  color: var(--xleth-eq-text-tertiary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.eqbp-close:hover {
+  color: var(--xleth-flat-text);
+  background: var(--xleth-flat-section);
+}
+
+.eqbp-knobs {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 4px;
+  padding: 10px 10px 6px;
+}
+
+.eqbp-power {
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--xleth-flat-border-strong);
+  background: transparent;
+  color: var(--xleth-eq-text-tertiary);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.eqbp-power.active {
+  color: var(--xleth-flat-accent);
+  border-color: var(--xleth-flat-accent);
+  background: var(--theme-accent-bg-subtle);
+}
+
+.eqbp-power:hover {
+  color: var(--xleth-flat-text);
+}
+
+.eqbp-knob-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.eqbp-knob-value {
+  font-size: 9px;
+  font-family: var(--xleth-eq-font-family);
+  color: var(--xleth-flat-text-muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.eqbp-section {
+  padding: 6px 10px;
+  border-top: 1px solid var(--xleth-flat-border);
+}
+
+.eqbp-section-label {
+  font-size: 8.5px;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--xleth-eq-text-tertiary);
+  margin-bottom: 4px;
+}
+
+.eqbp-shape-buttons {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 3px;
+}
+
+.eqbp-shape-btn {
+  padding: 3px 6px;
+  font-size: 9px;
+  letter-spacing: 0.02em;
+  font-family: var(--xleth-eq-font-family);
+  background: transparent;
+  color: var(--xleth-eq-text-secondary);
+  border: 1px solid var(--xleth-flat-border);
+  cursor: pointer;
+}
+
+.eqbp-shape-btn.active {
+  background: var(--xleth-flat-section);
+  color: var(--xleth-flat-text);
+  border-color: var(--xleth-flat-accent);
+}
+
+.eqbp-mode-select {
+  width: 100%;
+  height: 20px;
+  padding: 0 6px;
+  border: 1px solid var(--xleth-flat-border-strong);
+  background: var(--xleth-flat-well);
+  color: var(--xleth-eq-text-secondary);
+  font-size: 9px;
+  font-family: var(--xleth-eq-font-family);
+}
+
+.eqbp-channel-row {
+  display: flex;
+  border: 1px solid var(--xleth-flat-border);
+  background: var(--xleth-flat-well);
+}
+
+.eqbp-channel-btn {
+  flex: 1;
+  padding: 5px 2px;
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  font-family: var(--xleth-eq-font-family);
+  background: transparent;
+  color: var(--xleth-eq-text-tertiary);
+  border: none;
+  border-left: 1px solid var(--xleth-flat-border);
+  cursor: pointer;
+}
+
+.eqbp-channel-btn:first-child {
+  border-left: none;
+}
+
+.eqbp-channel-btn.active {
+  background: var(--xleth-flat-section);
+  font-weight: 700;
+}
+
+.eqbp-extend {
+  border-top: 1px solid var(--xleth-flat-border);
+  padding: 8px 10px;
+}
+
+.eqbp-footer {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  border-top: 1px solid var(--xleth-flat-border);
+  padding: 7px 10px 9px;
+}
+
+.eqbp-footer button {
+  flex: 1;
+  height: 22px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  font-family: var(--xleth-eq-font-family);
+  color: var(--xleth-eq-text-secondary);
+  background: transparent;
+  border: 1px solid var(--xleth-flat-border-strong);
+  cursor: pointer;
+}
+
+.eqbp-footer button:hover {
+  border-color: var(--xleth-flat-accent);
+  color: var(--xleth-flat-accent);
+}
+
+.eqbp-footer button.danger {
+  color: var(--xleth-eq-danger);
+}
+
+.eqbp-footer button.danger:hover {
+  border-color: var(--xleth-eq-danger);
+  color: var(--xleth-eq-danger);
+}
+
+.eqbp-confirm {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--xleth-eq-danger);
+}
+
+.eqbp-confirm span {
+  flex: 1;
+}
+
+.eqbp-confirm button {
+  height: 20px;
+  padding: 0 8px;
+  font-size: 8px;
+  border: 1px solid var(--xleth-flat-border-strong);
+  background: transparent;
+  color: var(--xleth-eq-text-secondary);
+  cursor: pointer;
+}
+
+.eqbp-confirm button:hover {
+  border-color: var(--xleth-eq-danger);
+  color: var(--xleth-eq-danger);
 }
 
 /* â”€â”€ Node Editor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
@@ -18297,8 +18868,8 @@ html, body, #root {
 /* â”€â”€ Scrollbar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 ::-webkit-scrollbar {
-  width: 8px;
-  height: 8px;
+  width: 16px;
+  height: 16px;
 }
 
 ::-webkit-scrollbar-track {
@@ -18849,7 +19420,7 @@ html, body, #root {
 }
 
 .midi-sample-rail::-webkit-scrollbar {
-  height: 8px;
+  height: 14px;
 }
 
 .midi-sample-rail::-webkit-scrollbar-track {
@@ -22698,7 +23269,7 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
 .effect-chain-add-menu.context-menu::-webkit-scrollbar,
 .effect-chain-add-submenu.context-menu::-webkit-scrollbar,
 .xleth-graph-state-preview__context-menu::-webkit-scrollbar {
-  width: 8px;
+  width: 14px;
 }
 
 .effect-chain-add-menu.context-menu::-webkit-scrollbar-thumb,
@@ -24122,16 +24693,8 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   border-bottom: 1px solid var(--xleth-flat-preview-border);
 }
 .track-header:hover { background: #1b1b1b; }
-.track-header-identity-stripe::before { display: none; }
 
-.track-header-left { padding-left: 10px; gap: 8px; }
-.track-header-name {
-  color: var(--xleth-flat-text);
-  font-size: 11.5px;
-  font-weight: 400;
-}
-.track-header-subname { color: var(--xleth-flat-text-subtle); }
-.track-header-type-badge { color: var(--xleth-flat-text-subtle); }
+.track-header-name { font-size: 11.5px; }
 
 .track-header-btn {
   width: 17px;
@@ -24262,10 +24825,12 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   background: var(--xleth-flat-main);
 }
 
-/* ── Node canvas: darkest well so nodes (#1c1c1c) read as lifted cards ──────── */
-.xleth-graph-state-preview__viewport {
-  background-color: var(--xleth-flat-main);
-}
+/* The node canvas used to be overridden here to force a darker well than the
+ * dot-grid base. windowing.css now paints it as a flat --theme-bg-inset well
+ * directly, which is already the darkest neutral, so re-stating it here only
+ * created a cascade-order coin flip between the two files over which backdrop
+ * wins. windowing.css is the single owner.
+ * ── (node canvas: see .xleth-graph-state-preview__viewport in windowing.css) ── */
 
 /* ── Add-effect picker modal ───────────────────────────────────────────────── */
 .xleth-fx-graph-effect-picker {
@@ -24369,8 +24934,8 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   scrollbar-color: var(--xleth-flat-border-strong) var(--xleth-flat-well);
 }
 .sampler-panel-scroll::-webkit-scrollbar {
-  width: 10px;
-  height: 10px;
+  width: 16px;
+  height: 16px;
 }
 .sampler-panel-scroll::-webkit-scrollbar-thumb {
   min-width: 44px;
@@ -24498,6 +25063,13 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
 }
 
 .sampler-panel-body {
+  /* The four modulation source colours are declared here as well as on the
+     tray: a routed knob draws its ring in its source's colour, and those knobs
+     live in the panel, not the tray. Same tokens, one inheritance root each. */
+  --mod-env: var(--theme-sampler-mod-color-volume);
+  --mod-lfo: var(--theme-sampler-mod-color-pan);
+  --mod-velo: var(--theme-sampler-mod-color-pitch);
+  --mod-note: var(--theme-accent);
   flex: 1 1 auto;
   margin: 0;
   overflow: hidden;
@@ -24535,8 +25107,8 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
 }
 
 .sampler-panel-scroll::-webkit-scrollbar {
-  width: 9px;
-  height: 9px;
+  width: 15px;
+  height: 15px;
 }
 
 .sampler-panel-scroll::-webkit-scrollbar-thumb {
@@ -25054,6 +25626,28 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   gap: 8px;
 }
 
+/* ── Preview monitoring (audition effect routing) ── */
+.sampler-preview-routing {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+
+.sampler-preview-routing-state {
+  font-size: 11px;
+  color: var(--theme-text);
+  opacity: 0.85;
+  white-space: nowrap;
+}
+
+/* Dry is the fallback, not the goal — read it back dimmer than a real route. */
+.sampler-preview-routing-state.is-dry {
+  color: var(--theme-text-muted);
+  opacity: 0.7;
+  font-style: italic;
+}
+
 .sampler-process-button {
   min-width: 0;
   height: 32px;
@@ -25092,8 +25686,15 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   background: transparent;
 }
 
+.sampler-root-module {
+  flex: 1 1 200px;
+  min-width: 170px;
+  border-right: 1px solid var(--sampler-bd) !important;
+}
+
 .sampler-voice-module {
-  flex: 0 0 170px;
+  flex: 1 1 240px;
+  min-width: 220px;
   border-right: 1px solid var(--sampler-bd) !important;
 }
 
@@ -25102,6 +25703,8 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
 }
 
 .sampler-arp-module {
+  flex: 1 1 260px;
+  min-width: 240px;
   padding: 12px;
 }
 
@@ -28000,6 +28603,19 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   flex-shrink: 0;
 }
 
+/* Shared preset strip for the bespoke (non-runtime-renderer) stock effect
+   panels — Delay, UniFlange, Chorus, Flanger, Phaser, Phanjer, Reverb,
+   Smart Balance, EQ, Filter, Waveshaper. Same chrome as .apex-preset-strip,
+   named generically since none of these panels are APEX. */
+.fx-panel-preset-strip {
+  display: flex;
+  align-items: center;
+  padding: 4px 12px;
+  border-bottom: 1px solid var(--xleth-flat-border);
+  background: var(--xleth-flat-chrome);
+  flex-shrink: 0;
+}
+
 /* ─── GLOSS — one-knob APEX companion skin ──────────────────────────────────── */
 /* Same flat, zero-radius chrome as APEX. Color is earned: the accent lives on the
    header tick, the active bank, and the AMOUNT knob's activity arc (from the
@@ -28430,6 +29046,8 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   display: flex;
   align-items: center;
   gap: 10px;
+  flex: 1 1 180px;
+  min-width: 180px;
   max-width: 480px;
 }
 .filter-depth-slider {
@@ -28609,6 +29227,8 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   background: var(--xleth-flat-panel);
   box-shadow: 4px 5px 0 rgba(0, 0, 0, 0.5);
   overflow: hidden;
+  display: flex;
+  flex-direction: column;
   opacity: 0;
   pointer-events: none;
   transform: translateX(-8px);
@@ -28638,13 +29258,29 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   color: var(--xleth-flat-text-secondary);
   box-shadow: 4px 5px 0 rgba(0, 0, 0, 0.5);
   cursor: pointer;
+  /* The tray is portaled into .xleth-floating-window-layer (to share its
+     panel-frame stacking context) rather than <body>; that layer sets
+     pointer-events:none on itself and only re-enables it for .xleth-panel-frame
+     children, so this needs its own explicit opt back in. */
+  pointer-events: auto;
 }
 
 .sampler-mod-tray-handle:hover { color: var(--xleth-flat-text); }
 .sampler-mod-tray-handle.is-open { color: var(--theme-accent); }
 
+/* Routes stay locked to the top of the tray with their own capped scroll, so
+   the wiring summary is always in view no matter how far the editors scroll. */
+.sampler-mod-tray-routes {
+  flex: 0 0 auto;
+  max-height: 34%;
+  overflow-y: auto;
+  padding: 12px 12px 10px;
+  border-bottom: 1px solid var(--xleth-flat-border);
+}
+
 .sampler-mod-tray-scroll {
-  height: 100%;
+  flex: 1 1 auto;
+  min-height: 0;
   overflow-y: auto;
   padding: 12px;
   display: flex;
@@ -28655,7 +29291,103 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
 .sampler-mod-section {
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 0;
+}
+
+/* ── Source tab strips (ENV / LFO / response) ─────────────────────────────────
+   One editor shows at a time; you switch sources by tab. The strip scrolls
+   horizontally when there are more tabs than fit. A tab is also the drag-to-
+   route handle (see ModDragLayer): click selects, drag drops onto a knob. */
+.sampler-mod-tabstrip {
+  display: flex;
+  align-items: stretch;
+  gap: 6px;
+}
+
+.sampler-mod-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+
+.sampler-mod-tabs::-webkit-scrollbar {
+  height: 12px;
+}
+
+.sampler-mod-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+  padding: 5px 8px;
+  border: 1px solid var(--xleth-flat-border);
+  border-bottom: 2px solid transparent;
+  border-radius: 0;
+  background: var(--xleth-flat-well);
+  color: var(--xleth-flat-text-secondary);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+}
+
+.sampler-mod-tab:hover { color: var(--xleth-flat-text); }
+
+.sampler-mod-tab.is-active {
+  color: var(--xleth-flat-text);
+  background: var(--xleth-flat-panel);
+  border-bottom-color: var(--tab-color, var(--theme-accent));
+}
+
+.sampler-mod-tab:focus-visible {
+  outline: none;
+  border-color: var(--theme-accent);
+}
+
+.sampler-mod-tab-dot {
+  width: 6px;
+  height: 6px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: var(--tab-color, var(--theme-accent));
+}
+
+.sampler-mod-tab-label { line-height: 1; }
+
+.sampler-mod-tab-x {
+  appearance: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  margin-left: 2px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--xleth-flat-text-secondary);
+  font-size: 13px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sampler-mod-tab-x:hover { color: var(--theme-accent); }
+
+/* The editor for the selected tab, framed to read as one piece with the strip. */
+.sampler-mod-tabpanel {
+  border: 1px solid var(--xleth-flat-border);
+  border-top: 0;
+  background: var(--xleth-flat-well);
+  padding: 8px;
 }
 
 .sampler-mod-section-head {
@@ -29006,4 +29738,962 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
 .sampler-select--sm {
   padding: 3px 6px;
   font-size: 10px;
+}
+
+/* ── Drag-to-route: grips, ghost, route list, mini bars ──────────────────────
+   Flat, zero-radius, tokens only. The teal accent appears only on meaningful
+   state: a live drop target, an armed grip, a bipolar route. Everything at rest
+   is the tray's neutral flat chrome. */
+.sampler-mod-grip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 16px;
+  margin-right: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--xleth-flat-text-muted);
+  cursor: grab;
+  touch-action: none;
+}
+
+.sampler-mod-grip:hover { color: var(--card-color, var(--theme-accent)); }
+.sampler-mod-grip:active { cursor: grabbing; }
+
+/* Route count leaving this source — a plain "in use" badge, not decoration. */
+.sampler-mod-src-uses {
+  min-width: 14px;
+  padding: 0 3px;
+  border: 1px solid var(--card-color, var(--theme-accent));
+  border-radius: 0;
+  color: var(--card-color, var(--theme-accent));
+  font-size: 9px;
+  line-height: 13px;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.sampler-mod-src-card.is-routed { border-left-color: var(--card-color, var(--theme-accent)); }
+
+/* The label that follows the pointer during a drag. pointer-events: none is
+   load-bearing — the drop hit-test is elementFromPoint, and a ghost that could
+   be hit would shadow every target underneath it. */
+.sampler-mod-drag-ghost {
+  position: fixed;
+  z-index: calc(var(--xleth-z-window-floating-base, 1000) + 800);
+  transform: translate(10px, 10px);
+  padding: 2px 6px;
+  border: 1px solid var(--ghost-color, var(--theme-accent));
+  border-radius: 0;
+  background: var(--xleth-flat-panel);
+  color: var(--ghost-color, var(--theme-accent));
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  pointer-events: none;
+  box-shadow: 3px 3px 0 rgba(0, 0, 0, 0.5);
+}
+
+.sampler-mod-drag-ghost.is-over {
+  background: var(--ghost-color, var(--theme-accent));
+  color: var(--theme-text-on-accent);
+}
+
+/* ── Route list ─────────────────────────────────────────────────────────── */
+.sampler-mod-route-count {
+  color: var(--xleth-flat-text-muted);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+
+.sampler-mod-route-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.sampler-mod-route {
+  display: grid;
+  grid-template-columns: 54px 10px 1fr auto 18px 18px;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 6px;
+  border: 1px solid var(--xleth-flat-border);
+  border-left: 2px solid var(--route-color, var(--theme-accent));
+  border-radius: 0;
+  background: var(--xleth-flat-inset, var(--theme-bg-inset));
+}
+
+.sampler-mod-route-src {
+  color: var(--route-color, var(--theme-accent));
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.sampler-mod-route-arrow { color: var(--xleth-flat-text-muted); font-size: 10px; }
+
+.sampler-mod-route-dst {
+  color: var(--xleth-flat-text);
+  font-size: 10px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.sampler-mod-route-amount {
+  color: var(--xleth-flat-text-secondary);
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.sampler-mod-route-pol,
+.sampler-mod-route-del {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1px solid var(--xleth-flat-border);
+  border-radius: 0;
+  background: transparent;
+  color: var(--xleth-flat-text-muted);
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.sampler-mod-route-pol:hover,
+.sampler-mod-route-del:hover { color: var(--xleth-flat-text); }
+
+.sampler-mod-route-pol.is-on {
+  border-color: var(--theme-accent);
+  color: var(--theme-accent);
+}
+
+/* ── Slot mini-control modulation bar ────────────────────────────────────────
+   A mini is a DOM control, so its indicator is a DOM bar under the value rather
+   than an arc — the shared Knob's ring rule ("draw with whatever the control
+   already draws with") applied to a control that never had a canvas. */
+.slot-mini { position: relative; }
+
+.slot-mini-mod {
+  position: absolute;
+  left: 1px;
+  right: 1px;
+  bottom: 0;
+  height: 3px;
+  cursor: ns-resize;
+  touch-action: none;
+}
+
+.slot-mini-mod-fill {
+  position: absolute;
+  top: 0;
+  height: 100%;
+  background: var(--mod-color, var(--theme-accent));
+}
+
+.slot-mini.is-modulated { border-color: var(--mod-color, var(--theme-accent)); }
+
+.slot-mini.is-mod-hover {
+  border-color: var(--theme-accent);
+  background: color-mix(in srgb, var(--theme-accent) 20%, var(--theme-bg-inset));
+}
+
+/* ═════════════════════════════════════════════════════════════════════════════
+   FX Chain Library — mixer strip context menu, library submenu, save dialog,
+   and the sticky drag ghost.
+
+   All of it is portaled to <body>, so it sits OUTSIDE the .mixer-panel element
+   that scopes the --mx-* palette. These rules therefore read the global
+   --theme-* tokens directly rather than --mx-*, which would resolve to nothing
+   out here. Geometry and weight still match the mixer's flat, square chrome.
+   ═════════════════════════════════════════════════════════════════════════════ */
+
+.fxchain-menu {
+  position: fixed;
+  z-index: 9100;
+  min-width: 214px;
+  padding: 4px 0;
+  background: var(--theme-bg-elevated);
+  border: 1px solid var(--theme-depth-elevation-3-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--theme-depth-elevation-3-outer-shadow);
+  user-select: none;
+}
+
+.fxchain-menu-head {
+  display: flex;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 5px 12px 7px;
+  margin-bottom: 4px;
+  border-bottom: 1px solid var(--theme-border-subtle);
+  font-size: 9.5px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--theme-text-placeholder);
+}
+
+.fxchain-menu-head b {
+  color: var(--theme-accent);
+  font-weight: 600;
+  letter-spacing: 0.08em;
+}
+
+/* Anchors the library submenu without nesting it inside the row button. */
+.fxchain-mi-wrap { position: relative; }
+
+.fxchain-mi {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 6px 12px;
+  background: none;
+  border: none;
+  color: var(--theme-text);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+  transition: background var(--transition-fast);
+}
+
+.fxchain-mi:hover,
+.fxchain-mi.is-open {
+  background: color-mix(in srgb, var(--theme-accent) 20%, transparent);
+}
+
+.fxchain-mi:focus-visible {
+  outline: 1px solid var(--theme-accent);
+  outline-offset: -2px;
+}
+
+.fxchain-mi:disabled {
+  color: var(--theme-text-placeholder);
+  cursor: default;
+}
+
+.fxchain-mi:disabled:hover { background: none; }
+
+.fxchain-glyph {
+  display: flex;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 14px;
+  color: var(--theme-text-subtle);
+}
+
+.fxchain-mi:hover:not(:disabled) .fxchain-glyph { color: var(--theme-accent); }
+
+.fxchain-mi-stack { display: flex; flex-direction: column; }
+
+.fxchain-mi-sub {
+  margin-top: 1px;
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--theme-text-subtle);
+}
+
+.fxchain-arrow {
+  margin-left: auto;
+  font-size: 10px;
+  color: var(--theme-text-subtle);
+}
+
+.fxchain-shortcut {
+  margin-left: auto;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--theme-text-placeholder);
+}
+
+.fxchain-sep {
+  height: 1px;
+  margin: 4px 10px;
+  background: var(--theme-border-subtle);
+}
+
+/* Drag affordance: the Save row is also the drag handle, so it grows a grip on
+   hover rather than relying on the user discovering press-and-hold by accident. */
+.fxchain-mi--grab { cursor: grab; }
+.fxchain-mi--grab:active:not(:disabled) { cursor: grabbing; }
+.fxchain-mi--grab:disabled { cursor: default; }
+
+.fxchain-grip {
+  flex-shrink: 0;
+  width: 6px;
+  height: 14px;
+  margin-left: -4px;
+  opacity: 0;
+  background-image: radial-gradient(circle, var(--theme-text-subtle) 1px, transparent 1.1px);
+  background-size: 3px 4px;
+  transition: opacity var(--transition-fast);
+}
+
+.fxchain-mi--grab:hover:not(:disabled) .fxchain-grip { opacity: 1; }
+
+/* ── Library submenu ──────────────────────────────────────────────────────── */
+
+.fxchain-submenu {
+  position: absolute;
+  left: 100%;
+  top: -5px;
+  z-index: 1;
+  width: 254px;
+  margin-left: 2px;
+  padding: 6px 0 4px;
+  background: var(--theme-bg-elevated);
+  border: 1px solid var(--theme-depth-elevation-3-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--theme-depth-elevation-3-outer-shadow);
+}
+
+.fxchain-search {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 8px 6px;
+  padding: 0 7px;
+  background: var(--theme-bg-inset);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm);
+  color: var(--theme-text-placeholder);
+}
+
+.fxchain-search input {
+  flex: 1;
+  min-width: 0;
+  padding: 5px 0;
+  background: none;
+  border: none;
+  outline: none;
+  color: var(--theme-text);
+  font-family: inherit;
+  font-size: 11.5px;
+}
+
+.fxchain-search input::placeholder { color: var(--theme-text-placeholder); }
+
+.fxchain-lib-scroll { max-height: 248px; overflow-y: auto; }
+
+.fxchain-lib-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px 3px;
+  font-size: 9px;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--theme-text-placeholder);
+}
+
+.fxchain-lib-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 12px;
+  background: none;
+  border: none;
+  color: var(--theme-text);
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.fxchain-lib-item:hover,
+.fxchain-lib-item.is-open {
+  background: color-mix(in srgb, var(--theme-accent) 20%, transparent);
+}
+
+.fxchain-lib-item:focus-visible {
+  outline: 1px solid var(--theme-accent);
+  outline-offset: -2px;
+}
+
+.fxchain-lib-name {
+  flex: 1;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.fxchain-lib-count {
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--theme-text-subtle);
+}
+
+/* A chain naming a plugin this machine cannot instantiate is flagged BEFORE the
+   user loads it, not reported as a short chain afterwards. */
+.fxchain-lib-item.is-missing .fxchain-lib-name { color: var(--theme-warning); }
+.fxchain-lib-warn { font-size: 10px; color: var(--theme-warning); }
+
+.fxchain-lib-empty {
+  padding: 10px 12px;
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--theme-text-placeholder);
+}
+
+/* ── Replace / Add flyout ─────────────────────────────────────────────────── */
+
+.fxchain-flyout {
+  position: fixed;
+  z-index: 9200;
+  width: 174px;
+  padding: 4px 0;
+  background: var(--theme-bg-elevated);
+  border: 1px solid var(--theme-depth-elevation-3-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--theme-depth-elevation-3-outer-shadow);
+}
+
+/* ── Save dialog ──────────────────────────────────────────────────────────── */
+
+.fxchain-scrim {
+  position: fixed;
+  inset: 0;
+  z-index: 9300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--theme-overlay-medium);
+}
+
+.fxchain-dialog {
+  width: 352px;
+  overflow: hidden;
+  background: var(--theme-bg-elevated);
+  border: 1px solid var(--theme-depth-elevation-3-border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--theme-depth-elevation-3-outer-shadow);
+}
+
+.fxchain-dialog h4 {
+  margin: 0;
+  padding: 11px 14px;
+  border-bottom: 1px solid var(--theme-border-subtle);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.11em;
+  text-transform: uppercase;
+  color: var(--theme-text-muted);
+}
+
+.fxchain-dialog-body {
+  display: flex;
+  flex-direction: column;
+  gap: 11px;
+  padding: 14px;
+}
+
+.fxchain-dialog-body > label {
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--theme-text-subtle);
+}
+
+.fxchain-dialog input[type="text"],
+.fxchain-dialog-select {
+  width: 100%;
+  padding: 7px 9px;
+  background: var(--theme-bg-inset);
+  border: 1px solid var(--theme-border-strong);
+  border-radius: var(--radius-sm);
+  outline: none;
+  color: var(--theme-text);
+  font-family: inherit;
+  font-size: 13px;
+}
+
+.fxchain-dialog input[type="text"]:focus,
+.fxchain-dialog-select:focus { border-color: var(--theme-accent); }
+
+.fxchain-capture-list {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  max-height: 148px;
+  overflow-y: auto;
+  padding: 8px 10px;
+  background: var(--theme-bg-inset);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm);
+}
+
+.fxchain-capture-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 11.5px;
+  color: var(--theme-text-muted);
+}
+
+.fxchain-capture-idx {
+  width: 12px;
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--theme-text-placeholder);
+}
+
+.fxchain-capture-name { flex: 1; }
+
+.fxchain-capture-bypass {
+  font-size: 9px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--theme-warning);
+}
+
+/* Overrides the uppercase label styling above — this one is a sentence, not a
+   field name, so the selector has to be at least as specific. */
+.fxchain-dialog-body > label.fxchain-opt {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  letter-spacing: 0;
+  text-transform: none;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+}
+
+.fxchain-opt input { accent-color: var(--theme-accent); }
+
+.fxchain-dialog-foot {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 0 14px 14px;
+}
+
+.fxchain-btn {
+  padding: 6px 14px;
+  background: var(--theme-bg-inset);
+  border: 1px solid var(--theme-border-strong);
+  border-radius: var(--radius-sm);
+  color: var(--theme-text);
+  font-family: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.fxchain-btn:hover { border-color: var(--theme-text-subtle); }
+
+.fxchain-btn:focus-visible {
+  outline: 2px solid var(--theme-accent);
+  outline-offset: 2px;
+}
+
+.fxchain-btn--primary {
+  background: var(--theme-accent);
+  border-color: var(--theme-accent);
+  color: var(--theme-text-on-accent);
+  font-weight: 600;
+}
+
+.fxchain-btn--primary:hover { filter: brightness(1.08); }
+
+/* ── Sticky drag ghost ────────────────────────────────────────────────────── */
+
+.fxchain-ghost {
+  position: fixed;
+  z-index: 9400;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 11px;
+  transform: translate(10px, 10px);
+  white-space: nowrap;
+  pointer-events: none;
+  background: var(--theme-bg-elevated);
+  border: 1px solid var(--theme-accent);
+  border-radius: var(--radius-md);
+  box-shadow: var(--theme-depth-elevation-3-outer-shadow);
+  color: var(--theme-text);
+  font-size: 11.5px;
+}
+
+.fxchain-ghost-count {
+  padding: 1px 6px;
+  border-radius: 8px;
+  background: var(--theme-accent);
+  color: var(--theme-text-on-accent);
+  font-size: 9.5px;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+}
+
+.fxchain-ghost-hint { font-size: 10.5px; color: var(--theme-text-subtle); }
+
+/* ── Strip drop-target states (inside .mixer-panel, so --mx-* applies) ────── */
+
+.mixer-strip--fx-droptarget {
+  background: color-mix(in srgb, var(--mx-ac) 10%, var(--mx-s1));
+  outline: 1px solid color-mix(in srgb, var(--mx-ac) 55%, transparent);
+  outline-offset: -1px;
+}
+
+.mixer-strip--fx-drophover {
+  background: color-mix(in srgb, var(--mx-ac) 20%, var(--mx-s1));
+  outline: 1px solid var(--mx-ac);
+}
+
+/* The strip the chain came from is not a target — mark it, do not invite it. */
+.mixer-strip--fx-dragsource::before { background: var(--mx-ac); }
+
+/* ── Zoom/Pan/Rot keyframe timeline card (replaces the old ZprParamsView
+   slider stack) ──────────────────────────────────────────────────────────
+   Flat, zero-radius, TR-8S dark-matte tokens only — no hardcoded colors,
+   accent derives from --theme-accent via the existing --xleth-flat-* set. */
+
+.zpr-timeline-card {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 10px;
+  background: var(--xleth-flat-panel);
+  border: 1px solid var(--xleth-flat-border);
+  border-radius: 0;
+  box-shadow: 4px 5px 0 rgba(0, 0, 0, 0.5);
+}
+
+.zpr-timeline-header {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.zpr-timeline-header-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+/* Slide-variant header: no Length/On-end/Retrigger (the slide config above the
+   card owns those), just the one line that explains what the curves mean here
+   — that they are a delta over the track's own animation, not a replacement. */
+.zpr-timeline-card.is-slide {
+  box-shadow: none;
+}
+
+.zpr-slide-note {
+  font-size: 10.5px;
+  line-height: 1.45;
+  color: var(--xleth-flat-text-subtle);
+}
+
+.zpr-timeline-header-row label {
+  font-size: 10.5px;
+  color: var(--xleth-flat-text-subtle);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.zpr-header-select {
+  min-width: 92px;
+}
+
+.zpr-length-resolved {
+  font-family: 'IBM Plex Mono', var(--font-mono, monospace);
+  font-size: 10.5px;
+  color: var(--xleth-flat-text-secondary);
+}
+
+.zpr-loop-warning {
+  font-size: 11px;
+  line-height: 1;
+  color: var(--theme-warning);
+  opacity: 0.75;
+  cursor: help;
+}
+
+/* ── Keyframe canvas body ─────────────────────────────────────────────── */
+
+.zpr-timeline-body {
+  display: flex;
+  border: 1px solid var(--xleth-flat-border);
+}
+
+.zpr-timeline-gutter {
+  flex: 0 0 92px;
+  display: flex;
+  flex-direction: column;
+  border-right: 1px solid var(--xleth-flat-border);
+  background: var(--xleth-flat-panel);
+}
+
+.zpr-timeline-gutter-ruler {
+  height: 22px;
+  border-bottom: 1px solid var(--xleth-flat-border);
+}
+
+.zpr-timeline-gutter-row {
+  display: flex;
+  align-items: center;
+  padding: 0 8px;
+  font-size: 10.5px;
+  color: var(--xleth-flat-text-secondary);
+  border-bottom: 1px solid var(--xleth-flat-border);
+}
+
+.zpr-timeline-gutter-row--disabled {
+  color: var(--xleth-flat-text-subtle);
+  opacity: 0.6;
+}
+
+.zpr-timeline-expand-btn {
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+  font-size: 10.5px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.zpr-timeline-expand-btn:hover { color: var(--theme-accent); }
+
+.zpr-timeline-canvas-wrap {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.zpr-timeline-canvas {
+  display: block;
+  cursor: default;
+  outline: none;
+}
+
+/* ── Numeric inspector — drag-scrub fields, never sliders ────────────────── */
+
+/* ── Spatial viewport (left) + numeric inspector (right) ────────────────
+   Vegas Pan/Crop-style direct manipulation. The rect, its handles and the
+   motion path are all painted on the canvas — nothing here positions a DOM
+   overlay over the stage. */
+
+.zpr-editor-row {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  flex-wrap: wrap;
+}
+
+.zpr-viewport-col {
+  flex: 1 1 320px;
+  min-width: 260px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.zpr-inspector-col {
+  flex: 0 1 210px;
+  min-width: 170px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.zpr-viewport-wrap {
+  width: 100%;
+  border: 1px solid var(--xleth-flat-border);
+  background: var(--xleth-flat-panel);
+}
+
+.zpr-viewport-canvas {
+  display: block;
+  touch-action: none;
+  outline: none;
+}
+
+.zpr-viewport-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.zpr-viewport-toggle {
+  font-family: 'IBM Plex Mono', var(--font-mono, monospace);
+  font-size: 10px;
+  color: var(--xleth-flat-text-secondary);
+  background: var(--xleth-flat-panel-alt, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--xleth-flat-border);
+  border-radius: 0;
+  padding: 2px 7px;
+  cursor: pointer;
+}
+
+.zpr-viewport-toggle:hover { border-color: var(--theme-accent); }
+
+.zpr-viewport-toggle.is-active {
+  color: var(--theme-accent);
+  border-color: var(--theme-accent);
+}
+
+.zpr-record-toggle.is-recording {
+  color: var(--theme-danger);
+  border-color: var(--theme-danger);
+  animation: zpr-record-pulse 1.2s ease-in-out infinite;
+}
+
+@keyframes zpr-record-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.55; }
+}
+
+.zpr-viewport-hint {
+  font-size: 9.5px;
+  color: var(--xleth-flat-text-subtle);
+  letter-spacing: 0.03em;
+}
+
+.zpr-inspector-derived {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-family: 'IBM Plex Mono', var(--font-mono, monospace);
+  font-size: 9.5px;
+  color: var(--xleth-flat-text-subtle);
+}
+
+.zpr-numeric-inspector {
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
+  padding-top: 4px;
+  border-top: 1px solid var(--xleth-flat-border);
+}
+
+/* Inside the inspector column the fields stack instead of flowing wide. */
+.zpr-inspector-col .zpr-numeric-inspector {
+  flex-direction: column;
+  gap: 6px;
+  border-top: none;
+  padding-top: 0;
+}
+
+.zpr-drag-field {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 64px;
+}
+
+.zpr-drag-field-label {
+  font-size: 9.5px;
+  color: var(--xleth-flat-text-subtle);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.zpr-drag-field-value,
+.zpr-drag-field-input {
+  font-family: 'IBM Plex Mono', var(--font-mono, monospace);
+  font-size: 12px;
+  color: var(--xleth-flat-text);
+  background: var(--xleth-flat-panel-alt, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--xleth-flat-border);
+  border-radius: 0;
+  padding: 3px 6px;
+  user-select: none;
+}
+
+.zpr-drag-field-input {
+  outline: none;
+  user-select: text;
+}
+
+.zpr-drag-field-input:focus,
+.zpr-drag-field-value:hover {
+  border-color: var(--theme-accent);
+}
+
+.zpr-drag-field--readonly .zpr-drag-field-value {
+  color: var(--xleth-flat-text-secondary);
+  opacity: 0.8;
+}
+
+/* ── Bezier segment editor ────────────────────────────────────────────── */
+
+.zpr-bezier-editor {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid var(--xleth-flat-border);
+}
+
+.zpr-bezier-canvas-wrap {
+  width: 100%;
+}
+
+.zpr-bezier-canvas {
+  display: block;
+  width: 100%;
+  cursor: default;
+  border: 1px solid var(--xleth-flat-border);
+}
+
+.zpr-bezier-readout-row {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-family: 'IBM Plex Mono', var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--xleth-flat-text-secondary);
+}
+
+.zpr-bezier-readout-input {
+  font-family: 'IBM Plex Mono', var(--font-mono, monospace);
+  font-size: 11px;
+  color: var(--xleth-flat-text);
+  background: var(--xleth-flat-panel-alt, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--xleth-flat-border);
+  border-radius: 0;
+  padding: 2px 4px;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.zpr-bezier-chip-row {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.zpr-bezier-chip {
+  font-size: 10px;
+  padding: 3px 8px;
+  background: var(--xleth-flat-panel-alt, rgba(255, 255, 255, 0.03));
+  border: 1px solid var(--xleth-flat-border);
+  border-radius: 0;
+  color: var(--xleth-flat-text-secondary);
+  cursor: pointer;
+}
+
+.zpr-bezier-chip:hover {
+  color: var(--xleth-flat-text);
+  border-color: var(--theme-accent);
+}
+
+.zpr-bezier-chip.is-active {
+  color: var(--theme-text-on-accent, #0D0D14);
+  background: var(--theme-accent);
+  border-color: var(--theme-accent);
 }

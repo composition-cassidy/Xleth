@@ -133,8 +133,10 @@ describe('MANGLE chain panel section', () => {
     expect(src).toContain('<SelGrouped')
     expect(src).toContain('groups={MANGLE_GROUPS}')
     // Knobs bind to the per-instance chain field, not a flat slot scalar.
-    expect(src).toMatch(/label="Amount"[\s\S]{0,400}previewChainField\(i, 'amount'/)
-    expect(src).toMatch(/label="Mix"[\s\S]{0,400}previewChainField\(i, 'mix'/)
+    // The window is wide enough to span the modulation registration each knob
+    // now carries between its label and its handlers.
+    expect(src).toMatch(/label="Amount"[\s\S]{0,600}previewChainField\(i, 'amount'/)
+    expect(src).toMatch(/label="Mix"[\s\S]{0,600}previewChainField\(i, 'mix'/)
   })
 
   it('offers add / remove / reorder / bypass chain controls', () => {

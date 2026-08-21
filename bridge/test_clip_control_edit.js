@@ -86,6 +86,52 @@ try {
   check(near(currentClip(clipId).velocity, 1), 'undo after no-op reaches the prior real command');
   addon.undo_redo();
 
+  // ── Concurrent sessions (multi-clip volume/fade drag) ─────────────────────
+  // A multi-clip drag opens one session per selected clip and commits them one
+  // by one. Opening the second session must NOT roll back or invalidate the
+  // first, or every clip but the last would silently fail to commit.
+  const clipB = addon.timeline_addClip({
+    trackId, regionId, positionTicks: 1920, durationTicks: 960, velocity: 1,
+  });
+  const clipC = addon.timeline_addClip({
+    trackId, regionId, positionTicks: 3840, durationTicks: 960, velocity: 1,
+  });
+
+  const sA = addon.timeline_beginClipControlEdit(clipId);
+  const sB = addon.timeline_beginClipControlEdit(clipB);
+  const sC = addon.timeline_beginClipControlEdit(clipC);
+  check(new Set([sA.sessionId, sB.sessionId, sC.sessionId]).size === 3,
+    'three concurrent sessions get distinct ids');
+
+  // The earlier sessions are still live after the later ones opened.
+  const previewA = addon.timeline_previewClipControlEdit(sA.sessionId, { velocity: 0.25 });
+  check(near(previewA.velocity, 0.25), 'first session still previews after later sessions open');
+  addon.timeline_previewClipControlEdit(sB.sessionId, { velocity: 0.25 });
+  addon.timeline_previewClipControlEdit(sC.sessionId, { velocity: 0.25 });
+
+  addon.timeline_commitClipControlEdit(sA.sessionId, { velocity: 0.25 });
+  addon.timeline_commitClipControlEdit(sB.sessionId, { velocity: 0.25 });
+  addon.timeline_commitClipControlEdit(sC.sessionId, { velocity: 0.25 });
+  check(near(currentClip(clipId).velocity, 0.25)
+     && near(currentClip(clipB).velocity, 0.25)
+     && near(currentClip(clipC).velocity, 0.25),
+    'every clip in a concurrent group commits');
+
+  // Each clip is its own undo entry, so the group unwinds one clip at a time.
+  addon.undo_undo();
+  check(near(currentClip(clipC).velocity, 1) && near(currentClip(clipB).velocity, 0.25),
+    'group commits are individually undoable');
+  addon.undo_redo();
+
+  // Re-grabbing the SAME clip supersedes only its own session.
+  const sB2 = addon.timeline_beginClipControlEdit(clipB);
+  check(rejects(() => addon.timeline_previewClipControlEdit(sB.sessionId, { velocity: 1 })),
+    're-grabbing a clip invalidates that clip’s previous session');
+  addon.timeline_cancelClipControlEdit(sB2.sessionId);
+
+  addon.timeline_removeClip(clipB);
+  addon.timeline_removeClip(clipC);
+
   const removed = addon.timeline_beginClipControlEdit(clipId);
   addon.timeline_previewClipControlEdit(removed.sessionId, { velocity: 1.75 });
   addon.timeline_removeClip(clipId);

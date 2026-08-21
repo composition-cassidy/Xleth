@@ -632,6 +632,14 @@ const METHODS = [
     binary: null,
   },
   {
+    method: 'timeline_setTrackZprTracks',
+    channels: ['xleth:timeline:setTrackZprTracks'],
+    api: { 'timeline.setTrackZprTracks': 'xleth:timeline:setTrackZprTracks' },
+    handler: 'Timeline_SetTrackZprTracks',
+    returns: 'void',
+    binary: null,
+  },
+  {
     method: 'timeline_setTrackPingPongSettings',
     channels: ['xleth:timeline:setTrackPingPongSettings'],
     api: { 'timeline.setTrackPingPongSettings': 'xleth:timeline:setTrackPingPongSettings' },
@@ -1108,6 +1116,17 @@ const METHODS = [
     binary: null,
   },
   {
+    // Duplicates an existing slot (including slot 0, the region's own sample)
+    // into a new layer: a fresh copy of its audio file plus every setting the
+    // source slot carries. See Timeline_DuplicateSampleSlot for slot-0 handling.
+    method: 'timeline_duplicateSampleSlot',
+    channels: ['xleth:timeline:duplicateSampleSlot'],
+    api: { 'timeline.duplicateSampleSlot': 'xleth:timeline:duplicateSampleSlot' },
+    handler: 'Timeline_DuplicateSampleSlot',
+    returns: 'value',
+    binary: null,
+  },
+  {
     // Per-slot PREP bake status, and the main-thread pump that publishes
     // finished bakes into the live samplers. The sampler editor polls this
     // while its PREP indicator is up; `changed: true` means a baked buffer was
@@ -1242,6 +1261,33 @@ const METHODS = [
     api: { 'timeline.setNoteVelocity': 'xleth:timeline:setNoteVelocity' },
     handler: 'Timeline_SetNoteVelocity',
     returns: 'void',
+    binary: null,
+  },
+  // ── Sampler audition routing ──
+  // Which track's effect rack a previewed note is heard through. A monitoring
+  // preference, not a project edit — no undo, not persisted with the project.
+  {
+    method: 'sampler_getPreviewRouting',
+    channels: ['xleth:sampler:getPreviewRouting'],
+    api: { 'sampler.getPreviewRouting': 'xleth:sampler:getPreviewRouting' },
+    handler: 'Sampler_GetPreviewRouting',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'sampler_setPreviewRouting',
+    channels: ['xleth:sampler:setPreviewRouting'],
+    api: { 'sampler.setPreviewRouting': 'xleth:sampler:setPreviewRouting' },
+    handler: 'Sampler_SetPreviewRouting',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'sampler_getPreviewRouteTrack',
+    channels: ['xleth:sampler:getPreviewRouteTrack'],
+    api: { 'sampler.getPreviewRouteTrack': 'xleth:sampler:getPreviewRouteTrack' },
+    handler: 'Sampler_GetPreviewRouteTrack',
+    returns: 'value',
     binary: null,
   },
   {
@@ -1549,6 +1595,46 @@ const METHODS = [
     handler: 'Audio_GetMasterEffectChain',
     returns: 'value',
     binary: null,
+  },
+  // FX Chain Library. getSnapshot returns the FULL graph serialization (per-node
+  // plugin state + bypass) that a save is built from; apply consumes the ORDERED
+  // [{pluginId,bypassed,state}] list the library stores, because the snapshot's
+  // node array is unordered and slot order lives only in its connections.
+  // Apply runs as ONE undoable engine command, and carries graph metadata so the
+  // chain refresh broadcast fires exactly as it does for add/remove/move.
+  {
+    method: 'audio_getEffectChainSnapshot',
+    channels: ['xleth:audio:getEffectChainSnapshot'],
+    api: { 'audio.getEffectChainSnapshot': 'xleth:audio:getEffectChainSnapshot' },
+    handler: 'Audio_GetEffectChainSnapshot',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getMasterEffectChainSnapshot',
+    channels: ['xleth:audio:getMasterEffectChainSnapshot'],
+    api: { 'audio.getMasterEffectChainSnapshot': 'xleth:audio:getMasterEffectChainSnapshot' },
+    handler: 'Audio_GetMasterEffectChainSnapshot',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_applyEffectChainPreset',
+    channels: ['xleth:audio:applyEffectChainPreset'],
+    api: { 'audio.applyEffectChainPreset': 'xleth:audio:applyEffectChainPreset' },
+    handler: 'Audio_ApplyEffectChainPreset',
+    returns: 'value',
+    binary: null,
+    graph: 'track',
+  },
+  {
+    method: 'audio_applyMasterEffectChainPreset',
+    channels: ['xleth:audio:applyMasterEffectChainPreset'],
+    api: { 'audio.applyMasterEffectChainPreset': 'xleth:audio:applyMasterEffectChainPreset' },
+    handler: 'Audio_ApplyMasterEffectChainPreset',
+    returns: 'value',
+    binary: null,
+    graph: 'master',
   },
   {
     method: 'audio_getEffectParameters',

@@ -7,9 +7,9 @@
  * element so the rect resolves (jsdom returns zeros, which is a non-null rect —
  * enough for the tray to render).
  *
- * Asserts the dynamic-source contract: ENV 1 has no remove control, VELO/NOTE
- * are fixed, the ENV/LFO "+" adds a card (and disables at six), and removing a
- * card commits through the store.
+ * Asserts the dynamic-source contract on the TAB strips: ENV 1's tab has no
+ * remove control, VELO/NOTE are fixed tabs, the ENV/LFO "+" adds a tab (and
+ * disables at six), and removing a tab commits through the store.
  */
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
@@ -88,45 +88,45 @@ async function mount() {
   await act(async () => { await Promise.resolve(); await Promise.resolve() })
 }
 
-const cardHeads = () =>
-  Array.from(document.querySelectorAll('.sampler-mod-src-head span')).map((s) => s.textContent.trim())
+const tabLabels = () =>
+  Array.from(document.querySelectorAll('.sampler-mod-tab-label')).map((s) => s.textContent.trim())
+
+const tabByLabel = (label) =>
+  Array.from(document.querySelectorAll('.sampler-mod-tab'))
+    .find((t) => t.querySelector('.sampler-mod-tab-label')?.textContent.trim() === label)
 
 describe('SamplerModTray', () => {
-  it('renders ENV 1 (no remove), VELO and NOTE for a fresh config', async () => {
+  it('renders an ENV 1 tab (no remove), plus VELO and NOTE tabs', async () => {
     installXleth(baseConfig([true, false, false, false, false, false],
                             [false, false, false, false, false, false]))
     await mount()
 
-    const heads = cardHeads()
-    expect(heads).toContain('ENV 1')
-    expect(heads).toContain('VELO')
-    expect(heads).toContain('NOTE')
-    expect(heads).not.toContain('ENV 2')
-    expect(heads).not.toContain('LFO 1')
+    const labels = tabLabels()
+    expect(labels).toContain('ENV 1')
+    expect(labels).toContain('VELO')
+    expect(labels).toContain('NOTE')
+    expect(labels).not.toContain('ENV 2')
+    expect(labels).not.toContain('LFO 1')
 
-    // ENV 1's card carries no remove control (it is the permanent amp envelope).
-    const env1Card = Array.from(document.querySelectorAll('.sampler-mod-src-card'))
-      .find((c) => c.querySelector('.sampler-mod-src-head span')?.textContent.trim() === 'ENV 1')
-    expect(env1Card.querySelector('.sampler-mod-remove-src')).toBeNull()
+    // ENV 1's tab carries no remove control (it is the permanent amp envelope).
+    expect(tabByLabel('ENV 1').querySelector('.sampler-mod-tab-x')).toBeNull()
   })
 
-  it('the ENV "+" adds an envelope and commits presence', async () => {
+  it('the ENV "+" adds an envelope tab and commits presence', async () => {
     installXleth(baseConfig([true, false, false, false, false, false],
                             [false, false, false, false, false, false]))
     await mount()
 
-    // First section is ENV; its header "+" adds ENV 2.
+    // First section is ENV; its "+" adds ENV 2.
     const addBtn = document.querySelector('.sampler-mod-section .sampler-mod-add-src')
     await act(async () => { addBtn.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
     await act(async () => { await Promise.resolve(); await Promise.resolve() })
 
     expect(lastSet).toBeTruthy()
     expect(lastSet.envPresent[1]).toBe(true)
-    expect(cardHeads()).toContain('ENV 2')
-    // The newly added ENV 2 card DOES carry a remove control.
-    const env2Card = Array.from(document.querySelectorAll('.sampler-mod-src-card'))
-      .find((c) => c.querySelector('.sampler-mod-src-head span')?.textContent.trim() === 'ENV 2')
-    expect(env2Card.querySelector('.sampler-mod-remove-src')).toBeTruthy()
+    expect(tabLabels()).toContain('ENV 2')
+    // The newly added ENV 2 tab DOES carry a remove control.
+    expect(tabByLabel('ENV 2').querySelector('.sampler-mod-tab-x')).toBeTruthy()
   })
 
   it('disables the ENV "+" when all six envelopes are present', async () => {
@@ -137,19 +137,17 @@ describe('SamplerModTray', () => {
     expect(addBtn.disabled).toBe(true)
   })
 
-  it('removing an LFO card commits its removal', async () => {
+  it('removing an LFO tab commits its removal', async () => {
     installXleth(baseConfig([true, false, false, false, false, false],
                             [true, false, false, false, false, false]))
     await mount()
 
-    const lfo1Card = Array.from(document.querySelectorAll('.sampler-mod-src-card'))
-      .find((c) => c.querySelector('.sampler-mod-src-head span')?.textContent.trim() === 'LFO 1')
-    const removeBtn = lfo1Card.querySelector('.sampler-mod-remove-src')
+    const removeBtn = tabByLabel('LFO 1').querySelector('.sampler-mod-tab-x')
     expect(removeBtn).toBeTruthy()
     await act(async () => { removeBtn.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
     await act(async () => { await Promise.resolve(); await Promise.resolve() })
 
     expect(lastSet.lfoPresent[0]).toBe(false)
-    expect(cardHeads()).not.toContain('LFO 1')
+    expect(tabLabels()).not.toContain('LFO 1')
   })
 })

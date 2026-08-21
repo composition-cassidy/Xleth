@@ -1,10 +1,11 @@
-import React, { useCallback, useEffect } from 'react'
+import React, { useCallback, useEffect, useRef } from 'react'
 import useMixerStore, { MASTER_OUTPUT_TARGET_ID, normalizeOutputTargetId } from '../../stores/mixerStore.js'
 import useTimelineFocusStore from '../../stores/timelineFocusStore.js'
 import PanWidthKnob from './PanWidthKnob.jsx'
 import VolumeFader, { FaderReadout } from './VolumeFader.jsx'
 import PeakMeter from './PeakMeter.jsx'
 import useEffectChainStore, { resolveFxMode } from '../../stores/effectChainStore.js'
+import useFxChainDragStore from '../../stores/fxChainDragStore.js'
 
 const EMPTY_CHAIN = []
 
@@ -45,6 +46,23 @@ export default function MixerStrip({ trackId }) {
   const chain = useEffectChainStore(s => s.chains[fxKey] ?? EMPTY_CHAIN)
   const fxMode = useEffectChainStore(s => resolveFxMode(s.fxModes, fxKey))
 
+  // FX Chain Library: the strip only reports the right-click and advertises
+  // itself as a drop target via data-fx-key. FxChainMenuLayer owns the menu,
+  // the dialog, the ghost and the hit-testing.
+  const openFxChainMenu = useFxChainDragStore(s => s.openMenu)
+  const dragActive = useFxChainDragStore(s => s.effects != null)
+  const dragSourceKey = useFxChainDragStore(s => s.sourceKey)
+  const dragHoverKey = useFxChainDragStore(s => s.hoverKey)
+  const isDragSource = dragActive && dragSourceKey === fxKey
+  const isDropTarget = dragActive && !isDragSource
+  const isDropHover = isDropTarget && dragHoverKey === fxKey
+
+  const handleContextMenu = useCallback((e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    openFxChainMenu(fxKey, e.clientX, e.clientY)
+  }, [openFxChainMenu, fxKey])
+
   const handleVolume = useCallback((gain) => setVolume(trackId, gain), [trackId, setVolume])
   const handlePanLive = useCallback((v) => setPan(trackId, v), [trackId, setPan])
   const handlePanCommit = useCallback((v) => setPan(trackId, v), [trackId, setPan])
@@ -60,6 +78,11 @@ export default function MixerStrip({ trackId }) {
   const hasSelectedTarget = outputTargets.some(option => option.targetTrackId === routeTargetId)
   const selectedMissingTarget = routeTargetId !== MASTER_OUTPUT_TARGET_ID && !hasSelectedTarget
   const selected = selectedChainKey === String(trackId)
+  const stripRef = useRef(null)
+
+  useEffect(() => {
+    if (selected) stripRef.current?.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' })
+  }, [selected])
 
   const handleSelectStrip = useCallback(() => {
     setFocusedTrackId(trackId)
@@ -80,8 +103,11 @@ export default function MixerStrip({ trackId }) {
 
   return (
     <div
-      className={`mixer-strip ${selected ? 'mixer-strip--selected' : ''} ${track.muted ? 'mixer-strip--muted' : ''} ${track.visualOnly ? 'mixer-strip--visual-only' : ''}`}
+      ref={stripRef}
+      className={`mixer-strip ${selected ? 'mixer-strip--selected' : ''} ${track.muted ? 'mixer-strip--muted' : ''} ${track.visualOnly ? 'mixer-strip--visual-only' : ''}${isDropTarget ? ' mixer-strip--fx-droptarget' : ''}${isDropHover ? ' mixer-strip--fx-drophover' : ''}${isDragSource ? ' mixer-strip--fx-dragsource' : ''}`}
       onClick={handleSelectStrip}
+      onContextMenu={handleContextMenu}
+      data-fx-key={fxKey}
       aria-selected={selected}
     >
       {/* Track name */}

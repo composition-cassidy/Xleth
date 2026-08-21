@@ -1,15 +1,33 @@
-import { useEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useLayoutEffect, useState, useCallback, useRef } from 'react'
 import { timelineEvents } from '../../timelineEvents.js'
 import RootNotePicker from './RootNotePicker.jsx'
 import SamplerWaveform from './SamplerWaveform.jsx'
 import SlotList, { MAX_SLOTS } from './SlotList.jsx'
+import PreviewRoutingControl from './PreviewRoutingControl.jsx'
 import Knob from './Knob.jsx'
 import SamplerModTray from './modulation/SamplerModTray.jsx'
+import { useModTarget } from './modulation/useModTarget.js'
+import { TARGET_SLOT_MANGLE_AMOUNT, TARGET_SLOT_MANGLE_MIX } from './modulation/modTargets.js'
+import useSamplerModulationStore from '../../stores/samplerModulationStore.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
 import { nudgeEventFor, applyRecordFor } from './autoLoopTelemetry.js'
+import { usePanelRegistry } from '../../windowing/registry/PanelRegistry'
+import { PANEL_CATALOG } from '../../windowing/registry/panelCatalog'
+import { MIN_PANEL_HEIGHT } from '../../windowing/managers/ResizeManager'
 
 const WAVE_WIDTH = 800
 const WAVE_HEIGHT = 158
+
+// Main <-> Playback tab transition timing. The outgoing pane fades/slides out
+// over TAB_ANIM_EXIT_MS while the incoming pane fades/slides in over
+// TAB_ANIM_ENTER_MS (the two overlap — a crossfade, not a hard cut); the
+// floating window's own resize is given a touch longer so it settles just
+// after the content does. Same ease-out-quint the rest of the windowing
+// system's own motion uses (xleth-sample-selector-drawer, xleth-windowing-shell).
+const TAB_ANIM_EXIT_MS = 200
+const TAB_ANIM_ENTER_MS = 240
+const TAB_ANIM_RESIZE_MS = 260
+const TAB_ANIM_EASE = 'cubic-bezier(0.16, 1, 0.3, 1)'
 
 const ARP_DIRS = ['up', 'down', 'updown', 'sticky']
 const ARP_DIR_TITLES = { up: 'Up', down: 'Down', updown: 'Up + Down', sticky: 'Sticky' }
@@ -133,6 +151,13 @@ const MANGLE_HINTS = {
   35: 'Bipolar ring modulation at the note frequency',
 }
 
+// Modes that bend the READ HEAD rather than shape the sample — mirrors
+// xleth::mangle::isPositionMode. The engine resolves every warp in a chain
+// before any shaper (a bent head re-reads the source buffer, so it cannot take
+// a shaped sample as its input), which the chain hint below has to reflect
+// rather than promise a left-to-right flow the audio does not follow.
+const MANGLE_WARP_MODES = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 32, 33])
+
 const mangleModeLabel = (v) => {
   if (!v) return 'Off'
   for (const g of MANGLE_GROUPS) {
@@ -190,8 +215,12 @@ const SAMPLER_KNOB_APPEARANCE = {
   accentGlow: false,
 }
 
-function SamplerKnob(props) {
-  return <Knob {...SAMPLER_KNOB_APPEARANCE} {...props} />
+// `modTarget` is the OPT-IN modulation registration. Every sampler knob routes
+// through here, but only the ones that pass a registration become drop targets;
+// the rest get `mod = null` and are the plain Knob they have always been.
+function SamplerKnob({ modTarget, ...props }) {
+  const mod = useModTarget(modTarget, { value: props.value, min: props.min, max: props.max })
+  return <Knob {...SAMPLER_KNOB_APPEARANCE} {...props} mod={mod} />
 }
 
 function Tabs({ tabs, active, onSelect, sm }) {
@@ -317,6 +346,114 @@ export default function SamplerPanelContent({ regionId, onClose }) {
   const [settings, setSettings] = useState(emptySettings)
   const settingsRef = useRef(settings)
   settingsRef.current = settings
+
+  // ── Tab switch: exit, then swap+resize, then enter ───────────────────────
+  // Strictly sequential — the outgoing pane finishes leaving before the
+  // incoming one is even mounted, so they never overlap or cross paths, and
+  // the panel stays at its CURRENT size for the whole exit (a tab is only
+  // ever shown at its own full size, never squeezed by the other tab's
+  // window). `tab` itself only flips once the exit has finished, which is
+  // also the moment the auto-shrink effect below fires and the entrance
+  // animation starts — so the resize and the entrance play together, right
+  // after the old content is gone. Reversed pairs: leaving MAIN moves down +
+  // fades (entering MAIN is its mirror, up + fade-in); leaving PLAYBACK
+  // slides out left + fades (entering PLAYBACK is its mirror, in from the
+  // left) — so Playback -> Main plays as the exact reverse of Main -> Playback.
+  const [tabAnimPhase, setTabAnimPhase] = useState('idle') // 'idle' | 'exiting' | 'entering'
+  const pendingTabRef = useRef(null)
+  const exitTimerRef = useRef(null)
+  const enterTimerRef = useRef(null)
+
+  useEffect(() => () => {
+    clearTimeout(exitTimerRef.current)
+    clearTimeout(enterTimerRef.current)
+  }, [])
+
+  const handleSelectTab = (nextTab) => {
+    if (pendingTabRef.current === nextTab) return
+    if (nextTab === tab) {
+      if (tabAnimPhase === 'idle') return
+      // Clicked back to the tab still on screen — abort the outgoing switch.
+      clearTimeout(exitTimerRef.current)
+      clearTimeout(enterTimerRef.current)
+      pendingTabRef.current = null
+      setTabAnimPhase('idle')
+      return
+    }
+    pendingTabRef.current = nextTab
+    setTabAnimPhase('exiting')
+    clearTimeout(exitTimerRef.current)
+    exitTimerRef.current = setTimeout(() => {
+      setTab(nextTab)
+      pendingTabRef.current = null
+      setTabAnimPhase('entering')
+      clearTimeout(enterTimerRef.current)
+      enterTimerRef.current = setTimeout(() => setTabAnimPhase('idle'), TAB_ANIM_ENTER_MS)
+    }, TAB_ANIM_EXIT_MS)
+  }
+
+  // ── Size the window to the active tab ────────────────────────────────────
+  // MAIN is the tall tab (slots + waveform + prep/process/trim/loop/mangle,
+  // which scrolls); PLAYBACK is short and fits its content exactly, so a
+  // window sized for main leaves a wall of empty space under it. Each tab
+  // therefore has ONE height, derived rather than remembered:
+  //   main     -> the catalog's default height, the panel's full size
+  //   playback -> chrome + the measured content, clamped to that same ceiling
+  //
+  // Derived, not remembered, because the sampler is `resizable: false` — there
+  // is no user-chosen size to preserve — and because panel layout is persisted:
+  // a remembered "restore to" height lives in a ref that dies with the panel, so
+  // quitting while on playback used to bake the short height in and leave MAIN
+  // permanently squashed. Recomputing from the catalog every time is self-healing.
+  //
+  // useLayoutEffect, NOT useEffect + requestAnimationFrame: it runs after the DOM
+  // commit (so scrollHeight is already valid, no rAF needed) and, critically, it
+  // survives StrictMode. The old rAF version never ran at all — StrictMode's
+  // setup/cleanup/setup double-invoke cancelled the frame in the cleanup, and the
+  // second setup early-returned on a `prevTabRef` it had already advanced. There
+  // is no prevTab guard here at all: the body is idempotent, and
+  // resizeFloatingPanel already no-ops when the geometry is unchanged.
+  const scrollRef = useRef(null)
+  const panelContentRef = useRef(null)
+  const resizeAnimTimerRef = useRef(null)
+
+  useLayoutEffect(() => {
+    const registry = usePanelRegistry.getState()
+    const panel = registry.panels.sampler
+    const contentEl = panelContentRef.current
+    const scrollEl = scrollRef.current
+    if (!panel || panel.mode !== 'floating' || !contentEl || !scrollEl) return
+
+    const frameEl = scrollEl.closest('.xleth-panel-frame[data-panel-id="sampler"]')
+    if (!frameEl) return
+
+    const fullHeight = PANEL_CATALOG.sampler.defaultFloating.height
+    let target = fullHeight
+    if (tab === 'playback') {
+      // Chrome (titlebar + tabbar) is height-independent, so this stays correct
+      // whatever size the window happens to be mid-transition.
+      const chromeHeight = frameEl.clientHeight - scrollEl.clientHeight
+      target = Math.min(fullHeight, Math.max(
+        MIN_PANEL_HEIGHT,
+        Math.round(chromeHeight + contentEl.scrollHeight),
+      ))
+    }
+    if (target === panel.floating.height) return
+
+    // The transition is set on the DOM node directly rather than through React
+    // style props so it stays out of PanelFrame's render path and can't leak
+    // into an interactive drag. Flush it to the browser BEFORE changing the
+    // height — both land in one style recalc otherwise, and the transition can
+    // be dropped because the before-change style had none.
+    frameEl.style.transition = `height ${TAB_ANIM_RESIZE_MS}ms ${TAB_ANIM_EASE}`
+    void frameEl.offsetHeight
+    clearTimeout(resizeAnimTimerRef.current)
+    resizeAnimTimerRef.current = setTimeout(() => { frameEl.style.transition = '' }, TAB_ANIM_RESIZE_MS + 30)
+
+    registry.resizeFloatingPanel('sampler', panel.floating.x, panel.floating.y, panel.floating.width, target)
+  }, [tab])
+
+  useEffect(() => () => clearTimeout(resizeAnimTimerRef.current), [])
 
   // ── Sample slots ──────────────────────────────────────────────────────────
   // `slots` mirrors the engine's slot list. Mini-control drags mutate it
@@ -586,6 +723,25 @@ export default function SamplerPanelContent({ regionId, onClose }) {
     }
   }, [regionId, pickAudioFile, fetchAll])
 
+  const duplicateSlot = useCallback(async (slotIdx) => {
+    if (regionId == null || slotsRef.current.length >= MAX_SLOTS) return
+    setSlotBusy(true)
+    try {
+      const r = await window.xleth?.timeline?.duplicateSampleSlot?.(regionId, slotIdx)
+      if (r && r.success === false) {
+        console.warn('[SamplerPanelContent] duplicateSampleSlot failed:', r.error)
+      } else if (r && typeof r.slotIndex === 'number') {
+        setSelectedSlot(r.slotIndex)
+      }
+      timelineEvents.dispatchEvent(new CustomEvent('timeline-sampler-changed', { detail: { regionId } }))
+    } catch (e) {
+      console.warn('[SamplerPanelContent] duplicateSampleSlot threw:', e.message)
+    } finally {
+      setSlotBusy(false)
+      fetchAll()
+    }
+  }, [regionId, fetchAll])
+
   const removeSlot = useCallback(async (slotIdx) => {
     if (regionId == null || slotIdx <= 0) return
     setSlotBusy(true)
@@ -651,16 +807,28 @@ export default function SamplerPanelContent({ regionId, onClose }) {
     if (base.length >= MANGLE_MAX) return
     commitChain([...base, { mode: MANGLE_OFF, amount: 0, mix: 1, bypass: false }])
   }, [commitChain, mangleBaseChain])
+  // A route to a MANGLE knob is addressed by chain POSITION (target + slot +
+  // stage), so an edit that moves the instances has to move their routes too —
+  // otherwise a reorder hands one instance's modulators to whichever mode took
+  // its place. Read imperatively: the panel does not otherwise subscribe to the
+  // modulation store and has no reason to re-render when a route changes.
+  const remapMangleRoutes = useCallback((mapStage) => {
+    useSamplerModulationStore.getState().remapMangleStages(selectedSlotRef.current, mapStage)
+  }, [])
   const removeMangleInstance = useCallback((idx) => {
     commitChain(mangleBaseChain().filter((_, i) => i !== idx))
-  }, [commitChain, mangleBaseChain])
+    // The instance is gone, so its routes go with it; everything after it
+    // shuffles one position earlier.
+    remapMangleRoutes((s) => (s === idx ? -1 : (s > idx ? s - 1 : s)))
+  }, [commitChain, mangleBaseChain, remapMangleRoutes])
   const moveMangleInstance = useCallback((idx, dir) => {
     const base = mangleBaseChain().slice()
     const j = idx + dir
     if (j < 0 || j >= base.length) return
     ;[base[idx], base[j]] = [base[j], base[idx]]
     commitChain(base)
-  }, [commitChain, mangleBaseChain])
+    remapMangleRoutes((s) => (s === idx ? j : (s === j ? idx : s)))
+  }, [commitChain, mangleBaseChain, remapMangleRoutes])
 
   const commitLoopPoints = useCallback(({ loopStart, loopEnd }) => {
     setFields({ loopStart, loopEnd })
@@ -815,6 +983,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
         onToggleSolo={(i) => toggleSlotFlag(i, 'solo')}
         onAddSlot={addSlot}
         onSwapSlot={swapSlot}
+        onDuplicateSlot={duplicateSlot}
         onRemoveSlot={removeSlot}
         busy={slotBusy}
       />
@@ -910,6 +1079,13 @@ export default function SamplerPanelContent({ regionId, onClose }) {
           <ProcessButton label="Reverse Polarity" active={!!settings.polarityReversed} onClick={() => commitField('polarityReversed', !settings.polarityReversed)}><span aria-hidden>+/-</span></ProcessButton>
           <ProcessButton label="Reverse" active={!!settings.reversed} onClick={() => commitField('reversed', !settings.reversed)}><span aria-hidden>&lt;&gt;</span></ProcessButton>
         </div>
+      </section>
+
+      {/* Auditioning routes through a track's effect rack so the keyboard
+          preview above sounds like the sample does in the arrangement. */}
+      <section className="sampler-card sampler-preview-routing-card">
+        <SectionLabel>Preview monitoring</SectionLabel>
+        <PreviewRoutingControl regionId={regionId} />
       </section>
 
       <div className="sampler-identity-row">
@@ -1113,6 +1289,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
                 </label>
                 <SamplerKnob
                   label="Amount"
+                  modTarget={{ target: TARGET_SLOT_MANGLE_AMOUNT, index: selectedSlot, stage: i, scale: 0.01 }}
                   value={(inst.amount ?? 0) * 100}
                   min={0} max={100}
                   defaultValue={mangleAmountIsBipolar(instMode) ? 50 : 0}
@@ -1124,6 +1301,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
                 />
                 <SamplerKnob
                   label="Mix"
+                  modTarget={{ target: TARGET_SLOT_MANGLE_MIX, index: selectedSlot, stage: i, scale: 0.01 }}
                   value={(inst.mix ?? 1) * 100}
                   min={0} max={100} defaultValue={100}
                   size={42}
@@ -1170,7 +1348,17 @@ export default function SamplerPanelContent({ regionId, onClose }) {
                 return MANGLE_HINTS[live[0].mode]
                   || `${mangleModeLabel(live[0].mode)} — Amount drives, Mix blends`
               }
-              return `${live.map((mi) => mangleModeLabel(mi.mode)).join(' → ')} — per-note chain, order is audible`
+              // Show the order the AUDIO travels, not the row order: warps
+              // resolve first (they re-read the source, so they cannot be fed a
+              // shaped sample), then the shapers. Order stays audible inside
+              // each group, which is what the reorder arrows move.
+              const warps   = live.filter((mi) => MANGLE_WARP_MODES.has(mi.mode))
+              const shapers = live.filter((mi) => !MANGLE_WARP_MODES.has(mi.mode))
+              const flow = [...warps, ...shapers].map((mi) => mangleModeLabel(mi.mode)).join(' → ')
+              const note = (warps.length > 0 && shapers.length > 0)
+                ? ' — per-note chain; warps resolve before shapers'
+                : ' — per-note chain, order is audible'
+              return `${flow}${note}`
             })()}
           </span>
         </div>
@@ -1193,9 +1381,9 @@ export default function SamplerPanelContent({ regionId, onClose }) {
           </div>
 
           {/* Voice — poly count / mono / legato / portamento */}
-          <div className="sampler-module sampler-voice-module" style={{ minWidth: 190 }}>
+          <div className="sampler-module sampler-voice-module">
             <SectionLabel>Voice</SectionLabel>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', rowGap: 6 }}>
               <Seg
                 opts={[{ v: 'mono', l: 'Mono' }, { v: 'poly', l: 'Poly' }]}
                 val={settings.monoEnabled ? 'mono' : 'poly'}
@@ -1219,7 +1407,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
             <div style={{ marginTop: 8 }}>
               <Chk val={settings.legatoEnabled} set={(v) => commitField('legatoEnabled', v)} label="Legato" />
             </div>
-            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, marginTop: 8 }}>
+            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, marginTop: 8, flexWrap: 'wrap', rowGap: 8 }}>
               <SamplerKnob
                 value={settings.portamentoTimeMs}
                 min={0} max={2000} defaultValue={0}
@@ -1357,12 +1545,19 @@ export default function SamplerPanelContent({ regionId, onClose }) {
           <Tabs
             tabs={[{ id: 'main', label: 'main' }, { id: 'playback', label: 'playback' }]}
             active={tab}
-            onSelect={setTab}
+            onSelect={handleSelectTab}
           />
         </div>
       </div>
-      <div className="sampler-panel-scroll">
-        <div className="sampler-panel-content">
+      <div className="sampler-panel-scroll" ref={scrollRef}>
+        <div
+          className={`sampler-panel-content${
+            tabAnimPhase === 'exiting' ? ` sampler-tab-pane--exit-${tab}`
+              : tabAnimPhase === 'entering' ? ` sampler-tab-pane--enter-${tab}`
+                : ''
+          }`}
+          ref={panelContentRef}
+        >
           {tab === 'main' && renderSample()}
           {tab === 'playback' && renderPlayback()}
         </div>

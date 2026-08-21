@@ -62,6 +62,26 @@ public:
     // Set bypass state on an effect node.  Returns false if not found.
     bool setBypass(int nodeId, bool bypassed);
 
+    // ── FX Chain Library (main thread) ──────────────────────────────────
+    //
+    // Build this chain from an ORDERED preset description:
+    //   [{ pluginId, bypassed?, state? }, ...]   state = base64 getStateInformation
+    //
+    // graphToJSON is not usable as the library's storage format: its `nodes`
+    // array comes out of an unordered_map, so slot order lives only in the
+    // connection list. A saved chain has to survive being read by a human and
+    // re-applied on another machine, so the library stores the ordered list
+    // instead and this method turns it back into a live chain.
+    //
+    // `replace` true clears every existing effect first; false appends after the
+    // last one. Effects whose pluginId will not instantiate here (a VST3 that is
+    // not installed on this machine) are SKIPPED and named in the result rather
+    // than aborting the load — a chain that is three-quarters right beats no
+    // chain plus an error.
+    //
+    // Returns { ok, added, skipped: [pluginId, ...] }.
+    nlohmann::json applyChainPreset(const nlohmann::json& effects, bool replace);
+
     // ── Query ───────────────────────────────────────────────────────────
     int getEffectCount() const;
 

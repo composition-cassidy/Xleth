@@ -343,6 +343,119 @@ export function applyGainDrag(startVelocity, deltaY, modifiers = {}, spec = CLIP
   return dbToVelocity(nextDb, normalized)
 }
 
+// ── Multi-clip (group) drags ─────────────────────────────────────────────────
+// Dragging a control while several clips are selected moves the whole selection
+// by the SAME delta, so pre-existing differences survive: -5 dB applied to a
+// clip already at -5 dB lands on -10 dB, not on -5 dB.
+//
+// The group is rigid. If any one clip would cross its own limit the delta stops
+// there for EVERYBODY, rather than letting the rest keep travelling while that
+// clip flattens against the bound — otherwise the selection's relative shape
+// would be silently destroyed the moment one member bottomed out. The clips
+// pinned at their limit come back in `blocked` so the caller can highlight
+// them; the user then adjusts or deselects them to continue.
+
+const GROUP_LIMIT_EPSILON = 1e-6
+
+// Clamp a requested delta to the range every entry can absorb, and report which
+// entries are sitting on the bound that stopped it. `bounds` maps each entry to
+// its own [min, max] travel.
+function clampGroupDelta(requested, bounds) {
+  let lower = -Infinity
+  let upper = Infinity
+  for (const b of bounds) {
+    if (b.min > lower) lower = b.min
+    if (b.max < upper) upper = b.max
+  }
+  if (!Number.isFinite(lower)) lower = 0
+  if (!Number.isFinite(upper)) upper = 0
+  if (upper < lower) upper = lower
+
+  const delta = Math.min(upper, Math.max(lower, requested))
+  const blocked = []
+  if (requested > upper + GROUP_LIMIT_EPSILON) {
+    for (const b of bounds) if (b.max <= delta + GROUP_LIMIT_EPSILON) blocked.push(b.id)
+  } else if (requested < lower - GROUP_LIMIT_EPSILON) {
+    for (const b of bounds) if (b.min >= delta - GROUP_LIMIT_EPSILON) blocked.push(b.id)
+  }
+  return { delta, blocked }
+}
+
+// dB value a clip's gain drag starts from. Silent clips have no finite dB, so
+// they anchor at the mute floor — the same substitution applyGainDrag makes.
+function startDbOf(velocity, floorDb) {
+  const db = velocityToDb(velocity)
+  return Number.isFinite(db) ? db : floorDb
+}
+
+// entries: [{ id, velocity }], entries[0] is the grabbed clip (the anchor whose
+// dB target the cursor defines). Returns { values: Map(id → velocity), blocked }.
+export function applyGroupGainDrag(entries, deltaY, modifiers = {}, spec = CLIP_CONTROL_DEFAULTS) {
+  const normalized = normalizeClipControlSpec(spec)
+  const list = Array.isArray(entries) ? entries : []
+  if (list.length === 0) return { values: new Map(), blocked: [] }
+
+  const floorDb = normalized.interaction.muteFloorDb
+  const anchor = list[0]
+  const anchorStartDb = startDbOf(anchor.velocity, floorDb)
+  // Route the anchor through the single-clip path so fine-drag, unity snap and
+  // dB-per-pixel stay identical between a one-clip and a many-clip drag.
+  const anchorTargetDb = startDbOf(
+    applyGainDrag(anchor.velocity, deltaY, modifiers, normalized), floorDb,
+  )
+  const requested = anchorTargetDb - anchorStartDb
+
+  const starts = list.map((e) => ({ id: e.id, startDb: startDbOf(e.velocity, floorDb) }))
+  const { delta, blocked } = clampGroupDelta(
+    requested,
+    starts.map((s) => ({
+      id: s.id,
+      min: floorDb - s.startDb,
+      max: CLIP_GAIN_MAX_DB - s.startDb,
+    })),
+  )
+
+  const values = new Map()
+  for (const s of starts) values.set(s.id, dbToVelocity(s.startDb + delta, normalized))
+  return { values, blocked }
+}
+
+// entries: [{ id, start, opposite }] for the dragged fade `kind`, entries[0] the
+// anchor. The percent delta is derived from the ANCHOR's width, then applied
+// verbatim to every clip — a percentage is the only quantity that means the same
+// thing across clips of different lengths.
+export function applyGroupFadeDrag(kind, entries, deltaX, anchorWidth, modifiers = {}, spec = CLIP_CONTROL_DEFAULTS) {
+  const normalized = normalizeClipControlSpec(spec)
+  const list = Array.isArray(entries) ? entries : []
+  if (list.length === 0) return { values: new Map(), blocked: [] }
+
+  const anchor = list[0]
+  const anchorStart = clampNumber(anchor.start ?? 0, 0, 100)
+  const requested = applyFadeDrag(
+    kind, anchorStart, anchor.opposite ?? 0, deltaX, anchorWidth, modifiers, normalized,
+  ) - anchorStart
+
+  const starts = list.map((e) => ({
+    id: e.id,
+    start: clampNumber(e.start ?? 0, 0, 100),
+    opposite: clampNumber(e.opposite ?? 0, 0, 100),
+  }))
+  const { delta, blocked } = clampGroupDelta(
+    requested,
+    starts.map((s) => ({
+      id: s.id,
+      min: -s.start,
+      max: Math.max(0, 100 - s.opposite) - s.start,
+    })),
+  )
+
+  const values = new Map()
+  for (const s of starts) {
+    values.set(s.id, clampNumber(s.start + delta, 0, Math.max(0, 100 - s.opposite)))
+  }
+  return { values, blocked }
+}
+
 export function applyFadeDrag(kind, startPercent, oppositePercent, deltaX, clipWidth, modifiers = {}, spec = CLIP_CONTROL_DEFAULTS) {
   const normalized = normalizeClipControlSpec(spec)
   const width = Math.max(1, Number(clipWidth) || 1)

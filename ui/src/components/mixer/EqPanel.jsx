@@ -1,72 +1,21 @@
-import React, { useState, useEffect, useRef, useCallback, memo } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { X } from 'lucide-react'
-import useEqStore, { BAND_TYPES, BAND_COLORS } from '../../stores/eqStore.js'
+import useEqStore, { BAND_TYPES, CHANNEL_META } from '../../stores/eqStore.js'
 import {
-  SVG_W, SVG_H, PAD_L, PAD_R, PAD_T, PAD_B, PLOT_W, PLOT_H,
-  FREQ_MIN, FREQ_MAX, ANA_DB_MIN, ANA_DB_MAX, RESPONSE_SIZE,
+  SVG_W, SVG_H, PAD_L, PAD_T, PLOT_W, PLOT_H,
+  FREQ_MIN, FREQ_MAX, RESPONSE_SIZE,
   freqToX, xToFreq,
-  dbToY_response, dbToY_analyzerWithRange, yToDb_response,
+  dbToY_response, yToDb_response,
   evalResponseAt, clamp,
 } from './eqGeometry.js'
 import { computeSpectrumPaths, resetMaxHold } from './eqSpectrumPath.js'
+import EffectPresetBar from '../../fx-presets/EffectPresetBar.jsx'
 import {
-  TILT_OPTIONS, RANGE_OPTIONS, SPEED_OPTIONS, RESOLUTION_OPTIONS,
   SPEED_DECAY, RESOLUTION_BARS,
   loadAnalyzerSettings, saveAnalyzerSettings,
 } from './eqAnalyzerSettings.js'
-import EqBandPopup from './EqBandPopup.jsx'
-
-// ── Constants ────────────────────────────────────────────────────────────────
-
-const FREQ_GRID = [20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000]
-const FREQ_LABELS = ['20', '50', '100', '200', '500', '1k', '2k', '5k', '10k', '20k']
-const ANA_DB_LINES = [-80, -60, -40, -20, 0]
-
-// Coordinate helpers are imported from ./eqGeometry.js
-
-// ── Grid (dual-scale, memoised) ──────────────────────────────────────────────
-
-const EqGrid = memo(function EqGrid({ dbZoom, rangeDb }) {
-  const respLines = [-dbZoom, -dbZoom / 2, 0, dbZoom / 2, dbZoom]
-  const botDb = ANA_DB_MAX - rangeDb
-  const visibleAnaLines = ANA_DB_LINES.filter(db => db >= botDb)
-  return (
-    <g className="eq-grid">
-      {FREQ_GRID.map((f, i) => {
-        const x = freqToX(f)
-        return (
-          <g key={`f${f}`}>
-            <line x1={x} y1={PAD_T} x2={x} y2={PAD_T + PLOT_H} className="eq-grid-line" />
-            <text x={x} y={SVG_H - 3} className="eq-grid-label-x">{FREQ_LABELS[i]}</text>
-          </g>
-        )
-      })}
-      {visibleAnaLines.map(db => {
-        const y = dbToY_analyzerWithRange(db, rangeDb)
-        return (
-          <g key={`ana${db}`}>
-            <line x1={PAD_L} y1={y} x2={PAD_L + PLOT_W} y2={y} className="eq-grid-line-ana" />
-            <text x={PAD_L - 4} y={y + 3} className="eq-grid-label-ana" textAnchor="end">{db}</text>
-          </g>
-        )
-      })}
-      {respLines.map(db => {
-        const y = dbToY_response(db, dbZoom)
-        return (
-          <g key={`resp${db}`}>
-            <line x1={PAD_L} y1={y} x2={PAD_L + PLOT_W} y2={y}
-              className={db === 0 ? 'eq-grid-line-zero' : 'eq-grid-line-resp'} />
-            <text x={PAD_L + PLOT_W + 4} y={y + 3} className="eq-grid-label-resp" textAnchor="start">
-              {db > 0 ? `+${db}` : db}
-            </text>
-          </g>
-        )
-      })}
-    </g>
-  )
-})
-
-// computeSpectrumPaths is imported from ./eqSpectrumPath.js
+import EqCanvas from './EqCanvas.jsx'
+import EqBandPanel from './EqBandPanel.jsx'
 
 // ── Response curve path ──────────────────────────────────────────────────────
 
@@ -84,43 +33,6 @@ function responseToPath(data, dbZoom) {
   return parts.join(' ')
 }
 
-// ── Band dot — minimal glowing orb ───────────────────────────────────────────
-// No Q ring, no GR ring, no mode badge, no label: a plain filled orb in the
-// band's color with a soft per-band-colored glow (drop-shadow filter) that
-// brightens when the band is selected. Everything else about a band (type,
-// mode, Q, dynamics/spectral fields) now lives in the floating EqBandPopup.
-
-function BandDot({ band, index, onDragStart, dbZoom, isSelected }) {
-  const color = BAND_COLORS[index % BAND_COLORS.length]
-  const cx = freqToX(band.freq)
-  const cy = dbToY_response(band.gain, dbZoom)
-  const opacity = band.enabled ? 1 : 0.3
-
-  const handleMouseDown = (e) => {
-    e.preventDefault()
-    e.stopPropagation()
-    onDragStart(index, e)
-  }
-
-  return (
-    <g className={`eq-band-dot${isSelected ? ' selected' : ''}`} opacity={opacity}>
-      {/* Visible orb — glow color comes from the band's own accent color */}
-      <circle
-        className="eq-band-orb"
-        cx={cx} cy={cy} r={6}
-        fill={color}
-        stroke="var(--xleth-eq-bg-plot)"
-        strokeWidth={1.5}
-        style={{ '--eq-orb-glow': color }}
-        pointerEvents="none"
-      />
-      {/* Hit area */}
-      <circle cx={cx} cy={cy} r={12} fill="transparent" style={{ cursor: 'grab' }}
-        onMouseDown={handleMouseDown} />
-    </g>
-  )
-}
-
 // ── Main EQ Panel ────────────────────────────────────────────────────────────
 
 export default function EqPanel() {
@@ -128,25 +40,22 @@ export default function EqPanel() {
   const bands = useEqStore(s => s.bands)
   const addBandAt = useEqStore(s => s.addBandAt)
   const setBandParam = useEqStore(s => s.setBandParam)
+  const setBandChannel = useEqStore(s => s.setBandChannel)
   const removeBand = useEqStore(s => s.removeBand)
   const duplicateBand = useEqStore(s => s.duplicateBand)
   // linPhase/oversample/preSpectrum + their setters are engine-synced global
   // params (linear-phase mode, oversampling factor, pre-EQ spectrum capture).
-  // Their header toggle buttons were removed in this design pass, but the
-  // state/actions stay wired so the owner can re-expose a control later
+  // Their header toggle buttons were removed in an earlier design pass, but
+  // the state/actions stay wired so the owner can re-expose a control later
   // without re-deriving any of this. linPhase/oversample still gate the
-  // Dynamic/Spectral mode options in the band popup; preSpectrum still
+  // Dynamic/Spectral mode options in the band panel; preSpectrum still
   // selects which spectrum trace the hover readout reads from below.
   const linPhase = useEqStore(s => s.linPhase)
   const oversample = useEqStore(s => s.oversample)
-  const setLinPhase = useEqStore(s => s.setLinPhase)
-  const setOversample = useEqStore(s => s.setOversample)
   const preSpectrum = useEqStore(s => s.preSpectrum)
-  const setPreSpectrum = useEqStore(s => s.setPreSpectrum)
   // dbZoom (response-curve vertical zoom) — same story: cycle button removed,
-  // state/action retained (see cycleDbZoom below).
+  // state/action retained.
   const dbZoom = useEqStore(s => s.dbZoom)
-  const setDbZoom = useEqStore(s => s.setDbZoom)
   const fetchResponseCurve = useEqStore(s => s.fetchResponseCurve)
   const fetchSpectrumData = useEqStore(s => s.fetchSpectrumData)
   const fetchBandGR = useEqStore(s => s.fetchBandGR)
@@ -154,12 +63,10 @@ export default function EqPanel() {
   const close = useEqStore(s => s.close)
   const selectedBandIndex = useEqStore(s => s.selectedBandIndex)
   const setSelectedBand = useEqStore(s => s.setSelectedBand)
-  // Font/theme popover was removed too; keep applying whatever was already
-  // saved (localStorage) so existing customizations don't silently reset.
   const themeFont = useEqStore(s => s.themeFont)
   const themeFontScale = useEqStore(s => s.themeFontScale)
 
-  const [analyzerSettings, setAnalyzerSettings] = useState(() => loadAnalyzerSettings())
+  const [analyzerSettings] = useState(() => loadAnalyzerSettings())
   const [panelPos, setPanelPos] = useState(() => ({
     x: Math.round(window.innerWidth / 2 - 340),
     y: 80,
@@ -177,10 +84,13 @@ export default function EqPanel() {
   const responseCurveRef = useRef(null)
   const spectrumDataRef = useRef(null)   // latest spec data for hover readout
 
-  // B6 — hover readout
+  // Hover readout (cursor position on the curve)
   const [hoverReadout, setHoverReadout] = useState(null)
   const cursorRef = useRef({ svgX: null, inPlot: false })
   const lastReadoutRef = useRef(null)
+
+  // Which node is under the pointer — drives the floating identity chip.
+  const [hoveredIndex, setHoveredIndex] = useState(null)
 
   // Refs so polling closure sees current values without restarting the effect
   const analyzerRef = useRef(analyzerSettings)
@@ -190,23 +100,6 @@ export default function EqPanel() {
 
   // Band drag state
   const dragRef = useRef(null)
-
-  // dB-zoom cycle
-  const cycleDbZoom = useCallback(() => {
-    const order = [6, 12, 24, 48]
-    const idx = order.indexOf(useEqStore.getState().dbZoom)
-    setDbZoom(order[(idx + 1) % order.length])
-  }, [setDbZoom])
-
-  // Analyzer setting cycle helper
-  const cycleAnalyzer = useCallback((key, options) => {
-    setAnalyzerSettings(s => {
-      const idx  = options.indexOf(s[key])
-      const next = { ...s, [key]: options[(idx + 1) % options.length] }
-      saveAnalyzerSettings(next)
-      return next
-    })
-  }, [])
 
   useEffect(() => {
     if (responseCurveRef.current) {
@@ -254,7 +147,6 @@ export default function EqPanel() {
       if (!active) return
       const now = performance.now()
 
-      // B6 — hover readout (computed every poll frame, cheap)
       const cursor = cursorRef.current
       if (cursor.inPlot && !dragRef.current && responseCurveRef.current) {
         const freq = clamp(xToFreq(cursor.svgX), FREQ_MIN, FREQ_MAX)
@@ -326,7 +218,7 @@ export default function EqPanel() {
     }
   }, [target, fetchResponseCurve, fetchSpectrumData, fetchBandGR, sampleRate])
 
-  // Band drag (B7.3 — track movement to distinguish click from drag)
+  // Band drag (track movement to distinguish click from drag)
   const handleDragStart = useCallback((bandIndex, e) => {
     const band = useEqStore.getState().bands[bandIndex]
     if (!band) return
@@ -374,7 +266,6 @@ export default function EqPanel() {
       const { bandIndex, hasMoved } = dragRef.current
       dragRef.current = null
       document.body.style.cursor = ''
-      // B7.3 — click (no movement) selects the band
       if (!hasMoved) setSelectedBand(bandIndex)
     }
 
@@ -386,7 +277,7 @@ export default function EqPanel() {
     }
   }, [setBandParam, setSelectedBand])
 
-  // SVG mousedown — drag existing dot OR add band on curve click
+  // SVG mousedown — drag existing node OR add band on curve click
   const handleSvgMouseDown = useCallback((e) => {
     if (dragRef.current) return
     if (e.button !== 0) return
@@ -434,7 +325,7 @@ export default function EqPanel() {
     }
   }, [handleDragStart, addBandAt, setSelectedBand])
 
-  // B6 — SVG cursor tracking
+  // Cursor tracking (hover readout)
   const handleSvgMouseMove = useCallback((e) => {
     if (!svgRef.current) return
     const rect = svgRef.current.getBoundingClientRect()
@@ -478,8 +369,6 @@ export default function EqPanel() {
 
   if (!target) return null
 
-  // Panel root style applies font CSS vars (font/theme popover UI is gone,
-  // but whatever was already saved still applies — see hook comments above).
   const panelStyle = {
     left: panelPos.x,
     top: panelPos.y,
@@ -487,111 +376,81 @@ export default function EqPanel() {
     ...(themeFont && { '--xleth-eq-font-family': themeFont }),
   }
 
-  // Floating band popup's anchor — the selected orb's live screen position,
-  // derived the same way the drag/hover handlers map SVG space to the page.
   const selectedBand = selectedBandIndex >= 0 ? (bands[selectedBandIndex] ?? null) : null
-  let popupAnchor = null
-  if (selectedBand && svgRef.current) {
-    const rect = svgRef.current.getBoundingClientRect()
-    const scaleX = rect.width / SVG_W
-    const scaleY = rect.height / SVG_H
-    popupAnchor = {
-      x: rect.left + freqToX(selectedBand.freq) * scaleX,
-      y: rect.top + dbToY_response(selectedBand.gain, dbZoom) * scaleY,
-    }
-  }
+
+  const usedChannels = [...new Set(bands.map(b => b.channel || 'stereo'))]
 
   return (
     <div className="eq-panel" style={panelStyle}>
-      {/* Header — stripped to title + close only. The removed global controls
-          (dB zoom / analyzer tilt / range / speed / resolution / LinPhase /
-          oversample / pre-spectrum / font popover) still exist in state
-          above; only their button affordances were removed here. */}
       <div className="eq-panel-header" onMouseDown={handlePanelDragStart}>
         <span className="eq-panel-title">PARAMETRIC EQ</span>
+        <span className="eq-panel-tag">M/S · Per-Channel</span>
         <button className="eq-panel-close" onClick={close} title="Close">
           <X size={13} />
         </button>
       </div>
 
-      {/* Response curve / spectrum analyzer */}
+      <div className="fx-panel-preset-strip">
+        <EffectPresetBar
+          effectType="xletheq"
+          target={target}
+          onApplied={() => {
+            useEqStore.getState().fetchBands()
+            useEqStore.getState().fetchGlobalParams()
+          }}
+        />
+      </div>
+
       <div className="eq-graph-row">
-        <div className="eq-svg-wrap">
-        <svg ref={svgRef} className="eq-svg" viewBox={`0 0 ${SVG_W} ${SVG_H}`}
-          preserveAspectRatio="none" onWheel={handleWheel}
+        <EqCanvas
+          svgRef={svgRef}
+          bands={bands}
+          selectedBandIndex={selectedBandIndex}
+          dbZoom={dbZoom}
+          rangeDb={analyzerSettings.rangeDb}
+          responsePath={responsePath}
+          spectrumPaths={spectrumPaths}
+          preSpectrumPaths={preSpectrumPaths}
+          hoverReadout={hoverReadout}
+          hoveredIndex={hoveredIndex}
+          onHoverBand={setHoveredIndex}
+          onWheel={handleWheel}
           onMouseDown={handleSvgMouseDown}
           onMouseMove={handleSvgMouseMove}
-          onMouseLeave={handleSvgMouseLeave}>
-          {/* EQ-A: token-driven vertical gradient stops.
-              All colors flow through the theme-token pipeline:
-                --xleth-eq-spectrum-* → --theme-eq-spectrum-* → catalog. */}
-          <defs>
-            <linearGradient id="xleth-eq-spectrum-fill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%"   stopColor="var(--xleth-eq-spectrum-top)" />
-              <stop offset="100%" stopColor="var(--xleth-eq-spectrum-bottom)" />
-            </linearGradient>
-            <linearGradient id="xleth-eq-pre-spectrum-fill" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%"   stopColor="var(--xleth-eq-pre-spectrum-top)" />
-              <stop offset="100%" stopColor="var(--xleth-eq-pre-spectrum-bottom)" />
-            </linearGradient>
-          </defs>
-          <rect x={PAD_L} y={PAD_T} width={PLOT_W} height={PLOT_H} className="eq-plot-bg" />
-          <EqGrid dbZoom={dbZoom} rangeDb={analyzerSettings.rangeDb} />
+          onMouseLeave={handleSvgMouseLeave}
+          onBandDragStart={handleDragStart}
+        />
+      </div>
 
-          {preSpectrumPaths.fill && (
-            <path d={preSpectrumPaths.fill}
-              className="eq-spectrum-pre-fill"
-              fill="url(#xleth-eq-pre-spectrum-fill)"
-              stroke="var(--xleth-eq-pre-spectrum-stroke)" />
-          )}
-          {preSpectrumPaths.maxHold && (
-            <path d={preSpectrumPaths.maxHold} className="eq-spectrum-pre-hold" />
-          )}
-          {spectrumPaths.fill && (
-            <path d={spectrumPaths.fill}
-              className="eq-spectrum-fill"
-              fill="url(#xleth-eq-spectrum-fill)"
-              stroke="var(--xleth-eq-spectrum-stroke)" />
-          )}
-          {spectrumPaths.maxHold && (
-            <path d={spectrumPaths.maxHold} className="eq-spectrum-hold" />
-          )}
-
-          {responsePath && (
-            <>
-              <path d={responsePath} className="eq-response-line" />
-              <path d={responsePath} fill="none" stroke="transparent" strokeWidth={20}
-                style={{ cursor: 'copy', pointerEvents: 'stroke' }} />
-            </>
-          )}
-
-          {bands.map((band, i) => (
-            <BandDot key={i} band={band} index={i} onDragStart={handleDragStart}
-              dbZoom={dbZoom} isSelected={i === selectedBandIndex} />
+      <div className="eq-panel-footer">
+        <div className="eq-panel-channel-legend">
+          {usedChannels.map(ch => (
+            <span key={ch} className="eq-panel-channel-chip">
+              <span className="eq-panel-channel-dot" style={{ background: `var(--xleth-eq-ch-${ch})` }} />
+              {CHANNEL_META[ch].label}
+            </span>
           ))}
-        </svg>
-
-          {/* B6 — hover readout */}
-          {hoverReadout && (
-            <div className="eq-hover-readout">{hoverReadout}</div>
-          )}
+        </div>
+        <div className="eq-panel-status">
+          <span>{Math.round(sampleRate)} Hz</span>
+          <span>Zero Latency</span>
         </div>
       </div>
 
-      {/* Floating per-band popup — replaces the old bottom band table +
-          selected-band footer. Portaled to document.body so it can overflow
-          this panel's own bounds; anchored to the selected orb's live
-          on-screen position. */}
-      {selectedBand && popupAnchor && (
-        <EqBandPopup
+      {selectedBand && (
+        <EqBandPanel
           key={selectedBandIndex}
           band={selectedBand}
           bandIndex={selectedBandIndex}
-          anchor={popupAnchor}
+          bandCount={bands.length}
+          svgRef={svgRef}
+          dbZoom={dbZoom}
+          panelPos={panelPos}
           linPhase={linPhase}
           oversample={oversample}
           grValue={bandGR ? bandGR[selectedBandIndex] : null}
           setBandParam={setBandParam}
+          setBandChannel={setBandChannel}
           removeBand={removeBand}
           duplicateBand={duplicateBand}
           onClose={() => setSelectedBand(-1)}

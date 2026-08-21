@@ -3,6 +3,7 @@ import { X, ChevronDown } from 'lucide-react'
 import useWaveshaperStore from '../../stores/waveshaperStore.js'
 import { deduplicatePoints } from '../../stores/waveshaperStore.js'
 import PluginUIKitKnob from '../../plugin-ui/runtime/components/PluginUIKitKnob.jsx'
+import EffectPresetBar from '../../fx-presets/EffectPresetBar.jsx'
 
 const MIXER_RING_APPEARANCE = { preset: 'mixer-ring', sizePreset: 'inherit' }
 
@@ -299,6 +300,19 @@ export default function WaveshaperPanel() {
     window.xleth?.audio?.setEffectParameter(target.trackId, target.nodeId, id, value)
   }, [target])
 
+  // Preset load/undo: the adapter already wrote pregain/postgain/mix/preset
+  // and the curve points to the engine — mirror them into local state (params)
+  // and the store (points, via a refetch) without re-deriving anything.
+  const applyPresetState = useCallback((state) => {
+    if (state?.params && typeof state.params === 'object') {
+      setParams(prev => ({ ...prev, ...state.params }))
+      if (Number.isFinite(state.params.preset)) {
+        useWaveshaperStore.setState({ preset: Math.round(state.params.preset) })
+      }
+    }
+    useWaveshaperStore.getState().fetchCurvePoints()
+  }, [])
+
   // ── Lock Ends helper ────────────────────────────────────────────────────────
 
   const isLockedIdx = useCallback((idx) => {
@@ -397,6 +411,14 @@ export default function WaveshaperPanel() {
         <button className="ws-panel-close" onClick={close} title="Close">
           <X size={12} />
         </button>
+      </div>
+
+      <div className="fx-panel-preset-strip">
+        <EffectPresetBar
+          effectType="waveshaper"
+          target={target}
+          onApplied={applyPresetState}
+        />
       </div>
 
       {/* ── Two-column body ── */}

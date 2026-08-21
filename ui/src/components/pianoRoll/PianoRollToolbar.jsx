@@ -1,6 +1,7 @@
 import { useState } from 'react'
-import { MousePointer2, Pencil, Scissors, Eraser, ZoomIn, ZoomOut, Sliders, ExternalLink, ArrowDownToLine, Waves } from 'lucide-react'
+import { MousePointer2, Pencil, Scissors, Eraser, ZoomIn, ZoomOut, Sliders, ExternalLink, ArrowDownToLine, Waves, Music2 } from 'lucide-react'
 import { timelineEvents } from '../../timelineEvents.js'
+import { SCALE_MODES, ROOT_NOTES, DEFAULT_SCALE, scaleLabel } from './scales.js'
 
 const TOOLS = [
   { id: 'select', icon: MousePointer2, label: 'Select (S)' },
@@ -23,6 +24,7 @@ export default function PianoRollToolbar({
   activeTool, onToolChange,
   slideMode = false, onSlideModeChange,
   stickyNoteLength, onStickyNoteLengthChange,
+  scale = DEFAULT_SCALE, onScaleChange,
   onZoomIn, onZoomOut,
   onOpenSamplerSettings,
   samplerSettingsDisabled = false,
@@ -152,6 +154,42 @@ export default function PianoRollToolbar({
             <option key={n.ticks} value={n.ticks}>{n.label}</option>
           ))}
         </select>
+      </div>
+      {/* ── Snap to Scale ─────────────────────────────────────── */}
+      <div className="piano-roll-toolbar-group">
+        <button
+          className={`timeline-toolbar-button ${scale.enabled ? 'active' : ''}`}
+          title={scale.enabled
+            ? `Snap to Scale: ${scaleLabel(scale.root, scale.mode)} — click to disable`
+            : 'Snap to Scale — restrict notes to one scale'}
+          onClick={() => onScaleChange?.({ ...scale, enabled: !scale.enabled })}
+        >
+          <Music2 size={14} />
+        </button>
+        {scale.enabled && (
+          <>
+            <select
+              className="piano-roll-scale-root"
+              value={scale.root}
+              onChange={(e) => onScaleChange?.({ ...scale, root: Number(e.target.value) })}
+              title="Scale root"
+            >
+              {ROOT_NOTES.map((n, i) => (
+                <option key={n} value={i}>{n}</option>
+              ))}
+            </select>
+            <select
+              className="piano-roll-scale-mode"
+              value={scale.mode}
+              onChange={(e) => onScaleChange?.({ ...scale, mode: e.target.value })}
+              title="Scale"
+            >
+              {SCALE_MODES.map((m) => (
+                <option key={m.id} value={m.id}>{m.label}</option>
+              ))}
+            </select>
+          </>
+        )}
       </div>
       <div className="piano-roll-toolbar-group">
         <button

@@ -3,14 +3,14 @@ import { ChevronDown, ChevronRight, EyeOff, Folder, Plus, Sliders, Trash2 } from
 import TrackHeader from './TrackHeader.jsx'
 import TrackColorPopover from './TrackColorPopover.jsx'
 import TrackContextMenu from './TrackContextMenu.jsx'
-import { RULER_HEIGHT, HEADER_WIDTH } from '../../constants/timeline.js'
+import { RULER_HEIGHT, HEADER_WIDTH, ADD_TRACK_ROW_HEIGHT } from '../../constants/timeline.js'
 import { resolveAutoTrackColor, normalizeTrackPalette, TRACK_PALETTE_FALLBACK } from './trackColorResolver.js'
 import { folderMapForLayout } from './trackFolderLayout.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
 
 export default function TrackHeaderList({
-  tracks, patterns, currentPatternIdByTrack,
-  focusedTrackId, onFocusTrack,
+  tracks,
+  focusedTrackId, onFocusTrack, onOpenInMixer,
   onAddTrack, onMute, onSolo, onVisualOnly, onRename, onRemove, onRequestContextMenu,
   onSetTrackColor,
   folderLayout,
@@ -114,11 +114,6 @@ export default function TrackHeaderList({
     const track = trackById.get(trackId)
     if (!track) return null
     const canonicalIndex = Math.max(0, tracks.findIndex(item => item.id === track.id))
-    let currentPattern = null
-    if (track.type === 'Pattern') {
-      const patternId = currentPatternIdByTrack?.[track.id]
-      if (patternId != null && patternId >= 0) currentPattern = patterns?.[patternId] || null
-    }
     const color = resolveAutoTrackColor(
       track, canonicalIndex, trackPalette, TRACK_PALETTE_FALLBACK[canonicalIndex % 16])
     const laneRows = lanesByTrack.get(track.id) ?? []
@@ -129,7 +124,6 @@ export default function TrackHeaderList({
           index={canonicalIndex}
           trackHeight={trackHeight}
           trackColor={color}
-          currentPattern={currentPattern}
           isFocused={focusedTrackId === track.id}
           isSelected={selectedTrackIds.has(track.id)}
           onMute={onMute}
@@ -140,6 +134,7 @@ export default function TrackHeaderList({
           onRequestContextMenu={onRequestContextMenu}
           onFocus={onFocusTrack}
           onSelect={onSelectTrack}
+          onOpenInMixer={onOpenInMixer}
           onDragStart={(event) => beginTrackDrag(event, track.id)}
           onDragOver={allowDrop}
           onDrop={(event) => dropAt(event, target)}
@@ -212,7 +207,7 @@ export default function TrackHeaderList({
         })}
         <div className="timeline-root-drop-zone" onMouseDown={() => onClearSelection?.()} onDragOver={allowDrop}
           onDrop={(event) => dropAt(event, { kind: 'root', index: rootOrder.length })} />
-        <button className="timeline-add-track" onClick={onAddTrack} title="Add track">
+        <button className="timeline-add-track" style={{ height: ADD_TRACK_ROW_HEIGHT }} onClick={onAddTrack} title="Add track">
           <Plus size={14} /><span>Add Track</span>
         </button>
       </div>

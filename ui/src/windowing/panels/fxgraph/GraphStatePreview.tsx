@@ -19,6 +19,8 @@ import {
   fitGraphViewport,
   zoomViewportAroundScreenPoint,
 } from '../../../fxgraph/graphViewport.js';
+import { resolveEffectVendorTag } from '../../../components/mixer/effectCatalog.js';
+import type { VstPluginMeta } from './ChainAsGraphPreview';
 import {
   EnvelopeNodeBody,
   readEnvelopeNodeData,
@@ -31,11 +33,6 @@ import {
   type LfoNodeData,
   type LfoNodePatch,
 } from './LfoEditor';
-// Canvas empty-space "Add Plugin / Add Modulator" menu reuses the same
-// portal-based context-menu component/pattern as track headers (clamping,
-// outside-click/Escape close, submenu support) instead of inventing a second
-// menu system.
-import TrackContextMenu from '../../../components/timeline/TrackContextMenu.jsx';
 
 // FXG.4-g — Bezier mapping editor types.
 type BezierPoint = { x: number; y: number };
@@ -179,8 +176,10 @@ interface PositionedNode {
   type: PreviewNodeKind;
   label: string;
   secondaryText: string | null;
-  metaText: string | null;
   badges: string[];
+  // Effect nodes only: the persisted bypass flag, which drives both the node's
+  // power toggle and its "Bypassed" badge.
+  bypassed: boolean;
   effectInstanceId: string | null;
   pluginId: string | null;
   parameterPorts: GraphExposedParameterPort[];
@@ -272,7 +271,13 @@ interface GraphStatePreviewProps {
   onSetSidechainInputSource?: (nodeId: string, sourceTrackId: number | null) => void;
   onConnectSidechain?: (sidechainInputNodeId: string, targetNodeId: string) => void;
   sidechainSources?: SidechainSourceOption[];
+  // Scanned plugin metadata — only consulted to resolve a third-party effect
+  // node's author tag. Stock effects resolve theirs from the effect catalog.
+  vstPlugins?: VstPluginMeta[];
   onRemoveNode?: (nodeId: string) => void;
+  // Effect-node bypass toggle (node power button + context-menu item). Absent in
+  // read-only preview, where bypass renders as a badge only.
+  onSetNodeBypass?: (nodeId: string, bypassed: boolean) => void;
   onConnectNodes?: (sourceNodeId: string, targetNodeId: string) => void;
   // Drag-drop splice: dropping a dragged node onto an audio cable removes it
   // and reconnects it inline between the cable's endpoints, in one undo step.
@@ -296,10 +301,6 @@ interface GraphStatePreviewProps {
     nodeId: string,
     parameter: GraphEffectParameterDescriptor,
   ) => Promise<unknown> | unknown;
-  canUndoGraphEdit?: boolean;
-  canRedoGraphEdit?: boolean;
-  onUndoGraphEdit?: () => void;
-  onRedoGraphEdit?: () => void;
   // FXG.4-g — per-link Bezier mapping editor
   onUpdateParameterEdgeMapping?: (edgeId: string, mappingPatch: unknown) => void;
   // FXG.4-h — parent-attached macro automation lane actions (macro nodes only)
@@ -307,6 +308,9 @@ interface GraphStatePreviewProps {
   onHideMacroAutomationLane?: (macroNodeId: string) => void;
   onCreateMacroAutomationClip?: (macroNodeId: string) => void;
 }
+
+// Stable identity so the default never re-triggers memoized consumers.
+const EMPTY_VST_PLUGINS: VstPluginMeta[] = [];
 
 const NODE_WIDTH = 148;
 const NODE_HEIGHT = 74;
@@ -329,7 +333,6 @@ const PREVIEW_PADDING_Y = 24;
 const FALLBACK_NODE_SPACING_X = 204;
 const FALLBACK_NODE_Y = 0;
 const DEFAULT_VIEWPORT: GraphStateViewport = Object.freeze({ x: 0, y: 0, zoom: 1 });
-const ZOOM_BUTTON_STEP = 1.1;
 // Continuous zoom sensitivity: Math.exp(-deltaY * k).
 // k=0.001 → ~10% per standard 100px wheel notch; trackpad frames are tiny so feel smooth.
 const WHEEL_ZOOM_SENSITIVITY = 0.001;
@@ -472,8 +475,8 @@ function isSidechainCapableEffectData(data: Record<string, unknown> | undefined)
 interface ResolvedNodeText {
   label: string;
   secondaryText: string | null;
-  metaText: string | null;
   badges: string[];
+  bypassed: boolean;
   effectInstanceId: string | null;
   pluginId: string | null;
   parameterPorts: GraphExposedParameterPort[];
@@ -492,8 +495,8 @@ function resolveNodeText(node: GraphStateNode): ResolvedNodeText {
   const base: ResolvedNodeText = {
     label: '',
     secondaryText: null,
-    metaText: null,
     badges: [],
+    bypassed: false,
     effectInstanceId: null,
     pluginId: null,
     parameterPorts: [],
@@ -517,21 +520,27 @@ function resolveNodeText(node: GraphStateNode): ResolvedNodeText {
   if (type === 'effect') {
     const displayName = readString(data, 'displayName') || 'Effect';
     const pluginId = readString(data, 'pluginId');
-    const sourceSlot = readInteger(data, 'sourceChainSlotIndex');
     const effectInstanceId = readString(data, 'effectInstanceId');
     const missing = readBoolean(data, 'missing');
+    const bypassed = readBoolean(data, 'bypass');
     const badges: string[] = [];
 
-    if (readBoolean(data, 'bypass')) badges.push('Bypassed');
+    if (bypassed) badges.push('Bypassed');
     if (missing) badges.push('Missing');
     if (readBoolean(data, 'crashed')) badges.push('Crashed');
 
     return {
       ...base,
       label: displayName,
-      secondaryText: pluginId && pluginId !== displayName ? pluginId : null,
-      metaText: sourceSlot == null ? null : `Chain slot ${sourceSlot + 1}`,
+      // An effect module's identity line is its display name plus the author tag
+      // rendered in the node's footer (XLETH for stock, the plugin's own vendor
+      // for a scanned VST). The raw pluginId used to be echoed here as secondary
+      // text, which read as the name printed twice on every stock effect
+      // ("Compressor" over "compressor") and as an opaque identifier string on
+      // third-party plugins. It carries nothing the vendor tag doesn't.
+      secondaryText: null,
       badges,
+      bypassed,
       effectInstanceId,
       pluginId,
       parameterPorts: readExposedParameterPorts(data),
@@ -1203,6 +1212,93 @@ export function computeNodeDragPosition(
   };
 }
 
+// Track Input / Track Output are routing terminals, not modules you configure,
+// so they drop the card treatment entirely and render as a jack glyph: a block
+// arrow with a return loop, pointing into the chain for the input and out of it
+// for the output. Traced from ui/in.svg and ui/out.svg. Everything paints in
+// `currentColor` so the glyph inherits the node's themed text color, and the
+// in/out word rides inside the arrowhead in the app's own font (text-anchor
+// middle keeps it centered whatever font the theme resolves to).
+function TrackIoGlyph({ direction }: { direction: 'in' | 'out' }) {
+  const isIn = direction === 'in';
+  // The source artwork's own viewBox (0 0 W 476ish) is NOT centered on the
+  // glyph's content — the return-loop swirl leaves ~94 units of dead space
+  // above the arrow and almost none below, so the visual center of the icon
+  // sits at ~59% of the box height, not 50%. Centering that box in the node
+  // (as flex alignment does) would leave the cable's actual attachment point
+  // — the arrow's tip, a fixed y=274.42 in both source files — sitting above
+  // the connection dot instead of on it. Cropping the viewBox to 406 units
+  // tall, symmetric around y=274.42, re-centers the tip without touching a
+  // single path/polygon coordinate (a viewBox crop is a pure pan, not a
+  // rescale, when only one axis's range changes).
+  return (
+    <svg
+      className="xleth-graph-state-preview__io-glyph"
+      viewBox={isIn ? '0 71.42 424.82 406' : '0 71.42 443.5 406'}
+      role="presentation"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <polygon
+        fill="currentColor"
+        points={isIn
+          ? '0 230.22 202.33 221.56 195.04 117.2 391.44 274.42 207.8 440.29 207.8 340.04 0 323.18 0 230.22'
+          : '52.06 230.22 254.38 221.56 247.09 117.2 443.5 274.42 259.85 440.29 259.85 340.04 52.06 323.18 52.06 230.22'}
+      />
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeMiterlimit={10}
+        strokeWidth={18}
+        d={isIn
+          ? 'M195.72,94.07c120.75-15.18,221.83,82.66,220.08,188.94-1.65,100.28-94.59,191.35-208.74,183.63'
+          : 'M229.1,93.02C108.36,77.84,7.27,175.68,9.02,281.95c1.65,100.28,94.59,191.35,208.74,183.63'}
+      />
+      <text
+        className="xleth-graph-state-preview__io-glyph-text"
+        x={isIn ? 272 : 305}
+        y={311.07}
+        textAnchor="middle"
+        fontSize={133.01}
+      >
+        {direction}
+      </text>
+    </svg>
+  );
+}
+
+// The standard power mark (a broken ring around a vertical stem), painted in
+// currentColor so the button's own themed state drives it.
+function PowerGlyph() {
+  return (
+    <svg
+      className="xleth-graph-state-preview__power-glyph"
+      viewBox="0 0 16 16"
+      role="presentation"
+      aria-hidden="true"
+      focusable="false"
+    >
+      <path
+        fill="none"
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth={1.8}
+        d="M5.1 4.4a4.6 4.6 0 1 0 5.8 0"
+      />
+      <line
+        stroke="currentColor"
+        strokeLinecap="round"
+        strokeWidth={1.8}
+        x1={8}
+        y1={2.2}
+        x2={8}
+        y2={7.6}
+      />
+    </svg>
+  );
+}
+
 export function GraphStatePreviewNode({
   node,
   dragging,
@@ -1217,6 +1313,7 @@ export function GraphStatePreviewNode({
   hoveredAudioTarget = false,
   connectGuidance = null,
   sidechainSources = [],
+  vstPlugins = [],
   onPointerDown,
   onPointerMove,
   onPointerUp,
@@ -1227,6 +1324,7 @@ export function GraphStatePreviewNode({
   onConnectPointerCancel,
   onNodeContextMenu,
   onEdit,
+  onToggleBypass,
   onMacroValueCommit,
   onMacroRenameCommit,
   onEnvelopeUpdate,
@@ -1254,6 +1352,9 @@ export function GraphStatePreviewNode({
   connectGuidance?: 'valid' | 'invalid' | null;
   // FXG-SC.6B — eligible source tracks for the Sidechain Input source selector.
   sidechainSources?: SidechainSourceOption[];
+  // Scanned plugin metadata, used only to resolve a third-party effect's author
+  // for the node footer tag. Stock effects never consult it.
+  vstPlugins?: VstPluginMeta[];
   onPointerDown?: (event: React.PointerEvent<HTMLDivElement>, node: PositionedNode) => void;
   onPointerMove?: (event: React.PointerEvent<HTMLDivElement>) => void;
   onPointerUp?: (event: React.PointerEvent<HTMLDivElement>) => void;
@@ -1268,6 +1369,9 @@ export function GraphStatePreviewNode({
   // Also wired to double-click on editable effect nodes — the same action as
   // the context menu's Edit item.
   onEdit?: (nodeId: string) => void;
+  // Effect nodes only — flips the effect's bypass. Absent in read-only preview,
+  // which renders the state as a badge with no toggle.
+  onToggleBypass?: (nodeId: string, bypassed: boolean) => void;
   onMacroValueCommit?: (nodeId: string, value: number) => void;
   onMacroRenameCommit?: (nodeId: string, label: string) => void;
   // EVC.3 — envelope node edit callback. When absent, the envelope renders read-only.
@@ -1330,6 +1434,12 @@ export function GraphStatePreviewNode({
     typeof onNodeContextMenu === 'function';
   const canDoubleClickEdit =
     node.type === 'effect' && node.editable && !node.virtual && typeof onEdit === 'function';
+  const isTrackIo = node.type === 'trackInput' || node.type === 'trackOutput';
+  // The author tag in an effect node's footer: 'XLETH' for a stock effect, the
+  // scanned plugin's own vendor for a third party, nothing when neither resolves.
+  const vendorTag = node.type === 'effect'
+    ? resolveEffectVendorTag(node.pluginId, vstPlugins)
+    : null;
   const macroPercent = node.macroValue == null ? null : Math.round(node.macroValue * 100);
   const commitMacroValue = (event: React.SyntheticEvent<HTMLInputElement>) => {
     const nextValue = Number(event.currentTarget.value);
@@ -1354,6 +1464,7 @@ export function GraphStatePreviewNode({
       ].filter(Boolean).join(' ')}
       data-node-id={node.id}
       data-node-type={node.type}
+      data-bypassed={node.type === 'effect' && node.bypassed ? 'true' : undefined}
       data-parameter-drop-node={hoveredParameterPortId ? 'true' : undefined}
       data-audio-drop-node={hoveredAudioTarget ? 'true' : undefined}
       data-connect-guidance={connectGuidance ?? undefined}
@@ -1450,6 +1561,31 @@ export function GraphStatePreviewNode({
           />
         )
       )}
+      {/* Effect power toggle. Bypass is otherwise a one-way trip in graph mode: a
+          chain converted with bypassed effects renders a "Bypassed" badge with no
+          affordance to clear it. Mirrors the Mixer Chain module's bypass button. */}
+      {node.type === 'effect' && !node.virtual && typeof onToggleBypass === 'function' && (
+        <button
+          className={[
+            'xleth-graph-state-preview__node-power',
+            node.bypassed ? 'xleth-graph-state-preview__node-power--bypassed' : '',
+          ].filter(Boolean).join(' ')}
+          type="button"
+          aria-pressed={node.bypassed}
+          aria-label={node.bypassed ? `Enable ${node.label}` : `Bypass ${node.label}`}
+          title={node.bypassed ? 'Enable' : 'Bypass'}
+          // The node body is a drag handle and a double-click editor target; neither
+          // should fire when the toggle is what was hit.
+          onPointerDown={(event) => event.stopPropagation()}
+          onDoubleClick={(event) => event.stopPropagation()}
+          onClick={(event) => {
+            event.stopPropagation();
+            onToggleBypass(node.id, !node.bypassed);
+          }}
+        >
+          <PowerGlyph />
+        </button>
+      )}
       {node.type === 'macro' && typeof onMacroRenameCommit === 'function' ? (
         <input
           className="xleth-graph-state-preview__macro-label"
@@ -1468,7 +1604,19 @@ export function GraphStatePreviewNode({
           }}
         />
       ) : (
-        <span className="xleth-graph-state-preview__node-title">{node.label}</span>
+        <>
+          {isTrackIo && <TrackIoGlyph direction={node.type === 'trackInput' ? 'in' : 'out'} />}
+          {/* The glyph already reads "in"/"out", so on a terminal the title is
+              kept for assistive tech and visually clipped rather than removed. */}
+          <span
+            className={[
+              'xleth-graph-state-preview__node-title',
+              isTrackIo ? 'xleth-graph-state-preview__node-title--io' : '',
+            ].filter(Boolean).join(' ')}
+          >
+            {node.label}
+          </span>
+        </>
       )}
       {/* FXG-SC.6D — sidechainInput secondary text uses a resolved track name from
           sidechainSources (available in the component) rather than the raw id from the
@@ -1491,6 +1639,14 @@ export function GraphStatePreviewNode({
                 return found ? `Keyed by: ${found.name}` : 'Source missing';
               })()
             : node.secondaryText}
+        </span>
+      )}
+      {/* The effect's author, sitting at the foot of the name block: 'XLETH' on a
+          stock effect, the plugin's own vendor on a third party. It takes the row
+          the echoed pluginId used to occupy, so the node's height is unchanged. */}
+      {vendorTag && (
+        <span className="xleth-graph-state-preview__node-vendor" title={vendorTag}>
+          {vendorTag}
         </span>
       )}
       {/* FXG-SC.6B — Sidechain Input source selector. Lists "No source" plus eligible
@@ -1591,9 +1747,6 @@ export function GraphStatePreviewNode({
             }}
           />
         </span>
-      )}
-      {node.metaText && (
-        <span className="xleth-graph-state-preview__node-meta">{node.metaText}</span>
       )}
       {node.badges.length > 0 && (
         <span className="xleth-graph-state-preview__badges">
@@ -1979,6 +2132,7 @@ export function GraphParameterContextMenu({
   onToggleParameter,
   onEdit,
   onRemove,
+  onToggleBypass,
   macroAutomation = null,
   onShowAutomationLane,
   onHideAutomationLane,
@@ -1996,6 +2150,8 @@ export function GraphParameterContextMenu({
   onToggleParameter?: (parameter: GraphEffectParameterDescriptor) => void;
   onEdit?: () => void;
   onRemove?: () => void;
+  // Effect nodes only — the menu's mirror of the node's power toggle.
+  onToggleBypass?: () => void;
   // FXG.4-h — macro automation lane state + actions (macro nodes only)
   macroAutomation?: { exists: boolean; visible: boolean; clipCount: number } | null;
   onShowAutomationLane?: () => void;
@@ -2134,6 +2290,16 @@ export function GraphParameterContextMenu({
       <button
         className="xleth-graph-state-preview__context-item"
         type="button"
+        role="menuitemcheckbox"
+        aria-checked={node.bypassed}
+        disabled={!onToggleBypass}
+        onClick={onToggleBypass}
+      >
+        {node.bypassed ? 'Enable' : 'Bypass'}
+      </button>
+      <button
+        className="xleth-graph-state-preview__context-item"
+        type="button"
         role="menuitem"
         disabled={!canRemove}
         onClick={onRemove}
@@ -2199,6 +2365,9 @@ export function GraphParameterContextMenu({
                       type="button"
                       role="menuitemcheckbox"
                       aria-checked={exposed}
+                      // Marks the exposure rows apart from the menu's other
+                      // checkable items (the effect's bypass toggle).
+                      data-menu-item="parameter"
                       disabled={!writable}
                       key={parameter.parameterId}
                       title={parameter.name || item.label}
@@ -2227,6 +2396,84 @@ export function GraphParameterContextMenu({
   );
 }
 
+// Canvas empty-space "Add Plugin / Add Modulator" menu.
+//
+// Deliberately built on this panel's OWN menu shell
+// (`xleth-graph-state-preview__context-menu`, same as GraphParameterContextMenu)
+// rather than the generic `.context-menu` used by TrackContextMenu elsewhere in
+// the app. The FX Graph panel renders inside window layers that set
+// `pointer-events: none` (see .xleth-floating-window-layer in windowing.css);
+// this panel's menu class is the one that explicitly restores
+// `pointer-events: auto`, so a generic menu portaled here renders but never
+// receives clicks. Modulators are a grouped section, not a hover submenu —
+// nothing to hover-target and no second positioning system to maintain.
+export interface GraphCanvasAddMenuAction {
+  key: string;
+  label: string;
+  disabled?: boolean;
+  title?: string;
+  onSelect: () => void;
+}
+
+export function GraphCanvasAddMenu({
+  x,
+  y,
+  pluginAction = null,
+  modulatorActions = [],
+}: {
+  x: number;
+  y: number;
+  pluginAction?: GraphCanvasAddMenuAction | null;
+  modulatorActions?: GraphCanvasAddMenuAction[];
+}) {
+  return (
+    <div
+      className="xleth-graph-state-preview__context-menu xleth-graph-state-preview__add-menu"
+      role="menu"
+      aria-label="Add graph node"
+      style={{ left: x, top: y }}
+      onPointerDown={(event) => event.stopPropagation()}
+      onContextMenu={(event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      }}
+    >
+      {pluginAction && (
+        <button
+          className="xleth-graph-state-preview__context-item"
+          type="button"
+          role="menuitem"
+          disabled={pluginAction.disabled}
+          title={pluginAction.title}
+          onClick={pluginAction.onSelect}
+        >
+          {pluginAction.label}
+        </button>
+      )}
+      {modulatorActions.length > 0 && (
+        <div className="xleth-graph-state-preview__context-section">
+          <div className="xleth-graph-state-preview__context-section-title">
+            Add Modulator
+          </div>
+          {modulatorActions.map((action) => (
+            <button
+              className="xleth-graph-state-preview__context-item"
+              type="button"
+              role="menuitem"
+              key={action.key}
+              disabled={action.disabled}
+              title={action.title}
+              onClick={action.onSelect}
+            >
+              {action.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 export default function GraphStatePreview({
   graphState = null,
   notice = 'Persisted graphState. Linear routing is enabled for supported paths.',
@@ -2242,7 +2489,9 @@ export default function GraphStatePreview({
   onSetSidechainInputSource,
   onConnectSidechain,
   sidechainSources = [],
+  vstPlugins = EMPTY_VST_PLUGINS,
   onRemoveNode,
+  onSetNodeBypass,
   onConnectNodes,
   onSpliceNodeIntoEdge,
   onConnectMacroToParameter,
@@ -2255,10 +2504,6 @@ export default function GraphStatePreview({
   trackId = null,
   fetchGraphEffectParameters,
   onToggleParameterPort,
-  canUndoGraphEdit = false,
-  canRedoGraphEdit = false,
-  onUndoGraphEdit,
-  onRedoGraphEdit,
   onUpdateParameterEdgeMapping,
   onShowMacroAutomationLane,
   onHideMacroAutomationLane,
@@ -2405,10 +2650,6 @@ export default function GraphStatePreview({
     typeof onShowMacroAutomationLane === 'function' ||
     typeof onHideMacroAutomationLane === 'function' ||
     typeof onCreateMacroAutomationClip === 'function';
-  const canUseGraphHistory =
-    typeof onUndoGraphEdit === 'function' || typeof onRedoGraphEdit === 'function';
-  const showToolbar =
-    canEditViewport || canAddNode || canAddMacro || canAddEnvelope || canAddLfo || canAddSidechainInput || canUseGraphHistory;
   // The right-click node menu carries Edit/Remove (formerly always-visible node-body
   // buttons) plus, for effect/macro nodes, the parameter-exposure/automation extras —
   // so it must open whenever any of those affordances is wired, not only the extras.
@@ -2427,6 +2668,45 @@ export default function GraphStatePreview({
   const closeAddMenu = React.useCallback(() => {
     setAddMenu(null);
   }, []);
+
+  // Every add-menu item does the same two things: close the menu, then run its
+  // add action at the right-click's graph position.
+  const runAddMenuAction = React.useCallback((
+    add?: (position?: { x: number; y: number }) => void,
+  ) => {
+    const position = addMenu?.graphPosition;
+    closeAddMenu();
+    add?.(position);
+  }, [addMenu?.graphPosition, closeAddMenu]);
+
+  // Outside-click / Escape close for the add menu. Mirrors the node context
+  // menu's effect below; the shared `__context-menu` class is what marks a
+  // click as "inside a menu".
+  React.useEffect(() => {
+    if (!addMenu) return undefined;
+
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (
+        typeof Element !== 'undefined' &&
+        target instanceof Element &&
+        target.closest('.xleth-graph-state-preview__context-menu')
+      ) {
+        return;
+      }
+      closeAddMenu();
+    };
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === 'Escape') closeAddMenu();
+    };
+
+    document.addEventListener('pointerdown', handlePointerDown);
+    document.addEventListener('keydown', handleKeyDown);
+    return () => {
+      document.removeEventListener('pointerdown', handlePointerDown);
+      document.removeEventListener('keydown', handleKeyDown);
+    };
+  }, [addMenu, closeAddMenu]);
 
   // Pan/zoom invalidates a menu's screen anchor (and the add menu's graph-space
   // spawn point), so either menu closes as soon as the viewport it opened under
@@ -2575,6 +2855,12 @@ export default function GraphStatePreview({
     closeContextMenu();
     if (node) onRemoveNode?.(node.id);
   }, [closeContextMenu, contextMenu?.node, onRemoveNode]);
+
+  const handleContextToggleBypass = React.useCallback(() => {
+    const node = contextMenu?.node;
+    closeContextMenu();
+    if (node?.type === 'effect') onSetNodeBypass?.(node.id, !node.bypassed);
+  }, [closeContextMenu, contextMenu?.node, onSetNodeBypass]);
 
   const handleToggleParameter = React.useCallback((parameter: GraphEffectParameterDescriptor) => {
     const node = contextMenu?.node;
@@ -2768,48 +3054,11 @@ export default function GraphStatePreview({
     return () => cancelAnimationFrame(frame);
   }, [canEditViewport, model.empty, trackId, handleFitView]);
 
-  const handleResetView = React.useCallback(() => {
-    onViewportChange?.({
-      x: DEFAULT_VIEWPORT.x,
-      y: DEFAULT_VIEWPORT.y,
-      zoom: DEFAULT_VIEWPORT.zoom,
-    });
-  }, [onViewportChange]);
-
   const toCanvasPoint = React.useCallback((clientX: number, clientY: number) => {
     const rect = canvasRef.current?.getBoundingClientRect();
     if (!rect) return null;
     return { x: (clientX - rect.left) / viewport.zoom, y: (clientY - rect.top) / viewport.zoom };
   }, [viewport.zoom]);
-
-  const handleZoomIn = React.useCallback(() => {
-    if (!onViewportChange) return;
-    const rect = viewportRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const center = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-    const nextZoom = clampGraphZoom(viewport.zoom * ZOOM_BUTTON_STEP);
-    const next = zoomViewportAroundScreenPoint(viewport, center, nextZoom, rect);
-    onViewportChange({ x: roundViewport(next.x), y: roundViewport(next.y), zoom: next.zoom });
-  }, [onViewportChange, viewport]);
-
-  const handleZoomOut = React.useCallback(() => {
-    if (!onViewportChange) return;
-    const rect = viewportRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const center = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-    const nextZoom = clampGraphZoom(viewport.zoom / ZOOM_BUTTON_STEP);
-    const next = zoomViewportAroundScreenPoint(viewport, center, nextZoom, rect);
-    onViewportChange({ x: roundViewport(next.x), y: roundViewport(next.y), zoom: next.zoom });
-  }, [onViewportChange, viewport]);
-
-  const handleZoomReset = React.useCallback(() => {
-    if (!onViewportChange) return;
-    const rect = viewportRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    const center = { x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 };
-    const next = zoomViewportAroundScreenPoint(viewport, center, 1, rect);
-    onViewportChange({ x: roundViewport(next.x), y: roundViewport(next.y), zoom: 1 });
-  }, [onViewportChange, viewport]);
 
   const handleWheel = React.useCallback((event: React.WheelEvent<HTMLDivElement>) => {
     if (!canEditViewport || !onViewportChange) return;
@@ -2848,6 +3097,22 @@ export default function GraphStatePreview({
     menuOpenViewportRef.current = viewport;
     setAddMenu({ x: event.clientX, y: event.clientY, graphPosition });
   }, [canAddAnything, toCanvasPoint, closeContextMenu, viewport]);
+
+  // Double-click on empty canvas space (same "not a node" guard as the
+  // right-click add menu above) frames the whole graph — the toolbar's old
+  // Fit View button, now reachable without a dedicated control.
+  const handleCanvasDoubleClick = React.useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (!canEditViewport) return;
+    const target = event.target;
+    if (
+      typeof Element !== 'undefined' &&
+      target instanceof Element &&
+      target.closest('.xleth-graph-state-preview__node')
+    ) {
+      return;
+    }
+    handleFitView();
+  }, [canEditViewport, handleFitView]);
 
   const resetConnect = React.useCallback((event: React.PointerEvent<HTMLSpanElement>) => {
     if (connectRef.current?.pointerId === event.pointerId) {
@@ -3093,140 +3358,16 @@ export default function GraphStatePreview({
       data-draggable-nodes={canDragNodes ? 'true' : undefined}
       data-workspace-active={canEditViewport ? 'true' : undefined}
     >
-      {(hasHeader || showToolbar) && (
+      {hasHeader && (
         <div className="xleth-graph-state-preview__chrome">
-          {hasHeader && (
-            <div className="xleth-graph-state-preview__header">
-              {notice != null && (
-                <p className="xleth-graph-state-preview__notice">{notice}</p>
-              )}
-              {model.empty && (
-                <p className="xleth-graph-state-preview__empty-title">Empty FX Graph</p>
-              )}
-            </div>
-          )}
-          {showToolbar && (
-            <div className="xleth-graph-state-preview__toolbar" aria-label="Graph workspace controls">
-              {canUseGraphHistory && (
-                <>
-                  <button
-                    className="xleth-graph-state-preview__view-button"
-                    type="button"
-                    disabled={!canUndoGraphEdit}
-                    aria-label="Undo graph edit"
-                    title="Undo graph edit"
-                    onClick={onUndoGraphEdit}
-                  >
-                    Undo
-                  </button>
-                  <button
-                    className="xleth-graph-state-preview__view-button"
-                    type="button"
-                    disabled={!canRedoGraphEdit}
-                    aria-label="Redo graph edit"
-                    title="Redo graph edit"
-                    onClick={onRedoGraphEdit}
-                  >
-                    Redo
-                  </button>
-                </>
-              )}
-              {/* FXG.3-l — Add Effect Node is the primary toolbar action (accent-filled);
-                  the other three Add buttons are quiet secondary/ghost actions so the
-                  toolbar reads as one emphasized action plus supporting ones. */}
-              {canAddNode && (
-                <button
-                  className="xleth-graph-state-preview__action-button"
-                  type="button"
-                  onClick={() => onAddEffectNode?.()}
-                >
-                  Add Effect Node
-                </button>
-              )}
-              {canAddMacro && (
-                <button
-                  className="xleth-graph-state-preview__action-button xleth-graph-state-preview__action-button--secondary"
-                  type="button"
-                  onClick={() => onAddMacroNode?.()}
-                >
-                  Add Macro
-                </button>
-              )}
-              {canAddEnvelope && (
-                <button
-                  className="xleth-graph-state-preview__action-button xleth-graph-state-preview__action-button--secondary"
-                  type="button"
-                  onClick={() => onAddEnvelopeNode?.()}
-                >
-                  Add Envelope
-                </button>
-              )}
-              {canAddLfo && (
-                <button
-                  className="xleth-graph-state-preview__action-button xleth-graph-state-preview__action-button--secondary"
-                  type="button"
-                  onClick={() => onAddLfoNode?.()}
-                >
-                  Add LFO
-                </button>
-              )}
-              {canAddSidechainInput && (
-                <button
-                  className="xleth-graph-state-preview__action-button xleth-graph-state-preview__action-button--secondary"
-                  type="button"
-                  disabled={hasSidechainInputNode}
-                  title={hasSidechainInputNode
-                    ? 'This graph already has a Sidechain Input node'
-                    : 'Add a Sidechain Input node'}
-                  onClick={() => onAddSidechainInput?.()}
-                >
-                  Add Sidechain Input
-                </button>
-              )}
-              {canEditViewport && (
-                <>
-                  <button
-                    className="xleth-graph-state-preview__view-button"
-                    type="button"
-                    onClick={handleZoomOut}
-                    aria-label="Zoom out"
-                  >
-                    {'−'}
-                  </button>
-                  <button
-                    className="xleth-graph-state-preview__zoom-display"
-                    type="button"
-                    onClick={handleZoomReset}
-                    title="Reset zoom to 100%"
-                  >
-                    {`${Math.round(viewport.zoom * 100)}%`}
-                  </button>
-                  <button
-                    className="xleth-graph-state-preview__view-button"
-                    type="button"
-                    onClick={handleZoomIn}
-                    aria-label="Zoom in"
-                  >
-                    {'+'}
-                  </button>
-                  <button
-                    className="xleth-graph-state-preview__view-button"
-                    type="button"
-                    onClick={handleFitView}
-                  >
-                    Fit View
-                  </button>
-                  <button
-                    className="xleth-graph-state-preview__view-button"
-                    type="button"
-                    onClick={handleResetView}
-                  >
-                    Reset View
-                  </button>
-                </>
-              )}
-            </div>
-          )}
+          <div className="xleth-graph-state-preview__header">
+            {notice != null && (
+              <p className="xleth-graph-state-preview__notice">{notice}</p>
+            )}
+            {model.empty && (
+              <p className="xleth-graph-state-preview__empty-title">Empty FX Graph</p>
+            )}
+          </div>
         </div>
       )}
       <div
@@ -3240,6 +3381,7 @@ export default function GraphStatePreview({
         onPointerCancel={canEditViewport ? finishPan : undefined}
         onWheel={canEditViewport ? handleWheel : undefined}
         onContextMenu={canAddAnything ? handleCanvasContextMenu : undefined}
+        onDoubleClick={canEditViewport ? handleCanvasDoubleClick : undefined}
       >
         <div className="xleth-graph-state-preview__stage" data-preview-scroll-stage="true">
           <div
@@ -3300,6 +3442,7 @@ export default function GraphStatePreview({
                       : null
                   }
                   sidechainSources={sidechainSources}
+                  vstPlugins={vstPlugins}
                   onPointerDown={canDragNodes ? handleNodePointerDown : undefined}
                   onPointerMove={canDragNodes ? handleNodePointerMove : undefined}
                   onPointerUp={canDragNodes ? finishDrag : undefined}
@@ -3310,6 +3453,7 @@ export default function GraphStatePreview({
                   onConnectPointerCancel={canConnect || canConnectParameters || canConnectEnvelopeParameters || canConnectLfoParameters || canConnectSidechain ? resetConnect : undefined}
                   onNodeContextMenu={canOpenNodeMenu ? handleNodeContextMenu : undefined}
                   onEdit={canEditNode ? onEditNode : undefined}
+                  onToggleBypass={onSetNodeBypass}
                   onMacroValueCommit={onUpdateMacroValue}
                   onMacroRenameCommit={onRenameMacroNode}
                   onEnvelopeUpdate={canEditEnvelope ? onUpdateEnvelope : undefined}
@@ -3396,6 +3540,7 @@ export default function GraphStatePreview({
               onToggleParameter={canExposeParameters ? handleToggleParameter : undefined}
               onEdit={handleContextEdit}
               onRemove={handleContextRemove}
+              onToggleBypass={onSetNodeBypass ? handleContextToggleBypass : undefined}
               macroAutomation={(() => {
                 if (contextMenu.node.type !== 'macro') return null;
                 const lane = Array.isArray(graphState?.macroAutomationLanes)
@@ -3413,42 +3558,46 @@ export default function GraphStatePreview({
             />,
             document.body,
           )}
-          {addMenu && typeof document !== 'undefined' && (
-            <TrackContextMenu
+          {addMenu && typeof document !== 'undefined' && createPortal(
+            // Same containing-block trap as the node context menu above — portal
+            // past the floating panel's transformed frame so the menu's
+            // clientX/clientY coordinates resolve against the viewport.
+            <GraphCanvasAddMenu
               x={addMenu.x}
               y={addMenu.y}
-              onClose={closeAddMenu}
-              menuClassName="xleth-graph-state-preview__add-menu"
-              submenuClassName="xleth-graph-state-preview__add-menu"
-              items={[
-                ...(canAddNode ? [{
-                  label: 'Add Plugin',
-                  onClick: () => onAddEffectNode?.(addMenu.graphPosition),
+              pluginAction={canAddNode ? {
+                key: 'plugin',
+                label: 'Add Plugin',
+                onSelect: () => runAddMenuAction(onAddEffectNode),
+              } : null}
+              modulatorActions={[
+                ...(canAddMacro ? [{
+                  key: 'macro',
+                  label: 'Macro',
+                  onSelect: () => runAddMenuAction(onAddMacroNode),
                 }] : []),
-                ...((canAddMacro || canAddEnvelope || canAddLfo || canAddSidechainInput) ? [{
-                  label: 'Add Modulator',
-                  submenu: [
-                    ...(canAddMacro ? [{
-                      label: 'Macro',
-                      onClick: () => onAddMacroNode?.(addMenu.graphPosition),
-                    }] : []),
-                    ...(canAddEnvelope ? [{
-                      label: 'Envelope',
-                      onClick: () => onAddEnvelopeNode?.(addMenu.graphPosition),
-                    }] : []),
-                    ...(canAddLfo ? [{
-                      label: 'LFO',
-                      onClick: () => onAddLfoNode?.(addMenu.graphPosition),
-                    }] : []),
-                    ...(canAddSidechainInput ? [{
-                      label: 'Sidechain Input',
-                      disabled: hasSidechainInputNode,
-                      onClick: () => onAddSidechainInput?.(addMenu.graphPosition),
-                    }] : []),
-                  ],
+                ...(canAddEnvelope ? [{
+                  key: 'envelope',
+                  label: 'Envelope',
+                  onSelect: () => runAddMenuAction(onAddEnvelopeNode),
+                }] : []),
+                ...(canAddLfo ? [{
+                  key: 'lfo',
+                  label: 'LFO',
+                  onSelect: () => runAddMenuAction(onAddLfoNode),
+                }] : []),
+                ...(canAddSidechainInput ? [{
+                  key: 'sidechainInput',
+                  label: 'Sidechain Input',
+                  disabled: hasSidechainInputNode,
+                  title: hasSidechainInputNode
+                    ? 'This graph already has a Sidechain Input node'
+                    : 'Add a Sidechain Input node',
+                  onSelect: () => runAddMenuAction(onAddSidechainInput),
                 }] : []),
               ]}
-            />
+            />,
+            document.body,
           )}
           {mappingEditorState && canEditMappings && typeof document !== 'undefined' && (() => {
             const meEdge = graphState?.edges?.find((e) => e.id === mappingEditorState.edgeId);

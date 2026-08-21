@@ -192,8 +192,12 @@ export function drawTrace(ctx, peaks, x, y, w, h, startCol, endCol, fillColor, s
  * @param {number}   endCol      past-the-end column
  * @param {string}   strokeColor line colour
  * @param {number}   [lineWidth=1.5]
+ * @param {string}   [haloColor] optional wider halo stroked underneath, for
+ *                    legibility against arbitrary background hues — see
+ *                    drawTrace/drawEnvelope's fill+core pairing
+ * @param {number}   [haloWidth=0] halo width added on each side of lineWidth
  */
-export function drawWaveformLine(ctx, peaks, x, y, w, h, startCol, endCol, strokeColor, lineWidth = 1.5) {
+export function drawWaveformLine(ctx, peaks, x, y, w, h, startCol, endCol, strokeColor, lineWidth = 1.5, haloColor = null, haloWidth = 0) {
   const cols = endCol - startCol
   if (cols <= 0) return
 
@@ -209,6 +213,11 @@ export function drawWaveformLine(ctx, peaks, x, y, w, h, startCol, endCol, strok
     const val = ((peaks[idx] || 0) + (peaks[idx + 1] || 0)) / 2
     if (j === 0) ctx.moveTo(px, mid - val * amp)
     else         ctx.lineTo(px, mid - val * amp)
+  }
+  if (haloColor && haloWidth > 0) {
+    ctx.strokeStyle = haloColor
+    ctx.lineWidth   = lineWidth + haloWidth * 2
+    ctx.stroke()
   }
   ctx.strokeStyle = strokeColor
   ctx.lineWidth   = lineWidth
@@ -227,8 +236,11 @@ export function drawWaveformLine(ctx, peaks, x, y, w, h, startCol, endCol, strok
  * @param {number}   count        number of samples to draw
  * @param {string}   strokeColor  line + dot colour
  * @param {number}   [dotRadius]  auto-computed from spacing if omitted
+ * @param {string}   [haloColor]  optional wider/larger halo drawn underneath
+ *                    the line and dots, for legibility against arbitrary
+ *                    background hues — see drawTrace/drawEnvelope
  */
-export function drawSamplePoints(ctx, samples, x, y, w, h, startIdx, count, strokeColor, dotRadius) {
+export function drawSamplePoints(ctx, samples, x, y, w, h, startIdx, count, strokeColor, dotRadius, haloColor = null) {
   if (count <= 0) return
 
   const mid  = y + h / 2
@@ -244,12 +256,28 @@ export function drawSamplePoints(ctx, samples, x, y, w, h, startIdx, count, stro
     if (j === 0) ctx.moveTo(px, mid - val * amp)
     else         ctx.lineTo(px, mid - val * amp)
   }
+  if (haloColor) {
+    ctx.strokeStyle = haloColor
+    ctx.lineWidth   = 3
+    ctx.stroke()
+  }
   ctx.strokeStyle = strokeColor
   ctx.lineWidth   = 1
   ctx.stroke()
 
   // Dots (skip if too small to see)
   if (dotR >= 1) {
+    if (haloColor) {
+      ctx.fillStyle = haloColor
+      for (let j = 0; j < count; j++) {
+        const px  = x + j * step + step / 2
+        const val = samples[startIdx + j] || 0
+        const py  = mid - val * amp
+        ctx.beginPath()
+        ctx.arc(px, py, dotR + 1, 0, Math.PI * 2)
+        ctx.fill()
+      }
+    }
     ctx.fillStyle = strokeColor
     for (let j = 0; j < count; j++) {
       const px  = x + j * step + step / 2

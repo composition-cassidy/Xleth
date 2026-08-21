@@ -22,6 +22,7 @@
 // Skip entries with duration < MIN_DURATION_TICKS (120, a 1/32 note).
 
 import { snapTickToGrid, PPQ } from '../constants/timeline.js'
+import { sourceTicksForTimelineTicks } from '../components/timeline/clipSourceDomain.js'
 
 export const MIN_DURATION_TICKS   = 120
 const STRETCH_MIN = 0.1
@@ -63,7 +64,11 @@ function applyStartAction(c, action, granularity) {
     const maxStart = origEnd - MIN_DURATION_TICKS
     start  = Math.min(snapped, maxStart)
     end    = origEnd
-    offset = Math.max(0, offset + (start - origStart))
+    // offset is SOURCE ticks, (start - origStart) is a TIMELINE distance: a
+    // stretched clip skips only delta/stretch of source. Identity at stretch 1
+    // (and pattern blocks always pass stretch = 1). See clipSourceDomain.js.
+    offset = Math.max(0, offset
+      + sourceTicksForTimelineTicks(start - origStart, stretch))
     return { start, end, offset, stretch }
   }
   if (action === 'stretch') {

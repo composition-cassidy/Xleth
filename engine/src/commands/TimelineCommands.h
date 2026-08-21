@@ -1254,6 +1254,22 @@ private:
     ZoomPanRotSettings newSettings_;
 };
 
+// ─── SetTrackZprTracksCommand ─────────────────────────────────────────────────
+// Keyframe-authoring commit: one undo step per drag/add/delete/curve-edit
+// gesture (never per pointermove — the UI previews locally and commits once).
+
+class SetTrackZprTracksCommand : public Command {
+public:
+    SetTrackZprTracksCommand(int trackId, const ZprTracks& newTracks, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int       trackId_;
+    ZprTracks oldTracks_;
+    ZprTracks newTracks_;
+};
+
 // ─── SetTrackPingPongSettingsCommand ─────────────────────────────────────────
 
 class SetTrackPingPongSettingsCommand : public Command {

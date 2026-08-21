@@ -251,6 +251,9 @@ describe('rpc-manifest invariants', () => {
     // hand-written in ui/electron-main/effects.js — their handlers coerce args
     // (!!enabled / maxBuckets|0) and the drain returns the binary viz payload.
     for (const excluded of ['timeline_addClipsBatch',
+                            'timeline_pasteClipsBatch',
+                            'timeline_moveClipsBatch',
+                            'timeline_removeClipsBatch',
                             'timeline_spliceClipsAtPlayhead',
                             'timeline_autoTrimClip',
                             'timeline_moveNotesBatch',

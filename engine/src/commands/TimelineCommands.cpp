@@ -2320,6 +2320,28 @@ std::string SetTrackZoomPanRotSettingsCommand::describe() const {
     return "Set ZoomPanRot Settings (track=" + std::to_string(trackId_) + ")";
 }
 
+// ─── SetTrackZprTracksCommand ─────────────────────────────────────────────────
+
+SetTrackZprTracksCommand::SetTrackZprTracksCommand(
+    int trackId, const ZprTracks& newTracks, const Timeline& timeline)
+    : trackId_(trackId), newTracks_(newTracks)
+{
+    const TrackInfo* t = timeline.getTrack(trackId);
+    oldTracks_ = t ? t->zoomPanRot.tracks : ZprTracks{};
+}
+
+void SetTrackZprTracksCommand::execute(Timeline& timeline) {
+    timeline.setTrackZprTracks(trackId_, newTracks_);
+}
+
+void SetTrackZprTracksCommand::undo(Timeline& timeline) {
+    timeline.setTrackZprTracks(trackId_, oldTracks_);
+}
+
+std::string SetTrackZprTracksCommand::describe() const {
+    return "Edit Zoom/Pan/Rot Keyframes (track=" + std::to_string(trackId_) + ")";
+}
+
 // ─── SetTrackPingPongSettingsCommand ─────────────────────────────────────────
 
 SetTrackPingPongSettingsCommand::SetTrackPingPongSettingsCommand(

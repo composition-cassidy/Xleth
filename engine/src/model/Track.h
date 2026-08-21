@@ -20,6 +20,20 @@ VideoFlipConfig videoFlipConfigFromJson(const nlohmann::json& j);
 std::string         visualEffectTypeToString(VisualEffect::Type t);
 VisualEffect::Type  stringToVisualEffectType(const std::string& s);
 
+// ── ZprTracks persistence (Zoom/Pan/Rot schema v2) ───────────────────────────
+// Written alongside the legacy scalars, never instead of them, so a v2 project
+// still opens on a pre-v2 build. loadOrMigrateZprTracks is the single decision
+// point between the two payload shapes — see its definition in Track.cpp.
+nlohmann::json zprTracksToJson(const ZprTracks& tr);
+void           loadOrMigrateZprTracks(const nlohmann::json& jz, ZoomPanRotSettings& z);
+
+// Direct-authoring counterpart to loadOrMigrateZprTracks: builds a ZprTracks
+// straight from a zprTracksToJson-shaped payload (as sent by the keyframe
+// editor RPC) with authored ALWAYS true — unlike the project-load path, there
+// is no legacy-scalar fallback to consider here, the caller is explicitly
+// writing keyframes.
+ZprTracks zprTracksFromJson(const nlohmann::json& jt);
+
 nlohmann::json visualEffectParamsToNamedJson(VisualEffect::Type type,
                                              const float (&p)[16]);
 void           visualEffectParamsFromNamedJson(VisualEffect::Type type,

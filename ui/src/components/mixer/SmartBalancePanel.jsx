@@ -3,6 +3,7 @@ import { X, ChevronDown, ChevronRight } from 'lucide-react'
 import { tokenValue } from '../../theming/tokenValue.ts'
 import useSmartBalanceStore from '../../stores/smartBalanceStore.js'
 import Knob from '../sampler/Knob.jsx'
+import EffectPresetBar from '../../fx-presets/EffectPresetBar.jsx'
 
 // ── Band definitions ────────────────────────────────────────────────────────
 // Bands match the engine's LR4 binary-tree crossover (150/800/4000 Hz).
@@ -544,6 +545,13 @@ export default function SmartBalancePanel() {
     window.xleth?.audio?.setEffectParameter(target.trackId, target.nodeId, id, value)
   }, [target])
 
+  // Preset load/undo: the adapter already wrote every param to the engine —
+  // mirror them into local state so the knobs/canvas reflect it immediately.
+  const applyPresetState = useCallback((state) => {
+    if (!state?.params || typeof state.params !== 'object') return
+    setParams(prev => ({ ...prev, ...state.params }))
+  }, [])
+
   // ── Canvas drag for target lines ─────────────────────────────────────────
   // In Relative mode the user drags the visual line (overallRms + offset)
   // and we store the offset; in Absolute mode they drag the absolute level.
@@ -673,6 +681,14 @@ export default function SmartBalancePanel() {
         <button className="sb-panel-close" onClick={close} title="Close">
           <X size={12} />
         </button>
+      </div>
+
+      <div className="fx-panel-preset-strip">
+        <EffectPresetBar
+          effectType="smartbalance"
+          target={target}
+          onApplied={applyPresetState}
+        />
       </div>
 
       <div className="sb-panel-body">

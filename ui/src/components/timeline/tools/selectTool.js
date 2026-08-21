@@ -7,6 +7,10 @@ import { tokenValue } from '../../../theming/tokenValue.ts'
 import { uiCanvasFont } from '../../../styles/typography.js'
 import { drawRubberBand, drawMovePreview } from '../timelineDrawing.js'
 import { getRegionPlaybackDurationSec } from '../regionDuration.js'
+import {
+  sourceTicksForTimelineTicks,
+  timelineTicksForSourceTicks,
+} from '../clipSourceDomain.js'
 
 const HANDLE_W = 6   // Resize handle hit-test width (slightly wider than visual 4px)
 const MIN_DURATION_TICKS = 120  // 1/32 note
@@ -20,7 +24,7 @@ export function createSelectTool(deps) {
   const {
     clipsRef, tracksRef, regionsRef, selectedRef,
     pixelsPerBeatRef, scrollOffsetRef, bpmRef,
-    onMoveClip, onDuplicateClips, onResizeClip, onResizeClipLeft,
+    onMoveClips, onDuplicateClips, onResizeClip, onResizeClipLeft,
     onStretchClip, onStretchClipLeft,
     setSelectedClipIds, setStickyNoteLength,
     onRequestClipContextMenu,
@@ -30,7 +34,7 @@ export function createSelectTool(deps) {
     // Pattern block deps
     patternBlocksRef, patternsRef, selectedBlockIdsRef,
     setSelectedBlockIds,
-    onMovePatternBlock, onDuplicatePatternBlocks, onResizePatternBlock, onResizePatternBlockLeft,
+    onMovePatternBlocks, onDuplicatePatternBlocks, onResizePatternBlock, onResizePatternBlockLeft,
     onRequestPatternBlockContextMenu,
     // FXG.4-h-r1: derived row layout so macro automation child lanes shift the
     // track-index↔Y mapping. Optional — falls back to contiguous geometry.
@@ -87,10 +91,16 @@ export function createSelectTool(deps) {
   let dragBlockOrigTrackIdx = 0
   let dragBlockOrigDuration = 0
   let dragBlockOrigOffset = 0
-  let pendingHit = null  // { clip?, block?, isRightEdge, isLeftEdge, e }
+  let pendingHit = null  // { clip?, block?, empty?, isRightEdge, isLeftEdge, e }
   // Multi-select drag state
   let dragSelectedClips = []   // [{ clip, origBeat, origTrackIdx }]
   let dragSelectedBlocks = []  // [{ block, origBeat, origTrackIdx }]
+  // Shift-click range-select anchor — the last plain/ctrl-clicked item's
+  // track+time extent, so a later shift-click can select everything between
+  // it and the new target (horizontally on one track, or across a block of
+  // tracks above/below/diagonally). Mirrors trackSelectionAnchorRef's role
+  // for track-header range selection (see updateTrackSelection).
+  let selectionAnchor = null  // { trackIndex, startTicks, endTicks }
 
   function resetDragState({ cancelled = false } = {}) {
     dragCancelled = cancelled
@@ -275,6 +285,55 @@ export function createSelectTool(deps) {
     setHoverEdge(null)
   }
 
+  // Track+time extent of a clicked clip/block, or of a bare click point when
+  // nothing was hit — the unit selectionAnchor and range-select deal in.
+  function clipExtent(clip) {
+    return {
+      trackIndex: tracksRef.current.findIndex((t) => t.id === clip.trackId),
+      startTicks: clip.positionTicks,
+      endTicks: clip.positionTicks + clip.durationTicks,
+    }
+  }
+  function blockExtent(block) {
+    return {
+      trackIndex: tracksRef.current.findIndex((t) => t.id === block.trackId),
+      startTicks: block.positionTicks,
+      endTicks: block.positionTicks + block.durationTicks,
+    }
+  }
+
+  // Selects every clip and pattern block whose track falls between the
+  // anchor's and target's track rows (inclusive, any order — so above,
+  // below, or diagonal all work) and whose time range overlaps the span
+  // between the two extents' ticks.
+  function selectRange(anchor, target) {
+    const trackLo = Math.min(anchor.trackIndex, target.trackIndex)
+    const trackHi = Math.max(anchor.trackIndex, target.trackIndex)
+    const startTicks = Math.min(anchor.startTicks, target.startTicks)
+    const endTicks = Math.max(anchor.endTicks, target.endTicks)
+    const tracks = tracksRef.current
+
+    // Clips/blocks are half-open [position, position+duration) spans, and
+    // packed patterns commonly butt one clip's end exactly against the next
+    // one's start — an inclusive <=/>= test would count that merely-touching
+    // neighbor as overlapping and grab one extra item past the target.
+    const clipIds = new Set()
+    for (const clip of clipsRef.current || []) {
+      const idx = tracks.findIndex((t) => t.id === clip.trackId)
+      if (idx < trackLo || idx > trackHi) continue
+      const clipEnd = clip.positionTicks + clip.durationTicks
+      if (clipEnd > startTicks && clip.positionTicks < endTicks) clipIds.add(clip.id)
+    }
+    const blockIds = new Set()
+    for (const block of patternBlocksRef?.current || []) {
+      const idx = tracks.findIndex((t) => t.id === block.trackId)
+      if (idx < trackLo || idx > trackHi) continue
+      const blockEnd = block.positionTicks + block.durationTicks
+      if (blockEnd > startTicks && block.positionTicks < endTicks) blockIds.add(block.id)
+    }
+    return { clipIds, blockIds }
+  }
+
   return {
     onMouseDown(localX, localY, e) {
       if (e.button !== 0) return
@@ -335,10 +394,10 @@ export function createSelectTool(deps) {
           dragMode = 'pending'
           return
         }
-        // Empty pattern-track space → rubber-band
+        // Empty pattern-track space → rubber-band (or shift range-select target)
         dragKind = null
         dragMode = 'pending'
-        pendingHit = null
+        pendingHit = { empty: true, trackIndex, positionTicks: beatsToTicks(beat), e }
         return
       }
 
@@ -359,8 +418,15 @@ export function createSelectTool(deps) {
         dragClipOrigOffset = hitClip.regionOffsetTicks ?? 0
         dragClipOrigStretchRatio = hitClip.stretchRatio ?? 1.0
         {
+          // regionDurTicks and regionOffset are SOURCE ticks; the resize clamp is
+          // a TIMELINE duration, so convert the remaining source budget through
+          // the clip's stretchRatio (see clipSourceDomain.js). A 4× clip with
+          // 1 bar of source left may legitimately stretch to 4 bars of timeline.
           const regionDurTicks = computeRegionDurTicks(hitClip)
-          dragClipOrigMaxDuration = Math.max(0, regionDurTicks - dragClipOrigOffset)
+          const sourceLeft = Math.max(0, regionDurTicks - dragClipOrigOffset)
+          dragClipOrigMaxDuration = (regionDurTicks === Number.MAX_SAFE_INTEGER)
+            ? Number.MAX_SAFE_INTEGER
+            : timelineTicksForSourceTicks(sourceLeft, dragClipOrigStretchRatio)
         }
         // Capture multi-selection if this clip is already selected
         if (selectedRef.current.has(hitClip.id) && selectedRef.current.size > 1) {
@@ -391,7 +457,7 @@ export function createSelectTool(deps) {
       } else {
         dragKind = null
         dragMode = 'pending'
-        pendingHit = null
+        pendingHit = { empty: true, trackIndex, positionTicks: beatsToTicks(beat), e }
         dragClip = null
       }
     },
@@ -507,14 +573,21 @@ export function createSelectTool(deps) {
           const snappedStart = snapBeatToGrid(Math.max(0, currentBeat), lastModifiers, snapGranularityRef?.current)
           const clipEndBeat = (dragClip.positionTicks + dragClip.durationTicks) / PPQ
           const minDur = lastModifiers.alt ? MIN_DURATION_TICKS_FREE : MIN_DURATION_TICKS
-          const minStartTicks = dragClip.positionTicks - dragClipOrigOffset
+          // The existing offset is SOURCE ticks; how far left the edge may travel
+          // is a TIMELINE distance, so scale it up by the ratio.
+          const minStartTicks = dragClip.positionTicks
+            - timelineTicksForSourceTicks(dragClipOrigOffset, dragClipOrigStretchRatio)
           const minStartBeat = Math.max(0, minStartTicks / PPQ)
           let newStartBeat = Math.min(snappedStart, clipEndBeat - minDur / PPQ)
           newStartBeat = Math.max(minStartBeat, newStartBeat)
           const newPositionTicks = beatsToTicks(newStartBeat)
           const newDurationTicks = (dragClip.positionTicks + dragClip.durationTicks) - newPositionTicks
           const positionDelta = newPositionTicks - dragClip.positionTicks
-          const newRegionOffset = Math.max(0, dragClipOrigOffset + positionDelta)
+          // …and the timeline distance the edge moved becomes a SOURCE-domain
+          // offset delta, so scale it back down. Trimming 1 bar off a 4× clip's
+          // head skips only a quarter bar of source.
+          const newRegionOffset = Math.max(0, dragClipOrigOffset
+            + sourceTicksForTimelineTicks(positionDelta, dragClipOrigStretchRatio))
           if (newPositionTicks !== dragClip.positionTicks) {
             onResizeClipLeft(dragClip.id, newPositionTicks, newDurationTicks, newRegionOffset)
             if (!lastModifiers.alt) setStickyNoteLength(newDurationTicks)
@@ -540,11 +613,16 @@ export function createSelectTool(deps) {
               if (next.has(hitBlock.id)) { next.delete(hitBlock.id) } else { next.add(hitBlock.id) }
               return next
             })
-          } else if (origE.shiftKey) {
-            setSelectedBlockIds?.((prev) => new Set([...prev, hitBlock.id]))
+            selectionAnchor = blockExtent(hitBlock)
+          } else if (origE.shiftKey && selectionAnchor) {
+            const { clipIds, blockIds } = selectRange(selectionAnchor, blockExtent(hitBlock))
+            setSelectedClipIds(clipIds)
+            setSelectedBlockIds?.(blockIds)
+            console.log(`[SelectTool] Range-selected ${clipIds.size} clip(s), ${blockIds.size} block(s) to block ${hitBlock.id}`)
           } else {
             setSelectedBlockIds?.(new Set([hitBlock.id]))
             setSelectedClipIds(new Set())
+            selectionAnchor = blockExtent(hitBlock)
           }
           console.log(`[SelectTool] Selected block ${hitBlock.id}`)
         } else if (pendingHit?.clip) {
@@ -556,21 +634,40 @@ export function createSelectTool(deps) {
               if (next.has(hitClip.id)) { next.delete(hitClip.id) } else { next.add(hitClip.id) }
               return next
             })
-          } else if (origE.shiftKey) {
-            setSelectedClipIds((prev) => new Set([...prev, hitClip.id]))
+            selectionAnchor = clipExtent(hitClip)
+          } else if (origE.shiftKey && selectionAnchor) {
+            const { clipIds, blockIds } = selectRange(selectionAnchor, clipExtent(hitClip))
+            setSelectedClipIds(clipIds)
+            setSelectedBlockIds?.(blockIds)
+            console.log(`[SelectTool] Range-selected ${clipIds.size} clip(s), ${blockIds.size} block(s) to clip ${hitClip.id}`)
           } else {
             setSelectedClipIds(new Set([hitClip.id]))
             setSelectedBlockIds?.(new Set())
+            selectionAnchor = clipExtent(hitClip)
           }
           console.log(`[SelectTool] Selected clip ${hitClip.id}`)
         } else {
-          if (selectedRef.current.size > 0) {
-            setSelectedClipIds(new Set())
+          const origE = pendingHit?.e
+          if (origE?.shiftKey && pendingHit?.empty && selectionAnchor) {
+            const target = {
+              trackIndex: pendingHit.trackIndex,
+              startTicks: pendingHit.positionTicks,
+              endTicks: pendingHit.positionTicks,
+            }
+            const { clipIds, blockIds } = selectRange(selectionAnchor, target)
+            setSelectedClipIds(clipIds)
+            setSelectedBlockIds?.(blockIds)
+            console.log(`[SelectTool] Range-selected ${clipIds.size} clip(s), ${blockIds.size} block(s) to empty point`)
+          } else {
+            if (selectedRef.current.size > 0) {
+              setSelectedClipIds(new Set())
+            }
+            if (selectedBlockIdsRef?.current?.size > 0) {
+              setSelectedBlockIds?.(new Set())
+            }
+            selectionAnchor = null
+            console.log('[SelectTool] Deselected all')
           }
-          if (selectedBlockIdsRef?.current?.size > 0) {
-            setSelectedBlockIds?.(new Set())
-          }
-          console.log('[SelectTool] Deselected all')
         }
         dragMode = null
         dragKind = null
@@ -617,6 +714,10 @@ export function createSelectTool(deps) {
           ? dragSelectedBlocks
           : [{ block: dragBlock, origBeat: dragBlockOrigBeat, origTrackIdx: dragBlockOrigTrackIdx }]
 
+        // Collect every displaced block and commit ONCE. Committing per block
+        // cost a full engine round trip and a full pattern-block refetch each,
+        // which is what made dragging a large selection crawl.
+        const blockMoves = []
         for (const { block, origBeat, origTrackIdx } of blocksToMove) {
           const newBeat = snapBeatToGrid(Math.max(0, origBeat + beatDelta), modifiers, snapGranularityRef?.current)
           const newTrkIdx = Math.max(0, Math.min(origTrackIdx + trackDelta, tracks.length - 1))
@@ -624,9 +725,12 @@ export function createSelectTool(deps) {
           const finalTrackId = tgtTrack?.type === 'Pattern' ? tgtTrack.id : block.trackId
           const newPositionTicks = beatsToTicks(newBeat)
           if (newPositionTicks !== block.positionTicks || finalTrackId !== block.trackId) {
-            onMovePatternBlock?.(block.id, finalTrackId, newPositionTicks)
-            console.log(`[SelectTool] Moved block ${block.id} to beat ${newBeat.toFixed(2)}, track=${finalTrackId}`)
+            blockMoves.push({ blockId: block.id, trackId: finalTrackId, positionTicks: newPositionTicks })
           }
+        }
+        if (blockMoves.length > 0) {
+          onMovePatternBlocks?.(blockMoves)
+          console.log(`[SelectTool] Moved ${blockMoves.length} pattern block(s)`)
         }
       }
 
@@ -679,6 +783,8 @@ export function createSelectTool(deps) {
           ? dragSelectedClips
           : [{ clip: dragClip, origBeat: dragClipOrigBeat, origTrackIdx: dragClipOrigTrackIdx }]
 
+        // Same as the block path: one batched commit for the whole selection.
+        const clipMoves = []
         for (const { clip, origBeat, origTrackIdx } of clipsToMove) {
           const newBeat = snapBeatToGrid(Math.max(0, origBeat + beatDelta), modifiers, snapGranularityRef?.current)
           const newTrkIdx = Math.max(0, Math.min(origTrackIdx + trackDelta, tracks.length - 1))
@@ -687,9 +793,12 @@ export function createSelectTool(deps) {
           const newTrackId = (tgtTrack?.type === 'Pattern') ? clip.trackId : tgtTrack.id
           const newPositionTicks = beatsToTicks(newBeat)
           if (newPositionTicks !== clip.positionTicks || newTrackId !== clip.trackId) {
-            onMoveClip(clip.id, newTrackId, newPositionTicks)
-            console.log(`[SelectTool] Moved clip ${clip.id} to beat ${newBeat.toFixed(2)}, track ${newTrkIdx}`)
+            clipMoves.push({ clipId: clip.id, trackId: newTrackId, positionTicks: newPositionTicks })
           }
+        }
+        if (clipMoves.length > 0) {
+          onMoveClips?.(clipMoves)
+          console.log(`[SelectTool] Moved ${clipMoves.length} clip(s)`)
         }
       }
 
@@ -956,7 +1065,10 @@ export function createSelectTool(deps) {
         if (lastModifiers.shift) {
           newStartBeat = Math.max(0, Math.min(snappedStart, clipEndBeat - minDur))
         } else {
-          const minStartBeat = Math.max(0, (dragClip.positionTicks - dragClipOrigOffset) / PPQ)
+          // Same source→timeline scaling as the commit path in onMouseMove, so
+          // the preview edge and the applied edge agree on a stretched clip.
+          const minStartBeat = Math.max(0, (dragClip.positionTicks
+            - timelineTicksForSourceTicks(dragClipOrigOffset, dragClipOrigStretchRatio)) / PPQ)
           newStartBeat = Math.max(minStartBeat, Math.min(snappedStart, clipEndBeat - minDur))
         }
         const newDurationBeats = clipEndBeat - newStartBeat
@@ -994,6 +1106,7 @@ export function createSelectTool(deps) {
       dragClipOrigMaxDuration = Number.MAX_SAFE_INTEGER
       dragClipOrigStretchRatio = 1.0
       dragBlockOrigOffset = 0
+      selectionAnchor = null
       setDragClass(null)
     },
   }

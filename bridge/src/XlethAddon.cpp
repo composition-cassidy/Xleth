@@ -259,6 +259,21 @@ Napi::Value Timeline_AddClipsBatch(const Napi::CallbackInfo& info)
     return dispatchToService(info, "timeline_addClipsBatch");
 }
 
+Napi::Value Timeline_PasteClipsBatch(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_pasteClipsBatch");
+}
+
+Napi::Value Timeline_MoveClipsBatch(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_moveClipsBatch");
+}
+
+Napi::Value Timeline_RemoveClipsBatch(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "timeline_removeClipsBatch");
+}
+
 Napi::Value Timeline_AutoTrimClip(const Napi::CallbackInfo& info)
 {
     return dispatchToService(info, "timeline_autoTrimClip");
@@ -713,6 +728,9 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
 
     // ── Phase 1 — Timeline mutations (via UndoManager) ───────────────────────
     exports.Set("timeline_addClipsBatch",           Napi::Function::New(env, Timeline_AddClipsBatch));
+    exports.Set("timeline_pasteClipsBatch",         Napi::Function::New(env, Timeline_PasteClipsBatch));
+    exports.Set("timeline_moveClipsBatch",          Napi::Function::New(env, Timeline_MoveClipsBatch));
+    exports.Set("timeline_removeClipsBatch",        Napi::Function::New(env, Timeline_RemoveClipsBatch));
     exports.Set("timeline_autoTrimClip",            Napi::Function::New(env, Timeline_AutoTrimClip));
     exports.Set("timeline_spliceClipsAtPlayhead",   Napi::Function::New(env, Timeline_SpliceClipsAtPlayhead));
 

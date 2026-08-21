@@ -14,6 +14,7 @@
 #include "audio/AudioPerformanceTelemetry.h"
 #include "audio/ClipRenderCache.h"
 #include "audio/ClipModulatedReader.h"
+#include "audio/SamplerPreviewRoute.h"
 #include "dsp/LoudnessAnalyzer.h"
 
 #include <atomic>
@@ -222,6 +223,23 @@ public:
     Sampler* getPreviewSamplerPtr(int regionId);
     bool hasPreviewSampler(int regionId) const;
     void silenceAllPreviewSamplers();
+
+    // ── Preview effect routing (main thread) ────────────────────────────────
+    // Which track's effect rack an auditioned note is heard through. See
+    // SamplerPreviewRoute.h for what "dedicated" means.
+    void setSamplerPreviewRouteMode(xleth::SamplerPreviewRouteMode mode);
+    xleth::SamplerPreviewRouteMode getSamplerPreviewRouteMode() const;
+    void setSamplerPreviewSelectedTrack(int trackId);
+    int  getSamplerPreviewSelectedTrack() const;
+
+    // Re-resolve the route for one region and publish it to its preview slot.
+    // Called just before a preview note-on, so the route is always current
+    // without needing invalidation hooks on every timeline edit. Returns the
+    // resolved track id (kPreviewRouteNone when the preview stays dry).
+    int refreshPreviewRoute(int regionId);
+
+    // The route currently published for a region, without re-resolving.
+    int getPreviewRouteTrack(int regionId) const;
 
     // ── Audio thread ─────────────────────────────────────────────────────────
     // Mix timeline audio into outputBuffer (additive). Caller must clear first
@@ -510,12 +528,29 @@ public:
     bool getGlobalFormantPreserve() const { return globalFormantPreserve_; }
     void invalidateAllGlobalMethodClips();            // call after global change
 
-    // Evict the cached render for clipId and re-submit a background job if the
-    // clip has non-identity pitch/stretch/reverse params.
-    // Call from message thread whenever clip playback params change.
+    // Re-point clipId at the right cached render, submitting a background job
+    // only when one is actually needed. Call from the message thread whenever
+    // clip playback params change. No-ops when the clip's CacheKey is unchanged
+    // (a MOVE, for instance) — the existing buffer stays valid.
     // `trigger` is a diagnostic label identifying the caller (e.g. "setClipParams",
     // "stretchClip", "addClip"). Defaulted so existing callers compile unchanged.
     void invalidateClipCache(int clipId, const char* trigger = "unknown");
+
+    // Bulk form of invalidateClipCache. Same per-clip semantics, but emits ONE
+    // summary log line instead of ~4 fflush'd stderr writes per clip — at a
+    // few hundred clips that logging alone dominated the batch.
+    void invalidateClipCaches(const std::vector<int>& clipIds, const char* trigger);
+
+    // Content-address for a clip's processed audio. Shared by the invalidate
+    // and lookup paths — see MixEngine.cpp.
+    CacheKey buildClipCacheKey(const Clip& clip,
+                               const juce::AudioBuffer<float>& srcBuf) const;
+
+private:
+    // Shared body of the two invalidate entry points. `quiet` suppresses the
+    // per-clip debug chatter so bulk callers log one line, not N×4.
+    void invalidateClipCacheImpl(int clipId, const char* trigger, bool quiet);
+public:
 
     // Returns clip IDs with in-flight WORLD render jobs; forwarded to the N-API
     // layer so the main process can poll and drive the UI processing spinner.
@@ -635,6 +670,15 @@ public:
     // incapable targets with sidechain_unsupported. Session-only — never persisted.
     bool isEffectInstanceSidechainCapable(int trackId,
                                           const std::string& effectInstanceId) const;
+
+    // ── FX Chain Library ──────────────────────────────────────────────────────
+    // Rebuild (replace=true) or extend (replace=false) a chain from an ordered
+    // [{pluginId, bypassed?, state?}, ...] preset description. trackId < 0
+    // selects the master chain. The whole rebuild happens under ONE acquisition
+    // of chainsMutex_, so the audio thread never processes a half-built chain.
+    // Returns { ok, added, skipped: [pluginId, ...] }.
+    nlohmann::json applyEffectChainPreset(int trackId, const nlohmann::json& effects,
+                                          bool replace);
 
     // Full graph serialization (includes APVTS state, connections, wire gains)
     nlohmann::json getEffectChainJSON(int trackId) const;
@@ -1343,7 +1387,46 @@ private:
     // Preview samplers, keyed by regionId. Dedicated to piano-roll and
     // MiniKeyboard auditioning — decoupled from per-track playback so a
     // preview note never competes with timeline voices on the same region.
-    std::unordered_map<int, std::unique_ptr<Sampler>> previewSamplers_;
+    //
+    // routeTrackId is the track whose effect chain this region's preview is
+    // pushed through (kPreviewRouteNone = dry). It is resolved on the main
+    // thread at audition time (refreshPreviewRoute) and read on the audio
+    // thread, hence the atomic. The slot is heap-allocated so the atomic never
+    // has to move when the map rehashes.
+    struct PreviewSamplerSlot
+    {
+        std::unique_ptr<Sampler> sampler;
+        std::atomic<int> routeTrackId { xleth::kPreviewRouteNone };
+        // Mixer slot index for routeTrackId, resolved on the main thread at the
+        // same moment as the route. trackIdToSlot_ lives under slotMutex_ and
+        // the audio thread must never take that lock, so the answer is
+        // published here instead. -1 when the route has no live mixer slot.
+        std::atomic<int> routeTrackSlot { -1 };
+    };
+    std::unordered_map<int, std::unique_ptr<PreviewSamplerSlot>> previewSamplers_;
+
+    // Audition routing preference (main thread writes, main thread reads during
+    // route resolution). selectedTrackId is only meaningful in Selected mode.
+    std::atomic<int> previewRouteMode_ {
+        static_cast<int>(xleth::SamplerPreviewRouteMode::Dedicated) };
+    std::atomic<int> previewRouteSelectedTrackId_ { -1 };
+
+    // Shared by both preview render sites (transport stopped and playing):
+    // sums each preview sampler into previewBuffer_, groups by resolved route,
+    // and pushes each group through that track's chain before it reaches the
+    // master output. `chainsLocked` must be true for any chain to be used.
+    void renderPreviewSamplers(juce::AudioBuffer<float>& outputBuffer,
+                               int numSamples, double sampleRate,
+                               double bpm, bool chainsLocked);
+
+    // Scratch MIDI for preview chain processing. Always empty — preview notes
+    // carry no onset events for effects to read.
+    juce::MidiBuffer previewMidi_;
+
+    // Sum of every ROUTED preview after its track chain and track fader. Fed
+    // through the master chain and master fader as one bus, so an audition
+    // lands where the arrangement lands. Dry previews never enter it.
+    juce::AudioBuffer<float> previewMasterBus_;
 
     // Transport state tracking: when playback transitions true → false,
     // fire allNotesOff() on every sampler so sustained notes release instead

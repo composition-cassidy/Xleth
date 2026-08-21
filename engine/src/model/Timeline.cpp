@@ -2,6 +2,7 @@
 #include "SamplerLegacyMigration.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <iostream>
 #include <set>
 #include <unordered_map>
@@ -493,35 +494,39 @@ int Timeline::addClip(Clip clip) {
     normalizeClipFadePercents(clip);
     clip.id = getNextId();
     m_clips[clip.id] = clip;
-    std::cout << "[Timeline] Added clip id=" << clip.id
-              << " trackId=" << clip.trackId
-              << " regionId=" << clip.regionId
-              << " position=" << clip.position.ticks
-              << " duration=" << clip.duration.ticks
-              << " syllable=" << clip.syllableIndex
-              << " vel=" << clip.velocity << "\n";
+    if (!inBulkEdit()) {
+        std::cout << "[Timeline] Added clip id=" << clip.id
+                  << " trackId=" << clip.trackId
+                  << " regionId=" << clip.regionId
+                  << " position=" << clip.position.ticks
+                  << " duration=" << clip.duration.ticks
+                  << " syllable=" << clip.syllableIndex
+                  << " vel=" << clip.velocity << "\n";
+    }
 #ifdef XLETH_DEBUG
     // Log the clip AS STORED in m_clips — catches "bridge received it correctly
     // but the copy-in clobbered/defaulted it" failures. Safe from this call site:
     // Timeline::addClip is only invoked by AddClipCommand::execute on the Node
     // main thread (via the bridge handler); the audio thread only reads clips.
     const Clip& stored = m_clips[clip.id];
-    fprintf(stderr,
-        "[Timeline_ClipConstruct] stored id=%d trackId=%d regionId=%d "
-        "pos=%lld dur=%lld regionOffset=%lld syll=%d vel=%.3f "
-        "pitchOffset=%d pitchCents=%d reversed=%d stretchRatio=%.3f "
-        "stretchMethod=%d formantPreserve=%d "
-        "fadeIn=%.2f fadeOut=%.2f bezierIn=[%.2f,%.2f,%.2f,%.2f] "
-        "bezierOut=[%.2f,%.2f,%.2f,%.2f]\n",
-        stored.id, stored.trackId, stored.regionId,
-        (long long)stored.position.ticks, (long long)stored.duration.ticks,
-        (long long)stored.regionOffset.ticks, stored.syllableIndex, stored.velocity,
-        stored.pitchOffset, stored.pitchOffsetCents,
-        stored.reversed ? 1 : 0, stored.stretchRatio,
-        (int)stored.stretchMethod, stored.formantPreserve ? 1 : 0,
-        stored.fadeInPercent, stored.fadeOutPercent,
-        stored.fadeInX1, stored.fadeInY1, stored.fadeInX2, stored.fadeInY2,
-        stored.fadeOutX1, stored.fadeOutY1, stored.fadeOutX2, stored.fadeOutY2);
+    if (!inBulkEdit()) {
+        fprintf(stderr,
+            "[Timeline_ClipConstruct] stored id=%d trackId=%d regionId=%d "
+            "pos=%lld dur=%lld regionOffset=%lld syll=%d vel=%.3f "
+            "pitchOffset=%d pitchCents=%d reversed=%d stretchRatio=%.3f "
+            "stretchMethod=%d formantPreserve=%d "
+            "fadeIn=%.2f fadeOut=%.2f bezierIn=[%.2f,%.2f,%.2f,%.2f] "
+            "bezierOut=[%.2f,%.2f,%.2f,%.2f]\n",
+            stored.id, stored.trackId, stored.regionId,
+            (long long)stored.position.ticks, (long long)stored.duration.ticks,
+            (long long)stored.regionOffset.ticks, stored.syllableIndex, stored.velocity,
+            stored.pitchOffset, stored.pitchOffsetCents,
+            stored.reversed ? 1 : 0, stored.stretchRatio,
+            (int)stored.stretchMethod, stored.formantPreserve ? 1 : 0,
+            stored.fadeInPercent, stored.fadeOutPercent,
+            stored.fadeInX1, stored.fadeInY1, stored.fadeInX2, stored.fadeInY2,
+            stored.fadeOutX1, stored.fadeOutY1, stored.fadeOutX2, stored.fadeOutY2);
+    }
 #endif
     // Contract: after addClip returns, the clip is stored AND its render
     // state is queued. MixEngine::invalidateClipCache is async (ThreadPool)
@@ -531,12 +536,14 @@ int Timeline::addClip(Clip clip) {
         m_clipCacheInvalidator(clip.id, "addClip");
     }
 #ifdef XLETH_DEBUG
-    fprintf(stderr,
-        "[CacheQueue] addClip clip=%d enqueued "
-        "(stretch=%.3f reversed=%d pitch=%d cents=%d)\n",
-        clip.id, clip.stretchRatio, clip.reversed ? 1 : 0,
-        clip.pitchOffset, clip.pitchOffsetCents);
-    fflush(stderr);
+    if (!inBulkEdit()) {
+        fprintf(stderr,
+            "[CacheQueue] addClip clip=%d enqueued "
+            "(stretch=%.3f reversed=%d pitch=%d cents=%d)\n",
+            clip.id, clip.stretchRatio, clip.reversed ? 1 : 0,
+            clip.pitchOffset, clip.pitchOffsetCents);
+        fflush(stderr);
+    }
 #endif
     return clip.id;
 }
@@ -565,9 +572,11 @@ bool Timeline::removeClip(int id) {
         std::cout << "[Timeline] ERROR removeClip: id=" << id << " not found\n";
         return false;
     }
-    std::cout << "[Timeline] Removed clip id=" << id
-              << " trackId=" << it->second.trackId
-              << " position=" << it->second.position.ticks << "\n";
+    if (!inBulkEdit()) {
+        std::cout << "[Timeline] Removed clip id=" << id
+                  << " trackId=" << it->second.trackId
+                  << " position=" << it->second.position.ticks << "\n";
+    }
     m_clips.erase(it);
     return true;
 }
@@ -611,9 +620,11 @@ bool Timeline::moveClip(int clipId, int newTrackId, TickTime newPosition) {
     TickTime oldPos = it->second.position;
     it->second.trackId  = newTrackId;
     it->second.position = newPosition;
-    std::cout << "[Timeline] Moved clip id=" << clipId
-              << " track " << oldTrackId << "→" << newTrackId
-              << " pos " << oldPos.ticks << "→" << newPosition.ticks << "\n";
+    if (!inBulkEdit()) {
+        std::cout << "[Timeline] Moved clip id=" << clipId
+                  << " track " << oldTrackId << "→" << newTrackId
+                  << " pos " << oldPos.ticks << "→" << newPosition.ticks << "\n";
+    }
     return true;
 }
 
@@ -690,6 +701,29 @@ bool Timeline::removePattern(int id) {
 
 // ─── PatternBlocks ────────────────────────────────────────────────────────────
 
+// A pattern block is fully identified, musically, by {track, pattern, position}.
+// Two blocks agreeing on all three are not "two blocks" in any audible sense:
+// MixEngine::findActivePatternBlocks pushes BOTH into activeBlocks_, and
+// triggerPatternNotes then runs once per active block against the SAME
+// {trackId, regionId} sampler -- so every note fires twice, at the same tick,
+// on the same voice pool. The result is a doubled (+6 dB) retrigger of every
+// note and 2x voice consumption, which reads as "the sample breaks up" rather
+// than as a duplicated block. Nothing legitimate produces this shape, so the
+// invariant is enforced at the two doors into m_patternBlocks:
+// addPatternBlock (new edits) and restorePatternBlock (project load).
+static int findDuplicatePatternBlockId(
+    const std::map<int, PatternBlock>& blocks, const PatternBlock& candidate)
+{
+    for (const auto& [id, b] : blocks) {
+        if (id == candidate.id) continue;   // restoring a block over itself is fine
+        if (b.trackId == candidate.trackId
+            && b.patternId == candidate.patternId
+            && b.position.ticks == candidate.position.ticks)
+            return id;
+    }
+    return -1;
+}
+
 int Timeline::addPatternBlock(PatternBlock block) {
     if (m_tracks.find(block.trackId) == m_tracks.end()) {
         std::cout << "[Timeline] ERROR addPatternBlock: trackId="
@@ -701,6 +735,21 @@ int Timeline::addPatternBlock(PatternBlock block) {
                   << block.patternId << " not found\n";
         return -1;
     }
+    // Reject an exact {track, pattern, position} duplicate. See
+    // findDuplicatePatternBlockId: stacking one would double-trigger every
+    // note through a single shared sampler. This deliberately returns -1
+    // rather than the existing block's id -- AddPatternBlockCommand::undo
+    // removes whatever id execute() hands back, so returning the pre-existing
+    // id would make a later undo delete a block the command never created.
+    if (const int dupId = findDuplicatePatternBlockId(m_patternBlocks, block);
+        dupId >= 0) {
+        std::cout << "[Timeline] addPatternBlock: rejected duplicate of block id="
+                  << dupId << " (trackId=" << block.trackId
+                  << " patternId=" << block.patternId
+                  << " position=" << block.position.ticks << ")\n";
+        return -1;
+    }
+
     block.id = getNextId();
     m_patternBlocks[block.id] = block;
     std::cout << "[Timeline] Added patternBlock id=" << block.id
@@ -770,6 +819,24 @@ bool Timeline::movePatternBlock(int id, int newTrackId, TickTime newPosition) {
                   << newTrackId << " not found\n";
         return false;
     }
+    // A move can land a block exactly on top of another with the same
+    // {track, pattern, position} -- the same stacked-duplicate shape
+    // addPatternBlock rejects, reached by dragging instead of by adding.
+    // Refuse the move so the block stays where it was rather than silently
+    // becoming a double-trigger. See findDuplicatePatternBlockId.
+    PatternBlock probe = it->second;
+    probe.trackId  = newTrackId;
+    probe.position = newPosition;
+    if (const int dupId = findDuplicatePatternBlockId(m_patternBlocks, probe);
+        dupId >= 0) {
+        std::cout << "[Timeline] movePatternBlock: id=" << id
+                  << " refused -- would stack onto block id=" << dupId
+                  << " (trackId=" << newTrackId
+                  << " patternId=" << probe.patternId
+                  << " position=" << newPosition.ticks << ")\n";
+        return false;
+    }
+
     int oldTrackId = it->second.trackId;
     TickTime oldPos = it->second.position;
     it->second.trackId  = newTrackId;
@@ -1173,7 +1240,46 @@ bool Timeline::setTrackBounceSettings(int trackId, const BounceSettings& setting
 bool Timeline::setTrackZoomPanRotSettings(int trackId, const ZoomPanRotSettings& settings) {
     auto it = m_tracks.find(trackId);
     if (it == m_tracks.end()) return false;
+
+    // Authored curves are captured BEFORE the assignment, because `settings`
+    // arrives from the scalar UI with an empty/derived tracks block and would
+    // otherwise silently flatten a hand-authored animation to a 2-key ramp.
+    // That silent-clobber shape is the failure mode this guard exists to
+    // prevent — the write is not a no-op (the scalars DO update), it just
+    // refuses to discard curves the scalars cannot express, and says so.
+    const bool wasAuthored = it->second.zoomPanRot.tracks.authored;
+    ZprTracks preserved;
+    if (wasAuthored) preserved = it->second.zoomPanRot.tracks;
+
     it->second.zoomPanRot = settings;
+
+    if (wasAuthored) {
+        it->second.zoomPanRot.tracks = std::move(preserved);
+        std::fprintf(stderr,
+            "[ParamTrack] track %d: scalar zoomPanRot write applied, but the "
+            "authored keyframe curves were KEPT — the scalars cannot represent "
+            "them. Edit the keyframes to change the animation.\n", trackId);
+    } else {
+        // The scalars are the edit surface; the tracks are what playback reads.
+        // Rebuilding here — the single choke point for every scalar write,
+        // including undo/redo, which replays through this same setter — is what
+        // stops the two representations from desyncing.
+        buildZprTracks(it->second.zoomPanRot.tracks, it->second.zoomPanRot);
+    }
+    return true;
+}
+
+bool Timeline::setTrackZprTracks(int trackId, const ZprTracks& tracks) {
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) return false;
+    // Trusts tracks.authored as given rather than forcing true: undo/redo
+    // replay a PRIOR ZprTracks snapshot through this same setter (via
+    // SetTrackZprTracksCommand), which may legitimately be a non-authored
+    // (derived) snapshot from before the first keyframe edit — forcing true
+    // here would make undoing the very first authoring commit unable to
+    // restore the pre-authoring state. zprTracksFromJson (the RPC entry
+    // point for a genuine new user edit) is what stamps authored=true.
+    it->second.zoomPanRot.tracks = tracks;
     return true;
 }
 
@@ -1188,6 +1294,14 @@ bool Timeline::setTrackSlideNoteEffectSettings(int trackId, const SlideNoteEffec
     auto it = m_tracks.find(trackId);
     if (it == m_tracks.end()) return false;
     it->second.slideNoteEffect = settings;
+    // Same rebuild-on-write contract as setTrackZoomPanRotSettings above, with
+    // the same authored-curve guard: the slide ZPR now has a full keyframe
+    // editor of its own, so a write carrying authored curves must keep them
+    // rather than flattening the animation back to a 2-key ramp.
+    if (!it->second.slideNoteEffect.zoomPanRot.tracks.authored) {
+        buildZprTracks(it->second.slideNoteEffect.zoomPanRot.tracks,
+                       it->second.slideNoteEffect.zoomPanRot);
+    }
     return true;
 }
 
@@ -1868,22 +1982,26 @@ bool Timeline::restoreClip(const Clip& clip) {
     normalizeClipFadePercents(normalized);
     m_clips[normalized.id] = normalized;
     if (normalized.id >= m_nextId) m_nextId = normalized.id + 1;
-    std::cout << "[Timeline] Restored clip id=" << clip.id
-              << " trackId=" << clip.trackId
-              << " regionId=" << clip.regionId
-              << " position=" << clip.position.ticks << "\n";
+    if (!inBulkEdit()) {
+        std::cout << "[Timeline] Restored clip id=" << clip.id
+                  << " trackId=" << clip.trackId
+                  << " regionId=" << clip.regionId
+                  << " position=" << clip.position.ticks << "\n";
+    }
     // Same contract as addClip: undo/redo must re-queue the render cache, or
     // a redone paste leaves the clip present but with stale/absent cache slot.
     if (m_clipCacheInvalidator) {
         m_clipCacheInvalidator(clip.id, "restoreClip");
     }
 #ifdef XLETH_DEBUG
-    fprintf(stderr,
-        "[CacheQueue] restoreClip clip=%d enqueued "
-        "(stretch=%.3f reversed=%d pitch=%d cents=%d)\n",
-        clip.id, clip.stretchRatio, clip.reversed ? 1 : 0,
-        clip.pitchOffset, clip.pitchOffsetCents);
-    fflush(stderr);
+    if (!inBulkEdit()) {
+        fprintf(stderr,
+            "[CacheQueue] restoreClip clip=%d enqueued "
+            "(stretch=%.3f reversed=%d pitch=%d cents=%d)\n",
+            clip.id, clip.stretchRatio, clip.reversed ? 1 : 0,
+            clip.pitchOffset, clip.pitchOffsetCents);
+        fflush(stderr);
+    }
 #endif
     return true;
 }
@@ -1933,6 +2051,23 @@ bool Timeline::restorePattern(const Pattern& pattern) {
 }
 
 bool Timeline::restorePatternBlock(const PatternBlock& block) {
+    // Projects saved before addPatternBlock enforced this invariant can carry
+    // stacked duplicates on disk, so the load path has to heal them too --
+    // otherwise the guard above only stops NEW duplicates while an already
+    // affected project keeps double-triggering on every open. Dropping the
+    // later id is safe: the blocks are identical in {track, pattern, position},
+    // and duration/offset/loop are re-read from the survivor.
+    if (const int dupId = findDuplicatePatternBlockId(m_patternBlocks, block);
+        dupId >= 0) {
+        std::cout << "[Timeline] restorePatternBlock: dropped duplicate id="
+                  << block.id << " (already present as id=" << dupId
+                  << ", trackId=" << block.trackId
+                  << " patternId=" << block.patternId
+                  << " position=" << block.position.ticks << ")\n";
+        if (block.id >= m_nextId) m_nextId = block.id + 1;
+        return true;
+    }
+
     m_patternBlocks[block.id] = block;
     if (block.id >= m_nextId) m_nextId = block.id + 1;
     std::cout << "[Timeline] Restored patternBlock id=" << block.id

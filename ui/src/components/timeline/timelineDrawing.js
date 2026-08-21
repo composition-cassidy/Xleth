@@ -78,6 +78,8 @@ export function resolveTimelinePalette() {
     // Clip / pattern material
     clipLabel:         tokenValue('--theme-timeline-clip-title-fg'),
     clipFadeOverlay:   tokenValue('--theme-timeline-fade-curve-fill'),
+    // Ring on the clip that pinned a multi-clip volume/fade drag at its limit.
+    clipControlAtLimit: tokenValue('--theme-danger'),
     clipWaveformFg:    tokenValue('--theme-timeline-clip-waveform-fg'),
     clipWaveformBg:    tokenValue('--theme-timeline-clip-waveform-bg'),
     clipPitchBoxBg:    tokenValue('--theme-timeline-fade-curve-fill'),
@@ -530,6 +532,16 @@ function _clampAlpha(a) {
 const _CONTRAST_MUL = { low: 0.82, medium: 1.0, high: 1.18 }
 function _contrastMul(c) { return _CONTRAST_MUL[c] ?? 1.0 }
 
+// Waveform overlay strength per clip-contrast setting. Deliberately a
+// separate, much gentler table than _CONTRAST_MUL: the waveform's own
+// legibility comes from the halo/core pairing below (self-contrast, not
+// contrast-against-the-clip-surface), so this only needs to nudge boldness
+// in the same direction as the "Contrast" control, never punish it — at
+// _CONTRAST_MUL's slope, "high" clip contrast makes the clip body more
+// opaque/saturated, which used to wash the (fixed-alpha) waveform out.
+const _WAVEFORM_CONTRAST_MUL = { low: 0.82, medium: 0.92, high: 1.0 }
+function _waveformContrastMul(c) { return _WAVEFORM_CONTRAST_MUL[c] ?? 0.92 }
+
 // Body material helper.
 // At plain + medium + unmuted, this MUST produce alpha identical to Pass 4B:
 //   audio: 0.6 (unselected) / 0.8 (selected)
@@ -904,25 +916,38 @@ export function drawClipFadeOverlay(
   ctx.restore()
 }
 
+// Draft value a clip should render during an in-flight control drag, or null if
+// that clip is not part of the drag. A multi-clip drag carries a per-clip
+// `values` map; a single-clip drag carries just `clipId` + `value`.
+export function clipControlDraftValue(activeControl, clipId) {
+  if (!activeControl) return null
+  if (activeControl.values) {
+    const value = activeControl.values.get(clipId)
+    return value === undefined ? null : value
+  }
+  return activeControl.clipId === clipId ? activeControl.value : null
+}
+
 export function drawClipInlineControls(
   ctx, clip, x, y, clipW, clipH, baseHex, selected,
   activeControl = null, hoveredControl = null, controlSpec = CLIP_CONTROL_DEFAULTS,
 ) {
   const spec = normalizeClipControlSpec(controlSpec)
 
-  const draftValue = activeControl?.clipId === clip.id ? activeControl.value : null
+  const draftValue = clipControlDraftValue(activeControl, clip.id)
+  const hasDraft = draftValue != null
   const committedFades = normalizeClipFades(clip)
-  const fadeInPercent = activeControl?.clipId === clip.id && activeControl.kind === 'fadeIn'
+  const fadeInPercent = hasDraft && activeControl.kind === 'fadeIn'
     ? clampNumber(draftValue, 0, Math.max(0, 100 - committedFades.fadeOutPercent))
     : committedFades.fadeInPercent
-  const fadeOutPercent = activeControl?.clipId === clip.id && activeControl.kind === 'fadeOut'
+  const fadeOutPercent = hasDraft && activeControl.kind === 'fadeOut'
     ? clampNumber(draftValue, 0, Math.max(0, 100 - committedFades.fadeInPercent))
     : committedFades.fadeOutPercent
-  const velocity = activeControl?.clipId === clip.id && activeControl.kind === 'volume'
+  const velocity = hasDraft && activeControl.kind === 'volume'
     ? clampNumber(draftValue, 0, CLIP_GAIN_MAX_VELOCITY)
     : clampNumber(clip.velocity ?? 1, 0, CLIP_GAIN_MAX_VELOCITY)
 
-  const activeKind = activeControl?.clipId === clip.id ? activeControl.kind : null
+  const activeKind = hasDraft ? activeControl.kind : null
   const hoveredKind = hoveredControl?.clipId === clip.id ? hoveredControl.kind : null
   const visibility = getClipControlVisibility({ selected, hoveredKind, activeKind }, spec)
   const geometry = computeClipControlGeometry({
@@ -1258,10 +1283,14 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
       ctx.rect(layout.contentX, layout.contentY, layout.contentW, layout.contentH)
       ctx.clip()
 
-      const envAlpha = selected ? 0.45 : 0.25
-      const rmsAlpha = selected ? 0.30 : 0.15
-      const lineColor = selected ? p.clipWaveformFg : withAlpha(p.clipWaveformFg, 0.7)
-      const traceFill = selected ? p.clipWaveformBg : withAlpha(p.clipWaveformBg, 0.55)
+      // Bright "core" over a dark "halo" — the two contrast against EACH
+      // OTHER, not against the clip's own (arbitrarily saturated) fill, so
+      // the waveform stays legible at any hue and any clip-contrast level.
+      // wfCm nudges both up together with the Contrast setting instead of
+      // holding them fixed while the clip body underneath gets more opaque.
+      const wfCm = _waveformContrastMul(ds.timelineClipContrast)
+      const lineColor = withAlpha(p.clipWaveformFg, _clampAlpha((selected ? 1.0 : 0.93) * wfCm))
+      const traceFill = withAlpha(p.clipWaveformBg, _clampAlpha((selected ? 1.0 : 0.88) * wfCm))
 
       let drawn = false
 
@@ -1284,7 +1313,7 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
           const dataCount  = visEndSample - visStartSample
           if (dataOffset >= 0 && dataOffset + dataCount <= hiRes.samples.length) {
             drawSamplePoints(ctx, hiRes.samples, visL, layout.contentY, visR - visL, layout.contentH,
-              dataOffset, dataCount, lineColor)
+              dataOffset, dataCount, lineColor, undefined, traceFill)
             drawn = true
           }
         } else if (hiRes?.peaks && hiRes.stride === 3) {
@@ -1302,7 +1331,7 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
                   startCol, endCol, traceFill, lineColor)
               } else {
                 drawWaveformLine(ctx, hiRes.peaks, visL, layout.contentY, visR - visL, layout.contentH,
-                  startCol, endCol, lineColor)
+                  startCol, endCol, lineColor, 1.5, traceFill, 1.5)
               }
               drawn = true
             }
@@ -1328,9 +1357,7 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
                   startCol, endCol, traceFill, lineColor)
               } else {
                 drawEnvelope(ctx, cpData.peaks, x, layout.contentY, clipW, layout.contentH,
-                  startCol, endCol,
-                  `rgba(255,255,255,${envAlpha})`,
-                  `rgba(255,255,255,${rmsAlpha})`)
+                  startCol, endCol, traceFill, lineColor)
               }
             }
           }
@@ -1350,9 +1377,7 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
                   startCol, endCol, traceFill, lineColor)
               } else {
                 drawEnvelope(ctx, wfData.peaks, x, layout.contentY, clipW, layout.contentH,
-                  startCol, endCol,
-                  `rgba(255,255,255,${envAlpha})`,
-                  `rgba(255,255,255,${rmsAlpha})`)
+                  startCol, endCol, traceFill, lineColor)
               }
             }
           }
@@ -1365,11 +1390,12 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
 
     // ── Fade overlay ──────────────────────────────────────────────────────
     const committedFades = normalizeClipFades(clip)
-    const fadeInPercent = activeClipControl?.clipId === clip.id && activeClipControl.kind === 'fadeIn'
-      ? clampNumber(activeClipControl.value, 0, Math.max(0, 100 - committedFades.fadeOutPercent))
+    const clipDraftValue = clipControlDraftValue(activeClipControl, clip.id)
+    const fadeInPercent = clipDraftValue != null && activeClipControl.kind === 'fadeIn'
+      ? clampNumber(clipDraftValue, 0, Math.max(0, 100 - committedFades.fadeOutPercent))
       : committedFades.fadeInPercent
-    const fadeOutPercent = activeClipControl?.clipId === clip.id && activeClipControl.kind === 'fadeOut'
-      ? clampNumber(activeClipControl.value, 0, Math.max(0, 100 - committedFades.fadeInPercent))
+    const fadeOutPercent = clipDraftValue != null && activeClipControl.kind === 'fadeOut'
+      ? clampNumber(clipDraftValue, 0, Math.max(0, 100 - committedFades.fadeInPercent))
       : committedFades.fadeOutPercent
 
     drawClipFadeOverlay(
@@ -1472,6 +1498,18 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
       ctx.fillStyle = hexToRgba(hex, 1.0)
       ctx.fillRect(x, y, HANDLE_W, clipH)                       // left
       ctx.fillRect(x + clipW - HANDLE_W, y, HANDLE_W, clipH)    // right
+    }
+
+    // ── At-limit marker (group drag) ──────────────────────────────────────
+    // This clip is what stopped the whole selection from travelling further.
+    // Ringed so the user can find it and either adjust or deselect it.
+    if (activeClipControl?.blocked?.has(clip.id)) {
+      ctx.save()
+      ctx.strokeStyle = p.clipControlAtLimit || '#ff5c5c'
+      ctx.lineWidth = 2
+      ctx.setLineDash([4, 3])
+      ctx.strokeRect(x + 1, y + 1, Math.max(0, clipW - 2), Math.max(0, clipH - 2))
+      ctx.restore()
     }
   }
 

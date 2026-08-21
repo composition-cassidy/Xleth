@@ -1,0 +1,29 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "xform",
+  "name": "Punch Out",
+  "author": "XLETH",
+  "created": "2026-08-17T00:00:00.000Z",
+  "state": {
+    "tracks": {
+      "panX": { "constantValue": 0, "keys": [] },
+      "panY": { "constantValue": 0, "keys": [] },
+      "zoomLog2": {
+        "constantValue": 0,
+        "keys": [
+          { "t": 0,   "v": 0,     "c": [0.55, 0.06, 0.68, 0.02] },
+          { "t": 0.3, "v": -0.5,  "c": [0.25, 1,    0.5,  1] },
+          { "t": 1,   "v": -0.2 }
+        ]
+      },
+      "rotationDeg": { "constantValue": 0, "keys": [] }
+    },
+    "lengthMode": 0,
+    "musicalDivision": 2,
+    "notePercentage": 100,
+    "onEndMode": 0,
+    "retriggerMode": 0,
+    "retriggerCrossfadeMs": 50,
+    "durationMs": 220
+  }
+}

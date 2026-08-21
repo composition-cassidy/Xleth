@@ -5,6 +5,7 @@ import { timelineEvents } from '../../timelineEvents.js'
 import { clearAllMeterTelemetry, mergeMeterTelemetry } from './meterTelemetry.js'
 import MixerStrip from './MixerStrip.jsx'
 import MasterStrip from './MasterStrip.jsx'
+import FxChainMenuLayer from './FxChainMenuLayer.jsx'
 import MasterLoudnessMeter, { pollMasterLoudness } from '../MasterLoudnessMeter.jsx'
 import SelectedEffectRack from './SelectedEffectRack.jsx'
 import { buildMixerFolderLayout } from './mixerFolderLayout.js'
@@ -161,6 +162,11 @@ export default function MixerPanel() {
           </>
         )}
       </div>
+
+      {/* FX Chain Library — one instance for the whole mixer. Owns the strip
+          context menu, the save dialog, the sticky drag ghost and the toasts;
+          the strips themselves only report the right-click. */}
+      <FxChainMenuLayer />
     </div>
   )
 }

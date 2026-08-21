@@ -305,9 +305,26 @@ inline float shapeSoftSat(float x, float a) noexcept {
 // A position-domain instance (Sync, Bend, FM, …) bends the READ HEAD, so its
 // input is always the source buffer, not the previous instance's sample — it
 // re-reads the source at its bent position and blends that in by its own mix.
-// Each instance ticks its cycle phase against the CANONICAL read head (they do
-// not compose read positions), so every instance's math is identical to the
-// single-instance case regardless of where it sits in the chain.
+// Two consequences shape how a MIXED chain is rendered, and both were learned
+// the hard way (a chain of two ALT modes sounded like only the last one):
+//
+//   POSITIONS COMPOSE. Instance N+1 ticks against the head instance N already
+//   bent, and moves it further by its own offset scaled by its mix. Ticking
+//   every instance against the canonical head instead meant each one re-read
+//   the source at a bend that had never seen its predecessor, so at the default
+//   mix of 1.0 the last position instance simply replaced everything before it
+//   — and two copies of one mode produced the same read twice instead of
+//   stacking. A single-instance chain still ticks against the canonical head,
+//   which is what keeps it bit-identical to the pre-chain render.
+//
+//   WARPS RESOLVE BEFORE SHAPERS. The render walks the ordered chain twice:
+//   head-bending instances first, then sample-shaping ones, each pass in chain
+//   order. A bent head reads the SOURCE, so a position instance cannot take a
+//   shaped sample as input — placing it after a shaper could only throw that
+//   shaper away. Order therefore stays audible among the warps and among the
+//   shapers, but a warp always lands before a shaper regardless of where the
+//   user dragged it. That is the warp-then-shape model of every wavetable
+//   synth, and the only ordering in which both stages survive.
 //
 // The config is immutable once built and published to the audio thread by a
 // single atomic pointer swap (the same model Slot::data and the modulation
@@ -354,6 +371,40 @@ struct State
     // Tape pre-emphasis memory, per channel.
     float peX1[2]{};
 
+    // ── Modulation dezipper ──────────────────────────────────────────────────
+    // The WHOLE ramp lives here, not in Runtime, and that placement is the fix
+    // rather than an implementation detail. Runtime is a per-block stack value
+    // the sampler rebuilds from the published (unmodulated) chain at the top of
+    // every audio buffer; the modulation control block is voice-relative and so
+    // does not line up with that boundary. Anything parameter-related held only
+    // in Runtime is therefore silently reverted to the base config for the first
+    // 0..31 samples of every buffer.
+    //
+    // Carrying the in-flight ramp across the boundary — rather than re-deriving
+    // one from the samples left in the block — also makes a modulated render
+    // bit-identical at any buffer size, which is what lets an offline export
+    // match the realtime stream sample for sample.
+    //
+    // Only these five quantities depend on amount / mix: m0..m2 and dcR are mode
+    // constants and cycleLen / the span are geometry, so nothing else needs to
+    // glide. Nothing here aliases the oscillator phase, the cycle anchor, the
+    // filter integrators or the DC blockers — those stay strictly continuous.
+    // Only the ENDPOINTS and the position between them are persisted, and that
+    // is deliberate: a State exists per instance per stream per voice — 1024 of
+    // them in one Sampler — so every byte here costs a kilobyte of Sampler.
+    // Increments and the interpolated SVF coefficients are re-derived from these
+    // three values at each buffer entry, which costs two tan() per ramping
+    // instance per buffer and nothing per sample.
+    //
+    // The per-sample value is computed as `from + idx * delta` rather than
+    // accumulated, so it depends only on idx — never on how many times the ramp
+    // has been re-derived, and therefore never on where the host cut the buffer.
+    float amtFrom = 0.0f, amtTo = 0.0f;
+    float mixFrom = 0.0f, mixTo = 0.0f;
+    int16_t rampIdx  = 0;        // 0..rampLen; >= rampLen ⇒ settled on `To`
+    int16_t rampLen  = 0;        // 0 ⇒ no ramp in flight
+    bool  paramPrimed = false;   // false ⇒ the next design snaps instead of gliding
+
     void reset() noexcept {
         phase = 0.0;
         cycleStartPos = 0.0;
@@ -364,8 +415,20 @@ struct State
         dcX1[0] = dcX1[1] = 0.0f;
         dcY1[0] = dcY1[1] = 0.0f;
         peX1[0] = peX1[1] = 0.0f;
+        amtFrom = amtTo = 0.0f;
+        mixFrom = mixTo = 0.0f;
+        rampIdx = rampLen = 0;
+        paramPrimed = false;
     }
 };
+
+// A Sampler holds MAX_VOICES x MAX_SAMPLE_SLOTS x kMaxInstances of these — 1024
+// in the stock configuration — so every byte added here costs a kilobyte of
+// Sampler, and Sampler is routinely a stack local in the test suite. Growing
+// State past this is not forbidden, but it is a decision to take deliberately
+// rather than by accident: put per-block working values in Runtime instead.
+static_assert(sizeof(State) <= 96,
+              "mangle::State is instantiated ~1024x per Sampler — keep it small");
 
 // ─── Per-block runtime ───────────────────────────────────────────────────────
 // Resolved ONCE per processVoice call per stream. Filter coefficients are
@@ -392,6 +455,21 @@ struct Runtime
 
     // DC blocker pole.
     float dcR = 0.9975f;
+
+    // ── Dezipper working set ─────────────────────────────────────────────────
+    // Re-derived at every buffer entry from the endpoints State persists, so
+    // these may live in the per-block Runtime: the values below are a pure
+    // function of (amtFrom, amtTo, rampLen) and the block geometry, identical
+    // however the host slices the stream. `rampLeft` is 0 for an unmodulated
+    // instance, which is the render loop's one-integer skip.
+    float amtFrom = 0.0f, dAmount = 0.0f;
+    float mixFrom = 0.0f, dMix    = 0.0f;
+    float a1From  = 0.0f, da1     = 0.0f;
+    float a2From  = 0.0f, da2     = 0.0f;
+    float a3From  = 0.0f, da3     = 0.0f;
+    float amtTo = 0.0f, mixTo = 0.0f;
+    float a1To  = 0.0f, a2To  = 0.0f, a3To = 0.0f;
+    int   rampLeft = 0;
 };
 
 // Build the runtime for one stream.
@@ -459,6 +537,136 @@ inline Runtime makeRuntime(int modeId, float amount, float mix,
         default: break;
     }
     return rt;
+}
+
+// ─── Modulated design (dezippered) ───────────────────────────────────────────
+// The entry point the sampler uses for EVERY instance, modulated or not.
+//
+// `rampSamples` is how many output samples the caller will render before it
+// designs again — the remaining life of the current modulation control block.
+// Pass 0 (or an unchanged target) and this collapses to a plain makeRuntime at
+// the requested value, which is what keeps an unrouted instance bit-identical
+// to the pre-dezipper build: it snaps every block to a value that never moves.
+//
+// The design is a pure function of `amount`; `mix` only ever decided the active
+// gate. So both endpoints are designed at the SAME (max) mix and the real mix
+// is written back afterwards — that way an instance whose mix is ramping up
+// from zero still gets a valid coefficient set to ramp from, and one ramping
+// down to zero keeps rendering until the ramp lands instead of being cut off
+// by the active gate half-way.
+// `armRamp` distinguishes the two call sites, and the distinction is the point:
+//
+//   armRamp = true   A MODULATION CONTROL BLOCK (or an unmodulated instance).
+//                    (amount, mix) is the new target and `rampSamples` is how
+//                    long to take getting there. rampSamples = 0 snaps, which
+//                    is the unrouted path and is bit-identical to a plain
+//                    makeRuntime at that value.
+//
+//   armRamp = false  BUFFER ENTRY on a modulated instance. Rebuild the block
+//                    runtime around the ramp already in flight and do not touch
+//                    it: the control block is voice-relative and knows nothing
+//                    about where the host chose to cut the stream.
+inline Runtime designInstance(State& st, int modeId, float amount, float mix,
+                              double noteHz, double cycleLen,
+                              double spanStart, double spanLen,
+                              double engineSR, bool armRamp, int rampSamples) noexcept
+{
+    const float tgtA = clamp01(amount);
+    const float tgtM = clamp01(mix);
+
+    // First design of the note: there is no previous value to glide from.
+    if (!st.paramPrimed) {
+        st.paramPrimed = true;
+        st.amtFrom = st.amtTo = tgtA;
+        st.mixFrom = st.mixTo = tgtM;
+        st.rampIdx = st.rampLen = 0;
+        armRamp = true;
+        rampSamples = 0;
+    }
+
+    if (armRamp) {
+        // A control block always arms on a ramp that has just settled, so the
+        // value in force is exactly the previous target — no drift can build up
+        // over an arbitrarily long note.
+        const bool  settled = (st.rampLen <= 0) || (st.rampIdx >= st.rampLen);
+        const float f = settled ? 1.0f
+                                : static_cast<float>(st.rampIdx) / static_cast<float>(st.rampLen);
+        const float curA = st.amtFrom + (st.amtTo - st.amtFrom) * f;
+        const float curM = st.mixFrom + (st.mixTo - st.mixFrom) * f;
+        st.amtFrom = curA;  st.amtTo = tgtA;
+        st.mixFrom = curM;  st.mixTo = tgtM;
+        st.rampIdx = 0;
+        st.rampLen = (rampSamples > 0 && (tgtA != curA || tgtM != curM))
+                   ? static_cast<int16_t>(rampSamples) : static_cast<int16_t>(0);
+    }
+
+    // The snap path — an unrouted instance every block, and a routed one whose
+    // target has not moved. Exactly the pre-dezipper call, byte for byte.
+    if (st.rampLen <= 0 || st.rampIdx >= st.rampLen) {
+        return makeRuntime(modeId, st.amtTo, st.mixTo, noteHz, cycleLen,
+                           spanStart, spanLen, engineSR);
+    }
+
+    // Design at a mix that cannot gate the instance off part-way through a ramp
+    // — one fading up from zero still needs a coefficient set to glide from, and
+    // one fading down to zero has to keep rendering until it lands. `mix` has no
+    // influence on the design itself, only on Runtime::active, so the real value
+    // is written back below.
+    const float designMix = std::max(st.mixFrom, st.mixTo);
+    Runtime       rt  = makeRuntime(modeId, st.amtFrom, designMix,
+                                    noteHz, cycleLen, spanStart, spanLen, engineSR);
+    const Runtime tgt = makeRuntime(modeId, st.amtTo,   designMix,
+                                    noteHz, cycleLen, spanStart, spanLen, engineSR);
+
+    const float inv = 1.0f / static_cast<float>(st.rampLen);
+    rt.amtFrom = rt.amount;   rt.amtTo = tgt.amount;
+    rt.mixFrom = st.mixFrom;  rt.mixTo = st.mixTo;
+    rt.a1From  = rt.a1;       rt.a1To  = tgt.a1;
+    rt.a2From  = rt.a2;       rt.a2To  = tgt.a2;
+    rt.a3From  = rt.a3;       rt.a3To  = tgt.a3;
+    rt.dAmount = (rt.amtTo - rt.amtFrom) * inv;
+    rt.dMix    = (rt.mixTo - rt.mixFrom) * inv;
+    rt.da1     = (rt.a1To  - rt.a1From)  * inv;
+    rt.da2     = (rt.a2To  - rt.a2From)  * inv;
+    rt.da3     = (rt.a3To  - rt.a3From)  * inv;
+    rt.rampLeft = st.rampLen - st.rampIdx;
+
+    // Position the runtime at the sample the ramp has actually reached, which is
+    // mid-ramp whenever the host cut the buffer inside a control block.
+    const float i = static_cast<float>(st.rampIdx);
+    rt.amount = rt.amtFrom + rt.dAmount * i;
+    rt.mix    = rt.mixFrom + rt.dMix    * i;
+    rt.a1     = rt.a1From  + rt.da1     * i;
+    rt.a2     = rt.a2From  + rt.da2     * i;
+    rt.a3     = rt.a3From  + rt.da3     * i;
+    return rt;
+}
+
+// Advance one sample of the dezipper. Called ONCE per sample per instance (not
+// per channel), AFTER the sample has been rendered, so a block opens on the
+// value the previous one closed with and closes exactly on its target.
+//
+// Evaluated as `from + idx * delta` rather than accumulated. That is what makes
+// a modulated render bit-identical at any buffer size: the value depends only
+// on the ramp index, never on how many times the ramp has been re-derived at a
+// buffer boundary. No design work, no trig, no allocation.
+inline void advanceParams(Runtime& rt, State& st) noexcept
+{
+    if (st.rampLen <= 0 || st.rampIdx >= st.rampLen) { rt.rampLeft = 0; return; }
+    ++st.rampIdx;
+    if (st.rampIdx >= st.rampLen) {
+        rt.amount = rt.amtTo;  rt.mix = rt.mixTo;
+        rt.a1 = rt.a1To;  rt.a2 = rt.a2To;  rt.a3 = rt.a3To;
+        rt.rampLeft = 0;
+        return;
+    }
+    const float i = static_cast<float>(st.rampIdx);
+    rt.amount = rt.amtFrom + rt.dAmount * i;
+    rt.mix    = rt.mixFrom + rt.dMix    * i;
+    rt.a1     = rt.a1From  + rt.da1     * i;
+    rt.a2     = rt.a2From  + rt.da2     * i;
+    rt.a3     = rt.a3From  + rt.da3     * i;
+    rt.rampLeft = st.rampLen - st.rampIdx;
 }
 
 // ─── Per-sample read-head plan ───────────────────────────────────────────────

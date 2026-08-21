@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react'
 import { Repeat } from 'lucide-react'
 import useLoopRegionStore, { loopMinLengthTicks } from '../../stores/loopRegionStore.js'
 import {
@@ -22,28 +22,57 @@ import {
 // Colors come from theme tokens (no hardcoded production hex). The z-index is a
 // structural tier set in app.css, not a theme token.
 
-const EDGE_PX = 7 // grab width of each edge handle
+const EDGE_PX = 6 // grab width of each edge handle
 
-export default function LoopRegionBar({ pixelsPerBeat, scrollOffset, snapGranularity, rulerHeight }) {
+// Vegas keeps the region indicator to a short strip pinned along the top of
+// the ruler — the rest of the ruler's height (numbers, tick area) stays free
+// for normal click-to-seek and wheel-zoom, even directly above/below the
+// loop range. Only this strip's height is a drag/resize hit target.
+const BAR_HEIGHT = 7
+
+// The bar lives in the ruler above a CANVAS that the view animator redraws
+// every frame, but it is a DOM element — so its own placement has to be pushed
+// per frame too, from the same refs the canvas draws with (applyView(), called
+// by TimelineView's commitViewportRedraw). Positioning it from the settled
+// pixelsPerBeat/scrollOffset state, which only syncs ~100ms after a gesture
+// stops, left the bar pinned to the viewport while the ruler scrolled beneath
+// it and then snapping into place at the end.
+const LoopRegionBar = forwardRef(function LoopRegionBar({
+  pixelsPerBeatRef, scrollOffsetRef, snapGranularity, rulerHeight,
+}, ref) {
   const committed = useLoopRegionStore((s) => s.loopRegion)
   const fetchLoopRegion = useLoopRegionStore((s) => s.fetchLoopRegion)
 
   // Live drag preview { startTick, endTick } or null when idle.
   const [preview, setPreview] = useState(null)
   const dragRef = useRef(null) // { mode, startMouseX, origStart, origEnd }
+  const rootRef = useRef(null)
 
   const view = preview
     ? { ...committed, startTick: preview.startTick, endTick: preview.endTick }
     : committed
 
-  const tickToPx = useCallback(
-    (tick) => (tick / PPQ - scrollOffset) * pixelsPerBeat,
-    [scrollOffset, pixelsPerBeat],
-  )
+  // Latest range for applyView — an animator frame must place the bar where
+  // the CURRENT (possibly drag-previewed) range says, without a re-render.
+  const viewRef = useRef(view)
+  viewRef.current = view
 
-  const startPx = tickToPx(view.startTick)
-  const endPx = tickToPx(view.endTick)
-  const widthPx = Math.max(2, endPx - startPx)
+  const applyView = () => {
+    const el = rootRef.current
+    if (!el) return
+    const ppb = pixelsPerBeatRef?.current || 0
+    const scroll = scrollOffsetRef?.current || 0
+    const { startTick, endTick } = viewRef.current
+    const startPx = (startTick / PPQ - scroll) * ppb
+    const endPx = (endTick / PPQ - scroll) * ppb
+    el.style.transform = `translateX(${startPx}px)`
+    el.style.width = `${Math.max(2, endPx - startPx)}px`
+  }
+
+  useImperativeHandle(ref, () => ({ applyView }))
+  // Also after every render: a drag preview, a committed change, or an
+  // arm/disarm all move the bar without the animator ticking.
+  useLayoutEffect(applyView)
 
   // Min length: 1 snap unit when snapping, 1 tick when free (Alt).
   const minLenTicksFor = useCallback(
@@ -75,7 +104,7 @@ export default function LoopRegionBar({ pixelsPerBeat, scrollOffset, snapGranula
       const drag = dragRef.current
       if (!drag) return
       const modifiers = { alt: moveE.altKey, shift: moveE.shiftKey, ctrl: moveE.ctrlKey }
-      const deltaBeats = (moveE.clientX - drag.startMouseX) / pixelsPerBeat
+      const deltaBeats = (moveE.clientX - drag.startMouseX) / (pixelsPerBeatRef?.current || 1)
       const origStartBeat = drag.origStart / PPQ
       const origEndBeat = drag.origEnd / PPQ
       const minLen = minLenTicksFor(modifiers)
@@ -113,7 +142,7 @@ export default function LoopRegionBar({ pixelsPerBeat, scrollOffset, snapGranula
       window.removeEventListener('mouseup', onUp)
       if (!drag) { setPreview(null); return }
       const modifiers = { alt: upE.altKey, shift: upE.shiftKey, ctrl: upE.ctrlKey }
-      const deltaBeats = (upE.clientX - drag.startMouseX) / pixelsPerBeat
+      const deltaBeats = (upE.clientX - drag.startMouseX) / (pixelsPerBeatRef?.current || 1)
       const origStartBeat = drag.origStart / PPQ
       const origEndBeat = drag.origEnd / PPQ
       const minLen = minLenTicksFor(modifiers)
@@ -147,7 +176,7 @@ export default function LoopRegionBar({ pixelsPerBeat, scrollOffset, snapGranula
 
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
-  }, [committed, pixelsPerBeat, snapGranularity, minLenTicksFor, fetchLoopRegion])
+  }, [committed, pixelsPerBeatRef, snapGranularity, minLenTicksFor, fetchLoopRegion])
 
   const toggleEnabled = useCallback((e) => {
     e.preventDefault()
@@ -164,11 +193,11 @@ export default function LoopRegionBar({ pixelsPerBeat, scrollOffset, snapGranula
 
   return (
     <div
+      ref={rootRef}
       className={className}
       style={{
-        transform: `translateX(${startPx}px)`,
-        width: `${widthPx}px`,
-        height: `${rulerHeight}px`,
+        // transform/width are written by applyView() — per animator frame.
+        height: `${BAR_HEIGHT}px`,
       }}
     >
       <div
@@ -181,23 +210,24 @@ export default function LoopRegionBar({ pixelsPerBeat, scrollOffset, snapGranula
         className="loop-region-bar__body"
         onMouseDown={(e) => beginDrag('body', e)}
         title="Drag to move loop region"
-      >
-        <button
-          type="button"
-          className="loop-region-bar__toggle"
-          onMouseDown={(e) => e.stopPropagation()}
-          onClick={toggleEnabled}
-          title={active ? 'Loop armed — click to disarm' : 'Loop disarmed — click to arm'}
-        >
-          <Repeat size={11} />
-        </button>
-      </div>
+      />
       <div
         className="loop-region-bar__edge loop-region-bar__edge--right"
         style={{ width: `${EDGE_PX}px` }}
         onMouseDown={(e) => beginDrag('right', e)}
         title="Drag to set loop end"
       />
+      <button
+        type="button"
+        className="loop-region-bar__toggle"
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={toggleEnabled}
+        title={active ? 'Loop armed — click to disarm' : 'Loop disarmed — click to arm'}
+      >
+        <Repeat size={9} />
+      </button>
     </div>
   )
-}
+})
+
+export default LoopRegionBar

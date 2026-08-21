@@ -5,6 +5,10 @@ import {
   SEG_STEP, SEG_LINE, SEG_CURVE, BEHAVIORS,
   NOTE_VALUES_NONZERO, modTimeSeconds,
 } from './modConstants.js'
+import {
+  TARGET_SRC_RATE, TARGET_SRC_PHASE, TARGET_SRC_RISE,
+  TARGET_SRC_DELAY, TARGET_SRC_SMOOTH, TARGET_SRC_AMOUNT,
+} from './modTargets.js'
 
 // ── LFO editor ───────────────────────────────────────────────────────────────
 // Canvas point editor (STEP/LINE/CURVE segments on a snap grid) plus rate,
@@ -63,7 +67,13 @@ const SNAP_Y_OPTS = [
   { v: 0, l: 'Off' }, { v: 2, l: '2' }, { v: 4, l: '4' }, { v: 8, l: '8' }, { v: 12, l: '12' },
 ]
 
-export default function LfoEditor({ lfo, color, bpm, preview, commit }) {
+// Cross-modulation registrations. `source` is this LFO's own flat source index,
+// which is what a route targeting it carries in ModRoute.index. `scale` converts
+// the knob's display units to the engine's: the percent knobs drive 0..1
+// parameters, the Hz and millisecond knobs are already in engine units.
+const srcReg = (target, source, scale = 1) => (source == null ? null : { target, index: source, stage: 0, scale })
+
+export default function LfoEditor({ lfo, color, bpm, preview, commit, source = null }) {
   const [selectedIdx, setSelectedIdx] = useState(-1)
   const [snapX, setSnapX] = useState(0)
   const [snapY, setSnapY] = useState(0)
@@ -112,6 +122,7 @@ export default function LfoEditor({ lfo, color, bpm, preview, commit }) {
         <div className="sampler-mod-head-spacer" />
         <ModKnob
           label="OUT"
+          modTarget={srcReg(TARGET_SRC_AMOUNT, source, 0.01)}
           value={(lfo.outputAmount ?? 1) * 100}
           min={0} max={100} defaultValue={100}
           size={34} color={color}
@@ -198,6 +209,7 @@ export default function LfoEditor({ lfo, color, bpm, preview, commit }) {
           ) : (
             <ModKnob
               label="Hz"
+              modTarget={srcReg(TARGET_SRC_RATE, source)}
               value={lfo.rateHz ?? 1}
               min={0.01} max={40} defaultValue={1} skew={0.4}
               size={40} color={color}
@@ -217,14 +229,16 @@ export default function LfoEditor({ lfo, color, bpm, preview, commit }) {
           ) : (
             <>
               <ModKnob
-                label="RISE" value={lfo.rise?.ms ?? 0} min={0} max={10000} defaultValue={0}
+                label="RISE" modTarget={srcReg(TARGET_SRC_RISE, source)}
+                value={lfo.rise?.ms ?? 0} min={0} max={10000} defaultValue={0}
                 size={40} color={color}
                 formatValue={(v) => v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${Math.round(v)}m`}
                 onLiveChange={(v) => setTimeLive('rise', { ms: Math.round(v) })}
                 onCommit={(v) => setTimeFinal('rise', { ms: Math.round(v) })}
               />
               <ModKnob
-                label="DELAY" value={lfo.delay?.ms ?? 0} min={0} max={10000} defaultValue={0}
+                label="DELAY" modTarget={srcReg(TARGET_SRC_DELAY, source)}
+                value={lfo.delay?.ms ?? 0} min={0} max={10000} defaultValue={0}
                 size={40} color={color}
                 formatValue={(v) => v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${Math.round(v)}m`}
                 onLiveChange={(v) => setTimeLive('delay', { ms: Math.round(v) })}
@@ -233,14 +247,16 @@ export default function LfoEditor({ lfo, color, bpm, preview, commit }) {
             </>
           )}
           <ModKnob
-            label="SMOOTH" value={lfo.smooth ?? 0} min={0} max={100} defaultValue={0}
+            label="SMOOTH" modTarget={srcReg(TARGET_SRC_SMOOTH, source, 0.01)}
+            value={lfo.smooth ?? 0} min={0} max={100} defaultValue={0}
             size={40} color={color}
             formatValue={(v) => `${Math.round(v)}`}
             onLiveChange={(v) => preview({ smooth: Math.round(v) })}
             onCommit={(v) => { preview({ smooth: Math.round(v) }); commit() }}
           />
           <ModKnob
-            label="PHASE" value={lfo.phase ?? 0} min={0} max={100} defaultValue={0}
+            label="PHASE" modTarget={srcReg(TARGET_SRC_PHASE, source, 0.01)}
+            value={lfo.phase ?? 0} min={0} max={100} defaultValue={0}
             size={40} color={color}
             formatValue={(v) => `${Math.round(v)}%`}
             onLiveChange={(v) => preview({ phase: Math.round(v) })}

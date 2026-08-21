@@ -62,6 +62,26 @@ export const EFFECT_CATEGORIES = [
   },
 ]
 
+// Every stock pluginId, derived from EFFECT_CATEGORIES so there is exactly one
+// list to keep current. Used to decide whether an effect is ours or a scanned
+// third-party plugin.
+export const STOCK_EFFECT_IDS = new Set(
+  EFFECT_CATEGORIES.flatMap((category) => category.submenu.map((effect) => effect.id)),
+)
+
+// The author tag an effect module shows: stock effects are all authored here,
+// a scanned plugin shows its own vendor. Returns null when neither applies (an
+// unknown/placeholder id, or a plugin scanned without a vendor string) so the
+// caller can render nothing rather than a misleading attribution.
+export const STOCK_EFFECT_VENDOR = 'XLETH'
+
+export function resolveEffectVendorTag(pluginId, vstPlugins = []) {
+  if (typeof pluginId !== 'string' || pluginId.length === 0) return null
+  if (STOCK_EFFECT_IDS.has(pluginId)) return STOCK_EFFECT_VENDOR
+  const vendor = vstPlugins.find((plugin) => plugin?.id === pluginId)?.vendor
+  return typeof vendor === 'string' && vendor.trim().length > 0 ? vendor.trim() : null
+}
+
 // Stable label used when a scanned VST/plugin section has no entries.
 export const NO_SCANNED_PLUGINS_LABEL = 'No plugins scanned - scan VST3 plugins in Settings'
 export const VST_GROUP_LABEL = 'VST3 Plugins'

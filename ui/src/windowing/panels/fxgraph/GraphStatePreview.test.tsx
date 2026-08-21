@@ -258,6 +258,40 @@ describe('GraphStatePreview', () => {
     expect(html).toContain('Bypassed');
   });
 
+  it('offers a power toggle on effect nodes when bypass editing is enabled', () => {
+    const html = renderToStaticMarkup(
+      <GraphStatePreview
+        graphState={graphState([
+          inputNode(),
+          effectNode('delay', 'Delay', 0, { x: 260, y: 0 }, { bypass: true }),
+          outputNode({ x: 520, y: 0 }),
+        ], [])}
+        onSetNodeBypass={() => {}}
+      />,
+    );
+
+    // A bypassed node must carry the affordance that clears the state — the badge
+    // alone left a converted chain's bypassed effects stuck off.
+    expect(html).toContain('aria-label="Enable Delay"');
+    expect(html).toContain('data-bypassed="true"');
+  });
+
+  it('labels the power toggle as Bypass on an active effect and omits it in read-only preview', () => {
+    const nodes = [
+      inputNode(),
+      effectNode('delay', 'Delay', 0, { x: 260, y: 0 }, { bypass: false }),
+      outputNode({ x: 520, y: 0 }),
+    ];
+    const editable = renderToStaticMarkup(
+      <GraphStatePreview graphState={graphState(nodes, [])} onSetNodeBypass={() => {}} />,
+    );
+    const readOnly = renderToStaticMarkup(<GraphStatePreview graphState={graphState(nodes, [])} />);
+
+    expect(editable).toContain('aria-label="Bypass Delay"');
+    expect(editable).not.toContain('data-bypassed="true"');
+    expect(readOnly).not.toContain('xleth-graph-state-preview__node-power');
+  });
+
   it('renders a missing indicator for missing effects', () => {
     const html = renderToStaticMarkup(
       <GraphStatePreview
@@ -492,76 +526,12 @@ describe('GraphStatePreview', () => {
     expect(html).not.toMatch(/on(Mouse|Click|ContextMenu|Key|Drag)/);
   });
 
-  it('renders view controls only when viewport editing is enabled', () => {
-    const editableHtml = renderToStaticMarkup(
-      <GraphStatePreview
-        graphState={graphState([
-          inputNode(),
-          effectNode('limiter', 'Limiter', 0, { x: 260, y: 0 }),
-          outputNode({ x: 520, y: 0 }),
-        ], [])}
-        onViewportChange={vi.fn()}
-      />,
-    );
-    const dormantHtml = renderToStaticMarkup(
-      <GraphStatePreview
-        graphState={graphState([
-          inputNode(),
-          outputNode(),
-        ], [])}
-      />,
-    );
-
-    expect(editableHtml).toContain('Fit View');
-    expect(editableHtml).toContain('Reset View');
-    expect(editableHtml).toContain('data-workspace-active="true"');
-    expect(dormantHtml).not.toContain('Fit View');
-    expect(dormantHtml).not.toContain('Reset View');
-  });
-
-  it('renders Add Macro only when its action is provided', () => {
-    const sourceGraphState = graphState([
-      inputNode(),
-      outputNode(),
-    ], []);
-    const editableHtml = renderToStaticMarkup(
-      <GraphStatePreview
-        graphState={sourceGraphState}
-        onAddEffectNode={vi.fn()}
-        onAddMacroNode={vi.fn()}
-      />,
-    );
-    const readOnlyHtml = renderToStaticMarkup(<GraphStatePreview graphState={sourceGraphState} />);
-
-    expect(editableHtml).toContain('Add Effect Node');
-    expect(editableHtml).toContain('Add Macro');
-    expect(readOnlyHtml).not.toContain('Add Macro');
-  });
-
-  it('renders Undo and Redo controls only when graph history callbacks are provided', () => {
-    const sourceGraphState = graphState([
-      inputNode(),
-      outputNode(),
-    ], []);
-    const historyHtml = renderToStaticMarkup(
-      <GraphStatePreview
-        graphState={sourceGraphState}
-        canUndoGraphEdit={false}
-        canRedoGraphEdit
-        onUndoGraphEdit={vi.fn()}
-        onRedoGraphEdit={vi.fn()}
-      />,
-    );
-    const dormantHtml = renderToStaticMarkup(<GraphStatePreview graphState={sourceGraphState} />);
-
-    expect(historyHtml).toContain('aria-label="Undo graph edit"');
-    expect(historyHtml).toContain('aria-label="Redo graph edit"');
-    expect(historyHtml).toContain('Undo');
-    expect(historyHtml).toContain('Redo');
-    expect(countText(historyHtml, 'disabled')).toBe(1);
-    expect(dormantHtml).not.toContain('Undo graph edit');
-    expect(dormantHtml).not.toContain('Redo graph edit');
-  });
+  // The Undo/Redo/Add/zoom toolbar row (and its "renders X only when Y is
+  // provided" tests) is gone — those affordances now live in the right-click
+  // canvas add menu (GraphStatePreviewAddMenu.test.tsx), the keyboard undo/redo
+  // shortcut (FxGraphPanel-level, outside this component since the button that
+  // used to call the onUndoGraphEdit/onRedoGraphEdit props is what's removed),
+  // and wheel-zoom / double-click-to-fit (still covered below).
 
   // --- FXG.3-b / node-menu-c1 Edit is a context-menu item, not a node-body button ---
 
@@ -619,6 +589,30 @@ describe('GraphStatePreview', () => {
     expect(realHtml).not.toMatch(/disabled[^>]*>\s*Edit/);
     expect(placeholderHtml).toMatch(/disabled[^>]*>\s*Edit/);
     expect(missingHtml).toMatch(/disabled[^>]*>\s*Edit/);
+  });
+
+  it('flips the context-menu bypass item between Bypass and Enable, and disables it without a handler', () => {
+    const [activeNode, bypassedNode] = buildGraphStatePreviewModel(graphState([
+      inputNode(),
+      effectNode('limiter', 'Limiter', 0, { x: 260, y: 0 }),
+      effectNode('delay', 'Delay', 1, { x: 260, y: 160 }, { bypass: true }),
+      outputNode({ x: 520, y: 0 }),
+    ], [])).nodes.filter((node) => node.type === 'effect');
+
+    const activeHtml = renderToStaticMarkup(
+      <GraphParameterContextMenu node={activeNode} x={0} y={0} canEdit canRemove onToggleBypass={vi.fn()} />,
+    );
+    const bypassedHtml = renderToStaticMarkup(
+      <GraphParameterContextMenu node={bypassedNode} x={0} y={0} canEdit canRemove onToggleBypass={vi.fn()} />,
+    );
+    const readOnlyHtml = renderToStaticMarkup(
+      <GraphParameterContextMenu node={bypassedNode} x={0} y={0} canEdit canRemove />,
+    );
+
+    expect(activeHtml).toContain('>Bypass<');
+    expect(bypassedHtml).toContain('>Enable<');
+    expect(bypassedHtml).toContain('aria-checked="true"');
+    expect(readOnlyHtml).toMatch(/disabled[^>]*>\s*Enable/);
   });
 
   // --- FXG.4-b parameter port exposure menu ---
@@ -827,7 +821,7 @@ describe('GraphStatePreview', () => {
     expect(html).toContain('Q');
     expect(html).toContain('Type');
     expect(html).toContain('Enabled');
-    expect(countText(html, 'role="menuitemcheckbox"')).toBe(16);
+    expect(countText(html, 'data-menu-item="parameter"')).toBe(16);
     expect(html).not.toContain('B0 Spec Sens');
     expect(html).not.toContain('B0 Dyn Attack');
     expect(html).not.toContain('Linear Phase');
@@ -880,7 +874,7 @@ describe('GraphStatePreview', () => {
     for (const band of [0, 1, 2, 3, 4, 5]) {
       expect(html).toContain(`Band ${band}`);
     }
-    expect(countText(html, 'role="menuitemcheckbox"')).toBe(6 * 5);
+    expect(countText(html, 'data-menu-item="parameter"')).toBe(6 * 5);
   });
 
   it('does not offer dormant bands beyond the EQ instance\'s active band count', () => {
@@ -912,7 +906,7 @@ describe('GraphStatePreview', () => {
     expect(html).toContain('Band 0');
     expect(html).not.toContain('Band 1');
     expect(html).not.toContain('Band 15');
-    expect(countText(html, 'role="menuitemcheckbox"')).toBe(5);
+    expect(countText(html, 'data-menu-item="parameter"')).toBe(5);
   });
 
   it('keeps curated EQ menu items bound to their original parameter descriptors', () => {
@@ -1908,15 +1902,9 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
     expect(html).not.toContain('Edit Envelope envelope');
   });
 
-  it('renders Add Envelope only when its action is provided', () => {
-    const source = graphState([inputNode(), outputNode()], []);
-    const editableHtml = renderToStaticMarkup(
-      <GraphStatePreview graphState={source} onAddEnvelopeNode={vi.fn()} />,
-    );
-    const readOnlyHtml = renderToStaticMarkup(<GraphStatePreview graphState={source} />);
-    expect(editableHtml).toContain('Add Envelope');
-    expect(readOnlyHtml).not.toContain('Add Envelope');
-  });
+  // "Add Envelope only when its action is provided" moved to the canvas
+  // add-menu suite (GraphStatePreviewAddMenu.test.tsx) — Add Envelope is a
+  // right-click canvas menu item now, not a toolbar button.
 
   it('commits an Attack edit through the envelope update callback', () => {
     const onChange = vi.fn();
@@ -2431,15 +2419,9 @@ describe('GraphStatePreview lfo nodes', () => {
     expect(html).not.toContain('Edit LFO LFO');
   });
 
-  it('renders Add LFO only when its action is provided', () => {
-    const source = graphState([inputNode(), outputNode()], []);
-    const editableHtml = renderToStaticMarkup(
-      <GraphStatePreview graphState={source} onAddLfoNode={vi.fn()} />,
-    );
-    const readOnlyHtml = renderToStaticMarkup(<GraphStatePreview graphState={source} />);
-    expect(editableHtml).toContain('Add LFO');
-    expect(readOnlyHtml).not.toContain('Add LFO');
-  });
+  // "Add LFO only when its action is provided" moved to the canvas add-menu
+  // suite (GraphStatePreviewAddMenu.test.tsx) — Add LFO is a right-click canvas
+  // menu item now, not a toolbar button.
 
   it('still renders effect, macro, and envelope nodes alongside lfo nodes', () => {
     const html = renderToStaticMarkup(
@@ -2612,69 +2594,10 @@ describe('EVC-R4 ParameterEdgeMappingEditor — modulation vs range', () => {
 
 describe('FXG-VP.1 viewport zoom and pan', () => {
   // ── Zoom controls rendering ────────────────────────────────────────────────
-
-  it('renders zoom controls when onViewportChange is provided', () => {
-    const html = renderToStaticMarkup(
-      <GraphStatePreview
-        graphState={graphState([inputNode(), outputNode()], [])}
-        onViewportChange={vi.fn()}
-      />,
-    );
-    expect(html).toContain('aria-label="Zoom in"');
-    expect(html).toContain('aria-label="Zoom out"');
-    expect(html).toContain('Fit View');
-    expect(html).toContain('Reset View');
-    expect(html).toContain('xleth-graph-state-preview__zoom-display');
-  });
-
-  it('does not render zoom controls when onViewportChange is absent', () => {
-    const html = renderToStaticMarkup(
-      <GraphStatePreview
-        graphState={graphState([inputNode(), outputNode()], [])}
-      />,
-    );
-    expect(html).not.toContain('aria-label="Zoom in"');
-    expect(html).not.toContain('aria-label="Zoom out"');
-    expect(html).not.toContain('xleth-graph-state-preview__zoom-display');
-  });
-
-  it('displays 100% for default zoom 1', () => {
-    const html = renderToStaticMarkup(
-      <GraphStatePreview
-        graphState={graphState([inputNode(), outputNode()], [])}
-        onViewportChange={vi.fn()}
-      />,
-    );
-    expect(html).toContain('>100%<');
-  });
-
-  it('displays the current zoom percentage from graphState.viewport.zoom', () => {
-    const gs: GraphStateDocument = {
-      schemaVersion: 1,
-      trackId: '7',
-      nodes: [inputNode(), outputNode()],
-      edges: [],
-      viewport: { x: 0, y: 0, zoom: 1.5 },
-    };
-    const html = renderToStaticMarkup(
-      <GraphStatePreview graphState={gs} onViewportChange={vi.fn()} />,
-    );
-    expect(html).toContain('>150%<');
-  });
-
-  it('rounds fractional zoom to a whole percent', () => {
-    const gs: GraphStateDocument = {
-      schemaVersion: 1,
-      trackId: '7',
-      nodes: [inputNode(), outputNode()],
-      edges: [],
-      viewport: { x: 0, y: 0, zoom: 0.753 },
-    };
-    const html = renderToStaticMarkup(
-      <GraphStatePreview graphState={gs} onViewportChange={vi.fn()} />,
-    );
-    expect(html).toContain('>75%<');
-  });
+  // The −/%/+ zoom readout and buttons are gone along with the rest of the
+  // toolbar row. Zoom itself is untouched — onWheel still drives
+  // onViewportChange (see handleWheel in GraphStatePreview.tsx) — there is
+  // just no on-canvas percentage display or button to assert on anymore.
 
   // ── Canvas transform ───────────────────────────────────────────────────────
 
@@ -2873,39 +2796,10 @@ describe('FXG-VP.1 viewport zoom and pan', () => {
     });
   });
 
-  // ── Zoom controls alongside existing toolbar buttons ──────────────────────
-
-  it('keeps Undo, Redo, Add buttons coexisting with zoom controls', () => {
-    const html = renderToStaticMarkup(
-      <GraphStatePreview
-        graphState={graphState([inputNode(), outputNode()], [])}
-        onViewportChange={vi.fn()}
-        onAddEffectNode={vi.fn()}
-        canUndoGraphEdit={false}
-        canRedoGraphEdit={false}
-        onUndoGraphEdit={vi.fn()}
-        onRedoGraphEdit={vi.fn()}
-      />,
-    );
-    expect(html).toContain('Undo');
-    expect(html).toContain('Redo');
-    expect(html).toContain('Add Effect Node');
-    expect(html).toContain('aria-label="Zoom in"');
-    expect(html).toContain('Fit View');
-  });
-
-  // ── Existing "renders view controls" test regression ──────────────────────
-
-  it('view controls include Fit View and Reset View as before', () => {
-    const html = renderToStaticMarkup(
-      <GraphStatePreview
-        graphState={graphState([inputNode(), outputNode()], [])}
-        onViewportChange={vi.fn()}
-      />,
-    );
-    expect(html).toContain('Fit View');
-    expect(html).toContain('Reset View');
-  });
+  // The old "Undo/Redo/Add buttons coexist with zoom controls" and "view
+  // controls include Fit View and Reset View" toolbar-row tests are gone with
+  // the toolbar itself. Fit View's replacement (double-click empty canvas) has
+  // its own coverage in GraphStatePreviewCanvasDoubleClick.test.tsx.
 });
 
 describe('FXG.5 unbounded free node placement', () => {
@@ -3134,22 +3028,9 @@ describe('GraphStatePreview sidechain input (FXG-SC.6B)', () => {
     expect(html).not.toContain('data-sidechain-port-type="sidechain-input"');
   });
 
-  it('renders the Add Sidechain Input toolbar button and disables it when one exists', () => {
-    const without = renderToStaticMarkup(
-      <GraphStatePreview
-        graphState={graphState([inputNode(), compressorNode(), outputNode({ x: 560, y: 0 })], [])}
-        onAddSidechainInput={vi.fn()}
-      />,
-    );
-    expect(without).toContain('Add Sidechain Input');
-    expect(without).not.toContain('disabled');
-
-    const withNode = renderToStaticMarkup(
-      <GraphStatePreview graphState={sidechainGraph()} onAddSidechainInput={vi.fn()} />,
-    );
-    expect(withNode).toContain('Add Sidechain Input');
-    expect(withNode).toContain('disabled');
-  });
+  // "Add Sidechain Input toolbar button, disabled when one exists" moved to the
+  // canvas add-menu suite (GraphStatePreviewAddMenu.test.tsx) — Add Sidechain
+  // Input is a right-click canvas menu item now, not a toolbar button.
 
   it('has no remove button on the protected Sidechain Input node', () => {
     const node = buildGraphStatePreviewModel(sidechainGraph())

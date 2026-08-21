@@ -1121,6 +1121,17 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 }
 
 .xleth-graph-state-preview {
+  /* The module lift, in one place. Resting state reuses the app's own hard-
+   * shadow idiom (the same token xleth-knob__dial paints its shadow with) —
+   * a real black offset, not a tint of the canvas color. That choice matters
+   * here specifically: the canvas well and the shadow used to share
+   * --theme-bg-inset, so the "shadow" was the same color as the surface it
+   * was cast on and disappeared entirely. Hovering pushes the offset out
+   * further while the card slides the opposite way by --shift, so the two
+   * separate and the module appears to rise. */
+  --xleth-graph-node-lift-shift: -3px;
+  --xleth-graph-node-lift: var(--theme-depth-control-hard-shadow-filter);
+  --xleth-graph-node-lift-hover: drop-shadow(9px 11px 0 rgba(0, 0, 0, 0.55));
   display: grid;
   grid-template-rows: auto 1fr;
   gap: 10px;
@@ -1132,11 +1143,13 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   text-align: left;
 }
 
+/* Used to be a two-column grid splitting header text from the toolbar; the
+ * toolbar is gone (right-click canvas / double-click / keyboard shortcuts
+ * cover what it did), so this now only ever wraps the notice/empty-state
+ * header. Kept as its own element rather than folded into __header so a
+ * future header-adjacent addition has a slot without re-threading markup. */
 .xleth-graph-state-preview__chrome {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  align-items: center;
-  gap: 10px;
   min-width: 0;
 }
 
@@ -1163,68 +1176,17 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   font-weight: 700;
 }
 
-.xleth-graph-state-preview__toolbar {
-  display: flex;
-  justify-content: flex-end;
-  gap: 6px;
-  min-width: 0;
-}
-
-.xleth-graph-state-preview__view-button {
-  padding: 6px 10px;
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: var(--theme-chrome-radius-sm);
-  background: var(--theme-bg-surface);
-  color: var(--theme-text);
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.xleth-graph-state-preview__view-button:hover {
-  border-color: var(--theme-border-strong);
-  background: var(--theme-bg-elevated);
-}
-
-.xleth-graph-state-preview__view-button:disabled {
-  border-color: var(--theme-border-subtle);
-  background: var(--theme-bg-surface);
-  color: var(--theme-text-muted);
-  cursor: not-allowed;
-  opacity: 0.6;
-}
-
-.xleth-graph-state-preview__view-button:focus-visible {
-  outline: 1px solid var(--theme-border-focus);
-  outline-offset: 1px;
-}
-
-.xleth-graph-state-preview__zoom-display {
-  all: unset;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-width: 40px;
-  font-size: var(--theme-font-size-xs);
-  color: var(--theme-text-muted);
-  cursor: pointer;
-  border-radius: var(--theme-chrome-radius-sm);
-  padding: 2px 4px;
-  font-variant-numeric: tabular-nums;
-}
-
-.xleth-graph-state-preview__zoom-display:hover {
-  background: var(--theme-bg-interactive-hover);
-  color: var(--theme-text);
-}
-
-.xleth-graph-state-preview__zoom-display:focus-visible {
-  outline: 1px solid var(--theme-border-focus);
-  outline-offset: 1px;
-}
-
 .xleth-graph-state-preview__viewport {
+  /* Explicit placement, not auto-flow: __chrome (row 1) is now conditionally
+   * rendered — it disappears whenever there's no notice/empty-state text,
+   * which is the COMMON case once a graph has real content and isn't
+   * dormant. Auto-flow would then make the viewport the grid's first (and
+   * only) item, landing it in the `auto` row instead of `1fr` — an auto row
+   * sizes to its content, and a height:100% child inside an auto-sized row
+   * has no definite size to resolve against, so it collapses to zero and the
+   * whole canvas goes blank. Pinning it to row 2 keeps it in the fill row
+   * whether or not row 1 has anything in it. */
+  grid-row: 2;
   width: 100%;
   height: 100%;
   min-width: 0;
@@ -1232,17 +1194,14 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   overflow: hidden;
   border: 1px solid var(--theme-border-subtle);
   border-radius: var(--theme-chrome-radius-sm);
-  /* FXG.3-l — subtle tokenized dot-grid so the canvas reads as a workspace
-   * surface, not a flat empty rectangle. color-mix keeps the dots faint and
-   * adapts to light/dark themes; no hardcoded colors. */
-  background-color: var(--theme-bg-surface);
-  background-image: radial-gradient(
-    circle,
-    color-mix(in srgb, var(--theme-text) 10%, transparent) 1px,
-    transparent 1.5px
-  );
-  background-size: 22px 22px;
-  background-position: 0 0;
+  /* A flat backdrop, not a dot grid. The dots competed with the cables and the
+   * node shadows for attention; a plain well reads as depth the modules sit on
+   * top of. --theme-bg-inset is the appearance system's own recessed backdrop
+   * (never an accent), so it tracks the active theme. It is used here rather
+   * than --theme-bg-primary because the FX Graph panel's flat-parity block in
+   * app.css remaps bg-primary to the *card* surface inside this subtree, which
+   * would leave the canvas and the modules sitting on it the same color. */
+  background: var(--theme-bg-inset);
   touch-action: none;
 }
 
@@ -1302,6 +1261,22 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   stroke: color-mix(in srgb, var(--theme-accent) 44%, var(--theme-border-strong));
 }
 
+/* A soft bloom around each cable so it reads as a lit signal path against the
+ * flat backdrop. drop-shadow follows the stroke's alpha rather than a bounding
+ * box, so it haloes the curve itself. Kept small and heavily diluted — a strong
+ * glow on a dense graph turns into fog. It sits on the path rather than the
+ * parent <svg> because that layer is an unbounded transform anchor with no
+ * intrinsic size, and a filter there would establish a region that clips the
+ * cables to nothing. */
+.xleth-graph-state-preview__edge--audio {
+  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--theme-accent) 34%, transparent));
+}
+
+.xleth-graph-state-preview__edge--parameter,
+.xleth-graph-state-preview__edge--sidechain {
+  filter: drop-shadow(0 0 2px color-mix(in srgb, var(--theme-accent-active) 24%, transparent));
+}
+
 /* Drag-drop cable splice: highlights the audio cable under the dragged
  * node's center as a valid drop target. */
 .xleth-graph-state-preview__edge--splice-target {
@@ -1336,15 +1311,48 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   padding: 10px 12px;
   border: 1px solid var(--theme-border-subtle);
   border-radius: var(--theme-chrome-radius-sm);
-  background: var(--theme-bg-primary);
+  background: var(--theme-bg-elevated);
   color: var(--theme-text);
-  box-shadow: var(--theme-depth-elevation-1-top-highlight);
+  /* A hard, tight shadow — offset down-right with almost no blur — so a module
+   * reads as a solid card lifted off the backdrop rather than something with a
+   * soft photographic glow around it. Painted with `filter`, not `box-shadow`:
+   * --xleth-graph-node-lift resolves to --theme-depth-control-hard-shadow-filter,
+   * the same drop-shadow() token the app's own knobs use, and drop-shadow() is a
+   * filter function, not a box-shadow value.
+   *
+   * Deliberately NOT composed with --theme-depth-elevation-*-top-highlight: the
+   * FX Graph panel's flat-parity block in app.css remaps that token to `none`,
+   * and `none` inside a comma-separated box-shadow list is a parse error that
+   * drops the entire declaration — shadow and all. Keeping the lift in its own
+   * local custom properties sidesteps that remap and gives the hover state one
+   * place to grow from. */
+  filter: var(--xleth-graph-node-lift);
+  transition:
+    transform 140ms cubic-bezier(0.22, 0.61, 0.36, 1),
+    filter 140ms cubic-bezier(0.22, 0.61, 0.36, 1);
 }
 
 .xleth-graph-state-preview__node--draggable {
   cursor: grab;
   pointer-events: auto;
   touch-action: none;
+}
+
+/* Hover pop: the module slides up-and-left while its shadow grows down-and-right
+ * by the same amount, so the gap between card and shadow widens and the card
+ * appears to rise off the surface. Terminals (Track Input/Output) are excluded —
+ * they're fixed routing sockets, not modules you pick up, so they stay planted.
+ * Suppressed mid-drag: during a drag the pointer owns the node's position, and a
+ * hover offset would desync it from the cable endpoints. */
+.xleth-graph-state-preview__node:not(.xleth-graph-state-preview__node--track-input):not(.xleth-graph-state-preview__node--track-output):not(.xleth-graph-state-preview__node--dragging):hover {
+  transform: translate(var(--xleth-graph-node-lift-shift), var(--xleth-graph-node-lift-shift));
+  filter: var(--xleth-graph-node-lift-hover);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .xleth-graph-state-preview__node {
+    transition: none;
+  }
 }
 
 .xleth-graph-state-preview__node--dragging {
@@ -1370,26 +1378,70 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 }
 
 /* FXG.3-l — Track Input/Output are fixed routing endpoints, not processor
- * nodes: no Edit/Remove actions (enforced in the node template) and a
- * distinct "socket" treatment — a stronger neutral border, a flatter tinted
- * fill, and a small-caps label — so they read as terminals to plug into
- * rather than cards you configure. */
+ * nodes: no Edit/Remove actions (enforced in the node template). They now drop
+ * the card entirely and render as a bare jack glyph (TrackIoGlyph), so the only
+ * boxes on the canvas are things you can actually open. The element keeps its
+ * layout box — the model's cable endpoints and the drag hit area are derived
+ * from it — but paints nothing of its own. */
 .xleth-graph-state-preview__node--track-input,
 .xleth-graph-state-preview__node--track-output {
-  border-color: color-mix(in srgb, var(--theme-panel-node) 70%, var(--theme-border-strong));
-  background: color-mix(in srgb, var(--theme-panel-node) 14%, var(--theme-bg-primary));
+  display: flex;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: none;
+  box-shadow: none;
+  color: color-mix(in srgb, var(--theme-text-muted) 80%, var(--theme-panel-node));
 }
 
-.xleth-graph-state-preview__node--track-input .xleth-graph-state-preview__node-title,
-.xleth-graph-state-preview__node--track-output .xleth-graph-state-preview__node-title {
-  color: var(--theme-text-muted);
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+/* The glyph is taller than it is wide, so it's sized off the node's height and
+ * pinned to the edge its cable leaves from: the input arrow's tip meets the out
+ * handle on the right, the output glyph's return loop meets the in handle on
+ * the left. */
+.xleth-graph-state-preview__node--track-input {
+  justify-content: flex-end;
 }
 
+.xleth-graph-state-preview__node--track-output {
+  justify-content: flex-start;
+}
+
+/* Sized in absolute units, not height:100%. The node sets only a min-height, so
+ * a percentage height is indefinite — the SVG would fall back to its 150px
+ * default and stretch the terminal to twice a module's height. 64px sits just
+ * inside the 74px node box; width follows from the viewBox aspect ratio. */
+.xleth-graph-state-preview__io-glyph {
+  flex: 0 0 auto;
+  height: 64px;
+  width: auto;
+  overflow: visible;
+}
+
+.xleth-graph-state-preview__io-glyph-text {
+  fill: var(--theme-text);
+  font-family: inherit;
+  font-weight: 800;
+}
+
+/* The glyph already spells out "in"/"out"; the node's own title stays in the
+ * DOM for assistive tech and is clipped rather than removed. */
+.xleth-graph-state-preview__node-title--io {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+/* An effect module's border is neutral. The accent is reserved for signal —
+ * the cables — and for the control-source nodes (Macro/Envelope/LFO) that drive
+ * the dashed modulation cables, so an accent outline on the canvas always means
+ * "this participates in modulation" rather than just "this is a box". */
 .xleth-graph-state-preview__node--effect {
-  border-color: color-mix(in srgb, var(--theme-accent) 34%, var(--theme-border-subtle));
+  border-color: var(--theme-border-strong);
 }
 
 .xleth-graph-state-preview__node--effect .xleth-graph-state-preview__handle {
@@ -1430,8 +1482,32 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   line-height: 1.25;
 }
 
-.xleth-graph-state-preview__node-secondary,
-.xleth-graph-state-preview__node-meta {
+/* An effect module leads with its name, centered across the top of the block and
+ * carrying the brightest text in the card — the author tag below it is the quiet
+ * half of the pair. */
+.xleth-graph-state-preview__node--effect .xleth-graph-state-preview__node-title {
+  color: var(--theme-text);
+  text-align: center;
+}
+
+/* Who made this effect: 'XLETH' on a stock module, the plugin's own vendor on a
+ * third party. Deliberately recessive — a footer credit, not a second title. */
+.xleth-graph-state-preview__node-vendor {
+  justify-self: start;
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  color: color-mix(in srgb, var(--theme-text-muted) 78%, transparent);
+  font-size: 9px;
+  font-weight: 800;
+  line-height: 1;
+  letter-spacing: 0.1em;
+  text-overflow: ellipsis;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.xleth-graph-state-preview__node-secondary {
   min-width: 0;
   overflow-wrap: anywhere;
   color: var(--theme-text-muted);
@@ -1579,6 +1655,58 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   font-weight: 700;
   line-height: 1;
   text-transform: uppercase;
+}
+
+/* Effect power toggle — the node's own bypass control, parked in the card's top
+ * right corner clear of the centered title and the side connection handles. At
+ * rest it is a quiet outline that only asserts itself on hover; bypassed, it
+ * carries the same muted treatment as the "Bypassed" badge below it so the two
+ * read as one state rather than two competing signals. */
+.xleth-graph-state-preview__node-power {
+  position: absolute;
+  top: 6px;
+  right: 7px;
+  display: grid;
+  place-items: center;
+  box-sizing: border-box;
+  width: 17px;
+  height: 17px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--theme-chrome-radius-sm);
+  background: transparent;
+  color: color-mix(in srgb, var(--theme-text-muted) 62%, transparent);
+  cursor: pointer;
+  pointer-events: auto;
+  transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease;
+}
+
+.xleth-graph-state-preview__node-power:hover {
+  border-color: var(--theme-border-subtle);
+  background: var(--theme-bg-hover);
+  color: var(--theme-text);
+}
+
+.xleth-graph-state-preview__node-power:focus-visible {
+  outline: 1px solid var(--theme-border-focus);
+  outline-offset: 1px;
+}
+
+.xleth-graph-state-preview__node-power--bypassed {
+  border-color: var(--theme-border-subtle);
+  background: var(--theme-bg-hover);
+  color: var(--theme-text-muted);
+}
+
+.xleth-graph-state-preview__power-glyph {
+  width: 11px;
+  height: 11px;
+}
+
+/* A bypassed module is out of the signal path; the whole card recedes so that
+ * reads at a glance from across the graph, not just from the badge. */
+.xleth-graph-state-preview__node--effect[data-bypassed='true'] {
+  opacity: 0.72;
 }
 
 /* EVC-R3 — Envelope Modulator node. A graph-owned parameter-modulation source
@@ -2112,49 +2240,6 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 
 .xleth-graph-state-preview__canvas[data-connecting-kind="sidechain"] .xleth-graph-state-preview__sidechain-port {
   cursor: copy;
-}
-
-/* Toolbar hierarchy: Add Effect Node is the one primary (accent-filled) action.
- * Add Macro / Add Envelope / Add Sidechain Input are secondary — a quiet ghost
- * treatment via the --secondary modifier below — so the toolbar reads as one
- * emphasized action plus supporting ones, not four equally loud buttons. */
-.xleth-graph-state-preview__action-button {
-  padding: 6px 10px;
-  border: 1px solid color-mix(in srgb, var(--theme-accent) 45%, var(--theme-border-subtle));
-  border-radius: var(--theme-chrome-radius-sm);
-  background: color-mix(in srgb, var(--theme-accent) 16%, var(--theme-bg-surface));
-  color: var(--theme-text);
-  font-size: 11px;
-  font-weight: 700;
-  line-height: 1;
-  cursor: pointer;
-}
-
-.xleth-graph-state-preview__action-button:hover {
-  border-color: var(--theme-accent);
-  background: color-mix(in srgb, var(--theme-accent) 26%, var(--theme-bg-surface));
-}
-
-.xleth-graph-state-preview__action-button:focus-visible {
-  outline: 1px solid var(--theme-border-focus);
-  outline-offset: 1px;
-}
-
-.xleth-graph-state-preview__action-button--secondary {
-  border-color: var(--theme-border-subtle);
-  background: transparent;
-  color: var(--theme-text-muted);
-}
-
-.xleth-graph-state-preview__action-button--secondary:hover {
-  border-color: var(--theme-border-strong);
-  background: var(--theme-bg-interactive-hover);
-  color: var(--theme-text);
-}
-
-.xleth-graph-state-preview__action-button:disabled {
-  opacity: 0.5;
-  cursor: not-allowed;
 }
 
 .xleth-graph-state-preview__handle--connect-source {

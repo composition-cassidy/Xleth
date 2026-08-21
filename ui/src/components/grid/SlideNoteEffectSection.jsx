@@ -4,7 +4,8 @@
 // but stays a SEPARATE config from the normal Visual FX chain. Slide duration
 // is owned exclusively by durationMode + fixedDurationMs (FollowSlide or Fixed),
 // so the reused per-effect views hide their own durationMs control.
-import { BounceParamsView, ZprParamsView, TvSimulatorParamsView } from './effectParamViews.jsx'
+import { BounceParamsView, TvSimulatorParamsView } from './effectParamViews.jsx'
+import ZprTimelineCard from './zprTimeline/ZprTimelineCard.jsx'
 import XlethSelect from '../common/XlethSelect.jsx'
 
 const EFFECT_TYPE_OPTIONS = [
@@ -44,8 +45,13 @@ export default function SlideNoteEffectSection({ track, fetchTracks }) {
   }
 
   const onBounceChange = (patch) => set({ bounce: { ...(sl.bounce ?? {}), ...patch } })
-  const onZprChange    = (patch) => set({ zoomPanRot: { ...(sl.zoomPanRot ?? {}), ...patch } })
   const onTvChange     = (patch) => set({ tv: { ...(sl.tv ?? {}), ...patch } })
+
+  // The slide ZPR runs through the SAME keyframe editor as the Visual FX one.
+  // There is no separate slide-tracks RPC: the slide config is written whole,
+  // so the curves ride along inside zoomPanRot on the normal set() call.
+  const onZprChange       = (patch)  => set({ zoomPanRot: { ...(sl.zoomPanRot ?? {}), ...patch } })
+  const onZprTracksChange = (tracks) => set({ zoomPanRot: { ...(sl.zoomPanRot ?? {}), tracks } })
 
   return (
     <div className="grid-tab-track-slide">
@@ -113,7 +119,14 @@ export default function SlideNoteEffectSection({ track, fetchTracks }) {
         </div>
       )}
       {type === 1 && (
-        <ZprParamsView value={sl.zoomPanRot ?? {}} onChange={onZprChange} hideDuration hideEnabled />
+        <ZprTimelineCard
+          variant="slide"
+          slideLengthMs={durationMode === 1 ? fixedMs : null}
+          trackId={track.id}
+          zpr={sl.zoomPanRot ?? {}}
+          onApplyScalar={onZprChange}
+          onApplyTracks={onZprTracksChange}
+        />
       )}
       {type === 2 && (
         <BounceParamsView value={sl.bounce ?? {}} onChange={onBounceChange} hideDuration hideEnabled />

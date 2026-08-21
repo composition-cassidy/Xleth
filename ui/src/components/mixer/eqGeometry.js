@@ -61,6 +61,25 @@ export function yToDb_response(y, dbZoom) {
   return dbZoom + t * (-2 * dbZoom)
 }
 
+// Musical note name + cents offset for a frequency (display only).
+export function freqToNote(f) {
+  const n = 69 + 12 * Math.log2(f / 440)
+  const ni = Math.round(n)
+  const names = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B']
+  const cents = Math.round((n - ni) * 100)
+  const name = names[((ni % 12) + 12) % 12]
+  const oct = Math.floor(ni / 12) - 1
+  return `${name}${oct} ${cents >= 0 ? '+' : '−'}${Math.abs(cents)}¢`
+}
+
+export function formatFreqValue(f) {
+  return f >= 1000 ? `${(f / 1000).toFixed(f >= 10000 ? 1 : 2)} kHz` : `${f.toFixed(0)} Hz`
+}
+
+export function formatGainValue(g) {
+  return `${g >= 0 ? '+' : '−'}${Math.abs(g).toFixed(1)} dB`
+}
+
 export function evalResponseAt(curveData, freq) {
   const t = (Math.log(freq) - Math.log(FREQ_MIN)) / (Math.log(FREQ_MAX) - Math.log(FREQ_MIN))
   const idx = t * (RESPONSE_SIZE - 1)

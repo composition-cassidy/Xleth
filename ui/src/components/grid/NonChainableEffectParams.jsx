@@ -1,12 +1,16 @@
 import { snapToOne, quantizedFromNorm } from '../../utils/sliderHelpers.js'
-import { BounceParamsView, ZprParamsView } from './effectParamViews.jsx'
+import { BounceParamsView } from './effectParamViews.jsx'
 import Fader from '../controls/Fader.jsx'
+import ZprTimelineCard from './zprTimeline/ZprTimelineCard.jsx'
 
 async function applyBounce(trackId, current, patch) {
   await window.xleth?.timeline?.setTrackBounceSettings(trackId, { ...current, ...patch })
 }
 async function applyZpr(trackId, current, patch) {
   await window.xleth?.timeline?.setTrackZoomPanRotSettings(trackId, { ...current, ...patch })
+}
+async function applyZprTracks(trackId, tracks) {
+  await window.xleth?.timeline?.setTrackZprTracks(trackId, tracks)
 }
 async function applyPP(trackId, current, patch) {
   await window.xleth?.timeline?.setTrackPingPongSettings(trackId, { ...current, ...patch })
@@ -26,9 +30,12 @@ export default function NonChainableEffectParams({ kind, track, fetchTracks }) {
   if (kind === 'zoomPanRot') {
     const z = track.zoomPanRot ?? {}
     return (
-      <ZprParamsView
-        value={z}
-        onChange={async (patch) => { await applyZpr(track.id, z, patch); fetchTracks() }}
+      <ZprTimelineCard
+        trackId={track.id}
+        zpr={z}
+        onApplyScalar={async (patch) => { await applyZpr(track.id, z, patch); fetchTracks() }}
+        onApplyTracks={async (tracks) => { await applyZprTracks(track.id, tracks); fetchTracks() }}
+        onPresetApplied={fetchTracks}
       />
     )
   }

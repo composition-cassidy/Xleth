@@ -2024,6 +2024,35 @@ export function updateGraphLfoNodeData(graphState, nodeId, patch) {
   }
 }
 
+// Flips an effect node's persisted bypass flag. The engine-side bypass is applied by
+// the caller (the store, through the same audio.setEffectBypass path Mixer Chain uses)
+// — this only owns the graphState mirror that the node badge and project file read.
+// Only effect nodes carry a bypass flag; every other node type is rejected.
+export function setGraphEffectNodeBypass(graphState, nodeId, bypassed) {
+  const editCheck = validateGraphStateForEditing(graphState)
+  if (!editCheck.ok) return editCheck
+  if (typeof nodeId !== 'string' || nodeId.length === 0) {
+    return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_NODE }
+  }
+
+  const node = graphState.nodes.find((candidate) => candidate.id === nodeId)
+  if (!node) return { ok: false, reason: GRAPH_MUTATION_REJECTION.MISSING_NODE }
+  if (node.type !== 'effect') return { ok: false, reason: GRAPH_MUTATION_REJECTION.UNKNOWN_NODE_TYPE }
+
+  const nextBypass = bypassed === true
+  return {
+    ok: true,
+    graphState: {
+      ...graphState,
+      nodes: graphState.nodes.map((candidate) => (
+        candidate.id === nodeId
+          ? { ...candidate, data: { ...(candidate.data ?? {}), bypass: nextBypass } }
+          : candidate
+      )),
+    },
+  }
+}
+
 export function renameGraphMacroNode(graphState, nodeId, label) {
   const editCheck = validateGraphStateForEditing(graphState)
   if (!editCheck.ok) return editCheck

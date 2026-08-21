@@ -1,13 +1,19 @@
 import Knob from '../Knob.jsx'
 import { NOTE_VALUES } from './modConstants.js'
+import { useModTarget } from './useModTarget.js'
 
 // Shared control atoms for the modulation editors. Kept together so the ENV,
 // LFO and curve editors read the same and stay visually consistent.
 
 const KNOB_APPEARANCE = { tickStyle: 'none', glyph: 'rotary-arrow', accentGlow: false }
 
-export function ModKnob(props) {
-  return <Knob {...KNOB_APPEARANCE} {...props} />
+// `modTarget` is the OPT-IN cross-modulation registration ({target, index,
+// stage, scale}) — a source's own RATE / RISE / DELAY / SMOOTH / PHASE / OUT
+// knob, or an envelope stage time. Omit it and this is the plain Knob it has
+// always been: useModTarget returns null and the `mod` prop is inert.
+export function ModKnob({ modTarget, ...props }) {
+  const mod = useModTarget(modTarget, { value: props.value, min: props.min, max: props.max })
+  return <Knob {...KNOB_APPEARANCE} {...props} mod={mod} />
 }
 
 // Segmented button group over {v, l} options.

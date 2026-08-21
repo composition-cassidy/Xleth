@@ -12,6 +12,7 @@
 // case to that path, for byte-level before/after diffing outside the assertions.
 
 #include "dsp/TDPSOLA.h"
+#include "dsp/StretchInputFloor.h"
 
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_core/juce_core.h>
@@ -138,12 +139,97 @@ static void testStretchAgainstBaseline()
     }
 }
 
+// ── Short-input floor (StretchInputFloor.h) ──────────────────────────────────
+// TDPSOLA varispeeds any input shorter than kMinDurSec instead of stretching it,
+// which transposes it DOWN by the stretch ratio. ClipRenderCache avoids that by
+// reading at least minStretchInputSamples() of source. These checks pin the
+// documented floor to the implementation's real behaviour, so the two can't
+// drift: below the floor the pitch MUST fall, at the floor it must not.
+//
+// Fundamental estimated by counting positive-going zero crossings over the
+// steady middle of the output — crude, but the two cases here differ by a factor
+// of the stretch ratio, so precision is not the issue.
+static double estimateF0(const juce::AudioBuffer<float>& b, double sampleRate)
+{
+    const int n = b.getNumSamples();
+    if (n < 16) return 0.0;
+    const int lo = n / 4, hi = n - n / 4;   // skip OLA ramp-in/out
+    const float* d = b.getReadPointer(0);
+    int crossings = 0;
+    for (int i = lo + 1; i < hi; ++i)
+        if (d[i - 1] <= 0.0f && d[i] > 0.0f) ++crossings;
+    const double spanSec = static_cast<double>(hi - lo) / sampleRate;
+    return spanSec > 0.0 ? crossings / spanSec : 0.0;
+}
+
+static void testShortInputFloor()
+{
+    std::cout << "[test] StretchInputFloor: PSOLA floor is where varispeed stops\n";
+
+    const int floorN = xleth::dsp::minStretchInputSamples(/*PSOLA*/1, kSR);
+    CHECK(floorN == (int)std::lround(kSR * xleth::dsp::kPsolaMinInputSec),
+          "floor matches kPsolaMinInputSec at this rate (got " << floorN << ")");
+
+    const double f0     = 220.0;
+    const double sratio = 4.0;
+
+    xleth::dsp::PSOLAParams p;
+    p.sampleRate       = kSR;
+    p.stretchRatio     = sratio;
+    p.pitchOffsetSemis = 0;
+    p.pitchOffsetCents = 0;
+    p.formantPreserve  = false;
+
+    // One sample under the floor: the varispeed fallback fires and the output
+    // sounds a factor of `sratio` lower. This is the bug the guard exists for.
+    {
+        auto in  = makeVoiceLike(f0, (floorN - 1) / kSR, kSR);
+        auto out = xleth::dsp::processTDPSOLA(in, p);
+        const double got = estimateF0(out, kSR);
+        std::printf("  under floor (%d samples): f0 ~ %.1f Hz (expect ~%.1f)\n",
+                    in.getNumSamples(), got, f0 / sratio);
+        CHECK(got > 0.0 && got < f0 * 0.6,
+              "below the floor PSOLA varispeeds (transposes down) — got " << got << " Hz");
+    }
+
+    // At the floor: the real PSOLA path runs and pitch is preserved. Feeding the
+    // engine at least this much input is exactly what ClipRenderCache now does.
+    {
+        auto in  = makeVoiceLike(f0, floorN / kSR, kSR);
+        auto out = xleth::dsp::processTDPSOLA(in, p);
+        const double got = estimateF0(out, kSR);
+        std::printf("  at floor (%d samples): f0 ~ %.1f Hz (expect ~%.1f)\n",
+                    in.getNumSamples(), got, f0);
+        CHECK(std::abs(got - f0) < f0 * 0.25,
+              "at the floor PSOLA preserves pitch — got " << got << " Hz, want ~" << f0);
+        CHECK(out.getNumSamples() == (int)std::lround(floorN * sratio),
+              "at the floor output length is still input * ratio (got "
+              << out.getNumSamples() << ")");
+    }
+
+    // The other engines' floors, so a renamed/retuned constant is caught here
+    // rather than by ear months later.
+    CHECK(xleth::dsp::minStretchInputSamples(/*RubberBand*/2, kSR) == 0,
+          "RubberBand has no varispeed fallback -> floor 0");
+    CHECK(xleth::dsp::minStretchInputSamples(/*WSOLA*/3, kSR) == xleth::dsp::kWsolaMinInputSamples,
+          "WSOLA floor is one OLA window at unity pitch");
+    CHECK(xleth::dsp::minStretchInputSamples(/*WSOLA*/3, kSR, 12.0)
+              == 2 * xleth::dsp::kWsolaMinInputSamples,
+          "WSOLA floor doubles an octave up (it resamples before windowing)");
+    CHECK(xleth::dsp::minStretchInputSamples(/*PhaseVocoder*/4, kSR)
+              == xleth::dsp::kPhaseVocoderMinInputSamples,
+          "PhaseVocoder floor is one STFT frame");
+    CHECK(xleth::dsp::minStretchInputSamples(/*WORLD*/5, kSR) == 0,
+          "WORLD has no varispeed fallback -> floor 0");
+}
+
 int main()
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
 
     std::cout << "=== test_tdpsola ===\n";
     testStretchAgainstBaseline();
+    testShortInputFloor();
 
     std::cout << "\npassed=" << g_passed << " failed=" << g_failed << "\n";
     if (g_failed > 0) { std::cout << "FAILED\n"; return 1; }

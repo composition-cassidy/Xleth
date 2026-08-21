@@ -5,6 +5,7 @@ import PatternListPanel from './timeline/PatternListPanel.jsx'
 import TimelineCanvas from './timeline/TimelineCanvas.jsx'
 import MacroAutomationLanes from './timeline/MacroAutomationLanes.jsx'
 import { buildTrackLayout } from './timeline/timelineRowLayout.js'
+import { sourceTicksForTimelineTicks } from './timeline/clipSourceDomain.js'
 import { tokenValue } from '../theming/tokenValue.ts'
 import TimelineRuler from './timeline/TimelineRuler.jsx'
 import LoopRegionBar from './timeline/LoopRegionBar.jsx'
@@ -21,26 +22,34 @@ import QuantizeDialog from './timeline/QuantizeDialog.jsx'
 import { buildQuantizeSpecs } from '../utils/quantize.js'
 import useTimelineZoom from '../hooks/useTimelineZoom.js'
 import useTimelineScroll from '../hooks/useTimelineScroll.js'
+import useViewAnimator from '../hooks/useViewAnimator.js'
 import { getGlobalStretchMethodLabel } from '../constants/globalStretchMethods.js'
 import { labelHexColor } from '../constants/labels.js'
 import { normalizeTrackCustomColor } from './timeline/trackColorResolver.js'
 import { subscribe } from '../transportStore.js'
 import { startMacroAutomationPlayback } from '../fxgraph/macroAutomationPlayback.js'
 import useEffectChainStore from '../stores/effectChainStore.js'
+import useAutoScrollStore from '../stores/autoScrollStore.js'
 import { playheadClock } from '../services/PlayheadClock.js'
 import { editCursor } from '../services/EditCursor.js'
 import { createXlethStoppedPreviewSeekScheduler } from '../services/stoppedPreviewSeekScheduler.js'
 import { timelineEvents } from '../timelineEvents.js'
 import {
-  BEATS_PER_BAR, DEFAULT_TRACK_HEIGHT, TRACK_HEIGHT, PPQ, RULER_HEIGHT,
+  BEATS_PER_BAR, DEFAULT_TRACK_HEIGHT, TRACK_HEIGHT, PPQ, RULER_HEIGHT, ADD_TRACK_ROW_HEIGHT,
   setTimelineTrackHeight, zoomTrackHeight,
-  pixelToBeat, snapBeatToGrid, beatsToTicks, regionDurationToTicks, findFreePosition,
-  GRANULARITY_BEATS,
+  pixelToBeat, snapBeatToGrid, beatsToTicks, regionDurationToTicks,
+  GRANULARITY_BEATS, MIN_PPB, MAX_PPB, ZOOM_FACTOR,
 } from '../constants/timeline.js'
 import { getRegime } from '../utils/waveformRenderer.js'
 import { getRegionPlaybackDurationSec } from './timeline/regionDuration.js'
 import { getClipRegionWaveformStartSec } from './timeline/timelineDrawing.js'
-import { normalizeTimelineClipboardPayloads } from './timeline/timelineClipboard.js'
+import {
+  buildTimelineClipboard,
+  clipPayloadFromSnapshot,
+  itemsCoveredByPlacements,
+  placementsEndTick,
+  resolveTimelinePaste,
+} from './timeline/timelineClipboard.js'
 import {
   flatTrackLayout,
   moveFolderInLayout,
@@ -86,16 +95,18 @@ const TIMELINE_KEY_COMBOS = [
   'Ctrl+a', 'Ctrl+A', 'Meta+a', 'Meta+A',
   // Delete selected
   'Delete',
-  // Copy / paste / duplicate
+  // Cut / copy / paste / duplicate
+  'Ctrl+x', 'Ctrl+X', 'Meta+x', 'Meta+X',
   'Ctrl+c', 'Ctrl+C', 'Meta+c', 'Meta+C',
   'Ctrl+v', 'Ctrl+V', 'Meta+v', 'Meta+V',
   'Ctrl+d', 'Ctrl+D', 'Meta+d', 'Meta+D',
   // Loop toggle
   'l', 'L',
-  // Pitch shift (no-mod = ±1 semitone, Ctrl/Meta = ±1 cent)
+  // Pitch shift (no-mod = ±1 semitone, Ctrl/Meta = ±1 cent, Shift = ±12 semitones/octave)
   '+', '=', '-', '_',
   'Ctrl++', 'Ctrl+=', 'Ctrl+-', 'Ctrl+_',
   'Meta++', 'Meta+=', 'Meta+-', 'Meta+_',
+  'Shift++', 'Shift+=', 'Shift+-', 'Shift+_',
   // Tools
   's', 'S', 'p', 'P', 'c', 'C', 'd', 'D',
   // Syllable pick
@@ -735,7 +746,11 @@ export default function TimelineView({
   }, [snapGranularity])
 
   const [patternListCollapsed, setPatternListCollapsed] = useState(false)
-  const lastSplitUndoCountRef = useRef(0)
+  // How many engine undo entries the last compound edit pushed (split = 3,
+  // paste = overwrite + insert). Ctrl+Z pops them together; Ctrl+Z then hands
+  // the count to compoundRedoCountRef so Ctrl+Y replays exactly as many.
+  const compoundUndoCountRef = useRef(0)
+  const compoundRedoCountRef = useRef(0)
   const timelineFocusedRef = useRef(false)
   const timelineViewRef = useRef(null)
 
@@ -796,8 +811,10 @@ export default function TimelineView({
   const [regions, setRegions] = useState({})        // { [id]: region }
   const [selectedClipIds, setSelectedClipIds] = useState(new Set())
   const clipsRef = useRef([])
-  const clipboardRef = useRef(null)  // stores copied clip properties for paste
-  const patternBlockClipboardRef = useRef(null)  // stores copied pattern block data for paste
+  // One rigid-group snapshot for BOTH clips and pattern blocks — see
+  // timelineClipboard.js. Two parallel refs used to drift apart and reintroduce
+  // the clip/block anchor gap on paste.
+  const clipboardRef = useRef(null)
   const pencilTemplateRef = useRef(null) // middle-click template for pencil tool
   const [pencilTemplate, setPencilTemplate] = useState(null)
   const dropPreviewRef = useRef(null)
@@ -837,27 +854,116 @@ export default function TimelineView({
     }
   }, [])
 
-  // ── User-scroll guard (prevents ensureVisible from fighting manual scroll) ─
-  const userScrollingRef = useRef(false)
-  const scrollTimeoutRef = useRef(null)
-  const markUserScrolling = useCallback(() => {
-    userScrollingRef.current = true
-    clearTimeout(scrollTimeoutRef.current)
-    scrollTimeoutRef.current = setTimeout(() => {
-      userScrollingRef.current = false
-    }, 2000)
-  }, [])
-
-  // ── Zoom / Scroll ──────────────────────────────────────────────────────────
-  const { pixelsPerBeat, pixelsPerBeatRef, applyZoom, zoomAtCursor } = useTimelineZoom()
-  const { scrollOffset, scrollOffsetRef, applyScroll, scrollBy, scrollTo, ensureVisible, setMaxScroll } = useTimelineScroll()
+  // ── Auto Scroll toggle (playback-only "follow the playhead" mode) ──────────
+  // Read imperatively (ref) from the 60fps playheadClock frame handler and
+  // the wheel/pan handlers below, which live outside React's render cycle.
+  const autoScrollEnabledRef = useRef(useAutoScrollStore.getState().enabled)
+  useEffect(() => useAutoScrollStore.subscribe((s) => {
+    autoScrollEnabledRef.current = s.enabled
+  }), [])
+  // True while playback is following the playhead — manual horizontal
+  // scroll/pan is locked out during this window (zoom/resize still works).
+  // Both refs read here are updated imperatively outside React's render
+  // cycle, so this must be a function (called fresh at use-sites), not a
+  // value snapshotted once per render.
+  const isFollowLocked = useCallback(
+    () => isPlayingRef.current && autoScrollEnabledRef.current,
+    [],
+  )
 
   // ── Canvas refs ────────────────────────────────────────────────────────────
+  // Declared before the zoom/scroll hooks so their onCommit callbacks (below)
+  // can close over canvasRef/rulerRef for imperative, per-frame redraws.
   const canvasRef = useRef(null)    // TimelineCanvas imperative handle
   const rulerRef = useRef(null)     // TimelineRuler imperative handle
+  // DOM overlays that sit on top of / beside those canvases. They are NOT
+  // canvases, but their placement is the same function of (pixelsPerBeat,
+  // scrollOffset), so they get pushed a frame from commitViewportRedraw too.
+  const loopRegionBarRef = useRef(null)
+  const scrollbarRef = useRef(null)
   const [canvasWidth, setCanvasWidth] = useState(800)
   const canvasAreaRef = useRef(null)
+
+  // ── Zoom / Scroll ──────────────────────────────────────────────────────────
+  // pixelsPerBeatRef/scrollOffsetRef are the source of truth for the draw
+  // path. applyZoom/applyScroll write the ref synchronously and invoke
+  // onCommit immediately — a direct, imperative redraw with no React render
+  // in between. The pixelsPerBeat/scrollOffset React state is synced
+  // afterward on a trailing ~100ms debounce (inside the hooks), purely for
+  // consumers that only need the resting value (viewport-aware data fetches,
+  // effect deps, the toolbar zoom readout). Anything that is POSITIONED on
+  // screen — FX badges, the scrollbar thumb, the loop region bar — follows the
+  // refs per frame via commitViewportRedraw instead; see below.
+  const commitViewportRedraw = useCallback((reason) => {
+    canvasRef.current?.redrawGrid(reason)
+    canvasRef.current?.redrawContent(reason)
+    rulerRef.current?.redraw()
+    canvasRef.current?.positionPlayhead(playheadBeatRef.current)
+    rulerRef.current?.redrawOverlay()
+    // DOM followers — same frame, same refs, so nothing lags behind the
+    // canvases while the animator eases.
+    canvasRef.current?.repositionFxBadges()
+    loopRegionBarRef.current?.applyView()
+    scrollbarRef.current?.applyView()
+  }, [])
+
+  const { scrollOffset, scrollOffsetRef, maxScrollRef, applyScroll, scrollBy, scrollTo, setMaxScroll } =
+    useTimelineScroll(() => commitViewportRedraw('scroll'))
+
+  const { pixelsPerBeat, pixelsPerBeatRef, applyZoom } =
+    useTimelineZoom((ppb) => {
+      commitViewportRedraw('zoom')
+      // Keep the scroll clamp bound current on every tick, not just at
+      // settle — it's a plain ref write (no re-render), so this is
+      // effectively free, and staying current here avoids a stale bound
+      // clipping the animator's cursor-anchored scroll math mid-gesture.
+      // (See the ON-SETTLE maxScroll effect below for the general-purpose
+      // recompute that also covers canvasWidth/totalBeats changes.)
+      setMaxScroll(Math.max(0, totalBeats - canvasWidth / (ppb || 40)))
+    })
   const scrollContainerRef = useRef(null)
+
+  // ── View animator: FL Studio-style spring easing ───────────────────────────
+  // Wheel input (and playhead-follow) no longer jump pixelsPerBeat/scrollX
+  // straight to their final value — they set a TARGET on this animator, and
+  // its single rAF loop eases the ref-backed current value toward it every
+  // frame via applyZoom/applyScroll above (which already do the imperative
+  // redraw + debounced-state-sync; the animator only changes how often/with
+  // what values they're called, never bypasses them). Piano Roll mounts its
+  // own separate instance of the exact same hook — see PianoRoll.jsx.
+  //
+  // Cursor-anchored zoom (requirement: stay anchored for the WHOLE
+  // animation, not just the final frame) needs scrollX to be a function of
+  // ppb on every tick, not an independently-eased spring — so while
+  // zoomAnchorRef is set, onTick derives scrollX from the anchor + the
+  // CURRENT (already-eased) ppb every frame, and slaves the scrollX spring
+  // to that value via setCurrent so a plain scroll gesture starting right
+  // after a zoom hands off smoothly instead of jumping.
+  const zoomAnchorRef = useRef(null) // { beat, pixelX } while a ctrl+wheel zoom is easing
+  const viewAnimatorRef = useRef(null)
+  const viewAnimator = useViewAnimator({
+    springs: {
+      ppb: { value: pixelsPerBeatRef.current, space: 'log' },
+      scrollX: { value: scrollOffsetRef.current },
+      scrollY: { value: 0 },
+    },
+    getDrawStats: () => canvasRef.current?.getDrawStats(),
+    onTick: (values) => {
+      let scrollXVal = values.scrollX
+      const anchor = zoomAnchorRef.current
+      if (anchor) {
+        scrollXVal = anchor.beat - anchor.pixelX / values.ppb
+        viewAnimatorRef.current?.setCurrent('scrollX', scrollXVal)
+        if (viewAnimatorRef.current?.isAtRest('ppb')) zoomAnchorRef.current = null
+      }
+      applyZoom(values.ppb)
+      applyScroll(scrollXVal)
+
+      const sc = scrollContainerRef.current
+      if (sc) sc.scrollTop = values.scrollY
+    },
+  })
+  viewAnimatorRef.current = viewAnimator
 
   // ── Track-header column resize ─────────────────────────────────────────────
   const timelineBodyRef = useRef(null)
@@ -1471,10 +1577,18 @@ export default function TimelineView({
     return () => timelineEvents.removeEventListener('timeline-video-invalidate', handler)
   }, [fetchRegions])
 
-  // ── Viewport-aware hi-res waveform fetch (for waveform-line & sample regimes) ─
-  // Runs on scroll/zoom changes. Computes which clips are visible, determines the
-  // zoom regime, and fetches viewport-appropriate data.  The visible time window
-  // shrinks as zoom increases, keeping data volume bounded by viewport pixel width.
+  // ── ON-SETTLE: viewport-aware hi-res waveform fetch (for waveform-line &
+  // sample regimes). Computes which clips are visible, determines the zoom
+  // regime, and fetches viewport-appropriate data. The visible time window
+  // shrinks as zoom increases, keeping data volume bounded by viewport pixel
+  // width. Deps are the (now trailing-debounced) pixelsPerBeat/scrollOffset
+  // state, so this no longer re-fires on every wheel tick — only once,
+  // ~100ms after a zoom/scroll gesture stops. It must NOT run per-frame: an
+  // IPC round-trip per wheel tick would stall the redraw path this whole
+  // refactor exists to keep off the render/JS thread. The 80ms setTimeout
+  // below is a separate, pre-existing debounce for the async fetch itself
+  // (kept as-is — it also covers the clips/regions/canvasWidth deps, which
+  // aren't part of the zoom/scroll hot path).
   useEffect(() => {
     // Gate: only relevant at zoom levels beyond envelope mode
     const ppb = pixelsPerBeatRef.current
@@ -1666,16 +1780,31 @@ export default function TimelineView({
         ? positionBeats
         : posMs * bpmRef.current / 60000
 
-      // Auto-scroll only during playback and only when user isn't manually scrolling
-      if (!isPlayingRef.current || userScrollingRef.current) return
+      // Opt-in only (Auto Scroll toggle in TransportBar), and only while
+      // actually playing. Off by default — the timeline never moves itself.
+      if (!isFollowLocked()) return
       const el = canvasAreaRef.current
-      if (el) {
-        const w = el.getBoundingClientRect().width
-        ensureVisible(playheadBeatRef.current, w, pixelsPerBeatRef.current)
-      }
+      if (!el) return
+      const w = el.getBoundingClientRect().width
+      const animator = viewAnimatorRef.current
+      const ppb = animator?.getCurrent('ppb') || pixelsPerBeatRef.current
+      const visibleBeats = w / ppb
+      // Center the playhead every frame — it's the centerpiece the view
+      // follows continuously, not an edge-triggered catch-up. Manual
+      // horizontal scroll/pan is locked out while this is active (see the
+      // wheel/pan/scrollbar handlers below), so there's no fight to guard
+      // against here.
+      const nextScroll = Math.max(
+        0,
+        Math.min(maxScrollRef.current, playheadBeatRef.current - visibleBeats / 2),
+      )
+      // Keeping the playhead centered outranks a still-easing zoom's cursor
+      // anchor — same anchor-release as the manual scroll paths.
+      zoomAnchorRef.current = null
+      animator?.setTarget('scrollX', nextScroll)
     })
     return unsub
-  }, [ensureVisible])
+  }, [maxScrollRef, isFollowLocked])
 
   useEffect(() => {
     function handleThemeChange() {
@@ -1687,26 +1816,29 @@ export default function TimelineView({
     return () => window.removeEventListener('xleth-theme-changed', handleThemeChange)
   }, [])
 
-  // ── Redraw grid/ruler when zoom or scroll changes (via state) ──────────────
-
+  // Dev-only console bridge to TimelineCanvas.getDrawStats() — lets us pull
+  // redrawContent() p50/p95/max from devtools while sizing the per-frame
+  // budget, without wiring a permanent debug UI.
   useEffect(() => {
-    canvasRef.current?.redrawGrid('zoom')
-    canvasRef.current?.redrawContent('zoom')
-    rulerRef.current?.redraw()
-    canvasRef.current?.positionPlayhead(playheadBeatRef.current)
-    rulerRef.current?.redrawOverlay()
+    if (!import.meta.env.DEV) return
+    window.__xlethTimelineDebug = { getDrawStats: () => canvasRef.current?.getDrawStats() }
+    return () => { delete window.__xlethTimelineDebug }
+  }, [])
 
+  // ── PER-FRAME: grid/ruler/content redraw + playhead reposition on zoom or
+  // scroll. This used to live in two useEffects keyed on [pixelsPerBeat] /
+  // [scrollOffset] state, which meant every wheel tick forced a React
+  // render just to reach this code. It now runs directly out of
+  // commitViewportRedraw(), called synchronously from applyZoom/applyScroll's
+  // onCommit (see the hook instantiation above) — no render involved.
+
+  // ── ON-SETTLE: the console diagnostic below is the only thing left that
+  // actually wants the debounced state — it fires once, ~100ms after the
+  // zoom gesture stops, instead of spamming the console every tick.
+  useEffect(() => {
     const barsVisible = (canvasAreaRef.current?.getBoundingClientRect().width || 800) / pixelsPerBeat / BEATS_PER_BAR
     console.log(`[Timeline] Zoom: ${pixelsPerBeat.toFixed(1)}px/beat, ~${barsVisible.toFixed(1)} bars visible`)
   }, [pixelsPerBeat])
-
-  useEffect(() => {
-    canvasRef.current?.redrawGrid('scroll')
-    canvasRef.current?.redrawContent('scroll')
-    rulerRef.current?.redraw()
-    canvasRef.current?.positionPlayhead(playheadBeatRef.current)
-    rulerRef.current?.redrawOverlay()
-  }, [scrollOffset])
 
   // ── Redraw content layer when clips/regions/selection change ───────────────
 
@@ -1750,7 +1882,15 @@ export default function TimelineView({
     return Math.max(minBeats, maxEndBeat + padBeats)
   }, [clips, patternBlocks])
 
-  // ── Max scroll: total length minus the currently visible window ──────────
+  // ── ON-SETTLE: max scroll bound (total length minus the currently visible
+  // window). setMaxScroll is a plain ref write (no re-render), so this is
+  // cheap, and it only needs to be correct within the ~100ms settle window —
+  // it clamps the *edges* of scroll, it draws nothing, so a few stale ms
+  // mid-gesture never shows up as a visual artifact. This effect is the
+  // general-purpose recompute (also covers canvasWidth/totalBeats changing
+  // on their own); the zoom hook's onCommit above additionally recomputes
+  // it PER-FRAME during an active zoom so the view animator's cursor-
+  // anchored scroll math is never clipped by a stale bound mid-gesture.
   useEffect(() => {
     const visibleBeats = canvasWidth / (pixelsPerBeat || 40)
     setMaxScroll(Math.max(0, totalBeats - visibleBeats))
@@ -1790,13 +1930,12 @@ export default function TimelineView({
 
   // Wheel on canvas/ruler:
   //   Ctrl+wheel  = horizontal zoom (cursor-centered)
-  //   Ctrl+Alt+wheel = vertical zoom (cursor-centered)
+  //   Alt+wheel   = vertical zoom (cursor-centered)
   //   Shift+wheel = horizontal scroll
   //   plain wheel = vertical track scroll
   const handleWheel = useCallback((e) => {
-    if (e.ctrlKey && e.altKey) {
+    if (e.altKey) {
       e.preventDefault()
-      markUserScrolling()
       const sc = scrollContainerRef.current
       if (!sc || e.deltaY === 0) return
 
@@ -1820,47 +1959,80 @@ export default function TimelineView({
     }
     if (e.ctrlKey) {
       e.preventDefault()
-      markUserScrolling()
       const rect = canvasAreaRef.current?.getBoundingClientRect()
       if (!rect) return
-      const cursorBeat = pixelToBeat(
-        e.clientX - rect.left,
-        scrollOffsetRef.current,
-        pixelsPerBeatRef.current
-      )
-      zoomAtCursor(e.deltaY, cursorBeat, scrollOffsetRef, applyScroll)
+      const animator = viewAnimatorRef.current
+      const cursorPixelX = e.clientX - rect.left
+      // Anchor from the CURRENT (already-rendered) position, not the
+      // target — the user is reacting to what's on screen right now.
+      const cursorBeat = pixelToBeat(cursorPixelX, animator.getCurrent('scrollX'), animator.getCurrent('ppb'))
+      zoomAnchorRef.current = { beat: cursorBeat, pixelX: cursorPixelX }
+      const factor = e.deltaY > 0 ? 1 / ZOOM_FACTOR : ZOOM_FACTOR
+      // Compound from the TARGET — a burst of same-direction wheel notches
+      // should land N steps from where we're already heading, not stall at
+      // wherever the spring has caught up to so far.
+      const nextPpb = Math.max(MIN_PPB, Math.min(MAX_PPB, animator.getTarget('ppb') * factor))
+      animator.setTarget('ppb', nextPpb)
       return
     }
     if (e.shiftKey || e.deltaX !== 0) {
       e.preventDefault()
-      markUserScrolling()
+      // Auto Scroll owns horizontal position while it's actively following
+      // playback — resize (the ctrl+wheel branch above) still works.
+      if (isFollowLocked()) return
+      // Release a still-easing zoom's cursor anchor — otherwise onTick keeps
+      // re-imposing the anchor-computed scrollX every frame, fighting this
+      // scroll input frame-by-frame (reads as jitter/tug-of-war) for as long
+      // as the zoom is still in flight.
+      zoomAnchorRef.current = null
+      const animator = viewAnimatorRef.current
       const dy = e.shiftKey ? e.deltaY : 0
-      const delta = ((dy + e.deltaX) / (pixelsPerBeatRef.current || 40)) * 0.8
-      scrollBy(delta)
+      const delta = ((dy + e.deltaX) / (animator.getCurrent('ppb') || 40)) * 0.8
+      const nextScroll = Math.max(0, Math.min(maxScrollRef.current, animator.getTarget('scrollX') + delta))
+      animator.setTarget('scrollX', nextScroll)
       return
     }
-    // Plain wheel → vertical scroll on the canvas-scroll wrapper
+    // Plain wheel → vertical scroll on the canvas-scroll wrapper. Direct
+    // 1:1 write (like the native overflow-scroll on the header column),
+    // not an eased spring — a spring here reads as sluggish/decelerating
+    // deceleration compared to the header side, which just scrolls at
+    // native speed.
     const sc = scrollContainerRef.current
     if (sc && sc.scrollHeight > sc.clientHeight) {
       e.preventDefault()
-      sc.scrollTop += e.deltaY
+      const maxScrollTop = Math.max(0, sc.scrollHeight - sc.clientHeight)
+      const nextScrollTop = Math.max(0, Math.min(maxScrollTop, sc.scrollTop + e.deltaY))
+      sc.scrollTop = nextScrollTop
+      viewAnimatorRef.current?.setCurrent('scrollY', nextScrollTop)
     }
-  }, [trackHeight, zoomAtCursor, scrollOffsetRef, applyScroll, scrollBy, markUserScrolling])
+  }, [trackHeight, maxScrollRef, isFollowLocked])
 
   const handleMiddleMousePan = useCallback((deltaXPx, deltaYPx) => {
-    markUserScrolling()
+    const followLocked = isFollowLocked()
     const { deltaBeats, deltaScrollTop } = pixelsToViewportPan(
       deltaXPx,
       deltaYPx,
       pixelsPerBeatRef.current,
     )
-    if (deltaBeats !== 0) scrollBy(deltaBeats)
+    // Direct 1:1 drag, not eased — spring lag on an actively-held pan gesture
+    // would read as the view fighting the mouse. Sync the spring's own
+    // bookkeeping to match so a wheel gesture starting right after this pan
+    // ends eases from the real position instead of jumping to a stale one.
+    // Auto Scroll owns horizontal position while it's actively following
+    // playback — vertical (track list) panning below is unaffected.
+    if (!followLocked && deltaBeats !== 0) {
+      // Same anchor-release as the wheel-scroll branch: a still-easing zoom
+      // must not fight this drag frame-by-frame.
+      zoomAnchorRef.current = null
+      const clamped = scrollBy(deltaBeats)
+      viewAnimatorRef.current?.setCurrent('scrollX', clamped)
+    }
 
     const sc = scrollContainerRef.current
     if (!sc || deltaScrollTop === 0 || sc.scrollHeight <= sc.clientHeight) return
     const maxScrollTop = Math.max(0, sc.scrollHeight - sc.clientHeight)
     sc.scrollTop = Math.max(0, Math.min(maxScrollTop, sc.scrollTop + deltaScrollTop))
-  }, [markUserScrolling, scrollBy])
+  }, [scrollBy, isFollowLocked])
 
   // ── Track mutations ────────────────────────────────────────────────────────
 
@@ -1884,6 +2056,11 @@ export default function TimelineView({
       return result.selectedTrackIds
     })
   }, [visibleTracks])
+
+  const handleOpenTrackInMixer = useCallback((trackId) => {
+    setFocusedTrackId(trackId)
+    usePanelRegistry.getState().openPanel('mixer')
+  }, [setFocusedTrackId])
 
   const handleAddFolder = useCallback(async () => {
     const timeline = window.xleth?.timeline
@@ -2405,50 +2582,37 @@ export default function TimelineView({
     }
   }, [fetchClips])
 
-  const handleMoveClip = useCallback(async (clipId, newTrackId, newPositionTicks) => {
-    console.log(`[SelectTool] Moving clip ${clipId}: track=${newTrackId}, pos=${newPositionTicks}t`)
+  // moves: [{ clipId, trackId, positionTicks }, ...]
+  //
+  // One engine round trip and one undo entry for the whole selection. The
+  // canvas is repainted from local state immediately and reconciled against
+  // the engine afterwards, so a large drag lands instantly instead of waiting
+  // on N round trips (and N full clip refetches) to come back.
+  const handleMoveClips = useCallback(async (moves) => {
+    if (!Array.isArray(moves) || moves.length === 0) return
+    const byId = new Map(moves.map(m => [m.clipId, m]))
+    const optimistic = clipsRef.current.map(c => {
+      const m = byId.get(c.id)
+      return m ? { ...c, trackId: m.trackId, positionTicks: m.positionTicks } : c
+    })
+    setClips(optimistic)
+    clipsRef.current = optimistic
     try {
-      await window.xleth?.timeline?.moveClip(clipId, newTrackId, newPositionTicks)
-      await fetchClips()
+      await window.xleth?.timeline?.moveClipsBatch(moves)
     } catch (err) {
-      console.error(`[SelectTool] moveClip(${clipId}) failed:`, err)
+      console.error(`[SelectTool] moveClipsBatch(${moves.length}) failed:`, err)
     }
+    await fetchClips()
   }, [fetchClips])
 
+  // Alt+drag duplicate. One batched insert, one undo entry — this used to be
+  // an awaited addClip per placement.
   const handleDuplicateClips = useCallback(async (placements) => {
     if (!Array.isArray(placements) || placements.length === 0) return
     try {
-      const newIds = []
-      for (const { clip, trackId, positionTicks } of placements) {
-        const payload = {
-          trackId,
-          regionId: clip.regionId,
-          positionTicks,
-          durationTicks: clip.durationTicks,
-          regionOffsetTicks: clip.regionOffsetTicks ?? 0,
-          syllableIndex: clip.syllableIndex ?? -1,
-          velocity: clip.velocity ?? 1.0,
-          pitchOffset: clip.pitchOffset ?? 0,
-          pitchOffsetCents: clip.pitchOffsetCents ?? 0,
-          reversed: clip.reversed ?? false,
-          stretchRatio: clip.stretchRatio ?? 1.0,
-          stretchMethod: clip.stretchMethod ?? 0,
-          formantPreserve: clip.formantPreserve ?? false,
-          fadeInPercent: clip.fadeInPercent ?? 0,
-          fadeOutPercent: clip.fadeOutPercent ?? 0,
-          fadeInX1: clip.fadeInX1 ?? 0,
-          fadeInY1: clip.fadeInY1 ?? 0,
-          fadeInX2: clip.fadeInX2 ?? 1,
-          fadeInY2: clip.fadeInY2 ?? 1,
-          fadeOutX1: clip.fadeOutX1 ?? 0,
-          fadeOutY1: clip.fadeOutY1 ?? 0,
-          fadeOutX2: clip.fadeOutX2 ?? 1,
-          fadeOutY2: clip.fadeOutY2 ?? 1,
-          ...(clip.modulation ? { modulation: clip.modulation } : {}),
-        }
-        const newId = await window.xleth?.timeline?.addClip(payload)
-        if (newId != null) newIds.push(newId)
-      }
+      const payloads = placements.map(({ clip, trackId, positionTicks }) =>
+        clipPayloadFromSnapshot(clip, trackId, positionTicks))
+      const newIds = (await window.xleth?.timeline?.addClipsBatch(payloads)) ?? []
       await fetchClips()
       setSelectedClipIds(new Set(newIds))
     } catch (err) {
@@ -2472,6 +2636,13 @@ export default function TimelineView({
     console.log(`[SplitTool] Splitting clip ${clipId}: left=${leftDuration}t, right=${rightDuration}t`)
     try {
       const originalOffset = clip.regionOffsetTicks ?? 0
+      // regionOffsetTicks is SOURCE time, leftDuration is TIMELINE time: a
+      // stretched clip only consumes leftDuration / stretchRatio source ticks
+      // over its left half. Both halves keep the original stretchRatio — a split
+      // is a cut through already-stretched audio, not a re-stretch. Mirrors the
+      // engine splice path (timeline_spliceClipsAtPlayhead).
+      const leftSourceDuration = sourceTicksForTimelineTicks(
+        leftDuration, clip.stretchRatio ?? 1.0)
 
       await window.xleth?.timeline?.removeClip(clipId)
       await window.xleth?.timeline?.addClip({
@@ -2496,7 +2667,7 @@ export default function TimelineView({
       await window.xleth?.timeline?.addClip({
         trackId: clip.trackId, regionId: clip.regionId,
         positionTicks: clip.positionTicks + leftDuration, durationTicks: rightDuration,
-        regionOffsetTicks: originalOffset + leftDuration,
+        regionOffsetTicks: originalOffset + leftSourceDuration,
         syllableIndex: clip.syllableIndex ?? -1,
         velocity: clip.velocity ?? 1.0,
         pitchOffset: clip.pitchOffset ?? 0,
@@ -2512,7 +2683,7 @@ export default function TimelineView({
         fadeOutX1: clip.fadeOutX1 ?? 0,  fadeOutY1: clip.fadeOutY1 ?? 0,
         fadeOutX2: clip.fadeOutX2 ?? 1,  fadeOutY2: clip.fadeOutY2 ?? 1,
       })
-      lastSplitUndoCountRef.current = 3
+      compoundUndoCountRef.current = 3
       setSelectedClipIds(new Set())
       await fetchClips()
       console.log(`[SplitTool] Split complete`)
@@ -2557,35 +2728,47 @@ export default function TimelineView({
     }
   }, [])
 
-  const handleMovePatternBlock = useCallback(async (blockId, trackId, positionTicks) => {
-    console.log(`[SelectTool] Moving pattern block ${blockId}: track=${trackId}, pos=${positionTicks}t`)
+  // moves: [{ blockId, trackId, positionTicks }, ...]
+  //
+  // There is no movePatternBlocks RPC — blocks are cheap metadata with no
+  // render cache behind them — so this pipelines the per-block calls instead
+  // of awaiting them one after another, and fires a single change event.
+  const handleMovePatternBlocks = useCallback(async (moves) => {
+    if (!Array.isArray(moves) || moves.length === 0) return
+    const byId = new Map(moves.map(m => [m.blockId, m]))
+    setPatternBlocks(prev => prev.map(b => {
+      const m = byId.get(b.id)
+      return m ? { ...b, trackId: m.trackId, positionTicks: m.positionTicks } : b
+    }))
     try {
-      await window.xleth?.timeline?.movePatternBlock(blockId, trackId, positionTicks)
-      timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
+      await Promise.all(moves.map(m =>
+        window.xleth?.timeline?.movePatternBlock(m.blockId, m.trackId, m.positionTicks)
+      ))
     } catch (err) {
-      console.error('[SelectTool] movePatternBlock failed:', err)
+      console.error('[SelectTool] movePatternBlocks failed:', err)
     }
-  }, [])
+    await fetchPatternBlocks()
+    timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
+  }, [fetchPatternBlocks])
 
   const handleDuplicatePatternBlocks = useCallback(async (placements) => {
     if (!Array.isArray(placements) || placements.length === 0) return
     try {
-      const newIds = []
-      for (const { block, trackId, positionTicks } of placements) {
-        const blockId = await window.xleth?.timeline?.addPatternBlock({
+      // Pipelined, not serial: the adds are independent, so one round-trip
+      // latency covers the whole selection instead of N stacked round trips.
+      const created = await Promise.all(placements.map(({ block, trackId, positionTicks }) =>
+        window.xleth?.timeline?.addPatternBlock({
           trackId,
           patternId: block.patternId,
           positionTicks,
           durationTicks: block.durationTicks,
           offsetTicks: block.offsetTicks ?? 0,
-        })
-        if (blockId != null && blockId >= 0) {
-          newIds.push(blockId)
-          if (block.loopEnabled) {
-            await window.xleth?.timeline?.setPatternBlockLoop(blockId, true)
-          }
-        }
-      }
+        }).then(id => ({ id, loopEnabled: block.loopEnabled }))
+      ))
+      const newIds = created.filter(c => c.id != null && c.id >= 0).map(c => c.id)
+      await Promise.all(created
+        .filter(c => c.id != null && c.id >= 0 && c.loopEnabled)
+        .map(c => window.xleth?.timeline?.setPatternBlockLoop(c.id, true)))
       await fetchPatternBlocks()
       timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
       setSelectedBlockIds(new Set(newIds))
@@ -2692,12 +2875,25 @@ export default function TimelineView({
     console.log(`[Keyboard] Deleting ${clipIdList.length} clip(s), ${blockIdList.length} block(s)`)
     setSelectedClipIds(new Set())
     setSelectedBlockIds(new Set())
+    // Repaint from local state first — the engine round trip below no longer
+    // gates the canvas, so deleting a big selection feels instant.
+    if (clipIdList.length > 0) {
+      const doomed = new Set(clipIdList)
+      const remaining = clipsRef.current.filter(c => !doomed.has(c.id))
+      setClips(remaining)
+      clipsRef.current = remaining
+    }
+    if (blockIdList.length > 0) {
+      const doomed = new Set(blockIdList)
+      setPatternBlocks(prev => prev.filter(b => !doomed.has(b.id)))
+    }
+    // One undo entry for the whole clip selection — Ctrl+Z used to put back
+    // exactly one clip out of however many were deleted.
     await Promise.all([
-      ...clipIdList.map(id =>
-        xl.timeline.removeClip(id).catch(err =>
-          console.error(`[Keyboard] removeClip(${id}) failed:`, err)
-        )
-      ),
+      clipIdList.length > 0
+        ? xl.timeline.removeClipsBatch(clipIdList).catch(err =>
+            console.error(`[Keyboard] removeClipsBatch(${clipIdList.length}) failed:`, err))
+        : null,
       ...blockIdList.map(id =>
         xl.timeline.removePatternBlock(id).catch(err =>
           console.error(`[Keyboard] removePatternBlock(${id}) failed:`, err)
@@ -2705,9 +2901,12 @@ export default function TimelineView({
       ),
     ])
     if (clipIdList.length > 0) await fetchClips()
-    if (blockIdList.length > 0) timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
+    if (blockIdList.length > 0) {
+      await fetchPatternBlocks()
+      timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
+    }
     return true
-  }, [fetchClips, selectedBlockIds, selectedClipIds])
+  }, [fetchClips, fetchPatternBlocks, selectedBlockIds, selectedClipIds])
 
   useEffect(() => (
     registerEditorCommand('timeline', 'deleteSelected', deleteSelectedTimelineItems)
@@ -3029,29 +3228,36 @@ export default function TimelineView({
       if (e.key === 'z' && ctrl && !e.shiftKey) {
         e.preventDefault()
         e.stopPropagation()
-        if (lastSplitUndoCountRef.current > 0) {
-          const count = lastSplitUndoCountRef.current
-          lastSplitUndoCountRef.current = 0
-          for (let i = 0; i < count; i++) await window.xleth?.undo?.undo()
-          console.log(`[Keyboard] Undo (split batch ×${count})`)
-        } else {
-          await window.xleth?.undo?.undo()
-          console.log('[Keyboard] Undo')
-        }
+        // A compound edit (paste = overwrite + insert, split = 3) pushed more
+        // than one engine entry. Pop them together, and hand the same count to
+        // redo — popping N but replaying 1 would leave the timeline in the
+        // half-applied state between the two halves of the edit.
+        const count = Math.max(1, compoundUndoCountRef.current)
+        compoundUndoCountRef.current = 0
+        for (let i = 0; i < count; i++) await window.xleth?.undo?.undo()
+        compoundRedoCountRef.current = count
+        console.log(count > 1 ? `[Keyboard] Undo (compound edit ×${count})` : '[Keyboard] Undo')
         await fetchTracks()
         await fetchClips()
+        await fetchPatternBlocks()
         timelineEvents.dispatchEvent(new Event('timeline-track-layout-changed'))
+        timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
         return
       }
       if ((e.key === 'y' && ctrl) || (e.key === 'z' && ctrl && e.shiftKey)) {
         e.preventDefault()
         e.stopPropagation()
-        await window.xleth?.undo?.redo()
+        const count = Math.max(1, compoundRedoCountRef.current)
+        compoundRedoCountRef.current = 0
+        for (let i = 0; i < count; i++) await window.xleth?.undo?.redo()
+        // Re-arm undo so Ctrl+Z after Ctrl+Y is symmetric again.
+        compoundUndoCountRef.current = count
+        console.log(count > 1 ? `[Keyboard] Redo (compound edit ×${count})` : '[Keyboard] Redo')
         await fetchTracks()
         await fetchClips()
+        await fetchPatternBlocks()
         timelineEvents.dispatchEvent(new Event('timeline-track-layout-changed'))
-        lastSplitUndoCountRef.current = 0
-        console.log('[Keyboard] Redo')
+        timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
         return
       }
 
@@ -3072,297 +3278,183 @@ export default function TimelineView({
         return
       }
 
-      // ── Copy clips + pattern blocks (Ctrl+C) — supports multi-selection ──
-      if (e.key === 'c' && ctrl) {
+      // ── Cut / Copy clips + pattern blocks (Ctrl+X / Ctrl+C) ──────────
+      if ((e.key === 'c' || e.key === 'x') && ctrl) {
         e.preventDefault()
         e.stopPropagation()
 
-        // Build both payloads before replacing the clipboard. Mixed clip/block
-        // selections are valid, and paste already supports replaying both.
-        let copiedClips = null
-        let copiedPatternBlocks = null
+        const next = buildTimelineClipboard({
+          clips: clipsRef.current.filter(c => selectedClipIds.has(c.id)),
+          patternBlocks: patternBlocks.filter(b => selectedBlockIds.has(b.id)),
+          tracks: visibleTracks,
+        })
+        if (!next.clips && !next.patternBlocks) return
 
-        if (selectedClipIds.size > 0) {
-          const selectedClips = clipsRef.current
-            .filter(c => selectedClipIds.has(c.id))
-            .sort((a, b) => a.positionTicks - b.positionTicks)
-          if (selectedClips.length > 0) {
-            const basePosition = selectedClips[0].positionTicks
-            copiedClips = selectedClips.map(clip => ({
-              regionId: clip.regionId,
-              trackId: clip.trackId,
-              sourceTrackType: 'Clip',
-              durationTicks: clip.durationTicks,
-              regionOffsetTicks: clip.regionOffsetTicks ?? 0,
-              velocity: clip.velocity ?? 1.0,
-              pitchOffset: clip.pitchOffset ?? 0,
-              syllableIndex: clip.syllableIndex ?? -1,
-              relativePosition: clip.positionTicks - basePosition,
-              // Non-fade playback modifiers (defaults match engine Clip struct)
-              pitchOffsetCents: clip.pitchOffsetCents ?? 0,
-              reversed: clip.reversed ?? false,
-              stretchRatio: clip.stretchRatio ?? 1.0,
-              stretchMethod: clip.stretchMethod ?? 0,   // 0 == StretchMethod::Global
-              formantPreserve: clip.formantPreserve ?? false,
-              // Fade envelope (percent + cubic-bezier control points)
-              fadeInPercent:  clip.fadeInPercent  ?? 0,
-              fadeOutPercent: clip.fadeOutPercent ?? 0,
-              fadeInX1:  clip.fadeInX1  ?? 0,
-              fadeInY1:  clip.fadeInY1  ?? 0,
-              fadeInX2:  clip.fadeInX2  ?? 1,
-              fadeInY2:  clip.fadeInY2  ?? 1,
-              fadeOutX1: clip.fadeOutX1 ?? 0,
-              fadeOutY1: clip.fadeOutY1 ?? 0,
-              fadeOutX2: clip.fadeOutX2 ?? 1,
-              fadeOutY2: clip.fadeOutY2 ?? 1,
-              // Clip modulation (Vibrato / Scratch / Video Swirl+Scratch) — carry
-              // the full object so paste preserves Swirl/Scratch data.
-              modulation: clip.modulation ?? null,
-            }))
-            console.log(`[Keyboard] Copied ${selectedClips.length} clip(s)`)
-            console.log('[ClipCopy] source clips (raw React state) =',
-              JSON.stringify(selectedClips, null, 2))
-            console.log('[ClipCopy] clipboard payload =',
-              JSON.stringify(copiedClips, null, 2))
-          }
+        clipboardRef.current = next
+        const nClips = next.clips?.length ?? 0
+        const nBlocks = next.patternBlocks?.length ?? 0
+        if (e.key === 'x') {
+          await deleteSelectedTimelineItems()
+          console.log(`[Keyboard] Cut ${nClips} clip(s), ${nBlocks} pattern block(s)`)
+        } else {
+          console.log(`[Keyboard] Copied ${nClips} clip(s), ${nBlocks} pattern block(s)`)
         }
-        if (selectedBlockIds.size > 0) {
-          const selectedBlocks = patternBlocks
-            .filter(b => selectedBlockIds.has(b.id))
-            .sort((a, b) => a.positionTicks - b.positionTicks)
-          if (selectedBlocks.length > 0) {
-            const basePosition = selectedBlocks[0].positionTicks
-            copiedPatternBlocks = selectedBlocks.map(block => {
-              const pattern = patterns[block.patternId]
-              const srcRegionId = pattern?.regionId ?? -1
-              const srcRegion = regions[srcRegionId]
-              return {
-                patternId: block.patternId,
-                srcRegionId,
-                srcRootNote: srcRegion?.rootNote ?? 60,
-                trackId: block.trackId,
-                sourceTrackType: 'Pattern',
-                durationTicks: block.durationTicks,
-                offsetTicks: block.offsetTicks ?? 0,
-                loopEnabled: block.loopEnabled ?? false,
-                relativePosition: block.positionTicks - basePosition,
-              }
-            })
-            console.log(`[Keyboard] Copied ${selectedBlocks.length} pattern block(s)`)
-          }
-        }
-
-        const nextClipboard = normalizeTimelineClipboardPayloads(copiedClips, copiedPatternBlocks)
-        clipboardRef.current = nextClipboard.clips
-        patternBlockClipboardRef.current = nextClipboard.patternBlocks
         return
       }
 
       // ── Paste clips + pattern blocks at edit cursor (Ctrl+V) ─────────
+      //
+      // The group is rigid: it lands at (edit cursor, focused track) with every
+      // internal tick and track offset preserved, and OVERWRITES whatever it
+      // covers. The clip half is a single atomic pasteClipsBatch, so a 200-clip
+      // paste is ONE round trip and ONE undo entry instead of 200 of each.
       if (e.key === 'v' && ctrl) {
         e.preventDefault()
         e.stopPropagation()
 
-        // Aggregated skip reasons — surfaced as a single toast at end of paste.
-        // 'typeMismatchClip'   = clip's original track is no longer a Clip track
-        // 'typeMismatchBlock'  = pattern block's original track is no longer a Pattern track
-        // 'overflow'           = the original track no longer exists
-        const skipped = { typeMismatchClip: 0, typeMismatchBlock: 0, overflow: 0 }
-
         const cb = clipboardRef.current
-        if (cb && Array.isArray(cb) && cb.length > 0) {
-          // Read the edit cursor exactly — it may be off-grid after playback or
-          // free seeking, and paste should not quantize it back to 1/16.
-          const baseBeat = Math.max(0, editCursor.getPosition())
-          const baseTicks = beatsToTicks(baseBeat)
+        if (!cb || (!cb.clips && !cb.patternBlocks)) return
 
-          // Predict end position from clipboard geometry (pure math, no I/O)
-          let predictedEndTicks = baseTicks
-          for (const item of cb) {
-            const end = baseTicks + item.relativePosition + item.durationTicks
-            if (end > predictedEndTicks) predictedEndTicks = end
-          }
+        // Read the edit cursor exactly — it may be off-grid after playback or
+        // free seeking, and paste should not quantize it back to 1/16.
+        const baseTicks = beatsToTicks(Math.max(0, editCursor.getPosition()))
+        const focusIdx = visibleTracks.findIndex(t => t.id === focusedTrackIdRef.current)
 
-          // Advance edit cursor IMMEDIATELY — spamming Ctrl+V reads fresh values
-          const predictedEndBeat = predictedEndTicks / PPQ
-          handleSeek(predictedEndBeat)
+        const { clipPlacements, blockPlacements, skipped } = resolveTimelinePaste({
+          clipboard: cb,
+          baseTicks,
+          targetTrackIndex: focusIdx >= 0 ? focusIdx : cb.anchorTrackIndex,
+          tracks: visibleTracks,
+        })
 
-          // Each clip always pastes back onto its own source track, regardless
-          // of which track is currently focused/selected — the clip's original
-          // trackId is the destination. Move it manually afterward if needed.
-          try {
-            const newIds = []
-            const virtualClips = [...clipsRef.current]  // includes in-batch placements
-            let pasteIdx = 0
-            for (const item of cb) {
-              const trackId = item.trackId
-              const destTrack = tracks.find(t => t.id === trackId)
-              if (!destTrack) { skipped.overflow++; continue }
-              const expectedType = item.sourceTrackType ?? 'Clip'
-              if (destTrack.type !== expectedType) {
-                skipped.typeMismatchClip++
-                console.warn(`[Keyboard] Clip paste rejected: track ${trackId} is ${destTrack.type}, expected ${expectedType}`)
-                continue
-              }
-              const proposedTicks = baseTicks + item.relativePosition
-              const safeTicks = findFreePosition(trackId, proposedTicks, item.durationTicks, virtualClips)
-              const payload = {
-                trackId,
-                regionId: item.regionId,
-                positionTicks: safeTicks,
-                durationTicks: item.durationTicks,
-                regionOffsetTicks: item.regionOffsetTicks,
-                syllableIndex: item.syllableIndex,
-                velocity: item.velocity,
-                pitchOffset: item.pitchOffset,
-                // Carry all playback modifiers from the clipboard snapshot
-                pitchOffsetCents: item.pitchOffsetCents,
-                reversed: item.reversed,
-                stretchRatio: item.stretchRatio,
-                stretchMethod: item.stretchMethod,
-                formantPreserve: item.formantPreserve,
-                fadeInPercent:  item.fadeInPercent,
-                fadeOutPercent: item.fadeOutPercent,
-                fadeInX1:  item.fadeInX1,  fadeInY1:  item.fadeInY1,
-                fadeInX2:  item.fadeInX2,  fadeInY2:  item.fadeInY2,
-                fadeOutX1: item.fadeOutX1, fadeOutY1: item.fadeOutY1,
-                fadeOutX2: item.fadeOutX2, fadeOutY2: item.fadeOutY2,
-                // Restore Vibrato / Scratch / Video Swirl+Scratch from the snapshot
-                ...(item.modulation ? { modulation: item.modulation } : {}),
-              }
-              console.log('[ClipPaste] payload for clip', pasteIdx++, '=',
-                JSON.stringify(payload, null, 2))
-              const newId = await window.xleth?.timeline?.addClip(payload)
-              if (newId != null) {
-                newIds.push(newId)
-                virtualClips.push({ trackId, positionTicks: safeTicks, durationTicks: item.durationTicks })
-              }
-            }
+        // Advance the edit cursor IMMEDIATELY so held/spammed Ctrl+V stacks
+        // forward instead of re-pasting onto the same spot.
+        const endTicks = placementsEndTick(baseTicks, clipPlacements, blockPlacements)
+        handleSeek(endTicks / PPQ)
+
+        const xl = window.xleth?.timeline
+        let undoSteps = 0
+        try {
+          const doomedClips = itemsCoveredByPlacements(clipsRef.current, clipPlacements)
+          const doomedBlocks = itemsCoveredByPlacements(patternBlocks, blockPlacements)
+
+          // ── Clips: overwrite + insert, atomically ───────────────────────
+          if (clipPlacements.length > 0 || doomedClips.length > 0) {
+            const payloads = clipPlacements.map(p =>
+              clipPayloadFromSnapshot(p.item, p.trackId, p.positionTicks))
+            const res = await xl?.pasteClipsBatch({
+              removeClipIds: doomedClips,
+              clips: payloads,
+            })
+            undoSteps++
             await fetchClips()
-            setSelectedClipIds(new Set(newIds))
-            console.log(`[Keyboard] Pasted ${newIds.length}/${cb.length} clip(s) at edit cursor (${baseTicks}t), cursor → ${predictedEndTicks}t`)
-          } catch (err) {
-            console.error('[Keyboard] Paste failed:', err)
+            setSelectedClipIds(new Set(res?.newIds ?? []))
           }
-        }
 
-        // ── Paste pattern blocks at edit cursor (Ctrl+V) ───────────────
-        const pbcb = patternBlockClipboardRef.current
-        if (pbcb && Array.isArray(pbcb) && pbcb.length > 0) {
-          const baseBeat = Math.max(0, editCursor.getPosition())
-          const baseTicks = beatsToTicks(baseBeat)
-
-          // Predict end position & advance cursor immediately (same pattern as clip paste)
-          let predictedEndTicks = baseTicks
-          for (const item of pbcb) {
-            const end = baseTicks + item.relativePosition + item.durationTicks
-            if (end > predictedEndTicks) predictedEndTicks = end
+          // Pattern blocks have no batch RPC — they are cheap metadata with no
+          // render cache behind them — so they still contribute one undo entry
+          // each, which compoundUndoCountRef accounts for.
+          if (doomedBlocks.length > 0) {
+            await Promise.all(doomedBlocks.map(id => xl?.removePatternBlock(id)))
+            undoSteps += doomedBlocks.length
           }
-          const predictedEndBeat = predictedEndTicks / PPQ
-          handleSeek(predictedEndBeat)
-
-          // Each block always pastes back onto its own source track, regardless
-          // of which track is currently focused/selected — the block's original
-          // trackId is the destination. Move it manually afterward if needed.
-          try {
-            const newIds = []
-            for (const item of pbcb) {
-              const destTrackId = item.trackId
-              const destTrack = tracks.find(t => t.id === destTrackId)
-              if (!destTrack) { skipped.overflow++; continue }
-              const expectedType = item.sourceTrackType ?? 'Pattern'
-              if (destTrack.type !== expectedType) {
-                skipped.typeMismatchBlock++
-                console.warn(`[Keyboard] Pattern block paste rejected: track ${destTrackId} is ${destTrack.type}, expected ${expectedType}`)
-                continue
-              }
-
-              // Pattern tracks are sample-agnostic — paste the pattern verbatim.
-              const blockId = await window.xleth?.timeline?.addPatternBlock({
-                trackId: destTrackId,
-                patternId: item.patternId,
-                positionTicks: baseTicks + item.relativePosition,
-                durationTicks: item.durationTicks,
-                offsetTicks: item.offsetTicks,
+          if (blockPlacements.length > 0) {
+            const newBlockIds = []
+            for (const p of blockPlacements) {
+              const id = await xl?.addPatternBlock({
+                trackId: p.trackId,
+                patternId: p.item.patternId,
+                positionTicks: p.positionTicks,
+                durationTicks: p.item.durationTicks,
+                offsetTicks: p.item.offsetTicks,
               })
-              if (blockId != null && blockId >= 0) newIds.push(blockId)
+              if (id != null && id >= 0) {
+                newBlockIds.push(id)
+                undoSteps++
+                if (p.item.loopEnabled) await xl?.setPatternBlockLoop(id, true)
+              }
             }
             await fetchPatternBlocks()
             timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
-            setSelectedBlockIds(new Set(newIds))
-            console.log(`[Keyboard] Pasted ${newIds.length}/${pbcb.length} pattern block(s) at ${baseTicks}t, cursor → ${predictedEndTicks}t`)
-          } catch (err) {
-            console.error('[Keyboard] Pattern block paste failed:', err)
+            setSelectedBlockIds(new Set(newBlockIds))
           }
+          console.log(`[Keyboard] Pasted ${clipPlacements.length} clip(s) + `
+            + `${blockPlacements.length} block(s) at ${baseTicks}t `
+            + `(overwrote ${doomedClips.length + doomedBlocks.length}), cursor → ${endTicks}t`)
+        } catch (err) {
+          console.error('[Keyboard] Paste failed:', err)
         }
+        // Ctrl+Z must undo the paste whole, not peel off the insert and leave
+        // the overwritten items deleted.
+        compoundUndoCountRef.current = undoSteps
 
-        // ── Aggregate skip reasons into a single toast (suppress on clean paste) ──
         const messages = []
         if (skipped.typeMismatchClip > 0) {
           const n = skipped.typeMismatchClip
-          messages.push(`${n} clip${n === 1 ? '' : 's'} skipped — original track is no longer a Clip track`)
+          messages.push(`${n} clip${n === 1 ? '' : 's'} skipped — no Clip track at that offset`)
         }
         if (skipped.typeMismatchBlock > 0) {
           const n = skipped.typeMismatchBlock
-          messages.push(`${n} pattern block${n === 1 ? '' : 's'} skipped — original track is no longer a Pattern track`)
-        }
-        if (skipped.overflow > 0) {
-          const n = skipped.overflow
-          messages.push(`${n} item${n === 1 ? '' : 's'} skipped — original track no longer exists`)
+          messages.push(`${n} pattern block${n === 1 ? '' : 's'} skipped — no Pattern track at that offset`)
         }
         if (messages.length > 0) showToast(messages.join(' · '), 'info')
         return
       }
 
-      // ── Duplicate clip after source (Ctrl+D) ─────────────────────────
+      // ── Duplicate selection after itself (Ctrl+D) ────────────────────
+      //
+      // Duplicates the WHOLE selection, shifted right by the selection's own
+      // span, so a copied phrase repeats seamlessly. It used to duplicate only
+      // the first selected clip and slide it to the nearest free slot.
       if (e.key === 'd' && ctrl) {
         e.preventDefault()
         e.stopPropagation()
-        if (selectedClipIds.size >= 1) {
-          const clipId = [...selectedClipIds][0]
-          const clip = clipsRef.current.find(c => c.id === clipId)
-          if (clip) {
-            const proposedTicks = clip.positionTicks + clip.durationTicks
-            const newPositionTicks = findFreePosition(clip.trackId, proposedTicks, clip.durationTicks, clipsRef.current)
-            try {
-              const payload = {
-                trackId: clip.trackId,
-                regionId: clip.regionId,
-                positionTicks: newPositionTicks,
-                durationTicks: clip.durationTicks,
-                regionOffsetTicks: clip.regionOffsetTicks ?? 0,
-                syllableIndex: clip.syllableIndex ?? -1,
-                velocity: clip.velocity ?? 1.0,
-                pitchOffset: clip.pitchOffset ?? 0,
-                pitchOffsetCents: clip.pitchOffsetCents ?? 0,
-                reversed: clip.reversed ?? false,
-                stretchRatio: clip.stretchRatio ?? 1.0,
-                stretchMethod: clip.stretchMethod ?? 0,
-                formantPreserve: clip.formantPreserve ?? false,
-                fadeInPercent:  clip.fadeInPercent  ?? 0,
-                fadeOutPercent: clip.fadeOutPercent ?? 0,
-                fadeInX1:  clip.fadeInX1  ?? 0,  fadeInY1:  clip.fadeInY1  ?? 0,
-                fadeInX2:  clip.fadeInX2  ?? 1,  fadeInY2:  clip.fadeInY2  ?? 1,
-                fadeOutX1: clip.fadeOutX1 ?? 0,  fadeOutY1: clip.fadeOutY1 ?? 0,
-                fadeOutX2: clip.fadeOutX2 ?? 1,  fadeOutY2: clip.fadeOutY2 ?? 1,
-                // Carry Vibrato / Scratch / Video Swirl+Scratch so Ctrl+D keeps them
-                ...(clip.modulation ? { modulation: clip.modulation } : {}),
-              }
-              console.log('[ClipDuplicate] source clip (raw React state) =',
-                JSON.stringify(clip, null, 2))
-              console.log('[ClipDuplicate] payload =',
-                JSON.stringify(payload, null, 2))
-              const newId = await window.xleth?.timeline?.addClip(payload)
-              await fetchClips()
-              if (newId != null) setSelectedClipIds(new Set([newId]))
-              // Advance playhead + editCursor to end of duplicated clip
-              const dupEndBeat = (newPositionTicks + clip.durationTicks) / PPQ
-              handleSeek(dupEndBeat)
-              console.log(`[Keyboard] Duplicated clip ${clipId} → ${newPositionTicks}t, playhead → ${newPositionTicks + clip.durationTicks}t`)
-            } catch (err) {
-              console.error('[Keyboard] Duplicate failed:', err)
-            }
+        const srcClips = clipsRef.current.filter(c => selectedClipIds.has(c.id))
+        const srcBlocks = patternBlocks.filter(b => selectedBlockIds.has(b.id))
+        if (srcClips.length === 0 && srcBlocks.length === 0) return
+
+        const all = [...srcClips, ...srcBlocks]
+        const spanStart = Math.min(...all.map(i => i.positionTicks))
+        const spanEnd = Math.max(...all.map(i => i.positionTicks + i.durationTicks))
+        const shift = spanEnd - spanStart
+        const xl = window.xleth?.timeline
+
+        try {
+          let steps = 0
+          if (srcClips.length > 0) {
+            const payloads = srcClips.map(c =>
+              clipPayloadFromSnapshot(c, c.trackId, c.positionTicks + shift))
+            const newIds = (await xl?.addClipsBatch(payloads)) ?? []
+            steps++
+            await fetchClips()
+            setSelectedClipIds(new Set(newIds))
           }
+          if (srcBlocks.length > 0) {
+            const newBlockIds = []
+            for (const b of srcBlocks) {
+              const id = await xl?.addPatternBlock({
+                trackId: b.trackId,
+                patternId: b.patternId,
+                positionTicks: b.positionTicks + shift,
+                durationTicks: b.durationTicks,
+                offsetTicks: b.offsetTicks ?? 0,
+              })
+              if (id != null && id >= 0) {
+                newBlockIds.push(id)
+                steps++
+                if (b.loopEnabled) await xl?.setPatternBlockLoop(id, true)
+              }
+            }
+            await fetchPatternBlocks()
+            timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
+            setSelectedBlockIds(new Set(newBlockIds))
+          }
+          compoundUndoCountRef.current = steps
+          handleSeek((spanEnd + shift) / PPQ)
+          console.log(`[Keyboard] Duplicated ${srcClips.length} clip(s) + `
+            + `${srcBlocks.length} block(s) by ${shift}t`)
+        } catch (err) {
+          console.error('[Keyboard] Duplicate failed:', err)
         }
         return
       }
@@ -3397,7 +3489,14 @@ export default function TimelineView({
         e.stopPropagation()
         const direction = (e.key === '+' || e.key === '=') ? 1 : -1
         const ids = [...selectedClipIds]
-        if (ctrl) {
+        if (e.shiftKey) {
+          // Shift +/- = ±12 semitones (one octave)
+          await Promise.all(ids.map(id =>
+            window.xleth?.timeline?.pitchShiftClip(id, direction * 12, 0)
+              .catch(err => console.error(`[Keyboard] pitchShiftClip(${id}) failed:`, err))
+          ))
+          console.log(`[Keyboard] Pitch ${direction > 0 ? '+' : '-'}12 semitones (1 octave) on ${ids.length} clip(s)`)
+        } else if (ctrl) {
           // Ctrl +/- = ±1 cent
           await Promise.all(ids.map(id =>
             window.xleth?.timeline?.pitchShiftClip(id, 0, direction)
@@ -4195,10 +4294,9 @@ export default function TimelineView({
               onRemoveFolder={handleRemoveFolder}
               editingFolderId={editingFolderId}
               onFinishFolderEdit={(folderId) => setEditingFolderId(folderId ?? null)}
-              patterns={patterns}
-              currentPatternIdByTrack={currentPatternIdByTrack}
               focusedTrackId={focusedTrackId}
               onFocusTrack={setFocusedTrackId}
+              onOpenInMixer={handleOpenTrackInMixer}
               onAddTrack={handleAddTrack}
               onMute={handleMute}
               onSolo={handleSolo}
@@ -4233,12 +4331,13 @@ export default function TimelineView({
                 onWheel={handleWheel}
               />
               {/* Vegas-style loop/render region overlay — sits over the ruler.
-                  Repositions on zoom/scroll via the pixelsPerBeat/scrollOffset
-                  React state (the canvas uses refs separately for 60fps). */}
+                  Repositions on zoom/scroll off the same refs the ruler canvas
+                  draws with, pushed per frame by commitViewportRedraw. */}
               <div className="loop-region-overlay" style={{ height: RULER_HEIGHT }}>
                 <LoopRegionBar
-                  pixelsPerBeat={pixelsPerBeat}
-                  scrollOffset={scrollOffset}
+                  ref={loopRegionBarRef}
+                  pixelsPerBeatRef={pixelsPerBeatRef}
+                  scrollOffsetRef={scrollOffsetRef}
                   snapGranularity={snapGranularity}
                   rulerHeight={RULER_HEIGHT}
                 />
@@ -4252,6 +4351,12 @@ export default function TimelineView({
                   if (headerScroll && headerScroll.scrollTop !== e.currentTarget.scrollTop) {
                     headerScroll.scrollTop = e.currentTarget.scrollTop
                   }
+                  // Catch-all: whatever moved scrollTop (wheel-driven spring,
+                  // the middle-mouse-pan direct write, row-height zoom's
+                  // reposition, or a native scrollbar drag), keep the
+                  // scrollY spring's bookkeeping honest so the next
+                  // wheel-driven animation eases from the real position.
+                  viewAnimatorRef.current?.setCurrent('scrollY', e.currentTarget.scrollTop)
                 }}
               >
                 <TimelineCanvas
@@ -4277,7 +4382,7 @@ export default function TimelineView({
                   snapGranularity={snapGranularity}
                   onCreateClip={handleCreateClip}
                   onDeleteClip={handleDeleteClip}
-                  onMoveClip={handleMoveClip}
+                  onMoveClips={handleMoveClips}
                   onDuplicateClips={handleDuplicateClips}
                   onResizeClip={handleResizeClip}
                   onResizeClipLeft={handleResizeClipLeft}
@@ -4320,7 +4425,7 @@ export default function TimelineView({
                   setSelectedBlockIds={setSelectedBlockIds}
                   currentPatternIdByTrack={currentPatternIdByTrack}
                   onCreatePatternBlock={handleCreatePatternBlock}
-                  onMovePatternBlock={handleMovePatternBlock}
+                  onMovePatternBlocks={handleMovePatternBlocks}
                   onDuplicatePatternBlocks={handleDuplicatePatternBlocks}
                   onResizePatternBlock={handleResizePatternBlock}
                   onResizePatternBlockLeft={handleResizePatternBlockLeft}
@@ -4338,14 +4443,40 @@ export default function TimelineView({
                   scrollOffset={scrollOffset}
                   snapGranularity={snapGranularity}
                 />
+                {/* Matches the header column's trailing "Add Track" row +
+                    drop zone (6px) — without this the two panels' scrollable
+                    content heights diverge and drift out of sync while
+                    scrolling to the bottom. */}
+                <div className="timeline-canvas-footer-spacer" style={{ height: ADD_TRACK_ROW_HEIGHT + 6 }} />
               </div>
               <TimelineScrollbar
+                ref={scrollbarRef}
                 scrollOffsetRef={scrollOffsetRef}
                 pixelsPerBeatRef={pixelsPerBeatRef}
                 totalBeats={totalBeats}
                 canvasWidth={canvasWidth}
-                onScroll={(delta) => { markUserScrolling(); scrollBy(delta) }}
-                onScrollTo={(beat) => { markUserScrolling(); scrollTo(beat) }}
+                onScroll={(delta) => {
+                  // Wheel-over-scrollbar — same discrete-notch treatment as
+                  // the main canvas's shift+wheel branch. Release a
+                  // still-easing zoom's anchor first (see that branch).
+                  // Auto Scroll owns horizontal position while following.
+                  if (isFollowLocked()) return
+                  zoomAnchorRef.current = null
+                  const animator = viewAnimatorRef.current
+                  const nextScroll = Math.max(0, Math.min(maxScrollRef.current, animator.getTarget('scrollX') + delta))
+                  animator.setTarget('scrollX', nextScroll)
+                }}
+                onScrollTo={(beat) => {
+                  // Thumb drag + click-to-page — direct 1:1, not eased (a
+                  // dragged thumb must track the cursor exactly); sync the
+                  // spring so the next wheel gesture doesn't jump. Also
+                  // releases a still-easing zoom's anchor (see above).
+                  // Auto Scroll owns horizontal position while following.
+                  if (isFollowLocked()) return
+                  zoomAnchorRef.current = null
+                  const clamped = scrollTo(beat)
+                  viewAnimatorRef.current?.setCurrent('scrollX', clamped)
+                }}
                 scrollOffset={scrollOffset}
                 pixelsPerBeat={pixelsPerBeat}
               />

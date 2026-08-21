@@ -36,6 +36,7 @@
 #include "midi/MidiImporter.h"
 #include "model/Timeline.h"
 #include "model/TimelineTypes.h"
+#include "model/Track.h"
 #include "model/ClipSourceAnchor.h"
 #include "audio/TrackRouting.h"
 #include "util/StartLatencyTrace.h"  // TEMP/DIAGNOSTIC — start-latency probe
@@ -45,6 +46,8 @@
 #include "commands/QuantizeClipsBatchCommand.h"
 #include "commands/AddNotesBatchCommand.h"
 #include "commands/AddClipsBatchCommand.h"
+#include "commands/ClipBatchCommands.h"
+#include "commands/EffectChainCommands.h"
 #include "import/FscScoreParser.h"
 #include "project/ProjectManager.h"
 #include "project/ProxyManager.h"
@@ -204,19 +207,48 @@ struct ClipControlEditSession {
     float initialFadeOutPercent = 0.0f;
 };
 
-std::unique_ptr<ClipControlEditSession> g_clipControlEdit;
+// Concurrent sessions, keyed by sessionId. A multi-clip volume/fade drag opens
+// one session per selected clip and commits them independently, so a single
+// global session would have each `begin` roll back and discard the previous
+// one — leaving every clip but the last with a stale id that can never commit.
+// At most one session per clip; renderer messages are ordered, and the
+// monotonically increasing id still rejects late previews after commit/cancel.
+std::map<uint32_t, ClipControlEditSession> g_clipControlEdits;
 uint32_t g_nextClipControlEditSessionId = 1;
 
+// Roll one session's clip back to the values captured when it opened.
+static void restoreClipControlEditSession(const ClipControlEditSession& edit)
+{
+    if (!g_timeline) return;
+    if (Clip* clip = g_timeline->getClipMutable(edit.clipId)) {
+        clip->velocity = edit.initialVelocity;
+        clip->fadeInPercent = edit.initialFadeInPercent;
+        clip->fadeOutPercent = edit.initialFadeOutPercent;
+    }
+}
+
+// Abandon EVERY in-flight session, restoring each clip. Used by the paths that
+// invalidate the whole timeline underneath a drag (project load, undo/redo,
+// clip removal), where no session can still be meaningful.
 static void restoreAndClearClipControlEdit()
 {
-    if (g_clipControlEdit && g_timeline) {
-        if (Clip* clip = g_timeline->getClipMutable(g_clipControlEdit->clipId)) {
-            clip->velocity = g_clipControlEdit->initialVelocity;
-            clip->fadeInPercent = g_clipControlEdit->initialFadeInPercent;
-            clip->fadeOutPercent = g_clipControlEdit->initialFadeOutPercent;
+    for (const auto& [sessionId, edit] : g_clipControlEdits)
+        restoreClipControlEditSession(edit);
+    g_clipControlEdits.clear();
+}
+
+// Abandon just the sessions targeting `clipId`. Keeps re-grabbing one clip
+// mid-drag behaving exactly as it did when only one session could exist.
+static void restoreAndClearClipControlEditsForClip(int clipId)
+{
+    for (auto it = g_clipControlEdits.begin(); it != g_clipControlEdits.end(); ) {
+        if (it->second.clipId == clipId) {
+            restoreClipControlEditSession(it->second);
+            it = g_clipControlEdits.erase(it);
+        } else {
+            ++it;
         }
     }
-    g_clipControlEdit.reset();
 }
 
 // Phase 1B — FrameServer (fast frame extraction for SamplePicker)
@@ -2676,6 +2708,15 @@ static JsonApi::Object trackToJs(JsonApi::Env env, const TrackInfo& t) {
         z.Set("panEasing",      JsonApi::Number::New(env, zpr.panEasing));
         z.Set("rotEasing",      JsonApi::Number::New(env, zpr.rotEasing));
         z.Set("overshoot",      JsonApi::Number::New(env, zpr.overshoot));
+        z.Set("lengthMode",           JsonApi::Number::New(env, static_cast<int>(zpr.lengthMode)));
+        z.Set("musicalDivision",      JsonApi::Number::New(env, zpr.musicalDivision));
+        z.Set("notePercentage",       JsonApi::Number::New(env, zpr.notePercentage));
+        z.Set("onEndMode",            JsonApi::Number::New(env, static_cast<int>(zpr.onEndMode)));
+        z.Set("retriggerMode",        JsonApi::Number::New(env, static_cast<int>(zpr.retriggerMode)));
+        z.Set("retriggerCrossfadeMs", JsonApi::Number::New(env, zpr.retriggerCrossfadeMs));
+        z.Set("presetName",           JsonApi::String::New(env, zpr.presetName));
+        z.Set("tracksAuthored",       JsonApi::Boolean::New(env, zpr.tracks.authored));
+        z.Set("tracks",               opaqueJsonToValue(env, zprTracksToJson(zpr.tracks)));
         o.Set("zoomPanRot", z);
     }
     {
@@ -2724,6 +2765,12 @@ static JsonApi::Object trackToJs(JsonApi::Env env, const TrackInfo& t) {
         sz.Set("panEasing",      JsonApi::Number::New(env, sl.zoomPanRot.panEasing));
         sz.Set("rotEasing",      JsonApi::Number::New(env, sl.zoomPanRot.rotEasing));
         sz.Set("overshoot",      JsonApi::Number::New(env, sl.zoomPanRot.overshoot));
+        // The slide ZPR is edited by the same keyframe editor as the track-level
+        // one, so its curves have to make the round trip too — the editor reads
+        // them from here and writes them straight back through
+        // setTrackSlideNoteEffect.
+        sz.Set("tracksAuthored", JsonApi::Boolean::New(env, sl.zoomPanRot.tracks.authored));
+        sz.Set("tracks",         opaqueJsonToValue(env, zprTracksToJson(sl.zoomPanRot.tracks)));
         s.Set("zoomPanRot", sz);
 
         JsonApi::Object stv = JsonApi::Object::New(env);
@@ -3644,7 +3691,9 @@ static void videoThreadBody()
 {
     bool blackWritten = false;
     // [PreviewUnify] Wall-clock delta for animation advance
-    auto lastTickTime = std::chrono::steady_clock::now();
+    // NOTE: animation timing no longer reads steady_clock — CellAnimation runs
+    // off the audio-master transport position so live preview and offline
+    // export cannot drift. See the advanceTo() call in the compositor path.
 
     // Frame-pacing deadline: tracks the wall-clock time the NEXT tick should
     // begin. Initialized here and advanced by one frame period each iteration
@@ -3796,17 +3845,6 @@ static void videoThreadBody()
                     GridLayout layout = g_timeline
                         ? g_timeline->getGridLayout() : GridLayout{};
 
-                    // Wall-clock delta for animation (cap at 200ms for debugger pauses)
-                    auto now = std::chrono::steady_clock::now();
-                    float deltaMs = std::chrono::duration<float, std::milli>(
-                        now - lastTickTime).count();
-                    lastTickTime = now;
-                    if (deltaMs > 200.0f) deltaMs = 200.0f;
-
-                    // Advance animations only while playing
-                    if (isPlaying && g_previewAnimMgr)
-                        g_previewAnimMgr->advanceAll(deltaMs);
-
                     // Compute output frame index from engine-owned presentation time.
                     // Playback remains audio-master-clock driven. Stopped preview
                     // renders use an explicit project sample and feed it into
@@ -3824,6 +3862,26 @@ static void videoThreadBody()
                     const int64_t collectorProjectStartSample =
                         hasStoppedPreviewRequest ? samplePos : 0;
 
+                    // Absolute project sample for THIS frame — the same basis
+                    // FrameCollector resolves layouts at, and the basis the
+                    // offline renderer uses.
+                    const int64_t frameProjectSample = collectorProjectStartSample
+                        + RenderClock::videoFrameToSample(collectorOutputFrame, sampleRate, fpsRat);
+
+                    // Advance animations from the AUDIO-MASTER CLOCK, not
+                    // steady_clock. This used to accumulate a wall-clock delta
+                    // capped at 200 ms, which meant the preview and the offline
+                    // export were driven by two different time bases and could
+                    // never agree, and every frame hitch silently dropped
+                    // animation time. Feeding the transport position makes the
+                    // two paths produce identical values for the same frame.
+                    // Still gated on isPlaying so a paused preview holds its
+                    // pose, as before; the call is idempotent for a fixed
+                    // sample position regardless.
+                    if (isPlaying && g_previewAnimMgr && sampleRate > 0)
+                        g_previewAnimMgr->advanceTo(1000.0 * static_cast<double>(frameProjectSample)
+                                                           / static_cast<double>(sampleRate));
+
                     // ── Snapshot transition resolve (Slice 3b) ────────────────
                     // Resolve the transition window for THIS frame's absolute
                     // project tick while we already hold syncEventsMutex (eLock),
@@ -3832,8 +3890,6 @@ static void videoThreadBody()
                     // composite calls below. The tick uses the SAME sample basis the
                     // collector resolves layouts at: projectStart + frame→sample.
                     const double previewBpm = g_timeline ? g_timeline->getBPM() : t.getBPM();
-                    const int64_t frameProjectSample = collectorProjectStartSample
-                        + RenderClock::videoFrameToSample(collectorOutputFrame, sampleRate, fpsRat);
                     const int64_t frameProjectTick = RenderClock::sampleToPPQ(
                         frameProjectSample, sampleRate, previewBpm);
                     Timeline::ResolvedTransition previewTransition;
@@ -5740,7 +5796,7 @@ JsonApi::Value Project_Save(const JsonApi::CallbackInfo& info)
     BridgeCallLog log("project.save");
     // A transient preview is intentionally not serializable. Autosave retries
     // on its next interval after the pointer gesture commits or cancels.
-    if (g_clipControlEdit) {
+    if (!g_clipControlEdits.empty()) {
         log.done("deferred: clip control edit active");
         return JsonApi::Boolean::New(env, false);
     }
@@ -5773,7 +5829,7 @@ JsonApi::Value Project_SaveAs(const JsonApi::CallbackInfo& info)
     std::string dir  = info[0].As<JsonApi::String>().Utf8Value();
     std::string name = info[1].As<JsonApi::String>().Utf8Value();
     BridgeCallLog log("project.saveAs");
-    if (g_clipControlEdit) {
+    if (!g_clipControlEdits.empty()) {
         log.done("deferred: clip control edit active");
         return JsonApi::Boolean::New(env, false);
     }
@@ -8185,10 +8241,16 @@ void Timeline_RemoveTrack(const JsonApi::CallbackInfo& info)
     }
     int id = info[0].As<JsonApi::Number>().Int32Value();
     BridgeCallLog log("timeline.removeTrack");
-    if (g_clipControlEdit) {
-        const Clip* editedClip = g_timeline->getClip(g_clipControlEdit->clipId);
-        if (!editedClip || editedClip->trackId == id)
-            restoreAndClearClipControlEdit();
+    // Abandon any in-flight drag whose clip lives on the track going away (or
+    // whose clip has already vanished). Sessions on other tracks are untouched.
+    for (auto it = g_clipControlEdits.begin(); it != g_clipControlEdits.end(); ) {
+        const Clip* editedClip = g_timeline->getClip(it->second.clipId);
+        if (!editedClip || editedClip->trackId == id) {
+            restoreClipControlEditSession(it->second);
+            it = g_clipControlEdits.erase(it);
+        } else {
+            ++it;
+        }
     }
     {
         // Cascades into grid slots / chorus / crash — hold syncEventsMutex
@@ -8204,27 +8266,13 @@ void Timeline_RemoveTrack(const JsonApi::CallbackInfo& info)
     log.done();
 }
 
-// timeline_addClip({ trackId, regionId, positionTicks, durationTicks,
-//                    regionOffsetTicks?, syllableIndex?, velocity?, pitchOffset?,
-//                    pitchOffsetCents?, reversed?, stretchRatio?, stretchMethod?, formantPreserve?,
-//                    fadeInPercent?, fadeOutPercent?, fadeInX1?, fadeInY1?, fadeInX2?, fadeInY2?,
-//                    fadeOutX1?, fadeOutY1?, fadeOutX2?, fadeOutY2?,
-//                    modulation? }) → id
-JsonApi::Value Timeline_AddClip(const JsonApi::CallbackInfo& info)
+// ─── jsToClip ─────────────────────────────────────────────────────────────────
+// Single source of truth for JS-object → Clip unmarshalling. Timeline_AddClip
+// and Timeline_AddClipsBatch both go through it, so the batch path can never
+// again silently drop fields the single-add path understands (it used to read
+// 7 of these ~25, which is why copy/paste could not use it).
+static Clip jsToClip(const JsonApi::Object& o)
 {
-    JsonApi::Env env = info.Env();
-    if (!isInitialised() || !g_timeline || !g_undoManager) {
-        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
-        return env.Undefined();
-    }
-    if (info.Length() < 1 || !info[0].IsObject()) {
-        JsonApi::TypeError::New(env, "timeline_addClip({ trackId, regionId, positionTicks, durationTicks, velocity? })")
-            .ThrowAsJavaScriptException();
-        return env.Undefined();
-    }
-    BridgeCallLog log("timeline.addClip");
-
-    JsonApi::Object o = info[0].As<JsonApi::Object>();
     Clip clip;
     clip.trackId         = o.Get("trackId").As<JsonApi::Number>().Int32Value();
     clip.regionId        = o.Get("regionId").As<JsonApi::Number>().Int32Value();
@@ -8287,6 +8335,32 @@ JsonApi::Value Timeline_AddClip(const JsonApi::CallbackInfo& info)
         clip.modulation = jsToClipModulation(
             o.Get("modulation").As<JsonApi::Object>(), ClipModulation{});
 
+    return clip;
+}
+
+// timeline_addClip({ trackId, regionId, positionTicks, durationTicks,
+//                    regionOffsetTicks?, syllableIndex?, velocity?, pitchOffset?,
+//                    pitchOffsetCents?, reversed?, stretchRatio?, stretchMethod?, formantPreserve?,
+//                    fadeInPercent?, fadeOutPercent?, fadeInX1?, fadeInY1?, fadeInX2?, fadeInY2?,
+//                    fadeOutX1?, fadeOutY1?, fadeOutX2?, fadeOutY2?,
+//                    modulation? }) → id
+JsonApi::Value Timeline_AddClip(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsObject()) {
+        JsonApi::TypeError::New(env, "timeline_addClip({ trackId, regionId, positionTicks, durationTicks, velocity? })")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    BridgeCallLog log("timeline.addClip");
+
+    JsonApi::Object o = info[0].As<JsonApi::Object>();
+    Clip clip = jsToClip(o);
+
 #ifdef XLETH_DEBUG
     // Per-field "present/defaulted" map — reveals whether a missing JS key
     // or a wrong type (IsNumber/IsBoolean guard failure) caused a default.
@@ -8333,21 +8407,10 @@ JsonApi::Value Timeline_AddClip(const JsonApi::CallbackInfo& info)
     fflush(stderr);
 #endif
 
-    fprintf(stderr, "[PITCHDBG] Timeline_AddClip ENTRY: trackId=%d regionId=%d "
-            "pitchSemi=%d cents=%d reversed=%d stretch=%.3f\n",
-            clip.trackId, clip.regionId,
-            clip.pitchOffset, clip.pitchOffsetCents,
-            clip.reversed ? 1 : 0, clip.stretchRatio);
-    fflush(stderr);
-
     g_undoManager->execute(std::make_unique<AddClipCommand>(clip), *g_timeline);
 
     auto clips = g_timeline->getAllClips();
     int newId = clips.empty() ? -1 : clips.back()->id;
-
-    fprintf(stderr, "[PITCHDBG] Timeline_AddClip EXIT: newId=%d regionId=%d\n",
-            newId, clip.regionId);
-    fflush(stderr);
 
     if (audioEngine && newId >= 0)
         audioEngine->getMixEngine().invalidateClipCache(newId, "addClip");
@@ -8360,9 +8423,10 @@ JsonApi::Value Timeline_AddClip(const JsonApi::CallbackInfo& info)
     return JsonApi::Number::New(env, newId);
 }
 
-// timeline_addClipsBatch([{ trackId, regionId, positionTicks, durationTicks,
-//                           regionOffsetTicks?, syllableIndex?, velocity? }, ...]) → [id, ...]
-// Inserts N clips as a single undoable command.
+// timeline_addClipsBatch([{ ...same shape as timeline_addClip... }, ...]) → [id, ...]
+// Inserts N clips as a single undoable command and a single RPC round trip.
+// Field handling is shared with timeline_addClip via jsToClip(), so paste /
+// duplicate keep stretch, pitch, fades and modulation intact.
 JsonApi::Value Timeline_AddClipsBatch(const JsonApi::CallbackInfo& info)
 {
     JsonApi::Env env = info.Env();
@@ -8383,19 +8447,7 @@ JsonApi::Value Timeline_AddClipsBatch(const JsonApi::CallbackInfo& info)
 
     for (uint32_t i = 0; i < arr.Length(); i++) {
         if (!arr.Get(i).IsObject()) continue;
-        JsonApi::Object o = arr.Get(i).As<JsonApi::Object>();
-        Clip clip;
-        clip.trackId        = o.Get("trackId").As<JsonApi::Number>().Int32Value();
-        clip.regionId       = o.Get("regionId").As<JsonApi::Number>().Int32Value();
-        clip.position.ticks = static_cast<int64_t>(o.Get("positionTicks").As<JsonApi::Number>().DoubleValue());
-        clip.duration.ticks = static_cast<int64_t>(o.Get("durationTicks").As<JsonApi::Number>().DoubleValue());
-        if (o.Has("regionOffsetTicks") && o.Get("regionOffsetTicks").IsNumber())
-            clip.regionOffset.ticks = static_cast<int64_t>(o.Get("regionOffsetTicks").As<JsonApi::Number>().DoubleValue());
-        if (o.Has("syllableIndex") && o.Get("syllableIndex").IsNumber())
-            clip.syllableIndex = o.Get("syllableIndex").As<JsonApi::Number>().Int32Value();
-        if (o.Has("velocity") && o.Get("velocity").IsNumber())
-            clip.velocity = o.Get("velocity").As<JsonApi::Number>().FloatValue();
-        clips.push_back(std::move(clip));
+        clips.push_back(jsToClip(arr.Get(i).As<JsonApi::Object>()));
     }
 
     if (clips.empty()) {
@@ -8403,17 +8455,25 @@ JsonApi::Value Timeline_AddClipsBatch(const JsonApi::CallbackInfo& info)
         return JsonApi::Array::New(env, 0);
     }
 
+    // Distinct regions touched — the proxy enqueue below is per-region, and a
+    // paste routinely spans several. The old code only ever looked at clips[0].
+    std::vector<std::pair<int,int>> regionTrackPairs;
+    for (const auto& c : clips) {
+        const std::pair<int,int> pr{c.regionId, c.trackId};
+        if (std::find(regionTrackPairs.begin(), regionTrackPairs.end(), pr)
+            == regionTrackPairs.end())
+            regionTrackPairs.push_back(pr);
+    }
+
     auto cmd = std::make_unique<AddClipsBatchCommand>(clips);
     AddClipsBatchCommand* cmdPtr = cmd.get();
     g_undoManager->execute(std::move(cmd), *g_timeline);
 
     const auto& ids = cmdPtr->getAssignedIds();
-    for (int id : ids) {
-        if (audioEngine && id >= 0)
-            audioEngine->getMixEngine().invalidateClipCache(id, "addClipsBatch");
-    }
-    if (!clips.empty())
-        maybeEnqueueRegionProxy(clips[0].regionId, clips[0].trackId);
+    if (audioEngine)
+        audioEngine->getMixEngine().invalidateClipCaches(ids, "addClipsBatch");
+    for (const auto& pr : regionTrackPairs)
+        maybeEnqueueRegionProxy(pr.first, pr.second);
 
     JsonApi::Array result = JsonApi::Array::New(env, ids.size());
     for (size_t i = 0; i < ids.size(); i++)
@@ -8421,6 +8481,181 @@ JsonApi::Value Timeline_AddClipsBatch(const JsonApi::CallbackInfo& info)
 
     log.done(std::to_string(ids.size()));
     return result;
+}
+
+// timeline_pasteClipsBatch({ removeClipIds: [id,...], clips: [ ...addClip shape... ] })
+//   → { newIds: [id,...], removedCount }
+// The atomic paste: overwrite + insert as ONE undoable operation and ONE round
+// trip. Splitting it into removeClipsBatch + addClipsBatch left a single Ctrl+Z
+// in the half-applied state between the two halves.
+JsonApi::Value Timeline_PasteClipsBatch(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsObject()) {
+        JsonApi::TypeError::New(env,
+            "timeline_pasteClipsBatch({ removeClipIds?: number[], clips: Array })")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    BridgeCallLog log("timeline.pasteClipsBatch");
+
+    JsonApi::Object arg = info[0].As<JsonApi::Object>();
+
+    std::vector<int> removeIds;
+    if (arg.Has("removeClipIds") && arg.Get("removeClipIds").IsArray()) {
+        JsonApi::Array r = arg.Get("removeClipIds").As<JsonApi::Array>();
+        removeIds.reserve(r.Length());
+        for (uint32_t i = 0; i < r.Length(); i++) {
+            if (!r.Get(i).IsNumber()) continue;
+            removeIds.push_back(r.Get(i).As<JsonApi::Number>().Int32Value());
+        }
+    }
+
+    std::vector<Clip> clips;
+    if (arg.Has("clips") && arg.Get("clips").IsArray()) {
+        JsonApi::Array c = arg.Get("clips").As<JsonApi::Array>();
+        clips.reserve(c.Length());
+        for (uint32_t i = 0; i < c.Length(); i++) {
+            if (!c.Get(i).IsObject()) continue;
+            clips.push_back(jsToClip(c.Get(i).As<JsonApi::Object>()));
+        }
+    }
+
+    JsonApi::Object result = JsonApi::Object::New(env);
+    if (clips.empty() && removeIds.empty()) {
+        result.Set("newIds", JsonApi::Array::New(env, 0));
+        result.Set("removedCount", JsonApi::Number::New(env, 0));
+        log.done("0");
+        return result;
+    }
+
+    // Distinct region/track pairs — proxy generation is per region and a paste
+    // routinely spans several.
+    std::vector<std::pair<int,int>> regionTrackPairs;
+    for (const auto& c : clips) {
+        const std::pair<int,int> pr{c.regionId, c.trackId};
+        if (std::find(regionTrackPairs.begin(), regionTrackPairs.end(), pr)
+            == regionTrackPairs.end())
+            regionTrackPairs.push_back(pr);
+    }
+
+    auto cmd = std::make_unique<ReplaceClipsBatchCommand>(
+        std::move(removeIds), std::move(clips), *g_timeline);
+    ReplaceClipsBatchCommand* cmdPtr = cmd.get();
+    g_undoManager->execute(std::move(cmd), *g_timeline);
+
+    const auto& newIds = cmdPtr->getAssignedIds();
+    if (audioEngine) {
+        audioEngine->getMixEngine().invalidateClipCaches(
+            cmdPtr->getRemovedIds(), "pasteClipsBatch/removed");
+        audioEngine->getMixEngine().invalidateClipCaches(newIds, "pasteClipsBatch");
+    }
+    for (const auto& pr : regionTrackPairs)
+        maybeEnqueueRegionProxy(pr.first, pr.second);
+
+    JsonApi::Array idsOut = JsonApi::Array::New(env, newIds.size());
+    for (size_t i = 0; i < newIds.size(); i++)
+        idsOut.Set(static_cast<uint32_t>(i), JsonApi::Number::New(env, newIds[i]));
+    result.Set("newIds", idsOut);
+    result.Set("removedCount",
+               JsonApi::Number::New(env, static_cast<int>(cmdPtr->getRemovedIds().size())));
+
+    log.done(std::to_string(newIds.size()));
+    return result;
+}
+
+// timeline_moveClipsBatch([{ clipId, trackId, positionTicks }, ...]) → count
+// Repositions N clips in one undoable command and one RPC round trip.
+// Dragging a multi-clip selection used to fire one moveClip per clip, each a
+// full renderer→main→worker round trip AND its own undo entry.
+JsonApi::Value Timeline_MoveClipsBatch(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsArray()) {
+        JsonApi::TypeError::New(env,
+            "timeline_moveClipsBatch(moves: Array<{clipId, trackId, positionTicks}>)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    BridgeCallLog log("timeline.moveClipsBatch");
+
+    JsonApi::Array arr = info[0].As<JsonApi::Array>();
+    std::vector<MoveClipsBatchCommand::Move> moves;
+    moves.reserve(arr.Length());
+    for (uint32_t i = 0; i < arr.Length(); i++) {
+        if (!arr.Get(i).IsObject()) continue;
+        JsonApi::Object o = arr.Get(i).As<JsonApi::Object>();
+        if (!o.Get("clipId").IsNumber() || !o.Get("trackId").IsNumber()
+            || !o.Get("positionTicks").IsNumber()) continue;
+        MoveClipsBatchCommand::Move m;
+        m.clipId              = o.Get("clipId").As<JsonApi::Number>().Int32Value();
+        m.newTrackId          = o.Get("trackId").As<JsonApi::Number>().Int32Value();
+        m.newPosition.ticks   = static_cast<int64_t>(
+            o.Get("positionTicks").As<JsonApi::Number>().DoubleValue());
+        moves.push_back(m);
+    }
+
+    if (moves.empty()) { log.done("0"); return JsonApi::Number::New(env, 0); }
+
+    auto cmd = std::make_unique<MoveClipsBatchCommand>(std::move(moves), *g_timeline);
+    MoveClipsBatchCommand* cmdPtr = cmd.get();
+    g_undoManager->execute(std::move(cmd), *g_timeline);
+
+    // A move leaves every CacheKey input untouched, so this resolves to a
+    // no-op for each clip — it exists only so a move that DID cross a
+    // region/rate boundary still re-points the cache correctly.
+    const auto& ids = cmdPtr->getMovedIds();
+    if (audioEngine)
+        audioEngine->getMixEngine().invalidateClipCaches(ids, "moveClipsBatch");
+
+    log.done(std::to_string(ids.size()));
+    return JsonApi::Number::New(env, static_cast<int>(ids.size()));
+}
+
+// timeline_removeClipsBatch([id, ...]) → count
+// Deletes N clips in one undoable command. Ctrl+Z restores the whole selection.
+JsonApi::Value Timeline_RemoveClipsBatch(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsArray()) {
+        JsonApi::TypeError::New(env, "timeline_removeClipsBatch(ids: Array<number>)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    BridgeCallLog log("timeline.removeClipsBatch");
+
+    JsonApi::Array arr = info[0].As<JsonApi::Array>();
+    std::vector<int> ids;
+    ids.reserve(arr.Length());
+    for (uint32_t i = 0; i < arr.Length(); i++) {
+        if (!arr.Get(i).IsNumber()) continue;
+        ids.push_back(arr.Get(i).As<JsonApi::Number>().Int32Value());
+    }
+
+    if (ids.empty()) { log.done("0"); return JsonApi::Number::New(env, 0); }
+
+    auto cmd = std::make_unique<RemoveClipsBatchCommand>(std::move(ids), *g_timeline);
+    RemoveClipsBatchCommand* cmdPtr = cmd.get();
+    g_undoManager->execute(std::move(cmd), *g_timeline);
+
+    const auto& removed = cmdPtr->getRemovedIds();
+    if (audioEngine)
+        audioEngine->getMixEngine().invalidateClipCaches(removed, "removeClipsBatch");
+
+    log.done(std::to_string(removed.size()));
+    return JsonApi::Number::New(env, static_cast<int>(removed.size()));
 }
 
 // timeline_removeClip(id)
@@ -8437,8 +8672,7 @@ void Timeline_RemoveClip(const JsonApi::CallbackInfo& info)
     }
     int id = info[0].As<JsonApi::Number>().Int32Value();
     BridgeCallLog log("timeline.removeClip");
-    if (g_clipControlEdit && g_clipControlEdit->clipId == id)
-        restoreAndClearClipControlEdit();
+    restoreAndClearClipControlEditsForClip(id);
     if (audioEngine)
         audioEngine->getMixEngine().invalidateClipCache(id, "removeClip");
     g_undoManager->execute(std::make_unique<RemoveClipCommand>(id, *g_timeline), *g_timeline);
@@ -8601,18 +8835,19 @@ static ClipControlEditSession* requireClipControlEdit(
         return nullptr;
     }
     const uint32_t sessionId = info[0].As<JsonApi::Number>().Uint32Value();
-    if (!g_clipControlEdit || g_clipControlEdit->sessionId != sessionId) {
+    auto it = g_clipControlEdits.find(sessionId);
+    if (it == g_clipControlEdits.end()) {
         JsonApi::Error::New(env, "Stale clip control edit session")
             .ThrowAsJavaScriptException();
         return nullptr;
     }
-    if (!g_timeline->getClip(g_clipControlEdit->clipId)) {
-        g_clipControlEdit.reset();
+    if (!g_timeline->getClip(it->second.clipId)) {
+        g_clipControlEdits.erase(it);
         JsonApi::Error::New(env, "Clip control edit target no longer exists")
             .ThrowAsJavaScriptException();
         return nullptr;
     }
-    return g_clipControlEdit.get();
+    return &it->second;
 }
 
 JsonApi::Value Timeline_BeginClipControlEdit(const JsonApi::CallbackInfo& info)
@@ -8628,31 +8863,34 @@ JsonApi::Value Timeline_BeginClipControlEdit(const JsonApi::CallbackInfo& info)
         return env.Undefined();
     }
 
-    restoreAndClearClipControlEdit();
     const int clipId = info[0].As<JsonApi::Number>().Int32Value();
+    // Only sessions on THIS clip are superseded. Sessions on other clips belong
+    // to sibling members of a multi-clip drag and must survive.
+    restoreAndClearClipControlEditsForClip(clipId);
+
     const Clip* clip = g_timeline->getClip(clipId);
     if (!clip) {
         JsonApi::Error::New(env, "Clip not found").ThrowAsJavaScriptException();
         return env.Undefined();
     }
 
-    auto edit = std::make_unique<ClipControlEditSession>();
-    edit->sessionId = g_nextClipControlEditSessionId++;
-    if (edit->sessionId == 0)
-        edit->sessionId = g_nextClipControlEditSessionId++;
-    edit->clipId = clipId;
-    edit->initialVelocity = clip->velocity;
-    edit->initialFadeInPercent = clip->fadeInPercent;
-    edit->initialFadeOutPercent = clip->fadeOutPercent;
+    ClipControlEditSession edit;
+    edit.sessionId = g_nextClipControlEditSessionId++;
+    if (edit.sessionId == 0)
+        edit.sessionId = g_nextClipControlEditSessionId++;
+    edit.clipId = clipId;
+    edit.initialVelocity = clip->velocity;
+    edit.initialFadeInPercent = clip->fadeInPercent;
+    edit.initialFadeOutPercent = clip->fadeOutPercent;
 
     JsonApi::Object initial = JsonApi::Object::New(env);
-    initial.Set("velocity", JsonApi::Number::New(env, edit->initialVelocity));
-    initial.Set("fadeInPercent", JsonApi::Number::New(env, edit->initialFadeInPercent));
-    initial.Set("fadeOutPercent", JsonApi::Number::New(env, edit->initialFadeOutPercent));
+    initial.Set("velocity", JsonApi::Number::New(env, edit.initialVelocity));
+    initial.Set("fadeInPercent", JsonApi::Number::New(env, edit.initialFadeInPercent));
+    initial.Set("fadeOutPercent", JsonApi::Number::New(env, edit.initialFadeOutPercent));
     JsonApi::Object result = JsonApi::Object::New(env);
-    result.Set("sessionId", JsonApi::Number::New(env, edit->sessionId));
+    result.Set("sessionId", JsonApi::Number::New(env, edit.sessionId));
     result.Set("initial", initial);
-    g_clipControlEdit = std::move(edit);
+    g_clipControlEdits[edit.sessionId] = edit;
     return result;
 }
 
@@ -8683,7 +8921,9 @@ JsonApi::Value Timeline_CancelClipControlEdit(const JsonApi::CallbackInfo& info)
         env, info, "timeline_cancelClipControlEdit(sessionId: number)");
     if (!edit) return env.Undefined();
     const int clipId = edit->clipId;
-    restoreAndClearClipControlEdit();
+    const uint32_t sessionId = edit->sessionId;
+    restoreClipControlEditSession(*edit);
+    g_clipControlEdits.erase(sessionId);   // invalidates `edit`
     g_previewDirty.store(true);
     const Clip* clip = g_timeline->getClip(clipId);
     return clip ? clipToJs(env, *clip) : env.Undefined();
@@ -8715,7 +8955,13 @@ JsonApi::Value Timeline_CommitClipControlEdit(const JsonApi::CallbackInfo& info)
         std::abs(finalFadeInPercent - edit->initialFadeInPercent) > 1.0e-5f ||
         std::abs(finalFadeOutPercent - edit->initialFadeOutPercent) > 1.0e-5f;
 
-    restoreAndClearClipControlEdit();
+    // Roll THIS clip back to its pre-drag values so the undo command below
+    // records a real before/after pair, then drop only this session — sibling
+    // sessions from the same multi-clip drag are still waiting to commit.
+    const uint32_t sessionId = edit->sessionId;
+    restoreClipControlEditSession(*edit);
+    g_clipControlEdits.erase(sessionId);   // invalidates `edit`
+
     if (changed) {
         const Clip* baseline = g_timeline->getClip(clipId);
         if (!baseline) {
@@ -9189,10 +9435,17 @@ JsonApi::Value Timeline_SpliceClipsAtPlayhead(const JsonApi::CallbackInfo& info)
         e.left.id         = 0;
         e.left.duration   = TickTime{leftDur};
 
+        // regionOffset is SOURCE time; leftDur is TIMELINE time. A stretched clip
+        // consumes leftDur / stretchRatio source ticks over its left half, so the
+        // right half must advance by that, not by leftDur (see ClipSourceAnchor.h).
+        // Both halves keep the clip's stretchRatio: a split is a cut, not a re-stretch.
+        const int64_t leftSourceDur =
+            xleth::anchoring::sourceTicksForTimelineTicks(leftDur, c->stretchRatio);
+
         e.right                    = *c;
         e.right.id                 = 0;
         e.right.position           = TickTime{splitTick};
-        e.right.regionOffset       = TickTime{c->regionOffset.ticks + leftDur};
+        e.right.regionOffset       = TickTime{c->regionOffset.ticks + leftSourceDur};
         e.right.duration           = TickTime{rightDur};
 
         entries.push_back(std::move(e));
@@ -10890,7 +11143,75 @@ void Timeline_PreviewNote(const JsonApi::CallbackInfo& info)
     if (!mix.hasPreviewSampler(regionId)) mix.ensurePreviewSampler(regionId);
     Sampler* s = mix.getPreviewSamplerPtr(regionId);
     if (s == nullptr) return;
+    // Resolve the audition's effect route here, at note-on: the arrangement may
+    // have changed since the last preview, and this is the one point where a
+    // fresh answer is always cheap and always correct.
+    mix.refreshPreviewRoute(regionId);
     s->noteOn(pitch, velocity);
+}
+
+// sampler_getPreviewRouting() → { mode, selectedTrackId }
+// mode: 0 = dedicated (follow the sample's own track), 1 = selected track,
+// 2 = off (audition dry).
+JsonApi::Value Sampler_GetPreviewRouting(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || audioEngine == nullptr) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    auto& mix = audioEngine->getMixEngine();
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("mode", JsonApi::Number::New(env,
+        static_cast<int>(mix.getSamplerPreviewRouteMode())));
+    out.Set("selectedTrackId", JsonApi::Number::New(env, mix.getSamplerPreviewSelectedTrack()));
+    return out;
+}
+
+// sampler_setPreviewRouting(mode: number, selectedTrackId: number) → void
+// Not undoable: this is a monitoring preference, not a project edit.
+void Sampler_SetPreviewRouting(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || audioEngine == nullptr) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return;
+    }
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        JsonApi::TypeError::New(env, "sampler_setPreviewRouting(mode: number, selectedTrackId?: number)")
+            .ThrowAsJavaScriptException();
+        return;
+    }
+    const int rawMode = info[0].As<JsonApi::Number>().Int32Value();
+    if (rawMode < 0 || rawMode > 2) {
+        JsonApi::TypeError::New(env, "sampler_setPreviewRouting: mode must be 0, 1 or 2")
+            .ThrowAsJavaScriptException();
+        return;
+    }
+    auto& mix = audioEngine->getMixEngine();
+    mix.setSamplerPreviewRouteMode(static_cast<xleth::SamplerPreviewRouteMode>(rawMode));
+    if (info.Length() >= 2 && info[1].IsNumber())
+        mix.setSamplerPreviewSelectedTrack(info[1].As<JsonApi::Number>().Int32Value());
+}
+
+// sampler_getPreviewRouteTrack(regionId) → number
+// The track id an audition of this region would be heard through right now, or
+// -1 when it would play dry. Drives the UI's "routed through X" readout.
+JsonApi::Value Sampler_GetPreviewRouteTrack(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || audioEngine == nullptr) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        JsonApi::TypeError::New(env, "sampler_getPreviewRouteTrack(regionId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int regionId = info[0].As<JsonApi::Number>().Int32Value();
+    auto& mix = audioEngine->getMixEngine();
+    return JsonApi::Number::New(env, mix.refreshPreviewRoute(regionId));
 }
 
 // timeline_previewNoteOff(regionId, pitch) — fires noteOff for a previously
@@ -11315,6 +11636,26 @@ static ZoomPanRotSettings jsToZoomPanRotSettings(JsonApi::Object o) {
     getI("panEasing",      z.panEasing);
     getI("rotEasing",      z.rotEasing);
     getF("overshoot",      z.overshoot);
+    {
+        int lengthMode = static_cast<int>(z.lengthMode);
+        getI("lengthMode", lengthMode);
+        z.lengthMode = static_cast<ZoomPanRotSettings::LengthMode>(lengthMode);
+    }
+    getI("musicalDivision", z.musicalDivision);
+    getF("notePercentage",  z.notePercentage);
+    {
+        int onEndMode = static_cast<int>(z.onEndMode);
+        getI("onEndMode", onEndMode);
+        z.onEndMode = static_cast<ZoomPanRotSettings::OnEndMode>(onEndMode);
+    }
+    {
+        int retriggerMode = static_cast<int>(z.retriggerMode);
+        getI("retriggerMode", retriggerMode);
+        z.retriggerMode = static_cast<ZoomPanRotSettings::RetriggerMode>(retriggerMode);
+    }
+    getF("retriggerCrossfadeMs", z.retriggerCrossfadeMs);
+    if (o.Has("presetName") && o.Get("presetName").IsString())
+        z.presetName = o.Get("presetName").As<JsonApi::String>().Utf8Value();
     return z;
 }
 
@@ -11336,6 +11677,35 @@ void Timeline_SetTrackZoomPanRotSettings(const JsonApi::CallbackInfo& info)
     BridgeCallLog log("timeline.setTrackZoomPanRotSettings");
     g_undoManager->execute(
         std::make_unique<SetTrackZoomPanRotSettingsCommand>(trackId, settings, *g_timeline),
+        *g_timeline);
+    g_previewDirty = true;
+    log.done();
+}
+
+// timeline_setTrackZprTracks(trackId, tracksObj)
+// tracksObj is the zprTracksToJson shape: { panX, panY, zoomLog2, rotationDeg },
+// each { constantValue, keys: [{ t, v, c:[p1x,p1y,p2x,p2y] }] }. This is the
+// keyframe-editor authoring seam — unlike setTrackZoomPanRotSettings, it always
+// writes the curves and always latches authored=true; there is no scalar
+// fallback to protect here because the caller IS the keyframe editor.
+void Timeline_SetTrackZprTracks(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return;
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsObject()) {
+        JsonApi::TypeError::New(env, "timeline_setTrackZprTracks(trackId: number, tracks: object)")
+            .ThrowAsJavaScriptException();
+        return;
+    }
+    int trackId = info[0].As<JsonApi::Number>().Int32Value();
+    nlohmann::json tj = valueToJson(info[1]);
+    ZprTracks tracks = zprTracksFromJson(tj);
+    BridgeCallLog log("timeline.setTrackZprTracks");
+    g_undoManager->execute(
+        std::make_unique<SetTrackZprTracksCommand>(trackId, tracks, *g_timeline),
         *g_timeline);
     g_previewDirty = true;
     log.done();
@@ -11442,7 +11812,29 @@ static SlideNoteEffectSettings jsToSlideNoteEffectSettings(JsonApi::Object o) {
     }
 
     if (o.Has("zoomPanRot") && o.Get("zoomPanRot").IsObject()) {
-        s.zoomPanRot = jsToZoomPanRotSettings(o.Get("zoomPanRot").As<JsonApi::Object>());
+        JsonApi::Object zo = o.Get("zoomPanRot").As<JsonApi::Object>();
+        s.zoomPanRot = jsToZoomPanRotSettings(zo);
+        // Keyframe curves, when the slide's own ZPR editor sent them. Unlike
+        // the track-level path there is no separate tracks RPC here: the slide
+        // config is written whole, so the curves ride along with it.
+        //
+        // authored is DERIVED, not taken on trust — exactly the rule
+        // loadOrMigrateZprTracks uses. A payload whose curves are just what
+        // the scalars would produce stays non-authored, so scalar edits keep
+        // working; only genuinely hand-authored keyframes latch the flag and
+        // become un-flattenable.
+        if (zo.Has("tracks") && zo.Get("tracks").IsObject()) {
+            ZprTracks incoming = zprTracksFromJson(valueToJson(zo.Get("tracks")));
+            const bool anyKeys =
+                !incoming.panX.keys.empty() || !incoming.panY.keys.empty()
+                || !incoming.zoomLog2.keys.empty() || !incoming.rotationDeg.keys.empty();
+            if (anyKeys) {
+                ZprTracks derived;
+                buildZprTracks(derived, s.zoomPanRot);
+                incoming.authored = !zprTracksEquivalent(incoming, derived);
+                s.zoomPanRot.tracks = std::move(incoming);
+            }
+        }
     } else {
         // Legacy migration: literal value preserved, semantics shift from
         // delta to absolute. Default-valued projects behave identically.
@@ -11977,18 +12369,30 @@ JsonApi::Value Timeline_AutoTrimClip(const JsonApi::CallbackInfo& info)
         return o;
     }
 
+    // silenceTicks came from a sample count, so it is a SOURCE-domain length. The
+    // regionOffset advances by that, but the duration is TIMELINE-domain: skipping
+    // silenceTicks of source removes silenceTicks * stretchRatio of timeline, so a
+    // stretched clip must shrink by the scaled amount to leave its audible content
+    // ending where it did (see model/ClipSourceAnchor.h). Equal at unity ratio.
+    int64_t durationTrimTicks =
+        xleth::anchoring::timelineTicksForSourceTicks(silenceTicks, clip->stretchRatio);
+
     // Clamp so at least a minimal audible tail remains (1/32 note ≈ 120 ticks).
     constexpr int64_t kMinClipTicks = 120;
-    if (silenceTicks >= clip->duration.ticks - kMinClipTicks) {
-        silenceTicks = std::max<int64_t>(0, clip->duration.ticks - kMinClipTicks);
+    if (durationTrimTicks >= clip->duration.ticks - kMinClipTicks) {
+        durationTrimTicks = std::max<int64_t>(0, clip->duration.ticks - kMinClipTicks);
+        silenceTicks = xleth::anchoring::sourceTicksForTimelineTicks(
+            durationTrimTicks, clip->stretchRatio);
     }
 
     std::cout << "[AutoTrim] clipId=" << clipId
               << " silence=" << silenceSamples << " samples ("
-              << silenceTicks << " ticks)\n" << std::flush;
+              << silenceTicks << " source ticks, "
+              << durationTrimTicks << " timeline ticks at "
+              << clip->stretchRatio << "x)\n" << std::flush;
 
     g_undoManager->execute(
-        std::make_unique<AutoTrimClipCommand>(clipId, silenceTicks, silenceTicks),
+        std::make_unique<AutoTrimClipCommand>(clipId, silenceTicks, durationTrimTicks),
         *g_timeline);
 
     // Re-read clip state for return payload.
@@ -12162,10 +12566,15 @@ void Timeline_RemoveRegion(const JsonApi::CallbackInfo& info)
     }
     int id = info[0].As<JsonApi::Number>().Int32Value();
     BridgeCallLog log("timeline.removeRegion");
-    if (g_clipControlEdit) {
-        const Clip* editedClip = g_timeline->getClip(g_clipControlEdit->clipId);
-        if (!editedClip || editedClip->regionId == id)
-            restoreAndClearClipControlEdit();
+    // Same as removeTrack: only drags whose clip uses the region going away.
+    for (auto it = g_clipControlEdits.begin(); it != g_clipControlEdits.end(); ) {
+        const Clip* editedClip = g_timeline->getClip(it->second.clipId);
+        if (!editedClip || editedClip->regionId == id) {
+            restoreClipControlEditSession(it->second);
+            it = g_clipControlEdits.erase(it);
+        } else {
+            ++it;
+        }
     }
     g_undoManager->execute(std::make_unique<RemoveRegionCommand>(id, *g_timeline), *g_timeline);
     log.done();
@@ -14358,6 +14767,199 @@ JsonApi::Value Audio_GetMasterEffectChain(const JsonApi::CallbackInfo& info)
     return JsonApi::String::New(env, json);
 }
 
+// ── FX Chain Library — whole-chain snapshot capture / apply ──────────────────
+//
+// getEffectChain (above) returns the LIGHT chain view ({nodeId, pluginId,
+// position, bypassed}) the mixer strip renders. These four return and consume
+// the FULL graph serialization instead — the same blob project save writes —
+// which carries each processor's bypass flag AND its complete APVTS/VST state.
+// That is what makes a saved chain restore the way it sounded rather than the
+// way it was shaped.
+//
+// Applying goes through the UndoManager as ONE LoadEffectChainCommand, so a
+// library load or a drag-drop between tracks is a single global Ctrl+Z step,
+// not one step per effect.
+
+namespace {
+
+// Shared body for the track and master apply handlers. `trackId < 0` selects the
+// master chain. Returns the JSON result string the RPC hands back.
+//
+// Order of operations matters: the chain is built FIRST through the ordered
+// preset builder, then the before/after pair is handed to the UndoManager with
+// alreadyApplied=true. Doing it the other way round — letting the command apply
+// a pre-built snapshot — would mean assembling every plugin twice.
+std::string applyEffectChainPreset(int trackId,
+                                   const std::string& effectsJson,
+                                   const std::string& label,
+                                   bool replace,
+                                   bool undoable)
+{
+    nlohmann::json effects;
+    try {
+        effects = nlohmann::json::parse(effectsJson);
+    } catch (const std::exception& e) {
+        return nlohmann::json{ { "ok", false }, { "reason", "invalid_json" },
+                               { "detail", e.what() } }.dump();
+    }
+    if (!effects.is_array())
+        return nlohmann::json{ { "ok", false }, { "reason", "effects_not_an_array" } }.dump();
+
+    auto& mix = audioEngine->getMixEngine();
+    const bool isMaster = (trackId < 0);
+
+    const nlohmann::json before = isMaster ? mix.getMasterEffectChainJSON()
+                                           : mix.getEffectChainJSON(trackId);
+
+    const nlohmann::json buildResult = mix.applyEffectChainPreset(trackId, effects, replace);
+    if (!buildResult.value("ok", false)) {
+        return nlohmann::json{
+            { "ok",     false },
+            { "reason", buildResult.value("reason", std::string("engine_rejected_preset")) },
+        }.dump();
+    }
+
+    audioEngine->refreshLivePresentationLatency();
+
+    const nlohmann::json after = isMaster ? mix.getMasterEffectChainJSON()
+                                          : mix.getEffectChainJSON(trackId);
+
+    // Restoring a whole-chain snapshot is the one operation that can put the
+    // track back exactly as it was, including any effect the preset replaced.
+    auto restore = [&mix, trackId, isMaster](const nlohmann::json& chain) {
+        return isMaster ? mix.loadMasterEffectChainFromJSON(chain)
+                        : mix.loadEffectChainFromJSON(trackId, chain);
+    };
+
+    bool recorded = false;
+    if (undoable && g_undoManager && g_timeline) {
+        auto cmd = std::make_unique<LoadEffectChainCommand>(
+            trackId, label, before, after, restore, /*alreadyApplied=*/true);
+        recorded = cmd->shouldRecordInUndoHistory();
+        g_undoManager->execute(std::move(cmd), *g_timeline);
+    }
+
+    int effectCount = 0;
+    if (after.contains("nodes") && after["nodes"].is_array())
+        effectCount = static_cast<int>(after["nodes"].size());
+
+    return nlohmann::json{
+        { "ok",          true },
+        { "added",       buildResult.value("added", 0) },
+        { "skipped",     buildResult.value("skipped", nlohmann::json::array()) },
+        { "effectCount", effectCount },
+        { "undoable",    recorded },
+    }.dump();
+}
+
+} // namespace
+
+// audio_getEffectChainSnapshot(trackId) → JSON string (full graph serialization)
+JsonApi::Value Audio_GetEffectChainSnapshot(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        JsonApi::TypeError::New(env, "audio_getEffectChainSnapshot(trackId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int trackId = info[0].As<JsonApi::Number>().Int32Value();
+    BridgeCallLog log("audio.getEffectChainSnapshot");
+
+    const std::string json = audioEngine->getMixEngine().getEffectChainJSON(trackId).dump();
+    log.done(std::to_string(trackId) + " " + std::to_string(json.size()) + " bytes");
+    return JsonApi::String::New(env, json);
+}
+
+// audio_getMasterEffectChainSnapshot() → JSON string (full graph serialization)
+JsonApi::Value Audio_GetMasterEffectChainSnapshot(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    BridgeCallLog log("audio.getMasterEffectChainSnapshot");
+
+    const std::string json = audioEngine->getMixEngine().getMasterEffectChainJSON().dump();
+    log.done(std::to_string(json.size()) + " bytes");
+    return JsonApi::String::New(env, json);
+}
+
+// audio_applyEffectChainPreset(trackId, effectsJson, label, replace, undoable) → JSON string
+JsonApi::Value Audio_ApplyEffectChainPreset(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsString()) {
+        JsonApi::TypeError::New(env,
+            "audio_applyEffectChainPreset(trackId: number, effects: string, label?: string, replace?: boolean, undoable?: boolean)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int         trackId = info[0].As<JsonApi::Number>().Int32Value();
+    const std::string effects = info[1].As<JsonApi::String>().Utf8Value();
+    const std::string label   = (info.Length() > 2 && info[2].IsString())
+                                    ? info[2].As<JsonApi::String>().Utf8Value()
+                                    : std::string{};
+    // Replace and undo are both the safe default: a library load means "make the
+    // track sound like this", and it must be reversible. Only explicit false opts out.
+    const bool replace  = !(info.Length() > 3 && info[3].IsBoolean()
+                            && !info[3].As<JsonApi::Boolean>().Value());
+    const bool undoable = !(info.Length() > 4 && info[4].IsBoolean()
+                            && !info[4].As<JsonApi::Boolean>().Value());
+    BridgeCallLog log("audio.applyEffectChainPreset");
+
+    // A negative trackId here would silently retarget the master chain; the
+    // caller has a dedicated method for that, so reject it rather than guess.
+    if (trackId < 0) {
+        JsonApi::TypeError::New(env,
+            "audio_applyEffectChainPreset: trackId must be >= 0 (use audio_applyMasterEffectChainPreset)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    const std::string result = applyEffectChainPreset(trackId, effects, label, replace, undoable);
+    log.done(std::to_string(trackId) + " " + result);
+    return JsonApi::String::New(env, result);
+}
+
+// audio_applyMasterEffectChainPreset(effectsJson, label, replace, undoable) → JSON string
+JsonApi::Value Audio_ApplyMasterEffectChainPreset(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsString()) {
+        JsonApi::TypeError::New(env,
+            "audio_applyMasterEffectChainPreset(effects: string, label?: string, replace?: boolean, undoable?: boolean)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const std::string effects = info[0].As<JsonApi::String>().Utf8Value();
+    const std::string label   = (info.Length() > 1 && info[1].IsString())
+                                    ? info[1].As<JsonApi::String>().Utf8Value()
+                                    : std::string{};
+    const bool replace  = !(info.Length() > 2 && info[2].IsBoolean()
+                            && !info[2].As<JsonApi::Boolean>().Value());
+    const bool undoable = !(info.Length() > 3 && info[3].IsBoolean()
+                            && !info[3].As<JsonApi::Boolean>().Value());
+    BridgeCallLog log("audio.applyMasterEffectChainPreset");
+
+    const std::string result = applyEffectChainPreset(-1, effects, label, replace, undoable);
+    log.done(result);
+    return JsonApi::String::New(env, result);
+}
+
 // ── Graph-mode routing ───────────────────────────────────────────────────────
 
 // audio_addConnection(trackId, sourceNodeId, destNodeId) → bool
@@ -16375,6 +16977,126 @@ JsonApi::Value Timeline_SetSlotAudio(const JsonApi::CallbackInfo& info)
 
     JsonApi::Object out = JsonApi::Object::New(env);
     out.Set("success", JsonApi::Boolean::New(env, true));
+    return out;
+}
+
+// Render slot 0's own audio to a standalone WAV in the project's slots/ dir.
+// Slot 0 has no file of its own when the region is unswapped — its PCM is
+// decoded on the fly from the source at [startTime, endTime] — so duplicating
+// it needs a real file to feed installSlotAudio the same way slots 1..7
+// already have one. Caller deletes the returned staging file once
+// installSlotAudio has copied it into its final namespaced destination.
+static std::string renderRegionAudioToTempFile(int regionId, std::string& err)
+{
+    if (!g_timeline || !sampleBank || !g_projectManager) { err = "Engine not initialised."; return {}; }
+    const SampleRegion* region = g_timeline->getRegion(regionId);
+    if (!region) { err = "Region not found."; return {}; }
+    const SourceMedia* source = g_timeline->getSource(region->sourceId);
+    if (!source) { err = "Source not found for region."; return {}; }
+
+    const int nativeRate = probeAudioInfo(source->filePath).sampleRate;
+    const int sampleId = sampleBank->loadSampleFromSource(
+        source->filePath, region->startTime, region->endTime,
+        static_cast<double>(nativeRate));
+    if (sampleId < 0) { err = "Audio decode failed."; return {}; }
+
+    const juce::AudioBuffer<float>* buf = sampleBank->getSample(sampleId);
+    if (!buf || buf->getNumSamples() == 0) { err = "Empty audio buffer."; return {}; }
+
+    const std::string tempPath = g_projectManager->getSlotsDir() + "/_dup_stage_"
+                                + std::to_string(regionId) + ".wav";
+    auto outFile = juce::File(juce::String(tempPath));
+    outFile.getParentDirectory().createDirectory();
+    if (outFile.existsAsFile()) outFile.deleteFile();
+    auto outStream = outFile.createOutputStream();
+    if (!outStream || !outStream->openedOk()) { err = "Cannot create staging file."; return {}; }
+
+    juce::WavAudioFormat wavFmt;
+    std::unique_ptr<juce::AudioFormatWriter> writer(
+        wavFmt.createWriterFor(
+            outStream.release(), static_cast<double>(nativeRate),
+            static_cast<unsigned int>(buf->getNumChannels()), 16, {}, 0));
+    if (!writer) { err = "WAV writer creation failed."; return {}; }
+    writer->writeFromAudioSampleBuffer(*buf, 0, buf->getNumSamples());
+    writer.reset();  // flush + close before the caller reads it back
+
+    return tempPath;
+}
+
+// timeline_duplicateSampleSlot(regionId, sourceSlotIndex) → { success, slotIndex?, error? }
+// Appends a new layer that is a full copy of an existing one: a fresh copy of
+// its audio file AND every tuning/level/trim/loop/MANGLE/PREP/destructive-flag
+// setting the source slot carries — everything but the mute/solo flags, so the
+// new layer starts audible even if the one it was copied from was soloed.
+// Slot 0's audio has no standalone file of its own (its PCM comes from the
+// region, decoded on the fly), so duplicating it renders that audio to a WAV
+// first — the swapped file directly if the region has one, otherwise a fresh
+// decode of the region's own [startTime, endTime] range from source.
+JsonApi::Value Timeline_DuplicateSampleSlot(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    auto fail = [&](const char* msg) -> JsonApi::Value {
+        JsonApi::Object o = JsonApi::Object::New(env);
+        o.Set("success", JsonApi::Boolean::New(env, false));
+        o.Set("error",   JsonApi::String::New(env, msg));
+        return o;
+    };
+
+    if (!isInitialised() || !g_timeline || !g_undoManager) return fail("Engine not initialised.");
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber())
+        return fail("timeline_duplicateSampleSlot(regionId: number, sourceSlotIndex: number)");
+
+    const int regionId        = info[0].As<JsonApi::Number>().Int32Value();
+    const int sourceSlotIndex = info[1].As<JsonApi::Number>().Int32Value();
+    BridgeCallLog log("timeline.duplicateSampleSlot");
+
+    const SampleRegion* r = g_timeline->getRegion(regionId);
+    if (!r) return fail("Region not found.");
+    if (sourceSlotIndex < 0 || sourceSlotIndex >= r->slotCount())
+        return fail("Source slot index out of range.");
+    if (r->slotCount() >= MAX_SAMPLE_SLOTS) return fail("All 8 slots are in use.");
+
+    const int newIndex = r->slotCount();
+
+    std::string err;
+    bool stagedTempFile = false;
+    std::string srcPath;
+    if (sourceSlotIndex == 0) {
+        if (r->hasSwappedAudio && !r->swappedAudioPath.empty()) {
+            srcPath = r->swappedAudioPath;
+        } else {
+            srcPath = renderRegionAudioToTempFile(regionId, err);
+            if (srcPath.empty()) return fail(err.c_str());
+            stagedTempFile = true;
+        }
+    } else {
+        srcPath = r->slot(sourceSlotIndex).audioFilePath;
+        if (srcPath.empty()) return fail("Source slot has no audio file.");
+    }
+
+    const std::string destPath = installSlotAudio(regionId, newIndex, srcPath, err);
+    if (stagedTempFile) juce::File(juce::String(srcPath)).deleteFile();
+    if (destPath.empty()) return fail(err.c_str());
+
+    SamplerSettings s = samplerSettingsFromRegion(*r);
+    SampleSlot slot = r->slot(sourceSlotIndex);   // full copy: tuning/level/trim/loop/mangle/prep/flags
+    slot.audioFilePath = destPath;
+    slot.name = slot.name.empty()
+        ? juce::File(juce::String(destPath)).getFileNameWithoutExtension().toStdString()
+        : slot.name + " copy";
+    slot.mute = false;
+    slot.solo = false;
+    s.slots.push_back(std::move(slot));
+
+    g_undoManager->execute(
+        std::make_unique<SetSamplerSettingsCommand>(regionId, s, *g_timeline), *g_timeline);
+    refreshSamplerForRegion(regionId);
+
+    log.done("slot " + std::to_string(newIndex) + " <- " + std::to_string(sourceSlotIndex));
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("success",   JsonApi::Boolean::New(env, true));
+    out.Set("slotIndex", JsonApi::Number::New(env, newIndex));
     return out;
 }
 
@@ -18982,6 +19704,9 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     if (method == "project_load") return Project_Load(info).raw();
     if (method == "project_newBlank") return Project_NewBlank(info).raw();
     if (method == "timeline_addClipsBatch") return Timeline_AddClipsBatch(info).raw();
+    if (method == "timeline_pasteClipsBatch") return Timeline_PasteClipsBatch(info).raw();
+    if (method == "timeline_moveClipsBatch") return Timeline_MoveClipsBatch(info).raw();
+    if (method == "timeline_removeClipsBatch") return Timeline_RemoveClipsBatch(info).raw();
     if (method == "timeline_autoTrimClip") return Timeline_AutoTrimClip(info).raw();
     if (method == "timeline_spliceClipsAtPlayhead") return Timeline_SpliceClipsAtPlayhead(info).raw();
     if (method == "timeline_createSnapshot") return Timeline_CreateSnapshot(info).raw();

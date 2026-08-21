@@ -1693,6 +1693,54 @@ describe('effectChainStore FX mode safety gate', () => {
     expect(result.runtimeSync).toMatchObject({ ok: true, reason: 'graph_routing_active' })
   })
 
+  it('toggles an effect node bypass on the engine and mirrors it into graphState', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))
+    useEffectChainStore.setState({ graphEngineNodeIds: { '7': { 'effect-1': 210 } } })
+
+    const result = await useEffectChainStore.getState().setGraphEffectBypassForTrack('7', 'fx-1', true)
+
+    expect(result.ok).toBe(true)
+    expect(audio.setEffectBypass).toHaveBeenCalledWith(7, 210, true)
+    const node = useEffectChainStore.getState().graphStates['7'].nodes.find((n) => n.id === 'fx-1')
+    expect(node.data.bypass).toBe(true)
+    // Bypass is a processor state, not routing — the topology must not be re-synced.
+    expect(audio.syncLinearGraphTopology).not.toHaveBeenCalled()
+  })
+
+  it('leaves the bypass flag untouched when the engine rejects the write', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    const graphState = makePositionedGraphState('7')
+    seedGraphMode(useEffectChainStore, graphState)
+    useEffectChainStore.setState({ graphEngineNodeIds: { '7': { 'effect-1': 210 } } })
+    audio.setEffectBypass.mockResolvedValueOnce(false)
+
+    const result = await useEffectChainStore.getState().setGraphEffectBypassForTrack('7', 'fx-1', true)
+
+    expect(result).toMatchObject({ ok: false, reason: 'engine_bypass_failed' })
+    expect(useEffectChainStore.getState().graphStates['7']).toBe(graphState)
+  })
+
+  it('rejects a bypass toggle on a node with no engine processor', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))
+
+    const result = await useEffectChainStore.getState().setGraphEffectBypassForTrack('7', 'fx-1', true)
+
+    expect(result).toMatchObject({ ok: false, reason: 'engine_unavailable' })
+    expect(audio.setEffectBypass).not.toHaveBeenCalled()
+  })
+
+  it('rejects a bypass toggle on a non-effect node', async () => {
+    const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
+    seedGraphMode(useEffectChainStore, makePositionedGraphState('7'))
+
+    await expect(
+      useEffectChainStore.getState().setGraphEffectBypassForTrack('7', 'input', true),
+    ).resolves.toMatchObject({ ok: false, reason: 'unknown_node_type' })
+    expect(audio.setEffectBypass).not.toHaveBeenCalled()
+  })
+
   it('blocks removing protected trackInput and trackOutput nodes', async () => {
     const { default: useEffectChainStore } = await loadEffectChainStoreFixture()
     const graphState = makePositionedGraphState('7')

@@ -22,6 +22,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include <cmath>
+#include <cstring>
 #include <iostream>
 #include <string>
 #include <vector>
@@ -1466,19 +1467,22 @@ static void testSourcePresence()
 {
     std::cout << "Source presence — add / remove state\n";
 
-    // Default: only ENV 1 (index 0) exists; every LFO starts absent.
+    // Default: ENV 1 (index 0) and LFO 1 (index 0) exist; every other source
+    // starts absent, so the tray opens on one envelope and one LFO to shape.
     sm::ModConfig fresh;
     CHECK(fresh.envPresent[0], "a fresh config has ENV 1 present");
     CHECK(!fresh.envPresent[1] && !fresh.envPresent[5], "a fresh config has ENV 2-6 absent");
-    CHECK(!fresh.lfoPresent[0] && !fresh.lfoPresent[5], "a fresh config has every LFO absent");
+    CHECK(fresh.lfoPresent[0], "a fresh config has LFO 1 present");
+    CHECK(!fresh.lfoPresent[1] && !fresh.lfoPresent[5], "a fresh config has LFO 2-6 absent");
     CHECK(fresh.isSourcePresent(sm::kEnvSource0), "isSourcePresent sees ENV 1");
-    CHECK(!fresh.isSourcePresent(sm::kLfoSource0), "isSourcePresent sees LFO 1 as absent");
+    CHECK(fresh.isSourcePresent(sm::kLfoSource0), "isSourcePresent sees LFO 1 as present");
     CHECK(fresh.isSourcePresent(sm::kVeloSource) && fresh.isSourcePresent(sm::kNoteSource),
           "VELO and NOTE are always present");
 
-    // A fresh config with only ENV 1 and no routes is a bypass — proof the
-    // voice-lifecycle path is untouched by every other source being absent.
-    CHECK(fresh.isBypassed(), "only ENV 1 present + no routes is an exact bypass");
+    // A fresh config with no routes is a bypass — presence flags never affect
+    // it (an unrouted source, including the default LFO 1, does nothing), so the
+    // voice-lifecycle path is untouched.
+    CHECK(fresh.isBypassed(), "a fresh config with no routes is an exact bypass");
 
     // Presence survives the round trip.
     sm::ModConfig c;
@@ -1526,6 +1530,318 @@ static void testSourcePresence()
           "lfoPresent survives a SampleRegion round trip");
 }
 
+// ─── MANGLE modulation: dezipper and block-boundary continuity ───────────────
+//
+// The bug these cover: a MANGLE instance's per-block Runtime lives in the
+// stack-local `geo` array, which processVoice rebuilds from the UNMODULATED
+// published chain at the top of EVERY audio buffer. The modulated re-design
+// only happens at a control-block boundary, and the control-block counter is
+// VOICE-relative — so it does not line up with the buffer boundary. Every
+// buffer therefore rendered its first `modCountdown` samples (0..31) with the
+// base amount before snapping back to the modulated one: a discontinuity per
+// buffer, for as long as the route carried a non-zero offset, whether or not
+// that offset was CHANGING.
+//
+// Hence the two properties asserted here: a statically-modulated render must
+// equal the equivalently-configured static one, and it must not depend on the
+// host buffer size.
+
+namespace mg = xleth::mangle;
+
+// Largest sample-to-sample jump in a window — the discontinuity metric.
+static float maxStep(const juce::AudioBuffer<float>& b, int ch, int start, int len)
+{
+    const int end = std::min(start + len, b.getNumSamples());
+    const float* d = b.getReadPointer(ch);
+    float m = 0.0f;
+    for (int i = std::max(1, start); i < end; ++i)
+        m = std::max(m, std::abs(d[i] - d[i - 1]));
+    return m;
+}
+
+static float maxDiff(const juce::AudioBuffer<float>& a,
+                     const juce::AudioBuffer<float>& b, int start = 0)
+{
+    float m = 0.0f;
+    const int n = std::min(a.getNumSamples(), b.getNumSamples());
+    for (int ch = 0; ch < std::min(a.getNumChannels(), b.getNumChannels()); ++ch)
+        for (int i = start; i < n; ++i)
+            m = std::max(m, std::abs(a.getSample(ch, i) - b.getSample(ch, i)));
+    return m;
+}
+
+// ENV 2 present, no routes at all — so the reference render drives its VCA
+// through exactly the same ENV-1 path as the modulated one and the ONLY
+// difference between the two is the MANGLE route.
+static sm::ModConfig modConfigNoRoutes()
+{
+    sm::ModConfig cfg;
+    cfg.envPresent[1] = true;
+    cfg.envs[1].sustainPct = 100.0f;    // instant attack, holds at full forever
+    return cfg;
+}
+
+// ENV 2 (static at full sustain) → slot 0 / instance `inst` MANGLE amount.
+static sm::ModConfig modConfigStaticEnvToMangleAmount(float amount, int inst = 0)
+{
+    sm::ModConfig cfg = modConfigNoRoutes();
+    addRoute(cfg, route(sm::kEnvSource0 + 1, sm::ModTarget::SlotMangleAmount,
+                        /*index=*/0, amount, /*bipolar=*/false, /*stage=*/inst));
+    return cfg;
+}
+
+// The note starts at a sample offset that is NOT a multiple of the 32-sample
+// control block, which is the whole point: with an onset of 0 and a power-of-two
+// buffer the control block lands exactly on every buffer boundary and the bug is
+// invisible. Any real project starts its notes wherever the sequencer says.
+static constexpr int kMangleOnset = 13;
+
+static juce::AudioBuffer<float> renderMangle(mg::Mode mode, float baseAmount,
+                                             const sm::ModConfig& cfg,
+                                             int numSamples, int blockSize)
+{
+    Sampler s;
+    prepareSampler(s, 220.0);
+    s.setSlotMangleChain(0, { mg::InstanceConfig{ static_cast<int>(mode),
+                                                  baseAmount, 1.0f, false } });
+    s.setModulation(cfg);
+    s.noteOn(60, 1.0f, kMangleOnset);
+    return render(s, numSamples, blockSize);
+}
+
+// One mode's worth of the two claims: a STATIC modulated amount must render
+// like the same amount set statically, and must not depend on the buffer size.
+static void checkStaticModulationMatches(const char* name, mg::Mode mode,
+                                         float baseAmount, float offset,
+                                         float tol)
+{
+    constexpr int kN    = 24000;
+    // Past the note-start ramp and the declick, so the comparison is of the
+    // steady state — the modulated render legitimately dezippers into its
+    // offset over the first control block.
+    constexpr int kFrom = 4096;
+
+    const sm::ModConfig none = modConfigNoRoutes();
+    const sm::ModConfig env  = modConfigStaticEnvToMangleAmount(offset);
+
+    juce::AudioBuffer<float> ref = renderMangle(mode, baseAmount + offset, none, kN, 512);
+    juce::AudioBuffer<float> mod = renderMangle(mode, baseAmount, env, kN, 512);
+
+    CHECK(rmsRange(ref, 0, kFrom, kN - kFrom) > 1e-4,
+          name << ": the reference render is audible");
+
+    const float refStep = maxStep(ref, 0, kFrom, kN - kFrom);
+    const float modStep = maxStep(mod, 0, kFrom, kN - kFrom);
+    std::cout << "    " << name << ": max step mod " << modStep
+              << " / ref " << refStep << "\n";
+    CHECK(modStep <= refStep * 1.05f + 1.0e-4f,
+          name << ": a statically-modulated render introduces no discontinuity beyond "
+               << "the unmodulated baseline (mod " << modStep << " vs ref " << refStep << ")");
+
+    CHECK(maxDiff(ref, mod, kFrom) < tol,
+          name << ": a static modulated amount renders as the same static amount "
+               << "(max diff " << maxDiff(ref, mod, kFrom) << ")");
+
+    // Buffer-size independence. The control block is voice-relative, so nothing
+    // about the render may depend on how the host slices the stream.
+    juce::AudioBuffer<float> mod128 = renderMangle(mode, baseAmount, env, kN, 128);
+    CHECK(maxDiff(mod, mod128) == 0.0f,
+          name << ": a modulated render is independent of the host buffer size "
+               << "(max diff " << maxDiff(mod, mod128) << ")");
+}
+
+static void testMangleStaticModulationIsContinuous()
+{
+    std::cout << "MANGLE modulation — a static modulated amount is click-free\n";
+
+    // (a) the reported case: ENV 2 → a Sync instance's amount, held at sustain.
+    checkStaticModulationMatches("SYNC", mg::Mode::Sync, 0.0f, 0.5f, 2.0e-3f);
+    // (d) one mode from each of the other groups.
+    checkStaticModulationMatches("LPF",   mg::Mode::Lpf,  0.5f, 0.3f, 2.0e-3f);
+    checkStaticModulationMatches("TUBE",  mg::Mode::Tube, 0.0f, 0.5f, 2.0e-3f);
+    checkStaticModulationMatches("FM",    mg::Mode::Fm,   0.0f, 0.4f, 2.0e-3f);
+}
+
+static void testMangleMovingModulationIsBufferAgnostic()
+{
+    std::cout << "MANGLE modulation — a MOVING modulated amount is buffer-agnostic\n";
+
+    // The static case above proves the block-boundary seam is gone. This one
+    // proves the dezipper itself is voice-relative: an amount that is genuinely
+    // sweeping — a 40 Hz LFO steps the control block ~19 times per cycle — must
+    // still render the same stream whatever the host buffer size is, which no
+    // ramp keyed off the BUFFER could manage.
+    sm::ModConfig cfg = modConfigNoRoutes();
+    cfg.lfos[0] = constantLfo(0.0f);         // placeholder, replaced below
+    cfg.lfos[0].numPoints = 0;               // built-in sine
+    cfg.lfos[0].rateHz    = 40.0f;
+    cfg.lfos[0].behavior  = static_cast<int>(sm::LfoBehavior::Retrig);
+    addRoute(cfg, route(sm::kLfoSource0, sm::ModTarget::SlotMangleAmount,
+                        /*index=*/0, 0.45f, /*bipolar=*/false, /*stage=*/0));
+
+    constexpr int kN = 24000;
+    juce::AudioBuffer<float> a = renderMangle(mg::Mode::Sync, 0.5f, cfg, kN, 512);
+    juce::AudioBuffer<float> b = renderMangle(mg::Mode::Sync, 0.5f, cfg, kN, 128);
+    juce::AudioBuffer<float> c = renderMangle(mg::Mode::Sync, 0.5f, cfg, kN, 333);
+
+    CHECK(rmsRange(a, 0, 4096, kN - 4096) > 1e-4, "the swept render is audible");
+    CHECK(maxDiff(a, b) == 0.0f,
+          "a swept MANGLE amount renders identically at 512 and 128 samples "
+          << "(max diff " << maxDiff(a, b) << ")");
+    CHECK(maxDiff(a, c) == 0.0f,
+          "…and at a buffer size that is not a multiple of the control block "
+          << "(max diff " << maxDiff(a, c) << ")");
+}
+
+static void testMangleModulationSettlesBackToBase()
+{
+    std::cout << "MANGLE modulation — an envelope that decays to zero settles on base\n";
+
+    // The reported project's other case: ENV 2 at sustain 0%. Once the envelope
+    // reaches zero the instance must land exactly on its published amount and
+    // stay there — a dezipper that never finished, or one that left a residue,
+    // would show up as a tail that never matches the unmodulated render.
+    sm::ModConfig cfg = modConfigNoRoutes();
+    cfg.envs[1].decay.ms   = 20.0f;
+    cfg.envs[1].sustainPct = 0.0f;
+    addRoute(cfg, route(sm::kEnvSource0 + 1, sm::ModTarget::SlotMangleAmount,
+                        /*index=*/0, 0.5f, /*bipolar=*/false, /*stage=*/0));
+
+    constexpr int kN = 24000;
+    juce::AudioBuffer<float> decayed = renderMangle(mg::Mode::Sync, 0.25f, cfg, kN, 512);
+    juce::AudioBuffer<float> base    = renderMangle(mg::Mode::Sync, 0.25f,
+                                                    modConfigNoRoutes(), kN, 512);
+
+    // 20 ms decay at 48 kHz is ~960 samples; compare well past it.
+    const int from = 8000;
+    CHECK(rmsRange(base, 0, from, kN - from) > 1e-4, "the base render is audible");
+    CHECK(maxDiff(decayed, base, from) < 1e-6f,
+          "a decayed-to-zero envelope leaves the instance exactly on its base amount "
+          << "(max diff " << maxDiff(decayed, base, from) << ")");
+
+    // …and the two must genuinely have differed earlier, or the check above is
+    // measuring a route that never did anything.
+    CHECK(maxDiff(decayed, base, 0) > 1e-3f,
+          "the envelope did modulate the instance before it decayed");
+}
+
+static void testMangleParamRampIsPerSample()
+{
+    std::cout << "MANGLE modulation — the parameter ramp is per-sample, not stepped\n";
+
+    mg::State st;
+    const int n = sm::kControlBlockSamples;
+    auto design = [&](float amt, int ramp) {
+        return mg::designInstance(st, static_cast<int>(mg::Mode::HardClip),
+                                  amt, 1.0f, 440.0, 400.0, 0.0, 48000.0,
+                                  kEngineSR, /*armRamp=*/true, ramp);
+    };
+
+    mg::Runtime rt = design(0.2f, n);
+    CHECK_NEAR(rt.amount, 0.2, 1e-6, "the first design snaps to its value");
+    CHECK(rt.rampLeft == 0, "the first design arms no ramp");
+
+    rt = design(0.6f, n);
+    CHECK_NEAR(rt.amount, 0.2, 1e-6, "the ramp starts from the value already in force");
+
+    float prev = rt.amount;
+    float maxJump = 0.0f;
+    int moved = 0;
+    for (int i = 0; i < n; ++i) {
+        mg::advanceParams(rt, st);
+        const float step = std::abs(rt.amount - prev);
+        maxJump = std::max(maxJump, step);
+        if (step > 0.0f) ++moved;
+        prev = rt.amount;
+    }
+    CHECK(moved == n, "every sample of the block moved the amount (got " << moved << ")");
+    CHECK(maxJump < (0.4f / n) * 1.01f + 1e-6f,
+          "no single sample jumps more than one " << n << "th of the span "
+          << "(max jump " << maxJump << ")");
+    CHECK_NEAR(rt.amount, 0.6, 1e-6, "the ramp lands exactly on its target");
+    CHECK_NEAR(st.amtTo, 0.6, 1e-6, "the smoothed state holds the target");
+    CHECK(rt.rampLeft == 0, "the ramp is spent after exactly one control block");
+
+    // Filter coefficients ride the same ramp — a filter mode must not step its
+    // cutoff once per control block.
+    mg::State fs;
+    auto designF = [&](float amt, int ramp) {
+        return mg::designInstance(fs, static_cast<int>(mg::Mode::Lpf),
+                                  amt, 1.0f, 440.0, 400.0, 0.0, 48000.0,
+                                  kEngineSR, /*armRamp=*/true, ramp);
+    };
+    mg::Runtime f = designF(0.2f, n);
+    const float a2Start = f.a2;
+    f = designF(0.9f, n);
+    CHECK_NEAR(f.a2, a2Start, 1e-6, "the filter design starts where it left off");
+    float prevA2 = f.a2, maxA2Jump = 0.0f;
+    for (int i = 0; i < n; ++i) {
+        mg::advanceParams(f, fs);
+        maxA2Jump = std::max(maxA2Jump, std::abs(f.a2 - prevA2));
+        prevA2 = f.a2;
+    }
+    const mg::Runtime target = mg::makeRuntime(static_cast<int>(mg::Mode::Lpf),
+                                               0.9f, 1.0f, 440.0, 400.0, 0.0,
+                                               48000.0, kEngineSR);
+    CHECK_NEAR(f.a2, target.a2, 1e-6, "the coefficient ramp lands on the target design");
+    CHECK(maxA2Jump < std::abs(target.a2 - a2Start) / n * 1.01f + 1e-9f,
+          "the coefficient moves in per-sample steps, not one block-rate jump");
+}
+
+// A stable checksum of the rendered stream, so "unmodulated MANGLE is
+// bit-identical" is a claim a future change cannot quietly break.
+static uint64_t renderChecksum(const juce::AudioBuffer<float>& b)
+{
+    uint64_t h = 1469598103934665603ull;             // FNV-1a
+    for (int ch = 0; ch < b.getNumChannels(); ++ch)
+        for (int i = 0; i < b.getNumSamples(); ++i) {
+            float s = b.getSample(ch, i);
+            uint32_t bits;
+            std::memcpy(&bits, &s, sizeof(bits));
+            for (int k = 0; k < 4; ++k) {
+                h ^= static_cast<uint64_t>((bits >> (k * 8)) & 0xFFu);
+                h *= 1099511628211ull;
+            }
+        }
+    return h;
+}
+
+static void testUnmodulatedMangleIsBitIdentical()
+{
+    std::cout << "MANGLE modulation — the unmodulated render is untouched\n";
+
+    // Golden checksums captured from the build BEFORE the dezipper landed. The
+    // modulation path must not perturb a single sample of a MANGLE render that
+    // has no route on it.
+    struct Case { const char* name; mg::Mode mode; float amount; uint64_t golden; };
+    const Case cases[] = {
+        { "SYNC", mg::Mode::Sync, 0.5f,   926315976264600255ull },
+        { "LPF",  mg::Mode::Lpf,  0.8f,  4407429191224068331ull },
+        { "TUBE", mg::Mode::Tube, 0.5f, 11452566751833619907ull },
+        { "FM",   mg::Mode::Fm,   0.4f, 18132423014153668871ull },
+    };
+
+    const sm::ModConfig none = modConfigNoRoutes();
+    for (const auto& c : cases) {
+        juce::AudioBuffer<float> out = renderMangle(c.mode, c.amount, none, 24000, 512);
+        const uint64_t got = renderChecksum(out);
+        std::cout << "    golden[" << c.name << "] = " << got << "ull\n";
+        if (c.golden != 0ull)
+            CHECK(got == c.golden,
+                  c.name << ": unmodulated MANGLE render is bit-identical "
+                         << "(got " << got << ", want " << c.golden << ")");
+    }
+
+    // A route that exists but carries a zero offset must also degenerate to the
+    // unmodulated render EXACTLY — the dezipper may not add a floor.
+    juce::AudioBuffer<float> plain = renderMangle(mg::Mode::Sync, 0.5f, none, 24000, 512);
+    juce::AudioBuffer<float> zeroRoute = renderMangle(
+        mg::Mode::Sync, 0.5f, modConfigStaticEnvToMangleAmount(0.0f), 24000, 512);
+    CHECK(maxDiff(plain, zeroRoute) == 0.0f,
+          "a zero-amount MANGLE route renders bit-identically to no route "
+          << "(max diff " << maxDiff(plain, zeroRoute) << ")");
+}
+
 // ─── main ────────────────────────────────────────────────────────────────────
 
 int main()
@@ -1563,6 +1879,11 @@ int main()
 
     testEmptyConfigIsExactBypass();
     testMangleInstanceRouting();
+    testMangleStaticModulationIsContinuous();
+    testMangleMovingModulationIsBufferAgnostic();
+    testMangleModulationSettlesBackToBase();
+    testMangleParamRampIsPerSample();
+    testUnmodulatedMangleIsBitIdentical();
     testAmpEnvViaEnv1MatchesSetEnvelope();
     testAudibleVibrato();
     testMasterVolumeAndPanTargets();

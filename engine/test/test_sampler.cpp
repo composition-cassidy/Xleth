@@ -13,6 +13,7 @@
 
 #include <cmath>
 #include <iostream>
+#include <memory>
 #include <string>
 #include <vector>
 
@@ -521,52 +522,35 @@ static void testCombinedTuningRatio()
     // roughly double the zero-crossing count of the untuned slot.
     auto src = makeSine(kEngineSR, 440.0, static_cast<int>(kEngineSR));
 
-    Sampler base;
-    base.loadSample(src, kEngineSR, 69);
-    base.setADSR(0, 0, 1.0f, 0);
-    base.setCrossfadeMode(false);
-    base.noteOn(69, 1.0f);
-    const int zcBase = countZeroCrossings(render(base, 4096), 128, 3840);
+    // One Sampler at a time, on the heap. A Sampler is ~200 KB — five of them
+    // live in one frame is most of a 1 MB stack, and this test used to sit right
+    // on that edge.
+    auto pitchOf = [&](int octave, int semitone, float fine, int coarse) {
+        auto s = std::make_unique<Sampler>();
+        s->loadSample(src, kEngineSR, 69);
+        s->setADSR(0, 0, 1.0f, 0);
+        s->setCrossfadeMode(false);
+        s->setSlotTuning(0, octave, semitone, fine, coarse);
+        s->noteOn(69, 1.0f);
+        return countZeroCrossings(render(*s, 4096), 128, 3840);
+    };
 
-    Sampler up;
-    up.loadSample(src, kEngineSR, 69);
-    up.setADSR(0, 0, 1.0f, 0);
-    up.setCrossfadeMode(false);
+    const int zcBase = pitchOf(0, 0, 0.0f, 0);
     // 1 octave expressed four different ways must all land on the same pitch.
-    up.setSlotTuning(0, 1, 0, 0.0f, 0);
-    up.noteOn(69, 1.0f);
-    const int zcOct = countZeroCrossings(render(up, 4096), 128, 3840);
+    const int zcOct = pitchOf(1, 0, 0.0f, 0);
     CHECK(zcOct > zcBase * 1.8 && zcOct < zcBase * 2.2,
           "tuning: octave=+1 doubles the pitch");
 
-    Sampler up2;
-    up2.loadSample(src, kEngineSR, 69);
-    up2.setADSR(0, 0, 1.0f, 0);
-    up2.setCrossfadeMode(false);
-    up2.setSlotTuning(0, 0, 12, 0.0f, 0);          // 12 semitones
-    up2.noteOn(69, 1.0f);
-    const int zcSem = countZeroCrossings(render(up2, 4096), 128, 3840);
+    const int zcSem = pitchOf(0, 12, 0.0f, 0);     // 12 semitones
     CHECK(std::abs(zcSem - zcOct) <= 2,
           "tuning: semitone=+12 equals octave=+1");
 
-    Sampler up3;
-    up3.loadSample(src, kEngineSR, 69);
-    up3.setADSR(0, 0, 1.0f, 0);
-    up3.setCrossfadeMode(false);
-    up3.setSlotTuning(0, 0, 0, 0.0f, 12);          // 12 coarse
-    up3.noteOn(69, 1.0f);
-    const int zcCoarse = countZeroCrossings(render(up3, 4096), 128, 3840);
+    const int zcCoarse = pitchOf(0, 0, 0.0f, 12);  // 12 coarse
     CHECK(std::abs(zcCoarse - zcOct) <= 2,
           "tuning: coarse=+12 equals octave=+1");
 
-    Sampler mixed;
-    mixed.loadSample(src, kEngineSR, 69);
-    mixed.setADSR(0, 0, 1.0f, 0);
-    mixed.setCrossfadeMode(false);
     // +6 semitones and +600 cents-worth of coarse/fine also sum to one octave.
-    mixed.setSlotTuning(0, 0, 6, 100.0f, 5);       // 6 + 5 + 1.00 = 12
-    mixed.noteOn(69, 1.0f);
-    const int zcMixed = countZeroCrossings(render(mixed, 4096), 128, 3840);
+    const int zcMixed = pitchOf(0, 6, 100.0f, 5);  // 6 + 5 + 1.00 = 12
     CHECK(std::abs(zcMixed - zcOct) <= 2,
           "tuning: sem+fine+coarse summing to 12 equals octave=+1");
 }
@@ -748,6 +732,115 @@ static void testStreamCapAndNoteStealing()
     }
 }
 
+// ─── Mono: back-to-back sequenced notes ──────────────────────────────────────
+//
+// A pattern whose notes are butted end to end dispatches noteOff(prev) and
+// noteOn(next) on the SAME tick, in that order (MixEngine sorts NoteOff before
+// NoteOn at equal tick) and therefore inside the same buffer at the same sample
+// offset. Every one of those notes must sound. The bug this guards: in MONO the
+// second note reused the still-active voice while that voice was carrying a
+// DEFERRED release stamp from the note-off, so it was released on the very
+// sample it started — every other note in a run went silent, while POLY with
+// voiceCount 1 played them all.
+static void testMonoButtedNotesAllSound()
+{
+    std::cout << "[21] Mono: butted sequenced notes all sound\n";
+
+    auto src = makeSine(kEngineSR, 440.0, static_cast<int>(kEngineSR));
+
+    // One block containing the note-off of `prevNote` and the note-on of
+    // `nextNote` at the same sample offset, exactly as MixEngine emits them.
+    auto renderButtedBlock = [](Sampler& s, int prevNote, int nextNote,
+                                int offset, int blockLen) {
+        juce::AudioBuffer<float> out(2, blockLen);
+        out.clear();
+        s.noteOff(prevNote, offset, /*force=*/true);
+        s.noteOn(nextNote, 1.0f, offset);
+        s.processBlock(out, blockLen, kEngineSR);
+        return out;
+    };
+
+    // Release is 0 ms, so a wrongly-released voice is instantly and totally
+    // silent — the assertion cannot be satisfied by a decaying tail.
+    auto configure = [&src](Sampler& s, bool mono, bool legato) {
+        s.loadSample(src, kEngineSR, 69);
+        s.setADSR(0.0f, 0.0f, 1.0f, 0.0f);
+        s.setCrossfadeMode(true);
+        s.setVoiceCount(1);
+        s.setMonoMode(mono);
+        s.setLegato(legato);
+    };
+
+    const int kBlock  = 512;
+    const int kOffset = 100;
+
+    // MONO + LEGATO — the reported configuration.
+    {
+        Sampler s;
+        configure(s, /*mono=*/true, /*legato=*/true);
+
+        s.noteOn(60, 1.0f, 0);
+        auto first = render(s, kBlock);
+        CHECK(peakAbs(first, 0, kBlock) > 0.1f, "mono/legato: note 1 sounds");
+
+        auto second = renderButtedBlock(s, 60, 64, kOffset, kBlock);
+        CHECK(peakAbs(second, kOffset + 20, kBlock - kOffset - 20) > 0.1f,
+              "mono/legato: note 2 sounds (butted against note 1)");
+
+        // The run must not alternate: a third and fourth butted note sound too.
+        auto third = renderButtedBlock(s, 64, 67, kOffset, kBlock);
+        CHECK(peakAbs(third, kOffset + 20, kBlock - kOffset - 20) > 0.1f,
+              "mono/legato: note 3 sounds");
+        auto fourth = renderButtedBlock(s, 67, 71, kOffset, kBlock);
+        CHECK(peakAbs(fourth, kOffset + 20, kBlock - kOffset - 20) > 0.1f,
+              "mono/legato: note 4 sounds");
+    }
+
+    // MONO without legato — same path, same requirement.
+    {
+        Sampler s;
+        configure(s, /*mono=*/true, /*legato=*/false);
+
+        s.noteOn(60, 1.0f, 0);
+        (void)render(s, kBlock);
+        auto second = renderButtedBlock(s, 60, 64, kOffset, kBlock);
+        CHECK(peakAbs(second, kOffset + 20, kBlock - kOffset - 20) > 0.1f,
+              "mono: note 2 sounds without legato");
+    }
+
+    // POLY with one voice is the user-visible control case: it always worked,
+    // and mono must not differ from it here.
+    {
+        Sampler s;
+        configure(s, /*mono=*/false, /*legato=*/false);
+
+        s.noteOn(60, 1.0f, 0);
+        (void)render(s, kBlock);
+        auto second = renderButtedBlock(s, 60, 64, kOffset, kBlock);
+        CHECK(peakAbs(second, kOffset + 20, kBlock - kOffset - 20) > 0.1f,
+              "poly(1): note 2 sounds (control case)");
+    }
+
+    // A genuinely OVERLAPPING note — no note-off in between — is still a legato
+    // retune: one continuous voice, no second voice spawned.
+    {
+        Sampler s;
+        configure(s, /*mono=*/true, /*legato=*/true);
+
+        s.noteOn(60, 1.0f, 0);
+        (void)render(s, kBlock);
+
+        juce::AudioBuffer<float> out(2, kBlock);
+        out.clear();
+        s.noteOn(64, 1.0f, kOffset);       // 60 still held
+        s.processBlock(out, kBlock, kEngineSR);
+        CHECK(peakAbs(out, kOffset + 20, kBlock - kOffset - 20) > 0.1f,
+              "mono/legato: overlapping note sounds");
+        CHECK(s.countHeldVoices() == 1,
+              "mono/legato: overlapping note retunes one voice, no respawn");
+    }
+}
+
 // ─── Main ────────────────────────────────────────────────────────────────────
 
 int main()
@@ -780,6 +873,9 @@ int main()
     testLayeredNoteSpawnsStreamPerSlot();
     testMuteSolo();
     testStreamCapAndNoteStealing();
+
+    // Mono voice mode
+    testMonoButtedNotesAllSound();
 
     std::cout << "\n";
     if (g_failed == 0)

@@ -4,6 +4,15 @@ import {
   NUM_ENVS, NUM_LFOS, NOTEVAL_OFF, BEHAVIOR_FREE,
   ENV_SOURCE_0, LFO_SOURCE_0, routeReferencesSource,
 } from '../components/sampler/modulation/modConstants.js'
+import {
+  routeKey, isRouteValid, sourceIsBipolarNatural,
+  TARGET_SLOT_MANGLE_AMOUNT, TARGET_SLOT_MANGLE_MIX,
+} from '../components/sampler/modulation/modTargets.js'
+
+// Amount a freshly dropped route starts at. Big enough that the ring is visibly
+// there the moment the card lands (the whole point of drag-to-route), small
+// enough that the drop is not itself a drastic sound change.
+export const DEFAULT_ROUTE_AMOUNT = 0.25
 
 // ── Sampler modulation store ─────────────────────────────────────────────────
 // Holds ONE region's modulation config (6 ENV + 6 LFO + VELO + NOTE + routes)
@@ -181,6 +190,99 @@ const useSamplerModulationStore = create((set, get) => ({
     set({ config: { ...cfg, envPresent, routes } })
     return get().commit()
   },
+  // ── Routes ─────────────────────────────────────────────────────────────────
+  // Every mutation here rewrites the route list and commits ONCE, so the
+  // engine's SetSamplerSettingsCommand captures the whole change as a single
+  // undoable step — one Ctrl+Z removes a dropped route, restores a deleted one,
+  // or puts an amount back.
+  //
+  // A control holds at most one route per SOURCE: dropping the same source on a
+  // knob it already drives is a no-op rather than a second stacked route, which
+  // is the only reading under which the ring means anything.
+  addRoute: (source, reg) => {
+    const cfg = get().config
+    if (!cfg || !reg) return null
+    const route = {
+      source,
+      target: reg.target,
+      index: reg.index ?? 0,
+      stage: reg.stage ?? 0,
+      amount: DEFAULT_ROUTE_AMOUNT,
+      bipolar: sourceIsBipolarNatural(source),
+    }
+    if (!isRouteValid(route)) {
+      console.warn('[samplerMod] refusing an invalid route:', route)
+      return null
+    }
+    const key = routeKey(route)
+    if (cfg.routes.some((r) => r.source === source && routeKey(r) === key)) return null
+    set({ config: { ...cfg, routes: [...cfg.routes, route] } })
+    get().commit()
+    return route
+  },
+
+  // Local preview during a ring drag — no IPC until the pointer comes up.
+  previewRouteAmount: (i, amount) => set((s) => {
+    if (!s.config || !s.config.routes[i]) return s
+    const routes = s.config.routes.slice()
+    routes[i] = { ...routes[i], amount: Math.max(-1, Math.min(1, amount)) }
+    return { config: { ...s.config, routes } }
+  }),
+
+  setRouteAmount: (i, amount) => {
+    get().previewRouteAmount(i, amount)
+    return get().commit()
+  },
+
+  toggleRouteBipolar: (i) => {
+    const cfg = get().config
+    if (!cfg || !cfg.routes[i]) return
+    const routes = cfg.routes.slice()
+    routes[i] = { ...routes[i], bipolar: !routes[i].bipolar }
+    set({ config: { ...cfg, routes } })
+    return get().commit()
+  },
+
+  // ── MANGLE chain edits move the targets under the routes ───────────────────
+  // A MANGLE route addresses its knob POSITIONALLY: {target: AMOUNT|MIX,
+  // index: slot, stage: chain instance}. Nothing in that tuple names the effect,
+  // so reordering the chain silently hands instance 0's routes to whatever mode
+  // moved into position 0 — the "Asym − stole the envelope from Sync" bug. The
+  // chain editor therefore has to move the routes with the instances: this walks
+  // the slot's MANGLE routes through the same permutation the chain took.
+  //
+  //   mapStage(oldStage) -> newStage, or a negative value to DROP the route
+  //                         (the instance it drove no longer exists).
+  //
+  // Commits once, like every other route mutation, so the remap and the chain
+  // edit that caused it land as adjacent undo steps rather than a torn state.
+  remapMangleStages: (slotIndex, mapStage) => {
+    const cfg = get().config
+    if (!cfg || typeof mapStage !== 'function') return
+    let changed = false
+    const routes = []
+    for (const r of cfg.routes) {
+      const isMangle = r.target === TARGET_SLOT_MANGLE_AMOUNT || r.target === TARGET_SLOT_MANGLE_MIX
+      if (!isMangle || (r.index ?? 0) !== slotIndex) { routes.push(r); continue }
+      const from = r.stage ?? 0
+      const to = mapStage(from)
+      if (typeof to !== 'number' || to < 0) { changed = true; continue }   // dropped
+      if (to === from) { routes.push(r); continue }
+      routes.push({ ...r, stage: to })
+      changed = true
+    }
+    if (!changed) return
+    set({ config: { ...cfg, routes } })
+    return get().commit()
+  },
+
+  removeRoute: (i) => {
+    const cfg = get().config
+    if (!cfg || !cfg.routes[i]) return
+    set({ config: { ...cfg, routes: cfg.routes.filter((_, j) => j !== i) } })
+    return get().commit()
+  },
+
   addLfo: () => {
     const cfg = get().config
     if (!cfg) return

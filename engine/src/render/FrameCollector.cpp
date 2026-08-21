@@ -400,8 +400,16 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
                     const CellAnimation* anim = animationMgr_->getAnimation(trackId);
                     if (!anim || ev->globalNoteIndex != anim->activeNoteId) {
                         animationMgr_->onSlideReturnTrigger(trackId);
+                        // Gate length for LengthMode::Note: ev->durationBeats is
+                        // this note's own duration, already in scope here (read
+                        // above for fade-gain) — converted to ms via the same
+                        // bpm used for every other time->beat conversion in this
+                        // function.
+                        const float noteDurationMs =
+                            static_cast<float>(ev->durationBeats * (60000.0 / bpm));
                         animationMgr_->onNoteStart(trackId, ev->globalNoteIndex,
-                                                   trk->zoomPanRot, trk->bounce);
+                                                   trk->zoomPanRot, trk->bounce,
+                                                   bpm, noteDurationMs);
                     }
                 }
             }

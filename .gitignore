@@ -133,13 +133,31 @@ art/
 /XlethSampler.jsx
 
 # Root internal planning/audit/spec docs
-/ARCHITECTURE_AUDIT.md
-/BUILD_DIAGNOSIS.md
-/BUILD_VERIFY.md
-/DEP_AUDIT.md
-/LMMS_ANALYSIS.md
-/PHASE 1 BUGS.md
-/PIANOROLLDIAGNOSTIC.md
-/XLETH_VS_LMMS_AUDIT.md
-/midi-import-v1-spec.md
 /xleth-*.md
+
+# --- Non-source content (specs, prompts, design, diagnostics, datasets) ---
+# Spec/audit/prompt docs moved out of root
+/docs/
+# Diagnostic captures & status dumps
+/diagnostics/
+# Claude Code / external-agent prompt packs & handoff docs
+/apex-gloss/
+/phanjer/
+/uniflange/
+# Design mockups & screenshots (not shipped source)
+/EQ UI/
+/theme-screenshots/
+/brightnessdebug/
+/iconvectors/
+# Font binaries
+/fonts/
+# Log/output dumps & captured terminal text
+/logs/
+# Zips & patch backups (extracted copies live in-tree)
+/archives/
+# Test scratch projects / one-off verification
+/buffer test/
+/portable-verify/
+# Prompt-related scripts moved into scripts/
+/scripts/slider_prompts_docx.py
+/scripts/XlethSampler.jsx

@@ -1,0 +1,49 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "xform",
+  "name": "Shake",
+  "author": "XLETH",
+  "created": "2026-08-17T00:00:00.000Z",
+  "state": {
+    "tracks": {
+      "panX": {
+        "constantValue": 0,
+        "keys": [
+          { "t": 0,    "v": 0 },
+          { "t": 0.15, "v": 0.06 },
+          { "t": 0.3,  "v": -0.05 },
+          { "t": 0.45, "v": 0.04 },
+          { "t": 0.6,  "v": -0.03 },
+          { "t": 0.8,  "v": 0.015 },
+          { "t": 1,    "v": 0 }
+        ]
+      },
+      "panY": {
+        "constantValue": 0,
+        "keys": [
+          { "t": 0,   "v": 0 },
+          { "t": 0.2, "v": -0.03 },
+          { "t": 0.4, "v": 0.025 },
+          { "t": 0.6, "v": -0.02 },
+          { "t": 0.8, "v": 0.01 },
+          { "t": 1,   "v": 0 }
+        ]
+      },
+      "zoomLog2": {
+        "constantValue": 0,
+        "keys": [
+          { "t": 0, "v": 0 },
+          { "t": 1, "v": 0 }
+        ]
+      },
+      "rotationDeg": { "constantValue": 0, "keys": [] }
+    },
+    "lengthMode": 0,
+    "musicalDivision": 2,
+    "notePercentage": 100,
+    "onEndMode": 1,
+    "retriggerMode": 0,
+    "retriggerCrossfadeMs": 50,
+    "durationMs": 220
+  }
+}

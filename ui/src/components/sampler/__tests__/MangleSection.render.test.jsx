@@ -15,6 +15,10 @@ import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import SamplerPanelContent from '../SamplerPanelContent.jsx'
+import useSamplerModulationStore from '../../../stores/samplerModulationStore.js'
+import {
+  TARGET_SLOT_MANGLE_AMOUNT, TARGET_SLOT_MANGLE_MIX, TARGET_SLOT_SEM,
+} from '../modulation/modTargets.js'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
@@ -55,6 +59,8 @@ function makeSlot(overrides = {}) {
 let container = null
 let root = null
 let commits = []
+// Routes the stubbed bridge hands back to the modulation store (see seedRoutes).
+let modRoutes = []
 
 // The stub must APPLY writes, not just record them. Every commit re-fetches
 // the region, so a stub that swallowed the patch would silently revert the
@@ -63,6 +69,7 @@ let commits = []
 // array replaces the list, otherwise the flat keys patch slot `slotIndex`.
 function installXleth(initialSlots) {
   commits = []
+  modRoutes = []
   let slots = initialSlots.map((s) => ({ ...s }))
 
   globalThis.window.xleth = {
@@ -85,6 +92,14 @@ function installXleth(initialSlots) {
           if (slots[slotIndex]) slots[slotIndex] = { ...slots[slotIndex], ...flat }
         }
         return true
+      },
+      getSamplerModulation: async () => ({ routes: modRoutes.map((r) => ({ ...r })) }),
+      // Applies the write, like the slot stub above: a commit re-dispatches
+      // timeline-sampler-changed and the tray reloads, so a stub that dropped
+      // the payload would silently revert every route mutation under test.
+      setSamplerModulation: async (_id, cfg) => {
+        modRoutes = (cfg.routes || []).map((r) => ({ ...r }))
+        return { routeCount: modRoutes.length, rejectedRoutes: 0 }
       },
       previewNote: () => {}, previewNoteOff: () => {},
       getSlotBakeStatus: async () => ({ pending: [], changed: false }),
@@ -289,6 +304,56 @@ describe('MANGLE section renders', () => {
 
     const write = lastCommit('mangleChain')
     expect(write.payload.mangleChain.map((m) => m.mode)).toEqual([14, 20])
+  })
+
+  // ── Routes follow their instance ───────────────────────────────────────────
+  // A MANGLE route addresses its knob by chain POSITION ({target, slot, stage}),
+  // so a chain edit that leaves the routes alone re-points them at whatever mode
+  // moved into that position: reorder SYNC/ASYM and the envelope driving SYNC's
+  // AMOUNT ends up driving ASYM's. These drive the real reorder / remove
+  // controls and read the store the tray and the rings read.
+  // Seed through the store's own load(), not setState: the tray's mount also
+  // loads, and a raw setState would be quietly overwritten when that resolves.
+  async function seedRoutes(routes) {
+    modRoutes = routes
+    await act(async () => { await useSamplerModulationStore.getState().load(REGION_ID) })
+  }
+  const storedRoutes = () => useSamplerModulationStore.getState().config.routes
+
+  it('carries a MANGLE route with its instance across a reorder', async () => {
+    // 1 = Sync (routed), 7 = Asym −.
+    await mount([makeSlot({ mangleChain: [inst(1, 0.5, 1), inst(7, 1, 1)] })])
+    await seedRoutes([
+      { source: 0, target: TARGET_SLOT_MANGLE_AMOUNT, index: 0, stage: 0, amount: 0.5, bipolar: false },
+      { source: 0, target: TARGET_SLOT_SEM,           index: 0, stage: 0, amount: 0.5, bipolar: false },
+    ])
+
+    // Move Sync (row 0) down: the chain becomes [Asym −, Sync].
+    await act(async () => { rows()[0].querySelectorAll('.sampler-mangle-move')[1].click() })
+    await act(async () => { await Promise.resolve() })
+
+    expect(lastCommit('mangleChain').payload.mangleChain.map((m) => m.mode)).toEqual([7, 1])
+    // The route followed SYNC to position 1 instead of staying on position 0,
+    // where ASYM − would have inherited it.
+    expect(storedRoutes()[0].stage).toBe(1)
+    // A non-MANGLE route on the same slot is untouched.
+    expect(storedRoutes()[1].target).toBe(TARGET_SLOT_SEM)
+    expect(storedRoutes()[1].stage).toBe(0)
+  })
+
+  it('drops the routes of a deleted instance and shifts the later ones down', async () => {
+    await mount([makeSlot({ mangleChain: [inst(1, 0.5, 1), inst(7, 1, 1)] })])
+    await seedRoutes([
+      { source: 0, target: TARGET_SLOT_MANGLE_AMOUNT, index: 0, stage: 0, amount: 0.5, bipolar: false },
+      { source: 1, target: TARGET_SLOT_MANGLE_MIX,    index: 0, stage: 1, amount: 0.5, bipolar: false },
+    ])
+
+    await act(async () => { rows()[0].querySelector('.sampler-mangle-remove').click() })
+    await act(async () => { await Promise.resolve() })
+
+    expect(storedRoutes()).toHaveLength(1)
+    expect(storedRoutes()[0].target).toBe(TARGET_SLOT_MANGLE_MIX)
+    expect(storedRoutes()[0].stage).toBe(0)
   })
 
   it('shows the ordered chain summary for multiple active instances', async () => {

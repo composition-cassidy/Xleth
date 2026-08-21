@@ -133,11 +133,19 @@ window.xleth = ({
     // mutation surface come from the RPC manifest (attachRpcWrappers below). The
     // region / syllable / pattern / pattern-block / single-note pass-throughs and
     // fsc.parse also come from the manifest now (S1 slice 4). Still hand-written
-    // here: addClipsBatch / spliceClipsAtPlayhead and the *Batch note ops (batch
+    // here: addClipsBatch / pasteClipsBatch / moveClipsBatch / removeClipsBatch /
+    // spliceClipsAtPlayhead and the *Batch note ops (batch
     // ops), plus autoTrimClip (thresholdDb=-54) and previewNote (velocity=0.8) —
     // their preload defaults would be lost by the generic manifest wrapper.
     // See docs/rpc-manifest.md.
     addClipsBatch:    (clips)               => invoke('xleth:timeline:addClipsBatch', clips),
+    // pasteClipsBatch({ removeClipIds, clips }) — overwrite + insert as ONE
+    // undoable operation; { newIds, removedCount } back.
+    pasteClipsBatch:  (spec)                => invoke('xleth:timeline:pasteClipsBatch', spec),
+    // moves: [{ clipId, trackId, positionTicks }, ...] — one round trip, one
+    // undo entry. removeClipsBatch: [id, ...], same deal.
+    moveClipsBatch:   (moves)               => invoke('xleth:timeline:moveClipsBatch', moves),
+    removeClipsBatch: (ids)                 => invoke('xleth:timeline:removeClipsBatch', ids),
     removeClip:       (id)                  => invoke('xleth:timeline:removeClip', id),
     moveClip:         (id, trackId, pos)    => invoke('xleth:timeline:moveClip', id, trackId, pos),
     resizeClip:       (id, dur)             => invoke('xleth:timeline:resizeClip', id, dur),
@@ -471,6 +479,18 @@ window.xleth = ({
     load:   (effectType, source, slug)   => invoke('xleth:fxPreset:load', effectType, source, slug),
     save:   (preset)                     => invoke('xleth:fxPreset:save', preset),
     delete: (effectType, slug)           => invoke('xleth:fxPreset:delete', effectType, slug),
+  },
+
+  // ── FX Chain Library (a whole mixer strip's effect chain) ──────────────────
+  // Separate root from fxPresets above: userData/fx-chains/[<folder>/]<slug>.json.
+  // `list` returns light metadata only (name, plugin ids, counts) so opening the
+  // menu never reads every snapshot; `load` fetches the one chain being applied.
+  fxChains: {
+    list:       ()              => invoke('xleth:fxChain:list'),
+    load:       (folder, slug)  => invoke('xleth:fxChain:load', folder, slug),
+    save:       (chain, folder) => invoke('xleth:fxChain:save', chain, folder),
+    delete:     (folder, slug)  => invoke('xleth:fxChain:delete', folder, slug),
+    openFolder: ()              => invoke('xleth:fxChain:openFolder'),
   },
 
   // ── Stock plugin UI layouts ───────────────────────────────────────────────

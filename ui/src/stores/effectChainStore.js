@@ -33,6 +33,7 @@ import {
   isParameterEdge,
   updateGraphMacroValue,
   renameGraphMacroNode,
+  setGraphEffectNodeBypass,
   toggleExposedParameterPort,
   updateParameterEdgeMapping,
   // FXG-SC.6B — Sidechain Input node + sidechain edge mutations
@@ -1166,6 +1167,66 @@ async function captureParameterValueForUndo(get, key, graphState, connectionDraf
   }
 }
 
+// Resolve a graph effect's engine nodeId: this session's adoption/hydration mapping
+// first, then the engine's own lookup (a reloaded project has no session mapping until
+// something asks for it). A resolved id is cached back into the session map.
+async function resolveGraphEngineNodeId(set, get, key, effectInstanceId, options = {}) {
+  if (typeof effectInstanceId !== 'string' || effectInstanceId.length === 0) return null
+  const cached = getSessionEngineNodeId(get(), key, effectInstanceId)
+  if (cached != null) return cached
+
+  const lookup = options.getGraphEffectEngineNodeId ?? defaultAudioApi().getGraphEffectEngineNodeId
+  if (typeof lookup !== 'function') return null
+  try {
+    const resolved = normalizeEngineNodeId(await lookup(Number(key), effectInstanceId))
+    if (resolved == null) return null
+    setSessionEngineNodeId(set, key, effectInstanceId, resolved)
+    return resolved
+  } catch (e) {
+    ;(options.warn ?? console.warn)?.('[FXG] engine nodeId lookup failed', {
+      trackId: key,
+      effectInstanceId,
+      error: e?.message ?? e,
+    })
+    return null
+  }
+}
+
+// Push every effect node's persisted bypass flag onto its engine processor. The graph
+// topology payload carries no bypass, so the flag would otherwise be renderer-only:
+// a bypassed effect would come back processing audio after a project load or an undo
+// while the node still reads "Bypassed". Nodes with no resolvable engine processor
+// (placeholder/missing/not yet hydrated) are skipped.
+async function applyGraphBypassStates(set, get, key, graphState, options = {}) {
+  const effectNodes = Array.isArray(graphState?.nodes)
+    ? graphState.nodes.filter((node) => node?.type === 'effect')
+    : []
+  if (effectNodes.length === 0) return []
+
+  const setEffectBypass = options.setEffectBypass ?? defaultAudioApi().setEffectBypass
+  if (typeof setEffectBypass !== 'function') return []
+
+  const applied = []
+  for (const node of effectNodes) {
+    const engineNodeId = await resolveGraphEngineNodeId(
+      set, get, key, node?.data?.effectInstanceId, options,
+    )
+    if (engineNodeId == null) continue
+    const bypassed = node?.data?.bypass === true
+    try {
+      await setEffectBypass(Number(key), engineNodeId, bypassed)
+      applied.push({ engineNodeId, bypassed })
+    } catch (e) {
+      ;(options.warn ?? console.warn)?.('[FXG] graph bypass apply failed', {
+        trackId: key,
+        engineNodeId,
+        error: e?.message ?? e,
+      })
+    }
+  }
+  return applied
+}
+
 // FXG.4-f — after project-load hydration, apply each macro's current value to its
 // connected parameters so a freshly loaded graph reflects saved macro positions.
 // Runs only after graph-owned effect processors are instantiated; unavailable
@@ -1615,11 +1676,14 @@ const useEffectChainStore = create((set, get) => ({
       // FXG.4-f — apply saved macro values to connected parameters now that the
       // graph-owned effect processors exist. Best-effort; never blocks hydration.
       const macroDrives = await driveAllMacroParameterEdges(get, key, graphState, options)
+      // The topology payload carries no bypass, so a saved bypassed node would come
+      // back processing audio. Re-apply each node's persisted flag to its processor.
+      const bypassApplies = await applyGraphBypassStates(set, get, key, graphState, options)
       // FXG-SC.6C — graph-owned effects are now hydrated, so the native sidechain
       // resolver can resolve them: rebind the derived sidechain route(s) + sc_external
       // from the persisted graph intent. Best-effort; never blocks hydration.
       const sidechainSync = await reconcileGraphSidechainRoutes(set, get, key, options)
-      results[key] = { ...result, runtimeSync, macroDrives, sidechainSync: sidechainSync.status }
+      results[key] = { ...result, runtimeSync, macroDrives, bypassApplies, sidechainSync: sidechainSync.status }
 
       if (!result.ok || result.failures.length > 0) {
         warn?.('[FXG] graph-owned effect hydration incomplete', {
@@ -2032,6 +2096,9 @@ const useEffectChainStore = create((set, get) => ({
     // the restores only ever target ports whose driving edge is now gone.
     await driveAllMacroParameterEdges(get, access.key, applied.graphState, options)
     await applyUndoParameterWrites(get, access.key, transaction.undoParameterWrites, options)
+    // Bypass lives on the processor, not in the topology payload the transition
+    // re-syncs, so the restored graph's flags have to be pushed back to the engine.
+    await applyGraphBypassStates(set, get, access.key, applied.graphState, options)
 
     set((state) => {
       const currentHistory = normalizeGraphHistory(state.graphHistories?.[access.key])
@@ -2081,6 +2148,8 @@ const useEffectChainStore = create((set, get) => ({
     // redone macro link would sit on a live edge that has not written anything, so
     // the parameter would keep the restored value until the macro next moved.
     await driveAllMacroParameterEdges(get, access.key, applied.graphState, options)
+    // Same reason as undo: the processor's bypass is not part of the topology sync.
+    await applyGraphBypassStates(set, get, access.key, applied.graphState, options)
 
     set((state) => {
       const currentHistory = normalizeGraphHistory(state.graphHistories?.[access.key])
@@ -2384,6 +2453,57 @@ const useEffectChainStore = create((set, get) => ({
         set,
         access.key,
         'rename_graph_macro_node',
+        access.graphState,
+        applied.graphState,
+      )
+    }
+    return applied
+  },
+
+  // The effect node's bypass toggle. Graph-owned effects are backed by the same
+  // per-node engine processors Mixer Chain drives, so bypass rides the existing
+  // audio.setEffectBypass path on the resolved engine nodeId; graphState's
+  // data.bypass is the persisted mirror the node badge and the project file read.
+  // The engine write happens FIRST and a failure aborts the flag flip, so the node
+  // never advertises a state the audio is not actually in.
+  setGraphEffectBypassForTrack: async (trackId, nodeId, bypassed, options = {}) => {
+    const access = readGraphStateForMutation(get(), trackId)
+    if (!access.ok) return access
+
+    const mutation = setGraphEffectNodeBypass(access.graphState, nodeId, bypassed)
+    if (!mutation.ok) return mutation
+
+    const node = access.graphState.nodes.find((n) => n.id === nodeId)
+    const engineNodeId = await resolveGraphEngineNodeId(
+      set, get, access.key, node?.data?.effectInstanceId, options,
+    )
+    if (engineNodeId == null) return { ok: false, reason: 'engine_unavailable' }
+
+    const setEffectBypass = options.setEffectBypass ?? defaultAudioApi().setEffectBypass
+    if (typeof setEffectBypass !== 'function') return { ok: false, reason: 'engine_unavailable' }
+    try {
+      const ok = await setEffectBypass(Number(access.key), engineNodeId, bypassed === true)
+      if (ok === false) return { ok: false, reason: 'engine_bypass_failed' }
+    } catch (e) {
+      ;(options.warn ?? console.warn)?.('[FXG] graph bypass toggle failed', {
+        trackId: access.key,
+        engineNodeId,
+        error: e?.message ?? e,
+      })
+      return { ok: false, reason: 'engine_bypass_failed' }
+    }
+
+    const applied = await applyGraphStateMutation(
+      set,
+      access.key,
+      mutation.graphState,
+      { ...options, syncRuntime: false },
+    )
+    if (applied.ok) {
+      recordGraphEditTransaction(
+        set,
+        access.key,
+        'set_graph_effect_bypass',
         access.graphState,
         applied.graphState,
       )

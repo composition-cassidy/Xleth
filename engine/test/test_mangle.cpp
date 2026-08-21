@@ -1010,6 +1010,72 @@ static void testChainMigrationRoundtrip()
     CHECK(maxDiff(a, dry) > 0.02, "the migrated HARD CLIP should change the signal (else vacuous)");
 }
 
+static void testChainPositionModesCompose()
+{
+    std::cout << "TEST: chained position modes compose (SYNC -> ASYM+ is not ASYM+ alone)\n";
+
+    const auto pcm = makeSine(kEngineSR, 220.0, 48000, 0.5f);
+    constexpr int N = 8192;
+
+    const mg::InstanceConfig sync{ static_cast<int>(mg::Mode::Sync),     0.6f, 1.0f, false };
+    const mg::InstanceConfig asym{ static_cast<int>(mg::Mode::AsymPlus), 0.8f, 1.0f, false };
+
+    auto dry      = renderChain(pcm, {},             { 60 }, N);
+    auto syncOnly = renderChain(pcm, { sync },       { 60 }, N);
+    auto asymOnly = renderChain(pcm, { asym },       { 60 }, N);
+    auto both     = renderChain(pcm, { sync, asym }, { 60 }, N);
+
+    CHECK(allFinite(both), "chained position modes produced non-finite output");
+
+    // The defect this test exists for: every instance used to bend the CANONICAL
+    // head, so instance 2 re-read the source at a position that had never seen
+    // instance 1 and — at the default mix of 1.0 — simply replaced its output.
+    // The chain sounded exactly like its last position instance.
+    CHECK(maxDiff(both, asymOnly) > 0.02,
+          "SYNC->ASYM+ must not equal ASYM+ alone (the later instance is overwriting), diff "
+          << maxDiff(both, asymOnly));
+    CHECK(maxDiff(both, syncOnly) > 0.02,
+          "SYNC->ASYM+ must not equal SYNC alone, diff " << maxDiff(both, syncOnly));
+
+    // Anti-vacuity: each mode alone is audible in the first place.
+    CHECK(maxDiff(syncOnly, dry) > 0.02, "SYNC alone did not change the signal");
+    CHECK(maxDiff(asymOnly, dry) > 0.02, "ASYM+ alone did not change the signal");
+
+    // Two copies of ONE mode stack rather than landing on the same read twice.
+    auto syncTwice = renderChain(pcm, { sync, sync }, { 60 }, N);
+    CHECK(allFinite(syncTwice), "SYNC->SYNC produced non-finite output");
+    CHECK(maxDiff(syncTwice, syncOnly) > 0.02,
+          "two SYNC instances must not collapse to one, diff " << maxDiff(syncTwice, syncOnly));
+}
+
+static void testChainWarpResolvesBeforeShaper()
+{
+    std::cout << "TEST: a warp resolves before a shaper, whatever the chain order\n";
+
+    const auto pcm = makeSine(kEngineSR, 220.0, 48000, 0.5f);
+    constexpr int N = 8192;
+
+    // Threshold 0.24 against a 0.5 peak, so the clipper genuinely engages.
+    const mg::InstanceConfig clip{ static_cast<int>(mg::Mode::HardClip), 0.8f, 1.0f, false };
+    const mg::InstanceConfig sync{ static_cast<int>(mg::Mode::Sync),     0.6f, 1.0f, false };
+
+    auto syncOnly    = renderChain(pcm, { sync },       { 60 }, N);
+    auto clipThenSync = renderChain(pcm, { clip, sync }, { 60 }, N);
+    auto syncThenClip = renderChain(pcm, { sync, clip }, { 60 }, N);
+
+    // A bent head re-reads the SOURCE, so a shaper placed BEFORE it cannot feed
+    // it — running the warp first is the only ordering in which the shaper
+    // survives at all. It used to be silently discarded.
+    CHECK(maxDiff(clipThenSync, syncOnly) > 0.02,
+          "HARD CLIP before SYNC was discarded by the warp, diff "
+          << maxDiff(clipThenSync, syncOnly));
+
+    // …and that makes the two orders the same render, bit for bit.
+    CHECK(maxDiff(clipThenSync, syncThenClip) == 0.0,
+          "warp/shaper order must resolve identically, diff "
+          << maxDiff(clipThenSync, syncThenClip));
+}
+
 static void testChainNoDenormals32x4()
 {
     std::cout << "TEST: no denormals at 32 streams x 4 instances worst case\n";
@@ -1112,6 +1178,8 @@ int main()
     testChainFourInstanceCap();
     testChainReorderUnderPlayback();
     testChainMigrationRoundtrip();
+    testChainPositionModesCompose();
+    testChainWarpResolvesBeforeShaper();
     testChainNoDenormals32x4();
 
     std::cout << "\n";

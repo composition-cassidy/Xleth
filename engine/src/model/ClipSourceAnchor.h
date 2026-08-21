@@ -32,6 +32,19 @@
  *                        clip with zero offset therefore anchors EXACTLY at the
  *                        region start — no epsilon, no rounding.
  *
+ * SOURCE TICKS ARE NOT TIMELINE TICKS (stretchRatio)
+ * --------------------------------------------------
+ * regionOffset is measured in SOURCE time: ClipRenderCache applies it to the raw
+ * PCM *before* the stretcher runs, so a clip of timeline duration D consumes only
+ * D / stretchRatio source ticks. Any edit that converts a timeline distance into
+ * a regionOffset — splitting a clip, dragging its left edge — must divide by the
+ * ratio, and any edit that compares a regionOffset against a timeline duration
+ * must multiply. Adding the two domains directly is the classic bug here: a 1.50×
+ * clip split in half gave the right half an offset 1.5× too deep, so it started
+ * late AND ran out of source before its end (silent tail). Use
+ * sourceTicksForTimelineTicks / timelineTicksForSourceTicks below; never open-code
+ * the division.
+ *
  * TEMPO DEPENDENCE (deliberate, and a known wart — see the note below)
  * -------------------------------------------------------------------
  * regionOffset is stored in musical ticks, so converting it to source seconds
@@ -59,6 +72,7 @@
  * exactly when regionOffsetTicks == 0.
  */
 
+#include <cmath>
 #include <cstdint>
 
 namespace xleth {
@@ -97,6 +111,40 @@ inline double clipSourceAnchorSeconds(double  regionStartTimeSec,
     return regionStartTimeSec
          + syllableStartTimeSec
          + ticksToSeconds(regionOffsetTicks, bpm);
+}
+
+/**
+ * Sanitize a clip stretchRatio for use as a divisor. Mirrors the audio path's
+ * clamp (ClipRenderCache treats |ratio-1| <= 1e-4 as unity; the DSP wrappers
+ * clamp to >= 0.1), so a corrupt or zero ratio can never produce inf/NaN ticks.
+ */
+inline double effectiveStretchRatio(double stretchRatio)
+{
+    if (!(stretchRatio > 0.0)) return 1.0;
+    return stretchRatio;
+}
+
+/**
+ * How many SOURCE ticks a clip consumes over `timelineTicks` of timeline.
+ * At unity ratio this is the identity, so untouched projects are unaffected.
+ */
+inline int64_t sourceTicksForTimelineTicks(int64_t timelineTicks, double stretchRatio)
+{
+    const double r = effectiveStretchRatio(stretchRatio);
+    if (r == 1.0) return timelineTicks;
+    return static_cast<int64_t>(std::llround(static_cast<double>(timelineTicks) / r));
+}
+
+/**
+ * Inverse of the above: the timeline span produced by `sourceTicks` of source.
+ * Use when clamping a timeline duration against a source-domain budget (e.g.
+ * "how long can this clip be before it runs off the end of the region?").
+ */
+inline int64_t timelineTicksForSourceTicks(int64_t sourceTicks, double stretchRatio)
+{
+    const double r = effectiveStretchRatio(stretchRatio);
+    if (r == 1.0) return sourceTicks;
+    return static_cast<int64_t>(std::llround(static_cast<double>(sourceTicks) * r));
 }
 
 } // namespace anchoring

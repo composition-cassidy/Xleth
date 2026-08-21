@@ -1,4 +1,5 @@
 #pragma once
+#include "ParamTrack.h"
 #include "SamplerModulationConfig.h"
 
 #include <algorithm>
@@ -958,6 +959,74 @@ struct PingPongSettings {
     int    maxLoops         = 0;     // 0 = infinite
 };
 
+// ─── ZprTracks ────────────────────────────────────────────────────────────────
+// The CANONICAL interpolation space for Zoom/Pan/Rotation. Four independent
+// ParamTracks; nothing else about the animation is interpolated.
+//
+//   panX / panY   normalized -1..1, cell-relative.
+//                 *** These are UV OFFSETS, not a focal centre. ***
+//                 The shader does `uv -= float2(panX, panY)` AFTER the zoom
+//                 divide. Reinterpreting them as a focal centre (the Vegas
+//                 "X Center" sense) would invert pan in every existing
+//                 project. Do not "fix" the naming into centerX/centerY.
+//
+//   zoomLog2      log2 of the linear zoom factor: 1.0x -> 0.0, 2.0x -> 1.0,
+//                 4.0x -> 2.0. Interpolating zoom linearly is perceptually
+//                 non-uniform — a linear 1x -> 8x sweep visually decelerates.
+//                 Convert back with std::exp2() only where the transform is
+//                 built. Pre-v2 projects interpolated linearly; see the
+//                 migration note in ParamTrack.cpp.
+//
+//   rotationDeg   UNWRAPPED degrees, unbounded. Never fmod / normalize to
+//                 0..360: a 350 -> 370 keyframe pair must travel +20, not -340.
+//
+// Width and height are deliberately absent. Deriving them from zoomLog2 is
+// what keeps aspect stable when a bezier segment overshoots.
+struct ZprTracks {
+    paramtrack::ParamTrack panX;
+    paramtrack::ParamTrack panY;
+    paramtrack::ParamTrack zoomLog2;
+    paramtrack::ParamTrack rotationDeg;
+
+    // True when these curves came from a project file and are NOT reproducible
+    // from the legacy scalars — i.e. somebody authored keyframes directly.
+    //
+    // This exists to stop a scalar write from silently flattening an authored
+    // animation back to a 2-key ramp. A project written by this build always
+    // round-trips to `false` (it only ever writes derived tracks), so ordinary
+    // editing is unaffected; the flag only latches for hand-authored files and,
+    // later, for the keyframe editor's output.
+    bool authored = false;
+};
+
+// True when two track sets describe the same curves (within a tight epsilon).
+bool zprTracksEquivalent(const ZprTracks& a, const ZprTracks& b);
+
+// True when ANY channel carries keyframes.
+//
+// Must be ANY, never zoomLog2 alone: the keyframe editor only writes keys to
+// the channels a gesture actually moved (see writeCanonicalAtT), so a pan-only
+// or rotation-only animation leaves zoomLog2 empty. Testing zoom by itself
+// reads that as "no authored curves", falls back to the legacy scalars, and
+// silently throws the authored animation away at trigger time.
+inline bool zprTracksAnimated(const ZprTracks& tr) {
+    return tr.panX.animated() || tr.panY.animated()
+        || tr.zoomLog2.animated() || tr.rotationDeg.animated();
+}
+
+// Smallest linear zoom that has a finite log2. The UI range is 0.25..4, but a
+// hand-edited or truncated project can carry 0, which would produce -inf.
+inline constexpr float kMinLinearZoom = 1.0e-4f;
+
+inline double zprZoomToLog2(float linearZoom) {
+    return std::log2(static_cast<double>(
+        linearZoom > kMinLinearZoom ? linearZoom : kMinLinearZoom));
+}
+
+inline float zprLog2ToZoom(double log2Zoom) {
+    return static_cast<float>(std::exp2(log2Zoom));
+}
+
 struct ZoomPanRotSettings {
     bool   enabled          = false;
     float  startZoom        = 1.0f;
@@ -973,7 +1042,58 @@ struct ZoomPanRotSettings {
     int    panEasing        = 1;
     int    rotEasing        = 1;
     float  overshoot        = 1.70158f;
+
+    // ── Keyframe-editor header controls ─────────────────────────────────────
+    // Length: how the effect's animation window is resolved at trigger time
+    // (AnimationManager.cpp: resolveZprDurationMs). Fixed uses durationMs
+    // directly; Musical resolves musicalDivision against the live tempo; Note
+    // uses the triggering note's gate length (falls back to Musical, with a
+    // one-shot [XformAnim] warning, when the gate length isn't known at the
+    // call site — see FrameCollector.cpp).
+    enum class LengthMode { Fixed = 0, Musical = 1, Note = 2 };
+    LengthMode lengthMode      = LengthMode::Musical;
+    int        musicalDivision = 2;      // index into {1/32,1/16,1/8,1/4,1/2,1 bar,2 bars}; 2 = 1/8
+    float      notePercentage  = 100.0f; // Note mode: % of the triggering note's gate length
+
+    // On-end / retrigger behaviour, evaluated in AnimationManager.cpp
+    // (CellAnimation::triggerNote / advance). Applies to note-triggered ZPRs
+    // only — a slide-triggered ZPR keeps the separate, pre-existing
+    // latch/return system (zprReturnActive et al. in AnimationManager.h).
+    // [XformUI] logs only for an out-of-range value (hand-edited project.json).
+    enum class OnEndMode     { Hold = 0, Reset = 1, Loop = 2, PingPong = 3 };
+    enum class RetriggerMode { Restart = 0, Ignore = 1, Crossfade = 2 };
+    OnEndMode     onEndMode            = OnEndMode::Hold;
+    RetriggerMode retriggerMode        = RetriggerMode::Restart;
+    float         retriggerCrossfadeMs = 50.0f; // only meaningful when retriggerMode == Crossfade
+
+    // Named-preset bookkeeping. The preset library is ui/electron-main/fx-presets.js
+    // with effectType "xform" (ui/src/fx-presets/effectPresetAdapters.js); this
+    // field round-trips the chosen preset's name through project.json.
+    std::string presetName;
+
+    // Derived runtime representation, and the authoritative one for playback.
+    // The scalars above remain the authoritative EDIT surface in this phase —
+    // the UI still writes them, and every write path rebuilds `tracks` from
+    // them (Timeline::setTrackZoomPanRotSettings, TrackInfo from_json), so the
+    // two cannot desync. When a project carries an explicit `tracks` block it
+    // is loaded as-is instead of being derived, which is the seam the keyframe
+    // editor plugs into next phase.
+    ZprTracks tracks;
 };
+
+// Builds the four canonical tracks from the legacy scalar settings.
+void buildZprTracks(ZprTracks& out, const ZoomPanRotSettings& z);
+
+// Endpoint form, used for the slide-return animation, which runs from the
+// cell's current pose back to its captured baseline rather than from the
+// settings' own start/target.
+void buildZprTracks(ZprTracks& out,
+                    float zoomFrom,  float zoomTo,
+                    float panXFrom,  float panXTo,
+                    float panYFrom,  float panYTo,
+                    float rotFrom,   float rotTo,
+                    int zoomEasing, int panEasing, int rotEasing,
+                    float overshoot);
 
 // Slide-only TV Simulator parameter set.
 // Mirrors the 7 user-facing TV Simulator params (VisualEffect TVSimulator

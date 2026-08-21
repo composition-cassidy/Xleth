@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import ModCurveCanvas from './ModCurveCanvas.jsx'
 import { ModKnob, Field } from './ModControls.jsx'
+import { TARGET_SRC_AMOUNT } from './modTargets.js'
 
 // ── VELO / NOTE response-curve editor ────────────────────────────────────────
 // A compact editor for the two response curves (input 0..1 → output 0..1).
@@ -12,7 +13,7 @@ const PRESETS = {
   invert: () => ([{ x: 0, y: 1, tension: 0 }, { x: 1, y: 0, tension: 0 }]),
 }
 
-export default function CurveEditor({ curve, color, preview, commit, label }) {
+export default function CurveEditor({ curve, color, preview, commit, label, source = null }) {
   const [selectedIdx, setSelectedIdx] = useState(-1)
   const points = Array.isArray(curve.points) ? curve.points : []
   const selPoint = selectedIdx >= 0 && selectedIdx < points.length ? points[selectedIdx] : null
@@ -40,6 +41,7 @@ export default function CurveEditor({ curve, color, preview, commit, label }) {
         <div className="sampler-mod-head-spacer" />
         <ModKnob
           label="OUT"
+          modTarget={source == null ? null : { target: TARGET_SRC_AMOUNT, index: source, stage: 0, scale: 0.01 }}
           value={(curve.outputAmount ?? 1) * 100}
           min={0} max={100} defaultValue={100}
           size={34} color={color}

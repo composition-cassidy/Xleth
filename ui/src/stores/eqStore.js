@@ -3,6 +3,19 @@ import { create } from 'zustand'
 export const BAND_TYPES = ['Bell', 'Low Shelf', 'High Shelf', 'Low Pass', 'High Pass', 'Notch', 'Tilt']
 export const BAND_MODES = ['Static', 'Dynamic', 'Spectral']
 
+// Per-band channel routing (UI-only for now — see setBandChannel below).
+// 'stereo' is the default: the band processes the full stereo signal exactly
+// as it always has. The other four modes are engine-agnostic stubs the UI
+// exposes so the DSP wiring can land in a follow-up without another UI pass.
+export const CHANNEL_MODES = ['stereo', 'left', 'right', 'mid', 'side']
+export const CHANNEL_META = {
+  stereo: { label: 'Stereo', short: 'ST' },
+  left:   { label: 'Left',   short: 'L' },
+  right:  { label: 'Right',  short: 'R' },
+  mid:    { label: 'Mid',    short: 'M' },
+  side:   { label: 'Side',   short: 'S' },
+}
+
 export const BAND_COLORS = [
   'var(--theme-eq-band-1)',  'var(--theme-eq-band-2)',  'var(--theme-eq-band-3)',  'var(--theme-eq-band-4)',
   'var(--theme-eq-band-5)',  'var(--theme-eq-band-6)',  'var(--theme-eq-band-7)',  'var(--theme-eq-band-8)',
@@ -55,7 +68,10 @@ const useEqStore = create((set, get) => ({
     if (!t) return
     try {
       const raw = await window.xleth?.audio?.eqGetBands(t.trackId, t.nodeId)
-      const bands = typeof raw === 'string' ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])
+      const parsed = typeof raw === 'string' ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])
+      // The engine has no notion of 'channel' yet — default any band it
+      // returns to 'stereo' rather than dropping the field on the floor.
+      const bands = parsed.map(b => ({ channel: 'stereo', ...b }))
       set({ bands })
     } catch {}
   },
@@ -167,6 +183,18 @@ const useEqStore = create((set, get) => ({
     } catch { return null }
   },
 
+  // UI-only per-band channel routing — local state, no engine RPC. The
+  // engine doesn't know about 'channel' yet; wiring the actual L/R/M/S DSP
+  // routing is a follow-up, so this just records the user's choice.
+  setBandChannel(bandIndex, channel) {
+    if (!CHANNEL_MODES.includes(channel)) return
+    set(s => {
+      const bands = [...s.bands]
+      if (bands[bandIndex]) bands[bandIndex] = { ...bands[bandIndex], channel }
+      return { bands }
+    })
+  },
+
   setSelectedBand(index) {
     set({ selectedBandIndex: index })
     if (window.XLETH_DEBUG) console.log('[EQ-UI] band selected:', index)
@@ -197,6 +225,7 @@ const useEqStore = create((set, get) => ({
     await get().addBandAt(band.freq, band.gain, band.type)
     const newIdx = get().bands.length - 1
     if (newIdx < 0) return
+    get().setBandChannel(newIdx, band.channel || 'stereo')
     await get().setBandParam(newIdx, 'q', band.q)
     await get().setBandParam(newIdx, 'mode', band.mode)
     await get().setBandParam(newIdx, 'enabled', band.enabled)

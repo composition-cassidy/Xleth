@@ -52,6 +52,8 @@ public:
         samplesInAttackWindow_ = 0;
         currentVelocity_ = 0.0f;
         isActive_ = false;
+        midiNoteActive_ = false;
+        envAttackSamplesRemaining_ = 0;
 
         vizSampleClock_ = 0;
         vizAccum_.reset();
@@ -81,6 +83,8 @@ public:
         samplesInAttackWindow_ = 0;
         currentVelocity_ = 0.0f;
         isActive_ = false;
+        midiNoteActive_ = false;
+        envAttackSamplesRemaining_ = 0;
 
         vizSampleClock_ = 0;
         vizAccum_.reset();
@@ -169,6 +173,12 @@ public:
 
             if (midiMode)
             {
+                // Two-phase state machine driven by note-on events: the attack
+                // shape owns the note fully for one attack_speed window, then
+                // sustain takes over and ducks/holds the level until the next
+                // onset re-arms the attack window. No blending between the two
+                // — each phase is exclusive so attack can never be diluted by
+                // sustain (or vice versa).
                 while (nextOnsetIdx < numOnsets
                        && onsets[nextOnsetIdx].sampleOffset <= s)
                 {
@@ -176,6 +186,7 @@ public:
                         std::max(1.0f, attackSpeedMs * 0.001f * sr);
                     samplesInAttackWindow_ = static_cast<int>(std::ceil(attackWindowSamples));
                     currentVelocity_ = onsets[nextOnsetIdx].velocity;
+                    midiNoteActive_ = true;
                     ++nextOnsetIdx;
                 }
 
@@ -185,6 +196,12 @@ public:
                     targetGainDb = juce::jlimit(-kMaxShapeGainDb, kMaxShapeGainDb,
                                                 attackDb * currentVelocity_);
                     --samplesInAttackWindow_;
+                }
+                else if (midiNoteActive_)
+                {
+                    const float sustainDb = amountToSignedDb(sustainPct);
+                    targetGainDb = juce::jlimit(-kMaxShapeGainDb, kMaxShapeGainDb,
+                                                sustainDb * currentVelocity_);
                 }
             }
             else
@@ -206,33 +223,52 @@ public:
                 vizSlowEnvLin = slowEnv_;
 
                 const float threshLin = std::pow(10.0f, thresholdDb / 20.0f);
+                const bool wasActive = isActive_;
                 if (!isActive_ && absIn > threshLin)
                     isActive_ = true;
                 if (isActive_ && absIn < threshLin * 0.7f)
                     isActive_ = false;
 
+                // Same exclusive attack-then-sustain state machine as MIDI
+                // mode, just gated by the envelope crossing the threshold
+                // instead of a note-on. A fresh onset re-arms the attack
+                // window so attack always gets its full, undiluted window
+                // before sustain takes over for the rest of the held note.
+                if (isActive_ && !wasActive)
+                {
+                    const float attackWindowSamples =
+                        std::max(1.0f, attackSpeedMs * 0.001f * sr);
+                    envAttackSamplesRemaining_ = static_cast<int>(std::ceil(attackWindowSamples));
+                }
+
                 if (isActive_)
                 {
-                    const float attackDb = amountToSignedDb(attackPct);
-                    const float sustainDb = amountToSignedDb(sustainPct);
-                    const float safeFastEnv = std::max(fastEnv_, 1.0e-5f);
-                    const float transientMask = juce::jlimit(0.0f, 1.0f,
-                        (fastEnv_ - slowEnv_) / safeFastEnv);
-                    const float bodyMask = 1.0f - transientMask;
-
-                    targetGainDb = juce::jlimit(-kMaxShapeGainDb, kMaxShapeGainDb,
-                        attackDb * transientMask + sustainDb * bodyMask);
+                    if (envAttackSamplesRemaining_ > 0)
+                    {
+                        const float attackDb = amountToSignedDb(attackPct);
+                        targetGainDb = juce::jlimit(-kMaxShapeGainDb, kMaxShapeGainDb, attackDb);
+                        --envAttackSamplesRemaining_;
+                    }
+                    else
+                    {
+                        const float sustainDb = amountToSignedDb(sustainPct);
+                        targetGainDb = juce::jlimit(-kMaxShapeGainDb, kMaxShapeGainDb, sustainDb);
+                    }
+                }
+                else
+                {
+                    envAttackSamplesRemaining_ = 0;
+                }
 
 #ifdef XLETH_DEBUG
-                    if (doLog)
-                    {
-                        DBG("[TransientProc] env fast=" + juce::String(fastEnv_, 4)
-                            + " slow=" + juce::String(slowEnv_, 4)
-                            + " tMask=" + juce::String(transientMask, 3)
-                            + " targetDb=" + juce::String(targetGainDb, 3));
-                    }
-#endif
+                if (doLog)
+                {
+                    DBG("[TransientProc] env fast=" + juce::String(fastEnv_, 4)
+                        + " slow=" + juce::String(slowEnv_, 4)
+                        + " attackSamplesLeft=" + juce::String(envAttackSamplesRemaining_)
+                        + " targetDb=" + juce::String(targetGainDb, 3));
                 }
+#endif
             }
 
             if (!std::isfinite(targetGainDb))
@@ -373,8 +409,10 @@ private:
 
     int samplesInAttackWindow_ = 0;
     float currentVelocity_ = 0.0f;
+    bool midiNoteActive_ = false;
 
     bool isActive_ = false;
+    int envAttackSamplesRemaining_ = 0;
     double sampleRate_ = 44100.0;
 
     std::unique_ptr<xleth::viz::DynamicsVizCollector<xleth::viz::TransientBucket>>

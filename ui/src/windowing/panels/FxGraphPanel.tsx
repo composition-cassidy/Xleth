@@ -72,6 +72,7 @@ const GRAPH_MUTATION_MESSAGES: Record<string, string> = {
   engine_unavailable: 'Audio engine is unavailable. The graph is unchanged.',
   engine_instantiation_failed: 'Could not create that effect. The graph is unchanged.',
   engine_removal_failed: 'Could not remove that effect cleanly. The graph is unchanged.',
+  engine_bypass_failed: 'Could not change that effect’s bypass. The graph is unchanged.',
   nothing_to_undo: 'Nothing to undo for this graph.',
   nothing_to_redo: 'Nothing to redo for this graph.',
   // FXG-SC.6B FX Graph Sidechain Input
@@ -168,6 +169,8 @@ export interface FxGraphPanelContentProps {
   onConnectGraphSidechain?: (sidechainInputNodeId: string, targetNodeId: string) => void;
   sidechainSources?: { sourceTrackId: number; name: string }[];
   onRemoveGraphNode?: (nodeId: string) => void;
+  // Effect-node bypass toggle (node body button + context menu item).
+  onSetGraphNodeBypass?: (nodeId: string, bypassed: boolean) => void;
   onConnectGraphNodes?: (sourceNodeId: string, targetNodeId: string) => void;
   // Drag-drop splice: dropping a dragged node onto an audio cable removes it
   // and rewires the node inline between the cable's endpoints.
@@ -186,10 +189,6 @@ export interface FxGraphPanelContentProps {
     effectInstanceId: string,
     options?: { graphNodeId?: string },
   ) => Promise<GraphParameterResult> | GraphParameterResult;
-  canUndoGraphEdit?: boolean;
-  canRedoGraphEdit?: boolean;
-  onUndoGraphEdit?: () => void;
-  onRedoGraphEdit?: () => void;
   onUpdateParameterEdgeMapping?: (edgeId: string, mappingPatch: unknown) => void;
   onShowMacroAutomationLane?: (macroNodeId: string) => void;
   onHideMacroAutomationLane?: (macroNodeId: string) => void;
@@ -261,6 +260,7 @@ export function FxGraphPanelContent({
   onConnectGraphSidechain,
   sidechainSources = [],
   onRemoveGraphNode,
+  onSetGraphNodeBypass,
   onConnectGraphNodes,
   onSpliceGraphNodeIntoEdge,
   onConnectGraphMacroToParameter,
@@ -272,10 +272,6 @@ export function FxGraphPanelContent({
   onRenameGraphMacroNode,
   onToggleParameterPort,
   fetchGraphEffectParameters,
-  canUndoGraphEdit = false,
-  canRedoGraphEdit = false,
-  onUndoGraphEdit,
-  onRedoGraphEdit,
   onUpdateParameterEdgeMapping,
   onShowMacroAutomationLane,
   onHideMacroAutomationLane,
@@ -398,7 +394,9 @@ export function FxGraphPanelContent({
               onSetSidechainInputSource={graphModeActive ? onSetGraphSidechainInputSource : undefined}
               onConnectSidechain={graphModeActive ? onConnectGraphSidechain : undefined}
               sidechainSources={graphModeActive ? sidechainSources : undefined}
+              vstPlugins={vstPlugins}
               onRemoveNode={graphModeActive ? onRemoveGraphNode : undefined}
+              onSetNodeBypass={graphModeActive ? onSetGraphNodeBypass : undefined}
               onConnectNodes={graphModeActive ? onConnectGraphNodes : undefined}
               onSpliceNodeIntoEdge={graphModeActive ? onSpliceGraphNodeIntoEdge : undefined}
               onConnectMacroToParameter={graphModeActive ? onConnectGraphMacroToParameter : undefined}
@@ -411,10 +409,6 @@ export function FxGraphPanelContent({
               trackId={graphModeActive ? trackId : null}
               fetchGraphEffectParameters={graphModeActive ? fetchGraphEffectParameters : undefined}
               onToggleParameterPort={graphModeActive ? onToggleParameterPort : undefined}
-              canUndoGraphEdit={graphModeActive && canUndoGraphEdit}
-              canRedoGraphEdit={graphModeActive && canRedoGraphEdit}
-              onUndoGraphEdit={graphModeActive ? onUndoGraphEdit : undefined}
-              onRedoGraphEdit={graphModeActive ? onRedoGraphEdit : undefined}
               onUpdateParameterEdgeMapping={graphModeActive ? onUpdateParameterEdgeMapping : undefined}
               onShowMacroAutomationLane={graphModeActive ? onShowMacroAutomationLane : undefined}
               onHideMacroAutomationLane={graphModeActive ? onHideMacroAutomationLane : undefined}
@@ -549,26 +543,6 @@ export default function FxGraphPanel() {
     ? effectChainState.graphSidechainStatuses?.[selectedStoreKey] ?? null
     : reactiveGraphSidechainStatus;
   const sidechainRouteNotice = describeGraphSidechainRouteStatus(graphSidechainStatus);
-  const reactiveCanUndoGraphEdit = useEffectChainStore((state) => (
-    selectedStoreKey == null
-      ? false
-      : (state.graphHistories?.[selectedStoreKey]?.undoStack?.length ?? 0) > 0
-  ));
-  const reactiveCanRedoGraphEdit = useEffectChainStore((state) => (
-    selectedStoreKey == null
-      ? false
-      : (state.graphHistories?.[selectedStoreKey]?.redoStack?.length ?? 0) > 0
-  ));
-  const canUndoGraphEdit = fxMode === 'graph' && (
-    effectChainState && selectedStoreKey != null
-      ? (effectChainState.graphHistories?.[selectedStoreKey]?.undoStack?.length ?? 0) > 0
-      : reactiveCanUndoGraphEdit
-  );
-  const canRedoGraphEdit = fxMode === 'graph' && (
-    effectChainState && selectedStoreKey != null
-      ? (effectChainState.graphHistories?.[selectedStoreKey]?.redoStack?.length ?? 0) > 0
-      : reactiveCanRedoGraphEdit
-  );
   const reactiveChain = useEffectChainStore((state) => (
     selectFxGraphPanelChain(state.chains, selectedStoreKey)
   ));
@@ -590,6 +564,7 @@ export default function FxGraphPanel() {
   const connectSidechainForTrack = useEffectChainStore((state) => state.connectSidechainForTrack);
   const disconnectSidechainEdgeForTrack = useEffectChainStore((state) => state.disconnectSidechainEdgeForTrack);
   const removeGraphNodeForTrack = useEffectChainStore((state) => state.removeGraphNodeForTrack);
+  const setGraphEffectBypassForTrack = useEffectChainStore((state) => state.setGraphEffectBypassForTrack);
   const connectGraphNodesForTrack = useEffectChainStore((state) => state.connectGraphNodesForTrack);
   const spliceGraphNodeIntoEdgeForTrack = useEffectChainStore((state) => state.spliceGraphNodeIntoEdgeForTrack);
   const connectMacroToParameterForTrack = useEffectChainStore((state) => state.connectMacroToParameterForTrack);
@@ -792,6 +767,13 @@ export default function FxGraphPanel() {
     setGraphActionNotice(describeGraphMutationResult(result));
   }, [fxMode, removeGraphNodeForTrack, selectedTrack?.id]);
 
+  const handleSetGraphNodeBypass = useCallback(async (nodeId: string, bypassed: boolean) => {
+    setGraphActionNotice(null);
+    if (selectedTrack?.id == null || fxMode !== 'graph') return;
+    const result = await setGraphEffectBypassForTrack(selectedTrack.id, nodeId, bypassed);
+    setGraphActionNotice(describeGraphMutationResult(result));
+  }, [fxMode, selectedTrack?.id, setGraphEffectBypassForTrack]);
+
   const handleUpdateGraphMacroValue = useCallback(async (nodeId: string, value: number) => {
     if (selectedTrack?.id == null || fxMode !== 'graph') return;
     const result = await updateGraphMacroValueForTrack(selectedTrack.id, nodeId, value);
@@ -920,14 +902,6 @@ export default function FxGraphPanel() {
     const result = await action(selectedTrack.id);
     setGraphActionNotice(describeGraphMutationResult(result));
   }, [fxMode, redoGraphEditForTrack, selectedTrack?.id, undoGraphEditForTrack]);
-
-  const handleUndoGraphEdit = useCallback(() => {
-    void runGraphHistoryAction('undo');
-  }, [runGraphHistoryAction]);
-
-  const handleRedoGraphEdit = useCallback(() => {
-    void runGraphHistoryAction('redo');
-  }, [runGraphHistoryAction]);
 
   fxGraphHistoryKeyHandlerRef.current = (event: KeyboardEvent) => {
     if (selectedTrack?.id == null || fxMode !== 'graph') return;
@@ -1058,6 +1032,7 @@ export default function FxGraphPanel() {
         onConnectGraphSidechain={handleConnectGraphSidechain}
         sidechainSources={sidechainSources}
         onRemoveGraphNode={handleRemoveGraphNode}
+        onSetGraphNodeBypass={handleSetGraphNodeBypass}
         onConnectGraphNodes={handleConnectGraphNodes}
         onSpliceGraphNodeIntoEdge={handleSpliceGraphNodeIntoEdge}
         onConnectGraphMacroToParameter={handleConnectGraphMacroToParameter}
@@ -1069,10 +1044,6 @@ export default function FxGraphPanel() {
         onRenameGraphMacroNode={handleRenameGraphMacroNode}
         onToggleParameterPort={handleToggleParameterPort}
         fetchGraphEffectParameters={fetchGraphEffectParameters}
-        canUndoGraphEdit={canUndoGraphEdit}
-        canRedoGraphEdit={canRedoGraphEdit}
-        onUndoGraphEdit={handleUndoGraphEdit}
-        onRedoGraphEdit={handleRedoGraphEdit}
         onUpdateParameterEdgeMapping={handleUpdateParameterEdgeMapping}
         onShowMacroAutomationLane={handleShowMacroAutomationLane}
         onHideMacroAutomationLane={handleHideMacroAutomationLane}

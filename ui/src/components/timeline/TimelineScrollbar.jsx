@@ -1,4 +1,4 @@
-import { useEffect, useRef, useCallback } from 'react'
+import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useCallback } from 'react'
 
 /**
  * Horizontal scrollbar for timeline panning.
@@ -11,12 +11,13 @@ import { useEffect, useRef, useCallback } from 'react'
  *   scrollOffset (state value, for re-render)
  *   pixelsPerBeat (state value, for re-render)
  */
-export default function TimelineScrollbar({
+const TimelineScrollbar = forwardRef(function TimelineScrollbar({
   scrollOffsetRef, pixelsPerBeatRef, totalBeats,
   canvasWidth, onScroll, onScrollTo,
   scrollOffset, pixelsPerBeat,
-}) {
+}, ref) {
   const trackRef = useRef(null)
+  const thumbRef = useRef(null)
   const dragging = useRef(false)
   const dragStartX = useRef(0)
   const dragStartScroll = useRef(0)
@@ -26,6 +27,24 @@ export default function TimelineScrollbar({
   const thumbFraction = Math.min(1, visibleBeats / totalBeats)
   const thumbLeft = (scrollOffset / totalBeats) * 100
   const thumbWidth = thumbFraction * 100
+
+  // The thumb is DOM, so it has to be repositioned per animator frame from the
+  // same refs the canvas draws with (applyView(), called by TimelineView's
+  // commitViewportRedraw). The values above are the settled mirror, used for
+  // the initial render only — driving the thumb from them left it frozen for
+  // the whole gesture and jumping ~100ms after it stopped.
+  const applyView = () => {
+    const thumb = thumbRef.current
+    if (!thumb) return
+    const ppb = pixelsPerBeatRef?.current || 40
+    const scroll = scrollOffsetRef?.current || 0
+    const visible = canvasWidth / ppb
+    thumb.style.left = `${(scroll / totalBeats) * 100}%`
+    thumb.style.width = `${Math.max(Math.min(1, visible / totalBeats) * 100, 3)}%`
+  }
+
+  useImperativeHandle(ref, () => ({ applyView }))
+  useLayoutEffect(applyView)
 
   // ── Drag handling ──────────────────────────────────────────────────────────
 
@@ -101,10 +120,13 @@ export default function TimelineScrollbar({
       onClick={onTrackClick}
     >
       <div
+        ref={thumbRef}
         className="timeline-scrollbar-thumb"
         style={{ left: `${thumbLeft}%`, width: `${Math.max(thumbWidth, 3)}%` }}
         onMouseDown={onMouseDown}
       />
     </div>
   )
-}
+})
+
+export default TimelineScrollbar

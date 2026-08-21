@@ -259,7 +259,14 @@ void from_json(const nlohmann::json& j, SampleRegion& r) {
     if (j.contains("arpDirection"))      j.at("arpDirection").get_to(r.arpDirection);
     // Modulation system (schema 3+). Absent on every schema-2 project, which
     // leaves the default empty route list — an exact bypass.
-    if (j.contains("modulation")) xleth::sampmod::from_json(j["modulation"], r.modulation);
+    if (j.contains("modulation")) {
+        xleth::sampmod::from_json(j["modulation"], r.modulation);
+    } else {
+        // Schema-2 region — predates dynamic LFO presence. Clear the fresh-region
+        // default (LFO 1 present) so migration below adds only the legacy LFOs
+        // that were actually enabled and an old file never sprouts a phantom LFO.
+        r.modulation.lfoPresent = { { false, false, false, false, false, false } };
+    }
 
     // ── Legacy amp envelope → ENV 1 (the VCA source) ─────────────────────────
     // The amplitude DAHDSR used to be flat region scalars; it is ENV 1 now. A

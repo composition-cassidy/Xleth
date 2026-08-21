@@ -1,6 +1,7 @@
 #include "Track.h"
 #include <algorithm>
 #include <cmath>
+#include <cstdio>
 #include <unordered_set>
 
 // ── VideoFlipConfig JSON helpers ─────────────────────────────────────────────
@@ -118,6 +119,78 @@ VisualEffect::Type stringToVisualEffectType(const std::string& s) {
     if (s == "Outline")            return VisualEffect::Type::Outline;
     if (s == "DropShadow")         return VisualEffect::Type::DropShadow;
     return VisualEffect::Type::Desaturation;
+}
+
+// ── ZprTracks persistence ────────────────────────────────────────────────────
+//
+// v2 of the Zoom/Pan/Rot schema. The four canonical ParamTracks are written
+// alongside the legacy scalars, never instead of them — the scalars remain the
+// edit surface this phase, and keeping both means a v2 project still opens on a
+// pre-v2 build (it just ignores the tracks block).
+nlohmann::json zprTracksToJson(const ZprTracks& tr) {
+    return nlohmann::json{
+        {"panX",        paramtrack::toJson(tr.panX)},
+        {"panY",        paramtrack::toJson(tr.panY)},
+        {"zoomLog2",    paramtrack::toJson(tr.zoomLog2)},
+        {"rotationDeg", paramtrack::toJson(tr.rotationDeg)},
+    };
+}
+
+// The ONE decision point between the v1 and v2 payload shapes.
+//
+// Presence-gated rather than version-gated on purpose: it is strictly more
+// robust than reading the project-root schema_version, because it also does the
+// right thing for a hand-edited or partially-written file. The root
+// schema_version (see ProjectManager.h) still records which shape the engine
+// wrote, and is what the load-time migration banner reports.
+//
+// v1 (no "tracks" key): derive the tracks from the legacy scalars, mapping each
+// named easing to its exact cubic bezier. See buildLegacyTrack.
+// v2: load the authored tracks verbatim.
+void loadOrMigrateZprTracks(const nlohmann::json& jz, ZoomPanRotSettings& z) {
+    if (jz.contains("tracks") && jz.at("tracks").is_object()) {
+        const auto& jt = jz.at("tracks");
+        z.tracks.panX        = paramtrack::fromJson(jt.value("panX",        nlohmann::json::object()));
+        z.tracks.panY        = paramtrack::fromJson(jt.value("panY",        nlohmann::json::object()));
+        z.tracks.zoomLog2    = paramtrack::fromJson(jt.value("zoomLog2",    nlohmann::json::object()));
+        z.tracks.rotationDeg = paramtrack::fromJson(jt.value("rotationDeg", nlohmann::json::object()));
+        // A block that carries no usable curve is treated as absent rather than
+        // as "no animation", so a truncated write cannot silently flatten a
+        // project's animation to a constant.
+        if (z.tracks.zoomLog2.keys.empty() && z.tracks.panX.keys.empty()
+            && z.tracks.panY.keys.empty() && z.tracks.rotationDeg.keys.empty()) {
+            std::fprintf(stderr, "[ParamTrack] zoomPanRot.tracks present but empty; "
+                                 "falling back to the legacy scalars.\n");
+            buildZprTracks(z.tracks, z);
+            return;
+        }
+
+        // Latch "authored" only when the loaded curves are NOT what the scalars
+        // would produce. A project written by this build always writes derived
+        // tracks, so a normal round trip lands here with authored == false and
+        // scalar editing keeps working. A hand-authored file latches true, and
+        // setTrackZoomPanRotSettings then refuses to flatten it.
+        ZprTracks derived;
+        buildZprTracks(derived, z);
+        z.tracks.authored = !zprTracksEquivalent(z.tracks, derived);
+        if (z.tracks.authored) {
+            std::fprintf(stderr, "[ParamTrack] zoomPanRot.tracks carry authored keyframes "
+                                 "that the legacy scalars cannot reproduce; scalar writes "
+                                 "will not overwrite them.\n");
+        }
+        return;
+    }
+    buildZprTracks(z.tracks, z);
+}
+
+ZprTracks zprTracksFromJson(const nlohmann::json& jt) {
+    ZprTracks tr;
+    tr.panX        = paramtrack::fromJson(jt.value("panX",        nlohmann::json::object()));
+    tr.panY        = paramtrack::fromJson(jt.value("panY",        nlohmann::json::object()));
+    tr.zoomLog2    = paramtrack::fromJson(jt.value("zoomLog2",    nlohmann::json::object()));
+    tr.rotationDeg = paramtrack::fromJson(jt.value("rotationDeg", nlohmann::json::object()));
+    tr.authored    = true;
+    return tr;
 }
 
 nlohmann::json visualEffectParamsToNamedJson(VisualEffect::Type type,
@@ -375,7 +448,15 @@ void to_json(nlohmann::json& j, const TrackInfo& t) {
         {"panEasing",      t.zoomPanRot.panEasing},
         {"rotEasing",      t.zoomPanRot.rotEasing},
         {"overshoot",      t.zoomPanRot.overshoot},
+        {"lengthMode",           static_cast<int>(t.zoomPanRot.lengthMode)},
+        {"musicalDivision",      t.zoomPanRot.musicalDivision},
+        {"notePercentage",       t.zoomPanRot.notePercentage},
+        {"onEndMode",            static_cast<int>(t.zoomPanRot.onEndMode)},
+        {"retriggerMode",        static_cast<int>(t.zoomPanRot.retriggerMode)},
+        {"retriggerCrossfadeMs", t.zoomPanRot.retriggerCrossfadeMs},
+        {"presetName",           t.zoomPanRot.presetName},
     };
+    j["zoomPanRot"]["tracks"] = zprTracksToJson(t.zoomPanRot.tracks);
 
     {
         const auto& sb = t.slideNoteEffect.bounce;
@@ -409,6 +490,7 @@ void to_json(nlohmann::json& j, const TrackInfo& t) {
                 {"panEasing",      sz.panEasing},
                 {"rotEasing",      sz.rotEasing},
                 {"overshoot",      sz.overshoot},
+                {"tracks",         zprTracksToJson(sz.tracks)},
             }},
             {"tv", {
                 {"intensity",  stv.intensity},
@@ -583,6 +665,27 @@ void from_json(const nlohmann::json& j, TrackInfo& t) {
         t.zoomPanRot.panEasing      = jz.value("panEasing",      1);
         t.zoomPanRot.rotEasing      = jz.value("rotEasing",      1);
         t.zoomPanRot.overshoot      = jz.value("overshoot",      1.70158f);
+        // Missing key = a project saved before lengthMode existed, when
+        // durationMs was the ONLY concept of window length. Now that Musical/
+        // Note actually resolve to a live duration in the engine (rather than
+        // being ignored in favour of durationMs), defaulting a legacy file to
+        // Musical would silently change its animation timing on load. Fixed
+        // preserves exactly what such a file always meant.
+        t.zoomPanRot.lengthMode      = static_cast<ZoomPanRotSettings::LengthMode>(
+            jz.value("lengthMode", static_cast<int>(ZoomPanRotSettings::LengthMode::Fixed)));
+        t.zoomPanRot.musicalDivision = jz.value("musicalDivision", 2);
+        t.zoomPanRot.notePercentage  = jz.value("notePercentage", 100.0f);
+        t.zoomPanRot.onEndMode       = static_cast<ZoomPanRotSettings::OnEndMode>(
+            jz.value("onEndMode", static_cast<int>(ZoomPanRotSettings::OnEndMode::Hold)));
+        t.zoomPanRot.retriggerMode   = static_cast<ZoomPanRotSettings::RetriggerMode>(
+            jz.value("retriggerMode", static_cast<int>(ZoomPanRotSettings::RetriggerMode::Restart)));
+        t.zoomPanRot.retriggerCrossfadeMs = jz.value("retriggerCrossfadeMs", 50.0f);
+        t.zoomPanRot.presetName      = jz.value("presetName", std::string());
+        loadOrMigrateZprTracks(jz, t.zoomPanRot);
+    } else {
+        // No zoomPanRot block at all — struct defaults, but the tracks still
+        // have to exist or playback would read an empty animation.
+        buildZprTracks(t.zoomPanRot.tracks, t.zoomPanRot);
     }
 
     if (j.contains("slideNoteEffect") && j.at("slideNoteEffect").is_object()) {
@@ -632,6 +735,7 @@ void from_json(const nlohmann::json& j, TrackInfo& t) {
             s.zoomPanRot.panEasing      = jz.value("panEasing",      1);
             s.zoomPanRot.rotEasing      = jz.value("rotEasing",      1);
             s.zoomPanRot.overshoot      = jz.value("overshoot",      1.70158f);
+            loadOrMigrateZprTracks(jz, s.zoomPanRot);
         } else {
             // Legacy migration: literal value preserved, semantics shift from
             // delta to absolute. For default values (1.0 / 0 / 0 / 0) behavior
@@ -644,6 +748,7 @@ void from_json(const nlohmann::json& j, TrackInfo& t) {
             s.zoomPanRot.targetPanY     = js.value("slidePanYDelta",     0.0f);
             s.zoomPanRot.startRotation  = 0.0f;
             s.zoomPanRot.targetRotation = js.value("slideRotationDelta", 0.0f);
+            buildZprTracks(s.zoomPanRot.tracks, s.zoomPanRot);
         }
 
         if (js.contains("tv") && js.at("tv").is_object()) {

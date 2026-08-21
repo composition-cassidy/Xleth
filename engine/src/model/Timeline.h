@@ -275,6 +275,15 @@ public:
                        const std::string& customColor = "");
     bool setTrackBounceSettings(int trackId, const BounceSettings& settings);
     bool setTrackZoomPanRotSettings(int trackId, const ZoomPanRotSettings& settings);
+    // Direct keyframe authoring seam: replaces the track's ZPR curves wholesale,
+    // bypassing the scalar rebuild-vs-preserve logic in
+    // setTrackZoomPanRotSettings (that function can never be used to AUTHOR
+    // curves, only to preserve or rebuild them from scalars). Trusts
+    // tracks.authored as given rather than forcing it — undo/redo replay a
+    // prior snapshot through this same setter and need to be able to restore
+    // a non-authored one. The RPC entry point (zprTracksFromJson) is what
+    // stamps authored=true for a genuine new user edit.
+    bool setTrackZprTracks(int trackId, const ZprTracks& tracks);
     bool setTrackPingPongSettings(int trackId, const PingPongSettings& settings);
     bool setTrackSlideNoteEffectSettings(int trackId, const SlideNoteEffectSettings& settings);
     bool setNoteSlide(int patternId, int noteId, bool isSlide, float curveCx, float curveCy);
@@ -335,6 +344,23 @@ public:
     bool restorePattern(const Pattern& pattern);
     bool restorePatternBlock(const PatternBlock& block);
     bool restoreNoteInPattern(int patternId, const PatternNote& note);
+
+    // ── Bulk-edit guard ───────────────────────────────────────────────────────
+    // Per-entity mutations log one line each to stdout/stderr, which the
+    // Electron main process drains over a pipe. At a few hundred clips that
+    // logging — not the edit itself — dominated the operation: a 200-clip
+    // insert spent ~1ms per clip writing two log lines. Batch commands hold a
+    // ScopedBulkEdit for the duration and print a single summary instead.
+    // ERROR lines are never suppressed.
+    struct ScopedBulkEdit {
+        explicit ScopedBulkEdit(Timeline& t) : t_(t) { ++t_.m_bulkDepth; }
+        ~ScopedBulkEdit() { --t_.m_bulkDepth; }
+        ScopedBulkEdit(const ScopedBulkEdit&) = delete;
+        ScopedBulkEdit& operator=(const ScopedBulkEdit&) = delete;
+    private:
+        Timeline& t_;
+    };
+    bool inBulkEdit() const { return m_bulkDepth > 0; }
 
     // ── Serialization ─────────────────────────────────────────────────────────
     nlohmann::json toJSON() const;
@@ -423,4 +449,7 @@ private:
     int    m_globalStretchMethod = static_cast<int>(StretchMethod::PSOLA);
 
     std::function<void(int, const char*)> m_clipCacheInvalidator;
+
+    // Nesting depth of ScopedBulkEdit — see inBulkEdit(). Message thread only.
+    int m_bulkDepth = 0;
 };

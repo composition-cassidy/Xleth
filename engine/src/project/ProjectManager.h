@@ -44,7 +44,17 @@
 //     over routes the user has since edited.
 // v5: per-slot MANGLE chain. A single MANGLE (schema ≤4 mangleMode/Amount/Mix)
 //     migrates to a one-instance chain with identical sound on load.
-inline constexpr int XLETH_PROJECT_SCHEMA_VERSION = 5;
+// v6: Zoom/Pan/Rot keyframe tracks (ParamTrack). The legacy scalars
+//     (startZoom/targetZoom/pan/rotation/durationMs/easing) are still written
+//     and are still the edit surface; a `zoomPanRot.tracks` block carrying the
+//     four canonical ParamTracks is written alongside them. A v≤5 project has
+//     no tracks block and is migrated on load by loadOrMigrateZprTracks, which
+//     maps each named easing to its EXACT cubic bezier.
+//     NOT bit-exact: zoom is now interpolated in log2 space rather than
+//     linearly. Endpoints and the post-animation hold are unchanged; the
+//     interior of a zoom sweep differs by that reparameterization. A 1x→8x
+//     sweep now reads 2.83x at its midpoint instead of 4.5x.
+inline constexpr int XLETH_PROJECT_SCHEMA_VERSION = 6;
 
 class ProjectManager {
 public:

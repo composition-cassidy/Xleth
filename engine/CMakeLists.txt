@@ -205,6 +205,7 @@ endif()
 # only. Safe to link from the bridge, the engine, or standalone tools.
 # Defined BEFORE XlethEngineCore because MixEngine depends on Timeline/Clip/Track.
 add_library(XlethEngineModel STATIC
+    src/model/ParamTrack.cpp
     src/model/SampleRegion.cpp
     src/model/SamplerModulationConfig.cpp
     src/model/SamplerLegacyMigration.cpp
@@ -225,6 +226,8 @@ add_library(XlethEngineModel STATIC
     src/commands/QuantizeClipsBatchCommand.cpp
     src/commands/AddNotesBatchCommand.cpp
     src/commands/AddClipsBatchCommand.cpp
+    src/commands/ClipBatchCommands.cpp
+    src/commands/EffectChainCommands.cpp
     src/audio/TrackRouting.cpp
 )
 
@@ -520,6 +523,18 @@ add_executable(test_video_flip_resolver
 )
 
 target_link_libraries(test_video_flip_resolver PRIVATE
+    XlethEngineModel
+)
+
+# ── test_effect_chain_commands ────────────────────────────────────────────────
+# LoadEffectChainCommand: the single undoable step behind an FX Chain Library
+# load / drag-drop. The command takes its chain swap as an injected callable, so
+# this is model-only — the MixEngine wiring is exercised through the RPC layer.
+add_executable(test_effect_chain_commands
+    test/test_effect_chain_commands.cpp
+)
+
+target_link_libraries(test_effect_chain_commands PRIVATE
     XlethEngineModel
 )
 
@@ -1297,6 +1312,16 @@ target_compile_definitions(test_sampler PRIVATE
     JUCE_USE_WINDOWS_MEDIA_FORMAT=0
     JUCE_STANDALONE_APPLICATION=1
 )
+
+# ── test_sampler_preview_route ───────────────────────────────────────────────
+# Which track's effect rack an auditioned sample is heard through: dedicated
+# track detection, shared-bus fallback, and the mode switch. Header-only logic —
+# links nothing. The MixEngine render integration is exercised by test_mix.
+add_executable(test_sampler_preview_route
+    test/test_sampler_preview_route.cpp
+)
+
+target_include_directories(test_sampler_preview_route PRIVATE src)
 
 # ── test_sampler_legacy_migration ────────────────────────────────────────────
 # Schema 3 → 4 migration of the hardcoded pitch envelope and the three drawable
@@ -2347,6 +2372,36 @@ target_compile_definitions(test_animation_manager PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_param_track ─────────────────────────────────────────────────────────
+# Verifies the ParamTrack keyframe core and the Zoom/Pan/Rot migration onto it:
+# bezier solve accuracy, the identity-in-x fast path, unclamped overshoot, the
+# exact legacy-easing mapping, unwrapped rotation, log2 zoom space, and v1/v2
+# payload handling. Pure CPU — no GPU or decoder.
+add_executable(test_param_track
+    test/test_param_track.cpp
+)
+
+target_link_libraries(test_param_track PRIVATE
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_param_track PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_compositor ──────────────────────────────────────────────────────────
 # Verifies GridCompositor with real D3D11 GPU rendering.
 # Creates solid-color textures, composites them, reads back pixels.
@@ -2559,6 +2614,7 @@ set(XLETH_ENGINE_TESTS
     test_flip_orientation_golden
     test_project
     test_undo
+    test_effect_chain_commands
     test_track_routing
     test_sidechain_routes
     test_clip_modulation_evaluator
@@ -2576,6 +2632,7 @@ set(XLETH_ENGINE_TESTS
     test_audio_telemetry
     test_audio_perf_scenarios
     test_sampler
+    test_sampler_preview_route
     test_sampler_legacy_migration
     test_sampler_modulation
     test_mangle
@@ -2608,6 +2665,7 @@ set(XLETH_ENGINE_TESTS
     test_frame_timing
     test_render_decoder
     test_animation_manager
+    test_param_track
     test_compositor
     test_snapshot_transition
     test_muxer

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { X } from 'lucide-react'
 import usePhaserStore from '../../stores/phaserStore.js'
 import PluginUIKitKnob from '../../plugin-ui/runtime/components/PluginUIKitKnob.jsx'
+import EffectPresetBar from '../../fx-presets/EffectPresetBar.jsx'
 import XlethSelect from '../common/XlethSelect.jsx'
 import PhaserVisualizerCanvas from './PhaserVisualizerCanvas.jsx'
 import { clamp } from './mixerFilterMath.js'
@@ -224,6 +225,13 @@ export default function PhaserPanel() {
     commitParam('stages', Number(value))
   }, [commitParam])
 
+  // Preset load/undo: the adapter already wrote every param to the engine —
+  // mirror them into local state so the knobs/visualizer reflect it immediately.
+  const applyPresetState = useCallback((state) => {
+    if (!state?.params || typeof state.params !== 'object') return
+    setParams(prev => ({ ...prev, ...state.params }))
+  }, [])
+
   if (!target) return null
 
   return (
@@ -235,6 +243,14 @@ export default function PhaserPanel() {
         <button className="phaser-panel-close" onClick={close} title="Close">
           <X size={13} />
         </button>
+      </div>
+
+      <div className="fx-panel-preset-strip">
+        <EffectPresetBar
+          effectType="phaser"
+          target={target}
+          onApplied={applyPresetState}
+        />
       </div>
 
       {/* Stage — dominant visualization, doubles as the FREQ LOW/HIGH control */}

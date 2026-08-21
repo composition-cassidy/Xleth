@@ -318,10 +318,13 @@ struct ModConfig {
     // ENV 0 is the amp envelope / voice-lifecycle gate — it always exists and
     // cannot be removed; enforceInvariants() re-asserts that after any patch.
     // VELO and NOTE are fixed sources with no presence flag. A default-
-    // constructed config has only ENV 0 present, matching "a fresh sampler
-    // starts with just ENV 1".
+    // constructed config (a FRESH sampler) starts with ENV 1 and LFO 1 present,
+    // so the tray opens on something to shape rather than an empty LFO strip.
+    // LFO 1 is removable, unlike ENV 1 — an unrouted LFO is a pure bypass, so a
+    // present-by-default LFO changes nothing audible. Loaded LEGACY projects must
+    // NOT inherit this default LFO; SampleRegion::from_json clears it for them.
     std::array<bool, kNumEnvs> envPresent{ { true, false, false, false, false, false } };
-    std::array<bool, kNumLfos> lfoPresent{ { false, false, false, false, false, false } };
+    std::array<bool, kNumLfos> lfoPresent{ { true, false, false, false, false, false } };
 
     int numRoutes = 0;
     std::array<ModRoute, kMaxRoutes> routes{};

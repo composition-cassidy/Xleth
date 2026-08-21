@@ -989,6 +989,14 @@ void Sampler::noteOn(int midiNote, float velocity, int sampleOffset)
     const float vel = std::clamp(velocity, 0.0f, 1.0f);
 
     if (monoEnabled_) {
+        // Was another note still DOWN when this one arrived? Legato and
+        // portamento are overlap behaviours, so this — not "is a voice still
+        // making sound" — is what decides between a retune and a new attack.
+        // Sequenced notes butted end to end arrive as noteOff-then-noteOn on
+        // the same tick (MixEngine orders NoteOff before NoteOn), which leaves
+        // nothing held: that second note is a fresh attack, not a legato slur.
+        const bool overlapping = !monoHeldNotes_.empty();
+
         // Track held note (remove duplicate, push to back as most recent)
         auto hIt = std::find(monoHeldNotes_.begin(), monoHeldNotes_.end(), midiNote);
         if (hIt != monoHeldNotes_.end()) monoHeldNotes_.erase(hIt);
@@ -996,12 +1004,18 @@ void Sampler::noteOn(int midiNote, float velocity, int sampleOffset)
         monoHeldNotes_.push_back(midiNote);
 
         Voice* active = findActiveMonoVoice();
-        // A note arriving while the previous one still sounds is a LEGATO or
+        // A note arriving while the previous one is still HELD is a LEGATO or
         // PORTAMENTO event: the voice is retuned rather than respawned. Which
         // of the two is enabled decides only whether that retune glides —
         // legato alone retunes instantly, portamento alone already behaved this
         // way, and both together is a glide with no envelope restart.
-        const bool retune = (active != nullptr) && (portamentoEnabled_ || legatoEnabled_);
+        //
+        // `active->noteHeld` is checked as well as `overlapping`: fireNoteOff
+        // clears it immediately while the envelope release itself is deferred
+        // to a sample offset inside the buffer, so a voice can still be in
+        // Sustain at this instant and yet already be a released tail.
+        const bool retune = (active != nullptr) && active->noteHeld && overlapping
+                            && (portamentoEnabled_ || legatoEnabled_);
         if (retune) {
             active->midiNote = midiNote;
             active->velocity = vel;
@@ -1014,6 +1028,11 @@ void Sampler::noteOn(int midiNote, float velocity, int sampleOffset)
             // nothing. A still-sounding voice keeps them, and THAT is legato.
             if (active->envStage == Voice::EnvStage::Release
                 || active->envStage == Voice::EnvStage::Off) {
+                // Re-arm the streams too. A held one-shot that has run out is
+                // put into Release by the "every layer has run out" path in
+                // processVoice, and its read heads sit past the end of the trim
+                // region — restarting only the envelope would modulate silence.
+                armStreams(*active);
                 active->envStage     = Voice::EnvStage::Delay;
                 active->envLevel     = 0.0f;
                 active->envPosition  = 0.0;
@@ -1024,15 +1043,32 @@ void Sampler::noteOn(int midiNote, float velocity, int sampleOffset)
             active->velocity     = vel;
             // Re-arm every layer from its own trim start.
             armStreams(*active);
-            active->currentPitchF = static_cast<double>(midiNote);
-            active->targetPitch   = midiNote;
-            active->portamentoRemaining = 0.0;
-            active->pitchRatio   = std::pow(2.0, (midiNote - slots_[0].rootNote) / 12.0);
+            // Portamento survives a re-attack: the pitch starts where the last
+            // note left off and glides, while the envelope and every stream
+            // restart from the top. Only the PITCH is continuous — that is
+            // exactly what separates portamento from legato, which keeps the
+            // envelope running too.
+            if (portamentoEnabled_ && lastNotePitch_ >= 0) {
+                active->currentPitchF = static_cast<double>(lastNotePitch_);
+                beginPortamento(*active, midiNote);
+            } else {
+                active->currentPitchF = static_cast<double>(midiNote);
+                active->targetPitch   = midiNote;
+                active->portamentoRemaining = 0.0;
+                active->portamentoTotal     = 0.0;
+            }
+            active->pitchRatio   = std::pow(2.0, (active->currentPitchF - slots_[0].rootNote) / 12.0);
             active->envStage     = Voice::EnvStage::Delay;
             active->envLevel     = 0.0f;
             active->envPosition  = 0.0;
             active->noteHeld     = true;
             active->onsetSample      = sampleOffset;
+            // The previous note's note-off is DEFERRED: fireNoteOff only stamps
+            // a sample index and processVoice performs the transition later in
+            // the buffer. Reusing that voice without clearing the stamp would
+            // release this note on the very sample it starts — which is the
+            // whole reason a note butted against its predecessor went silent.
+            active->releaseSample    = -1;
             // Hard retrigger cancels any in-flight slide on this voice.
             active->slideActive          = false;
             active->slideElapsedSamples  = 0.0;
@@ -1472,6 +1508,14 @@ void Sampler::processVoice(Voice& v,
     // per-sample pitch modulation — one tan() per block instead of per sample.
     const double noteHzAtBlockEntry = 440.0 * std::pow(2.0, (v.currentPitchF - 69.0) / 12.0);
 
+    // Loaded before the geometry pass because MANGLE's design needs to know
+    // whether this stream is modulated: a routed instance must be designed from
+    // the value CURRENTLY in force (carried in its per-stream state) plus the
+    // offsets still held from the last control block, not from the published
+    // base. Rebuilding from the base here is what used to leave the first
+    // 0..31 samples of every buffer unmodulated.
+    const xleth::sampmod::CompiledModGraph* const mod = modActive_;
+
     // ── Resolve every stream's geometry up front ─────────────────────────────
     // heldBuffers keeps each stream's published buffer alive for the duration
     // of this call (see the load below); geo holds the raw pointers the render
@@ -1583,6 +1627,20 @@ void Sampler::processVoice(Voice& v,
         g.mangleCount = 0;
         g.mangleAny   = false;
         g.mangleBase.fill(xleth::mangle::InstanceConfig{});
+        // A MODULATED slot must not be re-designed from the published base here:
+        // its live amount / mix (and any dezipper ramp still in flight) are held
+        // in the per-stream state and are simply resumed, because the control
+        // block that owns them is voice-relative and does not line up with this
+        // buffer boundary. Rebuilding from the base was the crackle — it reverted
+        // the instance to its unmodulated amount for the first 0..31 samples of
+        // every buffer, whether or not the modulated value was moving.
+        //
+        // An UNROUTED slot arms a zero-length ramp, which is a plain snap to the
+        // published value and therefore bit-identical to the pre-dezipper build.
+        const size_t modSlot = static_cast<size_t>(st.slotIndex);
+        const bool mangleRouted = (mod != nullptr) && mod->anyMangleRouted
+                               && modSlot < mod->slotMangleRouted.size()
+                               && mod->slotMangleRouted[modSlot];
         if (auto chain = sl.mangleChain.load(std::memory_order_acquire)) {
             const int nInst = std::min(chain->count, xleth::mangle::kMaxInstances);
             for (int k = 0; k < nInst; ++k) {
@@ -1591,12 +1649,14 @@ void Sampler::processVoice(Voice& v,
                 if (in.bypass) {
                     g.mangle[static_cast<size_t>(k)] = xleth::mangle::Runtime{};
                 } else {
-                    g.mangle[static_cast<size_t>(k)] = xleth::mangle::makeRuntime(
+                    g.mangle[static_cast<size_t>(k)] = xleth::mangle::designInstance(
+                        st.mangle[static_cast<size_t>(k)],
                         in.mode, in.amount, in.mix,
                         noteHzAtBlockEntry, cycleLen,
                         static_cast<double>(g.smpStart),
                         static_cast<double>(g.clampedEnd - g.smpStart),
-                        engineSampleRate);
+                        engineSampleRate,
+                        /*armRamp=*/!mangleRouted, /*rampSamples=*/0);
                 }
                 if (g.mangle[static_cast<size_t>(k)].active) g.mangleAny = true;
             }
@@ -1620,8 +1680,6 @@ void Sampler::processVoice(Voice& v,
         v.modPanL[static_cast<size_t>(st.slotIndex)] = gi.panL;
         v.modPanR[static_cast<size_t>(st.slotIndex)] = gi.panR;
     }
-    const xleth::sampmod::CompiledModGraph* const mod = modActive_;
-
     // 4-point cubic Hermite read. Dramatically reduces the aliasing that
     // becomes audible when the pitch LFO modulates stride.
     auto readInterp = [](const StreamGeometry& g, double pos, int srcCh) -> float {
@@ -1698,6 +1756,13 @@ void Sampler::processVoice(Voice& v,
                         // Re-design every active instance from its own base plus
                         // that instance's accumulated offset. A bypassed / Off
                         // instance has nothing to modulate and is left alone.
+                        //
+                        // The new value is the ramp's TARGET, not an immediate
+                        // write: makeRuntimeSmoothed glides amount, mix and the
+                        // SVF coefficients to it over the block's 32 samples and
+                        // leaves every piece of instance state — oscillator
+                        // phase, cycle anchor, filter integrators, DC blockers —
+                        // strictly alone.
                         for (int k = 0; k < gm.mangleCount && k < xleth::mangle::kMaxInstances; ++k)
                         {
                             const auto& base = gm.mangleBase[static_cast<size_t>(k)];
@@ -1706,12 +1771,15 @@ void Sampler::processVoice(Voice& v,
                                 base.amount + v.modOffsets.mangleAmount[si][static_cast<size_t>(k)], 0.0f, 1.0f);
                             const float mix = std::clamp(
                                 base.mix + v.modOffsets.mangleMix[si][static_cast<size_t>(k)], 0.0f, 1.0f);
-                            gm.mangle[static_cast<size_t>(k)] = xleth::mangle::makeRuntime(
+                            gm.mangle[static_cast<size_t>(k)] = xleth::mangle::designInstance(
+                                st.mangle[static_cast<size_t>(k)],
                                 base.mode, amt, mix,
                                 noteHzAtBlockEntry, cycleLen,
                                 static_cast<double>(gm.smpStart),
                                 static_cast<double>(gm.clampedEnd - gm.smpStart),
-                                engineSampleRate);
+                                engineSampleRate,
+                                /*armRamp=*/true,
+                                /*rampSamples=*/xleth::sampmod::kControlBlockSamples);
                             gm.mangleAny = gm.mangleAny || gm.mangle[static_cast<size_t>(k)].active;
                         }
                     }
@@ -1787,7 +1855,10 @@ void Sampler::processVoice(Voice& v,
         {
             auto& st = v.streams[static_cast<size_t>(i)];
             if (!st.active) continue;
-            const StreamGeometry& g = geo[static_cast<size_t>(i)];
+            // Non-const: the MANGLE dezipper advances this stream's per-instance
+            // runtime (coefficients only) once per sample. Everything else here
+            // still treats the geometry as read-only for the block.
+            StreamGeometry& g = geo[static_cast<size_t>(i)];
             if (g.data == nullptr) continue;
 
             // Combined tuning: note pitch, this slot's root note, and the
@@ -1954,34 +2025,56 @@ void Sampler::processVoice(Voice& v,
             // `tick` bends only where the head is READ FROM; st.playPosition is
             // never written here, so the loop state machine, the trim-end test,
             // the declick/fade envelopes and the crossfade above all keep
-            // driving the canonical head exactly as pre-MANGLE. Every instance
-            // ticks against that CANONICAL head (positions do not compose) and
-            // is resolved ONCE per sample here — tick advances phase — before
-            // the per-channel shaping below.
+            // driving the canonical head exactly as pre-MANGLE.
+            //
+            // POSITIONS COMPOSE. Each position-domain instance ticks against the
+            // head the instances BEFORE it already bent, not against the
+            // canonical head, and moves it further. Ticking every instance
+            // against the canonical head was the original design and it is what
+            // made a chain of two ALT modes behave as if only the last one
+            // existed: instance N+1 re-read the SOURCE at a bend derived purely
+            // from st.playPosition, so at its default mix of 1.0 it overwrote
+            // instance N's output with a read that had never seen it. Composing
+            // is also what makes two copies of the same mode stack instead of
+            // landing on the identical position and cancelling out.
+            //
+            // The head advances by offset * mix, so a partly-wet instance bends
+            // the head for its successors by exactly the fraction it contributes
+            // to the sample. A ONE-instance chain still ticks against
+            // st.playPosition, which is what keeps it bit-identical to the
+            // pre-chain single-MANGLE render (and the legacy migration exact).
             const bool mangleAny = g.mangleAny;
             std::array<xleth::mangle::Tick,   xleth::mangle::kMaxInstances> mt{};
             std::array<double, xleth::mangle::kMaxInstances> wetPos{};
             std::array<bool,   xleth::mangle::kMaxInstances> wetPosMoved{};
             if (mangleAny)
             {
+                double headPos = st.playPosition;
                 for (int k = 0; k < g.mangleCount; ++k)
                 {
                     const size_t ik = static_cast<size_t>(k);
                     if (!g.mangle[ik].active) continue;
                     mt[ik] = xleth::mangle::tick(g.mangle[ik], st.mangle[ik],
-                                                 st.playPosition, stride);
-                    wetPos[ik] = st.playPosition;
+                                                 headPos, stride);
+                    wetPos[ik] = headPos;
                     if (mt[ik].posOffset != 0.0)
                     {
                         // A bent head must stay inside the trim window: the ALT
                         // modes deliberately run backwards and stall, and nothing
                         // downstream re-checks the bound.
-                        wetPos[ik] = std::clamp(st.playPosition + mt[ik].posOffset,
+                        wetPos[ik] = std::clamp(headPos + mt[ik].posOffset,
                                                 g.readLo, g.readHi);
                         wetPosMoved[ik] = true;
+                        headPos = std::clamp(
+                            headPos + mt[ik].posOffset * static_cast<double>(g.mangle[ik].mix),
+                            g.readLo, g.readHi);
                     }
                 }
             }
+
+            // The channel loop below reads rt.amount / rt.mix / rt.a1..a3, so
+            // the dezipper is advanced after it — see the mangleAny block that
+            // follows the per-channel loop.
 
             for (int ch = 0; ch < std::min(2, outChannels); ++ch)
             {
@@ -1999,18 +2092,30 @@ void Sampler::processVoice(Voice& v,
                     // the running `sample` and blends it back by its own mix, so
                     // the output of instance N feeds instance N+1. A one-instance
                     // chain is exactly the pre-chain single-MANGLE render.
-                    for (int k = 0; k < g.mangleCount; ++k)
+                    //
+                    // The walk is TWO passes over the same ordered chain: every
+                    // head-bending instance first (in chain order), then every
+                    // sample-shaping one (in chain order). The split is forced by
+                    // physics, not taste: a bent head re-reads the SOURCE buffer,
+                    // so a position instance has no way to receive a shaped
+                    // sample as its input — running it after a shaper can only
+                    // discard that shaper's work, which is precisely how a
+                    // LPF -> SYNC chain used to end up sounding like SYNC alone.
+                    // Resolving the warps first and shaping the composed read is
+                    // the only ordering in which BOTH stages survive, and it is
+                    // the warp-then-shape model every wavetable synth uses.
+                    // Order stays audible where it can be: among the warps (the
+                    // bends compose in order) and among the shapers.
+                    const auto applyInstance = [&](size_t ik, float in) -> float
                     {
-                        const size_t ik = static_cast<size_t>(k);
                         const auto& rt = g.mangle[ik];
-                        if (!rt.active) continue;
 
                         // A sample-domain mode reuses the running value outright,
                         // so FILTER / DISTORTION cost one extra shaper call and
                         // no extra interpolation. A position-domain mode instead
                         // re-reads the SOURCE at its bent head — its input is the
                         // buffer, not the previous instance's sample.
-                        float wet = sample;
+                        float wet = in;
                         if (wetPosMoved[ik])
                         {
                             wet = readInterp(g, wetPos[ik], srcCh);
@@ -2039,7 +2144,20 @@ void Sampler::processVoice(Voice& v,
                         wet = xleth::mangle::shapeSample(rt, st.mangle[ik], wet, ch)
                             * mt[ik].ampGain;
 
-                        sample += (wet - sample) * rt.mix;
+                        return in + (wet - in) * rt.mix;
+                    };
+
+                    for (int k = 0; k < g.mangleCount; ++k)
+                    {
+                        const size_t ik = static_cast<size_t>(k);
+                        if (g.mangle[ik].active && wetPosMoved[ik])
+                            sample = applyInstance(ik, sample);
+                    }
+                    for (int k = 0; k < g.mangleCount; ++k)
+                    {
+                        const size_t ik = static_cast<size_t>(k);
+                        if (g.mangle[ik].active && !wetPosMoved[ik])
+                            sample = applyInstance(ik, sample);
                     }
                 }
 
@@ -2051,6 +2169,22 @@ void Sampler::processVoice(Voice& v,
                 const float panGain = (ch == 0) ? (v.modPanL[pi] * lfoPanL)
                                                 : (v.modPanR[pi] * lfoPanR);
                 out.addSample(ch, s, sample * common * panGain);
+            }
+
+            // ── Dezipper step ────────────────────────────────────────────────
+            // Once per SAMPLE per instance (not per channel), after the sample
+            // has been rendered: the block opens on the value the previous block
+            // closed with and closes exactly on the target the control block
+            // asked for. Five adds per ramping instance and nothing at all for
+            // an unmodulated one, whose rampLeft is always 0.
+            if (mangleAny)
+            {
+                for (int k = 0; k < g.mangleCount; ++k)
+                {
+                    const size_t ik = static_cast<size_t>(k);
+                    if (g.mangle[ik].rampLeft > 0)
+                        xleth::mangle::advanceParams(g.mangle[ik], st.mangle[ik]);
+                }
             }
 
             // dir is +1 for every forward read — including every Forward loop

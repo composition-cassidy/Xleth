@@ -6,7 +6,8 @@
 // handlers below remain hand-written, each evaluated and deliberately EXCLUDED
 // from the manifest (so the next migration pass need not re-evaluate them):
 //
-//   • addClipsBatch / spliceClipsAtPlayhead — batch / multi-entry operations.
+//   • addClipsBatch / pasteClipsBatch / moveClipsBatch / removeClipsBatch /
+//     spliceClipsAtPlayhead
 //     Excluded per the "no batching logic" rule even though their bodies are
 //     pure forwards (see docs/rpc-manifest.md).
 //   • autoTrimClip — NOT a pure pass-through: its preload wrapper supplies a
@@ -26,6 +27,15 @@ function init(deps) {
 
   ipcMain.handle('xleth:timeline:addClipsBatch',
     safeHandler((_, clips) => callWorker('timeline_addClipsBatch', [clips])));
+
+  ipcMain.handle('xleth:timeline:pasteClipsBatch',
+    safeHandler((_, spec) => callWorker('timeline_pasteClipsBatch', [spec])));
+
+  ipcMain.handle('xleth:timeline:moveClipsBatch',
+    safeHandler((_, moves) => callWorker('timeline_moveClipsBatch', [moves])));
+
+  ipcMain.handle('xleth:timeline:removeClipsBatch',
+    safeHandler((_, ids) => callWorker('timeline_removeClipsBatch', [ids])));
 
   ipcMain.handle('xleth:timeline:autoTrimClip',
     safeHandler((_, id, thresholdDb) => callWorker('timeline_autoTrimClip', [id, thresholdDb])));

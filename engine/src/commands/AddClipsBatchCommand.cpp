@@ -6,6 +6,9 @@ AddClipsBatchCommand::AddClipsBatchCommand(std::vector<Clip> clips)
     : clips_(std::move(clips)) {}
 
 void AddClipsBatchCommand::execute(Timeline& timeline) {
+    // Suppress the per-clip log lines — at a few hundred clips they cost more
+    // than the insertion itself. See Timeline::ScopedBulkEdit.
+    Timeline::ScopedBulkEdit bulk(timeline);
     if (firstExecute_) {
         assignedIds_.clear();
         assignedIds_.reserve(clips_.size());
@@ -25,12 +28,15 @@ void AddClipsBatchCommand::execute(Timeline& timeline) {
             timeline.restoreClip(clip);
         }
     }
+    std::cout << "[Timeline] Added " << assignedIds_.size() << " clip(s) (batch)\n";
 }
 
 void AddClipsBatchCommand::undo(Timeline& timeline) {
+    Timeline::ScopedBulkEdit bulk(timeline);
     for (int id : assignedIds_) {
         timeline.removeClip(id);
     }
+    std::cout << "[Timeline] Removed " << assignedIds_.size() << " clip(s) (batch undo)\n";
 }
 
 std::string AddClipsBatchCommand::describe() const {

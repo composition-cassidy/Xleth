@@ -1,9 +1,10 @@
 import { useState, useEffect, useRef, useCallback, memo } from 'react'
-import { SkipBack, Play, Pause, Square, SkipForward, Lock, LockOpen } from 'lucide-react'
+import { SkipBack, Play, Pause, Square, SkipForward, Lock, LockOpen, Crosshair } from 'lucide-react'
 import AudioDeviceSelector from './AudioDeviceSelector.jsx'
 import { subscribe } from '../transportStore.js'
 import { playheadClock } from '../services/PlayheadClock.js'
 import useMixerStore from '../stores/mixerStore.js'
+import useAutoScrollStore from '../stores/autoScrollStore.js'
 
 function formatTime(ms) {
   const totalMs = Math.max(0, ms)
@@ -42,6 +43,8 @@ const PositionDisplay = memo(function PositionDisplay() {
 export default function TransportBar() {
   const [isPlaying, setIsPlaying] = useState(false)
   const [bpm, setBpm] = useState(140)
+  const autoScrollEnabled = useAutoScrollStore(s => s.enabled)
+  const toggleAutoScroll = useAutoScrollStore(s => s.toggle)
 
   const [editingBpm, setEditingBpm] = useState(false)
   const [bpmInput, setBpmInput] = useState('140')
@@ -177,6 +180,15 @@ export default function TransportBar() {
           title="Forward"
         >
           <SkipForward size={16} />
+        </button>
+        <button
+          className={`transport-btn transport-auto-scroll ${autoScrollEnabled ? 'transport-btn-active' : ''}`}
+          onClick={toggleAutoScroll}
+          title={autoScrollEnabled
+            ? 'Auto Scroll: ON — timeline follows the playhead during playback'
+            : 'Auto Scroll: OFF — timeline stays put during playback'}
+        >
+          <Crosshair size={14} />
         </button>
       </div>
 

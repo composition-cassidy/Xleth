@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { X, HelpCircle, Plus, Minus } from 'lucide-react'
 import usePhanjerStore from '../../stores/phanjerStore.js'
 import PluginUIKitKnob from '../../plugin-ui/runtime/components/PluginUIKitKnob.jsx'
+import EffectPresetBar from '../../fx-presets/EffectPresetBar.jsx'
 import XlethSelect from '../common/XlethSelect.jsx'
 import PhanjerResponseCanvas from './PhanjerResponseCanvas.jsx'
 import { clamp } from './mixerFilterMath.js'
@@ -304,6 +305,14 @@ export default function PhanjerPanel() {
     pendingRef.current = null
   }, [])
 
+  // Preset load/undo: the adapter already wrote every param to the engine —
+  // mirror them into local state so the knobs/response canvas reflect it
+  // immediately.
+  const applyPresetState = useCallback((state) => {
+    if (!state?.params || typeof state.params !== 'object') return
+    setParams(prev => ({ ...prev, ...state.params }))
+  }, [])
+
   if (!target) return null
 
   // ── Derived enable/disable state ─────────────────────────────────────────────
@@ -409,6 +418,14 @@ export default function PhanjerPanel() {
         <button className="phanjer-panel-close" onClick={close} title="Close">
           <X size={14} />
         </button>
+      </div>
+
+      <div className="fx-panel-preset-strip">
+        <EffectPresetBar
+          effectType="phanjer"
+          target={target}
+          onApplied={applyPresetState}
+        />
       </div>
 
       {/* Response strip — both comb curves, param-driven */}

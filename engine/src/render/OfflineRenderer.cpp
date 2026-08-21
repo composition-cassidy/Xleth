@@ -94,10 +94,16 @@ float easingPeakFactor(int easingType, float overshoot) {
 float maxAnimationScale(const TrackInfo& trk) {
     auto zoomPeak = [](const ZoomPanRotSettings& z) -> float {
         if (!z.enabled) return 1.0f;
-        const float pk    = easingPeakFactor(z.zoomEasing, z.overshoot);
-        const float delta = z.targetZoom - z.startZoom;
-        const float maxZ  = z.startZoom + std::max(0.0f, delta) * pk;
-        return std::max({1.0f, z.startZoom, maxZ});
+        // easingPeakFactor is a peak in PROGRESS space, so it still applies —
+        // but zoom is now interpolated in log2, and the peak must be computed
+        // there too. Doing it linearly UNDER-estimates: for 1x -> 4x with
+        // pk = 1.1, linear says 4.30 while the real peak is 2^(2*1.1) = 4.59,
+        // which would size the render target below the true footprint.
+        const float  pk   = easingPeakFactor(z.zoomEasing, z.overshoot);
+        const double ls   = zprZoomToLog2(z.startZoom);
+        const double lt   = zprZoomToLog2(z.targetZoom);
+        const double lmax = ls + std::max(0.0, lt - ls) * static_cast<double>(pk);
+        return std::max({1.0f, z.startZoom, zprLog2ToZoom(lmax)});
     };
 
     // Note ZPR and slide ZPR are alternatives (slide overwrites the ZPR fields,
@@ -1028,13 +1034,16 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
             }
 
             for (int64_t f = firstFrame; f <= lastFrame; ++f) {
-                // Advance animation state before collecting
-                const float frameDurationMs = 1000.0f * static_cast<float>(fps.den)
-                                            / static_cast<float>(fps.num);
-                animMgr.advanceAll(frameDurationMs);
                 const int64_t localFrameSample = RenderClock::videoFrameToSample(
                     f, sampleRate, fps);
                 const int64_t projectFrameSample = startSample + localFrameSample;
+                // Advance animation state before collecting, and before the
+                // slide dispatch below — advanceTo also sets the stamp any
+                // trigger fired for this frame will use. Absolute project time,
+                // derived from the frame's own sample position, so this matches
+                // the live preview frame-for-frame.
+                animMgr.advanceTo(1000.0 * static_cast<double>(projectFrameSample)
+                                         / static_cast<double>(sampleRate));
                 const int64_t projectFrameTick = RenderClock::sampleToPPQ(
                     projectFrameSample, sampleRate, bpm);
                 const GridLayout frameGrid = timeline_.gridLayoutAt(
@@ -1672,11 +1681,12 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
 
         if (firstFrame <= lastFrame) {
             for (int64_t f = firstFrame; f <= lastFrame; ++f) {
-                const float frameDurationMs = 1000.0f * static_cast<float>(fps.den)
-                                            / static_cast<float>(fps.num);
-                animMgr.advanceAll(frameDurationMs);
                 const int64_t localFrameSample = RenderClock::videoFrameToSample(f, sampleRate, fps);
                 const int64_t projectFrameSample = startSample + localFrameSample;
+                // See the matching call in the tail-render loop above: absolute
+                // project time, so live and offline agree frame-for-frame.
+                animMgr.advanceTo(1000.0 * static_cast<double>(projectFrameSample)
+                                         / static_cast<double>(sampleRate));
                 const int64_t projectFrameTick = RenderClock::sampleToPPQ(
                     projectFrameSample, sampleRate, bpm);
                 const GridLayout frameGrid = timeline_.gridLayoutAt(

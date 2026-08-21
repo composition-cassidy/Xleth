@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { X } from 'lucide-react'
 import useReverbStore from '../../stores/reverbStore.js'
 import PluginUIKitKnob from '../../plugin-ui/runtime/components/PluginUIKitKnob.jsx'
+import EffectPresetBar from '../../fx-presets/EffectPresetBar.jsx'
 import ReverbDecayFieldVisualizer from './ReverbDecayFieldVisualizer.jsx'
 import ReverbFilterCurve from './ReverbFilterCurve.jsx'
 import {
@@ -295,6 +296,13 @@ export default function ReverbPanel() {
     [activeStyleIdx],
   )
 
+  // Preset load/undo: the adapter already wrote every param to the engine —
+  // mirror them into local state so the knobs/visualizer reflect it immediately.
+  const applyPresetState = useCallback((state) => {
+    if (!state?.params || typeof state.params !== 'object') return
+    setParams(prev => ({ ...prev, ...state.params }))
+  }, [])
+
   if (!target) return null
 
   const renderKnob = (k, size) => (
@@ -330,6 +338,14 @@ export default function ReverbPanel() {
         <button className="reverb-panel-close" onClick={close} title="Close">
           <X size={13} />
         </button>
+      </div>
+
+      <div className="fx-panel-preset-strip">
+        <EffectPresetBar
+          effectType="reverb"
+          target={target}
+          onApplied={applyPresetState}
+        />
       </div>
 
       {/* Style selector — segmented choice. Each index is a different engine

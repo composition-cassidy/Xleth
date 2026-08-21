@@ -1,6 +1,10 @@
 import ModEnvPreview from './ModEnvPreview.jsx'
 import { ModKnob, Seg, NoteSelect, Field } from './ModControls.jsx'
-import { modTimeSeconds } from './modConstants.js'
+import {
+  modTimeSeconds,
+  STAGE_DELAY, STAGE_ATTACK, STAGE_HOLD, STAGE_DECAY, STAGE_RELEASE,
+} from './modConstants.js'
+import { TARGET_ENV_STAGE_TIME, TARGET_SRC_AMOUNT } from './modTargets.js'
 
 // ── ENV editor ───────────────────────────────────────────────────────────────
 // DAHDSR with a per-envelope ms/BPM toggle and per-segment tension, above a
@@ -8,14 +12,22 @@ import { modTimeSeconds } from './modConstants.js'
 // (drag), `commit()` sends it to the engine (mouseup / discrete change).
 
 const STAGE_FIELDS = [
-  { key: 'delay', label: 'DEL' },
-  { key: 'attack', label: 'ATK' },
-  { key: 'hold', label: 'HLD' },
-  { key: 'decay', label: 'DEC' },
+  { key: 'delay', label: 'DEL', stage: STAGE_DELAY },
+  { key: 'attack', label: 'ATK', stage: STAGE_ATTACK },
+  { key: 'hold', label: 'HLD', stage: STAGE_HOLD },
+  { key: 'decay', label: 'DEC', stage: STAGE_DECAY },
 ]
 
-export default function EnvEditor({ env, color, bpm, preview, commit }) {
+// Sustain is deliberately absent from the registrations below: it is a LEVEL,
+// not a time, and the engine rejects a route to it.
+export default function EnvEditor({ env, color, bpm, preview, commit, source = null }) {
   const sync = !!env.tempoSync
+
+  // Cross-modulation registrations for this envelope's own parameters. Stage
+  // times are exponential-law targets in milliseconds, so they need no scaling;
+  // OUT is a percent knob over a 0..1 parameter.
+  const stageReg = (stage) =>
+    (source == null ? null : { target: TARGET_ENV_STAGE_TIME, index: source, stage, scale: 1 })
 
   // Patch one nested ModTime field (ms in Hz mode, noteValue in BPM mode).
   const setTimeLive = (key, patch) => preview({ [key]: { ...env[key], ...patch } })
@@ -34,7 +46,7 @@ export default function EnvEditor({ env, color, bpm, preview, commit }) {
     releaseTension: env.releaseTension || 0,
   }
 
-  const renderTime = (key, label) => {
+  const renderTime = (key, label, stage) => {
     if (sync) {
       return (
         <Field key={key} label={label}>
@@ -46,6 +58,7 @@ export default function EnvEditor({ env, color, bpm, preview, commit }) {
       <ModKnob
         key={key}
         label={label}
+        modTarget={stageReg(stage)}
         value={env[key]?.ms ?? 0}
         min={0} max={5000} defaultValue={0}
         size={40}
@@ -70,6 +83,7 @@ export default function EnvEditor({ env, color, bpm, preview, commit }) {
         <div className="sampler-mod-head-spacer" />
         <ModKnob
           label="OUT"
+          modTarget={source == null ? null : { target: TARGET_SRC_AMOUNT, index: source, stage: 0, scale: 0.01 }}
           value={(env.outputAmount ?? 1) * 100}
           min={0} max={100} defaultValue={100}
           size={34}
@@ -85,7 +99,7 @@ export default function EnvEditor({ env, color, bpm, preview, commit }) {
       </div>
 
       <div className="sampler-mod-knob-row">
-        {STAGE_FIELDS.map((s) => renderTime(s.key, s.label))}
+        {STAGE_FIELDS.map((s) => renderTime(s.key, s.label, s.stage))}
         <ModKnob
           label="SUS"
           value={env.sustainPct ?? 100}
@@ -96,7 +110,7 @@ export default function EnvEditor({ env, color, bpm, preview, commit }) {
           onLiveChange={(v) => preview({ sustainPct: Math.round(v) })}
           onCommit={(v) => { preview({ sustainPct: Math.round(v) }); commit() }}
         />
-        {renderTime('release', 'REL')}
+        {renderTime('release', 'REL', STAGE_RELEASE)}
       </div>
 
       <div className="sampler-mod-knob-row sampler-mod-knob-row--tension">

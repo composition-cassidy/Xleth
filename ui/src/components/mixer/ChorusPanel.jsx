@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback } from 'react'
 import { X } from 'lucide-react'
 import useChorusStore from '../../stores/chorusStore.js'
 import PluginUIKitKnob from '../../plugin-ui/runtime/components/PluginUIKitKnob.jsx'
+import EffectPresetBar from '../../fx-presets/EffectPresetBar.jsx'
 import ChorusOrbitVisualizer from './ChorusOrbitVisualizer.jsx'
 
 const MIXER_RING_APPEARANCE = { preset: 'mixer-ring', sizePreset: 'inherit' }
@@ -216,6 +217,13 @@ export default function ChorusPanel() {
     pendingRef.current = null
   }, [])
 
+  // Preset load/undo: the adapter already wrote every param to the engine —
+  // mirror them into local state so the knobs/visualizer reflect it immediately.
+  const applyPresetState = useCallback((state) => {
+    if (!state?.params || typeof state.params !== 'object') return
+    setParams(prev => ({ ...prev, ...state.params }))
+  }, [])
+
   if (!target) return null
 
   return (
@@ -226,6 +234,14 @@ export default function ChorusPanel() {
         <button className="chorus-panel-close" onClick={close} title="Close">
           <X size={13} />
         </button>
+      </div>
+
+      <div className="fx-panel-preset-strip">
+        <EffectPresetBar
+          effectType="chorus"
+          target={target}
+          onApplied={applyPresetState}
+        />
       </div>
 
       {/* Stage — dominant visualization, fills edge-to-edge */}

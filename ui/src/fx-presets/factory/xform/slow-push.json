@@ -1,0 +1,28 @@
+{
+  "xlethFxPreset": 1,
+  "effectType": "xform",
+  "name": "Slow Push",
+  "author": "XLETH",
+  "created": "2026-08-17T00:00:00.000Z",
+  "state": {
+    "tracks": {
+      "panX": { "constantValue": 0, "keys": [] },
+      "panY": { "constantValue": 0, "keys": [] },
+      "zoomLog2": {
+        "constantValue": 0,
+        "keys": [
+          { "t": 0, "v": 0,    "c": [0.45, 0.05, 0.55, 0.95] },
+          { "t": 1, "v": 0.35 }
+        ]
+      },
+      "rotationDeg": { "constantValue": 0, "keys": [] }
+    },
+    "lengthMode": 1,
+    "musicalDivision": 5,
+    "notePercentage": 100,
+    "onEndMode": 0,
+    "retriggerMode": 0,
+    "retriggerCrossfadeMs": 50,
+    "durationMs": 300
+  }
+}

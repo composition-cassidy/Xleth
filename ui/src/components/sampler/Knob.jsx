@@ -22,6 +22,31 @@ import { useDragLaw } from '../controls/dragLaw.js'
 //                    parameter curve — see the note above normFromValue().
 //   color            optional CSS color for value-arc + pointer line; default is --theme-border-focus
 //   appearance*      optional closed plugin-UI drawing props; omitted for legacy sampler use
+//   mod              optional MODULATION registration — see below. Absent (the
+//                    default, and the case for every knob outside the sampler)
+//                    means not one line of the modulation path runs: no extra
+//                    drawing, no extra hit-testing, no extra DOM attributes.
+//
+// ── The `mod` prop ───────────────────────────────────────────────────────────
+// Opt-in, and a single object so an unregistered knob has exactly one thing to
+// be undefined:
+//
+//   dropProps      spread onto the root element so a drag can hit-test it
+//   highlight      a source card is hovering this knob → outline it
+//   active         a route already drives it → draw the ring
+//   amount         the route's amount, -1..+1 (the ring drag's starting point)
+//   ringLo/ringHi  the modulated range, ALREADY in this knob's display units
+//   color          ring color (a CSS custom property, resolved by the caller)
+//   tooltip        hover text: source → target, amount, computed range
+//   onRingPreview  (amount) => void — every ring-drag frame, LOCAL only
+//   onRingCommit   (amount) => void — once, on ring-drag release
+//   onToggleBipolar() => void — right-click on the knob
+//
+// The ring is drawn on the knob's OWN canvas, inside the value arc, never as a
+// DOM overlay: an absolutely-positioned ring drifts against the canvas under
+// panel scroll and zoom, and it would swallow the pointer events the value drag
+// needs. For the same reason the ring drag is hit-tested by radius against the
+// same canvas rather than layered on top of it.
 
 export default function Knob({
   value,
@@ -48,8 +73,10 @@ export default function Knob({
   appearanceTokens = null,
   accentGlow = false,
   glyph = null,
+  mod = null,
 }) {
   const canvasRef = useRef(null)
+  const ringDragRef = useRef(null) // { startY, startAmount, latest }
   const [editing, setEditing] = useState(false)
   const [editText, setEditText] = useState('')
   // Repaint the canvas when the active theme changes so the value-arc/pointer
@@ -83,6 +110,19 @@ export default function Knob({
   }, [min, span, effSkew])
 
   const fraction = normFromValue(value)
+
+  // Modulation state, flattened to primitives so the draw effect re-runs on a
+  // real change rather than on every parent render (the `mod` object itself is
+  // rebuilt each time by the registration hook).
+  const modActive = !!mod?.active
+  const modHighlight = !!mod?.highlight
+  const modLo = mod?.ringLo
+  const modHi = mod?.ringHi
+  const modColorVar = mod?.colorVar
+  // Handlers read the live object through a ref, so they never need `mod` in
+  // their dependency lists.
+  const modRef = useRef(mod)
+  modRef.current = mod
 
   // Draw the knob
   useEffect(() => {
@@ -135,10 +175,33 @@ export default function Knob({
       track: readToken(null, tokenValue('--theme-fx-knob-lg-track'), c, '#263246'),
       border: readToken(null, tokenValue('--theme-fx-knob-lg-border'), c, 'rgba(203, 213, 225, 0.28)'),
     })
+
+    // Modulation ring — same canvas, inside the value arc.
+    if (modActive || modHighlight) {
+      drawModRing(ctx, {
+        cx,
+        cy,
+        radius: modRingRadius(size, glyph, accentGlow),
+        startAngle,
+        totalSweep,
+        active: modActive,
+        highlight: modHighlight,
+        from: modActive ? normFromValue(modLo) : 0,
+        to: modActive ? normFromValue(modHi) : 0,
+        valueFraction: fraction,
+        accent: readToken(modColorVar, tokenValue('--theme-accent'), c, '#52e5ff'),
+      })
+    }
   }, [
     size,
     fraction,
     color,
+    modActive,
+    modHighlight,
+    modLo,
+    modHi,
+    modColorVar,
+    normFromValue,
     capStyle,
     ringStyle,
     pointerStyle,
@@ -170,9 +233,53 @@ export default function Knob({
   // window, eliminating zombie-drag on missed mouseup.
   // touch-action: none on the canvas prevents the browser from consuming
   // touch-pan gestures before pointermove fires.
-  const handlePointerDown = drag.onPointerDown
-  const handlePointerMove = drag.onPointerMove
-  const handlePointerUp = drag.onPointerUp
+  const handlePointerDown = useCallback((e) => {
+    // Amount drag wins over value drag, but ONLY on the depth handle or its ring
+    // band, and only when a route actually draws one — everywhere else on the cap
+    // the knob behaves exactly as it always has.
+    const m = modRef.current
+    if (m?.active && e.button === 0 && !e.ctrlKey && !e.metaKey
+        && (hitsModHandle(e, size, glyph, accentGlow) || hitsModRing(e, size, glyph, accentGlow))) {
+      e.preventDefault()
+      e.stopPropagation()
+      try { e.currentTarget.setPointerCapture(e.pointerId) } catch (_) {}
+      const startAmount = Number(m.amount) || 0
+      ringDragRef.current = { startX: e.clientX, startY: e.clientY, startAmount, latest: startAmount }
+      document.body.style.cursor = 'nwse-resize'
+      return
+    }
+    drag.onPointerDown(e)
+  }, [size, glyph, accentGlow, drag.onPointerDown])
+
+  const handlePointerMove = useCallback((e) => {
+    const ring = ringDragRef.current
+    if (ring) {
+      // The handle answers to BOTH axes: up OR right increases the amount, down
+      // OR left decreases it, so you can nudge it whichever way feels natural.
+      // 180 px of travel = the full -1..+1, matching the knob's half-sweep feel.
+      // Shift is the same 10x fine ratio the value drag uses.
+      const delta = (ring.startY - e.clientY) + (e.clientX - ring.startX)
+      const sensitivity = e.shiftKey ? 10 : 1
+      const next = Math.max(-1, Math.min(1, ring.startAmount + (delta / 180) / sensitivity))
+      ring.latest = next
+      modRef.current?.onRingPreview?.(next)
+      return
+    }
+    drag.onPointerMove(e)
+  }, [drag.onPointerMove])
+
+  const handlePointerUp = useCallback(() => {
+    const ring = ringDragRef.current
+    if (ring) {
+      ringDragRef.current = null
+      document.body.style.cursor = ''
+      // One commit, on release — the drag itself never crossed the bridge.
+      modRef.current?.onRingCommit?.(ring.latest)
+      return
+    }
+    drag.onPointerUp()
+  }, [drag.onPointerUp])
+
   const handleWheel = drag.onWheel
 
   // Edit mode — entered only via value label double-click, never the canvas.
@@ -208,9 +315,21 @@ export default function Knob({
   const valueColor = pluginTextColor || (isRing ? '#ededf0' : '#BBBBCC')
   const labelColor = pluginTextColor || 'var(--theme-fx-axis-label)'
   const rootDirection = isPluginAppearance && labelMode === 'left' ? 'row' : 'column'
-  const canvasTitle = readoutMode === 'tooltip'
+  const baseTitle = readoutMode === 'tooltip'
     ? `${display} · Drag vertical · Shift = fine · Ctrl+click = reset`
     : 'Drag vertical · Shift = fine · Ctrl+click = reset'
+  // A routed knob's tooltip is the route, not the drag hint — the hint is the
+  // less useful half once there is something to explain.
+  const canvasTitle = mod?.active && mod.tooltip
+    ? `${mod.tooltip}\nDrag the handle = amount · Right-click = bipolar`
+    : baseTitle
+
+  const handleContextMenu = useCallback((e) => {
+    if (!modRef.current?.active) return
+    e.preventDefault()
+    e.stopPropagation()
+    modRef.current.onToggleBipolar?.()
+  }, [])
 
   const labelNode = showLabel ? (
     <div style={{
@@ -230,6 +349,7 @@ export default function Knob({
         onPointerUp={handlePointerUp}
         onPointerCancel={handlePointerUp}
         onWheel={handleWheel}
+        onContextMenu={mod ? handleContextMenu : undefined}
         style={{ cursor: 'ns-resize', display: 'block', touchAction: 'none' }}
         title={canvasTitle}
       />
@@ -253,10 +373,13 @@ export default function Knob({
   )
 
   return (
-    <div style={{
-      display: 'flex', flexDirection: rootDirection, alignItems: 'center',
-      gap: 2, userSelect: 'none',
-    }}>
+    <div
+      {...(mod?.dropProps || null)}
+      style={{
+        display: 'flex', flexDirection: rootDirection, alignItems: 'center',
+        gap: 2, userSelect: 'none',
+      }}
+    >
       {isPluginAppearance && labelMode === 'top' && labelNode}
       {isPluginAppearance && labelMode === 'left' && labelNode}
       {canvasNode}
@@ -527,6 +650,125 @@ function drawAppearanceKnob(ctx, opts) {
     accent,
     text,
   })
+}
+
+// ── Modulation ring geometry ─────────────────────────────────────────────────
+// The ring sits INSIDE the value arc: the hollow centre of the rotary-ring
+// glyph, or just inside the track on the classic cap. Exported because the ring
+// drag hit-tests against exactly this radius — draw and hit-test must never be
+// able to drift apart.
+export const MOD_RING_WIDTH = 2.5
+export const MOD_RING_HIT_PAD = 3.5
+
+// The depth handle — a small grabbable node at the ring's upper-left, the way
+// Serum marks a modulated knob. Dragging it sets the route's amount. A fixed
+// angle (not one that tracks the depth) keeps it a predictable grab point.
+export const MOD_HANDLE_ANGLE = Math.PI * 1.25   // 225° — upper-left ("top-left")
+export const MOD_HANDLE_R = 3.2                  // drawn node radius
+export const MOD_HANDLE_HIT_R = 7                 // generous grab radius
+
+export function modRingRadius(size /* , glyph, accentGlow */) {
+  // The modulation ring hugs the knob's rim, just outside the value arc, so it
+  // reads as a ring AROUND the knob (Serum-style) rather than a faint inner
+  // circle. Kept a hair inside outerR so the stroke + handle stay on-canvas.
+  const outerR = size / 2 - 2
+  return Math.max(2, outerR - 0.5)
+}
+
+// Canvas-space centre of the depth handle.
+export function modHandleCenter(size, glyph, accentGlow = false) {
+  const c = size / 2
+  const r = modRingRadius(size, glyph, accentGlow)
+  return { x: c + Math.cos(MOD_HANDLE_ANGLE) * r, y: c + Math.sin(MOD_HANDLE_ANGLE) * r }
+}
+
+// True when a pointer event landed in the ring's radial band. Uses the canvas's
+// own rect, so it is correct under panel scroll and zoom.
+export function hitsModRing(e, size, glyph, accentGlow = false) {
+  const rect = e.currentTarget?.getBoundingClientRect?.()
+  if (!rect || !(rect.width > 0)) return false
+  const scale = size / rect.width
+  const dx = (e.clientX - rect.left) * scale - size / 2
+  const dy = (e.clientY - rect.top) * scale - size / 2
+  const r = Math.sqrt(dx * dx + dy * dy)
+  const ringR = modRingRadius(size, glyph, accentGlow)
+  return Math.abs(r - ringR) <= MOD_RING_HIT_PAD
+}
+
+// True when a pointer event landed on the depth handle. A generous radius makes
+// the small node easy to grab; it takes priority over the ring band.
+export function hitsModHandle(e, size, glyph, accentGlow = false) {
+  const rect = e.currentTarget?.getBoundingClientRect?.()
+  if (!rect || !(rect.width > 0)) return false
+  const scale = size / rect.width
+  const { x, y } = modHandleCenter(size, glyph, accentGlow)
+  const px = (e.clientX - rect.left) * scale
+  const py = (e.clientY - rect.top) * scale
+  return Math.hypot(px - x, py - y) <= MOD_HANDLE_HIT_R
+}
+
+function drawModRing(ctx, {
+  cx, cy, radius, startAngle, totalSweep, active, highlight, from, to,
+  valueFraction, accent,
+}) {
+  ctx.save()
+  ctx.lineCap = 'butt'
+
+  // Drop-target outline — the whole ring track, so an unrouted knob still shows
+  // where the card is about to land.
+  if (highlight) {
+    ctx.strokeStyle = withAlpha(accent, 0.55)
+    ctx.lineWidth = MOD_RING_WIDTH
+    ctx.setLineDash([3, 3])
+    ctx.beginPath()
+    safeArc(ctx, cx, cy, radius, startAngle, startAngle + totalSweep)
+    ctx.stroke()
+    ctx.setLineDash([])
+  }
+
+  if (active) {
+    const a = startAngle + totalSweep * Math.max(0, Math.min(1, from))
+    const b = startAngle + totalSweep * Math.max(0, Math.min(1, to))
+    ctx.strokeStyle = accent
+    ctx.lineWidth = MOD_RING_WIDTH
+    ctx.beginPath()
+    safeArc(ctx, cx, cy, radius, Math.min(a, b), Math.max(a, b))
+    ctx.stroke()
+
+    // Base tick at the knob's current value — the point the range is measured
+    // from. Without it a symmetric bipolar ring gives no clue where zero is.
+    const baseAngle = startAngle + totalSweep * Math.max(0, Math.min(1, valueFraction))
+    const inner = Math.max(0, radius - MOD_RING_WIDTH)
+    const outer = radius + MOD_RING_WIDTH
+    ctx.strokeStyle = withAlpha(accent, 0.9)
+    ctx.lineWidth = 1.2
+    ctx.beginPath()
+    ctx.moveTo(cx + Math.cos(baseAngle) * inner, cy + Math.sin(baseAngle) * inner)
+    ctx.lineTo(cx + Math.cos(baseAngle) * outer, cy + Math.sin(baseAngle) * outer)
+    ctx.stroke()
+
+    // Depth handle — a small ring-with-a-dot node at the upper-left, the grab
+    // point for setting the amount (drag up/down or left/right).
+    const hx = cx + Math.cos(MOD_HANDLE_ANGLE) * radius
+    const hy = cy + Math.sin(MOD_HANDLE_ANGLE) * radius
+    ctx.shadowColor = withAlpha(accent, 0.9)
+    ctx.shadowBlur = 4
+    ctx.fillStyle = accent
+    ctx.beginPath()
+    ctx.arc(hx, hy, MOD_HANDLE_R, 0, Math.PI * 2)
+    ctx.fill()
+    ctx.shadowBlur = 0
+    // Punch a dark hole so it reads as a ring, then a small centre dot.
+    ctx.fillStyle = 'rgba(6, 8, 16, 0.92)'
+    ctx.beginPath()
+    ctx.arc(hx, hy, Math.max(0.5, MOD_HANDLE_R - 1.4), 0, Math.PI * 2)
+    ctx.fill()
+    ctx.fillStyle = accent
+    ctx.beginPath()
+    ctx.arc(hx, hy, 1, 0, Math.PI * 2)
+    ctx.fill()
+  }
+  ctx.restore()
 }
 
 export function getRotaryRingGeometry({

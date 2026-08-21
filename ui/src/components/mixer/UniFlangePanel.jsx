@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import { X } from 'lucide-react'
 import useUniFlangeStore from '../../stores/uniFlangeStore.js'
+import EffectPresetBar from '../../fx-presets/EffectPresetBar.jsx'
 import { useDynamicsVizSubscription } from '../../plugin-ui/runtime/useDynamicsVizSubscription.js'
 import { VIZ_TYPE } from '../../constants/dynamicsViz.js'
 
@@ -517,6 +518,13 @@ export default function UniFlangePanel() {
     pendingRef.current = null
   }, [])
 
+  // Preset load/undo: the adapter already wrote every param to the engine —
+  // mirror them into local state so the faders reflect it immediately.
+  const applyPresetState = useCallback((state) => {
+    if (!state?.params || typeof state.params !== 'object') return
+    setParams(prev => ({ ...prev, ...state.params }))
+  }, [])
+
   if (!target) return null
 
   return (
@@ -527,6 +535,14 @@ export default function UniFlangePanel() {
         <button className="uniflange-panel-close" onClick={close} title="Close">
           <X size={13} />
         </button>
+      </div>
+
+      <div className="fx-panel-preset-strip">
+        <EffectPresetBar
+          effectType="uniflange"
+          target={target}
+          onApplied={applyPresetState}
+        />
       </div>
 
       {/* Body — dry waveform / Flangus-order fader strip / wet waveform */}

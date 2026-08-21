@@ -1,7 +1,9 @@
 import { useEffect, useRef, useState, useCallback } from 'react'
+import useViewAnimator from '../../hooks/useViewAnimator.js'
 import PianoRollToolbar from './PianoRollToolbar.jsx'
 import PianoRollKeyboard, { PITCH_MIN, PITCH_MAX } from './PianoRollKeyboard.jsx'
 import PianoRollCanvas from './PianoRollCanvas.jsx'
+import PianoRollRuler from './PianoRollRuler.jsx'
 import VelocityLane from './VelocityLane.jsx'
 import PianoRollScrollbarV, { SCROLLBAR_V_WIDTH } from './PianoRollScrollbarV.jsx'
 import PianoRollScrollbarH, { SCROLLBAR_H_HEIGHT } from './PianoRollScrollbarH.jsx'
@@ -11,6 +13,7 @@ import { registerEditorCommand } from '../../windowing/managers/EditorCommandReg
 import { register as registerKeyboardBinding } from '../../windowing/managers/KeyboardManager'
 import { usePanelVisibility } from '../../windowing/contexts/PanelVisibilityContext'
 import { useToast } from '../Toast.jsx'
+import { DEFAULT_SCALE, nextScalePitch } from './scales.js'
 
 // Map parsed FSC notes (engine 960-PPQ shape) onto Xleth's PatternNote JS shape.
 // Only the five fields the Piano Roll understands are carried across — marker
@@ -78,6 +81,8 @@ const DEFAULT_PX_PER_SEMITONE = 14
 
 const MIN_PX_PER_BEAT = 20
 const MAX_PX_PER_BEAT = 320
+const MIN_PX_PER_SEMITONE = 6
+const MAX_PX_PER_SEMITONE = 40
 const MIN_CONTENT_BEATS = 16 // minimum scrollable horizontal range
 
 const PIANO_ROLL_KEY_COMBOS = [
@@ -114,9 +119,19 @@ export default function PianoRoll({
   const [slideMode, setSlideMode] = useState(false)
   const [stickyNoteLength, setStickyNoteLength] = useState(240) // 1/16 default
   const [stickyVelocity, setStickyVelocity] = useState(1.0)
+  // Snap to Scale is an editor-local view setting: it constrains what the user
+  // can draw, but nothing about it is stored on the pattern.
+  const [scale, setScale] = useState(DEFAULT_SCALE)
   const [selectedNoteIds, setSelectedNoteIds] = useState(new Set())
+  // pixelsPerBeat/scrollX/scrollY below are the SETTLED view state — synced
+  // from the animator on a trailing ~100ms debounce, same pattern as
+  // TimelineView. They exist for consumers that only need the resting value
+  // (content-size math, initial layout, effect deps). They must NOT be what
+  // positions anything on screen: both the canvases AND the DOM followers
+  // (keyboard, ruler, scrollbars) read pixelsPerBeatRef/pixelsPerSemitoneRef/
+  // scrollXRef/scrollYRef, written every animator frame with no re-render.
   const [pixelsPerBeat, setPixelsPerBeat] = useState(DEFAULT_PX_PER_BEAT)
-  const [pixelsPerSemitone] = useState(DEFAULT_PX_PER_SEMITONE)
+  const [pixelsPerSemitone, setPixelsPerSemitone] = useState(DEFAULT_PX_PER_SEMITONE)
   const [scrollX, setScrollX] = useState(0)
   const [scrollY, setScrollY] = useState(0)
   const [size, setSize] = useState({ w: 800, h: 500 })
@@ -124,12 +139,64 @@ export default function PianoRoll({
   const selectedNoteIdsRef = useRef(selectedNoteIds)
   selectedNoteIdsRef.current = selectedNoteIds
   const previewReleasesRef = useRef(new Set())
-  // Mirror scroll/zoom into refs so the keydown handler (Ctrl+V paste) can
-  // read them without re-registering on every scroll tick.
-  const scrollXRef = useRef(scrollX)
-  scrollXRef.current = scrollX
-  const pixelsPerBeatRef = useRef(pixelsPerBeat)
-  pixelsPerBeatRef.current = pixelsPerBeat
+  // Source of truth for the draw/hit-test path — see the view animator below.
+  const scrollXRef = useRef(0)
+  const scrollYRef = useRef(0)
+  const pixelsPerBeatRef = useRef(DEFAULT_PX_PER_BEAT)
+  const pixelsPerSemitoneRef = useRef(DEFAULT_PX_PER_SEMITONE)
+  const maxScrollXRef = useRef(0)
+  const pianoRollCanvasRef = useRef(null)
+  const velocityLaneRef = useRef(null)
+  // DOM-positioned view followers — driven imperatively from onTick below,
+  // exactly like the two canvases. Anything positioned from the settled state
+  // instead freezes for the whole gesture and snaps ~100ms after it stops.
+  const keyboardRef = useRef(null)
+  const rulerRef = useRef(null)
+  const scrollbarVRef = useRef(null)
+  const scrollbarHRef = useRef(null)
+
+  // ── View animator: FL Studio-style spring easing ───────────────────────────
+  // Same shared hook as TimelineView (see useViewAnimator.js) — a separate
+  // instance, own springs, no forked logic. onTick writes the refs above
+  // (per-frame, no setState) and calls the two canvases' imperative redraw()
+  // directly; the React state (pixelsPerBeat/scrollX/scrollY) is synced on a
+  // trailing ~100ms debounce purely for the DOM-positioned consumers.
+  const settleTimerRef = useRef(null)
+  useEffect(() => () => clearTimeout(settleTimerRef.current), [])
+
+  const viewAnimatorRef = useRef(null)
+  const viewAnimator = useViewAnimator({
+    springs: {
+      ppb: { value: DEFAULT_PX_PER_BEAT, space: 'log' },
+      pps: { value: DEFAULT_PX_PER_SEMITONE, space: 'log' },
+      scrollX: { value: 0 },
+      scrollY: { value: 0 },
+    },
+    // Writes the refs (per-frame, no setState), then pushes the frame to every
+    // view-following child imperatively: the two canvases redraw, the DOM
+    // followers reposition. The React state below is a trailing mirror only.
+    onTick: (values) => {
+      pixelsPerBeatRef.current = values.ppb
+      pixelsPerSemitoneRef.current = values.pps
+      scrollXRef.current = values.scrollX
+      scrollYRef.current = values.scrollY
+      pianoRollCanvasRef.current?.redraw()
+      velocityLaneRef.current?.redraw()
+      keyboardRef.current?.applyView()
+      rulerRef.current?.applyView()
+      scrollbarVRef.current?.applyView()
+      scrollbarHRef.current?.applyView()
+
+      clearTimeout(settleTimerRef.current)
+      settleTimerRef.current = setTimeout(() => {
+        setPixelsPerBeat(values.ppb)
+        setPixelsPerSemitone(values.pps)
+        setScrollX(values.scrollX)
+        setScrollY(values.scrollY)
+      }, 100)
+    },
+  })
+  viewAnimatorRef.current = viewAnimator
 
   const clearPendingPreviewReleases = useCallback((sendNoteOff = false) => {
     const releases = Array.from(previewReleasesRef.current)
@@ -195,11 +262,12 @@ export default function PianoRoll({
     return () => ro.disconnect()
   }, [])
 
-  // Initial scroll: center around C4 (pitch 60)
+  // Initial scroll: center around C4 (pitch 60) — instant, not eased; this
+  // is the panel settling into place, not a user gesture.
   useEffect(() => {
     const canvasH = size.h - VELOCITY_HEIGHT - TOOLBAR_HEIGHT - RULER_HEIGHT
     const targetY = (PITCH_MAX - 60) * pixelsPerSemitone - canvasH / 2
-    setScrollY(Math.max(0, targetY))
+    viewAnimatorRef.current?.setTarget('scrollY', Math.max(0, targetY), { immediate: true })
   }, [size.h, pixelsPerSemitone])
 
   // ── Mutation helpers — dispatch events after each mutation ────────────────
@@ -289,6 +357,19 @@ export default function PianoRoll({
       setStickyVelocity(velocity)
       notifyChanged()
     } catch (e) { console.warn('[PianoRoll] setNoteVelocity failed:', e.message) }
+  }, [patternId, notifyChanged])
+
+  // Multi-note velocity drag: one write per note, one refetch for the batch.
+  // stickyVelocity follows the note the user actually grabbed, which the
+  // VelocityLane puts first in the entry list.
+  const handleSetVelocities = useCallback(async (entries) => {
+    if (!entries?.length) return
+    for (const { noteId, velocity } of entries) {
+      try { await window.xleth?.timeline?.setNoteVelocity(patternId, noteId, velocity) }
+      catch (e) { console.warn('[PianoRoll] setNoteVelocity failed:', e.message) }
+    }
+    setStickyVelocity(entries[0].velocity)
+    notifyChanged()
   }, [patternId, notifyChanged])
 
   // Release stuck preview notes when the piano roll unmounts, the edited
@@ -458,12 +539,17 @@ export default function PianoRoll({
         if (ids.length === 0) return
         e.preventDefault()
         e.stopPropagation()
-        const delta = (e.key === 'ArrowUp' ? 1 : -1) * (e.shiftKey ? 12 : 1)
+        const dir = e.key === 'ArrowUp' ? 1 : -1
+        const delta = dir * (e.shiftKey ? 12 : 1)
         const byId = Object.fromEntries((pattern?.notes || []).map((n) => [n.id, n]))
         for (const id of ids) {
           const n = byId[id]
           if (!n) continue
-          const newPitch = Math.max(PITCH_MIN, Math.min(PITCH_MAX, n.pitch + delta))
+          // Under scale lock a semitone step becomes a scale-degree step. The
+          // ±12 octave jump already preserves pitch class, so it needs no snap.
+          const newPitch = (scale.enabled && !e.shiftKey)
+            ? nextScalePitch(n.pitch, dir, scale.root, scale.mode, PITCH_MIN, PITCH_MAX)
+            : Math.max(PITCH_MIN, Math.min(PITCH_MAX, n.pitch + delta))
           try { await window.xleth?.timeline?.moveNote(patternId, id, n.positionTicks, newPitch) } catch { /* ignore */ }
         }
         notifyChanged()
@@ -497,10 +583,12 @@ export default function PianoRoll({
   }, [])
 
   const handleZoomIn = useCallback(() => {
-    setPixelsPerBeat((p) => Math.min(MAX_PX_PER_BEAT, p * 1.25))
+    const animator = viewAnimatorRef.current
+    animator.setTarget('ppb', Math.min(MAX_PX_PER_BEAT, animator.getTarget('ppb') * 1.25))
   }, [])
   const handleZoomOut = useCallback(() => {
-    setPixelsPerBeat((p) => Math.max(MIN_PX_PER_BEAT, p / 1.25))
+    const animator = viewAnimatorRef.current
+    animator.setTarget('ppb', Math.max(MIN_PX_PER_BEAT, animator.getTarget('ppb') / 1.25))
   }, [])
 
   const handleOpenSamplerSettings = useCallback(() => {
@@ -511,21 +599,31 @@ export default function PianoRoll({
 
   const samplerSettingsDisabled = pattern?.regionId == null || pattern.regionId < 0
 
-  // Wheel: vertical scroll; ctrl+wheel = zoom horizontal; shift+wheel = horizontal scroll
+  // Wheel: vertical scroll; ctrl+wheel = zoom horizontal; alt+wheel = zoom
+  // vertical; shift+wheel = horizontal scroll.
+  // Every branch sets a TARGET on the view animator and lets its spring ease
+  // toward it — no instant setState jump (see useViewAnimator.js).
   const handleWheel = useCallback((e) => {
-    if (e.ctrlKey) {
+    const animator = viewAnimatorRef.current
+    if (e.altKey) {
       e.preventDefault()
-      setPixelsPerBeat((p) => {
-        const next = e.deltaY < 0 ? p * 1.15 : p / 1.15
-        return Math.max(MIN_PX_PER_BEAT, Math.min(MAX_PX_PER_BEAT, next))
-      })
+      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15
+      const next = Math.max(MIN_PX_PER_SEMITONE, Math.min(MAX_PX_PER_SEMITONE, animator.getTarget('pps') * factor))
+      animator.setTarget('pps', next)
+    } else if (e.ctrlKey) {
+      e.preventDefault()
+      const factor = e.deltaY < 0 ? 1.15 : 1 / 1.15
+      const next = Math.max(MIN_PX_PER_BEAT, Math.min(MAX_PX_PER_BEAT, animator.getTarget('ppb') * factor))
+      animator.setTarget('ppb', next)
     } else if (e.shiftKey) {
       e.preventDefault()
-      setScrollX((x) => Math.max(0, x + e.deltaY))
+      const next = Math.max(0, Math.min(maxScrollXRef.current, animator.getTarget('scrollX') + e.deltaY))
+      animator.setTarget('scrollX', next)
     } else {
       e.preventDefault()
       const maxScrollY = Math.max(0, (PITCH_MAX - PITCH_MIN + 1) * pixelsPerSemitone - (size.h - VELOCITY_HEIGHT - TOOLBAR_HEIGHT - RULER_HEIGHT - SCROLLBAR_H_HEIGHT))
-      setScrollY((y) => Math.max(0, Math.min(maxScrollY, y + e.deltaY)))
+      const next = Math.max(0, Math.min(maxScrollY, animator.getTarget('scrollY') + e.deltaY))
+      animator.setTarget('scrollY', next)
     }
   }, [pixelsPerSemitone, size.h])
 
@@ -551,38 +649,66 @@ export default function PianoRoll({
   const minContentBeats = Math.max(MIN_CONTENT_BEATS, lastNoteBeatsEnd + 4, patternLenBeats + 4)
   const contentWidth = Math.max(canvasWidth, minContentBeats * pixelsPerBeat)
 
+  // Live content bounds for the scrollbars' per-frame thumb geometry. Same
+  // math as contentHeight/contentWidth above, but off the animator's refs
+  // instead of the settled state — a zoom changes the content size on every
+  // frame, so a thumb sized from the settled value would be wrong for the
+  // whole gesture.
+  const getContentHeight = useCallback(
+    () => (PITCH_MAX - PITCH_MIN + 1) * pixelsPerSemitoneRef.current,
+    [],
+  )
+  const getContentWidth = useCallback(
+    () => Math.max(canvasWidth, minContentBeats * pixelsPerBeatRef.current),
+    [canvasWidth, minContentBeats],
+  )
+
   const handleZoomDelta = useCallback((direction) => {
-    setPixelsPerBeat((p) => {
-      const next = direction > 0 ? p * 1.15 : p / 1.15
-      return Math.max(MIN_PX_PER_BEAT, Math.min(MAX_PX_PER_BEAT, next))
-    })
+    const animator = viewAnimatorRef.current
+    const factor = direction > 0 ? 1.15 : 1 / 1.15
+    animator.setTarget('ppb', Math.max(MIN_PX_PER_BEAT, Math.min(MAX_PX_PER_BEAT, animator.getTarget('ppb') * factor)))
   }, [])
 
-  // Clamp scrollX if content shrank
+  // Direct 1:1 setters for the scrollbars (thumb drag, click-to-page, and
+  // wheel-over-the-scrollbar-itself all share these) — not eased, a dragged
+  // thumb must track the cursor exactly. `immediate` keeps the animator's
+  // own bookkeeping in sync so a wheel gesture over the main canvas starting
+  // right after ends here from the real position instead of jumping to a
+  // stale spring target. Accepts either a plain value or a React-style
+  // updater function, matching how PianoRollScrollbarH/V already call these.
+  const setScrollXInstant = useCallback((next) => {
+    const animator = viewAnimatorRef.current
+    const value = typeof next === 'function' ? next(animator.getCurrent('scrollX')) : next
+    animator.setTarget('scrollX', value, { immediate: true })
+  }, [])
+  const setScrollYInstant = useCallback((next) => {
+    const animator = viewAnimatorRef.current
+    const value = typeof next === 'function' ? next(animator.getCurrent('scrollY')) : next
+    animator.setTarget('scrollY', value, { immediate: true })
+  }, [])
+
+  // Keep the scroll clamp bound current, and clamp scrollX if content shrank
+  // (instant, not eased — this is a boundary correction, not a gesture).
   useEffect(() => {
     const maxX = Math.max(0, contentWidth - canvasWidth)
-    setScrollX((x) => Math.min(x, maxX))
+    maxScrollXRef.current = maxX
+    const animator = viewAnimatorRef.current
+    const clamped = Math.min(animator.getTarget('scrollX'), maxX)
+    if (clamped !== animator.getTarget('scrollX')) {
+      animator.setTarget('scrollX', clamped, { immediate: true })
+    }
   }, [contentWidth, canvasWidth])
 
-  // Ruler tick labels for the visible horizontal range. Bar boundaries
-  // (every 4 beats, 4/4) get a bright integer; in-between beats get a dim
-  // "bar.beat" sub-label — mirrors the mockup's ruler.
-  const rulerLabels = []
-  {
-    const startBeat = Math.max(0, Math.floor(scrollX / pixelsPerBeat))
-    const endBeat = Math.ceil((scrollX + canvasWidth) / pixelsPerBeat) + 1
-    for (let b = startBeat; b <= endBeat; b++) {
-      const left = b * pixelsPerBeat - scrollX
-      if (left < -20 || left > canvasWidth) continue
-      const isBar = b % 4 === 0
-      rulerLabels.push({
-        key: b,
-        left,
-        isBar,
-        text: isBar ? String(b / 4 + 1) : `${Math.floor(b / 4) + 1}.${(b % 4) + 1}`,
-      })
+  // Same boundary correction for scrollY when alt+wheel vertical zoom
+  // shrinks contentHeight below the current scroll position.
+  useEffect(() => {
+    const maxY = Math.max(0, contentHeight - canvasHeight)
+    const animator = viewAnimatorRef.current
+    const clamped = Math.min(animator.getTarget('scrollY'), maxY)
+    if (clamped !== animator.getTarget('scrollY')) {
+      animator.setTarget('scrollY', clamped, { immediate: true })
     }
-  }
+  }, [contentHeight, canvasHeight])
 
   return (
     <div
@@ -619,6 +745,7 @@ export default function PianoRoll({
         activeTool={activeTool} onToolChange={setActiveTool}
         slideMode={slideMode} onSlideModeChange={setSlideMode}
         stickyNoteLength={stickyNoteLength} onStickyNoteLengthChange={setStickyNoteLength}
+        scale={scale} onScaleChange={setScale}
         onZoomIn={handleZoomIn} onZoomOut={handleZoomOut}
         onOpenSamplerSettings={handleOpenSamplerSettings}
         samplerSettingsDisabled={samplerSettingsDisabled}
@@ -635,28 +762,26 @@ export default function PianoRoll({
         onRegionChange={handleRegionChange}
       />
       <div ref={containerRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <div className="piano-roll-ruler" style={{ height: RULER_HEIGHT }}>
-          <div className="piano-roll-ruler-corner" style={{ width: KEYBOARD_WIDTH }} />
-          <div className="piano-roll-ruler-track" style={{ width: canvasWidth }}>
-            {rulerLabels.map((l) => (
-              <span
-                key={l.key}
-                className={`piano-roll-ruler-tick${l.isBar ? ' bar' : ''}`}
-                style={{ left: l.left }}
-              >{l.text}</span>
-            ))}
-          </div>
-          <div className="piano-roll-ruler-corner" style={{ width: SCROLLBAR_V_WIDTH }} />
-        </div>
+        <PianoRollRuler
+          ref={rulerRef}
+          pixelsPerBeatRef={pixelsPerBeatRef}
+          scrollXRef={scrollXRef}
+          width={canvasWidth}
+          height={RULER_HEIGHT}
+          keyboardWidth={KEYBOARD_WIDTH}
+          scrollbarWidth={SCROLLBAR_V_WIDTH}
+        />
         <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
           <PianoRollKeyboard
-            pixelsPerSemitone={pixelsPerSemitone}
-            scrollY={scrollY}
+            ref={keyboardRef}
+            pixelsPerSemitoneRef={pixelsPerSemitoneRef}
+            scrollYRef={scrollYRef}
             height={canvasHeight}
             onPreviewNote={handlePreviewNote}
             highlightedPitches={highlightedPitches}
           />
           <PianoRollCanvas
+            ref={pianoRollCanvasRef}
             patternId={patternId}
             notes={notes}
             patternLengthTicks={patternLengthTicks}
@@ -668,10 +793,10 @@ export default function PianoRoll({
             setStickyVelocity={setStickyVelocity}
             selectedNoteIds={selectedNoteIds}
             setSelectedNoteIds={setSelectedNoteIds}
-            pixelsPerBeat={pixelsPerBeat}
-            pixelsPerSemitone={pixelsPerSemitone}
-            scrollX={scrollX}
-            scrollY={scrollY}
+            pixelsPerBeatRef={pixelsPerBeatRef}
+            pixelsPerSemitoneRef={pixelsPerSemitoneRef}
+            scrollXRef={scrollXRef}
+            scrollYRef={scrollYRef}
             width={canvasWidth}
             height={canvasHeight}
             onAddNote={handleAddNote}
@@ -682,21 +807,28 @@ export default function PianoRoll({
             onResizeNote={handleResizeNote}
             onPreviewNote={handlePreviewNote}
             onDropFsc={handleDropFsc}
+            scale={scale}
           />
           <PianoRollScrollbarV
+            ref={scrollbarVRef}
             contentHeight={contentHeight}
+            getContentHeight={getContentHeight}
             viewportHeight={canvasHeight}
             scrollY={scrollY}
-            setScrollY={setScrollY}
+            scrollYRef={scrollYRef}
+            setScrollY={setScrollYInstant}
           />
         </div>
         <div style={{ display: 'flex' }}>
           <div style={{ width: KEYBOARD_WIDTH, background: '#0d0d0d', borderRight: '1px solid #222', borderTop: '1px solid #222' }} />
           <PianoRollScrollbarH
+            ref={scrollbarHRef}
             contentWidth={contentWidth}
+            getContentWidth={getContentWidth}
             viewportWidth={canvasWidth}
             scrollX={scrollX}
-            setScrollX={setScrollX}
+            scrollXRef={scrollXRef}
+            setScrollX={setScrollXInstant}
             onZoomDelta={handleZoomDelta}
           />
           <div style={{ width: SCROLLBAR_V_WIDTH, background: '#0d0d0d', borderTop: '1px solid #222' }} />
@@ -709,13 +841,15 @@ export default function PianoRoll({
             <span className="piano-roll-velocity-axis" style={{ bottom: 3 }}>1</span>
           </div>
           <VelocityLane
+            ref={velocityLaneRef}
             notes={notes}
             selectedNoteIds={selectedNoteIds}
-            pixelsPerBeat={pixelsPerBeat}
-            scrollX={scrollX}
+            pixelsPerBeatRef={pixelsPerBeatRef}
+            scrollXRef={scrollXRef}
             width={canvasWidth}
             height={VELOCITY_HEIGHT}
             onSetVelocity={handleSetVelocity}
+            onSetVelocities={handleSetVelocities}
           />
           <div style={{ width: SCROLLBAR_V_WIDTH, background: '#181818', borderTop: '1px solid #222' }} />
         </div>

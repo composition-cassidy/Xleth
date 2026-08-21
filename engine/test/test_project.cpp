@@ -657,7 +657,13 @@ int main() {
         CHECK(m.reversed,                  "migration: reversed -> slot 0");
         // Sampler-level fields stay on the region.
         CHECK(migrated.crossfadeEnabled,   "migration: crossfadeEnabled stays sampler-level");
-        CHECK(std::abs(migrated.attackMs - 12.0f) < 1e-6, "migration: attackMs stays sampler-level");
+        // The amp DAHDSR is no longer a region scalar — it is modulation ENV 1
+        // (see SampleRegion.cpp's legacy-amp-envelope migration), so a legacy
+        // attackMs/releaseMs pair has to land in envs[0].
+        CHECK(std::abs(migrated.modulation.envs[0].attack.ms - 12.0f) < 1e-6,
+              "migration: legacy attackMs -> modulation ENV 1 attack");
+        CHECK(std::abs(migrated.modulation.envs[0].release.ms - 34.0f) < 1e-6,
+              "migration: legacy releaseMs -> modulation ENV 1 release");
 
         // Neutral tuning/level: a migrated legacy slot must be a no-op layer,
         // otherwise the project would not sound identical.
@@ -734,6 +740,80 @@ int main() {
         CHECK(XLETH_PROJECT_SCHEMA_VERSION >= 2,
               "schema: project schema version bumped for slots");
     }
+
+    // -- Test 5b: stacked-duplicate PatternBlock rejection ------------------
+    // A block is musically identified by {track, pattern, position}. Two blocks
+    // agreeing on all three drive the SAME {trackId, regionId} sampler twice per
+    // buffer, so every note fires twice at the same tick (+6 dB, 2x voices).
+    // Guard both doors into the block map: live edits and project load.
+    std::cout << "\n[5b] PatternBlock duplicate guard\n";
+    {
+        Timeline tl2;
+
+        TrackInfo pt;
+        pt.name = "dup guard track";
+        pt.type = TrackInfo::Type::Pattern;
+        const int trk = tl2.addTrack(pt);
+
+        Pattern pat;
+        pat.name     = "Pattern A";
+        pat.regionId = -1;
+        pat.length   = TickTime::fromBeats(4.0);
+        const int patId = tl2.addPattern(pat);
+
+        // A second, DIFFERENT pattern on the same region is legitimate -- this
+        // is the "same sample, two unique patterns" case and must stay allowed.
+        Pattern pat2;
+        pat2.name     = "Pattern B";
+        pat2.regionId = pat.regionId;
+        pat2.length   = TickTime::fromBeats(4.0);
+        const int patId2 = tl2.addPattern(pat2);
+
+        PatternBlock b;
+        b.trackId   = trk;
+        b.patternId = patId;
+        b.position  = TickTime::fromBeats(16.0);
+        b.duration  = pat.length;
+
+        const int firstId = tl2.addPatternBlock(b);
+        CHECK(firstId >= 0, "dup guard: first block is accepted");
+
+        const int dupId = tl2.addPatternBlock(b);
+        CHECK(dupId < 0, "dup guard: exact {track,pattern,position} duplicate rejected");
+        CHECK(tl2.getPatternBlocksOnTrack(trk).size() == 1,
+              "dup guard: rejected duplicate did not enter the block map");
+
+        // Same pattern at a DIFFERENT position -- allowed.
+        PatternBlock later = b;
+        later.position = TickTime::fromBeats(24.0);
+        CHECK(tl2.addPatternBlock(later) >= 0,
+              "dup guard: same pattern at a different position still allowed");
+
+        // A different pattern at the SAME position on ANOTHER track -- allowed.
+        // This is the two-tracks-one-sample layout that must keep working.
+        TrackInfo pt2;
+        pt2.name = "dup guard track 2";
+        pt2.type = TrackInfo::Type::Pattern;
+        const int trk2 = tl2.addTrack(pt2);
+
+        PatternBlock other;
+        other.trackId   = trk2;
+        other.patternId = patId2;
+        other.position  = b.position;
+        other.duration  = pat2.length;
+        CHECK(tl2.addPatternBlock(other) >= 0,
+              "dup guard: second track, unique pattern, same sample still allowed");
+
+        // Load path: a project saved before the guard can carry a stacked
+        // duplicate on disk, so restorePatternBlock must drop it too.
+        PatternBlock stale = b;
+        stale.id = 99999;
+        const size_t beforeRestore = tl2.getPatternBlocksOnTrack(trk).size();
+        tl2.restorePatternBlock(stale);
+        CHECK(tl2.getPatternBlocksOnTrack(trk).size() == beforeRestore,
+              "dup guard: restorePatternBlock drops an on-disk stacked duplicate");
+    }
+
 
     // Test 6: clean up temp directory.
     std::cout << "\n[6] cleanup\n";

@@ -25,8 +25,6 @@ export default function TimelineToolbar({
   selectedTrackCount = 0,
   pencilTemplate,
   onSelectSyllable,
-  declickMs,
-  onDeclickChange,
   onOpenQuantize,
   quantizeSelectionCount = 0,
   onOpenQuickNotation,
@@ -158,24 +156,8 @@ export default function TimelineToolbar({
         </select>
       </div>
 
-      {/* ── Declick ──────────────────────────────────────────── */}
-      <div className="timeline-toolbar-sep" />
-      <div className="timeline-toolbar-info">
-        <span className="timeline-toolbar-tag">Declick</span>
-        <input
-          type="number"
-          className="timeline-declick-input"
-          min="0"
-          max="5"
-          step="0.1"
-          value={declickMs}
-          onChange={e => {
-            const v = parseFloat(e.target.value)
-            if (!isNaN(v)) onDeclickChange(v)
-          }}
-        />
-        <span className="timeline-toolbar-tag">ms</span>
-      </div>
+      {/* Declick has no toolbar control — the engine keeps applying its
+          declick envelope, the value is just no longer user-editable here. */}
 
       {/* ── Quantize ─────────────────────────────────────────── */}
       <div className="timeline-toolbar-sep" />

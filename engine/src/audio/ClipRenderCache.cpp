@@ -5,6 +5,7 @@
 #include "dsp/WSOLA.h"
 #include "dsp/PhaseVocoder.h"
 #include "dsp/WORLD.h"
+#include "dsp/StretchInputFloor.h"
 #include "model/TimelineTypes.h"
 #include "XlethDebug.h"
 
@@ -30,6 +31,34 @@ bool CacheKey::operator==(const CacheKey& o) const noexcept {
         && formantPreserve     == o.formantPreserve;
 }
 
+size_t CacheKeyHash::operator()(const CacheKey& k) const noexcept {
+    // FNV-1a over the key's byte-comparable fields. stretchRatio is hashed by
+    // bit pattern, which is exactly what operator== compares it by.
+    size_t h = 1469598103934665603ULL;
+    auto mix = [&h](uint64_t v) {
+        for (int i = 0; i < 8; ++i) {
+            h ^= static_cast<size_t>(v & 0xFF);
+            h *= 1099511628211ULL;
+            v >>= 8;
+        }
+    };
+    uint64_t ratioBits = 0;
+    static_assert(sizeof(ratioBits) == sizeof(k.stretchRatio), "double is 64-bit");
+    std::memcpy(&ratioBits, &k.stretchRatio, sizeof(ratioBits));
+
+    mix(static_cast<uint64_t>(static_cast<uint32_t>(k.regionId)));
+    mix(static_cast<uint64_t>(static_cast<uint32_t>(k.syllableIndex)));
+    mix(static_cast<uint64_t>(k.regionOffsetSamples));
+    mix(static_cast<uint64_t>(k.durationSamples));
+    mix(static_cast<uint64_t>(k.sourceLengthSamples));
+    mix(static_cast<uint64_t>(static_cast<uint32_t>(k.pitchOffsetSemis)));
+    mix(static_cast<uint64_t>(static_cast<uint32_t>(k.pitchOffsetCents)));
+    mix(ratioBits);
+    mix(static_cast<uint64_t>(static_cast<uint32_t>(k.stretchMethod)));
+    mix(static_cast<uint64_t>((k.reversed ? 1u : 0u) | (k.formantPreserve ? 2u : 0u)));
+    return h;
+}
+
 // ─── ClipRenderJob ───────────────────────────────────────────────────────────
 // Runs on a worker thread from the ThreadPool.
 
@@ -52,11 +81,6 @@ public:
 
     JobStatus runJob() override {
         juce::ScopedNoDenormals noDenormals;
-        fprintf(stderr, "[PITCHDBG] ClipRenderJob::runJob START clip=%d region=%d pitch=%dst+%dc stretch=%.3f\n",
-                clipId_, entry_->key.regionId,
-                entry_->key.pitchOffsetSemis, entry_->key.pitchOffsetCents,
-                entry_->key.stretchRatio);
-        fflush(stderr);
 #ifdef XLETH_DEBUG
         const auto jobStart = std::chrono::steady_clock::now();
         fprintf(stderr, "[CacheQueue] START clip=%d\n", clipId_);
@@ -78,8 +102,24 @@ public:
         const double effRatio   = (willStretch && key.stretchRatio > 0.0)
                                 ? key.stretchRatio
                                 : 1.0;
-        const int64_t srcReadDesired = static_cast<int64_t>(
+        const int64_t srcReadNeeded = static_cast<int64_t>(
             std::llround(static_cast<double>(durSamp) / effRatio));
+
+        // ── Stretch-engine input floor (short-clip pitch-drop guard) ─────────
+        // PSOLA/WSOLA/PhaseVocoder varispeed anything shorter than one analysis
+        // window instead of stretching it, which transposes the clip DOWN by the
+        // stretch ratio. Since the input we hand them is durSamp / ratio, a big
+        // stretch on a short clip lands under the floor easily (at 8× a 300 ms
+        // clip is a 37 ms input, under PSOLA's 50 ms). Read PAST what the clip
+        // needs — the trimmed-away audio is sitting right there in the region
+        // buffer — and let copyIntoOutBuf drop the surplus output. Output
+        // alignment is unaffected: extra input only ever appends.
+        const int64_t srcReadFloor = willStretch
+            ? static_cast<int64_t>(xleth::dsp::minStretchInputSamples(
+                  key.stretchMethod, sampleRate_,
+                  key.pitchOffsetSemis + key.pitchOffsetCents / 100.0))
+            : 0;
+        const int64_t srcReadDesired = std::max(srcReadNeeded, srcReadFloor);
 
         // Bake-rate → prepared-rate correction. srcCopy_ is stored at the bake
         // rate; the cache output and the pitch/stretch engines run at the
@@ -143,7 +183,14 @@ public:
             // ── a) Build the prepared-rate source segment ───────────────────
             // matchedRate: verbatim reverse/copy (bit-for-bit legacy path).
             // else: resample bake→prepared via Lagrange, then reverse in place.
-            juce::AudioBuffer<float> working(numCh, static_cast<int>(readLen));
+            // If the source itself ran out before the engine's input floor (clip
+            // sits at the very tail of the region), zero-pad up to the floor
+            // rather than let the engine varispeed. The padding is silence the
+            // clip would have played anyway, and it lands after the real audio,
+            // so the kept output (first durSamp) still starts at readStart.
+            const int64_t workLen = std::max(readLen, srcReadFloor);
+            juce::AudioBuffer<float> working(numCh, static_cast<int>(workLen));
+            if (workLen > readLen) working.clear();
             if (matchedRate) {
                 for (int ch = 0; ch < numCh; ++ch) {
                     const float* src = srcCopy_.getReadPointer(ch);
@@ -246,8 +293,10 @@ public:
                     copyIntoOutBuf(xleth::dsp::processWORLD(working, p));
                 }
             } else {
-                // Raw copy — Global stub or no processing needed
-                const int copyN = static_cast<int>(readLen);
+                // Raw copy — Global stub or no processing needed. Clamped to
+                // durSamp: with ratio < 1 (or a padded `working`) the segment can
+                // be longer than the clip's own output buffer.
+                const int copyN = static_cast<int>(std::min(readLen, durSamp));
                 for (int ch = 0; ch < numCh; ++ch)
                     outBuf->copyFrom(ch, 0, working, ch, 0, copyN);
             }
@@ -255,15 +304,15 @@ public:
 
         entry_->buffer = std::move(outBuf);
         entry_->ready.store(true, std::memory_order_release);
-        owner_->publishEntry(clipId_, entry_);
-        fprintf(stderr, "[PITCHDBG] ClipRenderJob::runJob COMPLETE clip=%d outSamples=%d\n",
-                clipId_, entry_->buffer ? entry_->buffer->getNumSamples() : 0);
-        fflush(stderr);
 
         if (entry_->key.stretchMethod == static_cast<int>(StretchMethod::WORLD)) {
             std::lock_guard<std::mutex> lk(owner_->cacheMutex_);
-            owner_->worldActiveJobs_.erase(clipId_);
+            owner_->worldActiveEntries_.erase(entry_.get());
         }
+
+        // Publish LAST: it fans the finished buffer out to every clip sharing
+        // this entry, so the WORLD spinner must already be cleared by then.
+        owner_->publishEntry(clipId_, entry_);
 
 #ifdef XLETH_DEBUG
         {
@@ -312,6 +361,8 @@ void ClipRenderCache::shutdown() {
         slots_[i].store(nullptr, std::memory_order_seq_cst);
     std::lock_guard<std::mutex> lk(cacheMutex_);
     cache_.clear();
+    byKey_.clear();
+    worldActiveEntries_.clear();
 }
 
 // ── Audio thread ──────────────────────────────────────────────────────────────
@@ -325,29 +376,36 @@ const juce::AudioBuffer<float>* ClipRenderCache::getProcessedBuffer(
     if (!e)                                                return nullptr;
     if (!e->ready.load(std::memory_order_acquire))         return nullptr;
     if (!(e->key == key)) {
-        // [StreamUnder] stale-key churn — count before the (non-gated) log so
-        // the rate is visible in the trace even when stderr is being drained
-        // slowly by Electron. Lock-free; audio-thread safe.
+        // [StreamUnder] stale-key churn. Counted, never logged: this runs on
+        // the audio thread, where an fprintf is a hard real-time violation.
+        // Read the tally via getKeyMismatchCount() from the 1s health sampler.
         keyMismatchCount_.fetch_add(1, std::memory_order_relaxed);
-        // TEMPORARY non-gated log: dump both keys side-by-side on mismatch
-        fprintf(stderr, "[ClipCache] MISMATCH clip=%d\n"
-            "  lookup: region=%d syl=%d offset=%lld dur=%lld srcLen=%lld pitch=%d+%dc stretch=%.6f rev=%d method=%d formant=%d\n"
-            "  stored: region=%d syl=%d offset=%lld dur=%lld srcLen=%lld pitch=%d+%dc stretch=%.6f rev=%d method=%d formant=%d\n",
-            clipId,
-            key.regionId, key.syllableIndex,
-            (long long)key.regionOffsetSamples, (long long)key.durationSamples, (long long)key.sourceLengthSamples,
-            key.pitchOffsetSemis, key.pitchOffsetCents, key.stretchRatio,
-            (int)key.reversed, key.stretchMethod, (int)key.formantPreserve,
-            e->key.regionId, e->key.syllableIndex,
-            (long long)e->key.regionOffsetSamples, (long long)e->key.durationSamples, (long long)e->key.sourceLengthSamples,
-            e->key.pitchOffsetSemis, e->key.pitchOffsetCents, e->key.stretchRatio,
-            (int)e->key.reversed, e->key.stretchMethod, (int)e->key.formantPreserve);
         return nullptr;
     }
     return e->buffer.get();
 }
 
 // ── Message thread ────────────────────────────────────────────────────────────
+
+void ClipRenderCache::detachLocked(int clipId) {
+    auto it = cache_.find(clipId);
+    if (it == cache_.end()) return;
+    auto entry = it->second;
+    cache_.erase(it);
+    if (!entry) return;
+
+    entry->subscribers.erase(clipId);
+    if (!entry->subscribers.empty()) return;   // other clips still share it
+
+    // Last subscriber left — retire the entry from the content index so a
+    // later submitJob for the same key renders fresh. An in-flight job keeps
+    // the entry alive through its own shared_ptr and simply publishes into a
+    // now-empty subscriber set, which is a harmless no-op.
+    auto byKeyIt = byKey_.find(entry->key);
+    if (byKeyIt != byKey_.end() && byKeyIt->second == entry)
+        byKey_.erase(byKeyIt);
+    worldActiveEntries_.erase(entry.get());
+}
 
 void ClipRenderCache::markDirty(int clipId) {
     if (clipId < 0 || clipId >= kMaxClipId) return;
@@ -359,7 +417,14 @@ void ClipRenderCache::markDirty(int clipId) {
     slots_[clipId].store(nullptr, std::memory_order_seq_cst);
 
     std::lock_guard<std::mutex> lk(cacheMutex_);
-    cache_.erase(clipId);
+    detachLocked(clipId);
+}
+
+bool ClipRenderCache::hasEntryForKey(int clipId, const CacheKey& key) const {
+    if (clipId < 0 || clipId >= kMaxClipId) return false;
+    std::lock_guard<std::mutex> lk(cacheMutex_);
+    auto it = cache_.find(clipId);
+    return it != cache_.end() && it->second && it->second->key == key;
 }
 
 void ClipRenderCache::submitJob(int clipId, const CacheKey& key,
@@ -369,9 +434,61 @@ void ClipRenderCache::submitJob(int clipId, const CacheKey& key,
 {
     if (!threadPool_) return;
     if (clipId < 0 || clipId >= kMaxClipId) return;
-    fprintf(stderr, "[PITCHDBG] ClipRenderCache::submitJob clip=%d region=%d pitch=%dst+%dc stretch=%.3f\n",
-            clipId, key.regionId, key.pitchOffsetSemis, key.pitchOffsetCents, key.stretchRatio);
-    fflush(stderr);
+
+    std::shared_ptr<CacheEntry> entry;
+    bool needsRender = false;
+    {
+        std::lock_guard<std::mutex> lk(cacheMutex_);
+
+        // Already pointing at an entry for this exact key? Nothing to do —
+        // this is the repeat-submit path (e.g. an op that touched the clip but
+        // not its audio) and re-rendering would be pure waste.
+        auto own = cache_.find(clipId);
+        if (own != cache_.end() && own->second && own->second->key == key) {
+            entry = own->second;
+            if (entry->ready.load(std::memory_order_acquire))
+                slots_[clipId].store(entry, std::memory_order_release);
+            return;
+        }
+
+        detachLocked(clipId);
+
+        // Content-addressed lookup: another clip may already have rendered (or
+        // be rendering) byte-identical audio. Paste/duplicate of N identical
+        // clips lands here N-1 times and costs one map insert each.
+        auto shared = byKey_.find(key);
+        if (shared != byKey_.end() && shared->second) {
+            entry = shared->second;
+        } else {
+            entry = std::make_shared<CacheEntry>();
+            entry->key = key;
+            entry->ready.store(false, std::memory_order_relaxed);
+            byKey_[key] = entry;
+            needsRender = true;
+            if (key.stretchMethod == static_cast<int>(StretchMethod::WORLD))
+                worldActiveEntries_.insert(entry.get());
+        }
+        entry->subscribers.insert(clipId);
+        cache_[clipId] = entry;
+    }
+
+    if (!needsRender) {
+        // Reused an existing entry. If its render already finished, hand the
+        // buffer to the audio thread now; otherwise publishEntry() will fan it
+        // out to us when the in-flight job completes.
+        if (entry->ready.load(std::memory_order_acquire))
+            slots_[clipId].store(entry, std::memory_order_release);
+#ifdef XLETH_DEBUG
+        fprintf(stderr, "[ClipCache] share: clip=%d joined existing entry "
+                "(region=%d stretch=%.3f pitch=%dst+%dc) ready=%d\n",
+                clipId, key.regionId, key.stretchRatio,
+                key.pitchOffsetSemis, key.pitchOffsetCents,
+                (int)entry->ready.load(std::memory_order_acquire));
+        fflush(stderr);
+#endif
+        return;
+    }
+
 #ifdef XLETH_DEBUG
     fprintf(stderr, "[ClipCache] submit: clip=%d key={region=%d syl=%d"
             " pitch=%dst+%dc stretch=%.3f rev=%d method=%d formant=%d}\n",
@@ -381,24 +498,14 @@ void ClipRenderCache::submitJob(int clipId, const CacheKey& key,
             key.stretchMethod, (int)key.formantPreserve);
 #endif
 
-    // Build entry (not ready yet)
-    auto entry = std::make_shared<CacheEntry>();
-    entry->key = key;
-    entry->ready.store(false, std::memory_order_relaxed);
-
-    // Copy source PCM synchronously (caller's buffer may be temporary)
+    // Copy source PCM synchronously (caller's buffer may be temporary).
+    // Only reached on a genuine cache miss, so a bulk paste pays for this
+    // once per DISTINCT sound rather than once per clip.
     const int numCh   = srcPcm.getNumChannels();
     const int numSamp = srcPcm.getNumSamples();
     juce::AudioBuffer<float> srcCopy(numCh, numSamp);
     for (int ch = 0; ch < numCh; ++ch)
         srcCopy.copyFrom(ch, 0, srcPcm, ch, 0, numSamp);
-
-    {
-        std::lock_guard<std::mutex> lk(cacheMutex_);
-        cache_[clipId] = entry;
-        if (key.stretchMethod == static_cast<int>(StretchMethod::WORLD))
-            worldActiveJobs_.insert(clipId);
-    }
 
     threadPool_->addJob(
         new ClipRenderJob(clipId, entry, std::move(srcCopy), sampleRate,
@@ -408,12 +515,29 @@ void ClipRenderCache::submitJob(int clipId, const CacheKey& key,
 
 std::vector<int> ClipRenderCache::getWorldActiveJobIds() const {
     std::lock_guard<std::mutex> lk(cacheMutex_);
-    return std::vector<int>(worldActiveJobs_.begin(), worldActiveJobs_.end());
+    std::vector<int> ids;
+    for (const CacheEntry* e : worldActiveEntries_)
+        ids.insert(ids.end(), e->subscribers.begin(), e->subscribers.end());
+    return ids;
 }
 
 // ── Worker thread → audio thread publish ──────────────────────────────────────
 
 void ClipRenderCache::publishEntry(int clipId, std::shared_ptr<CacheEntry> entry) {
-    if (clipId < 0 || clipId >= kMaxClipId) return;
-    slots_[clipId].store(std::move(entry), std::memory_order_release);
+    if (!entry) return;
+
+    // Fan out to every clip sharing this entry, not just the one that
+    // triggered the render.
+    std::vector<int> targets;
+    {
+        std::lock_guard<std::mutex> lk(cacheMutex_);
+        targets.assign(entry->subscribers.begin(), entry->subscribers.end());
+    }
+    if (targets.empty() && clipId >= 0 && clipId < kMaxClipId)
+        targets.push_back(clipId);
+
+    for (int id : targets) {
+        if (id < 0 || id >= kMaxClipId) continue;
+        slots_[id].store(entry, std::memory_order_release);
+    }
 }

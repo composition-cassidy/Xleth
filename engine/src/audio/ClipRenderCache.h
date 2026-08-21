@@ -33,6 +33,12 @@ struct CacheKey {
     bool operator==(const CacheKey& o) const noexcept;
 };
 
+// Hash for content-addressing. Two clips whose CacheKeys are equal produce
+// bit-identical audio, so they share one render job and one buffer.
+struct CacheKeyHash {
+    size_t operator()(const CacheKey& k) const noexcept;
+};
+
 // ─── CacheEntry ───────────────────────────────────────────────────────────────
 // Owned by ClipRenderCache. The buffer pointer is published atomically once
 // the worker thread sets ready = true.
@@ -41,6 +47,12 @@ struct CacheEntry {
     CacheKey  key;
     std::shared_ptr<juce::AudioBuffer<float>> buffer;
     std::atomic<bool> ready{false};
+
+    // Clip IDs currently sharing this entry. Guarded by ClipRenderCache::
+    // cacheMutex_ — message/worker threads only, never the audio thread.
+    // publishEntry() fans the finished buffer out to every subscriber, so a
+    // paste of N identical clips costs exactly one render.
+    std::unordered_set<int> subscribers;
 
     CacheEntry() = default;
     CacheEntry(const CacheEntry&) = delete;
@@ -96,6 +108,12 @@ public:
     // Evict the entry for clipId (e.g. clip params changed).
     void markDirty(int clipId);
 
+    // True when clipId already has an entry rendering (or rendered) under
+    // exactly this key. Lets callers skip an evict+resubmit that would throw
+    // away a still-valid buffer — a clip MOVE, for instance, changes nothing
+    // the key depends on. Thread-safe: acquires cacheMutex_.
+    bool hasEntryForKey(int clipId, const CacheKey& key) const;
+
     // Returns the set of clip IDs that are currently being processed by a WORLD
     // render job. Called by the main process poll to drive the UI spinner.
     // Thread-safe: acquires cacheMutex_ internally.
@@ -137,14 +155,24 @@ private:
     // increments (relaxed); 1s sampler reads. Never gates behaviour.
     mutable std::atomic<uint64_t> keyMismatchCount_{0};
 
-    // Owning map: keeps entries alive until explicitly evicted.
+    // Owning maps: keep entries alive until explicitly evicted.
     // Held only by message/worker threads — NEVER audio thread.
     mutable std::mutex                                   cacheMutex_;
+    // clipId → entry. Several clip IDs may map to the SAME entry.
     std::unordered_map<int, std::shared_ptr<CacheEntry>> cache_;
+    // CacheKey → entry. The content-addressed index that makes the sharing
+    // above possible: submitJob consults this before spawning any DSP work.
+    std::unordered_map<CacheKey, std::shared_ptr<CacheEntry>, CacheKeyHash> byKey_;
 
-    // Set of clip IDs with an in-flight WORLD render job. Protected by cacheMutex_.
+    // Entries with an in-flight WORLD render job. Protected by cacheMutex_.
+    // Keyed by entry (not clip ID) because one job now serves N clips.
     // Inserted in submitJob, erased in runJob after publishEntry.
-    std::unordered_set<int> worldActiveJobs_;
+    std::unordered_set<CacheEntry*> worldActiveEntries_;
+
+    // Drop clipId's reference to whatever entry it holds; garbage-collects the
+    // entry (and its byKey_ index slot) once the last subscriber leaves.
+    // Caller must hold cacheMutex_.
+    void detachLocked(int clipId);
 
     friend class ClipRenderJob;
 

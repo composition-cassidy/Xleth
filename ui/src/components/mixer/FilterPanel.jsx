@@ -18,6 +18,7 @@ import {
 import {
   slotResponseDb, responseFrequencies, RESPONSE_SIZE, FREQ_MIN, FREQ_MAX,
 } from './filterResponse.js'
+import EffectPresetBar from '../../fx-presets/EffectPresetBar.jsx'
 
 // XLETH FILTER editor window. Flat, zero-radius console laid out in the same
 // design language as the APEX panel: a chrome header with an accent tick + muted
@@ -797,6 +798,14 @@ export default function FilterPanel() {
             <X size={13} />
           </button>
         </div>
+      </div>
+
+      <div className="fx-panel-preset-strip">
+        <EffectPresetBar
+          effectType="xlethfilter"
+          target={target}
+          onApplied={() => useFilterStore.getState().fetchSlots()}
+        />
       </div>
 
       {/* Slot rail */}

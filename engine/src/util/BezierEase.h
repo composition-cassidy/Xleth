@@ -1,5 +1,15 @@
 #pragma once
 
+// ── NOT the same function as util/ParamTrackEase.h ─────────────────────────
+// These two headers are intentionally separate and must NOT be merged.
+// This one is a 1-D bezier evaluated directly in t: it ignores cx, forces the
+// second control point to (1 - cy), and is frozen byte-for-byte because the
+// Sampler group-slide (realtime audio path) and the slide-curve visual goldens
+// depend on its exact output. ParamTrackEase is a parametric 2-D curve that
+// solves x -> t with unclamped y control points, per CSS cubic-bezier
+// semantics. Unifying them would change Sampler audio output.
+// See the header comment in util/ParamTrackEase.h for the full comparison.
+//
 // Cubic bezier easing. Preserved byte-for-byte from the original definition
 // in AnimationManager.cpp so visual animation goldens stay stable. The cx
 // parameter is intentionally unused — the legacy formula reads cy alone and

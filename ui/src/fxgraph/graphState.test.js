@@ -61,6 +61,7 @@ import {
   normalizeExposedParameterPorts,
   normalizeParameterMapping,
   renameGraphMacroNode,
+  setGraphEffectNodeBypass,
   removeGraphNode,
   saveGraphState,
   toggleExposedParameterPort,
@@ -1346,6 +1347,35 @@ describe('graph mutation architecture guards', () => {
       expect(removed.ok).toBe(true)
       expect(removed.graphState.nodes.find((node) => node.id === 'macro-a')).toBeUndefined()
       expect(removed.graphState.edges).toEqual([])
+    })
+  })
+
+  describe('setGraphEffectNodeBypass', () => {
+    it('flips an effect node bypass flag without touching the rest of its data', () => {
+      const bypassed = setGraphEffectNodeBypass(makeGuardGraphState(), 'fx-a', true)
+
+      expect(bypassed.ok).toBe(true)
+      const node = bypassed.graphState.nodes.find((candidate) => candidate.id === 'fx-a')
+      expect(node.data).toMatchObject({
+        bypass: true,
+        effectInstanceId: 'inst-a',
+        pluginId: 'stock:eq',
+        displayName: 'EQ',
+        sourceChainSlotIndex: 0,
+      })
+      expect(setGraphEffectNodeBypass(bypassed.graphState, 'fx-a', false).graphState
+        .nodes.find((candidate) => candidate.id === 'fx-a').data.bypass).toBe(false)
+    })
+
+    it('rejects unknown nodes and non-effect node types', () => {
+      expect(setGraphEffectNodeBypass(makeGuardGraphState(), 'nope', true)).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.MISSING_NODE,
+      })
+      expect(setGraphEffectNodeBypass(makeGuardGraphState(), 'in', true)).toEqual({
+        ok: false,
+        reason: GRAPH_MUTATION_REJECTION.UNKNOWN_NODE_TYPE,
+      })
     })
   })
 

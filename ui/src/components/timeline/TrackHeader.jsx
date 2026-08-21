@@ -1,15 +1,16 @@
 import { useState, useRef, useCallback } from 'react'
-import { Trash2, Music, Sliders, VolumeX } from 'lucide-react'
+import { Trash2 } from 'lucide-react'
 import { TRACK_HEIGHT } from '../../constants/timeline.js'
-import { timelineEvents } from '../../timelineEvents.js'
 import { TRACK_PALETTE_FALLBACK } from './trackColorResolver.js'
+import { PianoIcon, WaveformIcon, EllipsisIcon } from './TrackTypeIcons.jsx'
 
 export default function TrackHeader({
-  track, index, trackColor, currentPattern, isFocused, isSelected,
+  track, index, trackColor, isFocused, isSelected,
   trackHeight = TRACK_HEIGHT,
   onMute, onSolo, onVisualOnly, onRename, onRemove, onRequestContextMenu, onFocus, onSelect,
   onDragStart, onDragOver, onDrop,
   onOpenColorPicker,
+  onOpenInMixer,
 }) {
   const [editing, setEditing] = useState(false)
   const [nameInput, setNameInput] = useState('')
@@ -37,17 +38,18 @@ export default function TrackHeader({
     if (e.key === 'Escape') setEditing(false)
   }, [commitEdit])
 
-  const hasActivePattern = currentPattern?.id != null && currentPattern.id >= 0
-  const handleOpenSampler = useCallback((e) => {
+  const handleOpenMenu = useCallback((e) => {
     e.stopPropagation()
-    if (!hasActivePattern) {
-      console.warn('[TrackHeader] No active pattern block on track — cannot open sampler')
-      return
-    }
-    timelineEvents.dispatchEvent(new CustomEvent('open-sampler-settings', {
-      detail: { patternId: currentPattern.id, regionId: currentPattern.regionId },
-    }))
-  }, [currentPattern, hasActivePattern])
+    onFocus?.(track.id)
+    onRequestContextMenu?.(track, e.clientX, e.clientY)
+  }, [track, onFocus, onRequestContextMenu])
+
+  const handleHeaderDoubleClick = useCallback((e) => {
+    // The name label has its own double-click (rename) and buttons handle
+    // their own clicks — only jump to the mixer for the rest of the row.
+    if (e.target.closest('button, input, .track-header-name')) return
+    onOpenInMixer?.(track.id)
+  }, [track.id, onOpenInMixer])
 
   return (
     <div
@@ -59,6 +61,7 @@ export default function TrackHeader({
       draggable
       onMouseDown={() => onFocus?.(track.id)}
       onClick={(event) => onSelect?.(track.id, event)}
+      onDoubleClick={handleHeaderDoubleClick}
       onDragStart={onDragStart}
       onDragOver={onDragOver}
       onDrop={onDrop}
@@ -68,14 +71,13 @@ export default function TrackHeader({
         onRequestContextMenu?.(track, e.clientX, e.clientY)
       }}
     >
-      <span className="track-header-identity-stripe" aria-hidden="true" />
       {isFocused && <div className="track-header-focus-bar" />}
 
-      {/* Left content — color stripe + name stack. Dims to 55% when muted. */}
-      <div className="track-header-left">
+      {/* Colored identity block — solid fill for Pattern tracks, a soft white
+          glow bleeding in from the right edge for Clip tracks. */}
+      <div className="track-header-block">
         <button
           className="track-header-color-btn"
-          style={{ background: color }}
           onMouseDown={(e) => { e.stopPropagation() }}
           onClick={(e) => {
             e.stopPropagation()
@@ -86,6 +88,16 @@ export default function TrackHeader({
         />
 
         <div className="track-header-name-wrap" title={track.name}>
+          <button
+            className="track-header-menu-btn"
+            onMouseDown={(e) => { e.stopPropagation() }}
+            onClick={handleOpenMenu}
+            title="Track menu"
+            aria-label="Track menu"
+          >
+            <EllipsisIcon size={11} />
+          </button>
+
           {editing ? (
             <input
               ref={inputRef}
@@ -94,65 +106,53 @@ export default function TrackHeader({
               onChange={(e) => setNameInput(e.target.value)}
               onBlur={commitEdit}
               onKeyDown={onKeyDown}
+              onMouseDown={(e) => e.stopPropagation()}
+              onClick={(e) => e.stopPropagation()}
               autoFocus
             />
           ) : (
             <span className="track-header-name" onDoubleClick={startEdit}>
-              {isPatternTrack && (
-                <Music size={12} style={{ marginRight: 4, verticalAlign: '-1px', opacity: 0.85 }} />
-              )}
               {track.name}
             </span>
           )}
-          <div className="track-header-subname">
-            <span className="track-header-type-badge">{track.type.toUpperCase()}</span>
-            {track.videoHoldLastFrame && (
-              <span className="track-header-hold-badge" title="Hold Last Frame">H</span>
-            )}
-          </div>
+          {track.videoHoldLastFrame && (
+            <span className="track-header-hold-badge" title="Hold Last Frame">H</span>
+          )}
+        </div>
+
+        <div className="track-header-type-icon" aria-hidden="true">
+          {isPatternTrack ? <PianoIcon size={13} /> : <WaveformIcon size={13} />}
         </div>
       </div>
 
-      {/* Sampler button — pattern tracks only, preserved without redesign */}
-      {isPatternTrack && (
+      {/* M / S / V cluster — consistent with the mixer strip */}
+      <div className="track-header-controls">
+        <div className="track-header-btn-cluster">
+          <button
+            className={`track-header-btn track-header-btn--mute${track.muted ? ' active' : ''}`}
+            onClick={() => onMute(track.id)}
+            title="Mute"
+          >M</button>
+          <button
+            className={`track-header-btn track-header-btn--solo${track.solo ? ' active' : ''}`}
+            onClick={() => onSolo(track.id)}
+            title="Solo"
+          >S</button>
+          <button
+            className={`track-header-btn track-header-btn--visual${track.visualOnly ? ' active' : ''}`}
+            onClick={() => onVisualOnly(track.id)}
+            title="Visual Only — silences audio, keeps grid triggers"
+          >V</button>
+        </div>
+
         <button
-          className="track-header-btn"
-          onClick={handleOpenSampler}
-          disabled={!hasActivePattern}
-          title={hasActivePattern
-            ? 'Open Sampler Settings'
-            : 'No active pattern — drop a pattern onto this track'}
+          className="track-delete-btn"
+          onClick={() => onRemove(track.id)}
+          title="Delete track"
         >
-          <Sliders size={12} />
+          <Trash2 size={12} />
         </button>
-      )}
-
-      {/* M / S / 🔇 cluster — 2px gap, always full opacity */}
-      <div className="track-header-btn-cluster">
-        <button
-          className={`track-header-btn track-header-btn--mute${track.muted ? ' active' : ''}`}
-          onClick={() => onMute(track.id)}
-          title="Mute"
-        >M</button>
-        <button
-          className={`track-header-btn track-header-btn--solo${track.solo ? ' active' : ''}`}
-          onClick={() => onSolo(track.id)}
-          title="Solo"
-        >S</button>
-        <button
-          className={`track-header-btn track-header-btn--visual${track.visualOnly ? ' active' : ''}`}
-          onClick={() => onVisualOnly(track.id)}
-          title="Visual Only — silences audio, keeps grid triggers"
-        ><VolumeX size={12} strokeWidth={2} /></button>
       </div>
-
-      <button
-        className="track-delete-btn"
-        onClick={() => onRemove(track.id)}
-        title="Delete track"
-      >
-        <Trash2 size={12} />
-      </button>
     </div>
   )
 }

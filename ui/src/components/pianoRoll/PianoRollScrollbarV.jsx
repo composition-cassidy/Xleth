@@ -1,12 +1,16 @@
-import { useCallback, useEffect, useRef } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef } from 'react'
 
-const SCROLLBAR_WIDTH = 12
+const SCROLLBAR_WIDTH = 20
 const MIN_THUMB_SIZE = 24
 
-export default function PianoRollScrollbarV({
-  contentHeight, viewportHeight, scrollY, setScrollY,
-}) {
+// The thumb tracks the animator's per-frame scrollY (and per-frame content
+// height, which a vertical zoom changes) through applyView(), not through the
+// settled React state — see PianoRollKeyboard for why.
+const PianoRollScrollbarV = forwardRef(function PianoRollScrollbarV({
+  contentHeight, viewportHeight, scrollY, scrollYRef, setScrollY, getContentHeight,
+}, ref) {
   const trackRef = useRef(null)
+  const thumbRef = useRef(null)
   const dragRef = useRef(null)
 
   const maxScroll = Math.max(0, contentHeight - viewportHeight)
@@ -16,11 +20,31 @@ export default function PianoRollScrollbarV({
   const trackLen = viewportHeight
   const thumbTop = hasOverflow ? (scrollY / maxScroll) * (trackLen - thumbSize) : 0
 
+  // Live geometry from the refs — the props above are the settled mirror,
+  // used for the initial render and for deciding whether a thumb exists.
+  const applyView = () => {
+    const thumb = thumbRef.current
+    if (!thumb) return
+    const content = getContentHeight ? getContentHeight() : contentHeight
+    const max = Math.max(0, content - viewportHeight)
+    if (max <= 0) return
+    const size = Math.max(MIN_THUMB_SIZE, viewportHeight * (viewportHeight / content))
+    const top = ((scrollYRef?.current ?? 0) / max) * (viewportHeight - size)
+    thumb.style.top = `${top}px`
+    thumb.style.height = `${size}px`
+  }
+
+  useImperativeHandle(ref, () => ({ applyView }))
+  useLayoutEffect(applyView)
+
   const handleThumbMouseDown = useCallback((e) => {
     if (e.button !== 0 || !hasOverflow) return
     e.preventDefault()
     e.stopPropagation()
-    dragRef.current = { startY: e.clientY, origScroll: scrollY }
+    // Read the live ref, not the (debounced) scrollY prop — dragging can
+    // start mid-animation, and the prop may not have settled to the real
+    // position yet.
+    dragRef.current = { startY: e.clientY, origScroll: scrollYRef?.current ?? scrollY }
     const onMove = (me) => {
       const d = dragRef.current
       if (!d) return
@@ -75,6 +99,7 @@ export default function PianoRollScrollbarV({
     >
       {hasOverflow && (
         <div
+          ref={thumbRef}
           className="piano-roll-scrollbar-thumb"
           onMouseDown={handleThumbMouseDown}
           style={{
@@ -86,6 +111,8 @@ export default function PianoRollScrollbarV({
       )}
     </div>
   )
-}
+})
+
+export default PianoRollScrollbarV
 
 export { SCROLLBAR_WIDTH as SCROLLBAR_V_WIDTH }

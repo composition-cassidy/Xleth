@@ -2,6 +2,7 @@ import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { X } from 'lucide-react'
 import useDelayStore from '../../stores/delayStore.js'
 import PluginUIKitKnob from '../../plugin-ui/runtime/components/PluginUIKitKnob.jsx'
+import EffectPresetBar from '../../fx-presets/EffectPresetBar.jsx'
 import XlethSelect from '../common/XlethSelect.jsx'
 import DelayEchoFieldVisualizer from './DelayEchoFieldVisualizer.jsx'
 import DelayFilterCurve from './DelayFilterCurve.jsx'
@@ -436,6 +437,13 @@ export default function DelayPanel() {
     pendingRef.current = null
   }, [])
 
+  // Preset load/undo: the adapter already wrote every param to the engine —
+  // mirror them into local state so the knobs/visualizer reflect it immediately.
+  const applyPresetState = useCallback((state) => {
+    if (!state?.params || typeof state.params !== 'object') return
+    setParams(prev => ({ ...prev, ...state.params }))
+  }, [])
+
   /**
    * Mode dropdown → legacy adapter.
    * Free mode writes sync = 0. A division writes sync_div_<side> and, if
@@ -489,6 +497,14 @@ export default function DelayPanel() {
         <button className="delay-panel-close" onClick={close} title="Close">
           <X size={13} />
         </button>
+      </div>
+
+      <div className="fx-panel-preset-strip">
+        <EffectPresetBar
+          effectType="delay"
+          target={target}
+          onApplied={applyPresetState}
+        />
       </div>
 
       {/* Stage — dominant visualization */}

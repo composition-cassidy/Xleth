@@ -15,8 +15,8 @@ import { didMiddleMousePanStart } from './middleMousePan.js'
 import './clipControls.css'
 import {
   CLIP_CONTROL_DEFAULTS,
-  applyFadeDrag,
-  applyGainDrag,
+  applyGroupFadeDrag,
+  applyGroupGainDrag,
   clipControlCursor,
   formatClipControlValue,
   hitTestClipControl as hitTestClipControlGeometry,
@@ -25,6 +25,11 @@ import {
 } from './clipControlSpec.js'
 
 const PLAYHEAD_LINE_WIDTH = 1
+
+// Dev-only frame-time probe: rolling buffer of redrawContent() durations,
+// read via the imperative handle's getDrawStats() to size the per-frame
+// budget before adding zoom/scroll animation on top of this hot path.
+const DRAW_STATS_SIZE = 120
 
 /**
  * Three-layer canvas: background (grid), content (clips), overlay (drop preview + tool).
@@ -36,11 +41,11 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     clips, regions, tracks, selectedClipIds, dropPreviewRef, waveformCacheRef, hiResCacheRef, clipPeakCacheRef, bpmRef,
     patternBlocks, patterns, selectedBlockIds, setSelectedBlockIds,
     currentPatternIdByTrack,
-    onCreatePatternBlock, onMovePatternBlock, onDuplicatePatternBlocks, onResizePatternBlock, onResizePatternBlockLeft, onDeletePatternBlock, onSplitPatternBlock,
+    onCreatePatternBlock, onMovePatternBlocks, onDuplicatePatternBlocks, onResizePatternBlock, onResizePatternBlockLeft, onDeletePatternBlock, onSplitPatternBlock,
     onOpenPianoRoll,
     // Tool system props
     activeTool, stickyNoteLength, setStickyNoteLength, activeSampleId, snapGranularity,
-    onCreateClip, onDeleteClip, onMoveClip, onDuplicateClips, onResizeClip, onResizeClipLeft,
+    onCreateClip, onDeleteClip, onMoveClips, onDuplicateClips, onResizeClip, onResizeClipLeft,
     onStretchClip, onStretchClipLeft,
     onSplitClip,
     onRequestClipContextMenu,
@@ -73,6 +78,11 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   const playheadLineRef = useRef(null) // DOM playhead element
   const sizeRef = useRef({ w: 0, h: 0 })
 
+  // ── Dev-only frame-time probe (see getDrawStats below) ────────────────────
+  const drawStatsRef = useRef(import.meta.env.DEV
+    ? { samples: new Float64Array(DRAW_STATS_SIZE), index: 0, count: 0 }
+    : null)
+
   // ── Stable refs for drawing data (avoid stale closures) ──────────────────
   const clipsRef = useRef(clips)
   const regionsRef = useRef(regions)
@@ -92,6 +102,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   // path + tools read the current track/lane geometry without re-creating tools.
   const trackLayoutRef = useRef(trackLayout)
   trackLayoutRef.current = trackLayout
+  const badgeElsRef = useRef(new Map())   // clip id -> FX badge element
 
   clipsRef.current = clips
   regionsRef.current = regions
@@ -211,6 +222,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     if (w === 0 || h === 0) return
     const ctx = ctRef.current?.getContext('2d')
     if (!ctx) return
+    const t0 = import.meta.env.DEV ? performance.now() : 0
     const dpr = window.devicePixelRatio || 1
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     const mutedTrackIds = new Set(
@@ -255,6 +267,23 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
         spinAngleRef.current, accentColor, trackLayoutRef.current
       )
     }
+    if (import.meta.env.DEV) {
+      const stats = drawStatsRef.current
+      stats.samples[stats.index] = performance.now() - t0
+      stats.index = (stats.index + 1) % DRAW_STATS_SIZE
+      stats.count = Math.min(stats.count + 1, DRAW_STATS_SIZE)
+    }
+  }
+
+  // Dev-only: p50/p95/max of the last (up to) DRAW_STATS_SIZE redrawContent()
+  // calls, in milliseconds. Used to size the per-frame budget before adding
+  // zoom/scroll animation on top of this hot path.
+  function getDrawStats() {
+    const stats = drawStatsRef.current
+    if (!stats || stats.count === 0) return { p50: 0, p95: 0, max: 0, samples: 0 }
+    const sorted = Array.from(stats.samples.slice(0, stats.count)).sort((a, b) => a - b)
+    const at = (p) => sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))]
+    return { p50: at(0.5), p95: at(0.95), max: sorted[sorted.length - 1], samples: stats.count }
   }
 
   function redrawOverlay() {
@@ -292,8 +321,38 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     }
   }
 
+  // ── Reposition the DOM FX badges ──────────────────────────────────────────
+  // Which badges EXIST is settled-state work (see the fxBadges memo below — it
+  // needs the clip list anyway), but where they SIT is not: they are DOM on top
+  // of a canvas the view animator redraws every frame, so their positions come
+  // off the same live refs, once per those frames. Driving them from the
+  // settled state left them hanging motionless over scrolling clips, snapping
+  // into place ~100ms after the gesture ended.
+  //
+  // A function declaration, not a useCallback: the imperative handle below is
+  // built during render and would hit the const's temporal dead zone.
+  function repositionFxBadges() {
+    const els = badgeElsRef.current
+    if (els.size === 0) return
+    const so = scrollOffsetRef.current
+    const ppb = pixelsPerBeatRef.current
+    const trackIdToIndex = trackIdToIndexRef.current
+    for (const clip of clipsRef.current || []) {
+      const el = els.get(clip.id)
+      if (!el) continue
+      const rect = getClipRect(clip, trackIdToIndex, so, ppb, trackLayoutRef.current)
+      if (!rect) { el.style.visibility = 'hidden'; continue }
+      el.style.visibility = rect.w < 56 ? 'hidden' : ''
+      el.style.left = `${Math.round(rect.x + rect.w - 28)}px`
+      el.style.top = `${Math.round(rect.y + 3)}px`
+    }
+  }
+
   // Expose to parent
-  useImperativeHandle(ref, () => ({ redrawGrid, redrawContent, redrawOverlay, positionPlayhead }), [trackCount])
+  useImperativeHandle(ref, () => ({
+    redrawGrid, redrawContent, redrawOverlay, positionPlayhead, getDrawStats,
+    repositionFxBadges,
+  }), [trackCount])
 
   // ── Tool creation ─────────────────────────────────────────────────────────
 
@@ -303,7 +362,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       pixelsPerBeatRef, scrollOffsetRef, bpmRef,
       activeSampleIdRef, stickyNoteLengthRef, pencilTemplateRef,
       snapGranularityRef, trackLayoutRef,
-      onCreateClip, onDeleteClip, onMoveClip, onDuplicateClips, onResizeClip, onResizeClipLeft,
+      onCreateClip, onDeleteClip, onMoveClips, onDuplicateClips, onResizeClip, onResizeClipLeft,
       onStretchClip, onStretchClipLeft,
       onSplitClip,
       onRequestClipContextMenu,
@@ -315,7 +374,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       patternBlocksRef, patternsRef, selectedBlockIdsRef,
       currentPatternIdByTrackRef,
       setSelectedBlockIds,
-      onCreatePatternBlock, onMovePatternBlock, onDuplicatePatternBlocks, onResizePatternBlock, onResizePatternBlockLeft,
+      onCreatePatternBlock, onMovePatternBlocks, onDuplicatePatternBlocks, onResizePatternBlock, onResizePatternBlockLeft,
       onDeletePatternBlock, onSplitPatternBlock,
       onRequestPatternBlockContextMenu,
     }
@@ -803,29 +862,69 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     if (!hit) return false
     startEvent.preventDefault()
     startEvent.stopPropagation()
-    setSelectedClipIds?.(new Set([hit.clip.id]))
+
+    // Grabbing a control on a clip that is part of a multi-clip selection edits
+    // the WHOLE selection (see applyGroupGainDrag). Grabbing anything else
+    // collapses the selection onto that clip, as a single-clip drag always did.
+    const selectedIds = selectedRef.current
+    const isGroup = Boolean(selectedIds?.has(hit.clip.id) && selectedIds.size > 1)
+    if (!isGroup) setSelectedClipIds?.(new Set([hit.clip.id]))
     onFocusTrack?.(hit.clip.trackId)
     isDraggingRef.current = true
     setIsDraggingState(true)
     setClipControlCursorState(clipControlCursor(hit.kind))
     hoveredClipControlRef.current = { clipId: hit.clip.id, kind: hit.kind }
 
-    const startValue = hit.kind === 'volume'
-      ? Number(hit.clip.velocity ?? 1)
-      : Number(hit.kind === 'fadeIn' ? hit.fades.fadeInPercent : hit.fades.fadeOutPercent)
-    const oppositeFade = hit.kind === 'fadeIn' ? hit.fades.fadeOutPercent : hit.fades.fadeInPercent
+    // Anchor first — the grabbed clip is the one that tracks the cursor and
+    // whose travel defines the delta handed to the rest of the group.
+    const trackList = tracksRef.current || []
+    const tidx = trackIdToIndexRef.current
+    const groupClips = isGroup
+      ? [
+          hit.clip,
+          ...(clipsRef.current || []).filter((c) => (
+            c.id !== hit.clip.id &&
+            selectedIds.has(c.id) &&
+            trackList[tidx[c.trackId]]?.type !== 'Pattern'
+          )),
+        ]
+      : [hit.clip]
+
+    const valueOf = (clip) => {
+      if (hit.kind === 'volume') return Number(clip.velocity ?? 1)
+      const fades = normalizeClipFades(clip)
+      return hit.kind === 'fadeIn' ? fades.fadeInPercent : fades.fadeOutPercent
+    }
+    const oppositeOf = (clip) => {
+      const fades = normalizeClipFades(clip)
+      return hit.kind === 'fadeIn' ? fades.fadeOutPercent : fades.fadeInPercent
+    }
+    const groupEntries = groupClips.map((clip) => ({
+      id: clip.id,
+      velocity: Number(clip.velocity ?? 1),
+      start: valueOf(clip),
+      opposite: oppositeOf(clip),
+    }))
+
+    const startValue = valueOf(hit.clip)
     const startClientX = startEvent.clientX
     const startClientY = startEvent.clientY
     let previewRaf = null
-    let pendingPreviewPatch = null
+    let pendingPreviewValues = null
     let ended = false
 
-    const sessionPromise = onBeginClipControlEdit
-      ? Promise.resolve(onBeginClipControlEdit(hit.clip.id)).catch((err) => {
-          console.warn('[TimelineCanvas] begin clip control edit failed', err)
-          return null
-        })
-      : Promise.resolve(null)
+    // One edit session per clip. They are independent, so a failure on one
+    // resolves to null and that clip simply falls back to the direct setter.
+    const sessionsPromise = onBeginClipControlEdit
+      ? Promise.all(groupClips.map((clip) => (
+          Promise.resolve(onBeginClipControlEdit(clip.id))
+            .then((session) => [clip.id, session?.sessionId ?? null])
+            .catch((err) => {
+              console.warn('[TimelineCanvas] begin clip control edit failed', err)
+              return [clip.id, null]
+            })
+        ))).then((pairs) => new Map(pairs))
+      : Promise.resolve(new Map())
 
     const patchForValue = (value) => {
       if (hit.kind === 'volume') return { velocity: Number(value.toFixed(6)) }
@@ -835,39 +934,53 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
 
     const flushPreview = () => {
       previewRaf = null
-      const patch = pendingPreviewPatch
-      pendingPreviewPatch = null
-      if (!patch || ended || !onPreviewClipControlEdit) return
-      sessionPromise.then((session) => {
-        if (ended || !session?.sessionId) return
-        return onPreviewClipControlEdit(session.sessionId, patch)
+      const values = pendingPreviewValues
+      pendingPreviewValues = null
+      if (!values || ended || !onPreviewClipControlEdit) return
+      sessionsPromise.then((sessions) => {
+        if (ended) return
+        return Promise.all([...values].map(([clipId, value]) => {
+          const sessionId = sessions.get(clipId)
+          if (!sessionId) return null
+          return onPreviewClipControlEdit(sessionId, patchForValue(value))
+        }))
       }).catch((err) => console.warn('[TimelineCanvas] clip control preview failed', err))
     }
 
-    const schedulePreview = (value) => {
+    const schedulePreview = (values) => {
       if (!onPreviewClipControlEdit) return
-      pendingPreviewPatch = patchForValue(value)
+      pendingPreviewValues = values
       if (previewRaf == null) previewRaf = requestAnimationFrame(flushPreview)
     }
 
     const setDraftFromEvent = (event, preview = true) => {
       const dx = event.clientX - startClientX
       const dy = event.clientY - startClientY
-      const value = hit.kind === 'volume'
-        ? applyGainDrag(startValue, dy, event, clipControlSpecRef.current)
-        : applyFadeDrag(hit.kind, startValue, oppositeFade, dx, hit.rect.w, event, clipControlSpecRef.current)
-      clipControlDraftRef.current = { clipId: hit.clip.id, kind: hit.kind, value }
+      const spec = clipControlSpecRef.current
+      const { values, blocked } = hit.kind === 'volume'
+        ? applyGroupGainDrag(groupEntries, dy, event, spec)
+        : applyGroupFadeDrag(hit.kind, groupEntries, dx, hit.rect.w, event, spec)
+      const value = values.get(hit.clip.id) ?? startValue
+      clipControlDraftRef.current = {
+        clipId: hit.clip.id,
+        kind: hit.kind,
+        value,
+        values,
+        blocked: new Set(blocked),
+      }
       const p = getLocalXY(event)
       if (p) {
         setClipControlTooltip({
           x: p.localX,
           y: p.localY,
-          text: formatClipControlValue(hit.kind, value, clipControlSpecRef.current),
+          text: formatClipControlValue(hit.kind, value, spec)
+            + (groupEntries.length > 1 ? ` · ${groupEntries.length} clips` : '')
+            + (blocked.length > 0 ? ' · at limit' : ''),
         })
       }
       redrawContent('clip-control-drag')
-      if (preview) schedulePreview(value)
-      return value
+      if (preview) schedulePreview(values)
+      return values
     }
 
     clipControlDraftRef.current = { clipId: hit.clip.id, kind: hit.kind, value: startValue }
@@ -901,39 +1014,47 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       removeListeners()
       if (previewRaf != null) cancelAnimationFrame(previewRaf)
       previewRaf = null
-      pendingPreviewPatch = null
-      sessionPromise.then((session) => {
-        if (session?.sessionId) return onCancelClipControlEdit?.(session.sessionId)
-        return null
-      }).catch((err) => console.warn(`[TimelineCanvas] clip control ${reason} restore failed`, err))
+      pendingPreviewValues = null
+      sessionsPromise.then((sessions) => Promise.all(
+        [...sessions.values()]
+          .filter(Boolean)
+          .map((sessionId) => onCancelClipControlEdit?.(sessionId)),
+      )).catch((err) => console.warn(`[TimelineCanvas] clip control ${reason} restore failed`, err))
       clearInteraction()
     }
 
     const onWindowUp = async (event) => {
       if (ended) return
-      const value = setDraftFromEvent(event, false)
+      const values = setDraftFromEvent(event, false)
       ended = true
       removeListeners()
       if (previewRaf != null) cancelAnimationFrame(previewRaf)
       previewRaf = null
-      pendingPreviewPatch = null
+      pendingPreviewValues = null
+      const sessions = await sessionsPromise
+      // Commit each clip on its own. One clip failing must not abandon the rest,
+      // so only the clips that actually threw get rolled back.
+      const commitOne = async (clipId, value) => {
+        const sessionId = sessions.get(clipId)
+        try {
+          if (sessionId && onCommitClipControlEdit) {
+            await onCommitClipControlEdit(sessionId, patchForValue(value))
+          } else if (hit.kind === 'volume') {
+            await onSetClipVelocity?.(clipId, Number(value.toFixed(6)))
+          } else if (hit.kind === 'fadeIn') {
+            await onSetClipFade?.(clipId, { fadeInPercent: Number(value.toFixed(4)) })
+          } else {
+            await onSetClipFade?.(clipId, { fadeOutPercent: Number(value.toFixed(4)) })
+          }
+        } catch (err) {
+          console.warn('[TimelineCanvas] clip control commit failed', err)
+          if (sessionId && onCancelClipControlEdit) {
+            try { await onCancelClipControlEdit(sessionId) } catch { /* already stale */ }
+          }
+        }
+      }
       try {
-        const session = await sessionPromise
-        if (session?.sessionId && onCommitClipControlEdit) {
-          await onCommitClipControlEdit(session.sessionId, patchForValue(value))
-        } else if (hit.kind === 'volume') {
-          await onSetClipVelocity?.(hit.clip.id, Number(value.toFixed(6)))
-        } else if (hit.kind === 'fadeIn') {
-          await onSetClipFade?.(hit.clip.id, { fadeInPercent: Number(value.toFixed(4)) })
-        } else {
-          await onSetClipFade?.(hit.clip.id, { fadeOutPercent: Number(value.toFixed(4)) })
-        }
-      } catch (err) {
-        console.warn('[TimelineCanvas] clip control commit failed', err)
-        const session = await sessionPromise
-        if (session?.sessionId && onCancelClipControlEdit) {
-          try { await onCancelClipControlEdit(session.sessionId) } catch { /* already stale */ }
-        }
+        for (const [clipId, value] of values) await commitOne(clipId, value)
       } finally {
         clearInteraction()
       }
@@ -1007,11 +1128,17 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
           {fxBadges.map((b) => (
             <button
               key={b.id}
+              ref={(el) => {
+                if (el) badgeElsRef.current.set(b.id, el)
+                else badgeElsRef.current.delete(b.id)
+              }}
               type="button"
               title="Quick FX"
               className="timeline-fx-badge"
               style={{
                 position: 'absolute',
+                // left/top are re-written per animator frame — see
+                // repositionFxBadges; these are the settled placement.
                 left: Math.round(b.rect.x + b.rect.w - 28),
                 top:  Math.round(b.rect.y + 3),
                 width: 24,

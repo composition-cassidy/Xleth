@@ -1597,18 +1597,38 @@ static void testTransientMidiAttackMode()
     };
 
     const auto noOnset = renderMidi(0.0f, false);
-    const auto onset = renderMidi(0.0f, true);
-    const auto onsetSustainChanged = renderMidi(100.0f, true);
+    const auto onsetSustainZero = renderMidi(0.0f, true);
+    const auto onsetSustainBoosted = renderMidi(100.0f, true);
+    const auto onsetSustainCut = renderMidi(-100.0f, true);
 
     const double dryEarlyRms = windowRms(noOnset.output, 0, 0, 256);
-    const double onsetEarlyRms = windowRms(onset.output, 0, 0, 256);
+    const double onsetEarlyRms = windowRms(onsetSustainZero.output, 0, 0, 256);
 
     CHECK(onsetEarlyRms > dryEarlyRms * 1.08,
           "MIDI mode note-on should make attack shaping audible");
-    CHECK(onset.dominantSignedGainDb > 0.5f,
+    CHECK(onsetSustainZero.dominantSignedGainDb > 0.5f,
           "MIDI mode note-on should report positive signed gain");
-    CHECK(maxAbsDifference(onset.output, onsetSustainChanged.output) < 1.0e-6f,
-          "sustain should remain envelope-only in MIDI mode");
+
+    // attack_speed=8ms @ 44.1kHz -> attack window is ~353 samples. The
+    // attack window itself must stay identical regardless of sustain, since
+    // the two phases are exclusive (attack owns the window fully).
+    const double boostedEarlyRms = windowRms(onsetSustainBoosted.output, 0, 0, 256);
+    const double cutEarlyRms = windowRms(onsetSustainCut.output, 0, 0, 256);
+    CHECK(std::abs(boostedEarlyRms - onsetEarlyRms) < onsetEarlyRms * 0.02,
+          "sustain must not affect the MIDI attack window itself");
+    CHECK(std::abs(cutEarlyRms - onsetEarlyRms) < onsetEarlyRms * 0.02,
+          "sustain must not affect the MIDI attack window itself");
+
+    // Past the attack window, sustain should duck (or lift) the held note
+    // until the next note-on, instead of being a no-op.
+    const double zeroTailRms = windowRms(onsetSustainZero.output, 0, 600, 4096);
+    const double boostedTailRms = windowRms(onsetSustainBoosted.output, 0, 600, 4096);
+    const double cutTailRms = windowRms(onsetSustainCut.output, 0, 600, 4096);
+
+    CHECK(boostedTailRms > zeroTailRms * 1.08,
+          "positive sustain should raise the post-attack tail level in MIDI mode");
+    CHECK(cutTailRms < zeroTailRms * 0.92,
+          "negative sustain should duck the post-attack tail level in MIDI mode");
 }
 
 static void testResonanceSuppressorWolaIdentity()

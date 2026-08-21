@@ -16,11 +16,33 @@ import { snapToZero, snapToOne, quantizedFromNorm } from '../../utils/sliderHelp
 import XlethSelect from '../common/XlethSelect.jsx'
 import Fader from '../controls/Fader.jsx'
 
+// The four ZPR easing presets, and the EXACT cubic-bezier each one migrates to
+// in the engine (engine/src/model/ParamTrack.cpp — keep the two in sync).
+//
+// These are not the CSS presets. The legacy curves are polynomials in t, so
+// e.g. Ease Out is `1-(1-t)^2`, which cubic-bezier(0,0,0.58,1) misses by 0.069.
+// Fixing p1x=1/3, p2x=2/3 collapses x(t) to the identity, and any cubic then
+// matches exactly. `curve: null` means the preset needs more than one segment
+// (Ease In-Out splits at t=0.5) or depends on the overshoot param.
+//
+// The engine still receives the INDEX, not the curve — the keyframe editor that
+// writes beziers directly arrives next phase. This table is the shared source
+// of truth those controls will seed from.
+export const EASING_CURVES = {
+  0: [1 / 3, 1 / 3, 2 / 3, 2 / 3],   // Linear
+  1: [1 / 3, 2 / 3, 2 / 3, 1],       // Ease Out
+  2: null,                            // Ease In-Out — two segments
+  3: null,                            // Ease Out Back — p1y = (overshoot+3)/3
+}
+
+// Ease Out Back's curve is continuous in the overshoot slider rather than fixed.
+export const easeOutBackCurve = (overshoot) => [1 / 3, (overshoot + 3) / 3, 2 / 3, 1]
+
 const EASING_OPTIONS = [
-  { value: 0, label: 'Linear' },
-  { value: 1, label: 'Ease Out' },
-  { value: 2, label: 'Ease In-Out' },
-  { value: 3, label: 'Ease Out Back' },
+  { value: 0, label: 'Linear',        curve: EASING_CURVES[0] },
+  { value: 1, label: 'Ease Out',      curve: EASING_CURVES[1] },
+  { value: 2, label: 'Ease In-Out',   curve: EASING_CURVES[2] },
+  { value: 3, label: 'Ease Out Back', curve: EASING_CURVES[3] },
 ]
 
 // ─── BounceParamsView ────────────────────────────────────────────────────────

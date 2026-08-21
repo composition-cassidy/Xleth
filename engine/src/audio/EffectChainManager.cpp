@@ -76,6 +76,75 @@ int EffectChainManager::getEffectCount() const
     return graph_->getEffectCount();
 }
 
+nlohmann::json EffectChainManager::applyChainPreset(const nlohmann::json& effects, bool replace)
+{
+    nlohmann::json skipped = nlohmann::json::array();
+    int added = 0;
+
+    if (!effects.is_array())
+        return { { "ok", false }, { "reason", "effects must be an array" },
+                 { "added", 0 }, { "skipped", skipped } };
+
+    if (replace)
+    {
+        // Collect first, then remove: getChainState() is a snapshot, so mutating
+        // the graph while iterating its live node table would be undefined.
+        const nlohmann::json current = graph_->getChainState();
+        std::vector<int> nodeIds;
+        if (current.is_array())
+            for (const auto& slot : current)
+                if (slot.is_object() && slot.contains("nodeId"))
+                    nodeIds.push_back(slot["nodeId"].get<int>());
+        for (int nodeId : nodeIds)
+            graph_->removeEffect(nodeId);
+    }
+
+    for (const auto& entry : effects)
+    {
+        if (!entry.is_object()) continue;
+        const std::string pluginId = entry.value("pluginId", std::string{});
+        if (pluginId.empty()) continue;
+
+        if (getEffectCount() >= kMaxEffects)
+        {
+            skipped.push_back(pluginId);
+            continue;
+        }
+
+        // Always append: the preset array IS the order, so each entry goes on the
+        // end of whatever is there (the target's own effects when appending, or
+        // the entries already restored when replacing).
+        const int nodeId = graph_->addEffect(pluginId, getEffectCount());
+        if (nodeId < 0)
+        {
+            // Almost always a VST3 that is not installed on this machine.
+            skipped.push_back(pluginId);
+            continue;
+        }
+        ++added;
+
+        // Parameter state before bypass: setStateInformation on a stock effect
+        // restores its whole APVTS, which INCLUDES that effect's own bypass
+        // parameter, so applying the saved bypass afterwards is what makes the
+        // explicit flag authoritative.
+        const std::string state = entry.value("state", std::string{});
+        if (!state.empty())
+        {
+            juce::MemoryOutputStream decoded;
+            if (juce::Base64::convertFromBase64(decoded, juce::String(state))
+                && decoded.getDataSize() > 0)
+            {
+                graph_->setEffectStateInformation(nodeId, decoded.getData(),
+                                                  static_cast<int>(decoded.getDataSize()));
+            }
+        }
+
+        graph_->setBypass(nodeId, entry.value("bypassed", false));
+    }
+
+    return { { "ok", true }, { "added", added }, { "skipped", skipped } };
+}
+
 nlohmann::json EffectChainManager::getChainState() const
 {
     return graph_->getChainState();

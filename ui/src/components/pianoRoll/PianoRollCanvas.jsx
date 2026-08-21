@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState, useCallback } from 'react'
+import { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from 'react'
 import { PPQ, snapBeatToGrid, beatsToTicks, beatToPixel, pixelToBeat } from '../../constants/timeline.js'
 import { PITCH_MIN, PITCH_MAX, isBlackKey, pitchLabel } from './PianoRollKeyboard.jsx'
 import { tokenValue } from '../../theming/tokenValue.ts'
+import { DEFAULT_SCALE, isPitchInScale, snapPitchToScale } from './scales.js'
 
 const RESIZE_HANDLE_PX = 6
 
@@ -25,6 +26,7 @@ function resolvePalette() {
     noteSelStroke: tokenValue('--theme-accent') || '#33CED6',
     lassoFill: tokenValue('--theme-pianoroll-selection-rect') || 'rgba(51,206,214,0.18)',
     lassoStroke: tokenValue('--theme-accent') || '#33CED6',
+    outOfScale: tokenValue('--theme-overlay-subtle') || 'rgba(0,0,0,0.25)',
   }
 }
 
@@ -75,7 +77,7 @@ function hitTestNote(notes, localX, localY, pixelsPerBeat, pixelsPerSemitone, sc
   return null
 }
 
-function drawBackground(ctx, w, h, pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY, patternLenBeats, palette) {
+function drawBackground(ctx, w, h, pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY, patternLenBeats, palette, scale) {
   ctx.clearRect(0, 0, w, h)
   ctx.fillStyle = palette.bg
   ctx.fillRect(0, 0, w, h)
@@ -88,6 +90,19 @@ function drawBackground(ctx, w, h, pixelsPerBeat, pixelsPerSemitone, scrollX, sc
     if (y + pixelsPerSemitone < 0 || y > h) continue
     ctx.fillStyle = isBlackKey(p) ? palette.rowBlack : palette.rowWhite
     ctx.fillRect(0, y, w, pixelsPerSemitone)
+  }
+
+  // Scale lock: dim every row outside the active scale so the playable rows
+  // read at a glance. Purely a veil over the stripes above — note drawing and
+  // grid lines still paint on top.
+  if (scale?.enabled) {
+    ctx.fillStyle = palette.outOfScale
+    for (let p = PITCH_MAX; p >= PITCH_MIN; p--) {
+      const y = (PITCH_MAX - p) * pixelsPerSemitone - scrollY
+      if (y + pixelsPerSemitone < 0 || y > h) continue
+      if (isPitchInScale(p, scale.root, scale.mode)) continue
+      ctx.fillRect(0, y, w, pixelsPerSemitone)
+    }
   }
 
   ctx.strokeStyle = palette.octaveLine
@@ -206,16 +221,22 @@ function drawNotes(ctx, w, h, notes, selectedNoteIds, pixelsPerBeat, pixelsPerSe
   }
 }
 
-export default function PianoRollCanvas({
+// pixelsPerBeatRef/pixelsPerSemitoneRef/scrollXRef/scrollYRef are REF OBJECTS
+// owned by PianoRoll.jsx (not value props) — its view animator writes them
+// every frame without a re-render, exactly like TimelineCanvas's
+// pixelsPerBeatRef/scrollOffsetRef. A value prop would only be as fresh as
+// the last (debounced) render, which is stale mid-gesture.
+const PianoRollCanvas = forwardRef(function PianoRollCanvas({
   patternId,
   notes, patternLengthTicks,
   activeTool, slideMode = false, stickyNoteLength, setStickyNoteLength, stickyVelocity = 1.0, setStickyVelocity,
   selectedNoteIds, setSelectedNoteIds,
-  pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY,
+  pixelsPerBeatRef, pixelsPerSemitoneRef, scrollXRef, scrollYRef,
   width, height,
   onAddNote, onRemoveNote, onMoveNote, onMoveNotesBatch, onResizeNote, onResizeNotesBatch, onPreviewNote,
   onDropFsc,
-}) {
+  scale = DEFAULT_SCALE,
+}, ref) {
   const bgRef = useRef(null)
   const ctRef = useRef(null)
   const ovRef = useRef(null)
@@ -229,14 +250,6 @@ export default function PianoRollCanvas({
   const [themeTick, setThemeTick] = useState(0)
   const notesRef = useRef(notes)
   notesRef.current = notes
-  const scrollXRef = useRef(scrollX)
-  scrollXRef.current = scrollX
-  const scrollYRef = useRef(scrollY)
-  scrollYRef.current = scrollY
-  const pixelsPerBeatRef = useRef(pixelsPerBeat)
-  pixelsPerBeatRef.current = pixelsPerBeat
-  const pixelsPerSemitoneRef = useRef(pixelsPerSemitone)
-  pixelsPerSemitoneRef.current = pixelsPerSemitone
   const onMoveNoteRef = useRef(onMoveNote)
   onMoveNoteRef.current = onMoveNote
   const onMoveNotesBatchRef = useRef(onMoveNotesBatch)
@@ -259,6 +272,8 @@ export default function PianoRollCanvas({
   setStickyNoteLengthRef.current = setStickyNoteLength
   const slideModeRef = useRef(slideMode)
   slideModeRef.current = slideMode
+  const scaleRef = useRef(scale)
+  scaleRef.current = scale
 
   // Apply DPR sizing
   useEffect(() => {
@@ -275,8 +290,12 @@ export default function PianoRollCanvas({
     })
   }, [width, height])
 
-  // Redraw background + content
-  useEffect(() => {
+  // Imperative redraw: reads pixelsPerBeat/scrollX/scrollY from refs (NOT
+  // props) so it draws the CURRENT value regardless of whether it's called
+  // from the effect below (notes/selection/size/theme changes) or directly
+  // from PianoRoll's view animator onTick (60fps during a zoom/scroll
+  // gesture — must never go through React state/props for that path).
+  function redraw() {
     const bg = bgRef.current?.getContext('2d')
     const ct = ctRef.current?.getContext('2d')
     if (!bg || !ct) return
@@ -285,10 +304,24 @@ export default function PianoRollCanvas({
     ct.setTransform(dpr, 0, 0, dpr, 0, 0)
     const lenBeats = patternLengthTicks / PPQ
     const palette = resolvePalette()
-    drawBackground(bg, width, height, pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY, lenBeats, palette)
+    const ppb = pixelsPerBeatRef.current
+    const pps = pixelsPerSemitoneRef.current
+    const sX = scrollXRef.current
+    const sY = scrollYRef.current
+    drawBackground(bg, width, height, ppb, pps, sX, sY, lenBeats, palette, scaleRef.current)
     ct.clearRect(0, 0, width, height)
-    drawNotes(ct, width, height, notes, selectedNoteIds, pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY, palette)
-  }, [notes, selectedNoteIds, pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY, width, height, patternLengthTicks, themeTick])
+    drawNotes(ct, width, height, notesRef.current, selectedNoteIdsRef.current, ppb, pps, sX, sY, palette)
+  }
+
+  // ON-SETTLE-ish: redraw when anything OTHER than pixelsPerBeat/scrollX/
+  // scrollY changes. Those three are driven imperatively (per-frame, via the
+  // exposed redraw() below) by PianoRoll's view animator — including them
+  // here would mean every animation frame also forces a React render just
+  // to reach this effect, the exact thing the animator refactor removes.
+  useEffect(() => {
+    redraw()
+  }, [notes, selectedNoteIds, width, height, patternLengthTicks, themeTick,
+      scale.enabled, scale.root, scale.mode])
 
   // Redraw all canvases when the active theme changes — tokenValue() reads
   // CSS variables at draw time, but the draw effects only rerun on prop/state
@@ -306,9 +339,15 @@ export default function PianoRollCanvas({
     return { localX: e.clientX - rect.left, localY: e.clientY - rect.top }
   }, [])
 
+  // Row under the cursor, clamped to the keyboard range. With Snap to Scale on,
+  // the row is pulled to the nearest scale tone so a note can only ever be
+  // placed on a degree of the active scale.
   const pixelToPitch = useCallback((localY) => {
     const pitch = PITCH_MAX - Math.floor((localY + scrollYRef.current) / pixelsPerSemitoneRef.current)
-    return Math.max(PITCH_MIN, Math.min(PITCH_MAX, pitch))
+    const clamped = Math.max(PITCH_MIN, Math.min(PITCH_MAX, pitch))
+    const sc = scaleRef.current
+    if (!sc?.enabled) return clamped
+    return snapPitchToScale(clamped, sc.root, sc.mode, PITCH_MIN, PITCH_MAX)
   }, [])
 
   const pixelToTick = useCallback((localX, modifiers = {}) => {
@@ -508,12 +547,21 @@ export default function PianoRollCanvas({
         const dx = (localX + scrollXRef.current) - (ds.startX + ds.scrollXAtStart)
         const dy = (localY + scrollYRef.current) - (ds.startY + ds.scrollYAtStart)
         const deltaBeats = dx / ppb
-        const deltaPitch = -Math.round(dy / pps)
+        let deltaPitch = -Math.round(dy / pps)
 
         // Snap the anchor's destination, then derive a grid-aligned tick delta
         // that is applied identically to every note in `originals`.
         const anchorOrig = ds.originals.get(ds.anchorNoteId)
         if (!anchorOrig) return
+
+        // Scale lock: snap the ANCHOR's destination row to the nearest scale
+        // tone and reuse that pitch delta for the whole group, so a multi-note
+        // drag keeps its intervals instead of collapsing onto scale degrees.
+        const sc = scaleRef.current
+        if (sc?.enabled && deltaPitch !== 0) {
+          const dest = Math.max(PITCH_MIN, Math.min(PITCH_MAX, anchorOrig.pitch + deltaPitch))
+          deltaPitch = snapPitchToScale(dest, sc.root, sc.mode, PITCH_MIN, PITCH_MAX) - anchorOrig.pitch
+        }
         const anchorNewBeat = snapBeatToGrid(
           Math.max(0, anchorOrig.positionTicks / PPQ + deltaBeats),
           modifiers
@@ -610,8 +658,10 @@ export default function PianoRollCanvas({
     }
   }, [])
 
-  // Overlay canvas: draw drag ghost on top of the content layer.
-  useEffect(() => {
+  // Overlay canvas: draw drag ghost on top of the content layer. Same
+  // refs-not-props rule as redraw() above — this must also track the
+  // animator's per-frame ppb/scrollX/scrollY without a React render.
+  function redrawOverlayLayer() {
     const ov = ovRef.current?.getContext('2d')
     if (!ov) return
     const dpr = window.devicePixelRatio || 1
@@ -620,6 +670,10 @@ export default function PianoRollCanvas({
     const ds = dragStateRef.current
     if (!ds) return
     const palette = resolvePalette()
+    const ppb = pixelsPerBeatRef.current
+    const pps = pixelsPerSemitoneRef.current
+    const sX = scrollXRef.current
+    const sY = scrollYRef.current
 
     if (ds.action === ACTION.MOVE_NOTES) {
       ov.fillStyle = hexToRgba(palette.noteGhost, 0.55)
@@ -631,12 +685,12 @@ export default function PianoRollCanvas({
         const newPitch = orig.pitch + ds.previewDeltaPitch
         const beat = newPosTicks / PPQ
         const durBeats = orig.durationTicks / PPQ
-        const x = beat * pixelsPerBeat - scrollX
-        const wid = Math.max(2, durBeats * pixelsPerBeat)
-        const y = (PITCH_MAX - newPitch) * pixelsPerSemitone - scrollY
-        if (x + wid < 0 || x > width || y + pixelsPerSemitone < 0 || y > height) continue
-        ov.fillRect(x, y + 1, wid, pixelsPerSemitone - 2)
-        ov.strokeRect(x + 0.5, y + 1.5, wid - 1, pixelsPerSemitone - 3)
+        const x = beat * ppb - sX
+        const wid = Math.max(2, durBeats * ppb)
+        const y = (PITCH_MAX - newPitch) * pps - sY
+        if (x + wid < 0 || x > width || y + pps < 0 || y > height) continue
+        ov.fillRect(x, y + 1, wid, pps - 2)
+        ov.strokeRect(x + 0.5, y + 1.5, wid - 1, pps - 3)
       }
       ov.setLineDash([])
     } else if (ds.action === ACTION.RESIZE_NOTE) {
@@ -651,20 +705,20 @@ export default function PianoRollCanvas({
         const newDur = Math.max(60, orig.durationTicks + deltaTicks)
         const beat = orig.positionTicks / PPQ
         const durBeats = newDur / PPQ
-        const x = beat * pixelsPerBeat - scrollX
-        const wid = Math.max(2, durBeats * pixelsPerBeat)
-        const y = (PITCH_MAX - orig.pitch) * pixelsPerSemitone - scrollY
-        if (x + wid < 0 || x > width || y + pixelsPerSemitone < 0 || y > height) continue
-        ov.fillRect(x, y + 1, wid, pixelsPerSemitone - 2)
-        ov.strokeRect(x + 0.5, y + 1.5, wid - 1, pixelsPerSemitone - 3)
+        const x = beat * ppb - sX
+        const wid = Math.max(2, durBeats * ppb)
+        const y = (PITCH_MAX - orig.pitch) * pps - sY
+        if (x + wid < 0 || x > width || y + pps < 0 || y > height) continue
+        ov.fillRect(x, y + 1, wid, pps - 2)
+        ov.strokeRect(x + 0.5, y + 1.5, wid - 1, pps - 3)
       }
       ov.setLineDash([])
     } else if (ds.action === ACTION.LASSO) {
       // Convert world-space lasso coords to screen-space for rendering
-      const sx0 = ds.startWorldX - scrollX
-      const sy0 = ds.startWorldY - scrollY
-      const sx1 = ds.currentWorldX - scrollX
-      const sy1 = ds.currentWorldY - scrollY
+      const sx0 = ds.startWorldX - sX
+      const sy0 = ds.startWorldY - sY
+      const sx1 = ds.currentWorldX - sX
+      const sy1 = ds.currentWorldY - sY
       const x0 = Math.min(sx0, sx1)
       const x1 = Math.max(sx0, sx1)
       const y0 = Math.min(sy0, sy1)
@@ -677,7 +731,19 @@ export default function PianoRollCanvas({
       ov.strokeRect(x0 + 0.5, y0 + 0.5, x1 - x0 - 1, y1 - y0 - 1)
       ov.setLineDash([])
     }
-  }, [dragTick, themeTick, width, height, pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY])
+  }
+
+  // ON-SETTLE-ish, same reasoning as the content redraw effect above.
+  useEffect(() => {
+    redrawOverlayLayer()
+  }, [dragTick, themeTick, width, height])
+
+  // Expose to parent (PianoRoll.jsx's view animator calls redraw() directly,
+  // once per frame, bypassing React state/props entirely for ppb/scrollX/
+  // scrollY — mirrors TimelineCanvas's redrawGrid/redrawContent pattern).
+  useImperativeHandle(ref, () => ({
+    redraw: () => { redraw(); redrawOverlayLayer() },
+  }), [patternLengthTicks, width, height])
 
   const cursor = activeTool === 'pencil' ? 'crosshair'
                : activeTool === 'delete' ? 'not-allowed'
@@ -712,4 +778,6 @@ export default function PianoRollCanvas({
       <canvas ref={ovRef} style={{ position: 'absolute', inset: 0 }} />
     </div>
   )
-}
+})
+
+export default PianoRollCanvas
