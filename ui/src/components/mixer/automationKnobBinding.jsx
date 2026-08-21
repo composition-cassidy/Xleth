@@ -1,10 +1,11 @@
 import { useCallback, useEffect, useState } from 'react'
 import ContextMenu from '../ContextMenu.jsx'
-import { PPQ } from '../../constants/timeline.js'
+import { PPQ, snapTickToGrid } from '../../constants/timeline.js'
 import { timelineEvents } from '../../timelineEvents.js'
 import { playheadClock } from '../../services/PlayheadClock.js'
 import useEffectChainStore from '../../stores/effectChainStore.js'
 import useAutomationBindingStore, { wireAutomationBindingStore } from '../../stores/automationBindingStore.js'
+import useSnapStore from '../../stores/snapStore.js'
 
 // ── Automation binding for stock-effect knobs (Phase C) ──────────────────────
 //
@@ -47,25 +48,15 @@ export function resolveEffectInstanceId(trackId, nodeId) {
 
 const ONE_BAR_TICKS = PPQ * 4
 
-// Default clip placement: the current loop/render selection when one is set,
-// otherwise one bar starting at the playhead. Falls back to bar 1 when neither
-// the loop region nor the playhead can be read.
-async function defaultClipPlacement() {
-  try {
-    const getLoop = globalThis.window?.xleth?.timeline?.getLoopRegion
-    if (typeof getLoop === 'function') {
-      const region = await getLoop()
-      const start = Number(region?.startTick)
-      const end = Number(region?.endTick)
-      if (Number.isFinite(start) && Number.isFinite(end) && end > start) {
-        return { positionTicks: Math.max(0, Math.round(start)), durationTicks: Math.round(end - start) }
-      }
-    }
-  } catch (err) {
-    console.warn('[Automation] getLoopRegion failed, falling back to the playhead:', err?.message)
-  }
+// Default clip placement: always one bar, starting at the playhead and
+// snapped to the current snap-store granularity. Never the loop/render
+// region — a knob-created clip is a fresh one-bar phrase, not a span of
+// whatever the user last selected for looping/rendering.
+function defaultClipPlacement() {
   const beats = playheadClock?.positionBeats
-  const positionTicks = Number.isFinite(beats) ? Math.max(0, Math.round(beats * PPQ)) : 0
+  const rawTicks = Number.isFinite(beats) ? Math.max(0, Math.round(beats * PPQ)) : 0
+  const granularity = useSnapStore.getState().snapGranularity
+  const positionTicks = snapTickToGrid(rawTicks, {}, granularity)
   return { positionTicks, durationTicks: ONE_BAR_TICKS }
 }
 

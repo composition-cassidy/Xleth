@@ -54,6 +54,7 @@ export function createSelectTool(deps) {
     // trackLayoutRef.automationLaneRowAtY, not on a track index.
     automationClipsRef, selectedAutomationClipIdsRef, setSelectedAutomationClipIds,
     onMoveAutomationClip, onResizeAutomationClip, onResizeAutomationClipLeft,
+    onDuplicateAutomationClips,
     onRequestAutomationClipContextMenu,
     // Automation POINT editing deps (Phase C). The envelope map is read-only
     // here; every mutation leaves through one of the three callbacks, and
@@ -279,6 +280,31 @@ export function createSelectTool(deps) {
         trackId: tracks[trackIndex]?.id ?? block.trackId,
         trackIndex,
       }
+    })
+  }
+
+  // Automation-clip duplicate-drag placements — lane-addressed, so unlike
+  // clip/block duplicate there is no track-switch axis: a duplicate always
+  // stays on its source clip's lane. Same-lane overlap is rejected engine-
+  // side (see automationKnobBinding.js's findFreePosition), so the commit
+  // side (not this preview) slides a placement right if it lands occupied.
+  function getAutomationClipDragPlacements(modifiers) {
+    const items = dragSelectedAutomationClips.length > 0
+      ? dragSelectedAutomationClips
+      : dragAutomationClip
+        ? [{ clip: dragAutomationClip, origPosition: dragAutomationClipOrigPosition, origLaneId: dragAutomationClipOrigLaneId }]
+        : []
+    if (items.length === 0) return []
+    const beatDelta = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
+      - pixelToBeat(dragOriginX, scrollOffsetRef.current, pixelsPerBeatRef.current)
+    return items.map(({ clip, origPosition, origLaneId }) => {
+      const origBeat = origPosition / PPQ
+      const positionTicks = beatsToTicks(snapBeatToGrid(
+        Math.max(0, origBeat + beatDelta),
+        modifiers,
+        snapGranularityRef?.current,
+      ))
+      return { clip, positionTicks, laneId: origLaneId }
     })
   }
 
@@ -684,8 +710,8 @@ export function createSelectTool(deps) {
               setSelectedAutomationClipIds?.(new Set([clip.id]))
             }
           } else {
-            dragMode = 'move'
-            setDragClass('dragging')
+            dragMode = pendingHit.e.shiftKey ? 'duplicate' : 'move'
+            setDragClass(dragMode === 'duplicate' ? 'duplicating' : 'dragging')
             if (!selectedAutomationClipIdsRef?.current?.has(clip.id)) {
               if (pendingHit.e.ctrlKey || pendingHit.e.metaKey || pendingHit.e.shiftKey) {
                 setSelectedAutomationClipIds?.((prev) => new Set([...prev, clip.id]))
@@ -693,6 +719,7 @@ export function createSelectTool(deps) {
                 setSelectedAutomationClipIds?.(new Set([clip.id]))
               }
             }
+            console.log(`[SelectTool] ${dragMode === 'duplicate' ? 'Duplicate' : 'Move'} drag started on automation clip ${clip.id}`)
           }
         } else if (pendingHit?.block) {
           // Pattern-block drag
@@ -950,10 +977,12 @@ export function createSelectTool(deps) {
         if (modifiers.shift) {
           const clipPlacements = getClipDragPlacements(modifiers)
           const blockPlacements = getBlockDragPlacements(modifiers)
+          const automationPlacements = getAutomationClipDragPlacements(modifiers)
           if (clipPlacements.length > 0) onDuplicateClips?.(clipPlacements)
           if (blockPlacements.length > 0) onDuplicatePatternBlocks?.(blockPlacements)
-          if (clipPlacements.length + blockPlacements.length > 0) {
-            console.log(`[SelectTool] Duplicated ${clipPlacements.length} clip(s) and ${blockPlacements.length} pattern block(s) by drag`)
+          if (automationPlacements.length > 0) onDuplicateAutomationClips?.(automationPlacements)
+          if (clipPlacements.length + blockPlacements.length + automationPlacements.length > 0) {
+            console.log(`[SelectTool] Duplicated ${clipPlacements.length} clip(s), ${blockPlacements.length} pattern block(s) and ${automationPlacements.length} automation clip(s) by drag`)
           }
         }
         resetDragState()
@@ -1293,7 +1322,7 @@ export function createSelectTool(deps) {
 
     onKeyUp(e) {
       const pendingDuplicate = dragMode === 'pending'
-        && (pendingHit?.clip || pendingHit?.block)
+        && (pendingHit?.clip || pendingHit?.block || pendingHit?.automationClip)
         && !pendingHit.isLeftEdge
         && !pendingHit.isRightEdge
         && pendingHit.e.shiftKey
@@ -1312,7 +1341,7 @@ export function createSelectTool(deps) {
 
       // ── Automation clip drag previews (local-only, per the no-IPC-during-
       // drag constraint) ──────────────────────────────────────────────────
-      if ((dragMode === 'move' || dragMode === 'resize' || dragMode === 'resize-left') && dragAutomationClip) {
+      if ((dragMode === 'move' || dragMode === 'duplicate' || dragMode === 'resize' || dragMode === 'resize-left') && dragAutomationClip) {
         const accent = tokenValue('--theme-border-focus')
         ctx.save()
         ctx.fillStyle = accent
@@ -1338,6 +1367,18 @@ export function createSelectTool(deps) {
               : (trackLayoutRef?.current?.getAutomationLaneRows?.() ?? []).find((r) => r.laneId === origLaneId)
             if (!laneRow) continue
             const x = beatToPixel(newBeat, scrollOffset, ppb)
+            const width = Math.max(24, (clip.durationTicks / PPQ) * ppb)
+            ctx.globalAlpha = 0.22
+            ctx.fillRect(x, laneRow.y + 2, width, laneRow.height - 4)
+            ctx.globalAlpha = 1
+            ctx.strokeRect(x + 0.5, laneRow.y + 2.5, width - 1, laneRow.height - 5)
+          }
+        } else if (dragMode === 'duplicate') {
+          const laneRows = trackLayoutRef?.current?.getAutomationLaneRows?.() ?? []
+          for (const { clip, positionTicks, laneId } of getAutomationClipDragPlacements(lastModifiers)) {
+            const laneRow = laneRows.find((r) => r.laneId === laneId)
+            if (!laneRow) continue
+            const x = beatToPixel(positionTicks / PPQ, scrollOffset, ppb)
             const width = Math.max(24, (clip.durationTicks / PPQ) * ppb)
             ctx.globalAlpha = 0.22
             ctx.fillRect(x, laneRow.y + 2, width, laneRow.height - 4)

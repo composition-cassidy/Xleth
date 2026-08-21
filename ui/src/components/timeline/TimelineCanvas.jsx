@@ -72,6 +72,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     automationClips, automationEnvelopesById, automationBindingLabelsById,
     selectedAutomationClipIds, setSelectedAutomationClipIds,
     onMoveAutomationClip, onResizeAutomationClip, onResizeAutomationClipLeft,
+    onDuplicateAutomationClips,
     onRequestAutomationClipContextMenu,
     // Automation point editing (Phase C)
     selectedAutomationPoint, setSelectedAutomationPoint,
@@ -413,6 +414,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       // Automation clip deps (Phase B)
       automationClipsRef, selectedAutomationClipIdsRef, setSelectedAutomationClipIds,
       onMoveAutomationClip, onResizeAutomationClip, onResizeAutomationClipLeft,
+      onDuplicateAutomationClips,
       onRequestAutomationClipContextMenu,
       // Automation point editing deps (Phase C)
       automationEnvelopesByIdRef, setSelectedAutomationPoint,

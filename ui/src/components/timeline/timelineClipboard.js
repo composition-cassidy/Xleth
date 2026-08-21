@@ -53,13 +53,14 @@ export function normalizeTimelineClipboardPayloads(clips, patternBlocks) {
  * buildTimelineClipboard — snapshot a selection as a rigid group.
  *
  * @param {object}   args
- * @param {Array}    args.clips          Selected clip objects (engine shape).
- * @param {Array}    args.patternBlocks  Selected pattern-block objects.
- * @param {Array}    args.tracks         Visible tracks, in display order.
- * @returns {{clips: Array|null, patternBlocks: Array|null, anchorTrackIndex: number}}
+ * @param {Array}    args.clips           Selected clip objects (engine shape).
+ * @param {Array}    args.patternBlocks   Selected pattern-block objects.
+ * @param {Array}    args.automationClips Selected automation-clip objects.
+ * @param {Array}    args.tracks          Visible tracks, in display order.
+ * @returns {{clips: Array|null, patternBlocks: Array|null, automationClips: Array|null, anchorTrackIndex: number}}
  *          `null` payloads mean "nothing of that kind was selected".
  */
-export function buildTimelineClipboard({ clips = [], patternBlocks = [], tracks = [] }) {
+export function buildTimelineClipboard({ clips = [], patternBlocks = [], automationClips = [], tracks = [] }) {
   const trackIndexById = new Map(tracks.map((t, i) => [t.id, i]))
   const indexOf = (trackId) => {
     const i = trackIndexById.get(trackId)
@@ -67,25 +68,30 @@ export function buildTimelineClipboard({ clips = [], patternBlocks = [], tracks 
   }
 
   // Items on tracks that no longer exist can't be anchored, so drop them here
-  // rather than producing a group with a meaningless offset.
+  // rather than producing a group with a meaningless offset. Automation clips
+  // are lane-addressed, not track-addressed, so they carry no such check.
   const srcClips = clips.filter(c => indexOf(c.trackId) >= 0)
   const srcBlocks = patternBlocks.filter(b => indexOf(b.trackId) >= 0)
-  if (srcClips.length === 0 && srcBlocks.length === 0) {
-    return { clips: null, patternBlocks: null, anchorTrackIndex: 0 }
+  const srcAutomation = automationClips.slice()
+  if (srcClips.length === 0 && srcBlocks.length === 0 && srcAutomation.length === 0) {
+    return { clips: null, patternBlocks: null, automationClips: null, anchorTrackIndex: 0 }
   }
 
-  // ONE anchor shared by both kinds. Anchoring each kind to its own earliest
-  // item bakes the gap between the two groups into the payload, so on paste
-  // the pattern blocks reappear bars away from the clips they were copied with.
+  // ONE anchor shared by every kind. Anchoring each kind to its own earliest
+  // item bakes the gap between the groups into the payload, so on paste the
+  // pattern blocks (or automation clips) reappear bars away from the clips
+  // they were copied with.
   const allPositions = [
     ...srcClips.map(c => c.positionTicks),
     ...srcBlocks.map(b => b.positionTicks),
+    ...srcAutomation.map(c => c.positionTicks),
   ]
   const baseTicks = Math.min(...allPositions)
-  const anchorTrackIndex = Math.min(
+  const trackAnchorCandidates = [
     ...srcClips.map(c => indexOf(c.trackId)),
     ...srcBlocks.map(b => indexOf(b.trackId)),
-  )
+  ]
+  const anchorTrackIndex = trackAnchorCandidates.length > 0 ? Math.min(...trackAnchorCandidates) : 0
 
   const copiedClips = srcClips
     .slice()
@@ -117,8 +123,24 @@ export function buildTimelineClipboard({ clips = [], patternBlocks = [], tracks 
       loopEnabled: block.loopEnabled ?? false,
     }))
 
+  // No trackOffset: an automation clip stays on its exact source lane on
+  // paste/duplicate (no cross-lane retargeting), so the absolute laneId is
+  // carried straight through. envelopeId is carried too — copies SHARE the
+  // envelope until make-unique, the same FL semantics as the drag duplicate.
+  const copiedAutomation = srcAutomation
+    .slice()
+    .sort((a, b) => a.positionTicks - b.positionTicks)
+    .map(clip => ({
+      relativePosition: clip.positionTicks - baseTicks,
+      laneId: clip.laneId,
+      durationTicks: clip.durationTicks,
+      offsetTicks: clip.offsetTicks ?? 0,
+      envelopeId: clip.envelopeId,
+    }))
+
   return {
     ...normalizeTimelineClipboardPayloads(copiedClips, copiedBlocks),
+    automationClips: copiedAutomation.length > 0 ? copiedAutomation : null,
     anchorTrackIndex,
   }
 }
@@ -128,9 +150,11 @@ export function buildTimelineClipboard({ clips = [], patternBlocks = [], tracks 
  *
  * Track offsets are applied against the paste target, then clamped to the
  * track list. A destination whose type doesn't match the item's origin is
- * skipped and counted rather than silently retargeted.
+ * skipped and counted rather than silently retargeted. Automation clips have
+ * no track offset (they stay on their source lane) and no type-mismatch
+ * check — see buildTimelineClipboard.
  *
- * @returns {{clipPlacements: Array, blockPlacements: Array,
+ * @returns {{clipPlacements: Array, blockPlacements: Array, automationPlacements: Array,
  *            skipped: {typeMismatchClip: number, typeMismatchBlock: number}}}
  */
 export function resolveTimelinePaste({
@@ -139,7 +163,8 @@ export function resolveTimelinePaste({
   const skipped = { typeMismatchClip: 0, typeMismatchBlock: 0 }
   const clipPlacements = []
   const blockPlacements = []
-  if (!clipboard || tracks.length === 0) return { clipPlacements, blockPlacements, skipped }
+  const automationPlacements = []
+  if (!clipboard || tracks.length === 0) return { clipPlacements, blockPlacements, automationPlacements, skipped }
 
   const anchor = Number.isInteger(targetTrackIndex) && targetTrackIndex >= 0
     ? targetTrackIndex
@@ -171,7 +196,16 @@ export function resolveTimelinePaste({
     })
   }
 
-  return { clipPlacements, blockPlacements, skipped }
+  for (const item of clipboard.automationClips ?? []) {
+    automationPlacements.push({
+      item,
+      laneId: item.laneId,
+      positionTicks: baseTicks + item.relativePosition,
+      durationTicks: item.durationTicks,
+    })
+  }
+
+  return { clipPlacements, blockPlacements, automationPlacements, skipped }
 }
 
 /**

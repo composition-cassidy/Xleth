@@ -30,6 +30,7 @@ import { subscribe } from '../transportStore.js'
 import { startMacroAutomationPlayback } from '../fxgraph/macroAutomationPlayback.js'
 import useEffectChainStore from '../stores/effectChainStore.js'
 import { PLUGIN_NAMES } from './mixer/effectEditorOpeners.js'
+import { findFreePosition as findFreeAutomationLanePosition } from './mixer/automationKnobBinding.jsx'
 import useAutoScrollStore from '../stores/autoScrollStore.js'
 import { playheadClock } from '../services/PlayheadClock.js'
 import { editCursor } from '../services/EditCursor.js'
@@ -38,7 +39,7 @@ import { timelineEvents } from '../timelineEvents.js'
 import {
   BEATS_PER_BAR, DEFAULT_TRACK_HEIGHT, TRACK_HEIGHT, PPQ, RULER_HEIGHT, ADD_TRACK_ROW_HEIGHT,
   setTimelineTrackHeight, zoomTrackHeight,
-  pixelToBeat, snapBeatToGrid, beatsToTicks, regionDurationToTicks,
+  pixelToBeat, snapBeatToGrid, snapTickToGrid, beatsToTicks, regionDurationToTicks,
   GRANULARITY_BEATS, MIN_PPB, MAX_PPB, ZOOM_FACTOR,
 } from '../constants/timeline.js'
 import { getRegime } from '../utils/waveformRenderer.js'
@@ -3113,6 +3114,50 @@ export default function TimelineView({
     }
   }, [fetchAutomationClips, fetchAutomationEnvelopes])
 
+  // Shift+drag duplicate — mirrors handleDuplicatePatternBlocks, but a
+  // duplicated automation clip SHARES its source's envelopeId (FL semantics:
+  // copies share until make-unique), so this never calls addEnvelope. The
+  // engine rejects same-lane overlap outright (returns clipId -1) rather than
+  // shifting the request, so findFreePosition resolves each placement against
+  // both the existing lane contents and any earlier clip this same drag just
+  // placed on the same lane.
+  const handleDuplicateAutomationClips = useCallback(async (placements) => {
+    if (!Array.isArray(placements) || placements.length === 0) return
+    try {
+      const laneOccupancy = new Map()
+      const occupancyFor = (laneId) => {
+        if (!laneOccupancy.has(laneId)) {
+          laneOccupancy.set(laneId, automationClips
+            .filter((c) => c.laneId === laneId)
+            .map((c) => ({ positionTicks: c.positionTicks, durationTicks: c.durationTicks })))
+        }
+        return laneOccupancy.get(laneId)
+      }
+      const newIds = []
+      for (const { clip, positionTicks, laneId } of placements) {
+        const occupied = occupancyFor(laneId)
+        const resolvedPosition = findFreeAutomationLanePosition(occupied, positionTicks, clip.durationTicks)
+        const newId = await window.xleth?.automation?.addClip({
+          laneId,
+          envelopeId: clip.envelopeId,
+          positionTicks: resolvedPosition,
+          durationTicks: clip.durationTicks,
+          offsetTicks: clip.offsetTicks ?? 0,
+        })
+        if (Number.isInteger(newId) && newId >= 0) {
+          newIds.push(newId)
+          occupied.push({ positionTicks: resolvedPosition, durationTicks: clip.durationTicks })
+        }
+      }
+      await fetchAutomationClips()
+      timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
+      if (newIds.length > 0) setSelectedAutomationClipIds(new Set(newIds))
+      console.log(`[SelectTool] Duplicated ${newIds.length} automation clip(s) by drag`)
+    } catch (err) {
+      console.error('[SelectTool] Automation duplicate drag failed:', err)
+    }
+  }, [automationClips, fetchAutomationClips])
+
   const handleDeleteAutomationClip = useCallback(async (clipId) => {
     try {
       await window.xleth?.automation?.removeClip(clipId)
@@ -3652,18 +3697,20 @@ export default function TimelineView({
         const next = buildTimelineClipboard({
           clips: clipsRef.current.filter(c => selectedClipIds.has(c.id)),
           patternBlocks: patternBlocks.filter(b => selectedBlockIds.has(b.id)),
+          automationClips: automationClips.filter(c => selectedAutomationClipIds.has(c.id)),
           tracks: visibleTracks,
         })
-        if (!next.clips && !next.patternBlocks) return
+        if (!next.clips && !next.patternBlocks && !next.automationClips) return
 
         clipboardRef.current = next
         const nClips = next.clips?.length ?? 0
         const nBlocks = next.patternBlocks?.length ?? 0
+        const nAuto = next.automationClips?.length ?? 0
         if (e.key === 'x') {
           await deleteSelectedTimelineItems()
-          console.log(`[Keyboard] Cut ${nClips} clip(s), ${nBlocks} pattern block(s)`)
+          console.log(`[Keyboard] Cut ${nClips} clip(s), ${nBlocks} pattern block(s), ${nAuto} automation clip(s)`)
         } else {
-          console.log(`[Keyboard] Copied ${nClips} clip(s), ${nBlocks} pattern block(s)`)
+          console.log(`[Keyboard] Copied ${nClips} clip(s), ${nBlocks} pattern block(s), ${nAuto} automation clip(s)`)
         }
         return
       }
@@ -3679,23 +3726,29 @@ export default function TimelineView({
         e.stopPropagation()
 
         const cb = clipboardRef.current
-        if (!cb || (!cb.clips && !cb.patternBlocks)) return
+        if (!cb || (!cb.clips && !cb.patternBlocks && !cb.automationClips)) return
 
         // Read the edit cursor exactly — it may be off-grid after playback or
         // free seeking, and paste should not quantize it back to 1/16.
         const baseTicks = beatsToTicks(Math.max(0, editCursor.getPosition()))
         const focusIdx = visibleTracks.findIndex(t => t.id === focusedTrackIdRef.current)
 
-        const { clipPlacements, blockPlacements, skipped } = resolveTimelinePaste({
+        const { clipPlacements, blockPlacements, automationPlacements, skipped } = resolveTimelinePaste({
           clipboard: cb,
           baseTicks,
           targetTrackIndex: focusIdx >= 0 ? focusIdx : cb.anchorTrackIndex,
           tracks: visibleTracks,
         })
+        // Automation clips snap their landing tick to the current grid, same
+        // as every other automation-lane interaction — unlike the clip/block
+        // paste above, which preserves the edit cursor's exact position.
+        for (const p of automationPlacements) {
+          p.positionTicks = snapTickToGrid(p.positionTicks, {}, snapGranularity)
+        }
 
         // Advance the edit cursor IMMEDIATELY so held/spammed Ctrl+V stacks
         // forward instead of re-pasting onto the same spot.
-        const endTicks = placementsEndTick(baseTicks, clipPlacements, blockPlacements)
+        const endTicks = placementsEndTick(baseTicks, clipPlacements, blockPlacements, automationPlacements)
         handleSeek(endTicks / PPQ)
 
         const xl = window.xleth?.timeline
@@ -3744,9 +3797,46 @@ export default function TimelineView({
             timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
             setSelectedBlockIds(new Set(newBlockIds))
           }
+
+          // Automation clips: the engine REJECTS same-lane overlap outright
+          // (no overwrite semantics like clips/blocks above), so each landing
+          // position is resolved through findFreePosition first. Copies share
+          // the source's envelopeId — no addEnvelope call, per FL semantics.
+          if (automationPlacements.length > 0) {
+            const xlAuto = window.xleth?.automation
+            const laneOccupancy = new Map()
+            const occupancyFor = (laneId) => {
+              if (!laneOccupancy.has(laneId)) {
+                laneOccupancy.set(laneId, automationClips
+                  .filter((c) => c.laneId === laneId)
+                  .map((c) => ({ positionTicks: c.positionTicks, durationTicks: c.durationTicks })))
+              }
+              return laneOccupancy.get(laneId)
+            }
+            const newAutoIds = []
+            for (const p of automationPlacements) {
+              const occupied = occupancyFor(p.laneId)
+              const resolvedPosition = findFreeAutomationLanePosition(occupied, p.positionTicks, p.durationTicks)
+              const id = await xlAuto?.addClip({
+                laneId: p.laneId,
+                envelopeId: p.item.envelopeId,
+                positionTicks: resolvedPosition,
+                durationTicks: p.durationTicks,
+                offsetTicks: p.item.offsetTicks ?? 0,
+              })
+              if (Number.isInteger(id) && id >= 0) {
+                newAutoIds.push(id)
+                occupied.push({ positionTicks: resolvedPosition, durationTicks: p.durationTicks })
+                undoSteps++
+              }
+            }
+            await fetchAutomationClips()
+            timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
+            setSelectedAutomationClipIds(new Set(newAutoIds))
+          }
           console.log(`[Keyboard] Pasted ${clipPlacements.length} clip(s) + `
-            + `${blockPlacements.length} block(s) at ${baseTicks}t `
-            + `(overwrote ${doomedClips.length + doomedBlocks.length}), cursor → ${endTicks}t`)
+            + `${blockPlacements.length} block(s) + ${automationPlacements.length} automation clip(s) `
+            + `at ${baseTicks}t (overwrote ${doomedClips.length + doomedBlocks.length}), cursor → ${endTicks}t`)
         } catch (err) {
           console.error('[Keyboard] Paste failed:', err)
         }
@@ -3777,9 +3867,10 @@ export default function TimelineView({
         e.stopPropagation()
         const srcClips = clipsRef.current.filter(c => selectedClipIds.has(c.id))
         const srcBlocks = patternBlocks.filter(b => selectedBlockIds.has(b.id))
-        if (srcClips.length === 0 && srcBlocks.length === 0) return
+        const srcAutomation = automationClips.filter(c => selectedAutomationClipIds.has(c.id))
+        if (srcClips.length === 0 && srcBlocks.length === 0 && srcAutomation.length === 0) return
 
-        const all = [...srcClips, ...srcBlocks]
+        const all = [...srcClips, ...srcBlocks, ...srcAutomation]
         const spanStart = Math.min(...all.map(i => i.positionTicks))
         const spanEnd = Math.max(...all.map(i => i.positionTicks + i.durationTicks))
         const shift = spanEnd - spanStart
@@ -3815,10 +3906,47 @@ export default function TimelineView({
             timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
             setSelectedBlockIds(new Set(newBlockIds))
           }
+          if (srcAutomation.length > 0) {
+            // Same-lane overlap is engine-rejected, so each duplicate's shifted
+            // landing tick is snapped to grid, then resolved against the lane's
+            // existing clips and any earlier duplicate this same Ctrl+D placed —
+            // exactly the drag-duplicate commit path in handleDuplicateAutomationClips.
+            const xlAuto = window.xleth?.automation
+            const laneOccupancy = new Map()
+            const occupancyFor = (laneId) => {
+              if (!laneOccupancy.has(laneId)) {
+                laneOccupancy.set(laneId, automationClips
+                  .filter((c) => c.laneId === laneId)
+                  .map((c) => ({ positionTicks: c.positionTicks, durationTicks: c.durationTicks })))
+              }
+              return laneOccupancy.get(laneId)
+            }
+            const newAutoIds = []
+            for (const c of srcAutomation) {
+              const occupied = occupancyFor(c.laneId)
+              const desiredPosition = snapTickToGrid(c.positionTicks + shift, {}, snapGranularity)
+              const resolvedPosition = findFreeAutomationLanePosition(occupied, desiredPosition, c.durationTicks)
+              const id = await xlAuto?.addClip({
+                laneId: c.laneId,
+                envelopeId: c.envelopeId,
+                positionTicks: resolvedPosition,
+                durationTicks: c.durationTicks,
+                offsetTicks: c.offsetTicks ?? 0,
+              })
+              if (Number.isInteger(id) && id >= 0) {
+                newAutoIds.push(id)
+                occupied.push({ positionTicks: resolvedPosition, durationTicks: c.durationTicks })
+                steps++
+              }
+            }
+            await fetchAutomationClips()
+            timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
+            setSelectedAutomationClipIds(new Set(newAutoIds))
+          }
           compoundUndoCountRef.current = steps
           handleSeek((spanEnd + shift) / PPQ)
           console.log(`[Keyboard] Duplicated ${srcClips.length} clip(s) + `
-            + `${srcBlocks.length} block(s) by ${shift}t`)
+            + `${srcBlocks.length} block(s) + ${srcAutomation.length} automation clip(s) by ${shift}t`)
         } catch (err) {
           console.error('[Keyboard] Duplicate failed:', err)
         }
@@ -4788,6 +4916,7 @@ export default function TimelineView({
                   onMoveAutomationClip={handleMoveAutomationClip}
                   onResizeAutomationClip={handleResizeAutomationClip}
                   onResizeAutomationClipLeft={handleResizeAutomationClipLeft}
+                  onDuplicateAutomationClips={handleDuplicateAutomationClips}
                   onRequestAutomationClipContextMenu={(clip, x, y) => {
                     setQuickFxMenu(null)
                     setContextMenu({ type: 'automationClip', clipId: clip.id, x, y })

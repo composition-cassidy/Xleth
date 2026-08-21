@@ -88,6 +88,108 @@ describe('buildTimelineClipboard', () => {
   })
 })
 
+describe('buildTimelineClipboard — automation clips', () => {
+  const automationClip = (over) => ({
+    id: 500, laneId: 3, positionTicks: 0, durationTicks: 1920,
+    offsetTicks: 0, envelopeId: 42, ...over,
+  })
+
+  it('anchors an automation-only selection to its own earliest clip', () => {
+    const cb = buildTimelineClipboard({
+      automationClips: [automationClip({ positionTicks: 480 })],
+      tracks: TRACKS,
+    })
+    expect(cb.clips).toBeNull()
+    expect(cb.patternBlocks).toBeNull()
+    expect(cb.automationClips).toHaveLength(1)
+    expect(cb.automationClips[0].relativePosition).toBe(0)
+    expect(cb.automationClips[0].laneId).toBe(3)
+    expect(cb.automationClips[0].envelopeId).toBe(42)
+    expect(cb.automationClips[0].offsetTicks).toBe(0)
+  })
+
+  it('shares ONE anchor across clips, blocks, and automation clips together', () => {
+    const cb = buildTimelineClipboard({
+      clips: [clip({ positionTicks: 960 })],
+      automationClips: [automationClip({ positionTicks: 1920 })],
+      tracks: TRACKS,
+    })
+    // Automation clip starts 960t after the clip — anchoring separately
+    // would zero both relativePositions and lose that gap.
+    expect(cb.clips[0].relativePosition).toBe(0)
+    expect(cb.automationClips[0].relativePosition).toBe(960)
+  })
+
+  it('does not require a track anchor when only automation clips are selected', () => {
+    // anchorTrackIndex must not be Infinity (Math.min over an empty array)
+    // when there are no clips/blocks to derive a track anchor from.
+    const cb = buildTimelineClipboard({
+      automationClips: [automationClip()],
+      tracks: TRACKS,
+    })
+    expect(cb.anchorTrackIndex).toBe(0)
+  })
+
+  it('carries envelopeId and offsetTicks through untouched (copies share the envelope)', () => {
+    const cb = buildTimelineClipboard({
+      automationClips: [automationClip({ envelopeId: 7, offsetTicks: 240 })],
+      tracks: TRACKS,
+    })
+    expect(cb.automationClips[0]).toMatchObject({ envelopeId: 7, offsetTicks: 240 })
+  })
+
+  it('returns null automationClips when none are selected', () => {
+    const cb = buildTimelineClipboard({
+      clips: [clip()],
+      tracks: TRACKS,
+    })
+    expect(cb.automationClips).toBeNull()
+  })
+})
+
+describe('resolveTimelinePaste — automation clips', () => {
+  const automationClip = (over) => ({
+    id: 500, laneId: 3, positionTicks: 480, durationTicks: 1920,
+    offsetTicks: 0, envelopeId: 42, ...over,
+  })
+
+  it('re-anchors at baseTicks, staying on the SAME lane (no cross-lane retargeting)', () => {
+    const cb = buildTimelineClipboard({
+      automationClips: [automationClip({ positionTicks: 480 })],
+      tracks: TRACKS,
+    })
+    const { automationPlacements } = resolveTimelinePaste({
+      clipboard: cb, baseTicks: 3840, targetTrackIndex: 0, tracks: TRACKS,
+    })
+    expect(automationPlacements).toHaveLength(1)
+    expect(automationPlacements[0].positionTicks).toBe(3840)
+    expect(automationPlacements[0].laneId).toBe(3)
+    expect(automationPlacements[0].item.envelopeId).toBe(42)
+  })
+
+  it('preserves internal spacing between two automation clips on paste', () => {
+    const cb = buildTimelineClipboard({
+      automationClips: [
+        automationClip({ id: 1, laneId: 3, positionTicks: 0 }),
+        automationClip({ id: 2, laneId: 3, positionTicks: 960 }),
+      ],
+      tracks: TRACKS,
+    })
+    const { automationPlacements } = resolveTimelinePaste({
+      clipboard: cb, baseTicks: 5000, targetTrackIndex: 0, tracks: TRACKS,
+    })
+    expect(automationPlacements.map(p => p.positionTicks)).toEqual([5000, 5960])
+  })
+
+  it('is empty when the clipboard has no automation clips', () => {
+    const cb = buildTimelineClipboard({ clips: [clip()], tracks: TRACKS })
+    const { automationPlacements } = resolveTimelinePaste({
+      clipboard: cb, baseTicks: 0, targetTrackIndex: 0, tracks: TRACKS,
+    })
+    expect(automationPlacements).toEqual([])
+  })
+})
+
 describe('resolveTimelinePaste', () => {
   it('re-anchors the group at the focused track without deforming it', () => {
     const cb = buildTimelineClipboard({
