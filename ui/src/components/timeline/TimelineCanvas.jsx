@@ -73,6 +73,9 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     selectedAutomationClipIds, setSelectedAutomationClipIds,
     onMoveAutomationClip, onResizeAutomationClip, onResizeAutomationClipLeft,
     onRequestAutomationClipContextMenu,
+    // Automation point editing (Phase C)
+    selectedAutomationPoint, setSelectedAutomationPoint,
+    onAddAutomationPoint, onRemoveAutomationPoint, onMoveAutomationPoint,
   },
   ref
 ) {
@@ -106,6 +109,11 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   const selectedAutomationClipIdsRef = useRef(selectedAutomationClipIds)
   const automationEnvelopesByIdRef = useRef(automationEnvelopesById)
   const automationBindingLabelsByIdRef = useRef(automationBindingLabelsById)
+  const selectedAutomationPointRef = useRef(selectedAutomationPoint)
+  // Live point-drag preview, written by the select tool on every drag frame and
+  // read by the content draw. A ref (not state) on purpose: a drag must repaint
+  // the canvas without re-rendering React, and nothing outside the canvas cares.
+  const automationPointDragRef = useRef(null)
 
   // FXG.4-h-r1: hold the derived row layout in a ref so the canvas hot draw
   // path + tools read the current track/lane geometry without re-creating tools.
@@ -145,6 +153,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   selectedAutomationClipIdsRef.current = selectedAutomationClipIds
   automationEnvelopesByIdRef.current = automationEnvelopesById
   automationBindingLabelsByIdRef.current = automationBindingLabelsById
+  selectedAutomationPointRef.current = selectedAutomationPoint
 
   // ── Tool instance ref ────────────────────────────────────────────────────
   const toolRef = useRef(null)
@@ -269,7 +278,8 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
         ctx, w, h,
         scrollOffsetRef.current, pixelsPerBeatRef.current,
         automationClipsRef.current, laneRowsByLaneId, automationEnvelopesByIdRef.current,
-        selectedAutomationClipIdsRef.current, palette, automationBindingLabelsByIdRef.current
+        selectedAutomationClipIdsRef.current, palette, automationBindingLabelsByIdRef.current,
+        selectedAutomationPointRef.current, automationPointDragRef.current
       )
     }
     if (ghostClipsRef.current?.length) {
@@ -404,6 +414,10 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       automationClipsRef, selectedAutomationClipIdsRef, setSelectedAutomationClipIds,
       onMoveAutomationClip, onResizeAutomationClip, onResizeAutomationClipLeft,
       onRequestAutomationClipContextMenu,
+      // Automation point editing deps (Phase C)
+      automationEnvelopesByIdRef, setSelectedAutomationPoint,
+      onAddAutomationPoint, onRemoveAutomationPoint, onMoveAutomationPoint,
+      automationPointDragRef,
     }
 
     const factories = {
@@ -735,6 +749,14 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   const handleDoubleClick = useCallback((e) => {
     const pos = getLocalXY(e)
     if (!pos) return
+    // Automation lanes claim the double-click first (add an envelope point);
+    // the tool returns true when the Y landed on an automation lane row, which
+    // has no track index for the clip/pattern paths below to use anyway.
+    if (toolRef.current?.onDoubleClick?.(pos.localX, pos.localY, e)) {
+      e.preventDefault()
+      e.stopPropagation()
+      return
+    }
     if (activeTool !== 'pencil') {
       const hit = clipControlHandlersRef.current.hitTest?.(pos.localX, pos.localY)
       if (hit) {

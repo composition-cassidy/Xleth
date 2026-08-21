@@ -332,11 +332,13 @@ export async function handleXlethRootMenuAction(label, {
       await xl.undo.undo()
       timelineEvents.dispatchEvent(new Event('timeline-tracks-changed'))
       timelineEvents.dispatchEvent(new Event('timeline-track-layout-changed'))
+      timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
       break
     case 'Redo':
       await xl.undo.redo()
       timelineEvents.dispatchEvent(new Event('timeline-tracks-changed'))
       timelineEvents.dispatchEvent(new Event('timeline-track-layout-changed'))
+      timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
       break
     case 'Delete':
       await runEditorCommand('deleteSelected')

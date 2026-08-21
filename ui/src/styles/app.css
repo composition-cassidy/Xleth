@@ -8732,6 +8732,60 @@ html.fx-drag-active * {
   color: var(--theme-text);
 }
 
+/* Automation deletion contract dialog (Phase C) — lists the clips an effect or
+   track removal will take with it. Tokens only; the danger colour is already
+   carried by .confirm-dialog-btn.danger, so nothing here earns an accent. */
+.automation-delete-dialog {
+  max-width: 560px;
+}
+
+.automation-delete-lead {
+  margin: 0 0 10px 0;
+}
+
+.automation-delete-list {
+  list-style: none;
+  margin: 0 0 10px 0;
+  padding: 0;
+  max-height: 220px;
+  overflow-y: auto;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm, 4px);
+  background: var(--theme-bg-secondary);
+}
+
+.automation-delete-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 5px 9px;
+  border-bottom: 1px solid var(--theme-border-subtle);
+  font-size: 12px;
+}
+
+.automation-delete-item:last-child {
+  border-bottom: none;
+}
+
+.automation-delete-item-param {
+  color: var(--theme-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.automation-delete-item-pos {
+  color: var(--theme-text-muted);
+  flex: 0 0 auto;
+  font-variant-numeric: tabular-nums;
+}
+
+.automation-delete-note {
+  margin: 0;
+  font-size: 12px;
+  color: var(--theme-text-muted);
+}
+
 .confirm-dialog-body {
   color: var(--theme-text-muted);
   line-height: 1.5;
@@ -19857,6 +19911,25 @@ html, body, #root {
 
 .pluginui-knob--xleth-default {
   opacity: 1;
+}
+
+/* Automated knob (Phase C): a clip owns this parameter at the playhead, so the
+   knob is a readout, not a control. Colour is earned by the state change — the
+   accent ring says "an automation clip is driving this right now" — and the
+   not-allowed cursor says the drag will not do anything. Tokens only. */
+.pluginui-knob--automated {
+  position: relative;
+  cursor: not-allowed;
+}
+
+.pluginui-knob--automated::after {
+  content: '';
+  position: absolute;
+  inset: -3px;
+  border-radius: 50%;
+  border: 1px solid var(--theme-border-focus);
+  opacity: 0.75;
+  pointer-events: none;
 }
 
 .pluginui-knob--studio-ring {

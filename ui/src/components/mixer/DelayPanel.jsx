@@ -219,7 +219,7 @@ function DelayMixSlider({ value, onPreview, onCommit }) {
 // dropdown writes). Both controls address the same engine parameter, so they
 // can never disagree.
 
-function DelayTimeCell({ side, synced, divIndex, timeMs, bpm, locked = false, onModeChange, onPreview, onCommit }) {
+function DelayTimeCell({ side, synced, divIndex, timeMs, bpm, locked = false, onModeChange, onPreview, onCommit, automationTarget = null }) {
   const timeParam = side === 'L' ? 'time_l' : 'time_r'
   const divParam  = side === 'L' ? 'sync_div_l' : 'sync_div_r'
   const nf = indexToNoteFeel(divIndex)
@@ -273,6 +273,8 @@ function DelayTimeCell({ side, synced, divIndex, timeMs, bpm, locked = false, on
           dragRange={180}
           skew={knob.skew}
           appearance={MIXER_RING_APPEARANCE}
+          paramId={knob.param}
+          automationTarget={automationTarget}
         />
       </div>
 
@@ -531,6 +533,7 @@ export default function DelayPanel() {
               onModeChange={handleModeChange}
               onPreview={previewParam}
               onCommit={commitParam}
+              automationTarget={target}
             />
             <DelayTimeCell
               side="R"
@@ -542,6 +545,7 @@ export default function DelayPanel() {
               onModeChange={handleModeChange}
               onPreview={previewParam}
               onCommit={commitParam}
+              automationTarget={target}
             />
           </div>
           <div className="delay-strip-stereo-mode">
@@ -569,6 +573,8 @@ export default function DelayPanel() {
                   dragRange={150}
                   skew={k.skew ?? 1}
                   appearance={MIXER_RING_APPEARANCE}
+                  paramId={k.id}
+                  automationTarget={target}
                 />
                 {/* The mixer-ring preset hides its own readout (and would draw an
                     accent dot beside it); the value is rendered here instead so
@@ -594,6 +600,8 @@ export default function DelayPanel() {
                   dragRange={150}
                   skew={k.skew ?? 1}
                   appearance={MIXER_RING_APPEARANCE}
+                  paramId={k.id}
+                  automationTarget={target}
                 />
                 <div className="delay-knob-value">{k.fmt(params[k.id])}</div>
               </div>

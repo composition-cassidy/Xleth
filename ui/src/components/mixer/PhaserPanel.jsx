@@ -282,6 +282,8 @@ export default function PhaserPanel() {
                   size={72}
                   dragRange={150}
                   appearance={MIXER_RING_APPEARANCE}
+                  paramId={k.id}
+                  automationTarget={target}
                 />
                 {/* The mixer-ring preset hides its own readout; render it here
                     so every control is legible without a drag. */}
@@ -305,6 +307,8 @@ export default function PhaserPanel() {
                   size={52}
                   dragRange={150}
                   appearance={MIXER_RING_APPEARANCE}
+                  paramId={k.id}
+                  automationTarget={target}
                 />
                 <div className="phaser-knob-value">{k.fmt(params[k.id])}</div>
               </div>

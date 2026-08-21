@@ -279,6 +279,8 @@ export default function FlangerPanel() {
                 size={72}
                 dragRange={150}
                 appearance={MIXER_RING_APPEARANCE}
+                paramId={k.id}
+                automationTarget={target}
               />
               {/* The mixer-ring preset hides its own readout (and would draw an
                   accent dot beside it); the value is rendered here instead so
@@ -303,6 +305,8 @@ export default function FlangerPanel() {
                 size={52}
                 dragRange={150}
                 appearance={MIXER_RING_APPEARANCE}
+                paramId={k.id}
+                automationTarget={target}
               />
               <div className="flanger-knob-value">{k.fmt(params[k.id])}</div>
             </div>

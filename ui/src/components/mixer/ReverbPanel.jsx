@@ -319,6 +319,8 @@ export default function ReverbPanel() {
         size={size}
         dragRange={size >= 72 ? 180 : 150}
         appearance={MIXER_RING_APPEARANCE}
+        paramId={k.id}
+        automationTarget={target}
       />
       {/* The mixer-ring preset hides its own readout (and would draw an accent
           dot beside it); the value is rendered here instead so every control on

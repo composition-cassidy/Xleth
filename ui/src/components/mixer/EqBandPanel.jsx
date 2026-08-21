@@ -12,6 +12,7 @@ import { Power, X, Copy, Trash2 } from 'lucide-react'
 import { BAND_TYPES, BAND_MODES, CHANNEL_MODES, CHANNEL_META } from '../../stores/eqStore.js'
 import { SVG_W, SVG_H, FREQ_MIN, FREQ_MAX, freqToX, dbToY_response, formatFreqValue, formatGainValue } from './eqGeometry.js'
 import PluginUIKitKnob from '../../plugin-ui/runtime/components/PluginUIKitKnob.jsx'
+import useEqStore from '../../stores/eqStore.js'
 import SelectedBandInspector from './SelectedBandInspector.jsx'
 import XlethSelect from '../common/XlethSelect.jsx'
 
@@ -22,7 +23,7 @@ const Q_SKEW = 0.18
 const fmtQ = (v) => v.toFixed(2)
 
 // Knob + printed value below it, matching FilterPanel's FilterKnob convention.
-function EqBandKnob({ value, min, max, def, skew, label, fmt, onChange }) {
+function EqBandKnob({ value, min, max, def, skew, label, fmt, onChange, paramId = null, automationTarget = null }) {
   return (
     <div className="eqbp-knob-cell">
       <PluginUIKitKnob
@@ -30,6 +31,7 @@ function EqBandKnob({ value, min, max, def, skew, label, fmt, onChange }) {
         label={label} formatValue={fmt} appearance={MIXER_RING_APPEARANCE}
         size={40} dragRange={160}
         onLiveChange={onChange} onCommit={onChange}
+        paramId={paramId} automationTarget={automationTarget}
       />
       <div className="eqbp-knob-value">{fmt(value)}</div>
     </div>
@@ -46,6 +48,12 @@ export default function EqBandPanel({
   onClose,
 }) {
   const panelRef = useRef(null)
+  // EQ band parameters are APVTS-prefixed per band ("b<index>_<name>", see
+  // XlethEQEffect::createLayout) — that prefixed id IS the automation binding's
+  // parameterId, even though the panel writes them through the eqSetBandParam
+  // RPC rather than the generic setEffectParameter path.
+  const eqTarget = useEqStore(s => s.target)
+  const bandParamId = (name) => `b${bandIndex}_${name}`
   const [confirmDelete, setConfirmDelete] = useState(false)
   const confirmTimerRef = useRef(null)
   const colorVar = `--xleth-eq-ch-${band.channel || 'stereo'}`
@@ -126,16 +134,19 @@ export default function EqBandPanel({
         <EqBandKnob
           value={band.freq} min={FREQ_MIN} max={FREQ_MAX} def={1000} skew={FREQ_SKEW}
           label="FREQ" fmt={formatFreqValue}
+          paramId={bandParamId('freq')} automationTarget={eqTarget}
           onChange={(v) => setBandParam(bandIndex, 'freq', Math.round(v * 10) / 10)}
         />
         <EqBandKnob
           value={band.gain} min={-30} max={30} def={0}
           label="GAIN" fmt={formatGainValue}
+          paramId={bandParamId('gain')} automationTarget={eqTarget}
           onChange={(v) => setBandParam(bandIndex, 'gain', Math.round(v * 10) / 10)}
         />
         <EqBandKnob
           value={band.q} min={0.1} max={30} def={0.707} skew={Q_SKEW}
           label="Q" fmt={fmtQ}
+          paramId={bandParamId('q')} automationTarget={eqTarget}
           onChange={(v) => setBandParam(bandIndex, 'q', Math.round(v * 100) / 100)}
         />
       </div>

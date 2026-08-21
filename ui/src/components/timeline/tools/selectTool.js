@@ -1,5 +1,5 @@
 import {
-  TRACK_HEIGHT, PPQ, pixelToBeat, beatToPixel, snapBeatToGrid, beatsToTicks,
+  TRACK_HEIGHT, PPQ, pixelToBeat, beatToPixel, snapBeatToGrid, snapTickToGrid, beatsToTicks,
   MIN_DURATION_TICKS_FREE,
 } from '../../../constants/timeline.js'
 import { labelHexColor } from '../../../constants/labels.js'
@@ -14,8 +14,12 @@ import {
 import {
   AUTOMATION_MIN_DURATION_TICKS,
   AUTOMATION_RESIZE_HIT_WIDTH_PX,
+  automationClipBodyRect,
+  canvasPosToEnvelopePoint,
+  hitTestAutomationPoint,
   isOnAutomationClipLeftEdge,
   isOnAutomationClipRightEdge,
+  sortedEnvelopePoints,
 } from '../automationLaneGeometry.js'
 
 const HANDLE_W = 6   // Resize handle hit-test width (slightly wider than visual 4px)
@@ -51,6 +55,14 @@ export function createSelectTool(deps) {
     automationClipsRef, selectedAutomationClipIdsRef, setSelectedAutomationClipIds,
     onMoveAutomationClip, onResizeAutomationClip, onResizeAutomationClipLeft,
     onRequestAutomationClipContextMenu,
+    // Automation POINT editing deps (Phase C). The envelope map is read-only
+    // here; every mutation leaves through one of the three callbacks, and
+    // `automationPointDragRef` is the local drag preview the canvas draws —
+    // no IPC runs between mousedown and mouseup.
+    automationEnvelopesByIdRef, setSelectedAutomationPoint,
+    onAddAutomationPoint, onRemoveAutomationPoint, onMoveAutomationPoint,
+    automationPointDragRef,
+    redrawContent,
   } = deps
 
   // Resolve a Y coordinate to a track index (lane bands map to their parent
@@ -110,6 +122,12 @@ export function createSelectTool(deps) {
   let dragAutomationClipOrigLaneId = null
   let dragAutomationClipOwnerTrackId = null
   let dragSelectedAutomationClips = [] // [{ clip, origPosition, origLaneId }]
+  // Automation point drag state (Phase C). `previewTick/previewValue` are the
+  // LOCAL values the canvas paints each frame; they reach the engine exactly
+  // once, on mouseup, as a single undo step.
+  let dragAutomationPoint = null // { envelopeId, pointIndex, clip, laneRow, origTick, origValue }
+  let dragAutomationPointPreviewTick = 0
+  let dragAutomationPointPreviewValue = 0
   let pendingHit = null  // { clip?, block?, automationClip?, empty?, isRightEdge, isLeftEdge, e }
   // Multi-select drag state
   let dragSelectedClips = []   // [{ clip, origBeat, origTrackIdx }]
@@ -121,6 +139,43 @@ export function createSelectTool(deps) {
   // for track-header range selection (see updateTrackSelection).
   let selectionAnchor = null  // { trackIndex, startTicks, endTicks }
 
+  // Drops the automation point drag preview and repaints the content layer so
+  // the curve snaps back to whatever the engine actually holds. Called on
+  // commit, on cancel, and on tool teardown — the preview must never outlive
+  // the gesture that created it.
+  function clearAutomationPointPreview({ repaint = true } = {}) {
+    if (automationPointDragRef) automationPointDragRef.current = null
+    dragAutomationPoint = null
+    if (repaint) redrawContent?.('automation-point-drag-end')
+  }
+
+  // Recomputes the dragged point's { tick, value } from the pointer and
+  // publishes it to the shared preview ref, then repaints the content layer.
+  // Vertical travel is never snapped (a value is continuous); horizontal
+  // travel follows the same grid snap and Alt-to-free modifier as every other
+  // timeline drag, so a point lands on the beat the ruler shows.
+  function updateAutomationPointPreview(localX, localY) {
+    const d = dragAutomationPoint
+    if (!d) return
+    const next = canvasPosToEnvelopePoint(
+      localX, localY, d.clip, d.laneRow,
+      pixelsPerBeatRef.current, scrollOffsetRef.current,
+      (timelineTick) => snapTickToGrid(timelineTick, lastModifiers, snapGranularityRef?.current),
+    )
+    if (!next) return
+    dragAutomationPointPreviewTick = next.tick
+    dragAutomationPointPreviewValue = next.value
+    if (automationPointDragRef) {
+      automationPointDragRef.current = {
+        envelopeId: d.envelopeId,
+        pointIndex: d.pointIndex,
+        tick: next.tick,
+        value: next.value,
+      }
+    }
+    redrawContent?.('automation-point-drag')
+  }
+
   function resetDragState({ cancelled = false } = {}) {
     dragCancelled = cancelled
     dragMode = null
@@ -129,6 +184,7 @@ export function createSelectTool(deps) {
     dragClip = null
     dragBlock = null
     dragAutomationClip = null
+    clearAutomationPointPreview()
     dragSelectedClips = []
     dragSelectedBlocks = []
     dragSelectedAutomationClips = []
@@ -276,6 +332,33 @@ export function createSelectTool(deps) {
     return null
   }
 
+  // Points of the envelope a clip references, sorted — the exact list the
+  // engine's point commands index into.
+  function envelopePointsForClip(clip) {
+    const env = automationEnvelopesByIdRef?.current?.get(clip.envelopeId)
+    return { envelope: env ?? null, points: sortedEnvelopePoints(env?.points) }
+  }
+
+  // Hit-test a rendered envelope point under the cursor, across every clip on
+  // the lane (a lane can hold several clips; only the one under the pointer can
+  // match, but the loop keeps the caller from having to resolve it first).
+  function hitTestPointOnLane(laneRow, localX, localY) {
+    const clips = automationClipsRef?.current
+    if (!clips || !laneRow) return null
+    for (let i = 0; i < clips.length; i++) {
+      const clip = clips[i]
+      if (clip.laneId !== laneRow.laneId) continue
+      const body = automationClipBodyRect(clip, laneRow, pixelsPerBeatRef.current, scrollOffsetRef.current)
+      if (!body || localX < body.x - 8 || localX > body.x + body.w + 8) continue
+      const { envelope, points } = envelopePointsForClip(clip)
+      if (!envelope) continue
+      const hit = hitTestAutomationPoint(points, clip, laneRow, localX, localY,
+                                         pixelsPerBeatRef.current, scrollOffsetRef.current)
+      if (hit) return { ...hit, clip, laneRow, envelope, points }
+    }
+    return null
+  }
+
   function isOnRightEdgeOf(localX, startTicks, durTicks) {
     const ppb = pixelsPerBeatRef.current
     const scrollOffset = scrollOffsetRef.current
@@ -388,6 +471,28 @@ export function createSelectTool(deps) {
       const automationLaneRow = trackLayoutRef?.current?.automationLaneRowAtY?.(localY)
       if (automationLaneRow) {
         const tick = beatsToTicks(beat)
+        // Points win over the clip body: grabbing a point must never start a
+        // clip move. The hit radius is in screen pixels, so this stays usable
+        // at every zoom level without the clip drag becoming unreachable —
+        // anywhere more than a few pixels from a point still moves the clip.
+        const hitPoint = hitTestPointOnLane(automationLaneRow, localX, localY)
+        if (hitPoint) {
+          pendingHit = { automationPoint: hitPoint, laneRow: automationLaneRow, e }
+          dragKind = 'automationPoint'
+          dragAutomationPoint = {
+            envelopeId: hitPoint.envelope.id,
+            pointIndex: hitPoint.index,
+            clip: hitPoint.clip,
+            laneRow: automationLaneRow,
+            origTick: hitPoint.point.tick,
+            origValue: hitPoint.point.value,
+          }
+          dragAutomationPointPreviewTick = hitPoint.point.tick
+          dragAutomationPointPreviewValue = hitPoint.point.value
+          setSelectedAutomationPoint?.({ envelopeId: hitPoint.envelope.id, pointIndex: hitPoint.index })
+          dragMode = 'pending'
+          return
+        }
         const hitAutoClip = hitTestAutomationClip(tick, automationLaneRow.laneId)
         if (hitAutoClip) {
           const canResizeEdge = allowUnselectedEdgeResize || selectedAutomationClipIdsRef?.current?.has(hitAutoClip.id)
@@ -416,6 +521,7 @@ export function createSelectTool(deps) {
         dragKind = null
         dragMode = 'pending'
         pendingHit = { emptyAutomation: true, laneRow: automationLaneRow, e }
+        setSelectedAutomationPoint?.(null)
         return
       }
 
@@ -542,10 +648,26 @@ export function createSelectTool(deps) {
       dragCurrentX = localX
       dragCurrentY = localY
 
+      // ── Automation point drag ────────────────────────────────────────────
+      // Local preview only. The engine hears about this exactly once, on
+      // mouseup, as a single AutomationPointEditCommand — the locked spec
+      // forbids IPC between mousedown and mouseup.
+      if (dragMode === 'automation-point' && dragAutomationPoint) {
+        updateAutomationPointPreview(localX, localY)
+        return
+      }
+
       if (dragMode === 'pending') {
         const dx = Math.abs(localX - dragOriginX)
         const dy = Math.abs(localY - dragOriginY)
         if (dx < DRAG_THRESHOLD && dy < DRAG_THRESHOLD) return
+
+        if (pendingHit?.automationPoint) {
+          dragMode = 'automation-point'
+          setDragClass('dragging')
+          updateAutomationPointPreview(localX, localY)
+          return
+        }
 
         if (pendingHit?.automationClip) {
           const clip = pendingHit.automationClip
@@ -697,8 +819,36 @@ export function createSelectTool(deps) {
         dragCancelled = false
         return
       }
+      // ── Automation point: single commit on mouseup ───────────────────────
+      if (dragMode === 'automation-point' && dragAutomationPoint) {
+        const d = dragAutomationPoint
+        const moved = dragAutomationPointPreviewTick !== d.origTick
+                   || dragAutomationPointPreviewValue !== d.origValue
+        const tick = dragAutomationPointPreviewTick
+        const value = dragAutomationPointPreviewValue
+        // Drop the preview BEFORE the commit so the repaint that follows the
+        // engine round trip reads real state, never a stale ghost.
+        clearAutomationPointPreview({ repaint: false })
+        if (moved) {
+          onMoveAutomationPoint?.(d.envelopeId, d.pointIndex, tick, value)
+          console.log(`[SelectTool] Moved automation point ${d.pointIndex} of envelope ${d.envelopeId} → tick=${tick} value=${value.toFixed(4)}`)
+        } else {
+          redrawContent?.('automation-point-drag-end')
+        }
+        dragMode = null
+        dragKind = null
+        pendingHit = null
+        setDragClass(null)
+        redrawOverlay()
+        return
+      }
+
       if (dragMode === 'pending' || !dragMode) {
-        if (pendingHit?.automationClip) {
+        if (pendingHit?.automationPoint) {
+          // A click without travel: the point is already selected (mousedown
+          // did it) — nothing to commit.
+          clearAutomationPointPreview({ repaint: false })
+        } else if (pendingHit?.automationClip) {
           const clip = pendingHit.automationClip
           const origE = pendingHit.e
           if (origE.ctrlKey || origE.metaKey) {
@@ -1059,11 +1209,56 @@ export function createSelectTool(deps) {
       redrawOverlay()
     },
 
+    // Double-click inside an automation clip body adds a point at the clicked
+    // position. Returns true when it handled the event so TimelineCanvas can
+    // stop before its clip/pattern-block double-click behaviour runs.
+    onDoubleClick(localX, localY, e) {
+      const laneRow = trackLayoutRef?.current?.automationLaneRowAtY?.(localY)
+      if (!laneRow) return false
+      // Double-clicking an existing point is not an add — it would stack a
+      // second point on the same tick and the engine would replace the first.
+      if (hitTestPointOnLane(laneRow, localX, localY)) return true
+
+      const clips = automationClipsRef?.current ?? []
+      const modifiers = { alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey }
+      for (let i = 0; i < clips.length; i++) {
+        const clip = clips[i]
+        if (clip.laneId !== laneRow.laneId) continue
+        const body = automationClipBodyRect(clip, laneRow, pixelsPerBeatRef.current, scrollOffsetRef.current)
+        if (!body) continue
+        if (localX < body.x || localX > body.x + body.w) continue
+        if (localY < body.y || localY > body.y + body.h) continue
+        const { envelope } = envelopePointsForClip(clip)
+        if (!envelope) return true
+        const next = canvasPosToEnvelopePoint(
+          localX, localY, clip, laneRow,
+          pixelsPerBeatRef.current, scrollOffsetRef.current,
+          (timelineTick) => snapTickToGrid(timelineTick, modifiers, snapGranularityRef?.current),
+        )
+        if (!next) return true
+        onAddAutomationPoint?.(envelope.id, next.tick, next.value)
+        console.log(`[SelectTool] Added automation point to envelope ${envelope.id} → tick=${next.tick} value=${next.value.toFixed(4)}`)
+        return true
+      }
+      // Inside the lane but outside every clip — swallow it anyway so the
+      // track-index-based double-click paths below never fire on a lane row.
+      return true
+    },
+
     onContextMenu(localX, localY, e) {
       e.preventDefault()
       const beat = pixelToBeat(localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
       const automationLaneRow = trackLayoutRef?.current?.automationLaneRowAtY?.(localY)
       if (automationLaneRow) {
+        // Right-click ON a point deletes it (FL parity) — the clip's own menu
+        // only opens when the click misses every point.
+        const hitPoint = hitTestPointOnLane(automationLaneRow, localX, localY)
+        if (hitPoint) {
+          setSelectedAutomationPoint?.(null)
+          onRemoveAutomationPoint?.(hitPoint.envelope.id, hitPoint.index)
+          console.log(`[SelectTool] Removed automation point ${hitPoint.index} of envelope ${hitPoint.envelope.id}`)
+          return
+        }
         const hitAutoClip = hitTestAutomationClip(beatsToTicks(beat), automationLaneRow.laneId)
         if (hitAutoClip && onRequestAutomationClipContextMenu) {
           if (!selectedAutomationClipIdsRef?.current?.has(hitAutoClip.id)) {
@@ -1355,6 +1550,7 @@ export function createSelectTool(deps) {
       dragClip = null
       dragBlock = null
       dragAutomationClip = null
+      clearAutomationPointPreview({ repaint: false })
       dragSelectedClips = []
       dragSelectedBlocks = []
       dragSelectedAutomationClips = []

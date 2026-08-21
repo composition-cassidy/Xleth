@@ -784,6 +784,9 @@ export default function TimelineView({
   const [automationClips, setAutomationClips] = useState([])
   const [automationEnvelopes, setAutomationEnvelopes] = useState([])
   const [selectedAutomationClipIds, setSelectedAutomationClipIds] = useState(new Set())
+  // Phase C — the envelope point the user last clicked, so Delete can remove it
+  // and the canvas can draw it as the active one. { envelopeId, pointIndex }.
+  const [selectedAutomationPoint, setSelectedAutomationPoint] = useState(null)
   const [collapsedAutomationGroups, setCollapsedAutomationGroups] = useState(new Set())
   const [automationBindingLabels, setAutomationBindingLabels] = useState({}) // { [envelopeId]: label }
   const bindingLabelFetchRef = useRef(new Set()) // envelopeIds already requested
@@ -797,14 +800,22 @@ export default function TimelineView({
   // Groups automation lanes by owner (-1 = Master) for the row-layout builder.
   // A group only renders once it has at least one lane.
   const automationGroups = useMemo(() => {
+    // A lane holds clips for exactly one parameter (the knob entry point makes
+    // one lane per binding), so the first clip on the lane names the lane.
+    const labelByLaneId = new Map()
+    for (const clip of automationClips) {
+      if (labelByLaneId.has(clip.laneId)) continue
+      const label = automationBindingLabels[clip.envelopeId]
+      if (label) labelByLaneId.set(clip.laneId, label)
+    }
     const groups = {}
     for (const lane of automationLanes) {
       const key = String(lane.ownerTrackId)
       if (!groups[key]) groups[key] = { collapsed: collapsedAutomationGroups.has(lane.ownerTrackId), lanes: [] }
-      groups[key].lanes.push({ id: lane.id, index: lane.index })
+      groups[key].lanes.push({ id: lane.id, index: lane.index, label: labelByLaneId.get(lane.id) ?? null })
     }
     return groups
-  }, [automationLanes, collapsedAutomationGroups])
+  }, [automationLanes, automationClips, automationBindingLabels, collapsedAutomationGroups])
 
   const automationBindingLabelsById = useMemo(() => {
     const map = new Map()
@@ -835,7 +846,12 @@ export default function TimelineView({
         const { ownerTrackId, effectInstanceId, parameterId } = env.binding
         try {
           if (!chainCache.has(ownerTrackId)) {
-            const raw = await window.xleth?.audio?.getEffectChain?.(ownerTrackId)
+            // The engine keeps the Master chain in its own member, so
+            // audio_getEffectChain(-1) returns [] — Master must be read
+            // through audio_getMasterEffectChain instead.
+            const raw = ownerTrackId === -1
+              ? await window.xleth?.audio?.getMasterEffectChain?.()
+              : await window.xleth?.audio?.getEffectChain?.(ownerTrackId)
             chainCache.set(ownerTrackId, raw ? JSON.parse(raw) : [])
           }
           const chain = chainCache.get(ownerTrackId) ?? []
@@ -1359,6 +1375,24 @@ export default function TimelineView({
     const onPatternBlocksChanged = () => { fetchPatternBlocks() }
     const onPatternChanged = () => { fetchPatterns() }
     const onAutomationChanged = () => { fetchAutomationAll() }
+    // "Create automation clip" on a mixer knob asks the timeline to REVEAL the
+    // lane it just wrote to: expand the owning group (or the pinned Master
+    // group) if it was collapsed, refresh, and select the new clip so the user
+    // lands on something they can immediately edit.
+    const onAutomationReveal = (e) => {
+      const { ownerTrackId, clipId } = e.detail || {}
+      if (ownerTrackId != null) {
+        setCollapsedAutomationGroups((prev) => {
+          if (!prev.has(ownerTrackId)) return prev
+          const next = new Set(prev)
+          next.delete(ownerTrackId)
+          return next
+        })
+      }
+      fetchAutomationAll().then(() => {
+        if (Number.isInteger(clipId) && clipId >= 0) setSelectedAutomationClipIds(new Set([clipId]))
+      })
+    }
     const onTracksChanged = (e) => {
       const { trackId, patch } = e.detail || {}
       if (trackId != null && patch && typeof patch === 'object') {
@@ -1380,6 +1414,7 @@ export default function TimelineView({
     timelineEvents.addEventListener('timeline-pattern-blocks-changed', onPatternBlocksChanged)
     timelineEvents.addEventListener('timeline-pattern-changed', onPatternChanged)
     timelineEvents.addEventListener('timeline-automation-changed', onAutomationChanged)
+    timelineEvents.addEventListener('timeline-automation-reveal', onAutomationReveal)
     const offProjectLoaded = window.xleth?.onProjectLoaded?.(() => {
       loadedRegionAudioRef.current.clear()
       fetchTracks(); fetchClips(); fetchRegions(); fetchSources(); fetchPatterns(); fetchPatternBlocks()
@@ -1394,6 +1429,7 @@ export default function TimelineView({
       timelineEvents.removeEventListener('timeline-pattern-blocks-changed', onPatternBlocksChanged)
       timelineEvents.removeEventListener('timeline-pattern-changed', onPatternChanged)
       timelineEvents.removeEventListener('timeline-automation-changed', onAutomationChanged)
+      timelineEvents.removeEventListener('timeline-automation-reveal', onAutomationReveal)
       offProjectLoaded?.()
     }
   }, [fetchTracks, fetchClips, fetchRegions, fetchSources, fetchPatterns, fetchPatternBlocks, fetchAutomationAll])
@@ -1974,7 +2010,7 @@ export default function TimelineView({
 
   useEffect(() => {
     canvasRef.current?.redrawContent('automation-clips')
-  }, [automationClips, automationEnvelopes, automationBindingLabels])
+  }, [automationClips, automationEnvelopes, automationBindingLabels, selectedAutomationPoint])
 
   useEffect(() => {
     canvasRef.current?.redrawContent('display-settings')
@@ -2399,6 +2435,17 @@ export default function TimelineView({
   }, [])
 
   const handleRemove = useCallback(async (id) => {
+    // Deletion contract (Phase C): removing a track takes its chain — and any
+    // automation clip bound to an effect on that chain — with it, so the same
+    // confirmation cascades here. Cancelling aborts the whole removal.
+    try {
+      const { confirmTrackRemoval } = await import('./mixer/automationDeletionGuard.js')
+      const trackName = tracks.find((t) => t.id === id)?.name
+      const proceed = await confirmTrackRemoval(id, trackName)
+      if (!proceed) return
+    } catch (e) {
+      console.warn('[Timeline] automation deletion guard failed:', e?.message)
+    }
     console.log(`[Timeline] Track ${id} removed`)
     if (window.xleth?.timeline?.removeTrack) {
       try {
@@ -2408,7 +2455,7 @@ export default function TimelineView({
       } catch { /* fall through */ }
     }
     setTracks((prev) => prev.filter((t) => t.id !== id))
-  }, [fetchTracks])
+  }, [fetchTracks, tracks])
 
   const handleReorder = useCallback((fromIndex, toIndex) => {
     if (fromIndex < 0 || toIndex < 0 || fromIndex >= tracks.length || toIndex >= tracks.length) return
@@ -3081,6 +3128,66 @@ export default function TimelineView({
     }
   }, [])
 
+  // ── Automation POINT editing (Phase C) ────────────────────────────────────
+  // Each of these is ONE engine command = ONE undo step. The drag path only
+  // ever calls onMoveAutomationPoint, once, from the select tool's mouseup —
+  // never during the drag itself.
+  //
+  // Every call is verified present before use: the four-layer bridge
+  // optional-chains missing methods away, so a typo here would silently do
+  // nothing instead of failing.
+  const refreshAutomationAfterPointEdit = useCallback(async () => {
+    await fetchAutomationEnvelopes()
+    canvasRef.current?.redrawContent('automation-points')
+    timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
+  }, [fetchAutomationEnvelopes])
+
+  const handleAddAutomationPoint = useCallback(async (envelopeId, tick, value) => {
+    const fn = window.xleth?.automation?.addPoint
+    if (typeof fn !== 'function') {
+      console.warn('[Timeline] automation.addPoint is unavailable — point not added')
+      return
+    }
+    try {
+      const ok = await fn(envelopeId, { tick, value, curveType: 0, tension: 0 })
+      if (ok === false) console.warn(`[Timeline] automation.addPoint rejected (envelope ${envelopeId}, tick ${tick})`)
+      await refreshAutomationAfterPointEdit()
+    } catch (err) {
+      console.error('[Timeline] addAutomationPoint failed:', err)
+    }
+  }, [refreshAutomationAfterPointEdit])
+
+  const handleRemoveAutomationPoint = useCallback(async (envelopeId, pointIndex) => {
+    const fn = window.xleth?.automation?.removePoint
+    if (typeof fn !== 'function') {
+      console.warn('[Timeline] automation.removePoint is unavailable — point not removed')
+      return
+    }
+    try {
+      const ok = await fn(envelopeId, pointIndex)
+      if (ok === false) console.warn(`[Timeline] automation.removePoint rejected (envelope ${envelopeId}, index ${pointIndex})`)
+      setSelectedAutomationPoint(null)
+      await refreshAutomationAfterPointEdit()
+    } catch (err) {
+      console.error('[Timeline] removeAutomationPoint failed:', err)
+    }
+  }, [refreshAutomationAfterPointEdit])
+
+  const handleMoveAutomationPoint = useCallback(async (envelopeId, pointIndex, tick, value) => {
+    const fn = window.xleth?.automation?.movePoint
+    if (typeof fn !== 'function') {
+      console.warn('[Timeline] automation.movePoint is unavailable — point move dropped')
+      return
+    }
+    try {
+      const ok = await fn(envelopeId, pointIndex, tick, value)
+      if (ok === false) console.warn(`[Timeline] automation.movePoint rejected (envelope ${envelopeId}, index ${pointIndex})`)
+      await refreshAutomationAfterPointEdit()
+    } catch (err) {
+      console.error('[Timeline] moveAutomationPoint failed:', err)
+    }
+  }, [refreshAutomationAfterPointEdit])
+
   const handleToggleAutomationGroup = useCallback((ownerTrackId, collapsed) => {
     setCollapsedAutomationGroups(prev => {
       const next = new Set(prev)
@@ -3090,6 +3197,12 @@ export default function TimelineView({
   }, [])
 
   const deleteSelectedTimelineItems = useCallback(async () => {
+    // A selected envelope point is the finest-grained selection on the canvas,
+    // so Delete removes it rather than the clip that contains it.
+    if (selectedAutomationPoint) {
+      await handleRemoveAutomationPoint(selectedAutomationPoint.envelopeId, selectedAutomationPoint.pointIndex)
+      return true
+    }
     if (selectedClipIds.size === 0 && selectedBlockIds.size === 0 && selectedAutomationClipIds.size === 0) return false
 
     const clipIdList = [...selectedClipIds]
@@ -3144,7 +3257,8 @@ export default function TimelineView({
       timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
     }
     return true
-  }, [fetchClips, fetchPatternBlocks, fetchAutomationClips, selectedBlockIds, selectedClipIds, selectedAutomationClipIds])
+  }, [fetchClips, fetchPatternBlocks, fetchAutomationClips, selectedBlockIds, selectedClipIds,
+      selectedAutomationClipIds, selectedAutomationPoint, handleRemoveAutomationPoint])
 
   useEffect(() => (
     registerEditorCommand('timeline', 'deleteSelected', deleteSelectedTimelineItems)
@@ -3478,8 +3592,13 @@ export default function TimelineView({
         await fetchTracks()
         await fetchClips()
         await fetchPatternBlocks()
+        // Automation lanes/clips/envelopes are undo-tracked too — without this
+        // an undone point edit stays on the canvas (and, worse, the canvas
+        // hit-tests against points the engine no longer has).
+        await fetchAutomationAll()
         timelineEvents.dispatchEvent(new Event('timeline-track-layout-changed'))
         timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
+        timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
         return
       }
       if ((e.key === 'y' && ctrl) || (e.key === 'z' && ctrl && e.shiftKey)) {
@@ -3494,8 +3613,13 @@ export default function TimelineView({
         await fetchTracks()
         await fetchClips()
         await fetchPatternBlocks()
+        // Automation lanes/clips/envelopes are undo-tracked too — without this
+        // an undone point edit stays on the canvas (and, worse, the canvas
+        // hit-tests against points the engine no longer has).
+        await fetchAutomationAll()
         timelineEvents.dispatchEvent(new Event('timeline-track-layout-changed'))
         timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
+        timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
         return
       }
 
@@ -3508,8 +3632,12 @@ export default function TimelineView({
         return
       }
 
-      // ── Delete selected clips + blocks (parallel) ─────────────────────
-      if (e.key === 'Delete' && (selectedClipIds.size > 0 || selectedBlockIds.size > 0)) {
+      // ── Delete selected clips + blocks + automation (parallel) ────────
+      // The automation selections belong in this gate too: without them Delete
+      // never reaches deleteSelectedTimelineItems when the only thing selected
+      // is an automation clip (Phase B) or an envelope point (Phase C).
+      if (e.key === 'Delete' && (selectedClipIds.size > 0 || selectedBlockIds.size > 0
+                                 || selectedAutomationClipIds.size > 0 || selectedAutomationPoint)) {
         e.preventDefault()
         e.stopPropagation()
         await deleteSelectedTimelineItems()
@@ -4664,6 +4792,11 @@ export default function TimelineView({
                     setQuickFxMenu(null)
                     setContextMenu({ type: 'automationClip', clipId: clip.id, x, y })
                   }}
+                  selectedAutomationPoint={selectedAutomationPoint}
+                  setSelectedAutomationPoint={setSelectedAutomationPoint}
+                  onAddAutomationPoint={handleAddAutomationPoint}
+                  onRemoveAutomationPoint={handleRemoveAutomationPoint}
+                  onMoveAutomationPoint={handleMoveAutomationPoint}
                   onOpenClipFxQuickMenu={(clipId, anchor) => {
                     setContextMenu(null)
                     setQuickFxMenu({ clipId, x: anchor.x, y: anchor.y })

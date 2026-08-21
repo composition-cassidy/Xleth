@@ -345,6 +345,8 @@ export default function PhanjerPanel() {
         size={size}
         dragRange={150}
         appearance={MIXER_RING_APPEARANCE}
+        paramId={k.id}
+        automationTarget={target}
       />
       <div className="phanjer-knob-value">{k.fmt(params[k.id])}</div>
     </div>

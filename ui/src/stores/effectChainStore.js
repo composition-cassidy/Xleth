@@ -3375,6 +3375,21 @@ const useEffectChainStore = create((set, get) => ({
 
   removeEffect: async (key, nodeId) => {
     if (!isChainFxMode(get(), key)) return false
+
+    // Deletion contract (Phase C): an effect with bound automation clips must
+    // name them in a confirmation before it dies, and cancelling aborts the
+    // removal entirely. Gating HERE rather than at the two UI call sites means
+    // no future call site can bypass the contract. The import is dynamic so
+    // this store keeps no static dependency on React/DOM code.
+    try {
+      const { confirmEffectRemoval } = await import('../components/mixer/automationDeletionGuard.js')
+      const trackId = key === 'master' ? -1 : Number(key)
+      const proceed = await confirmEffectRemoval(trackId, nodeId)
+      if (!proceed) return false
+    } catch (e) {
+      console.warn('[effectChainStore] automation deletion guard failed:', e?.message)
+    }
+
     markChainMutationStarted(key)
 
     // Optimistic: filter out immediately

@@ -27,6 +27,9 @@ import {
   shouldDrawFadeOverlay,
 } from './clipControlSpec.js'
 import {
+  applyPointDragPreview,
+  automationClipBodyRect,
+  AUTOMATION_POINT_DRAW_RADIUS_PX,
   buildAutomationCurveCanvasPoints,
   buildAutomationHoldLine,
 } from './automationLaneGeometry.js'
@@ -1782,6 +1785,11 @@ export function drawAutomationClips(
   ctx, w, h, scrollOffset, ppb,
   automationClips, automationLaneRowsByLaneId, automationEnvelopesById,
   selectedAutomationClipIds, palette = null, bindingLabelsByEnvelopeId = null,
+  // Phase C — point editing. `selectedPoint` is { envelopeId, pointIndex } and
+  // `pointDragPreview` is { envelopeId, pointIndex, tick, value }: the LOCAL
+  // preview a point drag paints every frame, never an engine read. No IPC runs
+  // during a drag, so the content layer is the only thing that knows about it.
+  selectedPoint = null, pointDragPreview = null,
 ) {
   if (!automationClips || automationClips.length === 0) return
   const p = palette ?? resolveTimelinePalette()
@@ -1792,14 +1800,14 @@ export function drawAutomationClips(
     const laneRow = automationLaneRowsByLaneId?.get(clip.laneId)
     if (!laneRow) continue // lane hidden (group collapsed) — nothing to draw
 
-    const x = ((clip.positionTicks / PPQ) - scrollOffset) * ppb
-    const rawW = (clip.durationTicks / PPQ) * ppb
-    const clipW = Math.max(24, rawW)
+    // Single source of truth for the clip body + envelope band, shared with the
+    // Phase C hit-tests so the drawn curve and the clickable curve agree.
+    const body = automationClipBodyRect(clip, laneRow, ppb, scrollOffset)
+    if (!body) continue
+    const { x, w: clipW, y, h: clipH, headerH, contentTop, contentHeight: contentH } = body
     if (x + clipW < 0 || x > w) continue
     if (laneRow.y >= h || laneRow.y + laneRow.height < 0) continue
 
-    const y = laneRow.y + 2
-    const clipH = Math.max(1, laneRow.height - 4)
     const selected = selectedAutomationClipIds?.has(clip.id)
 
     // ── Body — neutral by default; accent is earned only by selection. ────
@@ -1809,11 +1817,21 @@ export function drawAutomationClips(
     ctx.lineWidth = selected ? 1.5 : 1
     ctx.strokeRect(x + 0.5, y + 0.5, clipW - 1, clipH - 1)
 
-    const headerH = Math.min(12, Math.max(0, clipH - 6))
     const envelope = automationEnvelopesById?.get(clip.envelopeId)
-    const points = envelope?.points ?? []
-    const contentTop = y + headerH + 1
-    const contentH = Math.max(1, clipH - headerH - 3)
+    let points = envelope?.points ?? []
+    // The drag preview reshapes the list for drawing only. Applying it here
+    // (rather than layering a ghost on the overlay) keeps exactly ONE curve on
+    // screen while dragging, which is what makes the edit read as direct.
+    const dragging = pointDragPreview != null && envelope != null
+      && pointDragPreview.envelopeId === envelope.id
+    if (dragging) {
+      points = applyPointDragPreview(points, pointDragPreview.pointIndex,
+                                     pointDragPreview.tick, pointDragPreview.value)
+    }
+    const activePointIndex = dragging
+      ? indexOfPointAtTick(points, pointDragPreview.tick)
+      : (selectedPoint != null && envelope != null && selectedPoint.envelopeId === envelope.id
+          ? selectedPoint.pointIndex : -1)
 
     // ── Envelope curve, clipped to the clip body so points outside the
     // visible [offset, offset+duration) window never bleed past the edges. ──
@@ -1833,11 +1851,15 @@ export function drawAutomationClips(
         curvePoints.forEach((pt, idx) => (idx === 0 ? ctx.moveTo(pt.x, pt.y) : ctx.lineTo(pt.x, pt.y)))
         ctx.stroke()
 
-        // Point dots
-        ctx.fillStyle = p.bg || '#000'
-        for (const pt of curvePoints) {
+        // Point dots. The active point (selected, or the one under the pointer
+        // mid-drag) is the only one that fills with the accent — colour is
+        // earned by a real state change, everything else stays neutral.
+        for (let idx = 0; idx < curvePoints.length; idx++) {
+          const pt = curvePoints[idx]
+          const isActive = idx === activePointIndex
           ctx.beginPath()
-          ctx.arc(pt.x, pt.y, 2.2, 0, Math.PI * 2)
+          ctx.arc(pt.x, pt.y, isActive ? AUTOMATION_POINT_DRAW_RADIUS_PX + 1.4 : AUTOMATION_POINT_DRAW_RADIUS_PX, 0, Math.PI * 2)
+          ctx.fillStyle = isActive ? accent : (p.bg || '#000')
           ctx.fill()
           ctx.strokeStyle = accent
           ctx.lineWidth = 1
@@ -1884,6 +1906,14 @@ export function drawAutomationClips(
       ctx.fillRect(x + clipW - 3, y, 3, clipH)
     }
   }
+}
+
+// The dragged point's index AFTER the preview re-sort — a drag that carries a
+// point past its neighbour changes its index, and the highlight has to follow
+// the point, not the stale index.
+function indexOfPointAtTick(points, tick) {
+  for (let i = 0; i < points.length; i++) if (points[i].tick === tick) return i
+  return -1
 }
 
 // ── Drop preview (drawn on overlay layer) ───────────────────────────────────

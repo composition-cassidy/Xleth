@@ -60,7 +60,7 @@ const fmtMs   = (v) => (v >= 100 ? `${Math.round(v)} ms` : `${v.toFixed(1)} ms`)
 // ── Small building blocks ─────────────────────────────────────────────────────
 
 // Stock mixer-ring knob with the formatted value printed below.
-function FilterKnob({ value, min, max, def, skew, label, fmt, onChange, size = 48 }) {
+function FilterKnob({ value, min, max, def, skew, label, fmt, onChange, size = 48, paramId = null, automationTarget = null }) {
   const v = Number.isFinite(value) ? value : def
   return (
     <div className="filter-knob-cell">
@@ -69,6 +69,7 @@ function FilterKnob({ value, min, max, def, skew, label, fmt, onChange, size = 4
         label={label} formatValue={fmt} appearance={KNOB_APPEARANCE}
         size={size} dragRange={155}
         onLiveChange={onChange} onCommit={onChange}
+        paramId={paramId} automationTarget={automationTarget}
       />
       <div className="filter-knob-value">{fmt(v)}</div>
     </div>
@@ -549,7 +550,12 @@ function AddModulatorBar({ slotIndex, used, onAdd }) {
 // ── Selected-slot control deck ────────────────────────────────────────────────
 
 function SlotControls({ slot, index, onParam, onModParam, onAddMod, onRemoveMod,
-                        onCutMin, onCutMax }) {
+                        onCutMin, onCutMax, automationTarget = null }) {
+  // Slot parameters are APVTS-prefixed per slot ("s<index>_<name>"), matching
+  // XlethFilterEffect::createLayout — that prefix IS the automation binding's
+  // parameterId. The modulator-lane sub-parameters below carry a further lane
+  // prefix and are not wired for automation in this pass.
+  const slotParamId = (name) => `s${index}_${name}`
   const type = clamp(Math.round(slot.type ?? 0), 0, 8)
   const slope = clamp(Math.round(slot.slope ?? 1), 0, 3)
   const mods = activeMods(slot)
@@ -596,19 +602,23 @@ function SlotControls({ slot, index, onParam, onModParam, onAddMod, onRemoveMod,
           <div className="filter-knob-row">
             <FilterKnob value={Number(slot.cutoff ?? 1000)} min={20} max={20000} def={1000}
               skew={FREQ_SKEW} label="CUTOFF" fmt={fmtHz}
+              paramId={slotParamId('cutoff')} automationTarget={automationTarget}
               onChange={(v) => onParam(index, 'cutoff', v)} />
             <FilterKnob value={Number(slot.q ?? 0.7071)} min={0.5} max={30} def={0.7071}
               skew={Q_SKEW} label="Q" fmt={fmtQ}
+              paramId={slotParamId('q')} automationTarget={automationTarget}
               onChange={(v) => onParam(index, 'q', v)} />
             {typeUsesGain(type) && (
               <FilterKnob value={Number(slot.gain ?? 0)}
                 min={typeGainRange(type).min} max={typeGainRange(type).max} def={0}
                 label={typeGainLabel(type)} fmt={fmtGain}
+                paramId={slotParamId('gain')} automationTarget={automationTarget}
                 onChange={(v) => onParam(index, 'gain', v)} />
             )}
             {typeUsesMorph(type) && (
               <FilterKnob value={Number(slot.morph ?? 0)} min={0} max={1} def={0}
                 label={typeMorphLabel(type)} fmt={fmtMorph}
+                paramId={slotParamId('morph')} automationTarget={automationTarget}
                 onChange={(v) => onParam(index, 'morph', v)} />
             )}
           </div>
@@ -619,9 +629,11 @@ function SlotControls({ slot, index, onParam, onModParam, onAddMod, onRemoveMod,
           <div className="filter-knob-row">
             <FilterKnob value={Number(slot.drive ?? 0)} min={0} max={24} def={0}
               label="DRIVE" fmt={fmtDrive}
+              paramId={slotParamId('drive')} automationTarget={automationTarget}
               onChange={(v) => onParam(index, 'drive', v)} />
             <FilterKnob value={Number(slot.mix ?? 1)} min={0} max={1} def={1}
               label="MIX" fmt={fmtMix}
+              paramId={slotParamId('mix')} automationTarget={automationTarget}
               onChange={(v) => onParam(index, 'mix', v)} />
           </div>
         </div>
@@ -858,6 +870,7 @@ export default function FilterPanel() {
           onRemoveMod={handleRemoveMod}
           onCutMin={handleCutMin}
           onCutMax={handleCutMax}
+          automationTarget={target}
         />
       ) : (
         <div className="filter-empty-state">

@@ -272,6 +272,8 @@ export default function ChorusPanel() {
                 size={72}
                 dragRange={150}
                 appearance={MIXER_RING_APPEARANCE}
+                paramId={k.id}
+                automationTarget={target}
               />
               {/* The mixer-ring preset hides its own readout; the value is
                   rendered here instead so every control is legible at rest. */}
@@ -295,6 +297,8 @@ export default function ChorusPanel() {
                 size={52}
                 dragRange={150}
                 appearance={MIXER_RING_APPEARANCE}
+                paramId={k.id}
+                automationTarget={target}
               />
               <div className="chorus-knob-value">{k.fmt(params[k.id])}</div>
             </div>

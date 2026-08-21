@@ -238,6 +238,8 @@ export default function GlossPanel() {
             size={132}
             dragRange={180}
             appearance={AMOUNT_APPEARANCE}
+            paramId={AMOUNT.id}
+            automationTarget={target}
           />
           <div className="gloss-amount-value">{AMOUNT.fmt(amountValue)}</div>
         </div>

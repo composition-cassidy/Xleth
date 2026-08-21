@@ -45,6 +45,9 @@ function ApexKnob({ id, label, min, max, def, skew, fmt, accentColor, size = 50 
   const value = useApexStore(s => s.params[id])
   const previewParam = useApexStore(s => s.previewParam)
   const commitParam = useApexStore(s => s.commitParam)
+  // Automation binds to the same { trackId, nodeId } the store already holds;
+  // `id` IS the stable APVTS parameter id, so no extra plumbing is needed.
+  const target = useApexStore(s => s.target)
   const v = Number.isFinite(value) ? value : def
   return (
     <div className="apex-knob-cell">
@@ -62,6 +65,8 @@ function ApexKnob({ id, label, min, max, def, skew, fmt, accentColor, size = 50 
         dragRange={150}
         appearance={MIXER_RING_APPEARANCE}
         accentColor={accentColor || undefined}
+        paramId={id}
+        automationTarget={target}
       />
       <div className="apex-knob-value">{fmt(v)}</div>
     </div>
