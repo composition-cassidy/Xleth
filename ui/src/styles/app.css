@@ -3246,6 +3246,58 @@ html[data-xleth-backdrop="video"] .app-body {
   background: var(--theme-surface-overlay, rgba(0, 0, 0, 0.2));
 }
 
+/* Automation clip lane groups (Phase B) — collapsible header + lane rows,
+   under a track (or the pinned Master group at the top of the header list). */
+.track-header-automation-group-header {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  width: 100%;
+  padding: 0 8px 0 10px;
+  box-sizing: border-box;
+  border: none;
+  border-bottom: 1px solid var(--theme-border-subtle);
+  background: var(--theme-bg-secondary, var(--theme-bg-primary));
+  color: var(--theme-text-secondary);
+  cursor: pointer;
+  text-align: left;
+}
+.track-header-automation-group-header:hover {
+  color: var(--theme-text);
+}
+.track-header-automation-group-icon { color: var(--theme-border-focus); flex: 0 0 auto; }
+.track-header-automation-group-label {
+  flex: 1 1 auto;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.track-header-automation-group-count {
+  flex: 0 0 auto;
+  font-size: 9px;
+  color: var(--theme-text-tertiary);
+}
+.track-header-automation-lane {
+  display: flex;
+  align-items: center;
+  padding: 0 8px 0 24px;
+  box-sizing: border-box;
+  border-left: 3px solid var(--theme-border-focus);
+  border-bottom: 1px solid var(--theme-border-subtle);
+  background: var(--theme-bg-secondary, var(--theme-bg-primary));
+  color: var(--theme-text-tertiary);
+}
+.track-header-automation-lane-label {
+  font-size: 10px;
+  letter-spacing: 0.2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
 .timeline-canvas-layer {
   position: absolute;
   top: 0;

@@ -29,6 +29,7 @@ import { normalizeTrackCustomColor } from './timeline/trackColorResolver.js'
 import { subscribe } from '../transportStore.js'
 import { startMacroAutomationPlayback } from '../fxgraph/macroAutomationPlayback.js'
 import useEffectChainStore from '../stores/effectChainStore.js'
+import { PLUGIN_NAMES } from './mixer/effectEditorOpeners.js'
 import useAutoScrollStore from '../stores/autoScrollStore.js'
 import { playheadClock } from '../services/PlayheadClock.js'
 import { editCursor } from '../services/EditCursor.js'
@@ -778,9 +779,90 @@ export default function TimelineView({
     () => visibleTracksForLayout(normalizedFolderLayout, tracks),
     [normalizedFolderLayout, tracks],
   )
+  // ── Automation clips (Phase B) ──────────────────────────────────────────
+  const [automationLanes, setAutomationLanes] = useState([])
+  const [automationClips, setAutomationClips] = useState([])
+  const [automationEnvelopes, setAutomationEnvelopes] = useState([])
+  const [selectedAutomationClipIds, setSelectedAutomationClipIds] = useState(new Set())
+  const [collapsedAutomationGroups, setCollapsedAutomationGroups] = useState(new Set())
+  const [automationBindingLabels, setAutomationBindingLabels] = useState({}) // { [envelopeId]: label }
+  const bindingLabelFetchRef = useRef(new Set()) // envelopeIds already requested
+
+  const automationEnvelopesById = useMemo(() => {
+    const map = new Map()
+    for (const env of automationEnvelopes) map.set(env.id, env)
+    return map
+  }, [automationEnvelopes])
+
+  // Groups automation lanes by owner (-1 = Master) for the row-layout builder.
+  // A group only renders once it has at least one lane.
+  const automationGroups = useMemo(() => {
+    const groups = {}
+    for (const lane of automationLanes) {
+      const key = String(lane.ownerTrackId)
+      if (!groups[key]) groups[key] = { collapsed: collapsedAutomationGroups.has(lane.ownerTrackId), lanes: [] }
+      groups[key].lanes.push({ id: lane.id, index: lane.index })
+    }
+    return groups
+  }, [automationLanes, collapsedAutomationGroups])
+
+  const automationBindingLabelsById = useMemo(() => {
+    const map = new Map()
+    for (const env of automationEnvelopes) {
+      const label = automationBindingLabels[env.id]
+      if (label) map.set(env.id, label)
+    }
+    return map
+  }, [automationEnvelopes, automationBindingLabels])
+
+  // Resolve each envelope's binding into a "<EffectName> - <ParamName>" label,
+  // lazily and once per envelope. The binding's effectInstanceId is stable
+  // across reorders/slot changes but engine parameter lookups are nodeId-based
+  // (audio_getEffectParameters), so first re-derive the CURRENT nodeId from the
+  // owning chain (audio_getEffectChain already carries pluginId too, covering
+  // the effect-name half without a second call) — works for both legacy Mixer
+  // Chain and FX Graph effects, unlike the graph-only parameter descriptor call.
+  useEffect(() => {
+    const requested = bindingLabelFetchRef.current
+    const pending = automationEnvelopes.filter((env) => env?.binding && !requested.has(env.id))
+    if (pending.length === 0) return
+    let cancelled = false
+    ;(async () => {
+      const updates = {}
+      const chainCache = new Map() // ownerTrackId -> parsed chain (avoid refetching per envelope)
+      for (const env of pending) {
+        requested.add(env.id)
+        const { ownerTrackId, effectInstanceId, parameterId } = env.binding
+        try {
+          if (!chainCache.has(ownerTrackId)) {
+            const raw = await window.xleth?.audio?.getEffectChain?.(ownerTrackId)
+            chainCache.set(ownerTrackId, raw ? JSON.parse(raw) : [])
+          }
+          const chain = chainCache.get(ownerTrackId) ?? []
+          const chainEntry = Array.isArray(chain) ? chain.find((e) => e.effectInstanceId === effectInstanceId) : null
+          const effectName = chainEntry?.pluginId ? (PLUGIN_NAMES[chainEntry.pluginId] ?? chainEntry.pluginId) : null
+          let paramName = parameterId
+          if (chainEntry?.nodeId != null) {
+            const paramsRaw = await window.xleth?.audio?.getEffectParameters?.(ownerTrackId, chainEntry.nodeId)
+            const params = paramsRaw ? JSON.parse(paramsRaw) : []
+            const descriptor = Array.isArray(params) ? params.find((p) => p.id === parameterId) : null
+            if (descriptor?.name) paramName = descriptor.name
+          }
+          updates[env.id] = effectName ? `${effectName} - ${paramName}` : paramName
+        } catch (err) {
+          console.warn(`[Timeline] Failed to resolve automation binding label for envelope ${env.id}:`, err)
+        }
+      }
+      if (!cancelled && Object.keys(updates).length > 0) {
+        setAutomationBindingLabels((prev) => ({ ...prev, ...updates }))
+      }
+    })()
+    return () => { cancelled = true }
+  }, [automationEnvelopes])
+
   const trackLayout = useMemo(
-    () => buildTrackLayout({ tracks, graphStates, folderLayout: normalizedFolderLayout, trackHeight }),
-    [tracks, graphStates, normalizedFolderLayout, trackHeight],
+    () => buildTrackLayout({ tracks, graphStates, folderLayout: normalizedFolderLayout, trackHeight, automationGroups }),
+    [tracks, graphStates, normalizedFolderLayout, trackHeight, automationGroups],
   )
   useEffect(() => {
     const visibleIds = new Set(visibleTracks.map(track => track.id))
@@ -1158,6 +1240,31 @@ export default function TimelineView({
     } catch { /* engine not ready */ }
   }, [])
 
+  const fetchAutomationLanes = useCallback(async () => {
+    try {
+      const l = await window.xleth?.automation?.getLanes()
+      if (l) setAutomationLanes(l)
+    } catch { /* engine not ready */ }
+  }, [])
+
+  const fetchAutomationClips = useCallback(async () => {
+    try {
+      const c = await window.xleth?.automation?.getClips()
+      if (c) setAutomationClips(c)
+    } catch { /* engine not ready */ }
+  }, [])
+
+  const fetchAutomationEnvelopes = useCallback(async () => {
+    try {
+      const e = await window.xleth?.automation?.getEnvelopes()
+      if (e) setAutomationEnvelopes(e)
+    } catch { /* engine not ready */ }
+  }, [])
+
+  const fetchAutomationAll = useCallback(async () => {
+    await Promise.all([fetchAutomationLanes(), fetchAutomationClips(), fetchAutomationEnvelopes()])
+  }, [fetchAutomationLanes, fetchAutomationClips, fetchAutomationEnvelopes])
+
   const fetchSources = useCallback(async () => {
     try {
       const s = await window.xleth?.timeline?.getSources()
@@ -1243,6 +1350,7 @@ export default function TimelineView({
     fetchSources()
     fetchPatterns()
     fetchPatternBlocks()
+    fetchAutomationAll()
 
     // Refresh regions/clips when samples are added/removed via SamplePicker
     const onRegionsChanged = () => { loadedRegionAudioRef.current.clear(); fetchTracks(); fetchRegions(); fetchSources() }
@@ -1250,6 +1358,7 @@ export default function TimelineView({
     const onPatternsChanged = () => { fetchPatterns() }
     const onPatternBlocksChanged = () => { fetchPatternBlocks() }
     const onPatternChanged = () => { fetchPatterns() }
+    const onAutomationChanged = () => { fetchAutomationAll() }
     const onTracksChanged = (e) => {
       const { trackId, patch } = e.detail || {}
       if (trackId != null && patch && typeof patch === 'object') {
@@ -1270,9 +1379,11 @@ export default function TimelineView({
     timelineEvents.addEventListener('timeline-patterns-changed', onPatternsChanged)
     timelineEvents.addEventListener('timeline-pattern-blocks-changed', onPatternBlocksChanged)
     timelineEvents.addEventListener('timeline-pattern-changed', onPatternChanged)
+    timelineEvents.addEventListener('timeline-automation-changed', onAutomationChanged)
     const offProjectLoaded = window.xleth?.onProjectLoaded?.(() => {
       loadedRegionAudioRef.current.clear()
       fetchTracks(); fetchClips(); fetchRegions(); fetchSources(); fetchPatterns(); fetchPatternBlocks()
+      fetchAutomationAll()
     })
     return () => {
       timelineEvents.removeEventListener('timeline-tracks-changed', onTracksChanged)
@@ -1282,9 +1393,10 @@ export default function TimelineView({
       timelineEvents.removeEventListener('timeline-patterns-changed', onPatternsChanged)
       timelineEvents.removeEventListener('timeline-pattern-blocks-changed', onPatternBlocksChanged)
       timelineEvents.removeEventListener('timeline-pattern-changed', onPatternChanged)
+      timelineEvents.removeEventListener('timeline-automation-changed', onAutomationChanged)
       offProjectLoaded?.()
     }
-  }, [fetchTracks, fetchClips, fetchRegions, fetchSources, fetchPatterns, fetchPatternBlocks])
+  }, [fetchTracks, fetchClips, fetchRegions, fetchSources, fetchPatterns, fetchPatternBlocks, fetchAutomationAll])
 
   // ── Rebuild audio mappings when regions change (e.g. on project load) ──────
   useEffect(() => {
@@ -1858,7 +1970,11 @@ export default function TimelineView({
 
   useEffect(() => {
     canvasRef.current?.redrawContent('selection')
-  }, [selectedClipIds, selectedBlockIds])
+  }, [selectedClipIds, selectedBlockIds, selectedAutomationClipIds])
+
+  useEffect(() => {
+    canvasRef.current?.redrawContent('automation-clips')
+  }, [automationClips, automationEnvelopes, automationBindingLabels])
 
   useEffect(() => {
     canvasRef.current?.redrawContent('display-settings')
@@ -2322,6 +2438,31 @@ export default function TimelineView({
     let n = 1
     while (used.has(`Pattern ${n}`)) n++
     return `Pattern ${n}`
+  }, [patterns])
+
+  // Auto-generate a distinguishable name for a "Make Unique Copy" of an
+  // existing pattern. A trailing " N" (e.g. "Pattern 2") increments N;
+  // a trailing " #N" increments N; anything else gets " #2" appended.
+  // Either way we walk forward past existing names to stay unique.
+  const nextUniqueCopyName = useCallback((origName) => {
+    const used = new Set(Object.values(patterns).map(p => p.name))
+    const hashMatch = origName.match(/^(.*)\s#(\d+)$/)
+    const trailingNumMatch = origName.match(/^(.*\D)(\d+)$/)
+    if (hashMatch) {
+      const base = hashMatch[1]
+      let n = parseInt(hashMatch[2], 10) + 1
+      while (used.has(`${base} #${n}`)) n++
+      return `${base} #${n}`
+    }
+    if (trailingNumMatch) {
+      const base = trailingNumMatch[1]
+      let n = parseInt(trailingNumMatch[2], 10) + 1
+      while (used.has(`${base}${n}`)) n++
+      return `${base}${n}`
+    }
+    let n = 2
+    while (used.has(`${origName} #${n}`)) n++
+    return `${origName} #${n}`
   }, [patterns])
 
   // Core: convert a Clip track → Pattern track (sample-agnostic container).
@@ -2822,7 +2963,7 @@ export default function TimelineView({
     if (!orig) return
     try {
       const newPatternId = await window.xleth?.timeline?.addPattern({
-        name: orig.name,
+        name: nextUniqueCopyName(orig.name),
         regionId: orig.regionId,
         lengthTicks: orig.lengthTicks,
       })
@@ -2864,17 +3005,101 @@ export default function TimelineView({
     } catch (err) {
       console.error('[SelectTool] makeUniquePatternBlock failed:', err)
     }
-  }, [patternBlocks, patterns, fetchPatterns, fetchPatternBlocks, setCurrentPatternIdByTrack])
+  }, [patternBlocks, patterns, fetchPatterns, fetchPatternBlocks, setCurrentPatternIdByTrack, nextUniqueCopyName])
+
+  // ── Automation clips (Phase B) — move/resize mirror the pattern-block
+  // handlers above; make-unique is a single engine command (NOT the
+  // UI-composed RPC chain handleMakeUniquePatternBlock uses), per the locked
+  // spec — automation's independent-copy semantics live entirely engine-side.
+  const handleMoveAutomationClip = useCallback(async (moves) => {
+    if (!Array.isArray(moves) || moves.length === 0) return
+    const byId = new Map(moves.map(m => [m.clipId, m]))
+    setAutomationClips(prev => prev.map(c => {
+      const m = byId.get(c.id)
+      return m ? { ...c, laneId: m.laneId, positionTicks: m.positionTicks } : c
+    }))
+    try {
+      await Promise.all(moves.map(m =>
+        window.xleth?.automation?.moveClip(m.clipId, m.laneId, m.positionTicks)
+      ))
+    } catch (err) {
+      console.error('[SelectTool] moveAutomationClip failed:', err)
+    }
+    await fetchAutomationClips()
+    timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
+  }, [fetchAutomationClips])
+
+  const handleResizeAutomationClip = useCallback(async (clipId, durationTicks) => {
+    try {
+      await window.xleth?.automation?.resizeClip(clipId, durationTicks)
+      await fetchAutomationClips()
+      timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
+    } catch (err) {
+      console.error('[SelectTool] resizeAutomationClip failed:', err)
+    }
+  }, [fetchAutomationClips])
+
+  const handleResizeAutomationClipLeft = useCallback(async (clipId, positionTicks, durationTicks, offsetTicks) => {
+    try {
+      await window.xleth?.automation?.resizeClipLeft(clipId, positionTicks, durationTicks, offsetTicks)
+      await fetchAutomationClips()
+      timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
+    } catch (err) {
+      console.error('[SelectTool] resizeAutomationClipLeft failed:', err)
+    }
+  }, [fetchAutomationClips])
+
+  // NOTE: automation_makeClipUnique does NOT create a new clip — the clip id
+  // stays the same. It duplicates the ENVELOPE the clip references and
+  // repoints the clip at the copy (returning the new envelopeId), so this
+  // clip's points diverge from any other clip still sharing the original
+  // envelope. Selection is unaffected; only the envelope binding changed.
+  const handleMakeUniqueAutomationClip = useCallback(async (clipId) => {
+    try {
+      const newEnvelopeId = await window.xleth?.automation?.makeClipUnique(clipId)
+      await fetchAutomationClips()
+      await fetchAutomationEnvelopes()
+      timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
+      console.log(`[SelectTool] Made unique copy: automation clip ${clipId} → envelope ${newEnvelopeId}`)
+    } catch (err) {
+      console.error('[SelectTool] makeClipUnique failed:', err)
+    }
+  }, [fetchAutomationClips, fetchAutomationEnvelopes])
+
+  const handleDeleteAutomationClip = useCallback(async (clipId) => {
+    try {
+      await window.xleth?.automation?.removeClip(clipId)
+      setSelectedAutomationClipIds(prev => {
+        const next = new Set(prev)
+        next.delete(clipId)
+        return next
+      })
+      setAutomationClips(prev => prev.filter(c => c.id !== clipId))
+      timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
+    } catch (err) {
+      console.error('[DeleteTool] removeAutomationClip failed:', err)
+    }
+  }, [])
+
+  const handleToggleAutomationGroup = useCallback((ownerTrackId, collapsed) => {
+    setCollapsedAutomationGroups(prev => {
+      const next = new Set(prev)
+      if (collapsed) next.add(ownerTrackId); else next.delete(ownerTrackId)
+      return next
+    })
+  }, [])
 
   const deleteSelectedTimelineItems = useCallback(async () => {
-    if (selectedClipIds.size === 0 && selectedBlockIds.size === 0) return false
+    if (selectedClipIds.size === 0 && selectedBlockIds.size === 0 && selectedAutomationClipIds.size === 0) return false
 
     const clipIdList = [...selectedClipIds]
     const blockIdList = [...selectedBlockIds]
+    const automationClipIdList = [...selectedAutomationClipIds]
     const xl = window.xleth
-    console.log(`[Keyboard] Deleting ${clipIdList.length} clip(s), ${blockIdList.length} block(s)`)
+    console.log(`[Keyboard] Deleting ${clipIdList.length} clip(s), ${blockIdList.length} block(s), ${automationClipIdList.length} automation clip(s)`)
     setSelectedClipIds(new Set())
     setSelectedBlockIds(new Set())
+    setSelectedAutomationClipIds(new Set())
     // Repaint from local state first — the engine round trip below no longer
     // gates the canvas, so deleting a big selection feels instant.
     if (clipIdList.length > 0) {
@@ -2886,6 +3111,10 @@ export default function TimelineView({
     if (blockIdList.length > 0) {
       const doomed = new Set(blockIdList)
       setPatternBlocks(prev => prev.filter(b => !doomed.has(b.id)))
+    }
+    if (automationClipIdList.length > 0) {
+      const doomed = new Set(automationClipIdList)
+      setAutomationClips(prev => prev.filter(c => !doomed.has(c.id)))
     }
     // One undo entry for the whole clip selection — Ctrl+Z used to put back
     // exactly one clip out of however many were deleted.
@@ -2899,14 +3128,23 @@ export default function TimelineView({
           console.error(`[Keyboard] removePatternBlock(${id}) failed:`, err)
         )
       ),
+      ...automationClipIdList.map(id =>
+        xl.automation?.removeClip(id).catch(err =>
+          console.error(`[Keyboard] automation.removeClip(${id}) failed:`, err)
+        )
+      ),
     ])
     if (clipIdList.length > 0) await fetchClips()
     if (blockIdList.length > 0) {
       await fetchPatternBlocks()
       timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
     }
+    if (automationClipIdList.length > 0) {
+      await fetchAutomationClips()
+      timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
+    }
     return true
-  }, [fetchClips, fetchPatternBlocks, selectedBlockIds, selectedClipIds])
+  }, [fetchClips, fetchPatternBlocks, fetchAutomationClips, selectedBlockIds, selectedClipIds, selectedAutomationClipIds])
 
   useEffect(() => (
     registerEditorCommand('timeline', 'deleteSelected', deleteSelectedTimelineItems)
@@ -3843,6 +4081,12 @@ export default function TimelineView({
             { type: 'separator' },
             { label: 'Delete', danger: true, onClick: () => { handleDeletePatternBlock(contextMenu.blockId); closeClipContextMenu() } },
           ]
+        : contextMenu.type === 'automationClip'
+        ? [
+            { label: 'Make Unique Copy', onClick: () => { handleMakeUniqueAutomationClip(contextMenu.clipId); closeClipContextMenu() } },
+            { type: 'separator' },
+            { label: 'Delete', danger: true, onClick: () => { handleDeleteAutomationClip(contextMenu.clipId); closeClipContextMenu() } },
+          ]
         : contextMenu.type === 'clip'
         ? [
             { label: 'Auto-Trim Silence (−54 dB)', onClick: () => handleAutoTrimClip(contextMenu.clipId) },
@@ -4311,6 +4555,9 @@ export default function TimelineView({
               macroRows={trackLayout.macroRows}
               onHideMacroLane={(trackId, macroNodeId) =>
                 useEffectChainStore.getState().hideMacroAutomationLaneForTrack?.(trackId, macroNodeId)}
+              automationGroupRows={trackLayout.automationGroupRows}
+              automationLaneRows={trackLayout.automationLaneRows}
+              onToggleAutomationGroup={handleToggleAutomationGroup}
             />
 
             {/* Resize handle — 4px drag zone between header column and canvas */}
@@ -4404,6 +4651,18 @@ export default function TimelineView({
                   onRequestPatternBlockContextMenu={(block, x, y) => {
                     setQuickFxMenu(null)
                     setContextMenu({ type: 'patternBlock', blockId: block.id, x, y })
+                  }}
+                  automationClips={automationClips}
+                  automationEnvelopesById={automationEnvelopesById}
+                  automationBindingLabelsById={automationBindingLabelsById}
+                  selectedAutomationClipIds={selectedAutomationClipIds}
+                  setSelectedAutomationClipIds={setSelectedAutomationClipIds}
+                  onMoveAutomationClip={handleMoveAutomationClip}
+                  onResizeAutomationClip={handleResizeAutomationClip}
+                  onResizeAutomationClipLeft={handleResizeAutomationClipLeft}
+                  onRequestAutomationClipContextMenu={(clip, x, y) => {
+                    setQuickFxMenu(null)
+                    setContextMenu({ type: 'automationClip', clipId: clip.id, x, y })
                   }}
                   onOpenClipFxQuickMenu={(clipId, anchor) => {
                     setContextMenu(null)

@@ -29,8 +29,27 @@ import { DEFAULT_TRACK_HEIGHT, TRACK_HEIGHT } from '../../constants/timeline.js'
 export const MACRO_LANE_HEIGHT = 36
 export const FOLDER_ROW_HEIGHT = 32
 
+// Automation clips (Phase B) — lanes grouped under their owning track (or the
+// pinned Master group, ownerTrackId -1), collapsible as a whole group. Shorter
+// than a full track row like macro lanes, but with their own header row so the
+// group can collapse independent of the lanes inside it.
+export const AUTOMATION_LANE_HEIGHT = 32
+export const AUTOMATION_GROUP_HEADER_HEIGHT = 20
+
 function readLanes(graphState) {
   return Array.isArray(graphState?.macroAutomationLanes) ? graphState.macroAutomationLanes : []
+}
+
+// `automationGroups` is a plain object keyed by String(ownerTrackId) — "-1" for
+// the pinned Master group — each value `{ collapsed?: bool, lanes: [{ id,
+// index, label? }] }`. Lanes render in ascending `index` order (topmost =
+// lowest index, per the AutomationLane model). Absent/empty entries render
+// nothing — a group only appears once at least one lane exists for its owner.
+function readAutomationGroup(automationGroups, ownerKey) {
+  const group = automationGroups?.[ownerKey]
+  const lanes = Array.isArray(group?.lanes) ? group.lanes : []
+  if (lanes.length === 0) return null
+  return { collapsed: group.collapsed === true, lanes: [...lanes].sort((a, b) => a.index - b.index) }
 }
 
 // Compose the compact child-lane label, e.g. "Macro 1 Automation". The macro
@@ -45,6 +64,45 @@ export function macroLaneLabel(macroNode) {
 // whose child lanes are hidden as a group (collapse affordance). A lane is also
 // hidden when its own `visible` flag is false. Orphaned lanes (targetUnavailable)
 // still render so the user can see/repair them — they are never silently dropped.
+// Pushes an automation group header row (and, unless collapsed, its lane rows)
+// for one owner. Returns the advanced `y`. Shared by the pinned Master group
+// (pushed once, before any track) and each track's own group (pushed inside
+// appendTrack). No-ops (returns `y` unchanged) when the owner has no lanes.
+function pushAutomationGroupRows(rows, { ownerTrackId, ownerLabel, y, automationGroups, laneHeight, headerHeight }) {
+  const group = readAutomationGroup(automationGroups, String(ownerTrackId))
+  if (!group) return y
+  rows.push({
+    id: `automationGroup:${ownerTrackId}`,
+    rowType: 'automationGroupHeader',
+    laneKind: 'automationGroupHeader',
+    ownerTrackId,
+    y,
+    height: headerHeight,
+    visible: true,
+    collapsed: group.collapsed,
+    laneCount: group.lanes.length,
+    label: ownerLabel,
+  })
+  y += headerHeight
+  if (group.collapsed) return y
+  for (const lane of group.lanes) {
+    rows.push({
+      id: `automationLane:${ownerTrackId}:${lane.id}`,
+      rowType: 'automationLane',
+      laneKind: 'automationLane',
+      ownerTrackId,
+      laneId: lane.id,
+      index: lane.index,
+      y,
+      height: laneHeight,
+      visible: true,
+      label: lane.label ?? null,
+    })
+    y += laneHeight
+  }
+  return y
+}
+
 export function buildTimelineRows({
   tracks,
   graphStates = {},
@@ -53,6 +111,9 @@ export function buildTimelineRows({
   trackHeight = TRACK_HEIGHT,
   macroLaneHeight = Math.round(MACRO_LANE_HEIGHT * trackHeight / DEFAULT_TRACK_HEIGHT),
   folderRowHeight = FOLDER_ROW_HEIGHT,
+  automationGroups = null,
+  automationLaneHeight = Math.round(AUTOMATION_LANE_HEIGHT * trackHeight / DEFAULT_TRACK_HEIGHT),
+  automationGroupHeaderHeight = AUTOMATION_GROUP_HEADER_HEIGHT,
 } = {}) {
   const rows = []
   if (!Array.isArray(tracks)) return rows
@@ -62,6 +123,13 @@ export function buildTimelineRows({
   let visibleTrackIndex = 0
   const trackById = new Map(tracks.map(track => [track.id, track]))
   const folderById = new Map((folderLayout?.folders ?? []).map(folder => [folder.id, folder]))
+
+  // Pinned Master automation group — always the very first row(s), above every
+  // track, when at least one Master-owned lane exists.
+  y = pushAutomationGroupRows(rows, {
+    ownerTrackId: -1, ownerLabel: 'Master', y, automationGroups,
+    laneHeight: automationLaneHeight, headerHeight: automationGroupHeaderHeight,
+  })
 
   const appendTrack = (track) => {
     const trackIndex = visibleTrackIndex++
@@ -84,6 +152,12 @@ export function buildTimelineRows({
 
     const trackCollapsed = collapsedSet?.has(trackId)
     if (trackCollapsed) return
+
+    // Automation lanes group directly under their owning track row.
+    y = pushAutomationGroupRows(rows, {
+      ownerTrackId: trackId, ownerLabel: track?.name ?? '', y, automationGroups,
+      laneHeight: automationLaneHeight, headerHeight: automationGroupHeaderHeight,
+    })
 
     const graphState = graphStates?.[String(trackId)]
     const lanes = readLanes(graphState)
@@ -147,11 +221,16 @@ export function buildTimelineRows({
 // Derives a layout "view" over the rows that the canvas + tools consult. Keeps
 // the `trackIndex → y` and `y → trackIndex` conversions in one place so the
 // shifted geometry is identical everywhere.
-export function buildTrackLayout({ tracks, graphStates = {}, collapsed = null, folderLayout = null, trackHeight = TRACK_HEIGHT } = {}) {
-  const rows = buildTimelineRows({ tracks, graphStates, collapsed, folderLayout, trackHeight })
+export function buildTrackLayout({
+  tracks, graphStates = {}, collapsed = null, folderLayout = null, trackHeight = TRACK_HEIGHT,
+  automationGroups = null,
+} = {}) {
+  const rows = buildTimelineRows({ tracks, graphStates, collapsed, folderLayout, trackHeight, automationGroups })
   const trackRows = rows.filter((r) => r.rowType === 'track')
   const macroRows = rows.filter((r) => r.rowType === 'macroAutomation')
   const folderRows = rows.filter((r) => r.rowType === 'folder')
+  const automationGroupRows = rows.filter((r) => r.rowType === 'automationGroupHeader')
+  const automationLaneRows = rows.filter((r) => r.rowType === 'automationLane')
   const trackCount = trackRows.length
 
   // y top per track index.
@@ -177,7 +256,7 @@ export function buildTrackLayout({ tracks, graphStates = {}, collapsed = null, f
     if (y < 0) return 0
     for (const r of rows) {
       if (y >= r.y && y < r.y + r.height) {
-        if (r.rowType === 'folder') return -1
+        if (r.rowType === 'folder' || r.rowType === 'automationGroupHeader' || r.rowType === 'automationLane') return -1
         return r.rowType === 'track' ? r.trackIndex : r.parentTrackIndex
       }
     }
@@ -192,19 +271,35 @@ export function buildTrackLayout({ tracks, graphStates = {}, collapsed = null, f
     return null
   }
 
+  // Returns the automation lane row whose band contains Y, else null. Used by
+  // automation clip hit-testing/drag — clips live on a specific lane, not a
+  // parent track, so this is looked up independently of trackIndexAtY.
+  function automationLaneRowAtY(y) {
+    for (const r of automationLaneRows) {
+      if (y >= r.y && y < r.y + r.height) return r
+    }
+    return null
+  }
+
   return {
     rows,
     trackRows,
     macroRows,
     folderRows,
+    automationGroupRows,
+    automationLaneRows,
     trackCount,
     totalHeight,
     trackTops,
     trackTop,
     trackIndexAtY,
     macroRowAtY,
+    automationLaneRowAtY,
     folderRowAtY: (y) => folderRows.find(r => y >= r.y && y < r.y + r.height) ?? null,
+    automationGroupRowAtY: (y) => automationGroupRows.find(r => y >= r.y && y < r.y + r.height) ?? null,
     getMacroRows: () => macroRows,
     getFolderRows: () => folderRows,
+    getAutomationGroupRows: () => automationGroupRows,
+    getAutomationLaneRows: () => automationLaneRows,
   }
 }

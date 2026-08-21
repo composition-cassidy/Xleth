@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, useState, useEffect } from 'react'
-import { ChevronDown, ChevronRight, EyeOff, Folder, Plus, Sliders, Trash2 } from 'lucide-react'
+import { ChevronDown, ChevronRight, EyeOff, Folder, Plus, Sliders, Trash2, Activity } from 'lucide-react'
 import TrackHeader from './TrackHeader.jsx'
 import TrackColorPopover from './TrackColorPopover.jsx'
 import TrackContextMenu from './TrackContextMenu.jsx'
@@ -29,6 +29,9 @@ export default function TrackHeaderList({
   trackHeight,
   macroRows = [],
   onHideMacroLane,
+  automationGroupRows = [],
+  automationLaneRows = [],
+  onToggleAutomationGroup,
 }) {
   const dragRef = useRef(null)
   const trackById = useMemo(() => new Map(tracks.map(track => [track.id, track])), [tracks])
@@ -53,6 +56,22 @@ export default function TrackHeaderList({
     }
     return map
   }, [macroRows])
+
+  // Automation clip lanes (Phase B) — grouped under their owning track, or the
+  // pinned Master group (ownerTrackId -1), rendered separately from macro lanes.
+  const automationGroupByOwner = useMemo(() => {
+    const map = new Map()
+    for (const row of automationGroupRows) map.set(row.ownerTrackId, row)
+    return map
+  }, [automationGroupRows])
+  const automationLanesByOwner = useMemo(() => {
+    const map = new Map()
+    for (const row of automationLaneRows) {
+      if (!map.has(row.ownerTrackId)) map.set(row.ownerTrackId, [])
+      map.get(row.ownerTrackId).push(row)
+    }
+    return map
+  }, [automationLaneRows])
 
   const [openColorPickerId, setOpenColorPickerId] = useState(null)
   const [folderMenu, setFolderMenu] = useState(null)
@@ -110,6 +129,38 @@ export default function TrackHeaderList({
     if (scrollContainerRef?.current) scrollContainerRef.current.scrollTop = event.currentTarget.scrollTop
   }, [scrollContainerRef])
 
+  const renderAutomationGroup = (ownerTrackId) => {
+    const groupRow = automationGroupByOwner.get(ownerTrackId)
+    if (!groupRow) return null
+    const laneRows = automationLanesByOwner.get(ownerTrackId) ?? []
+    return (
+      <div key={`automation-group:${ownerTrackId}`} className="track-header-automation-group">
+        <button
+          type="button"
+          className="track-header-automation-group-header"
+          style={{ height: groupRow.height }}
+          onClick={() => onToggleAutomationGroup?.(ownerTrackId, !groupRow.collapsed)}
+          title={groupRow.collapsed ? 'Expand automation lanes' : 'Collapse automation lanes'}
+        >
+          {groupRow.collapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
+          <Activity size={11} className="track-header-automation-group-icon" strokeWidth={2} />
+          <span className="track-header-automation-group-label">{groupRow.label || 'Automation'}</span>
+          <span className="track-header-automation-group-count">{groupRow.laneCount}</span>
+        </button>
+        {!groupRow.collapsed && laneRows.map((lane) => (
+          <div
+            key={lane.id}
+            className="track-header-automation-lane"
+            style={{ height: lane.height }}
+            title={lane.label || `Lane ${lane.index + 1}`}
+          >
+            <span className="track-header-automation-lane-label">{lane.label || `Lane ${lane.index + 1}`}</span>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
   const renderTrack = (trackId, target) => {
     const track = trackById.get(trackId)
     if (!track) return null
@@ -140,6 +191,7 @@ export default function TrackHeaderList({
           onDrop={(event) => dropAt(event, target)}
           onOpenColorPicker={openColorPicker}
         />
+        {renderAutomationGroup(track.id)}
         {laneRows.map(lane => (
           <div
             key={lane.id}
@@ -168,6 +220,7 @@ export default function TrackHeaderList({
       <div className="timeline-header-spacer" style={{ height: RULER_HEIGHT }} />
       <div className="timeline-header-scroll" onScroll={handleScroll}
         onMouseDown={(event) => { if (event.target === event.currentTarget) onClearSelection?.() }}>
+        {renderAutomationGroup(-1)}
         {rootOrder.map((item, rootIndex) => {
           if (item.kind === 'track') return renderTrack(item.id, { kind: 'root', index: rootIndex })
           const folder = folderById.get(item.id)

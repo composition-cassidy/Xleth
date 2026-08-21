@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useImperativeHandle, forwardRef, useCallback, useMemo } from 'react'
-import { drawGrid, drawClips, drawDropPreview, drawPatternBlocks, drawWorldSpinners, drawGhostClips, resolveTimelinePalette } from './timelineDrawing.js'
+import { drawGrid, drawClips, drawDropPreview, drawPatternBlocks, drawAutomationClips, drawWorldSpinners, drawGhostClips, resolveTimelinePalette } from './timelineDrawing.js'
 import { buildResolvedTrackColorMap } from './trackColorResolver.js'
 import useWorldProcessingStore from '../../stores/worldProcessingStore.js'
 import useGhostClipStore from '../../stores/ghostClipStore.js'
@@ -68,6 +68,11 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     scrollOffset,    // state value — used for badge re-positioning on scroll
     pixelsPerBeat,   // state value — used for badge re-positioning on zoom
     trackLayout,     // FXG.4-h-r1: derived row layout (track + macro lane rows)
+    // Automation clips (Phase B)
+    automationClips, automationEnvelopesById, automationBindingLabelsById,
+    selectedAutomationClipIds, setSelectedAutomationClipIds,
+    onMoveAutomationClip, onResizeAutomationClip, onResizeAutomationClipLeft,
+    onRequestAutomationClipContextMenu,
   },
   ref
 ) {
@@ -97,6 +102,10 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   const currentPatternIdByTrackRef = useRef(currentPatternIdByTrack)
   const timelineDisplaySettingsRef = useRef(timelineDisplaySettings)
   const clipControlSpecRef = useRef(normalizeClipControlSpec(clipControlSpec))
+  const automationClipsRef = useRef(automationClips)
+  const selectedAutomationClipIdsRef = useRef(selectedAutomationClipIds)
+  const automationEnvelopesByIdRef = useRef(automationEnvelopesById)
+  const automationBindingLabelsByIdRef = useRef(automationBindingLabelsById)
 
   // FXG.4-h-r1: hold the derived row layout in a ref so the canvas hot draw
   // path + tools read the current track/lane geometry without re-creating tools.
@@ -132,6 +141,10 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   currentPatternIdByTrackRef.current = currentPatternIdByTrack
   timelineDisplaySettingsRef.current = timelineDisplaySettings
   clipControlSpecRef.current = normalizeClipControlSpec(clipControlSpec)
+  automationClipsRef.current = automationClips
+  selectedAutomationClipIdsRef.current = selectedAutomationClipIds
+  automationEnvelopesByIdRef.current = automationEnvelopesById
+  automationBindingLabelsByIdRef.current = automationBindingLabelsById
 
   // ── Tool instance ref ────────────────────────────────────────────────────
   const toolRef = useRef(null)
@@ -249,6 +262,16 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       selectedBlockIdsRef.current, mutedTrackIds, palette,
       timelineDisplaySettingsRef.current, trackColorById, trackLayoutRef.current
     )
+    if (automationClipsRef.current?.length) {
+      const laneRows = trackLayoutRef.current?.getAutomationLaneRows?.() ?? []
+      const laneRowsByLaneId = new Map(laneRows.map((r) => [r.laneId, r]))
+      drawAutomationClips(
+        ctx, w, h,
+        scrollOffsetRef.current, pixelsPerBeatRef.current,
+        automationClipsRef.current, laneRowsByLaneId, automationEnvelopesByIdRef.current,
+        selectedAutomationClipIdsRef.current, palette, automationBindingLabelsByIdRef.current
+      )
+    }
     if (ghostClipsRef.current?.length) {
       const so  = scrollOffsetRef.current
       const ppb = pixelsPerBeatRef.current
@@ -377,6 +400,10 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       onCreatePatternBlock, onMovePatternBlocks, onDuplicatePatternBlocks, onResizePatternBlock, onResizePatternBlockLeft,
       onDeletePatternBlock, onSplitPatternBlock,
       onRequestPatternBlockContextMenu,
+      // Automation clip deps (Phase B)
+      automationClipsRef, selectedAutomationClipIdsRef, setSelectedAutomationClipIds,
+      onMoveAutomationClip, onResizeAutomationClip, onResizeAutomationClipLeft,
+      onRequestAutomationClipContextMenu,
     }
 
     const factories = {

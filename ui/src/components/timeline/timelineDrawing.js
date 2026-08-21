@@ -26,6 +26,10 @@ import {
   normalizeClipFades,
   shouldDrawFadeOverlay,
 } from './clipControlSpec.js'
+import {
+  buildAutomationCurveCanvasPoints,
+  buildAutomationHoldLine,
+} from './automationLaneGeometry.js'
 
 // Default engine sample rate (used for spp computation when no per-region rate is known)
 const DEFAULT_SR = 48000
@@ -232,7 +236,13 @@ export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null
     }
     ctx.fillStyle = withAlpha(p.laneSeparator, 0.22)
     for (const r of trackLayout.rows) {
-      if (r.rowType !== 'folder') continue
+      if (r.rowType !== 'folder' && r.rowType !== 'automationGroupHeader') continue
+      if (r.y >= h) break
+      ctx.fillRect(0, r.y, w, r.height)
+    }
+    ctx.fillStyle = withAlpha(p.laneSeparator, 0.14)
+    for (const r of trackLayout.rows) {
+      if (r.rowType !== 'automationLane') continue
       if (r.y >= h) break
       ctx.fillRect(0, r.y, w, r.height)
     }
@@ -1759,6 +1769,119 @@ export function drawPatternBlocks(ctx, w, h, scrollOffset, ppb, blocks, trackIdT
         }
         ctx.restore()
       }
+    }
+  }
+}
+
+// ── Automation clips (Phase B) ───────────────────────────────────────────────
+// Canvas-only per the locked spec — no DOM overlay (would drift on scroll/zoom
+// and corrupt hit-testing). Envelope points/hold-line come from
+// automationLaneGeometry.js; this function only turns that geometry into pixels.
+
+export function drawAutomationClips(
+  ctx, w, h, scrollOffset, ppb,
+  automationClips, automationLaneRowsByLaneId, automationEnvelopesById,
+  selectedAutomationClipIds, palette = null, bindingLabelsByEnvelopeId = null,
+) {
+  if (!automationClips || automationClips.length === 0) return
+  const p = palette ?? resolveTimelinePalette()
+  const accent = p.accent || '#5b8aff'
+
+  for (let i = 0; i < automationClips.length; i++) {
+    const clip = automationClips[i]
+    const laneRow = automationLaneRowsByLaneId?.get(clip.laneId)
+    if (!laneRow) continue // lane hidden (group collapsed) — nothing to draw
+
+    const x = ((clip.positionTicks / PPQ) - scrollOffset) * ppb
+    const rawW = (clip.durationTicks / PPQ) * ppb
+    const clipW = Math.max(24, rawW)
+    if (x + clipW < 0 || x > w) continue
+    if (laneRow.y >= h || laneRow.y + laneRow.height < 0) continue
+
+    const y = laneRow.y + 2
+    const clipH = Math.max(1, laneRow.height - 4)
+    const selected = selectedAutomationClipIds?.has(clip.id)
+
+    // ── Body — neutral by default; accent is earned only by selection. ────
+    ctx.fillStyle = p.clipWaveformBg || 'rgba(255,255,255,0.04)'
+    ctx.fillRect(x, y, clipW, clipH)
+    ctx.strokeStyle = selected ? accent : (p.laneSeparator || 'rgba(255,255,255,0.2)')
+    ctx.lineWidth = selected ? 1.5 : 1
+    ctx.strokeRect(x + 0.5, y + 0.5, clipW - 1, clipH - 1)
+
+    const headerH = Math.min(12, Math.max(0, clipH - 6))
+    const envelope = automationEnvelopesById?.get(clip.envelopeId)
+    const points = envelope?.points ?? []
+    const contentTop = y + headerH + 1
+    const contentH = Math.max(1, clipH - headerH - 3)
+
+    // ── Envelope curve, clipped to the clip body so points outside the
+    // visible [offset, offset+duration) window never bleed past the edges. ──
+    if (points.length > 0 && clipW > 2) {
+      ctx.save()
+      ctx.beginPath()
+      ctx.rect(x, contentTop, clipW, contentH)
+      ctx.clip()
+
+      const curvePoints = buildAutomationCurveCanvasPoints(points, clip, ppb, scrollOffset, contentTop, contentH)
+      if (curvePoints.length > 0) {
+        ctx.strokeStyle = accent
+        ctx.lineWidth = 1.5
+        ctx.lineJoin = 'round'
+        ctx.lineCap = 'round'
+        ctx.beginPath()
+        curvePoints.forEach((pt, idx) => (idx === 0 ? ctx.moveTo(pt.x, pt.y) : ctx.lineTo(pt.x, pt.y)))
+        ctx.stroke()
+
+        // Point dots
+        ctx.fillStyle = p.bg || '#000'
+        for (const pt of curvePoints) {
+          ctx.beginPath()
+          ctx.arc(pt.x, pt.y, 2.2, 0, Math.PI * 2)
+          ctx.fill()
+          ctx.strokeStyle = accent
+          ctx.lineWidth = 1
+          ctx.stroke()
+        }
+      }
+
+      // Dotted hold-line past the last point to the clip's right edge (FL parity).
+      const holdLine = buildAutomationHoldLine(points, clip, ppb, scrollOffset, contentTop, contentH)
+      if (holdLine) {
+        ctx.strokeStyle = withAlpha(accent, 0.6)
+        ctx.lineWidth = 1
+        ctx.setLineDash([2, 3])
+        ctx.beginPath()
+        ctx.moveTo(holdLine.x1, holdLine.y)
+        ctx.lineTo(holdLine.x2, holdLine.y)
+        ctx.stroke()
+        ctx.setLineDash([])
+      }
+      ctx.restore()
+    }
+
+    // ── Header: binding label ("<EffectName> - <ParamName>"), when there's
+    // room for it. ──────────────────────────────────────────────────────────
+    if (headerH >= 8 && clipW > 20) {
+      const label = bindingLabelsByEnvelopeId?.get(clip.envelopeId)
+      if (label) {
+        ctx.save()
+        ctx.beginPath()
+        ctx.rect(x + 2, y, clipW - 4, headerH)
+        ctx.clip()
+        ctx.fillStyle = p.clipLabel || p.patternLabel
+        ctx.font = uiCanvasFont('600 9px')
+        ctx.textBaseline = 'top'
+        ctx.fillText(label, x + 3, y + 1)
+        ctx.restore()
+      }
+    }
+
+    // ── Resize handles when selected ───────────────────────────────────────
+    if (selected && clipW > 18) {
+      ctx.fillStyle = accent
+      ctx.fillRect(x, y, 3, clipH)
+      ctx.fillRect(x + clipW - 3, y, 3, clipH)
     }
   }
 }
