@@ -1,4 +1,5 @@
 #include "Timeline.h"
+#include "AutomationEnvelope.h"
 #include "SamplerLegacyMigration.h"
 #include <algorithm>
 #include <cmath>
@@ -2092,6 +2093,374 @@ bool Timeline::restoreNoteInPattern(int patternId, const PatternNote& note) {
     return true;
 }
 
+// ─── Automation clips (Phase A) ───────────────────────────────────────────────
+//
+// The model layer. Validation and invariant enforcement live HERE, not in the
+// commands, so a future command type cannot bypass them:
+//   • same-lane overlap is rejected by addAutomationClip / moveAutomationClip /
+//     resizeAutomationClip*;
+//   • point lists stay sorted ascending by tick through the xleth::automation
+//     helpers (model/AutomationEnvelope.h);
+//   • removing a lane cascades to its clips but never to a shared envelope.
+
+int Timeline::addAutomationLane(AutomationLane lane) {
+    if (lane.ownerTrackId != -1 && m_tracks.find(lane.ownerTrackId) == m_tracks.end()) {
+        std::cout << "[Timeline] ERROR addAutomationLane: ownerTrackId="
+                  << lane.ownerTrackId << " not found\n";
+        return -1;
+    }
+    if (lane.index < 0) {
+        // Append: one past the owner's current last lane.
+        int maxIndex = -1;
+        for (const auto& [id, l] : m_automationLanes)
+            if (l.ownerTrackId == lane.ownerTrackId) maxIndex = std::max(maxIndex, l.index);
+        lane.index = maxIndex + 1;
+    }
+    lane.id = getNextId();
+    m_automationLanes[lane.id] = lane;
+    if (!inBulkEdit())
+        std::cout << "[Timeline] Added automationLane id=" << lane.id
+                  << " owner=" << lane.ownerTrackId << " index=" << lane.index << "\n";
+    return lane.id;
+}
+
+const AutomationLane* Timeline::getAutomationLane(int id) const {
+    auto it = m_automationLanes.find(id);
+    return it == m_automationLanes.end() ? nullptr : &it->second;
+}
+
+std::vector<const AutomationLane*> Timeline::getAllAutomationLanes() const {
+    std::vector<const AutomationLane*> out;
+    out.reserve(m_automationLanes.size());
+    for (const auto& [id, l] : m_automationLanes) out.push_back(&l);
+    return out;
+}
+
+std::vector<const AutomationLane*> Timeline::getAutomationLanesForOwner(int ownerTrackId) const {
+    std::vector<const AutomationLane*> out;
+    for (const auto& [id, l] : m_automationLanes)
+        if (l.ownerTrackId == ownerTrackId) out.push_back(&l);
+    std::sort(out.begin(), out.end(), [](const AutomationLane* a, const AutomationLane* b) {
+        return a->index != b->index ? a->index < b->index : a->id < b->id;
+    });
+    return out;
+}
+
+bool Timeline::removeAutomationLane(int id) {
+    auto it = m_automationLanes.find(id);
+    if (it == m_automationLanes.end()) return false;
+
+    // Cascade to the lane's clips. Envelopes are deliberately NOT touched: a
+    // sibling clip on another lane may still share one, and an orphaned
+    // envelope costs a few bytes while a wrongly-deleted one loses user data.
+    for (auto cit = m_automationClips.begin(); cit != m_automationClips.end();) {
+        if (cit->second.laneId == id) cit = m_automationClips.erase(cit);
+        else                          ++cit;
+    }
+    m_automationLanes.erase(it);
+    if (!inBulkEdit())
+        std::cout << "[Timeline] Removed automationLane id=" << id << " (clips cascaded)\n";
+    return true;
+}
+
+bool Timeline::restoreAutomationLane(const AutomationLane& lane) {
+    if (m_automationLanes.count(lane.id)) return false;
+    m_automationLanes[lane.id] = lane;
+    if (lane.id >= m_nextId) m_nextId = lane.id + 1;
+    return true;
+}
+
+bool Timeline::setAutomationLaneIndex(int id, int index) {
+    auto it = m_automationLanes.find(id);
+    if (it == m_automationLanes.end()) return false;
+    it->second.index = std::max(0, index);
+    return true;
+}
+
+// ── Envelopes ────────────────────────────────────────────────────────────────
+
+int Timeline::addAutomationEnvelope(AutomationEnvelope envelope) {
+    if (!envelope.binding.valid()) {
+        std::cout << "[Timeline] ERROR addAutomationEnvelope: invalid binding\n";
+        return -1;
+    }
+    xleth::automation::normalizePoints(envelope.points);
+    const int id = getNextId();
+    envelope.id = id;
+    m_automationEnvelopes[id] = std::move(envelope);
+    if (!inBulkEdit())
+        std::cout << "[Timeline] Added automationEnvelope id=" << id << "\n";
+    return id;
+}
+
+const AutomationEnvelope* Timeline::getAutomationEnvelope(int id) const {
+    auto it = m_automationEnvelopes.find(id);
+    return it == m_automationEnvelopes.end() ? nullptr : &it->second;
+}
+
+AutomationEnvelope* Timeline::getAutomationEnvelopeMutable(int id) {
+    auto it = m_automationEnvelopes.find(id);
+    return it == m_automationEnvelopes.end() ? nullptr : &it->second;
+}
+
+std::vector<const AutomationEnvelope*> Timeline::getAllAutomationEnvelopes() const {
+    std::vector<const AutomationEnvelope*> out;
+    out.reserve(m_automationEnvelopes.size());
+    for (const auto& [id, e] : m_automationEnvelopes) out.push_back(&e);
+    return out;
+}
+
+bool Timeline::removeAutomationEnvelope(int id) {
+    return m_automationEnvelopes.erase(id) > 0;
+}
+
+bool Timeline::restoreAutomationEnvelope(const AutomationEnvelope& envelope) {
+    if (m_automationEnvelopes.count(envelope.id)) return false;
+    m_automationEnvelopes[envelope.id] = envelope;
+    xleth::automation::normalizePoints(m_automationEnvelopes[envelope.id].points);
+    if (envelope.id >= m_nextId) m_nextId = envelope.id + 1;
+    return true;
+}
+
+bool Timeline::setAutomationEnvelopePoints(int envelopeId, std::vector<AutomationPoint> points) {
+    auto it = m_automationEnvelopes.find(envelopeId);
+    if (it == m_automationEnvelopes.end()) return false;
+    xleth::automation::normalizePoints(points);
+    it->second.points = std::move(points);
+    return true;
+}
+
+// ── Clips ────────────────────────────────────────────────────────────────────
+
+bool Timeline::automationClipOverlaps(int laneId, TickTime position, TickTime duration,
+                                      int ignoreClipId) const {
+    const int64_t s = position.ticks;
+    const int64_t e = position.ticks + duration.ticks;
+    if (e <= s) return false;   // zero/negative length occupies nothing
+    for (const auto& [id, c] : m_automationClips) {
+        if (id == ignoreClipId)   continue;
+        if (c.laneId != laneId)   continue;
+        const int64_t cs = c.position.ticks;
+        const int64_t ce = c.position.ticks + c.duration.ticks;
+        if (ce <= cs) continue;
+        if (s < ce && cs < e) return true;   // half-open intervals intersect
+    }
+    return false;
+}
+
+int Timeline::addAutomationClip(AutomationClip clip) {
+    if (m_automationLanes.find(clip.laneId) == m_automationLanes.end()) {
+        std::cout << "[Timeline] ERROR addAutomationClip: laneId="
+                  << clip.laneId << " not found\n";
+        return -1;
+    }
+    if (m_automationEnvelopes.find(clip.envelopeId) == m_automationEnvelopes.end()) {
+        std::cout << "[Timeline] ERROR addAutomationClip: envelopeId="
+                  << clip.envelopeId << " not found\n";
+        return -1;
+    }
+    if (clip.duration.ticks <= 0) {
+        std::cout << "[Timeline] ERROR addAutomationClip: non-positive duration="
+                  << clip.duration.ticks << "\n";
+        return -1;
+    }
+    if (automationClipOverlaps(clip.laneId, clip.position, clip.duration)) {
+        std::cout << "[Timeline] addAutomationClip: rejected same-lane overlap on laneId="
+                  << clip.laneId << " at position=" << clip.position.ticks << "\n";
+        return -1;
+    }
+
+    clip.id = getNextId();
+    m_automationClips[clip.id] = clip;
+    if (!inBulkEdit())
+        std::cout << "[Timeline] Added automationClip id=" << clip.id
+                  << " laneId=" << clip.laneId << " envelopeId=" << clip.envelopeId
+                  << " pos=" << clip.position.ticks << " dur=" << clip.duration.ticks << "\n";
+    return clip.id;
+}
+
+const AutomationClip* Timeline::getAutomationClip(int id) const {
+    auto it = m_automationClips.find(id);
+    return it == m_automationClips.end() ? nullptr : &it->second;
+}
+
+std::vector<const AutomationClip*> Timeline::getAllAutomationClips() const {
+    std::vector<const AutomationClip*> out;
+    out.reserve(m_automationClips.size());
+    for (const auto& [id, c] : m_automationClips) out.push_back(&c);
+    return out;
+}
+
+std::vector<const AutomationClip*> Timeline::getAutomationClipsOnLane(int laneId) const {
+    std::vector<const AutomationClip*> out;
+    for (const auto& [id, c] : m_automationClips)
+        if (c.laneId == laneId) out.push_back(&c);
+    std::sort(out.begin(), out.end(), [](const AutomationClip* a, const AutomationClip* b) {
+        return a->position.ticks < b->position.ticks;
+    });
+    return out;
+}
+
+bool Timeline::removeAutomationClip(int id) {
+    return m_automationClips.erase(id) > 0;
+}
+
+bool Timeline::restoreAutomationClip(const AutomationClip& clip) {
+    if (m_automationClips.count(clip.id)) return false;
+    m_automationClips[clip.id] = clip;
+    if (clip.id >= m_nextId) m_nextId = clip.id + 1;
+    return true;
+}
+
+bool Timeline::moveAutomationClip(int id, int newLaneId, TickTime newPosition) {
+    auto it = m_automationClips.find(id);
+    if (it == m_automationClips.end()) return false;
+    if (m_automationLanes.find(newLaneId) == m_automationLanes.end()) {
+        std::cout << "[Timeline] ERROR moveAutomationClip: laneId=" << newLaneId << " not found\n";
+        return false;
+    }
+    if (newPosition.ticks < 0) newPosition.ticks = 0;
+    if (automationClipOverlaps(newLaneId, newPosition, it->second.duration, id)) {
+        std::cout << "[Timeline] moveAutomationClip: rejected same-lane overlap (clip id="
+                  << id << " -> laneId=" << newLaneId << " pos=" << newPosition.ticks << ")\n";
+        return false;
+    }
+    it->second.laneId   = newLaneId;
+    it->second.position = newPosition;
+    return true;
+}
+
+bool Timeline::resizeAutomationClip(int id, TickTime newDuration) {
+    auto it = m_automationClips.find(id);
+    if (it == m_automationClips.end()) return false;
+    if (newDuration.ticks <= 0) return false;
+    if (automationClipOverlaps(it->second.laneId, it->second.position, newDuration, id)) {
+        std::cout << "[Timeline] resizeAutomationClip: rejected same-lane overlap (clip id="
+                  << id << " dur=" << newDuration.ticks << ")\n";
+        return false;
+    }
+    it->second.duration = newDuration;
+    return true;
+}
+
+bool Timeline::resizeAutomationClipLeft(int id, TickTime newPosition,
+                                        TickTime newDuration, TickTime newOffset) {
+    auto it = m_automationClips.find(id);
+    if (it == m_automationClips.end()) return false;
+    if (newDuration.ticks <= 0) return false;
+    if (newPosition.ticks < 0)  return false;
+    if (automationClipOverlaps(it->second.laneId, newPosition, newDuration, id)) {
+        std::cout << "[Timeline] resizeAutomationClipLeft: rejected same-lane overlap (clip id="
+                  << id << ")\n";
+        return false;
+    }
+    it->second.position = newPosition;
+    it->second.duration = newDuration;
+    it->second.offset   = newOffset;
+    return true;
+}
+
+int Timeline::makeAutomationClipUnique(int id) {
+    auto it = m_automationClips.find(id);
+    if (it == m_automationClips.end()) return -1;
+    auto eit = m_automationEnvelopes.find(it->second.envelopeId);
+    if (eit == m_automationEnvelopes.end()) return -1;
+
+    AutomationEnvelope copy = eit->second;
+    copy.id = getNextId();
+    m_automationEnvelopes[copy.id] = copy;
+    it->second.envelopeId = copy.id;
+    if (!inBulkEdit())
+        std::cout << "[Timeline] makeAutomationClipUnique clip=" << id
+                  << " envelope " << eit->first << " -> " << copy.id << "\n";
+    return copy.id;
+}
+
+// ── Points ───────────────────────────────────────────────────────────────────
+
+bool Timeline::addAutomationPoint(int envelopeId, AutomationPoint point) {
+    auto it = m_automationEnvelopes.find(envelopeId);
+    if (it == m_automationEnvelopes.end()) return false;
+    xleth::automation::insertPoint(it->second.points, point);
+    return true;
+}
+
+bool Timeline::removeAutomationPoint(int envelopeId, int pointIndex) {
+    auto it = m_automationEnvelopes.find(envelopeId);
+    if (it == m_automationEnvelopes.end() || pointIndex < 0) return false;
+    return xleth::automation::removePoint(it->second.points,
+                                          static_cast<std::size_t>(pointIndex));
+}
+
+bool Timeline::moveAutomationPoint(int envelopeId, int pointIndex,
+                                   TickTime newTick, double newValue) {
+    auto it = m_automationEnvelopes.find(envelopeId);
+    if (it == m_automationEnvelopes.end() || pointIndex < 0) return false;
+    const std::size_t landed = xleth::automation::movePoint(
+        it->second.points, static_cast<std::size_t>(pointIndex), newTick.ticks, newValue);
+    return landed != static_cast<std::size_t>(-1);
+}
+
+bool Timeline::setAutomationPointCurve(int envelopeId, int pointIndex,
+                                       AutomationCurveType curveType, double tension) {
+    auto it = m_automationEnvelopes.find(envelopeId);
+    if (it == m_automationEnvelopes.end() || pointIndex < 0) return false;
+    return xleth::automation::setPointCurve(it->second.points,
+                                            static_cast<std::size_t>(pointIndex),
+                                            curveType, tension);
+}
+
+// ── Deletion-contract queries ────────────────────────────────────────────────
+
+std::vector<const AutomationClip*> Timeline::getAutomationClipsForEffectInstance(
+    int ownerTrackId, const std::string& effectInstanceId) const {
+    std::vector<const AutomationClip*> out;
+    if (effectInstanceId.empty()) return out;
+    for (const auto& [id, c] : m_automationClips) {
+        auto eit = m_automationEnvelopes.find(c.envelopeId);
+        if (eit == m_automationEnvelopes.end()) continue;
+        const auto& b = eit->second.binding;
+        if (b.ownerTrackId == ownerTrackId && b.effectInstanceId == effectInstanceId)
+            out.push_back(&c);
+    }
+    std::sort(out.begin(), out.end(), [](const AutomationClip* a, const AutomationClip* b) {
+        return a->id < b->id;
+    });
+    return out;
+}
+
+std::vector<int> Timeline::getAutomationEnvelopeIdsForEffectInstance(
+    int ownerTrackId, const std::string& effectInstanceId) const {
+    std::vector<int> out;
+    if (effectInstanceId.empty()) return out;
+    for (const auto& [id, e] : m_automationEnvelopes)
+        if (e.binding.ownerTrackId == ownerTrackId && e.binding.effectInstanceId == effectInstanceId)
+            out.push_back(id);
+    return out;   // std::map iteration is already ascending and deduplicated by id
+}
+
+// ── Base values ──────────────────────────────────────────────────────────────
+
+double Timeline::getAutomationBaseValue(const AutomationBinding& binding, bool* found) const {
+    auto it = m_automationBaseValues.find(binding);
+    if (it == m_automationBaseValues.end()) {
+        if (found) *found = false;
+        return 0.0;
+    }
+    if (found) *found = true;
+    return it->second;
+}
+
+void Timeline::setAutomationBaseValue(const AutomationBinding& binding, double value) {
+    if (!binding.valid()) return;
+    if (!std::isfinite(value)) value = 0.0;
+    m_automationBaseValues[binding] = std::clamp(value, 0.0, 1.0);
+}
+
+bool Timeline::clearAutomationBaseValue(const AutomationBinding& binding) {
+    return m_automationBaseValues.erase(binding) > 0;
+}
+
 // ─── Serialization ────────────────────────────────────────────────────────────
 
 nlohmann::json Timeline::toJSON() const {
@@ -2162,6 +2531,28 @@ nlohmann::json Timeline::toJSON() const {
         nlohmann::json bj = b;  // ADL calls to_json(j, const PatternBlock&)
         j["patternBlocks"].push_back(bj);
     }
+
+    // ── Automation clips ─────────────────────────────────────────────────────
+    // Three flat arrays, always written (empty arrays cost 2 bytes each and keep
+    // the reader from having to distinguish "absent" from "none"). Envelopes use
+    // the paramtrack-style compact shape: `points` omitted when empty, `c`/`n`
+    // omitted at their defaults. Base values are keyed by binding, not by
+    // envelope, so two lanes on one parameter persist one manual value.
+    j["automationLanes"] = nlohmann::json::array();
+    for (const auto& [id, l] : m_automationLanes)
+        j["automationLanes"].push_back(automationLaneToJson(l));
+
+    j["automationClips"] = nlohmann::json::array();
+    for (const auto& [id, c] : m_automationClips)
+        j["automationClips"].push_back(automationClipToJson(c));
+
+    j["automationEnvelopes"] = nlohmann::json::array();
+    for (const auto& [id, e] : m_automationEnvelopes)
+        j["automationEnvelopes"].push_back(automationEnvelopeToJson(e));
+
+    j["automationBaseValues"] = nlohmann::json::array();
+    for (const auto& [binding, value] : m_automationBaseValues)
+        j["automationBaseValues"].push_back(automationBaseValueToJson(binding, value));
 
     // ── Grid layout — snapshot container ──────────────────────────────────────
     // The persisted `gridLayout` is a snapshot container, not the flat GridLayout:
@@ -2474,6 +2865,71 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
             for (const auto& bj : j.at("patternBlocks")) {
                 PatternBlock b = bj.get<PatternBlock>();  // ADL from_json
                 m_patternBlocks[b.id] = b;
+            }
+        }
+
+        // ── Automation clips ─────────────────────────────────────────────────
+        // Load order is envelopes -> lanes -> clips so a clip can be checked
+        // against both of its references. A clip whose lane or envelope is
+        // missing is DROPPED (it can never be drawn or evaluated); a clip whose
+        // envelope binding names an effect instance that no longer exists is
+        // KEPT — that is the spec's dead clip, and the engine only discovers it
+        // is dead when the plan is built against live chains, which is long
+        // after this function has run.
+        m_automationEnvelopes.clear();
+        m_automationLanes.clear();
+        m_automationClips.clear();
+        m_automationBaseValues.clear();
+
+        if (j.contains("automationEnvelopes") && j.at("automationEnvelopes").is_array()) {
+            for (const auto& ej : j.at("automationEnvelopes")) {
+                AutomationEnvelope e = automationEnvelopeFromJson(ej);
+                if (e.id <= 0 || !e.binding.valid()) continue;
+                xleth::automation::normalizePoints(e.points);
+                m_automationEnvelopes[e.id] = std::move(e);
+            }
+        }
+        if (j.contains("automationLanes") && j.at("automationLanes").is_array()) {
+            for (const auto& lj : j.at("automationLanes")) {
+                AutomationLane l = automationLaneFromJson(lj);
+                if (l.id <= 0) continue;
+                m_automationLanes[l.id] = l;
+            }
+        }
+        if (j.contains("automationClips") && j.at("automationClips").is_array()) {
+            for (const auto& cj : j.at("automationClips")) {
+                AutomationClip c = automationClipFromJson(cj);
+                if (c.id <= 0) continue;
+                if (!m_automationLanes.count(c.laneId)) {
+                    std::cout << "[Timeline] WARN automationClip " << c.id
+                              << " dropped: unknown laneId=" << c.laneId << "\n";
+                    continue;
+                }
+                if (!m_automationEnvelopes.count(c.envelopeId)) {
+                    std::cout << "[Timeline] WARN automationClip " << c.id
+                              << " dropped: unknown envelopeId=" << c.envelopeId << "\n";
+                    continue;
+                }
+                // A file hand-edited into same-lane overlap is healed here rather
+                // than allowed through: the runtime plan resolves overlap only
+                // ACROSS lanes, so an overlapping pair on one lane has no defined
+                // winner. Later id loses.
+                if (automationClipOverlaps(c.laneId, c.position, c.duration)) {
+                    std::cout << "[Timeline] WARN automationClip " << c.id
+                              << " dropped: same-lane overlap on laneId=" << c.laneId << "\n";
+                    continue;
+                }
+                m_automationClips[c.id] = c;
+            }
+        }
+        if (j.contains("automationBaseValues") && j.at("automationBaseValues").is_array()) {
+            for (const auto& bj : j.at("automationBaseValues")) {
+                if (!bj.is_object()) continue;
+                const AutomationBinding b = automationBindingFromJson(bj);
+                if (!b.valid()) continue;
+                double v = 0.0;
+                if (bj.contains("value") && bj["value"].is_number()) v = bj["value"].get<double>();
+                setAutomationBaseValue(b, v);
             }
         }
 
@@ -2856,6 +3312,10 @@ void Timeline::clear() {
     m_clips.clear();
     m_patterns.clear();
     m_patternBlocks.clear();
+    m_automationLanes.clear();
+    m_automationClips.clear();
+    m_automationEnvelopes.clear();
+    m_automationBaseValues.clear();
 
     m_gridLayout         = GridLayout{};
     m_activeSnapshotId   = generateSnapshotId();  // fresh "Base" snapshot identity

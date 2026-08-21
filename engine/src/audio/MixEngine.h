@@ -8,6 +8,7 @@
 #include "model/Timeline.h"
 #include "model/EnvelopeParameterModulation.h"
 #include "model/LfoParameterModulation.h"
+#include "audio/AutomationPlan.h"
 #include "SampleBank.h"
 #include "Transport.h"
 #include "Sampler.h"
@@ -42,6 +43,10 @@ class PluginEditorHost;
 class PluginRegistry;
 class XlethEffectBase;
 namespace juce { class AudioProcessor; }
+// Pointer-only member of AutomationRuntimeTarget. Declared rather than
+// included: this header pulls juce_audio_basics, not juce_audio_processors,
+// and MixEngine.cpp already has the full definition through EffectChainManager.h.
+namespace juce { class RangedAudioParameter; }
 namespace xleth { struct RoutePlan; struct RoutePdcPlan; }
 namespace xleth::audio { class WorldStretchCache; }
 namespace xleth::audio { class SlotBakeCache; struct BakeKey; }
@@ -846,6 +851,75 @@ public:
     std::shared_ptr<const xleth::lfomod::LfoModulationSnapshot>
     getLfoModulationSnapshotForTesting() const;
 
+    // ── Automation clips (Phase A) ──────────────────────────────────────
+    //
+    // Same three-role split as the Envelope/LFO modulators, but with the
+    // publication step done under chainsMutex_ instead of an epoch-RCU swap:
+    //
+    //   message  refreshAutomationPlan() flattens the Timeline's automation
+    //            model into an AutomationPlan and resolves each target to the
+    //            raw APVTS atomic its effect reads (both need the chains lock,
+    //            so both happen here, together).
+    //   audio    processBlock() evaluates the plan at this block's tick and
+    //            stores each value straight into that atomic — INSIDE the
+    //            `chainsLocked` region it already holds, so no new lock is
+    //            taken on the callback and no effect can be destroyed under it.
+    //
+    // Why not the Envelope/LFO mailbox + applier-thread hop: automation's value
+    // at tick t is required to be a pure function of t (OfflineRenderer export
+    // parity), and an asynchronous applier makes the moment a value LANDS
+    // depend on thread scheduling. Writing the parameter in the same block that
+    // evaluated it is what makes live playback and export agree. It is
+    // realtime-safe because the write is a single relaxed atomic store, not a
+    // notifying parameter set — see EffectChainManager::AutomationParameterHandle.
+    //
+    // Ramping is not done here: the atomic being written is the one
+    // XlethEffectBase::updateSmootherTargets() reads once per block, so every
+    // parameter the effect registered as smoothed ramps across the block
+    // through its own smoother. That is the no-zipper guarantee.
+
+    // Rebuild and publish the plan. Call after ANY mutation that can change it:
+    // automation edits (wired to the UndoManager post-mutation hook, which makes
+    // it complete by construction for timeline edits), project load, and effect
+    // chain changes. Cheap and idempotent. Takes chainsMutex_ — NEVER call it
+    // from processBlock or from a function that already holds that lock.
+    void refreshAutomationPlan();
+
+    // Rebuild only if a chain mutation has invalidated the resolved parameter
+    // handles since the last rebuild. Driven by the envelope applier thread, so
+    // adding or removing an effect re-resolves its automation without every
+    // chain mutator having to remember to call refreshAutomationPlan(). Returns
+    // 1 when it rebuilt, 0 when nothing was dirty.
+    int refreshAutomationPlanIfDirty();
+
+    // { targetCount, windowCount, pointCount, overflowed, droppedTargets,
+    //   droppedWindows, unresolvedClips, resolvedTargets }. Diagnostics for the
+    //   UI (dead-clip badges) and for tests. Main thread.
+    nlohmann::json getAutomationPlanDiagnostics() const;
+
+    // True iff (ownerTrackId, effectInstanceId, parameterId) currently addresses
+    // an automatable stock-effect parameter. ownerTrackId -1 = master chain.
+    // This is the predicate that makes a clip "dead" when it fails.
+    bool isAutomationBindingResolvable(int ownerTrackId,
+                                       const std::string& effectInstanceId,
+                                       const std::string& parameterId) const;
+
+    // Current NORMALIZED [0,1] value of a bound parameter (the knob position).
+    // False when the binding does not resolve.
+    bool getAutomationParameterNormalized(int ownerTrackId,
+                                          const std::string& effectInstanceId,
+                                          const std::string& parameterId,
+                                          double& outValue) const;
+
+    // The value the plan WOULD apply at `tick`, without applying it. Backs the
+    // UI's read-only automated-knob display and makes the evaluation semantics
+    // directly testable through the bridge. `found` is false when the binding
+    // has no plan target.
+    double evaluateAutomationAtTick(int ownerTrackId,
+                                    const std::string& effectInstanceId,
+                                    const std::string& parameterId,
+                                    int64_t tick, bool& found) const;
+
     // ── Effect parameter / meter access (main thread only) ──────────────
     // Per-track: returns "[]" / false / "[0,0,0,0]" if chain/node not found.
     std::string getEffectParameters(int trackId, int nodeId) const;
@@ -1334,6 +1408,51 @@ private:
     // Map key = trackId.  mutex protects both the map and masterEffectChain_.
     mutable std::mutex chainsMutex_;
     std::unordered_map<int, std::unique_ptr<EffectChainManager>> effectChains_;
+
+    // ── Automation runtime (guarded by chainsMutex_) ─────────────────────────
+    // One entry per AutomationPlan target, in the same order. Resolution is main
+    // thread; the audio thread only stores into `raw`.
+    //
+    // `effect` + `nodeId` are a LIVENESS CHECK, not a shortcut: before writing,
+    // the audio thread re-derives the effect from its chain by nodeId and
+    // compares. If the effect was removed (or replaced) since the plan was
+    // built, the lookup returns a different pointer (node ids are monotonic
+    // uids, never reused) and the target is skipped — so a stale plan fails
+    // closed instead of writing through a dangling pointer. Both the check and
+    // the write happen under chainsMutex_, which is exactly the lock that has to
+    // be held to destroy an effect, so the pointer cannot die mid-check.
+    struct AutomationRuntimeTarget
+    {
+        std::atomic<float>*         raw    = nullptr;
+        juce::RangedAudioParameter* param  = nullptr;
+        XlethEffectBase*            effect = nullptr;
+        int   nodeId      = -1;
+        int   trackId     = -1;     // -1 = master chain
+        float lastWritten = 0.0f;   // skip redundant stores
+        bool  everWritten = false;
+    };
+
+    struct AutomationRuntime
+    {
+        std::shared_ptr<const xleth::automation::AutomationPlan> plan;
+        std::vector<AutomationRuntimeTarget> targets;   // parallel to plan->targets
+        int resolvedCount = 0;
+    };
+
+    // Published by refreshAutomationPlan(), read by processBlock. Written and
+    // read only under chainsMutex_, which is why no epoch-RCU is needed: the
+    // audio thread already holds that lock over the whole region that touches
+    // effect processors.
+    std::shared_ptr<AutomationRuntime> automationRuntime_;
+
+    // Set by every chain mutator that can create or destroy a node; serviced by
+    // the envelope applier thread through refreshAutomationPlanIfDirty().
+    std::atomic<bool> automationBindingsDirty_{false};
+
+    // Evaluate the plan at `tick` and write each target's value. AUDIO THREAD,
+    // and ONLY with chainsMutex_ already held. No allocation, no locks, no
+    // logging.
+    void applyAutomationForBlock(int64_t tick) noexcept;
     std::unique_ptr<EffectChainManager> masterEffectChain_;
     double preparedSampleRate_ = 44100.0;
     int    preparedBlockSize_  = 512;

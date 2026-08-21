@@ -234,6 +234,50 @@ public:
         return arr.dump();
     }
 
+    // ── Automation binding (main thread resolves, audio thread writes) ──────
+    //
+    // Resolves a stable APVTS paramID to the two things an automation plan needs
+    // to drive it from the audio callback:
+    //
+    //   raw    the std::atomic<float> this effect's own DSP reads. It is the SAME
+    //          pointer initSmoothers() caches and updateSmootherTargets() reads
+    //          once per block, so storing into it from the audio thread is both
+    //          realtime-safe (a relaxed atomic store — no allocation, no lock, no
+    //          message-thread notification) AND automatically ramped for every
+    //          parameter the effect registered with registerSmoothedParam().
+    //          That is where automation's "no zipper noise" comes from: the
+    //          effect's existing per-parameter smoother, not a second ramp
+    //          bolted on top of it.
+    //
+    //   param  kept only for its normalisable range. convertFrom0to1() is pure
+    //          arithmetic on that range, so calling it per block is fine.
+    //
+    // Deliberately NOT setValueNotifyingHost(): that path notifies listeners and
+    // calls onParameterValueChanged(), neither of which is realtime-safe. The
+    // one consequence is that a LATENCY-AFFECTING parameter (compressor
+    // lookahead, limiter style, EQ band type/enable — the only things any
+    // onParameterValueChanged override reacts to) automates its VALUE but does
+    // not re-run PDC. Automating those is pathological anyway, and the
+    // alternative — a graph rebuild from the audio callback — is not an option.
+    //
+    // Returns false when paramId is unknown. MAIN THREAD ONLY.
+    bool resolveAutomationParameter(const std::string& paramId,
+                                    std::atomic<float>*& rawOut,
+                                    juce::RangedAudioParameter*& paramOut)
+    {
+        rawOut   = nullptr;
+        paramOut = nullptr;
+        auto* param = apvts_.getParameter(juce::String(paramId));
+        if (param == nullptr) return false;
+        auto* rp = dynamic_cast<juce::RangedAudioParameter*>(param);
+        if (rp == nullptr) return false;
+        auto* raw = apvts_.getRawParameterValue(juce::String(paramId));
+        if (raw == nullptr) return false;
+        rawOut   = raw;
+        paramOut = rp;
+        return true;
+    }
+
     float getParameterValue(const std::string& paramId) const
     {
         auto* param = apvts_.getParameter(juce::String(paramId));

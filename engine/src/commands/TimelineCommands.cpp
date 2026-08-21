@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <cstdio>
 #include <iostream>
+#include <set>
 #include <unordered_set>
 
 // ─── AddClipCommand ───────────────────────────────────────────────────────────
@@ -624,6 +625,16 @@ RemoveTrackCommand::RemoveTrackCommand(int trackId, const Timeline& timeline) {
         if (gl.fullscreenLayers[i].trackId == trackId)
             removedFullscreenLayers_.emplace_back(i, gl.fullscreenLayers[i]);
     }
+    // Automation cascade: the track's automation lanes and their clips. A lane
+    // is owned by exactly one track, so deleting the track has to take them —
+    // otherwise the project keeps lanes whose owner no longer exists and the
+    // timeline has nowhere to draw them. Envelopes are left alone (a clip on a
+    // surviving track may share one).
+    for (const AutomationLane* l : timeline.getAutomationLanesForOwner(trackId)) {
+        automationLanes_.push_back(*l);
+        for (const AutomationClip* c : timeline.getAutomationClipsOnLane(l->id))
+            automationClips_.push_back(*c);
+    }
 }
 
 void RemoveTrackCommand::execute(Timeline& timeline) {
@@ -642,6 +653,9 @@ void RemoveTrackCommand::execute(Timeline& timeline) {
         timeline.removeTrackFromGrid(track_.id);
     if (!removedFullscreenLayers_.empty())
         timeline.removeFullscreenLayersForTrack(track_.id);
+    // Automation cascade (removeAutomationLane also drops the lane's clips).
+    for (const auto& l : automationLanes_)
+        timeline.removeAutomationLane(l.id);
 }
 
 void RemoveTrackCommand::undo(Timeline& timeline) {
@@ -662,6 +676,9 @@ void RemoveTrackCommand::undo(Timeline& timeline) {
     for (const auto& [idx, layer] : removedFullscreenLayers_) {
         timeline.restoreFullscreenLayer(idx, layer);
     }
+    // Automation restore: lanes first, then their clips (a clip needs its lane).
+    for (const auto& l : automationLanes_) timeline.restoreAutomationLane(l);
+    for (const auto& c : automationClips_) timeline.restoreAutomationClip(c);
 }
 
 std::string RemoveTrackCommand::describe() const {
@@ -2588,4 +2605,426 @@ void SetVisualEffectBypassedCommand::undo(Timeline& timeline) {
 std::string SetVisualEffectBypassedCommand::describe() const {
     return "Set Visual Effect Bypassed (track=" + std::to_string(trackId_)
            + " effect=" + std::to_string(effectIndex_) + ")";
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Automation clip commands (Phase A)
+// ═══════════════════════════════════════════════════════════════════════════
+
+// ─── AddAutomationClipCommand ─────────────────────────────────────────────────
+
+AddAutomationClipCommand::AddAutomationClipCommand(AutomationClip clip)
+    : clip_(std::move(clip)) {}
+
+void AddAutomationClipCommand::execute(Timeline& timeline) {
+    if (firstExecute_) {
+        const int id = timeline.addAutomationClip(clip_);
+        // Rejected: unknown lane/envelope, non-positive duration, or same-lane
+        // overlap. Leave accepted_ false so UndoManager never records the step,
+        // and stamp -1 so clipId() reports the rejection rather than echoing
+        // whatever id the caller's payload happened to carry.
+        if (id < 0) { clip_.id = -1; accepted_ = false; return; }
+        clip_.id = id;
+        accepted_ = true;
+        firstExecute_ = false;
+    } else {
+        // Redo: restore the original id so later commands referring to it stay valid.
+        timeline.restoreAutomationClip(clip_);
+    }
+}
+
+void AddAutomationClipCommand::undo(Timeline& timeline) {
+    if (accepted_) timeline.removeAutomationClip(clip_.id);
+}
+
+std::string AddAutomationClipCommand::describe() const {
+    return "Add automation clip";
+}
+
+// ─── RemoveAutomationClipCommand ──────────────────────────────────────────────
+
+RemoveAutomationClipCommand::RemoveAutomationClipCommand(int clipId, const Timeline& timeline) {
+    if (const AutomationClip* c = timeline.getAutomationClip(clipId)) {
+        clip_  = *c;
+        found_ = true;
+    }
+}
+
+void RemoveAutomationClipCommand::execute(Timeline& timeline) {
+    if (found_) timeline.removeAutomationClip(clip_.id);
+}
+
+void RemoveAutomationClipCommand::undo(Timeline& timeline) {
+    if (found_) timeline.restoreAutomationClip(clip_);
+}
+
+std::string RemoveAutomationClipCommand::describe() const {
+    return "Remove automation clip";
+}
+
+// ─── MoveAutomationClipCommand ────────────────────────────────────────────────
+
+MoveAutomationClipCommand::MoveAutomationClipCommand(int clipId, int newLaneId,
+                                                     TickTime newPosition,
+                                                     const Timeline& timeline)
+    : clipId_(clipId), newLaneId_(newLaneId), newPosition_(newPosition) {
+    if (const AutomationClip* c = timeline.getAutomationClip(clipId)) {
+        oldLaneId_   = c->laneId;
+        oldPosition_ = c->position;
+    }
+}
+
+void MoveAutomationClipCommand::execute(Timeline& timeline) {
+    accepted_ = timeline.moveAutomationClip(clipId_, newLaneId_, newPosition_);
+}
+
+void MoveAutomationClipCommand::undo(Timeline& timeline) {
+    if (accepted_) timeline.moveAutomationClip(clipId_, oldLaneId_, oldPosition_);
+}
+
+std::string MoveAutomationClipCommand::describe() const {
+    return "Move automation clip";
+}
+
+// ─── ResizeAutomationClipCommand ──────────────────────────────────────────────
+
+ResizeAutomationClipCommand::ResizeAutomationClipCommand(int clipId, TickTime newDuration,
+                                                         const Timeline& timeline)
+    : clipId_(clipId), newDuration_(newDuration) {
+    if (const AutomationClip* c = timeline.getAutomationClip(clipId))
+        oldDuration_ = c->duration;
+}
+
+void ResizeAutomationClipCommand::execute(Timeline& timeline) {
+    accepted_ = timeline.resizeAutomationClip(clipId_, newDuration_);
+}
+
+void ResizeAutomationClipCommand::undo(Timeline& timeline) {
+    if (accepted_) timeline.resizeAutomationClip(clipId_, oldDuration_);
+}
+
+std::string ResizeAutomationClipCommand::describe() const {
+    return "Resize automation clip";
+}
+
+// ─── ResizeAutomationClipLeftCommand ──────────────────────────────────────────
+
+ResizeAutomationClipLeftCommand::ResizeAutomationClipLeftCommand(
+    int clipId, TickTime newPosition, TickTime newDuration, TickTime newOffset,
+    const Timeline& timeline)
+    : clipId_(clipId), newPosition_(newPosition), newDuration_(newDuration),
+      newOffset_(newOffset) {
+    if (const AutomationClip* c = timeline.getAutomationClip(clipId)) {
+        oldPosition_ = c->position;
+        oldDuration_ = c->duration;
+        oldOffset_   = c->offset;
+    }
+}
+
+void ResizeAutomationClipLeftCommand::execute(Timeline& timeline) {
+    accepted_ = timeline.resizeAutomationClipLeft(clipId_, newPosition_, newDuration_, newOffset_);
+}
+
+void ResizeAutomationClipLeftCommand::undo(Timeline& timeline) {
+    if (accepted_)
+        timeline.resizeAutomationClipLeft(clipId_, oldPosition_, oldDuration_, oldOffset_);
+}
+
+std::string ResizeAutomationClipLeftCommand::describe() const {
+    return "Trim automation clip";
+}
+
+// ─── MakeAutomationClipUniqueCommand ──────────────────────────────────────────
+
+MakeAutomationClipUniqueCommand::MakeAutomationClipUniqueCommand(int clipId,
+                                                                 const Timeline& timeline)
+    : clipId_(clipId) {
+    if (const AutomationClip* c = timeline.getAutomationClip(clipId))
+        oldEnvelopeId_ = c->envelopeId;
+}
+
+void MakeAutomationClipUniqueCommand::execute(Timeline& timeline) {
+    if (firstExecute_) {
+        newEnvelopeId_ = timeline.makeAutomationClipUnique(clipId_);
+        if (newEnvelopeId_ < 0) { accepted_ = false; return; }
+        if (const AutomationEnvelope* e = timeline.getAutomationEnvelope(newEnvelopeId_))
+            duplicate_ = *e;
+        accepted_     = true;
+        firstExecute_ = false;
+        return;
+    }
+    // Redo: put the SAME duplicate back rather than minting a new envelope,
+    // which would leak one envelope per undo/redo cycle.
+    timeline.restoreAutomationEnvelope(duplicate_);
+    if (const AutomationClip* c = timeline.getAutomationClip(clipId_)) {
+        AutomationClip copy = *c;
+        copy.envelopeId = newEnvelopeId_;
+        timeline.removeAutomationClip(clipId_);
+        timeline.restoreAutomationClip(copy);
+    }
+}
+
+void MakeAutomationClipUniqueCommand::undo(Timeline& timeline) {
+    if (!accepted_) return;
+    if (const AutomationClip* c = timeline.getAutomationClip(clipId_)) {
+        AutomationClip copy = *c;
+        copy.envelopeId = oldEnvelopeId_;
+        timeline.removeAutomationClip(clipId_);
+        timeline.restoreAutomationClip(copy);
+    }
+    timeline.removeAutomationEnvelope(newEnvelopeId_);
+}
+
+std::string MakeAutomationClipUniqueCommand::describe() const {
+    return "Make automation clip unique";
+}
+
+// ─── AddAutomationLaneCommand ─────────────────────────────────────────────────
+
+AddAutomationLaneCommand::AddAutomationLaneCommand(int ownerTrackId, int index) {
+    lane_.ownerTrackId = ownerTrackId;
+    lane_.index        = index;   // < 0 = append, resolved by Timeline
+}
+
+void AddAutomationLaneCommand::execute(Timeline& timeline) {
+    if (firstExecute_) {
+        const int id = timeline.addAutomationLane(lane_);
+        if (id < 0) { lane_.id = -1; accepted_ = false; return; }
+        if (const AutomationLane* l = timeline.getAutomationLane(id)) lane_ = *l;
+        accepted_     = true;
+        firstExecute_ = false;
+    } else {
+        timeline.restoreAutomationLane(lane_);
+    }
+}
+
+void AddAutomationLaneCommand::undo(Timeline& timeline) {
+    if (accepted_) timeline.removeAutomationLane(lane_.id);
+}
+
+std::string AddAutomationLaneCommand::describe() const {
+    return "Add automation lane";
+}
+
+// ─── RemoveAutomationLaneCommand ──────────────────────────────────────────────
+
+RemoveAutomationLaneCommand::RemoveAutomationLaneCommand(int laneId, const Timeline& timeline) {
+    if (const AutomationLane* l = timeline.getAutomationLane(laneId)) {
+        lane_  = *l;
+        found_ = true;
+        for (const AutomationClip* c : timeline.getAutomationClipsOnLane(laneId))
+            clips_.push_back(*c);
+    }
+}
+
+void RemoveAutomationLaneCommand::execute(Timeline& timeline) {
+    if (found_) timeline.removeAutomationLane(lane_.id);   // cascades to clips_
+}
+
+void RemoveAutomationLaneCommand::undo(Timeline& timeline) {
+    if (!found_) return;
+    timeline.restoreAutomationLane(lane_);                 // lane first: clips need it
+    for (const auto& c : clips_) timeline.restoreAutomationClip(c);
+}
+
+std::string RemoveAutomationLaneCommand::describe() const {
+    return "Remove automation lane";
+}
+
+// ─── AddAutomationEnvelopeCommand ─────────────────────────────────────────────
+
+AddAutomationEnvelopeCommand::AddAutomationEnvelopeCommand(AutomationBinding binding,
+                                                           std::vector<AutomationPoint> points) {
+    envelope_.binding = std::move(binding);
+    envelope_.points  = std::move(points);
+}
+
+void AddAutomationEnvelopeCommand::execute(Timeline& timeline) {
+    if (firstExecute_) {
+        const int id = timeline.addAutomationEnvelope(envelope_);
+        if (id < 0) { envelope_.id = -1; accepted_ = false; return; }
+        if (const AutomationEnvelope* e = timeline.getAutomationEnvelope(id)) envelope_ = *e;
+        accepted_     = true;
+        firstExecute_ = false;
+    } else {
+        timeline.restoreAutomationEnvelope(envelope_);
+    }
+}
+
+void AddAutomationEnvelopeCommand::undo(Timeline& timeline) {
+    if (accepted_) timeline.removeAutomationEnvelope(envelope_.id);
+}
+
+std::string AddAutomationEnvelopeCommand::describe() const {
+    return "Add automation envelope";
+}
+
+// ─── AutomationPointEditCommand ───────────────────────────────────────────────
+
+AutomationPointEditCommand::AutomationPointEditCommand(Kind kind, int envelopeId,
+                                                       const Timeline& timeline)
+    : kind_(kind), envelopeId_(envelopeId) {
+    if (const AutomationEnvelope* e = timeline.getAutomationEnvelope(envelopeId))
+        before_ = e->points;
+}
+
+std::unique_ptr<AutomationPointEditCommand> AutomationPointEditCommand::add(
+    int envelopeId, AutomationPoint point, const Timeline& timeline) {
+    std::unique_ptr<AutomationPointEditCommand> cmd(
+        new AutomationPointEditCommand(Kind::Add, envelopeId, timeline));
+    cmd->point_ = point;
+    return cmd;
+}
+
+std::unique_ptr<AutomationPointEditCommand> AutomationPointEditCommand::remove(
+    int envelopeId, int pointIndex, const Timeline& timeline) {
+    std::unique_ptr<AutomationPointEditCommand> cmd(
+        new AutomationPointEditCommand(Kind::Remove, envelopeId, timeline));
+    cmd->pointIndex_ = pointIndex;
+    return cmd;
+}
+
+std::unique_ptr<AutomationPointEditCommand> AutomationPointEditCommand::move(
+    int envelopeId, int pointIndex, TickTime newTick, double newValue,
+    const Timeline& timeline) {
+    std::unique_ptr<AutomationPointEditCommand> cmd(
+        new AutomationPointEditCommand(Kind::Move, envelopeId, timeline));
+    cmd->pointIndex_ = pointIndex;
+    cmd->newTick_    = newTick;
+    cmd->newValue_   = newValue;
+    return cmd;
+}
+
+std::unique_ptr<AutomationPointEditCommand> AutomationPointEditCommand::setCurve(
+    int envelopeId, int pointIndex, AutomationCurveType curveType, double tension,
+    const Timeline& timeline) {
+    std::unique_ptr<AutomationPointEditCommand> cmd(
+        new AutomationPointEditCommand(Kind::SetCurve, envelopeId, timeline));
+    cmd->pointIndex_ = pointIndex;
+    cmd->curveType_  = curveType;
+    cmd->tension_    = tension;
+    return cmd;
+}
+
+std::unique_ptr<AutomationPointEditCommand> AutomationPointEditCommand::replaceAll(
+    int envelopeId, std::vector<AutomationPoint> points, const Timeline& timeline) {
+    std::unique_ptr<AutomationPointEditCommand> cmd(
+        new AutomationPointEditCommand(Kind::ReplaceAll, envelopeId, timeline));
+    cmd->replacement_ = std::move(points);
+    return cmd;
+}
+
+void AutomationPointEditCommand::execute(Timeline& timeline) {
+    if (haveAfter_) {
+        // Redo: replay the recorded result rather than re-deriving it, so an
+        // index-based edit cannot land differently the second time around.
+        accepted_ = timeline.setAutomationEnvelopePoints(envelopeId_, after_);
+        return;
+    }
+
+    bool ok = false;
+    switch (kind_) {
+        case Kind::Add:
+            ok = timeline.addAutomationPoint(envelopeId_, point_);
+            break;
+        case Kind::Remove:
+            ok = timeline.removeAutomationPoint(envelopeId_, pointIndex_);
+            break;
+        case Kind::Move:
+            ok = timeline.moveAutomationPoint(envelopeId_, pointIndex_, newTick_, newValue_);
+            break;
+        case Kind::SetCurve:
+            ok = timeline.setAutomationPointCurve(envelopeId_, pointIndex_, curveType_, tension_);
+            break;
+        case Kind::ReplaceAll:
+            ok = timeline.setAutomationEnvelopePoints(envelopeId_, replacement_);
+            break;
+    }
+    accepted_ = ok;
+    if (!ok) return;
+
+    if (const AutomationEnvelope* e = timeline.getAutomationEnvelope(envelopeId_)) {
+        after_     = e->points;
+        haveAfter_ = true;
+    }
+}
+
+void AutomationPointEditCommand::undo(Timeline& timeline) {
+    if (accepted_) timeline.setAutomationEnvelopePoints(envelopeId_, before_);
+}
+
+std::string AutomationPointEditCommand::describe() const {
+    switch (kind_) {
+        case Kind::Add:      return "Add automation point";
+        case Kind::Remove:   return "Delete automation point";
+        case Kind::Move:     return "Move automation point";
+        case Kind::SetCurve: return "Set automation curve";
+        default:             return "Edit automation envelope";
+    }
+}
+
+// ─── RemoveAutomationForEffectInstanceCommand ─────────────────────────────────
+
+RemoveAutomationForEffectInstanceCommand::RemoveAutomationForEffectInstanceCommand(
+    int ownerTrackId, const std::string& effectInstanceId, const Timeline& timeline)
+    : ownerTrackId_(ownerTrackId), effectInstanceId_(effectInstanceId) {
+
+    std::set<int> touchedLanes;
+    for (const AutomationClip* c :
+         timeline.getAutomationClipsForEffectInstance(ownerTrackId, effectInstanceId)) {
+        clips_.push_back(*c);
+        touchedLanes.insert(c->laneId);
+    }
+
+    // A lane is taken with the clips only when NOTHING else lives on it — a lane
+    // that also carries a clip bound to a different parameter has to survive.
+    for (int laneId : touchedLanes) {
+        const auto onLane = timeline.getAutomationClipsOnLane(laneId);
+        std::size_t doomed = 0;
+        for (const AutomationClip* c : onLane)
+            for (const auto& d : clips_)
+                if (d.id == c->id) { ++doomed; break; }
+        if (doomed == onLane.size())
+            if (const AutomationLane* l = timeline.getAutomationLane(laneId))
+                emptiedLanes_.push_back(*l);
+    }
+}
+
+void RemoveAutomationForEffectInstanceCommand::execute(Timeline& timeline) {
+    for (const auto& c : clips_)        timeline.removeAutomationClip(c.id);
+    for (const auto& l : emptiedLanes_) timeline.removeAutomationLane(l.id);
+}
+
+void RemoveAutomationForEffectInstanceCommand::undo(Timeline& timeline) {
+    for (const auto& l : emptiedLanes_) timeline.restoreAutomationLane(l);
+    for (const auto& c : clips_)        timeline.restoreAutomationClip(c);
+}
+
+std::string RemoveAutomationForEffectInstanceCommand::describe() const {
+    return "Delete automation for effect";
+}
+
+// ─── SetAutomationBaseValueCommand ────────────────────────────────────────────
+
+SetAutomationBaseValueCommand::SetAutomationBaseValueCommand(AutomationBinding binding,
+                                                             double value,
+                                                             const Timeline& timeline)
+    : binding_(std::move(binding)), newValue_(value) {
+    oldValue_ = timeline.getAutomationBaseValue(binding_, &hadOld_);
+}
+
+void SetAutomationBaseValueCommand::execute(Timeline& timeline) {
+    if (!binding_.valid()) { accepted_ = false; return; }
+    timeline.setAutomationBaseValue(binding_, newValue_);
+    accepted_ = true;
+}
+
+void SetAutomationBaseValueCommand::undo(Timeline& timeline) {
+    if (!accepted_) return;
+    if (hadOld_) timeline.setAutomationBaseValue(binding_, oldValue_);
+    else         timeline.clearAutomationBaseValue(binding_);
+}
+
+std::string SetAutomationBaseValueCommand::describe() const {
+    return "Set automation base value";
 }

@@ -738,6 +738,51 @@ nlohmann::json EffectChainManager::setGraphEffectParameterNormalized(const std::
     return out;
 }
 
+// ─── Automation parameter binding (Phase A) ─────────────────────────────────
+
+EffectChainManager::AutomationParameterHandle
+EffectChainManager::resolveAutomationParameter(const std::string& effectInstanceId,
+                                               const std::string& parameterId)
+{
+    AutomationParameterHandle handle;
+    if (effectInstanceId.empty() || parameterId.empty()) return handle;
+
+    // Unified chain + graph lookup: automation must reach an ordinary mixer
+    // insert, not just an FX Graph node.
+    const int nodeId = getNodeIdForEffectInstance(effectInstanceId);
+    if (nodeId < 0 || graph_ == nullptr) return handle;
+    if (graph_->isNodeMissing(nodeId)) return handle;
+
+    // Stock effects only. A wrapped VST3 returns nullptr here, which is exactly
+    // the v1 scope boundary: its clips stay in the project as dead clips.
+    XlethEffectBase* effect = graph_->getEffect(nodeId);
+    if (effect == nullptr) return handle;
+
+    std::atomic<float>*         raw   = nullptr;
+    juce::RangedAudioParameter* param = nullptr;
+    if (!effect->resolveAutomationParameter(parameterId, raw, param)) return handle;
+
+    handle.raw   = raw;
+    handle.param = param;
+    return handle;
+}
+
+bool EffectChainManager::canAutomate(const std::string& effectInstanceId,
+                                     const std::string& parameterId)
+{
+    return resolveAutomationParameter(effectInstanceId, parameterId).valid();
+}
+
+bool EffectChainManager::getAutomationParameterNormalized(const std::string& effectInstanceId,
+                                                          const std::string& parameterId,
+                                                          double& outValue)
+{
+    const auto handle = resolveAutomationParameter(effectInstanceId, parameterId);
+    if (!handle.valid()) return false;
+    outValue = static_cast<double>(handle.param->getValue());   // already 0..1
+    return true;
+}
+
 // ─── Effect parameter / meter access ────────────────────────────────────────
 
 std::string EffectChainManager::getEffectParameters(int nodeId) const

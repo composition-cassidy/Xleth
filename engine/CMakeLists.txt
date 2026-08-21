@@ -206,6 +206,7 @@ endif()
 # Defined BEFORE XlethEngineCore because MixEngine depends on Timeline/Clip/Track.
 add_library(XlethEngineModel STATIC
     src/model/ParamTrack.cpp
+    src/model/AutomationEnvelope.cpp
     src/model/SampleRegion.cpp
     src/model/SamplerModulationConfig.cpp
     src/model/SamplerLegacyMigration.cpp
@@ -229,6 +230,7 @@ add_library(XlethEngineModel STATIC
     src/commands/ClipBatchCommands.cpp
     src/commands/EffectChainCommands.cpp
     src/audio/TrackRouting.cpp
+    src/audio/AutomationPlan.cpp
 )
 
 target_include_directories(XlethEngineModel PUBLIC
@@ -562,6 +564,20 @@ add_executable(test_lfo_parameter_modulation
 )
 
 target_link_libraries(test_lfo_parameter_modulation PRIVATE
+    XlethEngineModel
+)
+
+# ── test_automation_clips ─────────────────────────────────────────
+# Automation clip engine + model (Phase A): point invariants, tick-absolute
+# envelope evaluation, plan build/overlap resolution, undo commands, the effect
+# deletion contract and serialization. Model-only — links solely against
+# XlethEngineModel. The MixEngine integration is exercised through the bridge
+# smoke test (bridge/test_automation_clips_bridge.js).
+add_executable(test_automation_clips
+    test/test_automation_clips.cpp
+)
+
+target_link_libraries(test_automation_clips PRIVATE
     XlethEngineModel
 )
 
@@ -2666,6 +2682,7 @@ set(XLETH_ENGINE_TESTS
     test_render_decoder
     test_animation_manager
     test_param_track
+    test_automation_clips
     test_compositor
     test_snapshot_transition
     test_muxer

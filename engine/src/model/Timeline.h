@@ -75,6 +75,101 @@ public:
     bool                       resizeClip(int clipId, TickTime newDuration);
     bool                       resizeClipLeft(int clipId, TickTime newPosition, TickTime newDuration, TickTime newRegionOffset);
 
+    // ── Automation clips (Phase A) ────────────────────────────────────────────
+    //
+    // Three collections mirroring the Pattern / PatternBlock split:
+    //   lanes      grouping rows under a track (ownerTrackId -1 = Master);
+    //   envelopes  the point data plus its parameter binding;
+    //   clips      placements referencing a lane and an envelope.
+    //
+    // Clips SHARE an envelopeId the way pattern blocks share a patternId, so
+    // copying a clip copies nothing but the placement until makeAutomationClipUnique
+    // splits the envelope off.
+    //
+    // Every mutator here is the raw model operation: it validates and commits but
+    // does NOT push undo. Callers go through the *AutomationClip* commands in
+    // commands/TimelineCommands.h, which is where the project's "all timeline
+    // mutations through UndoManager" invariant is enforced.
+
+    // Lanes. addAutomationLane assigns the id; index < 0 appends after the
+    // owner's current last lane.
+    int                                 addAutomationLane(AutomationLane lane);
+    const AutomationLane*               getAutomationLane(int id) const;
+    std::vector<const AutomationLane*>  getAllAutomationLanes() const;
+    // Lanes of one owner (-1 = the Master group), ascending by index.
+    std::vector<const AutomationLane*>  getAutomationLanesForOwner(int ownerTrackId) const;
+    // Removes the lane AND every clip on it. Envelopes are left alone — another
+    // lane's clip may still share one. Returns false if the lane is unknown.
+    bool                                removeAutomationLane(int id);
+    bool                                restoreAutomationLane(const AutomationLane& lane);
+    bool                                setAutomationLaneIndex(int id, int index);
+
+    // Envelopes.
+    int                                     addAutomationEnvelope(AutomationEnvelope envelope);
+    const AutomationEnvelope*               getAutomationEnvelope(int id) const;
+    AutomationEnvelope*                     getAutomationEnvelopeMutable(int id);
+    std::vector<const AutomationEnvelope*>  getAllAutomationEnvelopes() const;
+    bool                                    removeAutomationEnvelope(int id);
+    bool                                    restoreAutomationEnvelope(const AutomationEnvelope& envelope);
+    // Wholesale point replacement — the seam undo commands use to restore a
+    // snapshot without replaying individual point edits. Re-normalizes.
+    bool                                    setAutomationEnvelopePoints(int envelopeId,
+                                                                        std::vector<AutomationPoint> points);
+
+    // Clips. addAutomationClip REJECTS (returns -1) a placement that overlaps
+    // another clip on the same lane — the spec's same-lane overlap rule lives
+    // here, in the mutation layer, so no command can bypass it.
+    int                                 addAutomationClip(AutomationClip clip);
+    const AutomationClip*               getAutomationClip(int id) const;
+    std::vector<const AutomationClip*>  getAllAutomationClips() const;
+    std::vector<const AutomationClip*>  getAutomationClipsOnLane(int laneId) const;
+    bool                                removeAutomationClip(int id);
+    bool                                restoreAutomationClip(const AutomationClip& clip);
+    bool                                moveAutomationClip(int id, int newLaneId, TickTime newPosition);
+    bool                                resizeAutomationClip(int id, TickTime newDuration);
+    bool                                resizeAutomationClipLeft(int id, TickTime newPosition,
+                                                                 TickTime newDuration, TickTime newOffset);
+    // Duplicates the clip's envelope and repoints the clip at the copy, so later
+    // point edits stop propagating to its siblings. Returns the NEW envelope id,
+    // or -1 when the clip is unknown / its envelope is missing. Idempotent in
+    // effect but not in identity: calling it twice makes two envelopes.
+    int                                 makeAutomationClipUnique(int id);
+
+    // True when [position, position + duration) intersects an existing clip on
+    // `laneId`. `ignoreClipId` excludes one clip (the one being moved/resized).
+    // Public so a command can pre-validate before mutating anything.
+    bool automationClipOverlaps(int laneId, TickTime position, TickTime duration,
+                                int ignoreClipId = -1) const;
+
+    // Points. Index-based, mirroring paramtrack's keyframe API. All of these
+    // maintain the sorted-ascending-by-tick invariant.
+    bool addAutomationPoint(int envelopeId, AutomationPoint point);
+    bool removeAutomationPoint(int envelopeId, int pointIndex);
+    bool moveAutomationPoint(int envelopeId, int pointIndex, TickTime newTick, double newValue);
+    bool setAutomationPointCurve(int envelopeId, int pointIndex,
+                                 AutomationCurveType curveType, double tension);
+
+    // Deletion contract query: every clip whose envelope binds to this effect
+    // instance. This is what the UI's "these clips will be deleted" confirmation
+    // dialog lists before an effect is removed. ownerTrackId -1 = Master chain.
+    std::vector<const AutomationClip*> getAutomationClipsForEffectInstance(
+        int ownerTrackId, const std::string& effectInstanceId) const;
+    // The envelope ids behind those clips (deduplicated).
+    std::vector<int> getAutomationEnvelopeIdsForEffectInstance(
+        int ownerTrackId, const std::string& effectInstanceId) const;
+
+    // ── Automation base values ────────────────────────────────────────────────
+    // The manual (knob) value a bound parameter reads before any clip has ever
+    // played, and the value a manual edit outside every clip writes. Stored ONCE
+    // per binding, never per envelope: two lanes automating the same parameter
+    // necessarily share one manual value.
+    double getAutomationBaseValue(const AutomationBinding& binding, bool* found = nullptr) const;
+    void   setAutomationBaseValue(const AutomationBinding& binding, double value);
+    bool   clearAutomationBaseValue(const AutomationBinding& binding);
+    const std::map<AutomationBinding, double>& getAllAutomationBaseValues() const {
+        return m_automationBaseValues;
+    }
+
     // ── Transport ─────────────────────────────────────────────────────────────
     void   setBPM(double bpm);
     double getBPM()         const { return m_bpm; }
@@ -420,6 +515,16 @@ private:
     std::map<int, Clip>         m_clips;
     std::map<int, Pattern>      m_patterns;
     std::map<int, PatternBlock> m_patternBlocks;
+
+    // Automation clips (Phase A). Three collections drawing on the SAME
+    // auto-incremented id space as every other entity, so a lane, a clip and an
+    // envelope can never collide on an id and ProjectManager's max-id scan on
+    // load stays correct without special-casing them.
+    std::map<int, AutomationLane>     m_automationLanes;
+    std::map<int, AutomationClip>     m_automationClips;
+    std::map<int, AutomationEnvelope> m_automationEnvelopes;
+    // Manual (knob) value per bound parameter — see getAutomationBaseValue.
+    std::map<AutomationBinding, double> m_automationBaseValues;
 
     // Grid layout — snapshot container, decomposed for the runtime.
     //   m_gridLayout        : flat working view = global canvas/fps ⊕ ACTIVE

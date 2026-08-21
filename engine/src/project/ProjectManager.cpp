@@ -204,6 +204,13 @@ bool ProjectManager::saveProject(const Timeline& timeline,
     j["clips"]          = tl.value("clips",   json::array());
     j["patterns"]       = tl.value("patterns",      json::array());
     j["patternBlocks"]  = tl.value("patternBlocks", json::array());
+    // Automation clips. project.json is a hand-copied key WHITELIST, so a key
+    // Timeline::toJSON writes but this function does not name is silently
+    // dropped on save. Four keys, always written.
+    j["automationLanes"]      = tl.value("automationLanes", json::array());
+    j["automationClips"]      = tl.value("automationClips", json::array());
+    j["automationEnvelopes"]  = tl.value("automationEnvelopes", json::array());
+    j["automationBaseValues"] = tl.value("automationBaseValues", json::array());
     j["gridLayout"]     = tl.value("gridLayout", json::object());
     j["trackLayout"]    = tl.value("trackLayout", json::object());
     j["declickMs"]      = tl.value("declickMs", 0.0);
@@ -363,6 +370,10 @@ std::optional<Timeline> ProjectManager::loadProject(const std::string& projectDi
     tl["clips"]         = j.value("clips",   json::array());
     tl["patterns"]      = j.value("patterns",      json::array());
     tl["patternBlocks"] = j.value("patternBlocks", json::array());
+    tl["automationLanes"]      = j.value("automationLanes", json::array());
+    tl["automationClips"]      = j.value("automationClips", json::array());
+    tl["automationEnvelopes"]  = j.value("automationEnvelopes", json::array());
+    tl["automationBaseValues"] = j.value("automationBaseValues", json::array());
     if (j.contains("gridLayout")) tl["gridLayout"] = j["gridLayout"];
     if (j.contains("trackLayout")) tl["trackLayout"] = j["trackLayout"];
     tl["declickMs"] = j.value("declickMs", 0.0);
@@ -370,8 +381,13 @@ std::optional<Timeline> ProjectManager::loadProject(const std::string& projectDi
 
     // Compute nextId = max(all entity ids) + 1 so the timeline counter is correct
     int maxId = 0;
+    // Automation lanes/clips/envelopes draw on the SAME id space as everything
+    // else, so they must be in this scan or a reloaded project would mint
+    // colliding ids on the next add.
     for (const auto& arr : { tl["sources"], tl["regions"], tl["tracks"], tl["clips"],
-                              tl["patterns"], tl["patternBlocks"] }) {
+                              tl["patterns"], tl["patternBlocks"],
+                              tl["automationLanes"], tl["automationClips"],
+                              tl["automationEnvelopes"] }) {
         for (const auto& item : arr) {
             if (item.contains("id"))
                 maxId = std::max(maxId, item["id"].get<int>());

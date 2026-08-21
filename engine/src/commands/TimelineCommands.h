@@ -2,6 +2,7 @@
 #include "Command.h"
 #include "model/TimelineTypes.h"
 #include "audio/TrackRouting.h"
+#include <memory>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -300,6 +301,10 @@ private:
     // its index in the layer vector at construction time. Restored in original
     // order so undo() preserves the relative stacking.
     std::vector<std::pair<size_t, FullscreenLayer>> removedFullscreenLayers_;
+    // Automation cascade — lanes owned by the track plus every clip on them.
+    // Restored lanes-first in undo(), since a clip needs its lane to exist.
+    std::vector<AutomationLane> automationLanes_;
+    std::vector<AutomationClip> automationClips_;
 };
 
 // ─── AddRegionCommand ─────────────────────────────────────────────────────────
@@ -1410,3 +1415,277 @@ private:
     bool oldBypassed_;
     bool newBypassed_;
 };
+
+// ─── Automation clip commands (Phase A) ───────────────────────────────────────
+//
+// Every automation mutation the UI can perform, as an undoable Command. They
+// follow the same shape as the PatternBlock family directly above:
+//   • Add*  : first execute() calls the id-assigning Timeline::add*, later
+//             execute()s (redo) call restore* so the id never drifts;
+//   • Remove*: snapshots at construction so undo() restores the exact state;
+//   • Move/Resize: snapshots the old placement, undo() writes it back.
+//
+// The same-lane overlap rule is NOT re-implemented here. Timeline's mutators
+// reject an overlapping placement and return false; these commands observe that
+// and report shouldRecordInUndoHistory() == false, so a rejected drag leaves the
+// undo stack completely untouched instead of recording a no-op step.
+
+// Adds a clip. `clip.id` is ignored on first execute and assigned by Timeline.
+class AddAutomationClipCommand : public Command {
+public:
+    explicit AddAutomationClipCommand(AutomationClip clip);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool shouldRecordInUndoHistory() const override { return accepted_; }
+    // Id assigned by the first execute(), or -1 if the placement was rejected.
+    int clipId() const { return clip_.id; }
+private:
+    AutomationClip clip_;
+    bool firstExecute_ = true;
+    bool accepted_     = false;
+};
+
+// Removes a clip. The envelope is deliberately left in place: a sibling copy may
+// still reference it, and undo has to be able to put the clip back on the exact
+// same data. Orphaned envelopes are harmless and cheap.
+class RemoveAutomationClipCommand : public Command {
+public:
+    RemoveAutomationClipCommand(int clipId, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool shouldRecordInUndoHistory() const override { return found_; }
+private:
+    AutomationClip clip_;
+    bool found_ = false;
+};
+
+// Moves a clip within its lane or onto another lane. Rejected (and not
+// recorded) when the destination overlaps another clip on the target lane.
+class MoveAutomationClipCommand : public Command {
+public:
+    MoveAutomationClipCommand(int clipId, int newLaneId, TickTime newPosition,
+                              const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool shouldRecordInUndoHistory() const override { return accepted_; }
+private:
+    int      clipId_;
+    int      oldLaneId_ = -1;
+    int      newLaneId_;
+    TickTime oldPosition_;
+    TickTime newPosition_;
+    bool     accepted_ = false;
+};
+
+// Right-edge trim.
+class ResizeAutomationClipCommand : public Command {
+public:
+    ResizeAutomationClipCommand(int clipId, TickTime newDuration, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool shouldRecordInUndoHistory() const override { return accepted_; }
+private:
+    int      clipId_;
+    TickTime oldDuration_;
+    TickTime newDuration_;
+    bool     accepted_ = false;
+};
+
+// Left-edge trim: position, duration and offset move together so the envelope
+// stays anchored to the same timeline ticks. One undo step.
+class ResizeAutomationClipLeftCommand : public Command {
+public:
+    ResizeAutomationClipLeftCommand(int clipId, TickTime newPosition, TickTime newDuration,
+                                    TickTime newOffset, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool shouldRecordInUndoHistory() const override { return accepted_; }
+private:
+    int      clipId_;
+    TickTime oldPosition_, oldDuration_, oldOffset_;
+    TickTime newPosition_, newDuration_, newOffset_;
+    bool     accepted_ = false;
+};
+
+// Make-unique: duplicates the clip's envelope so later point edits stop
+// propagating to its siblings. ONE engine command — deliberately not the
+// UI-composed RPC chain pattern make-unique uses, so undo is a single step.
+class MakeAutomationClipUniqueCommand : public Command {
+public:
+    MakeAutomationClipUniqueCommand(int clipId, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool shouldRecordInUndoHistory() const override { return accepted_; }
+    // Envelope id created by the first execute(), or -1.
+    int newEnvelopeId() const { return newEnvelopeId_; }
+private:
+    int  clipId_;
+    int  oldEnvelopeId_ = -1;
+    int  newEnvelopeId_ = -1;
+    // Snapshot of the duplicate, so redo restores the SAME envelope id rather
+    // than minting a second one (which would leak an envelope per redo).
+    AutomationEnvelope duplicate_;
+    bool firstExecute_ = true;
+    bool accepted_     = false;
+};
+
+// Creates a lane and, in the same step, the envelope its first clip will use.
+// Phase C's "right-click knob -> Create automation clip" is this command
+// followed by AddAutomationClipCommand.
+class AddAutomationLaneCommand : public Command {
+public:
+    // `index` < 0 appends after the owner's current last lane.
+    AddAutomationLaneCommand(int ownerTrackId, int index);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool shouldRecordInUndoHistory() const override { return accepted_; }
+    int laneId() const { return lane_.id; }
+private:
+    AutomationLane lane_;
+    bool firstExecute_ = true;
+    bool accepted_     = false;
+};
+
+// Removes a lane and cascades to its clips, all in one undo step.
+class RemoveAutomationLaneCommand : public Command {
+public:
+    RemoveAutomationLaneCommand(int laneId, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool shouldRecordInUndoHistory() const override { return found_; }
+private:
+    AutomationLane              lane_;
+    std::vector<AutomationClip> clips_;   // every clip that was on the lane
+    bool found_ = false;
+};
+
+// Creates a standalone envelope (a binding plus an initial point list). Used to
+// mint the data a first clip will play; separate from AddAutomationClipCommand
+// so a copy-paste of an existing clip can reuse an envelope without creating one.
+class AddAutomationEnvelopeCommand : public Command {
+public:
+    AddAutomationEnvelopeCommand(AutomationBinding binding, std::vector<AutomationPoint> points);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool shouldRecordInUndoHistory() const override { return accepted_; }
+    int envelopeId() const { return envelope_.id; }
+private:
+    AutomationEnvelope envelope_;
+    bool firstExecute_ = true;
+    bool accepted_     = false;
+};
+
+// ─── Point edits ──────────────────────────────────────────────────────────────
+//
+// All four snapshot the WHOLE point list rather than the single point they touch.
+// A point list is a few dozen entries at most, and a whole-list snapshot makes
+// undo exact regardless of how insertion re-sorted, merged a duplicate tick, or
+// shifted every index after the edit — the failure mode an index-based undo has.
+// This is also the seam Phase C's drag needs: local preview during the drag,
+// then ONE command committed on mouseup carrying the final list.
+
+class AutomationPointEditCommand : public Command {
+public:
+    enum class Kind { Add, Remove, Move, SetCurve, ReplaceAll };
+
+    // Add a point (replacing any point already at that tick).
+    static std::unique_ptr<AutomationPointEditCommand> add(
+        int envelopeId, AutomationPoint point, const Timeline& timeline);
+    // Remove the point at `pointIndex`.
+    static std::unique_ptr<AutomationPointEditCommand> remove(
+        int envelopeId, int pointIndex, const Timeline& timeline);
+    // Move the point at `pointIndex` to (newTick, newValue).
+    static std::unique_ptr<AutomationPointEditCommand> move(
+        int envelopeId, int pointIndex, TickTime newTick, double newValue,
+        const Timeline& timeline);
+    // Set the curve of the segment starting at `pointIndex`.
+    static std::unique_ptr<AutomationPointEditCommand> setCurve(
+        int envelopeId, int pointIndex, AutomationCurveType curveType, double tension,
+        const Timeline& timeline);
+    // Commit a whole edited list in one step (the drag-then-mouseup path).
+    static std::unique_ptr<AutomationPointEditCommand> replaceAll(
+        int envelopeId, std::vector<AutomationPoint> points, const Timeline& timeline);
+
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool shouldRecordInUndoHistory() const override { return accepted_; }
+
+private:
+    AutomationPointEditCommand(Kind kind, int envelopeId, const Timeline& timeline);
+
+    Kind kind_;
+    int  envelopeId_;
+    bool accepted_ = false;
+
+    std::vector<AutomationPoint> before_;   // snapshot taken at construction
+    std::vector<AutomationPoint> after_;    // computed by the first execute()
+    bool haveAfter_ = false;
+
+    // Per-kind payload.
+    AutomationPoint     point_;
+    int                 pointIndex_ = -1;
+    TickTime            newTick_;
+    double              newValue_ = 0.0;
+    AutomationCurveType curveType_ = AutomationCurveType::Linear;
+    double              tension_   = 0.0;
+    std::vector<AutomationPoint> replacement_;
+};
+
+// ─── Deletion contract ────────────────────────────────────────────────────────
+//
+// Removing an effect instance must take its bound automation clips with it, in
+// ONE undo step, after the UI has listed them in a confirmation dialog (the list
+// comes from Timeline::getAutomationClipsForEffectInstance).
+//
+// This command owns the AUTOMATION half of that contract: it removes every clip
+// bound to the instance, plus any lane it leaves completely empty. The effect
+// removal itself is a MixEngine call that is not part of the undo system today
+// (audio_removeEffect), so Phase C runs this command immediately before it and
+// undo restores the clips when the effect comes back.
+class RemoveAutomationForEffectInstanceCommand : public Command {
+public:
+    RemoveAutomationForEffectInstanceCommand(int ownerTrackId,
+                                             const std::string& effectInstanceId,
+                                             const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool shouldRecordInUndoHistory() const override { return !clips_.empty(); }
+    int removedClipCount() const { return static_cast<int>(clips_.size()); }
+private:
+    int         ownerTrackId_;
+    std::string effectInstanceId_;
+    std::vector<AutomationClip> clips_;
+    // Lanes that only existed to hold those clips; removed with them and
+    // restored by undo BEFORE the clips (a clip needs its lane to exist).
+    std::vector<AutomationLane> emptiedLanes_;
+};
+
+// Sets the manual (base) value of a bound parameter — the value it reads before
+// any clip has played and after a manual edit outside every clip.
+class SetAutomationBaseValueCommand : public Command {
+public:
+    SetAutomationBaseValueCommand(AutomationBinding binding, double value,
+                                  const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool shouldRecordInUndoHistory() const override { return accepted_; }
+private:
+    AutomationBinding binding_;
+    double newValue_;
+    double oldValue_ = 0.0;
+    bool   hadOld_   = false;
+    bool   accepted_ = false;
+};
+

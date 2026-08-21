@@ -195,6 +195,45 @@ public:
                                                      const std::string& parameterId,
                                                      float normalizedValue);
 
+    // ── Automation parameter binding (Phase A, main thread) ─────────────
+    //
+    // Automation addresses a parameter the same way sidechain routing addresses
+    // an effect: by the STABLE string effectInstanceId, resolved through
+    // getNodeIdForEffectInstance (chain-mode AND graph-owned, unlike the
+    // getGraphEffect* family, which only knows graph-owned instances). That
+    // matters because automation must work on ordinary mixer inserts and on the
+    // Master chain, neither of which is an FX Graph.
+    //
+    // resolveAutomationParameter hands back the raw APVTS atomic the effect's own
+    // DSP reads each block plus its normalisable range, so the audio thread can
+    // publish a value with a single relaxed store and let the effect's existing
+    // per-parameter smoother do the ramping (see XlethEffectBase's own comment).
+    // Stock effects only — a wrapped VST3 exposes no such pointer, and VST3
+    // automation is explicitly out of scope for v1.
+    struct AutomationParameterHandle
+    {
+        std::atomic<float>*           raw   = nullptr;  // written on the audio thread
+        juce::RangedAudioParameter*   param = nullptr;  // range only (pure math)
+        bool valid() const { return raw != nullptr && param != nullptr; }
+    };
+
+    // Returns an invalid handle when the instance is unknown, is a missing-plugin
+    // placeholder, is not a stock effect, or has no such parameter.
+    AutomationParameterHandle resolveAutomationParameter(const std::string& effectInstanceId,
+                                                         const std::string& parameterId);
+
+    // True iff (effectInstanceId, parameterId) resolves to an automatable stock
+    // parameter on this chain. Backs the plan builder's dead-clip detection.
+    bool canAutomate(const std::string& effectInstanceId,
+                     const std::string& parameterId);
+
+    // Current NORMALIZED [0,1] value of an automatable parameter. Returns false
+    // when it does not resolve. Used to seed a base value the project has never
+    // recorded (the knob's current position).
+    bool getAutomationParameterNormalized(const std::string& effectInstanceId,
+                                          const std::string& parameterId,
+                                          double& outValue);
+
     // ── Effect parameter / meter access (main-thread only) ─────────────
     std::string getEffectParameters(int nodeId) const;
     bool        setEffectParameter (int nodeId, const std::string& paramId, float value);

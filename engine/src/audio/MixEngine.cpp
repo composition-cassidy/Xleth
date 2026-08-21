@@ -2867,6 +2867,11 @@ void MixEngine::destroyAllEffectChains()
 
 int MixEngine::addEffect(int trackId, const std::string& pluginId, int position)
 {
+    // A node created or destroyed here invalidates the automation plan's
+    // resolved parameter handles. Flag rather than rebuild: this function
+    // holds chainsMutex_, and refreshAutomationPlan() takes it. The envelope
+    // applier thread services the flag on its next pass.
+    automationBindingsDirty_.store(true, std::memory_order_release);
     // TWO-STRIKE: chain->addEffect() instantiates the VST (DLL load + prepareToPlay).
     // Minimising hold time requires a two-phase EffectChainManager API:
     // createPluginOffline(pluginId) pre-lock, then insertPreparedPlugin(proc, pos) inside.
@@ -2887,6 +2892,11 @@ int MixEngine::addEffect(int trackId, const std::string& pluginId, int position)
 
 bool MixEngine::removeEffect(int trackId, int nodeId)
 {
+    // A node created or destroyed here invalidates the automation plan's
+    // resolved parameter handles. Flag rather than rebuild: this function
+    // holds chainsMutex_, and refreshAutomationPlan() takes it. The envelope
+    // applier thread services the flag on its next pass.
+    automationBindingsDirty_.store(true, std::memory_order_release);
     // Close any open editor (in-process or out-of-process) BEFORE removing the
     // AudioProcessor node. This avoids dangling AudioProcessor* references in
     // PluginEditorWindow and EditorProcessCoordinator::ParamSyncListener.
@@ -2955,6 +2965,11 @@ void MixEngine::destroyMasterEffectChain()
 
 int MixEngine::addMasterEffect(const std::string& pluginId, int position)
 {
+    // A node created or destroyed here invalidates the automation plan's
+    // resolved parameter handles. Flag rather than rebuild: this function
+    // holds chainsMutex_, and refreshAutomationPlan() takes it. The envelope
+    // applier thread services the flag on its next pass.
+    automationBindingsDirty_.store(true, std::memory_order_release);
     // TWO-STRIKE: same as addEffect — plugin instantiation inside lock.
     // Needs createPluginOffline / insertPreparedPlugin split in EffectChainManager.
     std::lock_guard<std::mutex> lock(chainsMutex_);
@@ -2972,6 +2987,11 @@ int MixEngine::addMasterEffect(const std::string& pluginId, int position)
 
 bool MixEngine::removeMasterEffect(int nodeId)
 {
+    // A node created or destroyed here invalidates the automation plan's
+    // resolved parameter handles. Flag rather than rebuild: this function
+    // holds chainsMutex_, and refreshAutomationPlan() takes it. The envelope
+    // applier thread services the flag on its next pass.
+    automationBindingsDirty_.store(true, std::memory_order_release);
     // Close editor before destroying the node (trackId = -1 = master chain).
     editorHost_->closeEditor(-1, nodeId);
 
@@ -3056,6 +3076,10 @@ bool MixEngine::isEffectInstanceSidechainCapable(int trackId,
 nlohmann::json MixEngine::applyEffectChainPreset(int trackId, const nlohmann::json& effects,
                                                  bool replace)
 {
+    // Nodes may be created or destroyed here — the automation plan's resolved
+    // parameter handles have to be rebuilt. See addEffect's note on why this
+    // flags rather than rebuilds inline.
+    automationBindingsDirty_.store(true, std::memory_order_release);
     // TWO-STRIKE: like loadEffectChainFromJSON, this instantiates every plugin in
     // the preset (DLL load + prepareToPlay) inside the lock. Held deliberately for
     // the whole rebuild rather than per effect: releasing between slots would let
@@ -3115,6 +3139,10 @@ nlohmann::json MixEngine::getMasterEffectChainJSON() const
 
 bool MixEngine::loadEffectChainFromJSON(int trackId, const nlohmann::json& j)
 {
+    // Nodes may be created or destroyed here — the automation plan's resolved
+    // parameter handles have to be rebuilt. See addEffect's note on why this
+    // flags rather than rebuilds inline.
+    automationBindingsDirty_.store(true, std::memory_order_release);
     // TWO-STRIKE: graphFromJSON() instantiates every plugin in the chain (bulk DLL
     // load + prepareToPlay) inside the lock. A two-phase split — offline construction
     // then locked graph splice — requires EffectChainManager API changes.
@@ -3133,6 +3161,10 @@ bool MixEngine::loadEffectChainFromJSON(int trackId, const nlohmann::json& j)
 
 bool MixEngine::loadMasterEffectChainFromJSON(const nlohmann::json& j)
 {
+    // Nodes may be created or destroyed here — the automation plan's resolved
+    // parameter handles have to be rebuilt. See addEffect's note on why this
+    // flags rather than rebuilds inline.
+    automationBindingsDirty_.store(true, std::memory_order_release);
     // TWO-STRIKE: same as loadEffectChainFromJSON — bulk plugin instantiation inside lock.
     std::lock_guard<std::mutex> lock(chainsMutex_);
     if (!masterEffectChain_) {
@@ -3199,6 +3231,10 @@ std::string MixEngine::getMissingPluginsJSON() const
 
 bool MixEngine::tryResolvePlugin(int trackId, int nodeId)
 {
+    // Nodes may be created or destroyed here — the automation plan's resolved
+    // parameter handles have to be rebuilt. See addEffect's note on why this
+    // flags rather than rebuilds inline.
+    automationBindingsDirty_.store(true, std::memory_order_release);
     // TWO-STRIKE: tryResolvePlugin instantiates the real VST (replaces placeholder)
     // inside the lock. Same two-phase split needed as addEffect.
     std::lock_guard<std::mutex> lock(chainsMutex_);
@@ -3222,6 +3258,10 @@ bool MixEngine::tryResolvePlugin(int trackId, int nodeId)
 
 void MixEngine::removeAllMissingPlugins()
 {
+    // Nodes may be created or destroyed here — the automation plan's resolved
+    // parameter handles have to be rebuilt. See addEffect's note on why this
+    // flags rather than rebuilds inline.
+    automationBindingsDirty_.store(true, std::memory_order_release);
     std::lock_guard<std::mutex> lock(chainsMutex_);
 
     auto removeFromChain = [&](EffectChainManager* chain)
@@ -3242,6 +3282,10 @@ void MixEngine::removeAllMissingPlugins()
 
 bool MixEngine::resetCrashedPlugin(int trackId, int nodeId)
 {
+    // Nodes may be created or destroyed here — the automation plan's resolved
+    // parameter handles have to be rebuilt. See addEffect's note on why this
+    // flags rather than rebuilds inline.
+    automationBindingsDirty_.store(true, std::memory_order_release);
     // TWO-STRIKE: resetCrashedPlugin re-initialises a crashed VST (prepareToPlay +
     // state restore) inside the lock. Plugin re-init time is unbounded.
     std::lock_guard<std::mutex> lock(chainsMutex_);
@@ -3396,6 +3440,10 @@ nlohmann::json MixEngine::hydrateGraphEffectNodes(int trackId,
 
 bool MixEngine::removeGraphEffectNode(int trackId, const std::string& effectInstanceId)
 {
+    // Nodes may be created or destroyed here — the automation plan's resolved
+    // parameter handles have to be rebuilt. See addEffect's note on why this
+    // flags rather than rebuilds inline.
+    automationBindingsDirty_.store(true, std::memory_order_release);
     if (trackId < 0) return false;  // master track is chain-only
 
     // Resolve the engine node id under the lock, then release it before closing
@@ -3897,9 +3945,16 @@ void MixEngine::startEnvelopeApplierThread()
             // this thread costs nothing but a second, cheap mailbox scan, so no
             // second applier thread is started for it.
             const int lfoWritten = applyPendingLfoModulation();
+            // Automation does NOT drain through a mailbox — its values are
+            // written in the same audio block that evaluated them, which is what
+            // makes export match live playback. What this thread does for it is
+            // the one job that genuinely cannot happen on the audio callback:
+            // re-resolving parameter handles after a chain mutation.
+            const int automationRebuilt = refreshAutomationPlanIfDirty();
             // Back off when idle so a stopped transport costs almost nothing,
             // and stay tight while modulation is actually moving.
-            std::this_thread::sleep_for((written > 0 || lfoWritten > 0) ? std::chrono::milliseconds(1)
+            std::this_thread::sleep_for((written > 0 || lfoWritten > 0 || automationRebuilt > 0)
+                                                   ? std::chrono::milliseconds(1)
                                                    : std::chrono::milliseconds(10));
         }
     });
@@ -4099,6 +4154,196 @@ int MixEngine::applyPendingLfoModulation()
     }
 
     return written;
+}
+
+// ── Automation clips (Phase A) ───────────────────────────────────────────────
+
+namespace {
+
+// Resolve a binding's owner chain. -1 addresses the Master chain, matching the
+// convention every other trackId-keyed effect API in this file uses.
+EffectChainManager* automationChainFor(
+    int trackId,
+    const std::unordered_map<int, std::unique_ptr<EffectChainManager>>& chains,
+    const std::unique_ptr<EffectChainManager>& master)
+{
+    if (trackId < 0) return master.get();
+    auto it = chains.find(trackId);
+    return it == chains.end() ? nullptr : it->second.get();
+}
+
+} // namespace
+
+void MixEngine::refreshAutomationPlan()
+{
+    if (timeline_ == nullptr) return;
+
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+
+    // The plan builder asks two questions this class is the only one able to
+    // answer: does this binding address a live stock parameter (dead-clip
+    // detection), and what does that parameter currently read (the base value a
+    // project has never recorded). Both are resolved here, under the same lock
+    // that will hold while the plan is used.
+    auto resolver = [this](const AutomationBinding& b) {
+        EffectChainManager* chain =
+            automationChainFor(b.ownerTrackId, effectChains_, masterEffectChain_);
+        return chain != nullptr && chain->canAutomate(b.effectInstanceId, b.parameterId);
+    };
+    auto baseResolver = [this](const AutomationBinding& b, double& out) {
+        EffectChainManager* chain =
+            automationChainFor(b.ownerTrackId, effectChains_, masterEffectChain_);
+        return chain != nullptr
+            && chain->getAutomationParameterNormalized(b.effectInstanceId, b.parameterId, out);
+    };
+
+    auto plan = std::make_shared<xleth::automation::AutomationPlan>();
+    xleth::automation::buildAutomationPlan(*timeline_, resolver, baseResolver, *plan);
+
+    auto runtime = std::make_shared<AutomationRuntime>();
+    runtime->plan = plan;
+    runtime->targets.resize(static_cast<std::size_t>(plan->targetCount));
+
+    for (int i = 0; i < plan->targetCount; ++i)
+    {
+        const auto& target = plan->targets[i];
+        auto& rt = runtime->targets[static_cast<std::size_t>(i)];
+        rt.trackId = target.ownerTrackId;
+
+        EffectChainManager* chain =
+            automationChainFor(target.ownerTrackId, effectChains_, masterEffectChain_);
+        if (chain == nullptr) continue;
+
+        const auto handle =
+            chain->resolveAutomationParameter(target.effectInstanceId, target.parameterId);
+        if (!handle.valid()) continue;
+
+        rt.raw    = handle.raw;
+        rt.param  = handle.param;
+        rt.nodeId = chain->getNodeIdForEffectInstance(target.effectInstanceId);
+        rt.effect = chain->getEffect(rt.nodeId);
+        if (rt.effect == nullptr) { rt.raw = nullptr; rt.param = nullptr; continue; }
+        ++runtime->resolvedCount;
+    }
+
+    // Swap. The previous runtime dies here, on the message thread, while this
+    // thread holds chainsMutex_ — so the audio thread cannot be inside
+    // applyAutomationForBlock reading it.
+    automationRuntime_ = std::move(runtime);
+    automationBindingsDirty_.store(false, std::memory_order_release);
+}
+
+int MixEngine::refreshAutomationPlanIfDirty()
+{
+    if (!automationBindingsDirty_.load(std::memory_order_acquire)) return 0;
+    refreshAutomationPlan();
+    return 1;
+}
+
+nlohmann::json MixEngine::getAutomationPlanDiagnostics() const
+{
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    nlohmann::json j = nlohmann::json::object();
+    if (!automationRuntime_ || !automationRuntime_->plan) {
+        j["targetCount"]     = 0;
+        j["windowCount"]     = 0;
+        j["pointCount"]      = 0;
+        j["overflowed"]      = false;
+        j["droppedTargets"]  = 0;
+        j["droppedWindows"]  = 0;
+        j["unresolvedClips"] = 0;
+        j["resolvedTargets"] = 0;
+        return j;
+    }
+    const auto& p = *automationRuntime_->plan;
+    j["targetCount"]     = p.targetCount;
+    j["windowCount"]     = p.windowCount;
+    j["pointCount"]      = p.pointCount;
+    j["overflowed"]      = p.overflowed;
+    j["droppedTargets"]  = p.droppedTargetCount;
+    j["droppedWindows"]  = p.droppedWindowCount;
+    j["unresolvedClips"] = p.unresolvedClipCount;
+    j["resolvedTargets"] = automationRuntime_->resolvedCount;
+    return j;
+}
+
+bool MixEngine::isAutomationBindingResolvable(int ownerTrackId,
+                                              const std::string& effectInstanceId,
+                                              const std::string& parameterId) const
+{
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    EffectChainManager* chain =
+        automationChainFor(ownerTrackId, effectChains_, masterEffectChain_);
+    return chain != nullptr && chain->canAutomate(effectInstanceId, parameterId);
+}
+
+bool MixEngine::getAutomationParameterNormalized(int ownerTrackId,
+                                                 const std::string& effectInstanceId,
+                                                 const std::string& parameterId,
+                                                 double& outValue) const
+{
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    EffectChainManager* chain =
+        automationChainFor(ownerTrackId, effectChains_, masterEffectChain_);
+    return chain != nullptr
+        && chain->getAutomationParameterNormalized(effectInstanceId, parameterId, outValue);
+}
+
+double MixEngine::evaluateAutomationAtTick(int ownerTrackId,
+                                           const std::string& effectInstanceId,
+                                           const std::string& parameterId,
+                                           int64_t tick, bool& found) const
+{
+    found = false;
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    if (!automationRuntime_ || !automationRuntime_->plan) return 0.0;
+    const auto& plan = *automationRuntime_->plan;
+    for (int i = 0; i < plan.targetCount; ++i) {
+        const auto& t = plan.targets[i];
+        if (t.ownerTrackId != ownerTrackId) continue;
+        if (t.effectInstanceId != effectInstanceId) continue;
+        if (t.parameterId != parameterId) continue;
+        found = true;
+        return xleth::automation::evaluateTarget(plan, i, tick);
+    }
+    return 0.0;
+}
+
+void MixEngine::applyAutomationForBlock(int64_t tick) noexcept
+{
+    // PRECONDITION: chainsMutex_ is held by this thread. Everything below is
+    // allocation-free, lock-free and log-free.
+    AutomationRuntime* runtime = automationRuntime_.get();
+    if (runtime == nullptr) return;
+    const xleth::automation::AutomationPlan* plan = runtime->plan.get();
+    if (plan == nullptr || plan->targetCount <= 0) return;
+
+    const int n = std::min(plan->targetCount, static_cast<int>(runtime->targets.size()));
+    for (int i = 0; i < n; ++i)
+    {
+        AutomationRuntimeTarget& rt = runtime->targets[static_cast<std::size_t>(i)];
+        if (rt.raw == nullptr || rt.param == nullptr) continue;   // dead clip / VST3
+
+        // Liveness: re-derive the effect from its chain and confirm it is the
+        // same object the plan resolved. A removed effect yields nullptr (or a
+        // different pointer, since node ids are monotonic and never reused), and
+        // the target is skipped rather than written through a stale pointer.
+        EffectChainManager* chain =
+            automationChainFor(rt.trackId, effectChains_, masterEffectChain_);
+        if (chain == nullptr) continue;
+        if (chain->getEffect(rt.nodeId) != rt.effect) continue;
+
+        const double v = xleth::automation::evaluateTarget(*plan, i, tick);
+        const float normalized = static_cast<float>(v < 0.0 ? 0.0 : (v > 1.0 ? 1.0 : v));
+        const float denorm = rt.param->convertFrom0to1(normalized);
+
+        // The effect reads this atomic once per block; writing an unchanged
+        // value would only add store traffic.
+        if (rt.everWritten && rt.lastWritten == denorm) continue;
+        rt.raw->store(denorm, std::memory_order_relaxed);
+        rt.lastWritten = denorm;
+        rt.everWritten = true;
+    }
 }
 
 std::string MixEngine::getEffectParameters(int trackId, int nodeId) const
@@ -5074,6 +5319,21 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         //
         // Only taken when something is actually loaded to audition, so a
         // stopped transport with no preview sampler never touches the mutex.
+        // Automation while stopped. value(t) is a pure function of the tick, and
+        // the playhead still HAS a tick, so seeking with the transport stopped
+        // has to leave every automated parameter on the value at the new
+        // position — otherwise the knob shows whatever the last rendered block
+        // happened to leave behind. try_lock, never a blocking lock: a miss just
+        // means the next block does it (same discipline as the audition below).
+        {
+            std::unique_lock<std::mutex> automationLock(chainsMutex_, std::try_to_lock);
+            if (automationLock.owns_lock())
+                applyAutomationForBlock(xleth::automation::tickAtSamplePosition(
+                    transport.getRenderPositionSamples(),
+                    transport.getBPM(),
+                    transport.getSampleRate()));
+        }
+
         if (!previewSamplers_.empty())
         {
             std::unique_lock<std::mutex> previewChainsLock(chainsMutex_, std::try_to_lock);
@@ -5783,6 +6043,16 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
 
     if (chainsLocked)
     {
+        // Automation, evaluated at THIS block's tick and written straight into
+        // the effect parameters before any of them process. Placed inside the
+        // chainsLocked region for three reasons at once: the lock is already
+        // held (no new lock on the audio callback), no effect can be destroyed
+        // while we hold it (the resolved handles cannot dangle), and the values
+        // land in the same block that evaluated them — which is what makes an
+        // offline export reproduce live playback exactly.
+        applyAutomationForBlock(
+            xleth::automation::tickAtSamplePosition(bufStart, bpm, sampleRate));
+
         int trackLatencies[kMaxTracks] = {};
         int maxAudibleTrackLatency = 0;
 

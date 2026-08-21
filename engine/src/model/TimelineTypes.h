@@ -1289,6 +1289,237 @@ struct PatternBlock {
     bool     loopEnabled = false; // true: notes loop past pattern.length; false: empty space past pattern.length
 };
 
+// ─── Automation clips (Phase A) ───────────────────────────────────────────────
+//
+// FL-style automation clips: a point envelope, placed on the timeline like a
+// PatternBlock, driving exactly ONE stock-effect parameter.
+//
+// Three types, deliberately split the same way Pattern / PatternBlock are:
+//
+//   AutomationLane      grouping row under the owning track (-1 = the pinned
+//                       Master group). Ordering within a group is `index`;
+//                       LOWEST index is topmost and wins cross-lane overlap.
+//   AutomationClip      the PLACEMENT — id/laneId/position/duration/offset,
+//                       mirroring PatternBlock field-for-field, plus the
+//                       envelopeId it plays.
+//   AutomationEnvelope  the DATA — a binding plus sorted points. Copies of a
+//                       clip share one envelopeId until make-unique duplicates
+//                       the envelope, exactly as pattern blocks share patternId.
+//
+// Prior art is paramtrack::ParamTrack (model/ParamTrack.h): the sorted-key
+// invariant, the duplicate-key-replaces rule, per-segment curve storage and the
+// "omit what is trivial" JSON shape are mirrored from it. It is NOT reused:
+// ParamTrack is normalized over a 0..1 window with no notion of musical time,
+// while automation points are 960-PPQ ticks measured from the clip's own
+// origin, so the evaluation core is separate (model/AutomationEnvelope.h).
+
+// Segment interpolation for the segment STARTING at a point. Linear is the only
+// shape v1 evaluates; Tension is reserved and already carried by the data model
+// and the file format so the tension UI can ship without a format migration.
+enum class AutomationCurveType { Linear = 0, Tension = 1 };
+
+inline AutomationCurveType intToAutomationCurveType(int v) {
+    return v == 1 ? AutomationCurveType::Tension : AutomationCurveType::Linear;
+}
+
+// One envelope point. `tick` is INTRA-CLIP (0 = the envelope's own origin), so a
+// clip can be moved or trimmed without rewriting a single point.
+struct AutomationPoint {
+    TickTime            tick;                                     // intra-clip, 960 PPQ
+    double              value     = 0.0;                          // normalized [0,1]
+    AutomationCurveType curveType = AutomationCurveType::Linear;  // segment starting here
+    double              tension   = 0.0;                          // 0 = linear
+};
+
+// The stable address of an automated parameter. Never slot indices: reordering a
+// chain must not touch a binding. ownerTrackId == -1 addresses the Master chain.
+struct AutomationBinding {
+    int         ownerTrackId = -1;
+    std::string effectInstanceId;
+    std::string parameterId;
+
+    bool operator==(const AutomationBinding& o) const {
+        return ownerTrackId == o.ownerTrackId
+            && effectInstanceId == o.effectInstanceId
+            && parameterId == o.parameterId;
+    }
+    bool operator!=(const AutomationBinding& o) const { return !(*this == o); }
+
+    // Strict weak ordering so a binding can key a std::map (base values).
+    bool operator<(const AutomationBinding& o) const {
+        if (ownerTrackId != o.ownerTrackId) return ownerTrackId < o.ownerTrackId;
+        if (effectInstanceId != o.effectInstanceId) return effectInstanceId < o.effectInstanceId;
+        return parameterId < o.parameterId;
+    }
+
+    bool valid() const { return !effectInstanceId.empty() && !parameterId.empty(); }
+};
+
+struct AutomationEnvelope {
+    int                          id = 0;
+    AutomationBinding            binding;
+    std::vector<AutomationPoint> points;   // sorted ascending by tick (invariant)
+};
+
+// Grouping row. `index` is the order within the owner's group; lowest == topmost,
+// and topmost wins wherever two lanes bound to the same parameter overlap.
+struct AutomationLane {
+    int id           = 0;
+    int ownerTrackId = -1;   // -1 = the pinned Master group
+    int index        = 0;
+};
+
+// Placement. Mirrors PatternBlock: position/duration are timeline ticks, offset
+// is the trimmed left edge measured into the envelope.
+struct AutomationClip {
+    int      id         = 0;
+    int      laneId     = 0;
+    int      envelopeId = 0;
+    TickTime position;   // timeline position of the clip's left edge
+    TickTime duration;   // length on the timeline
+    TickTime offset;     // trimmed left edge within the envelope
+
+    // Timeline tick at which intra-clip tick 0 sits. The envelope origin is
+    // `offset` ticks to the LEFT of the clip's visible left edge.
+    TickTime originTick() const { return TickTime{position.ticks - offset.ticks}; }
+    TickTime endTick()    const { return TickTime{position.ticks + duration.ticks}; }
+};
+
+// ─── Automation JSON ──────────────────────────────────────────────────────────
+//
+// Shapes follow the paramtrack convention: a key is written only when it carries
+// information. Points use short keys ("t"/"v") to match ParamTrack's serialized
+// keyframes; "c"/"n" (curveType/tension) are omitted at their defaults but are
+// ALWAYS accepted on read, which is what makes the deferred tension UI a purely
+// additive change rather than a format migration.
+
+inline nlohmann::json automationPointToJson(const AutomationPoint& p) {
+    nlohmann::json j = nlohmann::json::object();
+    j["t"] = p.tick.ticks;
+    j["v"] = p.value;
+    if (p.curveType != AutomationCurveType::Linear)
+        j["c"] = static_cast<int>(p.curveType);
+    if (p.tension != 0.0)
+        j["n"] = p.tension;
+    return j;
+}
+
+inline AutomationPoint automationPointFromJson(const nlohmann::json& j) {
+    AutomationPoint p;
+    if (!j.is_object()) return p;
+    if (j.contains("t") && j["t"].is_number())
+        p.tick.ticks = static_cast<int64_t>(j["t"].get<double>());
+    if (j.contains("v") && j["v"].is_number())
+        p.value = j["v"].get<double>();
+    if (j.contains("c") && j["c"].is_number())
+        p.curveType = intToAutomationCurveType(j["c"].get<int>());
+    if (j.contains("n") && j["n"].is_number())
+        p.tension = j["n"].get<double>();
+    if (!std::isfinite(p.value))   p.value = 0.0;
+    if (!std::isfinite(p.tension)) p.tension = 0.0;
+    p.value = std::clamp(p.value, 0.0, 1.0);
+    return p;
+}
+
+inline nlohmann::json automationBindingToJson(const AutomationBinding& b) {
+    return nlohmann::json{
+        {"ownerTrackId",     b.ownerTrackId},
+        {"effectInstanceId", b.effectInstanceId},
+        {"parameterId",      b.parameterId},
+    };
+}
+
+inline AutomationBinding automationBindingFromJson(const nlohmann::json& j) {
+    AutomationBinding b;
+    if (!j.is_object()) return b;
+    if (j.contains("ownerTrackId") && j["ownerTrackId"].is_number())
+        b.ownerTrackId = j["ownerTrackId"].get<int>();
+    if (j.contains("effectInstanceId") && j["effectInstanceId"].is_string())
+        b.effectInstanceId = j["effectInstanceId"].get<std::string>();
+    if (j.contains("parameterId") && j["parameterId"].is_string())
+        b.parameterId = j["parameterId"].get<std::string>();
+    return b;
+}
+
+inline nlohmann::json automationEnvelopeToJson(const AutomationEnvelope& e) {
+    nlohmann::json j = nlohmann::json::object();
+    j["id"]      = e.id;
+    j["binding"] = automationBindingToJson(e.binding);
+    // Omitted when empty, exactly like paramtrack's "keys".
+    if (!e.points.empty()) {
+        nlohmann::json arr = nlohmann::json::array();
+        for (const auto& p : e.points) arr.push_back(automationPointToJson(p));
+        j["points"] = std::move(arr);
+    }
+    return j;
+}
+
+inline AutomationEnvelope automationEnvelopeFromJson(const nlohmann::json& j) {
+    AutomationEnvelope e;
+    if (!j.is_object()) return e;
+    if (j.contains("id") && j["id"].is_number()) e.id = j["id"].get<int>();
+    if (j.contains("binding")) e.binding = automationBindingFromJson(j["binding"]);
+    if (j.contains("points") && j["points"].is_array())
+        for (const auto& pj : j["points"])
+            e.points.push_back(automationPointFromJson(pj));
+    return e;
+}
+
+inline nlohmann::json automationLaneToJson(const AutomationLane& l) {
+    return nlohmann::json{
+        {"id",           l.id},
+        {"ownerTrackId", l.ownerTrackId},
+        {"index",        l.index},
+    };
+}
+
+inline AutomationLane automationLaneFromJson(const nlohmann::json& j) {
+    AutomationLane l;
+    if (!j.is_object()) return l;
+    if (j.contains("id") && j["id"].is_number())                     l.id = j["id"].get<int>();
+    if (j.contains("ownerTrackId") && j["ownerTrackId"].is_number()) l.ownerTrackId = j["ownerTrackId"].get<int>();
+    if (j.contains("index") && j["index"].is_number())               l.index = j["index"].get<int>();
+    if (l.index < 0) l.index = 0;
+    return l;
+}
+
+inline nlohmann::json automationClipToJson(const AutomationClip& c) {
+    nlohmann::json j = nlohmann::json::object();
+    j["id"]         = c.id;
+    j["laneId"]     = c.laneId;
+    j["envelopeId"] = c.envelopeId;
+    j["position"]   = c.position.ticks;
+    j["duration"]   = c.duration.ticks;
+    if (c.offset.ticks != 0) j["offset"] = c.offset.ticks;
+    return j;
+}
+
+inline AutomationClip automationClipFromJson(const nlohmann::json& j) {
+    AutomationClip c;
+    if (!j.is_object()) return c;
+    if (j.contains("id") && j["id"].is_number())                 c.id = j["id"].get<int>();
+    if (j.contains("laneId") && j["laneId"].is_number())         c.laneId = j["laneId"].get<int>();
+    if (j.contains("envelopeId") && j["envelopeId"].is_number()) c.envelopeId = j["envelopeId"].get<int>();
+    if (j.contains("position") && j["position"].is_number())
+        c.position.ticks = static_cast<int64_t>(j["position"].get<double>());
+    if (j.contains("duration") && j["duration"].is_number())
+        c.duration.ticks = static_cast<int64_t>(j["duration"].get<double>());
+    if (j.contains("offset") && j["offset"].is_number())
+        c.offset.ticks = static_cast<int64_t>(j["offset"].get<double>());
+    if (c.duration.ticks < 0) c.duration.ticks = 0;
+    return c;
+}
+
+// One persisted manual (base) value for a bound parameter — the value the
+// parameter holds before any automation clip has ever played, and the value a
+// manual knob edit outside every clip writes. One per binding, never per
+// envelope: two lanes automating the same parameter share the same base.
+inline nlohmann::json automationBaseValueToJson(const AutomationBinding& b, double value) {
+    nlohmann::json j = automationBindingToJson(b);
+    j["value"] = value;
+    return j;
+}
+
 // ─── TrackColor (Pass 6D + 6F) ────────────────────────────────────────────────
 // Per-track color assignment metadata. UI-only — engine audio/video pipelines
 // ignore these fields. `Auto` means the renderer derives the color from the

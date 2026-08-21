@@ -4790,6 +4790,12 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
         g_undoManager->setPostMutationHook([ae] {
             if (ae) ae->getMixEngine().refreshEnvelopeDefinitions();
             if (ae) ae->getMixEngine().refreshLfoDefinitions();
+            // Automation clips live in the Timeline, so EVERY automation edit —
+            // clip, lane, envelope point, base value, and their undo/redo —
+            // arrives here. Hooking UndoManager instead of each handler makes
+            // the coverage complete by construction, the same argument the two
+            // refreshes above rest on.
+            if (ae) ae->getMixEngine().refreshAutomationPlan();
         });
     }
 
@@ -10585,6 +10591,744 @@ JsonApi::Value Timeline_AutoLoopForSelection(const JsonApi::CallbackInfo& info)
     }
     log.done(res.valid ? "loop" : res.reason);
     return emit(res, durSec);
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+// Automation clips (Phase A)
+// ═══════════════════════════════════════════════════════════════════════════
+//
+// The whole surface Phases B (timeline UI) and C (editing + mixer entry) need.
+// Every mutation goes through UndoManager, exactly like the pattern-block
+// family above; every query is a plain read.
+//
+// Tick fields are named *Ticks on the JS side (matching patternBlock*), while
+// values are always NORMALIZED [0,1] — the same currency the graph parameter
+// RPCs use, so a knob's value can be handed straight to an envelope point.
+
+static JsonApi::Object automationLaneToJs(JsonApi::Env env, const AutomationLane& l) {
+    JsonApi::Object o = JsonApi::Object::New(env);
+    o.Set("id",           JsonApi::Number::New(env, l.id));
+    o.Set("ownerTrackId", JsonApi::Number::New(env, l.ownerTrackId));
+    o.Set("index",        JsonApi::Number::New(env, l.index));
+    return o;
+}
+
+static JsonApi::Object automationClipToJs(JsonApi::Env env, const AutomationClip& c) {
+    JsonApi::Object o = JsonApi::Object::New(env);
+    o.Set("id",            JsonApi::Number::New(env, c.id));
+    o.Set("laneId",        JsonApi::Number::New(env, c.laneId));
+    o.Set("envelopeId",    JsonApi::Number::New(env, c.envelopeId));
+    o.Set("positionTicks", JsonApi::Number::New(env, static_cast<double>(c.position.ticks)));
+    o.Set("durationTicks", JsonApi::Number::New(env, static_cast<double>(c.duration.ticks)));
+    o.Set("offsetTicks",   JsonApi::Number::New(env, static_cast<double>(c.offset.ticks)));
+    return o;
+}
+
+static JsonApi::Object automationEnvelopeToJs(JsonApi::Env env, const AutomationEnvelope& e) {
+    JsonApi::Object o = JsonApi::Object::New(env);
+    o.Set("id", JsonApi::Number::New(env, e.id));
+
+    JsonApi::Object b = JsonApi::Object::New(env);
+    b.Set("ownerTrackId",     JsonApi::Number::New(env, e.binding.ownerTrackId));
+    b.Set("effectInstanceId", JsonApi::String::New(env, e.binding.effectInstanceId));
+    b.Set("parameterId",      JsonApi::String::New(env, e.binding.parameterId));
+    o.Set("binding", b);
+
+    JsonApi::Array pts = JsonApi::Array::New(env, e.points.size());
+    for (size_t i = 0; i < e.points.size(); ++i) {
+        const auto& p = e.points[i];
+        JsonApi::Object po = JsonApi::Object::New(env);
+        po.Set("tick",      JsonApi::Number::New(env, static_cast<double>(p.tick.ticks)));
+        po.Set("value",     JsonApi::Number::New(env, p.value));
+        po.Set("curveType", JsonApi::Number::New(env, static_cast<int>(p.curveType)));
+        po.Set("tension",   JsonApi::Number::New(env, p.tension));
+        pts.Set(static_cast<uint32_t>(i), po);
+    }
+    o.Set("points", pts);
+    return o;
+}
+
+// Reads { ownerTrackId, effectInstanceId, parameterId } out of a JS object.
+static AutomationBinding automationBindingFromJs(JsonApi::Object o) {
+    AutomationBinding b;
+    if (o.Has("ownerTrackId") && o.Get("ownerTrackId").IsNumber())
+        b.ownerTrackId = o.Get("ownerTrackId").As<JsonApi::Number>().Int32Value();
+    if (o.Has("effectInstanceId") && o.Get("effectInstanceId").IsString())
+        b.effectInstanceId = o.Get("effectInstanceId").As<JsonApi::String>().Utf8Value();
+    if (o.Has("parameterId") && o.Get("parameterId").IsString())
+        b.parameterId = o.Get("parameterId").As<JsonApi::String>().Utf8Value();
+    return b;
+}
+
+// Reads one { tick, value, curveType?, tension? } point out of a JS object.
+static AutomationPoint automationPointFromJs(JsonApi::Object o) {
+    AutomationPoint p;
+    if (o.Has("tick") && o.Get("tick").IsNumber())
+        p.tick.ticks = static_cast<int64_t>(o.Get("tick").As<JsonApi::Number>().DoubleValue());
+    if (o.Has("value") && o.Get("value").IsNumber())
+        p.value = o.Get("value").As<JsonApi::Number>().DoubleValue();
+    if (o.Has("curveType") && o.Get("curveType").IsNumber())
+        p.curveType = intToAutomationCurveType(o.Get("curveType").As<JsonApi::Number>().Int32Value());
+    if (o.Has("tension") && o.Get("tension").IsNumber())
+        p.tension = o.Get("tension").As<JsonApi::Number>().DoubleValue();
+    return p;
+}
+
+// automation_getLanes(ownerTrackId?) -> AutomationLane[]
+// Omit the argument for every lane; pass -1 for the Master group.
+JsonApi::Value Automation_GetLanes(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!g_timeline) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    std::vector<const AutomationLane*> lanes;
+    if (info.Length() >= 1 && info[0].IsNumber())
+        lanes = g_timeline->getAutomationLanesForOwner(info[0].As<JsonApi::Number>().Int32Value());
+    else
+        lanes = g_timeline->getAllAutomationLanes();
+
+    JsonApi::Array arr = JsonApi::Array::New(env, lanes.size());
+    for (size_t i = 0; i < lanes.size(); ++i)
+        arr.Set(static_cast<uint32_t>(i), automationLaneToJs(env, *lanes[i]));
+    return arr;
+}
+
+// automation_getClips(laneId?) -> AutomationClip[]
+JsonApi::Value Automation_GetClips(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!g_timeline) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    std::vector<const AutomationClip*> clips;
+    if (info.Length() >= 1 && info[0].IsNumber())
+        clips = g_timeline->getAutomationClipsOnLane(info[0].As<JsonApi::Number>().Int32Value());
+    else
+        clips = g_timeline->getAllAutomationClips();
+
+    JsonApi::Array arr = JsonApi::Array::New(env, clips.size());
+    for (size_t i = 0; i < clips.size(); ++i)
+        arr.Set(static_cast<uint32_t>(i), automationClipToJs(env, *clips[i]));
+    return arr;
+}
+
+// automation_getEnvelopes(envelopeId?) -> AutomationEnvelope[]
+JsonApi::Value Automation_GetEnvelopes(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!g_timeline) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() >= 1 && info[0].IsNumber()) {
+        const int id = info[0].As<JsonApi::Number>().Int32Value();
+        const AutomationEnvelope* e = g_timeline->getAutomationEnvelope(id);
+        JsonApi::Array one = JsonApi::Array::New(env, e ? 1 : 0);
+        if (e) one.Set(0u, automationEnvelopeToJs(env, *e));
+        return one;
+    }
+    auto envs = g_timeline->getAllAutomationEnvelopes();
+    JsonApi::Array arr = JsonApi::Array::New(env, envs.size());
+    for (size_t i = 0; i < envs.size(); ++i)
+        arr.Set(static_cast<uint32_t>(i), automationEnvelopeToJs(env, *envs[i]));
+    return arr;
+}
+
+// automation_addLane({ ownerTrackId, index? }) -> laneId (-1 on reject)
+// index omitted or < 0 appends after the owner's current last lane.
+JsonApi::Value Automation_AddLane(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsObject()) {
+        JsonApi::TypeError::New(env, "automation_addLane({ ownerTrackId, index? })")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    BridgeCallLog log("automation.addLane");
+    JsonApi::Object o = info[0].As<JsonApi::Object>();
+    const int ownerTrackId = o.Has("ownerTrackId") && o.Get("ownerTrackId").IsNumber()
+                           ? o.Get("ownerTrackId").As<JsonApi::Number>().Int32Value() : -1;
+    const int index = o.Has("index") && o.Get("index").IsNumber()
+                    ? o.Get("index").As<JsonApi::Number>().Int32Value() : -1;
+
+    auto cmd = std::make_unique<AddAutomationLaneCommand>(ownerTrackId, index);
+    AddAutomationLaneCommand* raw = cmd.get();
+    g_undoManager->execute(std::move(cmd), *g_timeline);
+    const int id = raw->laneId();
+    log.done(std::to_string(id));
+    return JsonApi::Number::New(env, id);
+}
+
+// automation_removeLane(laneId) -> bool   (cascades to the lane's clips)
+JsonApi::Value Automation_RemoveLane(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        JsonApi::TypeError::New(env, "automation_removeLane(laneId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int laneId = info[0].As<JsonApi::Number>().Int32Value();
+    BridgeCallLog log("automation.removeLane");
+    const bool existed = g_timeline->getAutomationLane(laneId) != nullptr;
+    g_undoManager->execute(std::make_unique<RemoveAutomationLaneCommand>(laneId, *g_timeline),
+                           *g_timeline);
+    log.done(existed ? "ok" : "unknown_lane");
+    return JsonApi::Boolean::New(env, existed);
+}
+
+// automation_addEnvelope({ ownerTrackId, effectInstanceId, parameterId, points? })
+//   -> envelopeId (-1 on reject)
+// `points` is [{ tick, value, curveType?, tension? }, ...]; omit it for an empty
+// envelope, or pass one flat point to mirror the knob's current position.
+JsonApi::Value Automation_AddEnvelope(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsObject()) {
+        JsonApi::TypeError::New(env,
+            "automation_addEnvelope({ ownerTrackId, effectInstanceId, parameterId, points? })")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    BridgeCallLog log("automation.addEnvelope");
+    JsonApi::Object o = info[0].As<JsonApi::Object>();
+    const AutomationBinding binding = automationBindingFromJs(o);
+
+    std::vector<AutomationPoint> points;
+    if (o.Has("points") && o.Get("points").IsArray()) {
+        JsonApi::Array arr = o.Get("points").As<JsonApi::Array>();
+        for (uint32_t i = 0; i < arr.Length(); ++i)
+            if (arr.Get(i).IsObject())
+                points.push_back(automationPointFromJs(arr.Get(i).As<JsonApi::Object>()));
+    }
+
+    auto cmd = std::make_unique<AddAutomationEnvelopeCommand>(binding, std::move(points));
+    AddAutomationEnvelopeCommand* raw = cmd.get();
+    g_undoManager->execute(std::move(cmd), *g_timeline);
+    const int id = raw->envelopeId();
+    log.done(std::to_string(id));
+    return JsonApi::Number::New(env, id);
+}
+
+// automation_addClip({ laneId, envelopeId, positionTicks, durationTicks, offsetTicks? })
+//   -> clipId, or -1 when the placement is rejected (unknown lane/envelope,
+//      non-positive duration, or same-lane overlap).
+JsonApi::Value Automation_AddClip(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsObject()) {
+        JsonApi::TypeError::New(env,
+            "automation_addClip({ laneId, envelopeId, positionTicks, durationTicks, offsetTicks? })")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    BridgeCallLog log("automation.addClip");
+    JsonApi::Object o = info[0].As<JsonApi::Object>();
+
+    AutomationClip c;
+    c.laneId     = o.Get("laneId").As<JsonApi::Number>().Int32Value();
+    c.envelopeId = o.Get("envelopeId").As<JsonApi::Number>().Int32Value();
+    c.position.ticks = static_cast<int64_t>(o.Get("positionTicks").As<JsonApi::Number>().DoubleValue());
+    c.duration.ticks = static_cast<int64_t>(o.Get("durationTicks").As<JsonApi::Number>().DoubleValue());
+    if (o.Has("offsetTicks") && o.Get("offsetTicks").IsNumber())
+        c.offset.ticks = static_cast<int64_t>(o.Get("offsetTicks").As<JsonApi::Number>().DoubleValue());
+
+    auto cmd = std::make_unique<AddAutomationClipCommand>(c);
+    AddAutomationClipCommand* raw = cmd.get();
+    g_undoManager->execute(std::move(cmd), *g_timeline);
+    const int id = raw->clipId();
+    log.done(std::to_string(id));
+    return JsonApi::Number::New(env, id);
+}
+
+// automation_removeClip(clipId) -> bool
+JsonApi::Value Automation_RemoveClip(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        JsonApi::TypeError::New(env, "automation_removeClip(clipId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int clipId = info[0].As<JsonApi::Number>().Int32Value();
+    BridgeCallLog log("automation.removeClip");
+    const bool existed = g_timeline->getAutomationClip(clipId) != nullptr;
+    g_undoManager->execute(std::make_unique<RemoveAutomationClipCommand>(clipId, *g_timeline),
+                           *g_timeline);
+    log.done(existed ? "ok" : "unknown_clip");
+    return JsonApi::Boolean::New(env, existed);
+}
+
+// automation_moveClip(clipId, laneId, positionTicks) -> bool
+// False means the move was REJECTED (same-lane overlap) and nothing changed.
+JsonApi::Value Automation_MoveClip(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsNumber()) {
+        JsonApi::TypeError::New(env, "automation_moveClip(clipId, laneId, positionTicks)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int clipId = info[0].As<JsonApi::Number>().Int32Value();
+    const int laneId = info[1].As<JsonApi::Number>().Int32Value();
+    TickTime pos; pos.ticks = static_cast<int64_t>(info[2].As<JsonApi::Number>().DoubleValue());
+    BridgeCallLog log("automation.moveClip");
+
+    const int beforeCount = g_undoManager->getUndoCount();
+    g_undoManager->execute(
+        std::make_unique<MoveAutomationClipCommand>(clipId, laneId, pos, *g_timeline), *g_timeline);
+    // A rejected command records no undo step — that is how the caller learns
+    // the placement was refused without a second query.
+    const bool ok = g_undoManager->getUndoCount() > beforeCount;
+    log.done(ok ? "ok" : "rejected");
+    return JsonApi::Boolean::New(env, ok);
+}
+
+// automation_resizeClip(clipId, durationTicks) -> bool (false = rejected)
+JsonApi::Value Automation_ResizeClip(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
+        JsonApi::TypeError::New(env, "automation_resizeClip(clipId, durationTicks)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int clipId = info[0].As<JsonApi::Number>().Int32Value();
+    TickTime dur; dur.ticks = static_cast<int64_t>(info[1].As<JsonApi::Number>().DoubleValue());
+    BridgeCallLog log("automation.resizeClip");
+
+    const int beforeCount = g_undoManager->getUndoCount();
+    g_undoManager->execute(
+        std::make_unique<ResizeAutomationClipCommand>(clipId, dur, *g_timeline), *g_timeline);
+    const bool ok = g_undoManager->getUndoCount() > beforeCount;
+    log.done(ok ? "ok" : "rejected");
+    return JsonApi::Boolean::New(env, ok);
+}
+
+// automation_resizeClipLeft(clipId, positionTicks, durationTicks, offsetTicks) -> bool
+JsonApi::Value Automation_ResizeClipLeft(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 4 || !info[0].IsNumber() || !info[1].IsNumber()
+        || !info[2].IsNumber() || !info[3].IsNumber()) {
+        JsonApi::TypeError::New(env,
+            "automation_resizeClipLeft(clipId, positionTicks, durationTicks, offsetTicks)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int clipId = info[0].As<JsonApi::Number>().Int32Value();
+    TickTime pos, dur, off;
+    pos.ticks = static_cast<int64_t>(info[1].As<JsonApi::Number>().DoubleValue());
+    dur.ticks = static_cast<int64_t>(info[2].As<JsonApi::Number>().DoubleValue());
+    off.ticks = static_cast<int64_t>(info[3].As<JsonApi::Number>().DoubleValue());
+    BridgeCallLog log("automation.resizeClipLeft");
+
+    const int beforeCount = g_undoManager->getUndoCount();
+    g_undoManager->execute(
+        std::make_unique<ResizeAutomationClipLeftCommand>(clipId, pos, dur, off, *g_timeline),
+        *g_timeline);
+    const bool ok = g_undoManager->getUndoCount() > beforeCount;
+    log.done(ok ? "ok" : "rejected");
+    return JsonApi::Boolean::New(env, ok);
+}
+
+// automation_makeClipUnique(clipId) -> new envelopeId (-1 on failure)
+// ONE engine command, not a UI-composed RPC chain: undo is a single step.
+JsonApi::Value Automation_MakeClipUnique(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        JsonApi::TypeError::New(env, "automation_makeClipUnique(clipId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int clipId = info[0].As<JsonApi::Number>().Int32Value();
+    BridgeCallLog log("automation.makeClipUnique");
+
+    auto cmd = std::make_unique<MakeAutomationClipUniqueCommand>(clipId, *g_timeline);
+    MakeAutomationClipUniqueCommand* raw = cmd.get();
+    g_undoManager->execute(std::move(cmd), *g_timeline);
+    const int newEnvId = raw->newEnvelopeId();
+    log.done(std::to_string(newEnvId));
+    return JsonApi::Number::New(env, newEnvId);
+}
+
+// automation_addPoint(envelopeId, { tick, value, curveType?, tension? }) -> bool
+JsonApi::Value Automation_AddPoint(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsObject()) {
+        JsonApi::TypeError::New(env,
+            "automation_addPoint(envelopeId, { tick, value, curveType?, tension? })")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int envelopeId = info[0].As<JsonApi::Number>().Int32Value();
+    const AutomationPoint p = automationPointFromJs(info[1].As<JsonApi::Object>());
+    BridgeCallLog log("automation.addPoint");
+
+    const int before = g_undoManager->getUndoCount();
+    g_undoManager->execute(AutomationPointEditCommand::add(envelopeId, p, *g_timeline), *g_timeline);
+    const bool ok = g_undoManager->getUndoCount() > before;
+    log.done(ok ? "ok" : "rejected");
+    return JsonApi::Boolean::New(env, ok);
+}
+
+// automation_removePoint(envelopeId, pointIndex) -> bool
+JsonApi::Value Automation_RemovePoint(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
+        JsonApi::TypeError::New(env, "automation_removePoint(envelopeId, pointIndex)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int envelopeId = info[0].As<JsonApi::Number>().Int32Value();
+    const int pointIndex = info[1].As<JsonApi::Number>().Int32Value();
+    BridgeCallLog log("automation.removePoint");
+
+    const int before = g_undoManager->getUndoCount();
+    g_undoManager->execute(AutomationPointEditCommand::remove(envelopeId, pointIndex, *g_timeline),
+                           *g_timeline);
+    const bool ok = g_undoManager->getUndoCount() > before;
+    log.done(ok ? "ok" : "rejected");
+    return JsonApi::Boolean::New(env, ok);
+}
+
+// automation_movePoint(envelopeId, pointIndex, tick, value) -> bool
+// Phase C commits ONE of these on mouseup; it must never be called during a drag.
+JsonApi::Value Automation_MovePoint(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 4 || !info[0].IsNumber() || !info[1].IsNumber()
+        || !info[2].IsNumber() || !info[3].IsNumber()) {
+        JsonApi::TypeError::New(env, "automation_movePoint(envelopeId, pointIndex, tick, value)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int envelopeId = info[0].As<JsonApi::Number>().Int32Value();
+    const int pointIndex = info[1].As<JsonApi::Number>().Int32Value();
+    TickTime tick; tick.ticks = static_cast<int64_t>(info[2].As<JsonApi::Number>().DoubleValue());
+    const double value = info[3].As<JsonApi::Number>().DoubleValue();
+    BridgeCallLog log("automation.movePoint");
+
+    const int before = g_undoManager->getUndoCount();
+    g_undoManager->execute(
+        AutomationPointEditCommand::move(envelopeId, pointIndex, tick, value, *g_timeline),
+        *g_timeline);
+    const bool ok = g_undoManager->getUndoCount() > before;
+    log.done(ok ? "ok" : "rejected");
+    return JsonApi::Boolean::New(env, ok);
+}
+
+// automation_setPointCurve(envelopeId, pointIndex, curveType, tension) -> bool
+// v1 evaluates every segment linearly; the fields persist so the tension UI can
+// ship later without a format migration.
+JsonApi::Value Automation_SetPointCurve(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 4 || !info[0].IsNumber() || !info[1].IsNumber()
+        || !info[2].IsNumber() || !info[3].IsNumber()) {
+        JsonApi::TypeError::New(env,
+            "automation_setPointCurve(envelopeId, pointIndex, curveType, tension)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int envelopeId = info[0].As<JsonApi::Number>().Int32Value();
+    const int pointIndex = info[1].As<JsonApi::Number>().Int32Value();
+    const AutomationCurveType curveType =
+        intToAutomationCurveType(info[2].As<JsonApi::Number>().Int32Value());
+    const double tension = info[3].As<JsonApi::Number>().DoubleValue();
+    BridgeCallLog log("automation.setPointCurve");
+
+    const int before = g_undoManager->getUndoCount();
+    g_undoManager->execute(
+        AutomationPointEditCommand::setCurve(envelopeId, pointIndex, curveType, tension, *g_timeline),
+        *g_timeline);
+    const bool ok = g_undoManager->getUndoCount() > before;
+    log.done(ok ? "ok" : "rejected");
+    return JsonApi::Boolean::New(env, ok);
+}
+
+// automation_setEnvelopePoints(envelopeId, points[]) -> bool
+// The drag-commit path: one command carrying the whole reshaped list, so a drag
+// that moved several points is a single undo step and no IPC happened mid-drag.
+JsonApi::Value Automation_SetEnvelopePoints(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsArray()) {
+        JsonApi::TypeError::New(env, "automation_setEnvelopePoints(envelopeId, points[])")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int envelopeId = info[0].As<JsonApi::Number>().Int32Value();
+    JsonApi::Array arr = info[1].As<JsonApi::Array>();
+    std::vector<AutomationPoint> points;
+    for (uint32_t i = 0; i < arr.Length(); ++i)
+        if (arr.Get(i).IsObject())
+            points.push_back(automationPointFromJs(arr.Get(i).As<JsonApi::Object>()));
+    BridgeCallLog log("automation.setEnvelopePoints");
+
+    const int before = g_undoManager->getUndoCount();
+    g_undoManager->execute(
+        AutomationPointEditCommand::replaceAll(envelopeId, std::move(points), *g_timeline),
+        *g_timeline);
+    const bool ok = g_undoManager->getUndoCount() > before;
+    log.done(ok ? "ok" : "rejected");
+    return JsonApi::Boolean::New(env, ok);
+}
+
+// automation_getClipsForEffectInstance(ownerTrackId, effectInstanceId)
+//   -> [{ ...clip, envelopeId, parameterId }]
+// The list Phase C's deletion-confirmation dialog shows before an effect dies.
+JsonApi::Value Automation_GetClipsForEffectInstance(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!g_timeline) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsString()) {
+        JsonApi::TypeError::New(env,
+            "automation_getClipsForEffectInstance(ownerTrackId, effectInstanceId)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int ownerTrackId = info[0].As<JsonApi::Number>().Int32Value();
+    const std::string effectInstanceId = info[1].As<JsonApi::String>().Utf8Value();
+
+    const auto clips = g_timeline->getAutomationClipsForEffectInstance(ownerTrackId, effectInstanceId);
+    JsonApi::Array arr = JsonApi::Array::New(env, clips.size());
+    for (size_t i = 0; i < clips.size(); ++i) {
+        JsonApi::Object o = automationClipToJs(env, *clips[i]);
+        // The dialog needs to name the PARAMETER, not just the clip id.
+        if (const AutomationEnvelope* e = g_timeline->getAutomationEnvelope(clips[i]->envelopeId))
+            o.Set("parameterId", JsonApi::String::New(env, e->binding.parameterId));
+        arr.Set(static_cast<uint32_t>(i), o);
+    }
+    return arr;
+}
+
+// automation_removeForEffectInstance(ownerTrackId, effectInstanceId) -> removed count
+// The deletion contract's automation half: every bound clip and every lane left
+// empty by them, in ONE undo step. Phase C runs this immediately before
+// audio_removeEffect once the user confirms.
+JsonApi::Value Automation_RemoveForEffectInstance(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsString()) {
+        JsonApi::TypeError::New(env,
+            "automation_removeForEffectInstance(ownerTrackId, effectInstanceId)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int ownerTrackId = info[0].As<JsonApi::Number>().Int32Value();
+    const std::string effectInstanceId = info[1].As<JsonApi::String>().Utf8Value();
+    BridgeCallLog log("automation.removeForEffectInstance");
+
+    auto cmd = std::make_unique<RemoveAutomationForEffectInstanceCommand>(
+        ownerTrackId, effectInstanceId, *g_timeline);
+    RemoveAutomationForEffectInstanceCommand* raw = cmd.get();
+    const int removed = raw->removedClipCount();
+    g_undoManager->execute(std::move(cmd), *g_timeline);
+    log.done(std::to_string(removed));
+    return JsonApi::Number::New(env, removed);
+}
+
+// automation_getBaseValue({ ownerTrackId, effectInstanceId, parameterId })
+//   -> { value, stored, resolved }
+//   value    the manual value the plan would use before any clip plays;
+//   stored   true when the project has recorded one (false = derived live);
+//   resolved true when the binding addresses a live automatable stock parameter
+//            (false = a dead clip's binding).
+JsonApi::Value Automation_GetBaseValue(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!g_timeline) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsObject()) {
+        JsonApi::TypeError::New(env,
+            "automation_getBaseValue({ ownerTrackId, effectInstanceId, parameterId })")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const AutomationBinding b = automationBindingFromJs(info[0].As<JsonApi::Object>());
+
+    bool stored = false;
+    double value = g_timeline->getAutomationBaseValue(b, &stored);
+    bool resolved = false;
+    if (isInitialised() && audioEngine) {
+        auto& mix = audioEngine->getMixEngine();
+        resolved = mix.isAutomationBindingResolvable(b.ownerTrackId, b.effectInstanceId, b.parameterId);
+        if (!stored) {
+            double live = 0.0;
+            if (mix.getAutomationParameterNormalized(b.ownerTrackId, b.effectInstanceId,
+                                                     b.parameterId, live))
+                value = live;
+        }
+    }
+
+    JsonApi::Object o = JsonApi::Object::New(env);
+    o.Set("value",    JsonApi::Number::New(env, value));
+    o.Set("stored",   JsonApi::Boolean::New(env, stored));
+    o.Set("resolved", JsonApi::Boolean::New(env, resolved));
+    return o;
+}
+
+// automation_setBaseValue({ ownerTrackId, effectInstanceId, parameterId }, value) -> bool
+// What a manual knob edit OUTSIDE every clip writes.
+JsonApi::Value Automation_SetBaseValue(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_timeline || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsObject() || !info[1].IsNumber()) {
+        JsonApi::TypeError::New(env,
+            "automation_setBaseValue({ ownerTrackId, effectInstanceId, parameterId }, value)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const AutomationBinding b = automationBindingFromJs(info[0].As<JsonApi::Object>());
+    const double value = info[1].As<JsonApi::Number>().DoubleValue();
+    BridgeCallLog log("automation.setBaseValue");
+
+    const int before = g_undoManager->getUndoCount();
+    g_undoManager->execute(
+        std::make_unique<SetAutomationBaseValueCommand>(b, value, *g_timeline), *g_timeline);
+    const bool ok = g_undoManager->getUndoCount() > before;
+    log.done(ok ? "ok" : "rejected");
+    return JsonApi::Boolean::New(env, ok);
+}
+
+// automation_evaluateAtTick({ ownerTrackId, effectInstanceId, parameterId }, tick)
+//   -> { value, found }
+// The value the engine WOULD apply at that tick, without applying it: backs the
+// read-only automated-knob display and makes the evaluation semantics directly
+// observable from JS. `found` is false when the binding has no plan target
+// (never automated, or a dead clip).
+JsonApi::Value Automation_EvaluateAtTick(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !audioEngine) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsObject() || !info[1].IsNumber()) {
+        JsonApi::TypeError::New(env,
+            "automation_evaluateAtTick({ ownerTrackId, effectInstanceId, parameterId }, tick)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const AutomationBinding b = automationBindingFromJs(info[0].As<JsonApi::Object>());
+    const int64_t tick = static_cast<int64_t>(info[1].As<JsonApi::Number>().DoubleValue());
+
+    bool found = false;
+    const double value = audioEngine->getMixEngine().evaluateAutomationAtTick(
+        b.ownerTrackId, b.effectInstanceId, b.parameterId, tick, found);
+
+    JsonApi::Object o = JsonApi::Object::New(env);
+    o.Set("value", JsonApi::Number::New(env, value));
+    o.Set("found", JsonApi::Boolean::New(env, found));
+    return o;
+}
+
+// automation_getPlanDiagnostics() -> { targetCount, windowCount, pointCount,
+//   overflowed, droppedTargets, droppedWindows, unresolvedClips, resolvedTargets }
+// unresolvedClips is the dead-clip count: clips the project kept whose effect
+// instance is not on any live chain.
+JsonApi::Value Automation_GetPlanDiagnostics(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !audioEngine) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const nlohmann::json j = audioEngine->getMixEngine().getAutomationPlanDiagnostics();
+    return JsonApi::String::New(env, j.dump());
+}
+
+// automation_refreshPlan() -> void
+// Force a rebuild. Every automation edit already triggers one through the
+// UndoManager post-mutation hook, and chain edits through the applier thread's
+// dirty flag; this exists for project load and for tests that need the rebuild
+// to have happened before the next assertion.
+void Automation_RefreshPlan(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !audioEngine) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return;
+    }
+    BridgeCallLog log("automation.refreshPlan");
+    audioEngine->getMixEngine().refreshAutomationPlan();
+    log.done();
 }
 
 // timeline_addPatternBlock({ trackId, patternId, positionTicks, durationTicks, offsetTicks? })
