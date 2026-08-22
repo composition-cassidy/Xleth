@@ -242,6 +242,13 @@ add_library(XlethEngineModel STATIC
     src/audio/TrackRouting.cpp
     src/audio/AutomationPlan.cpp
     src/render/RenderClock.cpp
+    # Sample Sandbox model tier: op descriptors, the workspace that owns the
+    # stacks, and the undo commands that mutate them. Pure data — the buffers
+    # and the DSP live in SandboxRenderer over in XlethEngineCore, which is what
+    # keeps the whole edit model unit-testable with no audio device.
+    src/sandbox/SandboxOp.cpp
+    src/sandbox/SandboxCore.cpp
+    src/sandbox/SandboxCommands.cpp
 )
 
 target_include_directories(XlethEngineModel PUBLIC
@@ -316,6 +323,10 @@ add_library(XlethEngineCore STATIC
     src/dsp/WORLD.cpp
     src/audio/WorldStretchCache.cpp
     src/audio/SlotBakeCache.cpp
+    # Sample Sandbox offline renderer. Sits here rather than in the model tier
+    # because it owns juce::AudioBuffer and a ThreadPool; the op-stack it
+    # evaluates comes from XlethEngineModel.
+    src/sandbox/SandboxRenderer.cpp
     src/video/FrameOutput.cpp
     src/video/FrameServer.cpp
     src/FrameCache.cpp
@@ -617,6 +628,31 @@ add_executable(test_automation_clips
 
 target_link_libraries(test_automation_clips PRIVATE
     XlethEngineModel
+)
+
+# ── test_sandbox ──────────────────────────────────────────────────────────────
+# Sample Sandbox engine core (SB-1): the typed op-stack model, its JSON
+# round-trip, the undo commands for every stack mutation, and the offline
+# SandboxRenderer — including the headline property, that editing op k of an
+# N-op stack re-renders only ops k..N.
+#
+# Links Core as well as Model because SandboxRenderer owns juce::AudioBuffer.
+# Offline throughout: no audio device is opened.
+add_executable(test_sandbox
+    test/test_sandbox.cpp
+)
+
+target_link_libraries(test_sandbox PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
 )
 
 # ── test_canvas_fit ───────────────────────────────────────────────────────────
@@ -2722,6 +2758,7 @@ set(XLETH_ENGINE_TESTS
     test_param_track
     test_render_clock
     test_automation_clips
+    test_sandbox
     test_compositor
     test_snapshot_transition
     test_muxer
