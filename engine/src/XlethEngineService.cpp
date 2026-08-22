@@ -48,6 +48,9 @@
 #include "commands/AddClipsBatchCommand.h"
 #include "commands/ClipBatchCommands.h"
 #include "commands/EffectChainCommands.h"
+#include "sandbox/SandboxCore.h"
+#include "sandbox/SandboxCommands.h"
+#include "sandbox/SandboxRenderer.h"
 #include "import/FscScoreParser.h"
 #include "project/ProjectManager.h"
 #include "project/ProxyManager.h"
@@ -194,6 +197,11 @@ std::unique_ptr<WaveformMipmapCache> g_mipmapCache;
 std::unique_ptr<Timeline>       g_timeline;
 std::unique_ptr<UndoManager>    g_undoManager;
 std::unique_ptr<ProjectManager> g_projectManager;
+
+// Sample Sandbox (SB-1 model/renderer; SB-2 bridge below). Mirrors g_timeline's
+// lifetime — constructed alongside it, torn down alongside it.
+std::unique_ptr<xleth::sandbox::SandboxCore>     g_sandboxCore;
+std::unique_ptr<xleth::sandbox::SandboxRenderer> g_sandboxRenderer;
 
 // Clip gain/fade drags are previewed directly on the model so the audio engine
 // can audition them without flooding undo history.  There is deliberately only
@@ -4758,6 +4766,9 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
     g_projectManager = std::make_unique<ProjectManager>();
     g_proxyManager   = std::make_unique<ProxyManager>();
 
+    g_sandboxCore     = std::make_unique<xleth::sandbox::SandboxCore>();
+    g_sandboxRenderer = std::make_unique<xleth::sandbox::SandboxRenderer>();
+
     // Wire region-proxy lookup sources into SyncManager so videoTick() can
     // prefer per-region proxy decoders when they are ready.
     syncManager->setRegionProxySources(&regionDecoderPtrs, g_timeline.get());
@@ -4967,6 +4978,8 @@ void Shutdown(const JsonApi::CallbackInfo& info)
     restoreAndClearClipControlEdit();
     g_timeline.reset();
     g_projectManager.reset();
+    g_sandboxRenderer.reset();  // drop published buffers before sampleBank
+    g_sandboxCore.reset();
     std::fprintf(stderr, "[BridgeShutdown] project state released\n");
 
     g_mipmapCache.reset();  // release mipmaps before SampleBank (they hold buffer ptrs)
@@ -10471,6 +10484,458 @@ JsonApi::Value Timeline_GetSamplerModulation(const JsonApi::CallbackInfo& info)
         return env.Undefined();
     }
     return modConfigToJs(env, r->modulation);
+}
+
+// ─── Sample Sandbox bridge (SB-2) ────────────────────────────────────────────
+// Thin RPC surface over xleth::sandbox::SandboxCore + SandboxRenderer (SB-1).
+//
+// ── Why every mutation is pre-validated before the Command is built ──────────
+// UndoManager::execute() takes its Command by value and, when the command's
+// first execute() rejects the edit (shouldRecordInUndoHistory() == false),
+// the Command is destroyed before execute() returns — it was never moved onto
+// the undo stack. A raw pointer kept to read the command's result back (the
+// pattern used elsewhere in this file, e.g. AddClipsBatchCommand::cmdPtr)
+// would dangle in that case. Every handler below instead re-checks SandboxCore's
+// OWN rejection condition — unknown layer, unknown op, out-of-range index, a
+// value already at the target — via its read accessors first, and returns an
+// honest {success:false, reason} without ever constructing the command when
+// the edit would be rejected. That guarantees the command IS accepted by the
+// time it is built, so reading its result back afterward is safe. A thrown
+// JS exception stays reserved for malformed calls / an uninitialised engine,
+// matching every other handler in this file — a routine rejected edit is not
+// an exceptional call, so it comes back as data, not a throw.
+namespace {
+
+bool sandboxReady() {
+    return isInitialised() && g_sandboxCore && g_sandboxRenderer && sampleBank;
+}
+
+JsonApi::Value sandboxFail(JsonApi::Env env, const char* reason) {
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("success", JsonApi::Boolean::New(env, false));
+    out.Set("reason",  JsonApi::String::New(env, reason));
+    return out;
+}
+
+} // namespace
+
+// sandbox_open(sourceRef: number, name?: string)
+//   → { success, layerId, sourceBufferId, bufferSampleRate, name }
+//   → { success:false, reason }
+// `sourceRef` is a SampleBank sample id — the caller loads audio into the bank
+// first (loadSample / loadSampleFromSource / an existing region source) and
+// opens a sandbox layer against it. Undoable: AddSandboxLayerCommand.
+JsonApi::Value Sandbox_Open(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!sandboxReady()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        JsonApi::TypeError::New(env, "sandbox_open(sourceRef: number, name?: string)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int sourceRef = info[0].As<JsonApi::Number>().Int32Value();
+    if (!sampleBank->getSample(sourceRef))
+        return sandboxFail(env, "source not found");
+
+    const double rate = sampleBank->getSampleBufferRate(sourceRef);
+    if (rate <= 0.0)
+        return sandboxFail(env, "source has no known sample rate");
+
+    const std::string name = (info.Length() >= 2 && info[1].IsString())
+        ? info[1].As<JsonApi::String>().Utf8Value()
+        : sampleBank->getSampleInfo(sourceRef).name.toStdString();
+
+    BridgeCallLog log("sandbox.open");
+    auto cmd = std::make_unique<xleth::sandbox::AddSandboxLayerCommand>(
+        *g_sandboxCore, name, sourceRef, rate);
+    auto* cmdPtr = cmd.get();
+    g_undoManager->execute(std::move(cmd), *g_timeline);
+    // addLayer() has no failure path (see SandboxCore::addLayer) — a fresh
+    // open() is always accepted, so cmdPtr is guaranteed still alive here.
+    const int layerId = cmdPtr->layerId();
+    log.done(std::to_string(layerId));
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("success",          JsonApi::Boolean::New(env, true));
+    out.Set("layerId",          JsonApi::Number::New(env, layerId));
+    out.Set("sourceBufferId",   JsonApi::Number::New(env, sourceRef));
+    out.Set("bufferSampleRate", JsonApi::Number::New(env, rate));
+    out.Set("name",             JsonApi::String::New(env, name));
+    return out;
+}
+
+// sandbox_close(layerId: number) → { success[, reason] }
+// Undoable: RemoveSandboxLayerCommand. Also drops any cached/published render
+// for this layer — SandboxRenderer does not know a layer disappeared on its
+// own, since it is a separate object from SandboxCore.
+JsonApi::Value Sandbox_Close(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!sandboxReady()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        JsonApi::TypeError::New(env, "sandbox_close(layerId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int layerId = info[0].As<JsonApi::Number>().Int32Value();
+    if (!g_sandboxCore->findLayer(layerId))
+        return sandboxFail(env, "layer not found");
+
+    BridgeCallLog log("sandbox.close");
+    g_undoManager->execute(
+        std::make_unique<xleth::sandbox::RemoveSandboxLayerCommand>(*g_sandboxCore, layerId),
+        *g_timeline);
+    g_sandboxRenderer->unpublish(layerId);
+    log.done();
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("success", JsonApi::Boolean::New(env, true));
+    return out;
+}
+
+// sandbox_stackAdd(layerId: number, op: object, index?: number)
+//   → { success, opId }  |  { success:false, reason }
+// `op` is the {type, params[, enabled]} shape SandboxOp::opToJson writes; any
+// `id` field is ignored — the server always mints a fresh one. `index` < 0 or
+// omitted appends. Undoable: AddSandboxOpCommand.
+JsonApi::Value Sandbox_StackAdd(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!sandboxReady()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsObject()) {
+        JsonApi::TypeError::New(env, "sandbox_stackAdd(layerId: number, op: object, index?: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int layerId = info[0].As<JsonApi::Number>().Int32Value();
+    if (!g_sandboxCore->findLayer(layerId))
+        return sandboxFail(env, "layer not found");
+
+    xleth::sandbox::SandboxOp op;
+    if (!xleth::sandbox::opFromJson(info[1].raw(), op))
+        return sandboxFail(env, "unknown op type");
+    op.id = 0;   // always mint fresh — this is not a redo replay
+
+    const int index = (info.Length() >= 3 && info[2].IsNumber())
+        ? info[2].As<JsonApi::Number>().Int32Value() : -1;
+
+    BridgeCallLog log("sandbox.stackAdd");
+    auto cmd = std::make_unique<xleth::sandbox::AddSandboxOpCommand>(
+        *g_sandboxCore, layerId, op, index);
+    auto* cmdPtr = cmd.get();
+    g_undoManager->execute(std::move(cmd), *g_timeline);
+    // addOp()'s only rejection cause is an unknown layer (opFromJson guarantees
+    // op.consistent()), which was already ruled out above — always accepted.
+    const int opId = cmdPtr->opId();
+    log.done(std::to_string(opId));
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("success", JsonApi::Boolean::New(env, true));
+    out.Set("opId",    JsonApi::Number::New(env, opId));
+    return out;
+}
+
+// sandbox_stackRemove(layerId: number, opId: number) → { success[, reason] }
+// Undoable: RemoveSandboxOpCommand.
+JsonApi::Value Sandbox_StackRemove(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!sandboxReady()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsNumber()) {
+        JsonApi::TypeError::New(env, "sandbox_stackRemove(layerId: number, opId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int layerId = info[0].As<JsonApi::Number>().Int32Value();
+    const int opId     = info[1].As<JsonApi::Number>().Int32Value();
+
+    const xleth::sandbox::SandboxLayer* layer = g_sandboxCore->findLayer(layerId);
+    if (!layer) return sandboxFail(env, "layer not found");
+    if (layer->indexOfOp(opId) < 0) return sandboxFail(env, "op not found");
+
+    BridgeCallLog log("sandbox.stackRemove");
+    g_undoManager->execute(
+        std::make_unique<xleth::sandbox::RemoveSandboxOpCommand>(*g_sandboxCore, layerId, opId),
+        *g_timeline);
+    log.done();
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("success", JsonApi::Boolean::New(env, true));
+    return out;
+}
+
+// sandbox_stackReorder(layerId: number, fromIndex: number, toIndex: number)
+//   → { success[, reason] }
+// Undoable: ReorderSandboxOpCommand.
+JsonApi::Value Sandbox_StackReorder(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!sandboxReady()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsNumber()) {
+        JsonApi::TypeError::New(env,
+            "sandbox_stackReorder(layerId: number, fromIndex: number, toIndex: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int layerId   = info[0].As<JsonApi::Number>().Int32Value();
+    const int fromIndex = info[1].As<JsonApi::Number>().Int32Value();
+    const int toIndex    = info[2].As<JsonApi::Number>().Int32Value();
+
+    const xleth::sandbox::SandboxLayer* layer = g_sandboxCore->findLayer(layerId);
+    if (!layer) return sandboxFail(env, "layer not found");
+    const int n = static_cast<int>(layer->ops.size());
+    if (fromIndex < 0 || fromIndex >= n) return sandboxFail(env, "fromIndex out of range");
+    if (toIndex   < 0 || toIndex   >= n) return sandboxFail(env, "toIndex out of range");
+    if (fromIndex == toIndex)            return sandboxFail(env, "not an edit");
+
+    BridgeCallLog log("sandbox.stackReorder");
+    g_undoManager->execute(
+        std::make_unique<xleth::sandbox::ReorderSandboxOpCommand>(
+            *g_sandboxCore, layerId, fromIndex, toIndex),
+        *g_timeline);
+    log.done();
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("success", JsonApi::Boolean::New(env, true));
+    return out;
+}
+
+// sandbox_stackSetParam(layerId: number, opId: number, op: object)
+//   → { success[, reason] }
+// `op` is {type, params} — `type` must name the SAME type opId already has
+// (this replaces params wholesale, it cannot retype an op). Undoable:
+// SetSandboxOpParamsCommand. The UI's drag contract is: preview locally while
+// dragging, call this once on release.
+JsonApi::Value Sandbox_StackSetParam(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!sandboxReady()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsObject()) {
+        JsonApi::TypeError::New(env,
+            "sandbox_stackSetParam(layerId: number, opId: number, op: object)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int layerId = info[0].As<JsonApi::Number>().Int32Value();
+    const int opId     = info[1].As<JsonApi::Number>().Int32Value();
+
+    const xleth::sandbox::SandboxLayer* layer = g_sandboxCore->findLayer(layerId);
+    if (!layer) return sandboxFail(env, "layer not found");
+    const xleth::sandbox::SandboxOp* existing = layer->findOp(opId);
+    if (!existing) return sandboxFail(env, "op not found");
+
+    xleth::sandbox::SandboxOp parsed;
+    if (!xleth::sandbox::opFromJson(info[2].raw(), parsed))
+        return sandboxFail(env, "unknown op type");
+    if (parsed.type != existing->type)
+        return sandboxFail(env, "param type does not match this op");
+    if (parsed.params == existing->params)
+        return sandboxFail(env, "not an edit");
+
+    BridgeCallLog log("sandbox.stackSetParam");
+    g_undoManager->execute(
+        std::make_unique<xleth::sandbox::SetSandboxOpParamsCommand>(
+            *g_sandboxCore, layerId, opId, parsed.params),
+        *g_timeline);
+    log.done();
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("success", JsonApi::Boolean::New(env, true));
+    return out;
+}
+
+// sandbox_stackSetBypassed(layerId: number, opId: number, bypassed: boolean)
+//   → { success[, reason] }
+// Undoable: SetSandboxOpBypassedCommand.
+JsonApi::Value Sandbox_StackSetBypassed(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!sandboxReady()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsBoolean()) {
+        JsonApi::TypeError::New(env,
+            "sandbox_stackSetBypassed(layerId: number, opId: number, bypassed: boolean)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int layerId    = info[0].As<JsonApi::Number>().Int32Value();
+    const int opId        = info[1].As<JsonApi::Number>().Int32Value();
+    const bool bypassed   = info[2].As<JsonApi::Boolean>().Value();
+
+    const xleth::sandbox::SandboxLayer* layer = g_sandboxCore->findLayer(layerId);
+    if (!layer) return sandboxFail(env, "layer not found");
+    const xleth::sandbox::SandboxOp* existing = layer->findOp(opId);
+    if (!existing) return sandboxFail(env, "op not found");
+    if (existing->enabled == !bypassed)
+        return sandboxFail(env, bypassed ? "already bypassed" : "already enabled");
+
+    BridgeCallLog log("sandbox.stackSetBypassed");
+    g_undoManager->execute(
+        std::make_unique<xleth::sandbox::SetSandboxOpBypassedCommand>(
+            *g_sandboxCore, layerId, opId, bypassed),
+        *g_timeline);
+    log.done();
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("success", JsonApi::Boolean::New(env, true));
+    return out;
+}
+
+// sandbox_render(layerId: number, trigger?: string) → { success, queued, pending }
+//   → { success:false, reason }
+// Queues an async render job on SandboxRenderer's worker pool (submit() is a
+// no-op-but-true-ish coalesce when an identical job is already in flight —
+// see `pending`). Not undoable — a render is not an edit. `trigger` is a
+// free-form diagnostic tag (which UI action asked for this render); it does
+// not change behaviour. Poll sandbox_getRenderedBuffer for the result.
+JsonApi::Value Sandbox_Render(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!sandboxReady()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        JsonApi::TypeError::New(env, "sandbox_render(layerId: number, trigger?: string)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int layerId = info[0].As<JsonApi::Number>().Int32Value();
+    const std::string trigger = (info.Length() >= 2 && info[1].IsString())
+        ? info[1].As<JsonApi::String>().Utf8Value() : "manual";
+
+    const xleth::sandbox::SandboxLayer* layer = g_sandboxCore->findLayer(layerId);
+    if (!layer) return sandboxFail(env, "layer not found");
+    if (layer->sourceBufferId < 0) return sandboxFail(env, "layer has no bound source");
+
+    const juce::AudioBuffer<float>* src = sampleBank->getSample(layer->sourceBufferId);
+    if (!src) return sandboxFail(env, "source sample no longer available");
+
+    const std::string logName = "sandbox.render(" + trigger + ")";
+    BridgeCallLog log(logName.c_str());
+    const bool queued = g_sandboxRenderer->submit(
+        layerId, layer->sourceBufferId, *src, layer->ops, layer->bufferSampleRate);
+    const bool pending = g_sandboxRenderer->isPending(layerId);
+    log.done(queued ? "queued" : "coalesced");
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("success", JsonApi::Boolean::New(env, true));
+    out.Set("queued",  JsonApi::Boolean::New(env, queued));
+    out.Set("pending", JsonApi::Boolean::New(env, pending));
+    return out;
+}
+
+// sandbox_getRenderedBuffer(layerId: number)
+//   → { ready:true, numChannels, numSamples, sampleRate, data: Buffer }
+//   → { ready:false, reason }
+// `data` is interleaved 32-bit float PCM (numChannels * numSamples samples),
+// little-endian, at `sampleRate`. Lock-free read of whatever SandboxRenderer
+// last published for this layer — never blocks, never throws "not ready yet"
+// as an error; that is an ordinary, expected poll result.
+JsonApi::Value Sandbox_GetRenderedBuffer(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!sandboxReady()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        JsonApi::TypeError::New(env, "sandbox_getRenderedBuffer(layerId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int layerId = info[0].As<JsonApi::Number>().Int32Value();
+
+    auto readyFail = [&](const char* reason) {
+        JsonApi::Object out = JsonApi::Object::New(env);
+        out.Set("ready",  JsonApi::Boolean::New(env, false));
+        out.Set("reason", JsonApi::String::New(env, reason));
+        return out;
+    };
+
+    const xleth::sandbox::SandboxLayer* layer = g_sandboxCore->findLayer(layerId);
+    if (!layer) return readyFail("layer not found");
+
+    xleth::sandbox::SandboxBufferPtr buf = g_sandboxRenderer->publishedOutput(layerId);
+    if (!buf) return readyFail("not rendered yet");
+
+    const int numChannels = buf->getNumChannels();
+    const int numSamples  = buf->getNumSamples();
+    std::vector<float> interleaved(static_cast<size_t>(numChannels) * static_cast<size_t>(numSamples));
+    for (int ch = 0; ch < numChannels; ++ch) {
+        const float* chanData = buf->getReadPointer(ch);
+        for (int i = 0; i < numSamples; ++i)
+            interleaved[static_cast<size_t>(i) * static_cast<size_t>(numChannels) + static_cast<size_t>(ch)]
+                = chanData[i];
+    }
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("ready",       JsonApi::Boolean::New(env, true));
+    out.Set("numChannels", JsonApi::Number::New(env, numChannels));
+    out.Set("numSamples",  JsonApi::Number::New(env, numSamples));
+    out.Set("sampleRate",  JsonApi::Number::New(env, layer->bufferSampleRate));
+    out.Set("data",        JsonApi::Buffer<float>::Copy(env, interleaved.data(), interleaved.size()));
+    return out;
+}
+
+// sandbox_bake(layerId: number) → { success, numChannels, numSamples }
+//   → { success:false, reason }
+// Commits the layer's current published render as its clean baseline
+// (SandboxCore::markLayerRendered — clears every op's dirty flag). SB-1 has
+// no SampleBank-persistence story yet (that lands with SB-5/SB-6 per the
+// SandboxRenderer header), so this is deliberately scoped to the one
+// "bake"-shaped primitive that already exists: committing the render, not
+// writing a new playable sample. Requires a render to already be published —
+// call sandbox_render first.
+JsonApi::Value Sandbox_Bake(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!sandboxReady()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        JsonApi::TypeError::New(env, "sandbox_bake(layerId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int layerId = info[0].As<JsonApi::Number>().Int32Value();
+    if (!g_sandboxCore->findLayer(layerId))
+        return sandboxFail(env, "layer not found");
+
+    xleth::sandbox::SandboxBufferPtr buf = g_sandboxRenderer->publishedOutput(layerId);
+    if (!buf) return sandboxFail(env, "not rendered yet");
+
+    BridgeCallLog log("sandbox.bake");
+    g_sandboxCore->markLayerRendered(layerId);
+    log.done();
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("success",     JsonApi::Boolean::New(env, true));
+    out.Set("numChannels", JsonApi::Number::New(env, buf->getNumChannels()));
+    out.Set("numSamples",  JsonApi::Number::New(env, buf->getNumSamples()));
+    return out;
 }
 
 // timeline_autoLoopForSelection(regionId, selStart?, selEnd?, slotIndex?)

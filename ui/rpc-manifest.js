@@ -2452,11 +2452,100 @@ const METHODS = [
     binary: null,
   },
 
+  // ── Sample Sandbox (SB-2 bridge over SB-1's SandboxCore/SandboxRenderer) ──
+  // Every op-stack mutation is undoable (routes through xleth::sandbox's own
+  // Command classes); open/close and render/getRenderedBuffer/bake are not —
+  // opening a workspace and running its renderer are not content edits.
+  {
+    method: 'sandbox_open',
+    channels: ['xleth:sandbox:open'],
+    api: { 'sandbox.open': 'xleth:sandbox:open' },
+    handler: 'Sandbox_Open',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'sandbox_close',
+    channels: ['xleth:sandbox:close'],
+    api: { 'sandbox.close': 'xleth:sandbox:close' },
+    handler: 'Sandbox_Close',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'sandbox_stackAdd',
+    channels: ['xleth:sandbox:stackAdd'],
+    api: { 'sandbox.stackAdd': 'xleth:sandbox:stackAdd' },
+    handler: 'Sandbox_StackAdd',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'sandbox_stackRemove',
+    channels: ['xleth:sandbox:stackRemove'],
+    api: { 'sandbox.stackRemove': 'xleth:sandbox:stackRemove' },
+    handler: 'Sandbox_StackRemove',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'sandbox_stackReorder',
+    channels: ['xleth:sandbox:stackReorder'],
+    api: { 'sandbox.stackReorder': 'xleth:sandbox:stackReorder' },
+    handler: 'Sandbox_StackReorder',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'sandbox_stackSetParam',
+    channels: ['xleth:sandbox:stackSetParam'],
+    api: { 'sandbox.stackSetParam': 'xleth:sandbox:stackSetParam' },
+    handler: 'Sandbox_StackSetParam',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'sandbox_stackSetBypassed',
+    channels: ['xleth:sandbox:stackSetBypassed'],
+    api: { 'sandbox.stackSetBypassed': 'xleth:sandbox:stackSetBypassed' },
+    handler: 'Sandbox_StackSetBypassed',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'sandbox_render',
+    channels: ['xleth:sandbox:render'],
+    api: { 'sandbox.render': 'xleth:sandbox:render' },
+    handler: 'Sandbox_Render',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // data: interleaved float32 PCM as a real Buffer — see Sandbox_GetRenderedBuffer.
+    // No special-case needed in addon-worker.js: the fork uses
+    // serialization:'advanced', which preserves Buffer identity across IPC
+    // (same reason midi_executeImport's noteData survives unconverted).
+    method: 'sandbox_getRenderedBuffer',
+    channels: ['xleth:sandbox:getRenderedBuffer'],
+    api: { 'sandbox.getRenderedBuffer': 'xleth:sandbox:getRenderedBuffer' },
+    handler: 'Sandbox_GetRenderedBuffer',
+    returns: 'value',
+    binary: 'sandboxBuffer',
+  },
+  {
+    method: 'sandbox_bake',
+    channels: ['xleth:sandbox:bake'],
+    api: { 'sandbox.bake': 'xleth:sandbox:bake' },
+    handler: 'Sandbox_Bake',
+    returns: 'value',
+    binary: null,
+  },
+
 ];
 
 // Binary kinds addon-worker.js knows how to transport. A manifest entry with
 // any other value is a wiring mistake, caught by validateManifest().
-const KNOWN_BINARY_KINDS = new Set(['frame', 'midiImport']);
+const KNOWN_BINARY_KINDS = new Set(['frame', 'midiImport', 'sandboxBuffer']);
 
 // Graph-broadcast keys rpc-registry.js knows how to map to a key function
 // (electron-main/effects.js's trackKey / masterKey). The field is optional —
