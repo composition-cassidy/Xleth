@@ -201,9 +201,19 @@ if(XLETH_ASIO)
 endif()
 
 # ── XlethEngineModel ──────────────────────────────────────────────────────────
-# Pure C++ data model: no JUCE, no FFmpeg, no GL. Links against nlohmann/json
+# Pure C++ data model: no JUCE, no GL. Links against nlohmann/json and libavutil
 # only. Safe to link from the bridge, the engine, or standalone tools.
 # Defined BEFORE XlethEngineCore because MixEngine depends on Timeline/Clip/Track.
+#
+# The libavutil dependency is RenderClock (render/RenderClock.cpp), the single
+# owner of every sample <-> tick <-> beat conversion in the engine. It sits at
+# this tier because AutomationPlan — model-only for testability — has to convert
+# a sample position to a tick, and that conversion must be the SAME one
+# MixEngine's note scheduler uses, or the two disagree by a tick at every
+# boundary. libavutil is a leaf C library (av_rescale_q / av_rescale_rnd only);
+# it carries none of the Electron GPU-process conflict risk that keeps JUCE and
+# GL out of this tier, and every engine ctest target already gets the vcpkg bin
+# directory prepended to PATH.
 add_library(XlethEngineModel STATIC
     src/model/ParamTrack.cpp
     src/model/AutomationEnvelope.cpp
@@ -231,14 +241,27 @@ add_library(XlethEngineModel STATIC
     src/commands/EffectChainCommands.cpp
     src/audio/TrackRouting.cpp
     src/audio/AutomationPlan.cpp
+    src/render/RenderClock.cpp
 )
 
 target_include_directories(XlethEngineModel PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/src
 )
 
+target_include_directories(XlethEngineModel PRIVATE
+    ${FFMPEG_INCLUDE_DIRS}
+)
+
+target_link_directories(XlethEngineModel PRIVATE
+    ${FFMPEG_LIBRARY_DIRS}
+)
+
 target_link_libraries(XlethEngineModel PUBLIC
     nlohmann_json::nlohmann_json
+)
+
+target_link_libraries(XlethEngineModel PRIVATE
+    ${FFMPEG_LIBRARIES}
 )
 
 target_compile_definitions(XlethEngineModel PRIVATE
@@ -303,7 +326,6 @@ add_library(XlethEngineCore STATIC
     src/project/ProxyManager.cpp
     src/export/AudioExporter.cpp
     src/export/FFmpegMuxer.cpp
-    src/render/RenderClock.cpp
     src/render/GpuDeviceManager.cpp
     src/render/FrameCache.cpp
     src/render/FrameCollector.cpp
@@ -565,6 +587,22 @@ add_executable(test_lfo_parameter_modulation
 
 target_link_libraries(test_lfo_parameter_modulation PRIVATE
     XlethEngineModel
+)
+
+# ── test_render_clock ─────────────────────────────────────────────────────────
+# The shared sample <-> tick <-> beat clock (render/RenderClock.h) that every
+# engine timing conversion now goes through. Pure arithmetic, model-only:
+# RenderClock lives in XlethEngineModel so AutomationPlan can share it.
+add_executable(test_render_clock
+    test/test_render_clock.cpp
+)
+
+target_link_libraries(test_render_clock PRIVATE
+    XlethEngineModel
+)
+
+target_include_directories(test_render_clock PRIVATE
+    ${FFMPEG_INCLUDE_DIRS}
 )
 
 # ── test_automation_clips ─────────────────────────────────────────
@@ -2682,6 +2720,7 @@ set(XLETH_ENGINE_TESTS
     test_render_decoder
     test_animation_manager
     test_param_track
+    test_render_clock
     test_automation_clips
     test_compositor
     test_snapshot_transition

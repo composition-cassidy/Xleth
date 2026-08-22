@@ -1,5 +1,6 @@
 #include "Transport.h"
 #include "audio/LoopTrap.h"
+#include "render/RenderClock.h"
 
 #include <cmath>
 
@@ -203,15 +204,16 @@ double Transport::samplesToSeconds(int64_t samples) const
     return static_cast<double>(samples) / sampleRate_;
 }
 
+// Public API unchanged; the arithmetic lives in RenderClock so every engine
+// sample <-> beat conversion shares one implementation.
 double Transport::samplesToBeats(int64_t samples) const
 {
     const double bpm = bpm_.load(std::memory_order_relaxed);
-    // beats = samples / (sampleRate * 60 / bpm)
-    return static_cast<double>(samples) / (sampleRate_ * 60.0 / bpm);
+    return RenderClock::sampleToBeats(samples, static_cast<int>(sampleRate_), bpm);
 }
 
 int64_t Transport::beatsToSamples(double beats) const
 {
     const double bpm = bpm_.load(std::memory_order_relaxed);
-    return static_cast<int64_t>(beats * (sampleRate_ * 60.0 / bpm));
+    return RenderClock::beatToSample(beats, static_cast<int>(sampleRate_), bpm);
 }

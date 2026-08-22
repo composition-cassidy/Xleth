@@ -2,6 +2,7 @@
 
 #include "model/AutomationEnvelope.h"
 #include "model/Timeline.h"
+#include "render/RenderClock.h"
 
 #include <algorithm>
 #include <cmath>
@@ -225,11 +226,11 @@ double evaluateTarget(const AutomationPlan& plan, int targetIndex, int64_t tick)
 int64_t tickAtSamplePosition(int64_t positionSamples, double bpm, double sampleRate) noexcept
 {
     if (!(bpm > 0.0) || !(sampleRate > 0.0)) return 0;
-    // beats = samples / sampleRate * bpm / 60 ; ticks = beats * 960.
-    // floor() (not round) so a tick boundary is entered exactly when the
-    // transport reaches it, and never one block early.
-    const double beats = (static_cast<double>(positionSamples) / sampleRate) * (bpm / 60.0);
-    return static_cast<int64_t>(std::floor(beats * 960.0));
+    // AV_ROUND_DOWN (floor, not round) so a tick boundary is entered exactly
+    // when the transport reaches it, and never one block early.
+    // RT-safe: av_rescale_rnd is pure integer arithmetic - no locks, no alloc.
+    return RenderClock::sampleToPPQ(positionSamples, static_cast<int>(sampleRate),
+                                    bpm, AV_ROUND_DOWN);
 }
 
 } // namespace xleth::automation

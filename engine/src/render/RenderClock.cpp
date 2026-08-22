@@ -45,52 +45,92 @@ int64_t RenderClock::videoFrameToSample(int64_t frame, int sampleRate,
 }
 
 // ===========================================================================
-// sample -> PPQ
+// sample <-> PPQ
+//
+// NO RCLOCK_LOG in this section. Unlike the frame helpers, these two run on
+// the AUDIO THREAD (MixEngine's pattern-note scheduler and
+// AutomationPlan::tickAtSamplePosition call them per block, per active block),
+// and XLETH_DEBUG is defined for the libraries that ship them — an fprintf per
+// call would be both a real-time violation and megabytes of stderr.
 // ===========================================================================
 
-int64_t RenderClock::sampleToPPQ(int64_t samplePos, int sampleRate, double bpm)
+namespace {
+
+//  Integer timing domain shared by sampleToPPQ / ppqToSample.
+//
+//  bpm arrives as a double (the RPC layer accepts any JS number), so it is
+//  pinned to a fixed-point grid to get into the integer domain. Micro-BPM is
+//  fine enough that the quantization is invisible: 1e-6 / 140 BPM is a 7e-9
+//  relative error, i.e. under 0.01 tick across a ten-minute timeline, while
+//  leaving bpm headroom to ~9.6e9 before bpmMicro * PPQ can overflow int64.
+constexpr int64_t kBpmScale = 1000000LL;            // bpm  -> micro-BPM
+constexpr int64_t kMinScale = 60LL * kBpmScale;     // 60 s  * micro-BPM
+
+inline int64_t toBpmMicro(double bpm)
 {
-    //  ppq = samplePos * bpm * 960 / (60 * sampleRate)
-    //
-    //  To keep everything integer we express bpm in milli-BPM:
-    //    bpm_milli = round(bpm * 1000)
-    //    ppq = samplePos * bpm_milli * 960 / (60000 * sampleRate)
-    //
-    //  av_rescale(a, b, c) = a * b / c   (128-bit intermediate)
-
-    int64_t bpmMilli = static_cast<int64_t>(std::round(bpm * 1000.0));
-
-    //  a = samplePos * bpmMilli   — could overflow 64-bit at extreme values,
-    //  so we split into two av_rescale calls:
-    //    step1 = av_rescale(samplePos, bpmMilli * PPQ, 60000LL * sampleRate)
-    //  av_rescale handles the 128-bit multiply internally.
-
-    int64_t ppq = av_rescale(samplePos,
-                             bpmMilli * static_cast<int64_t>(PPQ),
-                             60000LL * static_cast<int64_t>(sampleRate));
-
-    RCLOCK_LOG("sampleToPPQ: samplePos=%lld bpm=%.1f -> ppq=%lld",
-               (long long)samplePos, bpm, (long long)ppq);
-
-    return ppq;
+    if (!std::isfinite(bpm) || bpm <= 0.0) return 0;
+    return static_cast<int64_t>(std::llround(bpm * static_cast<double>(kBpmScale)));
 }
 
-int64_t RenderClock::ppqToSample(int64_t ppq, int sampleRate, double bpm)
+} // namespace
+
+int64_t RenderClock::sampleToPPQ(int64_t samplePos, int sampleRate, double bpm,
+                                 AVRounding rnd)
 {
-    if (sampleRate <= 0 || bpm <= 0.0) return 0;
+    //  ppq = samplePos * bpm * 960 / (60 * sampleRate)
+    //      = samplePos * bpm_micro * 960 / (60e6 * sampleRate)
+    //
+    //  av_rescale_rnd(a, b, c, rnd) = a * b / c   (128-bit intermediate),
+    //  so the samplePos * bpm_micro product cannot overflow.
 
-    const int64_t bpmMilli = static_cast<int64_t>(std::round(bpm * 1000.0));
-    if (bpmMilli <= 0) return 0;
+    if (sampleRate <= 0) return 0;
+    const int64_t bpmMicro = toBpmMicro(bpm);
+    if (bpmMicro <= 0) return 0;
 
-    const int64_t sample = av_rescale(
+    return av_rescale_rnd(samplePos,
+                          bpmMicro * static_cast<int64_t>(PPQ),
+                          kMinScale * static_cast<int64_t>(sampleRate),
+                          rnd);
+}
+
+int64_t RenderClock::ppqToSample(int64_t ppq, int sampleRate, double bpm,
+                                 AVRounding rnd)
+{
+    if (sampleRate <= 0) return 0;
+    const int64_t bpmMicro = toBpmMicro(bpm);
+    if (bpmMicro <= 0) return 0;
+
+    return av_rescale_rnd(
         ppq,
-        60000LL * static_cast<int64_t>(sampleRate),
-        bpmMilli * static_cast<int64_t>(PPQ));
+        kMinScale * static_cast<int64_t>(sampleRate),
+        bpmMicro * static_cast<int64_t>(PPQ),
+        rnd);
+}
 
-    RCLOCK_LOG("ppqToSample: ppq=%lld bpm=%.1f -> sample=%lld",
-               (long long)ppq, bpm, (long long)sample);
+// ===========================================================================
+// PPQ <-> beats  (double domain — see the header for why)
+// ===========================================================================
 
-    return sample;
+double RenderClock::ppqToBeats(int64_t ppq)
+{
+    return static_cast<double>(ppq) / static_cast<double>(PPQ);
+}
+
+int64_t RenderClock::beatsToPPQ(double beats)
+{
+    if (!std::isfinite(beats)) return 0;
+    return static_cast<int64_t>(std::llround(beats * static_cast<double>(PPQ)));
+}
+
+// ===========================================================================
+// sample <-> beats  (double domain)
+// ===========================================================================
+
+double RenderClock::sampleToBeats(int64_t samples, int sampleRate, double bpm)
+{
+    if (sampleRate <= 0 || !(bpm > 0.0)) return 0.0;
+    return static_cast<double>(samples)
+         / (static_cast<double>(sampleRate) * 60.0 / bpm);
 }
 
 int64_t RenderClock::beatToSample(double beat, int sampleRate, double bpm)
@@ -230,8 +270,7 @@ bool RenderClock::validate()
         //  So sampleToPPQ(20571, 48000, 140.0) should be close to 960
         //  Exact: 20571 * 140 * 960 / (60 * 48000) = 20571 * 134400 / 2880000
         //       = 2764742400 / 2880000 = 959.98
-        //  With milli-bpm: 20571 * 140000 * 960 / (60000 * 48000) = 959
-        //  (integer truncation toward zero via av_rescale)
+        //  With micro-bpm and the default AV_ROUND_NEAR_INF this lands on 960.
 
         // Use exact sample count for 1 beat: round(48000 * 60 / 140) = 20571
         int64_t ppq = sampleToPPQ(20571, SR, 140.0);

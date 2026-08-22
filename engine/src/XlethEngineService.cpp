@@ -1497,8 +1497,8 @@ static void rebuildVideoEventsFromClips() {
                             if (tapePos >= windowEnd) continue;
 
                             const int64_t timelineTicks = blockPosTicks + (tapePos - windowStart);
-                            const double  timelineBeats = static_cast<double>(timelineTicks) / 960.0;
-                            const double  durationBeats = static_cast<double>(note->duration.ticks) / 960.0;
+                            const double  timelineBeats = RenderClock::ppqToBeats(timelineTicks);
+                            const double  durationBeats = RenderClock::ppqToBeats(note->duration.ticks);
 
                             // Slide notes don't spawn a video cell — they fire a
                             // per-track visual effect (ZPR/Bounce/TVSim) on the
@@ -6743,11 +6743,10 @@ static void syncTransportLoopFromTimeline()
     const LoopRegion& lr = g_timeline->getLoopRegion();
     Transport& t = audioEngine->getTransport();
     const double bpm = t.getBPM();
-    const double sr  = t.getSampleRate();
-    // samples = ticks/960 * (60/bpm) * sampleRate
-    const double samplesPerTick = (bpm > 0.0) ? (sr * 60.0) / (960.0 * bpm) : 0.0;
-    const int64_t startSamples = static_cast<int64_t>(std::llround(lr.startTick * samplesPerTick));
-    const int64_t endSamples   = static_cast<int64_t>(std::llround(lr.endTick   * samplesPerTick));
+    const int    sr  = static_cast<int>(t.getSampleRate());
+    // ticks -> samples, rounded half away from zero (RenderClock's default).
+    const int64_t startSamples = RenderClock::ppqToSample(lr.startTick, sr, bpm);
+    const int64_t endSamples   = RenderClock::ppqToSample(lr.endTick,   sr, bpm);
     t.setLoopBounds(startSamples, endSamples, lr.loopEnabled);
 }
 
@@ -13100,9 +13099,11 @@ JsonApi::Value Timeline_AutoTrimClip(const JsonApi::CallbackInfo& info)
     const double bpm        = audioEngine->getTransport().getBPM();
     const double sampleRate = audioEngine->getSampleRate();
     int64_t silenceTicks = 0;
-    if (silenceSamples > 0 && sampleRate > 0.0 && bpm > 0.0) {
-        const double beats = (silenceSamples / sampleRate) * (bpm / 60.0);
-        silenceTicks = static_cast<int64_t>(beats * 960.0);
+    if (silenceSamples > 0) {
+        // AV_ROUND_ZERO keeps the truncation of the old double expression, so
+        // the trim never eats a partial tick of audio.
+        silenceTicks = RenderClock::sampleToPPQ(
+            silenceSamples, static_cast<int>(sampleRate), bpm, AV_ROUND_ZERO);
     }
 
     if (silenceTicks <= 0) {
@@ -16602,8 +16603,8 @@ static xleth::RenderScope resolveExportScope(const Timeline& tl,
         const double eB = hasEndBeat   ? endBeat   : -1.0;
         if (eB > sB) {   // a real explicit range — treat as a debug bounds repoint
             dbg.active    = true;
-            dbg.startTick = static_cast<int64_t>(std::llround(sB * 960.0));
-            dbg.endTick   = static_cast<int64_t>(std::llround(eB * 960.0));
+            dbg.startTick = RenderClock::beatsToPPQ(sB);
+            dbg.endTick   = RenderClock::beatsToPPQ(eB);
             std::fprintf(stderr,
                 "[LoopRegion] debug bounds override active: [%lld,%lld) ticks\n",
                 (long long)dbg.startTick, (long long)dbg.endTick);
@@ -16673,13 +16674,12 @@ JsonApi::Value Audio_ExportStart(const JsonApi::CallbackInfo& info)
         const double sB = hasS ? o.Get("startBeat").As<JsonApi::Number>().DoubleValue() : 0.0;
         const double eB = hasE ? o.Get("endBeat").As<JsonApi::Number>().DoubleValue()   : 0.0;
         const auto scope = resolveExportScope(*g_timeline, hasS, sB, hasE, eB);
-        const double ticksToBeats = 1.0 / 960.0;
-        cfg.startBeat = scope.captureStartTick * ticksToBeats;
-        cfg.endBeat   = scope.captureEndTick   * ticksToBeats;
+        cfg.startBeat = RenderClock::ppqToBeats(scope.captureStartTick);
+        cfg.endBeat   = RenderClock::ppqToBeats(scope.captureEndTick);
         // Absolute window warms up from tick 0 (warmUpStartTick) so in-flight
         // notes / effect tails survive into the first captured sample.
         cfg.warmUpStartBeat = scope.scoped
-            ? scope.warmUpStartTick * ticksToBeats
+            ? RenderClock::ppqToBeats(scope.warmUpStartTick)
             : -1.0;   // full timeline: legacy latency-only pre-roll
         // Tail policy from the project LoopRegion (built at the export sample
         // rate). hardCut → no tail; tailClamp → ring out effects past the capture
@@ -16984,13 +16984,12 @@ JsonApi::Value Video_ExportStart(const JsonApi::CallbackInfo& info)
     // capture start, capture end, and the output timestamp (always 0).
     const double bpm = g_timeline->getBPM();
     const double sampleRate = static_cast<double>(settings.sampleRate);
-    const double samplesPerTick = (bpm > 0.0) ? (sampleRate * 60.0) / (960.0 * bpm) : 0.0;
-    const int64_t startSample = static_cast<int64_t>(std::llround(scope.captureStartTick * samplesPerTick));
-    const int64_t endSample   = static_cast<int64_t>(std::llround(scope.captureEndTick   * samplesPerTick));
+    const int64_t startSample = RenderClock::ppqToSample(scope.captureStartTick, settings.sampleRate, bpm);
+    const int64_t endSample   = RenderClock::ppqToSample(scope.captureEndTick,   settings.sampleRate, bpm);
     // Scoped absolute window warms up from tick 0; full timeline / unscoped uses
     // legacy latency-only pre-roll (warm-up == capture start).
     const int64_t warmUpStartSample = scope.scoped
-        ? static_cast<int64_t>(std::llround(scope.warmUpStartTick * samplesPerTick))
+        ? RenderClock::ppqToSample(scope.warmUpStartTick, settings.sampleRate, bpm)
         : startSample;
 
     std::fprintf(stderr,
@@ -17161,9 +17160,8 @@ JsonApi::Value Video_ComputeDurationSeconds(const JsonApi::CallbackInfo& info)
     // Same scope resolution as the export start paths (LoopRegion-derived; debug
     // bounds override only under XLETH_DEBUG with an explicit eB > sB).
     const auto scope = resolveExportScope(*g_timeline, hasS, sB, hasE, eB);
-    const double ticksToBeats = 1.0 / 960.0;
     const double captureBeats =
-        static_cast<double>(scope.captureEndTick - scope.captureStartTick) * ticksToBeats;
+        RenderClock::ppqToBeats(scope.captureEndTick - scope.captureStartTick);
     double seconds = std::max(0.0, captureBeats * 60.0 / bpm);
 
     // Add the tail cap (rate cancels: maxTailSamples / sr == tailMaxSeconds).

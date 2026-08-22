@@ -38,8 +38,4 @@ private:
     // Track position from the previous buffer to detect backward seeks.
     // Initialized to -1 so the first buffer never triggers a spurious reset.
     int64_t lastKnownPosition_ = -1;
-
-    // Replicate Transport's private beatsToSamples via public getters.
-    // Safe to call from the audio thread (reads only stable, atomic-backed state).
-    int64_t beatsToSamples(double beats) const;
 };

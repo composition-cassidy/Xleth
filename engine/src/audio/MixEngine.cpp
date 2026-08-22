@@ -14,6 +14,7 @@
 #include "audio/SlotBakeCache.h"
 #include "dsp/DeclickEnvelope.h"
 #include "model/ClipModulationCompatibility.h"
+#include "render/RenderClock.h"
 #include "XlethDebug.h"
 
 #include <algorithm>
@@ -4993,10 +4994,12 @@ void MixEngine::triggerPatternNotes(const ActivePatternBlock& apb,
                                     int64_t bufferStart, int64_t bufferEnd,
                                     double bpm, double sampleRate)
 {
-    // Convert sample positions to ticks (960 PPQ).
+    // Convert sample positions to ticks (960 PPQ) through the shared clock.
+    // AV_ROUND_ZERO reproduces the truncation of the old double formula.
+    // RT-safe: integer arithmetic only - no locks, no allocation, no lookups.
+    const int srInt = static_cast<int>(sampleRate);
     auto sampleToTick = [&](int64_t sample) -> int64_t {
-        const double seconds = static_cast<double>(sample) / sampleRate;
-        return static_cast<int64_t>(seconds * (bpm / 60.0) * 960.0);
+        return RenderClock::sampleToPPQ(sample, srInt, bpm, AV_ROUND_ZERO);
     };
 
     const int64_t bufStartTick       = sampleToTick(bufferStart);
@@ -5941,12 +5944,14 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         if (patternLenTicks <= 0) continue;
         const int64_t blockEndTicks = blockPosTicks + apb.block->duration.ticks;
 
+        // Shared clock, AV_ROUND_ZERO to keep the truncation the old double
+        // formula had. RT-safe: integer arithmetic only.
+        const int srInt = static_cast<int>(sampleRate);
         auto tickToSample = [&](int64_t tick) -> int64_t {
-            return static_cast<int64_t>((tick / 960.0) * (60.0 / bpm) * sampleRate);
+            return RenderClock::ppqToSample(tick, srInt, bpm, AV_ROUND_ZERO);
         };
         auto sampleToTick = [&](int64_t sample) -> int64_t {
-            return static_cast<int64_t>(
-                (static_cast<double>(sample) / sampleRate) * (bpm / 60.0) * 960.0);
+            return RenderClock::sampleToPPQ(sample, srInt, bpm, AV_ROUND_ZERO);
         };
 
         const int64_t bufStartTick = sampleToTick(bufStart);

@@ -77,26 +77,61 @@ public:
     static int64_t videoFrameToSample(int64_t frame, int sampleRate,
                                       AVRational fps);
 
-    // ----- sample -> PPQ (960 pulses per quarter note) ---------------------
+    // ----- sample <-> PPQ (960 pulses per quarter note) --------------------
+
+    /** Pulses per quarter note. The project-wide tick resolution. */
+    static constexpr int PPQ = 960;
 
     /**
      * samplePos * bpm * PPQ / (60 * sampleRate)
      *
-     * Computed via av_rescale to keep 128-bit intermediates.
-     * bpm is accepted as double but truncated to integer milli-BPM internally
-     * to stay in the integer domain (precision: 0.001 BPM).
+     * Computed via av_rescale_rnd to keep 128-bit intermediates.
+     * bpm is accepted as double but rounded to integer micro-BPM internally to
+     * stay in the integer domain (precision: 1e-6 BPM, which is under 0.01
+     * tick of drift across a ten-minute timeline).
+     *
+     * `rnd` selects the rounding applied to the final divide so a caller can
+     * ask for exactly the semantics its arithmetic needs:
+     *   AV_ROUND_NEAR_INF (default) - half away from zero, == std::llround()
+     *   AV_ROUND_ZERO               - truncate toward zero, == (int64_t)dbl
+     *   AV_ROUND_DOWN               - floor toward -inf,    == std::floor()
+     * For non-negative positions ZERO and DOWN coincide; they stay distinct
+     * names so each call site records its own intent.
+     *
+     * Returns 0 for a non-positive sampleRate or bpm.
      */
-    static int64_t sampleToPPQ(int64_t samplePos, int sampleRate, double bpm);
+    static int64_t sampleToPPQ(int64_t samplePos, int sampleRate, double bpm,
+                               AVRounding rnd = AV_ROUND_NEAR_INF);
 
     /**
      * Convert a PPQ tick position to a sample position using the same integer
-     * timing domain as sampleToPPQ().
+     * timing domain as sampleToPPQ(). `rnd` as above.
      */
-    static int64_t ppqToSample(int64_t ppq, int sampleRate, double bpm);
+    static int64_t ppqToSample(int64_t ppq, int sampleRate, double bpm,
+                               AVRounding rnd = AV_ROUND_NEAR_INF);
+
+    // ----- PPQ <-> beats ---------------------------------------------------
+    //
+    // One beat is one quarter note = PPQ ticks. These stay in the double
+    // domain on purpose: the beat-based APIs (Transport, AudioExporter,
+    // VideoEvent) exchange continuous beat positions, and quantizing a
+    // caller-supplied beat to 1/960 would move seek and scrub targets.
+
+    /** ticks -> beats. Divides; never multiplies by a pre-rounded 1.0/960.0. */
+    static double ppqToBeats(int64_t ppq);
+
+    /** beats -> ticks, half away from zero (== std::llround(beats * PPQ)). */
+    static int64_t beatsToPPQ(double beats);
+
+    // ----- sample <-> beats (double domain) --------------------------------
+
+    /** samples / (sampleRate * 60 / bpm). 0.0 for a non-positive rate/bpm. */
+    static double sampleToBeats(int64_t samples, int sampleRate, double bpm);
 
     /**
-     * Convert a beat position to a sample position through PPQ so callers do
-     * not duplicate beat/sample math outside the render timing utility.
+     * Convert a beat position to a sample position. Double domain, for the
+     * reason given under "PPQ <-> beats" above. Negative or non-finite beats
+     * clamp to sample 0.
      */
     static int64_t beatToSample(double beat, int sampleRate, double bpm);
 
@@ -138,7 +173,4 @@ public:
      * explicitly (the caller can gate on XLETH_DEBUG if desired).
      */
     static bool validate();
-
-private:
-    static constexpr int PPQ = 960;
 };

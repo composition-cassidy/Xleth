@@ -1,5 +1,6 @@
 #include "AudioScheduler.h"
 #include "AudioEngine.h"   // needed to call engine_.queueTrigger()
+#include "render/RenderClock.h"
 
 AudioScheduler::AudioScheduler(Transport& transport, AudioEngine& engine)
     : transport_(transport)
@@ -21,19 +22,6 @@ void AudioScheduler::clearEvents()
 {
     events_.clear();
     triggered_.clear();
-}
-
-// ─────────────────────────────────────────────────────────────────────────────
-// Internal helper — replicates Transport::beatsToSamples() via public getters.
-// Transport::beatsToSamples is private; getSampleRate()/getBPM() are public.
-// getSampleRate() returns a plain double that is stable after audioDeviceAboutToStart.
-// getBPM() reads an atomic — safe from any thread.
-// ─────────────────────────────────────────────────────────────────────────────
-
-int64_t AudioScheduler::beatsToSamples(double beats) const
-{
-    return static_cast<int64_t>(
-        beats * (transport_.getSampleRate() * 60.0 / transport_.getBPM()));
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -76,7 +64,13 @@ void AudioScheduler::processBlock(int numSamples)
     {
         if (triggered_[i] != 0) continue;
 
-        const int64_t eventSamplePos = beatsToSamples(events_[i].beatPosition);
+        // Shared beat->sample path (same one Transport::beatsToSamples uses).
+        // getSampleRate() is a plain double, stable after audioDeviceAboutToStart;
+        // getBPM() reads an atomic — both safe on the audio thread.
+        const int64_t eventSamplePos = RenderClock::beatToSample(
+            events_[i].beatPosition,
+            static_cast<int>(transport_.getSampleRate()),
+            transport_.getBPM());
 
         if (eventSamplePos >= startSample && eventSamplePos < endSample)
         {
