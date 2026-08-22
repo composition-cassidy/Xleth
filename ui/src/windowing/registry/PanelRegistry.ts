@@ -61,6 +61,7 @@ export const MIN_DOCKED_PANEL_MAIN_SIZES: Record<PanelId, number> = {
   sampler: 220,
   quickNotation: 220,
   splitSyllables: 220,
+  sampleSandbox: 320,
 };
 
 export interface PanelRegistryState {

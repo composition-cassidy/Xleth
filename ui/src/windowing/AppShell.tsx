@@ -27,6 +27,7 @@ const NodeEditorPanel = React.lazy(() => import('./panels/NodeEditorPanel'));
 const SamplerWindowPanel = React.lazy(() => import('./panels/SamplerWindowPanel'));
 const QuickNotationPanel = React.lazy(() => import('./panels/QuickNotationPanel'));
 const SplitSyllablesPanel = React.lazy(() => import('./panels/SplitSyllablesPanel'));
+const SampleSandboxPanel = React.lazy(() => import('./panels/SampleSandboxPanel'));
 
 type DevShellMode =
   | 'single'
@@ -124,6 +125,7 @@ const PANEL_BODY_FOR_6B: Record<PanelId, React.LazyExoticComponent<React.FC>> = 
   sampler: SamplerWindowPanel,
   quickNotation: QuickNotationPanel,
   splitSyllables: SplitSyllablesPanel,
+  sampleSandbox: SampleSandboxPanel,
 };
 
 const DRAWER_PANEL_IDS = new Set<PanelId>(['sampleSelector']);
@@ -164,6 +166,7 @@ const SHELL_PANEL_IDS: Record<AppShellMode, PanelId[]> = {
     'sampler',
     'quickNotation',
     'splitSyllables',
+    'sampleSandbox',
   ],
 };
 

@@ -1,6 +1,7 @@
 import {
   AudioWaveform,
   Clock3,
+  FlaskConical,
   Music2,
   PanelLeft,
   Piano,
@@ -22,6 +23,7 @@ export const PANEL_IDS = [
   'sampler',
   'quickNotation',
   'splitSyllables',
+  'sampleSandbox',
 ] as const;
 
 export type PanelId = (typeof PANEL_IDS)[number];
@@ -158,6 +160,15 @@ export const PANEL_CATALOG = {
     // cached waveform mipmap + marker edits alive across close/reopen.
     defaultFloating: { x: 140, y: 160, width: 1000, height: 352 },
     keepAliveWhenHidden: true,
+  },
+  sampleSandbox: {
+    id: 'sampleSandbox',
+    title: 'Sample Sandbox',
+    typeColorToken: '--theme-panel-mixer',
+    icon: FlaskConical,
+    fKey: 'F10',
+    defaultFloating: { x: 200, y: 90, width: 1180, height: 640 },
+    keepAliveWhenHidden: false,
   },
 } satisfies Record<PanelId, PanelCatalogEntry>;
 

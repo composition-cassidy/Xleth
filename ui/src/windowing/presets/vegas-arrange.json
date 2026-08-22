@@ -99,6 +99,16 @@
       "floating": { "x": 140, "y": 160, "width": 1000, "height": 352 },
       "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 280 },
       "preMaximizeState": null
+    },
+    "sampleSandbox": {
+      "id": "sampleSandbox",
+      "hidden": true,
+      "focused": false,
+      "zIndex": 0,
+      "mode": "floating",
+      "floating": { "x": 200, "y": 90, "width": 1180, "height": 640 },
+      "docked": { "region": "bottom", "orderInRegion": 0, "sizeInRegion": 320 },
+      "preMaximizeState": null
     }
   },
   "dockRegionSizes": { "left": 280, "right": 280, "top": 240, "bottom": 240 }

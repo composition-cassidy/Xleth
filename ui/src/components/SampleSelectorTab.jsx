@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { Music, Search, Pencil, Type, Download, ArrowLeftRight, RotateCcw, Trash2, Scissors, Sliders, List, LayoutGrid } from 'lucide-react'
+import { Music, Search, Pencil, Type, Download, ArrowLeftRight, RotateCcw, Trash2, Scissors, Sliders, List, LayoutGrid, FlaskConical } from 'lucide-react'
 import { timelineEvents } from '../timelineEvents.js'
 import { DEFAULT_LABELS, loadCustomLabels, labelColor } from '../constants/labels.js'
 import SampleGroup from './SampleGroup.jsx'
 import ContextMenu from './ContextMenu.jsx'
 import useSampleViewModeStore from '../stores/sampleViewModeStore.js'
 import useSplitSyllablesPanelStore from '../stores/splitSyllablesPanelStore.js'
+import useSandboxPanelStore from '../stores/sandboxPanelStore.js'
 import { usePanelRegistry } from '../windowing/registry/PanelRegistry.ts'
 import { getPickerPath, openFilePicker } from './filePicker/filePickerService.js'
 
@@ -328,7 +329,17 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
           useSplitSyllablesPanelStore.getState().setSplitTarget({ region })
           usePanelRegistry.getState().openPanel('splitSyllables')
         },
-      }, { type: 'separator' }] : []),
+      }] : []),
+      // Open in Sample Sandbox (any region — loads it as a fresh sandbox layer)
+      {
+        label: 'Open in Sample Sandbox',
+        icon: FlaskConical,
+        onClick: () => {
+          useSandboxPanelStore.getState().setOpenTarget(region)
+          usePanelRegistry.getState().openPanel('sampleSandbox')
+        },
+      },
+      { type: 'separator' },
       // Export Audio
       {
         label: 'Export Audio',
