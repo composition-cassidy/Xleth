@@ -13,6 +13,9 @@
 //   SandboxRenderer  DSP correctness per op, the prefix cache, and THE
 //                    HEADLINE: mutating op 1 of a 3-op stack re-renders 2 ops,
 //                    not 3
+//   SB-5             layer mix/mute/solo commands, BakeSandboxCompositeCommand's
+//                     closure-injected undo/redo, and composite mixing itself —
+//                     the 3-layer (plain / reversed / +12ms offset) fixture
 //
 // Offline only — no audio device, no GPU, no transport.
 
@@ -23,6 +26,7 @@
 #include "sandbox/SandboxOp.h"
 #include "sandbox/SandboxRenderer.h"
 
+#include <algorithm>
 #include <cmath>
 #include <iostream>
 #include <memory>
@@ -85,6 +89,17 @@ static SandboxBuffer makeRamp(int channels, int samples) {
     for (int ch = 0; ch < channels; ++ch)
         for (int i = 0; i < samples; ++i)
             b.setSample(ch, i, static_cast<float>(i + ch * 1000) / 10000.0f);
+    return b;
+}
+
+// A constant-value buffer — used where the composite mixer's arithmetic needs
+// to be hand-checkable (a ramp's exact overlap sum is tedious to verify by
+// eye once three layers with different offsets are summed).
+static SandboxBuffer makeConst(int channels, int samples, float value) {
+    SandboxBuffer b(channels, samples);
+    for (int ch = 0; ch < channels; ++ch)
+        for (int i = 0; i < samples; ++i)
+            b.setSample(ch, i, value);
     return b;
 }
 
@@ -534,6 +549,238 @@ static void testCommands() {
 }
 
 // ---------------------------------------------------------------------------
+// SandboxCommands — layer mix / mute / solo undo+redo (SB-5)
+// ---------------------------------------------------------------------------
+
+static void testLayerMixCommands() {
+    std::cout << "\n[SandboxCommands — layer mix/mute/solo undo/redo]\n";
+
+    Timeline    timeline;
+    UndoManager undo;
+    SandboxCore core;
+
+    const int layerId = core.addLayer("bed", 3, kTestRate);
+
+    // ── Mix (gain/pan/offset) ──
+    undo.execute(std::make_unique<SetSandboxLayerMixCommand>(core, layerId, -6.0, 0.5, 576), timeline);
+    const SandboxLayer* layer = core.findLayer(layerId);
+    CHECK_NEAR(layer->gainDb, -6.0, 1e-9, "gain applied");
+    CHECK_NEAR(layer->pan, 0.5, 1e-9, "pan applied");
+    CHECK_EQ(layer->offsetSamples, int64_t(576), "offset applied");
+    CHECK_EQ(layer->firstDirtyIndex(), layer->ops.size(), "mix params never dirty the stack");
+
+    undo.undo(timeline);
+    layer = core.findLayer(layerId);
+    CHECK_NEAR(layer->gainDb, 0.0, 1e-9, "undo restores the default gain");
+    CHECK_NEAR(layer->pan, 0.0, 1e-9, "undo restores the default pan");
+    CHECK_EQ(layer->offsetSamples, int64_t(0), "undo restores the default offset");
+
+    undo.redo(timeline);
+    CHECK_NEAR(core.findLayer(layerId)->gainDb, -6.0, 1e-9, "redo re-applies the mix");
+
+    // A no-change mix write is not an edit.
+    const int depthBeforeNoop = undo.getUndoCount();
+    undo.execute(std::make_unique<SetSandboxLayerMixCommand>(core, layerId, -6.0, 0.5, 576), timeline);
+    CHECK_EQ(undo.getUndoCount(), depthBeforeNoop, "writing the mix already held is NOT recorded");
+
+    // ── Mute ──
+    undo.execute(std::make_unique<SetSandboxLayerMutedCommand>(core, layerId, true), timeline);
+    CHECK(core.findLayer(layerId)->muted, "mute applied");
+    undo.undo(timeline);
+    CHECK(!core.findLayer(layerId)->muted, "undo un-mutes");
+    undo.redo(timeline);
+    CHECK(core.findLayer(layerId)->muted, "redo re-mutes");
+
+    // ── Solo ──
+    undo.execute(std::make_unique<SetSandboxLayerSoloedCommand>(core, layerId, true), timeline);
+    CHECK(core.findLayer(layerId)->soloed, "solo applied");
+    undo.undo(timeline);
+    CHECK(!core.findLayer(layerId)->soloed, "undo un-solos");
+    undo.redo(timeline);
+    CHECK(core.findLayer(layerId)->soloed, "redo re-solos");
+
+    // Rejected mutations on an unknown layer must not consume an undo step.
+    const int depthBefore = undo.getUndoCount();
+    undo.execute(std::make_unique<SetSandboxLayerMutedCommand>(core, 9999, true), timeline);
+    CHECK_EQ(undo.getUndoCount(), depthBefore, "muting an unknown layer is NOT recorded");
+}
+
+// ---------------------------------------------------------------------------
+// BakeSandboxCompositeCommand — undo/redo of the closure-injected bake (SB-5)
+// ---------------------------------------------------------------------------
+
+static void testBakeCompositeCommand() {
+    std::cout << "\n[BakeSandboxCompositeCommand — undo/redo]\n";
+
+    Timeline    timeline;
+    UndoManager undo;
+
+    // A minimal fake "asset store" standing in for SampleBank — tombstone /
+    // restore semantics only, exactly what the command needs. Proves the
+    // command's own contract (bake once, redo restores rather than re-bakes)
+    // without depending on SampleBank's own link footprint.
+    struct FakeAsset { bool live = false; };
+    std::vector<FakeAsset> store;
+    int bakeCalls = 0;
+
+    BakeSandboxCompositeCommand::BakeFn bakeFn = [&]() -> int {
+        ++bakeCalls;
+        const int id = static_cast<int>(store.size());
+        store.push_back(FakeAsset{ true });
+        return id;
+    };
+    BakeSandboxCompositeCommand::UndoFn undoFn = [&](int id) {
+        if (id >= 0 && id < static_cast<int>(store.size())) store[static_cast<size_t>(id)].live = false;
+    };
+    BakeSandboxCompositeCommand::RestoreFn restoreFn = [&](int id) -> bool {
+        if (id < 0 || id >= static_cast<int>(store.size()) || store[static_cast<size_t>(id)].live) return false;
+        store[static_cast<size_t>(id)].live = true;
+        return true;
+    };
+
+    auto cmd = std::make_unique<BakeSandboxCompositeCommand>("mix", bakeFn, undoFn, restoreFn);
+    BakeSandboxCompositeCommand* raw = cmd.get();
+    undo.execute(std::move(cmd), timeline);
+
+    const int sampleId = raw->bakedSampleId();
+    CHECK(sampleId >= 0, "bake registers a new asset id");
+    CHECK_EQ(bakeCalls, 1, "bakeFn ran exactly once");
+    CHECK(store[static_cast<size_t>(sampleId)].live, "the asset is live right after bake");
+    CHECK_EQ(undo.getUndoCount(), 1, "the bake is on the undo stack");
+
+    undo.undo(timeline);
+    CHECK(!store[static_cast<size_t>(sampleId)].live, "undo tombstones the asset");
+
+    undo.redo(timeline);
+    CHECK(store[static_cast<size_t>(sampleId)].live, "redo restores it");
+    CHECK_EQ(bakeCalls, 1, "…without re-baking — restoreFn ran, not bakeFn a second time");
+
+    undo.undo(timeline);
+    CHECK(!store[static_cast<size_t>(sampleId)].live, "undo again tombstones it again");
+    undo.redo(timeline);
+    CHECK(store[static_cast<size_t>(sampleId)].live, "…and a second redo restores it again");
+
+    // A bake whose composite came back empty must not consume an undo step.
+    const int depthBefore = undo.getUndoCount();
+    BakeSandboxCompositeCommand::BakeFn emptyBakeFn = []() -> int { return -1; };
+    undo.execute(std::make_unique<BakeSandboxCompositeCommand>(
+                     "empty", emptyBakeFn, BakeSandboxCompositeCommand::UndoFn{},
+                     BakeSandboxCompositeCommand::RestoreFn{}),
+                 timeline);
+    CHECK_EQ(undo.getUndoCount(), depthBefore, "an empty composite is NOT recorded in history");
+}
+
+// ---------------------------------------------------------------------------
+// SandboxRenderer — composite mixing (SB-5)
+// ---------------------------------------------------------------------------
+//
+// THE DELIVERABLE FIXTURE: 3 layers — one plain, one reversed, one offset
+// +12ms — bakes to a composite whose rendered length/level match expectation.
+
+static void testCompositeMixing() {
+    std::cout << "\n[SandboxRenderer — composite mixing]\n";
+
+    const int64_t offsetSamplesC = static_cast<int64_t>(0.012 * kTestRate);   // 12ms @ 48kHz = 576
+    CHECK_EQ(offsetSamplesC, int64_t(576), "fixture sanity: 12ms @ 48kHz is 576 samples");
+
+    auto layerA = std::make_shared<const SandboxBuffer>(makeConst(1, 1000, 0.4f));
+
+    SandboxBuffer bRamp = makeRamp(1, 500);
+    { float* d = bRamp.getWritePointer(0); std::reverse(d, d + 500); }
+    auto layerB = std::make_shared<const SandboxBuffer>(std::move(bRamp));   // the REVERSED layer
+
+    auto layerC = std::make_shared<const SandboxBuffer>(makeConst(1, 1000, 0.3f));   // the OFFSET +12ms layer
+
+    std::vector<SandboxLayerMixInput> mix = {
+        { layerA, kTestRate, 0.0, 0.0, 0,             false, false },
+        { layerB, kTestRate, 0.0, 0.0, 0,             false, false },
+        { layerC, kTestRate, 0.0, 0.0, offsetSamplesC, false, false },
+    };
+
+    auto composite = SandboxRenderer::renderComposite(mix);
+    CHECK(composite.valid(), "composite renders");
+    CHECK_EQ(composite.buffer->getNumSamples(), 1576,
+             "length = the offset layer's start (576) + its own length (1000) — the longest span");
+    CHECK_EQ(composite.buffer->getNumChannels(), 2, "composite is always stereo");
+    CHECK_NEAR(composite.sampleRate, kTestRate, 1e-9, "composite rate = the (only) rate present");
+    CHECK_EQ(composite.layersMixed, 3, "all three layers are unmuted and unsoloed — all three mixed");
+
+    const double centerGain = std::cos(3.14159265358979323846 / 4.0);   // pan=0 → both channels equal
+    const float* outL = composite.buffer->getReadPointer(0);
+    const float* outR = composite.buffer->getReadPointer(1);
+
+    // Sample 0: A[0]=0.4 + the REVERSED layer's first sample, which is its
+    // source ramp's LAST sample (499/10000) — proves reversal survived into
+    // the mix untouched, since renderComposite just sums whatever buffer it
+    // is handed.
+    {
+        const float expected = static_cast<float>((0.4 + 499.0 / 10000.0) * centerGain);
+        CHECK_NEAR(outL[0], expected, 1e-4, "sample 0 sums A + reversed-B's first (= B's original last) sample");
+        CHECK_NEAR(outR[0], expected, 1e-4, "…identically on R at pan=0");
+    }
+    // Sample 700: B has ended (700 >= 500); A still active; C (started at 576,
+    // local index 124) is constant 0.3.
+    {
+        const float expected = static_cast<float>((0.4 + 0.3) * centerGain);
+        CHECK_NEAR(outL[700], expected, 1e-4, "sample 700: A + the offset layer C, B already ended");
+    }
+    // Sample 1200: A ended at 1000, B ended at 500 — only the delayed layer
+    // C is still sounding. This is the offset test: without a working delay,
+    // C would already have ended too (576+1000=1576 > 1200, so it hasn't).
+    {
+        const float expected = static_cast<float>(0.3 * centerGain);
+        CHECK_NEAR(outL[1200], expected, 1e-4,
+                   "past every other layer's end, only the +12ms-delayed layer still sounds");
+    }
+    // The composite's very last sample is the offset layer's own last sample.
+    {
+        const float expected = static_cast<float>(0.3 * centerGain);
+        CHECK_NEAR(outL[1575], expected, 1e-4, "the composite's last sample is C's own last sample");
+    }
+
+    // ── Solo: only B plays ──
+    mix[1].soloed = true;
+    auto soloed = SandboxRenderer::renderComposite(mix);
+    CHECK_EQ(soloed.layersMixed, 1, "soloing one layer excludes the other two");
+    {
+        const float expected = static_cast<float>((499.0 / 10000.0) * centerGain);
+        CHECK_NEAR(soloed.buffer->getReadPointer(0)[0], expected, 1e-4, "…and only its own audio sounds");
+    }
+    mix[1].soloed = false;
+
+    // ── Mute always wins over solo, for that one layer ──
+    mix[1].soloed = true;
+    mix[1].muted  = true;
+    auto muted = SandboxRenderer::renderComposite(mix);
+    CHECK_EQ(muted.layersMixed, 0, "soloed-but-muted excludes itself AND every non-soloed layer");
+    CHECK_EQ(muted.buffer->getNumSamples(), 1576,
+             "…but composite LENGTH still reflects every layer, muted or not");
+    CHECK_NEAR(muted.buffer->getReadPointer(0)[700], 0.0f, 1e-6, "and it is genuinely silent, not just empty");
+    mix[1].soloed = false;
+    mix[1].muted  = false;
+
+    // ── Gain (dB) + hard pan, isolated from the overlap geometry above ──
+    {
+        auto solo = std::make_shared<const SandboxBuffer>(makeConst(1, 10, 1.0f));
+        std::vector<SandboxLayerMixInput> one = { { solo, kTestRate, -6.0, 1.0, 0, false, false } };
+        auto r = SandboxRenderer::renderComposite(one);
+        CHECK(r.valid(), "single-layer composite renders");
+        const float expectedGain = static_cast<float>(std::pow(10.0, -6.0 / 20.0));   // ≈ 0.50119
+        CHECK_NEAR(r.buffer->getReadPointer(0)[0], 0.0f, 1e-4, "hard pan-right: L channel is silent");
+        CHECK_NEAR(r.buffer->getReadPointer(1)[0], expectedGain, 1e-4, "…and R carries the full -6dB gain");
+    }
+
+    // ── Edge cases ──
+    CHECK(!SandboxRenderer::renderComposite({}).valid(), "an empty layer list is an invalid composite");
+    {
+        auto empty = std::make_shared<const SandboxBuffer>(SandboxBuffer(1, 0));
+        std::vector<SandboxLayerMixInput> zero = { { empty, kTestRate, 0.0, 0.0, 0, false, false } };
+        CHECK(!SandboxRenderer::renderComposite(zero).valid(),
+              "a layer whose stack trimmed itself to zero length contributes nothing to mix");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // SandboxRenderer — per-op DSP correctness
 // ---------------------------------------------------------------------------
 
@@ -951,6 +1198,9 @@ int main() {
     testCoreMutation();
     testCoreSerialization();
     testCommands();
+    testLayerMixCommands();
+    testBakeCompositeCommand();
+    testCompositeMixing();
     testRendererOps();
     testRendererCache();
     testDownstreamOnlyRerender();

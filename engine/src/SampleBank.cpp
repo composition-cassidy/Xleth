@@ -466,6 +466,70 @@ void SampleBank::unloadSample(int id)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+juce::String SampleBank::uniqueSampleName(const juce::String& baseName) const
+{
+    const juce::String base = baseName.isNotEmpty() ? baseName : "Baked Sample";
+
+    auto nameTaken = [this](const juce::String& candidate)
+    {
+        for (const auto& s : samples_)
+            if (s != nullptr && s->info.name == candidate) return true;
+        return false;
+    };
+
+    if (!nameTaken(base)) return base;
+    for (int n = 2; n < 100000; ++n)
+    {
+        const juce::String candidate = base + " (" + juce::String(n) + ")";
+        if (!nameTaken(candidate)) return candidate;
+    }
+    // Astronomically unreachable in practice — fall back to something unique.
+    return base + " (" + juce::String(samples_.size()) + ")";
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+int SampleBank::addSampleFromBuffer(const juce::AudioBuffer<float>& buffer,
+                                    double sampleRate,
+                                    const juce::String& baseName)
+{
+    if (buffer.getNumChannels() <= 0 || buffer.getNumSamples() <= 0 || sampleRate <= 0.0)
+        return -1;
+
+    SampleInfo info;
+    info.name               = uniqueSampleName(baseName);
+    info.numChannels        = buffer.getNumChannels();
+    info.numSamples         = buffer.getNumSamples();
+    info.originalSampleRate = sampleRate;
+    info.bufferSampleRate   = sampleRate;
+
+    const int id  = static_cast<int>(samples_.size());
+    auto entry    = std::make_unique<LoadedSample>();
+    entry->buffer = buffer;   // copy — caller's buffer is untouched
+    entry->info   = std::move(info);
+
+    std::cout << "[SampleBank] Registered baked asset: " << entry->info.name.toStdString()
+              << "  ch=" << entry->info.numChannels
+              << "  samples=" << entry->info.numSamples
+              << "  rate=" << sampleRate << "Hz\n" << std::flush;
+
+    samples_.push_back(std::move(entry));
+    return id;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+bool SampleBank::restoreSample(int id, const juce::AudioBuffer<float>& buffer, const SampleInfo& info)
+{
+    if (id < 0 || id >= static_cast<int>(samples_.size())) return false;
+    if (samples_[id] != nullptr) return false;   // still live — not a replace primitive
+
+    auto entry    = std::make_unique<LoadedSample>();
+    entry->buffer = buffer;
+    entry->info   = info;
+    samples_[id]  = std::move(entry);
+    return true;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 void SampleBank::applyFades(juce::AudioBuffer<float>& buf, double sampleRate)
 {
     const int totalSamples = buf.getNumSamples();

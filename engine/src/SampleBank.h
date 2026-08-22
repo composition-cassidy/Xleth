@@ -94,6 +94,32 @@ public:
     // Call ONLY from the main thread.
     void unloadSample(int id);
 
+    // ── Sandbox composite bake (SB-5) ─────────────────────────────────────────
+    // Registers a NEW asset from an in-memory buffer instead of a file — the
+    // Sample Sandbox's bake-to-new-asset path. Copies `buffer`; the caller's
+    // own copy is untouched. `baseName` is used as-is unless a LIVE sample
+    // already holds it, in which case a numeric " (2)", " (3)", … suffix is
+    // appended until it doesn't collide — see uniqueSampleName(). That makes
+    // naming deterministic given the same base name and the bank's current
+    // contents (the same bake always tries the same first-choice name), but it
+    // is NOT coordinated with any other process or a prior run — the bank
+    // itself is not persisted, so "stable" here means "not random or
+    // timestamp-based," not "globally unique forever."
+    // Returns -1 if `buffer` or `sampleRate` is empty/invalid.
+    // Call ONLY from the main thread.
+    int addSampleFromBuffer(const juce::AudioBuffer<float>& buffer,
+                            double sampleRate,
+                            const juce::String& baseName);
+
+    // Re-fills a TOMBSTONED slot with `buffer`/`info` verbatim, restoring the
+    // same id. The undo path for addSampleFromBuffer: a bake's undo tombstones
+    // the slot it created (via unloadSample), and this is what a REDO calls to
+    // put the exact same content back without minting a second id. Returns
+    // false if `id` is out of range or the slot is currently LIVE — this is
+    // not a replace-in-place primitive for an in-use sample.
+    // Call ONLY from the main thread.
+    bool restoreSample(int id, const juce::AudioBuffer<float>& buffer, const SampleInfo& info);
+
 private:
     struct LoadedSample
     {
@@ -107,4 +133,5 @@ private:
 
     void ensureFormatsRegistered();
     static void applyFades(juce::AudioBuffer<float>& buf, double sampleRate);
+    juce::String uniqueSampleName(const juce::String& baseName) const;
 };

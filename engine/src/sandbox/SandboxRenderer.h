@@ -99,6 +99,30 @@ struct SandboxRenderResult {
     bool valid() const { return buffer != nullptr; }
 };
 
+// ─── Composite mixing (SB-5) ───────────────────────────────────────────────────
+//
+// One layer's contribution to a composite mix — everything SandboxLayer keeps
+// OUTSIDE its op-stack, plus the buffer/rate the caller already resolved.
+// SandboxRenderer::renderComposite() never touches SandboxCore or SampleBank
+// itself; the RPC layer builds this list from each layer's published render.
+struct SandboxLayerMixInput {
+    SandboxBufferPtr buffer;            // this layer's currently published render
+    double  bufferSampleRate = 0.0;     // rate `buffer` is stored at
+    double  gainDb           = 0.0;
+    double  pan              = 0.0;     // -1..1
+    int64_t offsetSamples    = 0;       // delay, in samples at bufferSampleRate
+    bool    muted            = false;
+    bool    soloed           = false;
+};
+
+struct SandboxCompositeResult {
+    SandboxBufferPtr buffer;
+    double sampleRate  = 0.0;   // rate `buffer` is stored at
+    int    layersMixed = 0;     // layers that actually contributed audio
+
+    bool valid() const { return buffer != nullptr; }
+};
+
 // ─── SandboxRenderer ──────────────────────────────────────────────────────────
 
 class SandboxRenderer {
@@ -208,6 +232,39 @@ public:
                                  const SandboxOp& op,
                                  double bufferSampleRate,
                                  const SandboxBuffer* clipboard = nullptr);
+
+    // ── Composite mixing (SB-5, exposed for testing) ─────────────────────────
+    //
+    // Mixes N layers' own rendered outputs into one stereo buffer, honoring
+    // each layer's gain/pan/offset/mute/solo — the mix params SandboxLayer
+    // keeps OUTSIDE its op-stack. Pure/static, no cache, no instance state:
+    // this never touches SandboxCore or SampleBank itself, so it is directly
+    // testable with fixture buffers, exactly like applyOp.
+    //
+    // Rules (see the .cpp for the full rationale):
+    //   • Output is always 2-channel. A mono layer's buffer broadcasts to both
+    //     output channels before panning; a stereo layer's two channels are
+    //     scaled independently (a balance pan), matching TrackMixer::applyPan's
+    //     convention (engine/src/audio/TrackMixer.h) so a Sandbox layer panned
+    //     the same way sits at the same apparent level as a mixer track.
+    //   • Layers at different bufferSampleRate are resampled UP to the highest
+    //     rate present (juce::LagrangeInterpolator, the same approach
+    //     SampleBank::loadSample uses) rather than ever downsampling.
+    //   • offsetSamples is a DELAY, in samples at the layer's own
+    //     bufferSampleRate; negative values clamp to 0 (a "delay" cannot be
+    //     negative — see SandboxLayer's own comment).
+    //   • Solo: if any layer is soloed, only soloed-and-unmuted layers sound;
+    //     otherwise every unmuted layer sounds. Mute always wins over solo for
+    //     that one layer — the two flags are not mutually exclusive in the
+    //     model.
+    //   • Composite LENGTH is computed from every layer regardless of mute, so
+    //     silencing a layer never shrinks the timeline out from under the
+    //     others.
+    //
+    // Returns an invalid result (buffer == nullptr) when `layers` is empty or
+    // nothing in it has real audio to contribute (e.g. every layer's stack
+    // trimmed itself to zero length).
+    static SandboxCompositeResult renderComposite(const std::vector<SandboxLayerMixInput>& layers);
 
     // ── Clipboard (main thread; CUT/COPY/PASTE) ──────────────────────────────
     //

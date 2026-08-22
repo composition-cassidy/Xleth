@@ -3,6 +3,62 @@ import { useState, useCallback } from 'react'
 import useSandboxStore from '../../stores/sandboxStore.js'
 import SandboxLayerWaveform from './SandboxLayerWaveform.jsx'
 
+function offsetMs(layer) {
+  return layer.bufferSampleRate ? (layer.offsetSamples / layer.bufferSampleRate) * 1000 : 0
+}
+
+// Compact gain/pan/offset row — mix params live OUTSIDE the op-stack, so
+// editing these never re-renders the layer itself (setLayerMix). Commits
+// on blur/Enter rather than per-keystroke, matching the drag-then-commit
+// contract every other sandbox control uses.
+function LayerMixRow({ layer, onSetMix }) {
+  const [draft, setDraft] = useState(null) // { gainDb?, pan?, offsetMs? } while editing, else null
+
+  const commit = useCallback((patch) => {
+    onSetMix(layer.id, patch)
+    setDraft(null)
+  }, [layer.id, onSetMix])
+
+  const gainDb = draft?.gainDb ?? layer.gainDb ?? 0
+  const pan = draft?.pan ?? layer.pan ?? 0
+  const offMs = draft?.offsetMs ?? offsetMs(layer)
+
+  return (
+    <div className="sandbox-layer-mix-row" onClick={(e) => e.stopPropagation()}>
+      <label className="sandbox-mix-field" title="Gain (dB)">
+        <span>dB</span>
+        <input
+          type="number" step="0.5" className="sandbox-mix-input"
+          value={gainDb}
+          onChange={(e) => setDraft((d) => ({ ...d, gainDb: Number(e.target.value) }))}
+          onBlur={() => draft?.gainDb !== undefined && commit({ gainDb: draft.gainDb })}
+          onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+        />
+      </label>
+      <label className="sandbox-mix-field" title="Pan (-1 = left, +1 = right)">
+        <span>Pan</span>
+        <input
+          type="number" step="0.1" min="-1" max="1" className="sandbox-mix-input"
+          value={pan}
+          onChange={(e) => setDraft((d) => ({ ...d, pan: Number(e.target.value) }))}
+          onBlur={() => draft?.pan !== undefined && commit({ pan: draft.pan })}
+          onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+        />
+      </label>
+      <label className="sandbox-mix-field" title="Offset / delay in the composite (ms)">
+        <span>ms</span>
+        <input
+          type="number" step="1" min="0" className="sandbox-mix-input"
+          value={offMs}
+          onChange={(e) => setDraft((d) => ({ ...d, offsetMs: Number(e.target.value) }))}
+          onBlur={() => draft?.offsetMs !== undefined && commit({ offsetMs: draft.offsetMs })}
+          onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
+        />
+      </label>
+    </div>
+  )
+}
+
 function formatMeta(layer) {
   const parts = []
   if (layer.bufferSampleRate) parts.push(`${Math.round(layer.bufferSampleRate)} Hz`)
@@ -14,7 +70,7 @@ function formatMeta(layer) {
   return parts.join(' · ')
 }
 
-function LayerRow({ layer, active, onSelect, onClose, onToggleMute, onToggleSolo }) {
+function LayerRow({ layer, active, onSelect, onClose, onToggleMute, onToggleSolo, onSetMix }) {
   return (
     <div
       className={`sandbox-layer-row${active ? ' active' : ''}`}
@@ -46,8 +102,73 @@ function LayerRow({ layer, active, onSelect, onClose, onToggleMute, onToggleSolo
         endTime={layer.sourceEndTime}
       />
       <div className="sandbox-layer-meta">{formatMeta(layer)}</div>
+      <LayerMixRow layer={layer} onSetMix={onSetMix} />
       {layer.renderState === 'error' && (
         <div className="sandbox-layer-error" title={layer.error}>Render failed</div>
+      )}
+    </div>
+  )
+}
+
+const COMPOSITE_RENDER_LABEL = {
+  idle: 'RENDER COMPOSITE', rendering: 'Rendering…', ready: 'RE-RENDER', error: 'Render failed — retry',
+}
+const BAKE_COMPOSITE_LABEL = {
+  idle: 'BAKE TO NEW ASSET', baking: 'Baking…', baked: 'Baked ✓ — bake again', error: 'Bake failed — retry',
+}
+
+function CompositeSection() {
+  const layers = useSandboxStore((s) => s.layers)
+  const composite = useSandboxStore((s) => s.composite)
+  const bakeCompositeState = useSandboxStore((s) => s.bakeCompositeState)
+  const bakedAssets = useSandboxStore((s) => s.bakedAssets)
+  const renderComposite = useSandboxStore((s) => s.renderComposite)
+  const bakeComposite = useSandboxStore((s) => s.bakeComposite)
+  const addBakedAssetAsSource = useSandboxStore((s) => s.addBakedAssetAsSource)
+
+  const hasLayers = layers.length > 0
+  const buf = composite.renderedBuffer
+
+  return (
+    <div className="sandbox-composite-section">
+      <div className="sandbox-panel-header">Composite</div>
+      <div className="sandbox-composite-actions">
+        <button
+          className="sandbox-action-btn"
+          disabled={!hasLayers || composite.renderState === 'rendering'}
+          onClick={() => renderComposite()}
+          title="Mix every layer's current render by its gain/pan/offset/mute/solo"
+        >
+          {COMPOSITE_RENDER_LABEL[composite.renderState] ?? composite.renderState}
+        </button>
+        <button
+          className="sandbox-action-btn sandbox-action-btn--bake"
+          disabled={!hasLayers || bakeCompositeState === 'baking'}
+          onClick={() => bakeComposite()}
+          title="Render the composite and register it as a new sample asset (undoable)"
+        >
+          {BAKE_COMPOSITE_LABEL[bakeCompositeState] ?? bakeCompositeState}
+        </button>
+      </div>
+      {buf && (
+        <div className="sandbox-layer-meta">
+          {buf.layersMixed} layer{buf.layersMixed === 1 ? '' : 's'} mixed · {buf.numSamples} smp @ {Math.round(buf.sampleRate)} Hz
+        </div>
+      )}
+      {composite.error && <div className="sandbox-layer-error" title={composite.error}>{composite.error}</div>}
+      {bakedAssets.length > 0 && (
+        <div className="sandbox-baked-asset-list">
+          {bakedAssets.map((a) => (
+            <div key={a.sampleId} className="sandbox-baked-asset-row">
+              <span className="sandbox-baked-asset-name" title={a.name}>{a.name}</span>
+              <button
+                className="sandbox-mini-btn"
+                onClick={() => addBakedAssetAsSource(a.sampleId, a.name)}
+                title="Add this baked asset back into the workspace as a new source"
+              >+</button>
+            </div>
+          ))}
+        </div>
       )}
     </div>
   )
@@ -60,6 +181,7 @@ export default function SandboxSourcesPanel() {
   const closeLayer = useSandboxStore((s) => s.closeLayer)
   const toggleMute = useSandboxStore((s) => s.toggleMute)
   const toggleSolo = useSandboxStore((s) => s.toggleSolo)
+  const setLayerMix = useSandboxStore((s) => s.setLayerMix)
   const addSourceFromRegion = useSandboxStore((s) => s.addSourceFromRegion)
 
   const [dragOver, setDragOver] = useState(false)
@@ -99,6 +221,7 @@ export default function SandboxSourcesPanel() {
             onClose={closeLayer}
             onToggleMute={toggleMute}
             onToggleSolo={toggleSolo}
+            onSetMix={setLayerMix}
           />
         ))}
       </div>
@@ -111,6 +234,7 @@ export default function SandboxSourcesPanel() {
         <Plus size={16} />
         <span>Drag a sample here</span>
       </div>
+      <CompositeSection />
     </div>
   )
 }

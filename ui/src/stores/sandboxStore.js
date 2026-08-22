@@ -68,6 +68,11 @@ function makeLayer({ layerId, name, sourceBufferId, bufferSampleRate, region }) 
     ops: [],
     muted: false,
     soloed: false,
+    // Mix params (SB-5) — live OUTSIDE the op-stack, applied at composite time.
+    // Mirrors SandboxLayer's own defaults (SandboxCore.h).
+    gainDb: 0,
+    pan: 0,
+    offsetSamples: 0,
     renderState: 'idle', // 'idle' | 'rendering' | 'ready' | 'error'
     renderedBuffer: null, // { numChannels, numSamples, sampleRate, channels: Float32Array[] }
     bakeState: 'idle', // 'idle' | 'baking' | 'baked' | 'error'
@@ -83,6 +88,16 @@ const useSandboxStore = create((set, get) => ({
   activeTool: 'select',
   selection: null, // { startSample, endSample } in the active layer's rendered buffer
   clipboard: null, // { clipboardId, numSamples } — session-local, from copySelection/cutSelection
+
+  // ── Composite (SB-5) — mix of every layer's own render by its mix params ──
+  composite: {
+    renderState: 'idle', // 'idle' | 'rendering' | 'ready' | 'error'
+    renderedBuffer: null, // { numChannels, numSamples, sampleRate, channels: Float32Array[], layersMixed }
+    error: null,
+  },
+  bakeCompositeState: 'idle', // 'idle' | 'baking' | 'baked' | 'error'
+  bakeCompositeError: null,
+  bakedAssets: [], // [{ sampleId, name }] — this session's composite bakes, addable back as a source
 
   // ── Layer lifecycle ────────────────────────────────────────────────────
 
@@ -143,19 +158,63 @@ const useSandboxStore = create((set, get) => ({
     set({ activeLayerId: layerId, selection: null })
   },
 
-  // Local-only for now — SandboxCore has setLayerMuted/setLayerSoloed but SB-2
-  // does not expose them as RPC yet (only stack + open/close/render/bake are
-  // wired). Toggling here previews the intent in the UI without pretending
-  // the engine already knows about it.
+  // Bridge-backed mute/solo (SB-5) — same optimistic-after-confirm contract as
+  // every other mutator in this file: the bridge call happens first, and the
+  // local flag only flips once the engine accepts it.
+  async setLayerMuted(layerId, muted) {
+    try {
+      const res = await window.xleth?.sandbox?.setLayerMuted(layerId, muted)
+      if (!res?.success) throw new Error(res?.reason || 'setLayerMuted rejected')
+      set((state) => ({
+        layers: state.layers.map((l) => (l.id === layerId ? { ...l, muted } : l)),
+      }))
+    } catch (e) {
+      console.warn('[SampleSandbox] setLayerMuted failed:', e?.message || e)
+    }
+  },
   toggleMute(layerId) {
-    set((state) => ({
-      layers: state.layers.map((l) => (l.id === layerId ? { ...l, muted: !l.muted } : l)),
-    }))
+    const layer = get().layers.find((l) => l.id === layerId)
+    if (layer) get().setLayerMuted(layerId, !layer.muted)
+  },
+
+  async setLayerSoloed(layerId, soloed) {
+    try {
+      const res = await window.xleth?.sandbox?.setLayerSoloed(layerId, soloed)
+      if (!res?.success) throw new Error(res?.reason || 'setLayerSoloed rejected')
+      set((state) => ({
+        layers: state.layers.map((l) => (l.id === layerId ? { ...l, soloed } : l)),
+      }))
+    } catch (e) {
+      console.warn('[SampleSandbox] setLayerSoloed failed:', e?.message || e)
+    }
   },
   toggleSolo(layerId) {
-    set((state) => ({
-      layers: state.layers.map((l) => (l.id === layerId ? { ...l, soloed: !l.soloed } : l)),
-    }))
+    const layer = get().layers.find((l) => l.id === layerId)
+    if (layer) get().setLayerSoloed(layerId, !layer.soloed)
+  },
+
+  // Gain (dB) / pan (-1..1) / offset (ms, converted to samples at the layer's
+  // own bufferSampleRate) — mix params live OUTSIDE the op-stack, so this
+  // never triggers a re-render of the layer itself. `patch` may set any
+  // subset of { gainDb, pan, offsetMs }; omitted fields keep their current
+  // value.
+  async setLayerMix(layerId, patch) {
+    const layer = get().layers.find((l) => l.id === layerId)
+    if (!layer) return
+    const gainDb = patch.gainDb ?? layer.gainDb ?? 0
+    const pan = patch.pan ?? layer.pan ?? 0
+    const offsetSamples = patch.offsetMs != null
+      ? Math.round((patch.offsetMs / 1000) * (layer.bufferSampleRate || 0))
+      : (layer.offsetSamples ?? 0)
+    try {
+      const res = await window.xleth?.sandbox?.setLayerMix(layerId, gainDb, pan, offsetSamples)
+      if (!res?.success) throw new Error(res?.reason || 'setLayerMix rejected')
+      set((state) => ({
+        layers: state.layers.map((l) => (l.id === layerId ? { ...l, gainDb, pan, offsetSamples } : l)),
+      }))
+    } catch (e) {
+      console.warn('[SampleSandbox] setLayerMix failed:', e?.message || e)
+    }
   },
 
   // ── Selection / tool (canvas UI state) ─────────────────────────────────
@@ -465,6 +524,79 @@ const useSandboxStore = create((set, get) => ({
     } catch (e) {
       console.warn('[SampleSandbox] bake failed:', e?.message || e)
       get().patchLayer(layerId, { bakeState: 'error', error: e?.message || String(e) })
+    }
+  },
+
+  // ── Composite (SB-5) ────────────────────────────────────────────────────
+  // renderComposite mixes every CURRENT layer's own published render by its
+  // mix params — requires each layer to already be rendered (renderLayer /
+  // the auto-render every stack edit already triggers). bakeComposite renders
+  // fresh and registers a brand-new SampleBank asset in one undoable engine
+  // step; it does not read composite.renderedBuffer, so a bake is always the
+  // CURRENT state even if the preview hasn't been re-rendered since the last
+  // mix tweak.
+
+  async renderComposite() {
+    set((state) => ({ composite: { ...state.composite, renderState: 'rendering', error: null } }))
+    try {
+      const res = await window.xleth?.sandbox?.renderComposite()
+      if (!res?.ready) throw new Error(res?.reason || 'composite render rejected')
+      const channels = deinterleave(res.data, res.numChannels, res.numSamples)
+      set({
+        composite: {
+          renderState: 'ready',
+          renderedBuffer: {
+            numChannels: res.numChannels,
+            numSamples: res.numSamples,
+            sampleRate: res.sampleRate,
+            layersMixed: res.layersMixed,
+            channels,
+          },
+          error: null,
+        },
+      })
+    } catch (e) {
+      set({ composite: { renderState: 'error', renderedBuffer: null, error: e?.message || String(e) } })
+    }
+  },
+
+  async bakeComposite(name) {
+    set({ bakeCompositeState: 'baking', bakeCompositeError: null })
+    try {
+      const res = await window.xleth?.sandbox?.bakeComposite(name)
+      if (!res?.success) throw new Error(res?.reason || 'bakeComposite rejected')
+      set((state) => ({
+        bakeCompositeState: 'baked',
+        bakedAssets: [...state.bakedAssets, { sampleId: res.sampleId, name: res.name }],
+      }))
+      return res
+    } catch (e) {
+      console.warn('[SampleSandbox] bakeComposite failed:', e?.message || e)
+      set({ bakeCompositeState: 'error', bakeCompositeError: e?.message || String(e) })
+      return null
+    }
+  },
+
+  // Adds a baked asset back into the workspace as an ordinary new layer — the
+  // "(3) ... baked asset can be added back as a source" requirement. `sampleId`
+  // is already a SampleBank id (bakeComposite just registered it), so this
+  // skips addSourceFromRegion's loadSourceRegion step and calls sandbox.open
+  // directly, same as that function's own back half.
+  async addBakedAssetAsSource(sampleId, name) {
+    try {
+      const res = await window.xleth?.sandbox?.open(sampleId, name)
+      if (!res?.success) throw new Error(res?.reason || 'sandbox.open failed')
+      const layer = makeLayer({
+        layerId: res.layerId,
+        name: res.name,
+        sourceBufferId: res.sourceBufferId,
+        bufferSampleRate: res.bufferSampleRate,
+        region: null,
+      })
+      set((state) => ({ layers: [...state.layers, layer], activeLayerId: layer.id, selection: null }))
+      get().renderLayer(layer.id, 'open')
+    } catch (e) {
+      console.warn('[SampleSandbox] addBakedAssetAsSource failed:', e?.message || e)
     }
   },
 

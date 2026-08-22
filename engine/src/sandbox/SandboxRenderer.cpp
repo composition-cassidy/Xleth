@@ -276,6 +276,40 @@ SandboxBuffer applyCrossfade(const SandboxBuffer& in, const CrossfadeParams& p) 
     return dst;
 }
 
+// Constant-power pan, mirroring TrackMixer::applyPan's formula/convention
+// (engine/src/audio/TrackMixer.h) so a layer panned in the Sandbox sits at the
+// same apparent level as a track panned the same way on the main mixer. Kept
+// as a local formula rather than a link against the audio target, same reason
+// fadeCurve() above re-derives DeclickEnvelope's Hann curve instead of linking
+// against it.
+void panGains(double pan, float& gainL, float& gainR) noexcept {
+    const double angle = (std::clamp(pan, -1.0, 1.0) + 1.0) * (kPi * 0.25);
+    gainL = static_cast<float>(std::cos(angle));
+    gainR = static_cast<float>(std::sin(angle));
+}
+
+// Resamples `src` to `dstRate` with juce::LagrangeInterpolator, per channel —
+// the same approach SampleBank::loadSample uses to bring a source to the
+// engine rate. A cheap copy when the rates already agree (within 0.5 Hz, the
+// same tolerance SampleBank uses).
+SandboxBuffer resampleTo(const SandboxBuffer& src, double srcRate, double dstRate) {
+    if (srcRate <= 0.0 || dstRate <= 0.0 || std::abs(srcRate - dstRate) <= 0.5)
+        return SandboxBuffer(src);
+
+    const double speedRatio = srcRate / dstRate;
+    const int    srcSamples = src.getNumSamples();
+    const int    outSamples = static_cast<int>(std::ceil(static_cast<double>(srcSamples) / speedRatio));
+
+    SandboxBuffer dst(src.getNumChannels(), std::max(0, outSamples));
+    for (int ch = 0; ch < src.getNumChannels(); ++ch) {
+        juce::LagrangeInterpolator interp;
+        interp.reset();
+        interp.process(speedRatio, src.getReadPointer(ch), dst.getWritePointer(ch),
+                       outSamples, srcSamples, 0);
+    }
+    return dst;
+}
+
 } // namespace
 
 // ─── SandboxRenderKey ─────────────────────────────────────────────────────────
@@ -362,6 +396,81 @@ SandboxBuffer SandboxRenderer::applyOp(const SandboxBuffer& in,
             return in;
     }
     return in;
+}
+
+// ─── renderComposite — mix N layers by their mix params ──────────────────────
+
+SandboxCompositeResult SandboxRenderer::renderComposite(const std::vector<SandboxLayerMixInput>& layers) {
+    SandboxCompositeResult result;
+    if (layers.empty()) return result;
+
+    // Highest rate present wins, so mixing never throws away resolution —
+    // every OTHER layer is upsampled to meet it, never the reverse.
+    double compositeRate = 0.0;
+    for (const auto& l : layers)
+        if (l.buffer && l.buffer->getNumSamples() > 0 && l.bufferSampleRate > 0.0)
+            compositeRate = std::max(compositeRate, l.bufferSampleRate);
+    if (compositeRate <= 0.0) return result;   // nothing with real audio to mix
+
+    const bool anySoloed = std::any_of(layers.begin(), layers.end(),
+                                       [](const SandboxLayerMixInput& l) { return l.soloed; });
+
+    // Pass 1: span. Every layer with real audio contributes to the composite's
+    // LENGTH regardless of mute, so silencing a layer never shrinks the
+    // timeline out from under the others.
+    int64_t compositeLen = 0;
+    for (const auto& l : layers) {
+        if (!l.buffer || l.buffer->getNumSamples() <= 0 || l.bufferSampleRate <= 0.0) continue;
+        const int64_t startAt     = std::max<int64_t>(0, l.offsetSamples);
+        const double  rateRatio   = compositeRate / l.bufferSampleRate;
+        const int64_t placedLen   = static_cast<int64_t>(std::llround(l.buffer->getNumSamples() * rateRatio));
+        const int64_t placedStart = static_cast<int64_t>(std::llround(static_cast<double>(startAt) * rateRatio));
+        compositeLen = std::max(compositeLen, placedStart + placedLen);
+    }
+    if (compositeLen <= 0) return result;
+
+    SandboxBuffer out(2, static_cast<int>(compositeLen));
+    out.clear();
+
+    // Pass 2: sum the AUDIBLE layers. Mute always wins over solo for that one
+    // layer; otherwise, if anyone is soloed, only soloed layers sound.
+    for (const auto& l : layers) {
+        if (!l.buffer || l.buffer->getNumSamples() <= 0 || l.bufferSampleRate <= 0.0) continue;
+        if (l.muted || (anySoloed && !l.soloed)) continue;
+
+        const SandboxBuffer resampled = resampleTo(*l.buffer, l.bufferSampleRate, compositeRate);
+        const int srcLen = resampled.getNumSamples();
+        if (srcLen <= 0) continue;
+
+        const int64_t startAt     = std::max<int64_t>(0, l.offsetSamples);
+        const double  rateRatio   = compositeRate / l.bufferSampleRate;
+        const int64_t placedStart = static_cast<int64_t>(std::llround(static_cast<double>(startAt) * rateRatio));
+
+        const float gain = dbToGain(l.gainDb);
+        float gainL = 1.0f, gainR = 1.0f;
+        panGains(l.pan, gainL, gainR);
+
+        // A mono layer broadcasts to both output channels before panning —
+        // same idiom applyPaste uses for a mono clip against a stereo dest.
+        const int srcChannels = resampled.getNumChannels();
+        const float* srcL = resampled.getReadPointer(0);
+        const float* srcR = resampled.getReadPointer(srcChannels > 1 ? 1 : 0);
+
+        float* outL = out.getWritePointer(0);
+        float* outR = out.getWritePointer(1);
+
+        const int64_t writable = std::min<int64_t>(srcLen, compositeLen - placedStart);
+        for (int64_t i = 0; i < writable; ++i) {
+            const int64_t o = placedStart + i;
+            outL[o] += srcL[static_cast<int>(i)] * gain * gainL;
+            outR[o] += srcR[static_cast<int>(i)] * gain * gainR;
+        }
+        ++result.layersMixed;
+    }
+
+    result.buffer     = std::make_shared<const SandboxBuffer>(std::move(out));
+    result.sampleRate = compositeRate;
+    return result;
 }
 
 // ─── renderStack — the prefix walk ────────────────────────────────────────────

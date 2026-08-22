@@ -140,6 +140,69 @@
   font-size: 10px;
 }
 
+.sandbox-layer-mix-row {
+  display: flex;
+  gap: 6px;
+  margin-top: 4px;
+}
+
+.sandbox-mix-field {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  color: var(--theme-text-muted);
+  font-size: 9px;
+}
+
+.sandbox-mix-input {
+  width: 40px;
+  height: 16px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 0;
+  background: var(--theme-bg-surface);
+  color: var(--theme-text);
+  font-size: 9px;
+  padding: 0 2px;
+}
+
+.sandbox-composite-section {
+  flex: 0 0 auto;
+  border-top: 1px solid var(--theme-border-subtle);
+}
+
+.sandbox-composite-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px;
+}
+
+.sandbox-baked-asset-list {
+  padding: 0 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+
+.sandbox-baked-asset-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 3px 6px;
+  background: var(--theme-bg-surface);
+  border: 1px solid var(--theme-border-subtle);
+}
+
+.sandbox-baked-asset-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 10px;
+}
+
 .sandbox-add-source-zone {
   flex: 0 0 auto;
   margin: 8px;

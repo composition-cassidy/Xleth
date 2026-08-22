@@ -4,6 +4,7 @@
 #include "sandbox/SandboxCore.h"
 #include "sandbox/SandboxOp.h"
 
+#include <functional>
 #include <string>
 
 // ─── Sandbox undo commands ────────────────────────────────────────────────────
@@ -194,6 +195,127 @@ private:
     SandboxLayer removed_;
     int          removedIndex_ = -1;
     bool         accepted_     = false;
+};
+
+// ─── SetSandboxLayerMixCommand ────────────────────────────────────────────────
+// Whole-params replacement of a layer's gain/pan/offset, same drag contract as
+// SetSandboxOpParamsCommand: preview locally while dragging, push one of these
+// on release. Does NOT touch the op-stack or its dirty flags — mix params are
+// applied at composite time (SandboxRenderer::renderComposite), so this never
+// invalidates a cached per-layer render.
+
+class SetSandboxLayerMixCommand : public Command {
+public:
+    SetSandboxLayerMixCommand(SandboxCore& core, int layerId,
+                              double gainDb, double pan, int64_t offsetSamples);
+
+    void        execute(Timeline& timeline) override;
+    void        undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool        shouldRecordInUndoHistory() const override { return accepted_; }
+
+private:
+    SandboxCore& core_;
+    int          layerId_;
+    double       gainDb_;
+    double       pan_;
+    int64_t      offsetSamples_;
+    double       oldGainDb_        = 0.0;
+    double       oldPan_           = 0.0;
+    int64_t      oldOffsetSamples_ = 0;
+    bool         accepted_         = false;
+};
+
+// ─── SetSandboxLayerMutedCommand / SetSandboxLayerSoloedCommand ──────────────
+// One flag each, mirroring SetSandboxOpBypassedCommand. Neither touches the
+// op-stack — see the mix-params note above.
+
+class SetSandboxLayerMutedCommand : public Command {
+public:
+    SetSandboxLayerMutedCommand(SandboxCore& core, int layerId, bool muted);
+
+    void        execute(Timeline& timeline) override;
+    void        undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool        shouldRecordInUndoHistory() const override { return accepted_; }
+
+private:
+    SandboxCore& core_;
+    int          layerId_;
+    bool         muted_;
+    bool         accepted_ = false;
+};
+
+class SetSandboxLayerSoloedCommand : public Command {
+public:
+    SetSandboxLayerSoloedCommand(SandboxCore& core, int layerId, bool soloed);
+
+    void        execute(Timeline& timeline) override;
+    void        undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool        shouldRecordInUndoHistory() const override { return accepted_; }
+
+private:
+    SandboxCore& core_;
+    int          layerId_;
+    bool         soloed_;
+    bool         accepted_ = false;
+};
+
+// ─── BakeSandboxCompositeCommand ──────────────────────────────────────────────
+// Renders the current composite (every layer's own published render, mixed by
+// gain/pan/offset/mute/solo) and registers it as a brand-new SampleBank asset.
+// Never mutates or removes any layer's stack — strictly additive, exactly like
+// sandbox_bake is for a single layer.
+//
+// SandboxRenderer and SampleBank are Core-tier objects XlethEngineModel (which
+// owns this file) does not link against. Following LoadEffectChainCommand's
+// precedent (EffectChainCommands.h) for the identical situation, the actual
+// buffer-level work is injected as closures built by the bridge, where both
+// objects are nameable:
+//
+//   BakeFn    — computes the composite from the layer set captured at
+//               construction and registers it, returning the new sample id
+//               (or -1 when the composite is empty — e.g. every layer trimmed
+//               to zero length). Called ONLY by the first execute().
+//   UndoFn    — tombstones the asset this command created.
+//   RestoreFn — re-fills the tombstoned slot with the SAME content BakeFn
+//               produced. Called by every execute() AFTER the first, so a
+//               redo never re-renders the composite or mints a second asset
+//               for one undo step.
+//
+// LIFETIME: the closures typically capture the SampleBank/SandboxRenderer and
+// a small bag of the rendered composite buffer for RestoreFn — same lifetime
+// contract as LoadEffectChainCommand's captured MixEngine.
+
+class BakeSandboxCompositeCommand : public Command {
+public:
+    using BakeFn    = std::function<int()>;
+    using UndoFn    = std::function<void(int sampleId)>;
+    using RestoreFn = std::function<bool(int sampleId)>;
+
+    BakeSandboxCompositeCommand(std::string label, BakeFn bakeFn, UndoFn undoFn, RestoreFn restoreFn);
+
+    void        execute(Timeline& timeline) override;
+    void        undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool        shouldRecordInUndoHistory() const override { return accepted_; }
+
+    // The SampleBank id baked, or -1 if the composite was empty. Valid to read
+    // only when accepted_ was true at the time this command was pushed — see
+    // the dangling-cmdPtr note in XlethEngineService.cpp's sandbox section for
+    // why a caller that cannot guarantee acceptance in advance should capture
+    // the id through its OWN closure state instead of reading this back.
+    int bakedSampleId() const { return sampleId_; }
+
+private:
+    std::string label_;
+    BakeFn      bakeFn_;
+    UndoFn      undoFn_;
+    RestoreFn   restoreFn_;
+    int         sampleId_     = -1;
+    bool        everExecuted_ = false;
+    bool        accepted_     = false;
 };
 
 } // namespace xleth::sandbox

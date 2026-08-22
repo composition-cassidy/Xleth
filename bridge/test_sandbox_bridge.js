@@ -13,7 +13,8 @@
 // pattern applied to an earlier feature.
 //
 // Verifies, calling every sandbox_* method BY NAME:
-//   1. all ten exports exist on the built addon
+//   1. all exports exist on the built addon (the original ten, plus SB-5's
+//      setLayerMix/setLayerMuted/setLayerSoloed/renderComposite/bakeComposite)
 //   2. open → stackAdd (x2) → stackSetParam → stackSetBypassed → stackReorder
 //      → render → getRenderedBuffer (polled) → bake → stackRemove → close
 //      all report explicit {success:true}/{ready:true}, never undefined
@@ -22,6 +23,11 @@
 //      out-of-range reorder, a poll before anything has rendered
 //   4. getRenderedBuffer's `data` arrives as a real Buffer of the documented
 //      size (interleaved float32 PCM), not lost across the fork boundary
+//   5. SB-5: the deliverable fixture — 3 layers (plain / reversed / offset
+//      +12ms) mix into a composite of the expected length and a sane level,
+//      bake to a brand-new SampleBank asset addable back as a source, and
+//      that bake's undo/redo is verified through real sandbox_open calls
+//      against the SAME sampleId going tombstoned and live again
 //
 // Run after rebuilding the native addon:
 //   node bridge/test_sandbox_bridge.js
@@ -243,6 +249,149 @@ async function main() {
 
     const afterClose = fn.sandbox_getRenderedBuffer(layerId);
     ok(afterClose.ready === false, 'getRenderedBuffer after close reports not-ready, not stale data');
+  }
+
+  // ── 12. SB-5: layering + bake-to-new-asset ───────────────────────────────
+  group('SB-5 exports');
+  {
+    const sb5Names = [
+      'sandbox_setLayerMix', 'sandbox_setLayerMuted', 'sandbox_setLayerSoloed',
+      'sandbox_renderComposite', 'sandbox_bakeComposite',
+    ];
+    for (const n of sb5Names) { fn[n] = mustFn(n); ok(true, `addon.${n} is exported`); }
+  }
+
+  group('sandbox_setLayerMix / setLayerMuted / setLayerSoloed');
+  {
+    // `layerId` (from the ORIGINAL sandbox_open smoke section) was already
+    // closed by the sandbox_close group above — open a fresh layer for this
+    // one rather than reusing a stale id.
+    const opened = fn.sandbox_open(sourceRef, 'mix-smoke-layer');
+    ok(opened.success === true, `sandbox_open for the mix smoke section succeeds (${JSON.stringify(opened)})`);
+    const mixLayerId = opened.layerId;
+
+    const missing = fn.sandbox_setLayerMix(999999, -6, 0, 0);
+    ok(missing.success === false, `unknown layerId → success:false (${JSON.stringify(missing)})`);
+
+    const r = fn.sandbox_setLayerMix(mixLayerId, -3, 0.25, 100);
+    ok(r.success === true, `setLayerMix succeeds (${JSON.stringify(r)})`);
+
+    const noop = fn.sandbox_setLayerMix(mixLayerId, -3, 0.25, 100);
+    ok(noop.success === false, `writing the same mix again → success:false (${JSON.stringify(noop)})`);
+
+    const mute = fn.sandbox_setLayerMuted(mixLayerId, true);
+    ok(mute.success === true, `setLayerMuted succeeds (${JSON.stringify(mute)})`);
+    const muteAgain = fn.sandbox_setLayerMuted(mixLayerId, true);
+    ok(muteAgain.success === false, `re-muting an already-muted layer → success:false (${JSON.stringify(muteAgain)})`);
+    fn.sandbox_setLayerMuted(mixLayerId, false);   // restore
+
+    const solo = fn.sandbox_setLayerSoloed(mixLayerId, true);
+    ok(solo.success === true, `setLayerSoloed succeeds (${JSON.stringify(solo)})`);
+    fn.sandbox_setLayerSoloed(mixLayerId, false);   // restore
+    fn.sandbox_setLayerMix(mixLayerId, 0, 0, 0);    // restore
+
+    fn.sandbox_close(mixLayerId);
+  }
+
+  // The deliverable fixture: 3 layers (one plain, one REVERSED, one offset
+  // +12ms) → composite renders to the expected length/level, then bakes to a
+  // brand-new SampleBank asset that can be re-opened as a source; bake
+  // undo/redo is verified through the SAME sampleId going tombstoned and
+  // live again via real sandbox_open calls against it.
+  group('SB-5 fixture — 3 layers (plain / reversed / +12ms offset) → composite bake');
+  {
+    const open = (name) => {
+      const r = fn.sandbox_open(sourceRef, name);
+      if (!r.success) throw new Error(`sandbox_open(${name}) failed: ${JSON.stringify(r)}`);
+      return r;
+    };
+    const renderAndWait = async (id) => {
+      fn.sandbox_render(id, 'sb5-fixture');
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        const r = fn.sandbox_getRenderedBuffer(id);
+        if (r.ready) return r;
+        await sleep(25);
+      }
+      throw new Error(`layer ${id} did not render within 5s`);
+    };
+
+    const a = open('plain');
+    const b = open('reversed');
+    const c = open('offset+12ms');
+
+    const revOp = fn.sandbox_stackAdd(b.layerId, { type: 'reverse', params: { startSample: 0, endSample: -1 } });
+    ok(revOp.success === true, `stackAdd(reverse) on layer B succeeds (${JSON.stringify(revOp)})`);
+
+    const offsetSamples = Math.round(0.012 * a.bufferSampleRate);
+    const mixC = fn.sandbox_setLayerMix(c.layerId, 0, 0, offsetSamples);
+    ok(mixC.success === true, `setLayerMix(+12ms = ${offsetSamples} smp) on layer C succeeds (${JSON.stringify(mixC)})`);
+
+    const bufA = await renderAndWait(a.layerId);
+    const bufB = await renderAndWait(b.layerId);
+    const bufC = await renderAndWait(c.layerId);
+    ok(bufA.ready && bufB.ready && bufC.ready, 'all three layers rendered');
+
+    const composite = fn.sandbox_renderComposite();
+    ok(composite.ready === true,
+       `renderComposite succeeds (numSamples=${composite.numSamples}, layersMixed=${composite.layersMixed})`);
+    ok(composite.layersMixed === 3, `all 3 layers mixed (${composite.layersMixed})`);
+
+    const expectedLen = Math.max(bufA.numSamples, bufB.numSamples, offsetSamples + bufC.numSamples);
+    ok(composite.numSamples === expectedLen,
+       `composite length matches expectation: max(A, B, offset+C) = ${expectedLen} (got ${composite.numSamples})`);
+
+    let peak = 0;
+    const floatData = new Float32Array(
+      composite.data.buffer, composite.data.byteOffset, composite.data.length / 4);
+    for (let i = 0; i < floatData.length; i++) peak = Math.max(peak, Math.abs(floatData[i]));
+    ok(peak > 0 && peak < 4, `composite level is sane — non-silent, not runaway (peak=${peak.toFixed(4)})`);
+
+    const bake = fn.sandbox_bakeComposite('sb5-fixture-bake');
+    ok(bake.success === true, `bakeComposite succeeds (${JSON.stringify(bake)})`);
+    ok(bake.numSamples === expectedLen,
+       `baked asset length matches the composite (${bake.numSamples} vs ${expectedLen})`);
+    ok(typeof bake.sampleId === 'number' && bake.sampleId >= 0, `bakeComposite returns a new sampleId (${bake.sampleId})`);
+    const bakedSampleId = bake.sampleId;
+
+    // Verify undo/redo IMMEDIATELY after the bake, before anything else pushes
+    // its own undo-stack entry on top of it — sandbox_open(bakedSampleId, ...)
+    // to prove "add back as a source" is itself an undoable AddSandboxLayerCommand,
+    // so doing that FIRST would make undo_undo() below undo THAT instead of the
+    // bake. undo_undo/undo_redo are generic engine RPCs, not sandbox_*-prefixed,
+    // so they were never added to `fn` via mustFn() above — call them straight
+    // off the addon.
+    const undone = addon.undo_undo();
+    ok(undone === true, `undo_undo() undoes the bake (${undone})`);
+    const reopenAfterUndo = fn.sandbox_open(bakedSampleId, 'reopen-after-undo');
+    ok(reopenAfterUndo.success === false,
+       `after undo, the baked asset's slot is tombstoned — sandbox_open on it fails (${JSON.stringify(reopenAfterUndo)})`);
+
+    const redone = addon.undo_redo();
+    ok(redone === true, `undo_redo() redoes the bake (${redone})`);
+    const reopenAfterRedo = fn.sandbox_open(bakedSampleId, 'reopen-after-redo');
+    ok(reopenAfterRedo.success === true,
+       `after redo, the SAME sampleId is live again — and it can be added back as a source (${JSON.stringify(reopenAfterRedo)})`);
+    fn.sandbox_close(reopenAfterRedo.layerId);
+
+    fn.sandbox_close(a.layerId);
+    fn.sandbox_close(b.layerId);
+    fn.sandbox_close(c.layerId);
+  }
+
+  group('sandbox_renderComposite / sandbox_bakeComposite rejection paths');
+  {
+    const noLayers = fn.sandbox_renderComposite();
+    ok(noLayers.ready === false, `renderComposite with no layers → ready:false (${JSON.stringify(noLayers)})`);
+
+    const noLayersBake = fn.sandbox_bakeComposite();
+    ok(noLayersBake.success === false, `bakeComposite with no layers → success:false (${JSON.stringify(noLayersBake)})`);
+
+    const fresh = fn.sandbox_open(sourceRef, 'unrendered-fixture');
+    const notRendered = fn.sandbox_renderComposite();
+    ok(notRendered.ready === false && typeof notRendered.reason === 'string',
+       `an unrendered layer blocks the composite (${JSON.stringify(notRendered)})`);
+    fn.sandbox_close(fresh.layerId);
   }
 
   // ── Teardown ─────────────────────────────────────────────────────────────

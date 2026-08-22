@@ -10988,6 +10988,280 @@ JsonApi::Value Sandbox_CopySelection(const JsonApi::CallbackInfo& info)
     return out;
 }
 
+// sandbox_setLayerMix(layerId: number, gainDb: number, pan: number, offsetSamples: number)
+//   → { success[, reason] }
+// Layer-level mix params live OUTSIDE the op-stack (SandboxCore.h) — this does
+// NOT dirty the stack or invalidate a cached per-layer render; it only changes
+// how the layer is weighted at composite time. Undoable: SetSandboxLayerMixCommand.
+JsonApi::Value Sandbox_SetLayerMix(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!sandboxReady()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 4 || !info[0].IsNumber() || !info[1].IsNumber()
+        || !info[2].IsNumber() || !info[3].IsNumber()) {
+        JsonApi::TypeError::New(env,
+            "sandbox_setLayerMix(layerId: number, gainDb: number, pan: number, offsetSamples: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int     layerId       = info[0].As<JsonApi::Number>().Int32Value();
+    const double  gainDb        = info[1].As<JsonApi::Number>().DoubleValue();
+    const double  pan           = info[2].As<JsonApi::Number>().DoubleValue();
+    const int64_t offsetSamples = static_cast<int64_t>(info[3].As<JsonApi::Number>().DoubleValue());
+
+    const xleth::sandbox::SandboxLayer* layer = g_sandboxCore->findLayer(layerId);
+    if (!layer) return sandboxFail(env, "layer not found");
+    // Mirrors SandboxCore::setLayerMix's own no-op condition exactly, so the
+    // command below is guaranteed accepted by the time it is built.
+    if (layer->gainDb == gainDb && layer->pan == pan && layer->offsetSamples == offsetSamples)
+        return sandboxFail(env, "not an edit");
+
+    BridgeCallLog log("sandbox.setLayerMix");
+    g_undoManager->execute(
+        std::make_unique<xleth::sandbox::SetSandboxLayerMixCommand>(
+            *g_sandboxCore, layerId, gainDb, pan, offsetSamples),
+        *g_timeline);
+    log.done();
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("success", JsonApi::Boolean::New(env, true));
+    return out;
+}
+
+// sandbox_setLayerMuted(layerId: number, muted: boolean) → { success[, reason] }
+// Undoable: SetSandboxLayerMutedCommand.
+JsonApi::Value Sandbox_SetLayerMuted(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!sandboxReady()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsBoolean()) {
+        JsonApi::TypeError::New(env, "sandbox_setLayerMuted(layerId: number, muted: boolean)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int  layerId = info[0].As<JsonApi::Number>().Int32Value();
+    const bool muted    = info[1].As<JsonApi::Boolean>().Value();
+
+    const xleth::sandbox::SandboxLayer* layer = g_sandboxCore->findLayer(layerId);
+    if (!layer) return sandboxFail(env, "layer not found");
+    if (layer->muted == muted) return sandboxFail(env, muted ? "already muted" : "already unmuted");
+
+    BridgeCallLog log("sandbox.setLayerMuted");
+    g_undoManager->execute(
+        std::make_unique<xleth::sandbox::SetSandboxLayerMutedCommand>(*g_sandboxCore, layerId, muted),
+        *g_timeline);
+    log.done();
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("success", JsonApi::Boolean::New(env, true));
+    return out;
+}
+
+// sandbox_setLayerSoloed(layerId: number, soloed: boolean) → { success[, reason] }
+// Undoable: SetSandboxLayerSoloedCommand.
+JsonApi::Value Sandbox_SetLayerSoloed(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!sandboxReady()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsBoolean()) {
+        JsonApi::TypeError::New(env, "sandbox_setLayerSoloed(layerId: number, soloed: boolean)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int  layerId = info[0].As<JsonApi::Number>().Int32Value();
+    const bool soloed   = info[1].As<JsonApi::Boolean>().Value();
+
+    const xleth::sandbox::SandboxLayer* layer = g_sandboxCore->findLayer(layerId);
+    if (!layer) return sandboxFail(env, "layer not found");
+    if (layer->soloed == soloed) return sandboxFail(env, soloed ? "already soloed" : "already unsoloed");
+
+    BridgeCallLog log("sandbox.setLayerSoloed");
+    g_undoManager->execute(
+        std::make_unique<xleth::sandbox::SetSandboxLayerSoloedCommand>(*g_sandboxCore, layerId, soloed),
+        *g_timeline);
+    log.done();
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("success", JsonApi::Boolean::New(env, true));
+    return out;
+}
+
+// sandbox_renderComposite()
+//   → { ready:true, numChannels, numSamples, sampleRate, layersMixed, data: Buffer }
+//   → { ready:false, reason }
+// Mixes every layer's CURRENT published render by its mix params (gain/pan/
+// offset/mute/solo) — the (4) "solo/mute in playback preview" primitive.
+// Computed synchronously: it is pure summation over buffers SandboxRenderer's
+// worker pool already produced, never audio-thread DSP, so there is no async
+// job to poll for. Requires every layer to already be rendered — call
+// sandbox_render (and poll sandbox_getRenderedBuffer) for each layer first.
+JsonApi::Value Sandbox_RenderComposite(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!sandboxReady()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    auto readyFail = [&](const std::string& reason) {
+        JsonApi::Object out = JsonApi::Object::New(env);
+        out.Set("ready",  JsonApi::Boolean::New(env, false));
+        out.Set("reason", JsonApi::String::New(env, reason));
+        return out;
+    };
+
+    const auto& layers = g_sandboxCore->layers();
+    if (layers.empty()) return readyFail("no layers");
+
+    std::vector<xleth::sandbox::SandboxLayerMixInput> mixInputs;
+    mixInputs.reserve(layers.size());
+    for (const auto& l : layers) {
+        xleth::sandbox::SandboxBufferPtr buf = g_sandboxRenderer->publishedOutput(l.id);
+        if (!buf) return readyFail("layer \"" + l.name + "\" not rendered yet");
+        mixInputs.push_back({ buf, l.bufferSampleRate, l.gainDb, l.pan, l.offsetSamples, l.muted, l.soloed });
+    }
+
+    BridgeCallLog log("sandbox.renderComposite");
+    const auto composite = xleth::sandbox::SandboxRenderer::renderComposite(mixInputs);
+    if (!composite.valid()) {
+        log.done("empty");
+        return readyFail("composite is empty");
+    }
+    log.done(std::to_string(composite.buffer->getNumSamples()));
+
+    const int numChannels = composite.buffer->getNumChannels();
+    const int numSamples  = composite.buffer->getNumSamples();
+    std::vector<float> interleaved(static_cast<size_t>(numChannels) * static_cast<size_t>(numSamples));
+    for (int ch = 0; ch < numChannels; ++ch) {
+        const float* chanData = composite.buffer->getReadPointer(ch);
+        for (int i = 0; i < numSamples; ++i)
+            interleaved[static_cast<size_t>(i) * static_cast<size_t>(numChannels) + static_cast<size_t>(ch)]
+                = chanData[i];
+    }
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("ready",       JsonApi::Boolean::New(env, true));
+    out.Set("numChannels", JsonApi::Number::New(env, numChannels));
+    out.Set("numSamples",  JsonApi::Number::New(env, numSamples));
+    out.Set("sampleRate",  JsonApi::Number::New(env, composite.sampleRate));
+    out.Set("layersMixed", JsonApi::Number::New(env, composite.layersMixed));
+    out.Set("data",        JsonApi::Buffer<float>::Copy(env, interleaved.data(), interleaved.size()));
+    return out;
+}
+
+// sandbox_bakeComposite(name?: string)
+//   → { success, sampleId, name, numChannels, numSamples, sampleRate }
+//   → { success:false, reason }
+// Renders the CURRENT composite (every layer, current mix params) and
+// registers it as a brand-new SampleBank asset — never touches any layer's
+// stack. Requires every layer to already be rendered (same precondition as
+// sandbox_renderComposite). Undoable: BakeSandboxCompositeCommand — undo
+// tombstones the new asset, redo restores the exact same content at the same
+// id rather than re-rendering. The new asset can be added back into the
+// workspace as an ordinary layer via sandbox_open(sampleId).
+//
+// The baked sample id is read back through `state->sampleId`, a shared_ptr
+// THIS function still holds directly — not through the command pointer. A
+// bake CAN legitimately be rejected (every layer trimmed to zero length), and
+// per this file's own dangling-cmdPtr rule (see the sandbox section's header
+// comment), a rejected command is destroyed inside g_undoManager->execute()
+// before it returns, so reading a raw command pointer back in that case would
+// be a use-after-free. The closures' captured `state` has no such lifetime
+// dependency.
+JsonApi::Value Sandbox_BakeComposite(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!sandboxReady()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    const auto& layers = g_sandboxCore->layers();
+    if (layers.empty()) return sandboxFail(env, "no layers to bake");
+
+    std::vector<xleth::sandbox::SandboxLayerMixInput> mixInputs;
+    mixInputs.reserve(layers.size());
+    std::string firstLayerName;
+    for (const auto& l : layers) {
+        xleth::sandbox::SandboxBufferPtr buf = g_sandboxRenderer->publishedOutput(l.id);
+        if (!buf) return sandboxFail(env, ("layer \"" + l.name + "\" not rendered yet").c_str());
+        if (firstLayerName.empty()) firstLayerName = l.name;
+        mixInputs.push_back({ buf, l.bufferSampleRate, l.gainDb, l.pan, l.offsetSamples, l.muted, l.soloed });
+    }
+
+    const std::string requestedName = (info.Length() >= 1 && info[0].IsString())
+        ? info[0].As<JsonApi::String>().Utf8Value()
+        : (firstLayerName.empty() ? "Sandbox Composite" : firstLayerName + " (composite)");
+
+    auto mixInputsPtr = std::make_shared<std::vector<xleth::sandbox::SandboxLayerMixInput>>(std::move(mixInputs));
+
+    struct BakeState {
+        xleth::sandbox::SandboxBufferPtr buffer;
+        double      sampleRate = 0.0;
+        std::string name;
+        int         sampleId   = -1;
+    };
+    auto state = std::make_shared<BakeState>();
+
+    xleth::sandbox::BakeSandboxCompositeCommand::BakeFn bakeFn =
+        [mixInputsPtr, requestedName, state]() -> int {
+            const auto composite = xleth::sandbox::SandboxRenderer::renderComposite(*mixInputsPtr);
+            if (!composite.valid()) { state->sampleId = -1; return -1; }
+            const int id = sampleBank->addSampleFromBuffer(*composite.buffer, composite.sampleRate, requestedName);
+            if (id < 0) { state->sampleId = -1; return -1; }
+            state->buffer     = composite.buffer;
+            state->sampleRate = composite.sampleRate;
+            state->name       = sampleBank->getSampleInfo(id).name.toStdString();
+            state->sampleId   = id;
+            return id;
+        };
+    xleth::sandbox::BakeSandboxCompositeCommand::UndoFn undoFn =
+        [](int sampleId) { sampleBank->unloadSample(sampleId); };
+    xleth::sandbox::BakeSandboxCompositeCommand::RestoreFn restoreFn =
+        [state](int sampleId) -> bool {
+            if (!state->buffer) return false;
+            SampleBank::SampleInfo info;
+            info.name               = juce::String(state->name);
+            info.numChannels        = state->buffer->getNumChannels();
+            info.numSamples         = state->buffer->getNumSamples();
+            info.originalSampleRate = state->sampleRate;
+            info.bufferSampleRate   = state->sampleRate;
+            return sampleBank->restoreSample(sampleId, *state->buffer, info);
+        };
+
+    BridgeCallLog log("sandbox.bakeComposite");
+    g_undoManager->execute(
+        std::make_unique<xleth::sandbox::BakeSandboxCompositeCommand>(
+            requestedName, std::move(bakeFn), std::move(undoFn), std::move(restoreFn)),
+        *g_timeline);
+
+    const int sampleId = state->sampleId;
+    if (sampleId < 0) {
+        log.done("failed");
+        return sandboxFail(env, "composite is empty");
+    }
+    log.done(std::to_string(sampleId));
+
+    const SampleBank::SampleInfo bakedInfo = sampleBank->getSampleInfo(sampleId);
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("success",     JsonApi::Boolean::New(env, true));
+    out.Set("sampleId",    JsonApi::Number::New(env, sampleId));
+    out.Set("name",        JsonApi::String::New(env, bakedInfo.name.toStdString()));
+    out.Set("numChannels", JsonApi::Number::New(env, bakedInfo.numChannels));
+    out.Set("numSamples",  JsonApi::Number::New(env, bakedInfo.numSamples));
+    out.Set("sampleRate",  JsonApi::Number::New(env, bakedInfo.bufferSampleRate));
+    return out;
+}
+
 // timeline_autoLoopForSelection(regionId, selStart?, selEnd?, slotIndex?)
 //   → { valid, loopStart, loopEnd, crossfadeSamples, period, periodMultiple,
 //       spanDriftCents, driftCutCents, spansConsidered, spansKept, longestSpan,

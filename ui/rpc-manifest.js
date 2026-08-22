@@ -2554,6 +2554,55 @@ const METHODS = [
     binary: null,
   },
 
+  // ── Sample Sandbox layering + bake (SB-5) ──────────────────────────────────
+  // Layer mix params (gain/pan/offset/mute/solo) live OUTSIDE the op-stack, so
+  // none of these three dirty a layer's render. Composite render/bake mix every
+  // layer's own published render by those params — see SandboxRenderer::
+  // renderComposite. sandbox_bakeComposite is undoable (BakeSandboxCompositeCommand);
+  // sandbox_renderComposite is not, same reasoning as sandbox_render.
+  {
+    method: 'sandbox_setLayerMix',
+    channels: ['xleth:sandbox:setLayerMix'],
+    api: { 'sandbox.setLayerMix': 'xleth:sandbox:setLayerMix' },
+    handler: 'Sandbox_SetLayerMix',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'sandbox_setLayerMuted',
+    channels: ['xleth:sandbox:setLayerMuted'],
+    api: { 'sandbox.setLayerMuted': 'xleth:sandbox:setLayerMuted' },
+    handler: 'Sandbox_SetLayerMuted',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'sandbox_setLayerSoloed',
+    channels: ['xleth:sandbox:setLayerSoloed'],
+    api: { 'sandbox.setLayerSoloed': 'xleth:sandbox:setLayerSoloed' },
+    handler: 'Sandbox_SetLayerSoloed',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // data: interleaved float32 PCM as a real Buffer — same transport as
+    // sandbox_getRenderedBuffer.
+    method: 'sandbox_renderComposite',
+    channels: ['xleth:sandbox:renderComposite'],
+    api: { 'sandbox.renderComposite': 'xleth:sandbox:renderComposite' },
+    handler: 'Sandbox_RenderComposite',
+    returns: 'value',
+    binary: 'sandboxBuffer',
+  },
+  {
+    method: 'sandbox_bakeComposite',
+    channels: ['xleth:sandbox:bakeComposite'],
+    api: { 'sandbox.bakeComposite': 'xleth:sandbox:bakeComposite' },
+    handler: 'Sandbox_BakeComposite',
+    returns: 'value',
+    binary: null,
+  },
+
 ];
 
 // Binary kinds addon-worker.js knows how to transport. A manifest entry with

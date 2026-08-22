@@ -218,4 +218,97 @@ std::string RemoveSandboxLayerCommand::describe() const {
          : "Remove Sandbox Layer";
 }
 
+// ─── SetSandboxLayerMixCommand ────────────────────────────────────────────────
+
+SetSandboxLayerMixCommand::SetSandboxLayerMixCommand(SandboxCore& core, int layerId,
+                                                     double gainDb, double pan, int64_t offsetSamples)
+    : core_(core), layerId_(layerId), gainDb_(gainDb), pan_(pan), offsetSamples_(offsetSamples) {}
+
+void SetSandboxLayerMixCommand::execute(Timeline&) {
+    const SandboxLayer* layer = core_.findLayer(layerId_);
+    if (layer == nullptr) { accepted_ = false; return; }
+
+    // Capture on every execute, not just the first — the redo path must
+    // restore whatever was there immediately before this step ran.
+    oldGainDb_        = layer->gainDb;
+    oldPan_            = layer->pan;
+    oldOffsetSamples_  = layer->offsetSamples;
+    accepted_ = core_.setLayerMix(layerId_, gainDb_, pan_, offsetSamples_);
+}
+
+void SetSandboxLayerMixCommand::undo(Timeline&) {
+    if (!accepted_) return;
+    core_.setLayerMix(layerId_, oldGainDb_, oldPan_, oldOffsetSamples_);
+}
+
+std::string SetSandboxLayerMixCommand::describe() const {
+    return "Edit Layer Mix";
+}
+
+// ─── SetSandboxLayerMutedCommand ──────────────────────────────────────────────
+
+SetSandboxLayerMutedCommand::SetSandboxLayerMutedCommand(SandboxCore& core, int layerId, bool muted)
+    : core_(core), layerId_(layerId), muted_(muted) {}
+
+void SetSandboxLayerMutedCommand::execute(Timeline&) {
+    accepted_ = core_.setLayerMuted(layerId_, muted_);
+}
+
+void SetSandboxLayerMutedCommand::undo(Timeline&) {
+    if (!accepted_) return;
+    core_.setLayerMuted(layerId_, !muted_);
+}
+
+std::string SetSandboxLayerMutedCommand::describe() const {
+    return muted_ ? "Mute Layer" : "Unmute Layer";
+}
+
+// ─── SetSandboxLayerSoloedCommand ─────────────────────────────────────────────
+
+SetSandboxLayerSoloedCommand::SetSandboxLayerSoloedCommand(SandboxCore& core, int layerId, bool soloed)
+    : core_(core), layerId_(layerId), soloed_(soloed) {}
+
+void SetSandboxLayerSoloedCommand::execute(Timeline&) {
+    accepted_ = core_.setLayerSoloed(layerId_, soloed_);
+}
+
+void SetSandboxLayerSoloedCommand::undo(Timeline&) {
+    if (!accepted_) return;
+    core_.setLayerSoloed(layerId_, !soloed_);
+}
+
+std::string SetSandboxLayerSoloedCommand::describe() const {
+    return soloed_ ? "Solo Layer" : "Unsolo Layer";
+}
+
+// ─── BakeSandboxCompositeCommand ──────────────────────────────────────────────
+
+BakeSandboxCompositeCommand::BakeSandboxCompositeCommand(std::string label, BakeFn bakeFn,
+                                                         UndoFn undoFn, RestoreFn restoreFn)
+    : label_(std::move(label)),
+      bakeFn_(std::move(bakeFn)),
+      undoFn_(std::move(undoFn)),
+      restoreFn_(std::move(restoreFn)) {}
+
+void BakeSandboxCompositeCommand::execute(Timeline&) {
+    if (!everExecuted_) {
+        everExecuted_ = true;
+        sampleId_ = bakeFn_ ? bakeFn_() : -1;
+        accepted_ = sampleId_ >= 0;
+        return;
+    }
+    // Redo: refill the exact same slot rather than re-rendering the composite
+    // and minting a second asset for one undo step.
+    accepted_ = accepted_ && sampleId_ >= 0 && restoreFn_ && restoreFn_(sampleId_);
+}
+
+void BakeSandboxCompositeCommand::undo(Timeline&) {
+    if (!accepted_ || sampleId_ < 0) return;
+    if (undoFn_) undoFn_(sampleId_);
+}
+
+std::string BakeSandboxCompositeCommand::describe() const {
+    return label_.empty() ? "Bake Sandbox Composite" : "Bake \"" + label_ + "\"";
+}
+
 } // namespace xleth::sandbox
