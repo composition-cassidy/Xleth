@@ -79,7 +79,7 @@ struct HashVisitor {
                                 p.clipboardLengthSamples), p.insert);
     }
     uint64_t operator()(const SpliceParams& p) const {
-        return hashI32(hashI64(h, p.atSample), static_cast<int32_t>(p.mode));
+        return hashI64(hashI32(hashI64(h, p.atSample), static_cast<int32_t>(p.mode)), p.gapSamples);
     }
     uint64_t operator()(const ReverseParams& p) const {
         return hashI64(hashI64(h, p.startSample), p.endSample);
@@ -117,7 +117,8 @@ struct ToJsonVisitor {
                  {"clipboardLengthSamples", p.clipboardLengthSamples}, {"insert", p.insert} };
     }
     nlohmann::json operator()(const SpliceParams& p) const {
-        return { {"atSample", p.atSample}, {"mode", static_cast<int>(p.mode)} };
+        return { {"atSample", p.atSample}, {"mode", static_cast<int>(p.mode)},
+                 {"gapSamples", p.gapSamples} };
     }
     nlohmann::json operator()(const ReverseParams& p) const {
         return { {"startSample", p.startSample}, {"endSample", p.endSample} };
@@ -176,8 +177,9 @@ struct FromJsonVisitor {
         p.insert                 = readField<bool>(j, "insert", p.insert);
     }
     void operator()(SpliceParams& p) const {
-        p.atSample = readField<int64_t>(j, "atSample", p.atSample);
-        p.mode = static_cast<SandboxRippleMode>(readEnum(j, "mode", static_cast<int>(p.mode), 0, 1));
+        p.atSample   = readField<int64_t>(j, "atSample",   p.atSample);
+        p.mode       = static_cast<SandboxRippleMode>(readEnum(j, "mode", static_cast<int>(p.mode), 0, 1));
+        p.gapSamples = readField<int64_t>(j, "gapSamples", p.gapSamples);
     }
     void operator()(ReverseParams& p) const {
         p.startSample = readField<int64_t>(j, "startSample", p.startSample);
@@ -186,7 +188,7 @@ struct FromJsonVisitor {
     void operator()(FadeParams& p) const {
         p.startSample   = readField<int64_t>(j, "startSample",   p.startSample);
         p.lengthSamples = readField<int64_t>(j, "lengthSamples", p.lengthSamples);
-        p.shape  = static_cast<SandboxFadeShape>(readEnum(j, "shape", static_cast<int>(p.shape), 0, 4));
+        p.shape  = static_cast<SandboxFadeShape>(readEnum(j, "shape", static_cast<int>(p.shape), 0, 5));
         p.fadeIn = readField<bool>(j, "fadeIn", p.fadeIn);
     }
     void operator()(GainParams& p) const {
@@ -199,7 +201,7 @@ struct FromJsonVisitor {
     void operator()(CrossfadeParams& p) const {
         p.atSample      = readField<int64_t>(j, "atSample",      p.atSample);
         p.lengthSamples = readField<int64_t>(j, "lengthSamples", p.lengthSamples);
-        p.shape = static_cast<SandboxFadeShape>(readEnum(j, "shape", static_cast<int>(p.shape), 0, 4));
+        p.shape = static_cast<SandboxFadeShape>(readEnum(j, "shape", static_cast<int>(p.shape), 0, 5));
     }
     void operator()(PitchParams& p) const {
         p.cents           = readField<double>(j, "cents", p.cents);
@@ -263,15 +265,14 @@ bool SandboxOp::implemented() const noexcept {
     switch (type) {
         case SandboxOpType::Trim:
         case SandboxOpType::Cut:
+        case SandboxOpType::Paste:
+        case SandboxOpType::Splice:
         case SandboxOpType::Reverse:
         case SandboxOpType::Fade:
         case SandboxOpType::Gain:
-            return true;
-        // DSP deferred: Paste/Splice/Crossfade land with the core edit ops
-        // (SB-4), Pitch/Stretch when the stretch engines are wired in.
-        case SandboxOpType::Paste:
-        case SandboxOpType::Splice:
         case SandboxOpType::Crossfade:
+            return true;
+        // DSP deferred until the stretch engines are wired in.
         case SandboxOpType::Pitch:
         case SandboxOpType::Stretch:
             return false;
@@ -295,7 +296,19 @@ int64_t SandboxOp::outputLength(int64_t inputLength) const noexcept {
             if (p.mode == SandboxRippleMode::Gap) return inputLength;
             return inputLength - (r.end - r.start);
         }
-        // Reverse / Fade / Gain are all in-place.
+        case SandboxOpType::Paste: {
+            const auto& p = std::get<PasteParams>(params);
+            const int64_t insLen = std::max<int64_t>(0, p.clipboardLengthSamples);
+            // Overwrite never changes length, even past the buffer end — the
+            // renderer clamps what actually gets written, same as GAIN/FADE.
+            return p.insert ? inputLength + insLen : inputLength;
+        }
+        case SandboxOpType::Splice: {
+            const auto& p = std::get<SpliceParams>(params);
+            if (p.mode != SandboxRippleMode::Gap) return inputLength;
+            return inputLength + std::max<int64_t>(0, p.gapSamples);
+        }
+        // Reverse / Fade / Gain / Crossfade are all in-place.
         default:
             return inputLength;
     }

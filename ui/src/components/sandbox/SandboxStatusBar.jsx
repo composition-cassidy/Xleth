@@ -12,6 +12,7 @@ const RENDER_STATE_LABEL = {
 export default function SandboxStatusBar() {
   const layers = useSandboxStore((s) => s.layers)
   const activeLayerId = useSandboxStore((s) => s.activeLayerId)
+  const clipboard = useSandboxStore((s) => s.clipboard)
   const layer = layers.find((l) => l.id === activeLayerId) ?? null
 
   const renderState = layer ? RENDER_STATE_LABEL[layer.renderState] ?? layer.renderState : '—'
@@ -33,6 +34,9 @@ export default function SandboxStatusBar() {
         </span>
         <span className="sandbox-status-item">Buffer: {bufferRate}</span>
         <span className="sandbox-status-item">Undo depth: {undoDepth}</span>
+        <span className="sandbox-status-item">
+          Clipboard: {clipboard ? `${clipboard.numSamples} smp` : 'empty'}
+        </span>
       </div>
     </div>
   )

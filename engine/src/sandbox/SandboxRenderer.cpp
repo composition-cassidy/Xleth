@@ -43,6 +43,10 @@ float fadeCurve(SandboxFadeShape shape, double t) noexcept {
         case SandboxFadeShape::Exponential: return static_cast<float>(t * t);
         case SandboxFadeShape::Logarithmic: return static_cast<float>(1.0 - (1.0 - t) * (1.0 - t));
         case SandboxFadeShape::SCurve:      return static_cast<float>(t * t * (3.0 - 2.0 * t));
+        // Same raised-cosine ramp as dsp::DeclickEnvelope::sLut — kept as an
+        // explicit formula (rather than a link against XlethEngineModel's dsp
+        // target) so this file's only dependency stays JUCE + <cmath>.
+        case SandboxFadeShape::Hann:        return static_cast<float>(0.5 - 0.5 * std::cos(t * kPi));
     }
     return static_cast<float>(t);
 }
@@ -168,6 +172,110 @@ SandboxBuffer applyGain(const SandboxBuffer& in, const GainParams& p) {
     return dst;
 }
 
+// `clipboard` is the resolved buffer for p.clipboardId, or nullptr — nullptr
+// covers both clipboardId == -1 (explicit INSERT SILENCE) and a stale id that
+// no longer resolves, deliberately the same code path. clipboardLengthSamples
+// is authoritative for how much material to place regardless of what the
+// resolved buffer's own length happens to be, so a mismatched or short
+// clipboard buffer zero-pads rather than shrinking the edit.
+SandboxBuffer applyPaste(const SandboxBuffer& in, const PasteParams& p, const SandboxBuffer* clipboard) {
+    const int64_t len    = in.getNumSamples();
+    const int64_t insLen = std::max<int64_t>(0, p.clipboardLengthSamples);
+    const int64_t at     = std::clamp<int64_t>(p.atSample, 0, len);
+
+    auto writeMaterial = [&](SandboxBuffer& dst, int64_t destStart, int64_t count) {
+        if (count <= 0) return;
+        if (clipboard != nullptr) {
+            const int64_t copyLen = std::min<int64_t>(count, clipboard->getNumSamples());
+            for (int ch = 0; ch < dst.getNumChannels(); ++ch) {
+                // A mono clip broadcasts to every output channel; extra clip
+                // channels beyond dst's are simply not read.
+                const int srcCh = std::min(ch, clipboard->getNumChannels() - 1);
+                if (copyLen > 0)
+                    dst.copyFrom(ch, static_cast<int>(destStart), *clipboard, srcCh, 0,
+                                 static_cast<int>(copyLen));
+            }
+        }
+        // else: dst was already zero-initialized where it needs to be — see
+        // call sites below — so "no clipboard" already reads as silence.
+    };
+
+    if (p.insert) {
+        SandboxBuffer dst = makeBuffer(in.getNumChannels(), len + insLen);
+        for (int ch = 0; ch < in.getNumChannels(); ++ch) {
+            if (at > 0)
+                dst.copyFrom(ch, 0, in, ch, 0, static_cast<int>(at));
+            if (len - at > 0)
+                dst.copyFrom(ch, static_cast<int>(at + insLen), in, ch,
+                             static_cast<int>(at), static_cast<int>(len - at));
+        }
+        writeMaterial(dst, at, insLen);
+        return dst;
+    }
+
+    // Overwrite: length unchanged, writes clamped to the buffer's own end.
+    SandboxBuffer dst(in);
+    const int64_t writable = std::clamp<int64_t>(insLen, 0, len - at);
+    if (writable > 0)
+        for (int ch = 0; ch < dst.getNumChannels(); ++ch)
+            dst.clear(ch, static_cast<int>(at), static_cast<int>(writable));
+    writeMaterial(dst, at, writable);
+    return dst;
+}
+
+// Split at atSample and swap the two halves. Ripple abuts tail directly
+// against head; Gap inserts gapSamples of silence at the new seam.
+SandboxBuffer applySplice(const SandboxBuffer& in, const SpliceParams& p) {
+    const int64_t len  = in.getNumSamples();
+    const int64_t at   = std::clamp<int64_t>(p.atSample, 0, len);
+    const int64_t head = at;
+    const int64_t tail = len - at;
+    const int64_t gap  = (p.mode == SandboxRippleMode::Gap) ? std::max<int64_t>(0, p.gapSamples) : 0;
+
+    SandboxBuffer dst = makeBuffer(in.getNumChannels(), tail + gap + head);
+    for (int ch = 0; ch < in.getNumChannels(); ++ch) {
+        if (tail > 0)
+            dst.copyFrom(ch, 0, in, ch, static_cast<int>(at), static_cast<int>(tail));
+        if (head > 0)
+            dst.copyFrom(ch, static_cast<int>(tail + gap), in, ch, 0, static_cast<int>(head));
+    }
+    return dst;
+}
+
+// Declicks a seam at atSample by dipping to (near) silence across the window
+// and back — see the CrossfadeParams comment for why this is a self-declick
+// rather than a two-signal crossfade. Symmetric: half the window fades OUT
+// approaching atSample, half fades IN leaving it, so gain is exactly at its
+// curve's zero right at the seam sample regardless of what discontinuity sits
+// there.
+SandboxBuffer applyCrossfade(const SandboxBuffer& in, const CrossfadeParams& p) {
+    SandboxBuffer dst(in);
+    const int64_t len = dst.getNumSamples();
+    if (len <= 0 || p.lengthSamples <= 0) return dst;
+
+    const int64_t at       = std::clamp<int64_t>(p.atSample, 0, len);
+    const int64_t halfBefore = p.lengthSamples / 2;
+    const int64_t halfAfter  = p.lengthSamples - halfBefore;
+
+    const Range before = resolveRange(at - halfBefore, at, len);
+    const Range after  = resolveRange(at, at + halfAfter, len);
+
+    for (int ch = 0; ch < dst.getNumChannels(); ++ch) {
+        float* d = dst.getWritePointer(ch);
+        // Approaching the seam: 1 far away, 0 at the seam itself.
+        for (int64_t i = before.start; i < before.end; ++i) {
+            const double t = static_cast<double>(at - i) / static_cast<double>(std::max<int64_t>(1, halfBefore));
+            d[i] *= fadeCurve(p.shape, t);
+        }
+        // Leaving the seam: 0 at the seam, 1 by the far edge of the window.
+        for (int64_t i = after.start; i < after.end; ++i) {
+            const double t = static_cast<double>(i - at) / static_cast<double>(std::max<int64_t>(1, halfAfter));
+            d[i] *= fadeCurve(p.shape, t);
+        }
+    }
+    return dst;
+}
+
 } // namespace
 
 // ─── SandboxRenderKey ─────────────────────────────────────────────────────────
@@ -230,24 +338,25 @@ SandboxRenderer::~SandboxRenderer() {
 
 SandboxBuffer SandboxRenderer::applyOp(const SandboxBuffer& in,
                                        const SandboxOp& op,
-                                       double /*bufferSampleRate*/) {
+                                       double /*bufferSampleRate*/,
+                                       const SandboxBuffer* clipboard) {
     // A bypassed, malformed or not-yet-built op is a PASS-THROUGH. Never a
     // partial edit: "half applied" is indistinguishable from a DSP bug at the
     // waveform, and the result carries unimplementedOps so the UI can say why.
     if (!op.enabled || !op.consistent() || !op.implemented()) return in;
 
     switch (op.type) {
-        case SandboxOpType::Trim:    return applyTrim(in, std::get<TrimParams>(op.params));
-        case SandboxOpType::Cut:     return applyCut(in, std::get<CutParams>(op.params));
-        case SandboxOpType::Reverse: return applyReverse(in, std::get<ReverseParams>(op.params));
-        case SandboxOpType::Fade:    return applyFade(in, std::get<FadeParams>(op.params));
-        case SandboxOpType::Gain:    return applyGain(in, std::get<GainParams>(op.params));
+        case SandboxOpType::Trim:      return applyTrim(in, std::get<TrimParams>(op.params));
+        case SandboxOpType::Cut:       return applyCut(in, std::get<CutParams>(op.params));
+        case SandboxOpType::Paste:     return applyPaste(in, std::get<PasteParams>(op.params), clipboard);
+        case SandboxOpType::Splice:    return applySplice(in, std::get<SpliceParams>(op.params));
+        case SandboxOpType::Reverse:   return applyReverse(in, std::get<ReverseParams>(op.params));
+        case SandboxOpType::Fade:      return applyFade(in, std::get<FadeParams>(op.params));
+        case SandboxOpType::Gain:      return applyGain(in, std::get<GainParams>(op.params));
+        case SandboxOpType::Crossfade: return applyCrossfade(in, std::get<CrossfadeParams>(op.params));
 
         // Guarded by implemented() above — listed so a newly built op that
         // forgets its case here is a compiler warning, not a silent no-op.
-        case SandboxOpType::Paste:
-        case SandboxOpType::Splice:
-        case SandboxOpType::Crossfade:
         case SandboxOpType::Pitch:
         case SandboxOpType::Stretch:
             return in;
@@ -309,7 +418,14 @@ SandboxRenderResult SandboxRenderer::renderStack(int sourceBufferId,
         const SandboxOp& op = ops[static_cast<size_t>(i)];
         if (op.enabled && !op.implemented()) ++result.unimplementedOps;
 
-        cur = applyOp(cur, op, bufferSampleRate);
+        SandboxBufferPtr clip;
+        const SandboxBuffer* clipPtr = nullptr;
+        if (op.type == SandboxOpType::Paste && op.enabled && op.consistent()) {
+            clip = clipboardBuffer(std::get<PasteParams>(op.params).clipboardId);
+            clipPtr = clip.get();
+        }
+
+        cur = applyOp(cur, op, bufferSampleRate, clipPtr);
         ++result.opsEvaluated;
         opEvalCount_.fetch_add(1, std::memory_order_relaxed);
 
@@ -397,6 +513,35 @@ size_t SandboxRenderer::bufferBytes(const SandboxBuffer& b) noexcept {
     return static_cast<size_t>(b.getNumChannels())
          * static_cast<size_t>(b.getNumSamples())
          * sizeof(float);
+}
+
+// ─── Clipboard ────────────────────────────────────────────────────────────────
+
+int SandboxRenderer::captureClipboard(const SandboxBuffer& source, int64_t startSample, int64_t endSample) {
+    const Range r = resolveRange(startSample, endSample, source.getNumSamples());
+    const int64_t n = r.end - r.start;
+    if (n <= 0) return -1;
+
+    auto buf = std::make_shared<SandboxBuffer>(source.getNumChannels(), static_cast<int>(n));
+    for (int ch = 0; ch < source.getNumChannels(); ++ch)
+        buf->copyFrom(ch, 0, source, ch, static_cast<int>(r.start), static_cast<int>(n));
+
+    std::lock_guard<std::mutex> lock(mu_);
+    const int id = nextClipboardId_++;
+    clipboard_.emplace(id, std::move(buf));
+    clipboardOrder_.push_back(id);
+    while (clipboardOrder_.size() > kMaxClipboardEntries) {
+        clipboard_.erase(clipboardOrder_.front());
+        clipboardOrder_.pop_front();
+    }
+    return id;
+}
+
+SandboxBufferPtr SandboxRenderer::clipboardBuffer(int clipboardId) const {
+    if (clipboardId < 0) return nullptr;
+    std::lock_guard<std::mutex> lock(mu_);
+    auto it = clipboard_.find(clipboardId);
+    return it != clipboard_.end() ? it->second : nullptr;
 }
 
 void SandboxRenderer::clearCache() {

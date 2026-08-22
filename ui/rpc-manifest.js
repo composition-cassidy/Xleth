@@ -2540,6 +2540,19 @@ const METHODS = [
     returns: 'value',
     binary: null,
   },
+  {
+    // Captures a range of the layer's published render into the session-local
+    // clipboard store (SB-4). Not undoable — see Sandbox_CopySelection. CUT is
+    // this call followed by sandbox_stackAdd({type:'cut', ...}) on the same
+    // range; PASTE and INSERT SILENCE are both sandbox_stackAdd({type:'paste'})
+    // — no dedicated bridge calls needed for either.
+    method: 'sandbox_copySelection',
+    channels: ['xleth:sandbox:copySelection'],
+    api: { 'sandbox.copySelection': 'xleth:sandbox:copySelection' },
+    handler: 'Sandbox_CopySelection',
+    returns: 'value',
+    binary: null,
+  },
 
 ];
 

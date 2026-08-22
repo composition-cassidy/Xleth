@@ -10938,6 +10938,56 @@ JsonApi::Value Sandbox_Bake(const JsonApi::CallbackInfo& info)
     return out;
 }
 
+// sandbox_copySelection(layerId: number, startSample: number, endSample: number)
+//   → { success, clipboardId, numSamples }
+//   → { success:false, reason }
+// Captures [startSample, endSample) of the layer's CURRENT published render
+// into SandboxRenderer's session-local clipboard store and returns its id.
+// Not undoable — capturing into the clipboard is not a content edit; the
+// caller pairs this with sandbox_stackAdd for CUT (a Cut op over the same
+// range) and passes the returned clipboardId back through a Paste op's params
+// for PASTE. INSERT SILENCE needs no clipboard at all — clipboardId: -1 with
+// the desired clipboardLengthSamples is a Paste op the renderer resolves to
+// silence (see PasteParams). No new op or command exists for copy/cut/paste;
+// they all compose the existing generic stack primitives.
+JsonApi::Value Sandbox_CopySelection(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!sandboxReady()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsNumber()) {
+        JsonApi::TypeError::New(env,
+            "sandbox_copySelection(layerId: number, startSample: number, endSample: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int layerId = info[0].As<JsonApi::Number>().Int32Value();
+    const int64_t startSample = static_cast<int64_t>(info[1].As<JsonApi::Number>().DoubleValue());
+    const int64_t endSample   = static_cast<int64_t>(info[2].As<JsonApi::Number>().DoubleValue());
+
+    if (!g_sandboxCore->findLayer(layerId))
+        return sandboxFail(env, "layer not found");
+
+    xleth::sandbox::SandboxBufferPtr src = g_sandboxRenderer->publishedOutput(layerId);
+    if (!src) return sandboxFail(env, "not rendered yet");
+
+    BridgeCallLog log("sandbox.copySelection");
+    const int clipboardId = g_sandboxRenderer->captureClipboard(*src, startSample, endSample);
+    if (clipboardId < 0) return sandboxFail(env, "empty selection");
+    // Read the length back from the buffer that was actually stored, rather
+    // than re-deriving the clamped range here — one resolveRange, in one file.
+    xleth::sandbox::SandboxBufferPtr captured = g_sandboxRenderer->clipboardBuffer(clipboardId);
+    log.done(std::to_string(clipboardId));
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("success",     JsonApi::Boolean::New(env, true));
+    out.Set("clipboardId", JsonApi::Number::New(env, clipboardId));
+    out.Set("numSamples",  JsonApi::Number::New(env, captured ? captured->getNumSamples() : 0));
+    return out;
+}
+
 // timeline_autoLoopForSelection(regionId, selStart?, selEnd?, slotIndex?)
 //   → { valid, loopStart, loopEnd, crossfadeSamples, period, periodMultiple,
 //       spanDriftCents, driftCutCents, spansConsidered, spansKept, longestSpan,

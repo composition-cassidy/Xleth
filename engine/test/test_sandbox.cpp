@@ -110,6 +110,11 @@ static void testOpModel() {
     SandboxOp pitch = makeOp(2, SandboxOpType::Pitch, PitchParams{ 100.0, false });
     CHECK(!pitch.implemented(), "PITCH is a declared stub in SB-1");
 
+    // SB-4 lands DSP for these three — they were the SB-1 stubs.
+    CHECK(makeOp(4, SandboxOpType::Paste,     PasteParams{}).implemented(),     "PASTE lands in SB-4");
+    CHECK(makeOp(5, SandboxOpType::Splice,    SpliceParams{}).implemented(),    "SPLICE lands in SB-4");
+    CHECK(makeOp(6, SandboxOpType::Crossfade, CrossfadeParams{}).implemented(), "CROSSFADE lands in SB-4");
+
     // A hand-built op whose variant disagrees with its type is malformed and
     // must be detectable — this is the failure mode `float params[16]` cannot
     // even represent, let alone catch.
@@ -156,6 +161,19 @@ static void testOpModel() {
     SandboxOp toEnd = makeOp(1, SandboxOpType::Trim, TrimParams{ 50, -1 });
     CHECK_EQ(toEnd.outputLength(1000), int64_t(950), "endSample -1 resolves to the buffer end (1000)");
     CHECK_EQ(toEnd.outputLength(500),  int64_t(450), "…and re-resolves after an upstream change (500)");
+
+    // PASTE / SPLICE predict length WITHOUT a buffer — clipboardLengthSamples
+    // and gapSamples are exactly what makes that possible.
+    SandboxOp pasteInsert = makeOp(1, SandboxOpType::Paste, PasteParams{ 500, -1, 200, true });
+    CHECK_EQ(pasteInsert.outputLength(1000), int64_t(1200), "PASTE insert grows by clipboardLengthSamples");
+    SandboxOp pasteOverwrite = makeOp(1, SandboxOpType::Paste, PasteParams{ 500, -1, 200, false });
+    CHECK_EQ(pasteOverwrite.outputLength(1000), int64_t(1000), "PASTE overwrite preserves length");
+
+    SandboxOp spliceRipple = makeOp(1, SandboxOpType::Splice, SpliceParams{ 400, SandboxRippleMode::Ripple, 999 });
+    CHECK_EQ(spliceRipple.outputLength(1000), int64_t(1000),
+             "SPLICE ripple preserves length (gapSamples ignored outside Gap mode)");
+    SandboxOp spliceGap = makeOp(1, SandboxOpType::Splice, SpliceParams{ 400, SandboxRippleMode::Gap, 50 });
+    CHECK_EQ(spliceGap.outputLength(1000), int64_t(1050), "SPLICE gap grows by gapSamples");
 }
 
 // ---------------------------------------------------------------------------
@@ -200,9 +218,9 @@ static void testOpSerialization() {
         makeOp(1, SandboxOpType::Trim,      TrimParams{ 480, 96000 }),
         makeOp(2, SandboxOpType::Cut,       CutParams{ 100, 200, SandboxRippleMode::Gap }),
         makeOp(3, SandboxOpType::Paste,     PasteParams{ 4800, 7, 1234, false }),
-        makeOp(4, SandboxOpType::Splice,    SpliceParams{ 999, SandboxRippleMode::Ripple }),
+        makeOp(4, SandboxOpType::Splice,    SpliceParams{ 999, SandboxRippleMode::Gap, 240 }),
         makeOp(5, SandboxOpType::Reverse,   ReverseParams{ 0, -1 }),
-        makeOp(6, SandboxOpType::Fade,      FadeParams{ 12, 480, SandboxFadeShape::SCurve, false }),
+        makeOp(6, SandboxOpType::Fade,      FadeParams{ 12, 480, SandboxFadeShape::Hann, false }),
         makeOp(7, SandboxOpType::Gain,      GainParams{ 5, 900, -3.5, true, -1.0 }),
         makeOp(8, SandboxOpType::Crossfade, CrossfadeParams{ 2400, 128, SandboxFadeShape::EqualPower }),
         makeOp(9, SandboxOpType::Pitch,     PitchParams{ -250.5, true }),
@@ -623,6 +641,84 @@ static void testRendererOps() {
         CHECK_NEAR(out.buffer->getSample(0, 900), 1.0, 1e-6, "fade-out starts at unity");
         CHECK_NEAR(out.buffer->getSample(0, 950), 0.5, 1e-6, "…is half way at the midpoint");
         CHECK_NEAR(out.buffer->getSample(0, 999), 0.0, 1e-2, "…and lands at silence");
+    }
+
+    // ── PASTE, insert-silence (clipboardId -1 is the INSERT SILENCE case) ──
+    {
+        SandboxRenderResult r = renderer.renderStack(
+            14, src, { makeOp(1, SandboxOpType::Paste, PasteParams{ 200, -1, 50, true }) }, kTestRate);
+        CHECK_EQ(r.buffer->getNumSamples(), 1050, "PASTE insert grows the buffer by clipboardLengthSamples");
+        CHECK_NEAR(r.buffer->getSample(0, 199), src.getSample(0, 199), 1e-9, "material before the insert point is intact");
+        CHECK_NEAR(r.buffer->getSample(0, 200), 0.0, 1e-9, "an unresolved clipboardId inserts SILENCE");
+        CHECK_NEAR(r.buffer->getSample(0, 249), 0.0, 1e-9, "…for the full requested length");
+        CHECK_NEAR(r.buffer->getSample(0, 250), src.getSample(0, 200), 1e-9, "material after the insert resumes exactly at the old position");
+    }
+
+    // ── PASTE, overwrite-with-silence ──
+    {
+        SandboxRenderResult r = renderer.renderStack(
+            15, src, { makeOp(1, SandboxOpType::Paste, PasteParams{ 200, -1, 50, false }) }, kTestRate);
+        CHECK_EQ(r.buffer->getNumSamples(), 1000, "PASTE overwrite preserves length");
+        CHECK_NEAR(r.buffer->getSample(0, 225), 0.0, 1e-9, "the overwritten range is silent");
+        CHECK_NEAR(r.buffer->getSample(0, 250), src.getSample(0, 250), 1e-9, "material after the range is untouched (no shift)");
+    }
+
+    // ── PASTE, real clipboard content (CUT/COPY/PASTE round trip) ──
+    {
+        const int clipId = renderer.captureClipboard(src, 300, 350);
+        CHECK(clipId >= 0, "captureClipboard returns a valid id for a real range");
+        SandboxBufferPtr clip = renderer.clipboardBuffer(clipId);
+        CHECK(clip != nullptr, "the captured buffer resolves");
+        if (clip) CHECK_EQ(clip->getNumSamples(), 50, "the captured clip is sample-exact");
+
+        SandboxRenderResult r = renderer.renderStack(
+            16, src, { makeOp(1, SandboxOpType::Paste, PasteParams{ 0, clipId, 50, true }) }, kTestRate);
+        CHECK_EQ(r.buffer->getNumSamples(), 1050, "pasting a real clip still predicts by clipboardLengthSamples");
+        CHECK_NEAR(r.buffer->getSample(0, 0),  src.getSample(0, 300), 1e-9, "pasted audio IS the copied range (sample-accurate)");
+        CHECK_NEAR(r.buffer->getSample(0, 49), src.getSample(0, 349), 1e-9, "…through its last sample");
+        CHECK_NEAR(r.buffer->getSample(0, 50), src.getSample(0, 0),   1e-9, "the original material resumes right after");
+
+        CHECK(renderer.clipboardBuffer(999999) == nullptr, "an unknown clipboard id resolves to nullptr");
+        CHECK(renderer.captureClipboard(src, 500, 500) < 0, "an empty range is not capturable");
+    }
+
+    // ── SPLICE, ripple: split and swap, no gap ──
+    {
+        SandboxRenderResult r = renderer.renderStack(
+            17, src, { makeOp(1, SandboxOpType::Splice, SpliceParams{ 400, SandboxRippleMode::Ripple, 0 }) },
+            kTestRate);
+        CHECK_EQ(r.buffer->getNumSamples(), 1000, "ripple SPLICE preserves length");
+        CHECK_NEAR(r.buffer->getSample(0, 0),   src.getSample(0, 400), 1e-9, "output starts with the TAIL");
+        CHECK_NEAR(r.buffer->getSample(0, 599), src.getSample(0, 999), 1e-9, "…through the old end");
+        CHECK_NEAR(r.buffer->getSample(0, 600), src.getSample(0, 0),   1e-9, "…then the HEAD resumes");
+        CHECK_NEAR(r.buffer->getSample(0, 999), src.getSample(0, 399), 1e-9, "…up to the split point");
+    }
+
+    // ── SPLICE, gap: split, swap, and open a gap at the new seam ──
+    {
+        SandboxRenderResult r = renderer.renderStack(
+            18, src, { makeOp(1, SandboxOpType::Splice, SpliceParams{ 400, SandboxRippleMode::Gap, 100 }) },
+            kTestRate);
+        CHECK_EQ(r.buffer->getNumSamples(), 1100, "gap SPLICE grows the buffer by gapSamples");
+        CHECK_NEAR(r.buffer->getSample(0, 599), src.getSample(0, 999), 1e-9, "the tail still ends where ripple mode left it");
+        CHECK_NEAR(r.buffer->getSample(0, 650), 0.0, 1e-9, "the gap itself is silent");
+        CHECK_NEAR(r.buffer->getSample(0, 700), src.getSample(0, 0),   1e-9, "the head starts right after the gap");
+    }
+
+    // ── CROSSFADE: declicks a hard discontinuity at the seam ──
+    {
+        SandboxBuffer click(1, 1000);
+        for (int i = 0; i < 1000; ++i) click.setSample(0, i, i < 500 ? -1.0f : 1.0f);
+
+        SandboxRenderResult r = renderer.renderStack(
+            19, click, { makeOp(1, SandboxOpType::Crossfade, CrossfadeParams{ 500, 100, SandboxFadeShape::Hann }) },
+            kTestRate);
+        CHECK_NEAR(r.buffer->getSample(0, 500), 0.0, 1e-6, "the seam sample itself lands at exactly zero — every shape's curve is 0 at t=0");
+        CHECK(std::fabs(r.buffer->getSample(0, 499)) < 0.1, "just before the seam the discontinuity is masked, not audible");
+        CHECK(std::fabs(r.buffer->getSample(0, 500)) < 0.1, "…and just after it too");
+        CHECK_NEAR(r.buffer->getSample(0, 450), -1.0, 1e-6, "the window's far edge is untouched (gain 1)");
+        CHECK_NEAR(r.buffer->getSample(0, 0),   -1.0, 1e-9, "material well outside the window is untouched");
+        CHECK_NEAR(r.buffer->getSample(0, 999),  1.0, 1e-9, "…on both sides");
     }
 
     // ── Bypass and stubs are exact pass-throughs ──

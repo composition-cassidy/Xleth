@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <cstdint>
+#include <deque>
 #include <list>
 #include <memory>
 #include <mutex>
@@ -90,9 +91,9 @@ struct SandboxRenderResult {
     // True when the FULL stack was already cached and nothing ran.
     bool fullyCached = false;
 
-    // Ops that were skipped because their DSP has not landed (Paste, Splice,
-    // Crossfade, Pitch, Stretch). Surfaced so the UI can say "not built yet"
-    // instead of leaving the user to conclude the edit was ignored.
+    // Ops that were skipped because their DSP has not landed (Pitch, Stretch).
+    // Surfaced so the UI can say "not built yet" instead of leaving the user
+    // to conclude the edit was ignored.
     int unimplementedOps = 0;
 
     bool valid() const { return buffer != nullptr; }
@@ -198,10 +199,30 @@ public:
     // ── Op evaluation (exposed for testing) ──────────────────────────────────
     //
     // Applies ONE op to `in`, returning the result. A bypassed or unimplemented
-    // op returns `in` unchanged (a copy). Pure — no cache, no state.
+    // op returns `in` unchanged (a copy). Pure — no cache, no state. `clipboard`
+    // is consulted only by PASTE (nullptr = insert/overwrite silence, exactly
+    // the fallback a stale or -1 clipboardId gets at real render time too — see
+    // PasteParams). Passing it directly here is what keeps this method pure
+    // and testable without going through the clipboard store below.
     static SandboxBuffer applyOp(const SandboxBuffer& in,
                                  const SandboxOp& op,
-                                 double bufferSampleRate);
+                                 double bufferSampleRate,
+                                 const SandboxBuffer* clipboard = nullptr);
+
+    // ── Clipboard (main thread; CUT/COPY/PASTE) ──────────────────────────────
+    //
+    // Session-local only — NOT persisted with the project. A PASTE op's
+    // clipboardId that no longer resolves (new session, evicted, never
+    // existed) degrades to silence of clipboardLengthSamples at render time
+    // rather than failing; see PasteParams. Capturing reads straight out of a
+    // caller-supplied buffer (the layer's own published render for COPY/CUT
+    // from a selection), so this file never has to reach into SampleBank.
+    //
+    // Returns -1 when [startSample, endSample) does not overlap `source`.
+    int captureClipboard(const SandboxBuffer& source, int64_t startSample, int64_t endSample);
+
+    // nullptr when `clipboardId` is unknown (including -1, the "silence" id).
+    SandboxBufferPtr clipboardBuffer(int clipboardId) const;
 
 private:
     friend class SandboxRenderJob;
@@ -225,6 +246,17 @@ private:
 
     // layerId -> in-flight. Guarded by mu_.
     std::unordered_map<int, bool> pending_;
+
+    // Clipboard store for CUT/COPY/PASTE. Guarded by mu_ — capture/lookup are
+    // both main-thread, low-frequency, and already sharing the cache's lock is
+    // simpler than a second one for what is at most a handful of small
+    // buffers. A small FIFO cap, not full LRU: unlike the render cache this is
+    // not read every frame, so eviction order only has to be "bounded", not
+    // "optimal".
+    static constexpr size_t kMaxClipboardEntries = 64;
+    std::unordered_map<int, SandboxBufferPtr> clipboard_;
+    std::deque<int>                           clipboardOrder_;   // insertion order, front = oldest
+    int                                        nextClipboardId_ = 1;
 
     // layerId -> published output, read lock-free from the audio thread.
     //

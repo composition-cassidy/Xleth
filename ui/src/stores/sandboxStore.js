@@ -43,6 +43,14 @@ function deinterleave(data, numChannels, numSamples) {
   return channels
 }
 
+// Mirrors xleth::sandbox::SandboxRippleMode / SandboxFadeShape (SandboxOp.h).
+// JSON writes/reads the int, never a name, for these two enums — unlike op
+// TYPE, which is a registry name (see opTypeName in SandboxOp.cpp).
+export const RIPPLE_MODE = { ripple: 0, gap: 1 }
+export const FADE_SHAPE = {
+  linear: 0, equalPower: 1, exponential: 2, logarithmic: 3, sCurve: 4, hann: 5,
+}
+
 const POLL_MS = 150
 const POLL_MAX_ATTEMPTS = 200 // ~30s ceiling — a stuck render surfaces as an error, not a silent hang
 
@@ -72,8 +80,9 @@ function makeLayer({ layerId, name, sourceBufferId, bufferSampleRate, region }) 
 const useSandboxStore = create((set, get) => ({
   layers: [],
   activeLayerId: null,
-  activeTool: 'select', // 'select' | 'chop' | 'trim' | 'fade' — SB-3 shell: display only
+  activeTool: 'select',
   selection: null, // { startSample, endSample } in the active layer's rendered buffer
+  clipboard: null, // { clipboardId, numSamples } — session-local, from copySelection/cutSelection
 
   // ── Layer lifecycle ────────────────────────────────────────────────────
 
@@ -226,6 +235,13 @@ const useSandboxStore = create((set, get) => ({
           return { ...l, ops, undoDepth: l.undoDepth + 1 }
         }),
       }))
+      // Any accepted stack mutation is about to change the rendered buffer
+      // out from under the current selection's sample indices, so it no
+      // longer means anything concrete — clear it rather than let the
+      // waveform show a stale overlay. COPY does not go through this path
+      // (it doesn't mutate the stack), so copying deliberately preserves the
+      // selection for a follow-up Cut/Trim on the same range.
+      get().clearSelection()
       get().renderLayer(layerId, 'stackAdd')
     } catch (e) {
       console.warn('[SampleSandbox] addOp failed:', e?.message || e)
@@ -303,6 +319,139 @@ const useSandboxStore = create((set, get) => ({
     } catch (e) {
       console.warn('[SampleSandbox] setOpBypassed failed:', e?.message || e)
     }
+  },
+
+  // ── Core edit ops (SB-4) ─────────────────────────────────────────────────
+  // Every tool below composes the SAME two primitives everything else in this
+  // file already uses — addOp (generic sandbox_stackAdd) and, for
+  // clipboard-aware tools, the new sandbox_copySelection bridge call. There is
+  // no dedicated engine op or command per tool: CUT is a copy followed by a
+  // Cut op over the same range, PASTE and INSERT SILENCE are both a Paste op
+  // (clipboardId: -1 means "no material" — the renderer fills it with
+  // silence), and TRIM/REVERSE/FADE/GAIN/NORMALIZE/SPLICE/CROSSFADE are one
+  // addOp each with the params the op type expects (see SandboxOp.h).
+
+  // The engine reads straight from the layer's CURRENT published render, so
+  // the clipboard is always cut from what the user actually sees selected,
+  // not from the raw, unedited source.
+  async copySelection(layerId) {
+    const sel = get().selection
+    if (!sel) return null
+    try {
+      const res = await window.xleth?.sandbox?.copySelection(layerId, sel.startSample, sel.endSample)
+      if (!res?.success) throw new Error(res?.reason || 'copySelection rejected')
+      const clipboard = { clipboardId: res.clipboardId, numSamples: res.numSamples }
+      set({ clipboard })
+      return clipboard
+    } catch (e) {
+      console.warn('[SampleSandbox] copySelection failed:', e?.message || e)
+      return null
+    }
+  },
+
+  // CUT = copy the selection to the clipboard, then remove it with a Cut op.
+  // The copy happens first so a paste right after a cut always has material,
+  // matching what every other sample editor's Cut does.
+  async cutSelection(layerId, mode = 'ripple') {
+    const sel = get().selection
+    if (!sel) return
+    const clipboard = await get().copySelection(layerId)
+    if (!clipboard) return
+    // addOp() clears the selection itself once accepted — no need to repeat
+    // it here.
+    await get().addOp(layerId, {
+      type: 'cut',
+      params: { startSample: sel.startSample, endSample: sel.endSample, mode: RIPPLE_MODE[mode] ?? RIPPLE_MODE.ripple },
+    })
+  },
+
+  // PASTE — inserts (or overwrites with) whatever is currently on the
+  // clipboard. `atSample` defaults to the selection's start, i.e. "paste at
+  // the point I have selected/scrubbed to."
+  async pasteClipboard(layerId, atSample, insert = true) {
+    const clipboard = get().clipboard
+    if (!clipboard) return
+    const at = atSample ?? get().selection?.startSample ?? 0
+    await get().addOp(layerId, {
+      type: 'paste',
+      params: { atSample: at, clipboardId: clipboard.clipboardId, clipboardLengthSamples: clipboard.numSamples, insert },
+    })
+  },
+
+  // INSERT SILENCE / SILENCE — a Paste op with clipboardId: -1, so the
+  // renderer has nothing to resolve and fills the range with silence. `insert`
+  // decides which of the two the toolbar's two buttons means: true grows the
+  // buffer (INSERT SILENCE), false mutes the range in place (SILENCE).
+  async insertSilence(layerId, atSample, lengthSamples, insert = true) {
+    if (!(lengthSamples > 0)) return
+    await get().addOp(layerId, {
+      type: 'paste',
+      params: { atSample, clipboardId: -1, clipboardLengthSamples: lengthSamples, insert },
+    })
+  },
+
+  // SPLICE — split at `atSample` and swap the two halves. `gapSamples` is
+  // only consulted in 'gap' mode.
+  async spliceAtCursor(layerId, atSample, mode = 'ripple', gapSamples = 0) {
+    await get().addOp(layerId, {
+      type: 'splice',
+      params: { atSample, mode: RIPPLE_MODE[mode] ?? RIPPLE_MODE.ripple, gapSamples },
+    })
+  },
+
+  // REVERSE over the current selection (or the whole buffer if none).
+  async reverseSelection(layerId) {
+    const sel = get().selection
+    await get().addOp(layerId, {
+      type: 'reverse',
+      params: { startSample: sel?.startSample ?? 0, endSample: sel?.endSample ?? -1 },
+    })
+  },
+
+  // FADE IN/OUT across the current selection. `shape` is one of FADE_SHAPE's
+  // keys — the toolbar exposes this as a <select>, satisfying "adjustable
+  // curve shapes."
+  async fadeSelection(layerId, fadeIn, shape = 'equalPower') {
+    const sel = get().selection
+    if (!sel) return
+    await get().addOp(layerId, {
+      type: 'fade',
+      params: {
+        startSample: sel.startSample,
+        lengthSamples: sel.endSample - sel.startSample,
+        shape: FADE_SHAPE[shape] ?? FADE_SHAPE.equalPower,
+        fadeIn,
+      },
+    })
+  },
+
+  // GAIN over the current selection (or the whole buffer if none).
+  async gainSelection(layerId, gainDb) {
+    const sel = get().selection
+    await get().addOp(layerId, {
+      type: 'gain',
+      params: { startSample: sel?.startSample ?? 0, endSample: sel?.endSample ?? -1, gainDb, normalize: false, targetPeakDb: 0 },
+    })
+  },
+
+  // NORMALIZE the current selection (or the whole buffer) so its peak lands
+  // on targetPeakDb.
+  async normalizeSelection(layerId, targetPeakDb) {
+    const sel = get().selection
+    await get().addOp(layerId, {
+      type: 'gain',
+      params: { startSample: sel?.startSample ?? 0, endSample: sel?.endSample ?? -1, gainDb: 0, normalize: true, targetPeakDb },
+    })
+  },
+
+  // CROSSFADE — declicks a seam at the selection's start (or the whole
+  // buffer's start, absent one) across `lengthSamples`.
+  async crossfadeAtCursor(layerId, atSample, lengthSamples, shape = 'hann') {
+    if (!(lengthSamples > 0)) return
+    await get().addOp(layerId, {
+      type: 'crossfade',
+      params: { atSample, lengthSamples, shape: FADE_SHAPE[shape] ?? FADE_SHAPE.hann },
+    })
   },
 
   // ── Bake / swap-in ──────────────────────────────────────────────────────

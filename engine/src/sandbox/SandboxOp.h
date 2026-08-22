@@ -70,6 +70,9 @@ enum class SandboxFadeShape : int {
     Exponential = 2,   // gain = t²        — slow start, fast finish
     Logarithmic = 3,   // gain = 1-(1-t)²  — fast start, slow finish
     SCurve      = 4,   // gain = t²(3-2t)  — smoothstep, click-free at both ends
+    Hann        = 5,   // gain = 0.5(1-cos(t·π)) — same raised-cosine ramp as
+                       // dsp::DeclickEnvelope, so a Crossfade seam declicks
+                       // exactly like the sampler's trim boundaries do.
 };
 
 // What happens to the material after an edit point.
@@ -105,10 +108,16 @@ struct CutParams {
 
 // PASTE — insert (or overwrite with) clipboard material at atSample.
 //
-// STUB in SB-1: the clipboard buffer store lands with the core edit ops in SB-4.
-// The params are complete now so a stack containing a paste round-trips through
-// the project file rather than being dropped on load. clipboardLengthSamples is
-// carried so outputLength() can predict the result without the buffer.
+// clipboardId resolves against SandboxRenderer's session-local clipboard store
+// (SB-4). clipboardId == -1, or an id that no longer resolves (e.g. a stack
+// reloaded from a project file in a later session — the clipboard is NOT
+// persisted), means "no material": the op inserts/overwrites
+// clipboardLengthSamples of SILENCE instead. That is also how INSERT SILENCE
+// is expressed — there is no separate op type for it. clipboardLengthSamples
+// is always authoritative for length prediction (outputLength() needs it
+// without touching a buffer), so a stale reference degrades gracefully to
+// silence of the same length rather than desyncing the stack's predicted
+// length from its actual render.
 struct PasteParams {
     int64_t atSample              = 0;
     int     clipboardId           = -1;   // -1 = nothing on the clipboard
@@ -118,10 +127,13 @@ struct PasteParams {
     bool operator==(const PasteParams&) const = default;
 };
 
-// SPLICE — split at atSample and rearrange. STUB in SB-1 (SB-4).
+// SPLICE — split at atSample and swap the two halves (tail moves in front of
+// head). Ripple abuts them with no gap; Gap inserts gapSamples of silence at
+// the new seam between the (relocated) tail and head.
 struct SpliceParams {
-    int64_t           atSample = 0;
-    SandboxRippleMode mode     = SandboxRippleMode::Ripple;
+    int64_t           atSample   = 0;
+    SandboxRippleMode mode       = SandboxRippleMode::Ripple;
+    int64_t           gapSamples = 0;   // only consulted when mode == Gap
 
     bool operator==(const SpliceParams&) const = default;
 };
@@ -157,13 +169,19 @@ struct GainParams {
     bool operator==(const GainParams&) const = default;
 };
 
-// CROSSFADE — declick a seam by cross-blending lengthSamples of material
-// centred on atSample. STUB in SB-1: the Hann-window declick has to match the
-// sampler's trim declicking, which is SB-4's job to reconcile.
+// CROSSFADE — declick a seam at atSample by dipping gain toward silence and
+// back across lengthSamples (half before the seam, half after), the same
+// technique dsp::DeclickEnvelope uses at a clip's hard start/end boundaries,
+// just centred on an INTERIOR point instead of the buffer edge. Because a
+// single-buffer op stack has no second signal to blend against once upstream
+// material has been cut away, this "declicks toward silence" rather than
+// true-crossfading two waveforms — which is exactly what makes it re-runnable
+// at any point in the stack, including seams the buffer no longer remembers
+// the far side of. Default shape is Hann to match the sampler exactly.
 struct CrossfadeParams {
     int64_t          atSample      = 0;
     int64_t          lengthSamples = 0;
-    SandboxFadeShape shape         = SandboxFadeShape::EqualPower;
+    SandboxFadeShape shape         = SandboxFadeShape::Hann;
 
     bool operator==(const CrossfadeParams&) const = default;
 };
@@ -233,9 +251,10 @@ struct SandboxOp {
         return static_cast<int>(params.index()) == static_cast<int>(type);
     }
 
-    // False for the ops whose DSP has not landed yet (Paste, Splice, Crossfade,
-    // Pitch, Stretch as of SB-1). An unimplemented op is a PASS-THROUGH in the
-    // renderer, never a silent partial edit — the UI is expected to badge it so
+    // False for the ops whose DSP has not landed yet (Pitch, Stretch — deferred
+    // to the phase that wires in the stretch engines). Paste/Splice/Crossfade
+    // landed in SB-4. An unimplemented op is a PASS-THROUGH in the renderer,
+    // never a silent partial edit — the UI is expected to badge it so
     // "nothing happened" reads as "not built yet" rather than as a bug.
     bool implemented() const noexcept;
 

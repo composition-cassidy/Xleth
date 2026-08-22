@@ -1,11 +1,45 @@
 import { GripVertical, Trash2 } from 'lucide-react'
-import useSandboxStore from '../../stores/sandboxStore.js'
+import useSandboxStore, { RIPPLE_MODE, FADE_SHAPE } from '../../stores/sandboxStore.js'
+
+const RIPPLE_MODE_NAME = Object.fromEntries(Object.entries(RIPPLE_MODE).map(([k, v]) => [v, k]))
+const FADE_SHAPE_NAME = Object.fromEntries(Object.entries(FADE_SHAPE).map(([k, v]) => [v, k]))
+
+// A short human-readable summary of an op's params — "stack shows the new op
+// with its params" without needing a full param-editor panel per op type.
+function describeParams(op) {
+  const p = op.params || {}
+  switch (op.type) {
+    case 'trim':
+      return `${p.startSample}–${p.endSample}`
+    case 'cut':
+      return `${p.startSample}–${p.endSample} (${RIPPLE_MODE_NAME[p.mode] ?? p.mode})`
+    case 'paste':
+      return p.clipboardId >= 0
+        ? `@ ${p.atSample}, ${p.clipboardLengthSamples} smp, ${p.insert ? 'insert' : 'overwrite'}`
+        : `@ ${p.atSample}, silence × ${p.clipboardLengthSamples} smp, ${p.insert ? 'insert' : 'overwrite'}`
+    case 'splice':
+      return `@ ${p.atSample} (${RIPPLE_MODE_NAME[p.mode] ?? p.mode}${p.mode === RIPPLE_MODE.gap ? `, gap ${p.gapSamples}` : ''})`
+    case 'reverse':
+      return `${p.startSample}–${p.endSample}`
+    case 'fade':
+      return `${p.fadeIn ? 'in' : 'out'}, ${p.lengthSamples} smp (${FADE_SHAPE_NAME[p.shape] ?? p.shape})`
+    case 'gain':
+      return p.normalize ? `normalize → ${p.targetPeakDb} dBFS` : `${p.gainDb} dB`
+    case 'crossfade':
+      return `@ ${p.atSample}, ${p.lengthSamples} smp (${FADE_SHAPE_NAME[p.shape] ?? p.shape})`
+    default:
+      return ''
+  }
+}
 
 function OpRow({ op, layerId, onToggleBypass, onRemove }) {
   return (
     <div className={`sandbox-op-row${op.enabled ? '' : ' bypassed'}`}>
       <GripVertical size={12} className="sandbox-op-grip" />
-      <span className="sandbox-op-type">{op.type}</span>
+      <div className="sandbox-op-label">
+        <span className="sandbox-op-type">{op.type}</span>
+        <span className="sandbox-op-params">{describeParams(op)}</span>
+      </div>
       <button
         className={`sandbox-op-bypass${op.enabled ? '' : ' active'}`}
         onClick={() => onToggleBypass(layerId, op.id, op.enabled)}

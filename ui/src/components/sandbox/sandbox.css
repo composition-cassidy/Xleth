@@ -171,6 +171,8 @@
 .sandbox-toolbar {
   flex: 0 0 auto;
   display: flex;
+  flex-wrap: wrap;
+  align-items: center;
   gap: 2px;
   padding: 4px 8px;
   background: var(--theme-bg-secondary);
@@ -190,7 +192,7 @@
   cursor: pointer;
 }
 
-.sandbox-tool-btn:hover {
+.sandbox-tool-btn:hover:not(:disabled) {
   background: var(--theme-bg-hover);
   color: var(--theme-text);
 }
@@ -199,6 +201,37 @@
   background: var(--theme-accent-bg-subtle);
   border-color: var(--theme-accent);
   color: var(--theme-accent);
+}
+
+.sandbox-tool-btn:disabled {
+  color: var(--theme-text-placeholder);
+  cursor: default;
+}
+
+.sandbox-toolbar-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 4px;
+  background: var(--theme-border-subtle);
+}
+
+.sandbox-toolbar-select,
+.sandbox-toolbar-number {
+  height: 22px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 0;
+  background: var(--theme-bg-surface);
+  color: var(--theme-text);
+  font-size: 10px;
+  padding: 0 4px;
+}
+
+.sandbox-toolbar-number {
+  width: 52px;
+}
+
+.sandbox-toolbar-select {
+  max-width: 96px;
 }
 
 .sandbox-waveform-area {
@@ -275,13 +308,27 @@
   flex: 0 0 auto;
 }
 
-.sandbox-op-type {
+.sandbox-op-label {
   flex: 1 1 auto;
   min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.sandbox-op-type {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   text-transform: capitalize;
+}
+
+.sandbox-op-params {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 9px;
+  color: var(--theme-text-muted);
 }
 
 .sandbox-op-bypass {
