@@ -1,5 +1,7 @@
 import { GripVertical, Trash2 } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import useSandboxStore, { RIPPLE_MODE, FADE_SHAPE } from '../../stores/sandboxStore.js'
+import XlethSelect from '../common/XlethSelect.jsx'
 
 const RIPPLE_MODE_NAME = Object.fromEntries(Object.entries(RIPPLE_MODE).map(([k, v]) => [v, k]))
 const FADE_SHAPE_NAME = Object.fromEntries(Object.entries(FADE_SHAPE).map(([k, v]) => [v, k]))
@@ -58,6 +60,52 @@ function OpRow({ op, layerId, onToggleBypass, onRemove }) {
   )
 }
 
+// Shown instead of the SWAP IN button when a layer has no bound target — a
+// layer opened over a composite bake, or (before it was fixed) a drag-in
+// whose region id never made it through. Lists every project sample region;
+// picking one both performs the swap AND binds the session to it (swapInLayer
+// records sourceRegionId/swapTargetName on success), so a later plain SWAP IN
+// click on this layer goes back to the same target.
+function SwapTargetPicker({ layerId, swapInLayer }) {
+  const [regions, setRegions] = useState(null) // null = still loading
+
+  useEffect(() => {
+    let cancelled = false
+    window.xleth?.timeline?.getRegions?.()
+      .then((list) => { if (!cancelled) setRegions(Array.isArray(list) ? list : []) })
+      .catch(() => { if (!cancelled) setRegions([]) })
+    return () => { cancelled = true }
+  }, [])
+
+  const options = (regions ?? []).map((r) => ({
+    value: r.id,
+    label: r.name || `Region ${r.id}`,
+    group: r.label || undefined,
+  }))
+
+  const handlePick = (regionId) => {
+    const region = (regions ?? []).find((r) => r.id === regionId)
+    if (!region) return
+    swapInLayer(layerId, { regionId: region.id, name: region.name })
+  }
+
+  return (
+    <XlethSelect
+      className="sandbox-swap-target-select"
+      value={null}
+      options={options}
+      onChange={handlePick}
+      disabled={regions == null || options.length === 0}
+      placeholder={
+        regions == null ? 'Loading samples…'
+          : options.length === 0 ? 'No project samples yet'
+          : 'SWAP IN — pick a sample to replace…'
+      }
+      ariaLabel="Pick a sample to swap this render into"
+    />
+  )
+}
+
 export default function SandboxStackPanel() {
   const layers = useSandboxStore((s) => s.layers)
   const activeLayerId = useSandboxStore((s) => s.activeLayerId)
@@ -73,23 +121,27 @@ export default function SandboxStackPanel() {
   const bakeLabel = layer?.bakeState === 'baking' ? 'Baking…' : layer?.bakeState === 'baked' ? 'Baked ✓' : 'BAKE'
 
   // SWAP IN needs a finished render AND a project region to put it back into.
-  // A layer opened from a composite bake has no source region, so there is
-  // nothing to swap — disabled with a title that says why, rather than a button
-  // that fails when pressed.
+  // A layer opened from a composite bake — or, before the drag-in id bug was
+  // fixed, one dropped in from the Sample Selector — has no bound region: the
+  // button becomes a target picker instead of just refusing (see
+  // SwapTargetPicker below).
+  const isSwapping = layer?.swapInState === 'swapping'
   const hasSwapTarget = layer?.sourceRegionId != null
-  const canSwap = canBake && hasSwapTarget && layer?.swapInState !== 'swapping'
+  const canSwap = canBake && hasSwapTarget && !isSwapping
+  const needsSwapTarget = canBake && !hasSwapTarget && !isSwapping
   const swapLabel =
     layer?.swapInState === 'swapping' ? 'Swapping…'
     : layer?.swapInState === 'swapped' ? 'Swapped ✓'
+    : layer?.swapTargetName ? `SWAP IN — replace ${layer.swapTargetName}`
     : 'SWAP IN'
   const swapTitle =
     layer?.swapInState === 'error' ? layer.swapInError
-    : !hasSwapTarget ? 'This layer has no source region to swap back into'
+    : !hasSwapTarget ? 'Pick a sample to replace — this layer has no bound target yet'
     : !canBake ? 'Render the layer first'
     : layer?.lastSwap
-      ? `Replaced the region's sample — ${layer.lastSwap.samplers} placed instance(s), `
-        + `${layer.lastSwap.clips} clip(s). Undo restores the old one.`
-      : "Replace this region's sample with the render — every placed instance follows"
+      ? `Replaced "${layer.swapTargetName ?? 'the region'}" — ${layer.lastSwap.samplers} placed instance(s), `
+        + `${layer.lastSwap.clips} clip(s) updated. Undo restores the old one.`
+      : `Replace "${layer.swapTargetName}"'s sample with the render — every placed instance follows`
 
   return (
     <div className="sandbox-stack-panel">
@@ -118,16 +170,32 @@ export default function SandboxStackPanel() {
         >
           {bakeLabel}
         </button>
-        <button
-          className={`sandbox-action-btn sandbox-action-btn--swap${
-            layer?.swapInState === 'error' ? ' sandbox-action-btn--error' : ''}`}
-          disabled={!canSwap}
-          onClick={() => layer && swapInLayer(layer.id)}
-          title={swapTitle}
-        >
-          {swapLabel}
-        </button>
+        {needsSwapTarget ? (
+          <SwapTargetPicker layerId={layer.id} swapInLayer={swapInLayer} />
+        ) : (
+          <button
+            className={`sandbox-action-btn sandbox-action-btn--swap${
+              layer?.swapInState === 'error' ? ' sandbox-action-btn--error' : ''}`}
+            disabled={!canSwap}
+            onClick={() => layer && swapInLayer(layer.id)}
+            title={swapTitle}
+          >
+            {swapLabel}
+          </button>
+        )}
       </div>
+      {layer?.swapInState === 'swapped' && layer.lastSwap && (
+        <div className="sandbox-swap-confirmation">
+          Swapped into "{layer.swapTargetName ?? 'target'}" — {layer.lastSwap.samplers} sampler
+          {layer.lastSwap.samplers === 1 ? '' : 's'}, {layer.lastSwap.clips} clip
+          {layer.lastSwap.clips === 1 ? '' : 's'} updated. Undo restores the previous sample.
+        </div>
+      )}
+      {layer?.swapInState === 'error' && layer.swapInError && (
+        <div className="sandbox-swap-confirmation sandbox-swap-confirmation--error">
+          {layer.swapInError}
+        </div>
+      )}
     </div>
   )
 }

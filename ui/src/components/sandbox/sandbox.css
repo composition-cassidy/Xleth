@@ -474,6 +474,38 @@
   color: var(--theme-danger);
 }
 
+/* Stands in for the SWAP IN button when a layer has no bound target — same
+   footprint as .sandbox-action-btn so swapping the two doesn't shift layout. */
+.sandbox-swap-target-select.xleth-select-trigger {
+  flex: 1 1 0;
+  height: auto;
+  padding: 8px 6px;
+  border: 1px solid var(--theme-warning);
+  border-radius: 0;
+  background: var(--theme-bg-surface);
+  color: var(--theme-warning);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.sandbox-swap-target-select.xleth-select-trigger:disabled {
+  border-color: var(--theme-border-strong);
+  color: var(--theme-text-placeholder);
+}
+
+.sandbox-swap-confirmation {
+  flex: 0 0 auto;
+  padding: 6px 8px;
+  border-top: 1px solid var(--theme-border-subtle);
+  color: var(--theme-text-muted);
+  font-size: 10px;
+}
+
+.sandbox-swap-confirmation--error {
+  color: var(--theme-danger);
+}
+
 /* ── Status bar (bottom) ─────────────────────────────────────────────────── */
 
 .sandbox-status-bar {

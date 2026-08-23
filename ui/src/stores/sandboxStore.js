@@ -70,6 +70,11 @@ function makeLayer({ layerId, name, sourceBufferId, bufferSampleRate, region }) 
     sourceStartTime: region?.startTime ?? null,
     sourceEndTime: region?.endTime ?? null,
     sourceRegionId: region?.id ?? null,
+    // Display name of the SWAP IN target — the layer's own name usually
+    // matches it (sandbox.open is called with the region's name), but a
+    // layer bound later via the target picker (cold-open case) points at a
+    // region that has nothing to do with this layer's own name.
+    swapTargetName: region?.name ?? null,
     ops: [],
     muted: false,
     soloed: false,
@@ -112,6 +117,7 @@ function layerFromWorkspace(wl, previous) {
           renderState: previous.renderState,
           renderedBuffer: previous.renderedBuffer,
           sourceRegionId: previous.sourceRegionId,
+          swapTargetName: previous.swapTargetName,
           lastSwap: previous.lastSwap,
         }
       : {}),
@@ -699,15 +705,23 @@ const useSandboxStore = create((set, get) => ({
       return null
     }
     const trackId = target.trackId ?? -1
+    // A target passed explicitly (the picker's pick) wins; otherwise keep
+    // whatever this layer is already bound to, so a re-swap to the same
+    // target keeps its display name too.
+    const targetName = target.name ?? layer.swapTargetName ?? null
 
     get().patchLayer(layerId, { swapInState: 'swapping', swapInError: null })
     try {
-      const opts = target.name ? { name: target.name } : undefined
+      const opts = targetName ? { name: targetName } : undefined
       const res = await window.xleth?.sandbox?.swapIn(layerId, trackId, regionId, opts)
       if (!res?.success) throw new Error(res?.reason || 'swapIn rejected')
       get().patchLayer(layerId, {
         swapInState: 'swapped',
         swapInError: null,
+        // A picker-driven swap BINDS the session to this target — the next
+        // plain "SWAP IN" click (no explicit target) goes to the same place.
+        sourceRegionId: regionId,
+        swapTargetName: targetName,
         lastSwap: {
           sampleId: res.sampleId,
           previousSampleId: res.previousSampleId,

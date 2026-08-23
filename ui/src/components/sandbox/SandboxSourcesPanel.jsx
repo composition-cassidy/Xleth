@@ -201,7 +201,13 @@ export default function SandboxSourcesPanel() {
     const raw = e.dataTransfer.getData('application/xleth-sample')
     if (!raw) return
     try {
-      const region = JSON.parse(raw)
+      const dropped = JSON.parse(raw)
+      // Drag payloads (SampleRow/SampleThumbnail) key the region id as
+      // `regionId`; addSourceFromRegion expects `id` (the shape the
+      // context-menu "Open in Sample Sandbox" entry point already passes).
+      // Without this the layer opens with no sourceRegionId and SWAP IN has
+      // nothing to target, even though the dragged sample IS a real region.
+      const region = { ...dropped, id: dropped.regionId ?? dropped.id }
       addSourceFromRegion(region)
     } catch (err) {
       console.warn('[SampleSandbox] Bad drop payload:', err?.message || err)
