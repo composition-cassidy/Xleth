@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { playSandboxPreview, stopSandboxPreview } from '../components/sandbox/sandboxPreviewPlayer.js'
 
 // ─── Sample Sandbox session store ──────────────────────────────────────────
 //
@@ -150,6 +151,7 @@ const useSandboxStore = create((set, get) => ({
   },
   bakeCompositeState: 'idle', // 'idle' | 'baking' | 'baked' | 'error'
   bakeCompositeError: null,
+  compositePreviewState: 'idle', // 'idle' | 'rendering' | 'playing'
 
   // ── Shared-undo-stack mirror (SB-6) ──────────────────────────────────────
   // The engine has ONE UndoManager for the whole app. `undoDomain` says whose
@@ -640,6 +642,34 @@ const useSandboxStore = create((set, get) => ({
     }
   },
 
+  // Preview playback (Space, or the composite section's own Play button) —
+  // the single toggle both surfaces share, so their state never drifts apart.
+  // Renders the composite on demand: a user who never clicked "Render
+  // Composite" first should still hear something on Space, not silence.
+  async toggleCompositePreview() {
+    if (get().compositePreviewState === 'playing') {
+      stopSandboxPreview()
+      set({ compositePreviewState: 'idle' })
+      return
+    }
+    let buf = get().composite.renderedBuffer
+    if (!buf) {
+      set({ compositePreviewState: 'rendering' })
+      await get().renderComposite()
+      buf = get().composite.renderedBuffer
+    }
+    if (!buf) {
+      set({ compositePreviewState: 'idle' }) // render failed — composite.error already set
+      return
+    }
+    const started = playSandboxPreview(
+      buf,
+      get().selection?.startSample ?? 0,
+      () => set({ compositePreviewState: 'idle' }),
+    )
+    set({ compositePreviewState: started ? 'playing' : 'idle' })
+  },
+
   async bakeComposite(name) {
     set({ bakeCompositeState: 'baking', bakeCompositeError: null })
     try {
@@ -818,11 +848,13 @@ const useSandboxStore = create((set, get) => ({
       const raw = await window.xleth?.sandbox?.getWorkspace?.()
       if (raw == null) return
       for (const l of get().layers) stopPolling(l.id)
+      stopSandboxPreview()
       set({
         layers: [],
         activeLayerId: null,
         selection: null,
         composite: { renderState: 'idle', renderedBuffer: null, error: null },
+        compositePreviewState: 'idle',
         bakedAssets: [],
       })
       get().hydrateFromWorkspace(raw)

@@ -1,8 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef } from 'react'
 import useSandboxStore from '../../stores/sandboxStore.js'
 import useSandboxPanelStore from '../../stores/sandboxPanelStore.js'
 import { useKeyboardBinding } from '../../windowing/managers/useKeyboardBinding.ts'
-import { playSandboxPreview, stopSandboxPreview } from './sandboxPreviewPlayer.js'
+import { stopSandboxPreview } from './sandboxPreviewPlayer.js'
 import SandboxSourcesPanel from './SandboxSourcesPanel.jsx'
 import SandboxToolbar from './SandboxToolbar.jsx'
 import SandboxWaveformCanvas from './SandboxWaveformCanvas.jsx'
@@ -32,28 +32,24 @@ export default function SandboxPanelContent() {
   // resolveFocusedPanel() in KeyboardManager. TransportBar's own Space
   // handler is a raw window-level listener outside that router entirely, so
   // it still gets the event on bubble unless we stop it here explicitly.
-  const [previewing, setPreviewing] = useState(false)
+  // The toggle itself lives in sandboxStore (toggleCompositePreview) so the
+  // composite section's own Play button shares the exact same state — no
+  // separate "is it playing" flag to drift out of sync.
   // KeyboardManager's combo strings are built from event.key, and the
   // spacebar's event.key is a literal " " (not the string "Space") — match
   // that, not event.code.
   useKeyboardBinding('panel:sampleSandbox', ' ', (e) => {
     e.preventDefault()
     e.stopPropagation()
-    if (previewing) {
-      stopSandboxPreview()
-      setPreviewing(false)
-      return 'handled'
-    }
-    const { composite, selection } = useSandboxStore.getState()
-    const started = playSandboxPreview(
-      composite.renderedBuffer,
-      selection?.startSample ?? 0,
-      () => setPreviewing(false),
-    )
-    setPreviewing(started)
+    useSandboxStore.getState().toggleCompositePreview()
     return 'handled'
   })
-  useEffect(() => stopSandboxPreview, []) // stop on panel unmount
+  useEffect(() => () => {
+    // Stop on panel unmount/close — also resets the store flag so a reopen
+    // doesn't show a stale "Stop" icon for audio that's no longer playing.
+    stopSandboxPreview()
+    useSandboxStore.setState({ compositePreviewState: 'idle' })
+  }, [])
 
   return (
     <div className="sandbox-panel-content">

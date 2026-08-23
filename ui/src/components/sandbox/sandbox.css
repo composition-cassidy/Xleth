@@ -120,6 +120,12 @@
   color: var(--theme-text-inverse);
 }
 
+.sandbox-mini-btn.active {
+  background: var(--theme-accent);
+  border-color: var(--theme-accent);
+  color: var(--theme-text-inverse);
+}
+
 .sandbox-layer-waveform {
   display: block;
   width: 220px;
@@ -175,6 +181,22 @@
   flex-direction: column;
   gap: 4px;
   padding: 8px;
+}
+
+.sandbox-composite-render-row {
+  display: flex;
+  gap: 4px;
+  align-items: stretch;
+}
+
+.sandbox-composite-render-row .sandbox-mini-btn {
+  width: 22px;
+  height: auto;
+  flex: 0 0 auto;
+}
+
+.sandbox-composite-render-row .sandbox-action-btn {
+  flex: 1 1 auto;
 }
 
 .sandbox-baked-asset-list {

@@ -1,4 +1,4 @@
-import { Plus, X } from 'lucide-react'
+import { Plus, X, Play, Square } from 'lucide-react'
 import { useState, useCallback } from 'react'
 import useSandboxStore from '../../stores/sandboxStore.js'
 import SandboxLayerWaveform from './SandboxLayerWaveform.jsx'
@@ -120,27 +120,40 @@ const BAKE_COMPOSITE_LABEL = {
 function CompositeSection() {
   const layers = useSandboxStore((s) => s.layers)
   const composite = useSandboxStore((s) => s.composite)
+  const compositePreviewState = useSandboxStore((s) => s.compositePreviewState)
   const bakeCompositeState = useSandboxStore((s) => s.bakeCompositeState)
   const bakedAssets = useSandboxStore((s) => s.bakedAssets)
   const renderComposite = useSandboxStore((s) => s.renderComposite)
+  const toggleCompositePreview = useSandboxStore((s) => s.toggleCompositePreview)
   const bakeComposite = useSandboxStore((s) => s.bakeComposite)
   const addBakedAssetAsSource = useSandboxStore((s) => s.addBakedAssetAsSource)
 
   const hasLayers = layers.length > 0
   const buf = composite.renderedBuffer
+  const isPlaying = compositePreviewState === 'playing'
 
   return (
     <div className="sandbox-composite-section">
       <div className="sandbox-panel-header">Composite</div>
       <div className="sandbox-composite-actions">
-        <button
-          className="sandbox-action-btn"
-          disabled={!hasLayers || composite.renderState === 'rendering'}
-          onClick={() => renderComposite()}
-          title="Mix every layer's current render by its gain/pan/offset/mute/solo"
-        >
-          {COMPOSITE_RENDER_LABEL[composite.renderState] ?? composite.renderState}
-        </button>
+        <div className="sandbox-composite-render-row">
+          <button
+            className={`sandbox-mini-btn${isPlaying ? ' active' : ''}`}
+            disabled={!hasLayers || compositePreviewState === 'rendering'}
+            onClick={() => toggleCompositePreview()}
+            title={isPlaying ? 'Stop preview (Space)' : 'Preview the composite (Space) — renders it first if needed'}
+          >
+            {isPlaying ? <Square size={11} /> : <Play size={11} />}
+          </button>
+          <button
+            className="sandbox-action-btn"
+            disabled={!hasLayers || composite.renderState === 'rendering'}
+            onClick={() => renderComposite()}
+            title="Mix every layer's current render by its gain/pan/offset/mute/solo"
+          >
+            {COMPOSITE_RENDER_LABEL[composite.renderState] ?? composite.renderState}
+          </button>
+        </div>
         <button
           className="sandbox-action-btn sandbox-action-btn--bake"
           disabled={!hasLayers || bakeCompositeState === 'baking'}
