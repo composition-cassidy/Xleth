@@ -61,6 +61,10 @@
     {
       "from": "addon-worker.js",
       "to": "worker/addon-worker.js"
+    },
+    {
+      "from": "worker-dispatch-priority.js",
+      "to": "worker/worker-dispatch-priority.js"
     }
   ],
   "win": {

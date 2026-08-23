@@ -13,9 +13,26 @@ process.on('beforeExit', (code) => {
 process.on('exit', (code) => {
     console.error('[Worker] exit code=' + code);
 });
+// Flipped right before process.send({ ready: true }) at the bottom of this
+// file. Until then, ANY uncaughtException means module load never finished:
+// process.on('message', ...) is unwired and the ready signal will never be
+// sent, yet the open IPC channel keeps this process's event loop alive
+// forever. The parent would then see neither 'ready' nor 'exit' and sit on
+// the splash screen indefinitely (this is exactly what a missing
+// ./worker-dispatch-priority.js did to the 1.2.1 packaged build). Exit
+// instead, so the parent's 'exit' handler rejects startWorker() and the app
+// surfaces a real error.
+let readySignalled = false;
+
 process.on('uncaughtException', (err) => {
     console.error('[Worker] uncaughtException:', err.message);
     console.error('[Worker] stack:', err.stack);
+    if (!readySignalled) {
+        console.error('[Worker] fatal during startup — exiting so the parent stops waiting');
+        // Small delay: stderr is a pipe here, and piped writes on Windows are
+        // async — exiting synchronously would truncate the stack above.
+        setTimeout(() => process.exit(1), 100);
+    }
 });
 process.on('unhandledRejection', (reason) => {
     console.error('[Worker] unhandledRejection:', reason);
@@ -65,8 +82,46 @@ const STRICT_IPC = process.env.XLETH_STRICT_IPC === '1';
 // wiring mistake is visible without flooding the log on every poll/call.
 const warnedMissingMethods = new Set();
 
-// Listen for messages from the main process via IPC (child_process.fork)
-process.on('message', ({ id, method, args }) => {
+// ── Waveform methods: deferred, never parallelised ──────────────────────────
+// The four waveform_* RPCs (getRegionPeaks/getRawSamples/getFilePeaks/
+// getClipPeaks) read g_timeline/sampleBank/audioEngine — globals nearly every
+// other RPC in XlethEngineService.cpp also touches. Only the mipmap cache
+// itself (WaveformMipmap.cpp) has its own internal mutex; those three globals
+// have no general-purpose lock anywhere in the engine. The engine's whole
+// correctness model currently rests on this process handling exactly one
+// dispatch() call at a time — moving waveform work to a real background
+// thread (Napi::AsyncWorker) would run its native execution CONCURRENTLY with
+// whatever other RPC this process's JS thread is handling, an unguarded data
+// race against every other RPC touching those globals. That is a correctness
+// risk, not a performance one, and properly auditing/locking those globals
+// for cross-thread access is a much larger undertaking than this fix — see
+// project_timeline_viewport_perf memory.
+//
+// What this DOES fix, staying single-threaded: the Timeline's Phase 5 hi-res
+// fetch coalescing can still land up to ~6 waveform requests in this
+// process's IPC mailbox back-to-back after one pan/zoom settle. Handling
+// them with a single synchronous `process.on('message', ...)` callback (as
+// every other RPC still does, unchanged below) means a transport-position or
+// meter poll that happens to arrive interleaved among them would sit behind
+// however many of the six were queued ahead of it before its own handler
+// even runs — the child process can't act on a later message while an
+// earlier one's handler is still synchronously executing.
+//
+// Deferring JUST these four methods' actual native call via setImmediate
+// fixes that without introducing concurrency: receiving the IPC message
+// stays synchronous and immediate (so the next already-buffered message —
+// e.g. a transport poll — gets its own handler invoked promptly, unaffected),
+// and only the native call itself is pushed to the next check-phase tick.
+// The four calls are still executed one at a time, in the order their
+// setImmediate callbacks were scheduled — never two running at once.
+//
+// The method list lives in worker-dispatch-priority.js, not here, so the
+// DECISION ("which methods get deferred") is unit-testable without forking a
+// real child process — this file can't be imported directly (see that
+// module's own comment).
+const { shouldDeferMethod } = require('./worker-dispatch-priority.js');
+
+function dispatchOne(id, method, args) {
   try {
     // Guard: if the native addon doesn't export this method yet (e.g. Phase 1
     // functions before cmake-js rebuild), it used to fail silently — which made
@@ -164,7 +219,21 @@ process.on('message', ({ id, method, args }) => {
   } catch (e) {
     process.send({ id, error: e.message });
   }
+}
+
+// Listen for messages from the main process via IPC (child_process.fork)
+process.on('message', ({ id, method, args }) => {
+  if (shouldDeferMethod(method)) {
+    // See the WAVEFORM_METHODS comment above: deferred so a burst of these
+    // (Phase 5 coalesces a settle-pass down to ~6) can't hold a transport/
+    // meter poll's own message hostage behind them — receiving stays
+    // immediate, only the native call itself is pushed a tick later.
+    setImmediate(() => dispatchOne(id, method, args));
+    return;
+  }
+  dispatchOne(id, method, args);
 });
 
 // Signal ready
+readySignalled = true;
 process.send({ ready: true });

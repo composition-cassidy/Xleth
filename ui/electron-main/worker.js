@@ -145,12 +145,34 @@ async function startWorker() {
       for (const line of lines) { if (line && !isNoisyEngineLine(line)) log(`[engine:err] ${line}`); }
     });
     let resolved = false;
+
+    // Belt-and-braces against a worker that starts but never reports in.
+    // startWorker() only settles on 'ready' / 'exit' / 'error'; a child whose
+    // module load dies without exiting (its uncaughtException handler swallows
+    // the error, and the open IPC channel keeps its event loop alive) produces
+    // none of the three, so this Promise would stay pending forever and the
+    // splash screen would hang with no error anywhere on screen. Bound the
+    // wait, and let the boot path's catch close the splash and report it.
+    const READY_TIMEOUT_MS =
+      Number(process.env.XLETH_WORKER_READY_TIMEOUT_MS) || 90_000;
+    const readyTimer = setTimeout(() => {
+      if (resolved) return;
+      resolved = true;
+      workerReady = false;
+      addonError =
+        `Engine worker did not signal ready within ${Math.round(READY_TIMEOUT_MS / 1000)}s ` +
+        `— see startup.log for the worker's own [engine:err] output.`;
+      log(`[Worker] ${addonError}`);
+      try { worker?.kill(); } catch { /* already gone */ }
+      reject(new Error(addonError));
+    }, READY_TIMEOUT_MS);
+
     worker.on('message', (msg) => {
       if (msg && msg.ready) {
         workerReady = true;
         addonError = null;
         log('[Worker] ready');
-        if (!resolved) { resolved = true; resolve(); }
+        if (!resolved) { resolved = true; clearTimeout(readyTimer); resolve(); }
         return;
       }
       if (msg && typeof msg.id === 'number') {
@@ -169,13 +191,13 @@ async function startWorker() {
       addonError = `worker exited (code ${code})`;
       for (const p of pending.values()) p.reject(new Error(addonError));
       pending.clear();
-      if (!resolved) { resolved = true; reject(new Error(addonError)); }
+      if (!resolved) { resolved = true; clearTimeout(readyTimer); reject(new Error(addonError)); }
     });
     worker.on('error', (err) => {
       log(`[Worker] spawn error: ${err.message}`);
       workerReady = false;
       addonError = err.message;
-      if (!resolved) { resolved = true; reject(err); }
+      if (!resolved) { resolved = true; clearTimeout(readyTimer); reject(err); }
     });
   });
 }
