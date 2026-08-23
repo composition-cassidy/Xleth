@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.2.2-beta
+
+### Fixed
+
+- **The packaged app no longer hangs forever on the splash screen.** 1.2.1-beta
+  froze at "Starting…" on both the installer and portable builds, and a
+  reinstall did not help. `addon-worker.js` runs outside `app.asar` and is
+  shipped by a per-file electron-builder entry; it had grown a
+  `require('./worker-dispatch-priority.js')` that was never added to that list,
+  so the packaged engine worker threw at load. The throw by itself would have
+  been survivable — what produced a dead splash is that the worker's
+  `uncaughtException` handler did not exit, and its open IPC channel kept the
+  process alive, so the main process saw neither a ready signal nor an exit and
+  waited on a Promise that could never settle. The missing module is now
+  shipped, the worker exits on a fatal startup error so the failure surfaces as
+  a real message, engine startup is bounded by a timeout
+  (`XLETH_WORKER_READY_TIMEOUT_MS`, default 90s), and a test now fails the build
+  if a new worker-side `require` is left unshipped.
+
 ## Unreleased
 
 ### Changed
