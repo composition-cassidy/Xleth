@@ -198,6 +198,7 @@ const useSandboxStore = create((set, get) => ({
       })
       set((state) => ({ layers: [...state.layers, layer], activeLayerId: layer.id, selection: null }))
       get().renderLayer(layer.id, 'open')
+      get().refreshHistory()
     } catch (e) {
       console.warn('[SampleSandbox] addSourceFromRegion failed:', e?.message || e)
     }
@@ -217,6 +218,7 @@ const useSandboxStore = create((set, get) => ({
         : state.activeLayerId
       return { layers, activeLayerId, selection: activeLayerId === state.activeLayerId ? state.selection : null }
     })
+    get().refreshHistory()
   },
 
   setActiveLayer(layerId) {
@@ -234,6 +236,7 @@ const useSandboxStore = create((set, get) => ({
       set((state) => ({
         layers: state.layers.map((l) => (l.id === layerId ? { ...l, muted } : l)),
       }))
+      get().refreshHistory()
     } catch (e) {
       console.warn('[SampleSandbox] setLayerMuted failed:', e?.message || e)
     }
@@ -250,6 +253,7 @@ const useSandboxStore = create((set, get) => ({
       set((state) => ({
         layers: state.layers.map((l) => (l.id === layerId ? { ...l, soloed } : l)),
       }))
+      get().refreshHistory()
     } catch (e) {
       console.warn('[SampleSandbox] setLayerSoloed failed:', e?.message || e)
     }
@@ -278,6 +282,7 @@ const useSandboxStore = create((set, get) => ({
       set((state) => ({
         layers: state.layers.map((l) => (l.id === layerId ? { ...l, gainDb, pan, offsetSamples } : l)),
       }))
+      get().refreshHistory()
     } catch (e) {
       console.warn('[SampleSandbox] setLayerMix failed:', e?.message || e)
     }
@@ -368,6 +373,7 @@ const useSandboxStore = create((set, get) => ({
       // selection for a follow-up Cut/Trim on the same range.
       get().clearSelection()
       get().renderLayer(layerId, 'stackAdd')
+      get().refreshHistory()
     } catch (e) {
       console.warn('[SampleSandbox] addOp failed:', e?.message || e)
     }
@@ -384,6 +390,7 @@ const useSandboxStore = create((set, get) => ({
         })),
       }))
       get().renderLayer(layerId, 'stackRemove')
+      get().refreshHistory()
     } catch (e) {
       console.warn('[SampleSandbox] removeOp failed:', e?.message || e)
     }
@@ -403,6 +410,7 @@ const useSandboxStore = create((set, get) => ({
         }),
       }))
       get().renderLayer(layerId, 'stackReorder')
+      get().refreshHistory()
     } catch (e) {
       console.warn('[SampleSandbox] reorderOp failed:', e?.message || e)
     }
@@ -422,6 +430,7 @@ const useSandboxStore = create((set, get) => ({
         })),
       }))
       get().renderLayer(layerId, 'stackSetParam')
+      get().refreshHistory()
     } catch (e) {
       console.warn('[SampleSandbox] setOpParams failed:', e?.message || e)
     }
@@ -438,6 +447,7 @@ const useSandboxStore = create((set, get) => ({
         })),
       }))
       get().renderLayer(layerId, 'stackSetBypassed')
+      get().refreshHistory()
     } catch (e) {
       console.warn('[SampleSandbox] setOpBypassed failed:', e?.message || e)
     }
@@ -584,6 +594,7 @@ const useSandboxStore = create((set, get) => ({
       const res = await window.xleth?.sandbox?.bake(layerId)
       if (!res?.success) throw new Error(res?.reason || 'bake rejected')
       get().patchLayer(layerId, { bakeState: 'baked' })
+      get().refreshHistory()
     } catch (e) {
       console.warn('[SampleSandbox] bake failed:', e?.message || e)
       get().patchLayer(layerId, { bakeState: 'error', error: e?.message || String(e) })
@@ -632,6 +643,7 @@ const useSandboxStore = create((set, get) => ({
         bakeCompositeState: 'baked',
         bakedAssets: [...state.bakedAssets, { sampleId: res.sampleId, name: res.name }],
       }))
+      get().refreshHistory()
       return res
     } catch (e) {
       console.warn('[SampleSandbox] bakeComposite failed:', e?.message || e)
@@ -658,6 +670,7 @@ const useSandboxStore = create((set, get) => ({
       })
       set((state) => ({ layers: [...state.layers, layer], activeLayerId: layer.id, selection: null }))
       get().renderLayer(layer.id, 'open')
+      get().refreshHistory()
     } catch (e) {
       console.warn('[SampleSandbox] addBakedAssetAsSource failed:', e?.message || e)
     }

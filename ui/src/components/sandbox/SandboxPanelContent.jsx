@@ -1,6 +1,8 @@
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import useSandboxStore from '../../stores/sandboxStore.js'
 import useSandboxPanelStore from '../../stores/sandboxPanelStore.js'
+import { useKeyboardBinding } from '../../windowing/managers/useKeyboardBinding.ts'
+import { playSandboxPreview, stopSandboxPreview } from './sandboxPreviewPlayer.js'
 import SandboxSourcesPanel from './SandboxSourcesPanel.jsx'
 import SandboxToolbar from './SandboxToolbar.jsx'
 import SandboxWaveformCanvas from './SandboxWaveformCanvas.jsx'
@@ -23,6 +25,35 @@ export default function SandboxPanelContent() {
     addSourceFromRegion(openTarget)
     clearOpenTarget()
   }, [openTarget, addSourceFromRegion, clearOpenTarget])
+
+  // ── Space: preview/stop the rendered composite ──────────────────────────
+  // Scoped to `panel:sampleSandbox` so it only fires while this panel is
+  // focused, and only ever wins the dispatch race for that combo then — see
+  // resolveFocusedPanel() in KeyboardManager. TransportBar's own Space
+  // handler is a raw window-level listener outside that router entirely, so
+  // it still gets the event on bubble unless we stop it here explicitly.
+  const [previewing, setPreviewing] = useState(false)
+  // KeyboardManager's combo strings are built from event.key, and the
+  // spacebar's event.key is a literal " " (not the string "Space") — match
+  // that, not event.code.
+  useKeyboardBinding('panel:sampleSandbox', ' ', (e) => {
+    e.preventDefault()
+    e.stopPropagation()
+    if (previewing) {
+      stopSandboxPreview()
+      setPreviewing(false)
+      return 'handled'
+    }
+    const { composite, selection } = useSandboxStore.getState()
+    const started = playSandboxPreview(
+      composite.renderedBuffer,
+      selection?.startSample ?? 0,
+      () => setPreviewing(false),
+    )
+    setPreviewing(started)
+    return 'handled'
+  })
+  useEffect(() => stopSandboxPreview, []) // stop on panel unmount
 
   return (
     <div className="sandbox-panel-content">

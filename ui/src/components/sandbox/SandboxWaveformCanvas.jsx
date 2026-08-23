@@ -199,6 +199,15 @@ export default function SandboxWaveformCanvas() {
     drawRulerCanvas()
   }, [drawBackground, drawOverlay, drawRulerCanvas])
 
+  // The ResizeObserver below is set up once (mount) and lives for the
+  // component's lifetime, so it must never call redrawAll directly — that
+  // would close over whatever `layer` was AT MOUNT (usually null, since a
+  // freshly added source hasn't rendered yet). Route it through a ref kept
+  // current every render instead, so a size correction that lands after a
+  // render arrives repaints with the CURRENT data, not the mount-time one.
+  const redrawAllRef = useRef(redrawAll)
+  useEffect(() => { redrawAllRef.current = redrawAll }, [redrawAll])
+
   // ── Sizing (ResizeObserver) ─────────────────────────────────────────────
   useEffect(() => {
     const container = containerRef.current
@@ -212,7 +221,7 @@ export default function SandboxWaveformCanvas() {
       if (rulerCanvasRef.current) applyCanvasSize(rulerCanvasRef.current, w, RULER_HEIGHT, dpr)
       if (bgCanvasRef.current) applyCanvasSize(bgCanvasRef.current, w, WAVE_HEIGHT, dpr)
       if (overlayCanvasRef.current) applyCanvasSize(overlayCanvasRef.current, w, WAVE_HEIGHT, dpr)
-      redrawAll()
+      redrawAllRef.current()
     }
 
     sizeAndDraw()
