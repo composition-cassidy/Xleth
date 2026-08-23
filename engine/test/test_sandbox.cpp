@@ -135,6 +135,12 @@ static void testOpModel() {
     CHECK(makeOp(5, SandboxOpType::Splice,    SpliceParams{}).implemented(),    "SPLICE lands in SB-4");
     CHECK(makeOp(6, SandboxOpType::Crossfade, CrossfadeParams{}).implemented(), "CROSSFADE lands in SB-4");
 
+    // Every op type auto-renders today — no heavy op (e.g. model separation)
+    // exists yet. Distinct from implemented(): PITCH is a stub but still
+    // cheap, so it does not opt out of auto-render.
+    CHECK(gain.autoRender(),  "GAIN auto-renders");
+    CHECK(pitch.autoRender(), "PITCH is unimplemented but still cheap — auto-renders");
+
     // A hand-built op whose variant disagrees with its type is malformed and
     // must be detectable — this is the failure mode `float params[16]` cannot
     // even represent, let alone catch.

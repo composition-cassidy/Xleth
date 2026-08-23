@@ -11,15 +11,30 @@ const RENDER_STATE_LABEL = {
   error: 'Error',
 }
 
+const COMPOSITE_STATUS_LABEL = {
+  rendering: 'Rendering…', error: 'Error', ready: 'Cached', idle: 'Idle',
+}
+
 export default function SandboxStatusBar() {
   const layers = useSandboxStore((s) => s.layers)
   const activeLayerId = useSandboxStore((s) => s.activeLayerId)
   const clipboard = useSandboxStore((s) => s.clipboard)
   const history = useSandboxStore((s) => s.history)
+  const composite = useSandboxStore((s) => s.composite)
+  const compositeAutoRender = useSandboxStore((s) => s.compositeAutoRender)
   const undo = useSandboxStore((s) => s.undo)
   const redo = useSandboxStore((s) => s.redo)
   const refreshHistory = useSandboxStore((s) => s.refreshHistory)
   const layer = layers.find((l) => l.id === activeLayerId) ?? null
+
+  // "Rendering…" covers both the debounce window (an edit just landed, the
+  // composite render hasn't fired yet) and the render itself actually being
+  // in flight — from the outside they are the same "not caught up yet" state.
+  const compositeStatus = composite.renderState === 'error'
+    ? 'error'
+    : (compositeAutoRender.debouncePending || compositeAutoRender.pending || composite.renderState === 'rendering')
+      ? 'rendering'
+      : composite.renderedBuffer ? 'ready' : 'idle'
 
   // The undo stack is SHARED with the Timeline (there is one UndoManager in the
   // engine). These buttons are only live when the next entry is actually a
@@ -59,6 +74,9 @@ export default function SandboxStatusBar() {
           Render: {renderState}
         </span>
         <span className="sandbox-status-item">Buffer: {bufferRate}</span>
+        <span className={`sandbox-status-item${compositeStatus === 'error' ? ' error' : ''}`}>
+          Composite: {COMPOSITE_STATUS_LABEL[compositeStatus]}
+        </span>
         <span className="sandbox-undo-group">
           <button className="sandbox-undo-btn" disabled={!canUndo} onClick={() => undo()} title={undoTitle}>
             ↶

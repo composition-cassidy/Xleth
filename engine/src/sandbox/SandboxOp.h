@@ -265,6 +265,18 @@ struct SandboxOp {
     // "nothing happened" reads as "not built yet" rather than as a bug.
     bool implemented() const noexcept;
 
+    // False for op types that must never auto-trigger a render from a plain
+    // stack edit — reserved for a future op heavy enough that running it on
+    // every keystroke/drag tick would stall the UI (e.g. model separation).
+    // True for every op type that exists today. The UI's auto-render
+    // scheduler skips a layer whose stack contains an ENABLED op with
+    // autoRender() == false, and that layer then requires the explicit
+    // RE-RENDER fallback. Distinct from implemented(): an op can be
+    // cheap-and-real (autoRender true) or unimplemented-and-cheap
+    // (Pitch/Stretch — still auto-renders today, since a pass-through costs
+    // nothing).
+    bool autoRender() const noexcept;
+
     // Length this op produces from an input of `inputLength` samples, without
     // rendering. Bypassed and unimplemented ops return inputLength unchanged.
     int64_t outputLength(int64_t inputLength) const noexcept;

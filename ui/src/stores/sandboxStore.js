@@ -55,6 +55,37 @@ export const FADE_SHAPE = {
 const POLL_MS = 150
 const POLL_MAX_ATTEMPTS = 200 // ~30s ceiling — a stuck render surfaces as an error, not a silent hang
 
+// ── Composite auto-render ───────────────────────────────────────────────────
+// Every op-stack mutation (add/remove/reorder/param/bypass) — and undo/redo of
+// one — schedules a debounced composite re-render so Play always reflects the
+// latest edit without a manual RE-RENDER click. See _scheduleCompositeAutoRender
+// / _runCompositeAutoRender below.
+const COMPOSITE_AUTORENDER_DEBOUNCE_MS = 150
+
+// Mirrors xleth::sandbox::SandboxOp::autoRender() (SandboxOp.cpp) — per-op-type
+// policy for whether a stack mutation involving this op type may auto-trigger
+// a render. Default true for every op type that exists today; a future heavy
+// op (e.g. model separation) sets its entry false so a layer carrying it never
+// auto-renders and must use the explicit RE-RENDER fallback instead. Keep in
+// sync with the engine table.
+const AUTO_RENDER_BY_OP_TYPE = {
+  trim: true, cut: true, paste: true, splice: true, reverse: true,
+  fade: true, gain: true, crossfade: true, pitch: true, stretch: true,
+}
+
+// True when every op currently on `layer`'s stack permits automatic
+// rendering. One heavy (autoRender:false) op anywhere in the stack is enough
+// to require the manual fallback for that layer — see AUTO_RENDER_BY_OP_TYPE.
+function layerAllowsAutoRender(layer) {
+  return layer.ops.every((o) => AUTO_RENDER_BY_OP_TYPE[o.type] !== false)
+}
+
+// Debounce timer + generation counter for the composite auto-render pipeline.
+// Not store state (like pollTimers) — a setTimeout handle isn't serializable,
+// and the generation only needs to be compared synchronously against itself.
+let compositeDebounceTimer = null
+let compositeGeneration = 0
+
 function makeLayer({ layerId, name, sourceBufferId, bufferSampleRate, region }) {
   return {
     id: layerId,
@@ -152,6 +183,20 @@ const useSandboxStore = create((set, get) => ({
   bakeCompositeState: 'idle', // 'idle' | 'baking' | 'baked' | 'error'
   bakeCompositeError: null,
   compositePreviewState: 'idle', // 'idle' | 'rendering' | 'playing'
+
+  // ── Composite auto-render bookkeeping ──────────────────────────────────
+  // debouncePending: an edit landed, the 150ms coalescing timer is running.
+  // pending: the timer fired — waiting on layers and/or the mix RPC.
+  // The three counters exist so a smoke test can watch rapid edits collapse
+  // into one render (scheduledCount keeps climbing, ranCount barely moves,
+  // supersededCount absorbs the difference).
+  compositeAutoRender: {
+    debouncePending: false,
+    pending: false,
+    scheduledCount: 0,
+    ranCount: 0,
+    supersededCount: 0,
+  },
 
   // ── Shared-undo-stack mirror (SB-6) ──────────────────────────────────────
   // The engine has ONE UndoManager for the whole app. `undoDomain` says whose
@@ -353,6 +398,137 @@ const useSandboxStore = create((set, get) => ({
     pollTimers.set(layerId, timer)
   },
 
+  // Called after every accepted op-stack mutation (and undo/redo of one).
+  // Kicks the layer's own async render exactly like before, then schedules
+  // the composite auto-render — UNLESS the layer's stack currently carries an
+  // op whose type opts out of auto-render (AUTO_RENDER_BY_OP_TYPE), in which
+  // case both are skipped and the layer/composite fall back to their manual
+  // triggers (per-layer RE-RENDER / the Composite section's RE-RENDER button).
+  _triggerAutoRender(layerId, trigger) {
+    const layer = get().layers.find((l) => l.id === layerId)
+    if (!layer || !layerAllowsAutoRender(layer)) return
+    get().renderLayer(layerId, trigger)
+    get()._scheduleCompositeAutoRender(trigger)
+  },
+
+  // Debounces ~150ms: a new call resets the timer, so a burst of edits (a
+  // rapid param drag, or undo/redo touching several layers) collapses into
+  // exactly one composite render instead of one per edit. Bumping
+  // `compositeGeneration` is what lets _runCompositeAutoRender recognize that
+  // a cycle already under way (waiting on layers, or mid-RPC) has been
+  // superseded by a newer edit — it keeps running to avoid wasting the
+  // in-flight work, but its result is discarded instead of published, which
+  // is the externally-visible "cancelled and restarted" behaviour.
+  _scheduleCompositeAutoRender(trigger) {
+    if (compositeDebounceTimer != null) clearTimeout(compositeDebounceTimer)
+    const gen = ++compositeGeneration
+    set((state) => ({
+      compositeAutoRender: {
+        ...state.compositeAutoRender,
+        debouncePending: true,
+        scheduledCount: state.compositeAutoRender.scheduledCount + 1,
+      },
+    }))
+    compositeDebounceTimer = setTimeout(() => {
+      compositeDebounceTimer = null
+      get()._runCompositeAutoRender(gen, trigger)
+    }, COMPOSITE_AUTORENDER_DEBOUNCE_MS)
+  },
+
+  // Fetches the composite mix without touching any store state — shared by
+  // the manual renderComposite() action and the auto-render pipeline, which
+  // need different rules for when to apply (or discard) the result.
+  async _fetchCompositeRender() {
+    const res = await window.xleth?.sandbox?.renderComposite()
+    if (!res?.ready) throw new Error(res?.reason || 'composite render rejected')
+    return {
+      numChannels: res.numChannels,
+      numSamples: res.numSamples,
+      sampleRate: res.sampleRate,
+      layersMixed: res.layersMixed,
+      channels: deinterleave(res.data, res.numChannels, res.numSamples),
+    }
+  },
+
+  // Waits for every bound layer to reach its own render's terminal state
+  // (sandbox_renderComposite's own precondition — "every layer already
+  // rendered"), then mixes. Bails out at any point `gen` stops being the
+  // newest scheduled generation, discarding whatever this cycle produced
+  // rather than letting stale audio overwrite a fresher edit's result.
+  async _runCompositeAutoRender(gen, trigger) {
+    const isStale = () => gen !== compositeGeneration
+    const supersede = () => set((state) => ({
+      compositeAutoRender: {
+        ...state.compositeAutoRender,
+        pending: false,
+        supersededCount: state.compositeAutoRender.supersededCount + 1,
+      },
+    }))
+
+    if (isStale()) { supersede(); return }
+    set((state) => ({
+      compositeAutoRender: { ...state.compositeAutoRender, debouncePending: false, pending: true },
+    }))
+
+    const layersSettled = () => get().layers
+      .filter((l) => l.sourceBufferId >= 0)
+      .every((l) => l.renderState === 'ready' || l.renderState === 'error')
+    const deadline = Date.now() + 30000
+    while (!layersSettled()) {
+      if (isStale()) { supersede(); return }
+      if (Date.now() > deadline) {
+        set((state) => ({ compositeAutoRender: { ...state.compositeAutoRender, pending: false } }))
+        return
+      }
+      await new Promise((resolve) => setTimeout(resolve, 30))
+    }
+    if (isStale()) { supersede(); return }
+
+    set((state) => ({ composite: { ...state.composite, renderState: 'rendering', error: null } }))
+    let renderedBuffer
+    try {
+      renderedBuffer = await get()._fetchCompositeRender()
+    } catch (e) {
+      if (!isStale()) {
+        set({ composite: { renderState: 'error', renderedBuffer: null, error: e?.message || String(e) } })
+      }
+      supersede()
+      console.warn(`[SampleSandbox] composite auto-render (${trigger}) failed:`, e?.message || e)
+      return
+    }
+    if (isStale()) { supersede(); return } // a newer edit landed mid-RPC — this result is already outdated
+
+    set((state) => ({
+      composite: { renderState: 'ready', renderedBuffer, error: null },
+      compositeAutoRender: { ...state.compositeAutoRender, pending: false, ranCount: state.compositeAutoRender.ranCount + 1 },
+    }))
+  },
+
+  // Resolves once `composite.renderedBuffer` reflects every currently-
+  // scheduled edit: fires a still-debouncing auto-render immediately instead
+  // of waiting out the remaining delay, waits out one already in flight
+  // (auto or manual), and renders fresh if nothing has ever run. This is what
+  // makes Play "always plays the newest COMPLETED render" instead of handing
+  // the transport whatever stale buffer happened to be cached.
+  async _awaitFreshComposite() {
+    if (compositeDebounceTimer != null) {
+      clearTimeout(compositeDebounceTimer)
+      compositeDebounceTimer = null
+      get()._runCompositeAutoRender(compositeGeneration, 'play')
+    }
+    const deadline = Date.now() + 30000
+    while (get().composite.renderState === 'rendering' || get().compositeAutoRender.pending) {
+      if (Date.now() > deadline) break
+      await new Promise((resolve) => setTimeout(resolve, 30))
+    }
+    let buf = get().composite.renderedBuffer
+    if (!buf) {
+      await get().renderComposite()
+      buf = get().composite.renderedBuffer
+    }
+    return buf
+  },
+
   // ── Op stack ─────────────────────────────────────────────────────────────
   // Every mutator below is optimistic-after-confirm: the bridge call happens
   // first, and the local `ops` array is only touched once it succeeds — see
@@ -380,7 +556,7 @@ const useSandboxStore = create((set, get) => ({
       // (it doesn't mutate the stack), so copying deliberately preserves the
       // selection for a follow-up Cut/Trim on the same range.
       get().clearSelection()
-      get().renderLayer(layerId, 'stackAdd')
+      get()._triggerAutoRender(layerId, 'stackAdd')
       get().refreshHistory()
     } catch (e) {
       console.warn('[SampleSandbox] addOp failed:', e?.message || e)
@@ -397,7 +573,7 @@ const useSandboxStore = create((set, get) => ({
           ops: l.ops.filter((o) => o.id !== opId),
         })),
       }))
-      get().renderLayer(layerId, 'stackRemove')
+      get()._triggerAutoRender(layerId, 'stackRemove')
       get().refreshHistory()
     } catch (e) {
       console.warn('[SampleSandbox] removeOp failed:', e?.message || e)
@@ -417,7 +593,7 @@ const useSandboxStore = create((set, get) => ({
           return { ...l, ops }
         }),
       }))
-      get().renderLayer(layerId, 'stackReorder')
+      get()._triggerAutoRender(layerId, 'stackReorder')
       get().refreshHistory()
     } catch (e) {
       console.warn('[SampleSandbox] reorderOp failed:', e?.message || e)
@@ -437,7 +613,7 @@ const useSandboxStore = create((set, get) => ({
           ops: l.ops.map((o) => (o.id === opId ? { ...o, params } : o)),
         })),
       }))
-      get().renderLayer(layerId, 'stackSetParam')
+      get()._triggerAutoRender(layerId, 'stackSetParam')
       get().refreshHistory()
     } catch (e) {
       console.warn('[SampleSandbox] setOpParams failed:', e?.message || e)
@@ -454,7 +630,7 @@ const useSandboxStore = create((set, get) => ({
           ops: l.ops.map((o) => (o.id === opId ? { ...o, enabled: !bypassed } : o)),
         })),
       }))
-      get().renderLayer(layerId, 'stackSetBypassed')
+      get()._triggerAutoRender(layerId, 'stackSetBypassed')
       get().refreshHistory()
     } catch (e) {
       console.warn('[SampleSandbox] setOpBypassed failed:', e?.message || e)
@@ -618,25 +794,22 @@ const useSandboxStore = create((set, get) => ({
   // CURRENT state even if the preview hasn't been re-rendered since the last
   // mix tweak.
 
+  // Manual path — the RE-RENDER button, and _awaitFreshComposite's
+  // never-rendered-yet fallback. Always applies its result and is
+  // authoritative over the auto-render pipeline: bumping compositeGeneration
+  // (and dropping any pending debounce timer) supersedes an auto-render cycle
+  // already in flight, so its eventual result is discarded rather than
+  // clobbering this one when it lands.
   async renderComposite() {
-    set((state) => ({ composite: { ...state.composite, renderState: 'rendering', error: null } }))
+    if (compositeDebounceTimer != null) { clearTimeout(compositeDebounceTimer); compositeDebounceTimer = null }
+    compositeGeneration++
+    set((state) => ({
+      composite: { ...state.composite, renderState: 'rendering', error: null },
+      compositeAutoRender: { ...state.compositeAutoRender, debouncePending: false },
+    }))
     try {
-      const res = await window.xleth?.sandbox?.renderComposite()
-      if (!res?.ready) throw new Error(res?.reason || 'composite render rejected')
-      const channels = deinterleave(res.data, res.numChannels, res.numSamples)
-      set({
-        composite: {
-          renderState: 'ready',
-          renderedBuffer: {
-            numChannels: res.numChannels,
-            numSamples: res.numSamples,
-            sampleRate: res.sampleRate,
-            layersMixed: res.layersMixed,
-            channels,
-          },
-          error: null,
-        },
-      })
+      const renderedBuffer = await get()._fetchCompositeRender()
+      set({ composite: { renderState: 'ready', renderedBuffer, error: null } })
     } catch (e) {
       set({ composite: { renderState: 'error', renderedBuffer: null, error: e?.message || String(e) } })
     }
@@ -644,20 +817,18 @@ const useSandboxStore = create((set, get) => ({
 
   // Preview playback (Space, or the composite section's own Play button) —
   // the single toggle both surfaces share, so their state never drifts apart.
-  // Renders the composite on demand: a user who never clicked "Render
-  // Composite" first should still hear something on Space, not silence.
+  // Always plays the newest COMPLETED render: _awaitFreshComposite waits out
+  // any render already in flight (or still debouncing) instead of handing the
+  // transport a buffer an edit has already invalidated, and renders fresh on
+  // demand if nothing has ever run.
   async toggleCompositePreview() {
     if (get().compositePreviewState === 'playing') {
       stopSandboxPreview()
       set({ compositePreviewState: 'idle' })
       return
     }
-    let buf = get().composite.renderedBuffer
-    if (!buf) {
-      set({ compositePreviewState: 'rendering' })
-      await get().renderComposite()
-      buf = get().composite.renderedBuffer
-    }
+    set({ compositePreviewState: 'rendering' })
+    const buf = await get()._awaitFreshComposite()
     if (!buf) {
       set({ compositePreviewState: 'idle' }) // render failed — composite.error already set
       return
@@ -785,9 +956,11 @@ const useSandboxStore = create((set, get) => ({
       if (!res) return null
       if (res.workspace) get().hydrateFromWorkspace(res.workspace)
       if (res.applied) {
-        // Every layer's render is now stale — the stack it was made from moved.
+        // Every layer's render is now stale — the stack it was made from
+        // moved. Schedules renders identically to a forward edit (same
+        // per-layer autoRender gate, same debounced composite render).
         for (const l of get().layers) {
-          if (l.sourceBufferId >= 0) get().renderLayer(l.id, which)
+          if (l.sourceBufferId >= 0) get()._triggerAutoRender(l.id, which)
         }
       }
       await get().refreshHistory()
@@ -849,12 +1022,20 @@ const useSandboxStore = create((set, get) => ({
       if (raw == null) return
       for (const l of get().layers) stopPolling(l.id)
       stopSandboxPreview()
+      // A project switch invalidates any auto-render cycle still in flight
+      // for the OLD layer set — bump the generation so its result (were it to
+      // land after this point) is recognized as stale and discarded.
+      if (compositeDebounceTimer != null) { clearTimeout(compositeDebounceTimer); compositeDebounceTimer = null }
+      compositeGeneration++
       set({
         layers: [],
         activeLayerId: null,
         selection: null,
         composite: { renderState: 'idle', renderedBuffer: null, error: null },
         compositePreviewState: 'idle',
+        compositeAutoRender: {
+          debouncePending: false, pending: false, scheduledCount: 0, ranCount: 0, supersededCount: 0,
+        },
         bakedAssets: [],
       })
       get().hydrateFromWorkspace(raw)

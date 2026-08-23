@@ -280,6 +280,23 @@ bool SandboxOp::implemented() const noexcept {
     return false;
 }
 
+bool SandboxOp::autoRender() const noexcept {
+    switch (type) {
+        case SandboxOpType::Trim:
+        case SandboxOpType::Cut:
+        case SandboxOpType::Paste:
+        case SandboxOpType::Splice:
+        case SandboxOpType::Reverse:
+        case SandboxOpType::Fade:
+        case SandboxOpType::Gain:
+        case SandboxOpType::Crossfade:
+        case SandboxOpType::Pitch:
+        case SandboxOpType::Stretch:
+            return true;
+    }
+    return true;
+}
+
 int64_t SandboxOp::outputLength(int64_t inputLength) const noexcept {
     if (inputLength < 0) inputLength = 0;
     if (!enabled || !implemented() || !consistent()) return inputLength;
