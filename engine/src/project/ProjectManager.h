@@ -54,7 +54,14 @@
 //     linearly. Endpoints and the post-animation hold are unchanged; the
 //     interior of a zoom sweep differs by that reparameterization. A 1x→8x
 //     sweep now reads 2.83x at its midpoint instead of 4.5x.
-inline constexpr int XLETH_PROJECT_SCHEMA_VERSION = 6;
+// v7: Sample Sandbox workspace. project.json carries a "sandboxWorkspace"
+//     object — SandboxCore::toJson(), i.e. sandboxStackVersion + every layer's
+//     op-stack, mix params and DURABLE source reference (path + time range,
+//     NOT the SampleBank id, which is minted fresh on every load). Written only
+//     when the workspace has layers, so a project that never opened the Sandbox
+//     is byte-identical to a v6 one apart from schema_version. A v≤6 project
+//     has no key at all and loads with an empty workspace — an exact no-op.
+inline constexpr int XLETH_PROJECT_SCHEMA_VERSION = 7;
 
 class ProjectManager {
 public:
@@ -71,10 +78,15 @@ public:
     // inside project.json (under "effectChains" and "masterEffectChain" keys).
     // masterVolume is a MixEngine-only value (no Timeline field backs it), so it
     // has to be passed in explicitly to be persisted.
+    // sandboxWorkspace is SandboxCore::toJson(). Like masterVolume it has no
+    // Timeline field behind it — the Sample Sandbox workspace is not timeline
+    // content — so it has to be passed in explicitly to be persisted. Written
+    // only when it actually holds layers.
     bool saveProject(const Timeline& timeline,
                      const nlohmann::json& effectChains     = nlohmann::json::object(),
                      const nlohmann::json& masterEffectChain = nlohmann::json(),
-                     float masterVolume = 1.0f);
+                     float masterVolume = 1.0f,
+                     const nlohmann::json& sandboxWorkspace = nlohmann::json());
 
     // Save the timeline to a NEW project directory with a NEW name.
     // Creates the directory structure (same as createProject) and writes
@@ -86,7 +98,8 @@ public:
                        const Timeline& timeline,
                        const nlohmann::json& effectChains      = nlohmann::json::object(),
                        const nlohmann::json& masterEffectChain = nlohmann::json(),
-                       float masterVolume = 1.0f);
+                       float masterVolume = 1.0f,
+                       const nlohmann::json& sandboxWorkspace = nlohmann::json());
 
     // Whether a project directory has been set (via create/load/saveAs).
     bool hasProjectDir() const;
@@ -109,6 +122,12 @@ public:
     // Master fader gain read during the last successful loadProject().
     // Defaults to 1.0 (0 dB) for projects saved before it was persisted.
     float getLoadedMasterVolume() const;
+
+    // Sample Sandbox workspace JSON read during the last successful
+    // loadProject(), in SandboxCore::fromJson's shape. An empty object for a
+    // project saved before v7 or one that never opened the Sandbox — both of
+    // which fromJson accepts as "no layers", not as an error.
+    const nlohmann::json& getLoadedSandboxWorkspace() const;
 
     // Per-media validation result. Covers both Media Pool sources and the
     // per-region swapped/extracted audio that lives inside the project folder.
@@ -180,6 +199,7 @@ private:
     nlohmann::json loadedEffectChains_      = nlohmann::json::object();
     nlohmann::json loadedMasterEffectChain_ = nlohmann::json();
     float          loadedMasterVolume_      = 1.0f;
+    nlohmann::json loadedSandboxWorkspace_  = nlohmann::json::object();
 
     void        ensureDirectories();
     std::string projectFilePath() const;

@@ -164,7 +164,8 @@ bool ProjectManager::createProject(const std::string& projectDir,
 bool ProjectManager::saveProject(const Timeline& timeline,
                                   const nlohmann::json& effectChains,
                                   const nlohmann::json& masterEffectChain,
-                                  float masterVolume) {
+                                  float masterVolume,
+                                  const nlohmann::json& sandboxWorkspace) {
     // NOTE (Prompt 11): Preview performance settings (previewResolutionScale,
     // previewEffectsBypass) are workstation-local by design and persisted via
     // the Electron settings store (xleth-settings.json), NOT in project.json.
@@ -229,6 +230,15 @@ bool ProjectManager::saveProject(const Timeline& timeline,
             && !masterEffectChain["nodes"].empty())
         j["masterEffectChain"] = masterEffectChain;
 
+    // Sample Sandbox workspace (schema v7). Same "only when non-empty" rule as
+    // the effect chains: a project that never opened the Sandbox gets no key,
+    // so its file does not grow an empty object it will never read back.
+    if (sandboxWorkspace.is_object()
+            && sandboxWorkspace.contains("layers")
+            && sandboxWorkspace["layers"].is_array()
+            && !sandboxWorkspace["layers"].empty())
+        j["sandboxWorkspace"] = sandboxWorkspace;
+
     const std::string path = projectFilePath();
     try {
         std::ofstream f(path);
@@ -258,7 +268,8 @@ bool ProjectManager::saveProjectAs(const std::string& newProjectDir,
                                    const Timeline& timeline,
                                    const nlohmann::json& effectChains,
                                    const nlohmann::json& masterEffectChain,
-                                   float masterVolume) {
+                                   float masterVolume,
+                                   const nlohmann::json& sandboxWorkspace) {
     if (newProjectDir.empty()) {
         std::cerr << "[Project] ERROR saveProjectAs: empty directory\n";
         return false;
@@ -280,7 +291,7 @@ bool ProjectManager::saveProjectAs(const std::string& newProjectDir,
         return false;
     }
 
-    return saveProject(timeline, effectChains, masterEffectChain, masterVolume);
+    return saveProject(timeline, effectChains, masterEffectChain, masterVolume, sandboxWorkspace);
 }
 
 bool ProjectManager::hasProjectDir() const {
@@ -296,6 +307,7 @@ void ProjectManager::resetToBlank() {
     loadedEffectChains_      = nlohmann::json::object();
     loadedMasterEffectChain_ = nlohmann::json();
     loadedMasterVolume_      = 1.0f;
+    loadedSandboxWorkspace_  = nlohmann::json::object();
 }
 
 // ─── loadProject ──────────────────────────────────────────────────────────────
@@ -410,6 +422,12 @@ std::optional<Timeline> ProjectManager::loadProject(const std::string& projectDi
     // Absent in projects saved before master volume was persisted → 1.0 (0 dB).
     if (j.contains("masterVolume") && j["masterVolume"].is_number())
         loadedMasterVolume_ = j["masterVolume"].get<float>();
+    // Sample Sandbox workspace (v7+). Reset first: a project WITHOUT the key
+    // must not inherit the previously-open project's sandbox — the same trap
+    // the master effect chain hit before it was always-written.
+    loadedSandboxWorkspace_ = nlohmann::json::object();
+    if (j.contains("sandboxWorkspace") && j["sandboxWorkspace"].is_object())
+        loadedSandboxWorkspace_ = j["sandboxWorkspace"];
 
     // Heal in-project asset paths (swapped/exports/media/proxies) that broke
     // because the project moved. External sources that can't be found here stay
@@ -430,6 +448,10 @@ std::optional<Timeline> ProjectManager::loadProject(const std::string& projectDi
 
 const nlohmann::json& ProjectManager::getLoadedEffectChains() const {
     return loadedEffectChains_;
+}
+
+const nlohmann::json& ProjectManager::getLoadedSandboxWorkspace() const {
+    return loadedSandboxWorkspace_;
 }
 
 const nlohmann::json& ProjectManager::getLoadedMasterEffectChain() const {

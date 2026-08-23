@@ -53,6 +53,25 @@ struct SandboxLayer {
     // is deliberately louder than rendering at a guessed 44100.
     double bufferSampleRate = 0.0;
 
+    // ── Durable source reference (SB-6) ──────────────────────────────────────
+    // sourceBufferId is a SampleBank id, and SampleBank is NOT persisted with
+    // the project: ids are minted fresh, in region order, on every load (see
+    // project_load's regionToSampleMap_ rebuild). Persisting the id alone would
+    // reopen a workspace pointing at whatever audio happened to take that slot.
+    //
+    // This triple is what a load actually re-resolves the buffer FROM — exactly
+    // the arguments SampleBank::loadSampleFromSource takes, which is the same
+    // call project load already uses to rebuild every region's audio. Empty
+    // path = no durable reference (a layer opened over an in-memory asset such
+    // as a composite bake): the layer reloads UNBOUND, sourceBufferId = -1,
+    // with its op-stack fully intact. It is the audio binding that cannot be
+    // recovered, never the edit.
+    std::string sourceFilePath;
+    double      sourceStartTime = 0.0;
+    double      sourceEndTime   = 0.0;
+
+    bool hasDurableSource() const { return !sourceFilePath.empty() && sourceEndTime > sourceStartTime; }
+
     std::vector<SandboxOp> ops;
 
     // ── Mix params — NOT part of the op-stack, NOT part of the stack hash ─────
@@ -94,8 +113,12 @@ public:
     // ── Layers ───────────────────────────────────────────────────────────────
 
     // Returns the new layer's id. `name` may be empty; the caller supplies a
-    // display name, this class does not invent one.
-    int addLayer(const std::string& name, int sourceBufferId, double bufferSampleRate);
+    // display name, this class does not invent one. The trailing three
+    // arguments are the DURABLE source reference (see SandboxLayer) and may be
+    // omitted for a layer over an in-memory asset that has no file behind it.
+    int addLayer(const std::string& name, int sourceBufferId, double bufferSampleRate,
+                 const std::string& sourceFilePath = {},
+                 double sourceStartTime = 0.0, double sourceEndTime = 0.0);
 
     // Re-adds a layer with its original id and full contents — the undo path for
     // removeLayer. Returns false if that id is already live.
@@ -148,6 +171,15 @@ public:
     bool setLayerSoloed(int layerId, bool soloed);
     bool setLayerSource(int layerId, int sourceBufferId, double bufferSampleRate);
 
+    // Durable source reference only — does NOT touch sourceBufferId and does
+    // NOT dirty the stack. Separate from setLayerSource because the two move
+    // independently: project load re-resolves a stored path into a NEW buffer
+    // id (setLayerSource), while a swap that rewrites the file behind a layer
+    // updates the path without the id having changed yet. Returns false when
+    // the layer is unknown or nothing actually changed.
+    bool setLayerSourceRef(int layerId, const std::string& sourceFilePath,
+                           double sourceStartTime, double sourceEndTime);
+
     // ── Dirty bookkeeping ────────────────────────────────────────────────────
 
     // Called by whoever owns the renderer once a buffer accounting for the whole
@@ -156,6 +188,20 @@ public:
 
     // Force a full re-render of a layer (source buffer replaced underneath us).
     void markLayerDirty(int layerId);
+
+    // ── Post-load rebinding (SB-6) ───────────────────────────────────────────
+    // Drops every layer's sourceBufferId to -1 and marks its whole stack dirty.
+    //
+    // fromJson() reads sourceBufferId back VERBATIM, because that is what makes
+    // the workspace round-trip lossless in-process (a save/reload inside one
+    // session keeps its bank). Across a real project load it is a live hazard:
+    // SampleBank ids are minted fresh on every load, so the id in the file
+    // names some OTHER project's audio. Project load therefore calls this
+    // immediately after fromJson and then re-resolves each layer's durable
+    // source reference into a new id via setLayerSource. A layer with no
+    // durable reference simply stays unbound rather than rendering the wrong
+    // audio, which is the whole reason this is a separate, explicit step.
+    void unbindAllSources();
 
     // ── Change hook ──────────────────────────────────────────────────────────
     // Fired once after any mutation that actually changed something, with the

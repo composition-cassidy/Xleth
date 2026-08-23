@@ -172,9 +172,13 @@ std::string SetSandboxOpBypassedCommand::describe() const {
 // ─── AddSandboxLayerCommand ───────────────────────────────────────────────────
 
 AddSandboxLayerCommand::AddSandboxLayerCommand(SandboxCore& core, std::string name,
-                                               int sourceBufferId, double bufferSampleRate)
+                                               int sourceBufferId, double bufferSampleRate,
+                                               std::string sourceFilePath,
+                                               double sourceStartTime, double sourceEndTime)
     : core_(core), name_(std::move(name)),
-      sourceBufferId_(sourceBufferId), bufferSampleRate_(bufferSampleRate) {}
+      sourceBufferId_(sourceBufferId), bufferSampleRate_(bufferSampleRate),
+      sourceFilePath_(std::move(sourceFilePath)),
+      sourceStartTime_(sourceStartTime), sourceEndTime_(sourceEndTime) {}
 
 void AddSandboxLayerCommand::execute(Timeline&) {
     if (haveSnapshot_) {
@@ -185,7 +189,8 @@ void AddSandboxLayerCommand::execute(Timeline&) {
         if (accepted_) layerId_ = snapshot_.id;
         return;
     }
-    layerId_  = core_.addLayer(name_, sourceBufferId_, bufferSampleRate_);
+    layerId_  = core_.addLayer(name_, sourceBufferId_, bufferSampleRate_,
+                               sourceFilePath_, sourceStartTime_, sourceEndTime_);
     accepted_ = layerId_ > 0;
 }
 
@@ -309,6 +314,42 @@ void BakeSandboxCompositeCommand::undo(Timeline&) {
 
 std::string BakeSandboxCompositeCommand::describe() const {
     return label_.empty() ? "Bake Sandbox Composite" : "Bake \"" + label_ + "\"";
+}
+
+// ─── SwapSandboxSampleCommand ─────────────────────────────────────────────────
+
+SwapSandboxSampleCommand::SwapSandboxSampleCommand(std::string label, int trackId, int regionId,
+                                                   SwapFn swapFn, RevertFn revertFn, ApplyFn applyFn)
+    : label_(std::move(label)),
+      trackId_(trackId),
+      regionId_(regionId),
+      swapFn_(std::move(swapFn)),
+      revertFn_(std::move(revertFn)),
+      applyFn_(std::move(applyFn)) {}
+
+void SwapSandboxSampleCommand::execute(Timeline&) {
+    if (!everExecuted_) {
+        everExecuted_ = true;
+        sampleId_ = swapFn_ ? swapFn_() : -1;
+        accepted_ = sampleId_ >= 0;
+        // Release it: nothing calls it again, and it captured the rendered
+        // buffer. An undo stack a hundred entries deep would otherwise pin one
+        // whole sandbox render per swap for the rest of the session.
+        swapFn_ = nullptr;
+        return;
+    }
+    // Redo: re-point the binding at the asset the first execute already
+    // produced. No render, no second file, no second SampleBank id.
+    accepted_ = accepted_ && sampleId_ >= 0 && applyFn_ && applyFn_(sampleId_);
+}
+
+void SwapSandboxSampleCommand::undo(Timeline&) {
+    if (!accepted_) return;
+    if (revertFn_) revertFn_();
+}
+
+std::string SwapSandboxSampleCommand::describe() const {
+    return label_.empty() ? "Swap In Sandbox Sample" : "Swap In \"" + label_ + "\"";
 }
 
 } // namespace xleth::sandbox

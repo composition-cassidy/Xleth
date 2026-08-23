@@ -28,12 +28,21 @@
 //      bake to a brand-new SampleBank asset addable back as a source, and
 //      that bake's undo/redo is verified through real sandbox_open calls
 //      against the SAME sampleId going tombstoned and live again
+//   6. SB-6: the deliverable fixture — one region placed on TWO pattern
+//      tracks, swapped to a sandbox render, with the bound sample's LENGTH
+//      measured before/after so "all placed instances update" is counted
+//      rather than asserted; sandbox_undo restores the old sample and
+//      refuses to touch a timeline edit sitting on the shared stack; and a
+//      real project save → load reproduces the exact op-stacks and workspace
+//      while REBINDING each layer's SampleBank id (a project whose sandbox
+//      sources went missing reloads unbound with its stacks intact)
 //
 // Run after rebuilding the native addon:
 //   node bridge/test_sandbox_bridge.js
 
 const path = require('path');
 const fs   = require('fs');
+const os   = require('os');
 
 const repoRoot = path.resolve(__dirname, '..');
 const dllDirs = [
@@ -44,6 +53,9 @@ const dllDirs = [
 process.env.PATH = dllDirs.join(';') + ';' + process.env.PATH;
 
 const addon = require('./build/Release/xleth_native.node');
+
+// Scratch project root for the SB-6 persistence fixture. Removed at teardown.
+const tmpRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'xleth-sandbox-'));
 
 // ── Harness ─────────────────────────────────────────────────────────────────
 
@@ -394,10 +406,272 @@ async function main() {
     fn.sandbox_close(fresh.layerId);
   }
 
+  // ── 13. SB-6: swap-in, session undo/redo, workspace persistence ──────────
+  group('SB-6 exports');
+  {
+    const sb6Names = [
+      'sandbox_swapIn', 'sandbox_getWorkspace',
+      'sandbox_undo', 'sandbox_redo', 'sandbox_getHistory',
+    ];
+    for (const n of sb6Names) { fn[n] = mustFn(n); ok(true, `addon.${n} is exported`); }
+  }
+
+  // The deliverable fixture. One region, TWO pattern tracks both playing it
+  // through the same pattern — so "ALL placed instances update" is something
+  // the test can actually count rather than assert by inspection.
+  //
+  // Read the note on sandbox_swapIn before changing this: the audio binding is
+  // REGION-scoped (MixEngine::regionToSampleMap_) while {trackId, regionId}
+  // keys only the Sampler instance, which is exactly why one swap moves both
+  // tracks. trackId is validated, not used to narrow the write.
+  group('SB-6 fixture — swap in replaces the sample under every placed instance');
+  let projDir, swapRegionId, swapTrackA, swapTrackB, swapLayerId;
+  let baselineSamples = 0, swappedSamples = 0, swappedPath = '', fixtureDur = 0;
+  {
+    const createProject = mustFn('project_create');
+    const addRegion     = mustFn('timeline_addRegion');
+    const addTrack      = mustFn('timeline_addTrack');
+    const toPatternTrack= mustFn('timeline_convertToPatternTrack');
+    const addPattern    = mustFn('timeline_addPattern');
+    const addBlock      = mustFn('timeline_addPatternBlock');
+    const mapRegion     = mustFn('audio_mapRegionToSample');
+    const regionInfo    = mustFn('timeline_getRegionAudioInfo');
+    const getRegions    = mustFn('timeline_getRegions');
+
+    projDir = path.join(tmpRoot, 'swap-proj');
+    ok(createProject(projDir, 'SandboxSwapSmoke') === true, 'project_create succeeds');
+
+    swapRegionId = addRegion({ name: 'swap-target', startTime: 0, endTime: 1,
+                               audioFilePath: fixtureWav });
+    ok(typeof swapRegionId === 'number' && swapRegionId >= 0,
+       `timeline_addRegion → region ${swapRegionId}`);
+
+    swapTrackA = addTrack({ name: 'pattern A' });  toPatternTrack(swapTrackA);
+    swapTrackB = addTrack({ name: 'pattern B' });  toPatternTrack(swapTrackB);
+    ok(swapTrackA >= 0 && swapTrackB >= 0 && swapTrackA !== swapTrackB,
+       `two pattern tracks (${swapTrackA}, ${swapTrackB})`);
+
+    const patternId = addPattern({ name: 'swap-pattern', regionId: swapRegionId, lengthTicks: 1920 });
+    const blockA = addBlock({ trackId: swapTrackA, patternId, positionTicks: 0,    durationTicks: 1920 });
+    const blockB = addBlock({ trackId: swapTrackB, patternId, positionTicks: 1920, durationTicks: 1920 });
+    ok(blockA >= 0 && blockB >= 0, 'the same pattern is placed on BOTH tracks');
+
+    // Bind the region's original audio — the thing the swap has to replace.
+    mapRegion(swapRegionId, sourceRef);
+    const base = regionInfo(swapRegionId);
+    baselineSamples = base.numSamples;
+    ok(baselineSamples > 0, `region is bound to its original audio (${baselineSamples} samples)`);
+
+    const engineRate = base.engineSampleRate;
+    fixtureDur = baselineSamples / engineRate;
+
+    // Open a layer WITH a durable source reference — the path+range project
+    // load re-resolves from, since the SampleBank id is minted fresh each load.
+    const opened = fn.sandbox_open(sourceRef, 'swap-source',
+                                   { filePath: fixtureWav, startTime: 0, endTime: fixtureDur });
+    ok(opened.success === true, `sandbox_open with a source descriptor succeeds (${JSON.stringify(opened)})`);
+    ok(opened.sourceFilePath === fixtureWav, 'the durable source path is echoed back');
+    swapLayerId = opened.layerId;
+
+    // A TRIM makes the sandbox output a visibly different length from the
+    // original, so "the bound sample actually changed" is measurable rather
+    // than a matter of trusting the call's return value.
+    const trimEnd = Math.floor(baselineSamples / 2);
+    const trim = fn.sandbox_stackAdd(swapLayerId, { type: 'trim', params: { startSample: 0, endSample: trimEnd } });
+    ok(trim.success === true, `stackAdd(trim → ${trimEnd} samples) succeeds`);
+
+    // Swapping before a render must be refused, not silently swap stale audio.
+    const tooEarly = fn.sandbox_swapIn(swapLayerId, swapTrackA, swapRegionId);
+    ok(tooEarly.success === false && /not rendered/.test(tooEarly.reason || ''),
+       `swapIn before a render is refused (${JSON.stringify(tooEarly)})`);
+
+    fn.sandbox_render(swapLayerId, 'sb6-fixture');
+    const deadline = Date.now() + 5000;
+    let rendered = null;
+    while (Date.now() < deadline) {
+      const r = fn.sandbox_getRenderedBuffer(swapLayerId);
+      if (r.ready) { rendered = r; break; }
+      await sleep(25);
+    }
+    ok(rendered !== null, 'the layer rendered');
+    ok(rendered.numSamples === trimEnd,
+       `the render is the TRIMMED length (${rendered.numSamples} vs ${trimEnd})`);
+
+    const swap = fn.sandbox_swapIn(swapLayerId, swapTrackA, swapRegionId);
+    ok(swap.success === true, `sandbox_swapIn succeeds (${JSON.stringify(swap)})`);
+    ok(swap.previousSampleId === sourceRef,
+       `it reports the binding it replaced (${swap.previousSampleId} === ${sourceRef})`);
+    ok(swap.sampleId !== sourceRef,
+       'the new binding is a DIFFERENT SampleBank id — an atomic handoff, not an in-place rewrite');
+    ok(swap.instancesUpdated.samplers === 2,
+       `both placed instances are reported updated (${swap.instancesUpdated.samplers})`);
+    swappedPath = swap.swappedPath;
+    ok(fs.existsSync(swappedPath), `the swapped audio was materialised on disk (${swappedPath})`);
+
+    const after = regionInfo(swapRegionId);
+    swappedSamples = after.numSamples;
+    ok(Math.abs(swappedSamples - trimEnd) <= 2,
+       `the region now resolves to the SANDBOX output (${swappedSamples} ≈ ${trimEnd})`);
+    ok(swappedSamples !== baselineSamples, '…which is not what it resolved to before');
+
+    const reg = getRegions().find((r) => r.id === swapRegionId);
+    ok(reg && reg.hasSwappedAudio === true,
+       'the region records the swap, which is what makes it survive a reload');
+  }
+
+  group('SB-6 sandbox_undo / sandbox_redo');
+  {
+    const regionInfo = mustFn('timeline_getRegionAudioInfo');
+    const getRegions = mustFn('timeline_getRegions');
+
+    const hist = fn.sandbox_getHistory();
+    ok(hist.undoDomain === 'sandbox', `the swap is tagged as a sandbox edit (${hist.undoDomain})`);
+    ok(/Swap In/.test(hist.undoDescription), `…and describes itself (${hist.undoDescription})`);
+    ok(hist.sandboxUndoCount >= 1, `sandboxUndoCount counts only sandbox entries (${hist.sandboxUndoCount})`);
+
+    const undone = fn.sandbox_undo();
+    ok(undone.applied === true, `sandbox_undo applies the swap's undo (${JSON.stringify(undone.reason || '')})`);
+    ok(regionInfo(swapRegionId).numSamples === baselineSamples,
+       'undo restores the ORIGINAL sample under every placed instance');
+    const regAfterUndo = getRegions().find((r) => r.id === swapRegionId);
+    ok(regAfterUndo.hasSwappedAudio === false, '…and clears the region\'s swapped-audio state');
+
+    const redone = fn.sandbox_redo();
+    ok(redone.applied === true, 'sandbox_redo re-applies the swap');
+    ok(Math.abs(regionInfo(swapRegionId).numSamples - swappedSamples) <= 2,
+       '…back to the sandbox output');
+    ok(fs.existsSync(swappedPath), '…without writing a second file — the first one is reused');
+
+    // The workspace comes back on every call, because the renderer's layer list
+    // is a mirror built by echoing its own mutations; an undo has to re-seed it.
+    const ws = JSON.parse(redone.workspace);
+    ok(Array.isArray(ws.layers) && ws.layers.length >= 1,
+       'undo/redo return the whole workspace so the UI mirror can re-seed');
+  }
+
+  group('SB-6 undo domain guard — one shared stack, two surfaces');
+  {
+    const addTrack = mustFn('timeline_addTrack');
+    const strayTrack = addTrack({ name: 'stray timeline edit' });
+    ok(strayTrack >= 0, 'a TIMELINE edit lands on the same shared undo stack');
+
+    const guarded = fn.sandbox_undo();
+    ok(guarded.applied === false,
+       'sandbox_undo REFUSES when the next entry is not a sandbox edit');
+    ok(guarded.domain === 'timeline', `…and says whose it is (${guarded.domain})`);
+    ok(/timeline/.test(guarded.reason || ''), `…with a reason the panel can show (${guarded.reason})`);
+
+    ok(addon.undo_undo() === true, 'the generic undo pops the timeline edit');
+    const nowSandbox = fn.sandbox_getHistory();
+    ok(nowSandbox.undoDomain === 'sandbox',
+       'with it gone, the sandbox edit is back on top');
+  }
+
+  group('SB-6 swapIn rejection paths');
+  {
+    const bad = [
+      [fn.sandbox_swapIn(999999, swapTrackA, swapRegionId), 'unknown layerId'],
+      [fn.sandbox_swapIn(swapLayerId, swapTrackA, 999999),  'unknown regionId'],
+      [fn.sandbox_swapIn(swapLayerId, 999999, swapRegionId), 'unknown trackId'],
+      [fn.sandbox_swapIn(swapLayerId, swapTrackA, swapRegionId, { slotIndex: 3 }), 'slotIndex != 0'],
+    ];
+    for (const [r, label] of bad)
+      ok(r && r.success === false && typeof r.reason === 'string',
+         `${label} → {success:false, reason} (${JSON.stringify(r)})`);
+  }
+
+  // The other half of the deliverable: the workspace itself has to come back
+  // byte-for-byte across a save/load, and the layer has to REBIND to real
+  // audio rather than to whatever SampleBank id the file happened to record.
+  group('SB-6 persistence — op-stack + workspace round-trip through project.json');
+  {
+    const saveProject = mustFn('project_save');
+    const loadProject = mustFn('project_load');
+    const regionInfo  = mustFn('timeline_getRegionAudioInfo');
+
+    // A second layer with mix params and a multi-op stack, so the round-trip
+    // covers more than the one layer the swap used.
+    // A sub-range of the fixture, derived from its MEASURED duration — the
+    // fixture is only a few milliseconds long, so a hardcoded range would
+    // decode zero samples and reload (correctly) unresolved, which is not what
+    // this group is testing.
+    const second = fn.sandbox_open(sourceRef, 'persist-layer',
+                                   { filePath: fixtureWav,
+                                     startTime: fixtureDur * 0.25,
+                                     endTime:   fixtureDur * 0.75 });
+    ok(second.success === true, 'a second layer is opened for the round-trip');
+    fn.sandbox_stackAdd(second.layerId, { type: 'reverse', params: { startSample: 0, endSample: -1 } });
+    fn.sandbox_stackAdd(second.layerId, { type: 'gain', params: { startSample: 0, endSample: -1, gainDb: -6, normalize: false, normalizeTargetDb: 0 } });
+    fn.sandbox_setLayerMix(second.layerId, -3.5, 0.5, 128);
+    fn.sandbox_setLayerMuted(second.layerId, true);
+
+    const before = JSON.parse(fn.sandbox_getWorkspace());
+    ok(before.sandboxStackVersion === 2, `workspace carries sandboxStackVersion 2 (${before.sandboxStackVersion})`);
+    ok(before.layers.length === 2, `two layers in the live workspace (${before.layers.length})`);
+
+    ok(saveProject() === true, 'project_save succeeds');
+
+    const raw = JSON.parse(fs.readFileSync(path.join(projDir, 'project.json'), 'utf8'));
+    ok(raw.schema_version === 7, `project.json is schema v7 (${raw.schema_version})`);
+    ok(raw.sandboxWorkspace && Array.isArray(raw.sandboxWorkspace.layers)
+       && raw.sandboxWorkspace.layers.length === 2,
+       'the workspace is ON DISK — the project.json key whitelist did not drop it');
+    ok(raw.sandboxWorkspace.layers.every((l) => typeof l.sourceFilePath === 'string' && l.sourceFilePath),
+       'every layer carries its DURABLE source reference, not just a SampleBank id');
+
+    ok(loadProject(projDir) === true, 'project_load succeeds');
+
+    const after = JSON.parse(fn.sandbox_getWorkspace());
+    ok(after.layers.length === before.layers.length,
+       `every layer came back (${after.layers.length} of ${before.layers.length})`);
+
+    // Compare everything EXCEPT the runtime binding: sourceBufferId and
+    // bufferSampleRate are deliberately re-resolved on load, because the id in
+    // the file names the previous session's bank slot.
+    const strip = (l) => { const c = { ...l }; delete c.sourceBufferId; delete c.bufferSampleRate; return c; };
+    const beforeStripped = JSON.stringify(before.layers.map(strip));
+    const afterStripped  = JSON.stringify(after.layers.map(strip));
+    ok(beforeStripped === afterStripped,
+       'the op-stacks, ids, names, mix params and source refs are IDENTICAL after the round-trip');
+    if (beforeStripped !== afterStripped) {
+      console.error('    before:', beforeStripped);
+      console.error('    after :', afterStripped);
+    }
+
+    ok(after.layers.every((l) => l.sourceBufferId >= 0),
+       'every layer REBOUND to a freshly minted SampleBank id');
+    ok(after.layers.every((l) => l.bufferSampleRate > 0),
+       '…at a known sample rate, so the renderer will not refuse it');
+    ok(after.layers.some((l) => l.ops.length === 2 && l.muted === true && l.pan === 0.5),
+       'the multi-op layer kept its stack AND its mix params');
+
+    // And the swap itself survived, through the region\'s swappedAudioPath.
+    ok(Math.abs(regionInfo(swapRegionId).numSamples - swappedSamples) <= 2,
+       'the SWAP survives the reload too — the region still plays the sandbox output');
+
+    // A layer whose durable source is gone must reload unbound with its stack
+    // intact, not bound to whatever id took that slot.
+    const missingDir = path.join(tmpRoot, 'missing-proj');
+    fs.mkdirSync(missingDir, { recursive: true });
+    const doctored = JSON.parse(fs.readFileSync(path.join(projDir, 'project.json'), 'utf8'));
+    doctored.sandboxWorkspace.layers.forEach((l) => { l.sourceFilePath = 'Z:/nope/gone.wav'; });
+    fs.writeFileSync(path.join(missingDir, 'project.json'), JSON.stringify(doctored, null, 2));
+    ok(loadProject(missingDir) === true, 'a project whose sandbox sources are missing still loads');
+    const orphaned = JSON.parse(fn.sandbox_getWorkspace());
+    ok(orphaned.layers.length === before.layers.length, '…with every layer present');
+    ok(orphaned.layers.every((l) => l.sourceBufferId === -1),
+       '…each UNBOUND rather than pointing at a stale id');
+    ok(orphaned.layers.every((l) => Array.isArray(l.ops)) &&
+       orphaned.layers.some((l) => l.ops.length === 2),
+       '…and every op-stack intact — it is the binding that is lost, never the edit');
+  }
+
   // ── Teardown ─────────────────────────────────────────────────────────────
   group('shutdown');
   try { addon.shutdown(); ok(true, 'shutdown() completed'); }
   catch (e) { ok(false, `shutdown() threw: ${e.message}`); }
+
+  try { fs.rmSync(tmpRoot, { recursive: true, force: true }); } catch {}
 
   console.log('\n--------------------------------------------------');
   console.log(`${failed === 0 ? 'PASSED' : 'FAILED'}: ${passed}/${passed + failed} tests`);

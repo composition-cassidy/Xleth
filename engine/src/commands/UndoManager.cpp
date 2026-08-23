@@ -117,6 +117,39 @@ std::string UndoManager::getRedoDescription() const {
 int UndoManager::getUndoCount() const { return static_cast<int>(undoStack_.size()); }
 int UndoManager::getRedoCount()  const { return static_cast<int>(redoStack_.size()); }
 
+std::string UndoManager::getUndoDomain() const {
+    return undoStack_.empty() ? std::string{} : std::string(undoStack_.back()->domain());
+}
+
+std::string UndoManager::getRedoDomain() const {
+    return redoStack_.empty() ? std::string{} : std::string(redoStack_.back()->domain());
+}
+
+namespace {
+std::vector<UndoManager::HistoryEntry>
+snapshotStack(const std::vector<std::unique_ptr<Command>>& stack) {
+    std::vector<UndoManager::HistoryEntry> out;
+    out.reserve(stack.size());
+    for (const auto& c : stack)
+        out.push_back({ c->describe(), std::string(c->domain()) });
+    return out;
+}
+} // namespace
+
+std::vector<UndoManager::HistoryEntry> UndoManager::getUndoHistory() const {
+    return snapshotStack(undoStack_);
+}
+
+std::vector<UndoManager::HistoryEntry> UndoManager::getRedoHistory() const {
+    return snapshotStack(redoStack_);
+}
+
+int UndoManager::countByDomain(const std::string& domain) const {
+    int n = 0;
+    for (const auto& c : undoStack_) if (domain == c->domain()) ++n;
+    return n;
+}
+
 void UndoManager::clear() {
     const int u = getUndoCount(), r = getRedoCount();
     undoStack_.clear();

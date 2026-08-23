@@ -60,11 +60,16 @@ function makeLayer({ layerId, name, sourceBufferId, bufferSampleRate, region }) 
     name,
     sourceBufferId,
     bufferSampleRate,
-    // Region metadata purely for the mini-waveform thumbnail + display — the
-    // engine doesn't need it, it already has sourceBufferId.
+    // Region metadata. sourceFilePath/Start/End double as the layer's DURABLE
+    // source reference (SB-6): they are what sandbox_open passes to the engine
+    // so a saved workspace can re-resolve its audio, since a SampleBank id is
+    // minted fresh on every project load. sourceRegionId is the swap TARGET —
+    // the timeline region this layer's audio came from, and so the binding
+    // "Swap In" replaces by default.
     sourceFilePath: region?.audioFilePath ?? null,
     sourceStartTime: region?.startTime ?? null,
     sourceEndTime: region?.endTime ?? null,
+    sourceRegionId: region?.id ?? null,
     ops: [],
     muted: false,
     soloed: false,
@@ -76,9 +81,51 @@ function makeLayer({ layerId, name, sourceBufferId, bufferSampleRate, region }) 
     renderState: 'idle', // 'idle' | 'rendering' | 'ready' | 'error'
     renderedBuffer: null, // { numChannels, numSamples, sampleRate, channels: Float32Array[] }
     bakeState: 'idle', // 'idle' | 'baking' | 'baked' | 'error'
-    swapInState: 'idle', // 'idle' | 'unavailable'
-    undoDepth: 0,
+    swapInState: 'idle', // 'idle' | 'swapping' | 'swapped' | 'error'
+    swapInError: null,
+    // Last accepted swap, for the status readout: { sampleId, previousSampleId,
+    // swappedPath, samplers, clips }.
+    lastSwap: null,
     error: null,
+  }
+}
+
+// SandboxCore::toJson() layer → this store's layer shape. Used wherever the
+// engine hands back a whole workspace instead of confirming one mutation:
+// project load and sandbox undo/redo. Render-side fields (renderedBuffer,
+// renderState, …) are NOT in the engine's JSON — they are per-session and are
+// re-established by the render that follows.
+function layerFromWorkspace(wl, previous) {
+  const base = makeLayer({
+    layerId: wl.id,
+    name: wl.name,
+    sourceBufferId: wl.sourceBufferId,
+    bufferSampleRate: wl.bufferSampleRate,
+    region: null,
+  })
+  return {
+    ...base,
+    // Keep whatever the previous local copy knew that the engine does not
+    // track (rendered buffer, region id) so a re-seed is not a downgrade.
+    ...(previous
+      ? {
+          renderState: previous.renderState,
+          renderedBuffer: previous.renderedBuffer,
+          sourceRegionId: previous.sourceRegionId,
+          lastSwap: previous.lastSwap,
+        }
+      : {}),
+    sourceFilePath: wl.sourceFilePath || null,
+    sourceStartTime: wl.sourceStartTime ?? null,
+    sourceEndTime: wl.sourceEndTime ?? null,
+    ops: (wl.ops ?? []).map((o) => ({
+      id: o.id, type: o.type, params: o.params, enabled: o.enabled !== false,
+    })),
+    gainDb: wl.gainDb ?? 0,
+    pan: wl.pan ?? 0,
+    offsetSamples: wl.offsetSamples ?? 0,
+    muted: !!wl.muted,
+    soloed: !!wl.soloed,
   }
 }
 
@@ -97,6 +144,20 @@ const useSandboxStore = create((set, get) => ({
   },
   bakeCompositeState: 'idle', // 'idle' | 'baking' | 'baked' | 'error'
   bakeCompositeError: null,
+
+  // ── Shared-undo-stack mirror (SB-6) ──────────────────────────────────────
+  // The engine has ONE UndoManager for the whole app. `undoDomain` says whose
+  // edit is next in line, which is what lets the panel disable its own Undo
+  // (or explain itself) instead of undoing a timeline edit.
+  history: {
+    canUndo: false,
+    canRedo: false,
+    undoDomain: '',
+    redoDomain: '',
+    undoDescription: '',
+    redoDescription: '',
+    sandboxUndoCount: 0,
+  },
   bakedAssets: [], // [{ sampleId, name }] — this session's composite bakes, addable back as a source
 
   // ── Layer lifecycle ────────────────────────────────────────────────────
@@ -120,7 +181,12 @@ const useSandboxStore = create((set, get) => ({
       )
       if (sourceRef == null || sourceRef < 0) throw new Error('Could not load source audio')
 
-      const res = await window.xleth?.sandbox?.open(sourceRef, region.name)
+      // Third argument is the DURABLE source reference — without it a saved
+      // workspace reopens unbound, because the SampleBank id above is minted
+      // fresh on every project load.
+      const res = await window.xleth?.sandbox?.open(sourceRef, region.name, {
+        filePath, startTime: region.startTime, endTime: region.endTime,
+      })
       if (!res?.success) throw new Error(res?.reason || 'sandbox.open failed')
 
       const layer = makeLayer({
@@ -291,7 +357,7 @@ const useSandboxStore = create((set, get) => ({
           const entry = { id: res.opId, type: op.type, params: op.params, enabled: op.enabled ?? true }
           if (index < 0 || index >= ops.length) ops.push(entry)
           else ops.splice(index, 0, entry)
-          return { ...l, ops, undoDepth: l.undoDepth + 1 }
+          return { ...l, ops }
         }),
       }))
       // Any accepted stack mutation is about to change the rendered buffer
@@ -315,7 +381,6 @@ const useSandboxStore = create((set, get) => ({
         layers: state.layers.map((l) => (l.id !== layerId ? l : {
           ...l,
           ops: l.ops.filter((o) => o.id !== opId),
-          undoDepth: l.undoDepth + 1,
         })),
       }))
       get().renderLayer(layerId, 'stackRemove')
@@ -334,7 +399,7 @@ const useSandboxStore = create((set, get) => ({
           const ops = l.ops.slice()
           const [moved] = ops.splice(fromIndex, 1)
           ops.splice(toIndex, 0, moved)
-          return { ...l, ops, undoDepth: l.undoDepth + 1 }
+          return { ...l, ops }
         }),
       }))
       get().renderLayer(layerId, 'stackReorder')
@@ -354,7 +419,6 @@ const useSandboxStore = create((set, get) => ({
         layers: state.layers.map((l) => (l.id !== layerId ? l : {
           ...l,
           ops: l.ops.map((o) => (o.id === opId ? { ...o, params } : o)),
-          undoDepth: l.undoDepth + 1,
         })),
       }))
       get().renderLayer(layerId, 'stackSetParam')
@@ -371,7 +435,6 @@ const useSandboxStore = create((set, get) => ({
         layers: state.layers.map((l) => (l.id !== layerId ? l : {
           ...l,
           ops: l.ops.map((o) => (o.id === opId ? { ...o, enabled: !bypassed } : o)),
-          undoDepth: l.undoDepth + 1,
         })),
       }))
       get().renderLayer(layerId, 'stackSetBypassed')
@@ -600,18 +663,161 @@ const useSandboxStore = create((set, get) => ({
     }
   },
 
-  // SB-6 (swap-in + persistence) hasn't landed — there is no bridge method to
-  // call yet. Wired as a stub so the button and its state machine are already
-  // in place; flip this to a real bridge.sandbox.swapIn(layerId) call once it
-  // exists.
-  swapInLayer(layerId) {
-    if (!window.xleth?.sandbox?.swapIn) {
-      get().patchLayer(layerId, { swapInState: 'unavailable' })
-      console.info('[SampleSandbox] Swap In is a stub — SB-6 has not landed yet.')
-      return
+  // ── Swap In (SB-6) ───────────────────────────────────────────────────────
+  // Replaces the sample bound to {trackId, regionId} with this layer's current
+  // render. `target` defaults to the layer's OWN source region and no track
+  // (-1), which is the case the panel's SWAP IN button means: "put this back
+  // where it came from".
+  //
+  // The engine's binding is region-scoped, so one swap updates every placed
+  // instance — every pattern-track sampler and every clip on that region. That
+  // is the point of the feature, not a side effect; `lastSwap` records how many
+  // so the panel can state it rather than imply it. See sandbox_swapIn's own
+  // header comment in XlethEngineService.cpp for why trackId cannot narrow it.
+  async swapInLayer(layerId, target = {}) {
+    const layer = get().layers.find((l) => l.id === layerId)
+    if (!layer) return null
+    const regionId = target.regionId ?? layer.sourceRegionId
+    if (regionId == null) {
+      get().patchLayer(layerId, {
+        swapInState: 'error',
+        swapInError: 'This layer has no source region to swap back into.',
+      })
+      return null
     }
-    window.xleth.sandbox.swapIn(layerId)
+    const trackId = target.trackId ?? -1
+
+    get().patchLayer(layerId, { swapInState: 'swapping', swapInError: null })
+    try {
+      const opts = target.name ? { name: target.name } : undefined
+      const res = await window.xleth?.sandbox?.swapIn(layerId, trackId, regionId, opts)
+      if (!res?.success) throw new Error(res?.reason || 'swapIn rejected')
+      get().patchLayer(layerId, {
+        swapInState: 'swapped',
+        swapInError: null,
+        lastSwap: {
+          sampleId: res.sampleId,
+          previousSampleId: res.previousSampleId,
+          swappedPath: res.swappedPath,
+          samplers: res.instancesUpdated?.samplers ?? 0,
+          clips: res.instancesUpdated?.clips ?? 0,
+        },
+      })
+      await get().refreshHistory()
+      return res
+    } catch (e) {
+      console.warn('[SampleSandbox] swapIn failed:', e?.message || e)
+      get().patchLayer(layerId, { swapInState: 'error', swapInError: e?.message || String(e) })
+      return null
+    }
+  },
+
+  // ── Session undo / redo (SB-6) ───────────────────────────────────────────
+  // There is ONE undo stack in the engine, shared with the Timeline. These call
+  // the sandbox-scoped wrappers, which refuse when the entry on top is a
+  // timeline edit — so the panel's Undo button can never quietly move a clip.
+  // `applied:false` with a `reason` is the normal, expected answer in that
+  // case, not an error.
+  //
+  // Both re-seed the whole layer list from the workspace the engine returns.
+  // Patching locally is not an option: this store's copy was built by echoing
+  // its own mutations, and an undo is precisely the event it did not issue.
+  async _applyUndoRedo(which) {
+    try {
+      const res = await window.xleth?.sandbox?.[which]?.()
+      if (!res) return null
+      if (res.workspace) get().hydrateFromWorkspace(res.workspace)
+      if (res.applied) {
+        // Every layer's render is now stale — the stack it was made from moved.
+        for (const l of get().layers) {
+          if (l.sourceBufferId >= 0) get().renderLayer(l.id, which)
+        }
+      }
+      await get().refreshHistory()
+      return res
+    } catch (e) {
+      console.warn('[SampleSandbox] ' + which + ' failed:', e?.message || e)
+      return null
+    }
+  },
+  undo() { return get()._applyUndoRedo('undo') },
+  redo() { return get()._applyUndoRedo('redo') },
+
+  async refreshHistory() {
+    try {
+      const h = await window.xleth?.sandbox?.getHistory?.()
+      if (!h) return
+      set({
+        history: {
+          canUndo: !!h.canUndo,
+          canRedo: !!h.canRedo,
+          undoDomain: h.undoDomain || '',
+          redoDomain: h.redoDomain || '',
+          undoDescription: h.undoDescription || '',
+          redoDescription: h.redoDescription || '',
+          sandboxUndoCount: h.sandboxUndoCount ?? 0,
+        },
+      })
+    } catch (e) {
+      console.warn('[SampleSandbox] getHistory failed:', e?.message || e)
+    }
+  },
+
+  // Re-seed the whole layer list from a SandboxCore::toJson() payload. Called
+  // after a project load (the store never saw those mutations) and after every
+  // sandbox undo/redo (same reason). `workspace` may be the JSON string the
+  // bridge returns or an already-parsed object.
+  hydrateFromWorkspace(workspace) {
+    let ws = workspace
+    if (typeof ws === 'string') {
+      try { ws = JSON.parse(ws) } catch { return }
+    }
+    if (!ws || !Array.isArray(ws.layers)) return
+    set((state) => {
+      const prev = new Map(state.layers.map((l) => [l.id, l]))
+      const layers = ws.layers.map((wl) => layerFromWorkspace(wl, prev.get(wl.id)))
+      const activeLayerId = layers.some((l) => l.id === state.activeLayerId)
+        ? state.activeLayerId
+        : (layers[0]?.id ?? null)
+      return { layers, activeLayerId, selection: null }
+    })
+  },
+
+  // Pull the engine's workspace and adopt it wholesale. The project-load entry
+  // point: nothing the store currently holds belongs to the newly opened
+  // project.
+  async reloadFromEngine() {
+    try {
+      const raw = await window.xleth?.sandbox?.getWorkspace?.()
+      if (raw == null) return
+      for (const l of get().layers) stopPolling(l.id)
+      set({
+        layers: [],
+        activeLayerId: null,
+        selection: null,
+        composite: { renderState: 'idle', renderedBuffer: null, error: null },
+        bakedAssets: [],
+      })
+      get().hydrateFromWorkspace(raw)
+      // A reloaded layer has its stack back but no published render — the audio
+      // was never part of the file. A layer whose durable source could not be
+      // re-resolved stays unbound and is deliberately NOT rendered.
+      for (const l of get().layers) {
+        if (l.sourceBufferId >= 0) get().renderLayer(l.id, 'projectLoad')
+      }
+      await get().refreshHistory()
+    } catch (e) {
+      console.warn('[SampleSandbox] reloadFromEngine failed:', e?.message || e)
+    }
   },
 }))
+
+// A project load replaces the engine's whole sandbox workspace (SB-6 persists
+// it in project.json). This store's layer list was built by echoing its OWN
+// mutations, so it has no idea that happened — re-seed it from the engine
+// rather than let it keep showing the previous project's layers.
+globalThis.window?.xleth?.onProjectLoaded?.(() => {
+  useSandboxStore.getState().reloadFromEngine()
+})
 
 export default useSandboxStore

@@ -72,6 +72,25 @@ export default function SandboxStackPanel() {
   const canBake = !!layer && layer.renderState === 'ready'
   const bakeLabel = layer?.bakeState === 'baking' ? 'Baking…' : layer?.bakeState === 'baked' ? 'Baked ✓' : 'BAKE'
 
+  // SWAP IN needs a finished render AND a project region to put it back into.
+  // A layer opened from a composite bake has no source region, so there is
+  // nothing to swap — disabled with a title that says why, rather than a button
+  // that fails when pressed.
+  const hasSwapTarget = layer?.sourceRegionId != null
+  const canSwap = canBake && hasSwapTarget && layer?.swapInState !== 'swapping'
+  const swapLabel =
+    layer?.swapInState === 'swapping' ? 'Swapping…'
+    : layer?.swapInState === 'swapped' ? 'Swapped ✓'
+    : 'SWAP IN'
+  const swapTitle =
+    layer?.swapInState === 'error' ? layer.swapInError
+    : !hasSwapTarget ? 'This layer has no source region to swap back into'
+    : !canBake ? 'Render the layer first'
+    : layer?.lastSwap
+      ? `Replaced the region's sample — ${layer.lastSwap.samplers} placed instance(s), `
+        + `${layer.lastSwap.clips} clip(s). Undo restores the old one.`
+      : "Replace this region's sample with the render — every placed instance follows"
+
   return (
     <div className="sandbox-stack-panel">
       <div className="sandbox-panel-header">Op Stack</div>
@@ -100,12 +119,13 @@ export default function SandboxStackPanel() {
           {bakeLabel}
         </button>
         <button
-          className="sandbox-action-btn sandbox-action-btn--swap"
-          disabled={!layer}
+          className={`sandbox-action-btn sandbox-action-btn--swap${
+            layer?.swapInState === 'error' ? ' sandbox-action-btn--error' : ''}`}
+          disabled={!canSwap}
           onClick={() => layer && swapInLayer(layer.id)}
-          title="Swap the baked result back into the project (requires SB-6)"
+          title={swapTitle}
         >
-          SWAP IN
+          {swapLabel}
         </button>
       </div>
     </div>

@@ -38,7 +38,14 @@ namespace xleth::sandbox {
 // Bumped when the serialized shape of a stack changes incompatibly. Written on
 // every stack, read back with a default of 1 so a pre-versioning file (there
 // are none in the wild yet, but the read path costs nothing) still loads.
-inline constexpr int kSandboxStackVersion = 1;
+//
+//   1 — SB-1..SB-5. Layers carried only sourceBufferId (a SampleBank id).
+//   2 — SB-6. Layers additionally carry a DURABLE source reference
+//       (sourceFilePath / sourceStartTime / sourceEndTime). A v1 workspace
+//       reads back with an empty path, which reloads as an unbound layer
+//       (sourceBufferId = -1) whose op-stack is nonetheless intact — the
+//       stack was never the part that could not be re-resolved.
+inline constexpr int kSandboxStackVersion = 2;
 
 // ─── SandboxOpType ────────────────────────────────────────────────────────────
 // Order is load-bearing: it must match the alternative order of SandboxOpParams

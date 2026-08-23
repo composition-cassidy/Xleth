@@ -32,12 +32,17 @@ SandboxOp* SandboxLayer::findOp(int opId) {
 
 // ─── SandboxCore — layers ─────────────────────────────────────────────────────
 
-int SandboxCore::addLayer(const std::string& name, int sourceBufferId, double bufferSampleRate) {
+int SandboxCore::addLayer(const std::string& name, int sourceBufferId, double bufferSampleRate,
+                          const std::string& sourceFilePath,
+                          double sourceStartTime, double sourceEndTime) {
     SandboxLayer layer;
     layer.id               = nextLayerId_++;
     layer.name             = name;
     layer.sourceBufferId   = sourceBufferId;
     layer.bufferSampleRate = bufferSampleRate;
+    layer.sourceFilePath   = sourceFilePath;
+    layer.sourceStartTime  = sourceStartTime;
+    layer.sourceEndTime    = sourceEndTime;
     const int id = layer.id;
     layers_.push_back(std::move(layer));
     fireChange(id);
@@ -237,6 +242,23 @@ bool SandboxCore::setLayerSource(int layerId, int sourceBufferId, double bufferS
     return true;
 }
 
+bool SandboxCore::setLayerSourceRef(int layerId, const std::string& sourceFilePath,
+                                    double sourceStartTime, double sourceEndTime) {
+    SandboxLayer* layer = findLayer(layerId);
+    if (layer == nullptr) return false;
+    if (layer->sourceFilePath  == sourceFilePath
+        && layer->sourceStartTime == sourceStartTime
+        && layer->sourceEndTime   == sourceEndTime) return false;
+    layer->sourceFilePath  = sourceFilePath;
+    layer->sourceStartTime = sourceStartTime;
+    layer->sourceEndTime   = sourceEndTime;
+    // Deliberately does NOT dirty the stack: this is bookkeeping about where
+    // the audio CAME from, not a statement that the audio changed. The buffer
+    // itself only moves through setLayerSource.
+    fireChange(layerId);
+    return true;
+}
+
 // ─── SandboxCore — dirty bookkeeping ──────────────────────────────────────────
 
 void SandboxCore::markLayerRendered(int layerId) {
@@ -268,6 +290,9 @@ nlohmann::json SandboxCore::toJson() const {
         lj["name"]             = l.name;
         lj["sourceBufferId"]   = l.sourceBufferId;
         lj["bufferSampleRate"] = l.bufferSampleRate;
+        lj["sourceFilePath"]   = l.sourceFilePath;
+        lj["sourceStartTime"]  = l.sourceStartTime;
+        lj["sourceEndTime"]    = l.sourceEndTime;
         lj["gainDb"]           = l.gainDb;
         lj["pan"]              = l.pan;
         lj["offsetSamples"]    = l.offsetSamples;
@@ -305,6 +330,12 @@ bool SandboxCore::fromJson(const nlohmann::json& j, int* versionOut, int* skippe
             l.name             = lj.value("name", std::string{});
             l.sourceBufferId   = lj.value("sourceBufferId", -1);
             l.bufferSampleRate = lj.value("bufferSampleRate", 0.0);
+            // Absent in a v1 workspace — the layer then reloads unbound and the
+            // owner is expected to leave sourceBufferId at whatever it read
+            // (typically a stale id) alone. See SandboxLayer's own comment.
+            l.sourceFilePath   = lj.value("sourceFilePath", std::string{});
+            l.sourceStartTime  = lj.value("sourceStartTime", 0.0);
+            l.sourceEndTime    = lj.value("sourceEndTime", 0.0);
             l.gainDb           = lj.value("gainDb", 0.0);
             l.pan              = lj.value("pan", 0.0);
             l.offsetSamples    = lj.value("offsetSamples", static_cast<int64_t>(0));
@@ -334,6 +365,15 @@ bool SandboxCore::fromJson(const nlohmann::json& j, int* versionOut, int* skippe
     if (versionOut) *versionOut = version;
     if (skippedOps) *skippedOps = skipped;
     return true;
+}
+
+void SandboxCore::unbindAllSources() {
+    for (auto& l : layers_) {
+        l.sourceBufferId   = -1;
+        l.bufferSampleRate = 0.0;
+        dirtyFrom(l, 0);
+        fireChange(l.id);
+    }
 }
 
 void SandboxCore::clear() {

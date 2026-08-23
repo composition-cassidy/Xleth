@@ -2603,6 +2603,55 @@ const METHODS = [
     binary: null,
   },
 
+  // ── Sample Sandbox swap-in / workspace / history (SB-6) ────────────────────
+  // sandbox_swapIn is undoable (SwapSandboxSampleCommand). sandbox_undo /
+  // sandbox_redo drive the ONE shared UndoManager — the Sandbox has no second
+  // stack — but refuse when the entry on top is not a sandbox edit, so the
+  // panel's Undo button can never undo a timeline clip move. getWorkspace /
+  // getHistory are pure reads.
+  {
+    method: 'sandbox_swapIn',
+    channels: ['xleth:sandbox:swapIn'],
+    api: { 'sandbox.swapIn': 'xleth:sandbox:swapIn' },
+    handler: 'Sandbox_SwapIn',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // Returns SandboxCore::toJson() as a JSON STRING (same convention as
+    // automation_getPlanDiagnostics) — the caller JSON.parses it.
+    method: 'sandbox_getWorkspace',
+    channels: ['xleth:sandbox:getWorkspace'],
+    api: { 'sandbox.getWorkspace': 'xleth:sandbox:getWorkspace' },
+    handler: 'Sandbox_GetWorkspace',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'sandbox_undo',
+    channels: ['xleth:sandbox:undo'],
+    api: { 'sandbox.undo': 'xleth:sandbox:undo' },
+    handler: 'Sandbox_Undo',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'sandbox_redo',
+    channels: ['xleth:sandbox:redo'],
+    api: { 'sandbox.redo': 'xleth:sandbox:redo' },
+    handler: 'Sandbox_Redo',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'sandbox_getHistory',
+    channels: ['xleth:sandbox:getHistory'],
+    api: { 'sandbox.getHistory': 'xleth:sandbox:getHistory' },
+    handler: 'Sandbox_GetHistory',
+    returns: 'value',
+    binary: null,
+  },
+
 ];
 
 // Binary kinds addon-worker.js knows how to transport. A manifest entry with

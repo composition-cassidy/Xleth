@@ -37,6 +37,31 @@ public:
     int getUndoCount() const;
     int getRedoCount() const;
 
+    // ─── Per-surface history (Command::domain) ────────────────────────────────
+    // There is exactly ONE undo stack for the whole app, but not one editing
+    // surface: the Sample Sandbox panel has its own Undo/Redo buttons, and
+    // pressing them must not quietly undo a timeline clip move that happens to
+    // sit on top. These let a caller ask what the next entry actually belongs
+    // to before offering to undo it.
+    //
+    // Domain of the next command to be undone / redone ("" if none).
+    std::string getUndoDomain() const;
+    std::string getRedoDomain() const;
+
+    struct HistoryEntry {
+        std::string description;
+        std::string domain;
+    };
+
+    // Both are OLDEST → NEWEST, so the last element is the next one to be
+    // undone (resp. redone) — the same order the stacks themselves are in.
+    std::vector<HistoryEntry> getUndoHistory() const;
+    std::vector<HistoryEntry> getRedoHistory() const;
+
+    // Entries whose domain == `domain`. Cheap enough to call from a UI poll:
+    // the stack is capped at maxHistory (100 by default).
+    int countByDomain(const std::string& domain) const;
+
     void clear();
 
     // ─── Dirty / savepoint tracking ───────────────────────────────────────────

@@ -462,6 +462,18 @@
   color: var(--theme-accent);
 }
 
+/* SWAP IN writes back into the project, so it reads as the destructive one of
+   the pair even though it is fully undoable. */
+.sandbox-action-btn--swap:not(:disabled) {
+  border-color: var(--theme-warning);
+  color: var(--theme-warning);
+}
+
+.sandbox-action-btn--error:not(:disabled) {
+  border-color: var(--theme-danger);
+  color: var(--theme-danger);
+}
+
 /* ── Status bar (bottom) ─────────────────────────────────────────────────── */
 
 .sandbox-status-bar {
@@ -499,4 +511,30 @@
 
 .sandbox-status-item.error {
   color: var(--theme-danger);
+}
+
+.sandbox-undo-group {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.sandbox-undo-btn {
+  padding: 1px 7px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 0;
+  background: var(--theme-bg-surface);
+  color: var(--theme-text);
+  font-size: 11px;
+  line-height: 1.2;
+  cursor: pointer;
+}
+
+.sandbox-undo-btn:hover:not(:disabled) {
+  background: var(--theme-bg-hover);
+}
+
+.sandbox-undo-btn:disabled {
+  color: var(--theme-text-placeholder);
+  cursor: default;
 }

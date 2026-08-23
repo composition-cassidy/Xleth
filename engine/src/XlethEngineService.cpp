@@ -5827,7 +5827,13 @@ JsonApi::Value Project_Save(const JsonApi::CallbackInfo& info)
         masterChain  = mix.getMasterEffectChainJSON();
         masterVolume = mix.getMasterVolume();
     }
-    bool ok = g_projectManager->saveProject(*g_timeline, effectChains, masterChain, masterVolume);
+    // Sample Sandbox workspace (SB-6). Not Timeline content, so — like
+    // masterVolume — it has to be handed to ProjectManager explicitly or the
+    // hand-copied project.json key whitelist drops it.
+    nlohmann::json sandboxWorkspace = nlohmann::json::object();
+    if (g_sandboxCore) sandboxWorkspace = g_sandboxCore->toJson();
+    bool ok = g_projectManager->saveProject(*g_timeline, effectChains, masterChain, masterVolume,
+                                            sandboxWorkspace);
     if (ok && g_undoManager) g_undoManager->markSavepoint();
     log.done(ok ? "true" : "false");
     return JsonApi::Boolean::New(env, ok);
@@ -5860,8 +5866,10 @@ JsonApi::Value Project_SaveAs(const JsonApi::CallbackInfo& info)
         masterChain  = mix.getMasterEffectChainJSON();
         masterVolume = mix.getMasterVolume();
     }
+    nlohmann::json sandboxWorkspace = nlohmann::json::object();
+    if (g_sandboxCore) sandboxWorkspace = g_sandboxCore->toJson();
     bool ok = g_projectManager->saveProjectAs(dir, name, *g_timeline, effectChains, masterChain,
-                                              masterVolume);
+                                              masterVolume, sandboxWorkspace);
     if (ok) syncSlotBakeCacheDir();
     if (ok && g_undoManager) g_undoManager->markSavepoint();
     log.done(ok ? "true" : "false");
@@ -5958,6 +5966,19 @@ JsonApi::Value Project_NewBlank(const JsonApi::CallbackInfo& info)
     // 5. Clear undo/redo history. markSavepoint at the end so the empty
     //    project starts out "clean".
     if (g_undoManager) g_undoManager->clear();
+
+    // 5b. Clear the Sample Sandbox workspace. It is per-project state (SB-6
+    //     persists it in project.json), so a blank project must not inherit the
+    //     previous one's layers — the same reason step 5 clears undo. Published
+    //     buffers go first: they are keyed by layer id, and the ids are about
+    //     to be handed out again from 1.
+    if (g_sandboxCore) {
+        if (g_sandboxRenderer) {
+            for (const auto& l : g_sandboxCore->layers()) g_sandboxRenderer->unpublish(l.id);
+            g_sandboxRenderer->clearCache();
+        }
+        g_sandboxCore->clear();
+    }
 
     // 6. Drop decoders, video events, frame caches. Must happen under
     //    syncEventsMutex so the video thread never sees a dangling pointer.
@@ -6208,6 +6229,71 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
             mix.setMasterVolume(g_projectManager->getLoadedMasterVolume());
         }
         audioEngine->refreshLivePresentationLatency();
+    }
+
+    // ── Sample Sandbox workspace (SB-6) ──────────────────────────────────────
+    // Restored AFTER the region audio rebuild above, because it goes through
+    // the same SampleBank and wants the bank in its post-load state before it
+    // starts adding to it.
+    //
+    // Three steps, and the order is load-bearing:
+    //   1. fromJson rebuilds every layer, op-stack, mix param and DURABLE
+    //      source reference. It reads sourceBufferId back verbatim, which is a
+    //      STALE id here — SampleBank ids are minted fresh on every load, so
+    //      that number names the PREVIOUS project's audio.
+    //   2. unbindAllSources() drops those ids to -1. Skipping it is the whole
+    //      bug class this exists to prevent: a layer would render, and a swap
+    //      would publish, entirely the wrong sample.
+    //   3. Each layer's durable reference is re-resolved into a NEW bank id.
+    //      A layer with no durable reference (opened over an in-memory asset,
+    //      e.g. a composite bake) stays unbound — its op-stack is intact and
+    //      the UI shows it as needing a source, which is honest. It is the
+    //      audio binding that could not be recovered, never the edit.
+    //
+    // Rebuilt WITHOUT the UndoManager: raw SandboxCore mutators, exactly as
+    // SandboxCore.h's mutation-discipline note prescribes for project load, so
+    // opening a project does not push a hundred undo steps. g_undoManager was
+    // cleared at the top of this function in any case.
+    if (g_sandboxCore) {
+        if (g_sandboxRenderer) {
+            // The previous project's published buffers name layer ids this
+            // project is about to reuse. Drop them before anything can read one.
+            for (const auto& l : g_sandboxCore->layers()) g_sandboxRenderer->unpublish(l.id);
+            g_sandboxRenderer->clearCache();
+        }
+        g_sandboxCore->clear();
+
+        const auto& ws = g_projectManager->getLoadedSandboxWorkspace();
+        int wsVersion = 0, wsSkippedOps = 0;
+        if (ws.is_object() && ws.contains("layers")) {
+            g_sandboxCore->fromJson(ws, &wsVersion, &wsSkippedOps);
+            g_sandboxCore->unbindAllSources();
+
+            int rebound = 0, unresolved = 0;
+            if (sampleBank && audioEngine) {
+                const double engineRate = audioEngine->getSampleRate();
+                for (const auto& l : g_sandboxCore->layers()) {
+                    if (!l.hasDurableSource()) { ++unresolved; continue; }
+                    const int sid = sampleBank->loadSampleFromSource(
+                        l.sourceFilePath, l.sourceStartTime, l.sourceEndTime, engineRate);
+                    if (sid < 0) {
+                        std::fprintf(stderr,
+                            "[project_load] sandbox layer %d: could not decode '%s' "
+                            "— layer reloads unbound\n", l.id, l.sourceFilePath.c_str());
+                        ++unresolved;
+                        continue;
+                    }
+                    const double rate = sampleBank->getSampleBufferRate(sid);
+                    g_sandboxCore->setLayerSource(l.id, sid, rate > 0.0 ? rate : engineRate);
+                    ++rebound;
+                }
+            }
+            std::cout << "[Project] Sandbox workspace restored: "
+                      << g_sandboxCore->layerCount() << " layer(s), "
+                      << rebound << " rebound, " << unresolved << " unresolved"
+                      << (wsSkippedOps > 0 ? ", " + std::to_string(wsSkippedOps) + " op(s) skipped" : "")
+                      << " (sandboxStackVersion " << wsVersion << ")\n";
+        }
     }
 
     // Drop any stale decoders/events from before the load, then re-wire every
@@ -10519,12 +10605,21 @@ JsonApi::Value sandboxFail(JsonApi::Env env, const char* reason) {
 
 } // namespace
 
-// sandbox_open(sourceRef: number, name?: string)
+// sandbox_open(sourceRef: number, name?: string, source?: object)
 //   → { success, layerId, sourceBufferId, bufferSampleRate, name }
 //   → { success:false, reason }
 // `sourceRef` is a SampleBank sample id — the caller loads audio into the bank
 // first (loadSample / loadSampleFromSource / an existing region source) and
 // opens a sandbox layer against it. Undoable: AddSandboxLayerCommand.
+//
+// `source` is the OPTIONAL durable source reference (SB-6):
+//   { filePath: string, startTime?: number, endTime?: number }
+// — the same triple SampleBank::loadSampleFromSource takes. SampleBank ids are
+// minted fresh on every project load, so without this a persisted workspace
+// cannot re-resolve its audio; the layer still reloads with its op-stack
+// intact, just unbound. Callers that opened the layer from a real file (the
+// Sample Selector path) should always pass it; a layer over an in-memory
+// asset (a composite bake) has nothing to pass and omits it.
 JsonApi::Value Sandbox_Open(const JsonApi::CallbackInfo& info)
 {
     JsonApi::Env env = info.Env();
@@ -10533,7 +10628,7 @@ JsonApi::Value Sandbox_Open(const JsonApi::CallbackInfo& info)
         return env.Undefined();
     }
     if (info.Length() < 1 || !info[0].IsNumber()) {
-        JsonApi::TypeError::New(env, "sandbox_open(sourceRef: number, name?: string)")
+        JsonApi::TypeError::New(env, "sandbox_open(sourceRef: number, name?: string, source?: object)")
             .ThrowAsJavaScriptException();
         return env.Undefined();
     }
@@ -10549,9 +10644,21 @@ JsonApi::Value Sandbox_Open(const JsonApi::CallbackInfo& info)
         ? info[1].As<JsonApi::String>().Utf8Value()
         : sampleBank->getSampleInfo(sourceRef).name.toStdString();
 
+    std::string srcPath;
+    double srcStart = 0.0, srcEnd = 0.0;
+    if (info.Length() >= 3 && info[2].IsObject()) {
+        JsonApi::Object so = info[2].As<JsonApi::Object>();
+        if (so.Has("filePath") && so.Get("filePath").IsString())
+            srcPath = so.Get("filePath").As<JsonApi::String>().Utf8Value();
+        if (so.Has("startTime") && so.Get("startTime").IsNumber())
+            srcStart = so.Get("startTime").As<JsonApi::Number>().DoubleValue();
+        if (so.Has("endTime") && so.Get("endTime").IsNumber())
+            srcEnd = so.Get("endTime").As<JsonApi::Number>().DoubleValue();
+    }
+
     BridgeCallLog log("sandbox.open");
     auto cmd = std::make_unique<xleth::sandbox::AddSandboxLayerCommand>(
-        *g_sandboxCore, name, sourceRef, rate);
+        *g_sandboxCore, name, sourceRef, rate, srcPath, srcStart, srcEnd);
     auto* cmdPtr = cmd.get();
     g_undoManager->execute(std::move(cmd), *g_timeline);
     // addLayer() has no failure path (see SandboxCore::addLayer) — a fresh
@@ -10565,6 +10672,9 @@ JsonApi::Value Sandbox_Open(const JsonApi::CallbackInfo& info)
     out.Set("sourceBufferId",   JsonApi::Number::New(env, sourceRef));
     out.Set("bufferSampleRate", JsonApi::Number::New(env, rate));
     out.Set("name",             JsonApi::String::New(env, name));
+    out.Set("sourceFilePath",   JsonApi::String::New(env, srcPath));
+    out.Set("sourceStartTime",  JsonApi::Number::New(env, srcStart));
+    out.Set("sourceEndTime",    JsonApi::Number::New(env, srcEnd));
     return out;
 }
 
@@ -11259,6 +11369,402 @@ JsonApi::Value Sandbox_BakeComposite(const JsonApi::CallbackInfo& info)
     out.Set("numChannels", JsonApi::Number::New(env, bakedInfo.numChannels));
     out.Set("numSamples",  JsonApi::Number::New(env, bakedInfo.numSamples));
     out.Set("sampleRate",  JsonApi::Number::New(env, bakedInfo.bufferSampleRate));
+    return out;
+}
+
+// ─── Sample Sandbox swap-in / workspace / history (SB-6) ─────────────────────
+
+namespace {
+
+// Monotonic within the process. Every swap writes a NEW file rather than
+// overwriting the region's previous one: undo restores the PREVIOUS binding,
+// and if that binding was itself a swap, its file has to still be on disk.
+int g_sandboxSwapSerial = 1;
+
+// Everything about a region's slot-0 audio binding that a swap changes, so
+// undo/redo is a straight restore of a captured struct rather than a
+// reconstruction. `sampleId` is a SampleBank id that stays LIVE for the whole
+// session (nothing here tombstones it), which is what makes the restore an
+// id swap instead of a re-decode.
+struct SandboxRegionBinding {
+    int         sampleId        = -1;
+    bool        hasSwappedAudio = false;
+    std::string swappedAudioPath;
+    double      swappedAudioDurationSec = 0.0;
+};
+
+SandboxRegionBinding captureRegionBinding(int regionId)
+{
+    SandboxRegionBinding b;
+    if (!audioEngine || !g_timeline) return b;
+    b.sampleId = audioEngine->getMixEngine().getSampleIdForRegion(regionId);
+    if (const SampleRegion* r = g_timeline->getRegion(regionId)) {
+        b.hasSwappedAudio         = r->hasSwappedAudio;
+        b.swappedAudioPath        = r->swappedAudioPath;
+        b.swappedAudioDurationSec = r->swappedAudioDurationSec;
+    }
+    return b;
+}
+
+// Point `regionId` at `b`. This is the ONE place the swap, its undo and its
+// redo all go through, so the three can never drift apart.
+//
+// ATOMIC HANDOFF: every field here names an ALREADY-COMPLETE SampleBank id.
+// Nothing writes into a buffer the audio thread may be reading —
+// mapRegionToSample publishes a different id, buildSamplerForRegion takes its
+// own copy of the PCM, and the old asset is left live and untouched for the
+// whole session. That is also why undo is cheap: there is nothing to re-decode.
+bool applyRegionBinding(int regionId, const SandboxRegionBinding& b)
+{
+    if (!audioEngine || !g_timeline) return false;
+    SampleRegion* region = g_timeline->getRegionMutable(regionId);
+    if (!region) return false;
+    if (b.sampleId < 0) return false;
+
+    auto& mix = audioEngine->getMixEngine();
+    mix.mapRegionToSample(regionId, b.sampleId);
+
+    region->hasSwappedAudio         = b.hasSwappedAudio;
+    region->swappedAudioPath        = b.swappedAudioPath;
+    region->swappedAudioDurationSec = b.swappedAudioDurationSec;
+
+    // Rebuild every {trackId, regionId} sampler that plays this region plus its
+    // preview sampler — this is what makes ALL placed instances follow the swap.
+    refreshSamplerForRegion(regionId);
+
+    // Clip instances of the region resolve through regionToSampleMap_ too, but
+    // a clip with non-identity processing plays out of a cache keyed on the OLD
+    // audio, so it has to be invalidated explicitly (the same pass
+    // audio_loadRegionAudio runs after a remap).
+    for (const Clip* c : g_timeline->getAllClips()) {
+        if (!c || c->regionId != regionId) continue;
+        mix.invalidateClipCache(c->id, "sandbox_swapIn");
+    }
+    return true;
+}
+
+// Write `buf` (at `rate`) to `outFile` as a 24-bit WAV. 24 bits, not the 16 the
+// region exporter uses: a swap replaces the audio the project plays from here
+// on, so it is the end of the edit chain for that region and must not quietly
+// add a quantisation step the sandbox render did not have.
+bool writeSandboxWav(const juce::File& outFile,
+                     const xleth::sandbox::SandboxBuffer& buf, double rate)
+{
+    if (buf.getNumSamples() <= 0 || buf.getNumChannels() <= 0 || rate <= 0.0) return false;
+    outFile.getParentDirectory().createDirectory();
+    if (outFile.existsAsFile()) outFile.deleteFile();
+
+    auto outStream = outFile.createOutputStream();
+    if (!outStream || !outStream->openedOk()) return false;
+
+    juce::WavAudioFormat wavFmt;
+    std::unique_ptr<juce::AudioFormatWriter> writer(
+        wavFmt.createWriterFor(outStream.release(), rate,
+                               static_cast<unsigned int>(buf.getNumChannels()), 24, {}, 0));
+    if (!writer) return false;
+    writer->writeFromAudioSampleBuffer(buf, 0, buf.getNumSamples());
+    writer.reset();   // flush + close
+    return outFile.existsAsFile() && outFile.getSize() > 0;
+}
+
+} // namespace
+
+// sandbox_swapIn(layerId: number, trackId: number, regionId: number, opts?: object)
+//   → { success, sampleId, previousSampleId, swappedPath, numChannels, numSamples,
+//       sampleRate, instancesUpdated: { samplers, clips } }
+//   → { success:false, reason }
+//
+// Replaces the sample bound to {trackId, regionId} with layer `layerId`'s
+// CURRENT published render. Undoable: SwapSandboxSampleCommand — undo restores
+// the exact previous binding, redo re-points at the same asset without
+// re-rendering or writing a second file.
+//
+// ── {trackId, regionId} vs. what actually gets replaced ──────────────────────
+// Read SwapSandboxSampleCommand's header comment before touching this: the
+// audio binding is REGION-scoped (MixEngine::regionToSampleMap_), while
+// {trackId, regionId} keys only the Sampler INSTANCE (MixEngine::samplers_).
+// So this necessarily updates every placed instance of the region — every
+// pattern-track sampler on every track, every clip, and the preview sampler —
+// which IS the requirement ("ALL placed instances update"), not a side effect.
+// `trackId` is accepted because that is how a caller points at the binding, and
+// is validated so a swap addressed at a track that does not exist is refused
+// rather than silently applied project-wide; pass -1 to address the region
+// directly with no track check. `instancesUpdated` reports how many samplers
+// and clips the swap actually moved, so the caller can state what happened
+// instead of guessing.
+//
+// opts: { name?: string, slotIndex?: number }
+//   slotIndex must be 0 (or absent). Slots 1..7 do not share this binding —
+//   each owns an independent file under the project's slots/ dir and its own
+//   {regionId, slot} SampleBank registration — so swapping "the region's
+//   sample" would be the wrong write for them. Refused explicitly rather than
+//   silently redirected to slot 0.
+//
+// Requires a project directory: the swap is materialised as a WAV under
+// swapped/ and recorded on the region as swappedAudioPath, which is the ONLY
+// thing that makes it survive a reload (project_load re-decodes from there).
+// A swap that lived only in SampleBank would evaporate on the next open.
+JsonApi::Value Sandbox_SwapIn(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!sandboxReady()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 3 || !info[0].IsNumber() || !info[1].IsNumber() || !info[2].IsNumber()) {
+        JsonApi::TypeError::New(env,
+            "sandbox_swapIn(layerId: number, trackId: number, regionId: number, opts?: object)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (!audioEngine || !g_projectManager)
+        return sandboxFail(env, "audio engine not available");
+
+    const int layerId  = info[0].As<JsonApi::Number>().Int32Value();
+    const int trackId  = info[1].As<JsonApi::Number>().Int32Value();
+    const int regionId = info[2].As<JsonApi::Number>().Int32Value();
+
+    std::string requestedName;
+    int slotIndex = 0;
+    if (info.Length() >= 4 && info[3].IsObject()) {
+        JsonApi::Object o = info[3].As<JsonApi::Object>();
+        if (o.Has("name") && o.Get("name").IsString())
+            requestedName = o.Get("name").As<JsonApi::String>().Utf8Value();
+        if (o.Has("slotIndex") && o.Get("slotIndex").IsNumber())
+            slotIndex = o.Get("slotIndex").As<JsonApi::Number>().Int32Value();
+    }
+    if (slotIndex != 0)
+        return sandboxFail(env, "only slot 0 (the region's own audio) can be swapped");
+
+    // ── Pre-validation, so the command is guaranteed accepted when built ─────
+    // (the sandbox section's standing dangling-cmdPtr rule). The one condition
+    // that CANNOT be proven in advance is the WAV write / decode itself, which
+    // is why the new sample id is read back through the closures' own shared
+    // state rather than off the Command pointer — same shape as
+    // Sandbox_BakeComposite.
+    const xleth::sandbox::SandboxLayer* layer = g_sandboxCore->findLayer(layerId);
+    if (!layer) return sandboxFail(env, "layer not found");
+
+    xleth::sandbox::SandboxBufferPtr rendered = g_sandboxRenderer->publishedOutput(layerId);
+    if (!rendered) return sandboxFail(env, "layer not rendered yet");
+    if (rendered->getNumSamples() <= 0) return sandboxFail(env, "layer rendered to zero length");
+
+    const double bufferRate = layer->bufferSampleRate;
+    if (!(bufferRate > 0.0)) return sandboxFail(env, "layer has no known sample rate");
+
+    if (!g_projectManager->hasProjectDir())
+        return sandboxFail(env, "no project directory — save the project first");
+
+    if (g_timeline->getRegion(regionId) == nullptr)
+        return sandboxFail(env, "region not found");
+
+    if (trackId >= 0 && g_timeline->getTrack(trackId) == nullptr)
+        return sandboxFail(env, "track not found");
+
+    const SandboxRegionBinding before = captureRegionBinding(regionId);
+    if (before.sampleId < 0)
+        return sandboxFail(env, "region has no audio bound yet — load it before swapping");
+
+    // How many placed instances this will move. Counted BEFORE the swap so the
+    // number describes the binding the caller addressed, and reported back so
+    // "all placed instances update" is observable rather than asserted.
+    int samplerInstances = 0;
+    for (const PatternBlock* b : g_timeline->getAllPatternBlocks()) {
+        if (!b) continue;
+        const Pattern* p = g_timeline->getPattern(b->patternId);
+        if (!p || p->regionId != regionId) continue;
+        ++samplerInstances;
+    }
+    int clipInstances = 0;
+    for (const Clip* c : g_timeline->getAllClips())
+        if (c && c->regionId == regionId) ++clipInstances;
+
+    const std::string label = requestedName.empty() ? layer->name : requestedName;
+
+    // Destination path — namespaced by region AND a session serial so a second
+    // swap never overwrites the file an earlier swap's undo has to restore.
+    const std::string destName =
+        "sandbox_r" + std::to_string(regionId) +
+        "_" + std::to_string(g_sandboxSwapSerial++) + ".wav";
+    const std::string destPath = g_projectManager->getSwappedDir() + "/" + destName;
+
+    struct SwapState {
+        SandboxRegionBinding after;
+        std::string          error;
+    };
+    auto state = std::make_shared<SwapState>();
+
+    xleth::sandbox::SwapSandboxSampleCommand::SwapFn swapFn =
+        [rendered, bufferRate, destPath, regionId, state]() -> int {
+            auto outFile = juce::File(juce::String(destPath));
+            if (!writeSandboxWav(outFile, *rendered, bufferRate)) {
+                state->error = "could not write the swapped WAV";
+                return -1;
+            }
+            const auto probed = probeAudioInfo(destPath);
+            const double endT = probed.duration > 0.0 ? probed.duration : 3600.0;
+            const double engineRate = audioEngine->getSampleRate();
+            const int sid = sampleBank->loadSampleFromSource(destPath, 0.0, endT, engineRate);
+            if (sid < 0) {
+                state->error = "could not decode the swapped WAV";
+                return -1;
+            }
+            triggerMipmapGeneration(sid, destPath, /*saveXlpeak=*/true);
+
+            state->after.sampleId                = sid;
+            state->after.hasSwappedAudio         = true;
+            state->after.swappedAudioPath        = destPath;
+            state->after.swappedAudioDurationSec = probed.duration > 0.0 ? probed.duration : 0.0;
+
+            if (!applyRegionBinding(regionId, state->after)) {
+                state->error = "region disappeared mid-swap";
+                return -1;
+            }
+            return sid;
+        };
+    xleth::sandbox::SwapSandboxSampleCommand::RevertFn revertFn =
+        [before, regionId]() -> bool { return applyRegionBinding(regionId, before); };
+    xleth::sandbox::SwapSandboxSampleCommand::ApplyFn applyFn =
+        [state, regionId](int) -> bool { return applyRegionBinding(regionId, state->after); };
+
+    BridgeCallLog log("sandbox.swapIn");
+    g_undoManager->execute(
+        std::make_unique<xleth::sandbox::SwapSandboxSampleCommand>(
+            label, trackId, regionId, std::move(swapFn), std::move(revertFn), std::move(applyFn)),
+        *g_timeline);
+
+    if (state->after.sampleId < 0) {
+        log.done("failed");
+        return sandboxFail(env, state->error.empty() ? "swap failed" : state->error.c_str());
+    }
+    log.done(std::to_string(state->after.sampleId));
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("success",          JsonApi::Boolean::New(env, true));
+    out.Set("sampleId",         JsonApi::Number::New(env, state->after.sampleId));
+    out.Set("previousSampleId", JsonApi::Number::New(env, before.sampleId));
+    out.Set("swappedPath",      JsonApi::String::New(env, state->after.swappedAudioPath));
+    out.Set("numChannels",      JsonApi::Number::New(env, rendered->getNumChannels()));
+    out.Set("numSamples",       JsonApi::Number::New(env, rendered->getNumSamples()));
+    out.Set("sampleRate",       JsonApi::Number::New(env, bufferRate));
+    JsonApi::Object inst = JsonApi::Object::New(env);
+    inst.Set("samplers", JsonApi::Number::New(env, samplerInstances));
+    inst.Set("clips",    JsonApi::Number::New(env, clipInstances));
+    out.Set("instancesUpdated", inst);
+    return out;
+}
+
+// sandbox_getWorkspace() → string (SandboxCore::toJson(), JSON-encoded)
+// The read-back the SB-2 bridge never had. Three callers need it and none of
+// them can reconstruct it: the renderer store after a project load (its layer
+// list was built by echoing its own mutations, which a load bypasses entirely),
+// the renderer store after a sandbox undo/redo (same reason), and the smoke
+// test's round-trip proof. Returned as a JSON STRING, matching
+// automation_getPlanDiagnostics rather than hand-marshalling a nested object.
+JsonApi::Value Sandbox_GetWorkspace(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_sandboxCore)
+        return JsonApi::String::New(env, "{}");
+    return JsonApi::String::New(env, g_sandboxCore->toJson().dump());
+}
+
+// sandbox_undo() / sandbox_redo()
+//   → { success, applied, domain, description, workspace[, reason] }
+//
+// The Sandbox does NOT own a second undo stack. Every sandbox mutation — stack
+// edits, layer add/remove, mix params, composite bake, swap-in — already goes
+// through the one shared UndoManager, and a private stack would let the two
+// disagree about what "the last edit" was. What was missing is that the shared
+// stack is also the Timeline's: pressing Undo in the Sandbox panel with a clip
+// move on top would silently move the clip.
+//
+// So these check Command::domain() first and refuse when the next entry is not
+// a sandbox edit, reporting `applied:false` plus the description of whatever IS
+// on top — data, not a throw, so the panel can say "next undo is a timeline
+// edit" instead of doing something the user did not ask for. `workspace` comes
+// back on every call because the renderer's layer list is a mirror it built by
+// echoing its own mutations; an undo has to re-seed it, not patch it.
+namespace {
+JsonApi::Value sandboxUndoRedo(const JsonApi::CallbackInfo& info, bool isUndo)
+{
+    JsonApi::Env env = info.Env();
+    if (!sandboxReady() || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    const std::string domain = isUndo ? g_undoManager->getUndoDomain()
+                                      : g_undoManager->getRedoDomain();
+    const std::string desc   = isUndo ? g_undoManager->getUndoDescription()
+                                      : g_undoManager->getRedoDescription();
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("success",     JsonApi::Boolean::New(env, true));
+    out.Set("description", JsonApi::String::New(env, desc));
+
+    bool applied = false;
+    if (domain.empty()) {
+        out.Set("reason", JsonApi::String::New(env, isUndo ? "nothing to undo" : "nothing to redo"));
+    } else if (domain != "sandbox") {
+        out.Set("reason", JsonApi::String::New(env,
+            std::string(isUndo ? "next undo" : "next redo") + " is a " + domain + " edit"));
+    } else {
+        BridgeCallLog log(isUndo ? "sandbox.undo" : "sandbox.redo");
+        applied = isUndo ? g_undoManager->undo(*g_timeline)
+                         : g_undoManager->redo(*g_timeline);
+        log.done(desc);
+    }
+
+    out.Set("applied",   JsonApi::Boolean::New(env, applied));
+    out.Set("domain",    JsonApi::String::New(env, domain));
+    out.Set("workspace", JsonApi::String::New(env, g_sandboxCore->toJson().dump()));
+    return out;
+}
+} // namespace
+
+JsonApi::Value Sandbox_Undo(const JsonApi::CallbackInfo& info) { return sandboxUndoRedo(info, true); }
+JsonApi::Value Sandbox_Redo(const JsonApi::CallbackInfo& info) { return sandboxUndoRedo(info, false); }
+
+// sandbox_getHistory() → { canUndo, canRedo, undoDomain, redoDomain,
+//                          undoDescription, redoDescription,
+//                          sandboxUndoCount, undoCount, redoCount,
+//                          undo: [{description, domain}], redo: [...] }
+// Both arrays are OLDEST → NEWEST, so the LAST element is the next one to be
+// undone (resp. redone) — the same order the stacks are in. `sandboxUndoCount`
+// is what the panel's "Undo depth" readout wants: how many of the entries are
+// the Sandbox's own, not how deep the shared stack happens to be.
+JsonApi::Value Sandbox_GetHistory(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!isInitialised() || !g_undoManager) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    auto toArray = [&](const std::vector<UndoManager::HistoryEntry>& src) {
+        JsonApi::Array arr = JsonApi::Array::New(env, src.size());
+        for (size_t i = 0; i < src.size(); ++i) {
+            JsonApi::Object e = JsonApi::Object::New(env);
+            e.Set("description", JsonApi::String::New(env, src[i].description));
+            e.Set("domain",      JsonApi::String::New(env, src[i].domain));
+            arr.Set(static_cast<uint32_t>(i), e);
+        }
+        return arr;
+    };
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("canUndo",          JsonApi::Boolean::New(env, g_undoManager->canUndo()));
+    out.Set("canRedo",          JsonApi::Boolean::New(env, g_undoManager->canRedo()));
+    out.Set("undoDomain",       JsonApi::String::New(env, g_undoManager->getUndoDomain()));
+    out.Set("redoDomain",       JsonApi::String::New(env, g_undoManager->getRedoDomain()));
+    out.Set("undoDescription",  JsonApi::String::New(env, g_undoManager->getUndoDescription()));
+    out.Set("redoDescription",  JsonApi::String::New(env, g_undoManager->getRedoDescription()));
+    out.Set("undoCount",        JsonApi::Number::New(env, g_undoManager->getUndoCount()));
+    out.Set("redoCount",        JsonApi::Number::New(env, g_undoManager->getRedoCount()));
+    out.Set("sandboxUndoCount", JsonApi::Number::New(env, g_undoManager->countByDomain("sandbox")));
+    out.Set("undo",             toArray(g_undoManager->getUndoHistory()));
+    out.Set("redo",             toArray(g_undoManager->getRedoHistory()));
     return out;
 }
 

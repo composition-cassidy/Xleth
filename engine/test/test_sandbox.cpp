@@ -16,6 +16,11 @@
 //   SB-5             layer mix/mute/solo commands, BakeSandboxCompositeCommand's
 //                     closure-injected undo/redo, and composite mixing itself —
 //                     the 3-layer (plain / reversed / +12ms offset) fixture
+//   SB-6             the DURABLE source reference (path + time range) that
+//                     survives a project load where a SampleBank id cannot,
+//                     SwapSandboxSampleCommand's undo/redo (undo restores the
+//                     old binding, redo re-applies without re-rendering), and
+//                     Command::domain — one shared undo stack, two surfaces
 //
 // Offline only — no audio device, no GPU, no transport.
 
@@ -1188,6 +1193,211 @@ static void testWorkerAndPublish() {
 }
 
 // ---------------------------------------------------------------------------
+// SB-6 — durable source reference, swap-in command, undo domains
+// ---------------------------------------------------------------------------
+
+static void testDurableSourceRef() {
+    std::cout << "\n[SandboxLayer — durable source reference (SB-6)]\n";
+
+    SandboxCore core;
+    const int withFile = core.addLayer("vox", 7, kTestRate, "C:/proj/media/vox.wav", 1.25, 3.5);
+    const int noFile   = core.addLayer("bake", 9, kTestRate);
+
+    CHECK(core.findLayer(withFile)->hasDurableSource(),
+          "a layer opened over a real file has a durable source");
+    CHECK(!core.findLayer(noFile)->hasDurableSource(),
+          "a layer over an in-memory asset (a composite bake) does not");
+
+    // An empty range is not a usable reference even with a path — loading it
+    // would decode zero samples, which is worse than reporting unresolved.
+    core.setLayerSourceRef(noFile, "C:/proj/media/x.wav", 2.0, 2.0);
+    CHECK(!core.findLayer(noFile)->hasDurableSource(),
+          "a zero-length time range does not count as a durable source");
+
+    CHECK(core.setLayerSourceRef(withFile, "C:/proj/swapped/vox_swapped.wav", 0.0, 2.25),
+          "setLayerSourceRef accepts a real change");
+    CHECK(!core.setLayerSourceRef(withFile, "C:/proj/swapped/vox_swapped.wav", 0.0, 2.25),
+          "…and rejects a rewrite of the value it already holds");
+
+    // The source REFERENCE is bookkeeping about provenance; only the buffer
+    // moving invalidates a render.
+    core.addOp(withFile, makeOp(0, SandboxOpType::Reverse, ReverseParams{ 0, -1 }), -1);
+    core.markLayerRendered(withFile);
+    CHECK(core.findLayer(withFile)->clean(), "the layer starts clean");
+    core.setLayerSourceRef(withFile, "C:/proj/other.wav", 0.0, 1.0);
+    CHECK(core.findLayer(withFile)->clean(),
+          "changing only the source REFERENCE does not dirty the stack");
+    core.setLayerSource(withFile, 12, kTestRate);
+    CHECK(!core.findLayer(withFile)->clean(),
+          "…but changing the bound BUFFER does");
+
+    // ── Round-trip ───────────────────────────────────────────────────────────
+    SandboxCore src;
+    const int l = src.addLayer("kick", 3, kTestRate, "C:/proj/media/kick.wav", 0.5, 1.75);
+    src.addOp(l, makeOp(0, SandboxOpType::Trim, TrimParams{ 100, 900 }), -1);
+
+    SandboxCore loaded;
+    int version = -1;
+    CHECK(loaded.fromJson(src.toJson(), &version, nullptr), "workspace with a source ref parses");
+    CHECK_EQ(version, 2, "sandboxStackVersion is 2 now that layers carry a source ref");
+    const SandboxLayer* rl = loaded.findLayer(l);
+    CHECK(rl != nullptr, "the layer round-trips");
+    CHECK_EQ(rl->sourceFilePath, std::string("C:/proj/media/kick.wav"), "sourceFilePath round-trips");
+    CHECK_NEAR(rl->sourceStartTime, 0.5, 1e-12, "sourceStartTime round-trips");
+    CHECK_NEAR(rl->sourceEndTime, 1.75, 1e-12, "sourceEndTime round-trips");
+    CHECK_EQ(rl->sourceBufferId, 3,
+             "sourceBufferId also reads back verbatim — in-process round-trip is lossless");
+
+    // …which is exactly why project load must NOT trust it. SampleBank ids are
+    // minted fresh on every load, so the id in the file names another project's
+    // audio; unbindAllSources is the explicit step that drops it.
+    loaded.markLayerRendered(l);
+    loaded.unbindAllSources();
+    CHECK_EQ(loaded.findLayer(l)->sourceBufferId, -1,
+             "unbindAllSources drops the stale SampleBank id");
+    CHECK_EQ(loaded.findLayer(l)->bufferSampleRate, 0.0,
+             "…and the rate that went with it");
+    CHECK(!loaded.findLayer(l)->clean(),
+          "…and marks the whole stack dirty, so nothing renders off the old buffer");
+    CHECK_EQ(loaded.findLayer(l)->ops.size(), size_t(1),
+          "the op-stack survives unbinding — it is the BINDING that is lost, never the edit");
+    CHECK(loaded.findLayer(l)->hasDurableSource(),
+          "…and the durable reference survives, so the owner can re-resolve it");
+
+    // A v1 workspace (no source-ref keys at all) still loads.
+    nlohmann::json v1 = {
+        { "sandboxStackVersion", 1 },
+        { "nextLayerId", 2 },
+        { "layers", nlohmann::json::array({ nlohmann::json{
+            { "id", 1 }, { "name", "legacy" }, { "sourceBufferId", 4 },
+            { "bufferSampleRate", kTestRate }, { "ops", nlohmann::json::array() } } }) }
+    };
+    SandboxCore legacy;
+    int v1Version = -1;
+    CHECK(legacy.fromJson(v1, &v1Version, nullptr), "a v1 workspace still parses");
+    CHECK_EQ(v1Version, 1, "…and reports its own version");
+    CHECK_EQ(legacy.layerCount(), size_t(1), "…with its layer intact");
+    CHECK(!legacy.findLayer(1)->hasDurableSource(),
+          "…and no durable source, so it reloads unbound rather than guessing");
+}
+
+static void testSwapInCommand() {
+    std::cout << "\n[SwapSandboxSampleCommand — undo/redo]\n";
+
+    Timeline    timeline;
+    UndoManager undo;
+
+    // Fake binding store standing in for MixEngine::regionToSampleMap_ plus the
+    // region's swapped-audio fields — the whole of what a swap changes. Same
+    // rationale as testBakeCompositeCommand's fake asset store: proves the
+    // command's contract without dragging in the audio tier.
+    struct Binding { int sampleId = -1; std::string path; };
+    Binding live{ 100, "" };            // the region's original audio
+    int swapCalls = 0, applyCalls = 0, revertCalls = 0;
+
+    const Binding before = live;
+
+    SwapSandboxSampleCommand::SwapFn swapFn = [&]() -> int {
+        ++swapCalls;
+        live = Binding{ 200, "swapped/sandbox_r5_1.wav" };
+        return live.sampleId;
+    };
+    SwapSandboxSampleCommand::RevertFn revertFn = [&]() -> bool {
+        ++revertCalls; live = before; return true;
+    };
+    SwapSandboxSampleCommand::ApplyFn applyFn = [&](int id) -> bool {
+        ++applyCalls; live = Binding{ id, "swapped/sandbox_r5_1.wav" }; return true;
+    };
+
+    auto cmd = std::make_unique<SwapSandboxSampleCommand>(
+        "vox", /*trackId*/ 3, /*regionId*/ 5, swapFn, revertFn, applyFn);
+    SwapSandboxSampleCommand* raw = cmd.get();
+    undo.execute(std::move(cmd), timeline);
+
+    CHECK_EQ(raw->swappedSampleId(), 200, "the swap reports the new sample id");
+    CHECK_EQ(raw->trackId(), 3, "…and echoes the trackId it was addressed with");
+    CHECK_EQ(raw->regionId(), 5, "…and the regionId");
+    CHECK_EQ(swapCalls, 1, "swapFn ran exactly once");
+    CHECK_EQ(live.sampleId, 200, "the binding now points at the sandbox output");
+    CHECK_EQ(undo.getUndoCount(), 1, "the swap is on the undo stack");
+    CHECK_EQ(undo.getUndoDomain(), std::string("sandbox"),
+             "…tagged as a sandbox edit, so the Sandbox panel's Undo may take it");
+
+    undo.undo(timeline);
+    CHECK_EQ(revertCalls, 1, "undo runs revertFn");
+    CHECK_EQ(live.sampleId, 100, "undo restores the ORIGINAL sample");
+    CHECK_EQ(live.path, std::string(""), "…including its swapped-audio state");
+
+    undo.redo(timeline);
+    CHECK_EQ(live.sampleId, 200, "redo re-applies the swap");
+    CHECK_EQ(swapCalls, 1, "…WITHOUT re-rendering — applyFn ran, not swapFn a second time");
+    CHECK_EQ(applyCalls, 1, "applyFn ran exactly once");
+
+    undo.undo(timeline);
+    CHECK_EQ(live.sampleId, 100, "a second undo restores the original again");
+    undo.redo(timeline);
+    CHECK_EQ(live.sampleId, 200, "…and a second redo re-applies the swap again");
+    CHECK_EQ(swapCalls, 1, "still exactly one render for the whole undo/redo cycle");
+
+    // A swap that could not produce a buffer must not consume an undo step.
+    const int depthBefore = undo.getUndoCount();
+    SwapSandboxSampleCommand::SwapFn failFn = []() -> int { return -1; };
+    undo.execute(std::make_unique<SwapSandboxSampleCommand>(
+                     "doomed", 3, 5, failFn,
+                     SwapSandboxSampleCommand::RevertFn{},
+                     SwapSandboxSampleCommand::ApplyFn{}),
+                 timeline);
+    CHECK_EQ(undo.getUndoCount(), depthBefore, "a failed swap is NOT recorded in history");
+    CHECK_EQ(live.sampleId, 200, "…and leaves the live binding untouched");
+}
+
+static void testUndoDomains() {
+    std::cout << "\n[Command::domain — one shared stack, two surfaces]\n";
+
+    Timeline    timeline;
+    UndoManager undo;
+    SandboxCore core;
+
+    // A stand-in timeline edit: any command that does NOT override domain().
+    struct PlainCommand : public Command {
+        void        execute(Timeline&) override {}
+        void        undo(Timeline&) override {}
+        std::string describe() const override { return "Move Clip"; }
+    };
+
+    const int layerId = core.addLayer("vox", 7, kTestRate);
+    undo.execute(std::make_unique<AddSandboxOpCommand>(
+                     core, layerId, makeOp(0, SandboxOpType::Reverse, ReverseParams{ 0, -1 }), -1),
+                 timeline);
+    CHECK_EQ(undo.getUndoDomain(), std::string("sandbox"), "a sandbox op edit is domain 'sandbox'");
+
+    undo.execute(std::make_unique<PlainCommand>(), timeline);
+    CHECK_EQ(undo.getUndoDomain(), std::string("timeline"),
+             "a command that does not override domain() defaults to 'timeline'");
+    CHECK_EQ(undo.getUndoDescription(), std::string("Move Clip"),
+             "…and the panel can say WHAT is on top instead of undoing it blindly");
+
+    CHECK_EQ(undo.countByDomain("sandbox"), 1, "one sandbox entry on the shared stack");
+    CHECK_EQ(undo.countByDomain("timeline"), 1, "one timeline entry");
+
+    const auto hist = undo.getUndoHistory();
+    CHECK_EQ(hist.size(), size_t(2), "the history snapshot has both entries");
+    CHECK_EQ(hist.front().domain, std::string("sandbox"), "history is OLDEST first");
+    CHECK_EQ(hist.back().domain, std::string("timeline"), "…so the LAST entry is the next undo");
+
+    undo.undo(timeline);
+    CHECK_EQ(undo.getRedoDomain(), std::string("timeline"), "the redo side is tagged too");
+    CHECK_EQ(undo.getUndoDomain(), std::string("sandbox"),
+             "…and the sandbox edit is now what an Undo would take");
+
+    // Every sandbox command type carries the tag, not just the one above.
+    undo.execute(std::make_unique<SetSandboxLayerMutedCommand>(core, layerId, true), timeline);
+    CHECK_EQ(undo.getUndoDomain(), std::string("sandbox"), "layer mix/mute commands are tagged too");
+    undo.execute(std::make_unique<RemoveSandboxLayerCommand>(core, layerId), timeline);
+    CHECK_EQ(undo.getUndoDomain(), std::string("sandbox"), "layer lifecycle commands are tagged too");
+}
+
+// ---------------------------------------------------------------------------
 
 int main() {
     std::cout << "=== test_sandbox ===\n";
@@ -1200,6 +1410,9 @@ int main() {
     testCommands();
     testLayerMixCommands();
     testBakeCompositeCommand();
+    testDurableSourceRef();
+    testSwapInCommand();
+    testUndoDomains();
     testCompositeMixing();
     testRendererOps();
     testRendererCache();
