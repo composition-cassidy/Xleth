@@ -1,5 +1,5 @@
 import { useEffect, useRef, useCallback, useState, forwardRef, useImperativeHandle } from 'react'
-import { PPQ } from '../../constants/timeline.js'
+import { ticksToBeats } from '../../constants/timeline.js'
 
 // Flat redesign palette (matches PianoRollCanvas MOCK).
 const VEL_BG = '#181818'
@@ -62,7 +62,7 @@ const VelocityLane = forwardRef(function VelocityLane({
     const selected = selectedNoteIdsRef.current
     for (let i = 0; i < noteList.length; i++) {
       const note = noteList[i]
-      const beat = note.positionTicks / PPQ
+      const beat = ticksToBeats(note.positionTicks)
       const x = Math.round(beat * ppb - sX)
       if (x + STEM_W < 0 || x > width) continue
       const dragged = drag?.preview.get(note.id)
@@ -102,7 +102,7 @@ const VelocityLane = forwardRef(function VelocityLane({
     const ppb = pixelsPerBeatRef.current
     const sX = scrollXRef.current
     for (let i = 0; i < notes.length; i++) {
-      const beat = notes[i].positionTicks / PPQ
+      const beat = ticksToBeats(notes[i].positionTicks)
       const x = beat * ppb - sX
       if (localX >= x - HEAD_HIT / 2 && localX < x + STEM_W + HEAD_HIT / 2) return notes[i]
     }

@@ -134,13 +134,19 @@ std::string ProjectManager::getAudioCacheDir() const {
 // ─── createProject ────────────────────────────────────────────────────────────
 
 bool ProjectManager::createProject(const std::string& projectDir,
-                                   const std::string& projectName) {
+                                   const std::string& projectName,
+                                   int videoWidth, int videoHeight,
+                                   double videoFps, const std::string& aspectRatio) {
     std::cout << "[Project] Creating project '" << projectName
               << "' at: " << projectDir << "\n";
 
     projectDir_  = projectDir;
     projectName_ = projectName;
     createdAt_   = currentTimestamp();
+    videoWidth_  = videoWidth;
+    videoHeight_ = videoHeight;
+    videoFps_    = videoFps;
+    aspectRatio_ = aspectRatio;
 
     try {
         ensureDirectories();
@@ -221,6 +227,10 @@ bool ProjectManager::saveProject(const Timeline& timeline,
     // omitted when empty) so loading a project always restores a definite value
     // instead of inheriting the previously-open project's master level.
     j["masterVolume"]   = masterVolume;
+    j["video_width"]    = videoWidth_;
+    j["video_height"]   = videoHeight_;
+    j["video_fps"]      = videoFps_;
+    j["aspect_ratio"]   = aspectRatio_;
 
     // Effect chains — only written when non-empty (keeps project files clean)
     if (effectChains.is_object() && !effectChains.empty())
@@ -308,6 +318,10 @@ void ProjectManager::resetToBlank() {
     loadedMasterEffectChain_ = nlohmann::json();
     loadedMasterVolume_      = 1.0f;
     loadedSandboxWorkspace_  = nlohmann::json::object();
+    videoWidth_  = 1920;
+    videoHeight_ = 1080;
+    videoFps_    = 30.0;
+    aspectRatio_ = "16:9";
 }
 
 // ─── loadProject ──────────────────────────────────────────────────────────────
@@ -346,6 +360,10 @@ std::optional<Timeline> ProjectManager::loadProject(const std::string& projectDi
 
     projectName_ = j.value("project_name", "Untitled");
     createdAt_   = j.value("created_at", "");
+    videoWidth_  = j.value("video_width", 1920);
+    videoHeight_ = j.value("video_height", 1080);
+    videoFps_    = j.value("video_fps", 30.0);
+    aspectRatio_ = j.value("aspect_ratio", std::string("16:9"));
 
     // Schema version. Absent ⇒ 1 (pre-slot, single-sample sampler): every
     // region's per-sample state is migrated into slot 0 by

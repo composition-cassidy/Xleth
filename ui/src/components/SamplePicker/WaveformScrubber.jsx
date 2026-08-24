@@ -2,6 +2,7 @@ import { useRef, useEffect, useState, useCallback } from 'react'
 import { drawEnvelope, downsamplePeaks3 } from '../../utils/waveformRenderer.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
 import { uiCanvasFont } from '../../styles/typography.js'
+import { labelHexColor } from '../../constants/labels.js'
 
 const HANDLE_W   = 2    // handle line width (px)
 const HANDLE_HIT = 8    // hit-test radius (px)
@@ -30,6 +31,8 @@ function formatTime(s) {
  *   onSeek        – (time: number) => void
  *   onInChange    – (time: number) => void
  *   onOutChange   – (time: number) => void
+ *   existingSamples      – Array<{ id, startTime, endTime, label }> | undefined
+ *   showExistingSamples  – boolean — overlay existingSamples as label-colored bands
  *
  * Zoom/pan:
  *   Scroll wheel          → zoom in/out (centered on cursor)
@@ -48,6 +51,8 @@ export default function WaveformScrubber({
   onSeek,
   onInChange,
   onOutChange,
+  existingSamples,
+  showExistingSamples,
 }) {
   const canvasRef    = useRef(null)
   const containerRef = useRef(null)
@@ -214,6 +219,33 @@ export default function WaveformScrubber({
       peaks = downsamplePeaks3(slice, W)
     }
 
+    // ── Existing samples overlay (toggle) ───────────────────────────────
+    // Translucent band per already-marked region, tinted by its label color,
+    // so overlapping/adjacent coverage reads at a glance. Drawn beneath the
+    // live in/out selection so the selection being auditioned still reads
+    // as visually primary.
+    if (showExistingSamples && existingSamples && existingSamples.length > 0) {
+      for (const sample of existingSamples) {
+        const sStart = Math.min(sample.startTime, sample.endTime)
+        const sEnd   = Math.max(sample.startTime, sample.endTime)
+        const x1 = timeToX(sStart)
+        const x2 = timeToX(sEnd)
+        if (x2 < 0 || x1 > W || x2 <= x1) continue
+        const cx1 = Math.max(0, x1)
+        const cx2 = Math.min(W, x2)
+        const color = labelHexColor(sample.label)
+
+        ctx.globalAlpha = 0.22
+        ctx.fillStyle = color
+        ctx.fillRect(cx1, drawTop, cx2 - cx1, drawH)
+        ctx.globalAlpha = 1
+
+        // Full-opacity tag strip along the top edge for clear color ID.
+        ctx.fillStyle = color
+        ctx.fillRect(cx1, drawTop, cx2 - cx1, 3)
+      }
+    }
+
     // ── Selection highlight ───────────────────────────────────────────────
     if (inPoint !== null && outPoint !== null) {
       const x1 = Math.max(0, timeToX(Math.min(inPoint, outPoint)))
@@ -337,7 +369,7 @@ export default function WaveformScrubber({
       ctx.fillStyle = tokenValue('--theme-lipsync-waveform-playhead')
       ctx.fillRect(thumbX, barY, thumbW, SCROLL_H)
     }
-  }, [waveformData, waveformError, duration, currentTime, inPoint, outPoint, viewStart, viewEnd, regionData])
+  }, [waveformData, waveformError, duration, currentTime, inPoint, outPoint, viewStart, viewEnd, regionData, existingSamples, showExistingSamples])
 
   // Redraw whenever any dep changes
   useEffect(() => { draw() }, [draw])

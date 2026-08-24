@@ -15,7 +15,7 @@
 // resolves to null and the viewport keeps drawing its checkerboard — the render
 // loop is never blocked on a frame (see the DO-NOT list).
 
-import { PPQ } from '../../../constants/timeline.js'
+import { ticksToBeats } from '../../../constants/timeline.js'
 import { sourceTicksForTimelineTicks } from '../../timeline/clipSourceDomain.js'
 
 /** Clip covering `tick`, else the nearest earlier clip, else the first. */
@@ -54,7 +54,7 @@ export function sourceTimeForClip(clip, region, tick, bpm) {
   const intoSourceTicks =
     (clip.regionOffsetTicks ?? 0) + sourceTicksForTimelineTicks(intoClipTicks, clip.stretchRatio)
 
-  const t = (region.startTime ?? 0) + (intoSourceTicks / PPQ) * secPerBeat
+  const t = (region.startTime ?? 0) + ticksToBeats(intoSourceTicks) * secPerBeat
   const end = Number.isFinite(region.endTime) && region.endTime > (region.startTime ?? 0)
     ? region.endTime
     : t

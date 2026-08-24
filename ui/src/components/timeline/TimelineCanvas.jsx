@@ -219,6 +219,23 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     return map
   }
 
+  // ── Per-redraw derived track state (memoised) ─────────────────────────────
+  // Keyed by identity of (tracks array, palette object). Both change rarely —
+  // a zoom/pan gesture changes neither — so this collapses two per-frame
+  // allocations (a Set + a full id→hex map) into one derivation per change.
+  const derivedTrackStateRef = useRef({ tracks: null, palette: null, value: null })
+
+  function derivedTrackState(tracks, palette) {
+    const cache = derivedTrackStateRef.current
+    if (cache.value && cache.tracks === tracks && cache.palette === palette) return cache.value
+    const value = {
+      mutedTrackIds: new Set((tracks || []).filter((t) => t.muted).map((t) => t.id)),
+      trackColorById: buildResolvedTrackColorMap(tracks, palette.trackPalette),
+    }
+    derivedTrackStateRef.current = { tracks, palette, value }
+    return value
+  }
+
   // ── Drawing wrappers ───────────────────────────────────────────────────────
 
   function redrawGrid(reason) {
@@ -248,12 +265,13 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     const t0 = import.meta.env.DEV ? performance.now() : 0
     const dpr = window.devicePixelRatio || 1
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-    const mutedTrackIds = new Set(
-      (tracksRef.current || []).filter((t) => t.muted).map((t) => t.id)
-    )
     const tidx = trackIdToIndexRef.current
     const palette = resolveTimelinePalette()
-    const trackColorById = buildResolvedTrackColorMap(tracksRef.current, palette.trackPalette)
+    // Both of these are pure functions of (tracks, palette), and both used to
+    // be rebuilt on every animated frame. resolveTimelinePalette() is memoised
+    // per theme now, so its identity is a valid cache key: re-derive only when
+    // the track array or the theme actually changed.
+    const { mutedTrackIds, trackColorById } = derivedTrackState(tracksRef.current, palette)
     drawClips(
       ctx, w, h,
       scrollOffsetRef.current, pixelsPerBeatRef.current,

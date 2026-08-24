@@ -10,7 +10,10 @@ import {
   beatToPixel,
 } from '../../constants/timeline.js'
 import { labelHexColor } from '../../constants/labels.js'
-import { drawEnvelope, drawTrace, drawWaveformLine, drawSamplePoints, getRegime } from '../../utils/waveformRenderer.js'
+import { drawEnvelope, drawTrace, drawWaveformLine, drawSamplePoints, visibleColumnWindow } from '../../utils/waveformRenderer.js'
+import { currentRegime } from './waveformRegime.js'
+import { hiResCoversWindow } from './hiResCoverage.js'
+import { findCoveringEntry } from './hiResRegionCache.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
 import { uiCanvasFont } from '../../styles/typography.js'
 import { normalizeTrackPalette, TRACK_PALETTE_FALLBACK } from './trackColorResolver.js'
@@ -57,15 +60,47 @@ export function getClipRegionWaveformStartSec(clip, region, bpm) {
 }
 
 // ── Theme palette ────────────────────────────────────────────────────────────
-// Resolve all CSS custom properties used by the Timeline canvas exactly once
-// per draw cycle. Callers (TimelineCanvas.redrawGrid/redrawContent and
-// TimelineRuler.redraw) call this and thread the returned object into draw
-// functions, avoiding ~17 getComputedStyle reads spread across hot draw paths.
+// Resolve all CSS custom properties used by the Timeline canvas. Callers
+// (TimelineCanvas.redrawGrid/redrawContent and TimelineRuler.redraw) call this
+// and thread the returned object into draw functions, avoiding getComputedStyle
+// reads spread across hot draw paths.
 //
 // Pattern mirrors PianoRollCanvas.resolvePalette (Pass 4A.0/4A.1).
+//
+// MEMOISED across draws, not just within one. Resolving costs 46
+// getComputedStyle(document.documentElement) reads, and the viewport commit
+// path calls it four times a frame (grid + content + ruler + ruler overlay) —
+// ~180 forced style reads per animated frame. Worse, those reads are
+// INTERLEAVED with the same path's DOM writes (playhead transform, FX badges,
+// scrollbar thumb, loop bar), so every frame of a zoom/pan gesture paid for a
+// synchronous style recalculation: classic read-write-read layout thrash, and
+// the direct cause of ctrl+wheel zoom jitter on large projects.
+//
+// Invalidation is exact, not heuristic: :root theme tokens are only ever
+// written by writeThemeToRoot() (theming/runtime/applyTheme.ts), which is
+// always followed by an 'xleth-theme-changed' dispatch — the single event this
+// cache listens for. Anything that changes tokens without that event must call
+// invalidateTimelinePalette() itself.
+
+let _paletteCache = null
+
+export function invalidateTimelinePalette() {
+  _paletteCache = null
+}
+
+if (typeof window !== 'undefined') {
+  // Both targets: the dispatch is on window, but some listeners in this app
+  // register on document — mirroring both keeps the cache correct if a future
+  // dispatcher picks the other target.
+  window.addEventListener('xleth-theme-changed', invalidateTimelinePalette)
+  if (typeof document !== 'undefined') {
+    document.addEventListener('xleth-theme-changed', invalidateTimelinePalette)
+  }
+}
 
 export function resolveTimelinePalette() {
-  return {
+  if (_paletteCache !== null) return _paletteCache
+  _paletteCache = {
     // Surfaces
     bg:                tokenValue('--theme-timeline-lane-bg'),
     laneSeparator:     tokenValue('--theme-border-strong'),
@@ -110,6 +145,7 @@ export function resolveTimelinePalette() {
       Array.from({ length: 16 }, (_, i) => tokenValue(`--theme-track-palette-${i + 1}`))
     ),
   }
+  return _paletteCache
 }
 
 // withAlpha — return a CSS color string with its alpha scaled by `mult`,
@@ -1192,7 +1228,10 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
   // Global regime detection — spp is the same for all clips at a given zoom
   const pixelsPerSecond = bpm ? ppb * (bpm / 60) : 0
   const spp = pixelsPerSecond > 0 ? DEFAULT_SR / pixelsPerSecond : 9999
-  const regime = getRegime(spp)
+  // Shared, hysteresis-aware tracker — see waveformRegime.js for why the
+  // previous regime must be threaded through and why it is shared with the
+  // hi-res fetch effect rather than tracked per-caller.
+  const regime = currentRegime(spp)
 
   for (let i = 0; i < clips.length; i++) {
     const clip = clips[i]
@@ -1309,13 +1348,22 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
 
       // ── Try hi-res cache for trace/waveform/sample regimes ──────────
       if (regime !== 'envelope' && hiResCache) {
-        // Processed clips: keyed by "c"+clipId with clip-local time coords.
-        // Unprocessed clips: keyed by regionId with region-relative time coords.
-        const hiRes = hasProcessing
-          ? hiResCache[`c${clip.id}`]
-          : hiResCache[clip.regionId]
         const hiResVisStart = hasProcessing ? clipLocalStart : visStartSec
         const hiResVisEnd   = hasProcessing ? clipLocalEnd   : visEndSec
+
+        // Processed clips: keyed by "c"+clipId with clip-local time coords —
+        // one clip, one buffer, no collision possible, so a single entry.
+        //
+        // Unprocessed clips: keyed by regionId holding an ARRAY of entries,
+        // because many clips commonly reference DIFFERENT sub-ranges of the
+        // same source region (a syllable-chopped region is the textbook
+        // case — see hiResFetchPlanner.js). A single slot there meant clip
+        // B's fetch silently discarded clip A's, forever, every settle pass.
+        // findCoveringEntry picks whichever entry (if any) actually covers
+        // THIS clip's window — see hiResCoverage.js for what "covers" means.
+        const hiRes = hasProcessing
+          ? hiResCache[`c${clip.id}`]
+          : findCoveringEntry(hiResCache[clip.regionId], hiResVisStart, hiResVisEnd)
 
         if (!hasProcessing && regime === 'sample' && hiRes?.samples) {
           // Regime 4: individual sample dots (unprocessed only)
@@ -1330,10 +1378,36 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
             drawn = true
           }
         } else if (hiRes?.peaks && hiRes.stride === 3) {
-          // Regime 2 (trace) or 3 (waveform): hi-res peaks
+          // Regime 2 (trace) or 3 (waveform): hi-res peaks.
+          //
+          // MUST require the cache to fully cover the requested visible
+          // window before using it — this was the source of the "waveform
+          // stretches while panning" bug. The old code clamped f0/f1 to
+          // [0,1] and then drew whatever fell in that clamped range across
+          // the FULL visL..visR width regardless of how much time it
+          // actually represented: pan a little past a cached window (e.g.
+          // cache covers sec 10-15, view now wants 12-17) and the last 60%
+          // of the cache's columns — representing only 3 of the 5 requested
+          // seconds — got stretched to fill all 5 seconds of pixel width.
+          // That mismatch between "columns available" and "columns
+          // requested" is exactly a rubber-band distortion, and it only
+          // resolved once the 80ms-debounced refetch replaced the cache.
+          //
+          // The sample-regime branch above never had this bug — it already
+          // requires `dataOffset >= 0 && dataOffset + dataCount <=
+          // hiRes.samples.length`, i.e. full coverage, and simply skips
+          // (falls through to the low-res fallback) otherwise. The epsilon
+          // here matches the ON-SETTLE fetch effect's own "is this cache
+          // entry still good enough to skip refetching" check (TimelineView
+          // .jsx) — the draw path must agree with the fetch path on what
+          // "covers the window" means, or a window the fetcher considers
+          // fresh can still get judged too incomplete to draw, or vice versa.
           const totalHiCols = Math.floor(hiRes.peaks.length / 3)
           const hiDur = hiRes.endSec - hiRes.startSec
-          if (hiDur > 0 && totalHiCols > 0) {
+          if (
+            hiDur > 0 && totalHiCols > 0 &&
+            hiResCoversWindow(hiRes.startSec, hiRes.endSec, hiResVisStart, hiResVisEnd)
+          ) {
             const f0 = Math.max(0, (hiResVisStart - hiRes.startSec) / hiDur)
             const f1 = Math.min(1, (hiResVisEnd   - hiRes.startSec) / hiDur)
             const startCol = Math.floor(f0 * totalHiCols)
@@ -1364,13 +1438,16 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
             const f1 = Math.min(1, clipLocalEnd   / clipDurSec)
             const startCol = Math.floor(f0 * totalCols)
             const endCol   = Math.min(totalCols, Math.ceil(f1 * totalCols))
-            if (endCol > startCol) {
+            // Emit only the columns the clip rect will actually keep — a clip
+            // far wider than the viewport otherwise pays for its whole span.
+            const win = visibleColumnWindow(x, clipW, startCol, endCol, visL, visR)
+            if (win) {
               if (regime === 'trace') {
-                drawTrace(ctx, cpData.peaks, x, layout.contentY, clipW, layout.contentH,
-                  startCol, endCol, traceFill, lineColor)
+                drawTrace(ctx, cpData.peaks, win.x, layout.contentY, win.w, layout.contentH,
+                  win.startCol, win.endCol, traceFill, lineColor)
               } else {
-                drawEnvelope(ctx, cpData.peaks, x, layout.contentY, clipW, layout.contentH,
-                  startCol, endCol, traceFill, lineColor)
+                drawEnvelope(ctx, cpData.peaks, win.x, layout.contentY, win.w, layout.contentH,
+                  win.startCol, win.endCol, traceFill, lineColor)
               }
             }
           }
@@ -1384,13 +1461,14 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
             const startCol = Math.floor(offsetFrac * totalPeakCols)
             const endCol = Math.min(totalPeakCols, Math.ceil((offsetFrac + durFrac) * totalPeakCols))
 
-            if (endCol > startCol) {
+            const win = visibleColumnWindow(x, clipW, startCol, endCol, visL, visR)
+            if (win) {
               if (regime === 'trace') {
-                drawTrace(ctx, wfData.peaks, x, layout.contentY, clipW, layout.contentH,
-                  startCol, endCol, traceFill, lineColor)
+                drawTrace(ctx, wfData.peaks, win.x, layout.contentY, win.w, layout.contentH,
+                  win.startCol, win.endCol, traceFill, lineColor)
               } else {
-                drawEnvelope(ctx, wfData.peaks, x, layout.contentY, clipW, layout.contentH,
-                  startCol, endCol, traceFill, lineColor)
+                drawEnvelope(ctx, wfData.peaks, win.x, layout.contentY, win.w, layout.contentH,
+                  win.startCol, win.endCol, traceFill, lineColor)
               }
             }
           }

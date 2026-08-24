@@ -71,7 +71,13 @@ public:
 
     // Create a new project at projectDir with the given name.
     // Creates the directory structure and writes an initial empty project.json.
-    bool createProject(const std::string& projectDir, const std::string& projectName);
+    // videoWidth/videoHeight/videoFps/aspectRatio are the canvas settings chosen
+    // in the Welcome screen's New Project dialog; they default to XLETH's
+    // standing default (1920x1080, 30fps, 16:9) so existing 2-arg call sites
+    // are unaffected.
+    bool createProject(const std::string& projectDir, const std::string& projectName,
+                       int videoWidth = 1920, int videoHeight = 1080,
+                       double videoFps = 30.0, const std::string& aspectRatio = "16:9");
 
     // Serialize the given timeline to project.json in the active project dir.
     // Pass non-empty effectChains / masterEffectChain JSON to persist effect chains
@@ -177,6 +183,14 @@ public:
     std::string getMediaDir()    const;   // <projectDir>/media (consolidated sources)
     std::string getSlotsDir()    const;   // <projectDir>/slots (per-slot layer audio)
 
+    // Canvas settings chosen at project creation (or read back from
+    // project.json for a project created before this existed, which defaults
+    // to 1920x1080/30fps/16:9 — XLETH's standing default).
+    int         getVideoWidth()  const { return videoWidth_; }
+    int         getVideoHeight() const { return videoHeight_; }
+    double      getVideoFps()    const { return videoFps_; }
+    std::string getAspectRatio() const { return aspectRatio_; }
+
     // <projectDir>/cache/audio — derived audio the project can always rebuild:
     // today, the sampler's per-slot PREP bakes. Safe to delete at any time;
     // anything missing is simply re-rendered on next use. Empty when no
@@ -200,6 +214,11 @@ private:
     nlohmann::json loadedMasterEffectChain_ = nlohmann::json();
     float          loadedMasterVolume_      = 1.0f;
     nlohmann::json loadedSandboxWorkspace_  = nlohmann::json::object();
+
+    int         videoWidth_  = 1920;
+    int         videoHeight_ = 1080;
+    double      videoFps_    = 30.0;
+    std::string aspectRatio_ = "16:9";
 
     void        ensureDirectories();
     std::string projectFilePath() const;

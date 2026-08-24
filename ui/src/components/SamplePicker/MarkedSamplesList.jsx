@@ -1,21 +1,40 @@
-import { Scissors, X } from 'lucide-react'
+import { Scissors, X, Eye, EyeOff } from 'lucide-react'
 import { labelColor, formatTime } from '../../constants/labels.js'
 
 /**
  * Props:
- *   samples    – Array<{ id, sourceId, startTime, endTime, label, name }>
- *   selectedId – string | null
- *   onSelect   – (sample) => void
- *   onDelete   – (id) => void
- *   onSplit    – (sample) => void  — opens the Split Syllables panel (Quote rows)
+ *   samples           – Array<{ id, sourceId, startTime, endTime, label, name }>
+ *   selectedId        – string | null
+ *   onSelect          – (sample) => void
+ *   onDelete          – (id) => void
+ *   onSplit           – (sample) => void  — opens the Split Syllables panel (Quote rows)
+ *   showMarks         – boolean — whether existing samples are highlighted on the waveform
+ *   onToggleShowMarks – () => void
  */
-export default function MarkedSamplesList({ samples, selectedId, onSelect, onDelete, onSplit }) {
+export default function MarkedSamplesList({
+  samples, selectedId, onSelect, onDelete, onSplit, showMarks, onToggleShowMarks,
+}) {
   return (
     <div className="marked-samples-list">
       {/* ── Header ───────────────────────────────────────────────────── */}
       <div className="tab-placeholder-header">
         <span className="tab-section-label">Marked Samples</span>
-        <span className="picker-samples-count">{samples.length}</span>
+        <span className="marked-samples-header-actions">
+          {onToggleShowMarks && (
+            <button
+              type="button"
+              className={`marked-samples-show-toggle ${showMarks ? 'active' : ''}`}
+              onClick={onToggleShowMarks}
+              title={showMarks
+                ? 'Hide existing selections on waveform'
+                : 'Highlight existing selections on waveform, by label color'}
+              aria-pressed={showMarks}
+            >
+              {showMarks ? <Eye size={12} /> : <EyeOff size={12} />}
+            </button>
+          )}
+          <span className="picker-samples-count">{samples.length}</span>
+        </span>
       </div>
 
       {/* ── Empty state ──────────────────────────────────────────────── */}

@@ -19,7 +19,7 @@ import {
 import { resolveTrackSourceFrame, cellAspectFor } from './zprSourceFrame.js'
 import { subscribe as subscribeTransport, getTransportState } from '../../../transportStore.js'
 import { playheadClock } from '../../../services/PlayheadClock.js'
-import { PPQ } from '../../../constants/timeline.js'
+import { beatsToTicks } from '../../../constants/timeline.js'
 
 const DEFAULT_RECORD_TOLERANCE = 0.03  // fraction of each channel's own recorded range
 
@@ -174,7 +174,7 @@ export default function ZprTimelineCard({
   useEffect(() => subscribeTransport((s) => {
     if (Number.isFinite(s?.bpm)) setBpm(s.bpm)
     const beats = s?.rawPositionBeats ?? s?.positionBeats
-    if (Number.isFinite(beats)) setPlayheadTick(Math.max(0, Math.round(beats * PPQ)))
+    if (Number.isFinite(beats)) setPlayheadTick(Math.max(0, beatsToTicks(beats)))
     if (typeof s?.isPlaying === 'boolean') setIsPlaying(s.isPlaying)
   }), [])
 

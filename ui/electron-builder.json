@@ -1,7 +1,7 @@
 {
   "appId": "com.xleth.app",
   "productName": "XLETH",
-  "files": ["dist/**/*", "src/plugin-ui/layouts/*.json", "main.js", "electron-main/**/*", "preload.js", "rpc-manifest.js", "runtimePaths.js", "workspaceBackdropCapability.js", "update-checker.js", "splash.html", "splash-preload.js"],
+  "files": ["dist/**/*", "src/plugin-ui/layouts/*.json", "main.js", "electron-main/**/*", "preload.js", "rpc-manifest.js", "runtimePaths.js", "workspaceBackdropCapability.js", "update-checker.js", "splash.html", "splash-preload.js", "welcome.html", "welcome-preload.js", "xleth.svg", "assets/icon.ico"],
   "directories": {
     "output": "../dist"
   },
@@ -9,10 +9,6 @@
   "asarUnpack": ["**/*.node"],
   "compression": "normal",
   "extraResources": [
-    {
-      "from": "../xlethpopup.png",
-      "to": "xlethpopup.png"
-    },
     {
       "from": "../bridge/build/Release",
       "to": "bridge",
@@ -68,6 +64,7 @@
     }
   ],
   "win": {
+    "icon": "assets/icon.ico",
     "target": [
       {
         "target": "nsis",

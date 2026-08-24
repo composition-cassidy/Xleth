@@ -69,6 +69,7 @@ const fxPresets = require('./electron-main/fx-presets');
 const fxChains = require('./electron-main/fx-chains');
 const decals = require('./electron-main/decals');
 const gridLayout = require('./electron-main/grid-layout');
+const recentProjects = require('./electron-main/recent-projects');
 settingsStore.init();
 autosave.init({ log, isExportBusy: () => exportHandlers.isExportBusy() });
 themesStore.init();
@@ -78,6 +79,7 @@ fxPresets.init();
 fxChains.init();
 decals.init({ getWin: () => win });
 gridLayout.init({ safeHandler });
+recentProjects.init();
 const { loadSettings, saveSettings, getNewProjectGlobalStretchMethodDefault } = settingsStore;
 const { restartAutosaveTimer } = autosave;
 
@@ -92,11 +94,22 @@ const timelineHandlers = require('./electron-main/timeline');
 const clipProcessingDefaults = require('./electron-main/clip-processing-defaults');
 const undoRedoHandlers = require('./electron-main/undo-redo');
 const transportHandlers = require('./electron-main/transport');
+const welcomeHandlers = require('./electron-main/welcome');
 projectHandlers.init({ safeHandler });
 timelineHandlers.init({ safeHandler });
 clipProcessingDefaults.init({ safeHandler });
 undoRedoHandlers.init({ safeHandler });
 transportHandlers.init({ safeHandler });
+// onProjectReady is a lazy reference to launchWorkspace() (defined later,
+// near createWindow) — function declarations hoist, and this callback only
+// actually runs once Welcome signals success, long after the whole module
+// has finished loading.
+welcomeHandlers.init({
+  safeHandler,
+  callWorker,
+  log,
+  onProjectReady: (dir, name) => launchWorkspace(dir, name),
+});
 
 // ── Extracted Phase 1 Audio + Effects/Graph handler domains (S5 Stage 4) ──────
 // Audio (samples/mixer/peaks/diagnostics/output devices), the effect chain +
@@ -528,9 +541,9 @@ function nudgeWindowZoom(targetWindow, direction) {
 }
 const nodeEditorWindows = new Map(); // key → BrowserWindow
 
-function splashStatus(msg) {
+function splashStatus(message, percent) {
   if (splashWin && !splashWin.isDestroyed()) {
-    splashWin.webContents.send('splash:status', msg);
+    splashWin.webContents.send('splash:status', message, percent);
   }
 }
 
@@ -540,6 +553,7 @@ function createWindow() {
     height: 800,
     minWidth: 900,
     minHeight: 600,
+    icon: path.join(__dirname, 'assets', 'icon.ico'),
     backgroundColor: '#00000000',
     backgroundMaterial: 'none',
     frame: false,
@@ -582,6 +596,75 @@ function createWindow() {
     nodeEditorWindows.clear();
     win = null;
   });
+}
+
+// ── Welcome screen (mandatory startup gate) ──────────────────────────────────
+// Decides what app.whenReady() shows once the engine has booted: either the
+// most recent valid project (auto-boot, only when "show Welcome on startup"
+// is off AND a valid recent exists) or the mandatory Welcome window. The gate
+// is never bypassed, only shortened — no valid recent always falls through
+// to Welcome regardless of the setting.
+function decideBootTarget() {
+  const settings = loadSettings();
+  const showWelcomeOnStartup = settings.showWelcomeOnStartup !== false; // default true
+  if (!showWelcomeOnStartup) {
+    const recent = recentProjects.firstValidRecent();
+    if (recent) return { mode: 'workspace', dir: recent.dir, name: recent.name };
+  }
+  return { mode: 'welcome' };
+}
+
+// Creates + shows the real workspace window and performs the one-time
+// per-window setup (HWND handoff to the engine, update check). handleSplash
+// is true only on the direct auto-boot path, where the splash window is
+// still open and its close has to be timed off this window's first paint;
+// when called from Welcome's completion callback the splash already closed
+// when Welcome itself first appeared (see attachSplashHandoff below).
+function openWorkspaceWindow({ handleSplash }) {
+  createWindow();
+  if (win) {
+    win.once('ready-to-show', () => {
+      if (handleSplash) {
+        splashStatus('Ready.', 100);
+        setTimeout(() => {
+          if (splashWin && !splashWin.isDestroyed()) splashWin.close();
+          win.show();
+        }, 400); // minimum splash visibility after first paint
+      } else {
+        win.show();
+      }
+    });
+  }
+
+  // Pass the main-window native HWND to the engine so VST editor-host
+  // processes can call SetWindowLongPtrW(GWLP_HWNDPARENT) and be treated as
+  // owned popups: they minimize with the main window, don't get a separate
+  // taskbar button, and stay above the main window in Z-order.
+  if (win && isWorkerReady()) {
+    try {
+      const hwndBuf = win.getNativeWindowHandle();
+      // Buffer is little-endian; on 64-bit Windows it is 8 bytes.
+      const hwndBigInt = hwndBuf.length >= 8
+        ? hwndBuf.readBigUInt64LE(0)
+        : BigInt(hwndBuf.readUInt32LE(0));
+      const hwndHex = hwndBigInt.toString(16).toUpperCase();
+      log(`[HWND] Main window handle: 0x${hwndHex}`);
+      callWorker('audio_setMainWindowHandle', [hwndHex]).catch(e =>
+        log('[HWND] setMainWindowHandle failed: ' + e.message));
+    } catch (e) {
+      log('[HWND] Failed to read native window handle: ' + e.message);
+    }
+  }
+
+  checkForUpdates(win);
+}
+
+// Welcome's onProjectReady callback (project already created/loaded and
+// touched into recents by the time this fires — see welcome.js). Splash is
+// already gone at this point (closed when Welcome itself appeared), so no
+// splash handling here.
+function launchWorkspace() {
+  openWorkspaceWindow({ handleSplash: false });
 }
 
 // ── IPC helpers ───────────────────────────────────────────────────────────────
@@ -2126,6 +2209,7 @@ ipcMain.on('xleth:window:openNodeEditor', (event, key, pos) => {
     height: 500,
     minWidth: 500,
     minHeight: 350,
+    icon: path.join(__dirname, 'assets', 'icon.ico'),
     backgroundColor: '#0A0A0F',
     frame: false,
     parent: win,
@@ -2172,14 +2256,15 @@ app.whenReady().then(async () => {
 
   // ── Splash window ──────────────────────────────────────────────────────────
   splashWin = new BrowserWindow({
-    width: 680,
+    width: 640,
     height: 400,
+    icon: path.join(__dirname, 'assets', 'icon.ico'),
     frame: false,
     transparent: false,
     alwaysOnTop: true,
     resizable: false,
+    skipTaskbar: true,
     center: true,
-    backgroundColor: '#0D0F13',
     show: false,
     webPreferences: {
       contextIsolation: false,
@@ -2188,23 +2273,17 @@ app.whenReady().then(async () => {
       preload: path.join(__dirname, 'splash-preload.js'),
     },
   });
-  splashWin.once('ready-to-show', () => {
-    // Inject logo as base64 data URL — avoids Chromium's cross-origin
-    // block on file:// URLs from different directories.
-    const logoPath = app.isPackaged
-      ? path.join(process.resourcesPath, 'xlethpopup.png')
-      : path.join(__dirname, '..', 'xlethpopup.png');
-    try {
-      const dataUrl = 'data:image/png;base64,' +
-        fs.readFileSync(logoPath).toString('base64');
-      splashWin.webContents.executeJavaScript(
-        `document.getElementById('logo').src = ${JSON.stringify(dataUrl)};`
-      ).catch(() => {});
-    } catch { /* logo file absent — img stays hidden via onerror */ }
-    splashWin.show();
+  // Awaited before engine init begins so window.splashStatus (defined by the
+  // splash's own inline script) exists before the first real milestone fires.
+  const splashShown = new Promise((resolve) => {
+    splashWin.once('ready-to-show', () => {
+      splashWin.show();
+      resolve();
+    });
   });
-  splashWin.loadFile(path.join(__dirname, 'splash.html'));
+  splashWin.loadFile(path.join(__dirname, 'splash.html'), { query: { v: app.getVersion() } });
   splashWin.on('closed', () => { splashWin = null; });
+  await splashShown;
   // ──────────────────────────────────────────────────────────────────────────
 
   // COOP/COEP — required so the renderer's `crossOriginIsolated` flag is
@@ -2217,15 +2296,15 @@ app.whenReady().then(async () => {
   });
 
   try {
+    splashStatus('Loading audio engine…', 15); // engine fork about to spawn
     await startWorker();
-    splashStatus('Initializing audio engine…');
-    splashStatus('Registering codecs…');
+    splashStatus('Connecting to engine bridge…', 35); // engine fork is up, bridge IPC ready
 
     await callWorker('initialize');
     log('initialize() OK');
     await applyEngineDefaults();
     startEngineBackgroundTasks();
-    splashStatus('Starting compositor…');
+    splashStatus('Starting compositor…', 65);
 
     // Swap the engine's owned FrameOutput buffer for a Windows named file
     // mapping so the renderer can read frames zero-copy via shm_helper.
@@ -2235,6 +2314,7 @@ app.whenReady().then(async () => {
     } catch (e) {
       log(`shm init FAILED: ${e.message}`);
     }
+    splashStatus('Finalizing startup…', 85);
 
     // Set up audio-scheduler timeline (drum pattern for legacy transport)
     await callWorker('setBPM', [140]);
@@ -2340,49 +2420,46 @@ app.whenReady().then(async () => {
 
   startMediaServer();
 
-  createWindow();
+  // ── Mandatory Welcome gate ───────────────────────────────────────────────
+  // No path to the workspace exists without a project file on disk. Auto-boot
+  // straight into the workspace only when "show Welcome on startup" is off
+  // AND a valid recent project exists; otherwise Welcome always shows first —
+  // the gate is shortened, never bypassed.
+  const bootTarget = decideBootTarget();
 
-  // ── Splash → main window handoff ──────────────────────────────────────────
-  if (win) {
-    win.once('ready-to-show', () => {
-      setTimeout(() => {
-        if (splashWin && !splashWin.isDestroyed()) {
-          splashWin.webContents.executeJavaScript(
-            `document.body.classList.add('fade-out');`
-          ).catch(() => {});
-          setTimeout(() => {
-            if (splashWin && !splashWin.isDestroyed()) splashWin.close();
-            win.show();
-          }, 320); // 300ms CSS transition + 20ms buffer
-        } else {
-          win.show(); // splash already gone — show immediately
-        }
-      }, 400); // minimum splash visibility after first paint
-    });
-  }
-  // ──────────────────────────────────────────────────────────────────────────
-
-  // Pass the main-window native HWND to the engine so VST editor-host
-  // processes can call SetWindowLongPtrW(GWLP_HWNDPARENT) and be treated as
-  // owned popups: they minimize with the main window, don't get a separate
-  // taskbar button, and stay above the main window in Z-order.
-  if (win && isWorkerReady()) {
+  if (bootTarget.mode === 'workspace') {
     try {
-      const hwndBuf = win.getNativeWindowHandle();
-      // Buffer is little-endian; on 64-bit Windows it is 8 bytes.
-      const hwndBigInt = hwndBuf.length >= 8
-        ? hwndBuf.readBigUInt64LE(0)
-        : BigInt(hwndBuf.readUInt32LE(0));
-      const hwndHex = hwndBigInt.toString(16).toUpperCase();
-      log(`[HWND] Main window handle: 0x${hwndHex}`);
-      callWorker('audio_setMainWindowHandle', [hwndHex]).catch(e =>
-        log('[HWND] setMainWindowHandle failed: ' + e.message));
+      const loaded = await callWorker('project_load', [bootTarget.dir]);
+      if (!loaded) throw new Error('project_load returned false');
+      recentProjects.touchRecent({ name: bootTarget.name, dir: bootTarget.dir });
     } catch (e) {
-      log('[HWND] Failed to read native window handle: ' + e.message);
+      log(`[Boot] Auto-load of last project failed, falling back to Welcome: ${e.message}`);
+      bootTarget.mode = 'welcome';
     }
   }
 
-  checkForUpdates(win);
+  if (bootTarget.mode === 'workspace') {
+    openWorkspaceWindow({ handleSplash: true });
+  } else {
+    welcomeHandlers.createWelcomeWindow({
+      onReadyToShow: (welcomeWin) => {
+        splashStatus('Ready.', 100);
+        setTimeout(() => {
+          if (splashWin && !splashWin.isDestroyed()) splashWin.close();
+          welcomeWin.show();
+        }, 400); // minimum splash visibility after first paint
+      },
+      onClosed: () => {
+        // Closed without a project having been created/opened (the × button,
+        // Alt+F4, taskbar close — see welcome-preload.js/welcome.html). The
+        // mandatory gate: there is no path to the workspace without a
+        // project file, so XLETH quits. Windows-only, so window-all-closed
+        // (below) already does this; this is here for the startup log.
+        log('[Welcome] closed without a project — quitting (mandatory gate)');
+      },
+    });
+  }
+  // ──────────────────────────────────────────────────────────────────────────
 });
 
 app.on('window-all-closed', () => {

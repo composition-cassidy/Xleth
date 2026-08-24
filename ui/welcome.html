@@ -1,0 +1,951 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>XLETH - Welcome</title>
+<style>
+  /* ============ XLETH TOKENS ============ */
+  /* Dedicated, hardcoded CSS-variable block — same reasoning as splash.html:
+     this window renders before ThemeProvider exists (it IS the gate to the
+     workspace), so it can't consume live --theme-* tokens. Components below
+     only ever reference var(--*); no hex appears outside this block. */
+  :root {
+    --bg: #0b0b0b;
+    --surface: #111111;
+    --surface-2: #1c1c1c;
+    --surface-3: #242424;
+    --border: #2b2b2b;
+    --border-strong: #3a3a3a;
+    --text: #e8e8e8;
+    --text-dim: #9a9a9a;
+    --text-faint: #5c5c5c;
+    --accent: #00b896;
+    --accent-press: #009e82;
+    --accent-ink: #03251e;
+    --danger: #c94f4f;
+    --warn: #d8a13c;
+    /* Krasen's signature: hard drop shadow, zero blur */
+    --shadow-hard: 4px 5px 0 rgba(0, 0, 0, 0.5);
+    --shadow-hard-sm: 3px 3px 0 rgba(0, 0, 0, 0.5);
+    --shadow-press: 1px 1px 0 rgba(0, 0, 0, 0.5);
+    --ease-spring: cubic-bezier(0.16, 1, 0.3, 1);
+    --font: "Segoe UI", "Segoe UI Variable", system-ui, sans-serif;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body { height: 100%; }
+
+  body {
+    font-family: var(--font);
+    background: #050505;
+    color: var(--text);
+    display: grid;
+    place-items: center;
+    overflow: hidden;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  body::before {
+    content: "";
+    position: fixed; inset: 0;
+    background:
+      radial-gradient(1200px 700px at 30% 20%, rgba(0,184,150,0.04), transparent 60%),
+      #050505;
+    pointer-events: none;
+  }
+
+  /* ============ WINDOW CHROME ============ */
+  .window {
+    width: min(1080px, 96vw);
+    height: min(700px, 94vh);
+    background: var(--bg);
+    border: 1px solid var(--border);
+    box-shadow: 10px 12px 0 rgba(0, 0, 0, 0.5);
+    display: flex;
+    flex-direction: column;
+    animation: window-in 0.55s var(--ease-spring) both;
+  }
+  @keyframes window-in {
+    from { opacity: 0; transform: translateY(18px) scale(0.975); }
+    to   { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  .window.shake { animation: shake 0.4s ease; }
+  @keyframes shake {
+    0%, 100% { transform: translateX(0); }
+    20% { transform: translateX(-9px); }
+    40% { transform: translateX(8px); }
+    60% { transform: translateX(-5px); }
+    80% { transform: translateX(4px); }
+  }
+
+  .titlebar {
+    height: 38px;
+    flex: none;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    display: flex;
+    align-items: center;
+    padding: 0 0 0 12px;
+    user-select: none;
+    -webkit-app-region: drag;
+  }
+  .appmark {
+    width: 18px; height: 18px;
+    background: var(--accent);
+    color: var(--accent-ink);
+    display: grid; place-items: center;
+    font-size: 12px; font-weight: 700;
+    box-shadow: 2px 2px 0 rgba(0,0,0,0.5);
+    flex: none;
+  }
+  .titlebar .title {
+    margin-left: 10px;
+    font-size: 12.5px;
+    letter-spacing: 0.02em;
+    color: var(--text);
+  }
+  .titlebar .title b { font-weight: 600; }
+  .titlebar .title span { color: var(--text-faint); }
+  .win-controls { margin-left: auto; display: flex; height: 100%; -webkit-app-region: no-drag; }
+  .win-controls button {
+    width: 46px; height: 100%;
+    background: transparent; border: none; color: var(--text-dim);
+    display: grid; place-items: center; cursor: pointer;
+    transition: background 0.12s ease, color 0.12s ease;
+  }
+  .win-controls button:hover { background: var(--surface-3); color: var(--text); }
+  .win-controls button.close:hover { background: var(--danger); color: #fff; }
+
+  /* ============ BODY LAYOUT ============ */
+  .body { flex: 1; display: flex; min-height: 0; }
+
+  /* ---- left rail ---- */
+  .rail {
+    width: 272px; flex: none;
+    background: var(--surface);
+    border-right: 1px solid var(--border);
+    display: flex; flex-direction: column;
+    padding: 14px 12px 10px;
+  }
+  .rail-action {
+    display: flex; align-items: center; gap: 11px;
+    width: 100%;
+    padding: 11px 12px;
+    background: transparent;
+    border: 1px solid transparent;
+    border-left: 3px solid transparent;
+    color: var(--text-dim);
+    font-family: var(--font);
+    font-size: 13.5px; font-weight: 500;
+    text-align: left; cursor: pointer;
+    transition: background 0.15s var(--ease-spring), color 0.15s ease,
+                border-color 0.15s ease, transform 0.12s var(--ease-spring);
+  }
+  .rail-action svg { flex: none; }
+  .rail-action:hover { background: var(--surface-2); color: var(--text); transform: translateX(2px); }
+  .rail-action:active { transform: translateX(2px) translateY(1px); }
+  .rail-action.active {
+    background: var(--surface-2);
+    border-left-color: var(--accent);
+    color: var(--text);
+  }
+  .rail-action.active svg { color: var(--accent); }
+
+  .rail-label {
+    margin: 18px 12px 8px;
+    font-size: 10.5px; font-weight: 600;
+    letter-spacing: 0.14em;
+    color: var(--text-faint);
+    display: flex; align-items: baseline; justify-content: space-between;
+  }
+  .rail-label .cap { font-weight: 400; letter-spacing: 0.04em; }
+
+  .recents { flex: 1; overflow-y: auto; min-height: 0; scrollbar-width: thin; scrollbar-color: var(--border-strong) transparent; }
+  .recents::-webkit-scrollbar { width: 8px; }
+  .recents::-webkit-scrollbar-thumb { background: var(--border-strong); }
+
+  .recent-row {
+    display: flex; align-items: center; gap: 9px;
+    width: 100%;
+    padding: 8px 10px;
+    background: transparent; border: none;
+    border-left: 3px solid transparent;
+    color: var(--text-dim);
+    font-family: var(--font);
+    text-align: left; cursor: pointer;
+    transition: background 0.15s ease, border-color 0.15s ease, transform 0.12s var(--ease-spring);
+  }
+  .recent-row:hover { background: var(--surface-2); border-left-color: var(--border-strong); transform: translateX(2px); }
+  .recent-row .meta { min-width: 0; flex: 1; display: flex; flex-direction: column; gap: 1px; }
+  .recent-row .name {
+    font-size: 12.5px; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .recent-row .when { font-size: 11px; color: var(--text-faint); }
+  .recent-row.missing .name { color: var(--text-faint); text-decoration: line-through; }
+  .recent-row.missing:hover { border-left-color: var(--warn); }
+
+  .recents-empty {
+    margin: 6px 10px;
+    padding: 18px 14px;
+    border: 1px dashed var(--border-strong);
+    color: var(--text-faint);
+    font-size: 12px; line-height: 1.55;
+  }
+
+  .rail-foot {
+    flex: none;
+    padding: 10px 12px 2px;
+    border-top: 1px solid var(--border);
+  }
+  .checkline {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 12px; color: var(--text-dim);
+    cursor: pointer; user-select: none;
+  }
+  .checkline input { accent-color: var(--accent); width: 14px; height: 14px; cursor: pointer; }
+
+  /* ---- main ---- */
+  .main { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg); }
+  .main-scroll { flex: 1; overflow-y: auto; padding: 30px 36px 20px; min-height: 0; }
+
+  .view-head { margin-bottom: 24px; }
+  .view-head h1 {
+    font-size: 21px; font-weight: 600; letter-spacing: -0.01em;
+  }
+  .view-head p {
+    margin-top: 7px;
+    font-size: 12.5px; line-height: 1.6; color: var(--text-dim);
+    max-width: 56ch;
+  }
+  .view-head p b { color: var(--text); font-weight: 600; }
+
+  .stagger > * {
+    animation: rise 0.5s var(--ease-spring) both;
+  }
+  .stagger > *:nth-child(1) { animation-delay: 0.05s; }
+  .stagger > *:nth-child(2) { animation-delay: 0.11s; }
+  .stagger > *:nth-child(3) { animation-delay: 0.17s; }
+  .stagger > *:nth-child(4) { animation-delay: 0.23s; }
+  .stagger > *:nth-child(5) { animation-delay: 0.29s; }
+  @keyframes rise {
+    from { opacity: 0; transform: translateY(14px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .field { margin-bottom: 20px; }
+  .field label {
+    display: block;
+    font-size: 10.5px; font-weight: 600; letter-spacing: 0.13em;
+    color: var(--text-dim);
+    margin-bottom: 7px;
+  }
+  .field .hint { font-size: 11.5px; color: var(--text-faint); margin-top: 6px; }
+  .field .hint.error { color: var(--danger); }
+
+  .text-input {
+    width: 100%; max-width: 420px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-strong);
+    color: var(--text);
+    font-family: var(--font); font-size: 13.5px;
+    padding: 9px 12px;
+    outline: none;
+    caret-color: var(--accent);
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .text-input::placeholder { color: var(--text-faint); }
+  .text-input:focus { border-color: var(--accent); box-shadow: var(--shadow-hard-sm); }
+
+  .path-row { display: flex; gap: 10px; align-items: stretch; max-width: 560px; }
+  .path-display {
+    flex: 1; min-width: 0;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    padding: 9px 12px;
+    font-family: "Cascadia Mono", "Consolas", monospace;
+    font-size: 12px; color: var(--text-faint);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    display: flex; align-items: center;
+    transition: color 0.2s ease, border-color 0.2s ease;
+  }
+  .path-display.set { color: var(--text-dim); border-color: var(--border-strong); }
+  .path-display .fname { color: var(--accent); }
+
+  .aspect-grid {
+    display: grid;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    gap: 14px;
+    max-width: 640px;
+  }
+  .aspect-card {
+    background: var(--surface-2);
+    border: 1px solid var(--border-strong);
+    padding: 14px 6px 10px;
+    display: flex; flex-direction: column; align-items: center; gap: 10px;
+    cursor: pointer;
+    color: var(--text-dim);
+    font-family: var(--font);
+    box-shadow: var(--shadow-hard-sm);
+    transition: transform 0.18s var(--ease-spring), border-color 0.18s ease,
+                color 0.18s ease, box-shadow 0.18s var(--ease-spring), background 0.18s ease;
+  }
+  .aspect-card:hover { transform: translateY(-3px); box-shadow: 4px 7px 0 rgba(0,0,0,0.5); color: var(--text); background: var(--surface-3); }
+  .aspect-card:active { transform: translateY(0); box-shadow: var(--shadow-press); }
+  .aspect-card.selected {
+    border-color: var(--accent);
+    color: var(--text);
+    box-shadow: var(--shadow-hard);
+  }
+  .aspect-card.selected .ratio-shape { border-color: var(--accent); }
+  .aspect-card.selected .ratio-num { color: var(--accent); }
+  .ratio-frame { height: 42px; display: flex; align-items: flex-end; justify-content: center; }
+  .ratio-shape { border: 2px solid var(--text-faint); transition: border-color 0.18s ease; }
+  .ratio-num { font-size: 12.5px; font-weight: 600; transition: color 0.18s ease; }
+  .ratio-name { font-size: 10.5px; color: var(--text-faint); letter-spacing: 0.03em; }
+
+  .select-row { display: flex; gap: 22px; flex-wrap: wrap; }
+  .select-wrap { position: relative; }
+  .select-wrap select {
+    appearance: none; -webkit-appearance: none;
+    background: var(--surface-2);
+    border: 1px solid var(--border-strong);
+    color: var(--text);
+    font-family: var(--font); font-size: 13px;
+    padding: 9px 34px 9px 12px;
+    cursor: pointer; outline: none;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+  }
+  .select-wrap select:focus { border-color: var(--accent); box-shadow: var(--shadow-hard-sm); }
+  .select-wrap::after {
+    content: "";
+    position: absolute; right: 12px; top: 50%;
+    width: 7px; height: 7px;
+    border-right: 2px solid var(--text-dim);
+    border-bottom: 2px solid var(--text-dim);
+    transform: translateY(-70%) rotate(45deg);
+    pointer-events: none;
+  }
+
+  .actionbar {
+    flex: none;
+    border-top: 1px solid var(--border);
+    background: var(--surface);
+    padding: 13px 36px;
+    display: flex; align-items: center; gap: 14px;
+  }
+  .mandate {
+    display: flex; align-items: center; gap: 8px;
+    font-size: 11.5px; color: var(--text-faint);
+    min-width: 0;
+  }
+  .mandate svg { flex: none; color: var(--warn); }
+  .actionbar .spacer { flex: 1; }
+
+  .btn {
+    font-family: var(--font); font-size: 13px; font-weight: 600;
+    padding: 10px 20px;
+    border: 1px solid var(--border-strong);
+    background: var(--surface-2); color: var(--text);
+    cursor: pointer;
+    box-shadow: var(--shadow-hard-sm);
+    transition: transform 0.14s var(--ease-spring), box-shadow 0.14s var(--ease-spring),
+                background 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+    display: inline-flex; align-items: center; gap: 8px;
+    white-space: nowrap;
+  }
+  .btn:hover { background: var(--surface-3); transform: translateY(-2px); box-shadow: 4px 6px 0 rgba(0,0,0,0.5); }
+  .btn:active { transform: translate(2px, 2px); box-shadow: var(--shadow-press); }
+  .btn:disabled { cursor: not-allowed; opacity: 0.6; transform: none; box-shadow: var(--shadow-hard-sm); }
+  .btn:focus-visible, .rail-action:focus-visible, .aspect-card:focus-visible, .recent-row:focus-visible {
+    outline: 1px solid var(--accent); outline-offset: 2px;
+  }
+  .btn.primary {
+    background: var(--accent); border-color: var(--accent); color: var(--accent-ink);
+  }
+  .btn.primary:hover { background: #0dcda9; border-color: #0dcda9; }
+  .btn.primary:disabled {
+    background: var(--surface-2); border-color: var(--border); color: var(--text-faint);
+    cursor: not-allowed; box-shadow: none; transform: none;
+  }
+
+  /* ---- open view ---- */
+  .open-list { max-width: 640px; display: flex; flex-direction: column; gap: 10px; }
+  .open-row {
+    display: flex; align-items: center; gap: 14px;
+    background: var(--surface-2);
+    border: 1px solid var(--border-strong);
+    border-left: 3px solid var(--border-strong);
+    padding: 12px 14px;
+    cursor: pointer;
+    font-family: var(--font); color: var(--text); text-align: left;
+    box-shadow: var(--shadow-hard-sm);
+    transition: transform 0.16s var(--ease-spring), border-color 0.15s ease, box-shadow 0.16s var(--ease-spring);
+  }
+  .open-row:hover { transform: translateY(-2px); border-left-color: var(--accent); box-shadow: 4px 6px 0 rgba(0,0,0,0.5); }
+  .open-row:active { transform: translate(1px, 1px); box-shadow: var(--shadow-press); }
+  .open-row .meta { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+  .open-row .name { font-size: 13.5px; font-weight: 600; }
+  .open-row .path {
+    font-family: "Cascadia Mono", "Consolas", monospace;
+    font-size: 11px; color: var(--text-faint);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .open-row .when { font-size: 11px; color: var(--text-faint); flex: none; }
+  .open-row.missing { border-left-color: var(--warn); cursor: default; opacity: 0.75; }
+  .open-row.missing:hover { transform: none; }
+  .open-row .tag {
+    flex: none; font-size: 10.5px; font-weight: 600; letter-spacing: 0.06em;
+    color: var(--warn); border: 1px solid var(--warn);
+    padding: 3px 7px;
+  }
+  .icon-btn {
+    flex: none;
+    width: 28px; height: 28px;
+    display: grid; place-items: center;
+    background: transparent; border: none; color: var(--text-faint);
+    cursor: pointer;
+    transition: color 0.15s ease, background 0.15s ease;
+  }
+  .icon-btn:hover { color: var(--danger); background: var(--surface-3); }
+
+  /* toast */
+  .toast {
+    position: fixed; left: 50%; bottom: 34px;
+    transform: translateX(-50%) translateY(20px);
+    background: var(--surface-2);
+    border: 1px solid var(--border-strong);
+    border-left: 3px solid var(--accent);
+    box-shadow: var(--shadow-hard);
+    color: var(--text);
+    font-size: 13px;
+    padding: 11px 18px;
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.25s var(--ease-spring), transform 0.25s var(--ease-spring);
+    max-width: 80vw;
+    z-index: 50;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+  .toast.error { border-left-color: var(--danger); }
+
+  .rail > * { animation: rise 0.45s var(--ease-spring) both; }
+  .rail > *:nth-child(1) { animation-delay: 0.10s; }
+  .rail > *:nth-child(2) { animation-delay: 0.15s; }
+  .rail > *:nth-child(3) { animation-delay: 0.20s; }
+  .rail > *:nth-child(4) { animation-delay: 0.25s; }
+  .rail > *:nth-child(5) { animation-delay: 0.30s; }
+  .rail > *:nth-child(6) { animation-delay: 0.34s; }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-delay: 0ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+</style>
+</head>
+<body>
+
+<div class="window" id="window">
+  <div class="titlebar">
+    <div class="appmark">X</div>
+    <div class="title"><b>XLETH</b> <span>- Welcome</span></div>
+    <div class="win-controls">
+      <button title="Minimize" tabindex="-1">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12h14"/></svg>
+      </button>
+      <button title="Maximize" tabindex="-1">
+        <svg width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="4" width="16" height="16"/></svg>
+      </button>
+      <button class="close" id="btnClose" title="Close">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <div class="body">
+    <aside class="rail">
+      <button class="rail-action active" id="actNew">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M9 15h6"/><path d="M12 12v6"/></svg>
+        New Project
+      </button>
+      <button class="rail-action" id="actOpen">
+        <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 14 1.5-2.9A2 2 0 0 1 9.24 10H20a2 2 0 0 1 1.94 2.5l-1.54 6a2 2 0 0 1-1.95 1.5H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h3.9a2 2 0 0 1 1.69.9l.81 1.2a2 2 0 0 0 1.67.9H18a2 2 0 0 1 2 2v2"/></svg>
+        Open Project&hellip;
+      </button>
+
+      <div class="rail-label">RECENT PROJECTS <span class="cap" id="capLabel"></span></div>
+      <div class="recents" id="railRecents"></div>
+
+      <div class="rail-foot">
+        <label class="checkline">
+          <input type="checkbox" id="chkStartup" checked>
+          Show this window on startup
+        </label>
+      </div>
+    </aside>
+
+    <main class="main">
+      <div class="main-scroll">
+
+        <section id="viewNew" class="stagger">
+          <div class="view-head">
+            <h1>Create a new project</h1>
+            <p>XLETH needs your project <b>saved on disk before the workspace opens</b>. Autosave, proxy media, and crash recovery all anchor to that file, so there is no untitled session to lose.</p>
+          </div>
+
+          <div class="field">
+            <label for="inpName">PROJECT NAME</label>
+            <input class="text-input" id="inpName" type="text" placeholder="Untitled Remix" autocomplete="off" spellcheck="false">
+          </div>
+
+          <div class="field">
+            <label>LOCATION</label>
+            <div class="path-row">
+              <div class="path-display" id="pathDisplay">Choose a folder&hellip;</div>
+              <button class="btn" id="btnBrowse">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+                Browse&hellip;
+              </button>
+            </div>
+            <div class="hint" id="pathHint">The project file is created the moment you continue.</div>
+          </div>
+
+          <div class="field">
+            <label>ASPECT RATIO</label>
+            <div class="aspect-grid" id="aspectGrid">
+              <button class="aspect-card selected" data-ratio="16:9">
+                <span class="ratio-frame"><span class="ratio-shape" style="width:44px;height:25px"></span></span>
+                <span class="ratio-num">16:9</span><span class="ratio-name">Widescreen</span>
+              </button>
+              <button class="aspect-card" data-ratio="4:3">
+                <span class="ratio-frame"><span class="ratio-shape" style="width:36px;height:27px"></span></span>
+                <span class="ratio-num">4:3</span><span class="ratio-name">Fullscreen</span>
+              </button>
+              <button class="aspect-card" data-ratio="9:16">
+                <span class="ratio-frame"><span class="ratio-shape" style="width:21px;height:37px"></span></span>
+                <span class="ratio-num">9:16</span><span class="ratio-name">Portrait</span>
+              </button>
+              <button class="aspect-card" data-ratio="1:1">
+                <span class="ratio-frame"><span class="ratio-shape" style="width:29px;height:29px"></span></span>
+                <span class="ratio-num">1:1</span><span class="ratio-name">Square</span>
+              </button>
+              <button class="aspect-card" data-ratio="2.39:1">
+                <span class="ratio-frame"><span class="ratio-shape" style="width:48px;height:20px"></span></span>
+                <span class="ratio-num">2.39:1</span><span class="ratio-name">Scope</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="field">
+            <div class="select-row">
+              <div>
+                <label>RESOLUTION</label>
+                <div class="select-wrap">
+                  <select id="selRes">
+                    <option value="3840x2160">3840 × 2160 (4K UHD)</option>
+                    <option value="2560x1440">2560 × 1440 (QHD)</option>
+                    <option value="1920x1080" selected>1920 × 1080 (Full HD)</option>
+                    <option value="1280x720">1280 × 720 (HD)</option>
+                  </select>
+                </div>
+              </div>
+              <div>
+                <label>FRAME RATE</label>
+                <div class="select-wrap">
+                  <select id="selFps">
+                    <option value="23.976">23.976 fps</option>
+                    <option value="24">24 fps</option>
+                    <option value="25">25 fps</option>
+                    <option value="29.97">29.97 fps</option>
+                    <option value="30" selected>30 fps</option>
+                    <option value="50">50 fps</option>
+                    <option value="59.94">59.94 fps</option>
+                    <option value="60">60 fps</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section id="viewOpen" class="stagger" hidden>
+          <div class="view-head">
+            <h1>Open a project</h1>
+            <p>Pick up where you left off, or browse for a project folder anywhere on disk.</p>
+          </div>
+          <div class="field">
+            <button class="btn" id="btnBrowseOpen">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>
+              Browse for project folder&hellip;
+            </button>
+          </div>
+          <div class="open-list" id="openList"></div>
+        </section>
+
+      </div>
+
+      <div class="actionbar">
+        <div class="mandate" id="mandateNew">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>
+          <span id="mandateText">Name your project and pick a folder to continue.</span>
+        </div>
+        <div class="spacer"></div>
+        <button class="btn" id="btnAdvanced">Advanced Settings&hellip;</button>
+        <button class="btn primary" id="btnCreate" disabled>Create Project</button>
+      </div>
+    </main>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+(function () {
+  "use strict";
+
+  // Real IPC surface (welcome-preload.js) when running inside Electron. In a
+  // plain browser tab (e.g. previewing this file directly) it's undefined —
+  // fall back to an in-memory demo so the page is still inspectable, exactly
+  // like splash.html's __xlethSplashPreloadActive-gated fallback does.
+  var xl = window.xlethWelcome || null;
+  var MAX_RECENTS = 10;
+
+  var now = Date.now();
+  var DAY = 86400000;
+
+  function demoRecents() {
+    return [
+      { name: "Adubuyrus Tribute (WIP)",   dir: "C:\\Users\\Krasen\\Documents\\XLETH Projects\\Adubuyrus Tribute (WIP)", lastOpened: now - 2 * 3600000, exists: true },
+      { name: "SpongeBob Sparta Pulse V3", dir: "C:\\Users\\Krasen\\Documents\\XLETH Projects\\SpongeBob Sparta Pulse V3", lastOpened: now - DAY, exists: true },
+      { name: "Old Laptop Backup Mix",     dir: "E:\\Backups\\XLETH\\Old Laptop Backup Mix", lastOpened: now - 20 * DAY, exists: false }
+    ];
+  }
+
+  var demoState = { recents: demoRecents(), showOnStartup: true };
+
+  var api = xl ? {
+    listRecents:   xl.recents.list,
+    touchRecent:   xl.recents.touch,
+    removeRecent:  xl.recents.remove,
+    chooseNewFolder:  xl.project.chooseNewProjectFolder,
+    chooseOpenFolder: xl.project.chooseOpenProjectFolder,
+    createProject: xl.project.create,
+    loadProject:   xl.project.load,
+    getShowOnStartup: xl.settings.getShowOnStartup,
+    setShowOnStartup: xl.settings.setShowOnStartup,
+    minimize: xl.window.minimize,
+    close:    xl.window.close,
+    projectReady: xl.projectReady,
+  } : {
+    listRecents:   function () { return Promise.resolve(demoState.recents); },
+    touchRecent:   function (entry) {
+      demoState.recents = demoState.recents.filter(function (r) { return r.dir !== entry.dir; });
+      demoState.recents.unshift({ name: entry.name, dir: entry.dir, lastOpened: Date.now(), exists: true });
+      demoState.recents = demoState.recents.slice(0, MAX_RECENTS);
+      return Promise.resolve(demoState.recents);
+    },
+    removeRecent:  function (dir) {
+      demoState.recents = demoState.recents.filter(function (r) { return r.dir !== dir; });
+      return Promise.resolve(demoState.recents);
+    },
+    chooseNewFolder:  function () { return Promise.resolve("C:\\Users\\Krasen\\Documents\\XLETH Projects"); },
+    chooseOpenFolder: function () { return Promise.resolve(null); },
+    createProject: function (form) {
+      return Promise.resolve({ ok: true, dir: form.parentDir + "\\" + form.name, name: form.name });
+    },
+    loadProject:   function () { return Promise.resolve(true); },
+    getShowOnStartup: function () { return Promise.resolve(demoState.showOnStartup); },
+    setShowOnStartup: function (v) { demoState.showOnStartup = v; return Promise.resolve(); },
+    minimize: function () {},
+    close:    function () { toast("Preview mode: no window to close.", true); },
+    projectReady: function (dir, name) { toast("Preview mode: would open workspace with \u201c" + name + "\u201d now."); },
+  };
+
+  var recents = [];
+
+  function relTime(ts) {
+    var d = now - ts;
+    if (d < 3600000) return "just now";
+    if (d < DAY) return Math.round(d / 3600000) + "h ago";
+    if (d < 7 * DAY) return Math.round(d / DAY) + "d ago";
+    if (d < 30 * DAY) return Math.round(d / (7 * DAY)) + "w ago";
+    return Math.round(d / (30 * DAY)) + "mo ago";
+  }
+
+  var folderIcon = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 20a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13a2 2 0 0 0 2 2Z"/></svg>';
+  var warnIcon = '<svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m21.73 18-8-14a2 2 0 0 0-3.48 0l-8 14A2 2 0 0 0 4 21h16a2 2 0 0 0 1.73-3Z"/><path d="M12 9v4"/><path d="M12 17h.01"/></svg>';
+  var xIcon = '<svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 6 6 18M6 6l12 12"/></svg>';
+
+  var railRecents = document.getElementById("railRecents");
+  var openList = document.getElementById("openList");
+  var capLabel = document.getElementById("capLabel");
+
+  function projectFileOf(dir) { return dir + "\\project.json"; }
+
+  function renderRecents() {
+    capLabel.textContent = recents.length > 0 ? Math.min(recents.length, MAX_RECENTS) + " / " + MAX_RECENTS : "";
+    railRecents.innerHTML = "";
+    openList.innerHTML = "";
+
+    if (recents.length === 0) {
+      railRecents.innerHTML = '<div class="recents-empty">No recent projects yet.<br>Projects you create or open will show up here.</div>';
+      openList.innerHTML = '<div class="recents-empty">Nothing here yet. Browse for a project folder, or start a new project.</div>';
+      return;
+    }
+
+    recents.forEach(function (p, i) {
+      var r = document.createElement("button");
+      r.className = "recent-row" + (p.exists ? "" : " missing");
+      r.title = p.dir;
+      r.innerHTML = (p.exists ? folderIcon : warnIcon) +
+        '<span class="meta"><span class="name"></span><span class="when">' + (p.exists ? relTime(p.lastOpened) : "file not found") + "</span></span>";
+      r.querySelector(".name").textContent = p.name;
+      r.addEventListener("click", function () { openRecent(i); });
+      railRecents.appendChild(r);
+
+      var o = document.createElement("div");
+      o.className = "open-row" + (p.exists ? "" : " missing");
+      o.setAttribute("role", "button");
+      o.innerHTML =
+        (p.exists ? folderIcon : warnIcon) +
+        '<span class="meta"><span class="name"></span><span class="path"></span></span>' +
+        (p.exists ? '<span class="when">' + relTime(p.lastOpened) + "</span>" : '<span class="tag">MISSING</span>') +
+        '<button class="icon-btn" title="Remove from list">' + xIcon + "</button>";
+      o.querySelector(".name").textContent = p.name;
+      o.querySelector(".path").textContent = projectFileOf(p.dir);
+      o.addEventListener("click", function (e) {
+        if (e.target.closest(".icon-btn")) return;
+        openRecent(i);
+      });
+      o.querySelector(".icon-btn").addEventListener("click", function (e) {
+        e.stopPropagation();
+        api.removeRecent(p.dir).then(function (next) {
+          recents = next;
+          renderRecents();
+          toast("Removed from recent projects.");
+        });
+      });
+      openList.appendChild(o);
+    });
+  }
+
+  function loadRecents() {
+    return api.listRecents().then(function (list) {
+      recents = list || [];
+      renderRecents();
+    });
+  }
+
+  /* ---- view switching ---- */
+  var actNew = document.getElementById("actNew");
+  var actOpen = document.getElementById("actOpen");
+  var viewNew = document.getElementById("viewNew");
+  var viewOpen = document.getElementById("viewOpen");
+  var btnCreate = document.getElementById("btnCreate");
+  var btnAdvanced = document.getElementById("btnAdvanced");
+  var mandateText = document.getElementById("mandateText");
+
+  function restartStagger(el) {
+    el.querySelectorAll(":scope > *, :scope .field").forEach(function (n) {
+      n.style.animation = "none";
+      void n.offsetWidth;
+      n.style.animation = "";
+    });
+  }
+
+  function showView(which) {
+    var isNew = which === "new";
+    actNew.classList.toggle("active", isNew);
+    actOpen.classList.toggle("active", !isNew);
+    viewNew.hidden = !isNew;
+    viewOpen.hidden = isNew;
+    btnCreate.style.display = isNew ? "" : "none";
+    btnAdvanced.style.display = isNew ? "" : "none";
+    if (isNew) validate();
+    else mandateText.textContent = "Opening a project loads its saved settings automatically.";
+    restartStagger(isNew ? viewNew : viewOpen);
+  }
+  actNew.addEventListener("click", function () { showView("new"); });
+  actOpen.addEventListener("click", function () { showView("open"); });
+
+  /* ---- new project form ---- */
+  var inpName = document.getElementById("inpName");
+  var pathDisplay = document.getElementById("pathDisplay");
+  var pathHint = document.getElementById("pathHint");
+  var btnBrowse = document.getElementById("btnBrowse");
+  var selRes = document.getElementById("selRes");
+  var selFps = document.getElementById("selFps");
+  var aspectGrid = document.getElementById("aspectGrid");
+  var chosenFolder = null;
+
+  // Client-side mirror of welcome.js's sanitizeFolderName — display only;
+  // the main process re-sanitizes authoritatively before touching disk.
+  function sanitizeForPreview(name) {
+    var cleaned = String(name || "").replace(/[<>:"/\\|?*\x00-\x1f]/g, "").trim().replace(/[. ]+$/, "");
+    return cleaned || "Untitled Project";
+  }
+
+  function selectedAspectRatio() {
+    var card = aspectGrid.querySelector(".aspect-card.selected");
+    return card ? card.getAttribute("data-ratio") : "16:9";
+  }
+
+  function fullDir() {
+    if (!chosenFolder) return null;
+    var name = sanitizeForPreview(inpName.value.trim() || "Untitled Remix");
+    return chosenFolder + "\\" + name;
+  }
+
+  function validate() {
+    var ok = inpName.value.trim().length > 0 && !!chosenFolder;
+    btnCreate.disabled = !ok;
+    mandateText.textContent = ok
+      ? "Ready: the project file is created on disk and the workspace opens with it."
+      : "Name your project and pick a folder to continue.";
+    if (chosenFolder) {
+      pathDisplay.classList.add("set");
+      pathDisplay.innerHTML = "";
+      var dir = fullDir();
+      pathDisplay.appendChild(document.createTextNode(dir + "\\"));
+      var f = document.createElement("span");
+      f.className = "fname";
+      f.textContent = "project.json";
+      pathDisplay.appendChild(f);
+      pathHint.textContent = "The project file is created the moment you continue.";
+      pathHint.classList.remove("error");
+    } else if (inpName.value.trim().length > 0) {
+      pathHint.textContent = "Still need a folder: XLETH cannot run a project with no file path.";
+      pathHint.classList.add("error");
+    } else {
+      pathHint.textContent = "The project file is created the moment you continue.";
+      pathHint.classList.remove("error");
+    }
+  }
+
+  inpName.addEventListener("input", validate);
+  btnBrowse.addEventListener("click", function () {
+    btnBrowse.disabled = true;
+    api.chooseNewFolder().then(function (folder) {
+      btnBrowse.disabled = false;
+      if (folder) chosenFolder = folder;
+      validate();
+    }, function () { btnBrowse.disabled = false; });
+  });
+
+  aspectGrid.addEventListener("click", function (e) {
+    var card = e.target.closest(".aspect-card");
+    if (!card) return;
+    aspectGrid.querySelectorAll(".aspect-card").forEach(function (c) { c.classList.remove("selected"); });
+    card.classList.add("selected");
+  });
+
+  /* ---- actions ---- */
+  var toastEl = document.getElementById("toast");
+  var toastTimer = null;
+  function toast(msg, isError) {
+    toastEl.textContent = msg;
+    toastEl.classList.toggle("error", !!isError);
+    toastEl.classList.add("show");
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(function () { toastEl.classList.remove("show"); }, 2800);
+  }
+
+  function proceedToWorkspace(dir, name) {
+    api.touchRecent({ name: name, dir: dir }).then(function () {
+      api.projectReady(dir, name);
+    });
+  }
+
+  btnCreate.addEventListener("click", function () {
+    if (btnCreate.disabled) return;
+    var res = selRes.value.split("x");
+    var form = {
+      parentDir: chosenFolder,
+      name: inpName.value.trim(),
+      width: parseInt(res[0], 10),
+      height: parseInt(res[1], 10),
+      fps: parseFloat(selFps.value),
+      aspectRatio: selectedAspectRatio(),
+    };
+    btnCreate.disabled = true;
+    btnCreate.textContent = "Creating\u2026";
+    api.createProject(form).then(function (result) {
+      if (!result || !result.ok) {
+        btnCreate.disabled = false;
+        btnCreate.textContent = "Create Project";
+        toast((result && result.error) || "Could not create the project.", true);
+        return;
+      }
+      toast("Created \u201c" + result.name + "\u201d \u2014 opening workspace\u2026");
+      proceedToWorkspace(result.dir, result.name);
+    }, function (err) {
+      btnCreate.disabled = false;
+      btnCreate.textContent = "Create Project";
+      toast(String((err && err.message) || err || "Could not create the project."), true);
+    });
+  });
+
+  function openRecent(i) {
+    var p = recents[i];
+    if (!p.exists) {
+      toast("File not found: " + projectFileOf(p.dir) + " \u2014 remove it or locate the project on disk.", true);
+      return;
+    }
+    toast("Opening " + p.name + "\u2026");
+    api.loadProject(p.dir).then(function (ok) {
+      if (!ok) { toast("Failed to load \u201c" + p.name + "\u201d.", true); return; }
+      proceedToWorkspace(p.dir, p.name);
+    }, function (err) {
+      toast(String((err && err.message) || err || "Failed to load project."), true);
+    });
+  }
+
+  document.getElementById("btnBrowseOpen").addEventListener("click", function () {
+    api.chooseOpenFolder().then(function (dir) {
+      if (!dir) return;
+      var name = dir.split("\\").pop() || dir;
+      toast("Opening " + name + "\u2026");
+      api.loadProject(dir).then(function (ok) {
+        if (!ok) { toast("No project found in that folder.", true); return; }
+        proceedToWorkspace(dir, name);
+      }, function (err) {
+        toast(String((err && err.message) || err || "Failed to load project."), true);
+      });
+    });
+  });
+
+  btnAdvanced.addEventListener("click", function () {
+    toast("Advanced settings: audio device, buffer size, proxy quality, PPQ.");
+  });
+
+  /* ---- the mandatory gate: closing the window cannot skip the project ---- */
+  var winEl = document.getElementById("window");
+  document.getElementById("btnClose").addEventListener("click", function () {
+    winEl.classList.remove("shake");
+    void winEl.offsetWidth;
+    winEl.classList.add("shake");
+    toast("XLETH cannot start without a project file. Create one or open an existing project.", true);
+    setTimeout(function () { api.close(); }, 380);
+  });
+
+  /* ---- startup toggle persistence ---- */
+  var chk = document.getElementById("chkStartup");
+  api.getShowOnStartup().then(function (value) {
+    chk.checked = value !== false;
+  });
+  chk.addEventListener("change", function () {
+    api.setShowOnStartup(chk.checked);
+    toast(chk.checked ? "Welcome screen will show on startup." : "Welcome screen hidden: XLETH will reopen your last project instead.");
+  });
+
+  loadRecents();
+  validate();
+})();
+</script>
+</body>
+</html>

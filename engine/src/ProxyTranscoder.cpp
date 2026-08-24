@@ -702,7 +702,21 @@ struct ProxyEnc {
 //   1. DNxHR HQX (dnxhd + dnxhr_hqx profile, yuv422p10le) — 10-bit edit proxy.
 //   2. ProRes (prores_ks/prores, yuv422p10le) — 10-bit, if compiled.
 //   3. …then the 8-bit DNxHR LB / MJPEG ladder below.
-static std::vector<ProxyEnc> buildProxyEncoders(bool highBitDepth = false)
+//
+// preferMjpeg=true swaps the 8-bit ladder to MJPEG-then-DNxHR-LB. DNxHR is a
+// constant-bits-per-frame codec — every frame must fit a fixed budget — and on
+// very long, high-motion/high-entropy sources (a 31-minute action-heavy source
+// crashed here) a frame can occasionally exceed what dnxhd's rate control
+// allocated, overrunning its output buffer and hitting libavcodec's internal
+// `put_bits` bounds assertion, which calls abort() and kills the whole engine
+// process (not just the background job). MJPEG's bitstream size follows the
+// frame's actual entropy instead of a fixed budget, so it doesn't have this
+// failure mode. Used for whole-source preview-proxy generation, which is the
+// long-running, low-priority path most exposed to this: it re-encodes an
+// entire source (tens of thousands of frames) as an unattended background job,
+// and a hard crash there isn't memoized, so a bad frame retriggers the same
+// crash every time the project reloads.
+static std::vector<ProxyEnc> buildProxyEncoders(bool highBitDepth = false, bool preferMjpeg = false)
 {
     std::vector<ProxyEnc> out;
     if (highBitDepth) {
@@ -715,10 +729,17 @@ static std::vector<ProxyEnc> buildProxyEncoders(bool highBitDepth = false)
             out.push_back({pr, AV_PIX_FMT_YUV422P10LE, nullptr, false,
                            "ProRes 10-bit"});
     }
-    if (const AVCodec* c = avcodec_find_encoder(AV_CODEC_ID_DNXHD))
-        out.push_back({c, AV_PIX_FMT_YUV422P, "dnxhr_lb", false, "DNxHR LB (dnxhd)"});
-    if (const AVCodec* c = avcodec_find_encoder(AV_CODEC_ID_MJPEG))
-        out.push_back({c, AV_PIX_FMT_YUVJ420P, nullptr, true, "MJPEG"});
+    const AVCodec* dnxhd = avcodec_find_encoder(AV_CODEC_ID_DNXHD);
+    const AVCodec* mjpeg = avcodec_find_encoder(AV_CODEC_ID_MJPEG);
+    ProxyEnc dnxhrLb{dnxhd, AV_PIX_FMT_YUV422P, "dnxhr_lb", false, "DNxHR LB (dnxhd)"};
+    ProxyEnc mjpegEnc{mjpeg, AV_PIX_FMT_YUVJ420P, nullptr, true, "MJPEG"};
+    if (preferMjpeg) {
+        if (mjpeg) out.push_back(mjpegEnc);
+        if (dnxhd) out.push_back(dnxhrLb);
+    } else {
+        if (dnxhd) out.push_back(dnxhrLb);
+        if (mjpeg) out.push_back(mjpegEnc);
+    }
     return out;
 }
 
@@ -735,7 +756,8 @@ static bool transcodeImpl(const std::string& inputPath,
                           std::function<void(float)> progressCb,
                           int swsFlags = SWS_BILINEAR,
                           bool highBitDepth = false,
-                          bool uncappedNative = false)
+                          bool uncappedNative = false,
+                          bool preferMjpeg = false)
 {
     std::error_code ec;
     if (!fs::exists(utf8ToPath(inputPath), ec)) {
@@ -762,7 +784,7 @@ static bool transcodeImpl(const std::string& inputPath,
         return false;
     }
 
-    std::vector<ProxyEnc> encoders = buildProxyEncoders(highBitDepth);
+    std::vector<ProxyEnc> encoders = buildProxyEncoders(highBitDepth, preferMjpeg);
     if (encoders.empty()) {
         std::cerr << "[ProxyTranscoder] No all-intra proxy encoder (DNxHD/MJPEG) compiled "
                      "into linked FFmpeg — cannot generate proxy; preview falls back to "
@@ -1196,9 +1218,13 @@ bool ProxyTranscoder::transcodeSourcePreview(
     // startSec=-1, endSec=-1 ⇒ whole file. targetW=0 + targetH>0 ⇒ width derived
     // from the source aspect at targetHeight, no 1080p cap (see transcodeImpl).
     // SWS_LANCZOS for high-quality downscaling (paid once, off-thread).
+    // preferMjpeg=true: this is the unattended, whole-source, tens-of-thousands-
+    // of-frames background job — the one most exposed to DNxHR's fixed-budget
+    // put_bits overrun on a rare high-entropy frame (see buildProxyEncoders).
     bool ok = transcodeImpl(inputPath, outputPath, -1.0, -1.0,
                             /*targetW*/0, /*targetH*/targetHeight,
-                            progressCallback, SWS_LANCZOS, highBitDepth);
+                            progressCallback, SWS_LANCZOS, highBitDepth,
+                            /*uncappedNative*/false, /*preferMjpeg*/true);
     if (!ok) {
         std::cerr << "[ProxyTranscoder] Whole-source preview proxy FAILED — preview "
                      "falls back to poster/original\n";

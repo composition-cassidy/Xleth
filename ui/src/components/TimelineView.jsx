@@ -42,7 +42,11 @@ import {
   pixelToBeat, snapBeatToGrid, snapTickToGrid, beatsToTicks, regionDurationToTicks,
   GRANULARITY_BEATS, MIN_PPB, MAX_PPB, ZOOM_FACTOR,
 } from '../constants/timeline.js'
-import { getRegime } from '../utils/waveformRenderer.js'
+import { currentRegime } from './timeline/waveformRegime.js'
+import { anchoredScrollX, scrollSpringWriteback } from './timeline/viewportAnchor.js'
+import { hiResCoversWindow } from './timeline/hiResCoverage.js'
+import { findCoveringEntry, insertEntry } from './timeline/hiResRegionCache.js'
+import { planRegionFetches } from './timeline/hiResFetchPlanner.js'
 import { getRegionPlaybackDurationSec } from './timeline/regionDuration.js'
 import { getClipRegionWaveformStartSec } from './timeline/timelineDrawing.js'
 import {
@@ -922,8 +926,33 @@ export default function TimelineView({
   const waveformCacheRef = useRef({})             // { [regionId]: { peaks, stride, peakWidth } }
   const waveformLruRef = useRef([])               // LRU order: most-recent at end
   const WAVEFORM_CACHE_MAX = 128                  // max cached regions before eviction
-  const hiResCacheRef = useRef({})                // { [regionId|"c"+clipId]: { peaks?, samples?, startSec, endSec, ... } }
+  // { ["c"+clipId]: { peaks?, samples?, startSec, endSec, ... } } for processed
+  // (per-clip, collision-free) entries, but
+  // { [regionId]: Array<{ peaks?, samples?, startSec, endSec, ... }> } for
+  // unprocessed ones — an ARRAY, not a single slot, because many clips
+  // routinely reference DIFFERENT sub-ranges of the same source region (a
+  // syllable-chopped region is the common case). A single slot meant one
+  // clip's fetch silently discarded every other clip's already-cached
+  // window, every settle pass — see hiResFetchPlanner.js / hiResRegionCache.js.
+  const hiResCacheRef = useRef({})
   const hiResFetchTimer = useRef(null)            // debounce timer for hi-res fetches
+  // Bumped once per settle-pass fetch batch. A batch's async jobs check this
+  // before writing a result into the cache — if a NEWER batch has already
+  // started (the user kept panning before the old one finished), the old
+  // batch's in-flight results are discarded instead of landing after the
+  // fact and briefly showing data for a viewport the user has already left.
+  // The old effect had no such guard at all: its cleanup only cleared the
+  // (by-then-already-fired) setTimeout, so overlapping gestures could run
+  // two full fetch passes concurrently, doubling IPC traffic for no benefit.
+  const hiResFetchGenerationRef = useRef(0)
+  // Tuning knobs for the coalesced hi-res fetch below. Distances are in
+  // PIXELS (converted to seconds at fetch time via the current zoom) so they
+  // scale with zoom instead of being a fixed number of seconds that would be
+  // huge relative to the viewport when zoomed in and tiny when zoomed out.
+  const HIRES_MARGIN_PX = 150            // pad merged fetch windows by this much on each side
+  const HIRES_MERGE_GAP_PX = 300         // batch clip requests within this many px of each other
+  const HIRES_MAX_ENTRIES_PER_REGION = 12 // cap on distinct cached windows per region (FIFO evict)
+  const HIRES_MAX_FETCHES_PER_REGION = 6  // cap merged fetches issued per region per settle pass
   const regionSampleRates = useRef({})            // { [regionId]: sampleRate } — learned from getRegionPeaks
   const clipPeakCacheRef = useRef({})             // { [clipId]: { peaks, stride, peakWidth, pitchOffset, pitchOffsetCents, reversed, stretchRatio } }
   const clipPeakRetryRef = useRef({})             // { [clipId]: retryCount } — resets on param change or success
@@ -1048,15 +1077,24 @@ export default function TimelineView({
     },
     getDrawStats: () => canvasRef.current?.getDrawStats(),
     onTick: (values) => {
-      let scrollXVal = values.scrollX
-      const anchor = zoomAnchorRef.current
-      if (anchor) {
-        scrollXVal = anchor.beat - anchor.pixelX / values.ppb
-        viewAnimatorRef.current?.setCurrent('scrollX', scrollXVal)
-        if (viewAnimatorRef.current?.isAtRest('ppb')) zoomAnchorRef.current = null
-      }
+      // Zoom FIRST: applyZoom's onCommit refreshes both the ppb ref and the
+      // maxScroll bound that the scroll clamp below depends on. Clamping the
+      // anchor-derived scroll against a bound computed for the PREVIOUS
+      // frame's zoom level is wrong by exactly one frame every frame of a
+      // zoom-out, which is where the bound is moving fastest.
       applyZoom(values.ppb)
-      applyScroll(scrollXVal)
+
+      const anchor = zoomAnchorRef.current
+      const requested = anchoredScrollX(values.scrollX, anchor, values.ppb)
+
+      // applyScroll clamps to [0, maxScroll] and RETURNS what it committed.
+      // Feed that back into the spring, never the raw request — see
+      // viewportAnchor.js for the invariant and why violating it makes the
+      // view bounce during ctrl+wheel zoom.
+      const committed = applyScroll(requested)
+      const writeback = scrollSpringWriteback(requested, committed, Boolean(anchor))
+      if (writeback !== null) viewAnimatorRef.current?.setCurrent('scrollX', writeback)
+      if (anchor && viewAnimatorRef.current?.isAtRest('ppb')) zoomAnchorRef.current = null
 
       const sc = scrollContainerRef.current
       if (sc) sc.scrollTop = values.scrollY
@@ -1579,7 +1617,16 @@ export default function TimelineView({
 
     async function fetchClipPeaks() {
       const PEAKS_PER_SECOND = 200
-      const MIN_PEAKS = 800
+      // Lower floor than the per-REGION fetch below deliberately. A region's
+      // peak array is shared by every clip cut from it, so paying for 800
+      // columns there is amortised; this array belongs to ONE clip, and
+      // syllable-chopped projects routinely have clips well under 100 ms —
+      // at an 800 floor that is >13,000 peaks/second, an array three times
+      // larger than the clip can ever display, serialised through IPC per
+      // clip. 256 still exceeds the ~2 columns/pixel the renderer will draw
+      // (see decimatePeaks) at any zoom this fallback covers; past that the
+      // viewport hi-res path takes over.
+      const MIN_PEAKS = 256
       const MAX_PEAKS = 16000
       const bpm = bpmRef.current || 120
 
@@ -1745,7 +1792,10 @@ export default function TimelineView({
     const DEFAULT_SR = 48000
     const pixelsPerSecond = ppb * (bpm / 60)
     const spp = DEFAULT_SR / pixelsPerSecond
-    const regime = getRegime(spp)
+    // Same shared hysteresis-aware tracker drawClips uses — the fetcher and
+    // the drawer MUST agree on the regime or the fetcher populates data the
+    // drawer never reads. See waveformRegime.js.
+    const regime = currentRegime(spp)
 
     if (regime === 'envelope') {
       // Clear any stale hi-res data when zoomed back out
@@ -1758,8 +1808,32 @@ export default function TimelineView({
     // Debounce: only fetch after scroll/zoom settles (80ms)
     if (hiResFetchTimer.current) clearTimeout(hiResFetchTimer.current)
     hiResFetchTimer.current = setTimeout(async () => {
+      // Supersede any still-in-flight batch from a PREVIOUS settle (the old
+      // code had no such guard — its cleanup only cleared the by-then-
+      // already-fired setTimeout, so a fast pan-then-pan-again could run two
+      // full fetch passes concurrently, doubling IPC traffic for a viewport
+      // the user had already left). Every write below checks this before
+      // touching the cache.
+      const myGeneration = ++hiResFetchGenerationRef.current
       const scroll = scrollOffsetRef.current
       const w = canvasWidth || 800
+      const pixelsPerSecond = ppb * (bpm / 60)
+      const marginSec = HIRES_MARGIN_PX / pixelsPerSecond
+      const mergeGapSec = HIRES_MERGE_GAP_PX / pixelsPerSecond
+
+      // ── Pass 1: classify every visible clip's need ──────────────────────
+      // Unprocessed clips in trace/waveform regime are collected per-region
+      // instead of fetched immediately — they're the case that used to cost
+      // one serial IPC round-trip PER CLIP even when many clips on the same
+      // region wanted the same or nearby windows (see hiResFetchPlanner.js).
+      // Processed clips and sample-regime raw-sample requests stay per-clip
+      // (a processed buffer belongs to exactly one clip; raw sample arrays
+      // are large enough that merging scattered small requests would often
+      // fetch far more data than any clip actually needs).
+      const regionPeakRequests = new Map()   // regionId -> [{start,end}]
+      const regionMaxSec = new Map()         // regionId -> region duration, for clamping
+      const sampleJobs = []
+      const processedJobs = []
 
       for (const clip of clips) {
         const region = regions[clip.regionId]
@@ -1786,7 +1860,6 @@ export default function TimelineView({
         const secPerPx = clipDurSec / clipW
         const visStartSec = regionOffsetSec + (visL - x) * secPerPx
         const visEndSec   = regionOffsetSec + (visR - x) * secPerPx
-        const visPxWidth  = Math.ceil(visR - visL)
         const sr = regionSampleRates.current[clip.regionId] || DEFAULT_SR
 
         const hasProcessing = (clip.pitchOffset ?? 0) !== 0
@@ -1801,72 +1874,131 @@ export default function TimelineView({
           const clipLocalEnd   = (visR - x) * secPerPx
           const hiResKey = `c${clip.id}`
           const cachedClip = hiResCacheRef.current[hiResKey]
-          if (cachedClip?.peaks &&
-              cachedClip.startSec <= clipLocalStart + 0.001 &&
-              cachedClip.endSec   >= clipLocalEnd   - 0.001) continue
-
-          try {
-            const data = await window.xleth?.waveform?.getClipPeaks(
-              clip.id, clipLocalStart, clipLocalEnd, visPxWidth)
-            if (data?.ready && data.peaks?.length > 0) {
-              hiResCacheRef.current[hiResKey] = {
-                peaks: data.peaks,
-                stride: 3,
-                startSec: clipLocalStart,
-                endSec:   clipLocalEnd,
-              }
-            }
-          } catch (e) {
-            console.warn(`[Timeline] Hi-res clip peak fetch failed for clip ${clip.id}:`, e.message)
-          }
+          if (cachedClip?.peaks && hiResCoversWindow(cachedClip.startSec, cachedClip.endSec, clipLocalStart, clipLocalEnd)) continue
+          processedJobs.push({ clipId: clip.id, hiResKey, clipLocalStart, clipLocalEnd, visPxWidth: Math.ceil(visR - visL) })
           continue
         }
 
-        // Unprocessed clip (or sample regime): use existing region-based logic.
-        // Check if existing cache entry already covers this window
-        const cached = hiResCacheRef.current[clip.regionId]
-        if (cached && cached.startSec <= visStartSec + 0.001 && cached.endSec >= visEndSec - 0.001) {
-          if (regime === 'sample' && cached.samples) continue
-          if ((regime === 'trace' || regime === 'waveform') && cached.peaks) continue
+        if (regime === 'sample') {
+          sampleJobs.push({ regionId: clip.regionId, visStartSec, visEndSec, sr })
+          continue
         }
 
-        try {
-          if (regime === 'sample') {
-            // Request raw samples for the visible window
-            const startSample = Math.floor(visStartSec * sr)
-            const endSample   = Math.ceil(visEndSec * sr)
+        // Unprocessed, trace/waveform regime → collect for per-region coalescing.
+        const list = regionPeakRequests.get(clip.regionId) || []
+        list.push({ start: visStartSec, end: visEndSec })
+        regionPeakRequests.set(clip.regionId, list)
+        if (!regionMaxSec.has(clip.regionId)) regionMaxSec.set(clip.regionId, regionDurSec)
+      }
+
+      // ── Pass 2: plan merged peak fetches per region ─────────────────────
+      const peakFetchJobs = []  // { regionId, start, end }
+      for (const [regionId, requests] of regionPeakRequests) {
+        const existing = hiResCacheRef.current[regionId] || []
+        const planned = planRegionFetches(requests, existing, {
+          marginSec, mergeGapSec,
+          maxSec: regionMaxSec.get(regionId),
+          maxFetches: HIRES_MAX_FETCHES_PER_REGION,
+        })
+        for (const win of planned) peakFetchJobs.push({ regionId, start: win.start, end: win.end })
+      }
+
+      // ── Pass 3: dedupe sample-regime jobs (no merging — see above) ──────
+      const dedupedSampleJobs = []
+      const plannedSampleWindows = new Map() // regionId -> [{start,end}] already queued this pass
+      for (const job of sampleJobs) {
+        const existing = hiResCacheRef.current[job.regionId] || []
+        if (findCoveringEntry(existing, job.visStartSec, job.visEndSec)) continue
+        const already = plannedSampleWindows.get(job.regionId) || []
+        if (already.some((win) => hiResCoversWindow(win.start, win.end, job.visStartSec, job.visEndSec))) continue
+        already.push({ start: job.visStartSec, end: job.visEndSec })
+        plannedSampleWindows.set(job.regionId, already)
+        dedupedSampleJobs.push(job)
+      }
+
+      // ── Pass 4: dispatch everything concurrently ─────────────────────────
+      // Concurrent, not serial-awaited: the old for-loop awaited one clip's
+      // IPC round-trip before even STARTING the next, so N visible clips on
+      // a busy region meant N round-trips stacked end to end. Each job below
+      // re-reads hiResCacheRef.current[key] fresh AFTER its own await and
+      // writes immediately after (no further await in between) — that keeps
+      // the read-modify-write atomic relative to every other concurrently
+      // resolving job, so two jobs landing for the same region never lose
+      // one another's insert.
+      const tasks = []
+
+      for (const job of peakFetchJobs) {
+        tasks.push((async () => {
+          try {
+            const targetPixels = Math.max(1, Math.round((job.end - job.start) * pixelsPerSecond))
+            const data = await window.xleth?.waveform?.getRegionPeaks(
+              job.regionId, job.start, job.end, targetPixels, -1)
+            if (hiResFetchGenerationRef.current !== myGeneration) return
+            if (data?.ready && data.peaks?.length > 0) {
+              const existing = hiResCacheRef.current[job.regionId] || []
+              hiResCacheRef.current[job.regionId] = insertEntry(existing, {
+                peaks: data.peaks,
+                stride: 3,
+                startSec: job.start,
+                endSec: job.end,
+                sampleRate: data.sampleRate || (regionSampleRates.current[job.regionId] || DEFAULT_SR),
+              }, HIRES_MAX_ENTRIES_PER_REGION)
+              canvasRef.current?.redrawContent('hires-waveform')
+            }
+          } catch (e) {
+            console.warn(`[Timeline] Hi-res fetch failed for region ${job.regionId}:`, e.message)
+          }
+        })())
+      }
+
+      for (const job of dedupedSampleJobs) {
+        tasks.push((async () => {
+          try {
+            const startSample = Math.floor(job.visStartSec * job.sr)
+            const endSample   = Math.ceil(job.visEndSec * job.sr)
             const data = await window.xleth?.waveform?.getRawSamples(
-              clip.regionId, startSample, endSample, -1)
+              job.regionId, startSample, endSample, -1)
+            if (hiResFetchGenerationRef.current !== myGeneration) return
             if (data?.samples?.length > 0) {
-              hiResCacheRef.current[clip.regionId] = {
+              const existing = hiResCacheRef.current[job.regionId] || []
+              hiResCacheRef.current[job.regionId] = insertEntry(existing, {
                 samples: data.samples,
                 startSample,
                 endSample,
-                startSec: visStartSec,
-                endSec: visEndSec,
-                sampleRate: data.sampleRate || sr,
-              }
+                startSec: job.visStartSec,
+                endSec: job.visEndSec,
+                sampleRate: data.sampleRate || job.sr,
+              }, HIRES_MAX_ENTRIES_PER_REGION)
+              canvasRef.current?.redrawContent('hires-waveform')
             }
-          } else {
-            // Waveform mode: request hi-res peaks for the visible window
-            const data = await window.xleth?.waveform?.getRegionPeaks(
-              clip.regionId, visStartSec, visEndSec, visPxWidth, -1)
+          } catch (e) {
+            console.warn(`[Timeline] Hi-res raw-sample fetch failed for region ${job.regionId}:`, e.message)
+          }
+        })())
+      }
+
+      for (const job of processedJobs) {
+        tasks.push((async () => {
+          try {
+            const data = await window.xleth?.waveform?.getClipPeaks(
+              job.clipId, job.clipLocalStart, job.clipLocalEnd, job.visPxWidth)
+            if (hiResFetchGenerationRef.current !== myGeneration) return
             if (data?.ready && data.peaks?.length > 0) {
-              hiResCacheRef.current[clip.regionId] = {
+              hiResCacheRef.current[job.hiResKey] = {
                 peaks: data.peaks,
                 stride: 3,
-                startSec: visStartSec,
-                endSec: visEndSec,
-                sampleRate: data.sampleRate || sr,
+                startSec: job.clipLocalStart,
+                endSec:   job.clipLocalEnd,
               }
+              canvasRef.current?.redrawContent('hires-waveform')
             }
+          } catch (e) {
+            console.warn(`[Timeline] Hi-res clip peak fetch failed for clip ${job.clipId}:`, e.message)
           }
-        } catch (e) {
-          console.warn(`[Timeline] Hi-res fetch failed for region ${clip.regionId}:`, e.message)
-        }
+        })())
       }
-      // Trigger redraw with the new hi-res data
-      canvasRef.current?.redrawContent('hires-waveform')
+
+      await Promise.allSettled(tasks)
     }, 80)
 
     return () => {

@@ -5789,17 +5789,33 @@ JsonApi::Value Project_Create(const JsonApi::CallbackInfo& info)
         return env.Undefined();
     }
     if (info.Length() < 2 || !info[0].IsString() || !info[1].IsString()) {
-        JsonApi::TypeError::New(env, "project_create(dir: string, name: string)")
+        JsonApi::TypeError::New(env, "project_create(dir: string, name: string, videoSettings?: object)")
             .ThrowAsJavaScriptException();
         return env.Undefined();
     }
 
     std::string dir  = info[0].As<JsonApi::String>().Utf8Value();
     std::string name = info[1].As<JsonApi::String>().Utf8Value();
+
+    // Welcome screen New Project dialog (renderer/main only — this is the one
+    // place that dialog reaches the engine). Falls back to XLETH's standing
+    // default (1920x1080/30fps/16:9) for every field it doesn't send.
+    int width = 1920, height = 1080;
+    double fps = 30.0;
+    std::string aspectRatio = "16:9";
+    if (info.Length() >= 3 && info[2].IsObject()) {
+        JsonApi::Object vs = info[2].As<JsonApi::Object>();
+        if (vs.Has("width")  && vs.Get("width").IsNumber())  width  = vs.Get("width").As<JsonApi::Number>().Int32Value();
+        if (vs.Has("height") && vs.Get("height").IsNumber()) height = vs.Get("height").As<JsonApi::Number>().Int32Value();
+        if (vs.Has("fps")    && vs.Get("fps").IsNumber())    fps    = vs.Get("fps").As<JsonApi::Number>().DoubleValue();
+        if (vs.Has("aspectRatio") && vs.Get("aspectRatio").IsString())
+            aspectRatio = vs.Get("aspectRatio").As<JsonApi::String>().Utf8Value();
+    }
+
     BridgeCallLog log("project.create");
 
     restoreAndClearClipControlEdit();
-    bool ok = g_projectManager->createProject(dir, name);
+    bool ok = g_projectManager->createProject(dir, name, width, height, fps, aspectRatio);
     if (ok) syncSlotBakeCacheDir();
     log.done(ok ? "true" : "false");
     return JsonApi::Boolean::New(env, ok);
@@ -6591,6 +6607,10 @@ JsonApi::Value Project_GetInfo(const JsonApi::CallbackInfo& info)
     o.Set("proxiesDir",  JsonApi::String::New(env, g_projectManager->getProxiesDir()));
     o.Set("exportsDir",  JsonApi::String::New(env, g_projectManager->getExportsDir()));
     o.Set("swappedDir",  JsonApi::String::New(env, g_projectManager->getSwappedDir()));
+    o.Set("videoWidth",  JsonApi::Number::New(env, g_projectManager->getVideoWidth()));
+    o.Set("videoHeight", JsonApi::Number::New(env, g_projectManager->getVideoHeight()));
+    o.Set("videoFps",    JsonApi::Number::New(env, g_projectManager->getVideoFps()));
+    o.Set("aspectRatio", JsonApi::String::New(env, g_projectManager->getAspectRatio()));
     return o;
 }
 

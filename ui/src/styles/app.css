@@ -4995,6 +4995,39 @@ html[data-xleth-backdrop="video"] .app-body {
   font-variant-numeric: tabular-nums;
 }
 
+.marked-samples-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.marked-samples-show-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  background: transparent;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 3px;
+  color: var(--theme-text-subtle);
+  cursor: pointer;
+  flex-shrink: 0;
+  transition: background var(--transition-fast), color var(--transition-fast),
+              border-color var(--transition-fast);
+}
+
+.marked-samples-show-toggle:hover {
+  background: var(--theme-bg-hover);
+  color: var(--theme-text);
+}
+
+.marked-samples-show-toggle.active {
+  background: var(--theme-accent-bg-subtle);
+  border-color: var(--theme-accent);
+  color: var(--theme-accent);
+}
+
 .picker-samples-empty {
   padding: 28px 16px;
   margin: 10px 0 0;

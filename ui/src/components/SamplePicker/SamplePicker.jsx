@@ -8,6 +8,7 @@ import MarkedSamplesList from './MarkedSamplesList.jsx'
 import { normalizeSelection } from './selection.js'
 import useSplitSyllablesPanelStore from '../../stores/splitSyllablesPanelStore.js'
 import { usePanelRegistry } from '../../windowing/registry/PanelRegistry.ts'
+import { setSamplePickerOpen } from '../../stores/samplePickerGate.js'
 
 import {
   DEFAULT_LABELS, loadCustomLabels, saveCustomLabels
@@ -63,6 +64,11 @@ export default function SamplePicker({ source, onClose }) {
   const [inPoint,  setInPoint]  = useState(null)
   const [outPoint, setOutPoint] = useState(null)
 
+  // Toggle: overlay every already-marked sample on the waveform as a
+  // translucent band in its label color, so existing coverage is visible
+  // while auditioning new in/out points.
+  const [showMarks, setShowMarks] = useState(false)
+
   // ── Sample list state ───────────────────────────────────────────────────────
   const [samples,      setSamples]      = useState([])
   const [selectedId,   setSelectedId]   = useState(null)
@@ -88,6 +94,11 @@ export default function SamplePicker({ source, onClose }) {
   // ── On mount: load source audio + fetch waveform + load regions ─────────────
   useEffect(() => {
     console.log(`[SamplePicker] Opened: ${source.name} (id=${source.id})`)
+
+    // Gate TransportBar's global spacebar/transport shortcuts for as long as
+    // this window is mounted, so Timeline playback can't fire alongside — or
+    // instead of — sample preview, regardless of which element has focus.
+    setSamplePickerOpen(true)
 
     // Load source audio into the C++ engine (decodes entire file to RAM)
     window.xleth?.audio?.loadSource(source.filePath)
@@ -135,6 +146,7 @@ export default function SamplePicker({ source, onClose }) {
       .catch(() => {})
 
     return () => {
+      setSamplePickerOpen(false)
       // Stop engine source playback and unload on unmount
       window.xleth?.audio?.stopSource().catch(() => {})
       window.xleth?.audio?.unloadSource().catch(() => {})
@@ -506,6 +518,8 @@ export default function SamplePicker({ source, onClose }) {
               onSeek={handleSeek}
               onInChange={setInPoint}
               onOutChange={setOutPoint}
+              existingSamples={samples}
+              showExistingSamples={showMarks}
             />
           </div>
 
@@ -545,6 +559,8 @@ export default function SamplePicker({ source, onClose }) {
             onSelect={handleSelectSample}
             onDelete={handleDeleteSample}
             onSplit={handleOpenSplitter}
+            showMarks={showMarks}
+            onToggleShowMarks={() => setShowMarks(v => !v)}
           />
         </aside>
       </div>

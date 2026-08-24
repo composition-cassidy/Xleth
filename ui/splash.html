@@ -1,54 +1,339 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
+<meta charset="utf-8">
 <meta http-equiv="Content-Security-Policy"
   content="default-src 'none'; img-src file: data:; style-src 'unsafe-inline'; script-src 'unsafe-inline';">
+<title>XLETH — Splash Screen</title>
+<!--
+  XLETH SPLASH SCREEN — design mockup for Claude Code
+  =====================================================
+  Inspiration: Vegas Pro 12 splash (wordmark left, version block right,
+  status text + progress bar bottom-left, copyright strip bottom,
+  diagonal carbon corner bands, big translucent play motif).
+
+  XLETH design system applied:
+    - Surface hierarchy #0b0b0b -> #1c1c1c, single teal accent #00b896
+    - Flat, zero border-radius everywhere
+    - Krasen's signature hard shadow: 4px 5px 0 rgba(0,0,0,0.5), no blur
+    - CSS custom-property tokens, no hardcoded hex outside :root
+    - Offline-safe: system fonts only (Segoe UI is guaranteed on Windows),
+      no webfonts, no external requests. xleth.svg must sit beside this file.
+
+  INTEGRATION POINTS for Claude Code are marked with [INTEGRATE].
+-->
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-  html, body {
-    width: 100%; height: 100%;
-    background: #0D0F13;
-    overflow: hidden;
-    user-select: none; -webkit-user-select: none;
-    font-family: "Inter", "Noto Sans", "Segoe UI", system-ui, sans-serif;
+  :root {
+    --surface-0: #0b0b0b;
+    --surface-1: #1c1c1c;
+    --surface-2: #242424;
+    --accent: #00b896;
+    --accent-dim: rgba(0, 184, 150, 0.14);
+    --text-hi: #f2f2f2;
+    --text-mid: #b5b5b5;
+    --text-lo: #6f6f6f;
+    --hard-shadow: 4px 5px 0 rgba(0, 0, 0, 0.5);
+    --splash-w: 640px;
+    --splash-h: 400px;
   }
-  body {
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html, body {
+    height: 100%;
+    background: #050505; /* page backdrop — preview only, not part of the splash */
     display: flex;
-    flex-direction: column;
     align-items: center;
     justify-content: center;
-    transition: opacity 300ms ease;
+    font-family: "Segoe UI", system-ui, sans-serif;
+    user-select: none;
   }
-  body.fade-out { opacity: 0; }
-  #logo { max-width: 420px; max-height: 220px; object-fit: contain; margin-bottom: 28px; }
-  #status { font-size: 13px; color: #4AE3D0; letter-spacing: 0.02em; height: 18px; text-align: center; }
-  #progress-bar {
-    position: fixed; bottom: 0; left: 0; right: 0;
-    height: 2px; background: transparent; overflow: hidden;
+
+  /* ============================================================
+     SPLASH CARD — the actual splash surface (frameless window)
+     ============================================================ */
+  .splash {
+    position: relative;
+    width: var(--splash-w);
+    height: var(--splash-h);
+    overflow: hidden;
+    border-radius: 0;
+    box-shadow: var(--hard-shadow);
+    background:
+      /* teal beam sweeping from top-left, echoing Vegas's blue beam */
+      linear-gradient(115deg,
+        rgba(0, 184, 150, 0.10) 0%,
+        rgba(0, 184, 150, 0.04) 28%,
+        rgba(0, 0, 0, 0) 52%),
+      /* dark diagonal falloff: surface-2 -> surface-1 -> surface-0 */
+      linear-gradient(135deg,
+        var(--surface-2) 0%,
+        var(--surface-1) 45%,
+        var(--surface-0) 100%);
   }
-  #progress-sweep {
-    position: absolute; top: 0; height: 100%; width: 40%;
-    background: rgba(74, 227, 208, 0.4);
-    animation: sweep 1.6s ease-in-out infinite;
+
+  /* Giant translucent X — XLETH's own glyph, not Vegas's play button */
+  .x-motif {
+    position: absolute;
+    right: -40px;
+    top: 50%;
+    width: 420px;
+    height: 480px;
+    transform: translateY(-50%);
+    pointer-events: none;
   }
-  @keyframes sweep { 0% { left: -40%; } 100% { left: 100%; } }
+  .x-motif::before,
+  .x-motif::after {
+    content: "";
+    position: absolute;
+    left: 50%;
+    top: 50%;
+    width: 96px;
+    height: 560px;
+    background: var(--accent-dim);
+  }
+  .x-motif::before { transform: translate(-50%, -50%) rotate(45deg); }
+  .x-motif::after  { transform: translate(-50%, -50%) rotate(-45deg); }
+
+  /* Diagonal carbon corner bands (Vegas's carbon fibre corners) */
+  .carbon {
+    position: absolute;
+    width: 260px;
+    height: 260px;
+    background:
+      repeating-linear-gradient(45deg,
+        rgba(0, 0, 0, 0.55) 0 2px,
+        rgba(255, 255, 255, 0.03) 2px 4px),
+      linear-gradient(135deg, #161616, #050505);
+    pointer-events: none;
+  }
+  .carbon-tr {
+    top: 0; right: 0;
+    clip-path: polygon(38% 0, 100% 0, 100% 38%);
+  }
+  .carbon-bl {
+    bottom: 0; left: 0;
+    clip-path: polygon(0 62%, 0 100%, 62% 100%);
+  }
+  /* thin teal seam along each carbon diagonal */
+  .carbon-seam {
+    position: absolute;
+    width: 320px;
+    height: 2px;
+    background: linear-gradient(90deg, var(--accent), rgba(0, 184, 150, 0));
+    pointer-events: none;
+  }
+  .seam-tr { top: 65px; right: -40px; transform: rotate(-45deg); transform-origin: right center; }
+  .seam-bl { bottom: 65px; left: -40px; transform: rotate(-45deg); transform-origin: left center;
+             background: linear-gradient(90deg, rgba(0,184,150,0), var(--accent)); }
+
+  /* ============================================================
+     CONTENT LAYOUT
+     ============================================================ */
+  .content {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    padding: 56px 48px 0 56px;
+  }
+
+  /* LEFT — wordmark */
+  .brand {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    justify-content: flex-start;
+  }
+
+  /*
+    xleth.svg has ~38% empty headroom in its viewBox; the crop box
+    trims it optically so the wordmark sits tight. Width drives height.
+  */
+  .logo-crop {
+    width: 340px;
+    height: 112px;           /* visible band of the SVG (content ends at viewBox bottom) */
+    overflow: hidden;
+  }
+  .logo-crop img {
+    width: 340px;
+    display: block;
+    margin-top: -68px;       /* hides the ~38% empty headroom in the viewBox */
+    /* SVG paths carry no fill -> render black; force XLETH white wordmark */
+    filter: brightness(0) invert(1) drop-shadow(3px 4px 0 rgba(0, 0, 0, 0.5));
+  }
+
+  .tagline {
+    margin-top: 14px;
+    font-size: 13px;
+    font-weight: 600;
+    letter-spacing: 6px;
+    color: var(--accent);
+    text-transform: uppercase;
+    text-shadow: 2px 3px 0 rgba(0, 0, 0, 0.5);
+  }
+  .dedication {
+    margin-top: 8px;
+    font-size: 12px;
+    font-style: italic;
+    color: var(--text-lo);
+  }
+
+  /* RIGHT — version block (Vegas's right-aligned info column) */
+  .version-block {
+    margin-left: auto;
+    padding-top: 6px;
+    text-align: left;
+    font-size: 12px;
+    line-height: 1.75;
+    color: var(--text-mid);
+  }
+  .version-block .product {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-hi);
+  }
+  .version-block .version {
+    color: var(--text-mid);
+  }
+
+  /* Small teal badge top-right inside the carbon band (the "SONY" slot) */
+  .corner-badge {
+    position: absolute;
+    top: 18px;
+    right: 18px;
+    width: 34px;
+    height: 34px;
+    background: var(--accent);
+    color: var(--surface-0);
+    font-size: 20px;
+    font-weight: 700;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    box-shadow: var(--hard-shadow);
+  }
+
+  /* ============================================================
+     BOTTOM — status, progress, copyright
+     ============================================================ */
+  .status-row {
+    position: absolute;
+    left: 56px;
+    bottom: 56px;
+    width: 340px;
+  }
+  .status-text {
+    font-size: 12px;
+    color: var(--accent); /* matches current "Starting compositor..." teal */
+    margin-bottom: 8px;
+    min-height: 16px;
+  }
+  .progress-track {
+    width: 100%;
+    height: 4px;
+    background: #000;
+    box-shadow: var(--hard-shadow);
+  }
+  .progress-fill {
+    height: 100%;
+    width: 0%;
+    background: var(--accent);
+    transition: width 0.45s ease;
+  }
+
+
 </style>
 </head>
 <body>
-  <img id="logo" src="" alt="" onerror="this.style.display='none'">
-  <div id="status">Starting…</div>
-  <div id="progress-bar"><div id="progress-sweep"></div></div>
-  <script>
-    const statusEl = document.getElementById('status');
-    if (window.splashIpc) {
-      window.splashIpc.on('splash:status', (_event, msg) => { statusEl.textContent = msg; });
-    } else {
-      const msgs = ['Initializing audio engine…','Registering codecs…','Starting compositor…','Loading workspace…'];
-      let i = 0;
-      const cycle = () => { statusEl.textContent = msgs[i++ % msgs.length]; setTimeout(cycle, 800); };
-      setTimeout(cycle, 800);
-    }
-  </script>
+
+  <div class="splash" id="splash">
+    <div class="x-motif"></div>
+    <div class="carbon carbon-tr"></div>
+    <div class="carbon carbon-bl"></div>
+    <div class="carbon-seam seam-tr"></div>
+    <div class="carbon-seam seam-bl"></div>
+
+    <div class="content">
+      <div class="brand">
+        <div class="logo-crop">
+          <!-- xleth.svg sits beside this HTML file -->
+          <img src="xleth.svg" alt="XLETH">
+        </div>
+        <div class="tagline">The YTPMVer's DAW</div>
+        <div class="dedication">In honor of Adubuyrus</div>
+      </div>
+
+      <div class="version-block">
+        <div class="product">XLETH</div>
+        <div class="version" id="versionLabel">Version 1.2.2-beta 64-bit</div>
+      </div>
+    </div>
+
+    <div class="corner-badge">X</div>
+
+    <div class="status-row">
+      <div class="status-text" id="statusText">Starting&hellip;</div>
+      <div class="progress-track"><div class="progress-fill" id="progressFill"></div></div>
+    </div>
+
+  </div>
+
+<script>
+  /*
+    [INTEGRATE] Version auto-alignment with build-portable.bat.
+    build-portable.bat already passes the typed version to electron-builder
+    via --config.extraMetadata.version=%XLETH_VERSION%, so the packaged
+    app's app.getVersion() IS the version Krasen typed. electron-main just
+    forwards it to this window via the `v` query param.
+  */
+  const versionLabel = document.getElementById('versionLabel');
+  const versionParam = new URLSearchParams(window.location.search).get('v');
+  versionLabel.textContent = 'Version ' + (versionParam || '1.2.2-beta') + ' 64-bit';
+
+  const statusText = document.getElementById('statusText');
+  const progressFill = document.getElementById('progressFill');
+
+  function setStatus(message) { statusText.textContent = message; }
+  function setProgress(percent) {
+    progressFill.style.width = Math.max(0, Math.min(100, percent)) + '%';
+  }
+
+  // Public surface of the splash window. electron-main drives this with real
+  // startup milestones through splash-preload.js (see window.splashStatus
+  // calls wired to the 'splash:status' IPC channel).
+  window.splashStatus = function (message, percent) {
+    if (message != null) setStatus(message);
+    if (percent != null) setProgress(percent);
+  };
+
+  // Demo messages, kept as fallback text for standalone preview only (no
+  // splash-preload.js present, e.g. opening this file directly in a browser).
+  // The packaged app never runs this loop — window.__xlethSplashPreloadActive
+  // is set by the preload before this script runs.
+  const bootSequence = [
+    ['Loading audio engine…',          14],
+    ['Starting compositor…',           32],
+    ['Scanning VST3 plugins…',         55],
+    ['Updating plug-in cache…',        71],
+    ['Restoring session…',             88],
+    ['Ready.',                        100],
+  ];
+
+  if (!window.__xlethSplashPreloadActive) {
+    let step = 0;
+    (function advance() {
+      const [message, target] = bootSequence[step];
+      window.splashStatus(message, target);
+      step++;
+      if (step < bootSequence.length) {
+        setTimeout(advance, 900);
+      } else {
+        // demo loop restart — real build closes the splash here instead
+        setTimeout(() => { step = 0; setProgress(0); setTimeout(advance, 400); }, 1600);
+      }
+    })();
+  }
+</script>
+
 </body>
 </html>
