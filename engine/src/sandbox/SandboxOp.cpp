@@ -2,6 +2,7 @@
 
 #include <algorithm>
 #include <bit>
+#include <cmath>
 #include <cstring>
 
 namespace xleth::sandbox {
@@ -25,6 +26,7 @@ constexpr TypeEntry kTypeTable[] = {
     { SandboxOpType::Crossfade, "crossfade" },
     { SandboxOpType::Pitch,     "pitch"     },
     { SandboxOpType::Stretch,   "stretch"   },
+    { SandboxOpType::GainEnvelope, "gainEnvelope" },
 };
 
 static_assert(std::size(kTypeTable) == kSandboxOpTypeCount,
@@ -102,6 +104,14 @@ struct HashVisitor {
     uint64_t operator()(const StretchParams& p) const {
         return hashI32(hashF64(h, p.ratio), p.algorithm);
     }
+    // Count first: without it a 2-point envelope could digest to the same value
+    // as a 3-point one whose extra point happens to chain to the identity, and
+    // the renderer's prefix cache would then serve the wrong audio.
+    uint64_t operator()(const GainEnvelopeParams& p) const {
+        uint64_t acc = hashU64(h, static_cast<uint64_t>(p.points.size()));
+        for (const auto& pt : p.points) acc = hashF64(hashI64(acc, pt.samplePos), pt.db);
+        return acc;
+    }
 };
 
 struct ToJsonVisitor {
@@ -141,6 +151,12 @@ struct ToJsonVisitor {
     }
     nlohmann::json operator()(const StretchParams& p) const {
         return { {"ratio", p.ratio}, {"algorithm", p.algorithm} };
+    }
+    nlohmann::json operator()(const GainEnvelopeParams& p) const {
+        nlohmann::json pts = nlohmann::json::array();
+        for (const auto& pt : p.points)
+            pts.push_back({ {"samplePos", pt.samplePos}, {"db", pt.db} });
+        return { {"points", std::move(pts)} };
     }
 };
 
@@ -211,6 +227,27 @@ struct FromJsonVisitor {
         p.ratio     = readField<double>(j, "ratio",     p.ratio);
         p.algorithm = readField<int>(j, "algorithm",    p.algorithm);
     }
+    // Read point-by-point rather than through a whole-array get<>: one
+    // malformed entry must cost that entry, not the entire curve — the same
+    // rule readField applies to every scalar param in this file. A missing or
+    // non-array "points" leaves the default (empty = unity), which renders as
+    // a pass-through rather than as silence.
+    void operator()(GainEnvelopeParams& p) const {
+        if (!j.is_object()) return;
+        auto it = j.find("points");
+        if (it == j.end() || !it->is_array()) return;
+        std::vector<SandboxGainPoint> pts;
+        pts.reserve(it->size());
+        for (const auto& e : *it) {
+            if (!e.is_object()) continue;
+            SandboxGainPoint pt;
+            pt.samplePos = readField<int64_t>(e, "samplePos", pt.samplePos);
+            pt.db        = readField<double>(e, "db",         pt.db);
+            pts.push_back(pt);
+        }
+        p.points = std::move(pts);
+        normalizeGainEnvelope(p);
+    }
 };
 
 // Resolve an inclusive-exclusive range against a concrete buffer length,
@@ -255,8 +292,82 @@ SandboxOpParams defaultParamsFor(SandboxOpType type) {
         case SandboxOpType::Crossfade: return CrossfadeParams{};
         case SandboxOpType::Pitch:     return PitchParams{};
         case SandboxOpType::Stretch:   return StretchParams{};
+        case SandboxOpType::GainEnvelope: return GainEnvelopeParams{};
     }
     return GainParams{};
+}
+
+// ─── Gain envelope ────────────────────────────────────────────────────────────
+// The ONE implementation of the curve. SandboxRenderer's per-sample loop calls
+// straight into gainEnvelopeAt rather than reimplementing the interpolation
+// incrementally: a second copy of the maths would be free to drift from the one
+// the UI predicts against, and the binary search it costs (log2 of a handful of
+// breakpoints) is nothing next to the buffer copy the op already performs.
+
+namespace {
+
+// dB → linear, with the exact-silence floor. See kGainEnvelopeSilenceDb.
+inline double envDbToGain(double db) noexcept {
+    if (db <= kGainEnvelopeSilenceDb) return 0.0;
+    return std::pow(10.0, db / 20.0);
+}
+
+} // namespace
+
+void normalizeGainEnvelope(GainEnvelopeParams& p) {
+    std::vector<SandboxGainPoint> keep;
+    keep.reserve(p.points.size());
+    for (SandboxGainPoint pt : p.points) {
+        if (pt.samplePos < 0) continue;                 // a point before the buffer is not a point
+        if (pt.db != pt.db) pt.db = 0.0;                // NaN out of a corrupt file reads as unity
+        pt.db = std::clamp(pt.db, kGainEnvelopeMinDb, kGainEnvelopeMaxDb);
+        keep.push_back(pt);
+    }
+
+    // STABLE sort: equal positions must retain their written order for the
+    // de-duplication below to mean "last one written wins" rather than
+    // "whichever the sort happened to leave last".
+    std::stable_sort(keep.begin(), keep.end(),
+                     [](const SandboxGainPoint& a, const SandboxGainPoint& b) {
+                         return a.samplePos < b.samplePos;
+                     });
+
+    std::vector<SandboxGainPoint> out;
+    out.reserve(keep.size());
+    for (const auto& pt : keep) {
+        if (!out.empty() && out.back().samplePos == pt.samplePos) out.back() = pt;
+        else                                                     out.push_back(pt);
+    }
+    p.points = std::move(out);
+}
+
+double gainEnvelopeAt(const GainEnvelopeParams& p, int64_t samplePos) noexcept {
+    const auto& pts = p.points;
+    if (pts.empty())     return 1.0;                    // no curve = no change
+    if (pts.size() == 1) return envDbToGain(pts.front().db);
+
+    // Held flat outside the authored range, rather than extrapolated: a curve
+    // that kept its slope past the last handle would keep ducking material the
+    // user never drew over, and an upstream length change would silently move
+    // where that runaway starts.
+    if (samplePos <= pts.front().samplePos) return envDbToGain(pts.front().db);
+    if (samplePos >= pts.back().samplePos)  return envDbToGain(pts.back().db);
+
+    const auto it = std::upper_bound(pts.begin(), pts.end(), samplePos,
+                                     [](int64_t v, const SandboxGainPoint& q) {
+                                         return v < q.samplePos;
+                                     });
+    // Guarded by the two bounds checks above: samplePos is strictly inside the
+    // authored range, so `it` is neither begin() nor end().
+    const SandboxGainPoint& b = *it;
+    const SandboxGainPoint& a = *(it - 1);
+
+    const int64_t span = b.samplePos - a.samplePos;
+    if (span <= 0) return envDbToGain(b.db);            // unsorted/duplicate input
+
+    double t = static_cast<double>(samplePos - a.samplePos) / static_cast<double>(span);
+    t = t * t * (3.0 - 2.0 * t);                        // smoothstep — zero slope at both handles
+    return envDbToGain(a.db + (b.db - a.db) * t);
 }
 
 // ─── SandboxOp ────────────────────────────────────────────────────────────────
@@ -271,6 +382,7 @@ bool SandboxOp::implemented() const noexcept {
         case SandboxOpType::Fade:
         case SandboxOpType::Gain:
         case SandboxOpType::Crossfade:
+        case SandboxOpType::GainEnvelope:
             return true;
         // DSP deferred until the stretch engines are wired in.
         case SandboxOpType::Pitch:
@@ -292,6 +404,9 @@ bool SandboxOp::autoRender() const noexcept {
         case SandboxOpType::Crossfade:
         case SandboxOpType::Pitch:
         case SandboxOpType::Stretch:
+        // A per-sample curve evaluation over one buffer, offline — the same
+        // order of cost as FADE. Nothing here justifies the manual fallback.
+        case SandboxOpType::GainEnvelope:
             return true;
     }
     return true;

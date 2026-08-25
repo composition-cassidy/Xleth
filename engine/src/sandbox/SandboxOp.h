@@ -64,9 +64,17 @@ enum class SandboxOpType : int {
     Crossfade = 7,
     Pitch     = 8,
     Stretch   = 9,
+
+    // A gain curve over time, rather than the single scalar GAIN applies to a
+    // range. Deliberately a SEPARATE type instead of a mode on GainParams: the
+    // two have nothing in common at the param level (a breakpoint list vs. a
+    // scalar + a normalize flag), and folding them together would reintroduce
+    // exactly the "one struct reinterpreted per mode" pattern this header's
+    // opening comment exists to avoid.
+    GainEnvelope = 10,
 };
 
-inline constexpr int kSandboxOpTypeCount = 10;
+inline constexpr int kSandboxOpTypeCount = 11;
 
 // ─── Shared enums ─────────────────────────────────────────────────────────────
 
@@ -193,6 +201,76 @@ struct CrossfadeParams {
     bool operator==(const CrossfadeParams&) const = default;
 };
 
+// ─── Gain envelope ────────────────────────────────────────────────────────────
+
+// dB bounds every breakpoint is clamped to on ingest. The top is deliberately
+// generous (a duck is authored against material that may already be quiet), the
+// bottom is a true mute rather than an asymptote — see kGainEnvelopeSilenceDb.
+inline constexpr double kGainEnvelopeMaxDb = 24.0;
+inline constexpr double kGainEnvelopeMinDb = -96.0;
+
+// A curve that reaches the floor is SILENCE, not 1.6e-5. Interpolating in dB
+// has no -inf to travel toward, so without this a "mute this section" gesture
+// leaves a floor of noise that survives a later normalize and comes back
+// audible. The floor is exact only AT the floor; everything above it is the
+// ordinary 10^(dB/20).
+inline constexpr double kGainEnvelopeSilenceDb = kGainEnvelopeMinDb;
+
+// One breakpoint: a dB value at a sample position. Positions are in
+// engine-buffer samples like every other param in this header.
+struct SandboxGainPoint {
+    int64_t samplePos = 0;
+    double  db        = 0.0;
+
+    bool operator==(const SandboxGainPoint&) const = default;
+};
+
+// GAIN ENVELOPE — a gain curve traced through `points`, evaluated per sample.
+//
+// ── Why dB, and why interpolate IN dB ────────────────────────────────────────
+// The UI draws this as a dB line over the waveform, so the interpolation domain
+// has to be dB too: interpolating the LINEAR gain between two dB breakpoints
+// would render a curve that does not match the one on screen (halfway between
+// 0 and -12 dB would land at -3.5 dB, not -6). What is drawn is what is applied.
+//
+// ── Why smoothstep rather than linear ────────────────────────────────────────
+// Linear-in-dB segments meet at breakpoints with a derivative discontinuity —
+// an audible corner on anything but the gentlest slope, and precisely the
+// "zipper" class of artefact. Smoothstep (t²(3-2t)) has zero slope at both ends
+// of every segment, so the composed curve is C¹ everywhere including across
+// breakpoints. The cost is that a segment cannot be a straight ramp — it always
+// eases in and out. That is the intended trade: this op renders offline, where
+// smoothness is free and a click is not.
+//
+// ── Degenerate shapes are all pass-throughs or constants, never errors ───────
+//   0 points          → unity (0 dB) everywhere; the op is a no-op.
+//   1 point           → that point's dB everywhere, i.e. a plain constant gain.
+//   before the first  → held at the first point's dB.
+//   after the last    → held at the last point's dB.
+// Two points sharing a samplePos would be a zero-length segment; the renderer
+// sorts and de-duplicates (last wins) rather than dividing by zero, and
+// opFromJson normalizes on the way in so a saved stack is already clean.
+struct GainEnvelopeParams {
+    // Ordered by samplePos, one point per position. Not enforced by the type —
+    // enforced by normalizeGainEnvelope(), which every ingest path calls.
+    std::vector<SandboxGainPoint> points;
+
+    bool operator==(const GainEnvelopeParams&) const = default;
+};
+
+// Sorts by samplePos, drops negative positions, clamps every db into
+// [kGainEnvelopeMinDb, kGainEnvelopeMaxDb], and collapses duplicate positions
+// keeping the LAST one written — the same "last edit wins" a UI drag produces
+// when a handle is dragged onto its neighbour.
+void normalizeGainEnvelope(GainEnvelopeParams& p);
+
+// Gain (LINEAR, not dB) this envelope produces at `samplePos`. The single
+// evaluator — the renderer's per-sample loop and any UI-side prediction must
+// agree, so there is exactly one implementation of the curve. Assumes `p` has
+// been normalized; unsorted input degrades to a wrong-but-bounded curve rather
+// than UB.
+double gainEnvelopeAt(const GainEnvelopeParams& p, int64_t samplePos) noexcept;
+
 // PITCH — shift by cents without changing length. STUB in SB-1: pitch/stretch
 // DSP routes through the existing stretch engines, wired in a later phase.
 struct PitchParams {
@@ -224,7 +302,8 @@ using SandboxOpParams = std::variant<
     GainParams,       // 6  Gain
     CrossfadeParams,  // 7  Crossfade
     PitchParams,      // 8  Pitch
-    StretchParams     // 9  Stretch
+    StretchParams,    // 9  Stretch
+    GainEnvelopeParams // 10 GainEnvelope
 >;
 
 static_assert(std::variant_size_v<SandboxOpParams> == kSandboxOpTypeCount,

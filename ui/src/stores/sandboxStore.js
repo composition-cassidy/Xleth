@@ -52,6 +52,74 @@ export const FADE_SHAPE = {
   linear: 0, equalPower: 1, exponential: 2, logarithmic: 3, sCurve: 4, hann: 5,
 }
 
+// ─── Gain envelope (Audio Dynamics Editor, Mode 1) ──────────────────────────
+// Mirrors xleth::sandbox::GainEnvelopeParams and its evaluator in SandboxOp.cpp.
+// The engine owns the audio; this mirror exists so the canvas can DRAW the same
+// curve the renderer will apply, and so the headroom warning can predict a drag
+// that has not been committed yet. Any change to the C++ curve has to land here
+// too — the same standing obligation FADE_SHAPE and AUTO_RENDER_BY_OP_TYPE
+// already carry in this file.
+
+// The engine's hard clamp (kGainEnvelopeMinDb/MaxDb). Anything outside is
+// clamped on ingest by normalizeGainEnvelope, so sending a wilder value is not
+// an error — it just does not round-trip.
+export const GAIN_ENVELOPE_DB_MIN = -96
+export const GAIN_ENVELOPE_DB_MAX = 24
+
+// Gain (LINEAR) the curve produces at `samplePos`. Mirrors gainEnvelopeAt():
+// held flat outside the authored range, smoothstep IN dB between breakpoints,
+// exact silence at the floor. `points` must be sorted by samplePos — every
+// path in this file keeps them that way via sortEnvelopePoints.
+export function gainEnvelopeAt(points, samplePos) {
+  if (!points || points.length === 0) return 1
+  const toGain = (db) => (db <= GAIN_ENVELOPE_DB_MIN ? 0 : Math.pow(10, db / 20))
+  if (points.length === 1) return toGain(points[0].db)
+
+  const first = points[0]
+  const last = points[points.length - 1]
+  if (samplePos <= first.samplePos) return toGain(first.db)
+  if (samplePos >= last.samplePos) return toGain(last.db)
+
+  // Linear scan: an envelope is a handful of breakpoints, and the callers here
+  // walk sample positions in ascending order anyway.
+  let i = 0
+  while (i < points.length - 2 && points[i + 1].samplePos <= samplePos) i++
+  const a = points[i]
+  const b = points[i + 1]
+  const span = b.samplePos - a.samplePos
+  if (span <= 0) return toGain(b.db)
+  let t = (samplePos - a.samplePos) / span
+  t = t * t * (3 - 2 * t) // smoothstep — zero slope at both handles
+  return toGain(a.db + (b.db - a.db) * t)
+}
+
+// Sort + clamp + de-duplicate, mirroring normalizeGainEnvelope(). Applied
+// before every commit so the local copy matches what the engine will store,
+// and the "is this actually an edit?" comparison below stays honest.
+export function sortEnvelopePoints(points) {
+  const keep = (points || [])
+    .filter((p) => Number.isFinite(p.samplePos) && Number.isFinite(p.db) && p.samplePos >= 0)
+    .map((p) => ({
+      samplePos: Math.round(p.samplePos),
+      db: Math.min(GAIN_ENVELOPE_DB_MAX, Math.max(GAIN_ENVELOPE_DB_MIN, p.db)),
+    }))
+  keep.sort((a, b) => a.samplePos - b.samplePos)
+  const out = []
+  for (const p of keep) {
+    if (out.length && out[out.length - 1].samplePos === p.samplePos) out[out.length - 1] = p
+    else out.push(p)
+  }
+  return out
+}
+
+// The layer's gain-envelope op, or null. The overlay owns exactly ONE op per
+// layer — the FIRST gainEnvelope on the stack — rather than trying to draw a
+// stack of curves on one canvas. A second envelope op added by other means
+// still renders; it just is not the one the overlay edits.
+export function findEnvelopeOp(layer) {
+  return layer?.ops?.find((o) => o.type === 'gainEnvelope') ?? null
+}
+
 const POLL_MS = 150
 const POLL_MAX_ATTEMPTS = 200 // ~30s ceiling — a stuck render surfaces as an error, not a silent hang
 
@@ -71,6 +139,9 @@ const COMPOSITE_AUTORENDER_DEBOUNCE_MS = 150
 const AUTO_RENDER_BY_OP_TYPE = {
   trim: true, cut: true, paste: true, splice: true, reverse: true,
   fade: true, gain: true, crossfade: true, pitch: true, stretch: true,
+  // One multiply per sample over one buffer, offline — the same order of cost
+  // as fade. See SandboxOp::autoRender().
+  gainEnvelope: true,
 }
 
 // True when every op currently on `layer`'s stack permits automatic
@@ -173,6 +244,9 @@ const useSandboxStore = create((set, get) => ({
   activeTool: 'select',
   selection: null, // { startSample, endSample } in the active layer's rendered buffer
   clipboard: null, // { clipboardId, numSamples } — session-local, from copySelection/cutSelection
+  // Envelope edit mode — see setEnvelopeEditMode. Session state, never
+  // persisted: it is a pointer mode, not part of the edit.
+  envelopeEditMode: false,
 
   // ── Composite (SB-5) — mix of every layer's own render by its mix params ──
   composite: {
@@ -619,6 +693,55 @@ const useSandboxStore = create((set, get) => ({
       console.warn('[SampleSandbox] setOpParams failed:', e?.message || e)
     }
   },
+
+  // ── Gain envelope (Audio Dynamics Editor, Mode 1) ────────────────────────
+  //
+  // Add-or-update, in ONE undo step either way: the first committed curve adds
+  // the op, every later one replaces its params. That is what lets the canvas
+  // treat "there is no envelope yet" and "there is one" as the same gesture —
+  // the user draws on a flat unity line and does not need to know which case
+  // they were in.
+  //
+  // Called ONCE, on mouseup. The drag itself is previewed locally in the canvas
+  // component and never reaches this store: a call per mousemove would push a
+  // command per frame onto the undo stack and re-render the layer at pointer
+  // rate. Both paths below already schedule the debounced auto-render, so the
+  // commit is also what makes playback reflect the new curve.
+  async setGainEnvelope(layerId, points) {
+    const layer = get().layers.find((l) => l.id === layerId)
+    if (!layer) return
+    const normalized = sortEnvelopePoints(points)
+    const existing = findEnvelopeOp(layer)
+
+    if (!existing) {
+      // Appended, not inserted: the envelope is a final gain stage, so its
+      // breakpoint positions refer to the buffer the canvas is actually
+      // showing. An op added AFTER it later (a trim, say) changes the sample
+      // space underneath it — the curve still renders, it just no longer lines
+      // up with what is drawn, the same way every other range-carrying op's
+      // indices behave when something upstream of them moves.
+      await get().addOp(layerId, { type: 'gainEnvelope', params: { points: normalized } })
+      return
+    }
+
+    // The engine rejects a no-op edit with "not an edit" (see
+    // Sandbox_StackSetParam). Catch it here instead of letting setOpParams log
+    // a warning for a mouseup that did not move anything.
+    const before = sortEnvelopePoints(existing.params?.points)
+    if (before.length === normalized.length
+        && before.every((pt, i) => pt.samplePos === normalized[i].samplePos && pt.db === normalized[i].db))
+      return
+
+    await get().setOpParams(layerId, existing.id, { points: normalized })
+  },
+
+  // Envelope EDIT mode. The waveform canvas has exactly one pointer, and a
+  // click on it already means "start a selection" — so breakpoint editing is a
+  // mode rather than a chord or a modifier. Off, the curve is still drawn (a
+  // dimmed read-only line): an envelope you cannot see is an envelope you
+  // cannot debug when playback sounds wrong.
+  setEnvelopeEditMode(on) { set({ envelopeEditMode: !!on }) },
+  toggleEnvelopeEditMode() { set((state) => ({ envelopeEditMode: !state.envelopeEditMode })) },
 
   async setOpBypassed(layerId, opId, bypassed) {
     try {

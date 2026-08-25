@@ -20,6 +20,7 @@ std::string opLabel(SandboxOpType type) {
         case SandboxOpType::Crossfade: return "Crossfade";
         case SandboxOpType::Pitch:     return "Pitch";
         case SandboxOpType::Stretch:   return "Stretch";
+        case SandboxOpType::GainEnvelope: return "Gain Envelope";
     }
     return "Op";
 }

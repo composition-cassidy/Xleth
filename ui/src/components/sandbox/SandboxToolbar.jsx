@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import {
   Scissors, Crop, Copy, ClipboardPaste, VolumeX, FlipHorizontal2,
-  SeparatorHorizontal, TrendingUp, TrendingDown, Volume2, Waves,
+  SeparatorHorizontal, TrendingUp, TrendingDown, Volume2, Waves, Spline,
 } from 'lucide-react'
 import useSandboxStore from '../../stores/sandboxStore.js'
 
@@ -19,10 +19,10 @@ const FADE_SHAPES = [
   { value: 'hann', label: 'Hann' },
 ]
 
-function ToolButton({ icon: Icon, label, disabled, onClick, title }) {
+function ToolButton({ icon: Icon, label, disabled, onClick, title, active }) {
   return (
     <button
-      className="sandbox-tool-btn"
+      className={`sandbox-tool-btn${active ? ' active' : ''}`}
       disabled={disabled}
       onClick={onClick}
       title={title || label}
@@ -50,6 +50,8 @@ export default function SandboxToolbar() {
   const gainSelection = useSandboxStore((s) => s.gainSelection)
   const normalizeSelection = useSandboxStore((s) => s.normalizeSelection)
   const crossfadeAtCursor = useSandboxStore((s) => s.crossfadeAtCursor)
+  const envelopeEditMode = useSandboxStore((s) => s.envelopeEditMode)
+  const toggleEnvelopeEditMode = useSandboxStore((s) => s.toggleEnvelopeEditMode)
 
   const [fadeShape, setFadeShape] = useState('equalPower')
   const [gainDb, setGainDb] = useState(-6)
@@ -146,6 +148,20 @@ export default function SandboxToolbar() {
       <ToolButton icon={Waves} label="Crossfade" disabled={!hasLayer}
         onClick={() => crossfadeAtCursor(activeLayerId, cursorSample, xfadeLength, xfadeShape)}
         title="Declick a seam at the selection start" />
+
+      <div className="sandbox-toolbar-divider" />
+
+      {/* The one MODE in this toolbar. Every other button applies its op
+          immediately; this one arms the waveform canvas so clicks land on the
+          gain curve instead of starting a selection. It has to be a mode
+          because the two gestures share the left button — see the header
+          comment in SandboxWaveformCanvas.jsx. A press that misses the curve
+          still falls through to a selection drag, so arming it never takes a
+          capability away. */}
+      <ToolButton icon={Spline} label="Envelope" disabled={!hasLayer}
+        active={envelopeEditMode}
+        onClick={toggleEnvelopeEditMode}
+        title="Draw a gain envelope: click the line to add a point, drag to move, right-click a point to delete" />
     </div>
   )
 }

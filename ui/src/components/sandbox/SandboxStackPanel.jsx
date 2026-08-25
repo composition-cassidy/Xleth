@@ -27,6 +27,14 @@ function describeParams(op) {
       return `${p.fadeIn ? 'in' : 'out'}, ${p.lengthSamples} smp (${FADE_SHAPE_NAME[p.shape] ?? p.shape})`
     case 'gain':
       return p.normalize ? `normalize → ${p.targetPeakDb} dBFS` : `${p.gainDb} dB`
+    case 'gainEnvelope': {
+      // Breakpoint count plus the range it spans — enough to tell two curves
+      // apart in the stack without trying to render a shape in a text row.
+      const pts = p.points || []
+      if (pts.length === 0) return 'flat (0 dB)'
+      const dbs = pts.map((q) => q.db)
+      return `${pts.length} pt, ${Math.min(...dbs).toFixed(1)}…${Math.max(...dbs).toFixed(1)} dB`
+    }
     case 'crossfade':
       return `@ ${p.atSample}, ${p.lengthSamples} smp (${FADE_SHAPE_NAME[p.shape] ?? p.shape})`
     default:

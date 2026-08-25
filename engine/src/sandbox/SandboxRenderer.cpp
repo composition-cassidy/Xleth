@@ -172,6 +172,42 @@ SandboxBuffer applyGain(const SandboxBuffer& in, const GainParams& p) {
     return dst;
 }
 
+// A gain CURVE rather than a scalar: one multiply per sample, the coefficient
+// re-evaluated at every sample position from the breakpoint list.
+//
+// Deliberately NOT block-rate + smoothing, which is how the realtime effects in
+// this codebase dezipper their parameters (SmoothedHandle, the per-buffer geo[]
+// rebuild in MANGLE). That machinery exists to keep a control-rate parameter
+// from stepping audibly between blocks; here there is no control rate to fight.
+// The curve is already continuous and already C¹ (smoothstep between
+// breakpoints), the whole buffer is in hand, and this runs offline — so the
+// exact per-sample coefficient is both cheaper to reason about and strictly
+// more correct than any smoothed approximation of it.
+//
+// The same channel gain is applied to every channel, so a duck never shifts the
+// stereo image — the same rule applyGain's normalize path follows.
+SandboxBuffer applyGainEnvelope(const SandboxBuffer& in, const GainEnvelopeParams& p) {
+    SandboxBuffer dst(in);
+    const int64_t len = dst.getNumSamples();
+    if (len <= 0) return dst;
+
+    // Normalize a LOCAL copy rather than trusting the caller. opFromJson
+    // already normalizes on every ingest path the RPC surface can reach, but a
+    // hand-built op (a test, a future in-engine caller) must not be able to
+    // hand the evaluator an unsorted list and get a plausible-looking wrong
+    // curve back.
+    GainEnvelopeParams env = p;
+    normalizeGainEnvelope(env);
+    if (env.points.empty()) return dst;   // unity — nothing to do
+
+    for (int ch = 0; ch < dst.getNumChannels(); ++ch) {
+        float* d = dst.getWritePointer(ch);
+        for (int64_t i = 0; i < len; ++i)
+            d[i] *= static_cast<float>(gainEnvelopeAt(env, i));
+    }
+    return dst;
+}
+
 // `clipboard` is the resolved buffer for p.clipboardId, or nullptr — nullptr
 // covers both clipboardId == -1 (explicit INSERT SILENCE) and a stale id that
 // no longer resolves, deliberately the same code path. clipboardLengthSamples
@@ -388,6 +424,8 @@ SandboxBuffer SandboxRenderer::applyOp(const SandboxBuffer& in,
         case SandboxOpType::Fade:      return applyFade(in, std::get<FadeParams>(op.params));
         case SandboxOpType::Gain:      return applyGain(in, std::get<GainParams>(op.params));
         case SandboxOpType::Crossfade: return applyCrossfade(in, std::get<CrossfadeParams>(op.params));
+        case SandboxOpType::GainEnvelope:
+            return applyGainEnvelope(in, std::get<GainEnvelopeParams>(op.params));
 
         // Guarded by implemented() above — listed so a newly built op that
         // forgets its case here is a compiler warning, not a silent no-op.

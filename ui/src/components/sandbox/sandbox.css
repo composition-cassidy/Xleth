@@ -340,7 +340,8 @@
 }
 
 .sandbox-waveform-bg,
-.sandbox-waveform-overlay {
+.sandbox-waveform-overlay,
+.sandbox-waveform-env {
   position: absolute;
   top: 0;
   left: 0;
@@ -350,6 +351,18 @@
 }
 
 .sandbox-waveform-overlay {
+  cursor: crosshair;
+}
+
+/* The gain-envelope overlay sits above the selection overlay but is inert
+   until the toolbar arms it — disarmed it is a read-only picture of the curve,
+   and every pointer event belongs to the selection layer underneath. */
+.sandbox-waveform-env {
+  pointer-events: none;
+}
+
+.sandbox-waveform-env.editing {
+  pointer-events: auto;
   cursor: crosshair;
 }
 

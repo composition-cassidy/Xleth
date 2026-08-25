@@ -134,6 +134,13 @@ static void testOpModel() {
     CHECK(makeOp(4, SandboxOpType::Paste,     PasteParams{}).implemented(),     "PASTE lands in SB-4");
     CHECK(makeOp(5, SandboxOpType::Splice,    SpliceParams{}).implemented(),    "SPLICE lands in SB-4");
     CHECK(makeOp(6, SandboxOpType::Crossfade, CrossfadeParams{}).implemented(), "CROSSFADE lands in SB-4");
+    CHECK(makeOp(7, SandboxOpType::GainEnvelope, GainEnvelopeParams{}).implemented(),
+          "GAIN ENVELOPE has DSP");
+    CHECK(makeOp(7, SandboxOpType::GainEnvelope, GainEnvelopeParams{}).autoRender(),
+          "GAIN ENVELOPE is cheap enough to auto-render");
+    CHECK_EQ(makeOp(7, SandboxOpType::GainEnvelope,
+                    GainEnvelopeParams{ { {0, 0.0}, {500, -24.0} } }).outputLength(1000),
+             int64_t(1000), "GAIN ENVELOPE is in-place - it never changes length");
 
     // Every op type auto-renders today — no heavy op (e.g. model separation)
     // exists yet. Distinct from implemented(): PITCH is a stub but still
@@ -251,13 +258,15 @@ static void testOpSerialization() {
         makeOp(8, SandboxOpType::Crossfade, CrossfadeParams{ 2400, 128, SandboxFadeShape::EqualPower }),
         makeOp(9, SandboxOpType::Pitch,     PitchParams{ -250.5, true }),
         makeOp(10, SandboxOpType::Stretch,  StretchParams{ 1.375, 5 }),
+        makeOp(11, SandboxOpType::GainEnvelope,
+               GainEnvelopeParams{ { {0, 0.0}, {4800, -18.25}, {9600, -3.5}, {96000, 0.0} } }),
     };
     ops[3].enabled = false;   // bypass must survive the trip
 
     const nlohmann::json j = stackToJson(ops);
     CHECK_EQ(j.value("sandboxStackVersion", -1), kSandboxStackVersion,
              "stack JSON carries sandboxStackVersion");
-    CHECK_EQ(j["ops"].size(), size_t(10), "every op is written");
+    CHECK_EQ(j["ops"].size(), size_t(11), "every op is written");
     CHECK_EQ(j["ops"][6]["type"].get<std::string>(), std::string("gain"),
              "type is written as a NAME, so an enum reorder is not a migration");
 
@@ -1404,6 +1413,159 @@ static void testUndoDomains() {
 }
 
 // ---------------------------------------------------------------------------
+// GAIN ENVELOPE — normalization, the curve itself, and the headline gesture:
+// a duck drawn over a spike actually ducks the spike.
+// ---------------------------------------------------------------------------
+
+static void testGainEnvelope() {
+    std::cout << "\n[GainEnvelope]\n";
+
+    // ── normalizeGainEnvelope ──
+    {
+        GainEnvelopeParams p{ { {500, -6.0}, {100, 0.0}, {500, -12.0}, {-7, 3.0}, {900, 999.0} } };
+        normalizeGainEnvelope(p);
+        CHECK_EQ(p.points.size(), size_t(3), "a negative position is dropped and a duplicate collapses");
+        CHECK_EQ(p.points[0].samplePos, int64_t(100), "points come back sorted by position");
+        CHECK_EQ(p.points[1].samplePos, int64_t(500), "…ascending");
+        CHECK_NEAR(p.points[1].db, -12.0, 1e-12,
+                   "of two points at the same position the LAST written wins");
+        CHECK_NEAR(p.points[2].db, kGainEnvelopeMaxDb, 1e-12,
+                   "an out-of-range dB is clamped, not rejected");
+    }
+
+    // ── The curve ──
+    {
+        const GainEnvelopeParams empty{};
+        CHECK_NEAR(gainEnvelopeAt(empty, 0),    1.0, 1e-12, "an empty envelope is unity — a pass-through");
+        CHECK_NEAR(gainEnvelopeAt(empty, 9999), 1.0, 1e-12, "…at every position");
+
+        const GainEnvelopeParams one{ { {5000, -6.0} } };
+        const double sixDown = std::pow(10.0, -6.0 / 20.0);
+        CHECK_NEAR(gainEnvelopeAt(one, 0),     sixDown, 1e-9, "a single point is a plain constant gain");
+        CHECK_NEAR(gainEnvelopeAt(one, 99999), sixDown, 1e-9, "…everywhere, before and after it");
+
+        const GainEnvelopeParams ramp{ { {0, 0.0}, {1000, -12.0} } };
+        CHECK_NEAR(gainEnvelopeAt(ramp, 0),    1.0, 1e-9, "the curve hits its first breakpoint exactly");
+        CHECK_NEAR(gainEnvelopeAt(ramp, 1000), std::pow(10.0, -12.0 / 20.0), 1e-9,
+                   "…and its last exactly");
+        // Smoothstep at t=0.5 is 0.5, so the midpoint is the dB midpoint — this
+        // is the check that says the interpolation happens in dB, not in linear
+        // gain (which would land at -3.5 dB, not -6).
+        CHECK_NEAR(gainEnvelopeAt(ramp, 500), std::pow(10.0, -6.0 / 20.0), 1e-9,
+                   "the midpoint is -6 dB — interpolation is in dB, matching the line the UI draws");
+        CHECK_NEAR(gainEnvelopeAt(ramp, -50), 1.0, 1e-9,
+                   "before the first point the curve is HELD, not extrapolated");
+        CHECK_NEAR(gainEnvelopeAt(ramp, 5000), std::pow(10.0, -12.0 / 20.0), 1e-9,
+                   "after the last point it is held too");
+
+        // Zero slope at every breakpoint is what makes the composed curve C1 —
+        // the reason there is no zipper to dezipper. Sample either side of an
+        // interior handle and both one-sample slopes must be ~0.
+        const GainEnvelopeParams vee{ { {0, 0.0}, {1000, -24.0}, {2000, 0.0} } };
+        const double slopeBefore = gainEnvelopeAt(vee, 1000) - gainEnvelopeAt(vee, 999);
+        const double slopeAfter  = gainEnvelopeAt(vee, 1001) - gainEnvelopeAt(vee, 1000);
+        CHECK(std::abs(slopeBefore) < 1e-5 && std::abs(slopeAfter) < 1e-5,
+              "the curve has ~zero slope on both sides of an interior breakpoint");
+
+        const GainEnvelopeParams mute{ { {0, kGainEnvelopeMinDb} } };
+        CHECK_NEAR(gainEnvelopeAt(mute, 0), 0.0, 1e-12,
+                   "the dB floor is EXACT silence, not 1.6e-5 of noise");
+    }
+
+    // ── JSON round-trip ──
+    {
+        SandboxOp op = makeOp(1, SandboxOpType::GainEnvelope,
+                              GainEnvelopeParams{ { {0, 0.0}, {2400, -21.5}, {7200, 6.25} } });
+        SandboxOp back;
+        CHECK(opFromJson(opToJson(op), back), "a gain-envelope op parses back");
+        CHECK(back.params == op.params, "every breakpoint round-trips losslessly (position AND dB)");
+        CHECK_EQ(back.contentHash(), op.contentHash(), "…so the reloaded op hits the same cache entry");
+
+        // Point count is part of the digest: dropping one must not collide.
+        SandboxOp fewer = op;
+        std::get<GainEnvelopeParams>(fewer.params).points.pop_back();
+        CHECK(fewer.contentHash() != op.contentHash(), "removing a breakpoint changes the content hash");
+
+        // An unsorted curve out of a hand-edited file is repaired on read.
+        nlohmann::json wild = opToJson(op);
+        wild["params"]["points"] = nlohmann::json::array({
+            nlohmann::json{ {"samplePos", 7200}, {"db", 6.25} },
+            nlohmann::json{ {"samplePos", 0},    {"db", 0.0}  },
+            nlohmann::json{ {"samplePos", 2400}, {"db", -21.5} },
+        });
+        SandboxOp repaired;
+        CHECK(opFromJson(wild, repaired), "an unsorted curve still parses");
+        CHECK(repaired.params == op.params, "…and comes back normalized into the same curve");
+    }
+
+    // ── THE DELIVERABLE: a duck drawn over a spike ducks the spike ──
+    // A flat 0.5 bed with a 1.0 spike at 2000..3000, and a curve that sits at
+    // unity, dives to -20 dB across the spike, and comes back.
+    {
+        SandboxBuffer src = makeConst(2, 6000, 0.5f);
+        for (int ch = 0; ch < 2; ++ch)
+            for (int i = 2000; i < 3000; ++i) src.setSample(ch, i, 1.0f);
+
+        SandboxRenderer renderer;
+        const GainEnvelopeParams duck{ { {1500, 0.0}, {2000, -20.0}, {3000, -20.0}, {3500, 0.0} } };
+        SandboxRenderResult r = renderer.renderStack(
+            900, src, { makeOp(1, SandboxOpType::GainEnvelope, duck) }, kTestRate);
+
+        CHECK(r.valid(), "the envelope renders");
+        CHECK_EQ(r.buffer->getNumSamples(), 6000, "length is untouched");
+        CHECK_NEAR(r.buffer->getSample(0, 0),    0.5f, 1e-6,
+                   "material before the curve starts is at unity, unchanged");
+        CHECK_NEAR(r.buffer->getSample(0, 5999), 0.5f, 1e-6, "…and after it ends");
+
+        const float duckedPeak = r.buffer->getSample(0, 2500);
+        CHECK_NEAR(duckedPeak, static_cast<float>(std::pow(10.0, -20.0 / 20.0)), 1e-5,
+                   "the spike is ducked by exactly the 20 dB drawn over it");
+        CHECK(duckedPeak < 0.5f, "…so the spike now sits BELOW the surrounding bed");
+        CHECK_NEAR(r.buffer->getSample(1, 2500), duckedPeak, 1e-9,
+                   "both channels get the same gain — a duck never shifts the stereo image");
+
+        // Bypass is the same pass-through every other op gets.
+        SandboxOp bypassed = makeOp(1, SandboxOpType::GainEnvelope, duck);
+        bypassed.enabled = false;
+        SandboxRenderResult rb = renderer.renderStack(901, src, { bypassed }, kTestRate);
+        CHECK(rb.valid(), "a bypassed envelope still renders");
+        CHECK_NEAR(rb.buffer->getSample(0, 2500), 1.0f, 1e-6,
+                   "bypass removes the duck entirely — the spike is back at full scale");
+    }
+
+    // ── Undo of a curve edit restores the previous curve, not the default ──
+    {
+        Timeline timeline;
+        UndoManager undo;
+        SandboxCore core;
+
+        const int layerId = core.addLayer("env", 1, kTestRate);
+        SandboxOp op = makeOp(0, SandboxOpType::GainEnvelope,
+                              GainEnvelopeParams{ { {0, 0.0}, {1000, -6.0} } });
+        int opId = 0;
+        CHECK(core.addOp(layerId, op, -1, &opId), "the envelope op is added");
+
+        const GainEnvelopeParams edited{ { {0, 0.0}, {1000, -30.0}, {2000, 0.0} } };
+        undo.execute(std::make_unique<SetSandboxOpParamsCommand>(core, layerId, opId, edited),
+                     timeline);
+        CHECK_EQ(std::get<GainEnvelopeParams>(
+                     core.findLayer(layerId)->findOp(opId)->params).points.size(), size_t(3),
+                 "the edited curve is what the core holds");
+
+        undo.undo(timeline);
+        const auto& afterUndo = std::get<GainEnvelopeParams>(
+            core.findLayer(layerId)->findOp(opId)->params);
+        CHECK_EQ(afterUndo.points.size(), size_t(2), "undo restores the PREVIOUS curve");
+        CHECK_NEAR(afterUndo.points[1].db, -6.0, 1e-12, "…breakpoint for breakpoint");
+
+        undo.redo(timeline);
+        CHECK_EQ(std::get<GainEnvelopeParams>(
+                     core.findLayer(layerId)->findOp(opId)->params).points.size(), size_t(3),
+                 "redo re-applies the edit");
+    }
+}
+
+// ---------------------------------------------------------------------------
 
 int main() {
     std::cout << "=== test_sandbox ===\n";
@@ -1424,6 +1586,7 @@ int main() {
     testRendererCache();
     testDownstreamOnlyRerender();
     testWorkerAndPublish();
+    testGainEnvelope();
 
     std::cout << "\n";
     if (g_failures == 0) {

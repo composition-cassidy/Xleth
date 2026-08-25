@@ -156,6 +156,46 @@ async function main() {
     ok(noop.success === false, `writing the same value again → success:false (${JSON.stringify(noop)})`);
   }
 
+  // ── 3b. gainEnvelope over the generic RPC surface ────────────────────────
+  // The only op whose params carry a LIST rather than scalars, so it is the
+  // only one that exercises array marshalling through opFromJson. There is no
+  // dedicated RPC method for it — that is the point of the check: a new op
+  // type should reach the engine through sandbox_stackAdd/stackSetParam
+  // unchanged.
+  group('sandbox_stackAdd — gainEnvelope');
+  {
+    const duck = [
+      { samplePos: 0, db: 0 },
+      { samplePos: 2000, db: -20 },
+      { samplePos: 4000, db: 0 },
+    ];
+    const add = fn.sandbox_stackAdd(layerId, { type: 'gainEnvelope', params: { points: duck } });
+    ok(add.success === true && typeof add.opId === 'number',
+       `add a gain envelope succeeds (${JSON.stringify(add)})`);
+
+    const envOpId = add.opId;
+
+    // An identical write is "not an edit" — same contract as every scalar op,
+    // which means the breakpoint list compares by VALUE on the engine side.
+    const noop = fn.sandbox_stackSetParam(layerId, envOpId, { type: 'gainEnvelope', params: { points: duck } });
+    ok(noop.success === false,
+       `re-writing the same curve → success:false (${JSON.stringify(noop)})`);
+
+    const deeper = duck.map((q) => (q.samplePos === 2000 ? { samplePos: 2000, db: -30 } : q));
+    const edit = fn.sandbox_stackSetParam(layerId, envOpId, { type: 'gainEnvelope', params: { points: deeper } });
+    ok(edit.success === true, `deepening one breakpoint succeeds (${JSON.stringify(edit)})`);
+
+    // An unsorted curve is repaired on ingest rather than rejected, so the
+    // SAME curve written out of order is still "not an edit".
+    const shuffled = [deeper[2], deeper[0], deeper[1]];
+    const reorderNoop = fn.sandbox_stackSetParam(layerId, envOpId, { type: 'gainEnvelope', params: { points: shuffled } });
+    ok(reorderNoop.success === false,
+       `the same curve written out of order normalizes to "not an edit" (${JSON.stringify(reorderNoop)})`);
+
+    const gone = fn.sandbox_stackRemove(layerId, envOpId);
+    ok(gone.success === true, 'the envelope op is removed again, leaving the stack as it was');
+  }
+
   // ── 4. sandbox_stackSetBypassed ──────────────────────────────────────────
   group('sandbox_stackSetBypassed');
   {
@@ -602,6 +642,19 @@ async function main() {
     ok(second.success === true, 'a second layer is opened for the round-trip');
     fn.sandbox_stackAdd(second.layerId, { type: 'reverse', params: { startSample: 0, endSample: -1 } });
     fn.sandbox_stackAdd(second.layerId, { type: 'gain', params: { startSample: 0, endSample: -1, gainDb: -6, normalize: false, normalizeTargetDb: 0 } });
+    // A gain ENVELOPE too, with awkward fractional dB values on purpose: this
+    // group compares the whole workspace JSON before and after the round-trip,
+    // so a breakpoint list that lost a point, reordered itself, or rounded a dB
+    // fails the comparison below rather than needing its own assertion.
+    fn.sandbox_stackAdd(second.layerId, {
+      type: 'gainEnvelope',
+      params: { points: [
+        { samplePos: 0,   db: 0 },
+        { samplePos: 64,  db: -18.25 },
+        { samplePos: 192, db: -3.5 },
+        { samplePos: 400, db: 6.125 },
+      ] },
+    });
     fn.sandbox_setLayerMix(second.layerId, -3.5, 0.5, 128);
     fn.sandbox_setLayerMuted(second.layerId, true);
 
@@ -642,8 +695,20 @@ async function main() {
        'every layer REBOUND to a freshly minted SampleBank id');
     ok(after.layers.every((l) => l.bufferSampleRate > 0),
        '…at a known sample rate, so the renderer will not refuse it');
-    ok(after.layers.some((l) => l.ops.length === 2 && l.muted === true && l.pan === 0.5),
+    ok(after.layers.some((l) => l.ops.length === 3 && l.muted === true && l.pan === 0.5),
        'the multi-op layer kept its stack AND its mix params');
+
+    // Spelled out separately from the whole-JSON comparison above, because
+    // "the breakpoints survived a save/load" is a deliverable in its own right
+    // and a future change to `strip` must not be able to quietly stop checking it.
+    const reloadedEnv = after.layers
+      .flatMap((l) => l.ops)
+      .find((o) => o.type === 'gainEnvelope');
+    ok(!!reloadedEnv && reloadedEnv.params.points.length === 4,
+       `the gain envelope came back with all 4 breakpoints (${JSON.stringify(reloadedEnv && reloadedEnv.params)})`);
+    ok(!!reloadedEnv && reloadedEnv.params.points[1].db === -18.25
+       && reloadedEnv.params.points[3].db === 6.125,
+       'every breakpoint dB round-trips to the bit — no rounding, no clamping');
 
     // And the swap itself survived, through the region\'s swappedAudioPath.
     ok(Math.abs(regionInfo(swapRegionId).numSamples - swappedSamples) <= 2,
@@ -661,9 +726,14 @@ async function main() {
     ok(orphaned.layers.length === before.layers.length, '…with every layer present');
     ok(orphaned.layers.every((l) => l.sourceBufferId === -1),
        '…each UNBOUND rather than pointing at a stale id');
+    // Counted against the fixture built above (reverse + gain + gainEnvelope),
+    // so adding an op to that fixture has to be reflected here too.
     ok(orphaned.layers.every((l) => Array.isArray(l.ops)) &&
-       orphaned.layers.some((l) => l.ops.length === 2),
+       orphaned.layers.some((l) => l.ops.length === 3),
        '…and every op-stack intact — it is the binding that is lost, never the edit');
+    ok(orphaned.layers.flatMap((l) => l.ops)
+              .some((o) => o.type === 'gainEnvelope' && o.params.points.length === 4),
+       '…including the gain envelope, whose curve outlives its own audio');
   }
 
   // ── Teardown ─────────────────────────────────────────────────────────────
