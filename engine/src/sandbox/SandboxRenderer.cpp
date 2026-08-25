@@ -172,6 +172,64 @@ SandboxBuffer applyGain(const SandboxBuffer& in, const GainParams& p) {
     return dst;
 }
 
+// Stereo-linked (max-across-channels) smoothed RMS envelope follower over the
+// WHOLE input buffer, in dB. One pass, forward, causal — this is the "natural
+// dynamics" trace Relative mode scales its drawn curve against.
+//
+// Asymmetric one-pole: rises on the ATTACK coefficient whenever the signal's
+// mean square is above the current envelope, falls on the RELEASE coefficient
+// otherwise. Same coefficient formula the realtime compressor uses
+// (XlethCompressorEffect.h) — coeff = exp(-1 / (timeSec * sampleRate)) — so a
+// given attack/release number means the same thing here as it does there, even
+// though this follower runs once, offline, over a buffer it already holds in
+// full rather than sample-by-sample under an audio callback.
+//
+// Stereo-linked rather than per-channel: applyGainEnvelope applies one gain to
+// every channel (never shifting the stereo image), so the envelope it reacts
+// to has to be a single shared trace too, not one that could disagree between
+// channels about when the transient happened.
+std::vector<double> gainEnvelopeFollowerDb(const SandboxBuffer& in, double sampleRate,
+                                           double attackMs, double releaseMs) {
+    const int64_t len = in.getNumSamples();
+    std::vector<double> out(static_cast<size_t>(std::max<int64_t>(0, len)), kGainEnvelopeSilenceDb);
+    if (len <= 0 || sampleRate <= 0.0) return out;
+
+    const int numCh = in.getNumChannels();
+    const double aCoeff = std::exp(-1.0 / std::max(attackMs  * 0.001 * sampleRate, 1e-6));
+    const double rCoeff = std::exp(-1.0 / std::max(releaseMs * 0.001 * sampleRate, 1e-6));
+
+    const auto meanSq = [&](int64_t i) {
+        double sq = 0.0;
+        for (int ch = 0; ch < numCh; ++ch) {
+            const double s = in.getSample(ch, static_cast<int>(i));
+            sq += s * s;
+        }
+        return sq / std::max(1, numCh);
+    };
+
+    // Seeded from the FIRST sample rather than from digital silence: this
+    // buffer did not just start playing, the whole thing is already in hand,
+    // so there is no reason to manufacture a fake "rising from nothing"
+    // transient at sample 0. Left seeded at 0, that phantom dip would become
+    // the buffer-wide envelope minimum on anything that starts at a normal
+    // level, dragging normalized(t) up everywhere else in Relative mode and
+    // quietly weakening every duck the curve draws.
+    double env = meanSq(0);
+    for (int64_t i = 0; i < len; ++i) {
+        const double sq = i == 0 ? env : meanSq(i);
+        if (i > 0) {
+            const double coeff = sq > env ? aCoeff : rCoeff;
+            env = coeff * env + (1.0 - coeff) * sq;
+        }
+
+        const double level = std::sqrt(std::max(env, 0.0));
+        out[static_cast<size_t>(i)] = level > 0.0
+            ? std::max(kGainEnvelopeSilenceDb, 20.0 * std::log10(level))
+            : kGainEnvelopeSilenceDb;
+    }
+    return out;
+}
+
 // A gain CURVE rather than a scalar: one multiply per sample, the coefficient
 // re-evaluated at every sample position from the breakpoint list.
 //
@@ -186,7 +244,41 @@ SandboxBuffer applyGain(const SandboxBuffer& in, const GainParams& p) {
 //
 // The same channel gain is applied to every channel, so a duck never shifts the
 // stereo image — the same rule applyGain's normalize path follows.
-SandboxBuffer applyGainEnvelope(const SandboxBuffer& in, const GainEnvelopeParams& p) {
+//
+// ── Mode 2 (Relative) ─────────────────────────────────────────────────────────
+// The drawn curve does not replace the material's own dynamics, it MULTIPLIES
+// them: 0 dB drawn must mean "leave the natural level alone", not "hold the
+// output at some fixed absolute level" — the two only coincide in Absolute
+// mode. So Relative mode cannot just apply drawnDb(t) as a gain the way
+// Absolute does (that IS Absolute — the same numeric curve, applied without
+// regard for what the signal is actually doing, is exactly what "flattens"
+// microdynamics inside a wide, hand-drawn window: a quiet passage sitting under
+// the same drawn dip as a loud transient gets attenuated by the same amount as
+// the transient, even though nothing about the quiet passage asked to move).
+//
+// Instead the drawn dB is scaled by how loud THIS INSTANT is relative to the
+// dynamic range the detected envelope covers across the whole buffer:
+//
+//   normalized(t) = (envDb(t) - envMinDb) / (envMaxDb - envMinDb)   ∈ [0, 1]
+//   appliedDb(t)  = drawnDb(t) * normalized(t)
+//
+// A drawn dip therefore lands almost entirely on whatever the envelope says is
+// loudest (normalized ≈ 1 — the transient itself) and almost not at all on
+// material sitting near the envelope's own floor (normalized ≈ 0 — the
+// microdynamics around it), even when the same dip is drawn wide enough to
+// cover both. That is also the textbook definition of expansion vs.
+// compression once phrased this way: scaling gain proportionally to level
+// widens the gap between loud and quiet (positive drawn dB = expand) or
+// narrows it (negative = compress) — and drawn 0 dB multiplies by anything and
+// stays 0, so "preserve natural dynamics" falls out for free rather than
+// needing its own case.
+//
+// A buffer whose envelope never moves (silence, or a dead-flat tone) has no
+// range to normalize against; normalized(t) is defined as 1 in that case so a
+// deliberately drawn curve still has SOME effect rather than silently doing
+// nothing.
+SandboxBuffer applyGainEnvelope(const SandboxBuffer& in, const GainEnvelopeParams& p,
+                                double sampleRate) {
     SandboxBuffer dst(in);
     const int64_t len = dst.getNumSamples();
     if (len <= 0) return dst;
@@ -198,12 +290,33 @@ SandboxBuffer applyGainEnvelope(const SandboxBuffer& in, const GainEnvelopeParam
     // curve back.
     GainEnvelopeParams env = p;
     normalizeGainEnvelope(env);
-    if (env.points.empty()) return dst;   // unity — nothing to do
+    if (env.points.empty()) return dst;   // unity — nothing to do in either mode
+
+    if (env.mode == SandboxGainEnvelopeMode::Absolute) {
+        for (int ch = 0; ch < dst.getNumChannels(); ++ch) {
+            float* d = dst.getWritePointer(ch);
+            for (int64_t i = 0; i < len; ++i)
+                d[i] *= static_cast<float>(gainEnvelopeAt(env, i));
+        }
+        return dst;
+    }
+
+    const std::vector<double> envDb =
+        gainEnvelopeFollowerDb(in, sampleRate, env.followerAttackMs, env.followerReleaseMs);
+
+    double minDb = envDb.empty() ? 0.0 : envDb.front();
+    double maxDb = minDb;
+    for (double v : envDb) { minDb = std::min(minDb, v); maxDb = std::max(maxDb, v); }
+    const double rangeDb = maxDb - minDb;
 
     for (int ch = 0; ch < dst.getNumChannels(); ++ch) {
         float* d = dst.getWritePointer(ch);
-        for (int64_t i = 0; i < len; ++i)
-            d[i] *= static_cast<float>(gainEnvelopeAt(env, i));
+        for (int64_t i = 0; i < len; ++i) {
+            const double normalized = rangeDb > 1e-9 ? std::clamp((envDb[static_cast<size_t>(i)] - minDb) / rangeDb, 0.0, 1.0)
+                                                      : 1.0;
+            const double appliedDb = gainEnvelopeDbAt(env, i) * normalized;
+            d[i] *= static_cast<float>(envDbToGain(appliedDb));
+        }
     }
     return dst;
 }
@@ -408,7 +521,7 @@ SandboxRenderer::~SandboxRenderer() {
 
 SandboxBuffer SandboxRenderer::applyOp(const SandboxBuffer& in,
                                        const SandboxOp& op,
-                                       double /*bufferSampleRate*/,
+                                       double bufferSampleRate,
                                        const SandboxBuffer* clipboard) {
     // A bypassed, malformed or not-yet-built op is a PASS-THROUGH. Never a
     // partial edit: "half applied" is indistinguishable from a DSP bug at the
@@ -425,7 +538,7 @@ SandboxBuffer SandboxRenderer::applyOp(const SandboxBuffer& in,
         case SandboxOpType::Gain:      return applyGain(in, std::get<GainParams>(op.params));
         case SandboxOpType::Crossfade: return applyCrossfade(in, std::get<CrossfadeParams>(op.params));
         case SandboxOpType::GainEnvelope:
-            return applyGainEnvelope(in, std::get<GainEnvelopeParams>(op.params));
+            return applyGainEnvelope(in, std::get<GainEnvelopeParams>(op.params), bufferSampleRate);
 
         // Guarded by implemented() above — listed so a newly built op that
         // forgets its case here is a compiler warning, not a silent no-op.

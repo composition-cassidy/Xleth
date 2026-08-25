@@ -192,6 +192,23 @@ async function main() {
     ok(reorderNoop.success === false,
        `the same curve written out of order normalizes to "not an edit" (${JSON.stringify(reorderNoop)})`);
 
+    // Mode 2 (Relative) — flipping mode alone, with the curve untouched, is
+    // still a real edit: it changes the rendered audio just as much as a
+    // breakpoint move would, so it must not be swallowed as "not an edit".
+    const toRelative = fn.sandbox_stackSetParam(layerId, envOpId,
+      { type: 'gainEnvelope', params: { points: deeper, mode: 1, followerAttackMs: 8, followerReleaseMs: 220 } });
+    ok(toRelative.success === true, `switching to Relative mode succeeds (${JSON.stringify(toRelative)})`);
+
+    const sameRelative = fn.sandbox_stackSetParam(layerId, envOpId,
+      { type: 'gainEnvelope', params: { points: deeper, mode: 1, followerAttackMs: 8, followerReleaseMs: 220 } });
+    ok(sameRelative.success === false,
+       `re-writing the same mode/follower/curve → success:false (${JSON.stringify(sameRelative)})`);
+
+    const backToAbsolute = fn.sandbox_stackSetParam(layerId, envOpId,
+      { type: 'gainEnvelope', params: { points: deeper, mode: 0 } });
+    ok(backToAbsolute.success === true,
+       `mode alone, curve unchanged, still counts as an edit (${JSON.stringify(backToAbsolute)})`);
+
     const gone = fn.sandbox_stackRemove(layerId, envOpId);
     ok(gone.success === true, 'the envelope op is removed again, leaving the stack as it was');
   }

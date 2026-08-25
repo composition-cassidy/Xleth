@@ -5,7 +5,8 @@ import { tokenValue } from '../../theming/tokenValue.ts'
 import { uiCanvasFont } from '../../styles/typography.js'
 import { getTransportState, subscribe as subscribeTransport } from '../../transportStore.js'
 import useSandboxStore, {
-  gainEnvelopeAt, sortEnvelopePoints, findEnvelopeOp,
+  gainEnvelopeAt, gainEnvelopeDbAt, sortEnvelopePoints, findEnvelopeOp,
+  clampGainEnvelopeFollower, GAIN_ENVELOPE_MODE, GAIN_ENVELOPE_DB_MIN,
 } from '../../stores/sandboxStore.js'
 
 const WAVE_HEIGHT = 240
@@ -67,6 +68,58 @@ function columnAbsPeaks(colPeaks, numCols) {
       const a = Math.max(Math.abs(lane.max[x]), Math.abs(lane.min[x]))
       if (a > out[x]) out[x] = a
     }
+  }
+  return out
+}
+
+// ── Mode 2 faint envelope guide (approximation, not the engine's follower) ──
+//
+// The engine's detected envelope runs sample-accurately over the buffer
+// BEFORE this op (SandboxRenderer::gainEnvelopeFollowerDb). The canvas only
+// has per-COLUMN peaks of the buffer AFTER every op including this one, so it
+// cannot reproduce that number — it can only approximate it, the same way the
+// headroom check already approximates "what this column looked like before
+// the curve" by dividing the committed curve's implied gain back out. This is
+// a visual guide for "roughly what am I modulating", not a value anything
+// else in this file depends on being exact.
+//
+// `committedPoints`/`sampleAt` follow the same recovery trick the headroom
+// check uses: divide the column's peak by what the DRAWN curve says it did to
+// get back to something close to the pre-curve level. In Relative mode this
+// under-corrects (the real applied gain is always closer to 0 dB than the
+// drawn curve implies), so the recovered line runs slightly duller than the
+// true natural signal in heavily-modulated stretches — acceptable for a faint
+// guide line, not for anything load-bearing.
+function approxNaturalDbPerColumn(absPeaks, committedPoints, cols, numSamples) {
+  const out = new Float32Array(cols)
+  for (let x = 0; x < cols; x++) {
+    // Same px→sample mapping the main curve loop uses, so column x here means
+    // the same sample position it means everywhere else in this file.
+    const sample = Math.min(Math.max(0, numSamples - 1), Math.round((x / cols) * numSamples))
+    const drawnGain = gainEnvelopeAt(committedPoints, sample)
+    const basePeak = drawnGain > 1e-6 ? absPeaks[x] / drawnGain : absPeaks[x]
+    out[x] = 20 * Math.log10(Math.max(1e-9, basePeak))
+  }
+  return out
+}
+
+// Asymmetric one-pole across COLUMNS rather than samples: each column already
+// aggregates many samples, so the attack/release times are converted to a
+// per-column coefficient using how many samples one column actually spans.
+// Same rise-fast/fall-slow shape as the engine's follower, at coarser
+// granularity — again, a guide line, not a measurement.
+function smoothFollowerDbPerColumn(rawDb, samplesPerCol, sampleRate, attackMs, releaseMs) {
+  const cols = rawDb.length
+  const out = new Float32Array(cols)
+  if (cols === 0 || !sampleRate) return out
+  const msPerCol = (samplesPerCol / sampleRate) * 1000
+  const aCoeff = Math.exp(-msPerCol / Math.max(0.001, attackMs))
+  const rCoeff = Math.exp(-msPerCol / Math.max(0.001, releaseMs))
+  let env = rawDb[0]
+  for (let x = 0; x < cols; x++) {
+    const coeff = rawDb[x] > env ? aCoeff : rCoeff
+    env = x === 0 ? rawDb[0] : coeff * env + (1 - coeff) * rawDb[x]
+    out[x] = env
   }
   return out
 }
@@ -136,6 +189,8 @@ export default function SandboxWaveformCanvas() {
   // and drawBackground would recompute the whole column-peak table each time.
   const envParamPoints = envOp?.params?.points
   const committedPoints = useMemo(() => sortEnvelopePoints(envParamPoints), [envParamPoints])
+  const envFollower = useMemo(() => clampGainEnvelopeFollower(envOp?.params), [envOp?.params])
+  const envIsRelative = envFollower.mode === GAIN_ENVELOPE_MODE.relative
 
   const [bpm, setBpm] = useState(() => getTransportState()?.bpm ?? 120)
   useEffect(() => subscribeTransport((s) => { if (s?.bpm) setBpm(s.bpm) }), [])
@@ -263,7 +318,7 @@ export default function SandboxWaveformCanvas() {
 
   // ── Envelope draw ────────────────────────────────────────────────────────
   //
-  // The headroom warning is EXACT rather than a guess, because both halves of
+  // The headroom warning is EXACT in Absolute mode, because both halves of
   // the arithmetic are known: the rendered buffer on screen already has the
   // COMMITTED curve baked into it, so dividing a column's peak back out by the
   // committed gain recovers what that column looked like before this op — and
@@ -275,6 +330,12 @@ export default function SandboxWaveformCanvas() {
   // It is exact only while the envelope is the LAST op that changes level; an
   // op added after it can move the peaks again. That is the same caveat every
   // range-carrying op in this panel already lives with.
+  //
+  // In Relative mode the prediction is additionally only APPROXIMATE even
+  // under that caveat: the real applied gain is the drawn dB scaled by the
+  // engine's own sample-accurate follower, which this canvas cannot
+  // reproduce — see approxNaturalDbPerColumn / smoothFollowerDbPerColumn above
+  // for the column-granularity stand-in it uses instead.
   const drawEnvelope = useCallback(() => {
     const canvas = envCanvasRef.current
     const w = sizeRef.current.w
@@ -325,6 +386,38 @@ export default function SandboxWaveformCanvas() {
     // output would clip. Drawn as individual segments rather than one path so
     // the over-0-dBFS stretch can carry its own colour without a second pass.
     const absPeaks = columnAbsPeaks(colPeaksRef.current, cols)
+
+    // Mode 2's faint "what am I modulating" guide, drawn UNDER the editable
+    // curve. Only worth computing when it will actually be visible.
+    let naturalDb = null
+    let naturalMinDb = 0
+    let naturalRangeDb = 0
+    if (envIsRelative && !envBypassed) {
+      const rawDb = approxNaturalDbPerColumn(absPeaks, committedPoints, cols, numSamples)
+      const samplesPerCol = numSamples / cols
+      const sampleRate = layer?.renderedBuffer?.sampleRate || 48000
+      naturalDb = smoothFollowerDbPerColumn(rawDb, samplesPerCol, sampleRate,
+        envFollower.followerAttackMs, envFollower.followerReleaseMs)
+      let mn = naturalDb[0] ?? 0, mx = mn
+      for (const v of naturalDb) { if (v < mn) mn = v; if (v > mx) mx = v }
+      naturalMinDb = mn
+      naturalRangeDb = mx - mn
+    }
+
+    if (naturalDb) {
+      ctx.save()
+      ctx.globalAlpha = 0.4
+      ctx.strokeStyle = muted
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      for (let x = 0; x < cols; x++) {
+        const y = dbToY(naturalDb[x], WAVE_HEIGHT)
+        if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y)
+      }
+      ctx.stroke()
+      ctx.restore()
+    }
+
     const ys = new Float32Array(cols)
     const over = new Uint8Array(cols)
     for (let x = 0; x < cols; x++) {
@@ -333,6 +426,8 @@ export default function SandboxWaveformCanvas() {
       const sample = Math.min(numSamples - 1, Math.round((x / cols) * numSamples))
       const displayGain = gainEnvelopeAt(display, sample)
       // An empty curve evaluates to 1.0, i.e. 0 dB — no special case needed.
+      // The editable line's SHAPE never changes with mode — only its EFFECT
+      // does — so this stays the drawn curve's own gain in both modes.
       ys[x] = dbToY(20 * Math.log10(Math.max(1e-9, displayGain)), WAVE_HEIGHT)
 
       if (envBypassed) continue
@@ -341,7 +436,15 @@ export default function SandboxWaveformCanvas() {
       // information about its own peak — 0 / 0. Say nothing rather than guess.
       if (committedGain <= 1e-6) continue
       const basePeak = absPeaks[x] / committedGain
-      if (basePeak * displayGain > 1.0) over[x] = 1
+
+      let predictedGain = displayGain
+      if (naturalDb && naturalRangeDb > 1e-9) {
+        const normalized = Math.max(0, Math.min(1, (naturalDb[x] - naturalMinDb) / naturalRangeDb))
+        const drawnDb = gainEnvelopeDbAt(display, sample)
+        const appliedDb = drawnDb * normalized
+        predictedGain = appliedDb <= GAIN_ENVELOPE_DB_MIN ? 0 : Math.pow(10, appliedDb / 20)
+      }
+      if (basePeak * predictedGain > 1.0) over[x] = 1
     }
 
     ctx.lineWidth = active ? 2 : 1.25
@@ -372,7 +475,7 @@ export default function SandboxWaveformCanvas() {
       }
     }
     ctx.globalAlpha = 1
-  }, [layer, committedPoints, envelopeEditMode, envBypassed])
+  }, [layer, committedPoints, envelopeEditMode, envBypassed, envIsRelative, envFollower])
 
   const drawRulerCanvas = useCallback(() => {
     const canvas = rulerCanvasRef.current

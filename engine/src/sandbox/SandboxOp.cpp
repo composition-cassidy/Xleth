@@ -106,10 +106,14 @@ struct HashVisitor {
     }
     // Count first: without it a 2-point envelope could digest to the same value
     // as a 3-point one whose extra point happens to chain to the identity, and
-    // the renderer's prefix cache would then serve the wrong audio.
+    // the renderer's prefix cache would then serve the wrong audio. mode and
+    // the follower times go in too — flipping Absolute/Relative or retuning
+    // attack/release changes the render without touching a single breakpoint.
     uint64_t operator()(const GainEnvelopeParams& p) const {
         uint64_t acc = hashU64(h, static_cast<uint64_t>(p.points.size()));
         for (const auto& pt : p.points) acc = hashF64(hashI64(acc, pt.samplePos), pt.db);
+        acc = hashI32(acc, static_cast<int32_t>(p.mode));
+        acc = hashF64(hashF64(acc, p.followerAttackMs), p.followerReleaseMs);
         return acc;
     }
 };
@@ -156,7 +160,10 @@ struct ToJsonVisitor {
         nlohmann::json pts = nlohmann::json::array();
         for (const auto& pt : p.points)
             pts.push_back({ {"samplePos", pt.samplePos}, {"db", pt.db} });
-        return { {"points", std::move(pts)} };
+        return { {"points", std::move(pts)},
+                 {"mode", static_cast<int>(p.mode)},
+                 {"followerAttackMs", p.followerAttackMs},
+                 {"followerReleaseMs", p.followerReleaseMs} };
     }
 };
 
@@ -246,6 +253,10 @@ struct FromJsonVisitor {
             pts.push_back(pt);
         }
         p.points = std::move(pts);
+        p.mode = static_cast<SandboxGainEnvelopeMode>(
+            readEnum(j, "mode", static_cast<int>(p.mode), 0, 1));
+        p.followerAttackMs  = readField<double>(j, "followerAttackMs",  p.followerAttackMs);
+        p.followerReleaseMs = readField<double>(j, "followerReleaseMs", p.followerReleaseMs);
         normalizeGainEnvelope(p);
     }
 };
@@ -304,15 +315,10 @@ SandboxOpParams defaultParamsFor(SandboxOpType type) {
 // the UI predicts against, and the binary search it costs (log2 of a handful of
 // breakpoints) is nothing next to the buffer copy the op already performs.
 
-namespace {
-
-// dB → linear, with the exact-silence floor. See kGainEnvelopeSilenceDb.
-inline double envDbToGain(double db) noexcept {
+double envDbToGain(double db) noexcept {
     if (db <= kGainEnvelopeSilenceDb) return 0.0;
     return std::pow(10.0, db / 20.0);
 }
-
-} // namespace
 
 void normalizeGainEnvelope(GainEnvelopeParams& p) {
     std::vector<SandboxGainPoint> keep;
@@ -339,19 +345,25 @@ void normalizeGainEnvelope(GainEnvelopeParams& p) {
         else                                                     out.push_back(pt);
     }
     p.points = std::move(out);
+
+    if (p.mode != SandboxGainEnvelopeMode::Relative) p.mode = SandboxGainEnvelopeMode::Absolute;
+    if (p.followerAttackMs != p.followerAttackMs)   p.followerAttackMs  = kGainEnvelopeDefaultAttackMs;
+    if (p.followerReleaseMs != p.followerReleaseMs) p.followerReleaseMs = kGainEnvelopeDefaultReleaseMs;
+    p.followerAttackMs  = std::clamp(p.followerAttackMs,  kGainEnvelopeMinAttackMs,  kGainEnvelopeMaxAttackMs);
+    p.followerReleaseMs = std::clamp(p.followerReleaseMs, kGainEnvelopeMinReleaseMs, kGainEnvelopeMaxReleaseMs);
 }
 
-double gainEnvelopeAt(const GainEnvelopeParams& p, int64_t samplePos) noexcept {
+double gainEnvelopeDbAt(const GainEnvelopeParams& p, int64_t samplePos) noexcept {
     const auto& pts = p.points;
-    if (pts.empty())     return 1.0;                    // no curve = no change
-    if (pts.size() == 1) return envDbToGain(pts.front().db);
+    if (pts.empty())     return 0.0;                    // no curve = unity
+    if (pts.size() == 1) return pts.front().db;
 
     // Held flat outside the authored range, rather than extrapolated: a curve
     // that kept its slope past the last handle would keep ducking material the
     // user never drew over, and an upstream length change would silently move
     // where that runaway starts.
-    if (samplePos <= pts.front().samplePos) return envDbToGain(pts.front().db);
-    if (samplePos >= pts.back().samplePos)  return envDbToGain(pts.back().db);
+    if (samplePos <= pts.front().samplePos) return pts.front().db;
+    if (samplePos >= pts.back().samplePos)  return pts.back().db;
 
     const auto it = std::upper_bound(pts.begin(), pts.end(), samplePos,
                                      [](int64_t v, const SandboxGainPoint& q) {
@@ -363,11 +375,15 @@ double gainEnvelopeAt(const GainEnvelopeParams& p, int64_t samplePos) noexcept {
     const SandboxGainPoint& a = *(it - 1);
 
     const int64_t span = b.samplePos - a.samplePos;
-    if (span <= 0) return envDbToGain(b.db);            // unsorted/duplicate input
+    if (span <= 0) return b.db;                         // unsorted/duplicate input
 
     double t = static_cast<double>(samplePos - a.samplePos) / static_cast<double>(span);
     t = t * t * (3.0 - 2.0 * t);                        // smoothstep — zero slope at both handles
-    return envDbToGain(a.db + (b.db - a.db) * t);
+    return a.db + (b.db - a.db) * t;
+}
+
+double gainEnvelopeAt(const GainEnvelopeParams& p, int64_t samplePos) noexcept {
+    return envDbToGain(gainEnvelopeDbAt(p, samplePos));
 }
 
 // ─── SandboxOp ────────────────────────────────────────────────────────────────

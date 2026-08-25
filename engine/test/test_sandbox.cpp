@@ -1472,14 +1472,68 @@ static void testGainEnvelope() {
                    "the dB floor is EXACT silence, not 1.6e-5 of noise");
     }
 
+    // ── mode / follower params ──
+    {
+        GainEnvelopeParams p{ { {0, 0.0} }, SandboxGainEnvelopeMode::Absolute, 5.0, 150.0 };
+        CHECK(p.mode == SandboxGainEnvelopeMode::Absolute, "default-constructed field order still puts mode where the aggregate init above expects it");
+
+        GainEnvelopeParams wild{};
+        wild.mode              = static_cast<SandboxGainEnvelopeMode>(7);   // not a declared enumerator
+        wild.followerAttackMs  = -50.0;                                    // below the floor
+        wild.followerReleaseMs = 999999.0;                                 // above the ceiling
+        normalizeGainEnvelope(wild);
+        CHECK(wild.mode == SandboxGainEnvelopeMode::Absolute, "an out-of-range mode repairs to Absolute, not UB");
+        CHECK_NEAR(wild.followerAttackMs, kGainEnvelopeMinAttackMs, 1e-12, "attack is clamped to its floor");
+        CHECK_NEAR(wild.followerReleaseMs, kGainEnvelopeMaxReleaseMs, 1e-12, "release is clamped to its ceiling");
+
+        // gainEnvelopeAt / gainEnvelopeDbAt are mode-agnostic — mode only
+        // changes how SandboxRenderer APPLIES the curve, not what the curve
+        // itself evaluates to at a position.
+        const GainEnvelopeParams ramp{ { {0, 0.0}, {1000, -12.0} }, SandboxGainEnvelopeMode::Relative, 5.0, 150.0 };
+        CHECK_NEAR(gainEnvelopeDbAt(ramp, 500), -6.0, 1e-9,
+                   "gainEnvelopeDbAt agrees with gainEnvelopeAt's dB-domain midpoint");
+        CHECK_NEAR(gainEnvelopeAt(ramp, 500), std::pow(10.0, -6.0 / 20.0), 1e-9,
+                   "…converted through the same exact-silence-floor rule as Absolute");
+    }
+
     // ── JSON round-trip ──
     {
         SandboxOp op = makeOp(1, SandboxOpType::GainEnvelope,
-                              GainEnvelopeParams{ { {0, 0.0}, {2400, -21.5}, {7200, 6.25} } });
+                              GainEnvelopeParams{ { {0, 0.0}, {2400, -21.5}, {7200, 6.25} },
+                                                  SandboxGainEnvelopeMode::Relative, 8.0, 220.0 });
         SandboxOp back;
         CHECK(opFromJson(opToJson(op), back), "a gain-envelope op parses back");
         CHECK(back.params == op.params, "every breakpoint round-trips losslessly (position AND dB)");
+        CHECK(std::get<GainEnvelopeParams>(back.params).mode == SandboxGainEnvelopeMode::Relative,
+              "mode round-trips too");
+        CHECK_NEAR(std::get<GainEnvelopeParams>(back.params).followerAttackMs, 8.0, 1e-12,
+                   "…and the follower times");
         CHECK_EQ(back.contentHash(), op.contentHash(), "…so the reloaded op hits the same cache entry");
+
+        // A file written before Mode 2 existed has neither field: it must load
+        // as Absolute with the stock follower defaults, not fail to parse.
+        nlohmann::json legacy = opToJson(op);
+        legacy["params"].erase("mode");
+        legacy["params"].erase("followerAttackMs");
+        legacy["params"].erase("followerReleaseMs");
+        SandboxOp fromLegacy;
+        CHECK(opFromJson(legacy, fromLegacy), "a pre-Mode-2 file still parses");
+        const auto& legacyParams = std::get<GainEnvelopeParams>(fromLegacy.params);
+        CHECK(legacyParams.mode == SandboxGainEnvelopeMode::Absolute, "…defaulting to Absolute");
+        CHECK_NEAR(legacyParams.followerAttackMs, kGainEnvelopeDefaultAttackMs, 1e-12,
+                   "…and the stock follower defaults");
+
+        // Flipping mode alone, with the curve untouched, must still invalidate
+        // the render cache — it changes the audio just as much as a breakpoint
+        // edit would.
+        SandboxOp absoluteTwin = op;
+        std::get<GainEnvelopeParams>(absoluteTwin.params).mode = SandboxGainEnvelopeMode::Absolute;
+        CHECK(absoluteTwin.contentHash() != op.contentHash(),
+              "mode alone changes the content hash");
+        SandboxOp slowerRelease = op;
+        std::get<GainEnvelopeParams>(slowerRelease.params).followerReleaseMs = 500.0;
+        CHECK(slowerRelease.contentHash() != op.contentHash(),
+              "retuning the follower alone changes the content hash too");
 
         // Point count is part of the digest: dropping one must not collide.
         SandboxOp fewer = op;
@@ -1566,6 +1620,130 @@ static void testGainEnvelope() {
 }
 
 // ---------------------------------------------------------------------------
+// GAIN ENVELOPE, Mode 2 (Relative) — the same dip drawn over a transient ducks
+// the transient without flattening the quiet material sharing its window,
+// which is the whole reason Mode 2 exists over Mode 1.
+// ---------------------------------------------------------------------------
+
+static double computeRms(const SandboxBuffer& b, int channel, int64_t start, int64_t end) {
+    double acc = 0.0;
+    const int64_t n = end - start;
+    if (n <= 0) return 0.0;
+    for (int64_t i = start; i < end; ++i) {
+        const double s = b.getSample(channel, static_cast<int>(i));
+        acc += s * s;
+    }
+    return std::sqrt(acc / static_cast<double>(n));
+}
+
+static void testGainEnvelopeRelativeMode() {
+    std::cout << "\n[GainEnvelope — Relative mode]\n";
+
+    // A quiet bed (0.1) the whole way through, with one loud transient (0.9)
+    // sitting inside a dip drawn wide enough to cover the ramp leading up to
+    // it too — the exact shape a hand-drawn dip has in practice, since nobody
+    // draws a duck that starts and ends exactly on the transient's own edges.
+    //
+    //   samples   0 ......... 3000 ......... 6000 ... 7000 ......... 10000 .. 12000
+    //   signal    |---- bed 0.1 ----|-- bed 0.1 --|-- SPIKE 0.9 --|-- bed 0.1 --|
+    //   drawn dB  |------ 0 dB -----|--- ramp --> -20 dB flat --> ramp ---|-- 0 dB --|
+    //
+    // The bed is CONSTANT from sample 0, so with the default 5ms attack the
+    // follower is pinned to it (exactly, once seeded — see
+    // gainEnvelopeFollowerDb) well before the ramp even starts at 3000. That
+    // pins the buffer's envelope MINIMUM to the bed's own level, which is the
+    // property this test leans on: material at the bed level normalizes to
+    // exactly 0, so Relative mode applies exactly 0 dB to it regardless of
+    // what the drawn curve says there.
+    SandboxBuffer src = makeConst(2, 12000, 0.1f);
+    for (int ch = 0; ch < 2; ++ch)
+        for (int64_t i = 6000; i < 7000; ++i) src.setSample(ch, static_cast<int>(i), 0.9f);
+
+    const GainEnvelopeParams dip{ { {3000, 0.0}, {6000, -20.0}, {7000, -20.0}, {10000, 0.0} },
+                                  SandboxGainEnvelopeMode::Absolute,
+                                  kGainEnvelopeDefaultAttackMs, kGainEnvelopeDefaultReleaseMs };
+    GainEnvelopeParams relativeDip = dip;
+    relativeDip.mode = SandboxGainEnvelopeMode::Relative;
+
+    SandboxRenderer renderer;
+    SandboxRenderResult absoluteResult = renderer.renderStack(
+        2000, src, { makeOp(1, SandboxOpType::GainEnvelope, dip) }, kTestRate);
+    SandboxRenderResult relativeResult = renderer.renderStack(
+        2001, src, { makeOp(1, SandboxOpType::GainEnvelope, relativeDip) }, kTestRate);
+    CHECK(absoluteResult.valid() && relativeResult.valid(), "both modes render");
+
+    // ── Pre-transient ramp material (sample 4500, entirely bed-level) ──
+    // Absolute has no idea 4500 is quiet material, not the transient — it
+    // applies whatever the drawn ramp says there (halfway from 0 to -20 dB,
+    // i.e. -10 dB, dB-domain smoothstep midpoint) regardless.
+    const float wantAbsolute4500 = static_cast<float>(0.1 * std::pow(10.0, -10.0 / 20.0));
+    CHECK_NEAR(absoluteResult.buffer->getSample(0, 4500), wantAbsolute4500, 1e-5,
+               "Absolute cuts pre-transient bed material by the drawn ramp's dB, same as anything else under it");
+    CHECK(absoluteResult.buffer->getSample(0, 4500) < 0.1f * 0.5f,
+          "…enough of a cut that it clearly does not sound like untouched bed level");
+
+    // Relative mode's follower has been pinned to the bed's own level since
+    // before the ramp started, so normalized(4500) is exactly 0 — the drawn
+    // -10 dB there multiplies by zero and vanishes.
+    CHECK_NEAR(relativeResult.buffer->getSample(0, 4500), 0.1f, 1e-5,
+               "Relative leaves pre-transient bed material at its natural level — nothing there is loud enough to trigger the duck");
+
+    // ── The transient itself (sample 6500, mid-attack into the spike) ──
+    // Both modes still duck it substantially: Absolute by exactly the drawn
+    // -20 dB, Relative by very nearly as much once the follower has caught up
+    // partway through the spike's own duration.
+    const float wantAbsolute6500 = static_cast<float>(0.9 * std::pow(10.0, -20.0 / 20.0));
+    CHECK_NEAR(absoluteResult.buffer->getSample(0, 6500), wantAbsolute6500, 1e-5,
+               "Absolute ducks the transient by exactly the 20 dB drawn over it");
+    const float relative6500 = relativeResult.buffer->getSample(0, 6500);
+    CHECK(relative6500 < 0.9f * 0.3f,
+          "Relative ducks the transient substantially too — this is not a bypass with extra steps");
+    CHECK(relative6500 > wantAbsolute6500 * 0.5f,
+          "…though not bit-identical to Absolute, since the follower is still mid-attack at this sample");
+
+    // ── The deliverable, stated as one comparison ──
+    // The SAME dip, drawn over the SAME material, leaves pre-transient bed
+    // material far closer to its original level in Relative than in Absolute.
+    CHECK(std::abs(relativeResult.buffer->getSample(0, 4500) - 0.1f)
+              < std::abs(absoluteResult.buffer->getSample(0, 4500) - 0.1f),
+          "Relative mode's pre-transient sample sits closer to the untouched bed level than Absolute's does");
+
+    // ── Peak/RMS comparison over the whole pre-transient ramp window ──
+    // [3000, 6000) is bed-only — no part of the transient itself is in this
+    // range. Relative's RMS there should reproduce the untouched bed's RMS
+    // (0.1) almost exactly; Absolute's is measurably pulled down by the ramp
+    // it cannot tell apart from a real level change.
+    const double rmsSrc      = computeRms(src, 0, 3000, 6000);
+    const double rmsAbsolute = computeRms(*absoluteResult.buffer, 0, 3000, 6000);
+    const double rmsRelative = computeRms(*relativeResult.buffer, 0, 3000, 6000);
+    CHECK_NEAR(rmsRelative, rmsSrc, 1e-5,
+               "Relative mode's RMS over the pre-transient window matches the untouched source almost exactly");
+    CHECK(rmsAbsolute < rmsSrc * 0.9,
+          "Absolute mode's RMS over the same window is measurably reduced by the ramp");
+
+    // Peak of the transient itself, across the whole buffer: Absolute brings
+    // it down from the untouched 0.9 peak instantly, confirming the duck is
+    // real audio behaviour and not just an RMS-window artefact.
+    const auto peakOf = [](const SandboxBuffer& b, int64_t start, int64_t end) {
+        float p = 0.0f;
+        for (int64_t i = start; i < end; ++i) p = std::max(p, std::abs(b.getSample(0, static_cast<int>(i))));
+        return p;
+    };
+    CHECK_NEAR(peakOf(src, 0, src.getNumSamples()), 0.9f, 1e-6, "the untouched source peak is the spike itself");
+    CHECK(peakOf(*absoluteResult.buffer, 0, absoluteResult.buffer->getNumSamples()) < 0.9f * 0.5f,
+          "Absolute reduces the buffer's peak substantially");
+
+    // Relative mode is causal: it cannot duck a transient before its follower
+    // has had time to react, so the transient's very first samples (still
+    // mid-attack, normalized(t) still low) legitimately let more through than
+    // Absolute does — that lag is the honest cost of reacting to the material
+    // instead of a fixed schedule. The SUSTAINED part of the spike, once the
+    // follower has caught up, still ducks hard.
+    CHECK(peakOf(*relativeResult.buffer, 6200, 7000) < 0.9f * 0.5f,
+          "Relative reduces the SUSTAINED transient's peak substantially once the follower has caught up");
+}
+
+// ---------------------------------------------------------------------------
 
 int main() {
     std::cout << "=== test_sandbox ===\n";
@@ -1587,6 +1765,7 @@ int main() {
     testDownstreamOnlyRerender();
     testWorkerAndPublish();
     testGainEnvelope();
+    testGainEnvelopeRelativeMode();
 
     std::cout << "\n";
     if (g_failures == 0) {

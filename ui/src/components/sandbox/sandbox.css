@@ -319,6 +319,29 @@
   max-width: 96px;
 }
 
+/* Advanced drawer (Mode 2 follower attack/release). A plain flow row rather
+   than a portaled popup: it toggles alongside the toolbar it belongs to, has
+   nothing that needs to escape a clipped ancestor, and there is exactly one
+   of it. Wraps onto its own line under the toolbar when the panel is narrow,
+   same as the toolbar itself already does (flex-wrap). */
+.sandbox-toolbar-drawer {
+  flex: 1 1 100%;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 4px 8px;
+  margin-top: 2px;
+  border-top: 1px dashed var(--theme-border-subtle);
+}
+
+.sandbox-toolbar-drawer label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10px;
+  color: var(--theme-text-muted);
+}
+
 .sandbox-waveform-area {
   flex: 1 1 auto;
   min-height: 0;

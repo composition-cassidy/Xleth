@@ -225,6 +225,30 @@ struct SandboxGainPoint {
     bool operator==(const SandboxGainPoint&) const = default;
 };
 
+// ── Mode 2 — relative dynamics modulation ───────────────────────────────────
+// Absolute (Mode 1) applies the drawn dB straight to the signal, unaware of
+// what the material is actually doing at that instant. Relative (Mode 2) asks
+// SandboxRenderer to first track the source's OWN loudness contour (a smoothed
+// RMS envelope follower) and scale the drawn dB by how loud THAT instant is
+// relative to the dynamic range the follower covers across this buffer — see
+// applyGainEnvelope() in SandboxRenderer.cpp for the exact arithmetic and why
+// it is not just "add the drawn dB to the detected envelope".
+enum class SandboxGainEnvelopeMode : int {
+    Absolute = 0,   // Mode 1 — the drawn curve IS the applied gain
+    Relative = 1,   // Mode 2 — the drawn curve modulates the detected envelope
+};
+
+// Follower time-constant bounds and defaults. Fast attack (default) so a
+// transient is caught inside its own duration rather than a follower cycle
+// late; slow-ish release (default) so the curve does not chase every
+// microdynamic wiggle back down, which would just reinvent Mode 1.
+inline constexpr double kGainEnvelopeMinAttackMs      = 0.1;
+inline constexpr double kGainEnvelopeMaxAttackMs      = 500.0;
+inline constexpr double kGainEnvelopeDefaultAttackMs  = 5.0;
+inline constexpr double kGainEnvelopeMinReleaseMs     = 1.0;
+inline constexpr double kGainEnvelopeMaxReleaseMs     = 2000.0;
+inline constexpr double kGainEnvelopeDefaultReleaseMs = 150.0;
+
 // GAIN ENVELOPE — a gain curve traced through `points`, evaluated per sample.
 //
 // ── Why dB, and why interpolate IN dB ────────────────────────────────────────
@@ -250,25 +274,58 @@ struct SandboxGainPoint {
 // Two points sharing a samplePos would be a zero-length segment; the renderer
 // sorts and de-duplicates (last wins) rather than dividing by zero, and
 // opFromJson normalizes on the way in so a saved stack is already clean.
+//
+// ── mode is a field here, not a second op type ───────────────────────────────
+// Mode 1 and Mode 2 share every other field: the same breakpoint list, the
+// same editor, the same "what does 0 dB mean" mental model — only how the
+// curve's dB value gets turned into a sample gain differs, which is exactly
+// the kind of variation a mode flag exists for. See SandboxOpType::GainEnvelope
+// for why this op is nonetheless its own type rather than a mode of GAIN.
 struct GainEnvelopeParams {
     // Ordered by samplePos, one point per position. Not enforced by the type —
     // enforced by normalizeGainEnvelope(), which every ingest path calls.
     std::vector<SandboxGainPoint> points;
 
+    SandboxGainEnvelopeMode mode = SandboxGainEnvelopeMode::Absolute;
+
+    // Consulted only in Relative mode; harmless dead weight in Absolute, kept
+    // rather than omitted so flipping modes back and forth never loses the
+    // user's tuning.
+    double followerAttackMs  = kGainEnvelopeDefaultAttackMs;
+    double followerReleaseMs = kGainEnvelopeDefaultReleaseMs;
+
     bool operator==(const GainEnvelopeParams&) const = default;
 };
 
 // Sorts by samplePos, drops negative positions, clamps every db into
-// [kGainEnvelopeMinDb, kGainEnvelopeMaxDb], and collapses duplicate positions
-// keeping the LAST one written — the same "last edit wins" a UI drag produces
-// when a handle is dragged onto its neighbour.
+// [kGainEnvelopeMinDb, kGainEnvelopeMaxDb], collapses duplicate positions
+// keeping the LAST one written (the same "last edit wins" a UI drag produces
+// when a handle is dragged onto its neighbour), and clamps mode/follower
+// times into their declared bounds.
 void normalizeGainEnvelope(GainEnvelopeParams& p);
 
-// Gain (LINEAR, not dB) this envelope produces at `samplePos`. The single
+// dB → linear, with the exact-silence floor (kGainEnvelopeSilenceDb): a curve
+// that reaches the floor is SILENCE, not 10^(-96/20) ≈ 1.6e-5 of noise. Public
+// because both the Absolute evaluator below and SandboxRenderer's Relative-mode
+// arithmetic need the identical rule — a second copy of "what does this dB
+// value mean as a gain" would be free to drift from this one.
+double envDbToGain(double db) noexcept;
+
+// Raw dB the drawn curve evaluates to at `samplePos` — smoothstep-interpolated,
+// held flat outside the authored range, but WITHOUT gainEnvelopeAt's
+// exact-silence floor snap. Relative mode needs the authored dB value itself
+// (to scale by the detected envelope) rather than the gain that value would
+// produce in isolation; Absolute mode never calls this directly. Assumes `p`
+// has been normalized, same as gainEnvelopeAt.
+double gainEnvelopeDbAt(const GainEnvelopeParams& p, int64_t samplePos) noexcept;
+
+// Gain (LINEAR, not dB) this envelope produces at `samplePos` in ABSOLUTE
+// mode — i.e. envDbToGain(gainEnvelopeDbAt(p, samplePos)). The single
 // evaluator — the renderer's per-sample loop and any UI-side prediction must
 // agree, so there is exactly one implementation of the curve. Assumes `p` has
 // been normalized; unsorted input degrades to a wrong-but-bounded curve rather
-// than UB.
+// than UB. Relative mode's actual applied gain is NOT this function — see
+// applyGainEnvelope() in SandboxRenderer.cpp.
 double gainEnvelopeAt(const GainEnvelopeParams& p, int64_t samplePos) noexcept;
 
 // PITCH — shift by cents without changing length. STUB in SB-1: pitch/stretch

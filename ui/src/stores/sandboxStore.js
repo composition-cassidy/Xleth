@@ -66,19 +66,33 @@ export const FADE_SHAPE = {
 export const GAIN_ENVELOPE_DB_MIN = -96
 export const GAIN_ENVELOPE_DB_MAX = 24
 
-// Gain (LINEAR) the curve produces at `samplePos`. Mirrors gainEnvelopeAt():
-// held flat outside the authored range, smoothstep IN dB between breakpoints,
-// exact silence at the floor. `points` must be sorted by samplePos — every
-// path in this file keeps them that way via sortEnvelopePoints.
-export function gainEnvelopeAt(points, samplePos) {
-  if (!points || points.length === 0) return 1
-  const toGain = (db) => (db <= GAIN_ENVELOPE_DB_MIN ? 0 : Math.pow(10, db / 20))
-  if (points.length === 1) return toGain(points[0].db)
+// Mirrors xleth::sandbox::SandboxGainEnvelopeMode. JSON writes the int, same
+// as RIPPLE_MODE/FADE_SHAPE above.
+export const GAIN_ENVELOPE_MODE = { absolute: 0, relative: 1 }
+
+// Mirrors kGainEnvelopeMin/MaxAttackMs, kGainEnvelopeMin/MaxReleaseMs and the
+// stock defaults (SandboxOp.h). Only meaningful in Relative mode, but carried
+// unconditionally — see GainEnvelopeParams's own comment on why.
+export const GAIN_ENVELOPE_ATTACK_MS_MIN = 0.1
+export const GAIN_ENVELOPE_ATTACK_MS_MAX = 500
+export const GAIN_ENVELOPE_ATTACK_MS_DEFAULT = 5
+export const GAIN_ENVELOPE_RELEASE_MS_MIN = 1
+export const GAIN_ENVELOPE_RELEASE_MS_MAX = 2000
+export const GAIN_ENVELOPE_RELEASE_MS_DEFAULT = 150
+
+// Raw dB the curve evaluates to at `samplePos` — smoothstep-interpolated, held
+// flat outside the authored range, WITHOUT the exact-silence floor snap.
+// Mirrors gainEnvelopeDbAt() (SandboxOp.cpp). gainEnvelopeAt() below builds on
+// this the same way the engine's does, so there is exactly one interpolation
+// to keep in sync rather than two.
+export function gainEnvelopeDbAt(points, samplePos) {
+  if (!points || points.length === 0) return 0
+  if (points.length === 1) return points[0].db
 
   const first = points[0]
   const last = points[points.length - 1]
-  if (samplePos <= first.samplePos) return toGain(first.db)
-  if (samplePos >= last.samplePos) return toGain(last.db)
+  if (samplePos <= first.samplePos) return first.db
+  if (samplePos >= last.samplePos) return last.db
 
   // Linear scan: an envelope is a handful of breakpoints, and the callers here
   // walk sample positions in ascending order anyway.
@@ -87,10 +101,23 @@ export function gainEnvelopeAt(points, samplePos) {
   const a = points[i]
   const b = points[i + 1]
   const span = b.samplePos - a.samplePos
-  if (span <= 0) return toGain(b.db)
+  if (span <= 0) return b.db
   let t = (samplePos - a.samplePos) / span
   t = t * t * (3 - 2 * t) // smoothstep — zero slope at both handles
-  return toGain(a.db + (b.db - a.db) * t)
+  return a.db + (b.db - a.db) * t
+}
+
+// Gain (LINEAR) the curve produces at `samplePos` in ABSOLUTE mode. Mirrors
+// gainEnvelopeAt(): held flat outside the authored range, smoothstep IN dB
+// between breakpoints, exact silence at the floor. `points` must be sorted by
+// samplePos — every path in this file keeps them that way via
+// sortEnvelopePoints. Relative mode's actual applied gain is NOT this
+// function — see the faint-envelope approximation in
+// SandboxWaveformCanvas.jsx and applyGainEnvelope() in SandboxRenderer.cpp for
+// what the engine actually renders.
+export function gainEnvelopeAt(points, samplePos) {
+  const db = gainEnvelopeDbAt(points, samplePos)
+  return db <= GAIN_ENVELOPE_DB_MIN ? 0 : Math.pow(10, db / 20)
 }
 
 // Sort + clamp + de-duplicate, mirroring normalizeGainEnvelope(). Applied
@@ -110,6 +137,24 @@ export function sortEnvelopePoints(points) {
     else out.push(p)
   }
   return out
+}
+
+// Clamp mode/attack/release into their engine-side bounds, mirroring the tail
+// of normalizeGainEnvelope() (the points half is sortEnvelopePoints above).
+// Takes a raw params-shaped object (or undefined) and always returns a
+// complete, valid triple — the seam every follower-touching call in this file
+// routes through so a partial `{ mode }` update never has to know the other
+// two fields' current values itself.
+export function clampGainEnvelopeFollower(params) {
+  const mode = params?.mode === GAIN_ENVELOPE_MODE.relative
+    ? GAIN_ENVELOPE_MODE.relative : GAIN_ENVELOPE_MODE.absolute
+  const attack = Number.isFinite(params?.followerAttackMs) ? params.followerAttackMs : GAIN_ENVELOPE_ATTACK_MS_DEFAULT
+  const release = Number.isFinite(params?.followerReleaseMs) ? params.followerReleaseMs : GAIN_ENVELOPE_RELEASE_MS_DEFAULT
+  return {
+    mode,
+    followerAttackMs: Math.min(GAIN_ENVELOPE_ATTACK_MS_MAX, Math.max(GAIN_ENVELOPE_ATTACK_MS_MIN, attack)),
+    followerReleaseMs: Math.min(GAIN_ENVELOPE_RELEASE_MS_MAX, Math.max(GAIN_ENVELOPE_RELEASE_MS_MIN, release)),
+  }
 }
 
 // The layer's gain-envelope op, or null. The overlay owns exactly ONE op per
@@ -694,7 +739,7 @@ const useSandboxStore = create((set, get) => ({
     }
   },
 
-  // ── Gain envelope (Audio Dynamics Editor, Mode 1) ────────────────────────
+  // ── Gain envelope (Audio Dynamics Editor) ─────────────────────────────────
   //
   // Add-or-update, in ONE undo step either way: the first committed curve adds
   // the op, every later one replaces its params. That is what lets the canvas
@@ -707,11 +752,18 @@ const useSandboxStore = create((set, get) => ({
   // command per frame onto the undo stack and re-render the layer at pointer
   // rate. Both paths below already schedule the debounced auto-render, so the
   // commit is also what makes playback reflect the new curve.
-  async setGainEnvelope(layerId, points) {
+  //
+  // `follower` is `{ mode, followerAttackMs, followerReleaseMs }`, or any
+  // subset of it — omitted fields fall back to the existing op's (or the
+  // stock defaults, for a brand-new one) via clampGainEnvelopeFollower. A
+  // curve drag that never touches Mode/Advanced controls therefore leaves
+  // them exactly as they were.
+  async setGainEnvelope(layerId, points, follower = {}) {
     const layer = get().layers.find((l) => l.id === layerId)
     if (!layer) return
     const normalized = sortEnvelopePoints(points)
     const existing = findEnvelopeOp(layer)
+    const mergedFollower = clampGainEnvelopeFollower({ ...(existing?.params || {}), ...follower })
 
     if (!existing) {
       // Appended, not inserted: the envelope is a final gain stage, so its
@@ -720,19 +772,37 @@ const useSandboxStore = create((set, get) => ({
       // space underneath it — the curve still renders, it just no longer lines
       // up with what is drawn, the same way every other range-carrying op's
       // indices behave when something upstream of them moves.
-      await get().addOp(layerId, { type: 'gainEnvelope', params: { points: normalized } })
+      await get().addOp(layerId, { type: 'gainEnvelope', params: { points: normalized, ...mergedFollower } })
       return
     }
 
     // The engine rejects a no-op edit with "not an edit" (see
     // Sandbox_StackSetParam). Catch it here instead of letting setOpParams log
-    // a warning for a mouseup that did not move anything.
+    // a warning for a mouseup/toggle that did not actually change anything —
+    // curve AND mode/follower both have to be unchanged for that to hold.
     const before = sortEnvelopePoints(existing.params?.points)
-    if (before.length === normalized.length
-        && before.every((pt, i) => pt.samplePos === normalized[i].samplePos && pt.db === normalized[i].db))
-      return
+    const beforeFollower = clampGainEnvelopeFollower(existing.params || {})
+    const samePoints = before.length === normalized.length
+        && before.every((pt, i) => pt.samplePos === normalized[i].samplePos && pt.db === normalized[i].db)
+    const sameFollower = beforeFollower.mode === mergedFollower.mode
+        && beforeFollower.followerAttackMs === mergedFollower.followerAttackMs
+        && beforeFollower.followerReleaseMs === mergedFollower.followerReleaseMs
+    if (samePoints && sameFollower) return
 
-    await get().setOpParams(layerId, existing.id, { points: normalized })
+    await get().setOpParams(layerId, existing.id, { points: normalized, ...mergedFollower })
+  },
+
+  // Mode/Advanced-drawer-only mutation: flips Mode 1↔2 or retunes
+  // attack/release WITHOUT the user having touched the curve. Seeds a flat
+  // (empty-points, i.e. 0 dB everywhere) op on a layer with no envelope yet —
+  // the same "there is no envelope yet" seam setGainEnvelope's own callers
+  // already rely on — so the Mode toggle works before the first breakpoint is
+  // ever drawn.
+  async setGainEnvelopeFollower(layerId, follower) {
+    const layer = get().layers.find((l) => l.id === layerId)
+    if (!layer) return
+    const existing = findEnvelopeOp(layer)
+    await get().setGainEnvelope(layerId, existing?.params?.points || [], follower)
   },
 
   // Envelope EDIT mode. The waveform canvas has exactly one pointer, and a

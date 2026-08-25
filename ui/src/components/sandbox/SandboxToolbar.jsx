@@ -2,8 +2,13 @@ import { useState } from 'react'
 import {
   Scissors, Crop, Copy, ClipboardPaste, VolumeX, FlipHorizontal2,
   SeparatorHorizontal, TrendingUp, TrendingDown, Volume2, Waves, Spline,
+  Settings2,
 } from 'lucide-react'
-import useSandboxStore from '../../stores/sandboxStore.js'
+import useSandboxStore, {
+  findEnvelopeOp, clampGainEnvelopeFollower, GAIN_ENVELOPE_MODE,
+  GAIN_ENVELOPE_ATTACK_MS_MIN, GAIN_ENVELOPE_ATTACK_MS_MAX,
+  GAIN_ENVELOPE_RELEASE_MS_MIN, GAIN_ENVELOPE_RELEASE_MS_MAX,
+} from '../../stores/sandboxStore.js'
 
 // Every button below applies its op IMMEDIATELY to the current selection —
 // there is no persistent "tool mode" the way chop/trim implied in the SB-3
@@ -52,17 +57,27 @@ export default function SandboxToolbar() {
   const crossfadeAtCursor = useSandboxStore((s) => s.crossfadeAtCursor)
   const envelopeEditMode = useSandboxStore((s) => s.envelopeEditMode)
   const toggleEnvelopeEditMode = useSandboxStore((s) => s.toggleEnvelopeEditMode)
+  const setGainEnvelopeFollower = useSandboxStore((s) => s.setGainEnvelopeFollower)
 
   const [fadeShape, setFadeShape] = useState('equalPower')
   const [gainDb, setGainDb] = useState(-6)
   const [normTargetDb, setNormTargetDb] = useState(-1)
   const [xfadeShape, setXfadeShape] = useState('hann')
   const [xfadeLength, setXfadeLength] = useState(256)
+  const [advancedOpen, setAdvancedOpen] = useState(false)
 
   const layer = layers.find((l) => l.id === activeLayerId) ?? null
   const hasLayer = !!layer && layer.renderState === 'ready'
   const hasSelection = hasLayer && !!selection && selection.endSample > selection.startSample
   const cursorSample = selection?.startSample ?? 0
+
+  // The committed op's own params, not local component state — Mode/Advanced
+  // reflect what will actually render, the same way the canvas's committed
+  // curve does, rather than a control that could drift from the real op after
+  // an undo or a layer switch.
+  const envOp = findEnvelopeOp(layer)
+  const envFollower = clampGainEnvelopeFollower(envOp?.params)
+  const isRelative = envFollower.mode === GAIN_ENVELOPE_MODE.relative
 
   const handleTrim = () => hasSelection && addOp(activeLayerId, {
     type: 'trim',
@@ -162,6 +177,63 @@ export default function SandboxToolbar() {
         active={envelopeEditMode}
         onClick={toggleEnvelopeEditMode}
         title="Draw a gain envelope: click the line to add a point, drag to move, right-click a point to delete" />
+
+      {/* Mode 1 (Absolute) / Mode 2 (Relative). A second control rather than a
+          third toolbar-wide mode: it only matters once Envelope is armed or a
+          curve already exists, so it lives right next to the button that
+          switches it on. Flipping it calls setGainEnvelopeFollower directly —
+          it changes the render even if the curve itself is never touched, so
+          it cannot wait for the next drag's mouseup the way a plain redraw
+          could. */}
+      <select
+        className="sandbox-toolbar-select"
+        value={isRelative ? 'relative' : 'absolute'}
+        disabled={!hasLayer}
+        onChange={(e) => setGainEnvelopeFollower(activeLayerId, {
+          ...envFollower, mode: e.target.value === 'relative' ? GAIN_ENVELOPE_MODE.relative : GAIN_ENVELOPE_MODE.absolute,
+        })}
+        title="Mode 1: the drawn curve IS the gain. Mode 2: the drawn curve modulates the material's own detected dynamics (drawn 0 dB = untouched, + expands, − compresses)."
+      >
+        <option value="absolute">Mode 1 · Absolute</option>
+        <option value="relative">Mode 2 · Relative</option>
+      </select>
+
+      <button
+        className={`sandbox-tool-btn${advancedOpen ? ' active' : ''}`}
+        disabled={!hasLayer}
+        onClick={() => setAdvancedOpen((v) => !v)}
+        title="Follower attack/release for Mode 2"
+      >
+        <Settings2 size={14} />
+        <span>Advanced</span>
+      </button>
+
+      {advancedOpen && (
+        <div className="sandbox-toolbar-drawer">
+          <label>
+            Attack (ms)
+            <input
+              className="sandbox-toolbar-number"
+              type="number" step="0.5"
+              min={GAIN_ENVELOPE_ATTACK_MS_MIN} max={GAIN_ENVELOPE_ATTACK_MS_MAX}
+              value={envFollower.followerAttackMs}
+              disabled={!hasLayer || !isRelative}
+              onChange={(e) => setGainEnvelopeFollower(activeLayerId, { ...envFollower, followerAttackMs: Number(e.target.value) })}
+            />
+          </label>
+          <label>
+            Release (ms)
+            <input
+              className="sandbox-toolbar-number"
+              type="number" step="5"
+              min={GAIN_ENVELOPE_RELEASE_MS_MIN} max={GAIN_ENVELOPE_RELEASE_MS_MAX}
+              value={envFollower.followerReleaseMs}
+              disabled={!hasLayer || !isRelative}
+              onChange={(e) => setGainEnvelopeFollower(activeLayerId, { ...envFollower, followerReleaseMs: Number(e.target.value) })}
+            />
+          </label>
+        </div>
+      )}
     </div>
   )
 }

@@ -31,9 +31,10 @@ function describeParams(op) {
       // Breakpoint count plus the range it spans — enough to tell two curves
       // apart in the stack without trying to render a shape in a text row.
       const pts = p.points || []
-      if (pts.length === 0) return 'flat (0 dB)'
+      const modeLabel = p.mode === 1 ? 'Rel' : 'Abs'
+      if (pts.length === 0) return `flat (0 dB, ${modeLabel})`
       const dbs = pts.map((q) => q.db)
-      return `${pts.length} pt, ${Math.min(...dbs).toFixed(1)}…${Math.max(...dbs).toFixed(1)} dB`
+      return `${pts.length} pt, ${Math.min(...dbs).toFixed(1)}…${Math.max(...dbs).toFixed(1)} dB (${modeLabel})`
     }
     case 'crossfade':
       return `@ ${p.atSample}, ${p.lengthSamples} smp (${FADE_SHAPE_NAME[p.shape] ?? p.shape})`

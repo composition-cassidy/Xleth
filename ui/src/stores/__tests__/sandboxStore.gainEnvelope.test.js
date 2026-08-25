@@ -105,6 +105,47 @@ describe('gain envelope curve mirror', () => {
   })
 })
 
+describe('gainEnvelopeDbAt — the raw curve Relative mode scales against', () => {
+  it('matches gainEnvelopeAt everywhere, before the exact-silence floor is applied', async () => {
+    const { gainEnvelopeDbAt, gainEnvelopeAt } = await loadStore(quietBridge())
+
+    expect(gainEnvelopeDbAt([], 0)).toBe(0)
+    const ramp = [{ samplePos: 0, db: 0 }, { samplePos: 1000, db: -12 }]
+    expect(gainEnvelopeDbAt(ramp, 500)).toBeCloseTo(-6, 9)
+    expect(gainEnvelopeAt(ramp, 500)).toBeCloseTo(Math.pow(10, -6 / 20), 9)
+
+    // Below the floor, gainEnvelopeDbAt still reports the RAW dB (Relative
+    // mode's normalization needs the real number), while gainEnvelopeAt snaps
+    // to exact silence the way the engine's Absolute evaluator does.
+    const mute = [{ samplePos: 0, db: -96 }]
+    expect(gainEnvelopeDbAt(mute, 0)).toBe(-96)
+    expect(gainEnvelopeAt(mute, 0)).toBe(0)
+  })
+})
+
+describe('clampGainEnvelopeFollower', () => {
+  it('defaults an empty/undefined params object to Absolute with the stock follower times', async () => {
+    const { clampGainEnvelopeFollower, GAIN_ENVELOPE_MODE, GAIN_ENVELOPE_ATTACK_MS_DEFAULT,
+      GAIN_ENVELOPE_RELEASE_MS_DEFAULT } = await loadStore(quietBridge())
+
+    expect(clampGainEnvelopeFollower(undefined)).toEqual({
+      mode: GAIN_ENVELOPE_MODE.absolute,
+      followerAttackMs: GAIN_ENVELOPE_ATTACK_MS_DEFAULT,
+      followerReleaseMs: GAIN_ENVELOPE_RELEASE_MS_DEFAULT,
+    })
+  })
+
+  it('clamps attack/release into their declared bounds and repairs a stray mode value', async () => {
+    const { clampGainEnvelopeFollower, GAIN_ENVELOPE_MODE, GAIN_ENVELOPE_ATTACK_MS_MIN,
+      GAIN_ENVELOPE_RELEASE_MS_MAX } = await loadStore(quietBridge())
+
+    const out = clampGainEnvelopeFollower({ mode: 7, followerAttackMs: -50, followerReleaseMs: 999999 })
+    expect(out.mode).toBe(GAIN_ENVELOPE_MODE.absolute)
+    expect(out.followerAttackMs).toBe(GAIN_ENVELOPE_ATTACK_MS_MIN)
+    expect(out.followerReleaseMs).toBe(GAIN_ENVELOPE_RELEASE_MS_MAX)
+  })
+})
+
 describe('setGainEnvelope — one command per commit', () => {
   beforeEach(() => { vi.restoreAllMocks() })
 
@@ -156,6 +197,72 @@ describe('setGainEnvelope — one command per commit', () => {
     // The engine would reject it as "not an edit" anyway; catching it here keeps
     // that rejection off the console.
     await useSandboxStore.getState().setGainEnvelope(1, points.map((p) => ({ ...p })))
+
+    expect(bridge.stackSetParam).not.toHaveBeenCalled()
+    expect(bridge.stackAdd).not.toHaveBeenCalled()
+  })
+
+  it('carries mode/follower params through on a brand-new curve', async () => {
+    const bridge = quietBridge()
+    const { default: useSandboxStore, GAIN_ENVELOPE_MODE } = await loadStore(bridge)
+    useSandboxStore.setState({ layers: [baseLayer()], activeLayerId: 1 })
+
+    const points = [{ samplePos: 0, db: 0 }, { samplePos: 1000, db: -20 }]
+    await useSandboxStore.getState().setGainEnvelope(1, points, { mode: GAIN_ENVELOPE_MODE.relative, followerAttackMs: 8 })
+
+    const [, addedOp] = bridge.stackAdd.mock.calls[0]
+    expect(addedOp.params.mode).toBe(GAIN_ENVELOPE_MODE.relative)
+    expect(addedOp.params.followerAttackMs).toBe(8)
+    expect(addedOp.params.followerReleaseMs).toBe(150) // untouched field falls back to the stock default
+  })
+})
+
+describe('setGainEnvelopeFollower — Mode/Advanced controls without touching the curve', () => {
+  beforeEach(() => { vi.restoreAllMocks() })
+
+  it('flips mode alone, preserving whatever curve already exists', async () => {
+    const bridge = quietBridge()
+    const { default: useSandboxStore, GAIN_ENVELOPE_MODE } = await loadStore(bridge)
+    const points = [{ samplePos: 0, db: 0 }, { samplePos: 1000, db: -9 }]
+    useSandboxStore.setState({
+      layers: [baseLayer({
+        ops: [{ id: 77, type: 'gainEnvelope', params: { points, mode: GAIN_ENVELOPE_MODE.absolute, followerAttackMs: 5, followerReleaseMs: 150 }, enabled: true }],
+      })],
+      activeLayerId: 1,
+    })
+
+    await useSandboxStore.getState().setGainEnvelopeFollower(1, { mode: GAIN_ENVELOPE_MODE.relative })
+
+    expect(bridge.stackAdd).not.toHaveBeenCalled()
+    const [, , newParams] = bridge.stackSetParam.mock.calls[0]
+    expect(newParams.params.mode).toBe(GAIN_ENVELOPE_MODE.relative)
+    expect(newParams.params.points).toEqual(points)
+  })
+
+  it('seeds a flat (empty) curve on a layer with no envelope yet, so Mode works before drawing', async () => {
+    const bridge = quietBridge()
+    const { default: useSandboxStore, GAIN_ENVELOPE_MODE } = await loadStore(bridge)
+    useSandboxStore.setState({ layers: [baseLayer()], activeLayerId: 1 })
+
+    await useSandboxStore.getState().setGainEnvelopeFollower(1, { mode: GAIN_ENVELOPE_MODE.relative })
+
+    expect(bridge.stackAdd).toHaveBeenCalledTimes(1)
+    const [, addedOp] = bridge.stackAdd.mock.calls[0]
+    expect(addedOp.params.points).toEqual([])
+    expect(addedOp.params.mode).toBe(GAIN_ENVELOPE_MODE.relative)
+  })
+
+  it('does nothing when the follower settings came back unchanged', async () => {
+    const bridge = quietBridge()
+    const { default: useSandboxStore, GAIN_ENVELOPE_MODE } = await loadStore(bridge)
+    useSandboxStore.setState({
+      layers: [baseLayer({
+        ops: [{ id: 77, type: 'gainEnvelope', params: { points: [], mode: GAIN_ENVELOPE_MODE.absolute, followerAttackMs: 5, followerReleaseMs: 150 }, enabled: true }],
+      })],
+      activeLayerId: 1,
+    })
+
+    await useSandboxStore.getState().setGainEnvelopeFollower(1, { mode: GAIN_ENVELOPE_MODE.absolute, followerAttackMs: 5, followerReleaseMs: 150 })
 
     expect(bridge.stackSetParam).not.toHaveBeenCalled()
     expect(bridge.stackAdd).not.toHaveBeenCalled()
