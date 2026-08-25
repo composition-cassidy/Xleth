@@ -187,6 +187,10 @@ const AUTO_RENDER_BY_OP_TYPE = {
   // One multiply per sample over one buffer, offline — the same order of cost
   // as fade. See SandboxOp::autoRender().
   gainEnvelope: true,
+  // Restoration/pitch trio — RubberBand offline moves and the declip/denoise
+  // scans are all single-pass over one buffer, still cheap enough not to opt
+  // out. See SandboxOp::autoRender()'s own comment on the same table.
+  formantShift: true, declip: true, denoise: true,
 }
 
 // True when every op currently on `layer`'s stack permits automatic
@@ -960,6 +964,73 @@ const useSandboxStore = create((set, get) => ({
     await get().addOp(layerId, {
       type: 'crossfade',
       params: { atSample, lengthSamples, shape: FADE_SHAPE[shape] ?? FADE_SHAPE.hann },
+    })
+  },
+
+  // ── Restoration / pitch trio ────────────────────────────────────────────
+  // PITCH and FORMANT SHIFT apply to the WHOLE buffer the op receives — there
+  // is no selection range on either (mirrors xleth::sandbox::PitchParams /
+  // FormantShiftParams, which carry no startSample/endSample). Add-or-update,
+  // same one-undo-step-either-way contract setGainEnvelope established: the
+  // first call on a layer adds the op, a later one replaces its params, so a
+  // slider drag settles into a single committed edit rather than stacking a
+  // new op per adjustment.
+
+  async findOrAddOp(layerId, type, params) {
+    const layer = get().layers.find((l) => l.id === layerId)
+    if (!layer) return
+    const existing = layer.ops.find((o) => o.type === type)
+    if (existing) await get().setOpParams(layerId, existing.id, params)
+    else await get().addOp(layerId, { type, params })
+  },
+
+  // PITCH — cents (fractional semitones × 100) and the formant-lock toggle.
+  async setPitch(layerId, cents, formantPreserve) {
+    await get().findOrAddOp(layerId, 'pitch', { cents, formantPreserve })
+  },
+
+  // FORMANT SHIFT — moves the spectral envelope by `cents`, independent of
+  // PITCH. A separate op rather than a second field on PITCH: see
+  // FormantShiftParams's own comment (SandboxOp.h) for why formantPreserve
+  // cannot express "move the formants on their own".
+  async setFormantShift(layerId, cents) {
+    await get().findOrAddOp(layerId, 'formantShift', { cents })
+  },
+
+  // DECLIP over the current selection (or the whole buffer if none).
+  async declipSelection(layerId, threshold, maxRunSamples) {
+    const sel = get().selection
+    await get().findOrAddOp(layerId, 'declip', {
+      startSample: sel?.startSample ?? 0, endSample: sel?.endSample ?? -1,
+      threshold, maxRunSamples,
+    })
+  },
+
+  // DENOISE — add the op with no learned profile yet (a pass-through until
+  // "Learn Noise Profile" commits a region). Reduction/sensitivity default to
+  // the engine's own stock values (SandboxOp.h) so a freshly-added op previews
+  // exactly like DenoiseParams{} does before any param is ever touched.
+  async addDenoise(layerId) {
+    await get().addOp(layerId, {
+      type: 'denoise',
+      params: { noiseStartSample: 0, noiseEndSample: 0, reductionDb: 12, sensitivity: 1.5 },
+    })
+  },
+
+  // "select region → Learn Noise Profile": commits the CURRENT selection as
+  // this op's noise region via the same generic setOpParams every other param
+  // edit in this file uses — undoable for free, and the actual spectral
+  // profile is re-derived from those two indices at render time (see
+  // DenoiseParams's comment) rather than computed here and shipped over the
+  // bridge as a second, driftable copy of the data.
+  async learnNoiseProfile(layerId, opId) {
+    const sel = get().selection
+    if (!sel || !(sel.endSample > sel.startSample)) return
+    const layer = get().layers.find((l) => l.id === layerId)
+    const existing = layer?.ops.find((o) => o.id === opId)
+    if (!existing) return
+    await get().setOpParams(layerId, opId, {
+      ...existing.params, noiseStartSample: sel.startSample, noiseEndSample: sel.endSample,
     })
   },
 

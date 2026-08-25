@@ -319,6 +319,17 @@
   max-width: 96px;
 }
 
+.sandbox-toolbar-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 0 4px;
+  font-size: 10px;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+  white-space: nowrap;
+}
+
 /* Advanced drawer (Mode 2 follower attack/release). A plain flow row rather
    than a portaled popup: it toggles alongside the toolbar it belongs to, has
    nothing that needs to escape a clipped ancestor, and there is exactly one
@@ -412,16 +423,47 @@
   font-size: 10px;
 }
 
+.sandbox-op-row-group {
+  border-bottom: 1px solid var(--theme-border-subtle);
+}
+
+.sandbox-op-row-group.bypassed {
+  opacity: 0.5;
+}
+
 .sandbox-op-row {
   display: flex;
   align-items: center;
   gap: 6px;
   padding: 6px 8px;
-  border-bottom: 1px solid var(--theme-border-subtle);
 }
 
-.sandbox-op-row.bypassed {
-  opacity: 0.5;
+/* Inline param editors for the restoration/pitch trio (PITCH, FORMANT SHIFT,
+   DECLIP, DENOISE) — a second line under the op row rather than crowding the
+   row itself, since these are the only op types with a persistent editable
+   knob on the op (see RestorationParamEditor). */
+.sandbox-op-params-row {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 0 8px 6px 26px;
+}
+
+.sandbox-op-params-row label {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9px;
+  color: var(--theme-text-muted);
+}
+
+.sandbox-op-params-row .sandbox-toolbar-number {
+  width: 56px;
+}
+
+.sandbox-op-checkbox {
+  cursor: pointer;
 }
 
 .sandbox-op-grip {
@@ -467,6 +509,28 @@
 .sandbox-op-bypass.active {
   border-color: var(--theme-accent);
   color: var(--theme-accent);
+}
+
+.sandbox-op-learn-noise {
+  flex: 0 0 auto;
+  padding: 2px 6px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 0;
+  background: var(--theme-bg-surface);
+  color: var(--theme-text-muted);
+  font-size: 9px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.sandbox-op-learn-noise:hover:not(:disabled) {
+  border-color: var(--theme-accent);
+  color: var(--theme-accent);
+}
+
+.sandbox-op-learn-noise:disabled {
+  color: var(--theme-text-placeholder);
+  cursor: default;
 }
 
 .sandbox-op-remove {

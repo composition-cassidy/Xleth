@@ -2,7 +2,7 @@ import { useState } from 'react'
 import {
   Scissors, Crop, Copy, ClipboardPaste, VolumeX, FlipHorizontal2,
   SeparatorHorizontal, TrendingUp, TrendingDown, Volume2, Waves, Spline,
-  Settings2,
+  Settings2, Music, Wand2, Eraser, WandSparkles,
 } from 'lucide-react'
 import useSandboxStore, {
   findEnvelopeOp, clampGainEnvelopeFollower, GAIN_ENVELOPE_MODE,
@@ -58,6 +58,10 @@ export default function SandboxToolbar() {
   const envelopeEditMode = useSandboxStore((s) => s.envelopeEditMode)
   const toggleEnvelopeEditMode = useSandboxStore((s) => s.toggleEnvelopeEditMode)
   const setGainEnvelopeFollower = useSandboxStore((s) => s.setGainEnvelopeFollower)
+  const setPitch = useSandboxStore((s) => s.setPitch)
+  const setFormantShift = useSandboxStore((s) => s.setFormantShift)
+  const declipSelection = useSandboxStore((s) => s.declipSelection)
+  const addDenoise = useSandboxStore((s) => s.addDenoise)
 
   const [fadeShape, setFadeShape] = useState('equalPower')
   const [gainDb, setGainDb] = useState(-6)
@@ -65,6 +69,11 @@ export default function SandboxToolbar() {
   const [xfadeShape, setXfadeShape] = useState('hann')
   const [xfadeLength, setXfadeLength] = useState(256)
   const [advancedOpen, setAdvancedOpen] = useState(false)
+  const [pitchCents, setPitchCents] = useState(0)
+  const [formantLock, setFormantLock] = useState(false)
+  const [formantCents, setFormantCents] = useState(0)
+  const [declipThreshold, setDeclipThreshold] = useState(0.98)
+  const [declipMaxRun, setDeclipMaxRun] = useState(64)
 
   const layer = layers.find((l) => l.id === activeLayerId) ?? null
   const hasLayer = !!layer && layer.renderState === 'ready'
@@ -163,6 +172,58 @@ export default function SandboxToolbar() {
       <ToolButton icon={Waves} label="Crossfade" disabled={!hasLayer}
         onClick={() => crossfadeAtCursor(activeLayerId, cursorSample, xfadeLength, xfadeShape)}
         title="Declick a seam at the selection start" />
+
+      <div className="sandbox-toolbar-divider" />
+
+      {/* Restoration/pitch trio. PITCH and FORMANT SHIFT apply to the whole
+          buffer (no selection range — mirrors PitchParams/FormantShiftParams,
+          which carry none), so only DECLIP is selection-gated here. Each
+          button adds-or-updates the layer's one op of that type (see
+          findOrAddOp in the store); further tweaking happens on the op row in
+          the stack below. */}
+      <input
+        className="sandbox-toolbar-number"
+        type="number" step="10" value={pitchCents}
+        onChange={(e) => setPitchCents(Number(e.target.value))}
+        title="Pitch shift, cents (100 = 1 semitone)"
+      />
+      <label className="sandbox-toolbar-checkbox" title="Preserve formants while shifting pitch">
+        <input type="checkbox" checked={formantLock} onChange={(e) => setFormantLock(e.target.checked)} />
+        Lock
+      </label>
+      <ToolButton icon={Music} label="Pitch" disabled={!hasLayer}
+        onClick={() => setPitch(activeLayerId, pitchCents, formantLock)}
+        title="Shift pitch without changing length (RubberBand)" />
+
+      <input
+        className="sandbox-toolbar-number"
+        type="number" step="10" value={formantCents}
+        onChange={(e) => setFormantCents(Number(e.target.value))}
+        title="Formant shift, cents — moves the spectral envelope independent of pitch"
+      />
+      <ToolButton icon={Wand2} label="Formant" disabled={!hasLayer}
+        onClick={() => setFormantShift(activeLayerId, formantCents)}
+        title="Shift formants without changing pitch or length" />
+
+      <input
+        className="sandbox-toolbar-number"
+        type="number" step="0.01" min="0.5" max="1" value={declipThreshold}
+        onChange={(e) => setDeclipThreshold(Number(e.target.value))}
+        title="Declip threshold, fraction of full scale"
+      />
+      <input
+        className="sandbox-toolbar-number"
+        type="number" step="1" min="1" value={declipMaxRun}
+        onChange={(e) => setDeclipMaxRun(Number(e.target.value))}
+        title="Longest run treated as a clip, in samples"
+      />
+      <ToolButton icon={Eraser} label="Declip" disabled={!hasLayer}
+        onClick={() => declipSelection(activeLayerId, declipThreshold, declipMaxRun)}
+        title="Reconstruct clipped runs in the selection (or the whole buffer)" />
+
+      <ToolButton icon={WandSparkles} label="Denoise" disabled={!hasLayer}
+        onClick={() => addDenoise(activeLayerId)}
+        title="Add a noise-reduction op — select a noise-only region, then Learn Noise Profile on the op" />
 
       <div className="sandbox-toolbar-divider" />
 

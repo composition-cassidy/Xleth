@@ -24,10 +24,18 @@ juce::AudioBuffer<float> processRubberBand(
         std::pow(2.0, params.pitchShiftSemitones / 12.0);
     const double sratio = std::max(0.1, params.stretchRatio);
 
+    // 0.0 = automatic (no override in play); 1.0 = an override that was
+    // explicitly asked to be a no-op. Either way there is nothing for the
+    // formant envelope to do, so the early exit below stays valid.
+    const bool formantOverrideIsIdentity =
+        params.formantScaleOverride == 0.0
+        || std::abs(params.formantScaleOverride - 1.0) < 0.001;
+
     // Near-identity early exit
     if (std::abs(pitchScale - 1.0) < 0.001
         && std::abs(sratio - 1.0) < 0.001
-        && !params.formantPreserve)
+        && !params.formantPreserve
+        && formantOverrideIsIdentity)
     {
 #ifdef XLETH_DEBUG
         fprintf(stderr, "[RubberBand] skip: near-identity params, returning copy\n");
@@ -62,6 +70,11 @@ juce::AudioBuffer<float> processRubberBand(
 
     stretcher.setTimeRatio(sratio);
     stretcher.setPitchScale(pitchScale);
+    // 0.0 is the "leave it automatic" sentinel (see the field's comment) —
+    // anything else is an explicit request, forwarded verbatim even when it
+    // happens to equal 1.0 (an explicit "hold the formants exactly still").
+    if (params.formantScaleOverride != 0.0)
+        stretcher.setFormantScale(params.formantScaleOverride);
 
     // Build channel-pointer arrays for the RubberBand API (float** interface)
     std::vector<const float*> inPtrs(numCh);

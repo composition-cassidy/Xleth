@@ -38,33 +38,159 @@ function describeParams(op) {
     }
     case 'crossfade':
       return `@ ${p.atSample}, ${p.lengthSamples} smp (${FADE_SHAPE_NAME[p.shape] ?? p.shape})`
+    case 'pitch':
+      return `${p.cents >= 0 ? '+' : ''}${p.cents}¢${p.formantPreserve ? ', formant lock' : ''}`
+    case 'formantShift':
+      return `${p.cents >= 0 ? '+' : ''}${p.cents}¢`
+    case 'declip':
+      return `${p.startSample}–${p.endSample}, thresh ${p.threshold}, max run ${p.maxRunSamples} smp`
+    case 'denoise':
+      return p.noiseEndSample > p.noiseStartSample
+        ? `profile ${p.noiseStartSample}–${p.noiseEndSample}, -${p.reductionDb} dB, ×${p.sensitivity}`
+        : 'no profile learned yet'
     default:
       return ''
   }
 }
 
-function OpRow({ op, layerId, onToggleBypass, onRemove }) {
-  return (
-    <div className={`sandbox-op-row${op.enabled ? '' : ' bypassed'}`}>
-      <GripVertical size={12} className="sandbox-op-grip" />
-      <div className="sandbox-op-label">
-        <span className="sandbox-op-type">{op.type}</span>
-        <span className="sandbox-op-params">{describeParams(op)}</span>
+// Inline param editors for the restoration/pitch trio (plus PITCH itself,
+// which had none before it had real DSP). Every other op type is edited by
+// re-drawing the tool that created it (a Trim re-selection, a new Gain drag,
+// etc.) — these four are the ones where "adjustable" means a persistent knob
+// on the op itself, since there is no equivalent re-draw gesture for "how
+// many cents" or "which threshold". Committed on blur/change via the same
+// generic setOpParams every other param edit in this file goes through, so
+// each edit is its own undo step, same contract as the toolbar's number
+// inputs.
+function RestorationParamEditor({ op, layerId, setOpParams, hasSelection, onLearnNoiseProfile }) {
+  const p = op.params || {}
+  if (op.type === 'pitch') {
+    return (
+      <div className="sandbox-op-params-row">
+        <label>
+          Cents
+          <input
+            type="number" step="10" className="sandbox-toolbar-number"
+            defaultValue={p.cents} key={`cents-${op.id}-${p.cents}`}
+            onBlur={(e) => setOpParams(layerId, op.id, { ...p, cents: Number(e.target.value) })}
+          />
+        </label>
+        <label className="sandbox-op-checkbox">
+          <input
+            type="checkbox" checked={!!p.formantPreserve}
+            onChange={(e) => setOpParams(layerId, op.id, { ...p, formantPreserve: e.target.checked })}
+          />
+          Formant Lock
+        </label>
       </div>
-      <button
-        className={`sandbox-op-bypass${op.enabled ? '' : ' active'}`}
-        onClick={() => onToggleBypass(layerId, op.id, op.enabled)}
-        title={op.enabled ? 'Bypass' : 'Enable'}
-      >
-        {op.enabled ? 'ON' : 'OFF'}
-      </button>
-      <button
-        className="sandbox-op-remove"
-        onClick={() => onRemove(layerId, op.id)}
-        title="Remove operation"
-      >
-        <Trash2 size={11} />
-      </button>
+    )
+  }
+  if (op.type === 'formantShift') {
+    return (
+      <div className="sandbox-op-params-row">
+        <label>
+          Cents
+          <input
+            type="number" step="10" className="sandbox-toolbar-number"
+            defaultValue={p.cents} key={`cents-${op.id}-${p.cents}`}
+            onBlur={(e) => setOpParams(layerId, op.id, { ...p, cents: Number(e.target.value) })}
+          />
+        </label>
+      </div>
+    )
+  }
+  if (op.type === 'declip') {
+    return (
+      <div className="sandbox-op-params-row">
+        <label>
+          Threshold
+          <input
+            type="number" step="0.01" min="0.5" max="1" className="sandbox-toolbar-number"
+            defaultValue={p.threshold} key={`thresh-${op.id}-${p.threshold}`}
+            onBlur={(e) => setOpParams(layerId, op.id, { ...p, threshold: Number(e.target.value) })}
+          />
+        </label>
+        <label>
+          Max run (smp)
+          <input
+            type="number" step="1" min="1" className="sandbox-toolbar-number"
+            defaultValue={p.maxRunSamples} key={`run-${op.id}-${p.maxRunSamples}`}
+            onBlur={(e) => setOpParams(layerId, op.id, { ...p, maxRunSamples: Number(e.target.value) })}
+          />
+        </label>
+      </div>
+    )
+  }
+  if (op.type === 'denoise') {
+    return (
+      <div className="sandbox-op-params-row">
+        <label>
+          Reduction (dB)
+          <input
+            type="number" step="1" min="0" max="60" className="sandbox-toolbar-number"
+            defaultValue={p.reductionDb} key={`red-${op.id}-${p.reductionDb}`}
+            onBlur={(e) => setOpParams(layerId, op.id, { ...p, reductionDb: Number(e.target.value) })}
+          />
+        </label>
+        <label>
+          Sensitivity
+          <input
+            type="number" step="0.1" min="0" max="5" className="sandbox-toolbar-number"
+            defaultValue={p.sensitivity} key={`sens-${op.id}-${p.sensitivity}`}
+            onBlur={(e) => setOpParams(layerId, op.id, { ...p, sensitivity: Number(e.target.value) })}
+          />
+        </label>
+        {/* DENOISE's "select region → Learn Noise Profile" gesture: commits
+            whatever is currently selected as THIS op's noise region via the
+            same generic setOpParams, so it is undoable for free. */}
+        <button
+          className="sandbox-op-learn-noise"
+          disabled={!hasSelection}
+          onClick={() => onLearnNoiseProfile(layerId, op.id)}
+          title={hasSelection
+            ? 'Learn a noise profile from the current selection'
+            : 'Select a noise-only region first'}
+        >
+          Learn Noise Profile
+        </button>
+      </div>
+    )
+  }
+  return null
+}
+
+const RESTORATION_OP_TYPES = new Set(['pitch', 'formantShift', 'declip', 'denoise'])
+
+function OpRow({ op, layerId, onToggleBypass, onRemove, setOpParams, hasSelection, onLearnNoiseProfile }) {
+  return (
+    <div className={`sandbox-op-row-group${op.enabled ? '' : ' bypassed'}`}>
+      <div className="sandbox-op-row">
+        <GripVertical size={12} className="sandbox-op-grip" />
+        <div className="sandbox-op-label">
+          <span className="sandbox-op-type">{op.type}</span>
+          <span className="sandbox-op-params">{describeParams(op)}</span>
+        </div>
+        <button
+          className={`sandbox-op-bypass${op.enabled ? '' : ' active'}`}
+          onClick={() => onToggleBypass(layerId, op.id, op.enabled)}
+          title={op.enabled ? 'Bypass' : 'Enable'}
+        >
+          {op.enabled ? 'ON' : 'OFF'}
+        </button>
+        <button
+          className="sandbox-op-remove"
+          onClick={() => onRemove(layerId, op.id)}
+          title="Remove operation"
+        >
+          <Trash2 size={11} />
+        </button>
+      </div>
+      {RESTORATION_OP_TYPES.has(op.type) && (
+        <RestorationParamEditor
+          op={op} layerId={layerId} setOpParams={setOpParams}
+          hasSelection={hasSelection} onLearnNoiseProfile={onLearnNoiseProfile}
+        />
+      )}
     </div>
   )
 }
@@ -118,11 +244,15 @@ function SwapTargetPicker({ layerId, swapInLayer }) {
 export default function SandboxStackPanel() {
   const layers = useSandboxStore((s) => s.layers)
   const activeLayerId = useSandboxStore((s) => s.activeLayerId)
+  const selection = useSandboxStore((s) => s.selection)
   const setOpBypassed = useSandboxStore((s) => s.setOpBypassed)
   const removeOp = useSandboxStore((s) => s.removeOp)
+  const setOpParams = useSandboxStore((s) => s.setOpParams)
   const bakeLayer = useSandboxStore((s) => s.bakeLayer)
   const swapInLayer = useSandboxStore((s) => s.swapInLayer)
+  const learnNoiseProfile = useSandboxStore((s) => s.learnNoiseProfile)
   const layer = layers.find((l) => l.id === activeLayerId) ?? null
+  const hasSelection = !!selection && selection.endSample > selection.startSample
 
   const handleToggleBypass = (layerId, opId, enabled) => setOpBypassed(layerId, opId, enabled)
 
@@ -167,6 +297,9 @@ export default function SandboxStackPanel() {
             layerId={layer.id}
             onToggleBypass={handleToggleBypass}
             onRemove={removeOp}
+            setOpParams={setOpParams}
+            hasSelection={hasSelection}
+            onLearnNoiseProfile={learnNoiseProfile}
           />
         ))}
       </div>

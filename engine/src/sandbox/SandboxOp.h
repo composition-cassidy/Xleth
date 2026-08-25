@@ -72,9 +72,18 @@ enum class SandboxOpType : int {
     // exactly the "one struct reinterpreted per mode" pattern this header's
     // opening comment exists to avoid.
     GainEnvelope = 10,
+
+    // Restoration/pitch trio. All three route through the same RubberBand R3
+    // engine PITCH already stubs out to (see PitchParams) — see
+    // dsp/RubberBandWrapper.h's formantScaleOverride for how FormantShift gets
+    // an independent formant move out of an engine whose public API otherwise
+    // only exposes "shift with/without the formants following".
+    FormantShift = 11,
+    Declip       = 12,
+    Denoise      = 13,
 };
 
-inline constexpr int kSandboxOpTypeCount = 11;
+inline constexpr int kSandboxOpTypeCount = 14;
 
 // ─── Shared enums ─────────────────────────────────────────────────────────────
 
@@ -328,8 +337,12 @@ double gainEnvelopeDbAt(const GainEnvelopeParams& p, int64_t samplePos) noexcept
 // applyGainEnvelope() in SandboxRenderer.cpp.
 double gainEnvelopeAt(const GainEnvelopeParams& p, int64_t samplePos) noexcept;
 
-// PITCH — shift by cents without changing length. STUB in SB-1: pitch/stretch
-// DSP routes through the existing stretch engines, wired in a later phase.
+// PITCH — shift by cents without changing length, via dsp::processRubberBand
+// (RubberBand R3, offline). formantPreserve is the "formant lock" toggle: off,
+// the formant envelope rides up/down with the pitch (RubberBand's
+// OptionFormantShifted — the classic "chipmunk" effect at large shifts); on,
+// RubberBand's OptionFormantPreserved keeps the envelope where it started, so
+// a vocal shifted an octave up still sounds like the same voice register.
 struct PitchParams {
     double cents           = 0.0;
     bool   formantPreserve = false;
@@ -346,6 +359,60 @@ struct StretchParams {
     bool operator==(const StretchParams&) const = default;
 };
 
+// FORMANT SHIFT — move the spectral envelope by `cents` (same unit as
+// PitchParams::cents) while leaving pitch AND length untouched. This is the
+// case PitchParams::formantPreserve cannot express: that toggle only ever
+// locks the formants to where they already were during a PITCH move, it never
+// moves them on their own. Implemented via
+// RubberBandParams::formantScaleOverride — see that field's comment for why
+// the stretcher needs an explicit override rather than just "pitch shift with
+// formants shifted".
+struct FormantShiftParams {
+    double cents = 0.0;
+
+    bool operator==(const FormantShiftParams&) const = default;
+};
+
+// DECLIP — find runs of samples pinned at or above `threshold` (a fraction of
+// full scale, so 0.98 catches a run flat-topped at ±0.98..1.0) and rebuild
+// them with a cubic Hermite curve anchored on the last/first good sample on
+// either side. `maxRunSamples` is the escape hatch: a run longer than this is
+// left alone rather than "reconstructed" — past a few dozen samples a flat-top
+// is far more likely to be genuine full-scale content (a clap, a synth
+// square) than an actual clip, and Hermite-filling a long run would just
+// invent audio that was never there. Whole-buffer default range, like every
+// other range-carrying op in this header.
+struct DeclipParams {
+    int64_t startSample    = 0;
+    int64_t endSample      = -1;
+    double  threshold      = 0.98;
+    int     maxRunSamples  = 64;
+
+    bool operator==(const DeclipParams&) const = default;
+};
+
+// DENOISE — learn a noise magnitude profile from [noiseStartSample,
+// noiseEndSample) and spectrally subtract `sensitivity` × that profile from
+// every frame across the WHOLE buffer, floored so no bin is ever attenuated
+// past -reductionDb (the floor is what keeps this from collapsing into
+// "musical noise" — full silence in a bin the instant its energy dips near
+// the profile). `noiseEndSample <= noiseStartSample` (the default: 0/0) means
+// "nothing learned yet" and the op is a pass-through — the same
+// empty-input-is-a-no-op convention GainEnvelope's empty `points` uses. The UI
+// commits a learned region as an ordinary SetSandboxOpParamsCommand (see
+// SandboxCommands.h): "Learn Noise Profile" is not a separate RPC, it is this
+// op's params being set to the user's current selection, so it is undoable
+// for free and the actual profile is re-derived from those two indices at
+// render time rather than stored as a second, driftable copy of the data.
+struct DenoiseParams {
+    int64_t noiseStartSample = 0;
+    int64_t noiseEndSample   = 0;
+    double  reductionDb      = 12.0;
+    double  sensitivity      = 1.5;
+
+    bool operator==(const DenoiseParams&) const = default;
+};
+
 // ─── SandboxOpParams ──────────────────────────────────────────────────────────
 // Alternative order MUST match SandboxOpType — see the static_assert below.
 
@@ -360,7 +427,10 @@ using SandboxOpParams = std::variant<
     CrossfadeParams,  // 7  Crossfade
     PitchParams,      // 8  Pitch
     StretchParams,    // 9  Stretch
-    GainEnvelopeParams // 10 GainEnvelope
+    GainEnvelopeParams, // 10 GainEnvelope
+    FormantShiftParams, // 11 FormantShift
+    DeclipParams,       // 12 Declip
+    DenoiseParams       // 13 Denoise
 >;
 
 static_assert(std::variant_size_v<SandboxOpParams> == kSandboxOpTypeCount,
@@ -394,9 +464,11 @@ struct SandboxOp {
         return static_cast<int>(params.index()) == static_cast<int>(type);
     }
 
-    // False for the ops whose DSP has not landed yet (Pitch, Stretch — deferred
-    // to the phase that wires in the stretch engines). Paste/Splice/Crossfade
-    // landed in SB-4. An unimplemented op is a PASS-THROUGH in the renderer,
+    // False for the ops whose DSP has not landed yet (Stretch only, as of the
+    // restoration/pitch trio landing — deferred to the phase that wires in the
+    // stretch engines). Paste/Splice/Crossfade landed in SB-4; Pitch,
+    // FormantShift, Declip and Denoise landed with the restoration ops. An
+    // unimplemented op is a PASS-THROUGH in the renderer,
     // never a silent partial edit — the UI is expected to badge it so
     // "nothing happened" reads as "not built yet" rather than as a bug.
     bool implemented() const noexcept;

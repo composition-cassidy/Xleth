@@ -1,7 +1,13 @@
 #include "sandbox/SandboxRenderer.h"
 
+#include "dsp/RubberBandWrapper.h"
+
+#include <juce_dsp/juce_dsp.h>
+
 #include <algorithm>
+#include <array>
 #include <cmath>
+#include <vector>
 
 namespace xleth::sandbox {
 
@@ -425,6 +431,227 @@ SandboxBuffer applyCrossfade(const SandboxBuffer& in, const CrossfadeParams& p) 
     return dst;
 }
 
+// ─── Restoration / pitch trio ─────────────────────────────────────────────────
+// PITCH and FORMANT SHIFT both route through dsp::processRubberBand (RubberBand
+// R3, offline) — see RubberBandWrapper.h. DECLIP and DENOISE are pure
+// sample/spectral-domain reconstruction with no external DSP dependency; the
+// project already links RubberBand (rubberband_static, engine/CMakeLists.txt)
+// for the sampler's own pitch/stretch, and juce_dsp for the FFT
+// XlethResonanceSuppressorEffect's WolaProcessor already uses, so neither op
+// needed a new library.
+
+SandboxBuffer applyPitch(const SandboxBuffer& in, const PitchParams& p, double sampleRate) {
+    if (in.getNumSamples() <= 0) return in;
+    dsp::RubberBandParams rp;
+    rp.sampleRate          = sampleRate;
+    rp.pitchShiftSemitones = p.cents / 100.0;
+    rp.stretchRatio        = 1.0;              // PITCH never changes length
+    rp.formantPreserve     = p.formantPreserve; // the "formant lock" toggle
+    return dsp::processRubberBand(in, rp);
+}
+
+// Pitch held at 1.0; only the formant envelope moves, via
+// RubberBandParams::formantScaleOverride — see that field's comment for why
+// this needs the override rather than the ordinary formantPreserve flag.
+SandboxBuffer applyFormantShift(const SandboxBuffer& in, const FormantShiftParams& p, double sampleRate) {
+    if (in.getNumSamples() <= 0) return in;
+    dsp::RubberBandParams rp;
+    rp.sampleRate            = sampleRate;
+    rp.pitchShiftSemitones   = 0.0;
+    rp.stretchRatio          = 1.0;
+    rp.formantScaleOverride  = std::pow(2.0, p.cents / 1200.0);
+    return dsp::processRubberBand(in, rp);
+}
+
+// DECLIP — cubic-Hermite reconstruction of runs pinned at/above `threshold`.
+// See DeclipParams for the run-length escape hatch and why threshold is a
+// fraction of full scale rather than a dBFS value (a clipped sample sits at a
+// fixed CEILING, not a fixed level below it).
+SandboxBuffer applyDeclip(const SandboxBuffer& in, const DeclipParams& p) {
+    SandboxBuffer dst(in);
+    const int64_t len = dst.getNumSamples();
+    const Range   r   = resolveRange(p.startSample, p.endSample, len);
+    if (r.end <= r.start) return dst;
+
+    const float   thresh = static_cast<float>(std::clamp(p.threshold, 0.5, 1.0));
+    const int64_t maxRun = std::max(1, p.maxRunSamples);
+
+    for (int ch = 0; ch < dst.getNumChannels(); ++ch) {
+        const float* src = in.getReadPointer(ch);
+        float*       out = dst.getWritePointer(ch);
+
+        int64_t i = r.start;
+        while (i < r.end) {
+            if (std::abs(src[i]) < thresh) { ++i; continue; }
+
+            const int64_t runStart = i;
+            while (i < r.end && std::abs(src[i]) >= thresh) ++i;
+            const int64_t runEnd = i;                        // [runStart, runEnd)
+            if (runEnd - runStart > maxRun) continue;         // too long to be a clip — leave it
+
+            const bool haveLeft  = runStart - 1 >= 0;
+            const bool haveRight = runEnd < len;
+            if (!haveLeft && !haveRight) continue;            // the whole buffer is "clipped"
+
+            if (!haveLeft) {
+                // Run touches sample 0 — nothing to anchor the left side to.
+                for (int64_t s = runStart; s < runEnd; ++s) out[s] = src[runEnd];
+                continue;
+            }
+            if (!haveRight) {
+                for (int64_t s = runStart; s < runEnd; ++s) out[s] = src[runStart - 1];
+                continue;
+            }
+
+            // Both anchors exist: cubic Hermite between them, tangents from
+            // one more sample past each anchor (0 if that sample doesn't
+            // exist either — a flat approach rather than an invented slope).
+            const float p0 = src[runStart - 1];
+            const float p1 = src[runEnd];
+            const float m0 = (runStart - 2 >= 0) ? (p0 - src[runStart - 2]) : 0.0f;
+            const float m1 = (runEnd + 1 < len)  ? (src[runEnd + 1] - p1)   : 0.0f;
+
+            const double span = static_cast<double>(runEnd - runStart + 1);
+            for (int64_t s = runStart; s < runEnd; ++s) {
+                const double t  = static_cast<double>(s - runStart + 1) / span;
+                const double t2 = t * t, t3 = t2 * t;
+                const double h00 =  2.0 * t3 - 3.0 * t2 + 1.0;
+                const double h10 =        t3 - 2.0 * t2 + t;
+                const double h01 = -2.0 * t3 + 3.0 * t2;
+                const double h11 =        t3 -       t2;
+                out[s] = static_cast<float>(h00 * p0 + h10 * m0 + h01 * p1 + h11 * m1);
+            }
+        }
+    }
+    return dst;
+}
+
+// ─── Denoise ───────────────────────────────────────────────────────────────────
+// Offline STFT spectral subtraction. sqrt-Hann analysis+synthesis window with
+// a precomputed per-hop-phase sum-of-squares normalization — the exact scheme
+// XlethResonanceSuppressorEffect::WolaProcessor::buildWindowAndNormalization
+// uses, reused verbatim rather than re-derived because it is already proven
+// correct in this codebase. Unlike that class this runs OFFLINE over a whole
+// buffer already in hand, so there is no ring buffer or streaming latency —
+// every frame that overlaps [0, len) is evaluated in one pass and
+// accumulated into a buffer padded by one FFT size on each side, which is
+// what lets a frame straddle sample 0 or the buffer end without a separate
+// edge case: the padding reads as silence, and the window/normalization
+// identity holds regardless of what the frame's data actually is.
+namespace denoise {
+    constexpr int kFftOrder = 11;
+    constexpr int kFftSize  = 1 << kFftOrder;      // 2048
+    constexpr int kHopSize  = kFftSize / 4;        // 512 — 4x overlap
+    constexpr int kNumBins  = kFftSize / 2 + 1;
+
+    // Bin 0 (DC) and bin kNumBins-1 (Nyquist) are packed specially by JUCE's
+    // real-only FFT and are not safe to read/write as an ordinary complex
+    // bin — XlethResonanceSuppressorEffect::updateDetector excludes the same
+    // two indices for the same reason. Left untouched: two bins out of 1025
+    // carrying no noise reduction is inaudible.
+    constexpr int kFirstBin = 1;
+    constexpr int kLastBin  = kNumBins - 2;
+
+    struct Window {
+        std::array<float, kFftSize> analysis{};
+        std::array<float, kHopSize> normalization{};
+        Window() {
+            for (int n = 0; n < kFftSize; ++n) {
+                const float hann = 0.5f - 0.5f * std::cos(2.0f * static_cast<float>(kPi) * n
+                                                          / static_cast<float>(kFftSize));
+                analysis[static_cast<size_t>(n)] = std::sqrt(std::max(hann, 0.0f));
+            }
+            for (int phase = 0; phase < kHopSize; ++phase) {
+                float sum = 0.0f;
+                for (int n = phase; n < kFftSize; n += kHopSize) {
+                    const float w = analysis[static_cast<size_t>(n)];
+                    sum += w * w;
+                }
+                normalization[static_cast<size_t>(phase)] = sum > 1.0e-8f ? (1.0f / sum) : 1.0f;
+            }
+        }
+    };
+}
+
+SandboxBuffer applyDenoise(const SandboxBuffer& in, const DenoiseParams& p) {
+    using namespace denoise;
+
+    const int64_t len      = in.getNumSamples();
+    const int     channels = in.getNumChannels();
+    if (len <= 0 || channels <= 0) return in;
+    if (p.noiseEndSample <= p.noiseStartSample) return in;   // no profile learned — pass-through
+
+    const Range noiseR = resolveRange(p.noiseStartSample, p.noiseEndSample, len);
+    if (noiseR.end - noiseR.start < kFftSize) return in;     // region too short to learn a profile
+
+    static const Window W;
+    juce::dsp::FFT fft(kFftOrder);
+
+    const float floorGain = static_cast<float>(std::pow(10.0, -std::max(0.0, p.reductionDb) / 20.0));
+    const float oversub   = static_cast<float>(std::max(0.0, p.sensitivity));
+
+    SandboxBuffer dst = makeBuffer(channels, len);
+    std::vector<float> fftBuf(static_cast<size_t>(kFftSize) * 2);
+    std::vector<float> profile(static_cast<size_t>(kNumBins), 0.0f);
+
+    for (int ch = 0; ch < channels; ++ch) {
+        const float* src = in.getReadPointer(ch);
+        const auto readPadded = [&](int64_t i) -> float {
+            return (i >= 0 && i < len) ? src[i] : 0.0f;
+        };
+
+        // ── Learn the noise profile: average magnitude spectrum over the
+        //    user-selected noise-only region ──
+        std::fill(profile.begin(), profile.end(), 0.0f);
+        int frames = 0;
+        for (int64_t f = noiseR.start; f + kFftSize <= noiseR.end; f += kHopSize) {
+            std::fill(fftBuf.begin(), fftBuf.end(), 0.0f);
+            for (int n = 0; n < kFftSize; ++n)
+                fftBuf[static_cast<size_t>(n)] = src[f + n] * W.analysis[static_cast<size_t>(n)];
+            fft.performRealOnlyForwardTransform(fftBuf.data(), false);
+            for (int b = kFirstBin; b <= kLastBin; ++b) {
+                const float re = fftBuf[static_cast<size_t>(2 * b)];
+                const float im = fftBuf[static_cast<size_t>(2 * b + 1)];
+                profile[static_cast<size_t>(b)] += std::sqrt(re * re + im * im);
+            }
+            ++frames;
+        }
+        if (frames == 0) continue;
+        for (auto& v : profile) v /= static_cast<float>(frames);
+
+        // ── Spectrally subtract the profile from every frame across the
+        //    WHOLE channel, floored so no bin drops past -reductionDb ──
+        std::vector<float> accum(static_cast<size_t>(len) + static_cast<size_t>(2 * kFftSize), 0.0f);
+        for (int64_t f = -(kFftSize - kHopSize); f < len; f += kHopSize) {
+            std::fill(fftBuf.begin(), fftBuf.end(), 0.0f);
+            for (int n = 0; n < kFftSize; ++n)
+                fftBuf[static_cast<size_t>(n)] = readPadded(f + n) * W.analysis[static_cast<size_t>(n)];
+            fft.performRealOnlyForwardTransform(fftBuf.data(), false);
+
+            for (int b = kFirstBin; b <= kLastBin; ++b) {
+                const size_t re_i = static_cast<size_t>(2 * b), im_i = re_i + 1;
+                const float re = fftBuf[re_i], im = fftBuf[im_i];
+                const float mag = std::sqrt(re * re + im * im);
+                const float sub = std::max(mag - oversub * profile[static_cast<size_t>(b)], 0.0f);
+                const float gain = std::max(mag > 1.0e-9f ? (sub / mag) : 1.0f, floorGain);
+                fftBuf[re_i] = re * gain;
+                fftBuf[im_i] = im * gain;
+            }
+
+            fft.performRealOnlyInverseTransform(fftBuf.data());
+            for (int n = 0; n < kFftSize; ++n) {
+                const float y = fftBuf[static_cast<size_t>(n)] * W.analysis[static_cast<size_t>(n)]
+                              * W.normalization[static_cast<size_t>(n % kHopSize)];
+                accum[static_cast<size_t>(f + n + kFftSize)] += y;
+            }
+        }
+
+        float* out = dst.getWritePointer(ch);
+        for (int64_t i = 0; i < len; ++i) out[i] = accum[static_cast<size_t>(i + kFftSize)];
+    }
+    return dst;
+}
+
 // Constant-power pan, mirroring TrackMixer::applyPan's formula/convention
 // (engine/src/audio/TrackMixer.h) so a layer panned in the Sandbox sits at the
 // same apparent level as a track panned the same way on the main mixer. Kept
@@ -539,10 +766,17 @@ SandboxBuffer SandboxRenderer::applyOp(const SandboxBuffer& in,
         case SandboxOpType::Crossfade: return applyCrossfade(in, std::get<CrossfadeParams>(op.params));
         case SandboxOpType::GainEnvelope:
             return applyGainEnvelope(in, std::get<GainEnvelopeParams>(op.params), bufferSampleRate);
+        case SandboxOpType::Pitch:
+            return applyPitch(in, std::get<PitchParams>(op.params), bufferSampleRate);
+        case SandboxOpType::FormantShift:
+            return applyFormantShift(in, std::get<FormantShiftParams>(op.params), bufferSampleRate);
+        case SandboxOpType::Declip:
+            return applyDeclip(in, std::get<DeclipParams>(op.params));
+        case SandboxOpType::Denoise:
+            return applyDenoise(in, std::get<DenoiseParams>(op.params));
 
         // Guarded by implemented() above — listed so a newly built op that
         // forgets its case here is a compiler warning, not a silent no-op.
-        case SandboxOpType::Pitch:
         case SandboxOpType::Stretch:
             return in;
     }

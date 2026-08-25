@@ -26,7 +26,10 @@ constexpr TypeEntry kTypeTable[] = {
     { SandboxOpType::Crossfade, "crossfade" },
     { SandboxOpType::Pitch,     "pitch"     },
     { SandboxOpType::Stretch,   "stretch"   },
-    { SandboxOpType::GainEnvelope, "gainEnvelope" },
+    { SandboxOpType::GainEnvelope,  "gainEnvelope"  },
+    { SandboxOpType::FormantShift,  "formantShift"  },
+    { SandboxOpType::Declip,        "declip"        },
+    { SandboxOpType::Denoise,       "denoise"       },
 };
 
 static_assert(std::size(kTypeTable) == kSandboxOpTypeCount,
@@ -116,6 +119,17 @@ struct HashVisitor {
         acc = hashF64(hashF64(acc, p.followerAttackMs), p.followerReleaseMs);
         return acc;
     }
+    uint64_t operator()(const FormantShiftParams& p) const {
+        return hashF64(h, p.cents);
+    }
+    uint64_t operator()(const DeclipParams& p) const {
+        return hashI32(hashF64(hashI64(hashI64(h, p.startSample), p.endSample), p.threshold),
+                       p.maxRunSamples);
+    }
+    uint64_t operator()(const DenoiseParams& p) const {
+        return hashF64(hashF64(hashI64(hashI64(h, p.noiseStartSample), p.noiseEndSample),
+                               p.reductionDb), p.sensitivity);
+    }
 };
 
 struct ToJsonVisitor {
@@ -164,6 +178,17 @@ struct ToJsonVisitor {
                  {"mode", static_cast<int>(p.mode)},
                  {"followerAttackMs", p.followerAttackMs},
                  {"followerReleaseMs", p.followerReleaseMs} };
+    }
+    nlohmann::json operator()(const FormantShiftParams& p) const {
+        return { {"cents", p.cents} };
+    }
+    nlohmann::json operator()(const DeclipParams& p) const {
+        return { {"startSample", p.startSample}, {"endSample", p.endSample},
+                 {"threshold", p.threshold}, {"maxRunSamples", p.maxRunSamples} };
+    }
+    nlohmann::json operator()(const DenoiseParams& p) const {
+        return { {"noiseStartSample", p.noiseStartSample}, {"noiseEndSample", p.noiseEndSample},
+                 {"reductionDb", p.reductionDb}, {"sensitivity", p.sensitivity} };
     }
 };
 
@@ -259,6 +284,21 @@ struct FromJsonVisitor {
         p.followerReleaseMs = readField<double>(j, "followerReleaseMs", p.followerReleaseMs);
         normalizeGainEnvelope(p);
     }
+    void operator()(FormantShiftParams& p) const {
+        p.cents = readField<double>(j, "cents", p.cents);
+    }
+    void operator()(DeclipParams& p) const {
+        p.startSample   = readField<int64_t>(j, "startSample",   p.startSample);
+        p.endSample     = readField<int64_t>(j, "endSample",     p.endSample);
+        p.threshold     = readField<double>(j, "threshold",      p.threshold);
+        p.maxRunSamples = readField<int>(j, "maxRunSamples",     p.maxRunSamples);
+    }
+    void operator()(DenoiseParams& p) const {
+        p.noiseStartSample = readField<int64_t>(j, "noiseStartSample", p.noiseStartSample);
+        p.noiseEndSample   = readField<int64_t>(j, "noiseEndSample",   p.noiseEndSample);
+        p.reductionDb      = readField<double>(j, "reductionDb",       p.reductionDb);
+        p.sensitivity      = readField<double>(j, "sensitivity",       p.sensitivity);
+    }
 };
 
 // Resolve an inclusive-exclusive range against a concrete buffer length,
@@ -303,7 +343,10 @@ SandboxOpParams defaultParamsFor(SandboxOpType type) {
         case SandboxOpType::Crossfade: return CrossfadeParams{};
         case SandboxOpType::Pitch:     return PitchParams{};
         case SandboxOpType::Stretch:   return StretchParams{};
-        case SandboxOpType::GainEnvelope: return GainEnvelopeParams{};
+        case SandboxOpType::GainEnvelope:   return GainEnvelopeParams{};
+        case SandboxOpType::FormantShift:   return FormantShiftParams{};
+        case SandboxOpType::Declip:         return DeclipParams{};
+        case SandboxOpType::Denoise:        return DenoiseParams{};
     }
     return GainParams{};
 }
@@ -399,9 +442,12 @@ bool SandboxOp::implemented() const noexcept {
         case SandboxOpType::Gain:
         case SandboxOpType::Crossfade:
         case SandboxOpType::GainEnvelope:
+        case SandboxOpType::Pitch:
+        case SandboxOpType::FormantShift:
+        case SandboxOpType::Declip:
+        case SandboxOpType::Denoise:
             return true;
         // DSP deferred until the stretch engines are wired in.
-        case SandboxOpType::Pitch:
         case SandboxOpType::Stretch:
             return false;
     }
@@ -423,6 +469,13 @@ bool SandboxOp::autoRender() const noexcept {
         // A per-sample curve evaluation over one buffer, offline — the same
         // order of cost as FADE. Nothing here justifies the manual fallback.
         case SandboxOpType::GainEnvelope:
+        // RubberBand offline pitch/formant moves and the declip/denoise scans
+        // are all single-pass over one buffer — heavier than a FADE, but still
+        // a bounded per-edit cost, not the open-ended kind autoRender exists
+        // to gate off (e.g. a future model-separation op).
+        case SandboxOpType::FormantShift:
+        case SandboxOpType::Declip:
+        case SandboxOpType::Denoise:
             return true;
     }
     return true;

@@ -31,8 +31,11 @@
 #include "sandbox/SandboxOp.h"
 #include "sandbox/SandboxRenderer.h"
 
+#include <juce_audio_formats/juce_audio_formats.h>
+
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -108,6 +111,37 @@ static SandboxBuffer makeConst(int channels, int samples, float value) {
     return b;
 }
 
+// A pure tone — used by the restoration/pitch trio's tests, where a
+// zero-crossing count stands in for "did the pitch actually move" without
+// needing an FFT-based pitch detector in the test itself.
+static SandboxBuffer makeSine(int channels, int samples, double freqHz, double sampleRate,
+                              float amplitude = 0.5f) {
+    SandboxBuffer b(channels, samples);
+    for (int ch = 0; ch < channels; ++ch)
+        for (int i = 0; i < samples; ++i)
+            b.setSample(ch, i, amplitude * static_cast<float>(
+                std::sin(2.0 * 3.14159265358979323846 * freqHz * i / sampleRate)));
+    return b;
+}
+
+static int countZeroCrossings(const SandboxBuffer& b, int64_t start, int64_t end) {
+    int count = 0;
+    float prev = b.getSample(0, static_cast<int>(start));
+    for (int64_t i = start + 1; i < end; ++i) {
+        const float cur = b.getSample(0, static_cast<int>(i));
+        if ((prev < 0.0f) != (cur < 0.0f)) ++count;
+        prev = cur;
+    }
+    return count;
+}
+
+static float rmsOf(const SandboxBuffer& b, int64_t start, int64_t end) {
+    double sum = 0.0;
+    for (int64_t i = start; i < end; ++i) { const double s = b.getSample(0, static_cast<int>(i)); sum += s * s; }
+    const int64_t n = end - start;
+    return n > 0 ? static_cast<float>(std::sqrt(sum / static_cast<double>(n))) : 0.0f;
+}
+
 static SandboxOp makeOp(int id, SandboxOpType type, SandboxOpParams params) {
     SandboxOp op;
     op.id     = id;
@@ -128,7 +162,10 @@ static void testOpModel() {
     CHECK(gain.implemented(), "GAIN has DSP in SB-1");
 
     SandboxOp pitch = makeOp(2, SandboxOpType::Pitch, PitchParams{ 100.0, false });
-    CHECK(!pitch.implemented(), "PITCH is a declared stub in SB-1");
+    CHECK(pitch.implemented(), "PITCH has DSP (RubberBand, offline)");
+
+    SandboxOp stretch = makeOp(3, SandboxOpType::Stretch, StretchParams{});
+    CHECK(!stretch.implemented(), "STRETCH is still a declared stub");
 
     // SB-4 lands DSP for these three — they were the SB-1 stubs.
     CHECK(makeOp(4, SandboxOpType::Paste,     PasteParams{}).implemented(),     "PASTE lands in SB-4");
@@ -142,11 +179,23 @@ static void testOpModel() {
                     GainEnvelopeParams{ { {0, 0.0}, {500, -24.0} } }).outputLength(1000),
              int64_t(1000), "GAIN ENVELOPE is in-place - it never changes length");
 
+    // Restoration/pitch trio — landed alongside PITCH.
+    CHECK(makeOp(8, SandboxOpType::FormantShift, FormantShiftParams{}).implemented(), "FORMANT SHIFT has DSP");
+    CHECK(makeOp(9, SandboxOpType::Declip,       DeclipParams{}).implemented(),       "DECLIP has DSP");
+    CHECK(makeOp(10, SandboxOpType::Denoise,      DenoiseParams{}).implemented(),      "DENOISE has DSP");
+    CHECK_EQ(makeOp(8, SandboxOpType::FormantShift, FormantShiftParams{ 300.0 }).outputLength(1000),
+             int64_t(1000), "FORMANT SHIFT is in-place — it never changes length");
+    CHECK_EQ(makeOp(9, SandboxOpType::Declip, DeclipParams{}).outputLength(1000),
+             int64_t(1000), "DECLIP is in-place");
+    CHECK_EQ(makeOp(10, SandboxOpType::Denoise, DenoiseParams{}).outputLength(1000),
+             int64_t(1000), "DENOISE is in-place");
+
     // Every op type auto-renders today — no heavy op (e.g. model separation)
-    // exists yet. Distinct from implemented(): PITCH is a stub but still
+    // exists yet. Distinct from implemented(): STRETCH is a stub but still
     // cheap, so it does not opt out of auto-render.
-    CHECK(gain.autoRender(),  "GAIN auto-renders");
-    CHECK(pitch.autoRender(), "PITCH is unimplemented but still cheap — auto-renders");
+    CHECK(gain.autoRender(),    "GAIN auto-renders");
+    CHECK(pitch.autoRender(),   "PITCH auto-renders");
+    CHECK(stretch.autoRender(), "STRETCH is unimplemented but still cheap — auto-renders");
 
     // A hand-built op whose variant disagrees with its type is malformed and
     // must be detectable — this is the failure mode `float params[16]` cannot
@@ -260,13 +309,16 @@ static void testOpSerialization() {
         makeOp(10, SandboxOpType::Stretch,  StretchParams{ 1.375, 5 }),
         makeOp(11, SandboxOpType::GainEnvelope,
                GainEnvelopeParams{ { {0, 0.0}, {4800, -18.25}, {9600, -3.5}, {96000, 0.0} } }),
+        makeOp(12, SandboxOpType::FormantShift, FormantShiftParams{ 316.0 }),
+        makeOp(13, SandboxOpType::Declip,       DeclipParams{ 100, 5000, 0.95, 40 }),
+        makeOp(14, SandboxOpType::Denoise,      DenoiseParams{ 0, 4800, 18.0, 2.0 }),
     };
     ops[3].enabled = false;   // bypass must survive the trip
 
     const nlohmann::json j = stackToJson(ops);
     CHECK_EQ(j.value("sandboxStackVersion", -1), kSandboxStackVersion,
              "stack JSON carries sandboxStackVersion");
-    CHECK_EQ(j["ops"].size(), size_t(11), "every op is written");
+    CHECK_EQ(j["ops"].size(), size_t(14), "every op is written");
     CHECK_EQ(j["ops"][6]["type"].get<std::string>(), std::string("gain"),
              "type is written as a NAME, so an enum reorder is not a migration");
 
@@ -997,7 +1049,7 @@ static void testRendererOps() {
                    "a bypassed op passes audio through untouched");
 
         SandboxRenderResult s = renderer.renderStack(
-            12, src, { makeOp(1, SandboxOpType::Pitch, PitchParams{ 1200.0, false }) }, kTestRate);
+            12, src, { makeOp(1, SandboxOpType::Stretch, StretchParams{ 1.5, 0 }) }, kTestRate);
         CHECK_NEAR(s.buffer->getSample(0, 500), src.getSample(0, 500), 1e-9,
                    "an unimplemented op passes audio through untouched");
         CHECK_EQ(s.unimplementedOps, 1,
@@ -1744,6 +1796,274 @@ static void testGainEnvelopeRelativeMode() {
 }
 
 // ---------------------------------------------------------------------------
+// SandboxRenderer — restoration/pitch trio (PITCH DSP, FORMANT SHIFT, DECLIP,
+// DENOISE)
+// ---------------------------------------------------------------------------
+
+static void testRestorationOps() {
+    std::cout << "\n[SandboxRenderer — restoration/pitch trio]\n";
+
+    SandboxRenderer renderer;
+
+    // ── PITCH ──
+    {
+        const int N = 8192;
+        const SandboxBuffer tone = makeSine(1, N, 220.0, kTestRate);
+        const int baseCrossings = countZeroCrossings(tone, 500, N - 500);
+
+        SandboxRenderResult unity = renderer.renderStack(
+            100, tone, { makeOp(1, SandboxOpType::Pitch, PitchParams{ 0.0, false }) }, kTestRate);
+        CHECK_EQ(unity.buffer->getNumSamples(), N, "PITCH never changes length");
+        CHECK_NEAR(rmsOf(*unity.buffer, 0, N), rmsOf(tone, 0, N), 0.01f,
+                   "PITCH at 0 cents is near-identity (RubberBand's own early exit)");
+
+        SandboxRenderResult up = renderer.renderStack(
+            101, tone, { makeOp(1, SandboxOpType::Pitch, PitchParams{ 1200.0, false }) }, kTestRate);
+        CHECK_EQ(up.buffer->getNumSamples(), N, "PITCH +1200 cents still never changes length");
+        const int upCrossings = countZeroCrossings(*up.buffer, 500, N - 500);
+        CHECK(upCrossings > baseCrossings * 3 / 2,
+              "PITCH +1200 cents (one octave) roughly doubles the zero-crossing rate");
+    }
+
+    // ── PITCH — formant lock actually changes the render ──
+    {
+        const int N = 8192;
+        const SandboxBuffer voice = makeSine(1, N, 180.0, kTestRate);   // a low fundamental
+        SandboxRenderResult locked = renderer.renderStack(
+            110, voice, { makeOp(1, SandboxOpType::Pitch, PitchParams{ 700.0, true }) }, kTestRate);
+        SandboxRenderResult unlocked = renderer.renderStack(
+            111, voice, { makeOp(1, SandboxOpType::Pitch, PitchParams{ 700.0, false }) }, kTestRate);
+        CHECK(locked.valid() && unlocked.valid(), "both formant-lock states render");
+
+        bool differ = false;
+        for (int64_t i = 1000; i < N - 1000 && !differ; i += 37)
+            if (std::fabs(locked.buffer->getSample(0, static_cast<int>(i))
+                         - unlocked.buffer->getSample(0, static_cast<int>(i))) > 1e-4f)
+                differ = true;
+        CHECK(differ, "formant lock ON vs OFF changes the render at the same pitch shift");
+    }
+
+    // ── FORMANT SHIFT ──
+    {
+        const int N = 8192;
+        const SandboxBuffer tone = makeSine(1, N, 220.0, kTestRate);
+
+        SandboxRenderResult unity = renderer.renderStack(
+            120, tone, { makeOp(1, SandboxOpType::FormantShift, FormantShiftParams{ 0.0 }) }, kTestRate);
+        CHECK_EQ(unity.buffer->getNumSamples(), N, "FORMANT SHIFT never changes length");
+        CHECK_NEAR(rmsOf(*unity.buffer, 0, N), rmsOf(tone, 0, N), 0.01f,
+                   "FORMANT SHIFT at 0 cents is near-identity");
+
+        const int crossingsUnshifted = countZeroCrossings(tone, 500, N - 500);
+        SandboxRenderResult shifted = renderer.renderStack(
+            121, tone, { makeOp(1, SandboxOpType::FormantShift, FormantShiftParams{ 1200.0 }) }, kTestRate);
+        const int crossingsShifted = countZeroCrossings(*shifted.buffer, 500, N - 500);
+        // A pure tone has no formant structure to speak of, but the point
+        // stands either way: FORMANT SHIFT must never move the fundamental —
+        // zero-crossing rate is a pitch measure, not a formant one.
+        CHECK(std::abs(crossingsShifted - crossingsUnshifted) <= 2,
+              "FORMANT SHIFT leaves pitch (zero-crossing rate) unchanged");
+    }
+
+    // ── DECLIP ──
+    {
+        const int N = 4000;
+        SandboxBuffer clipped = makeSine(1, N, 300.0, kTestRate, 1.0f);
+        float* d = clipped.getWritePointer(0);
+        for (int i = 0; i < N; ++i) d[i] = std::clamp(d[i], -0.5f, 0.5f);
+
+        int pinnedBefore = 0;
+        for (int i = 0; i < N; ++i) if (std::fabs(clipped.getSample(0, i)) >= 0.5f - 1e-6f) ++pinnedBefore;
+        CHECK(pinnedBefore > 0, "the fixture actually has clipped runs to fix");
+
+        SandboxRenderResult r = renderer.renderStack(
+            130, clipped, { makeOp(1, SandboxOpType::Declip, DeclipParams{ 0, -1, 0.5, 64 }) }, kTestRate);
+        CHECK(r.valid(), "DECLIP renders");
+        CHECK_EQ(r.buffer->getNumSamples(), N, "DECLIP never changes length");
+
+        int pinnedAfter = 0;
+        for (int i = 0; i < N; ++i) if (std::fabs(r.buffer->getSample(0, i)) >= 0.5f - 1e-6f) ++pinnedAfter;
+        CHECK(pinnedAfter < pinnedBefore, "DECLIP breaks up the flat-topped runs");
+
+        // A run longer than maxRunSamples is the escape hatch: left alone.
+        SandboxBuffer longRun(1, 1000);
+        longRun.clear();
+        for (int i = 200; i < 800; ++i) longRun.setSample(0, i, 0.99f);   // 600-sample flat run
+        SandboxRenderResult r2 = renderer.renderStack(
+            131, longRun, { makeOp(1, SandboxOpType::Declip, DeclipParams{ 0, -1, 0.9, 64 }) }, kTestRate);
+        CHECK_NEAR(r2.buffer->getSample(0, 500), 0.99f, 1e-6,
+                   "a run past maxRunSamples is left untouched, not reconstructed");
+    }
+
+    // ── DENOISE ──
+    {
+        const int N = 16384;
+        SandboxBuffer mix(1, N);
+        // Deterministic pseudo-noise (LCG), not real random — reproducible.
+        uint32_t seed = 12345u;
+        auto nextNoise = [&]() {
+            seed = seed * 1664525u + 1013904223u;
+            return (static_cast<float>(seed) / static_cast<float>(0xFFFFFFFFu)) * 2.0f - 1.0f;
+        };
+        for (int i = 0; i < N; ++i) {
+            const float tone = 0.4f * static_cast<float>(std::sin(2.0 * 3.14159265358979323846 * 500.0 * i / kTestRate));
+            mix.setSample(0, i, tone + 0.15f * nextNoise());
+        }
+
+        SandboxRenderResult noProfile = renderer.renderStack(
+            140, mix, { makeOp(1, SandboxOpType::Denoise, DenoiseParams{}) }, kTestRate);
+        CHECK_NEAR(noProfile.buffer->getSample(0, 5000), mix.getSample(0, 5000), 1e-9,
+                   "DENOISE with no learned profile (noiseEndSample<=noiseStartSample) is a pass-through");
+
+        // A noise-only region: the SAME noise stream continued, no tone — the
+        // learned profile has to come from genuinely noise-only material, not
+        // a separately-seeded stand-in.
+        SandboxBuffer noiseOnly(1, N + 8192);
+        for (int i = 0; i < N; ++i) noiseOnly.setSample(0, i, mix.getSample(0, i));
+        for (int i = N; i < N + 8192; ++i) noiseOnly.setSample(0, i, 0.15f * nextNoise());
+
+        SandboxRenderResult learned = renderer.renderStack(
+            141, noiseOnly,
+            { makeOp(1, SandboxOpType::Denoise, DenoiseParams{ N, N + 8192, 18.0, 1.5 }) },
+            kTestRate);
+        CHECK(learned.valid(), "DENOISE with a learned profile renders");
+        CHECK_EQ(learned.buffer->getNumSamples(), noiseOnly.getNumSamples(), "DENOISE never changes length");
+
+        const float noiseRmsBefore = rmsOf(noiseOnly, N, N + 8192);
+        const float noiseRmsAfter  = rmsOf(*learned.buffer, N, N + 8192);
+        CHECK(noiseRmsAfter < noiseRmsBefore * 0.7f,
+              "DENOISE measurably attenuates the noise-only region it learned from");
+
+        const float toneRmsBefore = rmsOf(noiseOnly, 2000, 6000);
+        const float toneRmsAfter  = rmsOf(*learned.buffer, 2000, 6000);
+        CHECK(toneRmsAfter > toneRmsBefore * 0.6f,
+              "DENOISE leaves the tone-dominant material largely intact, not silenced");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Restoration/pitch trio — deliverable fixtures
+// ---------------------------------------------------------------------------
+// Not correctness checks (CHECK-free by design): "no chipmunk", "peaks look
+// reconstructed", "hiss down but the music is intact" are judgment calls a
+// listener makes by ear, which a numeric assertion cannot stand in for. Every
+// buffer here is produced by SandboxRenderer::applyOp — the exact function
+// the DSP-correctness tests above already exercise — so what gets written is
+// provably the same code path a real op stack runs, not a hand-rolled stand-in.
+
+// A crude "vocal" proxy: a handful of harmonics of a low fundamental with a
+// hand-picked amplitude profile roughly peaking where the first two formants
+// of a spoken vowel would sit. Real singing has far more structure than this,
+// but it is enough spectral shape for formant-locked vs. unlocked pitch shift
+// to sound audibly different, which is the whole point of the fixture.
+static SandboxBuffer makeVocalLike(int samples, double f0, double sampleRate) {
+    SandboxBuffer b(1, samples);
+    b.clear();
+    float* d = b.getWritePointer(0);
+    struct Harmonic { int n; float amp; };
+    static const Harmonic kHarmonics[] = {
+        { 1, 0.50f }, { 2, 0.35f }, { 3, 0.55f }, { 4, 0.60f }, { 5, 0.40f },
+        { 6, 0.25f }, { 7, 0.15f }, { 8, 0.50f }, { 9, 0.35f }, { 10, 0.15f },
+    };
+    for (int i = 0; i < samples; ++i) {
+        const double t = static_cast<double>(i) / sampleRate;
+        double s = 0.0;
+        for (const auto& h : kHarmonics)
+            s += h.amp * std::sin(2.0 * 3.14159265358979323846 * f0 * h.n * t);
+        d[i] = static_cast<float>(s * 0.12);
+    }
+    return b;
+}
+
+static juce::File writeFixtureWav(const juce::File& dir, const juce::String& name,
+                                  const SandboxBuffer& buf, double sampleRate) {
+    juce::File file = dir.getChildFile(name + ".wav");
+    file.deleteFile();
+    auto outStream = std::unique_ptr<juce::FileOutputStream>(file.createOutputStream());
+    if (outStream == nullptr) return {};
+    juce::WavAudioFormat wavFmt;
+    std::unique_ptr<juce::AudioFormatWriter> writer(wavFmt.createWriterFor(
+        outStream.get(), sampleRate, static_cast<unsigned int>(buf.getNumChannels()), 16, {}, 0));
+    if (writer == nullptr) return {};
+    outStream.release();   // writer takes ownership
+    writer->writeFromAudioSampleBuffer(buf, 0, buf.getNumSamples());
+    return file;
+}
+
+static void generateFixtures() {
+    std::cout << "\n[Sample Sandbox -- restoration/pitch trio fixtures]\n";
+
+    juce::File dir(
+        "C:\\Users\\Krasen\\AppData\\Local\\Temp\\claude\\C--Users-Krasen-Desktop-XLETH"
+        "\\bd799a1b-0364-45ce-8d84-9cd89e799215\\scratchpad\\sandbox_fixtures");
+    dir.createDirectory();
+
+    // ── 1. Pitched vocal — with and without formant lock ──
+    {
+        const int N = static_cast<int>(kTestRate * 2.0);
+        const SandboxBuffer vocal = makeVocalLike(N, 140.0, kTestRate);
+        writeFixtureWav(dir, "1_vocal_source", vocal, kTestRate);
+
+        const SandboxBuffer chipmunk = SandboxRenderer::applyOp(
+            vocal, makeOp(1, SandboxOpType::Pitch, PitchParams{ 700.0, false }), kTestRate);
+        writeFixtureWav(dir, "1_vocal_pitch_up_NO_formant_lock_chipmunky", chipmunk, kTestRate);
+
+        const SandboxBuffer natural = SandboxRenderer::applyOp(
+            vocal, makeOp(1, SandboxOpType::Pitch, PitchParams{ 700.0, true }), kTestRate);
+        writeFixtureWav(dir, "1_vocal_pitch_up_WITH_formant_lock_natural", natural, kTestRate);
+        std::cout << "    wrote 1_vocal_source / _NO_formant_lock_chipmunky / _WITH_formant_lock_natural\n";
+    }
+
+    // ── 2. Clipped, square-ish recording, before/after DECLIP ──
+    {
+        const int N = static_cast<int>(kTestRate * 1.5);
+        SandboxBuffer clipped = makeSine(1, N, 220.0, kTestRate, 1.0f);
+        float* d = clipped.getWritePointer(0);
+        for (int i = 0; i < N; ++i) d[i] = std::clamp(d[i], -0.35f, 0.35f);   // hard clip -> near-square
+        writeFixtureWav(dir, "2_clipped_before", clipped, kTestRate);
+
+        const SandboxBuffer declipped = SandboxRenderer::applyOp(
+            clipped, makeOp(1, SandboxOpType::Declip, DeclipParams{ 0, -1, 0.35, 80 }), kTestRate);
+        writeFixtureWav(dir, "2_declipped_after", declipped, kTestRate);
+        std::cout << "    wrote 2_clipped_before / 2_declipped_after\n";
+    }
+
+    // ── 3. "YouTube rip with hiss" — tone + broadband noise, before/after DENOISE ──
+    {
+        const int N = static_cast<int>(kTestRate * 3.0);
+        SandboxBuffer mix(1, N);
+        uint32_t seed = 777u;
+        auto nextNoise = [&]() {
+            seed = seed * 1664525u + 1013904223u;
+            return (static_cast<float>(seed) / static_cast<float>(0xFFFFFFFFu)) * 2.0f - 1.0f;
+        };
+        for (int i = 0; i < N; ++i) {
+            const double t = static_cast<double>(i) / kTestRate;
+            const float music =
+                0.30f * static_cast<float>(std::sin(2.0 * 3.14159265358979323846 * 330.0 * t))
+              + 0.15f * static_cast<float>(std::sin(2.0 * 3.14159265358979323846 * 660.0 * t));
+            mix.setSample(0, i, music + 0.08f * nextNoise());
+        }
+        // A genuinely noise-only tail, appended after the "song" — the region
+        // the fixture's DENOISE op learns its profile from.
+        const int noiseLen = static_cast<int>(kTestRate * 1.0);
+        SandboxBuffer withTail(1, N + noiseLen);
+        for (int i = 0; i < N; ++i) withTail.setSample(0, i, mix.getSample(0, i));
+        for (int i = 0; i < noiseLen; ++i) withTail.setSample(0, N + i, 0.08f * nextNoise());
+        writeFixtureWav(dir, "3_hiss_before", withTail, kTestRate);
+
+        const SandboxBuffer denoised = SandboxRenderer::applyOp(
+            withTail,
+            makeOp(1, SandboxOpType::Denoise, DenoiseParams{ N, N + noiseLen, 18.0, 1.5 }),
+            kTestRate);
+        writeFixtureWav(dir, "3_hiss_after", denoised, kTestRate);
+        std::cout << "    wrote 3_hiss_before / 3_hiss_after\n";
+    }
+
+    std::cout << "    fixtures written to: " << dir.getFullPathName() << "\n";
+}
+
+// ---------------------------------------------------------------------------
 
 int main() {
     std::cout << "=== test_sandbox ===\n";
@@ -1761,11 +2081,14 @@ int main() {
     testUndoDomains();
     testCompositeMixing();
     testRendererOps();
+    testRestorationOps();
     testRendererCache();
     testDownstreamOnlyRerender();
     testWorkerAndPublish();
     testGainEnvelope();
     testGainEnvelopeRelativeMode();
+
+    generateFixtures();
 
     std::cout << "\n";
     if (g_failures == 0) {
