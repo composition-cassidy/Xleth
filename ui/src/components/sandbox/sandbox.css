@@ -253,7 +253,142 @@
   flex-direction: column;
 }
 
-.sandbox-toolbar {
+/* ── Toolstrip (row 1) — modal tools only ────────────────────────────────── */
+
+.sandbox-toolstrip {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 4px 8px;
+  background: var(--theme-bg-secondary);
+  border-bottom: 1px solid var(--theme-border-subtle);
+}
+
+.sandbox-toolstrip-tool {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 8px;
+  border: 1px solid transparent;
+  border-radius: 0;
+  background: transparent;
+  color: var(--theme-text-muted);
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.sandbox-toolstrip-tool:hover:not(:disabled) {
+  background: var(--theme-bg-hover);
+  color: var(--theme-text);
+}
+
+.sandbox-toolstrip-tool.active {
+  background: var(--theme-accent-bg-subtle);
+  border-color: var(--theme-accent);
+  color: var(--theme-accent);
+}
+
+.sandbox-toolstrip-tool:disabled {
+  color: var(--theme-text-placeholder);
+  cursor: default;
+}
+
+.sandbox-toolstrip-tool.ghost {
+  opacity: 0.45;
+}
+
+.sandbox-toolstrip-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 6px;
+  background: var(--theme-border-subtle);
+}
+
+.sandbox-toolstrip-view-toggle {
+  display: flex;
+  border: 1px solid var(--theme-border-subtle);
+}
+
+.sandbox-toolstrip-view-toggle button {
+  padding: 4px 8px;
+  border: none;
+  background: var(--theme-bg-surface);
+  color: var(--theme-text-placeholder);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+  cursor: default;
+}
+
+.sandbox-toolstrip-view-toggle button.active {
+  background: var(--theme-accent-bg-subtle);
+  color: var(--theme-accent);
+}
+
+.sandbox-toolstrip-view-toggle button.ghost {
+  opacity: 0.5;
+}
+
+.sandbox-toolstrip-hint {
+  font-size: 9px;
+  color: var(--theme-text-placeholder);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sandbox-toolstrip-spacer {
+  flex: 1 1 auto;
+}
+
+.sandbox-render-chip {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border: 1px solid var(--theme-border-subtle);
+  background: var(--theme-bg-surface);
+  font-size: 9px;
+  color: var(--theme-text-muted);
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.sandbox-render-chip-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--theme-text-placeholder);
+  flex: 0 0 auto;
+}
+
+.sandbox-render-chip--ready .sandbox-render-chip-dot {
+  background: var(--theme-accent);
+}
+
+.sandbox-render-chip--ready {
+  color: var(--theme-accent);
+  border-color: var(--theme-accent-dim, var(--theme-accent));
+}
+
+.sandbox-render-chip--rendering .sandbox-render-chip-dot {
+  background: var(--theme-warning);
+}
+
+.sandbox-render-chip--error .sandbox-render-chip-dot {
+  background: var(--theme-danger);
+}
+
+.sandbox-render-chip--error {
+  color: var(--theme-danger);
+  border-color: var(--theme-danger);
+}
+
+/* ── Selection action bar (row 2) — contextual, mounted only while a
+   selection exists ─────────────────────────────────────────────────────── */
+
+.sandbox-selection-bar {
   flex: 0 0 auto;
   display: flex;
   flex-wrap: wrap;
@@ -330,29 +465,6 @@
   white-space: nowrap;
 }
 
-/* Advanced drawer (Mode 2 follower attack/release). A plain flow row rather
-   than a portaled popup: it toggles alongside the toolbar it belongs to, has
-   nothing that needs to escape a clipped ancestor, and there is exactly one
-   of it. Wraps onto its own line under the toolbar when the panel is narrow,
-   same as the toolbar itself already does (flex-wrap). */
-.sandbox-toolbar-drawer {
-  flex: 1 1 100%;
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 4px 8px;
-  margin-top: 2px;
-  border-top: 1px dashed var(--theme-border-subtle);
-}
-
-.sandbox-toolbar-drawer label {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 10px;
-  color: var(--theme-text-muted);
-}
-
 .sandbox-waveform-area {
   flex: 1 1 auto;
   min-height: 0;
@@ -423,12 +535,40 @@
   font-size: 10px;
 }
 
-.sandbox-op-row-group {
+/* ── Op stack module rail (RX-style) ─────────────────────────────────────── */
+
+.sandbox-stack-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.sandbox-op-count-chip {
+  padding: 1px 6px;
+  border: 1px solid var(--theme-border-subtle);
+  background: var(--theme-bg-surface);
+  color: var(--theme-text-placeholder);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.sandbox-op-module {
   border-bottom: 1px solid var(--theme-border-subtle);
 }
 
-.sandbox-op-row-group.bypassed {
+.sandbox-op-module.bypassed {
   opacity: 0.5;
+}
+
+/* Clicking a module selects it AND expands its inline params (if it has
+   any) beneath the row — the module-rail contract this restructuring
+   introduces. Bare highlight on modules with nothing to edit (trim/cut/
+   paste/splice/reverse/gain): selection still tracks which row is "current"
+   even though there is no param drawer to show for it. */
+.sandbox-op-module.selected {
+  background: var(--theme-bg-active);
+  box-shadow: inset 2px 0 0 var(--theme-accent);
 }
 
 .sandbox-op-row {
@@ -436,12 +576,19 @@
   align-items: center;
   gap: 6px;
   padding: 6px 8px;
+  cursor: pointer;
 }
 
-/* Inline param editors for the restoration/pitch trio (PITCH, FORMANT SHIFT,
-   DECLIP, DENOISE) — a second line under the op row rather than crowding the
-   row itself, since these are the only op types with a persistent editable
-   knob on the op (see RestorationParamEditor). */
+.sandbox-op-index {
+  flex: 0 0 auto;
+  width: 16px;
+  color: var(--theme-text-placeholder);
+  font-size: 9px;
+}
+
+/* Inline param editors — shown only under the SELECTED module. Covers
+   envelope mode/attack/release, pitch, formant, declip threshold, denoise
+   profile, and fade/crossfade curves (see InlineOpParamEditor). */
 .sandbox-op-params-row {
   display: flex;
   align-items: center;
@@ -460,6 +607,12 @@
 
 .sandbox-op-params-row .sandbox-toolbar-number {
   width: 56px;
+}
+
+.sandbox-op-params-readout {
+  flex: 1 1 100%;
+  font-size: 9px;
+  color: var(--theme-text-placeholder);
 }
 
 .sandbox-op-checkbox {
@@ -547,6 +700,36 @@
 
 .sandbox-op-remove:hover {
   color: var(--theme-danger);
+}
+
+.sandbox-add-op-row {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  padding: 8px 8px 0;
+}
+
+.sandbox-add-op-select.xleth-select-trigger {
+  height: auto;
+  padding: 6px;
+  border: 1px dashed var(--theme-border-strong);
+  background: transparent;
+  color: var(--theme-text-muted);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.03em;
+}
+
+.sandbox-add-op-select.xleth-select-trigger:hover:not(:disabled) {
+  border-color: var(--theme-accent);
+  color: var(--theme-accent);
+}
+
+.sandbox-add-op-hint {
+  text-align: center;
+  font-size: 9px;
+  color: var(--theme-text-placeholder);
 }
 
 .sandbox-stack-actions {
@@ -642,24 +825,9 @@
   color: var(--theme-text-muted);
 }
 
-.sandbox-tier-strip {
+.sandbox-readout-group {
   display: flex;
-  gap: 2px;
-}
-
-.sandbox-tier-btn {
-  padding: 3px 10px;
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: 0;
-  background: var(--theme-bg-surface);
-  color: var(--theme-text-placeholder);
-  font-size: 9px;
-  font-weight: 600;
-  cursor: not-allowed;
-}
-
-.sandbox-session-status {
-  display: flex;
+  align-items: center;
   gap: 14px;
 }
 

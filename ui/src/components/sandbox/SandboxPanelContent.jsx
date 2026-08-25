@@ -4,7 +4,8 @@ import useSandboxPanelStore from '../../stores/sandboxPanelStore.js'
 import { useKeyboardBinding } from '../../windowing/managers/useKeyboardBinding.ts'
 import { stopSandboxPreview } from './sandboxPreviewPlayer.js'
 import SandboxSourcesPanel from './SandboxSourcesPanel.jsx'
-import SandboxToolbar from './SandboxToolbar.jsx'
+import SandboxToolstrip from './SandboxToolstrip.jsx'
+import SandboxSelectionActionBar from './SandboxSelectionActionBar.jsx'
 import SandboxWaveformCanvas from './SandboxWaveformCanvas.jsx'
 import SandboxStackPanel from './SandboxStackPanel.jsx'
 import SandboxStatusBar from './SandboxStatusBar.jsx'
@@ -14,7 +15,17 @@ export default function SandboxPanelContent() {
   const openTarget = useSandboxPanelStore((s) => s.openTarget)
   const clearOpenTarget = useSandboxPanelStore((s) => s.clearOpenTarget)
   const addSourceFromRegion = useSandboxStore((s) => s.addSourceFromRegion)
+  const activeLayerId = useSandboxStore((s) => s.activeLayerId)
+  const layers = useSandboxStore((s) => s.layers)
+  const selection = useSandboxStore((s) => s.selection)
   const consumedRef = useRef(null)
+
+  // The selection action bar only makes sense once there is a rendered
+  // buffer to select INTO — mirrors every selection-gated command in the
+  // store, which already no-ops without one.
+  const activeLayer = layers.find((l) => l.id === activeLayerId) ?? null
+  const hasSelection = !!activeLayer && activeLayer.renderState === 'ready'
+    && !!selection && selection.endSample > selection.startSample
 
   // One-shot: a context-menu entry point sets openTarget then opens this
   // panel. Consume it once (by region id) so re-renders / panel refocus
@@ -56,7 +67,8 @@ export default function SandboxPanelContent() {
       <div className="sandbox-main-row">
         <SandboxSourcesPanel />
         <div className="sandbox-center-column">
-          <SandboxToolbar />
+          <SandboxToolstrip />
+          {hasSelection && <SandboxSelectionActionBar />}
           <SandboxWaveformCanvas />
         </div>
         <SandboxStackPanel />
