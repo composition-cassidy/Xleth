@@ -51,6 +51,7 @@
 #include "sandbox/SandboxCore.h"
 #include "sandbox/SandboxCommands.h"
 #include "sandbox/SandboxRenderer.h"
+#include "sandbox/SandboxSpectrogram.h"
 #include "import/FscScoreParser.h"
 #include "project/ProjectManager.h"
 #include "project/ProxyManager.h"
@@ -202,6 +203,10 @@ std::unique_ptr<ProjectManager> g_projectManager;
 // lifetime — constructed alongside it, torn down alongside it.
 std::unique_ptr<xleth::sandbox::SandboxCore>     g_sandboxCore;
 std::unique_ptr<xleth::sandbox::SandboxRenderer> g_sandboxRenderer;
+// P3-1 spectrogram cache. Content-hash keyed (see SandboxSpectrogram.h), so
+// it needs no coordination with g_sandboxRenderer's own cache beyond sharing
+// its teardown points.
+std::unique_ptr<xleth::sandbox::SandboxSpectrogramAnalyzer> g_sandboxSpectrogram;
 
 // Clip gain/fade drags are previewed directly on the model so the audio engine
 // can audition them without flooding undo history.  There is deliberately only
@@ -4766,8 +4771,9 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
     g_projectManager = std::make_unique<ProjectManager>();
     g_proxyManager   = std::make_unique<ProxyManager>();
 
-    g_sandboxCore     = std::make_unique<xleth::sandbox::SandboxCore>();
-    g_sandboxRenderer = std::make_unique<xleth::sandbox::SandboxRenderer>();
+    g_sandboxCore        = std::make_unique<xleth::sandbox::SandboxCore>();
+    g_sandboxRenderer    = std::make_unique<xleth::sandbox::SandboxRenderer>();
+    g_sandboxSpectrogram = std::make_unique<xleth::sandbox::SandboxSpectrogramAnalyzer>();
 
     // Wire region-proxy lookup sources into SyncManager so videoTick() can
     // prefer per-region proxy decoders when they are ready.
@@ -4979,6 +4985,7 @@ void Shutdown(const JsonApi::CallbackInfo& info)
     g_timeline.reset();
     g_projectManager.reset();
     g_sandboxRenderer.reset();  // drop published buffers before sampleBank
+    g_sandboxSpectrogram.reset();
     g_sandboxCore.reset();
     std::fprintf(stderr, "[BridgeShutdown] project state released\n");
 
@@ -5992,6 +5999,7 @@ JsonApi::Value Project_NewBlank(const JsonApi::CallbackInfo& info)
         if (g_sandboxRenderer) {
             for (const auto& l : g_sandboxCore->layers()) g_sandboxRenderer->unpublish(l.id);
             g_sandboxRenderer->clearCache();
+            if (g_sandboxSpectrogram) g_sandboxSpectrogram->clearCache();
         }
         g_sandboxCore->clear();
     }
@@ -6276,6 +6284,7 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
             // project is about to reuse. Drop them before anything can read one.
             for (const auto& l : g_sandboxCore->layers()) g_sandboxRenderer->unpublish(l.id);
             g_sandboxRenderer->clearCache();
+            if (g_sandboxSpectrogram) g_sandboxSpectrogram->clearCache();
         }
         g_sandboxCore->clear();
 
@@ -11026,6 +11035,59 @@ JsonApi::Value Sandbox_GetRenderedBuffer(const JsonApi::CallbackInfo& info)
     out.Set("numSamples",  JsonApi::Number::New(env, numSamples));
     out.Set("sampleRate",  JsonApi::Number::New(env, layer->bufferSampleRate));
     out.Set("data",        JsonApi::Buffer<float>::Copy(env, interleaved.data(), interleaved.size()));
+    return out;
+}
+
+// sandbox_getSpectrogram(layerId: number)
+//   → { ready:true, numFrames, numBins, hopSize, sampleRate, minDb, maxDb, data: Buffer }
+//   → { ready:false, reason }
+// STFT magnitude analysis of the layer's currently published render — the
+// same post-op-stack buffer sandbox_getRenderedBuffer reads, never the raw
+// source (P3-1). `data` is one uint8 token per (frame, bin), row-major
+// [frame][bin] — token 0 = minDb, token 255 = maxDb. SandboxSpectrogramAnalyzer
+// caches by the buffer's own content hash, so this naturally recomputes only
+// when the render actually changed (e.g. a gain-envelope edit's auto-render)
+// and is a cache hit on every repeat poll/redraw in between.
+JsonApi::Value Sandbox_GetSpectrogram(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!sandboxReady()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        JsonApi::TypeError::New(env, "sandbox_getSpectrogram(layerId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int layerId = info[0].As<JsonApi::Number>().Int32Value();
+
+    auto readyFail = [&](const char* reason) {
+        JsonApi::Object out = JsonApi::Object::New(env);
+        out.Set("ready",  JsonApi::Boolean::New(env, false));
+        out.Set("reason", JsonApi::String::New(env, reason));
+        return out;
+    };
+
+    const xleth::sandbox::SandboxLayer* layer = g_sandboxCore->findLayer(layerId);
+    if (!layer) return readyFail("layer not found");
+
+    xleth::sandbox::SandboxBufferPtr buf = g_sandboxRenderer->publishedOutput(layerId);
+    if (!buf) return readyFail("not rendered yet");
+
+    const xleth::sandbox::SandboxSpectrogramResult result =
+        g_sandboxSpectrogram->analyze(*buf, layer->bufferSampleRate);
+    if (!result.valid()) return readyFail("analysis failed");
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("ready",      JsonApi::Boolean::New(env, true));
+    out.Set("numFrames",  JsonApi::Number::New(env, result.numFrames));
+    out.Set("numBins",    JsonApi::Number::New(env, result.numBins));
+    out.Set("hopSize",    JsonApi::Number::New(env, result.hopSize));
+    out.Set("sampleRate", JsonApi::Number::New(env, result.sampleRate));
+    out.Set("minDb",      JsonApi::Number::New(env, result.minDb));
+    out.Set("maxDb",      JsonApi::Number::New(env, result.maxDb));
+    out.Set("data",       JsonApi::Buffer<uint8_t>::Copy(env, result.tokens->data(), result.tokens->size()));
     return out;
 }
 

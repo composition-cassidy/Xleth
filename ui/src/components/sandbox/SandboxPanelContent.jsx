@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react'
-import useSandboxStore from '../../stores/sandboxStore.js'
+import useSandboxStore, { hasMeaningfulSelection } from '../../stores/sandboxStore.js'
 import useSandboxPanelStore from '../../stores/sandboxPanelStore.js'
 import { useKeyboardBinding } from '../../windowing/managers/useKeyboardBinding.ts'
 import { stopSandboxPreview } from './sandboxPreviewPlayer.js'
@@ -22,10 +22,12 @@ export default function SandboxPanelContent() {
 
   // The selection action bar only makes sense once there is a rendered
   // buffer to select INTO — mirrors every selection-gated command in the
-  // store, which already no-ops without one.
+  // store, which already no-ops without one. hasMeaningfulSelection also
+  // gates out a degenerate sub-millisecond selection (a tiny drag at high
+  // zoom can pass the pixel-based drag threshold and still span ~0 time).
   const activeLayer = layers.find((l) => l.id === activeLayerId) ?? null
   const hasSelection = !!activeLayer && activeLayer.renderState === 'ready'
-    && !!selection && selection.endSample > selection.startSample
+    && hasMeaningfulSelection(selection, activeLayer.renderedBuffer?.sampleRate)
 
   // One-shot: a context-menu entry point sets openTarget then opens this
   // panel. Consume it once (by region id) so re-renders / panel refocus

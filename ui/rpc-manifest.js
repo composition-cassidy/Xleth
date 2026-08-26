@@ -2533,6 +2533,17 @@ const METHODS = [
     binary: 'sandboxBuffer',
   },
   {
+    // data: one uint8 token per (frame, bin) — see Sandbox_GetSpectrogram.
+    // Same transport as sandbox_getRenderedBuffer: fork uses
+    // serialization:'advanced', Buffer identity survives unconverted.
+    method: 'sandbox_getSpectrogram',
+    channels: ['xleth:sandbox:getSpectrogram'],
+    api: { 'sandbox.getSpectrogram': 'xleth:sandbox:getSpectrogram' },
+    handler: 'Sandbox_GetSpectrogram',
+    returns: 'value',
+    binary: 'sandboxBuffer',
+  },
+  {
     method: 'sandbox_bake',
     channels: ['xleth:sandbox:bake'],
     api: { 'sandbox.bake': 'xleth:sandbox:bake' },

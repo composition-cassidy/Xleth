@@ -327,6 +327,7 @@ add_library(XlethEngineCore STATIC
     # because it owns juce::AudioBuffer and a ThreadPool; the op-stack it
     # evaluates comes from XlethEngineModel.
     src/sandbox/SandboxRenderer.cpp
+    src/sandbox/SandboxSpectrogram.cpp
     src/video/FrameOutput.cpp
     src/video/FrameServer.cpp
     src/FrameCache.cpp

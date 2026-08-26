@@ -27,6 +27,8 @@ export default function SandboxToolstrip() {
   const layers = useSandboxStore((s) => s.layers)
   const envelopeEditMode = useSandboxStore((s) => s.envelopeEditMode)
   const setEnvelopeEditMode = useSandboxStore((s) => s.setEnvelopeEditMode)
+  const viewMode = useSandboxStore((s) => s.viewMode)
+  const setViewMode = useSandboxStore((s) => s.setViewMode)
 
   const layer = layers.find((l) => l.id === activeLayerId) ?? null
   const hasLayer = !!layer && layer.renderState === 'ready'
@@ -66,8 +68,22 @@ export default function SandboxToolstrip() {
       <div className="sandbox-toolstrip-divider" />
 
       <div className="sandbox-toolstrip-view-toggle">
-        <button className="active" disabled title="Waveform view">WAV</button>
-        <button className="ghost" disabled title="Spectrogram view — coming soon">SPC</button>
+        <button
+          className={viewMode === 'wav' ? 'active' : ''}
+          disabled={!hasLayer}
+          onClick={() => setViewMode('wav')}
+          title="Waveform view"
+        >
+          WAV
+        </button>
+        <button
+          className={viewMode === 'spc' ? 'active' : ''}
+          disabled={!hasLayer}
+          onClick={() => setViewMode('spc')}
+          title="Spectrogram view — STFT analysis of the rendered audio"
+        >
+          SPC
+        </button>
       </div>
 
       <div className="sandbox-toolstrip-divider" />

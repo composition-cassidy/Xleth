@@ -3,6 +3,11 @@ import { useState, useCallback } from 'react'
 import useSandboxStore from '../../stores/sandboxStore.js'
 import SandboxLayerWaveform from './SandboxLayerWaveform.jsx'
 
+// OS-file drop (Explorer/Finder → panel): audio formats the engine can decode
+// via FFmpeg. Mirrors ImportDropZone.jsx's ALLOWED_EXT, narrowed to audio —
+// this panel has no track to put a video's picture on.
+const DROPPABLE_AUDIO_EXT = /\.(wav|mp3|flac|aiff?|ogg|m4a|wma|opus)$/i
+
 function offsetMs(layer) {
   return layer.bufferSampleRate ? (layer.offsetSamples / layer.bufferSampleRate) * 1000 : 0
 }
@@ -187,7 +192,8 @@ export default function SandboxSourcesPanel() {
   const [dragOver, setDragOver] = useState(false)
 
   const handleDragOver = useCallback((e) => {
-    if (!Array.from(e.dataTransfer.types || []).includes('application/xleth-sample')) return
+    const types = Array.from(e.dataTransfer.types || [])
+    if (!types.includes('application/xleth-sample') && !types.includes('Files')) return
     e.preventDefault()
     e.dataTransfer.dropEffect = 'copy'
     setDragOver(true)
@@ -195,24 +201,56 @@ export default function SandboxSourcesPanel() {
 
   const handleDragLeave = useCallback(() => setDragOver(false), [])
 
+  // Raw audio file dropped from Explorer/Finder — no region, no sourceId, so
+  // it goes straight to addSourceFromRegion with a synthetic "region" that
+  // carries just the file path and its full duration. With no `id`, the
+  // resulting layer's sourceRegionId is null — the existing cold-layer
+  // SwapTargetPicker (SandboxStackPanel.jsx) already handles that case.
+  const addSourceFromFile = useCallback(async (filePath, name) => {
+    const duration = await window.xleth?.audio?.probeAudioDuration(filePath)
+    if (!(duration > 0)) {
+      console.warn('[SampleSandbox] Could not read duration, skipping drop:', filePath)
+      return
+    }
+    addSourceFromRegion({ audioFilePath: filePath, name, startTime: 0, endTime: duration })
+  }, [addSourceFromRegion])
+
   const handleDrop = useCallback((e) => {
     e.preventDefault()
     setDragOver(false)
+
     const raw = e.dataTransfer.getData('application/xleth-sample')
-    if (!raw) return
-    try {
-      const dropped = JSON.parse(raw)
-      // Drag payloads (SampleRow/SampleThumbnail) key the region id as
-      // `regionId`; addSourceFromRegion expects `id` (the shape the
-      // context-menu "Open in Sample Sandbox" entry point already passes).
-      // Without this the layer opens with no sourceRegionId and SWAP IN has
-      // nothing to target, even though the dragged sample IS a real region.
-      const region = { ...dropped, id: dropped.regionId ?? dropped.id }
-      addSourceFromRegion(region)
-    } catch (err) {
-      console.warn('[SampleSandbox] Bad drop payload:', err?.message || err)
+    if (raw) {
+      try {
+        const dropped = JSON.parse(raw)
+        // Drag payloads (SampleRow/SampleThumbnail) key the region id as
+        // `regionId`; addSourceFromRegion expects `id` (the shape the
+        // context-menu "Open in Sample Sandbox" entry point already passes).
+        // Without this the layer opens with no sourceRegionId and SWAP IN has
+        // nothing to target, even though the dragged sample IS a real region.
+        const region = { ...dropped, id: dropped.regionId ?? dropped.id }
+        addSourceFromRegion(region)
+      } catch (err) {
+        console.warn('[SampleSandbox] Bad drop payload:', err?.message || err)
+      }
+      return
     }
-  }, [addSourceFromRegion])
+
+    const files = Array.from(e.dataTransfer.files || [])
+    if (files.length === 0) return
+    // Electron 41+ removed File.path; use webUtils via the preload bridge
+    // (same fallback chain as ImportDropZone.jsx).
+    const getPath = (f) => window.xleth?.getDroppedFilePath?.(f) || f.path || f.name
+    const audioFiles = files.filter((f) => DROPPABLE_AUDIO_EXT.test(f.name))
+    if (audioFiles.length === 0) {
+      console.log('[SampleSandbox] Drop ignored — no supported audio files')
+      return
+    }
+    for (const f of audioFiles) {
+      const path = getPath(f)
+      if (path) addSourceFromFile(path, f.name.replace(/\.[^.]+$/, ''))
+    }
+  }, [addSourceFromRegion, addSourceFromFile])
 
   return (
     <div className="sandbox-sources-panel">
@@ -238,7 +276,7 @@ export default function SandboxSourcesPanel() {
         onDrop={handleDrop}
       >
         <Plus size={16} />
-        <span>Drag a sample here</span>
+        <span>Drag a sample or audio file here</span>
       </div>
       <CompositeSection />
     </div>

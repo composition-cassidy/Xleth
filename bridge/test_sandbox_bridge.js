@@ -84,7 +84,7 @@ async function main() {
     'sandbox_open', 'sandbox_close',
     'sandbox_stackAdd', 'sandbox_stackRemove', 'sandbox_stackReorder',
     'sandbox_stackSetParam', 'sandbox_stackSetBypassed',
-    'sandbox_render', 'sandbox_getRenderedBuffer', 'sandbox_bake',
+    'sandbox_render', 'sandbox_getRenderedBuffer', 'sandbox_getSpectrogram', 'sandbox_bake',
   ];
   const fn = {};
   for (const n of names) {
@@ -289,6 +289,33 @@ async function main() {
     }
   }
 
+  // ── 8b. sandbox_getSpectrogram (P3-1) ─────────────────────────────────────
+  group('sandbox_getSpectrogram');
+  {
+    const beforeAnyLayer = fn.sandbox_getSpectrogram(999999);
+    ok(beforeAnyLayer.ready === false, `unknown layerId -> ready:false (${JSON.stringify(beforeAnyLayer)})`);
+
+    const r = fn.sandbox_getSpectrogram(layerId);
+    ok(r.ready === true, `analysis of the just-rendered buffer succeeds (${JSON.stringify(r)})`);
+    if (r.ready) {
+      ok(typeof r.numFrames === 'number' && r.numFrames > 0, `reports numFrames (${r.numFrames})`);
+      ok(r.numBins === 1025, `reports numBins == kFftSize/2+1 (${r.numBins})`);
+      ok(r.hopSize === 512, `reports hopSize (${r.hopSize})`);
+      ok(r.sampleRate > 0, `reports sampleRate (${r.sampleRate})`);
+      ok(r.maxDb >= r.minDb, `maxDb >= minDb (${r.minDb}..${r.maxDb})`);
+      ok(Buffer.isBuffer(r.data), `data survives the fork boundary as a real Buffer (got ${typeof r.data})`);
+      const expectedBytes = r.numFrames * r.numBins; // one uint8 token per (frame, bin)
+      ok(r.data.length === expectedBytes,
+         `data byte length matches numFrames*numBins (${r.data.length} vs ${expectedBytes})`);
+
+      // Content-hash cache: re-fetching the SAME published render must be a
+      // hit — byte-identical tokens, not just the same shape.
+      const r2 = fn.sandbox_getSpectrogram(layerId);
+      ok(r2.ready === true && Buffer.compare(r.data, r2.data) === 0,
+         're-fetching the same render returns byte-identical tokens (cache hit)');
+    }
+  }
+
   // ── 9. sandbox_bake after render ─────────────────────────────────────────
   group('sandbox_bake (after render)');
   {
@@ -318,6 +345,9 @@ async function main() {
 
     const afterClose = fn.sandbox_getRenderedBuffer(layerId);
     ok(afterClose.ready === false, 'getRenderedBuffer after close reports not-ready, not stale data');
+
+    const spcAfterClose = fn.sandbox_getSpectrogram(layerId);
+    ok(spcAfterClose.ready === false, 'getSpectrogram after close reports not-ready, not stale data');
   }
 
   // ── 12. SB-5: layering + bake-to-new-asset ───────────────────────────────

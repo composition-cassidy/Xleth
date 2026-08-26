@@ -165,6 +165,25 @@ export function findEnvelopeOp(layer) {
   return layer?.ops?.find((o) => o.type === 'gainEnvelope') ?? null
 }
 
+// A drag under MIN_SELECTION_PX (SandboxWaveformCanvas.jsx) already collapses
+// to "no selection" — but that guard is in PIXELS, so at a high enough
+// zoom-per-sample ratio a few pixels can still span a near-zero DURATION.
+// The selection action bar is keyboard/mouse real estate for Trim/Cut/Fade/
+// etc., none of which are meaningful on a sub-millisecond span, so it gates
+// on TIME here as a second, resolution-independent check.
+export const MIN_SELECTION_SEC = 0.001
+
+// True only for a selection with real duration on a rendered buffer — the
+// shared gate for both "is there a selection to act on" checks
+// (SandboxPanelContent mounting the bar, SandboxSelectionActionBar's own
+// belt-and-suspenders re-check). `sampleRate` is the rendered buffer's own
+// rate, since `selection` is always in that buffer's sample space.
+export function hasMeaningfulSelection(selection, sampleRate) {
+  if (!selection || !sampleRate) return false
+  const spanSamples = selection.endSample - selection.startSample
+  return spanSamples > 0 && spanSamples / sampleRate > MIN_SELECTION_SEC
+}
+
 const POLL_MS = 150
 const POLL_MAX_ATTEMPTS = 200 // ~30s ceiling — a stuck render surfaces as an error, not a silent hang
 
@@ -237,6 +256,12 @@ function makeLayer({ layerId, name, sourceBufferId, bufferSampleRate, region }) 
     offsetSamples: 0,
     renderState: 'idle', // 'idle' | 'rendering' | 'ready' | 'error'
     renderedBuffer: null, // { numChannels, numSamples, sampleRate, channels: Float32Array[] }
+    // SPC view (P3-1). Fetched lazily — see ensureSpectrogram — and dropped
+    // whenever a fresh renderedBuffer lands, so a stale image can never be
+    // mistaken for the current render even for the one frame before the new
+    // fetch resolves.
+    spectrogramState: 'idle', // 'idle' | 'loading' | 'ready' | 'error'
+    spectrogram: null, // { numFrames, numBins, hopSize, sampleRate, minDb, maxDb, tokens: Uint8Array }
     bakeState: 'idle', // 'idle' | 'baking' | 'baked' | 'error'
     swapInState: 'idle', // 'idle' | 'swapping' | 'swapped' | 'error'
     swapInError: null,
@@ -297,6 +322,12 @@ const useSandboxStore = create((set, get) => ({
   // persisted: it is a pointer mode, not part of the edit.
   envelopeEditMode: false,
 
+  // WAV/SPC view toggle (P3-1) — session state, never persisted, same as
+  // envelopeEditMode. Which of the two the waveform canvas paints for the
+  // active layer; selection/zoom/scroll stay driven by the same `selection`
+  // and canvas sizing either mode already shares.
+  viewMode: 'wav', // 'wav' | 'spc'
+
   // ── Composite (SB-5) — mix of every layer's own render by its mix params ──
   composite: {
     renderState: 'idle', // 'idle' | 'rendering' | 'ready' | 'error'
@@ -339,21 +370,40 @@ const useSandboxStore = create((set, get) => ({
   // ── Layer lifecycle ────────────────────────────────────────────────────
 
   // `region` is a Sample Selector marked-region: { id, sourceId, name,
-  // startTime, endTime, audioFilePath? }. Resolves a SampleBank sourceRef via
+  // startTime, endTime, audioFilePath?, hasSwappedAudio?, swappedAudioPath?,
+  // swappedAudioDurationSec? }. Resolves a SampleBank sourceRef via
   // audio.loadSourceRegion, then opens a sandbox layer against it.
+  //
+  // Swap-aware (mirrors Audio_LoadRegionAudio in XlethEngineService.cpp): a
+  // region whose sample has been SWAP-IN'd (from this same panel, or restored
+  // via the Sample Selector's Swap/Restore Audio entry) plays from
+  // swappedAudioPath, not the region's original audioFilePath — dragging or
+  // re-opening it here must follow the same binding, or the sandbox would
+  // silently edit audio the project no longer plays.
   async addSourceFromRegion(region) {
     if (!region) return
     try {
-      let filePath = region.audioFilePath ?? null
-      if (!filePath && region.sourceId != null) {
-        const sources = (await window.xleth?.timeline?.getSources?.()) ?? []
-        const src = sources.find((s) => s.id === region.sourceId)
-        filePath = src?.filePath ?? null
+      let filePath, startTime, endTime
+      if (region.hasSwappedAudio && region.swappedAudioPath) {
+        filePath = region.swappedAudioPath
+        startTime = 0
+        endTime = region.swappedAudioDurationSec > 0
+          ? region.swappedAudioDurationSec
+          : await window.xleth?.audio?.probeAudioDuration(filePath)
+      } else {
+        filePath = region.audioFilePath ?? null
+        if (!filePath && region.sourceId != null) {
+          const sources = (await window.xleth?.timeline?.getSources?.()) ?? []
+          const src = sources.find((s) => s.id === region.sourceId)
+          filePath = src?.filePath ?? null
+        }
+        startTime = region.startTime
+        endTime = region.endTime
       }
       if (!filePath) throw new Error('No source file for this region')
 
       const sourceRef = await window.xleth?.audio?.loadSourceRegion(
-        filePath, region.startTime, region.endTime,
+        filePath, startTime, endTime,
       )
       if (sourceRef == null || sourceRef < 0) throw new Error('Could not load source audio')
 
@@ -361,7 +411,7 @@ const useSandboxStore = create((set, get) => ({
       // workspace reopens unbound, because the SampleBank id above is minted
       // fresh on every project load.
       const res = await window.xleth?.sandbox?.open(sourceRef, region.name, {
-        filePath, startTime: region.startTime, endTime: region.endTime,
+        filePath, startTime, endTime,
       })
       if (!res?.success) throw new Error(res?.reason || 'sandbox.open failed')
 
@@ -370,7 +420,7 @@ const useSandboxStore = create((set, get) => ({
         name: res.name,
         sourceBufferId: res.sourceBufferId,
         bufferSampleRate: res.bufferSampleRate,
-        region: { ...region, audioFilePath: filePath },
+        region: { ...region, audioFilePath: filePath, startTime, endTime },
       })
       set((state) => ({ layers: [...state.layers, layer], activeLayerId: layer.id, selection: null }))
       get().renderLayer(layer.id, 'open')
@@ -400,6 +450,7 @@ const useSandboxStore = create((set, get) => ({
   setActiveLayer(layerId) {
     if (get().activeLayerId === layerId) return
     set({ activeLayerId: layerId, selection: null })
+    if (get().viewMode === 'spc') get().ensureSpectrogram(layerId)
   },
 
   // Bridge-backed mute/solo (SB-5) — same optimistic-after-confirm contract as
@@ -506,7 +557,14 @@ const useSandboxStore = create((set, get) => ({
             channels,
           },
           error: null,
+          // A new render is a new set of samples — the previous spectrogram
+          // (if any) describes audio that no longer exists. Dropped here
+          // rather than left to be silently overwritten by ensureSpectrogram,
+          // so a slow SPC fetch can never leave a stale image on screen.
+          spectrogramState: 'idle',
+          spectrogram: null,
         })
+        if (get().viewMode === 'spc') get().ensureSpectrogram(layerId)
         return
       }
     } catch (e) {
@@ -573,11 +631,34 @@ const useSandboxStore = create((set, get) => ({
     }
   },
 
-  // Waits for every bound layer to reach its own render's terminal state
-  // (sandbox_renderComposite's own precondition — "every layer already
-  // rendered"), then mixes. Bails out at any point `gen` stops being the
-  // newest scheduled generation, discarding whatever this cycle produced
-  // rather than letting stale audio overwrite a fresher edit's result.
+  // Waits until every bound layer reaches its own render's terminal state
+  // (sandbox_renderComposite's precondition — "every layer already
+  // rendered"). Shared by the manual RENDER COMPOSITE button and the
+  // auto-render pipeline: without this wait, a layer whose own render is
+  // still in flight (just added, or mid auto-render from an edit) makes
+  // sandbox_renderComposite fail with 'layer "X" not rendered yet' even
+  // though it finishes a moment later. Returns 'settled', 'stale' (per
+  // `isStale`, when given), or 'timeout'.
+  async _waitForLayersSettled(isStale = () => false) {
+    const layersSettled = () => get().layers
+      .filter((l) => l.sourceBufferId >= 0)
+      .every((l) => l.renderState === 'ready' || l.renderState === 'error')
+    const deadline = Date.now() + 30000
+    while (!layersSettled()) {
+      if (isStale()) return 'stale'
+      if (Date.now() > deadline) return 'timeout'
+      await new Promise((resolve) => setTimeout(resolve, 30))
+    }
+    return isStale() ? 'stale' : 'settled'
+  },
+
+  // Waits for every bound layer to settle, then mixes. Bails out at any point
+  // `gen` stops being the newest scheduled generation, discarding whatever
+  // this cycle produced rather than letting stale audio overwrite a fresher
+  // edit's result. On failure the PREVIOUS composite.renderedBuffer (if any)
+  // is left in place — a transient re-render failure should never erase a
+  // last-good mix the user can still preview/bake, only a render that has
+  // never once succeeded leaves renderedBuffer null (the honest empty state).
   async _runCompositeAutoRender(gen, trigger) {
     const isStale = () => gen !== compositeGeneration
     const supersede = () => set((state) => ({
@@ -593,19 +674,12 @@ const useSandboxStore = create((set, get) => ({
       compositeAutoRender: { ...state.compositeAutoRender, debouncePending: false, pending: true },
     }))
 
-    const layersSettled = () => get().layers
-      .filter((l) => l.sourceBufferId >= 0)
-      .every((l) => l.renderState === 'ready' || l.renderState === 'error')
-    const deadline = Date.now() + 30000
-    while (!layersSettled()) {
-      if (isStale()) { supersede(); return }
-      if (Date.now() > deadline) {
-        set((state) => ({ compositeAutoRender: { ...state.compositeAutoRender, pending: false } }))
-        return
-      }
-      await new Promise((resolve) => setTimeout(resolve, 30))
+    const waitResult = await get()._waitForLayersSettled(isStale)
+    if (waitResult === 'stale') { supersede(); return }
+    if (waitResult === 'timeout') {
+      set((state) => ({ compositeAutoRender: { ...state.compositeAutoRender, pending: false } }))
+      return
     }
-    if (isStale()) { supersede(); return }
 
     set((state) => ({ composite: { ...state.composite, renderState: 'rendering', error: null } }))
     let renderedBuffer
@@ -613,7 +687,7 @@ const useSandboxStore = create((set, get) => ({
       renderedBuffer = await get()._fetchCompositeRender()
     } catch (e) {
       if (!isStale()) {
-        set({ composite: { renderState: 'error', renderedBuffer: null, error: e?.message || String(e) } })
+        set((state) => ({ composite: { ...state.composite, renderState: 'error', error: e?.message || String(e) } }))
       }
       supersede()
       console.warn(`[SampleSandbox] composite auto-render (${trigger}) failed:`, e?.message || e)
@@ -816,6 +890,55 @@ const useSandboxStore = create((set, get) => ({
   // cannot debug when playback sounds wrong.
   setEnvelopeEditMode(on) { set({ envelopeEditMode: !!on }) },
   toggleEnvelopeEditMode() { set((state) => ({ envelopeEditMode: !state.envelopeEditMode })) },
+
+  // WAV/SPC view toggle (P3-1). Switching to 'spc' kicks a fetch immediately
+  // if the active layer has a render but no spectrogram yet — otherwise the
+  // canvas would sit on "Analyzing…" until the next unrelated store update.
+  setViewMode(mode) {
+    if (mode !== 'wav' && mode !== 'spc') return
+    set({ viewMode: mode })
+    if (mode === 'spc' && get().activeLayerId != null) get().ensureSpectrogram(get().activeLayerId)
+  },
+
+  // Fetches the STFT analysis of `layerId`'s CURRENT renderedBuffer, unless
+  // one is already in flight or already sitting in spectrogramState==='ready'
+  // (fresh, because a new render clears it — see _pollRenderedBuffer). The
+  // engine's own cache (SandboxSpectrogramAnalyzer, keyed by the buffer's
+  // content hash) is what makes repeated calls here cheap; this guard just
+  // avoids firing a redundant bridge round-trip for the same render.
+  async ensureSpectrogram(layerId) {
+    const layer = get().layers.find((l) => l.id === layerId)
+    if (!layer?.renderedBuffer || layer.spectrogramState === 'loading' || layer.spectrogramState === 'ready') return
+    get().patchLayer(layerId, { spectrogramState: 'loading' })
+    try {
+      const res = await window.xleth?.sandbox?.getSpectrogram(layerId)
+      if (!res?.ready) throw new Error(res?.reason || 'spectrogram not ready')
+      // `data` arrives as a Node Buffer over IPC — a Uint8Array view over it
+      // needs no alignment care (unlike deinterleave's Float32Array reads),
+      // one byte per token.
+      const tokens = new Uint8Array(res.data.buffer, res.data.byteOffset, res.data.byteLength)
+      // The layer may have re-rendered (and cleared spectrogramState) while
+      // this call was in flight — stamping a result onto a layer that has
+      // since moved on to a different renderedBuffer would show a stale
+      // image, so only apply it if still the fetch nothing has superseded.
+      if (get().layers.find((l) => l.id === layerId)?.renderedBuffer !== layer.renderedBuffer) return
+      get().patchLayer(layerId, {
+        spectrogramState: 'ready',
+        spectrogram: {
+          numFrames: res.numFrames,
+          numBins: res.numBins,
+          hopSize: res.hopSize,
+          sampleRate: res.sampleRate,
+          minDb: res.minDb,
+          maxDb: res.maxDb,
+          tokens,
+        },
+      })
+    } catch (e) {
+      get().patchLayer(layerId, { spectrogramState: 'error' })
+      console.warn('[SampleSandbox] ensureSpectrogram failed:', e?.message || e)
+    }
+  },
 
   async setOpBypassed(layerId, opId, bypassed) {
     try {
@@ -1064,18 +1187,44 @@ const useSandboxStore = create((set, get) => ({
   // (and dropping any pending debounce timer) supersedes an auto-render cycle
   // already in flight, so its eventual result is discarded rather than
   // clobbering this one when it lands.
+  //
+  // Must wait for every layer to settle first, same as the auto-render path
+  // (_waitForLayersSettled) — sandbox_renderComposite refuses outright if any
+  // bound layer hasn't published its own render yet. Without this wait,
+  // clicking RENDER COMPOSITE right after adding a layer (or right after an
+  // edit that just kicked that layer's own auto-render) failed immediately
+  // with "layer \"X\" not rendered yet", surfaced to the button as
+  // "Render failed — retry" even though the layer finishes rendering a
+  // moment later on its own.
   async renderComposite() {
     if (compositeDebounceTimer != null) { clearTimeout(compositeDebounceTimer); compositeDebounceTimer = null }
     compositeGeneration++
+    const gen = compositeGeneration
+    const isStale = () => gen !== compositeGeneration
     set((state) => ({
       composite: { ...state.composite, renderState: 'rendering', error: null },
       compositeAutoRender: { ...state.compositeAutoRender, debouncePending: false },
     }))
+
+    const waitResult = await get()._waitForLayersSettled(isStale)
+    if (waitResult === 'stale') return // a newer render call took over meanwhile
+    if (waitResult === 'timeout') {
+      set((state) => ({
+        composite: { ...state.composite, renderState: 'error', error: 'Timed out waiting for layers to render' },
+      }))
+      return
+    }
+
     try {
       const renderedBuffer = await get()._fetchCompositeRender()
+      if (isStale()) return
       set({ composite: { renderState: 'ready', renderedBuffer, error: null } })
     } catch (e) {
-      set({ composite: { renderState: 'error', renderedBuffer: null, error: e?.message || String(e) } })
+      if (isStale()) return
+      // Keep the previous renderedBuffer (if any) rather than nulling it out —
+      // a failed re-render should never erase a last-good mix still valid for
+      // preview/bake. See the auto-render path's identical rule.
+      set((state) => ({ composite: { ...state.composite, renderState: 'error', error: e?.message || String(e) } }))
     }
   },
 

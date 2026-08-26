@@ -148,6 +148,102 @@ function computeColumnPeaks(channelData, numCols) {
   return out
 }
 
+function hexToRgb(hex) {
+  const m = /^#?([0-9a-f]{2})([0-9a-f]{2})([0-9a-f]{2})/i.exec(hex || '')
+  return m ? { r: parseInt(m[1], 16), g: parseInt(m[2], 16), b: parseInt(m[3], 16) } : { r: 0, g: 0, b: 0 }
+}
+
+// ── Log-frequency axis (P3-1 fix) ───────────────────────────────────────────
+//
+// The engine hands back LINEAR fft bins (bin i == i * sampleRate/fftSize):
+// correct for the DSP, useless as a picture — almost every octave of musical
+// content (and every harmonic/formant line) lives below ~5 kHz, which on a
+// linear axis is a thin band at the very bottom while the rest of the image
+// is near-silent, near-solid-color "streaks". A real spectrogram plots
+// frequency log-scaled, so this canvas resamples the linear bins onto
+// log-spaced rows before ever drawing a pixel.
+const SPC_FREQ_MIN_HZ = 20
+const SPC_FREQ_MAX_HZ = 20000
+const SPC_GRID_HZ = [100, 1000, 10000] // labeled gridlines: "100", "1k", "10k"
+
+// Fraction (0..1) of the log axis between minHz and maxHz that `freq` falls
+// at. Shared by the image builder (which bin to sample per row) and the
+// gridline overlay (which y each labeled Hz lands at) so the two can never
+// drift apart pixel-for-pixel.
+function freqLogT(freq, minHz, maxHz) {
+  const f = Math.max(minHz, Math.min(maxHz, freq))
+  return Math.log(f / minHz) / Math.log(maxHz / minHz)
+}
+
+function formatHzLabel(hz) {
+  return hz >= 1000 ? `${hz / 1000}k` : `${hz}`
+}
+
+// Builds a (numFrames x numFreqRows) pixel grid for a spectrogram result —
+// ONE pixel per (frame, log-frequency row) — the visible canvas scales this
+// up with drawImage, the same "compute small, let the browser stretch it"
+// approach the rest of this app's mipmap-style canvas views use. Built once
+// per spectrogram object and cached by the caller (see spcImageRef);
+// token→color is a single-hue ramp from the page background to the accent —
+// the "token-based monochromatic magnitude ramp" the spec calls for.
+//
+// Row r's frequency is log-spaced between SPC_FREQ_MIN_HZ and
+// min(SPC_FREQ_MAX_HZ, Nyquist) — never above Nyquist, so the image never
+// carries a dead band of frequencies the source buffer can't contain. The
+// engine's linear bin for that frequency is `freq * fftSize / sampleRate`;
+// `fftSize` itself isn't in the RPC payload, but numBins IS fftSize/2+1 (see
+// SandboxSpectrogram.h), so it's recovered as (numBins-1)*2. Sampled with
+// linear interpolation between the two nearest source bins — the log axis
+// stretches the low end across many more rows than source bins exist for,
+// and nearest-neighbour there would look staircase-blocky.
+function buildSpectrogramImage(spectrogram, bgHex, accentHex) {
+  const { numFrames, numBins, tokens, sampleRate } = spectrogram
+  const fftSize = (numBins - 1) * 2
+  const minHz = SPC_FREQ_MIN_HZ
+  const maxHz = Math.min(SPC_FREQ_MAX_HZ, sampleRate / 2)
+  const numFreqRows = numBins // resolution only — drawImage stretches this to the canvas's real height regardless
+
+  const off = document.createElement('canvas')
+  off.width = Math.max(1, numFrames)
+  off.height = Math.max(1, numFreqRows)
+  const octx = off.getContext('2d')
+  const img = octx.createImageData(off.width, off.height)
+  const bg = hexToRgb(bgHex)
+  const accent = hexToRgb(accentHex)
+  const data = img.data
+
+  // Per-row source bin (fractional), precomputed once — every frame reuses it.
+  const srcBin = new Float32Array(numFreqRows)
+  for (let r = 0; r < numFreqRows; r++) {
+    const t = numFreqRows > 1 ? r / (numFreqRows - 1) : 0
+    const freq = minHz * Math.pow(maxHz / minHz, t)
+    srcBin[r] = (freq * fftSize) / sampleRate
+  }
+
+  for (let f = 0; f < numFrames; f++) {
+    const rowOffset = f * numBins
+    for (let r = 0; r < numFreqRows; r++) {
+      const bf = srcBin[r]
+      const b0 = Math.max(0, Math.min(numBins - 1, Math.floor(bf)))
+      const b1 = Math.min(numBins - 1, b0 + 1)
+      const frac = bf - Math.floor(bf)
+      const tok0 = tokens[rowOffset + b0]
+      const tok1 = tokens[rowOffset + b1]
+      const t = (tok0 + (tok1 - tok0) * frac) / 255
+      // Row 0 (lowest frequency) at the BOTTOM — the same frequency-axis
+      // convention as the EQ panel and the APEX curve editor.
+      const y = numFreqRows - 1 - r
+      const idx = (y * numFrames + f) * 4
+      data[idx]     = bg.r + (accent.r - bg.r) * t
+      data[idx + 1] = bg.g + (accent.g - bg.g) * t
+      data[idx + 2] = bg.b + (accent.b - bg.b) * t
+      data[idx + 3] = 255
+    }
+  }
+  octx.putImageData(img, 0, 0)
+  return { canvas: off, minHz, maxHz }
+}
+
 function pxToSample(px, w, numSamples) {
   return Math.max(0, Math.min(numSamples, Math.round((px / Math.max(1, w)) * numSamples)))
 }
@@ -164,6 +260,7 @@ export default function SandboxWaveformCanvas() {
   const setSelection = useSandboxStore((s) => s.setSelection)
   const envelopeEditMode = useSandboxStore((s) => s.envelopeEditMode)
   const setGainEnvelope = useSandboxStore((s) => s.setGainEnvelope)
+  const viewMode = useSandboxStore((s) => s.viewMode)
   const layer = layers.find((l) => l.id === activeLayerId) ?? null
 
   const containerRef = useRef(null)
@@ -174,6 +271,9 @@ export default function SandboxWaveformCanvas() {
   const envCanvasRef = useRef(null)
   const sizeRef = useRef({ w: 0, h: MIN_WAVE_HEIGHT })
   const colPeaksRef = useRef(null) // { numChannels, cols: [{min,max}, ...] }
+  // Offscreen spectrogram bitmap, rebuilt only when the spectrogram OBJECT
+  // changes (a new render/analysis) — not on every resize/theme redraw.
+  const spcImageRef = useRef({ spectrogram: null, canvas: null })
   const dragRef = useRef(null) // { startPx, endPx } while dragging
   // Live envelope drag: { points, index }. This is the ENTIRE local-preview
   // mechanism — while it is non-null the canvas draws from it instead of from
@@ -240,13 +340,65 @@ export default function SandboxWaveformCanvas() {
       return
     }
 
+    // Column peaks are computed regardless of view mode: the envelope
+    // overlay's headroom check reads colPeaksRef in BOTH views — an editable
+    // gain envelope is still something you draw while looking at SPC.
     const numChannels = buf.numChannels || 1
-    const laneH = h / numChannels
     colPeaksRef.current = {
       numSamples: buf.numSamples,
       lanes: buf.channels.map((chan) => computeColumnPeaks(chan, Math.max(1, Math.round(w)))),
     }
 
+    if (viewMode === 'spc') {
+      if (layer.spectrogram) {
+        let cache = spcImageRef.current
+        if (cache.spectrogram !== layer.spectrogram) {
+          const built = buildSpectrogramImage(
+            layer.spectrogram,
+            tokenValue('--theme-bg-primary') || '#101010',
+            tokenValue('--theme-accent') || '#fe589a',
+          )
+          cache = { spectrogram: layer.spectrogram, ...built }
+          spcImageRef.current = cache
+        }
+        // No smoothing: a token grid is discrete data, and a blurred STFT
+        // frame boundary would misrepresent where a paint-out stroke's
+        // feather (P3-2) actually falls.
+        ctx.imageSmoothingEnabled = false
+        ctx.drawImage(cache.canvas, 0, 0, cache.canvas.width, cache.canvas.height, 0, 0, w, h)
+
+        // Log-frequency axis — gridlines + Hz labels at the landmarks the
+        // spec calls for. Recomputed every draw (cheap text/line work)
+        // rather than baked into the cached bitmap, which stays pure pixel
+        // data keyed only on the spectrogram object.
+        ctx.save()
+        ctx.font = uiCanvasFont('9px')
+        ctx.textBaseline = 'alphabetic'
+        for (const hz of SPC_GRID_HZ) {
+          if (hz < cache.minHz || hz > cache.maxHz) continue
+          const y = Math.round(h * (1 - freqLogT(hz, cache.minHz, cache.maxHz))) + 0.5
+          ctx.strokeStyle = palette.rulerGridMinor || palette.laneSeparator
+          ctx.lineWidth = 1
+          ctx.beginPath()
+          ctx.moveTo(0, y)
+          ctx.lineTo(w, y)
+          ctx.stroke()
+          ctx.fillStyle = palette.rulerText
+          ctx.fillText(formatHzLabel(hz), 3, y - 2)
+        }
+        ctx.restore()
+      } else {
+        ctx.fillStyle = palette.rulerText
+        ctx.font = uiCanvasFont('11px')
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+        ctx.fillText(layer.spectrogramState === 'error' ? 'Spectrogram analysis failed' : 'Analyzing…', w / 2, h / 2)
+        ctx.textAlign = 'left'
+      }
+      return
+    }
+
+    const laneH = h / numChannels
     for (let ch = 0; ch < numChannels; ch++) {
       const top = ch * laneH
       const mid = top + laneH / 2
@@ -286,7 +438,7 @@ export default function SandboxWaveformCanvas() {
         ctx.stroke()
       }
     }
-  }, [layer])
+  }, [layer, viewMode])
 
   const drawOverlay = useCallback(() => {
     const canvas = overlayCanvasRef.current

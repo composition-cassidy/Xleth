@@ -2,7 +2,7 @@ import { useState } from 'react'
 import {
   Crop, Scissors, Copy, ClipboardPaste, VolumeX, TrendingUp, TrendingDown, Volume2,
 } from 'lucide-react'
-import useSandboxStore from '../../stores/sandboxStore.js'
+import useSandboxStore, { hasMeaningfulSelection } from '../../stores/sandboxStore.js'
 import { FADE_SHAPES } from './sandboxToolConstants.js'
 
 // Row 2 — rendered ONLY when a selection exists (hidden otherwise). Every
@@ -32,7 +32,7 @@ export default function SandboxSelectionActionBar() {
 
   const layer = layers.find((l) => l.id === activeLayerId) ?? null
   const hasLayer = !!layer && layer.renderState === 'ready'
-  const hasSelection = hasLayer && !!selection && selection.endSample > selection.startSample
+  const hasSelection = hasLayer && hasMeaningfulSelection(selection, layer.renderedBuffer?.sampleRate)
   const cursorSample = selection?.startSample ?? 0
 
   // The bar itself is only mounted while hasSelection is true (see

@@ -30,6 +30,7 @@
 #include "sandbox/SandboxCore.h"
 #include "sandbox/SandboxOp.h"
 #include "sandbox/SandboxRenderer.h"
+#include "sandbox/SandboxSpectrogram.h"
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
@@ -1990,6 +1991,92 @@ static juce::File writeFixtureWav(const juce::File& dir, const juce::String& nam
     return file;
 }
 
+// ---------------------------------------------------------------------------
+// Spectrogram (P3-1) — STFT analysis of the rendered buffer, content-hash cache
+// ---------------------------------------------------------------------------
+static void testSpectrogram() {
+    std::cout << "\n[Spectrogram -- STFT analysis + content-hash cache]\n";
+
+    // A tone at EXACTLY FFT bin 50's frequency — a windowed DFT of a pure
+    // sinusoid puts all its energy in one bin only when frequency (not phase)
+    // is bin-aligned, so this is deterministic and leak-free regardless of
+    // which frame/hop offset happens to sample it. See ApexVizAccumulator's
+    // computeSpectrum comment for the same |X[k]| = A*N/4 identity this
+    // analyzer's normalisation (4/N) is built to match.
+    const int    expectedBin = 50;
+    const double toneHz = kTestRate * expectedBin / SandboxSpectrogramAnalyzer::kFftSize;
+    SandboxBuffer tone = makeSine(1, static_cast<int>(kTestRate * 2), toneHz, kTestRate, 0.8f);
+
+    SandboxSpectrogramAnalyzer analyzer;
+    auto result = analyzer.analyze(tone, kTestRate);
+    CHECK(result.valid(), "analyze() returns a valid result for a real buffer");
+    CHECK_EQ(result.numBins, SandboxSpectrogramAnalyzer::kNumBins, "numBins == kFftSize/2+1");
+    const int expectedFrames =
+        (tone.getNumSamples() + SandboxSpectrogramAnalyzer::kHopSize - 1) / SandboxSpectrogramAnalyzer::kHopSize;
+    CHECK_EQ(result.numFrames, expectedFrames, "numFrames covers the whole buffer at hop stride");
+    CHECK_EQ(result.hopSize, SandboxSpectrogramAnalyzer::kHopSize, "hopSize reported matches kHopSize");
+    CHECK_NEAR(result.sampleRate, kTestRate, 0.001, "sampleRate carried through unchanged");
+
+    const int frameIdx = result.numFrames / 2; // safely inside the tone, a full window away from either edge
+    const uint8_t* row = result.tokens->data()
+        + static_cast<size_t>(frameIdx) * static_cast<size_t>(result.numBins);
+    int peakBin = 0;
+    for (int k = 1; k < result.numBins; ++k) if (row[k] > row[peakBin]) peakBin = k;
+    CHECK_EQ(peakBin, expectedBin, "peak magnitude bin lands exactly on the bin-aligned tone's own bin");
+    CHECK(row[peakBin] > 200, "peak bin token sits near the top of 0..255 for a -1.9dBFS tone");
+
+    // Silence quantizes to the floor token everywhere.
+    SandboxBuffer silence = makeConst(1, static_cast<int>(kTestRate), 0.0f);
+    auto silentResult = analyzer.analyze(silence, kTestRate);
+    CHECK(silentResult.valid(), "analyze() handles an all-zero buffer");
+    bool allFloor = true;
+    for (uint8_t t : *silentResult.tokens) if (t != 0) { allFloor = false; break; }
+    CHECK(allFloor, "a silent buffer quantizes to token 0 (minDb) at every frame/bin");
+
+    // Invalid input refuses rather than guessing, same discipline as
+    // SandboxRenderer::renderStack's own sampleRate <= 0 refusal.
+    CHECK(!analyzer.analyze(tone, 0.0).valid(), "analyze() refuses a non-positive sampleRate");
+    SandboxBuffer empty(1, 0);
+    CHECK(!analyzer.analyze(empty, kTestRate).valid(), "analyze() refuses an empty buffer");
+
+    // ── Content-hash cache ──────────────────────────────────────────────────
+    SandboxSpectrogramAnalyzer cacheAnalyzer;
+    SandboxBuffer bufA     = makeSine(1, 4000, 440.0, kTestRate, 0.5f);
+    SandboxBuffer bufACopy = makeSine(1, 4000, 440.0, kTestRate, 0.5f); // identical content, different object
+    SandboxBuffer bufB     = makeSine(1, 4000, 880.0, kTestRate, 0.5f); // different content
+
+    auto r1 = cacheAnalyzer.analyze(bufA, kTestRate);
+    CHECK_EQ(cacheAnalyzer.entryCount(), static_cast<size_t>(1), "first analyze() inserts one cache entry");
+    auto r2 = cacheAnalyzer.analyze(bufACopy, kTestRate);
+    CHECK(r1.tokens.get() == r2.tokens.get(),
+          "identical buffer CONTENT (a different object) hits the cache -- same tokens pointer");
+    CHECK_EQ(cacheAnalyzer.entryCount(), static_cast<size_t>(1), "a cache hit does not grow the cache");
+
+    auto r3 = cacheAnalyzer.analyze(bufB, kTestRate);
+    CHECK(r1.tokens.get() != r3.tokens.get(), "different buffer content is a cache miss -- different tokens pointer");
+    CHECK_EQ(cacheAnalyzer.entryCount(), static_cast<size_t>(2), "distinct content adds a second cache entry");
+
+    // Simulates a gain-envelope re-render producing new samples for the same
+    // layer: the hash changes, so "SPC updates after auto-render" falls out
+    // of the cache keying with no invalidation call needed.
+    SandboxBuffer bufAEdited = bufA;
+    bufAEdited.applyGain(0, 0, bufAEdited.getNumSamples(), 0.5f);
+    auto r4 = cacheAnalyzer.analyze(bufAEdited, kTestRate);
+    CHECK(r4.tokens.get() != r1.tokens.get(),
+          "a gain change on the same layer (different samples) is a cache miss, not a stale hit");
+
+    // LRU eviction under an entry budget.
+    SandboxSpectrogramAnalyzer smallAnalyzer(/*maxEntries=*/2);
+    smallAnalyzer.analyze(makeSine(1, 2000, 100.0, kTestRate), kTestRate);
+    smallAnalyzer.analyze(makeSine(1, 2000, 200.0, kTestRate), kTestRate);
+    smallAnalyzer.analyze(makeSine(1, 2000, 300.0, kTestRate), kTestRate);
+    CHECK_EQ(smallAnalyzer.entryCount(), static_cast<size_t>(2),
+             "a 2-entry cache evicts down to its cap rather than growing unbounded");
+
+    smallAnalyzer.clearCache();
+    CHECK_EQ(smallAnalyzer.entryCount(), static_cast<size_t>(0), "clearCache() empties the cache");
+}
+
 static void generateFixtures() {
     std::cout << "\n[Sample Sandbox -- restoration/pitch trio fixtures]\n";
 
@@ -2087,6 +2174,7 @@ int main() {
     testWorkerAndPublish();
     testGainEnvelope();
     testGainEnvelopeRelativeMode();
+    testSpectrogram();
 
     generateFixtures();
 

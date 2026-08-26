@@ -145,4 +145,58 @@ describe('sandboxStore composite auto-render', () => {
     expect(playSandboxPreview).toHaveBeenCalledTimes(1)
     expect(playSandboxPreview.mock.calls[0][0].layersMixed).toBe(1) // the fresh render, not 'stale'
   })
+
+  // Regression: the manual RENDER COMPOSITE button used to call
+  // sandbox_renderComposite immediately, with no wait for a layer whose own
+  // render was still in flight — sandbox_renderComposite refuses in that
+  // case ('layer "X" not rendered yet'), surfacing as "Render failed —
+  // retry" for a layer that finishes rendering a moment later on its own.
+  it('manual RENDER COMPOSITE waits for a layer still rendering instead of failing immediately', async () => {
+    let compositeCalls = 0
+    const useSandboxStore = await loadStore({
+      renderComposite: vi.fn(async () => {
+        compositeCalls += 1
+        return { ready: true, numChannels: 1, numSamples: 2, sampleRate: 48000, layersMixed: 1, data: FLOAT_BYTES }
+      }),
+    })
+
+    useSandboxStore.setState({ layers: [baseLayer({ renderState: 'rendering' })], activeLayerId: 1 })
+
+    const pending = useSandboxStore.getState().renderComposite()
+    await new Promise((resolve) => setTimeout(resolve, 80))
+    // Still waiting on the layer — must not have failed with "not rendered yet"
+    expect(compositeCalls).toBe(0)
+    expect(useSandboxStore.getState().composite.renderState).toBe('rendering')
+    expect(useSandboxStore.getState().composite.error).toBe(null)
+
+    useSandboxStore.setState((state) => ({
+      layers: state.layers.map((l) => ({ ...l, renderState: 'ready' })),
+    }))
+    await pending
+
+    expect(compositeCalls).toBe(1)
+    expect(useSandboxStore.getState().composite.renderState).toBe('ready')
+  })
+
+  // Regression: a failed re-render used to null out composite.renderedBuffer
+  // unconditionally, discarding a previously good mix that was still valid
+  // for preview/bake — "paint garbage / discard last-good state on a
+  // transient failure" is exactly what the spectrogram/render-failure
+  // contract forbids.
+  it('a failed composite re-render keeps the previous renderedBuffer instead of nulling it', async () => {
+    const useSandboxStore = await loadStore({
+      renderComposite: vi.fn(async () => ({ ready: false, reason: 'layer "X" not rendered yet' })),
+    })
+    useSandboxStore.setState({
+      layers: [baseLayer({ renderState: 'ready' })],
+      activeLayerId: 1,
+      composite: { renderState: 'ready', renderedBuffer: { layersMixed: 'last-good' }, error: null },
+    })
+
+    await useSandboxStore.getState().renderComposite()
+
+    const state = useSandboxStore.getState()
+    expect(state.composite.renderState).toBe('error')
+    expect(state.composite.renderedBuffer).toEqual({ layersMixed: 'last-good' })
+  })
 })
