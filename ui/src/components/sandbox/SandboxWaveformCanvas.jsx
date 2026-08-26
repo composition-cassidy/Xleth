@@ -9,7 +9,9 @@ import useSandboxStore, {
   clampGainEnvelopeFollower, GAIN_ENVELOPE_MODE, GAIN_ENVELOPE_DB_MIN,
 } from '../../stores/sandboxStore.js'
 
-const WAVE_HEIGHT = 240
+// Fallback used only before the first layout measurement, and as a floor so
+// a squeezed panel never hands the canvas a degenerate (near-zero) height.
+const MIN_WAVE_HEIGHT = 160
 const MIN_SELECTION_PX = 3 // drags shorter than this collapse to "no selection", same gesture as a plain click
 
 // ─── Gain envelope overlay (Audio Dynamics Editor, Mode 1) ──────────────────
@@ -165,11 +167,12 @@ export default function SandboxWaveformCanvas() {
   const layer = layers.find((l) => l.id === activeLayerId) ?? null
 
   const containerRef = useRef(null)
+  const stackRef = useRef(null)
   const rulerCanvasRef = useRef(null)
   const bgCanvasRef = useRef(null)
   const overlayCanvasRef = useRef(null)
   const envCanvasRef = useRef(null)
-  const sizeRef = useRef({ w: 0 })
+  const sizeRef = useRef({ w: 0, h: MIN_WAVE_HEIGHT })
   const colPeaksRef = useRef(null) // { numChannels, cols: [{min,max}, ...] }
   const dragRef = useRef(null) // { startPx, endPx } while dragging
   // Live envelope drag: { points, index }. This is the ENTIRE local-preview
@@ -207,19 +210,20 @@ export default function SandboxWaveformCanvas() {
   const drawBackground = useCallback(() => {
     const canvas = bgCanvasRef.current
     const w = sizeRef.current.w
+    const h = sizeRef.current.h
     if (!canvas || w === 0) return
     const ctx = canvas.getContext('2d')
     const palette = resolveTimelinePalette()
 
     ctx.fillStyle = tokenValue('--theme-bg-primary') || '#101010'
-    ctx.fillRect(0, 0, w, WAVE_HEIGHT)
+    ctx.fillRect(0, 0, w, h)
 
     if (!layer) {
       ctx.fillStyle = palette.rulerText
       ctx.font = uiCanvasFont('11px')
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
-      ctx.fillText('Drag a sample into Sources & Layers to begin', w / 2, WAVE_HEIGHT / 2)
+      ctx.fillText('Drag a sample into Sources & Layers to begin', w / 2, h / 2)
       ctx.textAlign = 'left'
       return
     }
@@ -231,13 +235,13 @@ export default function SandboxWaveformCanvas() {
       ctx.textAlign = 'center'
       ctx.textBaseline = 'middle'
       const msg = layer.renderState === 'error' ? `Render failed: ${layer.error || ''}` : 'Rendering…'
-      ctx.fillText(msg, w / 2, WAVE_HEIGHT / 2)
+      ctx.fillText(msg, w / 2, h / 2)
       ctx.textAlign = 'left'
       return
     }
 
     const numChannels = buf.numChannels || 1
-    const laneH = WAVE_HEIGHT / numChannels
+    const laneH = h / numChannels
     colPeaksRef.current = {
       numSamples: buf.numSamples,
       lanes: buf.channels.map((chan) => computeColumnPeaks(chan, Math.max(1, Math.round(w)))),
@@ -287,9 +291,10 @@ export default function SandboxWaveformCanvas() {
   const drawOverlay = useCallback(() => {
     const canvas = overlayCanvasRef.current
     const w = sizeRef.current.w
+    const h = sizeRef.current.h
     if (!canvas || w === 0) return
     const ctx = canvas.getContext('2d')
-    ctx.clearRect(0, 0, w, WAVE_HEIGHT)
+    ctx.clearRect(0, 0, w, h)
 
     const drag = dragRef.current
     const numSamples = layer?.renderedBuffer?.numSamples ?? 0
@@ -305,14 +310,14 @@ export default function SandboxWaveformCanvas() {
 
     const palette = resolveTimelinePalette()
     ctx.fillStyle = tokenValue('--theme-accent-bg-subtle') || 'rgba(0,184,150,0.14)'
-    ctx.fillRect(startPx, 0, endPx - startPx, WAVE_HEIGHT)
+    ctx.fillRect(startPx, 0, endPx - startPx, h)
     ctx.strokeStyle = palette.accent
     ctx.lineWidth = 1
     ctx.beginPath()
     ctx.moveTo(startPx + 0.5, 0)
-    ctx.lineTo(startPx + 0.5, WAVE_HEIGHT)
+    ctx.lineTo(startPx + 0.5, h)
     ctx.moveTo(endPx - 0.5, 0)
-    ctx.lineTo(endPx - 0.5, WAVE_HEIGHT)
+    ctx.lineTo(endPx - 0.5, h)
     ctx.stroke()
   }, [layer, selection])
 
@@ -339,9 +344,10 @@ export default function SandboxWaveformCanvas() {
   const drawEnvelope = useCallback(() => {
     const canvas = envCanvasRef.current
     const w = sizeRef.current.w
+    const h = sizeRef.current.h
     if (!canvas || w === 0) return
     const ctx = canvas.getContext('2d')
-    ctx.clearRect(0, 0, w, WAVE_HEIGHT)
+    ctx.clearRect(0, 0, w, h)
 
     const numSamples = layer?.renderedBuffer?.numSamples ?? 0
     if (!layer || !numSamples) return
@@ -369,7 +375,7 @@ export default function SandboxWaveformCanvas() {
     ctx.textBaseline = 'middle'
     for (const db of ENV_GRID_DB) {
       if (db !== 0 && !active) continue
-      const y = Math.round(dbToY(db, WAVE_HEIGHT)) + 0.5
+      const y = Math.round(dbToY(db, h)) + 0.5
       ctx.strokeStyle = db === 0 ? strong : subtle
       ctx.beginPath()
       ctx.moveTo(0, y)
@@ -411,7 +417,7 @@ export default function SandboxWaveformCanvas() {
       ctx.lineWidth = 1
       ctx.beginPath()
       for (let x = 0; x < cols; x++) {
-        const y = dbToY(naturalDb[x], WAVE_HEIGHT)
+        const y = dbToY(naturalDb[x], h)
         if (x === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y)
       }
       ctx.stroke()
@@ -428,7 +434,7 @@ export default function SandboxWaveformCanvas() {
       // An empty curve evaluates to 1.0, i.e. 0 dB — no special case needed.
       // The editable line's SHAPE never changes with mode — only its EFFECT
       // does — so this stays the drawn curve's own gain in both modes.
-      ys[x] = dbToY(20 * Math.log10(Math.max(1e-9, displayGain)), WAVE_HEIGHT)
+      ys[x] = dbToY(20 * Math.log10(Math.max(1e-9, displayGain)), h)
 
       if (envBypassed) continue
       const committedGain = gainEnvelopeAt(committedPoints, sample)
@@ -462,7 +468,7 @@ export default function SandboxWaveformCanvas() {
     if (active) {
       for (const pt of display) {
         const x = sampleToPx(pt.samplePos, w, numSamples)
-        const y = dbToY(pt.db, WAVE_HEIGHT)
+        const y = dbToY(pt.db, h)
         ctx.beginPath()
         ctx.arc(x, y, ENV_HANDLE_R, 0, Math.PI * 2)
         ctx.fillStyle = accent
@@ -514,13 +520,17 @@ export default function SandboxWaveformCanvas() {
 
     const sizeAndDraw = () => {
       const w = Math.floor(container.clientWidth)
-      if (w === 0 || w === sizeRef.current.w) return
-      sizeRef.current = { w }
+      // The stack fills whatever the flex column leaves it (area height minus
+      // the ruler), so its own clientHeight — not a fixed constant — is the
+      // canvas's true available headroom.
+      const h = Math.max(MIN_WAVE_HEIGHT, Math.floor(stackRef.current?.clientHeight || 0))
+      if (w === 0 || (w === sizeRef.current.w && h === sizeRef.current.h)) return
+      sizeRef.current = { w, h }
       const dpr = window.devicePixelRatio || 1
       if (rulerCanvasRef.current) applyCanvasSize(rulerCanvasRef.current, w, RULER_HEIGHT, dpr)
-      if (bgCanvasRef.current) applyCanvasSize(bgCanvasRef.current, w, WAVE_HEIGHT, dpr)
-      if (overlayCanvasRef.current) applyCanvasSize(overlayCanvasRef.current, w, WAVE_HEIGHT, dpr)
-      if (envCanvasRef.current) applyCanvasSize(envCanvasRef.current, w, WAVE_HEIGHT, dpr)
+      if (bgCanvasRef.current) applyCanvasSize(bgCanvasRef.current, w, h, dpr)
+      if (overlayCanvasRef.current) applyCanvasSize(overlayCanvasRef.current, w, h, dpr)
+      if (envCanvasRef.current) applyCanvasSize(envCanvasRef.current, w, h, dpr)
       redrawAllRef.current()
     }
 
@@ -710,8 +720,7 @@ export default function SandboxWaveformCanvas() {
 
   return (
     <div className="sandbox-waveform-area" ref={containerRef}>
-      <canvas ref={rulerCanvasRef} className="sandbox-ruler-canvas" />
-      <div className="sandbox-waveform-stack" style={{ height: WAVE_HEIGHT }}>
+      <div className="sandbox-waveform-stack" ref={stackRef}>
         <canvas ref={bgCanvasRef} className="sandbox-waveform-bg" />
         <canvas
           ref={overlayCanvasRef}
@@ -725,6 +734,7 @@ export default function SandboxWaveformCanvas() {
           onContextMenu={handleEnvContextMenu}
         />
       </div>
+      <canvas ref={rulerCanvasRef} className="sandbox-ruler-canvas" />
     </div>
   )
 }

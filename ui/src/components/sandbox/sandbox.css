@@ -481,7 +481,8 @@
 
 .sandbox-waveform-stack {
   position: relative;
-  flex: 0 0 auto;
+  flex: 1 1 auto;
+  min-height: 0;
   width: 100%;
 }
 

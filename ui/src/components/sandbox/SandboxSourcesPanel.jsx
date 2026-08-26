@@ -113,19 +113,14 @@ function LayerRow({ layer, active, onSelect, onClose, onToggleMute, onToggleSolo
 const COMPOSITE_RENDER_LABEL = {
   idle: 'RENDER COMPOSITE', rendering: 'Rendering…', ready: 'RE-RENDER', error: 'Render failed — retry',
 }
-const BAKE_COMPOSITE_LABEL = {
-  idle: 'BAKE TO NEW ASSET', baking: 'Baking…', baked: 'Baked ✓ — bake again', error: 'Bake failed — retry',
-}
 
 function CompositeSection() {
   const layers = useSandboxStore((s) => s.layers)
   const composite = useSandboxStore((s) => s.composite)
   const compositePreviewState = useSandboxStore((s) => s.compositePreviewState)
-  const bakeCompositeState = useSandboxStore((s) => s.bakeCompositeState)
   const bakedAssets = useSandboxStore((s) => s.bakedAssets)
   const renderComposite = useSandboxStore((s) => s.renderComposite)
   const toggleCompositePreview = useSandboxStore((s) => s.toggleCompositePreview)
-  const bakeComposite = useSandboxStore((s) => s.bakeComposite)
   const addBakedAssetAsSource = useSandboxStore((s) => s.addBakedAssetAsSource)
 
   const hasLayers = layers.length > 0
@@ -154,14 +149,6 @@ function CompositeSection() {
             {COMPOSITE_RENDER_LABEL[composite.renderState] ?? composite.renderState}
           </button>
         </div>
-        <button
-          className="sandbox-action-btn sandbox-action-btn--bake"
-          disabled={!hasLayers || bakeCompositeState === 'baking'}
-          onClick={() => bakeComposite()}
-          title="Render the composite and register it as a new sample asset (undoable)"
-        >
-          {BAKE_COMPOSITE_LABEL[bakeCompositeState] ?? bakeCompositeState}
-        </button>
       </div>
       {buf && (
         <div className="sandbox-layer-meta">
