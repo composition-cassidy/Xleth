@@ -1,0 +1,149 @@
+import {
+  GAIN_ENVELOPE_MODE, GAIN_ENVELOPE_ATTACK_MS_DEFAULT, GAIN_ENVELOPE_RELEASE_MS_DEFAULT,
+} from './sandboxStore.js'
+
+// The EFFECT ▾ menu's op metadata — one entry per addable operation, grouped
+// into the categories the menu renders in order. This is the "op registry"
+// the Sample Sandbox restructure calls for: SandboxMenuBar reads this table
+// (plus a layer's current `ops`) to decide what to show/disable, rather than
+// hardcoding a per-category list in the component itself.
+//
+// `matchesStack(op)` + `maxInstances` together express "how many of THIS may
+// exist on one layer" — most ops are unlimited (Infinity, i.e. every click
+// just appends another instance via the underlying store action), a few are
+// singletons because the underlying engine op genuinely only has one slot on
+// a layer (Reverse, Normalize, the Gain Envelope pair). `matchesStack` is
+// only read when `maxInstances` is finite.
+//
+// Two entries here don't correspond 1:1 with an engine op type:
+//  - GAIN vs NORMALIZE are both the `gain` op type, split by its own
+//    `normalize` flag — matchesStack checks the flag, not just the type.
+//  - GAIN ENVELOPE vs DYNAMICS MOD both target the single `gainEnvelope` op
+//    (Absolute vs Relative mode — see GAIN_ENVELOPE_MODE) since the engine
+//    has no separate "dynamics mod" op type. Whichever is added first blocks
+//    the other, because they share one matchesStack predicate.
+//
+// AUTOTUNE has no backing engine op at all (no pitch-correction/quantize-to-
+// scale op exists in SandboxOp.cpp) — it stays visible per the mockup but
+// permanently disabled rather than being silently dropped or half-built.
+export const EFFECT_CATEGORIES = ['EDIT', 'DYNAMICS', 'RESTORATION', 'PITCH']
+
+export const EFFECT_REGISTRY = [
+  // ── EDIT ───────────────────────────────────────────────────────────────
+  {
+    id: 'trim', label: 'Trim', category: 'EDIT', maxInstances: Infinity, needsSelection: true,
+    run: (store, ctx) => store.addOp(ctx.layerId, {
+      type: 'trim', params: { startSample: ctx.selection.startSample, endSample: ctx.selection.endSample },
+    }),
+  },
+  {
+    id: 'cut', label: 'Cut', category: 'EDIT', maxInstances: Infinity, needsSelection: true,
+    run: (store, ctx) => store.cutSelection(ctx.layerId, 'ripple'),
+  },
+  {
+    id: 'silence', label: 'Silence', category: 'EDIT', maxInstances: Infinity, needsSelection: true,
+    run: (store, ctx) => store.insertSilence(
+      ctx.layerId, ctx.selection.startSample, ctx.selection.endSample - ctx.selection.startSample, false,
+    ),
+  },
+  {
+    id: 'fadeIn', label: 'Fade In', category: 'EDIT', maxInstances: Infinity, needsSelection: true,
+    run: (store, ctx) => store.fadeSelection(ctx.layerId, true, 'equalPower'),
+  },
+  {
+    id: 'fadeOut', label: 'Fade Out', category: 'EDIT', maxInstances: Infinity, needsSelection: true,
+    run: (store, ctx) => store.fadeSelection(ctx.layerId, false, 'equalPower'),
+  },
+  {
+    id: 'gain', label: 'Gain', category: 'EDIT', maxInstances: Infinity, needsSelection: true,
+    run: (store, ctx) => store.gainSelection(ctx.layerId, 3.0),
+  },
+  {
+    id: 'normalize', label: 'Normalize', category: 'EDIT', maxInstances: 1, needsSelection: true,
+    matchesStack: (op) => op.type === 'gain' && !!op.params?.normalize,
+    whyNoMulti: 'idempotent — one instance max',
+    run: (store, ctx) => store.normalizeSelection(ctx.layerId, -0.1),
+  },
+  {
+    id: 'reverse', label: 'Reverse', category: 'EDIT', maxInstances: 1, needsSelection: false,
+    matchesStack: (op) => op.type === 'reverse',
+    whyNoMulti: 'two reverses cancel out',
+    run: (store, ctx) => store.reverseSelection(ctx.layerId),
+  },
+  // Not named by the mockup's EDIT list, but real, working ops today —
+  // kept so the restructure loses no reachable capability (see the plan's
+  // "EFFECT menu category membership" conflict).
+  {
+    id: 'splice', label: 'Splice', category: 'EDIT', maxInstances: Infinity, needsSelection: false,
+    run: (store, ctx) => store.spliceAtCursor(ctx.layerId, ctx.cursorSample, 'ripple', 0),
+  },
+  {
+    id: 'crossfade', label: 'Crossfade', category: 'EDIT', maxInstances: Infinity, needsSelection: false,
+    run: (store, ctx) => store.crossfadeAtCursor(ctx.layerId, ctx.cursorSample, 256, 'hann'),
+  },
+  {
+    id: 'insertSilence', label: 'Insert Silence', category: 'EDIT', maxInstances: Infinity, needsSelection: true,
+    run: (store, ctx) => store.insertSilence(
+      ctx.layerId, ctx.selection.startSample, ctx.selection.endSample - ctx.selection.startSample, true,
+    ),
+  },
+  {
+    id: 'copy', label: 'Copy', category: 'EDIT', maxInstances: Infinity, needsSelection: true,
+    run: (store, ctx) => store.copySelection(ctx.layerId),
+  },
+  {
+    id: 'paste', label: 'Paste', category: 'EDIT', maxInstances: Infinity, needsSelection: false, needsClipboard: true,
+    run: (store, ctx) => store.pasteClipboard(ctx.layerId, ctx.cursorSample, true),
+  },
+
+  // ── DYNAMICS ───────────────────────────────────────────────────────────
+  {
+    id: 'gainEnvelope', label: 'Gain Envelope', category: 'DYNAMICS', maxInstances: 1, needsSelection: false,
+    matchesStack: (op) => op.type === 'gainEnvelope',
+    run: (store, ctx) => store.setGainEnvelope(ctx.layerId, []),
+  },
+  {
+    id: 'dynamicsMod', label: 'Dynamics Mod', category: 'DYNAMICS', maxInstances: 1, needsSelection: false,
+    matchesStack: (op) => op.type === 'gainEnvelope',
+    whyNoMulti: 'one follower per layer',
+    run: async (store, ctx) => {
+      await store.setGainEnvelope(ctx.layerId, [])
+      await store.setGainEnvelopeFollower(ctx.layerId, {
+        mode: GAIN_ENVELOPE_MODE.relative,
+        followerAttackMs: GAIN_ENVELOPE_ATTACK_MS_DEFAULT,
+        followerReleaseMs: GAIN_ENVELOPE_RELEASE_MS_DEFAULT,
+      })
+    },
+  },
+
+  // ── RESTORATION ────────────────────────────────────────────────────────
+  {
+    id: 'denoise', label: 'De-Noise', category: 'RESTORATION', maxInstances: Infinity, needsSelection: false,
+    run: (store, ctx) => store.addDenoise(ctx.layerId),
+  },
+  {
+    id: 'declip', label: 'De-Clip', category: 'RESTORATION', maxInstances: Infinity, needsSelection: false,
+    run: (store, ctx) => store.addDeclip(ctx.layerId, 0.98, 64),
+  },
+
+  // ── PITCH ──────────────────────────────────────────────────────────────
+  {
+    id: 'pitch', label: 'Pitch Shift', category: 'PITCH', maxInstances: Infinity, needsSelection: false,
+    run: (store, ctx) => store.addPitchShift(ctx.layerId, 0, false),
+  },
+  {
+    id: 'formantShift', label: 'Formant Shift', category: 'PITCH', maxInstances: Infinity, needsSelection: false,
+    run: (store, ctx) => store.addFormantShiftOp(ctx.layerId, 0),
+  },
+  {
+    id: 'autotune', label: 'Autotune', category: 'PITCH', maxInstances: 1, needsSelection: false,
+    // No engine op backs this (see the plan's AUTOTUNE conflict) — it can
+    // never actually be "in stack", so the badge should read the same as any
+    // other not-yet-added singleton ("1×") rather than a misleading
+    // "IN STACK" borrowed from whatever other ops the layer happens to have.
+    matchesStack: () => false,
+    alwaysDisabled: true,
+    disabledReason: 'Not implemented in the engine yet',
+    run: null,
+  },
+]

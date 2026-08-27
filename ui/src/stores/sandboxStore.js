@@ -165,19 +165,82 @@ export function findEnvelopeOp(layer) {
   return layer?.ops?.find((o) => o.type === 'gainEnvelope') ?? null
 }
 
+// ── Spectral paint (P3-2) ────────────────────────────────────────────────────
+// The layer's spectral-paint op, or null — same "the overlay owns exactly ONE
+// op per layer" contract findEnvelopeOp uses, for the same reason: one canvas,
+// one editable mask.
+export function findSpectralPaintOp(layer) {
+  return layer?.ops?.find((o) => o.type === 'spectralPaint') ?? null
+}
+
+// Mirrors kSpectralPaintMinAmountDb/kSpectralPaintMaxAmountDb (SandboxOp.h) —
+// the engine's own per-dab clamp, bipolar since a dab can ATTENUATE (negative)
+// or BOOST (positive, added for the SPC selection tool's BOOST action). A
+// brush/selection amount outside this range is not an error, it just does not
+// round-trip past the renderer's clamp.
+export const SPECTRAL_PAINT_AMOUNT_DB_MIN = -60
+export const SPECTRAL_PAINT_AMOUNT_DB_MAX = 24
+
+// Default brush footprint — a few STFT bins/frames wide at the engine's own
+// 2048/512 analysis resolution (SandboxRenderer.cpp's `spectralpaint`
+// namespace), small enough to paint a single hum/whine line rather than a
+// whole octave.
+export const SPECTRAL_PAINT_BRUSH_DEFAULT = {
+  halfWidthSec: 0.05,
+  halfHeightHz: 150,
+  amountDb: -24,
+  featherTimeMs: 20,
+  featherFreqHz: 80,
+}
+
+// ── SPC selection tool (rect/freehand t×f regions) ──────────────────────────
+// Half-extent laid down per point along a FREEHAND selection drag — same role
+// SPECTRAL_PAINT_BRUSH_DEFAULT's halfWidthSec/halfHeightHz play for a paint
+// stroke, just named separately since the selection tool has no amount/
+// feather of its own (those come from whichever action fires).
+export const SPC_SELECT_FREEHAND_DEFAULT = {
+  halfWidthSec: 0.05,
+  halfHeightHz: 150,
+}
+
+// Feather applied when a selection's shapes are turned into dabs by an
+// action — the selection itself is a hard-edged region on screen (drawing a
+// feathered rectangle would misrepresent exactly what will be affected), but
+// every dab-consuming op (ATTENUATE/BOOST/MUTE) sounds better with a soft
+// edge, same reasoning SPECTRAL_PAINT_BRUSH_DEFAULT's own feather fields have.
+export const SPC_SELECTION_ACTION_FEATHER_TIME_MS = 20
+export const SPC_SELECTION_ACTION_FEATHER_FREQ_HZ = 80
+
+// A selection's committed shapes (no amountDb/feather) → SpectralPaintDab-
+// shaped objects at `amountDb`, feathered by the constants above. Shared by
+// every SPC selection action so ATTENUATE/BOOST/MUTE/COPY TO NEW LAYER all
+// build dabs identically, differing only in the amountDb they pass.
+export function spcSelectionToDabs(spcSelection, amountDb) {
+  if (!spcSelection?.shapes?.length) return []
+  return spcSelection.shapes.map((s) => ({
+    centerSample: s.centerSample,
+    halfWidthSamples: s.halfWidthSamples,
+    centerFreqHz: s.centerFreqHz,
+    halfHeightHz: s.halfHeightHz,
+    amountDb,
+    featherTimeMs: SPC_SELECTION_ACTION_FEATHER_TIME_MS,
+    featherFreqHz: SPC_SELECTION_ACTION_FEATHER_FREQ_HZ,
+  }))
+}
+
 // A drag under MIN_SELECTION_PX (SandboxWaveformCanvas.jsx) already collapses
 // to "no selection" — but that guard is in PIXELS, so at a high enough
 // zoom-per-sample ratio a few pixels can still span a near-zero DURATION.
-// The selection action bar is keyboard/mouse real estate for Trim/Cut/Fade/
-// etc., none of which are meaningful on a sub-millisecond span, so it gates
-// on TIME here as a second, resolution-independent check.
+// Trim/Cut/Fade/etc. (EFFECT ▾'s selection-scoped entries — see
+// sandboxEffectRegistry.js) are none of them meaningful on a sub-millisecond
+// span, so it gates on TIME here as a second, resolution-independent check.
 export const MIN_SELECTION_SEC = 0.001
 
 // True only for a selection with real duration on a rendered buffer — the
-// shared gate for both "is there a selection to act on" checks
-// (SandboxPanelContent mounting the bar, SandboxSelectionActionBar's own
-// belt-and-suspenders re-check). `sampleRate` is the rendered buffer's own
-// rate, since `selection` is always in that buffer's sample space.
+// shared gate for both "is there a selection to act on" checks (SandboxMenuBar's
+// EFFECT ▾ disabled-state, SandboxPanelContent's SPC-selection-bar mount).
+// `sampleRate` is the rendered buffer's own rate, since `selection` is always
+// in that buffer's sample space.
 export function hasMeaningfulSelection(selection, sampleRate) {
   if (!selection || !sampleRate) return false
   const spanSamples = selection.endSample - selection.startSample
@@ -210,6 +273,9 @@ const AUTO_RENDER_BY_OP_TYPE = {
   // scans are all single-pass over one buffer, still cheap enough not to opt
   // out. See SandboxOp::autoRender()'s own comment on the same table.
   formantShift: true, declip: true, denoise: true,
+  // Per-frame dab evaluation over an offline STFT pass — same order of cost
+  // as DENOISE. See SandboxOp::autoRender()'s SpectralPaint case.
+  spectralPaint: true,
 }
 
 // True when every op currently on `layer`'s stack permits automatic
@@ -322,6 +388,39 @@ const useSandboxStore = create((set, get) => ({
   // persisted: it is a pointer mode, not part of the edit.
   envelopeEditMode: false,
 
+  // Spectral paint edit mode (P3-2) — same "a mode, not a modifier" contract
+  // as envelopeEditMode (SandboxWaveformCanvas.jsx's header comment explains
+  // why), and mutually exclusive with it: the canvas has one pointer, so only
+  // one drag gesture can own it at a time. Session state, never persisted.
+  paintEditMode: false,
+  // Brush settings the SPC canvas reads on every dab it lays down during a
+  // paint drag. Session state (not per-op — it is "what will the NEXT stroke
+  // do", not a property of any painted mask already committed).
+  paintBrush: { ...SPECTRAL_PAINT_BRUSH_DEFAULT },
+
+  // ── SPC selection tool (rect/freehand t×f regions) ──────────────────────
+  // A FOURTH mode, mutually exclusive with select/envelope/paint for the same
+  // one-pointer reason paintEditMode's own comment gives. Only meaningful over
+  // the SPC view — armed alongside a forced switch to 'spc', same as Spectral.
+  spcSelectMode: false,
+  // 'rect': one drag = one rectangular shape. 'freehand': the drag path is
+  // approximated as a series of small overlapping rectangles (SPC_SELECT_
+  // BRUSH-sized), the exact technique paintDragRef already uses for a paint
+  // stroke — a freehand SELECTION is not a new engine concept, just several
+  // shapes committed together instead of one.
+  spcSelectShape: 'rect',
+  // The committed selection: { shapes: [{centerSample, halfWidthSamples,
+  // centerFreqHz, halfHeightHz}, ...] } or null. Shapes carry NO amountDb/
+  // feather of their own — those are supplied by whichever action (ATTENUATE/
+  // BOOST/MUTE/COPY TO NEW LAYER) the user fires, the same "brush settings are
+  // session state, not per-shape" split paintBrush already keeps for the
+  // paint tool.
+  spcSelection: null,
+  // Live (time, Hz) under the pointer while hovering/dragging the SPC canvas —
+  // purely a readout source for the status bar, never consulted by any
+  // action. null when the pointer is not over the SPC canvas.
+  spcHoverReadout: null,
+
   // WAV/SPC view toggle (P3-1) — session state, never persisted, same as
   // envelopeEditMode. Which of the two the waveform canvas paints for the
   // active layer; selection/zoom/scroll stay driven by the same `selection`
@@ -425,9 +524,36 @@ const useSandboxStore = create((set, get) => ({
       set((state) => ({ layers: [...state.layers, layer], activeLayerId: layer.id, selection: null }))
       get().renderLayer(layer.id, 'open')
       get().refreshHistory()
+      return layer
     } catch (e) {
       console.warn('[SampleSandbox] addSourceFromRegion failed:', e?.message || e)
+      return null
     }
+  },
+
+  // Open a raw audio file as a new layer — no timeline region behind it.
+  //
+  // Lives here rather than in SandboxLayerWorkspace (where the Explorer-drop
+  // handler used to own a private copy) because it is the shared "a file
+  // became a layer" path: the drop zone uses it, and so does separation,
+  // whose stems arrive as WAVs on disk and must land as ORDINARY layers.
+  // That is the whole "separation is a source generator, never an op" rule —
+  // a stem enters the workspace through the same door a dragged file does,
+  // with its own op-stack, its own undo, and no special-casing downstream.
+  //
+  // With no `id` on the synthetic region the resulting layer's sourceRegionId
+  // is null, which the cold-layer SwapTargetPicker (SandboxTransport.jsx)
+  // already handles.
+  async addSourceFromFile(filePath, name) {
+    if (!filePath) return null
+    const duration = await window.xleth?.audio?.probeAudioDuration(filePath)
+    if (!(duration > 0)) {
+      console.warn('[SampleSandbox] Could not read duration, skipping:', filePath)
+      return null
+    }
+    return get().addSourceFromRegion({
+      audioFilePath: filePath, name, startTime: 0, endTime: duration,
+    })
   },
 
   async closeLayer(layerId) {
@@ -888,8 +1014,66 @@ const useSandboxStore = create((set, get) => ({
   // mode rather than a chord or a modifier. Off, the curve is still drawn (a
   // dimmed read-only line): an envelope you cannot see is an envelope you
   // cannot debug when playback sounds wrong.
-  setEnvelopeEditMode(on) { set({ envelopeEditMode: !!on }) },
-  toggleEnvelopeEditMode() { set((state) => ({ envelopeEditMode: !state.envelopeEditMode })) },
+  setEnvelopeEditMode(on) {
+    set({
+      envelopeEditMode: !!on,
+      paintEditMode: on ? false : get().paintEditMode,
+      spcSelectMode: on ? false : get().spcSelectMode,
+    })
+  },
+  toggleEnvelopeEditMode() {
+    set((state) => ({ envelopeEditMode: !state.envelopeEditMode, paintEditMode: false, spcSelectMode: false }))
+  },
+
+  // Spectral paint edit mode — mutually exclusive with envelope/select edit
+  // mode, same reasoning as setEnvelopeEditMode above.
+  setPaintEditMode(on) {
+    set({
+      paintEditMode: !!on,
+      envelopeEditMode: on ? false : get().envelopeEditMode,
+      spcSelectMode: on ? false : get().spcSelectMode,
+    })
+  },
+  togglePaintEditMode() {
+    set((state) => ({ paintEditMode: !state.paintEditMode, envelopeEditMode: false, spcSelectMode: false }))
+  },
+
+  // SPC selection edit mode — mutually exclusive with envelope/paint, same
+  // one-pointer reasoning. `shape` optionally sets spcSelectShape in the same
+  // call, so a toolstrip click on "Freehand" while the tool is already armed
+  // (or arming it for the first time) is one store update, not two.
+  setSpcSelectMode(on, shape) {
+    set((state) => ({
+      spcSelectMode: !!on,
+      envelopeEditMode: on ? false : state.envelopeEditMode,
+      paintEditMode: on ? false : state.paintEditMode,
+      spcSelectShape: shape === 'rect' || shape === 'freehand' ? shape : state.spcSelectShape,
+    }))
+  },
+  setSpcSelectShape(shape) {
+    if (shape !== 'rect' && shape !== 'freehand') return
+    set({ spcSelectShape: shape })
+  },
+
+  // Committed selection shapes — replaces any previous selection wholesale
+  // (a new drag always starts a fresh selection, it never appends to the old
+  // one the way a paint stroke appends dabs to an op). Falsy/empty clears it.
+  setSpcSelection(shapes) {
+    set({ spcSelection: shapes && shapes.length ? { shapes } : null })
+  },
+  clearSpcSelection() { set({ spcSelection: null }) },
+  setSpcHoverReadout(readout) { set({ spcHoverReadout: readout }) },
+
+  setPaintBrush(patch) {
+    set((state) => ({
+      paintBrush: {
+        ...state.paintBrush,
+        ...patch,
+        amountDb: Math.min(SPECTRAL_PAINT_AMOUNT_DB_MAX,
+          Math.max(SPECTRAL_PAINT_AMOUNT_DB_MIN, patch.amountDb ?? state.paintBrush.amountDb)),
+      },
+    }))
+  },
 
   // WAV/SPC view toggle (P3-1). Switching to 'spc' kicks a fetch immediately
   // if the active layer has a render but no spectrogram yet — otherwise the
@@ -1093,39 +1277,35 @@ const useSandboxStore = create((set, get) => ({
   // ── Restoration / pitch trio ────────────────────────────────────────────
   // PITCH and FORMANT SHIFT apply to the WHOLE buffer the op receives — there
   // is no selection range on either (mirrors xleth::sandbox::PitchParams /
-  // FormantShiftParams, which carry no startSample/endSample). Add-or-update,
-  // same one-undo-step-either-way contract setGainEnvelope established: the
-  // first call on a layer adds the op, a later one replaces its params, so a
-  // slider drag settles into a single committed edit rather than stacking a
-  // new op per adjustment.
-
-  async findOrAddOp(layerId, type, params) {
-    const layer = get().layers.find((l) => l.id === layerId)
-    if (!layer) return
-    const existing = layer.ops.find((o) => o.type === type)
-    if (existing) await get().setOpParams(layerId, existing.id, params)
-    else await get().addOp(layerId, { type, params })
-  },
+  // FormantShiftParams, which carry no startSample/endSample). Each of these
+  // three always APPENDS a new op — the engine iterates the op stack
+  // generically, so nothing stops a layer carrying more than one; the EFFECT
+  // menu's registry (sandboxEffectRegistry.js) is what markes these ×N
+  // instead of the ×1 an earlier add-or-update version of this file used.
+  // Later params on any one instance are still edited in place afterward via
+  // setOpParams (see the inline param editors in SandboxStackPanel), same as
+  // every other op type — only ADDING one more never collapses into an
+  // update.
 
   // PITCH — cents (fractional semitones × 100) and the formant-lock toggle.
-  async setPitch(layerId, cents, formantPreserve) {
-    await get().findOrAddOp(layerId, 'pitch', { cents, formantPreserve })
+  async addPitchShift(layerId, cents = 0, formantPreserve = false) {
+    await get().addOp(layerId, { type: 'pitch', params: { cents, formantPreserve } })
   },
 
   // FORMANT SHIFT — moves the spectral envelope by `cents`, independent of
   // PITCH. A separate op rather than a second field on PITCH: see
   // FormantShiftParams's own comment (SandboxOp.h) for why formantPreserve
   // cannot express "move the formants on their own".
-  async setFormantShift(layerId, cents) {
-    await get().findOrAddOp(layerId, 'formantShift', { cents })
+  async addFormantShiftOp(layerId, cents = 0) {
+    await get().addOp(layerId, { type: 'formantShift', params: { cents } })
   },
 
   // DECLIP over the current selection (or the whole buffer if none).
-  async declipSelection(layerId, threshold, maxRunSamples) {
+  async addDeclip(layerId, threshold = 0.98, maxRunSamples = 64) {
     const sel = get().selection
-    await get().findOrAddOp(layerId, 'declip', {
-      startSample: sel?.startSample ?? 0, endSample: sel?.endSample ?? -1,
-      threshold, maxRunSamples,
+    await get().addOp(layerId, {
+      type: 'declip',
+      params: { startSample: sel?.startSample ?? 0, endSample: sel?.endSample ?? -1, threshold, maxRunSamples },
     })
   },
 
@@ -1155,6 +1335,98 @@ const useSandboxStore = create((set, get) => ({
     await get().setOpParams(layerId, opId, {
       ...existing.params, noiseStartSample: sel.startSample, noiseEndSample: sel.endSample,
     })
+  },
+
+  // ── Spectral paint (P3-2) ────────────────────────────────────────────────
+  //
+  // Called ONCE per stroke, on mouseup — the SPC canvas previews the drag
+  // locally (accumulating dabs in a ref, never touching this store) and hands
+  // the whole stroke's dabs here in one call, exactly like setGainEnvelope's
+  // "one command per drag, not per mousemove" contract above. Add-or-append:
+  // the first stroke on a layer adds the op, every later one appends to the
+  // SAME op's `dabs` — a spectral-paint mask is additive across strokes, never
+  // a replacement of the last one.
+  async commitSpectralPaintDabs(layerId, newDabs) {
+    if (!newDabs || newDabs.length === 0) return
+    const layer = get().layers.find((l) => l.id === layerId)
+    if (!layer) return
+    const existing = findSpectralPaintOp(layer)
+    if (!existing) {
+      await get().addOp(layerId, { type: 'spectralPaint', params: { dabs: newDabs } })
+      return
+    }
+    await get().setOpParams(layerId, existing.id, { dabs: [...(existing.params?.dabs ?? []), ...newDabs] })
+  },
+
+  // "Clear" on the op module — drops every painted dab in one undo step,
+  // leaving the op in place as an explicit (empty-mask) pass-through rather
+  // than removing it, same as a flat gain-envelope curve stays on the stack
+  // at 0 dB instead of vanishing.
+  async clearSpectralPaint(layerId) {
+    const layer = get().layers.find((l) => l.id === layerId)
+    const existing = findSpectralPaintOp(layer)
+    if (!existing || (existing.params?.dabs ?? []).length === 0) return
+    await get().setOpParams(layerId, existing.id, { dabs: [] })
+  },
+
+  // ── SPC selection actions (rect/freehand t×f selection tool) ─────────────
+  // ATTENUATE/BOOST/MUTE all go through commitSpectralPaintDabs — the exact
+  // same op the paint brush commits to, so a selection-driven edit and a
+  // brush stroke are indistinguishable to the engine and to the op-stack
+  // panel. They differ only in the amountDb baked into the dabs (see
+  // spcSelectionToDabs above). The selection clears itself after every
+  // action fires — same "an accepted edit invalidates the selection" rule
+  // addOp already applies to the plain time-only `selection`.
+
+  async attenuateSpcSelection(layerId, amountDb) {
+    const dabs = spcSelectionToDabs(get().spcSelection, -Math.abs(amountDb))
+    if (!dabs.length) return
+    await get().commitSpectralPaintDabs(layerId, dabs)
+    get().clearSpcSelection()
+  },
+
+  async boostSpcSelection(layerId, amountDb) {
+    const dabs = spcSelectionToDabs(get().spcSelection, Math.abs(amountDb))
+    if (!dabs.length) return
+    await get().commitSpectralPaintDabs(layerId, dabs)
+    get().clearSpcSelection()
+  },
+
+  // MUTE pins amountDb at the engine's own per-dab attenuation floor
+  // (kSpectralPaintMinAmountDb, mirrored here as SPECTRAL_PAINT_AMOUNT_DB_MIN)
+  // rather than trying to reach kSpectralPaintFloorDb — that floor bounds the
+  // SUM of overlapping dabs, not what one dab is allowed to author.
+  async muteSpcSelection(layerId) {
+    const dabs = spcSelectionToDabs(get().spcSelection, SPECTRAL_PAINT_AMOUNT_DB_MIN)
+    if (!dabs.length) return
+    await get().commitSpectralPaintDabs(layerId, dabs)
+    get().clearSpcSelection()
+  },
+
+  // COPY TO NEW LAYER — the complement of the three above: instead of editing
+  // this layer, it renders a NEW buffer keeping ONLY the selected region
+  // (sandbox_extractSelection, engine-side SandboxRenderer::extractSelection)
+  // and registers it as a new SampleBank asset, then opens it as an ordinary
+  // layer via the EXACT SAME addBakedAssetAsSource path bakeComposite's own
+  // "add the bake back as a source" button already uses — there is no second
+  // layer-add mechanism for this to invent. amountDb on the dabs is not
+  // consulted by extraction (keep/silence has no "how much"), so it is left
+  // at the SpectralPaintDab default rather than threading a meaningless value
+  // through.
+  async copySpcSelectionToNewLayer(layerId, name) {
+    const sel = get().spcSelection
+    if (!sel?.shapes?.length) return null
+    const dabs = spcSelectionToDabs(sel, 0)
+    try {
+      const res = await window.xleth?.sandbox?.extractSelection(layerId, dabs, name)
+      if (!res?.success) throw new Error(res?.reason || 'extractSelection rejected')
+      await get().addBakedAssetAsSource(res.sampleId, res.name)
+      get().clearSpcSelection()
+      return res
+    } catch (e) {
+      console.warn('[SampleSandbox] copySpcSelectionToNewLayer failed:', e?.message || e)
+      return null
+    }
   },
 
   // ── Bake / swap-in ──────────────────────────────────────────────────────

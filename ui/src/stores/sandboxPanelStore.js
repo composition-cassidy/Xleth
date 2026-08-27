@@ -5,7 +5,7 @@ import { create } from 'zustand'
 // entry point wants opened rides through this dedicated store — mirroring
 // splitSyllablesPanelStore / samplerPanelStore.
 //
-// `openTarget` is consumed once by SandboxSourcesPanel (added as a new layer,
+// `openTarget` is consumed once by SandboxPanelContent (added as a new layer,
 // same as a drag-and-drop drop), then cleared — it is a one-shot "please open
 // this" request, not a persistent selection.
 const useSandboxPanelStore = create((set) => ({

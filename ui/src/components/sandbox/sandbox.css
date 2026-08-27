@@ -1,4 +1,5 @@
-/* Sample Sandbox — SB-3 UI shell.
+/* Sample Sandbox — mockup-aligned restructure (menu bar / tool column /
+   layer cards / op-list rail / transport / readout).
    Flat, zero border-radius, existing surface hierarchy tokens. Teal accent
    (--theme-accent) reserved for active/selected state only. */
 
@@ -12,13 +13,6 @@
   background: var(--theme-bg-primary);
 }
 
-.sandbox-main-row {
-  flex: 1 1 auto;
-  min-height: 0;
-  display: flex;
-  flex-direction: row;
-}
-
 .sandbox-panel-header {
   flex: 0 0 auto;
   padding: 6px 10px;
@@ -29,62 +23,6 @@
   color: var(--theme-text-muted);
   background: var(--theme-bg-secondary);
   border-bottom: 1px solid var(--theme-border-subtle);
-}
-
-/* ── Sources & Layers (left) ─────────────────────────────────────────────── */
-
-.sandbox-sources-panel {
-  flex: 0 0 240px;
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  border-right: 1px solid var(--theme-border-subtle);
-  background: var(--theme-bg-secondary);
-}
-
-.sandbox-layer-list {
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow-y: auto;
-}
-
-.sandbox-layer-row {
-  padding: 8px 10px;
-  border-bottom: 1px solid var(--theme-border-subtle);
-  cursor: pointer;
-}
-
-.sandbox-layer-row:hover {
-  background: var(--theme-bg-hover);
-}
-
-.sandbox-layer-row.active {
-  background: var(--theme-bg-active);
-  box-shadow: inset 2px 0 0 var(--theme-accent);
-}
-
-.sandbox-layer-row-top {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 6px;
-  margin-bottom: 4px;
-}
-
-.sandbox-layer-name {
-  flex: 1 1 auto;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-weight: 600;
-  color: var(--theme-text);
-}
-
-.sandbox-layer-btn-cluster {
-  display: flex;
-  gap: 2px;
-  flex: 0 0 auto;
 }
 
 .sandbox-mini-btn {
@@ -135,21 +73,11 @@
   margin: 2px 0;
 }
 
-.sandbox-layer-meta {
-  color: var(--theme-text-muted);
-  font-size: 10px;
-}
-
 .sandbox-layer-error {
   margin-top: 2px;
+  padding: 2px 9px;
   color: var(--theme-danger);
   font-size: 10px;
-}
-
-.sandbox-layer-mix-row {
-  display: flex;
-  gap: 6px;
-  margin-top: 4px;
 }
 
 .sandbox-mix-field {
@@ -171,39 +99,12 @@
   padding: 0 2px;
 }
 
-.sandbox-composite-section {
-  flex: 0 0 auto;
-  border-top: 1px solid var(--theme-border-subtle);
-}
-
-.sandbox-composite-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  padding: 8px;
-}
-
-.sandbox-composite-render-row {
-  display: flex;
-  gap: 4px;
-  align-items: stretch;
-}
-
-.sandbox-composite-render-row .sandbox-mini-btn {
-  width: 22px;
-  height: auto;
-  flex: 0 0 auto;
-}
-
-.sandbox-composite-render-row .sandbox-action-btn {
-  flex: 1 1 auto;
-}
-
 .sandbox-baked-asset-list {
-  padding: 0 8px 8px;
+  flex: 0 0 auto;
   display: flex;
   flex-direction: column;
   gap: 3px;
+  padding: 0 4px;
 }
 
 .sandbox-baked-asset-row {
@@ -225,84 +126,211 @@
   font-size: 10px;
 }
 
-.sandbox-add-source-zone {
+/* ── Menu bar (EFFECT ▾ / VIEW ▾) ─────────────────────────────────────────── */
+
+.sandbox-menubar {
   flex: 0 0 auto;
-  margin: 8px;
-  padding: 14px 8px;
   display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 4px;
-  border: 1px dashed var(--theme-border-strong);
-  color: var(--theme-text-muted);
-  font-size: 10px;
+  align-items: stretch;
+  background: var(--theme-bg-secondary);
+  border-bottom: 1px solid var(--theme-border-subtle);
 }
 
-.sandbox-add-source-zone.drag-over {
-  border-color: var(--theme-accent);
+.sandbox-menu {
+  position: relative;
+}
+
+.sandbox-menu-btn {
+  padding: 7px 16px;
+  border: none;
+  border-right: 1px solid var(--theme-border-subtle);
+  background: transparent;
+  color: var(--theme-text);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+}
+
+.sandbox-menu-btn:hover,
+.sandbox-menu-btn.open {
+  background: var(--theme-bg-hover);
   color: var(--theme-accent);
-  background: var(--theme-accent-bg-subtle);
 }
 
-/* ── Center: toolbar + waveform + ruler ──────────────────────────────────── */
+.sandbox-menu-dropdown {
+  position: absolute;
+  top: 100%;
+  left: 0;
+  z-index: 60;
+  min-width: 260px;
+  max-height: 70vh;
+  overflow-y: auto;
+  background: var(--theme-bg-surface);
+  border: 1px solid var(--theme-border-strong);
+  box-shadow: 4px 5px 0 rgba(0, 0, 0, 0.5);
+}
 
-.sandbox-center-column {
+.sandbox-menu-cat {
+  padding: 6px 10px 4px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--theme-accent);
+  background: var(--theme-bg-secondary);
+  border-bottom: 1px solid var(--theme-border-subtle);
+}
+
+.sandbox-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  width: 100%;
+  padding: 6px 10px;
+  border: none;
+  background: transparent;
+  font: inherit;
+  font-size: 11px;
+  color: var(--theme-text);
+  text-align: left;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.sandbox-menu-item:hover {
+  background: var(--theme-accent-bg-subtle);
+  color: var(--theme-accent);
+}
+
+.sandbox-menu-item.disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+.sandbox-menu-item.disabled:hover {
+  background: transparent;
+  color: var(--theme-text);
+}
+
+.sandbox-menu-item-plus {
+  flex: 0 0 auto;
+  width: 12px;
+  color: var(--theme-accent);
+  font-weight: 700;
+}
+
+.sandbox-menu-item-label {
   flex: 1 1 auto;
   min-width: 0;
   display: flex;
   flex-direction: column;
 }
 
-/* ── Toolstrip (row 1) — modal tools only ────────────────────────────────── */
-
-.sandbox-toolstrip {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  padding: 4px 8px;
-  background: var(--theme-bg-secondary);
-  border-bottom: 1px solid var(--theme-border-subtle);
+.sandbox-menu-item-desc {
+  font-size: 8.5px;
+  color: var(--theme-text-placeholder);
 }
 
-.sandbox-toolstrip-tool {
+.sandbox-menu-item-badge {
+  flex: 0 0 auto;
+  font-size: 8.5px;
+  color: var(--theme-text-placeholder);
+}
+
+.sandbox-menu-item-check {
+  flex: 0 0 auto;
+  width: 14px;
+  color: var(--theme-accent);
+}
+
+/* ── Editor body: tool column + layer workspace + op-stack rail ──────────── */
+
+.sandbox-edbody {
+  flex: 1 1 auto;
+  min-height: 0;
   display: flex;
+}
+
+/* ── Tool column (left edge, swaps by view) ──────────────────────────────── */
+
+.sandbox-toolcol {
+  flex: 0 0 64px;
+  display: flex;
+  flex-direction: column;
   align-items: center;
   gap: 4px;
-  padding: 4px 8px;
+  padding: 8px 4px 0;
+  background: var(--theme-bg-secondary);
+  border-right: 1px solid var(--theme-border-subtle);
+}
+
+.sandbox-toolcol-tool {
+  width: 54px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 3px;
+  padding: 6px 0 5px;
   border: 1px solid transparent;
   border-radius: 0;
   background: transparent;
   color: var(--theme-text-muted);
-  font-size: 10px;
+  font-size: 8px;
+  letter-spacing: 0.03em;
   cursor: pointer;
 }
 
-.sandbox-toolstrip-tool:hover:not(:disabled) {
-  background: var(--theme-bg-hover);
+.sandbox-toolcol-tool:hover:not(:disabled) {
   color: var(--theme-text);
 }
 
-.sandbox-toolstrip-tool.active {
-  background: var(--theme-accent-bg-subtle);
-  border-color: var(--theme-accent);
+.sandbox-toolcol-tool.active {
   color: var(--theme-accent);
+  border-color: var(--theme-accent);
+  background: var(--theme-accent-bg-subtle);
 }
 
-.sandbox-toolstrip-tool:disabled {
+.sandbox-toolcol-tool:disabled {
   color: var(--theme-text-placeholder);
   cursor: default;
 }
 
-.sandbox-toolstrip-tool.ghost {
+.sandbox-toolcol-tool.ghost {
   opacity: 0.45;
 }
 
-.sandbox-toolstrip-divider {
-  width: 1px;
-  align-self: stretch;
-  margin: 2px 6px;
-  background: var(--theme-border-subtle);
+.sandbox-toolcol-params {
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 6px 4px;
+  border-top: 1px solid var(--theme-border-subtle);
+}
+
+.sandbox-toolcol-params label {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 8.5px;
+  color: var(--theme-text-muted);
+  white-space: nowrap;
+}
+
+.sandbox-toolcol-params .sandbox-toolbar-number {
+  width: 44px;
+  height: 18px;
+}
+
+.sandbox-toolcol-hint {
+  margin-top: auto;
+  padding: 8px 4px;
+  font-size: 8.5px;
+  line-height: 1.4;
+  color: var(--theme-text-placeholder);
+  text-align: center;
+  border-top: 1px solid var(--theme-border-subtle);
+  width: 100%;
 }
 
 .sandbox-toolstrip-view-toggle {
@@ -339,6 +367,13 @@
   text-overflow: ellipsis;
 }
 
+.sandbox-toolstrip-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 2px 6px;
+  background: var(--theme-border-subtle);
+}
+
 .sandbox-toolstrip-spacer {
   flex: 1 1 auto;
 }
@@ -349,6 +384,7 @@
   gap: 5px;
   padding: 3px 8px;
   border: 1px solid var(--theme-border-subtle);
+  border-radius: 0;
   background: var(--theme-bg-surface);
   font-size: 9px;
   color: var(--theme-text-muted);
@@ -377,6 +413,10 @@
   background: var(--theme-warning);
 }
 
+.sandbox-render-chip--rendering {
+  color: var(--theme-warning);
+}
+
 .sandbox-render-chip--error .sandbox-render-chip-dot {
   background: var(--theme-danger);
 }
@@ -386,18 +426,22 @@
   border-color: var(--theme-danger);
 }
 
-/* ── Selection action bar (row 2) — contextual, mounted only while a
-   selection exists ─────────────────────────────────────────────────────── */
+/* ── SPC selection action bar — contextual, mounted only over the active
+   layer card while a t×f region selection exists ───────────────────────── */
 
 .sandbox-selection-bar {
-  flex: 0 0 auto;
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 6;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   gap: 2px;
   padding: 4px 8px;
   background: var(--theme-bg-secondary);
-  border-bottom: 1px solid var(--theme-border-subtle);
+  border-top: 1px solid var(--theme-border-subtle);
 }
 
 .sandbox-tool-btn {
@@ -455,15 +499,140 @@
   max-width: 96px;
 }
 
-.sandbox-toolbar-checkbox {
+/* ── Layer workspace (main area) — stacked layer cards + drop zone ───────── */
+
+.sandbox-layer-workspace {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 10px 12px 4px;
+  display: flex;
+  flex-direction: column;
+}
+
+.sandbox-layer-card {
+  background: var(--theme-bg-secondary);
+  border: 1px solid var(--theme-border-subtle);
+  margin-bottom: 10px;
+  box-shadow: 4px 5px 0 rgba(0, 0, 0, 0.5);
+  cursor: pointer;
+}
+
+.sandbox-layer-card.active {
+  border-color: var(--theme-accent);
+}
+
+.sandbox-layer-card.soloed {
+  border-color: var(--theme-accent);
+}
+
+.sandbox-layer-card-head {
   display: flex;
   align-items: center;
-  gap: 3px;
-  padding: 0 4px;
-  font-size: 10px;
-  color: var(--theme-text-muted);
-  cursor: pointer;
+  gap: 8px;
+  padding: 4px 9px;
+  background: var(--theme-bg-surface);
+  border-bottom: 1px solid var(--theme-border-subtle);
+}
+
+.sandbox-layer-card-name {
+  font-weight: 700;
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.sandbox-layer-card-meta {
+  font-size: 9px;
+  color: var(--theme-text-placeholder);
+  white-space: nowrap;
+}
+
+.sandbox-layer-card-close {
+  margin-left: auto;
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  border: none;
+  background: transparent;
+  color: var(--theme-text-placeholder);
+  cursor: pointer;
+  padding: 2px;
+}
+
+.sandbox-layer-card-close:hover {
+  color: var(--theme-danger);
+}
+
+.sandbox-layer-card-body {
+  position: relative;
+  display: flex;
+  min-height: 96px;
+}
+
+.sandbox-layer-ctl {
+  width: 128px;
+  flex: 0 0 auto;
+  border-right: 1px solid var(--theme-border-subtle);
+  background: var(--theme-bg-secondary);
+  padding: 6px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  cursor: default;
+}
+
+.sandbox-layer-ctl-msrow {
+  display: flex;
+  gap: 5px;
+}
+
+.sandbox-layer-card-wave {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 96px;
+  background: var(--theme-bg-primary);
+  display: flex;
+}
+
+/* The inactive-card thumbnail is a fixed-size canvas (SandboxLayerWaveform) —
+   center it in the wider card slot rather than stretching a raster it can't
+   actually fill. */
+.sandbox-layer-card-wave .sandbox-layer-waveform {
+  margin: auto;
+}
+
+.sandbox-layer-card-wave .sandbox-waveform-area {
+  flex: 1 1 auto;
+}
+
+.sandbox-drop-zone {
+  flex: 0 0 auto;
+  margin: 2px 0 12px;
+  padding: 16px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  border: 1px dashed var(--theme-border-strong);
+  color: var(--theme-text-placeholder);
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  text-align: center;
+}
+
+.sandbox-drop-zone.compact {
+  flex-direction: row;
+  padding: 8px;
+  font-size: 10px;
+}
+
+.sandbox-drop-zone.over {
+  border-color: var(--theme-accent);
+  color: var(--theme-accent);
+  background: var(--theme-accent-bg-subtle);
 }
 
 .sandbox-waveform-area {
@@ -489,7 +658,9 @@
 
 .sandbox-waveform-bg,
 .sandbox-waveform-overlay,
-.sandbox-waveform-env {
+.sandbox-waveform-env,
+.sandbox-waveform-paint,
+.sandbox-waveform-spcselect {
   position: absolute;
   top: 0;
   left: 0;
@@ -503,8 +674,8 @@
 }
 
 /* The gain-envelope overlay sits above the selection overlay but is inert
-   until the toolbar arms it — disarmed it is a read-only picture of the curve,
-   and every pointer event belongs to the selection layer underneath. */
+   until the tool column arms it — disarmed it is a read-only picture of the
+   curve, and every pointer event belongs to the selection layer underneath. */
 .sandbox-waveform-env {
   pointer-events: none;
 }
@@ -514,10 +685,32 @@
   cursor: crosshair;
 }
 
-/* ── Op Stack (right) ────────────────────────────────────────────────────── */
+/* Spectral paint overlay (P3-2) — same inert-until-armed contract as the
+   envelope overlay above, one layer further up the stack. */
+.sandbox-waveform-paint {
+  pointer-events: none;
+}
+
+.sandbox-waveform-paint.editing {
+  pointer-events: auto;
+  cursor: crosshair;
+}
+
+/* SPC selection overlay (rect/freehand t×f selection tool) — same
+   inert-until-armed contract, topmost layer in the stack. */
+.sandbox-waveform-spcselect {
+  pointer-events: none;
+}
+
+.sandbox-waveform-spcselect.editing {
+  pointer-events: auto;
+  cursor: crosshair;
+}
+
+/* ── Op Stack rail (right) — pure op list + undo/redo ─────────────────────── */
 
 .sandbox-stack-panel {
-  flex: 0 0 260px;
+  flex: 0 0 280px;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -537,15 +730,19 @@
   font-size: 10px;
 }
 
-/* ── Op stack module rail (RX-style) ─────────────────────────────────────── */
-
 .sandbox-stack-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
+  gap: 6px;
+}
+
+.sandbox-stack-undo-group {
+  display: flex;
+  gap: 5px;
 }
 
 .sandbox-op-count-chip {
+  margin-left: auto;
   padding: 1px 6px;
   border: 1px solid var(--theme-border-subtle);
   background: var(--theme-bg-surface);
@@ -557,6 +754,7 @@
 
 .sandbox-op-module {
   border-bottom: 1px solid var(--theme-border-subtle);
+  transition: opacity 120ms ease;
 }
 
 .sandbox-op-module.bypassed {
@@ -564,13 +762,24 @@
 }
 
 /* Clicking a module selects it AND expands its inline params (if it has
-   any) beneath the row — the module-rail contract this restructuring
-   introduces. Bare highlight on modules with nothing to edit (trim/cut/
-   paste/splice/reverse/gain): selection still tracks which row is "current"
-   even though there is no param drawer to show for it. */
+   any) beneath the row. Bare highlight on modules with nothing to edit
+   (trim/cut/paste/splice/reverse/silence): selection still tracks which row
+   is "current" even though there is no param drawer to show for it. */
 .sandbox-op-module.selected {
   background: var(--theme-bg-active);
   box-shadow: inset 2px 0 0 var(--theme-accent);
+}
+
+.sandbox-op-module.dragging {
+  opacity: 0.4;
+}
+
+.sandbox-op-module.drop-above {
+  box-shadow: inset 0 2px 0 var(--theme-accent);
+}
+
+.sandbox-op-module.drop-below {
+  box-shadow: inset 0 -2px 0 var(--theme-accent);
 }
 
 .sandbox-op-row {
@@ -588,9 +797,9 @@
   font-size: 9px;
 }
 
-/* Inline param editors — shown only under the SELECTED module. Covers
-   envelope mode/attack/release, pitch, formant, declip threshold, denoise
-   profile, and fade/crossfade curves (see InlineOpParamEditor). */
+/* Inline param editors — shown only under the SELECTED module. Covers gain/
+   normalize, envelope mode/attack/release, pitch, formant, declip threshold,
+   denoise profile, and fade/crossfade curves (see InlineOpParamEditor). */
 .sandbox-op-params-row {
   display: flex;
   align-items: center;
@@ -624,6 +833,7 @@
 .sandbox-op-grip {
   color: var(--theme-text-placeholder);
   flex: 0 0 auto;
+  cursor: grab;
 }
 
 .sandbox-op-label {
@@ -704,87 +914,74 @@
   color: var(--theme-danger);
 }
 
-.sandbox-add-op-row {
+/* ── Transport (bottom): SWAP IN ▾ · BAKE · PLAY ─────────────────────────── */
+
+.sandbox-transport {
   flex: 0 0 auto;
   display: flex;
-  flex-direction: column;
-  gap: 3px;
-  padding: 8px 8px 0;
-}
-
-.sandbox-add-op-select.xleth-select-trigger {
-  height: auto;
-  padding: 6px;
-  border: 1px dashed var(--theme-border-strong);
-  background: transparent;
-  color: var(--theme-text-muted);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.03em;
-}
-
-.sandbox-add-op-select.xleth-select-trigger:hover:not(:disabled) {
-  border-color: var(--theme-accent);
-  color: var(--theme-accent);
-}
-
-.sandbox-add-op-hint {
-  text-align: center;
-  font-size: 9px;
-  color: var(--theme-text-placeholder);
-}
-
-.sandbox-stack-actions {
-  flex: 0 0 auto;
-  display: flex;
-  gap: 6px;
-  padding: 8px;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  padding: 10px 12px;
+  background: var(--theme-bg-secondary);
   border-top: 1px solid var(--theme-border-subtle);
 }
 
-.sandbox-action-btn {
-  flex: 1 1 0;
-  padding: 8px 6px;
+.sandbox-tbtn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 18px;
   border: 1px solid var(--theme-border-strong);
   border-radius: 0;
   background: var(--theme-bg-surface);
   color: var(--theme-text);
-  font-size: 10px;
+  font-size: 11px;
   font-weight: 700;
-  letter-spacing: 0.03em;
+  letter-spacing: 0.04em;
+  box-shadow: 4px 5px 0 rgba(0, 0, 0, 0.5);
   cursor: pointer;
 }
 
-.sandbox-action-btn:hover:not(:disabled) {
-  background: var(--theme-bg-hover);
+.sandbox-tbtn:hover:not(:disabled) {
+  border-color: var(--theme-accent);
 }
 
-.sandbox-action-btn:disabled {
+.sandbox-tbtn:disabled {
   color: var(--theme-text-placeholder);
   cursor: default;
 }
 
-.sandbox-action-btn--bake:not(:disabled) {
+.sandbox-tbtn--primary {
+  background: var(--theme-accent);
   border-color: var(--theme-accent);
-  color: var(--theme-accent);
+  color: var(--theme-text-inverse);
+}
+
+.sandbox-tbtn--primary:hover:not(:disabled) {
+  filter: brightness(1.12);
+}
+
+.sandbox-tbtn--primary.playing {
+  background: var(--theme-danger);
+  border-color: var(--theme-danger);
+  color: var(--theme-text-inverse);
+}
+
+.sandbox-tbtn--primary.queued {
+  background: var(--theme-warning);
+  border-color: var(--theme-warning);
+  color: var(--theme-text-inverse);
 }
 
 /* SWAP IN writes back into the project, so it reads as the destructive one of
    the pair even though it is fully undoable. */
-.sandbox-action-btn--swap:not(:disabled) {
-  border-color: var(--theme-warning);
-  color: var(--theme-warning);
-}
-
-.sandbox-action-btn--error:not(:disabled) {
+.sandbox-tbtn--error:not(:disabled) {
   border-color: var(--theme-danger);
   color: var(--theme-danger);
 }
 
-/* Stands in for the SWAP IN button when a layer has no bound target — same
-   footprint as .sandbox-action-btn so swapping the two doesn't shift layout. */
 .sandbox-swap-target-select.xleth-select-trigger {
-  flex: 1 1 0;
   height: auto;
   padding: 8px 6px;
   border: 1px solid var(--theme-warning);
@@ -794,6 +991,7 @@
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.03em;
+  box-shadow: 4px 5px 0 rgba(0, 0, 0, 0.5);
 }
 
 .sandbox-swap-target-select.xleth-select-trigger:disabled {
@@ -802,9 +1000,8 @@
 }
 
 .sandbox-swap-confirmation {
-  flex: 0 0 auto;
-  padding: 6px 8px;
-  border-top: 1px solid var(--theme-border-subtle);
+  flex: 1 1 220px;
+  min-width: 0;
   color: var(--theme-text-muted);
   font-size: 10px;
 }
@@ -813,13 +1010,14 @@
   color: var(--theme-danger);
 }
 
-/* ── Status bar (bottom) ─────────────────────────────────────────────────── */
+/* ── Status bar (bottom) — persistent readout ────────────────────────────── */
 
 .sandbox-status-bar {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
   justify-content: space-between;
+  flex-wrap: wrap;
   padding: 4px 10px;
   background: var(--theme-bg-secondary);
   border-top: 1px solid var(--theme-border-subtle);
@@ -835,12 +1033,6 @@
 
 .sandbox-status-item.error {
   color: var(--theme-danger);
-}
-
-.sandbox-undo-group {
-  display: flex;
-  align-items: center;
-  gap: 6px;
 }
 
 .sandbox-undo-btn {
@@ -861,4 +1053,263 @@
 .sandbox-undo-btn:disabled {
   color: var(--theme-text-placeholder);
   cursor: default;
+}
+
+/* ── Separation strip (P4) — progress/license/advanced only; the FAST/
+   BALANCED/BEST tier buttons live in the EFFECT ▾ menu (SandboxMenuBar).
+   Mounted only while there is something to show — see SandboxPanelContent. */
+
+.sandbox-separation-strip {
+  flex: 0 0 auto;
+  display: flex;
+  flex-direction: column;
+  background: var(--theme-bg-secondary);
+  border-top: 1px solid var(--theme-border-subtle);
+}
+
+.sandbox-separation-row {
+  display: flex;
+  align-items: center;
+  /* Wraps rather than overflows. The Sandbox is a dockable panel and can be
+     dragged narrower than the fixed items here add up to; wrapping costs a
+     row of height, while overflowing hides the Cancel button off the right
+     edge mid-run. */
+  flex-wrap: wrap;
+  gap: 8px;
+  row-gap: 4px;
+  padding: 4px 10px;
+  min-height: 26px;
+}
+
+.sandbox-separation-title {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--theme-text-muted);
+  white-space: nowrap;
+}
+
+.sandbox-separation-tier {
+  padding: 3px 10px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 0;
+  background: var(--theme-bg-surface);
+  color: var(--theme-text);
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  cursor: pointer;
+}
+
+.sandbox-separation-tier:hover:not(:disabled) {
+  background: var(--theme-bg-hover);
+}
+
+.sandbox-separation-tier:disabled {
+  color: var(--theme-text-placeholder);
+  cursor: default;
+}
+
+.sandbox-separation-tier.active {
+  background: var(--theme-accent-bg-subtle);
+  color: var(--theme-accent);
+}
+
+.sandbox-separation-progress {
+  /* Fixed basis, no shrink. The phase text next to it is the thing that
+     truncates when the panel is narrow — a progress bar squeezed to 60px
+     shows visibly different fractions as the same sliver of colour, which
+     is worse than a clipped caption. */
+  flex: 1 1 140px;
+  min-width: 90px;
+  max-width: 180px;
+  height: 4px;
+  background: var(--theme-bg-surface);
+  border: 1px solid var(--theme-border-subtle);
+  overflow: hidden;
+}
+
+.sandbox-separation-progress-fill {
+  height: 100%;
+  background: var(--theme-accent);
+  transition: width 120ms linear;
+}
+
+.sandbox-separation-phase,
+.sandbox-separation-status {
+  flex: 0 1 auto;
+  min-width: 0;
+  font-size: 9px;
+  color: var(--theme-text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sandbox-separation-eta {
+  flex: 0 0 auto;
+  font-size: 9px;
+  color: var(--theme-text-placeholder);
+  white-space: nowrap;
+}
+
+.sandbox-separation-device {
+  padding: 1px 6px;
+  border: 1px solid var(--theme-border-subtle);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--theme-text-muted);
+}
+
+.sandbox-separation-cancel {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding: 2px 8px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 0;
+  background: var(--theme-bg-surface);
+  color: var(--theme-text);
+  font-size: 9px;
+  cursor: pointer;
+}
+
+.sandbox-separation-cancel:hover {
+  background: var(--theme-bg-hover);
+}
+
+.sandbox-separation-footnote {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 10px 4px 10px;
+  font-size: 9px;
+  color: var(--theme-text-placeholder);
+}
+
+.sandbox-separation-advanced-toggle {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding: 3px 6px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 0;
+  background: var(--theme-bg-surface);
+  color: var(--theme-text-muted);
+  cursor: pointer;
+}
+
+.sandbox-separation-advanced-toggle:hover {
+  background: var(--theme-bg-hover);
+}
+
+.sandbox-separation-advanced-toggle.active {
+  background: var(--theme-accent-bg-subtle);
+  color: var(--theme-accent);
+  border-color: var(--theme-accent);
+}
+
+/* ENSEMBLE + DE-BLEED row. Wraps for the same reason the tier and licence
+   rows above it do — a checkbox plus two selects plus a button is a lot of
+   controls for a docked, narrowable panel. */
+.sandbox-separation-advanced {
+  border-top: 1px solid var(--theme-border-subtle);
+  padding-top: 4px;
+}
+
+.sandbox-separation-checkbox {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  color: var(--theme-text);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.sandbox-separation-checkbox input {
+  cursor: pointer;
+}
+
+.sandbox-separation-advanced-hint {
+  font-size: 9px;
+  color: var(--theme-text-placeholder);
+  white-space: nowrap;
+}
+
+.sandbox-separation-ensemble-select {
+  padding: 2px 4px;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 0;
+  background: var(--theme-bg-surface);
+  color: var(--theme-text);
+  font-size: 9px;
+}
+
+/* Licence acknowledgement row.
+   Wraps, like the tier row above it: the Sandbox is dockable and this row
+   carries a full sentence of licence text plus three controls. Without wrap
+   the "I understand" button leaves the panel and the gate becomes
+   unanswerable — which reads as a dead BALANCED button. */
+.sandbox-separation-license {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  margin: 0 8px 5px 8px;
+  padding: 5px 8px;
+  font-size: 10px;
+  line-height: 1.45;
+  color: var(--theme-text);
+  background: var(--theme-bg-surface);
+  border: 1px solid var(--theme-border-subtle);
+  border-left: 2px solid var(--theme-accent);
+}
+
+.sandbox-separation-license-text {
+  flex: 1 1 320px;
+  min-width: 0;
+}
+
+.sandbox-separation-license-accept {
+  flex: none;
+  padding: 3px 9px;
+  border: 1px solid var(--theme-accent);
+  border-radius: 0;
+  background: transparent;
+  color: var(--theme-accent);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  cursor: pointer;
+}
+
+.sandbox-separation-license-accept:hover {
+  background: var(--theme-accent);
+  color: var(--theme-text-inverse);
+}
+
+.sandbox-separation-linklike {
+  padding: 0;
+  border: none;
+  background: transparent;
+  color: var(--theme-accent);
+  font-size: 9px;
+  text-decoration: underline;
+  cursor: pointer;
+}
+
+.sandbox-separation-linklike:disabled {
+  color: var(--theme-text-placeholder);
+  cursor: default;
+  text-decoration: none;
 }

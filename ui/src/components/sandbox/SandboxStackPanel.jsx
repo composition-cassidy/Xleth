@@ -5,7 +5,6 @@ import useSandboxStore, {
   GAIN_ENVELOPE_ATTACK_MS_MIN, GAIN_ENVELOPE_ATTACK_MS_MAX,
   GAIN_ENVELOPE_RELEASE_MS_MIN, GAIN_ENVELOPE_RELEASE_MS_MAX,
 } from '../../stores/sandboxStore.js'
-import XlethSelect from '../common/XlethSelect.jsx'
 import { FADE_SHAPES } from './sandboxToolConstants.js'
 
 const RIPPLE_MODE_NAME = Object.fromEntries(Object.entries(RIPPLE_MODE).map(([k, v]) => [v, k]))
@@ -53,6 +52,12 @@ function describeParams(op) {
       return p.noiseEndSample > p.noiseStartSample
         ? `profile ${p.noiseStartSample}–${p.noiseEndSample}, -${p.reductionDb} dB, ×${p.sensitivity}`
         : 'no profile learned yet'
+    case 'spectralPaint': {
+      const dabs = p.dabs || []
+      if (dabs.length === 0) return 'no dabs painted yet'
+      const amounts = dabs.map((d) => d.amountDb)
+      return `${dabs.length} dab${dabs.length === 1 ? '' : 's'}, ${Math.min(...amounts).toFixed(0)}…${Math.max(...amounts).toFixed(0)} dB`
+    }
     default:
       return ''
   }
@@ -65,7 +70,10 @@ function describeParams(op) {
 // (trim/cut/paste/splice/reverse/gain) has no persistent knob — it was
 // authored by drawing/re-drawing the tool that created it, same as before
 // this restructuring, so selecting one just highlights the row.
-function InlineOpParamEditor({ op, layerId, setOpParams, hasSelection, onLearnNoiseProfile, setGainEnvelopeFollower }) {
+function InlineOpParamEditor({
+  op, layerId, setOpParams, hasSelection, onLearnNoiseProfile, setGainEnvelopeFollower,
+  onClearSpectralPaint,
+}) {
   const p = op.params || {}
 
   if (op.type === 'pitch') {
@@ -204,6 +212,56 @@ function InlineOpParamEditor({ op, layerId, setOpParams, hasSelection, onLearnNo
       </div>
     )
   }
+  if (op.type === 'spectralPaint') {
+    const dabs = p.dabs || []
+    return (
+      <div className="sandbox-op-params-row">
+        <span className="sandbox-op-params-readout">
+          {dabs.length} dab{dabs.length === 1 ? '' : 's'} — painted on the spectrogram (Spectral tool, SPC view)
+        </span>
+        <button
+          className="sandbox-op-learn-noise"
+          disabled={dabs.length === 0}
+          onClick={() => onClearSpectralPaint(layerId)}
+          title="Remove every painted dab, leaving this op as an empty (pass-through) mask"
+        >
+          Clear
+        </button>
+      </div>
+    )
+  }
+  if (op.type === 'gain') {
+    return (
+      <div className="sandbox-op-params-row">
+        <label className="sandbox-op-checkbox">
+          <input
+            type="checkbox" checked={!!p.normalize}
+            onChange={(e) => setOpParams(layerId, op.id, { ...p, normalize: e.target.checked })}
+          />
+          Normalize
+        </label>
+        {p.normalize ? (
+          <label>
+            Target (dBFS)
+            <input
+              type="number" step="0.5" className="sandbox-toolbar-number"
+              defaultValue={p.targetPeakDb} key={`tgt-${op.id}-${p.targetPeakDb}`}
+              onBlur={(e) => setOpParams(layerId, op.id, { ...p, targetPeakDb: Number(e.target.value) })}
+            />
+          </label>
+        ) : (
+          <label>
+            Gain (dB)
+            <input
+              type="number" step="0.5" className="sandbox-toolbar-number"
+              defaultValue={p.gainDb} key={`gain-${op.id}-${p.gainDb}`}
+              onBlur={(e) => setOpParams(layerId, op.id, { ...p, gainDb: Number(e.target.value) })}
+            />
+          </label>
+        )}
+      </div>
+    )
+  }
   if (op.type === 'fade' || op.type === 'crossfade') {
     return (
       <div className="sandbox-op-params-row">
@@ -223,14 +281,25 @@ function InlineOpParamEditor({ op, layerId, setOpParams, hasSelection, onLearnNo
   return null
 }
 
-const HAS_INLINE_PARAMS = new Set(['pitch', 'formantShift', 'declip', 'denoise', 'gainEnvelope', 'fade', 'crossfade'])
+const HAS_INLINE_PARAMS = new Set([
+  'pitch', 'formantShift', 'declip', 'denoise', 'gainEnvelope', 'fade', 'crossfade', 'spectralPaint', 'gain',
+])
 
 function OpModule({
   op, index, layerId, selected, onSelect, onToggleBypass, onRemove, setOpParams, hasSelection,
-  onLearnNoiseProfile, setGainEnvelopeFollower,
+  onLearnNoiseProfile, setGainEnvelopeFollower, onClearSpectralPaint,
+  dragging, dropEdge, onDragStart, onDragOver, onDrop, onDragEnd,
 }) {
+  const dropClass = dropEdge === 'above' ? ' drop-above' : dropEdge === 'below' ? ' drop-below' : ''
   return (
-    <div className={`sandbox-op-module${op.enabled ? '' : ' bypassed'}${selected ? ' selected' : ''}`}>
+    <div
+      className={`sandbox-op-module${op.enabled ? '' : ' bypassed'}${selected ? ' selected' : ''}${dragging ? ' dragging' : ''}${dropClass}`}
+      draggable
+      onDragStart={onDragStart}
+      onDragOver={onDragOver}
+      onDrop={onDrop}
+      onDragEnd={onDragEnd}
+    >
       <div className="sandbox-op-row" onClick={() => onSelect(op.id)}>
         <GripVertical size={12} className="sandbox-op-grip" />
         <span className="sandbox-op-index">{String(index + 1).padStart(2, '0')}</span>
@@ -258,58 +327,21 @@ function OpModule({
           op={op} layerId={layerId} setOpParams={setOpParams}
           hasSelection={hasSelection} onLearnNoiseProfile={onLearnNoiseProfile}
           setGainEnvelopeFollower={setGainEnvelopeFollower}
+          onClearSpectralPaint={onClearSpectralPaint}
         />
       )}
     </div>
   )
 }
 
-// Shown instead of the SWAP IN button when a layer has no bound target — a
-// layer opened over a composite bake, or (before it was fixed) a drag-in
-// whose region id never made it through. Lists every project sample region;
-// picking one both performs the swap AND binds the session to it (swapInLayer
-// records sourceRegionId/swapTargetName on success), so a later plain SWAP IN
-// click on this layer goes back to the same target.
-function SwapTargetPicker({ layerId, swapInLayer }) {
-  const [regions, setRegions] = useState(null) // null = still loading
-
-  useEffect(() => {
-    let cancelled = false
-    window.xleth?.timeline?.getRegions?.()
-      .then((list) => { if (!cancelled) setRegions(Array.isArray(list) ? list : []) })
-      .catch(() => { if (!cancelled) setRegions([]) })
-    return () => { cancelled = true }
-  }, [])
-
-  const options = (regions ?? []).map((r) => ({
-    value: r.id,
-    label: r.name || `Region ${r.id}`,
-    group: r.label || undefined,
-  }))
-
-  const handlePick = (regionId) => {
-    const region = (regions ?? []).find((r) => r.id === regionId)
-    if (!region) return
-    swapInLayer(layerId, { regionId: region.id, name: region.name })
-  }
-
-  return (
-    <XlethSelect
-      className="sandbox-swap-target-select"
-      value={null}
-      options={options}
-      onChange={handlePick}
-      disabled={regions == null || options.length === 0}
-      placeholder={
-        regions == null ? 'Loading samples…'
-          : options.length === 0 ? 'No project samples yet'
-          : 'SWAP IN — pick a sample to replace…'
-      }
-      ariaLabel="Pick a sample to swap this render into"
-    />
-  )
-}
-
+// Pure op-list rail (mockup: "OP STACK" header + ↶/↷ above ONLY the ordered
+// op rows). Adding an op moved to the EFFECT ▾ menu (SandboxMenuBar.jsx,
+// driven by sandboxEffectRegistry.js) and BAKE/SWAP IN moved to the bottom
+// transport (SandboxTransport.jsx) — this panel now only lists, reorders,
+// bypasses, removes and inline-edits whatever is already on the stack, plus
+// undo/redo for the whole sandbox (shared with SandboxStatusBar's depth
+// readout — same `history`/`undo`/`redo` store fields, just relocated here
+// per the mockup's header).
 export default function SandboxStackPanel() {
   const layers = useSandboxStore((s) => s.layers)
   const activeLayerId = useSandboxStore((s) => s.activeLayerId)
@@ -317,25 +349,23 @@ export default function SandboxStackPanel() {
   const setOpBypassed = useSandboxStore((s) => s.setOpBypassed)
   const removeOp = useSandboxStore((s) => s.removeOp)
   const setOpParams = useSandboxStore((s) => s.setOpParams)
-  const bakeLayer = useSandboxStore((s) => s.bakeLayer)
-  const swapInLayer = useSandboxStore((s) => s.swapInLayer)
   const learnNoiseProfile = useSandboxStore((s) => s.learnNoiseProfile)
-  const setGainEnvelope = useSandboxStore((s) => s.setGainEnvelope)
   const setGainEnvelopeFollower = useSandboxStore((s) => s.setGainEnvelopeFollower)
-  const spliceAtCursor = useSandboxStore((s) => s.spliceAtCursor)
-  const reverseSelection = useSandboxStore((s) => s.reverseSelection)
-  const crossfadeAtCursor = useSandboxStore((s) => s.crossfadeAtCursor)
-  const insertSilence = useSandboxStore((s) => s.insertSilence)
-  const declipSelection = useSandboxStore((s) => s.declipSelection)
-  const addDenoise = useSandboxStore((s) => s.addDenoise)
-  const setPitch = useSandboxStore((s) => s.setPitch)
-  const setFormantShift = useSandboxStore((s) => s.setFormantShift)
+  const clearSpectralPaint = useSandboxStore((s) => s.clearSpectralPaint)
+  const reorderOp = useSandboxStore((s) => s.reorderOp)
+  const history = useSandboxStore((s) => s.history)
+  const undo = useSandboxStore((s) => s.undo)
+  const redo = useSandboxStore((s) => s.redo)
 
   const [selectedOpId, setSelectedOpId] = useState(null)
+  // Drag-to-reorder: { draggedIndex, overIndex, edge } while a drag is live,
+  // else null. reorderOp's own dirty-marking (_triggerAutoRender) already
+  // covers "mark the composite dirty downstream of the earliest affected
+  // op" — this is purely the drag UI on top of that existing action.
+  const [dragState, setDragState] = useState(null)
 
   const layer = layers.find((l) => l.id === activeLayerId) ?? null
   const hasSelection = !!selection && selection.endSample > selection.startSample
-  const cursorSample = selection?.startSample ?? 0
 
   // Selecting a different layer (or one whose ops changed under it) should
   // not leave a stale expanded panel pointing at an op that may no longer
@@ -345,80 +375,56 @@ export default function SandboxStackPanel() {
   const handleToggleBypass = (layerId, opId, enabled) => setOpBypassed(layerId, opId, enabled)
   const handleSelectOp = (opId) => setSelectedOpId((cur) => (cur === opId ? null : opId))
 
-  const canBake = !!layer && layer.renderState === 'ready'
-  const bakeLabel = layer?.bakeState === 'baking' ? 'Baking…' : layer?.bakeState === 'baked' ? 'Baked ✓' : 'BAKE'
-
-  const isSwapping = layer?.swapInState === 'swapping'
-  const hasSwapTarget = layer?.sourceRegionId != null
-  const canSwap = canBake && hasSwapTarget && !isSwapping
-  const needsSwapTarget = canBake && !hasSwapTarget && !isSwapping
-  const swapLabel =
-    layer?.swapInState === 'swapping' ? 'Swapping…'
-    : layer?.swapInState === 'swapped' ? 'Swapped ✓'
-    : layer?.swapTargetName ? `SWAP IN — replace ${layer.swapTargetName}`
-    : 'SWAP IN'
-  const swapTitle =
-    layer?.swapInState === 'error' ? layer.swapInError
-    : !hasSwapTarget ? 'Pick a sample to replace — this layer has no bound target yet'
-    : !canBake ? 'Render the layer first'
-    : layer?.lastSwap
-      ? `Replaced "${layer.swapTargetName ?? 'the region'}" — ${layer.lastSwap.samplers} placed instance(s), `
-        + `${layer.lastSwap.clips} clip(s) updated. Undo restores the old one.`
-      : `Replace "${layer.swapTargetName}"'s sample with the render — every placed instance follows`
-
-  // "+ ADD OP" — categorized menu (Edit / Dynamics / Restoration / Pitch).
-  // Splice/Reverse/Crossfade/Insert Silence always append a new stack entry
-  // (same as the old toolbar buttons). The restoration/pitch/dynamics types
-  // are add-or-update (findOrAddOp / setGainEnvelope) — once one already
-  // exists on the layer, re-adding it would silently reset its params back
-  // to defaults, so those entries disable themselves and point at the
-  // existing module instead.
-  const opTypesPresent = new Set(layer?.ops.map((o) => o.type) ?? [])
-  const singleton = (type, label) => ({
-    value: type,
-    label: opTypesPresent.has(type) ? `${label} (already added)` : label,
-    disabled: opTypesPresent.has(type),
-  })
-  const addOpOptions = [
-    { value: 'splice', label: 'Splice', group: 'Edit' },
-    { value: 'reverse', label: 'Reverse', group: 'Edit' },
-    { value: 'crossfade', label: 'Crossfade', group: 'Edit' },
-    { value: 'insertSilence', label: 'Insert Silence', group: 'Edit', disabled: !hasSelection },
-    { ...singleton('gainEnvelope', 'Gain Envelope'), group: 'Dynamics' },
-    { ...singleton('declip', 'Declip'), group: 'Restoration' },
-    { ...singleton('denoise', 'Denoise'), group: 'Restoration' },
-    { ...singleton('pitch', 'Pitch Shift'), group: 'Pitch' },
-    { ...singleton('formantShift', 'Formant Shift'), group: 'Pitch' },
-  ]
-
-  const handleAddOp = (value) => {
-    if (!layer) return
-    switch (value) {
-      case 'splice': spliceAtCursor(layer.id, cursorSample, 'ripple', 0); break
-      case 'reverse': reverseSelection(layer.id); break
-      case 'crossfade': crossfadeAtCursor(layer.id, cursorSample, 256, 'hann'); break
-      case 'insertSilence':
-        if (hasSelection) insertSilence(layer.id, selection.startSample, selection.endSample - selection.startSample, true)
-        break
-      case 'gainEnvelope': setGainEnvelope(layer.id, []); break
-      case 'declip': declipSelection(layer.id, 0.98, 64); break
-      case 'denoise': addDenoise(layer.id); break
-      case 'pitch': setPitch(layer.id, 0, false); break
-      case 'formantShift': setFormantShift(layer.id, 0); break
-      default: break
-    }
+  const handleDragStart = (index) => (e) => {
+    e.dataTransfer.effectAllowed = 'move'
+    e.dataTransfer.setData('text/plain', String(index))
+    setDragState({ draggedIndex: index, overIndex: null, edge: null })
   }
+  const handleDragOver = (index) => (e) => {
+    e.preventDefault()
+    const rect = e.currentTarget.getBoundingClientRect()
+    const edge = (e.clientY - rect.top) < rect.height / 2 ? 'above' : 'below'
+    setDragState((s) => (s ? { ...s, overIndex: index, edge } : s))
+  }
+  const handleDragEnd = () => setDragState(null)
+  const handleDrop = (index) => (e) => {
+    e.preventDefault()
+    const state = dragState
+    setDragState(null)
+    if (!state || !layer || state.draggedIndex === index) return
+    const from = state.draggedIndex
+    let to = index + (state.edge === 'below' ? 1 : 0)
+    if (to > from) to -= 1
+    if (to === from) return
+    reorderOp(layer.id, from, to)
+  }
+
+  // Same shared-UndoManager gating SandboxStatusBar's own buttons use — the
+  // undo stack belongs to the engine, not this panel, and is shared with the
+  // Timeline.
+  const canUndo = history.canUndo && history.undoDomain === 'sandbox'
+  const canRedo = history.canRedo && history.redoDomain === 'sandbox'
+  const undoTitle = !history.canUndo
+    ? 'Nothing to undo'
+    : canUndo ? `Undo ${history.undoDescription}` : `Next undo is a ${history.undoDomain} edit (${history.undoDescription})`
+  const redoTitle = !history.canRedo
+    ? 'Nothing to redo'
+    : canRedo ? `Redo ${history.redoDescription}` : `Next redo is a ${history.redoDomain} edit (${history.redoDescription})`
 
   return (
     <div className="sandbox-stack-panel">
       <div className="sandbox-panel-header sandbox-stack-header">
         <span>Op Stack</span>
+        <div className="sandbox-stack-undo-group">
+          <button className="sandbox-undo-btn" disabled={!canUndo} onClick={() => undo()} title={undoTitle}>↶</button>
+          <button className="sandbox-undo-btn" disabled={!canRedo} onClick={() => redo()} title={redoTitle}>↷</button>
+        </div>
         {layer && <span className="sandbox-op-count-chip">{layer.ops.length} OP{layer.ops.length === 1 ? '' : 'S'}</span>}
       </div>
       <div className="sandbox-op-list">
         {!layer && <div className="sandbox-empty-hint">No layer selected.</div>}
         {layer && layer.ops.length === 0 && (
-          <div className="sandbox-empty-hint">No operations yet.</div>
+          <div className="sandbox-empty-hint">No operations yet — add one from EFFECT ▾.</div>
         )}
         {layer?.ops.map((op, index) => (
           <OpModule
@@ -434,56 +440,16 @@ export default function SandboxStackPanel() {
             hasSelection={hasSelection}
             onLearnNoiseProfile={learnNoiseProfile}
             setGainEnvelopeFollower={setGainEnvelopeFollower}
+            onClearSpectralPaint={clearSpectralPaint}
+            dragging={dragState?.draggedIndex === index}
+            dropEdge={dragState && dragState.overIndex === index ? dragState.edge : null}
+            onDragStart={handleDragStart(index)}
+            onDragOver={handleDragOver(index)}
+            onDrop={handleDrop(index)}
+            onDragEnd={handleDragEnd}
           />
         ))}
       </div>
-      <div className="sandbox-add-op-row">
-        <XlethSelect
-          className="sandbox-add-op-select"
-          value={null}
-          options={layer ? addOpOptions : []}
-          onChange={handleAddOp}
-          disabled={!layer}
-          placeholder="+ ADD OP"
-          ariaLabel="Add an operation to the stack"
-        />
-        <span className="sandbox-add-op-hint">Edit · Dynamics · Restoration · Pitch</span>
-      </div>
-      <div className="sandbox-stack-actions">
-        <button
-          className="sandbox-action-btn sandbox-action-btn--bake"
-          disabled={!canBake}
-          onClick={() => layer && bakeLayer(layer.id)}
-          title="Commit the current render as this layer's clean baseline"
-        >
-          {bakeLabel}
-        </button>
-        {needsSwapTarget ? (
-          <SwapTargetPicker layerId={layer.id} swapInLayer={swapInLayer} />
-        ) : (
-          <button
-            className={`sandbox-action-btn sandbox-action-btn--swap${
-              layer?.swapInState === 'error' ? ' sandbox-action-btn--error' : ''}`}
-            disabled={!canSwap}
-            onClick={() => layer && swapInLayer(layer.id)}
-            title={swapTitle}
-          >
-            {swapLabel}
-          </button>
-        )}
-      </div>
-      {layer?.swapInState === 'swapped' && layer.lastSwap && (
-        <div className="sandbox-swap-confirmation">
-          Swapped into "{layer.swapTargetName ?? 'target'}" — {layer.lastSwap.samplers} sampler
-          {layer.lastSwap.samplers === 1 ? '' : 's'}, {layer.lastSwap.clips} clip
-          {layer.lastSwap.clips === 1 ? '' : 's'} updated. Undo restores the previous sample.
-        </div>
-      )}
-      {layer?.swapInState === 'error' && layer.swapInError && (
-        <div className="sandbox-swap-confirmation sandbox-swap-confirmation--error">
-          {layer.swapInError}
-        </div>
-      )}
     </div>
   )
 }
