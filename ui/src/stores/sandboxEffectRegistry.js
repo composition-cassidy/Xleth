@@ -137,13 +137,20 @@ export const EFFECT_REGISTRY = [
   },
   {
     id: 'autotune', label: 'Autotune', category: 'PITCH', maxInstances: 1, needsSelection: false,
-    // No engine op backs this (see the plan's AUTOTUNE conflict) — it can
-    // never actually be "in stack", so the badge should read the same as any
-    // other not-yet-added singleton ("1×") rather than a misleading
-    // "IN STACK" borrowed from whatever other ops the layer happens to have.
+    // This is Mini-Melodyne (f0 detection, note segmentation, per-note edit,
+    // snap-to-key) — Phase 5 of the Sandbox's own spec ("XLETH Sample
+    // Sandbox — Spec & Build Plan.docx" §0/§2/§4), not yet built. The doc's
+    // own phase-gate rule is "prompts for a phase are written when that
+    // phase starts — never earlier", so this restructure (Phase 1 UI only)
+    // does not build P5's DSP — it just shows where the control will live.
+    //
+    // No engine op backs this yet — it can never actually be "in stack", so
+    // the badge should read the same as any other not-yet-added singleton
+    // ("1×") rather than a misleading "IN STACK" borrowed from whatever
+    // other ops the layer happens to have.
     matchesStack: () => false,
     alwaysDisabled: true,
-    disabledReason: 'Not implemented in the engine yet',
+    disabledReason: 'Mini-Melodyne (Phase 5) — not built yet, see the Spec & Build Plan',
     run: null,
   },
 ]
