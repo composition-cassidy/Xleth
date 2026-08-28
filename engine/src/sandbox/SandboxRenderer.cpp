@@ -956,6 +956,9 @@ public:
     JobStatus runJob() override {
         const SandboxRenderResult res =
             owner_.renderStack(sourceBufferId_, source_, ops_, rate_);
+        // Record the refusal BEFORE publishing: a caller woken by the new
+        // buffer must find the explanation already in place, not race it.
+        owner_.recordRefusal(layerId_, res.refusedOps, res.refusalReason);
         if (res.valid()) owner_.publish(layerId_, res.buffer);
         owner_.finishJob(layerId_);
         return jobHasFinished;
@@ -1472,6 +1475,18 @@ SandboxBufferPtr SandboxRenderer::clipboardBuffer(int clipboardId) const {
     return it != clipboard_.end() ? it->second : nullptr;
 }
 
+void SandboxRenderer::recordRefusal(int layerId, int count, const std::string& reason) {
+    std::lock_guard<std::mutex> lock(mu_);
+    if (count <= 0) refusals_.erase(layerId);
+    else            refusals_[layerId] = LayerRefusal{ count, reason };
+}
+
+SandboxRenderer::LayerRefusal SandboxRenderer::lastRefusal(int layerId) const {
+    std::lock_guard<std::mutex> lock(mu_);
+    auto it = refusals_.find(layerId);
+    return (it == refusals_.end()) ? LayerRefusal{} : it->second;
+}
+
 void SandboxRenderer::clearCache() {
     std::lock_guard<std::mutex> lock(mu_);
     map_.clear();
@@ -1556,6 +1571,8 @@ void SandboxRenderer::publish(int layerId, SandboxBufferPtr buffer) {
 void SandboxRenderer::unpublish(int layerId) {
     if (layerId < 0 || layerId >= kMaxLayers) return;
     published_[layerId].store(nullptr, std::memory_order_release);
+    std::lock_guard<std::mutex> lock(mu_);
+    refusals_.erase(layerId);
 }
 
 SandboxBufferPtr SandboxRenderer::publishedOutput(int layerId) const noexcept {

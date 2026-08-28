@@ -52,6 +52,7 @@
 #include "sandbox/SandboxCommands.h"
 #include "sandbox/SandboxRenderer.h"
 #include "sandbox/SandboxSpectrogram.h"
+#include "sandbox/SandboxPitchTrack.h"
 #include "import/FscScoreParser.h"
 #include "project/ProjectManager.h"
 #include "project/ProxyManager.h"
@@ -207,6 +208,41 @@ std::unique_ptr<xleth::sandbox::SandboxRenderer> g_sandboxRenderer;
 // it needs no coordination with g_sandboxRenderer's own cache beyond sharing
 // its teardown points.
 std::unique_ptr<xleth::sandbox::SandboxSpectrogramAnalyzer> g_sandboxSpectrogram;
+
+// AUTOTUNE detection-pass cache (pitch curve + note segmentation). Keyed by
+// sourceBufferId, not content hash — see SandboxPitchTrack.h for why that
+// differs from the spectrogram cache above.
+std::unique_ptr<xleth::sandbox::SandboxPitchTrackAnalyzer> g_sandboxPitchTrack;
+
+// Builds the "pitchTracks" block embedded as a sibling of SandboxCore's own
+// "layers" key in the sandboxWorkspace JSON (see Project_Save/Project_SaveAs
+// below) so reopening a session does not re-run NSDF analysis. Entries are
+// keyed by LAYER id, not sourceBufferId — SampleBank mints a fresh
+// sourceBufferId on every real project load (see the sandbox load path's
+// three-step rebind note), so a cache keyed by the old id would never hit;
+// layerId round-trips verbatim through SandboxCore::fromJson and is what the
+// load path re-keys against once each layer's new sourceBufferId is known.
+// Defined here, ahead of Project_Save, because this file calls it before the
+// anonymous namespace of small sandbox helpers further down is declared.
+nlohmann::json buildSandboxPitchTracksJson() {
+    nlohmann::json j = nlohmann::json::object();
+    j["pitchTrackVersion"] = 1;
+    nlohmann::json arr = nlohmann::json::array();
+    if (g_sandboxCore && g_sandboxPitchTrack) {
+        for (const auto& layer : g_sandboxCore->layers()) {
+            if (layer.sourceBufferId < 0) continue;
+            const xleth::sandbox::SandboxPitchTrackResult cached =
+                g_sandboxPitchTrack->lookup(layer.sourceBufferId);
+            if (!cached.valid()) continue;
+            nlohmann::json entry = nlohmann::json::object();
+            entry["layerId"] = layer.id;
+            entry["track"]   = cached.track->toJson();
+            arr.push_back(std::move(entry));
+        }
+    }
+    j["tracks"] = std::move(arr);
+    return j;
+}
 
 // Clip gain/fade drags are previewed directly on the model so the audio engine
 // can audition them without flooding undo history.  There is deliberately only
@@ -4774,6 +4810,7 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
     g_sandboxCore        = std::make_unique<xleth::sandbox::SandboxCore>();
     g_sandboxRenderer    = std::make_unique<xleth::sandbox::SandboxRenderer>();
     g_sandboxSpectrogram = std::make_unique<xleth::sandbox::SandboxSpectrogramAnalyzer>();
+    g_sandboxPitchTrack  = std::make_unique<xleth::sandbox::SandboxPitchTrackAnalyzer>();
 
     // Wire region-proxy lookup sources into SyncManager so videoTick() can
     // prefer per-region proxy decoders when they are ready.
@@ -4986,6 +5023,7 @@ void Shutdown(const JsonApi::CallbackInfo& info)
     g_projectManager.reset();
     g_sandboxRenderer.reset();  // drop published buffers before sampleBank
     g_sandboxSpectrogram.reset();
+    g_sandboxPitchTrack.reset();
     g_sandboxCore.reset();
     std::fprintf(stderr, "[BridgeShutdown] project state released\n");
 
@@ -5855,6 +5893,7 @@ JsonApi::Value Project_Save(const JsonApi::CallbackInfo& info)
     // hand-copied project.json key whitelist drops it.
     nlohmann::json sandboxWorkspace = nlohmann::json::object();
     if (g_sandboxCore) sandboxWorkspace = g_sandboxCore->toJson();
+    sandboxWorkspace["pitchTracks"] = buildSandboxPitchTracksJson();
     bool ok = g_projectManager->saveProject(*g_timeline, effectChains, masterChain, masterVolume,
                                             sandboxWorkspace);
     if (ok && g_undoManager) g_undoManager->markSavepoint();
@@ -5891,6 +5930,7 @@ JsonApi::Value Project_SaveAs(const JsonApi::CallbackInfo& info)
     }
     nlohmann::json sandboxWorkspace = nlohmann::json::object();
     if (g_sandboxCore) sandboxWorkspace = g_sandboxCore->toJson();
+    sandboxWorkspace["pitchTracks"] = buildSandboxPitchTracksJson();
     bool ok = g_projectManager->saveProjectAs(dir, name, *g_timeline, effectChains, masterChain,
                                               masterVolume, sandboxWorkspace);
     if (ok) syncSlotBakeCacheDir();
@@ -6000,6 +6040,7 @@ JsonApi::Value Project_NewBlank(const JsonApi::CallbackInfo& info)
             for (const auto& l : g_sandboxCore->layers()) g_sandboxRenderer->unpublish(l.id);
             g_sandboxRenderer->clearCache();
             if (g_sandboxSpectrogram) g_sandboxSpectrogram->clearCache();
+            if (g_sandboxPitchTrack) g_sandboxPitchTrack->clearCache();
         }
         g_sandboxCore->clear();
     }
@@ -6285,6 +6326,7 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
             for (const auto& l : g_sandboxCore->layers()) g_sandboxRenderer->unpublish(l.id);
             g_sandboxRenderer->clearCache();
             if (g_sandboxSpectrogram) g_sandboxSpectrogram->clearCache();
+            if (g_sandboxPitchTrack) g_sandboxPitchTrack->clearCache();
         }
         g_sandboxCore->clear();
 
@@ -6313,6 +6355,34 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
                     ++rebound;
                 }
             }
+
+            // ── Pitch-track cache (AUTOTUNE detection pass) ──────────────────
+            // Persisted keyed by layerId (buildSandboxPitchTracksJson, so it
+            // round-trips through fromJson above); re-key each entry to the
+            // sourceBufferId the rebind loop just minted and prime the
+            // analyzer's cache directly, so reopening this session does not
+            // re-run NSDF analysis. A layer that stayed unbound (unresolved
+            // above) has no current sourceBufferId to prime against and is
+            // skipped — its next analysis simply recomputes when requested.
+            if (g_sandboxPitchTrack) {
+                if (auto pt = ws.find("pitchTracks"); pt != ws.end() && pt->is_object()) {
+                    if (auto tracks = pt->find("tracks"); tracks != pt->end() && tracks->is_array()) {
+                        for (const auto& entry : *tracks) {
+                            if (!entry.is_object()) continue;
+                            const int layerId = entry.value("layerId", -1);
+                            const xleth::sandbox::SandboxLayer* layer = g_sandboxCore->findLayer(layerId);
+                            if (!layer || layer->sourceBufferId < 0) continue;
+                            auto trackIt = entry.find("track");
+                            if (trackIt == entry.end()) continue;
+                            xleth::dsp::PitchTrackResult restored =
+                                xleth::dsp::PitchTrackResult::fromJson(*trackIt);
+                            if (restored.valid())
+                                g_sandboxPitchTrack->primeCache(layer->sourceBufferId, std::move(restored));
+                        }
+                    }
+                }
+            }
+
             std::cout << "[Project] Sandbox workspace restored: "
                       << g_sandboxCore->layerCount() << " layer(s), "
                       << rebound << " rebound, " << unresolved << " unresolved"
@@ -10986,7 +11056,8 @@ JsonApi::Value Sandbox_Render(const JsonApi::CallbackInfo& info)
 }
 
 // sandbox_getRenderedBuffer(layerId: number)
-//   → { ready:true, numChannels, numSamples, sampleRate, data: Buffer }
+//   → { ready:true, numChannels, numSamples, sampleRate, data: Buffer,
+//       refusedOps, refusalReason }
 //   → { ready:false, reason }
 // `data` is interleaved 32-bit float PCM (numChannels * numSamples samples),
 // little-endian, at `sampleRate`. Lock-free read of whatever SandboxRenderer
@@ -11035,6 +11106,15 @@ JsonApi::Value Sandbox_GetRenderedBuffer(const JsonApi::CallbackInfo& info)
     out.Set("numSamples",  JsonApi::Number::New(env, numSamples));
     out.Set("sampleRate",  JsonApi::Number::New(env, layer->bufferSampleRate));
     out.Set("data",        JsonApi::Buffer<float>::Copy(env, interleaved.data(), interleaved.size()));
+    // Ops that are BUILT but declined this input and passed it through — today
+    // only AUTOTUNE, on material its pitch analysis judges non-monophonic.
+    // Reported on the same poll that fetches the audio because that is the one
+    // the UI already runs: an op that quietly did nothing is indistinguishable
+    // from a bug unless the reason arrives with the buffer. `refusalReason` is
+    // the analysis's own wording and is safe to show the user verbatim.
+    const auto refusal = g_sandboxRenderer->lastRefusal(layerId);
+    out.Set("refusedOps",    JsonApi::Number::New(env, refusal.count));
+    out.Set("refusalReason", JsonApi::String::New(env, refusal.reason));
     return out;
 }
 
@@ -11088,6 +11168,82 @@ JsonApi::Value Sandbox_GetSpectrogram(const JsonApi::CallbackInfo& info)
     out.Set("minDb",      JsonApi::Number::New(env, result.minDb));
     out.Set("maxDb",      JsonApi::Number::New(env, result.maxDb));
     out.Set("data",       JsonApi::Buffer<uint8_t>::Copy(env, result.tokens->data(), result.tokens->size()));
+    return out;
+}
+
+// sandbox_getPitchTrack(layerId: number)
+//   → { ready:true, sampleRate, hopSamples, numFrames, monophonic, reason,
+//       notes:[{startSample,endSample,medianF0Hz,noteName}], frames: Buffer }
+//   → { ready:false, reason }
+// AUTOTUNE's detection pass: NSDF pitch curve + note segmentation over the
+// layer's RAW SOURCE buffer (sampleBank->getSample, same lookup
+// Sandbox_Render uses) — never the rendered composite, since the pitch curve
+// describes the source content AUTOTUNE would correct, not a downstream
+// effect chain's output. `frames` is interleaved (f0Hz, confidence) float32
+// pairs, one pair per frame at `hopSamples`; an unvoiced frame has f0Hz 0.
+// `monophonic:false` is a legitimate result, not an error — the UI's cue to
+// refuse AUTOTUNE with `reason`. Cached by sourceBufferId (SandboxPitchTrack.h);
+// a repeat poll after the same source is a cache hit.
+JsonApi::Value Sandbox_GetPitchTrack(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!sandboxReady()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        JsonApi::TypeError::New(env, "sandbox_getPitchTrack(layerId: number)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int layerId = info[0].As<JsonApi::Number>().Int32Value();
+
+    auto readyFail = [&](const char* reason) {
+        JsonApi::Object out = JsonApi::Object::New(env);
+        out.Set("ready",  JsonApi::Boolean::New(env, false));
+        out.Set("reason", JsonApi::String::New(env, reason));
+        return out;
+    };
+
+    const xleth::sandbox::SandboxLayer* layer = g_sandboxCore->findLayer(layerId);
+    if (!layer) return readyFail("layer not found");
+    if (layer->sourceBufferId < 0) return readyFail("layer has no bound source");
+
+    const juce::AudioBuffer<float>* src = sampleBank->getSample(layer->sourceBufferId);
+    if (!src) return readyFail("source sample no longer available");
+
+    const xleth::sandbox::SandboxPitchTrackResult result =
+        g_sandboxPitchTrack->analyze(layer->sourceBufferId, *src, layer->bufferSampleRate);
+    if (!result.valid()) return readyFail("analysis failed");
+
+    const xleth::dsp::PitchTrackResult& track = *result.track;
+
+    std::vector<float> packed(track.frames.size() * 2);
+    for (size_t i = 0; i < track.frames.size(); ++i) {
+        packed[2 * i]     = track.frames[i].f0Hz;
+        packed[2 * i + 1] = track.frames[i].confidence;
+    }
+
+    JsonApi::Array notes = JsonApi::Array::New(env);
+    uint32_t n = 0;
+    for (const auto& seg : track.notes) {
+        JsonApi::Object o = JsonApi::Object::New(env);
+        o.Set("startSample", JsonApi::Number::New(env, static_cast<double>(seg.startSample)));
+        o.Set("endSample",   JsonApi::Number::New(env, static_cast<double>(seg.endSample)));
+        o.Set("medianF0Hz",  JsonApi::Number::New(env, seg.medianF0Hz));
+        o.Set("noteName",    JsonApi::String::New(env, seg.noteName));
+        notes.Set(n++, o);
+    }
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("ready",       JsonApi::Boolean::New(env, true));
+    out.Set("sampleRate",  JsonApi::Number::New(env, track.sampleRate));
+    out.Set("hopSamples",  JsonApi::Number::New(env, track.hopSamples));
+    out.Set("numFrames",   JsonApi::Number::New(env, static_cast<double>(track.frames.size())));
+    out.Set("monophonic",  JsonApi::Boolean::New(env, track.monophonic));
+    out.Set("reason",      JsonApi::String::New(env, track.reason));
+    out.Set("notes",       notes);
+    out.Set("frames",      JsonApi::Buffer<float>::Copy(env, packed.data(), packed.size()));
     return out;
 }
 
@@ -11317,10 +11473,17 @@ JsonApi::Value Sandbox_RenderComposite(const JsonApi::CallbackInfo& info)
     std::vector<xleth::sandbox::SandboxLayerMixInput> mixInputs;
     mixInputs.reserve(layers.size());
     for (const auto& l : layers) {
+        // Unbound (sourceBufferId < 0 — its durable source reference could
+        // not be re-resolved on load, see SandboxLayer's own comment)
+        // contributes no audio and never WILL: nothing calls sandbox_render
+        // for it. Treat it like a muted layer rather than blocking the whole
+        // composite forever on a layer that can structurally never render.
+        if (l.sourceBufferId < 0) continue;
         xleth::sandbox::SandboxBufferPtr buf = g_sandboxRenderer->publishedOutput(l.id);
         if (!buf) return readyFail("layer \"" + l.name + "\" not rendered yet");
         mixInputs.push_back({ buf, l.bufferSampleRate, l.gainDb, l.pan, l.offsetSamples, l.muted, l.soloed });
     }
+    if (mixInputs.empty()) return readyFail("no bound layers to mix");
 
     BridgeCallLog log("sandbox.renderComposite");
     const auto composite = xleth::sandbox::SandboxRenderer::renderComposite(mixInputs);
@@ -11384,11 +11547,15 @@ JsonApi::Value Sandbox_BakeComposite(const JsonApi::CallbackInfo& info)
     mixInputs.reserve(layers.size());
     std::string firstLayerName;
     for (const auto& l : layers) {
+        // See Sandbox_RenderComposite's identical skip — an unbound layer can
+        // never render, so it must not block a bake either.
+        if (l.sourceBufferId < 0) continue;
         xleth::sandbox::SandboxBufferPtr buf = g_sandboxRenderer->publishedOutput(l.id);
         if (!buf) return sandboxFail(env, ("layer \"" + l.name + "\" not rendered yet").c_str());
         if (firstLayerName.empty()) firstLayerName = l.name;
         mixInputs.push_back({ buf, l.bufferSampleRate, l.gainDb, l.pan, l.offsetSamples, l.muted, l.soloed });
     }
+    if (mixInputs.empty()) return sandboxFail(env, "no bound layers to bake");
 
     const std::string requestedName = (info.Length() >= 1 && info[0].IsString())
         ? info[0].As<JsonApi::String>().Utf8Value()
@@ -11451,6 +11618,123 @@ JsonApi::Value Sandbox_BakeComposite(const JsonApi::CallbackInfo& info)
     out.Set("numChannels", JsonApi::Number::New(env, bakedInfo.numChannels));
     out.Set("numSamples",  JsonApi::Number::New(env, bakedInfo.numSamples));
     out.Set("sampleRate",  JsonApi::Number::New(env, bakedInfo.bufferSampleRate));
+    return out;
+}
+
+// sandbox_extractSelection(layerId: number, dabs: array, name?: string)
+//   → { success, sampleId, name, numChannels, numSamples, sampleRate }
+//   → { success:false, reason }
+// SPC selection's COPY TO NEW LAYER: renders a NEW buffer containing ONLY the
+// audio inside `dabs`' time x frequency footprints (SandboxRenderer::
+// extractSelection — the complement of SPECTRAL_PAINT) and registers it as a
+// brand-new SampleBank asset, exactly like sandbox_bakeComposite does for a
+// full mix. Never touches the source layer's own op-stack — the extraction is
+// additive, not an edit, same as bakeComposite isn't an edit to any layer.
+//
+// `dabs` is JSON-shaped exactly like a SPECTRAL_PAINT op's own params.dabs
+// (SandboxOp.h's SpectralPaintDab) — reusing opFromJson via a throwaway
+// spectralPaint-typed op is what gives every field (missing/wrong-typed) the
+// SAME defaulting SetSandboxOpParamsCommand already relies on, rather than a
+// second hand-rolled parser for the same shape. amountDb is accepted but
+// ignored by extractSelection (keep/silence has no "how much").
+//
+// Undoable via the same generic BakeSandboxCompositeCommand
+// sandbox_bakeComposite uses — the command is already parameterised entirely
+// by injected closures (bakeFn/undoFn/restoreFn), so "bake a composite" and
+// "bake an extraction" are the same undo step shape, just fed a different
+// render.
+JsonApi::Value Sandbox_ExtractSelection(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!sandboxReady()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 2 || !info[0].IsNumber() || !info[1].IsArray()) {
+        JsonApi::TypeError::New(env,
+            "sandbox_extractSelection(layerId: number, dabs: array, name?: string)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int layerId = info[0].As<JsonApi::Number>().Int32Value();
+
+    const xleth::sandbox::SandboxLayer* layer = g_sandboxCore->findLayer(layerId);
+    if (!layer) return sandboxFail(env, "layer not found");
+
+    nlohmann::json dabsOp;
+    dabsOp["type"]           = "spectralPaint";
+    dabsOp["enabled"]        = true;
+    dabsOp["params"]         = nlohmann::json::object();
+    dabsOp["params"]["dabs"] = info[1].raw();
+    xleth::sandbox::SandboxOp parsedOp;
+    if (!xleth::sandbox::opFromJson(dabsOp, parsedOp))
+        return sandboxFail(env, "invalid dabs");
+    const auto& dabs = std::get<xleth::sandbox::SpectralPaintParams>(parsedOp.params).dabs;
+    if (dabs.empty()) return sandboxFail(env, "empty selection");
+
+    xleth::sandbox::SandboxBufferPtr src = g_sandboxRenderer->publishedOutput(layerId);
+    if (!src) return sandboxFail(env, "not rendered yet");
+
+    const std::string requestedName = (info.Length() >= 3 && info[2].IsString())
+        ? info[2].As<JsonApi::String>().Utf8Value()
+        : (layer->name + " (extract)");
+    const double layerRate = layer->bufferSampleRate;
+
+    struct ExtractState {
+        xleth::sandbox::SandboxBufferPtr buffer;
+        double      sampleRate = 0.0;
+        std::string name;
+        int         sampleId   = -1;
+    };
+    auto state = std::make_shared<ExtractState>();
+
+    xleth::sandbox::BakeSandboxCompositeCommand::BakeFn bakeFn =
+        [src, dabs, layerRate, requestedName, state]() -> int {
+            auto extracted = std::make_shared<const xleth::sandbox::SandboxBuffer>(
+                xleth::sandbox::SandboxRenderer::extractSelection(*src, dabs, layerRate));
+            const int id = sampleBank->addSampleFromBuffer(*extracted, layerRate, requestedName);
+            if (id < 0) { state->sampleId = -1; return -1; }
+            state->buffer     = extracted;
+            state->sampleRate = layerRate;
+            state->name       = sampleBank->getSampleInfo(id).name.toStdString();
+            state->sampleId   = id;
+            return id;
+        };
+    xleth::sandbox::BakeSandboxCompositeCommand::UndoFn undoFn =
+        [](int sampleId) { sampleBank->unloadSample(sampleId); };
+    xleth::sandbox::BakeSandboxCompositeCommand::RestoreFn restoreFn =
+        [state](int sampleId) -> bool {
+            if (!state->buffer) return false;
+            SampleBank::SampleInfo info;
+            info.name               = juce::String(state->name);
+            info.numChannels        = state->buffer->getNumChannels();
+            info.numSamples         = state->buffer->getNumSamples();
+            info.originalSampleRate = state->sampleRate;
+            info.bufferSampleRate   = state->sampleRate;
+            return sampleBank->restoreSample(sampleId, *state->buffer, info);
+        };
+
+    BridgeCallLog log("sandbox.extractSelection");
+    g_undoManager->execute(
+        std::make_unique<xleth::sandbox::BakeSandboxCompositeCommand>(
+            requestedName, std::move(bakeFn), std::move(undoFn), std::move(restoreFn)),
+        *g_timeline);
+
+    const int sampleId = state->sampleId;
+    if (sampleId < 0) {
+        log.done("failed");
+        return sandboxFail(env, "extraction is empty");
+    }
+    log.done(std::to_string(sampleId));
+
+    const SampleBank::SampleInfo extractedInfo = sampleBank->getSampleInfo(sampleId);
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("success",     JsonApi::Boolean::New(env, true));
+    out.Set("sampleId",    JsonApi::Number::New(env, sampleId));
+    out.Set("name",        JsonApi::String::New(env, extractedInfo.name.toStdString()));
+    out.Set("numChannels", JsonApi::Number::New(env, extractedInfo.numChannels));
+    out.Set("numSamples",  JsonApi::Number::New(env, extractedInfo.numSamples));
+    out.Set("sampleRate",  JsonApi::Number::New(env, extractedInfo.bufferSampleRate));
     return out;
 }
 

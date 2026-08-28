@@ -23,9 +23,8 @@ import {
 //    has no separate "dynamics mod" op type. Whichever is added first blocks
 //    the other, because they share one matchesStack predicate.
 //
-// AUTOTUNE has no backing engine op at all (no pitch-correction/quantize-to-
-// scale op exists in SandboxOp.cpp) — it stays visible per the mockup but
-// permanently disabled rather than being silently dropped or half-built.
+// AUTOTUNE is a plain singleton over SandboxOpType::Autotune (P5-3) — it was
+// the one permanently-disabled entry here until that op landed.
 export const EFFECT_CATEGORIES = ['EDIT', 'DYNAMICS', 'RESTORATION', 'PITCH']
 
 export const EFFECT_REGISTRY = [
@@ -137,20 +136,17 @@ export const EFFECT_REGISTRY = [
   },
   {
     id: 'autotune', label: 'Autotune', category: 'PITCH', maxInstances: 1, needsSelection: false,
-    // This is Mini-Melodyne (f0 detection, note segmentation, per-note edit,
-    // snap-to-key) — Phase 5 of the Sandbox's own spec ("XLETH Sample
-    // Sandbox — Spec & Build Plan.docx" §0/§2/§4), not yet built. The doc's
-    // own phase-gate rule is "prompts for a phase are written when that
-    // phase starts — never earlier", so this restructure (Phase 1 UI only)
-    // does not build P5's DSP — it just shows where the control will live.
+    // P5-3 landed the DSP: NSDF detection (P5-1) -> target-f0 curve (P5-2) ->
+    // TD-PSOLA resynthesis (dsp/AutotuneRender.h). A SINGLETON per layer, and
+    // genuinely so rather than by convention — two stacked corrections would
+    // have the second one detecting pitch in audio the first already
+    // resynthesized, which is a worse input than the source and asks the user
+    // to reason about an order that has no musical meaning.
     //
-    // No engine op backs this yet — it can never actually be "in stack", so
-    // the badge should read the same as any other not-yet-added singleton
-    // ("1×") rather than a misleading "IN STACK" borrowed from whatever
-    // other ops the layer happens to have.
-    matchesStack: () => false,
-    alwaysDisabled: true,
-    disabledReason: 'Mini-Melodyne (Phase 5) — not built yet, see the Spec & Build Plan',
-    run: null,
+    // Whole-buffer: needsSelection is false and addAutotune ignores the
+    // current selection. Pitch correction is a property of a performance, and
+    // AutotuneParams has no range to scope it to.
+    matchesStack: (op) => op.type === 'autotune',
+    run: (store, ctx) => store.addAutotune(ctx.layerId),
   },
 ]

@@ -4,6 +4,8 @@ import useSandboxStore, {
   RIPPLE_MODE, FADE_SHAPE, findEnvelopeOp, clampGainEnvelopeFollower, GAIN_ENVELOPE_MODE,
   GAIN_ENVELOPE_ATTACK_MS_MIN, GAIN_ENVELOPE_ATTACK_MS_MAX,
   GAIN_ENVELOPE_RELEASE_MS_MIN, GAIN_ENVELOPE_RELEASE_MS_MAX,
+  AUTOTUNE_SCALE_NAME, AUTOTUNE_KEY_NAME,
+  AUTOTUNE_MAX_RETUNE_MS, AUTOTUNE_MAX_SMOOTHNESS_MS,
 } from '../../stores/sandboxStore.js'
 import { FADE_SHAPES } from './sandboxToolConstants.js'
 
@@ -58,9 +60,58 @@ function describeParams(op) {
       const amounts = dabs.map((d) => d.amountDb)
       return `${dabs.length} dab${dabs.length === 1 ? '' : 's'}, ${Math.min(...amounts).toFixed(0)}…${Math.max(...amounts).toFixed(0)} dB`
     }
+    case 'autotune': {
+      // Scale/key first because that is what the user picked, then the one
+      // control that changes whether ANYTHING happens. A non-empty
+      // allowedNotes OVERRIDES scale/key (AutotuneParams), so the row must say
+      // "custom" rather than a preset name the render is ignoring.
+      const notes = p.allowedNotes || []
+      const scale = notes.length > 0
+        ? `custom (${notes.map((n) => AUTOTUNE_KEY_NAME[n] ?? n).join(' ')})`
+        : `${AUTOTUNE_KEY_NAME[p.key] ?? p.key} ${AUTOTUNE_SCALE_NAME[p.scale] ?? p.scale}`
+      if (!(p.correctionAmount > 0)) return `${scale} — 0% (bypass)`
+      return `${scale}, ${p.correctionAmount}%, retune ${p.retuneSpeedMs}ms, vib ${p.preserveVibrato}%`
+    }
     default:
       return ''
   }
+}
+
+// One AUTOTUNE control. The slider is mirrored locally while dragging and
+// only COMMITTED on release (pointerup / keyboard blur), so a drag across the
+// range is one undoable edit and one re-render rather than one per tick — the
+// same contract the gain-envelope drag and the spectral-paint stroke follow.
+// The number box beside it commits on blur, for typing an exact value.
+function AutotuneSlider({ label, unit, min, max, step, value, onCommit }) {
+  const [local, setLocal] = useState(value)
+  const [dragging, setDragging] = useState(false)
+  // Track the committed value while NOT dragging, so undo/redo and a render
+  // that clamps the value are both reflected without fighting the drag.
+  useEffect(() => { if (!dragging) setLocal(value) }, [value, dragging])
+  const shown = dragging ? local : value
+  return (
+    <label className="sandbox-op-slider">
+      {label}
+      <input
+        type="range" min={min} max={max} step={step} value={shown}
+        onChange={(e) => { setDragging(true); setLocal(Number(e.target.value)) }}
+        onPointerUp={() => { setDragging(false); if (local !== value) onCommit(local) }}
+        onBlur={() => { setDragging(false); if (local !== value) onCommit(local) }}
+      />
+      <input
+        type="number" className="sandbox-toolbar-number"
+        min={min} max={max} step={step}
+        value={shown}
+        onChange={(e) => { setDragging(true); setLocal(Number(e.target.value)) }}
+        onBlur={(e) => {
+          setDragging(false)
+          const v = Math.min(max, Math.max(min, Number(e.target.value)))
+          if (v !== value) onCommit(v)
+        }}
+      />
+      <span className="sandbox-op-slider-unit">{unit}</span>
+    </label>
+  )
 }
 
 // Inline param editors shown beneath the SELECTED module only. Covers every
@@ -230,6 +281,64 @@ function InlineOpParamEditor({
       </div>
     )
   }
+  if (op.type === 'autotune') {
+    // The six controls plus scale/key. Sliders commit on RELEASE (onChange
+    // fires per drag tick in React, so the value is mirrored locally and only
+    // pushed on pointerup) — the same "one command per drag, not per
+    // mousemove" contract setGainEnvelope and the spectral-paint stroke both
+    // follow, so a drag is one undo step rather than fifty.
+    //
+    // Scale/key are disabled while a custom note set is active, because a
+    // non-empty allowedNotes OVERRIDES them outright in the engine
+    // (AutotuneParams) — leaving them live would let the user change a preset
+    // and hear nothing.
+    const notes = p.allowedNotes || []
+    const custom = notes.length > 0
+    const set = (patch) => setOpParams(layerId, op.id, { ...p, ...patch })
+    return (
+      <div className="sandbox-op-params-row sandbox-op-params-wrap">
+        <label title={custom ? 'A custom note set overrides scale/key' : undefined}>
+          Key
+          <select
+            className="sandbox-toolbar-select" value={p.key} disabled={custom}
+            onChange={(e) => set({ key: Number(e.target.value) })}
+          >
+            {AUTOTUNE_KEY_NAME.map((n, i) => <option key={n} value={i}>{n}</option>)}
+          </select>
+        </label>
+        <label title={custom ? 'A custom note set overrides scale/key' : undefined}>
+          Scale
+          <select
+            className="sandbox-toolbar-select" value={p.scale} disabled={custom}
+            onChange={(e) => set({ scale: Number(e.target.value) })}
+          >
+            {Object.entries(AUTOTUNE_SCALE_NAME).map(([v, n]) => (
+              <option key={v} value={v}>{n}</option>
+            ))}
+          </select>
+        </label>
+        <AutotuneSlider label="Amount" unit="%" min={0} max={100} step={1}
+          value={p.correctionAmount} onCommit={(v) => set({ correctionAmount: v })} />
+        <AutotuneSlider label="Retune" unit="ms" min={0} max={AUTOTUNE_MAX_RETUNE_MS} step={1}
+          value={p.retuneSpeedMs} onCommit={(v) => set({ retuneSpeedMs: v })} />
+        <AutotuneSlider label="Smooth" unit="ms" min={0} max={AUTOTUNE_MAX_SMOOTHNESS_MS} step={1}
+          value={p.smoothnessMs} onCommit={(v) => set({ smoothnessMs: v })} />
+        <AutotuneSlider label="Jumpiness" unit="%" min={0} max={100} step={1}
+          value={p.jumpiness} onCommit={(v) => set({ jumpiness: v })} />
+        <AutotuneSlider label="Vibrato" unit="%" min={0} max={100} step={1}
+          value={p.preserveVibrato} onCommit={(v) => set({ preserveVibrato: v })} />
+        {custom && (
+          <button
+            className="sandbox-op-learn-noise"
+            onClick={() => set({ allowedNotes: [] })}
+            title="Drop the custom note set and go back to the scale/key preset"
+          >
+            Clear notes
+          </button>
+        )}
+      </div>
+    )
+  }
   if (op.type === 'gain') {
     return (
       <div className="sandbox-op-params-row">
@@ -283,6 +392,7 @@ function InlineOpParamEditor({
 
 const HAS_INLINE_PARAMS = new Set([
   'pitch', 'formantShift', 'declip', 'denoise', 'gainEnvelope', 'fade', 'crossfade', 'spectralPaint', 'gain',
+  'autotune',
 ])
 
 function OpModule({

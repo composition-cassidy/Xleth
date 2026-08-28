@@ -830,6 +830,38 @@
   cursor: pointer;
 }
 
+/* AUTOTUNE's editor (P5-3) carries eight controls rather than the one or two
+   every other op needs, so its row wraps into a grid instead of one long
+   flex line that would push the module rail wide. */
+.sandbox-op-params-wrap {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  align-items: center;
+  gap: 6px 10px;
+}
+
+.sandbox-op-slider {
+  display: grid;
+  grid-template-columns: 58px 1fr 52px 18px;
+  align-items: center;
+  gap: 4px;
+}
+
+.sandbox-op-slider input[type="range"] {
+  min-width: 0;
+  width: 100%;
+  accent-color: var(--theme-accent);
+}
+
+.sandbox-op-slider .sandbox-toolbar-number {
+  width: 100%;
+}
+
+.sandbox-op-slider-unit {
+  font-size: 9px;
+  color: var(--theme-text-placeholder);
+}
+
 .sandbox-op-grip {
   color: var(--theme-text-placeholder);
   flex: 0 0 auto;

@@ -178,6 +178,36 @@ export function findSpectralPaintOp(layer) {
 // or BOOST (positive, added for the SPC selection tool's BOOST action). A
 // brush/selection amount outside this range is not an error, it just does not
 // round-trip past the renderer's clamp.
+// ── AUTOTUNE (P5-3) ────────────────────────────────────────────────────────
+// Mirrors xleth::dsp::ScaleType (engine/src/dsp/CorrectionCurve.h). The VALUES
+// are what cross the bridge — SandboxOp.cpp's FromJsonVisitor reads "scale" as
+// that enum's integer — so this table's order is load-bearing and must track
+// the C++ enum, exactly like FADE_SHAPE does for SandboxFadeShape.
+export const AUTOTUNE_SCALE = {
+  IONIAN: 0, DORIAN: 1, PHRYGIAN: 2, LYDIAN: 3, MIXOLYDIAN: 4, AEOLIAN: 5,
+  LOCRIAN: 6, HARMONIC_MINOR: 7, MELODIC_MINOR: 8,
+  MAJOR_PENTATONIC: 9, MINOR_PENTATONIC: 10,
+}
+
+export const AUTOTUNE_SCALE_NAME = {
+  0: 'Ionian', 1: 'Dorian', 2: 'Phrygian', 3: 'Lydian', 4: 'Mixolydian',
+  5: 'Aeolian', 6: 'Locrian', 7: 'Harmonic Minor', 8: 'Melodic Minor',
+  9: 'Major Pentatonic', 10: 'Minor Pentatonic',
+}
+
+export const AUTOTUNE_KEY_NAME = [
+  'C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 'B',
+]
+
+// The product defaults, matching xleth::dsp::kDefaultKey/kDefaultScale.
+export const AUTOTUNE_DEFAULT_KEY = 2   // D
+
+// Ceilings on the two time constants, mirroring kAutotuneMaxRetuneMs /
+// kAutotuneMaxSmoothnessMs (SandboxOp.h). The engine clamps regardless; these
+// exist so the inputs cannot ASK for something the engine will silently refuse.
+export const AUTOTUNE_MAX_RETUNE_MS = 500
+export const AUTOTUNE_MAX_SMOOTHNESS_MS = 500
+
 export const SPECTRAL_PAINT_AMOUNT_DB_MIN = -60
 export const SPECTRAL_PAINT_AMOUNT_DB_MAX = 24
 
@@ -276,6 +306,12 @@ const AUTO_RENDER_BY_OP_TYPE = {
   // Per-frame dab evaluation over an offline STFT pass — same order of cost
   // as DENOISE. See SandboxOp::autoRender()'s SpectralPaint case.
   spectralPaint: true,
+  // AUTOTUNE's detection pass (a dense NSDF pitch track, ~270ms for 10s) is
+  // the most expensive thing in this table, but SandboxRenderer caches it
+  // against the identity of the op's INPUT prefix — so it runs once when the
+  // op is added and never again while the six controls are dragged, leaving
+  // only the ~17ms PSOLA to re-run. See SandboxOp::autoRender()'s Autotune case.
+  autotune: true,
 }
 
 // True when every op currently on `layer`'s stack permits automatic
@@ -322,6 +358,13 @@ function makeLayer({ layerId, name, sourceBufferId, bufferSampleRate, region }) 
     offsetSamples: 0,
     renderState: 'idle', // 'idle' | 'rendering' | 'ready' | 'error'
     renderedBuffer: null, // { numChannels, numSamples, sampleRate, channels: Float32Array[] }
+    // An op that is BUILT but declined the last render's input and passed it
+    // through — today only AUTOTUNE, on non-monophonic material. Deliberately
+    // NOT folded into `error`: the render succeeded, the buffer is real, and
+    // "one op chose not to act, and here is why" is a different message from
+    // "the render failed". Refreshed on every completed render.
+    refusedOps: 0,
+    refusalReason: null,
     // SPC view (P3-1). Fetched lazily — see ensureSpectrogram — and dropped
     // whenever a fresh renderedBuffer lands, so a stale image can never be
     // mistaken for the current render even for the one frame before the new
@@ -570,6 +613,11 @@ const useSandboxStore = create((set, get) => ({
         : state.activeLayerId
       return { layers, activeLayerId, selection: activeLayerId === state.activeLayerId ? state.selection : null }
     })
+    // A closed layer drops out of the mix entirely — the composite is stale
+    // the same way an op-stack edit leaves it stale. See setLayerMuted's
+    // comment: this schedules the composite auto-render directly since no
+    // layer render is involved.
+    get()._scheduleCompositeAutoRender('layerClose')
     get().refreshHistory()
   },
 
@@ -582,6 +630,14 @@ const useSandboxStore = create((set, get) => ({
   // Bridge-backed mute/solo (SB-5) — same optimistic-after-confirm contract as
   // every other mutator in this file: the bridge call happens first, and the
   // local flag only flips once the engine accepts it.
+  //
+  // Mix params never touch a layer's own render (renderComposite mixes each
+  // layer's already-published buffer by its mute/solo/gain/pan/offset), so
+  // this schedules the COMPOSITE auto-render directly rather than going
+  // through _triggerAutoRender (which also kicks a per-layer render and gates
+  // on that layer's own AUTO_RENDER_BY_OP_TYPE — neither applies here).
+  // Without this, Play's _awaitFreshComposite finds nothing scheduled and
+  // silently hands back the pre-change composite buffer.
   async setLayerMuted(layerId, muted) {
     try {
       const res = await window.xleth?.sandbox?.setLayerMuted(layerId, muted)
@@ -589,6 +645,7 @@ const useSandboxStore = create((set, get) => ({
       set((state) => ({
         layers: state.layers.map((l) => (l.id === layerId ? { ...l, muted } : l)),
       }))
+      get()._scheduleCompositeAutoRender('mixMute')
       get().refreshHistory()
     } catch (e) {
       console.warn('[SampleSandbox] setLayerMuted failed:', e?.message || e)
@@ -606,6 +663,7 @@ const useSandboxStore = create((set, get) => ({
       set((state) => ({
         layers: state.layers.map((l) => (l.id === layerId ? { ...l, soloed } : l)),
       }))
+      get()._scheduleCompositeAutoRender('mixSolo')
       get().refreshHistory()
     } catch (e) {
       console.warn('[SampleSandbox] setLayerSoloed failed:', e?.message || e)
@@ -618,9 +676,9 @@ const useSandboxStore = create((set, get) => ({
 
   // Gain (dB) / pan (-1..1) / offset (ms, converted to samples at the layer's
   // own bufferSampleRate) — mix params live OUTSIDE the op-stack, so this
-  // never triggers a re-render of the layer itself. `patch` may set any
-  // subset of { gainDb, pan, offsetMs }; omitted fields keep their current
-  // value.
+  // never triggers a re-render of the layer itself, only the composite (see
+  // setLayerMuted's comment above). `patch` may set any subset of
+  // { gainDb, pan, offsetMs }; omitted fields keep their current value.
   async setLayerMix(layerId, patch) {
     const layer = get().layers.find((l) => l.id === layerId)
     if (!layer) return
@@ -635,6 +693,7 @@ const useSandboxStore = create((set, get) => ({
       set((state) => ({
         layers: state.layers.map((l) => (l.id === layerId ? { ...l, gainDb, pan, offsetSamples } : l)),
       }))
+      get()._scheduleCompositeAutoRender('mixParam')
       get().refreshHistory()
     } catch (e) {
       console.warn('[SampleSandbox] setLayerMix failed:', e?.message || e)
@@ -683,6 +742,13 @@ const useSandboxStore = create((set, get) => ({
             channels,
           },
           error: null,
+          // Ops that are BUILT but declined this input and passed it through
+          // (today: AUTOTUNE on non-monophonic material). NOT `error` — the
+          // render succeeded and the buffer is real; one op chose not to act
+          // on it, which is a different thing to tell the user and comes with
+          // the analysis's own wording. P5-4 surfaces it on the op module.
+          refusedOps: res.refusedOps ?? 0,
+          refusalReason: res.refusalReason || null,
           // A new render is a new set of samples — the previous spectrogram
           // (if any) describes audio that no longer exists. Dropped here
           // rather than left to be silently overwritten by ensureSpectrogram,
@@ -1334,6 +1400,34 @@ const useSandboxStore = create((set, get) => ({
     if (!existing) return
     await get().setOpParams(layerId, opId, {
       ...existing.params, noiseStartSample: sel.startSample, noiseEndSample: sel.endSample,
+    })
+  },
+
+  // ── Autotune (P5-3) ──────────────────────────────────────────────────────
+  //
+  // Adds the op with the specced defaults: D Phrygian, 100% correction, no
+  // custom note set. The six controls are then edited in place through the
+  // generic setOpParams every other op uses, so each drag is one undo step and
+  // the engine's own clamps (normalizeAutotune) are the single source of truth
+  // for their ranges — this file does not restate them.
+  //
+  // Whole-buffer by design, and it ignores the current selection: pitch
+  // correction is a property of a performance, not of a region, and the
+  // detection pass it depends on is a whole-buffer analysis anyway. There is
+  // no start/endSample on AutotuneParams to give it one.
+  async addAutotune(layerId) {
+    await get().addOp(layerId, {
+      type: 'autotune',
+      params: {
+        scale: AUTOTUNE_SCALE.PHRYGIAN,
+        key: AUTOTUNE_DEFAULT_KEY,
+        allowedNotes: [],
+        correctionAmount: 100,
+        retuneSpeedMs: 20,
+        smoothnessMs: 20,
+        jumpiness: 0,
+        preserveVibrato: 100,
+      },
     })
   },
 

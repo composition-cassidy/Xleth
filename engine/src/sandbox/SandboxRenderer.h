@@ -223,6 +223,21 @@ public:
     // Drop a layer's published buffer (layer removed / sandbox closed).
     void unpublish(int layerId);
 
+    // ── Refusals (main thread) ───────────────────────────────────────────────
+    //
+    // What the LAST completed render of `layerId` refused, if anything. A
+    // refusal still publishes a buffer (the pass-through), so the poll that
+    // fetches the audio is exactly where the caller also wants to learn that
+    // one op declined — hence a per-layer record here rather than a return
+    // value the async job has nowhere to hand back to.
+    //
+    // Cleared by unpublish(). `count` 0 means the last render refused nothing.
+    struct LayerRefusal {
+        int         count = 0;
+        std::string reason;
+    };
+    LayerRefusal lastRefusal(int layerId) const;
+
     // ── Cache management / instrumentation ───────────────────────────────────
 
     void   clearCache();
@@ -339,6 +354,10 @@ private:
 
     SandboxBufferPtr lookupKey(const SandboxRenderKey& key);
     void             insert(const SandboxRenderKey& key, SandboxBufferPtr buffer);
+    // Called by the render job before it publishes. count <= 0 CLEARS the
+    // layer's record — a render that refused nothing must not leave the
+    // previous render's message standing.
+    void             recordRefusal(int layerId, int count, const std::string& reason);
     void             evictLocked();
     void             finishJob(int layerId);
 
@@ -383,6 +402,11 @@ private:
     // justify a second lock.
     std::unordered_map<SandboxRenderKey, PitchTrackPtr, SandboxRenderKeyHash> pitchCache_;
     std::list<SandboxRenderKey> pitchLru_;                   // front = MRU
+
+    // layerId -> what the last completed render refused. Guarded by mu_, and
+    // read only from the main thread (unlike published_, which the audio thread
+    // touches and which therefore cannot take a lock at all).
+    std::unordered_map<int, LayerRefusal> refusals_;
 
     // Clipboard store for CUT/COPY/PASTE. Guarded by mu_ — capture/lookup are
     // both main-thread, low-frequency, and already sharing the cache's lock is
