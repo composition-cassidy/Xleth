@@ -1,0 +1,348 @@
+{
+  "manifest_version": 2,
+  "store_version": "v1",
+  "_comment": [
+    "Model manifest for the XLETH separation sidecar (P4).",
+    "",
+    "URLs and checksums are RESOLVED AT BUILD TIME and hardcoded here. The",
+    "sidecar has NO runtime dependency on any upstream manifest (UVR's",
+    "download-center JSON, Hugging Face's API, ...): it downloads exactly the",
+    "bytes named below and refuses anything whose sha256 disagrees. That is",
+    "deliberate — a runtime manifest fetch would make an offline install fail",
+    "and would let an upstream edit silently change which weights we run.",
+    "Hugging Face URLs are pinned to a COMMIT rather than to a branch for the",
+    "same reason; /resolve/main/ would follow a force-push.",
+    "",
+    "Every entry carries a `license` block with a `status` field. A model whose",
+    "status is not a CLEARED status is REFUSED by /separate (see manifest.py's",
+    "assert_license_cleared) — the gate is enforced, not decorative. A model",
+    "cleared only under a condition (CLEARED-NONCOMMERCIAL) additionally sets",
+    "requires_acknowledgement, and /separate refuses it until the caller passes",
+    "acknowledgeLicense — the condition has to reach the user, not just this file.",
+    "",
+    "`files` is a list because a model is not always one blob. MDX-Net ships a",
+    "self-describing .onnx; Mel-Band RoFormer ships raw tensors plus a YAML that",
+    "says what shape they go in. The YAML is downloaded and checksummed like the",
+    "weight rather than paraphrased into this file: it is the model's own config,",
+    "getting it wrong does not error, and every Mel-RoFormer checkpoint has a",
+    "different one.",
+    "",
+    "`speed` seeds the ETA before the first chunk lands. It is PER MODEL because",
+    "the two tiers differ by 9x on the same CPU. `speed.measured` records which",
+    "figures came from a stopwatch and which are arithmetic — see manifest.py's",
+    "speed_is_measured."
+  ],
+  "models": [
+    {
+      "id": "mdx_kim_vocal_2",
+      "tier": "fast",
+      "name": "MDX-Net Kim Vocal 2",
+      "arch": "mdx_net",
+      "sample_rate": 44100,
+      "files": [
+        {
+          "role": "weights",
+          "name": "Kim_Vocal_2.onnx",
+          "url": "https://github.com/TRvlvr/model_repo/releases/download/all_public_uvr_models/Kim_Vocal_2.onnx",
+          "sha256": "ce74ef3b6a6024ce44211a07be9cf8bc6d87728cc852a68ab34eb8e58cde9c8b",
+          "size_bytes": 66759214,
+          "description": "ONNX graph and weights. Self-describing about dim_f/dim_t; NOT about n_fft or hop."
+        }
+      ],
+      "params": {
+        "dim_f": 3072,
+        "dim_t": 256,
+        "dim_c": 4,
+        "n_fft": 7680,
+        "hop": 1024,
+        "compensate": 1.021
+      },
+      "stems": {
+        "mode": "primary_plus_residual",
+        "primary": "Vocals",
+        "secondary": "Instrumental"
+      },
+      "speed": {
+        "_comment": [
+          "Seconds of wall clock per second of audio. Measured 2026-08-26 on Windows 11 /",
+          "RTX 4080 / Python 3.14 over an 18 s, 4-chunk input.",
+          "",
+          "No `fixed` term here, deliberately. MDX-Net's edge padding is one gen_size —",
+          "5.75 s, a single chunk — and the 18 s input these figures were measured on",
+          "already carried it, so its cost is inside the 0.33. Adding a fixed term would",
+          "count it twice. The BALANCED tier needs one because its padding is 13 s of a",
+          "much slower model: two chunks that a short sample pays in full."
+        ],
+        "cpu": 0.33,
+        "cuda": 0.05,
+        "directml": 0.12,
+        "measured": {
+          "cpu": true,
+          "cuda": true,
+          "directml": false
+        }
+      },
+      "notes": [
+        "n_fft is NOT recoverable from the ONNX graph. A wrong value here produces a quietly worse separation, never an error."
+      ],
+      "license": {
+        "status": "CLEARED",
+        "audited_on": "2026-08-26",
+        "spdx": "MIT",
+        "holder": "Anjok07 and the Ultimate Vocal Remover contributors",
+        "model_author": "KimberleyJSN (Kimberley Jensen)",
+        "source": "https://github.com/Anjok07/ultimatevocalremovergui",
+        "license_url": "https://github.com/Anjok07/ultimatevocalremovergui/blob/master/LICENSE",
+        "commercial_use": true,
+        "requires_acknowledgement": false,
+        "attribution": "MDX-Net \"Kim Vocal 2\" — model by KimberleyJSN, distributed by Ultimate Vocal Remover (MIT).",
+        "findings": [
+          "Ultimate Vocal Remover GUI is MIT licensed and its README states that its core developers trained all models shipped in the package except the Demucs v3/v4 4-stem models.",
+          "The README grants third-party application use directly: 'For all third-party application developers who wish to use our models, please honor the MIT license by providing credit to UVR and its developers.' That is our exact use case, and the condition is attribution.",
+          "XLETH does not REDISTRIBUTE the weight. It is fetched on demand, by the end user's own machine, from UVR's own public distribution channel (the TRvlvr/model_repo release the UVR Download Center itself points at). Redistribution terms are therefore not engaged by shipping XLETH.",
+          "The attribution string above is surfaced in the Sample Sandbox separation strip and recorded in NOTICE-separation-models.md, satisfying the credit condition."
+        ]
+      }
+    },
+    {
+      "id": "mel_roformer_becruily_deux",
+      "tier": "balanced",
+      "name": "Mel-Band RoFormer “deux” (becruily)",
+      "arch": "mel_band_roformer",
+      "sample_rate": 44100,
+      "files": [
+        {
+          "role": "weights",
+          "name": "becruily_deux.ckpt",
+          "url": "https://huggingface.co/becruily/mel-band-roformer-deux/resolve/2da74427d682a3df47a774378fc24d7a1a0cdaad/becruily_deux.ckpt",
+          "sha256": "10255c02295bf3e3865d4ee50ff752d7b19b124ed5fd93b147babc4333eda3aa",
+          "size_bytes": 435006815,
+          "description": "torch state_dict, 217.3M parameters. Raw tensors — carries no architecture information at all."
+        },
+        {
+          "role": "config",
+          "name": "config_deux_becruily.yaml",
+          "url": "https://huggingface.co/becruily/mel-band-roformer-deux/resolve/2da74427d682a3df47a774378fc24d7a1a0cdaad/config_deux_becruily.yaml",
+          "sha256": "bb3ea9bce37ca96d63568490d5a92d7e41df3d7726788b6970c10d89eb62d902",
+          "size_bytes": 1175,
+          "description": "The model's OWN config. Unique to this checkpoint — see notes. Never substitute another Mel-RoFormer's yaml."
+        }
+      ],
+      "params": {
+        "_comment": [
+          "The real architecture constants live in the downloaded yaml, which is",
+          "checksummed, so nothing can change them behind our back. What is here is",
+          "an `expects` block that roformer.py cross-checks the yaml against at load.",
+          "The yaml WINS on disagreement (it is what the weight was trained with) and",
+          "the mismatch is raised as a job warning — the same rule mdx.py applies when",
+          "the ONNX graph and the manifest disagree about dim_f."
+        ],
+        "expects": {
+          "chunk_size": 573300,
+          "stft_hop_length": 441,
+          "stft_n_fft": 2048,
+          "num_bands": 60,
+          "num_overlap": 2,
+          "sample_rate": 44100,
+          "instruments": ["Vocals", "Instrumental"]
+        }
+      },
+      "stems": {
+        "mode": "model_outputs",
+        "names": ["Vocals", "Instrumental"]
+      },
+      "speed": {
+        "_comment": [
+          "cpu: MEASURED 2026-08-26/27. Windows 11, i7-13700KF (24 threads), Python",
+          "3.14.2, torch 2.13.0+cpu. One 573300-sample chunk takes 20.07 s steady-state;",
+          "with num_overlap 2 that is 20.07 * 2 / 13.0 = 3.09 marginal wall-seconds per",
+          "audio-second. A three-minute song is about ten minutes on this CPU.",
+          "",
+          "fixed.cpu: 40 s, also measured. The chunker reflect-pads the input by one",
+          "border (6.5 s) at each end and the model runs on that padding, which is two",
+          "extra chunks at ~20 s each no matter how short the input is. End-to-end check",
+          "on a 32.31 s input: predicted 40 + 32.31*3.09 = 139.8 s, measured 141.0 s",
+          "including model load. Without the fixed term the same prediction is 100 s.",
+          "",
+          "cuda: NOT measured — the sidecar venv here has the CPU-only torch build, and",
+          "the Roformer tiers run inference in torch, not onnxruntime. Derived instead",
+          "from the CPU->CUDA ratio measured for the FAST tier on this machine's RTX 4080",
+          "(0.33 -> 0.05, i.e. 6.6x): 3.09 / 6.6 = 0.47, and the fixed term scaled the",
+          "same way. Attention-heavy models usually gain MORE from a GPU than MDX does,",
+          "so this is expected to be pessimistic, which is the safe direction for a seed.",
+          "It governs the display for one chunk at most: measured throughput replaces it",
+          "as soon as the first chunk lands."
+        ],
+        "cpu": 3.09,
+        "cuda": 0.47,
+        "fixed": {
+          "cpu": 40.0,
+          "cuda": 6.0
+        },
+        "measured": {
+          "cpu": true,
+          "cuda": false
+        }
+      },
+      "notes": [
+        "chunk_size is 573300 (13.0 s), NOT the 352800 (8 s) that most Mel-RoFormer configs use. Reusing another model's yaml runs without error and separates worse.",
+        "inference.dim_t in this yaml is 1101, which implies a 485100-sample chunk and contradicts audio.chunk_size. It is a leftover from an MDX-style config: Mel-Band RoFormer is length-agnostic and the reference inference path never reads it. roformer.py ignores it and warns.",
+        "audio.dim_f / audio.dim_t / audio.n_fft are MDX-style leftovers too. The transform this model actually uses is model.stft_n_fft 2048 / model.stft_hop_length 441 / model.dim_freqs_in 1025.",
+        "Both stems are model outputs, so they do NOT sum back to the mix — unlike the FAST tier, where the instrumental is the residual."
+      ],
+      "license": {
+        "status": "CLEARED-NONCOMMERCIAL",
+        "audited_on": "2026-08-26",
+        "spdx": "CC-BY-NC-4.0",
+        "holder": "becruily",
+        "model_author": "becruily",
+        "source": "https://huggingface.co/becruily/mel-band-roformer-deux",
+        "license_url": "https://creativecommons.org/licenses/by-nc/4.0/",
+        "commercial_use": false,
+        "requires_acknowledgement": true,
+        "attribution": "Mel-Band RoFormer “deux” — model by becruily, CC BY-NC 4.0. Non-commercial use only.",
+        "acknowledgement": "The BALANCED model (Mel-Band RoFormer “deux” by becruily) is licensed CC BY-NC 4.0: you may use it for non-commercial purposes only, and you must credit becruily. XLETH does not redistribute it — it is downloaded to your machine from the author's own Hugging Face repository. If your work with these stems is commercial, use the FAST tier instead, or obtain permission from the author.",
+        "findings": [
+          "The repository's model card declares license: cc-by-nc-4.0 and carries no additional grant. The README is three lines: the licence, the architecture, and the reported SDR figures (instrumental 17.5466, vocals 11.3695). There is no separate LICENSE file and no commercial-use exception.",
+          "CC BY-NC 4.0 imposes two conditions: attribution (BY) and non-commercial use (NC). NC is defined as 'not primarily intended for or directed toward commercial advantage or monetary compensation'.",
+          "XLETH does not REDISTRIBUTE the weight, so the Share-related terms are not engaged: the manifest points at the author's own Hugging Face repository, pinned to commit 2da74427, and the end user's machine fetches it directly. This is the same posture as the FAST tier.",
+          "The NC condition, unlike attribution, cannot be discharged by anything the software does. It is a restriction on what the person using the output may do with it. That is why this model is CLEARED-NONCOMMERCIAL rather than CLEARED, and why running it requires an explicit acknowledgement rather than only a credit line.",
+          "OPEN QUESTION FOR THE PROJECT OWNER, not settled by this audit: if XLETH is sold, or is used to produce work sold, then shipping a feature whose purpose is to invoke this weight is at minimum within reach of the NC condition, even though we never redistribute it. The acknowledgement gate places that decision with the person who knows the answer. It is not a legal opinion and does not substitute for one.",
+          "The attribution string is surfaced in the Sample Sandbox separation strip alongside the non-commercial notice, and recorded in NOTICE-separation-models.md."
+        ]
+      }
+    },
+    {
+      "id": "bs_roformer_ft1_anvuew",
+      "tier": "best",
+      "name": "BS-Roformer FT1 (anvuew)",
+      "arch": "bs_roformer",
+      "sample_rate": 44100,
+      "files": [
+        {
+          "role": "weights",
+          "name": "bs_roformer_ft1_anvuew_sdr_12.55.ckpt",
+          "url": "https://huggingface.co/anvuew/BS-RoFormer/resolve/24988f47270cb3529b62c4f3bbb8234f4586de9b/bs_roformer_ft1_anvuew_sdr_12.55.ckpt",
+          "sha256": "60347271e8493fdff28ef558c3b2297afb869a1f4462594ed548038264bec395",
+          "size_bytes": 204493312,
+          "description": "torch state_dict. Raw tensors — carries no architecture information; see the config file."
+        },
+        {
+          "role": "config",
+          "name": "config.yaml",
+          "url": "https://huggingface.co/anvuew/BS-RoFormer/resolve/24988f47270cb3529b62c4f3bbb8234f4586de9b/config.yaml",
+          "sha256": "033e57abee226a480ef410e0631b9fe00e8b7bc9a3bb5fe55659d0b43a238701",
+          "size_bytes": 1969,
+          "description": "The model's OWN config: freqs_per_bands, STFT settings, chunking. Never substitute another BS-Roformer's yaml."
+        }
+      ],
+      "params": {
+        "_comment": [
+          "Same pattern as the BALANCED tier: the real architecture constants live in",
+          "the downloaded yaml (checksummed alongside the weight). `expects` is",
+          "cross-checked against it at load — see bs_roformer.py._check_expectations."
+        ],
+        "expects": {
+          "chunk_size": 960000,
+          "stft_hop_length": 512,
+          "stft_n_fft": 2048,
+          "num_overlap": 4,
+          "sample_rate": 44100,
+          "instruments": ["vocals"]
+        }
+      },
+      "stems": {
+        "mode": "primary_plus_residual",
+        "primary": "Vocals",
+        "secondary": "Instrumental"
+      },
+      "speed": {
+        "_comment": [
+          "MEASURED 2026-08-27, this machine, CPU (torch 2.13.0+cpu), against the real",
+          "downloaded checkpoint. Two real runs, not one: a 3.0 s clip (1 chunk, no",
+          "reflect-padding — the model's border is 16.3 s each side, so anything under",
+          "2×border=32.65s pays no padding at all) took 28.95 s; a 30.0 s clip (6",
+          "chunks, still under the padding threshold) took 190.52 s. Fit to",
+          "fixed + marginal*duration by simple linear regression: marginal 5.99,",
+          "fixed 11.0. Unlike BALANCED, this fixed term is NOT a clean reflect-pad",
+          "cost (padding never triggered in either measurement) — it is a two-point",
+          "fit spanning a regime change (1 chunk vs 6) and is offered as an ETA seed",
+          "only, same as every other figure here: replaced by measured throughput",
+          "after the first real chunk of any job.",
+          "",
+          "This model is markedly more expensive per chunk than BALANCED's Mel-Band",
+          "RoFormer (roughly 31.75 s per 960000-sample chunk here vs 20.07 s per",
+          "573300-sample chunk there) — deeper (depth 12 vs unmeasured-here) and, more",
+          "importantly, 4x overlap instead of 2x, so 4 chunks of compute per unit of",
+          "genuinely new audio instead of 2.",
+          "",
+          "cuda: NOT measured, no CUDA torch on this machine. Derived the same way",
+          "BALANCED's was: scaled by the FAST tier's measured CPU->CUDA ratio on this",
+          "machine's RTX 4080 (6.6x), which is expected to be pessimistic for an",
+          "attention-heavy model — the safe direction for a seed."
+        ],
+        "cpu": 5.99,
+        "cuda": 0.91,
+        "fixed": {
+          "cpu": 11.0,
+          "cuda": 1.7
+        },
+        "measured": {
+          "cpu": true,
+          "cuda": false
+        }
+      },
+      "notes": [
+        "training.target_instrument is 'vocals' and model.num_stems is 1 — the model predicts one stem, so Instrumental is the residual (mix minus Vocals), the same convention the FAST tier uses. It does NOT follow BALANCED's model_outputs convention.",
+        "audio.hop_length in the yaml (441) disagrees with the model's own stft_hop_length (512) — another MDX-style decoy leftover, same trap as BALANCED's audio.dim_f/dim_t/n_fft. bs_roformer.py reads model.stft_hop_length and warns on the mismatch.",
+        "Loaded strict against the real checkpoint with zero missing and zero unexpected keys on the first attempt — no architecture guessing was needed, unlike BALANCED's vendoring problem. Verified end-to-end on a synthetic clip: Vocals + Instrumental sums back to the mix within 1.5e-8."
+      ],
+      "license": {
+        "status": "CLEARED",
+        "audited_on": "2026-08-28",
+        "spdx": "GPL-3.0",
+        "holder": null,
+        "model_author": "anvuew (Hugging Face handle; real identity not disclosed in the repo)",
+        "source": "https://huggingface.co/anvuew/BS-RoFormer",
+        "license_url": "https://www.gnu.org/licenses/gpl-3.0.html",
+        "commercial_use": true,
+        "requires_acknowledgement": true,
+        "attribution": "BS-Roformer FT1 — model by anvuew (Hugging Face), GPL-3.0.",
+        "acknowledgement": "The BEST model (BS-Roformer FT1 by anvuew) is licensed GPL-3.0. XLETH does not redistribute it — it is downloaded to your machine from the author's own Hugging Face repository, the same as every other separation tier. GPL-3.0 permits commercial use. XLETH's own source is, and will remain, freely open source (a paid build is a convenience/support purchase of that same codebase, not a closed fork), so running this model alongside XLETH does not create the licensing conflict GPL exists to prevent. If you build and distribute a closed-source product that bundles this weight, review GPL-3.0's terms yourself first — that combination was not evaluated here.",
+        "findings": [
+          "The repository's ONLY card content is a two-line YAML front-matter ('license: gpl-3.0') and one line of body text: 'dataset by bascurtiz' with a link to that person's GitHub. There is no description of the model, no statement of what the license is intended to cover, and no third-party-use permission of the kind UVR's and becruily's cards both gave explicitly.",
+          "GPL-3.0 is a copyleft SOURCE-CODE license. This repository ships no code at all — only a .ckpt of raw tensors and a YAML config. Applying GPL-3.0 to a binary weight file is unusual and its scope is genuinely unclear: whether it is meant to cover redistribution of the checkpoint itself, some unpublished training code, or is simply the Hugging Face upload form's default choice.",
+          "The one attribution present ('dataset by bascurtiz') credits the TRAINING DATA to a third party distinct from the uploader, and says nothing about who holds rights in the trained weights or on what terms. This is a THIRD interest this audit cannot resolve from the repo alone.",
+          "The two-strike fallback the project brief named — unwa's (Hugging Face handle pcunwa) 'BS-Roformer-Leap', specifically its 'Xe' checkpoint pair (bs_leap_xe_voc.ckpt / bs_leap_xe_inst.ckpt) — was investigated as an alternative. Its README is a single decorative image with NO license field and no text at all. An undeclared license defaults to full copyright reservation, which is a STRICTER position than GPL-3.0's, not a safer one — so it was not adopted as a substitute.",
+          "Both candidates fall short of the clarity the FAST and BALANCED audits reached (an explicit, on-the-record statement from the model's own author about permitted third-party use). Per the same standard this project has applied twice already, that gap is grounds to leave the audit open rather than resolve it by inference.",
+          "Nothing about the CODE path is blocked by this: the vendored BSRoformer architecture (MIT, same MSST commit as BALANCED) loaded the real checkpoint strict with zero mismatches and separated a real test clip correctly. Only the WEIGHT's license was unresolved as of the findings above.",
+          "XLETH would not redistribute this weight either way; the manifest points at the author's own repository pinned to a commit, same posture as both other tiers.",
+          "RESOLVED 2026-08-28 by the project owner, not by this audit inferring permission from the bare SPDX tag: XLETH is open source now (free beta on GitHub) and will remain freely open source after its full release — a paid tier is a convenience/support purchase of the SAME codebase, not a closed proprietary fork. That removes the scenario GPL-3.0's copyleft exists to prevent (a closed derivative hiding behind a GPL component), and combined with XLETH never bundling this weight (fetched separately at runtime, same as the two findings above already establish), the 'combined work' concern does not apply the way it would for a closed product. GPL-3.0 explicitly permits commercial use, so unlike BALANCED there is no non-commercial restriction to carry. Status set to CLEARED. requires_acknowledgement stays true — the ambiguity in the findings above (no explicit third-party statement from anvuew beyond the SPDX tag) has not been independently resolved by the author, only shown not to conflict with XLETH's own architecture and licensing posture, so the user is still told this before the model runs, same as BALANCED's non-commercial condition."
+        ]
+      }
+    }
+  ],
+  "tiers": {
+    "fast": {
+      "label": "FAST",
+      "order": 0,
+      "model_id": "mdx_kim_vocal_2",
+      "enabled": true,
+      "hint": "MDX-Net Kim Vocal 2 — vocals + instrumental, quickest"
+    },
+    "balanced": {
+      "label": "BALANCED",
+      "order": 1,
+      "model_id": "mel_roformer_becruily_deux",
+      "enabled": true,
+      "hint": "Mel-Band RoFormer “deux” — cleaner separation, much slower, non-commercial licence"
+    },
+    "best": {
+      "label": "BEST",
+      "order": 2,
+      "model_id": "bs_roformer_ft1_anvuew",
+      "enabled": true,
+      "hint": "BS-Roformer FT1 (anvuew) — best separation, GPL-3.0, requires a one-time acknowledgement"
+    }
+  }
+}
