@@ -30,6 +30,8 @@ constexpr TypeEntry kTypeTable[] = {
     { SandboxOpType::FormantShift,  "formantShift"  },
     { SandboxOpType::Declip,        "declip"        },
     { SandboxOpType::Denoise,       "denoise"       },
+    { SandboxOpType::SpectralPaint, "spectralPaint" },
+    { SandboxOpType::Autotune,      "autotune"      },
 };
 
 static_assert(std::size(kTypeTable) == kSandboxOpTypeCount,
@@ -130,6 +132,37 @@ struct HashVisitor {
         return hashF64(hashF64(hashI64(hashI64(h, p.noiseStartSample), p.noiseEndSample),
                                p.reductionDb), p.sensitivity);
     }
+    // Count first, same reasoning as GainEnvelope's own comment: without it a
+    // 2-dab stack could digest to the same value as a 3-dab one whose extra
+    // dab happens to chain to the identity.
+    uint64_t operator()(const SpectralPaintParams& p) const {
+        uint64_t acc = hashU64(h, static_cast<uint64_t>(p.dabs.size()));
+        for (const auto& d : p.dabs) {
+            acc = hashI64(acc, d.centerSample);
+            acc = hashI64(acc, d.halfWidthSamples);
+            acc = hashF64(acc, d.centerFreqHz);
+            acc = hashF64(acc, d.halfHeightHz);
+            acc = hashF64(acc, d.amountDb);
+            acc = hashF64(acc, d.featherTimeMs);
+            acc = hashF64(acc, d.featherFreqHz);
+        }
+        return acc;
+    }
+    // allowedNotes count first, same reasoning as the two vector-carrying
+    // visitors above. scale/key go in even when allowedNotes overrides them:
+    // a user who sets a custom note set, renders, then clears it back to the
+    // preset must get a DIFFERENT render, not a cache hit on the custom one.
+    uint64_t operator()(const AutotuneParams& p) const {
+        uint64_t acc = hashI32(hashI32(h, static_cast<int32_t>(p.scale)), p.key);
+        acc = hashU64(acc, static_cast<uint64_t>(p.allowedNotes.size()));
+        for (int pc : p.allowedNotes) acc = hashI32(acc, pc);
+        acc = hashF64(acc, p.correction.correctionAmount);
+        acc = hashF64(acc, p.correction.retuneSpeedMs);
+        acc = hashF64(acc, p.correction.smoothnessMs);
+        acc = hashF64(acc, p.correction.jumpiness);
+        acc = hashF64(acc, p.correction.preserveVibrato);
+        return acc;
+    }
 };
 
 struct ToJsonVisitor {
@@ -189,6 +222,32 @@ struct ToJsonVisitor {
     nlohmann::json operator()(const DenoiseParams& p) const {
         return { {"noiseStartSample", p.noiseStartSample}, {"noiseEndSample", p.noiseEndSample},
                  {"reductionDb", p.reductionDb}, {"sensitivity", p.sensitivity} };
+    }
+    nlohmann::json operator()(const SpectralPaintParams& p) const {
+        nlohmann::json dabs = nlohmann::json::array();
+        for (const auto& d : p.dabs) {
+            dabs.push_back({
+                {"centerSample", d.centerSample}, {"halfWidthSamples", d.halfWidthSamples},
+                {"centerFreqHz", d.centerFreqHz}, {"halfHeightHz", d.halfHeightHz},
+                {"amountDb", d.amountDb},
+                {"featherTimeMs", d.featherTimeMs}, {"featherFreqHz", d.featherFreqHz},
+            });
+        }
+        return { {"dabs", std::move(dabs)} };
+    }
+    // FLAT: the six controls sit at the top level of "params" rather than
+    // nested under the CorrectionParams the C++ struct embeds — see
+    // AutotuneParams. The UI edits six controls, not a control and an object.
+    nlohmann::json operator()(const AutotuneParams& p) const {
+        nlohmann::json notes = nlohmann::json::array();
+        for (int pc : p.allowedNotes) notes.push_back(pc);
+        return { {"scale", static_cast<int>(p.scale)}, {"key", p.key},
+                 {"allowedNotes", std::move(notes)},
+                 {"correctionAmount", p.correction.correctionAmount},
+                 {"retuneSpeedMs",    p.correction.retuneSpeedMs},
+                 {"smoothnessMs",     p.correction.smoothnessMs},
+                 {"jumpiness",        p.correction.jumpiness},
+                 {"preserveVibrato",  p.correction.preserveVibrato} };
     }
 };
 
@@ -299,6 +358,56 @@ struct FromJsonVisitor {
         p.reductionDb      = readField<double>(j, "reductionDb",       p.reductionDb);
         p.sensitivity      = readField<double>(j, "sensitivity",       p.sensitivity);
     }
+    // Read dab-by-dab, same reasoning as GainEnvelope's point-by-point read:
+    // one malformed dab costs that dab, not the whole painted mask.
+    void operator()(SpectralPaintParams& p) const {
+        if (!j.is_object()) return;
+        auto it = j.find("dabs");
+        if (it == j.end() || !it->is_array()) return;
+        std::vector<SpectralPaintDab> dabs;
+        dabs.reserve(it->size());
+        for (const auto& e : *it) {
+            if (!e.is_object()) continue;
+            SpectralPaintDab d;
+            d.centerSample     = readField<int64_t>(e, "centerSample",     d.centerSample);
+            d.halfWidthSamples = readField<int64_t>(e, "halfWidthSamples", d.halfWidthSamples);
+            d.centerFreqHz     = readField<double>(e, "centerFreqHz",      d.centerFreqHz);
+            d.halfHeightHz     = readField<double>(e, "halfHeightHz",      d.halfHeightHz);
+            d.amountDb         = readField<double>(e, "amountDb",          d.amountDb);
+            d.featherTimeMs    = readField<double>(e, "featherTimeMs",     d.featherTimeMs);
+            d.featherFreqHz    = readField<double>(e, "featherFreqHz",     d.featherFreqHz);
+            dabs.push_back(d);
+        }
+        p.dabs = std::move(dabs);
+    }
+    // Read note-by-note rather than through a whole-array get<>, same rule the
+    // two visitors above follow: one malformed entry costs that entry, not the
+    // user's whole note set. A missing/non-array "allowedNotes" leaves the
+    // default (empty = use scale/key), which is a valid configuration rather
+    // than an error.
+    void operator()(AutotuneParams& p) const {
+        if (!j.is_object()) return;
+        p.scale = static_cast<xleth::dsp::ScaleType>(
+            readEnum(j, "scale", static_cast<int>(p.scale), 0, 10));
+        p.key = readField<int>(j, "key", p.key);
+
+        if (auto it = j.find("allowedNotes"); it != j.end() && it->is_array()) {
+            std::vector<int> notes;
+            notes.reserve(it->size());
+            for (const auto& e : *it) {
+                if (!e.is_number_integer()) continue;
+                notes.push_back(e.get<int>());
+            }
+            p.allowedNotes = std::move(notes);
+        }
+
+        p.correction.correctionAmount = readField<double>(j, "correctionAmount", p.correction.correctionAmount);
+        p.correction.retuneSpeedMs    = readField<double>(j, "retuneSpeedMs",    p.correction.retuneSpeedMs);
+        p.correction.smoothnessMs     = readField<double>(j, "smoothnessMs",     p.correction.smoothnessMs);
+        p.correction.jumpiness        = readField<double>(j, "jumpiness",        p.correction.jumpiness);
+        p.correction.preserveVibrato  = readField<double>(j, "preserveVibrato",  p.correction.preserveVibrato);
+        normalizeAutotune(p);
+    }
 };
 
 // Resolve an inclusive-exclusive range against a concrete buffer length,
@@ -347,6 +456,8 @@ SandboxOpParams defaultParamsFor(SandboxOpType type) {
         case SandboxOpType::FormantShift:   return FormantShiftParams{};
         case SandboxOpType::Declip:         return DeclipParams{};
         case SandboxOpType::Denoise:        return DenoiseParams{};
+        case SandboxOpType::SpectralPaint:  return SpectralPaintParams{};
+        case SandboxOpType::Autotune:       return AutotuneParams{};
     }
     return GainParams{};
 }
@@ -429,6 +540,32 @@ double gainEnvelopeAt(const GainEnvelopeParams& p, int64_t samplePos) noexcept {
     return envDbToGain(gainEnvelopeDbAt(p, samplePos));
 }
 
+// ─── Autotune ─────────────────────────────────────────────────────────────────
+
+void normalizeAutotune(AutotuneParams& p) {
+    p.key = ((p.key % 12) + 12) % 12;
+
+    // Out-of-range pitch classes are DROPPED rather than wrapped: a "13" in a
+    // saved note set is a corrupt field, not a request for the octave above,
+    // and silently turning it into a C would put a note in the user's scale
+    // that they never picked. Sorted + de-duplicated so two note sets that
+    // mean the same scale also hash the same and share one render.
+    std::vector<int> notes;
+    notes.reserve(p.allowedNotes.size());
+    for (int pc : p.allowedNotes)
+        if (pc >= 0 && pc <= 11) notes.push_back(pc);
+    std::sort(notes.begin(), notes.end());
+    notes.erase(std::unique(notes.begin(), notes.end()), notes.end());
+    p.allowedNotes = std::move(notes);
+
+    auto& c = p.correction;
+    c.correctionAmount = std::clamp(c.correctionAmount, 0.0, 100.0);
+    c.jumpiness        = std::clamp(c.jumpiness,        0.0, 100.0);
+    c.preserveVibrato  = std::clamp(c.preserveVibrato,  0.0, 100.0);
+    c.retuneSpeedMs    = std::clamp(c.retuneSpeedMs,    0.0, kAutotuneMaxRetuneMs);
+    c.smoothnessMs     = std::clamp(c.smoothnessMs,     0.0, kAutotuneMaxSmoothnessMs);
+}
+
 // ─── SandboxOp ────────────────────────────────────────────────────────────────
 
 bool SandboxOp::implemented() const noexcept {
@@ -446,6 +583,8 @@ bool SandboxOp::implemented() const noexcept {
         case SandboxOpType::FormantShift:
         case SandboxOpType::Declip:
         case SandboxOpType::Denoise:
+        case SandboxOpType::SpectralPaint:
+        case SandboxOpType::Autotune:
             return true;
         // DSP deferred until the stretch engines are wired in.
         case SandboxOpType::Stretch:
@@ -476,6 +615,18 @@ bool SandboxOp::autoRender() const noexcept {
         case SandboxOpType::FormantShift:
         case SandboxOpType::Declip:
         case SandboxOpType::Denoise:
+        // An offline STFT pass over one buffer, same order of cost as
+        // Denoise's — the dab-evaluation loop it adds on top is per-frame
+        // arithmetic, not a second transform.
+        case SandboxOpType::SpectralPaint:
+        // AUTOTUNE's detection pass (a dense NSDF pitch track) is the most
+        // expensive thing in this table, but SandboxRenderer caches it against
+        // the identity of the op's INPUT prefix — so it runs ONCE when the op
+        // is added and never again while the six controls are dragged, which
+        // is the only interaction that would otherwise stall. The PSOLA
+        // resynthesis on its own is a single overlap-add pass over one buffer,
+        // the same order of cost as DENOISE.
+        case SandboxOpType::Autotune:
             return true;
     }
     return true;

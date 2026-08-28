@@ -1,5 +1,7 @@
 #include "sandbox/SandboxRenderer.h"
 
+#include "dsp/AutotuneRender.h"
+#include "dsp/CorrectionCurve.h"
 #include "dsp/RubberBandWrapper.h"
 
 #include <juce_dsp/juce_dsp.h>
@@ -7,6 +9,8 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <string>
+#include <utility>
 #include <vector>
 
 namespace xleth::sandbox {
@@ -652,6 +656,161 @@ SandboxBuffer applyDenoise(const SandboxBuffer& in, const DenoiseParams& p) {
     return dst;
 }
 
+// ─── Spectral paint ─────────────────────────────────────────────────────────
+// Offline STFT masking: the exact same sqrt-Hann WOLA scheme applyDenoise
+// uses (see that function's comment for where the scheme itself comes from),
+// with a per-frame, per-bin gain built from the painted dabs instead of a
+// learned noise profile. Own local FFT size/hop rather than sharing Denoise's
+// (or SandboxSpectrogramAnalyzer's) — see fadeCurve's comment at the top of
+// this file on why formulas are re-derived locally rather than shared.
+namespace spectralpaint {
+    constexpr int kFftOrder = 11;
+    constexpr int kFftSize  = 1 << kFftOrder;      // 2048
+    constexpr int kHopSize  = kFftSize / 4;        // 512 — 4x overlap
+    constexpr int kNumBins  = kFftSize / 2 + 1;
+    constexpr int kFirstBin = 1;                    // DC excluded — see Denoise's comment
+    constexpr int kLastBin  = kNumBins - 2;         // Nyquist excluded
+
+    struct Window {
+        std::array<float, kFftSize> analysis{};
+        std::array<float, kHopSize> normalization{};
+        Window() {
+            for (int n = 0; n < kFftSize; ++n) {
+                const float hann = 0.5f - 0.5f * std::cos(2.0f * static_cast<float>(kPi) * n
+                                                          / static_cast<float>(kFftSize));
+                analysis[static_cast<size_t>(n)] = std::sqrt(std::max(hann, 0.0f));
+            }
+            for (int phase = 0; phase < kHopSize; ++phase) {
+                float sum = 0.0f;
+                for (int n = phase; n < kFftSize; n += kHopSize) {
+                    const float w = analysis[static_cast<size_t>(n)];
+                    sum += w * w;
+                }
+                normalization[static_cast<size_t>(phase)] = sum > 1.0e-8f ? (1.0f / sum) : 1.0f;
+            }
+        }
+    };
+
+    // Raised-cosine falloff: 1.0 inside the core half-extent, eases to 0.0
+    // across `feather` past it, 0.0 beyond that. `feather <= 0` is a hard
+    // edge (feather has already been floored to >= 0 by the caller, so this
+    // only ever sees the "no feather authored" case, not a negative one).
+    inline float falloff(double dist, double half, double feather) noexcept {
+        if (dist <= half) return 1.0f;
+        if (feather <= 0.0 || dist >= half + feather) return dist <= half ? 1.0f : 0.0f;
+        const double t = (dist - half) / feather;
+        return static_cast<float>(0.5 + 0.5 * std::cos(t * kPi));
+    }
+}
+
+// Empty `dabs` is a GATE, checked before any FFT machinery runs: it must be a
+// bit-transparent pass-through, not merely an inaudible one — a WOLA
+// round-trip is only IDENTITY up to floating-point rounding, and "no paint
+// yet" must never cost so much as an ULP. Every dab past this point is
+// assumed to have gone through the same clamps this function applies
+// (amountDb floored, feather floored to >= 0) since SandboxOp.h's JSON
+// ingest does not clamp them itself — see SpectralPaintDab's own comment.
+SandboxBuffer applySpectralPaint(const SandboxBuffer& in, const SpectralPaintParams& p,
+                                 double bufferSampleRate) {
+    using namespace spectralpaint;
+
+    if (p.dabs.empty()) return in;
+
+    const int64_t len      = in.getNumSamples();
+    const int     channels = in.getNumChannels();
+    if (len <= 0 || channels <= 0 || bufferSampleRate <= 0.0) return in;
+
+    static const Window W;
+    juce::dsp::FFT fft(kFftOrder);
+    const double binHz = bufferSampleRate / static_cast<double>(kFftSize);
+
+    // Per-dab derived bounds, computed once rather than per frame/bin.
+    struct Dab {
+        int64_t centerSample, timeExtentSamples;
+        double  centerFreqHz, freqExtentHz;
+        double  halfWidthSamples, featherSamples;
+        double  halfHeightHz, featherFreqHz;
+        double  amountDb;
+    };
+    std::vector<Dab> dabs;
+    dabs.reserve(p.dabs.size());
+    for (const auto& d : p.dabs) {
+        Dab e;
+        e.centerSample       = d.centerSample;
+        e.halfWidthSamples   = static_cast<double>(std::max<int64_t>(0, d.halfWidthSamples));
+        e.featherSamples     = std::max(0.0, d.featherTimeMs) * 0.001 * bufferSampleRate;
+        e.timeExtentSamples  = static_cast<int64_t>(std::ceil(e.halfWidthSamples + e.featherSamples));
+        e.centerFreqHz       = d.centerFreqHz;
+        e.halfHeightHz       = std::max(0.0, d.halfHeightHz);
+        e.featherFreqHz      = std::max(0.0, d.featherFreqHz);
+        e.freqExtentHz       = e.halfHeightHz + e.featherFreqHz;
+        e.amountDb           = std::max(kSpectralPaintMinAmountDb, std::min(kSpectralPaintMaxAmountDb, d.amountDb));
+        dabs.push_back(e);
+    }
+
+    SandboxBuffer dst = makeBuffer(channels, len);
+    std::vector<float> fftBuf(static_cast<size_t>(kFftSize) * 2);
+    std::vector<float> gainDb(static_cast<size_t>(kNumBins));
+
+    for (int ch = 0; ch < channels; ++ch) {
+        const float* src = in.getReadPointer(ch);
+        const auto readPadded = [&](int64_t i) -> float {
+            return (i >= 0 && i < len) ? src[i] : 0.0f;
+        };
+
+        std::vector<float> accum(static_cast<size_t>(len) + static_cast<size_t>(2 * kFftSize), 0.0f);
+        for (int64_t f = -(kFftSize - kHopSize); f < len; f += kHopSize) {
+            const int64_t frameCenter = f + kFftSize / 2;
+
+            std::fill(gainDb.begin(), gainDb.end(), 0.0f);
+            for (const auto& d : dabs) {
+                const double dt = std::abs(static_cast<double>(frameCenter - d.centerSample));
+                if (dt > d.halfWidthSamples + d.featherSamples) continue;
+                const float timeWeight = falloff(dt, d.halfWidthSamples, d.featherSamples);
+                if (timeWeight <= 0.0f) continue;
+
+                const double loFreq = std::max(0.0, d.centerFreqHz - d.freqExtentHz);
+                const double hiFreq = d.centerFreqHz + d.freqExtentHz;
+                const int loBin = std::clamp(static_cast<int>(std::floor(loFreq / binHz)), kFirstBin, kLastBin);
+                const int hiBin = std::clamp(static_cast<int>(std::ceil(hiFreq / binHz)),  kFirstBin, kLastBin);
+                for (int b = loBin; b <= hiBin; ++b) {
+                    const double df = std::abs(b * binHz - d.centerFreqHz);
+                    const float freqWeight = falloff(df, d.halfHeightHz, d.featherFreqHz);
+                    if (freqWeight <= 0.0f) continue;
+                    gainDb[static_cast<size_t>(b)] += timeWeight * freqWeight * static_cast<float>(d.amountDb);
+                }
+            }
+
+            std::fill(fftBuf.begin(), fftBuf.end(), 0.0f);
+            for (int n = 0; n < kFftSize; ++n)
+                fftBuf[static_cast<size_t>(n)] = readPadded(f + n) * W.analysis[static_cast<size_t>(n)];
+            fft.performRealOnlyForwardTransform(fftBuf.data(), false);
+
+            for (int b = kFirstBin; b <= kLastBin; ++b) {
+                const size_t re_i = static_cast<size_t>(2 * b), im_i = re_i + 1;
+                const float totalDb = std::clamp(gainDb[static_cast<size_t>(b)],
+                                                 static_cast<float>(kSpectralPaintFloorDb),
+                                                 static_cast<float>(kSpectralPaintCeilDb));
+                if (totalDb == 0.0f) continue;   // no dab touches this bin this frame — leave it untouched
+                const float gain = static_cast<float>(std::pow(10.0, totalDb / 20.0));
+                fftBuf[re_i] *= gain;
+                fftBuf[im_i] *= gain;
+            }
+
+            fft.performRealOnlyInverseTransform(fftBuf.data());
+            for (int n = 0; n < kFftSize; ++n) {
+                const float y = fftBuf[static_cast<size_t>(n)] * W.analysis[static_cast<size_t>(n)]
+                              * W.normalization[static_cast<size_t>(n % kHopSize)];
+                accum[static_cast<size_t>(f + n + kFftSize)] += y;
+            }
+        }
+
+        float* out = dst.getWritePointer(ch);
+        for (int64_t i = 0; i < len; ++i) out[i] = accum[static_cast<size_t>(i + kFftSize)];
+    }
+    return dst;
+}
+
 // Constant-power pan, mirroring TrackMixer::applyPan's formula/convention
 // (engine/src/audio/TrackMixer.h) so a layer panned in the Sandbox sits at the
 // same apparent level as a track panned the same way on the main mixer. Kept
@@ -668,6 +827,84 @@ void panGains(double pan, float& gainL, float& gainR) noexcept {
 // the same approach SampleBank::loadSample uses to bring a source to the
 // engine rate. A cheap copy when the rates already agree (within 0.5 Hz, the
 // same tolerance SampleBank uses).
+// ─── Autotune (P5-3) ──────────────────────────────────────────────────────────
+
+// Mono-sum + NSDF pitch track for one buffer. The same mono convention
+// SandboxPitchTrackAnalyzer and SandboxSpectrogramAnalyzer both use (a plain
+// channel average): AUTOTUNE tracks ONE pitch curve per buffer, and a stereo
+// take's two sides are the same performance.
+xleth::dsp::PitchTrackResult analyzeBufferPitch(const SandboxBuffer& in, double sampleRate) {
+    const int N = in.getNumSamples();
+    const int C = in.getNumChannels();
+    if (N <= 0 || C <= 0 || !(sampleRate > 0.0)) return {};
+
+    std::vector<float> mono(static_cast<size_t>(N), 0.0f);
+    const float scale = 1.0f / static_cast<float>(C);
+    for (int ch = 0; ch < C; ++ch) {
+        const float* src = in.getReadPointer(ch);
+        for (int i = 0; i < N; ++i) mono[static_cast<size_t>(i)] += src[i] * scale;
+    }
+    return xleth::dsp::analyzePitchTrack(mono.data(), N, sampleRate);
+}
+
+// AUTOTUNE — detection (PitchTrackAnalysis) → target curve (CorrectionCurve) →
+// TD-PSOLA resynthesis (AutotuneRender). This function owns none of that math.
+// It resolves the analysis, hands the three pieces to each other in order, and
+// turns a refusal into a pass-through plus a reason.
+//
+// `provided` is the renderer's cached analysis of THIS op's input (see
+// SandboxRenderer::analyzeFor). It is re-derived here when absent — or when it
+// describes a different sample rate than the one we were handed, which would
+// silently mis-scale every period in the render.
+SandboxBuffer applyAutotune(const SandboxBuffer& in,
+                            const AutotuneParams& p,
+                            double sampleRate,
+                            const xleth::dsp::PitchTrackResult* provided,
+                            std::string* refusalOut) {
+    if (in.getNumSamples() <= 0 || !(sampleRate > 0.0)) return in;
+
+    xleth::dsp::PitchTrackResult local;
+    const xleth::dsp::PitchTrackResult* track = provided;
+    if (track == nullptr || !track->valid()
+        || std::abs(track->sampleRate - sampleRate) > 1e-6) {
+        local = analyzeBufferPitch(in, sampleRate);
+        track = &local;
+    }
+
+    if (!track->valid()) {
+        if (refusalOut) *refusalOut = "pitch analysis unavailable for this material";
+        return in;
+    }
+    // The monophonic gate, checked BEFORE the correctionAmount == 0 early-out
+    // below: whether AUTOTUNE can work on this material does not depend on how
+    // far the user has pushed the amount knob, and a refusal badge that
+    // appeared and vanished as the knob passed zero would read as a bug.
+    if (!track->monophonic) {
+        if (refusalOut)
+            *refusalOut = track->reason.empty()
+                ? std::string("content is not monophonic -- AUTOTUNE needs a single pitched voice")
+                : track->reason;
+        return in;
+    }
+
+    // 0% is an exact bypass. CorrectionCurve already makes the TARGET equal the
+    // input at 0, but a unity-ratio PSOLA pass is only ALMOST an identity —
+    // returning the input itself is both free and exactly right.
+    if (p.correction.correctionAmount <= 0.0) return in;
+
+    const xleth::dsp::CorrectionCurveResult curve = xleth::dsp::computeCorrectionCurve(
+        track->frames, track->notes, sampleRate,
+        p.scale, p.key, p.allowedNotes, p.correction);
+
+    xleth::dsp::AutotuneRenderResult rendered =
+        xleth::dsp::renderAutotune(in, sampleRate, *track, curve);
+    if (!rendered.ok) {
+        if (refusalOut) *refusalOut = rendered.reason;
+        return in;
+    }
+    return std::move(rendered.buffer);
+}
+
 SandboxBuffer resampleTo(const SandboxBuffer& src, double srcRate, double dstRate) {
     if (srcRate <= 0.0 || dstRate <= 0.0 || std::abs(srcRate - dstRate) <= 0.5)
         return SandboxBuffer(src);
@@ -749,7 +986,9 @@ SandboxRenderer::~SandboxRenderer() {
 SandboxBuffer SandboxRenderer::applyOp(const SandboxBuffer& in,
                                        const SandboxOp& op,
                                        double bufferSampleRate,
-                                       const SandboxBuffer* clipboard) {
+                                       const SandboxBuffer* clipboard,
+                                       const xleth::dsp::PitchTrackResult* pitchTrack,
+                                       std::string* refusalOut) {
     // A bypassed, malformed or not-yet-built op is a PASS-THROUGH. Never a
     // partial edit: "half applied" is indistinguishable from a DSP bug at the
     // waveform, and the result carries unimplementedOps so the UI can say why.
@@ -774,6 +1013,11 @@ SandboxBuffer SandboxRenderer::applyOp(const SandboxBuffer& in,
             return applyDeclip(in, std::get<DeclipParams>(op.params));
         case SandboxOpType::Denoise:
             return applyDenoise(in, std::get<DenoiseParams>(op.params));
+        case SandboxOpType::SpectralPaint:
+            return applySpectralPaint(in, std::get<SpectralPaintParams>(op.params), bufferSampleRate);
+        case SandboxOpType::Autotune:
+            return applyAutotune(in, std::get<AutotuneParams>(op.params), bufferSampleRate,
+                                 pitchTrack, refusalOut);
 
         // Guarded by implemented() above — listed so a newly built op that
         // forgets its case here is a compiler warning, not a silent no-op.
@@ -858,6 +1102,126 @@ SandboxCompositeResult SandboxRenderer::renderComposite(const std::vector<Sandbo
     return result;
 }
 
+// ─── Spectral extraction (SPC selection "Copy to New Layer") ─────────────────
+//
+// The complement of applySpectralPaint: instead of ATTENUATING what falls
+// inside the dabs, this KEEPS only what falls inside them and silences
+// everything else. Reuses the exact same STFT scaffold (spectralpaint::Window
+// / falloff, same 2048/512 WOLA) so an extracted region and "everything but
+// that region attenuated to nothing" describe the same mask — the two
+// operations should sound identical at a dab's feathered edge.
+//
+// Coverage from overlapping dabs takes the MAX, not the SUM SPECTRAL_PAINT
+// uses: this is "kept if inside ANY dab", not "attenuated by every dab that
+// touches it". amountDb is not consulted at all — keep/silence has no notion
+// of "how much", only "which dabs' time/frequency footprint (with feather)
+// this bin falls within". DC and Nyquist (kFirstBin/kLastBin's own excluded
+// pair) are left untouched, same as Denoise/SpectralPaint's own comment on
+// those two bins — inaudible either way.
+//
+// Empty `keepDabs` is NOT a pass-through gate the way SPECTRAL_PAINT's own
+// empty-dabs case is — nothing selected means nothing kept, i.e. silence.
+// There is no "select nothing" gesture this needs to survive bit-exactly, so
+// it short-circuits straight to a zeroed buffer rather than running the STFT
+// round-trip for a result that would come out silent anyway.
+//
+// Pure/static/no-cache — exposed on SandboxRenderer for testing exactly like
+// applyOp/renderComposite. Never touches SandboxCore or SampleBank; the RPC
+// layer registers the result as a new asset.
+SandboxBuffer SandboxRenderer::extractSelection(const SandboxBuffer& in,
+                                                const std::vector<SpectralPaintDab>& keepDabs,
+                                                double bufferSampleRate) {
+    using namespace spectralpaint;
+
+    const int64_t len      = in.getNumSamples();
+    const int     channels = in.getNumChannels();
+    if (len <= 0 || channels <= 0 || bufferSampleRate <= 0.0)
+        return makeBuffer(channels, len);
+    if (keepDabs.empty()) return makeBuffer(channels, len);
+
+    static const Window W;
+    juce::dsp::FFT fft(kFftOrder);
+    const double binHz = bufferSampleRate / static_cast<double>(kFftSize);
+
+    struct Dab {
+        int64_t centerSample;
+        double  halfWidthSamples, featherSamples;
+        double  centerFreqHz, halfHeightHz, featherFreqHz;
+    };
+    std::vector<Dab> dabs;
+    dabs.reserve(keepDabs.size());
+    for (const auto& d : keepDabs) {
+        Dab e;
+        e.centerSample     = d.centerSample;
+        e.halfWidthSamples = static_cast<double>(std::max<int64_t>(0, d.halfWidthSamples));
+        e.featherSamples   = std::max(0.0, d.featherTimeMs) * 0.001 * bufferSampleRate;
+        e.centerFreqHz     = d.centerFreqHz;
+        e.halfHeightHz     = std::max(0.0, d.halfHeightHz);
+        e.featherFreqHz    = std::max(0.0, d.featherFreqHz);
+        dabs.push_back(e);
+    }
+
+    SandboxBuffer dst = makeBuffer(channels, len);
+    std::vector<float> fftBuf(static_cast<size_t>(kFftSize) * 2);
+    std::vector<float> gain(static_cast<size_t>(kNumBins));
+
+    for (int ch = 0; ch < channels; ++ch) {
+        const float* src = in.getReadPointer(ch);
+        const auto readPadded = [&](int64_t i) -> float {
+            return (i >= 0 && i < len) ? src[i] : 0.0f;
+        };
+
+        std::vector<float> accum(static_cast<size_t>(len) + static_cast<size_t>(2 * kFftSize), 0.0f);
+        for (int64_t f = -(kFftSize - kHopSize); f < len; f += kHopSize) {
+            const int64_t frameCenter = f + kFftSize / 2;
+
+            std::fill(gain.begin(), gain.end(), 0.0f);
+            for (const auto& d : dabs) {
+                const double dt = std::abs(static_cast<double>(frameCenter - d.centerSample));
+                if (dt > d.halfWidthSamples + d.featherSamples) continue;
+                const float timeWeight = falloff(dt, d.halfWidthSamples, d.featherSamples);
+                if (timeWeight <= 0.0f) continue;
+
+                const double loFreq = std::max(0.0, d.centerFreqHz - (d.halfHeightHz + d.featherFreqHz));
+                const double hiFreq = d.centerFreqHz + d.halfHeightHz + d.featherFreqHz;
+                const int loBin = std::clamp(static_cast<int>(std::floor(loFreq / binHz)), kFirstBin, kLastBin);
+                const int hiBin = std::clamp(static_cast<int>(std::ceil(hiFreq / binHz)),  kFirstBin, kLastBin);
+                for (int b = loBin; b <= hiBin; ++b) {
+                    const double df = std::abs(b * binHz - d.centerFreqHz);
+                    const float freqWeight = falloff(df, d.halfHeightHz, d.featherFreqHz);
+                    if (freqWeight <= 0.0f) continue;
+                    const float coverage = timeWeight * freqWeight;
+                    if (coverage > gain[static_cast<size_t>(b)]) gain[static_cast<size_t>(b)] = coverage;
+                }
+            }
+
+            std::fill(fftBuf.begin(), fftBuf.end(), 0.0f);
+            for (int n = 0; n < kFftSize; ++n)
+                fftBuf[static_cast<size_t>(n)] = readPadded(f + n) * W.analysis[static_cast<size_t>(n)];
+            fft.performRealOnlyForwardTransform(fftBuf.data(), false);
+
+            for (int b = kFirstBin; b <= kLastBin; ++b) {
+                const size_t re_i = static_cast<size_t>(2 * b), im_i = re_i + 1;
+                const float g = gain[static_cast<size_t>(b)];
+                fftBuf[re_i] *= g;
+                fftBuf[im_i] *= g;
+            }
+
+            fft.performRealOnlyInverseTransform(fftBuf.data());
+            for (int n = 0; n < kFftSize; ++n) {
+                const float y = fftBuf[static_cast<size_t>(n)] * W.analysis[static_cast<size_t>(n)]
+                              * W.normalization[static_cast<size_t>(n % kHopSize)];
+                accum[static_cast<size_t>(f + n + kFftSize)] += y;
+            }
+        }
+
+        float* out = dst.getWritePointer(ch);
+        for (int64_t i = 0; i < len; ++i) out[i] = accum[static_cast<size_t>(i + kFftSize)];
+    }
+
+    return dst;
+}
+
 // ─── renderStack — the prefix walk ────────────────────────────────────────────
 
 SandboxRenderResult SandboxRenderer::renderStack(int sourceBufferId,
@@ -898,8 +1262,22 @@ SandboxRenderResult SandboxRenderer::renderStack(int sourceBufferId,
         result.buffer      = std::move(resume);
         result.fullyCached = true;
         cacheHitCount_.fetch_add(1, std::memory_order_relaxed);
-        for (const auto& op : ops)
-            if (op.enabled && !op.implemented()) ++result.unimplementedOps;
+        for (int i = 0; i < opCount; ++i) {
+            const SandboxOp& op = ops[static_cast<size_t>(i)];
+            if (!op.enabled) continue;
+            if (!op.implemented()) { ++result.unimplementedOps; continue; }
+            // A refusal is a property of the op's INPUT, not of the render that
+            // did or did not just run — so it is still knowable with nothing to
+            // re-render. Probe the analysis cache at this op's input prefix
+            // rather than letting the message disappear on the second look at
+            // the same stack. A probe miss (evicted) just means no message.
+            if (op.type == SandboxOpType::Autotune && op.consistent()) {
+                if (auto pt = lookupPitch(keyAt(i)); pt && !pt->monophonic) {
+                    ++result.refusedOps;
+                    if (result.refusalReason.empty()) result.refusalReason = pt->reason;
+                }
+            }
+        }
         return result;
     }
 
@@ -919,7 +1297,19 @@ SandboxRenderResult SandboxRenderer::renderStack(int sourceBufferId,
             clipPtr = clip.get();
         }
 
-        cur = applyOp(cur, op, bufferSampleRate, clipPtr);
+        // AUTOTUNE's detection pass, resolved against the identity of what this
+        // op is about to RECEIVE (keyAt(i) — the prefix state above it). Held
+        // for the duration of the applyOp call, exactly like `clip` above.
+        PitchTrackPtr pitch;
+        if (op.type == SandboxOpType::Autotune && op.enabled && op.consistent())
+            pitch = analyzeFor(keyAt(i), cur, bufferSampleRate);
+
+        std::string refusal;
+        cur = applyOp(cur, op, bufferSampleRate, clipPtr, pitch.get(), &refusal);
+        if (!refusal.empty()) {
+            ++result.refusedOps;
+            if (result.refusalReason.empty()) result.refusalReason = refusal;
+        }
         ++result.opsEvaluated;
         opEvalCount_.fetch_add(1, std::memory_order_relaxed);
 
@@ -940,6 +1330,50 @@ SandboxRenderResult SandboxRenderer::renderStack(int sourceBufferId,
     if (result.buffer == nullptr)   // evicted between insert and read — rare, not fatal
         result.buffer = std::make_shared<const SandboxBuffer>(std::move(cur));
     return result;
+}
+
+// ─── AUTOTUNE detection cache ─────────────────────────────────────────────────
+// Keyed by the render key of the audio being analyzed — see the declaration in
+// SandboxRenderer.h for why that, and not sourceBufferId, is the correct key.
+
+SandboxRenderer::PitchTrackPtr SandboxRenderer::lookupPitch(const SandboxRenderKey& key) {
+    std::lock_guard<std::mutex> lock(mu_);
+    auto it = pitchCache_.find(key);
+    if (it == pitchCache_.end()) return nullptr;
+    pitchLru_.remove(key);
+    pitchLru_.push_front(key);
+    return it->second;
+}
+
+SandboxRenderer::PitchTrackPtr SandboxRenderer::analyzeFor(const SandboxRenderKey& key,
+                                                           const SandboxBuffer& in,
+                                                           double bufferSampleRate) {
+    if (auto hit = lookupPitch(key)) return hit;
+
+    // Computed with the lock RELEASED. An NSDF pass over a whole buffer is
+    // hundreds of milliseconds; holding mu_ for it would stall the other pool
+    // thread, every main-thread lookup() and the clipboard alike.
+    auto track = std::make_shared<const xleth::dsp::PitchTrackResult>(
+        analyzeBufferPitch(in, bufferSampleRate));
+    if (!track->valid()) return nullptr;
+
+    std::lock_guard<std::mutex> lock(mu_);
+    auto it = pitchCache_.find(key);
+    if (it != pitchCache_.end()) {
+        // Lost a race with the other worker on the same prefix — keep what is
+        // already cached rather than double-inserting, same as
+        // SandboxPitchTrackAnalyzer::analyze.
+        pitchLru_.remove(key);
+        pitchLru_.push_front(key);
+        return it->second;
+    }
+    pitchCache_[key] = track;
+    pitchLru_.push_front(key);
+    while (pitchCache_.size() > kMaxPitchEntries) {
+        pitchCache_.erase(pitchLru_.back());
+        pitchLru_.pop_back();
+    }
+    return track;
 }
 
 // ─── Cache ────────────────────────────────────────────────────────────────────
@@ -1043,6 +1477,11 @@ void SandboxRenderer::clearCache() {
     map_.clear();
     lruOrder_.clear();
     bytesNow_.store(0, std::memory_order_relaxed);
+    // The AUTOTUNE detection cache is keyed by the same render keys, so it goes
+    // with them — leaving it behind would keep entries whose keys nothing can
+    // reach any more.
+    pitchCache_.clear();
+    pitchLru_.clear();
 }
 
 size_t SandboxRenderer::entryCount() const {

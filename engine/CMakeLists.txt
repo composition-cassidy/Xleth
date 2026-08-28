@@ -249,6 +249,13 @@ add_library(XlethEngineModel STATIC
     src/sandbox/SandboxOp.cpp
     src/sandbox/SandboxCore.cpp
     src/sandbox/SandboxCommands.cpp
+    # AUTOTUNE correction curve (P5-2): pure math turning a PitchTrackAnalysis
+    # result + scale/key + the six AUTOTUNE controls into a per-frame target-f0
+    # curve. Only consumes PitchFrame/NoteSegment (plain structs, no JUCE) from
+    # dsp/PitchTrackAnalysis.h, so it belongs at this tier alongside the rest
+    # of the sandbox model rather than in XlethEngineCore with the JUCE-using
+    # detector that produces its input.
+    src/dsp/CorrectionCurve.cpp
 )
 
 target_include_directories(XlethEngineModel PUBLIC
@@ -316,6 +323,12 @@ add_library(XlethEngineCore STATIC
     src/dsp/LoopAnalysis.cpp
     src/dsp/LoopOptimizer.cpp
     src/dsp/AutoLoopPolicy.cpp
+    src/dsp/PitchTrackAnalysis.cpp
+    # AUTOTUNE renderer (P5-3): time-varying TD-PSOLA driven by a
+    # CorrectionCurve. Separate from TDPSOLA.cpp below, which is a
+    # constant-ratio, per-channel-independent shifter — see
+    # dsp/AutotuneRender.h for why those cannot be the same function.
+    src/dsp/AutotuneRender.cpp
     src/dsp/TDPSOLA.cpp
     src/dsp/RubberBandWrapper.cpp
     src/dsp/WSOLA.cpp
@@ -328,6 +341,7 @@ add_library(XlethEngineCore STATIC
     # evaluates comes from XlethEngineModel.
     src/sandbox/SandboxRenderer.cpp
     src/sandbox/SandboxSpectrogram.cpp
+    src/sandbox/SandboxPitchTrack.cpp
     src/video/FrameOutput.cpp
     src/video/FrameServer.cpp
     src/FrameCache.cpp
@@ -644,6 +658,44 @@ add_executable(test_sandbox
 )
 
 target_link_libraries(test_sandbox PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+# ── test_correction_curve ────────────────────────────────────────────────────
+# AUTOTUNE correction curve (P5-2): scale/key tables, quantization, the
+# jumpiness-hold/retune-speed/smoothness state machine, and the Preserve
+# Vibrato low-pass split. Pure math — no JUCE, no FFmpeg, no GL. Links only
+# XlethEngineModel (dsp/CorrectionCurve.cpp lives there; PitchFrame/NoteSegment
+# come along for free as plain structs from dsp/PitchTrackAnalysis.h).
+add_executable(test_correction_curve
+    test/test_correction_curve.cpp
+)
+
+target_link_libraries(test_correction_curve PRIVATE
+    XlethEngineModel
+)
+
+# ── test_autotune_render ──────────────────────────────────────────────────────
+# The AUTOTUNE renderer (P5-3): TD-PSOLA resynthesis onto a CorrectionCurve.
+# Needs XlethEngineCore (dsp/AutotuneRender.cpp + the JUCE-using NSDF detector
+# in dsp/PitchTrackAnalysis.cpp) as well as XlethEngineModel (the correction
+# math). juce_audio_formats is for the OPTIONAL listening-QA pass: pass a WAV
+# path on argv[1] and it renders both deliverable settings out for a listen.
+# The automated run takes no arguments and touches no files.
+add_executable(test_autotune_render
+    test/test_autotune_render.cpp
+)
+
+target_link_libraries(test_autotune_render PRIVATE
     XlethEngineCore
     XlethEngineModel
     juce::juce_core
@@ -2700,6 +2752,8 @@ set(XLETH_ENGINE_TESTS
     test_lfo_parameter_modulation
     test_lfo_modulation_engine
     test_canvas_fit
+    test_correction_curve
+    test_autotune_render
     test_video_flip_applier
     test_flip_determinism
     test_flip_orientation_golden

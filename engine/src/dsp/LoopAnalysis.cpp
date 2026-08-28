@@ -51,6 +51,50 @@ int detectPeriod(const std::vector<float>& nsdf, int tauMin, float threshold)
     return 0;
 }
 
+// Promoted from AutoLoopPolicy.cpp's private nsdfFft — see the header comment
+// for why this exists alongside the direct computeNSDF above.
+std::vector<float> computeNSDFFft(const float* x, int N, int tauMin, int tauMax,
+                                  juce::dsp::FFT& fft, int order,
+                                  std::vector<float>& scratch)
+{
+    tauMax = std::min(tauMax, N - 1);
+    if (tauMin > tauMax || N <= 0) return {};
+
+    std::vector<double> cumX2((size_t)N + 1, 0.0);
+    for (int i = 0; i < N; ++i) cumX2[(size_t)i + 1] = cumX2[(size_t)i] + (double)x[i] * x[i];
+
+    const int M = 1 << order;
+    std::fill(scratch.begin(), scratch.end(), 0.0f);
+    for (int i = 0; i < N; ++i) scratch[(size_t)i] = x[i];
+    fft.performRealOnlyForwardTransform(scratch.data(), false);
+    for (int k = 0; k < M; ++k) {
+        const float re = scratch[2 * (size_t)k], im = scratch[2 * (size_t)k + 1];
+        scratch[2 * (size_t)k] = re * re + im * im;
+        scratch[2 * (size_t)k + 1] = 0.0f;
+    }
+    fft.performRealOnlyInverseTransform(scratch.data());  // scratch[tau] == Sum x[n]x[n+tau]
+
+    const int len = tauMax - tauMin + 1;
+    std::vector<float> nsdf((size_t)len, 0.0f);
+    for (int i = 0; i < len; ++i) {
+        const int tau = tauMin + i, W = N - tau;
+        const double denom = cumX2[(size_t)W] + (cumX2[(size_t)N] - cumX2[(size_t)tau]);
+        if (denom >= 1e-12) nsdf[(size_t)i] = (float)(2.0 * scratch[(size_t)tau] / denom);
+    }
+    return nsdf;
+}
+
+// Promoted from AutoLoopPolicy.cpp's private refinePeriod.
+double refinePeriodNSDF(const std::vector<float>& nsdf, int tauMin, int lag)
+{
+    const int i = lag - tauMin;
+    if (i <= 0 || i + 1 >= (int)nsdf.size()) return (double)lag;
+    const double a = nsdf[(size_t)i - 1], b = nsdf[(size_t)i], c = nsdf[(size_t)i + 1];
+    const double denom = a - 2.0 * b + c;
+    if (std::abs(denom) < 1e-18) return (double)lag;
+    return (double)lag + 0.5 * (a - c) / denom;
+}
+
 // Snap 'center' to the nearest positive zero-crossing within ±10% of t0.
 int snapZeroCrossing(const float* x, int N, int center, int t0)
 {

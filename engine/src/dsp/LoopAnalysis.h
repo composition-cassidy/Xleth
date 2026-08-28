@@ -10,6 +10,8 @@
 
 #include <vector>
 
+namespace juce::dsp { class FFT; }
+
 namespace xleth::dsp {
 
 // Amplitude below which a frame is treated as silence, in linear RMS (≈ -60 dB).
@@ -27,6 +29,31 @@ std::vector<float> computeNSDF(const float* x, int N, int tauMin, int tauMax);
 // threshold: minimum NSDF peak height to consider the frame voiced, in NSDF
 // units. Returns the lag of the first key maximum in samples, or 0 if unvoiced.
 int detectPeriod(const std::vector<float>& nsdf, int tauMin, float threshold = 0.5f);
+
+// FFT-accelerated equivalent of computeNSDF: mathematically identical (the
+// numerator Sum x[n]x[n+tau] IS the linear autocorrelation, so an FFT
+// power-spectrum round-trip gives it for every tau at once) but O(N log N)
+// per call rather than O(N*(tauMax-tauMin)) — the difference that makes a
+// dense per-frame pitch track (many frames, each its own NSDF) affordable.
+// Promoted out of the Auto Loop Optimizer's per-hop tracker (measureHops)
+// so every NSDF-based caller shares one implementation.
+//
+// `fft`/`order`/`scratch` are caller-owned so a per-frame loop can build them
+// once: order must satisfy (1 << order) >= 2*N (headroom for the circular
+// autocorrelation to not alias), and scratch must be sized (1 << order) * 2.
+// tauMax is clamped to N-1, same as computeNSDF. Returns tauMax-tauMin+1
+// values in [-1, 1]; empty if the lag range is degenerate.
+std::vector<float> computeNSDFFft(const float* x, int N, int tauMin, int tauMax,
+                                  juce::dsp::FFT& fft, int order,
+                                  std::vector<float>& scratch);
+
+// Sub-sample refinement of an NSDF peak via parabolic interpolation of the
+// three samples straddling `lag` (a lag returned by detectPeriod against the
+// same `nsdf`/`tauMin`). Falls back to the unrefined lag when the peak sits
+// at an edge or the local curvature is degenerate. This is what keeps the
+// engine's NSDF f0 estimate within a fraction of a cent of a YIN reference —
+// see AutoLoopPolicy.cpp's NSDF-vs-YIN validation note.
+double refinePeriodNSDF(const std::vector<float>& nsdf, int tauMin, int lag);
 
 // Snaps a pitch mark to the nearest positive-going zero crossing.
 // x: N input samples; center: candidate position in samples; t0: local period in

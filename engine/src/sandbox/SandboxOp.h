@@ -1,5 +1,12 @@
 #pragma once
 
+// AUTOTUNE's params EMBED xleth::dsp::CorrectionParams and reuse
+// xleth::dsp::ScaleType rather than restating them — see AutotuneParams below.
+// Both are plain structs/enums with no JUCE and no I/O, and CorrectionCurve.cpp
+// already lives in this same model tier (engine/CMakeLists.txt), so this costs
+// the header nothing it did not already have.
+#include "dsp/CorrectionCurve.h"
+
 #include <nlohmann/json.hpp>
 
 #include <cstdint>
@@ -45,7 +52,12 @@ namespace xleth::sandbox {
 //       reads back with an empty path, which reloads as an unbound layer
 //       (sourceBufferId = -1) whose op-stack is nonetheless intact — the
 //       stack was never the part that could not be re-resolved.
-inline constexpr int kSandboxStackVersion = 2;
+//   3 — P5-3. SandboxOpType::Autotune exists. Additive like v2 was, and
+//       stackFromJson's unknown-name rule means a v2 reader SKIPS an autotune
+//       op rather than mis-reading one — but silently dropping a user's
+//       pitch correction is exactly the kind of degradation the version
+//       number is here to record, so it gets a bump.
+inline constexpr int kSandboxStackVersion = 3;
 
 // ─── SandboxOpType ────────────────────────────────────────────────────────────
 // Order is load-bearing: it must match the alternative order of SandboxOpParams
@@ -81,9 +93,17 @@ enum class SandboxOpType : int {
     FormantShift = 11,
     Declip       = 12,
     Denoise      = 13,
+
+    // SPECTRAL_PAINT (P3-2) — attenuate energy in user-painted time/frequency
+    // regions on the SPC canvas. See SpectralPaintParams below.
+    SpectralPaint = 14,
+
+    // AUTOTUNE (P5-3) — snap the melody to a scale by TD-PSOLA resynthesis.
+    // See AutotuneParams below.
+    Autotune = 15,
 };
 
-inline constexpr int kSandboxOpTypeCount = 14;
+inline constexpr int kSandboxOpTypeCount = 16;
 
 // ─── Shared enums ─────────────────────────────────────────────────────────────
 
@@ -413,6 +433,151 @@ struct DenoiseParams {
     bool operator==(const DenoiseParams&) const = default;
 };
 
+// ─── Spectral paint ───────────────────────────────────────────────────────────
+//
+// SPECTRAL_PAINT — attenuate energy inside painted time/frequency regions
+// ("dabs") rather than a fixed sample range or a learned noise profile. The
+// user paints directly on the SPC (spectrogram) canvas; one mouse-drag on
+// that canvas commits as one or more dabs appended to `dabs` in a SINGLE
+// SetSandboxOpParamsCommand (see DenoiseParams's comment on the same
+// "commit whole params on release" contract — SPECTRAL_PAINT follows it too,
+// there is no per-dab RPC).
+//
+// ── Coordinates ─────────────────────────────────────────────────────────────
+// Time is engine-buffer SAMPLES, same convention as every op in this header.
+// Frequency is Hz, NOT an FFT bin index: a bin index is meaningless until the
+// renderer picks an FFT size, and that size is an implementation detail of
+// applySpectralPaint, not something a saved stack should have to know about.
+//
+// ── Falloff, not a hard edge ─────────────────────────────────────────────────
+// Each dab is a rectangle in (time, frequency) — [-halfWidth,+halfWidth] ×
+// [-halfHeight,+halfHeight] around its centre — with a raised-cosine feather
+// added past that core on both axes, so a painted-out region does not leave a
+// audible seam at its boundary the way a hard rectangular gate would.
+// featherTimeMs/featherFreqHz of 0 means a hard edge (no feather).
+//
+// ── How dabs combine ─────────────────────────────────────────────────────────
+// Overlapping dabs' amountDb SUMS (equivalently, their gains multiply) — the
+// same "interpolate/combine in dB" rule GainEnvelopeParams uses, and it is
+// what makes re-painting over an already-quiet region make it quieter still
+// rather than clamping at whichever single dab is loudest. A boost dab and an
+// attenuate dab overlapping simply partially cancel, for the same reason.
+// applySpectralPaint floors AND ceils the combined total (see
+// kSpectralPaintFloorDb/kSpectralPaintCeilDb) so an absurd pile of overlapping
+// dabs cannot demand more gain, either direction, than the bit depth can
+// represent.
+struct SpectralPaintDab {
+    int64_t centerSample     = 0;      // time centre, engine-buffer samples
+    int64_t halfWidthSamples = 0;      // time half-extent, BEFORE feather
+    double  centerFreqHz     = 0.0;    // frequency centre
+    double  halfHeightHz     = 0.0;    // frequency half-extent, BEFORE feather
+    // Gain at the dab's core, in dB — negative ATTENUATES (the original P3-2
+    // use, e.g. denoising a hum line), positive BOOSTS (SPC selection's BOOST
+    // action). Same field either way: dabs combine by summing dB regardless
+    // of sign, so a boost dab and an attenuate dab overlapping just partially
+    // cancel, which is the expected "re-paint over an edit" behaviour.
+    double  amountDb         = -12.0;
+    double  featherTimeMs    = 0.0;    // half-Hann falloff past halfWidthSamples
+    double  featherFreqHz    = 0.0;    // half-Hann falloff past halfHeightHz
+
+    bool operator==(const SpectralPaintDab&) const = default;
+};
+
+// Per-dab clamp on the ATTENUATE side: one dab attenuating past this is not
+// "more paint", it is a modelling error (e.g. a corrupt file) —
+// kSpectralPaintFloorDb below is what actually bounds a legitimate pile of
+// overlapping attenuate dabs.
+inline constexpr double kSpectralPaintMinAmountDb = -60.0;
+
+// Per-dab clamp on the BOOST side — matches kGainEnvelopeMaxDb's ceiling,
+// since a boost dab is the same "how far can one authored edit push a
+// signal" question GainEnvelope's top clamp already answers.
+inline constexpr double kSpectralPaintMaxAmountDb = 24.0;
+
+// Floor for the SUM of every dab covering a given (time, frequency) point.
+// Matches kGainEnvelopeMinDb's role: a total that reaches the floor is
+// silence, not a numerically-absurd negative gain.
+inline constexpr double kSpectralPaintFloorDb = -96.0;
+
+// Ceiling for that same sum, on the boost side — bounds a pile of overlapping
+// boost dabs the same way the floor bounds a pile of attenuate ones, rather
+// than letting them stack without limit.
+inline constexpr double kSpectralPaintCeilDb = 24.0;
+
+// SPECTRAL_PAINT — see the dabs/coordinates/combining notes above.
+struct SpectralPaintParams {
+    // Paint order does not matter to the render (dab combination is
+    // commutative — see the header comment), but IS preserved across a
+    // save/load round-trip since it is what the "undo the last stroke" UX
+    // wants to remove last.
+    std::vector<SpectralPaintDab> dabs;
+
+    bool operator==(const SpectralPaintParams&) const = default;
+};
+
+// ─── Autotune ─────────────────────────────────────────────────────────────────
+//
+// AUTOTUNE — quantize the melody to a scale and resynthesize onto the corrected
+// pitch with TD-PSOLA (dsp/AutotuneRender.h). Three cooperating pieces, none of
+// which this struct restates:
+//   • detection  — dsp/PitchTrackAnalysis.h produces the per-frame f0 track,
+//                  the note segmentation, and the monophonic gate.
+//   • correction — dsp/CorrectionCurve.h turns that track plus THESE params
+//                  into a per-frame target-f0 curve.
+//   • render     — dsp/AutotuneRender.h moves the samples onto that curve.
+//
+// ── Why the six controls are an embedded CorrectionParams ────────────────────
+// They ARE dsp::CorrectionParams — the same six knobs, the same units, the same
+// meanings. Restating them here as six loose doubles would be a second
+// declaration free to drift from the one the math actually reads, which is the
+// failure mode this header's opening comment exists to prevent. The JSON is
+// nonetheless FLAT (correctionAmount/retuneSpeedMs/... at the top level of
+// "params"), because the UI edits six controls, not a control and a sub-object.
+//
+// ── Formants ride with the pitch ─────────────────────────────────────────────
+// Deliberate, and there is no toggle for it. TD-PSOLA moves the spectral
+// envelope with the fundamental; that is the classic hard-tune sound and the
+// intended one. A caller who wants the envelope moved independently already has
+// SandboxOpType::FormantShift.
+//
+// ── Refusal, not a guess ─────────────────────────────────────────────────────
+// If the pitch analysis of this op's INPUT reports monophonic == false, the op
+// renders as a pass-through and the renderer reports the analysis's own reason
+// (SandboxRenderResult::refusalReason). It never emits a plausible-looking
+// correction of polyphonic material.
+// Upper bounds on the two time constants. CorrectionCurve itself only floors
+// them at 0 (it has no opinion about how slow is too slow); these ceilings are
+// the op's, so a typo in a saved file cannot produce a retune so slow the
+// correction never arrives and the op reads as broken rather than as mistuned.
+// Half a second is already far past the ~80 ms that sounds "natural".
+inline constexpr double kAutotuneMaxRetuneMs     = 500.0;
+inline constexpr double kAutotuneMaxSmoothnessMs = 500.0;
+
+struct AutotuneParams {
+    // The preset scale/key. Ignored entirely when `allowedNotes` is non-empty —
+    // see below, and CorrectionCurve.h's own note on the same override.
+    xleth::dsp::ScaleType scale = xleth::dsp::kDefaultScale;   // Phrygian
+    int                   key   = xleth::dsp::kDefaultKey;     // D
+
+    // Pitch classes 0-11 from the UI keyboard. NON-EMPTY OVERRIDES scale/key
+    // outright rather than merging with it — a user who has hand-picked a note
+    // set means that set, not that set unioned with a preset they stopped
+    // caring about. Empty (the default) = use scale/key.
+    std::vector<int> allowedNotes;
+
+    // The six controls, verbatim: correctionAmount, retuneSpeedMs,
+    // smoothnessMs, jumpiness, preserveVibrato. See CorrectionParams.
+    xleth::dsp::CorrectionParams correction;
+
+    bool operator==(const AutotuneParams&) const = default;
+};
+
+// Clamps `key` into 0-11, drops out-of-range/duplicate allowedNotes and sorts
+// them, and clamps every one of the six controls into its declared range.
+// Called by opFromJson so a saved stack is already clean, and available to any
+// other ingest path for the same reason normalizeGainEnvelope is.
+void normalizeAutotune(AutotuneParams& p);
+
 // ─── SandboxOpParams ──────────────────────────────────────────────────────────
 // Alternative order MUST match SandboxOpType — see the static_assert below.
 
@@ -430,7 +595,9 @@ using SandboxOpParams = std::variant<
     GainEnvelopeParams, // 10 GainEnvelope
     FormantShiftParams, // 11 FormantShift
     DeclipParams,       // 12 Declip
-    DenoiseParams       // 13 Denoise
+    DenoiseParams,      // 13 Denoise
+    SpectralPaintParams,// 14 SpectralPaint
+    AutotuneParams      // 15 Autotune
 >;
 
 static_assert(std::variant_size_v<SandboxOpParams> == kSandboxOpTypeCount,

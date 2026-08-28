@@ -31,6 +31,7 @@
 #include "sandbox/SandboxOp.h"
 #include "sandbox/SandboxRenderer.h"
 #include "sandbox/SandboxSpectrogram.h"
+#include "sandbox/SandboxPitchTrack.h"
 
 #include <juce_audio_formats/juce_audio_formats.h>
 
@@ -191,6 +192,16 @@ static void testOpModel() {
     CHECK_EQ(makeOp(10, SandboxOpType::Denoise, DenoiseParams{}).outputLength(1000),
              int64_t(1000), "DENOISE is in-place");
 
+    // SPECTRAL_PAINT (P3-2).
+    CHECK(makeOp(11, SandboxOpType::SpectralPaint, SpectralPaintParams{}).implemented(),
+          "SPECTRAL PAINT has DSP");
+    CHECK(makeOp(11, SandboxOpType::SpectralPaint, SpectralPaintParams{}).autoRender(),
+          "SPECTRAL PAINT is cheap enough to auto-render");
+    CHECK_EQ(makeOp(11, SandboxOpType::SpectralPaint,
+                    SpectralPaintParams{ { SpectralPaintDab{ 500, 100, 2000.0, 300.0, -18.0, 10.0, 150.0 } } })
+                 .outputLength(1000),
+             int64_t(1000), "SPECTRAL PAINT is in-place — it never changes length");
+
     // Every op type auto-renders today — no heavy op (e.g. model separation)
     // exists yet. Distinct from implemented(): STRETCH is a stub but still
     // cheap, so it does not opt out of auto-render.
@@ -313,13 +324,17 @@ static void testOpSerialization() {
         makeOp(12, SandboxOpType::FormantShift, FormantShiftParams{ 316.0 }),
         makeOp(13, SandboxOpType::Declip,       DeclipParams{ 100, 5000, 0.95, 40 }),
         makeOp(14, SandboxOpType::Denoise,      DenoiseParams{ 0, 4800, 18.0, 2.0 }),
+        makeOp(15, SandboxOpType::SpectralPaint, SpectralPaintParams{ {
+            SpectralPaintDab{ 4800, 960, 3200.0, 400.0, -24.0, 15.0, 120.0 },
+            SpectralPaintDab{ 9600, 480, 6500.0, 250.0, -12.0, 0.0, 0.0 },
+        } }),
     };
     ops[3].enabled = false;   // bypass must survive the trip
 
     const nlohmann::json j = stackToJson(ops);
     CHECK_EQ(j.value("sandboxStackVersion", -1), kSandboxStackVersion,
              "stack JSON carries sandboxStackVersion");
-    CHECK_EQ(j["ops"].size(), size_t(14), "every op is written");
+    CHECK_EQ(j["ops"].size(), size_t(15), "every op is written");
     CHECK_EQ(j["ops"][6]["type"].get<std::string>(), std::string("gain"),
              "type is written as a NAME, so an enum reorder is not a migration");
 
@@ -1307,7 +1322,8 @@ static void testDurableSourceRef() {
     SandboxCore loaded;
     int version = -1;
     CHECK(loaded.fromJson(src.toJson(), &version, nullptr), "workspace with a source ref parses");
-    CHECK_EQ(version, 2, "sandboxStackVersion is 2 now that layers carry a source ref");
+    CHECK_EQ(version, kSandboxStackVersion, "the workspace carries the current sandboxStackVersion");
+    CHECK_EQ(kSandboxStackVersion, 3, "sandboxStackVersion is 3 now that AUTOTUNE exists");
     const SandboxLayer* rl = loaded.findLayer(l);
     CHECK(rl != nullptr, "the layer round-trips");
     CHECK_EQ(rl->sourceFilePath, std::string("C:/proj/media/kick.wav"), "sourceFilePath round-trips");
@@ -1943,6 +1959,221 @@ static void testRestorationOps() {
 }
 
 // ---------------------------------------------------------------------------
+// SandboxRenderer — SPECTRAL PAINT (P3-2)
+// ---------------------------------------------------------------------------
+
+static void testSpectralPaint() {
+    std::cout << "\n[SandboxRenderer — spectral paint]\n";
+
+    {
+        const int N = 32768;
+
+        // ── GATE: an empty mask must be BIT-TRANSPARENT, checked before any
+        // attenuation logic — a WOLA round-trip is only identity up to
+        // floating-point rounding, so "no paint yet" must cost not one ULP. ──
+        const SandboxBuffer tone = makeSine(1, N, 440.0, kTestRate);
+        SandboxBuffer noPaint = SandboxRenderer::applyOp(
+            tone, makeOp(1, SandboxOpType::SpectralPaint, SpectralPaintParams{}), kTestRate);
+        bool bitExact = true;
+        for (int i = 0; i < N && bitExact; ++i)
+            if (noPaint.getSample(0, i) != tone.getSample(0, i)) bitExact = false;
+        CHECK(bitExact, "SPECTRAL PAINT with an empty dab list is a bit-exact pass-through");
+
+        // A dab with amountDb == 0 forces the full STFT round-trip (the mask
+        // is non-empty) but must still reconstruct near-identically — the
+        // WOLA scheme's own identity property, same one DENOISE's window
+        // relies on, just exercised through the paint path instead.
+        SandboxBuffer zeroDab = SandboxRenderer::applyOp(
+            tone,
+            makeOp(1, SandboxOpType::SpectralPaint,
+                   SpectralPaintParams{ { SpectralPaintDab{ N / 2, N, 440.0, 5000.0, 0.0, 0.0, 0.0 } } }),
+            kTestRate);
+        float maxDiff = 0.0f;
+        for (int i = 2048; i < N - 2048; ++i)
+            maxDiff = std::max(maxDiff, std::fabs(zeroDab.getSample(0, i) - tone.getSample(0, i)));
+        CHECK(maxDiff < 0.01f, "a 0 dB dab round-trips near-identically away from the buffer edges");
+
+        // ── -14 dB bleed-shell removal without collateral harmonic damage ──
+        // A "bleed" tone at 3 kHz mixed with an unrelated 1 kHz harmonic.
+        // Painting a narrow, feathered notch centred on 3 kHz over the WHOLE
+        // buffer must pull the 3 kHz component down by ~14 dB while leaving
+        // the 1 kHz harmonic — 2 kHz away, well outside the notch's feathered
+        // reach — essentially untouched.
+        const double bleedHz = 3000.0, harmonicHz = 1000.0;
+        SandboxBuffer mix(1, N);
+        for (int i = 0; i < N; ++i) {
+            const double t = static_cast<double>(i) / kTestRate;
+            mix.setSample(0, i, static_cast<float>(
+                0.3 * std::sin(2.0 * 3.14159265358979323846 * bleedHz * t)
+                + 0.3 * std::sin(2.0 * 3.14159265358979323846 * harmonicHz * t)));
+        }
+
+        SandboxOp notch = makeOp(1, SandboxOpType::SpectralPaint,
+            SpectralPaintParams{ { SpectralPaintDab{ N / 2, N, bleedHz, 40.0, -14.0, 0.0, 40.0 } } });
+        SandboxBuffer painted = SandboxRenderer::applyOp(mix, notch, kTestRate);
+
+        // Single-frequency magnitude (Goertzel) over the middle of the
+        // buffer, clear of the zero-padded STFT edges.
+        auto goertzelMag = [&](const SandboxBuffer& b, double freqHz) {
+            const int64_t start = 4096, n = N - 8192;
+            const double k = std::round((static_cast<double>(n) * freqHz) / kTestRate);
+            const double omega = (2.0 * 3.14159265358979323846 / static_cast<double>(n)) * k;
+            const double coeff = 2.0 * std::cos(omega);
+            double s1 = 0.0, s2 = 0.0;
+            for (int64_t i = 0; i < n; ++i) {
+                const double x = b.getSample(0, static_cast<int>(start + i));
+                const double s0 = x + coeff * s1 - s2;
+                s2 = s1; s1 = s0;
+            }
+            const double re = s1 - s2 * std::cos(omega);
+            const double im = s2 * std::sin(omega);
+            return std::sqrt(re * re + im * im) / (static_cast<double>(n) / 2.0);
+        };
+
+        const double bleedBefore = goertzelMag(mix, bleedHz);
+        const double bleedAfter  = goertzelMag(painted, bleedHz);
+        const double harmBefore  = goertzelMag(mix, harmonicHz);
+        const double harmAfter   = goertzelMag(painted, harmonicHz);
+
+        const double bleedDropDb = 20.0 * std::log10(bleedAfter / bleedBefore);
+        const double harmDropDb  = 20.0 * std::log10(harmAfter / harmBefore);
+        CHECK_NEAR(bleedDropDb, -14.0, 2.0, "the painted bleed tone drops by ~14 dB");
+        CHECK_NEAR(harmDropDb, 0.0, 1.0, "the untouched harmonic is left essentially intact");
+
+        // ── BOOST: a positive amountDb raises the dab's core instead of
+        // attenuating it — same clamp/combine machinery, opposite sign. ──
+        SandboxOp boost = makeOp(1, SandboxOpType::SpectralPaint,
+            SpectralPaintParams{ { SpectralPaintDab{ N / 2, N, bleedHz, 40.0, 14.0, 0.0, 40.0 } } });
+        SandboxBuffer boosted = SandboxRenderer::applyOp(mix, boost, kTestRate);
+        const double bleedBoostDb = 20.0 * std::log10(goertzelMag(boosted, bleedHz) / bleedBefore);
+        const double harmBoostDb  = 20.0 * std::log10(goertzelMag(boosted, harmonicHz) / harmBefore);
+        CHECK_NEAR(bleedBoostDb, 14.0, 2.0, "a +14 dB dab raises the boosted tone by ~14 dB");
+        CHECK_NEAR(harmBoostDb, 0.0, 1.0, "the untouched harmonic is left essentially intact by a boost dab");
+
+        // A single dab's amountDb is clamped to [-60, +24] — a boost past the
+        // ceiling is not "more boost", same reasoning as the attenuate floor.
+        SandboxOp overBoost = makeOp(1, SandboxOpType::SpectralPaint,
+            SpectralPaintParams{ { SpectralPaintDab{ N / 2, N, bleedHz, 40.0, 96.0, 0.0, 40.0 } } });
+        SandboxOp clampedBoost = makeOp(1, SandboxOpType::SpectralPaint,
+            SpectralPaintParams{ { SpectralPaintDab{ N / 2, N, bleedHz, 40.0, kSpectralPaintMaxAmountDb, 0.0, 40.0 } } });
+        SandboxBuffer overBoosted = SandboxRenderer::applyOp(mix, overBoost, kTestRate);
+        SandboxBuffer clampedBoosted = SandboxRenderer::applyOp(mix, clampedBoost, kTestRate);
+        CHECK_NEAR(goertzelMag(overBoosted, bleedHz), goertzelMag(clampedBoosted, bleedHz),
+                  goertzelMag(clampedBoosted, bleedHz) * 0.01,
+                  "a dab's amountDb clamps at kSpectralPaintMaxAmountDb, not the raw authored value");
+
+        // ── Re-edit + bypass ──
+        SandboxOp op = makeOp(1, SandboxOpType::SpectralPaint,
+            SpectralPaintParams{ { SpectralPaintDab{ N / 2, N, bleedHz, 40.0, -14.0, 0.0, 40.0 } } });
+        SandboxBuffer oneStroke = SandboxRenderer::applyOp(mix, op, kTestRate);
+
+        auto& oneDabParams = std::get<SpectralPaintParams>(op.params);
+        oneDabParams.dabs.push_back(SpectralPaintDab{ N / 2, N, harmonicHz, 40.0, -20.0, 0.0, 40.0 });
+        SandboxBuffer twoStrokes = SandboxRenderer::applyOp(mix, op, kTestRate);
+
+        bool differsAfterReedit = false;
+        for (int i = 4096; i < N - 4096 && !differsAfterReedit; ++i)
+            if (std::fabs(twoStrokes.getSample(0, i) - oneStroke.getSample(0, i)) > 1e-4f)
+                differsAfterReedit = true;
+        CHECK(differsAfterReedit, "adding a second dab changes the render (re-editing is live)");
+
+        op.enabled = false;
+        SandboxBuffer bypassed = SandboxRenderer::applyOp(mix, op, kTestRate);
+        bool bypassIsExact = true;
+        for (int i = 0; i < N && bypassIsExact; ++i)
+            if (bypassed.getSample(0, i) != mix.getSample(0, i)) bypassIsExact = false;
+        CHECK(bypassIsExact, "a bypassed SPECTRAL PAINT op is an exact pass-through");
+    }
+}
+
+static void testExtractSelection() {
+    std::cout << "\n[SandboxRenderer — spectral extraction (COPY TO NEW LAYER)]\n";
+
+    const int N = 32768;
+    auto goertzelMag = [](const SandboxBuffer& b, double freqHz, int64_t start, int64_t n) {
+        const double k = std::round((static_cast<double>(n) * freqHz) / kTestRate);
+        const double omega = (2.0 * 3.14159265358979323846 / static_cast<double>(n)) * k;
+        const double coeff = 2.0 * std::cos(omega);
+        double s1 = 0.0, s2 = 0.0;
+        for (int64_t i = 0; i < n; ++i) {
+            const double x = b.getSample(0, static_cast<int>(start + i));
+            const double s0 = x + coeff * s1 - s2;
+            s2 = s1; s1 = s0;
+        }
+        const double re = s1 - s2 * std::cos(omega);
+        const double im = s2 * std::sin(omega);
+        return std::sqrt(re * re + im * im) / (static_cast<double>(n) / 2.0);
+    };
+
+    // ── Empty selection is SILENCE, not a pass-through — the exact opposite of
+    // SPECTRAL_PAINT's own empty-dabs GATE, since "nothing selected" here
+    // means "nothing kept" rather than "nothing edited". ──
+    {
+        const SandboxBuffer tone = makeSine(1, N, 440.0, kTestRate);
+        SandboxBuffer empty = SandboxRenderer::extractSelection(tone, {}, kTestRate);
+        bool allSilent = true;
+        for (int i = 0; i < N && allSilent; ++i)
+            if (empty.getSample(0, i) != 0.0f) allSilent = false;
+        CHECK(allSilent, "extractSelection with no dabs returns exact silence");
+        CHECK(empty.getNumSamples() == tone.getNumSamples(),
+             "extractSelection preserves buffer length even when the selection is empty");
+    }
+
+    // ── Frequency gating: keep a 3 kHz tone, silence an unrelated 1 kHz one,
+    // both present over the whole buffer — the same "bleed + harmonic" mix
+    // testSpectralPaint uses, just testing the KEEP side instead of ATTENUATE.
+    {
+        const double keepHz = 3000.0, dropHz = 1000.0;
+        SandboxBuffer mix(1, N);
+        for (int i = 0; i < N; ++i) {
+            const double t = static_cast<double>(i) / kTestRate;
+            mix.setSample(0, i, static_cast<float>(
+                0.3 * std::sin(2.0 * 3.14159265358979323846 * keepHz * t)
+                + 0.3 * std::sin(2.0 * 3.14159265358979323846 * dropHz * t)));
+        }
+        std::vector<SpectralPaintDab> keep = { SpectralPaintDab{ N / 2, N, keepHz, 40.0, 0.0, 0.0, 40.0 } };
+        SandboxBuffer extracted = SandboxRenderer::extractSelection(mix, keep, kTestRate);
+
+        const int64_t start = 4096, n = N - 8192;
+        const double keepBefore = goertzelMag(mix, keepHz, start, n);
+        const double keepAfter  = goertzelMag(extracted, keepHz, start, n);
+        const double dropBefore = goertzelMag(mix, dropHz, start, n);
+        const double dropAfter  = goertzelMag(extracted, dropHz, start, n);
+
+        CHECK_NEAR(keepAfter, keepBefore, keepBefore * 0.15, "the kept 3 kHz tone survives extraction near-intact");
+        CHECK(dropAfter < dropBefore * 0.1, "the unrelated 1 kHz tone is silenced outside the frequency selection");
+    }
+
+    // ── Time gating: keep the first half of the buffer, silence the second —
+    // a dab wide enough in frequency to cover the whole audible band, narrow
+    // in time, so only the TIME axis determines keep/silence here. ──
+    {
+        const SandboxBuffer tone = makeSine(1, N, 440.0, kTestRate);
+        std::vector<SpectralPaintDab> keep = {
+            SpectralPaintDab{ N / 4, N / 4, 440.0, 20000.0, 0.0, 0.0, 0.0 },
+        };
+        SandboxBuffer extracted = SandboxRenderer::extractSelection(tone, keep, kTestRate);
+
+        float keptSq = 0.0f, silencedSq = 0.0f;
+        int keptCount = 0, silencedCount = 0;
+        for (int i = 4096; i < N / 2 - 2048; ++i) {
+            const float v = extracted.getSample(0, i);
+            keptSq += v * v;
+            ++keptCount;
+        }
+        for (int i = N / 2 + 4096; i < N - 2048; ++i) {
+            const float v = extracted.getSample(0, i);
+            silencedSq += v * v;
+            ++silencedCount;
+        }
+        const float keptRms      = std::sqrt(keptSq / static_cast<float>(std::max(1, keptCount)));
+        const float silencedRms  = std::sqrt(silencedSq / static_cast<float>(std::max(1, silencedCount)));
+        CHECK(keptRms > 0.1f, "the time-kept half of the buffer still carries signal");
+        CHECK(silencedRms < keptRms * 0.05f, "the time-excluded half is silenced");
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Restoration/pitch trio — deliverable fixtures
 // ---------------------------------------------------------------------------
 // Not correctness checks (CHECK-free by design): "no chipmunk", "peaks look
@@ -2077,6 +2308,324 @@ static void testSpectrogram() {
     CHECK_EQ(smallAnalyzer.entryCount(), static_cast<size_t>(0), "clearCache() empties the cache");
 }
 
+// ---------------------------------------------------------------------------
+// Pitch track — NSDF f0 curve + note segmentation, sourceBufferId-keyed cache
+// ---------------------------------------------------------------------------
+
+static void testPitchTrack() {
+    std::cout << "\n[PitchTrack -- NSDF pitch curve + note segmentation, id-keyed cache]\n";
+
+    // A pure 220 Hz (A3) tone: unambiguous monophonic content, so the median
+    // detected f0 and the note name are both checkable exactly.
+    const double toneHz = 220.0;
+    SandboxBuffer tone = makeSine(1, static_cast<int>(kTestRate * 1.0), toneHz, kTestRate, 0.6f);
+
+    SandboxPitchTrackAnalyzer analyzer;
+    auto result = analyzer.analyze(1, tone, kTestRate);
+    CHECK(result.valid(), "analyze() returns a valid result for a real buffer");
+    const xleth::dsp::PitchTrackResult& track = *result.track;
+
+    CHECK_NEAR(track.sampleRate, kTestRate, 0.001, "sampleRate carried through unchanged");
+    CHECK(track.hopSamples > 0.0 && track.hopSamples < kTestRate * 0.01,
+          "hop is sub-10ms at this rate (dense per-frame grid)");
+    CHECK(!track.frames.empty(), "a 1s buffer produces more than one frame");
+    CHECK(track.monophonic, "a single clean tone passes the monophonic gate");
+    CHECK(track.reason.empty(), "no refusal reason on a passing result");
+
+    const auto& midFrame = track.frames[track.frames.size() / 2];
+    CHECK(midFrame.voiced, "an interior frame of a steady tone is voiced");
+    CHECK_NEAR(midFrame.f0Hz, toneHz, 1.0, "detected f0 is within 1 Hz of the true 220 Hz tone");
+    CHECK(midFrame.confidence > 0.9f, "a pure tone's NSDF peak confidence sits near 1.0");
+
+    CHECK_EQ(track.notes.size(), static_cast<size_t>(1), "one steady tone segments into exactly one note");
+    if (!track.notes.empty()) {
+        CHECK_NEAR(track.notes[0].medianF0Hz, toneHz, 1.0, "note's median f0 matches the tone");
+        CHECK_EQ(track.notes[0].noteName, std::string("A3"), "220 Hz names as A3");
+    }
+
+    // ── Silence: valid analysis, but the monophonic gate refuses it ─────────
+    SandboxBuffer silence = makeConst(1, static_cast<int>(kTestRate), 0.0f);
+    auto silentResult = analyzer.analyze(2, silence, kTestRate);
+    CHECK(silentResult.valid(), "analyze() handles an all-zero buffer");
+    CHECK(!silentResult.track->monophonic, "silence has no pitched content -- refused, not garbage");
+    CHECK(!silentResult.track->reason.empty(), "the refusal carries a human-readable reason");
+    bool anyVoiced = false;
+    for (const auto& f : silentResult.track->frames) if (f.voiced) { anyVoiced = true; break; }
+    CHECK(!anyVoiced, "every frame of silence is unvoiced");
+
+    // ── A three-note chord: competing periodicities should fail the
+    // monophonic gate rather than report a plausible-looking single pitch --
+    // AUTOTUNE's monophonic-only scope requires a clean refusal here.
+    {
+        const int N = static_cast<int>(kTestRate * 1.0);
+        SandboxBuffer chord(1, N);
+        float* d = chord.getWritePointer(0);
+        const double freqs[3] = { 220.0, 277.18, 329.63 };  // A3, C#4, E4 -- A major triad
+        for (int i = 0; i < N; ++i) {
+            const double t = static_cast<double>(i) / kTestRate;
+            double s = 0.0;
+            for (double f : freqs) s += std::sin(2.0 * 3.14159265358979323846 * f * t);
+            d[i] = static_cast<float>(s * 0.18);
+        }
+        auto chordResult = analyzer.analyze(3, chord, kTestRate);
+        CHECK(chordResult.valid(), "analyze() handles a chord buffer");
+        CHECK(!chordResult.track->monophonic, "a 3-note chord fails the monophonic gate");
+    }
+
+    // ── Invalid input refuses rather than guessing ───────────────────────────
+    CHECK(!analyzer.analyze(4, tone, 0.0).valid(), "analyze() refuses a non-positive sampleRate");
+    SandboxBuffer empty(1, 0);
+    CHECK(!analyzer.analyze(5, empty, kTestRate).valid(), "analyze() refuses an empty buffer");
+
+    // ── Cache keyed by sourceBufferId, NOT content (unlike the spectrogram's
+    // content-hash cache) -- a real buffer change is expected to arrive with
+    // a NEW id, per SandboxLayer's own documented id-churn contract.
+    SandboxPitchTrackAnalyzer cacheAnalyzer;
+    SandboxBuffer bufA = makeSine(1, static_cast<int>(kTestRate * 0.5), 220.0, kTestRate, 0.5f);
+    SandboxBuffer bufB = makeSine(1, static_cast<int>(kTestRate * 0.5), 440.0, kTestRate, 0.5f);
+
+    auto r1 = cacheAnalyzer.analyze(10, bufA, kTestRate);
+    CHECK_EQ(cacheAnalyzer.entryCount(), static_cast<size_t>(1), "first analyze() inserts one cache entry");
+    auto r2 = cacheAnalyzer.analyze(10, bufB, kTestRate);   // SAME id, DIFFERENT content
+    CHECK(r1.track.get() == r2.track.get(),
+          "same sourceBufferId hits the cache even with different buffer content -- id is trusted");
+    CHECK_EQ(cacheAnalyzer.entryCount(), static_cast<size_t>(1), "a cache hit does not grow the cache");
+
+    auto r3 = cacheAnalyzer.analyze(11, bufB, kTestRate);   // different id
+    CHECK(r1.track.get() != r3.track.get(), "a different sourceBufferId is a cache miss");
+    CHECK_EQ(cacheAnalyzer.entryCount(), static_cast<size_t>(2), "a new id adds a second cache entry");
+
+    auto looked = cacheAnalyzer.lookup(10);
+    CHECK(looked.valid() && looked.track.get() == r1.track.get(), "lookup() probes the cache without recomputing");
+    CHECK(!cacheAnalyzer.lookup(999).valid(), "lookup() on an unknown id returns an invalid result");
+
+    // ── primeCache(): installs a precomputed result without running the
+    // analysis -- the session-load restore path (XlethEngineService.cpp).
+    xleth::dsp::PitchTrackResult restored;
+    restored.sampleRate = kTestRate;
+    restored.hopSamples = 240.0;
+    restored.monophonic = true;
+    cacheAnalyzer.primeCache(20, restored);
+    auto primed = cacheAnalyzer.lookup(20);
+    CHECK(primed.valid(), "primeCache() makes the id resolve via lookup() with no analyze() call");
+    CHECK_NEAR(primed.track->hopSamples, 240.0, 0.001, "primed result carries the exact fields installed");
+
+    // ── LRU eviction under an entry budget ───────────────────────────────────
+    SandboxPitchTrackAnalyzer smallAnalyzer(/*maxEntries=*/2);
+    SandboxBuffer shortBuf = makeSine(1, static_cast<int>(kTestRate * 0.5), 300.0, kTestRate, 0.5f);
+    smallAnalyzer.analyze(1, shortBuf, kTestRate);
+    smallAnalyzer.analyze(2, shortBuf, kTestRate);
+    smallAnalyzer.analyze(3, shortBuf, kTestRate);
+    CHECK_EQ(smallAnalyzer.entryCount(), static_cast<size_t>(2),
+             "a 2-entry cache evicts down to its cap rather than growing unbounded");
+
+    smallAnalyzer.clearCache();
+    CHECK_EQ(smallAnalyzer.entryCount(), static_cast<size_t>(0), "clearCache() empties the cache");
+}
+
+static void testAutotuneOp() {
+    std::cout << "\n[Autotune op -- typed params, JSON, hashing, and the refusal path]\n";
+
+    // ── Typed params, not a float blob ──────────────────────────────────────
+    {
+        SandboxOpParams def = defaultParamsFor(SandboxOpType::Autotune);
+        CHECK(std::holds_alternative<AutotuneParams>(def),
+              "defaultParamsFor(Autotune) yields the Autotune alternative");
+        const auto& p = std::get<AutotuneParams>(def);
+        CHECK(p.scale == xleth::dsp::kDefaultScale && p.key == xleth::dsp::kDefaultKey,
+              "defaults are the specced D Phrygian");
+        CHECK(p.allowedNotes.empty(), "no custom note set by default -- scale/key applies");
+        CHECK_NEAR(p.correction.correctionAmount, 100.0, 1e-9, "amount defaults to 100%");
+
+        SandboxOpType t{};
+        CHECK(opTypeFromName("autotune", t) && t == SandboxOpType::Autotune,
+              "the registry round-trips the type name");
+        CHECK_EQ(std::string(opTypeName(SandboxOpType::Autotune)), std::string("autotune"),
+                 "opTypeName agrees with opTypeFromName");
+    }
+
+    // ── implemented / autoRender / length ───────────────────────────────────
+    {
+        AutotuneParams p;
+        SandboxOp op = makeOp(1, SandboxOpType::Autotune, p);
+        CHECK(op.implemented(), "AUTOTUNE's DSP has landed");
+        CHECK(op.autoRender(), "AUTOTUNE auto-renders -- its detection pass is cached per input prefix");
+        CHECK_EQ(op.outputLength(48000), static_cast<int64_t>(48000),
+                 "AUTOTUNE is pitch-only: predicted output length == input length");
+    }
+
+    // ── normalizeAutotune ───────────────────────────────────────────────────
+    {
+        AutotuneParams p;
+        p.key = 14;                                  // wraps to 2
+        p.allowedNotes = { 5, 13, 5, -1, 0 };        // dedup, drop out-of-range
+        p.correction.correctionAmount = 250.0;
+        p.correction.jumpiness        = -10.0;
+        p.correction.retuneSpeedMs    = 99999.0;
+        normalizeAutotune(p);
+        CHECK_EQ(p.key, 2, "key wraps into 0-11");
+        CHECK(p.allowedNotes == std::vector<int>({ 0, 5 }),
+              "out-of-range notes are dropped (not wrapped), duplicates collapsed, sorted");
+        CHECK_NEAR(p.correction.correctionAmount, 100.0, 1e-9, "amount clamps to 100");
+        CHECK_NEAR(p.correction.jumpiness, 0.0, 1e-9, "jumpiness clamps to 0");
+        CHECK_NEAR(p.correction.retuneSpeedMs, kAutotuneMaxRetuneMs, 1e-9,
+                   "retune clamps to the op's own ceiling");
+    }
+
+    // ── JSON round-trip: FLAT keys, lossless ────────────────────────────────
+    {
+        AutotuneParams p;
+        p.scale = xleth::dsp::ScaleType::MinorPentatonic;
+        p.key   = 7;
+        p.allowedNotes = { 0, 4, 7 };
+        p.correction.correctionAmount = 62.5;
+        p.correction.retuneSpeedMs    = 81.0;
+        p.correction.smoothnessMs     = 44.0;
+        p.correction.jumpiness        = 33.0;
+        p.correction.preserveVibrato  = 12.5;
+
+        SandboxOp op = makeOp(9, SandboxOpType::Autotune, p);
+        const nlohmann::json j = opToJson(op);
+        CHECK_EQ(j["type"].get<std::string>(), std::string("autotune"),
+                 "serializes under its type name");
+        CHECK(j["params"].contains("correctionAmount") && j["params"].contains("preserveVibrato"),
+              "the six controls are FLAT at the top of params, not nested");
+
+        SandboxOp back;
+        CHECK(opFromJson(j, back), "reads back");
+        CHECK(back.consistent(), "the round-tripped op is type/params consistent");
+        CHECK(std::get<AutotuneParams>(back.params) == p, "every field survives the round-trip");
+        CHECK_EQ(back.contentHash(), op.contentHash(), "and so does the content hash");
+    }
+
+    // ── Hashing: every field moves the digest ───────────────────────────────
+    {
+        AutotuneParams base;
+        const uint64_t h0 = makeOp(1, SandboxOpType::Autotune, base).contentHash();
+
+        auto hashWith = [&](void (*mutate)(AutotuneParams&)) {
+            AutotuneParams p = base;
+            mutate(p);
+            return makeOp(1, SandboxOpType::Autotune, p).contentHash();
+        };
+        CHECK(hashWith([](AutotuneParams& p) { p.key = 5; }) != h0, "key moves the hash");
+        CHECK(hashWith([](AutotuneParams& p) { p.scale = xleth::dsp::ScaleType::Lydian; }) != h0,
+              "scale moves the hash");
+        CHECK(hashWith([](AutotuneParams& p) { p.allowedNotes = { 3 }; }) != h0,
+              "a custom note set moves the hash -- clearing it back must NOT hit the custom render");
+        CHECK(hashWith([](AutotuneParams& p) { p.correction.correctionAmount = 50.0; }) != h0,
+              "amount moves the hash");
+        CHECK(hashWith([](AutotuneParams& p) { p.correction.retuneSpeedMs = 80.0; }) != h0,
+              "retune moves the hash");
+        CHECK(hashWith([](AutotuneParams& p) { p.correction.smoothnessMs = 80.0; }) != h0,
+              "smoothness moves the hash");
+        CHECK(hashWith([](AutotuneParams& p) { p.correction.jumpiness = 40.0; }) != h0,
+              "jumpiness moves the hash");
+        CHECK(hashWith([](AutotuneParams& p) { p.correction.preserveVibrato = 0.0; }) != h0,
+              "preserve vibrato moves the hash");
+    }
+
+    // ── applyOp: a monophonic tone is corrected, 0% is an exact bypass ───────
+    {
+        SandboxBuffer tone = makeSine(1, static_cast<int>(kTestRate * 1.0), 300.0, kTestRate, 0.5f);
+        AutotuneParams p;                                  // D Phrygian, 100%
+        p.correction.retuneSpeedMs = 0.0;
+        p.correction.smoothnessMs  = 0.0;
+        SandboxOp op = makeOp(1, SandboxOpType::Autotune, p);
+
+        std::string refusal;
+        SandboxBuffer out = SandboxRenderer::applyOp(tone, op, kTestRate, nullptr, nullptr, &refusal);
+        CHECK(refusal.empty(), "a clean tone is not refused");
+        CHECK_EQ(out.getNumSamples(), tone.getNumSamples(), "applyOp preserves length");
+        bool changed = false;
+        for (int i = 0; i < out.getNumSamples() && !changed; ++i)
+            if (std::abs(out.getSample(0, i) - tone.getSample(0, i)) > 1.0e-4f) changed = true;
+        CHECK(changed, "and the audio actually changed");
+
+        // 0% is an exact bypass at the OP level (SandboxRenderer::applyAutotune's
+        // early-out), not merely a near-identity resynthesis.
+        AutotuneParams zero = p;
+        zero.correction.correctionAmount = 0.0;
+        SandboxBuffer bypass = SandboxRenderer::applyOp(
+            tone, makeOp(2, SandboxOpType::Autotune, zero), kTestRate);
+        float maxDiff = 0.0f;
+        for (int i = 0; i < bypass.getNumSamples(); ++i)
+            maxDiff = std::max(maxDiff, std::abs(bypass.getSample(0, i) - tone.getSample(0, i)));
+        CHECK(maxDiff == 0.0f, "0% amount returns the input bit-for-bit");
+
+        // A bypassed op is a pass-through and never even analyzes.
+        SandboxOp off = op;
+        off.enabled = false;
+        std::string offRefusal;
+        SandboxBuffer offOut = SandboxRenderer::applyOp(tone, off, kTestRate, nullptr, nullptr, &offRefusal);
+        CHECK(offRefusal.empty(), "a bypassed AUTOTUNE reports no refusal");
+        CHECK_EQ(offOut.getNumSamples(), tone.getNumSamples(), "a bypassed AUTOTUNE passes through");
+    }
+
+    // ── The monophonic gate: refuse, report, and pass the audio through ─────
+    {
+        const int N = static_cast<int>(kTestRate * 1.0);
+        SandboxBuffer chord(1, N);
+        float* d = chord.getWritePointer(0);
+        const double freqs[3] = { 220.0, 277.18, 329.63 };
+        for (int i = 0; i < N; ++i) {
+            const double t = static_cast<double>(i) / kTestRate;
+            double sum = 0.0;
+            for (double f : freqs) sum += std::sin(2.0 * 3.14159265358979323846 * f * t);
+            d[i] = static_cast<float>(sum * 0.18);
+        }
+
+        SandboxOp op = makeOp(1, SandboxOpType::Autotune, AutotuneParams{});
+        std::string refusal;
+        SandboxBuffer out = SandboxRenderer::applyOp(chord, op, kTestRate, nullptr, nullptr, &refusal);
+        CHECK(!refusal.empty(), "a chord is REFUSED, with a reason");
+        std::cout << "      refusal: \"" << refusal << "\"\n";
+        float maxDiff = 0.0f;
+        for (int i = 0; i < out.getNumSamples(); ++i)
+            maxDiff = std::max(maxDiff, std::abs(out.getSample(0, i) - chord.getSample(0, i)));
+        CHECK(maxDiff == 0.0f,
+              "a refusal is a bit-exact PASS-THROUGH -- never a partial or invented correction");
+
+        // ...and the refusal reaches the render result, then SURVIVES the cache
+        // hit on the second render of the same stack.
+        SandboxRenderer renderer;
+        std::vector<SandboxOp> ops{ op };
+        auto r1 = renderer.renderStack(1, chord, ops, kTestRate);
+        CHECK(r1.valid() && r1.refusedOps == 1, "renderStack reports the refused op");
+        CHECK_EQ(r1.refusalReason, refusal, "and carries the analysis's own wording");
+
+        auto r2 = renderer.renderStack(1, chord, ops, kTestRate);
+        CHECK(r2.fullyCached, "the second render is a full cache hit");
+        CHECK(r2.refusedOps == 1 && r2.refusalReason == refusal,
+              "the refusal survives the cache hit rather than vanishing on the second look");
+    }
+
+    // ── The detection cache is keyed on the op's INPUT, not the layer source ─
+    // A 2-op stack (gain, then autotune) renders once; re-rendering after
+    // touching ONLY the autotune params must re-run just that op -- the
+    // downstream-only rule holding for the most expensive op in the table, and
+    // the reason autoRender() can stay true for it.
+    {
+        SandboxRenderer renderer;
+        SandboxBuffer tone = makeSine(1, static_cast<int>(kTestRate * 1.0), 300.0, kTestRate, 0.5f);
+
+        AutotuneParams ap;
+        std::vector<SandboxOp> ops{
+            makeOp(1, SandboxOpType::Gain, GainParams{ 0, -1, 0.0, false, 0.0 }),
+            makeOp(2, SandboxOpType::Autotune, ap),
+        };
+        auto first = renderer.renderStack(7, tone, ops, kTestRate);
+        CHECK_EQ(first.opsEvaluated, 2, "a fresh 2-op stack evaluates both ops");
+
+        ap.correction.correctionAmount = 55.0;
+        ops[1].params = ap;
+        auto second = renderer.renderStack(7, tone, ops, kTestRate);
+        CHECK_EQ(second.resumedAtOp, 1, "changing only AUTOTUNE resumes from the op above it");
+        CHECK_EQ(second.opsEvaluated, 1, "and re-runs exactly one op");
+        CHECK(second.refusedOps == 0, "no refusal on clean monophonic material");
+    }
+}
+
 static void generateFixtures() {
     std::cout << "\n[Sample Sandbox -- restoration/pitch trio fixtures]\n";
 
@@ -2147,6 +2696,33 @@ static void generateFixtures() {
         std::cout << "    wrote 3_hiss_before / 3_hiss_after\n";
     }
 
+    // ── 4. Music + a narrowband whine, before/after SPECTRAL PAINT ──
+    {
+        const int N = static_cast<int>(kTestRate * 3.0);
+        const double whineHz = 3500.0;
+        SandboxBuffer mix(1, N);
+        for (int i = 0; i < N; ++i) {
+            const double t = static_cast<double>(i) / kTestRate;
+            const float music =
+                0.28f * static_cast<float>(std::sin(2.0 * 3.14159265358979323846 * 220.0 * t))
+              + 0.14f * static_cast<float>(std::sin(2.0 * 3.14159265358979323846 * 440.0 * t));
+            const float whine = 0.12f * static_cast<float>(std::sin(2.0 * 3.14159265358979323846 * whineHz * t));
+            mix.setSample(0, i, music + whine);
+        }
+        writeFixtureWav(dir, "4_whine_before", mix, kTestRate);
+
+        // A single feathered dab spanning the whole buffer's time and a narrow
+        // band around the whine — exactly what one long, steady paint stroke
+        // on the SPC canvas would commit as.
+        const SandboxBuffer painted = SandboxRenderer::applyOp(
+            mix,
+            makeOp(1, SandboxOpType::SpectralPaint,
+                   SpectralPaintParams{ { SpectralPaintDab{ N / 2, N, whineHz, 60.0, -30.0, 0.0, 60.0 } } }),
+            kTestRate);
+        writeFixtureWav(dir, "4_whine_after", painted, kTestRate);
+        std::cout << "    wrote 4_whine_before / 4_whine_after\n";
+    }
+
     std::cout << "    fixtures written to: " << dir.getFullPathName() << "\n";
 }
 
@@ -2169,12 +2745,16 @@ int main() {
     testCompositeMixing();
     testRendererOps();
     testRestorationOps();
+    testSpectralPaint();
+    testExtractSelection();
     testRendererCache();
     testDownstreamOnlyRerender();
     testWorkerAndPublish();
     testGainEnvelope();
     testGainEnvelopeRelativeMode();
     testSpectrogram();
+    testPitchTrack();
+    testAutotuneOp();
 
     generateFixtures();
 

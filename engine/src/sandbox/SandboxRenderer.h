@@ -1,5 +1,6 @@
 #pragma once
 
+#include "dsp/PitchTrackAnalysis.h"
 #include "sandbox/SandboxOp.h"
 
 #include <juce_audio_basics/juce_audio_basics.h>
@@ -11,6 +12,7 @@
 #include <list>
 #include <memory>
 #include <mutex>
+#include <string>
 #include <unordered_map>
 #include <vector>
 
@@ -95,6 +97,19 @@ struct SandboxRenderResult {
     // Surfaced so the UI can say "not built yet" instead of leaving the user
     // to conclude the edit was ignored.
     int unimplementedOps = 0;
+
+    // Ops that ARE built but REFUSED this particular input and rendered as a
+    // pass-through — today only AUTOTUNE, on material its pitch analysis judges
+    // non-monophonic (see AutotuneParams). Distinct from unimplementedOps: "not
+    // built yet" and "built, and it will not fake this" are different things to
+    // tell a user, and the second one comes with a reason.
+    //
+    // refusalReason carries the FIRST refusal's own wording, verbatim from the
+    // analysis that produced it. It survives a cache hit: renderStack re-probes
+    // the pitch-track cache on the fully-cached path rather than letting the
+    // message vanish the moment nothing needs re-rendering.
+    int         refusedOps = 0;
+    std::string refusalReason;
 
     bool valid() const { return buffer != nullptr; }
 };
@@ -228,10 +243,25 @@ public:
     // the fallback a stale or -1 clipboardId gets at real render time too — see
     // PasteParams). Passing it directly here is what keeps this method pure
     // and testable without going through the clipboard store below.
+    //
+    // `pitchTrack` and `refusalOut` are AUTOTUNE's equivalents of `clipboard`:
+    // resources the real render path resolves for the op, passed in explicitly
+    // so this stays pure.
+    //   pitchTrack — the analysis of `in` (NOT of the layer's source: this op
+    //                may sit downstream of edits that changed the audio). The
+    //                render path supplies it from the renderer's own
+    //                prefix-keyed cache; nullptr means "analyze `in` here and
+    //                now", which is what a direct test caller gets and is
+    //                always correct, only slower.
+    //   refusalOut — set to the reason when a built op declines to render this
+    //                input and passes it through instead. Left untouched
+    //                otherwise. See SandboxRenderResult::refusalReason.
     static SandboxBuffer applyOp(const SandboxBuffer& in,
                                  const SandboxOp& op,
                                  double bufferSampleRate,
-                                 const SandboxBuffer* clipboard = nullptr);
+                                 const SandboxBuffer* clipboard = nullptr,
+                                 const xleth::dsp::PitchTrackResult* pitchTrack = nullptr,
+                                 std::string* refusalOut = nullptr);
 
     // ── Composite mixing (SB-5, exposed for testing) ─────────────────────────
     //
@@ -266,6 +296,23 @@ public:
     // trimmed itself to zero length).
     static SandboxCompositeResult renderComposite(const std::vector<SandboxLayerMixInput>& layers);
 
+    // ── Spectral extraction (SPC selection "Copy to New Layer", exposed for testing) ──
+    //
+    // Produces a NEW buffer containing ONLY the audio inside `keepDabs`' time x
+    // frequency footprints (each a rectangle with raised-cosine feather, same
+    // shape SpectralPaintDab uses for ATTENUATE/BOOST/MUTE) — the complement of
+    // applySpectralPaint: everything NOT covered by any dab is silenced instead
+    // of everything covered being attenuated. amountDb on each dab is ignored;
+    // only its footprint/feather matter. Pure/static/no-cache, same testing
+    // contract as applyOp/renderComposite above — never touches SandboxCore or
+    // SampleBank.
+    //
+    // Empty `keepDabs` returns silence (nothing selected, nothing kept) — NOT
+    // a pass-through, unlike SPECTRAL_PAINT's own empty-dabs gate.
+    static SandboxBuffer extractSelection(const SandboxBuffer& in,
+                                          const std::vector<SpectralPaintDab>& keepDabs,
+                                          double bufferSampleRate);
+
     // ── Clipboard (main thread; CUT/COPY/PASTE) ──────────────────────────────
     //
     // Session-local only — NOT persisted with the project. A PASTE op's
@@ -295,6 +342,33 @@ private:
     void             evictLocked();
     void             finishJob(int layerId);
 
+    // ── AUTOTUNE detection cache ─────────────────────────────────────────────
+    //
+    // Keyed by SandboxRenderKey — the identity of the audio an AUTOTUNE op
+    // RECEIVES, i.e. the prefix state just above it. That is the only correct
+    // key: SandboxPitchTrackAnalyzer (XlethEngineService's cache, which feeds
+    // the UI's pitch overlay) is keyed by sourceBufferId and therefore
+    // describes the layer's RAW SOURCE — right for "what would AUTOTUNE
+    // correct", wrong for an AUTOTUNE sitting below a trim and a denoise.
+    //
+    // Reusing the render key also gets the invalidation for free: change an
+    // upstream op and the prefix hash changes, so the analysis misses exactly
+    // when it should. Drag one of AUTOTUNE's own six controls and the prefix
+    // above it is untouched, so the (expensive) detection pass is skipped and
+    // only the (cheap) PSOLA re-runs — which is what lets autoRender() stay
+    // true for this op.
+    //
+    // analyzeFor() computes OUTSIDE the lock (an NSDF pass over a whole buffer
+    // is far too long to hold mu_ for, with a second worker thread live), same
+    // lookup/compute/insert shape SandboxPitchTrackAnalyzer::analyze uses.
+    static constexpr size_t kMaxPitchEntries = 16;
+    using PitchTrackPtr = std::shared_ptr<const xleth::dsp::PitchTrackResult>;
+
+    PitchTrackPtr analyzeFor(const SandboxRenderKey& key,
+                             const SandboxBuffer& in,
+                             double bufferSampleRate);
+    PitchTrackPtr lookupPitch(const SandboxRenderKey& key);   // probe only, no compute
+
     static size_t bufferBytes(const SandboxBuffer& b) noexcept;
 
     mutable std::mutex mu_;
@@ -303,6 +377,12 @@ private:
 
     // layerId -> in-flight. Guarded by mu_.
     std::unordered_map<int, bool> pending_;
+
+    // AUTOTUNE detection cache (see analyzeFor above). Guarded by mu_ — it is
+    // touched once per AUTOTUNE op per render, nowhere near often enough to
+    // justify a second lock.
+    std::unordered_map<SandboxRenderKey, PitchTrackPtr, SandboxRenderKeyHash> pitchCache_;
+    std::list<SandboxRenderKey> pitchLru_;                   // front = MRU
 
     // Clipboard store for CUT/COPY/PASTE. Guarded by mu_ — capture/lookup are
     // both main-thread, low-frequency, and already sharing the cache's lock is
