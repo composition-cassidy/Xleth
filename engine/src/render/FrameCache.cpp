@@ -4,6 +4,42 @@
 #include <cstdio>
 
 // ===========================================================================
+// PathInterner
+// ===========================================================================
+
+PathInterner::PathInterner()
+{
+    // id 0 is reserved for the default-constructed InternedPath, so the
+    // empty path must be the first (and therefore 0th) entry.
+    idByPath_[""] = 0;
+    pathById_.push_back("");
+}
+
+PathInterner& PathInterner::instance()
+{
+    static PathInterner interner;
+    return interner;
+}
+
+uint32_t PathInterner::intern(const std::string& path)
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    auto it = idByPath_.find(path);
+    if (it != idByPath_.end()) return it->second;
+
+    const uint32_t id = static_cast<uint32_t>(pathById_.size());
+    pathById_.push_back(path);
+    idByPath_.emplace(path, id);
+    return id;
+}
+
+const std::string& PathInterner::path(uint32_t id) const
+{
+    std::lock_guard<std::mutex> lock(mutex_);
+    return pathById_[id];
+}
+
+// ===========================================================================
 // Construction / destruction
 // ===========================================================================
 

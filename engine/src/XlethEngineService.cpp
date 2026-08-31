@@ -7,7 +7,7 @@
 // Threading model:
 //   Node.js main thread  — all host bridge exported functions
 //   JUCE audio RT thread — AudioEngine callback (no host bridge calls)
-//   Video thread         — SyncManager::videoTick at ~60 Hz (no host bridge calls)
+//   Video thread         — preview frame pacing at ~60 Hz (no host bridge calls)
 //
 // Phase 1 additions:
 //   • Timeline data model (tracks, clips, regions, sources)
@@ -16,7 +16,7 @@
 //   • MixEngine wired to Timeline + peak meters
 //   • Transport seek
 
-// Engine headers — XlethEngineCore only (no VideoCompositor/GLFW/GLEW/OpenGL)
+// Engine headers — XlethEngineCore only (no GLFW/GLEW/OpenGL anywhere in the tree)
 #include "AudioEngine.h"
 #include "AudioScheduler.h"
 #include "FrameCache.h"
@@ -303,23 +303,17 @@ static void restoreAndClearClipControlEditsForClip(int clipId)
 // Phase 1B — FrameServer (fast frame extraction for SamplePicker)
 std::unique_ptr<FrameServer> g_frameServer;
 
-// Phase 0: no GPU compositor in the Electron process.
-// SyncManager accepts nullptr — it still decodes frames into FrameCache
-// but skips all GL upload/render calls (XLETH_CORE_ONLY compile guard).
-
 // Decoder ownership uses std::deque so that push_back never invalidates
-// existing element pointers. SyncManager holds std::vector<VideoDecoder*>&
-// (a reference to the vector itself), which remains valid across push_backs.
+// existing element pointers.
 std::deque<std::unique_ptr<VideoDecoder>> decoderOwner;
 std::vector<VideoDecoder*>                decoderPtrs;
 
-// Per-region proxy decoders. Keyed by regionId.
-//   regionDecoderOwner : actual ownership (unique_ptr); erase == clean close.
-//   regionDecoderPtrs  : raw-pointer view shared with SyncManager by ref.
-// Both must be mutated together under syncEventsMutex so SyncManager never
-// sees a raw pointer whose owning unique_ptr has been destroyed.
+// Per-region proxy decoders, keyed by regionId. unique_ptr ownership; erase ==
+// clean close. There used to be a parallel raw-pointer map (regionDecoderPtrs)
+// handed to SyncManager so videoTick() could prefer a region proxy while
+// decoding. SyncManager no longer decodes anything (Issue 10), and nothing else
+// ever read that map, so it is gone along with the compositor path.
 std::unordered_map<int, std::unique_ptr<VideoDecoder>> regionDecoderOwner;
-std::unordered_map<int, VideoDecoder*>                 regionDecoderPtrs;
 
 std::unique_ptr<ProxyManager> g_proxyManager;
 
@@ -348,8 +342,10 @@ std::atomic<uint64_t> g_publishedStoppedPreviewSeq{0};
 std::atomic<uint64_t> g_discardedStoppedPreviewSeq{0};
 std::atomic<int64_t>  g_pendingStoppedPreviewSample{0};
 
-// Guards both SyncManager event mutations (main thread) and videoTick() calls
-// (video thread) to prevent data races on events_ / driftSamples_ etc.
+// Guards SyncManager's event list: mutated on the main thread by
+// rebuildVideoEventsFromClips(), read on the video thread by the render block.
+// The per-tick beat query is deliberately NOT under this lock — see
+// SyncManager::currentBeatPosition().
 std::mutex syncEventsMutex;
 
 // ── Frame output (double-buffered, lock-free) ─────────────────────────────
@@ -472,17 +468,21 @@ struct PreviewDiagCounters {
     std::atomic<int32_t>  deliveredFps     {0};  // frames written to shm in the last real second
     std::atomic<int32_t>  lastCellCount    {0};  // active cells (render requests) this tick
     std::atomic<int32_t>  maxCellCount     {0};  // peak active cells since start
-    // Cumulative SyncManager::videoTick() blocking-decode call count (mirrors
-    // SyncManager::getDecodeAttemptCount() every tick). MUST stay 0 for the
+    // Cumulative SyncManager blocking-decode call count (mirrors
+    // SyncManager::getDecodeAttemptCount() every tick). Structurally 0 since
+    // Issue 10 retired the compositor path — SyncManager holds no decoder at
+    // all now. Kept because the perf gate asserts the field exists and reads 0.
+    // MUST stay 0 for the
     // lifetime of a .node (bridge/XLETH_CORE_ONLY) process — see the getter's
     // doc comment in SyncManager.h and bridge/test_perf_regression.js, which
     // asserts on this field.
     std::atomic<int32_t>  syncManagerDecodeCount {0};
-    // Wall-clock cost of the syncManager->videoTick() call itself (µs),
-    // including the syncEventsMutex acquire. Distinct from lastTickUs/
+    // Wall-clock cost of the syncManager->currentBeatPosition() call itself
+    // (µs). No longer includes a syncEventsMutex acquire — the beat query runs
+    // lock-free (Issue 10). Distinct from lastTickUs/
     // avgTickUs/maxTickUs above, which time a LATER, separate stage (the
-    // compositor pipeline, collect->shm copy) that only starts after
-    // videoTick() has already returned. Added alongside syncManagerDecodeCount
+    // compositor pipeline, collect->shm copy) that only starts after the beat
+    // query has already returned. Added alongside syncManagerDecodeCount
     // to give bridge/test_perf_regression.js a direct budget on this call —
     // see [[project_preview_fps_synctick_dead_decode]].
     std::atomic<int32_t>  lastVideoTickUs  {0};
@@ -570,6 +570,72 @@ static bool  g_previewEffectsBypass   = false;
 // the render/export path (OfflineRenderer calls collectRequests with the
 // default posterMode=false).
 static bool  g_previewPosterMode      = true;
+
+// ── Adaptive preview-resolution governor (RENDER_PERF_AUDIT.txt Finding 8) ───
+// Supported levels, low → high. g_previewResolutionAutoMode is true whenever
+// the governor (in videoThreadBody) is allowed to step g_previewResolutionScale
+// on its own; a manual Timeline_SetPreviewResolutionScale call clears it, and
+// only an explicit Timeline_SetPreviewResolutionAutoMode(true) sets it back.
+// g_previewGovernorPendingLevel is how the governor's decision (made on the
+// video thread while g_previewCompositorMutex is already held further down
+// this same tick) reaches applyPreviewResolutionScaleInternal(), which takes
+// that mutex itself: the pending level is applied at the TOP of the next
+// tick, before the mutex is (re-)acquired, so it never tries to re-lock a
+// mutex this thread already holds.
+static std::atomic<bool> g_previewResolutionAutoMode{true};
+static std::atomic<int>  g_previewGovernorPendingLevel{-1};
+static constexpr float kPreviewScaleLevels[4] = {0.25f, 0.50f, 0.75f, 1.00f};
+
+static int previewScaleLevelIndex(float scale)
+{
+    int best = 0;
+    float bestDiff = std::fabs(kPreviewScaleLevels[0] - scale);
+    for (int i = 1; i < 4; ++i) {
+        const float diff = std::fabs(kPreviewScaleLevels[i] - scale);
+        if (diff < bestDiff) { bestDiff = diff; best = i; }
+    }
+    return best;
+}
+
+// Re-initialises the preview compositor at CANVAS_W/H * scale. Shared by the
+// manual Timeline_SetPreviewResolutionScale RPC and the governor below —
+// callers must NOT already hold g_previewCompositorMutex.
+static void applyPreviewResolutionScaleInternal(float scale)
+{
+    if (scale <= 0.30f)       scale = 0.25f;
+    else if (scale <= 0.625f) scale = 0.50f;
+    else if (scale <= 0.875f) scale = 0.75f;
+    else                      scale = 1.00f;
+
+    if (g_previewResolutionScale == scale) {
+        g_previewDirty = true;
+        return;
+    }
+    g_previewResolutionScale = scale;
+
+    // Re-initialise compositor at new scaled resolution
+    if (g_previewCompositor && g_gpuDevice && g_gpuDevice->hasDevice()) {
+        const int sw = std::max(1, static_cast<int>(CANVAS_W * scale));
+        const int sh = std::max(1, static_cast<int>(CANVAS_H * scale));
+        auto* device = g_gpuDevice->getDevice();
+        auto* devCtx = g_gpuDevice->getContext();
+        std::lock_guard<std::mutex> lk(g_previewCompositorMutex);
+        g_previewCompositorReady = false;
+        g_previewCompositor->shutdown();
+        if (g_previewCompositor->init(device, devCtx, sw, sh)) {
+            if (g_previewEffectsBypass)
+                g_previewCompositor->setEffectsBypass(true);
+            g_previewCompositorReady = true;
+            g_previewCompositor->setReadbackPolicy(ReadbackPolicy::FastImmediate);
+            g_previewDiag.readbackPolicyActive.store(0, std::memory_order_relaxed);
+            std::fprintf(stderr, "[Preview] Resolution scale %.2f -> compositor %dx%d readback=FastImmediate\n",
+                         scale, sw, sh);
+        } else {
+            std::fprintf(stderr, "[Preview] ERROR: compositor re-init at %dx%d failed\n", sw, sh);
+        }
+    }
+    g_previewDirty = true;
+}
 
 // ── Poster prepass counters (Option B warm-on-engage) ────────────────────────
 // One base poster per video source on the timeline. Counters are monotonic for
@@ -1623,7 +1689,6 @@ static void invalidateRegionProxy(int regionId) {
     std::string oldPath;
     {
         std::lock_guard<std::mutex> lk(syncEventsMutex);
-        regionDecoderPtrs.erase(regionId);
         regionDecoderOwner.erase(regionId);   // unique_ptr dtor → close()
         oldPath = r->proxyPath;
         r->proxyPath.clear();
@@ -1671,13 +1736,6 @@ static void noteGenSuccess(int sourceId);
 static void maybeEnqueueRegionProxy(int regionId, int trackId,
                                     bool forceRetranscode = false) {
     if (!g_proxyManager || !g_timeline || !g_projectManager) return;
-
-    const GridLayout& gl = g_timeline->getGridLayout();
-    // Fullscreen layers always stream the original — skip proxy generation
-    // for any track referenced by one (parity with the old chorus/crash skip).
-    for (const auto& fl : gl.fullscreenLayers) {
-        if (fl.trackId == trackId) return;
-    }
 
     SampleRegion* r = g_timeline->getRegionMutable(regionId);
     if (!r) return;
@@ -1744,11 +1802,12 @@ static void maybeEnqueueRegionProxy(int regionId, int trackId,
 // first Play (which forces the first play(s) to decode the slow original source).
 //
 // Same batch pattern used by Timeline_AssignTrackToGrid, minus the per-track
-// filter — here we want every region. maybeEnqueueRegionProxy is idempotent
-// (skips fullscreen/chorus/crash layers and regions whose proxy is already on
-// disk) and reads region data lock-free (it does NOT take syncEventsMutex), so
-// this is safe to call from the main thread without blocking audio/video. The
-// lazy video-tick trigger remains as a fallback for clips added afterward.
+// filter — here we want every region, grid and fullscreen alike.
+// maybeEnqueueRegionProxy is idempotent (skips chorus/crash layers and regions
+// whose proxy is already on disk) and reads region data lock-free (it does
+// NOT take syncEventsMutex), so this is safe to call from the main thread
+// without blocking audio/video. The lazy video-tick trigger remains as a
+// fallback for clips added afterward.
 static void enqueueAllRegionProxies() {
     if (!g_timeline) return;
     std::unordered_set<int> seenRegions;
@@ -1809,7 +1868,6 @@ static void drainProxyResults() {
         if (!region) continue;
 
         // Close any previous region decoder first (invalidation / re-transcode).
-        regionDecoderPtrs.erase(r.regionId);
         regionDecoderOwner.erase(r.regionId);   // unique_ptr dtor closes it
 
         if (!r.ok) {
@@ -1840,9 +1898,7 @@ static void drainProxyResults() {
         }
         noteGenSuccess(region->sourceId);       // reset the failure streak
 
-        VideoDecoder* raw = r.dec.get();
         regionDecoderOwner[r.regionId] = std::move(r.dec);
-        regionDecoderPtrs[r.regionId]  = raw;
         std::cout << "[Proxy] region=" << r.regionId
                   << " ready -> " << r.outputPath << "\n";
     }
@@ -3793,6 +3849,18 @@ static void videoThreadBody()
 
     while (videoRunning) {
         g_previewDiag.videoTickCount.fetch_add(1, std::memory_order_relaxed);
+
+        // [PreviewResGovernor] Apply a governor-decided resolution step now,
+        // before g_previewCompositorMutex is taken further down this tick (the
+        // governor itself runs later in this same tick, while that mutex is
+        // already held — see g_previewGovernorPendingLevel's declaration).
+        {
+            const int pendingLevel =
+                g_previewGovernorPendingLevel.exchange(-1, std::memory_order_acq_rel);
+            if (pendingLevel >= 0)
+                applyPreviewResolutionScaleInternal(kPreviewScaleLevels[pendingLevel]);
+        }
+
         // Drain any finished proxy transcodes and install new region
         // decoders BEFORE locking syncEventsMutex — phase 2 of the drain
         // does blocking FFmpeg I/O (5-50 ms per open) that must never
@@ -3827,12 +3895,21 @@ static void videoThreadBody()
         {
             // Timed separately from the s_*Timer family below: those all start
             // AFTER this block (see tTickStart further down), so they never
-            // cover SyncManager::videoTick() itself. This is the only place
-            // that measures it — see bridge/test_perf_regression.js, which
-            // asserts a budget on lastVideoTickUs/avgVideoTickUs.
+            // cover the beat query itself. This is the only place that measures
+            // it — see bridge/test_perf_regression.js, which asserts a budget
+            // on lastVideoTickUs/avgVideoTickUs.
+            //
+            // NO syncEventsMutex here. This used to be SyncManager::videoTick()
+            // called under that lock, sweeping every VideoEvent to feed a
+            // compositor that no build actually had (Issue 10). What the video
+            // thread genuinely needs from SyncManager at this point is one
+            // number, derived entirely from atomic Transport reads plus the
+            // presentation-position provider — no SyncManager state is touched,
+            // so taking the lock shared with the event-rebuild path bought
+            // nothing and cost a whole extra lock round-trip per tick on top of
+            // the one the render block below already takes.
             const auto tVideoTickStart = TickClock::now();
-            std::lock_guard<std::mutex> lock(syncEventsMutex);
-            tickBeatPos = syncManager->videoTick();
+            tickBeatPos = syncManager->currentBeatPosition();
             s_videoTickTimer.record(
                 tickUsBetween(tVideoTickStart, TickClock::now()),
                 g_previewDiag.lastVideoTickUs,
@@ -4010,7 +4087,7 @@ static void videoThreadBody()
                     // Collect → dedup → resolve → decode misses → composite → readback
                     // [PreviewTickTiming] whole-tick start + stage 1 (collectRequests)
                     const auto tTickStart = TickClock::now();
-                    auto requests = g_previewCollector->collectRequests(
+                    auto& requests = g_previewCollector->collectRequests(
                         collectorOutputFrame, *g_timeline, sampleRate, fpsRat,
                         events, true, collectorProjectStartSample,
                         g_previewPosterMode, /*renderProxyBySource=*/nullptr,
@@ -4061,12 +4138,15 @@ static void videoThreadBody()
                         }
                     }
 
-                    // ── Proxy self-heal for active grid regions ───────────────
+                    // ── Proxy self-heal for active regions (grid + fullscreen) ─
                     // Ensure each active region has an all-intra DNxHR proxy so
                     // LIVE (non-poster) preview decodes the proxy instead of the
-                    // long-GOP original. One attempt per region per session;
-                    // maybeEnqueueRegionProxy is idempotent (skips fullscreen,
-                    // chorus/crash, and regions whose proxy is already on disk),
+                    // long-GOP original. Fullscreen-layer events carry a regionId
+                    // too (VIDEO_PREVIEW_AUDIT.txt Issue 6) — the fullscreen skip
+                    // was dropped so a backdrop's region proxy is queued on first
+                    // play, same as any grid cell. One attempt per region per
+                    // session; maybeEnqueueRegionProxy is idempotent (skips
+                    // chorus/crash and regions whose proxy is already on disk),
                     // de-duplicated by ProxyManager, and runs ffmpeg off-thread.
                     // Runs regardless of poster mode so the live fallback is
                     // prepped before the user toggles poster mode off.
@@ -4100,6 +4180,25 @@ static void videoThreadBody()
                     // [PreviewTickTiming] stage 2 (deduplicate + resolveFrames / cache resolve)
                     const auto tResolveStart = TickClock::now();
                     auto deduplicated = FrameCollector::deduplicateRequests(requests);
+
+                    // Size the decoder's open-context budget from this frame's
+                    // DISTINCT source paths — not deduplicated.size() (that counts
+                    // (path,frame) keys) and not requests.size() (that counts
+                    // cells). deduplicated is unordered, so distinct ids are
+                    // counted via a set rather than assuming adjacent equal
+                    // keys. This is the "live request set" the proxy ladder
+                    // inflates past raw source count (Issue 3,
+                    // VIDEO_PREVIEW_AUDIT.txt): a cache hit still represents a
+                    // source the grid is actively showing, so it counts too.
+                    {
+                        std::unordered_set<uint32_t> distinctPathIds;
+                        for (const auto& [key, reqs] : deduplicated) {
+                            distinctPathIds.insert(key.sourcePath.id());
+                        }
+                        g_previewRenderDecoder->setActiveContextBudget(
+                            static_cast<int>(distinctPathIds.size()));
+                    }
+
                     auto misses = FrameCollector::resolveFrames(
                         deduplicated, *g_previewRenderCache);
                     s_resolveTimer.record(
@@ -4121,9 +4220,17 @@ static void videoThreadBody()
                     auto* devCtx = g_gpuDevice->getContext();
                     int decodeSucc = 0, decodeFail = 0;
                     if (device && devCtx) {
+                        // Sort misses by (sourcePath, frameIndex) ascending so a
+                        // source with several outstanding misses decodes forward
+                        // through them, letting the sequential fast path
+                        // (frameIndex == lastDecodedFrame + 1) engage instead of
+                        // ping-ponging between cells reading the same file at
+                        // different offsets. Reorders decode order only — output
+                        // pixels are unchanged.
+                        std::sort(misses.begin(), misses.end());
                         for (const auto& key : misses) {
                             auto entry = g_previewRenderDecoder->decode(
-                                key.sourcePath, key.frameIndex, device, devCtx);
+                                key.sourcePath.str(), key.frameIndex, device, devCtx);
                             if (entry.texture) {
                                 g_previewRenderCache->put(key, std::move(entry));
                                 ++decodeSucc;
@@ -4132,6 +4239,11 @@ static void videoThreadBody()
                             }
                         }
                     }
+                    // Long-running preview sessions shouldn't hold decoder
+                    // contexts (file handles) forever once a source scrolls out
+                    // of the live request set. Cheap: at most kMaxOpenContextsCap
+                    // map entries, no I/O unless something is actually closed.
+                    g_previewRenderDecoder->pruneIdleContexts();
                     s_decodeTimer.record(
                         tickUsBetween(tDecodeStart, TickClock::now()),
                         g_previewDiag.lastDecodeUs, g_previewDiag.avgDecodeUs,
@@ -4191,7 +4303,7 @@ static void videoThreadBody()
                                 if (!device || !devCtx) return;
                                 for (const auto& key : misses) {
                                     auto entry = g_previewRenderDecoder->decode(
-                                        key.sourcePath, key.frameIndex, device, devCtx);
+                                        key.sourcePath.str(), key.frameIndex, device, devCtx);
                                     if (entry.texture)
                                         g_previewRenderCache->put(key, std::move(entry));
                                 }
@@ -4224,8 +4336,38 @@ static void videoThreadBody()
                             xleth::diag::StartLatencyTrace::instance().markFirstFrame();
                         xleth::diag::StartLatencyTrace::instance().flush();
 
+                        // ── Direct readback into the shm back buffer ──────────
+                        // The readback used to land in the compositor's owning
+                        // vector and then be copied again into shared memory.
+                        // The vector exists for the EXPORT path, which wants an
+                        // owning buffer; the preview's destination is the shm
+                        // back half, so name it and skip the intermediate copy.
+                        //
+                        // Only taken when the compositor's output and the shm
+                        // surface agree on size — during the two sequential RPCs
+                        // of a previewResolutionScale change they briefly do not,
+                        // and the copy below is skipped for that frame exactly as
+                        // it was before.
+                        //
+                        // Pixel diagnostics keep the old two-buffer route: with
+                        // one destination, pre-frameoutput-write and
+                        // post-frameoutput-write would read the same bytes and
+                        // stop being able to tell a bad shm write from a good one.
+                        const bool diagPixels = xleth::visualdiag::pixelsEnabled();
+                        uint8_t* const shmBack = frameOutput.getBackBuffer();
+                        const size_t shmBackBytes =
+                            static_cast<size_t>(frameOutput.getBufferSize());
+                        const bool shmMatchesCompositor =
+                            shmBack != nullptr &&
+                            frameOutput.getWidth()  == g_previewCompositor->getWidth() &&
+                            frameOutput.getHeight() == g_previewCompositor->getHeight();
+                        uint8_t* const rbDest =
+                            (!diagPixels && shmMatchesCompositor) ? shmBack : nullptr;
+
                         auto rbStart = std::chrono::high_resolution_clock::now();
-                        auto rb = g_previewCompositor->readback(ReadbackMode::PreviewRing);
+                        const auto& rb = g_previewCompositor->readback(
+                            ReadbackMode::PreviewRing, rbDest,
+                            rbDest ? shmBackBytes : 0);
                         auto rbEnd   = std::chrono::high_resolution_clock::now();
                         const int32_t rbUs = static_cast<int32_t>(
                             std::chrono::duration<float, std::micro>(rbEnd - rbStart).count());
@@ -4301,15 +4443,21 @@ static void videoThreadBody()
                                     g_discardedStoppedPreviewSeq.fetch_add(1, std::memory_order_relaxed);
                                 }
                             }
-                            uint8_t* canvas = canPublish ? frameOutput.getBackBuffer() : nullptr;
+                            // shmBack, not a fresh getBackBuffer() — the same half
+                            // readback() may have just written into. Nothing on
+                            // this thread swaps between the two points.
+                            uint8_t* canvas = canPublish ? shmBack : nullptr;
                             if (canvas) {
                                 g_previewDiag.canvasCopyCount.fetch_add(1, std::memory_order_relaxed);
-                                const uint8_t* src = rb.pixels.data();
+                                const uint8_t* src =
+                                    rb.intoDestination ? canvas : rb.pixels.data();
 
                                 // ── Diag: pre-frameoutput-write ───────────────
                                 // Stats on the BGRA source pixels we are about to
                                 // copy/convert into the shared-memory back buffer.
-                                // (XLETH_VISUAL_DIAG_PIXELS=1 only — zero cost off.)
+                                // (XLETH_VISUAL_DIAG_PIXELS=1 only — zero cost off,
+                                // and it forces rbDest to null above, so `src` here
+                                // is always the compositor's own buffer.)
                                 if (xleth::visualdiag::pixelsEnabled()) {
                                     static std::atomic<int64_t> s_preIdx{0};
                                     const int64_t fi =
@@ -4324,41 +4472,43 @@ static void videoThreadBody()
                                         xleth::visualdiag::PixelFormat::BGRA, ps);
                                 }
 
-                                // [PreviewTickTiming] stage 6 start: CPU swizzle
-                                // (BGRA→RGBA) + shared-memory copy + back-buffer swap.
+                                // [PreviewTickTiming] stage 6 start: shared-memory copy.
+                                // BGRA bytes go into shm UNCHANGED — no CPU-side channel
+                                // swap. The WebGL fragment shader in VideoPreview.jsx
+                                // samples .bgra on the GPU instead (see FRAG_SRC there).
+                                // The Canvas2D fallback path (no WebGL) and the eyedropper
+                                // pixel-read both correct for BGRA on the JS side, since
+                                // ImageData has no channel-swizzle option.
+                                //
+                                // On the normal path this stage is now empty — readback()
+                                // wrote the rows into `canvas` itself — so avgSwizzleUs
+                                // collapses toward zero and its cost shows up inside
+                                // avgReadbackUs instead. That is the move, not a
+                                // measurement fault.
                                 const auto tSwizzleStart = TickClock::now();
-                                if (rb.width == CANVAS_W && rb.height == CANVAS_H) {
-                                    const size_t pixelCount =
-                                        static_cast<size_t>(CANVAS_W) * CANVAS_H;
-                                    for (size_t i = 0; i < pixelCount; ++i) {
-                                        const size_t o = i * 4;
-                                        canvas[o + 0] = src[o + 2]; // R ← B
-                                        canvas[o + 1] = src[o + 1]; // G ← G
-                                        canvas[o + 2] = src[o + 0]; // B ← R
-                                        canvas[o + 3] = src[o + 3]; // A ← A
-                                    }
-                                } else {
-                                    for (int dy = 0; dy < CANVAS_H; ++dy) {
-                                        const int sy = (dy * rb.height) / CANVAS_H;
-                                        for (int dx = 0; dx < CANVAS_W; ++dx) {
-                                            const int sx = (dx * rb.width) / CANVAS_W;
-                                            const size_t si =
-                                                (static_cast<size_t>(sy) * rb.width + sx) * 4;
-                                            const size_t di =
-                                                (static_cast<size_t>(dy) * CANVAS_W + dx) * 4;
-                                            canvas[di + 0] = src[si + 2]; // R ← B
-                                            canvas[di + 1] = src[si + 1]; // G ← G
-                                            canvas[di + 2] = src[si + 0]; // B ← R
-                                            canvas[di + 3] = src[si + 3]; // A ← A
-                                        }
-                                    }
+                                // The shm surface tracks the compositor's actual output
+                                // size (see Timeline_SetPreviewResolutionScale / the JS
+                                // getFrameShm call that follows a scale change), so the
+                                // readback and frameOutput dimensions are equal by
+                                // construction. Only the straight copy path is needed;
+                                // a mismatch here means the two resizes are mid-flight
+                                // (JS issues them as two sequential RPCs) — skip this
+                                // frame's write rather than walk past either mapping.
+                                const int fw = frameOutput.getWidth();
+                                const int fh = frameOutput.getHeight();
+                                if (!rb.intoDestination &&
+                                    rb.width == fw && rb.height == fh) {
+                                    const size_t byteCount =
+                                        static_cast<size_t>(fw) * fh * 4;
+                                    std::memcpy(canvas, src, byteCount);
                                 }
                                 // ── Diag: post-frameoutput-write ──────────────
-                                // Stats on the RGBA bytes that now sit in the
-                                // shared-memory back buffer (note: channel order
-                                // flipped from the BGRA source above). Records the
-                                // written buffer index so a transport/index-swap
-                                // mismatch is visible against the renderer side.
+                                // Stats on the BGRA bytes that now sit in the
+                                // shared-memory back buffer (unchanged from the BGRA
+                                // readback source — the swizzle happens on the GPU in
+                                // the WebGL shader now, not here). Records the written
+                                // buffer index so a transport/index-swap mismatch is
+                                // visible against the renderer side.
                                 if (xleth::visualdiag::pixelsEnabled()) {
                                     static std::atomic<int64_t> s_postIdx{0};
                                     const int64_t fi =
@@ -4367,14 +4517,14 @@ static void videoThreadBody()
                                     const int64_t writtenIdx =
                                         frameOutput.getCurrentBufferIndex() ^ 1;
                                     auto ps = xleth::visualdiag::computeFrameStats(
-                                        canvas, CANVAS_W, CANVAS_H, CANVAS_W * 4,
-                                        xleth::visualdiag::PixelFormat::RGBA,
+                                        canvas, fw, fh, fw * 4,
+                                        xleth::visualdiag::PixelFormat::BGRA,
                                         fi, writtenIdx);
                                     xleth::visualdiag::record("post-frameoutput-write", ps);
                                     xleth::visualdiag::maybeDumpFrame(
-                                        "post-frameoutput-write", canvas, CANVAS_W,
-                                        CANVAS_H, CANVAS_W * 4,
-                                        xleth::visualdiag::PixelFormat::RGBA, ps);
+                                        "post-frameoutput-write", canvas, fw,
+                                        fh, fw * 4,
+                                        xleth::visualdiag::PixelFormat::BGRA, ps);
                                 }
 
                                 frameOutput.swapBuffers();
@@ -4413,10 +4563,83 @@ static void videoThreadBody()
                         // [PreviewTickTiming] stage 7: whole-tick total
                         // (collect → end of shm copy). Recorded for every composited
                         // tick, including not-ready/invalid readbacks (no shm copy).
+                        const int32_t wholeTickUs = tickUsBetween(tTickStart, TickClock::now());
                         s_tickTimer.record(
-                            tickUsBetween(tTickStart, TickClock::now()),
+                            wholeTickUs,
                             g_previewDiag.lastTickUs, g_previewDiag.avgTickUs,
                             g_previewDiag.maxTickUs);
+
+                        // [PreviewResGovernor] RENDER_PERF_AUDIT.txt Finding 8: step
+                        // g_previewResolutionScale down when the composited tick is
+                        // consistently over the frame budget, and back up when it is
+                        // comfortably under it. Rolling 60-sample window, same cadence
+                        // as the stage timers above. Only the DECISION happens here;
+                        // the actual re-init runs at the top of the next tick (see
+                        // g_previewGovernorPendingLevel), since g_previewCompositorMutex
+                        // (compLock) is already held in this scope.
+                        {
+                            static int32_t s_tickWindow[60];
+                            static int     s_tickWindowCount = 0;
+                            static int     s_overBudgetWindows = 0;
+                            static int     s_underBudgetWindows = 0;
+
+                            constexpr int   kWindowSize                  = 60;
+                            constexpr int   kOverBudgetWindowsToStepDown = 3;
+                            constexpr int   kUnderBudgetWindowsToStepUp  = 10; // "a longer window"
+                            constexpr float kUnderBudgetRatio            = 0.60f;
+
+                            s_tickWindow[s_tickWindowCount++] = wholeTickUs;
+                            if (s_tickWindowCount >= kWindowSize) {
+                                int32_t sorted[kWindowSize];
+                                std::copy(std::begin(s_tickWindow), std::end(s_tickWindow), sorted);
+                                std::sort(std::begin(sorted), std::end(sorted));
+                                // ~95th percentile: 57th-smallest of 60 samples.
+                                const int32_t p95Us =
+                                    sorted[static_cast<int>(kWindowSize * 0.95f) - 1];
+                                s_tickWindowCount = 0;
+
+                                if (g_previewResolutionAutoMode.load(std::memory_order_relaxed)) {
+                                    int previewFpsNow = 30;
+                                    if (g_timeline) {
+                                        int f = g_timeline->getGridLayout().previewFps;
+                                        if (f >= 1 && f <= 120) previewFpsNow = f;
+                                    }
+                                    const int32_t framePeriodUs = 1000000 / previewFpsNow;
+
+                                    if (p95Us > framePeriodUs) {
+                                        ++s_overBudgetWindows;
+                                        s_underBudgetWindows = 0;
+                                    } else if (p95Us < static_cast<int32_t>(framePeriodUs * kUnderBudgetRatio)) {
+                                        ++s_underBudgetWindows;
+                                        s_overBudgetWindows = 0;
+                                    } else {
+                                        // Hysteresis band: neither clearly over nor
+                                        // comfortably under budget — don't count it
+                                        // either way.
+                                        s_overBudgetWindows = 0;
+                                        s_underBudgetWindows = 0;
+                                    }
+
+                                    const int curIdx = previewScaleLevelIndex(g_previewResolutionScale);
+                                    if (s_overBudgetWindows >= kOverBudgetWindowsToStepDown && curIdx > 0) {
+                                        g_previewGovernorPendingLevel.store(
+                                            curIdx - 1, std::memory_order_release);
+                                        s_overBudgetWindows = 0;
+                                        s_underBudgetWindows = 0;
+                                    } else if (s_underBudgetWindows >= kUnderBudgetWindowsToStepUp && curIdx < 3) {
+                                        g_previewGovernorPendingLevel.store(
+                                            curIdx + 1, std::memory_order_release);
+                                        s_overBudgetWindows = 0;
+                                        s_underBudgetWindows = 0;
+                                    }
+                                } else {
+                                    // Manual scale pinned — don't let a stale streak
+                                    // fire the moment auto mode is re-enabled.
+                                    s_overBudgetWindows = 0;
+                                    s_underBudgetWindows = 0;
+                                }
+                            }
+                        }
 
                         // [PreviewTickTiming] Delivered-FPS: frames actually written to
                         // the shm back buffer per real wall-clock second, so throughput
@@ -4784,12 +5007,9 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
     // 4b. FrameServer (shares cache — fast frame extraction for SamplePicker)
     g_frameServer = std::make_unique<FrameServer>(*frameCache);
 
-    // 5. SyncManager (Phase 0 — no GPU compositor)
+    // 5. SyncManager — VideoEvent list + presentation beat position.
     syncManager = std::make_unique<SyncManager>(
         audioEngine->getTransport(),
-        decoderPtrs,
-        *frameCache,
-        nullptr,
         []() -> int64_t {
             return audioEngine
                 ? audioEngine->getLivePresentationPositionSamples()
@@ -4811,10 +5031,6 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
     g_sandboxRenderer    = std::make_unique<xleth::sandbox::SandboxRenderer>();
     g_sandboxSpectrogram = std::make_unique<xleth::sandbox::SandboxSpectrogramAnalyzer>();
     g_sandboxPitchTrack  = std::make_unique<xleth::sandbox::SandboxPitchTrackAnalyzer>();
-
-    // Wire region-proxy lookup sources into SyncManager so videoTick() can
-    // prefer per-region proxy decoders when they are ready.
-    syncManager->setRegionProxySources(&regionDecoderPtrs, g_timeline.get());
 
     // Wire MixEngine to Timeline (safe before playback starts)
     audioEngine->getMixEngine().setTimeline(g_timeline.get());
@@ -5002,7 +5218,6 @@ void Shutdown(const JsonApi::CallbackInfo& info)
     std::fprintf(stderr, "[BridgeShutdown] decoders released\n");
 
     // Region decoders are owned by unique_ptr — destructor closes each cleanly.
-    regionDecoderPtrs.clear();
     regionDecoderOwner.clear();
     g_posterEnqueued.clear();
     g_proxyEnqueuedRegions.clear();
@@ -5632,12 +5847,26 @@ JsonApi::Value GetCurrentFrameRGBA(const JsonApi::CallbackInfo& info)
     }
 
     const uint8_t* frame = frameOutput.getCurrentFrame();
-    const int size = frameOutput.getBufferSize();
+    const size_t size = static_cast<size_t>(frameOutput.getBufferSize());
+
+    // frameOutput's shm surface is native BGRA (see the [PreviewTickTiming]
+    // stage-6 comment above) — the WebGL preview corrects it on the GPU, but
+    // this RPC is named/contracted as RGBA and is not a per-tick hot path,
+    // so it pays the swizzle here rather than leaking BGRA to whichever
+    // caller eventually wires this up.
+    auto out = JsonApi::Buffer<uint8_t>::New(env, size);
+    uint8_t* dst = out.Data();
+    for (size_t o = 0; o + 3 < size; o += 4) {
+        dst[o + 0] = frame[o + 2]; // R ← B
+        dst[o + 1] = frame[o + 1]; // G ← G
+        dst[o + 2] = frame[o + 0]; // B ← R
+        dst[o + 3] = frame[o + 3]; // A ← A
+    }
 
     JsonApi::Object obj = JsonApi::Object::New(env);
     obj.Set("width",  JsonApi::Number::New(env, frameOutput.getWidth()));
     obj.Set("height", JsonApi::Number::New(env, frameOutput.getHeight()));
-    obj.Set("data",   JsonApi::Buffer<uint8_t>::Copy(env, frame, static_cast<size_t>(size)));
+    obj.Set("data",   out);
     return obj;
 }
 
@@ -6057,7 +6286,6 @@ JsonApi::Value Project_NewBlank(const JsonApi::CallbackInfo& info)
         for (auto& kv : regionDecoderOwner)
             if (kv.second) kv.second->close();
         regionDecoderOwner.clear();
-        regionDecoderPtrs.clear();
         // New project → re-attempt poster + proxy self-heal for its sources.
         g_posterEnqueued.clear();
         g_proxyEnqueuedRegions.clear();
@@ -9976,7 +10204,7 @@ JsonApi::Value Waveform_GetRegionPeaks(const JsonApi::CallbackInfo& info)
     const bool usingPrepared  = !prepKey.empty();
 
     int sampleBankId = -1;
-    WaveformMipmap* mm = nullptr;
+    std::shared_ptr<WaveformMipmap> mm;
 
     if (usingPrepared) {
         mm = g_mipmapCache->get(prepKey);
@@ -10117,7 +10345,7 @@ JsonApi::Value Waveform_GetRawSamples(const JsonApi::CallbackInfo& info)
         audioEngine->getMixEngine().getSampleIdForRegionSlot(regionId, slotIndex);
     if (sampleBankId < 0) return makeEmpty();
 
-    auto* mm = g_mipmapCache->get(std::to_string(sampleBankId));
+    auto mm = g_mipmapCache->get(std::to_string(sampleBankId));
     if (!mm) return makeEmpty();
 
     const int sr = mm->getSampleRate();
@@ -10315,93 +10543,30 @@ JsonApi::Value Waveform_GetFilePeaks(const JsonApi::CallbackInfo& info)
 
     // ── Get or generate mipmap (synchronous for SamplePicker) ────────────
     const std::string key = "file:" + filePath;
-    auto* mm = g_mipmapCache->get(key);
+    auto mm = g_mipmapCache->get(key);
     if (!mm) {
-        // Generate synchronously — SamplePicker expects blocking call
-        auto mipmap = std::make_unique<WaveformMipmap>();
-        if (!mipmap->generateFromFile(audioFile)) {
-            WFB_LOG("getFilePeaks: generation failed for %s", filePath.c_str());
-            return makeResult(true, 0, 0, true);
-        }
-        // Insert into cache (move ownership)
-        // We need a raw pointer before moving
-        WaveformMipmap* rawPtr = mipmap.get();
-        {
-            // Direct cache insertion — we already generated synchronously
-            // so we bypass generateFromFile's async path.
-            g_mipmapCache->remove(key);  // ensure clean slate
-        }
-        // Use generateFromFile on cache which will try .xlpeak first
-        g_mipmapCache->generateFromFile(key, audioFile);
-        // But that's async... We need synchronous insertion.
-        // Instead, directly check the cache after triggering, OR
-        // just generate inline and query the mipmap directly.
-        // Since we already have the mipmap, query it directly.
-        const int sr = rawPtr->getSampleRate();
-        const int64_t totalSamples = rawPtr->getTotalSamples();
-        const int numChannels = rawPtr->getNumChannels();
+        // Generate synchronously — SamplePicker expects a blocking call.
+        //
+        // waveform_getFilePeaks runs on the worker's JS thread, so two of
+        // these can never overlap: publishing the finished mipmap under `key`
+        // here is what stops the next caller from decoding the same source all
+        // over again.  This used to hand the key to the cache's *asynchronous*
+        // generateFromFile and throw the synchronous result away, so every
+        // call decoded the file twice and left the cache empty for the next
+        // one — several full decodes of the same media in flight at once.
+        const juce::File peakFile(audioFile.getFullPathName() + ".xlpeak");
+        const uint64_t   hash = WaveformMipmap::computeSourceHash(audioFile);
 
-        if (endTime < 0.0) endTime = static_cast<double>(totalSamples) / sr;
-
-        int64_t startSmp = static_cast<int64_t>(startTime * sr);
-        int64_t endSmp   = static_cast<int64_t>(endTime * sr);
-        startSmp = std::max(int64_t(0), std::min(startSmp, totalSamples));
-        endSmp   = std::max(startSmp, std::min(endSmp, totalSamples));
-        if (startSmp >= endSmp) {
-            return makeResult(true, sr, totalSamples);
-        }
-
-        const size_t floatCount = static_cast<size_t>(targetPixels) * 3;
-        auto ab = JsonApi::ArrayBuffer::New(env, floatCount * sizeof(float));
-        float* outBuf = static_cast<float*>(ab.Data());
-        std::memset(outBuf, 0, floatCount * sizeof(float));
-        bool needsRaw = false;
-
-        if (channel >= 0 && channel < numChannels) {
-            rawPtr->getPeaks(channel, startSmp, endSmp,
-                             targetPixels, outBuf, static_cast<int>(floatCount),
-                             needsRaw);
-        } else {
-            rawPtr->getPeaks(0, startSmp, endSmp,
-                             targetPixels, outBuf, static_cast<int>(floatCount),
-                             needsRaw);
-            if (numChannels > 1) {
-                std::vector<float> chBuf(floatCount);
-                for (int ch = 1; ch < numChannels; ++ch) {
-                    bool nr = false;
-                    rawPtr->getPeaks(ch, startSmp, endSmp,
-                                     targetPixels, chBuf.data(),
-                                     static_cast<int>(chBuf.size()), nr);
-                    for (int c = 0; c < targetPixels; ++c) {
-                        const int idx = c * 3;
-                        if (chBuf[idx]     < outBuf[idx])     outBuf[idx]     = chBuf[idx];
-                        if (chBuf[idx + 1] > outBuf[idx + 1]) outBuf[idx + 1] = chBuf[idx + 1];
-                        const float r0 = outBuf[idx + 2], r1 = chBuf[idx + 2];
-                        outBuf[idx + 2] = std::sqrt((r0 * r0 + r1 * r1) / 2.0f);
-                    }
-                }
+        auto generated = std::make_shared<WaveformMipmap>();
+        if (!(peakFile.existsAsFile() && generated->loadFromFile(peakFile, hash))) {
+            if (!generated->generateFromFile(audioFile)) {
+                WFB_LOG("getFilePeaks: generation failed for %s", filePath.c_str());
+                return makeResult(true, 0, 0, true);
             }
+            generated->saveToFile(peakFile);
         }
-
-        // Save .xlpeak for next time (async in background)
-        rawPtr->saveToFile(juce::File(audioFile.getFullPathName() + ".xlpeak"));
-
-        auto result = JsonApi::Object::New(env);
-        result.Set("peaks",          JsonApi::Float32Array::New(env, floatCount, ab, 0));
-        result.Set("needsRawSamples", JsonApi::Boolean::New(env, needsRaw));
-        result.Set("ready",          JsonApi::Boolean::New(env, true));
-        result.Set("error",          JsonApi::Boolean::New(env, false));
-        result.Set("sampleRate",     JsonApi::Number::New(env, sr));
-        result.Set("totalSamples",   JsonApi::Number::New(env, static_cast<double>(totalSamples)));
-        result.Set("duration",       JsonApi::Number::New(env, static_cast<double>(totalSamples) / sr));
-
-        // Now cache for future calls (move the unique_ptr)
-        // We can't easily insert into WaveformMipmapCache from outside since
-        // it only exposes generateFromFile/generateFromBuffer.
-        // The next call to getFilePeaks will trigger cache's async generation
-        // and the .xlpeak file we just saved will be loaded instantly.
-        // For THIS call, we already have the result above. Done.
-        return result;
+        g_mipmapCache->insert(key, generated);
+        mm = std::move(generated);
     }
 
     // ── Mipmap is cached and ready ───────────────────────────────────────
@@ -10774,6 +10939,74 @@ JsonApi::Value Sandbox_Open(const JsonApi::CallbackInfo& info)
     out.Set("sourceFilePath",   JsonApi::String::New(env, srcPath));
     out.Set("sourceStartTime",  JsonApi::Number::New(env, srcStart));
     out.Set("sourceEndTime",    JsonApi::Number::New(env, srcEnd));
+    return out;
+}
+
+// sandbox_duplicateLayer(layerId: number, name?: string)
+//   → { success, layerId, name, sourceBufferId, bufferSampleRate,
+//       sourceFilePath, sourceStartTime, sourceEndTime, opCount }
+//   → { success:false, reason }
+//
+// Copies a layer WITH its whole op-stack and mix params into a new layer
+// directly after it. Undoable: DuplicateSandboxLayerCommand.
+//
+// No audio is loaded or copied: the duplicate points at the SAME SampleBank
+// source id, and SandboxRenderer's prefix cache is keyed on
+// (sourceBufferId, stack hash, rate) rather than on a layer id — so the copy's
+// first render is served entirely out of the original's cache entries, and the
+// two only diverge once one of them is edited. Duplicating a 40 MB layer costs
+// a vector copy.
+//
+// `name` defaults to the original's with " copy" appended. Done HERE rather
+// than in SandboxCore for the reason its duplicateLayer comment gives: the
+// model does not invent display names.
+JsonApi::Value Sandbox_DuplicateLayer(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!sandboxReady()) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        JsonApi::TypeError::New(env, "sandbox_duplicateLayer(layerId: number, name?: string)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const int layerId = info[0].As<JsonApi::Number>().Int32Value();
+    const xleth::sandbox::SandboxLayer* src = g_sandboxCore->findLayer(layerId);
+    if (!src)
+        return sandboxFail(env, "layer not found");
+
+    const std::string name = (info.Length() >= 2 && info[1].IsString())
+        ? info[1].As<JsonApi::String>().Utf8Value()
+        : (src->name.empty() ? std::string{} : src->name + " copy");
+
+    BridgeCallLog log("sandbox.duplicateLayer");
+    auto cmd = std::make_unique<xleth::sandbox::DuplicateSandboxLayerCommand>(
+        *g_sandboxCore, layerId, name);
+    auto* cmdPtr = cmd.get();
+    g_undoManager->execute(std::move(cmd), *g_timeline);
+    // The layer was confirmed to exist above and duplicateLayer has no other
+    // failure path, so the command was accepted and cmdPtr is still alive —
+    // the same guarantee every handler in this file establishes before
+    // reading a command back (see the section header).
+    const int newLayerId = cmdPtr->layerId();
+    log.done(std::to_string(newLayerId));
+
+    const xleth::sandbox::SandboxLayer* copy = g_sandboxCore->findLayer(newLayerId);
+    if (!copy)
+        return sandboxFail(env, "duplicate rejected");
+
+    JsonApi::Object out = JsonApi::Object::New(env);
+    out.Set("success",          JsonApi::Boolean::New(env, true));
+    out.Set("layerId",          JsonApi::Number::New(env, copy->id));
+    out.Set("name",             JsonApi::String::New(env, copy->name));
+    out.Set("sourceBufferId",   JsonApi::Number::New(env, copy->sourceBufferId));
+    out.Set("bufferSampleRate", JsonApi::Number::New(env, copy->bufferSampleRate));
+    out.Set("sourceFilePath",   JsonApi::String::New(env, copy->sourceFilePath));
+    out.Set("sourceStartTime",  JsonApi::Number::New(env, copy->sourceStartTime));
+    out.Set("sourceEndTime",    JsonApi::Number::New(env, copy->sourceEndTime));
+    out.Set("opCount",          JsonApi::Number::New(env, static_cast<int>(copy->ops.size())));
     return out;
 }
 
@@ -14327,41 +14560,26 @@ JsonApi::Value Timeline_GetPreviewResolutionScale(const JsonApi::CallbackInfo& i
 void Timeline_SetPreviewResolutionScale(const JsonApi::CallbackInfo& info)
 {
     if (info.Length() < 1 || !info[0].IsNumber()) return;
-    float scale = info[0].As<JsonApi::Number>().FloatValue();
-    // Snap to supported levels
-    if (scale <= 0.30f)       scale = 0.25f;
-    else if (scale <= 0.625f) scale = 0.50f;
-    else if (scale <= 0.875f) scale = 0.75f;
-    else                      scale = 1.00f;
+    const float scale = info[0].As<JsonApi::Number>().FloatValue();
+    // An explicit manual pick always wins over the governor — see the
+    // g_previewResolutionAutoMode comment above applyPreviewResolutionScaleInternal.
+    // Cleared here (JS-facing entry point) rather than inside the shared apply
+    // function, which the governor itself also calls and must not affect this flag.
+    g_previewResolutionAutoMode.store(false, std::memory_order_relaxed);
+    applyPreviewResolutionScaleInternal(scale);
+}
 
-    if (g_previewResolutionScale == scale) {
-        g_previewDirty = true;
-        return;
-    }
-    g_previewResolutionScale = scale;
+JsonApi::Value Timeline_GetPreviewResolutionAutoMode(const JsonApi::CallbackInfo& info)
+{
+    return JsonApi::Boolean::New(info.Env(),
+        g_previewResolutionAutoMode.load(std::memory_order_relaxed));
+}
 
-    // Re-initialise compositor at new scaled resolution
-    if (g_previewCompositor && g_gpuDevice && g_gpuDevice->hasDevice()) {
-        const int sw = std::max(1, static_cast<int>(CANVAS_W * scale));
-        const int sh = std::max(1, static_cast<int>(CANVAS_H * scale));
-        auto* device = g_gpuDevice->getDevice();
-        auto* devCtx = g_gpuDevice->getContext();
-        std::lock_guard<std::mutex> lk(g_previewCompositorMutex);
-        g_previewCompositorReady = false;
-        g_previewCompositor->shutdown();
-        if (g_previewCompositor->init(device, devCtx, sw, sh)) {
-            if (g_previewEffectsBypass)
-                g_previewCompositor->setEffectsBypass(true);
-            g_previewCompositorReady = true;
-            g_previewCompositor->setReadbackPolicy(ReadbackPolicy::FastImmediate);
-            g_previewDiag.readbackPolicyActive.store(0, std::memory_order_relaxed);
-            std::fprintf(stderr, "[Preview] Resolution scale %.2f → compositor %dx%d readback=FastImmediate\n",
-                         scale, sw, sh);
-        } else {
-            std::fprintf(stderr, "[Preview] ERROR: compositor re-init at %dx%d failed\n", sw, sh);
-        }
-    }
-    g_previewDirty = true;
+void Timeline_SetPreviewResolutionAutoMode(const JsonApi::CallbackInfo& info)
+{
+    if (info.Length() < 1 || !info[0].IsBoolean()) return;
+    g_previewResolutionAutoMode.store(
+        info[0].As<JsonApi::Boolean>().Value(), std::memory_order_relaxed);
 }
 
 JsonApi::Value Timeline_GetPreviewEffectsBypass(const JsonApi::CallbackInfo& info)
@@ -15151,6 +15369,65 @@ JsonApi::Value Audio_SetOutputDevice(const JsonApi::CallbackInfo& info)
     }
     if (!audioEngine) return env.Null();
     auto err = audioEngine->setOutputDevice(info[0].As<JsonApi::String>().Utf8Value());
+    auto obj = JsonApi::Object::New(env);
+    obj.Set("ok",    JsonApi::Boolean::New(env, err.empty()));
+    obj.Set("error", JsonApi::String::New(env, err));
+    return obj;
+}
+
+// audio_getSupportedSampleRates() → number[]
+JsonApi::Value Audio_GetSupportedSampleRates(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!audioEngine) return env.Null();
+    auto rates = audioEngine->getSupportedSampleRates();
+    auto arr = JsonApi::Array::New(env, rates.size());
+    for (size_t i = 0; i < rates.size(); ++i)
+        arr.Set((uint32_t)i, JsonApi::Number::New(env, rates[i]));
+    return arr;
+}
+
+// audio_getDeviceInfo() → { sampleRate, bufferSize, latencyMs, outputDevice }
+// One round trip for the audio-settings UI to read after mount and after
+// every setBufferSize/setSampleRate/setOutputDevice call.
+JsonApi::Value Audio_GetDeviceInfo(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!audioEngine) return env.Null();
+    auto obj = JsonApi::Object::New(env);
+    obj.Set("sampleRate",   JsonApi::Number::New(env, audioEngine->getSampleRate()));
+    obj.Set("bufferSize",   JsonApi::Number::New(env, audioEngine->getBufferSize()));
+    obj.Set("latencyMs",    JsonApi::Number::New(env, audioEngine->getLatencyMs()));
+    obj.Set("outputDevice", JsonApi::String::New(env, audioEngine->getCurrentOutputDevice()));
+    return obj;
+}
+
+// audio_setBufferSize(bufferSize) → { ok: bool, error: string }
+JsonApi::Value Audio_SetBufferSize(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        JsonApi::TypeError::New(env, "audio_setBufferSize(bufferSize: number)").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (!audioEngine) return env.Null();
+    auto err = audioEngine->setBufferSize(info[0].As<JsonApi::Number>().Int32Value());
+    auto obj = JsonApi::Object::New(env);
+    obj.Set("ok",    JsonApi::Boolean::New(env, err.empty()));
+    obj.Set("error", JsonApi::String::New(env, err));
+    return obj;
+}
+
+// audio_setSampleRate(sampleRate) → { ok: bool, error: string }
+JsonApi::Value Audio_SetSampleRate(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsNumber()) {
+        JsonApi::TypeError::New(env, "audio_setSampleRate(sampleRate: number)").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    if (!audioEngine) return env.Null();
+    auto err = audioEngine->setSampleRate(info[0].As<JsonApi::Number>().DoubleValue());
     auto obj = JsonApi::Object::New(env);
     obj.Set("ok",    JsonApi::Boolean::New(env, err.empty()));
     obj.Set("error", JsonApi::String::New(env, err));
@@ -21265,6 +21542,8 @@ JsonApi::Value Diag_GetVisualPreviewDiagnostic(const JsonApi::CallbackInfo& info
           JsonApi::Boolean::New(env, g_previewPauseForVisibility.load()));
     o.Set("previewResolutionScale",
           JsonApi::Number::New(env, g_previewResolutionScale));
+    o.Set("previewResolutionAutoMode",
+          JsonApi::Boolean::New(env, g_previewResolutionAutoMode.load(std::memory_order_relaxed)));
     o.Set("previewEffectsBypass",
           JsonApi::Boolean::New(env, g_previewEffectsBypass));
     o.Set("previewPosterMode",

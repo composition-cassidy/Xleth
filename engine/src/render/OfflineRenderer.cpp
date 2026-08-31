@@ -37,6 +37,7 @@ extern "C" {
 #include <filesystem>
 #include <limits>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 // Buffer size: 512 samples = ~10.67ms at 48kHz. Fixed for consistent
@@ -1088,7 +1089,7 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
                 // Export honors settings.useSourceMedia: full quality → originals
                 // (planPtr null, allowProxy false); fast export → resolution-aware
                 // render proxies via planPtr.
-                auto requests = collector.collectRequests(
+                auto& requests = collector.collectRequests(
                     f, timeline_, sampleRate, fps, videoEvents,
                     /*allowProxy=*/ !settings.useSourceMedia,
                     /*projectStartSample=*/ startSample,
@@ -1098,13 +1099,34 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
                 // Deduplicate: multiple cells may reference the same source frame
                 auto deduplicated = FrameCollector::deduplicateRequests(requests);
 
+                // Size the decoder's open-context budget from this frame's
+                // distinct source paths (deduplicated is keyed by
+                // (sourcePath, frameIndex), so several keys can share a
+                // path). Same reasoning as the preview path in
+                // XlethEngineService.cpp (Issue 3, VIDEO_PREVIEW_AUDIT.txt).
+                // deduplicated is unordered, so distinct ids are counted via
+                // a set rather than assuming adjacent equal keys.
+                {
+                    std::unordered_set<uint32_t> distinctPathIds;
+                    for (const auto& [key, reqs] : deduplicated) {
+                        distinctPathIds.insert(key.sourcePath.id());
+                    }
+                    decoder.setActiveContextBudget(static_cast<int>(distinctPathIds.size()));
+                }
+
                 // Check cache and find what needs decoding
                 auto misses = FrameCollector::resolveFrames(deduplicated, cache);
 
-                // Decode cache misses
+                // Decode cache misses. Sort by (sourcePath, frameIndex) ascending
+                // first so a source with several outstanding misses decodes
+                // forward through them, letting the sequential fast path
+                // (frameIndex == lastDecodedFrame + 1) engage instead of
+                // ping-ponging between cells reading the same file at different
+                // offsets. Reorders decode order only — output pixels unchanged.
                 if (device && devCtx) {
+                    std::sort(misses.begin(), misses.end());
                     for (const auto& key : misses) {
-                        auto entry = decoder.decode(key.sourcePath, key.frameIndex,
+                        auto entry = decoder.decode(key.sourcePath.str(), key.frameIndex,
                                                     device, devCtx);
                         if (entry.texture) {
                             cache.put(key, std::move(entry));
@@ -1138,7 +1160,7 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
                                 if (!device || !devCtx) return;
                                 for (const auto& key : misses) {
                                     auto entry = decoder.decode(
-                                        key.sourcePath, key.frameIndex, device, devCtx);
+                                        key.sourcePath.str(), key.frameIndex, device, devCtx);
                                     if (entry.texture) cache.put(key, std::move(entry));
                                 }
                             };
@@ -1159,7 +1181,7 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
                     }
 
                     // Readback composited pixels from GPU
-                    auto readback = compositor.readback();
+                    const auto& readback = compositor.readback();
                     ++videoFramesAttempted;
                     if (readback.valid) {
                         // Retain for tailClamp freeze-frame (true copy — readback
@@ -1345,7 +1367,7 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
         if (invalidReadbackCount > 0) {
             std::fprintf(stderr,
                          "[Renderer] WARN: export degraded — %lld of %lld frames had invalid GPU readback "
-                         "(compositor produced no pixels). Check earlier log for [VideoCompositor] errors.\n",
+                         "(compositor produced no pixels). Check earlier log for [GridCompositor] errors.\n",
                          (long long)invalidReadbackCount,
                          (long long)videoFramesAttempted);
         }
@@ -1717,18 +1739,35 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
                     prevBeat = currentBeat;
                 }
 
-                auto requests = collector.collectRequests(
+                auto& requests = collector.collectRequests(
                     f, timeline_, sampleRate, fps, videoEvents,
                     /*allowProxy=*/ !settings.useSourceMedia,
                     /*projectStartSample=*/ startSample,
                     /*posterMode=*/ false,
                     /*renderProxyBySource=*/ planPtr);
                 auto deduplicated = FrameCollector::deduplicateRequests(requests);
+
+                // See the equivalent block above (~line 1099-1114) for why this
+                // is sized from distinct source paths, not request/key count,
+                // and why a set (not adjacency) is used to count them.
+                {
+                    std::unordered_set<uint32_t> distinctPathIds;
+                    for (const auto& [key, reqs] : deduplicated) {
+                        distinctPathIds.insert(key.sourcePath.id());
+                    }
+                    decoder.setActiveContextBudget(static_cast<int>(distinctPathIds.size()));
+                }
+
                 auto misses = FrameCollector::resolveFrames(deduplicated, cache);
 
+                // Sort by (sourcePath, frameIndex) ascending so the decoder walks
+                // forward per source and the sequential fast path engages instead
+                // of ping-ponging between cells at different offsets. Reorders
+                // decode order only — output pixels unchanged.
                 if (device && devCtx) {
+                    std::sort(misses.begin(), misses.end());
                     for (const auto& key : misses) {
-                        auto entry = decoder.decode(key.sourcePath, key.frameIndex, device, devCtx);
+                        auto entry = decoder.decode(key.sourcePath.str(), key.frameIndex, device, devCtx);
                         if (entry.texture) cache.put(key, std::move(entry));
                     }
                 }
@@ -1754,7 +1793,7 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
                                 if (!device || !devCtx) return;
                                 for (const auto& key : misses) {
                                     auto entry = decoder.decode(
-                                        key.sourcePath, key.frameIndex, device, devCtx);
+                                        key.sourcePath.str(), key.frameIndex, device, devCtx);
                                     if (entry.texture) cache.put(key, std::move(entry));
                                 }
                             };
@@ -1770,7 +1809,7 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
                                                   frameGrid.columns, frameGrid.rows,
                                                   currentTime, frameGrid.gapScale);
                     }
-                    auto readback = compositor.readback();
+                    const auto& readback = compositor.readback();
                     ++videoFramesAttempted;
                     if (readback.valid) {
                         recordExportPreEncode(readback, (long long)f);

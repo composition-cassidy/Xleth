@@ -18,9 +18,9 @@
  */
 
 #include <cstdint>
-#include <map>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 
 #include "FrameCache.h"          // FrameCacheKey
@@ -48,9 +48,8 @@ enum class CellLayerKind : uint8_t {
     FullscreenInFront = 2,  // fullscreen layer drawn after grid (Pass 3)
 };
 
-// ClipCompanionFxSnapshot moved to model/ClipCompanionFxSnapshot.h so the
-// realtime preview path (SyncManager → VideoCompositor) and the export path
-// (this file → GridCompositor) share one definition. Included above.
+// ClipCompanionFxSnapshot lives in model/ClipCompanionFxSnapshot.h so the data
+// contract stays independent of this file and of GridCompositor. Included above.
 
 // ---------------------------------------------------------------------------
 // CellFrameRequest — what one grid cell needs for this output frame
@@ -60,7 +59,7 @@ struct CellFrameRequest {
     int         cellCol          = 0;   // fine-grid X (kGridSubUnitsPerColumn per col)
     int         spanX            = 8;   // fine-grid units wide (default = full column)
     int         spanY            = 8;   // fine-grid units tall (default = full row)
-    std::string sourcePath;             // source file path
+    InternedPath sourcePath;            // resolved source path, interned (see FrameCache.h)
     int         sourceId         = -1;  // SourceMedia ID (for decoder lookup)
     int64_t     sourceFrameIndex = 0;   // frame number in source file
     float       opacity          = 1.0f;// slot.opacity * event.opacity
@@ -197,8 +196,15 @@ public:
      *                          leave this false so an in-flight preview mute can
      *                          never affect an export; only the live preview
      *                          tick opts in.
+     * @return  reference to an internal buffer, valid until the next call to
+     *          collectRequests() on THIS instance. Every caller uses it (via
+     *          dedup/resolve/decode/composite) synchronously within the same
+     *          frame before collecting again, so this is safe and avoids a
+     *          fresh heap allocation on every frame — capture by value (a
+     *          test doing `auto requests = collector.collectRequests(...)`)
+     *          if a copy that outlives the next call is genuinely needed.
      */
-    std::vector<CellFrameRequest> collectRequests(
+    std::vector<CellFrameRequest>& collectRequests(
         int64_t                        outputFrameIndex,
         const Timeline&                timeline,
         int                            sampleRate,
@@ -218,7 +224,7 @@ public:
      * Returns a map: unique frame key → list of pointers into the requests vector.
      * The decoder iterates this map — decode each key once.
      */
-    static std::map<FrameCacheKey, std::vector<CellFrameRequest*>>
+    static std::unordered_map<FrameCacheKey, std::vector<CellFrameRequest*>, FrameCacheKeyHash>
     deduplicateRequests(std::vector<CellFrameRequest>& requests);
 
     // ── Step 3: Resolve (cache lookup + decode dispatch) ────────────────────
@@ -233,7 +239,7 @@ public:
      * @return  keys that were NOT in the cache (need decoding)
      */
     static std::vector<FrameCacheKey> resolveFrames(
-        const std::map<FrameCacheKey, std::vector<CellFrameRequest*>>& deduplicated,
+        const std::unordered_map<FrameCacheKey, std::vector<CellFrameRequest*>, FrameCacheKeyHash>& deduplicated,
         RenderFrameCache& cache);
 
 private:
@@ -288,9 +294,9 @@ private:
     // GC'd each frame against the live BehindGrid trackId set so the map is
     // bounded by the current layer count, not by all tracks ever assigned.
     struct FullscreenHoldState {
-        int64_t     lastFrame       = -1;
-        std::string lastPath;
-        int         lastOrientation = 0;
+        int64_t      lastFrame       = -1;
+        InternedPath lastPath;
+        int          lastOrientation = 0;
         bool        suppressAfterFadeOut = false;
         // End position (in beats) of the clip that produced lastFrame. The
         // hold-expiry threshold is measured from here, NOT from when the gap
@@ -300,6 +306,19 @@ private:
         double      lastClipEndBeat = 0.0;
     };
     std::unordered_map<int, FullscreenHoldState> fullscreenHoldByTrack_;
+
+    // Tracks currently holding a note past its trim end, for edge-triggered
+    // clamp logging (XLETH_RENDER_LOG): a held note logs once on entry, not
+    // every frame of its sustain. Erased once the track stops clamping (note
+    // ends or drops out of the held range), so the next hold logs again.
+    // Bounded by live track count, not note count.
+    std::unordered_set<int> clampLoggedTracks_;
+
+    // Reused across calls to collectRequests() so a steady per-frame cell
+    // count settles into a stable capacity instead of reallocating every
+    // frame (Finding 11, RENDER_PERF_AUDIT.txt). Cleared, not deallocated,
+    // at the start of each call.
+    std::vector<CellFrameRequest> requestBuffer_;
 
     AnimationManager* animationMgr_ = nullptr;
 

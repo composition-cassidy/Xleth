@@ -12,9 +12,17 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <unordered_set>
 
 namespace {
+
+// A request at or below this resolved opacity is provably invisible — no
+// blend of pixels at this alpha can be distinguished from fully transparent
+// once quantized to an 8-bit output. Never compare opacity to exact 0.0f:
+// fadeGain is floating point and a fade curve can land arbitrarily close to
+// (but not exactly at) zero without ever reaching it.
+constexpr float kOpacityCullEpsilon = 1e-4f;
 
 bool isVideoModulationCompatible(const VideoEvent& event) noexcept
 {
@@ -99,11 +107,17 @@ xleth::clipmod::VideoModulationTimingContext makeVideoTimingContext(
 
 } // namespace
 
+// Gates the two per-frame hot fprintf sites below (hold-last-frame clamp and
+// fullscreen-cell composite logging). Evaluated once — this runs on the video
+// thread inside a forked worker whose stderr is a pipe, so unconditional
+// per-frame writes are a backpressure/stall hazard, not just noise.
+static const bool kRenderLog = std::getenv("XLETH_RENDER_LOG") != nullptr;
+
 // ===========================================================================
 // Step 1: Collect requests for one output frame
 // ===========================================================================
 
-std::vector<CellFrameRequest> FrameCollector::collectRequests(
+std::vector<CellFrameRequest>& FrameCollector::collectRequests(
     int64_t                        outputFrameIndex,
     const Timeline&                timeline,
     int                            sampleRate,
@@ -147,7 +161,12 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
         ? *layoutOverride
         : timeline.gridLayoutAt(TickTime{ projectFramePpq });
 
-    std::vector<CellFrameRequest> requests;
+    // Reused across calls rather than a fresh vector per frame — see
+    // requestBuffer_'s doc comment in FrameCollector.h. clear() retains
+    // capacity, so a session's steady-state cell count settles into zero
+    // reallocation after the first few frames.
+    requestBuffer_.clear();
+    std::vector<CellFrameRequest>& requests = requestBuffer_;
     int gapsSkipped = 0;
 
     // Helper lambda to build a CellFrameRequest from an active event
@@ -156,7 +175,10 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
                             float slotOpacity, int zOrder,
                             CellLayerKind kind) -> bool
     {
-        if (!ev) return false;
+        if (!ev) {
+            if (kRenderLog) clampLoggedTracks_.erase(trackId);
+            return false;
+        }
 
         // Look up source to get file path and fps
         const SourceMedia* src = timeline.getSource(ev->sourceId);
@@ -189,7 +211,9 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
             req.companionFx = xleth::clipmod::buildClipCompanionFxSnapshot(ev->modulation, timing);
 
         // Ping-pong overrides the hold-last-frame clamp for enabled tracks.
-        if (trk && trk->pingPong.enabled && !isFullscreen) {
+        // Not gated on placement: compositeFrame runs the crossfade on every
+        // layer kind, so a fullscreen backdrop ping-pongs like any other track.
+        if (trk && trk->pingPong.enabled) {
             int64_t secondaryFrame = -1;
             float   blendFactor    = 0.0f;
             srcFrame = computePingPongFrame(*ev, beatPos, bpm, sampleRate, srcRate,
@@ -203,9 +227,16 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
             if (ev->sourceEndTime > 0.0) {
                 if (sourceTime >= ev->sourceEndTime) {
                     srcFrame = computeSourceFrameFromTime(sourceTime, srcRate);
-                    std::fprintf(stderr, "[FrameCollector] Track %d: frame clamped to last frame %lld "
-                                 "(source time %.3fs >= trim end %.3fs)\n",
-                                 trackId, (long long)srcFrame, sourceTime, ev->sourceEndTime);
+                    // Edge-triggered: log once when the note enters the held
+                    // state, not every frame of its sustain (a normal
+                    // authoring state, not an error).
+                    if (kRenderLog && clampLoggedTracks_.insert(trackId).second) {
+                        std::fprintf(stderr, "[FrameCollector] Track %d: frame clamped to last frame %lld "
+                                     "(source time %.3fs >= trim end %.3fs)\n",
+                                     trackId, (long long)srcFrame, sourceTime, ev->sourceEndTime);
+                    }
+                } else if (kRenderLog) {
+                    clampLoggedTracks_.erase(trackId);
                 }
             }
         }
@@ -279,7 +310,7 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
             }
         } else {
             // ── PREVIEW PATH substitution ladder ──────────────────────────────
-            if (allowProxy && ev->regionId > 0 && !isFullscreen) {
+            if (allowProxy && ev->regionId > 0) {
                 const SampleRegion* r = pickRegion;
                 if (r && r->proxyReady && !r->proxyPath.empty()) {
                     if (sourceTime >= r->proxyStartTime &&
@@ -387,16 +418,26 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
                     // whole call runs under syncEventsMutex (eLock) in
                     // the caller's video-tick loop, which the visual-
                     // effect-chain mutation handlers now also acquire.
+                    // Copied for fullscreen layers too: compositeFrame runs
+                    // one per-cell path for every layer kind, so the chain
+                    // (and the Outline / Drop Shadow stages it drives) is
+                    // live for a fullscreen backdrop, not dead weight.
                     req.visualChain = trk->visualEffectChain;
                 }
                 // Note trigger detection: fire onNoteStart when globalNoteIndex
-                // changes (grid cells only). VideoEvents are emitted only by
+                // changes. Runs for fullscreen layers too — their ZPR is drawn
+                // by the same per-cell path now, and an animation that is never
+                // triggered simply sits at its defaults (zoom 1, pan/rot 0),
+                // which is what made a fullscreen backdrop static before.
+                // Bounce is still computed here but ignored at composite time
+                // for non-grid layers; see the bounce block in compositeFrame.
+                // VideoEvents are emitted only by
                 // *normal* (non-slide) PatternNotes (slide notes flow through
                 // SlideAnimationEvent and are skipped at note-build time), so
                 // this is the right place to hook the NextNormalNote slide
                 // visual return trigger — it covers both realtime preview and
                 // offline render via the shared FrameCollector path.
-                if (animationMgr_ && !isFullscreen) {
+                if (animationMgr_) {
                     const CellAnimation* anim = animationMgr_->getAnimation(trackId);
                     if (!anim || ev->globalNoteIndex != anim->activeNoteId) {
                         animationMgr_->onSlideReturnTrigger(trackId);
@@ -415,7 +456,10 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
             }
         }
 
-        // Populate animation state from AnimationManager
+        // Populate animation state from AnimationManager. Taken for fullscreen
+        // layers too — compositeFrame's single per-cell path reads ZPR and the
+        // slide TV ramp for every layer kind. Only the bounce fields go unused
+        // on a fullscreen layer (grid-geometry; see compositeFrame).
         if (animationMgr_) {
             const CellAnimation* anim = animationMgr_->getAnimation(trackId);
             if (anim) {
@@ -441,11 +485,34 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
         req.layerKind        = kind;
         req.zOrder           = zOrder;
 
-        if (isFullscreen) {
+        if (isFullscreen && kRenderLog) {
             std::fprintf(stderr, "[FrameCollector] FS-%s cell: '%s' frame=%lld opacity=%.2f\n",
                          kind == CellLayerKind::FullscreenBehind ? "behind" : "front",
                          req.sourcePath.c_str(), (long long)req.sourceFrameIndex, req.opacity);
         }
+
+        // Hold-through-gap bookkeeping runs regardless of the opacity cull
+        // below: it must keep recording the last ACTIVE frame (even one that
+        // resolves invisible, e.g. mid fade-out) so a genuine gap afterward
+        // still holds the same frame it always did. This used to happen in
+        // the BehindGrid caller reading requests.back(); moved here because
+        // the opacity-culled path never pushes to `requests`.
+        if (kind == CellLayerKind::FullscreenBehind) {
+            auto& s = fullscreenHoldByTrack_[trackId];
+            s.lastFrame            = req.sourceFrameIndex;
+            s.lastPath             = req.sourcePath;
+            s.lastOrientation      = req.orientation;
+            s.suppressAfterFadeOut = ev->fadeOutPercent > 0.0f;
+            s.lastClipEndBeat      = ev->startBeat + ev->durationBeats;
+        }
+
+        // Opacity cull: a request that provably cannot appear is dropped
+        // before it ever reaches dedup/decode/upload/draw. The caller still
+        // sees `true` — an event WAS active here, this is not a timeline gap
+        // — so BehindGrid hold-fill and the gap-skipped counters are not
+        // triggered by an invisible-but-active frame.
+        if (req.opacity <= kOpacityCullEpsilon)
+            return true;
 
         requests.push_back(std::move(req));
         return true;
@@ -488,14 +555,9 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
         if (buildRequest(ev, fl.trackId, 0, 0, fullW, fullH,
                          fl.opacity, fl.zOrder,
                          CellLayerKind::FullscreenBehind)) {
-            // Active layer — record last frame for hold-through-gap
-            const auto& r = requests.back();
-            auto& s = fullscreenHoldByTrack_[fl.trackId];
-            s.lastFrame       = r.sourceFrameIndex;
-            s.lastPath        = r.sourcePath;
-            s.lastOrientation = r.orientation;
-            s.suppressAfterFadeOut = ev->fadeOutPercent > 0.0f;
-            s.lastClipEndBeat = ev->startBeat + ev->durationBeats;
+            // Active layer — hold-through-gap state already recorded inside
+            // buildRequest (it runs regardless of the opacity cull, so a
+            // frame invisible only because of a fade still updates the hold).
         } else {
             auto it = fullscreenHoldByTrack_.find(fl.trackId);
             const TrackInfo* trk = timeline.getTrack(fl.trackId);
@@ -532,6 +594,36 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
                 req.zOrder           = fl.zOrder;
                 req.orientation      = it->second.lastOrientation;
                 req.trackId          = fl.trackId;
+
+                // A held frame is the SAME picture the live path was drawing an
+                // instant ago, so it has to carry the same look. Now that the
+                // compositor runs the full per-cell path on fullscreen layers,
+                // leaving these at their defaults would strip the chain, the
+                // corner radius and ZPR the moment the clip ended — a visible
+                // pop at every gap boundary. Mirrors buildRequest's population;
+                // ping-pong is deliberately absent (a hold has no motion) and
+                // bounce is unused on this layer kind.
+                req.cornerRadius     = trk->cornerRadius;
+                req.gapScaleOverride = trk->gapScaleOverride;
+                if (!(applyPreviewEffectMute
+                      && timeline.isVisualEffectChainPreviewMuted(trk->id)))
+                    req.visualChain = trk->visualEffectChain;
+                if (animationMgr_) {
+                    if (const CellAnimation* anim = animationMgr_->getAnimation(fl.trackId)) {
+                        req.currentZoom      = anim->currentZoom;
+                        req.currentPanX      = anim->currentPanX;
+                        req.currentPanY      = anim->currentPanY;
+                        req.currentRotDeg    = anim->currentRotDeg;
+                        req.tvRampIntensity  = anim->tvRampIntensity;
+                        req.tvRampRollSpeed  = anim->tvRampRollSpeed;
+                        req.tvRampScanlines  = anim->tvRampScanlines;
+                        req.tvRampChroma     = anim->tvRampChroma;
+                        req.tvRampNoise      = anim->tvRampNoise;
+                        req.tvRampJitter     = anim->tvRampJitter;
+                        req.tvRampColorBleed = anim->tvRampColorBleed;
+                    }
+                }
+
                 requests.push_back(std::move(req));
             } else {
                 ++gapsSkipped;
@@ -594,10 +686,10 @@ std::vector<CellFrameRequest> FrameCollector::collectRequests(
 // Step 2: Deduplicate
 // ===========================================================================
 
-std::map<FrameCacheKey, std::vector<CellFrameRequest*>>
+std::unordered_map<FrameCacheKey, std::vector<CellFrameRequest*>, FrameCacheKeyHash>
 FrameCollector::deduplicateRequests(std::vector<CellFrameRequest>& requests)
 {
-    std::map<FrameCacheKey, std::vector<CellFrameRequest*>> result;
+    std::unordered_map<FrameCacheKey, std::vector<CellFrameRequest*>, FrameCacheKeyHash> result;
 
     for (auto& req : requests) {
         FrameCacheKey key;
@@ -629,7 +721,7 @@ FrameCollector::deduplicateRequests(std::vector<CellFrameRequest>& requests)
 // ===========================================================================
 
 std::vector<FrameCacheKey> FrameCollector::resolveFrames(
-    const std::map<FrameCacheKey, std::vector<CellFrameRequest*>>& deduplicated,
+    const std::unordered_map<FrameCacheKey, std::vector<CellFrameRequest*>, FrameCacheKeyHash>& deduplicated,
     RenderFrameCache& cache)
 {
     std::vector<FrameCacheKey> misses;
@@ -652,7 +744,7 @@ std::vector<FrameCacheKey> FrameCollector::resolveFrames(
     if (misses.size() > 1) {
         std::unordered_map<std::string, std::vector<int64_t>> missFramesBySource;
         for (const auto& k : misses) {
-            missFramesBySource[k.sourcePath].push_back(k.frameIndex);
+            missFramesBySource[k.sourcePath.str()].push_back(k.frameIndex);
         }
         for (auto& [path, frames] : missFramesBySource) {
             std::sort(frames.begin(), frames.end());
