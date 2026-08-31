@@ -1746,6 +1746,11 @@ bool MixEngine::isPluginEditorOpen(int trackId, int nodeId) const
 void MixEngine::setTimeline(const Timeline* timeline)
 {
     timeline_ = timeline;
+    // Force refreshTrackSnapshotIfNeeded() to rebuild on the next block: a new
+    // Timeline instance's generation counter starts back at 0 and could
+    // otherwise coincidentally match the old instance's last-seen value,
+    // leaving cachedTrackSnapshot_ pointing at the PREVIOUS Timeline's tracks.
+    cachedTrackTopologyGeneration_ = ~static_cast<uint64_t>(0);
     syncTrackSlotsFromTimeline(false);
 }
 
@@ -4865,6 +4870,33 @@ inline int trackSlotTableFind(const TrackSlotEntry* table, int trackId)
 
 } // namespace
 
+// ── Per-block track snapshot cache (Finding 2b) ─────────────────────────────
+// Rebuilds cachedTrackSnapshot_ from timeline_->getAllTracks() only when the
+// track topology has actually changed since the last call. Audio-thread only:
+// the occasional rebuild (on a real track add/remove/reorder) is the sole
+// place this allocates — every other block is a relaxed load and compare.
+void MixEngine::refreshTrackSnapshotIfNeeded()
+{
+    if (timeline_ == nullptr)
+    {
+        cachedTrackSnapshotCount_ = 0;
+        return;
+    }
+
+    const uint64_t generation = timeline_->getTrackTopologyGeneration();
+    if (generation == cachedTrackTopologyGeneration_) return;
+
+    const auto allTracks = timeline_->getAllTracks();
+    int n = 0;
+    for (const auto* t : allTracks)
+    {
+        if (t == nullptr || n >= kMaxTracks) continue;
+        cachedTrackSnapshot_[n++] = t;
+    }
+    cachedTrackSnapshotCount_       = n;
+    cachedTrackTopologyGeneration_  = generation;
+}
+
 // ── Find active clips ────────────────────────────────────────────────────────
 
 void MixEngine::findActiveClips(int64_t bufferStart, int64_t bufferEnd,
@@ -5462,14 +5494,17 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     // Determine which tracks are in use. Solo/mute resolution now lives in the
     // per-block RoutePlan (route-aware closure, built below from this same track
     // list), so no separate anySolo scan is needed here.
-    auto allTracks = timeline_->getAllTracks();
+    //
+    // Finding 2b: refreshTrackSnapshotIfNeeded() mirrors getAllTracks() into
+    // cachedTrackSnapshot_ but only rebuilds it (and only then pays getAllTracks()'s
+    // allocation + stable_sort) when Timeline's track topology generation has
+    // actually advanced since the last block — i.e. on an add/remove/reorder,
+    // not on every callback.
+    refreshTrackSnapshotIfNeeded();
 
-    // Build a set of track IDs that have active clips (to know which buffers to clear)
-    // Use a simple bitfield for track indices 0..kMaxTracks-1
-    // We need to map trackId → index. Use trackId directly if < kMaxTracks.
-    // For safety, build a map of trackId → track slot index.
-    // Since track IDs are small integers from Timeline's auto-increment, they'll
-    // generally be small. We'll use an unordered_map for safety.
+    // Build a set of track IDs that have active clips (to know which buffers to clear).
+    // Track ids are not small dense integers (see TrackSlotEntry above), so slot
+    // lookup goes through the hashed fixed-capacity table built below.
     struct TrackSlot
     {
         int             slotIndex;
@@ -5483,8 +5518,9 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     int numTrackSlots = 0;
     TrackSlotEntry trackIdToSlot[kTrackSlotTableCapacity];
 
-    for (const auto* t : allTracks)
+    for (int ti = 0; ti < cachedTrackSnapshotCount_; ++ti)
     {
+        const auto* t = cachedTrackSnapshot_[ti];
         if (t == nullptr || numTrackSlots >= kMaxTracks) continue;
         const int slot = numTrackSlots++;
         trackSlots[slot] = {slot, t, false, false};

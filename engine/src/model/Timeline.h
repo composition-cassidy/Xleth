@@ -6,6 +6,8 @@
 #include "Pattern.h"
 #include "PatternBlock.h"
 #include "audio/TrackRouting.h"
+#include <atomic>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <unordered_set>
@@ -45,6 +47,14 @@ public:
     const TrackInfo*             getTrack(int id) const;
     TrackInfo*                   getTrackMutable(int id);
     std::vector<const TrackInfo*> getAllTracks() const;
+    // Bumped every time track membership or order changes (add/remove/reorder
+    // — syncTrackOrdersFromLayout() is the single choke point every such
+    // mutation funnels through). MixEngine polls this to know when its
+    // per-block track-slot snapshot needs rebuilding, instead of rebuilding
+    // it from getAllTracks() on every audio callback.
+    uint64_t getTrackTopologyGeneration() const {
+        return m_trackTopologyGeneration.load(std::memory_order_relaxed);
+    }
     bool                         setTrackOrder(const std::vector<int>& trackIdsInOrder);
     bool                         removeTrack(int id);
     TrackLayout                  getTrackLayout() const;
@@ -508,6 +518,7 @@ private:
     std::map<int, SourceMedia>  m_sources;
     std::map<int, SampleRegion> m_regions;
     std::map<int, TrackInfo>    m_tracks;
+    std::atomic<uint64_t>       m_trackTopologyGeneration{0};
     // Preview-only, not persisted — see setVisualEffectChainPreviewMuted above.
     std::unordered_set<int>     m_previewMutedChainTrackIds;
     std::map<int, TrackFolder>  m_trackFolders;

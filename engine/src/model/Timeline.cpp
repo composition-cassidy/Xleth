@@ -465,6 +465,9 @@ void Timeline::syncTrackOrdersFromLayout() {
             if (it != m_tracks.end()) it->second.order = order++;
         }
     }
+    // Single choke point for every track add/remove/reorder — see
+    // getTrackTopologyGeneration().
+    m_trackTopologyGeneration.fetch_add(1, std::memory_order_relaxed);
 }
 
 void Timeline::rebuildFlatTrackLayout() {
@@ -3334,6 +3337,7 @@ void Timeline::clear() {
     m_declickMs  = 0.5;
     m_globalStretchMethod = static_cast<int>(StretchMethod::PSOLA);
     m_nextId     = 1;
+    m_trackTopologyGeneration.fetch_add(1, std::memory_order_relaxed);
 
     std::cout << "[Timeline] Cleared ("
               << nSrc << " sources, " << nReg << " regions, "

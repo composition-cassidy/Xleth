@@ -967,6 +967,16 @@ private:
 
     std::unordered_map<int, int> regionToSampleMap_;
 
+    // ── Per-block track snapshot cache (Finding 2b) ─────────────────────────
+    // Mirrors timeline_->getAllTracks() (same pointers, same order) without
+    // paying its allocation + stable_sort every audio callback. Rebuilt only
+    // when Timeline's track topology generation has advanced since the last
+    // rebuild — i.e. on an actual track add/remove/reorder, not every block.
+    const TrackInfo* cachedTrackSnapshot_[kMaxTracks] = {};
+    int              cachedTrackSnapshotCount_ = 0;
+    uint64_t         cachedTrackTopologyGeneration_ = ~static_cast<uint64_t>(0);
+    void refreshTrackSnapshotIfNeeded();
+
     // Pre-allocated stereo track buffers (one per track slot, up to kMaxTracks)
     std::vector<juce::AudioBuffer<float>> trackBuffers_;
     int trackBufferSize_ = 0; // current allocation size in samples
