@@ -14,6 +14,7 @@
 #include "render/GridCompositor.h"
 #include "render/SnapshotTransitionRenderer.h"  // snapshot transition export seam (Slice 3b)
 #include "render/VisualFrameDiagnostics.h"  // opt-in pixel-content instrumentation
+#include "XlethDebug.h"
 #include "render/CanvasFit.h"
 #include "render/AnimationManager.h"
 #include "export/FFmpegMuxer.h"
@@ -1268,13 +1269,14 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
 
         // Log every 100 buffers
         if (iterationCount % 100 == 0) {
-            std::fprintf(stderr, "[Renderer] PROGRESS: %.1f%% | frame %lld/%lld | "
+            XLETH_RENDER_LOG(std::fprintf(stderr,
+                         "[Renderer] PROGRESS: %.1f%% | frame %lld/%lld | "
                          "%.1fx realtime | ETA %.0fs\n",
                          pct,
                          (long long)progress_.currentFrame.load(),
                          (long long)totalVideoFrames,
                          progress_.speedMultiplier.load(),
-                         progress_.etaSeconds.load());
+                         progress_.etaSeconds.load()));
         }
     }
 

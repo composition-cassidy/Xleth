@@ -1,6 +1,7 @@
 #include "Timeline.h"
 #include "AutomationEnvelope.h"
 #include "SamplerLegacyMigration.h"
+#include "XlethDebug.h"
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
@@ -585,9 +586,9 @@ bool Timeline::removeClip(int id) {
         return false;
     }
     if (!inBulkEdit()) {
-        std::cout << "[Timeline] Removed clip id=" << id
+        XLETH_RENDER_LOG(std::cout << "[Timeline] Removed clip id=" << id
                   << " trackId=" << it->second.trackId
-                  << " position=" << it->second.position.ticks << "\n";
+                  << " position=" << it->second.position.ticks << "\n");
     }
     m_clips.erase(it);
     m_clipTopologyGeneration.fetch_add(1, std::memory_order_relaxed);

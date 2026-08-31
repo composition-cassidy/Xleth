@@ -1,4 +1,5 @@
 #include "GridCompositor.h"
+#include "XlethDebug.h"
 
 #include <algorithm>
 #include <atomic>
@@ -1607,9 +1608,8 @@ RTPool::RTPair& RTPool::acquire(ID3D11Device* device, int width, int height, int
     device->CreateShaderResourceView(pair.texA.Get(), nullptr, &pair.srvA);
     device->CreateShaderResourceView(pair.texB.Get(), nullptr, &pair.srvB);
 
-    if (kRenderLog) {
-        std::fprintf(stderr, "[RTPool] Created RT pair %dx%d slot=%d\n", width, height, slot);
-    }
+    XLETH_RENDER_LOG(std::fprintf(stderr,
+        "[RTPool] Created RT pair %dx%d slot=%d\n", width, height, slot));
 
     pair.lastTouched = std::chrono::steady_clock::now();
     pairs[key] = std::move(pair);
