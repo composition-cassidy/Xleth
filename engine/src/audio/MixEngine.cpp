@@ -364,6 +364,7 @@ MixEngine::MixEngine()
     trackBuffers_.resize(kMaxTracks);
     sidechainBuffers_.resize(kMaxTracks);
     activeClips_.reserve(256);
+    prevActiveClipsScratch_.reserve(256);
     activeBlocks_.reserve(64);
 
     // WORLD vocoder content cache lives next to ClipRenderCache so the WORLD
@@ -1746,11 +1747,14 @@ bool MixEngine::isPluginEditorOpen(int trackId, int nodeId) const
 void MixEngine::setTimeline(const Timeline* timeline)
 {
     timeline_ = timeline;
-    // Force refreshTrackSnapshotIfNeeded() to rebuild on the next block: a new
-    // Timeline instance's generation counter starts back at 0 and could
-    // otherwise coincidentally match the old instance's last-seen value,
-    // leaving cachedTrackSnapshot_ pointing at the PREVIOUS Timeline's tracks.
+    // Force refreshTrackSnapshotIfNeeded()/findActiveClips() to rebuild on the
+    // next block: a new Timeline instance's generation counters start back at
+    // 0 and could otherwise coincidentally match the old instance's
+    // last-seen value, leaving the caches pointing at the PREVIOUS
+    // Timeline's tracks/clips.
     cachedTrackTopologyGeneration_ = ~static_cast<uint64_t>(0);
+    cachedClipTopologyGeneration_  = ~static_cast<uint64_t>(0);
+    clipScanLastBufferEnd_ = -1;
     syncTrackSlotsFromTimeline(false);
 }
 
@@ -4897,14 +4901,43 @@ void MixEngine::refreshTrackSnapshotIfNeeded()
     cachedTrackTopologyGeneration_  = generation;
 }
 
+// ── Sorted-by-start clip snapshot (Finding 2c) ──────────────────────────────
+// Rebuilt only when Timeline's clip topology generation has advanced.
+// Ordering by tick position matches ordering by sample position for any
+// fixed bpm (sample = ticks * a positive per-bpm scale factor), so this sort
+// stays valid across a live tempo change — no re-sort needed when bpm alone
+// moves.
+void MixEngine::rebuildSortedClipsByStart()
+{
+    sortedClipsByStart_.clear();
+    if (timeline_ == nullptr) return;
+
+    const auto allClips = timeline_->getAllClips();
+    sortedClipsByStart_.reserve(allClips.size());
+    for (const Clip* c : allClips)
+        if (c != nullptr)
+            sortedClipsByStart_.push_back(c);
+
+    std::stable_sort(sortedClipsByStart_.begin(), sortedClipsByStart_.end(),
+        [](const Clip* a, const Clip* b) {
+            if (a->position.ticks != b->position.ticks)
+                return a->position.ticks < b->position.ticks;
+            return a->id < b->id;
+        });
+}
+
 // ── Find active clips ────────────────────────────────────────────────────────
 
 void MixEngine::findActiveClips(int64_t bufferStart, int64_t bufferEnd,
                                 double bpm, double sampleRate)
 {
-    activeClips_.clear();
-
-    if (timeline_ == nullptr) return;
+    if (timeline_ == nullptr)
+    {
+        activeClips_.clear();
+        clipScanCursor_ = 0;
+        clipScanLastBufferEnd_ = -1;
+        return;
+    }
 
     // Phase 3A tailClamp: suppress clips that START at/after the trigger ceiling
     // (capture end). Clips already in flight (clipStart < ceiling) keep playing
@@ -4912,34 +4945,48 @@ void MixEngine::findActiveClips(int64_t bufferStart, int64_t bufferEnd,
     const int64_t triggerCeiling =
         noteTriggerCeilingSample_.load(std::memory_order_relaxed);
 
-    for (const auto* clip : timeline_->getAllClips())
+    const uint64_t clipGeneration = timeline_->getClipTopologyGeneration();
+    const bool topologyChanged = (clipGeneration != cachedClipTopologyGeneration_);
+    if (topologyChanged)
     {
-        if (clip == nullptr) continue;
+        rebuildSortedClipsByStart();
+        cachedClipTopologyGeneration_ = clipGeneration;
+    }
 
+    // A seek — or a topology change, which can move clips arbitrarily far
+    // from where the cursor left off, or delete the very clips activeClips_
+    // is still holding pointers to — forces a full rebuild. Everything below
+    // this point re-derives from sortedClipsByStart_/live clip state only;
+    // stale entries left over in activeClips_ are never dereferenced.
+    const bool isSeek = topologyChanged
+                       || clipScanLastBufferEnd_ < 0
+                       || bufferStart != clipScanLastBufferEnd_;
+
+    // Re-derives one clip's fields against the CURRENT bpm/sampleRate/
+    // regionToSampleMap_/triggerCeiling and appends it if it still overlaps
+    // and still qualifies. Identical per-clip logic (and order of checks) to
+    // the original exhaustive scan — the only thing that changed is how many
+    // clips this runs over per block.
+    const auto tryActivate = [&](const Clip* clip)
+    {
         const int64_t clipStart = clip->position.toSamples(bpm, sampleRate);
         const int64_t clipEnd   = (clip->position + clip->duration).toSamples(bpm, sampleRate);
 
-        // Skip clips that don't overlap this buffer
         if (clipEnd <= bufferStart || clipStart >= bufferEnd)
-            continue;
+            return;
 
-        // tailClamp gate: a clip whose onset is at/after the ceiling must not
-        // start during the tail. (No effect during normal renders/playback —
-        // ceiling is INT64_MAX.)
         if (clipStart >= triggerCeiling)
-            continue;
+            return;
 
-        // Look up sample bank ID for this clip's region
         auto it = regionToSampleMap_.find(clip->regionId);
         if (it == regionToSampleMap_.end())
         {
             // Warn on unmapped region (throttled in maybeLogDebug)
-            continue;
+            return;
         }
 
-        // Calculate region offset for syllable clips
         int64_t regionOffset = 0;
-        if (clip->syllableIndex >= 0 && timeline_ != nullptr)
+        if (clip->syllableIndex >= 0)
         {
             const auto* region = timeline_->getRegion(clip->regionId);
             if (region != nullptr && clip->syllableIndex < static_cast<int>(region->syllables.size()))
@@ -4949,12 +4996,51 @@ void MixEngine::findActiveClips(int64_t bufferStart, int64_t bufferEnd,
             }
         }
 
-        // Clip-level regionOffset (from split or manual offset)
         if (clip->regionOffset.ticks > 0)
             regionOffset += clip->regionOffset.toSamples(bpm, sampleRate);
 
         activeClips_.push_back({clip, it->second, clipStart, clipEnd, regionOffset});
+    };
+
+    if (isSeek)
+    {
+        activeClips_.clear();
+        for (const Clip* clip : sortedClipsByStart_)
+            tryActivate(clip);
+
+        // Position the cursor just past every clip whose start sample is
+        // already < bufferEnd, so the next (sequential) call resumes here
+        // instead of re-scanning from the top.
+        clipScanCursor_ = 0;
+        while (clipScanCursor_ < static_cast<int>(sortedClipsByStart_.size())
+               && sortedClipsByStart_[clipScanCursor_]->position.toSamples(bpm, sampleRate) < bufferEnd)
+            ++clipScanCursor_;
     }
+    else
+    {
+        // Sequential playback, no edits since the last block: refresh the
+        // clips already known to be active (cheap — O(active), not
+        // O(project) — and this is where a live bpm change or a live
+        // region→sample remap lands, exactly as the old full rescan did
+        // every block) via a swap so this never allocates once capacity
+        // settles, mirroring prevActiveBlocks_.swap(activeBlocks_) below.
+        prevActiveClipsScratch_.swap(activeClips_);
+        activeClips_.clear();
+        for (const auto& ac : prevActiveClipsScratch_)
+            tryActivate(ac.clip);
+
+        // Advance the cursor, activating clips newly entering the window.
+        while (clipScanCursor_ < static_cast<int>(sortedClipsByStart_.size()))
+        {
+            const Clip* clip = sortedClipsByStart_[clipScanCursor_];
+            if (clip->position.toSamples(bpm, sampleRate) >= bufferEnd)
+                break;
+            ++clipScanCursor_;
+            tryActivate(clip);
+        }
+    }
+
+    clipScanLastBufferEnd_ = bufferEnd;
 }
 
 // ── Find active pattern blocks ───────────────────────────────────────────────

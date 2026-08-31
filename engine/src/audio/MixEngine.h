@@ -1478,6 +1478,32 @@ private:
     };
     std::vector<ActiveClip> activeClips_;
 
+    // ── Incremental active-clip scan (Finding 2c) ───────────────────────────
+    // sortedClipsByStart_ mirrors every Clip in the project, sorted ascending
+    // by tick position (order by ticks == order by samples for any fixed bpm,
+    // so this ordering stays valid across a live tempo change). Rebuilt only
+    // when Timeline's clip topology generation advances — i.e. on an actual
+    // add/remove/move/resize, not every block.
+    //
+    // During uninterrupted sequential playback, findActiveClips() no longer
+    // rescans every clip in the project: clipScanCursor_ walks forward
+    // through sortedClipsByStart_ exactly once, activating each clip as its
+    // start sample enters the window, while already-active clips are
+    // refreshed (not rescanned from the full list) each block so a live bpm
+    // change or a live region→sample remap still lands on the next block,
+    // exactly as the old full rescan produced. A topology change or a seek
+    // (bufferStart not contiguous with the last call) forces one full
+    // rebuild — the same cost the old code paid every single block.
+    std::vector<const Clip*> sortedClipsByStart_;
+    int      clipScanCursor_ = 0;
+    int64_t  clipScanLastBufferEnd_ = -1;
+    uint64_t cachedClipTopologyGeneration_ = ~static_cast<uint64_t>(0);
+    // Double-buffer scratch for refreshing the previous block's active set
+    // without a per-block allocation (same swap-not-copy idiom prevActiveBlocks_
+    // uses below for pattern blocks).
+    std::vector<ActiveClip> prevActiveClipsScratch_;
+    void rebuildSortedClipsByStart();
+
     // Per-{track,region} Sampler instances (main-thread owned, audio-thread
     // read). Keyed by {trackId, regionId}: each pattern track is sample-
     // agnostic, and different PatternBlocks on the same track may reference

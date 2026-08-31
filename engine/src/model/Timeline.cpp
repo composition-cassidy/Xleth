@@ -498,6 +498,7 @@ int Timeline::addClip(Clip clip) {
     normalizeClipFadePercents(clip);
     clip.id = getNextId();
     m_clips[clip.id] = clip;
+    m_clipTopologyGeneration.fetch_add(1, std::memory_order_relaxed);
     if (!inBulkEdit()) {
         std::cout << "[Timeline] Added clip id=" << clip.id
                   << " trackId=" << clip.trackId
@@ -559,7 +560,14 @@ const Clip* Timeline::getClip(int id) const {
 
 Clip* Timeline::getClipMutable(int id) {
     auto it = m_clips.find(id);
-    return (it != m_clips.end()) ? &it->second : nullptr;
+    if (it == m_clips.end()) return nullptr;
+    // Commands (QuantizeClipsBatchCommand, TimelineCommands, etc.) mutate
+    // position/duration/trackId straight through this pointer, bypassing
+    // moveClip/resizeClip/resizeClipLeft entirely. Since Timeline can't see
+    // what the caller does with it, treat every call as a potential
+    // topology change — see getClipTopologyGeneration().
+    m_clipTopologyGeneration.fetch_add(1, std::memory_order_relaxed);
+    return &it->second;
 }
 
 std::vector<const Clip*> Timeline::getAllClips() const {
@@ -582,6 +590,7 @@ bool Timeline::removeClip(int id) {
                   << " position=" << it->second.position.ticks << "\n";
     }
     m_clips.erase(it);
+    m_clipTopologyGeneration.fetch_add(1, std::memory_order_relaxed);
     return true;
 }
 
@@ -624,6 +633,7 @@ bool Timeline::moveClip(int clipId, int newTrackId, TickTime newPosition) {
     TickTime oldPos = it->second.position;
     it->second.trackId  = newTrackId;
     it->second.position = newPosition;
+    m_clipTopologyGeneration.fetch_add(1, std::memory_order_relaxed);
     if (!inBulkEdit()) {
         std::cout << "[Timeline] Moved clip id=" << clipId
                   << " track " << oldTrackId << "→" << newTrackId
@@ -640,6 +650,7 @@ bool Timeline::resizeClip(int clipId, TickTime newDuration) {
     }
     TickTime oldDur = it->second.duration;
     it->second.duration = newDuration;
+    m_clipTopologyGeneration.fetch_add(1, std::memory_order_relaxed);
     std::cout << "[Timeline] Resized clip id=" << clipId
               << " from=" << oldDur.ticks
               << " to=" << newDuration.ticks << "\n";
@@ -656,6 +667,7 @@ bool Timeline::resizeClipLeft(int clipId, TickTime newPosition,
     it->second.position     = newPosition;
     it->second.duration     = newDuration;
     it->second.regionOffset = newRegionOffset;
+    m_clipTopologyGeneration.fetch_add(1, std::memory_order_relaxed);
     std::cout << "[Timeline] ResizeClipLeft id=" << clipId
               << " pos=" << newPosition.ticks
               << " dur=" << newDuration.ticks
@@ -1985,6 +1997,7 @@ bool Timeline::restoreClip(const Clip& clip) {
     Clip normalized = clip;
     normalizeClipFadePercents(normalized);
     m_clips[normalized.id] = normalized;
+    m_clipTopologyGeneration.fetch_add(1, std::memory_order_relaxed);
     if (normalized.id >= m_nextId) m_nextId = normalized.id + 1;
     if (!inBulkEdit()) {
         std::cout << "[Timeline] Restored clip id=" << clip.id
@@ -2818,6 +2831,7 @@ bool Timeline::fromJSON(const nlohmann::json& j) {
             Clip clip = c.get<Clip>();  // ADL from_json
             m_clips[clip.id] = clip;
         }
+        m_clipTopologyGeneration.fetch_add(1, std::memory_order_relaxed);
 
         m_patterns.clear();
         // Track which regions we've already migrated to so a second pattern
@@ -3338,6 +3352,7 @@ void Timeline::clear() {
     m_globalStretchMethod = static_cast<int>(StretchMethod::PSOLA);
     m_nextId     = 1;
     m_trackTopologyGeneration.fetch_add(1, std::memory_order_relaxed);
+    m_clipTopologyGeneration.fetch_add(1, std::memory_order_relaxed);
 
     std::cout << "[Timeline] Cleared ("
               << nSrc << " sources, " << nReg << " regions, "

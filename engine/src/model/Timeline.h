@@ -77,6 +77,14 @@ public:
     const Clip*                getClip(int id) const;
     Clip*                      getClipMutable(int id);
     std::vector<const Clip*>   getAllClips() const;
+    // Bumped on every clip add/remove/move/resize/restore/bulk-load. MixEngine
+    // uses this to know when its position-sorted clip cache (and the
+    // incremental active-clip scan built on top of it) must fully rebuild,
+    // rather than trusting cached Clip* pointers that a removal could have
+    // invalidated or a move/resize could have made stale.
+    uint64_t getClipTopologyGeneration() const {
+        return m_clipTopologyGeneration.load(std::memory_order_relaxed);
+    }
     bool                       removeClip(int id);
     std::vector<const Clip*>   getClipsOnTrack(int trackId) const;
     // Returns clips whose position falls in [start, end)
@@ -524,6 +532,7 @@ private:
     std::map<int, TrackFolder>  m_trackFolders;
     std::vector<TrackLayoutItem> m_trackRootOrder;
     std::map<int, Clip>         m_clips;
+    std::atomic<uint64_t>       m_clipTopologyGeneration{0};
     std::map<int, Pattern>      m_patterns;
     std::map<int, PatternBlock> m_patternBlocks;
 
