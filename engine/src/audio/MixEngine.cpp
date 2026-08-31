@@ -4824,6 +4824,47 @@ void MixEngine::ensureTrackBuffers(int numSamples)
     trackBufferSize_ = numSamples;
 }
 
+namespace {
+
+// Allocation-free replacement for the per-block std::unordered_map<int,int>
+// that mapped trackId -> track slot (Finding 2a). Track ids draw on
+// Timeline's single global auto-increment counter shared with clips,
+// regions, patterns, automation points and everything else — they are NOT
+// small dense integers, so a raw trackId-indexed array would be an
+// out-of-bounds write the moment a track is added after a few thousand
+// other entities exist. Keying by a hash of the id instead of the id
+// itself keeps this correct while staying entirely stack-allocated.
+struct TrackSlotEntry { int trackId = -1; int slot = -1; };
+constexpr int kTrackSlotTableCapacity = 128; // power of two, > 2*kMaxTracks (64) for a low load factor
+
+inline uint32_t trackSlotHash(int trackId)
+{
+    return static_cast<uint32_t>(trackId) * 2654435761u; // Knuth multiplicative hash
+}
+
+inline void trackSlotTableInsert(TrackSlotEntry* table, int trackId, int slot)
+{
+    int idx = static_cast<int>(trackSlotHash(trackId) & (kTrackSlotTableCapacity - 1));
+    while (table[idx].trackId != -1)
+        idx = (idx + 1) & (kTrackSlotTableCapacity - 1);
+    table[idx] = {trackId, slot};
+}
+
+// Returns the slot for trackId, or -1 if not present.
+inline int trackSlotTableFind(const TrackSlotEntry* table, int trackId)
+{
+    int idx = static_cast<int>(trackSlotHash(trackId) & (kTrackSlotTableCapacity - 1));
+    for (int probes = 0; probes < kTrackSlotTableCapacity; ++probes)
+    {
+        if (table[idx].trackId == -1) return -1;
+        if (table[idx].trackId == trackId) return table[idx].slot;
+        idx = (idx + 1) & (kTrackSlotTableCapacity - 1);
+    }
+    return -1;
+}
+
+} // namespace
+
 // ── Find active clips ────────────────────────────────────────────────────────
 
 void MixEngine::findActiveClips(int64_t bufferStart, int64_t bufferEnd,
@@ -5440,14 +5481,14 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     // Stack-allocated array for up to kMaxTracks track slots
     TrackSlot trackSlots[kMaxTracks];
     int numTrackSlots = 0;
-    std::unordered_map<int, int> trackIdToSlot;
+    TrackSlotEntry trackIdToSlot[kTrackSlotTableCapacity];
 
     for (const auto* t : allTracks)
     {
         if (t == nullptr || numTrackSlots >= kMaxTracks) continue;
         const int slot = numTrackSlots++;
         trackSlots[slot] = {slot, t, false, false};
-        trackIdToSlot[t->id] = slot;
+        trackSlotTableInsert(trackIdToSlot, t->id, slot);
     }
 
     // Clear track buffers that will be used
@@ -5516,10 +5557,8 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     // ── Render active clips into track buffers ───────────────────────────────
     for (const auto& ac : activeClips_)
     {
-        auto slotIt = trackIdToSlot.find(ac.clip->trackId);
-        if (slotIt == trackIdToSlot.end()) continue;
-
-        const int slot = slotIt->second;
+        const int slot = trackSlotTableFind(trackIdToSlot, ac.clip->trackId);
+        if (slot < 0) continue;
         trackSlots[slot].hasClips = true;
 
         auto& trackBuf = trackBuffers_[slot];
@@ -5846,9 +5885,8 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
 
     for (const auto& apb : activeBlocks_)
     {
-        auto slotIt = trackIdToSlot.find(apb.block->trackId);
-        if (slotIt == trackIdToSlot.end()) continue;
-        const int slot = slotIt->second;
+        const int slot = trackSlotTableFind(trackIdToSlot, apb.block->trackId);
+        if (slot < 0) continue;
         trackSlots[slot].hasClips = true;   // mark track as having audio
 
         // Pass BPM for arpeggiator tempo sync.
@@ -5882,9 +5920,8 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         // Skip if this sampler was already rendered by the activeBlocks_ loop
         if (prevActiveKeys_.count(key) > 0) continue;
 
-        auto slotIt = trackIdToSlot.find(key.trackId);
-        if (slotIt == trackIdToSlot.end()) continue;
-        const int slot = slotIt->second;
+        const int slot = trackSlotTableFind(trackIdToSlot, key.trackId);
+        if (slot < 0) continue;
         if (slot >= numTrackSlots) continue;
 
         trackSlots[slot].hasReleasingVoices = true;
@@ -5921,12 +5958,12 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         if (ac.clipStartSample >= midiTriggerCeiling) continue;
         if (ac.clipStartSample >= bufStart && ac.clipStartSample < bufEnd)
         {
-            auto slotIt = trackIdToSlot.find(ac.clip->trackId);
-            if (slotIt == trackIdToSlot.end()) continue;
+            const int slot = trackSlotTableFind(trackIdToSlot, ac.clip->trackId);
+            if (slot < 0) continue;
             const int bufOffset = static_cast<int>(ac.clipStartSample - bufStart);
             const auto vel = static_cast<juce::uint8>(
                 juce::jlimit(0.0f, 1.0f, ac.clip->velocity) * 127.0f);
-            trackMidiBuffers_[slotIt->second].addEvent(
+            trackMidiBuffers_[slot].addEvent(
                 juce::MidiMessage::noteOn(2, 60, vel), bufOffset);
         }
     }
@@ -5934,9 +5971,8 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     // Pattern note-on events (channel 1, pitch & velocity from note)
     for (const auto& apb : activeBlocks_)
     {
-        auto slotIt = trackIdToSlot.find(apb.block->trackId);
-        if (slotIt == trackIdToSlot.end()) continue;
-        const int slot = slotIt->second;
+        const int slot = trackSlotTableFind(trackIdToSlot, apb.block->trackId);
+        if (slot < 0) continue;
 
         const int64_t blockPosTicks    = apb.block->position.ticks;
         const int64_t blockOffsetTicks = apb.block->offset.ticks;
