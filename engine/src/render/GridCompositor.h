@@ -154,9 +154,12 @@ struct RTPool {
         Microsoft::WRL::ComPtr<ID3D11RenderTargetView> rtvA, rtvB;
         Microsoft::WRL::ComPtr<ID3D11ShaderResourceView> srvA, srvB;
         int width = 0, height = 0;
+        std::chrono::steady_clock::time_point lastTouched = std::chrono::steady_clock::now();
     };
 
-    // Key = (width << 32) | height | (slot << 48) — slot prevents aliasing
+    // Key = (slot << 48) | (width << 32) | height — both dimensions masked to
+    // 16 bits symmetrically. Real cell/canvas sizes never approach 65536, so
+    // this only guards against a mask that looks trustworthy but isn't.
     std::unordered_map<uint64_t, RTPair> pairs;
 
     /** Get or create an RT pair for the given dimensions and slot.
@@ -166,6 +169,12 @@ struct RTPool {
 
     /** Release all GPU resources. */
     void clear();
+
+    /** Evict pairs untouched for at least idleSeconds. Same discipline as
+     *  RenderVideoDecoder::pruneIdleContexts: a session that tries several
+     *  grid sizes/effect combinations otherwise strands a texture pair per
+     *  combination for the rest of the session. */
+    void pruneIdle(double idleSeconds = 10.0);
 };
 
 // ---------------------------------------------------------------------------
@@ -223,6 +232,13 @@ struct ReadbackBuffer {
     int  stride  = 0;              // bytes per row
     bool valid   = false;
     ReadbackResult result = ReadbackResult::Fatal;
+
+    // True when readback() was given a destination and wrote the frame there
+    // instead of into `pixels` — `pixels` is then untouched (and typically
+    // empty). The caller owns those bytes; width/height/stride still describe
+    // them. False for every call that omits a destination, so the export path
+    // and the tests keep reading `pixels` exactly as before.
+    bool intoDestination = false;
 };
 
 enum class ReadbackMode {
@@ -388,9 +404,28 @@ public:
      * Immediate mode is the default for offline export/tests. PreviewRing is
      * explicitly for live preview and reads a staging slot from two frames ago.
      *
-     * @return ReadbackBuffer with BGRA pixels, or invalid buffer on failure
+     * @param destination  Optional caller-owned buffer to receive the frame.
+     *        When non-null and exactly the right size, the mapped staging rows
+     *        are copied straight into it and the compositor's own `pixels`
+     *        vector is skipped entirely — one full-frame copy per frame less
+     *        for the live preview, whose real destination is the shared-memory
+     *        back buffer rather than an owning vector. Must stay valid for the
+     *        duration of the call and hold width*height*4 bytes.
+     * @param destinationBytes  Capacity of `destination`. The destination is
+     *        used only when it matches the frame's byte count exactly; any
+     *        mismatch falls back to `pixels` rather than writing a
+     *        differently-shaped image into the caller's buffer.
+     *
+     * @return ReadbackBuffer with BGRA pixels, or invalid buffer on failure.
+     *         Backed by a buffer owned by this GridCompositor and reused
+     *         across calls (resized only when dimensions change) — valid
+     *         until the next readback() call on this instance. When
+     *         `intoDestination` is set the pixels are in the caller's buffer
+     *         instead and `pixels` holds nothing meaningful.
      */
-    ReadbackBuffer readback(ReadbackMode mode = ReadbackMode::Immediate);
+    const ReadbackBuffer& readback(ReadbackMode mode = ReadbackMode::Immediate,
+                                   uint8_t* destination = nullptr,
+                                   size_t destinationBytes = 0);
 
     // ── Render target access (for downstream consumers) ────────────────────
 
@@ -518,6 +553,11 @@ private:
     uint64_t readbackFrameCount_ = 0;   // unused after policy refactor, kept for shutdown reset
     HRESULT  lastReadbackHR_     = S_OK;
     ReadbackDiagnostics lastReadbackDiag_;
+    // Persistent readback result — reused across calls so buf.pixels is
+    // resized (reallocated) only when the readback dimensions change, not
+    // on every frame. readback() resets the scalar fields to their
+    // fresh-construction defaults on every call.
+    ReadbackBuffer readbackBuf_;
 
     // ── Readback policy (per-vendor, set after init) ───────────────────────
     ReadbackPolicy   activePolicy_         = ReadbackPolicy::FastImmediate;
