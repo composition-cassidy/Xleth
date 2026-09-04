@@ -1,6 +1,7 @@
 #include "RenderVideoDecoder.h"
 
 #include "FrameRateMath.h"
+#include "../video/SwsDestBuffer.h"
 
 #include <algorithm>
 #include <cmath>
@@ -701,8 +702,12 @@ FrameCacheEntry RenderVideoDecoder::uploadSwFrame(DecoderContext& ctx, AVFrame* 
     }
 
     // Convert to BGRA
+    // Convert to BGRA. The destination carries sws_scale's write slack — see
+    // video/SwsDestBuffer.h. A bare vector sized w*4*h here was the
+    // STATUS_HEAP_CORRUPTION (0xC0000374): yuv422p sources (dnxhd proxies)
+    // overflowed it by 32 bytes on every decoded frame.
     const int stride = w * 4;
-    std::vector<uint8_t> bgraData(static_cast<size_t>(stride) * h);
+    auto bgraData = xleth::makeSwsDestBuffer(static_cast<size_t>(stride) * h);
     uint8_t* dstSlice[1] = { bgraData.data() };
     int dstStride[1] = { stride };
 

@@ -31,6 +31,7 @@
 #include "VideoDecoder.h"
 #include "video/FrameOutput.h"
 #include "video/FrameServer.h"
+#include "video/SwsDestBuffer.h"
 
 // Phase 1 — model, commands, project
 #include "midi/MidiImporter.h"
@@ -701,8 +702,9 @@ void blitYuvToCanvas(std::vector<uint8_t>& canvas,
     const uint8_t* srcSlice[3] = { cf.yPlane.data(), cf.uPlane.data(), cf.vPlane.data() };
     int srcStride[3] = { cf.yStride, cf.uStride, cf.vStride };
 
-    // Decode into a temp buffer at target cell size
-    std::vector<uint8_t> cellBuf(static_cast<size_t>(dw) * dh * 4);
+    // Decode into a temp buffer at target cell size, padded for
+    // sws_scale's write slack (see video/SwsDestBuffer.h).
+    auto cellBuf = xleth::makeSwsDestBuffer(static_cast<size_t>(dw) * dh * 4);
     uint8_t* dstSlice[1] = { cellBuf.data() };
     int dstStride[1] = { dw * 4 };
     sws_scale(sc.ctx, srcSlice, srcStride, 0, cf.height, dstSlice, dstStride);
