@@ -463,63 +463,90 @@ bool WaveformMipmap::saveToFile(const juce::File& peakFile) const
 {
     if (!ready_.load(std::memory_order_acquire)) return false;
 
-    peakFile.deleteFile();
-    juce::FileOutputStream out(peakFile);
-    if (!out.openedOk()) {
-        WFM_LOG("saveToFile: cannot open %s", peakFile.getFullPathName().toRawUTF8());
+    // Write to a private sibling, then swap it in.  Several threads can be
+    // asked to persist the same source's peaks at once (a synchronous
+    // getFilePeaks alongside a background generation); writing straight to
+    // peakFile let them delete and truncate each other's stream, leaving
+    // either a short file or a header-only stub that the next loadFromFile
+    // rejected as corrupt.  A rename makes the loser harmless: readers see
+    // either the old file or a whole new one, never a half-written one.
+    const juce::File tmpFile = peakFile.getSiblingFile(
+        peakFile.getFileName() + "." + juce::Uuid().toDashedString() + ".tmp");
+
+    bool writeOk = false;
+    {
+        juce::FileOutputStream out(tmpFile);
+        if (!out.openedOk()) {
+            WFM_LOG("saveToFile: cannot open %s", tmpFile.getFullPathName().toRawUTF8());
+            return false;
+        }
+        out.setPosition(0);
+        out.truncate();
+
+        // ── Header (40 bytes) ────────────────────────────────────────────────
+        out.write("XLPK", 4);
+
+        uint16_t version = 1;
+        out.write(&version, 2);
+
+        uint16_t nc = static_cast<uint16_t>(numChannels_);
+        out.write(&nc, 2);
+
+        uint32_t sr = static_cast<uint32_t>(sampleRate_);
+        out.write(&sr, 4);
+
+        uint64_t ts = static_cast<uint64_t>(totalSamples_);
+        out.write(&ts, 8);
+
+        out.write(&sourceHash_, 8);
+
+        uint16_t nl = static_cast<uint16_t>(kNumLevels);
+        out.write(&nl, 2);
+
+        uint8_t reserved[10] = {};
+        out.write(reserved, 10);
+
+        // ── Level descriptors (12 bytes each) ─────────────────────────────────
+        uint32_t dataOff = static_cast<uint32_t>(kHeaderSize + kNumLevels * kLevelDescSize);
+        for (int i = 0; i < kNumLevels; ++i) {
+            uint32_t spp = static_cast<uint32_t>(levels_[i].samplesPerPoint);
+            uint32_t np  = static_cast<uint32_t>(levels_[i].numPoints);
+            out.write(&spp, 4);
+            out.write(&np, 4);
+            out.write(&dataOff, 4);
+            dataOff += static_cast<uint32_t>(levels_[i].data.size() * sizeof(float));
+        }
+
+        // ── Level data ───────────────────────────────────────────────────────
+        for (int i = 0; i < kNumLevels; ++i) {
+            if (!levels_[i].data.empty()) {
+                out.write(levels_[i].data.data(),
+                          levels_[i].data.size() * sizeof(float));
+            }
+        }
+
+        writeOk = out.getStatus().wasOk();
+    } // closes the stream — the handle must be gone before delete or rename
+
+    if (!writeOk) {
+        WFM_LOG("saveToFile: %s — FAILED (write error, %lld bytes)",
+                peakFile.getFileName().toRawUTF8(),
+                (long long)tmpFile.getSize());
+        tmpFile.deleteFile();
         return false;
     }
-    out.setPosition(0);
-    out.truncate();
 
-    // ── Header (40 bytes) ────────────────────────────────────────────────
-    out.write("XLPK", 4);
-
-    uint16_t version = 1;
-    out.write(&version, 2);
-
-    uint16_t nc = static_cast<uint16_t>(numChannels_);
-    out.write(&nc, 2);
-
-    uint32_t sr = static_cast<uint32_t>(sampleRate_);
-    out.write(&sr, 4);
-
-    uint64_t ts = static_cast<uint64_t>(totalSamples_);
-    out.write(&ts, 8);
-
-    out.write(&sourceHash_, 8);
-
-    uint16_t nl = static_cast<uint16_t>(kNumLevels);
-    out.write(&nl, 2);
-
-    uint8_t reserved[10] = {};
-    out.write(reserved, 10);
-
-    // ── Level descriptors (12 bytes each) ─────────────────────────────────
-    uint32_t dataOff = static_cast<uint32_t>(kHeaderSize + kNumLevels * kLevelDescSize);
-    for (int i = 0; i < kNumLevels; ++i) {
-        uint32_t spp = static_cast<uint32_t>(levels_[i].samplesPerPoint);
-        uint32_t np  = static_cast<uint32_t>(levels_[i].numPoints);
-        out.write(&spp, 4);
-        out.write(&np, 4);
-        out.write(&dataOff, 4);
-        dataOff += static_cast<uint32_t>(levels_[i].data.size() * sizeof(float));
+    if (!tmpFile.replaceFileIn(peakFile)) {
+        WFM_LOG("saveToFile: %s — FAILED (cannot replace)",
+                peakFile.getFileName().toRawUTF8());
+        tmpFile.deleteFile();
+        return false;
     }
 
-    // ── Level data ───────────────────────────────────────────────────────
-    for (int i = 0; i < kNumLevels; ++i) {
-        if (!levels_[i].data.empty()) {
-            out.write(levels_[i].data.data(),
-                      levels_[i].data.size() * sizeof(float));
-        }
-    }
-
-    bool ok = out.getStatus().wasOk();
-    WFM_LOG("saveToFile: %s — %s (%lld bytes)",
+    WFM_LOG("saveToFile: %s — OK (%lld bytes)",
             peakFile.getFileName().toRawUTF8(),
-            ok ? "OK" : "FAILED",
             (long long)peakFile.getSize());
-    return ok;
+    return true;
 }
 
 bool WaveformMipmap::loadFromFile(const juce::File& peakFile, uint64_t expectedHash)
@@ -691,13 +718,20 @@ int WaveformMipmap::getRawSamples(int channel, int64_t startSample, int64_t endS
 //  WaveformMipmapCache
 // ══════════════════════════════════════════════════════════════════════════════
 
-WaveformMipmap* WaveformMipmapCache::get(const std::string& key) const
+WaveformMipmapCache::Ptr WaveformMipmapCache::get(const std::string& key) const
 {
     std::lock_guard<std::mutex> lock(mutex_);
     auto it = cache_.find(key);
     if (it == cache_.end()) return nullptr;
     if (!it->second->isReady()) return nullptr;
-    return it->second.get();
+    return it->second;
+}
+
+void WaveformMipmapCache::insert(const std::string& key, Ptr mipmap)
+{
+    if (!mipmap) return;
+    std::lock_guard<std::mutex> lock(mutex_);
+    cache_[key] = std::move(mipmap);
 }
 
 void WaveformMipmapCache::generateFromBuffer(
@@ -709,19 +743,16 @@ void WaveformMipmapCache::generateFromBuffer(
 {
     if (!buffer || buffer->getNumSamples() == 0) return;
 
+    Ptr mm;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (cache_.count(key)) return; // already exists or being generated
-        cache_[key] = std::make_unique<WaveformMipmap>();
+        mm = std::make_shared<WaveformMipmap>();
+        cache_[key] = mm;
     }
 
-    WaveformMipmap* mm;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        mm = cache_[key].get();
-    }
-
-    // Capture by value for the background thread.
+    // Capture by value for the background thread. `mm` is a strong reference:
+    // the thread outlives any remove()/clear() of this key.
     // `buffer` is a raw pointer to a stable SampleBank allocation.
     juce::File srcCopy = sourceFile;
 
@@ -756,20 +787,17 @@ void WaveformMipmapCache::generateFromFile(
 {
     if (!audioFile.existsAsFile()) return;
 
+    Ptr mm;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         if (cache_.count(key)) return;
-        cache_[key] = std::make_unique<WaveformMipmap>();
-    }
-
-    WaveformMipmap* mm;
-    {
-        std::lock_guard<std::mutex> lock(mutex_);
-        mm = cache_[key].get();
+        mm = std::make_shared<WaveformMipmap>();
+        cache_[key] = mm;
     }
 
     juce::File fileCopy = audioFile;
 
+    // `mm` is captured as a strong reference — see generateFromBuffer.
     std::thread([mm, fileCopy]() {
         juce::File pf(fileCopy.getFullPathName() + ".xlpeak");
         uint64_t h = WaveformMipmap::computeSourceHash(fileCopy);

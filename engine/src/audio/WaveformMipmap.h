@@ -116,8 +116,19 @@ private:
 class WaveformMipmapCache
 {
 public:
+    // Entries are shared, not owned solely by the map: a generation thread
+    // keeps its own strong reference for as long as it is writing, so
+    // remove()/clear()/insert() can never free a mipmap out from under it.
+    using Ptr = std::shared_ptr<WaveformMipmap>;
+
     // Returns the ready mipmap for key, or nullptr if not yet available.
-    WaveformMipmap* get(const std::string& key) const;
+    // The caller holds a strong reference for as long as it uses the result.
+    Ptr get(const std::string& key) const;
+
+    // Publishes an already-generated mipmap under key, replacing any entry.
+    // For callers that generate synchronously and still want later calls to
+    // hit the cache instead of decoding the same source again.
+    void insert(const std::string& key, Ptr mipmap);
 
     // Generate from an in-memory buffer on a background thread.
     // If saveXlpeak is true, also save/load a .xlpeak file alongside sourceFile.
@@ -135,5 +146,5 @@ public:
 
 private:
     mutable std::mutex mutex_;
-    std::unordered_map<std::string, std::unique_ptr<WaveformMipmap>> cache_;
+    std::unordered_map<std::string, Ptr> cache_;
 };
