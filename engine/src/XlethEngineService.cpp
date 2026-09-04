@@ -5752,7 +5752,16 @@ JsonApi::Value InitFrameOutput(const JsonApi::CallbackInfo& info)
         return env.Undefined();
     }
 
+    // Stop the video thread before reconfiguring frameOutput. initializeExternal
+    // calls FrameOutput::shutdown() internally, which frees/unmaps the backing
+    // buffers; the video thread writes into a back-buffer pointer it captured
+    // earlier in its tick, with no mutex (see videoThreadBody's header comment).
+    // Reconfiguring underneath it corrupts whatever now owns those bytes —
+    // STATUS_HEAP_CORRUPTION (0xC0000374) on the owned-vector path, an
+    // ACCESS_VIOLATION on the mapped path. Same guard as InitVideoSharedMemory.
+    stopVideoThread();
     frameOutput.initializeExternal(ptr, bytes, width, height);
+    startVideoThread();
 
     JsonApi::Object obj = JsonApi::Object::New(env);
     obj.Set("width",       JsonApi::Number::New(env, frameOutput.getWidth()));
@@ -5894,6 +5903,19 @@ void SetVideoResolution(const JsonApi::CallbackInfo& info)
         return;
     }
 
+    // Stop the video thread before reconfiguring frameOutput. FrameOutput::
+    // initialize() calls shutdown() internally, which frees ownedData_ (a heap
+    // std::vector) and unmaps any existing view; the video thread writes into a
+    // back-buffer pointer it captured earlier in its tick, with no mutex (see
+    // videoThreadBody's header comment). Freeing it underneath that write
+    // smashes the heap and the process dies at the next allocation with
+    // STATUS_HEAP_CORRUPTION (0xC0000374), typically inside an unrelated RPC.
+    // Same guard InitVideoSharedMemory already carries.
+    //
+    // Both surfaces are reconfigured while the thread is joined, so it never
+    // observes the frameOutput/compositor size pair mid-transition either.
+    stopVideoThread();
+
     frameOutput.initialize(w, h);
 
     // [PreviewUnify] Reinitialize GPU compositor at new resolution
@@ -5912,6 +5934,8 @@ void SetVideoResolution(const JsonApi::CallbackInfo& info)
             std::fprintf(stderr, "[PreviewUnify] WARNING: Compositor reinit failed %dx%d\n", w, h);
         }
     }
+
+    startVideoThread();
 
     std::cout << "[Bridge] video.setResolution " << w << "x" << h << "\n" << std::flush;
 }

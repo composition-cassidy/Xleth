@@ -705,21 +705,39 @@ function graphHandler(keyFn, fn) {
 // and metadata — no buffer crosses IPC.
 let frameShmMeta = null;  // { name, width, height, bufferSize, indexOffset, totalSize }
 
-async function ensureFrameShm(width, height) {
-  if (frameShmMeta && frameShmMeta.width === width && frameShmMeta.height === height) {
+// Serialises ensureFrameShm. The cache test below is a check-then-act across an
+// await, and callers genuinely do overlap: React.StrictMode double-invokes
+// VideoPreview's mount effect, so two restorePreviewSettings() runs race and
+// every preview RPC arrives twice. Both could miss the cache and both fire
+// initVideoSharedMemory, which on the engine side stops the video thread,
+// unmaps and recreates the frame mapping, then restarts it — and
+// stopVideoThread/startVideoThread are not reentrant. Chaining each call onto
+// the previous one means the second caller re-tests the cache only after the
+// first has published its result, so a same-size request collapses to one RPC
+// and a genuine resize never overlaps another.
+let frameShmQueue = Promise.resolve();
+
+function ensureFrameShm(width, height) {
+  const run = frameShmQueue.then(async () => {
+    if (frameShmMeta && frameShmMeta.width === width && frameShmMeta.height === height) {
+      return frameShmMeta;
+    }
+    const res = await callWorker('initVideoSharedMemory', [FRAME_SHM_NAME, width, height]);
+    frameShmMeta = {
+      name:        res.name,
+      width:       res.width,
+      height:      res.height,
+      bufferSize:  res.bufferSize,
+      indexOffset: res.indexOffset,
+      totalSize:   res.totalSize,
+    };
+    log(`[IPC] ← shm ready: ${JSON.stringify(frameShmMeta)}`);
     return frameShmMeta;
-  }
-  const res = await callWorker('initVideoSharedMemory', [FRAME_SHM_NAME, width, height]);
-  frameShmMeta = {
-    name:        res.name,
-    width:       res.width,
-    height:      res.height,
-    bufferSize:  res.bufferSize,
-    indexOffset: res.indexOffset,
-    totalSize:   res.totalSize,
-  };
-  log(`[IPC] ← shm ready: ${JSON.stringify(frameShmMeta)}`);
-  return frameShmMeta;
+  });
+  // Swallow rejections on the queue only — `run` still rejects for the caller.
+  // Without this a single failed resize would wedge every later call.
+  frameShmQueue = run.catch(() => {});
+  return run;
 }
 
 ipcMain.handle('xleth:video:getFrameShm', safeHandler(async (_, width, height) => {
