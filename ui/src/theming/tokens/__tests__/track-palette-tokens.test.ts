@@ -74,14 +74,14 @@ describe('track palette — resolved through ThemeProvider pipeline', () => {
 
   it('default theme palette values match spec', () => {
     const { values } = resolveTheme(defaultTheme as Parameters<typeof resolveTheme>[0]);
-    expect(values['--theme-track-palette-1']).toBe('#4CC9F0');
-    expect(values['--theme-track-palette-16']).toBe('#FB7185');
+    expect(values['--theme-track-palette-1']).toBe('#58B2CE');
+    expect(values['--theme-track-palette-16']).toBe('#DB6A7B');
   });
 
   it('light theme palette values match spec', () => {
     const { values } = resolveTheme(lightTheme as Parameters<typeof resolveTheme>[0]);
-    expect(values['--theme-track-palette-1']).toBe('#167FA3');
-    expect(values['--theme-track-palette-16']).toBe('#B43A52');
+    expect(values['--theme-track-palette-1']).toBe('#2F809B');
+    expect(values['--theme-track-palette-16']).toBe('#A54E5F');
   });
 
   it('catalog defaults resolve without any theme override', () => {

@@ -997,22 +997,22 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   // Consumed by Timeline/Mixer/Grid in future passes; not consumed here.
   // Values must remain solid hex — Theme Editor ColorPicker and canvas
   // hexToRgba() helpers both require valid #RRGGBB.
-  explicit('--theme-track-palette-1',  '#4CC9F0', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-2',  '#7BD88F', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-3',  '#FF9F5A', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-4',  '#9B7BFF', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-5',  '#F472B6', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-6',  '#FFD166', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-7',  '#5B8DEF', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-8',  '#2DD4BF', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-9',  '#FF6B6B', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-10', '#A3D65C', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-11', '#C084FC', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-12', '#38BDF8', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-13', '#FBBF24', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-14', '#8EA4D2', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-15', '#6EE7B7', 'solid', 'Labels', 'track-palette'),
-  explicit('--theme-track-palette-16', '#FB7185', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-1',  '#58B2CE', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-2',  '#77BE87', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-3',  '#DD925D', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-4',  '#8A6FE0', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-5',  '#D56DA3', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-6',  '#DEB963', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-7',  '#6186CF', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-8',  '#4AB7A9', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-9',  '#DF6666', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-10', '#97BB65', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-11', '#A974DE', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-12', '#4CA9D3', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-13', '#D3AA41', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-14', '#8496BA', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-15', '#6DCAA5', 'solid', 'Labels', 'track-palette'),
+  explicit('--theme-track-palette-16', '#DB6A7B', 'solid', 'Labels', 'track-palette'),
 ];
 
 // ──────────────────────────────────────────────────────────────────────────

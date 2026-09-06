@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback } from 'react'
 import { Trash2 } from 'lucide-react'
 import { TRACK_HEIGHT } from '../../constants/timeline.js'
-import { TRACK_PALETTE_FALLBACK } from './trackColorResolver.js'
+import { TRACK_PALETTE_FALLBACK, pickPatternAccentText } from './trackColorResolver.js'
 import { PianoIcon, WaveformIcon, EllipsisIcon } from './TrackTypeIcons.jsx'
 
 export default function TrackHeader({
@@ -18,6 +18,7 @@ export default function TrackHeader({
 
   const isPatternTrack = track.type === 'Pattern'
   const color = trackColor || TRACK_PALETTE_FALLBACK[index % 16]
+  const patternTextColor = isPatternTrack ? pickPatternAccentText(color) : null
 
   const startEdit = useCallback(() => {
     setEditing(true)
@@ -57,6 +58,7 @@ export default function TrackHeader({
       style={{
         height: trackHeight,
         '--track-header-fill': color,
+        ...(patternTextColor ? { '--track-header-text': patternTextColor } : {}),
       }}
       draggable
       onMouseDown={() => onFocus?.(track.id)}
@@ -73,8 +75,9 @@ export default function TrackHeader({
     >
       {isFocused && <div className="track-header-focus-bar" />}
 
-      {/* Colored identity block — solid fill for Pattern tracks, a soft white
-          glow bleeding in from the right edge for Clip tracks. */}
+      {/* Colored identity block — flat solid fill for Clip tracks; tinted
+          glass + diagonal hatch + inset stroke (all CSS-derived from
+          --track-header-fill) for Pattern tracks. */}
       <div className="track-header-block">
         <button
           className="track-header-color-btn"

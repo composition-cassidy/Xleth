@@ -16,7 +16,7 @@ import { hiResCoversWindow } from './hiResCoverage.js'
 import { findCoveringEntry } from './hiResRegionCache.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
 import { uiCanvasFont } from '../../styles/typography.js'
-import { normalizeTrackPalette, TRACK_PALETTE_FALLBACK } from './trackColorResolver.js'
+import { normalizeTrackPalette, TRACK_PALETTE_FALLBACK, pickPatternAccentText } from './trackColorResolver.js'
 import { getRegionPlaybackDurationSec } from './regionDuration.js'
 import { getSyllableDisplayNumber } from '../SyllableSplitter/syllableModel.js'
 import { getHoldThresholdTicks } from './holdLastFrame.js'
@@ -591,15 +591,15 @@ function _contrastMul(c) { return _CONTRAST_MUL[c] ?? 1.0 }
 const _WAVEFORM_CONTRAST_MUL = { low: 0.82, medium: 0.92, high: 1.0 }
 function _waveformContrastMul(c) { return _WAVEFORM_CONTRAST_MUL[c] ?? 0.92 }
 
-// Body material helper.
+// Body material helper for Clip (audio) tracks only — Pattern tracks use the
+// fixed, non-configurable tinted-glass treatment in getPatternGlassStyle()
+// below instead of this mode system (Pass 7).
 // At plain + medium + unmuted, this MUST produce alpha identical to Pass 4B:
 //   audio: 0.6 (unselected) / 0.8 (selected)
-//   pattern: 0.55 (unselected) / 0.75 (selected)
-// kind: 'audio' | 'pattern'
 // Returns: { fillStyle (string|CanvasGradient), borderStyle, borderWidth }
 function getTimelineBodyMaterial({
   baseHex, mode, selected, muted, contrast,
-  gradientDirection, ctx, x, y, w, h, kind,
+  gradientDirection, ctx, x, y, w, h,
 }) {
   const cm = _contrastMul(contrast)
   const mm = muted ? 0.3 : 1.0
@@ -618,13 +618,8 @@ function getTimelineBodyMaterial({
     fillAlphaA = selected ? 0.86 : 0.74
   } else {
     // 'plain' default — Pass 5E.3 raised against the new dark
-    // --theme-timeline-lane-bg arrangement bed so clips/patterns pop.
-    // Old (Pass 4B/5C) values: audio 0.60/0.80, pattern 0.55/0.75.
-    if (kind === 'audio') {
-      fillAlphaA = selected ? 0.90 : 0.80
-    } else {
-      fillAlphaA = selected ? 0.86 : 0.72
-    }
+    // --theme-timeline-lane-bg arrangement bed so clips pop.
+    fillAlphaA = selected ? 0.90 : 0.80
   }
 
   const aFinal = _clampAlpha(fillAlphaA * cm * mm)
@@ -836,6 +831,65 @@ function getTitleStripStyle(baseHex, mode, selected, muted, contrast) {
   const fill      = hexToRgba(baseHex, _clampAlpha(stripA * cm * mm))
   const separator = hexToRgba(baseHex, _clampAlpha(0.55 * cm * mm))
   return { fill, separator }
+}
+
+// Dark text spec'd for Clip tracks — legible against a full-saturation solid
+// fill of any hue. Pattern tracks use pickPatternAccentText(hex) instead
+// (see trackColorResolver.js), since their fill is a mostly-dark glass tint.
+const CLIP_TRACK_TEXT_DARK = 'rgba(26, 26, 26, 0.85)'
+
+// ── Pattern-track "tinted glass" material (Pass 7) ──────────────────────────
+// Fixed, non-configurable treatment — deliberately bypasses the Clip body-mode
+// system above. Everything here is derived from the track's own color at the
+// draw call (never cached/memoized across a theme change), same rule as
+// resolveTimelinePalette()'s tokenValue() reads.
+const PATTERN_FILL_ALPHA            = 0.10  // track color over the dark lane
+const PATTERN_HATCH_ALPHA           = 0.18
+const PATTERN_STRIP_FILL_ALPHA      = 0.16
+const PATTERN_STRIP_SEPARATOR_ALPHA = 0.45
+const PATTERN_STROKE_WIDTH          = 2      // drawn fully inside the bounds
+const PATTERN_HATCH_STRIPE_PX       = 2
+const PATTERN_HATCH_GAP_PX          = 10     // 5:1 gap:stripe ratio
+// Perpendicular stripe spacing (stripe+gap) converted to the 45° diagonal's
+// own c = x+y parameterization — see drawPatternHatch().
+const PATTERN_HATCH_STEP = (PATTERN_HATCH_STRIPE_PX + PATTERN_HATCH_GAP_PX) * Math.SQRT2
+
+function getPatternGlassStyle(baseHex, selected, muted) {
+  const mm = muted ? 0.3 : 1.0
+  const sel = selected ? 1.2 : 1.0 // selection ring (drawn separately) carries most of the cue
+  return {
+    fill:            hexToRgba(baseHex, _clampAlpha(PATTERN_FILL_ALPHA * sel * mm)),
+    hatch:           hexToRgba(baseHex, _clampAlpha(PATTERN_HATCH_ALPHA * sel * mm)),
+    stroke:          hexToRgba(baseHex, _clampAlpha(1.0 * mm)),
+    stripFill:       hexToRgba(baseHex, _clampAlpha(PATTERN_STRIP_FILL_ALPHA * sel * mm)),
+    stripSeparator:  hexToRgba(baseHex, _clampAlpha(PATTERN_STRIP_SEPARATOR_ALPHA * mm)),
+  }
+}
+
+// Static 45° hatch, clipped to (x,y,w,h). Lines satisfy x+y = c for a
+// constant c; canvas measures lineWidth perpendicular to the stroke
+// direction regardless of angle, so PATTERN_HATCH_STRIPE_PX is the real
+// on-screen stripe width. Phase is anchored to absolute canvas coordinates
+// (not clip-local), so the hatch reads as one continuous field rather than
+// resetting per block.
+function drawPatternHatch(ctx, x, y, w, h, strokeColor) {
+  if (w <= 0.5 || h <= 0.5) return
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(x, y, w, h)
+  ctx.clip()
+  ctx.strokeStyle = strokeColor
+  ctx.lineWidth = PATTERN_HATCH_STRIPE_PX
+  const cMin = x + y
+  const cMax = x + w + y + h
+  const firstC = Math.floor(cMin / PATTERN_HATCH_STEP) * PATTERN_HATCH_STEP
+  ctx.beginPath()
+  for (let c = firstC; c <= cMax; c += PATTERN_HATCH_STEP) {
+    ctx.moveTo(c - y, y)
+    ctx.lineTo(c - (y + h), y + h)
+  }
+  ctx.stroke()
+  ctx.restore()
 }
 
 // Chip data is built from the same fields the existing inline metadata block
@@ -1266,7 +1320,6 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
       contrast: ds.timelineClipContrast,
       gradientDirection: ds.timelineBodyGradientDirection,
       ctx, x, y, w: clipW, h: clipH,
-      kind: 'audio',
     })
 
     // ── Fill ──────────────────────────────────────────────────────────────
@@ -1548,7 +1601,7 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
             layout.titleH,
           )
           ctx.clip()
-          ctx.fillStyle = p.clipLabel
+          ctx.fillStyle = CLIP_TRACK_TEXT_DARK
           ctx.font = uiCanvasFont('600 10px')
           ctx.textBaseline = 'middle'
           const fitted = fitText(ctx, clipLabel, titleAvailW, { allowBareEllipsis })
@@ -1682,26 +1735,31 @@ export function drawPatternBlocks(ctx, w, h, scrollOffset, ppb, blocks, trackIdT
     const isMuted = mutedTrackIds?.has(block.trackId)
     const mutedMul = isMuted ? 0.3 : 1.0
 
-    // ── Body material (Pass 5C) ──────────────────────────────────────────
-    const _mat = getTimelineBodyMaterial({
-      baseHex: hex,
-      mode: ds.timelinePatternBodyMode,
-      selected,
-      muted: !!isMuted,
-      contrast: ds.timelineClipContrast, // contrast applies to both kinds in v1
-      gradientDirection: ds.timelineBodyGradientDirection,
-      ctx, x, y, w: blockW, h: clipH,
-      kind: 'pattern',
-    })
+    // ── Tinted-glass material (Pass 7) — fixed, not routed through the
+    // Clip body-mode setting; derives entirely from the track's own color.
+    const accentText = pickPatternAccentText(hex)
+    const _mat = getPatternGlassStyle(hex, selected, !!isMuted)
 
-    // ── Fill ──────────────────────────────────────────────────────────────
-    ctx.fillStyle = _mat.fillStyle
+    // ── Fill — track color at ~10% over the dark lane ("tinted glass") ────
+    ctx.fillStyle = _mat.fill
     ctx.fillRect(x, y, blockW, clipH)
 
-    // ── Border ────────────────────────────────────────────────────────────
-    ctx.strokeStyle = _mat.borderStyle
-    ctx.lineWidth = _mat.borderWidth
-    ctx.strokeRect(x, y, blockW, clipH)
+    // ── Hatch — static 45° stripes over the fill, inside the stroke ───────
+    drawPatternHatch(
+      ctx,
+      x + PATTERN_STROKE_WIDTH, y + PATTERN_STROKE_WIDTH,
+      blockW - PATTERN_STROKE_WIDTH * 2, clipH - PATTERN_STROKE_WIDTH * 2,
+      _mat.hatch,
+    )
+
+    // ── Stroke — 2px solid track color, drawn fully inside the bounds so
+    // adjacent same-hue pattern blocks never visually merge ───────────────
+    ctx.strokeStyle = _mat.stroke
+    ctx.lineWidth = PATTERN_STROKE_WIDTH
+    ctx.strokeRect(
+      x + PATTERN_STROKE_WIDTH / 2, y + PATTERN_STROKE_WIDTH / 2,
+      blockW - PATTERN_STROKE_WIDTH, clipH - PATTERN_STROKE_WIDTH,
+    )
 
     // ── Selected-state inner highlight ring (Pass 4B) ─────────────────────
     if (selected && blockW > 4 && clipH > 4) {
@@ -1718,28 +1776,14 @@ export function drawPatternBlocks(ctx, w, h, scrollOffset, ppb, blocks, trackIdT
       showTitleStrip: _wantTitleStrip,
     })
 
-    // ── Title strip background ───────────────────────────────────────────
-    // Drawn first so the dashed top border (re-drawn below) sits on top of it.
+    // ── Title strip background — a slightly stronger glass tint so the
+    // name text sits on a touch more contrast than the body alone ────────
     if (layout.useStrip) {
-      const ts = getTitleStripStyle(
-        hex, ds.timelinePatternBodyMode, selected, !!isMuted, ds.timelineClipContrast,
-      )
-      ctx.fillStyle = ts.fill
+      ctx.fillStyle = _mat.stripFill
       ctx.fillRect(layout.titleX, layout.titleY, layout.titleW, layout.titleH)
-      ctx.fillStyle = ts.separator
+      ctx.fillStyle = _mat.stripSeparator
       ctx.fillRect(layout.titleX, layout.titleY + layout.titleH - 1, layout.titleW, 1)
     }
-
-    // ── Dashed top border distinguishes PatternBlocks from Clips ──────────
-    // Drawn AFTER the title strip so the dashes remain visible.
-    ctx.strokeStyle = hexToRgba(hex, 1.0)
-    ctx.lineWidth = 2
-    ctx.setLineDash([4, 3])
-    ctx.beginPath()
-    ctx.moveTo(x, y + 1)
-    ctx.lineTo(x + blockW, y + 1)
-    ctx.stroke()
-    ctx.setLineDash([])
 
     // ── Note markers (if pattern has notes and zoom is sufficient) ────────
     // Pass 5C: gated by timelineShowPatternPreview.
@@ -1801,7 +1845,7 @@ export function drawPatternBlocks(ctx, w, h, scrollOffset, ppb, blocks, trackIdT
     const hasLoopGlyph = !!(pattern && pattern.lengthTicks > 0
                             && block.durationTicks > pattern.lengthTicks)
     if (hasLoopGlyph) {
-      ctx.fillStyle = p.patternGlyphBg
+      ctx.fillStyle = accentText
       ctx.font = uiCanvasFont('600 8px')
       ctx.textBaseline = 'top'
       // ↻ when loop active, ∣→ when disabled (extends as empty space)
@@ -1837,7 +1881,7 @@ export function drawPatternBlocks(ctx, w, h, scrollOffset, ppb, blocks, trackIdT
           layout.titleH,
         )
         ctx.clip()
-        ctx.fillStyle = p.patternLabel
+        ctx.fillStyle = accentText
         ctx.font = uiCanvasFont('600 10px')
         ctx.textBaseline = 'middle'
         const fitted = fitText(ctx, pattern?.name || '?', titleAvailW, { allowBareEllipsis })

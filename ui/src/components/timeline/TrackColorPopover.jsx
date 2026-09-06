@@ -4,6 +4,7 @@ import {
   normalizeTrackColorAssignment,
   isValidTrackCustomColor,
   normalizeTrackCustomColor,
+  TRACK_PALETTE_FALLBACK,
 } from './trackColorResolver.js'
 
 export default function TrackColorPopover({
@@ -18,12 +19,12 @@ export default function TrackColorPopover({
   const top = anchorRect.bottom + 4
   const left = anchorRect.left
 
-  const initDraft = (mode === 'custom' && customColor) ? customColor : (resolvedTrackColor || '#4CC9F0')
+  const initDraft = (mode === 'custom' && customColor) ? customColor : (resolvedTrackColor || TRACK_PALETTE_FALLBACK[0])
   const [draftHex, setDraftHex] = useState(initDraft)
 
   useEffect(() => {
     setDraftHex(
-      (mode === 'custom' && customColor) ? customColor : (resolvedTrackColor || '#4CC9F0')
+      (mode === 'custom' && customColor) ? customColor : (resolvedTrackColor || TRACK_PALETTE_FALLBACK[0])
     )
   }, [mode, customColor, resolvedTrackColor])
 

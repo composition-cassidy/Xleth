@@ -2552,7 +2552,7 @@ html[data-xleth-backdrop="video"] .app-body {
   flex-shrink: 0;
   display: flex;
   flex-direction: column;
-  border-right: 1px solid var(--theme-border-subtle);
+  border-right: 2px solid var(--theme-timeline-lane-bg);
   background: var(--theme-bg-surface);
   overflow: hidden;
 }
@@ -2597,7 +2597,7 @@ html[data-xleth-backdrop="video"] .app-body {
   align-items: stretch;
   gap: 0;
   padding: 0;
-  border-bottom: 1px solid var(--theme-border-subtle);
+  border-bottom: 2px solid var(--theme-timeline-lane-bg);
   user-select: none;
   cursor: default;
   background: transparent;
@@ -2631,8 +2631,10 @@ html[data-xleth-backdrop="video"] .app-body {
   opacity: 0.4;
 }
 
-/* â”€â”€ Colored identity block â”€â”€ solid fill for Pattern tracks, a soft white
-   glow bleeding in from the right edge for Clip tracks. â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+/* â”€â”€ Colored identity block â”€â”€ Clip tracks: flat solid fill, no shine.
+   Pattern tracks: "tinted glass" â€” a ~10% track-color wash over the dark
+   header background, a 2px inset stroke, and a static 45Â° hatch, all derived
+   from --track-header-fill via color-mix() at the CSS usage site. â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 .track-header-block {
   position: relative;
   flex: 1 1 auto;
@@ -2647,12 +2649,17 @@ html[data-xleth-backdrop="video"] .app-body {
   transition: background var(--transition-fast);
 }
 
-.track-header:not(.track-header--pattern) .track-header-block {
-  background: linear-gradient(
-    90deg,
-    var(--track-header-fill, var(--theme-timeline-track-color-stripe)) 55%,
-    color-mix(in srgb, var(--track-header-fill, var(--theme-timeline-track-color-stripe)) 55%, white 45%) 100%
-  );
+.track-header--pattern .track-header-block {
+  background:
+    repeating-linear-gradient(
+      45deg,
+      color-mix(in srgb, var(--track-header-fill, var(--theme-timeline-track-color-stripe)) 18%, transparent) 0px,
+      color-mix(in srgb, var(--track-header-fill, var(--theme-timeline-track-color-stripe)) 18%, transparent) 2px,
+      transparent 2px,
+      transparent 12px
+    ),
+    color-mix(in srgb, var(--track-header-fill, var(--theme-timeline-track-color-stripe)) 10%, transparent);
+  box-shadow: inset 0 0 0 2px var(--track-header-fill, var(--theme-timeline-track-color-stripe));
 }
 
 .track-header-color-btn {
@@ -2684,8 +2691,6 @@ html[data-xleth-backdrop="video"] .app-body {
   min-width: 0;
 }
 
-/* Single hard-edged (unblurred) offset shadow — enough of a cue against
-   pale track colors without the heavy blob a full outline gave. */
 .track-header-menu-btn {
   display: flex;
   align-items: center;
@@ -2696,13 +2701,12 @@ html[data-xleth-backdrop="video"] .app-body {
   border: none;
   padding: 0;
   background: transparent;
-  color: rgba(255, 255, 255, 0.5);
-  filter: drop-shadow(1px 1px 0 rgba(0, 0, 0, 0.35));
+  color: rgba(26, 26, 26, 0.55);
   cursor: pointer;
 }
 
 .track-header-menu-btn:hover {
-  color: rgba(255, 255, 255, 0.9);
+  color: rgba(26, 26, 26, 0.85);
 }
 
 .track-header-name {
@@ -2711,7 +2715,7 @@ html[data-xleth-backdrop="video"] .app-body {
   font-size: 12px;
   font-weight: 600;
   line-height: 1.2;
-  color: #fff;
+  color: rgba(26, 26, 26, 0.85);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2724,27 +2728,19 @@ html[data-xleth-backdrop="video"] .app-body {
   font-size: 12px;
   font-weight: 600;
   font-family: inherit;
-  color: #fff;
+  color: rgba(26, 26, 26, 0.85);
   background: transparent;
   border: none;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.6);
+  border-bottom: 1px solid rgba(26, 26, 26, 0.35);
   outline: none;
   padding: 0;
-}
-
-/* The app-wide ".xleth-windowing-app *" guardrail resets text-shadow to
-   none at the same (0,1,0) specificity, so these need the extra class to
-   actually win the cascade. */
-.track-header .track-header-name,
-.track-header .track-header-name-input {
-  text-shadow: 1px 1px 0 rgba(0, 0, 0, 0.35);
 }
 
 .track-header-hold-badge {
   font-size: 8px;
   font-weight: 700;
   text-transform: uppercase;
-  color: #fff;
+  color: rgba(26, 26, 26, 0.85);
   opacity: 0.85;
   border: 1px solid currentColor;
   border-radius: 2px;
@@ -2756,9 +2752,32 @@ html[data-xleth-backdrop="video"] .app-body {
 .track-header-type-icon {
   display: flex;
   align-items: center;
-  color: rgba(255, 255, 255, 0.62);
+  color: rgba(26, 26, 26, 0.55);
   margin-top: 1px;
-  filter: drop-shadow(1px 1px 0 rgba(0, 0, 0, 0.35));
+}
+
+/* â”€â”€ Pattern tracks â”€â”€ track color (or the near-white fallback computed in
+   TrackHeader.jsx when the color itself is too dark to read) instead of the
+   dark-on-fill text above, since the fill here is a mostly-dark glass tint
+   rather than a solid light color. â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+.track-header--pattern .track-header-name,
+.track-header--pattern .track-header-name-input,
+.track-header--pattern .track-header-hold-badge {
+  color: var(--track-header-text, var(--track-header-fill, var(--theme-timeline-track-color-stripe)));
+}
+
+.track-header--pattern .track-header-name-input {
+  border-bottom-color: color-mix(in srgb, var(--track-header-text, var(--track-header-fill)) 60%, transparent);
+}
+
+.track-header--pattern .track-header-menu-btn,
+.track-header--pattern .track-header-type-icon {
+  color: var(--track-header-text, var(--track-header-fill, var(--theme-timeline-track-color-stripe)));
+  opacity: 0.8;
+}
+
+.track-header--pattern .track-header-menu-btn:hover {
+  opacity: 1;
 }
 
 /* â”€â”€ M / S / V cluster â”€â”€ plain panel background, consistent with the mixer â”€â”€ */
