@@ -2018,6 +2018,40 @@ target_compile_definitions(test_reverb PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_amp ───────────────────────────────────────────────────────
+# XlethAmpEffect ("Amp Stack") — docs/amp spec.docx §10 acceptance tests 1-4:
+# aliasing sweep at max Drive per model, bypass null against latency-compensated
+# dry, per-stage element isolation, and per-instance CPU at the measured engine
+# rate. Also checks the §7 parameter surface and the placeholder cabinet IRs
+# against the numeric character notes in §6.
+add_executable(test_amp
+    test/test_amp.cpp
+)
+
+target_link_libraries(test_amp PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_amp PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_uniflange ───────────────────────────────────────────────────────────
 # Structural DSP tests for UniFlangeEffect (Fruity-Flangus-style unison/
 # ensemble generator). Verifies: cross-matrix exactness, LEGACY-mode
@@ -2796,6 +2830,7 @@ set(XLETH_ENGINE_TESTS
     test_distortion
     test_phanjer
     test_reverb
+    test_amp
     test_uniflange
     test_limiter
     test_apex
