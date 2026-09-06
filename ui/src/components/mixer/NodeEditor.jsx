@@ -22,6 +22,7 @@ const PLUGIN_NAMES = {
   testgain: 'Test Gain', compressor: 'Compressor', limiter: 'Limiter',
   overdone: 'Overdone', transientproc: 'Transient Proc', xletheq: 'Xleth EQ',
   xlethfilter: 'Xleth Filter', distortion: 'Distortion', waveshaper: 'Waveshaper',
+  amp: 'Amp Stack',
   uniflange: 'UniFlange', chorus: 'Chorus', flanger: 'Flanger', phaser: 'Phaser',
   phanjer: 'Phanjer', delay: 'Delay', reverb: 'Reverb', smartbalance: 'Smart Balance',
   resonancesuppressor: 'Resonance Suppressor',
@@ -38,6 +39,7 @@ const EFFECT_CATEGORIES = [
   ]},
   { label: 'Distortion', submenu: [
     { label: 'Distortion', id: 'distortion' }, { label: 'Waveshaper', id: 'waveshaper' },
+    { label: 'Amp Stack', id: 'amp' },
   ]},
   { label: 'Modulation', submenu: [
     { label: 'UniFlange', id: 'uniflange' }, { label: 'Chorus', id: 'chorus' },

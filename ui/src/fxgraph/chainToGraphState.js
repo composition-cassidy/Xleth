@@ -14,6 +14,7 @@ export const STOCK_EFFECT_LABELS = Object.freeze({
   xlethfilter: 'Xleth Filter',
   distortion: 'Distortion',
   waveshaper: 'Waveshaper',
+  amp: 'Amp Stack',
   uniflange: 'UniFlange',
   chorus: 'Chorus',
   flanger: 'Flanger',

@@ -30874,3 +30874,264 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   background: var(--theme-accent);
   border-color: var(--theme-accent);
 }
+
+/* ── Amp Stack panel (XlethAmpEffect) ─────────────────────────────────────────
+   Two skins over ONE component (spec 8): MODERN follows the theme token system,
+   so Dark/Light comes free with the token swap; ANALOG is hardcoded paint with
+   exactly two defined colour states. Skin is chosen by the root class
+   (.amp-panel--analog / .amp-panel--modern) which AmpPanel.jsx derives from the
+   Model, with a header override chip.                                          */
+
+.amp-panel {
+  position: fixed;
+  z-index: 200;
+  width: 660px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--xleth-flat-border);
+  border-radius: 0;
+  background: var(--xleth-flat-panel);
+  box-shadow: var(--theme-depth-hard-shadow);
+  color: var(--xleth-flat-text);
+  font-family: var(--xleth-global-font-family);
+  user-select: none;
+
+  /* Skin surface variables. MODERN binds them to theme tokens; the ANALOG block
+     below re-binds the same five names to its own two colour states, so every
+     rule underneath is written once and never branches on skin. */
+  --amp-plate: var(--xleth-flat-panel);
+  --amp-chrome: var(--xleth-flat-chrome);
+  --amp-line: var(--xleth-flat-border);
+  --amp-legend: var(--xleth-flat-text);
+  --amp-legend-muted: var(--xleth-flat-text-muted);
+  --amp-accent: var(--xleth-flat-accent);
+  --amp-accent-text: var(--xleth-flat-accent-text);
+}
+
+/* ANALOG light state (spec 8): cream plate, espresso legend, coral accent. */
+.amp-panel--analog {
+  --amp-plate: #F4ECDD;
+  --amp-chrome: #E7DBC4;
+  --amp-line: #201A12;
+  --amp-legend: #201A12;
+  --amp-legend-muted: #7A4B2A;
+  --amp-accent: #FF672F;
+  --amp-accent-text: #201A12;
+  background: var(--amp-plate);
+  color: var(--amp-legend);
+  border-color: var(--amp-line);
+}
+
+/* ANALOG dark state: espresso plate, cream legend, brass line. The coral accent
+   is unchanged across states — that is authentic, not an oversight.
+
+   The theme runtime writes token VALUES to :root and sets no dark/light
+   attribute or class, so there is no CSS-only selector for appearance. AmpPanel
+   derives the state from the panel-surface token's luminance and adds this
+   class; see the comment on ANALOG_DARK_THRESHOLD there. */
+.amp-panel--analog.amp-panel--analog-dark {
+  --amp-plate: #251D15;
+  --amp-chrome: #1C1610;
+  --amp-line: #5A4830;
+  --amp-legend: #F0E5CF;
+  --amp-legend-muted: #8A7A5E;
+  --amp-accent: #FF672F;
+  --amp-accent-text: #201A12;
+}
+
+/* ── Header ──────────────────────────────────────────────────────────────── */
+
+.amp-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 34px;
+  padding: 0 6px 0 12px;
+  background: var(--amp-chrome);
+  border-bottom: 1px solid var(--amp-line);
+  cursor: grab;
+}
+
+.amp-panel-header::before {
+  content: '';
+  width: 3px;
+  height: 14px;
+  background: var(--amp-accent);
+  flex-shrink: 0;
+}
+
+.amp-panel-header:active { cursor: grabbing; }
+
+.amp-panel-title {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--amp-legend);
+}
+
+/* Names the voicing that is actually running: model, then the resolved cab. */
+.amp-panel-sub {
+  flex: 1;
+  font-size: 8.5px;
+  font-weight: 600;
+  letter-spacing: 0.16em;
+  color: var(--amp-legend-muted);
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.amp-skin-chip {
+  height: 18px;
+  padding: 0 7px;
+  border: 1px solid var(--amp-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--amp-legend-muted);
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.amp-skin-chip:hover {
+  color: var(--amp-legend);
+  border-color: var(--amp-accent);
+}
+
+.amp-skin-chip-pin {
+  margin-left: 4px;
+  color: var(--amp-accent);
+}
+
+.amp-panel-close {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--amp-legend-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.amp-panel-close:hover {
+  color: var(--amp-legend);
+  background: var(--amp-plate);
+}
+
+/* ── Choice rows (Model, Cab) ────────────────────────────────────────────── */
+
+.amp-choice {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 12px;
+  border-bottom: 1px solid var(--amp-line);
+}
+
+.amp-choice-label {
+  width: 42px;
+  flex-shrink: 0;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.16em;
+  color: var(--amp-legend-muted);
+}
+
+.amp-choice-row {
+  display: flex;
+  gap: 2px;
+  flex: 1;
+  min-width: 0;
+}
+
+.amp-choice-button {
+  flex: 1;
+  min-width: 0;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid var(--amp-line);
+  border-radius: 0;
+  background: transparent;
+  color: var(--amp-legend-muted);
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  cursor: pointer;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.amp-choice-button:hover { color: var(--amp-legend); }
+
+.amp-choice-button.is-active {
+  background: var(--amp-accent);
+  color: var(--amp-accent-text);
+  border-color: var(--amp-accent);
+}
+
+/* ── Control deck ────────────────────────────────────────────────────────── */
+
+.amp-deck {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 14px 12px 16px;
+  background: var(--amp-plate);
+}
+
+.amp-deck-drive {
+  flex-shrink: 0;
+  padding-right: 16px;
+  border-right: 1px solid var(--amp-line);
+}
+
+.amp-deck-columns {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  flex: 1;
+  min-width: 0;
+}
+
+.amp-group {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+
+.amp-group-label {
+  font-size: 8px;
+  font-weight: 700;
+  letter-spacing: 0.18em;
+  color: var(--amp-legend-muted);
+}
+
+.amp-group-row {
+  display: flex;
+  gap: 14px;
+  align-items: flex-start;
+}
+
+.amp-knob-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 2px;
+}
+
+.amp-knob-value {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--amp-legend);
+  font-variant-numeric: tabular-nums;
+}
+
+.amp-knob-cell--sm .amp-knob-value { font-size: 8.5px; }

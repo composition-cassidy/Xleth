@@ -24,7 +24,7 @@ describe('effectCatalog shared add-effect source', () => {
     expect(stockPluginIds()).toEqual(
       expect.arrayContaining([
         'compressor', 'limiter', 'overdone', 'transientproc', 'resonancesuppressor',
-        'xletheq', 'xlethfilter', 'distortion', 'waveshaper',
+        'xletheq', 'xlethfilter', 'distortion', 'waveshaper', 'amp',
         'uniflange', 'chorus', 'flanger', 'phaser', 'phanjer',
         'delay', 'reverb', 'smartbalance',
       ]),

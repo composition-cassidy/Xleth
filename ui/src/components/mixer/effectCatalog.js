@@ -35,6 +35,7 @@ export const EFFECT_CATEGORIES = [
     submenu: [
       { label: 'Distortion', id: 'distortion' },
       { label: 'Waveshaper', id: 'waveshaper' },
+      { label: 'Amp Stack', id: 'amp' },
     ],
   },
   {
