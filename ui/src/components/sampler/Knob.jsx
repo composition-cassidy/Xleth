@@ -71,6 +71,13 @@ export default function Knob({
   labelPlacement = 'bottom',
   depth = 'raised',
   appearanceTokens = null,
+  // Resolved literal colors (e.g. from tokenValue() on a caller's own CSS
+  // custom property) that win over the token-registry surface/text lookup.
+  // Mirrors `color` (accent) below — null means "use the registry token",
+  // so every existing caller is unaffected. See PluginUIKitKnob's
+  // surfaceColor/textColor for the intended caller-facing escape hatch.
+  surfaceColor = null,
+  textColor = null,
   accentGlow = false,
   glyph = null,
   mod = null,
@@ -169,9 +176,9 @@ export default function Knob({
       depth,
       accentGlow,
       glyph,
-      surface: readToken(appearanceTokens?.surfaceCssVar, tokenValue('--theme-fx-knob-lg-bg'), c, '#172033'),
+      surface: surfaceColor || readToken(appearanceTokens?.surfaceCssVar, tokenValue('--theme-fx-knob-lg-bg'), c, '#172033'),
       accent: readToken(appearanceTokens?.accentCssVar, color || tokenValue('--theme-border-focus'), c, '#52e5ff'),
-      text: readToken(appearanceTokens?.textCssVar, tokenValue('--theme-text-muted'), c, '#cbd5e1'),
+      text: textColor || readToken(appearanceTokens?.textCssVar, tokenValue('--theme-text-muted'), c, '#cbd5e1'),
       track: readToken(null, tokenValue('--theme-fx-knob-lg-track'), c, '#263246'),
       border: readToken(null, tokenValue('--theme-fx-knob-lg-border'), c, 'rgba(203, 213, 225, 0.28)'),
     })
@@ -212,6 +219,8 @@ export default function Knob({
     accentGlow,
     glyph,
     themeEpoch,
+    surfaceColor,
+    textColor,
   ])
 
   // The canonical drag law — grab-relative deltas, normalised accumulation
