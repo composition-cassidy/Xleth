@@ -30942,7 +30942,12 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   --amp-plate-hi-inset: rgba(255, 255, 255, 0.7);
   --amp-plate-lo-inset: rgba(32, 26, 18, 0.15);
 
-  position: relative;
+  /* No `position` here — .amp-panel already declares `position: fixed`, which
+     is already a valid containing block for the absolutely-positioned corner
+     screws below. Redeclaring `position: relative` here previously WON the
+     cascade (same specificity, later in the sheet) and knocked the whole panel
+     out of fixed positioning into normal document flow — the exact bug behind
+     the panel visibly jumping position on every ANALOG/MODERN skin switch. */
   background: linear-gradient(180deg, var(--amp-plate) 0%, #F4ECDD 46%, var(--amp-plate-2) 100%);
   border: 3px solid var(--amp-line);
   border-radius: 14px;
