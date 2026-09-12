@@ -29,6 +29,8 @@ interface SplitRegion {
   startTime?: number;
   endTime?: number;
   audioFilePath?: string;
+  hasSwappedAudio?: boolean;
+  swappedAudioPath?: string;
 }
 
 interface RegionWaveform {
@@ -62,9 +64,16 @@ function SplitSyllablesPanelBody() {
 
     (async () => {
       try {
-        // Resolve the source media path: prefer what the caller handed us,
-        // else look it up from the region's sourceId.
-        let filePath: string | null = providedFilePath ?? region.audioFilePath ?? null;
+        // Swap-aware: once a region's audio has been SWAP-IN'd, that's the file
+        // that actually plays — resolve it first regardless of what the caller
+        // passed, same priority order as sandboxStore.addSourceFromRegion.
+        const swapped = !!(region.hasSwappedAudio && region.swappedAudioPath);
+
+        // Resolve the source media path: prefer the swap, then what the caller
+        // handed us, else look it up from the region's sourceId.
+        let filePath: string | null = swapped
+          ? (region.swappedAudioPath as string)
+          : (providedFilePath ?? region.audioFilePath ?? null);
         if (!filePath && region.sourceId != null) {
           const sources = (await window.xleth?.timeline?.getSources?.()) ?? [];
           const src = sources.find((s) => s.id === region.sourceId);
@@ -82,15 +91,23 @@ function SplitSyllablesPanelBody() {
 
         const start = region.startTime ?? 0;
         const end = region.endTime ?? 0;
+        const durSec = end - start;
+        // getRegionPeaks reads the region's MAPPED sample, which is always a
+        // zero-based sub-clip buffer (swapped or not) — never region.startTime.
         let raw = region.id != null
-          ? await window.xleth?.waveform?.getRegionPeaks?.(region.id, start, end, 1200, -1)
+          ? await window.xleth?.waveform?.getRegionPeaks?.(region.id, 0, durSec, 1200, -1)
           : null;
         if ((!raw || !raw.peaks?.length) && filePath) {
-          raw = await window.xleth?.waveform?.getFilePeaks?.(filePath, start, end, 1200, -1);
+          // getFilePeaks reads the file directly: the swap file's own timeline
+          // starts at 0, while the original source file needs the absolute
+          // region offset.
+          const fileStart = swapped ? 0 : start;
+          const fileEnd = swapped ? durSec : end;
+          raw = await window.xleth?.waveform?.getFilePeaks?.(filePath, fileStart, fileEnd, 1200, -1);
         }
         if (cancelled) return;
         if (raw && raw.peaks && raw.peaks.length > 0) {
-          setRegionWaveform({ peaks: raw.peaks, duration: end - start, stride: 3 });
+          setRegionWaveform({ peaks: raw.peaks, duration: durSec, stride: 3 });
         }
       } catch (e) {
         if (!cancelled) setError((e as Error)?.message || String(e));

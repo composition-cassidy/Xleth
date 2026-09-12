@@ -2403,6 +2403,28 @@ std::string SetTrackSlideNoteEffectCommand::describe() const {
     return "Set Slide Note Effect (track=" + std::to_string(trackId_) + ")";
 }
 
+// ─── SetTrackNoteFadeCommand ─────────────────────────────────────────────────
+
+SetTrackNoteFadeCommand::SetTrackNoteFadeCommand(
+    int trackId, const NoteFadeSettings& newSettings, const Timeline& timeline)
+    : trackId_(trackId), newSettings_(newSettings)
+{
+    const TrackInfo* t = timeline.getTrack(trackId);
+    oldSettings_ = t ? t->noteFade : NoteFadeSettings{};
+}
+
+void SetTrackNoteFadeCommand::execute(Timeline& timeline) {
+    timeline.setTrackNoteFadeSettings(trackId_, newSettings_);
+}
+
+void SetTrackNoteFadeCommand::undo(Timeline& timeline) {
+    timeline.setTrackNoteFadeSettings(trackId_, oldSettings_);
+}
+
+std::string SetTrackNoteFadeCommand::describe() const {
+    return "Set Note Fade (track=" + std::to_string(trackId_) + ")";
+}
+
 // ─── SetNoteSlideCommand ─────────────────────────────────────────────────────
 
 SetNoteSlideCommand::SetNoteSlideCommand(int patternId, int noteId, bool isSlide,

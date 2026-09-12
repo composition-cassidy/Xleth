@@ -60,10 +60,11 @@ endif()
 # ── FFmpeg ───────────────────────────────────────────────────────────────────
 find_package(FFMPEG REQUIRED)
 
-# ── OpenGL + GLEW + GLFW (only used by the standalone executable) ─────────────
-find_package(OpenGL REQUIRED)
-find_package(GLEW REQUIRED)
-find_package(glfw3 CONFIG REQUIRED)
+# No OpenGL/GLEW/GLFW discovery here on purpose. The realtime GL preview path
+# (VideoCompositor + the Main.cpp --video-display / --composite-test / --av-sync
+# entry points) was retired — see Issue 10 in VIDEO_PREVIEW_AUDIT.txt. All
+# compositing, preview and export alike, goes through FrameCollector +
+# GridCompositor on D3D11.
 
 # ── Rubber Band (R3, static, builtin FFT + resampler) ────────────────────────
 # Rubber Band uses Meson, not CMake, so we cannot use FetchContent_MakeAvailable.
@@ -238,6 +239,8 @@ add_library(XlethEngineModel STATIC
     src/commands/AddNotesBatchCommand.cpp
     src/commands/AddClipsBatchCommand.cpp
     src/commands/ClipBatchCommands.cpp
+    src/commands/PatternBlockBatchCommands.cpp
+    src/commands/AutomationBatchCommands.cpp
     src/commands/EffectChainCommands.cpp
     src/audio/TrackRouting.cpp
     src/audio/AutomationPlan.cpp
@@ -256,6 +259,12 @@ add_library(XlethEngineModel STATIC
     # of the sandbox model rather than in XlethEngineCore with the JUCE-using
     # detector that produces its input.
     src/dsp/CorrectionCurve.cpp
+    # PITCH's Resample (varispeed) mode. Model tier for the same reason
+    # CorrectionCurve is — plain math over float pointers, no JUCE — but here
+    # it is load-bearing rather than tidy: SandboxOp::outputLength predicts the
+    # resulting length at THIS tier, and SandboxRenderer must produce exactly
+    # that many samples over in XlethEngineCore. One file, one length rule.
+    src/dsp/VarispeedResample.cpp
 )
 
 target_include_directories(XlethEngineModel PUBLIC
@@ -283,13 +292,15 @@ target_compile_definitions(XlethEngineModel PRIVATE
 )
 
 # ── XlethEngineCore ───────────────────────────────────────────────────────────
-# CPU-only static library — no VideoCompositor, no GLFW/GLEW/OpenGL.
-# This is what the Node.js bridge links against, so the resulting .node DLL
-# does NOT import glfw3.dll or glew32.dll, which would conflict with
-# Electron/Chromium's GPU process initialisation.
+# CPU/D3D11 static library — no GLFW/GLEW/OpenGL anywhere. This is what the
+# Node.js bridge links against, so the resulting .node DLL does NOT import
+# glfw3.dll or glew32.dll, which would conflict with Electron/Chromium's GPU
+# process initialisation.
 #
-# XLETH_CORE_ONLY is defined here; SyncManager.cpp uses it to compile-out
-# all VideoCompositor method calls, avoiding any linker references to GL syms.
+# This used to be enforced by an XLETH_CORE_ONLY compile definition that
+# compiled the GL calls out of SyncManager.cpp. That guard is gone with the GL
+# path itself (Issue 10) — there is no longer any GL code to guard, in this
+# target or anywhere else.
 add_library(XlethEngineCore STATIC
     src/AudioEngine.cpp
     src/AudioScheduler.cpp
@@ -355,6 +366,7 @@ add_library(XlethEngineCore STATIC
     src/render/GpuDeviceManager.cpp
     src/render/FrameCache.cpp
     src/render/FrameCollector.cpp
+    src/render/VisualEchoTypes.cpp
     src/render/VideoFlipApplier.cpp
     src/render/RenderVideoDecoder.cpp
     src/render/GridCompositor.cpp
@@ -380,7 +392,6 @@ target_link_directories(XlethEngineCore PRIVATE
 
 target_compile_definitions(XlethEngineCore PRIVATE
     XLETH_DEBUG                       # enable structured debug logging to stderr
-    XLETH_CORE_ONLY                   # disables VideoCompositor/GL calls in SyncManager.cpp
     XLETH_HAS_DECODER                 # enables VideoDecoder/ProxyTranscoder in ProjectManager.cpp
     JUCE_USE_CURL=0
     JUCE_WEB_BROWSER=0
@@ -418,8 +429,8 @@ target_link_libraries(XlethEngineCore PRIVATE
     rubberband_static   # Rubber Band R3 pitch/time-stretch (static, builtin FFT)
     world_static        # WORLD vocoder (StretchMethod::WORLD)
     xxhash_static       # content hashing for WorldStretchCache
-    # No OpenGL::GL, GLEW::GLEW, glfw, or juce_audio_utils here —
-    # kept off the bridge link graph to prevent Electron GPU process conflicts.
+    # No juce_audio_utils here — kept off the bridge link graph to prevent
+    # Electron GPU process conflicts. (GL is gone from the whole tree.)
 )
 
 # MixEngine uses Timeline/Clip/TrackInfo from XlethEngineModel.
@@ -431,8 +442,8 @@ target_link_libraries(XlethEngineCore PUBLIC
 # ── XlethEngineHeaders ────────────────────────────────────────────────────────
 # INTERFACE library: propagates only include directories and compile definitions
 # to consumers (e.g. the Node.js addon) without adding any compiled sources.
-# SyncManager.h no longer includes VideoCompositor.h, so this interface
-# does not pull in GLFW/GLEW headers for consumers.
+# No GL headers exist in the tree, so this interface cannot pull GLFW/GLEW
+# headers into consumers.
 add_library(XlethEngineHeaders INTERFACE)
 
 target_include_directories(XlethEngineHeaders INTERFACE
@@ -489,9 +500,11 @@ target_link_libraries(XlethEngineService PUBLIC
 )
 
 # ── Standalone executable ─────────────────────────────────────────────────────
-# Thin shell linking XlethEngineCore + VideoCompositor.cpp (GPU).
-# VideoCompositor.cpp is compiled ONLY here so GLFW/GLEW/OpenGL symbols
-# remain absent from the Node.js addon link graph.
+# Developer harness only — the shipping app never spawns this; Electron forks
+# addon-worker.js against xleth_native.node instead. What remains here is the
+# GL-free set: --video-test, --cache-bench, --proxy-bench, and the interactive
+# Phase 0 audio demo. The three OpenGL modes (--video-display, --composite-test,
+# --av-sync) and VideoCompositor.cpp went with Issue 10.
 juce_add_console_app(XlethEngine
     PRODUCT_NAME "Xleth Engine"
     VERSION      "0.0.1"
@@ -499,22 +512,17 @@ juce_add_console_app(XlethEngine
 
 target_sources(XlethEngine PRIVATE
     src/Main.cpp
-    src/VideoCompositor.cpp   # GPU path — compiled only into the executable
 )
 
 # JUCE_STANDALONE_APPLICATION activates START_JUCE_APPLICATION/main() synthesis.
 # Must ONLY appear on the executable, never on the library or addon.
 target_compile_definitions(XlethEngine PRIVATE
     JUCE_STANDALONE_APPLICATION=1
-    # No XLETH_CORE_ONLY here — the executable gets the full compositor
 )
 
 target_link_libraries(XlethEngine PRIVATE
     XlethEngineCore
     XlethEngineHeaders
-    OpenGL::GL
-    GLEW::GLEW
-    glfw
     juce::juce_recommended_config_flags
     juce::juce_recommended_warning_flags
 )
@@ -539,6 +547,12 @@ add_executable(test_loop_region
 
 target_link_libraries(test_loop_region PRIVATE
     XlethEngineModel
+)
+
+# RenderClock.h pulls in libavutil headers (the seam-rounding test asserts the
+# loop bounds and the pattern-note dispatch share one tick->sample domain).
+target_include_directories(test_loop_region PRIVATE
+    ${FFMPEG_INCLUDE_DIRS}
 )
 
 # ── test_render_scope ─────────────────────────────────────────────────────────
@@ -863,10 +877,9 @@ target_link_libraries(test_clip_modulation_evaluator PRIVATE
 )
 
 # ── test_clip_companion_fx_builder ───────────────────────────────────────────
-# Phase E.3: shared ClipCompanionFxSnapshot builder used by both the export
-# pipeline (FrameCollector → GridCompositor) and the realtime preview path
-# (SyncManager → VideoCompositor). Verifies gating + signed propagation so
-# preview and export cannot drift apart. Model-only — no JUCE, FFmpeg, or GL.
+# Phase E.3: shared ClipCompanionFxSnapshot builder feeding FrameCollector →
+# GridCompositor, which is now the single compositing path for both preview and
+# export. Verifies gating + signed propagation. Model-only — no JUCE or FFmpeg.
 add_executable(test_clip_companion_fx_builder
     test/test_clip_companion_fx_builder.cpp
 )
@@ -1829,6 +1842,41 @@ target_compile_definitions(test_effects PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_chain_snapshot_lockfree ─────────────────────────────────────────────
+# RENDER_PERF_AUDIT Finding 9: the realtime audio thread must read effect chains
+# through the immutable ChainSnapshot instead of try_lock'ing chainsMutex_, so a
+# contended lock can no longer drop a whole block of effects. Also pins the
+# nonRealtime_ blocking branch, which an offline export depends on.
+add_executable(test_chain_snapshot_lockfree
+    test/test_chain_snapshot_lockfree.cpp
+)
+
+target_link_libraries(test_chain_snapshot_lockfree PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_chain_snapshot_lockfree PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+add_test(NAME test_chain_snapshot_lockfree COMMAND test_chain_snapshot_lockfree)
+
 # ── test_chain_effect_identity ────────────────────────────────────────────────
 # Prompt 4A: stable chain-mode effectInstanceId — creation, lookup, move, bypass,
 # parameter edit, save/load across APG uid remap, old-project generation,
@@ -2018,7 +2066,7 @@ target_compile_definitions(test_reverb PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
-# ── test_amp ───────────────────────────────────────────────────────
+# ── test_amp ─────────────────────────────────────────────────────────────────
 # XlethAmpEffect ("Amp Stack") — docs/amp spec.docx §10 acceptance tests 1-4:
 # aliasing sweep at max Drive per model, bypass null against latency-compensated
 # dry, per-stage element isolation, and per-instance CPU at the measured engine
@@ -2603,6 +2651,31 @@ target_compile_definitions(test_compositor PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_visual_echo ─────────────────────────────────────────────────────────
+# Visual Echo end-to-end: tap gain/orientation math, ring mechanics, and the
+# timing claim that matters — that a tap shows the frame from D frames ago,
+# measured by encoding the frame number into the composited pixels.
+add_executable(test_visual_echo
+    test/test_visual_echo.cpp
+)
+
+target_link_libraries(test_visual_echo PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    d3d11
+    dxgi
+)
+
+target_compile_definitions(test_visual_echo PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_snapshot_transition ─────────────────────────────────────────────────
 # Verifies the two-target whole-frame transition pass with real D3D11 rendering.
 add_executable(test_snapshot_transition
@@ -2753,6 +2826,13 @@ target_link_directories(test_real_render PRIVATE
     ${FFMPEG_LIBRARY_DIRS}
 )
 
+# main() holds Timeline + SampleBank + MixEngine as stack locals; together they
+# overflow the 1 MB default on this toolchain before the first fprintf runs
+# (0xC00000FD, reported by ctest as SEGFAULT with no output at all). 16 MB.
+if(MSVC)
+    target_link_options(test_real_render PRIVATE /STACK:16777216)
+endif()
+
 target_compile_definitions(test_real_render PRIVATE
     JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
     JUCE_USE_CURL=0
@@ -2850,6 +2930,7 @@ set(XLETH_ENGINE_TESTS
     test_automation_clips
     test_sandbox
     test_compositor
+    test_visual_echo
     test_snapshot_transition
     test_muxer
     test_hw_detect

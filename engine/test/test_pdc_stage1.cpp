@@ -1698,17 +1698,21 @@ static void testSyncManagerUsesPresentationProvider()
     transport.seekToSample(48000);
     transport.play();
 
-    std::vector<VideoDecoder*> decoders;
-    FrameCache cache(1024);
-    SyncManager sync(transport, decoders, cache, nullptr, []() -> int64_t {
+    SyncManager sync(transport, []() -> int64_t {
         return 24000;
     });
 
-    const double returnedBeat = sync.videoTick();
+    const double returnedBeat = sync.currentBeatPosition();
     CHECK(std::abs(transport.getPositionBeats() - 1.0) < 1.0e-9,
           "raw transport beat should remain one beat");
     CHECK(std::abs(returnedBeat - 0.5) < 1.0e-9,
-          "SyncManager videoTick should return the presentation beat, not raw beat");
+          "currentBeatPosition should return the presentation beat, not raw beat");
+
+    // Stopped transport reports "no position" rather than beat 0 — the video
+    // thread distinguishes the two.
+    transport.pause();
+    CHECK(sync.currentBeatPosition() < 0.0,
+          "currentBeatPosition should return -1 while the transport is stopped");
 }
 
 static double sampleToBeats(std::int64_t sample, double sampleRate, double bpm)

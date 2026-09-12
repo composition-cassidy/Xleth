@@ -106,6 +106,7 @@ std::string visualEffectTypeToString(VisualEffect::Type t) {
         case VisualEffect::Type::ChromaKey:          return "ChromaKey";
         case VisualEffect::Type::Outline:            return "Outline";
         case VisualEffect::Type::DropShadow:         return "DropShadow";
+        case VisualEffect::Type::VisualEcho:         return "VisualEcho";
     }
     return "Desaturation";
 }
@@ -118,6 +119,7 @@ VisualEffect::Type stringToVisualEffectType(const std::string& s) {
     if (s == "ChromaKey")          return VisualEffect::Type::ChromaKey;
     if (s == "Outline")            return VisualEffect::Type::Outline;
     if (s == "DropShadow")         return VisualEffect::Type::DropShadow;
+    if (s == "VisualEcho")         return VisualEffect::Type::VisualEcho;
     return VisualEffect::Type::Desaturation;
 }
 
@@ -267,6 +269,22 @@ nlohmann::json visualEffectParamsToNamedJson(VisualEffect::Type type,
             j["blendMode"]      = p[8];
             j["alphaThreshold"] = p[9];
             break;
+        case VisualEffect::Type::VisualEcho:
+            j["taps"]           = p[0];
+            j["decay"]          = p[1];
+            // The bound Delay's APG node uid. Node uids are assigned per SESSION,
+            // not persisted with the audio chain, so this survives save/load only
+            // as far as the chain rebuild reproduces the same uids. When it does
+            // not, the binding resolves to nothing and the echo goes inert rather
+            // than latching onto whatever effect happens to hold that uid now —
+            // resolveDelaySnapshot type-checks the node before using it.
+            j["delayNodeId"]    = p[2];
+            j["scaleTrail"]     = p[3];
+            j["flipMode"]       = p[4];
+            j["drift"]          = p[5];
+            j["blendMode"]      = p[6];
+            j["followFeedback"] = p[7];
+            break;
     }
     return j;
 }
@@ -361,6 +379,21 @@ void visualEffectParamsFromNamedJson(VisualEffect::Type type,
             p[7] = j.value("opacity",        0.60f);
             p[8] = j.value("blendMode",      1.0f);
             p[9] = j.value("alphaThreshold", 0.95f);
+            break;
+        case VisualEffect::Type::VisualEcho:
+            // Same reasoning as the two above. `taps` in particular must not
+            // fall back to 0 — an echo with zero taps loads as an effect that
+            // is present in the chain and does nothing at all. delayNodeId is
+            // the one field whose all-zero fallback would be actively WRONG
+            // (node uid 0 is a legal uid), so it defaults to -1 = unbound.
+            p[0] = j.value("taps",           4.0f);
+            p[1] = j.value("decay",          0.65f);
+            p[2] = j.value("delayNodeId",   -1.0f);
+            p[3] = j.value("scaleTrail",     0.20f);
+            p[4] = j.value("flipMode",       0.0f);
+            p[5] = j.value("drift",          0.0f);
+            p[6] = j.value("blendMode",      0.0f);
+            p[7] = j.value("followFeedback", 1.0f);
             break;
     }
 }
@@ -501,6 +534,27 @@ void to_json(nlohmann::json& j, const TrackInfo& t) {
                 {"jitter",     stv.jitter},
                 {"colorBleed", stv.colorBleed},
             }},
+        };
+    }
+
+    {
+        // Pattern-track note fade. Written for every track regardless of type so
+        // a track later switched to Pattern keeps whatever was configured; the
+        // renderer, not the file format, is what makes it Pattern-exclusive.
+        const auto& nf = t.noteFade;
+        auto sideJson = [](const NoteFadeSettings::Side& s) {
+            return nlohmann::json{
+                {"mode",                static_cast<int>(s.mode)},
+                {"percent",             s.percent},
+                {"divisionDenominator", s.divisionDenominator},
+                {"ms",                  s.ms},
+                {"curve",               static_cast<int>(s.curve)},
+            };
+        };
+        j["noteFade"] = {
+            {"enabled", nf.enabled},
+            {"fadeIn",  sideJson(nf.fadeIn)},
+            {"fadeOut", sideJson(nf.fadeOut)},
         };
     }
 
@@ -765,6 +819,27 @@ void from_json(const nlohmann::json& j, TrackInfo& t) {
             // SlideTVSettings defaults (which match VisualEffect TV defaults).
             s.tv.intensity = js.value("slideTVIntensity", 0.5f);
         }
+    }
+
+    // Pattern-track note fade. Absent in every project saved before the
+    // feature, which loads as the struct defaults (enabled = false) and so
+    // renders exactly as it always did.
+    if (j.contains("noteFade") && j.at("noteFade").is_object()) {
+        const auto& jn = j.at("noteFade");
+        auto& nf = t.noteFade;
+        nf.enabled = jn.value("enabled", false);
+        auto readSide = [](const nlohmann::json& js, NoteFadeSettings::Side& side) {
+            if (!js.is_object()) return;
+            side.mode = static_cast<NoteFadeSettings::LengthMode>(
+                std::clamp(js.value("mode", 0), 0, 2));
+            side.percent             = js.value("percent",             side.percent);
+            side.divisionDenominator = js.value("divisionDenominator", side.divisionDenominator);
+            side.ms                  = js.value("ms",                  side.ms);
+            side.curve = static_cast<NoteFadeSettings::Curve>(
+                std::clamp(js.value("curve", 0), 0, 3));
+        };
+        if (jn.contains("fadeIn"))  readSide(jn.at("fadeIn"),  nf.fadeIn);
+        if (jn.contains("fadeOut")) readSide(jn.at("fadeOut"), nf.fadeOut);
     }
 
     t.visualEffectChain.clear();

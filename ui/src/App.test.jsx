@@ -45,7 +45,9 @@ describe('XlethRoot New Project reset', () => {
         load: vi.fn().mockResolvedValue(true),
         isDirty: vi.fn().mockResolvedValue(false),
         isExportRunning: vi.fn().mockResolvedValue(false),
-        newBlank: newBlankMock,
+        newBlank: vi.fn().mockResolvedValue({ ok: true }),
+        switchToNew: newBlankMock,
+        switchToLoad: vi.fn().mockResolvedValue(true),
       },
       timeline: {
         getAllPatterns: vi.fn().mockResolvedValue([]),

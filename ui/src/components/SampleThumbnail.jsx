@@ -245,12 +245,16 @@ export default function SampleThumbnail({
   // ── Drag handlers (mirror SampleRow) ───────────────────────────────────────
   const handleDragStart = useCallback((e) => {
     const payload = {
-      regionId:  region.id,
-      sourceId:  region.sourceId,
-      label:     region.label,
-      name:      region.name,
-      startTime: region.startTime,
-      endTime:   region.endTime,
+      regionId:         region.id,
+      sourceId:         region.sourceId,
+      label:            region.label,
+      name:             region.name,
+      startTime:        region.startTime,
+      endTime:          region.endTime,
+      audioFilePath:    region.audioFilePath,
+      hasSwappedAudio:  region.hasSwappedAudio,
+      swappedAudioPath: region.swappedAudioPath,
+      swappedAudioDurationSec: region.swappedAudioDurationSec,
     }
     e.dataTransfer.setData('application/xleth-sample', JSON.stringify(payload))
     e.dataTransfer.effectAllowed = 'copy'

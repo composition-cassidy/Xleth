@@ -1,16 +1,60 @@
-import { GripVertical, Trash2 } from 'lucide-react'
+import { GripVertical, Trash2, TriangleAlert } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import useSandboxStore, {
-  RIPPLE_MODE, FADE_SHAPE, findEnvelopeOp, clampGainEnvelopeFollower, GAIN_ENVELOPE_MODE,
+  RIPPLE_MODE, FADE_SHAPE, PITCH_MODE, findEnvelopeOp, clampGainEnvelopeFollower, GAIN_ENVELOPE_MODE,
   GAIN_ENVELOPE_ATTACK_MS_MIN, GAIN_ENVELOPE_ATTACK_MS_MAX,
   GAIN_ENVELOPE_RELEASE_MS_MIN, GAIN_ENVELOPE_RELEASE_MS_MAX,
   AUTOTUNE_SCALE_NAME, AUTOTUNE_KEY_NAME,
   AUTOTUNE_MAX_RETUNE_MS, AUTOTUNE_MAX_SMOOTHNESS_MS,
 } from '../../stores/sandboxStore.js'
+import { allowedPitchClasses } from './autotuneCorrectionPreview.js'
 import { FADE_SHAPES } from './sandboxToolConstants.js'
 
 const RIPPLE_MODE_NAME = Object.fromEntries(Object.entries(RIPPLE_MODE).map(([k, v]) => [v, k]))
 const FADE_SHAPE_NAME = Object.fromEntries(Object.entries(FADE_SHAPE).map(([k, v]) => [v, k]))
+
+// ── AUTOTUNE keyboard note picker (P5-4) ─────────────────────────────────────
+// One octave, laid out like a real keyboard so "root highlighted, scale notes
+// lit" reads at a glance. White keys carry the 7 natural pitch classes in
+// left-to-right pitch order; black keys are absolutely positioned at the
+// boundary between the two white keys they sit above — good enough for a
+// 1-octave utility picker, not a literal-width piano reproduction.
+const KB_WHITE_PCS = [0, 2, 4, 5, 7, 9, 11]
+// pc -> index (0-6) of the white key it sits just after, for positioning.
+const KB_BLACK_AFTER_WHITE = { 1: 0, 3: 1, 6: 3, 8: 4, 10: 5 }
+
+function AutotuneKeyboard({ rootPc, activePcs, onToggle }) {
+  return (
+    <div className="sandbox-autotune-keyboard" role="group" aria-label="Allowed notes">
+      <div className="sandbox-autotune-keyboard-whites">
+        {KB_WHITE_PCS.map((pc) => (
+          <button
+            key={pc}
+            type="button"
+            className={`sandbox-autotune-key white${activePcs.includes(pc) ? ' on' : ''}${pc === rootPc ? ' root' : ''}`}
+            onClick={() => onToggle(pc)}
+            title={`${AUTOTUNE_KEY_NAME[pc]}${pc === rootPc ? ' (root)' : ''}`}
+          />
+        ))}
+      </div>
+      <div className="sandbox-autotune-keyboard-blacks">
+        {Object.entries(KB_BLACK_AFTER_WHITE).map(([pcStr, whiteIndex]) => {
+          const pc = Number(pcStr)
+          return (
+            <button
+              key={pc}
+              type="button"
+              style={{ left: `${((whiteIndex + 1) / KB_WHITE_PCS.length) * 100}%` }}
+              className={`sandbox-autotune-key black${activePcs.includes(pc) ? ' on' : ''}${pc === rootPc ? ' root' : ''}`}
+              onClick={() => onToggle(pc)}
+              title={`${AUTOTUNE_KEY_NAME[pc]}${pc === rootPc ? ' (root)' : ''}`}
+            />
+          )
+        })}
+      </div>
+    </div>
+  )
+}
 
 // A short human-readable summary of an op's params — shown on every module
 // row (selected or not), so the collapsed rail is still scannable.
@@ -44,8 +88,18 @@ function describeParams(op) {
     }
     case 'crossfade':
       return `@ ${p.atSample}, ${p.lengthSamples} smp (${FADE_SHAPE_NAME[p.shape] ?? p.shape})`
-    case 'pitch':
-      return `${p.cents >= 0 ? '+' : ''}${p.cents}¢${p.formantPreserve ? ', formant lock' : ''}`
+    case 'pitch': {
+      const cents = `${p.cents >= 0 ? '+' : ''}${p.cents}¢`
+      // Varispeed's length change is the thing a user most needs told, and the
+      // waveform alone does not say it (a re-rendered layer just looks like a
+      // different layer). Spell the speed factor out; formant lock is
+      // preserve-mode-only so it is not mentioned in the other branch.
+      if (p.mode === PITCH_MODE.resample) {
+        const speed = Math.pow(2, (p.cents || 0) / 1200)
+        return `${cents} varispeed — ×${speed.toFixed(3)} speed, ×${(1 / speed).toFixed(3)} length`
+      }
+      return `${cents}${p.formantPreserve ? ', formant lock' : ''}`
+    }
     case 'formantShift':
       return `${p.cents >= 0 ? '+' : ''}${p.cents}¢`
     case 'declip':
@@ -61,6 +115,12 @@ function describeParams(op) {
       return `${dabs.length} dab${dabs.length === 1 ? '' : 's'}, ${Math.min(...amounts).toFixed(0)}…${Math.max(...amounts).toFixed(0)} dB`
     }
     case 'autotune': {
+      if (p.mode === 1) {
+        const pts = p.manualPoints || []
+        if (pts.length === 0) return 'Manual — no curve drawn yet'
+        if (!(p.correctionAmount > 0)) return `Manual, ${pts.length} pt — 0% (bypass)`
+        return `Manual, ${pts.length} pt, ${p.correctionAmount}%, retune ${p.retuneSpeedMs}ms`
+      }
       // Scale/key first because that is what the user picked, then the one
       // control that changes whether ANYTHING happens. A non-empty
       // allowedNotes OVERRIDES scale/key (AutotuneParams), so the row must say
@@ -82,7 +142,7 @@ function describeParams(op) {
 // range is one undoable edit and one re-render rather than one per tick — the
 // same contract the gain-envelope drag and the spectral-paint stroke follow.
 // The number box beside it commits on blur, for typing an exact value.
-function AutotuneSlider({ label, unit, min, max, step, value, onCommit }) {
+function AutotuneSlider({ label, unit, min, max, step, value, onCommit, disabled, title }) {
   const [local, setLocal] = useState(value)
   const [dragging, setDragging] = useState(false)
   // Track the committed value while NOT dragging, so undo/redo and a render
@@ -90,10 +150,10 @@ function AutotuneSlider({ label, unit, min, max, step, value, onCommit }) {
   useEffect(() => { if (!dragging) setLocal(value) }, [value, dragging])
   const shown = dragging ? local : value
   return (
-    <label className="sandbox-op-slider">
+    <label className="sandbox-op-slider" title={title}>
       {label}
       <input
-        type="range" min={min} max={max} step={step} value={shown}
+        type="range" min={min} max={max} step={step} value={shown} disabled={disabled}
         onChange={(e) => { setDragging(true); setLocal(Number(e.target.value)) }}
         onPointerUp={() => { setDragging(false); if (local !== value) onCommit(local) }}
         onBlur={() => { setDragging(false); if (local !== value) onCommit(local) }}
@@ -101,7 +161,7 @@ function AutotuneSlider({ label, unit, min, max, step, value, onCommit }) {
       <input
         type="number" className="sandbox-toolbar-number"
         min={min} max={max} step={step}
-        value={shown}
+        value={shown} disabled={disabled}
         onChange={(e) => { setDragging(true); setLocal(Number(e.target.value)) }}
         onBlur={(e) => {
           setDragging(false)
@@ -123,11 +183,12 @@ function AutotuneSlider({ label, unit, min, max, step, value, onCommit }) {
 // this restructuring, so selecting one just highlights the row.
 function InlineOpParamEditor({
   op, layerId, setOpParams, hasSelection, onLearnNoiseProfile, setGainEnvelopeFollower,
-  onClearSpectralPaint,
+  onClearSpectralPaint, refusedOps, refusalReason,
 }) {
   const p = op.params || {}
 
   if (op.type === 'pitch') {
+    const resample = p.mode === PITCH_MODE.resample
     return (
       <div className="sandbox-op-params-row">
         <label>
@@ -138,9 +199,28 @@ function InlineOpParamEditor({
             onBlur={(e) => setOpParams(layerId, op.id, { ...p, cents: Number(e.target.value) })}
           />
         </label>
-        <label className="sandbox-op-checkbox">
+        <label title="Preserve: hold the length, rebuild the spectrum (RubberBand). Varispeed: read the waveform faster/slower, so the length moves with the pitch — the tape/turntable move.">
+          Mode
+          <select
+            className="sandbox-toolbar-select"
+            value={resample ? PITCH_MODE.resample : PITCH_MODE.preserve}
+            onChange={(e) => setOpParams(layerId, op.id, { ...p, mode: Number(e.target.value) })}
+          >
+            <option value={PITCH_MODE.preserve}>Preserve length</option>
+            <option value={PITCH_MODE.resample}>Varispeed (resample)</option>
+          </select>
+        </label>
+        {/* Disabled rather than hidden in varispeed: the toggle keeps its
+            value across a mode flip (PitchParams retains it deliberately), so
+            hiding it would make a setting that is still there look erased. */}
+        <label
+          className={`sandbox-op-checkbox${resample ? ' disabled' : ''}`}
+          title={resample
+            ? 'Varispeed moves the formants with the pitch by definition — add a FORMANT SHIFT op to move them back'
+            : 'Keep the formant envelope where it started, so a big shift does not chipmunk the voice'}
+        >
           <input
-            type="checkbox" checked={!!p.formantPreserve}
+            type="checkbox" checked={!!p.formantPreserve} disabled={resample}
             onChange={(e) => setOpParams(layerId, op.id, { ...p, formantPreserve: e.target.checked })}
           />
           Formant Lock
@@ -295,8 +375,44 @@ function InlineOpParamEditor({
     const notes = p.allowedNotes || []
     const custom = notes.length > 0
     const set = (patch) => setOpParams(layerId, op.id, { ...p, ...patch })
+    // The picker's own "lit" set: the custom set once one exists, otherwise
+    // the preset's own pitch classes — so the very first click on a key
+    // seeds FROM the preset (toggle one note relative to what is already
+    // playing) rather than starting from a blank slate the user would have
+    // to rebuild note by note. Also doubles as MANUAL mode's default snap
+    // set (SandboxWaveformCanvas.jsx's drawing handlers read the same op
+    // params), so it stays live in both modes rather than being disabled
+    // alongside Jumpiness/Vibrato below.
+    const displayedPcs = custom ? notes : allowedPitchClasses(p.key, p.scale)
+    const toggleNote = (pc) => {
+      const base = displayedPcs.slice()
+      const next = base.includes(pc) ? base.filter((n) => n !== pc) : [...base, pc].sort((a, b) => a - b)
+      set({ allowedNotes: next })
+    }
+    // mode is an int on the wire (0 Scale / 1 Manual — AutotuneMode in
+    // SandboxOp.h), same convention CutParams/SpliceParams/GainEnvelopeParams
+    // already use for their own enums.
+    const isManual = p.mode === 1
+    const manualTitle = isManual ? 'Not used in Manual mode' : undefined
     return (
       <div className="sandbox-op-params-row sandbox-op-params-wrap">
+        {refusedOps > 0 && (
+          <div className="sandbox-op-refusal-banner">
+            <TriangleAlert size={12} />
+            <span>{refusalReason || 'Autotune declined this input.'}</span>
+          </div>
+        )}
+        <label>
+          Mode
+          <select
+            className="sandbox-toolbar-select" value={isManual ? 'manual' : 'scale'}
+            onChange={(e) => set({ mode: e.target.value === 'manual' ? 1 : 0 })}
+            title="Scale: quantize to the scale/key below. Manual: draw the target pitch curve directly on the graph."
+          >
+            <option value="scale">Scale</option>
+            <option value="manual">Manual</option>
+          </select>
+        </label>
         <label title={custom ? 'A custom note set overrides scale/key' : undefined}>
           Key
           <select
@@ -324,18 +440,37 @@ function InlineOpParamEditor({
         <AutotuneSlider label="Smooth" unit="ms" min={0} max={AUTOTUNE_MAX_SMOOTHNESS_MS} step={1}
           value={p.smoothnessMs} onCommit={(v) => set({ smoothnessMs: v })} />
         <AutotuneSlider label="Jumpiness" unit="%" min={0} max={100} step={1}
-          value={p.jumpiness} onCommit={(v) => set({ jumpiness: v })} />
-        <AutotuneSlider label="Vibrato" unit="%" min={0} max={100} step={1}
-          value={p.preserveVibrato} onCommit={(v) => set({ preserveVibrato: v })} />
-        {custom && (
-          <button
-            className="sandbox-op-learn-noise"
-            onClick={() => set({ allowedNotes: [] })}
-            title="Drop the custom note set and go back to the scale/key preset"
-          >
-            Clear notes
-          </button>
+          value={p.jumpiness} onCommit={(v) => set({ jumpiness: v })}
+          disabled={isManual} title={manualTitle} />
+        {/* holdMs == the jumpiness value itself (1% = 1ms, literal per the
+            spec/CorrectionCurve.cpp) — shown as its own readout rather than
+            folded into the slider's unit, so both numbers stay visible while
+            dragging. */}
+        {!isManual && (
+          <span className="sandbox-op-params-readout sandbox-op-jumpiness-ms">
+            = {p.jumpiness}ms minimum hold before a note change is accepted
+          </span>
         )}
+        <AutotuneSlider label="Vibrato" unit="%" min={0} max={100} step={1}
+          value={p.preserveVibrato} onCommit={(v) => set({ preserveVibrato: v })}
+          disabled={isManual} title={manualTitle} />
+        {isManual && (
+          <span className="sandbox-op-params-readout">
+            {(p.manualPoints || []).length} breakpoint{(p.manualPoints || []).length === 1 ? '' : 's'} — drawn on the pitch graph above (hold ALT to free-draw)
+          </span>
+        )}
+        <div className="sandbox-autotune-keyboard-row">
+          <AutotuneKeyboard rootPc={p.key} activePcs={displayedPcs} onToggle={toggleNote} />
+          {custom && (
+            <button
+              className="sandbox-op-learn-noise"
+              onClick={() => set({ allowedNotes: [] })}
+              title="Drop the custom note set and go back to the scale/key preset"
+            >
+              Clear notes
+            </button>
+          )}
+        </div>
       </div>
     )
   }
@@ -397,10 +532,16 @@ const HAS_INLINE_PARAMS = new Set([
 
 function OpModule({
   op, index, layerId, selected, onSelect, onToggleBypass, onRemove, setOpParams, hasSelection,
-  onLearnNoiseProfile, setGainEnvelopeFollower, onClearSpectralPaint,
+  onLearnNoiseProfile, setGainEnvelopeFollower, onClearSpectralPaint, refusedOps, refusalReason,
   dragging, dropEdge, onDragStart, onDragOver, onDrop, onDragEnd,
 }) {
   const dropClass = dropEdge === 'above' ? ' drop-above' : dropEdge === 'below' ? ' drop-below' : ''
+  // The refusal is a per-LAYER fact (only one op type can produce it today),
+  // not per-op — shown on the AUTOTUNE row specifically since that's the op
+  // it's actually about. A badge on the collapsed row so "declined, not
+  // rendering garbage" is visible without expanding it; the full wording
+  // lives in InlineOpParamEditor for when it is.
+  const refused = op.type === 'autotune' && refusedOps > 0
   return (
     <div
       className={`sandbox-op-module${op.enabled ? '' : ' bypassed'}${selected ? ' selected' : ''}${dragging ? ' dragging' : ''}${dropClass}`}
@@ -417,6 +558,11 @@ function OpModule({
           <span className="sandbox-op-type">{op.type}</span>
           <span className="sandbox-op-params">{describeParams(op)}</span>
         </div>
+        {refused && (
+          <span className="sandbox-op-refusal-badge" title={refusalReason || 'Autotune declined this input.'}>
+            <TriangleAlert size={11} />
+          </span>
+        )}
         <button
           className={`sandbox-op-bypass${op.enabled ? '' : ' active'}`}
           onClick={(e) => { e.stopPropagation(); onToggleBypass(layerId, op.id, op.enabled) }}
@@ -438,6 +584,7 @@ function OpModule({
           hasSelection={hasSelection} onLearnNoiseProfile={onLearnNoiseProfile}
           setGainEnvelopeFollower={setGainEnvelopeFollower}
           onClearSpectralPaint={onClearSpectralPaint}
+          refusedOps={refusedOps} refusalReason={refusalReason}
         />
       )}
     </div>
@@ -466,8 +613,12 @@ export default function SandboxStackPanel() {
   const history = useSandboxStore((s) => s.history)
   const undo = useSandboxStore((s) => s.undo)
   const redo = useSandboxStore((s) => s.redo)
+  // Lifted to the store (P5-4) so SandboxWaveformCanvas can tell whether the
+  // selected op is AUTOTUNE and draw its pitch curve overlay — see
+  // setSelectedOpId's own comment (sandboxStore.js).
+  const selectedOpId = useSandboxStore((s) => s.selectedOpId)
+  const setSelectedOpId = useSandboxStore((s) => s.setSelectedOpId)
 
-  const [selectedOpId, setSelectedOpId] = useState(null)
   // Drag-to-reorder: { draggedIndex, overIndex, edge } while a drag is live,
   // else null. reorderOp's own dirty-marking (_triggerAutoRender) already
   // covers "mark the composite dirty downstream of the earliest affected
@@ -480,12 +631,21 @@ export default function SandboxStackPanel() {
   // Selecting a different layer (or one whose ops changed under it) should
   // not leave a stale expanded panel pointing at an op that may no longer
   // exist on the new layer.
-  useEffect(() => { setSelectedOpId(null) }, [activeLayerId])
+  useEffect(() => { setSelectedOpId(null) }, [activeLayerId, setSelectedOpId])
 
   const handleToggleBypass = (layerId, opId, enabled) => setOpBypassed(layerId, opId, enabled)
-  const handleSelectOp = (opId) => setSelectedOpId((cur) => (cur === opId ? null : opId))
+  const handleSelectOp = (opId) => setSelectedOpId(selectedOpId === opId ? null : opId)
 
   const handleDragStart = (index) => (e) => {
+    // The whole op module is `draggable` for reorder, but its expanded
+    // InlineOpParamEditor (sliders, number fields, selects, buttons) lives
+    // inside that same subtree — without this guard, starting a native drag
+    // gesture on a slider thumb hijacks it into a reorder drag instead of
+    // moving the slider.
+    if (e.target.closest('input, select, button, textarea')) {
+      e.preventDefault()
+      return
+    }
     e.dataTransfer.effectAllowed = 'move'
     e.dataTransfer.setData('text/plain', String(index))
     setDragState({ draggedIndex: index, overIndex: null, edge: null })
@@ -551,6 +711,8 @@ export default function SandboxStackPanel() {
             onLearnNoiseProfile={learnNoiseProfile}
             setGainEnvelopeFollower={setGainEnvelopeFollower}
             onClearSpectralPaint={clearSpectralPaint}
+            refusedOps={layer.refusedOps}
+            refusalReason={layer.refusalReason}
             dragging={dragState?.draggedIndex === index}
             dropEdge={dragState && dragState.overIndex === index ? dragState.edge : null}
             onDragStart={handleDragStart(index)}

@@ -55,7 +55,7 @@ describe('SampleSelectorDrawer', () => {
     expect(html).not.toContain('left-panel-tabs');
   });
 
-  it('opens through the drawer helper and normalizes to docked-left state', () => {
+  it('opens through the drawer helper and preserves the panel\'s existing dock side', () => {
     const panels = createInitialPanelStates();
     panels.sampleSelector.hidden = true;
     panels.sampleSelector.mode = 'floating';
@@ -67,8 +67,29 @@ describe('SampleSelectorDrawer', () => {
     const panel = usePanelRegistry.getState().panels.sampleSelector;
     expect(panel.hidden).toBe(false);
     expect(panel.mode).toBe('docked');
+    expect(panel.docked.region).toBe('right');
+    expect(panel.docked.orderInRegion).toBe(0);
+  });
+
+  it('opens on the default left side for a fresh panel with no prior placement', () => {
+    openSampleSelectorDrawer();
+
+    const panel = usePanelRegistry.getState().panels.sampleSelector;
+    expect(panel.hidden).toBe(false);
+    expect(panel.mode).toBe('docked');
     expect(panel.docked.region).toBe('left');
     expect(panel.docked.orderInRegion).toBe(0);
+  });
+
+  it('redocks to a new side via dockPanel and the change survives a close/open cycle', () => {
+    openSampleSelectorDrawer();
+    usePanelRegistry.getState().dockPanel('sampleSelector', 'bottom');
+    expect(usePanelRegistry.getState().panels.sampleSelector.docked.region).toBe('bottom');
+
+    collapseSampleSelectorDrawer();
+    openSampleSelectorDrawer();
+
+    expect(usePanelRegistry.getState().panels.sampleSelector.docked.region).toBe('bottom');
   });
 
   it('renders the production shell with a reserved sample dock column when open', () => {
@@ -84,7 +105,7 @@ describe('SampleSelectorDrawer', () => {
     );
   });
 
-  it('collapses to only the reserved edge-tab column and lets WorkArea expand', () => {
+  it('collapses to only the reserved edge-tab strip and lets WorkArea expand', () => {
     openSampleSelectorDrawer();
     collapseSampleSelectorDrawer();
 
@@ -92,9 +113,9 @@ describe('SampleSelectorDrawer', () => {
     const css = readUiSource('windowing/components/windowing.css');
 
     expect(html).toContain('xleth-sample-selector-drawer__edge-toggle--collapsed');
-    expect(css).toMatch(/\.xleth-windowing-shell\s*\{[\s\S]*grid-template-columns:\s*var\(--xleth-sample-dock-width\)\s+minmax\(0,\s*1fr\)/);
-    expect(css).toMatch(/\.xleth-windowing-shell\s*\{[\s\S]*transition:\s*grid-template-columns\s+180ms\s+cubic-bezier\(0\.16,\s*1,\s*0\.3,\s*1\)/);
-    expect(css).toMatch(/\.xleth-windowing-shell\.sample-dock-collapsed\s*\{[\s\S]*grid-template-columns:\s*var\(--xleth-sample-dock-handle-width\)\s+minmax\(0,\s*1fr\)/);
+    expect(css).toMatch(/\.xleth-sample-selector-drawer-host\s*\{[\s\S]*flex:\s*0 0 var\(--xleth-sample-dock-width\)/);
+    expect(css).toMatch(/\.xleth-sample-selector-drawer-host\s*\{[\s\S]*transition:\s*flex-basis\s+180ms\s+cubic-bezier\(0\.16,\s*1,\s*0\.3,\s*1\)/);
+    expect(css).toMatch(/\.xleth-windowing-shell\.sample-dock-collapsed \.xleth-sample-selector-drawer-host\s*\{[\s\S]*flex-basis:\s*var\(--xleth-sample-dock-handle-width\)/);
   });
 
   it('disables the drawer tween when reduced motion is requested', () => {
@@ -146,17 +167,27 @@ describe('SampleSelectorDrawer', () => {
     expect(html).toContain('aria-label="Collapse Sample Selector drawer"');
   });
 
-  it('renders a drawer resize handle for the left dock region', () => {
+  it('renders a shared DockRegionResizer for the panel\'s current dock side', () => {
     openSampleSelectorDrawer();
 
     const html = renderToStaticMarkup(<SampleSelectorDrawer />);
     const source = readUiSource('windowing/components/SampleSelectorDrawer.tsx');
 
-    expect(html).toContain('xleth-sample-selector-drawer__resize-handle');
-    expect(html).toContain('data-testid="xleth-sample-selector-drawer-resize-handle"');
-    expect(source).toContain("beginDockRegionResize('left', 'horizontal'");
-    expect(source).toContain('state.dockRegionSizes.left');
+    expect(html).toContain('data-testid="xleth-dock-region-resizer-left"');
+    expect(source).toContain('<DockRegionResizer region={side} currentSize={drawerSize} />');
+    expect(source).toContain('state.dockRegionSizes[side]');
     expect(source).not.toContain('sampleSelectorDockWidth');
+  });
+
+  it('renders the resizer for whichever side the panel is docked to', () => {
+    const panels = createInitialPanelStates();
+    panels.sampleSelector.hidden = false;
+    panels.sampleSelector.docked.region = 'bottom';
+    usePanelRegistry.setState({ panels });
+
+    const html = renderToStaticMarkup(<SampleSelectorDrawer />);
+
+    expect(html).toContain('data-testid="xleth-dock-region-resizer-bottom"');
   });
 
   it('collapses through the drawer helper', () => {

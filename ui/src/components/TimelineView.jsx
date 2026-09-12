@@ -5,6 +5,7 @@ import PatternListPanel from './timeline/PatternListPanel.jsx'
 import TimelineCanvas from './timeline/TimelineCanvas.jsx'
 import MacroAutomationLanes from './timeline/MacroAutomationLanes.jsx'
 import { buildTrackLayout } from './timeline/timelineRowLayout.js'
+import { drawLengthForSnap, adoptDrawLength, resetDrawLength } from './timeline/drawLength.js'
 import { sourceTicksForTimelineTicks } from './timeline/clipSourceDomain.js'
 import { tokenValue } from '../theming/tokenValue.ts'
 import TimelineRuler from './timeline/TimelineRuler.jsx'
@@ -30,7 +31,6 @@ import { subscribe } from '../transportStore.js'
 import { startMacroAutomationPlayback } from '../fxgraph/macroAutomationPlayback.js'
 import useEffectChainStore from '../stores/effectChainStore.js'
 import { PLUGIN_NAMES } from './mixer/effectEditorOpeners.js'
-import { findFreePosition as findFreeAutomationLanePosition } from './mixer/automationKnobBinding.jsx'
 import useAutoScrollStore from '../stores/autoScrollStore.js'
 import { playheadClock } from '../services/PlayheadClock.js'
 import { editCursor } from '../services/EditCursor.js'
@@ -43,19 +43,46 @@ import {
   GRANULARITY_BEATS, MIN_PPB, MAX_PPB, ZOOM_FACTOR,
 } from '../constants/timeline.js'
 import { currentRegime } from './timeline/waveformRegime.js'
+import { reconcileById } from './timeline/listReconcile.js'
 import { anchoredScrollX, scrollSpringWriteback } from './timeline/viewportAnchor.js'
 import { hiResCoversWindow } from './timeline/hiResCoverage.js'
 import { findCoveringEntry, insertEntry } from './timeline/hiResRegionCache.js'
 import { planRegionFetches } from './timeline/hiResFetchPlanner.js'
+import {
+  padClipWindow, prioritiseProcessedJobs, shouldRetryNotReady, pruneNotReady,
+} from './timeline/hiResProcessedPlanner.js'
+import { createHiResRedrawScheduler } from './timeline/hiResRedrawScheduler.js'
 import { getRegionPlaybackDurationSec } from './timeline/regionDuration.js'
+import { mergeClipModulationPatch } from './timeline/clipModulationPatch.js'
+import { useClipVideoFxDefaultsStore } from '../stores/clipVideoFxDefaultsStore.js'
+import { seedVideoFxDefaults } from './timeline/clipVideoFxApply.js'
+import { VIBRATO_SHAPES, VIBRATO_SYNC_DIVISIONS } from './timeline/clipVibrato.js'
+import {
+  SCRATCH_BABY_DEFAULT_COUNT,
+  SCRATCH_BABY_DEFAULT_LENGTH_BEATS,
+  SCRATCH_BABY_LENGTHS,
+  SCRATCH_DEFAULTS,
+  SCRATCH_EDGE_MODES,
+  SCRATCH_PRESETS,
+  clampScratchCount,
+  cloneScratchCurve,
+  inferBabyScratchSettings,
+  scratchCurveSummary,
+  scratchPresetKeyForScratch,
+  scratchPresetPatch,
+} from './timeline/clipScratch.js'
+import {
+  openClipFxEditor, closeAllClipFxEditors, reconcileClipFxEditors,
+} from './timeline/clipFxEditorOpeners.js'
 import { getClipRegionWaveformStartSec } from './timeline/timelineDrawing.js'
 import {
   buildTimelineClipboard,
   clipPayloadFromSnapshot,
-  itemsCoveredByPlacements,
   placementsEndTick,
+  resolveOverwritePlan,
   resolveTimelinePaste,
 } from './timeline/timelineClipboard.js'
+import { deleteUndoSteps, moveUndoSteps, pitchShiftUndoSteps } from './timeline/undoSteps.js'
 import {
   flatTrackLayout,
   moveFolderInLayout,
@@ -119,16 +146,9 @@ const TIMELINE_KEY_COMBOS = [
   '1', '2', '3', '4', '5', '6', '7', '8', '9',
 ]
 
-const VIBRATO_SYNC_DIVISIONS = [
-  ['whole', 'Whole'], ['half', '1/2'], ['quarter', '1/4'], ['eighth', '1/8'],
-  ['sixteenth', '1/16'], ['thirtySecond', '1/32'],
-  ['quarterTriplet', '1/4T'], ['eighthTriplet', '1/8T'], ['sixteenthTriplet', '1/16T'],
-  ['quarterDotted', '1/4D'], ['eighthDotted', '1/8D'], ['sixteenthDotted', '1/16D'],
-]
-const VIBRATO_SHAPES = [
-  ['sine', 'Sine'], ['triangle', 'Triangle'],
-  ['sawUp', 'Saw Up'], ['sawDown', 'Saw Down'], ['square', 'Square'],
-]
+// VIBRATO_SHAPES / VIBRATO_SYNC_DIVISIONS now live in ./timeline/clipVibrato.js
+// so the clip dropdown and the floating graph editor share one vocabulary
+// (and one 'custom' entry).
 const VIBRATO_DEFAULTS = {
   enabled: true,
   depthCents: 50,
@@ -139,203 +159,11 @@ const VIBRATO_DEFAULTS = {
   phaseResetOnClipStart: true,
   phaseOffset: 0,
 }
-const SCRATCH_EDGE_MODES = [
-  ['clamp', 'Clamp'],
-  ['silence', 'Silence'],
-]
-const SCRATCH_BABY_DEFAULT_COUNT = 2
-const SCRATCH_BABY_DEFAULT_LENGTH_BEATS = 1
-const SCRATCH_BABY_LENGTHS = [
-  [0.25, '1/4 beat'],
-  [0.5, '1/2 beat'],
-  [1, '1 beat'],
-  [2, '2 beats'],
-]
-const SCRATCH_PRESETS = [
-  {
-    key: 'normal',
-    label: 'Normal',
-    timeMode: 'clipPercent',
-    curve: [
-      { time: 0.0, rateMultiplier: 1.0, curve: 0.0 },
-      { time: 1.0, rateMultiplier: 1.0, curve: 0.0 },
-    ],
-  },
-  {
-    key: 'stop',
-    label: 'Stop',
-    timeMode: 'clipSeconds',
-    curve: [
-      { time: 0.0, rateMultiplier: 1.0, curve: 0.0 },
-      { time: 0.10, rateMultiplier: 0.0, curve: 0.0 },
-    ],
-  },
-  {
-    key: 'reverse',
-    label: 'Reverse',
-    timeMode: 'clipPercent',
-    curve: [
-      { time: 0.0, rateMultiplier: -1.0, curve: 0.0 },
-      { time: 1.0, rateMultiplier: -1.0, curve: 0.0 },
-    ],
-  },
-  {
-    key: 'babyScratch',
-    label: 'Baby Scratch',
-    timeMode: 'beats',
-    curve: generateBabyScratchCurve(SCRATCH_BABY_DEFAULT_COUNT, SCRATCH_BABY_DEFAULT_LENGTH_BEATS),
-  },
-  {
-    key: 'tapeStop',
-    label: 'Tape Stop',
-    timeMode: 'clipSeconds',
-    curve: [
-      { time: 0.0, rateMultiplier: 1.0, curve: 0.0 },
-      { time: 0.45, rateMultiplier: 0.0, curve: 0.0 },
-    ],
-  },
-]
-const SCRATCH_DEFAULTS = {
-  enabled: false,
-  timeMode: 'clipPercent',
-  smoothingMs: 2,
-  gainCompensationDb: 0,
-  edgeMode: 'clamp',
-  curve: SCRATCH_PRESETS[0].curve,
-}
-
-function clampScratchCount(value) {
-  return Math.max(1, Math.min(8, Math.round(Number(value) || SCRATCH_BABY_DEFAULT_COUNT)))
-}
-
-function normalizeScratchLengthBeats(value) {
-  const numeric = Number(value)
-  return SCRATCH_BABY_LENGTHS.some(([length]) => scratchNumbersMatch(length, numeric))
-    ? numeric
-    : SCRATCH_BABY_DEFAULT_LENGTH_BEATS
-}
-
-function scratchNumbersMatch(a, b) {
-  return Math.abs(Number(a) - Number(b)) < 0.0001
-}
-
-function generateBabyScratchCurve(count, lengthBeats) {
-  const scratchCount = clampScratchCount(count)
-  const length = normalizeScratchLengthBeats(lengthBeats)
-  const curve = []
-  const addPoint = (time, rateMultiplier) => {
-    const last = curve[curve.length - 1]
-    if (last && scratchNumbersMatch(last.time, time)) {
-      last.rateMultiplier = rateMultiplier
-      last.curve = 0.0
-      return
-    }
-    curve.push({ time, rateMultiplier, curve: 0.0 })
-  }
-
-  for (let i = 0; i < scratchCount; i += 1) {
-    const segment = length / scratchCount
-    const start = i * segment
-    const mid = start + segment * 0.5
-    const end = start + segment
-    addPoint(start, 1.0)
-    addPoint(mid, -1.0)
-    addPoint(end, 1.0)
-  }
-  return curve
-}
-
-function cloneScratchCurve(curve) {
-  return (curve ?? []).map(point => ({
-    time: point.time,
-    rateMultiplier: point.rateMultiplier,
-    curve: point.curve,
-  }))
-}
-
-function scratchCurvesMatch(a, b) {
-  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false
-  return a.every((point, i) =>
-    scratchNumbersMatch(point.time, b[i].time) &&
-    scratchNumbersMatch(point.rateMultiplier, b[i].rateMultiplier) &&
-    scratchNumbersMatch(point.curve, b[i].curve)
-  )
-}
-
-function scratchTimeModeMatches(a, b) {
-  return (a ?? SCRATCH_DEFAULTS.timeMode) === b
-}
-
-function inferBabyScratchSettings(scratch) {
-  if (!scratchTimeModeMatches(scratch?.timeMode, 'beats')) return null
-  for (const [lengthBeats, lengthLabel] of SCRATCH_BABY_LENGTHS) {
-    for (let count = 1; count <= 8; count += 1) {
-      if (scratchCurvesMatch(scratch?.curve, generateBabyScratchCurve(count, lengthBeats))) {
-        return { count, lengthBeats, lengthLabel }
-      }
-    }
-  }
-  return null
-}
-
-function scratchPresetKeyForScratch(scratch) {
-  if (inferBabyScratchSettings(scratch)) return 'babyScratch'
-  return SCRATCH_PRESETS
-    .filter(preset => preset.key !== 'babyScratch')
-    .find(preset => scratchTimeModeMatches(scratch?.timeMode, preset.timeMode) && scratchCurvesMatch(scratch?.curve, preset.curve))
-    ?.key ?? 'custom'
-}
-
-function scratchPresetPatch(presetKey, { scratchCount = SCRATCH_BABY_DEFAULT_COUNT, lengthBeats = SCRATCH_BABY_DEFAULT_LENGTH_BEATS } = {}) {
-  const preset = SCRATCH_PRESETS.find(p => p.key === presetKey) ?? SCRATCH_PRESETS[0]
-  const curve = preset.key === 'babyScratch'
-    ? generateBabyScratchCurve(scratchCount, lengthBeats)
-    : preset.curve
-  return {
-    enabled: true,
-    timeMode: preset.timeMode,
-    curve: cloneScratchCurve(curve),
-  }
-}
-
-function scratchCurveSummary(scratch) {
-  const babySettings = inferBabyScratchSettings(scratch)
-  if (babySettings) return `Curve: ${babySettings.count} scratches / ${babySettings.lengthLabel}`
-
-  const preset = SCRATCH_PRESETS
-    .filter(p => p.key !== 'babyScratch')
-    .find(p => scratchTimeModeMatches(scratch?.timeMode, p.timeMode) && scratchCurvesMatch(scratch?.curve, p.curve))
-  if (preset?.timeMode === 'clipSeconds') {
-    const endTime = preset.curve[preset.curve.length - 1]?.time ?? 0
-    return `Curve: fixed ${Number(endTime).toFixed(2)}s`
-  }
-  if (preset?.timeMode === 'clipPercent') return 'Curve: full clip'
-  return 'Curve: Custom'
-}
-
-function mergeClipModulationPatch(
-  clip,
-  { vibratoPatch = null, scratchPatch = null, videoPatch = null, forceEnabled = false } = {}
-) {
-  const existing = clip?.modulation ?? {}
-  const existingVibrato = existing.vibrato ?? {}
-  const existingScratch = existing.scratch ?? {}
-  const existingVideo = existing.video ?? {}
-  const nextVibrato = vibratoPatch ? { ...existingVibrato, ...vibratoPatch } : existingVibrato
-  const nextScratch = scratchPatch ? { ...existingScratch, ...scratchPatch } : existingScratch
-  const nextVideo   = videoPatch   ? { ...existingVideo,   ...videoPatch   } : existingVideo
-  const merged = {
-    ...existing,
-    enabled: Boolean(nextVibrato.enabled || nextScratch.enabled),
-  }
-
-  if (vibratoPatch) merged.vibrato = nextVibrato
-  if (scratchPatch) merged.scratch = nextScratch
-  if (videoPatch)   merged.video   = nextVideo
-  if (forceEnabled) merged.enabled = true
-
-  return merged
-}
+// Scratch preset vocabulary lives in timeline/clipScratch.js so the dropdown
+// below and the floating rate-graph editor share ONE definition of what a
+// preset is. SCRATCH_EDGE_MODES now carries all four engine edge modes; Wrap
+// and Ping-Pong were always supported by ClipModulation::Scratch::EdgeMode and
+// were simply never offered here.
 
 function hasAudioModulationIntent(modulation) {
   if (!modulation) return false
@@ -730,7 +558,14 @@ export default function TimelineView({
 }) {
   // ── Tool state ──────────────────────────────────────────────────────────────
   const [activeTool, setActiveTool] = useState('select')
-  const [stickyNoteLength, setStickyNoteLength] = useState(240) // 1/16 = PPQ/4
+  // Draw length for the pencil. `overridden` is the "a clip taught me this
+  // length" flag — see timeline/drawLength.js.
+  const [drawLength, setDrawLength] = useState({ lengthTicks: 240, overridden: false }) // 1/16 = PPQ/4
+  const stickyNoteLength = drawLength.lengthTicks
+  // Mirror for adoptStickyNoteLength — the tools call it from a mouse handler
+  // that must not close over a stale render's state.
+  const drawLengthRef = useRef(drawLength)
+  drawLengthRef.current = drawLength
   const snapGranularity = useSnapStore((s) => s.snapGranularity)
   const setSnapGranularity = useSnapStore((s) => s.setSnapGranularity)
   const timelineDisplaySettings = useTimelineDisplayStore((s) => s.timelineDisplaySettings)
@@ -745,11 +580,45 @@ export default function TimelineView({
   const { showToast } = useToast()
   const { useOnVisibilityChange } = usePanelVisibility()
 
-  // Keep arranger clip length in sync with snap granularity
-  useEffect(() => {
+  // ── Draw length ("sticky note length") ────────────────────────────────────
+  // Two modes:
+  //   snap-following (default) — the pencil draws one snap division (SNAP 1/16
+  //     -> a 1/16 clip), and it re-follows every SNAP change.
+  //   overridden — the moment the user touches an existing clip whose length
+  //     differs from the snap division (select / move / trim / stretch /
+  //     middle-click template), that clip's exact length becomes the global
+  //     draw length and SNAP changes no longer move it. It stays for the rest
+  //     of the session and is only cleared by loading/closing the project, or
+  //     by touching a clip that is exactly one snap division long again.
+  const snapDefaultTicks = useMemo(() => {
     const beats = GRANULARITY_BEATS[snapGranularity] ?? GRANULARITY_BEATS['1/16']
-    setStickyNoteLength(Math.round(beats * PPQ))
+    return Math.round(beats * PPQ)
   }, [snapGranularity])
+  const snapDefaultTicksRef = useRef(snapDefaultTicks)
+  snapDefaultTicksRef.current = snapDefaultTicks
+
+  useEffect(() => {
+    setDrawLength((prev) => drawLengthForSnap(prev, snapDefaultTicks))
+  }, [snapDefaultTicks])
+
+  // A fresh project starts back on the snap division.
+  useEffect(() => {
+    const offProjectLoaded = window.xleth?.onProjectLoaded?.(
+      () => setDrawLength(resetDrawLength(snapDefaultTicksRef.current))
+    )
+    return () => { offProjectLoaded?.() }
+  }, [])
+
+  // Adopt the length of a clip the user just touched. The timeline tools call
+  // this instead of a plain setter — it is what arms/disarms the override.
+  const adoptStickyNoteLength = useCallback((ticks) => {
+    const prev = drawLengthRef.current
+    const next = adoptDrawLength(prev, ticks, snapDefaultTicksRef.current)
+    if (next === prev) return
+    drawLengthRef.current = next
+    setDrawLength(next)
+    console.log(`[DrawLength] Adopted ${next.lengthTicks}t from clip (override=${next.overridden})`)
+  }, [])
 
   const [patternListCollapsed, setPatternListCollapsed] = useState(false)
   // How many engine undo entries the last compound edit pushed (split = 3,
@@ -757,6 +626,22 @@ export default function TimelineView({
   // the count to compoundRedoCountRef so Ctrl+Y replays exactly as many.
   const compoundUndoCountRef = useRef(0)
   const compoundRedoCountRef = useRef(0)
+
+  // Serializes every gesture that resolves an overwrite plan against
+  // clipsRef.current / patternBlocks. Those handlers read the CURRENT contents
+  // of a track to decide what the incoming items bury, but the previous
+  // gesture's writeback only lands after its refetch resolves — so a held
+  // Ctrl+V computed its doomed set from a snapshot two pastes stale and
+  // overwrote the wrong clips. Each gesture still resolves its geometry and
+  // advances the edit cursor synchronously (held Ctrl+V must keep stacking
+  // forward at key-repeat rate); only the engine half queues.
+  const editGateRef = useRef(Promise.resolve())
+  const runSerializedEdit = useCallback((fn) => {
+    // `.then(fn, fn)` — a rejected predecessor must not strand the queue.
+    const run = editGateRef.current.then(fn, fn)
+    editGateRef.current = run.then(() => {}, () => {})
+    return run
+  }, [])
   const timelineFocusedRef = useRef(false)
   const timelineViewRef = useRef(null)
 
@@ -787,6 +672,11 @@ export default function TimelineView({
   // ── Automation clips (Phase B) ──────────────────────────────────────────
   const [automationLanes, setAutomationLanes] = useState([])
   const [automationClips, setAutomationClips] = useState([])
+  // Latest-value mirror — see patternBlocksRef. The paste and Ctrl+D lane-
+  // occupancy scans run inside runSerializedEdit and must see the lane as it is
+  // when they run, not as it was at the keystroke.
+  const automationClipsRef = useRef([])
+  automationClipsRef.current = automationClips
   const [automationEnvelopes, setAutomationEnvelopes] = useState([])
   const [selectedAutomationClipIds, setSelectedAutomationClipIds] = useState(new Set())
   // Phase C — the envelope point the user last clicked, so Delete can remove it
@@ -899,6 +789,7 @@ export default function TimelineView({
   const [audioModSectionOpen, setAudioModSectionOpen] = useState(true)
   const [videoModSectionOpen, setVideoModSectionOpen] = useState(false)
   const [trackMenu, setTrackMenu] = useState(null)         // { track, x, y }
+  const [addTrackMenu, setAddTrackMenu] = useState(null)   // { x, y }
   const [confirmDialog, setConfirmDialog] = useState(null)  // { title, message, onConfirm }
   const [quantizeOpen, setQuantizeOpen] = useState(false)
   const nextTrackNum = useRef(1)
@@ -945,6 +836,11 @@ export default function TimelineView({
   // (by-then-already-fired) setTimeout, so overlapping gestures could run
   // two full fetch passes concurrently, doubling IPC traffic for no benefit.
   const hiResFetchGenerationRef = useRef(0)
+  // { ["c"+clipId]: ms timestamp } — last time getClipPeaks answered
+  // ready:false for that clip (engine has no rendered buffer for it right
+  // now). Without this a non-resident clip left no trace in hiResCacheRef and
+  // was refetched on EVERY settle pass forever. See hiResProcessedPlanner.js.
+  const hiResNotReadyRef = useRef(new Map())
   // Tuning knobs for the coalesced hi-res fetch below. Distances are in
   // PIXELS (converted to seconds at fetch time via the current zoom) so they
   // scale with zoom instead of being a fixed number of seconds that would be
@@ -953,12 +849,29 @@ export default function TimelineView({
   const HIRES_MERGE_GAP_PX = 300         // batch clip requests within this many px of each other
   const HIRES_MAX_ENTRIES_PER_REGION = 12 // cap on distinct cached windows per region (FIFO evict)
   const HIRES_MAX_FETCHES_PER_REGION = 6  // cap merged fetches issued per region per settle pass
+  // Cap on per-clip processed-buffer fetches per settle pass, across ALL
+  // regions. Processed clips can't be merged (no two clips share a processed
+  // buffer) so a cap is the only bound available — and it was missing: a
+  // stretch-heavy viewport issued one fetch per visible processed clip, 118 of
+  // them at once on the real BFDIA 9 project, all serialised on the engine
+  // worker's single JS thread ahead of every other RPC. Nearest-the-viewport-
+  // centre clips win the budget; the rest keep the low-res fallback until a
+  // later pass. See hiResProcessedPlanner.js for the measurements.
+  const HIRES_MAX_PROCESSED_FETCHES = 24
+  const HIRES_NOT_READY_BACKOFF_MS = 1500  // don't re-ask for a not-ready clip buffer sooner than this
+  const HIRES_NOT_READY_MAX_AGE_MS = 30000 // prune not-ready stamps older than this
   const regionSampleRates = useRef({})            // { [regionId]: sampleRate } — learned from getRegionPeaks
   const clipPeakCacheRef = useRef({})             // { [clipId]: { peaks, stride, peakWidth, pitchOffset, pitchOffsetCents, reversed, stretchRatio } }
   const clipPeakRetryRef = useRef({})             // { [clipId]: retryCount } — resets on param change or success
 
   // ── Pattern state ──────────────────────────────────────────────────────────
   const [patternBlocks, setPatternBlocks] = useState([])
+  // Latest-value mirror, the same pattern timelineKeyHandlerRef uses below.
+  // The overwrite resolver runs inside runSerializedEdit, i.e. after at least
+  // one await, so a closure over `patternBlocks` there would be the list as of
+  // the keystroke rather than as of the moment the work actually runs.
+  const patternBlocksRef = useRef([])
+  patternBlocksRef.current = patternBlocks
   const [patterns, setPatterns] = useState({})        // { [id]: pattern }
   const [selectedBlockIds, setSelectedBlockIds] = useState(new Set())
 
@@ -1003,6 +916,18 @@ export default function TimelineView({
   // Declared before the zoom/scroll hooks so their onCommit callbacks (below)
   // can close over canvasRef/rulerRef for imperative, per-frame redraws.
   const canvasRef = useRef(null)    // TimelineCanvas imperative handle
+  // Hi-res waveform results land one IPC reply at a time but within a few ms
+  // of each other, and redrawContent() is a full synchronous canvas rebuild —
+  // so every redraw but the last was immediately overwritten. Collapse them
+  // to one per frame. Scoped to this one reason string on purpose: every
+  // other path (drag commit, zoom tick) keeps calling redrawContent directly.
+  const hiResRedrawRef = useRef(null)
+  if (!hiResRedrawRef.current) {
+    hiResRedrawRef.current = createHiResRedrawScheduler(() => {
+      canvasRef.current?.redrawContent('hires-waveform')
+    })
+  }
+  useEffect(() => () => hiResRedrawRef.current?.cancel(), [])
   const rulerRef = useRef(null)     // TimelineRuler imperative handle
   // DOM overlays that sit on top of / beside those canvases. They are NOT
   // canvases, but their placement is the same function of (pixelsPerBeat,
@@ -1138,6 +1063,12 @@ export default function TimelineView({
     window.addEventListener('mouseup', onUp)
   }, [timelineTrackHeaderWidth, setTimelineTrackHeaderWidth])
 
+  // Video-companion FX defaults are read imperatively by seedVideoFxDefaults on
+  // a checkbox click, so they have to be in the store before the first click —
+  // not lazily on first read.
+  const hydrateClipVideoFxDefaults = useClipVideoFxDefaultsStore((st) => st.hydrate)
+  useEffect(() => { hydrateClipVideoFxDefaults() }, [hydrateClipVideoFxDefaults])
+
   // Declick is engine-owned and no longer surfaced in the UI — the engine keeps
   // applying its stored declick envelope; there is simply no control for it.
   const [globalStretchMethod, setGlobalStretchMethod] = useState(1) // 1=PSOLA,2=Rubber,3=WSOLA,4=PhaseVocoder,5=WORLD
@@ -1177,8 +1108,8 @@ export default function TimelineView({
   const updatePencilTemplate = useCallback((template) => {
     pencilTemplateRef.current = template
     setPencilTemplate(template)
-    if (template) setStickyNoteLength(template.durationTicks)
-  }, [])
+    if (template) adoptStickyNoteLength(template.durationTicks)
+  }, [adoptStickyNoteLength])
 
   // ── Select syllable index for pencil drawing ───────────────────────────────
   // Creates/updates a pencil template that carries the syllable index so the
@@ -1253,16 +1184,63 @@ export default function TimelineView({
     } catch { /* engine not ready */ }
   }, [])
 
+  // Every clip mutation ends in a refetch, and two overlapping mutations resolve
+  // in ARRIVAL order — so a slow snapshot taken before a move could land after
+  // the fast one taken after it, and the canvas visibly reverted (hold Ctrl+V
+  // while a move's refetch is in flight). The generation guard drops any
+  // snapshot a newer fetch has already superseded, the same way the hi-res
+  // waveform fetcher supersedes a stale batch.
+  const fetchClipsGenerationRef = useRef(0)
   const fetchClips = useCallback(async () => {
+    const myGeneration = ++fetchClipsGenerationRef.current
     try {
       const c = await window.xleth?.timeline?.getClips()
+      if (myGeneration !== fetchClipsGenerationRef.current) return
       if (c) {
         const normalized = c.map(normalizeClipFadeFields)
         setClips(normalized)
         clipsRef.current = normalized
+        // Close any floating clip-FX editor whose clip no longer exists. This is
+        // the one funnel every clip mutation flows through (delete tool, batch
+        // delete, split's remove+re-add under new ids, bulk ops, cascading region
+        // deletes), so reconciling here catches them all without touching each
+        // call site. Mirrors closeEffectEditorForNode's role for chain nodes.
+        reconcileClipFxEditors(normalized)
         console.log(`[TimelineClips] Clips loaded: ${normalized.length}`)
       }
     } catch { /* engine not ready */ }
+  }, [])
+
+  // The bounded counterpart to fetchClips: splice in the post-state a mutation
+  // just handed back instead of refetching every clip in the project.
+  //
+  // Every batch and single-clip mutation RPC now answers with the clips it
+  // touched (see clipsByIdToJs, XlethEngineService.cpp), so the change set is
+  // known and small — a 200-clip drag no longer drags the whole project across
+  // two process boundaries and rebuilds every clip object on arrival. See
+  // timeline/clipReconcile.js for the identity rules; unchanged clips keep
+  // their existing object so downstream memos survive.
+  //
+  // fetchClips survives for the paths where the change set is genuinely
+  // unbounded: undo/redo, project load, and the engine-driven clips-changed
+  // broadcast (cascading region deletes).
+  //
+  // It shares fetchClips' generation counter deliberately: a delta is only
+  // valid against the list it was computed from, so an in-flight full refetch
+  // must win — bumping the counter here also makes any refetch that started
+  // BEFORE this delta discard itself on arrival rather than reinstating the
+  // pre-mutation snapshot.
+  const applyClipDelta = useCallback(({ updated = [], removed = [] } = {}) => {
+    fetchClipsGenerationRef.current++
+    const next = reconcileById(clipsRef.current, {
+      updated, removed, normalize: normalizeClipFadeFields,
+    })
+    if (next === clipsRef.current) return
+    clipsRef.current = next
+    setClips(next)
+    // Same funnel duty fetchClips has: a split/paste/delete can retire the clip
+    // a floating clip-FX editor is bound to.
+    if (removed?.length) reconcileClipFxEditors(next)
   }, [])
 
   const fetchRegions = useCallback(async () => {
@@ -1293,6 +1271,22 @@ export default function TimelineView({
       const b = await window.xleth?.timeline?.getPatternBlocks()
       if (b) setPatternBlocks(b)
     } catch { /* engine not ready */ }
+  }, [])
+
+  // applyClipDelta's counterpart for pattern blocks. The batch add/paste RPCs
+  // return the blocks they inserted and the ids they buried, so a 64-block paste
+  // is genuinely ONE round trip — it used to be one addPatternBlock per block
+  // plus a setPatternBlockLoop each, and then a full getPatternBlocks on top.
+  // The paths that still fire N× single RPCs (move, remove) keep the refetch.
+  const applyPatternBlockDelta = useCallback(({ updated = [], removed = [] } = {}) => {
+    // Reads and writes the ref rather than using a functional setState, matching
+    // applyClipDelta: back-to-back deltas inside one gesture must each see the
+    // previous one, and the rest of this file reads patternBlocksRef
+    // synchronously right after a mutation.
+    const next = reconcileById(patternBlocksRef.current, { updated, removed })
+    if (next === patternBlocksRef.current) return
+    patternBlocksRef.current = next
+    setPatternBlocks(next)
   }, [])
 
   const fetchAutomationLanes = useCallback(async () => {
@@ -1389,14 +1383,15 @@ export default function TimelineView({
       return
     }
     try {
-      await window.xleth?.timeline?.quantizeClipsBatch(specs)
-      await fetchClips()
+      const quantized = await window.xleth?.timeline?.quantizeClipsBatch(specs)
+      applyClipDelta({ updated: quantized ?? [] })
       timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
     } catch (err) {
       console.error('[Quantize] quantizeClipsBatch failed:', err)
+      await fetchClips()
     }
     setQuantizeOpen(false)
-  }, [selectedClipIds, selectedBlockIds, patternBlocks, snapGranularity, fetchClips])
+  }, [selectedClipIds, selectedBlockIds, patternBlocks, snapGranularity, fetchClips, applyClipDelta])
 
   useEffect(() => {
     fetchTracks()
@@ -1456,6 +1451,10 @@ export default function TimelineView({
     timelineEvents.addEventListener('timeline-automation-reveal', onAutomationReveal)
     const offProjectLoaded = window.xleth?.onProjectLoaded?.(() => {
       loadedRegionAudioRef.current.clear()
+      // Clip ids are reassigned wholesale by a load, so any open clip-FX editor
+      // is addressing a stale clip. Same reasoning as closeAllEffectEditors()
+      // on project load in effectChainStore.js.
+      closeAllClipFxEditors()
       fetchTracks(); fetchClips(); fetchRegions(); fetchSources(); fetchPatterns(); fetchPatternBlocks()
       fetchAutomationAll()
     })
@@ -1802,6 +1801,10 @@ export default function TimelineView({
       if (Object.keys(hiResCacheRef.current).length > 0) {
         hiResCacheRef.current = {}
       }
+      // The not-ready stamps go with it: they only gate fetches that can't
+      // happen in this regime anyway, and keeping them would make the first
+      // pass after zooming back in skip clips for up to the backoff window.
+      hiResNotReadyRef.current.clear()
       return
     }
 
@@ -1820,6 +1823,11 @@ export default function TimelineView({
       const pixelsPerSecond = ppb * (bpm / 60)
       const marginSec = HIRES_MARGIN_PX / pixelsPerSecond
       const mergeGapSec = HIRES_MERGE_GAP_PX / pixelsPerSecond
+      // One clock read for the whole pass: every not-ready decision below must
+      // compare against the same instant, or a long pass could let an early
+      // clip through on a backoff a later clip is still inside.
+      const nowMs = Date.now()
+      pruneNotReady(hiResNotReadyRef.current, nowMs, HIRES_NOT_READY_MAX_AGE_MS)
 
       // ── Pass 1: classify every visible clip's need ──────────────────────
       // Unprocessed clips in trace/waveform regime are collected per-region
@@ -1870,12 +1878,29 @@ export default function TimelineView({
         if (hasProcessing && regime !== 'sample') {
           // Processed clip: use clip-local time coords (0 = start of processed buffer).
           // Keyed by "c"+clipId so multiple clips on the same region don't collide.
-          const clipLocalStart = (visL - x) * secPerPx   // 0..clipDurSec
-          const clipLocalEnd   = (visR - x) * secPerPx
+          //
+          // Padded by the same margin the region path uses. Unpadded, a clip
+          // straddling a viewport edge cached EXACTLY its visible sub-range,
+          // so the next settle after any pan found it uncovered and refetched
+          // unconditionally — see hiResProcessedPlanner.js.
+          const { start: clipLocalStart, end: clipLocalEnd } = padClipWindow(
+            (visL - x) * secPerPx, (visR - x) * secPerPx, marginSec, clipDurSec)
           const hiResKey = `c${clip.id}`
           const cachedClip = hiResCacheRef.current[hiResKey]
           if (cachedClip?.peaks && hiResCoversWindow(cachedClip.startSec, cachedClip.endSec, clipLocalStart, clipLocalEnd)) continue
-          processedJobs.push({ clipId: clip.id, hiResKey, clipLocalStart, clipLocalEnd, visPxWidth: Math.ceil(visR - visL) })
+          // The engine had no rendered buffer for this clip recently — don't
+          // re-ask every 80ms settle. It gets another chance after the backoff.
+          if (!shouldRetryNotReady(hiResNotReadyRef.current.get(hiResKey), nowMs, HIRES_NOT_READY_BACKOFF_MS)) continue
+          // secPerPx is clip-local seconds per PIXEL, so its reciprocal sizes
+          // the padded window in pixels — the padded window is wider than the
+          // visible one and must be sampled at matching resolution, or the
+          // extra margin would cost resolution inside the visible part.
+          const pxWidth = Math.ceil((clipLocalEnd - clipLocalStart) / secPerPx)
+          processedJobs.push({
+            clipId: clip.id, hiResKey, clipLocalStart, clipLocalEnd,
+            visPxWidth: Math.max(1, pxWidth),
+            centreDistPx: Math.abs((visL + visR) / 2 - w / 2),
+          })
           continue
         }
 
@@ -1902,6 +1927,14 @@ export default function TimelineView({
         })
         for (const win of planned) peakFetchJobs.push({ regionId, start: win.start, end: win.end })
       }
+
+      // ── Pass 2b: cap processed-clip fetches, viewport-centre first ───────
+      // Merging is genuinely inapplicable here (no two clips share a processed
+      // buffer), but a cap is not — and without one a stretch-heavy viewport
+      // issued one fetch per visible processed clip (118 on BFDIA 9), every
+      // one of them ahead of the user's next paste/transport RPC in the engine
+      // worker's single-threaded queue. See hiResProcessedPlanner.js.
+      const cappedProcessedJobs = prioritiseProcessedJobs(processedJobs, HIRES_MAX_PROCESSED_FETCHES)
 
       // ── Pass 3: dedupe sample-regime jobs (no merging — see above) ──────
       const dedupedSampleJobs = []
@@ -1943,7 +1976,7 @@ export default function TimelineView({
                 endSec: job.end,
                 sampleRate: data.sampleRate || (regionSampleRates.current[job.regionId] || DEFAULT_SR),
               }, HIRES_MAX_ENTRIES_PER_REGION)
-              canvasRef.current?.redrawContent('hires-waveform')
+              hiResRedrawRef.current?.request()
             }
           } catch (e) {
             console.warn(`[Timeline] Hi-res fetch failed for region ${job.regionId}:`, e.message)
@@ -1969,7 +2002,7 @@ export default function TimelineView({
                 endSec: job.visEndSec,
                 sampleRate: data.sampleRate || job.sr,
               }, HIRES_MAX_ENTRIES_PER_REGION)
-              canvasRef.current?.redrawContent('hires-waveform')
+              hiResRedrawRef.current?.request()
             }
           } catch (e) {
             console.warn(`[Timeline] Hi-res raw-sample fetch failed for region ${job.regionId}:`, e.message)
@@ -1977,7 +2010,7 @@ export default function TimelineView({
         })())
       }
 
-      for (const job of processedJobs) {
+      for (const job of cappedProcessedJobs) {
         tasks.push((async () => {
           try {
             const data = await window.xleth?.waveform?.getClipPeaks(
@@ -1990,7 +2023,13 @@ export default function TimelineView({
                 startSec: job.clipLocalStart,
                 endSec:   job.clipLocalEnd,
               }
-              canvasRef.current?.redrawContent('hires-waveform')
+              hiResNotReadyRef.current.delete(job.hiResKey)
+              hiResRedrawRef.current?.request()
+            } else {
+              // ready:false = ClipRenderCache miss (buffer building, or GC'd
+              // when its last subscriber left). Stamp it so the next settle
+              // passes skip it instead of re-asking every 80ms forever.
+              hiResNotReadyRef.current.set(job.hiResKey, Date.now())
             }
           } catch (e) {
             console.warn(`[Timeline] Hi-res clip peak fetch failed for clip ${job.clipId}:`, e.message)
@@ -2421,23 +2460,12 @@ export default function TimelineView({
     }
   }, [fetchTracks, notifyTrackLayoutChanged])
 
-  const handleAddTrack = useCallback(async () => {
-    const num = nextTrackNum.current++
-    const name = `Track ${num}`
-    console.log(`[Timeline] Track added: ${name}`)
-    if (window.xleth?.timeline?.addTrack) {
-      try {
-        await window.xleth.timeline.addTrack({ name, order: tracks.length })
-        await fetchTracks()
-        return
-      } catch { /* fall through to local */ }
-    }
-    // Offline / no-engine fallback — add locally
-    setTracks((prev) => [
-      ...prev,
-      { id: Date.now(), name, type: 'Audio', volume: 1, pan: 0, muted: false, solo: false, visualOnly: false },
-    ])
-  }, [fetchTracks, tracks.length])
+  // "+" button opens a small type picker (Clip vs Pattern) instead of always
+  // defaulting to a Clip track that then needs a manual convert.
+  const handleAddTrackClick = useCallback((event) => {
+    const rect = event.currentTarget.getBoundingClientRect()
+    setAddTrackMenu({ x: rect.left, y: rect.bottom + 2 })
+  }, [])
 
   const handleMute = useCallback(async (id) => {
     const current = tracks.find((t) => t.id === id)
@@ -2670,6 +2698,28 @@ export default function TimelineView({
     }
   }, [fetchTracks, fetchClips])
 
+  const handleAddTrack = useCallback(async (trackType = 'Clip') => {
+    const num = nextTrackNum.current++
+    const name = `Track ${num}`
+    console.log(`[Timeline] Track added: ${name}`)
+    if (window.xleth?.timeline?.addTrack) {
+      try {
+        const newId = await window.xleth.timeline.addTrack({ name, order: tracks.length })
+        if (trackType === 'Pattern' && newId != null && newId >= 0) {
+          await performConvertToPatternTrack(newId)
+        } else {
+          await fetchTracks()
+        }
+        return
+      } catch { /* fall through to local */ }
+    }
+    // Offline / no-engine fallback — add locally
+    setTracks((prev) => [
+      ...prev,
+      { id: Date.now(), name, type: trackType === 'Pattern' ? 'Pattern' : 'Audio', volume: 1, pan: 0, muted: false, solo: false, visualOnly: false },
+    ])
+  }, [fetchTracks, tracks.length, performConvertToPatternTrack])
+
   // Wrap convert with a confirmation dialog when the track has clips
   const confirmAndConvertToPatternTrack = useCallback((track) => {
     return new Promise((resolve) => {
@@ -2897,59 +2947,120 @@ export default function TimelineView({
         next.delete(clipId)
         return next
       })
-      await fetchClips()
+      applyClipDelta({ removed: [clipId] })
     } catch (err) {
       console.error(`[DeleteTool] removeClip(${clipId}) failed:`, err)
+      await fetchClips()
     }
-  }, [fetchClips])
+  }, [fetchClips, applyClipDelta])
 
   // moves: [{ clipId, trackId, positionTicks }, ...]
   //
-  // One engine round trip and one undo entry for the whole selection. The
+  // At most two engine round trips for the whole selection — one batched remove
+  // for whatever the move buries, one batched move — instead of N of each. The
   // canvas is repainted from local state immediately and reconciled against
   // the engine afterwards, so a large drag lands instantly instead of waiting
-  // on N round trips (and N full clip refetches) to come back.
+  // on the round trips to come back.
   const handleMoveClips = useCallback(async (moves) => {
     if (!Array.isArray(moves) || moves.length === 0) return
-    const byId = new Map(moves.map(m => [m.clipId, m]))
-    const optimistic = clipsRef.current.map(c => {
-      const m = byId.get(c.id)
-      return m ? { ...c, trackId: m.trackId, positionTicks: m.positionTicks } : c
+    await runSerializedEdit(async () => {
+      const byId = new Map(moves.map(m => [m.clipId, m]))
+      // A move overwrites what it lands on, exactly like a paste. The moved
+      // clips carry their own durations over from the pre-move snapshot —
+      // `moves` only names a destination.
+      const { doomedClipIds } = resolveOverwritePlan({
+        existingClips: clipsRef.current,
+        clipPlacements: moves.map(m => ({
+          trackId: m.trackId,
+          positionTicks: m.positionTicks,
+          durationTicks: clipsRef.current.find(c => c.id === m.clipId)?.durationTicks ?? 0,
+        })),
+        movingClipIds: new Set(byId.keys()),
+      })
+      const doomed = new Set(doomedClipIds)
+      const optimistic = clipsRef.current
+        .filter(c => !doomed.has(c.id))
+        .map(c => {
+          const m = byId.get(c.id)
+          return m ? { ...c, trackId: m.trackId, positionTicks: m.positionTicks } : c
+        })
+      setClips(optimistic)
+      clipsRef.current = optimistic
+      try {
+        // Remove first: the engine does not police occupancy, so moving onto a
+        // still-occupied slot is what produced the silent stack.
+        if (doomedClipIds.length > 0) {
+          const removedIds = await window.xleth?.timeline?.removeClipsBatch(doomedClipIds)
+          applyClipDelta({ removed: removedIds ?? doomedClipIds })
+        }
+        // Both calls answer with post-state, so a 200-clip drag costs exactly
+        // two round trips and NO getClips — it used to end in a refetch of every
+        // clip in the project just to learn the positions it already knew.
+        const movedClips = await window.xleth?.timeline?.moveClipsBatch(moves)
+        applyClipDelta({ updated: movedClips ?? [] })
+      } catch (err) {
+        console.error(`[SelectTool] moveClipsBatch(${moves.length}) failed:`, err)
+        // The optimistic repaint above is now a guess: resync against the engine.
+        await fetchClips()
+      }
+      compoundUndoCountRef.current = moveUndoSteps({
+        doomedCount: doomedClipIds.length, moveCount: moves.length,
+        batchedRemove: true, batchedMove: true,
+      })
+      if (doomedClipIds.length > 0) {
+        console.log(`[SelectTool] Move overwrote ${doomedClipIds.length} clip(s)`)
+      }
     })
-    setClips(optimistic)
-    clipsRef.current = optimistic
-    try {
-      await window.xleth?.timeline?.moveClipsBatch(moves)
-    } catch (err) {
-      console.error(`[SelectTool] moveClipsBatch(${moves.length}) failed:`, err)
-    }
-    await fetchClips()
-  }, [fetchClips])
+  }, [fetchClips, applyClipDelta, runSerializedEdit])
 
-  // Alt+drag duplicate. One batched insert, one undo entry — this used to be
-  // an awaited addClip per placement.
+  // Shift+drag duplicate. One atomic overwrite+insert, one undo entry — this
+  // used to be an awaited addClip per placement, and it stacked on whatever it
+  // landed on. (Alt is the free/no-snap modifier, not the duplicate one; see
+  // selectTool.js.)
   const handleDuplicateClips = useCallback(async (placements) => {
     if (!Array.isArray(placements) || placements.length === 0) return
-    try {
-      const payloads = placements.map(({ clip, trackId, positionTicks }) =>
-        clipPayloadFromSnapshot(clip, trackId, positionTicks))
-      const newIds = (await window.xleth?.timeline?.addClipsBatch(payloads)) ?? []
-      await fetchClips()
-      setSelectedClipIds(new Set(newIds))
-    } catch (err) {
-      console.error('[SelectTool] Duplicate drag failed:', err)
-    }
-  }, [fetchClips])
+    await runSerializedEdit(async () => {
+      try {
+        // The sources stay put, so nothing is excluded — a duplicate dropped
+        // back onto its own source legitimately buries it.
+        const { doomedClipIds } = resolveOverwritePlan({
+          existingClips: clipsRef.current,
+          clipPlacements: placements.map(({ clip, trackId, positionTicks }) => ({
+            trackId, positionTicks, durationTicks: clip.durationTicks,
+          })),
+        })
+        const payloads = placements.map(({ clip, trackId, positionTicks }) =>
+          clipPayloadFromSnapshot(clip, trackId, positionTicks))
+        // pasteClipsBatch, not addClipsBatch: remove + insert land as ONE undo
+        // entry, so Ctrl+Z cannot peel off the insert and leave the buried
+        // clips deleted.
+        const res = await window.xleth?.timeline?.pasteClipsBatch({
+          removeClipIds: doomedClipIds,
+          clips: payloads,
+        })
+        compoundUndoCountRef.current = 1
+        applyClipDelta({ updated: res?.clips ?? [], removed: res?.removedIds ?? [] })
+        setSelectedClipIds(new Set(res?.newIds ?? []))
+        if (doomedClipIds.length > 0) {
+          console.log(`[SelectTool] Duplicate overwrote ${doomedClipIds.length} clip(s)`)
+        }
+      } catch (err) {
+        console.error('[SelectTool] Duplicate drag failed:', err)
+        await fetchClips()
+      }
+    })
+  }, [fetchClips, applyClipDelta, runSerializedEdit])
 
   const handleResizeClip = useCallback(async (clipId, newDurationTicks) => {
     console.log(`[SelectTool] Resizing clip ${clipId}: dur=${newDurationTicks}t`)
     try {
-      await window.xleth?.timeline?.resizeClip(clipId, newDurationTicks)
-      await fetchClips()
+      const updated = await window.xleth?.timeline?.resizeClip(clipId, newDurationTicks)
+      applyClipDelta({ updated: updated ? [updated] : [] })
     } catch (err) {
       console.error(`[SelectTool] resizeClip(${clipId}) failed:`, err)
+      await fetchClips()
     }
-  }, [fetchClips])
+  }, [fetchClips, applyClipDelta])
 
   const handleSplitClip = useCallback(async (clipId, leftDuration, rightDuration) => {
     const clip = clipsRef.current.find((c) => c.id === clipId)
@@ -2965,53 +3076,33 @@ export default function TimelineView({
       const leftSourceDuration = sourceTicksForTimelineTicks(
         leftDuration, clip.stretchRatio ?? 1.0)
 
-      await window.xleth?.timeline?.removeClip(clipId)
-      await window.xleth?.timeline?.addClip({
-        trackId: clip.trackId, regionId: clip.regionId,
-        positionTicks: clip.positionTicks, durationTicks: leftDuration,
-        regionOffsetTicks: originalOffset,
-        syllableIndex: clip.syllableIndex ?? -1,
-        velocity: clip.velocity ?? 1.0,
-        pitchOffset: clip.pitchOffset ?? 0,
-        pitchOffsetCents: clip.pitchOffsetCents ?? 0,
-        reversed: clip.reversed ?? false,
-        stretchRatio: clip.stretchRatio ?? 1.0,
-        stretchMethod: clip.stretchMethod ?? 0,
-        formantPreserve: clip.formantPreserve ?? false,
-        fadeInPercent:  clip.fadeInPercent  ?? 0,
-        fadeOutPercent: clip.fadeOutPercent ?? 0,
-        fadeInX1:  clip.fadeInX1  ?? 0,  fadeInY1:  clip.fadeInY1  ?? 0,
-        fadeInX2:  clip.fadeInX2  ?? 1,  fadeInY2:  clip.fadeInY2  ?? 1,
-        fadeOutX1: clip.fadeOutX1 ?? 0,  fadeOutY1: clip.fadeOutY1 ?? 0,
-        fadeOutX2: clip.fadeOutX2 ?? 1,  fadeOutY2: clip.fadeOutY2 ?? 1,
+      // One atomic pasteClipsBatch, not removeClip + addClip + addClip. Three
+      // round trips became one, and — the real fix — three undo entries became
+      // one: compoundUndoCountRef had to carry a hardcoded 3 so Ctrl+Z did not
+      // stop halfway through the split, leaving the clip deleted and only its
+      // left half re-added. Both halves inherit every field through
+      // clipPayloadFromSnapshot, so a field added to a clip cannot go missing
+      // across a split the way a hand-copied payload list allows.
+      const res = await window.xleth?.timeline?.pasteClipsBatch({
+        removeClipIds: [clipId],
+        clips: [
+          { ...clipPayloadFromSnapshot(clip, clip.trackId, clip.positionTicks),
+            durationTicks: leftDuration,
+            regionOffsetTicks: originalOffset },
+          { ...clipPayloadFromSnapshot(clip, clip.trackId, clip.positionTicks + leftDuration),
+            durationTicks: rightDuration,
+            regionOffsetTicks: originalOffset + leftSourceDuration },
+        ],
       })
-      await window.xleth?.timeline?.addClip({
-        trackId: clip.trackId, regionId: clip.regionId,
-        positionTicks: clip.positionTicks + leftDuration, durationTicks: rightDuration,
-        regionOffsetTicks: originalOffset + leftSourceDuration,
-        syllableIndex: clip.syllableIndex ?? -1,
-        velocity: clip.velocity ?? 1.0,
-        pitchOffset: clip.pitchOffset ?? 0,
-        pitchOffsetCents: clip.pitchOffsetCents ?? 0,
-        reversed: clip.reversed ?? false,
-        stretchRatio: clip.stretchRatio ?? 1.0,
-        stretchMethod: clip.stretchMethod ?? 0,
-        formantPreserve: clip.formantPreserve ?? false,
-        fadeInPercent:  clip.fadeInPercent  ?? 0,
-        fadeOutPercent: clip.fadeOutPercent ?? 0,
-        fadeInX1:  clip.fadeInX1  ?? 0,  fadeInY1:  clip.fadeInY1  ?? 0,
-        fadeInX2:  clip.fadeInX2  ?? 1,  fadeInY2:  clip.fadeInY2  ?? 1,
-        fadeOutX1: clip.fadeOutX1 ?? 0,  fadeOutY1: clip.fadeOutY1 ?? 0,
-        fadeOutX2: clip.fadeOutX2 ?? 1,  fadeOutY2: clip.fadeOutY2 ?? 1,
-      })
-      compoundUndoCountRef.current = 3
+      compoundUndoCountRef.current = 1
       setSelectedClipIds(new Set())
-      await fetchClips()
+      applyClipDelta({ updated: res?.clips ?? [], removed: res?.removedIds ?? [clipId] })
       console.log(`[SplitTool] Split complete`)
     } catch (err) {
       console.error(`[SplitTool] split failed:`, err)
+      await fetchClips()
     }
-  }, [fetchClips])
+  }, [fetchClips, applyClipDelta])
 
   // Splits every selected clip that the transport playhead currently intersects.
   // Returns true if at least one clip was split (used to decide S key fallback).
@@ -3056,47 +3147,88 @@ export default function TimelineView({
   // of awaiting them one after another, and fires a single change event.
   const handleMovePatternBlocks = useCallback(async (moves) => {
     if (!Array.isArray(moves) || moves.length === 0) return
-    const byId = new Map(moves.map(m => [m.blockId, m]))
-    setPatternBlocks(prev => prev.map(b => {
-      const m = byId.get(b.id)
-      return m ? { ...b, trackId: m.trackId, positionTicks: m.positionTicks } : b
-    }))
-    try {
-      await Promise.all(moves.map(m =>
-        window.xleth?.timeline?.movePatternBlock(m.blockId, m.trackId, m.positionTicks)
-      ))
-    } catch (err) {
-      console.error('[SelectTool] movePatternBlocks failed:', err)
-    }
-    await fetchPatternBlocks()
-    timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
-  }, [fetchPatternBlocks])
+    await runSerializedEdit(async () => {
+      const byId = new Map(moves.map(m => [m.blockId, m]))
+      // Same overwrite policy as clips — a block move used to stack silently.
+      const { doomedBlockIds } = resolveOverwritePlan({
+        existingBlocks: patternBlocksRef.current,
+        blockPlacements: moves.map(m => ({
+          trackId: m.trackId,
+          positionTicks: m.positionTicks,
+          durationTicks: patternBlocksRef.current.find(b => b.id === m.blockId)?.durationTicks ?? 0,
+        })),
+        movingBlockIds: new Set(byId.keys()),
+      })
+      const doomed = new Set(doomedBlockIds)
+      setPatternBlocks(prev => prev.filter(b => !doomed.has(b.id)).map(b => {
+        const m = byId.get(b.id)
+        return m ? { ...b, trackId: m.trackId, positionTicks: m.positionTicks } : b
+      }))
+      try {
+        await Promise.all(doomedBlockIds.map(id =>
+          window.xleth?.timeline?.removePatternBlock(id)
+        ))
+        await Promise.all(moves.map(m =>
+          window.xleth?.timeline?.movePatternBlock(m.blockId, m.trackId, m.positionTicks)
+        ))
+      } catch (err) {
+        console.error('[SelectTool] movePatternBlocks failed:', err)
+      }
+      // There is still no movePatternBlocksBatch RPC — only the ADD side was
+      // batched (addPatternBlocksBatch / pastePatternBlocksBatch) — so every
+      // remove and every move here is its own engine entry and Ctrl+Z has to
+      // pop all of them. The calls are at least pipelined.
+      compoundUndoCountRef.current = moveUndoSteps({
+        doomedCount: doomedBlockIds.length, moveCount: moves.length,
+        batchedRemove: false, batchedMove: false,
+      })
+      await fetchPatternBlocks()
+      timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
+      if (doomedBlockIds.length > 0) {
+        console.log(`[SelectTool] Move overwrote ${doomedBlockIds.length} pattern block(s)`)
+      }
+    })
+  }, [fetchPatternBlocks, runSerializedEdit])
 
   const handleDuplicatePatternBlocks = useCallback(async (placements) => {
     if (!Array.isArray(placements) || placements.length === 0) return
-    try {
-      // Pipelined, not serial: the adds are independent, so one round-trip
-      // latency covers the whole selection instead of N stacked round trips.
-      const created = await Promise.all(placements.map(({ block, trackId, positionTicks }) =>
-        window.xleth?.timeline?.addPatternBlock({
-          trackId,
-          patternId: block.patternId,
-          positionTicks,
-          durationTicks: block.durationTicks,
-          offsetTicks: block.offsetTicks ?? 0,
-        }).then(id => ({ id, loopEnabled: block.loopEnabled }))
-      ))
-      const newIds = created.filter(c => c.id != null && c.id >= 0).map(c => c.id)
-      await Promise.all(created
-        .filter(c => c.id != null && c.id >= 0 && c.loopEnabled)
-        .map(c => window.xleth?.timeline?.setPatternBlockLoop(c.id, true)))
-      await fetchPatternBlocks()
-      timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
-      setSelectedBlockIds(new Set(newIds))
-    } catch (err) {
-      console.error('[SelectTool] Pattern duplicate drag failed:', err)
-    }
-  }, [fetchPatternBlocks])
+    await runSerializedEdit(async () => {
+      try {
+        // The sources stay put, so nothing is excluded.
+        const { doomedBlockIds } = resolveOverwritePlan({
+          existingBlocks: patternBlocksRef.current,
+          blockPlacements: placements.map(({ block, trackId, positionTicks }) => ({
+            trackId, positionTicks, durationTicks: block.durationTicks,
+          })),
+        })
+        // One atomic overwrite+insert: ONE round trip and ONE undo entry, where
+        // this used to be N pipelined adds plus a setPatternBlockLoop per looped
+        // block, each its own engine entry. loopEnabled now rides on the block.
+        const res = await window.xleth?.timeline?.pastePatternBlocksBatch({
+          removeBlockIds: doomedBlockIds,
+          blocks: placements.map(({ block, trackId, positionTicks }) => ({
+            trackId,
+            patternId: block.patternId,
+            positionTicks,
+            durationTicks: block.durationTicks,
+            offsetTicks: block.offsetTicks ?? 0,
+            loopEnabled: block.loopEnabled ?? false,
+          })),
+        })
+        const newIds = (res?.blocks ?? []).map(b => b.id)
+        compoundUndoCountRef.current = 1
+        applyPatternBlockDelta({ updated: res?.blocks ?? [], removed: res?.removedIds ?? [] })
+        timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
+        setSelectedBlockIds(new Set(newIds))
+        if (doomedBlockIds.length > 0) {
+          console.log(`[SelectTool] Duplicate overwrote ${doomedBlockIds.length} pattern block(s)`)
+        }
+      } catch (err) {
+        console.error('[SelectTool] Pattern duplicate drag failed:', err)
+        await fetchPatternBlocks()
+      }
+    })
+  }, [fetchPatternBlocks, applyPatternBlockDelta, runSerializedEdit])
 
   const handleResizePatternBlock = useCallback(async (blockId, durationTicks) => {
     console.log(`[SelectTool] Resizing pattern block ${blockId}: dur=${durationTicks}t`)
@@ -3250,37 +3382,25 @@ export default function TimelineView({
   // duplicated automation clip SHARES its source's envelopeId (FL semantics:
   // copies share until make-unique), so this never calls addEnvelope. The
   // engine rejects same-lane overlap outright (returns clipId -1) rather than
-  // shifting the request, so findFreePosition resolves each placement against
-  // both the existing lane contents and any earlier clip this same drag just
-  // placed on the same lane.
+  // shifting the request, so each placement has to be resolved against both the
+  // existing lane contents and any earlier clip this same drag placed on the
+  // same lane — the dependency that used to make this a serial await-per-clip
+  // with a running occupancy map here. addClipsBatch owns it now: one round
+  // trip, and ONE undo entry where a 5-clip drag-duplicate used to push five
+  // and Ctrl+Z removed exactly one of them.
   const handleDuplicateAutomationClips = useCallback(async (placements) => {
     if (!Array.isArray(placements) || placements.length === 0) return
     try {
-      const laneOccupancy = new Map()
-      const occupancyFor = (laneId) => {
-        if (!laneOccupancy.has(laneId)) {
-          laneOccupancy.set(laneId, automationClips
-            .filter((c) => c.laneId === laneId)
-            .map((c) => ({ positionTicks: c.positionTicks, durationTicks: c.durationTicks })))
-        }
-        return laneOccupancy.get(laneId)
-      }
-      const newIds = []
-      for (const { clip, positionTicks, laneId } of placements) {
-        const occupied = occupancyFor(laneId)
-        const resolvedPosition = findFreeAutomationLanePosition(occupied, positionTicks, clip.durationTicks)
-        const newId = await window.xleth?.automation?.addClip({
+      const landed = await window.xleth?.automation?.addClipsBatch(
+        placements.map(({ clip, positionTicks, laneId }) => ({
           laneId,
           envelopeId: clip.envelopeId,
-          positionTicks: resolvedPosition,
+          positionTicks,
           durationTicks: clip.durationTicks,
           offsetTicks: clip.offsetTicks ?? 0,
-        })
-        if (Number.isInteger(newId) && newId >= 0) {
-          newIds.push(newId)
-          occupied.push({ positionTicks: resolvedPosition, durationTicks: clip.durationTicks })
-        }
-      }
+        })))
+      const newIds = (landed ?? []).map(c => c.id)
+      compoundUndoCountRef.current = newIds.length > 0 ? 1 : 0
       await fetchAutomationClips()
       timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
       if (newIds.length > 0) setSelectedAutomationClipIds(new Set(newIds))
@@ -3288,7 +3408,7 @@ export default function TimelineView({
     } catch (err) {
       console.error('[SelectTool] Automation duplicate drag failed:', err)
     }
-  }, [automationClips, fetchAutomationClips])
+  }, [fetchAutomationClips])
 
   const handleDeleteAutomationClip = useCallback(async (clipId) => {
     try {
@@ -3424,7 +3544,16 @@ export default function TimelineView({
         )
       ),
     ])
-    if (clipIdList.length > 0) await fetchClips()
+    // Blocks and automation clips have no batch RPC yet, so this gesture pushed
+    // one engine entry PER item and Ctrl+Z would otherwise put back exactly one
+    // of them. Ctrl+X inherits the count from here.
+    compoundUndoCountRef.current = deleteUndoSteps({
+      clipIds: clipIdList, blockIds: blockIdList, automationClipIds: automationClipIdList,
+    })
+    // No refetch: the optimistic removal above already dropped exactly these
+    // clips, and reconcileClipFxEditors still has to run for any floating clip-FX
+    // editor bound to one of them.
+    if (clipIdList.length > 0) applyClipDelta({ removed: clipIdList })
     if (blockIdList.length > 0) {
       await fetchPatternBlocks()
       timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
@@ -3434,7 +3563,7 @@ export default function TimelineView({
       timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
     }
     return true
-  }, [fetchClips, fetchPatternBlocks, fetchAutomationClips, selectedBlockIds, selectedClipIds,
+  }, [applyClipDelta, fetchPatternBlocks, fetchAutomationClips, selectedBlockIds, selectedClipIds,
       selectedAutomationClipIds, selectedAutomationPoint, handleRemoveAutomationPoint])
 
   useEffect(() => (
@@ -3472,32 +3601,35 @@ export default function TimelineView({
   const handleResizeClipLeft = useCallback(async (clipId, newPositionTicks, newDurationTicks, newRegionOffset) => {
     console.log(`[SelectTool] Left-resize clip ${clipId}: pos=${newPositionTicks}t, dur=${newDurationTicks}t, offset=${newRegionOffset}t`)
     try {
-      await window.xleth?.timeline?.resizeClipLeft(clipId, newPositionTicks, newDurationTicks, newRegionOffset)
-      await fetchClips()
+      const updated = await window.xleth?.timeline?.resizeClipLeft(clipId, newPositionTicks, newDurationTicks, newRegionOffset)
+      applyClipDelta({ updated: updated ? [updated] : [] })
     } catch (err) {
       console.error(`[SelectTool] resizeClipLeft(${clipId}) failed:`, err)
+      await fetchClips()
     }
-  }, [fetchClips])
+  }, [fetchClips, applyClipDelta])
 
   const handleStretchClip = useCallback(async (clipId, newDurationTicks) => {
     console.log(`[SelectTool] Stretching clip ${clipId}: dur=${newDurationTicks}t`)
     try {
-      await window.xleth?.timeline?.stretchClip(clipId, newDurationTicks)
-      await fetchClips()
+      const updated = await window.xleth?.timeline?.stretchClip(clipId, newDurationTicks)
+      applyClipDelta({ updated: updated ? [updated] : [] })
     } catch (err) {
       console.error(`[SelectTool] stretchClip(${clipId}) failed:`, err)
+      await fetchClips()
     }
-  }, [fetchClips])
+  }, [fetchClips, applyClipDelta])
 
   const handleStretchClipLeft = useCallback(async (clipId, newPositionTicks, newDurationTicks) => {
     console.log(`[SelectTool] Left-stretch clip ${clipId}: pos=${newPositionTicks}t, dur=${newDurationTicks}t`)
     try {
-      await window.xleth?.timeline?.stretchClipLeft(clipId, newPositionTicks, newDurationTicks)
-      await fetchClips()
+      const updated = await window.xleth?.timeline?.stretchClipLeft(clipId, newPositionTicks, newDurationTicks)
+      applyClipDelta({ updated: updated ? [updated] : [] })
     } catch (err) {
       console.error(`[SelectTool] stretchClipLeft(${clipId}) failed:`, err)
+      await fetchClips()
     }
-  }, [fetchClips])
+  }, [fetchClips, applyClipDelta])
 
   // ── Drag-over (preview while dragging sample onto timeline) ────────────────
 
@@ -3883,98 +4015,92 @@ export default function TimelineView({
         const endTicks = placementsEndTick(baseTicks, clipPlacements, blockPlacements, automationPlacements)
         handleSeek(endTicks / PPQ)
 
-        const xl = window.xleth?.timeline
-        let undoSteps = 0
-        try {
-          const doomedClips = itemsCoveredByPlacements(clipsRef.current, clipPlacements)
-          const doomedBlocks = itemsCoveredByPlacements(patternBlocks, blockPlacements)
-
-          // ── Clips: overwrite + insert, atomically ───────────────────────
-          if (clipPlacements.length > 0 || doomedClips.length > 0) {
-            const payloads = clipPlacements.map(p =>
-              clipPayloadFromSnapshot(p.item, p.trackId, p.positionTicks))
-            const res = await xl?.pasteClipsBatch({
-              removeClipIds: doomedClips,
-              clips: payloads,
+        // Everything from here on reads the CURRENT clip/block lists to decide
+        // what the group buries, so it queues behind any paste still in flight.
+        // The cursor advance above stays synchronous — held Ctrl+V must keep
+        // stacking forward even while the engine is still catching up.
+        await runSerializedEdit(async () => {
+          const xl = window.xleth?.timeline
+          let undoSteps = 0
+          try {
+            const { doomedClipIds: doomedClips, doomedBlockIds: doomedBlocks } = resolveOverwritePlan({
+              existingClips: clipsRef.current,
+              existingBlocks: patternBlocksRef.current,
+              clipPlacements,
+              blockPlacements,
             })
-            undoSteps++
-            await fetchClips()
-            setSelectedClipIds(new Set(res?.newIds ?? []))
-          }
 
-          // Pattern blocks have no batch RPC — they are cheap metadata with no
-          // render cache behind them — so they still contribute one undo entry
-          // each, which compoundUndoCountRef accounts for.
-          if (doomedBlocks.length > 0) {
-            await Promise.all(doomedBlocks.map(id => xl?.removePatternBlock(id)))
-            undoSteps += doomedBlocks.length
-          }
-          if (blockPlacements.length > 0) {
-            const newBlockIds = []
-            for (const p of blockPlacements) {
-              const id = await xl?.addPatternBlock({
-                trackId: p.trackId,
-                patternId: p.item.patternId,
-                positionTicks: p.positionTicks,
-                durationTicks: p.item.durationTicks,
-                offsetTicks: p.item.offsetTicks,
+            // ── Clips: overwrite + insert, atomically ───────────────────────
+            if (clipPlacements.length > 0 || doomedClips.length > 0) {
+              const payloads = clipPlacements.map(p =>
+                clipPayloadFromSnapshot(p.item, p.trackId, p.positionTicks))
+              const res = await xl?.pasteClipsBatch({
+                removeClipIds: doomedClips,
+                clips: payloads,
               })
-              if (id != null && id >= 0) {
-                newBlockIds.push(id)
-                undoSteps++
-                if (p.item.loopEnabled) await xl?.setPatternBlockLoop(id, true)
-              }
+              undoSteps++
+              applyClipDelta({ updated: res?.clips ?? [], removed: res?.removedIds ?? [] })
+              setSelectedClipIds(new Set(res?.newIds ?? []))
             }
-            await fetchPatternBlocks()
-            timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
-            setSelectedBlockIds(new Set(newBlockIds))
-          }
 
-          // Automation clips: the engine REJECTS same-lane overlap outright
-          // (no overwrite semantics like clips/blocks above), so each landing
-          // position is resolved through findFreePosition first. Copies share
-          // the source's envelopeId — no addEnvelope call, per FL semantics.
-          if (automationPlacements.length > 0) {
-            const xlAuto = window.xleth?.automation
-            const laneOccupancy = new Map()
-            const occupancyFor = (laneId) => {
-              if (!laneOccupancy.has(laneId)) {
-                laneOccupancy.set(laneId, automationClips
-                  .filter((c) => c.laneId === laneId)
-                  .map((c) => ({ positionTicks: c.positionTicks, durationTicks: c.durationTicks })))
-              }
-              return laneOccupancy.get(laneId)
-            }
-            const newAutoIds = []
-            for (const p of automationPlacements) {
-              const occupied = occupancyFor(p.laneId)
-              const resolvedPosition = findFreeAutomationLanePosition(occupied, p.positionTicks, p.durationTicks)
-              const id = await xlAuto?.addClip({
-                laneId: p.laneId,
-                envelopeId: p.item.envelopeId,
-                positionTicks: resolvedPosition,
-                durationTicks: p.durationTicks,
-                offsetTicks: p.item.offsetTicks ?? 0,
+            // ── Pattern blocks: overwrite + insert, atomically ──────────────
+            // This was a SERIAL for-loop of awaited addPatternBlock plus a
+            // second awaited setPatternBlockLoop per looped block — a 64-block
+            // paste was 64+ stacked round trips and 64+ undo entries. The drag
+            // paths had been pipelined with Promise.all; the keyboard paths
+            // never were. Now one round trip, one undo entry, loopEnabled
+            // carried on the block itself.
+            if (blockPlacements.length > 0 || doomedBlocks.length > 0) {
+              const res = await xl?.pastePatternBlocksBatch({
+                removeBlockIds: doomedBlocks,
+                blocks: blockPlacements.map(p => ({
+                  trackId: p.trackId,
+                  patternId: p.item.patternId,
+                  positionTicks: p.positionTicks,
+                  durationTicks: p.item.durationTicks,
+                  offsetTicks: p.item.offsetTicks ?? 0,
+                  loopEnabled: p.item.loopEnabled ?? false,
+                })),
               })
-              if (Number.isInteger(id) && id >= 0) {
-                newAutoIds.push(id)
-                occupied.push({ positionTicks: resolvedPosition, durationTicks: p.durationTicks })
-                undoSteps++
-              }
+              undoSteps++
+              applyPatternBlockDelta({ updated: res?.blocks ?? [], removed: res?.removedIds ?? [] })
+              timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
+              setSelectedBlockIds(new Set((res?.blocks ?? []).map(b => b.id)))
             }
-            await fetchAutomationClips()
-            timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
-            setSelectedAutomationClipIds(new Set(newAutoIds))
+
+            // Automation clips: the engine REJECTS same-lane overlap outright
+            // (no overwrite semantics like clips/blocks above). Copies share the
+            // source's envelopeId — no addEnvelope call, per FL semantics.
+            if (automationPlacements.length > 0) {
+              // Resolved ENGINE-side, in one batch. Each landing tick depends on
+              // the placements before it, so this loop could never be a
+              // client-side Promise.all — which is exactly why it stayed a
+              // serial await-per-clip with a running occupancy map here.
+              // AddAutomationClipsBatchCommand keeps that dependency and makes
+              // the whole group one round trip and one undo entry.
+              const landed = await window.xleth?.automation?.addClipsBatch(
+                automationPlacements.map(p => ({
+                  laneId: p.laneId,
+                  envelopeId: p.item.envelopeId,
+                  positionTicks: p.positionTicks,
+                  durationTicks: p.durationTicks,
+                  offsetTicks: p.item.offsetTicks ?? 0,
+                })))
+              if ((landed ?? []).length > 0) undoSteps++
+              await fetchAutomationClips()
+              timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
+              setSelectedAutomationClipIds(new Set((landed ?? []).map(c => c.id)))
+            }
+            console.log(`[Keyboard] Pasted ${clipPlacements.length} clip(s) + `
+              + `${blockPlacements.length} block(s) + ${automationPlacements.length} automation clip(s) `
+              + `at ${baseTicks}t (overwrote ${doomedClips.length + doomedBlocks.length}), cursor → ${endTicks}t`)
+          } catch (err) {
+            console.error('[Keyboard] Paste failed:', err)
           }
-          console.log(`[Keyboard] Pasted ${clipPlacements.length} clip(s) + `
-            + `${blockPlacements.length} block(s) + ${automationPlacements.length} automation clip(s) `
-            + `at ${baseTicks}t (overwrote ${doomedClips.length + doomedBlocks.length}), cursor → ${endTicks}t`)
-        } catch (err) {
-          console.error('[Keyboard] Paste failed:', err)
-        }
-        // Ctrl+Z must undo the paste whole, not peel off the insert and leave
-        // the overwritten items deleted.
-        compoundUndoCountRef.current = undoSteps
+          // Ctrl+Z must undo the paste whole, not peel off the insert and leave
+          // the overwritten items deleted.
+          compoundUndoCountRef.current = undoSteps
+        })
 
         const messages = []
         if (skipped.typeMismatchClip > 0) {
@@ -3997,91 +4123,100 @@ export default function TimelineView({
       if (e.key === 'd' && ctrl) {
         e.preventDefault()
         e.stopPropagation()
-        const srcClips = clipsRef.current.filter(c => selectedClipIds.has(c.id))
-        const srcBlocks = patternBlocks.filter(b => selectedBlockIds.has(b.id))
-        const srcAutomation = automationClips.filter(c => selectedAutomationClipIds.has(c.id))
-        if (srcClips.length === 0 && srcBlocks.length === 0 && srcAutomation.length === 0) return
+        // Reading the sources and resolving the overwrite plan both queue: a
+        // held Ctrl+D otherwise duplicates from a list the previous repeat has
+        // not written back yet, and buries the wrong items.
+        await runSerializedEdit(async () => {
+          const srcClips = clipsRef.current.filter(c => selectedClipIds.has(c.id))
+          const srcBlocks = patternBlocksRef.current.filter(b => selectedBlockIds.has(b.id))
+          const srcAutomation = automationClipsRef.current.filter(c => selectedAutomationClipIds.has(c.id))
+          if (srcClips.length === 0 && srcBlocks.length === 0 && srcAutomation.length === 0) return
 
-        const all = [...srcClips, ...srcBlocks, ...srcAutomation]
-        const spanStart = Math.min(...all.map(i => i.positionTicks))
-        const spanEnd = Math.max(...all.map(i => i.positionTicks + i.durationTicks))
-        const shift = spanEnd - spanStart
-        const xl = window.xleth?.timeline
+          const all = [...srcClips, ...srcBlocks, ...srcAutomation]
+          const spanStart = Math.min(...all.map(i => i.positionTicks))
+          const spanEnd = Math.max(...all.map(i => i.positionTicks + i.durationTicks))
+          const shift = spanEnd - spanStart
+          const xl = window.xleth?.timeline
 
-        try {
-          let steps = 0
-          if (srcClips.length > 0) {
-            const payloads = srcClips.map(c =>
-              clipPayloadFromSnapshot(c, c.trackId, c.positionTicks + shift))
-            const newIds = (await xl?.addClipsBatch(payloads)) ?? []
-            steps++
-            await fetchClips()
-            setSelectedClipIds(new Set(newIds))
-          }
-          if (srcBlocks.length > 0) {
-            const newBlockIds = []
-            for (const b of srcBlocks) {
-              const id = await xl?.addPatternBlock({
-                trackId: b.trackId,
-                patternId: b.patternId,
-                positionTicks: b.positionTicks + shift,
-                durationTicks: b.durationTicks,
-                offsetTicks: b.offsetTicks ?? 0,
+          // Same overwrite policy as paste and drag: a shifted copy buries what
+          // it lands on instead of stacking on it. The shift is the selection's
+          // own span, so the copies always clear their own sources — but a sparse
+          // selection can still land a copy on an untouched item, and that goes.
+          const { doomedClipIds, doomedBlockIds } = resolveOverwritePlan({
+            existingClips: clipsRef.current,
+            existingBlocks: patternBlocksRef.current,
+            clipPlacements: srcClips.map(c => ({
+              trackId: c.trackId, positionTicks: c.positionTicks + shift, durationTicks: c.durationTicks,
+            })),
+            blockPlacements: srcBlocks.map(b => ({
+              trackId: b.trackId, positionTicks: b.positionTicks + shift, durationTicks: b.durationTicks,
+            })),
+          })
+
+          try {
+            let steps = 0
+            if (srcClips.length > 0 || doomedClipIds.length > 0) {
+              const payloads = srcClips.map(c =>
+                clipPayloadFromSnapshot(c, c.trackId, c.positionTicks + shift))
+              // pasteClipsBatch, not addClipsBatch — overwrite + insert as ONE
+              // undo entry, so Ctrl+Z cannot leave the buried clips deleted.
+              const res = await xl?.pasteClipsBatch({
+                removeClipIds: doomedClipIds,
+                clips: payloads,
               })
-              if (id != null && id >= 0) {
-                newBlockIds.push(id)
-                steps++
-                if (b.loopEnabled) await xl?.setPatternBlockLoop(id, true)
-              }
+              steps++
+              applyClipDelta({ updated: res?.clips ?? [], removed: res?.removedIds ?? [] })
+              setSelectedClipIds(new Set(res?.newIds ?? []))
             }
-            await fetchPatternBlocks()
-            timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
-            setSelectedBlockIds(new Set(newBlockIds))
-          }
-          if (srcAutomation.length > 0) {
-            // Same-lane overlap is engine-rejected, so each duplicate's shifted
-            // landing tick is snapped to grid, then resolved against the lane's
-            // existing clips and any earlier duplicate this same Ctrl+D placed —
-            // exactly the drag-duplicate commit path in handleDuplicateAutomationClips.
-            const xlAuto = window.xleth?.automation
-            const laneOccupancy = new Map()
-            const occupancyFor = (laneId) => {
-              if (!laneOccupancy.has(laneId)) {
-                laneOccupancy.set(laneId, automationClips
-                  .filter((c) => c.laneId === laneId)
-                  .map((c) => ({ positionTicks: c.positionTicks, durationTicks: c.durationTicks })))
-              }
-              return laneOccupancy.get(laneId)
-            }
-            const newAutoIds = []
-            for (const c of srcAutomation) {
-              const occupied = occupancyFor(c.laneId)
-              const desiredPosition = snapTickToGrid(c.positionTicks + shift, {}, snapGranularity)
-              const resolvedPosition = findFreeAutomationLanePosition(occupied, desiredPosition, c.durationTicks)
-              const id = await xlAuto?.addClip({
-                laneId: c.laneId,
-                envelopeId: c.envelopeId,
-                positionTicks: resolvedPosition,
-                durationTicks: c.durationTicks,
-                offsetTicks: c.offsetTicks ?? 0,
+            if (srcBlocks.length > 0 || doomedBlockIds.length > 0) {
+              // One atomic overwrite+insert, same as the paste path above — this
+              // was a serial add-per-block plus a setPatternBlockLoop each.
+              const res = await xl?.pastePatternBlocksBatch({
+                removeBlockIds: doomedBlockIds,
+                blocks: srcBlocks.map(b => ({
+                  trackId: b.trackId,
+                  patternId: b.patternId,
+                  positionTicks: b.positionTicks + shift,
+                  durationTicks: b.durationTicks,
+                  offsetTicks: b.offsetTicks ?? 0,
+                  loopEnabled: b.loopEnabled ?? false,
+                })),
               })
-              if (Number.isInteger(id) && id >= 0) {
-                newAutoIds.push(id)
-                occupied.push({ positionTicks: resolvedPosition, durationTicks: c.durationTicks })
-                steps++
-              }
+              steps++
+              applyPatternBlockDelta({ updated: res?.blocks ?? [], removed: res?.removedIds ?? [] })
+              timelineEvents.dispatchEvent(new Event('timeline-pattern-blocks-changed'))
+              setSelectedBlockIds(new Set((res?.blocks ?? []).map(b => b.id)))
             }
-            await fetchAutomationClips()
-            timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
-            setSelectedAutomationClipIds(new Set(newAutoIds))
+            if (srcAutomation.length > 0) {
+              // Same-lane overlap is engine-rejected, so each duplicate's shifted
+              // landing tick is snapped to grid here and then RESOLVED ENGINE-SIDE
+              // against the lane's existing clips and any earlier duplicate this
+              // same Ctrl+D placed. The snap is a UI decision and stays local; the
+              // free-slot search depends on the placements before it and so
+              // belongs in the batch (AddAutomationClipsBatchCommand) — that
+              // dependency is what kept this a serial await-per-clip loop.
+              const landed = await window.xleth?.automation?.addClipsBatch(
+                srcAutomation.map(c => ({
+                  laneId: c.laneId,
+                  envelopeId: c.envelopeId,
+                  positionTicks: snapTickToGrid(c.positionTicks + shift, {}, snapGranularity),
+                  durationTicks: c.durationTicks,
+                  offsetTicks: c.offsetTicks ?? 0,
+                })))
+              if ((landed ?? []).length > 0) steps++
+              await fetchAutomationClips()
+              timelineEvents.dispatchEvent(new Event('timeline-automation-changed'))
+              setSelectedAutomationClipIds(new Set((landed ?? []).map(c => c.id)))
+            }
+            compoundUndoCountRef.current = steps
+            handleSeek((spanEnd + shift) / PPQ)
+            console.log(`[Keyboard] Duplicated ${srcClips.length} clip(s) + `
+              + `${srcBlocks.length} block(s) + ${srcAutomation.length} automation clip(s) by ${shift}t `
+              + `(overwrote ${doomedClipIds.length + doomedBlockIds.length})`)
+          } catch (err) {
+            console.error('[Keyboard] Duplicate failed:', err)
           }
-          compoundUndoCountRef.current = steps
-          handleSeek((spanEnd + shift) / PPQ)
-          console.log(`[Keyboard] Duplicated ${srcClips.length} clip(s) + `
-            + `${srcBlocks.length} block(s) + ${srcAutomation.length} automation clip(s) by ${shift}t`)
-        } catch (err) {
-          console.error('[Keyboard] Duplicate failed:', err)
-        }
+        })
         return
       }
 
@@ -4115,29 +4250,24 @@ export default function TimelineView({
         e.stopPropagation()
         const direction = (e.key === '+' || e.key === '=') ? 1 : -1
         const ids = [...selectedClipIds]
-        if (e.shiftKey) {
-          // Shift +/- = ±12 semitones (one octave)
-          await Promise.all(ids.map(id =>
-            window.xleth?.timeline?.pitchShiftClip(id, direction * 12, 0)
-              .catch(err => console.error(`[Keyboard] pitchShiftClip(${id}) failed:`, err))
-          ))
-          console.log(`[Keyboard] Pitch ${direction > 0 ? '+' : '-'}12 semitones (1 octave) on ${ids.length} clip(s)`)
-        } else if (ctrl) {
-          // Ctrl +/- = ±1 cent
-          await Promise.all(ids.map(id =>
-            window.xleth?.timeline?.pitchShiftClip(id, 0, direction)
-              .catch(err => console.error(`[Keyboard] pitchShiftClip(${id}) failed:`, err))
-          ))
-          console.log(`[Keyboard] Pitch ${direction > 0 ? '+' : '-'}1 cent on ${ids.length} clip(s)`)
-        } else {
-          // +/- = ±1 semitone
-          await Promise.all(ids.map(id =>
-            window.xleth?.timeline?.pitchShiftClip(id, direction, 0)
-              .catch(err => console.error(`[Keyboard] pitchShiftClip(${id}) failed:`, err))
-          ))
-          console.log(`[Keyboard] Pitch ${direction > 0 ? '+' : '-'}1 semitone on ${ids.length} clip(s)`)
-        }
-        await fetchClips()
+        // N× pitchShiftClip, N engine entries — every branch below.
+        compoundUndoCountRef.current = pitchShiftUndoSteps(ids)
+        // Shift +/- = ±12 semitones (one octave); Ctrl +/- = ±1 cent; bare = ±1 semitone.
+        const [semis, cents] = e.shiftKey ? [direction * 12, 0]
+                             : ctrl       ? [0, direction]
+                                          : [direction, 0]
+        // pitchShiftClip answers with the clip's post-state, so the whole
+        // selection reconciles from the replies — no getClips over the project.
+        const shifted = await Promise.all(ids.map(id =>
+          window.xleth?.timeline?.pitchShiftClip(id, semis, cents)
+            .catch(err => {
+              console.error(`[Keyboard] pitchShiftClip(${id}) failed:`, err)
+              return null
+            })
+        ))
+        applyClipDelta({ updated: shifted.filter(Boolean) })
+        const unit = e.shiftKey ? '12 semitones (1 octave)' : ctrl ? '1 cent' : '1 semitone'
+        console.log(`[Keyboard] Pitch ${direction > 0 ? '+' : '-'}${unit} on ${ids.length} clip(s)`)
         return
       }
 
@@ -4211,57 +4341,60 @@ export default function TimelineView({
 
   const handlePitchShiftClip = useCallback(async (clipId, semiDelta, centsDelta = 0) => {
     try {
-      await window.xleth.timeline.pitchShiftClip(clipId, semiDelta, centsDelta)
-      await fetchClips()
+      const updated = await window.xleth.timeline.pitchShiftClip(clipId, semiDelta, centsDelta)
+      applyClipDelta({ updated: updated ? [updated] : [] })
     } catch (err) {
       console.error('[Timeline] pitchShiftClip error:', err)
+      await fetchClips()
     }
-  }, [fetchClips])
+  }, [fetchClips, applyClipDelta])
 
   const handleReverseClip = useCallback(async (clipId) => {
     try {
-      await window.xleth.timeline.reverseClip(clipId)
-      await fetchClips()
+      const updated = await window.xleth.timeline.reverseClip(clipId)
+      applyClipDelta({ updated: updated ? [updated] : [] })
     } catch (err) {
       console.error('[Timeline] reverseClip error:', err)
+      await fetchClips()
     }
-  }, [fetchClips])
+  }, [fetchClips, applyClipDelta])
 
   const handleSetClipStretchMethod = useCallback(async (clipId, method) => {
     console.log(`[UIStretch] setClipStretchMethod: clip=${clipId} method=${method}`)
     try {
-      await window.xleth.timeline.setClipParams(clipId, { stretchMethod: method })
-      await fetchClips()
+      const updated = await window.xleth.timeline.setClipParams(clipId, { stretchMethod: method })
+      applyClipDelta({ updated: updated ? [updated] : [] })
     } catch (err) {
       console.error('[Timeline] setClipStretchMethod error:', err)
+      await fetchClips()
     }
-  }, [fetchClips])
+  }, [fetchClips, applyClipDelta])
 
   const handleSetClipFormantPreserve = useCallback(async (clipId, enabled) => {
     console.log(`[UIStretch] setClipFormantPreserve: clip=${clipId} enabled=${enabled}`)
     try {
-      await window.xleth.timeline.setClipParams(clipId, { formantPreserve: enabled })
-      await fetchClips()
+      const updated = await window.xleth.timeline.setClipParams(clipId, { formantPreserve: enabled })
+      applyClipDelta({ updated: updated ? [updated] : [] })
     } catch (err) {
       console.error('[Timeline] setClipFormantPreserve error:', err)
+      await fetchClips()
     }
-  }, [fetchClips])
+  }, [fetchClips, applyClipDelta])
 
   const handleSetClipVelocity = useCallback(async (clipId, velocity) => {
     try {
-      await window.xleth.timeline.setClipParams(clipId, { velocity })
-      await fetchClips()
+      const updated = await window.xleth.timeline.setClipParams(clipId, { velocity })
+      applyClipDelta({ updated: updated ? [updated] : [] })
     } catch (err) {
       console.error('[Timeline] setClipVelocity error:', err)
+      await fetchClips()
     }
-  }, [fetchClips])
+  }, [fetchClips, applyClipDelta])
 
   const mergeReturnedClip = useCallback((updated) => {
     if (updated?.id == null) return
-    setClips((current) => current.map((clip) => (
-      clip.id === updated.id ? normalizeClipFadeFields({ ...clip, ...updated }) : clip
-    )))
-  }, [])
+    applyClipDelta({ updated: [updated] })
+  }, [applyClipDelta])
 
   const handleBeginClipControlEdit = useCallback((clipId) => (
     window.xleth.timeline.beginClipControlEdit(clipId)
@@ -4292,12 +4425,13 @@ export default function TimelineView({
         vibratoPatch,
         forceEnabled: vibratoPatch.enabled === true,
       })
-      await window.xleth.timeline.setClipModulation(clipId, merged)
-      await fetchClips()
+      const updated = await window.xleth.timeline.setClipModulation(clipId, merged)
+      applyClipDelta({ updated: updated ? [updated] : [] })
     } catch (err) {
       console.error('[Timeline] setClipVibrato error:', err)
+      await fetchClips()
     }
-  }, [fetchClips])
+  }, [fetchClips, applyClipDelta])
 
   const handleSetClipScratch = useCallback(async (clipId, scratchPatch, options = {}) => {
     try {
@@ -4331,23 +4465,30 @@ export default function TimelineView({
         scratchPatch: nextPatch,
         forceEnabled,
       })
-      await window.xleth.timeline.setClipModulation(clipId, merged)
-      await fetchClips()
+      const updated = await window.xleth.timeline.setClipModulation(clipId, merged)
+      applyClipDelta({ updated: updated ? [updated] : [] })
     } catch (err) {
       console.error('[Timeline] setClipScratch error:', err)
+      await fetchClips()
     }
-  }, [fetchClips])
+  }, [fetchClips, applyClipDelta])
 
   const handleSetClipVideoFx = useCallback(async (clipId, videoPatch) => {
     try {
       const clip = clipsRef.current.find(c => c.id === clipId)
-      const merged = mergeClipModulationPatch(clip, { videoPatch })
-      await window.xleth.timeline.setClipModulation(clipId, merged)
-      await fetchClips()
+      // Switching a companion FX off -> on seeds its numbers from the user's
+      // Settings > Clip FX defaults, but only while the clip still holds the
+      // engine's stock values: a clip whose Swirl was dialled in by hand keeps
+      // that number when it is toggled off and back on.
+      const seeded = seedVideoFxDefaults(clip?.modulation?.video, videoPatch)
+      const merged = mergeClipModulationPatch(clip, { videoPatch: seeded })
+      const updated = await window.xleth.timeline.setClipModulation(clipId, merged)
+      applyClipDelta({ updated: updated ? [updated] : [] })
     } catch (err) {
       console.error('[Timeline] setClipVideoFx error:', err)
+      await fetchClips()
     }
-  }, [fetchClips])
+  }, [fetchClips, applyClipDelta])
 
   const handleSetClipFade = useCallback(async (clipId, fadeParams) => {
     try {
@@ -4365,12 +4506,13 @@ export default function TimelineView({
           fadeOutTicks: Math.round((next.fadeOutPercent / 100) * (clip.durationTicks ?? 0)),
         }
       }
-      await window.xleth.timeline.setClipParams(clipId, payload)
-      await fetchClips()
+      const updated = await window.xleth.timeline.setClipParams(clipId, payload)
+      applyClipDelta({ updated: updated ? [updated] : [] })
     } catch (err) {
       console.error('[Timeline] setClipFade error:', err)
+      await fetchClips()
     }
-  }, [fetchClips])
+  }, [fetchClips, applyClipDelta])
 
   // Phase G.4: auto-close the quick FX menu if its clip is no longer present
   useEffect(() => {
@@ -4657,6 +4799,23 @@ export default function TimelineView({
                                 onChange={(val) => handleSetClipVibrato(contextMenu.clipId, { shape: val })}
                               />
                             </div>
+                            {/* The dropdown stays the quick-scalar summary; the
+                                shape itself is authored in the floating graph
+                                editor, which the host mounts outside every
+                                PanelFrame. */}
+                            <div style={{ padding: '2px 8px 6px' }}>
+                              <button
+                                type="button"
+                                className="clip-mod-open-editor"
+                                onMouseDown={stopFocus}
+                                onClick={() => {
+                                  openClipFxEditor('vibrato', contextMenu.clipId)
+                                  setContextMenu(null)
+                                }}
+                              >
+                                Open Graph Editor ↗
+                              </button>
+                            </div>
                           </div>
                         )}
 
@@ -4724,6 +4883,23 @@ export default function TimelineView({
                             )}
                             <div style={{ padding: '2px 8px 6px', fontSize: 11, color: '#888' }}>
                               {scratchCurveSummary(s)}
+                            </div>
+                            {/* The dropdown stays the quick summary (preset name
+                                or Custom, smoothing, edge mode); the curve
+                                itself is authored in the floating graph editor,
+                                which the host mounts outside every PanelFrame. */}
+                            <div style={{ padding: '2px 8px 6px' }}>
+                              <button
+                                type="button"
+                                className="clip-mod-open-editor"
+                                onMouseDown={stopFocus}
+                                onClick={() => {
+                                  openClipFxEditor('scratch', contextMenu.clipId)
+                                  setContextMenu(null)
+                                }}
+                              >
+                                Open Graph Editor ↗
+                              </button>
                             </div>
                           </div>
                         )}
@@ -4884,7 +5060,7 @@ export default function TimelineView({
         snapGranularity={snapGranularity}
         onSnapGranularityChange={setSnapGranularity}
         pixelsPerBeat={pixelsPerBeat}
-        onAddTrack={handleAddTrack}
+        onAddTrack={handleAddTrackClick}
         onAddFolder={handleAddFolder}
         selectedTrackCount={selectedTrackIds.size}
         pencilTemplate={pencilTemplate}
@@ -4929,7 +5105,7 @@ export default function TimelineView({
               focusedTrackId={focusedTrackId}
               onFocusTrack={setFocusedTrackId}
               onOpenInMixer={handleOpenTrackInMixer}
-              onAddTrack={handleAddTrack}
+              onAddTrack={handleAddTrackClick}
               onMute={handleMute}
               onSolo={handleSolo}
               onVisualOnly={handleVisualOnly}
@@ -5012,7 +5188,7 @@ export default function TimelineView({
                   bpmRef={bpmRef}
                   activeTool={activeTool}
                   stickyNoteLength={stickyNoteLength}
-                  setStickyNoteLength={setStickyNoteLength}
+                  setStickyNoteLength={adoptStickyNoteLength}
                   activeSampleId={activeSampleId}
                   snapGranularity={snapGranularity}
                   onCreateClip={handleCreateClip}
@@ -5141,7 +5317,7 @@ export default function TimelineView({
             <Layers size={36} strokeWidth={1} className="tab-placeholder-icon" />
             <p>No tracks yet</p>
             <p className="tab-placeholder-hint">Click + to add tracks to the timeline</p>
-            <button className="timeline-empty-add" onClick={handleAddTrack}>
+            <button className="timeline-empty-add" onClick={handleAddTrackClick}>
               <Plus size={14} />
               <span>Add Track</span>
             </button>
@@ -5390,6 +5566,19 @@ export default function TimelineView({
           y={trackMenu.y}
           items={buildTrackMenuItems(trackMenu.track)}
           onClose={() => setTrackMenu(null)}
+        />
+      )}
+
+      {/* ── "+" add-track type picker (Clip vs Pattern) ───────────────────── */}
+      {addTrackMenu && (
+        <TrackContextMenu
+          x={addTrackMenu.x}
+          y={addTrackMenu.y}
+          items={[
+            { label: 'Clip Track', onClick: () => handleAddTrack('Clip') },
+            { label: 'Pattern Track', onClick: () => handleAddTrack('Pattern') },
+          ]}
+          onClose={() => setAddTrackMenu(null)}
         />
       )}
 

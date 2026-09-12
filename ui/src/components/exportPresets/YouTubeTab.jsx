@@ -13,8 +13,6 @@ import {
 export default function YouTubeTab({
   settings,       // { resolution, fps, quality, hwEncoder }
   onChange,       // (patch) => void
-  outputPath,
-  onBrowse,
   running,
 }) {
   const [availableEncoders, setAvailableEncoders] = useState([])
@@ -49,25 +47,27 @@ export default function YouTubeTab({
         MP4 · H.264 · AAC 48 kHz 384 kbps. Tuned for YouTube upload.
       </div>
 
-      <div className="export-row">
-        <label>Resolution</label>
-        <select value={settings.resolution}
-                onChange={(e) => onChange({ resolution: e.target.value })}
-                disabled={running}>
-          {YOUTUBE_RESOLUTIONS.map((r) => (
-            <option key={r.id} value={r.id}>{r.label} ({r.width}×{r.height})</option>
-          ))}
-        </select>
-      </div>
+      <div className="export-field-grid">
+        <div className="export-row export-field">
+          <label>Resolution</label>
+          <select value={settings.resolution}
+                  onChange={(e) => onChange({ resolution: e.target.value })}
+                  disabled={running}>
+            {YOUTUBE_RESOLUTIONS.map((r) => (
+              <option key={r.id} value={r.id}>{r.label} ({r.width}×{r.height})</option>
+            ))}
+          </select>
+        </div>
 
-      <div className="export-row">
-        <label>Frame Rate</label>
-        <select value={settings.fps}
-                onChange={(e) => onChange({ fps: Number(e.target.value) })}
-                disabled={running}>
-          <option value={60}>60 fps</option>
-          <option value={30}>30 fps</option>
-        </select>
+        <div className="export-row export-field">
+          <label>Frame Rate</label>
+          <select value={settings.fps}
+                  onChange={(e) => onChange({ fps: Number(e.target.value) })}
+                  disabled={running}>
+            <option value={60}>60 fps</option>
+            <option value={30}>30 fps</option>
+          </select>
+        </div>
       </div>
 
       <div className="export-row">
@@ -100,14 +100,6 @@ export default function YouTubeTab({
         <label></label>
         <div className="export-bitrate-readout">
           {qualityLabel} — ~{formatBitrateMbps(bitrate)}
-        </div>
-      </div>
-
-      <div className="export-row export-row-path">
-        <label>Output File</label>
-        <div className="export-path-group">
-          <input type="text" value={outputPath} readOnly placeholder="Click Browse…" disabled={running} />
-          <button onClick={onBrowse} disabled={running}>Browse…</button>
         </div>
       </div>
     </div>

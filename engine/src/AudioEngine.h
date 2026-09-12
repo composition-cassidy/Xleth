@@ -141,6 +141,25 @@ public:
     std::string              setOutputDevice(const std::string& deviceName);
     void                     setPreferredOutputDevice(const std::string& name) { preferredOutputDevice_ = name; }
 
+    // Sample rates the CURRENT device reports as supported — query fresh per
+    // call since the answer depends on getCurrentAudioDevice(), not a cached
+    // list. Buffer size has no analogous device query surfaced here: callers
+    // offer a fixed ladder (128/256/512/1024/2048) and let setBufferSize's
+    // returned error string report an unsupported choice, same as ASIO's own
+    // fixed-buffer devices already do today via kTargetBuf/kMaxBuf fallback.
+    std::vector<double>      getSupportedSampleRates() const;
+
+    // Both reuse the exact reconfigure path setOutputDevice already does:
+    // mutate the AudioDeviceSetup, hand it to setAudioDeviceSetup(..., true),
+    // which — when the value actually changed — stops and restarts the
+    // device. The restart's audioDeviceAboutToStart() is what re-reads
+    // sampleRate_/bufferSize_, retunes the transport and re-prepares
+    // MixEngine; neither setter duplicates any of that here. A per-machine
+    // preference, never a per-project one — the caller persists it the same
+    // way previewResolutionScale is persisted.
+    std::string              setBufferSize(int bufferSize);
+    std::string              setSampleRate(double sampleRate);
+
 private:
     juce::AudioDeviceManager deviceManager_;
     juce::AudioFormatManager formatManager_;

@@ -24,6 +24,7 @@
 #include <vector>
 
 #include "FrameCache.h"          // FrameCacheKey
+#include "VisualEchoTypes.h"     // xleth::echo::EchoSettings / IDelaySnapshotResolver
 #include "RenderClock.h"         // sampleToVideoFrame, videoFrameToSample
 #include "model/ClipCompanionFxSnapshot.h" // ClipCompanionFxSnapshot (shared with preview)
 
@@ -118,6 +119,13 @@ struct CellFrameRequest {
     // Clip-local automatic visual FX snapshot. This intentionally contains
     // only plain values; never store pointers to mutable Clip objects here.
     ClipCompanionFxSnapshot companionFx;
+
+    // Visual Echo configuration for THIS output frame, already resolved against
+    // the bound Delay FX's published repeat interval. Inactive (and therefore
+    // free) unless the track's chain holds a non-bypassed VisualEcho whose
+    // binding resolves. Plain values, same discipline as companionFx — the
+    // compositor never looks at the audio graph itself.
+    xleth::echo::EchoSettings echo;
 };
 
 // ---------------------------------------------------------------------------
@@ -129,6 +137,15 @@ public:
     FrameCollector() = default;
 
     void setAnimationManager(AnimationManager* mgr) { animationMgr_ = mgr; }
+
+    /** Install the Visual Echo delay-binding resolver (not owned; must outlive
+     *  this collector). Both the live preview tick and OfflineRenderer install
+     *  one backed by the SAME MixEngine, which is what makes export echo output
+     *  identical to preview. Leave unset (the default) and every VisualEcho in
+     *  every chain resolves inactive, so the render path is byte-identical to
+     *  the pre-echo behaviour — which is exactly what the existing unit tests
+     *  and SnapshotTransitionRenderer want. */
+    void setEchoDelayResolver(const xleth::echo::IDelaySnapshotResolver* r) { echoResolver_ = r; }
     void setCompanionFxEnabled(bool enabled) { companionFxEnabled_ = enabled; }
     bool companionFxEnabled() const { return companionFxEnabled_; }
 
@@ -321,6 +338,9 @@ private:
     std::vector<CellFrameRequest> requestBuffer_;
 
     AnimationManager* animationMgr_ = nullptr;
+
+    // Visual Echo delay-binding resolver. Not owned; nullptr = feature off.
+    const xleth::echo::IDelaySnapshotResolver* echoResolver_ = nullptr;
 
     // Companion modulation FX are export-only in Phase E.2. Preview uses the
     // same collector/compositor stack for E.1 timing follow, so keep this off

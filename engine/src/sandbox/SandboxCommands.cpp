@@ -204,6 +204,31 @@ std::string AddSandboxLayerCommand::describe() const {
     return name_.empty() ? "Add Sandbox Layer" : "Add Layer \"" + name_ + "\"";
 }
 
+// ─── DuplicateSandboxLayerCommand ─────────────────────────────────────────────
+
+DuplicateSandboxLayerCommand::DuplicateSandboxLayerCommand(SandboxCore& core, int sourceLayerId,
+                                                           std::string name)
+    : core_(core), sourceLayerId_(sourceLayerId), name_(std::move(name)) {}
+
+void DuplicateSandboxLayerCommand::execute(Timeline&) {
+    if (haveSnapshot_) {
+        accepted_ = core_.restoreLayer(snapshot_, index_);
+        if (accepted_) layerId_ = snapshot_.id;
+        return;
+    }
+    layerId_  = core_.duplicateLayer(sourceLayerId_, name_, &index_);
+    accepted_ = layerId_ > 0;
+}
+
+void DuplicateSandboxLayerCommand::undo(Timeline&) {
+    if (!accepted_) return;
+    haveSnapshot_ = core_.removeLayer(layerId_, &snapshot_, &index_);
+}
+
+std::string DuplicateSandboxLayerCommand::describe() const {
+    return name_.empty() ? "Duplicate Sandbox Layer" : "Duplicate Layer \"" + name_ + "\"";
+}
+
 // ─── RemoveSandboxLayerCommand ────────────────────────────────────────────────
 
 RemoveSandboxLayerCommand::RemoveSandboxLayerCommand(SandboxCore& core, int layerId)

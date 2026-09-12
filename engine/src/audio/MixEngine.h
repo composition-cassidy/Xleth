@@ -15,9 +15,11 @@
 #include "audio/AudioPerformanceTelemetry.h"
 #include "audio/ClipRenderCache.h"
 #include "audio/ClipModulatedReader.h"
+#include "render/VisualEchoTypes.h"   // xleth::echo::DelaySnapshot / IDelaySnapshotResolver
 #include "audio/SamplerPreviewRoute.h"
 #include "dsp/LoudnessAnalyzer.h"
 
+#include <algorithm>
 #include <atomic>
 #include <limits>
 #include <array>
@@ -49,6 +51,9 @@ namespace juce { class AudioProcessor; }
 namespace juce { class RangedAudioParameter; }
 namespace xleth { struct RoutePlan; struct RoutePdcPlan; }
 namespace xleth::audio { class WorldStretchCache; }
+// Immutable per-chain node view (AudioGraph.h). Held by shared_ptr only, so an
+// incomplete type here keeps juce_audio_processors out of this header.
+namespace xleth::audio { struct GraphRealtimeView; }
 namespace xleth::audio { class SlotBakeCache; struct BakeKey; }
 
 // ─── Debug log queue (lock-free, single-producer / single-consumer) ──────────
@@ -414,7 +419,11 @@ public:
         uint64_t overrunBlockCount = 0;
         uint64_t audioCallbackOverrunCount = 0;
         uint64_t droppedTelemetrySamples = 0;
+        // Finding 9: structurally 0 while the realtime path uses the chain
+        // snapshot. A non-zero value means a try_lock has come back.
         uint64_t chainLockMissCount = 0;
+        // Blocks that ran before the first chain snapshot was published.
+        uint64_t chainSnapshotMissingCount = 0;
         uint64_t masterChainSkippedCount = 0;
         uint64_t trackChainSkippedCount = 0;
         uint64_t staleSnapshotReuseCount = 0;
@@ -952,6 +961,23 @@ public:
     XlethEffectBase* getEffectPtr(int trackId, int nodeId);
     XlethEffectBase* getMasterEffectPtr(int nodeId);
 
+    // ── Visual Echo delay binding (render thread) ────────────────────────────
+    //
+    // Resolve the repeat interval published by a Delay effect so the video-side
+    // Visual Echo can size its ring buffer and place its taps. The ONLY thing
+    // the render path is allowed to learn about the audio graph.
+    //
+    // NOT on the audio callback path — called once per output frame per echoing
+    // cell from the preview video thread and from the export render thread. It
+    // takes chainsMutex_ exactly as getEffectPtr does; that lock is held only by
+    // main-thread chain mutations and never by processBlock, so a render thread
+    // waiting on it can never stall audio.
+    //
+    // trackId == -1 selects the master chain, matching the meter/param
+    // convention. Returns a snapshot with .valid == false when the node does not
+    // exist, is not a Delay, or has not processed a block yet.
+    xleth::echo::DelaySnapshot resolveDelaySnapshot(int trackId, int nodeId) const;
+
     // Master graph APIs (trackId-less)
     bool addMasterConnection(int sourceNodeId, int destNodeId);
     bool removeMasterConnection(int sourceNodeId, int destNodeId);
@@ -1414,12 +1440,23 @@ private:
     void runCoordinatorReaper();
     void reapCoordinator(std::unique_ptr<EditorProcessCoordinator> dying);
 
-    // ── Effect chains (main-thread owned, audio-thread reads via tryLock) ──
-    // Map key = trackId.  mutex protects both the map and masterEffectChain_.
+    // ── Effect chains ───────────────────────────────────────────────────────
+    // Map key = trackId. chainsMutex_ protects the map, masterEffectChain_ and
+    // the automation runtime AGAINST OTHER MESSAGE-THREAD WRITERS, and is still
+    // taken (blocking) by an offline render — see processBlock.
+    //
+    // Finding 9: the REALTIME audio thread no longer takes this mutex at all.
+    // It used to try_lock it and, on a miss, skip every per-track and master
+    // effect chain for that block — a dry block and an audible level jump, not
+    // a dropped optimisation. Measured on a real session it missed on ~1.9% of
+    // blocks during ordinary mixer metering and on up to ~94% while chains were
+    // being edited. The audio thread now reads an immutable ChainSnapshot
+    // published through std::atomic<std::shared_ptr>, the same pattern
+    // ClipRenderCache::slots_ uses for rendered buffers.
     mutable std::mutex chainsMutex_;
-    std::unordered_map<int, std::unique_ptr<EffectChainManager>> effectChains_;
+    std::unordered_map<int, std::shared_ptr<EffectChainManager>> effectChains_;
 
-    // ── Automation runtime (guarded by chainsMutex_) ─────────────────────────
+    // ── Automation runtime (written under chainsMutex_) ──────────────────────
     // One entry per AutomationPlan target, in the same order. Resolution is main
     // thread; the audio thread only stores into `raw`.
     //
@@ -1428,9 +1465,14 @@ private:
     // compares. If the effect was removed (or replaced) since the plan was
     // built, the lookup returns a different pointer (node ids are monotonic
     // uids, never reused) and the target is skipped — so a stale plan fails
-    // closed instead of writing through a dangling pointer. Both the check and
-    // the write happen under chainsMutex_, which is exactly the lock that has to
-    // be held to destroy an effect, so the pointer cannot die mid-check.
+    // closed instead of writing through a dangling pointer.
+    //
+    // Finding 9 changed WHAT makes that check safe, not the check itself. The
+    // audio thread no longer holds chainsMutex_, so it re-derives through the
+    // ChainSnapshot's immutable RealtimeView rather than the live node map, and
+    // the snapshot's strong Node::Ptr references keep `effect` alive for as long
+    // as the block can still see it. A runtime is only ever reachable through
+    // the snapshot that resolved it, so a target can never outlive its chain.
     struct AutomationRuntimeTarget
     {
         std::atomic<float>*         raw    = nullptr;
@@ -1449,21 +1491,102 @@ private:
         int resolvedCount = 0;
     };
 
-    // Published by refreshAutomationPlan(), read by processBlock. Written and
-    // read only under chainsMutex_, which is why no epoch-RCU is needed: the
-    // audio thread already holds that lock over the whole region that touches
-    // effect processors.
+    // Published by refreshAutomationPlan() under chainsMutex_, and handed to the
+    // audio thread only as ChainSnapshot::automation — never read directly off
+    // this member from the realtime path.
     std::shared_ptr<AutomationRuntime> automationRuntime_;
 
     // Set by every chain mutator that can create or destroy a node; serviced by
     // the envelope applier thread through refreshAutomationPlanIfDirty().
     std::atomic<bool> automationBindingsDirty_{false};
 
-    // Evaluate the plan at `tick` and write each target's value. AUDIO THREAD,
-    // and ONLY with chainsMutex_ already held. No allocation, no locks, no
-    // logging.
-    void applyAutomationForBlock(int64_t tick) noexcept;
-    std::unique_ptr<EffectChainManager> masterEffectChain_;
+
+    // ── Lock-free chain snapshot (Finding 9) ────────────────────────────────
+    //
+    // Immutable once published. Holds shared_ptrs to THE SAME EffectChainManager
+    // objects effectChains_/masterEffectChain_ own, which is what makes the
+    // offline path (which still reads the map under the blocking lock) and the
+    // realtime path bit-identical by construction: same objects, same order,
+    // same DSP. The snapshot answers "which chains exist, and for which track";
+    // "what is in this chain right now" is answered per block by the chain's own
+    // GraphRealtimeView.
+    struct ChainSnapshot
+    {
+        struct TrackEntry
+        {
+            int trackId = -1;
+            std::shared_ptr<EffectChainManager> chain;
+        };
+
+        std::uint64_t generation = 0;
+        std::vector<TrackEntry> tracks;                 // sorted by trackId
+        std::shared_ptr<EffectChainManager> master;
+
+        // Deliberately NOT cached here: AudioGraph republishes its own node
+        // view on its debounce timer, so a view captured at snapshot time can
+        // go stale between chain mutations. The audio thread loads the current
+        // one per block through chain->realtimeView() — one atomic load, and
+        // the copy it holds pins every processor it names for the block.
+
+        // Resolved against exactly these chains, so a target can never point
+        // into an effect this snapshot does not keep alive.
+        std::shared_ptr<AutomationRuntime> automation;
+
+        // Audio thread: binary search, no allocation, no hashing.
+        const TrackEntry* find(int trackId) const noexcept
+        {
+            const auto it = std::lower_bound(
+                tracks.begin(), tracks.end(), trackId,
+                [](const TrackEntry& e, int id) { return e.trackId < id; });
+            return (it != tracks.end() && it->trackId == trackId) ? &*it : nullptr;
+        }
+    };
+
+    // Published by publishChainSnapshotLocked(), read by processBlock.
+    // MSVC implements std::atomic<shared_ptr<T>> with internal lock striping
+    // (~20 ns) rather than a user-visible lock — the same trade ClipRenderCache
+    // documents and accepts, and negligible against a 10 ms block.
+    mutable std::atomic<std::shared_ptr<const ChainSnapshot>> chainSnapshot_;
+    std::uint64_t chainSnapshotGeneration_ = 0;   // message thread only
+
+    // Superseded snapshots, held on the message thread so the audio thread can
+    // never be the last owner of an EffectChainManager (which would run plugin
+    // destructors on the realtime thread). Pruned on the next publish, and only
+    // when use_count()==1 — i.e. when nothing but this list still holds it.
+    std::vector<std::shared_ptr<const ChainSnapshot>> retiredChainSnapshots_;
+
+    // Rebuild and publish the snapshot from effectChains_/masterEffectChain_.
+    // PRECONDITION: chainsMutex_ is held by the caller.
+    void publishChainSnapshotLocked();
+
+    // RAII republish. Declared immediately after the lock guard in every chain
+    // mutator: destruction order means this fires while chainsMutex_ is still
+    // held, and no early return can leave the audio thread on a stale snapshot.
+    // Parameter writes deliberately do NOT use it — they change no chain
+    // membership, and any latency rebuild they trigger republishes the
+    // AudioGraph node view on its own.
+    struct ChainSnapshotPublisher
+    {
+        MixEngine* engine;
+        explicit ChainSnapshotPublisher(MixEngine* e) noexcept : engine(e) {}
+        ~ChainSnapshotPublisher() { engine->publishChainSnapshotLocked(); }
+        ChainSnapshotPublisher(const ChainSnapshotPublisher&) = delete;
+        ChainSnapshotPublisher& operator=(const ChainSnapshotPublisher&) = delete;
+    };
+
+    // Convenience for the ~40 message-thread mutators: take the lock, run `fn`,
+    // republish before releasing. Returns whatever `fn` returns.
+    std::shared_ptr<const ChainSnapshot> currentChainSnapshot() const noexcept
+    {
+        return chainSnapshot_.load(std::memory_order_acquire);
+    }
+
+    // Evaluate the plan at `tick` and write each target's value. AUDIO THREAD.
+    // Reads everything it touches out of `chains`, which pins both the runtime
+    // and the effects it points into. No allocation, no locks, no logging.
+    void applyAutomationForBlock(const ChainSnapshot& chains, int64_t tick) noexcept;
+
+    std::shared_ptr<EffectChainManager> masterEffectChain_;
     double preparedSampleRate_ = 44100.0;
     int    preparedBlockSize_  = 512;
 
@@ -1570,9 +1693,14 @@ private:
     // sums each preview sampler into previewBuffer_, groups by resolved route,
     // and pushes each group through that track's chain before it reaches the
     // master output. `chainsLocked` must be true for any chain to be used.
+    // `chains` non-null enables routed auditioning (walk the track chain, the
+    // track fader, then the master chain). Null means dry audition only. It
+    // used to be a bool fed by a try_lock on chainsMutex_, which silently
+    // demoted a routed audition to dry whenever the message thread happened to
+    // hold the lock; the snapshot removes that coin flip (Finding 9).
     void renderPreviewSamplers(juce::AudioBuffer<float>& outputBuffer,
                                int numSamples, double sampleRate,
-                               double bpm, bool chainsLocked);
+                               double bpm, const ChainSnapshot* chains);
 
     // Scratch MIDI for preview chain processing. Always empty — preview notes
     // carry no onset events for effects to read.

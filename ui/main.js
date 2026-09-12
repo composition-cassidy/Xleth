@@ -34,11 +34,15 @@ const BACKDROP_MEDIA_SOURCE_TYPES = new Set(['none', 'acrylic', 'image', 'video'
 // Log file for startup debugging
 const logPath = userDataPath('startup.log');
 try { fs.mkdirSync(path.dirname(logPath), { recursive: true }); } catch {}
-fs.writeFileSync(logPath, '');  // clear previous log
+// Buffered async stream instead of a sync appendFileSync-per-line — the
+// renderer console pipe below (and every non-silent IPC call) used to cost a
+// synchronous disk write per log line. 'w' truncates on open, replacing the
+// old separate writeFileSync('') clear.
+const logStream = fs.createWriteStream(logPath, { flags: 'w' });
 function log(msg) {
   const line = `[${new Date().toISOString()}] ${msg}\n`;
   process.stdout.write(line);
-  fs.appendFileSync(logPath, line);
+  logStream.write(line);
 }
 
 // ── Extracted main-process modules (S5 Stage 1) ──────────────────────────────
@@ -137,6 +141,10 @@ const patternHandlers = require('./electron-main/patterns');
 const vst3Handlers = require('./electron-main/vst3');
 const exportHandlers = require('./electron-main/export');
 const diagnosticsHandlers = require('./electron-main/diagnostics');
+// Source separation (P4) — owns the Python/FastAPI sidecar lifecycle. Not on
+// the RPC manifest: every manifest entry names a C++ engine handler symbol,
+// and separation never reaches the engine.
+const separationHandlers = require('./electron-main/separation');
 phase0Compat.init({ safeHandler });
 quickLaunchers.init({ getWin: () => win });
 previewVisibility.init({ safeHandler });
@@ -144,6 +152,10 @@ patternHandlers.init({ safeHandler });
 vst3Handlers.init({ safeHandler, getWin: () => win });
 exportHandlers.init({ safeHandler, getWin: () => win });
 diagnosticsHandlers.init({ safeHandler, getWin: () => win, log });
+// No safeHandler here on purpose — separation never reaches the engine, so
+// gating it on engine readiness would strand the Sandbox's separation strip
+// whenever the panel is opened during startup. See separation.js's `handler`.
+separationHandlers.init({ getWin: () => win, log });
 
 // ── Manifest-driven RPC handlers (AUDIT.md S1) ─────────────────────────────────
 // Pure pass-through channels declared once in ui/rpc-manifest.js; hand-written
@@ -547,6 +559,47 @@ function splashStatus(message, percent) {
   }
 }
 
+// Creates (or reuses) the splash window and resolves once it's actually
+// visible. Used both for the one-time engine-boot sequence and for any later
+// transition that needs the same "loading, here's the progress" treatment —
+// Welcome handing off to the workspace, and in-app project switches (see
+// launchWorkspace/switchProjectWindow below). Idempotent: if splashWin is
+// already up (e.g. a switch triggered while the previous one is still
+// closing), it's shown/reused rather than duplicated.
+function showSplashWindow() {
+  if (splashWin && !splashWin.isDestroyed()) {
+    if (!splashWin.isVisible()) splashWin.show();
+    return Promise.resolve(splashWin);
+  }
+  splashWin = new BrowserWindow({
+    width: 640,
+    height: 400,
+    icon: path.join(__dirname, 'assets', 'icon.ico'),
+    frame: false,
+    transparent: false,
+    alwaysOnTop: true,
+    resizable: false,
+    skipTaskbar: true,
+    center: true,
+    show: false,
+    webPreferences: {
+      contextIsolation: false,
+      nodeIntegration: false,
+      sandbox: false,
+      preload: path.join(__dirname, 'splash-preload.js'),
+    },
+  });
+  const shown = new Promise((resolve) => {
+    splashWin.once('ready-to-show', () => {
+      splashWin.show();
+      resolve(splashWin);
+    });
+  });
+  splashWin.loadFile(path.join(__dirname, 'splash.html'), { query: { v: app.getVersion() } });
+  splashWin.on('closed', () => { splashWin = null; });
+  return shown;
+}
+
 function createWindow() {
   win = new BrowserWindow({
     width: 1280,
@@ -560,9 +613,11 @@ function createWindow() {
     show: false,
     transparent: true,
     webPreferences: {
-      // contextIsolation disabled so preload can hand the renderer a live
-      // ArrayBuffer reference (shm_helper's file-mapped view). With isolation
-      // on, contextBridge would structured-clone the buffer → dead copy.
+      // contextIsolation disabled so preload can hand the renderer live
+      // references — the shm_helper handle and the frame buffers it fills.
+      // With isolation on, contextBridge would structured-clone every frame.
+      // (The mapping itself is never exposed to JS; V8's renderer sandbox
+      // forbids external ArrayBuffers — see the note in preload.js.)
       contextIsolation: false,
       nodeIntegration: false,
       sandbox: false,
@@ -583,11 +638,34 @@ function createWindow() {
     win.loadURL('http://localhost:5173');
   }
 
-  // Pipe all renderer console output to startup.log so we can read it externally
-  win.webContents.on('console-message', (_e, level, message, line, source) => {
-    const prefix = level === 3 ? '[RENDERER ERROR]' : level === 2 ? '[RENDERER WARN]' : '[RENDERER]';
-    log(`${prefix} ${message}  (${source}:${line})`);
-  });
+  // The workspace window never exists before its project is loaded (Welcome's
+  // project.load / the auto-boot path both run first) — so the ONE broadcast
+  // electron-main/project.js sends for that load fires to a webContents list
+  // that doesn't include this window yet, and effectChainStore's
+  // onProjectLoaded listener (which is the only thing that hydrates FX Graph
+  // state) never sees it. Re-signal once this window's own renderer bundle
+  // has finished evaluating (its listener registers at module scope, before
+  // did-finish-load), so every fresh workspace window gets its own delivery
+  // regardless of how the project already loaded. In-app project switches are
+  // unaffected — this window already exists then, so project.js's own
+  // broadcast reaches it directly.
+  if (!addonError) {
+    win.webContents.once('did-finish-load', () => {
+      win.webContents.send('xleth:project-loaded');
+    });
+  }
+
+  // Pipe renderer console output to startup.log so we can read it externally.
+  // Gated behind a debug flag — chatty timeline components (selectTool logs on
+  // drag start, every commit, every rubber-band) fire a log line, and hence a
+  // disk write, per interaction event otherwise. Set XLETH_LOG_RENDERER_CONSOLE=1
+  // to re-enable while debugging a renderer-side issue.
+  if (process.env.XLETH_LOG_RENDERER_CONSOLE === '1') {
+    win.webContents.on('console-message', (_e, level, message, line, source) => {
+      const prefix = level === 3 ? '[RENDERER ERROR]' : level === 2 ? '[RENDERER WARN]' : '[RENDERER]';
+      log(`${prefix} ${message}  (${source}:${line})`);
+    });
+  }
 
   win.on('closed', () => {
     for (const [, child] of nodeEditorWindows) {
@@ -660,12 +738,54 @@ function openWorkspaceWindow({ handleSplash }) {
 }
 
 // Welcome's onProjectReady callback (project already created/loaded and
-// touched into recents by the time this fires — see welcome.js). Splash is
-// already gone at this point (closed when Welcome itself appeared), so no
-// splash handling here.
-function launchWorkspace() {
-  openWorkspaceWindow({ handleSplash: false });
+// touched into recents by the time this fires — see welcome.js). Splash was
+// already closed once when Welcome itself appeared, so it's re-shown here
+// for the Welcome → workspace handoff (this used to be a silent gap: Welcome
+// closes, then nothing visible until the workspace window's first paint).
+async function launchWorkspace(dir, name) {
+  await showSplashWindow();
+  splashStatus(name ? `Opening “${name}”…` : 'Opening project…', 30);
+  openWorkspaceWindow({ handleSplash: true });
 }
+
+// Wraps an in-app project switch (New Project / Open Project triggered from
+// inside an already-open workspace) with the same splash treatment used at
+// boot: show the splash, hide the workspace window (not destroy it — its
+// native HWND is what VST editor windows are parented to, and destroying/
+// recreating it would orphan any open plugin editors), do the engine work,
+// then reveal the workspace again. `work` is loadProject(dir) or
+// newBlankProject() from electron-main/project.js.
+async function switchProjectWindow(message, work) {
+  await showSplashWindow();
+  splashStatus(message, 25);
+
+  const wasVisible = !!(win && !win.isDestroyed() && win.isVisible());
+  if (win && !win.isDestroyed()) win.hide();
+
+  const reveal = (delayMs) => {
+    setTimeout(() => {
+      if (splashWin && !splashWin.isDestroyed()) splashWin.close();
+      if (wasVisible && win && !win.isDestroyed()) win.show();
+    }, delayMs);
+  };
+
+  try {
+    const result = await work();
+    splashStatus('Ready.', 100);
+    reveal(400); // minimum splash visibility after first paint, matches openWorkspaceWindow
+    return result;
+  } catch (e) {
+    splashStatus('Failed: ' + e.message, 100);
+    reveal(900); // linger longer so the failure message is readable
+    throw e;
+  }
+}
+
+ipcMain.handle('xleth:project:switchToNew', safeHandler(() =>
+  switchProjectWindow('Starting new project…', () => projectHandlers.newBlankProject())));
+
+ipcMain.handle('xleth:project:switchToLoad', safeHandler((_event, dir) =>
+  switchProjectWindow('Loading project…', () => projectHandlers.loadProject(dir))));
 
 // ── IPC helpers ───────────────────────────────────────────────────────────────
 
@@ -2273,35 +2393,9 @@ app.whenReady().then(async () => {
   log('app ready — loading addon...');
 
   // ── Splash window ──────────────────────────────────────────────────────────
-  splashWin = new BrowserWindow({
-    width: 640,
-    height: 400,
-    icon: path.join(__dirname, 'assets', 'icon.ico'),
-    frame: false,
-    transparent: false,
-    alwaysOnTop: true,
-    resizable: false,
-    skipTaskbar: true,
-    center: true,
-    show: false,
-    webPreferences: {
-      contextIsolation: false,
-      nodeIntegration: false,
-      sandbox: false,
-      preload: path.join(__dirname, 'splash-preload.js'),
-    },
-  });
   // Awaited before engine init begins so window.splashStatus (defined by the
   // splash's own inline script) exists before the first real milestone fires.
-  const splashShown = new Promise((resolve) => {
-    splashWin.once('ready-to-show', () => {
-      splashWin.show();
-      resolve();
-    });
-  });
-  splashWin.loadFile(path.join(__dirname, 'splash.html'), { query: { v: app.getVersion() } });
-  splashWin.on('closed', () => { splashWin = null; });
-  await splashShown;
+  await showSplashWindow();
   // ──────────────────────────────────────────────────────────────────────────
 
   // COOP/COEP — required so the renderer's `crossOriginIsolated` flag is

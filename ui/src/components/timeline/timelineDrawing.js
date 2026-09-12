@@ -2192,21 +2192,26 @@ export function drawSplitLine(ctx, w, h, scrollOffset, ppb, beat, palette = null
   ctx.setLineDash([])
 }
 
+// `fillColor`/`strokeColor` are pre-resolved rgba() strings (see selectTool's
+// ghostColors) rather than a hex string to convert here — with up to
+// hundreds of these drawn per drag frame, re-parsing the same hex color on
+// every call added up. Dash style is shared by every ghost in a drag, so the
+// caller sets it once around the whole batch instead of per call.
 export function drawMovePreview(ctx, w, h, scrollOffset, ppb, preview, trackLayout = null) {
   if (!preview) return
-  const { beat, trackIndex, durationBeats, color } = preview
+  const { beat, trackIndex, durationBeats, fillColor, strokeColor } = preview
   const x = beatToPixel(beat, scrollOffset, ppb)
   const clipW = durationBeats * ppb
+  // Cull off-screen — mirrors the drawClips cull above.
+  if (x + clipW < 0 || x > w) return
   const y = _trackTop(trackIndex, trackLayout) + GHOST_CLIP_PAD
   const clipH = TRACK_HEIGHT - GHOST_CLIP_PAD * 2
 
-  ctx.fillStyle = hexToRgba(color, 0.3)
+  ctx.fillStyle = fillColor
   ctx.fillRect(x, y, clipW, clipH)
-  ctx.strokeStyle = hexToRgba(color, 0.7)
+  ctx.strokeStyle = strokeColor
   ctx.lineWidth = 1.5
-  ctx.setLineDash([3, 3])
   ctx.strokeRect(x, y, clipW, clipH)
-  ctx.setLineDash([])
 }
 
 export function drawDeleteSweep(ctx, x1, y1, x2, y2, palette = null) {

@@ -16,6 +16,13 @@
  *   6. GridCompositor           → GPU composite → readback
  *   7. FFmpegMuxer::writeVideo  → encode + mux video
  *
+ * Stages 5-6 (produce) run on the render thread; stage 7 (convert + encode +
+ * mux) runs on the muxer'''s own worker behind a bounded queue, so the two
+ * overlap instead of summing (RENDER_PERF_AUDIT Finding 6a). The worker is FIFO
+ * and frame indices are explicit, so the encoder still sees the exact frame
+ * sequence the serial path fed it. XLETH_EXPORT_ENCODE_QUEUE=0 restores the
+ * strictly serial path.
+ *
  * Thread model:
  *   - startRender() spawns a dedicated std::thread
  *   - RenderProgress is polled by N-API at 10 Hz

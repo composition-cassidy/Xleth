@@ -88,3 +88,40 @@ private:
     std::vector<int>  assignedIds_;
     bool              firstExecute_ = true;
 };
+
+// ─── SetClipModulationBatchCommand ────────────────────────────────────────────
+// Replaces the ClipModulation descriptor on N clips as ONE undoable operation.
+//
+// Exists for "apply my default Vibrato/Scratch video companion FX to every video
+// clip in the project": doing that as a loop of SetClipModulationCommand pushed
+// one undo entry per clip, so a project with more than maxHistory clips flushed
+// the entire undo stack and a single Ctrl+Z put back exactly one clip. Each
+// entry snapshots its own pre-edit descriptor at construction, so undo restores
+// the mixed prior state (some clips already had swirl on, others didn't).
+
+class SetClipModulationBatchCommand : public Command {
+public:
+    struct Edit {
+        int            clipId = -1;
+        ClipModulation modulation;   // fully merged descriptor, not a patch
+    };
+
+    SetClipModulationBatchCommand(std::vector<Edit> edits, const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+
+    // Clip IDs that actually resolved to a live clip at construction — the
+    // caller uses these to build the post-state reply without re-walking the
+    // request.
+    const std::vector<int>& getEditedIds() const { return editedIds_; }
+
+private:
+    struct Entry {
+        int            clipId = -1;
+        ClipModulation oldMod;
+        ClipModulation newMod;
+    };
+    std::vector<Entry> entries_;
+    std::vector<int>   editedIds_;
+};

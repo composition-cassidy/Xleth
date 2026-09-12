@@ -1,7 +1,8 @@
 import { Play, Square } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import useSandboxStore from '../../stores/sandboxStore.js'
 import XlethSelect from '../common/XlethSelect.jsx'
+import { DEFAULT_LABELS, loadCustomLabels } from '../../constants/labels.js'
 
 // Bottom transport (mockup: SWAP IN ▾ · BAKE · PLAY). SWAP IN and BAKE act on
 // the ACTIVE layer — swapInLayer/bakeLayer are inherently per-layer (a
@@ -27,11 +28,24 @@ function SwapTargetPicker({ layerId, swapInLayer }) {
     return () => { cancelled = true }
   }, [])
 
-  const options = (regions ?? []).map((r) => ({
-    value: r.id,
-    label: r.name || `Region ${r.id}`,
-    group: r.label || undefined,
-  }))
+  // Group order mirrors the SAMPLES tab's own list (SampleSelectorTab):
+  // DEFAULT_LABELS first, in their fixed order, then any custom labels —
+  // rather than the region list's raw (creation-order) sequence, which
+  // interleaves categories and defeats XlethSelect's group-header rendering.
+  const labelOrder = useMemo(() => [...DEFAULT_LABELS, ...loadCustomLabels()], [])
+
+  const options = useMemo(() => {
+    const sorted = [...(regions ?? [])].sort((a, b) => {
+      const ia = labelOrder.indexOf(a.label)
+      const ib = labelOrder.indexOf(b.label)
+      return (ia === -1 ? labelOrder.length : ia) - (ib === -1 ? labelOrder.length : ib)
+    })
+    return sorted.map((r) => ({
+      value: r.id,
+      label: r.name || `Region ${r.id}`,
+      group: r.label || 'Custom',
+    }))
+  }, [regions, labelOrder])
 
   const handlePick = (regionId) => {
     const region = (regions ?? []).find((r) => r.id === regionId)

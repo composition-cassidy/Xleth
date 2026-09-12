@@ -57,6 +57,17 @@ public:
     bool isLoopEnabled() const;
     bool isLoopArmed()   const;  // diagnostic read — true while the trap is active
 
+    // AUDIO THREAD ONLY. How many of the next `numSamples` may be rendered from
+    // the current position before the loop trap wraps — the seam splitter for
+    // the mix callback. Returns `numSamples` when this block does not cross the
+    // loop end (and always when stopped or the trap is disabled), otherwise the
+    // count that lands the playhead exactly on the loop end, so a following
+    // advance() of that count wraps to exactly the loop start.
+    //
+    // Rendering a whole buffer and wrapping afterwards skips the region's first
+    // (overshoot) samples on every lap — see xleth::loopSamplesUntilWrap.
+    int samplesUntilLoopWrap(int numSamples) const;
+
 private:
     std::atomic<int64_t> positionSamples_{ 0 };
     std::atomic<bool>    playing_{ false };

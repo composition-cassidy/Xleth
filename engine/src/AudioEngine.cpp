@@ -500,6 +500,48 @@ std::string AudioEngine::setOutputDevice(const std::string& deviceName)
     return err.toStdString();
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+std::vector<double> AudioEngine::getSupportedSampleRates() const
+{
+    std::vector<double> rates;
+    if (auto* device = deviceManager_.getCurrentAudioDevice())
+        for (double rate : device->getAvailableSampleRates())
+            rates.push_back(rate);
+    return rates;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Same shape as setOutputDevice: mutate the setup, let setAudioDeviceSetup's
+// restart (audioDeviceAboutToStart) do the actual reconfigure. No parallel
+// path — deviceChanged is the only place sampleRate_/bufferSize_ are written.
+std::string AudioEngine::setBufferSize(int bufferSize)
+{
+    juce::AudioDeviceManager::AudioDeviceSetup setup;
+    deviceManager_.getAudioDeviceSetup(setup);
+    setup.bufferSize = bufferSize;
+    auto err = deviceManager_.setAudioDeviceSetup(setup, true);
+    if (err.isEmpty())
+    {
+        cacheCurrentDeviceOutputLatency();
+        refreshLivePresentationLatency();
+    }
+    return err.toStdString();
+}
+
+std::string AudioEngine::setSampleRate(double sampleRate)
+{
+    juce::AudioDeviceManager::AudioDeviceSetup setup;
+    deviceManager_.getAudioDeviceSetup(setup);
+    setup.sampleRate = sampleRate;
+    auto err = deviceManager_.setAudioDeviceSetup(setup, true);
+    if (err.isEmpty())
+    {
+        cacheCurrentDeviceOutputLatency();
+        refreshLivePresentationLatency();
+    }
+    return err.toStdString();
+}
+
 int64_t AudioEngine::readCurrentDeviceOutputLatencySamples() const
 {
     const int64_t overrideSamples =
@@ -726,8 +768,63 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
         voiceManager_.processBlock(outBuf, *sampleBank_);
     }
 
-    // e) Timeline-driven multi-track mix (Phase 1 MixEngine)
-    mixEngine_.processBlock(outBuf, numSamples, transport_);
+    // e) Timeline-driven multi-track mix (Phase 1 MixEngine), rendered in
+    //    sub-blocks split at the loop seam.
+    //
+    //    Rendering the whole device buffer and only then wrapping the clock is
+    //    wrong: loopAdvance carries the overshoot across the seam, so playback
+    //    resumes at (loopStart + overshoot) and the samples in
+    //    [loopStart, loopStart + overshoot) are rendered by no buffer at all.
+    //    Any note landing in that gap is silently dropped on every lap — most
+    //    visibly a pattern note sitting exactly ON the loop start tick, which
+    //    never sounds. The mirror symptom is the up-to-one-buffer tail past
+    //    loopEnd that DID get rendered before the jump.
+    //
+    //    Splitting renders [pos, loopEnd), advances (which wraps to exactly
+    //    loopStart), then renders the remainder from loopStart: the region is
+    //    covered contiguously, and nothing past loopEnd is heard.
+    {
+        // A region shorter than one device buffer would split once per lap
+        // inside a single callback. Cap the chain so the audio thread can never
+        // be handed an unbounded number of sub-blocks; past the cap the last
+        // sub-block falls back to the plain (overshoot-carrying) advance.
+        constexpr int kMaxLoopSplits = 8;
+
+        int offset    = 0;
+        int remaining = numSamples;
+
+        for (int split = 0; remaining > 0; ++split)
+        {
+            int chunk = remaining;
+            if (split < kMaxLoopSplits)
+            {
+                chunk = transport_.samplesUntilLoopWrap(remaining);
+                if (chunk < 1)         chunk = 1;
+                if (chunk > remaining) chunk = remaining;
+            }
+
+            if (offset == 0 && chunk == numSamples)
+            {
+                mixEngine_.processBlock(outBuf, chunk, transport_);
+            }
+            else
+            {
+                // Pointer view over [offset, offset + chunk). AudioBuffer stores
+                // the offset channel pointers in its preallocated space for
+                // <= 32 channels, so this constructor does not allocate.
+                juce::AudioBuffer<float> seamView(outBuf.getArrayOfWritePointers(),
+                                                  numOutputChannels, offset, chunk);
+                mixEngine_.processBlock(seamView, chunk, transport_);
+            }
+
+            // The master clock advances per sub-block because the advance IS
+            // the wrap — see the removed trailing advance() below.
+            transport_.advance(chunk);
+
+            offset    += chunk;
+            remaining -= chunk;
+        }
+    }
 
     // f) Source preview (Sample Picker)
     sourcePlayer_.processBlock(outBuf, numSamples);
@@ -744,8 +841,11 @@ void AudioEngine::audioDeviceIOCallbackWithContext(
     if (transport_.isPlaying())
         xleth::diag::StartLatencyTrace::instance().markFirstAudio();
 
-    // Advance master clock — always last, after all processing
-    transport_.advance(numSamples);
+    // Master clock already advanced, per sub-block, inside (e) — the loop wrap
+    // has to happen mid-buffer at the seam, so it cannot be deferred to here.
+    // Nothing between (e) and this point reads the transport position:
+    // SourcePlayer is position-independent, the WAV writer takes raw samples,
+    // and StartLatencyTrace only reads isPlaying().
 
     // Device-health heartbeat. Relaxed is sufficient: the watchdog only needs to
     // observe that the value changed, never a happens-before on anything else.

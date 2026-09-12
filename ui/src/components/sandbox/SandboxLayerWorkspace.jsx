@@ -1,4 +1,4 @@
-import { Plus, X } from 'lucide-react'
+import { Copy, Plus, X } from 'lucide-react'
 import { useState, useCallback } from 'react'
 import useSandboxStore, { hasMeaningfulSelection } from '../../stores/sandboxStore.js'
 import SandboxLayerWaveform from './SandboxLayerWaveform.jsx'
@@ -100,7 +100,7 @@ function LayerMixStrip({ layer, onSetMix, onToggleMute, onToggleSolo }) {
 }
 
 function LayerCard({
-  layer, active, hasSpcSelection, onSelect, onClose, onToggleMute, onToggleSolo, onSetMix,
+  layer, active, hasSpcSelection, onSelect, onClose, onDuplicate, onToggleMute, onToggleSolo, onSetMix,
 }) {
   const renderState = RENDER_STATE_LABEL[layer.renderState] ?? layer.renderState
   return (
@@ -115,6 +115,11 @@ function LayerCard({
           <span className="sandbox-render-chip-dot" />
           {renderState}
         </span>
+        <button
+          className="sandbox-layer-card-dup"
+          onClick={(e) => { e.stopPropagation(); onDuplicate(layer.id) }}
+          title={`Duplicate this layer with its ${layer.ops.length} op${layer.ops.length === 1 ? '' : 's'} and mix settings (Ctrl+D)`}
+        ><Copy size={12} /></button>
         <button
           className="sandbox-layer-card-close"
           onClick={(e) => { e.stopPropagation(); onClose(layer.id) }}
@@ -146,6 +151,7 @@ export default function SandboxLayerWorkspace() {
   const activeLayerId = useSandboxStore((s) => s.activeLayerId)
   const setActiveLayer = useSandboxStore((s) => s.setActiveLayer)
   const closeLayer = useSandboxStore((s) => s.closeLayer)
+  const duplicateLayer = useSandboxStore((s) => s.duplicateLayer)
   const toggleMute = useSandboxStore((s) => s.toggleMute)
   const toggleSolo = useSandboxStore((s) => s.toggleSolo)
   const setLayerMix = useSandboxStore((s) => s.setLayerMix)
@@ -217,6 +223,7 @@ export default function SandboxLayerWorkspace() {
           hasSpcSelection={hasSpcSelection && layer.id === activeLayerId}
           onSelect={setActiveLayer}
           onClose={closeLayer}
+          onDuplicate={duplicateLayer}
           onToggleMute={toggleMute}
           onToggleSolo={toggleSolo}
           onSetMix={setLayerMix}

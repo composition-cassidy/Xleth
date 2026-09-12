@@ -4,11 +4,20 @@
 //
 // Guards against the exact failure class fixed in 3db1b33: SyncManager::
 // videoTick() performing blocking decoder->seekAndDecode() calls in the
-// bridge (.node/XLETH_CORE_ONLY) build whose output nothing ever consumed
-// (compositor_ is always nullptr there). That dead work cost 100-330ms per
-// scattered seek on the frame-pacing thread and collapsed a real project's
-// preview from 60fps to ~17fps. See:
+// bridge (.node) build whose output nothing ever consumed (compositor_ was
+// always nullptr there). That dead work cost 100-330ms per scattered seek on
+// the frame-pacing thread and collapsed a real project's preview from 60fps
+// to ~17fps. See:
 //   docs / memory: project_preview_fps_synctick_dead_decode
+//
+// That whole path has since been retired (Issue 10 in VIDEO_PREVIEW_AUDIT.txt):
+// SyncManager holds no decoder and no compositor, and the per-tick call it
+// serves the video thread — currentBeatPosition() — runs without the event
+// lock. counters.syncManagerDecodeCount is therefore structurally 0 rather
+// than measured-0, and the videoTick budget below now measures that beat
+// query. The gate is kept because the surrounding budgets (delivered FPS
+// floor, per-stage timings, non-vacuous run) still catch a re-introduction of
+// per-event work on the frame-pacing thread, whatever shape it takes.
 //
 // This is NOT a functional-correctness test — it drives the real preview
 // path (XlethEngineService::videoThreadBody) against a synthetic project
@@ -178,7 +187,7 @@ async function main() {
       totalClips += 1;
 
       // Filler clips: registered but positioned entirely after the active
-      // window, so SyncManager's per-tick loop still has to walk past them
+      // window, so any per-tick loop over the event list has to walk past them
       // (its `continue` on the beat-range check) without ever decoding —
       // this is what mirrors a real project's "many total, few active" shape
       // (the 1738-event project this bug was found on had cells=3-7 active
@@ -286,10 +295,10 @@ async function main() {
                 `${COLUMNS}x${ROWS} grid, previewFps cap ${PREVIEW_FPS_CAP}`);
     console.log(`delivered FPS    : steady-state avg ${avgFps.toFixed(1)}  (cap ${PREVIEW_FPS_CAP})`);
     console.log(`syncManager decodes: ${lastDecodeCount}  (must be 0)`);
-    console.log(`videoTick (SyncManager::videoTick call only, us):`);
+    console.log(`videoTick (SyncManager beat-query call only, us):`);
     console.log(`  samples=${sortedTicks.length}  mean=${fmtMs(tickMean)}ms  p50=${fmtMs(tickP50)}ms  ` +
                 `p95=${fmtMs(tickP95)}ms  max=${fmtMs(tickMax)}ms`);
-    console.log(`preview-pipeline per-stage (windowed avg, us) — separate stage, starts AFTER videoTick:`);
+    console.log(`preview-pipeline per-stage (windowed avg, us) — separate stage, starts AFTER the beat query:`);
     console.log(`  collect=${fmtMs(c.avgCollectUs)}ms resolve=${fmtMs(c.avgResolveUs)}ms ` +
                 `decode=${fmtMs(c.avgDecodeUs)}ms composite=${fmtMs(c.avgCompositeUs)}ms ` +
                 `readback=${fmtMs(c.avgReadbackUs)}ms swizzle=${fmtMs(c.avgSwizzleUs)}ms ` +

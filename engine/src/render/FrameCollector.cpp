@@ -7,7 +7,9 @@
 #include "model/ClipVideoModulationTiming.h"
 #include "model/ClipCompanionFxBuilder.h"
 #include "model/ClipModulationCompatibility.h"
+#include "model/NoteFade.h"
 #include "SyncManager.h"     // VideoEvent
+#include "render/VisualEchoTypes.h"
 
 #include <algorithm>
 #include <cmath>
@@ -45,6 +47,139 @@ float videoEventFadeGain(const VideoEvent& event, double beatPos) noexcept
         event.fadeInPercent, event.fadeOutPercent,
         event.fadeInX1, event.fadeInY1, event.fadeInX2, event.fadeInY2,
         event.fadeOutX1, event.fadeOutY1, event.fadeOutX2, event.fadeOutY2);
+}
+
+// Pattern-track automatic per-note fade (TrackInfo::noteFade).
+//
+// This is the ONE place the feature is applied. Preview (XlethEngineService's
+// video tick), export (OfflineRenderer) and the snapshot-transition renderer all
+// reach the compositor through collectRequests, so hooking the opacity here
+// gives all three identical output with no second implementation to keep in
+// sync — the same reason the user-authored clip fade above lives here.
+//
+// Gated on Type::Pattern: a Clip track's events are clips, whose fade envelope
+// is hand-authored per clip and already evaluated by videoEventFadeGain.
+//
+// Returns a MULTIPLIER, composed with (not substituted for) the event's own
+// fade. On a Pattern track the event fade is always identity — only clip-track
+// events populate VideoEvent::fadeInPercent / fadeOutPercent — so today the
+// product is the note fade alone; composing rather than replacing means a path
+// that ever sets both cannot silently drop one.
+float trackNoteFadeGain(const VideoEvent& event, const TrackInfo* trk,
+                        double beatPos, double bpm) noexcept
+{
+    if (!trk || trk->type != TrackInfo::Type::Pattern || !trk->noteFade.enabled)
+        return 1.0f;
+    if (!(event.durationBeats > 0.0) || !std::isfinite(event.durationBeats))
+        return 1.0f;
+
+    // A pattern note's VideoEvent spans exactly the note, so progress through
+    // the event IS progress through the note.
+    const float progress = static_cast<float>(
+        (beatPos - event.startBeat) / event.durationBeats);
+    return xleth::notefade::gain(trk->noteFade, progress, event.durationBeats, bpm);
+}
+
+// Whether this note actually ends on a fade-out, for the fullscreen-behind
+// hold-through-gap suppression below. Without it, a Pattern track used as a
+// fullscreen backdrop with hold-last-frame on would fade a note out and then
+// snap straight back to full opacity the instant the note ended.
+bool trackNoteFadeHasFadeOut(const VideoEvent& event, const TrackInfo* trk,
+                             double bpm) noexcept
+{
+    return trk && trk->type == TrackInfo::Type::Pattern
+        && xleth::notefade::hasFadeOut(trk->noteFade, event.durationBeats, bpm);
+}
+
+// ── Visual Echo ─────────────────────────────────────────────────────────────
+//
+// Resolve the track's VisualEcho entry (if any) against the bound Delay FX's
+// PUBLISHED repeat interval. This is the single graft point where the audio
+// side's timing becomes video-side geometry, and it is deliberately the only
+// place in the render path that touches xleth::echo at all besides the
+// compositor stage that consumes the result.
+//
+// Note what is NOT here: no BPM, no beat division, no sync-mode branch. The
+// Delay resolved all of that before publishing `delaySamples`; this function
+// only converts samples to output frames, which is a unit change. If that
+// distinction ever blurs, preview and export stop agreeing the moment one of
+// them is driven at a different tempo than the other.
+//
+// A chain may legally contain more than one VisualEcho (nothing forbids it, and
+// addVisualEffect does not dedupe). The FIRST non-bypassed one wins; the rest
+// are ignored rather than stacked, because two rings on one cell would each
+// push the other's output back into itself and compound without bound.
+xleth::echo::EchoSettings resolveEchoSettings(
+    const std::vector<VisualEffect>&                chain,
+    const xleth::echo::IDelaySnapshotResolver*      resolver,
+    int                                             trackId,
+    int                                             sampleRate,
+    AVRational                                      fps,
+    uint64_t                                        ringKey) noexcept
+{
+    xleth::echo::EchoSettings out;
+    if (!resolver || chain.empty() || sampleRate <= 0 || fps.den <= 0 || fps.num <= 0)
+        return out;
+
+    const VisualEffect* fx = nullptr;
+    for (const auto& e : chain) {
+        if (!e.bypassed && e.type == VisualEffect::Type::VisualEcho) { fx = &e; break; }
+    }
+    if (!fx) return out;
+
+    const int nodeId = static_cast<int>(std::lround(fx->params[2]));
+    if (nodeId < 0) return out;                       // unbound — inert by design
+
+    const xleth::echo::DelaySnapshot snap = resolver->resolve(trackId, nodeId);
+    if (!snap.valid || !(snap.delaySamples > 0.0f)) return out;
+
+    // samples -> output frames. fps is rational (30000/1001 is a real case), so
+    // the multiply is done in double and only rounded at the very end by the
+    // ring-depth ceil; the tap offsets themselves stay fractional and are lerped.
+    const double framesPerSample = static_cast<double>(fps.num)
+                                 / (static_cast<double>(fps.den) * static_cast<double>(sampleRate));
+    const double frameDelay = static_cast<double>(snap.delaySamples) * framesPerSample;
+
+    // A repeat interval shorter than one output frame cannot be resolved by the
+    // ring at all — every tap would land inside the same buffered frame. Rather
+    // than draw N identical copies on top of each other (which just brightens
+    // the cell and looks like a bug), the echo stays inactive below that floor.
+    if (!(frameDelay >= 1.0) || !std::isfinite(frameDelay)) return out;
+
+    const int taps = std::clamp(static_cast<int>(std::lround(fx->params[0])),
+                                1, xleth::echo::kMaxTaps);
+
+    const bool followFeedback = fx->params[7] >= 0.5f;
+    const float decay = followFeedback ? snap.feedback01
+                                       : std::clamp(fx->params[1], 0.0f, 1.0f);
+
+    out.active     = true;
+    out.taps       = taps;
+    out.tapGain    = decay;
+    out.frameDelay = static_cast<float>(frameDelay);
+    out.scaleTrail = std::clamp(fx->params[3], 0.0f, 1.0f);
+    out.flipMode   = std::clamp(static_cast<int>(std::lround(fx->params[4])),
+                                0, xleth::echo::kFlipModeCount - 1);
+    out.pingPong   = snap.pingPong;
+    // Edge drift is a ping-pong TELL, not a free parameter: it exists so the
+    // trail visibly alternates sides the way the audio alternates ears. On a
+    // Single or Dual delay there is nothing to alternate, so the param is
+    // ignored outright rather than applied as a generic sideways smear.
+    out.drift      = snap.pingPong ? std::clamp(fx->params[5], 0.0f, 1.0f) : 0.0f;
+    out.additive   = fx->params[6] >= 0.5f;
+    out.ringKey    = ringKey;
+
+    // Clamp the requested depth against the ring cap. When the delay is long
+    // enough that taps * D would overrun kMaxRingFrames, drop taps rather than
+    // truncate the oldest one to a wrong position: a missing tap reads as a
+    // shorter trail, a mis-positioned one reads as broken sync.
+    while (out.taps > 1
+           && (static_cast<double>(out.taps) * frameDelay) + 2.0
+              > static_cast<double>(xleth::echo::kMaxRingFrames)) {
+        --out.taps;
+    }
+
+    return out;
 }
 
 xleth::clipmod::VideoModulationTimingContext makeVideoTimingContext(
@@ -395,7 +530,8 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
         req.sourcePath       = pickedPath;
         req.sourceId         = ev->sourceId;
         req.sourceFrameIndex = pickedFrame;
-        const float fadeGain = videoEventFadeGain(*ev, beatPos);
+        const float fadeGain = videoEventFadeGain(*ev, beatPos)
+                             * trackNoteFadeGain(*ev, trk, beatPos, bpm);
         req.opacity          = std::clamp(slotOpacity * ev->opacity * fadeGain, 0.0f, 1.0f);
         // Flip v2: VideoFlipApplier already resolved stateIndex/orientation per
         // event during the build pass. The shader consumes `orientation` directly;
@@ -423,6 +559,24 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
                     // (and the Outline / Drop Shadow stages it drives) is
                     // live for a fullscreen backdrop, not dead weight.
                     req.visualChain = trk->visualEffectChain;
+
+                    // Visual Echo: resolved from the chain we just copied, so a
+                    // preview-muted or bypassed chain yields no echo for free.
+                    //
+                    // The ring identity is (track, cell, layer kind), NOT the
+                    // track alone: one track can occupy several cells, and each
+                    // needs its own history because each shows different pixels.
+                    // Moving a track to a different cell therefore starts a
+                    // fresh ring — correct, since the old cell's history is of
+                    // a different rectangle; the abandoned ring is swept by
+                    // pruneIdleEchoRings a few seconds later.
+                    const uint64_t ringKey =
+                          (static_cast<uint64_t>(static_cast<uint32_t>(trackId)) << 32)
+                        | (static_cast<uint64_t>(static_cast<uint16_t>(cellCol)) << 16)
+                        | (static_cast<uint64_t>(static_cast<uint8_t>(cellRow))  << 8)
+                        |  static_cast<uint64_t>(static_cast<uint8_t>(kind));
+                    req.echo = resolveEchoSettings(req.visualChain, echoResolver_,
+                                                   trackId, sampleRate, fps, ringKey);
                 }
                 // Note trigger detection: fire onNoteStart when globalNoteIndex
                 // changes. Runs for fullscreen layers too — their ZPR is drawn
@@ -502,7 +656,8 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
             s.lastFrame            = req.sourceFrameIndex;
             s.lastPath             = req.sourcePath;
             s.lastOrientation      = req.orientation;
-            s.suppressAfterFadeOut = ev->fadeOutPercent > 0.0f;
+            s.suppressAfterFadeOut = ev->fadeOutPercent > 0.0f
+                                  || trackNoteFadeHasFadeOut(*ev, trk, bpm);
             s.lastClipEndBeat      = ev->startBeat + ev->durationBeats;
         }
 

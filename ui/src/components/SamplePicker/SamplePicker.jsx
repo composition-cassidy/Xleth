@@ -21,6 +21,20 @@ function isPickerShortcutTarget(target) {
   ))
 }
 
+// Space belongs to preview everywhere in the picker. The only targets allowed
+// to keep it are real text entry (the sample name field, the custom-label
+// field), where it has to stay a literal space character. Notably a focused
+// <button> is NOT exempt: otherwise Set In / Set Out / Add Sample / the label
+// select swallow Space as their own activation and preview stops responding.
+function isTextEntryTarget(target) {
+  if (!target || typeof target.closest !== 'function') return false
+  return Boolean(target.closest('input, textarea, [contenteditable="true"]'))
+}
+
+function isSpaceKey(e) {
+  return e.key === ' ' || e.key === 'Spacebar' || e.code === 'Space'
+}
+
 // Count how many saved samples share the given label
 function nextLabelIndex(samples, label) {
   return samples.filter(s => s.label === label).length + 1
@@ -408,6 +422,17 @@ export default function SamplePicker({ source, onClose }) {
     console.log(`[SamplePicker] Sample selected: "${sample.name}"`)
   }, [handleSeek])
 
+  // ── Middle-drag region committed on the waveform ───────────────────────────
+  // The gesture already left in/out set, so the only thing missing is the
+  // label — pop the dropdown open so the next keystroke picks one.
+  const [labelPickerSignal, setLabelPickerSignal] = useState(0)
+  const handleRegionDragEnd = useCallback(({ start, end }) => {
+    setSelectedId(null)
+    setAddSampleError(null)
+    setLabelPickerSignal(n => n + 1)
+    console.log(`[SamplePicker] Region swept: ${start.toFixed(3)}-${end.toFixed(3)}s`)
+  }, [])
+
   // ── Add custom label ───────────────────────────────────────────────────────
   const handleAddCustomLabel = useCallback((name) => {
     const trimmed = name.trim()
@@ -427,13 +452,19 @@ export default function SamplePicker({ source, onClose }) {
   // picker only hands it the target region + source context and asks the
   // windowing system to surface it.
   const handleOpenSplitter = useCallback((sample) => {
+    // Swap-aware (mirrors sandboxStore.addSourceFromRegion / TimelineView audio
+    // mapping): once a sample's audio has been SWAP-IN'd, that's what plays —
+    // splitting against the original file would mark syllables against audio
+    // nobody hears. The stale whole-source waveform doesn't apply to the swap
+    // file either, so leave it null and let the panel fetch fresh region peaks.
+    const swapped = sample?.hasSwappedAudio && sample?.swappedAudioPath
     useSplitSyllablesPanelStore.getState().setSplitTarget({
       region: sample,
-      sourceFilePath: source.filePath,
-      sourceWaveform: waveformData,
+      sourceFilePath: swapped ? sample.swappedAudioPath : source.filePath,
+      sourceWaveform: swapped ? null : waveformData,
     })
     usePanelRegistry.getState().openPanel('splitSyllables')
-    console.log(`[SamplePicker] Opened Split Syllables for "${sample.name}"`)
+    console.log(`[SamplePicker] Opened Split Syllables for "${sample.name}"${swapped ? ' (swapped audio)' : ''}`)
   }, [source.filePath, waveformData])
 
   // ── Keyboard shortcuts (capture phase overrides TransportBar) ──────────────
@@ -442,6 +473,18 @@ export default function SamplePicker({ source, onClose }) {
   // not on every inPoint/duration change that recreates handlePlaySelection.
   useEffect(() => {
     const handler = (e) => {
+      // Space first, and gated only on text entry: capture-phase
+      // stopImmediatePropagation keeps it from ever reaching the focused
+      // button, and preventDefault kills that button's native activation.
+      if (isSpaceKey(e) && !e.ctrlKey && !e.metaKey && !e.altKey) {
+        if (isTextEntryTarget(e.target)) return
+        e.preventDefault()
+        e.stopImmediatePropagation()
+        if (e.repeat) return          // held key must not machine-gun the toggle
+        handlePlaySelectionRef.current()
+        return
+      }
+
       if (isPickerShortcutTarget(e.target)) return
 
       if (e.key === 'i' || e.key === 'I') {
@@ -450,17 +493,25 @@ export default function SamplePicker({ source, onClose }) {
       } else if (e.key === 'o' || e.key === 'O') {
         e.stopImmediatePropagation()
         handleSetOut()
-      } else if (e.key === ' ') {
-        e.preventDefault()
-        e.stopImmediatePropagation()
-        handlePlaySelectionRef.current()
       } else if (e.key === 'Escape') {
         e.stopImmediatePropagation()
         onClose()
       }
     }
+    // A <button> fires its click on keyUP, so swallow that half too rather
+    // than relying on the keydown preventDefault alone.
+    const keyUpHandler = (e) => {
+      if (!isSpaceKey(e)) return
+      if (isTextEntryTarget(e.target)) return
+      e.preventDefault()
+      e.stopImmediatePropagation()
+    }
     window.addEventListener('keydown', handler, { capture: true })
-    return () => window.removeEventListener('keydown', handler, { capture: true })
+    window.addEventListener('keyup', keyUpHandler, { capture: true })
+    return () => {
+      window.removeEventListener('keydown', handler, { capture: true })
+      window.removeEventListener('keyup', keyUpHandler, { capture: true })
+    }
   }, [handleSetIn, handleSetOut, onClose])
 
   // ── Render ─────────────────────────────────────────────────────────────────
@@ -518,6 +569,7 @@ export default function SamplePicker({ source, onClose }) {
               onSeek={handleSeek}
               onInChange={setInPoint}
               onOutChange={setOutPoint}
+              onRegionDragEnd={handleRegionDragEnd}
               existingSamples={samples}
               showExistingSamples={showMarks}
             />
@@ -540,6 +592,7 @@ export default function SamplePicker({ source, onClose }) {
               onNameChange={handleNameChange}
               onAddSample={handleAddSample}
               onAddCustomLabel={handleAddCustomLabel}
+              labelPickerSignal={labelPickerSignal}
             />
 
             {addSampleError && (

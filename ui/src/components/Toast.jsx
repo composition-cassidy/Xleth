@@ -1,5 +1,4 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
-import { createPortal } from 'react-dom'
 
 const ToastCtx = createContext(null)
 
@@ -31,19 +30,8 @@ export function ToastProvider({ children }) {
   }, [])
 
   return (
-    <ToastCtx.Provider value={{ showToast, dismiss }}>
+    <ToastCtx.Provider value={{ showToast, dismiss, toasts }}>
       {children}
-      {createPortal(
-        <div className="toast-stack">
-          {toasts.map((t) => (
-            <div key={t.id} className={`toast toast-${t.level}`} onClick={() => dismiss(t.id)}>
-              <span className="toast-msg">{t.message}</span>
-              {t.level === 'error' && <span className="toast-dismiss">×</span>}
-            </div>
-          ))}
-        </div>,
-        document.body
-      )}
     </ToastCtx.Provider>
   )
 }
@@ -52,4 +40,21 @@ export function useToast() {
   const ctx = useContext(ToastCtx)
   if (!ctx) throw new Error('useToast must be used within <ToastProvider>')
   return ctx
+}
+
+export function ToastStatusText() {
+  const { toasts, dismiss } = useToast()
+  const current = toasts[toasts.length - 1]
+  if (!current) return null
+
+  return (
+    <span
+      key={current.id}
+      className={`toast-status toast-status-${current.level}`}
+      onClick={() => dismiss(current.id)}
+      role="status"
+    >
+      {current.message}
+    </span>
+  )
 }

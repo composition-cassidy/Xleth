@@ -26,6 +26,11 @@ import {
 } from '../backdrop/backdropFxSettings.js'
 import { useQuickLaunchersStore } from '../stores/quickLaunchersStore.js'
 import {
+  useClipVideoFxDefaultsStore,
+} from '../stores/clipVideoFxDefaultsStore.js'
+import { clipHasVideo, planClipVideoFxApply } from './timeline/clipVideoFxApply.js'
+import { timelineEvents } from '../timelineEvents.js'
+import {
   BACKDROP_MEDIA_SOURCE_TYPES,
   backdropMediaFromBackdropState,
   useBackdropMediaSettingsStore,
@@ -37,6 +42,7 @@ const VALID_NAMING_FORMATS = ['sampleNameOnly', 'categoryAndName', 'sourceAndNam
 
 export const SETTINGS_CATEGORIES = [
   { id: 'project', label: 'Project', summary: 'Clip handling and safety defaults' },
+  { id: 'clipfx', label: 'Clip FX', summary: 'Default Vibrato and Scratch video companion FX' },
   { id: 'transport', label: 'Transport', summary: 'Playback controls' },
   { id: 'audio', label: 'Audio', summary: 'Latency and realtime diagnostics' },
   { id: 'plugins', label: 'Plugins', summary: 'Scan and manage VST3 plugins' },
@@ -216,6 +222,16 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
   const [pendingLauncher, setPendingLauncher] = useState(null)
   const [editingId, setEditingId] = useState(null)
   const [editDraft, setEditDraft] = useState(null)
+
+  const clipVideoFxDefaults = useClipVideoFxDefaultsStore((s) => s.defaults)
+  const hydrateClipVideoFxDefaults = useClipVideoFxDefaultsStore((s) => s.hydrate)
+  const setClipVideoFxDefaults = useClipVideoFxDefaultsStore((s) => s.setDefaults)
+  // One snapshot of the open project (clips + the region/source maps needed to
+  // tell a video clip from an audio-only one), taken when the category opens and
+  // refreshed after an apply. The candidate count then recomputes locally as the
+  // user drags a slider instead of round-tripping the engine per keystroke.
+  const [clipFxProject, setClipFxProject] = useState(null)
+  const [clipFxStatus, setClipFxStatus] = useState({ state: 'idle', message: '' })
 
   useEffect(() => {
     setActiveCategory(normalizeCategory(initialCategory))
@@ -435,6 +451,92 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
     setVideoMode(mode)
     await getXleth()?.settings?.set?.('videoMode', mode)
   }
+
+  // ── Clip video-companion FX defaults ──────────────────────────────────────
+
+  const loadClipFxProject = useCallback(async () => {
+    const xl = getXleth()
+    if (!xl?.timeline?.getClips) { setClipFxProject(null); return null }
+    try {
+      const [clips, regions, sources] = await Promise.all([
+        xl.timeline.getClips(),
+        xl.timeline.getRegions(),
+        xl.timeline.getSources(),
+      ])
+      const regionsById = {}
+      ;(regions || []).forEach((r) => { regionsById[r.id] = r })
+      const sourcesById = {}
+      ;(sources || []).forEach((src) => { sourcesById[src.id] = src })
+      const next = { clips: clips || [], regionsById, sourcesById }
+      setClipFxProject(next)
+      return next
+    } catch (err) {
+      console.warn('[ClipVideoFxDefaults] project snapshot failed:', err?.message || err)
+      setClipFxProject(null)
+      return null
+    }
+  }, [])
+
+  // Declared after loadClipFxProject: the dep array is evaluated during render,
+  // so a useEffect above the useCallback would hit its temporal dead zone.
+  useEffect(() => {
+    if (activeCategory !== 'clipfx') return
+    hydrateClipVideoFxDefaults()
+    loadClipFxProject()
+    setClipFxStatus({ state: 'idle', message: '' })
+  }, [activeCategory, hydrateClipVideoFxDefaults, loadClipFxProject])
+
+  const clipFxCandidates = useMemo(() => (
+    clipFxProject
+      ? planClipVideoFxApply({
+          clips: clipFxProject.clips,
+          regionsById: clipFxProject.regionsById,
+          sourcesById: clipFxProject.sourcesById,
+          defaults: clipVideoFxDefaults,
+        })
+      : []
+  ), [clipFxProject, clipVideoFxDefaults])
+
+  async function applyClipVideoFxDefault(patch) {
+    await setClipVideoFxDefaults(patch)
+    // The candidate count is derived, so editing a default never leaves a stale
+    // 'applied to N clips' line standing next to a different N.
+    setClipFxStatus({ state: 'idle', message: '' })
+  }
+
+  async function applyClipVideoFxToProject() {
+    const snapshot = await loadClipFxProject()
+    if (!snapshot) {
+      setClipFxStatus({ state: 'error', message: 'No project is open.' })
+      return
+    }
+    const edits = planClipVideoFxApply({
+      clips: snapshot.clips,
+      regionsById: snapshot.regionsById,
+      sourcesById: snapshot.sourcesById,
+      defaults: clipVideoFxDefaults,
+    })
+    if (edits.length === 0) {
+      setClipFxStatus({ state: 'done', message: 'Nothing to apply — every video clip already has it on.' })
+      return
+    }
+    setClipFxStatus({ state: 'applying', message: `Applying to ${edits.length} clip(s)…` })
+    try {
+      const updated = await getXleth()?.timeline?.setClipModulationBatch?.(edits)
+      const count = Array.isArray(updated) ? updated.length : edits.length
+      // One batch call is one undo entry; the timeline refetches off this event.
+      timelineEvents.dispatchEvent(new CustomEvent('timeline-clips-changed'))
+      await loadClipFxProject()
+      setClipFxStatus({
+        state: 'done',
+        message: `Applied to ${count} clip(s). Ctrl+Z undoes the whole sweep.`,
+      })
+    } catch (err) {
+      console.error('[ClipVideoFxDefaults] apply failed:', err)
+      setClipFxStatus({ state: 'error', message: err?.message || 'Apply failed.' })
+    }
+  }
+
 
   async function applyBackdropMediaSource(value) {
     const next = ['none', 'acrylic', 'image', 'video'].includes(value) ? value : 'none'
@@ -774,6 +876,171 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
       </SettingsSection>
     </>
   )
+
+  const renderClipFx = () => {
+    const d = clipVideoFxDefaults
+    const videoClipCount = clipFxProject
+      ? clipFxProject.clips.filter(c => clipHasVideo(c, clipFxProject.regionsById, clipFxProject.sourcesById)).length
+      : null
+    const nothingEnabled = !d.swirlEnabled && !d.waveEnabled
+
+    return (
+      <>
+        <SettingsSection title="Swirl with Vibrato" index={0}>
+          <SettingsRow
+            label="Swirl with Vibrato"
+            htmlFor="settings-clipfx-swirl-enabled"
+            description="Include Swirl when applying defaults to the project. On a clip, Swirl only moves while that clip's Vibrato is on."
+          >
+            <input
+              id="settings-clipfx-swirl-enabled"
+              type="checkbox"
+              className="settings-panel-checkbox"
+              checked={d.swirlEnabled}
+              onChange={e => applyClipVideoFxDefault({ swirlEnabled: e.target.checked })}
+            />
+          </SettingsRow>
+          <SettingsRow
+            label="Swirl"
+            htmlFor="settings-clipfx-swirl-amount"
+            description="Rotation the Vibrato LFO drives. Negative swirls the other way."
+          >
+            <div className="settings-panel-range-row">
+              <input
+                id="settings-clipfx-swirl-amount"
+                type="range"
+                min="-1"
+                max="1"
+                step="0.01"
+                className="settings-panel-range"
+                value={d.swirlAmount}
+                onChange={e => applyClipVideoFxDefault({ swirlAmount: Number(e.target.value) })}
+                aria-label="Default Swirl amount"
+              />
+              <span className="settings-panel-range-value">{d.swirlAmount.toFixed(2)}</span>
+            </div>
+          </SettingsRow>
+        </SettingsSection>
+
+        <SettingsSection title="Wave with Scratch" index={1}>
+          <SettingsRow
+            label="Wave with Scratch"
+            htmlFor="settings-clipfx-wave-enabled"
+            description="Include Wave when applying defaults to the project. On a clip, Wave only moves while that clip's Scratch is on."
+          >
+            <input
+              id="settings-clipfx-wave-enabled"
+              type="checkbox"
+              className="settings-panel-checkbox"
+              checked={d.waveEnabled}
+              onChange={e => applyClipVideoFxDefault({ waveEnabled: e.target.checked })}
+            />
+          </SettingsRow>
+          <SettingsRow
+            label="Wave"
+            htmlFor="settings-clipfx-wave-amount"
+            description="Displacement the Scratch curve drives."
+          >
+            <div className="settings-panel-range-row">
+              <input
+                id="settings-clipfx-wave-amount"
+                type="range"
+                min="-1"
+                max="1"
+                step="0.01"
+                className="settings-panel-range"
+                value={d.waveAmount}
+                onChange={e => applyClipVideoFxDefault({ waveAmount: Number(e.target.value) })}
+                aria-label="Default Wave amount"
+              />
+              <span className="settings-panel-range-value">{d.waveAmount.toFixed(2)}</span>
+            </div>
+          </SettingsRow>
+          <SettingsRow
+            label="Freq"
+            htmlFor="settings-clipfx-wave-frequency"
+            description="Ripples across the frame."
+          >
+            <div className="settings-panel-range-row">
+              <input
+                id="settings-clipfx-wave-frequency"
+                type="range"
+                min="0.25"
+                max="64"
+                step="0.25"
+                className="settings-panel-range"
+                value={d.waveFrequency}
+                onChange={e => applyClipVideoFxDefault({ waveFrequency: Number(e.target.value) })}
+                aria-label="Default Wave frequency"
+              />
+              <span className="settings-panel-range-value">{d.waveFrequency.toFixed(2)}x</span>
+            </div>
+          </SettingsRow>
+          <SettingsRow
+            label="Smear"
+            htmlFor="settings-clipfx-smear-amount"
+            description="Trails the displaced pixels along the wave."
+          >
+            <div className="settings-panel-range-row">
+              <input
+                id="settings-clipfx-smear-amount"
+                type="range"
+                min="-1"
+                max="1"
+                step="0.01"
+                className="settings-panel-range"
+                value={d.smearAmount}
+                onChange={e => applyClipVideoFxDefault({ smearAmount: Number(e.target.value) })}
+                aria-label="Default Smear amount"
+              />
+              <span className="settings-panel-range-value">{d.smearAmount.toFixed(2)}</span>
+            </div>
+          </SettingsRow>
+          <SettingsRow
+            label="Reverse Wave with Scratch"
+            htmlFor="settings-clipfx-reverse-wave"
+            description="Flips the wave direction while the Scratch curve runs backwards."
+          >
+            <input
+              id="settings-clipfx-reverse-wave"
+              type="checkbox"
+              className="settings-panel-checkbox"
+              checked={d.reverseWaveWithScratch}
+              onChange={e => applyClipVideoFxDefault({ reverseWaveWithScratch: e.target.checked })}
+            />
+          </SettingsRow>
+        </SettingsSection>
+
+        <SettingsSection title="Apply to Project" index={2}>
+          <SettingsRow
+            label="Apply to video clips without it on"
+            description={
+              nothingEnabled
+                ? 'Turn on Swirl or Wave above to have something to apply.'
+                : videoClipCount == null
+                  ? 'Reading the open project.'
+                  : `${clipFxCandidates.length} of ${videoClipCount} video clip(s) would change. Clips that already have it on are left alone.`
+            }
+          >
+            <button
+              type="button"
+              className="settings-panel-button"
+              onClick={applyClipVideoFxToProject}
+              disabled={nothingEnabled || clipFxStatus.state === 'applying' || clipFxCandidates.length === 0}
+            >
+              {clipFxStatus.state === 'applying' ? 'Applying...' : 'Apply to Project'}
+            </button>
+          </SettingsRow>
+          {clipFxStatus.message && (
+            <div className="settings-panel-hint settings-panel-hint--inline">{clipFxStatus.message}</div>
+          )}
+          <div className="settings-panel-hint settings-panel-hint--inline">
+            These values also seed a clip&apos;s Swirl/Wave the first time you switch it on from the clip menu.
+          </div>
+        </SettingsSection>
+      </>
+    )
+  }
 
   const renderTransport = () => (
     <SettingsSection title="Playback" index={0}>
@@ -1396,6 +1663,8 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
         return renderLaunchers()
       case 'advanced':
         return renderAdvanced()
+      case 'clipfx':
+        return renderClipFx()
       case 'project':
       default:
         return renderProject()

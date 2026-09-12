@@ -1618,6 +1618,12 @@ html[data-xleth-backdrop="video"] .app-body {
   padding: 12px;
 }
 
+/* Docked top/bottom: content lists flow left-to-right instead of stacking. */
+.left-panel[data-orientation="horizontal"] .left-panel-content {
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
 /* â”€â”€ Tab placeholder styles â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .tab-placeholder {
@@ -3662,6 +3668,88 @@ html[data-xleth-backdrop="video"] .app-body {
   white-space: nowrap;
 }
 
+.audio-device-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.audio-settings-gear-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+  background-color: var(--theme-depth-elevation-3-bg, var(--theme-bg-elevated));
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: var(--xleth-shell-control-radius, 8px);
+  color: var(--theme-text-secondary, var(--theme-text-primary));
+  cursor: pointer;
+  transition: background-color var(--transition-fast), color var(--transition-fast),
+              border-color var(--transition-fast);
+}
+
+.audio-settings-gear-btn:hover,
+.audio-settings-gear-btn--active {
+  color: var(--theme-text-primary);
+  border-color: rgba(255, 255, 255, 0.20);
+}
+
+.audio-settings-popover {
+  position: fixed;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  width: 240px;
+  padding: 12px;
+  background-color: var(--theme-depth-elevation-3-bg, var(--theme-bg-elevated));
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  border-radius: var(--xleth-shell-control-radius, 8px);
+  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.45);
+}
+
+.audio-settings-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.audio-settings-label {
+  font-size: 10px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--theme-text-secondary, var(--theme-text-primary));
+}
+
+.audio-settings-select {
+  height: 28px;
+  padding: 0 8px;
+  background-color: var(--theme-bg-secondary, var(--theme-bg-elevated));
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  color: var(--theme-text-primary);
+  font-family: inherit;
+  font-size: 11px;
+}
+
+.audio-settings-latency {
+  flex-direction: row;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 4px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.audio-settings-value {
+  font-size: 11px;
+  font-weight: 650;
+  color: var(--theme-text-primary);
+}
+
 /* â”€â”€ Shortcut hints â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -3679,6 +3767,16 @@ html[data-xleth-backdrop="video"] .app-body {
   display: flex;
   flex-direction: column;
   gap: 3px;
+}
+
+.left-panel[data-orientation="horizontal"] .source-list {
+  flex-direction: row;
+  align-items: stretch;
+}
+
+.left-panel[data-orientation="horizontal"] .source-card {
+  flex: 0 0 auto;
+  min-width: 200px;
 }
 
 /* â”€â”€ Source card â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
@@ -3931,11 +4029,87 @@ html[data-xleth-backdrop="video"] .app-body {
   cursor: not-allowed;
 }
 
+/* ── Render dialog (unified Audio/YouTube/Discord/Custom destination picker) ── */
+.render-dialog {
+  width: 640px;
+}
+
+.render-dialog-title {
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--theme-text);
+}
+
+.render-dialog-subtitle {
+  font-size: 11px;
+  color: var(--theme-text-muted);
+  margin-top: 2px;
+}
+
+.dest-cards {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 8px;
+  padding: 2px 16px 14px;
+  border-bottom: 1px solid var(--theme-border-subtle);
+}
+
+.dest-card {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  background: var(--theme-bg-secondary);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  cursor: pointer;
+  text-align: left;
+  color: var(--theme-text);
+  font-family: inherit;
+  transition: border-color var(--transition-fast), background var(--transition-fast);
+}
+
+.dest-card svg {
+  flex: none;
+  color: var(--theme-text-muted);
+  transition: color var(--transition-fast);
+}
+
+.dest-card .dc-name {
+  display: block;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.dest-card .dc-spec {
+  display: block;
+  font-size: 10px;
+  color: var(--theme-text-muted);
+  margin-top: 1px;
+}
+
+.dest-card:hover {
+  border-color: var(--theme-border-focus);
+}
+
+.dest-card.on {
+  background: var(--theme-accent-bg-subtle);
+  border-color: var(--theme-accent);
+}
+
+.dest-card.on svg {
+  color: var(--theme-accent);
+}
+
+.dest-card.on .dc-name {
+  color: var(--theme-text);
+}
+
 .export-dialog-body {
   padding: 16px;
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 
 .export-row {
@@ -4038,10 +4212,100 @@ html[data-xleth-backdrop="video"] .app-body {
   gap: 5px;
 }
 
+/* Generic multi-field row — groups 2-3 related controls (Format / Sample Rate /
+   Bit Depth, Resolution / Frame Rate, Audio Codec / Sample Rate / Bitrate, …)
+   onto one shared row instead of one control per row. Auto-fit so a 3-field
+   grid gracefully wraps to 2+1 in a narrower container (e.g. a tab column). */
+.export-field-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(90px, 1fr));
+  gap: 10px 12px;
+}
+
+.export-row.export-field {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 5px;
+}
+
 .tail-warning {
   font-size: 11px;
   line-height: 1.4;
   color: var(--theme-warning);
+}
+
+/* ── Render range & tails — shared collapsible section ─────────────────────── */
+.render-range-section {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.render-range-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  padding: 2px 0;
+  background: none;
+  border: none;
+  border-radius: 0;
+  color: var(--theme-text);
+  font-size: 12px;
+  font-weight: 500;
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.render-range-chevron {
+  flex: none;
+  color: var(--theme-text-muted);
+  transition: transform var(--transition-fast);
+}
+
+.render-range-chevron.expanded {
+  transform: rotate(90deg);
+}
+
+.render-range-title {
+  flex: none;
+  white-space: nowrap;
+}
+
+.render-range-summary {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--theme-text-muted);
+  font-weight: 400;
+}
+
+.render-range-body {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-left: 18px;
+  animation: tail-fields-entry var(--transition-fast) both;
+}
+
+/* ── Inline helper tooltip (End Behavior / Loudness Normalization explainers) ── */
+.info-tip {
+  display: inline-flex;
+  align-items: center;
+  vertical-align: middle;
+  margin-left: 4px;
+  color: var(--theme-text-muted);
+  opacity: 0.7;
+  cursor: help;
+}
+
+.info-tip:hover,
+.info-tip:focus-visible {
+  opacity: 1;
+  color: var(--theme-text);
+  outline: none;
 }
 
 @keyframes tail-fields-entry {
@@ -4155,6 +4419,41 @@ html[data-xleth-backdrop="video"] .app-body {
   padding: 12px 16px;
   border-top: 1px solid var(--theme-border-subtle);
   background: var(--theme-bg-surface);
+}
+
+.export-dialog-footer.with-chips {
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+
+.export-footer-chips {
+  display: flex;
+  gap: 6px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.export-footer-btns {
+  display: flex;
+  gap: 8px;
+  flex: none;
+}
+
+.export-chip {
+  font-size: 10.5px;
+  color: var(--theme-text-muted);
+  background: var(--theme-bg-secondary);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 999px;
+  padding: 3px 10px;
+  white-space: nowrap;
+}
+
+.export-chip.acc {
+  color: var(--theme-accent);
+  border-color: var(--theme-accent);
+  background: var(--theme-accent-bg-subtle);
 }
 
 .export-dialog-footer button {
@@ -4366,6 +4665,17 @@ html[data-xleth-backdrop="video"] .app-body {
   min-height: 0;
 }
 
+.left-panel[data-orientation="horizontal"] .sample-groups {
+  flex-direction: row;
+  overflow-x: auto;
+  overflow-y: hidden;
+}
+
+.left-panel[data-orientation="horizontal"] .sample-group {
+  flex: 0 0 auto;
+  min-width: 170px;
+}
+
 /* â”€â”€ Group header â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .sample-group-header {
@@ -4385,6 +4695,10 @@ html[data-xleth-backdrop="video"] .app-body {
   width: 100%;
   text-align: left;
   transition: background var(--transition-fast);
+}
+
+.left-panel[data-orientation="horizontal"] .sample-group-header {
+  width: auto;
 }
 
 .sample-group-header:hover {
@@ -4424,6 +4738,13 @@ html[data-xleth-backdrop="video"] .app-body {
   flex-direction: column;
   padding-left: 12px;
   background: var(--theme-bg-secondary);
+}
+
+.left-panel[data-orientation="horizontal"] .sample-group-rows {
+  flex-direction: row;
+  flex-wrap: wrap;
+  padding-left: 0;
+  padding-top: 4px;
 }
 
 .sample-row {
@@ -6391,42 +6712,6 @@ html[data-xleth-backdrop="video"] .app-body {
   color: var(--theme-text-subtle);
 }
 
-/* ── Track Detail: fullscreen Behind/Front toggle ────────────────────────── */
-.tvp-placement-toggle {
-  display: inline-flex;
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: var(--radius-sm);
-  overflow: hidden;
-  background: var(--theme-bg-secondary);
-  margin-bottom: 8px;
-}
-
-.tvp-placement-toggle-btn {
-  border: none;
-  border-right: 1px solid var(--theme-border-subtle);
-  border-radius: 0;
-  padding: 4px 14px;
-  background: transparent;
-  color: var(--theme-text-muted);
-  font-size: 11px;
-  letter-spacing: 0.2px;
-  cursor: pointer;
-  transition: background 0.12s, color 0.12s;
-}
-
-.tvp-placement-toggle-btn:last-child {
-  border-right: none;
-}
-
-.tvp-placement-toggle-btn:hover {
-  color: var(--theme-text);
-}
-
-.tvp-placement-toggle-btn.active {
-  background: var(--theme-accent);
-  color: var(--theme-fg-inverse);
-}
-
 /* ── Track Detail: fullscreen opacity control ───────────────────────────── */
 .tvp-opacity-row {
   display: flex;
@@ -7137,6 +7422,33 @@ html[data-xleth-backdrop="video"] .app-body {
   font-variant-numeric: tabular-nums;
   color: var(--theme-text-muted);
   text-align: right;
+}
+
+/* ── NoteFadeSection ─────────────────────────────────────────────────────────
+   Reuses .grid-tab-slide-* for the header, param grid, selects and readouts so
+   the Track Video Properties overrides further down (.tvp-root .grid-tab-slide-*)
+   apply here too. Only the two things the slide panel has no equivalent for --
+   the module enable row and the Fade In / Fade Out sub-headings -- are new.
+   ────────────────────────────────────────────────────────────────────────── */
+
+.grid-tab-notefade-enable {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 2px;
+  font-size: 11px;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+}
+
+.grid-tab-notefade-subhead {
+  margin-top: 8px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--theme-text-muted);
+  opacity: 0.75;
 }
 
 /* ── Compact Grid Settings Panel (gsp-*) ────────────────────────────────────
@@ -18429,62 +18741,40 @@ html.fx-drag-active * {
    Toasts â€” top-right stack, auto-dismiss except errors (click to dismiss)
    â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
-.toast-stack {
-  position: fixed;
-  top: 16px;
-  right: 16px;
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  z-index: 9300;
-  pointer-events: none;
-}
-
-.toast {
-  min-width: 260px;
-  max-width: 420px;
-  padding: 10px 14px;
+.toast-status {
+  margin-left: 12px;
+  padding: 4px 10px;
   border-radius: var(--radius-sm);
-  border: 1px solid var(--theme-border-subtle);
-  background: var(--theme-bg-elevated);
-  color: var(--theme-text);
-  font-size: 13px;
+  font-size: 12px;
   font-weight: 500;
-  box-shadow: var(--theme-toast-shadow);
-  display: flex;
-  align-items: center;
-  gap: 10px;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 320px;
   cursor: pointer;
-  pointer-events: auto;
-  animation: toast-slide-in 180ms ease-out;
+  color: var(--theme-text-muted);
+  animation: toast-status-fade-in 180ms ease-out;
+  -webkit-app-region: no-drag;
 }
 
-.toast-msg { flex: 1; }
-
-.toast-dismiss {
-  font-size: 16px;
-  line-height: 1;
-  opacity: 0.6;
+.toast-status-info {
+  color: var(--theme-accent);
 }
 
-.toast-info {
-  border-color: var(--theme-accent);
-  border-left: 3px solid var(--theme-accent);
+.toast-status-success {
+  color: var(--theme-semantic-success-border);
+  text-shadow: 0 0 8px color-mix(in srgb, var(--theme-semantic-success-border) 65%, transparent);
 }
 
-.toast-success {
-  border-color: var(--theme-semantic-success-border);
-  border-left: 3px solid var(--theme-semantic-success-border);
+.toast-status-error {
+  color: color-mix(in srgb, var(--theme-danger) 65%, var(--theme-semantic-warning-border) 35%);
+  text-shadow: 0 0 8px color-mix(in srgb, var(--theme-danger) 50%, var(--theme-semantic-warning-border) 35%);
 }
 
-.toast-error {
-  border-color: var(--theme-danger);
-  border-left: 3px solid var(--theme-danger);
-}
-
-@keyframes toast-slide-in {
-  from { transform: translateX(16px); opacity: 0; }
-  to   { transform: translateX(0);    opacity: 1; }
+@keyframes toast-status-fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
 }
 
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -18607,7 +18897,7 @@ html.fx-drag-active * {
 .export-tab-panel {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 10px;
 }
 
 .export-tab-desc {
@@ -18657,18 +18947,21 @@ html.fx-drag-active * {
   opacity: 0.9;
 }
 
-/* Discord tier radio group */
+/* Discord tier radio group — horizontal 3-way row (Free / Nitro Basic / Nitro) */
 .tier-radio-group {
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  flex-direction: row;
+  gap: 6px;
 }
 
 .tier-radio {
   display: flex;
+  flex: 1;
   align-items: center;
-  gap: 8px;
-  padding: 6px 10px;
+  justify-content: center;
+  text-align: center;
+  gap: 6px;
+  padding: 6px 8px;
   background: var(--theme-bg-secondary);
   border: 1px solid var(--theme-border-subtle);
   border-radius: var(--radius-sm);
@@ -18750,6 +19043,133 @@ html.fx-drag-active * {
 }
 
 .custom-preset-row button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Custom tab — Video / Audio side-by-side columns, keeps the tab within the
+   dialog's height budget instead of stacking every field full-width. */
+.custom-tab-columns {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px 20px;
+  align-items: start;
+}
+
+.custom-tab-column {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.custom-rate-control {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.custom-rate-control-toggle {
+  display: flex;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.custom-rate-control-value {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+}
+
+.custom-rate-control-value input[type="range"] { flex: 1; }
+.custom-rate-control-value input[type="number"] { width: 72px; }
+
+.custom-rate-control-value span {
+  min-width: 24px;
+  font-size: 11px;
+  color: var(--theme-text-muted);
+}
+
+.custom-tab-column-title {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--theme-text-muted);
+  opacity: 0.7;
+}
+
+.custom-tab-column .export-row {
+  grid-template-columns: 82px 1fr;
+  gap: 8px;
+}
+
+.custom-tab-column .export-row label {
+  font-size: 11px;
+}
+
+/* Denser controls — the two-column layout trades a little padding for fitting
+   the whole Custom tab inside the dialog's height budget. */
+.custom-tab-column .export-row select,
+.custom-tab-column .export-row input[type="number"],
+.custom-tab-column .export-row input[type="text"] {
+  padding: 4px 6px;
+  font-size: 12px;
+}
+
+/* Fields nested in an .export-field-grid (Resolution/Frame Rate, Audio Codec/
+   Sample Rate/Bitrate) keep the compact label-above layout, not the column's
+   82px/1fr row layout above. */
+.custom-tab-column .export-row.export-field {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 4px;
+}
+
+/* Fit-mode picker (Custom tab, aspect mismatch only) */
+.custom-fit-modes {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.custom-fit-buttons {
+  display: flex;
+  gap: 6px;
+}
+
+.custom-fit-btn {
+  flex: 1;
+  background: var(--theme-bg-secondary);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: 0;
+  color: var(--theme-text-muted);
+  padding: 6px 4px;
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background var(--transition-fast), border-color var(--transition-fast), color var(--transition-fast);
+}
+
+.custom-fit-btn:hover:not(:disabled) {
+  background: var(--theme-bg-surface);
+  border-color: var(--theme-border-focus);
+  color: var(--theme-text);
+}
+
+.custom-fit-btn.active {
+  background: var(--theme-accent);
+  border-color: var(--theme-accent);
+  color: var(--theme-text-on-accent);
+}
+
+.custom-fit-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.custom-fit-hint {
+  font-size: 11px;
+  line-height: 1.4;
+  color: var(--theme-text-muted);
+}
+
+.custom-fit-hint.required {
+  color: var(--theme-warning);
+}
 
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Progress panel (replaces active tab body during render)
@@ -22089,23 +22509,21 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   color: var(--xleth-flat-text-muted);
 }
 
+/* Lucide draws on a 24x24 grid with stroke-width 2, so at 13px every stroke
+   lands on 1.08px and anti-aliases into mush. Normalising the stroke back to
+   a whole pixel at rest keeps the glyphs legible, and geometricPrecision stops
+   the renderer snapping strokes as the dock magnifies them. */
 .titlebar-launcher-btn svg {
   width: 13px;
   height: 13px;
+  stroke-width: 1.85;
+  shape-rendering: geometricPrecision;
 }
 
-.titlebar-launcher-btn:nth-child(2)::after,
-.titlebar-launcher-btn:nth-child(5)::after,
-.titlebar-launcher-btn:nth-child(8)::after,
-.titlebar-launchers-divider {
-  content: "";
-  position: absolute;
-  right: -14px;
-  top: 8px;
-  width: 1px;
-  height: 14px;
-  margin: 0;
-  background: var(--xleth-flat-border);
+/* The dock reads as one continuous plate, so no group dividers or separator
+   ticks between the launcher icons. */
+.titlebar-launcher-btn::after {
+  content: none;
 }
 
 .titlebar-controls {
@@ -22125,22 +22543,108 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   height: 12px;
 }
 
+/* ── Dock-style proximity magnification (toolbar icon cluster) ──────────
+   The bar is pinned to the absolute top of the window (nothing renders above
+   it — growth that way would clip off-screen), so icons scale from their TOP
+   edge and the dock grows downward into the empty space below.
+
+   The backing plate is a separate absolutely-positioned layer so it can hang
+   below the 30px bar without stretching the flex row. JS (useDockMagnification)
+   rewrites its `clip-path` every frame, bulging the bottom edge to conform to
+   whatever the icons are doing; this block only supplies the flat surface fill
+   and the floating label tag. No shadows, no dividers — the plate reads as one
+   continuous surface. ── */
+
+.titlebar-dock {
+  isolation: isolate;
+}
+
+/* One step above the titlebar fill so the plate reads as its own surface —
+   otherwise it is the same color as the bar and the warp is only legible
+   where it hangs past the bottom edge. */
+.titlebar-dock-plate {
+  position: absolute;
+  top: 0;
+  background: var(--theme-bg-elevated);
+  border-radius: 0;
+  box-shadow: none;
+  /* Flipped to `auto` by the hook while armed so the bulge keeps the pointer
+     inside the dock; the clip-path makes that hit area follow the curve. */
+  pointer-events: none;
+  -webkit-app-region: no-drag;
+  z-index: 0;
+  will-change: clip-path;
+}
+
+/* No `will-change: transform` here on purpose. Promoting each icon to its own
+   compositor layer makes Chromium rasterize the SVG once at 1x and then
+   bitmap-upscale it, so magnified icons come out blurry. Leaving it off lets
+   the vector re-rasterize at the painted scale and stay crisp; nine small
+   icons are nowhere near enough paint work to need the layer. */
+.titlebar-launcher-btn {
+  position: relative;
+  z-index: 1;
+  transform-origin: 50% 0%;
+}
+
+.titlebar-dock-tooltip {
+  position: fixed;
+  left: 0;
+  top: 0;
+  transform: translate(-50%, 0);
+  padding: 4px 8px;
+  background: var(--theme-bg-elevated);
+  border: 1px solid var(--theme-border-subtle);
+  box-shadow: none;
+  border-radius: 0;
+  color: var(--theme-toolbar-fg);
+  font-size: 11px;
+  font-weight: 600;
+  white-space: nowrap;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 90ms ease-out;
+  z-index: 10000;
+}
+
+.titlebar-dock-tooltip[data-visible="true"] {
+  opacity: 1;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .titlebar-launcher-btn {
+    transition: none !important;
+    transform: none !important;
+  }
+
+  .titlebar-dock-tooltip {
+    transition: none !important;
+  }
+}
+
 .xleth-sample-selector-drawer,
 .xleth-sample-selector-drawer__body,
 .left-panel {
   width: 100%;
   min-width: 0;
   background: var(--xleth-flat-panel);
-  border-right: 1px solid var(--xleth-flat-border);
   box-shadow: none;
 }
 
-.xleth-sample-selector-drawer__resize-handle {
-  background: transparent;
+.xleth-sample-selector-drawer-host[data-drawer-side="left"] .xleth-sample-selector-drawer {
+  border-right: 1px solid var(--xleth-flat-border);
 }
 
-.xleth-sample-selector-drawer__resize-handle:hover {
-  background: color-mix(in srgb, var(--xleth-flat-accent) 18%, transparent);
+.xleth-sample-selector-drawer-host[data-drawer-side="right"] .xleth-sample-selector-drawer {
+  border-left: 1px solid var(--xleth-flat-border);
+}
+
+.xleth-sample-selector-drawer-host[data-drawer-side="top"] .xleth-sample-selector-drawer {
+  border-bottom: 1px solid var(--xleth-flat-border);
+}
+
+.xleth-sample-selector-drawer-host[data-drawer-side="bottom"] .xleth-sample-selector-drawer {
+  border-top: 1px solid var(--xleth-flat-border);
 }
 
 .xleth-sample-selector-drawer__edge-toggle {
@@ -24854,10 +25358,88 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
 .pattern-list-expand-btn:hover,
 .pattern-list-collapse-btn:hover { color: var(--xleth-flat-text); }
 
+/* ── Pattern hover-preview tooltip (portaled to <body>) ─────────────────────
+   Neutral chrome throughout — accent is reserved for the kind badge, per the
+   flat-design rule that accent color must carry information, not decorate
+   idle chrome. pointer-events:none since it never needs to receive input. */
+.pattern-preview-tooltip {
+  position: fixed;
+  z-index: 9500;
+  width: 240px;
+  padding: 8px 10px 9px;
+  background: var(--xleth-flat-panel);
+  border: 1px solid var(--xleth-flat-border-strong);
+  border-radius: 0;
+  box-shadow: 4px 5px 0 rgba(0, 0, 0, 0.5);
+  pointer-events: none;
+  opacity: 0;
+  transform: translateX(-6px);
+  transition: opacity 180ms ease, transform 180ms ease;
+  font-family: var(--xleth-global-font-family);
+}
+.pattern-preview-tooltip.is-flipped { transform: translateX(6px); }
+.pattern-preview-tooltip.is-visible {
+  opacity: 1;
+  transform: translateX(0);
+}
+.pattern-preview-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 2px;
+}
+.pattern-preview-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--xleth-flat-text);
+}
+.pattern-preview-kind-badge {
+  flex: 0 0 auto;
+  padding: 1px 5px;
+  font-size: 8.5px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--xleth-flat-accent);
+  border: 1px solid var(--xleth-flat-accent);
+  border-radius: 0;
+}
+.pattern-preview-ticks {
+  margin-bottom: 6px;
+  font-size: 9px;
+  color: var(--xleth-flat-text-muted);
+}
+.pattern-preview-canvas {
+  display: block;
+  width: 240px;
+  height: 88px;
+  background: var(--xleth-flat-well);
+  border: 1px solid var(--xleth-flat-border);
+}
+.pattern-preview-empty {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--xleth-flat-well);
+  border: 1px solid var(--xleth-flat-border);
+  color: var(--xleth-flat-empty-text);
+  font-size: 10px;
+  font-style: italic;
+}
+.pattern-preview-footer {
+  margin-top: 6px;
+  font-size: 9px;
+  color: var(--xleth-flat-text-subtle);
+}
+
 /* ── Track header column ───────────────────────────────────────────────────── */
 .timeline-header-column {
   background: var(--xleth-flat-panel);
-  border-right: 1px solid var(--xleth-flat-border);
+  border-right: 2px solid var(--theme-timeline-lane-bg);
 }
 .timeline-header-spacer {
   background: var(--xleth-flat-chrome);
@@ -24867,7 +25449,7 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
 .track-header {
   gap: 0;
   background: transparent;
-  border-bottom: 1px solid var(--xleth-flat-preview-border);
+  border-bottom: 2px solid var(--theme-timeline-lane-bg);
 }
 .track-header:hover { background: #1b1b1b; }
 
@@ -26641,21 +27223,9 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   color: var(--xleth-flat-text-muted);
 }
 
-.tvp-placement-toggle,
 .tvp-opacity-row,
 .tvp-root .grid-tab-track-sliders {
   padding: 12px;
-}
-
-.tvp-placement-toggle {
-  margin: 0 12px 0;
-  background: var(--xleth-flat-well);
-}
-
-.tvp-placement-toggle-btn {
-  min-width: 72px;
-  min-height: 28px;
-  border-radius: 0;
 }
 
 .tvp-opacity-row input[type=range] {
@@ -26980,7 +27550,6 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   padding: 0;
 }
 
-.tvp-root .tvp-section-body .tvp-placement-toggle,
 .tvp-root .tvp-section-body .tvp-opacity-row {
   margin: 0;
   padding: 0;
@@ -29208,6 +29777,16 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
 }
+/* Where the slot's modulators have actually put this knob, right now. Empty
+   (and zero-height, so nothing below it shifts) whenever the knob is parked. */
+.filter-knob-live {
+  min-height: 11px;
+  font-size: 9px;
+  color: var(--theme-accent);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+.filter-knob-live:empty { min-height: 11px; }
 
 /* Dynamics-follower column */
 .filter-col-dyn.is-active { box-shadow: inset 2px 0 0 var(--theme-accent); }
@@ -29218,6 +29797,49 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   background: var(--xleth-flat-border-strong);
 }
 .filter-col-dyn.is-active .filter-mod-dot { background: var(--theme-accent); }
+
+/* Live modulator output. The fill is positioned imperatively every frame, so it
+   carries NO transition — a 30 Hz stream through a CSS transition lags behind
+   the value it is supposed to be showing. */
+.filter-mod-live {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.filter-mod-live-track {
+  position: relative;
+  flex: 1 1 160px;
+  min-width: 120px;
+  max-width: 420px;
+  height: 6px;
+  background: var(--xleth-flat-bg);
+  border: 1px solid var(--xleth-flat-border);
+}
+/* An LFO swings both ways, so its track gets a centre rule to swing about. */
+.filter-mod-live-track.bipolar::before {
+  content: '';
+  position: absolute;
+  left: 50%;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--xleth-flat-border-strong);
+}
+.filter-mod-live-fill {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 0;
+  background: var(--theme-accent);
+}
+.filter-mod-live-readout {
+  min-width: 42px;
+  text-align: right;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  color: var(--theme-accent);
+}
 
 .filter-mod-depth {
   display: flex;
@@ -30873,6 +31495,270 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   color: var(--theme-text-on-accent, #0D0D14);
   background: var(--theme-accent);
   border-color: var(--theme-accent);
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+   Per-clip FX editors (floating) — the Vibrato graph editor, and the Scratch
+   editor that will reuse this chrome.
+
+   Mounted by ClipFxEditorHost at the windowing root, never inside a PanelFrame
+   (a PanelFrame transform would become the containing block for these
+   `position: fixed` windows and clip them). Flat XLETH style: zero radius, one
+   hard shadow, accent reserved for meaningful state. Tokens only — no hex.
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* The host is a PLAIN, UNPOSITIONED wrapper, and must stay that way. Giving it
+   `position` + `z-index` (it briefly had `position: relative; z-index: 0`)
+   creates a stacking context, which caps its `position: fixed` children at that
+   context's own level — so a z-index:200 editor window ended up painting BELOW
+   .xleth-floating-window-layer / .xleth-docked-window-layer (--xleth-z-workspace-panel-layer: 1)
+   and was invisible and click-through. .effect-editor-host is deliberately
+   unstyled for the same reason; the z-index that matters lives on .clipfx-window. */
+.clip-fx-editor-host { position: static; z-index: auto; }
+
+.clipfx-window {
+  position: fixed;
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  background: var(--xleth-flat-panel);
+  border: 1px solid var(--xleth-flat-border-strong);
+  border-radius: 0;
+  box-shadow: var(--theme-depth-hard-shadow);
+  color: var(--xleth-flat-text);
+  font-size: 11px;
+  user-select: none;
+  outline: none;
+}
+
+/* ── Titlebar ─────────────────────────────────────────────────────────────── */
+.clipfx-titlebar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 26px;
+  flex: none;
+  padding: 0 6px 0 8px;
+  background: var(--xleth-flat-chrome);
+  border-bottom: 1px solid var(--xleth-flat-border);
+  cursor: grab;
+}
+.clipfx-titlebar:active { cursor: grabbing; }
+.clipfx-swatch {
+  width: 8px; height: 8px; flex: none;
+  background: var(--xleth-flat-accent);
+}
+.clipfx-title {
+  font-size: 10px; font-weight: 600;
+  letter-spacing: 0.14em; text-transform: uppercase;
+  color: var(--xleth-flat-text); white-space: nowrap;
+}
+.clipfx-subtitle {
+  font-size: 9px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--xleth-flat-text-muted); white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis;
+}
+.clipfx-spacer { flex: 1; min-width: 0; }
+.clipfx-close {
+  width: 18px; height: 18px; flex: none;
+  display: grid; place-items: center;
+  background: transparent; border: none; border-radius: 0;
+  color: var(--xleth-flat-text-muted);
+  cursor: pointer; line-height: 1; padding: 0;
+}
+.clipfx-close:hover {
+  color: var(--xleth-flat-danger);
+  background: var(--xleth-flat-well);
+}
+
+/* ── Toolbar row ──────────────────────────────────────────────────────────── */
+.clipfx-row {
+  display: flex; align-items: center; gap: 5px;
+  flex: none; flex-wrap: wrap;
+  padding: 4px 8px;
+  border-bottom: 1px solid var(--xleth-flat-border);
+}
+.clipfx-row-label {
+  font-size: 8px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--xleth-flat-text-muted); margin-right: 2px;
+}
+.clipfx-chip {
+  font: inherit; font-size: 9px;
+  letter-spacing: 0.06em; text-transform: uppercase;
+  padding: 3px 6px; cursor: pointer;
+  background: var(--xleth-flat-well);
+  color: var(--xleth-flat-text-secondary);
+  border: 1px solid var(--xleth-flat-border);
+  border-radius: 0;
+}
+.clipfx-chip:hover {
+  color: var(--xleth-flat-text);
+  border-color: var(--xleth-flat-border-strong);
+}
+.clipfx-chip.is-on {
+  background: var(--xleth-flat-accent);
+  color: var(--xleth-flat-accent-text);
+  border-color: var(--xleth-flat-accent);
+  font-weight: 600;
+}
+.clipfx-icon-btn {
+  width: 22px; height: 20px; flex: none;
+  display: grid; place-items: center;
+  background: var(--xleth-flat-well);
+  border: 1px solid var(--xleth-flat-border);
+  border-radius: 0;
+  color: var(--xleth-flat-text-secondary);
+  cursor: pointer; padding: 0;
+}
+.clipfx-icon-btn:hover:not(:disabled) {
+  color: var(--xleth-flat-text);
+  border-color: var(--xleth-flat-border-strong);
+}
+.clipfx-icon-btn:disabled { opacity: 0.4; cursor: default; }
+
+/* A chip that reports state rather than offering an action (the Scratch
+   editor's "Custom" indicator). Same skin as .clipfx-chip.is-on, no pointer. */
+.clipfx-chip-static { cursor: default; pointer-events: none; }
+
+/* Inline label inside a toolbar row (Scratch: the Baby-generator fields). */
+.clipfx-inline-label {
+  font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--xleth-flat-text-muted);
+}
+.clipfx-row-hint {
+  font-size: 8px; letter-spacing: 0.08em;
+  color: var(--xleth-flat-text-muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ── Graph ────────────────────────────────────────────────────────────────── */
+.clipfx-graph-wrap {
+  position: relative;
+  flex: none;
+  padding: 8px;
+  background: var(--xleth-flat-panel);
+}
+canvas.clipfx-graph {
+  display: block;
+  background: var(--theme-bg-inset);
+  border: 1px solid var(--xleth-flat-border);
+}
+.clipfx-graph-hint {
+  position: absolute; right: 14px; top: 12px;
+  font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--xleth-flat-text-muted);
+  pointer-events: none;
+}
+
+/* ── Parameter grid ───────────────────────────────────────────────────────── */
+.clipfx-param-grid {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 6px;
+  flex: none;
+  padding: 8px;
+  background: var(--xleth-flat-chrome);
+  border-top: 1px solid var(--xleth-flat-border);
+}
+.clipfx-param { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.clipfx-param-wide { grid-column: span 2; }
+.clipfx-param-label {
+  font-size: 8px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--xleth-flat-text-muted);
+}
+.clipfx-param-value {
+  font-family: var(--theme-font-mono, "Cascadia Mono", Consolas, monospace);
+  font-size: 10px; margin-top: 2px;
+  color: var(--xleth-flat-text);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+.clipfx-range {
+  -webkit-appearance: none; appearance: none;
+  width: 100%; height: 3px;
+  background: var(--xleth-flat-border-strong);
+  border-radius: 0; outline: none; cursor: pointer;
+}
+.clipfx-range::-webkit-slider-thumb {
+  -webkit-appearance: none; appearance: none;
+  width: 9px; height: 14px; border-radius: 0;
+  background: var(--xleth-flat-well);
+  border: 1px solid var(--xleth-flat-accent);
+}
+.clipfx-range:disabled { opacity: 0.45; cursor: default; }
+.clipfx-range:disabled::-webkit-slider-thumb { border-color: var(--xleth-flat-border-strong); }
+
+.clipfx-select {
+  font: inherit; font-size: 9px; letter-spacing: 0.06em;
+  text-transform: uppercase; cursor: pointer;
+  padding: 2px 4px; outline: none; border-radius: 0;
+  background: var(--xleth-flat-well);
+  color: var(--xleth-flat-text);
+  border: 1px solid var(--xleth-flat-border);
+}
+.clipfx-select:disabled { opacity: 0.45; cursor: default; }
+
+.clipfx-seg { display: flex; border: 1px solid var(--xleth-flat-border); }
+.clipfx-seg-btn {
+  flex: 1; font: inherit; font-size: 8px;
+  letter-spacing: 0.08em; text-transform: uppercase;
+  padding: 3px 4px; cursor: pointer; border-radius: 0;
+  background: var(--xleth-flat-well);
+  color: var(--xleth-flat-text-secondary);
+  border: none;
+  border-right: 1px solid var(--xleth-flat-border);
+}
+.clipfx-seg-btn:last-child { border-right: none; }
+.clipfx-seg-btn.is-on {
+  background: var(--xleth-flat-accent);
+  color: var(--xleth-flat-accent-text);
+  font-weight: 600;
+}
+
+.clipfx-check {
+  display: flex; align-items: center; gap: 5px;
+  margin-top: 4px; cursor: pointer;
+}
+.clipfx-check input { accent-color: var(--xleth-flat-accent); margin: 0; }
+.clipfx-check span {
+  font-size: 8px; letter-spacing: 0.1em; text-transform: uppercase;
+  color: var(--xleth-flat-text-secondary);
+}
+
+/* ── Status footer ────────────────────────────────────────────────────────── */
+.clipfx-status {
+  display: flex; align-items: center; gap: 6px;
+  flex: none; height: 20px; padding: 4px 8px;
+  background: var(--xleth-flat-panel);
+  border-top: 1px solid var(--xleth-flat-border);
+  font-size: 8px; letter-spacing: 0.12em; text-transform: uppercase;
+  color: var(--xleth-flat-text-muted);
+}
+.clipfx-led {
+  width: 6px; height: 6px; flex: none;
+  background: var(--xleth-flat-border-strong);
+}
+.clipfx-led.is-on { background: var(--xleth-flat-accent); }
+.clipfx-status-right {
+  margin-left: auto;
+  font-family: var(--theme-font-mono, "Cascadia Mono", Consolas, monospace);
+  letter-spacing: 0.04em; text-transform: none;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* ── Clip dropdown launcher ───────────────────────────────────────────────── */
+.clip-mod-open-editor {
+  width: 100%;
+  font: inherit; font-size: 8px;
+  letter-spacing: 0.12em; text-transform: uppercase;
+  padding: 4px 0; cursor: pointer; border-radius: 0;
+  background: transparent;
+  color: var(--xleth-flat-accent);
+  border: 1px solid var(--xleth-flat-accent);
+}
+.clip-mod-open-editor:hover {
+  background: var(--xleth-flat-accent);
+  color: var(--xleth-flat-accent-text);
 }
 
 /* ── Amp Stack panel (XlethAmpEffect) ─────────────────────────────────────────

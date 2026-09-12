@@ -1,7 +1,7 @@
 cmake_minimum_required(VERSION 3.28)
 
 # Use vcpkg toolchain if VCPKG_ROOT is set, else fall back to VS2022's bundled
-# vcpkg. Without a toolchain here, this is the ONLY place FFmpeg/GLEW/glfw3
+# vcpkg. Without a toolchain here, this is the ONLY place FFmpeg/nlohmann-json
 # ever get installed into build/vcpkg_installed — bridge/CMakeLists.txt and
 # engine/CMakeLists.txt both only *reuse* that pre-installed tree, they don't
 # bootstrap it. See the matching fallback in bridge/CMakeLists.txt.

@@ -70,7 +70,50 @@ function resolveSystemNodeExe() {
 }
 
 // High-frequency polling methods — suppress routine logs for these
-const SILENT_METHODS = new Set(['getFrameRGBA', 'getCurrentFrame', 'getFrameBuffer', 'getTransportState', 'audio_getAllPeaks', 'audio_getRealtimeDiagnostics', 'audio_getAudioPerformanceTelemetry', 'getAudioPerformanceTelemetry', 'audio_setTrackVolume', 'audio_setTrackPan', 'audio_setTrackSpread', 'audio_setMasterVolume', 'audio_getMasterLoudness', 'cache_getWorldActiveJobs']);
+// Timeline mutation/query methods fired at interactive/drag rates (clip
+// moves, resizes, note edits, viewport clip/track/pattern fetches). Logging
+// every one of these used to serialize the full result payload — multiple
+// megabytes for timeline_getClips on a large project — on every call.
+const SILENT_TIMELINE_METHODS = [
+  'timeline_getClips', 'timeline_getClipsOnTrack', 'timeline_getClipsInRange',
+  'timeline_getTracks', 'timeline_getTrackLayout', 'timeline_getPatternBlocks',
+  'timeline_addClipsBatch', 'timeline_moveClipsBatch', 'timeline_removeClipsBatch', 'timeline_pasteClipsBatch',
+  'timeline_moveClip', 'timeline_resizeClip', 'timeline_resizeClipLeft', 'timeline_stretchClip', 'timeline_stretchClipLeft',
+  'timeline_movePatternBlock', 'timeline_resizePatternBlock', 'timeline_resizePatternBlockLeft',
+  'timeline_beginClipControlEdit', 'timeline_previewClipControlEdit', 'timeline_commitClipControlEdit', 'timeline_cancelClipControlEdit',
+  'timeline_moveNote', 'timeline_resizeNote', 'timeline_moveNotesBatch', 'timeline_resizeNotesBatch', 'timeline_addNotesBatch', 'timeline_quantizeClipsBatch',
+  'timeline_previewNote', 'timeline_previewNoteOff', 'timeline_previewAllNotesOff',
+];
+const SILENT_METHODS = new Set([
+  'getFrameRGBA', 'getCurrentFrame', 'getFrameBuffer', 'getTransportState', 'audio_getAllPeaks', 'audio_getRealtimeDiagnostics', 'audio_getAudioPerformanceTelemetry', 'getAudioPerformanceTelemetry', 'audio_setTrackVolume', 'audio_setTrackPan', 'audio_setTrackSpread', 'audio_setMasterVolume', 'audio_getMasterLoudness', 'cache_getWorldActiveJobs',
+  ...SILENT_TIMELINE_METHODS,
+]);
+
+// Summarizes an IPC value for logging WITHOUT serializing a large payload —
+// JSON.stringify(result).slice(0, 80) used to walk a multi-MB clips array
+// just to throw 99.99% of it away. Size is checked (array length / key
+// count) BEFORE stringifying, so a small object still gets its familiar
+// truncated-JSON preview while a large one is reported as shape only.
+function summarizeResult(value, maxLen = 80) {
+  if (value === null || value === undefined) return String(value);
+  if (Array.isArray(value)) {
+    if (value.length > 8) return `array(${value.length})`;
+    try {
+      const s = JSON.stringify(value);
+      return s.length > maxLen ? s.slice(0, maxLen) + '…' : s;
+    } catch { return `array(${value.length})`; }
+  }
+  if (typeof value === 'object') {
+    const keys = Object.keys(value);
+    if (keys.length > 8) return `object(${keys.length} keys)`;
+    try {
+      const s = JSON.stringify(value);
+      return s.length > maxLen ? s.slice(0, maxLen) + '…' : s;
+    } catch { return `object(${keys.length} keys)`; }
+  }
+  const s = String(value);
+  return s.length > maxLen ? s.slice(0, maxLen) + '…' : s;
+}
 // Last known transport state — only log when it actually changes
 let lastTransportStateStr = null;
 
@@ -208,7 +251,7 @@ function callWorker(method, args = []) {
     return Promise.reject(new Error('Engine not ready: ' + (addonError || 'starting')));
   }
   if (!SILENT_METHODS.has(method)) {
-    log(`[IPC] → ${method}(${args.map(a => typeof a === 'object' ? JSON.stringify(a).slice(0, 60) : a).join(', ')})`);
+    log(`[IPC] → ${method}(${args.map(a => typeof a === 'object' ? summarizeResult(a) : a).join(', ')})`);
   }
   const id = nextMsgId++;
   return new Promise((resolve, reject) => {
@@ -226,7 +269,7 @@ function callWorker(method, args = []) {
             lastTransportStateStr = str;
           }
         } else if (!SILENT_METHODS.has(method)) {
-          log(`[IPC] ← result: ${JSON.stringify(result).slice(0, 80)}`);
+          log(`[IPC] ← result (${method}): ${summarizeResult(result)}`);
         }
         resolve(result);
       },

@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from 'react'
 import useLoopRegionStore from '../stores/loopRegionStore.js'
+import InfoTip from './InfoTip.jsx'
 
 // Shared export-dialog controls for LoopRegion tail and warmup settings. The
 // values live in project state and are committed through timeline.setLoopRegion.
@@ -61,7 +62,7 @@ export default function TailRenderControls({ disabled = false }) {
   return (
     <div className="tail-render-controls">
       <div className="export-row">
-        <label>End Behavior</label>
+        <label>End Behavior <InfoTip text={tailModeHelp} /></label>
         <select
           value={tailMode}
           onChange={(e) => commit({ tailMode: e.target.value })}
@@ -72,8 +73,6 @@ export default function TailRenderControls({ disabled = false }) {
           <option value="wrap">Loop-safe wrap</option>
         </select>
       </div>
-
-      <div className="tail-help">{tailModeHelp}</div>
 
       {tailMode === 'tailClamp' && (
         <div className="tail-advanced-fields" aria-label="Tail fade settings">
@@ -112,7 +111,12 @@ export default function TailRenderControls({ disabled = false }) {
       )}
 
       <div className="export-row">
-        <label>Start Processing From</label>
+        <label>
+          Start Processing From
+          {renderOrigin === 'normalized' && (
+            <InfoTip text="Region start processing is reserved in this build, so exports still use project-start warmup." />
+          )}
+        </label>
         <select
           value={renderOrigin}
           onChange={(e) => commit({ renderOrigin: e.target.value })}
@@ -122,11 +126,6 @@ export default function TailRenderControls({ disabled = false }) {
           <option value="normalized" disabled>Region start — faster, may sound different</option>
         </select>
       </div>
-      {renderOrigin === 'normalized' && (
-        <div className="tail-help">
-          Region start processing is reserved in this build, so exports still use project-start warmup.
-        </div>
-      )}
     </div>
   )
 }

@@ -1,4 +1,4 @@
-import { Fragment, useState } from 'react'
+import { Fragment, useCallback, useEffect, useState } from 'react'
 import { Pipette } from 'lucide-react'
 import { snapToZero, snapToOne, quantizedFromNorm } from '../../utils/sliderHelpers.js'
 import { TvSimulatorParamsView, TV_FIELDS } from './effectParamViews.jsx'
@@ -133,13 +133,90 @@ function SliderRows({ rows, params, set }) {
   })
 }
 
+// Visual Echo. The repeat INTERVAL is not on this panel on purpose — it comes
+// from the bound Delay effect's own time/sync controls, so that the picture and
+// the sound can never disagree about how long a repeat is. Everything here
+// describes what a repeat LOOKS like.
+const ECHO_SLIDERS = [
+  { label: 'Taps', pi: 0, min: 1, max: 8, step: 1, def: 4,
+    fmt: v => `${Math.round(v)}`,
+    title: 'How many repeats are drawn behind the live frame. The last tap is always faded to zero, so raising or lowering this never pops a copy in or out.' },
+  { label: 'Decay', pi: 1, min: 0, max: 1, step: 0.01, def: 0.65,
+    fmt: v => `${(v * 100).toFixed(0)}%`,
+    title: 'How much dimmer each repeat is than the one before it. Ignored while Follow Feedback is on.' },
+  { label: 'Scale Trail', pi: 3, min: 0, max: 1, step: 0.01, def: 0.20,
+    fmt: v => `${(v * 100).toFixed(0)}%`,
+    title: 'Shrinks each repeat toward the centre of the cell, so the trail recedes instead of only fading.' },
+  { label: 'Ping-Pong Drift', pi: 5, min: 0, max: 1, step: 0.01, def: 0,
+    fmt: v => `${(v * 100).toFixed(0)}%`,
+    title: 'Walks alternate repeats out to opposite edges — the picture equivalent of the delay handing each repeat to the other ear. Has no effect unless the bound Delay is in Ping-Pong mode.' },
+]
+
+const ECHO_FLIP_OPTIONS = [
+  { value: 0, label: 'None' },
+  { value: 1, label: 'Alternate Horizontal' },
+  { value: 2, label: 'Alternate Vertical' },
+  { value: 3, label: 'Alternate Half-Turn' },
+  { value: 4, label: 'Cycle' },
+]
+
+const ECHO_BLEND_OPTIONS = [
+  { value: 0, label: 'Normal' },
+  { value: 1, label: 'Additive' },
+]
+
 export default function ChainableEffectParams({ fx, trackId, fxIdx, fetchTracks }) {
   const set = async (paramIdx, v) => {
-    await window.xleth?.timeline?.setVisualEffectParam(trackId, fxIdx, paramIdx, v)
+    // Checked call, not bare optional chaining. `window.xleth?.timeline?.foo(...)`
+    // silently evaluates to undefined when any link in the four-layer bridge
+    // (preload -> main -> RPC dispatch -> engine) is missing the method, so a
+    // param write that never reached the engine would look exactly like one that
+    // did. The engine side already reports a failed write by returning false and
+    // keeping the command out of undo history (SetVisualEffectParamCommand::
+    // shouldRecordInUndoHistory); this is the renderer half of the same rule.
+    const fn = window.xleth?.timeline?.setVisualEffectParam
+    if (typeof fn !== 'function') {
+      console.warn('[ChainableEffectParams] timeline.setVisualEffectParam is unavailable —'
+                 + ` param ${paramIdx} not written`)
+      return
+    }
+    await fn(trackId, fxIdx, paramIdx, v)
     fetchTracks()
   }
 
   const [picking, setPicking] = useState(false)
+
+  // ── Visual Echo: the list of Delay effects this track can bind to ──────────
+  //
+  // Read from the AUDIO chain, because that is where the repeat interval
+  // actually lives. Only loaded for a Visual Echo panel; every other effect type
+  // pays nothing for this.
+  const [delayNodes, setDelayNodes] = useState([])
+  const isEcho = fx.type === 8
+
+  const loadDelayNodes = useCallback(async () => {
+    if (!isEcho) return
+    const fn = window.xleth?.audio?.getEffectChain
+    if (typeof fn !== 'function') {
+      console.warn('[ChainableEffectParams] audio.getEffectChain is unavailable —'
+                 + ' the Visual Echo delay picker will be empty')
+      setDelayNodes([])
+      return
+    }
+    try {
+      const raw = await fn(trackId)
+      const chain = typeof raw === 'string' ? JSON.parse(raw) : (raw ?? [])
+      setDelayNodes(
+        (Array.isArray(chain) ? chain : [])
+          .filter(e => e?.pluginId === 'delay')
+          .map(e => ({ value: e.nodeId, label: `Delay (slot ${(e.position ?? 0) + 1})` })))
+    } catch (err) {
+      console.warn('[ChainableEffectParams] could not read the audio chain:', err)
+      setDelayNodes([])
+    }
+  }, [isEcho, trackId])
+
+  useEffect(() => { loadDelayNodes() }, [loadDelayNodes])
 
   // Eyedropper: read the key colour off the preview.
   //
@@ -267,6 +344,71 @@ export default function ChainableEffectParams({ fx, trackId, fxIdx, fetchTracks 
         <TerminalStageNote>
           Cast by the finished cell, including its outline, so its position in the
           chain does not change the result.
+        </TerminalStageNote>
+      </div>
+    )
+  }
+
+  // ── Visual Echo (type 8) ───────────────────────────────────────────────────
+  // Stateful and composite-time, like Outline and Drop Shadow: it re-draws this
+  // cell's own earlier frames behind the live one, so its position in the chain
+  // does not change the result either.
+  if (fx.type === 8) {
+    const boundId = Math.round(fx.params?.[2] ?? -1)
+    const bound   = boundId >= 0 && delayNodes.some(d => d.value === boundId)
+    return (
+      <div className="fx-params-grid">
+        <label title="Which Delay on this track sets the echo's repeat interval. The picture follows that effect's own time and sync settings, so the two can never drift apart.">
+          Follow Delay
+        </label>
+        <XlethSelect
+          className="fx-param-select"
+          value={bound ? boundId : -1}
+          options={[{ value: -1, label: delayNodes.length ? 'None' : 'No Delay on this track' },
+                    ...delayNodes]}
+          onChange={value => set(2, value)}
+          ariaLabel="Visual Echo delay binding"
+        />
+        <span>{bound ? '' : 'inactive'}</span>
+
+        <label title="Take the per-repeat dimming from the bound Delay's own Feedback control instead of the Decay slider, so the trail dies away at the same rate the sound does.">
+          Follow Feedback
+        </label>
+        <input
+          type="checkbox"
+          checked={(fx.params?.[7] ?? 1) >= 0.5}
+          onChange={e => set(7, e.target.checked ? 1 : 0)} />
+        <span />
+
+        <label title="How each repeat is flipped relative to the live frame. Every option stays within the flips the compositor can express exactly — see composeTapOrientation in the engine.">
+          Tap Flip
+        </label>
+        <XlethSelect
+          className="fx-param-select"
+          value={Math.round(fx.params?.[4] ?? 0)}
+          options={ECHO_FLIP_OPTIONS}
+          onChange={value => set(4, value)}
+          ariaLabel="Visual Echo tap flip mode"
+        />
+        <span />
+
+        <label title="Normal layers each repeat over the last. Additive sums them, which blooms where repeats overlap — good for bright subjects on a dark backdrop.">
+          Trail Blend
+        </label>
+        <XlethSelect
+          className="fx-param-select"
+          value={Math.round(fx.params?.[6] ?? 0)}
+          options={ECHO_BLEND_OPTIONS}
+          onChange={value => set(6, value)}
+          ariaLabel="Visual Echo trail blend mode"
+        />
+        <span />
+
+        <SliderRows rows={ECHO_SLIDERS} params={fx.params} set={set} />
+        <TerminalStageNote>
+          {bound
+            ? 'Repeat length comes from the bound Delay, so change the timing there, not here. The trail rebuilds over the first few repeats after a seek.'
+            : 'Add a Delay to this track\u2019s audio chain and pick it above \u2014 until then this effect does nothing.'}
         </TerminalStageNote>
       </div>
     )

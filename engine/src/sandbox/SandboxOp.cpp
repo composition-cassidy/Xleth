@@ -104,7 +104,8 @@ struct HashVisitor {
                        static_cast<int32_t>(p.shape));
     }
     uint64_t operator()(const PitchParams& p) const {
-        return hashBool(hashF64(h, p.cents), p.formantPreserve);
+        return hashI32(hashBool(hashF64(h, p.cents), p.formantPreserve),
+                       static_cast<int32_t>(p.mode));
     }
     uint64_t operator()(const StretchParams& p) const {
         return hashI32(hashF64(h, p.ratio), p.algorithm);
@@ -154,6 +155,7 @@ struct HashVisitor {
     // preset must get a DIFFERENT render, not a cache hit on the custom one.
     uint64_t operator()(const AutotuneParams& p) const {
         uint64_t acc = hashI32(hashI32(h, static_cast<int32_t>(p.scale)), p.key);
+        acc = hashI32(acc, static_cast<int32_t>(p.mode));
         acc = hashU64(acc, static_cast<uint64_t>(p.allowedNotes.size()));
         for (int pc : p.allowedNotes) acc = hashI32(acc, pc);
         acc = hashF64(acc, p.correction.correctionAmount);
@@ -161,6 +163,12 @@ struct HashVisitor {
         acc = hashF64(acc, p.correction.smoothnessMs);
         acc = hashF64(acc, p.correction.jumpiness);
         acc = hashF64(acc, p.correction.preserveVibrato);
+        acc = hashU64(acc, static_cast<uint64_t>(p.manualPoints.size()));
+        for (const auto& pt : p.manualPoints) {
+            acc = hashF64(acc, pt.timeSec);
+            acc = hashF64(acc, pt.targetHz);
+            acc = hashF64(acc, pt.tension);
+        }
         return acc;
     }
 };
@@ -198,7 +206,8 @@ struct ToJsonVisitor {
                  {"shape", static_cast<int>(p.shape)} };
     }
     nlohmann::json operator()(const PitchParams& p) const {
-        return { {"cents", p.cents}, {"formantPreserve", p.formantPreserve} };
+        return { {"cents", p.cents}, {"formantPreserve", p.formantPreserve},
+                 {"mode", static_cast<int>(p.mode)} };
     }
     nlohmann::json operator()(const StretchParams& p) const {
         return { {"ratio", p.ratio}, {"algorithm", p.algorithm} };
@@ -241,13 +250,18 @@ struct ToJsonVisitor {
     nlohmann::json operator()(const AutotuneParams& p) const {
         nlohmann::json notes = nlohmann::json::array();
         for (int pc : p.allowedNotes) notes.push_back(pc);
-        return { {"scale", static_cast<int>(p.scale)}, {"key", p.key},
+        nlohmann::json pts = nlohmann::json::array();
+        for (const auto& pt : p.manualPoints)
+            pts.push_back({ {"t", pt.timeSec}, {"hz", pt.targetHz}, {"tension", pt.tension} });
+        return { {"mode", static_cast<int>(p.mode)},
+                 {"scale", static_cast<int>(p.scale)}, {"key", p.key},
                  {"allowedNotes", std::move(notes)},
                  {"correctionAmount", p.correction.correctionAmount},
                  {"retuneSpeedMs",    p.correction.retuneSpeedMs},
                  {"smoothnessMs",     p.correction.smoothnessMs},
                  {"jumpiness",        p.correction.jumpiness},
-                 {"preserveVibrato",  p.correction.preserveVibrato} };
+                 {"preserveVibrato",  p.correction.preserveVibrato},
+                 {"manualPoints",     std::move(pts)} };
     }
 };
 
@@ -313,6 +327,9 @@ struct FromJsonVisitor {
     void operator()(PitchParams& p) const {
         p.cents           = readField<double>(j, "cents", p.cents);
         p.formantPreserve = readField<bool>(j, "formantPreserve", p.formantPreserve);
+        // Absent in a v4-and-earlier stack, which is exactly what should read
+        // back as Preserve — that is the only thing PITCH could do then.
+        p.mode = static_cast<SandboxPitchMode>(readEnum(j, "mode", static_cast<int>(p.mode), 0, 1));
     }
     void operator()(StretchParams& p) const {
         p.ratio     = readField<double>(j, "ratio",     p.ratio);
@@ -387,6 +404,8 @@ struct FromJsonVisitor {
     // than an error.
     void operator()(AutotuneParams& p) const {
         if (!j.is_object()) return;
+        p.mode = static_cast<AutotuneMode>(
+            readEnum(j, "mode", static_cast<int>(p.mode), 0, 1));
         p.scale = static_cast<xleth::dsp::ScaleType>(
             readEnum(j, "scale", static_cast<int>(p.scale), 0, 10));
         p.key = readField<int>(j, "key", p.key);
@@ -406,6 +425,23 @@ struct FromJsonVisitor {
         p.correction.smoothnessMs     = readField<double>(j, "smoothnessMs",     p.correction.smoothnessMs);
         p.correction.jumpiness        = readField<double>(j, "jumpiness",        p.correction.jumpiness);
         p.correction.preserveVibrato  = readField<double>(j, "preserveVibrato",  p.correction.preserveVibrato);
+
+        // Same per-entry tolerance as allowedNotes above: one malformed
+        // breakpoint costs that breakpoint, not the user's whole drawn curve.
+        if (auto it = j.find("manualPoints"); it != j.end() && it->is_array()) {
+            std::vector<xleth::dsp::ManualPitchPoint> pts;
+            pts.reserve(it->size());
+            for (const auto& e : *it) {
+                if (!e.is_object()) continue;
+                xleth::dsp::ManualPitchPoint pt;
+                pt.timeSec  = readField<double>(e, "t", 0.0);
+                pt.targetHz = readField<double>(e, "hz", 0.0);
+                pt.tension  = readField<double>(e, "tension", 0.0);
+                pts.push_back(pt);
+            }
+            p.manualPoints = std::move(pts);
+        }
+
         normalizeAutotune(p);
     }
 };
@@ -564,6 +600,25 @@ void normalizeAutotune(AutotuneParams& p) {
     c.preserveVibrato  = std::clamp(c.preserveVibrato,  0.0, 100.0);
     c.retuneSpeedMs    = std::clamp(c.retuneSpeedMs,    0.0, kAutotuneMaxRetuneMs);
     c.smoothnessMs     = std::clamp(c.smoothnessMs,     0.0, kAutotuneMaxSmoothnessMs);
+
+    // Drop non-finite/non-positive-Hz breakpoints (a corrupt field, not a
+    // pitch anyone drew), clamp tension into its reserved range, then
+    // re-sort by time — evalManualCurve/computeManualCorrectionCurve assume
+    // the ascending-by-timeSec invariant rather than re-checking it per call.
+    std::vector<xleth::dsp::ManualPitchPoint> pts;
+    pts.reserve(p.manualPoints.size());
+    for (const auto& pt : p.manualPoints) {
+        if (!std::isfinite(pt.timeSec) || !std::isfinite(pt.targetHz) || pt.targetHz <= 0.0)
+            continue;
+        xleth::dsp::ManualPitchPoint clean = pt;
+        clean.tension = std::clamp(pt.tension, -1.0, 1.0);
+        pts.push_back(clean);
+    }
+    std::stable_sort(pts.begin(), pts.end(),
+                      [](const xleth::dsp::ManualPitchPoint& a, const xleth::dsp::ManualPitchPoint& b) {
+                          return a.timeSec < b.timeSec;
+                      });
+    p.manualPoints = std::move(pts);
 }
 
 // ─── SandboxOp ────────────────────────────────────────────────────────────────
@@ -659,6 +714,13 @@ int64_t SandboxOp::outputLength(int64_t inputLength) const noexcept {
             const auto& p = std::get<SpliceParams>(params);
             if (p.mode != SandboxRippleMode::Gap) return inputLength;
             return inputLength + std::max<int64_t>(0, p.gapSamples);
+        }
+        // The ONE length-changing pitch mode. Preserve holds length by
+        // definition and falls through to the in-place default below.
+        case SandboxOpType::Pitch: {
+            const auto& p = std::get<PitchParams>(params);
+            if (p.mode != SandboxPitchMode::Resample) return inputLength;
+            return xleth::dsp::varispeedOutputLength(inputLength, p.cents);
         }
         // Reverse / Fade / Gain / Crossfade are all in-place.
         default:

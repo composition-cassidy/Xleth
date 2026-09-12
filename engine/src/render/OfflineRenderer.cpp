@@ -10,6 +10,7 @@
 #include "render/RenderScope.h"
 #include "render/FrameCache.h"
 #include "render/FrameCollector.h"
+#include "render/MixEngineDelayResolver.h"
 #include "render/RenderVideoDecoder.h"
 #include "render/GridCompositor.h"
 #include "render/SnapshotTransitionRenderer.h"  // snapshot transition export seam (Slice 3b)
@@ -34,6 +35,7 @@ extern "C" {
 #include <chrono>
 #include <cmath>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <limits>
@@ -128,6 +130,56 @@ float maxAnimationScale(const TrackInfo& trk) {
 // would cost more to proxy (decode the whole source once + encode) than it saves
 // (decode the original once), so it stays on the original.
 constexpr int kReuseThreshold = 2;
+
+// Depth of the export encode queue (RENDER_PERF_AUDIT Finding 6a). The render
+// thread produces [decode + composite + readback]; the muxer's worker consumes
+// [convert + encode + mux]. 0 disables the split entirely and restores the
+// strictly serial path — the A/B lever for timing comparisons, and the escape
+// hatch if an encoder ever misbehaves under the split.
+//
+// 3 is enough to hide the encoder behind the producer without letting the
+// producer run far enough ahead to matter for memory: (depth+1) frames of BGRA
+// is ~33 MB at 1080p, ~133 MB at 4K.
+constexpr int kDefaultExportEncodeQueueDepth = 3;
+
+inline int exportEncodeQueueDepth() {
+    if (const char* env = std::getenv("XLETH_EXPORT_ENCODE_QUEUE")) {
+        char* end = nullptr;
+        const long v = std::strtol(env, &end, 10);
+        if (end != env && v >= 0 && v <= 8)
+            return static_cast<int>(v);
+    }
+    return kDefaultExportEncodeQueueDepth;
+}
+
+// Wall-clock split of the per-frame video work, so an A/B run shows WHERE the
+// time went and not merely that the total moved. `produceUs` covers
+// collect+resolve+decode+composite+readback; `submitUs` covers the writeVideo
+// call — the whole convert+encode+mux when serial, and only the pooled copy
+// plus any wait on a full queue when pipelined.
+struct VideoStageTimers {
+    int64_t produceUs = 0;
+    int64_t submitUs  = 0;
+    int64_t frames    = 0;
+
+    void log(int queueDepth) const {
+        if (frames <= 0) return;
+        const double n = static_cast<double>(frames);
+        std::fprintf(stderr,
+            "[Renderer] Video stages over %lld frames: produce=%.2fs (%.2f ms/f), "
+            "submit=%.2fs (%.2f ms/f), encodeQueue=%d (%s)\n",
+            (long long)frames,
+            produceUs / 1e6, produceUs / 1000.0 / n,
+            submitUs  / 1e6, submitUs  / 1000.0 / n,
+            queueDepth, queueDepth > 0 ? "pipelined" : "serial");
+    }
+};
+
+using SteadyClock = std::chrono::steady_clock;
+inline int64_t usSince(SteadyClock::time_point t0) {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+               SteadyClock::now() - t0).count();
+}
 
 // Opt-in (XLETH_VISUAL_DIAG_PIXELS=1) content fingerprint of a composed export
 // frame, taken immediately before it is handed to the encoder. `readback.pixels`
@@ -838,12 +890,32 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
     progress_.setVideoEncoderName(muxer.videoEncoderName());
     progress_.videoEncoderFallback.store(muxer.isVideoEncoderFallback());
 
+    // Finding 6a — hand [convert + encode + mux] to the muxer's own thread so
+    // this thread's [decode + composite + readback] overlaps it instead of
+    // waiting for it. The worker consumes the bounded queue strictly FIFO and
+    // the frame index is carried explicitly, so the encoder sees exactly the
+    // frame sequence the serial path fed it.
+    const int encodeQueueDepth = exportEncodeQueueDepth();
+    muxer.enableAsyncVideo(encodeQueueDepth);
+    VideoStageTimers vstage;
+
     // Frame cache + collector (no GPU thread binding needed for offline)
     RenderFrameCache cache;
     FrameCollector collector;
     AnimationManager animMgr;
     collector.setAnimationManager(&animMgr);
     collector.setCompanionFxEnabled(true);
+
+    // Visual Echo: the export renders its audio through THIS MixEngine, so the
+    // Delay instances the echo binds to are the same objects, running the same
+    // blocks, at the same positions the preview does. Installing a resolver over
+    // it is the whole of export/preview echo parity — not a second code path
+    // that has to be kept in agreement, but literally the same numbers out of
+    // the same effect. Without this line the export would still composite every
+    // cell correctly and simply draw no taps, which is exactly the kind of
+    // silent divergence the parity requirement exists to prevent.
+    const xleth::echo::MixEngineDelayResolver echoResolver(mixer_);
+    collector.setEchoDelayResolver(&echoResolver);
 
     // Diagnostic counters for AMD/NVIDIA divergence: track frames where the GL
     // compositor produced no readback. A non-zero count means the export is
@@ -1036,6 +1108,7 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
             }
 
             for (int64_t f = firstFrame; f <= lastFrame; ++f) {
+                const auto frameT0 = SteadyClock::now();
                 const int64_t localFrameSample = RenderClock::videoFrameToSample(
                     f, sampleRate, fps);
                 const int64_t projectFrameSample = startSample + localFrameSample;
@@ -1184,6 +1257,8 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
                     // Readback composited pixels from GPU
                     const auto& readback = compositor.readback();
                     ++videoFramesAttempted;
+                    vstage.produceUs += usSince(frameT0);
+                    ++vstage.frames;
                     if (readback.valid) {
                         // Retain for tailClamp freeze-frame (true copy — readback
                         // is reused next iteration). Only when a tail is planned.
@@ -1193,8 +1268,11 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
                             haveLastFrame   = true;
                         }
                         recordExportPreEncode(readback, (long long)f);
-                        if (!muxer.writeVideo(readback.pixels.data(),
-                                              readback.stride, f)) {
+                        const auto submitT0 = SteadyClock::now();
+                        const bool videoOk = muxer.writeVideo(readback.pixels.data(),
+                                                              readback.stride, f);
+                        vstage.submitUs += usSince(submitT0);
+                        if (!videoOk) {
                             progress_.setError("Video encoding failed at frame "
                                              + std::to_string(f));
                             progress_.failed.store(true);
@@ -1357,6 +1435,8 @@ void OfflineRenderer::renderImpl(int64_t startSample, int64_t endSample,
     // ── PHASE 3: FINALIZE ────────────────────────────────────────────────
     progress_.phase.store(3);
     std::fprintf(stderr, "[Renderer] FINALIZING: flushing encoders...\n");
+
+    vstage.log(encodeQueueDepth);
 
     if (videoFramesAttempted > 0) {
         const double invalidPct = 100.0 * static_cast<double>(invalidReadbackCount)
@@ -1620,11 +1700,31 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
     progress_.setVideoEncoderName(muxer.videoEncoderName());
     progress_.videoEncoderFallback.store(muxer.isVideoEncoderFallback());
 
+    // Finding 6a — hand [convert + encode + mux] to the muxer's own thread so
+    // this thread's [decode + composite + readback] overlaps it instead of
+    // waiting for it. The worker consumes the bounded queue strictly FIFO and
+    // the frame index is carried explicitly, so the encoder sees exactly the
+    // frame sequence the serial path fed it.
+    const int encodeQueueDepth = exportEncodeQueueDepth();
+    muxer.enableAsyncVideo(encodeQueueDepth);
+    VideoStageTimers vstage;
+
     RenderFrameCache cache;
     FrameCollector collector;
     AnimationManager animMgr;
     collector.setAnimationManager(&animMgr);
     collector.setCompanionFxEnabled(true);
+
+    // Visual Echo: the export renders its audio through THIS MixEngine, so the
+    // Delay instances the echo binds to are the same objects, running the same
+    // blocks, at the same positions the preview does. Installing a resolver over
+    // it is the whole of export/preview echo parity — not a second code path
+    // that has to be kept in agreement, but literally the same numbers out of
+    // the same effect. Without this line the export would still composite every
+    // cell correctly and simply draw no taps, which is exactly the kind of
+    // silent divergence the parity requirement exists to prevent.
+    const xleth::echo::MixEngineDelayResolver echoResolver(mixer_);
+    collector.setEchoDelayResolver(&echoResolver);
 
     int64_t videoFramesAttempted = 0;
     int64_t invalidReadbackCount = 0;
@@ -1705,6 +1805,7 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
 
         if (firstFrame <= lastFrame) {
             for (int64_t f = firstFrame; f <= lastFrame; ++f) {
+                const auto frameT0 = SteadyClock::now();
                 const int64_t localFrameSample = RenderClock::videoFrameToSample(f, sampleRate, fps);
                 const int64_t projectFrameSample = startSample + localFrameSample;
                 // See the matching call in the tail-render loop above: absolute
@@ -1813,9 +1914,15 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
                     }
                     const auto& readback = compositor.readback();
                     ++videoFramesAttempted;
+                    vstage.produceUs += usSince(frameT0);
+                    ++vstage.frames;
                     if (readback.valid) {
                         recordExportPreEncode(readback, (long long)f);
-                        if (!muxer.writeVideo(readback.pixels.data(), readback.stride, f)) {
+                        const auto submitT0 = SteadyClock::now();
+                        const bool videoOk = muxer.writeVideo(readback.pixels.data(),
+                                                              readback.stride, f);
+                        vstage.submitUs += usSince(submitT0);
+                        if (!videoOk) {
                             progress_.setError("Video encoding failed at frame " + std::to_string(f));
                             progress_.failed.store(true);
                             muxer.finalize();
@@ -1867,6 +1974,8 @@ void OfflineRenderer::renderImplWrap(int64_t startSample, int64_t endSample,
         "[Renderer] WRAP COMPLETE: regionLen=%d samples, video frames=%lld, "
         "no tail extension, no video freeze\n",
         regionLen, (long long)progress_.currentFrame.load());
+
+    vstage.log(encodeQueueDepth);
 
     if (!muxer.finalize()) {
         progress_.setError("Muxer finalization failed");

@@ -15,6 +15,7 @@ const C_ITEMS = [
   { typeId: 5, label: 'Chroma Key'              },
   { typeId: 6, label: 'Outline'                 },
   { typeId: 7, label: 'Drop Shadow'             },
+  { typeId: 8, label: 'Visual Echo'             },
 ]
 
 export default function VisualFXAddDropdown({

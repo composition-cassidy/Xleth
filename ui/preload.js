@@ -9,10 +9,18 @@ const invoke = (ch, ...args) => ipcRenderer.invoke(ch, ...args);
 
 // Load the shared-memory helper addon. It has zero JUCE/FFmpeg deps and
 // loads reliably in the Electron renderer's preload Node context. It opens
-// a Windows file mapping by name and returns it as an external ArrayBuffer
-// pointing at the same physical pages the engine (in the forked worker)
-// writes to. With contextIsolation:false the returned buffer reaches the
-// renderer as a live reference — zero copy, zero IPC in the hot path.
+// a Windows file mapping by name — the same physical pages the engine (in the
+// forked worker) writes frames into — and keeps that mapping INTERNAL to the
+// addon, exposing readInt32/readBytes instead of the buffer itself.
+//
+// It cannot hand the mapping to JS directly, and that is not a matter of
+// effort: Electron's renderer runs V8 with the sandbox on, so an ArrayBuffer
+// whose backing store V8 did not allocate is rejected — napi_create_external_-
+// arraybuffer throws "External buffers are not allowed" (measured against
+// Electron 41.1.1, 2026-08-31). RENDER_PERF_AUDIT Finding 5b proposed viewing
+// the inactive shm half directly to drop the memcpy below; that is why it
+// cannot be done. The one copy that remains is into memory the GPU upload
+// can legally read from — no IPC, ~0.2ms for 2 MB.
 let shmHelper = null;
 let frameShm = null;  // { meta, bufA, bufB, readIndex, syncFrame }
 try {
@@ -48,6 +56,17 @@ function openFrameShm() {
     console.error('[preload] openSharedMemory failed:', e.message);
     return null;
   }
+}
+
+// Called after the engine resizes the preview shared-memory surface (e.g. a
+// previewResolutionScale change re-sizes frameOutput to the new compositor
+// output). readIndex/syncFrame read meta.bufferSize/meta.indexOffset at call
+// time, so mutating the already-open mapping's meta in place is enough — no
+// need to reopen the OS-level mapping, since the new region is always <= the
+// originally-opened view (previewResolutionScale only ever shrinks it).
+function updateFrameShmMeta(meta) {
+  if (!frameShm || !meta) return;
+  Object.assign(frameShm.meta, meta);
 }
 
 function normalizeBackdropState(state) {
@@ -120,6 +139,13 @@ window.xleth = ({
     },
     getSourceThumbnail: (filePath, duration) => invoke('xleth:project:getSourceThumbnail', filePath, duration),
     newBlank:           ()          => invoke('xleth:project:newBlank'),
+    // Same engine calls as load/newBlank above, but wrapped in main.js with a
+    // splash/loading window around the workspace-window hide+show — used when
+    // switching projects from inside an already-open workspace (File menu),
+    // so the transition gets the same "loading, here's progress" treatment
+    // as the initial Welcome → workspace handoff instead of a silent swap.
+    switchToNew:        ()          => invoke('xleth:project:switchToNew'),
+    switchToLoad:       (dir)       => invoke('xleth:project:switchToLoad', dir),
   },
 
   // ── Autosave ──────────────────────────────────────────────────────────────
@@ -342,6 +368,12 @@ window.xleth = ({
     // Returns { buffer: ArrayBuffer, meta: {name, width, height, bufferSize, indexOffset, totalSize} }
     // or null if the engine hasn't initialized the shm yet.
     openFrameShm:   () => openFrameShm(),
+    // Re-sizes the shared-memory surface to (width, height) — the engine
+    // re-initializes frameOutput's mapping (initVideoSharedMemory), and this
+    // pushes the resulting meta into the already-open mapping above so
+    // readIndex/syncFrame pick up the new layout without reopening it.
+    getFrameShm:    (width, height) => invoke('xleth:video:getFrameShm', width, height)
+        .then((meta) => { updateFrameShmMeta(meta); return meta; }),
     // FrameServer: open/close a decoder for a source (fast native path)
     openSource:     (id)    => invoke('xleth:video:openSource', id),
     closeSource:    (id)    => invoke('xleth:video:closeSource', id),
@@ -606,6 +638,33 @@ window.xleth = ({
   loopTelemetry: {
     append: (event)     => invoke('xleth:loopTelemetry:append', event),
     export: ()          => invoke('xleth:loopTelemetry:export'),
+  },
+
+  // ── Source separation sidecar (P4) ───────────────────────────────────────
+  // Hand-written rather than manifest-generated: the manifest wires channels
+  // through to C++ engine handlers, and separation never touches the engine —
+  // it talks to a local Python/FastAPI process (ui/electron-main/separation.js).
+  //
+  // getStatus is the CHEAP probe (no process spawn) the separation strip calls
+  // on mount; checkEnvironment is the expensive one behind the "unavailable"
+  // explainer. separateBuffer hands over the layer's rendered PCM as
+  // Float32Arrays by structured clone — main writes the WAV, so no base64 or
+  // string copy of a 60 MB buffer happens anywhere.
+  separation: {
+    getStatus:        ()            => invoke('xleth:separation:getStatus'),
+    checkEnvironment: ()            => invoke('xleth:separation:checkEnvironment'),
+    start:            ()            => invoke('xleth:separation:start'),
+    stop:             ()            => invoke('xleth:separation:stop'),
+    listModels:       ()            => invoke('xleth:separation:listModels'),
+    separateBuffer:   (payload)     => invoke('xleth:separation:separateBuffer', payload),
+    separateFile:     (opts)        => invoke('xleth:separation:separateFile', opts),
+    getJob:           (jobId)       => invoke('xleth:separation:getJob', jobId),
+    cancel:           (jobId)       => invoke('xleth:separation:cancel', jobId),
+    onProgress: (cb) => {
+      const h = (_e, data) => cb(data);
+      ipcRenderer.on('separation:progress', h);
+      return () => ipcRenderer.removeListener('separation:progress', h);
+    },
   },
 
   // ── Window controls (frameless title bar) ─────────────────────────────────

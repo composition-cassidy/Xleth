@@ -154,10 +154,10 @@ try {
     clipId, trackId, positionTicks: 500000 + i * 960,
   }));
   const tMove0 = process.hrtime.bigint();
-  const movedCount = addon.timeline_moveClipsBatch(moves);
+  const movedClips = addon.timeline_moveClipsBatch(moves);
   const moveMs = Number(process.hrtime.bigint() - tMove0) / 1e6;
 
-  ok(movedCount === N_CLIPS, `moved all ${N_CLIPS} clips`);
+  ok(movedClips.length === N_CLIPS, `moved all ${N_CLIPS} clips`);
   console.log(`        move batch: ${moveMs.toFixed(1)}ms`);
   ok(moveMs < distinctMs,
      'moving a selection is cheaper than rendering it '

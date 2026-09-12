@@ -336,6 +336,14 @@ const METHODS = [
     binary: null,
   },
   {
+    method: 'timeline_getPreviewResolutionAutoMode',
+    channels: ['xleth:timeline:getPreviewResolutionAutoMode'],
+    api: { 'timeline.getPreviewResolutionAutoMode': 'xleth:timeline:getPreviewResolutionAutoMode' },
+    handler: 'Timeline_GetPreviewResolutionAutoMode',
+    returns: 'value',
+    binary: null,
+  },
+  {
     method: 'timeline_getPreviewPosterMode',
     channels: ['xleth:timeline:getPreviewPosterMode'],
     api: { 'timeline.getPreviewPosterMode': 'xleth:timeline:getPreviewPosterMode' },
@@ -656,6 +664,14 @@ const METHODS = [
     binary: null,
   },
   {
+    method: 'timeline_setTrackNoteFade',
+    channels: ['xleth:timeline:setTrackNoteFade'],
+    api: { 'timeline.setTrackNoteFade': 'xleth:timeline:setTrackNoteFade' },
+    handler: 'Timeline_SetTrackNoteFade',
+    returns: 'void',
+    binary: null,
+  },
+  {
     method: 'timeline_setPreviewResolutionScale',
     channels: ['xleth:timeline:setPreviewResolutionScale'],
     api: { 'timeline.setPreviewResolutionScale': 'xleth:timeline:setPreviewResolutionScale' },
@@ -668,6 +684,14 @@ const METHODS = [
     channels: ['xleth:timeline:setPreviewEffectsBypass'],
     api: { 'timeline.setPreviewEffectsBypass': 'xleth:timeline:setPreviewEffectsBypass' },
     handler: 'Timeline_SetPreviewEffectsBypass',
+    returns: 'void',
+    binary: null,
+  },
+  {
+    method: 'timeline_setPreviewResolutionAutoMode',
+    channels: ['xleth:timeline:setPreviewResolutionAutoMode'],
+    api: { 'timeline.setPreviewResolutionAutoMode': 'xleth:timeline:setPreviewResolutionAutoMode' },
+    handler: 'Timeline_SetPreviewResolutionAutoMode',
     returns: 'void',
     binary: null,
   },
@@ -768,7 +792,7 @@ const METHODS = [
     channels: ['xleth:timeline:moveClip'],
     api: { 'timeline.moveClip': 'xleth:timeline:moveClip' },
     handler: 'Timeline_MoveClip',
-    returns: 'void',
+    returns: 'value',
     binary: null,
   },
   {
@@ -776,7 +800,7 @@ const METHODS = [
     channels: ['xleth:timeline:resizeClip'],
     api: { 'timeline.resizeClip': 'xleth:timeline:resizeClip' },
     handler: 'Timeline_ResizeClip',
-    returns: 'void',
+    returns: 'value',
     binary: null,
   },
   {
@@ -784,7 +808,7 @@ const METHODS = [
     channels: ['xleth:timeline:resizeClipLeft'],
     api: { 'timeline.resizeClipLeft': 'xleth:timeline:resizeClipLeft' },
     handler: 'Timeline_ResizeClipLeft',
-    returns: 'void',
+    returns: 'value',
     binary: null,
   },
   {
@@ -792,7 +816,7 @@ const METHODS = [
     channels: ['xleth:timeline:stretchClip'],
     api: { 'timeline.stretchClip': 'xleth:timeline:stretchClip' },
     handler: 'Timeline_StretchClip',
-    returns: 'void',
+    returns: 'value',
     binary: null,
   },
   {
@@ -800,7 +824,7 @@ const METHODS = [
     channels: ['xleth:timeline:stretchClipLeft'],
     api: { 'timeline.stretchClipLeft': 'xleth:timeline:stretchClipLeft' },
     handler: 'Timeline_StretchClipLeft',
-    returns: 'void',
+    returns: 'value',
     binary: null,
   },
   {
@@ -864,6 +888,17 @@ const METHODS = [
     channels: ['xleth:timeline:setClipModulation'],
     api: { 'timeline.setClipModulation': 'xleth:timeline:setClipModulation' },
     handler: 'Timeline_SetClipModulation',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // Manifest-eligible for the same reason as timeline_addPatternBlocksBatch:
+    // the batching lives entirely in the engine handler and every JS layer is a
+    // single-arg pass-through.
+    method: 'timeline_setClipModulationBatch',
+    channels: ['xleth:timeline:setClipModulationBatch'],
+    api: { 'timeline.setClipModulationBatch': 'xleth:timeline:setClipModulationBatch' },
+    handler: 'Timeline_SetClipModulationBatch',
     returns: 'value',
     binary: null,
   },
@@ -1172,6 +1207,27 @@ const METHODS = [
     channels: ['xleth:timeline:addPatternBlock'],
     api: { 'timeline.addPatternBlock': 'xleth:timeline:addPatternBlock' },
     handler: 'Timeline_AddPatternBlock',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // Batched, but manifest-eligible: the batching lives ENTIRELY in the engine
+    // handler and every JS layer is a single-arg pass-through — the same
+    // criterion that admitted the FXG.3-d topology ops (docs/rpc-manifest.md).
+    // The older *ClipsBatch methods stay hand-written in electron-main/timeline.js
+    // only because they predate the manifest.
+    method: 'timeline_addPatternBlocksBatch',
+    channels: ['xleth:timeline:addPatternBlocksBatch'],
+    api: { 'timeline.addPatternBlocksBatch': 'xleth:timeline:addPatternBlocksBatch' },
+    handler: 'Timeline_AddPatternBlocksBatch',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'timeline_pastePatternBlocksBatch',
+    channels: ['xleth:timeline:pastePatternBlocksBatch'],
+    api: { 'timeline.pastePatternBlocksBatch': 'xleth:timeline:pastePatternBlocksBatch' },
+    handler: 'Timeline_PastePatternBlocksBatch',
     returns: 'value',
     binary: null,
   },
@@ -1495,6 +1551,38 @@ const METHODS = [
     returns: 'value',
     binary: null,
   },
+  {
+    method: 'audio_getSupportedSampleRates',
+    channels: ['xleth:audio:getSupportedSampleRates'],
+    api: { 'audio.getSupportedSampleRates': 'xleth:audio:getSupportedSampleRates' },
+    handler: 'Audio_GetSupportedSampleRates',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_getDeviceInfo',
+    channels: ['xleth:audio:getDeviceInfo'],
+    api: { 'audio.getDeviceInfo': 'xleth:audio:getDeviceInfo' },
+    handler: 'Audio_GetDeviceInfo',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_setBufferSize',
+    channels: ['xleth:audio:setBufferSize'],
+    api: { 'audio.setBufferSize': 'xleth:audio:setBufferSize' },
+    handler: 'Audio_SetBufferSize',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_setSampleRate',
+    channels: ['xleth:audio:setSampleRate'],
+    api: { 'audio.setSampleRate': 'xleth:audio:setSampleRate' },
+    handler: 'Audio_SetSampleRate',
+    returns: 'value',
+    binary: null,
+  },
 
   // ── Effects: chain + parameters + EQ/SmartBalance/Waveshaper (AUDIT.md S1 slice 6) ──
   // From ui/electron-main/effects.js. The 8 chain mutations (add/remove/move/
@@ -1792,6 +1880,19 @@ const METHODS = [
     channels: ['xleth:audio:filterGetResponseCurve'],
     api: { 'audio.filterGetResponseCurve': 'xleth:audio:filterGetResponseCurve' },
     handler: 'Audio_Filter_GetResponseCurve',
+    returns: 'value',
+    binary: null,
+  },
+  // The panel's animation frame: effective (post-modulation) knob positions,
+  // every modulator lane's live source value and the response curve drawn from
+  // those same values, in ONE Float32Array. Polled at frame rate while the
+  // filter panel is open and a modulator is running, which is why it is one
+  // door and not three.
+  {
+    method: 'audio_filterGetLiveState',
+    channels: ['xleth:audio:filterGetLiveState'],
+    api: { 'audio.filterGetLiveState': 'xleth:audio:filterGetLiveState' },
+    handler: 'Audio_Filter_GetLiveState',
     returns: 'value',
     binary: null,
   },
@@ -2316,6 +2417,16 @@ const METHODS = [
     binary: null,
   },
   {
+    // Placements are resolved ENGINE-side (same-lane overlap is rejected, so each
+    // landing tick depends on the ones before it) — see Automation_AddClipsBatch.
+    method: 'automation_addClipsBatch',
+    channels: ['xleth:automation:addClipsBatch'],
+    api: { 'automation.addClipsBatch': 'xleth:automation:addClipsBatch' },
+    handler: 'Automation_AddClipsBatch',
+    returns: 'value',
+    binary: null,
+  },
+  {
     method: 'automation_removeClip',
     channels: ['xleth:automation:removeClip'],
     api: { 'automation.removeClip': 'xleth:automation:removeClip' },
@@ -2465,6 +2576,17 @@ const METHODS = [
     binary: null,
   },
   {
+    // Copies a layer WITH its op-stack and mix params. Undoable
+    // (DuplicateSandboxLayerCommand) unlike open/close, because unlike them it
+    // produces new content rather than just a view onto existing content.
+    method: 'sandbox_duplicateLayer',
+    channels: ['xleth:sandbox:duplicateLayer'],
+    api: { 'sandbox.duplicateLayer': 'xleth:sandbox:duplicateLayer' },
+    handler: 'Sandbox_DuplicateLayer',
+    returns: 'value',
+    binary: null,
+  },
+  {
     method: 'sandbox_close',
     channels: ['xleth:sandbox:close'],
     api: { 'sandbox.close': 'xleth:sandbox:close' },
@@ -2544,6 +2666,18 @@ const METHODS = [
     binary: 'sandboxBuffer',
   },
   {
+    // frames: interleaved (f0Hz, confidence) float32 pairs, one pair per
+    // analysis hop — see Sandbox_GetPitchTrack. Same transport as
+    // sandbox_getRenderedBuffer/sandbox_getSpectrogram: fork uses
+    // serialization:'advanced', Buffer identity survives unconverted.
+    method: 'sandbox_getPitchTrack',
+    channels: ['xleth:sandbox:getPitchTrack'],
+    api: { 'sandbox.getPitchTrack': 'xleth:sandbox:getPitchTrack' },
+    handler: 'Sandbox_GetPitchTrack',
+    returns: 'value',
+    binary: 'sandboxBuffer',
+  },
+  {
     method: 'sandbox_bake',
     channels: ['xleth:sandbox:bake'],
     api: { 'sandbox.bake': 'xleth:sandbox:bake' },
@@ -2610,6 +2744,17 @@ const METHODS = [
     channels: ['xleth:sandbox:bakeComposite'],
     api: { 'sandbox.bakeComposite': 'xleth:sandbox:bakeComposite' },
     handler: 'Sandbox_BakeComposite',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // SPC selection's COPY TO NEW LAYER — see Sandbox_ExtractSelection's own
+    // comment (XlethEngineService.cpp) for why this reuses
+    // BakeSandboxCompositeCommand rather than a new command type.
+    method: 'sandbox_extractSelection',
+    channels: ['xleth:sandbox:extractSelection'],
+    api: { 'sandbox.extractSelection': 'xleth:sandbox:extractSelection' },
+    handler: 'Sandbox_ExtractSelection',
     returns: 'value',
     binary: null,
   },

@@ -216,14 +216,22 @@ export default function SyllableSplitter({
       // then file-based which works for any FFmpeg-decodable format).
       let raw = null
       try {
+        // getRegionPeaks reads the region's MAPPED sample, which is always a
+        // zero-based sub-clip buffer (swapped or not) — never region.startTime.
         if (region?.id != null) {
           raw = await window.xleth?.waveform?.getRegionPeaks?.(
-            region.id, region.startTime, region.endTime, MASTER_COLS, -1)
+            region.id, 0, regionDur, MASTER_COLS, -1)
         }
+        const swapped = !!(region?.hasSwappedAudio && region?.swappedAudioPath)
         const fp = sourceFilePath || region?.audioFilePath
         if ((!raw || !raw.peaks?.length) && fp) {
+          // getFilePeaks reads the file directly: a swap file's own timeline
+          // starts at 0, while the original source file needs the absolute
+          // region offset.
+          const fileStart = swapped ? 0 : (region?.startTime ?? 0)
+          const fileEnd   = swapped ? regionDur : (region?.endTime ?? 0)
           raw = await window.xleth?.waveform?.getFilePeaks?.(
-            fp, region.startTime, region.endTime, MASTER_COLS, -1)
+            fp, fileStart, fileEnd, MASTER_COLS, -1)
         }
       } catch { /* fall back to whatever the parent already provided */ }
 
@@ -648,8 +656,12 @@ export default function SyllableSplitter({
     if (!sec) return
     const dur = Math.max(0, sec.end - sec.start)
     if (dur <= 0.01 || !sourceReady) return
-    // Source startTime (absolute seconds) = region.startTime + syllable-relative start
-    const absStart = (region.startTime ?? 0) + sec.start
+    // Source startTime (absolute seconds into the loaded sourceFilePath) =
+    // region.startTime + syllable-relative start — UNLESS the audio was
+    // swapped, in which case sourceFilePath is the swap file itself, whose
+    // own timeline starts at 0 (see Audio_SwapRegionAudio in the engine).
+    const swapped = !!(region?.hasSwappedAudio && region?.swappedAudioPath)
+    const absStart = (swapped ? 0 : (region.startTime ?? 0)) + sec.start
     const absEnd = absStart + dur
     const token = ++previewTokenRef.current
     if (previewTimerRef.current) {
@@ -682,7 +694,7 @@ export default function SyllableSplitter({
       console.warn('[SyllableSplitter] play preview failed:', e?.message)
       if (previewTokenRef.current === token) setPlayingIdx(null)
     }
-  }, [sections, region.startTime, playingIdx, sourceReady, stopPreview])
+  }, [sections, region.startTime, region?.hasSwappedAudio, region?.swappedAudioPath, playingIdx, sourceReady, stopPreview])
 
   // Stop any preview when component unmounts
   useEffect(() => () => stopPreview(), [stopPreview])

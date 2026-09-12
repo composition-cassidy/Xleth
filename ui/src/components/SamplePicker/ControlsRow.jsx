@@ -26,6 +26,7 @@ function formatTime(s) {
  *   onNameChange     – (name: string) => void
  *   onAddSample      – () => void
  *   onAddCustomLabel – (name: string) => void
+ *   labelPickerSignal – number — bump to pop the label dropdown open
  */
 export default function ControlsRow({
   playing,
@@ -43,6 +44,7 @@ export default function ControlsRow({
   onNameChange,
   onAddSample,
   onAddCustomLabel,
+  labelPickerSignal = 0,
 }) {
   const [addingCustom,    setAddingCustom]    = useState(false)
   const [customLabelDraft, setCustomLabelDraft] = useState('')
@@ -175,6 +177,7 @@ export default function ControlsRow({
               onChange={handleSelectChange}
               ariaLabel="Sample label"
               className="picker-label-select"
+              openSignal={labelPickerSignal}
             />
           </div>
         )}

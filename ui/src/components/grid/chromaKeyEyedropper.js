@@ -9,8 +9,9 @@
 //
 // Why the pixel is read from shared memory and not the canvas: the preview
 // WebGL context is created with preserveDrawingBuffer:false, so readPixels
-// outside the draw call returns garbage. The RGBA shm frame the engine writes
-// is the same data the canvas was drawn from, and it is readable at any time.
+// outside the draw call returns garbage. The BGRA shm frame the engine writes
+// is the same data the canvas was drawn from (VideoPreview's pickPixelRef
+// corrects the channel order), and it is readable at any time.
 
 let state = {
   active:  false,

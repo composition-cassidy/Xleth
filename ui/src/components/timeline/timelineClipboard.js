@@ -213,8 +213,13 @@ export function resolveTimelinePaste({
  *
  * Half-open interval test: an item that merely touches a placement's edge
  * (end === start) does not overlap it. Returns IDs, in the order given.
+ *
+ * `excludeIds` holds the gesture's OWN items (a Set, or null). A move must not
+ * delete the thing it is moving, and it must not delete a sibling that is
+ * vacating its slot in the same rigid translation — both are decided by the
+ * gesture's FINAL state, not the one it started from.
  */
-export function itemsCoveredByPlacements(existing, placements) {
+export function itemsCoveredByPlacements(existing, placements, excludeIds = null) {
   if (!Array.isArray(existing) || existing.length === 0) return []
   if (!Array.isArray(placements) || placements.length === 0) return []
 
@@ -229,6 +234,7 @@ export function itemsCoveredByPlacements(existing, placements) {
 
   const covered = []
   for (const item of existing) {
+    if (excludeIds?.has(item.id)) continue
     const spans = byTrack.get(item.trackId)
     if (!spans) continue
     const start = item.positionTicks
@@ -241,6 +247,39 @@ export function itemsCoveredByPlacements(existing, placements) {
     }
   }
   return covered
+}
+
+/**
+ * resolveOverwritePlan — the ONE overlap policy for track-addressed items.
+ *
+ * Clips and pattern blocks are OVERWRITTEN by whatever lands on them, the way
+ * Ableton / Reaper / FL do it. Every gesture that addresses a track resolves
+ * here — Ctrl+V paste, drag-move, Shift+drag duplicate and Ctrl+D — so the four
+ * can no longer disagree about what happens to occupied space.
+ *
+ * Before this, only paste overwrote. Move, Ctrl+D and Shift+drag STACKED: the
+ * engine validates ids and track type but never occupancy (Timeline::moveClip,
+ * Timeline::addClip), so two clips really did end up on the same ticks of the
+ * same track — which double-triggers the sampler.
+ *
+ * Automation clips are deliberately absent. The engine rejects same-lane
+ * overlap outright, so those callers slide right into a free slot instead
+ * (findFreeAutomationLanePosition); there is nothing to overwrite.
+ *
+ * `movingClipIds` / `movingBlockIds` are the gesture's OWN items — see
+ * itemsCoveredByPlacements.
+ *
+ * @returns {{doomedClipIds: Array, doomedBlockIds: Array}}
+ */
+export function resolveOverwritePlan({
+  existingClips = [], existingBlocks = [],
+  clipPlacements = [], blockPlacements = [],
+  movingClipIds = null, movingBlockIds = null,
+} = {}) {
+  return {
+    doomedClipIds: itemsCoveredByPlacements(existingClips, clipPlacements, movingClipIds),
+    doomedBlockIds: itemsCoveredByPlacements(existingBlocks, blockPlacements, movingBlockIds),
+  }
 }
 
 /**

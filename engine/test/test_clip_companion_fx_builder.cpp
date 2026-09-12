@@ -1,9 +1,8 @@
 // test_clip_companion_fx_builder.cpp — Phase E.3
 //
 // Self-verification for the shared builder that produces the per-frame
-// ClipCompanionFxSnapshot for both the export pipeline (FrameCollector →
-// GridCompositor) and the realtime OpenGL preview path (SyncManager →
-// VideoCompositor).
+// ClipCompanionFxSnapshot consumed by FrameCollector → GridCompositor on both
+// the preview and the export pass.
 //
 // Build: see engine/CMakeLists.txt target "test_clip_companion_fx_builder"
 // Run:   test_clip_companion_fx_builder(.exe)

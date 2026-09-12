@@ -14,6 +14,28 @@
 #include <vector>
 #include <nlohmann/json.hpp>
 
+// std::atomic is neither copyable nor movable, which silently deletes the
+// compiler-generated copy/move constructor and assignment for any class that
+// embeds one directly — Timeline needs those (ProjectManager::loadProject
+// returns one by value inside std::optional<Timeline>, and
+// XlethEngineService.cpp move-assigns a freshly loaded one over *g_timeline).
+// A generation counter has no resource to steal on move and no identity to
+// preserve on copy, so a plain load()+store() is a correct "copy": the
+// counter keeps working as a lock-free, relaxed cross-thread-visible atomic
+// for its normal callers, and additionally becomes copy/move-able for the
+// handful of call sites that replace the whole Timeline at once.
+template <typename T>
+struct CopyableAtomic : std::atomic<T> {
+    CopyableAtomic() noexcept = default;
+    constexpr CopyableAtomic(T value) noexcept : std::atomic<T>(value) {}
+    CopyableAtomic(const CopyableAtomic& other) noexcept
+        : std::atomic<T>(other.load(std::memory_order_relaxed)) {}
+    CopyableAtomic& operator=(const CopyableAtomic& other) noexcept {
+        this->store(other.load(std::memory_order_relaxed), std::memory_order_relaxed);
+        return *this;
+    }
+};
+
 // ─── Timeline ─────────────────────────────────────────────────────────────────
 // Central container for all project data: sources, regions, tracks, and clips.
 // All collections are keyed by auto-incremented integer IDs.
@@ -399,6 +421,10 @@ public:
     bool setTrackZprTracks(int trackId, const ZprTracks& tracks);
     bool setTrackPingPongSettings(int trackId, const PingPongSettings& settings);
     bool setTrackSlideNoteEffectSettings(int trackId, const SlideNoteEffectSettings& settings);
+    // Pattern-track exclusive (see NoteFadeSettings). Writing it on a Clip track
+    // is accepted and persisted but has no visual effect — FrameCollector gates
+    // on the track type, so the type check is not duplicated here.
+    bool setTrackNoteFadeSettings(int trackId, const NoteFadeSettings& settings);
     bool setNoteSlide(int patternId, int noteId, bool isSlide, float curveCx, float curveCy);
 
     // ── Mixer output routing (Prompt 2A) ──────────────────────────────────────
@@ -526,13 +552,13 @@ private:
     std::map<int, SourceMedia>  m_sources;
     std::map<int, SampleRegion> m_regions;
     std::map<int, TrackInfo>    m_tracks;
-    std::atomic<uint64_t>       m_trackTopologyGeneration{0};
+    CopyableAtomic<uint64_t>    m_trackTopologyGeneration{0};
     // Preview-only, not persisted — see setVisualEffectChainPreviewMuted above.
     std::unordered_set<int>     m_previewMutedChainTrackIds;
     std::map<int, TrackFolder>  m_trackFolders;
     std::vector<TrackLayoutItem> m_trackRootOrder;
     std::map<int, Clip>         m_clips;
-    std::atomic<uint64_t>       m_clipTopologyGeneration{0};
+    CopyableAtomic<uint64_t>    m_clipTopologyGeneration{0};
     std::map<int, Pattern>      m_patterns;
     std::map<int, PatternBlock> m_patternBlocks;
 

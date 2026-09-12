@@ -160,6 +160,14 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   const toolRef = useRef(null)
   const isDraggingRef = useRef(false)
   const middleMouseGestureRef = useRef(null)
+  // Container rect, cached for the life of a drag gesture so per-mousemove
+  // coordinate math doesn't force a style+layout flush via
+  // getBoundingClientRect() on every pointer event. Only consulted while
+  // isDraggingRef is true; outside a gesture getLocalXY always reads fresh.
+  // Invalidated (nulled) on scroll/resize so a mid-gesture layout shift is
+  // picked up on the next move instead of reading a stale rect all the way
+  // to mouseup.
+  const gestureRectRef = useRef(null)
   // Mirror of isDraggingRef into React state — drives FX badge layer hide
   // during drag/resize without touching the canvas hot path.
   const [isDraggingState, setIsDraggingState] = useState(false)
@@ -395,8 +403,9 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       const rect = getClipRect(clip, trackIdToIndex, so, ppb, trackLayoutRef.current)
       if (!rect) { el.style.visibility = 'hidden'; continue }
       el.style.visibility = rect.w < 56 ? 'hidden' : ''
-      el.style.left = `${Math.round(rect.x + rect.w - 28)}px`
-      el.style.top = `${Math.round(rect.y + 3)}px`
+      // transform is compositor-only (no layout/paint), unlike left/top —
+      // matters here since this runs on every animator frame during scroll/zoom.
+      el.style.transform = `translate(${Math.round(rect.x + rect.w - 28)}px, ${Math.round(rect.y + 3)}px)`
     }
   }
 
@@ -412,6 +421,7 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     const toolDeps = {
       clipsRef, tracksRef, regionsRef, selectedRef,
       pixelsPerBeatRef, scrollOffsetRef, bpmRef,
+      trackIdToIndexRef,
       activeSampleIdRef, stickyNoteLengthRef, pencilTemplateRef,
       snapGranularityRef, trackLayoutRef,
       onCreateClip, onDeleteClip, onMoveClips, onDuplicateClips, onResizeClip, onResizeClipLeft,
@@ -484,10 +494,27 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     sizeAndDraw(container, 'mount')
     const timerId = setTimeout(() => sizeAndDraw(container, 'deferred-mount'), 50)
 
-    const observer = new ResizeObserver(() => sizeAndDraw(container, 'resize'))
+    const observer = new ResizeObserver(() => {
+      gestureRectRef.current = null
+      sizeAndDraw(container, 'resize')
+    })
     observer.observe(container)
     return () => { clearTimeout(timerId); observer.disconnect() }
   }, [trackCount])
+
+  // Invalidate the gesture-cached container rect on any window resize or
+  // ancestor scroll (capture: true catches a scrollable panel, not just the
+  // window itself) — a mid-drag layout shift must not read a stale rect for
+  // the rest of the gesture.
+  useEffect(() => {
+    const invalidate = () => { gestureRectRef.current = null }
+    window.addEventListener('resize', invalidate)
+    window.addEventListener('scroll', invalidate, true)
+    return () => {
+      window.removeEventListener('resize', invalidate)
+      window.removeEventListener('scroll', invalidate, true)
+    }
+  }, [])
 
   // ── Wheel handler (non-passive) ────────────────────────────────────────────
 
@@ -572,8 +599,12 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
   // ── Event helpers: compute local coordinates ──────────────────────────────
 
   const getLocalXY = useCallback((e) => {
-    const rect = containerRef.current?.getBoundingClientRect()
-    if (!rect) return null
+    let rect = isDraggingRef.current ? gestureRectRef.current : null
+    if (!rect) {
+      rect = containerRef.current?.getBoundingClientRect()
+      if (!rect) return null
+      if (isDraggingRef.current) gestureRectRef.current = rect
+    }
     return { localX: e.clientX - rect.left, localY: e.clientY - rect.top }
   }, [])
 
@@ -887,12 +918,18 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     if (typeof scrollOffset !== 'number' || typeof pixelsPerBeat !== 'number') return []
     const trackIdToIndex = {}
     for (let i = 0; i < tracks.length; i++) trackIdToIndex[tracks[i].id] = i
+    // getClipRect only returns null for an unknown trackId — it never culls
+    // by x, so without this a project with hundreds of modulated clips mounts
+    // one <button> per clip project-wide, most of them off-screen (drawClips
+    // culls the canvas equivalent at its own loop; this mirrors that here).
+    const viewportW = sizeRef.current.w || 0
     const out = []
     for (const clip of clips) {
       if (!clipHasFxIntent(clip)) continue
       const rect = getClipRect(clip, trackIdToIndex, scrollOffset, pixelsPerBeat, trackLayout)
       if (!rect) continue
       if (rect.w < 56) continue
+      if (rect.x + rect.w < 0 || rect.x > viewportW) continue
       out.push({ id: clip.id, rect })
     }
     return out
@@ -980,6 +1017,8 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     const startClientY = startEvent.clientY
     let previewRaf = null
     let pendingPreviewValues = null
+    let pendingTooltip = null
+    let pendingRepaint = false
     let ended = false
 
     // One edit session per clip. They are independent, so a failure on one
@@ -1001,11 +1040,22 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       return { fadeOutPercent: Number(value.toFixed(4)) }
     }
 
+    // One rAF per frame drives BOTH the (expensive) canvas repaint/tooltip and
+    // the IPC preview — coalescing several mousemove events into a single
+    // paint + a single round trip, instead of a redrawContent() and a preview
+    // call on every pointer event.
     const flushPreview = () => {
       previewRaf = null
       const values = pendingPreviewValues
       pendingPreviewValues = null
-      if (!values || ended || !onPreviewClipControlEdit) return
+      const tooltip = pendingTooltip
+      pendingTooltip = null
+      const repaint = pendingRepaint
+      pendingRepaint = false
+      if (ended) return
+      if (tooltip) setClipControlTooltip(tooltip)
+      if (repaint) redrawContent('clip-control-drag')
+      if (!values || !onPreviewClipControlEdit) return
       sessionsPromise.then((sessions) => {
         if (ended) return
         return Promise.all([...values].map(([clipId, value]) => {
@@ -1017,7 +1067,6 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     }
 
     const schedulePreview = (values) => {
-      if (!onPreviewClipControlEdit) return
       pendingPreviewValues = values
       if (previewRaf == null) previewRaf = requestAnimationFrame(flushPreview)
     }
@@ -1038,17 +1087,30 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
         blocked: new Set(blocked),
       }
       const p = getLocalXY(event)
-      if (p) {
-        setClipControlTooltip({
-          x: p.localX,
-          y: p.localY,
-          text: formatClipControlValue(hit.kind, value, spec)
-            + (groupEntries.length > 1 ? ` · ${groupEntries.length} clips` : '')
-            + (blocked.length > 0 ? ' · at limit' : ''),
-        })
+      const tooltip = p ? {
+        x: p.localX,
+        y: p.localY,
+        text: formatClipControlValue(hit.kind, value, spec)
+          + (groupEntries.length > 1 ? ` · ${groupEntries.length} clips` : '')
+          + (blocked.length > 0 ? ' · at limit' : ''),
+      } : null
+
+      if (preview) {
+        // Live drag move: coalesce the tooltip + repaint onto the same rAF
+        // as the IPC preview instead of painting synchronously per event.
+        pendingTooltip = tooltip
+        pendingRepaint = true
+        schedulePreview(values)
+      } else {
+        // Seed (mousedown) / final (mouseup) call — must land immediately,
+        // and supersedes anything already queued for this frame.
+        if (previewRaf != null) { cancelAnimationFrame(previewRaf); previewRaf = null }
+        pendingPreviewValues = null
+        pendingTooltip = null
+        pendingRepaint = false
+        if (tooltip) setClipControlTooltip(tooltip)
+        redrawContent('clip-control-drag')
       }
-      redrawContent('clip-control-drag')
-      if (preview) schedulePreview(values)
       return values
     }
 
@@ -1084,6 +1146,8 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       if (previewRaf != null) cancelAnimationFrame(previewRaf)
       previewRaf = null
       pendingPreviewValues = null
+      pendingTooltip = null
+      pendingRepaint = false
       sessionsPromise.then((sessions) => Promise.all(
         [...sessions.values()]
           .filter(Boolean)
@@ -1100,6 +1164,8 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       if (previewRaf != null) cancelAnimationFrame(previewRaf)
       previewRaf = null
       pendingPreviewValues = null
+      pendingTooltip = null
+      pendingRepaint = false
       const sessions = await sessionsPromise
       // Commit each clip on its own. One clip failing must not abandon the rest,
       // so only the clips that actually threw get rolled back.
@@ -1206,10 +1272,13 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
               className="timeline-fx-badge"
               style={{
                 position: 'absolute',
-                // left/top are re-written per animator frame — see
-                // repositionFxBadges; these are the settled placement.
-                left: Math.round(b.rect.x + b.rect.w - 28),
-                top:  Math.round(b.rect.y + 3),
+                left: 0,
+                top: 0,
+                // transform is re-written per animator frame — see
+                // repositionFxBadges; this is the settled placement. A
+                // compositor-only property (unlike left/top) so per-frame
+                // scroll/zoom updates skip layout+paint.
+                transform: `translate(${Math.round(b.rect.x + b.rect.w - 28)}px, ${Math.round(b.rect.y + 3)}px)`,
                 width: 24,
                 height: 14,
                 padding: '1px 6px',

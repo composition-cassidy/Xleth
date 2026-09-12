@@ -8,11 +8,11 @@ function PreviewPanelBody() {
 
   useOnVisibilityChange((isVisible) => {
     void isVisible;
-    // Phase 6b skeleton; Phase 7 fills in the IPC line.
-    // PHASE 7 SEAM: a single line goes here:
-    //   window.xleth?.preview?.setEnabled?.(isVisible)
-    // Do not split engine-side enable across multiple effects.
-    // VideoPreview internally handles its own rAF suspension.
+    // Phase 7 landed inside VideoPreview.jsx itself: it already calls
+    // usePanelVisibility() for its own rAF suspension, so the
+    // window.xleth.preview.setEnabled(...) call (combined with document
+    // visibility + window focus) lives there as one effect rather than
+    // being split across this callback and VideoPreview's internals.
   });
 
   return <VideoPreview />;

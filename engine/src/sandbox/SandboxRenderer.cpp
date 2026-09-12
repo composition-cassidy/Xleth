@@ -3,6 +3,7 @@
 #include "dsp/AutotuneRender.h"
 #include "dsp/CorrectionCurve.h"
 #include "dsp/RubberBandWrapper.h"
+#include "dsp/VarispeedResample.h"
 
 #include <juce_dsp/juce_dsp.h>
 
@@ -444,12 +445,32 @@ SandboxBuffer applyCrossfade(const SandboxBuffer& in, const CrossfadeParams& p) 
 // XlethResonanceSuppressorEffect's WolaProcessor already uses, so neither op
 // needed a new library.
 
+// Varispeed (tape) PITCH — read the waveform faster/slower, so pitch and length
+// move together. The output length is NOT computed here: it comes from the same
+// SandboxOp::outputLength the UI and the cache already trust, so a predicted
+// length can never disagree with a rendered one (see VarispeedResample.h).
+SandboxBuffer applyPitchResample(const SandboxBuffer& in, const PitchParams& p) {
+    const int64_t inLen = in.getNumSamples();
+    const double  ratio = xleth::dsp::varispeedRatio(p.cents);
+    const int64_t outLen = xleth::dsp::varispeedOutputLength(inLen, p.cents);
+    if (inLen <= 0 || outLen <= 0) return in;
+
+    SandboxBuffer dst(in.getNumChannels(), static_cast<int>(outLen));
+    dst.clear();
+    for (int ch = 0; ch < in.getNumChannels(); ++ch)
+        xleth::dsp::resampleVarispeed(in.getReadPointer(ch), inLen,
+                                      dst.getWritePointer(ch), outLen, ratio);
+    return dst;
+}
+
 SandboxBuffer applyPitch(const SandboxBuffer& in, const PitchParams& p, double sampleRate) {
     if (in.getNumSamples() <= 0) return in;
+    if (p.mode == SandboxPitchMode::Resample) return applyPitchResample(in, p);
+
     dsp::RubberBandParams rp;
     rp.sampleRate          = sampleRate;
     rp.pitchShiftSemitones = p.cents / 100.0;
-    rp.stretchRatio        = 1.0;              // PITCH never changes length
+    rp.stretchRatio        = 1.0;              // Preserve mode never changes length
     rp.formantPreserve     = p.formantPreserve; // the "formant lock" toggle
     return dsp::processRubberBand(in, rp);
 }
@@ -892,9 +913,16 @@ SandboxBuffer applyAutotune(const SandboxBuffer& in,
     // returning the input itself is both free and exactly right.
     if (p.correction.correctionAmount <= 0.0) return in;
 
-    const xleth::dsp::CorrectionCurveResult curve = xleth::dsp::computeCorrectionCurve(
-        track->frames, track->notes, sampleRate,
-        p.scale, p.key, p.allowedNotes, p.correction);
+    // MANUAL and SCALE are two sources of the same CorrectionCurveResult —
+    // renderAutotune below never knows which mode produced the curve it
+    // consumes (see AutotuneMode's comment in SandboxOp.h).
+    const xleth::dsp::CorrectionCurveResult curve =
+        (p.mode == AutotuneMode::Manual)
+            ? xleth::dsp::computeManualCorrectionCurve(
+                  track->frames, sampleRate, p.manualPoints, p.correction)
+            : xleth::dsp::computeCorrectionCurve(
+                  track->frames, track->notes, sampleRate,
+                  p.scale, p.key, p.allowedNotes, p.correction);
 
     xleth::dsp::AutotuneRenderResult rendered =
         xleth::dsp::renderAutotune(in, sampleRate, *track, curve);

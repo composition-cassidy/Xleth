@@ -136,13 +136,14 @@ void AudioGraph::init(double sampleRate, int blockSize)
 
     // Direct input → output (empty graph)
     rebuildAPGConnections();
+    publishRealtimeView();
 }
 
 void AudioGraph::destroy()
 {
     stopTimer();
     pendingRebuild_.store(false);
-    outputLatencySamples_ = 0;
+    outputLatencySamples_.store(0, std::memory_order_release);
     latencyEpoch_.store(0, std::memory_order_release);
     nodes_.clear();
     connections_.clear();
@@ -156,6 +157,11 @@ void AudioGraph::destroy()
     graph_.reset();
     inputNode_  = {};
     outputNode_ = {};
+
+    // Finding 9: republish so no audio-thread reader is left holding a view of
+    // a graph that no longer exists. The strong Node::Ptrs in the OLD view keep
+    // those processors alive until its last holder drops it.
+    publishRealtimeView();
 }
 
 void AudioGraph::reprepare(double sampleRate, int blockSize)
@@ -167,6 +173,7 @@ void AudioGraph::reprepare(double sampleRate, int blockSize)
     graph_->setPlayConfigDetails(2, 2, sampleRate_, blockSize_);
     graph_->prepareToPlay(sampleRate_, blockSize_);
     computePDC();
+    publishRealtimeView();
 }
 
 // ─── Node management ────────────────────────────────────────────────────────
@@ -991,7 +998,7 @@ nlohmann::json AudioGraph::getGraphTopology() const
         io["x"] = 0.0f;
         io["y"] = 0.0f;
         io["level"] = -1;  // will be filled if topo sort ran
-        io["cumulativeLatency"] = outputLatencySamples_;
+        io["cumulativeLatency"] = outputLatencySamples_.load(std::memory_order_acquire);
         io["bypassed"] = false;
         nodesArr.push_back(io);
     }
@@ -1654,6 +1661,114 @@ void AudioGraph::processBlock(juce::AudioBuffer<float>& buffer, int numSamples,
     XlethEffectBase::setCurrentMidiBuffer(nullptr);
 }
 
+// ─── RealtimeView (Finding 9) ───────────────────────────────────────────────
+//
+// Built on the message thread, published atomically, never mutated afterwards.
+// Everything the audio thread needs from the node model lives here so it can
+// stop taking chainsMutex_ entirely. Each entry keeps a strong Node::Ptr: a
+// node the message thread removes right after this publish stays alive until
+// the last holder of this view lets go.
+
+void AudioGraph::publishRealtimeView()
+{
+    auto view = std::make_shared<RealtimeView>();
+    view->initialized = (graph_ != nullptr);
+
+    if (graph_ != nullptr)
+    {
+        view->effects.reserve(nodes_.size());
+        view->byNodeId.reserve(nodes_.size());
+        view->byInstanceId.reserve(nodes_.size());
+
+        for (const auto& [uid, gn] : nodes_)
+        {
+            juce::AudioProcessorGraph::Node::Ptr node = graph_->getNodeForId(gn.apgNodeId);
+            if (node == nullptr) continue;
+
+            RealtimeNode rn;
+            rn.nodeId    = uid;
+            rn.node      = node;
+            rn.processor = node->getProcessor();
+            rn.effect    = dynamic_cast<XlethEffectBase*>(rn.processor);
+
+            view->byNodeId.emplace(uid, view->effects.size());
+            if (!gn.effectInstanceId.empty())
+                view->byInstanceId.emplace(gn.effectInstanceId, uid);
+            view->effects.push_back(std::move(rn));
+        }
+
+        // Helper nodes (per-wire gain, PDC delay) are not part of the chain
+        // model, but resetProcessors() has always reset them too — keep that
+        // behaviour identical on the lock-free path.
+        const auto addHelper = [&](juce::AudioProcessorGraph::NodeID id)
+        {
+            if (id.uid == 0) return;
+            juce::AudioProcessorGraph::Node::Ptr node = graph_->getNodeForId(id);
+            if (node == nullptr) return;
+            RealtimeNode rn;
+            rn.nodeId    = static_cast<int>(id.uid);
+            rn.node      = node;
+            rn.processor = node->getProcessor();
+            view->helpers.push_back(std::move(rn));
+        };
+
+        for (const auto& [wid, conn] : connections_)
+        {
+            juce::ignoreUnused(wid);
+            addHelper(conn.wire.gainNodeId);
+            addHelper(conn.wire.delayNodeId);
+        }
+    }
+
+    auto previous = realtimeView_.exchange(
+        std::shared_ptr<const RealtimeView>(std::move(view)),
+        std::memory_order_acq_rel);
+
+    if (previous)
+        retiredViews_.push_back(std::move(previous));
+
+    retiredViews_.erase(
+        std::remove_if(retiredViews_.begin(), retiredViews_.end(),
+                       [](const std::shared_ptr<const RealtimeView>& v)
+                       { return v.use_count() == 1; }),
+        retiredViews_.end());
+}
+
+void AudioGraph::resetProcessors(const RealtimeView& view) noexcept
+{
+    for (const auto& rn : view.effects)
+        if (rn.processor != nullptr)
+            rn.processor->reset();
+
+    for (const auto& rn : view.helpers)
+        if (rn.processor != nullptr)
+            rn.processor->reset();
+}
+
+void AudioGraph::deliverModulationGate(const RealtimeView& view,
+                                       bool valid,
+                                       std::int64_t gateStartSample,
+                                       std::int64_t gateEndSample) noexcept
+{
+    for (const auto& rn : view.effects)
+        if (rn.effect != nullptr)
+            rn.effect->applyModulationGate(valid, gateStartSample, gateEndSample);
+}
+
+XlethEffectBase* AudioGraph::effectFor(const RealtimeView& view, int nodeId) noexcept
+{
+    const auto* rn = view.find(nodeId);
+    return rn == nullptr ? nullptr : rn->effect;
+}
+
+int AudioGraph::nodeIdForEffectInstance(const RealtimeView& view,
+                                        const std::string& effectInstanceId) noexcept
+{
+    if (effectInstanceId.empty()) return -1;
+    auto it = view.byInstanceId.find(effectInstanceId);
+    return it == view.byInstanceId.end() ? -1 : it->second;
+}
+
 void AudioGraph::resetProcessors()
 {
     if (!graph_) return;
@@ -1877,7 +1992,8 @@ void AudioGraph::computePDC()
     }
 
     auto outIt = cumLatency.find(outUid);
-    outputLatencySamples_ = (outIt != cumLatency.end()) ? outIt->second : 0;
+    outputLatencySamples_.store((outIt != cumLatency.end()) ? outIt->second : 0,
+                                std::memory_order_release);
     latencyEpoch_.fetch_add(1, std::memory_order_acq_rel);
 
     // For each connection, determine if delay compensation is needed
@@ -1955,7 +2071,7 @@ void AudioGraph::refreshOutputLatencyCache()
     auto levels = topologicalSortWithLevels();
     if (levels.empty())
     {
-        outputLatencySamples_ = 0;
+        outputLatencySamples_.store(0, std::memory_order_release);
         return;
     }
 
@@ -2004,7 +2120,8 @@ void AudioGraph::refreshOutputLatencyCache()
     }
 
     auto outIt = cumLatency.find(outUid);
-    outputLatencySamples_ = (outIt != cumLatency.end()) ? outIt->second : 0;
+    outputLatencySamples_.store((outIt != cumLatency.end()) ? outIt->second : 0,
+                                std::memory_order_release);
 }
 
 // ─── APG rebuild ────────────────────────────────────────────────────────────
@@ -2124,6 +2241,10 @@ void AudioGraph::rebuildAPGConnections()
         for (int ch = 0; ch < 2; ++ch)
             graph_->addConnection({{inputNode_, ch}, {outputNode_, ch}});
     }
+
+    // Finding 9: every topology change funnels through here, so this is the
+    // one place the audio-thread view has to be refreshed.
+    publishRealtimeView();
 }
 
 // ─── Sidechain key infrastructure ─────────────────────────────────────────────

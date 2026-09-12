@@ -80,8 +80,9 @@ public:
     // reused (shared counter across all entity types), so the cap erodes over
     // time. Consider switching slots_ to an unordered_map<int,…> once the
     // real-time read path is audited for lock acceptability.
-    static constexpr int kMaxClipId = 65536;
-    static constexpr int kThreads   = 4;
+    static constexpr int kMaxClipId  = 65536;
+    // Upper bound on worker count; actual count is clamp(hardware_concurrency()/2 - 1, 1, kMaxThreads).
+    static constexpr int kMaxThreads = 4;
 
     ClipRenderCache();
     ~ClipRenderCache();

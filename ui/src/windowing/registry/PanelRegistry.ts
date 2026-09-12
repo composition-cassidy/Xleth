@@ -37,8 +37,8 @@ export type DockRegionSizes = Record<DockRegion, number>;
 export const DEFAULT_DOCK_REGION_SIZES: DockRegionSizes = {
   left: 280,
   right: 280,
-  top: 240,
-  bottom: 240,
+  top: 140,
+  bottom: 140,
 };
 
 export const SAMPLE_SELECTOR_DOCK_HANDLE_WIDTH = 32;
@@ -46,8 +46,8 @@ export const SAMPLE_SELECTOR_DOCK_HANDLE_WIDTH = 32;
 export const MIN_DOCK_REGION_SIZES: DockRegionSizes = {
   left: 220,
   right: 220,
-  top: 160,
-  bottom: 200,
+  top: 100,
+  bottom: 100,
 };
 
 export const MIN_DOCKED_PANEL_MAIN_SIZES: Record<PanelId, number> = {
@@ -315,7 +315,6 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
     const sampleSelectorAlreadyDocked = id !== 'sampleSelector'
       || (
         panel.mode === 'docked'
-        && panel.docked.region === 'left'
         && panel.docked.orderInRegion === 0
         && panel.preMaximizeState === null
       );
@@ -327,7 +326,6 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
           draft[id].mode = 'docked';
           draft[id].docked = {
             ...draft[id].docked,
-            region: 'left',
             orderInRegion: 0,
           };
           draft[id].preMaximizeState = null;
@@ -501,7 +499,6 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
     if (open) {
       const alreadyOpen = !panel.hidden
         && panel.mode === 'docked'
-        && panel.docked.region === 'left'
         && panel.docked.orderInRegion === 0
         && panel.preMaximizeState === null;
       if (alreadyOpen) return state;
@@ -511,7 +508,6 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
           draft.sampleSelector.mode = 'docked';
           draft.sampleSelector.docked = {
             ...draft.sampleSelector.docked,
-            region: 'left',
             orderInRegion: 0,
           };
           draft.sampleSelector.preMaximizeState = null;

@@ -465,6 +465,51 @@ public:
 
         writeMeterValue(0, peakL);
         writeMeterValue(1, numCh > 1 ? peakR : peakL);
+
+        // ── Publish the resolved repeat interval for the Visual Echo effect ──
+        //
+        // This is the ONE place the video side is allowed to learn a delay time
+        // from, and it is deliberately POST-resolution: sync mode, beat
+        // division, global BPM, stereo mode and the 80 ms cascaded time
+        // smoother have all already been applied to smoothTimeL_[1]. The render
+        // path therefore does no musical math at all — it converts samples to
+        // output frames and nothing else. See render/VisualEchoTypes.h.
+        //
+        // Cost on the callback path: three relaxed atomic stores, once per
+        // block. No allocation, no lock, no logging, no string hashing —
+        // current() is a plain read through a pre-resolved handle, and the mode
+        // is the raw APVTS pointer this effect already holds.
+        //
+        // L is published rather than R because it is the line the user's single
+        // "time" control drives in both Single and PingPong mode, and in
+        // PingPong it IS the repeat interval (targetTimeR is forced equal to
+        // it). In Dual mode the two lines can differ; the echo follows L, which
+        // is the same line the UI labels as the primary time.
+        pubDelaySamples_.store(smoothTimeL_[1] * 0.001f * sr, std::memory_order_relaxed);
+        pubFeedback01_.store(std::clamp(hFeedback_.current() / 100.0f, 0.0f, 0.95f),
+                             std::memory_order_relaxed);
+        pubPingPong_.store(readStereoMode() == kModePingPong, std::memory_order_relaxed);
+        pubValid_.store(true, std::memory_order_release);
+    }
+
+    // ── Visual Echo binding (render thread reads, audio thread writes) ───────
+    //
+    // Read off the audio thread by MixEngineDelayResolver once per output frame
+    // per echoing cell. Relaxed loads behind one acquire on pubValid_: the four
+    // fields are independent scalars whose exact mutual consistency does not
+    // matter (a frame that mixes a delay time from block N with a feedback from
+    // block N+1 is indistinguishable at 30 fps), but reading them before the
+    // effect has ever processed a block would publish a zero delay time, which
+    // would read as "no echo" rather than "not ready yet".
+    bool getVisualEchoSnapshot(float& outDelaySamples,
+                               float& outFeedback01,
+                               bool&  outPingPong) const noexcept
+    {
+        if (!pubValid_.load(std::memory_order_acquire)) return false;
+        outDelaySamples = pubDelaySamples_.load(std::memory_order_relaxed);
+        outFeedback01   = pubFeedback01_.load(std::memory_order_relaxed);
+        outPingPong     = pubPingPong_.load(std::memory_order_relaxed);
+        return true;
     }
 
 private:
@@ -591,4 +636,13 @@ private:
     // ── Handle-based smoother access (Phase 4 CPU pass) ──────────────────────
     SmoothedHandle hFeedback_, hFilterLo_, hFilterHi_, hModRate_, hModDepth_,
                    hStereoWidth_, hDuckAmount_, hMix_;
+
+    // ── Visual Echo publish slots (audio thread writes, render thread reads) ─
+    // See the store block at the end of processEffect and getVisualEchoSnapshot.
+    // pubValid_ stays false until the first processed block so a cell bound to a
+    // freshly-added Delay renders with no echo rather than with a zero-length one.
+    std::atomic<float> pubDelaySamples_{0.0f};
+    std::atomic<float> pubFeedback01_{0.0f};
+    std::atomic<bool>  pubPingPong_{false};
+    std::atomic<bool>  pubValid_{false};
 };

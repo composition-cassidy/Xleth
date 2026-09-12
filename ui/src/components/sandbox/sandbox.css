@@ -549,8 +549,8 @@
   white-space: nowrap;
 }
 
+.sandbox-layer-card-dup,
 .sandbox-layer-card-close {
-  margin-left: auto;
   flex: 0 0 auto;
   display: flex;
   align-items: center;
@@ -559,6 +559,18 @@
   color: var(--theme-text-placeholder);
   cursor: pointer;
   padding: 2px;
+}
+
+/* The auto margin lives on the FIRST of the two icon buttons, so the pair
+   travels to the right edge together. */
+.sandbox-layer-card-dup {
+  margin-left: auto;
+}
+
+/* Plain text, not the accent: this file reserves --theme-accent for
+   active/selected state (see the header), and Duplicate is neither. */
+.sandbox-layer-card-dup:hover {
+  color: var(--theme-text);
 }
 
 .sandbox-layer-card-close:hover {
@@ -595,6 +607,14 @@
   min-height: 96px;
   background: var(--theme-bg-primary);
   display: flex;
+}
+
+/* The active card is the only one hosting the real interactive canvas
+   (SandboxWaveformCanvas — see SandboxLayerWorkspace.jsx); give it real
+   headroom so the spectrogram's log-frequency detail is actually legible
+   instead of being squashed into the same ~96px an inactive thumbnail gets. */
+.sandbox-layer-card.active .sandbox-layer-card-wave {
+  min-height: 340px;
 }
 
 /* The inactive-card thumbnail is a fixed-size canvas (SandboxLayerWaveform) —
@@ -660,7 +680,8 @@
 .sandbox-waveform-overlay,
 .sandbox-waveform-env,
 .sandbox-waveform-paint,
-.sandbox-waveform-spcselect {
+.sandbox-waveform-spcselect,
+.sandbox-waveform-pitch {
   position: absolute;
   top: 0;
   left: 0;
@@ -703,6 +724,19 @@
 }
 
 .sandbox-waveform-spcselect.editing {
+  pointer-events: auto;
+  cursor: crosshair;
+}
+
+/* AUTOTUNE pitch curve overlay (P5-4/P5-5) — inert in Scale mode (a picture
+   of what the six controls are doing), pointer-active in Manual mode (the
+   graph IS the target-pitch editor there). Topmost layer so the curves stay
+   visible over whatever else the stack is doing underneath. */
+.sandbox-waveform-pitch {
+  pointer-events: none;
+}
+
+.sandbox-waveform-pitch.editing {
   pointer-events: auto;
   cursor: crosshair;
 }
@@ -830,6 +864,14 @@
   cursor: pointer;
 }
 
+/* A control the current MODE has taken out of play — PITCH's formant lock in
+   varispeed, today. Dimmed rather than removed so the setting still visibly
+   exists (it is retained across a mode flip), with the reason on the title. */
+.sandbox-op-checkbox.disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 /* AUTOTUNE's editor (P5-3) carries eight controls rather than the one or two
    every other op needs, so its row wraps into a grid instead of one long
    flex line that would push the module rail wide. */
@@ -860,6 +902,116 @@
 .sandbox-op-slider-unit {
   font-size: 9px;
   color: var(--theme-text-placeholder);
+}
+
+.sandbox-op-jumpiness-ms {
+  grid-column: 1 / -1;
+}
+
+/* AUTOTUNE refusal (P5-4) — the row-level badge (always visible, collapsed
+   or not) and the expanded editor's full-text banner. Danger token only,
+   no fill, same restraint loopLab's own error states use (.ll-rate-error). */
+.sandbox-op-refusal-badge {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  color: var(--theme-danger);
+}
+
+.sandbox-op-refusal-banner {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 6px;
+  border: 1px solid var(--theme-danger);
+  color: var(--theme-danger);
+  font-size: 9px;
+}
+
+.sandbox-op-refusal-banner svg {
+  flex: 0 0 auto;
+}
+
+/* AUTOTUNE keyboard note picker (P5-4) — one octave, white keys in pitch
+   order with black keys positioned at the boundary they sit above. Flat,
+   zero border-radius per the design system; the root note carries a small
+   accent bar rather than a dot (no rounded shapes). */
+.sandbox-autotune-keyboard-row {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-top: 2px;
+}
+
+.sandbox-autotune-keyboard {
+  position: relative;
+  width: 154px;
+  height: 42px;
+  flex: 0 0 auto;
+}
+
+.sandbox-autotune-keyboard-whites {
+  display: flex;
+  gap: 1px;
+  width: 100%;
+  height: 100%;
+}
+
+.sandbox-autotune-key {
+  padding: 0;
+  border-radius: 0;
+  cursor: pointer;
+}
+
+.sandbox-autotune-key.white {
+  position: relative;
+  flex: 1 1 0;
+  height: 100%;
+  border: 1px solid var(--theme-border-subtle);
+  background: var(--theme-bg-surface);
+}
+
+.sandbox-autotune-key.white.on {
+  background: var(--theme-accent-bg-subtle);
+  border-color: var(--theme-accent);
+}
+
+.sandbox-autotune-keyboard-blacks {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 26px;
+  pointer-events: none;
+}
+
+.sandbox-autotune-key.black {
+  position: absolute;
+  top: 0;
+  width: 13px;
+  height: 100%;
+  transform: translateX(-50%);
+  border: 1px solid var(--theme-border-strong);
+  background: var(--theme-bg-primary);
+  pointer-events: auto;
+  z-index: 1;
+}
+
+.sandbox-autotune-key.black.on {
+  background: var(--theme-accent-bg-subtle);
+  border-color: var(--theme-accent);
+}
+
+.sandbox-autotune-key.root::after {
+  content: '';
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  bottom: 2px;
+  height: 2px;
+  background: var(--theme-accent);
 }
 
 .sandbox-op-grip {

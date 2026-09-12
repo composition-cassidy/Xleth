@@ -52,6 +52,12 @@ export const FADE_SHAPE = {
   linear: 0, equalPower: 1, exponential: 2, logarithmic: 3, sCurve: 4, hann: 5,
 }
 
+// Mirrors xleth::sandbox::SandboxPitchMode. `resample` is the varispeed / tape
+// move — the ONE op mode in the sandbox that changes a buffer's LENGTH as a
+// side effect of a pitch parameter, which is why the stack row spells the new
+// duration out rather than leaving the user to notice it on the waveform.
+export const PITCH_MODE = { preserve: 0, resample: 1 }
+
 // ─── Gain envelope (Audio Dynamics Editor, Mode 1) ──────────────────────────
 // Mirrors xleth::sandbox::GainEnvelopeParams and its evaluator in SandboxOp.cpp.
 // The engine owns the audio; this mirror exists so the canvas can DRAW the same
@@ -371,6 +377,13 @@ function makeLayer({ layerId, name, sourceBufferId, bufferSampleRate, region }) 
     // fetch resolves.
     spectrogramState: 'idle', // 'idle' | 'loading' | 'ready' | 'error'
     spectrogram: null, // { numFrames, numBins, hopSize, sampleRate, minDb, maxDb, tokens: Uint8Array }
+    // AUTOTUNE pitch curve (P5-1 detection + P5-4 display). Unlike the
+    // spectrogram, this reads the layer's raw SOURCE buffer (sourceBufferId),
+    // not renderedBuffer — it works before any render and never goes stale
+    // across one, so it is fetched at most ONCE per layer and never reset;
+    // see ensurePitchTrack.
+    pitchTrackState: 'idle', // 'idle' | 'loading' | 'ready' | 'error'
+    pitchTrack: null, // { frames, notes, hopSamples, sampleRate, numFrames, monophonic, reason }
     bakeState: 'idle', // 'idle' | 'baking' | 'baked' | 'error'
     swapInState: 'idle', // 'idle' | 'swapping' | 'swapped' | 'error'
     swapInError: null,
@@ -469,6 +482,13 @@ const useSandboxStore = create((set, get) => ({
   // active layer; selection/zoom/scroll stay driven by the same `selection`
   // and canvas sizing either mode already shares.
   viewMode: 'wav', // 'wav' | 'spc'
+
+  // The op-stack row currently expanded (SandboxStackPanel) — lifted out of
+  // that panel's own local state (P5-4) so the waveform canvas can tell
+  // whether an AUTOTUNE op is the one selected and, if so, draw its pitch
+  // curve overlay. Session state, never persisted, same reasoning as
+  // envelopeEditMode: it is a UI focus, not part of any op's data.
+  selectedOpId: null,
 
   // ── Composite (SB-5) — mix of every layer's own render by its mix params ──
   composite: {
@@ -597,6 +617,77 @@ const useSandboxStore = create((set, get) => ({
     return get().addSourceFromRegion({
       audioFilePath: filePath, name, startTime: 0, endTime: duration,
     })
+  },
+
+  // Duplicate a layer WITH everything that makes it that layer — its whole
+  // op-stack, its mix params, its source binding and its swap target. One
+  // undoable engine step (sandbox_duplicateLayer); no audio is re-loaded and
+  // no op is re-applied, because the engine's render cache is keyed on
+  // (source, stack hash, rate) rather than on a layer id.
+  //
+  // Mirrors that on this side: the copy inherits the original's ALREADY
+  // RENDERED buffer when there is one, so the new card draws its waveform
+  // immediately instead of flashing empty for a render round-trip that is
+  // guaranteed to produce the identical samples. renderLayer still runs — the
+  // engine has to publish a buffer under the NEW layer id before the copy can
+  // take part in a composite mix (see SandboxPanelContent's reload comment for
+  // what an unpublished layer costs) — it just has nothing new to compute.
+  async duplicateLayer(layerId) {
+    const src = get().layers.find((l) => l.id === layerId)
+    if (!src) return null
+    try {
+      const res = await window.xleth?.sandbox?.duplicateLayer(layerId)
+      if (!res?.success) throw new Error(res?.reason || 'duplicateLayer rejected')
+
+      const ready = src.renderState === 'ready' && !!src.renderedBuffer
+      const copy = {
+        ...makeLayer({
+          layerId: res.layerId,
+          name: res.name,
+          sourceBufferId: res.sourceBufferId,
+          bufferSampleRate: res.bufferSampleRate,
+          region: null,
+        }),
+        // Carried by hand rather than through makeLayer's `region` argument:
+        // these come back from the ENGINE's copy of the durable source
+        // reference, which is authoritative, while sourceRegionId/swapTargetName
+        // are renderer-only fields the engine never saw.
+        sourceFilePath: res.sourceFilePath || src.sourceFilePath,
+        sourceStartTime: res.sourceStartTime ?? src.sourceStartTime,
+        sourceEndTime: res.sourceEndTime ?? src.sourceEndTime,
+        sourceRegionId: src.sourceRegionId,
+        swapTargetName: src.swapTargetName,
+        ops: src.ops.map((o) => ({ ...o })),
+        gainDb: src.gainDb,
+        pan: src.pan,
+        offsetSamples: src.offsetSamples,
+        muted: src.muted,
+        // Solo is NOT copied. It is a monitoring state over the whole
+        // workspace, not a property of the layer's content — duplicating a
+        // soloed layer must not silently change what the other layers do.
+        soloed: false,
+        renderState: ready ? 'ready' : 'idle',
+        renderedBuffer: ready ? src.renderedBuffer : null,
+        refusedOps: ready ? src.refusedOps : 0,
+        refusalReason: ready ? src.refusalReason : null,
+      }
+
+      set((state) => {
+        const layers = state.layers.slice()
+        const at = layers.findIndex((l) => l.id === layerId)
+        layers.splice(at < 0 ? layers.length : at + 1, 0, copy)
+        return { layers, activeLayerId: copy.id, selection: null }
+      })
+      // No explicit composite schedule here: renderLayer already kicks one
+      // once the copy's own render lands, and the composite cannot include a
+      // layer the engine has not published yet anyway.
+      get().renderLayer(copy.id, 'duplicate')
+      get().refreshHistory()
+      return copy
+    } catch (e) {
+      console.warn('[SampleSandbox] duplicateLayer failed:', e?.message || e)
+      return null
+    }
   },
 
   async closeLayer(layerId) {
@@ -1150,6 +1241,21 @@ const useSandboxStore = create((set, get) => ({
     if (mode === 'spc' && get().activeLayerId != null) get().ensureSpectrogram(get().activeLayerId)
   },
 
+  // Sets (or clears, with null) the expanded op row. The toggle-on-reclick
+  // gesture lives in SandboxStackPanel's own click handler, same as its old
+  // local useState did — this is just where the value now lives. Also kicks
+  // a pitch-track fetch immediately when the newly-selected op is AUTOTUNE,
+  // the same "arm and fetch in one step" contract setViewMode('spc') follows
+  // above, so the curve overlay does not sit on nothing until some unrelated
+  // store update happens to re-run the waveform canvas's own effect.
+  setSelectedOpId(opId) {
+    set({ selectedOpId: opId })
+    if (opId == null) return
+    const layer = get().layers.find((l) => l.id === get().activeLayerId)
+    const op = layer?.ops.find((o) => o.id === opId)
+    if (op?.type === 'autotune') get().ensurePitchTrack(layer.id)
+  },
+
   // Fetches the STFT analysis of `layerId`'s CURRENT renderedBuffer, unless
   // one is already in flight or already sitting in spectrogramState==='ready'
   // (fresh, because a new render clears it — see _pollRenderedBuffer). The
@@ -1187,6 +1293,47 @@ const useSandboxStore = create((set, get) => ({
     } catch (e) {
       get().patchLayer(layerId, { spectrogramState: 'error' })
       console.warn('[SampleSandbox] ensureSpectrogram failed:', e?.message || e)
+    }
+  },
+
+  // Fetches `layerId`'s dense f0 track + note segments (P5-1) for the
+  // AUTOTUNE curve overlay — see SandboxWaveformCanvas.jsx's pitch-curve
+  // draw. Keyed by sourceBufferId (never reassigned after a layer is
+  // created — Swap In replaces the TIMELINE's sample, not this layer's own
+  // source), so unlike ensureSpectrogram this fetches at most once per layer
+  // and is never invalidated by a re-render.
+  async ensurePitchTrack(layerId) {
+    const layer = get().layers.find((l) => l.id === layerId)
+    if (!layer || layer.pitchTrackState === 'loading' || layer.pitchTrackState === 'ready') return
+    get().patchLayer(layerId, { pitchTrackState: 'loading' })
+    try {
+      const res = await window.xleth?.sandbox?.getPitchTrack(layerId)
+      if (!res?.ready) throw new Error(res?.reason || 'pitch track not ready')
+      // `frames` arrives as a Node Buffer over IPC, interleaved (f0Hz,
+      // confidence) float32 pairs — same transport as getSpectrogram's
+      // `tokens`/getRenderedBuffer's `data`.
+      const packed = new Float32Array(
+        res.frames.buffer, res.frames.byteOffset, res.frames.byteLength / 4,
+      )
+      const frames = new Array(res.numFrames)
+      for (let i = 0; i < res.numFrames; i++) {
+        frames[i] = { posSample: i * res.hopSamples, f0Hz: packed[2 * i], confidence: packed[2 * i + 1] }
+      }
+      get().patchLayer(layerId, {
+        pitchTrackState: 'ready',
+        pitchTrack: {
+          frames,
+          notes: res.notes || [],
+          hopSamples: res.hopSamples,
+          sampleRate: res.sampleRate,
+          numFrames: res.numFrames,
+          monophonic: res.monophonic,
+          reason: res.reason || '',
+        },
+      })
+    } catch (e) {
+      get().patchLayer(layerId, { pitchTrackState: 'error' })
+      console.warn('[SampleSandbox] ensurePitchTrack failed:', e?.message || e)
     }
   },
 
@@ -1353,9 +1500,15 @@ const useSandboxStore = create((set, get) => ({
   // every other op type — only ADDING one more never collapses into an
   // update.
 
-  // PITCH — cents (fractional semitones × 100) and the formant-lock toggle.
-  async addPitchShift(layerId, cents = 0, formantPreserve = false) {
-    await get().addOp(layerId, { type: 'pitch', params: { cents, formantPreserve } })
+  // PITCH — cents (fractional semitones × 100), the formant-lock toggle, and
+  // the mode that decides HOW the shift is realised (PITCH_MODE):
+  //   preserve — RubberBand, length held (the default, and what this op did
+  //              before the mode existed)
+  //   resample — varispeed / tape, where pitch and length move together
+  // formantPreserve is a preserve-mode control only — a varispeed move drags
+  // the formants along by definition. See PitchParams in SandboxOp.h.
+  async addPitchShift(layerId, cents = 0, formantPreserve = false, mode = PITCH_MODE.preserve) {
+    await get().addOp(layerId, { type: 'pitch', params: { cents, formantPreserve, mode } })
   },
 
   // FORMANT SHIFT — moves the spectral envelope by `cents`, independent of
@@ -1419,6 +1572,7 @@ const useSandboxStore = create((set, get) => ({
     await get().addOp(layerId, {
       type: 'autotune',
       params: {
+        mode: 0, // AutotuneMode::Scale (SandboxOp.h) — 0 Scale / 1 Manual
         scale: AUTOTUNE_SCALE.PHRYGIAN,
         key: AUTOTUNE_DEFAULT_KEY,
         allowedNotes: [],
@@ -1427,8 +1581,45 @@ const useSandboxStore = create((set, get) => ({
         smoothnessMs: 20,
         jumpiness: 0,
         preserveVibrato: 100,
+        manualPoints: [],
       },
     })
+  },
+
+  // ── Autotune Manual mode (P5-5) ──────────────────────────────────────────
+  //
+  // Called ONCE per stroke, on mouseup — the pitch canvas previews the drag
+  // locally in a ref (pitchDragRef, SandboxWaveformCanvas.jsx), never
+  // touching this store mid-drag, and hands the finished stroke here. Same
+  // "preview locally, commit once" contract setGainEnvelope/
+  // commitSpectralPaintDabs both follow, so a whole stroke is one undo step.
+  //
+  // Unlike spectral paint's dabs (which accumulate additively — order
+  // doesn't matter, combination is commutative), a pitch curve is a function
+  // of time: redrawing over an existing stretch means REPLACE it, not blend
+  // it in. Any existing breakpoint whose time falls inside the new stroke's
+  // own [start, end] span is dropped before the stroke's points are spliced
+  // in — strokePoints is already `{t, hz, tension}`, the exact wire shape
+  // AutotuneParams.manualPoints round-trips (see SandboxOp.cpp's
+  // ToJsonVisitor/FromJsonVisitor), so no translation is needed here.
+  async commitAutotuneManualStroke(layerId, strokePoints) {
+    if (!strokePoints || strokePoints.length < 2) return
+    const layer = get().layers.find((l) => l.id === layerId)
+    const existing = layer?.ops.find((o) => o.type === 'autotune')
+    if (!existing) return
+    // Scanned rather than taken from the first/last element — a stroke that
+    // reverses direction mid-drag (right-to-left, or a back-and-forth wiggle)
+    // does not append in monotonic time order, so only a full scan is a
+    // reliable bound for "what the stroke actually covers".
+    let lo = Infinity
+    let hi = -Infinity
+    for (const pt of strokePoints) {
+      if (pt.t < lo) lo = pt.t
+      if (pt.t > hi) hi = pt.t
+    }
+    const kept = (existing.params?.manualPoints || []).filter((pt) => pt.t < lo || pt.t > hi)
+    const merged = [...kept, ...strokePoints].sort((a, b) => a.t - b.t)
+    await get().setOpParams(layerId, existing.id, { ...existing.params, manualPoints: merged })
   },
 
   // ── Spectral paint (P3-2) ────────────────────────────────────────────────

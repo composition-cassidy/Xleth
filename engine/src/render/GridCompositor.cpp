@@ -1,4 +1,5 @@
 #include "GridCompositor.h"
+#include "render/VisualEchoTypes.h"
 #include "XlethDebug.h"
 
 #include <algorithm>
@@ -168,6 +169,12 @@ void GridCompositor::shutdown()
 {
     effectShaders_.shutdown();
     rtPool_.clear();
+    // Echo rings hold the largest single block of GPU memory this class owns —
+    // dropped here explicitly rather than left to the map's own lifetime, so a
+    // device reset frees them at the same moment as every other resource.
+    echoRings_.clear();
+    echoStats_ = {};
+    additiveBlendState_.Reset();
 
     renderTarget_.Reset();
     renderTargetRTV_.Reset();
@@ -476,6 +483,19 @@ bool GridCompositor::createPipelineState()
     if (!makeShadowBlend(D3D11_BLEND_ONE, D3D11_BLEND_ONE, D3D11_BLEND_OP_REV_SUBTRACT,
                          "shadow linear burn", shadowLinearBurnBlendState_)) return false;
 
+    // Additive blend for the Visual Echo trail: SRC_ALPHA / ONE.
+    //
+    // Reuses makeShadowBlend only for the boilerplate — this is not a shadow
+    // mode and needs no baked arithmetic in a shader, because "add the tap in,
+    // scaled by its opacity" is expressible as a fixed-function blend outright.
+    //
+    // The alpha channel accumulates the same way it does for the darkening
+    // modes (ONE / INV_SRC_ALPHA), so an additive trail still builds coverage
+    // over a transparent backdrop instead of staying invisible until something
+    // opaque is drawn underneath it.
+    if (!makeShadowBlend(D3D11_BLEND_SRC_ALPHA, D3D11_BLEND_ONE, D3D11_BLEND_OP_ADD,
+                         "echo additive", additiveBlendState_)) return false;
+
     // Linear sampler with clamp
     D3D11_SAMPLER_DESC samplerDesc = {};
     samplerDesc.Filter         = D3D11_FILTER_MIN_MAG_MIP_LINEAR;
@@ -572,6 +592,17 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
     // the one call common to every preview and export frame, so no caller
     // needs to remember to invoke it. Cheap when nothing is idle.
     rtPool_.pruneIdle();
+
+    // Echo rings are swept on the same tick and for the same reason, but on a
+    // much shorter fuse: one ring can be tens of megabytes, against a few
+    // hundred kilobytes for an RT pair, so a cell that stops echoing must give
+    // its memory back in seconds rather than in tens of seconds.
+    pruneIdleEchoRings();
+
+    const auto echoClockStart = std::chrono::high_resolution_clock::now();
+    echoStats_.lastTapDraws = 0;
+    echoStats_.lastPushes   = 0;
+    double echoAccumMs      = 0.0;
 
     // [Safety audit: Default-path regression] nullptr selects the same member
     // render target used before custom whole-frame targets were supported.
@@ -933,6 +964,27 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
             }
         }
 
+        // ── Visual Echo: record this cell's finished pixels ─────────────────
+        //
+        // Positioned here on purpose: after the chain / ZPR / ping-pong /
+        // companion FX (so the trail carries what the effects did) and before
+        // the two terminal expansion stages (so a stroke or a shadow decorates
+        // only the LIVE cell and is not baked into every tap).
+        //
+        // Follows effectsBypass_ like the decorative stages do. Fast preview is
+        // a speed knob, and an echo is the single most expensive thing this
+        // compositor can be asked to draw.
+        if (req.echo.active && !effectsBypass_) {
+            const auto echoStart = std::chrono::high_resolution_clock::now();
+
+            const int echoW = std::max(1, static_cast<int>(rw * width_));
+            const int echoH = std::max(1, static_cast<int>(rh * height_));
+            pushEchoFrame(req, cellSRV, echoW, echoH, time, activeRTV);
+
+            echoAccumMs += std::chrono::duration<double, std::milli>(
+                std::chrono::high_resolution_clock::now() - echoStart).count();
+        }
+
         // ── Terminal expansion stage 1: Outline ─────────────────────────────
         // Layer styles, not pixel filters — see the block comment above
         // applyOutlineStage. The stroke lives outside the cell's own bounds, so
@@ -982,6 +1034,23 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
         rw *= canvasFitW_;
         rh *= canvasFitH_;
 
+        // ── Visual Echo: draw the trail ─────────────────────────────────────
+        //
+        // After the canvas-fit mapping (taps are placed in OUTPUT-UV, like the
+        // drop shadow) and before it, so the shadow is cast by the live cell
+        // over its own trail rather than the trail being cast over the shadow.
+        //
+        // Note this uses `rx,ry,rw,rh` — the rect the LIVE cell will occupy,
+        // outline pad included. Taps therefore start from exactly the cell's own
+        // footprint and move from there, instead of from an un-padded rect that
+        // would leave the first tap visibly offset whenever an Outline is on.
+        if (req.echo.active && !effectsBypass_) {
+            const auto echoStart = std::chrono::high_resolution_clock::now();
+            drawEchoTaps(req, rx, ry, rw, rh, cellCornerRad, activeRTV);
+            echoAccumMs += std::chrono::duration<double, std::milli>(
+                std::chrono::high_resolution_clock::now() - echoStart).count();
+        }
+
         // ── Terminal expansion stage 2: Drop Shadow ─────────────────────────
         // Drawn here, immediately before the cell, so it lands on top of every
         // lower-z request already composited and underneath this cell — which is
@@ -1000,8 +1069,26 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
     ID3D11RenderTargetView* nullRTV = nullptr;
     deviceCtx_->OMSetRenderTargets(1, &nullRTV, nullptr);
 
+    echoStats_.lastFrameMs = echoAccumMs;
+    echoStats_.activeRings = static_cast<int>(echoRings_.size());
+    echoStats_.ringBytes   = 0;
+    for (const auto& kv : echoRings_) echoStats_.ringBytes += kv.second.bytes();
+    (void)echoClockStart;
+
     auto frameEnd = std::chrono::high_resolution_clock::now();
     double ms = std::chrono::duration<double, std::milli>(frameEnd - frameStart).count();
+    if (echoStats_.lastTapDraws > 0 || echoStats_.lastPushes > 0) {
+        // Printed unconditionally alongside the existing per-frame composite
+        // line, not behind XLETH_RENDER_LOG, because the echo's cost against the
+        // Phase 0 0.25 ms GPU composite floor is the number this feature has to
+        // keep answering for. It is one extra line only on frames that actually
+        // echoed.
+        std::fprintf(stderr,
+            "[Echo] %.3fms  taps=%d pushes=%d rings=%d ringMB=%.1f\n",
+            echoStats_.lastFrameMs, echoStats_.lastTapDraws, echoStats_.lastPushes,
+            echoStats_.activeRings,
+            static_cast<double>(echoStats_.ringBytes) / (1024.0 * 1024.0));
+    }
     std::fprintf(stderr, "[Compositor] Frame composited in %.2fms\n", ms);
 }
 
@@ -1616,6 +1703,344 @@ RTPool::RTPair& RTPool::acquire(ID3D11Device* device, int width, int height, int
     return pairs[key];
 }
 
+// ===========================================================================
+// Visual Echo — per-cell frame history
+// ===========================================================================
+
+ID3D11ShaderResourceView* EchoRing::at(int ago) const
+{
+    if (ago < 0 || ago >= count || capacity <= 0) return nullptr;
+    // writeIdx is where the NEXT push lands, so writeIdx-1 is the most recent.
+    int idx = writeIdx - 1 - ago;
+    idx %= capacity;
+    if (idx < 0) idx += capacity;
+    return srv[static_cast<size_t>(idx)].Get();
+}
+
+void EchoRing::reset()
+{
+    writeIdx       = 0;
+    count          = 0;
+    lastPushedTime = -1.0;
+}
+
+bool EchoRing::ensure(ID3D11Device* device, int w, int h, int frames)
+{
+    if (!device || w <= 0 || h <= 0 || frames <= 0) return false;
+    if (width == w && height == h && capacity >= frames) {
+        // Already big enough. Deliberately do NOT shrink on a shorter delay:
+        // a user sweeping the delay time would otherwise reallocate the whole
+        // ring every frame, and the extra slots cost nothing but memory that is
+        // about to be reclaimed by pruneIdleEchoRings anyway if the cell stops.
+        return true;
+    }
+
+    // Any geometry change invalidates the history — see the doc comment.
+    tex.clear(); rtv.clear(); srv.clear();
+    reset();
+
+    D3D11_TEXTURE2D_DESC desc = {};
+    desc.Width            = static_cast<UINT>(w);
+    desc.Height           = static_cast<UINT>(h);
+    desc.MipLevels        = 1;
+    desc.ArraySize        = 1;
+    desc.Format           = DXGI_FORMAT_R8G8B8A8_UNORM;
+    desc.SampleDesc.Count = 1;
+    desc.Usage            = D3D11_USAGE_DEFAULT;
+    desc.BindFlags        = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_RENDER_TARGET;
+
+    tex.resize(static_cast<size_t>(frames));
+    rtv.resize(static_cast<size_t>(frames));
+    srv.resize(static_cast<size_t>(frames));
+
+    for (int i = 0; i < frames; ++i) {
+        const size_t si = static_cast<size_t>(i);
+        if (FAILED(device->CreateTexture2D(&desc, nullptr, &tex[si]))
+            || FAILED(device->CreateRenderTargetView(tex[si].Get(), nullptr, &rtv[si]))
+            || FAILED(device->CreateShaderResourceView(tex[si].Get(), nullptr, &srv[si]))) {
+            std::fprintf(stderr,
+                "[Echo] Failed to allocate ring slot %d (%dx%d) — echo disabled for this cell\n",
+                i, w, h);
+            tex.clear(); rtv.clear(); srv.clear();
+            width = height = capacity = 0;
+            return false;
+        }
+    }
+
+    width    = w;
+    height   = h;
+    capacity = frames;
+    XLETH_RENDER_LOG(std::fprintf(stderr,
+        "[Echo] Allocated ring %dx%d x%d frames (%.1f MB)\n",
+        w, h, frames,
+        static_cast<double>(w) * h * 4.0 * frames / (1024.0 * 1024.0)));
+    return true;
+}
+
+void GridCompositor::flushEchoRings()
+{
+    for (auto& kv : echoRings_) kv.second.reset();
+    XLETH_RENDER_LOG(std::fprintf(stderr, "[Echo] Flushed %d ring(s) on seek\n",
+                                  static_cast<int>(echoRings_.size())));
+}
+
+void GridCompositor::pruneIdleEchoRings(double idleSeconds)
+{
+    if (echoRings_.empty()) return;
+    const auto now       = std::chrono::steady_clock::now();
+    const auto threshold = std::chrono::duration<double>(idleSeconds);
+    for (auto it = echoRings_.begin(); it != echoRings_.end(); ) {
+        if (now - it->second.lastTouched >= threshold) it = echoRings_.erase(it);
+        else                                           ++it;
+    }
+}
+
+// ---------------------------------------------------------------------------
+// pushEchoFrame — copy the cell's finished pixels into its ring.
+//
+// Runs AFTER the visual chain / standalone ZPR / ping-pong crossfade /
+// companion FX, and BEFORE the two terminal expansion stages. That position is
+// the contract: the echo trails what the effects made of the cell, but a stroke
+// or a drop shadow is a decoration of the LIVE cell and must not be baked into
+// the history and then re-stroked on every tap.
+//
+// The copy is a quad blit, not CopyResource, because cellSRV can be either an
+// RTPool target sized to this cell OR the raw decoded source texture, which is
+// whatever resolution the file happens to be. The blit normalises that to the
+// ring's fixed geometry in one draw. Orientation is deliberately NOT applied
+// here — it is applied per tap at composite time, so a tap can carry its own
+// flip without the history having been pre-flipped.
+// ---------------------------------------------------------------------------
+void GridCompositor::pushEchoFrame(const CellFrameRequest& req,
+                                   ID3D11ShaderResourceView* cellSRV,
+                                   int cellPixelW, int cellPixelH,
+                                   float time,
+                                   ID3D11RenderTargetView* activeRTV)
+{
+    if (!cellSRV || !device_ || !deviceCtx_) return;
+
+    EchoRing& ring = echoRings_[req.echo.ringKey];
+    ring.lastTouched = std::chrono::steady_clock::now();
+
+    // Frame count the trail wants, then the count the cell's size can afford.
+    // The second clamp is the one that matters for a FULLSCREEN echo, where a
+    // frame is twenty times the size of a grid cell's — see kMaxRingBytes.
+    const int wantFrames = req.echo.requiredRingFrames();
+    const int frames = xleth::echo::ringFramesWithinBudget(cellPixelW, cellPixelH,
+                                                           wantFrames);
+    if (frames < wantFrames && ring.capacity == 0) {
+        // Logged once per ring allocation, not per frame: this is the one
+        // condition under which the trail is quietly shorter than the user
+        // asked for, so it should be findable without a debugger.
+        std::fprintf(stderr,
+            "[Echo] Ring budget: %dx%d cell affords %d of %d frames "
+            "(%.0f MB cap) — the oldest taps will not draw\n",
+            cellPixelW, cellPixelH, frames, wantFrames,
+            static_cast<double>(xleth::echo::kMaxRingBytes) / (1024.0 * 1024.0));
+    }
+    if (!ring.ensure(device_, cellPixelW, cellPixelH, frames)) return;
+
+    // Once per DISTINCT output frame. A paused preview re-composites the same
+    // frame over and over; advancing the ring there would march the trail
+    // backwards through history on a still image. Equality (not >) so that a
+    // seek BACKWARDS still pushes — flushEchoRings has already cleared the
+    // history by then and the new position's first frame must be recorded.
+    if (ring.count > 0 && ring.lastPushedTime == static_cast<double>(time)) return;
+    ring.lastPushedTime = static_cast<double>(time);
+
+    const int slot = ring.writeIdx;
+
+    // Unbind the destination as an SRV before binding it as an RTV. The slot we
+    // are about to write may still be bound from a tap draw earlier in this same
+    // cell's pass (a short ring wraps within one frame).
+    ID3D11ShaderResourceView* nullSRV = nullptr;
+    deviceCtx_->PSSetShaderResources(0, 1, &nullSRV);
+
+    D3D11_VIEWPORT vp{};
+    vp.Width    = static_cast<float>(ring.width);
+    vp.Height   = static_cast<float>(ring.height);
+    vp.MaxDepth = 1.0f;
+    deviceCtx_->RSSetViewports(1, &vp);
+    deviceCtx_->OMSetRenderTargets(1, ring.rtv[static_cast<size_t>(slot)].GetAddressOf(), nullptr);
+
+    const float clear[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    deviceCtx_->ClearRenderTargetView(ring.rtv[static_cast<size_t>(slot)].Get(), clear);
+
+    // Straight overwrite, exactly as the effect chain does: the source may carry
+    // alpha < 1 (a keyed cell) and premultiplying it into a cleared target here
+    // would darken it a second time when the tap is finally composited.
+    // See the alpha-convention note in processEffectChain.
+    const float bf[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    deviceCtx_->OMSetBlendState(opaqueBlendState_.Get(), bf, 0xFFFFFFFF);
+    deviceCtx_->PSSetShader(pixelShader_.Get(), nullptr, 0);
+    deviceCtx_->PSSetConstantBuffers(0, 1, constantBuffer_.GetAddressOf());
+    deviceCtx_->PSSetSamplers(0, 1, samplerState_.GetAddressOf());
+
+    blitFullscreen(cellSRV, /*orientation=*/0);
+
+    deviceCtx_->OMSetBlendState(blendState_.Get(), bf, 0xFFFFFFFF);
+
+    ring.writeIdx = (slot + 1) % ring.capacity;
+    if (ring.count < ring.capacity) ++ring.count;
+    ++echoStats_.lastPushes;
+
+    restoreMainPipelineState(activeRTV);
+}
+
+// ---------------------------------------------------------------------------
+// resolveEchoTapSRV — one tap's texture, with fractional-frame interpolation.
+//
+// A tap sits `agoFrames` output frames back, and agoFrames is fractional
+// whenever the delay time is not an exact multiple of the frame period — which
+// is almost always. Snapping to the nearest buffered frame would quantise the
+// whole trail to the frame grid and make a 1/16-note echo at 30 fps visibly
+// judder against the audio it is supposed to be tracking.
+//
+// The lerp is done the same way the ping-pong crossfade does it: blit A with
+// blending OFF, then blit B at alpha f on top. Because the destination holds
+// exactly A at that point, the alpha blend evaluates to A*(1-f) + B*f — a true
+// lerp, not an approximation, and with no dedicated shader.
+// ---------------------------------------------------------------------------
+ID3D11ShaderResourceView* GridCompositor::resolveEchoTapSRV(
+    EchoRing& ring, float agoFrames, ID3D11RenderTargetView* activeRTV)
+{
+    if (agoFrames < 0.0f) return nullptr;
+
+    const int   i0   = static_cast<int>(std::floor(agoFrames));
+    const float frac = agoFrames - static_cast<float>(i0);
+
+    ID3D11ShaderResourceView* a = ring.at(i0);
+    if (!a) return nullptr;                  // history not deep enough yet
+
+    // Sub-quarter-frame fractions are below the threshold where interpolation
+    // buys anything visible, and skipping them halves the draw count on the
+    // common case of a delay that happens to land near a frame boundary.
+    if (frac < 0.01f) return a;
+
+    ID3D11ShaderResourceView* b = ring.at(i0 + 1);
+    if (!b) return a;                        // oldest buffered frame — no partner
+
+    RTPool::RTPair& pair = rtPool_.acquire(device_, ring.width, ring.height, kEchoLerpRtSlot);
+    if (!pair.rtvA || !pair.srvA) return a;
+
+    ID3D11ShaderResourceView* nullSRV = nullptr;
+    deviceCtx_->PSSetShaderResources(0, 1, &nullSRV);
+
+    D3D11_VIEWPORT vp{};
+    vp.Width    = static_cast<float>(ring.width);
+    vp.Height   = static_cast<float>(ring.height);
+    vp.MaxDepth = 1.0f;
+    deviceCtx_->RSSetViewports(1, &vp);
+    deviceCtx_->OMSetRenderTargets(1, pair.rtvA.GetAddressOf(), nullptr);
+    deviceCtx_->PSSetShader(pixelShader_.Get(), nullptr, 0);
+    deviceCtx_->PSSetConstantBuffers(0, 1, constantBuffer_.GetAddressOf());
+    deviceCtx_->PSSetSamplers(0, 1, samplerState_.GetAddressOf());
+
+    const float bf[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+
+    // A at full, blending off — the destination now holds A verbatim.
+    deviceCtx_->OMSetBlendState(opaqueBlendState_.Get(), bf, 0xFFFFFFFF);
+    drawCell(a, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f, /*orientation=*/0, 0.0f);
+
+    // B at alpha frac, blending on — dest = A*(1-frac) + B*frac.
+    deviceCtx_->OMSetBlendState(blendState_.Get(), bf, 0xFFFFFFFF);
+    drawCell(b, 0.0f, 0.0f, 1.0f, 1.0f, frac, /*orientation=*/0, 0.0f);
+
+    ID3D11RenderTargetView* nullRTV = nullptr;
+    deviceCtx_->OMSetRenderTargets(1, &nullRTV, nullptr);
+    restoreMainPipelineState(activeRTV);
+
+    echoStats_.lastTapDraws += 2;
+    return pair.srvA.Get();
+}
+
+// ---------------------------------------------------------------------------
+// drawEchoTaps — composite the trail behind the live cell.
+//
+// Draw order is OLDEST FIRST so the trail stacks correctly under the live cell
+// the caller draws immediately afterwards. Each tap is an ordinary drawCell:
+// there is no echo shader and no echo constant buffer, because everything the
+// effect does per tap — placement, scale, flip, opacity — is already expressible
+// through CellConstants.
+//
+// Tap opacity REUSES the request's own resolved opacity verbatim
+// (slot.opacity * event.opacity * fadeGain, computed once in FrameCollector for
+// both preview and export) and multiplies the tap gain onto it. That is the
+// whole reason live and export agree: there is no second opacity formula here
+// to drift from the one in the collector.
+// ---------------------------------------------------------------------------
+void GridCompositor::drawEchoTaps(const CellFrameRequest& req,
+                                  float rectX, float rectY, float rectW, float rectH,
+                                  float cornerRadius,
+                                  ID3D11RenderTargetView* activeRTV)
+{
+    const xleth::echo::EchoSettings& e = req.echo;
+
+    auto it = echoRings_.find(e.ringKey);
+    if (it == echoRings_.end()) return;
+    EchoRing& ring = it->second;
+    if (ring.count <= 1) return;   // nothing older than the frame just pushed
+
+    const float bf[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+
+    for (int n = e.taps; n >= 1; --n) {
+        const float gain = xleth::echo::tapGainAt(e.tapGain, e.taps, n);
+        // The raised-cosine taper drives the last tap to exactly zero, so this
+        // is the ordinary exit for the cap rather than an edge case.
+        const float opacity = req.opacity * gain;
+        if (opacity <= 1e-4f) continue;
+
+        // Tap n sits n*D frames back. The +0 is deliberate: the current frame
+        // was pushed at the top of this cell's pass, so ago=0 IS the live frame
+        // and every tap is strictly older than it.
+        const float ago = static_cast<float>(n) * e.frameDelay;
+        ID3D11ShaderResourceView* tapSRV = resolveEchoTapSRV(ring, ago, activeRTV);
+        if (!tapSRV) continue;     // trail still growing in after a flush/seek
+
+        // ── Scale-toward-centre ──────────────────────────────────────────────
+        // Each successive tap shrinks about the cell's own centre, so the trail
+        // recedes instead of only dimming. Linear in n rather than geometric:
+        // a geometric shrink collapses the far taps into a dot long before the
+        // taper has faded them, which reads as a hole rather than a trail.
+        float tx = rectX, ty = rectY, tw = rectW, th = rectH;
+        if (e.scaleTrail > 0.0f) {
+            const float k = std::max(0.05f,
+                1.0f - e.scaleTrail * static_cast<float>(n) / static_cast<float>(e.taps + 1));
+            const float cx = rectX + rectW * 0.5f;
+            const float cy = rectY + rectH * 0.5f;
+            tw = rectW * k;
+            th = rectH * k;
+            tx = cx - tw * 0.5f;
+            ty = cy - th * 0.5f;
+        }
+
+        // ── Ping-pong edge drift ─────────────────────────────────────────────
+        // Only reachable when the BOUND DELAY is in ping-pong mode (the
+        // collector zeroes drift otherwise), so this is a visual tell for a real
+        // audio behaviour rather than a decorative wobble. Odd taps go right,
+        // even taps go left — the same alternation the delay's cross-feed
+        // produces between ears — and the throw grows with n so the trail walks
+        // outward toward the edges.
+        if (e.drift > 0.0f) {
+            const float sign = (n & 1) ? 1.0f : -1.0f;
+            tx += sign * e.drift * rectW * static_cast<float>(n)
+                       / static_cast<float>(e.taps);
+        }
+
+        const int orientation =
+            xleth::echo::composeTapOrientation(req.orientation, e.flipMode, n);
+
+        if (e.additive)
+            deviceCtx_->OMSetBlendState(additiveBlendState_.Get(), bf, 0xFFFFFFFF);
+
+        drawCell(tapSRV, tx, ty, tw, th, opacity, orientation, cornerRadius);
+        ++echoStats_.lastTapDraws;
+
+        if (e.additive)
+            deviceCtx_->OMSetBlendState(blendState_.Get(), bf, 0xFFFFFFFF);
+    }
+}
+
 void RTPool::clear()
 {
     pairs.clear();
@@ -1987,20 +2412,30 @@ static bool isChainEffectBypassExempt(VisualEffect::Type type)
     return type == VisualEffect::Type::ChromaKey;
 }
 
-// True for the two chainable effects that are handled AFTER the chain, by
-// applyOutlineStage / drawDropShadowLayers, rather than as a pass inside it.
+// True for the chainable effects that are handled AFTER the chain — by
+// applyOutlineStage / drawDropShadowLayers / pushEchoFrame + drawEchoTaps —
+// rather than as a pass inside it.
 //
 // Outline and Drop Shadow draw outside the source's own bounds, so they need a
 // padded render target and a correspondingly grown composite rect — neither of
 // which a ping-pong pass over a cell-sized target can express. Running them last
 // also gets the semantics right: the stroke traces the finished cell rather than
 // whatever the chain happened to look like at that index, and the shadow is cast
-// by the shape the viewer actually sees. Skipped here so a chain that holds
-// nothing else still takes processEffectChain's zero-cost fast path.
+// by the shape the viewer actually sees.
+//
+// Visual Echo is here for a different reason, and a stronger one: it is made of
+// frames that are no longer being processed. A chain pass sees exactly one
+// frame's pixels; an echo needs the pixels of N*D frames ago, which only the
+// compositor's per-cell ring holds. It could not be a pass even in principle.
+//
+// Skipped here so a chain holding nothing else still takes processEffectChain's
+// zero-cost fast path. One consequence, shared with the other two and worth
+// knowing: chain POSITION does not affect any of them.
 static bool isTerminalStageEffect(VisualEffect::Type type)
 {
     return type == VisualEffect::Type::Outline
-        || type == VisualEffect::Type::DropShadow;
+        || type == VisualEffect::Type::DropShadow
+        || type == VisualEffect::Type::VisualEcho;
 }
 
 ID3D11ShaderResourceView* GridCompositor::processEffectChain(

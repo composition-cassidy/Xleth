@@ -18,8 +18,6 @@ import {
 export default function DiscordTab({
   settings,       // { tier, fps, hwEncoder }
   onChange,
-  outputPath,
-  onBrowse,
   running,
 }) {
   const [availableEncoders, setAvailableEncoders] = useState([])
@@ -107,14 +105,6 @@ export default function DiscordTab({
             <option key={e.name} value={e.name}>{e.displayName || e.name}</option>
           ))}
         </select>
-      </div>
-
-      <div className="export-row export-row-path">
-        <label>Output File</label>
-        <div className="export-path-group">
-          <input type="text" value={outputPath} readOnly placeholder="Click Browse…" disabled={running} />
-          <button onClick={onBrowse} disabled={running}>Browse…</button>
-        </div>
       </div>
 
       <div className="discord-readout">

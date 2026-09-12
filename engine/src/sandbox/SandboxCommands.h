@@ -197,6 +197,41 @@ private:
     bool         accepted_ = false;
 };
 
+// ─── DuplicateSandboxLayerCommand ─────────────────────────────────────────────
+// Copies an existing layer — whole op-stack, mix params, source binding — into
+// a new layer directly after it (SandboxCore::duplicateLayer).
+//
+// Undo/redo follows AddSandboxLayerCommand's snapshot pattern exactly, and for
+// the same reason: redo must put back the layer as UNDO found it, ops and all,
+// not re-run the copy against a source layer the user may have edited in the
+// meantime. Replaying duplicateLayer on redo would silently resynchronise the
+// copy with an original that has moved on — a redo that produces different
+// audio from the thing it is redoing.
+
+class DuplicateSandboxLayerCommand : public SandboxCommand {
+public:
+    // `name` may be empty — see SandboxCore::duplicateLayer.
+    DuplicateSandboxLayerCommand(SandboxCore& core, int sourceLayerId, std::string name = {});
+
+    void        execute(Timeline& timeline) override;
+    void        undo(Timeline& timeline) override;
+    std::string describe() const override;
+    bool        shouldRecordInUndoHistory() const override { return accepted_; }
+
+    // Id assigned by execute(), or -1 if the duplicate was rejected.
+    int layerId() const { return layerId_; }
+
+private:
+    SandboxCore& core_;
+    int          sourceLayerId_;
+    std::string  name_;
+    int          layerId_ = -1;
+    int          index_   = -1;
+    SandboxLayer snapshot_;              // captured on undo, replayed on redo
+    bool         haveSnapshot_ = false;
+    bool         accepted_     = false;
+};
+
 // ─── RemoveSandboxLayerCommand ────────────────────────────────────────────────
 // Removing a layer takes its whole op-stack with it, so undo restores the layer
 // verbatim — id, ops, op ids and mix params — not a fresh empty one.

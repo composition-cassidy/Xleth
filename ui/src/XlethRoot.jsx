@@ -3,10 +3,9 @@ import { timelineEvents } from './timelineEvents.js'
 import TitleBar from './components/TitleBar.jsx'
 import TransportBar from './components/TransportBar.jsx'
 import SamplePicker from './components/SamplePicker/SamplePicker.jsx'
-import ExportDialog from './components/ExportDialog.jsx'
+import RenderDialog from './components/RenderDialog.jsx'
 import ExportZipDialog from './components/ExportZipDialog.jsx'
 import MidiImportDialog from './components/MidiImport/MidiImportDialog.jsx'
-import VideoExportDialog from './components/VideoExportDialog.jsx'
 import useSamplerPanelStore from './stores/samplerPanelStore.js'
 import SettingsPanel from './components/SettingsPanel.jsx'
 import MissingPluginsDialog from './components/MissingPluginsDialog.jsx'
@@ -153,8 +152,7 @@ export async function handleXlethRootMenuAction(label, {
   xl = window.xleth,
   showToast,
   setProjectName,
-  setExportDialogOpen,
-  setVideoExportDialogOpen,
+  openRenderDialog,
   setActiveSampleId,
   setPickerSource,
   setCurrentPatternIdByTrack,
@@ -187,7 +185,7 @@ export async function handleXlethRootMenuAction(label, {
         }
       }
 
-      const res = await xl.project.newBlank?.()
+      const res = await xl.project.switchToNew?.()
       if (!res || !res.ok) {
         showToast?.(`New Project failed: ${res?.error || 'unknown error'}`, 'error')
         return
@@ -226,7 +224,7 @@ export async function handleXlethRootMenuAction(label, {
       })
       const dir = getPickerPath(picked)
       if (!dir) return
-      await xl.project.load(dir)
+      await xl.project.switchToLoad(dir)
       const info = await xl.project.getInfo()
       setProjectName?.(info?.projectName || dir.split(/[\\/]/).pop() || 'Project')
       timelineEvents.dispatchEvent(new Event('timeline-sources-changed'))
@@ -311,10 +309,10 @@ export async function handleXlethRootMenuAction(label, {
       break
     }
     case EXPORT_AUDIO_LABEL:
-      setExportDialogOpen?.(true)
+      openRenderDialog?.('audio')
       break
     case EXPORT_VIDEO_LABEL:
-      setVideoExportDialogOpen?.(true)
+      openRenderDialog?.('video')
       break
     case EXPORT_ZIP_LABEL:
       setExportZipOpen?.(true)
@@ -386,8 +384,9 @@ function XlethRootInner() {
   const [allPatterns, setAllPatterns] = useState({})
 
   const [projectName, setProjectName] = useState('Untitled Project')
-  const [exportDialogOpen, setExportDialogOpen] = useState(false)
-  const [videoExportDialogOpen, setVideoExportDialogOpen] = useState(false)
+  const [renderDialogOpen, setRenderDialogOpen] = useState(false)
+  const [renderDialogHint, setRenderDialogHint] = useState(null) // 'audio' | 'video' | null
+  const [renderDialogRequestNonce, setRenderDialogRequestNonce] = useState(0)
   const [exportZipOpen, setExportZipOpen] = useState(false)
   const [midiImportOpen, setMidiImportOpen] = useState(false)
   const [midiInitialPath, setMidiInitialPath] = useState(null)
@@ -521,12 +520,17 @@ function XlethRootInner() {
     }
   }, [allPatterns, pianoRollPatternId])
 
+  const openRenderDialog = useCallback((hint) => {
+    setRenderDialogHint(hint)
+    setRenderDialogRequestNonce((n) => n + 1)
+    setRenderDialogOpen(true)
+  }, [])
+
   const handleMenuAction = useCallback(async (label) => {
     await handleXlethRootMenuAction(label, {
       showToast,
       setProjectName,
-      setExportDialogOpen,
-      setVideoExportDialogOpen,
+      openRenderDialog,
       setActiveSampleId,
       setPickerSource,
       setCurrentPatternIdByTrack,
@@ -537,7 +541,7 @@ function XlethRootInner() {
       setShowSettings,
       setSettingsInitialCategory,
     })
-  }, [showToast])
+  }, [showToast, openRenderDialog])
 
   useEffect(() => {
     const onKeyDown = (e) => {
@@ -629,8 +633,13 @@ function XlethRootInner() {
 
       <TransportBar />
 
-      <ExportDialog isOpen={exportDialogOpen} onClose={() => setExportDialogOpen(false)} />
-      <VideoExportDialog isOpen={videoExportDialogOpen} onClose={() => setVideoExportDialogOpen(false)} />
+      <RenderDialog
+        isOpen={renderDialogOpen}
+        onClose={() => setRenderDialogOpen(false)}
+        destinationHint={renderDialogHint}
+        requestNonce={renderDialogRequestNonce}
+        projectName={projectName}
+      />
       <ExportZipDialog isOpen={exportZipOpen} onClose={() => setExportZipOpen(false)} />
       <MidiImportDialog
         isOpen={midiImportOpen}

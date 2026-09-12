@@ -14,6 +14,7 @@ import {
 import type { PanelStateMap } from './registry/PanelRegistry';
 import { PANEL_CATALOG, type PanelId } from './registry/panelCatalog';
 import EffectEditorHost from '../components/mixer/EffectEditorHost.jsx';
+import ClipFxEditorHost from '../components/timeline/ClipFxEditorHost.jsx';
 import BackdropLayer from '../backdrop/BackdropLayer.jsx';
 import './components/windowing.css';
 
@@ -217,15 +218,19 @@ export function AppShell({ mode = 'single', backdropImageUrl = '' }: WindowingAp
   const rendersRealPanels = shouldRenderRealPanels(mode);
   const drawerPanelIds = rendersRealPanels ? DRAWER_PANEL_ID_LIST : undefined;
   const reactiveSampleSelectorHidden = usePanelRegistry((state) => state.panels.sampleSelector.hidden);
-  const reactiveSampleDockRegionWidth = usePanelRegistry((state) => state.dockRegionSizes.left);
+  const reactiveSampleDockSide = usePanelRegistry((state) => state.panels.sampleSelector.docked.region);
   const sampleSelectorHidden = typeof window === 'undefined'
     ? usePanelRegistry.getState().panels.sampleSelector.hidden
     : reactiveSampleSelectorHidden;
-  const committedSampleDockRegionWidth = typeof window === 'undefined'
-    ? usePanelRegistry.getState().dockRegionSizes.left
-    : reactiveSampleDockRegionWidth;
-  const sampleDockResizePreview = useDockRegionResizePreview('left');
-  const sampleDockWidth = sampleDockResizePreview?.size ?? committedSampleDockRegionWidth;
+  const sampleDockSide = typeof window === 'undefined'
+    ? usePanelRegistry.getState().panels.sampleSelector.docked.region
+    : reactiveSampleDockSide;
+  const reactiveSampleDockRegionSize = usePanelRegistry((state) => state.dockRegionSizes[sampleDockSide]);
+  const committedSampleDockRegionSize = typeof window === 'undefined'
+    ? usePanelRegistry.getState().dockRegionSizes[sampleDockSide]
+    : reactiveSampleDockRegionSize;
+  const sampleDockResizePreview = useDockRegionResizePreview(sampleDockSide);
+  const sampleDockSize = sampleDockResizePreview?.size ?? committedSampleDockRegionSize;
   const sampleDockEnabled = rendersRealPanels && SHELL_PANEL_IDS[mode].includes('sampleSelector');
   const sampleDockExpanded = sampleDockEnabled && !sampleSelectorHidden;
   const shellClassName = [
@@ -235,8 +240,10 @@ export function AppShell({ mode = 'single', backdropImageUrl = '' }: WindowingAp
       : 'sample-dock-disabled',
   ].join(' ');
   const shellStyle = {
-    '--xleth-sample-dock-width': `${sampleDockWidth}px`,
+    '--xleth-sample-dock-width': `${sampleDockSize}px`,
+    '--xleth-sample-dock-height': `${sampleDockSize}px`,
     '--xleth-sample-dock-handle-width': `${SAMPLE_SELECTOR_DOCK_HANDLE_WIDTH}px`,
+    '--xleth-sample-dock-handle-height': `${SAMPLE_SELECTOR_DOCK_HANDLE_WIDTH}px`,
   } as React.CSSProperties;
 
   useEffect(() => {
@@ -283,7 +290,12 @@ export function AppShell({ mode = 'single', backdropImageUrl = '' }: WindowingAp
 
   return (
     <div className="xleth-windowing-app">
-      <div className={shellClassName} data-testid="xleth-windowing-shell" style={shellStyle}>
+      <div
+        className={shellClassName}
+        data-testid="xleth-windowing-shell"
+        data-sample-dock-side={sampleDockSide}
+        style={shellStyle}
+      >
         {sampleDockEnabled ? (
           <SampleSelectorDrawer />
         ) : null}
@@ -334,6 +346,12 @@ export function AppShell({ mode = 'single', backdropImageUrl = '' }: WindowingAp
           `transform`. The Mixer Chain and FX Graph only *request* editors via
           their effect stores; this host owns the editors' mounting. */}
       {rendersRealPanels ? <EffectEditorHost /> : null}
+      {/* Global per-clip FX editor host. Same containment rule as
+          EffectEditorHost above: mounted at the transform-free windowing root and
+          OUTSIDE every PanelFrame subtree, so a floating Timeline's `transform`
+          can never trap or clip the per-clip Vibrato graph editor. The Timeline
+          clip dropdown only *requests* editors; this host owns their mounting. */}
+      {rendersRealPanels ? <ClipFxEditorHost /> : null}
     </div>
   );
 }

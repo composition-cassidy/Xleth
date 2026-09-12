@@ -1,18 +1,12 @@
 #pragma once
 
 #include "Transport.h"
-#include "VideoDecoder.h"
 #include "FrameCache.h"
 #include "model/TimelineTypes.h"
 
 #include <functional>
 #include <unordered_map>
 #include <vector>
-
-// VideoCompositor is only available when building with GPU support.
-// Forward-declare so SyncManager can hold a nullable pointer without
-// pulling in <GL/glew.h> or <GLFW/glfw3.h>.
-class VideoCompositor;
 
 struct VideoEvent {
     double startBeat;       // When this event starts (in beats)
@@ -60,8 +54,8 @@ struct VideoEvent {
     double sourceClampStartTime = 0.0; // Trim start / first valid frame for reverse clamps.
 
     // Which SampleRegion this event was emitted for (-1 = unset / not region-backed).
-    // Used by SyncManager::videoTick and FrameCollector to route to a
-    // per-region proxy decoder when one is available.
+    // Used by FrameCollector to route to a per-region proxy decoder when one
+    // is available.
     int regionId = -1;
 
     // Clip-track modulation metadata. Pattern/note events leave these at
@@ -97,32 +91,23 @@ struct VideoEvent {
     Orientation orientation = Orientation::None;
 };
 
-class Timeline; // fwd decl — only needed for getRegion() lookup in videoTick
-
 class SyncManager {
 public:
-    // compositor may be nullptr (Phase 0 / headless / bridge mode).
-    // When null, videoTick() still decodes frames and fills the FrameCache
-    // but skips all GPU upload/render calls.
-    SyncManager(Transport& transport,
-                std::vector<VideoDecoder*>& decoders,
-                FrameCache& cache,
-                VideoCompositor* compositor = nullptr,
-                std::function<int64_t()> presentationPositionProvider = {});
-
-    // Wire in per-region proxy decoders and the Timeline used to resolve
-    // SampleRegion metadata during videoTick(). Both references are stored
-    // by pointer/ref and must remain valid for SyncManager's lifetime.
+    // SyncManager owns the realtime preview's VideoEvent list and answers
+    // "which beat is the audio the user is hearing right now on?".
     //
-    // regionDecoderPtrs: maps regionId -> VideoDecoder* for the region's proxy.
-    //                    Growth of this map during playback is visible through
-    //                    the reference. The owning map (unique_ptr) lives in
-    //                    XlethAddon; this is just a raw-pointer lookup surface.
-    // timeline:           used only for getRegion(regionId) to read
-    //                     proxyStartTime/proxyEndTime/proxyReady during videoTick.
-    void setRegionProxySources(
-        std::unordered_map<int, VideoDecoder*>* regionDecoderPtrs,
-        const Timeline*                         timeline);
+    // It used to also drive an OpenGL VideoCompositor: decode a frame per
+    // active event, upload it, and set a layerIndex-ordered layer. That
+    // compositor was retired (see the Issue 10 note in VIDEO_PREVIEW_AUDIT.txt)
+    // — all compositing, preview and export alike, goes through
+    // FrameCollector + GridCompositor, which is zOrder-ordered. Nothing here
+    // decodes, caches, or renders any more.
+    //
+    // presentationPositionProvider: optional; returns the sample position of
+    // the audio actually leaving the device (vs. the position already
+    // rendered). Falls back to Transport::getPositionSamples() when unset.
+    explicit SyncManager(Transport& transport,
+                         std::function<int64_t()> presentationPositionProvider = {});
 
     // Add video events to the timeline
     void addEvent(const VideoEvent& event);
@@ -137,56 +122,40 @@ public:
     void addSlideEvent(const SlideAnimationEvent& e) { slideEvents_.push_back(e); }
     const std::vector<SlideAnimationEvent>& getSlideEvents() const { return slideEvents_; }
 
-    // Called on a dedicated video thread at ~60Hz.
-    // Reads transport position -> determines which events are active ->
-    // fetches/decodes frames -> (if compositor != nullptr) uploads + renders.
-    double videoTick();
+    // Beat position of the audio currently being heard, or -1.0 when the
+    // transport is stopped.
+    //
+    // Pure function of Transport + the presentation-position provider, both of
+    // which are independently thread-safe atomic reads. It touches NO
+    // SyncManager state, so callers must NOT take the event-list lock for it —
+    // that is the whole point: the video thread used to hold the lock shared
+    // with the event-rebuild path for the duration of a full per-event sweep.
+    double currentBeatPosition() const;
 
-    // Performance stats
-    double getLastDriftMs()    const;
-    double getMaxDriftMs()     const;
-    double getAvgDriftMs()     const;
-    double getAvgDecodeTimeMs() const;
-    int    getFrameDropCount() const;
-    double getCacheHitRate()   const;
-
-    // Cumulative count of decoder->seekAndDecode() calls made from videoTick()
-    // since construction (every cache-miss attempt, success or failure — same
-    // population as decodeTimeSamples_). That call site lives inside
-    // #ifndef XLETH_CORE_ONLY, so in the bridge (.node) build this must always
-    // read 0: nothing there ever consumes the decoded frame. A non-zero value
-    // in that build means the dead-decode preview-FPS regression (60fps ->
-    // ~17fps, fixed 3db1b33) has resurfaced — see bridge/test_perf_regression.js.
-    int    getDecodeAttemptCount() const;
+    // ── Legacy preview stats ────────────────────────────────────────────────
+    // Retained because they are published verbatim by the getStats RPC
+    // (avgDriftMs / maxDriftMs / frameDrops) and by
+    // diag_getVisualPreviewDiagnostic (counters.syncManagerDecodeCount, which
+    // bridge/test_perf_regression.js asserts is present and stays 0).
+    //
+    // All four are now STRUCTURALLY zero, not measured-and-happens-to-be-zero:
+    // SyncManager holds no decoder, no frame cache, and no compositor, so there
+    // is nothing here that can drift, drop, or decode. getDecodeAttemptCount()
+    // in particular was the sentinel for the dead-decode preview-FPS regression
+    // (60fps -> ~17fps, fixed 3db1b33); that decode site no longer exists in
+    // any build. The perf gate's remaining teeth are its videoTick µs budget
+    // and its delivered-FPS floor.
+    double getMaxDriftMs()         const { return 0.0; }
+    double getAvgDriftMs()         const { return 0.0; }
+    int    getFrameDropCount()     const { return 0; }
+    int    getDecodeAttemptCount() const { return 0; }
 
 private:
-    Transport&                  transport_;
-    std::vector<VideoDecoder*>& decoders_;
-    FrameCache&                 cache_;
-    VideoCompositor*            compositor_;  // nullable
-    std::function<int64_t()>     presentationPositionProvider_;
-
-    // Region proxy lookup surfaces — both nullable; nullptr disables
-    // per-region proxy preference (videoTick falls back to the source decoder).
-    std::unordered_map<int, VideoDecoder*>* regionDecoderPtrs_ = nullptr;
-    const Timeline*                         timelineForRegions_ = nullptr;
+    Transport&               transport_;
+    std::function<int64_t()> presentationPositionProvider_;
 
     std::vector<VideoEvent>          events_;
     std::vector<SlideAnimationEvent> slideEvents_;
-
-    // Drift tracking
-    std::vector<double> driftSamples_;
-    double maxDrift_   = 0.0;
-    int    frameDrops_ = 0;
-
-    // Decode timing
-    std::vector<double> decodeTimeSamples_;
-
-    // Frame dedup: don't re-upload if same frame
-    std::unordered_map<int, int> lastDisplayedFrame_; // layerIndex -> frameNumber
-
-    // Track which layers are currently active for visibility toggling
-    int maxLayerIndex_ = 0;
 
 public:
     // Preview chorus hold state — written by video thread, reset on clearEvents().

@@ -86,6 +86,7 @@ async function main() {
     'sandbox_stackSetParam', 'sandbox_stackSetBypassed',
     'sandbox_render', 'sandbox_getRenderedBuffer', 'sandbox_getSpectrogram',
     'sandbox_getPitchTrack', 'sandbox_bake',
+    'sandbox_duplicateLayer',
   ];
   const fn = {};
   for (const n of names) {
@@ -427,6 +428,57 @@ async function main() {
 
     const r = fn.sandbox_stackRemove(layerId, fadeOpId);
     ok(r.success === true, `remove Fade op succeeds (${JSON.stringify(r)})`);
+  }
+
+  // ── 10b. sandbox_duplicateLayer ─────────────────────────────────
+  // Runs BEFORE sandbox_close, so it has a layer with a real op-stack to copy.
+  group('sandbox_duplicateLayer');
+  {
+    const missing = fn.sandbox_duplicateLayer(999999);
+    ok(missing.success === false, `unknown layerId → success:false (${JSON.stringify(missing)})`);
+
+    // getWorkspace/undo/redo are SB-6 exports resolved further down; this group
+    // runs before that section, so pull them in here rather than reordering the
+    // file around one new test.
+    fn.sandbox_getWorkspace = fn.sandbox_getWorkspace || mustFn('sandbox_getWorkspace');
+    fn.sandbox_undo = fn.sandbox_undo || mustFn('sandbox_undo');
+    fn.sandbox_redo = fn.sandbox_redo || mustFn('sandbox_redo');
+
+    const beforeWs = JSON.parse(fn.sandbox_getWorkspace());
+    const src = beforeWs.layers.find((l) => l.id === layerId);
+
+    const r = fn.sandbox_duplicateLayer(layerId);
+    ok(r.success === true, `duplicate succeeds (${JSON.stringify(r)})`);
+    ok(r.layerId !== layerId, `the copy has a NEW layer id (${r.layerId} vs ${layerId})`);
+    ok(r.sourceBufferId === src.sourceBufferId,
+       `the copy shares the source buffer — no audio is reloaded (${r.sourceBufferId})`);
+    ok(r.opCount === src.ops.length,
+       `the whole op-stack came along (${r.opCount} of ${src.ops.length})`);
+    ok(typeof r.name === 'string' && r.name.endsWith(' copy'),
+       `the copy is named off the original ("${r.name}")`);
+
+    const afterWs = JSON.parse(fn.sandbox_getWorkspace());
+    const srcIdx = afterWs.layers.findIndex((l) => l.id === layerId);
+    const copyIdx = afterWs.layers.findIndex((l) => l.id === r.layerId);
+    ok(copyIdx === srcIdx + 1,
+       `the copy sits directly after its source (${srcIdx} → ${copyIdx})`);
+
+    const copy = afterWs.layers[copyIdx];
+    ok(JSON.stringify(copy.ops) === JSON.stringify(src.ops),
+       'the copied stack is byte-identical to the original');
+    ok(copy.soloed === false, 'solo is NOT inherited — it is a workspace monitoring state');
+
+    // Undoable, and undo takes the copy with it while leaving the original.
+    ok(fn.sandbox_undo().success === true, 'the duplicate undoes');
+    const undone = JSON.parse(fn.sandbox_getWorkspace());
+    ok(!undone.layers.some((l) => l.id === r.layerId), 'undo removes the copy');
+    ok(undone.layers.some((l) => l.id === layerId), '…and leaves the original alone');
+
+    ok(fn.sandbox_redo().success === true, 'the duplicate redoes');
+    const redone = JSON.parse(fn.sandbox_getWorkspace());
+    ok(redone.layers.some((l) => l.id === r.layerId), 'redo puts the copy back with its id');
+
+    fn.sandbox_close(r.layerId);
   }
 
   // ── 11. sandbox_close ─────────────────────────────────────────────────────
@@ -871,10 +923,11 @@ async function main() {
     fn.sandbox_setLayerMuted(second.layerId, true);
 
     const before = JSON.parse(fn.sandbox_getWorkspace());
-    // 3 since P5-3 added SandboxOpType::Autotune — see kSandboxStackVersion's
-    // own history comment (engine/src/sandbox/SandboxOp.h) for why an additive
-    // op type still bumps it.
-    ok(before.sandboxStackVersion === 3, `workspace carries sandboxStackVersion 3 (${before.sandboxStackVersion})`);
+    // 5 since PITCH gained its Resample (varispeed) mode; 4 was AUTOTUNE's
+    // Manual mode, 3 was SandboxOpType::Autotune itself. See
+    // kSandboxStackVersion's own history comment (engine/src/sandbox/SandboxOp.h)
+    // for why even an additive change bumps it.
+    ok(before.sandboxStackVersion === 5, `workspace carries sandboxStackVersion 5 (${before.sandboxStackVersion})`);
     ok(before.layers.length === 2, `two layers in the live workspace (${before.layers.length})`);
 
     ok(saveProject() === true, 'project_save succeeds');

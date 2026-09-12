@@ -1305,6 +1305,21 @@ private:
     SlideNoteEffectSettings newSettings_;
 };
 
+// ─── SetTrackNoteFadeCommand ──────────────────────────────────────────────────────────────────────
+
+class SetTrackNoteFadeCommand : public Command {
+public:
+    SetTrackNoteFadeCommand(int trackId, const NoteFadeSettings& newSettings,
+                            const Timeline& timeline);
+    void execute(Timeline& timeline) override;
+    void undo(Timeline& timeline) override;
+    std::string describe() const override;
+private:
+    int              trackId_;
+    NoteFadeSettings oldSettings_;
+    NoteFadeSettings newSettings_;
+};
+
 // ─── SetNoteSlideCommand ─────────────────────────────────────────────────────
 
 class SetNoteSlideCommand : public Command {

@@ -140,3 +140,47 @@ void ReplaceClipsBatchCommand::undo(Timeline& timeline) {
 std::string ReplaceClipsBatchCommand::describe() const {
     return "Paste " + std::to_string(added_.size()) + " clip(s)";
 }
+
+// ─── SetClipModulationBatchCommand ────────────────────────────────────────────
+
+SetClipModulationBatchCommand::SetClipModulationBatchCommand(std::vector<Edit> edits,
+                                                             const Timeline& timeline)
+{
+    entries_.reserve(edits.size());
+    editedIds_.reserve(edits.size());
+    for (auto& e : edits) {
+        const Clip* c = timeline.getClip(e.clipId);
+        if (!c) {
+            std::cerr << "[Undo] WARN SetClipModulationBatchCommand: clip id=" << e.clipId
+                      << " not found in timeline — skipped\n";
+            continue;
+        }
+        Entry entry;
+        entry.clipId = e.clipId;
+        entry.oldMod = c->modulation;
+        entry.newMod = std::move(e.modulation);
+        entries_.push_back(std::move(entry));
+        editedIds_.push_back(e.clipId);
+    }
+}
+
+void SetClipModulationBatchCommand::execute(Timeline& timeline) {
+    Timeline::ScopedBulkEdit bulk(timeline);
+    for (const auto& e : entries_)
+        if (Clip* c = timeline.getClipMutable(e.clipId))
+            c->modulation = e.newMod;
+    std::cout << "[Timeline] Set modulation on " << entries_.size() << " clip(s) (batch)\n";
+}
+
+void SetClipModulationBatchCommand::undo(Timeline& timeline) {
+    Timeline::ScopedBulkEdit bulk(timeline);
+    for (const auto& e : entries_)
+        if (Clip* c = timeline.getClipMutable(e.clipId))
+            c->modulation = e.oldMod;
+    std::cout << "[Timeline] Restored modulation on " << entries_.size()
+              << " clip(s) (batch undo)\n";
+}
+
+std::string SetClipModulationBatchCommand::describe() const {
+    return "Set Clip Modulation on " + std::to_string(entries_.size()) + " clip(s)";
+}

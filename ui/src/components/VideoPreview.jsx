@@ -10,6 +10,25 @@ import { getPickerPath, openFilePicker } from './filePicker/filePickerService.js
 import { VIDEO_EXTENSIONS } from './filePicker/filePickerHelpers.js'
 import { subscribe, completePick, cancelPick } from './grid/chromaKeyEyedropper.js'
 
+// Mirrors CANVAS_W/CANVAS_H in XlethEngineService.cpp — the shm surface's
+// base resolution before previewResolutionScale is applied.
+const BASE_CANVAS_W = 960
+const BASE_CANVAS_H = 540
+
+// The shm surface size the engine's compositor will be running at for a given
+// previewResolutionScale. Must stay in step with
+// applyPreviewResolutionScaleInternal (XlethEngineService.cpp) — the engine
+// truncates (int)(CANVAS_W * scale) where this rounds, which agree exactly on
+// all four bucket values the engine snaps to (0.25/0.5/0.75/1.0) but would NOT
+// agree on an arbitrary scale. If the engine ever gains a continuous scale,
+// switch this to truncation rather than letting the two drift by a pixel.
+function shmDimsForScale(scale) {
+  return {
+    w: Math.max(1, Math.round(BASE_CANVAS_W * scale)),
+    h: Math.max(1, Math.round(BASE_CANVAS_H * scale)),
+  }
+}
+
 // ── WebGL shaders ────────────────────────────────────────────────────────────
 const VERT_SRC = `
   attribute vec2 a_position;
@@ -20,12 +39,17 @@ const VERT_SRC = `
     v_texCoord = a_texCoord;
   }
 `
+// The engine writes the composited frame into shm as raw BGRA (its native
+// D3D11 readback order) instead of paying a per-pixel CPU swizzle to RGBA
+// first. gl.texImage2D below is told the upload is 'RGBA', so the GPU loads
+// each texel's bytes as (R,G,B,A) = (trueB, trueG, trueR, trueA) — the .bgra
+// swizzle below reads them back out in the right order for free.
 const FRAG_SRC = `
   precision mediump float;
   varying vec2 v_texCoord;
   uniform sampler2D u_texture;
   void main() {
-    gl_FragColor = texture2D(u_texture, v_texCoord);
+    gl_FragColor = texture2D(u_texture, v_texCoord).bgra;
   }
 `
 
@@ -60,9 +84,10 @@ function createProgram(gl, vertSrc, fragSrc) {
 // ── Pixel-content diagnostics (opt-in) ───────────────────────────────────────
 // Mirrors the native FramePixelStats fingerprint so the renderer stages line up
 // with the engine stages in the Visual Preview Diagnostic Log. `format` MUST be
-// labelled ('RGBA' here, since shm + readPixels are both RGBA) so first-byte
-// comparisons against native BGRA are never made blindly. Heavy (~full-frame
-// loop) — callers gate on the diag flag and sample sparingly.
+// labelled correctly per stage: shm bytes are native BGRA (the engine writes
+// them unchanged — see FRAG_SRC's .bgra swizzle above), while readPixels reads
+// back the GPU framebuffer AFTER that shader swizzle, which is true RGBA. Heavy
+// (~full-frame loop) — callers gate on the diag flag and sample sparingly.
 function computeFrameStatsJS(bytes, width, height, format) {
   const rIdx = format === 'BGRA' ? 2 : 0
   const bIdx = format === 'BGRA' ? 0 : 2
@@ -125,6 +150,10 @@ export default function VideoPreview() {
   // Populated by the shm effect below; reads one RGBA pixel out of the shared
   // frame at normalized (0..1) coordinates. Null until shm is open.
   const pickPixelRef = useRef(null)
+  // Populated by the shm effect below; applies a new shm surface size (canvas,
+  // gl viewport, sabWidth/sabHeight closures) after previewResolutionScale
+  // changes the compositor's — and therefore the shm's — output dimensions.
+  const applyShmResizeRef = useRef(null)
   const [videoFile, setVideoFile] = useState(null)
   const [importing, setImporting] = useState(false)
   const [fps, setFps] = useState(0)
@@ -133,6 +162,21 @@ export default function VideoPreview() {
 
   // ── Preview performance controls ─────────────────────────────────────────
   const [resolutionScale, setResolutionScale] = useState(1.0)
+  // Whether the engine's adaptive resolution governor (RENDER_PERF_AUDIT
+  // Finding 8) is picking resolutionScale on its own. Picking a specific
+  // percentage from the dropdown clears this (engine-side, authoritatively —
+  // see Timeline_SetPreviewResolutionScale); only picking "Auto" again sets
+  // it back. Mirrored in a ref so the poll effect below always reads the
+  // latest resolutionScale without re-subscribing every time it changes.
+  const [autoResolution, setAutoResolution] = useState(true)
+  const resolutionScaleRef = useRef(1.0)
+  useEffect(() => { resolutionScaleRef.current = resolutionScale }, [resolutionScale])
+  // The size the shm surface is ACTUALLY at, mirrored for the reconcile poll
+  // below. This is the authoritative half of the comparison: resolutionScale is
+  // only what the UI believes it asked for, and the whole point of the poll is
+  // to catch the case where those two disagree.
+  const outputDimsRef = useRef({ w: 0, h: 0 })
+  useEffect(() => { outputDimsRef.current = outputDims }, [outputDims])
   const [effectsBypass, setEffectsBypass] = useState(false)
   // Poster fast-preview mode: grid cells show a single representative frame
   // instead of live video. Default ON. Preview-only — never affects render.
@@ -145,23 +189,94 @@ export default function VideoPreview() {
     active: false, completed: 0, total: 0, pending: 0, holdingVideo: false,
   })
 
+  // ── Engine preview-enabled sync (RENDER_PERF_AUDIT Finding 1) ────────────
+  // The engine idles the whole video thread (composite/decode/readback) when
+  // told nobody can see the canvas — one black frame written, then latched
+  // idle. Independent of export's own pause flag, so this can never affect a
+  // render, and it only touches the video tick — playback audio is untouched.
+  // "Visible" is the AND of three independent signals: the panel itself
+  // (hidden via F8 / keepAliveWhenHidden, or tabbed behind another panel in
+  // the dock — both flow through usePanelVisibility's isVisible, already a
+  // dependency here), the document's Page Visibility state (covers OS-level
+  // minimize), and window focus (covers the window being fully occluded
+  // behind another app). Kept as one effect, not split across several, so
+  // there is a single place that ever calls preview.setEnabled.
+  const engineDocFocusRef = useRef({ doc: true, focus: true })
+  useEffect(() => {
+    const syncEngineEnabled = () => {
+      const v = engineDocFocusRef.current
+      window.xleth?.preview?.setEnabled?.(isVisible && v.doc && v.focus)
+    }
+    const onVisibilityChange = () => {
+      engineDocFocusRef.current.doc = document.visibilityState === 'visible'
+      syncEngineEnabled()
+    }
+    const onFocus = () => { engineDocFocusRef.current.focus = true; syncEngineEnabled() }
+    const onBlur  = () => { engineDocFocusRef.current.focus = false; syncEngineEnabled() }
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('focus', onFocus)
+    window.addEventListener('blur', onBlur)
+    engineDocFocusRef.current.doc = document.visibilityState === 'visible'
+    engineDocFocusRef.current.focus = document.hasFocus()
+    syncEngineEnabled()
+    return () => {
+      document.removeEventListener('visibilitychange', onVisibilityChange)
+      window.removeEventListener('focus', onFocus)
+      window.removeEventListener('blur', onBlur)
+      window.xleth?.preview?.setEnabled?.(false)
+    }
+  }, [isVisible])
+
+  // Applies a previewResolutionScale to both the engine's compositor (resizes
+  // its render target) and the shm surface (resizes frameOutput to match —
+  // see Issue 1 in the video-preview audit: the shm used to stay fixed at
+  // 960x540 and get CPU-nearest-neighbour-upsampled back up regardless of
+  // scale). The two RPCs are sequential, not atomic; XlethEngineService.cpp's
+  // swizzle now skips a frame rather than write past either mapping if it
+  // observes them mid-transition. Once the shm resize resolves, pushes the
+  // new dimensions into the live canvas/gl/sabWidth closures via the ref the
+  // mount effect below populates.
+  const applyPreviewResolutionScale = useCallback(async (scale) => {
+    await window.xleth?.timeline?.setPreviewResolutionScale(scale)
+    const { w, h } = shmDimsForScale(scale)
+    const meta = await window.xleth?.video?.getFrameShm?.(w, h)
+    if (meta) applyShmResizeRef.current?.(meta.width, meta.height)
+  }, [])
+
   // Restore persisted settings on mount
   useEffect(() => {
     async function restorePreviewSettings() {
       try {
         // Read from settings store (workstation-local, not project)
         const scale  = await window.xleth?.settings?.get('previewResolutionScale')
+        const auto   = await window.xleth?.settings?.get('previewResolutionAutoMode')
         const bypass = await window.xleth?.settings?.get('previewEffectsBypass')
         const poster = await window.xleth?.settings?.get('previewPosterMode')
         const resolvedScale  = (typeof scale  === 'number') ? scale  : 1.0
+        // Governor defaults ON for a fresh install — see RENDER_PERF_AUDIT
+        // Finding 8. Only an explicit prior "false" (user picked a manual
+        // percentage last session) turns it off on restore.
+        const resolvedAuto   = (typeof auto   === 'boolean') ? auto   : true
         const resolvedBypass = (typeof bypass === 'boolean') ? bypass : false
         // Poster mode defaults ON when no preference is stored yet.
         const resolvedPoster = (typeof poster === 'boolean') ? poster : true
         setResolutionScale(resolvedScale)
+        setAutoResolution(resolvedAuto)
         setEffectsBypass(resolvedBypass)
         setPosterMode(resolvedPoster)
-        // Apply to engine
-        await window.xleth?.timeline?.setPreviewResolutionScale(resolvedScale)
+        // Apply to engine. The shm resize this issues races the mount
+        // effect's first openFrameShm() below (harmless either order: if
+        // this wins, the shm is created at the restored scale from the
+        // start; if openFrameShm() wins, applyShmResizeRef isn't set yet so
+        // the resize call below is a no-op, but ensureFrameShm's cache was
+        // still primed for whenever the panel next opens).
+        //
+        // Order matters: applyPreviewResolutionScale goes through the manual
+        // setPreviewResolutionScale RPC, which clears auto mode engine-side.
+        // Restoring the auto flag AFTER it guarantees the final engine state
+        // matches what was actually persisted, regardless of that side effect.
+        await applyPreviewResolutionScale(resolvedScale)
+        await window.xleth?.timeline?.setPreviewResolutionAutoMode(resolvedAuto)
         await window.xleth?.timeline?.setPreviewEffectsBypass(resolvedBypass)
         await window.xleth?.timeline?.setPreviewPosterMode(resolvedPoster)
       } catch (e) {
@@ -177,12 +292,107 @@ export default function VideoPreview() {
     }
   }, [isVisible])
 
+  // Note the setResolutionScale calls below run BEFORE the awaits that make
+  // them true engine-side, so the dropdown responds immediately. That means a
+  // throw anywhere in here leaves the label ahead of the shm — which is how the
+  // surface got stuck at 50% while the badge read 75%. Catching keeps it from
+  // becoming an unhandled rejection; the reconcile poll above is what actually
+  // repairs the divergence, within one 2s tick.
   const handleResolutionChange = useCallback(async (e) => {
-    const scale = parseFloat(e.target.value)
-    setResolutionScale(scale)
-    await window.xleth?.timeline?.setPreviewResolutionScale(scale)
-    await window.xleth?.settings?.set('previewResolutionScale', scale)
-  }, [])
+    const raw = e.target.value
+    try {
+      if (raw === 'auto') {
+        setAutoResolution(true)
+        await window.xleth?.timeline?.setPreviewResolutionAutoMode(true)
+        await window.xleth?.settings?.set('previewResolutionAutoMode', true)
+        // Re-enabling auto doesn't itself change the scale — the governor only
+        // steps at its own rolling-window cadence — so just pick up whatever
+        // the engine is currently applying rather than leaving the dropdown
+        // showing a stale manual value.
+        const scale = await window.xleth?.timeline?.getPreviewResolutionScale()
+        if (typeof scale === 'number') {
+          setResolutionScale(scale)
+          const { w, h } = shmDimsForScale(scale)
+          const meta = await window.xleth?.video?.getFrameShm?.(w, h)
+          if (meta) applyShmResizeRef.current?.(meta.width, meta.height)
+          await window.xleth?.settings?.set('previewResolutionScale', scale)
+        }
+        return
+      }
+      const scale = parseFloat(raw)
+      setAutoResolution(false)
+      setResolutionScale(scale)
+      await applyPreviewResolutionScale(scale) // also clears auto mode engine-side
+      await window.xleth?.settings?.set('previewResolutionScale', scale)
+      await window.xleth?.settings?.set('previewResolutionAutoMode', false)
+    } catch (err) {
+      console.error('[VideoPreview] Resolution change failed:', err)
+    }
+  }, [applyPreviewResolutionScale])
+
+  // [PreviewResGovernor] Poll the engine's current previewResolutionScale and
+  // reconcile the UI against it. In auto mode this picks up a governor-driven
+  // step so the dropdown/badge stop showing a stale value (and persists it, so
+  // the next launch starts near where this one left off).
+  //
+  // Runs in BOTH auto and manual mode, and reconciles two independent things
+  // against the engine's authoritative scale:
+  //
+  //   1. the dropdown/badge label (auto only — a governor step)
+  //   2. the shm surface size (always)
+  //
+  // (2) is the one that matters for correctness. The engine composites at
+  // CANVAS_W/H * scale and copies into the shm only when the two agree
+  // exactly (XlethEngineService.cpp shmMatchesCompositor / the rb.width == fw
+  // guard); on a mismatch it skips the write. That skip is documented as
+  // covering the brief window between the two sequential RPCs a scale change
+  // issues, but nothing ever retried the resize — so any failure of the
+  // getFrameShm half (a rejected RPC, or applyShmResizeRef still being null
+  // because the mount effect had not run yet) latched a PERMANENT mismatch and
+  // the preview froze on a stale frame until restart.
+  //
+  // This used to compare the engine scale against resolutionScaleRef, i.e. two
+  // views of the same intent — which is exactly the pair that still agrees when
+  // the resize fails, so it could never detect the stuck state. Comparing the
+  // engine's expected dims against the shm's real dims closes that hole.
+  // getFrameShm is cached by size in main.js, so a matching poll costs one
+  // resolved promise and never touches the engine.
+  useEffect(() => {
+    let cancelled = false
+    const poll = async () => {
+      try {
+        const scale = await window.xleth?.timeline?.getPreviewResolutionScale()
+        if (cancelled || typeof scale !== 'number') return
+
+        if (autoResolution && Math.abs(scale - resolutionScaleRef.current) > 0.001) {
+          setResolutionScale(scale)
+          await window.xleth?.settings?.set('previewResolutionScale', scale)
+          if (cancelled) return
+        }
+
+        // Skip until the shm is actually open — dims of 0x0 mean the mount
+        // effect's openFrameShm() has not published a surface yet, and forcing
+        // a resize into that gap would race it.
+        const have = outputDimsRef.current
+        if (!have.w || !have.h) return
+
+        const want = shmDimsForScale(scale)
+        if (have.w === want.w && have.h === want.h) return
+
+        console.warn(
+          `[VideoPreview] shm/compositor size mismatch — shm ${have.w}x${have.h}, ` +
+          `engine scale ${scale} wants ${want.w}x${want.h}. Re-issuing resize; ` +
+          'the preview was frozen until now.'
+        )
+        const meta = await window.xleth?.video?.getFrameShm?.(want.w, want.h)
+        if (!cancelled && meta) applyShmResizeRef.current?.(meta.width, meta.height)
+      } catch (e) {
+        console.error('[VideoPreview] Resolution reconcile poll failed:', e)
+      }
+    }
+    const id = setInterval(poll, 2000)
+    return () => { cancelled = true; clearInterval(id) }
+  }, [autoResolution])
 
   const handleEffectsBypassToggle = useCallback(async () => {
     const next = !effectsBypass
@@ -268,6 +478,7 @@ export default function VideoPreview() {
     diag.pixelDiagEnabled = pixelDiagEnabled
     let pixelDiagFrame = 0          // counts successful uploads
     let readPixelsBuf = null        // lazily-sized RGBA scratch for readPixels
+    let canvas2dScratch = null      // lazily-sized BGRA→RGBA scratch for the Canvas2D fallback
     const PIXEL_DIAG_FIRST_N = 3    // always sample the first N uploads
     const PIXEL_DIAG_EVERY = 120    // then sample 1-in-N to keep watching
     const shouldSamplePixels = (n) => n < PIXEL_DIAG_FIRST_N || (n % PIXEL_DIAG_EVERY) === 0
@@ -317,6 +528,24 @@ export default function VideoPreview() {
       diag.shm.error = String(e?.message || e)
     }
 
+    // Applied by handleResolutionChange (and the startup settings-restore
+    // effect) once the engine's shm surface has been resized to match a new
+    // previewResolutionScale. Updates the same sabWidth/sabHeight/canvas
+    // closures the tick loop below reads every frame — no effect re-run or
+    // WebGL context recreation needed. shm.meta itself was already updated
+    // in place by preload's getFrameShm() before this fires.
+    if (shm) {
+      applyShmResizeRef.current = (w, h) => {
+        if (!w || !h) return
+        sabWidth = w
+        sabHeight = h
+        canvas.width  = w
+        canvas.height = h
+        if (gl) gl.viewport(0, 0, w, h)
+        setOutputDims({ w, h })
+      }
+    }
+
     // ── Eyedropper pixel read ────────────────────────────────────────────
     // Samples the shared-memory frame directly. This is the ONLY correct
     // source: the WebGL context uses preserveDrawingBuffer:false, so reading
@@ -333,8 +562,8 @@ export default function VideoPreview() {
         if (!frame) return null
         const o = (py * sabWidth + px) * 4
         if (o + 2 >= frame.length) return null
-        // shm frames are RGBA (see the pixel-diag labelling above).
-        return { r: frame[o] / 255, g: frame[o + 1] / 255, b: frame[o + 2] / 255 }
+        // shm frames are BGRA (see the pixel-diag labelling above).
+        return { r: frame[o + 2] / 255, g: frame[o + 1] / 255, b: frame[o] / 255 }
       }
     }
 
@@ -471,14 +700,14 @@ export default function VideoPreview() {
           if (useWebGL) {
             try {
               // ── Diag: renderer-pre-webgl-upload ──────────────────────────
-              // Stats on the exact RGBA bytes read from shared memory, BEFORE
+              // Stats on the exact BGRA bytes read from shared memory, BEFORE
               // they touch WebGL. Compared against the engine's
-              // post-frameoutput-write (also RGBA) this isolates transport vs
+              // post-frameoutput-write (also BGRA) this isolates transport vs
               // GPU-upload faults. Sampled sparingly — heavy full-frame loop.
               const sampleThis = pixelDiagEnabled && shouldSamplePixels(pixelDiagFrame)
               if (sampleThis) {
                 try {
-                  const stats = computeFrameStatsJS(frame, sabWidth, sabHeight, 'RGBA')
+                  const stats = computeFrameStatsJS(frame, sabWidth, sabHeight, 'BGRA')
                   stats.shmIndex = idx
                   recordRendererStats('renderer-pre-webgl-upload', stats)
                 } catch { /* never let diag break preview */ }
@@ -521,10 +750,21 @@ export default function VideoPreview() {
             }
           } else if (ctx2d) {
             try {
-              // Canvas2D fallback: putImageData needs a Uint8ClampedArray view over
-              // the same SAB region. ImageData constructor requires it.
-              const clamped = new Uint8ClampedArray(frame.buffer, frame.byteOffset, frame.byteLength)
-              ctx2d.putImageData(new ImageData(clamped, sabWidth, sabHeight), 0, 0)
+              // Canvas2D fallback: shm is native BGRA (see FRAG_SRC above), but
+              // ImageData has no channel-swizzle option — putImageData interprets
+              // its bytes as literal RGBA. Unlike the WebGL path, this has to pay
+              // for the swap in JS. Only the no-WebGL fallback pays it.
+              const need = frame.length
+              if (!canvas2dScratch || canvas2dScratch.length !== need) {
+                canvas2dScratch = new Uint8ClampedArray(need)
+              }
+              for (let o = 0; o < need; o += 4) {
+                canvas2dScratch[o]     = frame[o + 2]
+                canvas2dScratch[o + 1] = frame[o + 1]
+                canvas2dScratch[o + 2] = frame[o]
+                canvas2dScratch[o + 3] = frame[o + 3]
+              }
+              ctx2d.putImageData(new ImageData(canvas2dScratch, sabWidth, sabHeight), 0, 0)
               uploadOk = true
             } catch (e) {
               diag.lastTexUploadError = String(e?.message || e)
@@ -565,6 +805,7 @@ export default function VideoPreview() {
       runningRef.current = false
       tickRef.current = null
       pickPixelRef.current = null
+      applyShmResizeRef.current = null
       window.removeEventListener('xleth-theme-changed', handleThemeChange)
       canvas.removeEventListener('webglcontextlost', onContextLost)
       canvas.removeEventListener('webglcontextrestored', onContextRestored)
@@ -731,21 +972,25 @@ export default function VideoPreview() {
 
           {/* Current preview output resolution. Shows scale qualifier when
               not at 100% so the user always knows whether the preview is
-              running at native resolution or downsampled. */}
+              running at native resolution or downsampled, and an "auto" tag
+              when the governor (not the user) picked that scale — see
+              RENDER_PERF_AUDIT Finding 8. */}
           {outputDims.w > 0 && (
             <span className="video-resolution" title="Current preview output resolution">
               {outputDims.w}×{outputDims.h}
               {resolutionScale < 0.999 && ` (${Math.round(resolutionScale * 100)}%)`}
+              {autoResolution && ' · auto'}
             </span>
           )}
 
           {/* Resolution scale dropdown */}
           <select
             className="preview-resolution-select"
-            value={resolutionScale}
+            value={autoResolution ? 'auto' : resolutionScale}
             onChange={handleResolutionChange}
-            title="Preview resolution (lower = faster)"
+            title="Preview resolution (lower = faster). Auto adjusts this automatically to keep the preview at its target frame rate."
           >
+            <option value="auto">Auto</option>
             <option value="1.0">100%</option>
             <option value="0.75">75%</option>
             <option value="0.5">50%</option>

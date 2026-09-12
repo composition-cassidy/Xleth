@@ -15,10 +15,12 @@ import {
   ZoomIn,
   ZoomOut,
 } from 'lucide-react'
+import { ToastStatusText } from './Toast.jsx'
 import { usePanelRegistry } from '../windowing/registry/PanelRegistry'
 import { PANEL_CATALOG_ORDER } from '../windowing/registry/panelCatalog'
 import { useQuickLaunchersStore } from '../stores/quickLaunchersStore.js'
 import { XlethButton, XlethIconButton } from './common/XlethButton.jsx'
+import { useDockMagnification } from '../hooks/useDockMagnification.js'
 
 const DROPDOWN_OPEN_DELAY_MS = 40
 const DROPDOWN_CLOSE_MS = 80
@@ -166,6 +168,7 @@ function TitleBarLauncherButton({ entry }) {
       title={`${entry.title} (${entry.fKey})`}
       aria-label={`Toggle ${entry.title}`}
       aria-pressed={panelVisible}
+      data-dock-label={entry.title}
     >
       <Icon size={22} strokeWidth={2} aria-hidden="true" />
     </XlethIconButton>
@@ -188,6 +191,7 @@ function QuickLauncherButton({ launcher }) {
       onClick={handleClick}
       title={launcher.label}
       aria-label={`Launch ${launcher.label}`}
+      data-dock-label={launcher.label}
     >
       {iconUrl ? (
         <img
@@ -216,6 +220,7 @@ function QuickLauncherButton({ launcher }) {
 export default function TitleBar({ projectName = 'Untitled Project', onAction, activeMenuLabel = null }) {
   const quickLaunchers = useQuickLaunchersStore((state) => state.launchers)
   const hydrateQuickLaunchers = useQuickLaunchersStore((state) => state.hydrate)
+  const dockRef = useDockMagnification('.titlebar-launcher-btn')
 
   useEffect(() => { hydrateQuickLaunchers() }, [hydrateQuickLaunchers])
 
@@ -379,16 +384,17 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction, a
             )
           })}
         </nav>
+        <ToastStatusText />
       </div>
 
-      <div className="titlebar-launchers">
+      <div className="titlebar-launchers titlebar-dock" ref={dockRef}>
+        {/* Backing plate — useDockMagnification reshapes its clip-path so it
+            conforms to the magnified icons. Must stay the first child. */}
+        <div className="titlebar-dock-plate" aria-hidden="true" />
+
         {PANEL_CATALOG_ORDER
           .filter((entry) => entry.id !== 'sampleSelector')
           .map((entry) => <TitleBarLauncherButton key={entry.id} entry={entry} />)}
-
-        {quickLaunchers.length > 0 && (
-          <div className="titlebar-launchers-divider" aria-hidden="true" />
-        )}
 
         {quickLaunchers.map((launcher) => (
           <QuickLauncherButton key={launcher.id} launcher={launcher} />

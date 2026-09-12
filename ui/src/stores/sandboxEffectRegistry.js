@@ -1,5 +1,6 @@
 import {
   GAIN_ENVELOPE_MODE, GAIN_ENVELOPE_ATTACK_MS_DEFAULT, GAIN_ENVELOPE_RELEASE_MS_DEFAULT,
+  PITCH_MODE,
 } from './sandboxStore.js'
 
 // The EFFECT ▾ menu's op metadata — one entry per addable operation, grouped
@@ -18,6 +19,12 @@ import {
 // Two entries here don't correspond 1:1 with an engine op type:
 //  - GAIN vs NORMALIZE are both the `gain` op type, split by its own
 //    `normalize` flag — matchesStack checks the flag, not just the type.
+//  - PITCH SHIFT vs VARISPEED are both the `pitch` op type, split by its own
+//    `mode` flag (PITCH_MODE) — the same shape as GAIN/NORMALIZE. Both are
+//    unlimited, so neither needs matchesStack; the two entries exist because
+//    "shift the pitch" and "speed the tape up" are different intentions a user
+//    arrives with, and burying the second one inside a dropdown on the first
+//    means nobody finds it.
 //  - GAIN ENVELOPE vs DYNAMICS MOD both target the single `gainEnvelope` op
 //    (Absolute vs Relative mode — see GAIN_ENVELOPE_MODE) since the engine
 //    has no separate "dynamics mod" op type. Whichever is added first blocks
@@ -128,7 +135,13 @@ export const EFFECT_REGISTRY = [
   // ── PITCH ──────────────────────────────────────────────────────────────
   {
     id: 'pitch', label: 'Pitch Shift', category: 'PITCH', maxInstances: Infinity, needsSelection: false,
-    run: (store, ctx) => store.addPitchShift(ctx.layerId, 0, false),
+    run: (store, ctx) => store.addPitchShift(ctx.layerId, 0, false, PITCH_MODE.preserve),
+  },
+  {
+    // Same op, `mode: resample` — see the header note. Length moves with the
+    // pitch here, which is exactly why it is worth its own menu row.
+    id: 'varispeed', label: 'Varispeed (Resample)', category: 'PITCH', maxInstances: Infinity, needsSelection: false,
+    run: (store, ctx) => store.addPitchShift(ctx.layerId, 0, false, PITCH_MODE.resample),
   },
   {
     id: 'formantShift', label: 'Formant Shift', category: 'PITCH', maxInstances: Infinity, needsSelection: false,

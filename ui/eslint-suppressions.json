@@ -74,11 +74,6 @@
       "count": 2
     }
   },
-  "src/components/pianoRoll/PianoRollCanvas.jsx": {
-    "no-restricted-syntax": {
-      "count": 12
-    }
-  },
   "src/components/timeline/LoopRegionBar.jsx": {
     "no-restricted-syntax": {
       "count": 6

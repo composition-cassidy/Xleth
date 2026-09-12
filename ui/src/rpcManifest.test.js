@@ -242,7 +242,14 @@ describe('rpc-manifest invariants', () => {
 
   it('excludes batch ops, default-arg autoTrimClip/previewNote, and project load/newBlank', () => {
     const methods = new Set(METHODS.map((m) => m.method));
-    // Batch ops (batching logic) and the default-arg fixups autoTrimClip
+    // NOTE: "batch op" is not by itself a reason to be excluded — what matters
+    // is whether the JS layers are pure pass-throughs. timeline_add/paste
+    // PatternBlocksBatch and automation_addClipsBatch ARE in the manifest: all
+    // of their batching (and, for automation, the free-slot resolution) lives in
+    // the engine handler and every JS layer is a single-arg forward. The *Clips
+    // Batch methods below stay hand-written because they predate the manifest,
+    // not because batching disqualifies them.
+    // The *Clips batch ops and the default-arg fixups autoTrimClip
     // (thresholdDb=-54) / previewNote (velocity=0.8) stay hand-written in
     // ui/electron-main/timeline.js + patterns.js. project_load / project_newBlank
     // stay hand-written in ui/electron-main/project.js — they broadcast

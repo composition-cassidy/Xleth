@@ -3,6 +3,7 @@ import CornerRadiusControl from './CornerRadiusControl.jsx'
 import CustomGapControl from './CustomGapControl.jsx'
 import VisualFXSection from './VisualFXSection.jsx'
 import SlideNoteEffectSection from './SlideNoteEffectSection.jsx'
+import NoteFadeSection from './NoteFadeSection.jsx'
 
 export default function TrackCard({ track, slot, badges, gapScale, fetchTracks, applyCornerRadiusToAll, compact = false }) {
   return (
@@ -25,6 +26,9 @@ export default function TrackCard({ track, slot, badges, gapScale, fetchTracks, 
       {!compact && <VisualFXSection track={track} fetchTracks={fetchTracks} />}
       {!compact && track.type === 'Pattern' && (
         <SlideNoteEffectSection track={track} fetchTracks={fetchTracks} />
+      )}
+      {!compact && track.type === 'Pattern' && (
+        <NoteFadeSection track={track} fetchTracks={fetchTracks} />
       )}
     </div>
   )

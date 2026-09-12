@@ -10,6 +10,7 @@ const CANVAS_H   = 132
 const RULER_H    = 18
 const MIN_VIEW_DUR = 0.5  // maximum zoom-in: 0.5 s visible
 const SCROLL_H     = 7    // height of position-indicator strip (px)
+const MIN_REGION_DRAG = 0.01  // shortest middle-drag that counts as a region (s)
 
 function formatTime(s) {
   if (!isFinite(s) || s < 0) return '0:00.00'
@@ -33,12 +34,16 @@ function formatTime(s) {
  *   onOutChange   – (time: number) => void
  *   existingSamples      – Array<{ id, startTime, endTime, label }> | undefined
  *   showExistingSamples  – boolean — overlay existingSamples as label-colored bands
+ *   onRegionDragEnd      – (sel: { start, end }) => void — fired when a
+ *                          middle-button drag commits a new in/out region
  *
- * Zoom/pan:
+ * Mouse:
+ *   Left drag             → seek / drag an existing in or out handle
+ *   Middle drag           → sweep out a new in/out region in one gesture
  *   Scroll wheel          → zoom in/out (centered on cursor)
  *   Shift + scroll wheel  → pan horizontally
  *   Horizontal trackpad   → pan horizontally
- *   Double-click          → reset zoom to full view
+ *   Double-click scrollbar → reset zoom to full view
  */
 export default function WaveformScrubber({
   filePath,
@@ -53,10 +58,13 @@ export default function WaveformScrubber({
   onOutChange,
   existingSamples,
   showExistingSamples,
+  onRegionDragEnd,
 }) {
   const canvasRef    = useRef(null)
   const containerRef = useRef(null)
   const drag         = useRef(null)
+  // Middle-button region sweep: { anchor, prevIn, prevOut } while active
+  const regionDrag   = useRef(null)
 
   // ── View state (seconds) ──────────────────────────────────────────────────
   // viewEnd = null means "show full file" (resolved to `duration` at render time).
@@ -451,8 +459,11 @@ export default function WaveformScrubber({
     return () => container.removeEventListener('wheel', handleWheel)
   }, [])  // Empty deps — all reads go through refs; setters are stable
 
-  // ── Double-click → reset to full view ─────────────────────────────────────
-  const onDoubleClick = useCallback(() => {
+  // ── Reset to full view ────────────────────────────────────────────────────
+  // Deliberately NOT bound to double-click on the waveform: double-clicking
+  // while marking points is common and blowing the zoom away each time is
+  // hostile. It lives on the scrollbar (only visible while zoomed) instead.
+  const resetZoom = useCallback(() => {
     applyView(0, null)
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [])
@@ -481,15 +492,30 @@ export default function WaveformScrubber({
   }
 
   const onMouseDown = useCallback((e) => {
+    // ── Middle button: sweep out an in/out region in one gesture ───────────
+    if (e.button === 1) {
+      if (e.target?.closest?.('.waveform-scrollbar')) return
+      e.preventDefault()   // also suppresses Chrome's autoscroll cursor
+      const t = pxToTime(e.clientX)
+      // Remember the current points so a stray middle-CLICK (no drag) can be
+      // rolled back instead of wiping a selection the user already set.
+      regionDrag.current = { anchor: t, prevIn: inPoint, prevOut: outPoint }
+      onInChange(t)
+      onOutChange(t)
+      return
+    }
+    if (e.button !== 0) return
+
     e.preventDefault()
     if (hitHandle(e.clientX, inPoint))  { drag.current = 'in';  return }
     if (hitHandle(e.clientX, outPoint)) { drag.current = 'out'; return }
     drag.current = 'seek'
     onSeek(pxToTime(e.clientX))
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [inPoint, outPoint, onSeek])
+  }, [inPoint, outPoint, onSeek, onInChange, onOutChange])
 
   const onMouseMove = useCallback((e) => {
+    if (regionDrag.current) return   // handled by the document-level listeners
     if (!drag.current) return
     const t = pxToTime(e.clientX)
     if (drag.current === 'seek') onSeek(t)
@@ -499,6 +525,42 @@ export default function WaveformScrubber({
   }, [onSeek, onInChange, onOutChange])
 
   const onMouseUp = useCallback(() => { drag.current = null }, [])
+
+  // ── Middle-button region drag (document-level so it survives leaving the
+  //    canvas, and still commits if the button is released outside it) ──────
+  useEffect(() => {
+    function onMove(e) {
+      const rd = regionDrag.current
+      if (!rd) return
+      const t = pxToTime(e.clientX)
+      onInChange(Math.min(rd.anchor, t))
+      onOutChange(Math.max(rd.anchor, t))
+    }
+    function onUp(e) {
+      const rd = regionDrag.current
+      if (!rd) return
+      regionDrag.current = null
+      const t     = pxToTime(e.clientX)
+      const start = Math.min(rd.anchor, t)
+      const end   = Math.max(rd.anchor, t)
+      if (end - start >= MIN_REGION_DRAG) {
+        onInChange(start)
+        onOutChange(end)
+        onRegionDragEnd?.({ start, end })
+      } else {
+        onInChange(rd.prevIn)
+        onOutChange(rd.prevOut)
+      }
+    }
+    document.addEventListener('mousemove', onMove)
+    document.addEventListener('mouseup', onUp)
+    return () => {
+      document.removeEventListener('mousemove', onMove)
+      document.removeEventListener('mouseup', onUp)
+    }
+    // pxToTime/resolveView read only refs, so the first-render closures stay
+    // correct for the life of the component.
+  }, [onInChange, onOutChange, onRegionDragEnd])
 
   // ── Scrollbar drag (horizontal pan) ────────────────────────────────────────
   const scrollbarRef      = useRef(null)
@@ -574,8 +636,8 @@ export default function WaveformScrubber({
       onMouseMove={onMouseMove}
       onMouseUp={onMouseUp}
       onMouseLeave={onMouseUp}
-      onDoubleClick={onDoubleClick}
-      title="Scroll to zoom · Drag scrollbar to pan · Double-click to reset"
+      onAuxClick={e => { if (e.button === 1) e.preventDefault() }}
+      title="Middle-drag to mark a region · Scroll to zoom · Drag scrollbar to pan"
     >
       <canvas
         ref={canvasRef}
@@ -587,6 +649,8 @@ export default function WaveformScrubber({
           ref={scrollbarRef}
           className="waveform-scrollbar"
           onClick={onScrollbarTrackClick}
+          onDoubleClick={resetZoom}
+          title="Drag to pan · Double-click to reset zoom"
         >
           <div
             className="waveform-scrollbar-thumb"

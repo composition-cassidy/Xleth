@@ -24,6 +24,46 @@ double hzOfCents(double cents) { return std::exp2(cents / 1200.0); }
 
 double clamp01Pct(double pct) { return std::clamp(pct, 0.0, 100.0) / 100.0; }
 
+// Rasterizes a sparse breakpoint list onto a single query time. `points`
+// must be sorted ascending by timeSec (normalizeAutotune's invariant on the
+// caller's side; this function does not re-check it). Before the first
+// point / after the last, holds that endpoint's value — same "hold at range
+// ends" contract as paramtrack::evaluate (model/ParamTrack.h). Between two
+// straddling points, interpolation happens in CENTS (log-frequency), not raw
+// Hz — the same domain the pitch canvas's Y axis is linear in, so a straight
+// line the user draws on screen is the same shape the renderer reconstructs
+// between two widely-spaced breakpoints, not just between two adjacent
+// densely-sampled ones. `tension` (averaged across the pair) blends linear
+// (0) toward a smoothstep ease (±1); today's drawing UI always writes 0, so
+// nonzero tension is exercised only by direct tests until a tension-editing
+// UI exists.
+double evalManualCurve(const std::vector<ManualPitchPoint>& points, double tSec)
+{
+    if (points.empty()) return 0.0;
+    if (tSec <= points.front().timeSec) return points.front().targetHz;
+    if (tSec >= points.back().timeSec)  return points.back().targetHz;
+
+    // Linear scan: a drawn curve is tens to low hundreds of breakpoints, not
+    // worth a binary search.
+    size_t i = 0;
+    while (i + 1 < points.size() && points[i + 1].timeSec < tSec) ++i;
+    const ManualPitchPoint& a = points[i];
+    const ManualPitchPoint& b = points[i + 1];
+    const double span = b.timeSec - a.timeSec;
+    if (span <= 0.0) return b.targetHz;
+    if (!(a.targetHz > 0.0) || !(b.targetHz > 0.0)) return b.targetHz; // guard log2(<=0)
+
+    double frac = (tSec - a.timeSec) / span;
+    const double tension = std::clamp(0.5 * (a.tension + b.tension), -1.0, 1.0);
+    if (tension != 0.0) {
+        const double eased = frac * frac * (3.0 - 2.0 * frac);  // smoothstep
+        frac += tension * (eased - frac);
+    }
+    const double ca = centsOf(a.targetHz);
+    const double cb = centsOf(b.targetHz);
+    return hzOfCents(ca + (cb - ca) * frac);
+}
+
 } // namespace
 
 std::vector<int> scaleIntervals(ScaleType scale)
@@ -195,6 +235,111 @@ CorrectionCurveResult computeCorrectionCurve(
 
         // ── 6. scale total correction by amount ─────────────────────────
         const double finalCents = inputCents + amount * correctionApplied;
+
+        out.targetF0Hz      = (float)hzOfCents(finalCents);
+        out.correctionCents = (float)(finalCents - inputCents);
+        result.frames.push_back(out);
+
+        prevVoiced        = true;
+        lastVoicedTimeSec = tSec;
+    }
+
+    return result;
+}
+
+// ─── MANUAL mode ────────────────────────────────────────────────────────────
+//
+// The counterpart to computeCorrectionCurve above, sharing its overall shape
+// (retune-speed/smoothness one-pole approach, correctionAmount scaling) but
+// with a different candidate source and two of the six controls dropped:
+//   1. candidate target — evalManualCurve(manualPoints, tSec) instead of
+//      quantizing the frame's segment median to a scale/key note. There is
+//      no note-segment concept in MANUAL; the drawn curve already IS the
+//      per-instant target.
+//   2. jumpiness hold — REMOVED. A candidate change commits immediately;
+//      jumpiness has nothing to gate once there is no discrete note-commit
+//      step. A candidate JUMP (a hard-stepped drawn block boundary) still
+//      opens a smoothnessMs release window exactly like a SCALE note-switch
+//      does, so Smoothness still shapes the transition across a step; a
+//      continuous ALT-drawn glide never crosses the jump threshold
+//      frame-to-frame and rides retuneSpeedMs throughout instead.
+//   3. vibrato split/re-add — REMOVED. The user's drawn curve already
+//      contains any vibrato they wiggled into the stroke by hand; running it
+//      through the slow/fast split and re-adding only preserveVibrato's
+//      share would fight the drawing. Correction is applied unfiltered,
+//      i.e. as if preserveVibrato were pinned at 100.
+// Unvoiced frames pass through unchanged, same as computeCorrectionCurve —
+// MANUAL doesn't un-mute unvoiced source material, and the PSOLA renderer
+// still needs the source's own voicing/marks regardless of curve source.
+CorrectionCurveResult computeManualCorrectionCurve(
+    const std::vector<PitchFrame>&       f0track,
+    double                                sampleRate,
+    const std::vector<ManualPitchPoint>&  manualPoints,
+    const CorrectionParams&               params)
+{
+    CorrectionCurveResult result;
+    result.frames.reserve(f0track.size());
+    if (f0track.empty() || !(sampleRate > 0.0)) return result;
+
+    const double amount   = clamp01Pct(params.correctionAmount);
+    const double retuneMs = std::max(0.0, params.retuneSpeedMs);
+    const double smoothMs = std::max(0.0, params.smoothnessMs);
+
+    // A committed-value jump larger than this (in cents) opens a
+    // smoothnessMs release window, same trigger a SCALE note-switch uses.
+    // A semitone is 100 cents; 1 cent is well below anything a snap-to-note
+    // step could produce by accident, so it only fires on real block edges.
+    constexpr double kStepThresholdCents = 1.0;
+
+    bool   haveCommitted     = false;
+    double committedCents    = 0.0;
+    double releaseWindowEndS = 0.0;
+    double runningCents      = 0.0;
+    double lastVoicedTimeSec = 0.0;
+    bool   prevVoiced        = false;
+
+    for (const auto& fr : f0track) {
+        CorrectionFrame out;
+        out.posSample = fr.posSample;
+
+        if (!fr.voiced || !(fr.f0Hz > 0.0f)) {
+            out.targetF0Hz      = fr.f0Hz;
+            out.correctionCents = 0.0f;
+            result.frames.push_back(out);
+            prevVoiced = false;
+            continue;
+        }
+
+        const double tSec       = (double)fr.posSample / sampleRate;
+        const double inputCents = centsOf((double)fr.f0Hz);
+
+        const double candidateHz    = evalManualCurve(manualPoints, tSec);
+        const double candidateCents = candidateHz > 0.0 ? centsOf(candidateHz) : inputCents;
+
+        const bool onset = !prevVoiced || !haveCommitted;
+        if (onset) {
+            committedCents    = candidateCents;
+            releaseWindowEndS = tSec;        // no release ramp needed at onset
+            runningCents      = inputCents;  // start exactly at the input pitch
+            lastVoicedTimeSec = tSec;         // dt == 0 for this frame
+            haveCommitted     = true;
+        } else {
+            if (std::abs(candidateCents - committedCents) > kStepThresholdCents)
+                releaseWindowEndS = tSec + smoothMs / 1000.0;
+            committedCents = candidateCents;  // always commits — no hold
+        }
+
+        const double dt        = std::max(0.0, tSec - lastVoicedTimeSec);
+        const bool   inRelease = tSec < releaseWindowEndS;
+        const double tauMs     = inRelease ? smoothMs : retuneMs;
+        if (tauMs <= 0.0) {
+            runningCents = committedCents;
+        } else {
+            const double alpha = 1.0 - std::exp(-dt / (tauMs / 1000.0));
+            runningCents += (committedCents - runningCents) * alpha;
+        }
+
+        const double finalCents = inputCents + amount * (runningCents - inputCents);
 
         out.targetF0Hz      = (float)hzOfCents(finalCents);
         out.correctionCents = (float)(finalCents - inputCents);

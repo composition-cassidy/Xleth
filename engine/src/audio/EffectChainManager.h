@@ -14,6 +14,9 @@ class AudioGraph;
 class PluginRegistry;
 class XlethEffectBase;
 
+// Defined in AudioGraph.h; held here only by shared_ptr, so incomplete is fine.
+namespace xleth::audio { struct GraphRealtimeView; }
+
 // ─── EffectChainManager ─────────────────────────────────────────────────────
 // Thin wrapper around AudioGraph.  Preserves the original linear-chain API
 // (addEffect/removeEffect/moveEffect) so MixEngine requires zero changes.
@@ -286,6 +289,18 @@ public:
     // Process `numSamples` samples in-place.
     void processBlock(juce::AudioBuffer<float>& buffer, int numSamples,
                       juce::MidiBuffer& midi);
+
+    // ── Lock-free realtime view (Finding 9) ─────────────────────────────
+    // The audio thread reads chain contents through an immutable snapshot
+    // instead of the live node model, so it never has to hold MixEngine's
+    // chainsMutex_. See the RealtimeView note at the top of AudioGraph.h.
+    //
+    // realtimeView() is the audio-thread accessor (one atomic load, never
+    // null). refreshRealtimeView() is the message-thread republish, called by
+    // MixEngine::publishChainSnapshotLocked() after every chain mutation.
+    using RealtimeView = xleth::audio::GraphRealtimeView;
+    std::shared_ptr<const RealtimeView> realtimeView() const noexcept;
+    void refreshRealtimeView();
 
     // ── Sidechain key injection (Prompt 4C+4D groundwork) ───────────────
     // True iff this chain currently owns a sidechain-capable node (and therefore

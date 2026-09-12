@@ -101,7 +101,15 @@ try {
     { clipId: ids[0], trackId: trackB, positionTicks: 3840 },
     { clipId: ids[1], trackId: trackB, positionTicks: 4320 },
   ]);
-  check(moved === 2, 'moveClipsBatch reports the number of clips moved');
+  // The reply is the POST-STATE of what moved, not a count: the renderer
+  // splices these in instead of following every drag with a full getClips().
+  check(Array.isArray(moved) && moved.length === 2,
+        'moveClipsBatch returns the clips it moved');
+  check(moved[0].id === ids[0] && moved[0].positionTicks === 3840
+        && moved[0].trackId === trackB,
+        'the returned clip carries its post-move position and track');
+  check(moved[0].stretchRatio !== undefined && moved[0].modulation !== undefined,
+        'the returned clip is a FULL clip object, not a position patch');
   check(clipById(ids[0]).positionTicks === 3840 && clipById(ids[0]).trackId === trackB,
         'first clip moved to the requested track and position');
   check(clipById(ids[1]).positionTicks === 4320, 'second clip moved');
@@ -125,12 +133,15 @@ try {
     { clipId: ids[0], trackId: trackA, positionTicks: 480 },
     { clipId: 999999, trackId: trackA, positionTicks: 480 },
   ]);
-  check(partial === 1, 'moveClipsBatch skips ids that no longer exist');
+  check(partial.length === 1, 'moveClipsBatch skips ids that no longer exist');
   addon.undo_undo();
 
   // ── removeClipsBatch ───────────────────────────────────────────────────────
   const removed = addon.timeline_removeClipsBatch([ids[0], ids[1]]);
-  check(removed === 2, 'removeClipsBatch reports the number of clips removed');
+  check(Array.isArray(removed) && removed.length === 2,
+        'removeClipsBatch returns the ids it removed');
+  check(removed.includes(ids[0]) && removed.includes(ids[1]),
+        'the returned ids are the ones actually removed');
   check(addon.timeline_getClips().length === 0, 'both clips are gone');
 
   addon.undo_undo();
@@ -159,6 +170,15 @@ try {
   check(Array.isArray(pasteRes.newIds) && pasteRes.newIds.length === 2,
         'pasteClipsBatch returns the inserted ids');
   check(pasteRes.removedCount === 2, 'pasteClipsBatch reports what it overwrote');
+  // Post-state, so a paste needs no refetch either.
+  check(Array.isArray(pasteRes.clips) && pasteRes.clips.length === 2,
+        'pasteClipsBatch returns the inserted clips, not just their ids');
+  check(pasteRes.clips[0].id === pasteRes.newIds[0]
+        && pasteRes.clips[0].positionTicks === 960,
+        'the returned clips match the ids and carry their engine-side state');
+  check(Array.isArray(pasteRes.removedIds) && pasteRes.removedIds.length === 2
+        && pasteRes.removedIds.includes(ids[0]),
+        'pasteClipsBatch names exactly which clips it buried');
   check(addon.timeline_getClips().length === 2,
         'overwritten clips are gone, replacements are in — no stacking');
   check(near(clipById(pasteRes.newIds[0]).stretchRatio, 3.0),
@@ -190,8 +210,8 @@ try {
 
   // ── Empty input is a no-op, not an error ───────────────────────────────────
   check(addon.timeline_addClipsBatch([]).length === 0, 'empty addClipsBatch is a no-op');
-  check(addon.timeline_moveClipsBatch([]) === 0, 'empty moveClipsBatch is a no-op');
-  check(addon.timeline_removeClipsBatch([]) === 0, 'empty removeClipsBatch is a no-op');
+  check(addon.timeline_moveClipsBatch([]).length === 0, 'empty moveClipsBatch is a no-op');
+  check(addon.timeline_removeClipsBatch([]).length === 0, 'empty removeClipsBatch is a no-op');
   check(addon.timeline_getClips().length === 2, 'no-op batches left the timeline alone');
 } catch (err) {
   failed++;

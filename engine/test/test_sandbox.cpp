@@ -248,7 +248,43 @@ static void testOpModel() {
     SandboxOp bypassed = trimR;
     bypassed.enabled = false;
     CHECK_EQ(bypassed.outputLength(1000), int64_t(1000), "a bypassed op predicts no length change");
-    CHECK_EQ(pitch.outputLength(1000), int64_t(1000), "an unimplemented op predicts no length change");
+    CHECK_EQ(pitch.outputLength(1000), int64_t(1000),
+             "PITCH in Preserve mode predicts no length change");
+
+    // ── PITCH / Resample (varispeed) — the ONE pitch mode that changes length ──
+    // The whole point of routing this through dsp::varispeedOutputLength is
+    // that the prediction here and the buffer SandboxRenderer produces come
+    // from one function; testRestorationOps asserts the render agrees.
+    {
+        auto varispeed = [](double cents) {
+            return makeOp(2, SandboxOpType::Pitch,
+                          PitchParams{ cents, false, SandboxPitchMode::Resample });
+        };
+        CHECK_EQ(varispeed(0.0).outputLength(1000), int64_t(1000),
+                 "varispeed at 0 cents is length-neutral");
+        CHECK_EQ(varispeed(1200.0).outputLength(1000), int64_t(500),
+                 "varispeed +1 octave halves the length");
+        CHECK_EQ(varispeed(-1200.0).outputLength(1000), int64_t(2000),
+                 "varispeed -1 octave doubles the length");
+        CHECK_EQ(varispeed(1200.0).outputLength(0), int64_t(0),
+                 "an empty buffer stays empty");
+        CHECK_EQ(varispeed(9999999.0).outputLength(1000),
+                 varispeed(xleth::dsp::kVarispeedMaxCents).outputLength(1000),
+                 "an absurd cents value clamps rather than collapsing the buffer");
+        CHECK(varispeed(xleth::dsp::kVarispeedMaxCents).outputLength(1000) >= 1,
+              "a non-empty buffer never varispeeds down to zero samples");
+
+        SandboxOp off = varispeed(1200.0);
+        off.enabled = false;
+        CHECK_EQ(off.outputLength(1000), int64_t(1000),
+                 "a bypassed varispeed predicts no length change");
+
+        // The two modes are different audio, so they must not share a cache
+        // entry — the contentHash is what keys SandboxRenderer's prefix cache.
+        CHECK(varispeed(700.0).contentHash()
+                  != makeOp(2, SandboxOpType::Pitch, PitchParams{ 700.0, false }).contentHash(),
+              "Preserve and Resample at the same cents hash differently");
+    }
 
     // "endSample < 0 means to the end" survives an upstream length change —
     // the property that makes a stack re-evaluable rather than frozen.
@@ -317,7 +353,8 @@ static void testOpSerialization() {
         makeOp(6, SandboxOpType::Fade,      FadeParams{ 12, 480, SandboxFadeShape::Hann, false }),
         makeOp(7, SandboxOpType::Gain,      GainParams{ 5, 900, -3.5, true, -1.0 }),
         makeOp(8, SandboxOpType::Crossfade, CrossfadeParams{ 2400, 128, SandboxFadeShape::EqualPower }),
-        makeOp(9, SandboxOpType::Pitch,     PitchParams{ -250.5, true }),
+        makeOp(9, SandboxOpType::Pitch,
+               PitchParams{ -250.5, true, SandboxPitchMode::Resample }),
         makeOp(10, SandboxOpType::Stretch,  StretchParams{ 1.375, 5 }),
         makeOp(11, SandboxOpType::GainEnvelope,
                GainEnvelopeParams{ { {0, 0.0}, {4800, -18.25}, {9600, -3.5}, {96000, 0.0} } }),
@@ -639,6 +676,100 @@ static void testCommands() {
 // ---------------------------------------------------------------------------
 // SandboxCommands — layer mix / mute / solo undo+redo (SB-5)
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// SandboxCore::duplicateLayer + DuplicateSandboxLayerCommand
+// ---------------------------------------------------------------------------
+
+static void testDuplicateLayer() {
+    std::cout << "\n[SandboxCore/Commands — duplicate layer]\n";
+
+    Timeline    timeline;
+    UndoManager undo;
+    SandboxCore core;
+
+    const int srcId = core.addLayer("vox", 7, kTestRate, "C:/audio/vox.wav", 1.5, 3.25);
+    int op1 = 0, op2 = 0;
+    core.addOp(srcId, makeOp(0, SandboxOpType::Gain, GainParams{ 0, -1, -6.0, false, 0.0 }), -1, &op1);
+    core.addOp(srcId, makeOp(0, SandboxOpType::Reverse, ReverseParams{ 0, -1 }), -1, &op2);
+    core.setLayerMix(srcId, -4.5, 0.5, 480);
+    core.setLayerMuted(srcId, true);
+    core.setLayerSoloed(srcId, true);
+    core.markLayerRendered(srcId);
+
+    // A second layer AFTER the source, so "inserted directly after" is a real
+    // claim rather than a synonym for "appended".
+    const int tailId = core.addLayer("tail", 8, kTestRate);
+
+    // ── The raw mutator ──
+    int atIndex = -1;
+    const int copyId = core.duplicateLayer(srcId, "vox copy", &atIndex);
+    CHECK(copyId > 0 && copyId != srcId, "duplicateLayer mints a NEW layer id");
+    CHECK_EQ(atIndex, 1, "the copy lands directly after its source, not at the end");
+    CHECK_EQ(core.layers()[2].id, tailId, "…pushing the layers below it down");
+
+    const SandboxLayer* src  = core.findLayer(srcId);
+    const SandboxLayer* copy = core.findLayer(copyId);
+    CHECK(copy != nullptr, "the copy is findable by its new id");
+    CHECK_EQ(copy->name, std::string("vox copy"), "the caller's name is used");
+    CHECK_EQ(copy->ops.size(), src->ops.size(), "the whole op-stack came along");
+    CHECK_EQ(copy->stackHash(), src->stackHash(),
+             "…identically enough to share the renderer's cache entries");
+    CHECK_EQ(copy->ops[0].id, op1, "op ids are copied verbatim — they are layer-scoped");
+    CHECK_EQ(copy->sourceBufferId, src->sourceBufferId, "the copy points at the same source buffer");
+    CHECK_EQ(copy->sourceFilePath, src->sourceFilePath, "the durable source reference came along");
+    CHECK_NEAR(copy->sourceStartTime, 1.5, 1e-9, "…including its time range");
+    CHECK_NEAR(copy->gainDb, -4.5, 1e-9, "mix gain came along");
+    CHECK_NEAR(copy->pan, 0.5, 1e-9, "mix pan came along");
+    CHECK_EQ(copy->offsetSamples, int64_t(480), "mix offset came along");
+    CHECK(copy->muted, "mute came along");
+    CHECK(!copy->soloed,
+          "solo did NOT — it is a whole-workspace monitoring state, not a "
+          "property of this layer's content");
+    CHECK(!copy->clean(), "the copy starts dirty — nothing has been rendered under ITS id yet");
+    CHECK(src->clean(), "…and duplicating did not dirty the ORIGINAL");
+
+    CHECK_EQ(core.duplicateLayer(9999), -1, "duplicating an unknown layer is refused");
+
+    // An empty name keeps the original's verbatim — this class does not invent
+    // display names (see addLayer).
+    const int plainId = core.duplicateLayer(tailId);
+    CHECK_EQ(core.findLayer(plainId)->name, std::string("tail"),
+             "an empty name keeps the source's name");
+
+    // ── The command ──
+    const size_t before = core.layerCount();
+    auto cmd = std::make_unique<DuplicateSandboxLayerCommand>(core, srcId, "vox copy 2");
+    DuplicateSandboxLayerCommand* raw = cmd.get();
+    undo.execute(std::move(cmd), timeline);
+    const int cmdCopyId = raw->layerId();
+    CHECK_EQ(core.layerCount(), before + 1, "the command adds one layer");
+    CHECK_EQ(undo.getUndoCount(), 1, "…and is recorded in history");
+    CHECK_EQ(undo.getUndoDescription(), std::string("Duplicate Layer \"vox copy 2\""),
+             "describe() names the copy");
+
+    // Edit the COPY, then undo/redo: redo must restore what undo found, not
+    // re-run the copy against a source that has since moved on.
+    core.addOp(cmdCopyId, makeOp(0, SandboxOpType::Fade,
+                                 FadeParams{ 0, 64, SandboxFadeShape::Linear, true }), -1, nullptr);
+    CHECK_EQ(core.findLayer(cmdCopyId)->ops.size(), size_t(3), "the copy took an edit of its own");
+
+    undo.undo(timeline);
+    CHECK_EQ(core.layerCount(), before, "undo removes the duplicate");
+    CHECK(core.findLayer(cmdCopyId) == nullptr, "…by id");
+    CHECK(core.findLayer(srcId) != nullptr, "…and leaves the ORIGINAL alone");
+
+    undo.redo(timeline);
+    CHECK(core.findLayer(cmdCopyId) != nullptr, "redo puts the duplicate back with its id");
+    CHECK_EQ(core.findLayer(cmdCopyId)->ops.size(), size_t(3),
+             "redo restores the copy AS UNDO FOUND IT — the edit made after the "
+             "duplicate is not silently discarded by re-copying the source");
+
+    // ── A rejected duplicate must not consume an undo step ──
+    const int depth = undo.getUndoCount();
+    undo.execute(std::make_unique<DuplicateSandboxLayerCommand>(core, 9999), timeline);
+    CHECK_EQ(undo.getUndoCount(), depth, "duplicating an unknown layer is NOT recorded");
+}
 
 static void testLayerMixCommands() {
     std::cout << "\n[SandboxCommands — layer mix/mute/solo undo/redo]\n";
@@ -1323,7 +1454,7 @@ static void testDurableSourceRef() {
     int version = -1;
     CHECK(loaded.fromJson(src.toJson(), &version, nullptr), "workspace with a source ref parses");
     CHECK_EQ(version, kSandboxStackVersion, "the workspace carries the current sandboxStackVersion");
-    CHECK_EQ(kSandboxStackVersion, 3, "sandboxStackVersion is 3 now that AUTOTUNE exists");
+    CHECK_EQ(kSandboxStackVersion, 5, "sandboxStackVersion is 5 now that PITCH has a Resample mode");
     const SandboxLayer* rl = loaded.findLayer(l);
     CHECK(rl != nullptr, "the layer round-trips");
     CHECK_EQ(rl->sourceFilePath, std::string("C:/proj/media/kick.wav"), "sourceFilePath round-trips");
@@ -1840,6 +1971,53 @@ static void testRestorationOps() {
         const int upCrossings = countZeroCrossings(*up.buffer, 500, N - 500);
         CHECK(upCrossings > baseCrossings * 3 / 2,
               "PITCH +1200 cents (one octave) roughly doubles the zero-crossing rate");
+    }
+
+    // ── PITCH / Resample (varispeed) ──
+    // The tape move: pitch and length are the same parameter. Asserted against
+    // SandboxOp::outputLength rather than a literal, because "the prediction
+    // and the render agree" IS the property — a stack whose predicted length
+    // drifts from its rendered one poisons the prefix cache.
+    {
+        const int N = 8192;
+        const SandboxBuffer tone = makeSine(1, N, 220.0, kTestRate);
+        const int baseCrossings = countZeroCrossings(tone, 500, N - 500);
+
+        const SandboxOp unityOp = makeOp(1, SandboxOpType::Pitch,
+                                         PitchParams{ 0.0, false, SandboxPitchMode::Resample });
+        SandboxRenderResult unity = renderer.renderStack(130, tone, { unityOp }, kTestRate);
+        CHECK_EQ(unity.buffer->getNumSamples(), N, "varispeed at 0 cents keeps the length");
+        CHECK_NEAR(rmsOf(*unity.buffer, 500, N - 500), rmsOf(tone, 500, N - 500), 0.02f,
+                   "varispeed at 0 cents is near-identity (unity-gain kernel)");
+
+        const SandboxOp upOp = makeOp(1, SandboxOpType::Pitch,
+                                      PitchParams{ 1200.0, false, SandboxPitchMode::Resample });
+        SandboxRenderResult up = renderer.renderStack(131, tone, { upOp }, kTestRate);
+        CHECK_EQ(int64_t(up.buffer->getNumSamples()), upOp.outputLength(N),
+                 "the varispeed render is exactly as long as outputLength predicted");
+        CHECK_EQ(up.buffer->getNumSamples(), N / 2,
+                 "varispeed +1 octave HALVES the buffer (unlike Preserve, which cannot)");
+        // Half as many samples at twice the frequency = the same crossing count.
+        const int upCrossings = countZeroCrossings(*up.buffer, 250, N / 2 - 250);
+        CHECK(upCrossings > baseCrossings * 4 / 5,
+              "varispeed +1 octave doubles the frequency while halving the length");
+
+        const SandboxOp downOp = makeOp(1, SandboxOpType::Pitch,
+                                        PitchParams{ -1200.0, false, SandboxPitchMode::Resample });
+        SandboxRenderResult down = renderer.renderStack(132, tone, { downOp }, kTestRate);
+        CHECK_EQ(int64_t(down.buffer->getNumSamples()), downOp.outputLength(N),
+                 "varispeed down agrees with its prediction too");
+        CHECK_EQ(down.buffer->getNumSamples(), N * 2, "varispeed -1 octave DOUBLES the buffer");
+        CHECK(std::fabs(down.buffer->getSample(0, N)) <= 1.0f
+                  && std::fabs(down.buffer->getSample(0, 2 * N - 1)) <= 1.0f,
+              "the stretched buffer stays in range end to end — no edge blow-up");
+
+        // Preserve and Resample at the same cents must not collide in the
+        // prefix cache. Different lengths is the loudest possible proof.
+        SandboxRenderResult preserve = renderer.renderStack(
+            133, tone, { makeOp(1, SandboxOpType::Pitch, PitchParams{ 1200.0, false }) }, kTestRate);
+        CHECK(preserve.buffer->getNumSamples() != up.buffer->getNumSamples(),
+              "the two PITCH modes render differently at identical cents");
     }
 
     // ── PITCH — formant lock actually changes the render ──
@@ -2737,6 +2915,7 @@ int main() {
     testCoreMutation();
     testCoreSerialization();
     testCommands();
+    testDuplicateLayer();
     testLayerMixCommands();
     testBakeCompositeCommand();
     testDurableSourceRef();

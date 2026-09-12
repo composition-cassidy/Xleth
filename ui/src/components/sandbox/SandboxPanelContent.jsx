@@ -3,6 +3,7 @@ import useSandboxStore from '../../stores/sandboxStore.js'
 import useSandboxPanelStore from '../../stores/sandboxPanelStore.js'
 import useSeparationStore, { SEPARATION_TERMINAL_STATES } from '../../stores/separationStore.js'
 import { useKeyboardBinding } from '../../windowing/managers/useKeyboardBinding.ts'
+import { useSandboxEditShortcuts } from './useSandboxEditShortcuts.js'
 import { stopSandboxPreview } from './sandboxPreviewPlayer.js'
 import SandboxMenuBar from './SandboxMenuBar.jsx'
 import SandboxToolColumn from './SandboxToolColumn.jsx'
@@ -87,6 +88,21 @@ export default function SandboxPanelContent() {
     useSandboxStore.getState().toggleCompositePreview()
     return 'handled'
   })
+
+  // ── Edit shortcuts: Delete / Ctrl+X / Ctrl+C / Ctrl+V / Ctrl+D ──────────
+  // Same panel scope and the same claim-the-key contract as Space above, for
+  // the same reason: these are ordinary editor combos that the rest of the app
+  // also wants, and only the focused panel may have them.
+  //
+  // Delete and Ctrl+X are BOTH a real cut — clipboard first, then a Cut op
+  // that ripples the gap closed (sandboxStore.cutSelection). Deliberately not
+  // "delete = discard, cut = copy-then-discard": in an audio editor the
+  // selection you just removed is overwhelmingly the thing you are about to
+  // paste somewhere, and a Delete that silently threw it away would be the
+  // one gesture in this panel that loses material. The EFFECT ▾ menu's Cut
+  // entry runs the identical store action, so the two can never diverge.
+  useSandboxEditShortcuts()
+
   useEffect(() => () => {
     // Stop on panel unmount/close — also resets the store flag so a reopen
     // doesn't show a stale "Stop" icon for audio that's no longer playing.

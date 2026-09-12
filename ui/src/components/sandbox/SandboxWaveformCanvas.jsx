@@ -7,12 +7,20 @@ import { getTransportState, subscribe as subscribeTransport } from '../../transp
 import useSandboxStore, {
   gainEnvelopeAt, gainEnvelopeDbAt, sortEnvelopePoints, findEnvelopeOp,
   clampGainEnvelopeFollower, GAIN_ENVELOPE_MODE, GAIN_ENVELOPE_DB_MIN,
+  findSpectralPaintOp, SPC_SELECT_FREEHAND_DEFAULT,
 } from '../../stores/sandboxStore.js'
+import { computeAutotuneCorrectionCurve, allowedPitchClasses, quantizeToNearestNote } from './autotuneCorrectionPreview.js'
 
 // Fallback used only before the first layout measurement, and as a floor so
 // a squeezed panel never hands the canvas a degenerate (near-zero) height.
 const MIN_WAVE_HEIGHT = 160
 const MIN_SELECTION_PX = 3 // drags shorter than this collapse to "no selection", same gesture as a plain click
+
+// AUTOTUNE pitch curve (P5-4) — padding added above/below the auto-fit cents
+// range so a curve hugging the top/bottom of its own span doesn't touch the
+// canvas edge. ~1.5 semitones; a musical unit, not a pixel one, since the
+// axis itself is linear in cents.
+const PITCH_AXIS_PAD_CENTS = 150
 
 // ─── Gain envelope overlay (Audio Dynamics Editor, Mode 1) ──────────────────
 //
@@ -164,7 +172,12 @@ function hexToRgb(hex) {
 // log-spaced rows before ever drawing a pixel.
 const SPC_FREQ_MIN_HZ = 20
 const SPC_FREQ_MAX_HZ = 20000
-const SPC_GRID_HZ = [100, 1000, 10000] // labeled gridlines: "100", "1k", "10k"
+// Labeled gridlines. Was just [100, 1000, 10000] when the card was ~96px
+// tall — too little room for more without labels colliding. Now that the
+// active card gets real height (see .sandbox-layer-card.active
+// .sandbox-layer-card-wave in sandbox.css), fill in the octave-ish landmarks
+// between them.
+const SPC_GRID_HZ = [100, 200, 500, 1000, 2000, 5000, 10000]
 
 // Fraction (0..1) of the log axis between minHz and maxHz that `freq` falls
 // at. Shared by the image builder (which bin to sample per row) and the
@@ -177,6 +190,18 @@ function freqLogT(freq, minHz, maxHz) {
 
 function formatHzLabel(hz) {
   return hz >= 1000 ? `${hz / 1000}k` : `${hz}`
+}
+
+// Inverse of freqLogT, for turning a pointer Y back into Hz — the paint
+// brush's whole reason to exist. Row 0 (lowest frequency) is drawn at the
+// BOTTOM (see buildSpectrogramImage's own comment), so y=h (bottom) is t=0.
+function pxToFreq(y, h, minHz, maxHz) {
+  const t = 1 - Math.max(0, Math.min(1, y / Math.max(1, h)))
+  return minHz * Math.pow(maxHz / minHz, t)
+}
+
+function freqToPx(freq, h, minHz, maxHz) {
+  return h * (1 - freqLogT(freq, minHz, maxHz))
 }
 
 // Builds a (numFrames x numFreqRows) pixel grid for a spectrogram result —
@@ -261,6 +286,17 @@ export default function SandboxWaveformCanvas() {
   const envelopeEditMode = useSandboxStore((s) => s.envelopeEditMode)
   const setGainEnvelope = useSandboxStore((s) => s.setGainEnvelope)
   const viewMode = useSandboxStore((s) => s.viewMode)
+  const paintEditMode = useSandboxStore((s) => s.paintEditMode)
+  const paintBrush = useSandboxStore((s) => s.paintBrush)
+  const commitSpectralPaintDabs = useSandboxStore((s) => s.commitSpectralPaintDabs)
+  const spcSelectMode = useSandboxStore((s) => s.spcSelectMode)
+  const spcSelectShape = useSandboxStore((s) => s.spcSelectShape)
+  const spcSelection = useSandboxStore((s) => s.spcSelection)
+  const setSpcSelection = useSandboxStore((s) => s.setSpcSelection)
+  const setSpcHoverReadout = useSandboxStore((s) => s.setSpcHoverReadout)
+  const selectedOpId = useSandboxStore((s) => s.selectedOpId)
+  const ensurePitchTrack = useSandboxStore((s) => s.ensurePitchTrack)
+  const commitAutotuneManualStroke = useSandboxStore((s) => s.commitAutotuneManualStroke)
   const layer = layers.find((l) => l.id === activeLayerId) ?? null
 
   const containerRef = useRef(null)
@@ -269,6 +305,9 @@ export default function SandboxWaveformCanvas() {
   const bgCanvasRef = useRef(null)
   const overlayCanvasRef = useRef(null)
   const envCanvasRef = useRef(null)
+  const paintCanvasRef = useRef(null)
+  const spcSelectCanvasRef = useRef(null)
+  const pitchCanvasRef = useRef(null)
   const sizeRef = useRef({ w: 0, h: MIN_WAVE_HEIGHT })
   const colPeaksRef = useRef(null) // { numChannels, cols: [{min,max}, ...] }
   // Offscreen spectrogram bitmap, rebuilt only when the spectrogram OBJECT
@@ -280,6 +319,27 @@ export default function SandboxWaveformCanvas() {
   // the store, and nothing has been committed. Cleared on mouseup, at which
   // point exactly one UndoManager command goes out.
   const envDragRef = useRef(null)
+  // Live paint-stroke drag: an array of dabs accumulated so far this stroke,
+  // or null between strokes — the same "entire local-preview mechanism, one
+  // commit on release" contract envDragRef uses (see commitSpectralPaintDabs).
+  const paintDragRef = useRef(null)
+  // Live AUTOTUNE Manual-mode stroke: { axis, previewPoints } while dragging,
+  // or null between strokes — same "entire local-preview mechanism, one
+  // commit on release" contract envDragRef/paintDragRef use. `axis` (the
+  // cents/time range the canvas is currently fit to) is frozen at pointerdown
+  // rather than recomputed every move, so the drawn line doesn't wobble as
+  // the in-progress stroke temporarily extends past the committed range.
+  const pitchDragRef = useRef(null)
+  // Live SPC selection drag: an array of shapes accumulated so far, or null
+  // between drags — same "entire local-preview mechanism, one commit on
+  // release" contract paintDragRef uses. Committing here means
+  // setSpcSelection (a store write of the final shape list), not an engine
+  // call — the engine is only ever reached once an action (ATTENUATE/BOOST/
+  // MUTE/COPY TO NEW LAYER) fires on the committed selection.
+  const spcSelectDragRef = useRef(null)
+
+  const spectralPaintOp = findSpectralPaintOp(layer)
+  const paintDabs = spectralPaintOp?.params?.dabs ?? []
 
   const envOp = findEnvelopeOp(layer)
   const envBypassed = !!envOp && envOp.enabled === false
@@ -294,6 +354,39 @@ export default function SandboxWaveformCanvas() {
   const committedPoints = useMemo(() => sortEnvelopePoints(envParamPoints), [envParamPoints])
   const envFollower = useMemo(() => clampGainEnvelopeFollower(envOp?.params), [envOp?.params])
   const envIsRelative = envFollower.mode === GAIN_ENVELOPE_MODE.relative
+
+  // ── AUTOTUNE pitch curve (P5-4) ──────────────────────────────────────────
+  // Only the SELECTED op counts (unlike the envelope/paint overlays, which
+  // own the layer's one instance of their op type outright) — AUTOTUNE is a
+  // read-only preview of an op that already carries its own inline editor,
+  // so it only earns waveform space while the user is actually looking at
+  // its row. `ensurePitchTrack` itself is idempotent and fetches at most
+  // once per layer (session-cached, see sandboxStore.js), so re-arming this
+  // on every render is free.
+  const autotuneOp = layer?.ops.find((o) => o.id === selectedOpId && o.type === 'autotune') ?? null
+  useEffect(() => {
+    if (autotuneOp && layer) ensurePitchTrack(layer.id)
+  }, [autotuneOp, layer, ensurePitchTrack])
+  // The "corrected target" line has no engine RPC of its own (P5-1 serves
+  // only the raw f0 track) — computeAutotuneCorrectionCurve re-derives it
+  // client-side from the same six controls the inline editor edits, purely
+  // for this preview. Memoized on the op's own params object and the fetched
+  // track, so dragging an unrelated control (e.g. Amount on a DIFFERENT op)
+  // never re-runs the per-frame loop.
+  const pitchTrack = layer?.pitchTrack ?? null
+  const autotuneParams = autotuneOp?.params
+  // MANUAL mode (P5-5) has no scale/key target to compute here — the drawn
+  // curve is rendered directly from autotuneParams.manualPoints inside
+  // drawPitchCurve, with no dependency on a successful analysis (see the
+  // "always drawable" note on that function).
+  const correctionCurve = useMemo(() => {
+    if (autotuneParams?.mode === 1) return null
+    if (!pitchTrack || !pitchTrack.monophonic || !autotuneParams) return null
+    return computeAutotuneCorrectionCurve(
+      pitchTrack.frames, pitchTrack.notes, pitchTrack.sampleRate,
+      autotuneParams.scale, autotuneParams.key, autotuneParams.allowedNotes || [], autotuneParams,
+    )
+  }, [pitchTrack, autotuneParams])
 
   const [bpm, setBpm] = useState(() => getTransportState()?.bpm ?? 120)
   useEffect(() => subscribeTransport((s) => { if (s?.bpm) setBpm(s.bpm) }), [])
@@ -635,6 +728,305 @@ export default function SandboxWaveformCanvas() {
     ctx.globalAlpha = 1
   }, [layer, committedPoints, envelopeEditMode, envBypassed, envIsRelative, envFollower])
 
+  // ── Spectral paint draw (P3-2) ──────────────────────────────────────────
+  //
+  // Draws every committed dab (from the op's own params — accent) plus, while
+  // a stroke is in flight, the dabs accumulated so far in paintDragRef (a
+  // second colour) — the "local preview during paint" the spec calls for.
+  // Only meaningful over the SPC view: a dab's whole footprint is time ×
+  // frequency, and the WAV view has no frequency axis to place it on.
+  const drawPaint = useCallback(() => {
+    const canvas = paintCanvasRef.current
+    const w = sizeRef.current.w
+    const h = sizeRef.current.h
+    if (!canvas || w === 0) return
+    const ctx = canvas.getContext('2d')
+    ctx.clearRect(0, 0, w, h)
+    if (viewMode !== 'spc') return
+
+    const numSamples = layer?.renderedBuffer?.numSamples ?? 0
+    const sampleRate = layer?.renderedBuffer?.sampleRate || 48000
+    if (!numSamples) return
+
+    const minHz = SPC_FREQ_MIN_HZ
+    const maxHz = Math.min(SPC_FREQ_MAX_HZ, sampleRate / 2)
+    const accent = tokenValue('--theme-accent') || '#fe589a'
+    const danger = tokenValue('--theme-danger') || '#e05260'
+
+    const drawDab = (d, color) => {
+      const featherSamples = (Math.max(0, d.featherTimeMs) / 1000) * sampleRate
+      const x0 = sampleToPx(d.centerSample - d.halfWidthSamples - featherSamples, w, numSamples)
+      const x1 = sampleToPx(d.centerSample + d.halfWidthSamples + featherSamples, w, numSamples)
+      const yTop = freqToPx(d.centerFreqHz + d.halfHeightHz + Math.max(0, d.featherFreqHz), h, minHz, maxHz)
+      const yBot = freqToPx(d.centerFreqHz - d.halfHeightHz - Math.max(0, d.featherFreqHz), h, minHz, maxHz)
+      ctx.fillStyle = color
+      ctx.globalAlpha = 0.18
+      ctx.fillRect(x0, yTop, Math.max(1, x1 - x0), Math.max(1, yBot - yTop))
+
+      // The core (pre-feather) footprint, drawn a bit stronger so the brush's
+      // actual centre reads clearly under the softer feathered fringe.
+      const cx0 = sampleToPx(d.centerSample - d.halfWidthSamples, w, numSamples)
+      const cx1 = sampleToPx(d.centerSample + d.halfWidthSamples, w, numSamples)
+      const cyTop = freqToPx(d.centerFreqHz + d.halfHeightHz, h, minHz, maxHz)
+      const cyBot = freqToPx(d.centerFreqHz - d.halfHeightHz, h, minHz, maxHz)
+      ctx.globalAlpha = 0.4
+      ctx.fillRect(cx0, cyTop, Math.max(1, cx1 - cx0), Math.max(1, cyBot - cyTop))
+    }
+
+    ctx.globalAlpha = 1
+    for (const d of paintDabs) drawDab(d, accent)
+    for (const d of (paintDragRef.current || [])) drawDab(d, danger)
+    ctx.globalAlpha = 1
+  }, [layer, viewMode, paintDabs])
+
+  // ── SPC selection draw (rect/freehand t×f selection tool) ────────────────
+  //
+  // Draws the COMMITTED selection (from the store — accent, dashed outline)
+  // plus, while a drag is in flight, the shapes accumulated so far in
+  // spcSelectDragRef (a second colour) — same "local preview during the drag"
+  // contract drawPaint uses. Unlike drawPaint's filled dabs, a selection is
+  // drawn as an OUTLINE only: it has no amountDb yet, so filling it the way a
+  // dab's attenuation strength is filled would imply a strength that has not
+  // been chosen.
+  const drawSpcSelect = useCallback(() => {
+    const canvas = spcSelectCanvasRef.current
+    const w = sizeRef.current.w
+    const h = sizeRef.current.h
+    if (!canvas || w === 0) return
+    const ctx = canvas.getContext('2d')
+    ctx.clearRect(0, 0, w, h)
+    if (viewMode !== 'spc') return
+
+    const numSamples = layer?.renderedBuffer?.numSamples ?? 0
+    const sampleRate = layer?.renderedBuffer?.sampleRate || 48000
+    if (!numSamples) return
+
+    const minHz = SPC_FREQ_MIN_HZ
+    const maxHz = Math.min(SPC_FREQ_MAX_HZ, sampleRate / 2)
+    const accent = tokenValue('--theme-accent') || '#fe589a'
+    const danger = tokenValue('--theme-danger') || '#e05260'
+
+    const drawShape = (s, color) => {
+      const x0 = sampleToPx(s.centerSample - s.halfWidthSamples, w, numSamples)
+      const x1 = sampleToPx(s.centerSample + s.halfWidthSamples, w, numSamples)
+      const yTop = freqToPx(s.centerFreqHz + s.halfHeightHz, h, minHz, maxHz)
+      const yBot = freqToPx(s.centerFreqHz - s.halfHeightHz, h, minHz, maxHz)
+      ctx.strokeStyle = color
+      ctx.lineWidth = 1.5
+      ctx.setLineDash([4, 3])
+      ctx.strokeRect(x0, yTop, Math.max(1, x1 - x0), Math.max(1, yBot - yTop))
+      ctx.setLineDash([])
+    }
+
+    for (const s of (spcSelection?.shapes || [])) drawShape(s, accent)
+    for (const s of (spcSelectDragRef.current || [])) drawShape(s, danger)
+  }, [layer, viewMode, spcSelection])
+
+  // ── AUTOTUNE pitch curve draw (P5-4/P5-5) ───────────────────────────────
+  //
+  // Read-only preview in SCALE mode (per-note editing is out of scope there,
+  // the six controls are the whole surface). In MANUAL mode this same canvas
+  // IS the target-pitch editor — see handlePitchDown below. Only meaningful
+  // over the WAV view, mirroring why drawPaint gates on 'spc' the other way
+  // — a pitch curve has no reading over a spectrogram image.
+  //
+  // Time is the shared axis with the rest of the stack: the pitch track's
+  // own sample grid is the SOURCE buffer's (sandbox_getPitchTrack reads it
+  // directly, see sandboxStore.js's ensurePitchTrack), which is only the
+  // same timeline as the displayed renderedBuffer when nothing upstream of
+  // AUTOTUNE trims/stretches it — true in the common case (AUTOTUNE is a
+  // singleton, usually the only or first shaping op), a known approximation
+  // otherwise. Converting through TIME (not sample index) at least keeps the
+  // two rates honest when they differ.
+
+  // Auto-fits the cents axis to whatever pitch actually appears (detected f0
+  // + whichever target is active), so a low speaking voice and a high vocal
+  // run both use the full height. Shared by drawPitchCurve (recomputed each
+  // non-dragging render) and handlePitchDown (frozen for the duration of one
+  // stroke — see pitchDragRef's comment on why).
+  const getPitchAxis = useCallback(() => {
+    let minCents = Infinity
+    let maxCents = -Infinity
+    for (const fr of (pitchTrack?.frames || [])) {
+      if (fr.f0Hz > 0) {
+        const c = 1200 * Math.log2(fr.f0Hz)
+        if (c < minCents) minCents = c
+        if (c > maxCents) maxCents = c
+      }
+    }
+    for (const fr of (correctionCurve || [])) {
+      if (fr.targetF0Hz > 0) {
+        const c = 1200 * Math.log2(fr.targetF0Hz)
+        if (c < minCents) minCents = c
+        if (c > maxCents) maxCents = c
+      }
+    }
+    for (const pt of (autotuneOp?.params?.manualPoints || [])) {
+      if (pt.hz > 0) {
+        const c = 1200 * Math.log2(pt.hz)
+        if (c < minCents) minCents = c
+        if (c > maxCents) maxCents = c
+      }
+    }
+    if (!Number.isFinite(minCents)) {
+      // Nothing to fit yet — no analysis, no drawn points. A fixed 2-octave
+      // window centered on the op's current key, so Manual mode has
+      // somewhere sensible to draw before the first stroke.
+      const key = autotuneOp?.params?.key ?? 2
+      const rootHz = 440 * Math.pow(2, (60 + key - 69) / 12)
+      const rootCents = 1200 * Math.log2(rootHz)
+      return { minCents: rootCents - 1200, maxCents: rootCents + 1200 }
+    }
+    return { minCents: minCents - PITCH_AXIS_PAD_CENTS, maxCents: maxCents + PITCH_AXIS_PAD_CENTS }
+  }, [pitchTrack, correctionCurve, autotuneOp])
+
+  const drawPitchCurve = useCallback(() => {
+    const canvas = pitchCanvasRef.current
+    const w = sizeRef.current.w
+    const h = sizeRef.current.h
+    if (!canvas || w === 0) return
+    const ctx = canvas.getContext('2d')
+    ctx.clearRect(0, 0, w, h)
+    if (!autotuneOp || viewMode !== 'wav' || !layer?.renderedBuffer) return
+
+    const isManual = autotuneOp.params?.mode === 1
+    const accent = tokenValue('--theme-accent') || '#fe589a'
+    const warning = tokenValue('--theme-warning') || '#FFAA33'
+    const muted = tokenValue('--theme-text-muted') || '#888'
+    const danger = tokenValue('--theme-danger') || '#e05260'
+    const placeholder = tokenValue('--theme-text-placeholder') || '#666'
+
+    const durationSec = layer.renderedBuffer.numSamples / (layer.renderedBuffer.sampleRate || 48000)
+    const xForTime = (tSec) => (durationSec > 0 ? (tSec / durationSec) * w : 0)
+
+    // While a stroke is in flight, use the axis frozen at pointerdown rather
+    // than refitting to the in-progress stroke every move — refitting live
+    // would make the curve visibly rescale under the pointer as it draws.
+    const drag = pitchDragRef.current
+    const { minCents, maxCents } = drag ? drag.axis : getPitchAxis()
+    const rangeCents = Math.max(1, maxCents - minCents)
+    const yForCents = (c) => h - ((c - minCents) / rangeCents) * h
+    const hzY = (hz) => yForCents(1200 * Math.log2(hz))
+
+    // SCALE mode keeps the original refusal-blocks-canvas behaviour: there is
+    // no meaningful quantized target to show without a successful monophonic
+    // analysis. MANUAL draws its grid and its own curve regardless — only the
+    // detected-f0 REFERENCE overlay below depends on analysis succeeding.
+    if (!isManual) {
+      if (!pitchTrack) {
+        ctx.fillStyle = placeholder
+        ctx.font = uiCanvasFont('9px')
+        ctx.textAlign = 'left'
+        ctx.textBaseline = 'top'
+        ctx.fillText('Analyzing pitch…', 4, 4)
+        return
+      }
+      // The monophonic refusal (P5-4's other deliverable) — rendered directly
+      // on the curve's own canvas rather than a separate DOM banner, so it
+      // sits exactly where a garbled curve would otherwise have been drawn.
+      // Uses the analysis's own wording (same string the op row's refusal
+      // banner shows once a render has actually run and refused).
+      if (!pitchTrack.monophonic) {
+        ctx.fillStyle = danger
+        ctx.font = uiCanvasFont('11px')
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+        ctx.fillText(
+          pitchTrack.reason || 'polyphonic content — Autotune is monophonic-only', w / 2, h / 2,
+        )
+        ctx.textAlign = 'left'
+        ctx.textBaseline = 'alphabetic'
+        return
+      }
+    }
+
+    const frames = pitchTrack?.frames || []
+    const haveAnalysis = !!(pitchTrack && pitchTrack.monophonic && frames.length)
+
+    if (haveAnalysis) {
+      // Note-segment boundaries first, so both curves paint over them.
+      ctx.save()
+      ctx.setLineDash([3, 3])
+      ctx.lineWidth = 1
+      ctx.strokeStyle = placeholder
+      ctx.fillStyle = placeholder
+      ctx.font = uiCanvasFont('9px')
+      ctx.textBaseline = 'top'
+      for (const seg of pitchTrack.notes) {
+        const x = xForTime(seg.startSample / pitchTrack.sampleRate)
+        ctx.beginPath()
+        ctx.moveTo(x + 0.5, 0)
+        ctx.lineTo(x + 0.5, h)
+        ctx.stroke()
+        ctx.fillText(seg.noteName, x + 3, 2)
+      }
+      ctx.restore()
+
+      // Both curves break across unvoiced gaps rather than interpolating
+      // through them — a straight line across a consonant would claim a
+      // pitch that was never actually detected there.
+      const strokeCurve = (getHz, color, width) => {
+        ctx.strokeStyle = color
+        ctx.lineWidth = width
+        ctx.beginPath()
+        let open = false
+        for (let i = 0; i < frames.length; i++) {
+          const hz = getHz(i)
+          if (!(hz > 0)) { open = false; continue }
+          const x = xForTime(frames[i].posSample / pitchTrack.sampleRate)
+          const y = hzY(hz)
+          if (open) ctx.lineTo(x, y); else ctx.moveTo(x, y)
+          open = true
+        }
+        ctx.stroke()
+      }
+      // Raw detected f0 (muted, the "before") drawn under whichever target is
+      // active — SCALE's quantized target (accent) or, in Manual, the drawn
+      // curve below (warning) — the one control-affecting line gets the one
+      // accent-family colour, per the design system's "single teal accent on
+      // meaningful state" rule; the detected curve is context, not state.
+      strokeCurve((i) => frames[i].f0Hz, muted, 1)
+      if (!isManual && correctionCurve) {
+        strokeCurve((i) => correctionCurve[i].targetF0Hz, accent, 1.5)
+      }
+    }
+
+    if (isManual) {
+      const points = drag ? drag.previewPoints : (autotuneOp.params?.manualPoints || [])
+      if (points.length > 0) {
+        ctx.strokeStyle = warning
+        ctx.lineWidth = 1.5
+        ctx.beginPath()
+        let open = false
+        for (const pt of points) {
+          if (!(pt.hz > 0)) { open = false; continue }
+          const x = xForTime(pt.t)
+          const y = hzY(pt.hz)
+          if (open) ctx.lineTo(x, y); else ctx.moveTo(x, y)
+          open = true
+        }
+        ctx.stroke()
+        // Breakpoint markers, so a lone drawn point (before it has anything
+        // to connect to) is still visible rather than invisible.
+        ctx.fillStyle = warning
+        for (const pt of points) {
+          if (!(pt.hz > 0)) continue
+          ctx.beginPath()
+          ctx.arc(xForTime(pt.t), hzY(pt.hz), 1.5, 0, Math.PI * 2)
+          ctx.fill()
+        }
+      } else if (!drag) {
+        ctx.fillStyle = placeholder
+        ctx.font = uiCanvasFont('9px')
+        ctx.textAlign = 'center'
+        ctx.textBaseline = 'middle'
+        ctx.fillText('Draw a target pitch curve — hold ALT to free-draw', w / 2, h / 2)
+        ctx.textAlign = 'left'
+        ctx.textBaseline = 'alphabetic'
+      }
+    }
+  }, [autotuneOp, viewMode, layer, pitchTrack, correctionCurve, getPitchAxis])
+
   const drawRulerCanvas = useCallback(() => {
     const canvas = rulerCanvasRef.current
     const w = sizeRef.current.w
@@ -653,8 +1045,11 @@ export default function SandboxWaveformCanvas() {
     drawBackground()
     drawOverlay()
     drawEnvelope()
+    drawPaint()
+    drawSpcSelect()
+    drawPitchCurve()
     drawRulerCanvas()
-  }, [drawBackground, drawOverlay, drawEnvelope, drawRulerCanvas])
+  }, [drawBackground, drawOverlay, drawEnvelope, drawPaint, drawSpcSelect, drawPitchCurve, drawRulerCanvas])
 
   // The ResizeObserver below is set up once (mount) and lives for the
   // component's lifetime, so it must never call redrawAll directly — that
@@ -683,6 +1078,9 @@ export default function SandboxWaveformCanvas() {
       if (bgCanvasRef.current) applyCanvasSize(bgCanvasRef.current, w, h, dpr)
       if (overlayCanvasRef.current) applyCanvasSize(overlayCanvasRef.current, w, h, dpr)
       if (envCanvasRef.current) applyCanvasSize(envCanvasRef.current, w, h, dpr)
+      if (paintCanvasRef.current) applyCanvasSize(paintCanvasRef.current, w, h, dpr)
+      if (spcSelectCanvasRef.current) applyCanvasSize(spcSelectCanvasRef.current, w, h, dpr)
+      if (pitchCanvasRef.current) applyCanvasSize(pitchCanvasRef.current, w, h, dpr)
       redrawAllRef.current()
     }
 
@@ -697,8 +1095,8 @@ export default function SandboxWaveformCanvas() {
   // envelope must repaint after it, not merely alongside it, or the first
   // frame after a render arrives would run its headroom check against the
   // PREVIOUS buffer's peaks.
-  useEffect(() => { drawBackground(); drawOverlay(); drawEnvelope() },
-    [drawBackground, drawOverlay, drawEnvelope])
+  useEffect(() => { drawBackground(); drawOverlay(); drawEnvelope(); drawPaint(); drawSpcSelect(); drawPitchCurve() },
+    [drawBackground, drawOverlay, drawEnvelope, drawPaint, drawSpcSelect, drawPitchCurve])
   useEffect(() => { drawRulerCanvas() }, [drawRulerCanvas])
 
   // ── Selection drag ───────────────────────────────────────────────────────
@@ -870,9 +1268,333 @@ export default function SandboxWaveformCanvas() {
     setGainEnvelope(layer.id, committedPoints.filter((_, i) => i !== index))
   }, [envelopeEditMode, layer, committedPoints, envLocal, hitHandle, setGainEnvelope])
 
+  // ── Spectral paint editing ───────────────────────────────────────────────
+  //
+  // Minimum pointer travel between dabs so a slow drag doesn't lay down
+  // hundreds of near-identical dabs — each one is a real entry appended to
+  // the op's params on commit, not a free-form path the engine resamples.
+  const MIN_PAINT_STEP_PX = 4
+
+  const paintLocal = useCallback((e) => {
+    const rect = paintCanvasRef.current?.getBoundingClientRect()
+    if (!rect) return null
+    return {
+      x: Math.max(0, Math.min(rect.width, e.clientX - rect.left)),
+      y: Math.max(0, Math.min(rect.height, e.clientY - rect.top)),
+      w: rect.width,
+      h: rect.height,
+    }
+  }, [])
+
+  const handlePaintDown = useCallback((e) => {
+    if (e.button !== 0 || !paintEditMode || viewMode !== 'spc') return
+    const numSamples = layer?.renderedBuffer?.numSamples ?? 0
+    const sampleRate = layer?.renderedBuffer?.sampleRate || 48000
+    if (!numSamples) return
+    const pos = paintLocal(e)
+    if (!pos) return
+    e.preventDefault()
+    e.stopPropagation()
+
+    const minHz = SPC_FREQ_MIN_HZ
+    const maxHz = Math.min(SPC_FREQ_MAX_HZ, sampleRate / 2)
+
+    // One dab per pointer sample, in engine-buffer samples/Hz — the exact
+    // shape SpectralPaintDab expects (SandboxOp.h), so commitSpectralPaintDabs
+    // hands the store's params straight through with no translation.
+    const makeDabAt = (p) => ({
+      centerSample: pxToSample(p.x, p.w, numSamples),
+      halfWidthSamples: Math.max(1, Math.round(paintBrush.halfWidthSec * sampleRate)),
+      centerFreqHz: pxToFreq(p.y, p.h, minHz, maxHz),
+      halfHeightHz: paintBrush.halfHeightHz,
+      amountDb: paintBrush.amountDb,
+      featherTimeMs: paintBrush.featherTimeMs,
+      featherFreqHz: paintBrush.featherFreqHz,
+    })
+
+    paintDragRef.current = [makeDabAt(pos)]
+    let lastPos = pos
+    drawPaint()
+
+    const onMove = (me) => {
+      const p = paintLocal(me)
+      if (!p) return
+      if (Math.hypot(p.x - lastPos.x, p.y - lastPos.y) < MIN_PAINT_STEP_PX) return
+      lastPos = p
+      paintDragRef.current = [...(paintDragRef.current || []), makeDabAt(p)]
+      drawPaint()
+    }
+    const onUp = () => {
+      const dabs = paintDragRef.current
+      paintDragRef.current = null
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      // ONE command for the whole stroke, here, on release — never per
+      // mousemove, same "preview locally, commit once" contract the envelope
+      // handler above follows.
+      if (dabs && dabs.length > 0 && layer) commitSpectralPaintDabs(layer.id, dabs)
+      drawPaint()
+    }
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [paintEditMode, viewMode, layer, paintBrush, paintLocal, drawPaint, commitSpectralPaintDabs])
+
+  // ── AUTOTUNE Manual-mode drawing (P5-5) ──────────────────────────────────
+  //
+  // Unlike the envelope/paint/SPC-select tools above, this canvas has no
+  // store-level "armed" flag — it is dedicated to AUTOTUNE alone (nothing
+  // else ever shares it), so being in Manual mode IS the arm condition.
+  const MIN_PITCH_STEP_PX = 3
+  // Gap used for the "hold-then-jump" pair at a snapped block boundary —
+  // small enough to read as instantaneous, large enough that the two points
+  // never land at the same timeSec (which would collapse the segment).
+  const PITCH_STEP_EPSILON_SEC = 0.002
+
+  const pitchLocal = useCallback((e) => {
+    const rect = pitchCanvasRef.current?.getBoundingClientRect()
+    if (!rect) return null
+    return {
+      x: Math.max(0, Math.min(rect.width, e.clientX - rect.left)),
+      y: Math.max(0, Math.min(rect.height, e.clientY - rect.top)),
+      w: rect.width,
+      h: rect.height,
+    }
+  }, [])
+
+  const handlePitchDown = useCallback((e) => {
+    if (e.button !== 0 || !autotuneOp || viewMode !== 'wav') return
+    const p = autotuneOp.params || {}
+    if (p.mode !== 1) return // Manual only — Scale mode's graph stays read-only
+    const numSamples = layer?.renderedBuffer?.numSamples ?? 0
+    const sampleRate = layer?.renderedBuffer?.sampleRate || 48000
+    const durationSec = numSamples > 0 ? numSamples / sampleRate : 0
+    if (!(durationSec > 0)) return
+    const pos = pitchLocal(e)
+    if (!pos) return
+    e.preventDefault()
+    e.stopPropagation()
+
+    // Frozen for the whole gesture — see pitchDragRef's comment.
+    const axis = getPitchAxis()
+    const rangeCents = Math.max(1, axis.maxCents - axis.minCents)
+    const tFor = (x) => Math.max(0, Math.min(durationSec, (x / pos.w) * durationSec))
+    const hzFor = (y) => Math.pow(2, (axis.minCents + ((pos.h - y) / pos.h) * rangeCents) / 1200)
+
+    const notes = p.allowedNotes || []
+    const pcs = notes.length > 0 ? notes : allowedPitchClasses(p.key ?? 2, p.scale ?? 2)
+    const snapHz = (hz) => quantizeToNearestNote(hz, pcs)
+
+    const committed = p.manualPoints || []
+    const previewFor = (strokePts, minT, maxT) => {
+      const kept = committed.filter((pt) => pt.t < minT || pt.t > maxT)
+      return [...kept, ...strokePts].sort((a, b) => a.t - b.t)
+    }
+
+    const startT = tFor(pos.x)
+    const startFree = e.altKey
+    const startHz = startFree ? hzFor(pos.y) : snapHz(hzFor(pos.y))
+
+    const stroke = [{ t: startT, hz: startHz, tension: 0 }]
+    let strokeMinT = startT
+    let strokeMaxT = startT
+    let lastMode = startFree ? 'free' : 'snap'
+    let lastHz = startHz
+    let lastPxX = pos.x
+    let lastPxY = pos.y
+
+    pitchDragRef.current = { axis, previewPoints: previewFor(stroke, strokeMinT, strokeMaxT) }
+    drawPitchCurve()
+
+    const onMove = (me) => {
+      const cur = pitchLocal(me)
+      if (!cur) return
+      if (Math.hypot(cur.x - lastPxX, cur.y - lastPxY) < MIN_PITCH_STEP_PX) return
+      lastPxX = cur.x
+      lastPxY = cur.y
+
+      const tNow = tFor(cur.x)
+      const hzRaw = hzFor(cur.y)
+
+      // Re-checked every event (not just at pointerdown), so holding/
+      // releasing ALT mid-stroke switches behaviour live — draw a snapped
+      // run, hold ALT partway through for a glide, release it to snap again.
+      if (me.altKey) {
+        stroke.push({ t: tNow, hz: hzRaw, tension: 0 })
+        lastMode = 'free'
+        lastHz = hzRaw
+      } else {
+        const snapped = snapHz(hzRaw)
+        if (lastMode === 'free' || snapped !== lastHz) {
+          // A hard step: hold the previous value right up to tNow, then jump
+          // — this is what makes a snapped run read as classic quantized
+          // autotune blocks instead of a ramp between notes. Also the seam
+          // when switching from free draw into snap mode mid-stroke, which
+          // closes the glide out at its own last value first.
+          const holdT = Math.max(stroke[stroke.length - 1].t, tNow - PITCH_STEP_EPSILON_SEC)
+          stroke.push({ t: holdT, hz: lastHz, tension: 0 })
+          stroke.push({ t: tNow, hz: snapped, tension: 0 })
+          lastHz = snapped
+        }
+        lastMode = 'snap'
+      }
+      strokeMinT = Math.min(strokeMinT, tNow)
+      strokeMaxT = Math.max(strokeMaxT, tNow)
+      pitchDragRef.current = { axis, previewPoints: previewFor(stroke, strokeMinT, strokeMaxT) }
+      drawPitchCurve()
+    }
+
+    const onUp = (ue) => {
+      window.removeEventListener('mousemove', onMove)
+      window.removeEventListener('mouseup', onUp)
+      const cur = pitchLocal(ue) || pos
+      const tEnd = Math.max(stroke[stroke.length - 1].t, tFor(cur.x))
+      // Close the final block/glide explicitly at the release point, rather
+      // than relying on evalManualCurve's hold-past-last-key behaviour, so
+      // the stroke visually ends exactly where the pointer let go.
+      const finalHz = lastMode === 'snap' ? lastHz : hzFor(cur.y)
+      if (tEnd !== stroke[stroke.length - 1].t || stroke.length === 1) {
+        stroke.push({ t: tEnd, hz: finalHz, tension: 0 })
+      }
+      pitchDragRef.current = null
+      if (stroke.length >= 2 && layer) commitAutotuneManualStroke(layer.id, stroke)
+      drawPitchCurve()
+    }
+
+    window.addEventListener('mousemove', onMove)
+    window.addEventListener('mouseup', onUp)
+  }, [autotuneOp, viewMode, layer, pitchLocal, getPitchAxis, drawPitchCurve, commitAutotuneManualStroke])
+
+  // ── SPC selection editing (rect/freehand t×f selection tool) ─────────────
+  const spcSelectLocal = useCallback((e) => {
+    const rect = spcSelectCanvasRef.current?.getBoundingClientRect()
+    if (!rect) return null
+    return {
+      x: Math.max(0, Math.min(rect.width, e.clientX - rect.left)),
+      y: Math.max(0, Math.min(rect.height, e.clientY - rect.top)),
+      w: rect.width,
+      h: rect.height,
+    }
+  }, [])
+
+  // Minimum pointer travel between freehand shapes — same role
+  // MIN_PAINT_STEP_PX plays for a paint stroke.
+  const MIN_SPC_SELECT_STEP_PX = 4
+
+  const handleSpcSelectDown = useCallback((e) => {
+    if (e.button !== 0 || !spcSelectMode || viewMode !== 'spc') return
+    const numSamples = layer?.renderedBuffer?.numSamples ?? 0
+    const sampleRate = layer?.renderedBuffer?.sampleRate || 48000
+    if (!numSamples) return
+    const pos = spcSelectLocal(e)
+    if (!pos) return
+    e.preventDefault()
+    e.stopPropagation()
+
+    const minHz = SPC_FREQ_MIN_HZ
+    const maxHz = Math.min(SPC_FREQ_MAX_HZ, sampleRate / 2)
+
+    if (spcSelectShape === 'rect') {
+      // One drag = one rectangular shape spanning the drag's bounding box —
+      // committed on release, same as the plain time-only selection tool's
+      // own drag (handlePointerDown above), just with a frequency extent too.
+      let start = pos
+      spcSelectDragRef.current = null
+      drawSpcSelect()
+
+      const onMove = (me) => {
+        const p = spcSelectLocal(me)
+        if (!p) return
+        const x0 = Math.min(start.x, p.x), x1 = Math.max(start.x, p.x)
+        const y0 = Math.min(start.y, p.y), y1 = Math.max(start.y, p.y)
+        const s0 = pxToSample(x0, pos.w, numSamples)
+        const s1 = pxToSample(x1, pos.w, numSamples)
+        const hzTop = pxToFreq(y0, pos.h, minHz, maxHz)
+        const hzBot = pxToFreq(y1, pos.h, minHz, maxHz)
+        spcSelectDragRef.current = [{
+          centerSample: Math.round((s0 + s1) / 2),
+          halfWidthSamples: Math.max(1, Math.round((s1 - s0) / 2)),
+          centerFreqHz: (hzTop + hzBot) / 2,
+          halfHeightHz: Math.max(1, (hzTop - hzBot) / 2),
+        }]
+        drawSpcSelect()
+      }
+      const onUp = () => {
+        const shapes = spcSelectDragRef.current
+        spcSelectDragRef.current = null
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', onUp)
+        setSpcSelection(shapes || [])
+        drawSpcSelect()
+      }
+      window.addEventListener('mousemove', onMove)
+      window.addEventListener('mouseup', onUp)
+    } else {
+      // Freehand: the drag path is approximated as a series of small
+      // overlapping rectangles — the exact technique paintDragRef already
+      // uses for a paint stroke (see handlePaintDown above), just committed
+      // to the selection instead of straight to an op.
+      const makeShapeAt = (p) => ({
+        centerSample: pxToSample(p.x, p.w, numSamples),
+        halfWidthSamples: Math.max(1, Math.round(SPC_SELECT_FREEHAND_DEFAULT.halfWidthSec * sampleRate)),
+        centerFreqHz: pxToFreq(p.y, p.h, minHz, maxHz),
+        halfHeightHz: SPC_SELECT_FREEHAND_DEFAULT.halfHeightHz,
+      })
+
+      spcSelectDragRef.current = [makeShapeAt(pos)]
+      let lastPos = pos
+      drawSpcSelect()
+
+      const onMove = (me) => {
+        const p = spcSelectLocal(me)
+        if (!p) return
+        if (Math.hypot(p.x - lastPos.x, p.y - lastPos.y) < MIN_SPC_SELECT_STEP_PX) return
+        lastPos = p
+        spcSelectDragRef.current = [...(spcSelectDragRef.current || []), makeShapeAt(p)]
+        drawSpcSelect()
+      }
+      const onUp = () => {
+        const shapes = spcSelectDragRef.current
+        spcSelectDragRef.current = null
+        window.removeEventListener('mousemove', onMove)
+        window.removeEventListener('mouseup', onUp)
+        setSpcSelection(shapes || [])
+        drawSpcSelect()
+      }
+      window.addEventListener('mousemove', onMove)
+      window.addEventListener('mouseup', onUp)
+    }
+  }, [spcSelectMode, spcSelectShape, viewMode, layer, spcSelectLocal, drawSpcSelect, setSpcSelection])
+
+  // ── SPC hover readout (time × Hz, for the status bar) ─────────────────────
+  // Attached to the whole canvas STACK, not any one layer: canvases stacked
+  // above the pointer's actual target have pointer-events:none while inert
+  // (see sandbox.css), so the mouse event bubbles from whichever one is
+  // actually armed (or the stack itself, none armed) up to this handler
+  // either way — one listener covers every tool/mode combination.
+  const handleStackHover = useCallback((e) => {
+    if (viewMode !== 'spc' || !layer?.renderedBuffer) return
+    const rect = stackRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left))
+    const y = Math.max(0, Math.min(rect.height, e.clientY - rect.top))
+    const numSamples = layer.renderedBuffer.numSamples
+    const sampleRate = layer.renderedBuffer.sampleRate || 48000
+    const minHz = SPC_FREQ_MIN_HZ
+    const maxHz = Math.min(SPC_FREQ_MAX_HZ, sampleRate / 2)
+    const sample = pxToSample(x, rect.width, numSamples)
+    setSpcHoverReadout({ sec: sample / sampleRate, hz: pxToFreq(y, rect.height, minHz, maxHz) })
+  }, [viewMode, layer, setSpcHoverReadout])
+
+  const handleStackLeave = useCallback(() => setSpcHoverReadout(null), [setSpcHoverReadout])
+
   return (
     <div className="sandbox-waveform-area" ref={containerRef}>
-      <div className="sandbox-waveform-stack" ref={stackRef}>
+      <div
+        className="sandbox-waveform-stack"
+        ref={stackRef}
+        onMouseMove={handleStackHover}
+        onMouseLeave={handleStackLeave}
+      >
         <canvas ref={bgCanvasRef} className="sandbox-waveform-bg" />
         <canvas
           ref={overlayCanvasRef}
@@ -884,6 +1606,21 @@ export default function SandboxWaveformCanvas() {
           className={`sandbox-waveform-env${envelopeEditMode ? ' editing' : ''}`}
           onMouseDown={handleEnvDown}
           onContextMenu={handleEnvContextMenu}
+        />
+        <canvas
+          ref={paintCanvasRef}
+          className={`sandbox-waveform-paint${paintEditMode ? ' editing' : ''}`}
+          onMouseDown={handlePaintDown}
+        />
+        <canvas
+          ref={spcSelectCanvasRef}
+          className={`sandbox-waveform-spcselect${spcSelectMode ? ' editing' : ''}`}
+          onMouseDown={handleSpcSelectDown}
+        />
+        <canvas
+          ref={pitchCanvasRef}
+          className={`sandbox-waveform-pitch${autotuneOp?.params?.mode === 1 ? ' editing' : ''}`}
+          onMouseDown={handlePitchDown}
         />
       </div>
       <canvas ref={rulerCanvasRef} className="sandbox-ruler-canvas" />

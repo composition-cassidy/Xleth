@@ -1322,6 +1322,13 @@ bool Timeline::setTrackSlideNoteEffectSettings(int trackId, const SlideNoteEffec
     return true;
 }
 
+bool Timeline::setTrackNoteFadeSettings(int trackId, const NoteFadeSettings& settings) {
+    auto it = m_tracks.find(trackId);
+    if (it == m_tracks.end()) return false;
+    it->second.noteFade = settings;
+    return true;
+}
+
 bool Timeline::setNoteSlide(int patternId, int noteId, bool isSlide, float curveCx, float curveCy) {
     auto it = m_patterns.find(patternId);
     if (it == m_patterns.end()) return false;
@@ -1435,6 +1442,25 @@ int Timeline::addVisualEffect(int trackId, VisualEffect::Type type)
             fx.params[7] = 0.60f;   // opacity
             fx.params[8] = 1.0f;    // blendMode = Multiply
             fx.params[9] = 0.95f;   // alphaThreshold — see the note on VisualEffect
+            break;
+        case VisualEffect::Type::VisualEcho:
+            // Unbound on add (delayNodeId = -1): the effect does nothing until
+            // the user points it at a Delay on this track. Deliberate — an echo
+            // that auto-grabbed "the first Delay it finds" would silently
+            // re-target itself whenever the audio chain was reordered.
+            //
+            // The remaining defaults describe a visible-but-tasteful trail so
+            // that the moment a Delay IS bound the effect reads as working:
+            // four repeats, a decay that follows the Delay's own feedback, and a
+            // slight shrink so the trail recedes rather than just dimming.
+            fx.params[0] = 4.0f;    // taps
+            fx.params[1] = 0.65f;   // decay (ignored while followFeedback is on)
+            fx.params[2] = -1.0f;   // delayNodeId — UNBOUND
+            fx.params[3] = 0.20f;   // scaleTrail
+            fx.params[4] = 0.0f;    // flipMode = None
+            fx.params[5] = 0.0f;    // drift
+            fx.params[6] = 0.0f;    // blendMode = Normal
+            fx.params[7] = 1.0f;    // followFeedback = on
             break;
         default:
             break;

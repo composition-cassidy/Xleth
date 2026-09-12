@@ -76,6 +76,28 @@ describe('App shell layer order', () => {
     expect(windowingCss).toContain('z-index: var(--xleth-z-window-snap-ghost);');
     expect(snapGhostSource).not.toContain('9999');
   });
+
+  it('keeps the floating-editor hosts free of a stacking context', () => {
+    const appCss = readUiSource('styles/app.css');
+
+    // Both hosts wrap `position: fixed` editor windows that carry their own
+    // z-index (200) and must be compared against the workspace panel layers in
+    // the ROOT stacking context. Giving a host `position` + `z-index` makes it a
+    // stacking context, which caps every window inside it at the host's own
+    // level — the Vibrato/Scratch host briefly had `position: relative;
+    // z-index: 0`, which painted both editors BELOW
+    // --xleth-z-workspace-panel-layer and made them invisible and click-through.
+    const workspacePanelLayer = cssVarNumber(appCss, '--xleth-z-workspace-panel-layer');
+    expect(workspacePanelLayer).toBeGreaterThan(0);
+
+    for (const host of ['.clip-fx-editor-host', '.effect-editor-host']) {
+      const block = appCss.match(new RegExp(`\\${host}\\s*\\{([^}]*)\\}`, 's'))?.[1] ?? '';
+      expect(block).not.toMatch(/position:\s*(relative|absolute|fixed|sticky)/);
+      expect(block).not.toMatch(/z-index:\s*-?\d/);
+      // A transform/filter/contain would create one just as surely.
+      expect(block).not.toMatch(/(transform|filter|backdrop-filter|contain|will-change):/);
+    }
+  });
 });
 
 describe('Workspace bounds layout contract', () => {
@@ -91,17 +113,17 @@ describe('Workspace bounds layout contract', () => {
     expect(appCss).toMatch(/--xleth-windowing-drawer-top-offset:\s*0(px)?;/);
   });
 
-  it('sample drawer width comes from the left dock region, not a fixed drawer width', () => {
+  it('sample drawer size comes from the panel\'s own dock region, not a fixed drawer width', () => {
     const appShellSource = readUiSource('windowing/AppShell.tsx');
     const drawerSource = readUiSource('windowing/components/SampleSelectorDrawer.tsx');
-    const appCss = readUiSource('styles/app.css');
+    const windowingCss = readUiSource('windowing/components/windowing.css');
 
-    expect(appShellSource).toContain('state.dockRegionSizes.left');
-    expect(appShellSource).toContain("useDockRegionResizePreview('left')");
+    expect(appShellSource).toContain('state.dockRegionSizes[sampleDockSide]');
+    expect(appShellSource).toContain('useDockRegionResizePreview(sampleDockSide)');
     expect(appShellSource).toContain("'--xleth-sample-dock-width'");
     expect(appShellSource).not.toContain('sampleSelectorDockWidth');
     expect(drawerSource).not.toContain('sampleSelectorDockWidth');
-    const drawerBlock = appCss.match(/\.xleth-sample-selector-drawer,\s*\.xleth-sample-selector-drawer__body,\s*\.left-panel\s*\{([^}]*)\}/s)?.[1] ?? '';
+    const drawerBlock = windowingCss.match(/(?:^|\n)\.xleth-sample-selector-drawer\s*\{([^}]*)\}/)?.[1] ?? '';
     expect(drawerBlock).toContain('width: 100%');
     expect(drawerBlock).not.toContain('width: 258px');
   });

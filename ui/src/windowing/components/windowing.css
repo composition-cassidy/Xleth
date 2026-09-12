@@ -12,10 +12,12 @@
 
 .xleth-windowing-shell {
   --xleth-sample-dock-width: 258px;
+  --xleth-sample-dock-height: 258px;
   --xleth-sample-dock-handle-width: 32px;
+  --xleth-sample-dock-handle-height: 32px;
   position: relative;
-  display: grid;
-  grid-template-columns: var(--xleth-sample-dock-width) minmax(0, 1fr);
+  display: flex;
+  flex-direction: row;
   width: 100%;
   height: 100%;
   min-height: 520px;
@@ -24,19 +26,48 @@
   background: var(--theme-primitive-app-bg);
   background-image: none;
   color: var(--theme-text);
-  transition: grid-template-columns 180ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
-.xleth-windowing-shell.sample-dock-collapsed {
-  grid-template-columns: var(--xleth-sample-dock-handle-width) minmax(0, 1fr);
+.xleth-windowing-shell[data-sample-dock-side="right"] {
+  flex-direction: row-reverse;
 }
 
-.xleth-windowing-shell.sample-dock-disabled {
-  grid-template-columns: 0 minmax(0, 1fr);
+.xleth-windowing-shell[data-sample-dock-side="top"] {
+  flex-direction: column;
+}
+
+.xleth-windowing-shell[data-sample-dock-side="bottom"] {
+  flex-direction: column-reverse;
+}
+
+.xleth-sample-selector-drawer-host {
+  flex: 0 0 var(--xleth-sample-dock-width);
+  transition: flex-basis 180ms cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+.xleth-windowing-shell[data-sample-dock-side="top"] .xleth-sample-selector-drawer-host,
+.xleth-windowing-shell[data-sample-dock-side="bottom"] .xleth-sample-selector-drawer-host {
+  flex-basis: var(--xleth-sample-dock-height);
+  /* However tall a stored/dragged size gets, a top/bottom strip never eats
+     more than a fifth of the window — it's one row of cards, not a panel. */
+  max-height: 20vh;
+}
+
+.xleth-windowing-shell.sample-dock-collapsed .xleth-sample-selector-drawer-host {
+  flex-basis: var(--xleth-sample-dock-handle-width);
+}
+
+.xleth-windowing-shell[data-sample-dock-side="top"].sample-dock-collapsed .xleth-sample-selector-drawer-host,
+.xleth-windowing-shell[data-sample-dock-side="bottom"].sample-dock-collapsed .xleth-sample-selector-drawer-host {
+  flex-basis: var(--xleth-sample-dock-handle-height);
+}
+
+.xleth-windowing-shell.sample-dock-disabled .xleth-sample-selector-drawer-host {
+  flex-basis: 0;
 }
 
 .xleth-app-workarea {
-  grid-column: 2;
+  flex: 1 1 auto;
   position: relative;
   min-width: 0;
   min-height: 0;
@@ -537,7 +568,6 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 }
 
 .xleth-sample-selector-drawer-host {
-  grid-column: 1;
   position: relative;
   min-width: 0;
   min-height: 0;
@@ -577,6 +607,37 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
     color var(--theme-transition-fast, 0.1s ease),
     border-color var(--theme-transition-fast, 0.1s ease),
     box-shadow var(--theme-transition-fast, 0.1s ease);
+}
+
+.xleth-sample-selector-drawer-host[data-drawer-side="right"] .xleth-sample-selector-drawer__edge-toggle {
+  right: auto;
+  left: -8px;
+  border-left-color: var(--theme-depth-elevation-1-border);
+  border-right-color: color-mix(in srgb, var(--theme-depth-elevation-1-border) 68%, transparent);
+  border-radius: var(--theme-chrome-radius-md, 6px) 0 0 var(--theme-chrome-radius-md, 6px);
+}
+
+.xleth-sample-selector-drawer-host[data-drawer-side="top"] .xleth-sample-selector-drawer__edge-toggle,
+.xleth-sample-selector-drawer-host[data-drawer-side="bottom"] .xleth-sample-selector-drawer__edge-toggle {
+  top: auto;
+  right: auto;
+  left: 50%;
+  width: 72px;
+  height: 34px;
+  transform: translateX(-50%);
+  border-left-color: var(--theme-depth-elevation-1-border);
+}
+
+.xleth-sample-selector-drawer-host[data-drawer-side="top"] .xleth-sample-selector-drawer__edge-toggle {
+  bottom: -8px;
+  border-top-color: color-mix(in srgb, var(--theme-depth-elevation-1-border) 68%, transparent);
+  border-radius: 0 0 var(--theme-chrome-radius-md, 6px) var(--theme-chrome-radius-md, 6px);
+}
+
+.xleth-sample-selector-drawer-host[data-drawer-side="bottom"] .xleth-sample-selector-drawer__edge-toggle {
+  top: -8px;
+  border-bottom-color: color-mix(in srgb, var(--theme-depth-elevation-1-border) 68%, transparent);
+  border-radius: var(--theme-chrome-radius-md, 6px) var(--theme-chrome-radius-md, 6px) 0 0;
 }
 
 .xleth-sample-selector-drawer__edge-toggle:hover {
@@ -625,8 +686,32 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   transition:
     opacity 120ms ease-out,
     transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
-  animation: xleth-sample-selector-drawer-enter 180ms cubic-bezier(0.16, 1, 0.3, 1);
+  animation: xleth-sample-selector-drawer-enter-left 180ms cubic-bezier(0.16, 1, 0.3, 1);
   will-change: opacity, transform;
+}
+
+.xleth-sample-selector-drawer-host[data-drawer-side="right"] .xleth-sample-selector-drawer {
+  border-left: 1px solid var(--theme-depth-floating-border);
+  border-right: 0;
+  border-top: 0;
+  border-bottom: 0;
+  animation-name: xleth-sample-selector-drawer-enter-right;
+}
+
+.xleth-sample-selector-drawer-host[data-drawer-side="top"] .xleth-sample-selector-drawer {
+  border-top: 0;
+  border-left: 0;
+  border-right: 0;
+  border-bottom: 1px solid var(--theme-depth-floating-border);
+  animation-name: xleth-sample-selector-drawer-enter-top;
+}
+
+.xleth-sample-selector-drawer-host[data-drawer-side="bottom"] .xleth-sample-selector-drawer {
+  border-bottom: 0;
+  border-left: 0;
+  border-right: 0;
+  border-top: 1px solid var(--theme-depth-floating-border);
+  animation-name: xleth-sample-selector-drawer-enter-bottom;
 }
 
 .xleth-sample-selector-drawer-host[data-drawer-state="collapsing"] .xleth-sample-selector-drawer {
@@ -634,6 +719,54 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   transform: translateX(-6px);
   animation: none;
   pointer-events: none;
+}
+
+.xleth-sample-selector-drawer-host[data-drawer-side="right"][data-drawer-state="collapsing"] .xleth-sample-selector-drawer {
+  transform: translateX(6px);
+}
+
+.xleth-sample-selector-drawer-host[data-drawer-side="top"][data-drawer-state="collapsing"] .xleth-sample-selector-drawer {
+  transform: translateY(-6px);
+}
+
+.xleth-sample-selector-drawer-host[data-drawer-side="bottom"][data-drawer-state="collapsing"] .xleth-sample-selector-drawer {
+  transform: translateY(6px);
+}
+
+.xleth-sample-selector-drawer__dock-picker {
+  flex: 0 0 auto;
+  display: flex;
+  gap: 4px;
+  padding: 6px 8px 0;
+}
+
+.xleth-sample-selector-drawer__dock-picker-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--theme-chrome-radius-sm, 4px);
+  background: transparent;
+  color: var(--theme-text-muted);
+  cursor: pointer;
+  transition:
+    background var(--theme-transition-fast, 0.1s ease),
+    color var(--theme-transition-fast, 0.1s ease),
+    border-color var(--theme-transition-fast, 0.1s ease);
+}
+
+.xleth-sample-selector-drawer__dock-picker-btn:hover {
+  background: var(--theme-bg-hover);
+  color: var(--theme-text);
+}
+
+.xleth-sample-selector-drawer__dock-picker-btn.active {
+  border-color: var(--theme-depth-accent-ring, var(--theme-accent));
+  color: var(--theme-accent);
+  background: color-mix(in srgb, var(--theme-accent) 14%, transparent);
 }
 
 .xleth-sample-selector-drawer__body {
@@ -645,22 +778,7 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   background: var(--theme-bg-primary);
 }
 
-.xleth-sample-selector-drawer__resize-handle {
-  position: absolute;
-  top: 0;
-  right: -4px;
-  bottom: 0;
-  z-index: var(--xleth-z-window-dock-resizer);
-  width: 8px;
-  cursor: ew-resize;
-  background: transparent;
-}
-
-.xleth-sample-selector-drawer__resize-handle:hover {
-  background: color-mix(in srgb, var(--theme-accent) 22%, transparent);
-}
-
-@keyframes xleth-sample-selector-drawer-enter {
+@keyframes xleth-sample-selector-drawer-enter-left {
   from {
     opacity: 0.82;
     transform: translateX(-4px);
@@ -669,6 +787,42 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
   to {
     opacity: 1;
     transform: translateX(0);
+  }
+}
+
+@keyframes xleth-sample-selector-drawer-enter-right {
+  from {
+    opacity: 0.82;
+    transform: translateX(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+@keyframes xleth-sample-selector-drawer-enter-top {
+  from {
+    opacity: 0.82;
+    transform: translateY(-4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes xleth-sample-selector-drawer-enter-bottom {
+  from {
+    opacity: 0.82;
+    transform: translateY(4px);
+  }
+
+  to {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
 

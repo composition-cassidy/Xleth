@@ -13,8 +13,16 @@
  *                      → CopyResource to default-usage texture → SRV.
  *
  * Per-source DecoderContext keeps the AVFormatContext/AVCodecContext open so
- * sequential reads don't re-open the file.  LRU eviction keeps at most
- * MAX_OPEN_CONTEXTS sources open simultaneously.
+ * sequential reads don't re-open the file.  LRU eviction keeps at most an
+ * ADAPTIVE budget of contexts open simultaneously — sized per frame from the
+ * distinct source paths the live request set actually needs (the proxy
+ * ladder means one source can present as several distinct paths, so path
+ * count is the real pressure signal, not source count), clamped to
+ * [MAX_OPEN_CONTEXTS, kMaxOpenContextsCap]. A time-based sweep additionally
+ * closes contexts untouched for a while so a long session doesn't hold
+ * handles forever. Eviction (LRU or idle) never closes the context decode()
+ * is currently using — its path is pinned in inFlightPath_ for the duration
+ * of the call.
  *
  * Sequential fast path: if the requested frame == lastDecodedFrame + 1, skip
  * the seek and just read forward (forward playback and chorus tracks benefit
@@ -26,6 +34,7 @@
  * to decode a GOP — seeking lands exactly on the target frame.
  */
 
+#include <chrono>
 #include <cstdint>
 #include <list>
 #include <map>
@@ -85,7 +94,16 @@ struct DecoderContext {
 class RenderVideoDecoder
 {
 public:
+    // Floor of the adaptive context budget, and its value until the first
+    // frame reports a request set via setActiveContextBudget(). Kept as the
+    // historical name/value — existing callers that never call
+    // setActiveContextBudget() see the old fixed-4 behaviour unchanged.
     static constexpr int MAX_OPEN_CONTEXTS = 4;
+    // Ceiling of the adaptive budget. An idle open FFmpeg context costs a
+    // few hundred KB and a file handle, which is cheap up to this cap.
+    static constexpr int kMaxOpenContextsCap = 32;
+    // Default idle threshold for pruneIdleContexts().
+    static constexpr double kIdleContextSeconds = 30.0;
 
     RenderVideoDecoder();
     ~RenderVideoDecoder();
@@ -149,6 +167,22 @@ public:
     /** Number of currently open contexts. */
     int openContextCount() const { return static_cast<int>(contexts_.size()); }
 
+    /** Size the open-context budget from the number of DISTINCT source paths
+     *  the current frame's live request set needs (e.g. the count of unique
+     *  FrameCacheKey::sourcePath values in deduplicateRequests()'s output,
+     *  before checking the cache — a cache hit still represents a source
+     *  the grid is actively using). Clamped to
+     *  [MAX_OPEN_CONTEXTS, kMaxOpenContextsCap]. Call once per frame, before
+     *  the decode-miss loop; cheap, no I/O, does not itself evict anything
+     *  (the next getOrOpenContext() call applies the new ceiling). */
+    void setActiveContextBudget(int distinctPathCount);
+
+    /** Close any open context untouched for >= idleSeconds, so a long
+     *  session doesn't hold file handles/contexts forever. Never closes the
+     *  context decode() is currently using. Call once per frame/tick from
+     *  the video thread, BETWEEN decode() calls — not from inside one. */
+    void pruneIdleContexts(double idleSeconds = kIdleContextSeconds);
+
     // ── Decode-path introspection (diagnostics) ─────────────────────────────
     // Reports the active decode path for each currently-open source so the
     // Visual Preview Diagnostic Log can show whether a 1080p source is being
@@ -181,11 +215,23 @@ private:
     struct ContextEntry {
         DecoderContext      ctx;
         LruList::iterator   lruIt;
+        std::chrono::steady_clock::time_point lastTouched;
     };
     std::unordered_map<std::string, ContextEntry> contexts_;
 
+    // Adaptive ceiling applied by getOrOpenContext(); set via
+    // setActiveContextBudget(), starts at the historical fixed value.
+    int contextBudget_ = MAX_OPEN_CONTEXTS;
+
+    // Path decode() is currently servicing, if any. Eviction (LRU or idle)
+    // skips this path so a frame's own decode can never be evicted out from
+    // under itself on the video thread.
+    std::string inFlightPath_;
+
     DecoderContext* getOrOpenContext(const std::string& sourcePath);
-    void evictLruContext();
+    // Closes one LRU-eligible context (never inFlightPath_). Returns false
+    // if nothing was safe to evict (e.g. every open context is pinned).
+    bool evictLruContext();
     void promoteToMru(const std::string& sourcePath);
 
     // ── Open a source ──────────────────────────────────────────────────────

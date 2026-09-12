@@ -37,6 +37,7 @@ describe('SettingsPanel consolidated shell', () => {
     expect(SETTINGS_CATEGORIES.every(category => !('icon' in category))).toBe(true)
     expect(SETTINGS_CATEGORIES.map(category => category.id)).toEqual([
       'project',
+      'clipfx',
       'transport',
       'audio',
       'plugins',
@@ -60,6 +61,7 @@ describe('SettingsPanel consolidated shell', () => {
 
   it('renders the requested category content without native select markup', () => {
     const expectations = [
+      ['clipfx', 'Swirl with Vibrato'],
       ['transport', 'Spacebar behavior'],
       ['audio', 'Performance report'],
       ['plugins', 'VST3 Browser'],

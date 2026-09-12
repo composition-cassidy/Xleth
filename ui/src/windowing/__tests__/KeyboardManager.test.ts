@@ -1,3 +1,4 @@
+/* @vitest-environment jsdom */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   destroy,
@@ -98,8 +99,33 @@ describe('KeyboardManager', () => {
     expect(usePanelRegistry.getState().panels.timeline).toEqual(before);
   });
 
-  it.skip('input focus guard requires jsdom', () => {
-    expect(true).toBe(true);
+  it('a focused button owns Space/Enter — a same-combo panel shortcut does not preempt it', () => {
+    const button = document.createElement('button');
+    document.body.appendChild(button);
+    button.focus();
+
+    const action = vi.fn((event: KeyboardEvent) => {
+      event.preventDefault();
+      return 'handled' as const;
+    });
+    register({ scope: 'panel:sampleSandbox', combo: ' ', handler: action });
+    usePanelRegistry.getState().openPanel('sampleSandbox');
+
+    const spaceEvent = shortcutEvent(' ');
+    handleKeyEvent(spaceEvent);
+    expect(action).not.toHaveBeenCalled();
+    expect(spaceEvent.defaultPrevented).toBe(false);
+
+    const enterEvent = shortcutEvent('Enter');
+    handleKeyEvent(enterEvent);
+    expect(enterEvent.defaultPrevented).toBe(false);
+
+    // Once focus leaves the button, the panel shortcut fires as normal.
+    button.blur();
+    document.body.removeChild(button);
+    const spaceAfterBlur = shortcutEvent(' ');
+    handleKeyEvent(spaceAfterBlur);
+    expect(action).toHaveBeenCalledTimes(1);
   });
 
   it('registerBinding adds a new binding', () => {

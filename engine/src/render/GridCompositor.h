@@ -178,6 +178,77 @@ struct RTPool {
 };
 
 // ---------------------------------------------------------------------------
+// EchoRing — per-cell history of finished pixels for the Visual Echo effect.
+//
+// The one piece of FRAME-SPANNING state in the compositor. Everything else here
+// is built and consumed inside a single compositeFrame call; this deliberately
+// is not, because an echo is by definition made of frames already drawn.
+//
+// One ring per (trackId, cellCol, cellRow, layerKind) — see the ringKey comment
+// in FrameCollector.cpp for why the cell, not just the track, is part of that.
+//
+// Storage is a plain circular array of cell-sized RGBA textures. It is real GPU
+// memory (a 480x270 cell is ~518 KB a frame), which is why:
+//   - only cells whose track actually has an active VisualEcho allocate one
+//   - capacity is exactly EchoSettings::requiredRingFrames(), not a fixed max
+//   - kMaxRingFrames caps it regardless (VisualEchoTypes.h)
+//   - pruneIdleEchoRings frees rings whose cell stopped echoing
+// ---------------------------------------------------------------------------
+struct EchoRing {
+    std::vector<Microsoft::WRL::ComPtr<ID3D11Texture2D>>          tex;
+    std::vector<Microsoft::WRL::ComPtr<ID3D11RenderTargetView>>   rtv;
+    std::vector<Microsoft::WRL::ComPtr<ID3D11ShaderResourceView>> srv;
+
+    int width    = 0;
+    int height   = 0;
+    int capacity = 0;
+    int writeIdx = 0;   // slot the NEXT push writes
+    int count    = 0;   // buffered frames, saturating at capacity
+
+    // Output-frame identity of the most recent push. Guards against a paused
+    // preview, which re-composites the SAME frame repeatedly: without this the
+    // ring would advance while the transport is stopped and the trail would
+    // crawl backwards through history on a still image.
+    double lastPushedTime = -1.0;
+
+    std::chrono::steady_clock::time_point lastTouched = std::chrono::steady_clock::now();
+
+    /** SRV of the frame `ago` pushes back (ago 0 = the most recent push).
+     *  nullptr when the ring has not buffered that far yet — which is exactly
+     *  what happens for the first N*D frames after a flush, and is why the
+     *  trail grows in rather than appearing all at once. */
+    ID3D11ShaderResourceView* at(int ago) const;
+
+    /** Resize/reallocate to hold `frames` textures of w x h. Existing contents
+     *  are DISCARDED when any of the three change — a ring whose geometry moved
+     *  holds pixels of a different rectangle, and reusing them would smear the
+     *  old cell size across the new one. Returns false if allocation failed. */
+    bool ensure(ID3D11Device* device, int w, int h, int frames);
+
+    void reset();   // drop history, keep the textures
+
+    uint64_t bytes() const {
+        return static_cast<uint64_t>(width) * static_cast<uint64_t>(height)
+             * 4ull * static_cast<uint64_t>(capacity);
+    }
+};
+
+// ---------------------------------------------------------------------------
+// EchoStats — measured cost of the Visual Echo composite stage.
+//
+// Exists because the feature has a hard performance floor to answer to (the
+// Phase 0 0.25 ms GPU composite budget) and "it looked fine" is not a
+// measurement. Accumulated per frame, read by the smoke test / diagnostics.
+// ---------------------------------------------------------------------------
+struct EchoStats {
+    double   lastFrameMs   = 0.0;   // CPU-side submit cost of all echo work this frame
+    int      lastTapDraws  = 0;     // quads drawn for taps this frame
+    int      lastPushes    = 0;     // ring pushes this frame
+    int      activeRings   = 0;
+    uint64_t ringBytes     = 0;     // total GPU bytes held by all live rings
+};
+
+// ---------------------------------------------------------------------------
 // EffectShaderCache — compiled pixel shaders for chainable effects
 // ---------------------------------------------------------------------------
 struct EffectShaderCache {
@@ -379,6 +450,29 @@ public:
                         float time = 0.0f,
                         float gapScale = 0.0f,
                         ID3D11RenderTargetView* targetRTV = nullptr);
+
+    // ── Visual Echo ────────────────────────────────────────────────────────
+
+    /** Drop all buffered echo history (textures are kept for reuse).
+     *
+     *  Call on a TRANSPORT SEEK, so a jump does not leave the previous
+     *  position's pixels trailing behind the new one.
+     *
+     *  Deliberately NOT called on a loop wrap. A wrap is musical continuity —
+     *  the audio delay carries its repeats across the loop point and the video
+     *  echo must too. The ring is indexed by push order, never by timeline
+     *  position, so a wrap needs no special handling at all: the taps go on
+     *  pointing at the frames that really were drawn N*D frames ago, which after
+     *  a wrap are the frames from the end of the loop. */
+    void flushEchoRings();
+
+    /** Free rings untouched for at least idleSeconds. Same discipline as
+     *  RTPool::pruneIdle, and for a sharper reason: a ring is far larger than an
+     *  RT pair, so a cell that stops echoing (effect removed, track moved, Delay
+     *  unbound) must not strand tens of megabytes for the session. */
+    void pruneIdleEchoRings(double idleSeconds = 4.0);
+
+    const EchoStats& getEchoStats() const { return echoStats_; }
 
     /** Acquire the cached whole-frame pair used for snapshot A and snapshot B.
      *  Requires a successfully initialized compositor. */
@@ -620,6 +714,39 @@ private:
     // a slot would bind the same texture as both SRV and RTV.
     static constexpr int kOutlineRtSlot    = 5;
     static constexpr int kDropShadowRtSlot = 6;
+
+    // ── Visual Echo state ──────────────────────────────────────────────────
+    std::unordered_map<uint64_t, EchoRing> echoRings_;
+    EchoStats                              echoStats_;
+    // Blend state for an additive trail: SRC_ALPHA / ONE. The live cell always
+    // draws through blendState_; only taps can opt into this.
+    Microsoft::WRL::ComPtr<ID3D11BlendState> additiveBlendState_;
+    // RTPool slot for the fractional-tap lerp target. Must differ from 0-6: the
+    // lerp samples a ring texture while writing this one, and the cell's own
+    // chain output is still live in slot 0 at that moment.
+    static constexpr int kEchoLerpRtSlot = 7;
+
+    /** Copy the cell's finished pixels into its ring.
+     *  Called once per DISTINCT output frame — see EchoRing::lastPushedTime. */
+    void pushEchoFrame(const CellFrameRequest& req,
+                       ID3D11ShaderResourceView* cellSRV,
+                       int cellPixelW, int cellPixelH,
+                       float time,
+                       ID3D11RenderTargetView* activeRTV);
+
+    /** Draw this cell's echo taps into activeRTV, oldest/faintest first, so the
+     *  live cell the caller draws afterwards lands on top of its own trail. */
+    void drawEchoTaps(const CellFrameRequest& req,
+                      float rectX, float rectY, float rectW, float rectH,
+                      float cornerRadius,
+                      ID3D11RenderTargetView* activeRTV);
+
+    /** Resolve one tap to a single SRV, lerping between the two adjacent
+     *  buffered frames when the tap's offset is fractional. Returns nullptr when
+     *  the ring has not buffered that far back yet. */
+    ID3D11ShaderResourceView* resolveEchoTapSRV(EchoRing& ring,
+                                                float agoFrames,
+                                                ID3D11RenderTargetView* activeRTV);
 
     // ── Internal helpers ───────────────────────────────────────────────────
     bool createRenderTarget();

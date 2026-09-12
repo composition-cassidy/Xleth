@@ -91,6 +91,10 @@ FFmpegMuxer::~FFmpegMuxer()
 
 void FFmpegMuxer::cleanup()
 {
+    // Worker first: it dereferences videoFrame_/swsCtx_/videoCodecCtx_/fmtCtx_,
+    // every one of which is freed below.
+    stopVideoWorker();
+
     // Defensive trailer write if init succeeded but finalize wasn't called
     if (fmtCtx_ && headerWritten_ && !trailerWritten_) {
         av_write_trailer(fmtCtx_);
@@ -126,6 +130,8 @@ void FFmpegMuxer::cleanup()
     videoEncoderName_     = "none";
     videoEncoderFallback_ = false;
     audioEncoderName_     = "none";
+    videoAsyncFailFrame_  = -1;
+    videoAsyncFailed_.store(false, std::memory_order_release);
 }
 
 // ===========================================================================
@@ -641,10 +647,10 @@ bool FFmpegMuxer::initAudioStream(const ExportSettings& s)
 // drainPackets — receive all pending packets from an encoder and write to muxer
 // ===========================================================================
 
-bool FFmpegMuxer::drainPackets(AVCodecContext* encCtx, AVStream* stream)
+bool FFmpegMuxer::drainPackets(AVCodecContext* encCtx, AVStream* stream, AVPacket* pkt)
 {
     while (true) {
-        int r = avcodec_receive_packet(encCtx, pkt_);
+        int r = avcodec_receive_packet(encCtx, pkt);
         if (r == AVERROR(EAGAIN) || r == AVERROR_EOF)
             return true;
         if (r < 0) {
@@ -653,34 +659,41 @@ bool FFmpegMuxer::drainPackets(AVCodecContext* encCtx, AVStream* stream)
         }
 
         // Track which stream and rescale timestamps
-        pkt_->stream_index = stream->index;
+        pkt->stream_index = stream->index;
 
         // Log before rescale for debugging
-        int64_t origPts = pkt_->pts;
-        av_packet_rescale_ts(pkt_, encCtx->time_base, stream->time_base);
+        int64_t origPts = pkt->pts;
+        av_packet_rescale_ts(pkt, encCtx->time_base, stream->time_base);
 
         // Periodic logging
         if (stream == videoStream_) {
             ++videoPacketCount_;
             if (videoPacketCount_ % 10 == 1) {
                 std::fprintf(stderr, "[Muxer] Video packet: pts=%lld (rescaled=%lld) size=%d\n",
-                             (long long)origPts, (long long)pkt_->pts, pkt_->size);
+                             (long long)origPts, (long long)pkt->pts, pkt->size);
             }
         } else {
             ++audioPacketCount_;
             if (audioPacketCount_ % 100 == 1) {
                 std::fprintf(stderr, "[Muxer] Audio packet: pts=%lld (rescaled=%lld) size=%d\n",
-                             (long long)origPts, (long long)pkt_->pts, pkt_->size);
+                             (long long)origPts, (long long)pkt->pts, pkt->size);
             }
         }
 
-        int wr = av_interleaved_write_frame(fmtCtx_, pkt_);
+        // The ONLY shared state on this path: fmtCtx_'s interleave queue and its
+        // output IO. Everything above touches per-stream contexts, so the async
+        // video worker's sws_scale/encode never waits on the audio drain and
+        // vice versa. Packet ORDER in the file is still decided by DTS inside
+        // av_interleaved_write_frame, not by which thread arrived first.
+        std::unique_lock<std::mutex> muxLock(muxMutex_);
+        int wr = av_interleaved_write_frame(fmtCtx_, pkt);
+        muxLock.unlock();
         if (wr < 0) {
             logAvError("av_interleaved_write_frame", wr);
-            av_packet_unref(pkt_);
+            av_packet_unref(pkt);
             return false;
         }
-        av_packet_unref(pkt_);
+        av_packet_unref(pkt);
     }
 }
 
@@ -697,7 +710,7 @@ bool FFmpegMuxer::flushEncoder(AVCodecContext* encCtx, AVStream* stream)
     }
 
     int64_t countBefore = (stream == videoStream_) ? videoPacketCount_ : audioPacketCount_;
-    bool ok = drainPackets(encCtx, stream);
+    bool ok = drainPackets(encCtx, stream, pkt_);
     int64_t drained = ((stream == videoStream_) ? videoPacketCount_ : audioPacketCount_) - countBefore;
 
     if (stream == videoStream_) {
@@ -710,13 +723,17 @@ bool FFmpegMuxer::flushEncoder(AVCodecContext* encCtx, AVStream* stream)
 }
 
 // ===========================================================================
-// writeVideo
+// encodeVideoFrame — the expensive half: convert, encode and mux one frame
+//
+// Runs on the caller's thread when synchronous and on videoWorker_ when async.
+// Touches only video-side state (swsCtx_, videoFrame_, videoCodecCtx_) plus the
+// caller-supplied packet, so the two modes need no extra locking here; the one
+// genuinely shared resource, fmtCtx_, is guarded inside drainPackets.
 // ===========================================================================
 
-bool FFmpegMuxer::writeVideo(const uint8_t* bgraPixels, int stride, int64_t frameIndex)
+bool FFmpegMuxer::encodeVideoFrame(const uint8_t* bgraPixels, int stride,
+                                   int64_t frameIndex, AVPacket* pkt)
 {
-    if (!initialized_) return false;
-
     // Make frame writable
     int ret = av_frame_make_writable(videoFrame_);
     if (ret < 0) {
@@ -740,11 +757,164 @@ bool FFmpegMuxer::writeVideo(const uint8_t* bgraPixels, int stride, int64_t fram
         return false;
     }
 
-    if (!drainPackets(videoCodecCtx_, videoStream_))
+    return drainPackets(videoCodecCtx_, videoStream_, pkt);
+}
+
+// ===========================================================================
+// writeVideo
+// ===========================================================================
+
+bool FFmpegMuxer::writeVideo(const uint8_t* bgraPixels, int stride, int64_t frameIndex)
+{
+    if (!initialized_) return false;
+
+    if (!videoWorkerRunning_) {
+        if (!encodeVideoFrame(bgraPixels, stride, frameIndex, pkt_))
+            return false;
+        videoPts_ = frameIndex + 1;
+        return true;
+    }
+
+    // ── Async path (Finding 6a) ──────────────────────────────────
+    // A worker failure is latched, so report it on the very next call rather
+    // than queueing frames into an encoder that has already given up.
+    if (videoAsyncFailed_.load(std::memory_order_acquire))
         return false;
 
+    const size_t bytes = static_cast<size_t>(stride) * static_cast<size_t>(settings_.height);
+
+    // Taking a recycled buffer IS the queue bound: at most videoQueueDepth_
+    // frames sit ahead of the encoder, so peak memory stays flat however far
+    // the producer would otherwise run ahead.
+    VideoJob job;
+    {
+        std::unique_lock<std::mutex> lk(videoQueueMutex_);
+        videoFreeCv_.wait(lk, [this] {
+            return !videoFree_.empty()
+                || videoAsyncFailed_.load(std::memory_order_relaxed);
+        });
+        if (videoAsyncFailed_.load(std::memory_order_relaxed))
+            return false;
+        job.pixels = std::move(videoFree_.front());
+        videoFree_.pop_front();
+    }
+
+    job.pixels.resize(bytes);            // no reallocation after the first frame
+    std::memcpy(job.pixels.data(), bgraPixels, bytes);
+    job.stride     = stride;
+    job.frameIndex = frameIndex;
+
+    {
+        std::lock_guard<std::mutex> lk(videoQueueMutex_);
+        videoReady_.push_back(std::move(job));
+    }
+    videoReadyCv_.notify_one();
+
+    // videoPts_ tracks SUBMITTED frames, which is what shouldWriteVideo()'s
+    // interleaving question is actually asking about.
     videoPts_ = frameIndex + 1;
     return true;
+}
+
+// ===========================================================================
+// Async video encode worker (Finding 6a)
+// ===========================================================================
+
+void FFmpegMuxer::enableAsyncVideo(int queueDepth)
+{
+    if (!initialized_ || videoWorkerRunning_) return;
+    if (queueDepth <= 0) return;                       // stay strictly serial
+    if (queueDepth > 8)  queueDepth = 8;
+
+    videoPkt_ = av_packet_alloc();
+    if (!videoPkt_) {
+        std::fprintf(stderr, "[Muxer] Async video encode DISABLED: av_packet_alloc failed\n");
+        return;
+    }
+
+    // depth + 1: `depth` frames may be queued while the worker holds one.
+    const size_t frameBytes = static_cast<size_t>(settings_.width)
+                            * static_cast<size_t>(settings_.height) * 4u;
+    videoFree_.clear();
+    videoReady_.clear();
+    for (int i = 0; i < queueDepth + 1; ++i) {
+        std::vector<uint8_t> buf;
+        buf.reserve(frameBytes);
+        videoFree_.push_back(std::move(buf));
+    }
+
+    videoQueueDepth_     = queueDepth;
+    videoWorkerStop_     = false;
+    videoAsyncFailFrame_ = -1;
+    videoAsyncFailed_.store(false, std::memory_order_release);
+    videoWorkerRunning_  = true;
+    videoWorker_ = std::thread(&FFmpegMuxer::videoWorkerLoop, this);
+
+    std::fprintf(stderr,
+                 "[Muxer] Async video encode ENABLED: depth=%d, %d buffers x %zu bytes "
+                 "(%.1f MB peak)\n",
+                 queueDepth, queueDepth + 1, frameBytes,
+                 static_cast<double>(frameBytes) * (queueDepth + 1) / (1024.0 * 1024.0));
+}
+
+void FFmpegMuxer::videoWorkerLoop()
+{
+    for (;;) {
+        VideoJob job;
+        {
+            std::unique_lock<std::mutex> lk(videoQueueMutex_);
+            videoReadyCv_.wait(lk, [this] {
+                return !videoReady_.empty() || videoWorkerStop_;
+            });
+            // Stop only once the queue is empty: a requested stop still drains
+            // every frame already submitted, so no frame is ever dropped.
+            if (videoReady_.empty())
+                return;
+            job = std::move(videoReady_.front());
+            videoReady_.pop_front();
+        }
+
+        if (!videoAsyncFailed_.load(std::memory_order_relaxed)) {
+            if (!encodeVideoFrame(job.pixels.data(), job.stride, job.frameIndex, videoPkt_)) {
+                std::fprintf(stderr,
+                             "[Muxer] ASYNC video encode FAILED at frame %lld\n",
+                             (long long)job.frameIndex);
+                videoAsyncFailFrame_ = job.frameIndex;
+                videoAsyncFailed_.store(true, std::memory_order_release);
+                videoFreeCv_.notify_all();   // free a producer blocked on a full queue
+            }
+        }
+
+        {
+            std::lock_guard<std::mutex> lk(videoQueueMutex_);
+            job.pixels.clear();              // keeps capacity — no realloc churn
+            videoFree_.push_back(std::move(job.pixels));
+        }
+        videoFreeCv_.notify_one();
+    }
+}
+
+void FFmpegMuxer::stopVideoWorker()
+{
+    if (!videoWorkerRunning_) {
+        if (videoPkt_) av_packet_free(&videoPkt_);
+        return;
+    }
+
+    {
+        std::lock_guard<std::mutex> lk(videoQueueMutex_);
+        videoWorkerStop_ = true;
+    }
+    videoReadyCv_.notify_all();
+    if (videoWorker_.joinable())
+        videoWorker_.join();
+
+    videoWorkerRunning_ = false;
+    videoWorkerStop_    = false;
+    videoQueueDepth_    = 0;
+    videoReady_.clear();
+    videoFree_.clear();
+    if (videoPkt_) av_packet_free(&videoPkt_);
 }
 
 // ===========================================================================
@@ -828,7 +998,7 @@ bool FFmpegMuxer::encodeAudioFrame()
         return false;
     }
 
-    return drainPackets(audioCodecCtx_, audioStream_);
+    return drainPackets(audioCodecCtx_, audioStream_, pkt_);
 }
 
 // ===========================================================================
@@ -838,6 +1008,18 @@ bool FFmpegMuxer::encodeAudioFrame()
 bool FFmpegMuxer::finalize()
 {
     if (!initialized_) return false;
+
+    // Drain and join the async encode worker FIRST — every queued frame must
+    // reach the encoder before the flush NULL frame does, or the tail of the
+    // video is silently lost.
+    const bool wasAsync = videoWorkerRunning_;
+    stopVideoWorker();
+    if (wasAsync && videoAsyncFailed_.load(std::memory_order_acquire)) {
+        std::fprintf(stderr,
+                     "[Muxer] finalize: async video encode had failed at frame %lld\n",
+                     (long long)videoAsyncFailFrame_);
+        return false;
+    }
 
     // 1. Flush residual audio buffer (zero-pad to full frame)
     if (audioBufferSamples_ > 0) {

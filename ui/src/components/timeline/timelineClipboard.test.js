@@ -5,6 +5,7 @@ import {
   itemsCoveredByPlacements,
   normalizeTimelineClipboardPayloads,
   placementsEndTick,
+  resolveOverwritePlan,
   resolveTimelinePaste,
 } from './timelineClipboard.js'
 
@@ -279,5 +280,62 @@ describe('placementsEndTick', () => {
 
   it('falls back to the base tick for an empty paste', () => {
     expect(placementsEndTick(4800, [], [])).toBe(4800)
+  })
+})
+
+describe('itemsCoveredByPlacements — gesture members', () => {
+  const existing = [
+    clip({ id: 1, trackId: 10, positionTicks: 0,   durationTicks: 480 }),
+    clip({ id: 2, trackId: 10, positionTicks: 480, durationTicks: 480 }),
+  ]
+
+  it('never reports an item the gesture is itself moving', () => {
+    // Clip 1 nudged +240 still covers its own old span. Without the exclusion a
+    // move would delete the very clip it is moving.
+    const placements = [{ trackId: 10, positionTicks: 240, durationTicks: 480 }]
+    expect(itemsCoveredByPlacements(existing, placements, new Set([1]))).toEqual([2])
+  })
+
+  it('never reports a sibling that is vacating its slot in the same gesture', () => {
+    // 1 and 2 swap-shift right by one slot together: 2 lands where nothing will
+    // remain, because 1 and 2 are both moving. Neither is doomed.
+    const placements = [
+      { trackId: 10, positionTicks: 480, durationTicks: 480 },
+      { trackId: 10, positionTicks: 960, durationTicks: 480 },
+    ]
+    expect(itemsCoveredByPlacements(existing, placements, new Set([1, 2]))).toEqual([])
+  })
+
+  it('still reports untouched items when an exclusion set is given', () => {
+    const placements = [{ trackId: 10, positionTicks: 500, durationTicks: 100 }]
+    expect(itemsCoveredByPlacements(existing, placements, new Set([1]))).toEqual([2])
+  })
+})
+
+describe('resolveOverwritePlan', () => {
+  it('resolves clips and pattern blocks in one call, each against its own list', () => {
+    const plan = resolveOverwritePlan({
+      existingClips: [clip({ id: 1, trackId: 10, positionTicks: 0, durationTicks: 480 })],
+      existingBlocks: [block({ id: 100, trackId: 12, positionTicks: 0, durationTicks: 960 })],
+      clipPlacements: [{ trackId: 10, positionTicks: 240, durationTicks: 480 }],
+      blockPlacements: [{ trackId: 12, positionTicks: 480, durationTicks: 960 }],
+    })
+    expect(plan).toEqual({ doomedClipIds: [1], doomedBlockIds: [100] })
+  })
+
+  it('excludes each kind with its OWN moving set', () => {
+    const plan = resolveOverwritePlan({
+      existingClips: [clip({ id: 1, trackId: 10, positionTicks: 0, durationTicks: 480 })],
+      existingBlocks: [block({ id: 100, trackId: 12, positionTicks: 0, durationTicks: 960 })],
+      clipPlacements: [{ trackId: 10, positionTicks: 240, durationTicks: 480 }],
+      blockPlacements: [{ trackId: 12, positionTicks: 480, durationTicks: 960 }],
+      movingClipIds: new Set([1]),
+      movingBlockIds: new Set([100]),
+    })
+    expect(plan).toEqual({ doomedClipIds: [], doomedBlockIds: [] })
+  })
+
+  it('is empty for a gesture with no placements', () => {
+    expect(resolveOverwritePlan()).toEqual({ doomedClipIds: [], doomedBlockIds: [] })
   })
 })

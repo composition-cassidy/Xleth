@@ -6,6 +6,7 @@ import CornerRadiusControl from '../grid/CornerRadiusControl.jsx'
 import CustomGapControl from '../grid/CustomGapControl.jsx'
 import VisualFXSection from '../grid/VisualFXSection.jsx'
 import SlideNoteEffectSection from '../grid/SlideNoteEffectSection.jsx'
+import NoteFadeSection from '../grid/NoteFadeSection.jsx'
 import { getTrackPlacement, placementBadgeLabel, setFullscreenPlacementMode } from './trackPlacement.js'
 import { HOLD_THRESHOLD_UNLIMITED, formatHoldThreshold } from './holdLastFrame.js'
 import { quantizedFromNorm } from '../../utils/sliderHelpers.js'
@@ -148,10 +149,13 @@ export default function TrackVideoProperties({ trackId, onBack }) {
   const [opacityDraft, setOpacityDraft] = useState(fsLayerOpacity)
   useEffect(() => { setOpacityDraft(fsLayerOpacity) }, [fsLayerOpacity])
 
-  // Behind/Front hold-through-gap toggle — edits `placement` only, fully
-  // independent of the track's current zOrder/drag position (see
-  // setFullscreenPlacementMode in trackPlacement.js). Lives here, ongoing;
-  // the context menu's "Make Fullscreen" only sets a one-time creation default.
+  // Hold-last-frame-between-notes checkbox — edits the underlying `placement`
+  // field only ('behind' = hold, 'front' = don't), fully independent of the
+  // track's current zOrder/drag position (see setFullscreenPlacementMode in
+  // trackPlacement.js). Since the unified-zOrder work, placement no longer
+  // controls draw order — zOrder does — so this is purely a behaviour flag now,
+  // not a stacking control. Lives here, ongoing; the context menu's "Make
+  // Fullscreen" only sets a one-time creation default.
   const handleSetPlacementMode = useCallback(async (mode) => {
     if (!track || !layout) return
     console.log(`[TrackVideoProperties] track ${trackId} placement toggle → ${mode}`)
@@ -320,22 +324,16 @@ export default function TrackVideoProperties({ trackId, onBack }) {
           <div className="grid-tab-section tvp-section">
             <div className="tvp-section-title"><span>Fullscreen Layer</span></div>
             <div className="tvp-section-body">
-              <div className="tvp-placement-toggle" role="group" aria-label="Fullscreen placement (hold-through-gap)">
-                <button
-                  type="button"
-                  className={`tvp-placement-toggle-btn${placement.kind === 'behind' ? ' active' : ''}`}
-                  onClick={() => handleSetPlacementMode('behind')}
-                >
-                  Behind
-                </button>
-                <button
-                  type="button"
-                  className={`tvp-placement-toggle-btn${placement.kind === 'front' ? ' active' : ''}`}
-                  onClick={() => handleSetPlacementMode('front')}
-                >
-                  Front
-                </button>
-              </div>
+              <label className="tvp-checkbox-row">
+                <input
+                  className="tvp-checkbox"
+                  type="checkbox"
+                  checked={placement.kind === 'behind'}
+                  onChange={(e) => handleSetPlacementMode(e.target.checked ? 'behind' : 'front')}
+                />
+                <span>Hold last frame between notes</span>
+                <span className="tvp-hint">(freeze this layer's last decoded frame across gaps instead of blinking out)</span>
+              </label>
               <div className="tvp-opacity-row">
                 <label className="tvp-opacity-label" htmlFor="tvp-fs-opacity">Opacity</label>
                 <Fader
@@ -377,6 +375,13 @@ export default function TrackVideoProperties({ trackId, onBack }) {
         {track.type === 'Pattern' && (
           <div className="grid-tab-section tvp-section">
             <SlideNoteEffectSection track={track} fetchTracks={fetchTracks} />
+          </div>
+        )}
+
+        {/* ── Note Fade — Pattern tracks only ──────────────────────── */}
+        {track.type === 'Pattern' && (
+          <div className="grid-tab-section tvp-section">
+            <NoteFadeSection track={track} fetchTracks={fetchTracks} />
           </div>
         )}
       </div>

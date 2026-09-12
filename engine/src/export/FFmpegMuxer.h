@@ -19,11 +19,25 @@
  * Encoder flushing: NULL frame → drain loop → AVERROR_EOF.  Critical for
  * H.264/H.265 where B-frame reordering delays the last few frames.
  *
+ * Async video encode (RENDER_PERF_AUDIT Finding 6a): enableAsyncVideo(depth)
+ * moves [sws_scale → avcodec_send_frame → drain] onto a worker thread fed by a
+ * BOUNDED queue, so the caller's [decode → composite → readback] overlaps the
+ * convert+encode instead of waiting for it. The worker consumes strictly FIFO,
+ * so the encoder is handed the identical frame sequence in the identical order
+ * the serial path fed it — the encoded bitstream is unchanged. Only the writes
+ * into the shared AVFormatContext are serialised (muxMutex_); the expensive
+ * stages run on per-stream state outside that lock.
+ *
  * No JUCE dependency in this header — audio arrives as raw float pointers.
  */
 
+#include <atomic>
+#include <condition_variable>
 #include <cstdint>
+#include <deque>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <vector>
 
 // Forward-declare FFmpeg opaque types to avoid pulling heavy headers
@@ -172,6 +186,28 @@ public:
     bool writeVideo(const uint8_t* bgraPixels, int stride, int64_t frameIndex);
 
     /**
+     * Finding 6a — enable the pipelined video encode path.
+     *
+     * Must be called AFTER a successful init() and BEFORE the first
+     * writeVideo(). writeVideo() then copies the BGRA frame into a pooled
+     * buffer, hands it to a worker thread and returns; the worker performs the
+     * colour conversion, the encode and the mux. `queueDepth` frames may be in
+     * flight (plus the one being encoded), so peak extra memory is bounded at
+     * (queueDepth + 1) × width × height × 4 bytes and writeVideo() blocks once
+     * the producer runs that far ahead of the encoder.
+     *
+     * queueDepth <= 0 leaves the muxer strictly synchronous.
+     *
+     * Encoder input order is unchanged (single FIFO consumer), so the output is
+     * identical to the serial path's. A worker-side failure is latched: the next
+     * writeVideo() and finalize() both return false.
+     */
+    void enableAsyncVideo(int queueDepth);
+
+    /** True while the async video worker thread is running. */
+    bool isAsyncVideo() const { return videoWorkerRunning_; }
+
+    /**
      * Encode audio samples.  Internally buffers to match the encoder's
      * frame_size requirement (e.g. 1024 for AAC).
      *
@@ -222,6 +258,35 @@ private:
 
     AVPacket*        pkt_           = nullptr;    // shared encode → mux packet
 
+    // ── Async video encode (Finding 6a) ─────────────────────────────
+    // One frame of work handed to the encode worker. `pixels` is recycled
+    // through videoFree_, so the steady state allocates nothing.
+    struct VideoJob {
+        std::vector<uint8_t> pixels;
+        int                  stride     = 0;
+        int64_t              frameIndex = 0;
+    };
+
+    // Serialises av_interleaved_write_frame() on fmtCtx_ between the audio
+    // drain (caller thread) and the video drain (worker thread). Held ONLY
+    // across that one call — sws_scale and avcodec_* touch per-stream state and
+    // stay outside it, which is where the whole win comes from.
+    std::mutex               muxMutex_;
+
+    AVPacket*                videoPkt_ = nullptr;   // worker's packet; pkt_ stays the caller's
+
+    std::thread              videoWorker_;
+    std::mutex               videoQueueMutex_;
+    std::condition_variable  videoReadyCv_;   // producer → worker: a frame is queued
+    std::condition_variable  videoFreeCv_;    // worker → producer: a buffer was recycled
+    std::deque<VideoJob>             videoReady_;
+    std::deque<std::vector<uint8_t>> videoFree_;
+    int                      videoQueueDepth_    = 0;
+    bool                     videoWorkerRunning_ = false;
+    bool                     videoWorkerStop_    = false;  // guarded by videoQueueMutex_
+    std::atomic<bool>        videoAsyncFailed_{false};
+    int64_t                  videoAsyncFailFrame_ = -1;
+
     // ── Audio frame buffering ──────────────────────────────────────────────
     std::vector<float> audioStagingL_;
     std::vector<float> audioStagingR_;
@@ -252,7 +317,14 @@ private:
     // ── Internal helpers ───────────────────────────────────────────────────
     bool initVideoStream(const ExportSettings& s);
     bool initAudioStream(const ExportSettings& s);
-    bool drainPackets(AVCodecContext* encCtx, AVStream* stream);
+    bool drainPackets(AVCodecContext* encCtx, AVStream* stream, AVPacket* pkt);
+    // sws_scale + send_frame + drain for ONE video frame. Runs on the caller
+    // thread when synchronous, on videoWorker_ when async; `pkt` keeps the two
+    // paths off each other's AVPacket.
+    bool encodeVideoFrame(const uint8_t* bgraPixels, int stride, int64_t frameIndex,
+                          AVPacket* pkt);
+    void videoWorkerLoop();
+    void stopVideoWorker();   // drains the queue, then joins. Idempotent.
     bool flushEncoder(AVCodecContext* encCtx, AVStream* stream);
     bool encodeAudioFrame();
     void cleanup();

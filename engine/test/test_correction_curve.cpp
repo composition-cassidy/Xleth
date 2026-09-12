@@ -1,7 +1,12 @@
 // test_correction_curve.cpp — Self-verification for the AUTOTUNE correction
-// curve (P5-2): scale/key tables, quantization, the jumpiness-hold /
-// retune-speed / smoothness state machine, and the Preserve Vibrato
-// low-pass split. Pure math — no JUCE, no FFmpeg, no GL.
+// curve. SCALE mode (P5-2): scale/key tables, quantization, the
+// jumpiness-hold / retune-speed / smoothness state machine, and the
+// Preserve Vibrato low-pass split. MANUAL mode (P5-5): breakpoint
+// rasterization (evalManualCurve, exercised indirectly through
+// computeManualCorrectionCurve — it has no public linkage of its own),
+// cents-domain interpolation, the hard-step release window, and confirming
+// jumpiness/preserveVibrato are genuinely no-ops there. Pure math — no
+// JUCE, no FFmpeg, no GL.
 // Build: see engine/CMakeLists.txt target "test_correction_curve"
 // Run:   test_correction_curve.exe [vibrato-csv-out-path]
 //        Passing a path writes the vibrato-preservation example (input f0 vs
@@ -397,6 +402,168 @@ int main(int argc, char** argv)
         for (size_t i = 20; i < vib100.frames.size(); ++i) sum += centsOf(vib100.frames[i].targetF0Hz);
         const double mean100 = sum / (double)(vib100.frames.size() - 20);
         CHECK(std::fabs(mean100 - centsOf(targetHz)) < 5.0, "preserveVibrato=100% still centers on the target note");
+    }
+
+    // ── MANUAL mode (P5-5): computeManualCorrectionCurve ────────────────────
+    //
+    // Same synthetic-note helpers as SCALE mode above; instant retune/
+    // smoothness (both 0) isolates evalManualCurve's own rasterization from
+    // the one-pole approach math, same trick the scale-quantization test
+    // above uses.
+
+    // Empty manualPoints: evalManualCurve returns 0 (no candidate), which
+    // computeManualCorrectionCurve treats as "no target" and falls back to
+    // the frame's own input pitch — a pass-through, not a snap to 0 Hz.
+    {
+        auto note = makeSingleNote(10, 310.0, [](int) { return 310.0; });
+        CorrectionParams p;
+        p.correctionAmount = 100.0;
+        p.retuneSpeedMs = 0.0;
+        p.smoothnessMs  = 0.0;
+        auto r = computeManualCorrectionCurve(note.frames, kSampleRate, {}, p);
+        for (size_t i = 0; i < r.frames.size(); ++i)
+            CHECK(std::fabs(r.frames[i].targetF0Hz - 310.0f) < 1e-2f,
+                  "empty manualPoints is a pass-through, not a snap to 0 Hz");
+    }
+
+    // A single breakpoint holds its value everywhere (before-first and
+    // after-last both resolve to the same lone point).
+    {
+        auto note = makeSingleNote(10, 200.0, [](int) { return 200.0; });
+        CorrectionParams p;
+        p.correctionAmount = 100.0;
+        p.retuneSpeedMs = 0.0;
+        p.smoothnessMs  = 0.0;
+        std::vector<ManualPitchPoint> pts = { { 0.5, 300.0, 0.0 } };
+        auto r = computeManualCorrectionCurve(note.frames, kSampleRate, pts, p);
+        for (size_t i = 0; i < r.frames.size(); ++i)
+            CHECK(std::fabs(r.frames[i].targetF0Hz - 300.0f) < 0.5f,
+                  "a single manual breakpoint holds its value across the whole track");
+    }
+
+    // Interpolation between two breakpoints happens in CENTS, not raw Hz:
+    // A=220Hz at t=0, B=440Hz (exactly +1200c) at t=1 — the frame at exactly
+    // t=0.5s (a full-second note at the 5ms hop lands one exactly on it, i=100)
+    // must land at +600c from A, i.e. 220*sqrt(2), not the Hz-linear
+    // midpoint (330 Hz).
+    {
+        auto note = makeSingleNote(200, 220.0, [](int) { return 220.0; }); // 1 second @ 5ms hop
+        CorrectionParams p;
+        p.correctionAmount = 100.0;
+        p.retuneSpeedMs = 0.0;
+        p.smoothnessMs  = 0.0;
+        std::vector<ManualPitchPoint> pts = { { 0.0, 220.0, 0.0 }, { 1.0, 440.0, 0.0 } };
+        auto r = computeManualCorrectionCurve(note.frames, kSampleRate, pts, p);
+        const double expectedHz = 220.0 * std::sqrt(2.0);
+        CHECK(std::fabs((double)r.frames[100].targetF0Hz - expectedHz) < 0.5,
+              "manual curve interpolates in cents (log-freq), landing at the geometric midpoint, not the Hz-linear one");
+        CHECK(std::fabs((double)r.frames[100].targetF0Hz - 330.0) > 1.0,
+              "the cents-domain midpoint is measurably different from the Hz-linear midpoint (330 Hz) for a full octave span");
+    }
+
+    // A hard step (two breakpoints ~2ms apart at different Hz, the drawing
+    // UI's own "hold-then-jump" pattern) opens the smoothnessMs release
+    // window exactly like a SCALE note-switch: instant with smoothnessMs=0,
+    // audibly ramped with smoothnessMs>0.
+    {
+        auto note = makeSingleNote(200, 220.0, [](int) { return 220.0; });
+        std::vector<ManualPitchPoint> stepPts = {
+            { 0.0, 220.0, 0.0 }, { 0.498, 220.0, 0.0 }, { 0.5, 440.0, 0.0 }, { 1.0, 440.0, 0.0 },
+        };
+        CorrectionParams instant;
+        instant.correctionAmount = 100.0;
+        instant.retuneSpeedMs = 0.0;
+        instant.smoothnessMs  = 0.0;
+        auto rInstant = computeManualCorrectionCurve(note.frames, kSampleRate, stepPts, instant);
+        // Frame 101 == t=0.505s, 5ms after the step: instant smoothness has
+        // already fully arrived at 440 Hz.
+        CHECK(std::fabs((double)rInstant.frames[101].targetF0Hz - 440.0) < 1.0,
+              "smoothnessMs=0: the step lands on target within one frame");
+
+        CorrectionParams ramped = instant;
+        ramped.smoothnessMs = 100.0; // release window outlives a single 5ms hop
+        auto rRamped = computeManualCorrectionCurve(note.frames, kSampleRate, stepPts, ramped);
+        CHECK(rRamped.frames[101].targetF0Hz > 220.0f && rRamped.frames[101].targetF0Hz < 440.0f,
+              "smoothnessMs=100: the step is still mid-ramp one frame after crossing it");
+    }
+
+    // Jumpiness has NO effect in Manual mode — a candidate change commits
+    // immediately regardless of the stored value, unlike SCALE's hold. Two
+    // otherwise-identical runs differing ONLY in jumpiness must produce
+    // bit-identical output.
+    {
+        auto note = makeSingleNote(200, 220.0, [](int) { return 220.0; });
+        std::vector<ManualPitchPoint> stepPts = {
+            { 0.0, 220.0, 0.0 }, { 0.048, 220.0, 0.0 }, { 0.05, 440.0, 0.0 }, { 1.0, 440.0, 0.0 },
+        };
+        CorrectionParams p0;
+        p0.correctionAmount = 100.0;
+        p0.retuneSpeedMs = 0.0;
+        p0.smoothnessMs  = 0.0;
+        p0.jumpiness     = 0.0;
+        CorrectionParams p100 = p0;
+        p100.jumpiness = 100.0; // would be a 100ms hold in SCALE mode
+        auto r0   = computeManualCorrectionCurve(note.frames, kSampleRate, stepPts, p0);
+        auto r100 = computeManualCorrectionCurve(note.frames, kSampleRate, stepPts, p100);
+        CHECK(r0.frames.size() == r100.frames.size(), "same frame count regardless of jumpiness");
+        bool identical = true;
+        for (size_t i = 0; i < r0.frames.size(); ++i)
+            if (std::fabs(r0.frames[i].targetF0Hz - r100.frames[i].targetF0Hz) > 1e-4f) identical = false;
+        CHECK(identical, "jumpiness is ignored in Manual mode: 0% and 100% produce identical output");
+        // And concretely: 10ms after the step (well inside what would be a
+        // 100ms SCALE hold), the jumpiness=100 run has ALREADY moved.
+        CHECK(std::fabs((double)r100.frames[12].targetF0Hz - 440.0) < 1.0,
+              "jumpiness=100 does not hold the pre-step value past the step in Manual mode");
+    }
+
+    // Preserve Vibrato has NO effect in Manual mode — the drawn curve is
+    // applied unfiltered. Two otherwise-identical runs differing ONLY in
+    // preserveVibrato must produce bit-identical output.
+    {
+        // A wiggly drawn curve: 8 Hz oscillation on top of a 220 Hz center,
+        // dense breakpoints (every hop) so evalManualCurve's interpolation
+        // doesn't itself smooth away the wiggle.
+        auto note = makeSingleNote(200, 220.0, [](int) { return 220.0; });
+        std::vector<ManualPitchPoint> wigglePts;
+        wigglePts.reserve(note.frames.size());
+        for (size_t i = 0; i < note.frames.size(); ++i) {
+            const double t = (double)i * kHopMs / 1000.0;
+            const double hz = 220.0 * std::exp2(20.0 * std::sin(2.0 * kPi * 8.0 * t) / 1200.0);
+            wigglePts.push_back({ t, hz, 0.0 });
+        }
+        CorrectionParams p0;
+        p0.correctionAmount = 100.0;
+        p0.retuneSpeedMs = 0.0;
+        p0.smoothnessMs  = 0.0;
+        p0.preserveVibrato = 0.0;
+        CorrectionParams p100 = p0;
+        p100.preserveVibrato = 100.0;
+        auto r0   = computeManualCorrectionCurve(note.frames, kSampleRate, wigglePts, p0);
+        auto r100 = computeManualCorrectionCurve(note.frames, kSampleRate, wigglePts, p100);
+        bool identical = true;
+        for (size_t i = 0; i < r0.frames.size(); ++i)
+            if (std::fabs(r0.frames[i].targetF0Hz - r100.frames[i].targetF0Hz) > 1e-4f) identical = false;
+        CHECK(identical, "preserveVibrato is ignored in Manual mode: 0% and 100% produce identical output");
+        // And concretely: with instant retune, the output reproduces the
+        // drawn wiggle exactly rather than being flattened toward the mean.
+        CHECK(std::fabs((double)r0.frames[50].targetF0Hz - (double)wigglePts[50].targetHz) < 0.5,
+              "the drawn wiggle survives unfiltered (not flattened by a vibrato split)");
+    }
+
+    // Unvoiced frames pass through unchanged, same contract as SCALE mode.
+    {
+        std::vector<PitchFrame> frames(3);
+        frames[0].voiced = false; frames[0].f0Hz = 0.0f; frames[0].posSample = 0;
+        frames[1].voiced = false; frames[1].f0Hz = 123.0f; frames[1].posSample = kHopSamples;
+        frames[2].voiced = false; frames[2].f0Hz = 0.0f; frames[2].posSample = 2 * kHopSamples;
+        std::vector<ManualPitchPoint> pts = { { 0.0, 300.0, 0.0 }, { 1.0, 300.0, 0.0 } };
+        CorrectionParams p;
+        auto r = computeManualCorrectionCurve(frames, kSampleRate, pts, p);
+        CHECK(r.frames.size() == 3, "unvoiced-only track still returns one frame per input frame (manual)");
+        for (size_t i = 0; i < r.frames.size(); ++i) {
+            CHECK(r.frames[i].targetF0Hz == frames[i].f0Hz, "unvoiced frame target == input f0Hz unchanged (manual)");
+            CHECK(r.frames[i].correctionCents == 0.0f, "unvoiced frame reports zero correction (manual)");
+        }
     }
 
     // ── Optional: dump the vibrato example as CSV for plotting ─────────────

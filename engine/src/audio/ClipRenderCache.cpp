@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstring>
 #include <iostream>
+#include <thread>
 
 // ─── CacheKey ==  ────────────────────────────────────────────────────────────
 
@@ -344,8 +345,20 @@ private:
 
 // ─── ClipRenderCache ──────────────────────────────────────────────────────────
 
+namespace {
+// Workers feed a cache with a correct raw-PCM fallback, so a late worker is
+// cheap and a preempting one is not: fewer threads, below-normal priority.
+int clipCacheWorkerCount() {
+    const int hw = (int) std::thread::hardware_concurrency();
+    return juce::jlimit(1, ClipRenderCache::kMaxThreads, hw / 2 - 1);
+}
+} // namespace
+
 ClipRenderCache::ClipRenderCache()
-    : threadPool_(std::make_unique<juce::ThreadPool>(kThreads))
+    : threadPool_(std::make_unique<juce::ThreadPool>(
+          juce::ThreadPool::Options{}
+              .withNumberOfThreads(clipCacheWorkerCount())
+              .withDesiredThreadPriority(juce::Thread::Priority::low)))
 {}
 
 ClipRenderCache::~ClipRenderCache() {

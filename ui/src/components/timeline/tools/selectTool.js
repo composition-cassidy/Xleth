@@ -5,7 +5,8 @@ import {
 import { labelHexColor } from '../../../constants/labels.js'
 import { tokenValue } from '../../../theming/tokenValue.ts'
 import { uiCanvasFont } from '../../../styles/typography.js'
-import { drawRubberBand, drawMovePreview } from '../timelineDrawing.js'
+import { drawRubberBand, drawMovePreview, hexToRgba } from '../timelineDrawing.js'
+import { resolveGroupTranslation, splitPlacementsByKind } from '../groupTransform.js'
 import { getRegionPlaybackDurationSec } from '../regionDuration.js'
 import {
   sourceTicksForTimelineTicks,
@@ -26,6 +27,13 @@ const HANDLE_W = 6   // Resize handle hit-test width (slightly wider than visual
 const MIN_DURATION_TICKS = 120  // 1/32 note
 const DRAG_THRESHOLD = 3  // px before drag starts
 
+// Resolves a ghost-preview fill/stroke pair from a region's label color once
+// (at mousedown, or once per selected item into the drag snapshot) instead of
+// re-parsing the hex string via hexToRgba on every drag-overlay frame.
+function ghostColors(hex) {
+  return { fillColor: hexToRgba(hex, 0.3), strokeColor: hexToRgba(hex, 0.7) }
+}
+
 /**
  * Select tool — click to select, drag to move/resize, rubber-band select.
  * Handles both Clips and PatternBlocks (pattern blocks on Pattern tracks).
@@ -34,6 +42,10 @@ export function createSelectTool(deps) {
   const {
     clipsRef, tracksRef, regionsRef, selectedRef,
     pixelsPerBeatRef, scrollOffsetRef, bpmRef,
+    // Track id → index lookup (rebuilt only when the tracks array changes) —
+    // avoids an O(tracks) tracks.findIndex() scan inside per-clip/per-block
+    // loops during mousedown, rubber-band selection, and drag-preview redraw.
+    trackIdToIndexRef,
     onMoveClips, onDuplicateClips, onResizeClip, onResizeClipLeft,
     onStretchClip, onStretchClipLeft,
     setSelectedClipIds, setStickyNoteLength,
@@ -103,18 +115,23 @@ export function createSelectTool(deps) {
   let dragCurrentX = 0, dragCurrentY = 0
   // Clip drag state
   let dragClip = null
-  let dragClipOrigBeat = 0
+  // INTEGER ticks, not float beats. A gesture's position math never leaves the
+  // tick domain (groupTransform.js law 6) — holding beats here is what let a
+  // free (Alt) drag accumulate a tick of rounding drift per item per frame.
+  let dragClipOrigTicks = 0
   let dragClipOrigTrackIdx = 0
   let dragClipOrigDuration = 0
   let dragClipOrigOffset = 0
   let dragClipOrigMaxDuration = Number.MAX_SAFE_INTEGER
   let dragClipOrigStretchRatio = 1.0
+  let dragClipOrigColors = null  // { fillColor, strokeColor } — resolved once at mousedown
   // Block drag state
   let dragBlock = null
-  let dragBlockOrigBeat = 0
+  let dragBlockOrigTicks = 0
   let dragBlockOrigTrackIdx = 0
   let dragBlockOrigDuration = 0
   let dragBlockOrigOffset = 0
+  let dragBlockOrigColors = null  // { fillColor, strokeColor } — resolved once at mousedown
   // Automation clip drag state — lane-addressed, not track-addressed.
   let dragAutomationClip = null
   let dragAutomationClipOrigPosition = 0
@@ -131,14 +148,34 @@ export function createSelectTool(deps) {
   let dragAutomationPointPreviewValue = 0
   let pendingHit = null  // { clip?, block?, automationClip?, empty?, isRightEdge, isLeftEdge, e }
   // Multi-select drag state
-  let dragSelectedClips = []   // [{ clip, origBeat, origTrackIdx }]
-  let dragSelectedBlocks = []  // [{ block, origBeat, origTrackIdx }]
+  let dragSelectedClips = []   // [{ clip, origTicks, origTrackIdx }]
+  let dragSelectedBlocks = []  // [{ block, origTicks, origTrackIdx }]
   // Shift-click range-select anchor — the last plain/ctrl-clicked item's
   // track+time extent, so a later shift-click can select everything between
   // it and the new target (horizontally on one track, or across a block of
   // tracks above/below/diagonally). Mirrors trackSelectionAnchorRef's role
   // for track-header range selection (see updateTrackSelection).
   let selectionAnchor = null  // { trackIndex, startTicks, endTicks }
+
+  // rAF-coalesced overlay repaint for the hot per-mousemove path. Several
+  // mousemove events can land in the same animation frame; without this a
+  // clip trim redraws the full overlay canvas once per event instead of once
+  // per frame. Mouseup/reset paths still call redrawOverlay() directly so
+  // the final state paints immediately with no extra frame of latency.
+  let overlayRedrawRaf = null
+  function scheduleOverlayRedraw() {
+    if (overlayRedrawRaf != null) return
+    overlayRedrawRaf = requestAnimationFrame(() => {
+      overlayRedrawRaf = null
+      redrawOverlay()
+    })
+  }
+  function cancelScheduledOverlayRedraw() {
+    if (overlayRedrawRaf != null) {
+      cancelAnimationFrame(overlayRedrawRaf)
+      overlayRedrawRaf = null
+    }
+  }
 
   // Drops the automation point drag preview and repaints the content layer so
   // the curve snaps back to whatever the engine actually holds. Called on
@@ -190,122 +227,118 @@ export function createSelectTool(deps) {
     dragSelectedBlocks = []
     dragSelectedAutomationClips = []
     setDragClass(null)
+    cancelScheduledOverlayRedraw()
     redrawOverlay()
   }
 
-  function getDragDelta() {
-    const tracks = tracksRef.current || []
-    const beatDelta = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-      - pixelToBeat(dragOriginX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-    const newTrackIndex = idxAtY(dragCurrentY)
-    const validTarget = newTrackIndex >= 0 && newTrackIndex < tracks.length
-    const clampedTrackIdx = Math.max(0, Math.min(newTrackIndex, tracks.length - 1))
-    const anchorTrackIdx = dragKind === 'block' ? dragBlockOrigTrackIdx : dragClipOrigTrackIdx
-    const requestedTrackDelta = clampedTrackIdx - anchorTrackIdx
-    const clipItems = dragSelectedClips.length > 0
-      ? dragSelectedClips
-      : dragClip
-        ? [{ origTrackIdx: dragClipOrigTrackIdx }]
-        : []
-    const blockItems = dragSelectedBlocks.length > 0
-      ? dragSelectedBlocks
-      : dragBlock
-        ? [{ origTrackIdx: dragBlockOrigTrackIdx }]
-        : []
-    const destinationTypesMatch = clipItems.every(({ origTrackIdx }) => {
-      const target = tracks[origTrackIdx + requestedTrackDelta]
-      return target && target.type !== 'Pattern'
-    }) && blockItems.every(({ origTrackIdx }) => {
-      const target = tracks[origTrackIdx + requestedTrackDelta]
-      return target?.type === 'Pattern'
-    })
-    return {
-      tracks,
-      beatDelta,
-      trackDelta: destinationTypesMatch ? requestedTrackDelta : 0,
-      validTarget,
+  // ── Group translation ──────────────────────────────────────────────────
+  // A move/duplicate gesture is a RIGID TRANSLATION of the whole selection.
+  // Its geometry lives in groupTransform.js; the functions below only turn drag
+  // state into that module's inputs. There is exactly one resolver — drawOverlay
+  // renders `placements`, onMouseUp commits that same array — so the preview and
+  // the commit cannot disagree.
+
+  // The clip/block/automation halves of the gesture, as groupTransform items.
+  // Each carries its ORIGINAL integer tick position; nothing is snapped or
+  // clamped here.
+  function clipGroupItems() {
+    if (dragSelectedClips.length > 0) {
+      return dragSelectedClips.map(({ clip, origTicks, origTrackIdx, colors }) => ({
+        kind: 'clip', clip, colors, origTicks, origTrackIndex: origTrackIdx, trackId: clip.trackId,
+      }))
     }
+    if (dragKind === 'clip' && dragClip) {
+      return [{
+        kind: 'clip', clip: dragClip, colors: dragClipOrigColors,
+        origTicks: dragClipOrigTicks, origTrackIndex: dragClipOrigTrackIdx, trackId: dragClip.trackId,
+      }]
+    }
+    return []
   }
 
-  function getClipDragPlacements(modifiers) {
-    const items = dragSelectedClips.length > 0
-      ? dragSelectedClips
-      : dragClip
-        ? [{ clip: dragClip, origBeat: dragClipOrigBeat, origTrackIdx: dragClipOrigTrackIdx }]
-        : []
-    if (items.length === 0) return []
-    const { tracks, beatDelta, trackDelta, validTarget } = getDragDelta()
-    if (!validTarget) return []
-
-    return items.map(({ clip, origBeat, origTrackIdx }) => {
-      const positionTicks = beatsToTicks(snapBeatToGrid(
-        Math.max(0, origBeat + beatDelta),
-        modifiers,
-        snapGranularityRef?.current,
-      ))
-      const proposedTrackIdx = Math.max(0, Math.min(origTrackIdx + trackDelta, tracks.length - 1))
-      const proposedTrack = tracks[proposedTrackIdx]
-      const trackIndex = proposedTrack?.type === 'Pattern' ? origTrackIdx : proposedTrackIdx
-      return {
-        clip,
-        positionTicks,
-        trackId: tracks[trackIndex]?.id ?? clip.trackId,
-        trackIndex,
-      }
-    })
+  function blockGroupItems() {
+    if (dragSelectedBlocks.length > 0) {
+      return dragSelectedBlocks.map(({ block, origTicks, origTrackIdx, colors }) => ({
+        kind: 'block', block, colors, origTicks, origTrackIndex: origTrackIdx, trackId: block.trackId,
+      }))
+    }
+    if (dragKind === 'block' && dragBlock) {
+      return [{
+        kind: 'block', block: dragBlock, colors: dragBlockOrigColors,
+        origTicks: dragBlockOrigTicks, origTrackIndex: dragBlockOrigTrackIdx, trackId: dragBlock.trackId,
+      }]
+    }
+    return []
   }
 
-  function getBlockDragPlacements(modifiers) {
-    const items = dragSelectedBlocks.length > 0
-      ? dragSelectedBlocks
-      : dragBlock
-        ? [{ block: dragBlock, origBeat: dragBlockOrigBeat, origTrackIdx: dragBlockOrigTrackIdx }]
-        : []
-    if (items.length === 0) return []
-    const { tracks, beatDelta, trackDelta, validTarget } = getDragDelta()
-    if (!validTarget) return []
-
-    return items.map(({ block, origBeat, origTrackIdx }) => {
-      const positionTicks = beatsToTicks(snapBeatToGrid(
-        Math.max(0, origBeat + beatDelta),
-        modifiers,
-        snapGranularityRef?.current,
-      ))
-      const proposedTrackIdx = Math.max(0, Math.min(origTrackIdx + trackDelta, tracks.length - 1))
-      const proposedTrack = tracks[proposedTrackIdx]
-      const trackIndex = proposedTrack?.type === 'Pattern' ? proposedTrackIdx : origTrackIdx
-      return {
-        block,
-        positionTicks,
-        trackId: tracks[trackIndex]?.id ?? block.trackId,
-        trackIndex,
-      }
-    })
-  }
-
-  // Automation-clip duplicate-drag placements — lane-addressed, so unlike
-  // clip/block duplicate there is no track-switch axis: a duplicate always
-  // stays on its source clip's lane. Same-lane overlap is rejected engine-
-  // side (see automationKnobBinding.js's findFreePosition), so the commit
-  // side (not this preview) slides a placement right if it lands occupied.
-  function getAutomationClipDragPlacements(modifiers) {
-    const items = dragSelectedAutomationClips.length > 0
+  // Automation clips are LANE-addressed, so they take no part in the vertical
+  // axis (origTrackIndex null). Which lane a moved clip lands on is a policy
+  // decision made here — a single-clip MOVE, within the grabbed clip's own
+  // group — not geometry groupTransform knows about. A duplicate never switches
+  // lane: it stays on its source clip's lane, as it always has.
+  function automationGroupItems() {
+    if (dragKind !== 'automation') return []
+    const src = dragSelectedAutomationClips.length > 0
       ? dragSelectedAutomationClips
       : dragAutomationClip
         ? [{ clip: dragAutomationClip, origPosition: dragAutomationClipOrigPosition, origLaneId: dragAutomationClipOrigLaneId }]
         : []
-    if (items.length === 0) return []
-    const beatDelta = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
+    if (src.length === 0) return []
+    const targetLaneRow = trackLayoutRef?.current?.automationLaneRowAtY?.(dragCurrentY)
+    const allowLaneSwitch = dragMode === 'move' && src.length === 1
+      && targetLaneRow && targetLaneRow.ownerTrackId === dragAutomationClipOwnerTrackId
+    return src.map(({ clip, origPosition, origLaneId }) => ({
+      kind: 'automation', clip,
+      origTicks: origPosition, origTrackIndex: null,
+      laneId: allowLaneSwitch ? targetLaneRow.laneId : origLaneId,
+    }))
+  }
+
+  /**
+   * The single resolver for a move/duplicate gesture: pointer state in, one
+   * rigid (tickDelta, trackDelta) and the resulting placements out, sliced per
+   * kind. `refused` means the gesture resolved to nothing at all (no track row
+   * under the pointer, or a type-mismatched destination anywhere in the
+   * selection) — then every slice is empty and nothing is drawn or committed.
+   */
+  function resolveDragTranslation(modifiers) {
+    const tracks = tracksRef.current || []
+    const items = [...clipGroupItems(), ...blockGroupItems(), ...automationGroupItems()]
+    if (items.length === 0) {
+      return { tickDelta: 0, trackDelta: 0, placements: [], refused: true, clip: [], block: [], automation: [] }
+    }
+
+    // The ANCHOR is the item grabbed at mousedown — the only item whose
+    // destination snap resolves.
+    const anchor =
+      dragKind === 'block' ? items.find((it) => it.kind === 'block' && it.block === dragBlock)
+      : dragKind === 'automation' ? items.find((it) => it.kind === 'automation' && it.clip === dragAutomationClip)
+      : items.find((it) => it.kind === 'clip' && it.clip === dragClip)
+
+    const pointerBeatDelta = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
       - pixelToBeat(dragOriginX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-    return items.map(({ clip, origPosition, origLaneId }) => {
-      const origBeat = origPosition / PPQ
-      const positionTicks = beatsToTicks(snapBeatToGrid(
-        Math.max(0, origBeat + beatDelta),
-        modifiers,
-        snapGranularityRef?.current,
-      ))
-      return { clip, positionTicks, laneId: origLaneId }
+
+    // Vertical pointer travel, measured from the ANCHOR's row. A Y that resolves
+    // to no track at all (a folder header, an automation group band) refuses the
+    // gesture rather than silently picking a neighbouring row.
+    let pointerTrackDelta = 0
+    if (items.some((it) => it.origTrackIndex != null)) {
+      const row = idxAtY(dragCurrentY)
+      const anchorRow = anchor?.origTrackIndex
+      if (row < 0 || tracks.length === 0 || anchorRow == null) pointerTrackDelta = NaN
+      else pointerTrackDelta = Math.max(0, Math.min(row, tracks.length - 1)) - anchorRow
+    }
+
+    const result = resolveGroupTranslation({
+      items,
+      anchor,
+      pointerBeatDelta,
+      pointerTrackDelta,
+      tracks,
+      modifiers,
+      snapGranularity: snapGranularityRef?.current,
     })
+    return { ...result, ...splitPlacementsByKind(result.placements) }
   }
 
   // Compute the max duration the clip can have given its region + current offset.
@@ -327,7 +360,7 @@ export function createSelectTool(deps) {
       const clip = clips[i]
       const clipBeat = clip.positionTicks / PPQ
       const clipEnd = clipBeat + clip.durationTicks / PPQ
-      const clipTrackIdx = tracks.findIndex((t) => t.id === clip.trackId)
+      const clipTrackIdx = trackIdToIndexRef.current[clip.trackId] ?? -1
       if (beat >= clipBeat && beat < clipEnd && trackIndex === clipTrackIdx) return clip
     }
     return null
@@ -341,7 +374,7 @@ export function createSelectTool(deps) {
       const b = blocks[i]
       const bBeat = b.positionTicks / PPQ
       const bEnd = bBeat + b.durationTicks / PPQ
-      const bTrackIdx = tracks.findIndex((t) => t.id === b.trackId)
+      const bTrackIdx = trackIdToIndexRef.current[b.trackId] ?? -1
       if (beat >= bBeat && beat < bEnd && trackIndex === bTrackIdx) return b
     }
     return null
@@ -430,14 +463,14 @@ export function createSelectTool(deps) {
   // nothing was hit — the unit selectionAnchor and range-select deal in.
   function clipExtent(clip) {
     return {
-      trackIndex: tracksRef.current.findIndex((t) => t.id === clip.trackId),
+      trackIndex: trackIdToIndexRef.current[clip.trackId] ?? -1,
       startTicks: clip.positionTicks,
       endTicks: clip.positionTicks + clip.durationTicks,
     }
   }
   function blockExtent(block) {
     return {
-      trackIndex: tracksRef.current.findIndex((t) => t.id === block.trackId),
+      trackIndex: trackIdToIndexRef.current[block.trackId] ?? -1,
       startTicks: block.positionTicks,
       endTicks: block.positionTicks + block.durationTicks,
     }
@@ -452,7 +485,7 @@ export function createSelectTool(deps) {
     const trackHi = Math.max(anchor.trackIndex, target.trackIndex)
     const startTicks = Math.min(anchor.startTicks, target.startTicks)
     const endTicks = Math.max(anchor.endTicks, target.endTicks)
-    const tracks = tracksRef.current
+    const tidx = trackIdToIndexRef.current
 
     // Clips/blocks are half-open [position, position+duration) spans, and
     // packed patterns commonly butt one clip's end exactly against the next
@@ -460,14 +493,14 @@ export function createSelectTool(deps) {
     // neighbor as overlapping and grab one extra item past the target.
     const clipIds = new Set()
     for (const clip of clipsRef.current || []) {
-      const idx = tracks.findIndex((t) => t.id === clip.trackId)
+      const idx = tidx[clip.trackId] ?? -1
       if (idx < trackLo || idx > trackHi) continue
       const clipEnd = clip.positionTicks + clip.durationTicks
       if (clipEnd > startTicks && clip.positionTicks < endTicks) clipIds.add(clip.id)
     }
     const blockIds = new Set()
     for (const block of patternBlocksRef?.current || []) {
-      const idx = tracks.findIndex((t) => t.id === block.trackId)
+      const idx = tidx[block.trackId] ?? -1
       if (idx < trackLo || idx > trackHi) continue
       const blockEnd = block.positionTicks + block.durationTicks
       if (blockEnd > startTicks && block.positionTicks < endTicks) blockIds.add(block.id)
@@ -563,31 +596,38 @@ export function createSelectTool(deps) {
           pendingHit = { block: hitBlock, isRightEdge, isLeftEdge, e }
           dragKind = 'block'
           dragBlock = hitBlock
-          dragBlockOrigBeat = hitBlock.positionTicks / PPQ
+          dragBlockOrigTicks = hitBlock.positionTicks
           dragBlockOrigTrackIdx = trackIndex
           dragBlockOrigDuration = hitBlock.durationTicks
           dragBlockOrigOffset = hitBlock.offsetTicks ?? 0
+          dragBlockOrigColors = ghostColors(labelHexColor(
+            regionsRef.current?.[patternsRef.current?.[hitBlock.patternId]?.regionId]?.label
+          ))
           // Capture multi-selection if this block is already selected
           if (selectedBlockIdsRef?.current?.has(hitBlock.id) && selectedBlockIdsRef.current.size > 1) {
-            const trks = tracksRef.current
+            const tidx = trackIdToIndexRef.current
             dragSelectedBlocks = (patternBlocksRef.current || [])
               .filter((b) => selectedBlockIdsRef.current.has(b.id))
               .map((b) => ({
                 block: b,
-                origBeat: b.positionTicks / PPQ,
-                origTrackIdx: trks.findIndex((t) => t.id === b.trackId),
+                origTicks: b.positionTicks,
+                origTrackIdx: tidx[b.trackId] ?? -1,
+                colors: ghostColors(labelHexColor(
+                  regionsRef.current?.[patternsRef.current?.[b.patternId]?.regionId]?.label
+                )),
               }))
           } else {
             dragSelectedBlocks = []
           }
           if (selectedBlockIdsRef?.current?.has(hitBlock.id) && selectedRef.current.size > 0) {
-            const trks = tracksRef.current
+            const tidx = trackIdToIndexRef.current
             dragSelectedClips = clipsRef.current
               .filter((c) => selectedRef.current.has(c.id))
               .map((c) => ({
                 clip: c,
-                origBeat: c.positionTicks / PPQ,
-                origTrackIdx: trks.findIndex((t) => t.id === c.trackId),
+                origTicks: c.positionTicks,
+                origTrackIdx: tidx[c.trackId] ?? -1,
+                colors: ghostColors(labelHexColor(regionsRef.current?.[c.regionId]?.label)),
               }))
           } else {
             dragSelectedClips = []
@@ -613,11 +653,12 @@ export function createSelectTool(deps) {
         pendingHit = { clip: hitClip, isRightEdge, isLeftEdge, e }
         dragKind = 'clip'
         dragClip = hitClip
-        dragClipOrigBeat = hitClip.positionTicks / PPQ
-        dragClipOrigTrackIdx = tracksRef.current.findIndex((t) => t.id === hitClip.trackId)
+        dragClipOrigTicks = hitClip.positionTicks
+        dragClipOrigTrackIdx = trackIdToIndexRef.current[hitClip.trackId] ?? -1
         dragClipOrigDuration = hitClip.durationTicks
         dragClipOrigOffset = hitClip.regionOffsetTicks ?? 0
         dragClipOrigStretchRatio = hitClip.stretchRatio ?? 1.0
+        dragClipOrigColors = ghostColors(labelHexColor(regionsRef.current?.[hitClip.regionId]?.label))
         {
           // regionDurTicks and regionOffset are SOURCE ticks; the resize clamp is
           // a TIMELINE duration, so convert the remaining source budget through
@@ -631,25 +672,29 @@ export function createSelectTool(deps) {
         }
         // Capture multi-selection if this clip is already selected
         if (selectedRef.current.has(hitClip.id) && selectedRef.current.size > 1) {
-          const trks = tracksRef.current
+          const tidx = trackIdToIndexRef.current
           dragSelectedClips = clipsRef.current
             .filter((c) => selectedRef.current.has(c.id))
             .map((c) => ({
               clip: c,
-              origBeat: c.positionTicks / PPQ,
-              origTrackIdx: trks.findIndex((t) => t.id === c.trackId),
+              origTicks: c.positionTicks,
+              origTrackIdx: tidx[c.trackId] ?? -1,
+              colors: ghostColors(labelHexColor(regionsRef.current?.[c.regionId]?.label)),
             }))
         } else {
           dragSelectedClips = []
         }
         if (selectedRef.current.has(hitClip.id) && selectedBlockIdsRef?.current?.size > 0) {
-          const trks = tracksRef.current
+          const tidx = trackIdToIndexRef.current
           dragSelectedBlocks = (patternBlocksRef.current || [])
             .filter((b) => selectedBlockIdsRef.current.has(b.id))
             .map((b) => ({
               block: b,
-              origBeat: b.positionTicks / PPQ,
-              origTrackIdx: trks.findIndex((t) => t.id === b.trackId),
+              origTicks: b.positionTicks,
+              origTrackIdx: tidx[b.trackId] ?? -1,
+              colors: ghostColors(labelHexColor(
+                regionsRef.current?.[patternsRef.current?.[b.patternId]?.regionId]?.label
+              )),
             }))
         } else {
           dragSelectedBlocks = []
@@ -789,59 +834,23 @@ export function createSelectTool(deps) {
         return
       }
 
-      // ── Clip resize live updates (trim) and stretch cursor ─────────────────
+      // ── Clip resize/stretch cursor ──────────────────────────────────────
+      // No IPC here — the edge is painted from drag state by drawOverlay
+      // below (same as block/automation-clip resize), and onResizeClip /
+      // onResizeClipLeft commit exactly once, from onMouseUp.
       if (dragMode === 'resize' && dragClip) {
         setDragClass(lastModifiers.shift ? 'stretching-right' : 'resizing-right')
-        if (!lastModifiers.shift) {
-          const currentBeat = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-          const snappedEnd = snapBeatToGrid(Math.max(0, currentBeat), lastModifiers, snapGranularityRef?.current)
-          const clipStartBeat = dragClip.positionTicks / PPQ
-          let newDurationTicks = beatsToTicks(Math.max(snappedEnd - clipStartBeat, 0))
-          const minDur = lastModifiers.alt ? MIN_DURATION_TICKS_FREE : MIN_DURATION_TICKS
-          if (newDurationTicks < minDur) newDurationTicks = minDur
-          if (newDurationTicks > dragClipOrigMaxDuration) {
-            newDurationTicks = Math.max(minDur, dragClipOrigMaxDuration)
-          }
-          if (newDurationTicks !== dragClipOrigDuration) {
-            onResizeClip(dragClip.id, newDurationTicks)
-            if (!lastModifiers.alt) setStickyNoteLength(newDurationTicks)
-          }
-        }
       }
 
       if (dragMode === 'resize-left' && dragClip) {
         setDragClass(lastModifiers.shift ? 'stretching-left' : 'resizing-left')
-        if (!lastModifiers.shift) {
-          const currentBeat = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-          const snappedStart = snapBeatToGrid(Math.max(0, currentBeat), lastModifiers, snapGranularityRef?.current)
-          const clipEndBeat = (dragClip.positionTicks + dragClip.durationTicks) / PPQ
-          const minDur = lastModifiers.alt ? MIN_DURATION_TICKS_FREE : MIN_DURATION_TICKS
-          // The existing offset is SOURCE ticks; how far left the edge may travel
-          // is a TIMELINE distance, so scale it up by the ratio.
-          const minStartTicks = dragClip.positionTicks
-            - timelineTicksForSourceTicks(dragClipOrigOffset, dragClipOrigStretchRatio)
-          const minStartBeat = Math.max(0, minStartTicks / PPQ)
-          let newStartBeat = Math.min(snappedStart, clipEndBeat - minDur / PPQ)
-          newStartBeat = Math.max(minStartBeat, newStartBeat)
-          const newPositionTicks = beatsToTicks(newStartBeat)
-          const newDurationTicks = (dragClip.positionTicks + dragClip.durationTicks) - newPositionTicks
-          const positionDelta = newPositionTicks - dragClip.positionTicks
-          // …and the timeline distance the edge moved becomes a SOURCE-domain
-          // offset delta, so scale it back down. Trimming 1 bar off a 4× clip's
-          // head skips only a quarter bar of source.
-          const newRegionOffset = Math.max(0, dragClipOrigOffset
-            + sourceTicksForTimelineTicks(positionDelta, dragClipOrigStretchRatio))
-          if (newPositionTicks !== dragClip.positionTicks) {
-            onResizeClipLeft(dragClip.id, newPositionTicks, newDurationTicks, newRegionOffset)
-            if (!lastModifiers.alt) setStickyNoteLength(newDurationTicks)
-          }
-        }
       }
 
-      redrawOverlay()
+      scheduleOverlayRedraw()
     },
 
     onMouseUp(localX, localY, e) {
+      cancelScheduledOverlayRedraw()
       if (dragCancelled) {
         dragCancelled = false
         return
@@ -933,6 +942,8 @@ export function createSelectTool(deps) {
             setSelectedBlockIds?.(new Set())
             selectionAnchor = clipExtent(hitClip)
           }
+          // Selecting a clip publishes its length as the global draw length.
+          setStickyNoteLength(hitClip.durationTicks)
           console.log(`[SelectTool] Selected clip ${hitClip.id}`)
         } else {
           const origE = pendingHit?.e
@@ -972,12 +983,16 @@ export function createSelectTool(deps) {
       }
 
       const modifiers = { alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey }
+      // The overlay resolved its last frame from lastModifiers; adopting the
+      // mouseup's modifiers here keeps the committed array the one the user was
+      // actually looking at.
+      lastModifiers = modifiers
 
       if (dragMode === 'duplicate') {
         if (modifiers.shift) {
-          const clipPlacements = getClipDragPlacements(modifiers)
-          const blockPlacements = getBlockDragPlacements(modifiers)
-          const automationPlacements = getAutomationClipDragPlacements(modifiers)
+          // Same resolver, same array the preview drew.
+          const { clip: clipPlacements, block: blockPlacements, automation: automationPlacements } =
+            resolveDragTranslation(modifiers)
           if (clipPlacements.length > 0) onDuplicateClips?.(clipPlacements)
           if (blockPlacements.length > 0) onDuplicatePatternBlocks?.(blockPlacements)
           if (automationPlacements.length > 0) onDuplicateAutomationClips?.(automationPlacements)
@@ -989,37 +1004,53 @@ export function createSelectTool(deps) {
         return
       }
 
-      // ── Automation clip move/resize commit (single commit here — no IPC
-      // during drag, per the locked spec). ─────────────────────────────────
-      if (dragMode === 'move' && dragAutomationClip) {
-        const beatDelta = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-          - pixelToBeat(dragOriginX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-        const targetLaneRow = trackLayoutRef?.current?.automationLaneRowAtY?.(dragCurrentY)
-        const items = dragSelectedAutomationClips.length > 1
-          ? dragSelectedAutomationClips
-          : [{ clip: dragAutomationClip, origPosition: dragAutomationClipOrigPosition, origLaneId: dragAutomationClipOrigLaneId }]
-        // Lane switching only applies to a single-clip drag, and only within
-        // the origin clip's own group (same ownerTrackId) — cross-group moves
-        // are refused by staying on the original lane.
-        const allowLaneSwitch = items.length === 1
-          && targetLaneRow && targetLaneRow.ownerTrackId === dragAutomationClipOwnerTrackId
+      // ── Move commit — ONE rigid translation for the whole gesture ───────
+      // Clips, pattern blocks and automation clips resolve together: a mixed
+      // selection has to move or refuse as a unit (groupTransform law 5). Each
+      // kind still leaves through its own batch RPC.
+      if (dragMode === 'move' && (dragClip || dragBlock || dragAutomationClip)) {
+        const { clip: clipPlacements, block: blockPlacements, automation: automationPlacements } =
+          resolveDragTranslation(modifiers)
 
-        const moves = []
-        for (const { clip, origPosition, origLaneId } of items) {
-          const origBeat = origPosition / PPQ
-          const newBeat = snapBeatToGrid(Math.max(0, origBeat + beatDelta), modifiers, snapGranularityRef?.current)
-          const newPositionTicks = beatsToTicks(newBeat)
-          const laneId = allowLaneSwitch ? targetLaneRow.laneId : origLaneId
-          if (newPositionTicks !== clip.positionTicks || laneId !== clip.laneId) {
-            moves.push({ clipId: clip.id, laneId, positionTicks: newPositionTicks })
+        const clipMoves = []
+        for (const p of clipPlacements) {
+          if (p.positionTicks !== p.clip.positionTicks || p.trackId !== p.clip.trackId) {
+            clipMoves.push({ clipId: p.clip.id, trackId: p.trackId, positionTicks: p.positionTicks })
           }
         }
-        if (moves.length > 0) {
-          onMoveAutomationClip?.(moves)
-          console.log(`[SelectTool] Moved ${moves.length} automation clip(s)`)
+        if (clipMoves.length > 0) {
+          // Merely moving a clip publishes its length as the global draw length.
+          if (dragClip) setStickyNoteLength(dragClip.durationTicks)
+          onMoveClips?.(clipMoves)
+          console.log(`[SelectTool] Moved ${clipMoves.length} clip(s)`)
+        }
+
+        const blockMoves = []
+        for (const p of blockPlacements) {
+          if (p.positionTicks !== p.block.positionTicks || p.trackId !== p.block.trackId) {
+            blockMoves.push({ blockId: p.block.id, trackId: p.trackId, positionTicks: p.positionTicks })
+          }
+        }
+        if (blockMoves.length > 0) {
+          onMovePatternBlocks?.(blockMoves)
+          console.log(`[SelectTool] Moved ${blockMoves.length} pattern block(s)`)
+        }
+
+        const automationMoves = []
+        for (const p of automationPlacements) {
+          if (p.positionTicks !== p.clip.positionTicks || p.laneId !== p.clip.laneId) {
+            automationMoves.push({ clipId: p.clip.id, laneId: p.laneId, positionTicks: p.positionTicks })
+          }
+        }
+        if (automationMoves.length > 0) {
+          onMoveAutomationClip?.(automationMoves)
+          console.log(`[SelectTool] Moved ${automationMoves.length} automation clip(s)`)
         }
       }
 
+      // ── Automation clip resize commit (single commit here — no IPC during
+      // drag, per the locked spec). The MOVE half of this gesture is part of the
+      // unified group translation above. ──────────────────────────────────
       if (dragMode === 'resize' && dragAutomationClip) {
         const currentBeat = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
         const snappedEnd = snapBeatToGrid(Math.max(0, currentBeat), modifiers, snapGranularityRef?.current)
@@ -1049,43 +1080,7 @@ export function createSelectTool(deps) {
         }
       }
 
-      // ── Block move/resize commit ────────────────────────────────────────
-      if (dragMode === 'move' && dragBlock) {
-        const beatDelta = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-          - pixelToBeat(dragOriginX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-        const newTrackIndex = idxAtY(dragCurrentY)
-        if (newTrackIndex < 0) {
-          resetDragState({ cancelled: true })
-          return
-        }
-        const tracks = tracksRef.current
-        const clampedTrackIdx = Math.max(0, Math.min(newTrackIndex, tracks.length - 1))
-        const trackDelta = clampedTrackIdx - dragBlockOrigTrackIdx
-
-        const blocksToMove = dragSelectedBlocks.length > 1
-          ? dragSelectedBlocks
-          : [{ block: dragBlock, origBeat: dragBlockOrigBeat, origTrackIdx: dragBlockOrigTrackIdx }]
-
-        // Collect every displaced block and commit ONCE. Committing per block
-        // cost a full engine round trip and a full pattern-block refetch each,
-        // which is what made dragging a large selection crawl.
-        const blockMoves = []
-        for (const { block, origBeat, origTrackIdx } of blocksToMove) {
-          const newBeat = snapBeatToGrid(Math.max(0, origBeat + beatDelta), modifiers, snapGranularityRef?.current)
-          const newTrkIdx = Math.max(0, Math.min(origTrackIdx + trackDelta, tracks.length - 1))
-          const tgtTrack = tracks[newTrkIdx]
-          const finalTrackId = tgtTrack?.type === 'Pattern' ? tgtTrack.id : block.trackId
-          const newPositionTicks = beatsToTicks(newBeat)
-          if (newPositionTicks !== block.positionTicks || finalTrackId !== block.trackId) {
-            blockMoves.push({ blockId: block.id, trackId: finalTrackId, positionTicks: newPositionTicks })
-          }
-        }
-        if (blockMoves.length > 0) {
-          onMovePatternBlocks?.(blockMoves)
-          console.log(`[SelectTool] Moved ${blockMoves.length} pattern block(s)`)
-        }
-      }
-
+      // ── Block resize commit (its move half is in the group translation) ─
       if (dragMode === 'resize' && dragBlock) {
         const currentBeat = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
         const snappedEnd = snapBeatToGrid(Math.max(0, currentBeat), modifiers, snapGranularityRef?.current)
@@ -1118,39 +1113,47 @@ export function createSelectTool(deps) {
         }
       }
 
-      // ── Clip move/resize commit ─────────────────────────────────────────
-      if (dragMode === 'move' && dragClip) {
-        const beatDelta = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-          - pixelToBeat(dragOriginX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-        const newTrackIndex = idxAtY(dragCurrentY)
-        if (newTrackIndex < 0) {
-          resetDragState({ cancelled: true })
-          return
+      // ── Clip resize commit (trim) — single commit here, no IPC during drag
+      // (matches the block/automation-clip resize pattern above). ─────────
+      if (dragMode === 'resize' && dragClip && !modifiers.shift) {
+        const currentBeat = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
+        const snappedEnd = snapBeatToGrid(Math.max(0, currentBeat), modifiers, snapGranularityRef?.current)
+        const clipStartBeat = dragClip.positionTicks / PPQ
+        let newDurationTicks = beatsToTicks(Math.max(snappedEnd - clipStartBeat, 0))
+        const minDur = modifiers.alt ? MIN_DURATION_TICKS_FREE : MIN_DURATION_TICKS
+        if (newDurationTicks < minDur) newDurationTicks = minDur
+        if (newDurationTicks > dragClipOrigMaxDuration) {
+          newDurationTicks = Math.max(minDur, dragClipOrigMaxDuration)
         }
-        const tracks = tracksRef.current
-        const clampedTrackIdx = Math.max(0, Math.min(newTrackIndex, tracks.length - 1))
-        const trackDelta = clampedTrackIdx - dragClipOrigTrackIdx
-
-        const clipsToMove = dragSelectedClips.length > 1
-          ? dragSelectedClips
-          : [{ clip: dragClip, origBeat: dragClipOrigBeat, origTrackIdx: dragClipOrigTrackIdx }]
-
-        // Same as the block path: one batched commit for the whole selection.
-        const clipMoves = []
-        for (const { clip, origBeat, origTrackIdx } of clipsToMove) {
-          const newBeat = snapBeatToGrid(Math.max(0, origBeat + beatDelta), modifiers, snapGranularityRef?.current)
-          const newTrkIdx = Math.max(0, Math.min(origTrackIdx + trackDelta, tracks.length - 1))
-          const tgtTrack = tracks[newTrkIdx]
-          // Refuse cross-move onto a Pattern track
-          const newTrackId = (tgtTrack?.type === 'Pattern') ? clip.trackId : tgtTrack.id
-          const newPositionTicks = beatsToTicks(newBeat)
-          if (newPositionTicks !== clip.positionTicks || newTrackId !== clip.trackId) {
-            clipMoves.push({ clipId: clip.id, trackId: newTrackId, positionTicks: newPositionTicks })
-          }
+        if (newDurationTicks !== dragClipOrigDuration) {
+          onResizeClip(dragClip.id, newDurationTicks)
+          setStickyNoteLength(newDurationTicks)
         }
-        if (clipMoves.length > 0) {
-          onMoveClips?.(clipMoves)
-          console.log(`[SelectTool] Moved ${clipMoves.length} clip(s)`)
+      }
+
+      if (dragMode === 'resize-left' && dragClip && !modifiers.shift) {
+        const currentBeat = pixelToBeat(dragCurrentX, scrollOffsetRef.current, pixelsPerBeatRef.current)
+        const snappedStart = snapBeatToGrid(Math.max(0, currentBeat), modifiers, snapGranularityRef?.current)
+        const clipEndBeat = (dragClip.positionTicks + dragClip.durationTicks) / PPQ
+        const minDur = modifiers.alt ? MIN_DURATION_TICKS_FREE : MIN_DURATION_TICKS
+        // The existing offset is SOURCE ticks; how far left the edge may travel
+        // is a TIMELINE distance, so scale it up by the ratio.
+        const minStartTicks = dragClip.positionTicks
+          - timelineTicksForSourceTicks(dragClipOrigOffset, dragClipOrigStretchRatio)
+        const minStartBeat = Math.max(0, minStartTicks / PPQ)
+        let newStartBeat = Math.min(snappedStart, clipEndBeat - minDur / PPQ)
+        newStartBeat = Math.max(minStartBeat, newStartBeat)
+        const newPositionTicks = beatsToTicks(newStartBeat)
+        const newDurationTicks = (dragClip.positionTicks + dragClip.durationTicks) - newPositionTicks
+        const positionDelta = newPositionTicks - dragClip.positionTicks
+        // …and the timeline distance the edge moved becomes a SOURCE-domain
+        // offset delta, so scale it back down. Trimming 1 bar off a 4× clip's
+        // head skips only a quarter bar of source.
+        const newRegionOffset = Math.max(0, dragClipOrigOffset
+          + sourceTicksForTimelineTicks(positionDelta, dragClipOrigStretchRatio))
+        if (newPositionTicks !== dragClip.positionTicks) {
+          onResizeClipLeft(dragClip.id, newPositionTicks, newDurationTicks, newRegionOffset)
+          setStickyNoteLength(newDurationTicks)
         }
       }
 
@@ -1164,6 +1167,7 @@ export function createSelectTool(deps) {
         if (newDurationTicks < minDur) newDurationTicks = minDur
         if (newDurationTicks !== dragClipOrigDuration) {
           onStretchClip?.(dragClip.id, newDurationTicks)
+          setStickyNoteLength(newDurationTicks)
           console.log(`[SelectTool] Stretched clip ${dragClip.id} to ${newDurationTicks}t`)
         }
       }
@@ -1179,6 +1183,7 @@ export function createSelectTool(deps) {
         const newDurationTicks = (dragClip.positionTicks + dragClip.durationTicks) - newPositionTicks
         if (newPositionTicks !== dragClip.positionTicks) {
           onStretchClipLeft?.(dragClip.id, newPositionTicks, newDurationTicks)
+          setStickyNoteLength(newDurationTicks)
           console.log(`[SelectTool] Stretch-left clip ${dragClip.id}: pos=${newPositionTicks}t, dur=${newDurationTicks}t`)
         }
       }
@@ -1191,7 +1196,7 @@ export function createSelectTool(deps) {
         const ppb = pixelsPerBeatRef.current
         const scrollOffset = scrollOffsetRef.current
         const clips = clipsRef.current
-        const tracks = tracksRef.current
+        const tidx = trackIdToIndexRef.current
         const clipIds = new Set()
         const blockIds = new Set()
 
@@ -1200,7 +1205,7 @@ export function createSelectTool(deps) {
           const clipEnd = clipBeat + clip.durationTicks / PPQ
           const clipX1 = beatToPixel(clipBeat, scrollOffset, ppb)
           const clipX2 = beatToPixel(clipEnd, scrollOffset, ppb)
-          const trackIdx = tracks.findIndex((t) => t.id === clip.trackId)
+          const trackIdx = tidx[clip.trackId] ?? -1
           const clipY1 = topOf(trackIdx)
           const clipY2 = clipY1 + TRACK_HEIGHT
           if (clipX2 >= x1 && clipX1 <= x2 && clipY2 >= y1 && clipY1 <= y2) {
@@ -1213,7 +1218,7 @@ export function createSelectTool(deps) {
           const bEnd = bBeat + b.durationTicks / PPQ
           const bX1 = beatToPixel(bBeat, scrollOffset, ppb)
           const bX2 = beatToPixel(bEnd, scrollOffset, ppb)
-          const trackIdx = tracks.findIndex((t) => t.id === b.trackId)
+          const trackIdx = tidx[b.trackId] ?? -1
           const bY1 = topOf(trackIdx)
           const bY2 = bY1 + TRACK_HEIGHT
           if (bX2 >= x1 && bX1 <= x2 && bY2 >= y1 && bY1 <= y2) {
@@ -1350,32 +1355,10 @@ export function createSelectTool(deps) {
         ctx.globalAlpha = 1
         ctx.lineWidth = 1.5
 
-        if (dragMode === 'move') {
-          const beatDelta = pixelToBeat(dragCurrentX, scrollOffset, ppb)
-            - pixelToBeat(dragOriginX, scrollOffset, ppb)
-          const targetLaneRow = trackLayoutRef?.current?.automationLaneRowAtY?.(dragCurrentY)
-          const items = dragSelectedAutomationClips.length > 1
-            ? dragSelectedAutomationClips
-            : [{ clip: dragAutomationClip, origPosition: dragAutomationClipOrigPosition, origLaneId: dragAutomationClipOrigLaneId }]
-          const allowLaneSwitch = items.length === 1
-            && targetLaneRow && targetLaneRow.ownerTrackId === dragAutomationClipOwnerTrackId
-          for (const { clip, origPosition, origLaneId } of items) {
-            const origBeat = origPosition / PPQ
-            const newBeat = snapBeatToGrid(Math.max(0, origBeat + beatDelta), lastModifiers, snapGranularityRef?.current)
-            const laneRow = allowLaneSwitch
-              ? targetLaneRow
-              : (trackLayoutRef?.current?.getAutomationLaneRows?.() ?? []).find((r) => r.laneId === origLaneId)
-            if (!laneRow) continue
-            const x = beatToPixel(newBeat, scrollOffset, ppb)
-            const width = Math.max(24, (clip.durationTicks / PPQ) * ppb)
-            ctx.globalAlpha = 0.22
-            ctx.fillRect(x, laneRow.y + 2, width, laneRow.height - 4)
-            ctx.globalAlpha = 1
-            ctx.strokeRect(x + 0.5, laneRow.y + 2.5, width - 1, laneRow.height - 5)
-          }
-        } else if (dragMode === 'duplicate') {
+        if (dragMode === 'move' || dragMode === 'duplicate') {
+          // Exactly the array mouseup commits — no second copy of the math.
           const laneRows = trackLayoutRef?.current?.getAutomationLaneRows?.() ?? []
-          for (const { clip, positionTicks, laneId } of getAutomationClipDragPlacements(lastModifiers)) {
+          for (const { clip, positionTicks, laneId } of resolveDragTranslation(lastModifiers).automation) {
             const laneRow = laneRows.find((r) => r.laneId === laneId)
             if (!laneRow) continue
             const x = beatToPixel(positionTicks / PPQ, scrollOffset, ppb)
@@ -1419,48 +1402,33 @@ export function createSelectTool(deps) {
         ctx.restore()
       }
 
-      // ── Block drag previews ──────────────────────────────────────────
-      // Block color follows the block's pattern's region (sample-agnostic tracks).
-      if ((dragMode === 'move' || dragMode === 'duplicate') && (dragBlock || dragSelectedBlocks.length > 0)) {
-        if (dragMode === 'duplicate') {
-          for (const { block, positionTicks, trackIndex } of getBlockDragPlacements(lastModifiers)) {
-            const blockPattern = patternsRef.current?.[block.patternId]
-            const region = regionsRef.current?.[blockPattern?.regionId]
-            drawMovePreview(ctx, w, h, scrollOffset, ppb, {
-              beat: positionTicks / PPQ,
-              trackIndex,
-              durationBeats: block.durationTicks / PPQ,
-              color: labelHexColor(region?.label),
-            }, trackLayoutRef?.current)
-          }
-        } else {
-        const beatDelta = pixelToBeat(dragCurrentX, scrollOffset, ppb)
-          - pixelToBeat(dragOriginX, scrollOffset, ppb)
-        const newTrackIndex = idxAtY(dragCurrentY)
-        if (newTrackIndex < 0) return
-        const tracks = tracksRef.current
-        const clampedTrackIdx = Math.max(0, Math.min(newTrackIndex, (tracks?.length || 1) - 1))
-        const trackDelta = clampedTrackIdx - dragBlockOrigTrackIdx
-
-        const items = dragSelectedBlocks.length > 1
-          ? dragSelectedBlocks
-          : [{ block: dragBlock, origBeat: dragBlockOrigBeat, origTrackIdx: dragBlockOrigTrackIdx }]
-
-        for (const { block, origBeat, origTrackIdx } of items) {
-          const newBeat = snapBeatToGrid(Math.max(0, origBeat + beatDelta), lastModifiers, snapGranularityRef?.current)
-          const newTrkIdx = Math.max(0, Math.min(origTrackIdx + trackDelta, (tracks?.length || 1) - 1))
-          const tgtTrack = tracks?.[newTrkIdx]
-          const previewTrackIdx = tgtTrack?.type === 'Pattern' ? newTrkIdx : origTrackIdx
-          const blockPattern = patternsRef.current?.[block.patternId]
-          const region = regionsRef.current?.[blockPattern?.regionId]
+      // ── Group drag preview (clips + pattern blocks) ──────────────────
+      // ONE resolve for the whole gesture, drawing the exact list mouseup will
+      // commit. Block color follows the block's pattern's region (sample-
+      // agnostic tracks); clip color follows the clip's own region.
+      if ((dragMode === 'move' || dragMode === 'duplicate')
+          && (dragClip || dragBlock || dragSelectedClips.length > 0 || dragSelectedBlocks.length > 0)) {
+        const { clip: clipPlacements, block: blockPlacements } = resolveDragTranslation(lastModifiers)
+        ctx.setLineDash([3, 3])
+        for (const { clip, positionTicks, trackIndex, colors } of clipPlacements) {
           drawMovePreview(ctx, w, h, scrollOffset, ppb, {
-            beat: newBeat,
-            trackIndex: previewTrackIdx,
-            durationBeats: block.durationTicks / PPQ,
-            color: labelHexColor(region?.label),
+            beat: positionTicks / PPQ,
+            trackIndex,
+            durationBeats: clip.durationTicks / PPQ,
+            fillColor: colors.fillColor,
+            strokeColor: colors.strokeColor,
           }, trackLayoutRef?.current)
         }
+        for (const { block, positionTicks, trackIndex, colors } of blockPlacements) {
+          drawMovePreview(ctx, w, h, scrollOffset, ppb, {
+            beat: positionTicks / PPQ,
+            trackIndex,
+            durationBeats: block.durationTicks / PPQ,
+            fillColor: colors.fillColor,
+            strokeColor: colors.strokeColor,
+          }, trackLayoutRef?.current)
         }
+        ctx.setLineDash([])
       }
 
       if (dragMode === 'resize' && dragBlock) {
@@ -1468,16 +1436,16 @@ export function createSelectTool(deps) {
         const snappedEnd = snapBeatToGrid(Math.max(0, currentBeat), lastModifiers, snapGranularityRef?.current)
         const blockStartBeat = dragBlock.positionTicks / PPQ
         let newDurationBeats = Math.max(snappedEnd - blockStartBeat, MIN_DURATION_TICKS / PPQ)
-        const tracks = tracksRef.current
-        const trackIdx = tracks?.findIndex((t) => t.id === dragBlock.trackId) ?? 0
-        const blockPattern = patternsRef.current?.[dragBlock.patternId]
-        const region = regionsRef.current?.[blockPattern?.regionId]
+        const trackIdx = trackIdToIndexRef.current[dragBlock.trackId] ?? 0
+        ctx.setLineDash([3, 3])
         drawMovePreview(ctx, w, h, scrollOffset, ppb, {
           beat: blockStartBeat,
           trackIndex: trackIdx,
           durationBeats: newDurationBeats,
-          color: labelHexColor(region?.label),
+          fillColor: dragBlockOrigColors.fillColor,
+          strokeColor: dragBlockOrigColors.strokeColor,
         }, trackLayoutRef?.current)
+        ctx.setLineDash([])
       }
 
       if (dragMode === 'resize-left' && dragBlock) {
@@ -1488,29 +1456,16 @@ export function createSelectTool(deps) {
         const minStartBeat = Math.max(0, (dragBlock.positionTicks - dragBlockOrigOffset) / PPQ)
         const newStartBeat = Math.max(minStartBeat, Math.min(snappedStart, blockEndBeat - minDur))
         const newDurationBeats = blockEndBeat - newStartBeat
-        const tracks = tracksRef.current
-        const trackIdx = tracks?.findIndex((t) => t.id === dragBlock.trackId) ?? 0
-        const blockPattern = patternsRef.current?.[dragBlock.patternId]
-        const region = regionsRef.current?.[blockPattern?.regionId]
+        const trackIdx = trackIdToIndexRef.current[dragBlock.trackId] ?? 0
+        ctx.setLineDash([3, 3])
         drawMovePreview(ctx, w, h, scrollOffset, ppb, {
           beat: newStartBeat,
           trackIndex: trackIdx,
           durationBeats: newDurationBeats,
-          color: labelHexColor(region?.label),
+          fillColor: dragBlockOrigColors.fillColor,
+          strokeColor: dragBlockOrigColors.strokeColor,
         }, trackLayoutRef?.current)
-      }
-
-      // ── Clip drag previews ───────────────────────────────────────────
-      if ((dragMode === 'move' || dragMode === 'duplicate') && (dragClip || dragSelectedClips.length > 0)) {
-        for (const { clip, positionTicks, trackIndex } of getClipDragPlacements(lastModifiers)) {
-          const region = regionsRef.current?.[clip.regionId]
-          drawMovePreview(ctx, w, h, scrollOffset, ppb, {
-            beat: positionTicks / PPQ,
-            trackIndex,
-            durationBeats: clip.durationTicks / PPQ,
-            color: labelHexColor(region?.label),
-          }, trackLayoutRef?.current)
-        }
+        ctx.setLineDash([])
       }
 
       if (dragMode === 'resize' && dragClip) {
@@ -1518,19 +1473,21 @@ export function createSelectTool(deps) {
         const snappedEnd = snapBeatToGrid(Math.max(0, currentBeat), lastModifiers, snapGranularityRef?.current)
         const clipStartBeat = dragClip.positionTicks / PPQ
         const minDurBeats = MIN_DURATION_TICKS / PPQ
-        const region = regionsRef.current?.[dragClip.regionId]
-        const trackIdx = tracksRef.current?.findIndex((t) => t.id === dragClip.trackId) ?? 0
+        const trackIdx = trackIdToIndexRef.current[dragClip.trackId] ?? 0
         let newDurationBeats = Math.max(snappedEnd - clipStartBeat, minDurBeats)
         if (!lastModifiers.shift) {
           const maxDurBeats = dragClipOrigMaxDuration / PPQ
           if (newDurationBeats > maxDurBeats) newDurationBeats = Math.max(minDurBeats, maxDurBeats)
         }
+        ctx.setLineDash([3, 3])
         drawMovePreview(ctx, w, h, scrollOffset, ppb, {
           beat: clipStartBeat,
           trackIndex: trackIdx,
           durationBeats: newDurationBeats,
-          color: labelHexColor(region?.label),
+          fillColor: dragClipOrigColors.fillColor,
+          strokeColor: dragClipOrigColors.strokeColor,
         }, trackLayoutRef?.current)
+        ctx.setLineDash([])
         if (lastModifiers.shift) {
           const ratio = (newDurationBeats * PPQ / dragClipOrigDuration) * dragClipOrigStretchRatio
           const ratioText = ratio.toFixed(2) + '×'
@@ -1549,8 +1506,7 @@ export function createSelectTool(deps) {
         const snappedStart = snapBeatToGrid(Math.max(0, currentBeat), lastModifiers, snapGranularityRef?.current)
         const clipEndBeat = (dragClip.positionTicks + dragClip.durationTicks) / PPQ
         const minDur = (lastModifiers.alt ? MIN_DURATION_TICKS_FREE : MIN_DURATION_TICKS) / PPQ
-        const region = regionsRef.current?.[dragClip.regionId]
-        const trackIdx = tracksRef.current?.findIndex((t) => t.id === dragClip.trackId) ?? 0
+        const trackIdx = trackIdToIndexRef.current[dragClip.trackId] ?? 0
         let newStartBeat
         if (lastModifiers.shift) {
           newStartBeat = Math.max(0, Math.min(snappedStart, clipEndBeat - minDur))
@@ -1562,12 +1518,15 @@ export function createSelectTool(deps) {
           newStartBeat = Math.max(minStartBeat, Math.min(snappedStart, clipEndBeat - minDur))
         }
         const newDurationBeats = clipEndBeat - newStartBeat
+        ctx.setLineDash([3, 3])
         drawMovePreview(ctx, w, h, scrollOffset, ppb, {
           beat: newStartBeat,
           trackIndex: trackIdx,
           durationBeats: newDurationBeats,
-          color: labelHexColor(region?.label),
+          fillColor: dragClipOrigColors.fillColor,
+          strokeColor: dragClipOrigColors.strokeColor,
         }, trackLayoutRef?.current)
+        ctx.setLineDash([])
         if (lastModifiers.shift) {
           const newDurTicks = newDurationBeats * PPQ
           const ratio = (newDurTicks / dragClipOrigDuration) * dragClipOrigStretchRatio
@@ -1601,6 +1560,7 @@ export function createSelectTool(deps) {
       dragBlockOrigOffset = 0
       selectionAnchor = null
       setDragClass(null)
+      cancelScheduledOverlayRedraw()
     },
   }
 }

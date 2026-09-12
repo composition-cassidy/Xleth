@@ -1151,6 +1151,71 @@ struct SlideNoteEffectSettings {
     SlideTVSettings    tv;
 };
 
+// ─── NoteFadeSettings — Pattern-track-exclusive automatic per-note video fade ──
+//
+// Every normal PatternNote emits its own VideoEvent whose durationBeats IS the
+// note's length, and a grid cell simply disappears once that event ends (there
+// is no hold-through-gap for grid cells).  That makes "fade every note's video
+// in and/or out" expressible entirely as an opacity envelope over the note's
+// own span — no shader, no chain pass, no extra compositor stage.
+//
+// It is deliberately NOT a VisualEffect chain entry:
+//   * A chain entry is per-track but type-agnostic; this one is meaningless on a
+//     Clip track, whose events are clips and which already has a hand-authored
+//     per-clip fade envelope (Clip::fadeInPercent / fadeOutPercent).
+//   * The chain runs on the GPU, one pass per entry, against a cell-sized target
+//     that knows nothing about note timing.  The fade needs beat-space note
+//     timing, which only FrameCollector has.
+// It follows SlideNoteEffectSettings instead: a separate per-track config,
+// gated on TrackInfo::Type::Pattern in both the UI and the collector.
+//
+// LengthMode decides how the LENGTH of one fade is specified; each side (in and
+// out) carries its own mode + all three values, so switching modes back and
+// forth never loses the other modes' settings.
+//
+//   FollowNoteLength — length is `percent` of the note's own duration. Default,
+//                      and the only mode that stays musical across every note
+//                      length in a pattern.
+//   Division         — a fixed musical length: `divisionDenominator` D means
+//                      4/D beats, matching the house convention used by the
+//                      Sampler / Phanjer tempo-sync dropdowns (D=4 is one beat,
+//                      D=16 a sixteenth note). Capped at one beat (D>=4).
+//   Milliseconds     — a fixed wall-clock length, tempo-independent.
+//
+// Whatever the mode, the resolved length is expressed back as a PERCENT of the
+// note so it can go straight through evaluateClipFadeGain (audio/ClipFade.h) —
+// the same evaluator the user-authored clip fade uses, so both fade kinds share
+// one curve implementation and one in+out > 100% normalization rule.
+//
+// The curve options are named relative to the SILENT end of the fade, not to
+// time, because evaluateClipFadeGain feeds the fade-out its bezier reversed
+// (x = remaining/ratio). Naming them that way makes one option mean the same
+// shape on both sides.
+struct NoteFadeSettings {
+    enum class LengthMode { FollowNoteLength = 0, Division = 1, Milliseconds = 2 };
+    enum class Curve      { Linear = 0, Smooth = 1, Snappy = 2, Gentle = 3 };
+
+    // One fade side. Both sides are configured independently — "fade in and/or
+    // fade out" is expressed by zeroing the side you do not want.
+    struct Side {
+        LengthMode mode                = LengthMode::FollowNoteLength;
+        float      percent             = 10.0f;  // FollowNoteLength: 0..100 of note length
+        int        divisionDenominator = 16;     // Division: length = 4/D beats
+        float      ms                  = 60.0f;  // Milliseconds: length in ms
+        Curve      curve               = Curve::Linear;
+    };
+
+    bool enabled = false;
+    Side fadeIn;
+    Side fadeOut;
+};
+
+// Smallest legal note-division denominator: D=4 is exactly one beat, the cap the
+// feature is specified to. Larger D = shorter fade; 64 (a 64th note) is the
+// shortest offered.
+inline constexpr int kNoteFadeMinDivisionDenominator = 4;
+inline constexpr int kNoteFadeMaxDivisionDenominator = 64;
+
 struct SlideAnimationEvent {
     double   startBeat      = 0.0;
     double   durationBeats  = 0.0;
@@ -1169,7 +1234,8 @@ struct VisualEffect {
         ZoomPanRotation    = 4,
         ChromaKey          = 5,
         Outline            = 6,
-        DropShadow         = 7
+        DropShadow         = 7,
+        VisualEcho         = 8
     };
     Type type   = Type::Desaturation;
     bool bypassed = false;
@@ -1227,6 +1293,44 @@ struct VisualEffect {
     //          engine/src/render/GridCompositor.cpp (applyExpansionStage — NOT the
     //          processEffectChain switch; see below)
     //       3. ui/src/components/grid/ChainableEffectParams.jsx (fx.type 6 / 7 panels)
+    //
+    // VisualEcho:         [0]=taps           1..8, rounded. Number of echo repeats drawn
+    //                                        BEHIND the live cell.
+    //                     [1]=decay          0..1 per-tap gain g; tap n draws at g^n
+    //                                        (times the cap taper, see below)
+    //                     [2]=delayNodeId    APG node uid of the Delay FX on this track
+    //                                        whose repeat interval drives the echo.
+    //                                        <0 = unbound; the effect is fully inert.
+    //                                        Stored as a float — node uids are small
+    //                                        ints and exact in float32 well past 2^24.
+    //                     [3]=scaleTrail     0..1 scale-toward-centre per tap
+    //                     [4]=flipMode       0=None 1=AltHorizontal 2=AltVertical
+    //                                        3=AltHalfTurn 4=KleinCycle
+    //                     [5]=drift          0..1 ping-pong edge drift; applied ONLY
+    //                                        when the bound Delay is in PingPong mode
+    //                     [6]=blendMode      0=Normal 1=Additive (trail only; the live
+    //                                        cell always composites normally)
+    //                     [7]=followFeedback 0/1 — when 1, [1] is ignored and the decay
+    //                                        is taken from the Delay's own feedback %
+    //   ^ CANONICAL LAYOUT. Like Outline / Drop Shadow this is NOT a case in the
+    //     processEffectChain switch — it is a COMPOSITE-TIME stage (see
+    //     isTerminalStageEffect / drawEchoTaps in GridCompositor.cpp), because it
+    //     needs the cell's finished pixels from EARLIER FRAMES, which no
+    //     single-frame chain pass can see. Keep in sync with:
+    //       1. engine/src/render/VisualEchoTypes.h    (EchoSettings, flip modes, caps)
+    //       2. engine/src/render/FrameCollector.cpp   (resolveEchoSettings)
+    //          engine/src/render/GridCompositor.cpp   (pushEchoFrame / drawEchoTaps)
+    //       3. ui/src/components/grid/ChainableEffectParams.jsx (fx.type === 8 panel)
+    //     There is deliberately NO shader and no constant buffer: every tap is an
+    //     ordinary drawCell of an already-rendered texture, so the whole effect is
+    //     geometry + opacity + the existing orientation transform.
+    //
+    //   Unlike every other entry here it is also STATEFUL: the compositor keeps a
+    //   per-cell ring of that cell's own finished frames. Consequences worth
+    //   knowing before touching it are in the GridCompositor::pushEchoFrame
+    //   comment — notably that the ring is pushed once per DISTINCT output frame
+    //   (a paused preview re-compositing the same frame must not advance it), and
+    //   that a transport seek flushes it while a LOOP WRAP deliberately does not.
     //
     //   These two are LAYER STYLES, not pixel filters, and that makes them unlike
     //   every other entry above in three ways worth knowing before touching them:
@@ -1691,6 +1795,10 @@ struct TrackInfo {
     PingPongSettings                pingPong;
     ZoomPanRotSettings              zoomPanRot;
     SlideNoteEffectSettings         slideNoteEffect;
+    // Pattern-track exclusive. Ignored outright on a Clip track: FrameCollector
+    // gates on type == Pattern, and neither UI surface offers the section for a
+    // Clip track. See NoteFadeSettings and model/NoteFade.h.
+    NoteFadeSettings                noteFade;
     std::vector<VisualEffect>       visualEffectChain;
 
     // Sub-column subdivision used when placing this track in the grid. 1 =

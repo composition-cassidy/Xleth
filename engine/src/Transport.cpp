@@ -193,6 +193,23 @@ bool Transport::isLoopEnabled() const
     return loopEnabled_.load(std::memory_order_acquire);
 }
 
+// AUDIO THREAD ONLY — no alloc, no logging, no locks
+int Transport::samplesUntilLoopWrap(int numSamples) const
+{
+    // Mirrors advance()'s early-out: a stopped transport never moves, so a
+    // split here would only re-render the same position N times.
+    if (!playing_.load(std::memory_order_acquire))
+        return numSamples;
+
+    return xleth::loopSamplesUntilWrap(
+        positionSamples_.load(std::memory_order_relaxed),
+        numSamples,
+        loopArmed_.load(std::memory_order_relaxed),
+        loopStartSamples_.load(std::memory_order_relaxed),
+        loopEndSamples_.load(std::memory_order_relaxed),
+        loopEnabled_.load(std::memory_order_relaxed));
+}
+
 bool Transport::isLoopArmed() const
 {
     return loopArmed_.load(std::memory_order_acquire);

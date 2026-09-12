@@ -6,6 +6,10 @@
 // already lives in this same model tier (engine/CMakeLists.txt), so this costs
 // the header nothing it did not already have.
 #include "dsp/CorrectionCurve.h"
+// PITCH's Resample mode shares ONE length rule with SandboxRenderer — see
+// VarispeedResample.h's "why this is model-tier" note. outputLength() below
+// calls varispeedOutputLength directly rather than restating the arithmetic.
+#include "dsp/VarispeedResample.h"
 
 #include <nlohmann/json.hpp>
 
@@ -57,7 +61,19 @@ namespace xleth::sandbox {
 //       op rather than mis-reading one — but silently dropping a user's
 //       pitch correction is exactly the kind of degradation the version
 //       number is here to record, so it gets a bump.
-inline constexpr int kSandboxStackVersion = 3;
+//   5 — PitchParams gained `mode` (Preserve/Resample). A v4 reader defaults it
+//       to Preserve, which is the behaviour it already had — so unlike the two
+//       bumps below this one degrades to "the shift is still there, it just
+//       does not change the length any more" rather than to a dropped edit.
+//       Bumped anyway: a varispeed move and a time-preserving one of the same
+//       cents are not the same audio, and the version is the record of that.
+//   4 — P5-5. AutotuneParams gained `mode` (Scale/Manual) and `manualPoints`.
+//       A v3 reader's readField defaults already parse a v4 file fine
+//       (mode falls back to Scale, manualPoints to empty), so nothing here
+//       is a hard migration — but a v3 reader would silently discard a
+//       user's drawn MANUAL curve down to whatever SCALE happens to be set
+//       to, same class of degradation v3's own bump was recording.
+inline constexpr int kSandboxStackVersion = 5;
 
 // ─── SandboxOpType ────────────────────────────────────────────────────────────
 // Order is load-bearing: it must match the alternative order of SandboxOpParams
@@ -117,6 +133,12 @@ enum class SandboxFadeShape : int {
     Hann        = 5,   // gain = 0.5(1-cos(t·π)) — same raised-cosine ramp as
                        // dsp::DeclickEnvelope, so a Crossfade seam declicks
                        // exactly like the sampler's trim boundaries do.
+};
+
+// How a PITCH move is realised. See PitchParams.
+enum class SandboxPitchMode : int {
+    Preserve = 0,   // RubberBand R3 — length held, spectrum rebuilt
+    Resample = 1,   // varispeed — the tape move; length scales with the pitch
 };
 
 // What happens to the material after an edit point.
@@ -357,15 +379,42 @@ double gainEnvelopeDbAt(const GainEnvelopeParams& p, int64_t samplePos) noexcept
 // applyGainEnvelope() in SandboxRenderer.cpp.
 double gainEnvelopeAt(const GainEnvelopeParams& p, int64_t samplePos) noexcept;
 
-// PITCH — shift by cents without changing length, via dsp::processRubberBand
-// (RubberBand R3, offline). formantPreserve is the "formant lock" toggle: off,
-// the formant envelope rides up/down with the pitch (RubberBand's
-// OptionFormantShifted — the classic "chipmunk" effect at large shifts); on,
-// RubberBand's OptionFormantPreserved keeps the envelope where it started, so
-// a vocal shifted an octave up still sounds like the same voice register.
+// PITCH — shift by `cents`, either of two ways.
+//
+// ── mode ─────────────────────────────────────────────────────────────────────
+// Preserve (the default, and everything this op did before the field existed):
+// length is held and the spectrum is rebuilt, via dsp::processRubberBand
+// (RubberBand R3, offline).
+//
+// Resample: the tape/turntable move. The waveform is read faster or slower
+// (dsp::resampleVarispeed), so pitch and LENGTH move together — up a fifth is
+// also 2/3 as long. This is the one mode of this op that changes length, which
+// is why outputLength() has a case for PITCH at all.
+//
+// A mode field rather than a second op type, deliberately: the two share the
+// same single parameter (`cents`), the same unit, the same sign convention and
+// the same editor row — only the machinery behind them differs, which is
+// exactly what SandboxGainEnvelopeMode's own comment describes as the job of a
+// mode flag. Contrast SandboxOpType::GainEnvelope vs Gain, split into two types
+// because their PARAMS have nothing in common.
+//
+// ── formantPreserve ──────────────────────────────────────────────────────────
+// The "formant lock" toggle, and a Preserve-mode control only: off, the formant
+// envelope rides up/down with the pitch (RubberBand's OptionFormantShifted —
+// the classic "chipmunk" effect at large shifts); on, OptionFormantPreserved
+// keeps the envelope where it started, so a vocal shifted an octave up still
+// sounds like the same voice register.
+//
+// Resample IGNORES it, and cannot do otherwise: dragging the formants along
+// with everything else is not a setting of a varispeed move, it is the
+// definition of one. The field is retained rather than cleared when the mode
+// flips, same reason GainEnvelopeParams keeps its follower times in Absolute
+// mode — switching back must not have cost the user their toggle. (FORMANT
+// SHIFT stacked after a Resample PITCH is how you move them independently.)
 struct PitchParams {
-    double cents           = 0.0;
-    bool   formantPreserve = false;
+    double           cents           = 0.0;
+    bool             formantPreserve = false;
+    SandboxPitchMode mode            = SandboxPitchMode::Preserve;
 
     bool operator==(const PitchParams&) const = default;
 };
@@ -553,21 +602,48 @@ struct SpectralPaintParams {
 inline constexpr double kAutotuneMaxRetuneMs     = 500.0;
 inline constexpr double kAutotuneMaxSmoothnessMs = 500.0;
 
+// ── Mode (P5-5) ──────────────────────────────────────────────────────────────
+// SCALE quantizes to scale/key (or allowedNotes) as always. MANUAL replaces
+// the quantizer with a user-drawn target curve (manualPoints below); the
+// renderer below this struct never knows which mode produced the curve it
+// consumes, it only ever sees a CorrectionCurveResult (see CorrectionCurve.h's
+// computeCorrectionCurve vs. computeManualCorrectionCurve). Switching modes
+// never clears the other mode's fields — a SCALE setup survives a trip
+// through MANUAL and back, and vice versa, so the two live side by side in
+// this struct rather than one being cleared when the other is edited.
+enum class AutotuneMode { Scale, Manual };
+
 struct AutotuneParams {
+    // Which of the two curve sources feeds the renderer. See AutotuneMode.
+    AutotuneMode mode = AutotuneMode::Scale;
+
     // The preset scale/key. Ignored entirely when `allowedNotes` is non-empty —
-    // see below, and CorrectionCurve.h's own note on the same override.
+    // see below, and CorrectionCurve.h's own note on the same override. Also
+    // ignored when mode == Manual, but retained rather than cleared (see the
+    // AutotuneMode comment above).
     xleth::dsp::ScaleType scale = xleth::dsp::kDefaultScale;   // Phrygian
     int                   key   = xleth::dsp::kDefaultKey;     // D
 
     // Pitch classes 0-11 from the UI keyboard. NON-EMPTY OVERRIDES scale/key
     // outright rather than merging with it — a user who has hand-picked a note
     // set means that set, not that set unioned with a preset they stopped
-    // caring about. Empty (the default) = use scale/key.
+    // caring about. Empty (the default) = use scale/key. Also doubles as the
+    // MANUAL-mode drawing UI's default snap set (see SandboxWaveformCanvas.jsx).
     std::vector<int> allowedNotes;
 
     // The six controls, verbatim: correctionAmount, retuneSpeedMs,
-    // smoothnessMs, jumpiness, preserveVibrato. See CorrectionParams.
+    // smoothnessMs, jumpiness, preserveVibrato. See CorrectionParams. In
+    // MANUAL mode, jumpiness and preserveVibrato are not read (the drawn
+    // curve has no note-commit concept to hold, and no automatic vibrato
+    // split to gate) — the UI greys those two controls out accordingly.
     xleth::dsp::CorrectionParams correction;
+
+    // MANUAL mode's drawn curve. Sorted ascending by timeSec (invariant
+    // enforced by normalizeAutotune, same as segments elsewhere in this
+    // tier). Ignored when mode == Scale, but retained rather than cleared.
+    // See xleth::dsp::ManualPitchPoint (CorrectionCurve.h) for why this is
+    // embedded rather than restated, same reasoning as `correction` below.
+    std::vector<xleth::dsp::ManualPitchPoint> manualPoints;
 
     bool operator==(const AutotuneParams&) const = default;
 };

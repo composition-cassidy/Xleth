@@ -49,6 +49,41 @@ int SandboxCore::addLayer(const std::string& name, int sourceBufferId, double bu
     return id;
 }
 
+int SandboxCore::duplicateLayer(int layerId, const std::string& name, int* outIndex) {
+    for (size_t i = 0; i < layers_.size(); ++i) {
+        if (layers_[i].id != layerId) continue;
+
+        SandboxLayer copy = layers_[i];          // ops, op ids, mix params, source ref
+        copy.id = nextLayerId_++;
+        if (!name.empty()) copy.name = name;
+
+        // The copy has never been rendered under its OWN id, whatever the
+        // original's flags say. Marking the whole stack dirty is what makes the
+        // caller's first render actually publish a buffer for the new layer
+        // instead of trusting a clean flag copied from a layer that already had
+        // one. The prefix CACHE is keyed on (sourceBufferId, stack hash, rate)
+        // and not on the layer id, so this costs nothing but bookkeeping — the
+        // duplicate's render is served straight out of the original's entries.
+        for (auto& op : copy.ops) op.dirty = true;
+
+        // Solo is the ONE field not carried. Mute/gain/pan/offset describe this
+        // layer's own contribution and belong to the copy; solo describes what
+        // the WHOLE workspace is monitoring, and inheriting it would silently
+        // change what every other layer does the moment a duplicate appears.
+        copy.soloed = false;
+
+        // Directly after the original, not at the end: a duplicate is a
+        // variation ON something, and the workspace reads top-to-bottom.
+        const size_t pos = i + 1;
+        const int    id  = copy.id;
+        layers_.insert(layers_.begin() + static_cast<std::ptrdiff_t>(pos), std::move(copy));
+        if (outIndex) *outIndex = static_cast<int>(pos);
+        fireChange(id);
+        return id;
+    }
+    return -1;
+}
+
 bool SandboxCore::restoreLayer(const SandboxLayer& layer, int atIndex) {
     if (findLayer(layer.id) != nullptr) return false;
 

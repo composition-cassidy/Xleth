@@ -178,6 +178,41 @@ describe('sandboxStore composite auto-render', () => {
     expect(useSandboxStore.getState().composite.renderState).toBe('ready')
   })
 
+  // Regression: mute/solo/mix and closing a layer used to leave the composite
+  // buffer untouched — they don't set the op-stack dirty flag, so nothing
+  // scheduled a re-render and Play kept handing out pre-change audio until a
+  // manual RE-RENDER (Ctrl+R). Each of these must schedule the same debounced
+  // composite auto-render as an op-stack edit.
+  it.each([
+    ['setLayerMuted', (s) => s.setLayerMuted(1, true), { setLayerMuted: vi.fn(async () => ({ success: true })) }],
+    ['setLayerSoloed', (s) => s.setLayerSoloed(1, true), { setLayerSoloed: vi.fn(async () => ({ success: true })) }],
+    ['setLayerMix', (s) => s.setLayerMix(1, { gainDb: -6 }), { setLayerMix: vi.fn(async () => ({ success: true })) }],
+    ['closeLayer', (s) => s.closeLayer(1), { close: vi.fn(async () => ({ success: true })) }],
+  ])('%s schedules a composite auto-render', async (_name, act, bridgeExtra) => {
+    let compositeCalls = 0
+    const useSandboxStore = await loadStore({
+      ...bridgeExtra,
+      renderComposite: vi.fn(async () => {
+        compositeCalls += 1
+        return { ready: true, numChannels: 1, numSamples: 2, sampleRate: 48000, layersMixed: 1, data: FLOAT_BYTES }
+      }),
+      getHistory: vi.fn(async () => ({})),
+    })
+
+    useSandboxStore.setState({
+      layers: [baseLayer()],
+      activeLayerId: 1,
+      composite: { renderState: 'ready', renderedBuffer: { layersMixed: 'stale' }, error: null },
+    })
+
+    await act(useSandboxStore.getState())
+    expect(useSandboxStore.getState().compositeAutoRender.scheduledCount).toBe(1)
+
+    await new Promise((resolve) => setTimeout(resolve, 300)) // past the 150ms debounce
+    expect(compositeCalls).toBe(1)
+    expect(useSandboxStore.getState().composite.renderedBuffer.layersMixed).toBe(1)
+  })
+
   // Regression: a failed re-render used to null out composite.renderedBuffer
   // unconditionally, discarding a previously good mix that was still valid
   // for preview/bake — "paint garbage / discard last-good state on a

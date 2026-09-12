@@ -1,6 +1,9 @@
-import { useCallback, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight, Plus } from 'lucide-react'
 import { timelineEvents } from '../../timelineEvents.js'
+import PatternPreviewTooltip from './patternPreview/PatternPreviewTooltip.jsx'
+
+const HOVER_PREVIEW_DELAY_MS = 220
 
 // ── PatternListPanel ────────────────────────────────────────────────────────
 // Left strip inside the timeline listing every pattern in the project as one
@@ -29,6 +32,53 @@ export default function PatternListPanel({
   const [editingId, setEditingId] = useState(null)
   const [nameInput, setNameInput] = useState('')
   const inputRef = useRef(null)
+
+  // ── Hover-preview tooltip ─────────────────────────────────────────────────
+  // `hoverId` above drives the instant `.is-hover` row highlight; the preview
+  // card itself only appears after a short hover-intent delay so skimming
+  // down the list doesn't flicker a tooltip per row.
+  const [previewTarget, setPreviewTarget] = useState(null) // { patternId, anchorRect }
+  const rowElsRef = useRef(new Map()) // patternId -> row DOM node
+  const previewTimerRef = useRef(null)
+
+  const clearPreviewTimer = useCallback(() => {
+    if (previewTimerRef.current) {
+      clearTimeout(previewTimerRef.current)
+      previewTimerRef.current = null
+    }
+  }, [])
+
+  const handleRowMouseEnter = useCallback((patternId) => {
+    setHoverId(patternId)
+    clearPreviewTimer()
+    previewTimerRef.current = setTimeout(() => {
+      previewTimerRef.current = null
+      const rowEl = rowElsRef.current.get(patternId)
+      if (!rowEl) return
+      setPreviewTarget({ patternId, anchorRect: rowEl.getBoundingClientRect() })
+    }, HOVER_PREVIEW_DELAY_MS)
+  }, [clearPreviewTimer])
+
+  const handleRowMouseLeave = useCallback(() => {
+    setHoverId(null)
+    clearPreviewTimer()
+    setPreviewTarget(null)
+  }, [clearPreviewTimer])
+
+  // Dismiss on scroll/resize — a fixed-position card would otherwise detach
+  // from its anchor row (mirrors TrackColorPopover.jsx's same guard).
+  useEffect(() => {
+    if (!previewTarget) return
+    const dismiss = () => setPreviewTarget(null)
+    window.addEventListener('resize', dismiss)
+    window.addEventListener('wheel', dismiss, { passive: true })
+    return () => {
+      window.removeEventListener('resize', dismiss)
+      window.removeEventListener('wheel', dismiss)
+    }
+  }, [previewTarget])
+
+  useEffect(() => clearPreviewTimer, [clearPreviewTimer])
 
   const startEdit = useCallback((pattern) => {
     setEditingId(pattern.id)
@@ -133,13 +183,17 @@ export default function PatternListPanel({
             return (
               <div
                 key={p.id}
+                ref={(el) => {
+                  if (el) rowElsRef.current.set(p.id, el)
+                  else rowElsRef.current.delete(p.id)
+                }}
                 className={`pattern-list-row ${hoverId === p.id ? 'is-hover' : ''}`}
                 draggable={!isEditing}
                 onDragStart={(e) => handleDragStart(e, p)}
                 onDragEnd={handleDragEnd}
                 onClick={() => { if (!isEditing) handleClick(p.id) }}
-                onMouseEnter={() => setHoverId(p.id)}
-                onMouseLeave={() => setHoverId(null)}
+                onMouseEnter={() => handleRowMouseEnter(p.id)}
+                onMouseLeave={handleRowMouseLeave}
                 title={isEditing ? undefined : `${p.name || `Pattern ${p.id}`} — ${p.notes?.length || 0} note(s)`}
               >
                 <span className="pattern-list-row-swatch" style={{ background: PATTERN_ACCENT }} />
@@ -176,6 +230,14 @@ export default function PatternListPanel({
             <span>New Pattern</span>
           </button>
         </div>
+      )}
+
+      {previewTarget && patterns[previewTarget.patternId] && (
+        <PatternPreviewTooltip
+          pattern={patterns[previewTarget.patternId]}
+          anchorRect={previewTarget.anchorRect}
+          onRequestClose={() => setPreviewTarget(null)}
+        />
       )}
     </div>
   )

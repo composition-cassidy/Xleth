@@ -1,16 +1,21 @@
 import {
   AudioWaveform,
-  Clock3,
   FlaskConical,
   Music2,
   PanelLeft,
-  Piano,
   Scissors,
-  SlidersHorizontal,
   Video,
   Workflow,
   type LucideIcon,
 } from 'lucide-react';
+import type { ComponentType } from 'react';
+import {
+  FxGraphGlyphIcon,
+  MixerGlyphIcon,
+  PianoRollGlyphIcon,
+  TimelineGlyphIcon,
+  type GlyphIconProps,
+} from './panelGlyphs';
 
 export const PANEL_IDS = [
   'timeline',
@@ -55,7 +60,7 @@ export interface PanelCatalogEntry {
   id: PanelId;
   title: string;
   typeColorToken: PanelTypeColorToken;
-  icon: LucideIcon;
+  icon: LucideIcon | ComponentType<GlyphIconProps>;
   fKey?: 'F5' | 'F6' | 'F7' | 'F8' | 'F9' | 'F10' | 'F11' | 'F12';
   defaultFloating: FloatingDimensions;
   keepAliveWhenHidden: boolean;
@@ -70,7 +75,7 @@ export const PANEL_CATALOG = {
     id: 'timeline',
     title: 'Timeline',
     typeColorToken: '--theme-panel-timeline',
-    icon: Clock3,
+    icon: TimelineGlyphIcon,
     fKey: 'F5',
     defaultFloating: { x: 260, y: 60, width: 1200, height: 480 },
     keepAliveWhenHidden: true,
@@ -88,7 +93,7 @@ export const PANEL_CATALOG = {
     id: 'pianoRoll',
     title: 'Piano Roll',
     typeColorToken: '--theme-panel-pianoroll',
-    icon: Piano,
+    icon: PianoRollGlyphIcon,
     fKey: 'F7',
     defaultFloating: { x: 320, y: 140, width: 960, height: 540 },
     keepAliveWhenHidden: false,
@@ -106,7 +111,7 @@ export const PANEL_CATALOG = {
     id: 'mixer',
     title: 'Mixer',
     typeColorToken: '--theme-panel-mixer',
-    icon: SlidersHorizontal,
+    icon: MixerGlyphIcon,
     fKey: 'F9',
     // +176 over the pre-loudness-meter default: the meter is a third pinned
     // column beside the rack and master strip, and without the extra width it
@@ -118,7 +123,7 @@ export const PANEL_CATALOG = {
     id: 'fxGraph',
     title: 'FX Graph',
     typeColorToken: '--theme-panel-node',
-    icon: Workflow,
+    icon: FxGraphGlyphIcon,
     fKey: 'F11',
     defaultFloating: { x: 360, y: 120, width: 980, height: 640 },
     keepAliveWhenHidden: false,

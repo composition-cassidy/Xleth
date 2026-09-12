@@ -88,13 +88,23 @@ int main(int argc, char* argv[])
     // ── Parse optional CLI args ──────────────────────────────────────────
     int         width      = 1920;
     int         height     = 1080;
+    int         barsArg    = 16;
     std::string outputArg;
+    std::string projectArg;
+    std::string encoderArg;
 
     for (int i = 1; i < argc; ++i) {
         std::string a = argv[i];
         if ((a == "--width")  && i + 1 < argc) { width  = std::stoi(argv[++i]); }
         else if ((a == "--height") && i + 1 < argc) { height = std::stoi(argv[++i]); }
         else if ((a == "--output") && i + 1 < argc) { outputArg = argv[++i]; }
+        // --project points the harness at any saved project directory, so an
+        // export-perf A/B can run against a real timeline rather than the one
+        // hardcoded path below. --encoder pins the video encoder ("libx264" to
+        // force the software path); --bars shortens the render window.
+        else if ((a == "--project") && i + 1 < argc) { projectArg = argv[++i]; }
+        else if ((a == "--encoder") && i + 1 < argc) { encoderArg = argv[++i]; }
+        else if ((a == "--bars")    && i + 1 < argc) { barsArg    = std::stoi(argv[++i]); }
     }
 
     std::fprintf(stderr, "\n================================================================\n");
@@ -102,7 +112,9 @@ int main(int argc, char* argv[])
     std::fprintf(stderr, "================================================================\n\n");
 
     // ── Step 1: Load the project ─────────────────────────────────────────
-    const std::string projectDir = "C:\\Users\\Krasen\\Desktop\\XLETH\\test";
+    const std::string projectDir = projectArg.empty()
+        ? std::string("C:\\Users\\Krasen\\Desktop\\XLETH\\test")
+        : projectArg;
     std::string outputPath = outputArg.empty()
         ? projectDir + "\\test_render_bars1to17.mp4"
         : outputArg;
@@ -258,11 +270,13 @@ int main(int argc, char* argv[])
     hwDetector.detect();
 
     int h264CodecId = HwEncoderDetector::codecNameToId("h264");
-    std::string h264Encoder = hwDetector.getDefaultEncoder(h264CodecId);
+    std::string h264Encoder = encoderArg.empty()
+        ? hwDetector.getDefaultEncoder(h264CodecId)
+        : encoderArg;
     std::fprintf(stderr, "[TEST:RealRender] H.264 encoder: '%s'\n", h264Encoder.c_str());
 
     // ── Step 4: Compute render range ─────────────────────────────────────
-    const int    barsToRender  = 16;
+    const int    barsToRender  = barsArg;
     const int    beatsPerBar   = 4;
     const int64_t beatsToRender = static_cast<int64_t>(barsToRender) * beatsPerBar;  // 64
     const int    sampleRate    = 48000;
@@ -283,7 +297,8 @@ int main(int argc, char* argv[])
                  "(%.2fs, PPQ=%lld, expect ~61440)\n",
                  barsToRender + 1, (long long)beatsToRender,
                  (long long)endSample, durationSec, (long long)ppqAtEnd);
-    assert(ppqAtEnd >= 61400 && ppqAtEnd <= 61500 && "PPQ should be ~61440 for 64 beats");
+    if (barsToRender == 16)
+        assert(ppqAtEnd >= 61400 && ppqAtEnd <= 61500 && "PPQ should be ~61440 for 64 beats");
 
     // Expected video frame count
     const AVRational fps60 = { 60, 1 };

@@ -73,7 +73,14 @@ struct AudioTelemetryCounterSnapshot
     std::uint64_t callbackOverrunCount = 0;
     std::uint64_t mixOverrunCount = 0;
     std::uint64_t overBudgetBlockCount = 0;
+    // Finding 9: structurally 0 on the realtime path since the audio thread
+    // stopped taking chainsMutex_. Kept because the RPC surface and the 1 Hz
+    // audio-health sampler read it, and a non-zero value would now mean the
+    // try_lock has been reintroduced somewhere.
     std::uint64_t chainLockMissCount = 0;
+    // Blocks that found no published ChainSnapshot at all — only possible
+    // before the first publish, never from contention.
+    std::uint64_t chainSnapshotMissingCount = 0;
     std::uint64_t masterChainSkippedCount = 0;
     std::uint64_t trackChainSkippedCount = 0;
     std::uint64_t staleSnapshotReuseCount = 0;
@@ -192,6 +199,7 @@ public:
 
     void recordTimingFromAudioThread(const AudioTelemetryTimingSample& sample) noexcept;
     void incrementChainLockMiss() noexcept;
+    void incrementChainSnapshotMissing() noexcept;
     void incrementMasterChainSkipped() noexcept;
     void incrementTrackChainSkipped(std::uint64_t amount = 1) noexcept;
     void incrementStaleSnapshotReuse() noexcept;
@@ -249,6 +257,7 @@ private:
     std::atomic<std::uint64_t> mixOverrunCount_{0};
     std::atomic<std::uint64_t> overBudgetBlockCount_{0};
     std::atomic<std::uint64_t> chainLockMissCount_{0};
+    std::atomic<std::uint64_t> chainSnapshotMissingCount_{0};
     std::atomic<std::uint64_t> masterChainSkippedCount_{0};
     std::atomic<std::uint64_t> trackChainSkippedCount_{0};
     std::atomic<std::uint64_t> staleSnapshotReuseCount_{0};

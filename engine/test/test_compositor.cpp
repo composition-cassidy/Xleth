@@ -659,6 +659,265 @@ int main()
         std::fprintf(stderr, "[TEST:Compositor] Test 10: PASSED\n");
     }
 
+    // ── Test 11: fullscreen rect == the canvas-fit rect, exactly ────────────
+    // The unified per-cell path starts a fullscreen layer from the canvas-UV
+    // rect (0,0,1,1) and lets the shared canvas-fit mapping place it, instead
+    // of drawing (canvasFitX_..canvasFitH_) directly the way the old dedicated
+    // fullscreen branch did. This is the frame-identity guard for that swap:
+    // under a deliberately NON-identity (pillarboxed) fit the layer must land
+    // on exactly the fitted rect and not one pixel outside it.
+    {
+        std::fprintf(stderr, "\n[TEST:Compositor] --- Test 11: fullscreen honours canvas fit ---\n");
+
+        GridCompositor compositor;
+        assert(compositor.init(g_device, g_deviceCtx, 320, 240));
+        // Pillarbox: content occupies x in [80, 240) of a 320-wide output.
+        compositor.setCanvasFit(0.25f, 0.0f, 0.5f, 1.0f);
+
+        CellFrameRequest fs{};
+        fs.sourcePath = "blue.mp4"; fs.sourceFrameIndex = 0;
+        fs.opacity = 1.0f; fs.layerKind = CellLayerKind::FullscreenBehind; fs.zOrder = 0;
+        std::vector<CellFrameRequest> requests{ fs };
+
+        compositor.compositeFrame(requests, cache, 2, 1);
+        ReadbackBuffer buf = compositor.readback();
+        assert(buf.valid);
+
+        uint8_t b, g, r, a;
+        extractBGRA(samplePixel(buf, 160, 120), b, g, r, a);   // inside the fit
+        std::fprintf(stderr, "[TEST:Compositor] inside fit  (160,120): B=%d A=%d\n", b, a);
+        assert(b > 200 && a > 200 && "Fullscreen layer must fill the canvas-fit rect");
+
+        extractBGRA(samplePixel(buf, 85, 120), b, g, r, a);    // just inside the left edge
+        assert(b > 200 && a > 200 && "Fullscreen layer must reach the left edge of the fit");
+
+        extractBGRA(samplePixel(buf, 20, 120), b, g, r, a);    // left pillar
+        std::fprintf(stderr, "[TEST:Compositor] left pillar  (20,120): B=%d A=%d\n", b, a);
+        assert(a < 16 && "Fullscreen layer must NOT spill into the left pillar");
+
+        extractBGRA(samplePixel(buf, 300, 120), b, g, r, a);   // right pillar
+        assert(a < 16 && "Fullscreen layer must NOT spill into the right pillar");
+
+        compositor.shutdown();
+        std::fprintf(stderr, "[TEST:Compositor] Test 11: PASSED\n");
+    }
+
+    // ── Test 12: fullscreen layer runs the track visual effect chain ────────
+    // Previously the fullscreen branch never touched visualChain at all, so a
+    // backdrop silently lost the track's look. Full Desaturation on a pure-blue
+    // source is the cheapest unambiguous proof: the result must come back grey.
+    {
+        std::fprintf(stderr, "\n[TEST:Compositor] --- Test 12: fullscreen visual effect chain ---\n");
+
+        GridCompositor compositor;
+        assert(compositor.init(g_device, g_deviceCtx, 320, 240));
+
+        VisualEffect desat;
+        desat.type      = VisualEffect::Type::Desaturation;
+        desat.bypassed  = false;
+        desat.params[0] = 1.0f;   // full
+
+        CellFrameRequest fs{};
+        fs.sourcePath = "blue.mp4"; fs.sourceFrameIndex = 0;
+        fs.opacity = 1.0f; fs.layerKind = CellLayerKind::FullscreenBehind; fs.zOrder = 0;
+        fs.visualChain = { desat };
+        std::vector<CellFrameRequest> requests{ fs };
+
+        compositor.compositeFrame(requests, cache, 1, 1);
+        ReadbackBuffer buf = compositor.readback();
+        assert(buf.valid);
+
+        uint8_t b, g, r, a;
+        extractBGRA(samplePixel(buf, 160, 120), b, g, r, a);
+        std::fprintf(stderr, "[TEST:Compositor] desaturated FS: R=%d G=%d B=%d A=%d (expect grey)\n",
+                     r, g, b, a);
+        assert(a > 200 && "Desaturated fullscreen layer must still be opaque");
+        assert(std::abs((int)r - (int)g) <= 3 && std::abs((int)g - (int)b) <= 3
+               && "Fullscreen layer must run the visual effect chain (channels must converge)");
+        assert(b < 128 && "Pure blue fully desaturated must darken well below 255");
+
+        compositor.shutdown();
+        std::fprintf(stderr, "[TEST:Compositor] Test 12: PASSED\n");
+    }
+
+    // ── Test 13: fullscreen layer honours corner radius ─────────────────────
+    // The old fullscreen branch passed a hardcoded 0.0f radius to drawCell.
+    {
+        std::fprintf(stderr, "\n[TEST:Compositor] --- Test 13: fullscreen corner radius ---\n");
+
+        GridCompositor compositor;
+        assert(compositor.init(g_device, g_deviceCtx, 320, 240));
+
+        CellFrameRequest fs{};
+        fs.sourcePath = "blue.mp4"; fs.sourceFrameIndex = 0;
+        fs.opacity = 1.0f; fs.layerKind = CellLayerKind::FullscreenInFront; fs.zOrder = 0;
+        fs.cornerRadius = 0.5f;   // radiusPx = 0.5 * min(320,240) = 120
+        std::vector<CellFrameRequest> requests{ fs };
+
+        compositor.compositeFrame(requests, cache, 1, 1);
+        ReadbackBuffer buf = compositor.readback();
+        assert(buf.valid);
+
+        uint8_t b, g, r, a;
+        extractBGRA(samplePixel(buf, 160, 120), b, g, r, a);
+        assert(b > 200 && a > 200 && "Rounded fullscreen layer must still fill its centre");
+
+        extractBGRA(samplePixel(buf, 1, 1), b, g, r, a);
+        std::fprintf(stderr, "[TEST:Compositor] rounded FS corner (1,1): A=%d (expect ~0)\n", a);
+        assert(a < 16 && "Fullscreen layer must honour cornerRadius (corner must be cut)");
+
+        compositor.shutdown();
+        std::fprintf(stderr, "[TEST:Compositor] Test 13: PASSED\n");
+    }
+
+    // ── Test 14: fullscreen layer honours the ping-pong crossfade ───────────
+    // The crossfade block used to be gated on layerKind == Grid, so a
+    // ping-ponging track went un-blended the moment it was made fullscreen.
+    {
+        std::fprintf(stderr, "\n[TEST:Compositor] --- Test 14: fullscreen ping-pong crossfade ---\n");
+
+        // Same path, two frame indices: primary blue, secondary red.
+        cache.put({"pp.mp4", 0},  makeSolidTexture(255, 0, 0, 255));   // blue
+        cache.put({"pp.mp4", 10}, makeSolidTexture(0, 0, 255, 255));   // red
+
+        GridCompositor compositor;
+        assert(compositor.init(g_device, g_deviceCtx, 320, 240));
+
+        CellFrameRequest fs{};
+        fs.sourcePath = "pp.mp4"; fs.sourceFrameIndex = 0;
+        fs.opacity = 1.0f; fs.layerKind = CellLayerKind::FullscreenBehind; fs.zOrder = 0;
+        fs.pingPongSecondaryFrame = 10;
+        fs.pingPongBlendFactor    = 0.5f;
+        std::vector<CellFrameRequest> requests{ fs };
+
+        compositor.compositeFrame(requests, cache, 1, 1);
+        ReadbackBuffer buf = compositor.readback();
+        assert(buf.valid);
+
+        uint8_t b, g, r, a;
+        extractBGRA(samplePixel(buf, 160, 120), b, g, r, a);
+        std::fprintf(stderr, "[TEST:Compositor] FS ping-pong 50%%: R=%d G=%d B=%d A=%d (expect ~half/half)\n",
+                     r, g, b, a);
+        assert(a > 200 && "Crossfaded fullscreen layer must stay opaque");
+        assert(r > 90 && r < 165 && "Secondary frame must be blended into the fullscreen layer");
+        assert(b > 90 && b < 165 && "Primary frame must survive the fullscreen crossfade");
+
+        compositor.shutdown();
+        std::fprintf(stderr, "[TEST:Compositor] Test 14: PASSED\n");
+    }
+
+    // ── Test 15: gap and bounce stay GRID-ONLY ──────────────────────────────
+    // Both are authored as fractions of a grid CELL, so they are deliberately
+    // not applied to a full-canvas rect. A fullscreen request carrying both
+    // (the collector takes one animation snapshot per track, bounce included)
+    // must still cover the canvas edge-to-edge.
+    {
+        std::fprintf(stderr, "\n[TEST:Compositor] --- Test 15: gap/bounce stay grid-only ---\n");
+
+        GridCompositor compositor;
+        assert(compositor.init(g_device, g_deviceCtx, 320, 240));
+
+        CellFrameRequest fs{};
+        fs.sourcePath = "blue.mp4"; fs.sourceFrameIndex = 0;
+        fs.opacity = 1.0f; fs.layerKind = CellLayerKind::FullscreenBehind; fs.zOrder = 0;
+        fs.gapScaleOverride = 0.5f;    // would inset the rect by 25% per side
+        fs.bounceOffsetX    = 0.5f;    // would shove it half a rect to the right
+        fs.bounceScaleX     = 0.5f;
+        fs.bounceScaleY     = 0.5f;
+        std::vector<CellFrameRequest> requests{ fs };
+
+        compositor.compositeFrame(requests, cache, 1, 1, /*time=*/0.0f, /*gapScale=*/0.5f);
+        ReadbackBuffer buf = compositor.readback();
+        assert(buf.valid);
+
+        const int probes[4][2] = { {2, 2}, {317, 2}, {2, 237}, {317, 237} };
+        for (const auto& p : probes) {
+            uint8_t b, g, r, a;
+            extractBGRA(samplePixel(buf, p[0], p[1]), b, g, r, a);
+            std::fprintf(stderr, "[TEST:Compositor] corner (%d,%d): B=%d A=%d\n", p[0], p[1], b, a);
+            assert(b > 200 && a > 200
+                   && "Gap/bounce must NOT be applied to a fullscreen layer");
+        }
+
+        compositor.shutdown();
+        std::fprintf(stderr, "[TEST:Compositor] Test 15: PASSED\n");
+    }
+
+    // ── Test 16: readback into a caller-owned destination ───────────────────
+    // The live preview hands readback() the shared-memory back buffer so the
+    // frame is not copied into the compositor's own vector first. That is only
+    // legitimate if the bytes come out identical either way, and if a
+    // destination that does not fit is refused rather than half-filled.
+    {
+        std::fprintf(stderr, "\n[TEST:Compositor] --- Test 16: readback into caller destination ---\n");
+
+        GridCompositor compositor;
+        assert(compositor.init(g_device, g_deviceCtx, 320, 240));
+
+        // Two cells, so a row-order or stride fault cannot hide behind a
+        // uniformly coloured frame.
+        std::vector<CellFrameRequest> requests;
+        CellFrameRequest left{};
+        left.cellCol = 0; left.cellRow = 0;
+        left.spanX = kGridSubUnitsPerColumn; left.spanY = kGridSubUnitsPerRow;
+        left.sourcePath = "red.mp4"; left.sourceFrameIndex = 0;
+        left.opacity = 1.0f; left.layerKind = CellLayerKind::Grid; left.zOrder = 0;
+        requests.push_back(left);
+
+        CellFrameRequest right{};
+        right.cellCol = kGridSubUnitsPerColumn; right.cellRow = 0;
+        right.spanX = kGridSubUnitsPerColumn; right.spanY = kGridSubUnitsPerRow;
+        right.sourcePath = "green.mp4"; right.sourceFrameIndex = 0;
+        right.opacity = 1.0f; right.layerKind = CellLayerKind::Grid; right.zOrder = 1;
+        requests.push_back(right);
+
+        // Reference: the ordinary owning-vector path.
+        compositor.compositeFrame(requests, cache, 2, 2);
+        const ReadbackBuffer reference = compositor.readback();
+        assert(reference.valid);
+        assert(!reference.intoDestination
+               && "a readback with no destination must fill its own vector");
+        const size_t frameBytes =
+            static_cast<size_t>(reference.stride) * reference.height;
+        assert(reference.pixels.size() == frameBytes);
+        const std::vector<uint8_t> expected = reference.pixels;
+
+        // Same scene, straight into a caller-owned buffer.
+        std::vector<uint8_t> dest(frameBytes, 0xAB);
+        compositor.compositeFrame(requests, cache, 2, 2);
+        const ReadbackBuffer& direct =
+            compositor.readback(ReadbackMode::Immediate, dest.data(), dest.size());
+        assert(direct.valid);
+        assert(direct.intoDestination && "a fitting destination must be used");
+        assert(direct.width == reference.width && direct.height == reference.height);
+        assert(direct.stride == reference.stride);
+        assert(std::memcmp(dest.data(), expected.data(), frameBytes) == 0
+               && "direct readback must be byte-identical to the vector path");
+        std::fprintf(stderr,
+                     "[TEST:Compositor] direct destination matches vector path (%llu bytes)\n",
+                     static_cast<unsigned long long>(frameBytes));
+
+        // A destination whose size does not match the frame is refused outright:
+        // the frame goes to the vector and the caller's buffer is left alone.
+        std::vector<uint8_t> misSized(frameBytes, 0xAB);
+        compositor.compositeFrame(requests, cache, 2, 2);
+        const ReadbackBuffer& refused =
+            compositor.readback(ReadbackMode::Immediate, misSized.data(), frameBytes - 4);
+        assert(refused.valid);
+        assert(!refused.intoDestination && "a mis-sized destination must be refused");
+        assert(refused.pixels.size() == frameBytes);
+        assert(std::memcmp(refused.pixels.data(), expected.data(), frameBytes) == 0
+               && "the refused path must still produce the same frame");
+        for (size_t i = 0; i < misSized.size(); ++i) {
+            assert(misSized[i] == 0xAB
+                   && "a refused destination must not be written to at all");
+        }
+        std::fprintf(stderr, "[TEST:Compositor] mis-sized destination refused, buffer untouched\n");
+
+        compositor.shutdown();
+        std::fprintf(stderr, "[TEST:Compositor] Test 16: PASSED\n");
+    }
+
     std::fprintf(stderr, "\n[TEST:Compositor] ALL TESTS PASSED\n");
     std::_Exit(0);
 }

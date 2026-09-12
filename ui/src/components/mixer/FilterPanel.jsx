@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import { X, Plus, Info } from 'lucide-react'
 import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
 import useFilterStore, {
@@ -8,6 +8,7 @@ import useFilterStore, {
   MAX_MODS_PER_SLOT, modKindLabel, activeMods,
   typeUsesGain, typeUsesMorph, typeUsesSlope,
   typeGainLabel, typeGainRange, typeMorphLabel,
+  decodeLiveState, slotWithLiveValues, hasAnyModulator,
 } from '../../stores/filterStore.js'
 import PluginUIKitKnob from '../../plugin-ui/runtime/components/PluginUIKitKnob.jsx'
 import Fader from '../controls/Fader.jsx'
@@ -57,10 +58,71 @@ const fmtMix  = (v) => `${Math.round(v * 100)} %`
 const fmtMorph = (v) => v.toFixed(2)
 const fmtMs   = (v) => (v >= 100 ? `${Math.round(v)} ms` : `${v.toFixed(1)} ms`)
 
+// ModDest index → the knob it moves, in the order MOD_DESTS declares them.
+const MOD_DEST_FIELDS = ['cutoff', 'q', 'gain', 'morph', 'drive', 'mix']
+
+// How far a live value has to sit from the parked one before the panel prints
+// it, per destination and in that destination's own units. Below these the two
+// numbers would read identically anyway and the extra line is just flicker.
+const LIVE_EPSILON = {
+  cutoff: 0.5,    // Hz
+  q:      0.005,
+  gain:   0.05,   // dB
+  morph:  0.002,
+  drive:  0.05,   // dB
+  mix:    0.002,
+}
+
+// The guide curves are recomputed every animation frame, so they are sampled
+// coarser than the parked ones: at the well's ~736px width a 256-point hairline
+// is indistinguishable from a 512-point one and costs half as much per frame.
+const LIVE_GUIDE_SIZE = 256
+
+// ── Live frame plumbing ───────────────────────────────────────────────────────
+// The engine's live state arrives ~30 times a second. None of it goes through
+// React state: the panel owns one Set of subscribers, the poll loop hands each
+// of them the decoded frame, and each subscriber paints straight into a canvas
+// or a DOM node it already holds. A setState at frame rate would re-render every
+// knob, select and canvas in the panel for a number two pixels care about.
+
+function useLiveFrame(bus, fn) {
+  const fnRef = useRef(fn)
+  fnRef.current = fn
+  useEffect(() => {
+    if (!bus) return undefined
+    // The registered callback is stable for the subscriber's lifetime and reads
+    // the latest closure through the ref, so a re-render never churns the Set.
+    const cb = (frame) => fnRef.current(frame)
+    bus.add(cb)
+    return () => { bus.delete(cb) }
+  }, [bus])
+}
+
 // ── Small building blocks ─────────────────────────────────────────────────────
 
-// Stock mixer-ring knob with the formatted value printed below.
-function FilterKnob({ value, min, max, def, skew, label, fmt, onChange, size = 48, paramId = null, automationTarget = null }) {
+// The live, post-modulation value of one slot knob, printed under the parked
+// one. Blank whenever the engine has no live reading or the modulators are not
+// actually moving this knob, so a knob nothing points at looks exactly as it
+// did before any of this existed.
+function LiveKnobValue({ bus, slotIndex, field, fmt, base, epsilon }) {
+  const ref = useRef(null)
+  useLiveFrame(bus, (frame) => {
+    const el = ref.current
+    if (!el) return
+    const ls = frame?.slots?.[slotIndex]
+    const v = (ls && ls.valid) ? ls[field] : null
+    const text = (Number.isFinite(v) && Math.abs(v - base) > epsilon) ? fmt(v) : ''
+    if (el.textContent !== text) el.textContent = text
+  })
+  return <div className="filter-knob-live" ref={ref} />
+}
+
+// Stock mixer-ring knob with the formatted value printed below. Passing
+// liveField opts the cell into a second, accent-coloured readout that tracks
+// where the slot's modulators have actually put this knob.
+function FilterKnob({ value, min, max, def, skew, label, fmt, onChange, size = 48,
+                      paramId = null, automationTarget = null,
+                      liveBus = null, liveSlot = -1, liveField = null }) {
   const v = Number.isFinite(value) ? value : def
   return (
     <div className="filter-knob-cell">
@@ -72,6 +134,11 @@ function FilterKnob({ value, min, max, def, skew, label, fmt, onChange, size = 4
         paramId={paramId} automationTarget={automationTarget}
       />
       <div className="filter-knob-value">{fmt(v)}</div>
+      {liveBus && liveField && liveSlot >= 0 && (
+        <LiveKnobValue
+          bus={liveBus} slotIndex={liveSlot} field={liveField}
+          fmt={fmt} base={v} epsilon={LIVE_EPSILON[liveField] ?? 1e-4} />
+      )}
     </div>
   )
 }
@@ -108,9 +175,15 @@ function SlotTab({ slot, index, selected, onSelect, onToggleEnabled, onRemove })
 
 // ── Response curve (canvas only — no DOM overlays) ────────────────────────────
 
-function ResponseCurve({ slots, selectedSlotIndex, aggregateRef, version }) {
+function ResponseCurve({ slots, selectedSlotIndex, aggregateRef, version,
+                         liveBus = null, liveRef = null }) {
   const canvasRef = useRef(null)
   const themeEpoch = useThemeEpoch()
+  // One cached guide curve per slot, keyed by the exact values it was drawn
+  // from. A slot nothing modulates keeps the same key every frame and is never
+  // recomputed, so an eight-slot filter with one moving slot costs one curve
+  // per frame rather than eight.
+  const guideCacheRef = useRef([])
 
   const paint = useCallback(() => {
     const canvas = canvasRef.current
@@ -172,14 +245,33 @@ function ResponseCurve({ slots, selectedSlotIndex, aggregateRef, version }) {
       ctx.fillText(`${db > 0 ? '+' : ''}${db}`, padL - 4, gy)
     }
 
+    // The engine's live frame, if the panel is animating. `animating` means the
+    // engine has actually composed at least one slot — not merely that a poll
+    // came back — so a filter whose modulators exist but have never seen audio
+    // draws exactly the parked picture it always did.
+    const live = liveRef ? liveRef.current : null
+    const animating = !!(live && live.slots && live.slots.some(s => s.valid))
+
     // Per-slot faint guide curves (client-side; sum in dB to the aggregate).
-    const freqs = responseFrequencies(RESPONSE_SIZE)
+    // While animating each guide is drawn at its own MODULATED position, so a
+    // slot sweeps under the aggregate instead of sitting still beneath it.
+    const guideN = animating ? LIVE_GUIDE_SIZE : RESPONSE_SIZE
+    const freqs = responseFrequencies(guideN)
+    const cache = guideCacheRef.current
     slots.forEach((slot, si) => {
-      const curve = slotResponseDb(slot)
+      const drawn = animating ? slotWithLiveValues(slot, live.slots[si]) : slot
+      const key = `${guideN}|${drawn.enabled ? 1 : 0}|${drawn.type}|${drawn.slope}`
+        + `|${drawn.cutoff}|${drawn.q}|${drawn.gain}|${drawn.morph}|${drawn.mix}`
+      let entry = cache[si]
+      if (!entry || entry.key !== key) {
+        entry = { key, curve: slotResponseDb(drawn, live?.sampleRate || 44100, guideN) }
+        cache[si] = entry
+      }
+      const curve = entry.curve
       if (!curve) return
       const isSel = si === selectedSlotIndex
       ctx.beginPath()
-      for (let i = 0; i < RESPONSE_SIZE; i++) {
+      for (let i = 0; i < guideN; i++) {
         const x = xOf(freqs[i])
         const y = yOf(curve[i])
         if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y)
@@ -188,22 +280,60 @@ function ResponseCurve({ slots, selectedSlotIndex, aggregateRef, version }) {
       ctx.lineWidth = isSel ? 1.5 : 1
       ctx.stroke()
     })
+    cache.length = slots.length
 
-    // Bold aggregate — authoritative array from audio_filterGetResponseCurve.
+    // Aggregate. `agg` is the PARKED curve — the authoritative array from
+    // audio_filterGetResponseCurve, i.e. where the knobs are sitting. While
+    // animating it drops back to a dashed ghost and the bold line becomes the
+    // engine's live curve, so the sweep is always read against its own rest
+    // position instead of against nothing.
     const agg = aggregateRef.current
-    if (agg && agg.length > 1) {
-      const n = Math.min(agg.length, RESPONSE_SIZE)
+    const strokeCurve = (arr, alpha, width, dashed) => {
+      const n = Math.min(arr.length, RESPONSE_SIZE)
+      if (n < 2) return
       ctx.beginPath()
       for (let i = 0; i < n; i++) {
         const t = i / (n - 1)
         const f = Math.exp(logMin + t * (logMax - logMin))
         const x = xOf(f)
-        const y = yOf(agg[i])
+        const y = yOf(arr[i])
         if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y)
       }
-      ctx.strokeStyle = th.accent
-      ctx.lineWidth = 2
+      if (dashed) ctx.setLineDash([3, 3])
+      ctx.strokeStyle = alpha >= 1 ? th.accent : withAlpha(th.accent, alpha)
+      ctx.lineWidth = width
       ctx.stroke()
+      if (dashed) ctx.setLineDash([])
+    }
+
+    const hasAgg = agg && agg.length > 1
+    if (animating && live.curve && live.curve.length > 1) {
+      if (hasAgg) strokeCurve(agg, 0.3, 1, true)
+      strokeCurve(live.curve, 1, 2, false)
+
+      // Where the selected slot's corner actually is this instant. The vertical
+      // rule is the part that reads as movement on a flat low-pass curve, whose
+      // shape barely changes as it sweeps.
+      const ls = live.slots[selectedSlotIndex]
+      if (ls && ls.valid && ls.cutoff >= FREQ_MIN && ls.cutoff <= FREQ_MAX) {
+        const mx = Math.round(xOf(ls.cutoff)) + 0.5
+        ctx.strokeStyle = withAlpha(th.accent, 0.45)
+        ctx.lineWidth = 1
+        ctx.beginPath()
+        ctx.moveTo(mx, padT)
+        ctx.lineTo(mx, padB)
+        ctx.stroke()
+
+        // The dot rides the bold curve at that frequency.
+        const t = (Math.log(ls.cutoff) - logMin) / (logMax - logMin)
+        const idx = clamp(Math.round(t * (live.curve.length - 1)), 0, live.curve.length - 1)
+        ctx.fillStyle = th.accent
+        ctx.beginPath()
+        ctx.arc(mx, yOf(live.curve[idx]), 2.6, 0, 2 * Math.PI)
+        ctx.fill()
+      }
+    } else if (hasAgg) {
+      strokeCurve(agg, 1, 2, false)
     } else if (slots.length === 0) {
       ctx.font = MONO
       ctx.textAlign = 'center'
@@ -211,9 +341,13 @@ function ResponseCurve({ slots, selectedSlotIndex, aggregateRef, version }) {
       ctx.fillStyle = withAlpha(th.textSubtle, 0.8)
       ctx.fillText('Add a slot to start filtering', (padL + padR) / 2, (padT + padB) / 2)
     }
-  }, [slots, selectedSlotIndex, version, themeEpoch, aggregateRef])
+  }, [slots, selectedSlotIndex, version, themeEpoch, aggregateRef, liveRef])
 
   useEffect(() => { paint() }, [paint])
+
+  // Every live frame repaints the well. `paint` reads liveRef at call time, so
+  // the subscription never has to be torn down and rebuilt as frames arrive.
+  useLiveFrame(liveBus, () => { paint() })
 
   useEffect(() => {
     const canvas = canvasRef.current
@@ -234,15 +368,71 @@ function ResponseCurve({ slots, selectedSlotIndex, aggregateRef, version }) {
 
 // ── Per-slot modulator decks (LFO + Envelope) ─────────────────────────────────
 
+// The lane's own activity light. Brightness and size ride |source|, so an LFO's
+// dot breathes at its rate and an envelope's flashes on each note — visible from
+// the slot rail without reading the meter below it.
+function ModActivityDot({ bus, slotIndex, lane }) {
+  const ref = useRef(null)
+  useLiveFrame(bus, (frame) => {
+    const el = ref.current
+    if (!el) return
+    const src = frame?.slots?.[slotIndex]?.lanes?.[lane]?.src
+    const a = Number.isFinite(src) ? Math.min(1, Math.abs(src)) : 0
+    el.style.opacity = (0.25 + 0.75 * a).toFixed(3)
+    el.style.transform = `scale(${(1 + 0.6 * a).toFixed(3)})`
+  })
+  return <span className="filter-mod-dot" ref={ref} aria-hidden />
+}
+
+// The modulator's own output, live — the thing that actually makes a lane look
+// like it is running. An LFO swings either side of centre at its rate; an
+// envelope and a follower fill from the left, because neither ever goes
+// negative. Everything is written straight to the DOM node, never through state.
+function ModLiveMeter({ bus, slotIndex, lane, bipolar }) {
+  const fillRef = useRef(null)
+  const textRef = useRef(null)
+  useLiveFrame(bus, (frame) => {
+    const src = frame?.slots?.[slotIndex]?.lanes?.[lane]?.src
+    const v = Number.isFinite(src) ? clamp(src, -1, 1) : 0
+    const fill = fillRef.current
+    if (fill) {
+      if (bipolar) {
+        const half = Math.abs(v) * 50
+        fill.style.left = `${(v >= 0 ? 50 : 50 - half).toFixed(2)}%`
+        fill.style.width = `${half.toFixed(2)}%`
+      } else {
+        fill.style.left = '0%'
+        fill.style.width = `${(Math.max(0, v) * 100).toFixed(2)}%`
+      }
+    }
+    const t = textRef.current
+    if (t) {
+      const s = `${bipolar && v >= 0 ? '+' : ''}${v.toFixed(2)}`
+      if (t.textContent !== s) t.textContent = s
+    }
+  })
+  return (
+    <div className="filter-mod-live">
+      <span className="filter-field-label">Out</span>
+      <div className={`filter-mod-live-track${bipolar ? ' bipolar' : ''}`}>
+        <div className="filter-mod-live-fill" ref={fillRef} />
+      </div>
+      <span className="filter-mod-live-readout" ref={textRef}>
+        {bipolar ? '+0.00' : '0.00'}
+      </span>
+    </div>
+  )
+}
+
 // Shared header: kind badge, a live dot, and the remove button. A lane's
 // EXISTENCE is now its on state — there is no separate toggle, because you add
 // exactly the modulators you want and remove the ones you don't.
-function ModHeader({ title, badge, onRemove }) {
+function ModHeader({ title, badge, onRemove, dot = null }) {
   return (
     <div className="filter-col-title-row">
       <span className="filter-mod-badge">{badge}</span>
       <span className="filter-col-title">{title}</span>
-      <span className="filter-mod-dot" aria-hidden />
+      {dot || <span className="filter-mod-dot" aria-hidden />}
       <button
         type="button"
         className="filter-mod-remove"
@@ -486,7 +676,7 @@ function DynBody({ mod, onCutMin, onCutMax, onMod }) {
 
 // One modulator lane: header, the shared Dest + Depth row, then the body for
 // whichever kind this lane is.
-function ModDeck({ slotIndex, mod, onModParam, onRemove, onCutMin, onCutMax }) {
+function ModDeck({ slotIndex, mod, onModParam, onRemove, onCutMin, onCutMax, liveBus = null }) {
   const lane = Number(mod.index ?? 0)
   const kind = Number(mod.kind ?? MOD_KIND_OFF)
   const dest = clamp(Math.round(mod.dest ?? 0), 0, 5)
@@ -503,10 +693,17 @@ function ModDeck({ slotIndex, mod, onModParam, onRemove, onCutMin, onCutMax }) {
       <ModHeader
         title={modKindLabel(kind)}
         badge={`M${lane + 1}`}
-        onRemove={() => onRemove(slotIndex, lane)} />
+        onRemove={() => onRemove(slotIndex, lane)}
+        dot={liveBus
+          ? <ModActivityDot bus={liveBus} slotIndex={slotIndex} lane={lane} />
+          : null} />
       <ModDestDepth dest={dest} depth={depth}
         onDest={(v) => onMod('dest', v)}
         onDepth={(v) => onMod('depth', v)} />
+      {liveBus && (
+        <ModLiveMeter bus={liveBus} slotIndex={slotIndex} lane={lane}
+          bipolar={kind === MOD_KIND_LFO} />
+      )}
       {kind === MOD_KIND_LFO && <LfoBody mod={mod} onMod={onMod} />}
       {kind === MOD_KIND_ENV && <EnvBody mod={mod} onMod={onMod} />}
       {kind === MOD_KIND_DYN && (
@@ -550,7 +747,7 @@ function AddModulatorBar({ slotIndex, used, onAdd }) {
 // ── Selected-slot control deck ────────────────────────────────────────────────
 
 function SlotControls({ slot, index, onParam, onModParam, onAddMod, onRemoveMod,
-                        onCutMin, onCutMax, automationTarget = null }) {
+                        onCutMin, onCutMax, automationTarget = null, liveBus = null }) {
   // Slot parameters are APVTS-prefixed per slot ("s<index>_<name>"), matching
   // XlethFilterEffect::createLayout — that prefix IS the automation binding's
   // parameterId. The modulator-lane sub-parameters below carry a further lane
@@ -559,6 +756,18 @@ function SlotControls({ slot, index, onParam, onModParam, onAddMod, onRemoveMod,
   const type = clamp(Math.round(slot.type ?? 0), 0, 8)
   const slope = clamp(Math.round(slot.slope ?? 1), 0, 3)
   const mods = activeMods(slot)
+
+  // Only the knobs something is actually AIMED at get a live readout. The blank
+  // readout row still holds its height once a lane points at a knob — otherwise
+  // the whole deck would jog by a line every time a modulator crossed back
+  // through its parked value — but a knob no lane touches, and every knob on a
+  // slot with no modulators at all, renders exactly as it did before.
+  const liveFields = useMemo(() => {
+    const set = new Set()
+    for (const m of mods) set.add(MOD_DEST_FIELDS[clamp(Math.round(m.dest ?? 0), 0, 5)])
+    return set
+  }, [mods])
+  const busFor = (field) => (liveBus && liveFields.has(field) ? liveBus : null)
 
   return (
     <>
@@ -603,22 +812,26 @@ function SlotControls({ slot, index, onParam, onModParam, onAddMod, onRemoveMod,
             <FilterKnob value={Number(slot.cutoff ?? 1000)} min={20} max={20000} def={1000}
               skew={FREQ_SKEW} label="CUTOFF" fmt={fmtHz}
               paramId={slotParamId('cutoff')} automationTarget={automationTarget}
+              liveBus={busFor('cutoff')} liveSlot={index} liveField="cutoff"
               onChange={(v) => onParam(index, 'cutoff', v)} />
             <FilterKnob value={Number(slot.q ?? 0.7071)} min={0.5} max={30} def={0.7071}
               skew={Q_SKEW} label="Q" fmt={fmtQ}
               paramId={slotParamId('q')} automationTarget={automationTarget}
+              liveBus={busFor('q')} liveSlot={index} liveField="q"
               onChange={(v) => onParam(index, 'q', v)} />
             {typeUsesGain(type) && (
               <FilterKnob value={Number(slot.gain ?? 0)}
                 min={typeGainRange(type).min} max={typeGainRange(type).max} def={0}
                 label={typeGainLabel(type)} fmt={fmtGain}
                 paramId={slotParamId('gain')} automationTarget={automationTarget}
+                liveBus={busFor('gain')} liveSlot={index} liveField="gain"
                 onChange={(v) => onParam(index, 'gain', v)} />
             )}
             {typeUsesMorph(type) && (
               <FilterKnob value={Number(slot.morph ?? 0)} min={0} max={1} def={0}
                 label={typeMorphLabel(type)} fmt={fmtMorph}
                 paramId={slotParamId('morph')} automationTarget={automationTarget}
+                liveBus={busFor('morph')} liveSlot={index} liveField="morph"
                 onChange={(v) => onParam(index, 'morph', v)} />
             )}
           </div>
@@ -630,10 +843,12 @@ function SlotControls({ slot, index, onParam, onModParam, onAddMod, onRemoveMod,
             <FilterKnob value={Number(slot.drive ?? 0)} min={0} max={24} def={0}
               label="DRIVE" fmt={fmtDrive}
               paramId={slotParamId('drive')} automationTarget={automationTarget}
+              liveBus={busFor('drive')} liveSlot={index} liveField="drive"
               onChange={(v) => onParam(index, 'drive', v)} />
             <FilterKnob value={Number(slot.mix ?? 1)} min={0} max={1} def={1}
               label="MIX" fmt={fmtMix}
               paramId={slotParamId('mix')} automationTarget={automationTarget}
+              liveBus={busFor('mix')} liveSlot={index} liveField="mix"
               onChange={(v) => onParam(index, 'mix', v)} />
           </div>
         </div>
@@ -668,6 +883,7 @@ function SlotControls({ slot, index, onParam, onModParam, onAddMod, onRemoveMod,
             onRemove={onRemoveMod}
             onCutMin={onCutMin}
             onCutMax={onCutMax}
+            liveBus={liveBus}
           />
         </div>
       ))}
@@ -693,6 +909,17 @@ export default function FilterPanel() {
   const aggregateRef = useRef(null)
   const [curveVersion, setCurveVersion] = useState(0)
   const refreshTimerRef = useRef(null)
+
+  // The live animation frame, and the subscribers that paint it. Both are refs:
+  // a frame arrives ~30 times a second and must not re-render the panel.
+  const liveRef = useRef(null)
+  const liveBusRef = useRef(null)
+  if (liveBusRef.current === null) liveBusRef.current = new Set()
+  const liveBus = liveBusRef.current
+
+  // Nothing to animate unless a modulator exists — a filter that is only knobs
+  // never starts the loop, and never costs a poll.
+  const modulated = useMemo(() => hasAnyModulator(slots), [slots])
 
   const refreshCurve = useCallback(async () => {
     const c = await useFilterStore.getState().fetchResponseCurve()
@@ -720,6 +947,59 @@ export default function FilterPanel() {
       }
     }
   }, [target, refreshCurve])
+
+  // ── The animation loop ─────────────────────────────────────────────────────
+  // One rAF loop, throttled to ~30 Hz, that pulls the engine's live state and
+  // hands it to every subscriber. It exists only while the panel is open AND the
+  // filter actually has a modulator on it; closing the panel unmounts this
+  // component, which cancels the frame and leaves zero background work behind.
+  useEffect(() => {
+    if (!target || !modulated) {
+      // Drop any stale frame so the well falls straight back to the parked
+      // picture rather than freezing on the last modulated one.
+      if (liveRef.current) {
+        liveRef.current = null
+        liveBus.forEach(cb => cb(null))
+      }
+      return undefined
+    }
+
+    let active = true
+    let rafId = 0
+    let last = 0
+    let inFlight = false
+
+    const tick = async (now) => {
+      if (!active) return
+      // A hidden window still fires rAF in some Electron configurations; there
+      // is nothing to look at, so there is nothing to poll for.
+      if (now - last >= 33 && !inFlight && !document.hidden) {
+        last = now
+        inFlight = true
+        try {
+          const buf = await useFilterStore.getState().fetchLiveState()
+          const frame = decodeLiveState(buf)
+          if (active && frame) {
+            liveRef.current = frame
+            liveBus.forEach(cb => cb(frame))
+          }
+        } catch {
+          // A chain torn down between two frames is not an error worth logging
+          // thirty times a second.
+        } finally {
+          inFlight = false
+        }
+      }
+      rafId = requestAnimationFrame(tick)
+    }
+
+    rafId = requestAnimationFrame(tick)
+    return () => {
+      active = false
+      cancelAnimationFrame(rafId)
+      liveRef.current = null
+    }
+  }, [target, modulated, liveBus])
 
   const handleParam = useCallback((i, paramName, value) => {
     useFilterStore.getState().setSlotParam(i, paramName, value)
@@ -855,6 +1135,8 @@ export default function FilterPanel() {
             selectedSlotIndex={selectedSlotIndex}
             aggregateRef={aggregateRef}
             version={curveVersion}
+            liveBus={liveBus}
+            liveRef={liveRef}
           />
         </div>
       </div>
@@ -871,6 +1153,7 @@ export default function FilterPanel() {
           onCutMin={handleCutMin}
           onCutMax={handleCutMax}
           automationTarget={target}
+          liveBus={liveBus}
         />
       ) : (
         <div className="filter-empty-state">

@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.28)
 
 # ── Vcpkg packages ────────────────────────────────────────────────────────────
 # The engine's main build (in ../build) has already installed vcpkg packages
-# (FFmpeg, GLEW, GLFW). Rather than re-running vcpkg manifest install (which
+# (FFmpeg, nlohmann-json). Rather than re-running vcpkg manifest install (which
 # requires a builtin-baseline in vcpkg.json), we reuse the pre-installed
 # packages by adding them to CMAKE_PREFIX_PATH and disabling manifest mode.
 set(_VCPKG_INSTALLED "${CMAKE_CURRENT_SOURCE_DIR}/../build/vcpkg_installed/x64-windows"
@@ -60,9 +60,9 @@ if(MSVC)
 endif()
 
 # ── Engine (XlethEngineCore + XlethEngineHeaders) ────────────────────────────
-# This also sets up JUCE, finds FFmpeg/OpenGL/GLEW/GLFW, and builds XlethEngine.
+# This also sets up JUCE, finds FFmpeg, and builds the XlethEngine dev harness.
 # We only link against XlethEngineCore and XlethEngineHeaders from here.
-# XlethEngineCore has no VideoCompositor/GLFW/GLEW/OpenGL — safe for Electron.
+# Nothing in the tree links GLFW/GLEW/OpenGL any more — safe for Electron.
 add_subdirectory(
     ${CMAKE_CURRENT_SOURCE_DIR}/../engine
     ${CMAKE_CURRENT_BINARY_DIR}/engine
@@ -129,7 +129,7 @@ target_compile_definitions(xleth_native PRIVATE
 
 target_link_libraries(xleth_native PRIVATE
     XlethEngineService  # host-neutral command implementation
-    XlethEngineCore     # CPU-only engine (no VideoCompositor/GLFW/GLEW/OpenGL)
+    XlethEngineCore     # CPU/D3D11 engine (no GLFW/GLEW/OpenGL)
     XlethEngineHeaders  # JUCE/FFmpeg include paths only — no extra sources added
     ${CMAKE_JS_LIB}
 )

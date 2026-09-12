@@ -120,6 +120,25 @@ public:
                  const std::string& sourceFilePath = {},
                  double sourceStartTime = 0.0, double sourceEndTime = 0.0);
 
+    // Deep-copies `layerId` — its whole op-stack (op ids and all), its mix
+    // params, its source binding and its durable source reference — into a NEW
+    // layer inserted directly after it. Returns the new layer's id, or -1 if
+    // `layerId` is unknown; `outIndex` receives the position it landed at.
+    //
+    // Everything EXCEPT solo, which is deliberately reset (see the .cpp): it
+    // describes what the workspace is monitoring, not what this layer is.
+    //
+    // `name` may be empty, meaning "keep the original's name verbatim". This
+    // class does not invent names (see addLayer) — deriving a "… copy" label is
+    // the caller's job, because only the caller knows what the user is looking
+    // at when they ask for one.
+    //
+    // Op ids are copied rather than reminted. They are scoped to a layer, so
+    // the copy's op 3 and the original's op 3 are different ops that happen to
+    // share a number — exactly the situation restoreLayer already produces on
+    // undo, and what keeps a duplicate's stack byte-identical to its source's.
+    int duplicateLayer(int layerId, const std::string& name = {}, int* outIndex = nullptr);
+
     // Re-adds a layer with its original id and full contents — the undo path for
     // removeLayer. Returns false if that id is already live.
     bool restoreLayer(const SandboxLayer& layer, int atIndex = -1);

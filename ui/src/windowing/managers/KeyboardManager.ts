@@ -44,6 +44,24 @@ function isTextEntryElement(element: Element | null): boolean {
   );
 }
 
+// A focused control the browser itself activates on Space/Enter (buttons,
+// links, [role=button], checkboxes/radios). Space and Enter belong to
+// whatever the user just tabbed to — a panel-scoped shortcut bound to the
+// same combo (e.g. Sample Sandbox's Space-to-preview) must not preempt it,
+// the same way it already can't steal keys from a focused text field. Without
+// this, tabbing to a button inside a focused panel and pressing Space fires
+// the panel's Space shortcut instead of the button — the shortcut's own
+// preventDefault() then also blocks the browser's native activate-on-keyup,
+// so the button silently never receives the click at all.
+function isNativelyActivatedElement(element: Element | null): boolean {
+  if (!element) return false;
+  if (element instanceof HTMLButtonElement) return true;
+  if (element instanceof HTMLAnchorElement && element.hasAttribute('href')) return true;
+  if (element instanceof HTMLInputElement && (element.type === 'checkbox' || element.type === 'radio')) return true;
+  if (element instanceof HTMLElement && element.getAttribute('role') === 'button') return true;
+  return false;
+}
+
 function normalizeKey(key: string): string {
   return key;
 }
@@ -102,6 +120,20 @@ function dispatchMain(event: KeyboardEvent): boolean {
       if (!reg.allowInTextEntry) continue;
       if (reg.combo !== combo) continue;
       if (reg.scope === 'overlay') continue; // overlay handled in capture phase
+      if (tryFire(reg, event)) return true;
+    }
+    return false;
+  }
+  // Same guard, narrowed to Space/Enter: a focused button/link/checkbox owns
+  // those two keys natively, so a same-combo shortcut must not preempt them
+  // (see isNativelyActivatedElement's comment). Unlike the text-entry guard,
+  // this doesn't block every other combo — Escape, F-keys etc. are unrelated
+  // to activating the focused control and should still reach their bindings.
+  if ((combo === ' ' || combo === 'Enter') && isNativelyActivatedElement(activeElement)) {
+    for (const reg of registrations) {
+      if (!reg.allowInTextEntry) continue;
+      if (reg.combo !== combo) continue;
+      if (reg.scope === 'overlay') continue;
       if (tryFire(reg, event)) return true;
     }
     return false;

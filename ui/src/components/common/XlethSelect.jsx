@@ -36,6 +36,7 @@ export default function XlethSelect({
   ariaLabel,
   placeholder = 'Select...',
   className = '',
+  openSignal = 0,
 }) {
   const generatedId = useId()
   const triggerId = id || `xleth-select-${generatedId}`
@@ -107,6 +108,19 @@ export default function XlethSelect({
     if (!open) return
     updatePosition()
   }, [open, updatePosition])
+
+  // Callers bump `openSignal` to pop the list open without a click (the sample
+  // picker does this the moment a middle-drag commits a region).
+  const lastOpenSignal = useRef(openSignal)
+  useEffect(() => {
+    if (openSignal === lastOpenSignal.current) return
+    lastOpenSignal.current = openSignal
+    if (openSignal <= 0) return
+    openPopup(selectedIndex)
+    // Focus the trigger too, otherwise the list is open but arrow keys and
+    // Enter have nowhere to land (the gesture that opened it wasn't a click).
+    triggerRef.current?.focus()
+  }, [openSignal, openPopup, selectedIndex])
 
   useEffect(() => {
     if (!open) return

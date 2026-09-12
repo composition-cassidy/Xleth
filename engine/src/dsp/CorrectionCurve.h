@@ -132,4 +132,35 @@ CorrectionCurveResult computeCorrectionCurve(
     const std::vector<int>&         allowedNotes,
     const CorrectionParams&         params);
 
+// One breakpoint of a user-drawn target-pitch curve (MANUAL mode). Embedded
+// by xleth::sandbox::AutotuneParams the same way CorrectionParams/ScaleType
+// already are — see SandboxOp.h's opening comment on why the op's params
+// reuse these structs rather than restating them. NOT a per-sample float
+// track — computeManualCorrectionCurve rasterizes this sparse list onto the
+// analysis frame grid at render time. `tension` is reserved for a future
+// non-linear segment shape; today's drawing UI always writes 0 (pure linear
+// interpolation between breakpoints).
+struct ManualPitchPoint {
+    double timeSec  = 0.0;
+    double targetHz = 0.0;
+    double tension  = 0.0;
+
+    bool operator==(const ManualPitchPoint&) const = default;
+};
+
+// The MANUAL-mode counterpart to computeCorrectionCurve: instead of
+// quantizing each frame to a scale/key note, the target comes from
+// rasterizing `manualPoints` (sorted ascending by timeSec) at each frame's
+// own time. Same output shape and same three of the six controls apply
+// (correctionAmount/retuneSpeedMs/smoothnessMs) — jumpiness and
+// preserveVibrato are not read: MANUAL has no note-commit concept for
+// jumpiness to gate, and no automatic vibrato split (the drawn curve IS
+// whatever vibrato the user wiggled in, unfiltered). See the .cpp for the
+// per-frame algorithm notes.
+CorrectionCurveResult computeManualCorrectionCurve(
+    const std::vector<PitchFrame>&      f0track,
+    double                               sampleRate,
+    const std::vector<ManualPitchPoint>& manualPoints,
+    const CorrectionParams&              params);
+
 } // namespace xleth::dsp

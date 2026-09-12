@@ -12,6 +12,8 @@ extern "C" {
 // Force assert even in Release builds (NDEBUG is defined)
 #undef NDEBUG
 #include <cassert>
+#include <cstdint>
+#include <string>
 #include <cmath>
 #include <cstdio>
 #include <cstdlib>
@@ -29,6 +31,42 @@ static constexpr int FPS    = 30;
 static constexpr int SR     = 48000;
 static constexpr int DURATION_SEC = 1;
 static constexpr double FREQ = 440.0;
+
+// One demuxed packet, reduced to what has to match between two encodes of the
+// same input: which stream it belongs to, its timestamps, and its bytes.
+struct ProbedPacket {
+    int                  streamIndex = -1;
+    int64_t              pts         = 0;
+    int64_t              dts         = 0;
+    std::vector<uint8_t> data;
+};
+
+// Read every packet out of `path` in file order. Used by Test 6 to compare the
+// serial and pipelined encodes byte-for-byte.
+static std::vector<ProbedPacket> probePackets(const std::string& path)
+{
+    std::vector<ProbedPacket> out;
+    AVFormatContext* fmt = nullptr;
+    if (avformat_open_input(&fmt, path.c_str(), nullptr, nullptr) < 0)
+        return out;
+    if (avformat_find_stream_info(fmt, nullptr) < 0) {
+        avformat_close_input(&fmt);
+        return out;
+    }
+    AVPacket* pkt = av_packet_alloc();
+    while (av_read_frame(fmt, pkt) >= 0) {
+        ProbedPacket p;
+        p.streamIndex = pkt->stream_index;
+        p.pts         = pkt->pts;
+        p.dts         = pkt->dts;
+        p.data.assign(pkt->data, pkt->data + pkt->size);
+        out.push_back(std::move(p));
+        av_packet_unref(pkt);
+    }
+    av_packet_free(&pkt);
+    avformat_close_input(&fmt);
+    return out;
+}
 
 int main()
 {
@@ -356,6 +394,100 @@ int main()
         }
 
         std::fprintf(stderr, "[TEST:Muxer] Test 5: PASSED\n");
+    }
+
+    // ── Test 6: async video encode is bit-identical to the serial path ──────
+    // RENDER_PERF_AUDIT Finding 6a moves [convert + encode + mux] onto a worker
+    // thread. The whole point of the bounded FIFO is that the encoder still
+    // receives the same frames in the same order, so the two runs must produce
+    // byte-identical packets. Anything else means the split reordered or
+    // dropped a frame.
+    {
+        std::fprintf(stderr, "\n[TEST:Muxer] --- Test 6: async == serial ---\n");
+
+        const int kFrames = 40;
+
+        // Content that CHANGES per frame, so the encoder does real inter-frame
+        // work and a reordered or dropped frame cannot go unnoticed.
+        auto fillFrame = [](std::vector<uint8_t>& bgra, int f) {
+            for (int y = 0; y < HEIGHT; ++y) {
+                for (int x = 0; x < WIDTH; ++x) {
+                    const size_t i = (static_cast<size_t>(y) * WIDTH + x) * 4;
+                    bgra[i + 0] = static_cast<uint8_t>((x + f * 3) & 0xFF);
+                    bgra[i + 1] = static_cast<uint8_t>((y + f * 5) & 0xFF);
+                    bgra[i + 2] = static_cast<uint8_t>((x ^ y) + f * 7);
+                    bgra[i + 3] = 255;
+                }
+            }
+        };
+
+        const int samplesPerFrame = SR / FPS;
+        std::vector<float> audio(static_cast<size_t>(samplesPerFrame) * kFrames);
+        for (size_t i = 0; i < audio.size(); ++i)
+            audio[i] = static_cast<float>(std::sin(2.0 * M_PI * FREQ * (double)i / SR)) * 0.5f;
+
+        auto runExport = [&](const std::string& path, int queueDepth) {
+            ExportSettings s;
+            s.outputPath   = path;
+            s.videoCodec   = ExportSettings::VideoCodec::MPEG4;
+            s.width        = WIDTH;
+            s.height       = HEIGHT;
+            s.fpsNum       = FPS;
+            s.fpsDen       = 1;
+            s.crf          = -1;
+            s.videoBitrate = 800000;
+            s.audioCodec   = ExportSettings::AudioCodec::AAC;
+            s.sampleRate   = SR;
+            s.audioBitrate = 128;
+
+            FFmpegMuxer muxer;
+            assert(muxer.init(s));
+            muxer.enableAsyncVideo(queueDepth);
+            assert(muxer.isAsyncVideo() == (queueDepth > 0)
+                   && "enableAsyncVideo should start a worker iff depth > 0");
+
+            std::vector<uint8_t> bgra(static_cast<size_t>(WIDTH) * HEIGHT * 4);
+            for (int f = 0; f < kFrames; ++f) {
+                fillFrame(bgra, f);
+                assert(muxer.writeVideo(bgra.data(), WIDTH * 4, f));
+
+                const int pos = f * samplesPerFrame;
+                const float* ch[2] = { audio.data() + pos, audio.data() + pos };
+                assert(muxer.writeAudio(ch, samplesPerFrame, pos));
+            }
+            assert(muxer.finalize());
+            assert(!muxer.isAsyncVideo() && "finalize must join the worker");
+        };
+
+        const std::string serialPath = "test_muxer_serial.mp4";
+        const std::string asyncPath  = "test_muxer_async.mp4";
+        runExport(serialPath, 0);   // strictly serial: the reference
+        runExport(asyncPath,  3);   // pipelined, depth 3
+
+        auto a = probePackets(serialPath);
+        auto b = probePackets(asyncPath);
+
+        std::fprintf(stderr, "[TEST:Muxer] serial=%zu packets, async=%zu packets\n",
+                     a.size(), b.size());
+        assert(!a.empty() && "serial encode produced no packets");
+        assert(a.size() == b.size() && "async encode changed the packet count");
+
+        size_t comparedBytes = 0;
+        for (size_t i = 0; i < a.size(); ++i) {
+            assert(a[i].streamIndex == b[i].streamIndex && "packet stream order differs");
+            assert(a[i].pts == b[i].pts && "packet pts differs");
+            assert(a[i].dts == b[i].dts && "packet dts differs");
+            assert(a[i].data.size() == b[i].data.size() && "packet size differs");
+            assert(a[i].data == b[i].data && "packet payload differs - NOT bit-identical");
+            comparedBytes += a[i].data.size();
+        }
+        std::fprintf(stderr,
+                     "[TEST:Muxer] %zu packets / %zu bytes identical between serial "
+                     "and pipelined encode\n", a.size(), comparedBytes);
+
+        std::filesystem::remove(serialPath);
+        std::filesystem::remove(asyncPath);
+        std::fprintf(stderr, "[TEST:Muxer] Test 6: PASSED\n");
     }
 
     // ── Cleanup ─────────────────────────────────────────────────────────────

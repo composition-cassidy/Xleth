@@ -9,7 +9,7 @@ const TABS = [
   { id: 'samples', label: 'SAMPLES', title: 'Sample Selector',   icon: Music },
 ]
 
-export default function LeftPanel({ onOpenPicker, activeSampleId, setActiveSampleId }) {
+export default function LeftPanel({ onOpenPicker, activeSampleId, setActiveSampleId, orientation = 'vertical' }) {
   const [activeTab, setActiveTab] = useState('media')
 
   const handleTabSwitch = useCallback((id) => {
@@ -18,7 +18,7 @@ export default function LeftPanel({ onOpenPicker, activeSampleId, setActiveSampl
   }, [])
 
   return (
-    <div className="left-panel">
+    <div className="left-panel" data-orientation={orientation}>
       <div className="left-panel-tabs">
         {TABS.map(({ id, label, title, icon: Icon }) => (
           <XlethButton

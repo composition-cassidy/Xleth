@@ -123,12 +123,16 @@ DecoderContext* RenderVideoDecoder::getOrOpenContext(const std::string& sourcePa
     auto it = contexts_.find(sourcePath);
     if (it != contexts_.end()) {
         promoteToMru(sourcePath);
+        it->second.lastTouched = std::chrono::steady_clock::now();
         return &it->second.ctx;
     }
 
-    // Evict if at capacity
-    while (static_cast<int>(contexts_.size()) >= MAX_OPEN_CONTEXTS) {
-        evictLruContext();
+    // Evict if at capacity. sourcePath (about to be opened below) cannot
+    // itself be picked here: it isn't inserted into contexts_/lruOrder_
+    // until after this loop, so evictLruContext() only ever sees OTHER,
+    // already-open paths as candidates.
+    while (static_cast<int>(contexts_.size()) >= contextBudget_) {
+        if (!evictLruContext()) break;   // nothing left that's safe to evict
     }
 
     // Open new context
@@ -139,23 +143,62 @@ DecoderContext* RenderVideoDecoder::getOrOpenContext(const std::string& sourcePa
 
     lruOrder_.push_front(sourcePath);
     entry.lruIt = lruOrder_.begin();
+    entry.lastTouched = std::chrono::steady_clock::now();
     auto [insertIt, _] = contexts_.emplace(sourcePath, std::move(entry));
     return &insertIt->second.ctx;
 }
 
-void RenderVideoDecoder::evictLruContext()
+bool RenderVideoDecoder::evictLruContext()
 {
-    if (lruOrder_.empty()) return;
+    // Walk from the LRU end, skipping the context decode() is currently
+    // using (inFlightPath_). That context should never actually be this far
+    // back in lruOrder_ while pinned — it was just promoted to MRU by the
+    // getOrOpenContext() call that pinned it — but the guard is the one
+    // invariant that must hold even if a future caller changes that: never
+    // close a context with an in-flight decode on the video thread.
+    for (auto rit = lruOrder_.rbegin(); rit != lruOrder_.rend(); ++rit) {
+        if (!inFlightPath_.empty() && *rit == inFlightPath_) continue;
 
-    const std::string& victim = lruOrder_.back();
-    std::fprintf(stderr, "[RenderDecoder] Evicting LRU context: '%s'\n", victim.c_str());
+        const std::string victim = *rit;
+        std::fprintf(stderr, "[RenderDecoder] Evicting LRU context: '%s'\n", victim.c_str());
 
-    auto it = contexts_.find(victim);
-    if (it != contexts_.end()) {
-        it->second.ctx.close();
-        contexts_.erase(it);
+        auto it = contexts_.find(victim);
+        if (it != contexts_.end()) {
+            it->second.ctx.close();
+            contexts_.erase(it);
+        }
+        lruOrder_.erase(std::next(rit).base());
+        return true;
     }
-    lruOrder_.pop_back();
+    return false;
+}
+
+void RenderVideoDecoder::setActiveContextBudget(int distinctPathCount)
+{
+    contextBudget_ = std::clamp(distinctPathCount, MAX_OPEN_CONTEXTS, kMaxOpenContextsCap);
+}
+
+void RenderVideoDecoder::pruneIdleContexts(double idleSeconds)
+{
+    if (contexts_.empty()) return;
+
+    const auto now = std::chrono::steady_clock::now();
+    const auto threshold = std::chrono::duration<double>(idleSeconds);
+
+    // Collect first, close after: closeSource() mutates contexts_/lruOrder_,
+    // which would invalidate an in-progress iteration over contexts_.
+    std::vector<std::string> toClose;
+    for (const auto& [path, entry] : contexts_) {
+        if (!inFlightPath_.empty() && path == inFlightPath_) continue;
+        if (now - entry.lastTouched >= threshold) {
+            toClose.push_back(path);
+        }
+    }
+    for (const auto& path : toClose) {
+        std::fprintf(stderr, "[RenderDecoder] Closing idle context (untouched >= %.0fs): '%s'\n",
+                     idleSeconds, path.c_str());
+        closeSource(path);
+    }
 }
 
 void RenderVideoDecoder::promoteToMru(const std::string& sourcePath)
@@ -595,6 +638,14 @@ FrameCacheEntry RenderVideoDecoder::decode(const std::string& sourcePath,
         return empty;
     }
 
+    // Pin sourcePath for the duration of this call so eviction (LRU or idle)
+    // can never close the context this decode is using, on any return path.
+    inFlightPath_ = sourcePath;
+    struct InFlightGuard {
+        std::string& slot;
+        ~InFlightGuard() { slot.clear(); }
+    } inFlightGuard{inFlightPath_};
+
     // Get or open the decoder context for this source
     DecoderContext* ctx = getOrOpenContext(sourcePath);
     if (!ctx) {
@@ -701,7 +752,6 @@ FrameCacheEntry RenderVideoDecoder::uploadSwFrame(DecoderContext& ctx, AVFrame* 
         }
     }
 
-    // Convert to BGRA
     // Convert to BGRA. The destination carries sws_scale's write slack — see
     // video/SwsDestBuffer.h. A bare vector sized w*4*h here was the
     // STATUS_HEAP_CORRUPTION (0xC0000374): yuv422p sources (dnxhd proxies)

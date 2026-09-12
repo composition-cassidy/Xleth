@@ -978,6 +978,18 @@ void EffectChainManager::processBlock(juce::AudioBuffer<float>& buffer, int numS
     graph_->processBlock(buffer, numSamples, midi);
 }
 
+std::shared_ptr<const EffectChainManager::RealtimeView>
+EffectChainManager::realtimeView() const noexcept
+{
+    return graph_ ? graph_->realtimeView()
+                  : std::shared_ptr<const RealtimeView>{};
+}
+
+void EffectChainManager::refreshRealtimeView()
+{
+    if (graph_) graph_->publishRealtimeView();
+}
+
 bool EffectChainManager::hasSidechainCapableNode() const
 {
     return graph_ && graph_->hasSidechainCapableNode();

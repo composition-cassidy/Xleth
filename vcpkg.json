@@ -7,8 +7,6 @@
       "name": "ffmpeg",
       "features": ["avcodec", "avformat", "swscale"]
     },
-    "glew",
-    "glfw3",
     "nlohmann-json"
   ]
 }

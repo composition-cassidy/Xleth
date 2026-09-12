@@ -24,6 +24,7 @@ extern "C" {
 }
 
 #include <mutex>
+#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 
@@ -107,6 +108,16 @@ static void logAvErr(const char* msg, int rc)
 
 // Force an even, >=2 dimension (yuv420p/yuv422p require even width & height).
 static int evenClamp(int v) { v &= ~1; return v < 2 ? 2 : v; }
+
+// libav equivalent of the CLI `-threads` flag: caps decode/encode worker
+// threads so proxy generation doesn't oversubscribe against the audio and
+// video threads. g_genMutex already serialises generation to one at a time;
+// this is the remaining per-process knob.
+static int proxyThreadCount()
+{
+    const int hw = (int) std::thread::hardware_concurrency();
+    return std::clamp(hw / 2 - 1, 1, 4);
+}
 
 // ╔══════════════════════════════════════════════════════════════════════════╗
 // ║  Why generation needs D3D11VA (the AV1-software-decode problem)            ║
@@ -201,7 +212,7 @@ static bool openVideoSource(const std::string& path, SrcCtx& s)
     rc = avcodec_parameters_to_context(s.dec, st->codecpar);
     if (rc < 0) { logAvErr("avcodec_parameters_to_context failed", rc); s.close(); return false; }
 
-    s.dec->thread_count = 0;   // 0 = auto (software decode multi-threads)
+    s.dec->thread_count = proxyThreadCount();   // was 0 (auto/uncapped); now clamp(hw/2-1, 1, 4)
 
     if (needHw) {
         // Create a fresh, thread-isolated D3D11VA device (FFmpeg makes its own
@@ -602,10 +613,11 @@ bool ProxyTranscoder::extractPoster(const std::string& inputPath,
 
         ec2 = avcodec_alloc_context3(enc);
         if (!ec2) goto done;
-        ec2->width     = pw;
-        ec2->height    = ph;
-        ec2->pix_fmt   = dstFmt;
-        ec2->time_base = AVRational{1, 25};
+        ec2->width       = pw;
+        ec2->height      = ph;
+        ec2->pix_fmt     = dstFmt;
+        ec2->time_base   = AVRational{1, 25};
+        ec2->thread_count = proxyThreadCount();
         // Constant-quality JPEG ~ old `-q:v 3` (FF_QP2LAMBDA scales qscale→lambda).
         ec2->flags         |= AV_CODEC_FLAG_QSCALE;
         ec2->global_quality = FF_QP2LAMBDA * 3;
@@ -862,11 +874,12 @@ static bool transcodeImpl(const std::string& inputPath,
         enc = avcodec_alloc_context3(cand.codec);
         if (!enc) continue;
 
-        enc->width     = tw;
-        enc->height    = th;
-        enc->pix_fmt   = cand.pixFmt;
-        enc->time_base = av_inv_q(s.frameRate);
-        enc->framerate = s.frameRate;
+        enc->width        = tw;
+        enc->height       = th;
+        enc->pix_fmt      = cand.pixFmt;
+        enc->time_base    = av_inv_q(s.frameRate);
+        enc->framerate    = s.frameRate;
+        enc->thread_count = proxyThreadCount();
         // Set the all-intra profile (e.g. dnxhr_lb). AV_OPT_SEARCH_CHILDREN so it
         // resolves whether "profile" lives on the context or the encoder's
         // priv_data (varies across FFmpeg versions for the dnxhd encoder).
