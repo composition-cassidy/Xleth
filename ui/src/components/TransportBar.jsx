@@ -1,6 +1,5 @@
 import { useState, useEffect, useRef, useCallback, memo } from 'react'
 import { SkipBack, Play, Pause, Square, SkipForward, Lock, LockOpen, Crosshair } from 'lucide-react'
-import AudioDeviceSelector from './AudioDeviceSelector.jsx'
 import { subscribe } from '../transportStore.js'
 import { playheadClock } from '../services/PlayheadClock.js'
 import useMixerStore from '../stores/mixerStore.js'
@@ -201,8 +200,6 @@ export default function TransportBar() {
 
       {/* ── Spacer ──────────────────────────────────────────────────────── */}
       <div className="transport-spacer" />
-
-      <AudioDeviceSelector />
 
       {/* ── BPM ─────────────────────────────────────────────────────────── */}
       <div className="transport-bpm">

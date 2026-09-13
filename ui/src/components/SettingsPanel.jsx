@@ -1,5 +1,5 @@
 import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import { Film, Image as ImageIcon, X } from 'lucide-react'
+import { Film, Image as ImageIcon, RefreshCw, X } from 'lucide-react'
 import {
   GLOBAL_STRETCH_METHOD_OPTIONS,
   sanitizeGlobalStretchMethod,
@@ -40,11 +40,24 @@ import { IMAGE_EXTENSIONS } from './filePicker/filePickerHelpers.js'
 
 const VALID_NAMING_FORMATS = ['sampleNameOnly', 'categoryAndName', 'sourceAndName', 'fullLegacy']
 
+const FALLBACK_AUDIO_BUFFER_SIZES = [128, 256, 512, 1024, 2048]
+
+// Output device, buffer size and sample rate are all hardware properties of
+// this machine, not of the project — persisted through the same generic
+// settings store other per-machine prefs on this panel use (xleth-settings.json),
+// never into project.json. main.js's applyEngineDefaults() restores all three
+// from this same store before the window is ever shown, so by the time this
+// panel is opened the engine is already running with the saved config — this
+// panel only needs to save on change, never re-apply on mount.
+const SETTINGS_KEY_AUDIO_DEVICE = 'audioOutputDevice'
+const SETTINGS_KEY_AUDIO_BUFFER = 'audioBufferSize'
+const SETTINGS_KEY_AUDIO_RATE   = 'audioSampleRate'
+
 export const SETTINGS_CATEGORIES = [
   { id: 'project', label: 'Project', summary: 'Clip handling and safety defaults' },
   { id: 'clipfx', label: 'Clip FX', summary: 'Default Vibrato and Scratch video companion FX' },
   { id: 'transport', label: 'Transport', summary: 'Playback controls' },
-  { id: 'audio', label: 'Audio', summary: 'Latency and realtime diagnostics' },
+  { id: 'audio', label: 'Audio', summary: 'Output device, buffer size, and realtime diagnostics' },
   { id: 'plugins', label: 'Plugins', summary: 'Scan and manage VST3 plugins' },
   { id: 'graphics', label: 'Graphics', summary: 'GPU and preview diagnostics' },
   { id: 'appearance', label: 'Appearance', summary: 'Accent color, brightness, and workspace backdrop' },
@@ -205,6 +218,14 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
   const [videoMode, setVideoMode] = useState('auto')
   const [diagState, setDiagState] = useState({ status: 'idle', message: '', path: '' })
   const [namingFormat, setNamingFormat] = useState('sampleNameOnly')
+  const [audioDevices, setAudioDevices] = useState([])
+  const [audioSelectedDevice, setAudioSelectedDevice] = useState('')
+  const [audioRescanning, setAudioRescanning] = useState(false)
+  const [audioSampleRates, setAudioSampleRates] = useState([])
+  const [audioBufferSizes, setAudioBufferSizes] = useState(FALLBACK_AUDIO_BUFFER_SIZES)
+  const [audioDefaultBufferSize, setAudioDefaultBufferSize] = useState(null)
+  const [audioBufferSize, setAudioBufferSizeState] = useState(null)
+  const [audioSampleRate, setAudioSampleRateState] = useState(null)
   const [backdropState, setBackdropState] = useState(getInitialBackdropState)
   const backdropFxSettings = useBackdropFxSettingsStore((state) => state.settings)
   const hydrateBackdropFxSettings = useBackdropFxSettingsStore((state) => state.hydrate)
@@ -248,6 +269,31 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
   useEffect(() => {
     if (activeCategory === 'launchers') hydrateLaunchers()
   }, [activeCategory, hydrateLaunchers])
+
+  const refreshAudioDeviceInfo = useCallback(async () => {
+    const info = await getXleth()?.audio?.getDeviceInfo?.()
+    if (!info) return
+    setAudioBufferSizeState(info.bufferSize ?? null)
+    setAudioSampleRateState(info.sampleRate ?? null)
+    if (Array.isArray(info.bufferSizes) && info.bufferSizes.length > 0)
+      setAudioBufferSizes(info.bufferSizes)
+    setAudioDefaultBufferSize(typeof info.defaultBufferSize === 'number' ? info.defaultBufferSize : null)
+  }, [])
+
+  useEffect(() => {
+    if (activeCategory !== 'audio') return
+    async function loadAudio() {
+      const xl = getXleth()
+      const list = await xl?.audio?.getOutputDevices?.() ?? []
+      setAudioDevices(list)
+      const current = await xl?.audio?.getCurrentOutputDevice?.() ?? ''
+      setAudioSelectedDevice(current)
+      const rates = await xl?.audio?.getSupportedSampleRates?.() ?? []
+      setAudioSampleRates(rates)
+      await refreshAudioDeviceInfo()
+    }
+    loadAudio()
+  }, [activeCategory, refreshAudioDeviceInfo])
 
   useEffect(() => {
     const xl = getXleth()
@@ -669,6 +715,64 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
     await getXleth()?.settings?.set?.('sampleNamingFormat', validated)
   }
 
+  // ── Audio output device / buffer size / sample rate ───────────────────────
+
+  async function applyAudioDeviceChange(name) {
+    setAudioSelectedDevice(name)
+    const result = await getXleth()?.audio?.setOutputDevice?.(name)
+    if (result && !result.ok) {
+      console.error('[Settings] audio.setOutputDevice failed:', result.error)
+      return
+    }
+    await getXleth()?.settings?.set?.(SETTINGS_KEY_AUDIO_DEVICE, name)
+    // A device switch can change the supported-rate list and the reopened
+    // device's actual buffer/rate/latency — refresh everything this section shows.
+    const rates = await getXleth()?.audio?.getSupportedSampleRates?.() ?? []
+    setAudioSampleRates(rates)
+    await refreshAudioDeviceInfo()
+  }
+
+  async function applyAudioRescan() {
+    if (audioRescanning) return
+    setAudioRescanning(true)
+    try {
+      const list = await getXleth()?.audio?.rescanDevices?.() ?? []
+      setAudioDevices(list)
+      const current = await getXleth()?.audio?.getCurrentOutputDevice?.() ?? ''
+      setAudioSelectedDevice(current)
+      const rates = await getXleth()?.audio?.getSupportedSampleRates?.() ?? []
+      setAudioSampleRates(rates)
+      await refreshAudioDeviceInfo()
+    } finally {
+      setAudioRescanning(false)
+    }
+  }
+
+  async function applyAudioBufferSize(value) {
+    const size = parseInt(value, 10)
+    setAudioBufferSizeState(size) // optimistic — live latency value updates immediately
+    const result = await getXleth()?.audio?.setBufferSize?.(size)
+    if (result && !result.ok) {
+      console.error('[Settings] audio.setBufferSize failed:', result.error)
+      await refreshAudioDeviceInfo()
+      return
+    }
+    await getXleth()?.settings?.set?.(SETTINGS_KEY_AUDIO_BUFFER, size)
+    await refreshAudioDeviceInfo()
+  }
+
+  async function applyAudioSampleRate(value) {
+    const rate = parseFloat(value)
+    const result = await getXleth()?.audio?.setSampleRate?.(rate)
+    if (result && !result.ok) {
+      console.error('[Settings] audio.setSampleRate failed:', result.error)
+      await refreshAudioDeviceInfo()
+      return
+    }
+    await getXleth()?.settings?.set?.(SETTINGS_KEY_AUDIO_RATE, rate)
+    await refreshAudioDeviceInfo()
+  }
+
   function applyBackdropFxSettings(patch) {
     void setBackdropFxSettings(patch)
   }
@@ -792,6 +896,34 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
       setDiagState({ status: 'error', message: String(e?.message || e), path: '' })
     }
   }
+
+  const audioDeviceOptions = useMemo(
+    () => audioDevices.map(device => ({ value: device, label: device })),
+    [audioDevices]
+  )
+
+  const audioBufferSizeOptions = useMemo(() => {
+    const opts = []
+    if (typeof audioDefaultBufferSize === 'number')
+      opts.push({ value: audioDefaultBufferSize, label: `Default (${audioDefaultBufferSize} samples)` })
+    for (const size of audioBufferSizes) {
+      if (size === audioDefaultBufferSize) continue
+      opts.push({ value: size, label: `${size} samples` })
+    }
+    return opts
+  }, [audioBufferSizes, audioDefaultBufferSize])
+
+  const audioSampleRateOptions = useMemo(
+    () => audioSampleRates.map(rate => ({ value: rate, label: `${Math.round(rate)} Hz` })),
+    [audioSampleRates]
+  )
+
+  // Live estimate: recomputed on every render from local state, so it updates
+  // the instant a buffer size is picked rather than waiting on the device
+  // round trip. bufferSize / sampleRate is the resulting output latency.
+  const audioLiveLatencyMs = (typeof audioBufferSize === 'number' && typeof audioSampleRate === 'number' && audioSampleRate > 0)
+    ? (audioBufferSize / audioSampleRate) * 1000
+    : null
 
   const stretchOptions = projectStretchMethod == null
     ? [{ value: '', label: 'Loading...' }]
@@ -1062,9 +1194,76 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
   )
 
   const renderAudio = () => (
-    <SettingsSection title="Audio Diagnostics" index={0} className="settings-panel-section--wide">
-      <AudioPerformanceDiagnosticsPanel />
-    </SettingsSection>
+    <>
+      <SettingsSection title="Output Device" index={0}>
+        <SettingsRow
+          label="Output device"
+          htmlFor="settings-audio-output-device"
+          description="The audio driver and device Xleth plays through."
+        >
+          <div className="settings-panel-inline-row">
+            <XlethSelect
+              id="settings-audio-output-device"
+              value={audioSelectedDevice}
+              options={audioDeviceOptions}
+              onChange={applyAudioDeviceChange}
+              ariaLabel="Audio output device"
+              className="settings-panel-select"
+            />
+            <button
+              type="button"
+              className="settings-panel-button settings-panel-button--icon"
+              onClick={applyAudioRescan}
+              disabled={audioRescanning}
+              title="Rescan for connected audio devices"
+            >
+              <RefreshCw size={14} aria-hidden="true" className={audioRescanning ? 'settings-panel-spin' : ''} />
+              <span>{audioRescanning ? 'Rescanning...' : 'Rescan'}</span>
+            </button>
+          </div>
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title="Buffer & Latency" index={1}>
+        <SettingsRow
+          label="Buffer size"
+          htmlFor="settings-audio-buffer-size"
+          description="Trade latency for playback stability. Lower is snappier but more prone to crackle."
+        >
+          <XlethSelect
+            id="settings-audio-buffer-size"
+            value={audioBufferSize ?? ''}
+            options={audioBufferSizeOptions}
+            onChange={applyAudioBufferSize}
+            ariaLabel="Buffer size"
+            className="settings-panel-select"
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Sample rate"
+          htmlFor="settings-audio-sample-rate"
+          description="The device's operating sample rate."
+        >
+          <XlethSelect
+            id="settings-audio-sample-rate"
+            value={audioSampleRate ?? ''}
+            options={audioSampleRateOptions}
+            onChange={applyAudioSampleRate}
+            ariaLabel="Sample rate"
+            className="settings-panel-select"
+          />
+        </SettingsRow>
+        <SettingsRow label="Output latency">
+          <span className="settings-panel-value">
+            {typeof audioLiveLatencyMs === 'number' ? `${audioLiveLatencyMs.toFixed(1)} ms` : '—'}
+          </span>
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title="Audio Diagnostics" index={2} className="settings-panel-section--wide">
+        <AudioPerformanceDiagnosticsPanel />
+      </SettingsSection>
+    </>
   )
 
   const renderPlugins = () => (
