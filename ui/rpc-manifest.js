@@ -1174,6 +1174,18 @@ const METHODS = [
     binary: null,
   },
   {
+    // Per-slot read-head position (source samples, -1 = not sounding) for the
+    // sampler editor's waveform playhead. Reads the region's PREVIEW sampler,
+    // which is the instance the panel's own audition keyboard drives. Polled
+    // only while a note is held.
+    method: 'timeline_getSamplerPlayPositions',
+    channels: ['xleth:timeline:getSamplerPlayPositions'],
+    api: { 'timeline.getSamplerPlayPositions': 'xleth:timeline:getSamplerPlayPositions' },
+    handler: 'Timeline_GetSamplerPlayPositions',
+    returns: 'value',
+    binary: null,
+  },
+  {
     method: 'timeline_getPatternAudioInfo',
     channels: ['xleth:timeline:getPatternAudioInfo'],
     api: { 'timeline.getPatternAudioInfo': 'xleth:timeline:getPatternAudioInfo' },
@@ -1548,6 +1560,14 @@ const METHODS = [
     channels: ['xleth:audio:setOutputDevice'],
     api: { 'audio.setOutputDevice': 'xleth:audio:setOutputDevice' },
     handler: 'Audio_SetOutputDevice',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    method: 'audio_rescanDevices',
+    channels: ['xleth:audio:rescanDevices'],
+    api: { 'audio.rescanDevices': 'xleth:audio:rescanDevices' },
+    handler: 'Audio_RescanDevices',
     returns: 'value',
     binary: null,
   },

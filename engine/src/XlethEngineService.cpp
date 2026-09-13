@@ -1255,6 +1255,49 @@ JsonApi::Value Timeline_GetSlotBakeStatus(const JsonApi::CallbackInfo& info)
     return out;
 }
 
+// timeline_getSamplerPlayPositions(regionId) -> { positions: number[] }
+//
+// Where each of a region's slots is currently reading from, in SOURCE samples,
+// or -1 for a slot that is not sounding. Drives the playhead on the sampler
+// editor's waveform.
+//
+// Reads the PREVIEW sampler, not a track's playback sampler: the editor's
+// audition (timeline_previewNote, which the panel's keyboard drives) is exactly
+// what plays through that instance, so this reports the notes the user is
+// actually auditioning rather than whatever the arrangement happens to be
+// doing on the same region.
+//
+// A poll, not a push: the value is advisory UI telemetry published once per
+// audio block, and the panel only asks for it while a note is held.
+JsonApi::Value Timeline_GetSamplerPlayPositions(const JsonApi::CallbackInfo& info)
+{
+    auto env = info.Env();
+    JsonApi::Object out = JsonApi::Object::New(env);
+    JsonApi::Array arr = JsonApi::Array::New(env);
+
+    if (!audioEngine || info.Length() < 1 || !info[0].IsNumber()) {
+        out.Set("positions", arr);
+        return out;
+    }
+
+    const int regionId = info[0].As<JsonApi::Number>().Int32Value();
+    Sampler* s = audioEngine->getMixEngine().getPreviewSamplerPtr(regionId);
+    if (s == nullptr) {
+        // No preview sampler for this region yet (nothing auditioned since it
+        // was opened). An empty array, not an error — the panel treats that as
+        // "no playhead", which is the truth.
+        out.Set("positions", arr);
+        return out;
+    }
+
+    for (int i = 0; i < MAX_SAMPLE_SLOTS; ++i) {
+        arr.Set(static_cast<uint32_t>(i),
+                JsonApi::Number::New(env, static_cast<double>(s->playPositionForSlot(i))));
+    }
+    out.Set("positions", arr);
+    return out;
+}
+
 // ── Global clip-processing defaults bridge functions ─────────────────────────
 
 // engine_setGlobalStretchMethod(method: number) — 1=PSOLA, 2=Rubber, 3=WSOLA, 4=PhaseVocoder, 5=WORLD
@@ -15876,6 +15919,21 @@ JsonApi::Value Audio_SetOutputDevice(const JsonApi::CallbackInfo& info)
     return obj;
 }
 
+// audio_rescanDevices() → string[] (same shape as audio_getOutputDevices, so
+// the UI reuses its existing device-list handling with no new parsing)
+JsonApi::Value Audio_RescanDevices(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!audioEngine) return env.Null();
+    BridgeCallLog log("audio.rescanDevices");
+    auto names = audioEngine->rescanDevices();
+    auto arr = JsonApi::Array::New(env, names.size());
+    for (size_t i = 0; i < names.size(); ++i)
+        arr.Set((uint32_t)i, JsonApi::String::New(env, names[i]));
+    log.done(std::to_string(names.size()) + " devices");
+    return arr;
+}
+
 // audio_getSupportedSampleRates() → number[]
 JsonApi::Value Audio_GetSupportedSampleRates(const JsonApi::CallbackInfo& info)
 {
@@ -15888,9 +15946,12 @@ JsonApi::Value Audio_GetSupportedSampleRates(const JsonApi::CallbackInfo& info)
     return arr;
 }
 
-// audio_getDeviceInfo() → { sampleRate, bufferSize, latencyMs, outputDevice }
+// audio_getDeviceInfo() → { sampleRate, bufferSize, latencyMs, outputDevice,
+//                            bufferSizes, defaultBufferSize }
 // One round trip for the audio-settings UI to read after mount and after
-// every setBufferSize/setSampleRate/setOutputDevice call.
+// every setBufferSize/setSampleRate/setOutputDevice call. bufferSizes is the
+// current device's own getAvailableBufferSizes() list, falling back to the
+// fixed 128/256/512/1024/2048 ladder when the device reports none.
 JsonApi::Value Audio_GetDeviceInfo(const JsonApi::CallbackInfo& info)
 {
     JsonApi::Env env = info.Env();
@@ -15900,6 +15961,17 @@ JsonApi::Value Audio_GetDeviceInfo(const JsonApi::CallbackInfo& info)
     obj.Set("bufferSize",   JsonApi::Number::New(env, audioEngine->getBufferSize()));
     obj.Set("latencyMs",    JsonApi::Number::New(env, audioEngine->getLatencyMs()));
     obj.Set("outputDevice", JsonApi::String::New(env, audioEngine->getCurrentOutputDevice()));
+
+    static const int kFallbackBufferSizes[] = { 128, 256, 512, 1024, 2048 };
+    auto bufferSizes = audioEngine->getAvailableBufferSizes();
+    if (bufferSizes.empty())
+        bufferSizes.assign(std::begin(kFallbackBufferSizes), std::end(kFallbackBufferSizes));
+    auto bufferSizesArr = JsonApi::Array::New(env, bufferSizes.size());
+    for (size_t i = 0; i < bufferSizes.size(); ++i)
+        bufferSizesArr.Set((uint32_t)i, JsonApi::Number::New(env, bufferSizes[i]));
+    obj.Set("bufferSizes",       bufferSizesArr);
+    obj.Set("defaultBufferSize", JsonApi::Number::New(env, audioEngine->getDefaultBufferSize()));
+
     return obj;
 }
 

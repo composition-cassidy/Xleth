@@ -3697,6 +3697,37 @@ html[data-xleth-backdrop="video"] .app-body {
   border-color: rgba(255, 255, 255, 0.20);
 }
 
+.audio-rescan-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  min-height: 32px;
+  padding: 0;
+  background-color: var(--theme-depth-elevation-3-bg, var(--theme-bg-elevated));
+  border: 1px solid rgba(255, 255, 255, 0.10);
+  border-radius: var(--xleth-shell-control-radius, 8px);
+  color: var(--theme-text-secondary, var(--theme-text-primary));
+  cursor: pointer;
+  transition: background-color var(--transition-fast), color var(--transition-fast),
+              border-color var(--transition-fast);
+}
+
+.audio-rescan-btn:hover:not(:disabled) {
+  color: var(--theme-text-primary);
+  border-color: rgba(255, 255, 255, 0.20);
+}
+
+.audio-rescan-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.audio-rescan-spin {
+  animation: spin 1.2s linear infinite;
+}
+
 .audio-settings-popover {
   position: fixed;
   z-index: 10000;
@@ -9656,134 +9687,6 @@ html.fx-drag-active * {
    solo, and a mini control moved off its neutral value. Everything at rest
    stays neutral so the accent actually carries information. */
 
-.slot-list {
-  display: flex;
-  flex-direction: column;
-  min-width: 0;
-  border: 1px solid var(--theme-border-strong);
-  border-radius: 0;
-  background: var(--theme-depth-well-bg);
-  box-shadow: 4px 5px 0 rgba(0, 0, 0, 0.5);
-}
-
-.slot-list-header {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 8px;
-  border-bottom: 1px solid var(--theme-border-strong);
-  background: var(--theme-bg-elevated);
-}
-
-.slot-list-title {
-  font-size: 10px;
-  font-weight: 750;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--theme-text-muted);
-}
-
-.slot-list-count {
-  margin-left: auto;
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-  color: var(--theme-text-muted);
-}
-
-.slot-add-btn {
-  appearance: none;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 8px;
-  border: 1px solid var(--theme-border-strong);
-  border-radius: 0;
-  background: var(--theme-bg-inset);
-  color: var(--theme-text);
-  font: inherit;
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  cursor: pointer;
-}
-
-.slot-add-btn:hover:not(:disabled) {
-  border-color: var(--sampler-accent);
-  color: var(--sampler-accent);
-}
-
-.slot-add-btn:disabled {
-  opacity: 0.4;
-  cursor: not-allowed;
-}
-
-.slot-rows {
-  display: flex;
-  flex-direction: column;
-}
-
-/* The name column is BOUNDED and a flexible tail absorbs the remainder, so the
-   per-row actions stay next to the row they belong to instead of drifting to
-   the far edge when the panel is docked wide. */
-.slot-row {
-  display: grid;
-  grid-template-columns: 18px minmax(64px, 220px) auto 1fr;
-  grid-template-areas:
-    'index name actions .'
-    'minis minis minis minis';
-  align-items: center;
-  gap: 4px 6px;
-  padding: 4px 8px;
-  border-bottom: 1px solid var(--theme-border-subtle);
-  background: transparent;
-  cursor: pointer;
-  user-select: none;
-}
-
-.slot-row:last-child { border-bottom: 0; }
-
-.slot-row:hover { background: var(--theme-bg-hover); }
-
-/* Selected = the slot the Sample tab's waveform / trim / loop editor edits. */
-.slot-row.is-selected {
-  background: color-mix(in srgb, var(--sampler-accent) 12%, transparent);
-  box-shadow: inset 2px 0 0 var(--sampler-accent);
-}
-
-/* Not currently sounding (muted, or another slot is solo'd). */
-.slot-row.is-silent .slot-name,
-.slot-row.is-silent .slot-index { opacity: 0.42; }
-
-.slot-index {
-  grid-area: index;
-  font-size: 10px;
-  font-weight: 750;
-  font-variant-numeric: tabular-nums;
-  color: var(--theme-text-muted);
-  text-align: center;
-}
-
-.slot-row.is-selected .slot-index { color: var(--sampler-accent); }
-
-.slot-name {
-  grid-area: name;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 11px;
-  color: var(--theme-text);
-}
-
-.slot-actions {
-  grid-area: actions;
-  display: flex;
-  align-items: center;
-  gap: 3px;
-}
-
 .slot-flag {
   appearance: none;
   width: 17px;
@@ -9836,16 +9739,6 @@ html.fx-drag-active * {
 .slot-icon-btn--danger:hover:not(:disabled) {
   border-color: var(--theme-danger, #d9534f);
   color: var(--theme-danger, #d9534f);
-}
-
-/* Fixed-width minis, left-aligned: the panel can be very wide, and stretching
-   six tiny numeric fields across it makes them unreadable and awkward to drag. */
-.slot-minis {
-  grid-area: minis;
-  display: grid;
-  grid-template-columns: repeat(6, minmax(38px, 56px));
-  justify-content: start;
-  gap: 3px;
 }
 
 .slot-mini {
@@ -25796,6 +25689,9 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   --sampler-t4: var(--theme-text-placeholder);
   --sampler-accent: var(--theme-accent);
   --sampler-loop: var(--theme-warning);
+  /* Strip/bar heights the main tab's layout budget depends on. */
+  --slot-tab-h: 24px;
+  --sampler-audition-h: 28px;
   color: var(--sampler-t1);
 }
 
@@ -32301,3 +32197,536 @@ canvas.clipfx-graph {
   border-radius: 50%;
   background: #201A12;
 }
+
+/* ── Sampler rework: slot tab strip, two-column work row, audition bar ───────
+   Everything here is scoped under the sampler panel frame so it inherits the
+   --sampler-* surface/text tokens declared there, and so none of these generic
+   class names can leak into another panel. */
+
+/* ── Slot tab strip ───────────────────────────────────────────────────────── */
+
+.slot-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 2px;
+  min-width: 0;
+  padding: 0 0 0 0;
+  border-bottom: 1px solid var(--sampler-bd2);
+  overflow-x: auto;
+  overflow-y: hidden;
+  scrollbar-width: none;
+}
+.slot-tabs::-webkit-scrollbar { height: 0; }
+
+.slot-tabs.is-drop-target {
+  outline: 1px dashed var(--sampler-accent);
+  outline-offset: -1px;
+}
+
+.slot-tab {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 150px;
+  height: var(--slot-tab-h);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 8px;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  background: var(--sampler-s1);
+  color: var(--sampler-t3);
+  font-size: 10px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.slot-tab:hover { color: var(--sampler-t1); }
+
+/* The selected tab is the only one that earns the accent: it is the layer every
+   control below the strip is bound to, which is real state, not decoration. */
+.slot-tab.is-selected {
+  border-color: var(--sampler-bd2);
+  border-bottom-color: transparent;
+  background: var(--sampler-s2);
+  color: var(--sampler-t1);
+  box-shadow: inset 0 2px 0 var(--sampler-accent);
+}
+
+.slot-tab.is-silent { opacity: 0.45; }
+
+.slot-tab.is-drop-target {
+  border-color: var(--sampler-accent);
+  background: color-mix(in srgb, var(--sampler-accent) 18%, transparent);
+}
+
+.slot-tab-index {
+  flex: 0 0 auto;
+  font-size: 9px;
+  font-weight: 800;
+  font-variant-numeric: tabular-nums;
+  color: var(--sampler-t4);
+}
+.slot-tab.is-selected .slot-tab-index { color: var(--sampler-accent); }
+
+.slot-tab-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* A muted / shadowed-by-solo layer gets a dot rather than a word: the strip has
+   no room for a label, and the dimming alone does not say WHY it is dim. */
+.slot-tab-silent {
+  flex: 0 0 auto;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--sampler-t4);
+}
+
+.slot-tab-rename {
+  width: 92px;
+  min-width: 0;
+  padding: 0 2px;
+  border: 1px solid var(--theme-border-focus);
+  border-radius: 0;
+  background: var(--sampler-s0);
+  color: var(--sampler-t1);
+  font: inherit;
+  font-size: 10px;
+}
+
+.slot-tab-add {
+  appearance: none;
+  flex: 0 0 auto;
+  width: 24px;
+  height: var(--slot-tab-h);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid transparent;
+  border-bottom: 0;
+  background: transparent;
+  color: var(--sampler-t3);
+  cursor: pointer;
+}
+.slot-tab-add:hover:not(:disabled) {
+  border-color: var(--sampler-bd2);
+  color: var(--sampler-accent);
+}
+.slot-tab-add:disabled { opacity: 0.3; cursor: not-allowed; }
+
+.slot-tabs-count {
+  margin-left: auto;
+  align-self: center;
+  padding: 0 4px;
+  color: var(--sampler-t4);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Slot action row ──────────────────────────────────────────────────────── */
+
+.slot-actions-row {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+
+.slot-actions-sep {
+  width: 1px;
+  height: 14px;
+  margin: 0 4px;
+  background: var(--sampler-bd);
+}
+
+/* ── Two-column work row ──────────────────────────────────────────────────── */
+
+.sampler-work-row {
+  display: flex;
+  align-items: stretch;
+  gap: 14px;
+  min-width: 0;
+}
+
+.sampler-work-row .sampler-waveform-block {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* Fixed width, not a fraction: the three minis across have to stay at a
+   draggable size whatever the panel width, and PREP's two knobs plus its
+   algorithm select set the same natural column width. */
+.sampler-work-side {
+  flex: 0 0 200px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.slot-minis-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 3px;
+}
+
+.sampler-work-side .sampler-prep-body {
+  display: grid;
+  grid-template-columns: 1fr auto auto;
+  align-items: end;
+  gap: 6px;
+}
+
+.sampler-work-side .sampler-prep-algo {
+  grid-column: 1 / -1;
+}
+
+.sampler-work-side .sampler-process-card { padding: 8px; }
+
+.sampler-work-side .sampler-process-row {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 4px;
+}
+
+/* ── Waveform header tools ────────────────────────────────────────────────── */
+
+.sampler-waveform-tools {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+}
+
+.sampler-wave-tool {
+  appearance: none;
+  height: 16px;
+  padding: 0 5px;
+  border: 1px solid var(--sampler-bd2);
+  border-radius: 0;
+  background: var(--sampler-s0);
+  color: var(--sampler-t3);
+  font: inherit;
+  font-size: 8.5px;
+  font-weight: 800;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+.sampler-wave-tool:hover:not(:disabled) { color: var(--sampler-t1); }
+.sampler-wave-tool:disabled { opacity: 0.3; cursor: not-allowed; }
+.sampler-wave-tool.is-active {
+  border-color: var(--sampler-accent);
+  background: color-mix(in srgb, var(--sampler-accent) 24%, transparent);
+  color: var(--sampler-t1);
+}
+
+.sampler-wave-zoom {
+  min-width: 34px;
+  text-align: right;
+  color: var(--sampler-t4);
+  font-size: 9px;
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Patch bar (tab bar, right side) ──────────────────────────────────────── */
+
+.sampler-patch-bar {
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.sampler-patch-select {
+  max-width: 140px;
+  height: 20px;
+  font-size: 10px;
+}
+
+.sampler-patch-name {
+  width: 150px;
+  height: 20px;
+  padding: 0 4px;
+  border: 1px solid var(--theme-border-focus);
+  border-radius: 0;
+  background: var(--sampler-s0);
+  color: var(--sampler-t1);
+  font: inherit;
+  font-size: 10px;
+}
+
+.sampler-patch-btn {
+  appearance: none;
+  width: 20px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--sampler-bd2);
+  border-radius: 0;
+  background: var(--sampler-s0);
+  color: var(--sampler-t3);
+  cursor: pointer;
+}
+.sampler-patch-btn:hover:not(:disabled) {
+  border-color: var(--sampler-accent);
+  color: var(--sampler-t1);
+}
+.sampler-patch-btn:disabled { opacity: 0.3; cursor: not-allowed; }
+.sampler-patch-btn--danger:hover:not(:disabled) {
+  border-color: var(--theme-danger, #d9534f);
+  color: var(--theme-danger, #d9534f);
+}
+
+.sampler-patch-status {
+  color: var(--sampler-t4);
+  font-size: 9px;
+  white-space: nowrap;
+}
+
+/* ── Audition bar (panel chrome, outside the scroll) ──────────────────────── */
+
+.sampler-audition-bar {
+  flex: 0 0 auto;
+  height: var(--sampler-audition-h);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-top: 1px solid var(--sampler-bd2);
+  background: var(--sampler-s3);
+  color: var(--sampler-t3);
+  font-size: 9.5px;
+}
+
+/* Lit while any auditioned note is held — the panel's only direct answer to
+   "is this thing making a sound right now". */
+.sampler-audition-lamp {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--sampler-bd2);
+  transition: background 90ms linear, box-shadow 90ms linear;
+}
+.sampler-audition-lamp.is-lit {
+  background: var(--sampler-accent);
+  box-shadow: 0 0 6px var(--sampler-accent);
+}
+
+.sampler-audition-label {
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--sampler-t2);
+}
+
+.sampler-audition-hint {
+  padding: 1px 5px;
+  border: 1px solid var(--sampler-bd);
+  background: var(--sampler-s0);
+  color: var(--sampler-t4);
+  font-size: 8.5px;
+  letter-spacing: 0.04em;
+  white-space: nowrap;
+}
+
+.sampler-audition-range {
+  color: var(--sampler-t4);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.sampler-audition-oct {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.sampler-audition-oct button {
+  appearance: none;
+  width: 16px;
+  height: 16px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 1px solid var(--sampler-bd2);
+  border-radius: 0;
+  background: var(--sampler-s0);
+  color: var(--sampler-t3);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+.sampler-audition-oct button:hover:not(:disabled) {
+  border-color: var(--sampler-accent);
+  color: var(--sampler-t1);
+}
+.sampler-audition-oct button:disabled { opacity: 0.3; cursor: not-allowed; }
+.sampler-audition-oct > span {
+  min-width: 18px;
+  text-align: center;
+  color: var(--sampler-t2);
+  font-variant-numeric: tabular-nums;
+}
+
+.sampler-audition-vel {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.sampler-audition-vel input[type="range"] {
+  width: 74px;
+  height: 12px;
+  accent-color: var(--sampler-accent);
+  cursor: pointer;
+}
+.sampler-audition-vel-val {
+  min-width: 20px;
+  text-align: right;
+  color: var(--sampler-t2);
+  font-variant-numeric: tabular-nums;
+}
+
+.sampler-audition-root {
+  appearance: none;
+  margin-left: auto;
+  height: 18px;
+  padding: 0 8px;
+  border: 1px solid var(--sampler-bd2);
+  border-radius: 0;
+  background: var(--sampler-s0);
+  color: var(--sampler-t2);
+  font: inherit;
+  font-size: 9.5px;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sampler-audition-root:hover:not(:disabled) {
+  border-color: var(--sampler-accent);
+  color: var(--sampler-t1);
+}
+.sampler-audition-root:disabled { opacity: 0.35; cursor: not-allowed; }
+
+/* At narrow widths the bar sheds its most redundant pieces first: the keymap
+   hint and the range read-out are discoverability aids, while the octave,
+   velocity and lamp are controls and state. */
+@container (max-width: 640px) {
+  .sampler-audition-hint,
+  .sampler-audition-range { display: none; }
+  .sampler-work-side { flex-basis: 168px; }
+}
+
+/* ── Sampler rework: fit the main tab in its own window ─────────────────────
+   The page is a fixed-size panel, so every row here has to earn its height. */
+
+/* Mode | Trim | Loop on ONE line. The row inherits flex-wrap:wrap, and Trim's
+   five knobs were greedy enough (614px of 776) to push Loop onto a second line
+   — 130px of pure wasted height, and the single biggest reason the main tab
+   still scrolled after the layout rework. Explicit bases stop the fight. */
+.sampler-identity-row { flex-wrap: nowrap; }
+.sampler-identity-row .sampler-mode-card {
+  flex: 0 0 auto;
+  min-width: 104px;
+}
+.sampler-identity-row .sampler-range-card--trim { flex: 1 1 300px; min-width: 0; }
+.sampler-identity-row .sampler-range-card--loop { flex: 0 1 250px; min-width: 0; }
+.sampler-range-knobs--trim,
+.sampler-range-knobs--loop {
+  display: flex;
+  flex-wrap: nowrap;
+  justify-content: space-between;
+  gap: 2px;
+  min-width: 0;
+}
+
+/* PREP: the algorithm select shares the row with its two knobs instead of
+   taking a full line of its own above them. */
+.sampler-work-side .sampler-prep-body {
+  grid-template-columns: 1fr auto auto;
+  align-items: center;
+  gap: 4px 6px;
+}
+.sampler-work-side .sampler-prep-algo { grid-column: 1; }
+
+/* PROCESS: four destructive one-shots, rarely used — a 2x2 grid of 32px
+   buttons is more height than they are worth next to the waveform. */
+.sampler-work-side .sampler-process-card .sampler-section-label {
+  margin-bottom: 5px;
+}
+.sampler-work-side .sampler-process-row { gap: 3px; }
+.sampler-work-side .sampler-process-button {
+  min-height: 0;
+  padding: 3px 4px;
+  font-size: 8.5px;
+}
+
+/* MANGLE's note wraps to two lines for a chain; reserving both keeps the card
+   from resizing as modes change. */
+.sampler-mangle-note { min-height: 22px; }
+
+/* The waveform should use whatever height the side column sets, rather than
+   sitting at the top of the row with dead space under it. */
+.sampler-work-row .sampler-waveform-block {
+  display: flex;
+  flex-direction: column;
+}
+.sampler-work-row .sampler-waveform-well { flex: 1 1 auto; }
+
+/* The chain "+" lives in the MANGLE header now, not as a body row of its own:
+   a single button is not worth a full line in a fixed-height panel. */
+.sampler-range-card--mangle > header .sampler-mangle-add {
+  margin-left: auto;
+  width: 20px;
+  height: 16px;
+  min-height: 0;
+  padding: 0;
+  line-height: 1;
+}
+
+/* PREP in the 200px side column: ALGORITHM is a label+select on one compact
+   line, the two knobs share the line under it. The grid that put the select in
+   the first column alongside both knobs squeezed them past the card's right
+   edge. */
+.sampler-work-side .sampler-prep-body {
+  display: flex;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 4px;
+}
+.sampler-work-side .sampler-prep-algo {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  min-width: 0;
+}
+.sampler-work-side .sampler-prep-algo > span { flex: 0 0 auto; }
+.sampler-work-side .sampler-prep-algo .sampler-select {
+  flex: 1 1 auto;
+  min-width: 0;
+  max-width: 118px;
+  height: 18px;
+}
+/* The two knobs sit in a row of their own, centred, with room either side. */
+.sampler-work-side .sampler-prep-body > div:not(.sampler-prep-algo) {
+  align-self: center;
+}
+.sampler-work-side .sampler-prep-body {
+  flex-flow: row wrap;
+  justify-content: center;
+  align-items: center;
+}
+.sampler-work-side .sampler-prep-algo { flex: 1 0 100%; }
+
+/* The waveform canvas fills its well now (see SamplerWaveform's responsive
+   height), so the well must not add its own intrinsic height on top. */
+.sampler-work-row .sampler-waveform-well { min-height: 120px; }

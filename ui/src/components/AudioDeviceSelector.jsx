@@ -1,25 +1,31 @@
 import { useState, useEffect, useMemo, useRef, useCallback } from 'react'
 import { createPortal } from 'react-dom'
-import { Settings } from 'lucide-react'
+import { Settings, RefreshCw } from 'lucide-react'
 import XlethSelect from './common/XlethSelect.jsx'
 
-const STORAGE_KEY = 'xleth-audio-device'
-const BUFFER_SIZE_OPTIONS = [128, 256, 512, 1024, 2048]
+const FALLBACK_BUFFER_SIZES = [128, 256, 512, 1024, 2048]
 
-// Buffer size and sample rate are hardware properties of this machine, not of
-// the project — persisted the same way previewResolutionScale is: through the
-// generic settings store (xleth-settings.json), never into project.json.
+// Output device, buffer size and sample rate are all hardware properties of
+// this machine, not of the project — persisted through the same generic
+// settings store previewResolutionScale uses (xleth-settings.json), never
+// into project.json. main.js's applyEngineDefaults() restores all three from
+// this same store before the window is ever shown, so by the time this
+// component mounts the engine is already running with the saved config —
+// this component only needs to save on change, never re-apply on mount.
+const SETTINGS_KEY_DEVICE = 'audioOutputDevice'
 const SETTINGS_KEY_BUFFER = 'audioBufferSize'
 const SETTINGS_KEY_RATE   = 'audioSampleRate'
 
 export default function AudioDeviceSelector() {
   const [devices, setDevices] = useState([])
   const [selected, setSelected] = useState('')
+  const [rescanning, setRescanning] = useState(false)
 
   const [sampleRates, setSampleRates] = useState([])
+  const [bufferSizes, setBufferSizes] = useState(FALLBACK_BUFFER_SIZES)
+  const [defaultBufferSize, setDefaultBufferSize] = useState(null)
   const [bufferSize, setBufferSizeState] = useState(null)
   const [sampleRate, setSampleRateState] = useState(null)
-  const [latencyMs, setLatencyMs] = useState(null)
 
   const [settingsOpen, setSettingsOpen] = useState(false)
   const [popoverPos, setPopoverPos] = useState(null)
@@ -31,42 +37,20 @@ export default function AudioDeviceSelector() {
     if (!info) return
     setBufferSizeState(info.bufferSize ?? null)
     setSampleRateState(info.sampleRate ?? null)
-    setLatencyMs(typeof info.latencyMs === 'number' ? info.latencyMs : null)
+    if (Array.isArray(info.bufferSizes) && info.bufferSizes.length > 0)
+      setBufferSizes(info.bufferSizes)
+    setDefaultBufferSize(typeof info.defaultBufferSize === 'number' ? info.defaultBufferSize : null)
   }, [])
 
   useEffect(() => {
     async function init() {
       const list = await window.xleth?.audio?.getOutputDevices?.() ?? []
       setDevices(list)
-      const saved   = localStorage.getItem(STORAGE_KEY)
       const current = await window.xleth?.audio?.getCurrentOutputDevice?.() ?? ''
-      const initial = (saved && list.includes(saved)) ? saved : current
-      setSelected(initial)
-      // Apply saved preference if it differs from what the engine opened
-      if (saved && list.includes(saved) && saved !== current) {
-        await window.xleth.audio.setOutputDevice(saved)
-      }
+      setSelected(current)
 
       const rates = await window.xleth?.audio?.getSupportedSampleRates?.() ?? []
       setSampleRates(rates)
-
-      // Restore per-machine buffer size / sample rate preference. Each apply
-      // reuses the same device-change reconfigure path setOutputDevice does
-      // (AudioEngine::setBufferSize / setSampleRate -> setAudioDeviceSetup),
-      // so a bad restored value surfaces as a normal {ok:false, error} rather
-      // than silently leaving the engine on a different config than shown.
-      const savedBuffer = await window.xleth?.settings?.get(SETTINGS_KEY_BUFFER)
-      const savedRate   = await window.xleth?.settings?.get(SETTINGS_KEY_RATE)
-      if (typeof savedBuffer === 'number' && BUFFER_SIZE_OPTIONS.includes(savedBuffer)) {
-        const result = await window.xleth?.audio?.setBufferSize?.(savedBuffer)
-        if (result && !result.ok)
-          console.error('[AudioDeviceSelector] restore buffer size failed:', result.error)
-      }
-      if (typeof savedRate === 'number' && rates.includes(savedRate)) {
-        const result = await window.xleth?.audio?.setSampleRate?.(savedRate)
-        if (result && !result.ok)
-          console.error('[AudioDeviceSelector] restore sample rate failed:', result.error)
-      }
 
       await refreshDeviceInfo()
     }
@@ -78,12 +62,21 @@ export default function AudioDeviceSelector() {
     [devices]
   )
 
+  // Live estimate: recomputed on every render from local state, so it updates
+  // the instant a buffer size is picked rather than waiting on the device
+  // round trip. bufferSize / sampleRate is the resulting output latency.
+  const liveLatencyMs = (typeof bufferSize === 'number' && typeof sampleRate === 'number' && sampleRate > 0)
+    ? (bufferSize / sampleRate) * 1000
+    : null
+
   const handleChange = async (name) => {
     setSelected(name)
-    localStorage.setItem(STORAGE_KEY, name)
     const result = await window.xleth?.audio?.setOutputDevice?.(name)
-    if (result && !result.ok)
+    if (result && !result.ok) {
       console.error('[AudioDeviceSelector] switch failed:', result.error)
+      return
+    }
+    await window.xleth?.settings?.set(SETTINGS_KEY_DEVICE, name)
     // A device switch can change the supported-rate list and the reopened
     // device's actual buffer/rate/latency — refresh everything the popover shows.
     const rates = await window.xleth?.audio?.getSupportedSampleRates?.() ?? []
@@ -91,8 +84,25 @@ export default function AudioDeviceSelector() {
     await refreshDeviceInfo()
   }
 
+  const handleRescan = useCallback(async () => {
+    if (rescanning) return
+    setRescanning(true)
+    try {
+      const list = await window.xleth?.audio?.rescanDevices?.() ?? []
+      setDevices(list)
+      const current = await window.xleth?.audio?.getCurrentOutputDevice?.() ?? ''
+      setSelected(current)
+      const rates = await window.xleth?.audio?.getSupportedSampleRates?.() ?? []
+      setSampleRates(rates)
+      await refreshDeviceInfo()
+    } finally {
+      setRescanning(false)
+    }
+  }, [rescanning, refreshDeviceInfo])
+
   const handleBufferSizeChange = async (e) => {
     const size = parseInt(e.target.value, 10)
+    setBufferSizeState(size) // optimistic — live latency label updates immediately
     const result = await window.xleth?.audio?.setBufferSize?.(size)
     if (result && !result.ok) {
       console.error('[AudioDeviceSelector] setBufferSize failed:', result.error)
@@ -114,6 +124,17 @@ export default function AudioDeviceSelector() {
     await window.xleth?.settings?.set(SETTINGS_KEY_RATE, rate)
     await refreshDeviceInfo()
   }
+
+  const bufferSizeOptions = useMemo(() => {
+    const opts = []
+    if (typeof defaultBufferSize === 'number')
+      opts.push({ value: defaultBufferSize, label: `Default (${defaultBufferSize} samples)` })
+    for (const size of bufferSizes) {
+      if (size === defaultBufferSize) continue
+      opts.push({ value: size, label: `${size} samples` })
+    }
+    return opts
+  }, [bufferSizes, defaultBufferSize])
 
   const openSettings = useCallback(() => {
     const trigger = gearRef.current
@@ -167,8 +188,8 @@ export default function AudioDeviceSelector() {
               onChange={handleBufferSizeChange}
               title="Trade latency for playback stability"
             >
-              {BUFFER_SIZE_OPTIONS.map(size => (
-                <option key={size} value={size}>{size} samples</option>
+              {bufferSizeOptions.map(({ value, label }) => (
+                <option key={value} value={value}>{label}</option>
               ))}
             </select>
           </div>
@@ -194,9 +215,9 @@ export default function AudioDeviceSelector() {
           </div>
 
           <div className="audio-settings-row audio-settings-latency">
-            <span className="audio-settings-label">Reported latency</span>
+            <span className="audio-settings-label">Output latency</span>
             <span className="audio-settings-value">
-              {typeof latencyMs === 'number' ? `${latencyMs.toFixed(1)} ms` : '—'}
+              {typeof liveLatencyMs === 'number' ? `${liveLatencyMs.toFixed(1)} ms` : '—'}
             </span>
           </div>
         </div>,
@@ -215,6 +236,16 @@ export default function AudioDeviceSelector() {
         ariaLabel="Audio output device"
         placeholder="Audio output"
       />
+      <button
+        type="button"
+        className="audio-rescan-btn"
+        aria-label="Rescan audio devices"
+        disabled={rescanning}
+        onClick={handleRescan}
+        title="Rescan for connected audio devices"
+      >
+        <RefreshCw size={14} aria-hidden="true" className={rescanning ? 'audio-rescan-spin' : ''} />
+      </button>
       <button
         ref={gearRef}
         type="button"

@@ -511,6 +511,58 @@ std::vector<double> AudioEngine::getSupportedSampleRates() const
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+std::vector<int> AudioEngine::getAvailableBufferSizes() const
+{
+    std::vector<int> sizes;
+    if (auto* device = deviceManager_.getCurrentAudioDevice())
+        for (int size : device->getAvailableBufferSizes())
+            sizes.push_back(size);
+    return sizes;
+}
+
+int AudioEngine::getDefaultBufferSize() const
+{
+    if (auto* device = deviceManager_.getCurrentAudioDevice())
+        return device->getDefaultBufferSize();
+    return bufferSize_;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Message/RPC thread only — drives juce::AudioDeviceManager, same contract as
+// setOutputDevice()/reopenAudioDevice().
+std::vector<std::string> AudioEngine::rescanDevices()
+{
+    auto& dm = deviceManager_;
+    for (auto* type : dm.getAvailableDeviceTypes())
+        type->scanForDevices();
+
+    auto names = getOutputDevices();
+    const std::string current = getCurrentOutputDevice();
+
+    if (std::find(names.begin(), names.end(), current) == names.end())
+    {
+        // Selected device vanished (unplugged) — fall back to this driver's
+        // default output, same reconfigure path setOutputDevice uses. An
+        // empty outputDeviceName + useDefaultOutputChannels asks JUCE for
+        // whatever the OS now calls the default for the current driver type.
+        juce::AudioDeviceManager::AudioDeviceSetup setup;
+        dm.getAudioDeviceSetup(setup);
+        setup.outputDeviceName         = {};
+        setup.useDefaultOutputChannels = true;
+        auto err = dm.setAudioDeviceSetup(setup, true);
+        if (err.isEmpty())
+        {
+            preferredOutputDevice_ = getCurrentOutputDevice();
+            cacheCurrentDeviceOutputLatency();
+            refreshLivePresentationLatency();
+        }
+        names = getOutputDevices();
+    }
+
+    return names;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Same shape as setOutputDevice: mutate the setup, let setAudioDeviceSetup's
 // restart (audioDeviceAboutToStart) do the actual reconfigure. No parallel
 // path — deviceChanged is the only place sampleRate_/bufferSize_ are written.

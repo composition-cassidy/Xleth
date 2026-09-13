@@ -508,6 +508,25 @@ async function applyEngineDefaults() {
     await callWorker('engine_setGlobalFormantPreserve',
       [saved.globalFormantPreserve]).catch(() => {});
   }
+
+  // Per-machine audio device preferences (output device, buffer size, sample
+  // rate) — hardware properties of this machine, not this project, persisted
+  // in the same generic settings store as previewResolutionScale, never in
+  // project.json. Reapplied here, before the window is ever shown, so any
+  // resulting device reopen happens during the splash screen instead of as
+  // an audible glitch after the UI and audio are already live.
+  if (typeof saved.audioOutputDevice === 'string' && saved.audioOutputDevice) {
+    const result = await callWorker('audio_setOutputDevice', [saved.audioOutputDevice]).catch(() => null);
+    if (result && !result.ok) log(`applyEngineDefaults: restore output device failed: ${result.error}`);
+  }
+  if (typeof saved.audioBufferSize === 'number') {
+    const result = await callWorker('audio_setBufferSize', [saved.audioBufferSize]).catch(() => null);
+    if (result && !result.ok) log(`applyEngineDefaults: restore buffer size failed: ${result.error}`);
+  }
+  if (typeof saved.audioSampleRate === 'number') {
+    const result = await callWorker('audio_setSampleRate', [saved.audioSampleRate]).catch(() => null);
+    if (result && !result.ok) log(`applyEngineDefaults: restore sample rate failed: ${result.error}`);
+  }
 }
 
 function startEngineBackgroundTasks() {
@@ -1578,12 +1597,12 @@ ipcMain.handle('xleth:audio:unloadSource',
 // ── Waveform mipmap bindings (replace FFmpeg 8kHz extraction pipeline) ───────
 
 ipcMain.handle('xleth:waveform:getRegionPeaks',
-  safeHandler((_, regionId, startTime, endTime, targetPixels, channel) =>
-    callWorker('waveform_getRegionPeaks', [regionId, startTime, endTime, targetPixels, channel])));
+  safeHandler((_, regionId, startTime, endTime, targetPixels, channel, slotIndex = 0) =>
+    callWorker('waveform_getRegionPeaks', [regionId, startTime, endTime, targetPixels, channel, slotIndex])));
 
 ipcMain.handle('xleth:waveform:getRawSamples',
-  safeHandler((_, regionId, startSample, endSample, channel) =>
-    callWorker('waveform_getRawSamples', [regionId, startSample, endSample, channel])));
+  safeHandler((_, regionId, startSample, endSample, channel, slotIndex = 0) =>
+    callWorker('waveform_getRawSamples', [regionId, startSample, endSample, channel, slotIndex])));
 
 ipcMain.handle('xleth:waveform:getFilePeaks',
   safeHandler((_, filePath, startTime, endTime, targetPixels, channel) =>

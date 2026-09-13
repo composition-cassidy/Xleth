@@ -141,6 +141,15 @@ public:
     std::string              setOutputDevice(const std::string& deviceName);
     void                     setPreferredOutputDevice(const std::string& name) { preferredOutputDevice_ = name; }
 
+    // Re-scans every registered device type (WASAPI/ASIO/etc.) for hardware
+    // changes — a hot-plugged interface, an unplugged one — and returns the
+    // refreshed output device list, same shape as getOutputDevices(). If the
+    // currently selected output device no longer exists in that list, falls
+    // back to the current driver's default output device via the same
+    // setAudioDeviceSetup(..., true) reconfigure path setOutputDevice uses.
+    // Message/RPC thread only — see checkDeviceHealth()'s threading note.
+    std::vector<std::string> rescanDevices();
+
     // Sample rates the CURRENT device reports as supported — query fresh per
     // call since the answer depends on getCurrentAudioDevice(), not a cached
     // list. Buffer size has no analogous device query surfaced here: callers
@@ -148,6 +157,13 @@ public:
     // returned error string report an unsupported choice, same as ASIO's own
     // fixed-buffer devices already do today via kTargetBuf/kMaxBuf fallback.
     std::vector<double>      getSupportedSampleRates() const;
+
+    // Buffer sizes (in samples) the CURRENT device reports as supported, and
+    // the device's own preferred default. Empty when there is no current
+    // device — callers fall back to the fixed 128/256/512/1024/2048 ladder,
+    // same as getSupportedSampleRates() callers do for sample rate.
+    std::vector<int>         getAvailableBufferSizes() const;
+    int                      getDefaultBufferSize()    const;
 
     // Both reuse the exact reconfigure path setOutputDevice already does:
     // mutate the AudioDeviceSetup, hand it to setAudioDeviceSetup(..., true),
