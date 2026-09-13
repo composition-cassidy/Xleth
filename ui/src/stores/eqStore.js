@@ -3,10 +3,10 @@ import { create } from 'zustand'
 export const BAND_TYPES = ['Bell', 'Low Shelf', 'High Shelf', 'Low Pass', 'High Pass', 'Notch', 'Tilt']
 export const BAND_MODES = ['Static', 'Dynamic', 'Spectral']
 
-// Per-band channel routing (UI-only for now — see setBandChannel below).
-// 'stereo' is the default: the band processes the full stereo signal exactly
-// as it always has. The other four modes are engine-agnostic stubs the UI
-// exposes so the DSP wiring can land in a follow-up without another UI pass.
+// Per-band channel routing. 'stereo' is the default: the band processes the
+// full stereo signal exactly as it always has. Array order IS the engine's
+// b{i}_channel value (0=Stereo, 1=Left, 2=Right, 3=Mid, 4=Side) — it must stay
+// in sync with XlethParametricEQ::ChannelMode.
 export const CHANNEL_MODES = ['stereo', 'left', 'right', 'mid', 'side']
 export const CHANNEL_META = {
   stereo: { label: 'Stereo', short: 'ST' },
@@ -69,9 +69,12 @@ const useEqStore = create((set, get) => ({
     try {
       const raw = await window.xleth?.audio?.eqGetBands(t.trackId, t.nodeId)
       const parsed = typeof raw === 'string' ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])
-      // The engine has no notion of 'channel' yet — default any band it
-      // returns to 'stereo' rather than dropping the field on the floor.
-      const bands = parsed.map(b => ({ channel: 'stereo', ...b }))
+      // The engine reports channel as the numeric ChannelMode; map it back to
+      // the name the UI works in. Pre-routing saves omit it → 'stereo'.
+      const bands = parsed.map(b => ({
+        ...b,
+        channel: CHANNEL_MODES[b?.channel] ?? 'stereo',
+      }))
       set({ bands })
     } catch {}
   },
@@ -183,16 +186,20 @@ const useEqStore = create((set, get) => ({
     } catch { return null }
   },
 
-  // UI-only per-band channel routing — local state, no engine RPC. The
-  // engine doesn't know about 'channel' yet; wiring the actual L/R/M/S DSP
-  // routing is a follow-up, so this just records the user's choice.
-  setBandChannel(bandIndex, channel) {
-    if (!CHANNEL_MODES.includes(channel)) return
+  // Per-band channel routing. Kept as a name in the store, sent to the engine
+  // as the numeric ChannelMode (CHANNEL_MODES index).
+  async setBandChannel(bandIndex, channel) {
+    const t = get().target
+    if (!t) return
+    const value = CHANNEL_MODES.indexOf(channel)
+    if (value < 0) return
+    // Optimistic
     set(s => {
       const bands = [...s.bands]
       if (bands[bandIndex]) bands[bandIndex] = { ...bands[bandIndex], channel }
       return { bands }
     })
+    await window.xleth?.audio?.eqSetBandParam(t.trackId, t.nodeId, bandIndex, 'channel', value)
   },
 
   setSelectedBand(index) {
@@ -225,7 +232,7 @@ const useEqStore = create((set, get) => ({
     await get().addBandAt(band.freq, band.gain, band.type)
     const newIdx = get().bands.length - 1
     if (newIdx < 0) return
-    get().setBandChannel(newIdx, band.channel || 'stereo')
+    await get().setBandChannel(newIdx, band.channel || 'stereo')
     await get().setBandParam(newIdx, 'q', band.q)
     await get().setBandParam(newIdx, 'mode', band.mode)
     await get().setBandParam(newIdx, 'enabled', band.enabled)

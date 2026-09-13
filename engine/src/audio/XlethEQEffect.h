@@ -25,6 +25,7 @@
 //   b{i}_type    0–6 discrete  (Bell=0, LowShelf=1, HighShelf=2, LowPass=3,
 //                                HighPass=4, Notch=5, Tilt=6)
 //   b{i}_enabled 0/1 boolean
+//   b{i}_channel 0–4 discrete  (Stereo=0, Left=1, Right=2, Mid=3, Side=4)
 //
 // Coefficients are recomputed once per audio block from smoothed values.
 // 0 bands active by default; add/remove dynamically via addBand()/removeBand().
@@ -56,6 +57,17 @@ public:
         Bell = 0, LowShelf = 1, HighShelf = 2,
         LowPass = 3, HighPass = 4, Notch = 5, Tilt = 6
     };
+
+    // Per-band channel routing.  Values match the b{i}_channel APVTS range and
+    // the UI's CHANNEL_MODES array order (eqStore.js).
+    enum class ChannelMode : int {
+        Stereo = 0, Left = 1, Right = 2, Mid = 3, Side = 4
+    };
+    static constexpr int kNumChannelModes = 5;
+
+    // Filter-state slots per band: L, R, M, S (indices 0..3).
+    static constexpr int kNumRoutingSlots = 4;
+    static constexpr int kSlotL = 0, kSlotR = 1, kSlotM = 2, kSlotS = 3;
 
     // ── Construction ─────────────────────────────────────────────────────────
     XlethParametricEQ() : XlethEffectBase("xletheq", createLayout()) {}
@@ -116,6 +128,7 @@ public:
         setParamDirect(count, "q",       0.707f);
         setParamDirect(count, "type",    0.0f);
         setParamDirect(count, "enabled", 1.0f);
+        setParamDirect(count, "channel", 0.0f);   // 0 = Stereo
         setParamDirect(count, "mode",        0.0f);
         setParamDirect(count, "dyn_thresh", -20.0f);
         setParamDirect(count, "dyn_ratio",   4.0f);
@@ -181,9 +194,18 @@ public:
         const double logMin = std::log(20.0);
         const double logMax = std::log(20000.0);
 
+        using Cplx = std::complex<double>;
+        const Cplx kCplxOne (1.0, 0.0);
+        const Cplx kCplxZero(0.0, 0.0);
+
+        // Linear Phase folds every band's routing to Stereo (see
+        // foldChannelForContext) — the displayed curve must agree with that.
+        const bool linPhaseActive = linPhasePtr_
+            ? (linPhasePtr_->load(std::memory_order_relaxed) > 0.5f) : false;
+
         // Snapshot current APVTS parameters and compute coefficients locally
         // so we don't depend on processEffect having run recently.
-        struct LocalCoeffs { double b0, b1, b2, a1, a2; bool enabled; };
+        struct LocalCoeffs { double b0, b1, b2, a1, a2; bool enabled; int channel; };
         LocalCoeffs lc[kMaxBands]{};
 
         for (int b = 0; b < count; ++b)
@@ -200,6 +222,15 @@ public:
             int   mode   = bs.modePtr ? static_cast<int>(bs.modePtr->load(std::memory_order_relaxed)) : 0;
             freq = std::max(freq, 20.0f);
             q    = std::max(q, 0.1f);
+
+            // Channel routing snapshot.  numCh = 2 here: this EQ always runs on
+            // a stereo bus (prepareEffect sizes everything for 2 channels), and
+            // a mono bus folds to Stereo, which is the flat-diagonal case the
+            // matrix below already reduces to.
+            int chMode = bs.channelPtr
+                ? static_cast<int>(bs.channelPtr->load(std::memory_order_relaxed)) : 0;
+            if (chMode < 0 || chMode >= kNumChannelModes) chMode = 0;
+            lc[b].channel = foldChannelForContext(chMode, mode, linPhaseActive, 2);
 
             // Model B: Dynamic bands are visually "off" (0 dB) when inactive,
             // and animate toward target gain as activation grows. Snapshot the
@@ -227,26 +258,79 @@ public:
             const double sinw  = std::sin(w);
             const double sin2w = std::sin(2.0 * w);
 
-            double magSq = 1.0; // combined magnitude-squared (product of all bands)
+            // Each band contributes a 2x2 complex matrix mapping (L, R) in to
+            // (L, R) out.  The cascade is the matrix product, which stays exact
+            // under channel routing (a scalar |H| product cannot express M/S
+            // cross terms).  Start from the identity = pass-through.
+            Cplx m00(1.0, 0.0), m01(0.0, 0.0), m10(0.0, 0.0), m11(1.0, 0.0);
 
             for (int b = 0; b < count; ++b)
             {
                 if (!lc[b].enabled) continue;
 
                 // H(e^jw) = (b0 + b1*e^-jw + b2*e^-j2w) / (1 + a1*e^-jw + a2*e^-j2w)
-                double numRe = lc[b].b0 + lc[b].b1 * cosw + lc[b].b2 * cos2w;
-                double numIm =          - lc[b].b1 * sinw - lc[b].b2 * sin2w;
-                double denRe = 1.0 + lc[b].a1 * cosw + lc[b].a2 * cos2w;
-                double denIm =     - lc[b].a1 * sinw - lc[b].a2 * sin2w;
+                const Cplx num(lc[b].b0 + lc[b].b1 * cosw + lc[b].b2 * cos2w,
+                                        - lc[b].b1 * sinw - lc[b].b2 * sin2w);
+                const Cplx den(1.0 + lc[b].a1 * cosw + lc[b].a2 * cos2w,
+                                    - lc[b].a1 * sinw - lc[b].a2 * sin2w);
 
-                double numMagSq = numRe * numRe + numIm * numIm;
-                double denMagSq = denRe * denRe + denIm * denIm;
+                const double denMagSq = den.real() * den.real() + den.imag() * den.imag();
+                const Cplx   H = (denMagSq > 1e-30) ? (num / den) : kCplxOne;
 
-                magSq *= (denMagSq > 1e-30) ? (numMagSq / denMagSq) : 1.0;
+                // This band's routing matrix.
+                Cplx b00, b01, b10, b11;
+                switch (static_cast<ChannelMode>(lc[b].channel))
+                {
+                case ChannelMode::Left:   // diag(H, 1)
+                    b00 = H;       b01 = kCplxZero;
+                    b10 = kCplxZero; b11 = kCplxOne;
+                    break;
+
+                case ChannelMode::Right:  // diag(1, H)
+                    b00 = kCplxOne; b01 = kCplxZero;
+                    b10 = kCplxZero; b11 = H;
+                    break;
+
+                case ChannelMode::Mid:
+                    // m = (L+R)/2, s = (L-R)/2, L' = H*m + s, R' = H*m - s
+                    b00 = 0.5 * (H + kCplxOne); b01 = 0.5 * (H - kCplxOne);
+                    b10 = 0.5 * (H - kCplxOne); b11 = 0.5 * (H + kCplxOne);
+                    break;
+
+                case ChannelMode::Side:
+                    // L' = m + H*s, R' = m - H*s
+                    b00 = 0.5 * (kCplxOne + H); b01 = 0.5 * (kCplxOne - H);
+                    b10 = 0.5 * (kCplxOne - H); b11 = 0.5 * (kCplxOne + H);
+                    break;
+
+                case ChannelMode::Stereo:
+                default:                  // H * I
+                    b00 = H;         b01 = kCplxZero;
+                    b10 = kCplxZero; b11 = H;
+                    break;
+                }
+
+                // M := B * M — band 0 is applied to the signal first, so it
+                // ends up rightmost in the product.
+                const Cplx n00 = b00 * m00 + b01 * m10;
+                const Cplx n01 = b00 * m01 + b01 * m11;
+                const Cplx n10 = b10 * m00 + b11 * m10;
+                const Cplx n11 = b10 * m01 + b11 * m11;
+                m00 = n00; m01 = n01; m10 = n10; m11 = n11;
             }
 
-            // Convert to dB: 10*log10(magSq) = 20*log10(mag)
-            outBuf[i] = static_cast<float>(10.0 * std::log10(std::max(magSq, 1e-30)));
+            // The UI draws one 512-point trace, so collapse the matrix to the
+            // dB average of the L and R diagonal magnitudes (|L→L| and |R→R|;
+            // the off-diagonal crosstalk an M/S band creates is not displayed).
+            //
+            // For an all-Stereo chain both diagonals equal H, so this reproduces
+            // the old 20*log10|H| product exactly.  For a routed band it reads
+            // as the mean of what the two outputs do — a Left-only +12 dB bell
+            // plots at +6 dB, a Mid or Side +12 dB bell at ~+7.9 dB (both its
+            // diagonals are 0.5*(H+1)).  Same -300 dB floor as before.
+            const double dbL = 20.0 * std::log10(std::max(std::abs(m00), 1e-15));
+            const double dbR = 20.0 * std::log10(std::max(std::abs(m11), 1e-15));
+            outBuf[i] = static_cast<float>(0.5 * (dbL + dbR));
         }
     }
 
@@ -292,6 +376,7 @@ public:
             b["q"]       = readParam(i, "q");
             b["type"]    = static_cast<int>(readParam(i, "type"));
             b["enabled"] = readParam(i, "enabled") > 0.5f;
+            b["channel"] = static_cast<int>(readParam(i, "channel"));
             b["mode"]        = static_cast<int>(readParam(i, "mode"));
             b["dyn_thresh"]  = readParam(i, "dyn_thresh");
             b["dyn_ratio"]   = readParam(i, "dyn_ratio");
@@ -397,6 +482,7 @@ public:
             bs.qPtr       = apvts_.getRawParameterValue(paramId(i, "q"));
             bs.typePtr    = apvts_.getRawParameterValue(paramId(i, "type"));
             bs.enabledPtr = apvts_.getRawParameterValue(paramId(i, "enabled"));
+            bs.channelPtr = apvts_.getRawParameterValue(paramId(i, "channel"));
 
             // Advanced mode pointers
             bs.modePtr       = apvts_.getRawParameterValue(paramId(i, "mode"));
@@ -527,20 +613,26 @@ public:
         const int count      = bandCount_.load(std::memory_order_relaxed);
         const double sr      = sampleRate_.load(std::memory_order_relaxed);
 
-        // ── Read band modes + enabled state ─────────────────────────────────
+        // ── Read global mode state ──────────────────────────────────────────
+        // Read before the per-band latch below: linear phase folds every band's
+        // channel routing back to Stereo.
+        const bool linPhaseActive = linPhasePtr_
+            ? (linPhasePtr_->load(std::memory_order_relaxed) > 0.5f) : false;
+        linPhaseActive_.store(linPhaseActive, std::memory_order_relaxed);
+
+        // ── Read band modes + enabled + channel routing ─────────────────────
         bool hasDynamic = false;
         for (int b = 0; b < count; ++b)
         {
             auto& bs = bands_[b];
             bs.mode    = bs.modePtr    ? static_cast<int>(bs.modePtr->load(std::memory_order_relaxed)) : 0;
             bs.enabled = bs.enabledPtr ? (bs.enabledPtr->load(std::memory_order_relaxed) > 0.5f) : true;
+            bs.channel = bs.channelPtr
+                ? static_cast<int>(bs.channelPtr->load(std::memory_order_relaxed)) : 0;
+            if (bs.channel < 0 || bs.channel >= kNumChannelModes) bs.channel = 0;
+            bs.channel = foldChannelForContext(bs.channel, bs.mode, linPhaseActive, numCh);
             if (bs.mode == 1 && bs.enabled) hasDynamic = true;
         }
-
-        // ── Read global mode state ──────────────────────────────────────────
-        const bool linPhaseActive = linPhasePtr_
-            ? (linPhasePtr_->load(std::memory_order_relaxed) > 0.5f) : false;
-        linPhaseActive_.store(linPhaseActive, std::memory_order_relaxed);
 
         // Read oversample factor (0=off, 1=2x, 2=4x)
         int osRaw = oversamplePtr_
@@ -594,22 +686,53 @@ public:
                 computeSidechainBPF(bs, scFreq, scQ, sr);
 
                 // Run sidechain BPF on input, compute RMS of detector output.
+                // The detector follows the band's channel routing: a Left band
+                // must not duck on Right-only content, and an M/S band detects
+                // on its own M or S signal.
                 double sumSq = 0.0;
-                for (int ch = 0; ch < numCh; ++ch)
+                int    rmsCount = 0;
+
+                if (bs.channel == static_cast<int>(ChannelMode::Stereo))
                 {
-                    const float* data = buffer.getReadPointer(ch);
+                    for (int ch = 0; ch < numCh; ++ch)
+                    {
+                        const float* data = buffer.getReadPointer(ch);
+                        const int slot = (ch == 0) ? kSlotL : kSlotR;
+                        for (int s = 0; s < numSamples; ++s)
+                        {
+                            float x = data[s];
+                            float y  = bs.sc_b0 * x + bs.sc_z1[slot];
+                            bs.sc_z1[slot] = bs.sc_b1 * x - bs.sc_a1 * y + bs.sc_z2[slot];
+                            bs.sc_z2[slot] = bs.sc_b2 * x - bs.sc_a2 * y;
+                            sumSq += static_cast<double>(y * y);
+                        }
+                    }
+                    rmsCount = numSamples * numCh;
+                }
+                else
+                {
+                    // Routed: one detector signal only (L, R, M or S).
+                    // bs.channel is only non-Stereo when numCh >= 2 (see the
+                    // per-block fold), so channel 1 is safe to read here.
+                    float wL = 1.0f, wR = 0.0f;
+                    int   slot = kSlotL;
+                    routingDetectorWeights(bs.channel, wL, wR, slot);
+
+                    const float* dL = buffer.getReadPointer(0);
+                    const float* dR = buffer.getReadPointer(1);
                     for (int s = 0; s < numSamples; ++s)
                     {
-                        float x = data[s];
-                        float y  = bs.sc_b0 * x + bs.sc_z1[ch];
-                        bs.sc_z1[ch] = bs.sc_b1 * x - bs.sc_a1 * y + bs.sc_z2[ch];
-                        bs.sc_z2[ch] = bs.sc_b2 * x - bs.sc_a2 * y;
+                        float x = wL * dL[s] + wR * dR[s];
+                        float y  = bs.sc_b0 * x + bs.sc_z1[slot];
+                        bs.sc_z1[slot] = bs.sc_b1 * x - bs.sc_a1 * y + bs.sc_z2[slot];
+                        bs.sc_z2[slot] = bs.sc_b2 * x - bs.sc_a2 * y;
                         sumSq += static_cast<double>(y * y);
                     }
+                    rmsCount = numSamples;
                 }
 
                 float rmsDb = 10.0f * std::log10(std::max(
-                    static_cast<float>(sumSq / (numSamples * numCh)), 1e-30f));
+                    static_cast<float>(sumSq / std::max(rmsCount, 1)), 1e-30f));
 
                 // Map overshoot → activation target in [0,1].
                 // 0 dB over → 0; grows asymptotically toward 1 with more overshoot.
@@ -807,61 +930,54 @@ public:
                 }
             }
         }
-        else if (currentOSFactor > 0)
+        else if (currentOSFactor > 0 && numCh > 0)
         {
             // ── Oversampled biquad: upsample → cascade → downsample ─────────
             auto* os = (currentOSFactor == 1) ? os2x_.get() : os4x_.get();
             juce::dsp::AudioBlock<float> block(buffer);
             auto upBlock = os->processSamplesUp(block);
 
+            // Sample-outer so an (L, R) pair can be carried through the cascade
+            // together — per-band M/S routing needs both channels in hand.
             const int upN = static_cast<int>(upBlock.getNumSamples());
-            for (int ch = 0; ch < numCh; ++ch)
-            {
-                float* data = upBlock.getChannelPointer(ch);
-                for (int s = 0; s < upN; ++s)
-                {
-                    float x = data[s];
-                    for (int b = 0; b < count; ++b)
-                    {
-                        auto& bs = bands_[b];
-                        if (!bs.enabled || bs.mode == 2) continue;
+            float* upL = upBlock.getChannelPointer(0);
+            float* upR = (numCh > 1) ? upBlock.getChannelPointer(1) : nullptr;
+            const bool hasR = (upR != nullptr);
 
-                        float y  = bs.b0 * x + bs.z1[ch];
-                        bs.z1[ch] = bs.b1 * x - bs.a1 * y + bs.z2[ch];
-                        bs.z2[ch] = bs.b2 * x - bs.a2 * y;
-                        x = y;
-                    }
-                    data[s] = x;
-                }
+            for (int s = 0; s < upN; ++s)
+            {
+                float L = upL[s];
+                float R = hasR ? upR[s] : 0.0f;
+
+                processCascadeSample(count, L, R, hasR);
+
+                upL[s] = L;
+                if (hasR) upR[s] = R;
             }
 
             os->processSamplesDown(block);
         }
-        else
+        else if (numCh > 0)
         {
             // ── Biquad processing (DFII Transposed) ─────────────────────────
             // Spectral-mode bands skip biquad — processed by STFT above.
-            for (int ch = 0; ch < numCh; ++ch)
+            //
+            // Sample-outer rather than channel-outer: per-band channel routing
+            // (Mid/Side especially) needs the L and R samples of one frame in
+            // hand at the same time.
+            float* dataL = buffer.getWritePointer(0);
+            float* dataR = (numCh > 1) ? buffer.getWritePointer(1) : nullptr;
+            const bool hasR = (dataR != nullptr);
+
+            for (int s = 0; s < numSamples; ++s)
             {
-                float* data = buffer.getWritePointer(ch);
+                float L = dataL[s];
+                float R = hasR ? dataR[s] : 0.0f;
 
-                for (int s = 0; s < numSamples; ++s)
-                {
-                    float x = data[s];
+                processCascadeSample(count, L, R, hasR);
 
-                    for (int b = 0; b < count; ++b)
-                    {
-                        auto& bs = bands_[b];
-                        if (!bs.enabled || bs.mode == 2) continue;
-
-                        float y  = bs.b0 * x + bs.z1[ch];
-                        bs.z1[ch] = bs.b1 * x - bs.a1 * y + bs.z2[ch];
-                        bs.z2[ch] = bs.b2 * x - bs.a2 * y;
-                        x = y;
-                    }
-
-                    data[s] = x;
-                }
+                dataL[s] = L;
+                if (hasR) dataR[s] = R;
             }
         }
 
@@ -913,6 +1029,7 @@ private:
         std::atomic<float>* qPtr       = nullptr;
         std::atomic<float>* typePtr    = nullptr;
         std::atomic<float>* enabledPtr = nullptr;
+        std::atomic<float>* channelPtr = nullptr;
 
         // Smoothers (audio thread only)
         juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> freqSmooth;
@@ -923,10 +1040,16 @@ private:
         float b0 = 1.0f, b1 = 0.0f, b2 = 0.0f;
         float a1 = 0.0f, a2 = 0.0f;
 
-        // DFII Transposed state per channel (stereo max)
-        float z1[2]{}, z2[2]{};
+        // DFII Transposed state, one slot per routable signal:
+        //   0 = L, 1 = R, 2 = M, 3 = S.
+        // A band only ever runs in one routing at a time, but keeping all four
+        // slots means switching routing mid-stream never drags foreign state in.
+        float z1[kNumRoutingSlots]{}, z2[kNumRoutingSlots]{};
 
         bool enabled = true;
+
+        // Channel routing, latched once per block (see ChannelMode).
+        int channel = 0;
 
         // ── Mode (0=Normal, 1=Dynamic, 2=Spectral) ─────────────────────────
         std::atomic<float>* modePtr = nullptr;
@@ -944,7 +1067,8 @@ private:
         float sc_a1 = 0.0f, sc_a2 = 0.0f;
 
         // Dynamic EQ runtime state (audio thread)
-        float sc_z1[2]{}, sc_z2[2]{};   // sidechain bandpass DFII state
+        // Same slot layout as z1/z2: the detector follows the band's routing.
+        float sc_z1[kNumRoutingSlots]{}, sc_z2[kNumRoutingSlots]{};
         std::atomic<float> dynActivation{0.0f}; // activation [0,1]: 0 = band off, 1 = at target
         float dynAttackCoeff = 0.0f;     // one-pole attack coefficient
         float dynReleaseCoeff = 0.0f;    // one-pole release coefficient
@@ -967,10 +1091,11 @@ private:
 
         void clearState()
         {
-            z1[0] = z1[1] = 0.0f;
-            z2[0] = z2[1] = 0.0f;
-            sc_z1[0] = sc_z1[1] = 0.0f;
-            sc_z2[0] = sc_z2[1] = 0.0f;
+            for (int i = 0; i < kNumRoutingSlots; ++i)
+            {
+                z1[i] = z2[i] = 0.0f;
+                sc_z1[i] = sc_z2[i] = 0.0f;
+            }
             dynActivation.store(0.0f, std::memory_order_relaxed);
             std::fill(specBinEnv.begin(), specBinEnv.end(), 1.0f);
         }
@@ -1048,6 +1173,102 @@ private:
     std::vector<float> stftTempIm_;
     std::vector<float> stftMag_;      // per-bin magnitude (positive freqs, size kSTFTSize/2)
     std::vector<float> stftLogMag_;   // per-bin log magnitude for local-env rolling sum
+
+    // ── Channel routing helpers ─────────────────────────────────────────────
+
+    // Collapse a band's requested routing to what the current context can
+    // actually honour.  Everything that cannot be routed folds to Stereo:
+    //
+    //  • Mono input (numCh < 2) — there is no second channel to route against.
+    //  • Spectral-mode bands (mode == 2) — routing is deliberately NOT
+    //    implemented for these.  M/S spectral processing needs the STFT itself
+    //    run in the M/S domain (a second analysis/synthesis pair plus M/S
+    //    per-bin envelopes), which is a separate unit of work.
+    //  • Linear Phase — deliberately NOT implemented.  Per-channel linear phase
+    //    needs a 2x2 MIMO FIR matrix (four kernels, cross terms included)
+    //    instead of the single shared zero-phase kernel rebuildFIR() produces.
+    //    Also a separate unit of work.
+    static int foldChannelForContext(int channel, int mode, bool linPhaseActive, int numCh)
+    {
+        if (numCh < 2)      return static_cast<int>(ChannelMode::Stereo);
+        if (mode == 2)      return static_cast<int>(ChannelMode::Stereo);
+        if (linPhaseActive) return static_cast<int>(ChannelMode::Stereo);
+        return channel;
+    }
+
+    // One DFII-Transposed biquad step on slot `slot` of the band's state.
+    static inline float biquadTick(BandState& bs, int slot, float x)
+    {
+        const float y  = bs.b0 * x + bs.z1[slot];
+        bs.z1[slot] = bs.b1 * x - bs.a1 * y + bs.z2[slot];
+        bs.z2[slot] = bs.b2 * x - bs.a2 * y;
+        return y;
+    }
+
+    // Run one sample of the whole band cascade over an (L, R) pair, honouring
+    // each band's channel routing.  `hasR` is false for mono input, in which
+    // case every band behaves as Stereo and only L is touched.
+    //
+    // Audio thread; no allocation, no locks, no logging.
+    inline void processCascadeSample(int count, float& L, float& R, bool hasR)
+    {
+        for (int b = 0; b < count; ++b)
+        {
+            auto& bs = bands_[b];
+            if (!bs.enabled || bs.mode == 2) continue;  // Spectral handled by STFT
+
+            switch (static_cast<ChannelMode>(bs.channel))
+            {
+            case ChannelMode::Left:
+                L = biquadTick(bs, kSlotL, L);
+                break;
+
+            case ChannelMode::Right:
+                R = biquadTick(bs, kSlotR, R);
+                break;
+
+            case ChannelMode::Mid:
+            {
+                const float m = 0.5f * (L + R);
+                const float s = 0.5f * (L - R);
+                const float mf = biquadTick(bs, kSlotM, m);
+                L = mf + s;
+                R = mf - s;
+                break;
+            }
+
+            case ChannelMode::Side:
+            {
+                const float m = 0.5f * (L + R);
+                const float s = 0.5f * (L - R);
+                const float sf = biquadTick(bs, kSlotS, s);
+                L = m + sf;
+                R = m - sf;
+                break;
+            }
+
+            case ChannelMode::Stereo:
+            default:
+                L = biquadTick(bs, kSlotL, L);
+                if (hasR) R = biquadTick(bs, kSlotR, R);
+                break;
+            }
+        }
+    }
+
+    // Detector input mix for a routed Dynamic band: x = wL*L + wR*R.
+    // Stereo is handled separately (it sums both channels' detector energy).
+    static void routingDetectorWeights(int channel, float& wL, float& wR, int& slot)
+    {
+        switch (static_cast<ChannelMode>(channel))
+        {
+        case ChannelMode::Left:  wL = 1.0f; wR =  0.0f; slot = kSlotL; break;
+        case ChannelMode::Right: wL = 0.0f; wR =  1.0f; slot = kSlotR; break;
+        case ChannelMode::Mid:   wL = 0.5f; wR =  0.5f; slot = kSlotM; break;
+        case ChannelMode::Side:  wL = 0.5f; wR = -0.5f; slot = kSlotS; break;
+        default:                 wL = 1.0f; wR =  0.0f; slot = kSlotL; break;
+        }
+    }
 
     // ── Sidechain BPF (constant-skirt-gain, peak 0 dB) ──────────────────────
     // Bristow-Johnson "BPF (constant 0 dB peak gain)" form. Independent of
@@ -1294,6 +1515,10 @@ private:
                 auto& bs = bands_[b];
                 if (bs.mode != 2 || !bs.enabled) continue;
                 if (static_cast<int>(bs.specBinEnv.size()) < binsN) continue;
+                // Spectral bands ignore channel routing (folded to Stereo by
+                // foldChannelForContext): the same per-bin envelope is applied
+                // to both channels. M/S spectral would need the STFT itself run
+                // in the M/S domain — out of scope here.
 
                 float bandFreq = bs.freqSmooth.getCurrentValue();
                 float bandQ    = bs.qSmooth.getCurrentValue();
@@ -1451,7 +1676,11 @@ private:
             for (int b = 0; b < count; ++b)
             {
                 if (!bands_[b].enabled) continue;
-                // All bands included as Normal (Dynamic/Spectral folded in)
+                // All bands included as Normal (Dynamic/Spectral folded in).
+                // Channel routing is also folded to Stereo here: one shared
+                // zero-phase kernel is applied to both channels. Per-channel
+                // linear phase would need a 2x2 MIMO FIR matrix — out of scope,
+                // see foldChannelForContext().
                 const double cb0 = bands_[b].b0, cb1 = bands_[b].b1, cb2 = bands_[b].b2;
                 const double ca1 = bands_[b].a1, ca2 = bands_[b].a2;
 
@@ -1655,6 +1884,7 @@ private:
     void copyBandParams(int srcBand, int dstBand)
     {
         static const char* names[] = { "freq", "gain", "q", "type", "enabled",
+            "channel",
             "mode", "dyn_thresh", "dyn_ratio", "dyn_attack", "dyn_release",
             "spec_sens", "spec_depth", "spec_sel",
             "spec_attack", "spec_release" };
@@ -1667,7 +1897,7 @@ private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     {
         std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
-        params.reserve(kMaxBands * 13 + 2);
+        params.reserve(kMaxBands * 16 + 2);
 
         // Skew factors: makes midpoint of slider map to a musically useful value.
         // JUCE formula: value = start + (end-start) * exp(log(proportion)/skew)
@@ -1712,6 +1942,16 @@ private:
                 label + "Enabled",
                 juce::NormalisableRange<float>(0.0f, 1.0f, 1.0f), // step = 1 → boolean
                 1.0f));
+
+            // Per-band channel routing. Default 0 (= Stereo) is what every
+            // pre-routing project save restores to, so old saves keep their
+            // original full-stereo behaviour.
+            params.push_back(std::make_unique<juce::AudioParameterFloat>(
+                juce::ParameterID{ prefix + "channel", 1 },
+                label + "Channel",
+                // 0=Stereo, 1=Left, 2=Right, 3=Mid, 4=Side
+                juce::NormalisableRange<float>(0.0f, 4.0f, 1.0f),
+                0.0f));
 
             // ── Advanced mode params ────────────────────────────────────────
 

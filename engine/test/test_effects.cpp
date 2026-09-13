@@ -3908,9 +3908,11 @@ static void testEQLayout()
 
     CHECK(eq.getBandCount() == 0, "EQ should start with 0 bands");
 
-    // Should have 210 APVTS params (13 per band × 16 + 2 global)
+    // 16 per band × 16 bands + 2 global.  Per band: freq, gain, q, type,
+    // enabled, channel, mode, dyn_{thresh,ratio,attack,release},
+    // spec_{sens,depth,sel,attack,release}.
     const auto& params = eq.getParameters();
-    CHECK(static_cast<int>(params.size()) == 210, "EQ should have 210 APVTS params");
+    CHECK(static_cast<int>(params.size()) == 258, "EQ should have 258 APVTS params");
 }
 
 static void testEQAddRemove()
@@ -4092,6 +4094,306 @@ static void testEQSerialization()
         float restored = rp->convertFrom0to1(rp->getValue());
         CHECK_NEAR(restored, 2000.0f, 50.0f, "restored b0 freq should be ≈ 2000");
     }
+}
+
+// ─── EQ per-band channel routing (Stereo / Left / Right / Mid / Side) ───────
+
+// Drives a 1 kHz sine through a single +12 dB bell band routed to `channel`
+// and returns the settled (L, R) output magnitudes.
+//
+// `lGain`/`rGain` scale the sine fed to each channel so M/S routing can be
+// exercised with genuinely correlated / anti-correlated content.
+static void runEQRoutedBell(int channel, float lGain, float rGain,
+                            float& outL, float& outR)
+{
+    constexpr double kSR = 44100.0;
+    constexpr int    kBS = 1024;
+    const float pi2 = 2.0f * juce::MathConstants<float>::pi;
+
+    XlethParametricEQ eq;
+    eq.prepareToPlay(kSR, kBS);
+
+    int b = eq.addBand();
+    eq.setBandParam(b, "freq",    1000.0f);
+    eq.setBandParam(b, "gain",    12.0f);
+    eq.setBandParam(b, "q",       1.0f);
+    eq.setBandParam(b, "type",    0.0f);   // Bell
+    eq.setBandParam(b, "enabled", 1.0f);
+    eq.setBandParam(b, "channel", static_cast<float>(channel));
+
+    juce::AudioBuffer<float> buf(2, kBS);
+    juce::MidiBuffer midi;
+
+    // Several blocks so the freq/gain/Q smoothers settle.
+    for (int blk = 0; blk < 6; ++blk)
+    {
+        for (int s = 0; s < kBS; ++s)
+        {
+            const float v = std::sin(pi2 * 1000.0f
+                * static_cast<float>(blk * kBS + s) / static_cast<float>(kSR));
+            buf.setSample(0, s, v * lGain);
+            buf.setSample(1, s, v * rGain);
+        }
+        eq.processBlock(buf, midi);
+    }
+
+    outL = buf.getMagnitude(0, 0, kBS);
+    outR = buf.getMagnitude(1, 0, kBS);
+}
+
+static void testEQChannelRoutingDefault()
+{
+    std::cout << "  [EQ routing: default is Stereo]\n";
+    XlethParametricEQ eq;
+    eq.prepareToPlay(44100.0, 512);
+
+    eq.addBand();
+    auto bands = nlohmann::json::parse(eq.getBandsAsJSON());
+    CHECK(bands.is_array() && bands.size() == 1, "getBandsAsJSON should report 1 band");
+    CHECK(bands[0].contains("channel"), "band JSON should expose a channel field");
+    CHECK(bands[0]["channel"].get<int>() == 0, "a new band should default to Stereo (0)");
+
+    // Round-trips through the same generic path the N-API handler uses.
+    CHECK(eq.setBandParam(0, "channel", 4.0f), "setBandParam(\"channel\", 4) should succeed");
+    bands = nlohmann::json::parse(eq.getBandsAsJSON());
+    CHECK(bands[0]["channel"].get<int>() == 4, "channel should read back as Side (4)");
+}
+
+static void testEQChannelRoutingLeftRight()
+{
+    std::cout << "  [EQ routing: Left / Right]\n";
+
+    float refL = 0.0f, refR = 0.0f;
+    runEQRoutedBell(0, 1.0f, 1.0f, refL, refR);   // Stereo baseline
+    CHECK(refL > 1.5f && refR > 1.5f, "Stereo routing should boost both channels");
+    CHECK_NEAR(refL, refR, 0.01f, "Stereo routing should treat L and R identically");
+
+    float l = 0.0f, r = 0.0f;
+    runEQRoutedBell(1, 1.0f, 1.0f, l, r);         // Left
+    CHECK_NEAR(l, refL, 0.02f, "Left routing should boost L exactly like Stereo does");
+    CHECK_NEAR(r, 1.0f, 0.02f, "Left routing must leave R untouched (unity)");
+
+    runEQRoutedBell(2, 1.0f, 1.0f, l, r);         // Right
+    CHECK_NEAR(l, 1.0f, 0.02f, "Right routing must leave L untouched (unity)");
+    CHECK_NEAR(r, refR, 0.02f, "Right routing should boost R exactly like Stereo does");
+}
+
+static void testEQChannelRoutingMidSide()
+{
+    std::cout << "  [EQ routing: Mid / Side]\n";
+
+    float refL = 0.0f, refR = 0.0f;
+    runEQRoutedBell(0, 1.0f, 1.0f, refL, refR);   // Stereo baseline, boost factor
+
+    // Fully correlated content: S == 0, so a Mid band sees the whole signal
+    // (behaves like Stereo) and a Side band has nothing to work on.
+    float l = 0.0f, r = 0.0f;
+    runEQRoutedBell(3, 1.0f, 1.0f, l, r);         // Mid on mono-in-stereo
+    CHECK_NEAR(l, refL, 0.02f, "Mid routing on correlated content should match Stereo (L)");
+    CHECK_NEAR(r, refR, 0.02f, "Mid routing on correlated content should match Stereo (R)");
+
+    runEQRoutedBell(4, 1.0f, 1.0f, l, r);         // Side on mono-in-stereo
+    CHECK_NEAR(l, 1.0f, 0.02f, "Side routing on correlated content must pass L through");
+    CHECK_NEAR(r, 1.0f, 0.02f, "Side routing on correlated content must pass R through");
+
+    // Fully anti-correlated content: M == 0, so the roles swap.
+    runEQRoutedBell(3, 1.0f, -1.0f, l, r);        // Mid on anti-correlated
+    CHECK_NEAR(l, 1.0f, 0.02f, "Mid routing on anti-correlated content must pass L through");
+    CHECK_NEAR(r, 1.0f, 0.02f, "Mid routing on anti-correlated content must pass R through");
+
+    runEQRoutedBell(4, 1.0f, -1.0f, l, r);        // Side on anti-correlated
+    CHECK_NEAR(l, refL, 0.02f, "Side routing on anti-correlated content should boost L");
+    CHECK_NEAR(r, refR, 0.02f, "Side routing on anti-correlated content should boost R");
+}
+
+static void testEQChannelRoutingResponseCurve()
+{
+    std::cout << "  [EQ routing: response curve]\n";
+    constexpr int kN = XlethParametricEQ::kResponseSize;
+
+    auto settledCurve = [](int channel, float* out)
+    {
+        XlethParametricEQ eq;
+        eq.prepareToPlay(44100.0, 512);
+        int b = eq.addBand();
+        eq.setBandParam(b, "freq",    1000.0f);
+        eq.setBandParam(b, "gain",    12.0f);
+        eq.setBandParam(b, "q",       1.0f);
+        eq.setBandParam(b, "type",    0.0f);
+        eq.setBandParam(b, "enabled", 1.0f);
+        eq.setBandParam(b, "channel", static_cast<float>(channel));
+        eq.getResponseCurve(out, kN);
+    };
+
+    float stereo[kN], left[kN], mid[kN], side[kN];
+    settledCurve(0, stereo);
+    settledCurve(1, left);
+    settledCurve(3, mid);
+    settledCurve(4, side);
+
+    // Peak of the Stereo curve is the +12 dB bell itself.
+    float stereoPeak = -300.0f;
+    int   peakIdx = 0;
+    for (int i = 0; i < kN; ++i)
+        if (stereo[i] > stereoPeak) { stereoPeak = stereo[i]; peakIdx = i; }
+    CHECK_NEAR(stereoPeak, 12.0f, 0.5f, "Stereo routing curve should peak at ~+12 dB");
+
+    // Left routing = diag(H, 1), so the dB average of the diagonals is
+    // 0.5*(12 + 0) = 6 dB.
+    CHECK_NEAR(left[peakIdx], 6.0f, 0.3f,
+               "Left routing curve should read the L/R dB mean (+6 dB)");
+
+    // Mid and Side both have 0.5*(H+1) on BOTH diagonals. At the bell centre
+    // H is real ≈ 10^(12/20) = 3.981, so each diagonal is 2.4905
+    // → 20*log10(2.4905) ≈ 7.92 dB, and the average is the same.
+    CHECK_NEAR(mid[peakIdx],  7.92f, 0.3f, "Mid routing curve should read ~+7.9 dB at peak");
+    CHECK_NEAR(side[peakIdx], 7.92f, 0.3f, "Side routing curve should read ~+7.9 dB at peak");
+    CHECK(left[peakIdx] < mid[peakIdx],
+          "Left and Mid routing must produce DIFFERENT curves (2x2 math, not a fudge)");
+
+    // Far from the band, every routing collapses to unity.
+    CHECK_NEAR(left[0], 0.0f, 0.2f, "Left routing curve should be flat at 20 Hz");
+    CHECK_NEAR(mid[0],  0.0f, 0.2f, "Mid routing curve should be flat at 20 Hz");
+    CHECK_NEAR(side[0], 0.0f, 0.2f, "Side routing curve should be flat at 20 Hz");
+}
+
+static void testEQChannelRoutingFoldsForLinPhase()
+{
+    std::cout << "  [EQ routing: linPhase folds to Stereo]\n";
+    constexpr double kSR = 44100.0;
+    constexpr int    kBS = 1024;
+    const float pi2 = 2.0f * juce::MathConstants<float>::pi;
+
+    XlethParametricEQ eq;
+    eq.prepareToPlay(kSR, kBS);
+
+    int b = eq.addBand();
+    eq.setBandParam(b, "freq",    1000.0f);
+    eq.setBandParam(b, "gain",    12.0f);
+    eq.setBandParam(b, "q",       1.0f);
+    eq.setBandParam(b, "type",    0.0f);
+    eq.setBandParam(b, "enabled", 1.0f);
+    eq.setBandParam(b, "channel", 1.0f);   // Left
+    eq.setParameterValue("linphase", 1.0f);
+
+    juce::AudioBuffer<float> buf(2, kBS);
+    juce::MidiBuffer midi;
+    for (int blk = 0; blk < 8; ++blk)
+    {
+        for (int s = 0; s < kBS; ++s)
+        {
+            const float v = std::sin(pi2 * 1000.0f
+                * static_cast<float>(blk * kBS + s) / static_cast<float>(kSR));
+            buf.setSample(0, s, v);
+            buf.setSample(1, s, v);
+        }
+        eq.processBlock(buf, midi);
+    }
+
+    const float l = buf.getMagnitude(0, 0, kBS);
+    const float r = buf.getMagnitude(1, 0, kBS);
+    // Linear phase applies one shared kernel, so routing is ignored and R is
+    // boosted right alongside L (see foldChannelForContext).
+    CHECK(r > 1.3f, "linPhase should boost R too — routing folds to Stereo");
+    CHECK_NEAR(l, r, 0.05f, "linPhase should treat L and R identically despite Left routing");
+
+    // The displayed curve must agree with that fold.
+    float curve[XlethParametricEQ::kResponseSize];
+    eq.getResponseCurve(curve, XlethParametricEQ::kResponseSize);
+    float peak = -300.0f;
+    for (int i = 0; i < XlethParametricEQ::kResponseSize; ++i)
+        peak = std::max(peak, curve[i]);
+    CHECK_NEAR(peak, 12.0f, 0.5f,
+               "under linPhase the curve should show the full +12 dB, not the routed mean");
+}
+
+static void testEQChannelRoutingMonoFoldsToStereo()
+{
+    std::cout << "  [EQ routing: mono folds to Stereo]\n";
+    constexpr double kSR = 44100.0;
+    constexpr int    kBS = 1024;
+    const float pi2 = 2.0f * juce::MathConstants<float>::pi;
+
+    // A Right-routed band on a mono buffer must not silently become a bypass.
+    XlethParametricEQ eq;
+    eq.prepareToPlay(kSR, kBS);
+
+    int b = eq.addBand();
+    eq.setBandParam(b, "freq",    1000.0f);
+    eq.setBandParam(b, "gain",    12.0f);
+    eq.setBandParam(b, "q",       1.0f);
+    eq.setBandParam(b, "type",    0.0f);
+    eq.setBandParam(b, "enabled", 1.0f);
+    eq.setBandParam(b, "channel", 2.0f);   // Right — no such channel here
+
+    juce::AudioBuffer<float> buf(1, kBS);
+    juce::MidiBuffer midi;
+    for (int blk = 0; blk < 6; ++blk)
+    {
+        for (int s = 0; s < kBS; ++s)
+            buf.setSample(0, s, std::sin(pi2 * 1000.0f
+                * static_cast<float>(blk * kBS + s) / static_cast<float>(kSR)));
+        eq.processBlock(buf, midi);
+    }
+
+    CHECK(buf.getMagnitude(0, 0, kBS) > 1.5f,
+          "mono input should fold Right routing to Stereo and still boost");
+}
+
+static void testEQChannelRoutingDynamicDetector()
+{
+    std::cout << "  [EQ routing: dynamic detector follows routing]\n";
+    constexpr double kSR = 44100.0;
+    constexpr int    kBS = 512;
+    const float pi2 = 2.0f * juce::MathConstants<float>::pi;
+
+    // A Right-routed Dynamic band fed loud content on L ONLY must not trigger:
+    // the detector has to listen to R, not to the stereo sum.
+    auto activationFor = [&](int channel, float lGain, float rGain)
+    {
+        XlethParametricEQ eq;
+        eq.prepareToPlay(kSR, kBS);
+        int b = eq.addBand();
+        eq.setBandParam(b, "freq",        1000.0f);
+        eq.setBandParam(b, "gain",        -12.0f);
+        eq.setBandParam(b, "q",           1.0f);
+        eq.setBandParam(b, "type",        0.0f);
+        eq.setBandParam(b, "enabled",     1.0f);
+        eq.setBandParam(b, "mode",        1.0f);   // Dynamic
+        eq.setBandParam(b, "dyn_thresh",  -30.0f);
+        eq.setBandParam(b, "dyn_ratio",   10.0f);
+        eq.setBandParam(b, "dyn_attack",  1.0f);
+        eq.setBandParam(b, "dyn_release", 200.0f);
+        eq.setBandParam(b, "channel",     static_cast<float>(channel));
+
+        juce::AudioBuffer<float> buf(2, kBS);
+        juce::MidiBuffer midi;
+        for (int blk = 0; blk < 40; ++blk)
+        {
+            for (int s = 0; s < kBS; ++s)
+            {
+                const float v = std::sin(pi2 * 1000.0f
+                    * static_cast<float>(blk * kBS + s) / static_cast<float>(kSR));
+                buf.setSample(0, s, v * lGain);
+                buf.setSample(1, s, v * rGain);
+            }
+            eq.processBlock(buf, midi);
+        }
+        // getBandGR() == activation * target gain (-12 dB here).
+        return std::abs(eq.getBandGR(0));
+    };
+
+    const float stereoBoth = activationFor(0, 1.0f, 1.0f);
+    CHECK(stereoBoth > 1.0f, "Stereo dynamic band should trigger on loud stereo content");
+
+    const float rightOnR = activationFor(2, 0.0f, 1.0f);
+    CHECK(rightOnR > 1.0f, "Right-routed dynamic band should trigger on loud R content");
+
+    const float rightOnL = activationFor(2, 1.0f, 0.0f);
+    CHECK(rightOnL < 0.1f,
+          "Right-routed dynamic band must NOT trigger on L-only content");
+    CHECK(rightOnR > rightOnL * 10.0f,
+          "routed detector should discriminate L-only from R-only content");
 }
 
 // ─── Advanced EQ Mode Tests ─────────────────────────────────────────────────
@@ -4382,6 +4684,15 @@ int main()
     testEQResponseCurve();
     testEQBypassBand();
     testEQSerialization();
+
+    std::cout << "\n=== test_eq_channel_routing ===\n";
+    testEQChannelRoutingDefault();
+    testEQChannelRoutingLeftRight();
+    testEQChannelRoutingMidSide();
+    testEQChannelRoutingResponseCurve();
+    testEQChannelRoutingFoldsForLinPhase();
+    testEQChannelRoutingMonoFoldsToStereo();
+    testEQChannelRoutingDynamicDetector();
 
     std::cout << "\n=== test_eq_advanced ===\n";
     testDynamicEQ();
