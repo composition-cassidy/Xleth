@@ -47,7 +47,7 @@ export default function SelectedBandInspector({ band, bandIndex, setBandParam, g
             field={field}
             value={band[field.key] ?? field.def}
             onChange={handleChange}
-            isBipolar={field.key === 'spec_depth'}
+            isBipolar={field.key === 'dyn_range'}
           />
         ))}
         {showGR && grMag > 0.1 && (

@@ -32,7 +32,7 @@ function makeStaticBand(overrides = {}) {
 function makeDynamicBand(overrides = {}) {
   return {
     freq: 1000, gain: -3, q: 1, type: 0, enabled: 1, mode: 1,
-    dyn_thresh: -24, dyn_ratio: 4, dyn_attack: 10, dyn_release: 100,
+    dyn_thresh: -24, dyn_ratio: 4, dyn_attack: 10, dyn_release: 100, dyn_range: 12,
     ...overrides,
   }
 }
@@ -40,7 +40,7 @@ function makeDynamicBand(overrides = {}) {
 function makeSpectralBand(overrides = {}) {
   return {
     freq: 1000, gain: 0, q: 1, type: 0, enabled: 1, mode: 2,
-    spec_sens: 0.5, spec_depth: 0, spec_sel: 5, spec_attack: 10, spec_release: 100,
+    spec_sens: 0.5, spec_sel: 5, spec_attack: 10, spec_release: 100,
     ...overrides,
   }
 }
@@ -107,7 +107,7 @@ describe('EqBandPopup', () => {
     await unmountRoot(root)
   })
 
-  it('dynamic band: extends with the four dyn_* knobs (reusing SelectedBandInspector)', async () => {
+  it('dynamic band: extends with the five dyn_* knobs (reusing SelectedBandInspector)', async () => {
     const EqBandPopup = await loadEqBandPopupFixture()
     const { root } = await renderPopup(EqBandPopup, {
       band: makeDynamicBand(), bandIndex: 0, setBandParam: vi.fn(),
@@ -116,7 +116,7 @@ describe('EqBandPopup', () => {
 
     const extend = document.body.querySelector('.eq-band-popup-extend')
     expect(extend).not.toBeNull()
-    for (const key of ['dyn_thresh', 'dyn_ratio', 'dyn_attack', 'dyn_release']) {
+    for (const key of ['dyn_thresh', 'dyn_ratio', 'dyn_attack', 'dyn_release', 'dyn_range']) {
       expect(extend.querySelector(`[data-key="${key}"]`)).not.toBeNull()
     }
     expect(extend.querySelector('[data-key="spec_sens"]')).toBeNull()
@@ -133,6 +133,8 @@ describe('EqBandPopup', () => {
     const extend = document.body.querySelector('.eq-band-popup-extend')
     expect(extend.querySelector('[data-key="spec_sens"]')).not.toBeNull()
     expect(extend.querySelector('[data-key="dyn_thresh"]')).toBeNull()
+    // Depth is the band's own gain knob, not a spec_* field.
+    expect(extend.querySelector('[data-key="spec_depth"]')).toBeNull()
     await unmountRoot(root)
   })
 

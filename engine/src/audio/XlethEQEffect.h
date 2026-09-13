@@ -46,6 +46,11 @@ public:
     static constexpr int kSTFTSize     = 1 << kSTFTOrder;
     static constexpr int kSTFTHop      = kSTFTSize / 2;   // 50% overlap, 2048 latency
 
+    // Spectral detection soft knee: a bin this far above its local threshold
+    // receives the band's full depth; anything less gets a proportional share,
+    // so mild protrusions are nudged rather than hard-gated.
+    static constexpr float kSpecKneeDb = 6.0f;
+
     // ── Spectrum Analyzer constants ──────────────────────────────────────
     static constexpr int kSpecFFTOrder = 12;              // 2^12 = 4096
     static constexpr int kSpecFFTSize  = 1 << kSpecFFTOrder;
@@ -134,8 +139,8 @@ public:
         setParamDirect(count, "dyn_ratio",   4.0f);
         setParamDirect(count, "dyn_attack",  10.0f);
         setParamDirect(count, "dyn_release", 100.0f);
+        setParamDirect(count, "dyn_range",   12.0f);
         setParamDirect(count, "spec_sens",    0.5f);
-        setParamDirect(count, "spec_depth",   0.0f);
         setParamDirect(count, "spec_sel",     5.0f);
         setParamDirect(count, "spec_attack",  10.0f);
         setParamDirect(count, "spec_release", 100.0f);
@@ -232,14 +237,24 @@ public:
             if (chMode < 0 || chMode >= kNumChannelModes) chMode = 0;
             lc[b].channel = foldChannelForContext(chMode, mode, linPhaseActive, 2);
 
-            // Model B: Dynamic bands are visually "off" (0 dB) when inactive,
-            // and animate toward target gain as activation grows. Snapshot the
-            // activation once per call — audio thread stores atomically.
+            // Dynamic bands: gainDb is the permanent baseline; the curve
+            // animates further from it toward gainDb + dyn_range as activation
+            // grows. Snapshot activation once per call — audio thread stores
+            // it atomically.
             if (mode == 1)
             {
                 const float act = bs.dynActivation.load(std::memory_order_relaxed);
-                gainDb *= act;
+                const float rangeDb = bs.dynRangePtr
+                    ? bs.dynRangePtr->load(std::memory_order_relaxed) : 12.0f;
+                gainDb += act * rangeDb;
             }
+
+            // Spectral bands (mode == 2) are drawn as their plain bell, and
+            // that is now honest: the gain knob IS the band's spectral depth
+            // and the per-bin influence weight is this very bell normalised to
+            // 1 at the centre (see updateSpectralWeights).  So the curve reads
+            // as the band's maximum-depth profile — the shape suppression
+            // follows, reached by bins fully over threshold.
 
             // Compute biquad coefficients (same formulas as computeCoefficients)
             BandState tmp;
@@ -382,8 +397,8 @@ public:
             b["dyn_ratio"]   = readParam(i, "dyn_ratio");
             b["dyn_attack"]  = readParam(i, "dyn_attack");
             b["dyn_release"] = readParam(i, "dyn_release");
+            b["dyn_range"]   = readParam(i, "dyn_range");
             b["spec_sens"]    = readParam(i, "spec_sens");
-            b["spec_depth"]   = readParam(i, "spec_depth");
             b["spec_sel"]     = readParam(i, "spec_sel");
             b["spec_attack"]  = readParam(i, "spec_attack");
             b["spec_release"] = readParam(i, "spec_release");
@@ -490,14 +505,18 @@ public:
             bs.dynRatioPtr   = apvts_.getRawParameterValue(paramId(i, "dyn_ratio"));
             bs.dynAttackPtr  = apvts_.getRawParameterValue(paramId(i, "dyn_attack"));
             bs.dynReleasePtr = apvts_.getRawParameterValue(paramId(i, "dyn_release"));
+            bs.dynRangePtr   = apvts_.getRawParameterValue(paramId(i, "dyn_range"));
             bs.specSensPtr    = apvts_.getRawParameterValue(paramId(i, "spec_sens"));
-            bs.specDepthPtr   = apvts_.getRawParameterValue(paramId(i, "spec_depth"));
             bs.specSelPtr     = apvts_.getRawParameterValue(paramId(i, "spec_sel"));
             bs.specAttackPtr  = apvts_.getRawParameterValue(paramId(i, "spec_attack"));
             bs.specReleasePtr = apvts_.getRawParameterValue(paramId(i, "spec_release"));
 
             // Per-bin spectral envelope buffer (audio-thread read/write; sized once here)
             bs.specBinEnv.assign(kSTFTSize / 2, 1.0f);
+            // Per-bin bell influence weight (rebuilt lazily on the audio thread
+            // by updateSpectralWeights; the -1 freq forces the first rebuild).
+            bs.specBinWeight.assign(kSTFTSize / 2, 0.0f);
+            bs.specWeightFreq = -1.0f;
 
             // Initialise smoothers
             float f = bs.freqPtr ? bs.freqPtr->load(std::memory_order_relaxed) : 1000.0f;
@@ -510,6 +529,11 @@ public:
             bs.gainSmooth.setCurrentAndTargetValue(g);
             bs.qSmooth.reset(sampleRate, 0.030);
             bs.qSmooth.setCurrentAndTargetValue(std::max(q, 1e-6f));
+
+            float range = bs.dynRangePtr ? bs.dynRangePtr->load(std::memory_order_relaxed) : 12.0f;
+            bs.rangeSmooth.reset(sampleRate, 0.020);
+            bs.rangeSmooth.setCurrentAndTargetValue(range);
+
             bs.clearState();
         }
 
@@ -559,6 +583,25 @@ public:
         stftTempIm_.resize(kSTFTSize, 0.0f);
         stftMag_.resize(kSTFTSize / 2, 0.0f);
         stftLogMag_.resize(kSTFTSize / 2, 0.0f);
+
+        // Per-bin trig tables for the spectral bell weight (bin-frequency only)
+        {
+            const int binsN = kSTFTSize / 2;
+            stftBinCosW_.resize(binsN);
+            stftBinSinW_.resize(binsN);
+            stftBinCos2W_.resize(binsN);
+            stftBinSin2W_.resize(binsN);
+            const double twoPi = 2.0 * juce::MathConstants<double>::pi;
+            for (int i = 0; i < binsN; ++i)
+            {
+                const double w = twoPi * static_cast<double>(i)
+                               / static_cast<double>(kSTFTSize);
+                stftBinCosW_[i]  = static_cast<float>(std::cos(w));
+                stftBinSinW_[i]  = static_cast<float>(std::sin(w));
+                stftBinCos2W_[i] = static_cast<float>(std::cos(2.0 * w));
+                stftBinSin2W_[i] = static_cast<float>(std::sin(2.0 * w));
+            }
+        }
 
         // ── Spectrum Analyzer initialisation ────────────────────────────────
         stopAnalysisThread(); // stop any existing thread from previous prepare
@@ -749,9 +792,10 @@ public:
                 float newAct = coeff * activationTarget + (1.0f - coeff) * cur;
                 bs.dynActivation.store(newAct, std::memory_order_relaxed);
 
-                // Meter: signed dB the band is currently contributing.
-                float targetGainDb = bs.gainPtr ? bs.gainPtr->load(std::memory_order_relaxed) : 0.0f;
-                bandGR_[b].store(newAct * targetGainDb, std::memory_order_relaxed);
+                // Meter: signed dB the dynamic swing is currently contributing
+                // on top of the baseline gain (the knob itself, always applied).
+                float rangeDbNow = bs.dynRangePtr ? bs.dynRangePtr->load(std::memory_order_relaxed) : 12.0f;
+                bandGR_[b].store(newAct * rangeDbNow, std::memory_order_relaxed);
 
 #ifdef XLETH_DEBUG
                 bs.dynLogCounter += numSamples;
@@ -783,20 +827,25 @@ public:
             float gainDb  = bs.gainPtr ? bs.gainPtr->load(std::memory_order_relaxed) : 0.0f;
             float q       = bs.qPtr    ? bs.qPtr->load(std::memory_order_relaxed)    : 0.707f;
             int   type    = bs.typePtr ? static_cast<int>(bs.typePtr->load(std::memory_order_relaxed)) : 0;
+            float rangeDb = bs.dynRangePtr ? bs.dynRangePtr->load(std::memory_order_relaxed) : 12.0f;
 
             // Advance smoothers to end-of-block position
             bs.freqSmooth.setTargetValue(std::max(freq, 20.0f));
             bs.gainSmooth.setTargetValue(gainDb);
             bs.qSmooth.setTargetValue(std::max(q, 0.1f));
+            bs.rangeSmooth.setTargetValue(rangeDb);
 
-            float smoothFreq = bs.freqSmooth.skip(numSamples);
-            float smoothGain = bs.gainSmooth.skip(numSamples);
-            float smoothQ    = bs.qSmooth.skip(numSamples);
+            float smoothFreq  = bs.freqSmooth.skip(numSamples);
+            float smoothGain  = bs.gainSmooth.skip(numSamples);
+            float smoothQ     = bs.qSmooth.skip(numSamples);
+            float smoothRange = bs.rangeSmooth.skip(numSamples);
 
-            // Apply Dynamic EQ activation (Model B): band is off at 0 dB
-            // when untriggered, moves toward user target gain as activation → 1.
+            // Apply Dynamic EQ activation: the gain knob is a permanent
+            // baseline, always applied. Range is how far the band swings
+            // further from that baseline as activation grows toward 1 —
+            // positive range boosts further on trigger, negative ducks.
             if (bs.mode == 1)
-                smoothGain = bs.dynActivation.load(std::memory_order_relaxed) * smoothGain;
+                smoothGain = smoothGain + bs.dynActivation.load(std::memory_order_relaxed) * smoothRange;
 
             if (bs.enabled)
                 computeCoefficients(bs, static_cast<BandType>(type),
@@ -823,11 +872,11 @@ public:
             bool hasSpectralBands = false;
             for (int b = 0; b < count; ++b)
             {
-                if (bands_[b].mode == 2 && bands_[b].enabled)
-                {
+                if (bands_[b].mode != 2) continue;
+                if (bands_[b].enabled)
                     hasSpectralBands = true;
-                    break;
-                }
+                else
+                    bandGR_[b].store(0.0f, std::memory_order_relaxed);  // don't strand the meter
             }
             hasSpectralBands_.store(hasSpectralBands, std::memory_order_relaxed);
 
@@ -866,6 +915,9 @@ public:
         else
         {
             hasSpectralBands_.store(false, std::memory_order_relaxed); // linPhase disables spectral
+            for (int b = 0; b < count; ++b)
+                if (bands_[b].mode == 2)
+                    bandGR_[b].store(0.0f, std::memory_order_relaxed);
         }
 
         // ── Processing path ─────────────────────────────────────────────────
@@ -1035,6 +1087,7 @@ private:
         juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> freqSmooth;
         juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>         gainSmooth;
         juce::SmoothedValue<float, juce::ValueSmoothingTypes::Multiplicative> qSmooth;
+        juce::SmoothedValue<float, juce::ValueSmoothingTypes::Linear>         rangeSmooth;
 
         // Current biquad coefficients (normalised: a0 = 1)
         float b0 = 1.0f, b1 = 0.0f, b2 = 0.0f;
@@ -1060,6 +1113,7 @@ private:
         std::atomic<float>* dynRatioPtr   = nullptr;
         std::atomic<float>* dynAttackPtr  = nullptr;
         std::atomic<float>* dynReleasePtr = nullptr;
+        std::atomic<float>* dynRangePtr   = nullptr;
 
         // Dedicated sidechain BPF coefficients (constant-skirt, peak 0 dB).
         // Recomputed once per block from smoothed freq/Q; independent of band gain.
@@ -1078,16 +1132,26 @@ private:
 #endif
 
         // ── Spectral Dynamics APVTS pointers ────────────────────────────────
+        // Spectral depth is NOT its own parameter: the band's gain knob is the
+        // signed depth in dB (see processSTFTFrame).
         std::atomic<float>* specSensPtr    = nullptr;
-        std::atomic<float>* specDepthPtr   = nullptr;
         std::atomic<float>* specSelPtr     = nullptr;
         std::atomic<float>* specAttackPtr  = nullptr;
         std::atomic<float>* specReleasePtr = nullptr;
 
         // Per-bin spectral reduction envelope, smoothed across STFT frames.
-        // Value in [0, 1+]: 1 = no change, <1 = attenuation toward depthLin,
-        // >1 = boost (upward spectral). Sized kSTFTSize/2 in prepareEffect.
+        // Value in [0, 1+]: 1 = no change, <1 = attenuation, >1 = boost
+        // (upward spectral). Sized kSTFTSize/2 in prepareEffect.
         std::vector<float> specBinEnv;
+
+        // Per-bin bell influence weight in [0, 1]: 1 at the band centre,
+        // falling off with the band's own Q so the suppression profile has the
+        // shape getResponseCurve draws. Sized kSTFTSize/2 in prepareEffect,
+        // rebuilt only when the cached freq/Q/|depth| below move materially.
+        std::vector<float> specBinWeight;
+        float specWeightFreq  = -1.0f;   // < 0 = never built
+        float specWeightQ     = 0.0f;
+        float specWeightDepth = 0.0f;
 
         void clearState()
         {
@@ -1098,6 +1162,7 @@ private:
             }
             dynActivation.store(0.0f, std::memory_order_relaxed);
             std::fill(specBinEnv.begin(), specBinEnv.end(), 1.0f);
+            specWeightFreq = -1.0f;   // force a weight rebuild
         }
     };
 
@@ -1173,6 +1238,14 @@ private:
     std::vector<float> stftTempIm_;
     std::vector<float> stftMag_;      // per-bin magnitude (positive freqs, size kSTFTSize/2)
     std::vector<float> stftLogMag_;   // per-bin log magnitude for local-env rolling sum
+
+    // Per-bin e^-jw / e^-j2w tables. Bin frequencies are fixed (w = 2*pi*i/N),
+    // so updateSpectralWeights can evaluate a biquad's |H| per bin without
+    // running any trig on the audio thread. Sized kSTFTSize/2 in prepareEffect.
+    std::vector<float> stftBinCosW_;
+    std::vector<float> stftBinSinW_;
+    std::vector<float> stftBinCos2W_;
+    std::vector<float> stftBinSin2W_;
 
     // ── Channel routing helpers ─────────────────────────────────────────────
 
@@ -1465,6 +1538,81 @@ private:
         }
     }
 
+    // ── Spectral bell influence weight (audio thread, cached) ──────────────
+
+    // Rebuild a spectral band's per-bin influence weight: the RBJ bell the
+    // band would have at |depthDb| dB with its own Q, evaluated at every STFT
+    // bin and normalised to 1.0 at the peak (the band centre).  This replaces
+    // the old rectangular freq ± freq/Q gate, so the Q knob now shapes the
+    // suppression profile exactly the way getResponseCurve draws it.
+    //
+    // The shape is always a Bell regardless of the band's type: Spectral mode
+    // exists to tame resonances, and a LowPass/HighPass has no gain peak to
+    // normalise against.
+    //
+    // Cached on smoothed freq/Q/|depth|, so a parked band costs nothing per
+    // frame and a knob sweep costs one pass of pure arithmetic (bin trig is
+    // precomputed in prepareEffect).
+    void updateSpectralWeights(BandState& bs, float freq, float q,
+                               float depthDb, double sr)
+    {
+        const int   binsN    = kSTFTSize / 2;
+        const float absDepth = std::abs(depthDb);
+
+        // Clamp before comparing, or a sub-20 Hz smoother ramp would never
+        // match the clamped cache and would rebuild on every frame.
+        const float useFreq = std::max(freq, 20.0f);
+        const float useQ    = std::max(q, 0.1f);
+
+        const bool fresh = (bs.specWeightFreq < 0.0f);
+        if (!fresh
+            && std::abs(useFreq - bs.specWeightFreq) <= bs.specWeightFreq * 0.001f
+            && std::abs(useQ - bs.specWeightQ) <= 0.001f
+            && std::abs(absDepth - bs.specWeightDepth) <= 0.01f)
+            return;
+
+        bs.specWeightFreq  = useFreq;
+        bs.specWeightQ     = useQ;
+        bs.specWeightDepth = absDepth;
+
+        // An RBJ bell's dB profile depends only weakly on its gain, but
+        // normalising by a near-zero peak is unstable — so the shape is always
+        // computed at >= 1 dB.  At depth 0 every bin's target is 0 dB anyway,
+        // which makes the shape irrelevant there.
+        const float shapeDb = std::max(absDepth, 1.0f);
+
+        // Allocation-free: every vector inside a default-constructed BandState
+        // is empty, and computeCoefficients only writes the scalar coeffs.
+        BandState tmp;
+        computeCoefficients(tmp, BandType::Bell, bs.specWeightFreq, shapeDb,
+                            bs.specWeightQ, sr);
+
+        float peakDb = -1.0e9f;
+        for (int i = 0; i < binsN; ++i)
+        {
+            const float cw = stftBinCosW_[i],  sw = stftBinSinW_[i];
+            const float c2 = stftBinCos2W_[i], s2 = stftBinSin2W_[i];
+
+            // H(e^jw) = (b0 + b1 e^-jw + b2 e^-j2w) / (1 + a1 e^-jw + a2 e^-j2w)
+            const float nRe = tmp.b0 + tmp.b1 * cw + tmp.b2 * c2;
+            const float nIm =        - tmp.b1 * sw - tmp.b2 * s2;
+            const float dRe = 1.0f   + tmp.a1 * cw + tmp.a2 * c2;
+            const float dIm =        - tmp.a1 * sw - tmp.a2 * s2;
+
+            const float dMagSq = dRe * dRe + dIm * dIm;
+            const float magSq  = (dMagSq > 1e-30f)
+                ? (nRe * nRe + nIm * nIm) / dMagSq : 1.0f;
+
+            const float magDb = 10.0f * std::log10(std::max(magSq, 1e-30f));
+            bs.specBinWeight[i] = magDb;
+            if (magDb > peakDb) peakDb = magDb;
+        }
+
+        const float invPeak = (peakDb > 1.0e-3f) ? (1.0f / peakDb) : 0.0f;
+        for (int i = 0; i < binsN; ++i)
+            bs.specBinWeight[i] = std::max(0.0f, bs.specBinWeight[i] * invPeak);
+    }
+
     // ── STFT frame processing (Spectral Dynamics) ───────────────────────────
 
     void processSTFTFrame(int numCh, double sr)
@@ -1515,6 +1663,7 @@ private:
                 auto& bs = bands_[b];
                 if (bs.mode != 2 || !bs.enabled) continue;
                 if (static_cast<int>(bs.specBinEnv.size()) < binsN) continue;
+                if (static_cast<int>(bs.specBinWeight.size()) < binsN) continue;
                 // Spectral bands ignore channel routing (folded to Stereo by
                 // foldChannelForContext): the same per-bin envelope is applied
                 // to both channels. M/S spectral would need the STFT itself run
@@ -1522,25 +1671,30 @@ private:
 
                 float bandFreq = bs.freqSmooth.getCurrentValue();
                 float bandQ    = bs.qSmooth.getCurrentValue();
+
+                // The band's GAIN knob IS the spectral depth, signed in dB:
+                // negative suppresses detected resonances, positive boosts
+                // them, 0 leaves the band inert.  Spectral bands skip the
+                // biquad cascade entirely (see its `mode == 2` skip), so the
+                // gain knob has no other meaning in this mode — hence no
+                // separate spec_depth parameter.
+                float depthDb = bs.gainSmooth.getCurrentValue();
                 float sens  = bs.specSensPtr    ? bs.specSensPtr->load(std::memory_order_relaxed)    : 0.5f;
-                float depth = bs.specDepthPtr   ? bs.specDepthPtr->load(std::memory_order_relaxed)   : 0.0f;
                 float sel   = bs.specSelPtr     ? bs.specSelPtr->load(std::memory_order_relaxed)     : 5.0f;
                 float atkMs = bs.specAttackPtr  ? bs.specAttackPtr->load(std::memory_order_relaxed)  : 10.0f;
                 float relMs = bs.specReleasePtr ? bs.specReleasePtr->load(std::memory_order_relaxed) : 100.0f;
 
-                const float depthLin = std::pow(10.0f, depth / 20.0f);
                 const float attackCoeff  = 1.0f - std::exp(-framePeriodSec / (atkMs * 0.001f));
                 const float releaseCoeff = 1.0f - std::exp(-framePeriodSec / (relMs * 0.001f));
-
-                // Influence zone: freq ± (freq / Q)
-                const float bwHz   = bandFreq / std::max(bandQ, 0.1f);
-                const float loFreq = std::max(bandFreq - bwHz, 0.0f);
-                const float hiFreq = bandFreq + bwHz;
-                const float binHz  = static_cast<float>(sr) / static_cast<float>(kSTFTSize);
 
                 // Envelope update only on ch=0 to preserve per-frame semantics.
                 if (ch == 0)
                 {
+                    // Influence zone: the band's own bell, per bin, normalised
+                    // to 1 at the centre.  Cached, so this only does real work
+                    // when the smoothed freq/Q/depth have moved materially.
+                    updateSpectralWeights(bs, bandFreq, bandQ, depthDb, sr);
+
                     // Local envelope: arithmetic mean of logMag in ±half octave
                     // around each bin [i/sqrt(2), i*sqrt(2)]. Rolling sum = O(N).
                     const float loFactor = 0.70710678f; // 1 / sqrt(2)
@@ -1573,19 +1727,30 @@ private:
                             ++runLo;
                         }
 
-                        const float binFreq = static_cast<float>(i) * binHz;
-                        const bool  inZone  = (binFreq >= loFreq && binFreq <= hiFreq);
+                        const float w = bs.specBinWeight[i];
 
                         float target = 1.0f;
-                        if (inZone && runCnt > 0)
+                        if (w > 1.0e-4f && runCnt > 0)
                         {
                             const float localLog = runSum / static_cast<float>(runCnt);
                             const float localEnv = std::exp(localLog);
                             const float thresh   = localEnv * (1.0f + sens * sel);
-                            if (stftMag_[i] > thresh)
-                                target = depthLin;
+                            if (thresh > 1.0e-20f && stftMag_[i] > thresh)
+                            {
+                                // Proportional detection: how far this bin
+                                // protrudes above its local threshold, through
+                                // a kSpecKneeDb soft knee.  A bin 1 dB over
+                                // gets a sixth of the knob, one 6 dB or more
+                                // over gets all of it — no hard gate.
+                                const float overDb =
+                                    20.0f * std::log10(stftMag_[i] / thresh);
+                                const float knee = std::min(
+                                    overDb * (1.0f / kSpecKneeDb), 1.0f);
+                                const float targetDb = depthDb * w * knee;
+                                target = std::pow(10.0f, targetDb * 0.05f);
+                            }
                         }
-                        // Outside zone: relax toward 1.0 via releaseCoeff (set target=1).
+                        // Outside the bell / below threshold: relax toward 1.0.
 
                         const float cur = bs.specBinEnv[i];
                         // Attack = envelope moving toward a stronger reduction
@@ -1605,6 +1770,11 @@ private:
                         }
                     }
 
+                    // Signed per-band GR for the UI's eqGetBandGR poll (negative
+                    // = suppression, positive = upward boost).  Computed in the
+                    // loop above unconditionally — it is only a compare.
+                    bandGR_[b].store(maxReductionDb, std::memory_order_relaxed);
+
 #ifdef XLETH_DEBUG
                     bs.specLogCounter += kSTFTHop;
                     if (bs.specLogCounter >= static_cast<int>(sr))
@@ -1615,17 +1785,13 @@ private:
                     }
 #else
                     (void)activeBins;
-                    (void)maxReductionDb;
 #endif
                 }
 
-                // Apply the smoothed per-bin envelope to this channel's spectrum.
-                // Only bins within the influence zone are touched.
-                const int loBinZ = std::max(1,
-                    static_cast<int>(std::floor(loFreq / binHz)));
-                const int hiBinZ = std::min(binsN - 1,
-                    static_cast<int>(std::ceil(hiFreq / binHz)));
-                for (int i = loBinZ; i <= hiBinZ; ++i)
+                // Apply the smoothed per-bin envelope to this channel's
+                // spectrum.  The bell weight has no hard edge, so every bin is
+                // swept; untouched bins sit at exactly 1.0 and stay bit-exact.
+                for (int i = 1; i < binsN; ++i)
                 {
                     const float g = bs.specBinEnv[i];
                     stftTempRe_[i] *= g;
@@ -1885,8 +2051,8 @@ private:
     {
         static const char* names[] = { "freq", "gain", "q", "type", "enabled",
             "channel",
-            "mode", "dyn_thresh", "dyn_ratio", "dyn_attack", "dyn_release",
-            "spec_sens", "spec_depth", "spec_sel",
+            "mode", "dyn_thresh", "dyn_ratio", "dyn_attack", "dyn_release", "dyn_range",
+            "spec_sens", "spec_sel",
             "spec_attack", "spec_release" };
         for (const char* n : names)
             setParamDirect(dstBand, n, readParam(srcBand, n));
@@ -1988,19 +2154,24 @@ private:
                 100.0f,
                 juce::AudioParameterFloatAttributes().withLabel("ms")));
 
+            // Signed: how far the band swings from its baseline gain (above)
+            // as activation grows toward 1. Positive boosts further on
+            // trigger, negative ducks — independent of the baseline's sign.
+            params.push_back(std::make_unique<juce::AudioParameterFloat>(
+                juce::ParameterID{ prefix + "dyn_range", 1 },
+                label + "Dyn Range",
+                juce::NormalisableRange<float>(-30.0f, 30.0f),
+                12.0f,
+                juce::AudioParameterFloatAttributes().withLabel("dB")));
+
             params.push_back(std::make_unique<juce::AudioParameterFloat>(
                 juce::ParameterID{ prefix + "spec_sens", 1 },
                 label + "Spec Sens",
                 juce::NormalisableRange<float>(0.0f, 1.0f),
                 0.5f));
 
-            params.push_back(std::make_unique<juce::AudioParameterFloat>(
-                juce::ParameterID{ prefix + "spec_depth", 1 },
-                label + "Spec Depth",
-                juce::NormalisableRange<float>(-30.0f, 30.0f),
-                0.0f,
-                juce::AudioParameterFloatAttributes().withLabel("dB")));
-
+            // No spec_depth: a Spectral band's depth is its own gain knob
+            // (signed, +-30 dB, see processSTFTFrame).
             params.push_back(std::make_unique<juce::AudioParameterFloat>(
                 juce::ParameterID{ prefix + "spec_sel", 1 },
                 label + "Spec Sel",

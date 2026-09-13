@@ -14,11 +14,11 @@ export const DYN_FIELDS = [
   { key: 'dyn_ratio',   label: 'Ratio', min: 1,   max: 20,   step: 0.1,  def: 4,    decimals: 1 },
   { key: 'dyn_attack',  label: 'Atk',   min: 0.1, max: 100,  step: 0.1,  def: 10,   decimals: 1 },
   { key: 'dyn_release', label: 'Rel',   min: 1,   max: 1000, step: 1,    def: 100,  decimals: 0 },
+  { key: 'dyn_range',   label: 'Range', min: -30, max: 30,   step: 0.1,  def: 12,   decimals: 1 },
 ]
 
 export const SPEC_FIELDS = [
   { key: 'spec_sens',    label: 'Sens',  min: 0,   max: 1,    step: 0.01, def: 0.5,  decimals: 2 },
-  { key: 'spec_depth',   label: 'Dep',   min: -30, max: 30,   step: 0.1,  def: 0,    decimals: 1 },
   { key: 'spec_sel',     label: 'Sel',   min: 1,   max: 20,   step: 0.1,  def: 5,    decimals: 1 },
   { key: 'spec_attack',  label: 'Atk',   min: 0.1, max: 100,  step: 0.1,  def: 10,   decimals: 1 },
   { key: 'spec_release', label: 'Rel',   min: 1,   max: 1000, step: 1,    def: 100,  decimals: 0 },
@@ -34,6 +34,9 @@ export function getInspectorFields(mode) {
   return []
 }
 
+// Both Dynamic and Spectral bands write signed gain reduction into the
+// engine's per-band GR meter (eqGetBandGR): Dynamic from its activation,
+// Spectral from the strongest per-bin envelope in the STFT frame.
 export function inspectorHasGR(mode) {
-  return mode === 1
+  return mode === 1 || mode === 2
 }

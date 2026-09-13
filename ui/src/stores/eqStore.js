@@ -27,7 +27,8 @@ const useEqStore = create((set, get) => ({
   // { trackId, nodeId, storeKey } or null
   target: null,
 
-  // [{ index, freq, gain, q, type, enabled, mode, dyn_thresh, dyn_ratio, dyn_attack, dyn_release, spec_sens, spec_depth, spec_sel }, ...]
+  // [{ index, freq, gain, q, type, enabled, mode, dyn_thresh, dyn_ratio, dyn_attack, dyn_release, dyn_range, spec_sens, spec_sel }, ...]
+  // Spectral bands have no spec_depth: `gain` is their signed depth.
   bands: [],
 
   // Global mode state
@@ -242,11 +243,11 @@ const useEqStore = create((set, get) => ({
         ['dyn_ratio', band.dyn_ratio ?? 4],
         ['dyn_attack', band.dyn_attack ?? 10],
         ['dyn_release', band.dyn_release ?? 100],
+        ['dyn_range', band.dyn_range ?? 12],
       ]) await get().setBandParam(newIdx, p, v)
     } else if (band.mode === 2) {
       const specParams = [
         ['spec_sens', band.spec_sens ?? 0.5],
-        ['spec_depth', band.spec_depth ?? 0],
         ['spec_sel', band.spec_sel ?? 5],
       ]
       if (band.spec_attack != null) specParams.push(['spec_attack', band.spec_attack])

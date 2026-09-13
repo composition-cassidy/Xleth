@@ -115,7 +115,8 @@ static void configureSpectralBand(XlethParametricEQ& eq)
     CHECK(eq.setBandParam(0, "type", 0.0f), "spectral EQ type should be settable");
     CHECK(eq.setBandParam(0, "enabled", 1.0f), "spectral EQ band should be enabled");
     CHECK(eq.setBandParam(0, "mode", 2.0f), "spectral EQ mode should be Spectral");
-    CHECK(eq.setBandParam(0, "spec_depth", 0.0f), "spectral EQ depth should be settable");
+    // Spectral depth is the band's own gain knob (set above) — no spec_depth.
+    CHECK(eq.setBandParam(0, "spec_sens", 0.5f), "spectral EQ sensitivity should be settable");
 }
 
 static void processEqDiagnosticBlock(XlethParametricEQ& eq,

@@ -8,10 +8,16 @@ const UNIT_BY_KEY = {
   dyn_thresh: 'dB',
   dyn_attack: 'ms',
   dyn_release: 'ms',
-  spec_depth: 'dB',
+  dyn_range: 'dB',
   spec_attack: 'ms',
   spec_release: 'ms',
 }
+
+// Signed fields show an explicit '+' on positive values: dyn_range is a
+// bipolar boost-further-or-duck control where the sign is the whole point,
+// unlike dyn_thresh (always negative) or the ms fields.  A Spectral band's
+// signed depth is its own gain knob, which lives outside these field sets.
+const SIGNED_KEYS = new Set(['dyn_range'])
 
 function decimalsForStep(step) {
   const text = String(step)
@@ -36,7 +42,7 @@ export function formatInspectorValue(field, value) {
   const unit = UNIT_BY_KEY[field.key]
   const decimals = field.decimals ?? 0
   const text = v.toFixed(decimals)
-  const signed = field.key === 'spec_depth' && v > 0 ? `+${text}` : text
+  const signed = SIGNED_KEYS.has(field.key) && v > 0 ? `+${text}` : text
   return unit ? `${signed} ${unit}` : signed
 }
 

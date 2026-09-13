@@ -18,7 +18,7 @@ function makeStaticBand(overrides = {}) {
 function makeDynamicBand(overrides = {}) {
   return {
     freq: 1000, gain: -3, q: 1, type: 0, enabled: 1, mode: 1,
-    dyn_thresh: -24, dyn_ratio: 4, dyn_attack: 10, dyn_release: 100,
+    dyn_thresh: -24, dyn_ratio: 4, dyn_attack: 10, dyn_release: 100, dyn_range: 12,
     ...overrides,
   }
 }
@@ -26,7 +26,7 @@ function makeDynamicBand(overrides = {}) {
 function makeSpectralBand(overrides = {}) {
   return {
     freq: 1000, gain: 0, q: 1, type: 0, enabled: 1, mode: 2,
-    spec_sens: 0.5, spec_depth: 0, spec_sel: 5, spec_attack: 10, spec_release: 100,
+    spec_sens: 0.5, spec_sel: 5, spec_attack: 10, spec_release: 100,
     ...overrides,
   }
 }
@@ -95,7 +95,7 @@ describe('SelectedBandInspector — dynamic mode', () => {
     expect(html).toContain('Band 2')
   })
 
-  it('renders all four dynamic param knobs with correct data-key attributes', () => {
+  it('renders all five dynamic param knobs with correct data-key attributes', () => {
     const html = render(
       <SelectedBandInspector band={makeDynamicBand()} bandIndex={0} setBandParam={noop} grValue={null} />
     )
@@ -105,6 +105,7 @@ describe('SelectedBandInspector — dynamic mode', () => {
     expect(html).toContain('data-key="dyn_ratio"')
     expect(html).toContain('data-key="dyn_attack"')
     expect(html).toContain('data-key="dyn_release"')
+    expect(html).toContain('data-key="dyn_range"')
   })
 
   it('does NOT render spectral param inputs', () => {
@@ -133,6 +134,31 @@ describe('SelectedBandInspector — dynamic mode', () => {
       />
     )
     expect(html).toContain('-30 dB')
+  })
+
+  it('renders dyn_range as a bipolar knob with signed readout', () => {
+    const html = render(
+      <SelectedBandInspector
+        band={makeDynamicBand({ dyn_range: -18.5 })}
+        bandIndex={0}
+        setBandParam={noop}
+        grValue={null}
+      />
+    )
+    expect(html).toContain('eq-inspector-knob--bipolar')
+    expect(html).toContain('-18.5 dB')
+  })
+
+  it('shows a "+" prefix on a positive dyn_range value', () => {
+    const html = render(
+      <SelectedBandInspector
+        band={makeDynamicBand({ dyn_range: 12 })}
+        bandIndex={0}
+        setBandParam={noop}
+        grValue={null}
+      />
+    )
+    expect(html).toContain('+12.0 dB')
   })
 
   it('does NOT render old inline numeric dynamic fields', () => {
@@ -177,14 +203,13 @@ describe('SelectedBandInspector — spectral mode', () => {
     expect(html).toContain('Band 3')
   })
 
-  it('renders all five spectral param knobs with correct data-key attributes', () => {
+  it('renders all four spectral param knobs with correct data-key attributes', () => {
     const html = render(
       <SelectedBandInspector band={makeSpectralBand()} bandIndex={0} setBandParam={noop} grValue={null} />
     )
     expect(html).toContain('eq-inspector-knob-grid')
     expect(html).toContain('data-control="knob"')
     expect(html).toContain('data-key="spec_sens"')
-    expect(html).toContain('data-key="spec_depth"')
     expect(html).toContain('data-key="spec_sel"')
     expect(html).toContain('data-key="spec_attack"')
     expect(html).toContain('data-key="spec_release"')
@@ -206,24 +231,19 @@ describe('SelectedBandInspector — spectral mode', () => {
     expect(html).toContain('inspector--spectral')
   })
 
-  it('does NOT show a GR meter even with a non-zero grValue', () => {
+  it('shows a GR meter for a non-zero grValue (spectral bands report per-bin GR)', () => {
     const html = render(
       <SelectedBandInspector band={makeSpectralBand()} bandIndex={0} setBandParam={noop} grValue={-2} />
     )
-    expect(html).not.toContain('eq-gr-bar')
+    expect(html).toContain('eq-gr-bar')
+    expect(html).toContain('-2.0 dB')
   })
 
-  it('renders spectral depth as a bipolar knob with signed readout', () => {
+  it('renders no depth knob — the band gain knob is the spectral depth', () => {
     const html = render(
-      <SelectedBandInspector
-        band={makeSpectralBand({ spec_depth: -12.5 })}
-        bandIndex={0}
-        setBandParam={noop}
-        grValue={null}
-      />
+      <SelectedBandInspector band={makeSpectralBand()} bandIndex={0} setBandParam={noop} grValue={null} />
     )
-    expect(html).toContain('eq-inspector-knob--bipolar')
-    expect(html).toContain('-12.5 dB')
+    expect(html).not.toContain('data-key="spec_depth"')
   })
 })
 
@@ -239,15 +259,6 @@ describe('SelectedBandInspector — setBandParam key contract', () => {
     expect(spy).toHaveBeenCalledWith(3, 'dyn_thresh', -37)
   })
 
-  it('spectral depth knob calls setBandParam(bandIndex, spec_depth, negativeValue)', () => {
-    const spy = vi.fn()
-    const bandIndex = 1
-    const field = SPEC_FIELDS.find(f => f.key === 'spec_depth')
-    const props = buildInspectorKnobProps(field, 0, (key, value) => spy(bandIndex, key, value))
-    props.onLiveChange(-8.4)
-    expect(spy).toHaveBeenCalledWith(1, 'spec_depth', -8.4)
-  })
-
   it('ratio, attack, and release knobs call the correct dynamic param ids', () => {
     const spy = vi.fn()
     for (const key of ['dyn_ratio', 'dyn_attack', 'dyn_release']) {
@@ -260,7 +271,16 @@ describe('SelectedBandInspector — setBandParam key contract', () => {
     expect(spy).toHaveBeenCalledWith('dyn_release', 101)
   })
 
-  it('spectral knobs call the correct non-depth param ids', () => {
+  it('dynamic range knob calls setBandParam(bandIndex, dyn_range, signedValue)', () => {
+    const spy = vi.fn()
+    const bandIndex = 2
+    const field = DYN_FIELDS.find(f => f.key === 'dyn_range')
+    const props = buildInspectorKnobProps(field, 12, (key, value) => spy(bandIndex, key, value))
+    props.onLiveChange(-18)
+    expect(spy).toHaveBeenCalledWith(2, 'dyn_range', -18)
+  })
+
+  it('spectral knobs call the correct param ids', () => {
     const spy = vi.fn()
     for (const key of ['spec_sens', 'spec_sel', 'spec_attack', 'spec_release']) {
       const field = SPEC_FIELDS.find(f => f.key === key)
@@ -275,13 +295,13 @@ describe('SelectedBandInspector — setBandParam key contract', () => {
 
   it('DYN_FIELDS keys match expected engine param names', () => {
     expect(DYN_FIELDS.map(f => f.key)).toEqual([
-      'dyn_thresh', 'dyn_ratio', 'dyn_attack', 'dyn_release',
+      'dyn_thresh', 'dyn_ratio', 'dyn_attack', 'dyn_release', 'dyn_range',
     ])
   })
 
   it('SPEC_FIELDS keys match expected engine param names', () => {
     expect(SPEC_FIELDS.map(f => f.key)).toEqual([
-      'spec_sens', 'spec_depth', 'spec_sel', 'spec_attack', 'spec_release',
+      'spec_sens', 'spec_sel', 'spec_attack', 'spec_release',
     ])
   })
 })

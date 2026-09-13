@@ -3909,8 +3909,9 @@ static void testEQLayout()
     CHECK(eq.getBandCount() == 0, "EQ should start with 0 bands");
 
     // 16 per band × 16 bands + 2 global.  Per band: freq, gain, q, type,
-    // enabled, channel, mode, dyn_{thresh,ratio,attack,release},
-    // spec_{sens,depth,sel,attack,release}.
+    // enabled, channel, mode, dyn_{thresh,ratio,attack,release,range},
+    // spec_{sens,sel,attack,release}.  Spectral depth is the band's own gain
+    // knob, so there is no spec_depth parameter.
     const auto& params = eq.getParameters();
     CHECK(static_cast<int>(params.size()) == 258, "EQ should have 258 APVTS params");
 }
@@ -4379,7 +4380,7 @@ static void testEQChannelRoutingDynamicDetector()
             }
             eq.processBlock(buf, midi);
         }
-        // getBandGR() == activation * target gain (-12 dB here).
+        // getBandGR() == activation * dyn_range (default +12 dB, unset here).
         return std::abs(eq.getBandGR(0));
     };
 
@@ -4409,7 +4410,7 @@ static void testDynamicEQ()
 
     int b = eq.addBand();
     eq.setBandParam(b, "freq",    1000.0f);
-    eq.setBandParam(b, "gain",    12.0f);   // +12 dB boost
+    eq.setBandParam(b, "gain",    0.0f);    // baseline: flat until triggered
     eq.setBandParam(b, "q",       1.0f);
     eq.setBandParam(b, "type",    0.0f);    // Bell
     eq.setBandParam(b, "enabled", 1.0f);
@@ -4418,6 +4419,7 @@ static void testDynamicEQ()
     eq.setBandParam(b, "dyn_ratio",  4.0f);
     eq.setBandParam(b, "dyn_attack", 10.0f);
     eq.setBandParam(b, "dyn_release", 100.0f);
+    eq.setBandParam(b, "dyn_range", -18.0f); // duck up to 18 dB when triggered
 
     // Feed 1 kHz sine at ~-10 dBFS (10 dB above threshold)
     const float pi2 = 2.0f * juce::MathConstants<float>::pi;
@@ -4468,27 +4470,125 @@ static void testSpectralDynamics()
 
     int b = eq.addBand();
     eq.setBandParam(b, "freq",    1000.0f);
-    eq.setBandParam(b, "gain",    0.0f);
+    // In Spectral mode the GAIN knob IS the signed depth — there is no
+    // spec_depth parameter.  -20 dB = suppress detected resonances by 20 dB.
+    eq.setBandParam(b, "gain",    -20.0f);
     eq.setBandParam(b, "q",       1.0f);
     eq.setBandParam(b, "type",    0.0f);
     eq.setBandParam(b, "enabled", 1.0f);
     eq.setBandParam(b, "mode",       2.0f);   // Spectral
-    eq.setBandParam(b, "spec_sens",  0.5f);
-    eq.setBandParam(b, "spec_depth", -20.0f); // -20 dB attenuation
+    eq.setBandParam(b, "spec_sens",  1.0f);   // most sensitive
     eq.setBandParam(b, "spec_sel",   5.0f);
 
-    // Process a few blocks to trigger STFT and latency update
+    // A loud 1 kHz sine on a very low noise floor is exactly the "resonance"
+    // this mode targets: it sits far above its own half-octave local envelope,
+    // so it should be pushed down by close to the full 20 dB.
+    //
+    // Phase has to run continuously across blocks — a per-block phase reset
+    // would smear broadband clicks across the spectrum.
+    const float pi2  = 2.0f * juce::MathConstants<float>::pi;
+    const float amp  = 0.5f;                 // ~-6 dBFS
+    const float step = pi2 * 1000.0f / static_cast<float>(kSR);
+    float phase = 0.0f;
+    std::uint32_t rng = 0x13572468u;         // deterministic dither/noise floor
+
     juce::AudioBuffer<float> buf(2, kBS);
     juce::MidiBuffer midi;
-    for (int i = 0; i < 10; ++i)
+
+    // Latency is 2048 samples and the per-bin envelope needs a handful of STFT
+    // frames (one frame = kSTFTHop = 2048 samples = 4 blocks) to settle.
+    constexpr int kWarmBlocks    = 40;   // ~20 frames
+    constexpr int kMeasureBlocks = 20;
+    double inSumSq = 0.0, outSumSq = 0.0;
+    int    measured = 0;
+
+    for (int i = 0; i < kWarmBlocks + kMeasureBlocks; ++i)
     {
-        fillBuffer(buf, 0.1f);
+        double blockIn = 0.0;
+        for (int s = 0; s < kBS; ++s)
+        {
+            rng = rng * 1664525u + 1013904223u;
+            const float noise = (static_cast<float>(rng >> 8) / 8388608.0f - 1.0f)
+                              * 0.0003f;     // ~-70 dBFS floor
+            const float v = amp * std::sin(phase) + noise;
+            phase += step;
+            if (phase > pi2) phase -= pi2;
+            buf.setSample(0, s, v);
+            buf.setSample(1, s, v);
+            blockIn += static_cast<double>(v) * v;
+        }
+
         eq.processBlock(buf, midi);
+
+        if (i >= kWarmBlocks)
+        {
+            double blockOut = 0.0;
+            const float* p = buf.getReadPointer(0);
+            for (int s = 0; s < kBS; ++s)
+                blockOut += static_cast<double>(p[s]) * p[s];
+            inSumSq  += blockIn;
+            outSumSq += blockOut;
+            ++measured;
+        }
     }
+
+    CHECK(measured == kMeasureBlocks, "spectral test should measure every tail block");
+
+    const double inRms  = std::sqrt(inSumSq  / (measured * kBS));
+    const double outRms = std::sqrt(outSumSq / (measured * kBS));
+    const double dropDb = 20.0 * std::log10(inRms / std::max(outRms, 1e-12));
+    std::cout << "    spectral drop = " << dropDb << " dB\n";
+    CHECK(dropDb >= 6.0, "Spectral band at gain -20 dB should cut a loud 1 kHz "
+                         "resonance by at least 6 dB");
+
+    // GR metering must report the suppression (signed, negative = cut).
+    const float gr = eq.getBandGR(b);
+    CHECK(gr < -1.0f, "Spectral band should report negative GR while suppressing");
 
     // Check latency includes STFT hop (2048 samples)
     int lat = eq.getLatencySamples();
     CHECK(lat == 2048, "Spectral mode latency should be 2048 (kSTFTHop)");
+
+    // Depth 0 must leave the band inert: once the envelope has released back
+    // to unity the STFT path is a pass-through.
+    //
+    // "Inert" is measured against the STFT path's own floor, not against 0 dB:
+    // the 50% Hann OLA reads each output sample before the second overlapping
+    // frame has contributed to it, which costs ~1.15 dB on an unmodified
+    // spectrum (reproduced independently of this band's code).  That loss is
+    // pre-existing and unrelated to depth — what matters here is that depth 0
+    // is nowhere near the ~21 dB the same signal gets at -20 dB.
+    eq.setBandParam(b, "gain", 0.0f);
+    double flatIn = 0.0, flatOut = 0.0;
+    for (int i = 0; i < 60; ++i)   // ~15 frames: plenty for a 100 ms release
+    {
+        double blockIn = 0.0;
+        for (int s = 0; s < kBS; ++s)
+        {
+            const float v = amp * std::sin(phase);
+            phase += step;
+            if (phase > pi2) phase -= pi2;
+            buf.setSample(0, s, v);
+            buf.setSample(1, s, v);
+            blockIn += static_cast<double>(v) * v;
+        }
+        eq.processBlock(buf, midi);
+        if (i >= 50)
+        {
+            const float* p = buf.getReadPointer(0);
+            for (int s = 0; s < kBS; ++s)
+                flatOut += static_cast<double>(p[s]) * p[s];
+            flatIn += blockIn;
+        }
+    }
+    const double inertDb = 20.0 * std::log10(std::sqrt(flatIn)
+                                           / std::max(std::sqrt(flatOut), 1e-12));
+    std::cout << "    spectral depth-0 delta = " << inertDb << " dB\n";
+    CHECK(std::abs(inertDb) < 2.0,
+          "Spectral band at gain 0 dB should be inert (only the STFT path's "
+          "own ~1.15 dB OLA loss, not depth)");
+    CHECK(dropDb - inertDb >= 15.0,
+          "Suppression must come from the gain knob, not the STFT path");
 }
 
 static void testLinearPhase()
