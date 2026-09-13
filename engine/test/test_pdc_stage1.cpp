@@ -136,6 +136,11 @@ static void processEqDiagnosticBlock(XlethParametricEQ& eq,
     eq.processBlock(buffer, midi);
 }
 
+// Linear-phase latency is the FIR group delay (firLength_/2), which is 2048
+// at <= 48 kHz. It is a different quantity from the spectral WOLA latency
+// and only ever coincided with the old 50%-overlap kSTFTHop value.
+static constexpr int kLinearPhaseLatency = 2048;
+
 static XlethParametricEQ* requireSpectralEq(XlethEffectBase* effect, const char* label)
 {
     auto* eq = dynamic_cast<XlethParametricEQ*>(effect);
@@ -164,9 +169,9 @@ static void testXlethEqSpectralLatency()
     CHECK(eq.getNonRealtimeLatencyUpdateCount() == nonRealtimeUpdatesBefore + 1,
           "Spectral EQ should update reported latency once from the parameter path");
 
-    CHECK(eq.getLatencySamples() == XlethParametricEQ::kSTFTHop,
-          "Spectral EQ getLatencySamples should equal kSTFTHop");
-    CHECK(eq.getReportedProcessorLatencySamples() == XlethParametricEQ::kSTFTHop,
+    CHECK(eq.getLatencySamples() == XlethParametricEQ::kSTFTLatency,
+          "Spectral EQ getLatencySamples should equal kSTFTLatency");
+    CHECK(eq.getReportedProcessorLatencySamples() == XlethParametricEQ::kSTFTLatency,
           "Spectral EQ AudioProcessor latency should be updated before processBlock");
 
     processEqDiagnosticBlock(eq);
@@ -198,7 +203,7 @@ static void testXlethEqLatencyAffectingParameterPaths()
 
         CHECK(eq.setParameterValue("linphase", 1.0f),
               "linear-phase parameter should be settable");
-        CHECK(eq.getReportedProcessorLatencySamples() == XlethParametricEQ::kSTFTHop,
+        CHECK(eq.getReportedProcessorLatencySamples() == kLinearPhaseLatency,
               "linear-phase enable should report FIR latency before processBlock");
         CHECK(eq.getNonRealtimeLatencyUpdateCount() == nonRealtimeUpdatesBefore + 1,
               "linear-phase enable should update latency once from the parameter path");
@@ -258,7 +263,7 @@ static void testXlethEqStateRestoreLatencyBeforeProcessBlock()
     restored.prepareToPlay(48000.0, 512);
     restored.setStateInformation(spectralState.getData(),
                                  static_cast<int>(spectralState.getSize()));
-    CHECK(restored.getReportedProcessorLatencySamples() == XlethParametricEQ::kSTFTHop,
+    CHECK(restored.getReportedProcessorLatencySamples() == XlethParametricEQ::kSTFTLatency,
           "restored spectral EQ should report latency before first processBlock");
     CHECK(restored.getProcessBlockLatencyUpdateCount() == 0,
           "restored spectral EQ should not need processBlock latency updates");
@@ -796,7 +801,7 @@ static void testAudioGraphLatencyEpochAndTopology()
     const auto epochBefore = graph.getLatencyEpoch();
     graph.refreshLatencyDiagnostics();
 
-    CHECK(graph.getOutputLatencySamples() == XlethParametricEQ::kSTFTHop,
+    CHECK(graph.getOutputLatencySamples() == XlethParametricEQ::kSTFTLatency,
           "AudioGraph output latency should expose the Spectral EQ chain latency");
     CHECK(graph.getLatencyEpoch() == epochBefore + 1,
           "AudioGraph latency epoch should increment on explicit PDC recompute");
@@ -807,7 +812,7 @@ static void testAudioGraphLatencyEpochAndTopology()
     {
         if (node.value("pluginId", "") == "__output__")
             sawOutputLatency = (node.value("cumulativeLatency", -1)
-                                == XlethParametricEQ::kSTFTHop);
+                                == XlethParametricEQ::kSTFTLatency);
     }
     CHECK(sawOutputLatency,
           "AudioGraph topology output node should report cached output latency");
@@ -929,9 +934,9 @@ static void testAudioGraphLatencyChangePropagation()
 
     CHECK(graph.setEffectParameter(nodeId, "b0_mode", 2.0f),
           "AudioGraph should set Spectral mode through the owner path");
-    CHECK(eq->getReportedProcessorLatencySamples() == XlethParametricEQ::kSTFTHop,
+    CHECK(eq->getReportedProcessorLatencySamples() == XlethParametricEQ::kSTFTLatency,
           "AudioGraph owner path should update EQ reported latency on Spectral enable");
-    CHECK(graph.getOutputLatencySamples() == XlethParametricEQ::kSTFTHop,
+    CHECK(graph.getOutputLatencySamples() == XlethParametricEQ::kSTFTLatency,
           "AudioGraph output latency should update on Spectral enable");
     CHECK(graph.getLatencyEpoch() == epochBeforeSpectral + 1,
           "AudioGraph Spectral enable should trigger one PDC recompute");
@@ -951,7 +956,7 @@ static void testAudioGraphLatencyChangePropagation()
     const auto epochBeforeLinear = graph.getLatencyEpoch();
     CHECK(graph.setEffectParameter(nodeId, "linphase", 1.0f),
           "AudioGraph should set linear phase through the owner path");
-    CHECK(graph.getOutputLatencySamples() == XlethParametricEQ::kSTFTHop,
+    CHECK(graph.getOutputLatencySamples() == kLinearPhaseLatency,
           "AudioGraph output latency should update on linear-phase enable");
     CHECK(graph.getLatencyEpoch() == epochBeforeLinear + 1,
           "AudioGraph linear-phase enable should trigger one PDC recompute");
@@ -1157,8 +1162,8 @@ static void testPdcRegressionAccounting()
 
         CHECK(
             fixture->engine.isInterTrackLatencyCompensationApplied()
-                && trackLat == XlethParametricEQ::kSTFTHop
-                && dryComp == XlethParametricEQ::kSTFTHop
+                && trackLat == XlethParametricEQ::kSTFTLatency
+                && dryComp == XlethParametricEQ::kSTFTLatency
                 && latentComp == 0,
             "track_to_track_impulse_alignment: dry track should be delayed by the latent track insert latency before summing");
     }
@@ -1169,7 +1174,7 @@ static void testPdcRegressionAccounting()
 
         CHECK(
             snapshot.maxAudibleTrackLatencySamples == 0
-                && snapshot.masterInsertLatencySamples == XlethParametricEQ::kSTFTHop
+                && snapshot.masterInsertLatencySamples == XlethParametricEQ::kSTFTLatency
                 && fixture->engine.getTrackCompensationDelaySamples(fixture->dryTrackId) == 0,
             "master_only_latency_accounting: master insert latency should be reported separately from per-track compensation");
     }
@@ -1182,9 +1187,9 @@ static void testPdcRegressionAccounting()
             fixture->engine.getTrackCompensationDelaySamples(fixture->latentTrackId);
 
         CHECK(
-            snapshot.maxAudibleTrackLatencySamples == XlethParametricEQ::kSTFTHop
-                && snapshot.masterInsertLatencySamples == XlethParametricEQ::kSTFTHop
-                && dryComp == XlethParametricEQ::kSTFTHop
+            snapshot.maxAudibleTrackLatencySamples == XlethParametricEQ::kSTFTLatency
+                && snapshot.masterInsertLatencySamples == XlethParametricEQ::kSTFTLatency
+                && dryComp == XlethParametricEQ::kSTFTLatency
                 && latentComp == 0,
             "track_plus_master_accounting: track PDC and master/common-path latency should remain separate");
 
@@ -1192,7 +1197,7 @@ static void testPdcRegressionAccounting()
             snapshot.maxAudibleTrackLatencySamples
             + snapshot.masterInsertLatencySamples;
         CHECK(
-            totalExportPreroll == 2 * XlethParametricEQ::kSTFTHop,
+            totalExportPreroll == 2 * XlethParametricEQ::kSTFTLatency,
             "export_preroll_discard_accounting: export preroll/discard should include maxTrackLatency + masterLatency");
     }
 }
@@ -1350,11 +1355,11 @@ static void testLivePresentationLatencyFormulaAndPositions()
 
     const auto diagnostics = engine.getLivePresentationLatencyDiagnostics();
     const int64_t expectedTotal =
-        static_cast<int64_t>(XlethParametricEQ::kSTFTHop) * 2 + kDeviceLatency;
+        static_cast<int64_t>(XlethParametricEQ::kSTFTLatency) * 2 + kDeviceLatency;
 
-    CHECK(diagnostics.maxTrackLatencySamples == XlethParametricEQ::kSTFTHop,
+    CHECK(diagnostics.maxTrackLatencySamples == XlethParametricEQ::kSTFTLatency,
           "presentation formula should include max audible track latency");
-    CHECK(diagnostics.masterLatencySamples == XlethParametricEQ::kSTFTHop,
+    CHECK(diagnostics.masterLatencySamples == XlethParametricEQ::kSTFTLatency,
           "presentation formula should include master insert latency");
     CHECK(diagnostics.deviceOutputLatencySamples == kDeviceLatency,
           "presentation formula should include cached device output latency");
@@ -1412,10 +1417,10 @@ static void testLivePresentationLatencyRefreshAfterEqChange()
           "presentation refresh should toggle Spectral through MixEngine");
     engine.refreshLivePresentationLatency();
     diagnostics = engine.getLivePresentationLatencyDiagnostics();
-    CHECK(diagnostics.maxTrackLatencySamples == XlethParametricEQ::kSTFTHop,
+    CHECK(diagnostics.maxTrackLatencySamples == XlethParametricEQ::kSTFTLatency,
           "presentation diagnostics should see Spectral track latency after parameter change");
     CHECK(diagnostics.totalPresentationLatencySamples
-              == XlethParametricEQ::kSTFTHop + kDeviceLatency,
+              == XlethParametricEQ::kSTFTLatency + kDeviceLatency,
           "presentation total should refresh from MixEngine latency diagnostics");
 
     CHECK(mixer.setEffectParameter(fixture->latentTrackId,
@@ -1443,12 +1448,12 @@ static void testLivePresentationLatencyMasterTrackAndZeroCases()
         const auto diagnostics = engine.getLivePresentationLatencyDiagnostics();
         CHECK(diagnostics.maxTrackLatencySamples == 0,
               "master-only presentation should have zero max track latency");
-        CHECK(diagnostics.masterLatencySamples == XlethParametricEQ::kSTFTHop,
+        CHECK(diagnostics.masterLatencySamples == XlethParametricEQ::kSTFTLatency,
               "master-only presentation should include master latency");
         CHECK(engine.getMixEngine().getTrackCompensationDelaySamples(fixture->dryTrackId) == 0,
               "master-only latency should not become per-track compensation");
         CHECK(diagnostics.totalPresentationLatencySamples
-                  == XlethParametricEQ::kSTFTHop + kDeviceLatency,
+                  == XlethParametricEQ::kSTFTLatency + kDeviceLatency,
               "master-only presentation should lag by master + device latency");
     }
 
@@ -1456,15 +1461,15 @@ static void testLivePresentationLatencyMasterTrackAndZeroCases()
         auto fixture = makePresentationLatencyEngine(true, false, kDeviceLatency);
         auto& engine = fixture->engine;
         const auto diagnostics = engine.getLivePresentationLatencyDiagnostics();
-        CHECK(diagnostics.maxTrackLatencySamples == XlethParametricEQ::kSTFTHop,
+        CHECK(diagnostics.maxTrackLatencySamples == XlethParametricEQ::kSTFTLatency,
               "track-only presentation should include max track latency");
         CHECK(diagnostics.masterLatencySamples == 0,
               "track-only presentation should have zero master latency");
         CHECK(engine.getMixEngine().getTrackCompensationDelaySamples(fixture->dryTrackId)
-                  == XlethParametricEQ::kSTFTHop,
+                  == XlethParametricEQ::kSTFTLatency,
               "track-only presentation should preserve differential track PDC");
         CHECK(diagnostics.totalPresentationLatencySamples
-                  == XlethParametricEQ::kSTFTHop + kDeviceLatency,
+                  == XlethParametricEQ::kSTFTLatency + kDeviceLatency,
               "track-only presentation should lag by max track + device latency");
     }
 
@@ -1496,7 +1501,7 @@ static void testLivePresentationLatencyAutoRefreshAfterMutation()
     std::cout << "[Presentation] Live latency auto-refreshes after mutation (Stage 7B)\n";
 
     constexpr int64_t kDeviceLatency = 384;
-    constexpr int64_t kHop = static_cast<int64_t>(XlethParametricEQ::kSTFTHop);
+    constexpr int64_t kEqLat = static_cast<int64_t>(XlethParametricEQ::kSTFTLatency);
 
     // Helper: add an XlethEQ insert with a single band and toggle Spectral mode
     // through MixEngine — exactly the path the bridge uses for built-in effect
@@ -1532,15 +1537,15 @@ static void testLivePresentationLatencyAutoRefreshAfterMutation()
 
         // No engine.refreshLivePresentationLatency() — that's the regression.
         const auto diag = engine.getLivePresentationLatencyDiagnostics();
-        CHECK(diag.maxTrackLatencySamples == kHop,
+        CHECK(diag.maxTrackLatencySamples == kEqLat,
               "Stage 7B: diagnostics maxTrack should reflect added insert without refresh");
-        CHECK(diag.totalPresentationLatencySamples == kHop + kDeviceLatency,
+        CHECK(diag.totalPresentationLatencySamples == kEqLat + kDeviceLatency,
               "Stage 7B: diagnostics total should reflect added insert without refresh");
-        CHECK(engine.getLivePresentationLatencySamples() == kHop + kDeviceLatency,
+        CHECK(engine.getLivePresentationLatencySamples() == kEqLat + kDeviceLatency,
               "Stage 7B: latency getter should reflect added insert without refresh");
 
         auto& transport = engine.getTransport();
-        transport.seekToSample(kHop + kDeviceLatency + 1024);
+        transport.seekToSample(kEqLat + kDeviceLatency + 1024);
         // Mutate again on the dry track — same MixEngine path — without any
         // further refresh. Both insertions should now contribute to the live
         // max-audible latency, and the position must subtract that updated
@@ -1576,9 +1581,9 @@ static void testLivePresentationLatencyAutoRefreshAfterMutation()
 
         // No refresh, no seek — just read.
         const auto diag = engine.getLivePresentationLatencyDiagnostics();
-        CHECK(diag.maxTrackLatencySamples == kHop,
+        CHECK(diag.maxTrackLatencySamples == kEqLat,
               "Stage 7B param: diagnostics should pick up post-parameter latency live");
-        CHECK(engine.getLivePresentationLatencySamples() == kHop + kDeviceLatency,
+        CHECK(engine.getLivePresentationLatencySamples() == kEqLat + kDeviceLatency,
               "Stage 7B param: latency getter should pick up post-parameter latency live");
     }
 
@@ -1593,7 +1598,7 @@ static void testLivePresentationLatencyAutoRefreshAfterMutation()
         auto& mixer = engine.getMixEngine();
 
         // Master XlethEQ already configured by fixture (masterSpectral=true).
-        CHECK(engine.getLivePresentationLatencyDiagnostics().masterLatencySamples == kHop,
+        CHECK(engine.getLivePresentationLatencyDiagnostics().masterLatencySamples == kEqLat,
               "Stage 7B master+track: master spectral latency should be reported");
         CHECK(engine.getLivePresentationLatencyDiagnostics().maxTrackLatencySamples == 0,
               "Stage 7B master+track: no track latency yet");
@@ -1603,11 +1608,11 @@ static void testLivePresentationLatencyAutoRefreshAfterMutation()
         addAndEnableSpectralViaMixer(mixer, fixture->latentTrackId);
 
         const auto diag = engine.getLivePresentationLatencyDiagnostics();
-        CHECK(diag.maxTrackLatencySamples == kHop,
+        CHECK(diag.maxTrackLatencySamples == kEqLat,
               "Stage 7B master+track: track latency should be visible live");
-        CHECK(diag.masterLatencySamples == kHop,
+        CHECK(diag.masterLatencySamples == kEqLat,
               "Stage 7B master+track: master latency should still be reported");
-        CHECK(diag.totalPresentationLatencySamples == kHop + kHop + kDeviceLatency,
+        CHECK(diag.totalPresentationLatencySamples == kEqLat + kEqLat + kDeviceLatency,
               "Stage 7B master+track: total = track + master + device, no double count");
     }
 
@@ -1617,7 +1622,7 @@ static void testLivePresentationLatencyAutoRefreshAfterMutation()
         auto& engine = fixture->engine;
         auto& mixer = engine.getMixEngine();
 
-        CHECK(engine.getLivePresentationLatencySamples() == kHop + kDeviceLatency,
+        CHECK(engine.getLivePresentationLatencySamples() == kEqLat + kDeviceLatency,
               "Stage 7B remove: spectral track should contribute latency live");
 
         CHECK(mixer.removeEffect(fixture->latentTrackId, fixture->trackEqNodeId),
@@ -1654,9 +1659,9 @@ static void testLivePresentationLatencyAutoRefreshAfterMutation()
         // event. The bridge has no audio_setMasterEffectParameter wrapper that
         // could refresh even if it wanted to.
         const auto diag = engine.getLivePresentationLatencyDiagnostics();
-        CHECK(diag.masterLatencySamples == kHop,
+        CHECK(diag.masterLatencySamples == kEqLat,
               "Stage 7B master-param: master latency should be visible after parameter change");
-        CHECK(engine.getLivePresentationLatencySamples() == kHop + kDeviceLatency,
+        CHECK(engine.getLivePresentationLatencySamples() == kEqLat + kDeviceLatency,
               "Stage 7B master-param: total latency should include new master latency");
     }
 
@@ -1673,9 +1678,9 @@ static void testLivePresentationLatencyAutoRefreshAfterMutation()
         auto& transport = engine.getTransport();
 
         // Simulate a "live" playhead well past device latency.
-        transport.seekToSample(kHop + kDeviceLatency + 4096);
+        transport.seekToSample(kEqLat + kDeviceLatency + 4096);
         const int64_t baselinePos = engine.getLivePresentationPositionSamples();
-        CHECK(baselinePos == kHop + 4096,
+        CHECK(baselinePos == kEqLat + 4096,
               "Stage 7B pos: baseline presentation position = raw - device");
 
         // Add the spectral insert via the MixEngine bridge route, no seek.
@@ -1684,7 +1689,7 @@ static void testLivePresentationLatencyAutoRefreshAfterMutation()
         const int64_t postMutPos = engine.getLivePresentationPositionSamples();
         CHECK(postMutPos == 4096,
               "Stage 7B pos: presentation position must subtract NEW latency live");
-        CHECK(baselinePos - postMutPos == kHop,
+        CHECK(baselinePos - postMutPos == kEqLat,
               "Stage 7B pos: position delta should equal added insert latency");
     }
 }
@@ -2412,7 +2417,7 @@ static void testExportAccountingAfterXlethEqLatencyChange()
     mixer.refreshLatencyDiagnostics();
 
     const auto snapshot = mixer.getLatencyCompensationSnapshot();
-    CHECK(snapshot.maxAudibleTrackLatencySamples == XlethParametricEQ::kSTFTHop,
+    CHECK(snapshot.maxAudibleTrackLatencySamples == XlethParametricEQ::kSTFTLatency,
           "export accounting should see toggled Spectral track latency");
     CHECK(snapshot.masterInsertLatencySamples == 0,
           "export accounting should not invent master latency for track-only EQ");
@@ -2422,7 +2427,7 @@ static void testExportAccountingAfterXlethEqLatencyChange()
                      + snapshot.masterInsertLatencySamples);
     CHECK(plan.renderStartSample == 0,
           "export accounting should clamp project-start render start after EQ latency change");
-    CHECK(plan.samplesToDiscard == XlethParametricEQ::kSTFTHop,
+    CHECK(plan.samplesToDiscard == XlethParametricEQ::kSTFTLatency,
           "export accounting should discard plugin-latency lead-in after EQ latency change");
 }
 

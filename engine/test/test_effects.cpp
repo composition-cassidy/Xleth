@@ -28,6 +28,7 @@
 #include <memory>
 #include <string>
 #include <utility>
+#include <algorithm>
 #include <vector>
 
 // ─── Test harness ────────────────────────────────────────────────────────────
@@ -4545,19 +4546,21 @@ static void testSpectralDynamics()
     const float gr = eq.getBandGR(b);
     CHECK(gr < -1.0f, "Spectral band should report negative GR while suppressing");
 
-    // Check latency includes STFT hop (2048 samples)
+    // Correct WOLA reconstruction costs a full kSTFTSize of latency, not a
+    // hop: a frame is only complete once its last sample has arrived.
     int lat = eq.getLatencySamples();
-    CHECK(lat == 2048, "Spectral mode latency should be 2048 (kSTFTHop)");
+    CHECK(lat == XlethParametricEQ::kSTFTLatency,
+          "Spectral mode latency should be kSTFTLatency (= kSTFTSize)");
 
     // Depth 0 must leave the band inert: once the envelope has released back
     // to unity the STFT path is a pass-through.
     //
-    // "Inert" is measured against the STFT path's own floor, not against 0 dB:
-    // the 50% Hann OLA reads each output sample before the second overlapping
-    // frame has contributed to it, which costs ~1.15 dB on an unmodified
-    // spectrum (reproduced independently of this band's code).  That loss is
-    // pre-existing and unrelated to depth — what matters here is that depth 0
-    // is nowhere near the ~21 dB the same signal gets at -20 dB.
+    // The WOLA path reconstructs an unmodified spectrum exactly (sqrt-Hann on
+    // both ends at 75% overlap, normalised by 1/sum(w^2)), so depth 0 is a
+    // true bit-level pass-through and this tolerance can be tight.  It used to
+    // sit at ~1.15 dB because analysis-only windowing at 50% overlap emitted
+    // each output sample before its overlapping frames had all landed — the
+    // same defect that made the path click once per hop.
     eq.setBandParam(b, "gain", 0.0f);
     double flatIn = 0.0, flatOut = 0.0;
     for (int i = 0; i < 60; ++i)   // ~15 frames: plenty for a 100 ms release
@@ -4584,11 +4587,93 @@ static void testSpectralDynamics()
     const double inertDb = 20.0 * std::log10(std::sqrt(flatIn)
                                            / std::max(std::sqrt(flatOut), 1e-12));
     std::cout << "    spectral depth-0 delta = " << inertDb << " dB\n";
-    CHECK(std::abs(inertDb) < 2.0,
-          "Spectral band at gain 0 dB should be inert (only the STFT path's "
-          "own ~1.15 dB OLA loss, not depth)");
+    CHECK(std::abs(inertDb) < 0.2,
+          "Spectral band at gain 0 dB should be inert (WOLA reconstructs an "
+          "unmodified spectrum exactly)");
     CHECK(dropDb - inertDb >= 15.0,
           "Suppression must come from the gain knob, not the STFT path");
+}
+
+// Regression guard for the click train the old analysis-only 50% OLA produced.
+// A spectral band actively suppressing a resonance must not introduce any
+// sample-to-sample discontinuity: the artefact was a step at every hop
+// boundary, which shows up as a |diff| spike far above the signal's own median
+// slew and — diagnostically — lands on an exact kSTFTHop grid at a fixed phase.
+static void testSpectralNoClicks()
+{
+    std::cout << "  [EQ spectral: no frame-boundary clicks]\n";
+    constexpr double kSR = 48000.0;
+    constexpr int    kBS = 512;
+
+    XlethParametricEQ eq;
+    eq.prepareToPlay(kSR, kBS);
+
+    int b = eq.addBand();
+    eq.setBandParam(b, "freq",    1000.0f);
+    eq.setBandParam(b, "gain",    -20.0f);  // depth: suppress hard
+    eq.setBandParam(b, "q",       1.0f);
+    eq.setBandParam(b, "type",    0.0f);
+    eq.setBandParam(b, "enabled", 1.0f);
+    eq.setBandParam(b, "mode",       2.0f);
+    eq.setBandParam(b, "spec_sens",  1.0f);
+    eq.setBandParam(b, "spec_sel",   5.0f);
+
+    const float pi2  = 2.0f * juce::MathConstants<float>::pi;
+    const float step = pi2 * 1000.0f / static_cast<float>(kSR);
+    float phase = 0.0f;
+
+    juce::AudioBuffer<float> buf(2, kBS);
+    juce::MidiBuffer midi;
+
+    // Collect the steady-state tail so the startup ramp is excluded.
+    constexpr int kWarm    = 40;
+    constexpr int kCollect = 40;
+    std::vector<float> out;
+    out.reserve(static_cast<std::size_t>(kCollect) * kBS);
+
+    for (int i = 0; i < kWarm + kCollect; ++i)
+    {
+        for (int s = 0; s < kBS; ++s)
+        {
+            const float v = 0.5f * std::sin(phase);
+            phase += step;
+            if (phase > pi2) phase -= pi2;
+            buf.setSample(0, s, v);
+            buf.setSample(1, s, v);
+        }
+        eq.processBlock(buf, midi);
+        if (i >= kWarm)
+        {
+            const float* p = buf.getReadPointer(0);
+            for (int s = 0; s < kBS; ++s)
+                out.push_back(p[s]);
+        }
+    }
+
+    std::vector<float> diffs;
+    diffs.reserve(out.size());
+    for (std::size_t i = 1; i < out.size(); ++i)
+        diffs.push_back(std::abs(out[i] - out[i - 1]));
+
+    std::vector<float> sorted = diffs;
+    std::sort(sorted.begin(), sorted.end());
+    const float medianDiff = sorted[sorted.size() / 2];
+    float maxDiff = 0.0f;
+    std::size_t maxAt = 0;
+    for (std::size_t i = 0; i < diffs.size(); ++i)
+        if (diffs[i] > maxDiff) { maxDiff = diffs[i]; maxAt = i; }
+
+    const float ratio = maxDiff / std::max(medianDiff, 1.0e-12f);
+    std::cout << "    max|diff|/median|diff| = " << ratio
+              << "  (max at +" << maxAt << ", hop grid phase "
+              << (maxAt % static_cast<std::size_t>(XlethParametricEQ::kSTFTHop))
+              << ")\n";
+
+    // A clean 1 kHz sine at 48 kHz slews smoothly: the largest step can only be
+    // a little above the median. The old path hit >20x here.
+    CHECK(medianDiff > 1.0e-6f, "spectral click test should have real signal to measure");
+    CHECK(ratio < 4.0f,
+          "Spectral band must not step at frame boundaries (WOLA synthesis window)");
 }
 
 static void testLinearPhase()
@@ -4797,6 +4882,7 @@ int main()
     std::cout << "\n=== test_eq_advanced ===\n";
     testDynamicEQ();
     testSpectralDynamics();
+    testSpectralNoClicks();
     testLinearPhase();
     testOversampling();
     testLinPhaseDisablesDynamic();

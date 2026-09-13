@@ -44,7 +44,29 @@ public:
     static constexpr int kResponseSize = 512;
     static constexpr int kSTFTOrder    = 12;              // 2^12 = 4096
     static constexpr int kSTFTSize     = 1 << kSTFTOrder;
-    static constexpr int kSTFTHop      = kSTFTSize / 2;   // 50% overlap, 2048 latency
+
+    // Weighted Overlap-Add (WOLA), same structure as the Resonance Suppressor's
+    // WolaProcessor: 75% overlap with a sqrt-Hann window applied on BOTH the
+    // analysis and the synthesis side, normalised per hop phase by 1/sum(w^2).
+    //
+    // Analysis-only windowing at 50% overlap does NOT survive spectral gain
+    // modification: the modified frame is no longer confined to the window's
+    // support, so its edges land in the output as a step discontinuity once per
+    // hop — an audible click train locked to the hop grid.  The synthesis
+    // window tapers those edges and 75% overlap keeps four frames summing over
+    // every output sample.
+    static constexpr int kSTFTHop      = kSTFTSize / 4;   // 75% overlap
+
+    // A frame covering [t, t+kSTFTSize) can only be complete once sample
+    // t+kSTFTSize-1 has arrived, so correct WOLA reconstruction costs a full
+    // kSTFTSize of latency — not kSTFTHop.  Output is written at
+    // frameStart + kSTFTLatency (see processSTFTFrame).
+    static constexpr int kSTFTLatency  = kSTFTSize;
+
+    // Power-of-two ring so indexing is a mask, and large enough to hold the
+    // live input window plus the latency-shifted output span and one block.
+    static constexpr int kSTFTRingSize = kSTFTSize * 4;
+    static constexpr int kSTFTRingMask = kSTFTRingSize - 1;
 
     // Spectral detection soft knee: a bin this far above its local threshold
     // receives the band's full depth; anything less gets a proportional share,
@@ -422,7 +444,7 @@ public:
     int getLatencySamples() const
     {
         int lat = 0;
-        if (hasSpectralBands_.load(std::memory_order_relaxed)) lat += kSTFTHop;
+        if (hasSpectralBands_.load(std::memory_order_relaxed)) lat += kSTFTLatency;
         if (linPhaseActive_.load(std::memory_order_relaxed)) lat += firLength_ / 2;
         const int currentOSFactor = currentOSFactor_.load(std::memory_order_relaxed);
         if (currentOSFactor > 0)
@@ -553,18 +575,34 @@ public:
         preparedBlockSize_ = maxBlockSize;
         for (int ch = 0; ch < 2; ++ch)
         {
-            stftInRing_[ch].assign(kSTFTSize * 2, 0.0f);
-            stftOutRing_[ch].assign(kSTFTSize * 2, 0.0f);
+            stftInRing_[ch].assign(kSTFTRingSize, 0.0f);
+            stftOutRing_[ch].assign(kSTFTRingSize, 0.0f);
         }
-        stftWritePos_ = 0;
-        stftSinceLastFrame_ = 0;
+        resetSTFTStream();
 
-        // Precompute Hann window for STFT
+        // WOLA window: sqrt of a PERIODIC Hann (denominator kSTFTSize, not
+        // kSTFTSize-1 — the periodic form is the one that overlap-adds exactly).
+        // The same window is applied on analysis and again on synthesis, so the
+        // pair multiplies out to a full Hann.
         {
-            const float piF = juce::MathConstants<float>::pi;
+            const float twoPi = 2.0f * juce::MathConstants<float>::pi;
             for (int i = 0; i < kSTFTSize; ++i)
-                stftWindow_[i] = 0.5f * (1.0f - std::cos(2.0f * piF
-                    * static_cast<float>(i) / static_cast<float>(kSTFTSize - 1)));
+            {
+                const float hann = 0.5f - 0.5f * std::cos(twoPi
+                    * static_cast<float>(i) / static_cast<float>(kSTFTSize));
+                stftWindow_[i] = std::sqrt(std::max(hann, 0.0f));
+            }
+
+            // Per-hop-phase normalisation 1/sum(w^2). Every output sample is
+            // covered by kSTFTSize/kSTFTHop frames whose window indices are
+            // congruent mod kSTFTHop, so one value per phase is exact.
+            for (int phase = 0; phase < kSTFTHop; ++phase)
+            {
+                float sum = 0.0f;
+                for (int i = phase; i < kSTFTSize; i += kSTFTHop)
+                    sum += stftWindow_[i] * stftWindow_[i];
+                stftNorm_[phase] = (sum > 1.0e-8f) ? (1.0f / sum) : 1.0f;
+            }
         }
 
         // Linear phase FIR
@@ -887,28 +925,30 @@ public:
 
             if (hasSpectralBands)
             {
-                const int ringSize = kSTFTSize * 2;
                 for (int s = 0; s < numSamples; ++s)
                 {
-                    int wp = stftWritePos_ % ringSize;
+                    const int inIdx =
+                        static_cast<int>(stftSamplesWritten_ & kSTFTRingMask);
                     for (int ch = 0; ch < numCh; ++ch)
-                        stftInRing_[ch][wp] = buffer.getSample(ch, s);
+                        stftInRing_[ch][inIdx] = buffer.getSample(ch, s);
+                    ++stftSamplesWritten_;
 
-                    stftWritePos_++;
-                    stftSinceLastFrame_++;
-
-                    if (stftSinceLastFrame_ >= kSTFTHop)
+                    // Run every frame whose kSTFTSize-sample window just became
+                    // complete. At 75% overlap this fires once per kSTFTHop.
+                    while (stftNextFrameStart_ + kSTFTSize <= stftSamplesWritten_)
                     {
-                        stftSinceLastFrame_ = 0;
-                        processSTFTFrame(numCh, sr);
+                        processSTFTFrame(stftNextFrameStart_, numCh, sr);
+                        stftNextFrameStart_ += kSTFTHop;
                     }
 
-                    int rp = ((stftWritePos_ - kSTFTHop) % ringSize + ringSize) % ringSize;
+                    const int outIdx =
+                        static_cast<int>(stftSamplesEmitted_ & kSTFTRingMask);
                     for (int ch = 0; ch < numCh; ++ch)
                     {
-                        buffer.setSample(ch, s, stftOutRing_[ch][rp]);
-                        stftOutRing_[ch][rp] = 0.0f;
+                        buffer.setSample(ch, s, stftOutRing_[ch][outIdx]);
+                        stftOutRing_[ch][outIdx] = 0.0f;
                     }
+                    ++stftSamplesEmitted_;
                 }
             }
         }
@@ -1063,6 +1103,11 @@ public:
     {
         for (int i = 0; i < kMaxBands; ++i)
             bands_[i].clearState();
+
+        // Also rewind the WOLA stream: without this a seek leaves up to
+        // kSTFTSize of the previous position's audio in the rings, which
+        // overlap-adds into the new position as a splice.
+        resetSTFTStream();
     }
 
 private:
@@ -1213,9 +1258,15 @@ private:
     // ── STFT state (Spectral Dynamics) ──────────────────────────────────────
     std::vector<float> stftInRing_[2];
     std::vector<float> stftOutRing_[2];
-    int stftWritePos_ = 0;
-    int stftSinceLastFrame_ = 0;
-    float stftWindow_[kSTFTSize]{};
+
+    // Absolute sample counters (WOLA scheduling, mirrors SpectralChannelState).
+    // Both channels advance in lockstep, so one set covers the pair.
+    std::int64_t stftSamplesWritten_ = 0;   // inputs accepted
+    std::int64_t stftSamplesEmitted_ = 0;   // outputs handed back
+    std::int64_t stftNextFrameStart_ = 0;   // start of the next frame to run
+
+    float stftWindow_[kSTFTSize]{};         // sqrt-Hann (analysis AND synthesis)
+    float stftNorm_[kSTFTHop]{};            // 1/sum(w^2) per hop phase
     std::atomic<bool> hasSpectralBands_{false};
     int  preparedBlockSize_ = 512;
 
@@ -1538,6 +1589,25 @@ private:
         }
     }
 
+    // ── STFT stream reset ──────────────────────────────────────────────────
+
+    // Rewind the WOLA stream. nextFrameStart starts kSTFTSize-kSTFTHop *before*
+    // zero so frames begin firing from the first hop and ramp in through the
+    // window overlap instead of stepping in at full amplitude; the out-of-range
+    // reads that implies return silence.
+    void resetSTFTStream()
+    {
+        stftSamplesWritten_ = 0;
+        stftSamplesEmitted_ = 0;
+        stftNextFrameStart_ = -static_cast<std::int64_t>(kSTFTSize)
+                            +  static_cast<std::int64_t>(kSTFTHop);
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            std::fill(stftInRing_[ch].begin(),  stftInRing_[ch].end(),  0.0f);
+            std::fill(stftOutRing_[ch].begin(), stftOutRing_[ch].end(), 0.0f);
+        }
+    }
+
     // ── Spectral bell influence weight (audio thread, cached) ──────────────
 
     // Rebuild a spectral band's per-bin influence weight: the RBJ bell the
@@ -1615,9 +1685,8 @@ private:
 
     // ── STFT frame processing (Spectral Dynamics) ───────────────────────────
 
-    void processSTFTFrame(int numCh, double sr)
+    void processSTFTFrame(std::int64_t frameStart, int numCh, double sr)
     {
-        const int ringSize = kSTFTSize * 2;
         const int count = bandCount_.load(std::memory_order_relaxed);
         const int binsN = kSTFTSize / 2;
 
@@ -1627,15 +1696,19 @@ private:
 
         for (int ch = 0; ch < numCh; ++ch)
         {
-            // Read kSTFTSize samples from input ring, apply Hann window
+            // Read this frame's kSTFTSize samples, apply the sqrt-Hann
+            // analysis window. Positions outside the accepted stream (the
+            // startup ramp) read as silence.
             std::fill(stftTempRe_.begin(), stftTempRe_.end(), 0.0f);
             std::fill(stftTempIm_.begin(), stftTempIm_.end(), 0.0f);
 
-            int readStart = ((stftWritePos_ - kSTFTSize) % ringSize + ringSize) % ringSize;
             for (int i = 0; i < kSTFTSize; ++i)
             {
-                int idx = (readStart + i) % ringSize;
-                stftTempRe_[i] = stftInRing_[ch][idx] * stftWindow_[i];
+                const std::int64_t src = frameStart + i;
+                const float x = (src >= 0 && src < stftSamplesWritten_)
+                    ? stftInRing_[ch][static_cast<int>(src & kSTFTRingMask)]
+                    : 0.0f;
+                stftTempRe_[i] = x * stftWindow_[i];
             }
 
             // Forward FFT
@@ -1808,12 +1881,19 @@ private:
             // Inverse FFT
             ifftCompute(stftTempRe_.data(), stftTempIm_.data(), kSTFTSize);
 
-            // Overlap-add into output ring (no synthesis window — Hann OLA)
-            int writeStart = ((stftWritePos_ - kSTFTSize) % ringSize + ringSize) % ringSize;
+            // Weighted overlap-add: sqrt-Hann synthesis window + per-phase
+            // 1/sum(w^2), written kSTFTLatency ahead of the frame start so
+            // every output sample has all four overlapping frames before it is
+            // read. Slots already handed back are skipped (startup only).
+            const std::int64_t outStart = frameStart + kSTFTLatency;
+            int phase = 0;
             for (int i = 0; i < kSTFTSize; ++i)
             {
-                int idx = (writeStart + i) % ringSize;
-                stftOutRing_[ch][idx] += stftTempRe_[i];
+                const std::int64_t dst = outStart + i;
+                if (dst >= stftSamplesEmitted_)
+                    stftOutRing_[ch][static_cast<int>(dst & kSTFTRingMask)] +=
+                        stftTempRe_[i] * stftWindow_[i] * stftNorm_[phase];
+                if (++phase == kSTFTHop) phase = 0;
             }
         }
     }
