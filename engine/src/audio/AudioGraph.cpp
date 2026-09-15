@@ -8,7 +8,6 @@
 #include "audio/XlethTransientProcEffect.h"
 #include "audio/XlethEQEffect.h"
 #include "audio/XlethFilterEffect.h"
-#include "audio/DistortionEffect.h"
 #include "audio/XlethDistortionEffect.h"
 #include "audio/XlethWaveshaperEffect.h"
 #include "audio/UniFlangeEffect.h"

@@ -1313,13 +1313,20 @@ static void testDistortionModesDiffer()
     constexpr int    kSkip = 128;
     constexpr float  kPi2 = 2.0f * juce::MathConstants<float>::pi;
 
-    std::array<std::array<float, kBS>, 4> rendered {};
+    std::array<std::array<float, kBS>, 7> rendered {};
 
-    for (int mode = 0; mode < 4; ++mode)
+    for (int mode = 0; mode < 7; ++mode)
     {
         XlethDistortionEffect fx;
         CHECK(fx.setParameterValue("mode", static_cast<float>(mode)),
               "distortion mode param should be settable");
+        // Crush-only params: pushed off their transparent defaults so mode 4 is
+        // compared as the crusher it is, not as the clipper it degenerates to
+        // at 16 bits / 1x.
+        CHECK(fx.setParameterValue("bits", 6.0f),
+              "distortion bits param should be settable");
+        CHECK(fx.setParameterValue("downsample", 4.0f),
+              "distortion downsample param should be settable");
         CHECK(fx.setParameterValue("drive", 12.0f),
               "distortion drive param should be settable");
         CHECK(fx.setParameterValue("tone", 20000.0f),
@@ -1350,9 +1357,9 @@ static void testDistortionModesDiffer()
     }
 
     float minRmsDiff = 999.0f;
-    for (int a = 0; a < 4; ++a)
+    for (int a = 0; a < 7; ++a)
     {
-        for (int b = a + 1; b < 4; ++b)
+        for (int b = a + 1; b < 7; ++b)
         {
             double sumSq = 0.0;
             for (int s = kSkip; s < kBS; ++s)
@@ -1369,6 +1376,417 @@ static void testDistortionModesDiffer()
     std::cout << "    min pairwise RMS diff: " << minRmsDiff << "\n";
     CHECK(minRmsDiff > 0.025f,
           "distortion modes should produce measurably different output for the same input");
+}
+
+// ─── Distortion legacy-render regression guard ───────────────────────────────
+// Renders the four PRE-EXISTING distortion modes (0–3) with every other
+// parameter left at its APVTS default and fingerprints the result. The golden
+// numbers below were captured from the build immediately BEFORE the 7-mode
+// expansion landed, so any change to the legacy shaping path — including a
+// non-transparent default for the new symmetry / bits / downsample params —
+// breaks this test. Exact float equality is intentional: "bit-identical" is the
+// contract, not "close enough".
+// APVTS is protected on XlethEffectBase, so reach parameters the way the engine
+// itself does for stock effects — through the AudioProcessor parameter list.
+static juce::RangedAudioParameter* findRangedParam(juce::AudioProcessor& proc,
+                                                   const juce::String& paramId)
+{
+    for (auto* p : proc.getParameters())
+        if (auto* rp = dynamic_cast<juce::RangedAudioParameter*>(p))
+            if (rp->paramID == paramId)
+                return rp;
+    return nullptr;
+}
+
+struct DistortionFingerprint
+{
+    float  peak    = 0.0f;
+    double sumAbs  = 0.0;
+    double weighted = 0.0;
+};
+
+static DistortionFingerprint renderDistortionDefaults(int mode)
+{
+    constexpr double kSR = 44100.0;
+    constexpr int    kBS = 2048;
+    constexpr float  kPi2 = 2.0f * juce::MathConstants<float>::pi;
+
+    XlethDistortionEffect fx;
+    // ONLY the mode is set — every other parameter must stay at its default so
+    // this doubles as a default-value guard for the newly added params.
+    CHECK(fx.setParameterValue("mode", static_cast<float>(mode)),
+          "regression render: mode param should be settable");
+
+    fx.prepareToPlay(kSR, kBS);
+
+    juce::AudioBuffer<float> buf(2, kBS);
+    for (int s = 0; s < kBS; ++s)
+    {
+        const float t = static_cast<float>(s) / static_cast<float>(kBS - 1);
+        const float sweep = -0.85f + 1.70f * t;
+        const float sine = std::sin(kPi2 * 7.0f * static_cast<float>(s) / static_cast<float>(kBS));
+        const float v = juce::jlimit(-0.95f, 0.95f, 0.62f * sine + 0.22f * sweep);
+        buf.setSample(0, s, v);
+        buf.setSample(1, s, v);
+    }
+
+    juce::MidiBuffer midi;
+    fx.processBlock(buf, midi);
+
+    DistortionFingerprint fp;
+    for (int s = 0; s < kBS; ++s)
+    {
+        const float x = buf.getSample(0, s);
+        fp.peak     = std::max(fp.peak, std::abs(x));
+        fp.sumAbs  += std::abs(static_cast<double>(x));
+        fp.weighted += static_cast<double>(x) * static_cast<double>(s % 97);
+    }
+    return fp;
+}
+
+static void testDistortionDefaultRenderUnchanged()
+{
+    std::cout << "  [distortion default-render regression]\n";
+
+    // Golden fingerprints captured pre-expansion (see comment above).
+    struct Golden { float peak; double sumAbs; double weighted; };
+    static const Golden kGolden[4] = {
+        { 0.9928135871887207f, 1260.4362006411293, 2713.0245958208216 }, // Tube
+        { 1.1929118633270264f, 1722.3966890491010, 3797.8096109480311 }, // Soft Clip
+        { 1.0747795104980469f, 1612.4634629828097, 4000.2805844426439 }, // Hard Clip
+        { 1.0915191173553467f, 1517.3326005375500, 3806.9994734264010 }, // Analog
+    };
+
+    for (int mode = 0; mode < 4; ++mode)
+    {
+        const auto fp = renderDistortionDefaults(mode);
+        std::cout.precision(17);
+        std::cout << "    mode " << mode
+                  << " peak=" << fp.peak
+                  << " sumAbs=" << fp.sumAbs
+                  << " weighted=" << fp.weighted << "\n";
+        std::cout.precision(6);
+
+        const auto& g = kGolden[mode];
+        CHECK(fp.peak == g.peak,
+              "legacy distortion mode peak must be bit-identical to the pre-expansion build");
+        CHECK(fp.sumAbs == g.sumAbs,
+              "legacy distortion mode sumAbs must be bit-identical to the pre-expansion build");
+        CHECK(fp.weighted == g.weighted,
+              "legacy distortion mode weighted sum must be bit-identical to the pre-expansion build");
+    }
+
+    // The guard above only means anything while the new params really do default
+    // to their transparent values, so pin the defaults themselves.
+    {
+        XlethDistortionEffect fx;
+        auto defaultOf = [&fx](const char* id) -> float
+        {
+            auto* p = findRangedParam(fx, id);
+            return p ? p->convertFrom0to1(p->getDefaultValue()) : -1.0f;
+        };
+
+        CHECK(defaultOf("symmetry") == 100.0f,
+              "symmetry must default to 100 % (the historical fixed Analog bias)");
+        CHECK(defaultOf("bits") == 16.0f,
+              "bits must default to 16 (transparent quantization)");
+        CHECK(defaultOf("downsample") == 1.0f,
+              "downsample must default to 1x (no sample-and-hold)");
+    }
+}
+
+// ─── Distortion: new modes are bounded and finite ────────────────────────────
+static void testDistortionNewModesSafety()
+{
+    std::cout << "  [distortion new-mode safety]\n";
+    constexpr double kSR = 48000.0;
+    constexpr int    kBS = 1024;
+
+    // Four hostile inputs: silence, full-scale DC, a full-scale impulse train,
+    // and a loud low-frequency sine (the case that drives a sample-and-hold
+    // hardest). All seven modes are run so the bound on the new ones can be
+    // calibrated against what the shipped ones already do on the same input —
+    // an absolute "must stay under 1.0" would be wrong here: the oversampler's
+    // FIR rings on an impulse and the 10 Hz DC blocker overshoots on a step, so
+    // even Hard Clip leaves this stress test well above unity.
+    std::array<float, 7> worstPeak {};
+    for (int mode = 0; mode <= 6; ++mode)
+    {
+        for (int shape = 0; shape < 4; ++shape)
+        {
+            XlethDistortionEffect fx;
+            CHECK(fx.setParameterValue("mode", static_cast<float>(mode)), "mode settable");
+            CHECK(fx.setParameterValue("drive", 48.0f), "drive settable");       // max
+            CHECK(fx.setParameterValue("tone", 20000.0f), "tone settable");
+            CHECK(fx.setParameterValue("mix", 100.0f), "mix settable");
+            CHECK(fx.setParameterValue("bits", 2.0f), "bits settable");          // min
+            CHECK(fx.setParameterValue("downsample", 40.0f), "downsample settable"); // max
+
+            fx.prepareToPlay(kSR, kBS);
+
+            juce::AudioBuffer<float> buf(2, kBS);
+            for (int s = 0; s < kBS; ++s)
+            {
+                float v = 0.0f;
+                switch (shape)
+                {
+                    case 0: v = 0.0f; break;
+                    case 1: v = 1.0f; break;
+                    case 2: v = (s % 64 == 0) ? 1.0f : 0.0f; break;
+                    default:
+                        v = std::sin(2.0f * juce::MathConstants<float>::pi
+                                     * 55.0f * static_cast<float>(s)
+                                     / static_cast<float>(kSR));
+                        break;
+                }
+                buf.setSample(0, s, v);
+                buf.setSample(1, s, -v);
+            }
+
+            juce::MidiBuffer midi;
+            // Two blocks: the second one exercises state carried across blocks
+            // (Crush's hold register, Fuzz's lowpass pole).
+            fx.processBlock(buf, midi);
+            fx.processBlock(buf, midi);
+
+            float peak = 0.0f;
+            bool  finite = true;
+            for (int ch = 0; ch < 2; ++ch)
+                for (int s = 0; s < kBS; ++s)
+                {
+                    const float v = buf.getSample(ch, s);
+                    if (!std::isfinite(v)) finite = false;
+                    peak = std::max(peak, std::abs(v));
+                }
+
+            CHECK(finite, "distortion modes must never emit NaN or Inf");
+            worstPeak[static_cast<size_t>(mode)] =
+                std::max(worstPeak[static_cast<size_t>(mode)], peak);
+        }
+    }
+
+    float legacyWorst = 0.0f;
+    for (int mode = 0; mode < 4; ++mode)
+        legacyWorst = std::max(legacyWorst, worstPeak[static_cast<size_t>(mode)]);
+
+    std::cout << "    worst peak per mode:";
+    for (int mode = 0; mode <= 6; ++mode)
+        std::cout << " " << mode << ":" << worstPeak[static_cast<size_t>(mode)];
+    std::cout << "  (legacy worst " << legacyWorst << ")\n";
+
+    for (int mode = 4; mode <= 6; ++mode)
+        CHECK(worstPeak[static_cast<size_t>(mode)] <= legacyWorst,
+              "new distortion modes must stay at or below the shipped modes' worst-case peak");
+}
+
+// ─── Distortion: Crush params actually do something ──────────────────────────
+static void testDistortionCrushParams()
+{
+    std::cout << "  [distortion crush params]\n";
+    constexpr double kSR = 44100.0;
+    constexpr int    kBS = 2048;
+
+    auto renderCrush = [](float bits, float downsample)
+    {
+        XlethDistortionEffect fx;
+        fx.setParameterValue("mode", 4.0f);
+        fx.setParameterValue("drive", 6.0f);
+        fx.setParameterValue("tone", 20000.0f);
+        fx.setParameterValue("bits", bits);
+        fx.setParameterValue("downsample", downsample);
+        fx.prepareToPlay(kSR, kBS);
+
+        juce::AudioBuffer<float> buf(2, kBS);
+        for (int s = 0; s < kBS; ++s)
+        {
+            const float v = 0.5f * std::sin(2.0f * juce::MathConstants<float>::pi
+                                            * 220.0f * static_cast<float>(s)
+                                            / static_cast<float>(kSR));
+            buf.setSample(0, s, v);
+            buf.setSample(1, s, v);
+        }
+        juce::MidiBuffer midi;
+        fx.processBlock(buf, midi);
+        return buf;
+    };
+
+    auto rmsDiff = [](const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b)
+    {
+        double sumSq = 0.0;
+        for (int s = 128; s < kBS; ++s)
+        {
+            const double d = static_cast<double>(a.getSample(0, s))
+                           - static_cast<double>(b.getSample(0, s));
+            sumSq += d * d;
+        }
+        return std::sqrt(sumSq / static_cast<double>(kBS - 128));
+    };
+
+    const auto transparent = renderCrush(16.0f, 1.0f);   // both params neutral
+    const auto fewBits     = renderCrush(4.0f,  1.0f);   // quantizer only
+    const auto decimated   = renderCrush(16.0f, 12.0f);  // sample-and-hold only
+
+    const double bitsDelta = rmsDiff(transparent, fewBits);
+    const double dsDelta   = rmsDiff(transparent, decimated);
+    std::cout << "    bits delta RMS: " << bitsDelta
+              << "   downsample delta RMS: " << dsDelta << "\n";
+
+    // Each param is checked on its own so a param that is read but never used
+    // cannot hide behind the other one.
+    CHECK(bitsDelta > 0.01, "lowering bits must audibly change the Crush output");
+    CHECK(dsDelta   > 0.01, "raising downsample must audibly change the Crush output");
+}
+
+// ─── Distortion: symmetry morph ──────────────────────────────────────────────
+static void testDistortionSymmetry()
+{
+    std::cout << "  [distortion symmetry]\n";
+    constexpr double kSR = 44100.0;
+    constexpr int    kBS = 2048;
+
+    // symmetry = 0 must collapse Analog to a symmetric (odd) shaper: feeding
+    // -x must produce exactly -f(x). At symmetry = 100 the diode bias is back
+    // and that identity must NOT hold.
+    auto asymmetryOf = [](float symmetry) -> float
+    {
+        std::array<juce::AudioBuffer<float>, 2> outs {
+            juce::AudioBuffer<float>(2, kBS), juce::AudioBuffer<float>(2, kBS) };
+
+        for (int polarity = 0; polarity < 2; ++polarity)
+        {
+            XlethDistortionEffect fx;
+            fx.setParameterValue("mode", 3.0f);
+            fx.setParameterValue("symmetry", symmetry);
+            fx.setParameterValue("tone", 20000.0f);
+            fx.prepareToPlay(kSR, kBS);
+
+            const float sign = polarity == 0 ? 1.0f : -1.0f;
+            for (int s = 0; s < kBS; ++s)
+            {
+                const float v = sign * 0.8f
+                    * std::sin(2.0f * juce::MathConstants<float>::pi * 9.0f
+                               * static_cast<float>(s) / static_cast<float>(kBS));
+                outs[static_cast<size_t>(polarity)].setSample(0, s, v);
+                outs[static_cast<size_t>(polarity)].setSample(1, s, v);
+            }
+
+            juce::MidiBuffer midi;
+            fx.processBlock(outs[static_cast<size_t>(polarity)], midi);
+        }
+
+        double sumSq = 0.0;
+        for (int s = 0; s < kBS; ++s)
+        {
+            const double d = static_cast<double>(outs[0].getSample(0, s))
+                           + static_cast<double>(outs[1].getSample(0, s));
+            sumSq += d * d;
+        }
+        return static_cast<float>(std::sqrt(sumSq / static_cast<double>(kBS)));
+    };
+
+    const float asymAt0   = asymmetryOf(0.0f);
+    const float asymAt100 = asymmetryOf(100.0f);
+    std::cout << "    odd-symmetry residual: symmetry=0 -> " << asymAt0
+              << ", symmetry=100 -> " << asymAt100 << "\n";
+
+    CHECK(asymAt0 < 1.0e-4f,
+          "symmetry=0 must make Analog an odd (symmetric) shaper");
+    CHECK(asymAt100 > 20.0f * std::max(asymAt0, 1.0e-6f),
+          "symmetry=100 must retain the asymmetric diode bias");
+}
+
+// ─── Distortion: loudness honesty across all 7 modes ─────────────────────────
+static void testDistortionModeLoudness()
+{
+    std::cout << "  [distortion mode loudness]\n";
+    constexpr double kSR = 44100.0;
+    constexpr int    kBS = 4096;
+
+    for (const float driveDb : { 6.0f, 12.0f, 24.0f })
+    {
+        std::array<double, 7> rms {};
+        for (int mode = 0; mode < 7; ++mode)
+        {
+            XlethDistortionEffect fx;
+            fx.setParameterValue("mode", static_cast<float>(mode));
+            fx.setParameterValue("drive", driveDb);
+            fx.setParameterValue("tone", 20000.0f);
+            fx.setParameterValue("bits", 8.0f);
+            fx.setParameterValue("downsample", 4.0f);
+            fx.prepareToPlay(kSR, kBS);
+
+            juce::AudioBuffer<float> buf(2, kBS);
+            for (int s = 0; s < kBS; ++s)
+            {
+                const float ph = 2.0f * juce::MathConstants<float>::pi
+                               * static_cast<float>(s) / static_cast<float>(kSR);
+                const float v = 0.35f * (std::sin(110.0f * ph)
+                                       + 0.6f * std::sin(277.0f * ph)
+                                       + 0.3f * std::sin(660.0f * ph));
+                buf.setSample(0, s, v);
+                buf.setSample(1, s, v);
+            }
+
+            juce::MidiBuffer midi;
+            fx.processBlock(buf, midi);
+
+            double sumSq = 0.0;
+            for (int s = 256; s < kBS; ++s)
+            {
+                const double v = buf.getSample(0, s);
+                sumSq += v * v;
+            }
+            rms[static_cast<size_t>(mode)] = std::sqrt(sumSq / static_cast<double>(kBS - 256));
+        }
+
+        // Reference = mean RMS of the four shipped modes.
+        const double ref = (rms[0] + rms[1] + rms[2] + rms[3]) / 4.0;
+        std::cout << "    drive " << driveDb << " dB  ref=" << ref << "  ";
+        for (int mode = 0; mode < 7; ++mode)
+            std::cout << mode << ":" << (20.0 * std::log10(rms[static_cast<size_t>(mode)] / ref)) << "dB ";
+        std::cout << "\n";
+
+        for (int mode = 4; mode < 7; ++mode)
+        {
+            const double deltaDb = 20.0 * std::log10(rms[static_cast<size_t>(mode)] / ref);
+            CHECK(std::abs(deltaDb) <= 2.5,
+                  "new distortion modes must sit within 2.5 dB of the legacy modes' loudness");
+        }
+    }
+}
+
+// ─── Distortion: new params reach the graph/automation parameter surface ─────
+static void testDistortionParameterSurface()
+{
+    std::cout << "  [distortion parameter surface]\n";
+    XlethDistortionEffect fx;
+
+    // Stock effects expose their parameters to the mixer graph and to automation
+    // straight from the APVTS (buildGraphEffectParameterDescriptors walks
+    // getParameters(); getParametersAsJSON mirrors it). Being in createLayout IS
+    // the registration — so assert both surfaces actually see the new params.
+    const std::string json = fx.getParametersAsJSON();
+    for (const char* id : { "mode", "drive", "tone", "filter_pos", "mix",
+                            "symmetry", "bits", "downsample" })
+    {
+        CHECK(json.find(std::string("\"id\":\"") + id + "\"") != std::string::npos,
+              "distortion parameter JSON should expose every APVTS param");
+
+        std::atomic<float>* raw = nullptr;
+        juce::RangedAudioParameter* param = nullptr;
+        CHECK(fx.resolveAutomationParameter(id, raw, param) && raw && param,
+              "every distortion param should be automation-resolvable");
+    }
+
+    auto* modeParam = findRangedParam(fx, "mode");
+    CHECK(modeParam != nullptr, "mode param should exist");
+    if (modeParam)
+    {
+        CHECK(modeParam->getNormalisableRange().end == 6.0f,
+              "mode range should be 0-6 after the append-only expansion");
+        CHECK(modeParam->getNormalisableRange().start == 0.0f,
+              "mode range should still start at 0");
+    }
 }
 
 static void testTransientAttackShaping()
@@ -4837,6 +5255,12 @@ int main()
     testBypass();
     testJSONHelpers();
     testDistortionModesDiffer();
+    testDistortionDefaultRenderUnchanged();
+    testDistortionNewModesSafety();
+    testDistortionCrushParams();
+    testDistortionSymmetry();
+    testDistortionModeLoudness();
+    testDistortionParameterSurface();
     testTransientAttackShaping();
     testTransientSustainShaping();
     testTransientMixAndBypass();

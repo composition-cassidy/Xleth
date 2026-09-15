@@ -18,10 +18,15 @@ describe('Distortion manifest registry', () => {
 
   it('declares exactly the engine Distortion parameters', () => {
     expect(Object.keys(DISTORTION_MANIFEST.params).sort())
-      .toEqual(['drive', 'filter_pos', 'mix', 'mode', 'tone'])
+      .toEqual(['bits', 'downsample', 'drive', 'filter_pos', 'mix', 'mode', 'symmetry', 'tone'])
     expect(DISTORTION_MANIFEST.params.mode.kind).toBe('discrete')
     expect(DISTORTION_MANIFEST.params.mode.min).toBe(0)
-    expect(DISTORTION_MANIFEST.params.mode.max).toBe(3)
+    expect(DISTORTION_MANIFEST.params.mode.max).toBe(6)
+    // Mode-specific params must stay transparent by default: these three values
+    // are what make a pre-expansion session load unchanged.
+    expect(DISTORTION_MANIFEST.params.symmetry.defaultValue).toBe(100)
+    expect(DISTORTION_MANIFEST.params.bits.defaultValue).toBe(16)
+    expect(DISTORTION_MANIFEST.params.downsample.defaultValue).toBe(1)
     expect(DISTORTION_MANIFEST.params.filter_pos.kind).toBe('discrete')
     expect(DISTORTION_MANIFEST.params.drive.format).toBe('dB1')
     expect(DISTORTION_MANIFEST.params.tone.format).toBe('hz0')
@@ -113,7 +118,7 @@ describe('Designer store - loadInitial("distortion")', () => {
 describe('Designer BindingPicker for Distortion', () => {
   it('lists Distortion params without Compressor or Limiter leakage', () => {
     const values = getParamPickerOptions(DISTORTION_MANIFEST, null).map(o => o.value).sort()
-    expect(values).toEqual(['drive', 'filter_pos', 'mix', 'mode', 'tone'])
+    expect(values).toEqual(['bits', 'downsample', 'drive', 'filter_pos', 'mix', 'mode', 'symmetry', 'tone'])
     expect(values).not.toContain('threshold')
     expect(values).not.toContain('ceiling')
   })
