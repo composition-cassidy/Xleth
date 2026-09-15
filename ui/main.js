@@ -1620,6 +1620,9 @@ ipcMain.handle('xleth:midi:parseSummary', (_, filePath) =>
 ipcMain.handle('xleth:midi:importFull', (_, filePath, optionsJson) =>
     callWorker('midi_importFull', [filePath, optionsJson]));
 
+ipcMain.handle('xleth:midi:getReimportTargets', () =>
+    callWorker('midi_getReimportTargets', []));
+
 ipcMain.handle('xleth:midi:executeImport', (_, noteData, optionsJson) =>
     // preload.js guarantees noteData is a Buffer; the pipe client base64-encodes it.
     callWorker('midi_executeImport', [noteData, optionsJson]));

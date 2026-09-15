@@ -9,7 +9,12 @@ import {
   buildOutputTracks,
   buildSamplePickerItems,
   getEffectiveTempoOverride,
+  resolveRowMode,
+  MODE_NEW,
+  MODE_UPDATE,
 } from './MidiImportDialog.jsx'
+import { findMatchingTrack } from './filenameMatch.js'
+import { buildTargetOptions } from './MidiReimportModeSelect.jsx'
 
 describe('MIDI import modal helpers', () => {
   it('treats near-matching BPMs as a no-op tempo override', () => {
@@ -74,9 +79,65 @@ describe('MIDI import modal helpers', () => {
         name: 'Lead',
         visualOnly: true,
         regionId: 42,
+        // A row with no re-import target commits as a plain create, which is
+        // the pre-re-import behaviour.
+        mode: MODE_NEW,
+        targetTrackId: -1,
       },
     ])
     expect(commitOptions.tempoOverride).toBe(false)
+  })
+
+  it('commits an update row with its resolved target track', () => {
+    const targets = [{ trackId: 9, name: 'Kick', eligible: true, patternCount: 1, regionId: 3 }]
+    const commitOptions = buildMidiCommitOptions({
+      metadata: { sourceTempo: 120, outputTracks: [{ name: 'Kick' }] },
+      summary: { sourceTempo: 120 },
+      outputTrackOptions: {
+        0: { name: 'Kick', visualOnly: false, sampleId: 3, mode: MODE_UPDATE, targetTrackId: 9 },
+      },
+      projectBpm: 140,
+      tempoOverride: true,
+      reimportTargets: targets,
+    })
+
+    expect(commitOptions.outputTracks[0]).toMatchObject({
+      mode: MODE_UPDATE,
+      targetTrackId: 9,
+      regionId: 3,
+    })
+  })
+
+  it('falls back to a new track when the chosen target has vanished', () => {
+    // The engine hard-fails an update into a missing track, which would drop the
+    // notes on the floor; creating instead at least keeps the material.
+    expect(resolveRowMode({ mode: MODE_UPDATE, targetTrackId: 9 }, []))
+      .toEqual({ mode: MODE_NEW, targetTrackId: -1 })
+
+    // An ineligible target (more than one distinct pattern on the track) is
+    // treated the same way.
+    expect(resolveRowMode(
+      { mode: MODE_UPDATE, targetTrackId: 9 },
+      [{ trackId: 9, name: 'Kick', eligible: false }],
+    )).toEqual({ mode: MODE_NEW, targetTrackId: -1 })
+
+    expect(resolveRowMode({ mode: MODE_NEW, targetTrackId: 9 }, []))
+      .toEqual({ mode: MODE_NEW, targetTrackId: -1 })
+  })
+
+  it('suggests a re-import target by name, tie-breaking on the lowest trackId', () => {
+    const targets = [
+      { trackId: 12, name: 'Snare', eligible: true },
+      { trackId: 4, name: 'Snare', eligible: true },
+      { trackId: 7, name: 'Hat', eligible: true },
+      { trackId: 2, name: 'Kick', eligible: false },
+    ]
+
+    expect(findMatchingTrack('Snare', targets).trackId).toBe(4)
+    expect(findMatchingTrack('Hat', targets).trackId).toBe(7)
+    // Ineligible targets are never suggested even on an exact name match.
+    expect(findMatchingTrack('Kick', targets)).toBe(null)
+    expect(findMatchingTrack('Nothing Like This', targets)).toBe(null)
   })
 
   it('joins existing regions to existing sources for the sample rail', () => {
@@ -132,5 +193,55 @@ describe('MidiTrackRow redesigned layout', () => {
     expect(html).not.toContain('<select')
     expect(html).not.toContain('Pitch bend will be discarded')
     expect(html).not.toContain('This track will import without a sample assignment')
+    // No existing Pattern tracks were passed, so the target picker is hidden
+    // rather than shown as a one-option dropdown.
+    expect(html).not.toContain('Target')
+  })
+
+  it('renders the re-import target picker only when targets exist', () => {
+    const row = targets => renderToStaticMarkup(
+      <MidiTrackRow
+        track={{ index: 0, name: 'Kick', noteCount: 12, isDrum: false }}
+        parentOptions={{ enabled: true, splitByNote: false }}
+        outputOptions={{
+          outputTrackIndex: 0,
+          sampleId: null,
+          visualOnly: false,
+          maxNoteLengthDenom: 0,
+          mode: MODE_UPDATE,
+          targetTrackId: 5,
+        }}
+        onParentChange={vi.fn()}
+        onOutputChange={vi.fn()}
+        sampleItems={[]}
+        reimportTargets={targets}
+      />
+    )
+
+    expect(row([])).not.toContain('Target')
+
+    const html = row([
+      { trackId: 5, name: 'Kick', eligible: true, patternCount: 1, regionId: 3 },
+      { trackId: 6, name: 'Busy', eligible: false, patternCount: 3, regionId: -1 },
+    ])
+    // XlethSelect renders only the closed trigger, so the markup shows the
+    // label and the SELECTED option; the option list is asserted below.
+    expect(html).toContain('Target')
+    expect(html).toContain('Update: Kick')
+  })
+
+  it('offers New track plus every Pattern target, disabling ambiguous ones', () => {
+    expect(buildTargetOptions([
+      { trackId: 5, name: 'Kick', eligible: true, patternCount: 1 },
+      { trackId: 6, name: 'Busy', eligible: false, patternCount: 3 },
+    ])).toEqual([
+      { value: MODE_NEW, label: 'New track' },
+      { value: '5', label: 'Update: Kick', disabled: false },
+      // An ambiguous track is shown, disabled, with why — not silently dropped,
+      // which would read as the track having gone missing.
+      { value: '6', label: 'Busy (3 patterns)', disabled: true },
+    ])
+
+    expect(buildTargetOptions([])).toEqual([{ value: MODE_NEW, label: 'New track' }])
   })
 })

@@ -1,6 +1,8 @@
 import React, { useEffect, useRef, useState, useCallback, useMemo } from 'react'
 import MidiTrackRow from './MidiTrackRow.jsx'
-import { findMatchingSample, gmDrumName } from './filenameMatch.js'
+import { gmDrumName, findMatchingTrack } from './filenameMatch.js'
+import { MODE_NEW, MODE_UPDATE } from './MidiReimportModeSelect.jsx'
+import { resolveAutoAssignment, rememberAssignments } from './assignmentMemory.js'
 import { useToast } from '../Toast.jsx'
 import { PPQ } from '../../constants/timeline.js'
 import { getPickerPath, openFilePicker } from '../filePicker/filePickerService.js'
@@ -167,12 +169,34 @@ export function buildMidiImportOptions({
   }
 }
 
+// ── Re-import mode ────────────────────────────────────────────────────────────
+// A row is either 'new' (create a fresh Pattern track, the original behaviour)
+// or 'update' (rewrite the notes of the pattern already on targetTrackId).
+// Defined by the control that sets them; re-exported here because the commit
+// payload builders below are the other half of the same contract.
+export { MODE_NEW, MODE_UPDATE } from './MidiReimportModeSelect.jsx'
+
+// Resolves one row's stored mode into the { mode, targetTrackId } pair the
+// engine expects. A row that says 'update' but whose target has disappeared
+// from the timeline since the dialog opened falls back to 'new': the engine
+// would hard-fail it otherwise, losing the notes entirely.
+export function resolveRowMode(opts, targets) {
+  if (opts?.mode !== MODE_UPDATE) return { mode: MODE_NEW, targetTrackId: -1 }
+  const targetId = Number(opts.targetTrackId)
+  const target = (targets || []).find(t => Number(t.trackId) === targetId)
+  if (!target || target.eligible === false) {
+    return { mode: MODE_NEW, targetTrackId: -1 }
+  }
+  return { mode: MODE_UPDATE, targetTrackId: targetId }
+}
+
 export function buildMidiCommitOptions({
   metadata,
   summary,
   outputTrackOptions,
   tempoOverride,
   projectBpm,
+  reimportTargets = [],
 }) {
   return {
     tempoOverride: getEffectiveTempoOverride(tempoOverride, metadata?.sourceTempo ?? summary?.sourceTempo, projectBpm),
@@ -180,11 +204,17 @@ export function buildMidiCommitOptions({
     projectTPQ: PPQ,
     outputTracks: (metadata?.outputTracks || []).map((ot, i) => {
       const userOpts = outputTrackOptions[i]
+      const { mode, targetTrackId } = resolveRowMode(userOpts, reimportTargets)
       return {
         outputTrackIndex: i,
+        // In update mode the engine keeps the track's OWN name (the user may
+        // have renamed it since the first import); this is still sent because
+        // it names a pattern seeded into a previously empty target track.
         name: userOpts?.name ?? ot.name,
         visualOnly: userOpts?.visualOnly ?? false,
         regionId: Number(userOpts?.sampleId ?? -1),
+        mode,
+        targetTrackId,
       }
     }),
   }
@@ -209,6 +239,9 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
   const [outputTrackOptions, setOutputTrackOptions] = useState({})
   const [regions, setRegions] = useState([])
   const [sourceMedia, setSourceMedia] = useState([])
+  // Existing Pattern tracks that a row can be re-imported INTO, resolved
+  // engine-side (midi.getReimportTargets).
+  const [reimportTargets, setReimportTargets] = useState([])
 
   // Fetch project BPM whenever the dialog opens.
   useEffect(() => {
@@ -231,6 +264,7 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
     setOutputTrackOptions({})
     setRegions([])
     setSourceMedia([])
+    setReimportTargets([])
 
     let cancelled = false
 
@@ -293,10 +327,12 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
 
       let fetchedRegions = []
       let fetchedSources = []
+      let fetchedTargets = []
       try {
-        const [regionResult, sourceResult] = await Promise.allSettled([
+        const [regionResult, sourceResult, targetResult] = await Promise.allSettled([
           window.xleth?.timeline?.getRegions?.(),
           window.xleth?.timeline?.getSources?.(),
+          window.xleth?.midi?.getReimportTargets?.(),
         ])
         fetchedRegions = regionResult.status === 'fulfilled' && Array.isArray(regionResult.value)
           ? regionResult.value
@@ -304,13 +340,24 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
         fetchedSources = sourceResult.status === 'fulfilled' && Array.isArray(sourceResult.value)
           ? sourceResult.value
           : []
+        fetchedTargets = targetResult.status === 'fulfilled' && Array.isArray(targetResult.value)
+          ? targetResult.value
+          : []
+        if (targetResult.status !== 'fulfilled' || !Array.isArray(targetResult.value)) {
+          // Four-layer bridge: an unwired call resolves to undefined rather than
+          // throwing, so say so loudly instead of silently offering no targets.
+          console.warn('[MidiImport] getReimportTargets unavailable — re-import mode disabled',
+                       targetResult.status === 'rejected' ? targetResult.reason : targetResult.value)
+        }
       } catch (e) {
         console.warn('[MidiImport] timeline media fetch error:', e)
       }
       if (cancelled) return
 
+      console.log('[MidiImport] Re-import targets:', fetchedTargets)
       setRegions(fetchedRegions)
       setSourceMedia(fetchedSources)
+      setReimportTargets(fetchedTargets)
       setSummary(parsed)
       setTrackOptions(initSourceTrackOptions(parsed.tracks || []))
       // outputTrackOptions seeded by reconciliation effect watching outputTracks
@@ -343,8 +390,10 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
   // ── Reconcile outputTrackOptions whenever outputTracks changes ──────────────
   // Carries forward existing entries by stableKey so user selections survive
   // splitByNote toggles and parent enable/disable. Seeds new entries via auto-match.
-  // regions captured from render closure — correct at the time outputTracks changes.
-  // regions intentionally excluded from deps — auto-match runs on seed only.
+  // regions and reimportTargets captured from the render closure — both are set
+  // in the same batch that sets summary, so they are populated by the time
+  // outputTracks first becomes non-empty.
+  // Deliberately excluded from deps — auto-match runs on seed only.
   useEffect(() => {
     setOutputTrackOptions(prev => {
       const prevByStableKey = {}
@@ -357,19 +406,42 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
         if (prevByStableKey[key]) {
           next[ot.outputTrackIndex] = prevByStableKey[key]
         } else {
-          const matched = findMatchingSample(ot.name, regions)
+          // Precedence: remembered assignment (from a prior import of this
+          // track name) first, then scored fuzzy match against the GM alias
+          // table and region names.
+          const { region: matched, source: matchSource } = resolveAutoAssignment(ot.name, regions)
           if (matched) {
-            console.log(`[MidiImport] Auto-match: "${ot.name}" → "${matched.name}" (regionId=${matched.id})`)
+            console.log(`[MidiImport] Auto-match (${matchSource}): "${ot.name}" → "${matched.name}" (regionId=${matched.id})`)
           } else {
             console.log(`[MidiImport] Auto-match: "${ot.name}" → none`)
           }
+
+          // Re-import: an existing Pattern track whose name matches becomes the
+          // default target, so the common case (same MIDI, edited in the DAW)
+          // needs no clicks. No match → 'new', the original behaviour.
+          const matchedTrack = findMatchingTrack(ot.name, reimportTargets)
+          if (matchedTrack) {
+            console.log(`[MidiImport] Track-match: "${ot.name}" → update trackId=${matchedTrack.trackId} ("${matchedTrack.name}")`)
+          }
+
+          // When updating, the track's CURRENT binding is ground truth and wins
+          // over the auto-match: it is what is actually playing on the timeline.
+          // regionId -1 on the target means "unassigned", in which case the
+          // auto-match still gets to suggest something.
+          const targetRegionId = Number(matchedTrack?.regionId ?? -1)
+          const seededSampleId = (matchedTrack && targetRegionId >= 0)
+            ? targetRegionId
+            : (matched?.id ?? null)
+
           next[ot.outputTrackIndex] = {
             _stableKey: key,
             enabled: true,
             visualOnly: false,
-            sampleId: matched?.id ?? null,
+            sampleId: seededSampleId,
             name: ot.name,
             maxNoteLengthDenom: readDefaultMaxNoteLengthDenom(),
+            mode: matchedTrack ? MODE_UPDATE : MODE_NEW,
+            targetTrackId: matchedTrack ? Number(matchedTrack.trackId) : -1,
           }
         }
       }
@@ -440,20 +512,57 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
         outputTrackOptions,
         tempoOverride,
         projectBpm,
+        reimportTargets,
       })
+
+      const updateCount = commitOptions.outputTracks.filter(o => o.mode === MODE_UPDATE).length
+      console.log('[MidiImport] Commit payload:', updateCount, 'update row(s),',
+                  commitOptions.outputTracks.length - updateCount, 'new row(s)')
 
       await window.xleth.midi.executeImport(noteData, commitOptions)
       const t2 = performance.now()
       console.log('[MidiImport] executeImport complete:', (t2 - t1).toFixed(1), 'ms', 'total=', (t2 - t0).toFixed(1), 'ms')
 
-      showToast(`Imported ${enabledCount} track${enabledCount === 1 ? '' : 's'} — Ctrl+Z to undo`, 'success')
+      // Learn from this import: remember every enabled output track's final
+      // name → sample assignment, including manual overrides, so a re-import
+      // of the same (or similarly-named) tracks pre-fills next time.
+      const assignmentEntries = outputTracks
+        .filter(ot => outputTrackOptions[ot.outputTrackIndex]?.enabled !== false)
+        .map(ot => {
+          const opts = outputTrackOptions[ot.outputTrackIndex]
+          const regionId = opts?.sampleId
+          if (regionId == null || Number(regionId) < 0) return null
+          const region = regions.find(r => String(r.id) === String(regionId))
+          return {
+            trackName: opts?.name ?? ot.name,
+            regionId,
+            regionName: region?.name ?? '',
+          }
+        })
+        .filter(Boolean)
+      if (assignmentEntries.length) {
+        rememberAssignments(assignmentEntries)
+      }
+
+      const updatedRows = outputTracks.filter(ot => {
+        const opts = outputTrackOptions[ot.outputTrackIndex]
+        return opts?.enabled !== false
+          && resolveRowMode(opts, reimportTargets).mode === MODE_UPDATE
+      }).length
+      const createdRows = enabledCount - updatedRows
+      const summaryText = updatedRows === 0
+        ? `Imported ${createdRows} track${createdRows === 1 ? '' : 's'}`
+        : createdRows === 0
+          ? `Updated ${updatedRows} track${updatedRows === 1 ? '' : 's'}`
+          : `Updated ${updatedRows}, imported ${createdRows}`
+      showToast(`${summaryText} — Ctrl+Z to undo`, 'success')
       setPhase('done')
     } catch (err) {
       console.error('[MidiImport] Import failed:', err)
       setErrorMsg(String(err?.message ?? err))
       setPhase('error')
     }
-  }, [summary, filePath, canImport, tempoOverride, outputTracks, outputTrackOptions, trackOptions, enabledCount, projectBpm, showToast])
+  }, [summary, filePath, canImport, tempoOverride, outputTracks, outputTrackOptions, trackOptions, enabledCount, projectBpm, showToast, regions, reimportTargets])
 
   if (!isOpen) return null
 
@@ -585,6 +694,7 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
                       [outputTrackIndex]: { ...prev[outputTrackIndex], ...patch },
                     }))}
                     sampleItems={sampleItems}
+                    reimportTargets={reimportTargets}
                   />
                 ))}
               </div>

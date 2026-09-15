@@ -2,6 +2,7 @@ import React from 'react'
 import MidiDrumSubTrackRow from './MidiDrumSubTrackRow.jsx'
 import { MAX_NOTE_LENGTH_OPTIONS, DEFAULT_MAX_NOTE_LENGTH_DENOM } from './maxNoteLength.js'
 import MidiSampleRail from './MidiSampleRail.jsx'
+import MidiReimportModeSelect from './MidiReimportModeSelect.jsx'
 import XlethSelect from '../common/XlethSelect.jsx'
 
 const MAX_LENGTH_SELECT_OPTIONS = MAX_NOTE_LENGTH_OPTIONS.map(option => ({
@@ -14,7 +15,8 @@ const MAX_LENGTH_SELECT_OPTIONS = MAX_NOTE_LENGTH_OPTIONS.map(option => ({
 //                for split-drum tracks - array of { pitch, outputTrackIndex, sampleId, visualOnly, ... }
 // onParentChange(patch)              - partial patch to source-track-level options
 // onOutputChange(outputTrackIndex, patch) - partial patch to output-track-level options
-export default function MidiTrackRow({ track, parentOptions, outputOptions, onParentChange, onOutputChange, sampleItems }) {
+// reimportTargets - existing Pattern tracks this row can be re-imported into
+export default function MidiTrackRow({ track, parentOptions, outputOptions, onParentChange, onOutputChange, sampleItems, reimportTargets }) {
   const isSplitDrum = !!track.isDrum && !!parentOptions.splitByNote
   const trackName = track.name || `Track ${track.index + 1}`
   const controlsDisabled = !parentOptions.enabled || outputOptions == null
@@ -52,6 +54,17 @@ export default function MidiTrackRow({ track, parentOptions, outputOptions, onPa
             />
           </div>
           <div className="midi-track-controls">
+            <MidiReimportModeSelect
+              targets={reimportTargets}
+              mode={outputOptions?.mode}
+              targetTrackId={outputOptions?.targetTrackId}
+              onChange={patch => outputOptions != null && onOutputChange(
+                outputOptions.outputTrackIndex,
+                patch
+              )}
+              disabled={controlsDisabled}
+              ariaLabel={`${trackName} import target`}
+            />
             <label className="midi-control-group">
               <span className="midi-control-label">Max Length</span>
               <XlethSelect
@@ -105,6 +118,7 @@ export default function MidiTrackRow({ track, parentOptions, outputOptions, onPa
                   options={subEntry}
                   onChange={patch => onOutputChange(subEntry.outputTrackIndex, patch)}
                   sampleItems={sampleItems}
+                  reimportTargets={reimportTargets}
                 />
               ))}
             </div>

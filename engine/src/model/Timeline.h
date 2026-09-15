@@ -385,6 +385,37 @@ public:
     bool resizeNote(int patternId, int noteId, TickTime newDuration);
     bool setNoteVelocity(int patternId, int noteId, float velocity);
 
+    // ── Whole-note-set replacement (MIDI re-import) ───────────────────────────
+    // Swaps a pattern's entire note set in ONE step, then recalculates length
+    // exactly once.
+    //
+    // Deliberately not "clear, then addNotesToPatternBulk": an intermediate
+    // clear would run recalcPatternLength against an empty note list, collapse
+    // the pattern to the 1-bar minimum, and cascade every in-sync block down to
+    // 3840 ticks BEFORE the new notes arrive. cascadeBlockDurations identifies
+    // untrimmed blocks by `duration == oldLength`, so it must observe exactly
+    // one transition (real old length → real new length) or it resizes the
+    // wrong set: blocks the user had deliberately trimmed to one bar would be
+    // swept up, and genuinely in-sync blocks would already have been moved off
+    // the old length and so be skipped.
+    //
+    // `notes` is taken by reference and has its ids rewritten in place, matching
+    // addNotesToPatternBulk. Returns false if patternId is unknown.
+    bool replacePatternNotes(int patternId, std::vector<PatternNote>& notes);
+
+    // Verbatim note-set restore for undo. Reinstates the exact note objects
+    // (ids included), the pattern's nextNoteId counter and its stored length
+    // WITHOUT recalculating or cascading.
+    //
+    // The cascade is not invertible: replaying it backwards would resize any
+    // block the user had trimmed to exactly the NEW length. Callers that need
+    // block durations back must snapshot them before mutating and restore them
+    // explicitly (see ImportMidiCommand::UpdatedTrackSnapshot).
+    bool restorePatternNotes(int patternId,
+                             const std::vector<PatternNote>& notes,
+                             int nextNoteId,
+                             TickTime length);
+
     // ── Track type / sampler ──────────────────────────────────────────────────
     // Pattern tracks are sample-agnostic containers for PatternBlocks. Any
     // pattern (regardless of its regionId) can be placed on any pattern track.

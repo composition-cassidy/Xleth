@@ -687,6 +687,11 @@ Napi::Value Midi_ExecuteImport(const Napi::CallbackInfo& info)
     return dispatchToService(info, "midi_executeImport");
 }
 
+Napi::Value Midi_GetReimportTargets(const Napi::CallbackInfo& info)
+{
+    return dispatchToService(info, "midi_getReimportTargets");
+}
+
 Napi::Object Init(Napi::Env env, Napi::Object exports)
 {
     // ── Manifest-generated exports (AUDIT.md S1) ─────────────────────────────
@@ -917,6 +922,8 @@ Napi::Object Init(Napi::Env env, Napi::Object exports)
     exports.Set("midi_parseSummary",  Napi::Function::New(env, Midi_ParseSummary));
     exports.Set("midi_importFull",    Napi::Function::New(env, Midi_ImportFull));
     exports.Set("midi_executeImport", Napi::Function::New(env, Midi_ExecuteImport));
+    exports.Set("midi_getReimportTargets",
+                Napi::Function::New(env, Midi_GetReimportTargets));
 
     return exports;
 }

@@ -595,6 +595,9 @@ window.xleth = ({
   // ── MIDI Import ───────────────────────────────────────────────────────────
   midi: {
     parseSummary:  (filePath)          => invoke('xleth:midi:parseSummary', filePath),
+    // Candidate Pattern tracks for re-import mode. Resolved engine-side so the
+    // dialog's list and the engine's validation cannot drift apart.
+    getReimportTargets: ()             => invoke('xleth:midi:getReimportTargets'),
     importFull:    (filePath, options) => invoke('xleth:midi:importFull', filePath, JSON.stringify(options || {})),
     executeImport: (noteData, options) => {
       // Convert ArrayBuffer/TypedArray to Buffer before crossing the renderer→main

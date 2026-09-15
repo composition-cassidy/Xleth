@@ -2,6 +2,7 @@ import React from 'react'
 import { gmDrumName } from './filenameMatch.js'
 import { MAX_NOTE_LENGTH_OPTIONS, DEFAULT_MAX_NOTE_LENGTH_DENOM } from './maxNoteLength.js'
 import MidiSampleRail from './MidiSampleRail.jsx'
+import MidiReimportModeSelect from './MidiReimportModeSelect.jsx'
 import XlethSelect from '../common/XlethSelect.jsx'
 
 const MAX_LENGTH_SELECT_OPTIONS = MAX_NOTE_LENGTH_OPTIONS.map(option => ({
@@ -11,7 +12,7 @@ const MAX_LENGTH_SELECT_OPTIONS = MAX_NOTE_LENGTH_OPTIONS.map(option => ({
 
 // options: { enabled, visualOnly, sampleId, outputTrackIndex, pitch, ... }
 // onChange(patch): partial patch dispatched up to onOutputChange in the dialog
-export default function MidiDrumSubTrackRow({ noteNum, options, onChange, sampleItems }) {
+export default function MidiDrumSubTrackRow({ noteNum, options, onChange, sampleItems, reimportTargets }) {
   const gmName = gmDrumName(noteNum) || `Note ${noteNum}`
 
   return (
@@ -35,6 +36,14 @@ export default function MidiDrumSubTrackRow({ noteNum, options, onChange, sample
         ariaLabel={`${gmName} sample assignment`}
       />
       <div className="midi-track-controls midi-track-controls--compact">
+        <MidiReimportModeSelect
+          targets={reimportTargets}
+          mode={options.mode}
+          targetTrackId={options.targetTrackId}
+          onChange={onChange}
+          disabled={!options.enabled}
+          ariaLabel={`${gmName} import target`}
+        />
         <label className="midi-control-group">
           <span className="midi-control-label">Max Length</span>
           <XlethSelect

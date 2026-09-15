@@ -991,6 +991,60 @@ bool Timeline::addNotesToPatternBulk(int patternId, std::vector<PatternNote>& no
     return true;
 }
 
+// See the header for why this is not clear + addNotesToPatternBulk: the block
+// duration cascade must observe exactly ONE length transition.
+bool Timeline::replacePatternNotes(int patternId, std::vector<PatternNote>& notes) {
+    auto it = m_patterns.find(patternId);
+    if (it == m_patterns.end()) {
+        std::cout << "[Timeline] ERROR replacePatternNotes: patternId="
+                  << patternId << " not found\n";
+        return false;
+    }
+
+    Pattern& pattern = it->second;
+    const size_t oldCount = pattern.notes.size();
+
+    // Fresh ids continue the pattern's own counter rather than restarting at 1,
+    // so an id never refers to two different notes across the swap (piano-roll
+    // selections and any in-flight edit sessions key off note ids).
+    pattern.notes.clear();
+    pattern.notes.reserve(notes.size());
+    for (auto& note : notes) {
+        note.id = pattern.nextNoteId++;
+        pattern.notes.push_back(note);
+    }
+
+    std::cout << "[Timeline] replacePatternNotes pattern=" << patternId
+              << " " << oldCount << " -> " << notes.size() << " notes\n";
+
+    recalcPatternLength(patternId);
+    return true;
+}
+
+bool Timeline::restorePatternNotes(int patternId,
+                                   const std::vector<PatternNote>& notes,
+                                   int nextNoteId,
+                                   TickTime length) {
+    auto it = m_patterns.find(patternId);
+    if (it == m_patterns.end()) {
+        std::cout << "[Timeline] ERROR restorePatternNotes: patternId="
+                  << patternId << " not found\n";
+        return false;
+    }
+
+    Pattern& pattern = it->second;
+    pattern.notes  = notes;
+    pattern.length = length;
+    // Never walk the counter backwards: ids handed out since the snapshot may
+    // still be referenced elsewhere, and reusing one would alias two notes.
+    if (nextNoteId > pattern.nextNoteId) pattern.nextNoteId = nextNoteId;
+
+    std::cout << "[Timeline] restorePatternNotes pattern=" << patternId
+              << " notes=" << notes.size()
+              << " length=" << length.ticks << " (no cascade)\n";
+    return true;
+}
+
 bool Timeline::removeNoteFromPattern(int patternId, int noteId) {
     auto it = m_patterns.find(patternId);
     if (it == m_patterns.end()) {

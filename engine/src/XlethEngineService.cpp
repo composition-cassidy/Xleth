@@ -22771,6 +22771,78 @@ JsonApi::Value Midi_ImportFull(const JsonApi::CallbackInfo& info)
     }
 }
 
+// midi_getReimportTargets() -> Array<{
+//   trackId, name, visualOnly, patternId, patternCount, blockCount, regionId,
+//   eligible
+// }>
+//   The candidate list for MIDI re-import mode: every Pattern-type timeline
+//   track, with the pattern it carries resolved the SAME way
+//   ImportMidiCommand::executeUpdateRow resolves it, so what the dialog offers
+//   and what the engine accepts cannot drift apart.
+//
+//   Clip tracks are omitted entirely -- they are never valid update targets.
+//   A Pattern track carrying more than one distinct pattern is listed with
+//   eligible=false (there is no single note set to replace); the engine rejects
+//   it too, so the flag is a UI affordance, not the enforcement point.
+//
+//   patternId/regionId are -1 when the track has no blocks yet; such a track IS
+//   eligible and gets a pattern seeded into it on commit.
+JsonApi::Value Midi_GetReimportTargets(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (!g_timeline) {
+        JsonApi::Error::New(env, "Engine not initialised.").ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+
+    // patternId -> block count, built once over all blocks rather than calling
+    // getPatternBlocksOnTrack per track.
+    std::unordered_map<int, std::vector<int>> patternIdsByTrack;
+    std::unordered_map<int, int>              blockCountByTrack;
+    for (const PatternBlock* block : g_timeline->getAllPatternBlocks()) {
+        if (block == nullptr) continue;
+        blockCountByTrack[block->trackId]++;
+        auto& ids = patternIdsByTrack[block->trackId];
+        if (std::find(ids.begin(), ids.end(), block->patternId) == ids.end())
+            ids.push_back(block->patternId);
+    }
+
+    const auto tracks = g_timeline->getAllTracks();
+    JsonApi::Array arr = JsonApi::Array::New(env);
+    uint32_t outIndex = 0;
+    for (const TrackInfo* track : tracks) {
+        if (track == nullptr) continue;
+        if (track->type != TrackInfo::Type::Pattern) continue;
+
+        const auto idsIt = patternIdsByTrack.find(track->id);
+        const size_t patternCount = (idsIt == patternIdsByTrack.end())
+            ? 0u : idsIt->second.size();
+
+        int patternId = -1;
+        int regionId  = -1;
+        if (patternCount == 1) {
+            patternId = idsIt->second.front();
+            if (const Pattern* pattern = g_timeline->getPattern(patternId))
+                regionId = pattern->regionId;
+        }
+
+        const auto countIt = blockCountByTrack.find(track->id);
+
+        JsonApi::Object o = JsonApi::Object::New(env);
+        o.Set("trackId",      JsonApi::Number::New(env, track->id));
+        o.Set("name",         JsonApi::String::New(env, track->name));
+        o.Set("visualOnly",   JsonApi::Boolean::New(env, track->visualOnly));
+        o.Set("patternId",    JsonApi::Number::New(env, patternId));
+        o.Set("patternCount", JsonApi::Number::New(env, static_cast<double>(patternCount)));
+        o.Set("blockCount",   JsonApi::Number::New(env,
+                                  countIt == blockCountByTrack.end() ? 0 : countIt->second));
+        o.Set("regionId",     JsonApi::Number::New(env, regionId));
+        o.Set("eligible",     JsonApi::Boolean::New(env, patternCount <= 1));
+        arr.Set(outIndex++, o);
+    }
+    return arr;
+}
+
 // midi_executeImport(noteData: ArrayBuffer | Buffer | Uint8Array,
 //                    optionsJson: string)
 //   Commits a parsed MIDI import (output from midi_importFull) into the
@@ -22851,6 +22923,25 @@ void Midi_ExecuteImport(const JsonApi::CallbackInfo& info)
             spec.name             = entry.value("name",            std::string{});
             spec.visualOnly       = entry.value("visualOnly",      false);
             spec.regionId         = entry.value("regionId",        -1);
+
+            // Re-import: "update" rewrites the notes of the pattern already on
+            // targetTrackId instead of creating a new track. Anything other
+            // than the literal "update" is Create, so an older renderer (or a
+            // payload without the field) keeps the original behaviour.
+            const std::string mode = entry.value("mode", std::string{"create"});
+            spec.mode = (mode == "update")
+                ? ImportMidiCommandOptions::Mode::Update
+                : ImportMidiCommandOptions::Mode::Create;
+            spec.targetTrackId = entry.value("targetTrackId", -1);
+
+            if (spec.mode == ImportMidiCommandOptions::Mode::Update
+                && spec.targetTrackId < 0) {
+                JsonApi::TypeError::New(env,
+                    "midi_executeImport: outputTracks[].mode=\"update\" requires targetTrackId")
+                    .ThrowAsJavaScriptException();
+                return;
+            }
+
             opts.outputTracks.push_back(std::move(spec));
         }
     } catch (const std::exception& e) {
@@ -22906,6 +22997,14 @@ void Midi_ExecuteImport(const JsonApi::CallbackInfo& info)
     const double engineRate = audioEngine->getSampleRate();
     auto& mixEngine = audioEngine->getMixEngine();
 
+    // Read before the move: an update row may change a pattern's region
+    // binding, which invalidates the Sampler that pattern plays through.
+    const bool hasUpdateRows = std::any_of(
+        opts.outputTracks.begin(), opts.outputTracks.end(),
+        [](const ImportMidiCommandOptions::OutputTrackSpec& spec) {
+            return spec.mode == ImportMidiCommandOptions::Mode::Update;
+        });
+
     // Hold a non-owning pointer so we can read created-slot info after dispatch.
     auto cmd = std::make_unique<ImportMidiCommand>(
         std::move(opts), mixEngine, *sampleBank, engineRate);
@@ -22916,6 +23015,12 @@ void Midi_ExecuteImport(const JsonApi::CallbackInfo& info)
         g_undoManager->execute(std::move(cmd), *g_timeline);
     }
     syncMixerTrackSlots(false);
+
+    // Create rows only ever add patterns, whose Samplers are built lazily.
+    // Update rows rewrite an EXISTING pattern (and possibly its binding), so
+    // the already-built Sampler has to be rebuilt -- the same thing undo/redo
+    // do for exactly the same reason.
+    if (hasUpdateRows) rebuildAllSamplers();
 
     // Post-pass: trigger waveform mipmap generation for each newly-loaded
     // sample slot. cmdPtr is still valid — UndoManager owns the command on
@@ -23124,5 +23229,6 @@ nlohmann::json XlethEngineService::dispatch(const std::string& method,
     if (method == "midi_parseSummary") return Midi_ParseSummary(info).raw();
     if (method == "midi_importFull") return Midi_ImportFull(info).raw();
     if (method == "midi_executeImport") { Midi_ExecuteImport(info); return JsonApi::Env{}.Undefined().raw(); }
+    if (method == "midi_getReimportTargets") return Midi_GetReimportTargets(info).raw();
     throw std::runtime_error("Unknown engine command: " + method);
 }
