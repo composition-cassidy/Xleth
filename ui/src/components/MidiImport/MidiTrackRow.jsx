@@ -1,6 +1,8 @@
 import React from 'react'
 import MidiDrumSubTrackRow from './MidiDrumSubTrackRow.jsx'
 import { MAX_NOTE_LENGTH_OPTIONS, DEFAULT_MAX_NOTE_LENGTH_DENOM } from './maxNoteLength.js'
+import { TRANSPOSE_MIN_SEMITONES, TRANSPOSE_MAX_SEMITONES, DEFAULT_TRANSPOSE_SEMITONES, clampTransposeSemitones } from './transpose.js'
+import { MODE_UPDATE } from './MidiReimportModeSelect.jsx'
 import MidiSampleRail from './MidiSampleRail.jsx'
 import MidiReimportModeSelect from './MidiReimportModeSelect.jsx'
 import XlethSelect from '../common/XlethSelect.jsx'
@@ -9,6 +11,46 @@ const MAX_LENGTH_SELECT_OPTIONS = MAX_NOTE_LENGTH_OPTIONS.map(option => ({
   value: option.value,
   label: option.value === 0 ? 'None' : option.label,
 }))
+
+// Small numeric stepper for the ±24 semitone transpose control. Local to this
+// file — melodic-track-only, no reuse elsewhere in the MIDI import dialog.
+function TransposeStepper({ value, onChange, disabled, ariaLabel }) {
+  const dec = () => onChange(clampTransposeSemitones(value - 1))
+  const inc = () => onChange(clampTransposeSemitones(value + 1))
+  return (
+    <div className="midi-transpose-stepper">
+      <button
+        type="button"
+        onClick={dec}
+        disabled={disabled || value <= TRANSPOSE_MIN_SEMITONES}
+        aria-label={`${ariaLabel} down`}
+      >
+        −
+      </button>
+      <input
+        type="number"
+        className="midi-transpose-stepper-input"
+        aria-label={ariaLabel}
+        min={TRANSPOSE_MIN_SEMITONES}
+        max={TRANSPOSE_MAX_SEMITONES}
+        value={value}
+        disabled={disabled}
+        onChange={e => {
+          const n = parseInt(e.target.value, 10)
+          if (Number.isFinite(n)) onChange(clampTransposeSemitones(n))
+        }}
+      />
+      <button
+        type="button"
+        onClick={inc}
+        disabled={disabled || value >= TRANSPOSE_MAX_SEMITONES}
+        aria-label={`${ariaLabel} up`}
+      >
+        +
+      </button>
+    </div>
+  )
+}
 
 // parentOptions: { enabled, splitByNote }
 // outputOptions: for non-split tracks - single { outputTrackIndex, sampleId, visualOnly, name, ... } or null
@@ -65,6 +107,25 @@ export default function MidiTrackRow({ track, parentOptions, outputOptions, onPa
               disabled={controlsDisabled}
               ariaLabel={`${trackName} import target`}
             />
+            {(reimportTargets?.length > 0) && outputOptions?.mode === MODE_UPDATE && (
+              <span className="midi-placement-ignored-note" title="Re-import rows always keep their existing block placement">
+                Position / Tile ignored (re-import)
+              </span>
+            )}
+            {!track.isDrum && (
+              <label className="midi-control-group">
+                <span className="midi-control-label">Transpose</span>
+                <TransposeStepper
+                  value={outputOptions?.transposeSemitones ?? DEFAULT_TRANSPOSE_SEMITONES}
+                  onChange={value => outputOptions != null && onOutputChange(
+                    outputOptions.outputTrackIndex,
+                    { transposeSemitones: value }
+                  )}
+                  disabled={controlsDisabled}
+                  ariaLabel={`${trackName} transpose semitones`}
+                />
+              </label>
+            )}
             <label className="midi-control-group">
               <span className="midi-control-label">Max Length</span>
               <XlethSelect

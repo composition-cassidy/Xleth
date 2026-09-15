@@ -124,11 +124,11 @@ void ImportMidiCommand::execute(Timeline& timeline)
             blockDuration = storedPattern->length;
         }
 
-        // 2g. Place the pattern at position 0 on the new track.
+        // 2g. Place the pattern at the resolved import position on the new track.
         PatternBlock block;
         block.trackId   = trackId;
         block.patternId = patternId;
-        block.position  = TickTime{ 0 };
+        block.position  = options_.importPosition;
         block.duration  = blockDuration;
         const int blockId = timeline.addPatternBlock(std::move(block));
         if (blockId < 0) {
@@ -138,6 +138,40 @@ void ImportMidiCommand::execute(Timeline& timeline)
             continue;
         }
         createdPatternBlockIds_.push_back(blockId);
+
+        // 2h. "Loop pattern to fill project" -- Create rows only. Places
+        // sequential, contiguous copies of the same pattern until they cover
+        // preProjectEndTick_ (captured before this command placed anything).
+        if (options_.tileToFillProject) {
+            if (blockDuration.ticks <= 0) {
+                std::cout << "[MidiImport] output track " << spec.outputTrackIndex
+                          << " tile-to-fill skipped: pattern has zero length\n";
+            } else if (preProjectEndTick_.ticks <= options_.importPosition.ticks) {
+                std::cout << "[MidiImport] output track " << spec.outputTrackIndex
+                          << " tile-to-fill skipped: project end (" << preProjectEndTick_.ticks
+                          << ") is at or before the import position ("
+                          << options_.importPosition.ticks << ") -- placing a single block\n";
+            } else {
+                TickTime nextPos = options_.importPosition + blockDuration;
+                int tileCount = 0;
+                while (nextPos.ticks < preProjectEndTick_.ticks) {
+                    PatternBlock tileBlock;
+                    tileBlock.trackId   = trackId;
+                    tileBlock.patternId = patternId;
+                    tileBlock.position  = nextPos;
+                    tileBlock.duration  = blockDuration;
+                    const int tileBlockId = timeline.addPatternBlock(std::move(tileBlock));
+                    if (tileBlockId < 0) break;
+                    createdPatternBlockIds_.push_back(tileBlockId);
+                    ++tileCount;
+                    nextPos = nextPos + blockDuration;
+                }
+                std::cout << "[MidiImport] output track " << spec.outputTrackIndex
+                          << " tile-to-fill placed " << tileCount
+                          << " additional block(s) to cover project end ("
+                          << preProjectEndTick_.ticks << ")\n";
+            }
+        }
 
 #ifdef XLETH_DEBUG
         std::fprintf(stderr,
@@ -295,6 +329,15 @@ void ImportMidiCommand::capturePreImportState(Timeline& timeline)
         preRegionToSampleMap_ = mixEngine_->getRegionToSampleMapSnapshot();
     } else {
         preRegionToSampleMap_.clear();
+    }
+
+    preProjectEndTick_ = TickTime{ 0 };
+    for (const PatternBlock* block : timeline.getAllPatternBlocks()) {
+        if (block == nullptr) continue;
+        const TickTime end = block->position + block->duration;
+        if (end.ticks > preProjectEndTick_.ticks) {
+            preProjectEndTick_ = end;
+        }
     }
 }
 

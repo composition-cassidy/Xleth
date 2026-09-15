@@ -10468,18 +10468,25 @@ static void applyPeakTransforms(float* peaks, int numCols,
 }
 
 // waveform_getRegionPeaks(regionId, startTime, endTime, targetPixels, channel)
-// Returns { peaks: Float32Array, needsRawSamples, ready, sampleRate, totalSamples }
+// Returns { peaks: Float32Array, needsRawSamples, ready, mapped, sampleRate, totalSamples }
 JsonApi::Value Waveform_GetRegionPeaks(const JsonApi::CallbackInfo& info)
 {
     JsonApi::Env env = info.Env();
 
     // ── Build empty/not-ready result ─────────────────────────────────────
-    auto makeResult = [&](bool ready, int sr = 0, int64_t total = 0) {
+    // `mapped` is NOT the same thing as `ready`. ready=false used to mean both
+    // "the mipmap is still generating, ask again" and "this region/slot has no
+    // audio at all, there is nothing to wait for" — and callers, having no way
+    // to tell those apart, polled the second case forever (a slot-1 waveform on
+    // an unmapped slot retried every 150ms for the life of the panel).
+    // mapped=false says the wait is pointless: draw an empty state, do not poll.
+    auto makeResult = [&](bool ready, int sr = 0, int64_t total = 0, bool mapped = true) {
         auto obj = JsonApi::Object::New(env);
         auto ab = JsonApi::ArrayBuffer::New(env, 0);
         obj.Set("peaks",          JsonApi::Float32Array::New(env, 0, ab, 0));
         obj.Set("needsRawSamples", JsonApi::Boolean::New(env, false));
         obj.Set("ready",          JsonApi::Boolean::New(env, ready));
+        obj.Set("mapped",         JsonApi::Boolean::New(env, mapped));
         obj.Set("sampleRate",     JsonApi::Number::New(env, sr));
         obj.Set("totalSamples",   JsonApi::Number::New(env, static_cast<double>(total)));
         return obj;
@@ -10532,7 +10539,7 @@ JsonApi::Value Waveform_GetRegionPeaks(const JsonApi::CallbackInfo& info)
             audioEngine->getMixEngine().getSampleIdForRegionSlot(regionId, slotIndex);
         if (sampleBankId < 0) {
             WFB_LOG("getRegionPeaks: region %d -> sampleBankId=-1 (not mapped)", regionId);
-            return makeResult(false);
+            return makeResult(false, 0, 0, /*mapped=*/false);
         }
         mm = g_mipmapCache->get(std::to_string(sampleBankId));
         if (!mm) {
@@ -22908,6 +22915,13 @@ void Midi_ExecuteImport(const JsonApi::CallbackInfo& info)
         opts.sourceBPM     = parsed.value("sourceBPM",    0.0);
         opts.projectTPQ    = parsed.value("projectTPQ",   960);
         opts.sourcePath    = parsed.value("sourcePath",   std::string{});
+
+        // Placement (Create rows only; the renderer resolves "at playhead"
+        // itself and hands us a plain tick -- this command never reads
+        // transport state).
+        const int64_t positionTicks = parsed.value("positionTicks", static_cast<int64_t>(0));
+        opts.importPosition     = TickTime{ std::max<int64_t>(0, positionTicks) };
+        opts.tileToFillProject  = parsed.value("tileToFillProject", false);
 
         const auto& outputTracksJson = parsed.at("outputTracks");
         if (!outputTracksJson.is_array()) {

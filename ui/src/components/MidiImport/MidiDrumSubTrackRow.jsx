@@ -2,7 +2,7 @@ import React from 'react'
 import { gmDrumName } from './filenameMatch.js'
 import { MAX_NOTE_LENGTH_OPTIONS, DEFAULT_MAX_NOTE_LENGTH_DENOM } from './maxNoteLength.js'
 import MidiSampleRail from './MidiSampleRail.jsx'
-import MidiReimportModeSelect from './MidiReimportModeSelect.jsx'
+import MidiReimportModeSelect, { MODE_UPDATE } from './MidiReimportModeSelect.jsx'
 import XlethSelect from '../common/XlethSelect.jsx'
 
 const MAX_LENGTH_SELECT_OPTIONS = MAX_NOTE_LENGTH_OPTIONS.map(option => ({
@@ -44,6 +44,11 @@ export default function MidiDrumSubTrackRow({ noteNum, options, onChange, sample
           disabled={!options.enabled}
           ariaLabel={`${gmName} import target`}
         />
+        {(reimportTargets?.length > 0) && options.mode === MODE_UPDATE && (
+          <span className="midi-placement-ignored-note" title="Re-import rows always keep their existing block placement">
+            Position / Tile ignored (re-import)
+          </span>
+        )}
         <label className="midi-control-group">
           <span className="midi-control-label">Max Length</span>
           <XlethSelect

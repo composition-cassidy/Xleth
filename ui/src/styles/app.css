@@ -19942,6 +19942,89 @@ html, body, #root {
   font-size: 12px;
 }
 
+/* -- Transpose stepper ---------------------------------------------------- */
+
+.midi-transpose-stepper {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.midi-transpose-stepper button {
+  width: 20px;
+  height: 22px;
+  line-height: 1;
+  background: var(--theme-bg-elevated);
+  color: var(--theme-text);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+}
+
+.midi-transpose-stepper button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.midi-transpose-stepper-input {
+  width: 40px;
+  height: 22px;
+  text-align: center;
+  background: var(--theme-bg-elevated);
+  color: var(--theme-text);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm);
+  font-size: 12px;
+}
+
+.midi-transpose-stepper-input:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Per-row note that placement options (Position / Tile) are ignored because
+   this row resolved to a re-import (update) target. */
+.midi-placement-ignored-note {
+  font-size: 11px;
+  color: var(--theme-text-muted);
+  white-space: nowrap;
+}
+
+/* -- Placement (dialog-level: Position / Trim / Tile) ---------------------- */
+
+.midi-placement-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px 10px;
+  background: var(--theme-bg-secondary);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-md);
+}
+
+.midi-placement-position {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 12px;
+}
+
+.midi-placement-radio {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 13px;
+  color: var(--theme-text);
+  cursor: pointer;
+  user-select: none;
+}
+
+.midi-placement-radio input[type="radio"] {
+  margin: 0;
+  cursor: pointer;
+  accent-color: var(--theme-accent);
+}
+
 .midi-drum-section {
   gap: 10px;
   padding: 10px;

@@ -68,6 +68,15 @@ struct ImportOptions {
     // Out-of-range / missing entries are treated as 0 (off). Note starts are
     // never modified by the clamp.
     std::vector<uint32_t>                   maxNoteLengthByOutputTrack;
+    // Per-output-track transpose in semitones, same indexing as above. Range
+    // [-24, 24]; missing/out-of-range entries default to 0. Applied AFTER
+    // output-track routing (which keys on the ORIGINAL note number) and
+    // BEFORE packing, so it never perturbs drum-split routing.
+    std::vector<int32_t>                    transposeByOutputTrack;
+    // Dialog-level (one per import, not per-track): shift every included
+    // note's start so the earliest one lands at tick 0. Applied before the
+    // per-track duration clamp; never changes note count.
+    bool                                    trimLeadingSilence = false;
 };
 
 struct OutputTrackMetadata {
@@ -420,6 +429,37 @@ bool parseImportOptions(const std::string& optionsJson,
         }
     }
 
+    if (parsed.contains("transposeByOutputTrack")) {
+        const auto& arr = parsed["transposeByOutputTrack"];
+        if (!arr.is_array()) {
+            reason = "transposeByOutputTrack must be an array.";
+            debugLog("reject reason=\"%s\"", reason.c_str());
+            return false;
+        }
+        options.transposeByOutputTrack.reserve(arr.size());
+        for (const auto& item : arr) {
+            if (!item.is_number_integer()) {
+                reason = "transposeByOutputTrack entries must be integers.";
+                debugLog("reject reason=\"%s\"", reason.c_str());
+                return false;
+            }
+            const auto v = item.get<long long>();
+            if (v < -24 || v > 24) {
+                reason = "transposeByOutputTrack entries must be between -24 and 24.";
+                debugLog("reject reason=\"%s\"", reason.c_str());
+                return false;
+            }
+            options.transposeByOutputTrack.push_back(static_cast<int32_t>(v));
+        }
+    }
+
+    if (parsed.contains("trimLeadingSilence") && !parsed["trimLeadingSilence"].is_boolean()) {
+        reason = "trimLeadingSilence must be a boolean.";
+        debugLog("reject reason=\"%s\"", reason.c_str());
+        return false;
+    }
+    options.trimLeadingSilence = parsed.value("trimLeadingSilence", false);
+
     return true;
 }
 
@@ -655,7 +695,6 @@ MidiImportFullResult MidiImporter::importFull(const std::string& filePath,
         tickScale *= (tempoInfo.sourceBpm / options.projectBPM);
     }
 
-    std::vector<PackedNote> packedNotes;
     size_t estimatedNoteCount = 0;
 
     for (int trackIndex = 0; trackIndex < loaded.midiFile.getNumTracks(); ++trackIndex) {
@@ -679,7 +718,20 @@ MidiImportFullResult MidiImporter::importFull(const std::string& filePath,
                  scan.hasPitchBend ? 1 : 0);
     }
 
-    packedNotes.reserve(estimatedNoteCount);
+    // Routed but not-yet-transposed/trimmed/clamped notes. Kept as a separate
+    // pass because the trim offset (below) is a function of ALL included
+    // notes and must be known before any note's tick is finalised.
+    struct RawNote {
+        uint32_t scaledTick;
+        uint32_t scaledDuration;
+        int      noteNumber;      // original, untransposed -- routing already resolved
+        uint8_t  velocity;
+        uint8_t  outputTrackIndex;
+        uint8_t  flags;
+    };
+
+    std::vector<RawNote> rawNotes;
+    rawNotes.reserve(estimatedNoteCount);
 
     for (int trackIndex = 0; trackIndex < loaded.midiFile.getNumTracks(); ++trackIndex) {
         if (options.enabledTrackIndices.find(trackIndex) == options.enabledTrackIndices.end()) {
@@ -706,6 +758,9 @@ MidiImportFullResult MidiImporter::importFull(const std::string& filePath,
             const auto& message = event->message;
             const int noteNumber = message.getNoteNumber();
 
+            // Routing keys on the ORIGINAL note number -- transpose is applied
+            // later (below), once the output track is already decided, so it
+            // can never perturb drum-split routing.
             std::optional<uint8_t> outputTrackIndex;
             if (routing.splitDrums) {
                 const auto outputIt = routing.drumOutputIndices.find(noteNumber);
@@ -740,7 +795,7 @@ MidiImportFullResult MidiImporter::importFull(const std::string& filePath,
             const double durationTicks = std::max(0.0, endTick - startTick);
 
             const auto scaledTick     = scaleTicks(startTick, tickScale);
-            auto       scaledDuration = scaleTicks(durationTicks, tickScale);
+            const auto scaledDuration = scaleTicks(durationTicks, tickScale);
 
             if (!scaledTick.has_value() || !scaledDuration.has_value()) {
                 reason = "Imported note timing exceeds the packed uint32 range.";
@@ -755,21 +810,10 @@ MidiImportFullResult MidiImporter::importFull(const std::string& filePath,
                 return result;
             }
 
-            // Clamp imported note duration to this output track's user-selected
-            // maximum (project ticks). Start time is never altered;
-            // pitch/velocity/routing are unaffected. 0 / missing = off.
-            const uint32_t maxLen =
-                (*outputTrackIndex < options.maxNoteLengthByOutputTrack.size())
-                    ? options.maxNoteLengthByOutputTrack[*outputTrackIndex]
-                    : 0u;
-            if (maxLen > 0 && *scaledDuration > maxLen) {
-                scaledDuration = maxLen;
-            }
-
-            packedNotes.push_back(PackedNote{
+            rawNotes.push_back(RawNote{
                 *scaledTick,
                 *scaledDuration,
-                static_cast<uint8_t>(noteNumber),
+                noteNumber,
                 static_cast<uint8_t>(message.getVelocity()),
                 *outputTrackIndex,
                 static_cast<uint8_t>(message.getChannel() == kDrumChannel ? 0x01 : 0x00)
@@ -777,6 +821,60 @@ MidiImportFullResult MidiImporter::importFull(const std::string& filePath,
 
             ++outputTracks[*outputTrackIndex].noteCount;
         }
+    }
+
+    // "Trim leading silence": shift every included note's start so the
+    // earliest one lands at tick 0. Computed over ALL included notes
+    // together (not per output track), in already-scaled project ticks, and
+    // applied before the per-track duration clamp. Note count is unchanged.
+    uint32_t trimOffsetTicks = 0;
+    if (options.trimLeadingSilence && !rawNotes.empty()) {
+        trimOffsetTicks = rawNotes.front().scaledTick;
+        for (const auto& note : rawNotes) {
+            trimOffsetTicks = std::min(trimOffsetTicks, note.scaledTick);
+        }
+    }
+
+    std::vector<PackedNote> packedNotes;
+    packedNotes.reserve(rawNotes.size());
+
+    int transposeClampCount = 0;
+
+    for (const auto& raw : rawNotes) {
+        const int32_t transposeSemitones =
+            (raw.outputTrackIndex < options.transposeByOutputTrack.size())
+                ? options.transposeByOutputTrack[raw.outputTrackIndex]
+                : 0;
+
+        int transposedNote = raw.noteNumber + transposeSemitones;
+        if (transposedNote < 0 || transposedNote > 127) {
+            ++transposeClampCount;
+            transposedNote = std::clamp(transposedNote, 0, 127);
+        }
+
+        // trimOffsetTicks is the min over all raw ticks, so this never underflows.
+        const uint32_t trimmedTick = raw.scaledTick - trimOffsetTicks;
+
+        // Clamp imported note duration to this output track's user-selected
+        // maximum (project ticks). Start time is never altered by the clamp;
+        // velocity/routing are unaffected. 0 / missing = off.
+        uint32_t clampedDuration = raw.scaledDuration;
+        const uint32_t maxLen =
+            (raw.outputTrackIndex < options.maxNoteLengthByOutputTrack.size())
+                ? options.maxNoteLengthByOutputTrack[raw.outputTrackIndex]
+                : 0u;
+        if (maxLen > 0 && clampedDuration > maxLen) {
+            clampedDuration = maxLen;
+        }
+
+        packedNotes.push_back(PackedNote{
+            trimmedTick,
+            clampedDuration,
+            static_cast<uint8_t>(transposedNote),
+            raw.velocity,
+            raw.outputTrackIndex,
+            raw.flags
+        });
     }
 
     result.notes.setSize(packedNotes.size() * static_cast<size_t>(kBytesPerNote), false);
@@ -809,7 +907,9 @@ MidiImportFullResult MidiImporter::importFull(const std::string& filePath,
     result.metadataJson = json{
         {"outputTracks", outputTracksJson},
         {"noteCount", packedNotes.size()},
-        {"bytesPerNote", kBytesPerNote}
+        {"bytesPerNote", kBytesPerNote},
+        {"transposeClampCount", transposeClampCount},
+        {"trimOffsetTicks", trimOffsetTicks}
     }.dump();
 
     debugLog("import fileSize=%lld fileType=%d tpq=%d trackCount=%d sourceTempo=%.6f hasMidFileTempoChanges=%d totalNoteCount=%d",

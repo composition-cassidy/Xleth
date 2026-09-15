@@ -22,6 +22,19 @@ import {
   readDefaultMaxNoteLengthDenom,
   denomToTicks,
 } from './maxNoteLength.js'
+import { DEFAULT_TRANSPOSE_SEMITONES, clampTransposeSemitones } from './transpose.js'
+import { playheadClock } from '../../services/PlayheadClock.js'
+import { beatsToTicks } from '../../constants/timeline.js'
+
+// ── Placement (dialog-level, one set per import) ─────────────────────────────
+// Position and tile-to-fill apply to CREATE rows only; re-import (update) rows
+// always preserve the target track's existing block placements. "At playhead"
+// reads the renderer's existing playhead mirror (playheadClock, fed by
+// transport IPC via TimelineView) rather than adding a new bridge call, and
+// the resolved tick is sent explicitly in commitOptions -- the engine command
+// never reads transport state itself.
+export const POSITION_START = 'start'
+export const POSITION_PLAYHEAD = 'playhead'
 
 export const MIDI_BPM_MATCH_TOLERANCE = 0.05
 
@@ -135,6 +148,7 @@ export function buildMidiImportOptions({
   outputTrackOptions,
   projectBpm,
   tempoOverride,
+  trimLeadingSilence = false,
 }) {
   const enabledTrackIndices = []
   const perTrackOptions = {}
@@ -158,6 +172,12 @@ export function buildMidiImportOptions({
     const denom = opts?.maxNoteLengthDenom ?? DEFAULT_MAX_NOTE_LENGTH_DENOM
     return denomToTicks(denom)
   })
+  // Drum sub-tracks never show a transpose control (transposing a routed drum
+  // note is meaningless), so they always carry the default of 0 (no shift).
+  const transposeByOutputTrack = outputTracks.map(ot => {
+    const opts = outputTrackOptions[ot.outputTrackIndex]
+    return clampTransposeSemitones(opts?.transposeSemitones ?? DEFAULT_TRANSPOSE_SEMITONES)
+  })
 
   return {
     enabledTrackIndices,
@@ -166,6 +186,8 @@ export function buildMidiImportOptions({
     projectTPQ: PPQ,
     projectBPM,
     maxNoteLengthByOutputTrack,
+    transposeByOutputTrack,
+    trimLeadingSilence: !!trimLeadingSilence,
   }
 }
 
@@ -197,11 +219,19 @@ export function buildMidiCommitOptions({
   tempoOverride,
   projectBpm,
   reimportTargets = [],
+  // Placement — resolved by the caller (handleImport) before this is built,
+  // since "at playhead" reads live renderer state and this function stays a
+  // pure mapper. Both are Create-row-only; the engine ignores them for update
+  // rows regardless of what is sent.
+  positionTicks = 0,
+  tileToFillProject = false,
 }) {
   return {
     tempoOverride: getEffectiveTempoOverride(tempoOverride, metadata?.sourceTempo ?? summary?.sourceTempo, projectBpm),
     sourceBPM: metadata?.sourceTempo ?? summary?.sourceTempo,
     projectTPQ: PPQ,
+    positionTicks: Math.max(0, Math.round(Number(positionTicks) || 0)),
+    tileToFillProject: !!tileToFillProject,
     outputTracks: (metadata?.outputTracks || []).map((ot, i) => {
       const userOpts = outputTrackOptions[i]
       const { mode, targetTrackId } = resolveRowMode(userOpts, reimportTargets)
@@ -233,6 +263,10 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
   const [errorMsg, setErrorMsg] = useState('')
   const [projectBpm, setProjectBpm] = useState(null)
   const [tempoOverride, setTempoOverride] = useState(true)
+  // Placement (dialog-level, one set per import — Create rows only).
+  const [positionMode, setPositionMode] = useState(POSITION_START)
+  const [trimLeadingSilence, setTrimLeadingSilence] = useState(false)
+  const [tileToFillProject, setTileToFillProject] = useState(false)
   // Source-track-level: { [sourceTrackIndex]: { enabled, splitByNote } }
   const [trackOptions, setTrackOptions] = useState({})
   // Output-track-level: { [outputTrackIndex]: { _stableKey, enabled, visualOnly, sampleId, name } }
@@ -260,6 +294,9 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
     setSummary(null)
     setErrorMsg('')
     setTempoOverride(true)
+    setPositionMode(POSITION_START)
+    setTrimLeadingSilence(false)
+    setTileToFillProject(false)
     setTrackOptions({})
     setOutputTrackOptions({})
     setRegions([])
@@ -440,6 +477,7 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
             sampleId: seededSampleId,
             name: ot.name,
             maxNoteLengthDenom: readDefaultMaxNoteLengthDenom(),
+            transposeSemitones: DEFAULT_TRANSPOSE_SEMITONES,
             mode: matchedTrack ? MODE_UPDATE : MODE_NEW,
             targetTrackId: matchedTrack ? Number(matchedTrack.trackId) : -1,
           }
@@ -475,8 +513,16 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
 
     const effectiveTempoOverride = getEffectiveTempoOverride(tempoOverride, summary.sourceTempo, projectBpm)
 
+    // Resolved now, at click time, from the renderer's existing playhead
+    // mirror -- NOT read again later, and never by the engine command itself.
+    const resolvedPositionTicks = positionMode === POSITION_PLAYHEAD
+      ? Math.max(0, beatsToTicks(playheadClock.positionBeats))
+      : 0
+
     setPhase('importing')
-    console.log('[MidiImport] Import begin: tempoOverride=', effectiveTempoOverride, 'output tracks=', outputTracks.length)
+    console.log('[MidiImport] Import begin: tempoOverride=', effectiveTempoOverride, 'output tracks=', outputTracks.length,
+                'positionMode=', positionMode, 'positionTicks=', resolvedPositionTicks,
+                'trimLeadingSilence=', trimLeadingSilence, 'tileToFillProject=', tileToFillProject)
 
     // Two RAFs so phase='importing' paints before synchronous bridge calls freeze the renderer.
     await new Promise(r => requestAnimationFrame(() => requestAnimationFrame(r)))
@@ -491,6 +537,7 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
         outputTrackOptions,
         projectBpm,
         tempoOverride,
+        trimLeadingSilence,
       })
 
       console.log('[MidiImport] Import payload:', importOptions)
@@ -513,6 +560,8 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
         tempoOverride,
         projectBpm,
         reimportTargets,
+        positionTicks: resolvedPositionTicks,
+        tileToFillProject,
       })
 
       const updateCount = commitOptions.outputTracks.filter(o => o.mode === MODE_UPDATE).length
@@ -562,7 +611,7 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
       setErrorMsg(String(err?.message ?? err))
       setPhase('error')
     }
-  }, [summary, filePath, canImport, tempoOverride, outputTracks, outputTrackOptions, trackOptions, enabledCount, projectBpm, showToast, regions, reimportTargets])
+  }, [summary, filePath, canImport, tempoOverride, outputTracks, outputTrackOptions, trackOptions, enabledCount, projectBpm, showToast, regions, reimportTargets, positionMode, trimLeadingSilence, tileToFillProject])
 
   if (!isOpen) return null
 
@@ -662,6 +711,48 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
                   <span className="midi-tempo-override-note">Already matches</span>
                 )}
               </label>
+
+              {/* Placement — Create rows only; re-import rows always keep their
+                  existing block placement (see the per-row note below). */}
+              <div className="midi-placement-section" aria-label="Import placement">
+                <div className="midi-placement-position">
+                  <span className="midi-control-label">Position</span>
+                  <label className="midi-placement-radio">
+                    <input
+                      type="radio"
+                      name="midi-import-position"
+                      checked={positionMode === POSITION_START}
+                      onChange={() => setPositionMode(POSITION_START)}
+                    />
+                    Start of timeline
+                  </label>
+                  <label className="midi-placement-radio">
+                    <input
+                      type="radio"
+                      name="midi-import-position"
+                      checked={positionMode === POSITION_PLAYHEAD}
+                      onChange={() => setPositionMode(POSITION_PLAYHEAD)}
+                    />
+                    At playhead
+                  </label>
+                </div>
+                <label className="midi-checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={trimLeadingSilence}
+                    onChange={e => setTrimLeadingSilence(e.target.checked)}
+                  />
+                  Trim leading silence
+                </label>
+                <label className="midi-checkbox-row">
+                  <input
+                    type="checkbox"
+                    checked={tileToFillProject}
+                    onChange={e => setTileToFillProject(e.target.checked)}
+                  />
+                  Loop pattern to fill project
+                </label>
+              </div>
 
               {(summary.hasMidFileTempoChanges || pitchBendTrackCount > 0 || unassignedOutputCount > 0) && (
                 <div className="midi-import-details" aria-label="Import details">

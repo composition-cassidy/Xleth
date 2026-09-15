@@ -37,6 +37,14 @@ struct ImportMidiCommandOptions {
     };
 
     std::vector<OutputTrackSpec> outputTracks;
+
+    // ── Placement (dialog-level, one set per import) ─────────────────────────
+    // Create rows only. Update rows always preserve the target track's
+    // existing block placements and never read either field.
+    TickTime importPosition;          // resolved tick for the first block; caller
+                                       // resolves "at playhead" itself, this
+                                       // command never reads transport state.
+    bool     tileToFillProject = false;
 };
 
 class ImportMidiCommand : public Command {
@@ -107,6 +115,10 @@ private:
     // Pre-execute snapshot
     double                       preBpm_ = 0.0;
     std::unordered_map<int, int> preRegionToSampleMap_;
+    // Max end tick (position + duration) across every block that existed
+    // BEFORE this command placed anything. Tile-to-fill covers up to this
+    // point, never to a point inflated by the command's own placements.
+    TickTime                     preProjectEndTick_;
 
     // Per-execute creation log (for undo + bridge mipmap post-pass)
     std::vector<int>                    createdTrackIds_;

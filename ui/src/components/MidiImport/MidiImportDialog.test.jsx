@@ -2,6 +2,7 @@ import React from 'react'
 import { describe, expect, it, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import MidiTrackRow from './MidiTrackRow.jsx'
+import MidiDrumSubTrackRow from './MidiDrumSubTrackRow.jsx'
 import {
   areBpmsEffectivelyEqual,
   buildMidiCommitOptions,
@@ -86,6 +87,101 @@ describe('MIDI import modal helpers', () => {
       },
     ])
     expect(commitOptions.tempoOverride).toBe(false)
+  })
+
+  it('carries per-output-track transpose and dialog-level trim into the import payload', () => {
+    const summary = {
+      sourceTempo: 120,
+      tracks: [
+        { index: 0, name: 'Lead', noteCount: 12, isDrum: false },
+        { index: 1, name: 'Bass', noteCount: 8, isDrum: false },
+      ],
+    }
+    const trackOptions = {
+      0: { enabled: true, splitByNote: false },
+      1: { enabled: true, splitByNote: false },
+    }
+    const outputTracks = buildOutputTracks(summary.tracks, trackOptions)
+    const outputTrackOptions = {
+      0: { enabled: true, name: 'Lead', transposeSemitones: 12 },
+      1: { enabled: true, name: 'Bass', transposeSemitones: -5 },
+    }
+
+    const importOptions = buildMidiImportOptions({
+      summary,
+      trackOptions,
+      outputTracks,
+      outputTrackOptions,
+      projectBpm: 120,
+      tempoOverride: true,
+      trimLeadingSilence: true,
+    })
+
+    expect(importOptions.transposeByOutputTrack).toEqual([12, -5])
+    expect(importOptions.trimLeadingSilence).toBe(true)
+  })
+
+  it('defaults transpose to 0 and trim to false when unset', () => {
+    const summary = { sourceTempo: 120, tracks: [{ index: 0, name: 'Lead', noteCount: 4, isDrum: false }] }
+    const trackOptions = { 0: { enabled: true, splitByNote: false } }
+    const outputTracks = buildOutputTracks(summary.tracks, trackOptions)
+
+    const importOptions = buildMidiImportOptions({
+      summary,
+      trackOptions,
+      outputTracks,
+      outputTrackOptions: { 0: { enabled: true, name: 'Lead' } },
+      projectBpm: 120,
+      tempoOverride: true,
+    })
+
+    expect(importOptions.transposeByOutputTrack).toEqual([0])
+    expect(importOptions.trimLeadingSilence).toBe(false)
+  })
+
+  it('clamps an out-of-range transpose value before it reaches the wire payload', () => {
+    const summary = { sourceTempo: 120, tracks: [{ index: 0, name: 'Lead', noteCount: 4, isDrum: false }] }
+    const trackOptions = { 0: { enabled: true, splitByNote: false } }
+    const outputTracks = buildOutputTracks(summary.tracks, trackOptions)
+
+    const importOptions = buildMidiImportOptions({
+      summary,
+      trackOptions,
+      outputTracks,
+      outputTrackOptions: { 0: { enabled: true, name: 'Lead', transposeSemitones: 99 } },
+      projectBpm: 120,
+      tempoOverride: true,
+    })
+
+    expect(importOptions.transposeByOutputTrack).toEqual([24])
+  })
+
+  it('carries the resolved placement (position + tile-to-fill) into the commit payload', () => {
+    const commitOptions = buildMidiCommitOptions({
+      metadata: { sourceTempo: 120, outputTracks: [{ name: 'Lead' }] },
+      summary: { sourceTempo: 120 },
+      outputTrackOptions: { 0: { name: 'Lead', visualOnly: false, sampleId: -1 } },
+      projectBpm: 120,
+      tempoOverride: true,
+      positionTicks: 15360,
+      tileToFillProject: true,
+    })
+
+    expect(commitOptions.positionTicks).toBe(15360)
+    expect(commitOptions.tileToFillProject).toBe(true)
+  })
+
+  it('defaults placement to start-of-timeline with no tiling when unset', () => {
+    const commitOptions = buildMidiCommitOptions({
+      metadata: { sourceTempo: 120, outputTracks: [{ name: 'Lead' }] },
+      summary: { sourceTempo: 120 },
+      outputTrackOptions: { 0: { name: 'Lead', visualOnly: false, sampleId: -1 } },
+      projectBpm: 120,
+      tempoOverride: true,
+    })
+
+    expect(commitOptions.positionTicks).toBe(0)
+    expect(commitOptions.tileToFillProject).toBe(false)
   })
 
   it('commits an update row with its resolved target track', () => {
@@ -228,6 +324,77 @@ describe('MidiTrackRow redesigned layout', () => {
     // label and the SELECTED option; the option list is asserted below.
     expect(html).toContain('Target')
     expect(html).toContain('Update: Kick')
+  })
+
+  it('shows the transpose stepper for a melodic track but hides it for a drum track', () => {
+    const melodicHtml = renderToStaticMarkup(
+      <MidiTrackRow
+        track={{ index: 0, name: 'Lead', noteCount: 12, isDrum: false }}
+        parentOptions={{ enabled: true, splitByNote: false }}
+        outputOptions={{ outputTrackIndex: 0, sampleId: null, visualOnly: false, transposeSemitones: 3 }}
+        onParentChange={vi.fn()}
+        onOutputChange={vi.fn()}
+        sampleItems={[]}
+      />
+    )
+    expect(melodicHtml).toContain('Transpose')
+    expect(melodicHtml).toContain('midi-transpose-stepper')
+
+    const drumHtml = renderToStaticMarkup(
+      <MidiTrackRow
+        track={{ index: 1, name: 'Drums', noteCount: 12, isDrum: true, uniqueNoteNumbers: [36] }}
+        parentOptions={{ enabled: true, splitByNote: false }}
+        outputOptions={{ outputTrackIndex: 0, sampleId: null, visualOnly: false }}
+        onParentChange={vi.fn()}
+        onOutputChange={vi.fn()}
+        sampleItems={[]}
+      />
+    )
+    expect(drumHtml).not.toContain('Transpose')
+    expect(drumHtml).not.toContain('midi-transpose-stepper')
+  })
+
+  it('never shows a transpose control on a drum sub-track row', () => {
+    const html = renderToStaticMarkup(
+      <MidiDrumSubTrackRow
+        noteNum={36}
+        options={{ enabled: true, visualOnly: false, sampleId: null, outputTrackIndex: 0 }}
+        onChange={vi.fn()}
+        sampleItems={[]}
+        reimportTargets={[]}
+      />
+    )
+    expect(html).not.toContain('Transpose')
+    expect(html).not.toContain('midi-transpose-stepper')
+  })
+
+  it('notes that Position/Tile are ignored on a row resolved to re-import', () => {
+    const targets = [{ trackId: 5, name: 'Kick', eligible: true, patternCount: 1, regionId: 3 }]
+    const html = renderToStaticMarkup(
+      <MidiTrackRow
+        track={{ index: 0, name: 'Kick', noteCount: 12, isDrum: false }}
+        parentOptions={{ enabled: true, splitByNote: false }}
+        outputOptions={{ outputTrackIndex: 0, sampleId: null, visualOnly: false, mode: MODE_UPDATE, targetTrackId: 5 }}
+        onParentChange={vi.fn()}
+        onOutputChange={vi.fn()}
+        sampleItems={[]}
+        reimportTargets={targets}
+      />
+    )
+    expect(html).toContain('Position / Tile ignored')
+
+    const createHtml = renderToStaticMarkup(
+      <MidiTrackRow
+        track={{ index: 0, name: 'Kick', noteCount: 12, isDrum: false }}
+        parentOptions={{ enabled: true, splitByNote: false }}
+        outputOptions={{ outputTrackIndex: 0, sampleId: null, visualOnly: false, mode: MODE_NEW, targetTrackId: -1 }}
+        onParentChange={vi.fn()}
+        onOutputChange={vi.fn()}
+        sampleItems={[]}
+        reimportTargets={targets}
+      />
+    )
+    expect(createHtml).not.toContain('Position / Tile ignored')
   })
 
   it('offers New track plus every Pattern target, disabling ambiguous ones', () => {
