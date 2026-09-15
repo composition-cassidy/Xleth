@@ -19,6 +19,7 @@ const ALLOWED_TYPES = new Set([
   'knob', 'toggle', 'button', 'meter', 'visualizer', 'label', 'spacer',
   'compressorCurve', 'compressorSlider', 'compressorHSlider', 'compressorDryWet', 'compressorLookahead',
   'overdoneBandStack', 'overdoneCrossovers',
+  'distortionCurve',
   // Freeform-A additions:
   'freeformLayer',
   'decorText', 'decorLine', 'decorShape', 'decal',
@@ -520,6 +521,22 @@ function validateNodeProps(node, errors, manifest) {
         p.thresholdParam || 'threshold',
         p.ratioParam || 'ratio',
         p.kneeParam || 'knee',
+      ]
+      for (const paramId of bindings) {
+        if (manifest && !manifest.params[paramId]) {
+          node._invalid = true
+          errors.push({ nodeId: node.id, code: 'UNKNOWN_PARAM', message: `Unknown param "${paramId}" for plugin "${manifest.pluginId}"` })
+        }
+      }
+      break
+    }
+
+    case 'distortionCurve': {
+      const bindings = [
+        p.modeParam || 'mode',
+        p.driveParam || 'drive',
+        p.symmetryParam || 'symmetry',
+        p.bitsParam || 'bits',
       ]
       for (const paramId of bindings) {
         if (manifest && !manifest.params[paramId]) {

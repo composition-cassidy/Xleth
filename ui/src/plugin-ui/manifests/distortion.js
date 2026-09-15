@@ -15,7 +15,7 @@ export const DISTORTION_MANIFEST = {
     // sessions sounding identical).
     symmetry:   { kind: 'continuous', min: 0,  max: 100,   defaultValue: 100,  format: 'pct0', label: 'Symmetry' },
     bits:       { kind: 'continuous', min: 2,  max: 16,    defaultValue: 16,   format: 'raw',  label: 'Bits' },
-    downsample: { kind: 'continuous', min: 1,  max: 40,    defaultValue: 1,    format: 'raw',  label: 'Downsample' },
+    downsample: { kind: 'continuous', min: 1,  max: 40,    defaultValue: 1,    format: 'x0',   label: 'Downsample' },
   },
 
   meterSlots: ['PEAK_L', 'PEAK_R'],

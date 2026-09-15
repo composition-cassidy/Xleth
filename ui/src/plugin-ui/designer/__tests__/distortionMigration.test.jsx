@@ -62,14 +62,55 @@ describe('Distortion shipped layout registry', () => {
     }
   })
 
-  it('recreates the legacy controls without fake visualizers or extra params', () => {
+  it('has no fake visualizers or viz sources — the curve is analytic/client-side only', () => {
     expect(collectNodeTypes(SHIPPED_LAYOUTS.distortion.root)).not.toContain('visualizer')
     expect(collectVizSources(SHIPPED_LAYOUTS.distortion.root)).toEqual([])
+  })
 
+  it('references exactly the 7-mode engine param set, each present in the manifest', () => {
     const refs = collectParamRefs(SHIPPED_LAYOUTS.distortion.root).sort()
-    expect(refs).toEqual(['drive', 'filter_pos', 'filter_pos', 'mix', 'mode', 'mode', 'mode', 'mode', 'tone'])
+    expect(refs).toEqual([
+      'bits', 'downsample', 'drive', 'filter_pos', 'filter_pos', 'mix',
+      'mode', 'mode', 'mode', 'mode', 'mode', 'mode', 'mode',
+      'symmetry', 'tone',
+    ])
     for (const param of refs) {
       expect(DISTORTION_MANIFEST.params[param]).toBeTruthy()
+    }
+  })
+
+  it('exposes one toggle per engine mode 0-6, plus a disabled reserved 8th grid slot', () => {
+    const toggles = collectNodesOfType(SHIPPED_LAYOUTS.distortion.root, 'toggle')
+      .filter((n) => n.props?.param === 'mode')
+    expect(toggles.map((n) => n.props.valueWhenOn).sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5, 6])
+
+    const buttons = collectNodesOfType(SHIPPED_LAYOUTS.distortion.root, 'button')
+    expect(buttons).toHaveLength(1)
+    expect(buttons[0].props.action).toBe('distortion.reserved')
+  })
+
+  it('renders the analytic distortionCurve node bound to the engine param names', () => {
+    const curves = collectNodesOfType(SHIPPED_LAYOUTS.distortion.root, 'distortionCurve')
+    expect(curves).toHaveLength(1)
+  })
+
+  it('dims (not hides) the mode-conditional knobs — the schema has no visibility expressions', () => {
+    const knobs = collectNodesOfType(SHIPPED_LAYOUTS.distortion.root, 'knob')
+    const byParam = Object.fromEntries(knobs.map((n) => [n.props.param, n]))
+
+    expect(byParam.symmetry.props.enabledWhen).toEqual({ param: 'mode', in: [3] })
+    expect(byParam.bits.props.enabledWhen).toEqual({ param: 'mode', in: [4] })
+    expect(byParam.downsample.props.enabledWhen).toEqual({ param: 'mode', in: [4] })
+    expect(byParam.drive.props.enabledWhen).toBeUndefined()
+    expect(byParam.tone.props.enabledWhen).toBeUndefined()
+    expect(byParam.mix.props.enabledWhen).toBeUndefined()
+  })
+
+  it('binds the peak meters to the manifest-declared PEAK_L/PEAK_R slots', () => {
+    const meters = collectNodesOfType(SHIPPED_LAYOUTS.distortion.root, 'meter')
+    expect(meters.map((n) => n.props.source.slot).sort()).toEqual(['PEAK_L', 'PEAK_R'])
+    for (const meter of meters) {
+      expect(DISTORTION_MANIFEST.meterSlots).toContain(meter.props.source.slot)
     }
   })
 })
@@ -184,6 +225,13 @@ function collectNodeTypes(node, out = []) {
   if (!node) return out
   if (node.type) out.push(node.type)
   if (Array.isArray(node.children)) for (const c of node.children) collectNodeTypes(c, out)
+  return out
+}
+
+function collectNodesOfType(node, type, out = []) {
+  if (!node) return out
+  if (node.type === type) out.push(node)
+  if (Array.isArray(node.children)) for (const c of node.children) collectNodesOfType(c, type, out)
   return out
 }
 

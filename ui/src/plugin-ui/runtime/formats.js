@@ -14,6 +14,7 @@ const FORMATS = {
   hz0:         v => `${v.toFixed(0)} Hz`,
   hz_smart:    v => v >= 1000 ? `${(v / 1000).toFixed(1)}k Hz` : `${v.toFixed(0)} Hz`,
   lufs1:       v => `${v.toFixed(1)} LUFS`,
+  x0:          v => `×${Math.round(v)}`,
 }
 
 export function resolveFormat(key) {

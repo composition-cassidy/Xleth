@@ -20173,6 +20173,14 @@ html, body, #root {
   align-items: flex-start;
 }
 
+/* A knob gated by props.enabledWhen (KnobNode.jsx) whose bound mode/discrete
+   param doesn't currently apply. Dimmed rather than hidden — the schema has
+   no visibility-expression support, so the layout can't reflow per mode. */
+.pluginui-knob-cell--dimmed {
+  opacity: 0.35;
+  pointer-events: none;
+}
+
 .pluginui-knob {
   --pluginui-knob-surface: var(--theme-bg-surface);
   --pluginui-knob-accent: var(--theme-accent);
@@ -21294,6 +21302,63 @@ html, body, #root {
   padding-left: 1px;
   padding-right: 1px;
   letter-spacing: 0;
+}
+
+/* ── Distortion redesign (7-mode + transfer curve) ─────────────────────────── */
+/* Flat, zero-radius, 4px offset-shadow aesthetic — scoped to this plugin's
+   own root id so the shared toggle/button classes keep their normal look
+   everywhere else. */
+
+[data-pluginui-id="distortion-root"] .pluginui-toggle-btn,
+[data-pluginui-id="distortion-root"] .pluginui-button {
+  border-radius: 0;
+  box-shadow: 4px 4px 0 0 var(--theme-overlay-subtle);
+}
+
+[data-pluginui-id="distortion-root"] .pluginui-toggle-btn.active {
+  box-shadow: 4px 4px 0 0 var(--theme-overlay-medium);
+}
+
+/* The Clip | Digital boundary in the bottom mode row. */
+[data-pluginui-id="mode-clip-digital-divider"] {
+  flex: 0 0 1px !important;
+  align-self: stretch;
+  margin: 0 2px;
+  background: transparent;
+  border-left: 1px dotted var(--theme-text-subtle);
+}
+
+/* Reserved 8th grid slot (Fold — not shipped). Renders disabled via
+   ButtonNode's own isKnownAction() check; this just matches its footprint
+   and font to the toggle buttons it sits beside. */
+[data-pluginui-id="mode-reserved"] {
+  font-size: 10px;
+  font-weight: 600;
+}
+
+.pluginui-distortion-curve {
+  width: 100%;
+  min-width: 0;
+  border: 3px solid color-mix(in srgb, var(--theme-bg-inset) 80%, #000);
+  background: var(--theme-bg-inset);
+  overflow: hidden;
+}
+
+.pluginui-distortion-curve-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 150px;
+}
+
+/* Thin L/R peak bars — the numeric readout is redundant next to a bar this
+   small, so only the L/R caption stays. */
+[data-pluginui-id="peak-bars"] .pluginui-meter--horizontal .pluginui-meter-track {
+  height: 6px;
+}
+
+[data-pluginui-id="peak-bars"] .pluginui-meter-label span {
+  display: none;
 }
 
 /* ── Dev-mode unknown/invalid node placeholders ────────────────────────────── */
