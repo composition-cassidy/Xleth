@@ -226,6 +226,13 @@ public:
     // (already published lock-free as one atomic shared_ptr) immediately
     // before triggering this sampler's pattern notes; every reader is on the
     // same thread. Two scalar writes, no allocation, no lock.
+    //
+    // Known limitation: only the pitch (semis+cents) crosses over from the
+    // table. Mix, clip_method (the stretch engine choice), and clip_formant
+    // are all inert here — a pattern track always gets this one wet-only
+    // transpose, no blend, no engine choice, no formant option. Those three
+    // params only mean anything on the ClipRenderCache fx lane (audio
+    // clips); see the CacheKey fx-field comment in ClipRenderCache.h.
     void setTransposeOffset(int semis, int cents) noexcept
     {
         transposeSemis_ = std::clamp(static_cast<double>(semis)

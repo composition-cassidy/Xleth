@@ -50,6 +50,23 @@ struct CacheKey {
 
     bool hasFx() const noexcept { return fxMethod != 0; }
 
+    // Known limitations of this lane (verified, not bugs to chase):
+    //   - PSOLA and WORLD are resynthesis engines, not sample-domain
+    //     stretchers, so their output cannot be dry/wet-aligned the way
+    //     Rubber/WSOLA/PhaseVocoder can (see DryWetAlign / alignAndCopy in
+    //     ClipRenderCache.cpp). A mid Mix on either produces a comb filter,
+    //     not a blend — pick Rubber, WSOLA, or PhaseVocoder for Mix < 100.
+    //   - A clip whose reader is modulated (vibrato/scratch) never gets an
+    //     fx render: the fx lane only ever renders the clip's plain linear
+    //     read, so a modulated clip's fx entry is simply never submitted.
+    //   - This key's fx fields come from the per-track SourceTransform
+    //     table, which is republished on the ~100 ms UI poll but only
+    //     rebuilt when its epoch changes — in practice a Clip-mode param
+    //     commit can take up to ~1 s to reach a clip's next render.
+    //   - Mix, clip_method, and clip_formant have no effect on pattern
+    //     tracks; see Sampler::setTransposeOffset for what pattern tracks
+    //     actually consume from this same table.
+
     bool operator==(const CacheKey& o) const noexcept;
 };
 
