@@ -401,7 +401,7 @@ public:
         entry_->buffer = std::move(outBuf);
         entry_->ready.store(true, std::memory_order_release);
 
-        if (eff.method == static_cast<int>(StretchMethod::WORLD)) {
+        if (eff.method == static_cast<int>(StretchMethod::WORLD) || key.hasFx()) {
             std::lock_guard<std::mutex> lk(owner_->cacheMutex_);
             owner_->worldActiveEntries_.erase(entry_.get());
         }
@@ -863,7 +863,14 @@ void ClipRenderCache::submitJob(int clipId, const CacheKey& key,
             entry->ready.store(false, std::memory_order_relaxed);
             byKey_[key] = entry;
             needsRender = true;
-            if (resolveEffectiveRender(key).method == static_cast<int>(StretchMethod::WORLD))
+            // Same surface as the WORLD spinner, one more job family: a
+            // Pitch Shifter Clip-mode (fx) render can be just as slow as a
+            // WORLD render on a big clip (offline Rubber Band/PSOLA/WSOLA/
+            // PhaseVocoder all run synchronously on the worker), and without
+            // this it reports no activity at all — a long render just feels
+            // like a hang. See the matching erase() in ClipRenderJob::runJob.
+            if (resolveEffectiveRender(key).method == static_cast<int>(StretchMethod::WORLD)
+                || fx)
                 worldActiveEntries_.insert(entry.get());
         }
         entry->subscribers.insert(clipId);

@@ -227,8 +227,13 @@ public:
     // the key depends on. Thread-safe: acquires cacheMutex_.
     bool hasEntryForKey(int clipId, const CacheKey& key) const;
 
-    // Returns the set of clip IDs that are currently being processed by a WORLD
-    // render job. Called by the main process poll to drive the UI spinner.
+    // Returns the set of clip IDs that are currently being processed by a
+    // WORLD render job OR a Pitch Shifter Clip-mode (fx) render — both are
+    // synchronous offline engine calls on the worker and can run long on a
+    // big clip. Called by the main process poll to drive the UI spinner; the
+    // consumer (ui/main.js's pollWorldProcessing) just treats the array as
+    // "these clips are rendering," so it needed no change when the fx family
+    // was added — see submitJob()/ClipRenderJob::runJob() for the two ends.
     // Thread-safe: acquires cacheMutex_ internally.
     std::vector<int> getWorldActiveJobIds() const;
 
