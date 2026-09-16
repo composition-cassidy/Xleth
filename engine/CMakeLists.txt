@@ -1964,6 +1964,46 @@ target_compile_definitions(test_pattern_fx_transpose PRIVATE
 
 target_link_options(test_pattern_fx_transpose PRIVATE /STACK:8388608)
 
+# ── test_clip_fx_perf_gate ───────────────────────────────────────────────────
+# Pitch Shifter Clip mode (mode 4): permanent perf regression gate. 64-clip
+# track semitone sweep bounded on job count AND peak RSS delta; 100-clip
+# session differential zero-allocation check on the audio path. See the file
+# header for the bound justifications.
+add_executable(test_clip_fx_perf_gate
+    test/test_clip_fx_perf_gate.cpp
+)
+
+target_link_libraries(test_clip_fx_perf_gate PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+if (WIN32)
+    target_link_libraries(test_clip_fx_perf_gate PRIVATE Psapi.lib)
+endif()
+
+target_compile_definitions(test_clip_fx_perf_gate PRIVATE
+    _CRT_SECURE_NO_WARNINGS=1
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+target_link_options(test_clip_fx_perf_gate PRIVATE /STACK:8388608)
+
 # ── test_source_transform_table ──────────────────────────────────────────────
 # Pitch Shifter Clip mode plumbing: SourceTransform capability, the pure
 # per-track table builder (last-in-chain-order wins, track chains only, bypass
@@ -3091,6 +3131,7 @@ set(XLETH_ENGINE_TESTS
     test_source_transform_table
     test_clip_fx_transform
     test_pattern_fx_transpose
+    test_clip_fx_perf_gate
     test_auto_loop_policy
     test_midi_importer
     test_fsc_score_parser
