@@ -18,8 +18,9 @@ class XlethEffectBase;
 // Built on the message thread by buildTrackSourceTransformTable() and published
 // by MixEngine through one std::atomic<std::shared_ptr<const Table>> (the
 // ChainSnapshot shape). Immutable once published. Consumed by MixEngine's
-// audio-clip render path (ClipRenderCache fx lane + the clip-loop Mix blend);
-// pattern tracks do not read it yet.
+// audio-clip render path (ClipRenderCache fx lane + the clip-loop Mix blend)
+// and by its pattern-block loop (Sampler voice-spawn transpose; Mix, method
+// and formant are inert there).
 //
 // RULES (every one of these is pinned by test_source_transform_table):
 //

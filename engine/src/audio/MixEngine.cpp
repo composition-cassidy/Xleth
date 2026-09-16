@@ -6577,6 +6577,31 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         // (currentAbsSample_ + sampleOffset), where sampleOffset is BUFFER-RELATIVE.
         apb.sampler->setCurrentSample(bufStart);
 
+        // ── Pitch Shifter Clip mode (mode 4) on a PATTERN track ─────────────
+        // The same per-block table the clip loop pinned above. An active entry
+        // transposes this sampler's NEW voices by semis + cents/100; no entry
+        // (inactive, bypassed or removed shifter) writes 0, which is how the
+        // offset clears. Written on this thread right before the triggers that
+        // read it — no handoff beyond the table's own atomic publish.
+        //
+        // Voices already sounding keep the transpose they spawned with and ring
+        // out at that pitch; only voices spawned from here on take the new one.
+        //
+        // INERT here, by product decision: Mix (a dry/wet blend of one synth
+        // voice would double every voice — twice the CPU and an instant comb),
+        // clip_method and clip_formant (transposition at the voice is exact,
+        // there is no stretch engine to choose). The transpose applies fully.
+        // Event pitches and Pattern.notes are never modified, and the video
+        // event builder never sees the table.
+        {
+            const xleth::TrackSourceTransformEntry* patFx =
+                anyFxTransform ? fxTable->findEntry(apb.block->trackId) : nullptr;
+            if (patFx != nullptr)
+                apb.sampler->setTransposeOffset(patFx->transform.semis, patFx->transform.cents);
+            else
+                apb.sampler->setTransposeOffset(0, 0);
+        }
+
         // Sample-accurate (block-granular) note triggering.
         triggerPatternNotes(apb, bufStart, bufEnd, bpm, sampleRate);
 

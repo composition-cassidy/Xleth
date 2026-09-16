@@ -7,6 +7,7 @@
 #include "SamplerModulation.h"
 #include "../model/TimelineTypes.h"
 
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdint>
@@ -210,6 +211,28 @@ public:
     void setCurrentSample(int64_t absSample) noexcept { currentAbsSample_ = absSample; }
     void setVisualOnly(bool v) noexcept { visualOnly_.store(v, std::memory_order_relaxed); }
 
+    // ── Pitch Shifter Clip mode (mode 4) on pattern tracks ───────────────────
+    // A voice-spawn transpose on top of the slot tuning sum:
+    //   sounding = (midiNote - rootNote) + slotTuning + transposeOffset
+    // Stored as fractional semitones (semis + cents/100, clamped to ±48 like the
+    // clip lane) and COPIED into a voice only when the voice truly (re)spawns —
+    // fireNoteOn and a mono hard retrigger. A voice already sounding when the
+    // offset changes keeps the offset it spawned with and rings out at that
+    // pitch; legato retunes, portamento and group slides are NOT respawns and
+    // keep the voice's copy too. Event pitches are never touched, so
+    // noteOn/noteOff/slide pairing is exactly what it is without a transform.
+    //
+    // AUDIO THREAD. MixEngine writes it from the per-block transform table
+    // (already published lock-free as one atomic shared_ptr) immediately
+    // before triggering this sampler's pattern notes; every reader is on the
+    // same thread. Two scalar writes, no allocation, no lock.
+    void setTransposeOffset(int semis, int cents) noexcept
+    {
+        transposeSemis_ = std::clamp(static_cast<double>(semis)
+                                     + static_cast<double>(cents) / 100.0, -48.0, 48.0);
+    }
+    double transposeOffsetSemis() const noexcept { return transposeSemis_; }
+
     // ── Audio-thread triggering ──────────────────────────────────────────────
     void noteOn(int midiNote, float velocity, int sampleOffset = 0);
     void noteOff(int midiNote, int sampleOffset = 0, bool force = false);
@@ -241,6 +264,8 @@ public:
     // verify slide-note pitch behavior without resorting to FFT analysis on
     // multi-voice chord renders. Not for production use.
     double debugVoicePitch(int voiceIdx) const;
+    // Transpose (semitones) the voice captured at spawn; see setTransposeOffset.
+    double debugVoiceTranspose(int voiceIdx) const;
     bool   debugVoiceSlideActive(int voiceIdx) const;
     int    debugFirstActiveVoiceIndex() const;
     // Streams currently sounding on one voice (0 when the voice is inactive).
@@ -480,6 +505,10 @@ private:
         int    midiNote     = 60;
         float  velocity     = 1.0f;
         double pitchRatio   = 1.0;         // 2^((midiNote - rootNote) / 12)
+        // Clip-mode transpose captured at (re)spawn, in semitones. Added to the
+        // sounding pitch only; currentPitchF / targetPitch / slide pitches all
+        // stay in the drawn-note domain. See Sampler::setTransposeOffset.
+        double transposeSemis = 0.0;
 
         // Portamento state. `source` and `total` are captured at glide start so
         // the CURVE can be applied as a shaped interpolation across the whole
@@ -552,6 +581,7 @@ private:
 
     uint64_t nextSpawnCounter_ = 1;   // 0 reserved as "never spawned" sentinel
     int64_t  currentAbsSample_ = 0;   // buffer-start absolute sample; 0 = preview/pre-transport
+    double   transposeSemis_   = 0.0; // Clip-mode transpose for NEW voices (audio thread)
 
     // ── Modulation: published graph + global (FREE / MONO) half ──────────────
     // The graph is swapped in whole. shared_ptr publication mirrors Slot::data:

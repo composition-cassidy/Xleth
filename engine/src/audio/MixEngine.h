@@ -575,8 +575,9 @@ public:
     //
     // trackId -> SourceTransform, rebuilt from the effect chains and published
     // lock-free. See SourceTransformTable.h for the table's rules. Consumed by
-    // AUDIO CLIPS (mode 4, see "Clip mode render path" below); pattern tracks
-    // do not read it.
+    // AUDIO CLIPS (mode 4, see "Clip mode render path" below) and by PATTERN
+    // tracks, as a voice-spawn transpose (Sampler::setTransposeOffset, written
+    // per block in processBlock's pattern loop; Mix/method/formant inert).
     //
     // Poll-driven, not mutator-driven. XlethEngineService calls
     // pollSourceTransformTable() from the WORLD-spinner poll

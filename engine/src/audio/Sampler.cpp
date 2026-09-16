@@ -715,6 +715,12 @@ double Sampler::debugVoicePitch(int voiceIdx) const
     return voices_[static_cast<size_t>(voiceIdx)].currentPitchF;
 }
 
+double Sampler::debugVoiceTranspose(int voiceIdx) const
+{
+    if (voiceIdx < 0 || voiceIdx >= MAX_VOICES) return 0.0;
+    return voices_[static_cast<size_t>(voiceIdx)].transposeSemis;
+}
+
 bool Sampler::debugVoiceSlideActive(int voiceIdx) const
 {
     if (voiceIdx < 0 || voiceIdx >= MAX_VOICES) return false;
@@ -1082,6 +1088,10 @@ void Sampler::noteOn(int midiNote, float velocity, int sampleOffset)
             active->spawnAbsSample = (currentAbsSample_ > 0)
                                      ? currentAbsSample_ + sampleOffset
                                      : -1;
+            // A hard retrigger is a respawn, so it takes the CURRENT Clip-mode
+            // transpose. The legato/portamento retune above is not, and keeps
+            // the offset the voice spawned with.
+            active->transposeSemis = transposeSemis_;
         } else {
             // No active voice: start fresh
             fireNoteOn(midiNote, vel, sampleOffset);
@@ -1204,6 +1214,9 @@ void Sampler::fireNoteOn(int midiNote, float velocity, int sampleOffset)
     v->spawnAbsSample = (currentAbsSample_ > 0)
                         ? currentAbsSample_ + sampleOffset
                         : -1;
+    // Clip-mode transpose is latched per voice at spawn: a later table change
+    // retunes only the voices spawned after it.
+    v->transposeSemis = transposeSemis_;
 
     // ── Modulation: arm this voice's half of the system ──────────────────────
     // Every per-voice source restarts here. modCountdown = 0 forces the first
@@ -1506,7 +1519,11 @@ void Sampler::processVoice(Voice& v,
     // cutoff is designed from this once per block (block-rate coefficients,
     // the same convention the effect base class uses) rather than chasing the
     // per-sample pitch modulation — one tan() per block instead of per sample.
-    const double noteHzAtBlockEntry = 440.0 * std::pow(2.0, (v.currentPitchF - 69.0) / 12.0);
+    // The voice's Clip-mode transpose is part of the sounding note: a pattern
+    // transposed by N semitones must key-track exactly as if every note had
+    // been drawn N semitones higher.
+    const double noteHzAtBlockEntry =
+        440.0 * std::pow(2.0, (v.currentPitchF + v.transposeSemis - 69.0) / 12.0);
 
     // Loaded before the geometry pass because MANGLE's design needs to know
     // whether this stream is modulated: a routed instance must be designed from
@@ -1868,8 +1885,11 @@ void Sampler::processVoice(Voice& v,
             // The modulation matrix folds SEM, COARSE and FINE into ONE
             // per-slot semitone offset (FINE already converted from cents), so
             // routing all three costs a single extra add here.
+            //
+            // v.transposeSemis is the Clip-mode transpose latched at spawn
+            // (fractional semitones, double end to end — cents are exact).
             const double semis = (v.currentPitchF - g.rootNote)
-                               + g.tuning + pitchOffsetSemitones
+                               + g.tuning + v.transposeSemis + pitchOffsetSemitones
                                + static_cast<double>(
                                      v.modOffsets.semis[static_cast<size_t>(st.slotIndex)]);
             const double stride = std::pow(2.0, semis / 12.0) * g.srRatio;

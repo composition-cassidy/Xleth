@@ -1928,6 +1928,42 @@ target_compile_definitions(test_clip_fx_transform PRIVATE
 
 target_link_options(test_clip_fx_transform PRIVATE /STACK:8388608)
 
+# ── test_pattern_fx_transpose ────────────────────────────────────────────────
+# Pitch Shifter Clip mode (mode 4) on PATTERN tracks: Sampler voice-spawn
+# transpose from the per-block transform table. Measured fundamental per
+# semis/cents, voice pairing (mono, slides, mid-phrase table changes), video
+# event gate, Pattern.notes/undo untouched, differential allocation count.
+add_executable(test_pattern_fx_transpose
+    test/test_pattern_fx_transpose.cpp
+)
+
+target_link_libraries(test_pattern_fx_transpose PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_pattern_fx_transpose PRIVATE
+    _CRT_SECURE_NO_WARNINGS=1
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+target_link_options(test_pattern_fx_transpose PRIVATE /STACK:8388608)
+
 # ── test_source_transform_table ──────────────────────────────────────────────
 # Pitch Shifter Clip mode plumbing: SourceTransform capability, the pure
 # per-track table builder (last-in-chain-order wins, track chains only, bypass
@@ -3054,6 +3090,7 @@ set(XLETH_ENGINE_TESTS
     test_pitch_shifter_effect
     test_source_transform_table
     test_clip_fx_transform
+    test_pattern_fx_transpose
     test_auto_loop_policy
     test_midi_importer
     test_fsc_score_parser
