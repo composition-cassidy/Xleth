@@ -1,5 +1,6 @@
 import React from 'react'
 import MidiDrumSubTrackRow from './MidiDrumSubTrackRow.jsx'
+import MidiTrackThumbnail from './MidiTrackThumbnail.jsx'
 import { MAX_NOTE_LENGTH_OPTIONS, DEFAULT_MAX_NOTE_LENGTH_DENOM } from './maxNoteLength.js'
 import { TRANSPOSE_MIN_SEMITONES, TRANSPOSE_MAX_SEMITONES, DEFAULT_TRANSPOSE_SEMITONES, clampTransposeSemitones } from './transpose.js'
 import { MODE_UPDATE } from './MidiReimportModeSelect.jsx'
@@ -79,6 +80,12 @@ export default function MidiTrackRow({ track, parentOptions, outputOptions, onPa
           <span className="midi-track-notes">{track.noteCount} notes</span>
         </span>
       </div>
+
+      {track.thumb && (
+        <div className="midi-track-thumbnail-wrap">
+          <MidiTrackThumbnail thumb={track.thumb} />
+        </div>
+      )}
 
       {!isSplitDrum && (
         <>

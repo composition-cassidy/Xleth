@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { Image, Music2, Search } from 'lucide-react'
 import XlethSelect from '../common/XlethSelect.jsx'
+import { getCachedPreview, getSourceFingerprint } from './samplePreviewCache.js'
 
 function getItemKey(item) {
   return item?.id == null ? '__none__' : String(item.id)
@@ -80,21 +81,21 @@ export default function MidiSampleRail({
     const getFrameAtTime = window.xleth?.video?.getFrameAtTime
     if (typeof getFrameAtTime !== 'function') return
 
+    let cancelled = false
     for (const item of railItems) {
       const key = getItemKey(item)
       if (item.isNone || requestedRef.current.has(key) || previews[key] || !canRequestPreview(item)) continue
       requestedRef.current.add(key)
       const sourceId = item.source.id
+      const fingerprint = getSourceFingerprint(item.source)
       const time = Number.isFinite(item.previewTime) ? item.previewTime : 0
-      getFrameAtTime(sourceId, time, compact ? 96 : 144, compact ? 54 : 81)
+      getCachedPreview(getFrameAtTime, sourceId, fingerprint, time, compact ? 96 : 144, compact ? 54 : 81)
         .then(dataUrl => {
-          if (!dataUrl) return
-          setPreviews(prev => ({ ...prev, [key]: dataUrl }))
-        })
-        .catch(() => {
-          setPreviews(prev => ({ ...prev, [key]: null }))
+          if (cancelled) return
+          setPreviews(prev => ({ ...prev, [key]: dataUrl ?? null }))
         })
     }
+    return () => { cancelled = true }
   }, [compact, disabled, previews, railItems])
 
   return (

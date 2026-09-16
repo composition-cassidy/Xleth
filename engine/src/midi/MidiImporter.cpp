@@ -23,10 +23,14 @@ namespace
 {
 using json = nlohmann::json;
 
-constexpr int      kDefaultTempoBpm  = 120;
-constexpr int      kBytesPerNote     = 12;
-constexpr int      kDrumChannel      = 10;
-constexpr uint32_t kMaxPackedTick    = std::numeric_limits<uint32_t>::max();
+constexpr int      kDefaultTempoBpm   = 120;
+constexpr int      kBytesPerNote      = 12;
+constexpr int      kDrumChannel       = 10;
+constexpr uint32_t kMaxPackedTick     = std::numeric_limits<uint32_t>::max();
+// Fixed resolution for the per-track summary thumbnail (see TrackScan below):
+// note-on counts are bucketed into this many equal time divisions spanning
+// [thumbStartTick, thumbEndTick), regardless of the track's actual length.
+constexpr int      kThumbBucketCount  = 96;
 
 struct LoadedMidiFile {
     juce::File     file;
@@ -50,6 +54,17 @@ struct TrackScan {
     bool             isDrum        = false;
     bool             hasPitchBend  = false;
     std::vector<int> uniqueNotes;
+
+    // Summary-only thumbnail data (unused by importFull's call to scanTrack).
+    // thumbEndTick is the last note-off tick, falling back to the last
+    // note-on tick + tpq when the track has no note-off events at all.
+    double           thumbStartTick = 0.0;
+    double           thumbEndTick   = 0.0;
+    int              pitchMin       = 0;
+    int              pitchMax       = 0;
+    // Note-on count per equal time division of [thumbStartTick, thumbEndTick).
+    // Empty when noteCount == 0.
+    std::vector<int> thumbBuckets;
 };
 
 struct ImportTrackOptions {
@@ -223,7 +238,7 @@ TempoInfo buildTempoInfo(const juce::MidiFile& midiFile)
     return info;
 }
 
-TrackScan scanTrack(const juce::MidiMessageSequence& track, int trackIndex)
+TrackScan scanTrack(const juce::MidiMessageSequence& track, int trackIndex, int tpq)
 {
     TrackScan scan;
     scan.index = trackIndex;
@@ -231,6 +246,13 @@ TrackScan scanTrack(const juce::MidiMessageSequence& track, int trackIndex)
 
     std::set<int> channelsUsed;
     std::set<int> uniqueNotes;
+    std::vector<double> noteOnTicks;
+    double minNoteOnTick  = 0.0;
+    double maxNoteOnTick  = 0.0;
+    double maxNoteOffTick = 0.0;
+    bool   hasNoteOff     = false;
+    int    pitchMin       = std::numeric_limits<int>::max();
+    int    pitchMax       = std::numeric_limits<int>::min();
 
     for (const auto* event : track) {
         if (event == nullptr) {
@@ -240,12 +262,32 @@ TrackScan scanTrack(const juce::MidiMessageSequence& track, int trackIndex)
         const auto& message = event->message;
 
         if (message.isNoteOn()) {
+            const double tick       = message.getTimeStamp();
+            const int    noteNumber = message.getNoteNumber();
+
             ++scan.noteCount;
             channelsUsed.insert(message.getChannel());
-            uniqueNotes.insert(message.getNoteNumber());
+            uniqueNotes.insert(noteNumber);
+            noteOnTicks.push_back(tick);
+
+            if (scan.noteCount == 1) {
+                minNoteOnTick = tick;
+                maxNoteOnTick = tick;
+            } else {
+                minNoteOnTick = std::min(minNoteOnTick, tick);
+                maxNoteOnTick = std::max(maxNoteOnTick, tick);
+            }
+            pitchMin = std::min(pitchMin, noteNumber);
+            pitchMax = std::max(pitchMax, noteNumber);
 
             if (message.getChannel() == kDrumChannel) {
                 scan.isDrum = true;
+            }
+
+            if (event->noteOffObject != nullptr) {
+                const double offTick = event->noteOffObject->message.getTimeStamp();
+                maxNoteOffTick = hasNoteOff ? std::max(maxNoteOffTick, offTick) : offTick;
+                hasNoteOff     = true;
             }
         } else if (message.isPitchWheel()) {
             scan.hasPitchBend = true;
@@ -254,6 +296,31 @@ TrackScan scanTrack(const juce::MidiMessageSequence& track, int trackIndex)
 
     scan.channelsUsed.assign(channelsUsed.begin(), channelsUsed.end());
     scan.uniqueNotes.assign(uniqueNotes.begin(), uniqueNotes.end());
+
+    if (scan.noteCount > 0) {
+        scan.thumbStartTick = minNoteOnTick;
+        scan.thumbEndTick   = hasNoteOff ? maxNoteOffTick : (maxNoteOnTick + static_cast<double>(tpq));
+        if (scan.thumbEndTick <= scan.thumbStartTick) {
+            // Defensive only: JUCE reorders a same-tick note-off ahead of its
+            // note-on when reading a file (see MidiFile::readNextTrack), so a
+            // matched pair can never actually collapse to zero span in
+            // practice -- but nothing upstream guarantees that, so still
+            // guard the division below against it.
+            scan.thumbEndTick = scan.thumbStartTick + 1.0;
+        }
+        scan.pitchMin = pitchMin;
+        scan.pitchMax = pitchMax;
+
+        const double span = scan.thumbEndTick - scan.thumbStartTick;
+        scan.thumbBuckets.assign(kThumbBucketCount, 0);
+        for (const double tick : noteOnTicks) {
+            const double frac = std::clamp((tick - scan.thumbStartTick) / span, 0.0, 0.999999);
+            const int bucketIndex = std::clamp(static_cast<int>(frac * kThumbBucketCount),
+                                                0, kThumbBucketCount - 1);
+            ++scan.thumbBuckets[bucketIndex];
+        }
+    }
+
     return scan;
 }
 
@@ -611,7 +678,7 @@ std::string MidiImporter::parseSummary(const std::string& filePath)
             continue;
         }
 
-        const TrackScan scan = scanTrack(*track, trackIndex);
+        const TrackScan scan = scanTrack(*track, trackIndex, loaded.tpq);
         if (scan.noteCount <= 0) {
             continue;
         }
@@ -625,7 +692,14 @@ std::string MidiImporter::parseSummary(const std::string& filePath)
             {"channelsUsed", scan.channelsUsed},
             {"isDrum", scan.isDrum},
             {"hasPitchBend", scan.hasPitchBend},
-            {"uniqueNoteNumbers", scan.uniqueNotes}
+            {"uniqueNoteNumbers", scan.uniqueNotes},
+            {"thumb", {
+                {"startTick", scan.thumbStartTick},
+                {"endTick", scan.thumbEndTick},
+                {"pitchMin", scan.pitchMin},
+                {"pitchMax", scan.pitchMax},
+                {"buckets", scan.thumbBuckets}
+            }}
         });
 
         debugLog("track index=%d name=\"%s\" noteCount=%d isDrum=%d hasPitchBend=%d",
@@ -707,7 +781,7 @@ MidiImportFullResult MidiImporter::importFull(const std::string& filePath,
             continue;
         }
 
-        const TrackScan scan = scanTrack(*track, trackIndex);
+        const TrackScan scan = scanTrack(*track, trackIndex, loaded.tpq);
         estimatedNoteCount += static_cast<size_t>(std::max(scan.noteCount, 0));
 
         debugLog("track index=%d name=\"%s\" noteCount=%d isDrum=%d hasPitchBend=%d",

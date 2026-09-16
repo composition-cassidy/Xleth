@@ -19766,6 +19766,20 @@ html, body, #root {
   font-size: 11px;
 }
 
+.midi-track-thumbnail-wrap {
+  width: 100%;
+}
+
+.midi-track-thumbnail {
+  display: block;
+  width: 100%;
+  height: 20px;
+}
+
+.midi-track-thumbnail rect {
+  fill: var(--theme-accent);
+}
+
 .midi-track-sample-area {
   display: flex;
   flex-direction: column;

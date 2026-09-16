@@ -249,6 +249,36 @@ function writeDrumTransposeFixture(filePath) {
   });
 }
 
+// Two tracks for parseSummary thumbnail bucket-math coverage:
+//   "Thumb Track" - three notes spread across a 9600-tick span (tpq 96, so
+//     100 ticks/bucket over 96 buckets) landing cleanly in buckets 0, 48, 95.
+//   "Orphaned Note Track" - a note-on with no matching note-off (JUCE reorders
+//     a same-tick note-off to precede its note-on when read from a file, so it
+//     can never land as a matched pair -- this is the only way a single-note
+//     track's note-off goes missing). Exercises the "endTick falls back to the
+//     last note-on + tpq" branch, and incidentally the endTick > startTick
+//     guard is always satisfied by that +tpq fallback (tpq > 0 by construction).
+function writeThumbFixture(filePath) {
+  writeMidiFile(filePath, {
+    format: 1,
+    tpq: 96,
+    tracks: [
+      buildTrack('Thumb Track', [
+        { delta: 0, bytes: [0x90, 60, 100] },    // note-on @0
+        { delta: 10, bytes: [0x80, 60, 0] },     // note-off @10
+        { delta: 4790, bytes: [0x90, 72, 90] },  // note-on @4800 (bucket 48)
+        { delta: 50, bytes: [0x80, 72, 0] },     // note-off @4850
+        { delta: 4650, bytes: [0x90, 65, 80] },  // note-on @9500 (bucket 95)
+        { delta: 100, bytes: [0x80, 65, 0] },    // note-off @9600
+      ]),
+      buildTrack('Orphaned Note Track', [
+        { delta: 0, bytes: [0x90, 50, 100] },  // note-on @0, never matched
+        { delta: 0, bytes: [0x80, 50, 0] },    // note-off @0 -- reordered before the note-on above
+      ]),
+    ],
+  });
+}
+
 // A single track with 500 ticks of leading silence before its first note, for
 // trim-leading-silence coverage.
 function writeTrimFixture(filePath) {
@@ -982,6 +1012,45 @@ function runTileToFillScenario(projectRoot, clampMidiPath, mixedMidiPath) {
   eq(addon.timeline_getPatternBlocks().length, beforeSecondImport.blocks, 'undo removes ALL tiled blocks');
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// parseSummary thumbnail
+// ─────────────────────────────────────────────────────────────────────────────
+
+function runThumbnailScenario(projectRoot, thumbMidiPath) {
+  console.log('\n[ Scenario 16 - parseSummary per-track thumbnail bucket math ]');
+
+  const summary = JSON.parse(addon.midi_parseSummary(thumbMidiPath));
+  assert(summary.ok === true, 'thumbnail fixture parseSummary ok');
+  eq(summary.tracks.length, 2, 'thumbnail fixture reports two note-bearing tracks');
+
+  const thumbTrack = summary.tracks.find(t => t.name === 'Thumb Track');
+  assert(thumbTrack != null, 'Thumb Track present in summary');
+  if (thumbTrack) {
+    assert(thumbTrack.thumb != null, 'Thumb Track carries a thumb object');
+    eq(thumbTrack.thumb.startTick, 0, 'thumb startTick is the first note-on tick');
+    eq(thumbTrack.thumb.endTick, 9600, 'thumb endTick is the last note-off tick');
+    eq(thumbTrack.thumb.pitchMin, 60, 'thumb pitchMin');
+    eq(thumbTrack.thumb.pitchMax, 72, 'thumb pitchMax');
+    assert(Array.isArray(thumbTrack.thumb.buckets), 'thumb buckets is an array');
+    eq(thumbTrack.thumb.buckets.length, 96, 'thumb buckets has 96 entries');
+    const bucketSum = thumbTrack.thumb.buckets.reduce((a, b) => a + b, 0);
+    eq(bucketSum, 3, 'thumb buckets sum to the track note count');
+    eq(thumbTrack.thumb.buckets[0], 1, 'note @ tick 0 lands in bucket 0');
+    eq(thumbTrack.thumb.buckets[48], 1, 'note @ tick 4800 lands in bucket 48');
+    eq(thumbTrack.thumb.buckets[95], 1, 'note @ tick 9500 lands in bucket 95');
+  }
+
+  const orphanedTrack = summary.tracks.find(t => t.name === 'Orphaned Note Track');
+  assert(orphanedTrack != null, 'Orphaned Note Track present in summary');
+  if (orphanedTrack) {
+    eq(orphanedTrack.thumb.startTick, 0, 'orphaned-note thumb startTick is the note-on tick');
+    eq(orphanedTrack.thumb.endTick, 96, 'orphaned-note thumb endTick falls back to note-on + tpq');
+    const bucketSum = orphanedTrack.thumb.buckets.reduce((a, b) => a + b, 0);
+    eq(bucketSum, 1, 'orphaned-note thumb buckets still sum to the track note count');
+    eq(orphanedTrack.thumb.buckets[0], 1, 'orphaned note lands in bucket 0');
+  }
+}
+
 function runTileEmptyProjectScenario(projectRoot, mixedMidiPath) {
   console.log('\n[ Scenario 15 - tile-to-fill on an empty project places exactly one block ]');
   createProject(path.join(projectRoot, 'tile_empty'));
@@ -1011,6 +1080,7 @@ async function main() {
   const transposeMidiPath = path.join(projectRoot, 'transpose_fixture.mid');
   const drumTransposeMidiPath = path.join(projectRoot, 'drum_transpose_fixture.mid');
   const trimMidiPath = path.join(projectRoot, 'trim_fixture.mid');
+  const thumbMidiPath = path.join(projectRoot, 'thumb_fixture.mid');
 
   cleanupDir(projectRoot);
   ensureDir(projectRoot);
@@ -1020,6 +1090,7 @@ async function main() {
   writeTransposeFixture(transposeMidiPath);
   writeDrumTransposeFixture(drumTransposeMidiPath);
   writeTrimFixture(trimMidiPath);
+  writeThumbFixture(thumbMidiPath);
   testWavPath = path.join(projectRoot, 'fixture.wav');
   writeTestWav(testWavPath);
 
@@ -1038,6 +1109,7 @@ async function main() {
     runDrumSplitTransposeScenario(projectRoot, drumTransposeMidiPath);
     runReimportTransposeUndoScenario(projectRoot, clampMidiPath, reimportMidiPath);
     runTrimScenario(projectRoot, trimMidiPath);
+    runThumbnailScenario(projectRoot, thumbMidiPath);
     runPositionScenario(projectRoot, clampMidiPath);
     runTileToFillScenario(projectRoot, clampMidiPath, mixedMidiPath);
     runTileEmptyProjectScenario(projectRoot, mixedMidiPath);
