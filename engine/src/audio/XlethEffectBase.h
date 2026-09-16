@@ -101,6 +101,21 @@ public:
     // provideSourceTransform MUST override this too. Readable from any thread.
     virtual std::uint64_t sourceTransformEpoch() const { return 0; }
 
+    // The dry/wet blend a source-transform provider asks for over the NEXT
+    // `numSamples` samples, as the smoothed value at the block start and the
+    // value the smoother will reach at its end (it moves linearly in between
+    // for a Linear smoother). Returns false for an effect that is not a
+    // source-transform provider.
+    //
+    // AUDIO THREAD, read-only, allocation- and lock-free. Called by MixEngine's
+    // clip loop, which runs BEFORE the chain processes this block, so it sees
+    // the target the previous block pushed: at most one block of lag, and the
+    // smoother itself is never advanced here.
+    virtual bool sourceTransformMixRamp(int /*numSamples*/, float& /*start*/, float& /*end*/) const noexcept
+    {
+        return false;
+    }
+
     // True iff this effect declared the optional second input bus at construction.
     bool hasSidechainInputBus() const { return getBusCount(true) > 1; }
 

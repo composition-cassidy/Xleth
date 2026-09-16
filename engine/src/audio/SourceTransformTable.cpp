@@ -77,9 +77,14 @@ SourceTransformBuildResult buildTrackSourceTransformTable(const EffectChainMap& 
         // always the last one. Overwriting it is what makes the LAST provider
         // in chain order win.
         if (!result.table.entries.empty() && result.table.entries.back().trackId == trackId)
-            result.table.entries.back().transform = t;
+        {
+            result.table.entries.back().transform      = t;
+            result.table.entries.back().providerNodeId = nodeId;
+        }
         else
-            result.table.entries.push_back({ trackId, t });
+        {
+            result.table.entries.push_back({ trackId, t, nodeId });
+        }
     };
     walkTrackEffects(chains, collect);
 

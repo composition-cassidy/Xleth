@@ -17,8 +17,9 @@ class XlethEffectBase;
 //
 // Built on the message thread by buildTrackSourceTransformTable() and published
 // by MixEngine through one std::atomic<std::shared_ptr<const Table>> (the
-// ChainSnapshot shape). Immutable once published. NOTHING CONSUMES IT YET —
-// the ClipRenderCache and pattern-transpose consumers land in later prompts.
+// ChainSnapshot shape). Immutable once published. Consumed by MixEngine's
+// audio-clip render path (ClipRenderCache fx lane + the clip-loop Mix blend);
+// pattern tracks do not read it yet.
 //
 // RULES (every one of these is pinned by test_source_transform_table):
 //
@@ -46,6 +47,12 @@ namespace xleth
     {
         int             trackId = -1;
         SourceTransform transform;
+
+        // The chain node that provided `transform` (the last active provider in
+        // chain order). Identity only, never render identity: it is how a
+        // realtime consumer finds the node whose smoothed `mix` it blends at,
+        // through the chain's GraphRealtimeView, without walking the chain.
+        int             providerNodeId = -1;
     };
 
     struct TrackSourceTransformTable
@@ -56,12 +63,18 @@ namespace xleth
         std::vector<TrackSourceTransformEntry> entries;
 
         // Any thread holding the table: binary search, no allocation.
-        const SourceTransform* find(int trackId) const noexcept
+        const TrackSourceTransformEntry* findEntry(int trackId) const noexcept
         {
             const auto it = std::lower_bound(
                 entries.begin(), entries.end(), trackId,
                 [](const TrackSourceTransformEntry& e, int id) { return e.trackId < id; });
-            return (it != entries.end() && it->trackId == trackId) ? &it->transform : nullptr;
+            return (it != entries.end() && it->trackId == trackId) ? &*it : nullptr;
+        }
+
+        const SourceTransform* find(int trackId) const noexcept
+        {
+            const auto* e = findEntry(trackId);
+            return e != nullptr ? &e->transform : nullptr;
         }
     };
 

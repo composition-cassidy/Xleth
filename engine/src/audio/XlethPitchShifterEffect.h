@@ -170,6 +170,15 @@ public:
 
     void setStateInformation(const void* data, int sizeInBytes) override;
 
+    // Clip mode's Mix, read by MixEngine's clip loop (see XlethEffectBase).
+    // Clamped to [0, 1] exactly like applyMix().
+    bool sourceTransformMixRamp(int numSamples, float& start, float& end) const noexcept override
+    {
+        start = std::clamp(hMix_.current(), 0.0f, 1.0f);
+        end   = std::clamp(hMix_.peekAfter(numSamples), 0.0f, 1.0f);
+        return true;
+    }
+
     // Underlying modules, for the conformance tests only.
     const xleth::dsp::GranularShifter&    getGranularShifter() const noexcept { return granular_; }
     const xleth::dsp::LiveShifterWrapper& getSmartShifter()    const noexcept { return liveSmart_; }

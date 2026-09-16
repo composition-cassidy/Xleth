@@ -1150,9 +1150,8 @@ static void refreshAllClipCaches()
     auto& mix = audioEngine->getMixEngine();
     for (const Clip* c : g_timeline->getAllClips()) {
         if (!c) continue;
-        const bool needs = (c->pitchOffset != 0 || c->pitchOffsetCents != 0
-                         || c->reversed || c->stretchRatio != 1.0);
-        if (needs)
+        // Own processing OR a Clip-mode Pitch Shifter on the clip's track.
+        if (mix.clipNeedsCacheRender(*c))
             mix.invalidateClipCache(c->id, "refreshAllClipCaches");
     }
 }
@@ -1174,17 +1173,18 @@ static int waitForClipCachesReady(int timeoutMs)
     std::vector<int> pending;
     for (const Clip* c : g_timeline->getAllClips()) {
         if (!c) continue;
-        const bool needs = (c->pitchOffset != 0 || c->pitchOffsetCents != 0
-                         || c->reversed || c->stretchRatio != 1.0);
-        if (needs) pending.push_back(c->id);
+        if (mix.clipNeedsCacheRender(*c)) pending.push_back(c->id);
     }
     const auto deadline = std::chrono::steady_clock::now()
                         + std::chrono::milliseconds(timeoutMs);
     size_t notReady = pending.size();
     while (notReady > 0 && std::chrono::steady_clock::now() < deadline) {
         notReady = 0;
+        // Ready = every render the clip needs: its original AND, on a Clip-mode
+        // track, its shifted render. A clip still missing one after the timeout
+        // plays the same fallback as today's unfinished pitched clip.
         for (int id : pending)
-            if (mix.getClipProcessedBuffer(id) == nullptr) ++notReady;
+            if (!mix.isClipCacheReady(id)) ++notReady;
         if (notReady > 0)
             std::this_thread::sleep_for(std::chrono::milliseconds(2));
     }
@@ -1209,6 +1209,10 @@ JsonApi::Value Cache_GetWorldActiveJobIds(const JsonApi::CallbackInfo& info)
     // renders are in flight and 1 Hz otherwise. A poll with no chain/parameter
     // change is an allocation-free walk that publishes nothing.
     audioEngine->getMixEngine().pollSourceTransformTable();
+    // Same cadence: resubmit clips the audio thread reported as missing a
+    // render (evicted, or a key that went stale), and flush a due Clip-mode
+    // settle queue in case the settle timer has not fired yet.
+    audioEngine->getMixEngine().serviceClipRenderCache();
     const auto ids = audioEngine->getMixEngine().getWorldActiveJobIds();
     auto arr = JsonApi::Array::New(env, ids.size());
     for (size_t i = 0; i < ids.size(); ++i)
@@ -7494,9 +7498,7 @@ void Timeline_SetBPM(const JsonApi::CallbackInfo& info)
     if (audioEngine && g_timeline) {
         for (const Clip* c : g_timeline->getAllClips()) {
             if (!c) continue;
-            const bool stretched = (c->pitchOffset != 0 || c->pitchOffsetCents != 0
-                                 || c->reversed || c->stretchRatio != 1.0);
-            if (stretched)
+            if (audioEngine->getMixEngine().clipNeedsCacheRender(*c))
                 audioEngine->getMixEngine().invalidateClipCache(c->id, "setBPM");
         }
     }
@@ -10760,7 +10762,7 @@ JsonApi::Value Waveform_GetClipPeaks(const JsonApi::CallbackInfo& info)
     const int    numPeaks = std::max(1, std::min(info[3].As<JsonApi::Number>().Int32Value(), 16000));
 
     const auto& mix = audioEngine->getMixEngine();
-    const juce::AudioBuffer<float>* buf = mix.getClipProcessedBuffer(clipId);
+    const auto buf = mix.getClipProcessedBuffer(clipId);   // pinned for this read
     if (!buf) {
         // Cache miss (buffer building) or clip has identity params — signal not-ready.
         return makeResult(false);
@@ -19262,7 +19264,10 @@ JsonApi::Value Audio_ExportStart(const JsonApi::CallbackInfo& info)
         // stretched clips hit the cache (which applies pitch) instead of the
         // rate-corrected-but-pitchless raw fallback. Must run after prepare()
         // so cache keys are built at the export rate, on the message thread,
-        // before the render thread spawns.
+        // before the render thread spawns. The Clip-mode transform table is
+        // published first, with no settle, so the shifted renders are keyed
+        // (and awaited) on the transform the export will actually play.
+        mixer.prepareSourceTransformsForExport();
         refreshAllClipCaches();
         waitForClipCachesReady(15000);
     }
@@ -19547,6 +19552,7 @@ JsonApi::Value Video_ExportStart(const JsonApi::CallbackInfo& info)
         // Warm + await the clip render cache at the EXPORT rate (see audio
         // export above) so pitched/stretched clips hit the cache rather than the
         // pitchless raw fallback. Message thread, before the render thread spawns.
+        mixer.prepareSourceTransformsForExport();
         refreshAllClipCaches();
         waitForClipCachesReady(15000);
     }
@@ -20038,9 +20044,7 @@ JsonApi::Value Audio_LoadRegionAudio(const JsonApi::CallbackInfo& info)
         auto& mix = audioEngine->getMixEngine();
         for (const Clip* c : g_timeline->getAllClips()) {
             if (!c || c->regionId != regionId) continue;
-            const bool needs = (c->pitchOffset != 0 || c->pitchOffsetCents != 0
-                             || c->reversed || c->stretchRatio != 1.0);
-            if (needs) mix.invalidateClipCache(c->id, "audio_loadRegionAudio");
+            if (mix.clipNeedsCacheRender(*c)) mix.invalidateClipCache(c->id, "audio_loadRegionAudio");
         }
     }
 

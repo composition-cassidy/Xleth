@@ -574,9 +574,9 @@ public:
     // ── Per-track source transform table (Pitch Shifter Clip mode) ──────────
     //
     // trackId -> SourceTransform, rebuilt from the effect chains and published
-    // lock-free. See SourceTransformTable.h for the table's rules. NOTHING
-    // CONSUMES THE TABLE YET: the ClipRenderCache / pattern-transpose readers
-    // arrive in later prompts, so the realtime path does no new work today.
+    // lock-free. See SourceTransformTable.h for the table's rules. Consumed by
+    // AUDIO CLIPS (mode 4, see "Clip mode render path" below); pattern tracks
+    // do not read it.
     //
     // Poll-driven, not mutator-driven. XlethEngineService calls
     // pollSourceTransformTable() from the WORLD-spinner poll
@@ -591,6 +591,72 @@ public:
     // blocks, and this poll must never stall the RPC thread behind an export.
     // MESSAGE THREAD.
     bool pollSourceTransformTable();
+
+    // ── Clip mode render path (Pitch Shifter mode 4, audio clips) ───────────
+    //
+    // For a clip on a track with an active table entry the engine keeps TWO
+    // renders: the clip's original render (only when the clip has processing
+    // of its own — otherwise raw PCM is the original) and the SHIFTED render
+    // (ClipRenderCache fx lane, key = original key + the transform). The clip
+    // loop blends them per sample at the provider node's smoothed Mix:
+    //   no table entry / wet not ready / Mix == 0  -> today's code, untouched
+    //   Mix == 1                                   -> shifted render only
+    //   0 < Mix < 1                                -> dry*(1-m) + wet*m
+    // with the clip's gain/fade/declick applied once to the result. The
+    // shifted render is requested whenever the transform is active, whatever
+    // Mix is, so an automated Mix sweep always has wet to blend against.
+    //
+    // Clips read through ClipModulatedReader (vibrato / scratch) are NOT
+    // blended: they keep today's output. The reader holds one readhead state
+    // per clip, and a second, independent readhead for the wet is not built.
+    //
+    // Invalidation: a republish that changes a track's transform queues that
+    // track, and kSourceTransformSettleMs after the LAST such change every clip
+    // on it is invalidated (and so resubmitted) in one batch. The settle is
+    // the render-storm guard for a stepped sweep; a settle timer on the message
+    // thread flushes it, and every poll flushes a due queue as well.
+    static constexpr int64_t kSourceTransformSettleMs = 250;
+
+    // pollSourceTransformTable() with an explicit clock (ms, ClipRenderCache::
+    // nowMs() scale). `blocking` waits for chainsMutex_ instead of skipping.
+    bool pollSourceTransformTableAt(int64_t nowMs, bool blocking = false);
+
+    // Invalidate every clip on the queued tracks once the settle has elapsed
+    // (or immediately with force). Returns how many clips it invalidated.
+    // MESSAGE THREAD.
+    int  flushSourceTransformInvalidations(int64_t nowMs, bool force = false);
+    bool hasPendingSourceTransformInvalidation() const noexcept { return fxInvalidationPending_; }
+
+    // Drain the cache's miss reports and resubmit those clips (a clip whose
+    // buffer was evicted, or whose key went stale without an invalidation),
+    // then flush a due settle queue. Clips on a track still settling are left
+    // to the flush. MESSAGE THREAD; hooked on the same poll as the table.
+    void serviceClipRenderCache();
+
+    // Export entry: publish the current table NOW (blocking), flush any pending
+    // settle immediately, so the refresh + wait that follows sees final keys.
+    void prepareSourceTransformsForExport();
+
+    // The fx-lane key for `original` under transform `t` (fx fields only; the
+    // clip's own pitch fields are left alone).
+    static CacheKey withSourceTransform(CacheKey original, const xleth::SourceTransform& t) noexcept;
+
+    // True when the clip needs any cache render: processing of its own, or an
+    // active transform on its track. The filter every "warm the caches" loop
+    // must use — the old pitch/reverse/stretch test misses identity clips on a
+    // Clip-mode track.
+    bool clipNeedsCacheRender(const Clip& clip) const;
+
+    // True when every render the clip needs is published (original and/or
+    // shifted). Clips needing none are ready. MESSAGE THREAD.
+    bool isClipCacheReady(int clipId) const;
+
+    // The clip's shifted (fx lane) buffer under the current table, or nullptr.
+    std::shared_ptr<const juce::AudioBuffer<float>> getClipFxProcessedBuffer(int clipId) const;
+
+    // Direct cache access for observability and tests.
+    ClipRenderCache&       getClipRenderCache()       noexcept { return clipRenderCache_; }
+    const ClipRenderCache& getClipRenderCache() const noexcept { return clipRenderCache_; }
 
     // Read API. One atomic load, no lock, no allocation; the returned pointer
     // pins the table. Never null. Safe from the audio thread.
@@ -610,8 +676,9 @@ public:
     // atomic reads). Builds the CacheKey from the clip's current params.
     // Returns nullptr if the clip has identity params (no processing needed)
     // or the cache is a miss (buffer still building). Safe to call from any
-    // non-audio thread — atomic shared_ptr load, no mutex.
-    const juce::AudioBuffer<float>* getClipProcessedBuffer(int clipId) const;
+    // non-audio thread — atomic shared_ptr load, no mutex. The pointer pins
+    // the buffer, so a concurrent LRU eviction cannot free it under the caller.
+    std::shared_ptr<const juce::AudioBuffer<float>> getClipProcessedBuffer(int clipId) const;
 
     // Returns the engine sample rate set by the last prepare() call.
     double getPreparedSampleRate() const { return preparedSampleRate_; }
@@ -1607,6 +1674,19 @@ private:
     // Publish `table` with the next generation. PRECONDITION: chainsMutex_ held
     // (it serialises this with every other writer of the members above).
     void publishSourceTransformTableLocked(xleth::TrackSourceTransformTable table);
+
+    // ── Clip mode settle queue (message thread only) ────────────────────────
+    std::vector<int> fxInvalidationTracks_;        // sorted, unique
+    int64_t          fxInvalidationLastChangeMs_ = 0;
+    bool             fxInvalidationPending_      = false;
+    std::vector<int> clipMissScratch_;             // serviceClipRenderCache scratch
+    class SourceTransformSettleTimer;
+    std::unique_ptr<SourceTransformSettleTimer> fxSettleTimer_;
+
+    // Queue every track whose transform differs between the two tables.
+    void queueSourceTransformChanges(const xleth::TrackSourceTransformTable& before,
+                                     const xleth::TrackSourceTransformTable& after,
+                                     int64_t nowMs);
 
     // RAII republish. Declared immediately after the lock guard in every chain
     // mutator: destruction order means this fires while chainsMutex_ is still

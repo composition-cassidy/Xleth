@@ -19,6 +19,8 @@
 #include "render/RenderClock.h"
 #include "XlethDebug.h"
 
+#include <juce_events/juce_events.h>
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -412,6 +414,9 @@ MixEngine::MixEngine()
 
 MixEngine::~MixEngine()
 {
+    // The settle timer calls back into this engine; stop it first.
+    fxSettleTimer_.reset();
+
     // Stop the envelope applier before anything else tears down: it writes to
     // effect chains, so it must not be running while they are destroyed.
     stopEnvelopeApplierThread();
@@ -2234,6 +2239,10 @@ MixEngine::MasterLoudnessSnapshot MixEngine::getMasterLoudness() const
 void MixEngine::setNonRealtime(bool nr)
 {
     nonRealtime_.store(nr, std::memory_order_relaxed);
+    // An export awaits every clip render before its first block and then plays
+    // each one once, faster than realtime: nothing it waited for may be
+    // evicted from under it. Ending the export runs the deferred eviction pass.
+    clipRenderCache_.setEvictionSuspended(nr);
     // Propagate to each effect chain's JUCE AudioProcessorGraph.
     // JUCE's AudioProcessorGraph::processBlock() only builds its render
     // sequence synchronously when prepareToPlay() is called from the message
@@ -2325,9 +2334,7 @@ void MixEngine::invalidateAllGlobalMethodClips() {
     int count = 0;
     for (const Clip* c : timeline_->getAllClips()) {
         if (!c || c->stretchMethod != StretchMethod::Global) continue;
-        const bool needs = (c->pitchOffset != 0 || c->pitchOffsetCents != 0
-                         || c->reversed || c->stretchRatio != 1.0);
-        if (needs) { invalidateClipCache(c->id, "invalidateAllGlobalMethodClips"); ++count; }
+        if (clipNeedsCacheRender(*c)) { invalidateClipCache(c->id, "invalidateAllGlobalMethodClips"); ++count; }
     }
 #ifdef XLETH_DEBUG
     fprintf(stderr, "[EngineConfig] mass markDirty: %d clips invalidated\n", count);
@@ -2420,12 +2427,15 @@ void MixEngine::invalidateClipCacheImpl(int clipId, const char* trigger, bool qu
         return;
     }
 
-    // Only submit a render job if the clip actually needs processing
+    // Only submit a render job if the clip actually needs processing — of its
+    // own, or because its track's Pitch Shifter is in Clip mode (fx lane).
     const bool needsProcessing = (clip->pitchOffset != 0
                                || clip->pitchOffsetCents != 0
                                || clip->reversed
                                || clip->stretchRatio != 1.0);
-    if (!needsProcessing) {
+    const auto fxTable = currentSourceTransformTable();
+    const xleth::SourceTransform* fx = fxTable->find(clip->trackId);
+    if (!needsProcessing && fx == nullptr) {
 #ifdef XLETH_DEBUG
         if (!quiet) {
             fprintf(stderr, "[CacheQueue] SKIP clip=%d reason=identity_params "
@@ -2467,41 +2477,46 @@ void MixEngine::invalidateClipCacheImpl(int clipId, const char* trigger, bool qu
     }
 
     const CacheKey key = buildClipCacheKey(*clip, *srcBuf);
+    const double bakeRate = sampleBank_->getSampleBufferRate(it->second);
 
-    // Nothing the render depends on changed — keep the buffer we already have.
-    // A clip MOVE is the common case: position cancels out of durationSamples,
-    // so re-rendering here would redo the full PSOLA/WORLD/RubberBand pass for
-    // audio that is already sitting in the cache. Bulk-moving a selection used
-    // to re-render every clip in it.
-    if (clipRenderCache_.hasEntryForKey(clipId, key)) {
+    // One lane at a time: the original render, then the shifted one. A key
+    // whose entry already exists goes through submitJob's repeat path, which
+    // renders nothing and only re-publishes a finished buffer the slot lost
+    // (an eviction, or a stale job) — a clip MOVE, the common case, changes
+    // nothing the key depends on. Bulk-moving a selection used to re-render
+    // every clip in it.
+    auto submitLane = [&](const CacheKey& laneKey, const char* lane) {
 #ifdef XLETH_DEBUG
         if (!quiet) {
-            fprintf(stderr, "[CacheQueue] KEEP clip=%d reason=key_unchanged trigger=%s\n",
-                    clipId, trigger ? trigger : "null");
+            const bool keep = clipRenderCache_.hasEntryForKey(clipId, laneKey);
+            fprintf(stderr, "[CacheQueue] %s clip=%d lane=%s regionId=%d stretchRatio=%.3f reversed=%d "
+                    "stretchMethod=%d (resolved=%d) pitch=%dst+%dc fx=%dst+%dc/%d trigger=%s\n",
+                    keep ? "KEEP" : "ENQUEUE", clipId, lane, clip->regionId,
+                    clip->stretchRatio, clip->reversed ? 1 : 0,
+                    (int)clip->stretchMethod, laneKey.stretchMethod,
+                    clip->pitchOffset, clip->pitchOffsetCents,
+                    laneKey.fxPitchSemis, laneKey.fxPitchCents, laneKey.fxMethod,
+                    trigger ? trigger : "null");
             fflush(stderr);
         }
+#else
+        (void) lane;
 #endif
-        return;
-    }
+        clipRenderCache_.submitJob(clipId, laneKey, *srcBuf, preparedSampleRate_, bakeRate);
+    };
 
-#ifdef XLETH_DEBUG
-    if (!quiet) {
-        fprintf(stderr, "[CacheQueue] ENQUEUE clip=%d regionId=%d stretchRatio=%.3f reversed=%d "
-                "stretchMethod=%d (resolved=%d) pitch=%dst+%dc trigger=%s\n",
-                clipId, clip->regionId, clip->stretchRatio, clip->reversed ? 1 : 0,
-                (int)clip->stretchMethod, key.stretchMethod,
-                clip->pitchOffset, clip->pitchOffsetCents,
-                trigger ? trigger : "null");
-        fflush(stderr);
-    }
-#endif
-    const double bakeRate = sampleBank_->getSampleBufferRate(it->second);
-    clipRenderCache_.submitJob(clipId, key, *srcBuf, preparedSampleRate_, bakeRate);
+    if (needsProcessing) submitLane(key, "orig");
+    else                 clipRenderCache_.markDirtyLane(clipId, /*fxLane=*/false);
+
+    // The shifted render is requested whenever the transform is active —
+    // regardless of Mix, so an automated Mix sweep always has wet to blend.
+    if (fx != nullptr)   submitLane(withSourceTransform(key, *fx), "fx");
+    else                 clipRenderCache_.markDirtyLane(clipId, /*fxLane=*/true);
 }
 
 // ── Clip processed buffer lookup (message thread) ────────────────────────────
 
-const juce::AudioBuffer<float>* MixEngine::getClipProcessedBuffer(int clipId) const
+std::shared_ptr<const juce::AudioBuffer<float>> MixEngine::getClipProcessedBuffer(int clipId) const
 {
     if (!timeline_ || !sampleBank_) return nullptr;
 
@@ -4318,19 +4333,215 @@ void MixEngine::publishChainSnapshotLocked()
 
 bool MixEngine::pollSourceTransformTable()
 {
-    std::unique_lock<std::mutex> lock(chainsMutex_, std::try_to_lock);
-    if (!lock.owns_lock())
-        return false;
+    return pollSourceTransformTableAt(ClipRenderCache::nowMs());
+}
 
-    // The no-change path: an in-place walk against the cached stamps. No
-    // allocation, no publish.
-    if (!xleth::sourceTransformSnapshotChanged(effectChains_, sourceTransformSnapshot_))
-        return false;
+// ── Clip mode settle timer ──────────────────────────────────────────────────
+// One-shot in effect: armed for kSourceTransformSettleMs by every queued
+// change (re-arming restarts it — that is the settle), it flushes and stops.
+// juce::Timer callbacks run on the message thread, which is the only thread
+// that touches the settle queue.
+class MixEngine::SourceTransformSettleTimer : public juce::Timer
+{
+public:
+    explicit SourceTransformSettleTimer(MixEngine& e) : engine_(e) {}
+    ~SourceTransformSettleTimer() override { stopTimer(); }
 
-    auto built = xleth::buildTrackSourceTransformTable(effectChains_);
-    sourceTransformSnapshot_ = std::move(built.snapshot);
-    publishSourceTransformTableLocked(std::move(built.table));
+    void timerCallback() override
+    {
+        stopTimer();
+        engine_.flushSourceTransformInvalidations(ClipRenderCache::nowMs());
+        // A change queued during the flush re-arms through the queue itself.
+        if (engine_.hasPendingSourceTransformInvalidation())
+            startTimer(static_cast<int>(MixEngine::kSourceTransformSettleMs));
+    }
+
+private:
+    MixEngine& engine_;
+};
+
+bool MixEngine::pollSourceTransformTableAt(int64_t nowMs, bool blocking)
+{
+    bool republished = false;
+    {
+        std::unique_lock<std::mutex> lock(chainsMutex_, std::defer_lock);
+        if (blocking) lock.lock();
+        else          lock.try_lock();
+
+        // The no-change path: an in-place walk against the cached stamps. No
+        // allocation, no publish.
+        if (lock.owns_lock()
+            && xleth::sourceTransformSnapshotChanged(effectChains_, sourceTransformSnapshot_))
+        {
+            const auto before = currentSourceTransformTable();
+            auto built = xleth::buildTrackSourceTransformTable(effectChains_);
+            sourceTransformSnapshot_ = std::move(built.snapshot);
+            publishSourceTransformTableLocked(std::move(built.table));
+            queueSourceTransformChanges(*before, *currentSourceTransformTable(), nowMs);
+            republished = true;
+        }
+    }
+
+    // A due settle flushes on any poll, changed or not (no-op when idle).
+    flushSourceTransformInvalidations(nowMs);
+    return republished;
+}
+
+void MixEngine::queueSourceTransformChanges(const xleth::TrackSourceTransformTable& before,
+                                            const xleth::TrackSourceTransformTable& after,
+                                            int64_t nowMs)
+{
+    // Both tables are sorted by trackId: one merge walk. Only render identity
+    // counts — a different provider node with the same transform (a duplicate
+    // shifter removed, say) re-renders nothing.
+    std::size_t i = 0, j = 0;
+    bool queued = false;
+    auto queue = [&](int trackId)
+    {
+        const auto it = std::lower_bound(fxInvalidationTracks_.begin(), fxInvalidationTracks_.end(), trackId);
+        if (it == fxInvalidationTracks_.end() || *it != trackId)
+            fxInvalidationTracks_.insert(it, trackId);
+        queued = true;
+    };
+    while (i < before.entries.size() || j < after.entries.size())
+    {
+        if (j >= after.entries.size()
+            || (i < before.entries.size() && before.entries[i].trackId < after.entries[j].trackId))
+        {
+            queue(before.entries[i++].trackId);
+        }
+        else if (i >= before.entries.size() || after.entries[j].trackId < before.entries[i].trackId)
+        {
+            queue(after.entries[j++].trackId);
+        }
+        else
+        {
+            if (before.entries[i].transform != after.entries[j].transform)
+                queue(after.entries[j].trackId);
+            ++i; ++j;
+        }
+    }
+    if (!queued) return;
+
+    fxInvalidationPending_      = true;
+    fxInvalidationLastChangeMs_ = nowMs;
+    if (juce::MessageManager::getInstanceWithoutCreating() != nullptr)
+    {
+        if (!fxSettleTimer_)
+            fxSettleTimer_ = std::make_unique<SourceTransformSettleTimer>(*this);
+        fxSettleTimer_->startTimer(static_cast<int>(kSourceTransformSettleMs));
+    }
+}
+
+int MixEngine::flushSourceTransformInvalidations(int64_t nowMs, bool force)
+{
+    if (!fxInvalidationPending_) return 0;
+    if (!force && nowMs - fxInvalidationLastChangeMs_ < kSourceTransformSettleMs) return 0;
+
+    fxInvalidationPending_ = false;
+    std::vector<int> tracks;
+    tracks.swap(fxInvalidationTracks_);
+    if (timeline_ == nullptr) return 0;
+
+    std::vector<int> clipIds;
+    for (const Clip* c : timeline_->getAllClips())
+        if (c != nullptr && std::binary_search(tracks.begin(), tracks.end(), c->trackId))
+            clipIds.push_back(c->id);
+
+    if (!clipIds.empty())
+        invalidateClipCaches(clipIds, "fxTransform");
+    return static_cast<int>(clipIds.size());
+}
+
+void MixEngine::serviceClipRenderCache()
+{
+    clipMissScratch_.clear();
+    clipRenderCache_.drainMisses(clipMissScratch_);
+
+    if (!clipMissScratch_.empty() && timeline_ != nullptr)
+    {
+        // Duplicates are possible across drains; a clip on a track that is
+        // still settling is the flush's job, not ours — resubmitting it here
+        // would render every intermediate step of a sweep.
+        std::sort(clipMissScratch_.begin(), clipMissScratch_.end());
+        clipMissScratch_.erase(std::unique(clipMissScratch_.begin(), clipMissScratch_.end()),
+                               clipMissScratch_.end());
+        if (fxInvalidationPending_)
+        {
+            clipMissScratch_.erase(
+                std::remove_if(clipMissScratch_.begin(), clipMissScratch_.end(),
+                               [this](int id)
+                               {
+                                   const Clip* c = timeline_->getClip(id);
+                                   return c != nullptr
+                                       && std::binary_search(fxInvalidationTracks_.begin(),
+                                                             fxInvalidationTracks_.end(), c->trackId);
+                               }),
+                clipMissScratch_.end());
+        }
+        if (!clipMissScratch_.empty())
+            invalidateClipCaches(clipMissScratch_, "cacheMiss");
+    }
+
+    flushSourceTransformInvalidations(ClipRenderCache::nowMs());
+}
+
+void MixEngine::prepareSourceTransformsForExport()
+{
+    const int64_t now = ClipRenderCache::nowMs();
+    pollSourceTransformTableAt(now, /*blocking=*/true);
+    flushSourceTransformInvalidations(now, /*force=*/true);
+}
+
+CacheKey MixEngine::withSourceTransform(CacheKey key, const xleth::SourceTransform& t) noexcept
+{
+    key.fxPitchSemis = t.semis;
+    key.fxPitchCents = t.cents;
+    // A provider never reports Global (0); if one ever did, 0 would silently
+    // mean "no fx" here, so fall back to Rubber Band, the provider's default.
+    key.fxMethod     = (t.method >= 1 && t.method <= 5) ? t.method : 2;
+    key.fxFormant    = t.formant;
+    return key;
+}
+
+bool MixEngine::clipNeedsCacheRender(const Clip& clip) const
+{
+    const bool ownProcessing = (clip.pitchOffset != 0 || clip.pitchOffsetCents != 0
+                             || clip.reversed || clip.stretchRatio != 1.0);
+    return ownProcessing || currentSourceTransformTable()->find(clip.trackId) != nullptr;
+}
+
+bool MixEngine::isClipCacheReady(int clipId) const
+{
+    if (!timeline_ || !sampleBank_) return true;
+    const Clip* clip = timeline_->getClip(clipId);
+    if (!clip) return true;
+
+    const bool ownProcessing = (clip->pitchOffset != 0 || clip->pitchOffsetCents != 0
+                             || clip->reversed || clip->stretchRatio != 1.0);
+    if (ownProcessing && getClipProcessedBuffer(clipId) == nullptr) return false;
+    if (currentSourceTransformTable()->find(clip->trackId) != nullptr
+        && getClipFxProcessedBuffer(clipId) == nullptr) return false;
     return true;
+}
+
+std::shared_ptr<const juce::AudioBuffer<float>> MixEngine::getClipFxProcessedBuffer(int clipId) const
+{
+    if (!timeline_ || !sampleBank_) return nullptr;
+    const Clip* clip = timeline_->getClip(clipId);
+    if (!clip) return nullptr;
+
+    const auto table = currentSourceTransformTable();
+    const auto* fx = table->find(clip->trackId);
+    if (!fx) return nullptr;
+
+    auto it = regionToSampleMap_.find(clip->regionId);
+    if (it == regionToSampleMap_.end()) return nullptr;
+    const juce::AudioBuffer<float>* srcBuf = sampleBank_->getSample(it->second);
+    if (!srcBuf) return nullptr;
+
+    return clipRenderCache_.getProcessedBuffer(
+        clipId, withSourceTransform(buildClipCacheKey(*clip, *srcBuf), *fx));
 }
 
 void MixEngine::publishSourceTransformTableLocked(xleth::TrackSourceTransformTable table)
@@ -5906,6 +6117,45 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     const int clipFadeN = clipBoundaryFadeSamples_.load(std::memory_order_relaxed);
     const uint64_t sourceRenderStartNs = rtDiagEnabled ? steadyNowNs() : 0;
 
+    // ── Pitch Shifter Clip mode (mode 4): per-block transform state ─────────
+    // One atomic load pins the table for the whole block. Superseded tables are
+    // retired on the message thread, so dropping this copy never frees one here.
+    // A project without a Clip-mode shifter pays for that load and nothing else.
+    const std::shared_ptr<const xleth::TrackSourceTransformTable> fxTable =
+        sourceTransformTable_.load(std::memory_order_acquire);
+    const bool anyFxTransform = fxTable != nullptr && !fxTable->entries.empty();
+    const int64_t cacheNowMs = ClipRenderCache::nowMs();
+
+    // Mix per track, resolved at most once per block from the provider node's
+    // smoothed parameter: chain snapshot -> the chain's realtime view -> node.
+    // Every step is an atomic load or a hash lookup in an immutable view — no
+    // lock, no allocation. A node the view does not (yet) name reads as Mix 1.
+    struct FxMixState { bool resolved = false; float start = 1.0f; float end = 1.0f; };
+    std::array<FxMixState, kMaxTracks> fxMix {};
+    std::shared_ptr<const ChainSnapshot> fxChains;
+    auto resolveFxMix = [&](int trackSlot, const xleth::TrackSourceTransformEntry& entry)
+        -> const FxMixState&
+    {
+        auto& st = fxMix[static_cast<std::size_t>(trackSlot)];
+        if (st.resolved) return st;
+        st.resolved = true;
+        if (!fxChains) fxChains = chainSnapshot_.load(std::memory_order_acquire);
+        if (!fxChains) return st;
+        const auto* chainEntry = fxChains->find(entry.trackId);
+        if (chainEntry == nullptr || !chainEntry->chain) return st;
+        const auto view = chainEntry->chain->realtimeView();
+        if (!view) return st;
+        const auto* node = view->find(entry.providerNodeId);
+        if (node == nullptr || node->effect == nullptr) return st;
+        float start = 1.0f, end = 1.0f;
+        if (node->effect->sourceTransformMixRamp(numSamples, start, end))
+        {
+            st.start = start;
+            st.end   = end;
+        }
+        return st;
+    };
+
     // ── Render active clips into track buffers ───────────────────────────────
     for (const auto& ac : activeClips_)
     {
@@ -5947,11 +6197,19 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                                    || ac.clip->reversed
                                    || ac.clip->stretchRatio   != 1.0);
 
-        // Build CacheKey and attempt a lock-free cache hit
+        // Mode 4: this track's Clip-mode transform, if any.
+        const xleth::TrackSourceTransformEntry* fxEntry =
+            anyFxTransform ? fxTable->findEntry(ac.clip->trackId) : nullptr;
+
+        // Build CacheKey and attempt a lock-free cache hit. The entries are
+        // pinned for this clip's whole pass (see ClipRenderCache retirement).
         const juce::AudioBuffer<float>* readBuf  = nullptr; // points to processed buffer
         bool                            cacheHit = false;
+        std::shared_ptr<const CacheEntry> origEntry;
+        std::shared_ptr<const CacheEntry> wetEntry;
+        const juce::AudioBuffer<float>* wetBuf   = nullptr; // shifted render (mode 4)
 
-        if (needsProcessing)
+        if (needsProcessing || fxEntry != nullptr)
         {
             CacheKey key;
             key.regionId            = ac.clip->regionId;
@@ -5966,15 +6224,53 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             key.stretchMethod       = resolvedStretchMethod;
             key.formantPreserve     = resolvedFormantPreserve;
 
-            readBuf  = clipRenderCache_.getProcessedBuffer(ac.clip->id, key);
-            cacheHit = (readBuf != nullptr);
+            if (needsProcessing)
+            {
+                origEntry = clipRenderCache_.acquire(ac.clip->id, key, cacheNowMs);
+                readBuf   = origEntry ? origEntry->buffer.get() : nullptr;
+                cacheHit  = (readBuf != nullptr);
 
-            // [Underrun] Clip wanted a processed buffer but the render cache had
-            // none ready → this clip block is silenced / falls back. Lock-free
-            // audio-thread counter, read by the 1s health sampler.
-            if (!cacheHit)
-                clipCacheMissCount_.fetch_add(1, std::memory_order_relaxed);
+                // [Underrun] Clip wanted a processed buffer but the render cache had
+                // none ready → this clip block is silenced / falls back. Lock-free
+                // audio-thread counter, read by the 1s health sampler.
+                if (!cacheHit)
+                {
+                    clipCacheMissCount_.fetch_add(1, std::memory_order_relaxed);
+                    clipRenderCache_.noteMiss(ac.clip->id);
+                }
+            }
+
+            // The dual lookup: the original key above (which may miss — the dry
+            // then falls back to raw PCM, which for an identity clip IS its
+            // original render) and the same key plus this track's transform.
+            if (fxEntry != nullptr)
+            {
+                wetEntry = clipRenderCache_.acquire(
+                    ac.clip->id, withSourceTransform(key, fxEntry->transform), cacheNowMs);
+                wetBuf = wetEntry ? wetEntry->buffer.get() : nullptr;
+                if (wetBuf == nullptr)
+                    clipRenderCache_.noteMiss(ac.clip->id);
+            }
         }
+
+        // Blend mode for this block. Wet not ready yet → exactly today's output
+        // (the same fallback a still-rendering pitched clip already has).
+        enum class FxBlend { Off, WetOnly, Mix };
+        FxBlend fxBlend  = FxBlend::Off;
+        float   mixStart = 0.0f;
+        float   mixEnd   = 0.0f;
+        if (wetBuf != nullptr)
+        {
+            const auto& m = resolveFxMix(slot, *fxEntry);
+            mixStart = m.start;
+            mixEnd   = m.end;
+            if (mixStart <= 0.0f && mixEnd <= 0.0f)      fxBlend = FxBlend::Off;
+            else if (mixStart >= 1.0f && mixEnd >= 1.0f) fxBlend = FxBlend::WetOnly;
+            else                                         fxBlend = FxBlend::Mix;
+        }
+        const float mixStep = (fxBlend == FxBlend::Mix && numSamples > 0)
+                            ? (mixEnd - mixStart) / static_cast<float>(numSamples)
+                            : 0.0f;
 
 #ifdef XLETH_DEBUG
         // Throttled render-loop log: fire once every 1024 calls per clip slot (lock-free)
@@ -6147,6 +6443,15 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                 gain *= xleth::dsp::DeclickEnvelope::fadeOut(static_cast<int>(fromEnd), clipFadeN);
             }
 
+            // ── Dry: the clip's original signal, exactly today's three reads ──
+            // Each branch produces the unscaled L/R sample (a mono source reads
+            // the same value into both); gain is applied once, below. With the
+            // blend Off the arithmetic is sample*gain added per channel — the
+            // same operations, in the same order, as before mode 4 existed.
+            float dryL = 0.0f;
+            float dryR = 0.0f;
+            bool  haveDry = false;
+
             if (cacheHit)
             {
                 // ── Cache hit: read from pre-processed buffer ────────────────
@@ -6154,18 +6459,12 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                 const int rp         = static_cast<int>(posInClip);
                 const int readCh     = readBuf->getNumChannels();
                 const int readTotal  = readBuf->getNumSamples();
-                if (rp < 0 || rp >= readTotal) continue;
-
-                if (readCh == 1)
+                if (rp >= 0 && rp < readTotal)
                 {
-                    const float sample = readBuf->getSample(0, rp) * gain;
-                    trackBuf.addSample(0, s, sample);
-                    trackBuf.addSample(1, s, sample);
-                }
-                else
-                {
-                    trackBuf.addSample(0, s, readBuf->getSample(0, rp) * gain);
-                    trackBuf.addSample(1, s, readBuf->getSample(std::min(1, readCh - 1), rp) * gain);
+                    haveDry = true;
+                    dryL = readBuf->getSample(0, rp);
+                    dryR = (readCh == 1) ? dryL
+                                         : readBuf->getSample(std::min(1, readCh - 1), rp);
                 }
             }
             else if (matchedRate)
@@ -6173,19 +6472,13 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                 // ── Raw PCM fallback (cache miss or no processing needed) ────
                 // Matched bake/export rate → integer fast path (unchanged).
                 const int64_t samplePos = posInClip + ac.regionOffsetSamples;
-                if (samplePos < 0 || samplePos >= srcTotal) continue;
-                const int sp = static_cast<int>(samplePos);
-
-                if (srcChannels == 1)
+                if (samplePos >= 0 && samplePos < srcTotal)
                 {
-                    const float sample = srcBuf->getSample(0, sp) * gain;
-                    trackBuf.addSample(0, s, sample);
-                    trackBuf.addSample(1, s, sample);
-                }
-                else
-                {
-                    trackBuf.addSample(0, s, srcBuf->getSample(0, sp) * gain);
-                    trackBuf.addSample(1, s, srcBuf->getSample(std::min(1, srcChannels - 1), sp) * gain);
+                    const int sp = static_cast<int>(samplePos);
+                    haveDry = true;
+                    dryL = srcBuf->getSample(0, sp);
+                    dryR = (srcChannels == 1) ? dryL
+                                              : srcBuf->getSample(std::min(1, srcChannels - 1), sp);
                 }
             }
             else
@@ -6199,20 +6492,55 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                 const double srcPos =
                     (static_cast<double>(posInClip) + static_cast<double>(ac.regionOffsetSamples))
                     * srFactor;
-                if (srcPos < 0.0 || srcPos >= static_cast<double>(srcTotal - 1)) continue;
-
-                if (srcChannels == 1)
+                if (srcPos >= 0.0 && srcPos < static_cast<double>(srcTotal - 1))
                 {
-                    const float sample = xleth::audio::hermiteSample(*srcBuf, 0, srcPos) * gain;
-                    trackBuf.addSample(0, s, sample);
-                    trackBuf.addSample(1, s, sample);
-                }
-                else
-                {
-                    trackBuf.addSample(0, s, xleth::audio::hermiteSample(*srcBuf, 0, srcPos) * gain);
-                    trackBuf.addSample(1, s, xleth::audio::hermiteSample(*srcBuf, std::min(1, srcChannels - 1), srcPos) * gain);
+                    haveDry = true;
+                    dryL = xleth::audio::hermiteSample(*srcBuf, 0, srcPos);
+                    dryR = (srcChannels == 1)
+                         ? dryL
+                         : xleth::audio::hermiteSample(*srcBuf, std::min(1, srcChannels - 1), srcPos);
                 }
             }
+
+            if (fxBlend == FxBlend::Off)
+            {
+                if (!haveDry) continue;
+                trackBuf.addSample(0, s, dryL * gain);
+                trackBuf.addSample(1, s, dryR * gain);
+                continue;
+            }
+
+            // ── Wet: the shifted render (mode 4), clip-local like readBuf ────
+            float wetL = 0.0f;
+            float wetR = 0.0f;
+            bool  haveWet = false;
+            {
+                const int rp       = static_cast<int>(posInClip);
+                const int wetCh    = wetBuf->getNumChannels();
+                const int wetTotal = wetBuf->getNumSamples();
+                if (rp >= 0 && rp < wetTotal)
+                {
+                    haveWet = true;
+                    wetL = wetBuf->getSample(0, rp);
+                    wetR = (wetCh == 1) ? wetL
+                                        : wetBuf->getSample(std::min(1, wetCh - 1), rp);
+                }
+            }
+
+            if (fxBlend == FxBlend::WetOnly)
+            {
+                if (!haveWet) continue;
+                trackBuf.addSample(0, s, wetL * gain);
+                trackBuf.addSample(1, s, wetR * gain);
+                continue;
+            }
+
+            // 0 < Mix < 1: per-sample linear blend. The smoother's value after
+            // s + 1 advances, which is what its next() would return at sample s.
+            if (!haveDry && !haveWet) continue;
+            const float mix = mixStart + mixStep * static_cast<float>(s + 1);
+            trackBuf.addSample(0, s, (dryL * (1.0f - mix) + wetL * mix) * gain);
+            trackBuf.addSample(1, s, (dryR * (1.0f - mix) + wetR * mix) * gain);
         }
     }
 
