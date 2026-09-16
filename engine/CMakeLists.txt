@@ -342,6 +342,12 @@ add_library(XlethEngineCore STATIC
     src/dsp/AutotuneRender.cpp
     src/dsp/TDPSOLA.cpp
     src/dsp/RubberBandWrapper.cpp
+    # Realtime pitch-shift DSP foundation (Pitch Shifter effect, P1). Both are
+    # standalone modules with no engine dependencies beyond juce_audio_basics;
+    # LiveShifterWrapper wraps RubberBandLiveShifter, which rubberband_static
+    # already compiles.
+    src/dsp/GranularShifter.cpp
+    src/dsp/LiveShifterWrapper.cpp
     src/dsp/WSOLA.cpp
     src/dsp/PhaseVocoder.cpp
     src/dsp/WORLD.cpp
@@ -1662,6 +1668,39 @@ target_compile_definitions(test_tdpsola PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_pitch_shift_dsp ─────────────────────────────────────────────────────
+# Realtime pitch-shift DSP foundation (Pitch Shifter P1): dsp/GranularShifter
+# and dsp/LiveShifterWrapper. Covers spectral quality, click freedom, the
+# LATENCY INVARIANCE requirement (constant across +/-24 st and the whole grain
+# size range), and zero allocation in both process() calls.
+add_executable(test_pitch_shift_dsp
+    test/test_pitch_shift_dsp.cpp
+)
+
+target_link_libraries(test_pitch_shift_dsp PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_pitch_shift_dsp PRIVATE
+    _CRT_SECURE_NO_WARNINGS=1
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_loop_analysis ───────────────────────────────────────────────────────
 # Unit-tests the seam-similarity primitives in dsp/LoopAnalysis.h (NCC, phase-
 # alignment search, spectral distance) against synthetic signals with known
@@ -2900,6 +2939,7 @@ set(XLETH_ENGINE_TESTS
     test_tdpsola
     test_loop_analysis
     test_loop_optimizer
+    test_pitch_shift_dsp
     test_auto_loop_policy
     test_midi_importer
     test_fsc_score_parser
