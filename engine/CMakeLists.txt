@@ -326,6 +326,10 @@ add_library(XlethEngineCore STATIC
     src/audio/EffectChainManager.cpp
     src/audio/AudioGraph.cpp
     src/audio/GraphEffectParameters.cpp
+    # Pitch Shifter stock effect. Wraps the two P1 DSP modules below
+    # (GranularShifter / LiveShifterWrapper) as a stock insert effect; Clip mode
+    # is a pass-through until its offline path lands.
+    src/audio/XlethPitchShifterEffect.cpp
     src/audio/GuardedPluginWrapper.cpp
     src/audio/NamedAudioRing.cpp
     src/audio/WaveformMipmap.cpp
@@ -1851,6 +1855,40 @@ target_compile_definitions(test_fsc_score_parser PRIVATE
     XLETH_FSC_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/fsc"
 )
 
+# ── test_pitch_shifter_effect ────────────────────────────────────────────────
+# The Pitch Shifter STOCK EFFECT (P2) that wraps the P1 DSP modules. Covers
+# latency conformance per mode, the smoothed +/-24 st sweep that justifies
+# routing pitch through the base class smoother, mode-switch PDC, zero
+# allocation in processBlock, and Clip's sample-exact pass-through.
+add_executable(test_pitch_shifter_effect
+    test/test_pitch_shifter_effect.cpp
+)
+
+target_link_libraries(test_pitch_shifter_effect PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_pitch_shifter_effect PRIVATE
+    _CRT_SECURE_NO_WARNINGS=1
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_effects ──────────────────────────────────────────────────────────────
 # Verifies XlethEffectBase (APVTS, smoothing, metering, serialization, bypass)
 # using TestGainEffect as the concrete subclass.
@@ -2940,6 +2978,7 @@ set(XLETH_ENGINE_TESTS
     test_loop_analysis
     test_loop_optimizer
     test_pitch_shift_dsp
+    test_pitch_shifter_effect
     test_auto_loop_policy
     test_midi_importer
     test_fsc_score_parser

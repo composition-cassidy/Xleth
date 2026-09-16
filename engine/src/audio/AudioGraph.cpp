@@ -22,6 +22,7 @@
 #include "audio/XlethResonanceSuppressorEffect.h"
 #include "audio/XlethApexEffect.h"
 #include "audio/XlethAmpEffect.h"
+#include "audio/XlethPitchShifterEffect.h"
 #include "audio/SmartBalanceEffect.h"
 #include "audio/WireGainProcessor.h"
 #include "audio/DelayCompensationProcessor.h"
@@ -2940,6 +2941,7 @@ std::unique_ptr<juce::AudioProcessor> AudioGraph::createEffect(const std::string
     if (pluginId == "smartbalance")  return std::make_unique<SmartBalanceEffect>();
     if (pluginId == "apex")          return std::make_unique<XlethApexEffect>();
     if (pluginId == "amp")           return std::make_unique<XlethAmpEffect>();
+    if (pluginId == "pitchshifter")  return std::make_unique<XlethPitchShifterEffect>();
     if (pluginId == "gloss")         return std::make_unique<XlethApexEffect>("gloss");   // one-knob APEX skin — same DSP, distinct persisted id
 
     // VST3 fallback — look up in the plugin registry and instantiate.
