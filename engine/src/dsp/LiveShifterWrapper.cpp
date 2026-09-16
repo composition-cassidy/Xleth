@@ -87,6 +87,28 @@ using CalKey = std::tuple<int, int, int>;
 std::mutex                      g_calMutex;
 std::map<CalKey, std::vector<int>> g_calCache;
 
+// prepare()'s calibration deliberately runs the shifter through repeated
+// reset()+shift() cycles before it is warmed up (measureDelayAtRatio, the
+// prime loop in prepare()/reset()). R3LiveShifter's first shift() after a
+// reset() legitimately under-produces while its pre-pad drains, and it
+// reports that at Log level 0 — which, per RubberBandLiveShifter.h's Logger
+// contract, is NOT gated by setDebugLevel() the way levels 1+ are (the
+// library treats 0 as "always tell someone"). Passing this no-op Logger to
+// the constructor is the documented, non-vendored way to divert that: it
+// only ever runs during prepare()/reset(), both message-thread-only per this
+// wrapper's contract (see the class header), so dropping the message here
+// changes no audio-thread behaviour — the fallback fill in R3LiveShifter's
+// shift() runs regardless of whether anything logs it.
+struct SilentLogger : RubberBandLiveShifter::Logger
+{
+    void log(const char*) override {}
+    void log(const char*, double) override {}
+    void log(const char*, double, double) override {}
+};
+
+const std::shared_ptr<RubberBandLiveShifter::Logger> g_silentLogger =
+    std::make_shared<SilentLogger>();
+
 } // namespace
 
 LiveShifterWrapper::LiveShifterWrapper() = default;
@@ -148,10 +170,13 @@ void LiveShifterWrapper::setFormantOption(Formant f) noexcept
 void LiveShifterWrapper::rebuild()
 {
     shifter_ = std::make_unique<RubberBandLiveShifter>(
-        (size_t) std::lround(sampleRate_), (size_t) numChannels_, optionFlags());
+        (size_t) std::lround(sampleRate_), (size_t) numChannels_,
+        g_silentLogger, optionFlags());
 
     // Level 0 is the only level the header guarantees realtime safe by default
-    // (levels 2+ may construct messages by allocation).
+    // (levels 2+ may construct messages by allocation). The silent Logger
+    // above is what actually stops prepare()'s calibration transient from
+    // reaching stderr — see its comment.
     shifter_->setDebugLevel(0);
 }
 
