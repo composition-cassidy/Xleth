@@ -17,6 +17,7 @@
 #include "audio/ClipModulatedReader.h"
 #include "render/VisualEchoTypes.h"   // xleth::echo::DelaySnapshot / IDelaySnapshotResolver
 #include "audio/SamplerPreviewRoute.h"
+#include "audio/SourceTransformTable.h"
 #include "dsp/LoudnessAnalyzer.h"
 
 #include <algorithm>
@@ -569,6 +570,41 @@ public:
     // Returns clip IDs with in-flight WORLD render jobs; forwarded to the N-API
     // layer so the main process can poll and drive the UI processing spinner.
     std::vector<int> getWorldActiveJobIds() const { return clipRenderCache_.getWorldActiveJobIds(); }
+
+    // ── Per-track source transform table (Pitch Shifter Clip mode) ──────────
+    //
+    // trackId -> SourceTransform, rebuilt from the effect chains and published
+    // lock-free. See SourceTransformTable.h for the table's rules. NOTHING
+    // CONSUMES THE TABLE YET: the ClipRenderCache / pattern-transpose readers
+    // arrive in later prompts, so the realtime path does no new work today.
+    //
+    // Poll-driven, not mutator-driven. XlethEngineService calls
+    // pollSourceTransformTable() from the WORLD-spinner poll
+    // (cache_getWorldActiveJobs, 150 ms while jobs run, 1000 ms idle). A poll
+    // whose chains still match the cached stamp snapshot — same nodes, same
+    // order, same bypass, same sourceTransformEpoch() — returns without
+    // allocating and without republishing. Anything else rebuilds and
+    // republishes exactly once.
+    //
+    // Returns true iff it republished. Skips (returns false, retries next poll)
+    // when chainsMutex_ is contended — an offline render holds it for whole
+    // blocks, and this poll must never stall the RPC thread behind an export.
+    // MESSAGE THREAD.
+    bool pollSourceTransformTable();
+
+    // Read API. One atomic load, no lock, no allocation; the returned pointer
+    // pins the table. Never null. Safe from the audio thread.
+    std::shared_ptr<const xleth::TrackSourceTransformTable> currentSourceTransformTable() const noexcept
+    {
+        return sourceTransformTable_.load(std::memory_order_acquire);
+    }
+
+    // Generation of the currently published table: 0 for the empty table the
+    // constructor publishes, +1 per republish. Test/introspection.
+    std::uint64_t getSourceTransformTableGeneration() const noexcept
+    {
+        return currentSourceTransformTable()->generation;
+    }
 
     // Returns the cached processed buffer for clipId (message-thread safe via
     // atomic reads). Builds the CacheKey from the clip's current params.
@@ -1558,6 +1594,19 @@ private:
     // Rebuild and publish the snapshot from effectChains_/masterEffectChain_.
     // PRECONDITION: chainsMutex_ is held by the caller.
     void publishChainSnapshotLocked();
+
+    // ── Source transform table publisher ────────────────────────────────────
+    // Same shape as chainSnapshot_: immutable table behind an atomic
+    // shared_ptr, superseded tables retired here so a reader can never be the
+    // one that frees a table's vector on the realtime thread.
+    mutable std::atomic<std::shared_ptr<const xleth::TrackSourceTransformTable>> sourceTransformTable_;
+    std::uint64_t sourceTransformGeneration_ = 0;                   // message thread only
+    xleth::SourceTransformEpochSnapshot sourceTransformSnapshot_;   // message thread only
+    std::vector<std::shared_ptr<const xleth::TrackSourceTransformTable>> retiredSourceTransformTables_;
+
+    // Publish `table` with the next generation. PRECONDITION: chainsMutex_ held
+    // (it serialises this with every other writer of the members above).
+    void publishSourceTransformTableLocked(xleth::TrackSourceTransformTable table);
 
     // RAII republish. Declared immediately after the lock guard in every chain
     // mutator: destruction order means this fires while chainsMutex_ is still

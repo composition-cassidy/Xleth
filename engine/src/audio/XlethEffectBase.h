@@ -3,6 +3,8 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <nlohmann/json.hpp>
 
+#include "audio/SourceTransformCapability.h"
+
 #include <algorithm>
 #include <atomic>
 #include <chrono>
@@ -80,6 +82,24 @@ public:
     // compressor overrides this; every other stock effect stays false, so they
     // never receive a second input bus (no behavior change).
     virtual bool supportsExternalSidechain() const { return false; }
+
+    // ── Source transform capability (Pitch Shifter Clip mode) ───────────────
+    // Runtime-discovered, NEVER persisted — mirrors supportsExternalSidechain().
+    // An effect that wants the audio feeding its TRACK re-rendered offline
+    // (rather than processing it in processEffect) describes that render here.
+    // MixEngine walks every chain on the message thread, asks each node, and
+    // publishes a per-track table (see SourceTransformTable.h).
+    //
+    // provideSourceTransform: fill `out` from current parameter state and
+    // return true ONLY when the transform is active. A false return means "no
+    // transform", whatever was written into `out`. MESSAGE THREAD.
+    virtual bool provideSourceTransform(xleth::SourceTransform& /*out*/) const { return false; }
+
+    // Monotonic counter that advances whenever anything provideSourceTransform
+    // reads may have changed. The engine re-queries a node only when this moves
+    // (or the node set/order/bypass changed), so an effect that overrides
+    // provideSourceTransform MUST override this too. Readable from any thread.
+    virtual std::uint64_t sourceTransformEpoch() const { return 0; }
 
     // True iff this effect declared the optional second input bus at construction.
     bool hasSidechainInputBus() const { return getBusCount(true) > 1; }

@@ -142,6 +142,34 @@ public:
         return latencyUpdateCount_.load(std::memory_order_acquire);
     }
 
+    // ── Source transform (Clip mode) ────────────────────────────────────────
+    //
+    // Clip mode's render identity, read straight from the APVTS: `mode` plus the
+    // four clip_* parameters. Active iff mode == Clip and the transform does
+    // something (a formant-only transform counts). clip_method's choice index i
+    // is reported as StretchMethod(i + 1) — see createLayout().
+    //
+    // `mix` is deliberately NOT part of it. See SourceTransformCapability.h.
+    bool provideSourceTransform(xleth::SourceTransform& out) const override;
+
+    // Advanced ONLY inside onParameterValueChanged, which is message-thread
+    // only for every parameter that feeds provideSourceTransform (all five are
+    // withAutomatable(false), so the automation write path — which never calls
+    // onParameterValueChanged — cannot move them either). NOTHING ELSE MAY BUMP
+    // IT: the engine's no-change poll is only correct because this counter and
+    // the APVTS values it guards move together, on one thread.
+    //
+    // A whole-state restore (setStateInformation) replaces the APVTS values
+    // without going through setParameterValue, so the override below re-enters
+    // onParameterValueChanged for `mode` — which bumps the epoch through the
+    // one sanctioned path, and re-reports latency for the restored mode.
+    std::uint64_t sourceTransformEpoch() const override
+    {
+        return sourceTransformEpoch_.load(std::memory_order_acquire);
+    }
+
+    void setStateInformation(const void* data, int sizeInBytes) override;
+
     // Underlying modules, for the conformance tests only.
     const xleth::dsp::GranularShifter&    getGranularShifter() const noexcept { return granular_; }
     const xleth::dsp::LiveShifterWrapper& getSmartShifter()    const noexcept { return liveSmart_; }
@@ -208,6 +236,9 @@ private:
     Mode lastAudioMode_ = Mode::Granular;
 
     std::atomic<int> latencyUpdateCount_ { 0 };
+
+    // See sourceTransformEpoch(). Written ONLY by onParameterValueChanged.
+    std::atomic<std::uint64_t> sourceTransformEpoch_ { 0 };
 
     JUCE_DECLARE_NON_COPYABLE_WITH_LEAK_DETECTOR(XlethPitchShifterEffect)
 };

@@ -307,6 +307,14 @@ public:
     // a SidechainSourceProcessor wired to it). Main thread.
     bool hasSidechainCapableNode() const;
 
+    // Message thread, allocation-free. Forwards to
+    // AudioGraph::visitEffectsInChainOrder — see there for the order contract.
+    // The signature matches AudioGraph::EffectVisitor (not named here because
+    // this header only forward-declares AudioGraph).
+    void visitEffectsInChainOrder(void* context,
+                                  void (*visit)(void* context, int nodeId,
+                                                XlethEffectBase* effect)) const;
+
     // Borrow this block's per-target key audio for the chain's sidechain source
     // node. No-op when the chain has no sidechain source. MixEngine calls these
     // around processBlock — under the chains lock, same thread, same block.

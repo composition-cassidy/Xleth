@@ -256,6 +256,19 @@ public:
     // Allocates; used by the filter-envelope gate scan.
     std::vector<XlethEffectBase*> collectEffects() const;
 
+    // Message thread: visit every stock effect (XlethEffectBase) node in a
+    // DETERMINISTIC chain order, without allocating. `visit` receives the node
+    // uid and the effect; non-stock nodes (VST3, missing-plugin placeholders)
+    // are skipped.
+    //
+    // Order: when the graph is a single linear path covering every node (every
+    // Mixer Chain, and any FX Graph that happens to be linear), that path's
+    // order, input to output. Otherwise — a parallel or partially disconnected
+    // FX Graph, where "chain order" is not defined — ascending node uid, which
+    // is creation order because uids are monotonic and never reused.
+    using EffectVisitor = void (*)(void* context, int nodeId, XlethEffectBase* effect);
+    void visitEffectsInChainOrder(void* context, EffectVisitor visit) const;
+
     // Returns the raw AudioProcessor for any node (stock XlethEffectBase OR
     // VST3 AudioPluginInstance).  Returns nullptr if nodeId is not found.
     juce::AudioProcessor* getProcessor(int nodeId);

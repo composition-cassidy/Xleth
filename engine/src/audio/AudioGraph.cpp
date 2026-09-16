@@ -33,6 +33,7 @@
 
 #include <algorithm>
 #include <cstdio>
+#include <limits>
 #include <queue>
 #include <stack>
 
@@ -2588,6 +2589,50 @@ std::vector<XlethEffectBase*> AudioGraph::collectEffects() const
             out.push_back(fx);
     }
     return out;
+}
+
+void AudioGraph::visitEffectsInChainOrder(void* context, EffectVisitor visit) const
+{
+    if (!graph_ || visit == nullptr) return;
+
+    const auto visitNode = [&](int uid, const GraphNode& gn)
+    {
+        auto* n = graph_->getNodeForId(gn.apgNodeId);
+        if (n == nullptr) return;
+        if (auto* fx = dynamic_cast<XlethEffectBase*>(n->getProcessor()))
+            visit(context, uid, fx);
+    };
+
+    // updateLinearOrder() only leaves linearOrder_ populated when the whole
+    // graph is one input->output path through EVERY node; the size check
+    // re-asserts that here rather than trusting a cache that could be stale.
+    if (!linearOrder_.empty() && linearOrder_.size() == nodes_.size())
+    {
+        for (int uid : linearOrder_)
+        {
+            auto it = nodes_.find(uid);
+            if (it != nodes_.end()) visitNode(uid, it->second);
+        }
+        return;
+    }
+
+    // Non-linear: ascending uid. A repeated min-greater-than scan instead of a
+    // sorted copy keeps this allocation-free; nodes_ is capped at
+    // EffectChainManager::kMaxEffects, so the quadratic walk is bounded.
+    long long prev = std::numeric_limits<long long>::min();
+    for (;;)
+    {
+        const GraphNode* best = nullptr;
+        int bestUid = 0;
+        for (const auto& [uid, gn] : nodes_)
+        {
+            if (static_cast<long long>(uid) <= prev) continue;
+            if (best == nullptr || uid < bestUid) { best = &gn; bestUid = uid; }
+        }
+        if (best == nullptr) break;
+        visitNode(bestUid, *best);
+        prev = bestUid;
+    }
 }
 
 juce::AudioProcessor* AudioGraph::getProcessor(int nodeId)

@@ -371,6 +371,11 @@ MixEngine::MixEngine()
     {
         std::lock_guard<std::mutex> lock(chainsMutex_);
         publishChainSnapshotLocked();
+        // Likewise an empty source-transform table, at generation 0, so
+        // currentSourceTransformTable() is never null.
+        sourceTransformTable_.store(
+            std::make_shared<const xleth::TrackSourceTransformTable>(),
+            std::memory_order_release);
     }
 
     trackBuffers_.resize(kMaxTracks);
@@ -4309,6 +4314,43 @@ void MixEngine::publishChainSnapshotLocked()
                        [](const std::shared_ptr<const ChainSnapshot>& s)
                        { return s.use_count() == 1; }),
         retiredChainSnapshots_.end());
+}
+
+bool MixEngine::pollSourceTransformTable()
+{
+    std::unique_lock<std::mutex> lock(chainsMutex_, std::try_to_lock);
+    if (!lock.owns_lock())
+        return false;
+
+    // The no-change path: an in-place walk against the cached stamps. No
+    // allocation, no publish.
+    if (!xleth::sourceTransformSnapshotChanged(effectChains_, sourceTransformSnapshot_))
+        return false;
+
+    auto built = xleth::buildTrackSourceTransformTable(effectChains_);
+    sourceTransformSnapshot_ = std::move(built.snapshot);
+    publishSourceTransformTableLocked(std::move(built.table));
+    return true;
+}
+
+void MixEngine::publishSourceTransformTableLocked(xleth::TrackSourceTransformTable table)
+{
+    // PRECONDITION: chainsMutex_ is held by this thread.
+    table.generation = ++sourceTransformGeneration_;
+
+    auto previous = sourceTransformTable_.exchange(
+        std::make_shared<const xleth::TrackSourceTransformTable>(std::move(table)),
+        std::memory_order_acq_rel);
+
+    // Retire, never free here — see publishChainSnapshotLocked. Prune only the
+    // tables this list alone still owns.
+    if (previous)
+        retiredSourceTransformTables_.push_back(std::move(previous));
+    retiredSourceTransformTables_.erase(
+        std::remove_if(retiredSourceTransformTables_.begin(), retiredSourceTransformTables_.end(),
+                       [](const std::shared_ptr<const xleth::TrackSourceTransformTable>& t)
+                       { return t.use_count() == 1; }),
+        retiredSourceTransformTables_.end());
 }
 
 void MixEngine::refreshAutomationPlan()

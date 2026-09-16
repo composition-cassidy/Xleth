@@ -995,6 +995,12 @@ bool EffectChainManager::hasSidechainCapableNode() const
     return graph_ && graph_->hasSidechainCapableNode();
 }
 
+void EffectChainManager::visitEffectsInChainOrder(
+    void* context, void (*visit)(void* context, int nodeId, XlethEffectBase* effect)) const
+{
+    if (graph_) graph_->visitEffectsInChainOrder(context, visit);
+}
+
 void EffectChainManager::setSidechainKeyBuffer(const float* left, const float* right,
                                                int numSamples) noexcept
 {

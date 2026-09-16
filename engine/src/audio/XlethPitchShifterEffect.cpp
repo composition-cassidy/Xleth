@@ -203,6 +203,53 @@ void XlethPitchShifterEffect::onParameterValueChanged(const std::string& paramId
     // path — which is exactly the invariant that keeps PDC correct.
     if (paramId == "mode")
         refreshLatencySamples();
+
+    // The one and only writer of sourceTransformEpoch_. Every parameter
+    // provideSourceTransform reads is listed; anything else (the realtime
+    // modes' knobs, mix) leaves the Clip render identity alone.
+    if (paramId == "mode"
+        || paramId == "clip_semitones" || paramId == "clip_cents"
+        || paramId == "clip_method"    || paramId == "clip_formant")
+    {
+        sourceTransformEpoch_.fetch_add(1, std::memory_order_acq_rel);
+    }
+}
+
+// ─── Source transform (Clip mode) ───────────────────────────────────────────
+
+bool XlethPitchShifterEffect::provideSourceTransform(xleth::SourceTransform& out) const
+{
+    const auto readInt = [this](const char* id) noexcept
+    {
+        const auto* raw = apvts_.getRawParameterValue(id);
+        return raw != nullptr
+            ? static_cast<int>(std::lround(raw->load(std::memory_order_relaxed)))
+            : 0;
+    };
+
+    out = xleth::SourceTransform{};
+    out.semis   = std::clamp(readInt("clip_semitones"), -24, 24);
+    out.cents   = std::clamp(readInt("clip_cents"), -100, 100);
+    // Choice index 0..4 -> StretchMethod 1..5. Global (0) is never produced.
+    out.method  = std::clamp(readInt("clip_method"), 0, 4) + 1;
+    out.formant = readInt("clip_formant") != 0;
+    out.active  = xleth::isSourceTransformActive(getMode() == Mode::Clip,
+                                                 out.semis, out.cents, out.formant);
+    return out.active;
+}
+
+void XlethPitchShifterEffect::setStateInformation(const void* data, int sizeInBytes)
+{
+    XlethEffectBase::setStateInformation(data, sizeInBytes);
+
+    // replaceState() moved every parameter without a single
+    // onParameterValueChanged call. Re-enter it for `mode` (message thread —
+    // state restore is never an audio-thread operation): that re-reports the
+    // restored mode's latency and advances the source-transform epoch through
+    // its one sanctioned writer, which covers the clip_* values restored
+    // alongside it.
+    if (const auto* raw = apvts_.getRawParameterValue("mode"))
+        onParameterValueChanged("mode", raw->load(std::memory_order_relaxed));
 }
 
 // ─── Lifecycle ──────────────────────────────────────────────────────────────

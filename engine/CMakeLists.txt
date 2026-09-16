@@ -324,6 +324,7 @@ add_library(XlethEngineCore STATIC
     src/audio/Arpeggiator.cpp
     src/audio/SampleProcessor.cpp
     src/audio/EffectChainManager.cpp
+    src/audio/SourceTransformTable.cpp
     src/audio/AudioGraph.cpp
     src/audio/GraphEffectParameters.cpp
     # Pitch Shifter stock effect. Wraps the two P1 DSP modules below
@@ -1889,6 +1890,40 @@ target_compile_definitions(test_pitch_shifter_effect PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_source_transform_table ──────────────────────────────────────────────
+# Pitch Shifter Clip mode plumbing: SourceTransform capability, the pure
+# per-track table builder (last-in-chain-order wins, track chains only, bypass
+# and removal clear), and MixEngine's epoch-driven lock-free publisher
+# (unchanged poll = no republish and no allocation; one bump = one republish).
+add_executable(test_source_transform_table
+    test/test_source_transform_table.cpp
+)
+
+target_link_libraries(test_source_transform_table PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_source_transform_table PRIVATE
+    _CRT_SECURE_NO_WARNINGS=1
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_effects ──────────────────────────────────────────────────────────────
 # Verifies XlethEffectBase (APVTS, smoothing, metering, serialization, bypass)
 # using TestGainEffect as the concrete subclass.
@@ -2979,6 +3014,7 @@ set(XLETH_ENGINE_TESTS
     test_loop_optimizer
     test_pitch_shift_dsp
     test_pitch_shifter_effect
+    test_source_transform_table
     test_auto_loop_policy
     test_midi_importer
     test_fsc_score_parser

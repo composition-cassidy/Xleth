@@ -1204,6 +1204,11 @@ JsonApi::Value Cache_GetWorldActiveJobIds(const JsonApi::CallbackInfo& info)
 {
     auto env = info.Env();
     if (!audioEngine) return JsonApi::Array::New(env, 0);
+    // Piggyback the per-track source transform table on this poll's cadence:
+    // it already runs on this thread for the whole session, fast while clip
+    // renders are in flight and 1 Hz otherwise. A poll with no chain/parameter
+    // change is an allocation-free walk that publishes nothing.
+    audioEngine->getMixEngine().pollSourceTransformTable();
     const auto ids = audioEngine->getMixEngine().getWorldActiveJobIds();
     auto arr = JsonApi::Array::New(env, ids.size());
     for (size_t i = 0; i < ids.size(); ++i)
