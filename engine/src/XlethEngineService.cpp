@@ -15961,7 +15961,10 @@ JsonApi::Value Audio_GetSupportedSampleRates(const JsonApi::CallbackInfo& info)
 }
 
 // audio_getDeviceInfo() → { sampleRate, bufferSize, latencyMs, outputDevice,
+//                            driver, devicePeriodMs, deadlineMs, deadlineSource,
 //                            bufferSizes, defaultBufferSize }
+// latencyMs is the driver-reported output latency, single-counted (it already
+// includes the buffer).
 // One round trip for the audio-settings UI to read after mount and after
 // every setBufferSize/setSampleRate/setOutputDevice call. bufferSizes is the
 // current device's own getAvailableBufferSizes() list, falling back to the
@@ -15975,6 +15978,15 @@ JsonApi::Value Audio_GetDeviceInfo(const JsonApi::CallbackInfo& info)
     obj.Set("bufferSize",   JsonApi::Number::New(env, audioEngine->getBufferSize()));
     obj.Set("latencyMs",    JsonApi::Number::New(env, audioEngine->getLatencyMs()));
     obj.Set("outputDevice", JsonApi::String::New(env, audioEngine->getCurrentOutputDevice()));
+    // Device-layer truth: the driver actually open (JUCE device-type name, never
+    // a made-up label), the callback period the device really runs at, and the
+    // deadline the realtime telemetry judges callbacks against + its source.
+    obj.Set("driver",           JsonApi::String::New(env, audioEngine->getCurrentDriverName()));
+    obj.Set("devicePeriodMs",   JsonApi::Number::New(env, audioEngine->getDevicePeriodMs()));
+    obj.Set("deadlineMs",       JsonApi::Number::New(env, audioEngine->getRealtimeDeadlineMs()));
+    obj.Set("deadlineSource",   JsonApi::String::New(env,
+        audioEngine->getRealtimeDeadlineSource() == AudioEngine::DeadlineSource::DevicePeriod
+            ? "devicePeriod" : "bufferSize"));
 
     static const int kFallbackBufferSizes[] = { 128, 256, 512, 1024, 2048 };
     auto bufferSizes = audioEngine->getAvailableBufferSizes();

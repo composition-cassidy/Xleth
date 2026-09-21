@@ -167,11 +167,127 @@ static void testUninitialisedEngineIsInert()
           "a resume signal must not reopen a device on an uninitialised engine");
 }
 
+// ── Device-layer truthfulness ────────────────────────────────────────────────
+// The callback deadline the telemetry judges against. Under WASAPI shared the
+// endpoint holds ~an engine period of audio no matter what buffer size the app
+// asked for; everywhere else one buffer is delivered per period.
+static void testSharedWasapiDeadlineIsTheEnginePeriod()
+{
+    using DS = AudioEngine::DeadlineSource;
+
+    // 10 ms engine period = 441 samples @ 44.1 kHz (the Focusrite endpoint).
+    for (int buffer : { 132, 441, 2048 })
+    {
+        const auto d = AudioEngine::chooseRealtimeDeadline("Windows Audio", buffer, 441);
+        CHECK(d.source == DS::DevicePeriod,
+              "WASAPI shared must be judged against the device period (buffer " << buffer << ")");
+        CHECK(d.samples == 441,
+              "the shared-mode deadline must not move with the requested buffer size ("
+                  << buffer << " -> " << d.samples << ")");
+    }
+
+    // No usable period reported -> honest fallback to the buffer, never 0.
+    const auto fallback = AudioEngine::chooseRealtimeDeadline("Windows Audio", 256, 0);
+    CHECK(fallback.source == DS::BufferSize && fallback.samples == 256,
+          "shared mode with an unknown period must fall back to the buffer duration");
+}
+
+static void testBufferPerPeriodDriversUseTheBuffer()
+{
+    using DS = AudioEngine::DeadlineSource;
+
+    for (const char* driver : { "ASIO",
+                                "Windows Audio (Exclusive Mode)",
+                                "Windows Audio (Low Latency Mode)" })
+    {
+        // devicePeriodSamples is deliberately non-zero: it must be ignored.
+        const auto d = AudioEngine::chooseRealtimeDeadline(driver, 256, 441);
+        CHECK(d.source == DS::BufferSize,
+              driver << " delivers one buffer per period, so the buffer is the deadline");
+        CHECK(d.samples == 256, driver << " deadline must equal the buffer size");
+    }
+}
+
+static void testSharedDriverMatchIsExact()
+{
+    CHECK(AudioEngine::isWasapiSharedDriver("Windows Audio"),
+          "\"Windows Audio\" is WASAPI shared");
+    CHECK(!AudioEngine::isWasapiSharedDriver("Windows Audio (Exclusive Mode)"),
+          "exclusive mode is NOT shared -- a prefix match would misclassify it");
+    CHECK(!AudioEngine::isWasapiSharedDriver("Windows Audio (Low Latency Mode)"),
+          "low-latency mode requests its own period, so it is not the shared case");
+    CHECK(!AudioEngine::isWasapiSharedDriver("ASIO"), "ASIO is not WASAPI shared");
+    CHECK(!AudioEngine::isWasapiSharedDriver(""), "no driver is not WASAPI shared");
+}
+
+// An engine with no open device must report nothing rather than invent a driver
+// ("Default") or a latency.
+static void testUninitialisedEngineReportsNoDevice()
+{
+    auto engine = std::make_unique<AudioEngine>();
+    CHECK(engine->getCurrentDriverName().empty(),
+          "no device open -> no driver name (never a made-up label)");
+    CHECK(engine->getLatencyMs() == 0.0, "no device open -> no latency");
+    CHECK(engine->getDevicePeriodMs() == 0.0, "no device open -> no device period");
+    CHECK(engine->getRealtimeDeadlineMs() == 0.0, "no device open -> no deadline");
+}
+
+// The real accounting path (MixEngine::recordAudioCallbackTiming), not a copy of
+// it: the published deadline must decide what counts as an overrun.
+static void testDeadlineOverrideDecidesOverruns()
+{
+    auto engine = std::make_unique<AudioEngine>();
+    auto& mix = engine->getMixEngine();
+    mix.setRealtimeDiagnosticsEnabled(true);
+
+    constexpr double   kRate   = 44100.0;
+    constexpr int      kBuffer = 132;              // 2.993 ms of audio
+    constexpr uint64_t k5msNs  = 5'000'000;
+    constexpr uint64_t k12msNs = 12'000'000;
+
+    // Default accounting: a 5 ms callback at a 132-sample buffer IS an overrun.
+    mix.recordAudioCallbackTiming(kBuffer, kRate, k5msNs);
+    auto snap = mix.getRealtimeDiagnosticsSnapshot();
+    CHECK(snap.audioCallbackOverrunCount == 1,
+          "block-derived deadline: 5 ms > 2.993 ms must count as an overrun");
+
+    // Shared WASAPI: same callback against the real 10 ms engine period is fine.
+    mix.resetRealtimeDiagnostics();
+    mix.setRealtimeDeadlineOverrideNs(10'000'000);
+    mix.recordAudioCallbackTiming(kBuffer, kRate, k5msNs);
+    snap = mix.getRealtimeDiagnosticsSnapshot();
+    CHECK(snap.audioCallbackOverrunCount == 0,
+          "10 ms period deadline: a 5 ms callback must NOT be a false overrun");
+
+    // ...and a genuine starvation at a big buffer IS caught, which the old
+    // 2048/44100 = 46 ms deadline let through.
+    mix.recordAudioCallbackTiming(2048, kRate, k12msNs);
+    snap = mix.getRealtimeDiagnosticsSnapshot();
+    CHECK(snap.audioCallbackOverrunCount == 1,
+          "10 ms period deadline: a 12 ms callback at buffer 2048 must be an overrun");
+
+    // Clearing the override restores the block-derived deadline.
+    mix.resetRealtimeDiagnostics();
+    mix.setRealtimeDeadlineOverrideNs(0);
+    mix.recordAudioCallbackTiming(kBuffer, kRate, k5msNs);
+    snap = mix.getRealtimeDiagnosticsSnapshot();
+    CHECK(snap.audioCallbackOverrunCount == 1,
+          "override 0 must fall back to numSamples / sampleRate");
+}
+
 int main()
 {
     // AudioEngine owns a juce::AudioDeviceManager, which needs the JUCE
     // subsystems up before it can be constructed.
     juce::ScopedJuceInitialiser_GUI juceInit;
+
+    std::cout << "=== Device-layer truthfulness ===\n";
+
+    testSharedWasapiDeadlineIsTheEnginePeriod();
+    testBufferPerPeriodDriversUseTheBuffer();
+    testSharedDriverMatchIsExact();
+    testUninitialisedEngineReportsNoDevice();
+    testDeadlineOverrideDecidesOverruns();
 
     std::cout << "=== Device watchdog policy ===\n";
 

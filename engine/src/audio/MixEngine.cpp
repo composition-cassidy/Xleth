@@ -1093,12 +1093,18 @@ std::string MixEngine::getRealtimeDiagnosticsJSON() const
     return j.dump();
 }
 
+uint64_t MixEngine::realtimeDeadlineNs(int numSamples, double sampleRate) const noexcept
+{
+    const uint64_t overrideNs = realtimeDeadlineOverrideNs_.load(std::memory_order_relaxed);
+    return overrideNs > 0 ? overrideNs : deadlineNsFor(numSamples, sampleRate);
+}
+
 void MixEngine::recordAudioCallbackTiming(int numSamples, double sampleRate, uint64_t elapsedNs)
 {
     if (!isRealtimeDiagnosticsEnabled())
         return;
 
-    const uint64_t deadlineNs = deadlineNsFor(numSamples, sampleRate);
+    const uint64_t deadlineNs = realtimeDeadlineNs(numSamples, sampleRate);
     const uint64_t ratio = ratioPermille(elapsedNs, deadlineNs);
 
     realtimeDiagnostics_.audioCallbackCount.fetch_add(1, std::memory_order_relaxed);
@@ -1238,7 +1244,7 @@ void MixEngine::recordProcessBlockTiming(int numSamples, double sampleRate,
     if (!realtimeDiagnostics_.enabled.load(std::memory_order_relaxed))
         return;
 
-    const uint64_t deadlineNs = deadlineNsFor(numSamples, sampleRate);
+    const uint64_t deadlineNs = realtimeDeadlineNs(numSamples, sampleRate);
     const uint64_t ratio = ratioPermille(elapsedNs, deadlineNs);
 
     realtimeDiagnostics_.blockCount.fetch_add(1, std::memory_order_relaxed);
@@ -1374,6 +1380,23 @@ void MixEngine::recordTelemetryTiming(xleth::audio::AudioTelemetrySampleKind kin
                       (static_cast<double>(sample.blockSize) / sampleRate)
                           * 1000000.0))
             : 0;
+    // Callback-level samples are judged against the device's real deadline (the
+    // WASAPI shared engine period), not blockSize / sampleRate. Per-effect /
+    // per-track samples carry no block size and so no deadline of their own.
+    if (sample.deadlineUs > 0
+        && (kind == xleth::audio::AudioTelemetrySampleKind::AudioCallback
+            || kind == xleth::audio::AudioTelemetrySampleKind::MixBlock))
+    {
+        const uint64_t overrideNs =
+            realtimeDeadlineOverrideNs_.load(std::memory_order_relaxed);
+        if (overrideNs > 0)
+        {
+            const uint64_t overrideUs = (overrideNs + 500u) / 1000u;
+            sample.deadlineUs = overrideUs > UINT32_MAX
+                ? UINT32_MAX
+                : static_cast<uint32_t>(overrideUs);
+        }
+    }
     const uint64_t elapsedUs = (elapsedNs + 999u) / 1000u;
     sample.durationUs = elapsedUs > UINT32_MAX
         ? UINT32_MAX

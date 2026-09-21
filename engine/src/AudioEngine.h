@@ -126,7 +126,52 @@ public:
     bool   analyzeRecording(const juce::File& wavFile) const;
     double getSampleRate()  const { return sampleRate_; }
     int    getBufferSize()  const { return bufferSize_; }
-    double getLatencyMs()   const;
+
+    // ── Device-layer truth ───────────────────────────────────────────────────
+    // JUCE device-type name of the device that is ACTUALLY open ("ASIO",
+    // "Windows Audio", "Windows Audio (Exclusive Mode)", ...). Empty when no
+    // device is open. Never a label the engine made up.
+    std::string getCurrentDriverName() const;
+
+    // Output latency in ms, SINGLE-counted: exactly what the driver reports.
+    // JUCE's getOutputLatencyInSamples() already includes the buffer for every
+    // backend (WASAPI adds currentBufferSizeSamples itself, ASIO's
+    // getLatencies() includes it by spec), so nothing is added here.
+    double getLatencyMs() const;
+
+    // The callback period the device really runs at, in ms. WASAPI shared: the
+    // fixed Windows engine period (GetDevicePeriod), independent of the buffer
+    // size requested. Every other backend: the buffer size. 0 with no device.
+    double getDevicePeriodMs() const;
+
+    // Deadline the realtime telemetry judges each callback against (ms), and
+    // where it came from. See chooseRealtimeDeadline().
+    enum class DeadlineSource { BufferSize, DevicePeriod };
+    double         getRealtimeDeadlineMs() const;
+    DeadlineSource getRealtimeDeadlineSource() const
+    {
+        return realtimeDeadlineFromPeriod_.load(std::memory_order_relaxed)
+            ? DeadlineSource::DevicePeriod : DeadlineSource::BufferSize;
+    }
+
+    // Pure policy — which quantity is the real callback deadline. Split out so
+    // it can be tested without an audio device; audioDeviceAboutToStart() calls
+    // exactly this.
+    //   * WASAPI shared ("Windows Audio"): the endpoint holds ~one engine period
+    //     of audio, so a callback that outruns the period underruns whatever the
+    //     app-side buffer size is — a 2048-sample callback still has ~10 ms, not
+    //     46 ms, and a 132-sample callback is not judged against 3 ms.
+    //   * ASIO / WASAPI exclusive / low-latency: one buffer per period, so the
+    //     buffer duration is the deadline.
+    struct RealtimeDeadline
+    {
+        DeadlineSource source  = DeadlineSource::BufferSize;
+        int            samples = 0;   // in the SESSION sample rate
+    };
+    static RealtimeDeadline chooseRealtimeDeadline(const std::string& driverName,
+                                                   int bufferSizeSamples,
+                                                   int devicePeriodSamples);
+    static bool isWasapiSharedDriver(const std::string& driverName);
 
     // ── Audio-health instrumentation ─────────────────────────────────────────
     // [XRun] Current device hardware x-run (under/overflow) count, or -1 when the
@@ -225,6 +270,14 @@ private:
     void unregisterPowerNotification();
     void* powerNotifyHandle_ = nullptr;
 
-    void*       mmcssHandle_        = nullptr;
+    // Published by audioDeviceAboutToStart (message/RPC thread), read by the
+    // reporting getters. The MixEngine holds the audio-thread copy.
+    std::atomic<int64_t> realtimeDeadlineNs_{ 0 };
+    std::atomic<bool>    realtimeDeadlineFromPeriod_{ false };
+
+    // One line: driver | device | rate | buffer | latency | period. `what`
+    // names the event ("Buffer size changed", "Sample rate changed", ...).
+    void logDeviceState(const std::string& what) const;
+
     std::string preferredOutputDevice_;
 };

@@ -491,6 +491,23 @@ public:
     std::string getRealtimeDiagnosticsJSON() const;
     void recordAudioCallbackTiming(int numSamples, double sampleRate, uint64_t elapsedNs);
 
+    // The callback deadline the realtime diagnostics / telemetry judge against.
+    // 0 (the default) derives it from the block: numSamples / sampleRate, which
+    // is the true deadline for ASIO and WASAPI exclusive/low-latency, where the
+    // driver hands over one buffer per period. Under WASAPI SHARED mode that
+    // arithmetic is wrong (the true deadline is the fixed engine period,
+    // independent of the buffer size the app asked for), so AudioEngine
+    // publishes the real value here from audioDeviceAboutToStart. Message/RPC
+    // thread writes, audio thread reads (relaxed).
+    void setRealtimeDeadlineOverrideNs(uint64_t deadlineNs) noexcept
+    {
+        realtimeDeadlineOverrideNs_.store(deadlineNs, std::memory_order_relaxed);
+    }
+    uint64_t getRealtimeDeadlineOverrideNs() const noexcept
+    {
+        return realtimeDeadlineOverrideNs_.load(std::memory_order_relaxed);
+    }
+
     // ── Debug log ────────────────────────────────────────────────────────────
     MixDebugLog& getDebugLog() { return debugLog_; }
 
@@ -1469,6 +1486,11 @@ private:
     };
 
     RealtimeDiagnosticsState realtimeDiagnostics_;
+
+    // See setRealtimeDeadlineOverrideNs(). 0 = derive from block size / rate.
+    std::atomic<uint64_t> realtimeDeadlineOverrideNs_{0};
+    // Deadline for a callback-level timing sample (AudioCallback / MixBlock).
+    uint64_t realtimeDeadlineNs(int numSamples, double sampleRate) const noexcept;
 
     // [Underrun] Audio-health: clip-render-cache misses observed on the audio
     // thread (see getClipCacheMissCount). Incremented in processBlock; read from
