@@ -45,6 +45,7 @@ import ResonanceSuppressorPanel from './ResonanceSuppressorPanel.jsx'
 import ApexPanel from './ApexPanel.jsx'
 import GlossPanel from './GlossPanel.jsx'
 import AmpPanel from './AmpPanel.jsx'
+import GlueCompPanel from './GlueCompPanel.jsx'
 
 export default function EffectEditorHost() {
   return (
@@ -69,6 +70,7 @@ export default function EffectEditorHost() {
       <ApexPanel />
       <GlossPanel />
       <AmpPanel />
+      <GlueCompPanel />
     </div>
   )
 }

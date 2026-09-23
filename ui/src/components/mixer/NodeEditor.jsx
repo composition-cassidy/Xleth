@@ -26,11 +26,13 @@ const PLUGIN_NAMES = {
   uniflange: 'UniFlange', chorus: 'Chorus', flanger: 'Flanger', phaser: 'Phaser',
   phanjer: 'Phanjer', delay: 'Delay', reverb: 'Reverb', smartbalance: 'Smart Balance',
   resonancesuppressor: 'Resonance Suppressor',
+  glue: 'Glue Comp',
 }
 
 const EFFECT_CATEGORIES = [
   { label: 'Dynamics', submenu: [
-    { label: 'Compressor', id: 'compressor' }, { label: 'Limiter', id: 'limiter' },
+    { label: 'Compressor', id: 'compressor' }, { label: 'Glue Comp', id: 'glue' },
+    { label: 'Limiter', id: 'limiter' },
     { label: 'Overdone', id: 'overdone' }, { label: 'Transient Proc', id: 'transientproc' },
     { label: 'Resonance Suppressor', id: 'resonancesuppressor' },
   ]},

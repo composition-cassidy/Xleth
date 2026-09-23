@@ -2361,6 +2361,40 @@ target_compile_definitions(test_uniflange PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_glue_compressor ─────────────────────────────────────────────────────
+# CompressorCore template + the Glue VCA stock compressor ("glue"). Behaviour
+# tests per docs/Compressor_Archetypes_Deep_Dive.md §10: static curve vs the
+# gain computer, ballistics under one time-constant definition (incl. the
+# tracked loop's closed-loop pole and oversampled coefficients), auto-release
+# program dependence, stereo-link identity, stepped-control crossfade, RT
+# safety (allocations, denormals, implicit-loop stability) and PDC latency.
+add_executable(test_glue_compressor
+    test/test_glue_compressor.cpp
+)
+
+target_link_libraries(test_glue_compressor PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_glue_compressor PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_apex ────────────────────────────────────────────────────────────────
 # DSP-core contract tests for XlethApexEffect (the APEX multiband maximizer).
 # Verifies: Linkwitz-Riley band-split reconstruction is magnitude-flat within
@@ -3146,6 +3180,7 @@ set(XLETH_ENGINE_TESTS
     test_uniflange
     test_limiter
     test_apex
+    test_glue_compressor
     test_xlethfilter
     test_xlethfilter_analog
     test_xlethfilter_mod

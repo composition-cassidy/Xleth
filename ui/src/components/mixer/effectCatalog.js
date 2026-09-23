@@ -15,6 +15,7 @@ export const EFFECT_CATEGORIES = [
     label: 'Dynamics',
     submenu: [
       { label: 'Compressor', id: 'compressor' },
+      { label: 'Glue Comp', id: 'glue' },
       { label: 'Limiter', id: 'limiter' },
       { label: 'APEX', id: 'apex' },
       { label: 'GLOSS', id: 'gloss' },

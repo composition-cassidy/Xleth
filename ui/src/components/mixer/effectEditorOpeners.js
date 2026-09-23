@@ -29,6 +29,7 @@ import useSmartBalanceStore from '../../stores/smartBalanceStore.js'
 import useResonanceSuppressorStore from '../../stores/resonanceSuppressorStore.js'
 import useApexStore from '../../stores/apexStore.js'
 import useAmpStore from '../../stores/ampStore.js'
+import useGlueCompStore from '../../stores/glueCompStore.js'
 
 // Registry: pluginId -> opener(trackId, nodeId, storeKey)
 // Add one entry per effect that has a dedicated editor panel.
@@ -90,6 +91,9 @@ export const EFFECT_EDITORS = {
   amp: (trackId, nodeId, storeKey) => {
     useAmpStore.getState().open(trackId, nodeId, storeKey)
   },
+  glue: (trackId, nodeId, storeKey) => {
+    useGlueCompStore.getState().open(trackId, nodeId, storeKey)
+  },
   // GLOSS is the one-knob companion skin over the SAME engine effect. It shares
   // the APEX store but tags the target with skin:'gloss' so the GlossPanel (not
   // ApexPanel) renders. Its own EFFECT_EDITOR_STORES entry is already covered by
@@ -123,6 +127,7 @@ const EFFECT_EDITOR_STORES = [
   useResonanceSuppressorStore,
   useApexStore,
   useAmpStore,
+  useGlueCompStore,
 ]
 
 // Close any open stock-effect editor whose target addresses (storeKey, nodeId).
@@ -172,6 +177,7 @@ export const PLUGIN_NAMES = {
   apex: 'APEX',
   gloss: 'GLOSS',
   amp: 'Amp Stack',
+  glue: 'Glue Comp',
 }
 
 export function resolveTrackId(storeKey) {
