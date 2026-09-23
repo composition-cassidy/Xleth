@@ -24,6 +24,7 @@
 #include "audio/XlethAmpEffect.h"
 #include "audio/XlethPitchShifterEffect.h"
 #include "audio/XlethGlueCompressorEffect.h"
+#include "audio/XlethOptoCompressorEffect.h"
 #include "audio/SmartBalanceEffect.h"
 #include "audio/WireGainProcessor.h"
 #include "audio/DelayCompensationProcessor.h"
@@ -2990,6 +2991,7 @@ std::unique_ptr<juce::AudioProcessor> AudioGraph::createEffect(const std::string
     if (pluginId == "pitchshifter")  return std::make_unique<XlethPitchShifterEffect>();
     if (pluginId == "gloss")         return std::make_unique<XlethApexEffect>("gloss");   // one-knob APEX skin — same DSP, distinct persisted id
     if (pluginId == "glue")          return std::make_unique<XlethGlueCompressorEffect>();
+    if (pluginId == "opto")          return std::make_unique<XlethOptoCompressorEffect>();
 
     // VST3 fallback — look up in the plugin registry and instantiate.
     // The createPluginInstance call itself is guarded (some plugins fault on load).

@@ -2395,6 +2395,40 @@ target_compile_definitions(test_glue_compressor PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_opto_compressor ─────────────────────────────────────────────────────
+# Opto Comp ("opto"), the LA-2A-lineage model on CompressorCore. Behaviour tests
+# per docs/Compressor_Archetypes_Deep_Dive.md §3.4/§10: the burst fitting
+# procedure (release tails lengthen with burst length) with a single-tau
+# negative control, static-curve sweep (soft, program-dependent knee,
+# Compress vs Limit), stereo-link identity, Limit/Compress crossfade, 2x
+# oversampling of the tube colour (aliasing), RT safety and PDC latency.
+add_executable(test_opto_compressor
+    test/test_opto_compressor.cpp
+)
+
+target_link_libraries(test_opto_compressor PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_opto_compressor PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_apex ────────────────────────────────────────────────────────────────
 # DSP-core contract tests for XlethApexEffect (the APEX multiband maximizer).
 # Verifies: Linkwitz-Riley band-split reconstruction is magnitude-flat within
@@ -3181,6 +3215,7 @@ set(XLETH_ENGINE_TESTS
     test_limiter
     test_apex
     test_glue_compressor
+    test_opto_compressor
     test_xlethfilter
     test_xlethfilter_analog
     test_xlethfilter_mod

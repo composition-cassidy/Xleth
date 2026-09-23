@@ -50,6 +50,11 @@
 //   Detector:   prepare(fs) · reset() · float levelDb(l, r, StereoLink)
 //   GC:         struct Params (==) · reductionFF(x,T,p,&slope) ·
 //               reductionFB(v,T,p,&slope) · outputDb(x,T,p)
+//               optional: reductionLoop(L,B,T,p,&slopeB) — a sidechain that
+//               sees the input level L as well as the loop's reduction B
+//               (replaces reductionFB(L − B) in the loop); kLoopRelTolerance —
+//               relative Newton tolerance for a ρ that is not in dB.
+//               (Opto policies: OptoCompressorCore.h.)
 //   Ballistics: struct Params (==) · struct Coeffs · struct State ·
 //               makeCoeffs(p, fs) · value(st) · predict(st,c,target,&d) ·
 //               commit(st,c,target) · adopt(st,c)
@@ -299,27 +304,55 @@ private:
         return Bal::value(ln.st);
     }
 
-    // Zero-delay solve of the tracked loop:  ρ = c( L − B(ρ) )
-    //   c = GC feedback (inverse-curve) reduction, nondecreasing in its argument
+    // The loop's sidechain law c(L, B): what the GC asks for when the input
+    // level is L and the loop currently applies B dB of reduction. Returns c and
+    // slopeB = −∂c/∂B ≥ 0.
+    //
+    // By default the sidechain sees only the reduced level, c = GC::reductionFB
+    // (L − B), so −∂c/∂B = dc/dv. A GC whose sidechain ALSO taps the input (the
+    // opto's Limit position mixes input into the output-derived sidechain) says
+    // so by providing reductionLoop(L, B, T, p, slopeB) itself.
+    static float loopReduction(float L, float B, float T, const typename GC::Params& p,
+                               float& slopeB) noexcept
+    {
+        if constexpr (requires { GC::reductionLoop(L, B, T, p, slopeB); })
+            return GC::reductionLoop(L, B, T, p, slopeB);
+        else
+            return GC::reductionFB(L - B, T, p, slopeB);
+    }
+
+    // Newton stopping rule on |ρ − c|. Absolute 1e-5 for GCs whose ρ is dB;
+    // a GC whose ρ spans decades (the opto's EL light) sets a relative one.
+    static float loopTolerance(float rho) noexcept
+    {
+        if constexpr (requires { GC::kLoopRelTolerance; })
+            return 1.0e-5f + GC::kLoopRelTolerance * rho;
+        else
+            return 1.0e-5f;
+    }
+
+    // Zero-delay solve of the tracked loop:  ρ = c( L, B(ρ) )
+    //   c = GC sidechain law, nonincreasing in B (default: the feedback
+    //       inverse-curve reduction of the reduced level L − B)
     //   B = this sample's ballistics output for target ρ, nondecreasing in ρ
-    // so g(ρ) = ρ − c(L − B(ρ)) is strictly increasing with a unique root in
-    // [0, c(L − B(0))]. Safeguarded Newton; every map is piecewise linear or a
+    // so g(ρ) = ρ − c(L, B(ρ)) is strictly increasing with a unique root in
+    // [0, c(L, B(0))]. Safeguarded Newton; every map is piecewise linear or a
     // smooth quadratic inverse, so it converges in 1–3 steps.
     static float solveTracked(const Lane& ln, float L, float T) noexcept
     {
         float dB = 0.0f, dC = 0.0f;
         const float b0 = Bal::predict(ln.st, ln.c, 0.0f, dB);
-        float hi = GC::reductionFB(L - b0, T, ln.s.gc, dC);
+        float hi = loopReduction(L, b0, T, ln.s.gc, dC);
         if (hi <= 0.0f) return 0.0f;
         float lo = 0.0f;
 
-        float rho = std::clamp(GC::reductionFB(L - Bal::value(ln.st), T, ln.s.gc, dC), lo, hi);
+        float rho = std::clamp(loopReduction(L, Bal::value(ln.st), T, ln.s.gc, dC), lo, hi);
         for (int it = 0; it < 12; ++it)
         {
             const float B = Bal::predict(ln.st, ln.c, rho, dB);
-            const float c = GC::reductionFB(L - B, T, ln.s.gc, dC);
+            const float c = loopReduction(L, B, T, ln.s.gc, dC);
             const float g = rho - c;
-            if (std::abs(g) < 1.0e-5f) break;
+            if (std::abs(g) < loopTolerance(rho)) break;
             if (g < 0.0f) lo = rho; else hi = rho;
             float next = rho - g / (1.0f + dC * dB);
             if (!(next > lo && next < hi)) next = 0.5f * (lo + hi);

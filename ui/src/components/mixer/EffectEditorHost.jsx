@@ -46,6 +46,7 @@ import ApexPanel from './ApexPanel.jsx'
 import GlossPanel from './GlossPanel.jsx'
 import AmpPanel from './AmpPanel.jsx'
 import GlueCompPanel from './GlueCompPanel.jsx'
+import OptoCompPanel from './OptoCompPanel.jsx'
 
 export default function EffectEditorHost() {
   return (
@@ -71,6 +72,7 @@ export default function EffectEditorHost() {
       <GlossPanel />
       <AmpPanel />
       <GlueCompPanel />
+      <OptoCompPanel />
     </div>
   )
 }

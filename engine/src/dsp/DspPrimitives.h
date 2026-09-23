@@ -236,6 +236,17 @@ struct TptSvf
         ic2[ch] = 2.0f * v2 - ic2[ch];
         return x - k * v1 - v2;
     }
+
+    // Returns the low-pass output (12 dB/oct; q > 0.707 peaks at the cutoff).
+    float processLowPass(float x, int ch) noexcept
+    {
+        const float v3 = x - ic2[ch];
+        const float v1 = a1 * ic1[ch] + a2 * v3;
+        const float v2 = ic2[ch] + a2 * ic1[ch] + a3 * v3;
+        ic1[ch] = 2.0f * v1 - ic1[ch];
+        ic2[ch] = 2.0f * v2 - ic2[ch];
+        return v2;
+    }
 };
 
 // ─── Soft clipper ───────────────────────────────────────────────────────────

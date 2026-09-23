@@ -75,9 +75,9 @@ describe('EffectEditorHost ownership contract', () => {
     expect(tree.props.className).toBe('effect-editor-host')
 
     const owned = collectOwnedComponents(tree.props.children)
-    // 21 stock editors, all real function components, hosted globally
+    // 22 stock editors, all real function components, hosted globally
     // (APEX + its one-knob GLOSS skin are two panels over one engine class).
-    expect(owned).toHaveLength(21)
+    expect(owned).toHaveLength(22)
     expect(owned.every((type) => typeof type === 'function')).toBe(true)
     expect(owned).toContain(EqPanel)
     expect(owned).toContain(FilterPanel)
@@ -113,6 +113,7 @@ describe('EffectEditorHost ownership contract', () => {
       'GlossPanel',
       'AmpPanel',
       'GlueCompPanel',
+      'OptoCompPanel',
     ]
     for (const panel of editorPanels) {
       // No import of, and no JSX element for, any stock editor panel.
