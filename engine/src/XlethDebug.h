@@ -29,6 +29,13 @@ inline bool xlethRenderLogEnabled() {
 #define XLETH_RENDER_LOG(stmt) \
     do { if (xlethRenderLogEnabled()) { stmt; } } while (0)
 
+// XLETH_RT_TRACE — opt-in compile flag for stderr traces INSIDE the audio
+// callback (per-note trigger traces, per-block effect metering). Never defined
+// by the build. XLETH_DEBUG is on in every build, Release included, so gating
+// an audio-thread fprintf on it leaves the CRT stream lock and a blocking pipe
+// write on the real-time path. Define XLETH_RT_TRACE only for a local
+// diagnostic build, and expect xruns while it is on.
+
 #ifdef XLETH_DEBUG
 
 #include <chrono>

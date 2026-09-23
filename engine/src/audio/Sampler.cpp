@@ -1504,7 +1504,7 @@ void Sampler::processVoice(Voice& v,
                            double engineSampleRate)
 {
     if (v.numStreams <= 0) { v.active = false; return; }
-#ifdef XLETH_DEBUG
+#ifdef XLETH_RT_TRACE
     if (v.onsetSample != 0)
         fprintf(stderr, "[ProcVoice] entry onset=%d numSamples=%d streams=%d\n",
                 v.onsetSample, numSamples, v.numStreams);

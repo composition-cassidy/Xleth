@@ -369,6 +369,9 @@ public:
     const PatternBlock*                  getPatternBlock(int id) const;
     PatternBlock*                        getPatternBlockMutable(int id);
     std::vector<const PatternBlock*>     getAllPatternBlocks() const;
+    // Same blocks, same (id) order, without building a vector — for the audio
+    // thread, which walks this every block and must not allocate.
+    const std::map<int, PatternBlock>&   getPatternBlockMap() const { return m_patternBlocks; }
     std::vector<const PatternBlock*>     getPatternBlocksOnTrack(int trackId) const;
     std::vector<const PatternBlock*>     getPatternBlocksInRange(TickTime start, TickTime end) const;
     bool                                 removePatternBlock(int id);

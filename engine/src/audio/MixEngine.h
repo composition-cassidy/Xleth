@@ -118,11 +118,10 @@ public:
     void unmapRegion(int regionId);
 
     // Look up the sample bank slot for a region. Returns -1 if not mapped.
-    // Main-thread read (map is only mutated from main thread).
+    // Any thread: reads the published snapshot (see regionToSampleMap_).
     int  getSampleIdForRegion(int regionId) const;
 
-    // Returns a copy of the current region→sample mapping table.
-    // Main-thread read only; the map is mutated from the main thread.
+    // Returns a copy of the current region→sample mapping table. Any thread.
     std::unordered_map<int, int> getRegionToSampleMapSnapshot() const;
 
     // ── Per-slot sample mapping (main thread) ────────────────────────────────
@@ -977,6 +976,16 @@ public:
     // Main/applier thread only.
     int applyPendingLfoModulation();
 
+    // Services effect-chain reset requests posted by the audio thread (seek,
+    // transport stop, play after an audition). Realtime playback never calls
+    // AudioProcessor::reset() in the callback — it is not realtime-safe — so
+    // the applier thread resets the chains here, coalescing any number of
+    // requests into one pass, each chain claimed via
+    // EffectChainManager::tryResetProcessorsOffThread. Takes chainsMutex_.
+    // Returns 1 when it ran a reset pass, 0 when nothing was pending. Public so
+    // tests can service deterministically; the applier thread calls exactly this.
+    int serviceEffectChainResets();
+
     // Test/diagnostic read of the live snapshot. Never call from the audio thread.
     std::shared_ptr<const xleth::lfomod::LfoModulationSnapshot>
     getLfoModulationSnapshotForTesting() const;
@@ -1112,7 +1121,25 @@ private:
     const Timeline*   timeline_   = nullptr;
     const SampleBank* sampleBank_ = nullptr;
 
-    std::unordered_map<int, int> regionToSampleMap_;
+    // Region → SampleBank id. The audio thread reads this every block
+    // (findActiveClips) while RPC handlers, project load and MIDI import write
+    // it, so it is never mutated in place: writers copy, modify and publish a
+    // new immutable map under regionSampleMapWriteMutex_; readers take one
+    // atomic load and hold that map for as long as they use it. Same shape as
+    // chainSnapshot_. Never null after construction.
+    using RegionSampleMap = std::unordered_map<int, int>;
+    mutable std::atomic<std::shared_ptr<const RegionSampleMap>> regionToSampleMap_;
+    // Writers only — the audio thread never takes it.
+    std::mutex regionSampleMapWriteMutex_;
+    // Superseded maps, released only here (writer side) once no reader holds
+    // them, so the audio thread never runs an unordered_map destructor.
+    std::vector<std::shared_ptr<const RegionSampleMap>> retiredRegionSampleMaps_;
+    // PRECONDITION: regionSampleMapWriteMutex_ held.
+    void publishRegionSampleMapLocked(RegionSampleMap next);
+    std::shared_ptr<const RegionSampleMap> loadRegionSampleMap() const noexcept
+    {
+        return regionToSampleMap_.load(std::memory_order_acquire);
+    }
 
     // ── Per-block track snapshot cache (Finding 2b) ─────────────────────────
     // Mirrors timeline_->getAllTracks() (same pointers, same order) without
@@ -1873,9 +1900,21 @@ private:
     // held pattern notes so stale voices don't ring past the seek point.
     int64_t lastBufferEnd_ = -1;
 
-    // Transport stop/seek reset request for latent effect processors.
-    // Audio-thread only; serviced after chainsMutex_ is acquired.
-    bool pendingEffectChainReset_ = false;
+    // Transport stop/seek reset request for effect processors. Audio thread
+    // posts through requestEffectChainReset():
+    //   - realtime: bumps effectResetRequestGen_; serviceEffectChainResets()
+    //     resets the chains off-thread, typically within 1-2 blocks.
+    //   - non-realtime (export): sets pendingEffectChainReset_ and the chains
+    //     reset inline under chainsMutex_, exactly as before, so an export stays
+    //     deterministic.
+    void requestEffectChainReset() noexcept;
+    bool pendingEffectChainReset_ = false;              // audio thread only
+    std::atomic<uint64_t> effectResetRequestGen_ { 0 }; // audio thread -> worker
+    uint64_t effectResetServicedGen_ = 0;               // worker only (under chainsMutex_)
+    // An audition ran a track/master chain while stopped. Those tails must not
+    // bleed into playback, but must not be wiped mid-audition either, so the
+    // reset is requested on the next play start. Audio thread only.
+    bool auditionDirtiedChains_ = false;
 
     // Active pattern-block info — pre-allocated, reused each block
     struct ActivePatternBlock
@@ -1902,7 +1941,38 @@ private:
     // jumped away), fire allNotesOff() on that pair's sampler. Keyed per
     // {trackId, regionId} so cutting a different-region block on the same
     // track never cuts voices that belong to a different region's sampler.
-    std::unordered_set<TrackRegionKey, TrackRegionKeyHash> prevActiveKeys_;
+    //
+    // Fixed capacity, linear search: this set is rebuilt on the audio thread
+    // every block, and an unordered_set allocates a node per insert (and, on
+    // MSVC, its sentinel + buckets on construction). The key count is bounded
+    // by the number of simultaneously active pattern blocks — a handful.
+    struct ActiveKeySet
+    {
+        static constexpr int kCapacity = 1024;
+        std::array<TrackRegionKey, kCapacity> keys {};
+        int count = 0;
+
+        bool contains(const TrackRegionKey& k) const noexcept
+        {
+            for (int i = 0; i < count; ++i)
+                if (keys[static_cast<size_t>(i)] == k) return true;
+            return false;
+        }
+        void insert(const TrackRegionKey& k) noexcept
+        {
+            if (contains(k)) return;
+            jassert(count < kCapacity);
+            if (count < kCapacity) keys[static_cast<size_t>(count++)] = k;
+        }
+        void assign(const ActiveKeySet& o) noexcept
+        {
+            std::copy(o.keys.begin(), o.keys.begin() + o.count, keys.begin());
+            count = o.count;
+        }
+        void clear() noexcept { count = 0; }
+    };
+    ActiveKeySet prevActiveKeys_;
+    ActiveKeySet currentActiveKeysScratch_;
 
     // ── Clip render cache ────────────────────────────────────────────────────
     ClipRenderCache clipRenderCache_;

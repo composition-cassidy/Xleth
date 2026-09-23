@@ -54,7 +54,9 @@
 class Sampler
 {
 public:
-    Sampler() = default;
+    // The mono held-note stack is pushed on the audio thread (noteOn); reserve
+    // its whole bound up front so it never grows there.
+    Sampler() { monoHeldNotes_.reserve(16); }
 
     // ── Slot configuration (main thread) ─────────────────────────────────────
     // Slot count is clamped to [1, MAX_SAMPLE_SLOTS]. Shrinking clears the

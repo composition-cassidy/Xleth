@@ -32,7 +32,25 @@
 // The contention in T1/T3 is real: a second thread hammers the same mutators a
 // user's mixer drives (parameter writes, chain add/remove, chain teardown)
 // while blocks render.
+//
+// Effect-chain resets (AudioProcessor::reset() is not realtime-safe, so live
+// playback resets chains off the audio thread):
+//
+//   T4  A realtime seek never runs reset() on the audio thread, and the worker
+//       does run it shortly after.
+//   T5  The claim handshake: a reset cannot start while the audio thread holds
+//       the chain, and the audio thread cannot claim a chain mid-reset.
+//   T6  An export (nonRealtime_) still resets inline, on the render thread, in
+//       the block that detected the seek — so renders stay deterministic.
+//   T7  A block that lands while the worker is mid-reset renders that track
+//       SILENT, never dry, and the chain comes straight back afterwards.
+//
+// Region map (regionToSampleMap_ is read by the audio thread every block):
+//
+//   T8  A writer thread republishing the map continuously never costs a block
+//       its clip: every realtime block stays wet.
 
+#include "audio/EffectChainManager.h"
 #include "audio/MixEngine.h"
 #include "audio/TestGainEffect.h"
 #include "model/Timeline.h"
@@ -46,7 +64,9 @@
 
 #include <atomic>
 #include <cmath>
+#include <chrono>
 #include <cstdint>
+#include <functional>
 #include <iostream>
 #include <memory>
 #include <string>
@@ -422,6 +442,284 @@ static void testChainTeardownDuringRenderIsSafe(Fixture& fx)
 
 // ─── main ────────────────────────────────────────────────────────────────────
 
+// ─── Reset probe ─────────────────────────────────────────────────────────────
+//
+// A unity-gain effect that records every reset(): how many, and whether it ran
+// on the thread the test designates as the audio thread. It can also park
+// inside reset() (T7) and run a hook from inside it (T5).
+struct ResetProbeState
+{
+    std::atomic<int>             resets{0};
+    std::atomic<int>             resetsOnAudioThread{0};
+    std::thread::id              audioThread;
+    std::atomic<bool>            parkInReset{false};
+    std::atomic<bool>            parked{false};
+    std::atomic<bool>            release{false};
+    std::function<void()>        duringReset;
+};
+
+class ResetProbeEffect : public TestGainEffect
+{
+public:
+    explicit ResetProbeEffect(std::shared_ptr<ResetProbeState> s) : state_(std::move(s))
+    {
+        setParameterValue("gain", 1.0f);
+    }
+
+    void resetEffect() override
+    {
+        state_->resets.fetch_add(1);
+        if (std::this_thread::get_id() == state_->audioThread)
+            state_->resetsOnAudioThread.fetch_add(1);
+        if (state_->duringReset) state_->duringReset();
+        if (state_->parkInReset.load())
+        {
+            state_->parked.store(true);
+            // Bounded: if reset() ever regresses onto the audio (test) thread,
+            // nothing would release it — fail T7 instead of hanging the suite.
+            const auto deadline = std::chrono::steady_clock::now() + std::chrono::seconds(3);
+            while (!state_->release.load() && std::chrono::steady_clock::now() < deadline)
+                std::this_thread::sleep_for(std::chrono::milliseconds(1));
+        }
+    }
+
+private:
+    std::shared_ptr<ResetProbeState> state_;
+};
+
+static bool waitFor(const std::function<bool()>& pred, int timeoutMs = 2000)
+{
+    const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(timeoutMs);
+    while (std::chrono::steady_clock::now() < deadline)
+    {
+        if (pred()) return true;
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+    }
+    return pred();
+}
+
+// Engine wired to the fixture with the probe after the gain on the track.
+static std::shared_ptr<ResetProbeState> wireProbe(MixEngine& engine, Fixture& fx)
+{
+    auto state = std::make_shared<ResetProbeState>();
+    state->audioThread = std::this_thread::get_id();
+    engine.addProcessorForTesting(fx.trackId, "resetprobe",
+                                  std::make_unique<ResetProbeEffect>(state), 1);
+    return state;
+}
+
+// Render one block at the transport's position, then advance.
+static float renderOne(MixEngine& engine, Transport& transport)
+{
+    juce::AudioBuffer<float> block(2, kBlockSize);
+    block.clear();
+    engine.processBlock(block, kBlockSize, transport);
+    transport.advance(kBlockSize);
+    return peakOf(block, kBlockSize);
+}
+
+// Wait until every posted reset has been serviced (nothing pending). The
+// service call runs on a helper thread: a reset it performed on the test
+// thread would be indistinguishable from one on the audio thread.
+static bool quiesceResets(MixEngine& engine, ResetProbeState& s)
+{
+    return waitFor([&] {
+        const int before = s.resets.load();
+        std::this_thread::sleep_for(std::chrono::milliseconds(30));
+        int pending = 1;
+        std::thread([&] { pending = engine.serviceEffectChainResets(); }).join();
+        return s.resets.load() == before && pending == 0;
+    });
+}
+
+// ─── T4: a realtime seek never resets on the audio thread ────────────────────
+
+static void testRealtimeSeekResetsOffAudioThread(Fixture& fx)
+{
+    std::cout << "[T4] realtime seek: reset() runs on the worker, never in the callback\n";
+
+    // Heap-allocated: sizeof(MixEngine) overflows the stack (see T1).
+    auto enginePtr = std::make_unique<MixEngine>();
+    MixEngine& engine = *enginePtr;
+    CHECK(wireEngine(engine, fx), "engine wired");
+    auto probe = wireProbe(engine, fx);
+
+    Transport transport;
+    transport.setSampleRate(kSampleRate);
+    transport.setBPM(kBPM);
+    transport.seekToSample(0);
+    transport.play();
+
+    for (int b = 0; b < 8; ++b) renderOne(engine, transport);
+    CHECK(quiesceResets(engine, *probe), "worker quiesced before the seeks");
+    const int before = probe->resets.load();
+
+    // Ten seeks in ten consecutive blocks — each one posts a reset request.
+    for (int k = 0; k < 10; ++k)
+    {
+        transport.seekToSample(static_cast<int64_t>((k % 4 + 1) * 8 * kBlockSize));
+        renderOne(engine, transport);
+    }
+
+    CHECK(probe->resetsOnAudioThread.load() == 0,
+          "no reset() ran on the audio thread (got " << probe->resetsOnAudioThread.load() << ")");
+    CHECK(waitFor([&] { return probe->resets.load() > before; }),
+          "the worker reset the chain after the seeks");
+    CHECK(quiesceResets(engine, *probe), "all reset requests serviced");
+    const int serviced = probe->resets.load() - before;
+    std::cout << "    10 seeks -> " << serviced << " off-thread reset pass(es)\n";
+    CHECK(serviced >= 1 && serviced <= 10, "requests coalesce (1..10 passes for 10 seeks)");
+    transport.pause();
+}
+
+// ─── T5: the claim handshake ─────────────────────────────────────────────────
+
+static void testResetClaimHandshake()
+{
+    std::cout << "[T5] claim handshake: reset and processing never overlap\n";
+
+    EffectChainManager chain;
+    chain.init(kSampleRate, kBlockSize);
+    auto probe = std::make_shared<ResetProbeState>();
+    chain.addProcessorForTesting("resetprobe", std::make_unique<ResetProbeEffect>(probe), 0);
+    chain.refreshRealtimeView();
+
+    // Audio thread inside the chain: the worker must back off.
+    CHECK(chain.beginRealtimeUse(), "audio thread claims an idle chain");
+    CHECK(!chain.tryResetProcessorsOffThread(), "reset refused while the audio thread holds the chain");
+    CHECK(probe->resets.load() == 0, "no reset() ran while refused");
+    chain.endRealtimeUse();
+
+    // Worker mid-reset: the audio thread must not get in.
+    bool claimedDuringReset = true;
+    probe->duringReset = [&] {
+        claimedDuringReset = chain.beginRealtimeUse();
+        if (claimedDuringReset) chain.endRealtimeUse();
+    };
+    CHECK(chain.tryResetProcessorsOffThread(), "reset proceeds once the chain is free");
+    CHECK(probe->resets.load() == 1, "reset() ran exactly once");
+    CHECK(!claimedDuringReset, "the audio thread cannot claim a chain mid-reset");
+    probe->duringReset = nullptr;
+
+    CHECK(chain.beginRealtimeUse(), "claim succeeds again after the reset");
+    chain.endRealtimeUse();
+}
+
+// ─── T6: export still resets inline ──────────────────────────────────────────
+
+static void testOfflineSeekResetsInline(Fixture& fx)
+{
+    std::cout << "[T6] export: the seek resets inline on the render thread\n";
+
+    // Heap-allocated: sizeof(MixEngine) overflows the stack (see T1).
+    auto enginePtr = std::make_unique<MixEngine>();
+    MixEngine& engine = *enginePtr;
+    CHECK(wireEngine(engine, fx), "engine wired");
+    auto probe = wireProbe(engine, fx);
+
+    Transport transport;
+    transport.setSampleRate(kSampleRate);
+    transport.setBPM(kBPM);
+    transport.seekToSample(0);
+    transport.play();
+    renderOne(engine, transport);
+    CHECK(quiesceResets(engine, *probe), "worker quiesced");
+
+    engine.setNonRealtime(true);
+    renderOne(engine, transport);
+    const int before = probe->resetsOnAudioThread.load();
+    transport.seekToSample(16 * kBlockSize);
+    renderOne(engine, transport);
+    CHECK(probe->resetsOnAudioThread.load() == before + 1,
+          "the seek block reset the chain inline, on the render thread");
+    engine.setNonRealtime(false);
+    transport.pause();
+}
+
+// ─── T7: a block that lands mid-reset is silent, not dry ─────────────────────
+
+static void testMidResetBlockIsSilentNotDry(Fixture& fx)
+{
+    std::cout << "[T7] block during an off-thread reset: silent, never dry\n";
+
+    // Heap-allocated: sizeof(MixEngine) overflows the stack (see T1).
+    auto enginePtr = std::make_unique<MixEngine>();
+    MixEngine& engine = *enginePtr;
+    CHECK(wireEngine(engine, fx), "engine wired");
+    auto probe = wireProbe(engine, fx);
+
+    Transport transport;
+    transport.setSampleRate(kSampleRate);
+    transport.setBPM(kBPM);
+    transport.seekToSample(0);
+    transport.play();
+    for (int b = 0; b < 8; ++b) renderOne(engine, transport);
+    CHECK(quiesceResets(engine, *probe), "worker quiesced");
+
+    // Park the worker inside reset(), then render while it is there.
+    probe->parkInReset.store(true);
+    transport.seekToSample(20 * kBlockSize);
+    renderOne(engine, transport);                    // posts the request
+    CHECK(waitFor([&] { return probe->parked.load(); }), "worker is inside reset()");
+
+    const float midResetPeak = renderOne(engine, transport);
+    std::cout << "    peak while the chain is mid-reset: " << midResetPeak << "\n";
+    CHECK(midResetPeak < 1.0e-4f, "track is silent for the block (not dry, not processed)");
+
+    probe->parkInReset.store(false);
+    probe->release.store(true);
+    CHECK(quiesceResets(engine, *probe), "reset completed");
+
+    // Past the gain smoother's ramp, the chain is back to full wet output.
+    float peak = 0.0f;
+    for (int b = 0; b < 8; ++b) peak = renderOne(engine, transport);
+    const float kDryCeiling = 0.25f * (1.0f + kChainGain) * 0.5f;
+    CHECK(peak > kDryCeiling, "chain processes again after the reset (peak " << peak << ")");
+    transport.pause();
+}
+
+// ─── T8: region map republished under a rendering audio thread ──────────────
+
+static void testRegionMapRepublishDuringRender(Fixture& fx)
+{
+    std::cout << "[T8] region map: continuous republish while blocks render\n";
+
+    // Heap-allocated: sizeof(MixEngine) overflows the stack (see T1).
+    auto enginePtr = std::make_unique<MixEngine>();
+    MixEngine& engine = *enginePtr;
+    CHECK(wireEngine(engine, fx), "engine wired");
+
+    std::atomic<bool> stop{false};
+    std::atomic<uint64_t> publishes{0};
+    std::thread writer([&] {
+        int churn = 0;
+        while (!stop.load(std::memory_order_relaxed))
+        {
+            // Unrelated regions come and go (the map grows and rehashes) while
+            // the fixture's own mapping is rewritten to the same value.
+            const int unrelated = 100000 + (churn++ % 512);
+            engine.mapRegionToSample(unrelated, 0);
+            engine.mapRegionToSample(fx.regionId, fx.sampleId);
+            if ((churn & 7) == 0) engine.unmapRegion(unrelated);
+            publishes.fetch_add(3, std::memory_order_relaxed);
+        }
+    });
+
+    Transport transport;
+    transport.setSampleRate(kSampleRate);
+    transport.setBPM(kBPM);
+    const RenderResult r = renderAndClassify(engine, transport, 150);
+    stop.store(true);
+    writer.join();
+
+    std::cout << "    " << r.blocks << " blocks, " << r.wetBlocks << " wet, "
+              << r.dryBlocks << " dry, " << r.silent << " silent, "
+              << publishes.load() << " map publishes\n";
+    CHECK(publishes.load() > 1000, "the writer really was republishing");
+    CHECK(r.silent == 0, "no block lost its clip to a map republish");
+    CHECK(engine.getSampleIdForRegion(fx.regionId) == fx.sampleId, "mapping intact afterwards");
+}
+
 int main()
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
@@ -438,6 +736,11 @@ int main()
     testRealtimeNeverSkipsUnderContention(fx);
     testOfflineStillBlocksAndNeverSkips(fx);
     testChainTeardownDuringRenderIsSafe(fx);
+    testRealtimeSeekResetsOffAudioThread(fx);
+    testResetClaimHandshake();
+    testOfflineSeekResetsInline(fx);
+    testMidResetBlockIsSilentNotDry(fx);
+    testRegionMapRepublishDuringRender(fx);
 
     std::cout << "\n" << g_passed << " passed, " << g_failed << " failed\n";
     if (g_failed > 0)

@@ -602,6 +602,14 @@ static void testBlendPathAllocationFree()
     std::cout << "    Clip-mode shifter, transform INACTIVE (today): " << off << " allocations\n";
     std::cout << "    Clip-mode shifter, Mix 50 blend ACTIVE:        " << on << " allocations\n";
     std::cout << "    attributable to the blend path: " << (on - off) << "\n";
+    // Absolute gate on the plain path. It used to be ~109 (an unordered_set
+    // built every block + a diagnostic map); the audio-thread audit took it
+    // to zero, so any new per-block allocation in processBlock fails here.
+    CHECK(baseline == 0, "plain clip playback allocates nothing on the audio thread (got " << baseline << ")");
+    // With the Pitch Shifter chain too: the 4 that remained came from reset()
+    // running in the callback after the seek; resets now run off-thread.
+    CHECK(on == 0 && off == 0, "shifter chain playback allocates nothing on the audio thread (on "
+          << on << ", off " << off << ")");
     CHECK(on == off, "the Mix blend adds no allocation (active " << on << " vs inactive " << off << ")");
 }
 

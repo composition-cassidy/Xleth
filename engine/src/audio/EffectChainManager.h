@@ -3,6 +3,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <nlohmann/json.hpp>
 
+#include <atomic>
 #include <memory>
 #include <cstdint>
 #include <set>
@@ -336,6 +337,23 @@ public:
     // Reset all processors in the chain. Intended for transport jumps.
     void resetProcessors();
 
+    // ── Off-thread reset handshake ──────────────────────────────────────
+    // AudioProcessor::reset() is not realtime-safe (plugins allocate, the
+    // Pitch Shifter primes its vendored shifter), so live playback never calls
+    // it from the audio callback. A non-realtime worker resets the chain
+    // instead, and this claim keeps that reset from ever overlapping the
+    // chain's own processing. Dekker-style: each side publishes its flag
+    // (seq_cst), then reads the other's, so at most one side proceeds.
+    //
+    //   Audio thread: if (beginRealtimeUse()) { ...use chain...; endRealtimeUse(); }
+    //                 else the chain is mid-reset — leave it alone this block.
+    //   Worker:       tryResetProcessorsOffThread() returns false when the audio
+    //                 thread was inside the chain; retry. Caller holds the
+    //                 owner's chains lock (no concurrent chain mutation).
+    bool beginRealtimeUse() noexcept;
+    void endRealtimeUse() noexcept;
+    bool tryResetProcessorsOffThread();
+
     // Returns the maximum getTailLengthSeconds() across all effect nodes.
     double getMaxTailLengthSeconds() const;
 
@@ -350,6 +368,9 @@ public:
 
 private:
     std::unique_ptr<AudioGraph> graph_;
+
+    std::atomic<bool> realtimeInUse_   { false };
+    std::atomic<bool> resetInProgress_ { false };
 
     // Graph-owned effect instances: stable effectInstanceId → APG uid.
     // Session-only at runtime. Serialized additively on graph-owned nodes so a

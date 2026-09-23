@@ -835,7 +835,7 @@ public:
                 float rangeDbNow = bs.dynRangePtr ? bs.dynRangePtr->load(std::memory_order_relaxed) : 12.0f;
                 bandGR_[b].store(newAct * rangeDbNow, std::memory_order_relaxed);
 
-#ifdef XLETH_DEBUG
+#ifdef XLETH_RT_TRACE
                 bs.dynLogCounter += numSamples;
                 if (bs.dynLogCounter >= static_cast<int>(sr))
                 {
@@ -1171,7 +1171,7 @@ private:
         std::atomic<float> dynActivation{0.0f}; // activation [0,1]: 0 = band off, 1 = at target
         float dynAttackCoeff = 0.0f;     // one-pole attack coefficient
         float dynReleaseCoeff = 0.0f;    // one-pole release coefficient
-#ifdef XLETH_DEBUG
+#ifdef XLETH_RT_TRACE
         int dynLogCounter = 0;
         int specLogCounter = 0;
 #endif
@@ -1848,7 +1848,7 @@ private:
                     // loop above unconditionally — it is only a compare.
                     bandGR_[b].store(maxReductionDb, std::memory_order_relaxed);
 
-#ifdef XLETH_DEBUG
+#ifdef XLETH_RT_TRACE
                     bs.specLogCounter += kSTFTHop;
                     if (bs.specLogCounter >= static_cast<int>(sr))
                     {

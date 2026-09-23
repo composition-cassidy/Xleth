@@ -385,6 +385,15 @@ MixEngine::MixEngine()
     activeClips_.reserve(256);
     prevActiveClipsScratch_.reserve(256);
     activeBlocks_.reserve(64);
+    regionToSampleMap_.store(std::make_shared<const RegionSampleMap>(),
+                             std::memory_order_release);
+    // findActivePatternBlocks() swaps these two every block, so both need the
+    // capacity — otherwise the first swap hands the audio thread an empty one.
+    prevActiveBlocks_.reserve(64);
+    // Onset events are added on the audio thread every block; clear() keeps
+    // the storage, so sizing it here means addEvent() never has to grow it.
+    for (auto& midi : trackMidiBuffers_)
+        midi.ensureSize(4096);
 
     // WORLD vocoder content cache lives next to ClipRenderCache so the WORLD
     // dispatch branch (worker thread) can reuse analysis across pitch toggles.
@@ -1813,30 +1822,59 @@ void MixEngine::setSampleBank(const SampleBank* bank)
     sampleBank_ = bank;
 }
 
+void MixEngine::publishRegionSampleMapLocked(RegionSampleMap next)
+{
+    auto previous = regionToSampleMap_.exchange(
+        std::make_shared<const RegionSampleMap>(std::move(next)),
+        std::memory_order_acq_rel);
+
+    // Retire, never free here. An audio block may still hold `previous`; if it
+    // dropped the last reference, the map's node frees would run on the
+    // realtime thread. use_count()==1 proves only this list is left, and no new
+    // reader can appear because the map is no longer reachable.
+    if (previous)
+        retiredRegionSampleMaps_.push_back(std::move(previous));
+    retiredRegionSampleMaps_.erase(
+        std::remove_if(retiredRegionSampleMaps_.begin(), retiredRegionSampleMaps_.end(),
+                       [](const std::shared_ptr<const RegionSampleMap>& m)
+                       { return m.use_count() == 1; }),
+        retiredRegionSampleMaps_.end());
+}
+
 void MixEngine::mapRegionToSample(int regionId, int sampleBankId)
 {
-    regionToSampleMap_[regionId] = sampleBankId;
+    std::lock_guard<std::mutex> lock(regionSampleMapWriteMutex_);
+    RegionSampleMap next = *loadRegionSampleMap();
+    next[regionId] = sampleBankId;
+    publishRegionSampleMapLocked(std::move(next));
 }
 
 void MixEngine::clearRegionToSampleMap()
 {
-    regionToSampleMap_.clear();
+    std::lock_guard<std::mutex> lock(regionSampleMapWriteMutex_);
+    publishRegionSampleMapLocked({});
 }
 
 void MixEngine::unmapRegion(int regionId)
 {
-    regionToSampleMap_.erase(regionId);
+    std::lock_guard<std::mutex> lock(regionSampleMapWriteMutex_);
+    const auto current = loadRegionSampleMap();
+    if (current->find(regionId) == current->end()) return;
+    RegionSampleMap next = *current;
+    next.erase(regionId);
+    publishRegionSampleMapLocked(std::move(next));
 }
 
 int MixEngine::getSampleIdForRegion(int regionId) const
 {
-    auto it = regionToSampleMap_.find(regionId);
-    return it != regionToSampleMap_.end() ? it->second : -1;
+    const auto map = loadRegionSampleMap();
+    auto it = map->find(regionId);
+    return it != map->end() ? it->second : -1;
 }
 
 std::unordered_map<int, int> MixEngine::getRegionToSampleMapSnapshot() const
 {
-    return regionToSampleMap_;
+    return *loadRegionSampleMap();
 }
 
 // ── Per-slot sample mapping (main thread) ────────────────────────────────────
@@ -2473,8 +2511,9 @@ void MixEngine::invalidateClipCacheImpl(int clipId, const char* trigger, bool qu
         return;
     }
 
-    auto it = regionToSampleMap_.find(clip->regionId);
-    if (it == regionToSampleMap_.end()) {
+    const auto regionMap = loadRegionSampleMap();
+    auto it = regionMap->find(clip->regionId);
+    if (it == regionMap->end()) {
 #ifdef XLETH_DEBUG
         if (!quiet) {
             fprintf(stderr, "[CacheQueue] SKIP clip=%d reason=region_%d_not_in_sampleMap trigger=%s\n",
@@ -2552,8 +2591,9 @@ std::shared_ptr<const juce::AudioBuffer<float>> MixEngine::getClipProcessedBuffe
                                || clip->stretchRatio   != 1.0);
     if (!needsProcessing) return nullptr;
 
-    auto it = regionToSampleMap_.find(clip->regionId);
-    if (it == regionToSampleMap_.end()) return nullptr;
+    const auto regionMap = loadRegionSampleMap();
+    auto it = regionMap->find(clip->regionId);
+    if (it == regionMap->end()) return nullptr;
 
     const juce::AudioBuffer<float>* srcBuf = sampleBank_->getSample(it->second);
     if (!srcBuf) return nullptr;
@@ -2853,13 +2893,22 @@ void MixEngine::renderPreviewSamplers(juce::AudioBuffer<float>& outputBuffer,
         const auto* previewEntry = chains->find(route);
         if (previewEntry != nullptr && previewEntry->chain && previewEntry->chain->isInitialized())
         {
+            // Claimed like the playing path's chains: a chain the worker is
+            // resetting right now is left alone and the audition is silent for
+            // this one block (see EffectChainManager::beginRealtimeUse).
+            if (!previewEntry->chain->beginRealtimeUse())
+            {
+                previewBuffer_.clear(0, numSamples);
+                continue;
+            }
             previewMidi_.clear();
             previewEntry->chain->processBlock(previewBuffer_, numSamples, previewMidi_);
+            previewEntry->chain->endRealtimeUse();
 
             // The audition just left state in a chain the arrangement owns
-            // (a reverb tail, a filled delay line). Have the next playing
-            // block reset the chains so none of it bleeds into playback.
-            pendingEffectChainReset_ = true;
+            // (a reverb tail, a filled delay line). Request a reset on the next
+            // play start so none of it bleeds into playback.
+            auditionDirtiedChains_ = true;
         }
 
         // Post-effects track fader, ramped exactly as the playing path ramps it.
@@ -2894,9 +2943,12 @@ void MixEngine::renderPreviewSamplers(juce::AudioBuffer<float>& outputBuffer,
     // still honours the once-per-block rule.
     if (chains->master && chains->master->isInitialized())
     {
+        if (!chains->master->beginRealtimeUse())
+            return;   // master mid-reset: previews silent this block
         previewMidi_.clear();
         chains->master->processBlock(previewMasterBus_, numSamples, previewMidi_);
-        pendingEffectChainReset_ = true;
+        chains->master->endRealtimeUse();
+        auditionDirtiedChains_ = true;
     }
 
     const float masterVol = masterVolume_.load(std::memory_order_relaxed);
@@ -4036,6 +4088,59 @@ int MixEngine::applyPendingEnvelopeModulation()
     return written;
 }
 
+// ── Effect-chain reset (off the audio thread) ───────────────────────────────
+
+void MixEngine::requestEffectChainReset() noexcept
+{
+    // AUDIO THREAD. Non-realtime renders reset inline under chainsMutex_ (the
+    // export thread may block), which keeps an export deterministic. Live
+    // playback only posts: AudioProcessor::reset() is not realtime-safe.
+    if (nonRealtime_.load(std::memory_order_relaxed))
+        pendingEffectChainReset_ = true;
+    else
+        effectResetRequestGen_.fetch_add(1, std::memory_order_release);
+}
+
+int MixEngine::serviceEffectChainResets()
+{
+    const uint64_t requested = effectResetRequestGen_.load(std::memory_order_acquire);
+    std::lock_guard<std::mutex> lock(chainsMutex_);
+    if (requested == effectResetServicedGen_) return 0;
+
+    const std::shared_ptr<const ChainSnapshot> chains =
+        chainSnapshot_.load(std::memory_order_acquire);
+
+    // A failed claim means the audio thread is inside that chain for the rest
+    // of its block, so a short yield-retry succeeds within a fraction of a
+    // block. Bounded so a stalled device can never wedge this thread (or the
+    // chains lock it holds); anything left over is retried on the next poll.
+    const auto resetOne = [](EffectChainManager* chain) -> bool
+    {
+        if (chain == nullptr || !chain->isInitialized()) return true;
+        const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
+        while (!chain->tryResetProcessorsOffThread())
+        {
+            if (std::chrono::steady_clock::now() >= deadline) return false;
+            std::this_thread::yield();
+        }
+        return true;
+    };
+
+    bool allReset = true;
+    if (chains)
+    {
+        for (const auto& entry : chains->tracks)
+            allReset = resetOne(entry.chain.get()) && allReset;
+        allReset = resetOne(chains->master.get()) && allReset;
+    }
+
+    // Requests that arrived during the pass stay pending (requested was read
+    // first), so a seek that lands mid-reset still gets its own reset.
+    if (allReset)
+        effectResetServicedGen_ = requested;
+    return 1;
+}
+
 void MixEngine::startEnvelopeApplierThread()
 {
     if (envelopeApplierRunning_.exchange(true)) return;
@@ -4060,9 +4165,13 @@ void MixEngine::startEnvelopeApplierThread()
             // the one job that genuinely cannot happen on the audio callback:
             // re-resolving parameter handles after a chain mutation.
             const int automationRebuilt = refreshAutomationPlanIfDirty();
+            // Effect-chain resets posted by the audio thread (seek, stop, play
+            // after an audition) — reset() cannot run in the callback.
+            const int chainsReset = serviceEffectChainResets();
             // Back off when idle so a stopped transport costs almost nothing,
             // and stay tight while modulation is actually moving.
-            std::this_thread::sleep_for((written > 0 || lfoWritten > 0 || automationRebuilt > 0)
+            std::this_thread::sleep_for((written > 0 || lfoWritten > 0 || automationRebuilt > 0
+                                         || chainsReset > 0)
                                                    ? std::chrono::milliseconds(1)
                                                    : std::chrono::milliseconds(10));
         }
@@ -4156,16 +4265,15 @@ void MixEngine::evaluateLfoModulation(int64_t positionSamples,
     // cannot be expressed by omitting structure the way Envelope's gate
     // timeline can. This mirrors buildEnvelopeModulationSnapshot's own use
     // of xleth::buildRoutePlan, just moved from PREPARE time to EVALUATE
-    // time, once per block. timeline_->getAllTracks() allocates a small
-    // vector; processBlock already does the same on this thread each block
-    // (see its own routePlan build a few lines below the per-block call
-    // site), so this is an existing, accepted trade-off in this file, not a
-    // new one.
+    // time, once per block. The track list comes from the same generation-
+    // gated snapshot processBlock uses — timeline_->getAllTracks() builds and
+    // sorts a fresh vector, which would allocate on every callback.
+    refreshTrackSnapshotIfNeeded();
     xleth::RoutePlanSlotInput routeInputs[xleth::RoutePlan::kMaxSlots];
     int slotCount = 0;
     if (timeline_ != nullptr) {
-        const auto allTracks = timeline_->getAllTracks();
-        for (const auto* t : allTracks) {
+        for (int ti = 0; ti < cachedTrackSnapshotCount_; ++ti) {
+            const auto* t = cachedTrackSnapshot_[ti];
             if (t == nullptr || slotCount >= xleth::RoutePlan::kMaxSlots) continue;
             routeInputs[slotCount].trackId             = t->id;
             routeInputs[slotCount].outputTargetTrackId = t->outputRoute.targetTrackId;
@@ -4558,8 +4666,9 @@ std::shared_ptr<const juce::AudioBuffer<float>> MixEngine::getClipFxProcessedBuf
     const auto* fx = table->find(clip->trackId);
     if (!fx) return nullptr;
 
-    auto it = regionToSampleMap_.find(clip->regionId);
-    if (it == regionToSampleMap_.end()) return nullptr;
+    const auto regionMap = loadRegionSampleMap();
+    auto it = regionMap->find(clip->regionId);
+    if (it == regionMap->end()) return nullptr;
     const juce::AudioBuffer<float>* srcBuf = sampleBank_->getSample(it->second);
     if (!srcBuf) return nullptr;
 
@@ -5404,6 +5513,10 @@ void MixEngine::findActiveClips(int64_t bufferStart, int64_t bufferEnd,
     const int64_t triggerCeiling =
         noteTriggerCeilingSample_.load(std::memory_order_relaxed);
 
+    // One atomic load pins the region map for this whole scan; a writer
+    // publishing mid-block cannot change or free what we are reading.
+    const auto regionMap = loadRegionSampleMap();
+
     const uint64_t clipGeneration = timeline_->getClipTopologyGeneration();
     const bool topologyChanged = (clipGeneration != cachedClipTopologyGeneration_);
     if (topologyChanged)
@@ -5437,8 +5550,8 @@ void MixEngine::findActiveClips(int64_t bufferStart, int64_t bufferEnd,
         if (clipStart >= triggerCeiling)
             return;
 
-        auto it = regionToSampleMap_.find(clip->regionId);
-        if (it == regionToSampleMap_.end())
+        auto it = regionMap->find(clip->regionId);
+        if (it == regionMap->end())
         {
             // Warn on unmapped region (throttled in maybeLogDebug)
             return;
@@ -5522,9 +5635,12 @@ void MixEngine::findActivePatternBlocks(int64_t bufferStart, int64_t bufferEnd,
 
     if (timeline_ != nullptr)
     {
-        for (const auto* block : timeline_->getAllPatternBlocks())
+        // Walk the map directly: getAllPatternBlocks() builds a fresh vector,
+        // which would be a heap allocation on every callback.
+        for (const auto& [blockId, blockRef] : timeline_->getPatternBlockMap())
         {
-            if (block == nullptr) continue;
+            juce::ignoreUnused(blockId);
+            const PatternBlock* block = &blockRef;
 
             const int64_t blockStart = block->position.toSamples(bpm, sampleRate);
             const int64_t blockEnd   = (block->position + block->duration).toSamples(bpm, sampleRate);
@@ -5589,21 +5705,23 @@ void MixEngine::findActivePatternBlocks(int64_t bufferStart, int64_t bufferEnd,
     // deletion, block moves, and playhead jumping away mid-note. Keyed per
     // region so a block ending doesn't cut voices on a different region's
     // sampler that shares the same track.
-    std::unordered_set<TrackRegionKey, TrackRegionKeyHash> currentKeys;
+    auto& currentKeys = currentActiveKeysScratch_;
+    currentKeys.clear();
     for (const auto& apb : activeBlocks_) {
         if (apb.block && apb.pattern)
             currentKeys.insert({apb.block->trackId, apb.pattern->regionId});
     }
 
-    for (const auto& key : prevActiveKeys_)
+    for (int k = 0; k < prevActiveKeys_.count; ++k)
     {
-        if (currentKeys.count(key) == 0)
+        const auto& key = prevActiveKeys_.keys[static_cast<size_t>(k)];
+        if (!currentKeys.contains(key))
         {
             auto it = samplers_.find(key);
             if (it != samplers_.end() && it->second) it->second->allNotesOff();
         }
     }
-    prevActiveKeys_ = std::move(currentKeys);
+    prevActiveKeys_.assign(currentKeys);
 }
 
 // ── Trigger pattern notes (block-granular) ───────────────────────────────────
@@ -5723,7 +5841,7 @@ void MixEngine::triggerPatternNotes(const ActivePatternBlock& apb,
                 e.pitch = note.pitch;
                 e.velocity = note.velocity;
                 events[eventCount++] = e;
-#ifdef XLETH_DEBUG
+#ifdef XLETH_RT_TRACE
                 // Log where the noteOff for this note would land relative to the window.
                 // offInWin=YES means both events fire in the same buffer (very short note).
                 // offInWin=NO means the noteOff must be picked up in a later buffer.
@@ -5797,7 +5915,7 @@ void MixEngine::triggerPatternNotes(const ActivePatternBlock& apb,
                 if (absSample >= triggerCeiling) continue;  // tailClamp: no new notes
                 const int sampleOffset = static_cast<int>(absSample - bufferStart);
                 jassert(sampleOffset >= 0 && sampleOffset < numSamples);
-#ifdef XLETH_DEBUG
+#ifdef XLETH_RT_TRACE
                 fprintf(stderr, "[PatternTrig] absTick=%lld absSample=%lld "
                         "bufStart=%lld bufEnd=%lld numSamples=%d offset=%d\n",
                         (long long)e.tick, (long long)absSample,
@@ -5821,7 +5939,7 @@ void MixEngine::triggerPatternNotes(const ActivePatternBlock& apb,
                 // Firing one sample early at the edge is inaudible.
                 if (noteOffOffset >= numSamples) noteOffOffset = numSamples - 1;
                 jassert(noteOffOffset >= 0 && noteOffOffset < numSamples);
-#ifdef XLETH_DEBUG
+#ifdef XLETH_RT_TRACE
                 fprintf(stderr, "[PatternOff] absTick=%lld absSample=%lld "
                         "bufStart=%lld bufEnd=%lld numSamples=%d offset=%d\n",
                         (long long)e.tick, (long long)absSample,
@@ -5835,7 +5953,7 @@ void MixEngine::triggerPatternNotes(const ActivePatternBlock& apb,
                 if (absSample >= bufferEnd) continue;
                 const int sampleOffset = static_cast<int>(absSample - bufferStart);
                 jassert(sampleOffset >= 0 && sampleOffset < numSamples);
-#ifdef XLETH_DEBUG
+#ifdef XLETH_RT_TRACE
                 fprintf(stderr, "[PatternSlide] absTick=%lld absSample=%lld "
                         "targetPitch=%d durSamples=%.1f cx=%.3f cy=%.3f offset=%d\n",
                         (long long)e.tick, (long long)absSample,
@@ -5909,7 +6027,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         // pre-stop blocks were previously active (and spuriously silence them).
         prevActiveKeys_.clear();
         lastBufferEnd_ = -1;
-        pendingEffectChainReset_ = true;
+        requestEffectChainReset();
         pendingLatencyCompensationReset_.store(true, std::memory_order_release);
         std::fill(std::begin(tailEndSamples_), std::end(tailEndSamples_), int64_t(0));
         std::fill(std::begin(tailBelowThreshRun_), std::end(tailBelowThreshRun_), int64_t(0));
@@ -5932,6 +6050,14 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                               transport.getBPM(),
                               transport.getSampleRate(),
                               /*atRest=*/true);
+    }
+    // Play start after an audition: reset the chains it ran through (see
+    // auditionDirtiedChains_). Not done while stopped — that would wipe the
+    // tail the user is auditioning.
+    if (!wasPlaying_ && isPlaying && auditionDirtiedChains_)
+    {
+        requestEffectChainReset();
+        auditionDirtiedChains_ = false;
     }
     wasPlaying_ = isPlaying;
 
@@ -6025,7 +6151,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     if (lastBufferEnd_ >= 0 && bufStart != lastBufferEnd_) {
         for (auto& kv : samplers_)
             if (kv.second) kv.second->allNotesOff();
-        pendingEffectChainReset_ = true;
+        requestEffectChainReset();
         pendingLatencyCompensationReset_.store(true, std::memory_order_release);
         std::fill(std::begin(tailEndSamples_), std::end(tailEndSamples_), int64_t(0));
         std::fill(std::begin(tailBelowThreshRun_), std::end(tailBelowThreshRun_), int64_t(0));
@@ -6295,7 +6421,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                             ? (mixEnd - mixStart) / static_cast<float>(numSamples)
                             : 0.0f;
 
-#ifdef XLETH_DEBUG
+#ifdef XLETH_RT_TRACE
         // Throttled render-loop log: fire once every 1024 calls per clip slot (lock-free)
         if (needsProcessing) {
             static std::atomic<int> renderLogCounters[ClipRenderCache::kMaxClipId] {};
@@ -6349,44 +6475,6 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             && !ac.clip->reversed
             && needsProcessing
             && (ac.clip->stretchRatio != 1.0 || resolvedFormantPreserve);
-
-        // ── DIAGNOSTIC (temporary): log the exact clip-modulation bypass reason.
-        // Audio-thread safe: emits ONE line per clip only when its reason changes
-        // (never per block), so it can't flood the log or jitter the audio thread.
-        // Remove once the vibrato/scratch bypass is diagnosed.
-        {
-            using R = xleth::clipmod::ClipModulationBypassReason;
-            const R reason = xleth::clipmod::classifyClipModulationBypass(
-                ac.clip->reversed, ac.clip->stretchRatio,
-                resolvedFormantPreserve, clipMod);
-            // +1 offset so the map's default 0 never equals a real reason → first
-            // observation of every clip always logs.
-            static thread_local std::unordered_map<int,int> sLastModBypass;
-            int& last = sLastModBypass[ac.clip->id];
-            if (last != static_cast<int>(reason) + 1) {
-                last = static_cast<int>(reason) + 1;
-                const char* msg = "?";
-                switch (reason) {
-                    case R::None:            msg = "ACTIVE (not bypassed)";                 break;
-                    case R::Disabled:        msg = "BYPASSED: modulation root disabled";    break;
-                    case R::NoActiveCurve:   msg = "BYPASSED: no vibrato/scratch curve on"; break;
-                    case R::Reversed:        msg = "BYPASSED: clip is reversed";            break;
-                    case R::Stretched:       msg = "BYPASSED: stretched (legacy)";          break;
-                    case R::FormantPreserve: msg = "BYPASSED: formant-preserve on";         break;
-                }
-                fprintf(stderr,
-                    "[ClipModFX] clip %d: %s "
-                    "(root=%d vib=%d scr=%d rev=%d formantPreserve=%d[clip=%d global=%d])\n",
-                    ac.clip->id, msg,
-                    (int)clipMod.enabled,
-                    (int)clipMod.vibrato.enabled,
-                    (int)clipMod.scratch.enabled,
-                    (int)ac.clip->reversed,
-                    (int)resolvedFormantPreserve,
-                    (int)ac.clip->formantPreserve,
-                    (int)globalFormantPreserve_);
-            }
-        }
 
         if (useModulatedReader)
         {
@@ -6581,10 +6669,16 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     // boundary tick, the earlier-starting block must dispatch first so noteOff binds
     // to the original voice before noteOn spawns a new one. stable_sort preserves
     // timeline storage order as the tiebreaker when blockStartSample collides.
-    std::stable_sort(activeBlocks_.begin(), activeBlocks_.end(),
-        [](const ActivePatternBlock& a, const ActivePatternBlock& b) {
-            return a.blockStartSample < b.blockStartSample;
-        });
+    // Insertion sort, not std::stable_sort: the latter may take a temporary
+    // heap buffer, and this runs every block over a handful of entries.
+    for (size_t i = 1; i < activeBlocks_.size(); ++i)
+    {
+        const ActivePatternBlock moving = activeBlocks_[i];
+        size_t j = i;
+        for (; j > 0 && moving.blockStartSample < activeBlocks_[j - 1].blockStartSample; --j)
+            activeBlocks_[j] = activeBlocks_[j - 1];
+        activeBlocks_[j] = moving;
+    }
 
     for (const auto& apb : activeBlocks_)
     {
@@ -6646,7 +6740,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         if (sampler->activeVoiceCount() == 0) continue;
 
         // Skip if this sampler was already rendered by the activeBlocks_ loop
-        if (prevActiveKeys_.count(key) > 0) continue;
+        if (prevActiveKeys_.contains(key)) continue;
 
         const int slot = trackSlotTableFind(trackIdToSlot, key.trackId);
         if (slot < 0) continue;
@@ -6809,6 +6903,14 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             static_cast<uint64_t>(juce::jmax(0, numTrackSlots)));
     }
 
+    // Set only by requestEffectChainReset() in non-realtime (export) mode, where
+    // resetting inline under chainsMutex_ keeps the render deterministic. If the
+    // mode flipped to realtime since, hand the request to the worker instead.
+    if (pendingEffectChainReset_ && chainsLocked && !nonRealtime)
+    {
+        requestEffectChainReset();
+        pendingEffectChainReset_ = false;
+    }
     if (pendingEffectChainReset_ && chainsLocked)
     {
         for (const auto& entry : chains->tracks)
@@ -7116,7 +7218,21 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             const auto chainView = (chainEntry != nullptr && chainEntry->chain)
                                        ? chainEntry->chain->realtimeView()
                                        : std::shared_ptr<const xleth::audio::GraphRealtimeView>{};
-            if (chainEntry != nullptr && chainEntry->chain && chainView && chainView->initialized)
+            const bool chainLive = chainEntry != nullptr && chainEntry->chain
+                                && chainView && chainView->initialized;
+            // Claim the chain against an off-thread reset (see
+            // EffectChainManager::beginRealtimeUse). A miss means the worker is
+            // resetting it right now — only possible just after a seek or play
+            // start. A freshly reset chain has nothing to output yet, so stand
+            // in with silence for this one block rather than a dry burst.
+            const bool chainClaimed = chainLive && chainEntry->chain->beginRealtimeUse();
+            if (chainLive && !chainClaimed)
+            {
+                trackBuffers_[i].clear(0, numSamples);
+                if (rtDiagEnabled)
+                    audioPerformanceTelemetry_.incrementTrackChainSkipped(1);
+            }
+            if (chainClaimed)
             {
                 // Hand this target's accumulated key to the chain's sidechain
                 // source node for the duration of its processBlock (Prompt 4C+4D).
@@ -7175,6 +7291,8 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                 // Drop the borrowed key pointers so no later block reads them.
                 if (deliverKey)
                     chainEntry->chain->clearSidechainKeyBuffer();
+
+                chainEntry->chain->endRealtimeUse();
             }
         }
 
@@ -7339,7 +7457,17 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     const auto masterView = (chainsLocked && chains->master)
                                 ? chains->master->realtimeView()
                                 : std::shared_ptr<const xleth::audio::GraphRealtimeView>{};
-    if (chainsLocked && chains->master && masterView && masterView->initialized)
+    const bool masterLive = chainsLocked && chains->master && masterView && masterView->initialized;
+    const bool masterClaimed = masterLive && chains->master->beginRealtimeUse();
+    if (masterLive && !masterClaimed)
+    {
+        // Master mid-reset (just after a seek): silence, never an unprocessed
+        // mix — same reasoning as the per-track claim above.
+        outputBuffer.clear(0, numSamples);
+        if (rtDiagEnabled)
+            audioPerformanceTelemetry_.incrementTrackChainSkipped(1);
+    }
+    if (masterClaimed)
     {
         const uint64_t masterChainStartNs = rtDiagEnabled ? steadyNowNs() : 0;
         if (rtDiagEnabled)
@@ -7361,6 +7489,8 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             XlethEffectBase::setRealtimeTimingContext({});
             recordTrackChainTiming(-1, steadyNowNs() - masterChainStartNs);
         }
+
+        chains->master->endRealtimeUse();
     }
 
     // Master volume fader (post-effect-chain)
@@ -7478,13 +7608,14 @@ void MixEngine::maybeLogDebug(int numSamples, double sampleRate)
         debugLog_.push(entry);
     }
 
-    // Warn on unmapped regions
+    // Warn on unmapped regions. sortedClipsByStart_ mirrors every clip and was
+    // refreshed by findActiveClips() this block; getAllClips() would allocate.
     if (timeline_ != nullptr)
     {
-        for (const auto* clip : timeline_->getAllClips())
+        const auto regionMap = loadRegionSampleMap();
+        for (const auto* clip : sortedClipsByStart_)
         {
-            if (clip == nullptr) continue;
-            if (regionToSampleMap_.find(clip->regionId) == regionToSampleMap_.end())
+            if (regionMap->find(clip->regionId) == regionMap->end())
             {
                 MixDebugEntry entry;
                 entry.type = MixDebugEntry::UnmappedRegion;

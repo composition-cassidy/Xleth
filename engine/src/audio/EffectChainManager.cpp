@@ -1039,6 +1039,40 @@ void EffectChainManager::resetProcessors()
         graph_->resetProcessors();
 }
 
+bool EffectChainManager::beginRealtimeUse() noexcept
+{
+    realtimeInUse_.store(true, std::memory_order_seq_cst);
+    if (resetInProgress_.load(std::memory_order_seq_cst))
+    {
+        realtimeInUse_.store(false, std::memory_order_release);
+        return false;
+    }
+    return true;
+}
+
+void EffectChainManager::endRealtimeUse() noexcept
+{
+    realtimeInUse_.store(false, std::memory_order_release);
+}
+
+bool EffectChainManager::tryResetProcessorsOffThread()
+{
+    resetInProgress_.store(true, std::memory_order_seq_cst);
+    if (realtimeInUse_.load(std::memory_order_seq_cst))
+    {
+        resetInProgress_.store(false, std::memory_order_release);
+        return false;
+    }
+
+    // The same processor set the audio thread used to reset in-block: the
+    // realtime view's effects plus its helper (wire gain / PDC delay) nodes.
+    if (const auto view = realtimeView())
+        AudioGraph::resetProcessors(*view);
+
+    resetInProgress_.store(false, std::memory_order_release);
+    return true;
+}
+
 double EffectChainManager::getMaxTailLengthSeconds() const
 {
     return graph_ ? graph_->getMaxTailLengthSeconds() : 0.0;

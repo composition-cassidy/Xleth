@@ -570,6 +570,11 @@ static void testAllocations()
               << ", active (+7 st 25 c) " << on << "\n";
     CHECK(offOffset == 0.0 && std::abs(onOffset - 7.25) < 1e-12, "inactive run untransposed, active run transposed");
     CHECK(on == off, "transpose adds zero allocations (active == inactive)");
+    // Absolute gate: pattern playback (poly chord, slide, block exits) with no
+    // effect chain must not allocate at all on the audio thread.
+    CHECK(plain == 0, "plain pattern playback allocates nothing on the audio thread (got " << plain << ")");
+    CHECK(on == 0 && off == 0, "shifter chain pattern playback allocates nothing on the audio thread (on "
+          << on << ", off " << off << ")");
 }
 
 // ─── [6] Deactivate mid-phrase ─────────────────────────────────────────────
