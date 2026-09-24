@@ -27,6 +27,7 @@ export const STOCK_EFFECT_LABELS = Object.freeze({
   glue: 'Glue Comp',
   opto: 'Opto Comp',
   fet: 'FET Comp',
+  varimu: 'Vari-Mu Comp',
 })
 
 function fallbackUuid() {

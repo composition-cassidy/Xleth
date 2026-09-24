@@ -1,9 +1,9 @@
 #pragma once
 
 // ─── CompressorCore — one dynamics core, pluggable characters ───────────────
-// docs/Compressor_Archetypes_Deep_Dive.md §9: every XLETH compressor (Glue VCA
-// now; opto, FET and vari-mu later) is this ONE core instantiated with
-// different compile-time stages:
+// docs/Compressor_Archetypes_Deep_Dive.md §9: every XLETH compressor (Glue VCA,
+// Opto, FET, Vari-Mu) is this ONE core instantiated with different
+// compile-time stages:
 //
 //   CompressorCore<Detector, GainComputer, Ballistics, GainElement, Color>
 //
@@ -17,10 +17,19 @@
 //                   attack at 44.1 kHz (loop pole 1 − (1−a)R < −1).
 //   • Sidechain     pre-tracking high-pass hook (the SSL "S/C HPF"), with its
 //                   in/out switch crossfaded.
-//   • Stereo link   Max | Sum — one detector for both channels and one gain for
-//                   both channels, so linked gain is identical by construction.
-//                   (Unlinked / M/S need per-channel loop state; they arrive
-//                   with the vari-mu, the first model that needs them.)
+//   • Channels      Linked (default) — one detector for both channels (Max |
+//                   Sum link) and one gain for both, so linked gain is identical
+//                   by construction. MidSide — the input is matrixed to
+//                   M = (L+R)/2, S = (L−R)/2 and each runs its OWN detector,
+//                   loop, gain element and colour, then is matrixed back
+//                   (the vari-mu's §5.2 sum/difference mode). Each independent
+//                   control signal is a "unit" with its own loop state.
+//                   Switching mode crossfades the two complete paths over the
+//                   stepped-control fade: the new path starts from the old one's
+//                   loop state and from its colour filter states re-expressed
+//                   in the new basis (Col::remix, when the colour has one), so
+//                   both paths are continuous and the fade only covers the
+//                   gain difference between them.
 //   • Stepped-control crossfade: every stepped control (ratio, time-constant
 //                   switches, topology) lives in a Settings value. A change
 //                   copies the running lane — state included — into a second
@@ -32,7 +41,7 @@
 //   • Makeup gain   applied AFTER the loop (§2.2/§11: inside a feedback loop it
 //                   would act as a threshold control), then Color.
 //
-// Signal flow per sample (all at the rate passed to prepare() — the
+// Signal flow per sample and unit (all at the rate passed to prepare() — the
 // OVERSAMPLED rate when the host effect oversamples, so every coefficient is
 // computed at the rate it runs at, §11):
 //
@@ -58,13 +67,18 @@
 //   Ballistics: struct Params (==) · struct Coeffs · struct State ·
 //               makeCoeffs(p, fs) · value(st) · predict(st,c,target,&d) ·
 //               commit(st,c,target) · adopt(st,c)
+//               optional: kDiodeGated — predict() is exactly independent of a
+//               target below its charge threshold (lets the loop skip Newton).
 //   GainElem:   prepare(fs) · reset() · float gainFor(grDb) ·
 //               float apply(x, gain, ch)
-//               gainFor() runs once per sample before apply() on each channel,
-//               so an element may hold per-sample state there (the FET does).
+//               gainFor() runs once per sample per unit, immediately before
+//               that unit's apply() calls, so an element may hold per-sample
+//               state there (the FET does).
 //               `gain` is whatever the element's own apply() needs — the FET
-//               passes its channel conductance, not a multiplier.
-//   Color:      prepare(fs) · reset() · float process(x, ch)
+//               passes its channel conductance, the vari-mu its grid bias.
+//   Color:      prepare(fs) · reset() · float process(x, ch) · copyable
+//               optional: remix(m00, m01, m10, m11) — re-express the two
+//               channels' filter states in another basis (DspPrimitives.h).
 
 #include "dsp/DspPrimitives.h"
 
@@ -86,6 +100,12 @@ enum class StereoLink : int
 {
     Max = 0,   // max(|L|, |R|)
     Sum = 1,   // (|L| + |R|) / 2
+};
+
+enum class ChannelMode : int
+{
+    Linked  = 0,   // one control signal for L and R (StereoLink picks the level)
+    MidSide = 1,   // independent control signals for M and S
 };
 
 template <class Det, class GC, class Bal, class Elem, class Col>
@@ -111,6 +131,8 @@ public:
         StereoLink link             = StereoLink::Max;
         double     crossfadeSeconds = 0.030;   // stepped-control coefficient-set fade
         double     toggleSeconds    = 0.020;   // S/C HPF in/out and Color in/out
+        bool       sidechainHpf     = true;    // false: a model with a flat sidechain
+                                               // skips the (always-running) HPF filter
     };
 
     CompressorCore() = default;
@@ -120,18 +142,25 @@ public:
     void prepare(double processRate, const Settings& initial)
     {
         rate_ = processRate;
-        det_.prepare(rate_);
+        for (auto& u : units_)
+        {
+            u.det.prepare(rate_);
+            u.fade.prepare(rate_, cfg_.crossfadeSeconds);
+        }
         elem_.prepare(rate_);
-        col_.prepare(rate_);
-        fade_.prepare(rate_, cfg_.crossfadeSeconds);
+        for (auto& c : col_) c.prepare(rate_);
+        modeFade_.prepare(rate_, cfg_.crossfadeSeconds);
         hpfW_.prepare(rate_, cfg_.toggleSeconds);
         colW_.prepare(rate_, cfg_.toggleSeconds);
-        hpf_.setCutoff(hpfHz_, rate_);
+        for (auto& h : hpf_) h.setCutoff(hpfHz_, rate_);
 
         pending_ = initial;
-        lanes_[0].s = initial;
-        lanes_[0].c = Bal::makeCoeffs(initial.bal, rate_);
-        lanes_[1]   = lanes_[0];
+        for (auto& u : units_)
+        {
+            u.lanes[0].s = initial;
+            u.lanes[0].c = Bal::makeCoeffs(initial.bal, rate_);
+            u.lanes[1]   = u.lanes[0];
+        }
         hpfW_.snap(hpfOn_ ? 1.0f : 0.0f);
         colW_.snap(colOn_ ? 1.0f : 0.0f);
         reset();
@@ -139,24 +168,37 @@ public:
 
     void reset() noexcept
     {
-        // A pending stepped change is applied outright — nothing to fade from.
-        lanes_[cur_].s = pending_;
-        lanes_[cur_].c = Bal::makeCoeffs(pending_.bal, rate_);
-        lanes_[cur_].st = typename Bal::State{};
-        fading_ = false;
-        fade_.snap(0.0f);
-        det_.reset();
+        // A pending stepped change — and a pending channel mode — is applied
+        // outright: nothing to fade from.
+        for (auto& u : units_)
+        {
+            u.lanes[u.cur].s = pending_;
+            u.lanes[u.cur].c = Bal::makeCoeffs(pending_.bal, rate_);
+            u.lanes[u.cur].st = typename Bal::State{};
+            u.fading = false;
+            u.fade.snap(0.0f);
+            u.det.reset();
+            u.grDb = 0.0f;
+        }
+        mode_ = modeTarget_;
+        modeFading_ = false;
+        modeFade_.snap(0.0f);
         elem_.reset();
-        col_.reset();
-        hpf_.reset();
+        for (auto& c : col_) c.reset();
+        for (auto& h : hpf_) h.reset();
         hpfW_.snap(hpfOn_ ? 1.0f : 0.0f);
         colW_.snap(colOn_ ? 1.0f : 0.0f);
         grDb_ = 0.0f;
-        grMax_ = 0.0f;
+        grMax_[0] = grMax_[1] = 0.0f;
     }
 
     // ── Control (audio thread, typically once per block) ────────────────────
     void setSettings(const Settings& s) noexcept { pending_ = s; }
+
+    // Linked ⇄ MidSide. Takes effect at the next process() call with a stereo
+    // (L ≠ R) buffer and crossfades over the stepped-control fade. Mono input
+    // is always processed linked.
+    void setChannelMode(ChannelMode m) noexcept { modeTarget_ = m; }
 
     void setSidechainHighPass(bool on, float hz) noexcept
     {
@@ -165,7 +207,8 @@ public:
         if (hz != hpfHz_)
         {
             hpfHz_ = hz;
-            if (rate_ > 0.0) hpf_.setCutoff(hpfHz_, rate_);
+            if (rate_ > 0.0)
+                for (auto& h : hpf_) h.setCutoff(hpfHz_, rate_);
         }
     }
 
@@ -186,10 +229,15 @@ public:
         if (n <= 0) return;
         stride = std::max(1, stride);
 
-        if (!fading_ && pending_ != lanes_[cur_].s)
-            beginFade();
-
         const bool mono = (L == R);
+        if (!mono && !modeFading_ && modeTarget_ != mode_)
+            beginModeFade();
+
+        const bool linkedActive = mono || modeFading_ || mode_ == ChannelMode::Linked;
+        const bool msActive     = !mono && (modeFading_ || mode_ == ChannelMode::MidSide);
+        if (linkedActive) maybeBeginFade(units_[kLinked]);
+        if (msActive)     { maybeBeginFade(units_[kMid]); maybeBeginFade(units_[kSide]); }
+
         int   hostIdx     = -1;
         float T           = 0.0f;
         float makeupGain  = 1.0f;
@@ -206,76 +254,102 @@ public:
 
             const float xl = L[i];
             const float xr = mono ? xl : R[i];
-
-            // Sidechain tap → pre-tracking HPF hook (crossfaded in/out).
             const float wh = hpfW_.next();
-            float sl = xl, sr = xr;
+            const float wc = colW_.next();
+
+            float yl, yr;
+            if (mono)
             {
-                const float hl = hpf_.processHighPass(xl, 0);
-                const float hr = mono ? hl : hpf_.processHighPass(xr, 1);
-                sl = xl + wh * (hl - xl);
-                sr = xr + wh * (hr - xr);
+                linkedSample(xl, xr, true, T, makeupGain, wh, wc, yl, yr);
             }
-
-            // Linked detector → one control signal for both channels.
-            const float levelDb = det_.levelDb(sl, sr, cfg_.link);
-
-            float gr = runLane(lanes_[cur_], levelDb, T);
-            if (fading_)
+            else if (!modeFading_)
             {
-                const float grNext = runLane(lanes_[1 - cur_], levelDb, T);
-                const float w = fade_.next();
-                gr += w * (grNext - gr);
+                if (mode_ == ChannelMode::Linked) linkedSample(xl, xr, false, T, makeupGain, wh, wc, yl, yr);
+                else                              midSideSample(xl, xr, T, makeupGain, wh, wc, yl, yr);
+            }
+            else
+            {
+                // Both complete paths, the outgoing one's output faded into
+                // the incoming one's.
+                float ll, lr, ml, mr;
+                linkedSample(xl, xr, false, T, makeupGain, wh, wc, ll, lr);
+                midSideSample(xl, xr, T, makeupGain, wh, wc, ml, mr);
+                const bool toMs = modeTarget_ == ChannelMode::MidSide;
+                const float w = modeFade_.next();
+                const float al = toMs ? ll : ml, ar = toMs ? lr : mr;
+                const float bl = toMs ? ml : ll, br = toMs ? mr : lr;
+                yl = al + w * (bl - al);
+                yr = ar + w * (br - ar);
                 if (w >= 1.0f)
                 {
-                    cur_ = 1 - cur_;
-                    fading_ = false;
+                    mode_ = modeTarget_;
+                    modeFading_ = false;
                 }
             }
-            grDb_ = gr;
-            grMax_ = std::max(grMax_, gr);
 
-            // Gain element (identical gain on both channels), makeup, color.
-            const float g  = elem_.gainFor(gr);
-            const float wc = colW_.next();
-            float yl = elem_.apply(xl, g, 0) * makeupGain;
-            yl += wc * (col_.process(yl, 0) - yl);
+            // The reported GR: the linked unit, or the deeper of mid and side.
+            grDb_ = (mono || currentPathIsLinked()) ? units_[kLinked].grDb
+                                                    : std::max(units_[kMid].grDb, units_[kSide].grDb);
             L[i] = yl;
-            if (!mono)
-            {
-                float yr = elem_.apply(xr, g, 1) * makeupGain;
-                yr += wc * (col_.process(yr, 1) - yr);
-                R[i] = yr;
-            }
+            if (!mono) R[i] = yr;
         }
     }
 
     // ── Introspection ───────────────────────────────────────────────────────
     float getGainReductionDb() const noexcept { return grDb_; }
 
-    // Max GR since the previous call (meters). Audio thread.
+    // Per-channel GR of the current path: linked → the one control signal on
+    // both; MidSide → 0 = mid, 1 = side.
+    float getChannelGainReductionDb(int ch) const noexcept
+    {
+        if (currentPathIsLinked()) return units_[kLinked].grDb;
+        return units_[ch == 0 ? kMid : kSide].grDb;
+    }
+
+    // Max GR since the previous call (meters), over both channels. Audio thread.
     float takeMaxGainReductionDb() noexcept
     {
-        const float m = grMax_;
-        grMax_ = 0.0f;
+        const float m = std::max(grMax_[0], grMax_[1]);
+        grMax_[0] = grMax_[1] = 0.0f;
+        return m;
+    }
+
+    // Max GR since the previous call on one channel slot (0 = linked/mid,
+    // 1 = linked/side). Audio thread.
+    float takeMaxGainReductionDb(int ch) noexcept
+    {
+        const int k = ch == 0 ? 0 : 1;
+        const float m = grMax_[k];
+        grMax_[k] = 0.0f;
         return m;
     }
 
     // The textbook static curve the loop is built to settle on (tests / UI).
     float staticOutputDb(float xDb, float thresholdDb) const noexcept
     {
-        return GC::outputDb(xDb, thresholdDb, lanes_[cur_].s.gc);
+        return GC::outputDb(xDb, thresholdDb, primary().lanes[primary().cur].s.gc);
     }
 
-    const Settings& getActiveSettings() const noexcept { return lanes_[cur_].s; }
-    bool   isCrossfading() const noexcept { return fading_; }
+    const Settings& getActiveSettings() const noexcept { return primary().lanes[primary().cur].s; }
+    bool isCrossfading() const noexcept
+    {
+        if (modeFading_) return true;
+        if (currentPathIsLinked()) return units_[kLinked].fading;
+        return units_[kMid].fading || units_[kSide].fading;
+    }
     double getProcessRate() const noexcept { return rate_; }
+    ChannelMode getChannelMode() const noexcept { return mode_; }
+    bool isChannelModeFading() const noexcept { return modeFading_; }
 
     // The gain element itself, for a model whose element carries state of its
     // own outside the stepped lanes (the FET's bias network, FetCompressorCore.h).
     // Audio thread, like the other controls.
     Elem&       gainElement() noexcept       { return elem_; }
     const Elem& gainElement() const noexcept { return elem_; }
+
+    // The colour stages (0 = the L/R path's, 1 = the M/S path's), for a model
+    // that configures its colour (the vari-mu's line-amp headroom).
+    Col& colorStage(int basis) noexcept { return col_[basis == 0 ? 0 : 1]; }
 
 private:
     struct Lane
@@ -285,20 +359,164 @@ private:
         typename Bal::State     st {};
     };
 
-    void beginFade() noexcept
+    // One independent control signal: its detector, its two stepped lanes and
+    // their fade.
+    struct Unit
     {
-        const int nxt = 1 - cur_;
-        lanes_[nxt]    = lanes_[cur_];      // same state → continuous start
-        lanes_[nxt].s  = pending_;
-        lanes_[nxt].c  = Bal::makeCoeffs(pending_.bal, rate_);
-        Bal::adopt(lanes_[nxt].st, lanes_[nxt].c);
-        fade_.snap(0.0f);
-        fade_.setTarget(1.0f);
-        fading_ = true;
+        Det             det {};
+        Lane            lanes[2] {};
+        int             cur    = 0;
+        bool            fading = false;
+        dsp::LinearRamp fade {};
+        float           grDb   = 0.0f;
+    };
+
+    static constexpr int kLinked = 0, kMid = 1, kSide = 2;
+
+    bool currentPathIsLinked() const noexcept { return mode_ == ChannelMode::Linked; }
+    const Unit& primary() const noexcept { return units_[currentPathIsLinked() ? kLinked : kMid]; }
+
+    void maybeBeginFade(Unit& u) noexcept
+    {
+        if (!u.fading && pending_ != u.lanes[u.cur].s)
+            beginFade(u);
+    }
+
+    void beginFade(Unit& u) noexcept
+    {
+        const int nxt = 1 - u.cur;
+        u.lanes[nxt]    = u.lanes[u.cur];   // same state → continuous start
+        u.lanes[nxt].s  = pending_;
+        u.lanes[nxt].c  = Bal::makeCoeffs(pending_.bal, rate_);
+        Bal::adopt(u.lanes[nxt].st, u.lanes[nxt].c);
+        u.fade.snap(0.0f);
+        u.fade.setTarget(1.0f);
+        u.fading = true;
+    }
+
+    // Start the Linked ⇄ MidSide crossfade: the incoming path's units take the
+    // outgoing path's loop state (so its gain starts where the old one is) and
+    // its colour and sidechain filters take the outgoing ones' states in the
+    // new basis.
+    void beginModeFade() noexcept
+    {
+        if (modeTarget_ == ChannelMode::MidSide)
+        {
+            units_[kMid] = units_[kLinked];
+            units_[kSide] = units_[kLinked];
+            units_[kMid].det.reset();
+            units_[kSide].det.reset();
+            carryFilters(col_[0], col_[1], hpf_[0], hpf_[1], 0.5f, 0.5f, 0.5f, -0.5f);
+        }
+        else
+        {
+            units_[kLinked] = units_[kMid].grDb >= units_[kSide].grDb ? units_[kMid] : units_[kSide];
+            units_[kLinked].det.reset();
+            carryFilters(col_[1], col_[0], hpf_[1], hpf_[0], 1.0f, 1.0f, 1.0f, -1.0f);
+        }
+        modeFade_.snap(0.0f);
+        modeFade_.setTarget(1.0f);
+        modeFading_ = true;
+    }
+
+    static void carryFilters(const Col& colFrom, Col& colTo, const dsp::TptSvf<2>& hpfFrom, dsp::TptSvf<2>& hpfTo,
+                             float m00, float m01, float m10, float m11) noexcept
+    {
+        colTo = colFrom;
+        if constexpr (requires(Col& c) { c.remix(m00, m01, m10, m11); })
+            colTo.remix(m00, m01, m10, m11);
+        hpfTo = hpfFrom;
+        hpfTo.remix(m00, m01, m10, m11);
+    }
+
+    // The linked path for one sample: one detector, one gain for both channels.
+    void linkedSample(float xl, float xr, bool mono, float T, float makeupGain, float wh, float wc,
+                      float& yl, float& yr) noexcept
+    {
+        // Sidechain tap → pre-tracking HPF hook (crossfaded in/out).
+        float sl = xl, sr = xr;
+        if (cfg_.sidechainHpf)
+        {
+            const float hl = hpf_[0].processHighPass(xl, 0);
+            const float hr = mono ? hl : hpf_[0].processHighPass(xr, 1);
+            sl = xl + wh * (hl - xl);
+            sr = xr + wh * (hr - xr);
+        }
+
+        // Linked detector → one control signal for both channels.
+        Unit& u = units_[kLinked];
+        const float levelDb = u.det.levelDb(sl, sr, cfg_.link);
+        const float gr = runUnit(u, levelDb, T);
+        grMax_[0] = std::max(grMax_[0], gr);
+        grMax_[1] = std::max(grMax_[1], gr);
+
+        // Gain element (identical gain on both channels), makeup, color.
+        const float g = elem_.gainFor(gr);
+        yl = elem_.apply(xl, g, 0) * makeupGain;
+        yl += wc * (col_[0].process(yl, 0) - yl);
+        if (!mono)
+        {
+            yr = elem_.apply(xr, g, 1) * makeupGain;
+            yr += wc * (col_[0].process(yr, 1) - yr);
+        }
+        else
+        {
+            yr = yl;
+        }
+    }
+
+    // The mid/side path for one sample: two independent units, matrixed back.
+    void midSideSample(float xl, float xr, float T, float makeupGain, float wh, float wc,
+                       float& yl, float& yr) noexcept
+    {
+        const float m = 0.5f * (xl + xr);
+        const float s = 0.5f * (xl - xr);
+        float sm = m, ss = s;
+        if (cfg_.sidechainHpf)
+        {
+            const float hm = hpf_[1].processHighPass(m, 0);
+            const float hs = hpf_[1].processHighPass(s, 1);
+            sm = m + wh * (hm - m);
+            ss = s + wh * (hs - s);
+        }
+
+        const float grM = runUnit(units_[kMid], units_[kMid].det.levelDb(sm, sm, StereoLink::Max), T);
+        const float grS = runUnit(units_[kSide], units_[kSide].det.levelDb(ss, ss, StereoLink::Max), T);
+        grMax_[0] = std::max(grMax_[0], grM);
+        grMax_[1] = std::max(grMax_[1], grS);
+
+        const float gm = elem_.gainFor(grM);
+        float ym = elem_.apply(m, gm, 0) * makeupGain;
+        ym += wc * (col_[1].process(ym, 0) - ym);
+        const float gs = elem_.gainFor(grS);
+        float ys = elem_.apply(s, gs, 1) * makeupGain;
+        ys += wc * (col_[1].process(ys, 1) - ys);
+
+        yl = ym + ys;
+        yr = ym - ys;
+    }
+
+    // One unit's gain reduction for this sample (dB, >= 0), lanes faded.
+    float runUnit(Unit& u, float levelDb, float T) noexcept
+    {
+        float gr = runLane(u.lanes[u.cur], levelDb, T);
+        if (u.fading)
+        {
+            const float grNext = runLane(u.lanes[1 - u.cur], levelDb, T);
+            const float w = u.fade.next();
+            gr += w * (grNext - gr);
+            if (w >= 1.0f)
+            {
+                u.cur = 1 - u.cur;
+                u.fading = false;
+            }
+        }
+        u.grDb = gr;
+        return gr;
     }
 
     // One lane's gain reduction for this sample (dB, >= 0), state committed.
-    static float runLane(Lane& ln, float levelDb, float T) noexcept
+    float runLane(Lane& ln, float levelDb, float T) const noexcept
     {
         float rho;
         if (ln.s.topology == Topology::FeedForward)
@@ -322,11 +540,24 @@ private:
     // (L − B), so −∂c/∂B = dc/dv. A GC whose sidechain ALSO taps the input (the
     // opto's Limit position mixes input into the output-derived sidechain) says
     // so by providing reductionLoop(L, B, T, p, slopeB) itself.
-    static float loopReduction(float L, float B, float T, const typename GC::Params& p,
-                               float& slopeB) noexcept
+    //
+    // An element whose large-signal gain departs from its small-signal GR (the
+    // vari-mu's tube swinging toward cutoff) provides loopOutputDb(L, B, dOut):
+    // the ACTUAL output level for input level L at B dB of small-signal
+    // reduction, and d(output)/dB ≤ 0. The sidechain then sees that — what the
+    // unit's rectifier really sees — so the loop regulates the real output.
+    float loopReduction(float L, float B, float T, const typename GC::Params& p,
+                        float& slopeB) const noexcept
     {
         if constexpr (requires { GC::reductionLoop(L, B, T, p, slopeB); })
             return GC::reductionLoop(L, B, T, p, slopeB);
+        else if constexpr (requires(const Elem& e, float d) { e.loopOutputDb(L, B, d); })
+        {
+            float dOut, slope;
+            const float c = GC::reductionFB(elem_.loopOutputDb(L, B, dOut), T, p, slope);
+            slopeB = -slope * dOut;
+            return c;
+        }
         else
             return GC::reductionFB(L - B, T, p, slopeB);
     }
@@ -348,12 +579,21 @@ private:
     // so g(ρ) = ρ − c(L, B(ρ)) is strictly increasing with a unique root in
     // [0, c(L, B(0))]. Safeguarded Newton; every map is piecewise linear or a
     // smooth quadratic inverse, so it converges in 1–3 steps.
-    static float solveTracked(const Lane& ln, float L, float T) noexcept
+    float solveTracked(const Lane& ln, float L, float T) const noexcept
     {
         float dB = 0.0f, dC = 0.0f;
         const float b0 = Bal::predict(ln.st, ln.c, 0.0f, dB);
         float hi = loopReduction(L, b0, T, ln.s.gc, dC);
         if (hi <= 0.0f) return 0.0f;
+        if constexpr (requires { Bal::kDiodeGated; })
+        {
+            // A diode-gated network ignores any drive below its charge
+            // threshold: if what the sidechain asks for at the released state
+            // opens no diode, B(hi) = B(0) and hi is the exact root. On a
+            // waveform that is most samples (the caps charge only near peaks).
+            float dHi;
+            if (Bal::predict(ln.st, ln.c, hi, dHi) == b0) return hi;
+        }
         float lo = 0.0f;
 
         float rho = std::clamp(loopReduction(L, Bal::value(ln.st), T, ln.s.gc, dC), lo, hi);
@@ -374,17 +614,18 @@ private:
     Config   cfg_ {};
     double   rate_ = 48000.0;
 
-    Det  det_  {};
+    Unit units_[3] {};           // kLinked, kMid, kSide
     Elem elem_ {};
-    Col  col_  {};
+    Col  col_[2] {};             // [0] L/R basis, [1] M/S basis
 
-    Lane     lanes_[2] {};
-    int      cur_    = 0;
-    bool     fading_ = false;
     Settings pending_ {};
-    dsp::LinearRamp fade_ {};
 
-    dsp::TptSvf<2>  hpf_ {};
+    ChannelMode     mode_       = ChannelMode::Linked;
+    ChannelMode     modeTarget_ = ChannelMode::Linked;
+    bool            modeFading_ = false;
+    dsp::LinearRamp modeFade_ {};
+
+    dsp::TptSvf<2>  hpf_[2] {};  // [0] L/R basis, [1] M/S basis
     dsp::LinearRamp hpfW_ {};
     float hpfHz_ = 100.0f;
     bool  hpfOn_ = false;
@@ -393,7 +634,7 @@ private:
     bool  colOn_ = false;
 
     float grDb_  = 0.0f;
-    float grMax_ = 0.0f;
+    float grMax_[2] {};
 };
 
 // ═══ Glue VCA policies ═══════════════════════════════════════════════════════

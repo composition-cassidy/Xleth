@@ -485,15 +485,30 @@ struct TubeTransformerColor
 
     void reset() noexcept { xfmr_.reset(); }
 
+    // Channel-basis change (the core's Linked ⇄ MidSide switch): the tube stage
+    // is memoryless, so only the transformer's states move.
+    void remix(float m00, float m01, float m10, float m11) noexcept { xfmr_.remix(m00, m01, m10, m11); }
+
+    // Operating level: the stage runs `db` below the signal and is made up
+    // after the transformer — a line amp with that much more headroom at the
+    // same nominal level. 0 dB (the default, the Opto) is bit-exact the plain
+    // stage. Survives prepare()/reset().
+    void setHeadroomDb(float db) noexcept
+    {
+        inScale_  = dsp::dbToGain(-db);
+        outScale_ = 1.0f / inScale_;
+    }
+
     float process(float x, int ch) noexcept
     {
-        const float t = (dsp::softClipPade(kTubeDrive * (x + kTubeBias)) - biasOut_) * invTubeGain_;
-        return xfmr_.process(t, ch);
+        const float t = (dsp::softClipPade(kTubeDrive * (x * inScale_ + kTubeBias)) - biasOut_) * invTubeGain_;
+        return xfmr_.process(t, ch) * outScale_;
     }
 
 private:
     float biasOut_ = 0.0f;
     float invTubeGain_ = 1.0f;
+    float inScale_ = 1.0f, outScale_ = 1.0f;
     dsp::OutputTransformer xfmr_ {};
 };
 

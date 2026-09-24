@@ -29,6 +29,7 @@ const PLUGIN_NAMES = {
   glue: 'Glue Comp',
   opto: 'Opto Comp',
   fet: 'FET Comp',
+  varimu: 'Vari-Mu Comp',
 }
 
 const EFFECT_CATEGORIES = [
@@ -36,6 +37,7 @@ const EFFECT_CATEGORIES = [
     { label: 'Compressor', id: 'compressor' }, { label: 'Glue Comp', id: 'glue' },
     { label: 'Opto Comp', id: 'opto' },
     { label: 'FET Comp', id: 'fet' },
+    { label: 'Vari-Mu Comp', id: 'varimu' },
     { label: 'Limiter', id: 'limiter' },
     { label: 'Overdone', id: 'overdone' }, { label: 'Transient Proc', id: 'transientproc' },
     { label: 'Resonance Suppressor', id: 'resonancesuppressor' },

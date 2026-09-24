@@ -159,7 +159,19 @@ struct Fet1176
 // the samples, never below the sampled maximum — as the level. It is known one (oversampled) sample late, 5 µs at
 // 4 × 48 kHz, which the feedback loop does not notice; off the peaks the level
 // is |x| itself.
-struct RcRectifier
+//
+// PeakFit::Cosine fits a cosine instead of a parabola through the same three
+// samples (y₋₁ + y₁ = 2y₀·cos θ gives the spacing θ, then
+// A² = y₀² + (y₁ − y₋₁)²/(4 sin²θ)): exact for a sinusoid at ANY sampling phase
+// while the three samples stay within ±90° of the crest, i.e. down to 4
+// samples per cycle — where the parabola is still up to ~1 dB low at 6. The
+// vari-mu runs at 2× (6 samples per cycle at 16 kHz) with a 67 µs attack, and
+// its loop follows that error (VariMuCompressorCore.h). Never below the sampled
+// maximum either.
+enum class PeakFit { Parabola, Cosine };
+
+template <PeakFit Fit>
+struct RcRectifierT
 {
     void prepare(double) noexcept {}
     void reset() noexcept { p0_ = p1_ = 0.0f; }
@@ -173,8 +185,18 @@ struct RcRectifier
         // level — a square wave's) has no peak between its samples.
         if (p1_ > p0_ && p1_ > v)
         {
-            const float d = p0_ - v;
-            level = p1_ - 0.125f * d * d / (p0_ - 2.0f * p1_ + v);   // denominator < 0
+            if constexpr (Fit == PeakFit::Parabola)
+            {
+                const float d = p0_ - v;
+                level = p1_ - 0.125f * d * d / (p0_ - 2.0f * p1_ + v);   // denominator < 0
+            }
+            else
+            {
+                const float c = (p0_ + v) / (2.0f * p1_);                // cos θ ∈ [0, 1)
+                const float s2 = 1.0f - c * c;                            // sin²θ
+                const float d = v - p0_;
+                level = s2 > 1.0e-6f ? std::sqrt(p1_ * p1_ + d * d / (4.0f * s2)) : p1_;
+            }
         }
         p0_ = p1_;
         p1_ = v;
@@ -184,6 +206,8 @@ struct RcRectifier
 private:
     float p0_ = 0.0f, p1_ = 0.0f;   // the two previous rectified samples
 };
+
+using RcRectifier = RcRectifierT<PeakFit::Parabola>;
 
 // ─── Gain element: the JFET shunt divider (§4.3) ────────────────────────────
 //
@@ -421,16 +445,15 @@ struct FetRatioPresetGC
 // at 4×). The single diode-gated capacitor is both the real circuit and
 // periodic (test_fet_compressor [5]).
 //
-// Integration: trapezoidal (TPT) — the capacitor is one integrator,
-//   v_n = v_{n−1} + ½·(f_n + f_{n−1}),
-// solved in closed form for the regime (charging or not) the END of the sample
-// is in. It is left unprewarped: the two regimes share one state and must meet
-// continuously at the diode's switch point (ρ = the released value), which
-// keeps predict() continuous and nondecreasing in ρ for the loop's Newton
-// solve; at the 4× rate the unwarped pole is within 0.6 % of exact for the
-// 20 µs attack. The step is half a sample late by construction (the trapezoid
-// sees a sampled step as a ramp across its first sample), which the RC timing
-// test accounts for.
+// Integration: dsp::DiodeRcCap — trapezoidal (TPT), the capacitor as one
+// integrator, solved in closed form for the regime (charging or not) the END
+// of the sample is in. It is left unprewarped: the two regimes share one state
+// and must meet continuously at the diode's switch point (ρ = the released
+// value), which keeps predict() continuous and nondecreasing in ρ for the
+// loop's Newton solve; at the 4× rate the unwarped pole is within 0.6 % of
+// exact for the 20 µs attack. The step is half a sample late by construction
+// (the trapezoid sees a sampled step as a ramp across its first sample), which
+// the RC timing test accounts for.
 //
 // State is physical (v, last ρ), so a coefficient change (knob, ratio button)
 // needs no re-encoding: f_{n−1} is rebuilt from it with the current τs.
@@ -444,15 +467,7 @@ struct RcBallistics
         bool operator!=(const Params& o) const noexcept { return !(*this == o); }
     };
 
-    struct Coeffs
-    {
-        // Per-sample rates 1/(τ·fs) and the trapezoid's closed-form factors.
-        float wA = 1.0f, wR = 0.0f;
-        float halfWA = 0.5f;          // ½·w_a
-        float invCharge = 1.0f;       // 1 / (1 + ½(w_a + w_r))
-        float invRelease = 1.0f;      // 1 / (1 + ½·w_r)
-        float dCharge = 0.0f;         // dv/dρ while charging: ½·w_a / (1 + ½(w_a + w_r))
-    };
+    using Coeffs = dsp::DiodeRcCap::Coeffs;
 
     struct State
     {
@@ -469,14 +484,7 @@ struct RcBallistics
 
     static Coeffs makeCoeffs(const Params& p, double fs) noexcept
     {
-        Coeffs c;
-        c.wA = static_cast<float>(1.0 / std::max(1.0e-9, p.attackS * fs));
-        c.wR = static_cast<float>(1.0 / std::max(1.0e-9, p.releaseS * fs));
-        c.halfWA = 0.5f * c.wA;
-        c.invCharge = 1.0f / (1.0f + 0.5f * (c.wA + c.wR));
-        c.invRelease = 1.0f / (1.0f + 0.5f * c.wR);
-        c.dCharge = c.halfWA * c.invCharge;
-        return c;
+        return dsp::DiodeRcCap::make(p.attackS, p.releaseS, fs);
     }
 
     static float value(const State& s) noexcept { return s.gr; }
@@ -484,22 +492,9 @@ struct RcBallistics
     static float grFor(float a) noexcept { return dsp::kDbPerNeper * std::log1p(a); }
 
     // One trapezoidal step for drive ρ: the new cap voltage and dv/dρ.
-    // Written as an INCREMENT on v (Δ = ½(f₀ + f₁), solved for f₁ implicitly),
-    // never as a pole multiplying v: at a 1.1 s release a per-sample pole sits
-    // 3e-6 below 1 and its float rounding alone would shift τ by percents —
-    // the same trap DspPrimitives.h's onePoleStep avoids.
     static float step(const State& s, const Coeffs& c, float rho, float& dv) noexcept
     {
-        const float f0 = (s.rho > s.v ? c.wA * (s.rho - s.v) : 0.0f) - c.wR * s.v;
-        const float dRel = 0.5f * (f0 - c.wR * s.v) * c.invRelease;
-        const float released = std::max(0.0f, s.v + dRel);
-        if (rho > released)
-        {
-            dv = c.dCharge;
-            return s.v + 0.5f * (f0 + c.wA * (rho - s.v) - c.wR * s.v) * c.invCharge;
-        }
-        dv = 0.0f;
-        return released;
+        return dsp::DiodeRcCap::step(s.v, s.rho, rho, c, dv);
     }
 
     static float predict(const State& s, const Coeffs& c, float target, float& d) noexcept

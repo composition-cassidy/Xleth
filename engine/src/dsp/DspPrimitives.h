@@ -25,11 +25,17 @@
 //   BranchingEnvelope  Log-domain smoothed branching peak detector on gain
 //                      reduction (§1.3), with a side-effect-free predict() so a
 //                      zero-delay feedback solver can evaluate it implicitly.
+//   DiodeRcCap         A timing capacitor charged through a diode + resistor and
+//                      drained through another resistor, integrated
+//                      trapezoidally (TPT) in closed form — the FET's gate
+//                      network and each branch of the vari-mu's multi-RC bias.
 //   TptSvf             Zavalishin topology-preserving state-variable filter;
 //                      stable under per-block coefficient modulation.
 //   softClipPade       Padé tanh approximant, C1 at its +/-3 clamp.
 //   OutputTransformer  §8.4 transformer colour: coupling HPF, LF saturation,
 //                      mild HF resonance (shared by the compressor models).
+//                      Its (linear) filter states can be remixed between channel
+//                      bases (L/R ⇄ M/S) so a stereo-mode switch stays seamless.
 //   LinearRamp         Sample-accurate 0..1 crossfade weight that snaps exactly
 //                      onto its endpoints (so a finished fade is bit-exact).
 //   IntegerDelay       Preallocated multichannel integer-sample delay (the
@@ -201,6 +207,64 @@ struct BranchingEnvelope
     }
 };
 
+// ─── Diode-charged RC timing capacitor ──────────────────────────────────────
+//
+//   drive ρ ──►|── R_charge ──┬── v
+//                             C
+//                             ├── R_drain ── GND
+//
+//   dv/dt = [ρ > v]·(ρ − v)/τ_c − v/τ_d          τ_c = R_charge·C, τ_d = R_drain·C
+//
+// Trapezoidal (TPT) — the capacitor is one integrator,
+//   v_n = v_{n−1} + ½·(f_n + f_{n−1}),
+// solved in closed form for the regime (charging or not) the END of the sample
+// is in. Unprewarped on purpose: the two regimes share one state and meet
+// continuously at the diode's switch point (ρ = the released value), which keeps
+// step() continuous and nondecreasing in ρ — what an implicit (zero-delay)
+// feedback solve through it needs. Written as an INCREMENT on v, never as a pole
+// multiplying v: a pole 3e-6 below 1 (a 1.1 s τ) would drift τ by percents in
+// float rounding alone. While charging the cap settles at ρ·τ_d/(τ_c + τ_d),
+// the network's own divider.
+struct DiodeRcCap
+{
+    struct Coeffs
+    {
+        // Per-sample rates 1/(τ·fs) and the trapezoid's closed-form factors.
+        float wA = 1.0f, wR = 0.0f;
+        float invCharge = 1.0f;       // 1 / (1 + ½(w_c + w_d))
+        float invRelease = 1.0f;      // 1 / (1 + ½·w_d)
+        float dCharge = 0.0f;         // dv/dρ while charging: ½·w_c / (1 + ½(w_c + w_d))
+    };
+
+    // τ ≤ 0 (or absurdly small) means instant; a very large τ_c never charges.
+    static Coeffs make(double chargeS, double drainS, double fs) noexcept
+    {
+        Coeffs c;
+        c.wA = static_cast<float>(1.0 / std::max(1.0e-9, chargeS * fs));
+        c.wR = static_cast<float>(1.0 / std::max(1.0e-9, drainS * fs));
+        c.invCharge = 1.0f / (1.0f + 0.5f * (c.wA + c.wR));
+        c.invRelease = 1.0f / (1.0f + 0.5f * c.wR);
+        c.dCharge = 0.5f * c.wA * c.invCharge;
+        return c;
+    }
+
+    // One step from cap voltage v (previous drive rhoPrev) for drive rho: the
+    // new cap voltage and dv/dρ.
+    static float step(float v, float rhoPrev, float rho, const Coeffs& c, float& dv) noexcept
+    {
+        const float f0 = (rhoPrev > v ? c.wA * (rhoPrev - v) : 0.0f) - c.wR * v;
+        const float dRel = 0.5f * (f0 - c.wR * v) * c.invRelease;
+        const float released = std::max(0.0f, v + dRel);
+        if (rho > released)
+        {
+            dv = c.dCharge;
+            return v + 0.5f * (f0 + c.wA * (rho - v) - c.wR * v) * c.invCharge;
+        }
+        dv = 0.0f;
+        return released;
+    }
+};
+
 // ─── TPT state-variable filter (Zavalishin) ─────────────────────────────────
 // Per-channel state; coefficients shared. setCutoff() is cheap enough to call
 // once per block, and the structure stays stable under that modulation.
@@ -210,6 +274,18 @@ struct TptSvf
     float g = 0.0f, k = 1.41421356f, a1 = 0.0f, a2 = 0.0f, a3 = 0.0f;
     float ic1[MaxChannels] {};
     float ic2[MaxChannels] {};
+
+    // Re-express the two channels' states in another basis: new0 = m00·s0 +
+    // m01·s1, new1 = m10·s0 + m11·s1. The filter is linear and identical per
+    // channel, so if its inputs change basis by the same matrix (L/R ⇄ M/S) the
+    // remixed states continue exactly as if the filter had always run there.
+    void remix(float m00, float m01, float m10, float m11) noexcept
+    {
+        static_assert(MaxChannels >= 2, "remix needs two channels");
+        const float a = ic1[0], b = ic1[1], c = ic2[0], d = ic2[1];
+        ic1[0] = m00 * a + m01 * b;  ic1[1] = m10 * a + m11 * b;
+        ic2[0] = m00 * c + m01 * d;  ic2[1] = m10 * c + m11 * d;
+    }
 
     void setCutoff(float hz, double sampleRate, float q = 0.70710678f) noexcept
     {
@@ -293,6 +369,18 @@ struct OutputTransformer
         coupling_.reset();
         hf_.reset();
         lf_[0] = lf_[1] = 0.0f;
+    }
+
+    // Channel-basis change of every state (see TptSvf::remix). All three stages
+    // hold LINEAR state — the LF saturation is memoryless on top of a linear
+    // one-pole — so only the memoryless nonlinearities differ across the change.
+    void remix(float m00, float m01, float m10, float m11) noexcept
+    {
+        coupling_.remix(m00, m01, m10, m11);
+        hf_.remix(m00, m01, m10, m11);
+        const float a = lf_[0], b = lf_[1];
+        lf_[0] = m00 * a + m01 * b;
+        lf_[1] = m10 * a + m11 * b;
     }
 
     float process(float x, int ch) noexcept

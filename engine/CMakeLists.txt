@@ -2463,6 +2463,42 @@ target_compile_definitions(test_fet_compressor PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_varimu_compressor ───────────────────────────────────────────────────
+# Vari-Mu Comp ("varimu"), the Fairchild 660/670-lineage model on
+# CompressorCore. Behaviour tests per docs/Compressor_Archetypes_Deep_Dive.md
+# §5.4/§10: the ratio rising with level (negative control: a log-linear g_m),
+# positions 5/6 program dependence (negative control: a fixed release), the
+# §1.3 ÷3 time-constant normalisation (negative control: un-normalised),
+# THD vs GR with push-pull even-order cancellation and no thump, aliasing at
+# 1x/2x/4x, stereo link, Mid/Side independence and the mode crossfade, RT
+# safety, PDC latency.
+add_executable(test_varimu_compressor
+    test/test_varimu_compressor.cpp
+)
+
+target_link_libraries(test_varimu_compressor PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_varimu_compressor PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_apex ────────────────────────────────────────────────────────────────
 # DSP-core contract tests for XlethApexEffect (the APEX multiband maximizer).
 # Verifies: Linkwitz-Riley band-split reconstruction is magnitude-flat within
@@ -3251,6 +3287,7 @@ set(XLETH_ENGINE_TESTS
     test_glue_compressor
     test_opto_compressor
     test_fet_compressor
+    test_varimu_compressor
     test_xlethfilter
     test_xlethfilter_analog
     test_xlethfilter_mod

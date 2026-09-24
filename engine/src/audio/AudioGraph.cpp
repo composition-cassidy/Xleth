@@ -26,6 +26,7 @@
 #include "audio/XlethGlueCompressorEffect.h"
 #include "audio/XlethOptoCompressorEffect.h"
 #include "audio/XlethFetCompressorEffect.h"
+#include "audio/XlethVariMuCompressorEffect.h"
 #include "audio/SmartBalanceEffect.h"
 #include "audio/WireGainProcessor.h"
 #include "audio/DelayCompensationProcessor.h"
@@ -2994,6 +2995,7 @@ std::unique_ptr<juce::AudioProcessor> AudioGraph::createEffect(const std::string
     if (pluginId == "glue")          return std::make_unique<XlethGlueCompressorEffect>();
     if (pluginId == "opto")          return std::make_unique<XlethOptoCompressorEffect>();
     if (pluginId == "fet")           return std::make_unique<XlethFetCompressorEffect>();
+    if (pluginId == "varimu")        return std::make_unique<XlethVariMuCompressorEffect>();
 
     // VST3 fallback — look up in the plugin registry and instantiate.
     // The createPluginInstance call itself is guarded (some plugins fault on load).

@@ -18,6 +18,7 @@ export const EFFECT_CATEGORIES = [
       { label: 'Glue Comp', id: 'glue' },
       { label: 'Opto Comp', id: 'opto' },
       { label: 'FET Comp', id: 'fet' },
+      { label: 'Vari-Mu Comp', id: 'varimu' },
       { label: 'Limiter', id: 'limiter' },
       { label: 'APEX', id: 'apex' },
       { label: 'GLOSS', id: 'gloss' },
