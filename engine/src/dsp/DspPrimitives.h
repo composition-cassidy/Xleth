@@ -28,6 +28,8 @@
 //   TptSvf             Zavalishin topology-preserving state-variable filter;
 //                      stable under per-block coefficient modulation.
 //   softClipPade       Padé tanh approximant, C1 at its +/-3 clamp.
+//   OutputTransformer  §8.4 transformer colour: coupling HPF, LF saturation,
+//                      mild HF resonance (shared by the compressor models).
 //   LinearRamp         Sample-accurate 0..1 crossfade weight that snaps exactly
 //                      onto its endpoints (so a finished fade is bit-exact).
 //   IntegerDelay       Preallocated multichannel integer-sample delay (the
@@ -258,6 +260,56 @@ inline float softClipPade(float x) noexcept
     const float x2 = x * x;
     return x * (27.0f + x2) / (27.0f + 9.0f * x2);
 }
+
+// ─── Output transformer (§8.4) ──────────────────────────────────────────────
+// The coloration building block the compressor models share: a coupling
+// high-pass (also the DC blocker for any biased stage in front of it), a
+// level-dependent LF saturation (a soft clip of the band below lfSplitHz only:
+// core saturation is a low-frequency effect), and a mild HF resonance (2nd-order
+// low-pass, capped at 0.45·fs). Per-channel state, up to 2 channels.
+struct OutputTransformer
+{
+    struct Config
+    {
+        float couplingHz = 12.0f;
+        float lfSplitHz  = 90.0f;
+        float lfDrive    = 0.35f;
+        float hfHz       = 26000.0f;
+        float hfQ        = 0.85f;
+    };
+
+    void prepare(double fs, const Config& cfg) noexcept
+    {
+        lfDrive_    = cfg.lfDrive;
+        invLfDrive_ = 1.0f / cfg.lfDrive;
+        coupling_.setCutoff(cfg.couplingHz, fs);
+        hf_.setCutoff(std::min(cfg.hfHz, static_cast<float>(0.45 * fs)), fs, cfg.hfQ);
+        bLf_ = onePoleStep(1.0 / (2.0 * juce::MathConstants<double>::pi * cfg.lfSplitHz), fs);
+        reset();
+    }
+
+    void reset() noexcept
+    {
+        coupling_.reset();
+        hf_.reset();
+        lf_[0] = lf_[1] = 0.0f;
+    }
+
+    float process(float x, int ch) noexcept
+    {
+        const float h = coupling_.processHighPass(x, ch);
+        const float lo = (lf_[ch] += bLf_ * (h - lf_[ch]));
+        const float s = h + (softClipPade(lfDrive_ * lo) * invLfDrive_ - lo);
+        return hf_.processLowPass(s, ch);
+    }
+
+private:
+    float lfDrive_ = 0.35f, invLfDrive_ = 1.0f / 0.35f;
+    float bLf_ = 0.0f;
+    float lf_[2] {};
+    TptSvf<2> coupling_ {};
+    TptSvf<2> hf_ {};
+};
 
 // ─── Linear crossfade weight ────────────────────────────────────────────────
 // Moves toward its target by a fixed step per sample and lands EXACTLY on 0 or

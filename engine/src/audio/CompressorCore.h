@@ -60,6 +60,10 @@
 //               commit(st,c,target) · adopt(st,c)
 //   GainElem:   prepare(fs) · reset() · float gainFor(grDb) ·
 //               float apply(x, gain, ch)
+//               gainFor() runs once per sample before apply() on each channel,
+//               so an element may hold per-sample state there (the FET does).
+//               `gain` is whatever the element's own apply() needs — the FET
+//               passes its channel conductance, not a multiplier.
 //   Color:      prepare(fs) · reset() · float process(x, ch)
 
 #include "dsp/DspPrimitives.h"
@@ -266,6 +270,12 @@ public:
     const Settings& getActiveSettings() const noexcept { return lanes_[cur_].s; }
     bool   isCrossfading() const noexcept { return fading_; }
     double getProcessRate() const noexcept { return rate_; }
+
+    // The gain element itself, for a model whose element carries state of its
+    // own outside the stepped lanes (the FET's bias network, FetCompressorCore.h).
+    // Audio thread, like the other controls.
+    Elem&       gainElement() noexcept       { return elem_; }
+    const Elem& gainElement() const noexcept { return elem_; }
 
 private:
     struct Lane

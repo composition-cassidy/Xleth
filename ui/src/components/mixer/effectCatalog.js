@@ -17,6 +17,7 @@ export const EFFECT_CATEGORIES = [
       { label: 'Compressor', id: 'compressor' },
       { label: 'Glue Comp', id: 'glue' },
       { label: 'Opto Comp', id: 'opto' },
+      { label: 'FET Comp', id: 'fet' },
       { label: 'Limiter', id: 'limiter' },
       { label: 'APEX', id: 'apex' },
       { label: 'GLOSS', id: 'gloss' },

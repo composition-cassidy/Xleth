@@ -2429,6 +2429,40 @@ target_compile_definitions(test_opto_compressor PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── test_fet_compressor ──────────────────────────────────────────────────────
+# FET Comp ("fet"), the 1176-lineage model on CompressorCore. Behaviour tests
+# per docs/Compressor_Archetypes_Deep_Dive.md §4/§10: static curve per ratio
+# preset (the threshold moves with the ratio), THD vs gain reduction rising
+# (the eps fit, with an eps = 0 negative control), ballistics measured at the
+# 4x rate (1x negative control), aliasing sweep under fast heavy compression,
+# All-buttons-in as its own mode, stereo link, RT safety and PDC latency.
+add_executable(test_fet_compressor
+    test/test_fet_compressor.cpp
+)
+
+target_link_libraries(test_fet_compressor PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_fet_compressor PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_apex ────────────────────────────────────────────────────────────────
 # DSP-core contract tests for XlethApexEffect (the APEX multiband maximizer).
 # Verifies: Linkwitz-Riley band-split reconstruction is magnitude-flat within
@@ -3216,6 +3250,7 @@ set(XLETH_ENGINE_TESTS
     test_apex
     test_glue_compressor
     test_opto_compressor
+    test_fet_compressor
     test_xlethfilter
     test_xlethfilter_analog
     test_xlethfilter_mod

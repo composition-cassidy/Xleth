@@ -26,6 +26,7 @@ export const STOCK_EFFECT_LABELS = Object.freeze({
   resonancesuppressor: 'Resonance Suppressor',
   glue: 'Glue Comp',
   opto: 'Opto Comp',
+  fet: 'FET Comp',
 })
 
 function fallbackUuid() {

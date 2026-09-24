@@ -480,35 +480,21 @@ struct TubeTransformerColor
         const float slope = (dn * m - n * dm) / (m * m);
         invTubeGain_ = 1.0f / (kTubeDrive * slope);
 
-        coupling_.setCutoff(kCouplingHz, fs);
-        hf_.setCutoff(std::min(kHfHz, static_cast<float>(0.45 * fs)), fs, kHfQ);
-        bLf_ = dsp::onePoleStep(1.0 / (2.0 * juce::MathConstants<double>::pi * kLfSplitHz), fs);
-        reset();
+        xfmr_.prepare(fs, { kCouplingHz, kLfSplitHz, kLfDrive, kHfHz, kHfQ });
     }
 
-    void reset() noexcept
-    {
-        coupling_.reset();
-        hf_.reset();
-        lf_[0] = lf_[1] = 0.0f;
-    }
+    void reset() noexcept { xfmr_.reset(); }
 
     float process(float x, int ch) noexcept
     {
         const float t = (dsp::softClipPade(kTubeDrive * (x + kTubeBias)) - biasOut_) * invTubeGain_;
-        const float h = coupling_.processHighPass(t, ch);
-        const float lo = (lf_[ch] += bLf_ * (h - lf_[ch]));
-        const float s = h + (dsp::softClipPade(kLfDrive * lo) * (1.0f / kLfDrive) - lo);
-        return hf_.processLowPass(s, ch);
+        return xfmr_.process(t, ch);
     }
 
 private:
     float biasOut_ = 0.0f;
     float invTubeGain_ = 1.0f;
-    float bLf_ = 0.0f;
-    float lf_[2] {};
-    dsp::TptSvf<2> coupling_ {};
-    dsp::TptSvf<2> hf_ {};
+    dsp::OutputTransformer xfmr_ {};
 };
 
 using OptoCompressorCore =

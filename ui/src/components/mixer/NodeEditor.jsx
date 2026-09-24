@@ -28,12 +28,14 @@ const PLUGIN_NAMES = {
   resonancesuppressor: 'Resonance Suppressor',
   glue: 'Glue Comp',
   opto: 'Opto Comp',
+  fet: 'FET Comp',
 }
 
 const EFFECT_CATEGORIES = [
   { label: 'Dynamics', submenu: [
     { label: 'Compressor', id: 'compressor' }, { label: 'Glue Comp', id: 'glue' },
     { label: 'Opto Comp', id: 'opto' },
+    { label: 'FET Comp', id: 'fet' },
     { label: 'Limiter', id: 'limiter' },
     { label: 'Overdone', id: 'overdone' }, { label: 'Transient Proc', id: 'transientproc' },
     { label: 'Resonance Suppressor', id: 'resonancesuppressor' },
