@@ -16,8 +16,8 @@ export function isEdgeRegion(value: unknown): value is DockRegion {
   return value === 'left' || value === 'right' || value === 'top' || value === 'bottom';
 }
 
-/** Height of a panel titlebar in px. Mirrored by --xleth-panel-titlebar-height. */
-export const PANEL_TITLEBAR_HEIGHT = 32;
+/** Height of a floating panel titlebar in px. Mirrors --panel-header-h (tokens.css). */
+export const PANEL_TITLEBAR_HEIGHT = 28;
 
 export interface FloatingPanelState {
   x: number;

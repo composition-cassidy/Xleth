@@ -208,7 +208,8 @@ describe('PanelFrame render paths', () => {
     const html = renderPanel('preview');
     expect(html).toContain('data-panel-mode="floating"');
     expect(html).toContain('xleth-windowing-titlebar');
-    expect(html).toContain('data-testid="xleth-windowing-underline-preview"');
+    // The floating titlebar names its window.
+    expect(html).toContain('>Preview<');
   });
 
   it('renders layout preset and dock controls in the top toolbar', () => {
@@ -878,33 +879,37 @@ describe('describeGraphSidechainRouteStatus (FXG-SC.6D)', () => {
   });
 });
 
-describe('Titlebar focus underline flip', () => {
+describe('floating panel focus', () => {
   beforeEach(resetRegistry);
 
-  it('moves the focused underline between two floating test panels', () => {
-    usePanelRegistry.getState().openPanel('timeline');
-    usePanelRegistry.getState().openPanel('mixer');
+  // The accent bar and focus underline are gone: focus is a 1px selection
+  // outline on the frame, keyed off the frame's is-focused class.
+  it('moves the frame focus between two floating panels', () => {
+    usePanelRegistry.getState().openPanel('preview');
+    usePanelRegistry.getState().openPanel('inspector');
+    usePanelRegistry.getState().dockPanel('preview', 'top');
+    usePanelRegistry.getState().undockPanel('preview', 10, 10);
+    usePanelRegistry.getState().undockPanel('inspector', 40, 40);
 
-    usePanelRegistry.getState().focusPanel('timeline');
-    const firstState = usePanelRegistry.getState().panels;
-    const timelineFocused = renderToStaticMarkup(
-      <>
-        <Titlebar id="timeline" focused={firstState.timeline.focused} />
-        <Titlebar id="mixer" focused={firstState.mixer.focused} />
-      </>,
-    );
-    expect(timelineFocused).toContain('data-testid="xleth-windowing-underline-timeline" data-focused="true"');
-    expect(timelineFocused).toContain('data-testid="xleth-windowing-underline-mixer" data-focused="false"');
+    const frameClassFor = (id: 'preview' | 'inspector') => {
+      const html = renderToStaticMarkup(<PanelFrame id={id}><div /></PanelFrame>);
+      return html.match(/<section[^>]*class="([^"]*)"/)?.[1] ?? '';
+    };
 
-    usePanelRegistry.getState().focusPanel('mixer');
-    const secondState = usePanelRegistry.getState().panels;
-    const mixerFocused = renderToStaticMarkup(
-      <>
-        <Titlebar id="timeline" focused={secondState.timeline.focused} />
-        <Titlebar id="mixer" focused={secondState.mixer.focused} />
-      </>,
-    );
-    expect(mixerFocused).toContain('data-testid="xleth-windowing-underline-timeline" data-focused="false"');
-    expect(mixerFocused).toContain('data-testid="xleth-windowing-underline-mixer" data-focused="true"');
+    usePanelRegistry.getState().focusPanel('preview');
+    expect(frameClassFor('preview')).toContain('is-focused');
+    expect(frameClassFor('inspector')).not.toContain('is-focused');
+
+    usePanelRegistry.getState().focusPanel('inspector');
+    expect(frameClassFor('preview')).not.toContain('is-focused');
+    expect(frameClassFor('inspector')).toContain('is-focused');
+  });
+
+  it('draws no accent bar or focus underline in a titlebar', () => {
+    usePanelRegistry.getState().openPanel('inspector');
+    const html = renderToStaticMarkup(<Titlebar id="inspector" focused />);
+    expect(html).not.toContain('xleth-windowing-accent-bar');
+    expect(html).not.toContain('xleth-windowing-focus-underline');
+    expect(html).toContain('>Inspector<');
   });
 });

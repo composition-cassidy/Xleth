@@ -1,0 +1,33 @@
+@layer kit {
+  /* The docked Preview's pop-out: it has no titlebar, so the control sits at
+   * the end of the Preview's own header row. 24x24 hit area. */
+  .popOut {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--hit-min);
+    height: var(--hit-min);
+    margin-left: var(--space-1);
+    padding: 0;
+    border: 0;
+    border-radius: var(--ui-radius-1);
+    background: transparent;
+    color: var(--ui-ink-2);
+    cursor: pointer;
+  }
+
+  .popOut svg {
+    width: var(--type-13);
+    height: var(--type-13);
+  }
+
+  .popOut:hover {
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+  }
+
+  .popOut:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+}

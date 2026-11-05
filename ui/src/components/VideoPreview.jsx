@@ -135,7 +135,9 @@ function hexToGlColor(hex) {
 
 // ── Component ────────────────────────────────────────────────────────────────
 
-export default function VideoPreview() {
+// headerActions: shell controls for the panel itself (the docked Preview's
+// pop-out), appended to the header row. Docked panels have no titlebar.
+export default function VideoPreview({ headerActions = null } = {}) {
   const gridEditMode = useGridEditStore((s) => s.gridEditMode)
   const setGridEditMode = useGridEditStore((s) => s.setGridEditMode)
   const { isVisible, useOnVisibilityChange } = usePanelVisibility()
@@ -1102,6 +1104,7 @@ export default function VideoPreview() {
             <Import size={13} />
             <span>{importing ? 'Loading...' : 'Import'}</span>
           </button>
+          {headerActions}
         </div>
       </div>
       <div className={`video-canvas-wrapper ${gridEditMode ? 'grid-editing' : ''}`} ref={wrapperRef}>

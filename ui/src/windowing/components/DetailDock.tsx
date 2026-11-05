@@ -178,7 +178,7 @@ export function DetailDock({ renderPanel }: DetailDockProps) {
       </div>
       {openTab ? (
         <div className={styles.body} id="xleth-detail-dock-body" role="tabpanel" aria-label={PANEL_CATALOG[openTab.id].title}>
-          <DockSlotProvider region="bottom" tabIds={[openTab.id]} activeId={openTab.id} chromeless>
+          <DockSlotProvider region="bottom" tabIds={[openTab.id]} activeId={openTab.id}>
             {renderPanel(openTab.id)}
           </DockSlotProvider>
         </div>

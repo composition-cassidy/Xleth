@@ -7831,15 +7831,6 @@ html.fx-drag-active * {
     var(--theme-depth-accent-glow-subtle);
 }
 
-.xleth-windowing-titlebar[data-panel-id="splitSyllables"] .xleth-windowing-accent-bar {
-  background: var(--theme-accent);
-}
-
-.xleth-windowing-titlebar[data-panel-id="splitSyllables"] .xleth-windowing-focus-underline {
-  background: var(--theme-accent);
-  box-shadow: var(--theme-depth-accent-glow-medium);
-}
-
 .xleth-windowing-titlebar[data-panel-id="splitSyllables"] .xleth-windowing-control-button {
   background:
     linear-gradient(
@@ -9001,13 +8992,6 @@ html.fx-drag-active * {
     0 0 18px color-mix(in srgb, var(--xleth-windowing-panel-color) 18%, transparent);
 }
 
-.xleth-windowing-titlebar[data-panel-id="sampler"] .xleth-windowing-focus-underline {
-  height: 2px;
-  opacity: 1;
-  background: var(--xleth-windowing-panel-color);
-  box-shadow: 0 0 12px color-mix(in srgb, var(--xleth-windowing-panel-color) 72%, transparent);
-}
-
 .xleth-windowing-titlebar[data-panel-id="sampler"] .xleth-windowing-controls {
   gap: 4px;
   padding-right: 8px;
@@ -9635,13 +9619,6 @@ html.fx-drag-active * {
   padding: 0 12px;
   background: var(--mx-s2);
   border-bottom: 1px solid var(--mx-bd);
-  box-shadow: none;
-}
-
-.xleth-windowing-titlebar[data-panel-id="mixer"] .xleth-windowing-focus-underline {
-  height: 0;
-  opacity: 0;
-  background: transparent;
   box-shadow: none;
 }
 
@@ -10942,19 +10919,6 @@ html.fx-drag-active * {
   background: var(--xleth-flat-chrome);
   border-bottom: 1px solid var(--xleth-flat-border);
   box-shadow: none;
-}
-
-.xleth-windowing-titlebar[data-panel-id="quickNotation"] .xleth-windowing-accent-bar,
-.xleth-windowing-titlebar[data-panel-id="splitSyllables"] .xleth-windowing-accent-bar {
-  width: 3px;
-  flex-basis: 3px;
-  background: var(--theme-accent);
-  opacity: 1;
-}
-
-.xleth-windowing-titlebar[data-panel-id="quickNotation"] .xleth-windowing-focus-underline,
-.xleth-windowing-titlebar[data-panel-id="splitSyllables"] .xleth-windowing-focus-underline {
-  display: none;
 }
 
 .xleth-windowing-titlebar[data-panel-id="quickNotation"] .xleth-windowing-controls,
@@ -21722,12 +21686,6 @@ html, body, #root {
   box-shadow: var(--theme-depth-elevation-1-top-highlight);
 }
 
-.xleth-windowing-titlebar[data-panel-id] .xleth-windowing-focus-underline {
-  height: 1px;
-  background: var(--theme-state-active);
-  box-shadow: none;
-}
-
 .xleth-windowing-titlebar[data-panel-id] .xleth-windowing-control-button:hover {
   box-shadow:
     var(--theme-depth-elevation-1-top-highlight),
@@ -24999,11 +24957,6 @@ html[data-xleth-backdrop="native-acrylic"] .xleth-center-column {
 .xleth-windowing-titlebar[data-panel-id="timeline"] .xleth-windowing-control-button:hover {
   box-shadow: none;
 }
-.xleth-windowing-titlebar[data-panel-id="timeline"] .xleth-windowing-accent-bar,
-.xleth-windowing-titlebar[data-panel-id="timeline"] .xleth-windowing-focus-underline {
-  display: none;
-}
-
 /* ── Panel body: override blue-tinted --theme-bg-primary behind the view ──── */
 .xleth-panel-frame[data-panel-id="timeline"] .xleth-panel-body {
   background: var(--xleth-flat-bg);
@@ -25369,11 +25322,6 @@ html[data-xleth-backdrop="native-acrylic"] .xleth-center-column {
   border-bottom: 1px solid var(--xleth-flat-border);
   box-shadow: none;
 }
-.xleth-windowing-titlebar[data-panel-id="fxGraph"] .xleth-windowing-accent-bar,
-.xleth-windowing-titlebar[data-panel-id="fxGraph"] .xleth-windowing-focus-underline {
-  display: none;
-}
-
 /* ── Panel body behind the workspace ──────────────────────────────────────── */
 .xleth-panel-frame[data-panel-id="fxGraph"] .xleth-panel-body {
   background: var(--xleth-flat-bg);
@@ -25465,11 +25413,6 @@ html[data-xleth-backdrop="native-acrylic"] .xleth-center-column {
   border-bottom: 1px solid var(--xleth-flat-border);
   box-shadow: none;
 }
-.xleth-windowing-titlebar[data-panel-id="sampler"] .xleth-windowing-accent-bar,
-.xleth-windowing-titlebar[data-panel-id="sampler"] .xleth-windowing-focus-underline {
-  display: none;
-}
-
 /* ── Token remap: flips inline-styled sub-components (LFO, etc.) + token rules ── */
 .sampler-panel-body {
   --sampler-accent: var(--xleth-flat-accent);

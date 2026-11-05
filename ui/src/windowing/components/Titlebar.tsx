@@ -2,11 +2,12 @@ import React from 'react';
 import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent, ReactNode } from 'react';
 import { ArrowDownToLine, ChevronDown, ChevronUp, Maximize2, Square, X } from 'lucide-react';
 import { armPanelDrag, useIsTabDropTarget } from '../managers/DragManager';
-import { isDetailDockTab, PANEL_CATALOG, panelTypeColorVar, type PanelId } from '../registry/panelCatalog';
+import { dockHomeOf, PANEL_CATALOG, panelTypeColorVar, type PanelId } from '../registry/panelCatalog';
 import { usePanelRegistry } from '../registry/PanelRegistry';
 import { usePanelValue } from '../registry/usePanelValue';
 import { XlethIconButton } from '../../components/common/XlethButton.jsx';
 import './windowing.css';
+import chrome from './PanelChrome.module.css';
 
 export interface TitlebarProps {
   id: PanelId;
@@ -100,19 +101,24 @@ export function Titlebar({ id, focused, children }: TitlebarProps) {
   };
 
   const collapseLabel = collapsed ? `Expand ${entry.title}` : `Collapse ${entry.title}`;
-  // A popped-out detail-dock panel can go home in one click (dragging it to
-  // the bottom edge still works too).
-  const canReturnToDock = mode === 'floating' && isDetailDockTab(id);
+  // A popped-out panel with a home region goes back in one click (dragging it
+  // to that edge still works too). It returns to the slot it left: undocking
+  // keeps the panel's docked order, so Preview lands left of the Inspector.
+  const dockHome = dockHomeOf(id);
+  const canReturnToDock = mode === 'floating' && dockHome !== null;
   const returnLabel = `Return ${entry.title} to the dock`;
   const returnToDock = (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
+    if (!dockHome) return;
     console.log(`[Shell] re-dock ${id} from its window`);
-    dockPanel(id, 'bottom');
+    const panel = usePanelRegistry.getState().panels[id];
+    const slot = dockHome !== 'bottom' && panel.docked.region === dockHome ? panel.docked.orderInRegion : undefined;
+    dockPanel(id, dockHome, slot);
   };
 
   return (
     <div
-      className="xleth-windowing-titlebar"
+      className={`xleth-windowing-titlebar ${chrome.titlebar}`}
       data-panel-id={id}
       data-focused={focused}
       // Marks the drop zone DragManager hit-tests when a dragged panel is over
@@ -133,20 +139,16 @@ export function Titlebar({ id, focused, children }: TitlebarProps) {
       aria-orientation="horizontal"
       tabIndex={mode === 'floating' ? 0 : -1}
     >
-      <span className="xleth-windowing-accent-bar" aria-hidden="true" />
-      <span
-        className="xleth-windowing-focus-underline"
-        data-testid={`xleth-windowing-underline-${id}`}
-        data-focused={focused}
-        aria-hidden="true"
-      />
+      {/* Only floating and maximized panels have a titlebar now, so it names
+          the window. Focus shows as an outline on the frame. */}
+      <span className={chrome.title}>{entry.title}</span>
       {children ? <div className="xleth-windowing-titlebar-content">{children}</div> : null}
       <span className="xleth-windowing-drag-zone" aria-hidden="true" />
-      <div className="xleth-windowing-controls" aria-label={`${entry.title} panel controls`}>
+      <div className={`xleth-windowing-controls ${chrome.controls}`} aria-label={`${entry.title} panel controls`}>
         {canReturnToDock ? (
           <XlethIconButton
             type="button"
-            className="xleth-windowing-control-button"
+            className={`xleth-windowing-control-button ${chrome.control}`}
             aria-label={returnLabel}
             title={returnLabel}
             data-hint={returnLabel}
@@ -158,7 +160,7 @@ export function Titlebar({ id, focused, children }: TitlebarProps) {
         ) : null}
         <XlethIconButton
           type="button"
-          className="xleth-windowing-control-button"
+          className={`xleth-windowing-control-button ${chrome.control}`}
           aria-label={collapseLabel}
           aria-expanded={!collapsed}
           title={collapseLabel}
@@ -173,7 +175,7 @@ export function Titlebar({ id, focused, children }: TitlebarProps) {
         {canMaximize ? (
           <XlethIconButton
             type="button"
-            className="xleth-windowing-control-button"
+            className={`xleth-windowing-control-button ${chrome.control}`}
             aria-label={mode === 'maximized' ? `Restore ${entry.title}` : `Maximize ${entry.title}`}
             title={mode === 'maximized' ? `Restore ${entry.title}` : `Maximize ${entry.title}`}
             data-hint={mode === 'maximized' ? `Restore ${entry.title}` : `Maximize ${entry.title}`}
@@ -188,7 +190,7 @@ export function Titlebar({ id, focused, children }: TitlebarProps) {
         ) : null}
         <XlethIconButton
           type="button"
-          className="xleth-windowing-control-button"
+          className={`xleth-windowing-control-button ${chrome.control}`}
           aria-label={`Close ${entry.title}`}
           title={`Close ${entry.title}`}
           data-hint={`Close ${entry.title}`}

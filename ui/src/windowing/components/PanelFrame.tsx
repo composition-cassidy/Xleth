@@ -11,6 +11,7 @@ import { usePanelValue } from '../registry/usePanelValue';
 import { ResizeHandles } from './ResizeHandles';
 import { Titlebar } from './Titlebar';
 import './windowing.css';
+import chrome from './PanelChrome.module.css';
 
 export interface PanelFrameProps {
   id: PanelId;
@@ -113,10 +114,10 @@ export function PanelFrame({
           onMouseDownCapture={claimFocus}
           {...accessibility}
         >
+          {/* Docked panels draw no titlebar: the region names them (the detail
+              dock's tab, the layout itself). A shared slot keeps its tab strip.
+              Anything a titlebar carried moves into the panel's own toolbar. */}
           {tabStrip}
-          {slot?.chromeless
-            ? null
-            : <Titlebar id={id} focused={focused}>{titlebarContent}</Titlebar>}
           {collapsed ? null : <div className="xleth-panel-body" id={`xleth-panel-body-${id}`}>{children}</div>}
         </section>
       </PanelVisibilityProvider>
@@ -146,6 +147,7 @@ export function PanelFrame({
 
   const className = [
     'xleth-panel-frame',
+    chrome.frame,
     focused ? 'is-focused' : '',
     collapsed ? 'is-collapsed' : '',
     // Lifts the dragged frame out of hit-testing so DragManager's

@@ -112,3 +112,30 @@ describe('detail dock', () => {
     expect(openTabs()).toEqual(['preview']);
   });
 });
+
+describe('docked chrome and pop-outs', () => {
+  beforeEach(reset);
+
+  it('a docked panel renders no titlebar; its floating window does', () => {
+    const docked = renderToStaticMarkup(<PanelFrame id="inspector"><div /></PanelFrame>);
+    expect(docked).toContain('data-panel-mode="docked"');
+    expect(docked).not.toContain('xleth-windowing-titlebar');
+
+    usePanelRegistry.getState().undockPanel('inspector', 20, 20);
+    const floating = renderToStaticMarkup(<PanelFrame id="inspector"><div /></PanelFrame>);
+    expect(floating).toContain('xleth-windowing-titlebar');
+    expect(floating).toContain('aria-label="Return Inspector to the dock"');
+  });
+
+  it('the popped-out Preview returns to its own slot, left of the Inspector', async () => {
+    const { popOutPreview } = await import('../panels/PreviewPanel');
+    popOutPreview();
+    expect(usePanelRegistry.getState().panels.preview.mode).toBe('floating');
+
+    const { docked } = usePanelRegistry.getState().panels.preview;
+    usePanelRegistry.getState().dockPanel('preview', 'top', docked.orderInRegion);
+    const panels = usePanelRegistry.getState().panels;
+    expect(panels.preview.docked.orderInRegion).toBe(0);
+    expect(panels.inspector.docked.orderInRegion).toBe(1);
+  });
+});

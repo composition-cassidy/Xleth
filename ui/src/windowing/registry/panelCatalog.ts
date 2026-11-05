@@ -91,6 +91,9 @@ export interface PanelCatalogEntry {
   // Sampler, FX Graph). Present = this panel is a detail-dock tab: it opens
   // docked at the bottom, its tab is always shown, and it pops out on demand.
   dockTabOrder?: number;
+  // The region a popped-out window returns to from its "Return to dock"
+  // control. Detail-dock tabs return to the dock without declaring it.
+  dockHome?: 'left' | 'right' | 'top';
   // Whether the top bar offers a visibility toggle for this panel. Drawers are
   // excluded automatically (they carry their own edge tab); set this false for
   // a panel that is only ever opened from a context menu and would be noise in
@@ -157,6 +160,7 @@ export const PANEL_CATALOG = {
     minHeight: 120,
     minDockedSize: 180,
     presentation: 'window',
+    dockHome: 'top',
     dockFill: true,
   },
   mixer: {
@@ -283,6 +287,7 @@ export const PANEL_CATALOG = {
     minHeight: 120,
     minDockedSize: 260,
     presentation: 'window',
+    dockHome: 'top',
   },
   devices: {
     id: 'devices',
@@ -329,6 +334,12 @@ export const DETAIL_DOCK_TAB_IDS: PanelId[] = ACTIVE_PANEL_IDS
 
 export function isDetailDockTab(id: PanelId): boolean {
   return (PANEL_CATALOG[id] as PanelCatalogEntry).dockTabOrder !== undefined;
+}
+
+/** Where a popped-out panel goes home to, or null when it has no home region. */
+export function dockHomeOf(id: PanelId): 'left' | 'right' | 'top' | 'bottom' | null {
+  if (isDetailDockTab(id)) return 'bottom';
+  return (PANEL_CATALOG[id] as PanelCatalogEntry).dockHome ?? null;
 }
 
 // Panels the top bar offers a toggle for.
