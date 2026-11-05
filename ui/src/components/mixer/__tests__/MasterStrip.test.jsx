@@ -6,15 +6,6 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 async function loadMasterStripFixture() {
-  vi.doMock('../EffectChainPanel.jsx', () => ({
-    default: (props) => (
-      <div
-        data-testid="effect-chain-panel"
-        data-mode={props.mode}
-        data-master={props.master ? 'true' : 'false'}
-      />
-    ),
-  }))
   vi.doMock('../PeakMeter.jsx', () => ({
     default: () => <div data-testid="peak-meter" />,
   }))
@@ -49,12 +40,11 @@ describe('MasterStrip selection', () => {
   afterEach(() => {
     document.body.innerHTML = ''
     delete globalThis.IS_REACT_ACT_ENVIRONMENT
-    vi.doUnmock('../EffectChainPanel.jsx')
     vi.doUnmock('../PeakMeter.jsx')
     vi.doUnmock('../VolumeFader.jsx')
   })
 
-  it('renders master effects as a preview and selects master on click', async () => {
+  it('renders the master FX badge and selects master on click', async () => {
     const { MasterStrip, useMixerStore } = await loadMasterStripFixture()
     useMixerStore.setState({
       master: { volume: 1 },
@@ -64,8 +54,8 @@ describe('MasterStrip selection', () => {
     const { container, root } = await renderMasterStrip(MasterStrip)
     const strip = container.querySelector('.mixer-strip--master')
 
-    expect(container.querySelector('[data-testid="effect-chain-panel"]').dataset.mode).toBe('preview')
-    expect(container.querySelector('[data-testid="effect-chain-panel"]').dataset.master).toBe('true')
+    // Strips show a compact FX badge; the editable chain lives in SelectedEffectRack.
+    expect(container.querySelector('.mixer-strip-fx-badge-text').textContent).toBe('No FX')
 
     await act(async () => {
       strip.dispatchEvent(new MouseEvent('click', { bubbles: true }))

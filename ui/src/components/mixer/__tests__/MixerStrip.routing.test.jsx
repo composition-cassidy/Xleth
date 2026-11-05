@@ -6,15 +6,6 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 async function loadMixerStripFixture() {
-  vi.doMock('../EffectChainPanel.jsx', () => ({
-    default: (props) => (
-      <div
-        data-testid="effect-chain-panel"
-        data-mode={props.mode}
-        data-track-id={props.trackId}
-      />
-    ),
-  }))
   vi.doMock('../PeakMeter.jsx', () => ({
     default: () => <div data-testid="peak-meter" />,
   }))
@@ -81,7 +72,6 @@ describe('MixerStrip output routing UI', () => {
     document.body.innerHTML = ''
     delete window.xleth
     delete globalThis.IS_REACT_ACT_ENVIRONMENT
-    vi.doUnmock('../EffectChainPanel.jsx')
     vi.doUnmock('../PeakMeter.jsx')
     vi.doUnmock('../VolumeFader.jsx')
     vi.doUnmock('../PanWidthKnob.jsx')
@@ -98,7 +88,8 @@ describe('MixerStrip output routing UI', () => {
     expect(select.getAttribute('aria-label')).toBe('Output')
     expect(select.value).toBe('-1')
     expect(Array.from(select.options).map(option => option.textContent)).toContain('Master')
-    expect(container.querySelector('[data-testid="effect-chain-panel"]').dataset.mode).toBe('preview')
+    // Strips show a compact FX badge; the editable chain lives in SelectedEffectRack.
+    expect(container.querySelector('.mixer-strip-fx-badge-text').textContent).toBe('No FX')
     await unmountRoot(root)
   })
 

@@ -15,6 +15,13 @@ if (typeof globalThis.ResizeObserver === 'undefined') {
   }
 }
 
+// And for Element.prototype.scrollIntoView: jsdom omits it, browsers have it.
+// MixerStrip calls it when a strip becomes selected. Guarded on `Element` so the
+// node-environment test files (no DOM) are unaffected.
+if (typeof Element !== 'undefined' && typeof Element.prototype.scrollIntoView !== 'function') {
+  Element.prototype.scrollIntoView = function scrollIntoView() {}
+}
+
 // Same situation for requestAnimationFrame/cancelAnimationFrame: real browsers
 // and Electron's renderer always have them, jsdom/node do not. The timeline
 // select tool schedules its drag-preview repaint on one, so any test that
