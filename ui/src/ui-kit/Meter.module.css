@@ -1,0 +1,53 @@
+/* Meter: one canvas for bars, scale and peak hold; one DOM button for the
+ * latching clip indicator (outline = clear, filled = clipped, so it is never
+ * colour alone). */
+@layer kit {
+  .meter {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    align-self: stretch;
+    width: var(--meter-w);
+    min-height: 64px;
+  }
+
+  .canvas {
+    flex: 1;
+    display: block;
+    width: var(--meter-w);
+    min-height: 0;
+  }
+
+  .clip {
+    position: relative;
+    flex: none;
+    width: var(--bars-w);
+    height: 6px;
+    padding: 0;
+    border: 1px solid var(--ui-boundary);
+    border-radius: 0;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  /* The visual is 6px tall; the hit area is at least 24x24. */
+  .clip::before {
+    content: "";
+    position: absolute;
+    top: -9px;
+    bottom: -9px;
+    left: -9px;
+    right: -9px;
+  }
+
+  .clip[data-clipped="true"] {
+    border-color: var(--ui-clip);
+    background: var(--ui-clip);
+  }
+
+  .clip:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 1px;
+  }
+}

@@ -1,0 +1,92 @@
+/* NumberBox: a neutral value field; the value shows as a 3px rule along the
+ * bottom edge, not as a block fill behind the text. */
+@layer kit {
+  .box {
+    box-sizing: border-box;
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-1);
+    width: var(--box-w, 72px);
+    height: var(--ctl-h-sm);
+    padding: 0 var(--space-1) 3px;
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g3);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    font-variant-numeric: tabular-nums;
+    color: var(--ui-ink);
+    cursor: ew-resize;
+    touch-action: none;
+    user-select: none;
+    overflow: hidden;
+    outline: none;
+  }
+
+  .label {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+
+  .value {
+    flex: none;
+    margin-left: auto;
+    white-space: nowrap;
+    font-weight: var(--weight-medium);
+  }
+
+  .fill {
+    position: absolute;
+    left: calc(var(--fill-a, 0) * 100%);
+    width: calc((var(--fill-b, 0) - var(--fill-a, 0)) * 100%);
+    bottom: 0;
+    height: 3px;
+    background: var(--ui-value);
+    pointer-events: none;
+  }
+
+  .input {
+    box-sizing: border-box;
+    flex: 1;
+    min-width: 0;
+    height: 18px;
+    padding: 0 2px;
+    border: 1px solid var(--ui-select);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g0);
+    color: var(--ui-ink);
+    font: inherit;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    outline: none;
+  }
+
+  .input[aria-invalid="true"] {
+    border-color: var(--ui-rec);
+  }
+
+  .box:is(:hover, [data-state="hover"]) {
+    background: var(--ui-g2);
+  }
+
+  .box:is(:focus-visible, [data-state="focus"]) {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 1px;
+  }
+
+  .box:is([data-dragging="true"], [data-state="active"]) {
+    border-color: var(--ui-value);
+  }
+
+  .box[data-disabled] {
+    opacity: var(--ui-mute-opacity);
+    cursor: default;
+    pointer-events: none;
+  }
+}

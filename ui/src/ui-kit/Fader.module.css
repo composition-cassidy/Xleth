@@ -1,0 +1,77 @@
+/* Fader: a thin groove and a flat bracket cap. No shadow (it is a docked control). */
+@layer kit {
+  .fader {
+    box-sizing: border-box;
+    display: flex;
+    align-self: stretch;
+    width: var(--fader-w, 28px);
+    min-width: var(--hit-min);
+    min-height: 64px;
+    border-radius: var(--ui-radius-1);
+    cursor: ns-resize;
+    touch-action: none;
+    user-select: none;
+    outline: none;
+  }
+
+  .rail {
+    position: relative;
+    flex: 1;
+    margin: 0 auto;
+    width: 100%;
+  }
+
+  .groove {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 50%;
+    width: 2px;
+    margin-left: -1px;
+    background: var(--ui-boundary);
+  }
+
+  /* The cap sits at --norm of the travel (rail height minus cap height). */
+  .cap {
+    position: absolute;
+    left: 3px;
+    right: 3px;
+    height: 12px;
+    bottom: calc(var(--norm, 0) * (100% - 12px));
+    box-sizing: border-box;
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g3);
+  }
+
+  /* The centre line is the reading edge, so the cap's position is exact. */
+  .cap::after {
+    content: "";
+    position: absolute;
+    left: 2px;
+    right: 2px;
+    top: 50%;
+    height: 2px;
+    margin-top: -1px;
+    background: var(--ui-ink);
+  }
+
+  .fader:is(:hover, [data-state="hover"]) .cap {
+    background: var(--ui-g4);
+  }
+
+  .fader:is(:focus-visible, [data-state="focus"]) {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 0;
+  }
+
+  .fader:is([data-dragging="true"], [data-state="active"]) .cap {
+    border-color: var(--ui-value);
+  }
+
+  .fader[data-disabled] {
+    opacity: var(--ui-mute-opacity);
+    cursor: default;
+    pointer-events: none;
+  }
+}
