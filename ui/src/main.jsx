@@ -39,14 +39,22 @@ if (view === 'node-editor') {
   document.documentElement.setAttribute('data-xleth-backdrop', initialBackdropMode)
 }
 
+// Dev-only UI kit gallery (ui/src/ui-kit/Gallery.jsx): compiled in only when built
+// with VITE_XLETH_UI_KIT_GALLERY=1 (`npm run dev:ui-kit`, `npm run shots:gallery`),
+// and shown at `?view=ui-kit`. The normal build never contains it.
+const UI_KIT_GALLERY = import.meta.env.VITE_XLETH_UI_KIT_GALLERY === '1' || import.meta.env.VITE_XLETH_UI_KIT_GALLERY === 'true'
+const Gallery = UI_KIT_GALLERY ? React.lazy(() => import('./ui-kit/Gallery.jsx')) : null
+
 console.log('[UI] App mounting', view ? `(view=${view}, key=${storeKey})` : '')
 
 ReactDOM.createRoot(document.getElementById('root')).render(
   <React.StrictMode>
     <ThemeProvider>
-      {view === 'node-editor' && storeKey
-        ? <NodeEditorWindow storeKey={storeKey} trackPos={trackPos ? Number(trackPos) : null} />
-        : <XlethRoot />}
+      {Gallery && view === 'ui-kit'
+        ? <React.Suspense fallback={null}><Gallery /></React.Suspense>
+        : view === 'node-editor' && storeKey
+          ? <NodeEditorWindow storeKey={storeKey} trackPos={trackPos ? Number(trackPos) : null} />
+          : <XlethRoot />}
     </ThemeProvider>
   </React.StrictMode>
 )

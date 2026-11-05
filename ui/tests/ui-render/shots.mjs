@@ -11,6 +11,10 @@
 //   npm run shots -- --label before                 build + capture
 //   npm run shots -- --label after --no-build       capture the existing dist/
 //   npm run shots -- --compare before after         pixel diff (+ report deltas)
+//   npm run shots:gallery -- --label kit            UI kit gallery (Phase 2) at 100% and 150% zoom
+//                                                    -> gallery-100.png, gallery-150.png, report.json
+//                                                    (built into tests/ui-render/out/_gallery-build with
+//                                                    VITE_XLETH_UI_KIT_GALLERY=1, meters frozen)
 //   Options: --channel msedge|chrome|chromium   (default msedge, env XLETH_SHOTS_CHANNEL)
 //            --executable <path>                use a specific browser binary
 //            --port <n>                         preview port (default 4173)
@@ -41,6 +45,7 @@ function parseArgs(argv) {
     const a = argv[i]
     if (a === '--label') args.label = argv[++i]
     else if (a === '--no-build') args.build = false
+    else if (a === '--gallery') args.gallery = true
     else if (a === '--channel') args.channel = argv[++i]
     else if (a === '--executable') args.executable = argv[++i]
     else if (a === '--port') args.port = Number(argv[++i])
@@ -152,6 +157,63 @@ function auditTextInPage({ minContrast, minFontPx }) {
   return out
 }
 
+const GALLERY_OUT_DIR = path.join('tests', 'ui-render', 'out', '_gallery-build')
+
+// Phase 2: the dev-only UI kit gallery, full page, at 100% and 150% zoom.
+async function captureGallery(args) {
+  const { chromium } = await import('playwright-core')
+  const vite = await import('vite')
+  process.env.VITE_XLETH_UI_KIT_GALLERY = '1'
+  const buildOpts = { root: UI_ROOT, logLevel: 'warn', build: { outDir: GALLERY_OUT_DIR, emptyOutDir: true } }
+
+  if (args.build) {
+    log('vite build (gallery) …')
+    await vite.build(buildOpts)
+  } else if (!fs.existsSync(path.join(UI_ROOT, GALLERY_OUT_DIR, 'index.html'))) {
+    throw new Error(`${GALLERY_OUT_DIR}/index.html missing; run without --no-build`)
+  }
+
+  const server = await vite.preview({ ...buildOpts, preview: { port: args.port, strictPort: true, host: '127.0.0.1' } })
+  const url = `http://127.0.0.1:${args.port}/?view=ui-kit&shots=1`
+  const launchOpts = args.executable ? { executablePath: args.executable } : { channel: args.channel }
+  const browser = await chromium.launch({ ...launchOpts, headless: true })
+  const outDir = path.join(OUT_ROOT, args.label)
+  fs.rmSync(outDir, { recursive: true, force: true })
+  fs.mkdirSync(outDir, { recursive: true })
+
+  const report = { label: args.label, generatedAt: new Date().toISOString(), browser: `${args.executable || args.channel} ${browser.version()}`, thresholds: { minContrast: MIN_CONTRAST, minFontPx: MIN_FONT_PX }, note: 'UI kit gallery; meters show a frozen synthetic test signal.', zooms: {} }
+  try {
+    for (const zoom of [1, 1.5]) {
+      const context = await browser.newContext({ viewport: { width: 1920, height: 1080 }, deviceScaleFactor: 1, reducedMotion: 'reduce' })
+      const page = await context.newPage()
+      const pageErrors = []
+      const consoleErrors = []
+      page.on('pageerror', (e) => pageErrors.push(String(e.message || e)))
+      page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text().slice(0, 300)) })
+      await page.goto(`${url}&zoom=${zoom}`, { waitUntil: 'networkidle' })
+      await page.waitForSelector('[data-testid="ui-kit-gallery"]')
+      await page.evaluate(() => document.fonts.ready)
+      await page.addStyleTag({ content: '*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}' })
+      await page.waitForTimeout(500)
+      const name = `gallery-${Math.round(zoom * 100)}`
+      // CSS zoom defeats fullPage's height measurement: size the viewport to the gallery instead.
+      const bottom = await page.evaluate(() => Math.ceil(document.querySelector('[data-testid="ui-kit-gallery"]').getBoundingClientRect().bottom))
+      await page.setViewportSize({ width: 1920, height: Math.max(1080, bottom + 16) })
+      await page.waitForTimeout(250)
+      await page.screenshot({ path: path.join(outDir, `${name}.png`) })
+      const audit = await page.evaluate(auditTextInPage, { minContrast: MIN_CONTRAST, minFontPx: MIN_FONT_PX })
+      report.zooms[name] = { ...audit, pageErrors, consoleErrors }
+      log(`${name}: ${audit.total} text nodes, ${audit.lowContrast} < ${MIN_CONTRAST}:1, ${audit.small} < ${MIN_FONT_PX}px, ${pageErrors.length} page errors`)
+      await context.close()
+    }
+  } finally {
+    await browser.close()
+    await new Promise((resolve) => server.httpServer.close(resolve))
+  }
+  fs.writeFileSync(path.join(outDir, 'report.json'), JSON.stringify(report, null, 2))
+  log('wrote', path.relative(UI_ROOT, outDir))
+}
+
 async function capture(args) {
   const { chromium } = await import('playwright-core')
   const vite = await import('vite')
@@ -257,4 +319,5 @@ async function compare(args) {
 
 const args = parseArgs(process.argv.slice(2))
 if (args.compare) await compare(args)
+else if (args.gallery) await captureGallery(args)
 else await capture(args)

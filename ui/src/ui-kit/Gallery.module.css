@@ -1,0 +1,78 @@
+/* Dev-only gallery layout. Same tokens as the kit; nothing here ships in the
+ * normal build. */
+@layer kit {
+  .page {
+    box-sizing: border-box;
+    min-height: 100vh;
+    background: var(--ui-g1);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+  }
+
+  .section {
+    padding-bottom: var(--space-3);
+  }
+
+  .row {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-3) 0;
+  }
+
+  .spec {
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+  }
+
+  .spec[data-wide] {
+    min-width: 320px;
+  }
+
+  .specBody {
+    padding: var(--space-2);
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
+  }
+
+  .caption {
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+
+  .inline {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .tall {
+    display: flex;
+    height: 200px;
+  }
+
+  .faders {
+    display: flex;
+    gap: var(--space-2);
+    height: 160px;
+  }
+
+  .faderCol {
+    display: flex;
+  }
+
+  .narrow {
+    width: 260px;
+  }
+
+  .region {
+    width: 360px;
+    min-height: 56px;
+    background: var(--ui-g0);
+  }
+}

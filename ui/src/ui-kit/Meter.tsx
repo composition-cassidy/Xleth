@@ -187,10 +187,17 @@ export default function Meter(props: MeterProps) {
     };
   }, [subscribe, kick]);
 
-  // Channel count or range changed: restart the states.
+  // Channel count or range CHANGED (not merely mounted): restart the states. Comparing
+  // against the previous values keeps a first push from the feed (which runs in an
+  // earlier effect, and twice under StrictMode) from being wiped.
+  const shapeRef = useRef({ channels, min });
   useEffect(() => {
-    inputRef.current = Array.from({ length: channels }, () => min);
-    statesRef.current = Array.from({ length: channels }, () => initialMeterState(min));
+    const prev = shapeRef.current;
+    if (prev.channels !== channels || prev.min !== min) {
+      shapeRef.current = { channels, min };
+      inputRef.current = Array.from({ length: channels }, () => min);
+      statesRef.current = Array.from({ length: channels }, () => initialMeterState(min));
+    }
     draw();
   }, [channels, min, max, draw]);
 

@@ -6,6 +6,7 @@
   "scripts": {
     "dev": "concurrently --kill-others \"vite\" \"wait-on http://localhost:5173 && electron .\"",
     "dev:clip-controls": "set VITE_XLETH_CLIP_CONTROL_TUNER=1&& concurrently --kill-others \"vite --force\" \"wait-on http://localhost:5173 && electron .\"",
+    "dev:ui-kit": "set VITE_XLETH_UI_KIT_GALLERY=1&& concurrently --kill-others \"vite --force\" \"wait-on http://localhost:5173 && electron .\"",
     "dev:designer": "set VITE_XLETH_PLUGIN_UI_DESIGNER=1&& concurrently --kill-others \"vite --force\" \"wait-on http://localhost:5173 && electron .\"",
     "build": "vite build",
     "build:designer": "set VITE_XLETH_PLUGIN_UI_DESIGNER=1&& vite build",
@@ -17,6 +18,7 @@
     "lint:css": "stylelint \"src/ui-kit/**/*.css\" \"src/**/*.module.css\"",
     "check:legacy-css": "node scripts/check-legacy-css.mjs",
     "shots": "node tests/ui-render/shots.mjs",
+    "shots:gallery": "node tests/ui-render/shots.mjs --gallery",
     "test:watch": "vitest",
     "test:smoke": "playwright test --config playwright.smoke.config.ts",
     "baseline:build": "vite build",
