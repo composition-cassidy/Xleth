@@ -232,6 +232,23 @@ export function deriveTheme(base: BaseTokens, derivationDetached: ReadonlyArray<
   put('--theme-waveform-envelope-fill',        withAlpha(accent, 0.35));
   put('--theme-waveform-rms-body',             withAlpha(accent, 0.55));
 
+  // ── UI kit neutral ramp (ui/DESIGN.md §3.1) ──────────────────────────────
+  // g0/g1/ink are the base tokens themselves; the rest are fixed lightness
+  // steps from bg-surface (g2..g4) and from text (ink-2, ink-3, boundary).
+  // The deltas reproduce the contract values exactly from the Default base
+  // (#141414 / #1B1B1B / #E6E6E6): g2 #222222, g3 #2B2B2B, g4 #3A3A3A,
+  // ink-2 #B4B4B4, ink-3 #929292, boundary #747474. Hue and saturation are
+  // inherited, so a neutral base yields a neutral ramp.
+  put('--theme-ui-g0',       bgPrimary);
+  put('--theme-ui-g1',       bgSurface);
+  put('--theme-ui-g2',       shift(bgSurface, { dL: 2.745 }));
+  put('--theme-ui-g3',       shift(bgSurface, { dL: 6.275 }));
+  put('--theme-ui-g4',       shift(bgSurface, { dL: 12.157 }));
+  put('--theme-ui-ink',      text);
+  put('--theme-ui-ink-2',    shift(text, { dL: -19.608 }));
+  put('--theme-ui-ink-3',    shift(text, { dL: -32.941 }));
+  put('--theme-ui-boundary', shift(text, { dL: -44.706 }));
+
   return out;
 }
 

@@ -4,11 +4,16 @@ const HEX6 = /^#[0-9a-fA-F]{6}$/
 // lightness from the original full-saturation swatches, so full-fill Clip
 // tracks don't glow against the dark UI. Custom user-picked colors are
 // untouched; only these 16 defaults changed.
+//
+// UI rebuild Phase 0: slots 4, 6, 8, 9, 13 and 16 were adjusted to satisfy the
+// identity-palette rules in ui/DESIGN.md section 3.4 (hue >= 20 deg from the
+// value/rec/solo/danger hues, label contrast >= 4.5:1). Must stay identical to
+// the --theme-track-palette-* values in shipped/xleth-default.json (tested).
 export const TRACK_PALETTE_FALLBACK = [
-  '#58B2CE', '#77BE87', '#DD925D', '#8A6FE0',
-  '#D56DA3', '#DEB963', '#6186CF', '#4AB7A9',
-  '#DF6666', '#97BB65', '#A974DE', '#4CA9D3',
-  '#D3AA41', '#8496BA', '#6DCAA5', '#DB6A7B',
+  '#58B2CE', '#77BE87', '#DD925D', '#8D72E3',
+  '#D56DA3', '#C7C368', '#6186CF', '#4EB7A4',
+  '#DB6E3B', '#97BB65', '#A974DE', '#4CA9D3',
+  '#E99D50', '#8496BA', '#6DCAA5', '#D76A8F',
 ]
 
 export const TRACK_COLOR_MODE_AUTO = 'auto'

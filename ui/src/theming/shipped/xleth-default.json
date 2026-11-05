@@ -2,19 +2,22 @@
   "schemaVersion": 1,
   "name": "Xleth Default",
   "author": "Xleth",
-  "description": "The shipped default palette. Matches the pre-theming hardcoded values in ui/src/styles/theme.css exactly (spec §7.1). Class A/B derived tokens are now produced by deriveTheme() byte-identically; warning and success ship as catalog explicit defaults (spec §3.3).",
+  "description": "The shipped default. Surfaces and text sit on the neutral UI-kit ramp (ui/DESIGN.md §3.1): bg-primary=g0, bg-surface=g1, text=ink, text-muted=ink-2, border-subtle=g4; the other derived tokens follow from these. Accent and danger are unchanged. Six of the 16 track-palette entries were adjusted to meet the identity-palette rules (ui/DESIGN.md §3.4).",
   "locked": true,
 
   "_comment_detach": "Post-Track-B formula tuning, every §3.2 derived token is emitted correctly by deriveTheme(), so no derivationDetached entries are required for the shipped default.",
 
-  "derivationDetached": [],
+  "derivationDetached": ["--theme-text-muted", "--theme-border-subtle"],
 
   "tokens": {
-    "--theme-bg-primary": "#0A0A0F",
-    "--theme-bg-surface": "#1A1A24",
+    "--theme-bg-primary": "#141414",
+    "--theme-bg-surface": "#1B1B1B",
     "--theme-accent":     "#33CED6",
-    "--theme-text":       "#E8E8ED",
+    "--theme-text":       "#E6E6E6",
     "--theme-danger":     "#FF4757",
+
+    "--theme-text-muted":    "var(--theme-ui-ink-2)",
+    "--theme-border-subtle": "var(--theme-ui-g4)",
 
     "--theme-chrome-shadow":                "0 12px 40px rgba(0, 0, 0, 0.6)",
     "--theme-modal-shadow":                 "0 12px 40px rgba(0, 0, 0, 0.6)",
@@ -40,11 +43,11 @@
     "--theme-syllable-section-alt":         "rgba(51, 206, 214, 0.06)",
     "--theme-drag-preview-default":         "#6aa9ff",
     "--theme-fg-inverse":                   "#ffffff",
-    "--theme-bg-inset":                     "#0d0d14",
+    "--theme-bg-inset":                     "#141414",
     "--theme-overlay-subtle":               "rgba(0, 0, 0, 0.25)",
     "--theme-overlay-medium":               "rgba(0, 0, 0, 0.60)",
     "--theme-overlay-heavy":                "rgba(0, 0, 0, 0.75)",
-    "--theme-text-on-accent":               "#0d0d14",
+    "--theme-text-on-accent":               "#141414",
     "--theme-accent-bg-subtle":             "rgba(51, 206, 214, 0.08)",
     "--theme-accent-bg-medium":             "rgba(51, 206, 214, 0.10)",
     "--theme-semantic-danger-bg-subtle":    "rgba(255, 71, 87, 0.12)",
@@ -74,18 +77,18 @@
     "--theme-track-palette-1":  "#58B2CE",
     "--theme-track-palette-2":  "#77BE87",
     "--theme-track-palette-3":  "#DD925D",
-    "--theme-track-palette-4":  "#8A6FE0",
+    "--theme-track-palette-4":  "#8D72E3",
     "--theme-track-palette-5":  "#D56DA3",
-    "--theme-track-palette-6":  "#DEB963",
+    "--theme-track-palette-6":  "#C7C368",
     "--theme-track-palette-7":  "#6186CF",
-    "--theme-track-palette-8":  "#4AB7A9",
-    "--theme-track-palette-9":  "#DF6666",
+    "--theme-track-palette-8":  "#4EB7A4",
+    "--theme-track-palette-9":  "#DB6E3B",
     "--theme-track-palette-10": "#97BB65",
     "--theme-track-palette-11": "#A974DE",
     "--theme-track-palette-12": "#4CA9D3",
-    "--theme-track-palette-13": "#D3AA41",
+    "--theme-track-palette-13": "#E99D50",
     "--theme-track-palette-14": "#8496BA",
     "--theme-track-palette-15": "#6DCAA5",
-    "--theme-track-palette-16": "#DB6A7B"
+    "--theme-track-palette-16": "#D76A8F"
   }
 }

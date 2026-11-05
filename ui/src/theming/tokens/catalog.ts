@@ -79,6 +79,10 @@ export const SUBSYSTEMS: ReadonlyArray<SubsystemMeta> = [
   { key: 'text',       section: '3.2', displayName: 'Text',         category: 'Foundations' },
   { key: 'borders',    section: '3.2', displayName: 'Borders',      category: 'Foundations' },
   { key: 'depth',      section: '3.2', displayName: 'Depth & elevation', category: 'Foundations' },
+  // UI kit (ui/DESIGN.md): neutral ramp, semantic colours, signal-type hues.
+  { key: 'ui-neutral',  section: 'ui-kit', displayName: 'UI kit: neutral ramp',      category: 'Foundations' },
+  { key: 'ui-semantic', section: 'ui-kit', displayName: 'UI kit: semantic colours',  category: 'Foundations' },
+  { key: 'ui-signal',   section: 'ui-kit', displayName: 'UI kit: signal types',      category: 'Foundations' },
 
   // Window system
   { key: 'panel-chrome', section: '3.3', displayName: 'Panel chrome',        category: 'Window system', aliases: ['chrome-layout'] },
@@ -1013,6 +1017,37 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   explicit('--theme-track-palette-14', '#8496BA', 'solid', 'Labels', 'track-palette'),
   explicit('--theme-track-palette-15', '#6DCAA5', 'solid', 'Labels', 'track-palette'),
   explicit('--theme-track-palette-16', '#DB6A7B', 'solid', 'Labels', 'track-palette'),
+
+  // ─── UI kit: neutral ramp (ui/DESIGN.md §3.1) ─────────────────────────
+  // Derived from the base tokens (bg-primary -> g0, bg-surface -> g1, text ->
+  // ink) so Simple mode drives the kit. The kit reads them through the
+  // `--ui-*` aliases in ui-kit/tokens.css, never by these names.
+  derivedFormula('--theme-ui-g0',       'solid', 'Foundations', 'ui-neutral'),
+  derivedFormula('--theme-ui-g1',       'solid', 'Foundations', 'ui-neutral'),
+  derivedFormula('--theme-ui-g2',       'solid', 'Foundations', 'ui-neutral'),
+  derivedFormula('--theme-ui-g3',       'solid', 'Foundations', 'ui-neutral'),
+  derivedFormula('--theme-ui-g4',       'solid', 'Foundations', 'ui-neutral'),
+  derivedFormula('--theme-ui-boundary', 'solid', 'Foundations', 'ui-neutral'),
+  derivedFormula('--theme-ui-ink',      'solid', 'Foundations', 'ui-neutral'),
+  derivedFormula('--theme-ui-ink-2',    'solid', 'Foundations', 'ui-neutral'),
+  derivedFormula('--theme-ui-ink-3',    'solid', 'Foundations', 'ui-neutral'),
+
+  // ─── UI kit: semantic colours (ui/DESIGN.md §3.2) ─────────────────────
+  alias('--theme-ui-value',  '--theme-accent',  'ui-semantic', 'Foundations'),
+  alias('--theme-ui-select', '--theme-accent',  'ui-semantic', 'Foundations'),
+  alias('--theme-ui-clip',   '--theme-danger',  'ui-semantic', 'Foundations'),
+  alias('--theme-ui-on-bg',  '--theme-ui-ink',  'ui-semantic', 'Foundations'),
+  alias('--theme-ui-on-fg',  '--theme-ui-g1',   'ui-semantic', 'Foundations'),
+  // Record/arm: FILLS AND GLYPHS ONLY (4.40:1 on g1); text uses rec-text.
+  explicit('--theme-ui-rec',      '#E5484D', 'solid', 'Foundations', 'ui-semantic'),
+  explicit('--theme-ui-rec-text', '#F06A6E', 'solid', 'Foundations', 'ui-semantic'),
+  explicit('--theme-ui-solo',     '#E8B53A', 'solid', 'Foundations', 'ui-semantic'),
+
+  // ─── UI kit: signal-type hues (ui/DESIGN.md §3.3) ─────────────────────
+  explicit('--theme-ui-signal-audio',     '#6FA7EE', 'solid', 'Foundations', 'ui-signal'),
+  explicit('--theme-ui-signal-events',    '#69BA7C', 'solid', 'Foundations', 'ui-signal'),
+  explicit('--theme-ui-signal-parameter', '#AA95E8', 'solid', 'Foundations', 'ui-signal'),
+  explicit('--theme-ui-signal-video',     '#CF88C8', 'solid', 'Foundations', 'ui-signal'),
 ];
 
 // ──────────────────────────────────────────────────────────────────────────

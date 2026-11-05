@@ -18,8 +18,12 @@ import '@fontsource/noto-sans/400.css'
 import '@fontsource/noto-sans/500.css'
 import '@fontsource/noto-sans/600.css'
 import '@fontsource/noto-sans/700.css'
+// Timecode and bars|beats readouts (ui/DESIGN.md section 4).
+import '@fontsource/ibm-plex-mono/400.css'
+import '@fontsource/ibm-plex-mono/500.css'
 
 import './styles/legacy.css'
+import './ui-kit/tokens.css'
 
 const params = new URLSearchParams(window.location.search)
 const view = params.get('view')

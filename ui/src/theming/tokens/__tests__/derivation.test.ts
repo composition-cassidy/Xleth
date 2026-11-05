@@ -243,6 +243,16 @@ describe('deriveTheme — structural contracts', () => {
       '--theme-lipsync-selection-fill',
       '--theme-waveform-envelope-fill',
       '--theme-waveform-rms-body',
+      // UI kit neutral ramp (ui/DESIGN.md §3.1)
+      '--theme-ui-g0',
+      '--theme-ui-g1',
+      '--theme-ui-g2',
+      '--theme-ui-g3',
+      '--theme-ui-g4',
+      '--theme-ui-ink',
+      '--theme-ui-ink-2',
+      '--theme-ui-ink-3',
+      '--theme-ui-boundary',
     ];
     for (const k of expected) expect(d[k]).toBeTruthy();
     expect(Object.keys(d).length).toBe(expected.length);

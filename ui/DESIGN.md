@@ -147,11 +147,26 @@ that makes it *(Step 3)*.
    (`relativeLuminance`, `contrastOf`, exported with no behaviour change). Note that
    `contrastText` there is a text-versus-background solver, not a label picker.
 
-**Audit of the current default palette** (before any change): slots **6** (`#DEB963`, 1° from
-solo), **8** (`#4AB7A9`, 17° from accent), **9** (`#DF6666`, 1° from rec), **13** (`#D3AA41`,
-2° from solo) and **16** (`#DB6A7B`, 11° from rec) violate rule 2. Slot **4** (`#8A6FE0`) is the
-only borderline label-contrast entry (4.50 on g1, to be measured exactly in the test). These
-five or six are the only entries that may change.
+**Audit and the changes made in Phase 0.** Five slots violated rule 2 and one failed rule 3
+(measured exactly: `#8A6FE0` is 4.454:1 on g1, not 4.50). Only those six changed, each keeping
+its lightness and chroma and moving hue to the nearest legal position with at least 8° of
+clearance from every other slot (slot 4 instead gained 0.01 of lightness). Smallest movement was
+chosen on purpose: existing `auto`/`paletteSlot` tracks recolour with the palette.
+
+| Slot | Before | After | OKLCH hue | Why | Label on g1 |
+|---|---|---|---|---|---|
+| 4 | `#8A6FE0` | `#8D72E3` | 291.9° → 292.0° | label contrast | 4.45 → 4.63 |
+| 6 | `#DEB963` | `#C7C368` | 86.5° → 106.5° | 1.5° from solo → 21.5° | 9.2 → 9.4 |
+| 8 | `#4AB7A9` | `#4EB7A4` | 183.6° → 179.5° | 16.4° from value → 20.5° | 7.1 → 7.1 |
+| 9 | `#DF6666` | `#DB6E3B` | 22.1° → 44.0° | 0.9° from rec → 21.0° | 5.2 → 5.2 |
+| 13 | `#D3AA41` | `#E99D50` | 87.2° → 63.9° | 2.2° from solo → 21.1° | 7.9 → 7.7 |
+| 16 | `#DB6A7B` | `#D76A8F` | 12.4° → 0.2° | 10.6° from rec → 22.8° | 5.2 → 5.2 |
+
+Known trade-offs of keeping hue exclusion: the palette no longer contains a pure red (that hue
+belongs to rec/clip), and slots 3, 9 and 13 are now three oranges (44°, 55°, 64°) separated
+mainly by lightness and chroma, as are slots 5 and 16 (pinks, 11° apart). Sixteen hues in the 240°
+that remain average 15° apart, so some crowding is inherent. All six changes are asserted by
+`ui-kit/__tests__/tokens.test.ts`, which also fails if any other slot moves.
 
 Where edits land: `xleth-default.json` (explicit values) and `TRACK_PALETTE_FALLBACK` in
 `trackColorResolver.js`. The catalog's own defaults are **not** changed, because `xleth-warm`
@@ -161,6 +176,33 @@ slots; fixing that is Phase 7).
 
 The palette is generated against the *default* accent and is **not recomputed when a user
 changes their accent**. Phase 7 adds a theme-editor warning for accent/identity hue clashes.
+
+### 3.5 How legacy surfaces map onto the ramp (Default theme only)
+
+`xleth-default.json` now sits on the ramp; the legacy `--theme-*` names are unchanged, so
+nothing in `app.css` needed editing apart from one declaration.
+
+| Legacy token | Was | Now |
+|---|---|---|
+| `--theme-bg-primary`, `--theme-bg-inset` | `#0A0A0F`, `#0D0D14` | `#141414` (g0) |
+| `--theme-bg-surface` | `#1A1A24` | `#1B1B1B` (g1) |
+| `--theme-bg-secondary` / `-tertiary` / `-hover` / `-active` / `-elevated` | tinted, derived | grey, derived: `#1C1C1C` / `#202020` / `#252525` / `#2F2F2F` / `#252525` |
+| `--theme-text` | `#E8E8ED` | `#E6E6E6` (ink) |
+| `--theme-text-muted` | `#8888A0` (derived) | `var(--theme-ui-ink-2)` `#B4B4B4` |
+| `--theme-border-subtle` | `#2A2A38` (derived) | `var(--theme-ui-g4)` `#3A3A3A` |
+| `--theme-text-on-accent` | `#0D0D14` | `#141414` |
+| `--xleth-flat-text-muted` (`app.css`) | `var(--theme-text-subtle)` (2.4:1) | `var(--ui-ink-3)` (5.54:1) |
+
+The legacy three-tier text ladder therefore reads ink (13.8) > ink-2 (8.3) > ink-3 (5.5).
+`--theme-text-subtle` and `--theme-text-placeholder` stay derived (now `#595959`, 2.46:1 on g1, still below the floor):
+they are the legacy "below the floor" tier and disappear as components are rebuilt; the kit
+never uses them. Panel-local tinted tokens in the Default theme (for example
+`--theme-timeline-lane-bg`, `--theme-syllable-splitter-bg`, `--theme-sampler-key-border`) and
+hard-coded hexes inside `app.css` are **not** touched in Phase 0; each moves with its panel.
+
+The kit tokens (`--ui-*`) follow the base tokens through `deriveTheme`, so for a tinted base
+(warm, cool, an Appearance theme) they are tinted too, and for the shipped Light theme the
+`ink-*` steps do not invert. **The kit is dark-only until Phase 7.**
 
 ## 4. Typography
 

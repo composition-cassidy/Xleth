@@ -162,7 +162,7 @@ function contrastTarget(shippedRatio, contrastScale) {
 // WCAG 2.1 relative luminance. This, not HSL lightness, is what perceived
 // contrast is actually computed from — the whole reason the old L-space math
 // couldn't reason about legibility.
-function relativeLuminance(hex) {
+export function relativeLuminance(hex) {
   const { r, g, b } = hexToRgb(hex);
   const ch = (c) => {
     const s = c / 255;
@@ -172,7 +172,7 @@ function relativeLuminance(hex) {
 }
 
 // WCAG contrast ratio between two relative luminances.
-function contrastOf(lumA, lumB) {
+export function contrastOf(lumA, lumB) {
   const hi = Math.max(lumA, lumB);
   const lo = Math.min(lumA, lumB);
   return (hi + 0.05) / (lo + 0.05);

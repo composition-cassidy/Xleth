@@ -22669,7 +22669,7 @@ input[type="radio"] {
   --xleth-flat-preview-border: var(--theme-border-subtle);
   --xleth-flat-text: var(--theme-text);
   --xleth-flat-text-secondary: var(--theme-text-muted);
-  --xleth-flat-text-muted: var(--theme-text-subtle);
+  --xleth-flat-text-muted: var(--ui-ink-3);
   --xleth-flat-text-subtle: var(--theme-text-placeholder);
   --xleth-flat-empty-text: var(--theme-text-placeholder);
   --xleth-flat-accent: var(--theme-accent);
