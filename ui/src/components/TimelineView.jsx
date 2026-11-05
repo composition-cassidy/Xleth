@@ -40,11 +40,12 @@ import {
   BEATS_PER_BAR, DEFAULT_TRACK_HEIGHT, TRACK_HEIGHT, PPQ, RULER_HEIGHT, ADD_TRACK_ROW_HEIGHT,
   setTimelineTrackHeight, zoomTrackHeight,
   pixelToBeat, snapBeatToGrid, snapTickToGrid, beatsToTicks, regionDurationToTicks,
-  GRANULARITY_BEATS, MIN_PPB, MAX_PPB, ZOOM_FACTOR,
+  GRANULARITY_BEATS, MAX_PPB, ZOOM_FACTOR,
 } from '../constants/timeline.js'
 import { currentRegime } from './timeline/waveformRegime.js'
 import { reconcileById } from './timeline/listReconcile.js'
 import { anchoredScrollX, scrollSpringWriteback } from './timeline/viewportAnchor.js'
+import { contentEndBeats, fitBeatsFor, minPpbFor, maxScrollFor, wheelZoomSteps } from './timeline/zoomFit.js'
 import { hiResCoversWindow } from './timeline/hiResCoverage.js'
 import { findCoveringEntry, insertEntry } from './timeline/hiResRegionCache.js'
 import { planRegionFetches } from './timeline/hiResFetchPlanner.js'
@@ -963,7 +964,7 @@ export default function TimelineView({
   const { scrollOffset, scrollOffsetRef, maxScrollRef, applyScroll, scrollBy, scrollTo, setMaxScroll } =
     useTimelineScroll(() => commitViewportRedraw('scroll'))
 
-  const { pixelsPerBeat, pixelsPerBeatRef, applyZoom } =
+  const { pixelsPerBeat, pixelsPerBeatRef, minPpbRef, setMinPpb, applyZoom } =
     useTimelineZoom((ppb) => {
       commitViewportRedraw('zoom')
       // Keep the scroll clamp bound current on every tick, not just at
@@ -972,7 +973,7 @@ export default function TimelineView({
       // clipping the animator's cursor-anchored scroll math mid-gesture.
       // (See the ON-SETTLE maxScroll effect below for the general-purpose
       // recompute that also covers canvasWidth/totalBeats changes.)
-      setMaxScroll(Math.max(0, totalBeats - canvasWidth / (ppb || 40)))
+      setMaxScroll(scrollBoundFor(ppb))
     })
   const scrollContainerRef = useRef(null)
 
@@ -2141,7 +2142,17 @@ export default function TimelineView({
   // budget, without wiring a permanent debug UI.
   useEffect(() => {
     if (!import.meta.env.DEV) return
-    window.__xlethTimelineDebug = { getDrawStats: () => canvasRef.current?.getDrawStats() }
+    window.__xlethTimelineDebug = {
+      getDrawStats: () => canvasRef.current?.getDrawStats(),
+      getView: () => ({
+        ppb: pixelsPerBeatRef.current,
+        scrollX: scrollOffsetRef.current,
+        maxScroll: maxScrollRef.current,
+        targetPpb: viewAnimatorRef.current?.getTarget('ppb'),
+        targetScrollX: viewAnimatorRef.current?.getTarget('scrollX'),
+        anchor: zoomAnchorRef.current,
+      }),
+    }
     return () => { delete window.__xlethTimelineDebug }
   }, [])
 
@@ -2191,20 +2202,27 @@ export default function TimelineView({
   // ── Total song length (independent of container width) ────────────────────
   // Derived from the longest clip/pattern-block end + 64 bars of padding,
   // floored at 512 bars. This decouples horizontal scroll range from layout.
+  const songEndBeats = useMemo(
+    () => contentEndBeats([clips, patternBlocks, automationClips]),
+    [clips, patternBlocks, automationClips],
+  )
   const totalBeats = useMemo(() => {
     const minBeats = 512 * BEATS_PER_BAR // 2048 beats (512 bars)
     const padBeats = 64 * BEATS_PER_BAR  // 64 bars trailing room
-    let maxEndBeat = 0
-    for (const c of clips) {
-      const end = (c.positionTicks + c.durationTicks) / PPQ
-      if (end > maxEndBeat) maxEndBeat = end
-    }
-    for (const b of patternBlocks) {
-      const end = (b.positionTicks + b.durationTicks) / PPQ
-      if (end > maxEndBeat) maxEndBeat = end
-    }
-    return Math.max(minBeats, maxEndBeat + padBeats)
-  }, [clips, patternBlocks])
+    return Math.max(minBeats, songEndBeats + padBeats)
+  }, [songEndBeats])
+
+  // ── Zoom-out limit: the whole song fits the canvas ───────────────────────
+  // See timeline/zoomFit.js. Both inputs are independent of the zoom level,
+  // so zooming can never move its own limit (no clamp↔fit feedback loop).
+  const fitBeats = useMemo(() => fitBeatsFor(songEndBeats), [songEndBeats])
+  const minPpb = useMemo(() => minPpbFor(canvasWidth, fitBeats), [canvasWidth, fitBeats])
+
+  // The ONE scroll-bound formula every path uses (per-frame zoom commit, the
+  // settle effect below, and the scrollbar's extent), so they can't disagree.
+  const scrollBoundFor = useCallback((ppb) => maxScrollFor({
+    ppb, canvasWidth, workspaceBeats: totalBeats, fitBeats, minPpb,
+  }), [canvasWidth, totalBeats, fitBeats, minPpb])
 
   // ── ON-SETTLE: max scroll bound (total length minus the currently visible
   // window). setMaxScroll is a plain ref write (no re-render), so this is
@@ -2216,9 +2234,36 @@ export default function TimelineView({
   // it PER-FRAME during an active zoom so the view animator's cursor-
   // anchored scroll math is never clipped by a stale bound mid-gesture.
   useEffect(() => {
-    const visibleBeats = canvasWidth / (pixelsPerBeat || 40)
-    setMaxScroll(Math.max(0, totalBeats - visibleBeats))
-  }, [totalBeats, canvasWidth, pixelsPerBeat, setMaxScroll])
+    // The live ref, not the debounced state: this also runs when the song or
+    // canvas changes mid-gesture, and must bound the zoom actually on screen.
+    const bound = scrollBoundFor(pixelsPerBeatRef.current)
+    setMaxScroll(bound)
+    // A shrunk bound (content deleted, panel widened) must pull the view back
+    // in now — not leave it parked out of range until the next scroll input.
+    if (scrollOffsetRef.current > bound) {
+      const clamped = applyScroll(bound)
+      viewAnimatorRef.current?.setCurrent('scrollX', clamped)
+    }
+  }, [scrollBoundFor, pixelsPerBeat, setMaxScroll, applyScroll, pixelsPerBeatRef, scrollOffsetRef])
+
+  // Publish the zoom-out limit. If the view was sitting at the old limit
+  // (fully zoomed out) it stays fitted: resizing the panel or adding a clip
+  // past the end keeps the whole song on screen. A view zoomed in past a
+  // limit that just rose (clips removed, panel widened) is pulled up to it.
+  const prevMinPpbRef = useRef(null)
+  useEffect(() => {
+    const prevMin = prevMinPpbRef.current
+    prevMinPpbRef.current = minPpb
+    setMinPpb(minPpb)
+    const animator = viewAnimatorRef.current
+    if (!animator) return
+    const target = animator.getTarget('ppb')
+    const wasFitted = prevMin != null && target <= prevMin * (1 + 1e-6)
+    if (wasFitted || target < minPpb) {
+      zoomAnchorRef.current = null
+      animator.setTarget('ppb', minPpb, { immediate: true })
+    }
+  }, [minPpb, setMinPpb])
 
   // ── Track canvas area width for scrollbar ──────────────────────────────────
 
@@ -2286,16 +2331,20 @@ export default function TimelineView({
       const rect = canvasAreaRef.current?.getBoundingClientRect()
       if (!rect) return
       const animator = viewAnimatorRef.current
+      const steps = wheelZoomSteps(e.deltaY, e.deltaMode)
+      // Compound from the TARGET — a burst of same-direction wheel notches
+      // should land N steps from where we're already heading, not stall at
+      // wherever the spring has caught up to so far.
+      const target = animator.getTarget('ppb')
+      const nextPpb = Math.max(minPpbRef.current, Math.min(MAX_PPB, target * ZOOM_FACTOR ** steps))
+      // Pinned at a zoom limit: nothing to do. Re-anchoring here would only
+      // wake the animator to re-derive the scroll it already has.
+      if (nextPpb === target) return
       const cursorPixelX = e.clientX - rect.left
       // Anchor from the CURRENT (already-rendered) position, not the
       // target — the user is reacting to what's on screen right now.
       const cursorBeat = pixelToBeat(cursorPixelX, animator.getCurrent('scrollX'), animator.getCurrent('ppb'))
       zoomAnchorRef.current = { beat: cursorBeat, pixelX: cursorPixelX }
-      const factor = e.deltaY > 0 ? 1 / ZOOM_FACTOR : ZOOM_FACTOR
-      // Compound from the TARGET — a burst of same-direction wheel notches
-      // should land N steps from where we're already heading, not stall at
-      // wherever the spring has caught up to so far.
-      const nextPpb = Math.max(MIN_PPB, Math.min(MAX_PPB, animator.getTarget('ppb') * factor))
       animator.setTarget('ppb', nextPpb)
       return
     }
@@ -2329,7 +2378,7 @@ export default function TimelineView({
       sc.scrollTop = nextScrollTop
       viewAnimatorRef.current?.setCurrent('scrollY', nextScrollTop)
     }
-  }, [trackHeight, maxScrollRef, isFollowLocked])
+  }, [trackHeight, maxScrollRef, minPpbRef, isFollowLocked])
 
   const handleMiddleMousePan = useCallback((deltaXPx, deltaYPx) => {
     const followLocked = isFollowLocked()
@@ -5282,6 +5331,7 @@ export default function TimelineView({
                 ref={scrollbarRef}
                 scrollOffsetRef={scrollOffsetRef}
                 pixelsPerBeatRef={pixelsPerBeatRef}
+                maxScrollRef={maxScrollRef}
                 totalBeats={totalBeats}
                 canvasWidth={canvasWidth}
                 onScroll={(delta) => {

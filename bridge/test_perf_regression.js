@@ -233,6 +233,7 @@ async function main() {
     let lastSeenTickCount = -1;
     let lastDecodeCount = 0;
     let lastSnapshot = null;
+    const cadence0 = addon.diag_getVisualPreviewDiagnostic().counters || {};
     const measureStart = Date.now();
     while (Date.now() - measureStart < MEASURE_MS) {
       const d = addon.diag_getVisualPreviewDiagnostic();
@@ -287,6 +288,32 @@ async function main() {
     ok(measuredElapsedMs >= MEASURE_MS * 0.9 && measuredElapsedMs <= MEASURE_MS * 3,
        `measurement wall-clock duration sane (${measuredElapsedMs}ms for a ${MEASURE_MS}ms window)`);
 
+    // Frame cadence. The video thread used to derive its frame index from a
+    // transport position that only moves once per audio block, sampled by an
+    // independent timer: at 60 fps a third of published frames were repeats of
+    // the previous index and a third of indices were skipped, at full delivered
+    // FPS (so the FPS floor above could never see it). The smoothed clock +
+    // centre-of-frame pacing make a repeat structurally impossible in steady
+    // playback; a skip is only a genuine late tick.
+    console.log('\n[ playback cadence + readback policy ]');
+    const cad1 = (lastSnapshot && lastSnapshot.c) || {};
+    ok('cadencePublished' in cad1 && 'cadenceRepeated' in cad1 && 'cadenceSkipped' in cad1,
+       'diagnostic exposes counters.cadencePublished / cadenceRepeated / cadenceSkipped');
+    const published = (cad1.cadencePublished || 0) - (cadence0.cadencePublished || 0);
+    const repeated = (cad1.cadenceRepeated || 0) - (cadence0.cadenceRepeated || 0);
+    const skipped = (cad1.cadenceSkipped || 0) - (cadence0.cadenceSkipped || 0);
+    ok(published >= 60, `published ${published} playback frames in the window (need >= 60)`);
+    ok(repeated <= Math.ceil(published * 0.01),
+       `repeated frame indices = ${repeated} <= 1% of ${published} published`);
+    ok(skipped <= Math.ceil(published * 0.10),
+       `skipped frame indices = ${skipped} <= 10% of ${published} published`);
+    // The readback must stay on FastImmediate. The automatic switch to the
+    // AsyncQueued ring was removed after it was measured delivering 0-18 fps
+    // (warm-up readbacks tripped it on a workstation too); if anything
+    // re-introduces a switch, this goes red.
+    ok(cad1.readbackPolicyActive === 0,
+       `readback policy stayed FastImmediate (readbackPolicyActive=${cad1.readbackPolicyActive})`);
+
     // ── Summary table (always printed — this is what makes a failure
     //    diagnosable from CI output alone, no local repro needed) ───────────
     const c = (lastSnapshot && lastSnapshot.c) || {};
@@ -304,6 +331,7 @@ async function main() {
                 `readback=${fmtMs(c.avgReadbackUs)}ms swizzle=${fmtMs(c.avgSwizzleUs)}ms ` +
                 `wholeTick=${fmtMs(c.avgTickUs)}ms`);
     console.log(`cells/reqs (max seen): cells=${maxCells} reqs=${maxReqs}`);
+    console.log(`cadence          : published=${published} repeated=${repeated} skipped=${skipped}`);
     console.log('─────────────────────────────────────────────────────────');
 
   } finally {

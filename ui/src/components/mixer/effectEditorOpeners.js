@@ -29,6 +29,7 @@ import useSmartBalanceStore from '../../stores/smartBalanceStore.js'
 import useResonanceSuppressorStore from '../../stores/resonanceSuppressorStore.js'
 import useApexStore from '../../stores/apexStore.js'
 import useAmpStore from '../../stores/ampStore.js'
+import usePitchShifterStore from '../../stores/pitchShifterStore.js'
 import useGlueCompStore from '../../stores/glueCompStore.js'
 import useOptoCompStore from '../../stores/optoCompStore.js'
 import useFetCompStore from '../../stores/fetCompStore.js'
@@ -94,6 +95,9 @@ export const EFFECT_EDITORS = {
   amp: (trackId, nodeId, storeKey) => {
     useAmpStore.getState().open(trackId, nodeId, storeKey)
   },
+  pitchshifter: (trackId, nodeId, storeKey) => {
+    usePitchShifterStore.getState().open(trackId, nodeId, storeKey)
+  },
   glue: (trackId, nodeId, storeKey) => {
     useGlueCompStore.getState().open(trackId, nodeId, storeKey)
   },
@@ -139,6 +143,7 @@ const EFFECT_EDITOR_STORES = [
   useResonanceSuppressorStore,
   useApexStore,
   useAmpStore,
+  usePitchShifterStore,
   useGlueCompStore,
   useOptoCompStore,
   useFetCompStore,
@@ -192,6 +197,7 @@ export const PLUGIN_NAMES = {
   apex: 'APEX',
   gloss: 'GLOSS',
   amp: 'Amp Stack',
+  pitchshifter: 'Pitch Shifter',
   glue: 'Glue Comp',
   opto: 'Opto Comp',
   fet: 'FET Comp',

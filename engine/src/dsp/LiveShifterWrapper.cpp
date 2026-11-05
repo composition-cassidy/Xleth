@@ -109,6 +109,22 @@ struct SilentLogger : RubberBandLiveShifter::Logger
 const std::shared_ptr<RubberBandLiveShifter::Logger> g_silentLogger =
     std::make_shared<SilentLogger>();
 
+// The one reset path every shifter takes - the running one inline, the spare
+// ahead of time - so the two end in bit-identical states. `in` must be silent.
+// Prime AT UNITY: reset() re-arms R3LiveShifter's first-block pre-pad
+// (R3LiveShifter.cpp:337-346), which is ceil(ws * p) input zeros - 10368 of
+// them at +24 st - so without this the first few hundred milliseconds of audio
+// come out later than the latency we report, by a pitch-dependent amount.
+// Unity rather than the staged pitch also makes this the exact path the
+// calibration measured, so the compensation matches what the pipeline does.
+void primeAtUnity(RubberBandLiveShifter& s, const float* const* in, float* const* out)
+{
+    s.reset();
+    s.setPitchScale(1.0);
+    for (int i = 0; i < kPrimeBlocks; ++i)
+        s.shift(in, out);
+}
+
 } // namespace
 
 LiveShifterWrapper::LiveShifterWrapper() = default;
@@ -167,9 +183,9 @@ void LiveShifterWrapper::setFormantOption(Formant f) noexcept
     formantOption_.store((int) f, std::memory_order_relaxed);
 }
 
-void LiveShifterWrapper::rebuild()
+std::unique_ptr<RubberBandLiveShifter> LiveShifterWrapper::makeShifter() const
 {
-    shifter_ = std::make_unique<RubberBandLiveShifter>(
+    auto s = std::make_unique<RubberBandLiveShifter>(
         (size_t) std::lround(sampleRate_), (size_t) numChannels_,
         g_silentLogger, optionFlags());
 
@@ -177,7 +193,13 @@ void LiveShifterWrapper::rebuild()
     // (levels 2+ may construct messages by allocation). The silent Logger
     // above is what actually stops prepare()'s calibration transient from
     // reaching stderr — see its comment.
-    shifter_->setDebugLevel(0);
+    s->setDebugLevel(0);
+    return s;
+}
+
+void LiveShifterWrapper::rebuild()
+{
+    shifter_ = makeShifter();
 }
 
 int LiveShifterWrapper::sweepMaxStartDelay()
@@ -296,6 +318,8 @@ int LiveShifterWrapper::getCalibratedDelayAt(double semitones) const noexcept
 void LiveShifterWrapper::prepare(double sampleRate, int numChannels, int maxBlockSize)
 {
     prepared_ = false;
+    spareReady_.store(false, std::memory_order_relaxed);
+    stale_.store(false, std::memory_order_relaxed);
 
     sampleRate_   = (sampleRate > 0.0) ? sampleRate : 48000.0;
     numChannels_  = std::max(1, numChannels);
@@ -337,20 +361,9 @@ void LiveShifterWrapper::prepare(double sampleRate, int numChannels, int maxBloc
 
     // Calibration left the shifter warm and mid-sweep; put it back to a known
     // state and to the pitch the caller actually asked for.
-    // Prime away the start-up transient, AT UNITY. reset() re-arms
-    // R3LiveShifter's first-block pre-pad (R3LiveShifter.cpp:337-346), which is
-    // ceil(ws * p) input zeros - 10368 of them at +24 st - so without this the
-    // first few hundred milliseconds of audio come out later than the latency
-    // we report, by a pitch-dependent amount. Priming at unity rather than at
-    // the staged pitch also makes this the exact path the calibration measured,
-    // so the compensation matches what the pipeline actually does.
-    shifter_->reset();
-    shifter_->setPitchScale(1.0);
-
     for (int c = 0; c < numChannels_; ++c)
         shiftIn_.clear(c, 0, blockSize_);
-    for (int i = 0; i < kPrimeBlocks; ++i)
-        shifter_->shift(shiftInPtrs_.data(), shiftOutPtrs_.data());
+    primeAtUnity(*shifter_, shiftInPtrs_.data(), shiftOutPtrs_.data());
 
     shifter_->setPitchScale(pitchTarget_.load(std::memory_order_relaxed));
 
@@ -358,6 +371,30 @@ void LiveShifterWrapper::prepare(double sampleRate, int numChannels, int maxBloc
     appliedFormant_    = -1.0;
     appliedFormantOpt_ = -1;
 
+    padCurrent_ = targetDelay_ - getCalibratedDelayAt(
+                      semisTarget_.load(std::memory_order_relaxed));
+    clearStreamState();
+
+    // The spare: same options, its own silent scratch, primed now so that the
+    // first reset after prepare is already a swap.
+    spare_ = makeShifter();
+    spareIn_ .setSize(numChannels_, blockSize_, false, true, false);
+    spareOut_.setSize(numChannels_, blockSize_, false, true, false);
+    spareIn_.clear();
+    spareInPtrs_ .assign((size_t) numChannels_, nullptr);
+    spareOutPtrs_.assign((size_t) numChannels_, nullptr);
+    for (int c = 0; c < numChannels_; ++c)
+    {
+        spareInPtrs_ [(size_t) c] = spareIn_ .getReadPointer(c);
+        spareOutPtrs_[(size_t) c] = spareOut_.getWritePointer(c);
+    }
+
+    prepared_ = true;
+    primeSpare();
+}
+
+void LiveShifterWrapper::clearStreamState() noexcept
+{
     inFifo_.clear();
     outFifo_.clear();
     inCount_  = 0;
@@ -365,37 +402,57 @@ void LiveShifterWrapper::prepare(double sampleRate, int numChannels, int maxBloc
 
     padLine_.clear();
     padWrite_    = 0;
-    padCurrent_  = targetDelay_ - getCalibratedDelayAt(
-                       semisTarget_.load(std::memory_order_relaxed));
     padPrevious_ = padCurrent_;
     padFade_     = 0;
+}
 
-    prepared_ = true;
+bool LiveShifterWrapper::primeSpare()
+{
+    // Acquire: when false, the consumer's swap (which parked the retired
+    // shifter here) happened-before this, and spare_ is ours until we publish.
+    if (! prepared_ || spare_ == nullptr || spareReady_.load(std::memory_order_acquire))
+        return false;
+
+    primeAtUnity(*spare_, spareInPtrs_.data(), spareOutPtrs_.data());
+    spareReady_.store(true, std::memory_order_release);
+    return true;
+}
+
+void LiveShifterWrapper::adoptSpare() noexcept
+{
+    // Caller has seen spareReady_ == true (acquire), so the spare is ours.
+    // The retired shifter becomes the next spare; it is re-primed off-thread.
+    std::swap(shifter_, spare_);
+    spareReady_.store(false, std::memory_order_release);
+
+    // Exactly what the inline path leaves behind: primed at unity, then back to
+    // the last applied pitch. The spare was built with this wrapper's options
+    // but has never seen its runtime formant settings, so force
+    // applyStagedParams() to push them before the first shift().
+    shifter_->setPitchScale(appliedPitch_);
+    appliedFormant_    = -1.0;
+    appliedFormantOpt_ = -1;
 }
 
 void LiveShifterWrapper::reset()
 {
     if (! prepared_) return;
+    stale_.store(false, std::memory_order_relaxed);
 
-    shifter_->reset();
-    shifter_->setPitchScale(1.0);
+    if (spareReady_.load(std::memory_order_acquire))
+    {
+        adoptSpare();
+    }
+    else
+    {
+        // Nobody primed ahead of time: pay for it inline, as reset always did.
+        for (int c = 0; c < numChannels_; ++c)
+            shiftIn_.clear(c, 0, blockSize_);
+        primeAtUnity(*shifter_, shiftInPtrs_.data(), shiftOutPtrs_.data());
+        shifter_->setPitchScale(appliedPitch_);
+    }
 
-    for (int c = 0; c < numChannels_; ++c)
-        shiftIn_.clear(c, 0, blockSize_);
-    for (int i = 0; i < kPrimeBlocks; ++i)
-        shifter_->shift(shiftInPtrs_.data(), shiftOutPtrs_.data());
-
-    shifter_->setPitchScale(appliedPitch_);
-
-    inFifo_.clear();
-    outFifo_.clear();
-    inCount_  = 0;
-    outCount_ = blockSize_;
-
-    padLine_.clear();
-    padWrite_    = 0;
-    padPrevious_ = padCurrent_;
-    padFade_     = 0;
+    clearStreamState();
 }
 
 void LiveShifterWrapper::applyStagedParams() noexcept
@@ -429,6 +486,19 @@ void LiveShifterWrapper::applyStagedParams() noexcept
 void LiveShifterWrapper::process(juce::AudioBuffer<float>& block) noexcept
 {
     if (! prepared_) return;
+
+    // Deferred reset (markStale): the owning effect was not running this
+    // wrapper when the chain reset. The swap is realtime safe. If no spare is
+    // primed (only reachable when a reset ran without the off-thread priming
+    // pass), a full reset is not realtime safe, so drop the wrapper's own
+    // buffered audio and let the shifter's internal history play out.
+    if (stale_.load(std::memory_order_acquire))
+    {
+        stale_.store(false, std::memory_order_relaxed);
+        if (spareReady_.load(std::memory_order_acquire))
+            adoptSpare();
+        clearStreamState();
+    }
 
     const int n  = block.getNumSamples();
     const int ch = block.getNumChannels();

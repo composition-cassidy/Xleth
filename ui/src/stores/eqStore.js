@@ -1,4 +1,5 @@
 import { create } from 'zustand'
+import { RESPONSE_SIZE } from '../components/mixer/eqGeometry.js'
 
 export const BAND_TYPES = ['Bell', 'Low Shelf', 'High Shelf', 'Low Pass', 'High Pass', 'Notch', 'Tilt']
 export const BAND_MODES = ['Static', 'Dynamic', 'Spectral']
@@ -14,6 +15,20 @@ export const CHANNEL_META = {
   right:  { label: 'Right',  short: 'R' },
   mid:    { label: 'Mid',    short: 'M' },
   side:   { label: 'Side',   short: 'S' },
+}
+
+// The engine's response-curve call returns one RESPONSE_SIZE-long dB trace per
+// routing group, back to back in CHANNEL_MODES order. Split them into
+// { stereo, left, right, mid, side }. A shorter buffer (an older engine build
+// that only sends the single Stereo trace) yields just the traces it has.
+export function splitResponseCurves(raw) {
+  if (!raw || raw.length < RESPONSE_SIZE) return null
+  const curves = {}
+  CHANNEL_MODES.forEach((ch, k) => {
+    const end = (k + 1) * RESPONSE_SIZE
+    if (end <= raw.length) curves[ch] = raw.slice(k * RESPONSE_SIZE, end)
+  })
+  return curves
 }
 
 export const BAND_COLORS = [
@@ -45,7 +60,7 @@ const useEqStore = create((set, get) => ({
   themeFontScale: (() => { try { const s = localStorage.getItem('xleth.eq.theme'); return s ? (JSON.parse(s).fontScale ?? 1) : 1 } catch { return 1 } })(),
 
   // Polling data (mutated in-place by rAF, not reactive)
-  responseCurve: null,   // Float32Array(512)
+  responseCurve: null,   // { stereo, left, right, mid, side } of Float32Array(512)
   spectrumData: null,    // { post: Float32Array, pre: Float32Array | null }
 
   setDbZoom(value) {
@@ -162,11 +177,12 @@ const useEqStore = create((set, get) => ({
     } catch {}
   },
 
+  // Returns { stereo, left, right, mid, side } of dB traces, or null.
   async fetchResponseCurve() {
     const t = get().target
     if (!t) return null
     try {
-      return await window.xleth?.audio?.eqGetResponseCurve(t.trackId, t.nodeId)
+      return splitResponseCurves(await window.xleth?.audio?.eqGetResponseCurve(t.trackId, t.nodeId))
     } catch { return null }
   },
 

@@ -137,9 +137,8 @@ def test_the_window_is_linear_and_sums_flat_across_a_seam():
     window, a linear cross-fade sums to a constant for any integer overlap, so
     the seam is flat by construction. A "better" window would put a ripple into
     every chunk boundary."""
-    torch = pytest.importorskip("torch")
     size, fade = 1000, 100
-    w = windowing_array(size, fade, torch)
+    w = windowing_array(size, fade)
 
     assert w[0] == pytest.approx(0.0)
     assert w[-1] == pytest.approx(0.0)
@@ -156,9 +155,8 @@ def test_the_windows_fade_is_a_tenth_of_the_chunk():
     """fade_size = chunk_size // 10 is the reference's own figure, and it is
     what makes the cross-fade wide enough to hide a seam without smearing a
     tenth of a second of transient."""
-    torch = pytest.importorskip("torch")
     fade = CHUNK // 10
     assert fade == 57_330
-    w = windowing_array(CHUNK, fade, torch)
+    w = windowing_array(CHUNK, fade)
     assert w.shape[0] == CHUNK
     assert w[fade - 1] == pytest.approx(1.0, abs=1e-4)

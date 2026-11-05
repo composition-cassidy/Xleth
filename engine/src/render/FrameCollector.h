@@ -262,11 +262,20 @@ public:
 private:
     // Find the active VideoEvent on a given track at a given beat position.
     // Returns nullptr if no event is active (gap) or track is muted.
+    // Reference semantics for resolveActiveEvents below (one scan per call);
+    // kept for callers that want a single track without the batch.
     static const VideoEvent* findActiveEvent(
         const std::vector<VideoEvent>& events,
         const Timeline&                timeline,
         int                            trackId,
         double                         beatPos);
+
+    // Batch form of findActiveEvent: fills activeByTrack_ with, for every
+    // track, the event findActiveEvent would return at beatPos (same window
+    // test, same tie-break, same first-wins on an exact tie). Muting is
+    // applied at lookup (activeEventFor), exactly where findActiveEvent did.
+    void resolveActiveEvents(const std::vector<VideoEvent>& events, double beatPos);
+    const VideoEvent* activeEventFor(const Timeline& timeline, int trackId) const;
 
     // Compute the source frame index for an event at a given beat position.
     static int64_t computeSourceFrame(
@@ -305,12 +314,16 @@ private:
         int64_t&                outSecondaryFrame,
         float&                  outBlendFactor);
 
-    // Per-track hold-frame state for fullscreen BehindGrid layers: when a
-    // BehindGrid clip has a gap (and that track has videoHoldLastFrame on),
-    // we redraw the last known frame so the backdrop never goes black.
-    // GC'd each frame against the live BehindGrid trackId set so the map is
-    // bounded by the current layer count, not by all tracks ever assigned.
-    struct FullscreenHoldState {
+    // Per-track hold-frame state, shared by every placement that can hold: a
+    // fullscreen BehindGrid layer and a grid cell. When such a placement has a
+    // gap (and its track has videoHoldLastFrame on), we redraw the last known
+    // frame so it never goes black. Keyed by track, not by cell: every cell a
+    // track occupies shows the same event, hence the same held frame; only the
+    // cell geometry differs and that comes from the placement at draw time.
+    // GC'd each frame against the trackIds still placed as a BehindGrid layer
+    // or a grid slot, so the map is bounded by the live layout, not by all
+    // tracks ever assigned. FullscreenInFront is transient and never holds.
+    struct HoldState {
         int64_t      lastFrame       = -1;
         InternedPath lastPath;
         int          lastOrientation = 0;
@@ -322,7 +335,7 @@ private:
         // snapshot transitions all agree.
         double      lastClipEndBeat = 0.0;
     };
-    std::unordered_map<int, FullscreenHoldState> fullscreenHoldByTrack_;
+    std::unordered_map<int, HoldState> holdByTrack_;
 
     // Tracks currently holding a note past its trim end, for edge-triggered
     // clamp logging (XLETH_RENDER_LOG): a held note logs once on entry, not
@@ -336,6 +349,15 @@ private:
     // frame (Finding 11, RENDER_PERF_AUDIT.txt). Cleared, not deallocated,
     // at the start of each call.
     std::vector<CellFrameRequest> requestBuffer_;
+
+    // The active event of every track that has one at this frame's beat,
+    // resolved in ONE pass over the event list at the top of collectRequests
+    // (see resolveActiveEvents). Each placement then looks its track up here.
+    // Before, every placement ran findActiveEvent's full scan on its own: with
+    // a 4x4 grid plus a backdrop over a 3133-event project that was ~53k
+    // event visits per frame — each one touching a sizeable struct — for a
+    // handful of hits. Cleared, not deallocated, per call.
+    std::unordered_map<int, const VideoEvent*> activeByTrack_;
 
     AnimationManager* animationMgr_ = nullptr;
 

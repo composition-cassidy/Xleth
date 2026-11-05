@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import useSandboxStore from '../../stores/sandboxStore.js'
 import useSandboxPanelStore from '../../stores/sandboxPanelStore.js'
 import useSeparationStore, { SEPARATION_TERMINAL_STATES } from '../../stores/separationStore.js'
-import { useKeyboardBinding } from '../../windowing/managers/useKeyboardBinding.ts'
+import { useShortcutCommand } from '../../windowing/managers/useKeyboardBinding.ts'
 import { useSandboxEditShortcuts } from './useSandboxEditShortcuts.js'
+import { useSandboxViewShortcuts } from './useSandboxViewShortcuts.js'
 import { stopSandboxPreview } from './sandboxPreviewPlayer.js'
 import SandboxMenuBar from './SandboxMenuBar.jsx'
 import SandboxToolColumn from './SandboxToolColumn.jsx'
@@ -79,10 +80,11 @@ export default function SandboxPanelContent() {
   // The toggle itself lives in sandboxStore (toggleCompositePreview) so the
   // composite section's own Play button shares the exact same state — no
   // separate "is it playing" flag to drift out of sync.
-  // KeyboardManager's combo strings are built from event.key, and the
-  // spacebar's event.key is a literal " " (not the string "Space") — match
-  // that, not event.code.
-  useKeyboardBinding('panel:sampleSandbox', ' ', (e) => {
+  // The combo lives in shortcutCatalog as `sandbox.playComposite` so Settings
+  // can rebind it. Its default there is the literal " " — KeyboardManager's
+  // combo strings are built from event.key, and the spacebar's event.key is a
+  // space character, not the string "Space".
+  useShortcutCommand('sandbox.playComposite', (e) => {
     e.preventDefault()
     e.stopPropagation()
     useSandboxStore.getState().toggleCompositePreview()
@@ -103,11 +105,18 @@ export default function SandboxPanelContent() {
   // entry runs the identical store action, so the two can never diverge.
   useSandboxEditShortcuts()
 
+  // ── Navigation / transport: zoom, scroll, cursor, audition, loop ────────
+  // Same panel scope and the same claim-the-key contract; see that file's
+  // header for why these are deliberately not menu entries.
+  useSandboxViewShortcuts()
+
   useEffect(() => () => {
     // Stop on panel unmount/close — also resets the store flag so a reopen
     // doesn't show a stale "Stop" icon for audio that's no longer playing.
     stopSandboxPreview()
-    useSandboxStore.setState({ compositePreviewState: 'idle' })
+    useSandboxStore.setState({
+      playback: { state: 'idle', kind: null, layerId: null, startSample: 0, endSample: null },
+    })
   }, [])
 
   return (

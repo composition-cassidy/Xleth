@@ -1,6 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
-  ROOT_APP_SHELL_MODE,
   getFileMenuShortcutLabel,
   getWorkspaceBackdropClassName,
   handleXlethRootMenuAction,
@@ -12,6 +11,14 @@ import usePianoRollStore from './stores/usePianoRollStore.js'
 import { createInitialPanelStates, usePanelRegistry } from './windowing/registry/PanelRegistry'
 import * as EditorCommandRegistry from './windowing/managers/EditorCommandRegistry'
 import * as StatePersistence from './windowing/managers/StatePersistence'
+
+// The real dialog mounts into document.body; this suite runs in node. The
+// dialog itself is covered by CleanupProjectDialog.test.jsx.
+const cleanupDialogChoice = vi.hoisted(() => ({ value: true }))
+vi.mock('./components/CleanupProjectDialog.jsx', () => ({
+  default: () => null,
+  showCleanupProjectDialog: vi.fn(async () => cleanupDialogChoice.value),
+}))
 
 describe('XlethRoot New Project reset', () => {
   let newBlankMock
@@ -48,6 +55,14 @@ describe('XlethRoot New Project reset', () => {
         newBlank: vi.fn().mockResolvedValue({ ok: true }),
         switchToNew: newBlankMock,
         switchToLoad: vi.fn().mockResolvedValue(true),
+        takeLastPurge: vi.fn().mockResolvedValue(null),
+        cleanupScan: vi.fn().mockResolvedValue({
+          hasProject: true,
+          willFree: { files: 2, bytes: 2048, categories: [] },
+          kept: { files: 0, bytes: 0, items: [] },
+          partialsSkipped: false,
+        }),
+        cleanupRun: vi.fn().mockResolvedValue({ ok: true, freedBytes: 2048, filesRemoved: 2, filesFailed: 0 }),
       },
       timeline: {
         getAllPatterns: vi.fn().mockResolvedValue([]),
@@ -94,6 +109,56 @@ describe('XlethRoot New Project reset', () => {
     expect(usePanelRegistry.getState().panels.pianoRoll.hidden).toBe(true)
   })
 
+  it('reports what purge-on-close freed after New Project and Open Project', async () => {
+    const purge = { freedBytes: 5 * 1024 * 1024 * 1024, filesRemoved: 12, filesFailed: 0 }
+
+    const xlNew = makeXleth()
+    xlNew.project.takeLastPurge.mockResolvedValue(purge)
+    await handleXlethRootMenuAction('New Project', { xl: xlNew, showToast, setProjectName: vi.fn() })
+    expect(xlNew.project.takeLastPurge).toHaveBeenCalledTimes(1)
+    expect(showToast).toHaveBeenCalledWith(
+      'Freed 5 GB of regenerable files from the previous project.', 'success')
+
+    showToast.mockClear()
+    const xlOpen = makeXleth()
+    xlOpen.project.takeLastPurge.mockResolvedValue(purge)
+    await handleXlethRootMenuAction('Open Project', {
+      xl: xlOpen,
+      showToast,
+      setProjectName: vi.fn(),
+      openFilePicker: vi.fn().mockResolvedValue({ path: 'C:\\Projects\\Next' }),
+    })
+    expect(xlOpen.project.switchToLoad).toHaveBeenCalledWith('C:\\Projects\\Next')
+    expect(xlOpen.project.takeLastPurge).toHaveBeenCalledTimes(1)
+    expect(showToast).toHaveBeenCalledWith(
+      'Freed 5 GB of regenerable files from the previous project.', 'success')
+  })
+
+  it('says nothing after a project switch when purge-on-close freed nothing', async () => {
+    const xl = makeXleth()                     // takeLastPurge → null (setting off)
+    await handleXlethRootMenuAction('New Project', { xl, showToast, setProjectName: vi.fn() })
+    expect(xl.project.takeLastPurge).toHaveBeenCalledTimes(1)
+    expect(showToast).not.toHaveBeenCalled()
+  })
+
+  it('routes the File > Clean up project menu item: scan, confirm, then delete', async () => {
+    cleanupDialogChoice.value = true
+    const xl = makeXleth()
+    await handleXlethRootMenuAction('Clean up project…', { xl, showToast })
+    expect(xl.project.cleanupScan).toHaveBeenCalledTimes(1)
+    expect(xl.project.cleanupRun).toHaveBeenCalledTimes(1)
+    expect(showToast).toHaveBeenCalledWith('Freed 2 KB (2 files).', 'success')
+  })
+
+  it('does not delete anything when the Clean up confirmation is declined', async () => {
+    cleanupDialogChoice.value = false
+    const xl = makeXleth()
+    await handleXlethRootMenuAction('Clean up project…', { xl, showToast })
+    expect(xl.project.cleanupScan).toHaveBeenCalledTimes(1)
+    expect(xl.project.cleanupRun).not.toHaveBeenCalled()
+    cleanupDialogChoice.value = true
+  })
+
   it('uses production mode and boots persistence from the root helper', async () => {
     const setPersistenceAdapterMock = vi.spyOn(StatePersistence, 'setPersistenceAdapter').mockImplementation(() => {})
     const loadPersistedStateMock = vi.spyOn(StatePersistence, 'loadPersistedState').mockResolvedValue(true)
@@ -104,7 +169,6 @@ describe('XlethRoot New Project reset', () => {
       adapter: { read: vi.fn(), write: vi.fn() },
     })
 
-    expect(ROOT_APP_SHELL_MODE).toBe('production')
     expect(hydrated).toBe(true)
     expect(setPersistenceAdapterMock).toHaveBeenCalledTimes(1)
     expect(loadPersistedStateMock).toHaveBeenCalledTimes(1)

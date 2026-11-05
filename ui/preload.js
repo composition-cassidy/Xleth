@@ -39,8 +39,15 @@ function openFrameShm() {
     const handle = shmHelper.openSharedMemory(meta.name, meta.totalSize);
     // Two renderer-owned destination buffers — one per half of the mapping.
     // We memcpy the active half from native into one of these per swap.
-    const bufA = new Uint8Array(meta.bufferSize);
-    const bufB = new Uint8Array(meta.bufferSize);
+    //
+    // Sized by the section's CAPACITY, not the current frame: these are
+    // captured once by VideoPreview's tick closure and never reallocated, so
+    // a later previewResolutionScale increase would otherwise overrun them
+    // (readBytes throws "out of range"). Over-sized is harmless — texImage2D
+    // is given sabWidth/sabHeight and ignores the tail.
+    const dstBytes = meta.capacityBufferSize || meta.bufferSize;
+    const bufA = new Uint8Array(dstBytes);
+    const bufB = new Uint8Array(dstBytes);
     frameShm = {
       meta,
       bufA, bufB,
@@ -58,12 +65,15 @@ function openFrameShm() {
   }
 }
 
-// Called after the engine resizes the preview shared-memory surface (e.g. a
+// Called after the engine reframes the preview shared-memory surface (e.g. a
 // previewResolutionScale change re-sizes frameOutput to the new compositor
 // output). readIndex/syncFrame read meta.bufferSize/meta.indexOffset at call
 // time, so mutating the already-open mapping's meta in place is enough — no
-// need to reopen the OS-level mapping, since the new region is always <= the
-// originally-opened view (previewResolutionScale only ever shrinks it).
+// need to reopen the OS-level mapping. That holds in BOTH directions because
+// meta.totalSize is the section's capacity (100% preview scale), not the live
+// frame's size, so every frame the engine can ask for fits the view we already
+// opened. Reopening would not work anyway: a named section's size is fixed at
+// creation, and this handle is what pins it (shm_helper has no close).
 function updateFrameShmMeta(meta) {
   if (!frameShm || !meta) return;
   Object.assign(frameShm.meta, meta);
@@ -272,10 +282,18 @@ window.xleth = ({
 
   // ── Waveform mipmap (replaces Pipeline A FFmpeg extraction) ────────────────
   waveform: {
-    getRegionPeaks: (regionId, startTime, endTime, targetPixels, channel) =>
-      invoke('xleth:waveform:getRegionPeaks', regionId, startTime, endTime, targetPixels, channel),
-    getRawSamples: (regionId, startSample, endSample, channel) =>
-      invoke('xleth:waveform:getRawSamples', regionId, startSample, endSample, channel),
+    // slotIndex is the OPTIONAL 6th arg the engine already honours
+    // (Waveform_GetRegionPeaks reads info[5] and resolves that slot's mipmap).
+    // It has to be threaded through every layer here, in the ipcMain handler and
+    // in the callWorker arg array -- dropping it anywhere silently falls back to
+    // slot 0, which is what made the sampler editor draw the region's own sample
+    // whichever layer was selected.
+    getRegionPeaks: (regionId, startTime, endTime, targetPixels, channel, slotIndex = 0) =>
+      invoke('xleth:waveform:getRegionPeaks', regionId, startTime, endTime, targetPixels, channel, slotIndex),
+    // Same optional-slot story as getRegionPeaks above: the engine reads an
+    // optional 5th slotIndex, so it has to survive every hop to get there.
+    getRawSamples: (regionId, startSample, endSample, channel, slotIndex = 0) =>
+      invoke('xleth:waveform:getRawSamples', regionId, startSample, endSample, channel, slotIndex),
     getFilePeaks: (filePath, startTime, endTime, targetPixels, channel) =>
       invoke('xleth:waveform:getFilePeaks', filePath, startTime, endTime, targetPixels, channel),
     getClipPeaks: (clipId, startSec, endSec, numPeaks) =>
@@ -440,6 +458,20 @@ window.xleth = ({
   settings: {
     get: (key)        => invoke('xleth:settings:get', key),
     set: (key, value) => invoke('xleth:settings:set', key, value),
+  },
+
+  // ── Session console log (Settings → Application → Logs) ─────────────────────
+  // The buffer itself lives in the main process (electron-main/console-log.js);
+  // the renderer only reads a summary and asks for exports. Deliberately no
+  // "read the lines" call — the renderer has no use for 8k log entries and
+  // shipping them across IPC to render a preview would cost more than the
+  // capture does.
+  logs: {
+    getStatus:     ()       => invoke('xleth:logs:getStatus'),
+    setAutoExport: (on)     => invoke('xleth:logs:setAutoExport', !!on),
+    exportNow:     (format) => invoke('xleth:logs:export', { format }),
+    openFolder:    ()       => invoke('xleth:logs:openFolder'),
+    reveal:        (p)      => invoke('xleth:logs:reveal', p),
   },
 
   // Custom XLETH file picker filesystem bridge. These calls are intentionally

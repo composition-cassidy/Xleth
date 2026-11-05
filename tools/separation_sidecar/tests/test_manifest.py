@@ -149,8 +149,19 @@ def test_speed_figures_are_per_model_and_declare_what_was_measured():
     assert balanced.speed_is_measured("cuda") is False
     assert fast.speed_is_measured("cuda") is True
 
-    # An unknown device must still produce a usable seed, not a crash.
-    assert balanced.seconds_per_second("directml") == balanced.seconds_per_second("cpu")
+    # DirectML is a real device for this tier now, with its own derived seed.
+    #
+    # It was not before: the Roformer tiers inferred in torch, which has no
+    # DirectML backend here, so `directml` was an unknown key that fell back to
+    # the CPU figure. Since they moved to onnxruntime the same DirectML GPU
+    # that serves FAST serves them too, and the manifest carries a figure for
+    # it — derived from FAST's measured cpu->directml ratio, and declared
+    # unmeasured.
+    assert balanced.seconds_per_second("directml") < balanced.seconds_per_second("cpu")
+    assert balanced.speed_is_measured("directml") is False
+
+    # A genuinely unknown device must still produce a usable seed, not a crash.
+    assert balanced.seconds_per_second("nosuchdevice") == balanced.seconds_per_second("cpu")
 
 
 # ── The license gate ─────────────────────────────────────────────────────
@@ -320,13 +331,19 @@ def test_the_fixed_cost_of_a_run_is_modelled_not_ignored():
     sample that padding IS the job, and a pure per-second rate says the run
     takes 15 s when it takes 55."""
     balanced = load_manifest().model_for_tier("balanced")
-    assert balanced.fixed_seconds("cpu") == pytest.approx(40.0)
+    assert balanced.fixed_seconds("cpu") == pytest.approx(46.2)
 
-    # 32.31 s input, measured end to end at 141.0 s on this CPU.
-    assert balanced.estimated_seconds(32.31, "cpu") == pytest.approx(141.0, rel=0.05)
+    # 32.31 s input, measured end to end at 160.8 s on this CPU through the
+    # ONNX path (it was 141.0 s under torch; the move off torch cost ~14%).
+    #
+    # BENCHMARK THIS ON AN IDLE MACHINE. The same measurement taken while two
+    # other jobs were running read 357.5 s and sent an afternoon chasing a
+    # phantom 2.5x regression. Both of this file's speed figures have been
+    # wrong that way once.
+    assert balanced.estimated_seconds(32.31, "cpu") == pytest.approx(160.8, rel=0.05)
     # Without the fixed term the same estimate is out by a third.
     marginal_only = 32.31 * balanced.seconds_per_second("cpu")
-    assert marginal_only < 0.75 * 141.0
+    assert marginal_only < 0.75 * 160.8
 
 
 def test_the_fixed_cost_dominates_a_short_sample_and_fades_on_a_long_one():

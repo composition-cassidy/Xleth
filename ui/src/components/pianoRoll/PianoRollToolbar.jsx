@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { MousePointer2, Pencil, Scissors, Eraser, ZoomIn, ZoomOut, Sliders, ExternalLink, ArrowDownToLine, Waves, Music2 } from 'lucide-react'
+import { MousePointer2, Pencil, Scissors, Eraser, ZoomIn, ZoomOut, Sliders, ExternalLink, ArrowDownToLine, Waves, Music2, Keyboard } from 'lucide-react'
 import { timelineEvents } from '../../timelineEvents.js'
 import { SCALE_MODES, ROOT_NOTES, DEFAULT_SCALE, scaleLabel } from './scales.js'
 
@@ -28,6 +28,7 @@ export default function PianoRollToolbar({
   onZoomIn, onZoomOut,
   onOpenSamplerSettings,
   samplerSettingsDisabled = false,
+  onOpenQuickNotation,
   onClose,
   // Detach / float props
   floating = false, onDetach, onDock,
@@ -199,6 +200,14 @@ export default function PianoRollToolbar({
           disabled={samplerSettingsDisabled}
         >
           <Sliders size={14} />
+        </button>
+        <button
+          className="timeline-toolbar-button"
+          title="Quick Notation — type chord tokens (Cmaj7, Dmin***) to place notes"
+          onClick={onOpenQuickNotation}
+          disabled={currentPatternId == null}
+        >
+          <Keyboard size={14} />
         </button>
       </div>
       <div className="piano-roll-toolbar-group">

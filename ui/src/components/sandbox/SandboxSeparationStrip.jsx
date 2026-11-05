@@ -217,7 +217,11 @@ export default function SandboxSeparationStrip({ advancedOpen, onToggleAdvanced 
     const model = tier.model
     if (model && model.runtimeOk === false) {
       const missing = model.missing?.length ? model.missing.join(', ') : 'required packages'
-      return `${tier.label} needs ${missing} — install from tools/separation_sidecar/requirements.txt`
+      // No repo-relative path here. Most people running this installed an
+      // .exe and have never seen the source tree, so naming a file inside it
+      // is worse than saying nothing. XLETH bundles its own Python runtime;
+      // if a package is missing from it, the install is damaged.
+      return `${tier.label} needs ${missing} — XLETH's bundled runtime looks incomplete, reinstalling should fix it`
     }
     // A wired tier whose weight the license gate refuses (PENDING-AUDIT and
     // anything else outside CLEARED_STATUSES). Caught here rather than left
@@ -425,13 +429,20 @@ export default function SandboxSeparationStrip({ advancedOpen, onToggleAdvanced 
           {runtimeBroken && !pythonMissing ? (
             <span className="sandbox-status-item error">
               {status.runtimeError
-                || `The separation sidecar is missing ${missingPackages}. Install it from tools/separation_sidecar/requirements.txt.`}
+                || `The separation sidecar is missing ${missingPackages}. XLETH's bundled runtime looks incomplete — reinstalling should fix it.`}
             </span>
           ) : pythonMissing ? (
             <>
+              {/*
+                Reached only when the bundled runtime is absent AND no system
+                interpreter could stand in: a damaged install, or a source
+                checkout where build_sidecar_runtime.py has not been run. Not
+                the everyday state it used to be, when separation required the
+                user to install Python themselves.
+              */}
               <span>
-                Separation needs Python 3.9+ with the packages in
-                {' '}tools/separation_sidecar/requirements.txt.
+                XLETH&rsquo;s bundled Python runtime is missing, so separation
+                cannot start. Reinstalling XLETH restores it.
               </span>
               <button
                 className="sandbox-separation-linklike"

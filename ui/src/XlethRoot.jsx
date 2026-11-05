@@ -6,7 +6,6 @@ import SamplePicker from './components/SamplePicker/SamplePicker.jsx'
 import RenderDialog from './components/RenderDialog.jsx'
 import ExportZipDialog from './components/ExportZipDialog.jsx'
 import MidiImportDialog from './components/MidiImport/MidiImportDialog.jsx'
-import useSamplerPanelStore from './stores/samplerPanelStore.js'
 import SettingsPanel from './components/SettingsPanel.jsx'
 import MissingPluginsDialog from './components/MissingPluginsDialog.jsx'
 import MissingMediaDialog from './components/MissingMediaDialog.jsx'
@@ -14,6 +13,8 @@ import DevThemeSwitcher from './components/debug/DevThemeSwitcher.jsx'
 import { ToastProvider, useToast } from './components/Toast.jsx'
 import UpdateBanner from './components/UpdateBanner.jsx'
 import { showUnsavedChangesDialog } from './components/UnsavedChangesDialog.jsx'
+import { showCleanupProjectDialog } from './components/CleanupProjectDialog.jsx'
+import { CLEANUP_PROJECT_LABEL, reportPurgeOnClose, runCleanupProject } from './components/projectCleanup.js'
 import XlethFilePickerProvider from './components/filePicker/XlethFilePickerProvider.jsx'
 import { getPickerPath, getPickerPaths, openFilePicker as openXlethFilePicker } from './components/filePicker/filePickerService.js'
 import usePianoRollStore from './stores/usePianoRollStore.js'
@@ -22,6 +23,8 @@ import AppShell from './windowing/AppShell.tsx'
 import XlethRootContext from './windowing/contexts/XlethRootContext.jsx'
 import { usePanelRegistry } from './windowing/registry/PanelRegistry'
 import { runEditorCommand } from './windowing/managers/EditorCommandRegistry'
+import { comboFromEvent } from './windowing/managers/shortcutCatalog.ts'
+import { load as loadShortcutOverrides, resolveCombos } from './windowing/managers/shortcutOverrides.ts'
 import { ElectronAdapter } from './windowing/managers/StatePersistence'
 import * as StatePersistence from './windowing/managers/StatePersistence'
 
@@ -31,7 +34,6 @@ const EXPORT_ZIP_LABEL = 'Export as ZIP…'
 const ZOOM_IN_LABEL = 'Zoom In'
 const ZOOM_OUT_LABEL = 'Zoom Out'
 const RESET_ZOOM_LABEL = 'Reset Zoom'
-export const ROOT_APP_SHELL_MODE = 'production'
 
 const MEDIA_IMPORT_FILTERS = [
   { name: 'All Supported', extensions: ['mp4', 'avi', 'mov', 'mkv', 'wav', 'mp3', 'flac', 'ogg', 'aac', 'm4a'] },
@@ -127,25 +129,42 @@ export async function hydrateProductionLayout({
   return hydrated
 }
 
+// ─── Global menu shortcuts ──────────────────────────────────────────────────
+// The command ids come from shortcutCatalog; the menu labels are the ones
+// handleXlethRootMenuAction dispatches on, declared as constants above. This
+// map is the only place the two meet, so a rebind in Settings changes which
+// key reaches a menu action without touching either side.
+const MENU_LABEL_BY_COMMAND = {
+  'file.new': 'New Project',
+  'file.open': 'Open Project',
+  'file.save': 'Save',
+  'file.saveAs': 'Save As...',
+  'file.importSource': 'Import Source',
+  'file.exportAudio': EXPORT_AUDIO_LABEL,
+  'file.exportVideo': EXPORT_VIDEO_LABEL,
+  'view.zoomIn': ZOOM_IN_LABEL,
+  'view.zoomOut': ZOOM_OUT_LABEL,
+  'view.resetZoom': RESET_ZOOM_LABEL,
+}
+
 export function getFileMenuShortcutLabel(e) {
   const target = e.target
   if (target && (target.tagName === 'INPUT' || target.tagName === 'TEXTAREA' || target.isContentEditable)) return null
 
-  const ctrl = e.ctrlKey || e.metaKey
-  if (!ctrl) return null
+  const combo = comboFromEvent(e)
+  if (!combo) return null
 
-  const key = e.key.toLowerCase()
-  if (key === 'n' && !e.shiftKey && !e.altKey) return 'New Project'
-  if (key === 'o' && !e.shiftKey && !e.altKey) return 'Open Project'
-  if (key === 's' && e.shiftKey && !e.altKey) return 'Save As...'
-  if (key === 's' && !e.shiftKey && !e.altKey) return 'Save'
-  if (key === 'i' && !e.shiftKey && !e.altKey) return 'Import Source'
-  if (key === 'e' && e.shiftKey && !e.altKey) return EXPORT_VIDEO_LABEL
-  if (key === 'e' && !e.shiftKey && !e.altKey) return EXPORT_AUDIO_LABEL
-  if ((key === '=' || key === '+') && !e.altKey) return ZOOM_IN_LABEL
-  if ((key === '-' || key === '_') && !e.altKey) return ZOOM_OUT_LABEL
-  if (key === '0' && !e.shiftKey && !e.altKey) return RESET_ZOOM_LABEL
-  return null
+  // Longest-combo-first so Ctrl+Shift+E (Export Video) is tested before
+  // Ctrl+E (Export Audio) — resolveCombos returns exact strings, but a user
+  // override could legitimately make one command's combo a prefix of
+  // another's, and matching the more specific one is always the right answer.
+  const ids = Object.keys(MENU_LABEL_BY_COMMAND)
+  let best = null
+  for (const id of ids) {
+    if (!resolveCombos(id).includes(combo)) continue
+    if (!best || combo.length > best.combo.length) best = { id, combo }
+  }
+  return best ? MENU_LABEL_BY_COMMAND[best.id] : null
 }
 
 export async function handleXlethRootMenuAction(label, {
@@ -190,6 +209,8 @@ export async function handleXlethRootMenuAction(label, {
         showToast?.(`New Project failed: ${res?.error || 'unknown error'}`, 'error')
         return
       }
+      // "Delete regenerable files when closing a project": say what it freed.
+      await reportPurgeOnClose({ xl, showToast })
 
       setProjectName?.('Untitled Project')
 
@@ -199,7 +220,6 @@ export async function handleXlethRootMenuAction(label, {
       pianoRollStore.setActiveCenterTab('timeline')
       usePanelRegistry.getState().closePanel('pianoRoll')
 
-      useSamplerPanelStore.getState().setRegionId(null)
       usePanelRegistry.getState().closePanel('sampler')
       setActiveSampleId?.(null)
       setPickerSource?.(null)
@@ -225,6 +245,8 @@ export async function handleXlethRootMenuAction(label, {
       const dir = getPickerPath(picked)
       if (!dir) return
       await xl.project.switchToLoad(dir)
+      // "Delete regenerable files when closing a project": say what it freed.
+      await reportPurgeOnClose({ xl, showToast })
       const info = await xl.project.getInfo()
       setProjectName?.(info?.projectName || dir.split(/[\\/]/).pop() || 'Project')
       timelineEvents.dispatchEvent(new Event('timeline-sources-changed'))
@@ -316,6 +338,9 @@ export async function handleXlethRootMenuAction(label, {
       break
     case EXPORT_ZIP_LABEL:
       setExportZipOpen?.(true)
+      break
+    case CLEANUP_PROJECT_LABEL:
+      await runCleanupProject({ xl, showToast, confirm: showCleanupProjectDialog })
       break
     case ZOOM_IN_LABEL:
       xl.window.zoomIn?.()
@@ -468,8 +493,7 @@ function XlethRootInner() {
   useEffect(() => {
     const onOpen = (e) => {
       const regionId = e.detail?.regionId ?? null
-      useSamplerPanelStore.getState().setRegionId(regionId)
-      usePanelRegistry.getState().openPanel('sampler')
+      usePanelRegistry.getState().openPanel('sampler', { regionId })
     }
     const onClose = () => {
       usePanelRegistry.getState().closePanel('sampler')
@@ -542,6 +566,12 @@ function XlethRootInner() {
       setSettingsInitialCategory,
     })
   }, [showToast, openRenderDialog])
+
+  // Persisted shortcut overrides, read once at startup. Until this resolves
+  // every command answers to its catalog default, which is also what a user
+  // who has never rebound anything gets — so a slow read degrades to shipped
+  // behavior rather than to no shortcuts at all.
+  useEffect(() => { loadShortcutOverrides() }, [])
 
   useEffect(() => {
     const onKeyDown = (e) => {
@@ -626,7 +656,7 @@ function XlethRootInner() {
 
         <div style={{ display: pickerSource ? 'none' : 'contents' }}>
           <XlethRootContext.Provider value={rootContextValue}>
-            <AppShell mode={ROOT_APP_SHELL_MODE} backdropImageUrl={workspaceBackdropImageUrl} />
+            <AppShell backdropImageUrl={workspaceBackdropImageUrl} />
           </XlethRootContext.Provider>
         </div>
       </div>

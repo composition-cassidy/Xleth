@@ -1,6 +1,9 @@
 import { useEffect } from 'react'
 
 import useSandboxStore from '../../stores/sandboxStore.js'
+import { formatSamples, formatSamplesShort, formatHz } from './sandboxFormat.js'
+import { resolveView, viewSpan, isFitted } from './sandboxView.js'
+import { activeToolOf, TOOL_HINTS } from './sandboxToolConstants.js'
 
 // Bottom readout bar — cursor position, selection start/end/length, undo
 // depth, clipboard size. Live: every value here is read straight off the
@@ -8,15 +11,11 @@ import useSandboxStore from '../../stores/sandboxStore.js'
 // stack already use. Render/composite status moved to the toolstrip's render
 // chip and the Composite section (Sources & Layers panel) respectively, so
 // this bar isn't a second copy of state shown elsewhere.
-function formatSec(samples, sampleRate) {
-  if (!sampleRate || samples == null) return '0.000'
-  return (samples / sampleRate).toFixed(3)
-}
-
-function formatHz(hz) {
-  if (!Number.isFinite(hz)) return '—'
-  return hz >= 1000 ? `${(hz / 1000).toFixed(2)}k` : `${Math.round(hz)}`
-}
+//
+// Time formatting is shared with the ruler and the op rail (sandboxFormat.js)
+// — this bar used to carry its own three-decimal helper, which is how the
+// panel ended up reading seconds here, beats on the ruler and sample indices
+// in the op stack.
 
 // Time × Hz span of a committed SPC selection's shapes — min/max across every
 // shape, so a multi-shape freehand selection reads as ONE bounding readout
@@ -64,7 +63,20 @@ export default function SandboxStatusBar() {
   const refreshHistory = useSandboxStore((s) => s.refreshHistory)
   const composite = useSandboxStore((s) => s.composite)
   const compositeAutoRender = useSandboxStore((s) => s.compositeAutoRender)
+  const view = useSandboxStore((s) => s.view)
+  const envelopeEditMode = useSandboxStore((s) => s.envelopeEditMode)
+  const paintEditMode = useSandboxStore((s) => s.paintEditMode)
+  const spcSelectMode = useSandboxStore((s) => s.spcSelectMode)
   const layer = layers.find((l) => l.id === activeLayerId) ?? null
+
+  // What the pointer currently does, in the middle of the bar. This lived in
+  // the 64px tool column, where a sentence wrapped to five lines and read as
+  // decoration.
+  const toolHint = TOOL_HINTS[activeToolOf({ paintEditMode, envelopeEditMode, spcSelectMode })]
+
+  const numSamples = layer?.renderedBuffer?.numSamples ?? 0
+  const fitted = isFitted(view, numSamples)
+  const visibleSamples = viewSpan(resolveView(view, numSamples))
 
   const chipState = compositeChipState(composite, compositeAutoRender)
 
@@ -87,24 +99,35 @@ export default function SandboxStatusBar() {
     : spcHoverReadout
       ? `${spcHoverReadout.sec.toFixed(3)}s × ${formatHz(spcHoverReadout.hz)} Hz`
       : spcSpan
-        ? `${formatSec(spcSpan.startSample, sampleRate)}–${formatSec(spcSpan.endSample, sampleRate)}s × ${formatHz(spcSpan.minHz)}–${formatHz(spcSpan.maxHz)} Hz`
+        ? `${formatSamples(spcSpan.startSample, sampleRate)}–${formatSamples(spcSpan.endSample, sampleRate)} × ${formatHz(spcSpan.minHz)}–${formatHz(spcSpan.maxHz)} Hz`
         : '—'
 
   return (
     <div className="sandbox-status-bar">
       <div className="sandbox-readout-group">
-        <span className="sandbox-status-item">Cursor: {formatSec(cursorSample, sampleRate)}</span>
+        <span className="sandbox-status-item">Cursor: {formatSamples(cursorSample, sampleRate)}</span>
         <span className="sandbox-status-item">
-          Sel: {hasSelection ? `${formatSec(selection.startSample, sampleRate)} – ${formatSec(selection.endSample, sampleRate)}` : '—'}
+          Sel: {hasSelection ? `${formatSamples(selection.startSample, sampleRate)} – ${formatSamples(selection.endSample, sampleRate)}` : '—'}
         </span>
-        <span className="sandbox-status-item">Len: {hasSelection ? `${formatSec(lengthSamples, sampleRate)}s` : '—'}</span>
+        <span className="sandbox-status-item">Len: {hasSelection ? formatSamplesShort(lengthSamples, sampleRate) : '—'}</span>
+        {/* Zoom, stated as a span rather than a percentage: "0.42s visible" is
+            the number you can act on when deciding whether to zoom further,
+            and "1400%" is not. Hidden while fitted, where the waveform's own
+            extent already says it. */}
+        {!fitted && (
+          <span className="sandbox-status-item sandbox-status-item--zoom" title="Visible range — Ctrl+F fits the whole layer">
+            View: {formatSamplesShort(visibleSamples, sampleRate)}
+          </span>
+        )}
         {viewMode === 'spc' && <span className="sandbox-status-item">t × Hz: {spcReadout}</span>}
       </div>
+      <span className="sandbox-status-hint">{toolHint}</span>
+
       <div className="sandbox-readout-group">
         <span className="sandbox-status-item">Layers: {layers.length}</span>
         <span className="sandbox-status-item">Undo depth: {history.sandboxUndoCount}</span>
         <span className="sandbox-status-item">
-          Clipboard: {clipboard ? `${clipboard.numSamples} smp` : 'empty'}
+          Clipboard: {clipboard ? formatSamplesShort(clipboard.numSamples, sampleRate) : 'empty'}
         </span>
         <span className={`sandbox-render-chip sandbox-render-chip--${chipState}`}>
           <span className="sandbox-render-chip-dot" />

@@ -161,3 +161,29 @@ art/
 # Prompt-related scripts moved into scripts/
 /scripts/slider_prompts_docx.py
 /scripts/XlethSampler.jsx
+
+# Separation sidecar: the bundled Python runtime and its download cache.
+# Built by tools/separation_sidecar/tools/build_sidecar_runtime.py and copied
+# into the installer by electron-builder. ~143 MB of third-party binaries that
+# a pinned script reproduces exactly, so it is a build artifact, not source.
+# The weightless ONNX graphs under xleth_separation/graphs/ ARE committed —
+# they are ~2 MB each and are what makes the runtime this small.
+/tools/separation_sidecar/runtime/
+/tools/separation_sidecar/.runtime-cache/
+/tools/separation_sidecar/.venv/
+
+# Local scratch, design mockups and tool output at the repo root (not source).
+# graphify-out/ is the generated knowledge graph; dist-onnx-verify/ is an ONNX
+# verification build. Both are regenerable and run to GBs.
+/graphify-out/
+/dist-onnx-verify/
+/New folder/
+/CLAUDE - Copy.md
+/PITCH SHIFTER AUDIT.txt
+/RENDER_PERF_AUDIT.txt
+/VIDEO_PREVIEW_AUDIT.txt
+/XLETH Sample Sandbox*
+/mockups/
+/splash/
+/welcome-screen.html
+/xleth.txt

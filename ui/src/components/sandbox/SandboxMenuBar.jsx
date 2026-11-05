@@ -115,7 +115,10 @@ function EffectDropdown({ open, onClose, onOpenAdvancedSeparation }) {
     const model = tier.model
     if (model && model.runtimeOk === false) {
       const missing = model.missing?.length ? model.missing.join(', ') : 'required packages'
-      return `${tier.label} needs ${missing} — install from tools/separation_sidecar/requirements.txt`
+      // Matches SandboxSeparationStrip's wording deliberately: XLETH bundles
+      // its own Python runtime, so a missing package means a damaged install,
+      // not something the user is expected to go and pip-install.
+      return `${tier.label} needs ${missing} — XLETH's bundled runtime looks incomplete, reinstalling should fix it`
     }
     if (model && model.license && model.license.cleared === false) {
       return `${tier.label}'s model (${model.license.spdx || 'licence'}) has not cleared its audit`

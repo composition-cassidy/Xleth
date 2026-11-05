@@ -709,11 +709,21 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
         FrameCacheEntry* entry = cache.get(key);
 
         if (!entry || !entry->srv) {
-            if (isGrid) {
-                std::fprintf(stderr, "[Compositor] WARN: Skipping cell [%d,%d] — texture is null (cache miss?)\n",
-                             req.cellCol, req.cellRow);
-            } else {
-                std::fprintf(stderr, "[Compositor] WARN: Skipping FS-%s — texture is null (cache miss?)\n", band);
+            // Expected during playback, not an error: the preview's decode
+            // budget defers misses past half a frame period, and a cell that
+            // has no earlier frame to hold (its first frame) arrives here
+            // without a texture until the deferred decode lands. Export decodes
+            // every miss before compositing, and a failed decode is already
+            // reported by the decoder, so this line only ever repeated that.
+            // Unconditional, it was one stderr write per such cell per tick on
+            // exactly the machines that defer the most.
+            if (kRenderLog) {
+                if (isGrid) {
+                    std::fprintf(stderr, "[Compositor] Skipping cell [%d,%d] — texture not decoded yet\n",
+                                 req.cellCol, req.cellRow);
+                } else {
+                    std::fprintf(stderr, "[Compositor] Skipping FS-%s — texture not decoded yet\n", band);
+                }
             }
             continue;
         }
@@ -1089,7 +1099,7 @@ void GridCompositor::compositeFrame(const std::vector<CellFrameRequest>& request
             echoStats_.activeRings,
             static_cast<double>(echoStats_.ringBytes) / (1024.0 * 1024.0));
     }
-    std::fprintf(stderr, "[Compositor] Frame composited in %.2fms\n", ms);
+    XLETH_RENDER_LOG(std::fprintf(stderr, "[Compositor] Frame composited in %.2fms\n", ms));
 }
 
 RTPool::RTPair& GridCompositor::acquireTransitionTargets()
@@ -1464,7 +1474,7 @@ const ReadbackBuffer& GridCompositor::readback(ReadbackMode mode,
 
             auto end = std::chrono::high_resolution_clock::now();
             double ms = std::chrono::duration<double, std::milli>(end - start).count();
-            std::fprintf(stderr,
+            XLETH_RENDER_LOG(std::fprintf(stderr,
                 "[Compositor] GPU readback: %dx%d mode=%s policy=FastImmediate staging[0] "
                 "rowPitch=%u expectedBytes=%llu copyBytes=%llu in %.2fms\n",
                 width_, height_,
@@ -1472,7 +1482,7 @@ const ReadbackBuffer& GridCompositor::readback(ReadbackMode mode,
                 lastReadbackDiag_.mappedRowPitch,
                 static_cast<unsigned long long>(lastReadbackDiag_.expectedBytes),
                 static_cast<unsigned long long>(lastReadbackDiag_.actualCopyBytes),
-                ms);
+                ms));
 
             return buf;
 
@@ -1607,7 +1617,7 @@ const ReadbackBuffer& GridCompositor::readback(ReadbackMode mode,
 
             auto end = std::chrono::high_resolution_clock::now();
             double ms = std::chrono::duration<double, std::milli>(end - start).count();
-            std::fprintf(stderr,
+            XLETH_RENDER_LOG(std::fprintf(stderr,
                 "[Compositor] GPU readback: %dx%d mode=PreviewRing policy=AsyncQueued staging[%llu] "
                 "rowPitch=%u expectedBytes=%llu copyBytes=%llu in %.2fms "
                 "ring(write=%llu read=%llu dropped=%llu)\n",
@@ -1619,7 +1629,7 @@ const ReadbackBuffer& GridCompositor::readback(ReadbackMode mode,
                 ms,
                 static_cast<unsigned long long>(asyncWriteHead_),
                 static_cast<unsigned long long>(asyncReadHead_),
-                static_cast<unsigned long long>(droppedPendingFrames_));
+                static_cast<unsigned long long>(droppedPendingFrames_)));
 
             return buf;
         }
@@ -2464,10 +2474,11 @@ ID3D11ShaderResourceView* GridCompositor::processEffectChain(
 
     if (cellWidth <= 0 || cellHeight <= 0) return sourceSRV;
 
-#ifdef XLETH_DEBUG
-    std::fprintf(stderr, "[VisualFX] Cell track=%d: chain has %zu effects, processing at %dx%d, slot=%d\n",
-                 req.trackId, chain.size(), cellWidth, cellHeight, rtSlot);
-#endif
+    // Per cell per frame. XLETH_DEBUG is on in Release, so this needs the
+    // runtime gate, not the #ifdef it used to sit behind.
+    XLETH_RENDER_LOG(std::fprintf(stderr,
+                 "[VisualFX] Cell track=%d: chain has %zu effects, processing at %dx%d, slot=%d\n",
+                 req.trackId, chain.size(), cellWidth, cellHeight, rtSlot));
 
     // Get RT pair for this cell size + slot
     RTPool::RTPair& rtp = rtPool_.acquire(device_, cellWidth, cellHeight, rtSlot);

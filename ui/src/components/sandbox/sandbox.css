@@ -64,40 +64,9 @@
   color: var(--theme-text-inverse);
 }
 
-.sandbox-layer-waveform {
-  display: block;
-  width: 220px;
-  height: 32px;
-  background: var(--theme-bg-primary);
-  border: 1px solid var(--theme-border-subtle);
-  margin: 2px 0;
-}
 
-.sandbox-layer-error {
-  margin-top: 2px;
-  padding: 2px 9px;
-  color: var(--theme-danger);
-  font-size: 10px;
-}
 
-.sandbox-mix-field {
-  display: flex;
-  align-items: center;
-  gap: 3px;
-  color: var(--theme-text-muted);
-  font-size: 9px;
-}
 
-.sandbox-mix-input {
-  width: 40px;
-  height: 16px;
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: 0;
-  background: var(--theme-bg-surface);
-  color: var(--theme-text);
-  font-size: 9px;
-  padding: 0 2px;
-}
 
 .sandbox-baked-asset-list {
   flex: 0 0 auto;
@@ -254,7 +223,9 @@
 /* ── Tool column (left edge, swaps by view) ──────────────────────────────── */
 
 .sandbox-toolcol {
-  flex: 0 0 64px;
+  /* 88px, not 64: the key legend at the foot needs room for "Ctrl+E" on one
+     line, and a legend that wraps mid-shortcut is worse than none. */
+  flex: 0 0 88px;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -320,17 +291,6 @@
 .sandbox-toolcol-params .sandbox-toolbar-number {
   width: 44px;
   height: 18px;
-}
-
-.sandbox-toolcol-hint {
-  margin-top: auto;
-  padding: 8px 4px;
-  font-size: 8.5px;
-  line-height: 1.4;
-  color: var(--theme-text-placeholder);
-  text-align: center;
-  border-top: 1px solid var(--theme-border-subtle);
-  width: 100%;
 }
 
 .sandbox-toolstrip-view-toggle {
@@ -499,43 +459,64 @@
   max-width: 96px;
 }
 
-/* ── Layer workspace (main area) — stacked layer cards + drop zone ───────── */
+/* ── Layer workspace — compact layer rail + one editor pane ──────────────── */
+/* Was N stacked full-height cards; see SandboxLayerWorkspace.jsx's header for
+   why only one of them was ever an editor. */
 
 .sandbox-layer-workspace {
   flex: 1 1 auto;
   min-width: 0;
-  overflow-y: auto;
-  padding: 10px 12px 4px;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
 
-.sandbox-layer-card {
+/* The rail scrolls on its own rather than pushing the editor off-screen: past
+   a handful of layers the list is the thing that should get shorter, never the
+   waveform. */
+.sandbox-layer-rail {
+  flex: 0 0 auto;
+  max-height: 34%;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--theme-border-subtle);
   background: var(--theme-bg-secondary);
-  border: 1px solid var(--theme-border-subtle);
-  margin-bottom: 10px;
-  box-shadow: 4px 5px 0 rgba(0, 0, 0, 0.5);
-  cursor: pointer;
 }
 
-.sandbox-layer-card.active {
-  border-color: var(--theme-accent);
-}
-
-.sandbox-layer-card.soloed {
-  border-color: var(--theme-accent);
-}
-
-.sandbox-layer-card-head {
+.sandbox-layer-row {
   display: flex;
   align-items: center;
-  gap: 8px;
-  padding: 4px 9px;
-  background: var(--theme-bg-surface);
+  gap: 7px;
+  padding: 3px 8px;
   border-bottom: 1px solid var(--theme-border-subtle);
+  cursor: pointer;
+  /* A transparent left edge that the active state fills in — so selecting a
+     row shifts no text, which a border appearing from nowhere would. */
+  border-left: 2px solid transparent;
 }
 
-.sandbox-layer-card-name {
+.sandbox-layer-row:hover {
+  background: var(--theme-bg-hover);
+}
+
+.sandbox-layer-row.active {
+  background: var(--theme-bg-surface);
+  border-left-color: var(--theme-accent);
+}
+
+.sandbox-layer-row.soloed .sandbox-layer-row-name {
+  color: var(--theme-accent);
+}
+
+/* A muted layer contributes nothing to the mix — say so by fading the row, the
+   same way a muted track reads everywhere else in the app. */
+.sandbox-layer-row.muted .sandbox-layer-row-name,
+.sandbox-layer-row.muted .sandbox-layer-row-meta {
+  opacity: 0.45;
+}
+
+.sandbox-layer-row-name {
+  flex: 0 1 auto;
+  min-width: 0;
   font-weight: 700;
   font-size: 11px;
   overflow: hidden;
@@ -543,110 +524,137 @@
   white-space: nowrap;
 }
 
-.sandbox-layer-card-meta {
+.sandbox-layer-row-meta {
+  flex: 1 1 auto;
   font-size: 9px;
   color: var(--theme-text-placeholder);
   white-space: nowrap;
 }
 
-.sandbox-layer-card-dup,
-.sandbox-layer-card-close {
+.sandbox-layer-row-mix {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  cursor: default;
+}
+
+/* Square, borderless row buttons. Not .sandbox-mini-btn: these are actions on
+   the row (audition/duplicate/close), not latching mix state, and giving them
+   the same boxed look would imply they toggle. */
+.sandbox-row-btn {
   flex: 0 0 auto;
   display: flex;
   align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  padding: 0;
   border: none;
   background: transparent;
   color: var(--theme-text-placeholder);
   cursor: pointer;
-  padding: 2px;
 }
 
-/* The auto margin lives on the FIRST of the two icon buttons, so the pair
-   travels to the right edge together. */
-.sandbox-layer-card-dup {
-  margin-left: auto;
-}
-
-/* Plain text, not the accent: this file reserves --theme-accent for
-   active/selected state (see the header), and Duplicate is neither. */
-.sandbox-layer-card-dup:hover {
+.sandbox-row-btn:hover:not(:disabled) {
   color: var(--theme-text);
 }
 
-.sandbox-layer-card-close:hover {
-  color: var(--theme-danger);
-}
-
-.sandbox-layer-card-body {
-  position: relative;
-  display: flex;
-  min-height: 96px;
-}
-
-.sandbox-layer-ctl {
-  width: 128px;
-  flex: 0 0 auto;
-  border-right: 1px solid var(--theme-border-subtle);
-  background: var(--theme-bg-secondary);
-  padding: 6px 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
+.sandbox-row-btn:disabled {
+  opacity: 0.35;
   cursor: default;
 }
 
-.sandbox-layer-ctl-msrow {
-  display: flex;
-  gap: 5px;
+.sandbox-row-btn--play.active {
+  color: var(--theme-accent);
 }
 
-.sandbox-layer-card-wave {
+.sandbox-row-btn--close:hover {
+  color: var(--theme-danger);
+}
+
+/* Sandbox-sized DragNumberField (the ZPR inspector's own control — see
+   SandboxLayerWorkspace.jsx). Only the scale changes; the behaviour and the
+   base styling stay shared. */
+.sandbox-drag-field.zpr-drag-field {
+  /* Row, not the ZPR inspector's stacked column: these sit in a 26px layer row,
+     where a label above its value would double the row height. */
+  flex-direction: row;
+  align-items: center;
+  gap: 3px;
+  min-width: 0;
+}
+
+.sandbox-drag-field .zpr-drag-field-label {
+  font-size: 9px;
+  color: var(--theme-text-placeholder);
+}
+
+.sandbox-drag-field .zpr-drag-field-value,
+.sandbox-drag-field .zpr-drag-field-input {
+  width: 38px;
+  padding: 1px 3px;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.sandbox-layer-rail-hint {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 4px 10px;
+  font-size: 9px;
+  color: var(--theme-text-placeholder);
+  letter-spacing: 0.02em;
+}
+
+/* ── Editor pane — the one interactive canvas ────────────────────────────── */
+.sandbox-editor-pane {
   position: relative;
   flex: 1 1 auto;
-  min-width: 0;
-  min-height: 96px;
-  background: var(--theme-bg-primary);
+  min-height: 0;
   display: flex;
+  flex-direction: column;
+  background: var(--theme-bg-primary);
 }
 
-/* The active card is the only one hosting the real interactive canvas
-   (SandboxWaveformCanvas — see SandboxLayerWorkspace.jsx); give it real
-   headroom so the spectrogram's log-frequency detail is actually legible
-   instead of being squashed into the same ~96px an inactive thumbnail gets. */
-.sandbox-layer-card.active .sandbox-layer-card-wave {
-  min-height: 340px;
-}
-
-/* The inactive-card thumbnail is a fixed-size canvas (SandboxLayerWaveform) —
-   center it in the wider card slot rather than stretching a raster it can't
-   actually fill. */
-.sandbox-layer-card-wave .sandbox-layer-waveform {
-  margin: auto;
-}
-
-.sandbox-layer-card-wave .sandbox-waveform-area {
-  flex: 1 1 auto;
+/* Drop feedback while layers already exist — the empty-state drop zone is not
+   mounted then, so without this a drag over a full workspace looked inert. */
+.sandbox-drop-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  pointer-events: none;
+  background: var(--theme-accent-bg-subtle);
+  border: 1px dashed var(--theme-accent);
+  color: var(--theme-accent);
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
 }
 
 .sandbox-drop-zone {
-  flex: 0 0 auto;
-  margin: 2px 0 12px;
+  flex: 1 1 auto;
+  margin: 12px;
   padding: 16px;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
+  justify-content: center;
+  gap: 6px;
   border: 1px dashed var(--theme-border-strong);
   color: var(--theme-text-placeholder);
-  font-size: 11px;
+  font-size: 12px;
   letter-spacing: 0.02em;
   text-align: center;
 }
 
-.sandbox-drop-zone.compact {
-  flex-direction: row;
-  padding: 8px;
+.sandbox-drop-zone-hint {
   font-size: 10px;
+  opacity: 0.75;
 }
 
 .sandbox-drop-zone.over {
@@ -667,6 +675,20 @@
   flex: 0 0 auto;
   display: block;
   width: 100%;
+  /* Clickable: placing the cursor is what a ruler is for. */
+  cursor: pointer;
+  border-bottom: 1px solid var(--theme-border-subtle);
+}
+
+/* ── Overview strip — whole buffer + visible window (Phase 1) ────────────── */
+/* Only mounted while the view is zoomed in (see SandboxOverviewStrip), so it
+   costs no vertical space in the common fitted case. */
+.sandbox-overview-strip {
+  flex: 0 0 auto;
+  display: block;
+  width: 100%;
+  background: var(--theme-bg-secondary);
+  border-bottom: 1px solid var(--theme-border-subtle);
 }
 
 .sandbox-waveform-stack {
@@ -681,7 +703,8 @@
 .sandbox-waveform-env,
 .sandbox-waveform-paint,
 .sandbox-waveform-spcselect,
-.sandbox-waveform-pitch {
+.sandbox-waveform-pitch,
+.sandbox-waveform-playhead {
   position: absolute;
   top: 0;
   left: 0;
@@ -691,7 +714,16 @@
 }
 
 .sandbox-waveform-overlay {
-  cursor: crosshair;
+  /* Swapped to ew-resize by the canvas itself over a draggable selection edge
+     — see handleOverlayHover. */
+  cursor: text;
+}
+
+/* The playhead is the topmost layer and never a pointer target: it moves at
+   rAF rate and must not interrupt a drag that happens to pass under it. */
+.sandbox-waveform-playhead {
+  pointer-events: none;
+  z-index: 2;
 }
 
 /* The gain-envelope overlay sits above the selection overlay but is inert
@@ -1158,6 +1190,54 @@
   color: var(--theme-text-inverse);
 }
 
+/* Icon-only transport/zoom buttons — square, no heavy drop shadow, so a row of
+   them reads as one cluster of controls rather than five separate CTAs. The
+   text buttons (SWAP IN / BAKE) keep the shadow: they commit something. */
+.sandbox-tbtn--icon {
+  padding: 0;
+  width: 26px;
+  height: 26px;
+  justify-content: center;
+  box-shadow: none;
+  color: var(--theme-text-muted);
+}
+
+.sandbox-tbtn--icon:hover:not(:disabled) {
+  color: var(--theme-text);
+}
+
+.sandbox-tbtn--icon.active {
+  background: var(--theme-accent);
+  border-color: var(--theme-accent);
+  color: var(--theme-text-inverse);
+}
+
+/* What Space will play, stated rather than implied. Muted while it is the
+   default (cursor → end); accented once a real selection has made it a bounded
+   range, which is the state where looping starts to matter. */
+.sandbox-transport-range {
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: 0.02em;
+  color: var(--theme-text-placeholder);
+  white-space: nowrap;
+}
+
+.sandbox-transport-range.selection {
+  color: var(--theme-accent);
+}
+
+.sandbox-transport-divider {
+  width: 1px;
+  align-self: stretch;
+  margin: 0 2px;
+  background: var(--theme-border-subtle);
+}
+
+.sandbox-transport-spacer {
+  flex: 1 1 auto;
+}
+
 /* SWAP IN writes back into the project, so it reads as the destructive one of
    the pair even though it is fully undoable. */
 .sandbox-tbtn--error:not(:disabled) {
@@ -1496,4 +1576,134 @@
   color: var(--theme-text-placeholder);
   cursor: default;
   text-decoration: none;
+}
+
+/* ── Right-click menu on the waveform (Phase 5) ──────────────────────────── */
+/* position: fixed because it is placed from clientX/clientY — see
+   SandboxSelectionContextMenu, which clamps against the window so a click near
+   an edge never opens a menu half off screen. */
+.sandbox-context-menu {
+  position: fixed;
+  z-index: 60;
+  min-width: 178px;
+  padding: 3px 0;
+  background: var(--theme-bg-surface);
+  border: 1px solid var(--theme-border-strong);
+  box-shadow: 4px 5px 0 rgba(0, 0, 0, 0.5);
+}
+
+.sandbox-context-menu-head {
+  padding: 4px 10px 5px;
+  font-size: 9px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--theme-text-placeholder);
+  border-bottom: 1px solid var(--theme-border-subtle);
+}
+
+.sandbox-context-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  width: 100%;
+  padding: 4px 10px;
+  border: none;
+  background: transparent;
+  color: var(--theme-text);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.sandbox-context-item:hover:not(.disabled) {
+  background: var(--theme-accent);
+  color: var(--theme-text-inverse);
+}
+
+.sandbox-context-item.disabled {
+  color: var(--theme-text-placeholder);
+  cursor: default;
+}
+
+.sandbox-context-key {
+  font-size: 9px;
+  color: var(--theme-text-placeholder);
+}
+
+.sandbox-context-item:hover:not(.disabled) .sandbox-context-key {
+  color: var(--theme-text-inverse);
+}
+
+.sandbox-context-sep {
+  height: 1px;
+  margin: 3px 0;
+  background: var(--theme-border-subtle);
+}
+
+/* ── Tool column key legend (Phase 5) ────────────────────────────────────── */
+/* The shortcuts existed already; nothing in the panel said so. */
+.sandbox-toolcol-keys {
+  margin-top: auto;
+  padding: 8px 6px 4px;
+  border-top: 1px solid var(--theme-border-subtle);
+  font-size: 9px;
+  line-height: 1.6;
+  color: var(--theme-text-placeholder);
+}
+
+.sandbox-toolcol-keys-title {
+  margin-bottom: 3px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  color: var(--theme-text-muted);
+}
+
+.sandbox-toolcol-keys kbd {
+  display: inline-block;
+  min-width: 14px;
+  margin-right: 3px;
+  padding: 0 3px;
+  border: 1px solid var(--theme-border-subtle);
+  background: var(--theme-bg-surface);
+  color: var(--theme-text-muted);
+  font-family: inherit;
+  font-size: 9px;
+  text-align: center;
+}
+
+/* ── Op row "reveal" (Phase 3) ───────────────────────────────────────────── */
+/* Only rendered for ops that carry a locatable range, so its absence is
+   information too: this entry does not apply to one part of the buffer. */
+.sandbox-op-reveal {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  padding: 2px;
+  border: none;
+  background: transparent;
+  color: var(--theme-text-placeholder);
+  cursor: pointer;
+}
+
+.sandbox-op-reveal:hover {
+  color: var(--theme-accent);
+}
+
+/* Tool hint, middle of the status bar — moved out of the 88px tool column,
+   where the same sentence wrapped to five lines. */
+.sandbox-status-hint {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 12px;
+  color: var(--theme-text-placeholder);
+  font-size: 9.5px;
+  letter-spacing: 0.02em;
+}
+
+.sandbox-status-item--zoom {
+  color: var(--theme-accent);
 }

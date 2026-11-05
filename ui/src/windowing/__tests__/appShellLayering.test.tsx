@@ -2,7 +2,7 @@ import React from 'react';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import TitleBar, { TITLEBAR_MENUS } from '../../components/TitleBar.jsx';
 import { PanelFrame } from '../components/PanelFrame';
 import {
@@ -12,6 +12,15 @@ import {
   registerWorkAreaRect,
 } from '../managers/DragManager';
 import { createInitialPanelStates, usePanelRegistry } from '../registry/PanelRegistry';
+
+// TitleBar renders the toast status line, which requires a ToastProvider these
+// tests never mount. Stub the module rather than wrapping every render.
+vi.mock('../../components/Toast.jsx', () => ({
+  ToastProvider: ({ children }: { children: unknown }) => children,
+  ToastStatusText: () => null,
+  useToast: () => ({ dismiss: () => {}, showToast: () => undefined, toasts: [] }),
+}));
+
 
 function readUiSource(relativePath: string) {
   return readFileSync(path.resolve(process.cwd(), 'src', relativePath), 'utf8');
@@ -120,6 +129,7 @@ describe('Workspace bounds layout contract', () => {
 
     expect(appShellSource).toContain('state.dockRegionSizes[sampleDockSide]');
     expect(appShellSource).toContain('useDockRegionResizePreview(sampleDockSide)');
+    expect(appShellSource).toContain('useDockRegionResizePreview(sampleDockSide)');
     expect(appShellSource).toContain("'--xleth-sample-dock-width'");
     expect(appShellSource).not.toContain('sampleSelectorDockWidth');
     expect(drawerSource).not.toContain('sampleSelectorDockWidth');
@@ -193,16 +203,14 @@ describe('PanelFrame selector stability', () => {
   // ── Source-level verification ────────────────────────────────────────────
 
   it('PanelFrame selects primitives, not the panel object, to prevent getSnapshot reference churn', () => {
-    const src = readUiSource('windowing/components/PanelFrame.tsx');
-    // Must have individual primitive field selectors
-    expect(src).toContain("s.panels[id].hidden");
-    expect(src).toContain("s.panels[id].mode");
-    expect(src).toContain("s.panels[id].focused");
-    expect(src).toContain("s.panels[id].zIndex");
-    expect(src).toContain("s.panels[id].floating.x");
-    // Must NOT return a combined object from a selector
-    expect(src).not.toMatch(/usePanelRegistry\(\s*\(s\)\s*=>\s*s\.panels\[id\]\s*\)/);
-    expect(src).not.toMatch(/usePanelRegistry\(\s*\(state\)\s*=>\s*state\.panels\[id\]\s*\)/);
+    // The rule now lives in usePanelValue, which every windowing component
+    // goes through; PanelFrame must not reach past it into the raw store.
+    const panelFrameSource = readUiSource('windowing/components/PanelFrame.tsx');
+    const usePanelValueSource = readUiSource('windowing/registry/usePanelValue.ts');
+
+    expect(panelFrameSource).toContain("usePanelValue(id, (p) => p.hidden)");
+    expect(panelFrameSource).not.toMatch(/usePanelRegistry\(\s*\(s(tate)?\)\s*=>\s*s(tate)?\.panels\[id\]\s*\)/);
+    expect(usePanelValueSource).toContain('string | number | boolean | null | undefined');
   });
 
   it('registerWorkAreaRect is guarded against identical writes', () => {

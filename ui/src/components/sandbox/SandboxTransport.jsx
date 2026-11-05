@@ -1,22 +1,26 @@
-import { Play, Square } from 'lucide-react'
+import {
+  Play, Square, Repeat, Crosshair, ZoomIn, ZoomOut, Maximize2, Scan,
+} from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
-import useSandboxStore from '../../stores/sandboxStore.js'
+import useSandboxStore, { hasMeaningfulSelection } from '../../stores/sandboxStore.js'
 import XlethSelect from '../common/XlethSelect.jsx'
 import { DEFAULT_LABELS, loadCustomLabels } from '../../constants/labels.js'
+import { formatTime } from './sandboxFormat.js'
 
-// Bottom transport (mockup: SWAP IN ▾ · BAKE · PLAY). SWAP IN and BAKE act on
-// the ACTIVE layer — swapInLayer/bakeLayer are inherently per-layer (a
-// layer's own sourceRegionId), there is no composite-level swap. PLAY is the
-// one composite-level control that already exists (toggleCompositePreview) —
-// see the plan's "Transport BAKE / SWAP IN target" conflict for why these
-// three don't all operate at the same "level".
+// Bottom transport. Reorganised (Phase 2/4) around what a transport is
+// actually for: PLAY, what it will play, and how the view follows it. Zoom
+// controls live here too — they are navigation, not editing, and the tool
+// column is for tools that own the pointer.
 //
-// bakedAssets/addBakedAssetAsSource are carried forward unchanged from the
-// old Composite section; bakeComposite itself has never had a UI trigger
-// anywhere in this codebase (verified — no call site existed before this
-// restructure either), so no new button was added for it here, keeping this
-// restructure from quietly turning a previously-unreachable action into a
-// new feature.
+// SWAP IN and BAKE moved to the RIGHT, behind a divider: they act on the
+// active layer and commit something outside this panel (a project sample, a
+// baked asset), which makes them the two heaviest buttons in the room. They
+// used to sit first, where Play belongs.
+//
+// bakedAssets/addBakedAssetAsSource are carried forward unchanged; bakeComposite
+// itself still has no UI trigger anywhere in this codebase (verified — no call
+// site existed before this restructure either), so no new button was added for
+// it here.
 function SwapTargetPicker({ layerId, swapInLayer }) {
   const [regions, setRegions] = useState(null) // null = still loading
 
@@ -77,8 +81,16 @@ export default function SandboxTransport() {
   const swapInLayer = useSandboxStore((s) => s.swapInLayer)
   const bakedAssets = useSandboxStore((s) => s.bakedAssets)
   const addBakedAssetAsSource = useSandboxStore((s) => s.addBakedAssetAsSource)
-  const compositePreviewState = useSandboxStore((s) => s.compositePreviewState)
+  const playback = useSandboxStore((s) => s.playback)
   const toggleCompositePreview = useSandboxStore((s) => s.toggleCompositePreview)
+  const loopPlayback = useSandboxStore((s) => s.loopPlayback)
+  const toggleLoopPlayback = useSandboxStore((s) => s.toggleLoopPlayback)
+  const followPlayhead = useSandboxStore((s) => s.followPlayhead)
+  const toggleFollowPlayhead = useSandboxStore((s) => s.toggleFollowPlayhead)
+  const selection = useSandboxStore((s) => s.selection)
+  const zoomBy = useSandboxStore((s) => s.zoomBy)
+  const zoomToFit = useSandboxStore((s) => s.zoomToFit)
+  const zoomToSelection = useSandboxStore((s) => s.zoomToSelection)
 
   const layer = layers.find((l) => l.id === activeLayerId) ?? null
 
@@ -104,13 +116,73 @@ export default function SandboxTransport() {
       : `Replace "${layer.swapTargetName}"'s sample with the render — every placed instance follows`
 
   const hasLayers = layers.length > 0
-  const isPlaying = compositePreviewState === 'playing'
-  const isQueued = compositePreviewState === 'rendering'
+  const isPlaying = playback.state === 'playing'
+  const isQueued = playback.state === 'rendering'
   const playClass = isPlaying ? ' playing' : isQueued ? ' queued' : ''
-  const playTitle = isPlaying ? 'Stop preview (Space)' : 'Preview the composite (Space) — renders it first if needed'
+
+  // The transport says WHAT Space will play, because the rule is not
+  // guessable: a real selection plays as a bounded range, otherwise playback
+  // runs from the cursor to the end. Before this readout the same keypress
+  // did two visibly different things with no explanation.
+  const sampleRate = layer?.renderedBuffer?.sampleRate
+  const rangeIsSelection = hasMeaningfulSelection(selection, sampleRate)
+  const playFrom = (selection?.startSample ?? 0)
+  const playTo = rangeIsSelection ? selection.endSample : (layer?.renderedBuffer?.numSamples ?? 0)
+  const rangeText = sampleRate
+    ? `${formatTime(playFrom / sampleRate)} → ${formatTime(playTo / sampleRate)}`
+    : '—'
+  const playTitle = isPlaying
+    ? 'Stop (Space)'
+    : rangeIsSelection
+      ? 'Play the selection (Space) — renders the composite first if needed'
+      : 'Play from the cursor (Space) — renders the composite first if needed'
 
   return (
     <div className="sandbox-transport">
+      <button
+        className={`sandbox-tbtn sandbox-tbtn--primary${playClass}`}
+        disabled={!hasLayers || isQueued}
+        onClick={() => toggleCompositePreview()}
+        title={playTitle}
+      >
+        {isPlaying ? <Square size={14} /> : <Play size={14} />}
+      </button>
+      <button
+        className={`sandbox-tbtn sandbox-tbtn--icon${loopPlayback ? ' active' : ''}`}
+        onClick={() => toggleLoopPlayback()}
+        title="Loop the played range (L)"
+      ><Repeat size={13} /></button>
+      <button
+        className={`sandbox-tbtn sandbox-tbtn--icon${followPlayhead ? ' active' : ''}`}
+        onClick={() => toggleFollowPlayhead()}
+        title="Scroll the view to follow the playhead"
+      ><Crosshair size={13} /></button>
+
+      <span className={`sandbox-transport-range${rangeIsSelection ? ' selection' : ''}`} title={
+        rangeIsSelection ? 'Space plays the selection' : 'Space plays from the cursor to the end'
+      }>
+        {rangeIsSelection ? 'SEL' : 'CUR'} {rangeText}
+      </span>
+
+      <div className="sandbox-transport-divider" />
+
+      <button className="sandbox-tbtn sandbox-tbtn--icon" onClick={() => zoomBy(1.6)} title="Zoom out (−)">
+        <ZoomOut size={13} />
+      </button>
+      <button className="sandbox-tbtn sandbox-tbtn--icon" onClick={() => zoomBy(1 / 1.6)} title="Zoom in (+)">
+        <ZoomIn size={13} />
+      </button>
+      <button
+        className="sandbox-tbtn sandbox-tbtn--icon"
+        onClick={() => zoomToSelection()}
+        title="Zoom to selection (Ctrl+E)"
+      ><Scan size={13} /></button>
+      <button className="sandbox-tbtn sandbox-tbtn--icon" onClick={() => zoomToFit()} title="Fit whole layer (Ctrl+F)">
+        <Maximize2 size={13} />
+      </button>
+
+      <div className="sandbox-transport-spacer" />
+
       {needsSwapTarget ? (
         <SwapTargetPicker layerId={layer.id} swapInLayer={swapInLayer} />
       ) : (
@@ -130,14 +202,6 @@ export default function SandboxTransport() {
         title="Commit the current render as this layer's clean baseline"
       >
         {bakeLabel}
-      </button>
-      <button
-        className={`sandbox-tbtn sandbox-tbtn--primary${playClass}`}
-        disabled={!hasLayers || compositePreviewState === 'rendering'}
-        onClick={() => toggleCompositePreview()}
-        title={playTitle}
-      >
-        {isPlaying ? <Square size={14} /> : <Play size={14} />}
       </button>
       {layer?.swapInState === 'swapped' && layer.lastSwap && (
         <span className="sandbox-swap-confirmation">

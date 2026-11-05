@@ -2,9 +2,18 @@ import { useEffect, useLayoutEffect, useState, useCallback, useRef } from 'react
 import { timelineEvents } from '../../timelineEvents.js'
 import RootNotePicker from './RootNotePicker.jsx'
 import SamplerWaveform from './SamplerWaveform.jsx'
-import SlotList, { MAX_SLOTS } from './SlotList.jsx'
+import SlotTabs, { MAX_SLOTS } from './SlotTabs.jsx'
+import { SlotActions, SlotMinis } from './SlotInspector.jsx'
+import AuditionBar from './AuditionBar.jsx'
+import PatchBar from './PatchBar.jsx'
 import PreviewRoutingControl from './PreviewRoutingControl.jsx'
 import Knob from './Knob.jsx'
+import { noteForCode, clampOctaveShift } from './auditionKeymap.js'
+import { copySlotSettings, buildSlotPaste, hasSlotClipboard } from './slotClipboard.js'
+import {
+  buildPatchState, saveSamplerPatch, loadSamplerPatch,
+  mergePatchSlots, patchRegionSettings,
+} from './samplerPatch.js'
 import SamplerModTray from './modulation/SamplerModTray.jsx'
 import { useModTarget } from './modulation/useModTarget.js'
 import { TARGET_SLOT_MANGLE_AMOUNT, TARGET_SLOT_MANGLE_MIX } from './modulation/modTargets.js'
@@ -463,6 +472,49 @@ export default function SamplerPanelContent({ regionId, onClose }) {
   const [slots, setSlots] = useState([{}])
   const [selectedSlot, setSelectedSlot] = useState(0)
   const [slotBusy, setSlotBusy] = useState(false)
+
+  // ── Audition state ────────────────────────────────────────────────────────
+  // The computer-keyboard piano used to be a fixed C4..E6 window at a hard-coded
+  // velocity of 0.8, with nothing on screen saying it existed. These three
+  // pieces of state are what the AuditionBar shows and steers.
+  const [octaveShift, setOctaveShift] = useState(0)
+  const [velocity, setVelocity] = useState(0.8)
+  const [heldCount, setHeldCount] = useState(0)
+  const octaveShiftRef = useRef(0)
+  octaveShiftRef.current = octaveShift
+  const velocityRef = useRef(velocity)
+  velocityRef.current = velocity
+
+  // Zero-crossing snap for waveform handle drags, and the waveform's current
+  // zoom window — the Loop/Trim knobs scope their range to it, which is what
+  // makes them usable on a long sample.
+  // The slot clipboard is module state (it has to survive a panel close), so
+  // nothing re-renders when it changes — this counter is what re-enables the
+  // paste button the moment something has been copied.
+  const [clipboardTick, setClipboardTick] = useState(0)
+  const [snapZero, setSnapZero] = useState(true)
+  const [waveView, setWaveView] = useState({ start: 0, len: 0, api: null })
+  const onWaveViewChange = useCallback((v) => {
+    setWaveView((prev) => (
+      prev.start === v.start && prev.len === v.len && prev.api === v.api ? prev : v
+    ))
+  }, [])
+
+  // Per-slot sample lengths. Only the SELECTED slot's length arrives with
+  // audioInfo, but pasting settings and saving a patch both need to rescale
+  // sample-index fields against the length of the layer they land on, so the
+  // lengths are cached as slots are visited and fetched on demand otherwise.
+  const numSamplesBySlotRef = useRef({})
+  const slotLengthFor = useCallback(async (idx) => {
+    const cached = numSamplesBySlotRef.current[idx]
+    if (cached != null) return cached
+    try {
+      const ai = await window.xleth?.timeline?.getRegionAudioInfo?.(regionId, idx)
+      const n = ai?.numSamples || 0
+      numSamplesBySlotRef.current[idx] = n
+      return n
+    } catch { return 0 }
+  }, [regionId])
   const selectedSlotRef = useRef(0)
   selectedSlotRef.current = selectedSlot
   const slotsRef = useRef(slots)
@@ -537,7 +589,12 @@ export default function SamplerPanelContent({ regionId, onClose }) {
           arpDirection: r.arpDirection ?? 0,
         })
       }
-      if (ai) setAudioInfo(ai)
+      if (ai) {
+        setAudioInfo(ai)
+        // Cache this layer's length so a later paste / patch load can rescale
+        // sample-index fields against it without another round trip.
+        numSamplesBySlotRef.current[slotIdx] = ai.numSamples || 0
+      }
     } catch (e) {
       console.warn('[SamplerPanelContent] fetch failed:', e.message)
     }
@@ -579,14 +636,9 @@ export default function SamplerPanelContent({ regionId, onClose }) {
 
   useEffect(() => {
     if (regionId == null) return
-    const KEY_MAP = {
-      KeyZ: 60, KeyS: 61, KeyX: 62, KeyD: 63, KeyC: 64,
-      KeyV: 65, KeyG: 66, KeyB: 67, KeyH: 68, KeyN: 69, KeyJ: 70, KeyM: 71,
-      KeyQ: 72, Digit2: 73, KeyW: 74, Digit3: 75, KeyE: 76,
-      KeyR: 77, Digit5: 78, KeyT: 79, Digit6: 80, KeyY: 81, Digit7: 82, KeyU: 83,
-      KeyI: 84, Digit9: 85, KeyO: 86, Digit0: 87, KeyP: 88,
-    }
-    const held = new Set()
+    // code -> the note that key STARTED, so a release still stops the right
+    // note if the octave was shifted while it was held down.
+    const held = new Map()
     const isTyping = () => {
       const el = document.activeElement
       if (!el) return false
@@ -596,28 +648,88 @@ export default function SamplerPanelContent({ regionId, onClose }) {
     const onDown = (e) => {
       if (e.repeat || e.ctrlKey || e.metaKey || e.altKey) return
       if (isTyping()) return
-      const note = KEY_MAP[e.code]
-      if (note == null || held.has(note)) return
-      held.add(note)
+      if (held.has(e.code)) return
+      const note = noteForCode(e.code, octaveShiftRef.current)
+      if (note == null) return
+      held.set(e.code, note)
+      setHeldCount(held.size)
       e.preventDefault()
-      window.xleth?.timeline?.previewNote?.(regionId, note, 0.8)
+      window.xleth?.timeline?.previewNote?.(regionId, note, velocityRef.current)
     }
     const onUp = (e) => {
-      const note = KEY_MAP[e.code]
-      if (note == null || !held.has(note)) return
-      held.delete(note)
+      const note = held.get(e.code)
+      if (note == null) return
+      held.delete(e.code)
+      setHeldCount(held.size)
       window.xleth?.timeline?.previewNoteOff?.(regionId, note)
+    }
+    // A focus loss mid-hold (alt-tab, a dialog) never delivers the keyup, which
+    // used to leave the note sounding forever.
+    const onBlur = () => {
+      for (const note of held.values()) {
+        window.xleth?.timeline?.previewNoteOff?.(regionId, note)
+      }
+      held.clear()
+      setHeldCount(0)
     }
     window.addEventListener('keydown', onDown)
     window.addEventListener('keyup', onUp)
+    window.addEventListener('blur', onBlur)
     return () => {
       window.removeEventListener('keydown', onDown)
       window.removeEventListener('keyup', onUp)
-      for (const note of held) {
+      window.removeEventListener('blur', onBlur)
+      for (const note of held.values()) {
         window.xleth?.timeline?.previewNoteOff?.(regionId, note)
       }
     }
   }, [regionId])
+
+  // ── Playhead poll ─────────────────────────────────────────────────────────
+  // The engine publishes each slot's read head once per audio block; this polls
+  // it for the SELECTED slot while there is any reason to.
+  //
+  // Armed by a held note, but it keeps going after the last key is released
+  // until the engine itself reports -1: a note does not stop at note-off, it
+  // runs its amp release (and, with exit-on-release, a whole loop pass plus the
+  // tail), and cutting the playhead at keyup would hide exactly the part of the
+  // sample a loop edit is about.
+  const [playPosition, setPlayPosition] = useState(null)
+  const playTailRef = useRef(false)
+
+  useEffect(() => {
+    if (regionId == null) return undefined
+    if (heldCount === 0 && !playTailRef.current) {
+      setPlayPosition(null)
+      return undefined
+    }
+    let cancelled = false
+    // ~30Hz. Finer than this is wasted: the value only changes once per audio
+    // block, and each poll is a full IPC round trip.
+    const timer = setInterval(async () => {
+      if (cancelled) return
+      try {
+        const res = await window.xleth?.timeline?.getSamplerPlayPositions?.(regionId)
+        if (cancelled) return
+        const positions = Array.isArray(res?.positions) ? res.positions : []
+        const p = positions[selectedSlotRef.current]
+        const sounding = typeof p === 'number' && p >= 0
+        playTailRef.current = sounding
+        setPlayPosition(sounding ? p : null)
+        // Nothing sounding and no key down — stop until the next note.
+        if (!sounding && heldCount === 0) {
+          cancelled = true
+          clearInterval(timer)
+        }
+      } catch {
+        cancelled = true
+        clearInterval(timer)
+        playTailRef.current = false
+        setPlayPosition(null)
+      }
+    }, 33)
+    return () => { cancelled = true; clearInterval(timer) }
+  }, [regionId, heldCount])
 
   // AUTO-loop telemetry: remember the last apply so an edit to loopStart/loopEnd/
   // crossfade within 30 s of it is logged as a "nudge" (the only signal for how
@@ -679,9 +791,11 @@ export default function SamplerPanelContent({ regionId, onClose }) {
     return typeof res === 'string' && res ? res : null
   }, [])
 
-  const addSlot = useCallback(async () => {
+  // `presetPath` short-circuits the picker: an OS file drop already knows the
+  // path, and opening a dialog after a drop would be absurd.
+  const addSlot = useCallback(async (presetPath = null) => {
     if (regionId == null || slotsRef.current.length >= MAX_SLOTS) return
-    const filePath = await pickAudioFile()
+    const filePath = presetPath || await pickAudioFile()
     if (!filePath) return
     setSlotBusy(true)
     try {
@@ -700,10 +814,13 @@ export default function SamplerPanelContent({ regionId, onClose }) {
     }
   }, [regionId, pickAudioFile, fetchAll])
 
-  const swapSlot = useCallback(async (slotIdx) => {
+  const swapSlot = useCallback(async (slotIdx, presetPath = null) => {
     if (regionId == null) return
-    const filePath = await pickAudioFile()
+    const filePath = presetPath || await pickAudioFile()
     if (!filePath) return
+    // The layer's audio is changing, so its cached length is stale — a paste or
+    // a patch load rescaling against it would use the OLD sample's length.
+    delete numSamplesBySlotRef.current[slotIdx]
     setSlotBusy(true)
     try {
       // Slot 1 IS the region's audio — swapping it leaves its settings and
@@ -760,12 +877,110 @@ export default function SamplerPanelContent({ regionId, onClose }) {
     }
   }, [regionId, fetchAll])
 
+  // One-shot audition of the root note, at the bar's current velocity. The
+  // release is scheduled rather than held: this is a click, not a key, so there
+  // is no keyup to hang the note off.
+  const previewRootNoteTimer = useRef(null)
+  const previewRootNote = useCallback(() => {
+    if (regionId == null) return
+    const note = settingsRef.current.rootNote ?? 60
+    clearTimeout(previewRootNoteTimer.current)
+    window.xleth?.timeline?.previewNote?.(regionId, note, velocityRef.current)
+    previewRootNoteTimer.current = setTimeout(() => {
+      window.xleth?.timeline?.previewNoteOff?.(regionId, note)
+    }, 1200)
+  }, [regionId])
+
+  useEffect(() => () => clearTimeout(previewRootNoteTimer.current), [])
+
   const setField = useCallback((field, val) => {
     setSettings((s) => ({ ...s, [field]: val }))
   }, [])
   const setFields = useCallback((partial) => {
     setSettings((s) => ({ ...s, ...partial }))
   }, [])
+
+  // ── Slot name / clipboard ─────────────────────────────────────────────────
+  // `name` is a real SampleSlot field that already round-trips through the
+  // project JSON, so a rename is an ordinary slot commit — no engine change.
+  // Empty clears the override and falls back to the filename.
+  const renameSlot = useCallback((slotIdx, name) => {
+    commitSlotField(slotIdx, 'name', name)
+  }, [commitSlotField])
+
+  const copySlot = useCallback(async () => {
+    const idx = selectedSlotRef.current
+    const slot = slotsRef.current[idx]
+    if (!slot) return
+    // Merge the panel's live per-slot settings over the fetched slot: trim,
+    // loop, fades, prep and mangle live in `settings` for the SELECTED layer,
+    // and those are exactly what is worth copying.
+    const s = settingsRef.current
+    copySlotSettings({ ...slot, ...s }, audioInfo?.numSamples || 0)
+    setClipboardTick((n) => n + 1)
+  }, [audioInfo])
+
+  const pasteSlot = useCallback(async () => {
+    const idx = selectedSlotRef.current
+    const target = await slotLengthFor(idx)
+    const patch = buildSlotPaste(target)
+    if (!patch) return
+    const { mangleChain, ...flat } = patch
+    // One commit for the whole paste so it lands as a single undo step, the
+    // same way every other multi-field sampler edit does.
+    setFields({ ...flat, mangleChain })
+    commit({ ...flat, mangleChain })
+  }, [slotLengthFor, commit, setFields])
+
+  // ── Patches ───────────────────────────────────────────────────────────────
+  const savePatch = useCallback(async (name) => {
+    // Every layer's length, so sample-index fields can be rescaled on load.
+    const lengths = {}
+    for (let i = 0; i < slotsRef.current.length; i++) lengths[i] = await slotLengthFor(i)
+    // The selected layer's live edits are in `settings`, not yet in `slots`.
+    const mergedSlots = slotsRef.current.map((sl, i) =>
+      (i === selectedSlotRef.current ? { ...sl, ...settingsRef.current } : sl))
+    let modulation = null
+    try {
+      modulation = await window.xleth?.timeline?.getSamplerModulation?.(regionId)
+    } catch { /* a patch without modulation is still worth saving */ }
+    return saveSamplerPatch({
+      name,
+      state: buildPatchState({
+        settings: settingsRef.current,
+        slots: mergedSlots,
+        numSamplesBySlot: lengths,
+        modulation,
+      }),
+    })
+  }, [regionId, slotLengthFor])
+
+  const loadPatch = useCallback(async (source, slug) => {
+    const res = await loadSamplerPatch(source, slug)
+    if (!res.ok) return res
+    const lengths = {}
+    for (let i = 0; i < slotsRef.current.length; i++) lengths[i] = await slotLengthFor(i)
+    const nextSlots = mergePatchSlots(res.state.slots, slotsRef.current, lengths)
+    try {
+      // Slots, region-level settings AND the modulation config all go in ONE
+      // call: Timeline_UpdateSamplerSettings accepts a `modulation` object in
+      // the same payload precisely so a bulk caller does not need a second RPC,
+      // and it routes everything through one SetSamplerSettingsCommand — so
+      // loading a patch is a single Ctrl+Z, not one undo step per stage.
+      await window.xleth?.timeline?.updateSamplerSettings?.(regionId, {
+        slots: nextSlots,
+        ...patchRegionSettings(res.state),
+        ...(res.state.modulation ? { modulation: res.state.modulation } : null),
+      })
+      timelineEvents.dispatchEvent(new CustomEvent('timeline-sampler-changed', { detail: { regionId } }))
+      timelineEvents.dispatchEvent(new CustomEvent('timeline-pattern-changed', { detail: {} }))
+    } catch (e) {
+      return { ok: false, error: e?.message || 'apply failed' }
+    }
+    await fetchAll()
+    return { ok: true }
+  }, [regionId, slotLengthFor, fetchAll])
+
 
   const commitField = useCallback((field, val) => {
     setSettings((s) => ({ ...s, [field]: val }))
@@ -971,122 +1186,206 @@ export default function SamplerPanelContent({ regionId, onClose }) {
     (mi?.mode ?? 0) !== MANGLE_OFF && !mi?.bypass && (mi?.mix ?? 1) > 0
   const mangleOn = mangleChain.some(mangleInstanceActive)
 
+  // The slot the editor is bound to. The panel's live per-slot edits live in
+  // `settings`, so the inspector reads the fetched slot for tuning/level and
+  // `settings` for everything the waveform editor touches.
+  const selectedSlotData = slots[selectedSlot] || {}
+  // `clipboardTick` is not read — it is the dependency that re-evaluates this
+  // after a copy, because the clipboard itself is module state.
+  const canPaste = hasSlotClipboard() || clipboardTick < 0
+
+  // ── Sample-index knob feel ────────────────────────────────────────────────
+  // SMP Start / Length / Loop Start / Loop End are indices into a buffer that
+  // is routinely hundreds of thousands of samples long, and Knob's default
+  // 180px of travel covers the WHOLE min→max sweep — so a pixel was worth
+  // ~1300 samples and placing a loop point by drag was not possible.
+  //
+  // The range stays absolute (so the readout means what it says and type-in is
+  // not silently clamped by the zoom); what scales is the TRAVEL. Stretching
+  // dragRange by numSamples/viewLen makes 180px of drag move exactly one
+  // visible window, so zooming in buys drag precision at the same rate it buys
+  // visual precision, and the knob and the waveform agree about what "fine"
+  // means.
+  const waveViewLen = waveView.len > 0 ? waveView.len : numSamples
+  const sampleDragRange = (numSamples > 0 && waveViewLen > 0)
+    ? Math.round(180 * (numSamples / waveViewLen))
+    : 180
+
+  const zoomLabel = (() => {
+    if (numSamples <= 0) return ''
+    if (waveViewLen >= numSamples) return 'full'
+    const secs = waveViewLen / (sampleRate || 48000)
+    return secs >= 1 ? `${secs.toFixed(2)}s` : `${Math.round(secs * 1000)}ms`
+  })()
+
   const renderSample = () => (
     <div className="sampler-page sampler-page--sample">
-      <SlotList
+      {/* Slots as a TAB STRIP, not a table. See SlotTabs.jsx for why: eight
+          rows of six live minis was ~490px of a 545px content area, which is
+          what pushed the waveform and everything under it below the fold in a
+          panel that is deliberately fixed-size. */}
+      <SlotTabs
         slots={slots}
         selectedSlot={selectedSlot}
         onSelectSlot={setSelectedSlot}
-        onPreviewSlotField={previewSlotField}
-        onCommitSlotField={commitSlotField}
-        onToggleMute={(i) => toggleSlotFlag(i, 'mute')}
-        onToggleSolo={(i) => toggleSlotFlag(i, 'solo')}
-        onAddSlot={addSlot}
-        onSwapSlot={swapSlot}
-        onDuplicateSlot={duplicateSlot}
-        onRemoveSlot={removeSlot}
+        onAddSlot={() => addSlot()}
+        onAddSlotFromPath={(path) => addSlot(path)}
+        onDropSlotAudio={(i, path) => swapSlot(i, path)}
+        onRenameSlot={renameSlot}
         busy={slotBusy}
       />
-      <section className="sampler-waveform-block">
-        <div className="sampler-waveform-meta">
-          <span className="sampler-waveform-name" title={sourceName}>{sourceName}</span>
-          <span>{(sampleRate / 1000).toFixed(sampleRate % 1000 === 0 ? 0 : 1)}kHz &middot; {formatDuration(sourceDuration)}</span>
-        </div>
-        <div className="sampler-waveform-well">
-          <SamplerWaveform
-          regionId={regionId}
-          slotIndex={selectedSlot}
-          numSamples={numSamples}
-          loopEnabled={settings.loopEnabled}
-          loopStart={settings.loopStart}
-          loopEnd={settings.loopEnd || numSamples}
-          onCommitLoopPoints={commitLoopPoints}
-          smpStart={settings.smpStart}
-          smpLength={settings.smpLength}
-          declickMs={settings.declickMs}
-          fadeInMs={settings.fadeInMs}
-          fadeOutMs={settings.fadeOutMs}
-          crossfadeSamples={settings.crossfadeSamples}
-          sampleRate={sampleRate}
-          onCommitSmpPoints={commitSmpPoints}
-            width={WAVE_WIDTH}
-            height={WAVE_HEIGHT}
-            responsive
-          />
-        </div>
-      </section>
 
-      {/* PREP sits between the raw file and everything below it: the bake it
-          produces is the buffer trim, loop, fades and the waveform above all
-          work against. Placed here so the panel reads in pipeline order. */}
-      <section className={`sampler-range-card sampler-range-card--prep${prepBypassed ? ' is-bypassed' : ''}`}>
-        <header>
-          <i /><span>Prep</span>
-          {prepBusy && <span className="sampler-prep-busy">baking…</span>}
-          <button
-            type="button"
-            onClick={() => commitPrep({ prepStretch: 1, prepShiftCents: 0 })}
-            disabled={prepBypassed}
-            title="Return to unity stretch and zero shift — the slot plays its raw sample with no bake"
-          >
-            Reset
-          </button>
-        </header>
-        <div className="sampler-prep-body">
-          <label className="sampler-prep-algo">
-            <span>Algorithm</span>
-            <SelKV
-              val={settings.prepAlgorithm}
-              set={(v) => commitPrep({ prepAlgorithm: v })}
-              opts={PREP_ALGOS}
+      <SlotActions
+        slot={selectedSlotData}
+        slotIndex={selectedSlot}
+        slotCount={slots.length}
+        maxSlots={MAX_SLOTS}
+        busy={slotBusy}
+        canPaste={canPaste}
+        onToggleMute={() => toggleSlotFlag(selectedSlot, 'mute')}
+        onToggleSolo={() => toggleSlotFlag(selectedSlot, 'solo')}
+        onSwap={() => swapSlot(selectedSlot)}
+        onDuplicate={() => duplicateSlot(selectedSlot)}
+        onCopySettings={copySlot}
+        onPasteSettings={pasteSlot}
+        onRemove={() => removeSlot(selectedSlot)}
+      />
+
+      {/* Waveform left, PREP + PROCESS + the selected slot's minis stacked in a
+          column beside it — the mockup's arrangement. They used to be three
+          full-width cards stacked UNDER the waveform, which is most of why the
+          main tab did not fit its own window. */}
+      <div className="sampler-work-row">
+        <section className="sampler-waveform-block">
+          <div className="sampler-waveform-meta">
+            <span className="sampler-waveform-name" title={sourceName}>{sourceName}</span>
+            <span>{(sampleRate / 1000).toFixed(sampleRate % 1000 === 0 ? 0 : 1)}kHz &middot; {formatDuration(sourceDuration)}</span>
+            <span className="sampler-waveform-tools">
+              <button
+                type="button"
+                className={`sampler-wave-tool${snapZero ? ' is-active' : ''}`}
+                onClick={() => setSnapZero((v) => !v)}
+                title={snapZero
+                  ? 'Trim and loop handles snap to the nearest zero crossing on release (hold Alt while dragging to place one exactly)'
+                  : 'Zero-crossing snap is off — loop ends may click'}
+                aria-pressed={snapZero}
+              >SNAP</button>
+              <button
+                type="button"
+                className="sampler-wave-tool"
+                onClick={() => waveView.api?.zoomToSelection?.()}
+                disabled={numSamples === 0}
+                title="Zoom to the trim selection"
+              >SEL</button>
+              <button
+                type="button"
+                className="sampler-wave-tool"
+                onClick={() => waveView.api?.zoomToFit?.()}
+                disabled={!waveView.api?.zoomed}
+                title="Zoom out to the whole sample (or double-click the waveform)"
+              >FIT</button>
+              <span className="sampler-wave-zoom" title="Visible span of the sample">
+                {zoomLabel}
+              </span>
+            </span>
+          </div>
+          <div className="sampler-waveform-well">
+            <SamplerWaveform
+              regionId={regionId}
+              slotIndex={selectedSlot}
+              numSamples={numSamples}
+              loopEnabled={settings.loopEnabled}
+              loopStart={settings.loopStart}
+              loopEnd={settings.loopEnd || numSamples}
+              onCommitLoopPoints={commitLoopPoints}
+              smpStart={settings.smpStart}
+              smpLength={settings.smpLength}
+              declickMs={settings.declickMs}
+              fadeInMs={settings.fadeInMs}
+              fadeOutMs={settings.fadeOutMs}
+              crossfadeSamples={settings.crossfadeSamples}
+              sampleRate={sampleRate}
+              onCommitSmpPoints={commitSmpPoints}
+              width={WAVE_WIDTH}
+              height={WAVE_HEIGHT}
+              responsive
+              snapZero={snapZero}
+              onViewChange={onWaveViewChange}
+              playPosition={playPosition}
             />
-          </label>
-          <SamplerKnob
-            label="Stretch"
-            value={settings.prepStretch * 100}
-            min={25} max={400} defaultValue={100}
-            size={42}
-            color={accentPanel}
-            formatValue={(v) => `${Math.round(v)}%`}
-            onLiveChange={(v) => setField('prepStretch', Math.round(v) / 100)}
-            onCommit={(v) => commitPrep({ prepStretch: Math.round(v) / 100 })}
-          />
-          <SamplerKnob
-            label="Shift"
-            value={settings.prepShiftCents}
-            min={-2400} max={2400} defaultValue={0}
-            size={42}
-            color={accentPanel}
-            formatValue={(v) => `${v > 0 ? '+' : ''}${Math.round(v)}c`}
-            onLiveChange={(v) => setField('prepShiftCents', Math.round(v))}
-            onCommit={(v) => commitPrep({ prepShiftCents: Math.round(v) })}
-          />
-          <span className="sampler-prep-note">
-            {prepBypassed
-              ? 'Bypassed — raw sample, no bake'
-              : 'Baked once, off the audio thread'}
-          </span>
-        </div>
-      </section>
+          </div>
+        </section>
 
-      {/* PROCESS applies destructively to the baked buffer, so it reads directly
-          under PREP and above the trim/loop stages that work on its output. */}
-      <section className="sampler-card sampler-process-card">
-        <SectionLabel>Process (applies immediately)</SectionLabel>
-        <div className="sampler-process-row">
-          <ProcessButton label="Remove DC Offset" active={!!settings.dcOffsetRemoved} onClick={() => commitField('dcOffsetRemoved', !settings.dcOffsetRemoved)}><span aria-hidden>-</span></ProcessButton>
-          <ProcessButton label="Normalize" active={!!settings.normalized} onClick={() => commitField('normalized', !settings.normalized)}><span aria-hidden>~</span></ProcessButton>
-          <ProcessButton label="Reverse Polarity" active={!!settings.polarityReversed} onClick={() => commitField('polarityReversed', !settings.polarityReversed)}><span aria-hidden>+/-</span></ProcessButton>
-          <ProcessButton label="Reverse" active={!!settings.reversed} onClick={() => commitField('reversed', !settings.reversed)}><span aria-hidden>&lt;&gt;</span></ProcessButton>
-        </div>
-      </section>
+        <aside className="sampler-work-side">
+          {/* Tuning + level for the SELECTED layer only. */}
+          <SlotMinis
+            slot={selectedSlotData}
+            slotIndex={selectedSlot}
+            onPreviewField={previewSlotField}
+            onCommitField={commitSlotField}
+            disabled={slotBusy}
+          />
 
-      {/* Auditioning routes through a track's effect rack so the keyboard
-          preview above sounds like the sample does in the arrangement. */}
-      <section className="sampler-card sampler-preview-routing-card">
-        <SectionLabel>Preview monitoring</SectionLabel>
-        <PreviewRoutingControl regionId={regionId} />
-      </section>
+          {/* PREP sits between the raw file and everything below it: the bake it
+              produces is the buffer trim, loop, fades and the waveform all work
+              against. */}
+          <section className={`sampler-range-card sampler-range-card--prep${prepBypassed ? ' is-bypassed' : ''}`}>
+            <header>
+              <i /><span>Prep</span>
+              {prepBusy && <span className="sampler-prep-busy">baking&hellip;</span>}
+              <button
+                type="button"
+                onClick={() => commitPrep({ prepStretch: 1, prepShiftCents: 0 })}
+                disabled={prepBypassed}
+                title="Return to unity stretch and zero shift — the slot plays its raw sample with no bake"
+              >
+                Reset
+              </button>
+            </header>
+            <div className="sampler-prep-body">
+              <label className="sampler-prep-algo">
+                <span>Algorithm</span>
+                <SelKV
+                  val={settings.prepAlgorithm}
+                  set={(v) => commitPrep({ prepAlgorithm: v })}
+                  opts={PREP_ALGOS}
+                />
+              </label>
+              <SamplerKnob
+                label="Stretch"
+                value={settings.prepStretch * 100}
+                min={25} max={400} defaultValue={100}
+                size={38}
+                color={accentPanel}
+                formatValue={(v) => `${Math.round(v)}%`}
+                onLiveChange={(v) => setField('prepStretch', Math.round(v) / 100)}
+                onCommit={(v) => commitPrep({ prepStretch: Math.round(v) / 100 })}
+              />
+              <SamplerKnob
+                label="Shift"
+                value={settings.prepShiftCents}
+                min={-2400} max={2400} defaultValue={0}
+                size={38}
+                color={accentPanel}
+                formatValue={(v) => `${v > 0 ? '+' : ''}${Math.round(v)}c`}
+                onLiveChange={(v) => setField('prepShiftCents', Math.round(v))}
+                onCommit={(v) => commitPrep({ prepShiftCents: Math.round(v) })}
+              />
+            </div>
+          </section>
+
+          {/* PROCESS applies destructively to the baked buffer. */}
+          <section className="sampler-card sampler-process-card">
+            <SectionLabel>Process (applies immediately)</SectionLabel>
+            <div className="sampler-process-row">
+              <ProcessButton label="Remove DC Offset" active={!!settings.dcOffsetRemoved} onClick={() => commitField('dcOffsetRemoved', !settings.dcOffsetRemoved)}><span aria-hidden>-</span></ProcessButton>
+              <ProcessButton label="Normalize" active={!!settings.normalized} onClick={() => commitField('normalized', !settings.normalized)}><span aria-hidden>~</span></ProcessButton>
+              <ProcessButton label="Reverse Polarity" active={!!settings.polarityReversed} onClick={() => commitField('polarityReversed', !settings.polarityReversed)}><span aria-hidden>+/-</span></ProcessButton>
+              <ProcessButton label="Reverse" active={!!settings.reversed} onClick={() => commitField('reversed', !settings.reversed)}><span aria-hidden>&lt;&gt;</span></ProcessButton>
+            </div>
+          </section>
+        </aside>
+      </div>
 
       <div className="sampler-identity-row">
         <section className="sampler-card sampler-mode-card">
@@ -1101,68 +1400,70 @@ export default function SamplerPanelContent({ regionId, onClose }) {
         <section className="sampler-range-card sampler-range-card--trim">
           <header><i /><span>Trim</span></header>
           <div className="sampler-range-knobs sampler-range-knobs--trim">
-        <SamplerKnob
-          label="SMP Start"
-          value={settings.smpStart}
-          min={0}
-          max={Math.max(0, numSamples - 1)}
-          defaultValue={0}
-          size={42}
-          color={accentPanel}
-          onLiveChange={(v) => setField('smpStart', Math.round(v))}
-          onCommit={(v) => commit({ smpStart: Math.round(v) })}
-        />
-        <SamplerKnob
-          label="Length"
-          value={settings.smpLength === 0 ? numSamples : settings.smpLength}
-          min={0}
-          max={numSamples}
-          defaultValue={numSamples}
-          size={42}
-          color={accentPanel}
-          formatValue={(v) => {
-            const r = Math.round(v)
-            return (numSamples === 0 || r >= numSamples) ? 'FULL' : String(r)
-          }}
-          onLiveChange={(v) => {
-            const len = Math.round(v)
-            setField('smpLength', len >= numSamples ? 0 : len)
-          }}
-          onCommit={(v) => {
-            const len = Math.round(v)
-            commit({ smpLength: len >= numSamples ? 0 : len })
-          }}
-        />
-        <SamplerKnob
-          label="In"
-          value={settings.fadeInMs}
-          min={0} max={5000} defaultValue={0}
-          size={42}
-          color={accentPanel}
-          formatValue={(v) => `${Math.round(v)}ms`}
-          onLiveChange={(v) => setField('fadeInMs', Math.round(v))}
-          onCommit={(v) => commit({ fadeInMs: Math.round(v) })}
-        />
-        <SamplerKnob
-          label="Out"
-          value={settings.fadeOutMs}
-          min={0} max={5000} defaultValue={0}
-          size={42}
-          color={accentPanel}
-          formatValue={(v) => `${Math.round(v)}ms`}
-          onLiveChange={(v) => setField('fadeOutMs', Math.round(v))}
-          onCommit={(v) => commit({ fadeOutMs: Math.round(v) })}
-        />
-        <SamplerKnob
-          label="Declick"
-          value={settings.declickMs}
-          min={0} max={10} step={0.1} defaultValue={1.5}
-          size={42}
-          color={accentPanel}
-          formatValue={(v) => `${v.toFixed(1)}ms`}
-          onLiveChange={(v) => setField('declickMs', Math.round(v * 10) / 10)}
-          onCommit={(v) => commit({ declickMs: Math.round(v * 10) / 10 })}
-        />
+            <SamplerKnob
+              label="SMP Start"
+              value={settings.smpStart}
+              min={0}
+              max={Math.max(0, numSamples - 1)}
+              defaultValue={0}
+              size={42}
+              dragRange={sampleDragRange}
+              color={accentPanel}
+              onLiveChange={(v) => setField('smpStart', Math.round(v))}
+              onCommit={(v) => commit({ smpStart: Math.round(v) })}
+            />
+            <SamplerKnob
+              label="Length"
+              value={settings.smpLength === 0 ? numSamples : settings.smpLength}
+              min={0}
+              max={numSamples}
+              defaultValue={numSamples}
+              size={42}
+              dragRange={sampleDragRange}
+              color={accentPanel}
+              formatValue={(v) => {
+                const r = Math.round(v)
+                return (numSamples === 0 || r >= numSamples) ? 'FULL' : String(r)
+              }}
+              onLiveChange={(v) => {
+                const len = Math.round(v)
+                setField('smpLength', len >= numSamples ? 0 : len)
+              }}
+              onCommit={(v) => {
+                const len = Math.round(v)
+                commit({ smpLength: len >= numSamples ? 0 : len })
+              }}
+            />
+            <SamplerKnob
+              label="In"
+              value={settings.fadeInMs}
+              min={0} max={5000} defaultValue={0}
+              size={42}
+              color={accentPanel}
+              formatValue={(v) => `${Math.round(v)}ms`}
+              onLiveChange={(v) => setField('fadeInMs', Math.round(v))}
+              onCommit={(v) => commit({ fadeInMs: Math.round(v) })}
+            />
+            <SamplerKnob
+              label="Out"
+              value={settings.fadeOutMs}
+              min={0} max={5000} defaultValue={0}
+              size={42}
+              color={accentPanel}
+              formatValue={(v) => `${Math.round(v)}ms`}
+              onLiveChange={(v) => setField('fadeOutMs', Math.round(v))}
+              onCommit={(v) => commit({ fadeOutMs: Math.round(v) })}
+            />
+            <SamplerKnob
+              label="Declick"
+              value={settings.declickMs}
+              min={0} max={10} step={0.1} defaultValue={1.5}
+              size={42}
+              color={accentPanel}
+              formatValue={(v) => `${v.toFixed(1)}ms`}
+              onLiveChange={(v) => setField('declickMs', Math.round(v * 10) / 10)}
+              onCommit={(v) => commit({ declickMs: Math.round(v * 10) / 10 })}
+            />
           </div>
         </section>
 
@@ -1183,48 +1484,50 @@ export default function SamplerPanelContent({ regionId, onClose }) {
             </button>
           </header>
           <div className="sampler-range-knobs sampler-range-knobs--loop">
-        <SamplerKnob
-          label="XFade"
-          value={settings.crossfadeSamples}
-          min={0} max={5000} defaultValue={0}
-          size={36}
-          color="var(--sampler-loop)"
-          formatValue={(v) => `${Math.round(v)}`}
-          onLiveChange={(v) => setField('crossfadeSamples', Math.round(v))}
-          onCommit={(v) => commit({ crossfadeSamples: Math.round(v) })}
-        />
-        <SamplerKnob
-          label="Loop Start"
-          value={settings.loopStart}
-          min={0}
-          max={Math.max(0, numSamples - 1)}
-          defaultValue={0}
-          size={36}
-          color="var(--sampler-loop)"
-          onLiveChange={(v) => setField('loopStart', Math.round(v))}
-          onCommit={(v) => commit({ loopStart: Math.round(v) })}
-        />
-        <SamplerKnob
-          label="Loop End"
-          value={settings.loopEnd === 0 ? numSamples : settings.loopEnd}
-          min={0}
-          max={numSamples}
-          defaultValue={numSamples}
-          size={36}
-          color="var(--sampler-loop)"
-          formatValue={(v) => {
-            const r = Math.round(v)
-            return (numSamples === 0 || r >= numSamples) ? 'END' : String(r)
-          }}
-          onLiveChange={(v) => {
-            const end = Math.round(v)
-            setField('loopEnd', end >= numSamples ? 0 : end)
-          }}
-          onCommit={(v) => {
-            const end = Math.round(v)
-            commit({ loopEnd: end >= numSamples ? 0 : end })
-          }}
-        />
+            <SamplerKnob
+              label="XFade"
+              value={settings.crossfadeSamples}
+              min={0} max={5000} defaultValue={0}
+              size={36}
+              color="var(--sampler-loop)"
+              formatValue={(v) => `${Math.round(v)}`}
+              onLiveChange={(v) => setField('crossfadeSamples', Math.round(v))}
+              onCommit={(v) => commit({ crossfadeSamples: Math.round(v) })}
+            />
+            <SamplerKnob
+              label="Loop Start"
+              value={settings.loopStart}
+              min={0}
+              max={Math.max(0, numSamples - 1)}
+              defaultValue={0}
+              size={36}
+              dragRange={sampleDragRange}
+              color="var(--sampler-loop)"
+              onLiveChange={(v) => setField('loopStart', Math.round(v))}
+              onCommit={(v) => commit({ loopStart: Math.round(v) })}
+            />
+            <SamplerKnob
+              label="Loop End"
+              value={settings.loopEnd === 0 ? numSamples : settings.loopEnd}
+              min={0}
+              max={numSamples}
+              defaultValue={numSamples}
+              size={36}
+              dragRange={sampleDragRange}
+              color="var(--sampler-loop)"
+              formatValue={(v) => {
+                const r = Math.round(v)
+                return (numSamples === 0 || r >= numSamples) ? 'END' : String(r)
+              }}
+              onLiveChange={(v) => {
+                const end = Math.round(v)
+                setField('loopEnd', end >= numSamples ? 0 : end)
+              }}
+              onCommit={(v) => {
+                const end = Math.round(v)
+                commit({ loopEnd: end >= numSamples ? 0 : end })
+              }}
+            />
           </div>
           <div className="sampler-loop-mode-row">
             <Seg
@@ -1250,6 +1553,14 @@ export default function SamplerPanelContent({ regionId, onClose }) {
         <header>
           <i /><span>Mangle</span>
           {mangleOn && <span className="sampler-mangle-tag">per note</span>}
+          {mangleChain.length < MANGLE_MAX && (
+            <button
+              type="button" className="sampler-mangle-add"
+              aria-label="Add another MANGLE to the chain"
+              title="Add another MANGLE to the chain"
+              onClick={addMangleInstance}
+            >+</button>
+          )}
         </header>
         <div className="sampler-mangle-body">
           {/* One row per instance. The chain is an ordered stack — the output of
@@ -1270,13 +1581,13 @@ export default function SamplerPanelContent({ regionId, onClose }) {
                     disabled={i === 0} aria-label="Move earlier in the chain"
                     title="Move earlier in the chain"
                     onClick={() => moveMangleInstance(i, -1)}
-                  >↑</button>
+                  >&uarr;</button>
                   <button
                     type="button" className="sampler-mangle-move"
                     disabled={i === mangleChain.length - 1} aria-label="Move later in the chain"
                     title="Move later in the chain"
                     onClick={() => moveMangleInstance(i, 1)}
-                  >↓</button>
+                  >&darr;</button>
                 </div>
                 <label className="sampler-prep-algo sampler-mangle-mode">
                   <span>Mode</span>
@@ -1325,19 +1636,11 @@ export default function SamplerPanelContent({ regionId, onClose }) {
                     type="button" className="sampler-mangle-remove"
                     aria-label="Remove this instance" title="Remove this instance"
                     onClick={() => removeMangleInstance(i)}
-                  >×</button>
+                  >&times;</button>
                 </div>
               </div>
             )
           })}
-          {mangleChain.length < MANGLE_MAX && (
-            <button
-              type="button" className="sampler-mangle-add"
-              aria-label="Add another MANGLE to the chain"
-              title="Add another MANGLE to the chain"
-              onClick={addMangleInstance}
-            >+</button>
-          )}
           <span className="sampler-prep-note sampler-mangle-note">
             {(() => {
               const live = mangleChain.filter(mangleInstanceActive)
@@ -1531,6 +1834,17 @@ export default function SamplerPanelContent({ regionId, onClose }) {
             </div>
           </div>
         </div>
+        {/* Auditioning routes through a track's effect rack so the keyboard
+            preview sounds like the sample does in the arrangement. Moved here
+            off the main tab: it is a per-session monitoring choice, not part of
+            editing a sample, and on the main tab it was a full-width card
+            sitting between the waveform and the controls that actually get
+            used. */}
+        <section className="sampler-card sampler-preview-routing-card">
+          <SectionLabel>Preview monitoring</SectionLabel>
+          <PreviewRoutingControl regionId={regionId} />
+        </section>
+
         {/* The legacy Envelope / Pitch-Envelope / Vol-Pan-Pitch LFO cards used to
             live here. They are gone — ENV 1 is the amp envelope and every other
             envelope/LFO is a modulation source in the pull-out tray. */}
@@ -1548,6 +1862,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
             onSelect={handleSelectTab}
           />
         </div>
+        <PatchBar onSave={savePatch} onLoad={loadPatch} disabled={regionId == null} />
       </div>
       <div className="sampler-panel-scroll" ref={scrollRef}>
         <div
@@ -1562,6 +1877,20 @@ export default function SamplerPanelContent({ regionId, onClose }) {
           {tab === 'playback' && renderPlayback()}
         </div>
       </div>
+      {/* Outside the scroll container on purpose: the audition keyboard applies
+          to both tabs and is the panel's only "is this thing making a sound"
+          affordance, so it must not be something you can scroll away from. */}
+      <AuditionBar
+        octaveShift={octaveShift}
+        onOctaveShift={(n) => setOctaveShift(clampOctaveShift(n))}
+        velocity={velocity}
+        onVelocity={setVelocity}
+        heldCount={heldCount}
+        rootNote={settings.rootNote ?? 60}
+        onPreviewRoot={previewRootNote}
+        disabled={regionId == null}
+      />
+
       {/* Modulation lives in a pull-out tray on the window's right edge instead
           of a tab, so an ENV/LFO sits beside the knobs it drives. */}
       <SamplerModTray regionId={regionId} bpm={bpm} />

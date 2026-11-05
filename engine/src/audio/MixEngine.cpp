@@ -4101,11 +4101,27 @@ void MixEngine::requestEffectChainReset() noexcept
         effectResetRequestGen_.fetch_add(1, std::memory_order_release);
 }
 
+void MixEngine::requestJumpChainReset() noexcept
+{
+    // AUDIO THREAD. See jumpChainResetPending_: realtime resets in this block,
+    // on this thread; an export keeps its inline full reset.
+    if (nonRealtime_.load(std::memory_order_relaxed))
+        pendingEffectChainReset_ = true;
+    else
+        jumpChainResetPending_ = true;
+}
+
 int MixEngine::serviceEffectChainResets()
 {
     const uint64_t requested = effectResetRequestGen_.load(std::memory_order_acquire);
+    const uint64_t jumpRequested = jumpResetRequestGen_.load(std::memory_order_acquire);
     std::lock_guard<std::mutex> lock(chainsMutex_);
-    if (requested == effectResetServicedGen_) return 0;
+    if (requested == effectResetServicedGen_ && jumpRequested == jumpResetServicedGen_) return 0;
+
+    // A stop resets whole chains. A jump already reset them on the audio
+    // thread; the worker finishes only what that left, never re-resetting a
+    // node the jump block reset (that would restore the misalignment).
+    const bool full = requested != effectResetServicedGen_;
 
     const std::shared_ptr<const ChainSnapshot> chains =
         chainSnapshot_.load(std::memory_order_acquire);
@@ -4114,11 +4130,12 @@ int MixEngine::serviceEffectChainResets()
     // of its block, so a short yield-retry succeeds within a fraction of a
     // block. Bounded so a stalled device can never wedge this thread (or the
     // chains lock it holds); anything left over is retried on the next poll.
-    const auto resetOne = [](EffectChainManager* chain) -> bool
+    const auto resetOne = [full](EffectChainManager* chain) -> bool
     {
         if (chain == nullptr || !chain->isInitialized()) return true;
         const auto deadline = std::chrono::steady_clock::now() + std::chrono::milliseconds(50);
-        while (!chain->tryResetProcessorsOffThread())
+        while (full ? !chain->tryResetProcessorsOffThread()
+                    : !chain->tryResetDeferredOffThread())
         {
             if (std::chrono::steady_clock::now() >= deadline) return false;
             std::this_thread::yield();
@@ -4126,18 +4143,47 @@ int MixEngine::serviceEffectChainResets()
         return true;
     };
 
+    // Two-phase: the expensive part of a reset (the Pitch Shifter's spare
+    // shifter) is primed WITHOUT the claim, while the audio thread keeps
+    // playing the chain, so the claimed reset below is a swap and the chain is
+    // silent for microseconds rather than for the whole prime.
+    const auto primeAll = [&chains]
+    {
+        const auto primeOne = [](EffectChainManager* chain)
+        {
+            if (chain != nullptr && chain->isInitialized())
+                chain->primeDeferredReset();
+        };
+        for (const auto& entry : chains->tracks)
+            primeOne(entry.chain.get());
+        primeOne(chains->master.get());
+    };
+
     bool allReset = true;
     if (chains)
     {
+        // After a jump this re-primes what the jump block's swaps consumed, so
+        // an effect that declined for want of a spare swaps under the claim
+        // below instead of priming there. After a stop it is normally a no-op.
+        primeAll();
+
         for (const auto& entry : chains->tracks)
             allReset = resetOne(entry.chain.get()) && allReset;
         allReset = resetOne(chains->master.get()) && allReset;
+
+        // Replenish the spares this pass consumed, now, so the NEXT seek's
+        // reset does not first wait out a prime while the chain plays on
+        // unreset audio.
+        primeAll();
     }
 
     // Requests that arrived during the pass stay pending (requested was read
     // first), so a seek that lands mid-reset still gets its own reset.
     if (allReset)
+    {
         effectResetServicedGen_ = requested;
+        jumpResetServicedGen_ = jumpRequested;
+    }
     return 1;
 }
 
@@ -6056,7 +6102,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     // tail the user is auditioning.
     if (!wasPlaying_ && isPlaying && auditionDirtiedChains_)
     {
-        requestEffectChainReset();
+        requestJumpChainReset();
         auditionDirtiedChains_ = false;
     }
     wasPlaying_ = isPlaying;
@@ -6151,7 +6197,7 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
     if (lastBufferEnd_ >= 0 && bufStart != lastBufferEnd_) {
         for (auto& kv : samplers_)
             if (kv.second) kv.second->allNotesOff();
-        requestEffectChainReset();
+        requestJumpChainReset();
         pendingLatencyCompensationReset_.store(true, std::memory_order_release);
         std::fill(std::begin(tailEndSamples_), std::end(tailEndSamples_), int64_t(0));
         std::fill(std::begin(tailBelowThreshRun_), std::end(tailBelowThreshRun_), int64_t(0));
@@ -6903,12 +6949,13 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
             static_cast<uint64_t>(juce::jmax(0, numTrackSlots)));
     }
 
-    // Set only by requestEffectChainReset() in non-realtime (export) mode, where
-    // resetting inline under chainsMutex_ keeps the render deterministic. If the
-    // mode flipped to realtime since, hand the request to the worker instead.
+    // Set only in non-realtime (export) mode, where resetting inline under
+    // chainsMutex_ keeps the render deterministic. If the mode flipped to
+    // realtime since, this block is playing with the export's leftover state:
+    // reset as for a jump, now, in step with the PDC delay lines.
     if (pendingEffectChainReset_ && chainsLocked && !nonRealtime)
     {
-        requestEffectChainReset();
+        jumpChainResetPending_ = true;
         pendingEffectChainReset_ = false;
     }
     if (pendingEffectChainReset_ && chainsLocked)
@@ -6923,6 +6970,24 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                 AudioGraph::resetProcessors(*view);
 
         pendingEffectChainReset_ = false;
+    }
+
+    // Live transport jump: every chain restarts in this block, the block whose
+    // top already reset the PDC compensation delay lines - including chains
+    // whose track is silent right now, which would otherwise carry pre-jump
+    // state into their next note. Realtime safe by contract (see
+    // XlethEffectBase::resetOnAudioThread); the worker, woken by the
+    // generation bump, re-primes consumed spares and finishes any node left.
+    if (jumpChainResetPending_ && chainsLocked)
+    {
+        for (const auto& entry : chains->tracks)
+            if (entry.chain)
+                entry.chain->resetOnAudioThread();
+        if (chains->master)
+            chains->master->resetOnAudioThread();
+
+        jumpResetRequestGen_.fetch_add(1, std::memory_order_release);
+        jumpChainResetPending_ = false;
     }
 
     if (chainsLocked)
@@ -7345,6 +7410,11 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
                                hasAudio,
                                isTailing);
 
+        // Tail decisions read the signal ENTERING the compensation delay (see the
+        // drain bookkeeping below); only needed once content has ended.
+        const float preCompensationMag =
+            hasAudio ? 0.0f : trackBuffers_[i].getMagnitude(0, numSamples);
+
         {
             const uint64_t pdcStartNs = rtDiagEnabled ? steadyNowNs() : 0;
             trackCompensationDelays_[i].process(trackBuffers_[i], numSamples);
@@ -7363,13 +7433,22 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         // While content plays, arm a generous hard cap so the insert chain keeps
         // running after the clip ends — that is what lets reverb/delay wet tails
         // (including external VSTs) ring out past the boundary. Once content has
-        // ended (isTailing), stop as soon as the post-PDC track output has stayed
-        // below -60 dB for ~50 ms (tail fully decayed), or the cap expires —
-        // whichever comes first. The decision is driven by the ACTUAL output
-        // level, never the plugin's self-reported getTailLengthSeconds(), which
-        // VST reverbs routinely report as 0 or "infinite". Measuring post-PDC
-        // also means any compensation-delay flush is inherently waited out (its
-        // buffered audio keeps the output above threshold until drained).
+        // ended (isTailing), stop once the signal entering the compensation delay
+        // has stayed below -60 dB for ~50 ms (tail fully decayed) PLUS the
+        // compensation delay itself, or the cap expires — whichever comes first.
+        // The decision is driven by the ACTUAL level, never the plugin's
+        // self-reported getTailLengthSeconds(), which VST reverbs routinely
+        // report as 0 or "infinite".
+        //
+        // Stopping clears the compensation delay's history (the !hasAudio &&
+        // !isTailing branch above), so it must only happen once that delay holds
+        // nothing but silence. Measuring the post-PDC output does NOT guarantee
+        // that: it is the signal from `compensation` samples ago, and when that
+        // older content had a gap of its own (stuttered clips on a track
+        // compensated by hundreds of ms) the output went quiet while audible
+        // audio was still queued — the clear then deleted it, and live playback
+        // dropped whole clips that an export (one large block, no empty blocks
+        // between them) kept.
         if (hasAudio)
         {
             tailEndSamples_[i] = bufEnd
@@ -7378,14 +7457,15 @@ void MixEngine::processBlock(juce::AudioBuffer<float>& outputBuffer,
         }
         else  // isTailing — this point is reached only when hasAudio || isTailing
         {
-            const float outMag = trackBuffers_[i].getMagnitude(0, numSamples);
-            if (outMag < kRealtimeTailThresholdLinear)
+            if (preCompensationMag < kRealtimeTailThresholdLinear)
                 tailBelowThreshRun_[i] += numSamples;
             else
                 tailBelowThreshRun_[i] = 0;
 
             const int64_t holdSamples =
-                static_cast<int64_t>(kRealtimeTailHoldSeconds * sampleRate + 0.5);
+                static_cast<int64_t>(kRealtimeTailHoldSeconds * sampleRate + 0.5)
+                + juce::jmax(trackCompensationSamples,
+                             trackCompensationDelays_[i].getCurrentDelaySamples());
             if (tailBelowThreshRun_[i] >= holdSamples)
             {
                 tailEndSamples_[i] = 0;       // tail decayed — stop next block

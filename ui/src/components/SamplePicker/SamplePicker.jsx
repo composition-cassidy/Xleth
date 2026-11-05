@@ -6,7 +6,6 @@ import WaveformScrubber from './WaveformScrubber.jsx'
 import ControlsRow from './ControlsRow.jsx'
 import MarkedSamplesList from './MarkedSamplesList.jsx'
 import { normalizeSelection } from './selection.js'
-import useSplitSyllablesPanelStore from '../../stores/splitSyllablesPanelStore.js'
 import { usePanelRegistry } from '../../windowing/registry/PanelRegistry.ts'
 import { setSamplePickerOpen } from '../../stores/samplePickerGate.js'
 
@@ -458,12 +457,11 @@ export default function SamplePicker({ source, onClose }) {
     // nobody hears. The stale whole-source waveform doesn't apply to the swap
     // file either, so leave it null and let the panel fetch fresh region peaks.
     const swapped = sample?.hasSwappedAudio && sample?.swappedAudioPath
-    useSplitSyllablesPanelStore.getState().setSplitTarget({
+    usePanelRegistry.getState().openPanel('splitSyllables', {
       region: sample,
       sourceFilePath: swapped ? sample.swappedAudioPath : source.filePath,
       sourceWaveform: swapped ? null : waveformData,
     })
-    usePanelRegistry.getState().openPanel('splitSyllables')
     console.log(`[SamplePicker] Opened Split Syllables for "${sample.name}"${swapped ? ' (swapped audio)' : ''}`)
   }, [source.filePath, waveformData])
 

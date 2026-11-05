@@ -5,6 +5,7 @@
 #include "ProxyTranscoder.h"
 
 #include <algorithm>
+#include <atomic>
 #include <chrono>
 #include <cmath>
 #include <cstdio>
@@ -32,6 +33,8 @@ extern "C" {
   #define WIN32_LEAN_AND_MEAN
   #define NOMINMAX
   #include <windows.h>
+  #include <objbase.h>   // CoInitializeEx — Media Foundation needs an MTA thread
+  #pragma comment(lib, "ole32.lib")
 #endif
 
 namespace fs = std::filesystem;
@@ -433,7 +436,8 @@ std::string ProxyTranscoder::getProxyPath(const std::string& sourcePath,
 std::string ProxyTranscoder::getSourcePreviewProxyPath(const std::string& sourcePath,
                                                        const std::string& outputDir,
                                                        int proxyHeight,
-                                                       bool highBitDepth)
+                                                       bool highBitDepth,
+                                                       ProxyCodec codec)
 {
     fs::path src(sourcePath);
     fs::path out(outputDir);
@@ -441,15 +445,23 @@ std::string ProxyTranscoder::getSourcePreviewProxyPath(const std::string& source
     // Height-keyed so a 720p and a 480p proxy never collide; the "10" suffix keeps
     // a 10-bit render proxy distinct from an 8-bit preview proxy of the same height.
     const std::string depthTag = highBitDepth ? "p10" : "p";
-    return (out / (stem + ".preview." + std::to_string(proxyHeight) + depthTag + ".mov")).string();
+    // Codec tag: only 8-bit H.264 gets one. The untagged name is the legacy
+    // intra proxy every pre-H.264 project already has on disk, so it keeps its
+    // name and meaning; 10-bit proxies are always intra (no 10-bit H.264 here).
+    const std::string codecTagStr =
+        (codec == ProxyCodec::H264 && !highBitDepth) ? ".h264" : "";
+    return (out / (stem + ".preview." + std::to_string(proxyHeight) + depthTag
+                   + codecTagStr + ".mov")).string();
 }
 
 bool ProxyTranscoder::sourcePreviewProxyExists(const std::string& sourcePath,
                                                const std::string& outputDir,
                                                int proxyHeight,
-                                               bool highBitDepth)
+                                               bool highBitDepth,
+                                               ProxyCodec codec)
 {
-    std::string proxy = getSourcePreviewProxyPath(sourcePath, outputDir, proxyHeight, highBitDepth);
+    std::string proxy = getSourcePreviewProxyPath(sourcePath, outputDir, proxyHeight,
+                                                  highBitDepth, codec);
     std::error_code ec;
     if (!fs::exists(utf8ToPath(proxy), ec)) return false;
 
@@ -458,6 +470,54 @@ bool ProxyTranscoder::sourcePreviewProxyExists(const std::string& sourcePath,
     auto proxyTime = fs::last_write_time(utf8ToPath(proxy), ec);
     if (ec) return false;
     return proxyTime >= srcTime;
+}
+
+ProxyTranscoder::ProxyLookup ProxyTranscoder::findSourcePreviewProxy(
+    const std::string& sourcePath, const std::string& outputDir,
+    int proxyHeight, bool highBitDepth)
+{
+    ProxyLookup out;
+    // H.264 first: when both exist the H.264 one is the migration result and
+    // the intra one is its superseded predecessor awaiting deletion.
+    for (ProxyCodec c : { ProxyCodec::H264, ProxyCodec::Intra }) {
+        if (highBitDepth && c == ProxyCodec::H264) continue;   // 10-bit is intra-only
+        if (sourcePreviewProxyExists(sourcePath, outputDir, proxyHeight, highBitDepth, c)) {
+            out.found = true;
+            out.codec = c;
+            out.path  = getSourcePreviewProxyPath(sourcePath, outputDir, proxyHeight,
+                                                  highBitDepth, c);
+            return out;
+        }
+    }
+    return out;
+}
+
+std::string ProxyTranscoder::getRegionProxyPath(const std::string& outputDir,
+                                                int regionId, ProxyCodec codec)
+{
+    // ".mxf" is the historical region-proxy name (the payload has always been
+    // QuickTime — transcodeImpl forces the mov muxer). Kept for Intra so every
+    // existing project's region proxies still resolve.
+    const std::string name = std::to_string(regionId)
+                           + (codec == ProxyCodec::H264 ? ".h264.mov" : ".mxf");
+    return (fs::path(outputDir) / name).string();
+}
+
+bool ProxyTranscoder::fileExistsUtf8(const std::string& path)
+{
+    if (path.empty()) return false;
+    std::error_code ec;
+    return fs::exists(utf8ToPath(path), ec);
+}
+
+bool ProxyTranscoder::removeFileUtf8(const std::string& path)
+{
+    if (path.empty()) return true;
+    std::error_code ec;
+    const fs::path p = utf8ToPath(path);
+    fs::remove(p, ec);
+    std::error_code ec2;
+    return !fs::exists(p, ec2);
 }
 
 std::string ProxyTranscoder::getPosterPath(const std::string& sourcePath,
@@ -699,13 +759,76 @@ done:
 //      fallback when dnxhd was not built. yuvj420p, qscale-controlled, .mov.
 // (FFV1 is another all-intra option but is lossless/large and needs a
 // matroska/nut container, so we stop at MJPEG, which always exists.)
+// How an encoder candidate is tuned once its context is allocated.
+enum class EncTuning { Intra, X264, MediaFoundation };
+
 struct ProxyEnc {
     const AVCodec* codec   = nullptr;
     AVPixelFormat  pixFmt  = AV_PIX_FMT_YUV422P;
     const char*    profile = nullptr;   // "dnxhr_lb" for dnxhd
     bool           qscale  = false;     // MJPEG quality knob
     const char*    label   = "";
+    EncTuning      tuning  = EncTuning::Intra;
 };
+
+// ── H.264 proxy tuning ────────────────────────────────────────────────────────
+// GOP length is the seek-cost knob: a random seek decodes up to kH264Gop-1
+// frames past the preceding keyframe. 48 frames = 2 s at 24 fps, 0.8 s at 60.
+// No B-frames on the MF path (it never emits them in Baseline anyway), so decode
+// order == display order and no reorder delay is added to a seek.
+static constexpr int  kH264Gop        = 48;
+static constexpr int  kX264Crf        = 23;           // libx264 constant-quality
+static constexpr char kX264Preset[]   = "veryfast";
+// Media Foundation has no CRF; its quality-VBR mode (0..100) is the equivalent.
+// Measured on a 60 s 1080p→720p excerpt of a real episode, against the
+// source (SSIM, 1.0 = identical):
+//     MJPEG q4 (legacy proxy)  111.8 MB  0.9908
+//     h264_mf quality 55        10.6 MB  0.9892   ← chosen: 10.6x smaller
+//     h264_mf quality 60        12.8 MB  0.9920
+//     libx264 CRF 23 veryfast    7.4 MB  0.9941
+// 55 lands the ~10x size target at a visually indistinguishable SSIM for a
+// preview proxy.
+static constexpr int  kMfQuality      = 55;
+
+// Apply the H.264-specific options to an allocated (not yet opened) context.
+// Options live in the encoder's priv_data, hence AV_OPT_SEARCH_CHILDREN.
+static void tuneH264Encoder(AVCodecContext* enc, EncTuning tuning)
+{
+    enc->gop_size = kH264Gop;
+    if (tuning == EncTuning::X264) {
+        av_opt_set    (enc, "preset", kX264Preset, AV_OPT_SEARCH_CHILDREN);
+        av_opt_set_int(enc, "crf",    kX264Crf,    AV_OPT_SEARCH_CHILDREN);
+    } else if (tuning == EncTuning::MediaFoundation) {
+        enc->max_b_frames = 0;
+        av_opt_set    (enc, "rate_control", "quality",  AV_OPT_SEARCH_CHILDREN);
+        av_opt_set_int(enc, "quality",      kMfQuality, AV_OPT_SEARCH_CHILDREN);
+        // Software MFT: identical output on every machine. The hardware MFTs are
+        // vendor-specific (and async), and proxy encode is not the bottleneck —
+        // this runs ~35x realtime at 720p on the software encoder.
+        av_opt_set_int(enc, "hw_encoding",  0,          AV_OPT_SEARCH_CHILDREN);
+    }
+}
+
+// Ordered H.264 candidates compiled into the linked FFmpeg.
+//   1. libx264 — best size/quality; only present if FFmpeg was built with it
+//      (the vcpkg build this project ships is --disable-libx264, see
+//      vcpkg.json: enabling it means adding the port's "x264" feature, which
+//      makes the FFmpeg DLLs GPL).
+//   2. h264_mf — Windows Media Foundation encoder, part of every Windows 10/11
+//      install that has the Media Feature Pack (absent on "N" editions until
+//      the pack is installed).
+static std::vector<ProxyEnc> buildH264Encoders()
+{
+    std::vector<ProxyEnc> out;
+    if (const AVCodec* c = avcodec_find_encoder_by_name("libx264"))
+        out.push_back({c, AV_PIX_FMT_YUV420P, nullptr, false,
+                       "H.264 (libx264, CRF 23, veryfast, GOP 48)", EncTuning::X264});
+    if (const AVCodec* c = avcodec_find_encoder_by_name("h264_mf"))
+        out.push_back({c, AV_PIX_FMT_NV12, nullptr, false,
+                       "H.264 (Media Foundation, quality 55, GOP 48)",
+                       EncTuning::MediaFoundation});
+    return out;
+}
 
 // highBitDepth=true builds a 10-bit-preserving ladder FIRST so a 10-bit source
 // (common for 4K AV1) keeps 10-bit through a render proxy — preventing banding in
@@ -755,12 +878,127 @@ static std::vector<ProxyEnc> buildProxyEncoders(bool highBitDepth = false, bool 
     return out;
 }
 
+// ── COM apartment for Media Foundation ────────────────────────────────────────
+// FFmpeg's h264_mf refuses to open on a thread whose COM apartment is STA
+// ("COM must not be in STA mode"). Engine threads differ: the JUCE message /
+// N-API thread is STA, pool and render threads usually have no apartment yet.
+// runInMta(fn) runs fn on the calling thread after joining the MTA; if that
+// thread is already STA (CoInitializeEx → RPC_E_CHANGED_MODE) it runs fn on a
+// short-lived helper thread that is MTA, and waits for it. Every successful
+// CoInitializeEx is balanced by CoUninitialize.
+template <typename Fn>
+static auto runInMta(Fn&& fn) -> decltype(fn())
+{
+#if defined(_WIN32) || defined(_WIN64)
+    const HRESULT hr = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+    if (hr == RPC_E_CHANGED_MODE) {
+        decltype(fn()) result{};
+        std::thread helper([&] {
+            const HRESULT h2 = CoInitializeEx(nullptr, COINIT_MULTITHREADED);
+            result = fn();
+            if (SUCCEEDED(h2)) CoUninitialize();
+        });
+        helper.join();
+        return result;
+    }
+    auto result = fn();
+    if (SUCCEEDED(hr)) CoUninitialize();
+    return result;
+#else
+    return fn();
+#endif
+}
+
+// ── proxy codec preference ────────────────────────────────────────────────────
+
+static std::atomic<int> g_requestedProxyCodec{ static_cast<int>(ProxyCodec::H264) };
+
+void ProxyTranscoder::setPreferredCodec(ProxyCodec codec)
+{
+    g_requestedProxyCodec.store(static_cast<int>(codec), std::memory_order_relaxed);
+    std::cout << "[ProxyTranscoder] Proxy codec setting: " << codecTag(codec)
+              << " (effective for new proxies: " << codecTag(preferredCodec()) << ")\n";
+}
+
+ProxyCodec ProxyTranscoder::requestedCodec()
+{
+    return static_cast<ProxyCodec>(g_requestedProxyCodec.load(std::memory_order_relaxed));
+}
+
+const char* ProxyTranscoder::codecTag(ProxyCodec codec)
+{
+    return codec == ProxyCodec::H264 ? "h264" : "intra";
+}
+
+// Probed once: can any H.264 candidate actually OPEN at a typical proxy size?
+// avcodec_find_encoder alone is not enough for h264_mf — the codec is compiled
+// in on every Windows build, but the Media Foundation transform behind it is
+// missing on "N" editions without the Media Feature Pack, and only open fails.
+bool ProxyTranscoder::h264EncoderAvailable()
+{
+    static const bool available = runInMta([] {
+        for (const ProxyEnc& cand : buildH264Encoders()) {
+            AVCodecContext* enc = avcodec_alloc_context3(cand.codec);
+            if (!enc) continue;
+            enc->width     = 1280;
+            enc->height    = 720;
+            enc->pix_fmt   = cand.pixFmt;
+            enc->time_base = AVRational{1, 24};
+            enc->framerate = AVRational{24, 1};
+            tuneH264Encoder(enc, cand.tuning);
+            const int rc = avcodec_open2(enc, cand.codec, nullptr);
+            avcodec_free_context(&enc);
+            if (rc == 0) {
+                std::cout << "[ProxyTranscoder] H.264 proxy encoder available: "
+                          << cand.label << "\n";
+                return true;
+            }
+            logAvErr("H.264 proxy encoder probe failed to open", rc);
+        }
+        std::cerr << "[ProxyTranscoder] WARNING: no usable H.264 encoder (libx264 not "
+                     "compiled in; Media Foundation h264_mf unavailable — Windows N "
+                     "without the Media Feature Pack?). New proxies fall back to the "
+                     "all-intra codec.\n";
+        return false;
+    });
+    return available;
+}
+
+ProxyCodec ProxyTranscoder::preferredCodec()
+{
+    const ProxyCodec req = requestedCodec();
+    if (req == ProxyCodec::H264 && !h264EncoderAvailable()) return ProxyCodec::Intra;
+    return req;
+}
+
+ProxyCodec ProxyTranscoder::codecForTargetSize(int targetW, int targetH)
+{
+    if (targetW < 128 || targetH < 72) return ProxyCodec::Intra;
+    return preferredCodec();
+}
+
 // ── in-process transcode core (whole file or [startSec,endSec)) ───────────────
 // startSec < 0 ⇒ whole file. Always downscales to <=1080p (a 4K proxy would not
-// help a weak machine) and re-encodes to an all-intra codec via libav. The
+// help a weak machine) and re-encodes via libav — to `codec` (H.264 or the
+// intra ladder; highBitDepth / uncappedNative always use the intra ladder). The
 // output container is forced to QuickTime regardless of the file extension — the
 // proxy is an internal preview artifact opened by content (avformat probe), so a
 // .mxf-named mov decodes fine; this keeps us off MXF's strict DNxHD constraints.
+//
+// shouldCancel is polled once per decoded frame; a cancelled job fails like any
+// other failure (temp deleted, existing output untouched).
+static bool transcodeImplBody(const std::string& inputPath,
+                              const std::string& outputPath,
+                              double startSec, double endSec,
+                              int targetW, int targetH,
+                              std::function<void(float)> progressCb,
+                              int swsFlags,
+                              bool highBitDepth,
+                              bool uncappedNative,
+                              bool preferMjpeg,
+                              ProxyCodec codec,
+                              const ProxyTranscoder::CancelFn& shouldCancel);
+
 static bool transcodeImpl(const std::string& inputPath,
                           const std::string& outputPath,
                           double startSec, double endSec,
@@ -769,7 +1007,31 @@ static bool transcodeImpl(const std::string& inputPath,
                           int swsFlags = SWS_BILINEAR,
                           bool highBitDepth = false,
                           bool uncappedNative = false,
-                          bool preferMjpeg = false)
+                          bool preferMjpeg = false,
+                          ProxyCodec codec = ProxyCodec::Intra,
+                          const ProxyTranscoder::CancelFn& shouldCancel = nullptr)
+{
+    auto body = [&] {
+        return transcodeImplBody(inputPath, outputPath, startSec, endSec, targetW, targetH,
+                                 progressCb, swsFlags, highBitDepth, uncappedNative,
+                                 preferMjpeg, codec, shouldCancel);
+    };
+    // Only the Media Foundation H.264 path cares about the COM apartment; the
+    // intra path runs exactly as before, on the calling thread.
+    return (codec == ProxyCodec::H264) ? runInMta(body) : body();
+}
+
+static bool transcodeImplBody(const std::string& inputPath,
+                              const std::string& outputPath,
+                              double startSec, double endSec,
+                              int targetW, int targetH,
+                              std::function<void(float)> progressCb,
+                              int swsFlags,
+                              bool highBitDepth,
+                              bool uncappedNative,
+                              bool preferMjpeg,
+                              ProxyCodec codec,
+                              const ProxyTranscoder::CancelFn& shouldCancel)
 {
     std::error_code ec;
     if (!fs::exists(utf8ToPath(inputPath), ec)) {
@@ -779,6 +1041,12 @@ static bool transcodeImpl(const std::string& inputPath,
 
     // One-at-a-time generation (tiny shared GPU) — see g_genMutex.
     std::lock_guard<std::mutex> genLock(g_genMutex);
+
+    // A job cancelled while it queued on g_genMutex should not start at all.
+    if (shouldCancel && shouldCancel()) {
+        std::cout << "[ProxyTranscoder] Cancelled before start: " << outputPath << "\n";
+        return false;
+    }
 
     // Honest decode capability check (one real frame, cached). If this source
     // can't be decoded for generation, bail before touching the output file.
@@ -796,11 +1064,19 @@ static bool transcodeImpl(const std::string& inputPath,
         return false;
     }
 
-    std::vector<ProxyEnc> encoders = buildProxyEncoders(highBitDepth, preferMjpeg);
+    // H.264 is 8-bit only here, and the native-resolution section export is a
+    // mastering artifact (not a proxy) — both stay on the intra ladder. An H.264
+    // request does NOT fall back to intra inside this function: the output file
+    // is named for its codec, so the caller must pick Intra (preferredCodec()
+    // already does when no H.264 encoder opens) rather than get an intra file
+    // behind an .h264 name.
+    const bool useH264 = (codec == ProxyCodec::H264) && !highBitDepth && !uncappedNative;
+    std::vector<ProxyEnc> encoders = useH264 ? buildH264Encoders()
+                                             : buildProxyEncoders(highBitDepth, preferMjpeg);
     if (encoders.empty()) {
-        std::cerr << "[ProxyTranscoder] No all-intra proxy encoder (DNxHD/MJPEG) compiled "
-                     "into linked FFmpeg — cannot generate proxy; preview falls back to "
-                     "live decode.\n";
+        std::cerr << "[ProxyTranscoder] No " << (useH264 ? "H.264" : "all-intra (DNxHD/MJPEG)")
+                  << " proxy encoder compiled into linked FFmpeg — cannot generate "
+                     "proxy; preview falls back to live decode.\n";
         return false;
     }
 
@@ -868,7 +1144,7 @@ static bool transcodeImpl(const std::string& inputPath,
     ostream = avformat_new_stream(oc, nullptr);
     if (!ostream) goto cleanup;
 
-    // ── open the first all-intra encoder that accepts this size/rate ──────────
+    // ── open the first encoder in the ladder that accepts this size/rate ──────
     for (const ProxyEnc& cand : encoders) {
         if (enc) avcodec_free_context(&enc);
         enc = avcodec_alloc_context3(cand.codec);
@@ -880,6 +1156,8 @@ static bool transcodeImpl(const std::string& inputPath,
         enc->time_base    = av_inv_q(s.frameRate);
         enc->framerate    = s.frameRate;
         enc->thread_count = proxyThreadCount();
+        if (cand.tuning != EncTuning::Intra)
+            tuneH264Encoder(enc, cand.tuning);
         // Set the all-intra profile (e.g. dnxhr_lb). AV_OPT_SEARCH_CHILDREN so it
         // resolves whether "profile" lives on the context or the encoder's
         // priv_data (varies across FFmpeg versions for the dnxhd encoder).
@@ -906,7 +1184,7 @@ static bool transcodeImpl(const std::string& inputPath,
                   << tw << "x" << th << ": " << eb << " — trying next\n";
     }
     if (!picked || !enc) {
-        std::cerr << "[ProxyTranscoder] Proxy FAILED: no all-intra encoder accepted the "
+        std::cerr << "[ProxyTranscoder] Proxy FAILED: no proxy encoder accepted the "
                      "target size — preview falls back to live decode.\n";
         goto cleanup;
     }
@@ -994,6 +1272,12 @@ static bool transcodeImpl(const std::string& inputPath,
                                     ? decFrame->best_effort_timestamp
                                     : decFrame->pts;
                 double tSec = (tsRaw != AV_NOPTS_VALUE) ? tsRaw * av_q2d(ist->time_base) : 0.0;
+
+                if (shouldCancel && shouldCancel()) {
+                    std::cout << "[ProxyTranscoder] Cancelled mid-transcode after "
+                              << outIdx << " frame(s) — discarding " << tmpPath << "\n";
+                    av_frame_unref(decFrame); done = true; encodeErr = true; break;
+                }
 
                 // Cheap range trim BEFORE the (expensive) GPU→sysmem download.
                 if (startSec >= 0.0 && tSec < startSec - kEps) { av_frame_unref(decFrame); continue; }
@@ -1106,7 +1390,9 @@ bool ProxyTranscoder::transcodeRange(
     double             endTimeSec,
     int                targetWidth,
     int                targetHeight,
-    std::function<void(float progress)> progressCallback)
+    std::function<void(float progress)> progressCallback,
+    ProxyCodec         codec,
+    CancelFn           shouldCancel)
 {
     std::error_code ec;
     if (!fs::exists(utf8ToPath(inputPath), ec)) {
@@ -1131,14 +1417,18 @@ bool ProxyTranscoder::transcodeRange(
               << "[ProxyTranscoder] Range: [" << startTimeSec << ", " << endTimeSec
               << ") (" << rangeDuration << " s)\n"
               << "[ProxyTranscoder] Requested target (pre-1080p-cap): "
-              << targetWidth << "x" << targetHeight << "\n";
+              << targetWidth << "x" << targetHeight
+              << " codec=" << codecTag(codec) << "\n";
 
     auto t0 = std::chrono::high_resolution_clock::now();
     if (progressCallback) progressCallback(0.0f);
 
     bool ok = transcodeImpl(inputPath, outputPath,
                             startTimeSec, endTimeSec,
-                            targetWidth, targetHeight, progressCallback);
+                            targetWidth, targetHeight, progressCallback,
+                            SWS_BILINEAR, /*highBitDepth=*/false,
+                            /*uncappedNative=*/false, /*preferMjpeg=*/false,
+                            codec, shouldCancel);
     if (!ok) {
         std::cerr << "[ProxyTranscoder] Range proxy FAILED — region streams from original\n";
         return false;
@@ -1205,7 +1495,9 @@ bool ProxyTranscoder::transcodeSourcePreview(
     const std::string& outputPath,
     int                targetHeight,
     bool               highBitDepth,
-    std::function<void(float progress)> progressCallback)
+    std::function<void(float progress)> progressCallback,
+    ProxyCodec         codec,
+    CancelFn           shouldCancel)
 {
     std::error_code ec;
     if (!fs::exists(utf8ToPath(inputPath), ec)) {
@@ -1223,7 +1515,9 @@ bool ProxyTranscoder::transcodeSourcePreview(
               << "[ProxyTranscoder] Output: " << outputPath << "\n"
               << "[ProxyTranscoder] Target height: " << targetHeight
               << "p (aspect-preserved, lanczos, "
-              << (highBitDepth ? "10-bit" : "8-bit") << ")\n";
+              << (highBitDepth ? "10-bit intra" : (codec == ProxyCodec::H264
+                                                       ? "8-bit H.264" : "8-bit intra"))
+              << ")\n";
 
     auto t0 = std::chrono::high_resolution_clock::now();
     if (progressCallback) progressCallback(0.0f);
@@ -1231,13 +1525,15 @@ bool ProxyTranscoder::transcodeSourcePreview(
     // startSec=-1, endSec=-1 ⇒ whole file. targetW=0 + targetH>0 ⇒ width derived
     // from the source aspect at targetHeight, no 1080p cap (see transcodeImpl).
     // SWS_LANCZOS for high-quality downscaling (paid once, off-thread).
-    // preferMjpeg=true: this is the unattended, whole-source, tens-of-thousands-
-    // of-frames background job — the one most exposed to DNxHR's fixed-budget
-    // put_bits overrun on a rare high-entropy frame (see buildProxyEncoders).
+    // preferMjpeg=true (intra ladder only): this is the unattended, whole-source,
+    // tens-of-thousands-of-frames background job — the one most exposed to
+    // DNxHR's fixed-budget put_bits overrun on a rare high-entropy frame (see
+    // buildProxyEncoders). H.264 rate control has no fixed per-frame budget.
     bool ok = transcodeImpl(inputPath, outputPath, -1.0, -1.0,
                             /*targetW*/0, /*targetH*/targetHeight,
                             progressCallback, SWS_LANCZOS, highBitDepth,
-                            /*uncappedNative*/false, /*preferMjpeg*/true);
+                            /*uncappedNative*/false, /*preferMjpeg*/true,
+                            codec, shouldCancel);
     if (!ok) {
         std::cerr << "[ProxyTranscoder] Whole-source preview proxy FAILED — preview "
                      "falls back to poster/original\n";

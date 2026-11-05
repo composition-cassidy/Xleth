@@ -188,6 +188,62 @@ describe('clampDt', () => {
   })
 })
 
+// Regression: the Timeline's "zoom all the way out and the view stammers back
+// and forth". The old semi-implicit Euler step was only stable for short
+// frames. At dt = MAX_DT (every frame at 30fps or slower, which a zoomed-out
+// redraw easily causes) it sat on the stability edge: the value reversed
+// direction every frame and never settled.
+describe('stepSpring — slow frames (≤30fps) stay monotonic', () => {
+  function countReversals(values) {
+    let reversals = 0
+    let prevDelta = 0
+    for (let i = 1; i < values.length; i++) {
+      const d = values[i] - values[i - 1]
+      if (Math.abs(d) < 1e-9) continue
+      if (prevDelta && Math.sign(d) !== Math.sign(prevDelta)) reversals++
+      prevDelta = d
+    }
+    return reversals
+  }
+
+  for (const dt of [1 / 60, 1 / 40, 1 / 30, MAX_DT]) {
+    it(`step response at dt=${(dt * 1000).toFixed(1)}ms never reverses, overshoots, or stalls`, () => {
+      const spring = createSpring({ value: 40, space: 'log' })
+      spring.target = 8
+      const values = [spring.current]
+      let moving = true
+      for (let i = 0; i < 600 && moving; i++) {
+        moving = stepSpring(spring, dt, DEFAULT_OMEGA)
+        values.push(spring.current)
+      }
+      expect(countReversals(values)).toBe(0)
+      expect(Math.min(...values)).toBeGreaterThanOrEqual(8 - 1e-9)
+      expect(moving).toBe(false) // settled, so the rAF loop can sleep
+    })
+
+    it(`a ctrl+wheel zoom-out burst at dt=${(dt * 1000).toFixed(1)}ms moves one way only`, () => {
+      // 30 notches, 40ms apart, each compounding the target by 1/1.15.
+      const spring = createSpring({ value: 40, space: 'log' })
+      const values = [spring.current]
+      let t = 0
+      let nextNotch = 0
+      let notches = 0
+      for (let i = 0; i < 400; i++) {
+        t += dt
+        while (t >= nextNotch && notches < 30) {
+          spring.target /= 1.15
+          notches++
+          nextNotch += 0.04
+        }
+        stepSpring(spring, dt, DEFAULT_OMEGA)
+        values.push(spring.current)
+      }
+      expect(countReversals(values)).toBe(0)
+      expect(spring.current).toBeCloseTo(spring.target, 6)
+    })
+  }
+})
+
 // ---------------------------------------------------------------------------
 // Hook: rAF loop lifecycle, via a manually-driven fake rAF queue.
 // ---------------------------------------------------------------------------

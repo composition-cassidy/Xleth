@@ -2,7 +2,7 @@ import React, { useEffect, useState } from 'react';
 import { PanelFrame } from '../components/PanelFrame';
 import { usePanelRegistry } from '../registry/PanelRegistry';
 import SyllableSplitter from '../../components/SyllableSplitter/SyllableSplitter.jsx';
-import useSplitSyllablesPanelStore from '../../stores/splitSyllablesPanelStore.js';
+import { usePanelProps } from '../registry/usePanelValue';
 import { timelineEvents } from '../../timelineEvents.js';
 
 declare const window: Window & {
@@ -33,6 +33,12 @@ interface SplitRegion {
   swappedAudioPath?: string;
 }
 
+interface SplitSyllablesPanelProps {
+  region?: SplitRegion | null;
+  sourceFilePath?: string | null;
+  sourceWaveform?: RegionWaveform | null;
+}
+
 interface RegionWaveform {
   peaks: number[];
   duration: number;
@@ -45,9 +51,14 @@ interface RegionWaveform {
 // menu only hands us a region, so we resolve the source file path + a fallback
 // region waveform here before handing them to the splitter.
 function SplitSyllablesPanelBody() {
-  const region = useSplitSyllablesPanelStore((s) => s.region) as SplitRegion | null;
-  const providedFilePath = useSplitSyllablesPanelStore((s) => s.sourceFilePath) as string | null;
-  const providedSourceWaveform = useSplitSyllablesPanelStore((s) => s.sourceWaveform);
+  // Handed over by whoever opened the panel:
+  //   openPanel('splitSyllables', { region, sourceFilePath, sourceWaveform })
+  // sourceFilePath / sourceWaveform are optional — the context-menu entry point
+  // only knows the region, so the panel resolves the rest from region.sourceId.
+  const props = usePanelProps<SplitSyllablesPanelProps>('splitSyllables');
+  const region = (props?.region ?? null) as SplitRegion | null;
+  const providedFilePath = (props?.sourceFilePath ?? null) as string | null;
+  const providedSourceWaveform = props?.sourceWaveform ?? null;
 
   const [sourceFilePath, setSourceFilePath] = useState<string | null>(providedFilePath ?? null);
   const [regionWaveform, setRegionWaveform] = useState<RegionWaveform | null>(null);

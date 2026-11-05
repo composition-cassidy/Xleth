@@ -158,6 +158,10 @@ public:
     /** Returns pointer to entry on hit (promoted to MRU), nullptr on miss. */
     FrameCacheEntry* get(const FrameCacheKey& key);
 
+    /** Presence check with no side effects: no MRU promotion, no hit/miss
+     *  accounting, no logging. */
+    bool contains(const FrameCacheKey& key) const { return map_.count(key) > 0; }
+
     /** Insert or replace an entry. Evicts LRU entries if over capacity. */
     void put(const FrameCacheKey& key, FrameCacheEntry entry);
 

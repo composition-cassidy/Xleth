@@ -343,6 +343,20 @@ public:
     // published view instead of the live containers, so they take no lock and
     // race with nothing.
     static void resetProcessors(const RealtimeView& view) noexcept;
+    // Audio thread, under the chain's realtime claim: the seek / loop-wrap
+    // reset, in the same block as the PDC delay lines. Resets every effect
+    // whose XlethEffectBase::resetOnAudioThread() accepts, and the helper
+    // nodes (none of which override reset()). VST3 nodes, and effects that
+    // decline, are left for resetDeferredProcessors. Returns false when
+    // anything was left.
+    static bool resetProcessorsOnAudioThread(const RealtimeView& view) noexcept;
+    // Worker, under the claim: exactly the nodes resetProcessorsOnAudioThread
+    // left - every VST3 node, and each effect that declined.
+    static void resetDeferredProcessors(const RealtimeView& view) noexcept;
+    // Off-claim half of a two-phase reset: XlethEffectBase::primeDeferredReset
+    // on every effect in the view. NOT audio-thread safe (it primes spares);
+    // safe to run while the audio thread processes the same view.
+    static void primeDeferredResets(const RealtimeView& view);
     static void deliverModulationGate(const RealtimeView& view,
                                       bool valid,
                                       std::int64_t gateStartSample,

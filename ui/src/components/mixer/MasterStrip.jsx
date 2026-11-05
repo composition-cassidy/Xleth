@@ -80,7 +80,7 @@ export default function MasterStrip() {
             <PeakMeter master />
             <Fader
               orientation="vertical"
-              value={masterVolume}
+              value={displayVolume}
               toNorm={linearToPos}
               fromNorm={gainFromPos}
               defaultValue={1.0}

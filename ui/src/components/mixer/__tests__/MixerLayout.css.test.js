@@ -53,15 +53,43 @@ describe('Mixer layout CSS', () => {
     expect(embeddedListRule).toMatch(/max-height:\s*360px\s*;/)
   })
 
-  it('switches short mixer panels to a side-by-side compact control layout', () => {
+  it('steps the strip through height tiers so a short panel never clips or overlaps', () => {
     const css = readAppCss()
     const mixerPanelRule = cssRule(css, '.mixer-panel')
-    const compactBlock = css.match(/@container mixer-panel \(max-height:\s*360px\)\s*{([\s\S]*?)\n}/)?.[1] ?? ''
+    const tier = (px) => css.match(
+      new RegExp(String.raw`@container mixer-panel \(max-height:\s*${px}px\)\s*\{([\s\S]*?)\n\}`),
+    )?.[1] ?? ''
 
     expect(mixerPanelRule).toMatch(/container-name:\s*mixer-panel\s*;/)
     expect(mixerPanelRule).toMatch(/container-type:\s*size\s*;/)
-    expect(compactBlock).toMatch(/\.mixer-strip-bottom\s*{[\s\S]*?flex-direction:\s*row\s*;/)
-    expect(compactBlock).toMatch(/\.mixer-strip-fader-area\s*{[\s\S]*?min-height:\s*56px\s*;/)
-    expect(compactBlock).toMatch(/\.mixer-strip-knobs\s*{[\s\S]*?width:\s*36px\s*;/)
+
+    // Tier 1: the PAN/WIDTH pair goes side by side, still below the fader.
+    expect(tier(430)).toMatch(/\.mixer-strip-knobs\s*{[\s\S]*?flex-direction:\s*row\s*;/)
+
+    // Tier 2: density pass only — it must NOT rearrange anything, or the two
+    // concerns (arrangement, density) stop being independently tunable.
+    expect(tier(360)).toMatch(/\.mixer-strip-fader-area\s*{[\s\S]*?min-height:\s*56px\s*;/)
+    expect(tier(360)).not.toMatch(/flex-direction:/)
+
+    // Tier 3: the knob pair moves out of the stack, beside the meter/fader.
+    expect(tier(296)).toMatch(/\.mixer-strip-bottom\s*{[\s\S]*?flex-direction:\s*row\s*;/)
+    expect(tier(296)).toMatch(/\.mixer-strip-knobs\s*{[\s\S]*?flex-direction:\s*column\s*;/)
+    expect(tier(296)).toMatch(/\.mixer-strip-knobs\s*{[\s\S]*?width:\s*40px\s*;/)
+
+    // Tier 4: dropping the knob captions is what keeps the centred knob column
+    // from overflowing its row and painting over M/S/V and the output select.
+    expect(tier(216)).toMatch(/\.mixer-knob-label\s*{[\s\S]*?display:\s*none\s*;/)
+
+    // Tiers are additive, so they have to stay in descending order.
+    const order = [430, 360, 296, 216].map(px => css.indexOf(`@container mixer-panel (max-height: ${px}px)`))
+    expect(order.every(i => i > -1)).toBe(true)
+    expect([...order].sort((a, b) => a - b)).toEqual(order)
   })
+
+  it('does not reserve strip height for an empty output-routing chip row', () => {
+    const css = readAppCss()
+
+    expect(cssRule(css, '.mixer-route-badges:empty')).toMatch(/min-height:\s*0\s*;/)
+  })
+
 })

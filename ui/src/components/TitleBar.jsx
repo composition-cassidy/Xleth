@@ -21,6 +21,7 @@ import { PANEL_CATALOG_ORDER } from '../windowing/registry/panelCatalog'
 import { useQuickLaunchersStore } from '../stores/quickLaunchersStore.js'
 import { XlethButton, XlethIconButton } from './common/XlethButton.jsx'
 import { useDockMagnification } from '../hooks/useDockMagnification.js'
+import { CLEANUP_PROJECT_LABEL } from './projectCleanup.js'
 
 const DROPDOWN_OPEN_DELAY_MS = 40
 const DROPDOWN_CLOSE_MS = 80
@@ -35,6 +36,7 @@ export const FILE_DROPDOWN_ITEMS = [
   { label: 'Save As...', shortcut: 'Ctrl+Shift+S' },
   { label: 'Import Source', shortcut: 'Ctrl+I' },
   { label: 'Export as ZIP…' },
+  { label: CLEANUP_PROJECT_LABEL },
 ]
 
 export const EDIT_DROPDOWN_ACTIONS = [

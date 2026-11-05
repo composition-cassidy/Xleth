@@ -13,6 +13,7 @@ const FREQ_LABELS = ['20', '50', '100', '200', '500', '1k', '2k', '5k', '10k', '
 const ANA_DB_LINES = [-80, -60, -40, -20, 0]
 
 const channelColorVar = (channel) => `--xleth-eq-ch-${channel || 'stereo'}`
+const ROUTED_TRACE_ORDER = ['left', 'right', 'mid', 'side']
 
 // Grid — flat dashed reference lines, no gradients.
 const EqGrid = memo(function EqGrid({ dbZoom, rangeDb }) {
@@ -101,7 +102,7 @@ function BandNode({ band, index, dbZoom, isSelected, isActive, hPerPx, vPerPx, o
 
 export default function EqCanvas({
   svgRef, bands, selectedBandIndex, dbZoom, rangeDb,
-  responsePath, spectrumPaths, preSpectrumPaths, hoverReadout,
+  responsePaths, spectrumPaths, preSpectrumPaths, hoverReadout,
   hoveredIndex, onHoverBand,
   onWheel, onMouseDown, onMouseMove, onMouseLeave, onBandDragStart,
 }) {
@@ -176,7 +177,14 @@ export default function EqCanvas({
             opacity={selectedBandIndex === f.index ? 0.16 : 0.05} pointerEvents="none" />
         ))}
 
-        {responsePath && <path d={responsePath} className="eqc-response-line" />}
+        {/* One curve per routing group. Routed ones (in their channel tint)
+            first so the standard Stereo curve stays on top. */}
+        {ROUTED_TRACE_ORDER.map(ch => responsePaths?.[ch] && (
+          <path key={`resp-${ch}`} d={responsePaths[ch]}
+            className={`eqc-response-line eqc-response-line-${ch}`}
+            style={{ stroke: `var(${channelColorVar(ch)})` }} />
+        ))}
+        {responsePaths?.stereo && <path d={responsePaths.stereo} className="eqc-response-line" />}
 
         {bands.map((band, i) => (
           <BandNode

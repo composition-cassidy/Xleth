@@ -17,6 +17,9 @@ static std::string findTestProxy()
     // Try several locations — build systems place the exe in different dirs
     const char* candidates[] = {
         "test_proxy.mov",
+        // ctest runs this from the repo root (WORKING_DIRECTORY engine/..),
+        // where the fixture is here; without this entry the test skipped.
+        "engine/test/test_proxy.mov",
         "../test_proxy.mov",
         "../../engine/test/test_proxy.mov",
         "../../../engine/test/test_proxy.mov",

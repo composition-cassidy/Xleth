@@ -35,10 +35,11 @@ from typing import Any, Dict, List, Optional
 from fastapi import Depends, FastAPI, Header, HTTPException
 from pydantic import BaseModel, Field
 
+from . import ort_util
 from .jobs import JobRegistry
 from .manifest import (LicenseNotAcknowledged, LicenseNotCleared, Manifest,
                        ManifestError, load_manifest)
-from .mdx import available_device
+from .ort_util import available_device
 from .pipeline import device_for_arch, run_ensemble_separation, run_separation
 from .store import ModelStore
 
@@ -46,19 +47,22 @@ SIDECAR_VERSION = "1.1.0"
 
 # Python modules each architecture needs beyond the core set.
 #
-# Per-arch rather than one list, because they genuinely differ and the tiers
-# have to fail independently. Someone who installed the base requirements can
-# run the FAST tier; the BALANCED tier additionally needs the Mel-Band RoFormer
-# stack (its vendored model imports einops, librosa and rotary_embedding_torch,
-# and the model's config is YAML). Gating FAST on those would break a working
-# feature to report a missing one.
+# The three tiers now converge on one runtime. They used to diverge sharply:
+# the Roformer tiers built a PyTorch model and needed torch, einops, librosa,
+# rotary-embedding-torch and beartype on top of the FAST tier's onnxruntime.
+# Those tiers now run exported ONNX graphs with their architecture — mel band
+# layout included — baked in as ops, so the whole of that stack is gone.
+#
+# The structure stays per-arch even though two entries are now identical,
+# because the ability to fail independently is the point: a tier whose
+# dependency is missing must not take the others down with it, and the next
+# architecture added here may well reintroduce a divergence.
 ARCH_MODULES = {
     "mdx_net": ("onnxruntime",),
-    "mel_band_roformer": ("yaml", "einops", "librosa", "rotary_embedding_torch",
-                          "beartype"),
-    # No librosa: BS-Roformer splits into fixed frequency bands, not a mel
-    # filterbank, so it never needs the module BALANCED's mel scale does.
-    "bs_roformer": ("yaml", "einops", "rotary_embedding_torch", "beartype"),
+    # YAML because these two read the model's own config file; the graph
+    # supplies everything else.
+    "mel_band_roformer": ("onnxruntime", "yaml"),
+    "bs_roformer": ("onnxruntime", "yaml"),
 }
 
 
@@ -161,7 +165,7 @@ def create_app(config: SidecarConfig) -> FastAPI:
         # Report EVERY missing runtime dependency, not just the first one
         # found. A health check that names one module at a time turns a single
         # incomplete install into as many failed runs as there are gaps.
-        missing: List[str] = []
+        missing: List[str] = list(ort_util.missing_packages())
         try:
             import onnxruntime as ort
             info["onnxruntime"] = ort.__version__
@@ -169,32 +173,32 @@ def create_app(config: SidecarConfig) -> FastAPI:
         except ImportError:
             info["onnxruntime"] = None
             info["providers"] = []
-            missing.append("onnxruntime")
-        try:
-            import torch
-            info["torch"] = torch.__version__
-        except ImportError:
-            info["torch"] = None
-            missing.append("torch")
 
         info["missing"] = missing
         if missing:
             info["ok"] = False
+            # Deliberately NOT a repo-relative path. A packaged build has no
+            # `tools/` directory anywhere near it, and telling someone who
+            # installed an .exe to open a file from a source tree they have
+            # never cloned is worse than saying nothing.
             info["error"] = (
                 "Missing Python package(s): " + ", ".join(missing)
-                + ". Install them from tools/separation_sidecar/requirements.txt.")
+                + ". The bundled runtime is incomplete — reinstalling XLETH "
+                "restores it.")
 
-        # Per-architecture readiness and DEVICE. Two separate reasons this is
-        # not one global answer:
+        # Per-architecture readiness and DEVICE.
         #
-        #   * The tiers depend on different packages, and one tier being
-        #     un-runnable must not present as the whole feature being broken.
-        #   * They run on different runtimes. MDX-Net infers in onnxruntime,
-        #     Mel-Band RoFormer in torch, and this project's own requirements
-        #     pin CPU torch alongside a CUDA-capable onnxruntime. On that very
-        #     ordinary install, FAST is on the GPU and BALANCED is not — and a
-        #     single `device` field would report the first and be wrong about
-        #     the second by a factor of six.
+        # It stays per-arch even though all three tiers now share one runtime
+        # and will normally agree. One tier being un-runnable must not present
+        # as the whole feature being broken, and a model whose graph failed to
+        # load is a per-arch fact.
+        #
+        # This block used to carry a second, larger reason: the tiers ran on
+        # DIFFERENT runtimes, so a machine with a CUDA onnxruntime and a
+        # CPU-only torch would run FAST on the GPU and BALANCED on the CPU, and
+        # a single `device` field would have been wrong about one of them by a
+        # factor of six. That divergence is gone — every tier is onnxruntime
+        # now — but the shape that reported it honestly is worth keeping.
         archs: Dict[str, Any] = {}
         for arch, modules in ARCH_MODULES.items():
             arch_missing = missing + _missing_modules(modules)

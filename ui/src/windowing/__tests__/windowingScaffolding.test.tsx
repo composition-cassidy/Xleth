@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { AppShell } from '../AppShell';
+import { AppShell, floatingPanelKey } from '../AppShell';
 import { PanelFrame, getPanelFrameRenderPath } from '../components/PanelFrame';
 import { Titlebar } from '../components/Titlebar';
 import { TopBarToggles } from '../components/TopBarToggles';
@@ -19,7 +19,15 @@ import {
   usePanelRegistry,
   type PanelState,
 } from '../registry/PanelRegistry';
-import { PANEL_CATALOG, PANEL_CATALOG_ORDER, PANEL_IDS, type PanelId } from '../registry/panelCatalog';
+import {
+  ACTIVE_PANEL_IDS,
+  PANEL_CATALOG,
+  PANEL_CATALOG_ORDER,
+  PANEL_IDS,
+  WINDOW_PANEL_IDS,
+  type PanelId,
+} from '../registry/panelCatalog';
+import { DockRegion } from '../components/DockRegion';
 
 function readUiSource(relativePath: string) {
   return readFileSync(path.resolve(process.cwd(), 'src', relativePath), 'utf8');
@@ -110,6 +118,7 @@ describe('PanelRegistry schema', () => {
       expect(Object.keys(panel)).toEqual([
         'id',
         'hidden',
+        'collapsed',
         'focused',
         'zIndex',
         'mode',
@@ -119,13 +128,38 @@ describe('PanelRegistry schema', () => {
       ]);
       expect(panel.id).toBe(id);
       expect(typeof panel.hidden).toBe('boolean');
+      expect(typeof panel.collapsed).toBe('boolean');
       expect(typeof panel.focused).toBe('boolean');
       expect(typeof panel.zIndex).toBe('number');
       expect(['floating', 'docked', 'maximized']).toContain(panel.mode);
       expect(Object.keys(panel.floating)).toEqual(['x', 'y', 'width', 'height']);
-      expect(Object.keys(panel.docked)).toEqual(['region', 'orderInRegion', 'sizeInRegion']);
+      expect(Object.keys(panel.docked)).toEqual([
+        'region',
+        'orderInRegion',
+        'sizeInRegion',
+        'tabGroupId',
+        'tabOrder',
+        'tabActive',
+      ]);
       expect(panel.preMaximizeState).toBeNull();
     }
+  });
+
+  // Maximized is never allowed to become a one-way door: whatever stripped the
+  // snapshot (an older persisted layout, a hand-edited one), the panel still
+  // has to come back to a window the user can move and dock.
+  it('restorePanel un-maximizes a panel that has lost its snapshot', () => {
+    usePanelRegistry.getState().openPanel('timeline');
+    usePanelRegistry.getState().maximizePanel('timeline');
+    usePanelRegistry.setState((state) => ({
+      panels: { ...state.panels, timeline: { ...state.panels.timeline, preMaximizeState: null } },
+    }));
+
+    usePanelRegistry.getState().restorePanel('timeline');
+
+    const timeline = usePanelRegistry.getState().panels.timeline;
+    expect(timeline.mode).toBe('floating');
+    expect(timeline.hidden).toBe(false);
   });
 
   it('exposes all phase 1 registry mutations', () => {
@@ -142,6 +176,14 @@ describe('PanelRegistry schema', () => {
       'maximizePanel',
       'restorePanel',
       'applyPreset',
+      'dockPanelAsTab',
+      'activateTab',
+      'collapsePanel',
+      'expandPanel',
+      'toggleCollapsePanel',
+      'reopenLastClosed',
+      'focusNextPanel',
+      'resetLayout',
     ] as const) {
       expect(typeof registry[method]).toBe('function');
     }
@@ -151,10 +193,13 @@ describe('PanelRegistry schema', () => {
 describe('PanelFrame render paths', () => {
   beforeEach(resetRegistry);
 
-  it('imports the parallel AppShell as an isolated test harness', () => {
+  it('renders the shell chrome without the top bar', () => {
+    // Panel bodies are lazy, so a static render shows the shell's own layers
+    // and nothing else. Panel markup is asserted through PanelFrame/DockRegion.
     const html = renderToStaticMarkup(<AppShell />);
     expect(html).toContain('data-testid="xleth-windowing-shell"');
-    expect(html).toContain('Timeline Test Panel');
+    expect(html).toContain('data-testid="xleth-app-workarea"');
+    expect(html).toContain('data-testid="xleth-floating-window-layer"');
     expect(html).not.toContain('xleth-top-bar-toggles');
   });
 
@@ -192,11 +237,22 @@ describe('PanelFrame render paths', () => {
     expect(html).not.toContain('Node Editor (F11)');
   });
 
-  it('keeps active production window paths from mounting the quarantined nodeEditor panel', () => {
-    const appShellSource = readUiSource('windowing/AppShell.tsx');
-    expect(appShellSource).toContain("production: [");
-    expect(appShellSource).not.toMatch(/production:\s*\[[\s\S]*['"]nodeEditor['"]/);
+  it('keeps active window paths from mounting the quarantined nodeEditor panel', () => {
+    // There is no hand-maintained production list any more: the catalog's
+    // quarantined flag is the single gate, so open the panel and prove it
+    // still never reaches a render path.
+    expect(PANEL_CATALOG.nodeEditor.quarantined).toBe(true);
+    expect(ACTIVE_PANEL_IDS).not.toContain('nodeEditor');
+    expect(WINDOW_PANEL_IDS).not.toContain('nodeEditor');
     expect(PANEL_CATALOG_ORDER.map((entry) => entry.id)).not.toContain('nodeEditor');
+
+    usePanelRegistry.getState().openPanel('nodeEditor');
+    expect(floatingPanelKey(usePanelRegistry.getState().panels).split('|'))
+      .not.toContain('nodeEditor');
+
+    usePanelRegistry.getState().dockPanel('nodeEditor', 'bottom');
+    const html = renderToStaticMarkup(<DockRegion side="bottom" />);
+    expect(html).not.toContain('data-panel-id="nodeEditor"');
   });
 
   it('registers fxGraph as the safe active FX Graph workspace shell', () => {

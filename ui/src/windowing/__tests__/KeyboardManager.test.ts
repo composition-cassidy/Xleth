@@ -12,6 +12,7 @@ import {
   createInitialPanelStates,
   usePanelRegistry,
 } from '../registry/PanelRegistry';
+import { PANEL_FKEY_BINDINGS } from '../registry/panelCatalog';
 
 function keyEvent(key: string): KeyboardEvent {
   return { key, type: 'keydown' } as KeyboardEvent;
@@ -185,9 +186,14 @@ describe('KeyboardManager', () => {
   describe('Ctrl+Shift preset bindings', () => {
     beforeEach(resetRegistry);
 
-    it('Ctrl+Shift+1 applies fl-compose preset', () => {
+    // What a browser ACTUALLY reports for Ctrl+Shift+1: event.key is the
+    // character the chord produces, so it is the shifted symbol, not the digit.
+    // The bindings used to match on event.key alone and were dead in the app
+    // while these tests passed against a synthetic digit no browser emits.
+    it('Ctrl+Shift+1 applies fl-compose preset for a real shifted digit event', () => {
       handleKeyEvent({
-        key: '1',
+        key: '!',
+        code: 'Digit1',
         type: 'keydown',
         ctrlKey: true,
         shiftKey: true,
@@ -201,9 +207,10 @@ describe('KeyboardManager', () => {
       expect(panels.preview.hidden).toBe(true);
     });
 
-    it('Ctrl+Shift+2 applies vegas-arrange preset', () => {
+    it('Ctrl+Shift+2 applies vegas-arrange preset for a real shifted digit event', () => {
       handleKeyEvent({
-        key: '2',
+        key: '@',
+        code: 'Digit2',
         type: 'keydown',
         ctrlKey: true,
         shiftKey: true,
@@ -217,9 +224,68 @@ describe('KeyboardManager', () => {
     });
 
     it('plain 1 without modifiers does not trigger preset', () => {
-      handleKeyEvent({ key: '1', type: 'keydown' } as KeyboardEvent);
+      handleKeyEvent({ key: '1', code: 'Digit1', type: 'keydown' } as KeyboardEvent);
 
       expect(usePanelRegistry.getState().panels.mixer.mode).not.toBe('docked');
+    });
+
+    it('still matches an event that reports the digit in event.key', () => {
+      // A layout where the chord yields the digit itself must keep working:
+      // the physical-key spelling is an ADDITIONAL match, not a replacement.
+      handleKeyEvent({
+        key: '1',
+        code: 'Digit1',
+        type: 'keydown',
+        ctrlKey: true,
+        shiftKey: true,
+      } as KeyboardEvent);
+
+      expect(usePanelRegistry.getState().panels.mixer.mode).toBe('docked');
+    });
+
+    it('tolerates an event with no code at all', () => {
+      expect(() => handleKeyEvent({
+        key: '!',
+        type: 'keydown',
+        ctrlKey: true,
+        shiftKey: true,
+      } as KeyboardEvent)).not.toThrow();
+    });
+  });
+
+  describe('catalog-generated function keys', () => {
+    beforeEach(resetRegistry);
+
+    it('binds exactly the F-keys the catalog declares, to the panels it names', () => {
+      for (const [fKey, panelId] of PANEL_FKEY_BINDINGS) {
+        const before = usePanelRegistry.getState().panels[panelId].hidden;
+        handleKeyEvent(keyEvent(fKey));
+        expect(usePanelRegistry.getState().panels[panelId].hidden).toBe(!before);
+      }
+    });
+
+    it('gives the quarantined panel no shortcut', () => {
+      expect([...PANEL_FKEY_BINDINGS.values()]).not.toContain('nodeEditor');
+    });
+  });
+
+  describe('layout shortcuts', () => {
+    beforeEach(resetRegistry);
+
+    it('Ctrl+Shift+T reopens the last closed panel', () => {
+      const registry = usePanelRegistry.getState();
+      registry.openPanel('mixer');
+      registry.closePanel('mixer');
+
+      handleKeyEvent({
+        key: 'T',
+        code: 'KeyT',
+        type: 'keydown',
+        ctrlKey: true,
+        shiftKey: true,
+      } as KeyboardEvent);
+
+      expect(usePanelRegistry.getState().panels.mixer.hidden).toBe(false);
     });
   });
 });

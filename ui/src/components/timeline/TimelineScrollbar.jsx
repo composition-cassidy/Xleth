@@ -7,12 +7,28 @@ import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, us
  *
  * Props:
  *   scrollOffsetRef, pixelsPerBeatRef, totalBeats, canvasWidth,
+ *   maxScrollRef (optional — the live scroll clamp; see scrollExtent below),
  *   onScroll(deltaBeats), onScrollTo(beat)
  *   scrollOffset (state value, for re-render)
  *   pixelsPerBeat (state value, for re-render)
  */
+
+/**
+ * Beats the scrollbar's track represents. With the live clamp available this
+ * is exactly the scrollable range plus the visible window, so the thumb's
+ * right edge meets the track's end at the scroll limit, whatever the zoom
+ * (the clamp is zoom-dependent; see zoomFit.js). Without it, falls back to
+ * the static song length.
+ */
+export function scrollExtent(maxScroll, visibleBeats, totalBeats) {
+  if (Number.isFinite(maxScroll) && maxScroll >= 0 && visibleBeats > 0) {
+    return maxScroll + visibleBeats
+  }
+  return totalBeats
+}
+
 const TimelineScrollbar = forwardRef(function TimelineScrollbar({
-  scrollOffsetRef, pixelsPerBeatRef, totalBeats,
+  scrollOffsetRef, pixelsPerBeatRef, maxScrollRef, totalBeats,
   canvasWidth, onScroll, onScrollTo,
   scrollOffset, pixelsPerBeat,
 }, ref) {
@@ -22,10 +38,16 @@ const TimelineScrollbar = forwardRef(function TimelineScrollbar({
   const dragStartX = useRef(0)
   const dragStartScroll = useRef(0)
 
-  // Visible beats as a fraction of total
+  // Visible beats as a fraction of the scrollable extent
   const visibleBeats = canvasWidth / (pixelsPerBeat || 40)
-  const thumbFraction = Math.min(1, visibleBeats / totalBeats)
-  const thumbLeft = (scrollOffset / totalBeats) * 100
+  const extentNow = () => scrollExtent(
+    maxScrollRef?.current,
+    canvasWidth / (pixelsPerBeatRef?.current || 40),
+    totalBeats,
+  )
+  const renderExtent = scrollExtent(maxScrollRef?.current, visibleBeats, totalBeats)
+  const thumbFraction = Math.min(1, visibleBeats / renderExtent)
+  const thumbLeft = (scrollOffset / renderExtent) * 100
   const thumbWidth = thumbFraction * 100
 
   // The thumb is DOM, so it has to be repositioned per animator frame from the
@@ -39,8 +61,14 @@ const TimelineScrollbar = forwardRef(function TimelineScrollbar({
     const ppb = pixelsPerBeatRef?.current || 40
     const scroll = scrollOffsetRef?.current || 0
     const visible = canvasWidth / ppb
-    thumb.style.left = `${(scroll / totalBeats) * 100}%`
-    thumb.style.width = `${Math.max(Math.min(1, visible / totalBeats) * 100, 3)}%`
+    const extent = extentNow()
+    const fraction = Math.min(1, visible / extent)
+    thumb.style.left = `${(scroll / extent) * 100}%`
+    thumb.style.width = `${Math.max(fraction * 100, 3)}%`
+    // Everything visible: hide the thumb but keep the track mounted. The
+    // track used to unmount here, and at the zoom-out limit that shifted the
+    // track rows by the bar's height each time the view crossed the limit.
+    thumb.style.visibility = fraction >= 0.999 ? 'hidden' : ''
   }
 
   useImperativeHandle(ref, () => ({ applyView }))
@@ -65,7 +93,7 @@ const TimelineScrollbar = forwardRef(function TimelineScrollbar({
       if (!track) return
       const trackW = track.clientWidth
       const dx = e.clientX - dragStartX.current
-      const beatsDelta = (dx / trackW) * totalBeats
+      const beatsDelta = (dx / trackW) * extentNow()
       onScrollTo(dragStartScroll.current + beatsDelta)
     }
 
@@ -82,7 +110,7 @@ const TimelineScrollbar = forwardRef(function TimelineScrollbar({
       document.removeEventListener('mousemove', onMouseMove)
       document.removeEventListener('mouseup', onMouseUp)
     }
-  }, [totalBeats, onScrollTo])
+  }, [totalBeats, onScrollTo, canvasWidth, maxScrollRef, pixelsPerBeatRef])
 
   // ── Click on track (not thumb) to jump ─────────────────────────────────────
 
@@ -92,9 +120,10 @@ const TimelineScrollbar = forwardRef(function TimelineScrollbar({
     if (!track) return
     const rect = track.getBoundingClientRect()
     const fraction = (e.clientX - rect.left) / rect.width
-    const beat = fraction * totalBeats - visibleBeats / 2
+    const visible = canvasWidth / (pixelsPerBeatRef?.current || 40)
+    const beat = fraction * extentNow() - visible / 2
     onScrollTo(beat)
-  }, [totalBeats, visibleBeats, onScrollTo])
+  }, [totalBeats, canvasWidth, maxScrollRef, pixelsPerBeatRef, onScrollTo])
 
   // ── Wheel on scrollbar = horizontal scroll ─────────────────────────────────
 
@@ -110,9 +139,6 @@ const TimelineScrollbar = forwardRef(function TimelineScrollbar({
     return () => el.removeEventListener('wheel', handleWheel)
   }, [onScroll, pixelsPerBeatRef])
 
-  // Don't render if everything is visible
-  if (thumbFraction >= 1) return null
-
   return (
     <div
       ref={trackRef}
@@ -122,7 +148,11 @@ const TimelineScrollbar = forwardRef(function TimelineScrollbar({
       <div
         ref={thumbRef}
         className="timeline-scrollbar-thumb"
-        style={{ left: `${thumbLeft}%`, width: `${Math.max(thumbWidth, 3)}%` }}
+        style={{
+          left: `${thumbLeft}%`,
+          width: `${Math.max(thumbWidth, 3)}%`,
+          visibility: thumbFraction >= 0.999 ? 'hidden' : undefined,
+        }}
         onMouseDown={onMouseDown}
       />
     </div>

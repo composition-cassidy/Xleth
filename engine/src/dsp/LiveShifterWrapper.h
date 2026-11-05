@@ -117,6 +117,37 @@ namespace xleth::dsp {
 // locks nothing, logs nothing. The shifter itself is documented realtime safe
 // at debug level 0, which is what we set.
 //
+// --- TWO-PHASE RESET (spare shifter) ----------------------------------------
+//
+// A reset has to prime away the start-up pre-pad (kPrimeBlocks silent shift()
+// calls, ~15 ms of CPU), and live playback resets under the effect chain's
+// realtime claim, during which the whole chain renders silence. Priming inline
+// cost ~30 ms of silence per seek on a Pitch Shifter track.
+//
+// So the wrapper owns a SECOND shifter, primed ahead of time into exactly the
+// state a reset produces, and reset() just swaps it in:
+//
+//   primeSpare()  - the expensive half. Runs OFF the claim, concurrently with
+//                   process(), and touches nothing process() touches.
+//   reset()       - the cheap half, run where it always was. Adopts the primed
+//                   spare (a pointer swap plus FIFO/pad clears) when one is
+//                   ready, and falls back to priming inline when not, so a
+//                   caller that never primes gets the old behaviour.
+//   markStale()   - for a wrapper the effect is not currently running: the
+//                   next process() adopts the spare itself (realtime safe - it
+//                   is the same swap), so an inactive engine costs the reset
+//                   nothing at all.
+//
+// Ownership of spare_ is handed across threads by spareReady_:
+//   false - the primer owns it; reset()/process() never touch it.
+//   true  - reset()/process() own it; primeSpare() never touches it.
+// Each side publishes the handoff with a release store and takes it with an
+// acquire load, so the two never touch the spare at the same time.
+//
+// A spare primed ahead of time is bit-identical to a shifter primed inline
+// (same options, same reset() + unity + kPrimeBlocks path), which is what keeps
+// an export deterministic whichever path its reset took.
+//
 class LiveShifterWrapper
 {
 public:
@@ -153,9 +184,28 @@ public:
     // shifter. Message thread only. Safe to call repeatedly.
     void prepare(double sampleRate, int numChannels, int maxBlockSize);
 
-    // Drops all buffered audio. Calls the shifter's reset(), which is not
-    // documented realtime safe, so this is message thread only like prepare().
+    // Drops all buffered audio. Never concurrent with process(). Adopts the
+    // primed spare when one is ready - cheap, allocation free and realtime
+    // safe, which is what lets a live seek reset the effect on the audio
+    // thread (XlethPitchShifterEffect::resetOnAudioThread checks
+    // isSpareReady() first). Otherwise calls the shifter's reset() and primes
+    // inline, which is NOT realtime safe. See TWO-PHASE RESET above.
     void reset();
+
+    // The expensive half of reset(): primes the spare shifter if it is not
+    // already primed. Off the audio thread; safe to run concurrently with
+    // process() and reset(), NOT with prepare() or another primeSpare().
+    // Returns true iff it primed (false: already ready, or not prepared).
+    bool primeSpare();
+
+    // True when the next reset() (or stale process()) will be a swap.
+    bool isSpareReady() const noexcept { return spareReady_.load(std::memory_order_acquire); }
+
+    // Reset this wrapper lazily: the next process() adopts the primed spare
+    // before touching audio (or, if none is ready, just drops its buffered
+    // audio). For a wrapper the owning effect is not running. Same threading
+    // as reset().
+    void markStale() noexcept { stale_.store(true, std::memory_order_release); }
 
     // --- Audio-thread safe setters (staged, applied between shift() calls) ---
 
@@ -207,8 +257,21 @@ private:
     int  measureDelayAtRatio(double ratio, int settleBlocks, int captureBlocks);
     void applyStagedParams() noexcept;    // audio thread, between shift() calls
     int  optionFlags() const noexcept;
+    std::unique_ptr<RubberBand::RubberBandLiveShifter> makeShifter() const;
+    void adoptSpare() noexcept;           // swap the primed spare in
+    void clearStreamState() noexcept;     // FIFOs + pad line back to post-prepare
 
     std::unique_ptr<RubberBand::RubberBandLiveShifter> shifter_;
+
+    // --- Spare shifter (see TWO-PHASE RESET). Its own silent scratch, so
+    //     priming never touches shiftIn_/shiftOut_, which process() uses. ---
+    std::unique_ptr<RubberBand::RubberBandLiveShifter> spare_;
+    juce::AudioBuffer<float>  spareIn_;
+    juce::AudioBuffer<float>  spareOut_;
+    std::vector<const float*> spareInPtrs_;
+    std::vector<float*>       spareOutPtrs_;
+    std::atomic<bool> spareReady_ { false };
+    std::atomic<bool> stale_      { false };
 
     // --- Options (construction-time except formant) ---
     Window window_           = Window::Medium;

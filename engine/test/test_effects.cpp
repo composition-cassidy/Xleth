@@ -4628,10 +4628,13 @@ static void testEQChannelRoutingMidSide()
 
 static void testEQChannelRoutingResponseCurve()
 {
-    std::cout << "  [EQ routing: response curve]\n";
+    std::cout << "  [EQ routing: per-group response curves]\n";
     constexpr int kN = XlethParametricEQ::kResponseSize;
+    constexpr int kModes = XlethParametricEQ::kNumChannelModes;
 
-    auto settledCurve = [](int channel, float* out)
+    // One +12 dB bell at 1 kHz routed to `channel`; returns all five traces
+    // (Stereo, Left, Right, Mid, Side) back to back.
+    auto curvesFor = [](int channel, float* out)
     {
         XlethParametricEQ eq;
         eq.prepareToPlay(44100.0, 512);
@@ -4642,39 +4645,76 @@ static void testEQChannelRoutingResponseCurve()
         eq.setBandParam(b, "type",    0.0f);
         eq.setBandParam(b, "enabled", 1.0f);
         eq.setBandParam(b, "channel", static_cast<float>(channel));
-        eq.getResponseCurve(out, kN);
+        eq.getChannelResponseCurves(out, kN);
     };
 
-    float stereo[kN], left[kN], mid[kN], side[kN];
-    settledCurve(0, stereo);
-    settledCurve(1, left);
-    settledCurve(3, mid);
-    settledCurve(4, side);
+    auto peakOf = [](const float* trace)
+    {
+        float peak = -300.0f;
+        for (int i = 0; i < kN; ++i) peak = std::max(peak, trace[i]);
+        return peak;
+    };
+    auto isFlat = [](const float* trace)
+    {
+        for (int i = 0; i < kN; ++i)
+            if (std::abs(trace[i]) > 0.01f) return false;
+        return true;
+    };
 
-    // Peak of the Stereo curve is the +12 dB bell itself.
-    float stereoPeak = -300.0f;
-    int   peakIdx = 0;
+    // Each routing must land the full +12 dB bell on ITS trace and leave every
+    // other trace flat — no averaging across channels.
+    static const char* kNames[kModes] = { "Stereo", "Left", "Right", "Mid", "Side" };
+    for (int channel = 0; channel < kModes; ++channel)
+    {
+        std::vector<float> curves(static_cast<size_t>(kModes) * kN);
+        curvesFor(channel, curves.data());
+
+        for (int k = 0; k < kModes; ++k)
+        {
+            const float* trace = curves.data() + static_cast<size_t>(k) * kN;
+            if (k == channel)
+            {
+                CHECK_NEAR(peakOf(trace), 12.0f, 0.5f,
+                           (std::string(kNames[channel]) + " band should peak at the full +12 dB on its own trace").c_str());
+                CHECK_NEAR(trace[0], 0.0f, 0.2f,
+                           (std::string(kNames[channel]) + " trace should be flat at 20 Hz").c_str());
+            }
+            else
+            {
+                CHECK(isFlat(trace),
+                      (std::string(kNames[channel]) + " band must not bleed into the " + kNames[k] + " trace").c_str());
+            }
+        }
+    }
+
+    // getResponseCurve() is the Stereo trace of the same data.
+    XlethParametricEQ eq;
+    eq.prepareToPlay(44100.0, 512);
+    int b = eq.addBand();
+    eq.setBandParam(b, "freq",    1000.0f);
+    eq.setBandParam(b, "gain",    12.0f);
+    eq.setBandParam(b, "q",       1.0f);
+    eq.setBandParam(b, "type",    0.0f);
+    eq.setBandParam(b, "enabled", 1.0f);
+    float stereoOnly[kN];
+    std::vector<float> all(static_cast<size_t>(kModes) * kN);
+    eq.getResponseCurve(stereoOnly, kN);
+    eq.getChannelResponseCurves(all.data(), kN);
     for (int i = 0; i < kN; ++i)
-        if (stereo[i] > stereoPeak) { stereoPeak = stereo[i]; peakIdx = i; }
-    CHECK_NEAR(stereoPeak, 12.0f, 0.5f, "Stereo routing curve should peak at ~+12 dB");
+        CHECK_NEAR(stereoOnly[i], all[i], 1e-4f, "getResponseCurve must equal the Stereo trace");
 
-    // Left routing = diag(H, 1), so the dB average of the diagonals is
-    // 0.5*(12 + 0) = 6 dB.
-    CHECK_NEAR(left[peakIdx], 6.0f, 0.3f,
-               "Left routing curve should read the L/R dB mean (+6 dB)");
-
-    // Mid and Side both have 0.5*(H+1) on BOTH diagonals. At the bell centre
-    // H is real ≈ 10^(12/20) = 3.981, so each diagonal is 2.4905
-    // → 20*log10(2.4905) ≈ 7.92 dB, and the average is the same.
-    CHECK_NEAR(mid[peakIdx],  7.92f, 0.3f, "Mid routing curve should read ~+7.9 dB at peak");
-    CHECK_NEAR(side[peakIdx], 7.92f, 0.3f, "Side routing curve should read ~+7.9 dB at peak");
-    CHECK(left[peakIdx] < mid[peakIdx],
-          "Left and Mid routing must produce DIFFERENT curves (2x2 math, not a fudge)");
-
-    // Far from the band, every routing collapses to unity.
-    CHECK_NEAR(left[0], 0.0f, 0.2f, "Left routing curve should be flat at 20 Hz");
-    CHECK_NEAR(mid[0],  0.0f, 0.2f, "Mid routing curve should be flat at 20 Hz");
-    CHECK_NEAR(side[0], 0.0f, 0.2f, "Side routing curve should be flat at 20 Hz");
+    // Two bands in the SAME group multiply (dB add); bands in different groups
+    // stay on separate traces.
+    int b2 = eq.addBand();
+    eq.setBandParam(b2, "freq",    1000.0f);
+    eq.setBandParam(b2, "gain",    6.0f);
+    eq.setBandParam(b2, "q",       1.0f);
+    eq.setBandParam(b2, "type",    0.0f);
+    eq.setBandParam(b2, "enabled", 1.0f);
+    eq.setBandParam(b2, "channel", 4.0f);   // Side
+    eq.getChannelResponseCurves(all.data(), kN);
+    CHECK_NEAR(peakOf(all.data()), 12.0f, 0.5f, "Stereo trace must ignore the Side band");
+    CHECK_NEAR(peakOf(all.data() + 4 * kN), 6.0f, 0.5f, "Side trace must show only the Side band");
 }
 
 static void testEQChannelRoutingFoldsForLinPhase()

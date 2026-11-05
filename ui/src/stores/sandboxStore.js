@@ -1,5 +1,10 @@
 import { create } from 'zustand'
-import { playSandboxPreview, stopSandboxPreview } from '../components/sandbox/sandboxPreviewPlayer.js'
+import {
+  playSandboxPreview, stopSandboxPreview, setSandboxPreviewLoop,
+} from '../components/sandbox/sandboxPreviewPlayer.js'
+import {
+  zoomView, zoomViewByWheel, panViewByFraction, zoomToRange,
+} from '../components/sandbox/sandboxView.js'
 
 // ─── Sample Sandbox session store ──────────────────────────────────────────
 //
@@ -490,6 +495,39 @@ const useSandboxStore = create((set, get) => ({
   // envelopeEditMode: it is a UI focus, not part of any op's data.
   selectedOpId: null,
 
+  // ── Waveform viewport (zoom / scroll) ───────────────────────────────────
+  // `{ startSample, endSample }` over the ACTIVE layer's rendered buffer, or
+  // null meaning "fit the whole buffer". Singular rather than per-layer, for
+  // the same reason `selection` is: one canvas is interactive at a time (see
+  // SandboxLayerWorkspace's header), so a per-layer view would be state nobody
+  // could see. Reset to fit whenever the active layer changes.
+  //
+  // All the arithmetic lives in sandboxView.js — nothing here or in the canvas
+  // recomputes a zoom by hand. See that file's header for why null-means-fit
+  // is load-bearing rather than a convenience.
+  view: null,
+  // Session state: follow the playhead while it runs past the right edge of a
+  // zoomed-in view. Off by default — an auto-scrolling waveform is exactly
+  // wrong while you are editing one, and exactly right while you are auditing.
+  followPlayhead: false,
+
+  // ── Playback (Phase 2) ──────────────────────────────────────────────────
+  // What Space/the transport is currently doing, and to WHAT. `kind` is the
+  // difference between the composite mix and a single layer's own audition:
+  // both draw a playhead, but a composite position must have the layer's own
+  // offsetSamples subtracted before it means anything on that layer's
+  // waveform (see SandboxWaveformCanvas's playhead loop).
+  playback: {
+    state: 'idle', // 'idle' | 'rendering' | 'playing'
+    kind: null,    // 'composite' | 'layer'
+    layerId: null, // set when kind === 'layer'
+    startSample: 0,
+    endSample: null, // null = to the end of the buffer
+  },
+  // Loop the played range. Persisted across plays (it is a transport mode, not
+  // part of any one play) and honoured by both audition paths.
+  loopPlayback: false,
+
   // ── Composite (SB-5) — mix of every layer's own render by its mix params ──
   composite: {
     renderState: 'idle', // 'idle' | 'rendering' | 'ready' | 'error'
@@ -498,7 +536,6 @@ const useSandboxStore = create((set, get) => ({
   },
   bakeCompositeState: 'idle', // 'idle' | 'baking' | 'baked' | 'error'
   bakeCompositeError: null,
-  compositePreviewState: 'idle', // 'idle' | 'rendering' | 'playing'
 
   // ── Composite auto-render bookkeeping ──────────────────────────────────
   // debouncePending: an edit landed, the 150ms coalescing timer is running.
@@ -714,7 +751,9 @@ const useSandboxStore = create((set, get) => ({
 
   setActiveLayer(layerId) {
     if (get().activeLayerId === layerId) return
-    set({ activeLayerId: layerId, selection: null })
+    // The view is expressed in the OLD layer's sample indices; carrying it
+    // across would frame an arbitrary window of a different buffer. Fit.
+    set({ activeLayerId: layerId, selection: null, view: null })
     if (get().viewMode === 'spc') get().ensureSpectrogram(layerId)
   },
 
@@ -796,6 +835,71 @@ const useSandboxStore = create((set, get) => ({
   setActiveTool(tool) { set({ activeTool: tool }) },
   setSelection(selection) { set({ selection }) },
   clearSelection() { set({ selection: null }) },
+
+  // ── Viewport (zoom / scroll) ────────────────────────────────────────────
+  //
+  // Every one of these is a thin wrapper over a pure sandboxView.js function.
+  // They live in the store rather than the canvas because three other surfaces
+  // drive the same viewport — the overview strip's drag, the zoom buttons, and
+  // the panel-scoped keyboard shortcuts — and a zoom that only the canvas can
+  // perform would have to be re-implemented in each.
+  //
+  // `numSamples` is read here rather than passed in so a caller can never zoom
+  // against a stale length (the buffer is replaced wholesale on every render).
+  _activeNumSamples() {
+    const state = get()
+    const layer = state.layers.find((l) => l.id === state.activeLayerId)
+    return layer?.renderedBuffer?.numSamples ?? 0
+  },
+
+  setView(view) { set({ view }) },
+  zoomToFit() { set({ view: null }) },
+
+  zoomBy(factor, anchorT = 0.5) {
+    set({ view: zoomView(get().view, get()._activeNumSamples(), factor, anchorT) })
+  },
+
+  zoomByWheel(deltaY, anchorT) {
+    set({ view: zoomViewByWheel(get().view, get()._activeNumSamples(), deltaY, anchorT) })
+  },
+
+  panByFraction(fraction) {
+    set({ view: panViewByFraction(get().view, get()._activeNumSamples(), fraction) })
+  },
+
+  // Zoom to the current time selection. With only a cursor (no range) this
+  // frames the zoom floor around it — see zoomToRange — so the shortcut always
+  // does something rather than silently no-opping on the commonest state.
+  zoomToSelection() {
+    const { selection } = get()
+    const numSamples = get()._activeNumSamples()
+    if (!numSamples) return
+    const start = selection?.startSample ?? 0
+    const end = selection?.endSample ?? start
+    set({ view: zoomToRange(start, end, numSamples) })
+  },
+
+  // Frame the range an op acts on. Called when an op row is selected in the
+  // stack rail (Phase 3's op↔waveform link): a non-destructive stack is only
+  // legible if you can see WHERE each entry applies.
+  revealRange(startSample, endSample) {
+    const numSamples = get()._activeNumSamples()
+    if (!numSamples) return
+    set({ view: zoomToRange(startSample, endSample, numSamples, 0.35) })
+  },
+
+  setFollowPlayhead(on) { set({ followPlayhead: !!on }) },
+  toggleFollowPlayhead() { set((s) => ({ followPlayhead: !s.followPlayhead })) },
+  setLoopPlayback(on) { set({ loopPlayback: !!on }) },
+  toggleLoopPlayback() {
+    const next = !get().loopPlayback
+    set({ loopPlayback: next })
+    // Take effect on the CURRENTLY playing pass rather than the next one —
+    // arming loop halfway through an audition and having it ignored until you
+    // stop and start again is the kind of small lie that makes a transport
+    // feel fake.
+    setSandboxPreviewLoop(next)
+  },
 
   // ── Render / poll ───────────────────────────────────────────────────────
 
@@ -1791,24 +1895,91 @@ const useSandboxStore = create((set, get) => ({
   // any render already in flight (or still debouncing) instead of handing the
   // transport a buffer an edit has already invalidated, and renders fresh on
   // demand if nothing has ever run.
-  async toggleCompositePreview() {
-    if (get().compositePreviewState === 'playing') {
-      stopSandboxPreview()
-      set({ compositePreviewState: 'idle' })
-      return
+  // ── Playback range ──────────────────────────────────────────────────────
+  // A meaningful selection plays as a RANGE (its own start to its own end);
+  // otherwise play from the cursor to the end. That is the rule an audio
+  // editor's Space is expected to follow, and it is what makes looping useful:
+  // select the two bars you are shaping, arm loop, and keep editing while it
+  // runs. `offsetSamples` shifts a layer's material within the composite, so a
+  // layer-timeline range has to be shifted by it to mean the same audio in the
+  // mix — without that, looping "the selection" over a delayed layer would
+  // loop the wrong audio.
+  _playbackRange(kind, layer) {
+    const state = get()
+    const sel = state.selection
+    const rate = layer?.renderedBuffer?.sampleRate
+    const offset = (kind === 'composite' && rate) ? (layer?.offsetSamples ?? 0) : 0
+    if (sel && hasMeaningfulSelection(sel, rate)) {
+      return { startSample: sel.startSample + offset, endSample: sel.endSample + offset }
     }
-    set({ compositePreviewState: 'rendering' })
+    return { startSample: (sel?.startSample ?? 0) + offset, endSample: null }
+  },
+
+  _stopPlayback() {
+    stopSandboxPreview()
+    set({ playback: { state: 'idle', kind: null, layerId: null, startSample: 0, endSample: null } })
+  },
+
+  // Preview playback (Space, or the transport's own Play button) — the single
+  // toggle both surfaces share, so their state never drifts apart.
+  // Always plays the newest COMPLETED render: _awaitFreshComposite waits out
+  // any render already in flight (or still debouncing) instead of handing the
+  // transport a buffer an edit has already invalidated, and renders fresh on
+  // demand if nothing has ever run.
+  async toggleCompositePreview() {
+    if (get().playback.state === 'playing') { get()._stopPlayback(); return }
+    const layer = get().layers.find((l) => l.id === get().activeLayerId) ?? null
+    const range = get()._playbackRange('composite', layer)
+    set((s) => ({ playback: { ...s.playback, state: 'rendering', kind: 'composite', layerId: null, ...range } }))
     const buf = await get()._awaitFreshComposite()
     if (!buf) {
-      set({ compositePreviewState: 'idle' }) // render failed — composite.error already set
+      // render failed — composite.error already set
+      set({ playback: { state: 'idle', kind: null, layerId: null, startSample: 0, endSample: null } })
       return
     }
-    const started = playSandboxPreview(
-      buf,
-      get().selection?.startSample ?? 0,
-      () => set({ compositePreviewState: 'idle' }),
-    )
-    set({ compositePreviewState: started ? 'playing' : 'idle' })
+    const started = playSandboxPreview(buf, {
+      ...range,
+      loop: get().loopPlayback,
+      onEnded: () => set((s) => (s.playback.state === 'playing'
+        ? { playback: { state: 'idle', kind: null, layerId: null, startSample: 0, endSample: null } }
+        : {})),
+    })
+    set((s) => ({ playback: { ...s.playback, state: started ? 'playing' : 'idle' } }))
+  },
+
+  // ── Single-layer audition ───────────────────────────────────────────────
+  // Plays the active layer's OWN rendered buffer, with no composite render in
+  // between. Before this existed, hearing one layer meant soloing it and
+  // waiting out a full composite re-render — which is a mix operation wearing
+  // an audition's clothes, and it made checking a single edit slow enough that
+  // people stopped doing it. This path touches no engine RPC at all: the
+  // layer's PCM is already in the renderer.
+  toggleLayerPreview(layerId) {
+    const state = get()
+    if (state.playback.state === 'playing') {
+      const same = state.playback.kind === 'layer' && state.playback.layerId === layerId
+      get()._stopPlayback()
+      if (same) return // a second press on the same layer is Stop
+    }
+    const layer = state.layers.find((l) => l.id === (layerId ?? state.activeLayerId))
+    const buf = layer?.renderedBuffer
+    if (!buf?.channels?.length) return
+    const range = get()._playbackRange('layer', layer)
+    const started = playSandboxPreview(buf, {
+      ...range,
+      loop: state.loopPlayback,
+      onEnded: () => set((s) => (s.playback.state === 'playing'
+        ? { playback: { state: 'idle', kind: null, layerId: null, startSample: 0, endSample: null } }
+        : {})),
+    })
+    set({
+      playback: {
+        state: started ? 'playing' : 'idle',
+        kind: started ? 'layer' : null,
+        layerId: started ? layer.id : null,
+        ...range,
+      },
+    })
   },
 
   async bakeComposite(name) {

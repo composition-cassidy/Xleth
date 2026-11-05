@@ -26,11 +26,15 @@ extern "C" {
 }
 
 // ---------------------------------------------------------------------------
-// Debug logging — compiled out in release builds
+// Debug logging. XLETH_DEBUG is defined in Release too, so the #ifdef alone
+// left sampleToVideoFrame printing once per preview tick; the runtime
+// XLETH_RENDER_LOG switch is what actually keeps it quiet.
 // ---------------------------------------------------------------------------
 #ifdef XLETH_DEBUG
     #include <cstdio>
-    #define RCLOCK_LOG(fmt, ...) std::fprintf(stderr, "[RenderClock] " fmt "\n", ##__VA_ARGS__)
+    #include "XlethDebug.h"
+    #define RCLOCK_LOG(fmt, ...) \
+        XLETH_RENDER_LOG(std::fprintf(stderr, "[RenderClock] " fmt "\n", ##__VA_ARGS__))
 #else
     #define RCLOCK_LOG(fmt, ...) ((void)0)
 #endif

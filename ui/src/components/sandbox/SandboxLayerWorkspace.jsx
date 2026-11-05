@@ -1,18 +1,32 @@
-import { Copy, Plus, X } from 'lucide-react'
+import { Copy, Play, Plus, Square, X } from 'lucide-react'
 import { useState, useCallback } from 'react'
-import useSandboxStore, { hasMeaningfulSelection } from '../../stores/sandboxStore.js'
-import SandboxLayerWaveform from './SandboxLayerWaveform.jsx'
+import useSandboxStore from '../../stores/sandboxStore.js'
 import SandboxWaveformCanvas from './SandboxWaveformCanvas.jsx'
 import SandboxSpcSelectionActionBar from './SandboxSpcSelectionActionBar.jsx'
+import DragNumberField from '../grid/zprTimeline/DragNumberField.jsx'
+import { formatSamplesShort } from './sandboxFormat.js'
 
-// Layer cards filling the main workspace (mockup layout): a name bar on top,
-// then a split row — a ~128px mix control strip on the LEFT, waveform area
-// filling the rest on the RIGHT. Only the ACTIVE card's waveform area hosts
-// the real interactive SandboxWaveformCanvas (selection/envelope/paint/SPC
-// selection are singular store state, not per-layer — see the plan's "per-
-// layer interactive canvas" conflict); every inactive card shows the
-// existing lightweight SandboxLayerWaveform thumbnail. Clicking a card
-// activates it, upgrading its waveform area to the real canvas.
+// ── Layer rail + one editor (Phase 4 restructure) ───────────────────────────
+//
+// This was N stacked full-size cards, only one of which was ever interactive:
+// the active card hosted the real canvas at a 340px minimum, every other card
+// showed a 220×32 thumbnail floating in a card-width slot, and reaching the
+// layer you wanted to edit meant scrolling past that dead space. With three
+// layers open the thing you were actually working on was rarely on screen
+// whole.
+//
+// Now: a compact rail of one-line rows (the whole list visible at once), and
+// ONE editor pane that fills everything left over. That is also what the
+// singular-state design was already assuming — selection, view, envelope and
+// paint modes have always been global-to-the-active-layer, never per-card, so
+// the second, third and fourth canvases were never editors in the first place.
+//
+// The mix controls moved into the row as drag-scrub fields. Reusing the ZPR
+// inspector's DragNumberField rather than writing a second one: it already
+// implements the drag-to-scrub / click-to-type / Shift-fine contract, its
+// styles live in the global app.css, and a panel-local copy would be a second
+// thing to keep in step. It is not moved into components/common here —
+// relocating it would touch ZPR's own imports for no benefit to this change.
 
 const DROPPABLE_AUDIO_EXT = /\.(wav|mp3|flac|aiff?|ogg|m4a|wma|opus)$/i
 
@@ -24,36 +38,56 @@ function offsetMs(layer) {
   return layer.bufferSampleRate ? (layer.offsetSamples / layer.bufferSampleRate) * 1000 : 0
 }
 
-function formatMeta(layer) {
-  const parts = []
-  if (layer.bufferSampleRate) parts.push(`${Math.round(layer.bufferSampleRate)} Hz`)
-  const dur = layer.sourceStartTime != null && layer.sourceEndTime != null
-    ? layer.sourceEndTime - layer.sourceStartTime
-    : (layer.renderedBuffer ? layer.renderedBuffer.numSamples / layer.renderedBuffer.sampleRate : null)
-  if (dur != null) parts.push(`${dur.toFixed(2)}s`)
-  parts.push(`${layer.ops.length} op${layer.ops.length === 1 ? '' : 's'}`)
-  return parts.join(' · ')
+function layerDuration(layer) {
+  if (layer.renderedBuffer?.numSamples && layer.renderedBuffer.sampleRate) {
+    return formatSamplesShort(layer.renderedBuffer.numSamples, layer.renderedBuffer.sampleRate)
+  }
+  if (layer.sourceStartTime != null && layer.sourceEndTime != null) {
+    return `${(layer.sourceEndTime - layer.sourceStartTime).toFixed(2)}s`
+  }
+  return '—'
 }
 
-// Compact gain/pan/offset control strip — mix params live OUTSIDE the
-// op-stack, so editing these never re-renders the layer itself (setLayerMix).
-// Commits on blur/Enter rather than per-keystroke, matching the drag-then-
-// commit contract every other sandbox control uses.
-function LayerMixStrip({ layer, onSetMix, onToggleMute, onToggleSolo }) {
-  const [draft, setDraft] = useState(null) // { gainDb?, pan?, offsetMs? } while editing, else null
+// One line per layer. Everything that was spread across a card head and a
+// 128px control strip, in a row you can scan a stack of.
+function LayerRow({
+  layer, active, playing, onSelect, onClose, onDuplicate, onToggleMute, onToggleSolo,
+  onSetMix, onAudition,
+}) {
+  // Mix edits preview locally during the drag and commit once on release —
+  // setLayerMix is a bridge round-trip plus a composite re-render schedule, so
+  // a call per pointer frame would queue a render per frame.
+  const [live, setLive] = useState(null) // { gainDb?, pan?, offsetMs? } while dragging
 
-  const commit = useCallback((patch) => {
-    onSetMix(layer.id, patch)
-    setDraft(null)
-  }, [layer.id, onSetMix])
+  const gainDb = live?.gainDb ?? layer.gainDb ?? 0
+  const pan = live?.pan ?? layer.pan ?? 0
+  const offMs = live?.offsetMs ?? offsetMs(layer)
+  const commit = (patch) => { setLive(null); onSetMix(layer.id, patch) }
 
-  const gainDb = draft?.gainDb ?? layer.gainDb ?? 0
-  const pan = draft?.pan ?? layer.pan ?? 0
-  const offMs = draft?.offsetMs ?? offsetMs(layer)
+  const ready = layer.renderState === 'ready'
 
   return (
-    <div className="sandbox-layer-ctl" onClick={(e) => e.stopPropagation()}>
-      <div className="sandbox-layer-ctl-msrow">
+    <div
+      className={`sandbox-layer-row${active ? ' active' : ''}${layer.soloed ? ' soloed' : ''}${layer.muted ? ' muted' : ''}`}
+      onClick={() => onSelect(layer.id)}
+      title={layer.renderState === 'error' ? (layer.error || 'Render failed') : layer.name}
+    >
+      <button
+        className={`sandbox-row-btn sandbox-row-btn--play${playing ? ' active' : ''}`}
+        disabled={!ready}
+        onClick={(e) => { e.stopPropagation(); onAudition(layer.id) }}
+        title="Audition this layer alone (Shift+Space) — plays its own render, no composite mix"
+      >{playing ? <Square size={10} /> : <Play size={10} />}</button>
+
+      <span className={`sandbox-render-chip-dot sandbox-render-chip--${layer.renderState}`}
+        title={RENDER_STATE_LABEL[layer.renderState] ?? layer.renderState} />
+
+      <span className="sandbox-layer-row-name">{layer.name}</span>
+      <span className="sandbox-layer-row-meta">
+        {layerDuration(layer)} · {layer.ops.length} op{layer.ops.length === 1 ? '' : 's'}
+      </span>
+
+      <div className="sandbox-layer-row-mix" onClick={(e) => e.stopPropagation()}>
         <button
           className={`sandbox-mini-btn sandbox-mini-btn--mute${layer.muted ? ' active' : ''}`}
           onClick={() => onToggleMute(layer.id)}
@@ -64,84 +98,36 @@ function LayerMixStrip({ layer, onSetMix, onToggleMute, onToggleSolo }) {
           onClick={() => onToggleSolo(layer.id)}
           title="Solo"
         >S</button>
+        <DragNumberField
+          className="sandbox-drag-field" label="dB" value={gainDb} precision={1} step={0.25}
+          min={-60} max={12}
+          onLiveChange={(v) => setLive((d) => ({ ...d, gainDb: v }))}
+          onCommit={(v) => commit({ gainDb: v })}
+        />
+        <DragNumberField
+          className="sandbox-drag-field" label="Pan" value={pan} precision={2} step={0.01}
+          min={-1} max={1}
+          onLiveChange={(v) => setLive((d) => ({ ...d, pan: v }))}
+          onCommit={(v) => commit({ pan: v })}
+        />
+        <DragNumberField
+          className="sandbox-drag-field" label="ms" value={offMs} precision={0} step={1}
+          min={0} max={60000}
+          onLiveChange={(v) => setLive((d) => ({ ...d, offsetMs: v }))}
+          onCommit={(v) => commit({ offsetMs: v })}
+        />
       </div>
-      <label className="sandbox-mix-field" title="Gain (dB)">
-        <span>dB</span>
-        <input
-          type="number" step="0.5" className="sandbox-mix-input"
-          value={gainDb}
-          onChange={(e) => setDraft((d) => ({ ...d, gainDb: Number(e.target.value) }))}
-          onBlur={() => draft?.gainDb !== undefined && commit({ gainDb: draft.gainDb })}
-          onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
-        />
-      </label>
-      <label className="sandbox-mix-field" title="Pan (-1 = left, +1 = right)">
-        <span>Pan</span>
-        <input
-          type="number" step="0.1" min="-1" max="1" className="sandbox-mix-input"
-          value={pan}
-          onChange={(e) => setDraft((d) => ({ ...d, pan: Number(e.target.value) }))}
-          onBlur={() => draft?.pan !== undefined && commit({ pan: draft.pan })}
-          onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
-        />
-      </label>
-      <label className="sandbox-mix-field" title="Offset / delay in the composite (ms)">
-        <span>ms</span>
-        <input
-          type="number" step="1" min="0" className="sandbox-mix-input"
-          value={offMs}
-          onChange={(e) => setDraft((d) => ({ ...d, offsetMs: Number(e.target.value) }))}
-          onBlur={() => draft?.offsetMs !== undefined && commit({ offsetMs: draft.offsetMs })}
-          onKeyDown={(e) => e.key === 'Enter' && e.currentTarget.blur()}
-        />
-      </label>
-    </div>
-  )
-}
 
-function LayerCard({
-  layer, active, hasSpcSelection, onSelect, onClose, onDuplicate, onToggleMute, onToggleSolo, onSetMix,
-}) {
-  const renderState = RENDER_STATE_LABEL[layer.renderState] ?? layer.renderState
-  return (
-    <div
-      className={`sandbox-layer-card${active ? ' active' : ''}${layer.soloed ? ' soloed' : ''}`}
-      onClick={() => onSelect(layer.id)}
-    >
-      <div className="sandbox-layer-card-head">
-        <span className="sandbox-layer-card-name" title={layer.name}>{layer.name}</span>
-        <span className="sandbox-layer-card-meta">{formatMeta(layer)}</span>
-        <span className={`sandbox-render-chip sandbox-render-chip--${layer.renderState}`}>
-          <span className="sandbox-render-chip-dot" />
-          {renderState}
-        </span>
-        <button
-          className="sandbox-layer-card-dup"
-          onClick={(e) => { e.stopPropagation(); onDuplicate(layer.id) }}
-          title={`Duplicate this layer with its ${layer.ops.length} op${layer.ops.length === 1 ? '' : 's'} and mix settings (Ctrl+D)`}
-        ><Copy size={12} /></button>
-        <button
-          className="sandbox-layer-card-close"
-          onClick={(e) => { e.stopPropagation(); onClose(layer.id) }}
-          title="Close layer"
-        ><X size={12} /></button>
-      </div>
-      <div className="sandbox-layer-card-body">
-        <LayerMixStrip layer={layer} onSetMix={onSetMix} onToggleMute={onToggleMute} onToggleSolo={onToggleSolo} />
-        <div className="sandbox-layer-card-wave">
-          {active ? <SandboxWaveformCanvas /> : (
-            <SandboxLayerWaveform
-              filePath={layer.sourceFilePath}
-              startTime={layer.sourceStartTime}
-              endTime={layer.sourceEndTime}
-            />
-          )}
-          {active && hasSpcSelection && <SandboxSpcSelectionActionBar />}
-        </div>
-      </div>
-      {layer.renderState === 'error' && (
-        <div className="sandbox-layer-error" title={layer.error}>Render failed</div>
-      )}
+      <button
+        className="sandbox-row-btn"
+        onClick={(e) => { e.stopPropagation(); onDuplicate(layer.id) }}
+        title={`Duplicate this layer with its ${layer.ops.length} op${layer.ops.length === 1 ? '' : 's'} and mix settings (Ctrl+D)`}
+      ><Copy size={11} /></button>
+      <button
+        className="sandbox-row-btn sandbox-row-btn--close"
+        onClick={(e) => { e.stopPropagation(); onClose(layer.id) }}
+        title="Close layer"
+      ><X size={11} /></button>
     </div>
   )
 }
@@ -159,6 +145,8 @@ export default function SandboxLayerWorkspace() {
   // Shared with the separation strip — a stem and a dropped file enter the
   // workspace through the same door. See sandboxStore.addSourceFromFile.
   const addSourceFromFile = useSandboxStore((s) => s.addSourceFromFile)
+  const toggleLayerPreview = useSandboxStore((s) => s.toggleLayerPreview)
+  const playback = useSandboxStore((s) => s.playback)
   const viewMode = useSandboxStore((s) => s.viewMode)
   const spcSelection = useSandboxStore((s) => s.spcSelection)
 
@@ -213,30 +201,57 @@ export default function SandboxLayerWorkspace() {
     }
   }, [addSourceFromRegion, addSourceFromFile])
 
+  const auditioning = (id) => playback.state === 'playing'
+    && playback.kind === 'layer' && playback.layerId === id
+
   return (
-    <div className="sandbox-layer-workspace">
-      {layers.map((layer) => (
-        <LayerCard
-          key={layer.id}
-          layer={layer}
-          active={layer.id === activeLayerId}
-          hasSpcSelection={hasSpcSelection && layer.id === activeLayerId}
-          onSelect={setActiveLayer}
-          onClose={closeLayer}
-          onDuplicate={duplicateLayer}
-          onToggleMute={toggleMute}
-          onToggleSolo={toggleSolo}
-          onSetMix={setLayerMix}
-        />
-      ))}
-      <div
-        className={`sandbox-drop-zone${dragOver ? ' over' : ''}${layers.length ? ' compact' : ''}`}
-        onDragOver={handleDragOver}
-        onDragLeave={handleDragLeave}
-        onDrop={handleDrop}
-      >
-        <Plus size={layers.length ? 14 : 20} />
-        <span>{layers.length ? 'Drag a sample or audio file here' : 'Drag a sample or audio file here to begin'}</span>
+    <div
+      className="sandbox-layer-workspace"
+      onDragOver={handleDragOver}
+      onDragLeave={handleDragLeave}
+      onDrop={handleDrop}
+    >
+      {layers.length > 0 && (
+        <div className="sandbox-layer-rail">
+          {layers.map((layer) => (
+            <LayerRow
+              key={layer.id}
+              layer={layer}
+              active={layer.id === activeLayerId}
+              playing={auditioning(layer.id)}
+              onSelect={setActiveLayer}
+              onClose={closeLayer}
+              onDuplicate={duplicateLayer}
+              onToggleMute={toggleMute}
+              onToggleSolo={toggleSolo}
+              onSetMix={setLayerMix}
+              onAudition={toggleLayerPreview}
+            />
+          ))}
+          <div className="sandbox-layer-rail-hint">
+            <Plus size={11} /> Drop a sample or audio file anywhere here to add a layer
+          </div>
+        </div>
+      )}
+
+      {/* The editor. One canvas, filling everything the rail leaves — which is
+          the whole point of the restructure. */}
+      <div className="sandbox-editor-pane">
+        {activeLayer ? (
+          <>
+            <SandboxWaveformCanvas />
+            {hasSpcSelection && <SandboxSpcSelectionActionBar />}
+          </>
+        ) : (
+          <div className={`sandbox-drop-zone${dragOver ? ' over' : ''}`}>
+            <Plus size={20} />
+            <span>Drag a sample or audio file here to begin</span>
+            <span className="sandbox-drop-zone-hint">
+              …or right-click a marked region in the timeline and choose “Open in Sample Sandbox”
+            </span>
+          </div>
+        )}
+        {dragOver && activeLayer && <div className="sandbox-drop-overlay">Drop to add a layer</div>}
       </div>
     </div>
   )

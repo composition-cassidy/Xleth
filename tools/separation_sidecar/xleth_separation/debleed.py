@@ -31,6 +31,8 @@ from typing import Dict
 
 import numpy as np
 
+from . import dsp
+
 # Framing for the mask's own STFT. Independent of any tier's chunking or
 # transform settings — this pass runs on the WHOLE finished stem, once, after
 # separate() has already reassembled it — so it does not need to agree with
@@ -64,8 +66,6 @@ def de_bleed(stems: Dict[str, np.ndarray], sample_rate: int) -> Dict[str, np.nda
     if not can_de_bleed(stems):
         return stems
 
-    import torch
-
     names = list(stems.keys())
     a_name, b_name = names[0], names[1]
     a = np.asarray(stems[a_name], dtype=np.float32)
@@ -74,18 +74,17 @@ def de_bleed(stems: Dict[str, np.ndarray], sample_rate: int) -> Dict[str, np.nda
     n = min(a.shape[-1], b.shape[-1])
     a, b = a[..., :n], b[..., :n]
 
-    window = torch.hann_window(N_FFT)
+    window = dsp.hann_window(N_FFT, periodic=True)
 
-    def stft(x: np.ndarray) -> "torch.Tensor":
-        t = torch.from_numpy(np.ascontiguousarray(x, dtype=np.float32))
-        return torch.stft(t, n_fft=N_FFT, hop_length=HOP, window=window,
-                          center=True, return_complex=True)
+    def stft(x: np.ndarray) -> np.ndarray:
+        return dsp.stft(np.ascontiguousarray(x, dtype=np.float32),
+                        n_fft=N_FFT, hop_length=HOP, window=window, center=True)
 
     Sa = stft(a)
     Sb = stft(b)
 
-    mag_a = Sa.abs()
-    mag_b = Sb.abs()
+    mag_a = np.abs(Sa)
+    mag_b = np.abs(Sb)
     total = mag_a + mag_b + _EPS
 
     # Ideal ratio mask: each stem keeps the share of the combined energy it
@@ -95,12 +94,12 @@ def de_bleed(stems: Dict[str, np.ndarray], sample_rate: int) -> Dict[str, np.nda
     mask_a = mag_a / total
     mask_b = mag_b / total
 
-    cleaned_a = torch.istft(Sa * mask_a, n_fft=N_FFT, hop_length=HOP,
-                            window=window, center=True, length=n)
-    cleaned_b = torch.istft(Sb * mask_b, n_fft=N_FFT, hop_length=HOP,
-                            window=window, center=True, length=n)
+    cleaned_a = dsp.istft(Sa * mask_a, n_fft=N_FFT, hop_length=HOP,
+                          window=window, center=True, length=n)
+    cleaned_b = dsp.istft(Sb * mask_b, n_fft=N_FFT, hop_length=HOP,
+                          window=window, center=True, length=n)
 
     result = dict(stems)
-    result[a_name] = np.ascontiguousarray(cleaned_a.numpy(), dtype=np.float32)
-    result[b_name] = np.ascontiguousarray(cleaned_b.numpy(), dtype=np.float32)
+    result[a_name] = np.ascontiguousarray(cleaned_a, dtype=np.float32)
+    result[b_name] = np.ascontiguousarray(cleaned_b, dtype=np.float32)
     return result

@@ -1,32 +1,31 @@
 # XLETH separation sidecar.
 #
-# Install into a dedicated venv; the Electron launcher looks for
-# tools/separation_sidecar/.venv before falling back to a system Python.
+# XLETH bundles this runtime; a normal install does not need pip at all. These
+# pins are for development, CI, and running the sidecar from a source checkout:
 #
 #   python -m venv .venv
 #   .venv\Scripts\python -m pip install -r requirements.txt
 #
-# Verified working on Windows 11 / Python 3.14.2 / i7-13700KF / RTX 4080
-# (2026-08-27).
+# Verified on Windows 11 / Python 3.14.2 / i7-13700KF / RTX 4080 (2026-09-18).
 
 fastapi>=0.110
 uvicorn>=0.27
 pydantic>=2.5
 
-torch>=2.1            # STFT/iSTFT for the MDX tier; the WHOLE of inference for
-                      # the Roformer tiers. See the GPU note below — which build
-                      # you install decides whether BALANCED runs on your GPU.
 numpy>=1.24
 soundfile>=0.12
 soxr>=0.3             # high-quality resampling to the model's 44.1 kHz
+PyYAML>=6.0           # the Roformer models ship their own config as YAML
 
-# ── Tier 1 (FAST) — MDX-Net. Execution provider: pick exactly ONE ───────────
-# They are mutually exclusive: installing two leaves whichever landed last on
-# sys.path and makes the active provider a coin flip.
+# ── Inference. ONE runtime for all three tiers ──────────────────────────────
+#
+# Pick exactly ONE onnxruntime build. They are mutually exclusive: installing
+# two leaves whichever landed last on sys.path and makes the active provider a
+# coin flip.
 
-onnxruntime>=1.17               # CPU. ~0.33x realtime.
+onnxruntime>=1.17               # CPU
 
-# --- NVIDIA / CUDA (fastest: ~0.05x realtime, measured on an RTX 4080) -------
+# --- NVIDIA / CUDA (fastest) -------------------------------------------------
 # onnxruntime-gpu==1.24.4
 # nvidia-cudnn-cu12
 # nvidia-cublas-cu12
@@ -40,15 +39,15 @@ onnxruntime>=1.17               # CPU. ~0.33x realtime.
 # 1.29 is the newest and pip installs it by default, but there are NO Windows
 # wheels for the CUDA 13 runtime — nvidia-cublas-cu13 and
 # nvidia-cuda-runtime-cu13 are 0.0.1 placeholder sdists on PyPI and on
-# pypi.nvidia.com alike, and no cp314 torch cu130 wheel exists either. So on
-# Windows, pin 1.24.4 and use the cu12 packages. Hence the == above, not >=.
+# pypi.nvidia.com alike. So on Windows, pin 1.24.4 and use the cu12 packages.
+# Hence the == above, not >=.
 #
 # A system CUDA Toolkit install does NOT make this work on its own: it ships
-# cuBLAS but not cuDNN. The pip packages above supply cuDNN, and mdx.py's
-# _register_cuda_dll_dirs() both registers their directories AND ctypes-loads
-# the DLLs — os.add_dll_directory alone is not enough, because onnxruntime
-# loads its provider DLL through a plain LoadLibrary that does not consult
-# user-added directories. Without that preload you get
+# cuBLAS but not cuDNN. The pip packages above supply cuDNN, and
+# ort_util.register_cuda_dll_dirs() both registers their directories AND
+# ctypes-loads the DLLs — os.add_dll_directory alone is not enough, because
+# onnxruntime loads its provider DLL through a plain LoadLibrary that does not
+# consult user-added directories. Without that preload you get
 # "cudnn64_9.dll ... missing (Error 126)" and a SILENT fallback to CPU.
 #
 # --- DirectML (any DX12 GPU, no CUDA deps at all) ----------------------------
@@ -56,42 +55,23 @@ onnxruntime>=1.17               # CPU. ~0.33x realtime.
 #
 # Slower than CUDA on an NVIDIA card, but immune to every version trap above.
 
-# ── Tier 2 (BALANCED) — Mel-Band RoFormer ───────────────────────────────────
+# ── What is NOT here any more, and why ──────────────────────────────────────
 #
-# Required by the vendored model in xleth_separation/vendor/. Skipping these
-# leaves the FAST tier fully working and BALANCED reporting exactly which
-# packages it needs — the arch gate in app.py keeps the two independent.
-
-PyYAML>=6.0                     # the model ships its own config as YAML
-einops>=0.7                     # tensor rearrangement, used throughout the model
-librosa>=0.10                   # ONLY for filters.mel — the 60-band filterbank
-rotary-embedding-torch>=0.5     # rotary position embeddings ("RoFormer")
-beartype>=0.17                  # runtime type checks the vendored file declares
-
-# NOT `bs-roformer` from PyPI. It looks like the obvious dependency and it does
-# not work: lucidrains' package has moved on from the architecture these
-# community checkpoints were trained against, and a strict load of
-# becruily_deux.ckpt reports 1002 missing and 240 unexpected parameters on
-# 1.2.4, 1.0.6 and 1.0.4 alike. There is no released version that loads it.
-# See xleth_separation/vendor/VENDOR-NOTICE.md for the measurements.
-
-# ── GPU for the BALANCED tier is a SEPARATE question from the FAST tier ─────
+# torch, einops, librosa, rotary-embedding-torch and beartype were all
+# requirements until the Roformer tiers moved to exported ONNX graphs. Between
+# them they were ~1 GB installed — torch 533 MB, librosa's scientific stack
+# (scipy, llvmlite, numba, scikit-learn) 330 MB, torch's own sympy/networkx
+# 100 MB — against ~135 MB for everything above. That is the entire reason the
+# separators are ONNX now, and it is what makes bundling the runtime with XLETH
+# practical instead of a gigabyte download.
 #
-# The Roformer tiers infer in torch. A CUDA onnxruntime does nothing for them.
-# The default `torch` wheel on Windows is CPU-only, so on a stock install of
-# this file the FAST tier runs on the GPU and BALANCED runs on the CPU at
-# roughly 3.1x realtime — a three-minute song in ten minutes.
+# torch is still needed to EXPORT the graphs (tools/export_roformer_onnx.py)
+# and to run tests/test_dsp.py, which holds the numpy STFT pair to torch's
+# output. Both are maintainer tasks on a machine that already has it:
 #
-# That is not a bug and the sidecar reports it honestly (per-architecture
-# device in /health and /models, and the device chip in the separation strip).
-# To move BALANCED onto the GPU as well, install a CUDA torch build:
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   pip install onnx
 #
-#   pip install torch --index-url https://download.pytorch.org/whl/cu126
-#
-# Check it took, rather than assuming — the failure is silent:
-#
-#   python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
-
 # ── Tests ───────────────────────────────────────────────────────────────────
 # pytest
 # httpx2                        # required by starlette's TestClient

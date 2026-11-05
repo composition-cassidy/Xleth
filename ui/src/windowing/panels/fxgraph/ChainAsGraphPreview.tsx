@@ -1,5 +1,6 @@
 import React from 'react';
 import { resolveChainEffectDisplayName } from '../../../fxgraph/chainToGraphState.js';
+import './fxGraph.css';
 
 export interface ChainEffect {
   nodeId?: number;

@@ -22,6 +22,7 @@ import type {
   GraphParameterResult,
 } from './fxgraph/graphParameterUtils';
 import { register as registerKeyboardBinding } from '../managers/KeyboardManager';
+import './fxgraph/fxGraph.css';
 
 const USE_GRAPH_MODE_TITLE = 'Use FX Graph Mode for this track?';
 const USE_GRAPH_MODE_MESSAGE =

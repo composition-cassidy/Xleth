@@ -60,6 +60,12 @@ export const EFFECT_CATEGORIES = [
     ],
   },
   {
+    label: 'Pitch',
+    submenu: [
+      { label: 'Pitch Shifter', id: 'pitchshifter' },
+    ],
+  },
+  {
     label: 'Utility',
     submenu: [
       { label: 'Smart Balance', id: 'smartbalance' },

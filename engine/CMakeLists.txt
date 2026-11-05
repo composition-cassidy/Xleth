@@ -233,6 +233,7 @@ add_library(XlethEngineModel STATIC
     src/model/ClipCompanionFxBuilder.cpp
     src/import/FscScoreParser.cpp
     src/project/ProjectManager.cpp
+    src/project/RegenerableFiles.cpp
     src/commands/UndoManager.cpp
     src/commands/TimelineCommands.cpp
     src/commands/QuantizeClipsBatchCommand.cpp
@@ -747,6 +748,17 @@ target_link_libraries(test_canvas_fit PRIVATE
     XlethEngineModel
 )
 
+# ── test_presentation_clock_smoother ─────────────────────────────────────────
+# The preview's continuous audio clock (render/PresentationClockSmoother.h):
+# header-only arithmetic, driven with synthetic callback staircases.
+add_executable(test_presentation_clock_smoother
+    test/test_presentation_clock_smoother.cpp
+)
+
+target_link_libraries(test_presentation_clock_smoother PRIVATE
+    XlethEngineModel
+)
+
 # ── test_video_flip_applier ───────────────────────────────────────────────────
 # Phase 3 single-call-site wrapper: chord detection + per-track resolver.
 # Includes SyncManager.h (which needs JUCE/FFmpeg transitively) so this test
@@ -842,6 +854,19 @@ add_executable(test_project
 )
 
 target_link_libraries(test_project PRIVATE
+    XlethEngineModel
+)
+
+# ── test_regenerable_files ────────────────────────────────────────────────────
+# Safety contract of the regenerable-file registry (purge-on-close, Clean up
+# project, on-open .tmp sweep): only recognised files go, offline-media proxies
+# are retained, source media / project.json are never touched.
+# No JUCE, no FFmpeg, no GL — pure model + filesystem.
+add_executable(test_regenerable_files
+    test/test_regenerable_files.cpp
+)
+
+target_link_libraries(test_regenerable_files PRIVATE
     XlethEngineModel
 )
 
@@ -2103,6 +2128,41 @@ target_compile_definitions(test_chain_snapshot_lockfree PRIVATE
 
 add_test(NAME test_chain_snapshot_lockfree COMMAND test_chain_snapshot_lockfree)
 
+# ── test_effect_audio_thread_reset ──────────────────────────────────────────
+# A live transport jump resets effect chains ON THE AUDIO THREAD, in the block
+# that clears the PDC delay lines, via XlethEffectBase::resetOnAudioThread().
+# Holds every stock effect to that contract (zero allocations, bounded time),
+# and the Pitch Shifter to declining when its spare is not primed.
+add_executable(test_effect_audio_thread_reset
+    test/test_effect_audio_thread_reset.cpp
+)
+
+target_link_libraries(test_effect_audio_thread_reset PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_effect_audio_thread_reset PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+add_test(NAME test_effect_audio_thread_reset COMMAND test_effect_audio_thread_reset)
+
 # ── test_chain_effect_identity ────────────────────────────────────────────────
 # Prompt 4A: stable chain-mode effectInstanceId — creation, lookup, move, bypass,
 # parameter edit, save/load across APG uid remap, old-project generation,
@@ -2931,6 +2991,36 @@ target_compile_definitions(test_render_decoder PRIVATE
     JUCE_STANDALONE_APPLICATION=1
 )
 
+# ── bench_proxy_seek (tool, NOT a ctest test) ────────────────────────────────
+# Seek-latency + GOP-boundary accuracy benchmark for preview proxy files through
+# the live-preview RenderVideoDecoder. Needs a GPU and real proxy files:
+#   bench_proxy_seek <proxy.mov> [<proxy.mov> ...]
+add_executable(bench_proxy_seek
+    test/bench_proxy_seek.cpp
+)
+target_link_libraries(bench_proxy_seek PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    d3d11
+    dxgi
+    ${FFMPEG_LIBRARIES}
+)
+target_include_directories(bench_proxy_seek PRIVATE
+    ${FFMPEG_INCLUDE_DIRS}
+)
+target_link_directories(bench_proxy_seek PRIVATE
+    ${FFMPEG_LIBRARY_DIRS}
+)
+target_compile_definitions(bench_proxy_seek PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
 # ── test_animation_manager ───────────────────────────────────────────────────
 # Verifies the slide visual return system: latch-at-target, captured baseline,
 # Instant / SmoothReverse return, NextSlideNote toggle/consume, TV ramp-UP.
@@ -3230,12 +3320,14 @@ set(XLETH_ENGINE_TESTS
     test_lfo_parameter_modulation
     test_lfo_modulation_engine
     test_canvas_fit
+    test_presentation_clock_smoother
     test_correction_curve
     test_autotune_render
     test_video_flip_applier
     test_flip_determinism
     test_flip_orientation_golden
     test_project
+    test_regenerable_files
     test_undo
     test_effect_chain_commands
     test_track_routing
@@ -3326,3 +3418,36 @@ foreach(_xleth_test IN LISTS XLETH_ENGINE_TESTS)
         )
     endif()
 endforeach()
+
+# Live-vs-export timing repro for Pitch-Shifter tracks under PDC. Tool-only:
+# loads a machine-local project copy, so it is not registered with ctest.
+add_executable(xleth_pitch_pdc_timing_repro
+    tools/xleth_pitch_pdc_timing_repro.cpp
+)
+target_link_libraries(xleth_pitch_pdc_timing_repro PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    nlohmann_json::nlohmann_json
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+    winmm
+)
+target_include_directories(xleth_pitch_pdc_timing_repro PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/src)
+target_compile_definitions(xleth_pitch_pdc_timing_repro PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+    NOMINMAX
+)
+target_link_options(xleth_pitch_pdc_timing_repro PRIVATE /STACK:33554432)

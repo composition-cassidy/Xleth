@@ -24,6 +24,7 @@ export const STOCK_EFFECT_LABELS = Object.freeze({
   reverb: 'Reverb',
   smartbalance: 'Smart Balance',
   resonancesuppressor: 'Resonance Suppressor',
+  pitchshifter: 'Pitch Shifter',
   glue: 'Glue Comp',
   opto: 'Opto Comp',
   fet: 'FET Comp',

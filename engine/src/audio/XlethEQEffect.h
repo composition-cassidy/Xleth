@@ -31,7 +31,8 @@
 // 0 bands active by default; add/remove dynamically via addBand()/removeBand().
 //
 // Provides:
-//   getResponseCurve()  — |H(e^jω)| at 512 log-spaced frequencies (main thread)
+//   getResponseCurve()  — Stereo-routed |H(e^jω)| at 512 log-spaced frequencies (main thread)
+//   getChannelResponseCurves() — one such trace per routing group (St/L/R/M/S)
 //   getSpectrumData()   — Hann-windowed 2048-point FFT of recent output (main thread)
 //
 // pluginId: "xletheq"
@@ -208,11 +209,44 @@ public:
 
     int getBandCount() const { return bandCount_.load(std::memory_order_relaxed); }
 
-    // ── Response curve (main thread) ─────────────────────────────────────────
-    // Writes 512 magnitude values (dB) at log-spaced frequencies into outBuf.
-    // Computes coefficients on the fly from APVTS parameters so the curve
-    // always reflects the current UI state even when no audio is flowing.
+    // ── Response curves (main thread) ────────────────────────────────────────
+    // A band's routing decides WHICH signal it shapes, so bands with different
+    // routing cannot honestly share one trace: a Side-routed +12 dB bell leaves
+    // Mid untouched, and a single averaged line would report a bell that
+    // neither channel actually gets.  Instead the bands are grouped by
+    // (folded) routing and each group gets its own trace:
+    //
+    //   trace k = 20*log10 | prod over enabled bands routed to k of H_band |
+    //
+    // Every band in a group acts on the same signal (both channels for Stereo,
+    // L / R for Left / Right, the M / S component for Mid / Side) and they
+    // commute, so the product is exactly what that signal is filtered by.
+    // A group with no bands is a flat 0 dB trace.
+    //
+    // Computes coefficients on the fly from APVTS parameters so the curves
+    // always reflect the current UI state even when no audio is flowing.
+
+    // The standard (Stereo-routed) trace only: writes up to kResponseSize dB
+    // values at log-spaced frequencies.  For an all-Stereo chain this is the
+    // whole EQ response.
     void getResponseCurve(float* outBuf, int outSize) const
+    {
+        writeResponseTraces(outBuf, outSize,
+                            static_cast<int>(ChannelMode::Stereo), 1);
+    }
+
+    // Every routing group's trace, back to back in ChannelMode order
+    // (Stereo, Left, Right, Mid, Side).  `outSize` is the per-trace length
+    // (capped at kResponseSize) and outBuf must hold kNumChannelModes * n
+    // floats; trace k starts at outBuf[k * n].
+    void getChannelResponseCurves(float* outBuf, int outSize) const
+    {
+        writeResponseTraces(outBuf, outSize, 0, kNumChannelModes);
+    }
+
+private:
+    void writeResponseTraces(float* outBuf, int outSize,
+                             int firstChannel, int numChannels) const
     {
         const int n       = std::min(outSize, kResponseSize);
         const int count   = bandCount_.load(std::memory_order_relaxed);
@@ -222,11 +256,9 @@ public:
         const double logMax = std::log(20000.0);
 
         using Cplx = std::complex<double>;
-        const Cplx kCplxOne (1.0, 0.0);
-        const Cplx kCplxZero(0.0, 0.0);
 
         // Linear Phase folds every band's routing to Stereo (see
-        // foldChannelForContext) — the displayed curve must agree with that.
+        // foldChannelForContext) — the displayed curves must agree with that.
         const bool linPhaseActive = linPhasePtr_
             ? (linPhasePtr_->load(std::memory_order_relaxed) > 0.5f) : false;
 
@@ -252,12 +284,18 @@ public:
 
             // Channel routing snapshot.  numCh = 2 here: this EQ always runs on
             // a stereo bus (prepareEffect sizes everything for 2 channels), and
-            // a mono bus folds to Stereo, which is the flat-diagonal case the
-            // matrix below already reduces to.
+            // a mono bus folds to Stereo, which is the Stereo group's trace.
             int chMode = bs.channelPtr
                 ? static_cast<int>(bs.channelPtr->load(std::memory_order_relaxed)) : 0;
             if (chMode < 0 || chMode >= kNumChannelModes) chMode = 0;
             lc[b].channel = foldChannelForContext(chMode, mode, linPhaseActive, 2);
+
+            // Skip bands whose group the caller did not ask for.
+            if (lc[b].channel < firstChannel || lc[b].channel >= firstChannel + numChannels)
+            {
+                lc[b].enabled = false;
+                continue;
+            }
 
             // Dynamic bands: gainDb is the permanent baseline; the curve
             // animates further from it toward gainDb + dyn_range as activation
@@ -295,11 +333,9 @@ public:
             const double sinw  = std::sin(w);
             const double sin2w = std::sin(2.0 * w);
 
-            // Each band contributes a 2x2 complex matrix mapping (L, R) in to
-            // (L, R) out.  The cascade is the matrix product, which stays exact
-            // under channel routing (a scalar |H| product cannot express M/S
-            // cross terms).  Start from the identity = pass-through.
-            Cplx m00(1.0, 0.0), m01(0.0, 0.0), m10(0.0, 0.0), m11(1.0, 0.0);
+            // Running complex product per routing group; identity = flat.
+            Cplx group[kNumChannelModes];
+            for (auto& g : group) g = Cplx(1.0, 0.0);
 
             for (int b = 0; b < count; ++b)
             {
@@ -312,64 +348,21 @@ public:
                                     - lc[b].a1 * sinw - lc[b].a2 * sin2w);
 
                 const double denMagSq = den.real() * den.real() + den.imag() * den.imag();
-                const Cplx   H = (denMagSq > 1e-30) ? (num / den) : kCplxOne;
-
-                // This band's routing matrix.
-                Cplx b00, b01, b10, b11;
-                switch (static_cast<ChannelMode>(lc[b].channel))
-                {
-                case ChannelMode::Left:   // diag(H, 1)
-                    b00 = H;       b01 = kCplxZero;
-                    b10 = kCplxZero; b11 = kCplxOne;
-                    break;
-
-                case ChannelMode::Right:  // diag(1, H)
-                    b00 = kCplxOne; b01 = kCplxZero;
-                    b10 = kCplxZero; b11 = H;
-                    break;
-
-                case ChannelMode::Mid:
-                    // m = (L+R)/2, s = (L-R)/2, L' = H*m + s, R' = H*m - s
-                    b00 = 0.5 * (H + kCplxOne); b01 = 0.5 * (H - kCplxOne);
-                    b10 = 0.5 * (H - kCplxOne); b11 = 0.5 * (H + kCplxOne);
-                    break;
-
-                case ChannelMode::Side:
-                    // L' = m + H*s, R' = m - H*s
-                    b00 = 0.5 * (kCplxOne + H); b01 = 0.5 * (kCplxOne - H);
-                    b10 = 0.5 * (kCplxOne - H); b11 = 0.5 * (kCplxOne + H);
-                    break;
-
-                case ChannelMode::Stereo:
-                default:                  // H * I
-                    b00 = H;         b01 = kCplxZero;
-                    b10 = kCplxZero; b11 = H;
-                    break;
-                }
-
-                // M := B * M — band 0 is applied to the signal first, so it
-                // ends up rightmost in the product.
-                const Cplx n00 = b00 * m00 + b01 * m10;
-                const Cplx n01 = b00 * m01 + b01 * m11;
-                const Cplx n10 = b10 * m00 + b11 * m10;
-                const Cplx n11 = b10 * m01 + b11 * m11;
-                m00 = n00; m01 = n01; m10 = n10; m11 = n11;
+                if (denMagSq > 1e-30)
+                    group[lc[b].channel] *= num / den;
             }
 
-            // The UI draws one 512-point trace, so collapse the matrix to the
-            // dB average of the L and R diagonal magnitudes (|L→L| and |R→R|;
-            // the off-diagonal crosstalk an M/S band creates is not displayed).
-            //
-            // For an all-Stereo chain both diagonals equal H, so this reproduces
-            // the old 20*log10|H| product exactly.  For a routed band it reads
-            // as the mean of what the two outputs do — a Left-only +12 dB bell
-            // plots at +6 dB, a Mid or Side +12 dB bell at ~+7.9 dB (both its
-            // diagonals are 0.5*(H+1)).  Same -300 dB floor as before.
-            const double dbL = 20.0 * std::log10(std::max(std::abs(m00), 1e-15));
-            const double dbR = 20.0 * std::log10(std::max(std::abs(m11), 1e-15));
-            outBuf[i] = static_cast<float>(0.5 * (dbL + dbR));
+            // -300 dB floor for exact nulls (HP/LP stopband, notch centre).
+            for (int k = 0; k < numChannels; ++k)
+            {
+                const double db = 20.0 * std::log10(
+                    std::max(std::abs(group[firstChannel + k]), 1e-15));
+                outBuf[k * n + i] = static_cast<float>(db);
+            }
         }
     }
+
+public:
 
     // ── Spectrum Analyzer (double-buffered output, fed by background thread) ──
 

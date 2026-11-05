@@ -262,6 +262,26 @@ public:
     void processBlock(juce::AudioBuffer<float>& outputBuffer,
                       int numSamples, double engineSampleRate);
 
+    // ── Playhead publication (audio thread -> main thread) ───────────────────
+    // Where each slot's read head currently is, in SOURCE samples — the same
+    // domain the editor's trim and loop indices live in, so the sampler panel
+    // can draw a playhead straight onto its waveform.
+    //
+    // Published ONCE PER BLOCK from processBlock, never from the per-sample
+    // loop: a poll cannot use finer than block granularity, and the inner loop
+    // is the hot path. -1 means "nothing sounding on this slot", which is a
+    // distinct answer from "sounding at sample 0" and is what lets the panel
+    // hide the playhead rather than park it at the left edge.
+    //
+    // Relaxed ordering on both sides: this is advisory telemetry for a UI, each
+    // slot is one independent scalar, and a reader that sees last block's value
+    // is off by at most a few milliseconds. Nothing in the engine reads it.
+    int64_t playPositionForSlot(int slotIndex) const noexcept
+    {
+        if (slotIndex < 0 || slotIndex >= MAX_SAMPLE_SLOTS) return -1;
+        return slotPlayPos_[static_cast<size_t>(slotIndex)].v.load(std::memory_order_relaxed);
+    }
+
     // ── Introspection (main-thread) ──────────────────────────────────────────
     int  activeVoiceCount() const;
     int  countActiveVoices() const;      // audio-thread-safe read-only scan; same as activeVoiceCount
@@ -467,6 +487,14 @@ private:
     Arpeggiator arp_;
 
     std::atomic<bool> visualOnly_ { false };
+
+    // Per-slot read-head position for the editor playhead; see
+    // playPositionForSlot(). Wrapped in a struct so the array's default
+    // construction seeds every entry to the "not sounding" sentinel — a bare
+    // std::array<std::atomic<int64_t>, N> would zero-initialise, and 0 is a
+    // legal playhead position.
+    struct AtomicPlayPos { std::atomic<int64_t> v { -1 }; };
+    std::array<AtomicPlayPos, MAX_SAMPLE_SLOTS> slotPlayPos_;
 
     // Mono held-note stack (most recent at back, max 16)
     std::vector<int> monoHeldNotes_;

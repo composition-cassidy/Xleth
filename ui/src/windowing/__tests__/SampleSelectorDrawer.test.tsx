@@ -13,6 +13,13 @@ import {
   createInitialPanelStates,
   usePanelRegistry,
 } from '../registry/PanelRegistry';
+import {
+  DRAWER_PANEL_IDS,
+  PANEL_CATALOG,
+  WINDOW_PANEL_IDS,
+} from '../registry/panelCatalog';
+import { floatingPanelKey } from '../AppShell';
+import { DockRegion } from '../components/DockRegion';
 
 vi.mock('../../components/Toast.jsx', () => ({
   ToastProvider: ({ children }: { children: unknown }) => children,
@@ -142,13 +149,26 @@ describe('SampleSelectorDrawer', () => {
   });
 
   it('keeps Sample Selector out of normal floating and maximized panel mounting paths', () => {
-    const appShellSource = readUiSource('windowing/AppShell.tsx');
+    // Enforced by the catalog's presentation flag rather than by a hand-kept
+    // exclusion list, so assert the outcome instead of the spelling.
     const sampleSelectorPanelSource = readUiSource('windowing/panels/SampleSelectorPanel.tsx');
-
-    expect(appShellSource).toContain('<SampleSelectorDrawer />');
-    expect(appShellSource).toContain('DRAWER_PANEL_IDS.has(panelId)');
-    expect(appShellSource).toContain('excludePanelIds={drawerPanelIds}');
+    expect(PANEL_CATALOG.sampleSelector.presentation).toBe('drawer');
+    expect(WINDOW_PANEL_IDS).not.toContain('sampleSelector');
+    expect(DRAWER_PANEL_IDS).toContain('sampleSelector');
     expect(sampleSelectorPanelSource).toContain('return null');
+
+    // Open it every way a panel can be opened; it still never reaches the
+    // floating layer, and its mode is pinned to docked.
+    const registry = usePanelRegistry.getState();
+    registry.openPanel('sampleSelector');
+    expect(floatingPanelKey(usePanelRegistry.getState().panels).split('|'))
+      .not.toContain('sampleSelector');
+
+    registry.maximizePanel('sampleSelector');
+    expect(usePanelRegistry.getState().panels.sampleSelector.mode).toBe('maximized');
+    registry.restorePanel('sampleSelector');
+    expect(floatingPanelKey(usePanelRegistry.getState().panels).split('|'))
+      .not.toContain('sampleSelector');
   });
 
   it('renders the existing internal tabs inside the expanded drawer', () => {
@@ -206,11 +226,17 @@ describe('SampleSelectorDrawer', () => {
     expect(countRegistryNotifications(() => collapseSampleSelectorDrawer())).toBe(0);
   });
 
-  it('production shell does not render sample selector as a normal PanelFrame', () => {
+  it('shell mounts the drawer and excludes the panel from every dock region', () => {
     const appShellSource = readUiSource('windowing/AppShell.tsx');
-
     expect(appShellSource).toContain('<SampleSelectorDrawer />');
-    expect(appShellSource).toContain('DRAWER_PANEL_IDS.has(panelId)');
-    expect(appShellSource).toContain('excludePanelIds={drawerPanelIds}');
+    expect(appShellSource).toContain('excludePanelIds={DRAWER_PANEL_IDS}');
+
+    // Docking it by hand must still not put a PanelFrame in the region.
+    usePanelRegistry.getState().openPanel('sampleSelector');
+    usePanelRegistry.getState().dockPanel('sampleSelector', 'left');
+    const html = renderToStaticMarkup(
+      <DockRegion side="left" excludePanelIds={DRAWER_PANEL_IDS} />,
+    );
+    expect(html).not.toContain('data-panel-id="sampleSelector"');
   });
 });

@@ -17,9 +17,16 @@
 // it is a hand-written main-process module in the same shape as export.js.
 //
 // Lifecycle: the sidecar is started LAZILY, on the first call that needs it,
-// and stopped on app quit. Starting a Python process (and importing torch)
-// costs seconds and hundreds of MB; a user who never opens the Sample Sandbox
-// should never pay for it.
+// and stopped on app quit. Starting a Python process and opening an ONNX
+// session costs seconds and hundreds of MB; a user who never opens the Sample
+// Sandbox should never pay for it.
+//
+// The interpreter is XLETH's own: build_sidecar_runtime.py produces a
+// relocatable CPython with the sidecar's dependencies in it, electron-builder
+// copies it beside the app, and candidatePythons() prefers it over anything on
+// the user's PATH. Before that, a packaged build asked the user to install
+// Python and pip-install a requirements file out of a source tree the
+// installer never shipped.
 
 const { ipcMain, app } = require('electron');
 const fs = require('fs');
@@ -34,9 +41,11 @@ let log = (msg) => { process.stdout.write(String(msg) + '\n'); };
 let getWin = () => null;
 
 const READY_PREFIX = 'XLETH_SIDECAR_READY ';
-// The sidecar imports torch on startup, which on a cold filesystem cache can
-// genuinely take 20+ seconds. A short timeout here reads as "separation is
-// broken" on exactly the machines where it is merely slow.
+// Startup imports onnxruntime and builds the FastAPI app, which on a cold
+// filesystem cache can still take many seconds. A short timeout here reads as
+// "separation is broken" on exactly the machines where it is merely slow.
+// (It used to import torch, which is why this is 90s rather than 20; the
+// margin is kept because a cold spinning disk is still a cold disk.)
 const START_TIMEOUT_MS = 90_000;
 const POLL_INTERVAL_MS = 500;
 
@@ -61,15 +70,39 @@ function ensureDir(dir) {
 
 // ── Python resolution ────────────────────────────────────────────────────
 
+// The interpreter XLETH ships. Built by
+// tools/separation_sidecar/tools/build_sidecar_runtime.py and copied beside
+// the app by electron-builder; the path is the same relative to sidecarRoot()
+// in a dev checkout and in a packaged build.
+function bundledPython() {
+  return process.platform === 'win32'
+    ? path.join(sidecarRoot(), 'runtime', 'python.exe')
+    : path.join(sidecarRoot(), 'runtime', 'bin', 'python3');
+}
+
 function candidatePythons() {
   const out = [];
+  // An explicit override still wins — it is how a developer points the sidecar
+  // at a CUDA build or a work-in-progress environment.
   if (process.env.XLETH_PYTHON) out.push({ exe: process.env.XLETH_PYTHON, args: [], why: 'XLETH_PYTHON' });
+
+  // The bundled runtime comes BEFORE anything on the user's machine.
+  //
+  // It is the only interpreter we know has the sidecar's dependencies in it.
+  // A system Python found first would be missing onnxruntime nine times out of
+  // ten, which is exactly the failure this bundling exists to end: users of
+  // packaged builds were told to pip-install a requirements file from a
+  // `tools/` directory that does not exist in an installed app.
+  out.push({ exe: bundledPython(), args: [], why: 'bundled runtime' });
 
   const venv = process.platform === 'win32'
     ? path.join(sidecarRoot(), '.venv', 'Scripts', 'python.exe')
     : path.join(sidecarRoot(), '.venv', 'bin', 'python');
   out.push({ exe: venv, args: [], why: 'sidecar venv' });
 
+  // System interpreters stay as a fallback for source checkouts where the
+  // runtime has not been built. They are last because they are the least
+  // likely to be able to run anything.
   if (process.platform === 'win32') {
     out.push({ exe: 'py', args: ['-3'], why: 'py launcher' });
   }
@@ -96,17 +129,21 @@ function probePython(candidate) {
   }
 }
 
+// Interpreters we provisioned ourselves, and therefore know carry the
+// sidecar's dependencies. Anything else is a guess about the user's machine.
+const PROVISIONED = new Set(['bundled runtime', 'sidecar venv', 'XLETH_PYTHON']);
+
 function resolvePython(force = false) {
-  // A venv created AFTER the app started must beat a cached system
-  // interpreter. Without this, installing the requirements into
-  // tools/separation_sidecar/.venv appears to do nothing — the session keeps
-  // using the `py -3` it resolved at first use, which is exactly the Python
-  // that lacks onnxruntime — until the whole app is restarted.
-  if (resolvedPython && !force && resolvedPython.why !== 'sidecar venv') {
+  // A provisioned interpreter that appears AFTER the app started must beat a
+  // cached system one. Without this, building the runtime (or creating a venv)
+  // appears to do nothing — the session keeps using the `py -3` it resolved at
+  // first use, which is exactly the Python that lacks onnxruntime — until the
+  // whole app is restarted.
+  if (resolvedPython && !force && !PROVISIONED.has(resolvedPython.why)) {
     const venvExe = process.platform === 'win32'
       ? path.join(sidecarRoot(), '.venv', 'Scripts', 'python.exe')
       : path.join(sidecarRoot(), '.venv', 'bin', 'python');
-    if (fs.existsSync(venvExe)) force = true;
+    if (fs.existsSync(bundledPython()) || fs.existsSync(venvExe)) force = true;
   }
   if (resolvedPython && !force) return resolvedPython;
   for (const c of candidatePythons()) {
@@ -121,15 +158,15 @@ function resolvePython(force = false) {
   return null;
 }
 
-// Cheap check that the sidecar's own dependencies are importable. Without
-// this a missing `torch` surfaces as "the process died during startup", which
-// tells the user nothing about what to install.
+// Cheap check that the sidecar's own dependencies are importable. Without this
+// a missing package surfaces as "the process died during startup", which tells
+// the user nothing about what is wrong.
 function probeDependencies(py) {
   try {
     const out = execFileSync(py.exe, [...py.args, '-c',
       'import json\n'
       + 'r={}\n'
-      + 'for m in ("fastapi","uvicorn","numpy","soundfile","torch","onnxruntime"):\n'
+      + 'for m in ("fastapi","uvicorn","numpy","soundfile","onnxruntime","yaml"):\n'
       + '    try:\n'
       + '        __import__(m); r[m]=True\n'
       + '    except Exception:\n'
@@ -192,8 +229,10 @@ function startSidecar() {
     const py = resolvePython();
     if (!py) {
       const e = new Error(
-        'No suitable Python found. Install Python 3.9+ and the sidecar requirements '
-        + '(tools/separation_sidecar/requirements.txt), or set XLETH_PYTHON to an interpreter.');
+        'The bundled Python runtime is missing, and no usable interpreter was found '
+        + 'to fall back on. Reinstalling XLETH restores it. (Running from source: '
+        + 'build it with tools/separation_sidecar/tools/build_sidecar_runtime.py, or '
+        + 'set XLETH_PYTHON to an interpreter that has the requirements installed.)');
       lastError = e.message;
       return reject(e);
     }
@@ -285,7 +324,8 @@ function startSidecar() {
         settled = true;
         clearTimeout(timer);
         lastError = `sidecar exited during startup (code ${code}). `
-          + 'Check that the requirements in tools/separation_sidecar/requirements.txt are installed.';
+          + 'The bundled Python runtime may be incomplete — reinstalling XLETH '
+          + 'restores it.';
         startPromise = null;
         reject(new Error(lastError));
       }

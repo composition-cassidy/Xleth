@@ -177,6 +177,24 @@ const METHODS = [
     binary: null,
   },
   {
+    method: 'proxy_getCodec',
+    channels: ['xleth:proxy:getCodec'],
+    api: { 'proxy.getCodec': 'xleth:proxy:getCodec' },
+    handler: 'Proxy_GetCodec',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // Returns the resulting { requested, effective, h264Available } state, so a
+    // caller can confirm the call really reached the engine.
+    method: 'proxy_setCodec',
+    channels: ['xleth:proxy:setCodec'],
+    api: { 'proxy.setCodec': 'xleth:proxy:setCodec' },
+    handler: 'Proxy_SetCodec',
+    returns: 'value',
+    binary: null,
+  },
+  {
     method: 'posterPrepass_getStatus',
     channels: ['xleth:posterPrepass:getStatus'],
     api: { 'posterPrepass.getStatus': 'xleth:posterPrepass:getStatus' },
@@ -995,6 +1013,44 @@ const METHODS = [
     channels: ['xleth:project:isDirty'],
     api: { 'project.isDirty': 'xleth:project:isDirty' },
     handler: 'Project_IsDirty',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // The app setting "Delete regenerable files when closing a project". Returns
+    // the value now in force, so a caller can confirm the call reached the engine.
+    method: 'project_setPurgeOnClose',
+    channels: ['xleth:project:setPurgeOnClose'],
+    api: { 'project.setPurgeOnClose': 'xleth:project:setPurgeOnClose' },
+    handler: 'Project_SetPurgeOnClose',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // null | { projectDir, freedBytes, filesRemoved, filesFailed, categories[] } —
+    // the last purge-on-close result, consumed on read.
+    method: 'project_takeLastPurge',
+    channels: ['xleth:project:takeLastPurge'],
+    api: { 'project.takeLastPurge': 'xleth:project:takeLastPurge' },
+    handler: 'Project_TakeLastPurge',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // Dry run of "Clean up project" for the confirmation dialog. Deletes nothing.
+    method: 'project_cleanupScan',
+    channels: ['xleth:project:cleanupScan'],
+    api: { 'project.cleanupScan': 'xleth:project:cleanupScan' },
+    handler: 'Project_CleanupScan',
+    returns: 'value',
+    binary: null,
+  },
+  {
+    // "Clean up project": delete orphaned + leftover-partial files now.
+    method: 'project_cleanupRun',
+    channels: ['xleth:project:cleanupRun'],
+    api: { 'project.cleanupRun': 'xleth:project:cleanupRun' },
+    handler: 'Project_CleanupRun',
     returns: 'value',
     binary: null,
   },

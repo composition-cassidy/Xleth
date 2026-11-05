@@ -379,7 +379,10 @@ describe('BackdropLayer', () => {
       const css = readFileSync(path.resolve(process.cwd(), 'src/windowing/components/windowing.css'), 'utf8')
       expect(css).toMatch(/\.xleth-backdrop-layer\s*\{[\s\S]*z-index:\s*var\(--xleth-z-backdrop-underlay\)/)
       expect(css).toMatch(/\.xleth-backdrop-fx-canvas\s*\{[\s\S]*pointer-events:\s*none/)
-      expect(css).toMatch(/\.xleth-docked-window-layer,[\s\S]*\.xleth-floating-window-layer,[\s\S]*z-index:\s*var\(--xleth-z-workspace-panel-layer\)/)
+      // The dead .xleth-maximized-window-layer selector was removed from this
+    // group (a maximized panel renders inside the floating layer), so the
+    // floating selector is now the last one before the brace.
+    expect(css).toMatch(/\.xleth-docked-window-layer,[\s\S]*\.xleth-floating-window-layer\s*\{[\s\S]*z-index:\s*var\(--xleth-z-workspace-panel-layer\)/)
     } finally {
       await act(async () => root.unmount())
       container.remove()

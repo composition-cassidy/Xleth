@@ -19,6 +19,9 @@
 //      figure.
 //   5. Zero allocation in both process() calls, via a counting global
 //      operator new/delete.
+//   7. Two-phase reset — a reset that swaps in the primed spare shifter is
+//      bit-identical to one that primes inline, costs microseconds, allocates
+//      nothing, and priming may run concurrently with process().
 //
 // Every threshold is a named constant below, with the measured headroom noted.
 
@@ -37,6 +40,7 @@
 #include <chrono>
 #include <cstdlib>
 #include <iostream>
+#include <thread>
 #include <vector>
 
 // ─── Counting allocator ──────────────────────────────────────────────────────
@@ -922,6 +926,272 @@ static void testSanity()
     }
 }
 
+// ─── 7. Two-phase reset (spare shifter) ──────────────────────────────────────
+//
+// Live playback resets under the effect chain's realtime claim, and the chain
+// renders silence for as long as that takes. reset() used to prime inline
+// (~15 ms per wrapper); it now swaps in a spare primed off the claim. Pins:
+//   (a) swapping is BIT-IDENTICAL to priming inline, whichever path a reset
+//       takes and whatever either wrapper played before, including a recycled
+//       spare and the lazy markStale() path - so exports stay deterministic;
+//   (b) a swap reset costs microseconds, an inline one does not;
+//   (c) the swap, and a stale process(), allocate nothing;
+//   (d) priming concurrently with process() is safe.
+
+static void feed(xleth::dsp::LiveShifterWrapper& l, int blocks, double hz, std::vector<float>* out)
+{
+    juce::AudioBuffer<float> b(2, kOddBlock);
+    for (int k = 0; k < blocks; ++k)
+    {
+        for (int c = 0; c < 2; ++c)
+        {
+            float* w = b.getWritePointer(c);
+            for (int i = 0; i < kOddBlock; ++i)
+            {
+                const int n = k * kOddBlock + i;
+                w[i] = (float) (0.4 * std::sin(2.0 * juce::MathConstants<double>::pi * hz * n / kSR)
+                              + 0.1 * std::sin(2.0 * juce::MathConstants<double>::pi * 3.1 * hz * n / kSR + c));
+            }
+        }
+        l.process(b);
+        if (out != nullptr)
+            for (int c = 0; c < 2; ++c)
+                out->insert(out->end(), b.getReadPointer(c), b.getReadPointer(c) + kOddBlock);
+    }
+}
+
+static void testTwoPhaseReset()
+{
+    std::cout << "\n[7] Two-phase reset (primed spare swapped in)\n";
+    using W = xleth::dsp::LiveShifterWrapper;
+
+    const auto make = [](W& l, W::Window w)
+    {
+        l.setWindowOption(w);
+        l.setFormantOption(w == W::Window::Short ? W::Formant::Preserved : W::Formant::Shifted);
+        l.prepare(kSR, 2, kBlock);
+        l.setPitch(7, 0);
+        l.setFormantScale(1.25f);
+    };
+
+    for (const W::Window win : { W::Window::Medium, W::Window::Short })
+    {
+        const char* name = (win == W::Window::Medium) ? "Medium" : "Short";
+        W swap, inl, stale;
+        make(swap, win); make(inl, win); make(stale, win);
+        CHECK(swap.isSpareReady() && inl.isSpareReady() && stale.isSpareReady(),
+              name << ": prepare() leaves a primed spare");
+
+        // Different histories, so any state a reset failed to clear shows up.
+        feed(swap, 40, 220.0, nullptr);
+        feed(inl, 55, 555.0, nullptr);
+        feed(stale, 31, 97.0, nullptr);
+
+        // inl: consume its spare, play more, then reset with none ready ->
+        // the inline-priming path.
+        inl.reset();
+        feed(inl, 9, 1234.0, nullptr);
+        CHECK(!inl.isSpareReady(), name << ": a swap consumes the spare");
+        inl.reset();
+
+        swap.reset();                       // swap path
+        stale.markStale();                  // lazy swap inside the next process()
+
+        std::vector<float> a, b, s;
+        feed(swap, 60, 330.0, &a);
+        feed(inl, 60, 330.0, &b);
+        feed(stale, 60, 330.0, &s);
+
+        double peak = 0.0;
+        for (float v : a) peak = std::max(peak, (double) std::abs(v));
+        CHECK(peak > 0.05, name << ": post-reset output is not silent (peak " << peak << ")");
+        CHECK(a == b, name << ": swap reset is bit-identical to an inline-primed reset");
+        CHECK(a == s, name << ": markStale() + process() is bit-identical to reset()");
+
+        // A recycled spare: re-prime the retired shifter, dirty the running
+        // one, swap again - must match the first swap exactly.
+        CHECK(swap.primeSpare(), name << ": primeSpare() re-primes the consumed spare");
+        CHECK(!swap.primeSpare(), name << ": primeSpare() is a no-op once ready");
+        feed(swap, 23, 777.0, nullptr);
+        swap.reset();
+        std::vector<float> r;
+        feed(swap, 60, 330.0, &r);
+        CHECK(a == r, name << ": a recycled spare is bit-identical too");
+
+        // (b) cost, and (c) allocation, of the swap vs the inline prime.
+        double swapMaxUs = 0.0, inlineMinUs = 1.0e12;
+        long long swapAllocs = 0;
+        for (int k = 0; k < 10; ++k)
+        {
+            swap.primeSpare();
+            feed(swap, 3, 440.0, nullptr);
+            g_allocCount.store(0);
+            g_allocArmed.store(true);
+            auto t0 = std::chrono::steady_clock::now();
+            swap.reset();
+            auto t1 = std::chrono::steady_clock::now();
+            g_allocArmed.store(false);
+            swapAllocs += g_allocCount.load();
+            swapMaxUs = std::max(swapMaxUs, std::chrono::duration<double, std::micro>(t1 - t0).count());
+
+            feed(inl, 3, 440.0, nullptr);   // inl's spare stays consumed
+            t0 = std::chrono::steady_clock::now();
+            inl.reset();
+            t1 = std::chrono::steady_clock::now();
+            inlineMinUs = std::min(inlineMinUs, std::chrono::duration<double, std::micro>(t1 - t0).count());
+        }
+        std::printf("    %-6s reset: swap max %.1f us, inline min %.1f us, swap allocations %lld\n",
+                    name, swapMaxUs, inlineMinUs, swapAllocs);
+        CHECK(swapMaxUs < 1000.0, name << ": a swap reset stays under 1 ms (max " << swapMaxUs << " us)");
+        CHECK(inlineMinUs > 10.0 * swapMaxUs,
+              name << ": the swap is >10x cheaper than priming inline");
+        CHECK(swapAllocs == 0, name << ": a swap reset allocated " << swapAllocs << " times");
+
+        // Stale process() must not allocate either: it runs on the audio thread.
+        {
+            juce::AudioBuffer<float> blk(2, kOddBlock);
+            blk.clear();
+            stale.primeSpare();
+            stale.markStale();
+            g_allocCount.store(0);
+            g_allocArmed.store(true);
+            stale.process(blk);
+            g_allocArmed.store(false);
+            CHECK(g_allocCount.load() == 0,
+                  name << ": stale process() allocated " << g_allocCount.load() << " times");
+        }
+    }
+
+    // (d) A primer thread re-priming while the owner processes and resets.
+    {
+        W l;
+        make(l, W::Window::Medium);
+        std::atomic<bool> stop{false};
+        std::atomic<int>  primes{0};
+        std::thread primer([&] {
+            while (!stop.load())
+            {
+                if (l.primeSpare()) primes.fetch_add(1);
+                else std::this_thread::yield();
+            }
+        });
+
+        juce::AudioBuffer<float> b(2, kOddBlock);
+        bool finite = true;
+        int  swaps  = 0;
+        const auto end = std::chrono::steady_clock::now() + std::chrono::milliseconds(1500);
+        while (std::chrono::steady_clock::now() < end)
+        {
+            for (int c = 0; c < 2; ++c)
+                for (int i = 0; i < kOddBlock; ++i)
+                    b.setSample(c, i, (float) (0.3 * std::sin(0.05 * i)));
+            l.process(b);
+            for (int c = 0; c < 2 && finite; ++c)
+                for (int i = 0; i < kOddBlock; ++i)
+                    if (!std::isfinite(b.getSample(c, i))) { finite = false; break; }
+            if (l.isSpareReady()) { l.reset(); ++swaps; }
+        }
+        stop.store(true);
+        primer.join();
+        std::printf("    concurrent priming: %d primes, %d swap resets\n", primes.load(), swaps);
+        CHECK(finite, "output stays finite while a primer thread runs");
+        CHECK(swaps >= 5 && primes.load() >= swaps, "the primer really ran against the owner");
+    }
+}
+
+// ─── 8. Latency after a reset ────────────────────────────────────────────────
+//
+// [4b] measures the delay of a freshly prepared wrapper; this measures it after
+// every way a live reset can land: adopting the spare prepare() built, adopting
+// a recycled (re-primed) spare, priming inline with no spare ready, and the
+// lazy markStale() swap inside process(). Each path must deliver the latency
+// the effect REPORTS - that number is what the PDC delay lines on every other
+// track are set to, so any path that drifts from it desyncs the mix.
+static std::vector<float> impulseAfter(xleth::dsp::LiveShifterWrapper& l)
+{
+    const int total = l.getLatencySamples() + 24 * kBlock;
+    std::vector<float> out((size_t) total, 0.0f);
+    juce::AudioBuffer<float> b(2, kBlock);
+    for (int i = 0; i < total; i += kBlock)
+    {
+        b.clear();
+        if (i == 0) { b.setSample(0, 0, 1.0f); b.setSample(1, 0, 1.0f); }
+        l.process(b);
+        for (int k = 0; k < kBlock && i + k < total; ++k)
+            out[(size_t) (i + k)] = b.getReadPointer(0)[k];
+    }
+    return out;
+}
+
+static void testPostResetLatency()
+{
+    std::cout << "\n[8] Latency after a reset (every reset path)\n";
+    using W = xleth::dsp::LiveShifterWrapper;
+
+    for (const W::Window win : { W::Window::Medium, W::Window::Short })
+    {
+        const char* name = (win == W::Window::Medium) ? "Smart/Medium" : "Voice/Short";
+        const auto make = [win](W& l, int semis, int cents)
+        {
+            l.setWindowOption(win);
+            l.setChannelsTogether(true);
+            l.setFormantOption(win == W::Window::Short ? W::Formant::Preserved : W::Formant::Shifted);
+            l.prepare(kSR, 2, kBlock);
+            l.setPitch(semis, cents);
+        };
+
+        std::printf("    %-12s %6s %8s %8s %8s %8s %8s   (measured - reported)\n",
+                    name, "pitch", "prepare", "fresh", "recycled", "inline", "stale");
+        for (const auto [semis, cents] : std::vector<std::pair<int,int>>{
+                 { -24, 0 }, { -12, 0 }, { -12, -49 }, { -7, 0 }, { 0, 0 },
+                 { 7, 0 }, { 12, 0 }, { 24, 0 } })
+        {
+            W p, f, r, in, st;
+            make(p, semis, cents); make(f, semis, cents); make(r, semis, cents);
+            make(in, semis, cents); make(st, semis, cents);
+            const int rep = p.getLatencySamples();
+
+            const auto aP = impulseAfter(p);
+
+            feed(f, 40, 220.0, nullptr);
+            f.reset();                                    // adopts prepare()'s spare
+            const auto aF = impulseAfter(f);
+
+            feed(r, 40, 220.0, nullptr);
+            r.reset();
+            r.primeSpare();                               // re-primes the retired shifter
+            feed(r, 40, 330.0, nullptr);
+            r.reset();                                    // adopts the recycled spare
+            const auto aR = impulseAfter(r);
+
+            feed(in, 40, 220.0, nullptr);
+            in.reset();                                   // consumes the spare
+            feed(in, 40, 330.0, nullptr);
+            in.reset();                                   // none ready: primes inline
+            const auto aI = impulseAfter(in);
+
+            feed(st, 40, 220.0, nullptr);
+            st.markStale();                               // next process() swaps
+            const auto aS = impulseAfter(st);
+
+            const auto err = [rep](const std::vector<float>& v) { return smoothedEnergyPeak(v) - rep; };
+            std::printf("    %-12s %+3d.%02d %+8d %+8d %+8d %+8d %+8d   same-as-prepare: %c%c%c%c\n",
+                        "", semis, std::abs(cents), err(aP), err(aF), err(aR), err(aI), err(aS),
+                        aF == aP ? 'F' : 'f', aR == aP ? 'R' : 'r', aI == aP ? 'I' : 'i', aS == aP ? 'S' : 's');
+
+            // Bit-identical is the real claim: a reset path that restarted the
+            // shifter in any other state would move its delay off the one the
+            // effect reports, and with it every PDC-compensated track.
+            CHECK(aF == aP && aR == aP && aI == aP && aS == aP,
+                  name << " " << semis << "." << std::abs(cents)
+                       << " st: every reset path is bit-identical to a fresh prepare()");
+            CHECK(std::abs(err(aP)) <= kLiveDelayToleranceSamples,
+                  name << " " << semis << " st: post-reset delay " << err(aP)
+                       << " samples off the reported latency");
+        }
+    }
+}
+
 // ─── main ────────────────────────────────────────────────────────────────────
 
 int main()
@@ -937,6 +1207,8 @@ int main()
     testLiveShifterLatency();
     testZeroAllocation();
     testSanity();
+    testTwoPhaseReset();
+    testPostResetLatency();
 
     std::cout << "\n--- " << g_passed << " passed, " << g_failed << " failed ---\n";
     if (g_failed == 0) { std::cout << "ALL TESTS PASSED\n"; return 0; }

@@ -68,8 +68,15 @@ namespace {
 
 // Watchdog tuning. The starvation window has to clear the largest buffer period
 // the engine will ever open (kMaxBuf @ kFallback ≈ 10.7 ms) by a wide margin so
-// an ordinary scheduling hiccup can never be read as a dead device.
-static constexpr int64_t kCallbackStarvationMs       = 500;
+// an ordinary scheduling hiccup can never be read as a dead device. 500 ms was
+// not a wide enough margin: on a 15 W laptop (Ryzen 5 7520U, shared VRAM) the
+// burst that opens the main window — D3D11 device creation, 11 shader compiles,
+// the preview shared-memory rebuild — starves the WASAPI callback for just over
+// half a second on every launch, and each false positive costs a ~4 s device
+// reopen that blocks the RPC thread. A device that died without a resume event
+// (interface unplugged) is not time-critical to notice, so widen this; the
+// resume path below keeps its own short window.
+static constexpr int64_t kCallbackStarvationMs       = 1500;
 // A resume event is strong evidence the device is already gone, so react faster
 // — but still long enough that a poll landing between two healthy buffers does
 // not trigger a pointless reopen.
@@ -329,6 +336,41 @@ bool AudioEngine::shouldAttemptRecovery(const WatchdogInputs& in)
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Pure bookkeeping — no device access, no clock read. See AudioEngine.h.
+AudioEngine::WatchdogRecoveryState
+AudioEngine::afterRecoveryAttempt(bool    recovered,
+                                  int     failedAttempts,
+                                  int64_t lastProgressMs,
+                                  int64_t completedAtMs)
+{
+    WatchdogRecoveryState out;
+
+    if (recovered)
+    {
+        out.failedAttempts = 0;
+        // Re-baseline so the next poll judges the *new* device from the moment
+        // it actually came up, and hold the watchdog off for a full retry
+        // interval: a freshly reopened driver is entitled to take longer than
+        // the bare starvation window to produce its first block.
+        out.lastProgressMs = completedAtMs;
+        out.nextAttemptMs  = completedAtMs + kRecoveryRetryMs;
+    }
+    else
+    {
+        out.failedAttempts = failedAttempts + 1;
+        // Nothing came up, so the progress age keeps running from whenever the
+        // callback was last seen — only the retry deadline moves.
+        out.lastProgressMs = lastProgressMs;
+        out.nextAttemptMs  = completedAtMs
+                           + (out.failedAttempts >= kRecoveryBackoffAfter
+                                  ? kRecoveryBackoffMs
+                                  : kRecoveryRetryMs);
+    }
+
+    return out;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Message/RPC thread only. See the contract in AudioEngine.h.
 bool AudioEngine::checkDeviceHealth()
 {
@@ -383,29 +425,30 @@ bool AudioEngine::checkDeviceHealth()
     watchdogResumeArmed_ = false;
     const bool recovered = reopenAudioDevice();
 
+    // reopenAudioDevice() blocks for seconds on a real driver, so `now` is
+    // stale by the time it returns — every deadline below is stamped from a
+    // fresh read. See afterRecoveryAttempt()'s note in AudioEngine.h.
+    const auto state = afterRecoveryAttempt(recovered,
+                                            watchdogFailedAttempts_,
+                                            watchdogLastProgressMs_,
+                                            steadyNowMs());
+    watchdogFailedAttempts_ = state.failedAttempts;
+    watchdogNextAttemptMs_  = state.nextAttemptMs;
+    watchdogLastProgressMs_ = state.lastProgressMs;
+
     if (recovered)
     {
-        watchdogFailedAttempts_ = 0;
-        watchdogNextAttemptMs_  = now + kRecoveryRetryMs;
-        // Re-baseline so the next poll judges the *new* device, and give the
-        // reopened driver a full starvation window to produce its first block.
-        watchdogLastCounter_    = callbackCounter_.load(std::memory_order_relaxed);
-        watchdogLastProgressMs_ = now;
+        watchdogLastCounter_ = callbackCounter_.load(std::memory_order_relaxed);
 
         std::cout << "[AudioEngine] Device recovered: "
                   << getCurrentOutputDevice() << " @ " << sampleRate_ << " Hz / "
                   << bufferSize_ << " samples\n" << std::flush;
     }
-    else
+    else if (verbose)
     {
-        ++watchdogFailedAttempts_;
-        watchdogNextAttemptMs_ = now + (watchdogFailedAttempts_ >= kRecoveryBackoffAfter
-                                            ? kRecoveryBackoffMs
-                                            : kRecoveryRetryMs);
-        if (verbose)
-            std::cerr << "[AudioEngine] Device reopen failed (attempt "
-                      << watchdogFailedAttempts_ << ") — no audio device available.\n"
-                      << std::flush;
+        std::cerr << "[AudioEngine] Device reopen failed (attempt "
+                  << watchdogFailedAttempts_ << ") — no audio device available.\n"
+                  << std::flush;
     }
 
     return recovered;

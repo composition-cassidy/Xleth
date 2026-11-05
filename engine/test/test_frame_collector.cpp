@@ -675,6 +675,107 @@ int main()
         std::fprintf(stderr, "[TEST:FrameCollector] Test 1i: PASSED\n");
     }
 
+    // ── Test 1k: Hold Last Frame on GRID CELLS ────────────────────────────────
+    // Hold Last Frame used to be honored only for fullscreen BehindGrid layers;
+    // a grid cell whose clip ended just went empty even with the toggle on.
+    // A grid cell must now behave exactly like a BehindGrid layer: same held
+    // frame, same threshold, same untouched path when the toggle is off — and
+    // a muted track must still blank its cell.
+    {
+        std::fprintf(stderr, "\n[TEST:FrameCollector] --- Test 1k: hold last frame on grid cells ---\n");
+        const int gridTrackId = trackIds[0];   // slot 0: (0,0), full cell, opacity 1.0
+        TrackInfo* gt = timeline.getTrackMutable(gridTrackId);
+        requireFadeTest(gt != nullptr, "grid hold track exists");
+        gt->videoHoldLastFrameThresholdBeats =
+            TrackInfo::kHoldLastFrameThresholdUnlimited;
+
+        // Clip spans beats [0, 1) — same frame->beat mapping as Test 1h
+        // (140bpm @ 30fps: frame 7 in clip, 13 = +0.011 beats, 26 = +1.022).
+        std::vector<VideoEvent> ev{
+            makeEvent(gridTrackId, srcAId, 0.0, 1.0, 2.0, 1.0f, 0)};
+        const AVRational fps = {30, 1};
+
+        auto gridReq = [&](FrameCollector& c, int64_t frame) -> const CellFrameRequest* {
+            auto& reqs = c.collectRequests(frame, timeline, 48000, fps, ev);
+            return findGridRequestForTrack(reqs, gridTrackId);
+        };
+
+        // (a) Hold ON: the cell keeps showing the LAST frame the clip served,
+        // in the same cell, through the gap.
+        {
+            gt->videoHoldLastFrame = true;
+            FrameCollector c;
+            const CellFrameRequest* live = gridReq(c, 7);
+            requireFadeTest(live != nullptr, "grid hold: clip active mid-clip");
+            const int64_t liveFrame = live->sourceFrameIndex;
+            const InternedPath livePath = live->sourcePath;
+
+            const CellFrameRequest* held = gridReq(c, 13);
+            requireFadeTest(held != nullptr, "grid hold: cell is held past clip end");
+            requireFadeTest(held->layerKind == CellLayerKind::Grid,
+                            "grid hold: held request stays a Grid layer");
+            requireFadeTest(held->sourceFrameIndex == liveFrame,
+                            "grid hold: held frame == last served frame");
+            requireFadeTest(held->sourcePath == livePath,
+                            "grid hold: held path == last served path");
+            requireFadeTest(held->cellCol == 0 && held->cellRow == 0
+                            && held->spanX == kGridSubUnitsPerColumn
+                            && held->spanY == kGridSubUnitsPerRow,
+                            "grid hold: held request keeps the cell's own geometry");
+            requireFadeTest(gridReq(c, 45) != nullptr,
+                            "grid hold: unlimited threshold holds at +2.5 beats");
+        }
+
+        // (b) Hold OFF: the gap is a real gap — the pre-fix behavior for every
+        // project that never enabled the toggle.
+        {
+            gt->videoHoldLastFrame = false;
+            FrameCollector c;
+            requireFadeTest(gridReq(c, 7) != nullptr,  "grid hold off: clip active");
+            requireFadeTest(gridReq(c, 13) == nullptr, "grid hold off: gap stays empty");
+        }
+
+        // (c) The beat threshold applies to grid cells like any other layer.
+        {
+            gt->videoHoldLastFrame = true;
+            gt->videoHoldLastFrameThresholdBeats = 1.0;
+            FrameCollector c;
+            requireFadeTest(gridReq(c, 7) != nullptr,  "grid threshold: clip active");
+            requireFadeTest(gridReq(c, 25) != nullptr, "grid threshold: holds at +0.944 beats");
+            requireFadeTest(gridReq(c, 26) == nullptr, "grid threshold: CUT at +1.022 beats");
+            gt->videoHoldLastFrameThresholdBeats =
+                TrackInfo::kHoldLastFrameThresholdUnlimited;
+        }
+
+        // (d) Muting the track must blank the cell, not freeze it: a muted
+        // track has no active event, which looks like a gap to the hold path.
+        {
+            gt->videoHoldLastFrame = true;
+            FrameCollector c;
+            requireFadeTest(gridReq(c, 7) != nullptr, "grid mute: clip active before mute");
+            gt->muted = true;
+            requireFadeTest(gridReq(c, 13) == nullptr,
+                            "grid mute: a muted track does not hold its last frame");
+            gt->muted = false;
+        }
+
+        // (e) Hold on a grid track must not leak into other cells.
+        {
+            gt->videoHoldLastFrame = true;
+            FrameCollector c;
+            requireFadeTest(gridReq(c, 7) != nullptr, "grid isolation: clip active");
+            auto& reqs = c.collectRequests(13, timeline, 48000, fps, ev);
+            for (const auto& r : reqs)
+                requireFadeTest(r.trackId == gridTrackId,
+                                "grid isolation: only the holding track fills its gap");
+        }
+
+        gt->videoHoldLastFrame = false;
+        gt->videoHoldLastFrameThresholdBeats =
+            TrackInfo::kHoldLastFrameThresholdUnlimited;
+        std::fprintf(stderr, "[TEST:FrameCollector] Test 1k: PASSED\n");
+    }
+
     // ── Test 1z-i: unified zOrder — fullscreen layer interleaved between cells ──
     // A fullscreen layer whose zOrder sits between two grid cells' zOrders must
     // come out of collectRequests globally sorted BETWEEN them — the whole point

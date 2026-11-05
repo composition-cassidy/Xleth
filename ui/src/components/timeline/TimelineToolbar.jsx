@@ -196,7 +196,7 @@ export default function TimelineToolbar({
       {/* ── Right side: zoom + add track ─────────────────────── */}
       <div className="timeline-toolbar-actions">
         <span className="timeline-zoom-display">
-          {pixelsPerBeat.toFixed(0)} px/beat
+          {pixelsPerBeat.toFixed(pixelsPerBeat < 10 ? 1 : 0)} px/beat
         </span>
         <button className="tab-icon-btn" title={selectedTrackCount > 0
           ? `Create folder with ${selectedTrackCount} selected track${selectedTrackCount === 1 ? '' : 's'}`

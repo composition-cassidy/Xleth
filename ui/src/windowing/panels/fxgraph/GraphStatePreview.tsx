@@ -33,6 +33,7 @@ import {
   type LfoNodeData,
   type LfoNodePatch,
 } from './LfoEditor';
+import './fxGraph.css';
 
 // FXG.4-g — Bezier mapping editor types.
 type BezierPoint = { x: number; y: number };

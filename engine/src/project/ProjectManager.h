@@ -12,7 +12,7 @@
 // A project is a directory with the layout:
 //   MyRemix/
 //   ├── project.json      (Timeline serialized to JSON)
-//   ├── proxies/          (DNxHR proxy files)
+//   ├── proxies/          (preview proxies — H.264 or all-intra — and posters)
 //   ├── exports/          (Exported sample audio files)
 //   └── swapped/          (Swapped/processed audio files)
 //

@@ -117,6 +117,27 @@ public:
     };
     static bool shouldAttemptRecovery(const WatchdogInputs& in);
 
+    // Pure watchdog bookkeeping — the other half of checkDeviceHealth(), split
+    // out for the same reason. reopenAudioDevice() blocks for *seconds* on a
+    // real driver (WASAPI rescan + reinit measured at 3.7-5.9 s on a Ryzen
+    // 7520U laptop), so every deadline it writes has to be stamped from a clock
+    // read *after* the reopen returns. Stamping them from the pre-reopen `now`
+    // hands the reopened device a progress age already older than the
+    // starvation window and a backoff deadline already in the past, so the very
+    // next poll tears the device down again before it can deliver its first
+    // block — a self-sustaining reopen loop that never exits and, because the
+    // poll runs on the RPC thread, wedges every other engine call behind it.
+    struct WatchdogRecoveryState
+    {
+        int64_t lastProgressMs = 0; // new baseline for the progress age
+        int64_t nextAttemptMs  = 0; // earliest the watchdog may reopen again
+        int     failedAttempts = 0;
+    };
+    static WatchdogRecoveryState afterRecoveryAttempt(bool    recovered,
+                                                      int     failedAttempts,
+                                                      int64_t lastProgressMs,
+                                                      int64_t completedAtMs);
+
     // Raises the "system just resumed" flag, shortening the watchdog's
     // starvation window on the next poll. Safe to call from any thread — it
     // stores a single atomic and does no device work. Called by the OS power

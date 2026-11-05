@@ -25,7 +25,7 @@ const PLUGIN_NAMES = {
   amp: 'Amp Stack',
   uniflange: 'UniFlange', chorus: 'Chorus', flanger: 'Flanger', phaser: 'Phaser',
   phanjer: 'Phanjer', delay: 'Delay', reverb: 'Reverb', smartbalance: 'Smart Balance',
-  resonancesuppressor: 'Resonance Suppressor',
+  resonancesuppressor: 'Resonance Suppressor', pitchshifter: 'Pitch Shifter',
   glue: 'Glue Comp',
   opto: 'Opto Comp',
   fet: 'FET Comp',

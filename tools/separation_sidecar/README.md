@@ -3,34 +3,30 @@
 A local FastAPI service that runs source-separation models out of process and
 hands finished stems back as WAV files. Phase 4 of the Sample Sandbox.
 
-Two tiers are wired:
+Three tiers are wired:
 
-| Tier | Model | Runtime | Licence | Speed (this machine) |
-| --- | --- | --- | --- | --- |
-| FAST | MDX-Net Kim Vocal 2 | onnxruntime | MIT | 0.33x realtime CPU, 0.05x CUDA |
-| BALANCED | Mel-Band RoFormer "deux" (becruily) | torch | **CC BY-NC 4.0** | 3.09x realtime CPU + 40 s fixed |
+| Tier | Model | Licence | CPU cost (this machine) |
+| --- | --- | --- | --- |
+| FAST | MDX-Net Kim Vocal 2 | MIT | 0.33 s per second of audio |
+| BALANCED | Mel-Band RoFormer "deux" (becruily) | **CC BY-NC 4.0** | 3.55 s/s, ~10 GB |
+| BEST | BS-Roformer FT1 (anvuew) | GPL-3.0 | 6.79 s/s, ~12 GB |
 
-BEST is deliberately inert until P4-3 lands its model.
-
-**The two tiers run on different runtimes, and that is the single most
-misleading thing about this service if you forget it.** MDX-Net infers in
-onnxruntime; Mel-Band RoFormer infers in torch. `requirements.txt` pins CPU
-torch (the FAST tier only needs it for an STFT), so on a stock install FAST
-runs on your GPU and BALANCED runs on your CPU — a three-minute song in ten
-minutes. Nothing is broken when that happens; it is what the packages you
-installed can do. `/health` and `/models` report a device *per architecture*
-for exactly this reason, and so does the separation strip.
+**All three infer in onnxruntime.** That is the single most important thing to
+know about this service, and it is recent: the Roformer tiers used to run
+PyTorch models, and the split between the two runtimes was the source of most
+of the confusion here. See "The move off torch" below.
 
 **The BALANCED weight is CC BY-NC 4.0.** It is cleared to run and cleared for
 nothing else. `/separate` refuses it with a 409 until the caller passes
 `acknowledgeLicense`, and the UI puts the condition to the user before the
-first run. See "The license gate" below and `NOTICE-separation-models.md`.
+first run. BEST is GPL-3.0 and also requires acknowledgement. See
+"The license gate" below and `NOTICE-separation-models.md`.
 
 ---
 
 ## Why a sidecar
 
-The models live in the PyTorch / ONNX ecosystem; the XLETH engine is C++/JUCE
+The models live in the ONNX / PyTorch ecosystem; the XLETH engine is C++/JUCE
 running under a forked system Node. Embedding a second ML runtime in the audio
 engine — for an operation that is offline, minutes long, and never real-time —
 would buy nothing and cost a great deal. A separate process also means a model
@@ -41,66 +37,146 @@ sidecar, NOT ONNX in-engine.**
 
 ## Install
 
+**There is nothing to install.** XLETH ships its own Python runtime — a
+relocatable CPython with exactly these dependencies in it, ~143 MB, built by
+`tools/build_sidecar_runtime.py` and copied beside the app by electron-builder.
+`ui/electron-main/separation.js` prefers it over anything on the user's PATH.
+
+To build it in a source checkout:
+
 ```bash
 cd tools/separation_sidecar
+python tools/build_sidecar_runtime.py
+```
+
+To work against your own interpreter instead:
+
+```bash
 python -m venv .venv
 .venv\Scripts\python -m pip install -r requirements.txt
 ```
 
-The Electron launcher looks for `tools/separation_sidecar/.venv` first, then
-`py -3`, then `python3` / `python` on PATH. Set `XLETH_PYTHON` to override.
+The launcher looks for `runtime/python.exe`, then `.venv`, then `py -3`, then
+`python3` / `python` on PATH. Set `XLETH_PYTHON` to override everything.
 
-### GPU — two independent questions
+### GPU
 
-**For the FAST tier (onnxruntime).** `requirements.txt` pins the CPU build.
-Swap it for **one** of:
+One question now, not two. Install exactly one onnxruntime build — they are
+mutually exclusive, and two leaves the active provider a coin flip:
 
-| Package                   | Provider                | Throughput (RTX 4080) |
-| ------------------------- | ----------------------- | --------------------- |
-| `onnxruntime`             | CPU                     | ~0.33x realtime       |
-| `onnxruntime-gpu==1.24.4` | `CUDAExecutionProvider` | ~0.05x realtime       |
-| `onnxruntime-directml`    | `DmlExecutionProvider`  | between the two       |
+| Package | Provider |
+| --- | --- |
+| `onnxruntime` | CPU (what ships) |
+| `onnxruntime-gpu==1.24.4` | `CUDAExecutionProvider` |
+| `onnxruntime-directml` | `DmlExecutionProvider` |
 
-Mutually exclusive: installing two leaves whichever landed last on `sys.path`,
-making the active provider a coin flip.
+`requirements.txt` documents the two CUDA traps in full — version pairing and
+DLL discovery — and both fail SILENTLY to CPU rather than erroring. So **check
+the device rather than assuming it**: `GET /health`, or the device chip in the
+separation strip. A run reporting `cpu` on a GPU machine means one of them bit.
 
-**Two CUDA traps, both of which fail silently to CPU rather than erroring.**
+## The move off torch
 
-1. *Version pairing.* Each `onnxruntime-gpu` release targets one CUDA major —
-   1.24.x wants CUDA 12, 1.29.x wants CUDA 13. pip installs 1.29 by default,
-   but there are no Windows wheels for the CUDA 13 runtime
-   (`nvidia-cublas-cu13` and `nvidia-cuda-runtime-cu13` are 0.0.1 placeholder
-   sdists on PyPI *and* on pypi.nvidia.com, and there is no cp314 `torch`
-   cu130 wheel either). On Windows, pin **1.24.4** with the `cu12` packages.
-2. *DLL discovery.* A system CUDA Toolkit ships cuBLAS but **not** cuDNN, so
-   `nvidia-cudnn-cu12` is required. And putting it on the DLL search path via
-   `os.add_dll_directory` is not sufficient: onnxruntime loads
-   `onnxruntime_providers_cuda.dll` through a plain `LoadLibrary`, which does
-   not consult user-added directories. `mdx.py`'s `_register_cuda_dll_dirs()`
-   therefore also **ctypes-loads** those DLLs so they resolve by name. Without
-   it: `cudnn64_9.dll ... missing (Error 126)`, then a quiet fall back to CPU.
+The Roformer tiers used to build the vendored PyTorch model and run its
+`forward` end to end. They now run exported ONNX graphs. The reason was size:
 
-Because both failures are silent, **check the device rather than assuming it**:
-`GET /health`, or the device chip in the separation strip. A run reporting
-`cpu` on a GPU machine means one of the two traps above bit.
+| | with torch | now |
+| --- | --- | --- |
+| torch | 533 MB | — |
+| torch's sympy / networkx | 100 MB | — |
+| librosa's stack (scipy, llvmlite, numba, sklearn) | 330 MB | — |
+| onnxruntime + numpy + the rest | ~105 MB | ~105 MB |
+| CPython itself | ~30 MB | ~30 MB |
+| **total** | **~1.1 GB** | **143 MB** |
 
-**For the BALANCED tier (torch).** None of the above applies — the Roformer
-tiers never touch onnxruntime. The default `torch` wheel on Windows is
-CPU-only, so BALANCED runs on the CPU until you install a CUDA build:
+1.1 GB is not something you put in an installer for a feature people are trying
+out; 143 MB is. That is the whole case for this change, and it is a size
+argument rather than a performance one — see "What it cost" below, which is not
+flattering.
+
+Three consequences worth knowing:
+
+* **The GPU question is no longer split.** It used to be that a CUDA
+  onnxruntime did nothing for BALANCED and a CUDA torch did nothing for FAST,
+  so two tiers could honestly report different devices on one machine.
+* **librosa is gone even though BALANCED still uses a mel filterbank.** The
+  filterbank is computed at model construction and is a constant, so it is
+  baked into the exported graph as ops. Same for the rotary tables and the band
+  layout.
+* **The STFT pair moved to numpy** (`dsp.py`), because ONNX has an `STFT` op
+  and no inverse at all. One implementation serves all three tiers;
+  `tests/test_dsp.py` holds it to torch's output on each tier's real
+  parameters.
+
+### What it cost: memory, and some speed
+
+The move is not free, and the bill is mostly RAM. Measured on an idle machine:
+
+| | torch (before) | ONNX (now) |
+| --- | --- | --- |
+| BALANCED, one 13.0 s chunk | 17.7 s, 2.80 GB | 23.1 s, **9.5 GB** |
+| BEST, one 21.8 s chunk | 27.1 s, 2.68 GB | 37.0 s, **11.8 GB** |
+| BALANCED, 32.31 s input end to end | 141.0 s | **160.8 s** (1.14x), peak 17.9 GB |
+
+**Benchmark these on an IDLE machine.** The same end-to-end run measured 357.5 s
+with two other jobs on the box, and an earlier round of per-chunk numbers came
+out with onnxruntime apparently 1.24-1.26x *faster* than torch for the same
+reason. Both were wrong, both were briefly believed, and the second one reached
+this README and `models.json` before it was caught.
+
+**Why.** torch dispatches attention to `scaled_dot_product_attention`, which
+tiles the computation and never forms the score matrix. That path cannot be
+traced into a portable ONNX graph, so the exported graph uses the plain
+formulation, and for BEST the scores are 62 bands x 8 heads x 1876 x 1876 x 4
+bytes = 7 GB. Before `_SlicedAttend` bounded it, peak was 30.9 GB and
+onnxruntime failed outright with "bad allocation".
+
+**What did not help**, each measured rather than assumed: disabling ORT's CPU
+memory arena (-1.3 GB, +24% time), sequential execution mode (no change),
+halving the slice budget (11.8 -> 11.4 GB), making every slice the same shape
+(no change). ORT keeps all the unrolled slices' buffers live, so the scores
+stay at ~7 GB however they are cut. Going lower needs real ONNX control flow
+(Loop/Scan) so the slices share one buffer, which the TorchScript exporter will
+not produce from traced Python.
+
+**Practical effect.** A full BALANCED run peaked at 17.9 GB, so 32 GB is
+comfortable and 16 GB is tight but workable; 8 GB cannot run the Roformer
+tiers. The FAST tier is unaffected — it was always an
+ONNX graph and is small. If that trade ever needs revisiting, the options are
+ONNX control flow for the attention, or keeping torch for the Roformer tiers
+and giving up the bundled runtime.
+
+### The graphs ship without weights
+
+`xleth_separation/graphs/*.onnx` are ~3 MB each: ops, shapes and band layout,
+and **no weights**. The user's machine still downloads the author's own `.ckpt`
+exactly as before, and `weights.py` writes those tensors into the graph's
+external-data file at install time (~0.3 s), reading the checkpoint with a
+pure-numpy reader in `ckpt.py`.
+
+That is not an optimisation, it is the licensing posture.
+`NOTICE-separation-models.md` rests the clearance for all three tiers on XLETH
+never redistributing a weight, and names bundling one as the thing that would
+reopen the GPL-3.0 question for BEST. An ONNX file with the weights baked in
+would be a redistributed derivative of that checkpoint. A graph with holes in
+it is not.
+
+`tools/export_roformer_onnx.py` produces the graphs and refuses to write one
+that kept a checkpoint tensor inline; `tests/test_onnx_parity.py` re-checks the
+shipped artefact.
+
+### Re-exporting
+
+Re-export when the vendored architecture changes, when a tier's config changes
+its chunk size or hop, or when `onnx_export.py` changes:
 
 ```bash
-pip install torch --index-url https://download.pytorch.org/whl/cu126
+python tools/export_roformer_onnx.py
+set XLETH_ONNX_PARITY=1 && python -m pytest tests/test_onnx_parity.py -q -s
 ```
 
-Check it took, rather than assuming; this failure is silent too:
-
-```bash
-python -c "import torch; print(torch.__version__, torch.cuda.is_available())"
-```
-
-A CUDA onnxruntime does **nothing** for this tier, and a CUDA torch does
-nothing for the FAST tier's inference. They are separate installs answering
-separate questions, and `/health`'s `archs` block reports them separately.
+Both need torch and `onnx` installed, which is a maintainer's problem and not a
+user's.
 
 ## Run
 
@@ -115,7 +191,7 @@ It prints one machine-readable line once it is genuinely accepting
 connections:
 
 ```
-XLETH_SIDECAR_READY {"port": 51234, "pid": 9876, "device": "cuda", "host": "127.0.0.1"}
+XLETH_SIDECAR_READY {"port": 51234, "pid": 9876, "device": "cpu", "host": "127.0.0.1"}
 ```
 
 ## API
@@ -146,7 +222,7 @@ between here and the renderer.
   condition. Sent per request rather than remembered here: the sidecar is a
   stateless worker any local process can reach, and "somebody accepted this
   once" is not the same claim as "the person who pressed the button accepted
-  it". Omitting it for the BALANCED tier gets a **409** whose body is an object
+  it". Omitting it for BALANCED or BEST gets a **409** whose body is an object
   (`code`, `modelId`, `spdx`, `licenseUrl`, `message`) rather than prose, so the
   caller can ask the question and retry instead of reporting a failure.
 * `durationSec` — the input's length, which the renderer knows before the job
@@ -159,6 +235,8 @@ between here and the renderer.
 ```
 <userData>/xleth-separation/models/<store_version>/<model_id>/<name>
                                                              <name>.json   ← receipt
+                                                             <model_id>.onnx      ← filled graph
+                                                             <model_id>.weights   ← written at install
 ```
 
 A file counts as present only when its bytes hash to the sha256 the manifest
@@ -166,11 +244,12 @@ names, and a MODEL is present only when every one of its files is. A truncated
 download, a mirror that quietly served a different revision, or a half-written
 file from a killed process all read as "not present" and are re-fetched. Each
 download lands at `<name>.part` and is renamed into place only after the hash
-matches, so the real name never holds a bad file.
+matches, so the real name never holds a bad file. `weights.py` applies the same
+discipline to the file it builds.
 
 **A model is a list of files, not one blob.** MDX-Net is a single
-self-describing `.onnx`. Mel-Band RoFormer is 435 MB of raw tensors plus a
-1.2 kB YAML that says what shape they go in — and that YAML is checksummed
+self-describing `.onnx`. The Roformer tiers are hundreds of MB of raw tensors
+plus a YAML that says what shape they go in — and that YAML is checksummed
 exactly like the weight. It is small, but it is the file that decides whether
 the weight is used *correctly*, and a wrong one separates worse without ever
 erroring. Progress across a multi-file fetch is weighted by bytes, so the
@@ -223,29 +302,27 @@ Six commitments, each tested (`tests/test_jobs_and_store.py`,
 2. **The phase split is DERIVED from estimated seconds, not a constant.** It
    used to be a fixed table giving the download 35%, fitted to a 66 MB weight
    in front of a 0.33x-realtime separation. BALANCED is 435 MB in front of a
-   3.09x one; no constant is right for both, and being wrong parks the bar for
-   minutes. Every phase is costed in seconds — from the model's own manifest
-   figures and the bytes actually missing from the store — and the spans are
-   those costs normalised. When the input length is unknown the old fixed
-   tables are used rather than a number nobody measured.
+   much slower one; no constant is right for both, and being wrong parks the
+   bar for minutes. Every phase is costed in seconds — from the model's own
+   manifest figures and the bytes actually missing from the store — and the
+   spans are those costs normalised. When the input length is unknown the old
+   fixed tables are used rather than a number nobody measured.
 3. **The download rate is measured, not assumed.** It is the one input that
    varies a hundredfold between machines, so it seeds at a placeholder and is
    replaced as soon as a megabyte has moved. It feeds the phase *weighting*
    only; download time still gets no ETA, because a rate measured over five
    seconds of a five-minute transfer is a fine weight and a bad promise.
 4. **Speed figures are per model, per device, and say whether they were
-   measured.** The same CPU runs FAST at 0.33x realtime and BALANCED at 3.09x.
-   The manifest's `speed.measured` block records which figures came from a
-   stopwatch; a job seeded from an unmeasured one adds a warning saying so.
+   measured.** The manifest's `speed.measured` block records which figures came
+   from a stopwatch; a job seeded from an unmeasured one adds a warning saying
+   so.
 5. **A run's fixed cost is modelled separately from its per-second cost.** Both
-   architectures pad the input with reflected audio and run the model on it —
-   13 s of it for BALANCED, two whole extra chunks, ~40 s of CPU inference that
-   a five-second sample pays in full. A pure per-second rate says that job takes
-   15 s when it takes 55. Measured end to end: a 32.31 s input predicted at
-   40 + 32.31x3.09 = 139.8 s, observed 141.0 s.
+   Roformer architectures pad the input with reflected audio and run the model
+   on it — two whole extra chunks for BALANCED, tens of seconds of CPU that a
+   five-second sample pays in full. A pure per-second rate says that job takes
+   15 s when it takes 55.
 6. **Cancellation is checked between chunks and between download blocks.** The
-   longest a Cancel can take to land is one chunk — a few seconds on FAST, up
-   to twenty on BALANCED, whose chunks are 13 s of audio each.
+   longest a Cancel can take to land is one chunk.
 
 The overall bar also **ratchets**: the spans are re-derived as facts arrive
 mid-run, and a re-derivation can place the current point slightly behind the
@@ -259,18 +336,29 @@ freely in both directions.
 python -m pytest tests -q          # needs: pytest, httpx2
 ```
 
-They run **with or without torch and onnxruntime installed**, and assert the
-right thing either way: the runtime-gate tests hide those modules through
+They run **without torch, onnxruntime or any model present**, and assert the
+right thing either way: the runtime-gate tests hide modules through
 `sys.modules` so the "incomplete install" path is still exercised on a fully
 provisioned machine, and `test_health_is_ok_when_the_runtime_is_complete`
-asserts the gate actually OPENS when it should — a gate that were always shut
+asserts the gate actually OPENS when it should — a gate that was always shut
 would pass every other test here and ship a permanently broken feature.
 
-They do no network I/O and download no models — including the BALANCED
-tier's: `tests/test_roformer_config.py` transcribes the config's numbers rather
+Two suites are opt-in because they need things a normal checkout does not have:
+
+| Suite | Needs | Run it when |
+| --- | --- | --- |
+| `test_dsp.py` | torch | `dsp.py` changes |
+| `test_onnx_parity.py` | torch, `onnx`, the real checkpoints, `XLETH_ONNX_PARITY=1` | the graphs are re-exported, or the vendored architecture changes |
+
+`test_dsp.py` skipping is the NORMAL state — torch is not a runtime dependency
+any more, so a stock install runs everything except it. It is the evidence that
+the numpy STFT pair reproduces what torch did, and it is run on a machine that
+still has torch.
+
+The rest do no network I/O and download no models — including the Roformer
+tiers': `tests/test_roformer_config.py` transcribes the config's numbers rather
 than fetching the file, so the chunking arithmetic is tested on a plane and the
-435 MB checkpoint never comes near CI. `roformer.py` must import without torch,
-einops or librosa, and that test file is the regression check for it.
+435 MB checkpoint never comes near CI.
 
 ## Layout
 
@@ -279,11 +367,22 @@ einops or librosa, and that test file is the regression check for it.
 | `models.json` | The manifest. URLs, checksums, arch constants, licenses. |
 | `manifest.py` | Load + validate + enforce the licence and acknowledgement gates. |
 | `store.py`    | Versioned, checksummed, multi-file model store.           |
-| `mdx.py`      | MDX-Net inference (ONNX weights, torch STFT/iSTFT).      |
-| `roformer.py` | Mel-Band RoFormer inference (torch weights + the model's own YAML). |
-| `vendor/`     | Pinned third-party model architecture. See its VENDOR-NOTICE.md. |
+| `dsp.py`      | STFT / iSTFT in numpy. Replaces torch's, conventions included. |
+| `ort_util.py` | onnxruntime sessions, provider choice, CUDA DLL handling. |
+| `mdx.py`      | MDX-Net inference (ONNX weights).                        |
+| `roformer.py` | Mel-Band RoFormer (BALANCED) — config, stems, chunk geometry. |
+| `bs_roformer.py` | BS-Roformer (BEST) — same, plus the residual stem convention. |
+| `roformer_engine.py` | The ONNX session and chunked overlap-add both Roformers share. |
+| `graphs/`     | The shipped weightless ONNX graphs and their weight manifests. |
+| `ckpt.py`     | Read a PyTorch `.ckpt` into numpy arrays, without torch.  |
+| `weights.py`  | Fill a weightless graph from the user's checkpoint.       |
+| `onnx_export.py` | Dev-time. Trace a Roformer to ONNX and strip its weights. |
+| `vendor/`     | Pinned third-party model architecture, needed only to export. |
 | `audio_io.py` | Load / resample / save.                                  |
-| `jobs.py`     | Job registry, progress model, cancellation.              |
-| `pipeline.py` | What one job does, end to end.                           |
-| `app.py`      | FastAPI routes.                                          |
-| `__main__.py` | Entry point + the READY handshake.                       |
+| `debleed.py`  | Optional ratio-mask cleanup pass over a two-stem result.  |
+| `ensemble.py` | Average two models' stems.                                |
+| `jobs.py`     | Job registry, progress model, cancellation.               |
+| `pipeline.py` | What one job does, end to end.                            |
+| `app.py`      | FastAPI routes.                                           |
+| `__main__.py` | Entry point + the READY handshake.                        |
+| `tools/`      | Dev-time scripts: build the runtime, export the graphs.   |

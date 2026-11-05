@@ -334,8 +334,37 @@ std::optional<Timeline> ProjectManager::loadProject(const std::string& projectDi
     loadedMasterEffectChain_ = nlohmann::json();
     loadedMasterVolume_      = 1.0f;
 
-    projectDir_ = projectDir;
-    ensureDirectories();
+    // A load that fails must leave this ProjectManager describing the project that
+    // is STILL OPEN. It used to overwrite projectDir_ first and only then check
+    // that project.json existed, so a failed open left the manager pointing at the
+    // bad folder while the timeline was still the old project's — later saves,
+    // Clean up and purge-on-close would then act on the wrong folder. It also
+    // created the whole folder tree for a path that was never a project.
+    struct Identity {
+        std::string dir, name, createdAt, aspect;
+        int         width, height, schema;
+        double      fps;
+    };
+    const Identity before{ projectDir_, projectName_, createdAt_, aspectRatio_,
+                           videoWidth_, videoHeight_, loadedSchemaVersion_, videoFps_ };
+    struct Rollback {
+        ProjectManager*  self;
+        const Identity&  id;
+        bool             committed = false;
+        ~Rollback() {
+            if (committed) return;
+            self->projectDir_          = id.dir;
+            self->projectName_         = id.name;
+            self->createdAt_           = id.createdAt;
+            self->aspectRatio_         = id.aspect;
+            self->videoWidth_          = id.width;
+            self->videoHeight_         = id.height;
+            self->videoFps_            = id.fps;
+            self->loadedSchemaVersion_ = id.schema;
+        }
+    } rollback{ this, before };
+
+    projectDir_ = projectDir;                    // projectFilePath() reads it
     const std::string path = projectFilePath();
 
     if (!fs::exists(path)) {
@@ -343,6 +372,8 @@ std::optional<Timeline> ProjectManager::loadProject(const std::string& projectDi
                   << path << "\n";
         return std::nullopt;
     }
+    // Only a folder that really holds a project gets its (possibly newer) subfolders.
+    ensureDirectories();
 
     json j;
     try {
@@ -452,6 +483,7 @@ std::optional<Timeline> ProjectManager::loadProject(const std::string& projectDi
     // missing and surface to the relink UI via validateMedia().
     resolveMediaPaths(timeline);
 
+    rollback.committed = true;                   // the load succeeded: keep the new identity
     std::cout << "[Project] Loaded '" << projectName_
               << "': BPM=" << timeline.getBPM()
               << ", SR=" << timeline.getSampleRate()
@@ -584,11 +616,17 @@ void ProjectManager::resolveMediaPaths(Timeline& timeline) {
             // JSON may say previewProxyReady=false. Re-detect it here against the
             // height the JSON recorded; if the file is gone, clear the stale flag
             // so the preview self-heal regenerates it.
+            //
+            // The path is RE-DERIVED from disk, never trusted from the JSON: it
+            // resolves to the H.264 proxy when one exists, else the legacy intra
+            // one. So a project.json saved while a codec migration was still
+            // running (naming the legacy file, since deleted) opens onto the H.264
+            // file, and a reference to a missing file is never engaged.
             if (src->hasVideo && src->previewProxyHeight > 0) {
-                if (ProxyTranscoder::sourcePreviewProxyExists(
-                        src->filePath, proxiesDir, src->previewProxyHeight)) {
-                    const std::string proxy = ProxyTranscoder::getSourcePreviewProxyPath(
+                if (const auto found = ProxyTranscoder::findSourcePreviewProxy(
                         src->filePath, proxiesDir, src->previewProxyHeight);
+                        found.found) {
+                    const std::string& proxy = found.path;
                     if (!src->previewProxyReady || src->previewProxyPath != proxy) {
                         std::cout << "[Project] Preview proxy re-validated on disk for "
                                      "source id=" << src->id << " -> " << proxy << "\n";

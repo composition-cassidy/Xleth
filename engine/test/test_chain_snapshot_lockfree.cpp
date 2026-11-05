@@ -49,10 +49,18 @@
 //
 //   T8  A writer thread republishing the map continuously never costs a block
 //       its clip: every realtime block stays wet.
+//
+// Two-phase reset (the Pitch Shifter primes a spare shifter off the claim):
+//
+//   T9  In every Pitch Shifter mode, a primed claimed reset holds the chain for
+//       microseconds (an unprimed one for the whole ~15 ms inline prime).
+//   T10 Paced like a real device, seeks in every Pitch Shifter mode cost ZERO
+//       silent blocks - each used to cost ~3 (~30 ms).
 
 #include "audio/EffectChainManager.h"
 #include "audio/MixEngine.h"
 #include "audio/TestGainEffect.h"
+#include "audio/XlethPitchShifterEffect.h"
 #include "model/Timeline.h"
 #include "SampleBank.h"
 #include "Transport.h"
@@ -446,7 +454,9 @@ static void testChainTeardownDuringRenderIsSafe(Fixture& fx)
 //
 // A unity-gain effect that records every reset(): how many, and whether it ran
 // on the thread the test designates as the audio thread. It can also park
-// inside reset() (T7) and run a hook from inside it (T5).
+// inside reset() (T7) and run a hook from inside it (T5). Its reset stands in
+// for one that is NOT realtime safe (a VST3's), so it declines the audio-thread
+// jump reset and is always reset by the worker.
 struct ResetProbeState
 {
     std::atomic<int>             resets{0};
@@ -465,6 +475,8 @@ public:
     {
         setParameterValue("gain", 1.0f);
     }
+
+    bool resetOnAudioThread() noexcept override { return false; }
 
     void resetEffect() override
     {
@@ -532,11 +544,11 @@ static bool quiesceResets(MixEngine& engine, ResetProbeState& s)
     });
 }
 
-// ─── T4: a realtime seek never resets on the audio thread ────────────────────
+// ─── T4: a non-realtime-safe reset never runs on the audio thread ────────────
 
 static void testRealtimeSeekResetsOffAudioThread(Fixture& fx)
 {
-    std::cout << "[T4] realtime seek: reset() runs on the worker, never in the callback\n";
+    std::cout << "[T4] realtime seek: a declined (non-realtime) reset runs on the worker, never in the callback\n";
 
     // Heap-allocated: sizeof(MixEngine) overflows the stack (see T1).
     auto enginePtr = std::make_unique<MixEngine>();
@@ -720,6 +732,329 @@ static void testRegionMapRepublishDuringRender(Fixture& fx)
     CHECK(engine.getSampleIdForRegion(fx.regionId) == fx.sampleId, "mapping intact afterwards");
 }
 
+// ─── T9: a primed reset holds the claim for microseconds, in every mode ──────
+
+static const char* modeName(XlethPitchShifterEffect::Mode m)
+{
+    switch (m)
+    {
+        case XlethPitchShifterEffect::Mode::Granular: return "Granular";
+        case XlethPitchShifterEffect::Mode::Smart:    return "Smart";
+        case XlethPitchShifterEffect::Mode::Voice:    return "Voice";
+        case XlethPitchShifterEffect::Mode::Clip:     return "Clip";
+    }
+    return "?";
+}
+
+static constexpr XlethPitchShifterEffect::Mode kRealtimeModes[] = {
+    XlethPitchShifterEffect::Mode::Granular,
+    XlethPitchShifterEffect::Mode::Smart,
+    XlethPitchShifterEffect::Mode::Voice,
+};
+
+static void testPrimedResetHoldsClaimBriefly()
+{
+    std::cout << "[T9] Pitch Shifter: a primed reset holds the claim for microseconds\n";
+
+    EffectChainManager chain;
+    chain.init(kSampleRate, kBlockSize);
+    auto owned = std::make_unique<XlethPitchShifterEffect>();
+    XlethPitchShifterEffect* fx = owned.get();
+    CHECK(chain.addProcessorForTesting("pitchshifter", std::move(owned), 0) >= 0, "shifter added");
+    chain.refreshRealtimeView();
+
+    using Clock = std::chrono::steady_clock;
+    const auto usSince = [](Clock::time_point t0)
+    { return std::chrono::duration<double, std::micro>(Clock::now() - t0).count(); };
+
+    for (const auto mode : kRealtimeModes)
+    {
+        fx->setParameterValue("mode", static_cast<float>(static_cast<int>(mode)));
+        fx->setParameterValue("semitones", 7.0f);
+
+        // Primed: the worker's real order - prime off the claim, then claim.
+        double primedMaxUs = 0.0;
+        for (int k = 0; k < 10; ++k)
+        {
+            chain.primeDeferredReset();
+            const auto t0 = Clock::now();
+            const bool ok = chain.tryResetProcessorsOffThread();
+            primedMaxUs = std::max(primedMaxUs, usSince(t0));
+            CHECK(ok, modeName(mode) << ": claimed reset ran");
+        }
+
+        // Unprimed: the previous reset consumed the spare and nothing re-primed
+        // it, so the claim is held across the inline prime - the old cost.
+        const auto t0 = Clock::now();
+        chain.tryResetProcessorsOffThread();
+        const double unprimedUs = usSince(t0);
+        chain.primeDeferredReset();
+
+        const double blockUs = 1.0e6 * kBlockSize / kSampleRate;
+        std::cout << "    " << modeName(mode) << ": claim held " << primedMaxUs
+                  << " us primed (max of 10), " << unprimedUs << " us unprimed; block = "
+                  << blockUs << " us\n";
+        CHECK(primedMaxUs < 1000.0,
+              modeName(mode) << ": primed claimed reset under 1 ms (" << primedMaxUs << " us)");
+        if (mode != XlethPitchShifterEffect::Mode::Granular)
+            CHECK(unprimedUs > 10.0 * primedMaxUs,
+                  modeName(mode) << ": priming is what the claim no longer pays for");
+    }
+}
+
+// ─── T10: paced seeks never silence a Pitch Shifter chain ───────────────────
+
+static void testPacedSeeksCostNoSilentBlocks(Fixture& fx)
+{
+    std::cout << "[T10] Pitch Shifter: paced seeks cost zero silent blocks, every mode\n";
+
+    using Clock = std::chrono::steady_clock;
+    const auto period = std::chrono::duration_cast<Clock::duration>(
+        std::chrono::duration<double>(kBlockSize / kSampleRate));
+    constexpr int kSeeks          = 20;
+    constexpr int kBlocksPerSeek  = 6;
+
+    for (const auto mode : kRealtimeModes)
+    {
+        // Heap-allocated: sizeof(MixEngine) overflows the stack (see T1). The
+        // engine's own applier thread services the resets, as in the app.
+        auto enginePtr = std::make_unique<MixEngine>();
+        MixEngine& engine = *enginePtr;
+        CHECK(wireEngine(engine, fx), "engine wired");
+
+        auto owned = std::make_unique<XlethPitchShifterEffect>();
+        XlethPitchShifterEffect* shifter = owned.get();
+        CHECK(engine.addProcessorForTesting(fx.trackId, "pitchshifter", std::move(owned), 1) >= 0,
+              "shifter added");
+        shifter->setParameterValue("mode", static_cast<float>(static_cast<int>(mode)));
+        shifter->setParameterValue("semitones", 7.0f);
+        auto probe = wireProbe(engine, fx);
+        // trackChainSkippedCount only counts while diagnostics are on.
+        engine.setRealtimeDiagnosticsEnabled(true);
+
+        Transport transport;
+        transport.setSampleRate(kSampleRate);
+        transport.setBPM(kBPM);
+        transport.seekToSample(0);
+        transport.play();
+
+        // Spin-paced rather than sleep_until: at Windows' default 15.6 ms timer
+        // resolution a sleeping render thread would wake on the same timer
+        // ticks as the applier thread's sleep, and a render clock locked to the
+        // worker could hide a long claim between blocks. A device clock is
+        // independent of the applier. (Negative control: with priming disabled
+        // this test reports ~1 silent block per seek in Smart and Voice.)
+        auto next = Clock::now();
+        const auto paced = [&] {
+            next += period;
+            renderOne(engine, transport);
+            while (Clock::now() < next) std::this_thread::yield();
+        };
+
+        for (int b = 0; b < 30; ++b) paced();
+        CHECK(quiesceResets(engine, *probe), modeName(mode) << ": worker quiesced");
+        next = Clock::now();
+
+        const uint64_t skipped0 = engine.getRealtimeDiagnosticsSnapshot().trackChainSkippedCount;
+        const int resets0 = probe->resets.load();
+
+        for (int k = 0; k < kSeeks; ++k)
+        {
+            transport.seekToSample(static_cast<int64_t>((k % 5 + 1) * 7 * kBlockSize));
+            for (int b = 0; b < kBlocksPerSeek; ++b) paced();
+        }
+        for (int b = 0; b < 12; ++b) paced();
+
+        const uint64_t skipped =
+            engine.getRealtimeDiagnosticsSnapshot().trackChainSkippedCount - skipped0;
+        const int resets = probe->resets.load() - resets0;
+        std::cout << "    " << modeName(mode) << ": " << kSeeks << " seeks -> " << resets
+                  << " reset pass(es), " << skipped << " silent (skipped) chain block(s)\n";
+        CHECK(resets >= kSeeks / 2, modeName(mode) << ": the worker really reset the chain");
+        CHECK(probe->resetsOnAudioThread.load() == 0, modeName(mode) << ": no reset on the audio thread");
+        CHECK(skipped == 0, modeName(mode) << ": seeks cost " << skipped << " silent block(s), want 0");
+        transport.pause();
+    }
+}
+
+// ─── T11: a jump resets realtime-safe effects IN the jump block ─────────────
+//
+// The PDC compensation delay lines reset inline in the jump block, so every
+// chain has to restart in that block too. Before this was enforced, the
+// worker's reset landed 1..N blocks later and a latent effect played pre-jump
+// audio out of its pipeline against every compensated track.
+
+namespace {
+// Accepts the audio-thread reset (the XlethEffectBase default), like every
+// stock effect; counts where each reset ran.
+class RealtimeResetProbe : public TestGainEffect
+{
+public:
+    explicit RealtimeResetProbe(std::shared_ptr<ResetProbeState> s) : state_(std::move(s))
+    {
+        setParameterValue("gain", 1.0f);
+    }
+    void resetEffect() override
+    {
+        state_->resets.fetch_add(1);
+        if (std::this_thread::get_id() == state_->audioThread)
+            state_->resetsOnAudioThread.fetch_add(1);
+    }
+private:
+    std::shared_ptr<ResetProbeState> state_;
+};
+} // namespace
+
+static void testJumpResetsInTheJumpBlock(Fixture& fx)
+{
+    std::cout << "[T11] realtime seek: realtime-safe effects reset in the seek block, exactly once\n";
+
+    auto enginePtr = std::make_unique<MixEngine>();
+    MixEngine& engine = *enginePtr;
+    CHECK(wireEngine(engine, fx), "engine wired");
+    auto rt = std::make_shared<ResetProbeState>();
+    rt->audioThread = std::this_thread::get_id();
+    engine.addProcessorForTesting(fx.trackId, "rtprobe", std::make_unique<RealtimeResetProbe>(rt), 1);
+    auto slow = wireProbe(engine, fx);        // declines: the worker's share
+
+    Transport transport;
+    transport.setSampleRate(kSampleRate);
+    transport.setBPM(kBPM);
+    transport.seekToSample(0);
+    transport.play();
+    for (int b = 0; b < 8; ++b) renderOne(engine, transport);
+    CHECK(quiesceResets(engine, *slow), "worker quiesced");
+    const int rt0 = rt->resets.load(), slow0 = slow->resets.load();
+
+    for (int k = 0; k < 10; ++k)
+    {
+        const int before = rt->resetsOnAudioThread.load();
+        // Never the current position (8 blocks in = 8 * kBlockSize), which is
+        // no jump at all.
+        transport.seekToSample(static_cast<int64_t>((k % 4 + 2) * 8 * kBlockSize));
+        renderOne(engine, transport);
+        // Checked right after the seek block, before the worker could act.
+        CHECK(rt->resetsOnAudioThread.load() == before + 1,
+              "seek " << k << ": realtime-safe effect reset in the seek block");
+        renderOne(engine, transport);
+    }
+    CHECK(quiesceResets(engine, *slow), "worker finished the declined effect");
+    CHECK(rt->resets.load() - rt0 == 10,
+          "realtime-safe effect reset exactly once per seek, never again by the worker (got "
+          << rt->resets.load() - rt0 << ")");
+    CHECK(slow->resets.load() > slow0, "the declined effect was reset by the worker");
+    CHECK(slow->resetsOnAudioThread.load() == 0, "the declined effect never reset on the audio thread");
+    transport.pause();
+}
+
+// ─── T12: loop laps through a Pitch Shifter chain are identical ─────────────
+//
+// The user-visible form of the bug: every loop wrap is a jump. With the reset
+// deferred to the worker, each lap of a Pitch Shifter track leaked the end of
+// the previous lap or swallowed the head of this one, differently every lap,
+// depending on when the worker ran. With the reset in the wrap block, every
+// lap renders the same samples as the first, which started from a clean stop.
+
+static void testLoopLapsAreIdentical(Fixture& fx)
+{
+    std::cout << "[T12] loop playback: every lap through a Pitch Shifter chain is bit-identical\n";
+
+    for (const auto mode : kRealtimeModes)
+    {
+        auto enginePtr = std::make_unique<MixEngine>();
+        MixEngine& engine = *enginePtr;
+        CHECK(wireEngine(engine, fx), "engine wired");
+        auto owned = std::make_unique<XlethPitchShifterEffect>();
+        XlethPitchShifterEffect* shifter = owned.get();
+        CHECK(engine.addProcessorForTesting(fx.trackId, "pitchshifter", std::move(owned), 1) >= 0,
+              "shifter added");
+        shifter->setParameterValue("mode", static_cast<float>(static_cast<int>(mode)));
+        shifter->setParameterValue("semitones", -12.0f);
+        shifter->setParameterValue("mix", 0.7f);
+
+        // Loop [2 beats, 6 beats): 2 s, several shifter latencies long.
+        const int64_t loopStart = static_cast<int64_t>(kSampleRate * 1.0);
+        const int64_t loopEnd   = static_cast<int64_t>(kSampleRate * 3.0);
+        const int64_t lapLen    = loopEnd - loopStart;
+        constexpr int kLaps = 4;
+
+        Transport transport;
+        transport.setSampleRate(kSampleRate);
+        transport.setBPM(kBPM);
+
+        // Pre-roll so the parameter smoothers (a 120 ms pitch ramp) settle,
+        // then stop and let the worker reset: lap 1 starts from a clean stop
+        // with settled parameters, the reference every later lap must match.
+        auto probe = wireProbe(engine, fx);
+        transport.seekToSample(0);
+        transport.play();
+        for (int b = 0; b < 40; ++b) renderOne(engine, transport);
+        transport.pause();
+        renderOne(engine, transport);
+        CHECK(quiesceResets(engine, *probe), modeName(mode) << ": stop reset serviced");
+
+        transport.setLoopBounds(loopStart, loopEnd, true);
+        transport.seekToSample(loopStart);
+        transport.play();
+
+        // Rendered faster than real time, so a worker-side reset would land
+        // an arbitrary number of blocks after each wrap. Halfway through each
+        // lap the render waits for the worker to finish re-priming, which a
+        // real-time device clock gives it for free.
+        std::vector<std::vector<float>> laps(kLaps, std::vector<float>((size_t) lapLen, 0.0f));
+        juce::AudioBuffer<float> block(2, kBlockSize);
+        int lap = 0;
+        int64_t lapPos = 0;
+        bool waitedThisLap = false;
+        while (lap < kLaps)
+        {
+            block.clear();
+            int offset = 0, remaining = kBlockSize;
+            while (remaining > 0 && lap < kLaps)
+            {
+                // Split at the seam exactly like AudioEngine's callback.
+                const int chunk = std::clamp(transport.samplesUntilLoopWrap(remaining), 1, remaining);
+                juce::AudioBuffer<float> view(block.getArrayOfWritePointers(), 2, offset, chunk);
+                engine.processBlock(view, chunk, transport);
+                transport.advance(chunk);
+                for (int i = 0; i < chunk && lapPos + i < lapLen; ++i)
+                    laps[(size_t) lap][(size_t) (lapPos + i)] = view.getSample(0, i);
+                lapPos += chunk;
+                if (transport.getPositionSamples() == loopStart)
+                {
+                    ++lap; lapPos = 0; waitedThisLap = false;
+                }
+                offset += chunk; remaining -= chunk;
+            }
+            if (!waitedThisLap && lapPos > lapLen / 2)
+            {
+                waitedThisLap = true;
+                waitFor([&] {
+                    std::this_thread::sleep_for(std::chrono::milliseconds(5));
+                    int pending = 1;
+                    std::thread([&] { pending = engine.serviceEffectChainResets(); }).join();
+                    return pending == 0;
+                });
+            }
+        }
+        transport.pause();
+
+        double peak = 0.0;
+        for (float v : laps[0]) peak = std::max(peak, (double) std::abs(v));
+        CHECK(peak > 0.05, modeName(mode) << ": lap 1 is not silent (peak " << peak << ")");
+        for (int k = 1; k < kLaps; ++k)
+        {
+            int64_t firstDiff = -1;
+            for (int64_t i = 0; i < lapLen && firstDiff < 0; ++i)
+                if (laps[(size_t) k][(size_t) i] != laps[0][(size_t) i]) firstDiff = i;
+            if (firstDiff >= 0)
+                std::cout << "    " << modeName(mode) << " lap " << (k + 1) << " first differs from lap 1 at "
+                          << firstDiff << " (" << 1000.0 * firstDiff / kSampleRate << " ms into the lap)\n";
+            CHECK(firstDiff < 0, modeName(mode) << ": lap " << (k + 1) << " is bit-identical to lap 1");
+        }
+    }
+}
+
 int main()
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
@@ -741,6 +1076,10 @@ int main()
     testOfflineSeekResetsInline(fx);
     testMidResetBlockIsSilentNotDry(fx);
     testRegionMapRepublishDuringRender(fx);
+    testPrimedResetHoldsClaimBriefly();
+    testPacedSeeksCostNoSilentBlocks(fx);
+    testJumpResetsInTheJumpBlock(fx);
+    testLoopLapsAreIdentical(fx);
 
     std::cout << "\n" << g_passed << " passed, " << g_failed << " failed\n";
     if (g_failed > 0)

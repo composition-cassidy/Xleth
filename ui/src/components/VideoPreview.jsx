@@ -2,6 +2,7 @@ import { useRef, useEffect, useState, useCallback } from 'react'
 import { Import, Grid3x3, Image, Film, Loader2 } from 'lucide-react'
 import GridEditorOverlay from './GridEditorOverlay.jsx'
 import GridEditorDock from './GridEditorDock.jsx'
+import ProxyBatchBadge from './ProxyBatchBadge.jsx'
 import { tokenValue } from '../theming/tokenValue.ts'
 import useGridEditStore from '../stores/useGridEditStore.js'
 import { usePanelVisibility } from '../windowing/contexts/PanelVisibilityContext'
@@ -189,6 +190,20 @@ export default function VideoPreview() {
     active: false, completed: 0, total: 0, pending: 0, holdingVideo: false,
   })
 
+  // On-open proxy codec migration (engine re-encodes legacy all-intra proxies
+  // to H.264 in the background). Drives a small non-blocking badge; preview
+  // keeps using the old proxies until each replacement is ready.
+  // { active, total, completed, failed, progress (0..1) }.
+  const [proxyMigration, setProxyMigration] = useState({
+    active: false, total: 0, completed: 0, failed: 0, progress: 0,
+  })
+  // On-open REBUILD of proxies that were missing — purged by "Delete regenerable
+  // files when closing a project", never generated, or deleted while the app was
+  // closed. Same shape and same non-blocking badge as the migration above.
+  const [proxyRebuild, setProxyRebuild] = useState({
+    active: false, total: 0, completed: 0, failed: 0, progress: 0,
+  })
+
   // ── Engine preview-enabled sync (RENDER_PERF_AUDIT Finding 1) ────────────
   // The engine idles the whole video thread (composite/decode/readback) when
   // told nobody can see the canvas — one black frame written, then latched
@@ -297,7 +312,7 @@ export default function VideoPreview() {
   // throw anywhere in here leaves the label ahead of the shm — which is how the
   // surface got stuck at 50% while the badge read 75%. Catching keeps it from
   // becoming an unhandled rejection; the reconcile poll above is what actually
-  // repairs the divergence, within one 2s tick.
+  // repairs the divergence, within one 500 ms tick.
   const handleResolutionChange = useCallback(async (e) => {
     const raw = e.target.value
     try {
@@ -390,7 +405,11 @@ export default function VideoPreview() {
         console.error('[VideoPreview] Resolution reconcile poll failed:', e)
       }
     }
-    const id = setInterval(poll, 2000)
+    // 500 ms, not 2 s: a governor step resizes the compositor immediately but
+    // the shm only follows when this poll notices, and until then the engine
+    // skips the copy — the preview holds a stale frame for up to one interval
+    // per step. A matching poll is one cached IPC round-trip.
+    const id = setInterval(poll, 500)
     return () => { cancelled = true; clearInterval(id) }
   }, [autoResolution])
 
@@ -754,7 +773,11 @@ export default function VideoPreview() {
               // ImageData has no channel-swizzle option — putImageData interprets
               // its bytes as literal RGBA. Unlike the WebGL path, this has to pay
               // for the swap in JS. Only the no-WebGL fallback pays it.
-              const need = frame.length
+              // Size by the live frame, NOT frame.length — bufA/bufB are
+              // allocated at the shm section's capacity and can be larger
+              // than the current resolution. ImageData requires its buffer to
+              // be exactly sabWidth*sabHeight*4 or it throws IndexSizeError.
+              const need = sabWidth * sabHeight * 4
               if (!canvas2dScratch || canvas2dScratch.length !== need) {
                 canvas2dScratch = new Uint8ClampedArray(need)
               }
@@ -915,6 +938,43 @@ export default function VideoPreview() {
   const posterLoadPct = posterLoad.total > 0
     ? Math.round((posterLoad.completed / posterLoad.total) * 100)
     : 0
+
+  // Poll the proxy-migration batch while the panel is visible: every second
+  // while a migration runs, every 3 s otherwise (a project open can start one
+  // at any time). One IPC round-trip reading a few ints; silent in the log.
+  useEffect(() => {
+    if (!isVisible) return
+    let cancelled = false
+    let timer = null
+    const toBatch = (m) => ({
+      active:    !!m.active,
+      total:     m.total | 0,
+      completed: m.completed | 0,
+      failed:    m.failed | 0,
+      progress:  Number(m.progress) || 0,
+    })
+    const poll = async () => {
+      let active = false
+      try {
+        const st = await window.xleth?.proxy?.getStatus?.()
+        if (!cancelled && st?.migration) {
+          active = !!st.migration.active
+          setProxyMigration(toBatch(st.migration))
+        }
+        if (!cancelled && st?.rebuild) {
+          active = active || !!st.rebuild.active
+          setProxyRebuild(toBatch(st.rebuild))
+        }
+      } catch { /* engine not ready yet — try again next tick */ }
+      if (!cancelled) timer = setTimeout(poll, active ? 1000 : 3000)
+    }
+    poll()
+    return () => { cancelled = true; if (timer) clearTimeout(timer) }
+  }, [isVisible])
+
+  const batchPct = (b) => Math.round(Math.min(1, Math.max(0, b.progress)) * 100)
+  const proxyMigrationPct = batchPct(proxyMigration)
+  const proxyRebuildPct = batchPct(proxyRebuild)
 
   // ── Chroma Key eyedropper ──────────────────────────────────────────────────
   // While a pick is in flight the canvas takes a crosshair and the next click
@@ -1080,6 +1140,32 @@ export default function VideoPreview() {
                   Skip to live
                 </button>
               </div>
+            </div>
+          )}
+
+          {/* Background proxy work badges. Informational only — nothing is
+              blocked; the project stays fully usable meanwhile. Stacked so a
+              rebuild and a codec migration can both be shown. */}
+          {(proxyRebuild.active || proxyMigration.active) && (
+            <div className="proxy-badge-stack">
+              {proxyRebuild.active && (
+                <ProxyBatchBadge
+                  label="Rebuilding previews"
+                  title="Rebuilding preview files that were removed or never generated. Preview and editing work normally meanwhile."
+                  batch={proxyRebuild}
+                  pct={proxyRebuildPct}
+                  testId="proxy-rebuild-badge"
+                />
+              )}
+              {proxyMigration.active && (
+                <ProxyBatchBadge
+                  label="Optimizing proxies"
+                  title="Converting this project's preview proxies to H.264 to save disk space. Preview and editing work normally meanwhile."
+                  batch={proxyMigration}
+                  pct={proxyMigrationPct}
+                  testId="proxy-migration-badge"
+                />
+              )}
             </div>
           )}
         </div>

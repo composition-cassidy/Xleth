@@ -87,6 +87,8 @@ const SILENT_TIMELINE_METHODS = [
 const SILENT_METHODS = new Set([
   'getFrameRGBA', 'getCurrentFrame', 'getFrameBuffer', 'getTransportState', 'audio_getAllPeaks', 'audio_getRealtimeDiagnostics', 'audio_getAudioPerformanceTelemetry', 'getAudioPerformanceTelemetry', 'audio_setTrackVolume', 'audio_setTrackPan', 'audio_setTrackSpread', 'audio_setMasterVolume', 'audio_getMasterLoudness', 'cache_getWorldActiveJobs',
   ...SILENT_TIMELINE_METHODS,
+  // Polled every few seconds by the video panel's proxy-migration badge.
+  'proxy_getStatus',
 ]);
 
 // Summarizes an IPC value for logging WITHOUT serializing a large payload —

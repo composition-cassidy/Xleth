@@ -5,7 +5,6 @@ import { DEFAULT_LABELS, loadCustomLabels, labelColor } from '../constants/label
 import SampleGroup from './SampleGroup.jsx'
 import ContextMenu from './ContextMenu.jsx'
 import useSampleViewModeStore from '../stores/sampleViewModeStore.js'
-import useSplitSyllablesPanelStore from '../stores/splitSyllablesPanelStore.js'
 import useSandboxPanelStore from '../stores/sandboxPanelStore.js'
 import { usePanelRegistry } from '../windowing/registry/PanelRegistry.ts'
 import { getPickerPath, openFilePicker } from './filePicker/filePickerService.js'
@@ -326,8 +325,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
         label: 'Split Syllables',
         icon: Scissors,
         onClick: () => {
-          useSplitSyllablesPanelStore.getState().setSplitTarget({ region })
-          usePanelRegistry.getState().openPanel('splitSyllables')
+          usePanelRegistry.getState().openPanel('splitSyllables', { region })
         },
       }] : []),
       // Open in Sample Sandbox (any region — loads it as a fresh sandbox layer)

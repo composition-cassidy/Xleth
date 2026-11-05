@@ -1,25 +1,21 @@
 import { useCallback, useRef, useState } from 'react'
-import { Plus, X, Upload, Copy } from 'lucide-react'
 import { useModTarget } from './modulation/useModTarget.js'
 import {
   TARGET_SLOT_VOLUME, TARGET_SLOT_PAN, TARGET_SLOT_SEM,
   TARGET_SLOT_FINE, TARGET_SLOT_COARSE,
 } from './modulation/modTargets.js'
 
-// ── SlotList ────────────────────────────────────────────────────────────────
-// The sampler's 8 sample slots. Slot 1 always plays the region's own audio
-// (loaded/swapped through the normal region-audio path); slots 2-8 carry their
-// own file. Selecting a row binds the Sample tab's waveform/trim/loop editor
-// to that slot.
+// ── SlotMini ────────────────────────────────────────────────────────────────
+// One compact drag field for a slot's tuning/level. Extracted from the old
+// SlotList so the slot TAB STRIP and the SLOT INSPECTOR can share it: the strip
+// shows none of these, the inspector shows all six for the selected slot only.
 //
-// Every mini control follows the panel rule for continuous values: drag paints
-// a LOCAL preview only, and a single commit fires on mouseup. Nothing touches
-// IPC while the pointer is down.
-
-export const MAX_SLOTS = 8
+// The panel rule for continuous values holds here exactly as it did before:
+// a drag paints a LOCAL preview and a single commit fires on pointer-up, so
+// nothing touches IPC while the pointer is down.
 
 // Per-control drag config: [min, max, step-per-pixel, integer?]
-const DRAG_SPECS = {
+export const DRAG_SPECS = {
   octave:   { min: -4,   max: 4,   perPx: 0.05,  int: true,  label: 'OCT'  },
   semitone: { min: -12,  max: 12,  perPx: 0.12,  int: true,  label: 'SEM'  },
   fine:     { min: -100, max: 100, perPx: 1.0,   int: false, label: 'FINE' },
@@ -27,6 +23,9 @@ const DRAG_SPECS = {
   volume:   { min: 0,    max: 2,   perPx: 0.01,  int: false, label: 'VOL'  },
   pan:      { min: -1,   max: 1,   perPx: 0.01,  int: false, label: 'PAN'  },
 }
+
+// The mockup's 2x3 grid order: tuning on the top row, level on the bottom.
+export const MINI_ORDER = ['octave', 'semitone', 'fine', 'coarse', 'volume', 'pan']
 
 // ── Modulation targets ───────────────────────────────────────────────────────
 // Five of the six minis are modulation destinations. OCT is deliberately NOT:
@@ -41,7 +40,7 @@ const MINI_TARGETS = {
   coarse:   TARGET_SLOT_COARSE,
 }
 
-function formatValue(field, v) {
+export function formatMiniValue(field, v) {
   if (field === 'volume') return v.toFixed(2)
   if (field === 'pan') {
     if (Math.abs(v) < 0.005) return 'C'
@@ -51,8 +50,7 @@ function formatValue(field, v) {
   return (v > 0 ? '+' : '') + String(v)
 }
 
-// A compact drag field. Local preview while dragging; one commit on release.
-function MiniDrag({ field, value, onPreview, onCommit, disabled, slotIndex }) {
+export default function SlotMini({ field, value, onPreview, onCommit, disabled, slotIndex }) {
   const spec = DRAG_SPECS[field]
   const [dragging, setDragging] = useState(false)
   const stateRef = useRef({ startY: 0, startVal: 0, latest: 0 })
@@ -185,7 +183,7 @@ Drag the bar = amount · Right-click = bipolar`
       tabIndex={disabled ? -1 : 0}
     >
       <span className="slot-mini-label">{spec.label}</span>
-      <span className="slot-mini-value">{formatValue(field, value)}</span>
+      <span className="slot-mini-value">{formatMiniValue(field, value)}</span>
       {mod?.active && (
         <span
           className="slot-mini-mod"
@@ -201,140 +199,6 @@ Drag the bar = amount · Right-click = bipolar`
           />
         </span>
       )}
-    </div>
-  )
-}
-
-export default function SlotList({
-  slots,
-  selectedSlot,
-  onSelectSlot,
-  onPreviewSlotField,
-  onCommitSlotField,
-  onToggleMute,
-  onToggleSolo,
-  onAddSlot,
-  onSwapSlot,
-  onDuplicateSlot,
-  onRemoveSlot,
-  busy,
-}) {
-  const count = slots.length
-  const canAdd = count < MAX_SLOTS && !busy
-  const anySolo = slots.some((s) => s?.solo)
-
-  return (
-    <div className="slot-list">
-      <div className="slot-list-header">
-        <span className="slot-list-title">Slots</span>
-        <span className="slot-list-count">{count} / {MAX_SLOTS}</span>
-        <button
-          type="button"
-          className="slot-add-btn"
-          onClick={onAddSlot}
-          disabled={!canAdd}
-          title={canAdd ? 'Add a sample layer' : 'All 8 slots are in use'}
-        >
-          <Plus size={12} />
-          <span>Add</span>
-        </button>
-      </div>
-
-      <div className="slot-rows">
-        {slots.map((slot, i) => {
-          const isSel = i === selectedSlot
-          // A slot is audible unless muted, or unless something else is solo'd.
-          const audible = anySolo ? !!slot.solo : !slot.mute
-          const name = slot.name || (i === 0 ? 'Region sample' : 'Empty')
-          return (
-            <div
-              key={i}
-              className={`slot-row${isSel ? ' is-selected' : ''}${audible ? '' : ' is-silent'}`}
-              onPointerDown={() => onSelectSlot(i)}
-              role="button"
-              tabIndex={0}
-              onKeyDown={(e) => {
-                if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); onSelectSlot(i) }
-              }}
-              aria-pressed={isSel}
-            >
-              <span className="slot-index">{i + 1}</span>
-
-              <span className="slot-name" title={slot.audioFilePath || name}>{name}</span>
-
-              <div className="slot-actions">
-                <button
-                  type="button"
-                  className={`slot-flag${slot.mute ? ' is-on' : ''}`}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={(e) => { e.stopPropagation(); onToggleMute(i) }}
-                  title="Mute this layer"
-                  aria-pressed={!!slot.mute}
-                >M</button>
-                <button
-                  type="button"
-                  className={`slot-flag slot-flag--solo${slot.solo ? ' is-on' : ''}`}
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={(e) => { e.stopPropagation(); onToggleSolo(i) }}
-                  title="Solo this layer"
-                  aria-pressed={!!slot.solo}
-                >S</button>
-                <button
-                  type="button"
-                  className="slot-icon-btn"
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={(e) => { e.stopPropagation(); onSwapSlot(i) }}
-                  disabled={busy}
-                  title={i === 0
-                    ? 'Swap the region’s audio (slot 1 settings are kept)'
-                    : 'Load / swap this layer’s audio'}
-                >
-                  <Upload size={11} />
-                </button>
-                <button
-                  type="button"
-                  className="slot-icon-btn"
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={(e) => { e.stopPropagation(); onDuplicateSlot(i) }}
-                  disabled={busy || count >= MAX_SLOTS}
-                  title={count >= MAX_SLOTS
-                    ? 'All 8 slots are in use'
-                    : 'Duplicate this layer — audio and all its settings'}
-                >
-                  <Copy size={11} />
-                </button>
-                <button
-                  type="button"
-                  className="slot-icon-btn slot-icon-btn--danger"
-                  onPointerDown={(e) => e.stopPropagation()}
-                  onClick={(e) => { e.stopPropagation(); onRemoveSlot(i) }}
-                  // Slot 1 IS the region's sample — it can never be removed.
-                  disabled={i === 0 || busy}
-                  title={i === 0
-                    ? 'Slot 1 holds the region’s own sample and cannot be removed'
-                    : 'Remove this layer'}
-                >
-                  <X size={11} />
-                </button>
-              </div>
-
-              <div className="slot-minis">
-                {['octave', 'semitone', 'fine', 'coarse', 'volume', 'pan'].map((f) => (
-                  <MiniDrag
-                    key={f}
-                    field={f}
-                    slotIndex={i}
-                    value={Number(slot[f] ?? (f === 'volume' ? 1 : 0))}
-                    onPreview={(field, v) => onPreviewSlotField(i, field, v)}
-                    onCommit={(field, v) => onCommitSlotField(i, field, v)}
-                    disabled={busy}
-                  />
-                ))}
-              </div>
-            </div>
-          )
-        })}
-      </div>
     </div>
   )
 }

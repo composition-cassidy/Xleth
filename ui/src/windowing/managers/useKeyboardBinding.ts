@@ -1,6 +1,7 @@
 import { useEffect, useRef } from 'react';
 import {
   register,
+  registerCommand,
   onPanelBlur,
   onPanelFocus,
   type BindingOptions,
@@ -44,6 +45,35 @@ export function useKeyboardBinding(
     };
     return register(opts);
   }, [scope, combo, enabled, allowInTextEntry]);
+}
+
+/**
+ * The catalog-driven form of useKeyboardBinding: binds a named command rather
+ * than a literal combo, so the key it answers to is whatever Settings →
+ * Application → Shortcuts currently resolves for that command.
+ *
+ * The scope and the combo both come from the catalog entry, which is the point
+ * — a component that owns an action should not also be the place its key is
+ * spelled, or the Settings editor and the component can disagree.
+ *
+ * Like useKeyboardBinding, the handler is read through a ref so a consumer can
+ * close over fresh state every render without re-registering. Re-registration
+ * happens only when the user rebinds, driven from KeyboardManager's own
+ * subscription to the override store.
+ */
+export function useShortcutCommand(
+  commandId: string,
+  handler: (event: KeyboardEvent) => HandlerResult,
+  options?: { enabled?: boolean },
+): void {
+  const handlerRef = useRef(handler);
+  handlerRef.current = handler;
+  const enabled = options?.enabled ?? true;
+
+  useEffect(() => {
+    if (!enabled) return;
+    return registerCommand(commandId, (e) => handlerRef.current(e));
+  }, [commandId, enabled]);
 }
 
 export function usePanelFocusEffect(

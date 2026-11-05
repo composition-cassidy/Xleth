@@ -6,6 +6,9 @@ export type PanelMode = 'floating' | 'docked' | 'maximized';
 export type DockRegion = 'left' | 'right' | 'top' | 'bottom';
 export type PresetId = 'fl-compose' | 'vegas-arrange' | string;
 
+/** Height of a panel titlebar in px. Mirrored by --xleth-panel-titlebar-height. */
+export const PANEL_TITLEBAR_HEIGHT = 32;
+
 export interface FloatingPanelState {
   x: number;
   y: number;
@@ -15,13 +18,30 @@ export interface FloatingPanelState {
 
 export interface DockedPanelState {
   region: DockRegion;
+  /** Slot order within the region. Every member of a tab group shares one. */
   orderInRegion: number;
+  /** Extent of the whole slot along the region main axis. Shared by a group. */
   sizeInRegion: number;
+  /**
+   * Tab-group identity. `null` means "own slot" — the classic one-panel slot.
+   * A non-null id is shared by every panel tabbed together in the same slot.
+   * Grouping is never inferred from orderInRegion: only an explicit
+   * dockPanelAsTab() writes this, so reopening a panel can never silently
+   * absorb it into a neighbour's tab strip.
+   */
+  tabGroupId: string | null;
+  /** Order within the tab strip. Meaningless when tabGroupId is null. */
+  tabOrder: number;
+  /** Whether this panel is the visible tab of its slot. */
+  tabActive: boolean;
 }
 
 export interface PanelState {
   id: PanelId;
+  /** Closed. Not rendered, not in the tab strip, not restorable except by open. */
   hidden: boolean;
+  /** Open but rolled up to its titlebar. Distinct from hidden — see collapsePanel. */
+  collapsed: boolean;
   focused: boolean;
   zIndex: number;
   mode: PanelMode;
@@ -33,6 +53,8 @@ export interface PanelState {
 export type PanelStateMap = Record<PanelId, PanelState>;
 
 export type DockRegionSizes = Record<DockRegion, number>;
+
+export const DOCK_REGIONS: readonly DockRegion[] = ['left', 'right', 'top', 'bottom'];
 
 export const DEFAULT_DOCK_REGION_SIZES: DockRegionSizes = {
   left: 280,
@@ -50,33 +72,44 @@ export const MIN_DOCK_REGION_SIZES: DockRegionSizes = {
   bottom: 100,
 };
 
-export const MIN_DOCKED_PANEL_MAIN_SIZES: Record<PanelId, number> = {
-  timeline: 240,
-  sampleSelector: 220,
-  pianoRoll: 220,
-  preview: 180,
-  mixer: 260,
-  fxGraph: 240,
-  nodeEditor: 200,
-  sampler: 220,
-  quickNotation: 220,
-  splitSyllables: 220,
-  sampleSandbox: 320,
-};
+// Derived from the catalog — the panel declares its own minimum exactly once.
+export const MIN_DOCKED_PANEL_MAIN_SIZES: Record<PanelId, number> = PANEL_IDS.reduce((acc, id) => {
+  acc[id] = PANEL_CATALOG[id].minDockedSize;
+  return acc;
+}, {} as Record<PanelId, number>);
+
+export interface PanelProps {
+  [key: string]: unknown;
+}
 
 export interface PanelRegistryState {
   panels: PanelStateMap;
   dockRegionSizes: DockRegionSizes;
-  openPanel: (id: PanelId) => void;
+  /**
+   * Per-open context handed to a panel by whoever opened it. Deliberately NOT
+   * persisted: it describes one opening, not a layout.
+   */
+  panelProps: Partial<Record<PanelId, PanelProps>>;
+  /** Most recently closed panels, newest last. Drives reopenLastClosed(). */
+  recentlyClosed: PanelId[];
+  openPanel: (id: PanelId, props?: PanelProps) => void;
   closePanel: (id: PanelId) => void;
-  togglePanel: (id: PanelId) => void;
+  togglePanel: (id: PanelId, props?: PanelProps) => void;
+  reopenLastClosed: () => void;
+  setPanelProps: (id: PanelId, props: PanelProps) => void;
   focusPanel: (id: PanelId) => void;
+  focusNextPanel: (direction: 1 | -1) => void;
   moveFloatingPanel: (id: PanelId, x: number, y: number) => void;
   resizeFloatingPanel: (id: PanelId, x: number, y: number, width: number, height: number) => void;
-  dockPanel: (id: PanelId, region: DockRegion) => void;
+  dockPanel: (id: PanelId, region: DockRegion, slotIndex?: number) => void;
+  dockPanelAsTab: (id: PanelId, targetId: PanelId) => void;
+  activateTab: (id: PanelId) => void;
   undockPanel: (id: PanelId, x: number, y: number) => void;
   maximizePanel: (id: PanelId) => void;
   restorePanel: (id: PanelId) => void;
+  collapsePanel: (id: PanelId) => void;
+  expandPanel: (id: PanelId) => void;
+  toggleCollapsePanel: (id: PanelId) => void;
   setDockRegionSize: (region: DockRegion, size: number) => void;
   resizeDockedPanelPair: (
     region: DockRegion,
@@ -88,6 +121,7 @@ export interface PanelRegistryState {
   setSampleSelectorDockOpen: (open: boolean) => void;
   clampFloatingPanelsToWorkArea: (width: number, height: number) => void;
   applyPreset: (presetId: PresetId) => void;
+  resetLayout: () => void;
 }
 
 export const LAYOUT_PERSISTENCE_DEBOUNCE_MS = 500;
@@ -126,19 +160,21 @@ function scheduleLayoutPersistence(
 }
 
 function defaultDockedState(id: PanelId): DockedPanelState {
-  if (id === 'sampleSelector') return { region: 'left', orderInRegion: 0, sizeInRegion: 240 };
-  if (id === 'mixer') return { region: 'bottom', orderInRegion: 0, sizeInRegion: 240 };
-  return { region: 'bottom', orderInRegion: 0, sizeInRegion: 280 };
+  const base = { tabGroupId: null, tabOrder: 0, tabActive: true } as const;
+  if (id === 'sampleSelector') return { region: 'left', orderInRegion: 0, sizeInRegion: 240, ...base };
+  if (id === 'mixer') return { region: 'bottom', orderInRegion: 0, sizeInRegion: 240, ...base };
+  return { region: 'bottom', orderInRegion: 0, sizeInRegion: 280, ...base };
 }
 
-function createPanelState(id: PanelId, index: number): PanelState {
+export function createPanelState(id: PanelId, index: number): PanelState {
   const focused = id === 'timeline';
   return {
     id,
     hidden: id !== 'timeline',
+    collapsed: false,
     focused,
     zIndex: focused ? index + 1 : 0,
-    mode: id === 'sampleSelector' ? 'docked' : 'floating',
+    mode: PANEL_CATALOG[id].presentation === 'drawer' ? 'docked' : 'floating',
     floating: { ...PANEL_CATALOG[id].defaultFloating },
     docked: defaultDockedState(id),
     preMaximizeState: null,
@@ -181,6 +217,84 @@ export function clonePanelStates(panels: PanelStateMap): PanelStateMap {
   }, {} as PanelStateMap);
 }
 
+// ─── Dock slot model ───────────────────────────────────────────────────────
+//
+// A region is an ordered list of SLOTS; a slot holds one or more panels as
+// tabs. Slot identity is `tabGroupId ?? id`, so an ungrouped panel is simply a
+// slot of one. Every docking mutation runs through normalizeDockSlots(), which
+// re-establishes the invariants rather than asking each caller to maintain
+// them: slot order is compact 0..n-1, every member of a slot shares that slot's
+// order and size, tab order is compact, and exactly one member is active.
+
+export function dockSlotKey(panel: PanelState): string {
+  return panel.docked.tabGroupId ?? panel.id;
+}
+
+/** Visible docked panels of one region, grouped into slots in render order. */
+export function getRegionSlots(panels: PanelStateMap, region: DockRegion): PanelId[][] {
+  const members = PANEL_IDS.filter((id) => (
+    !panels[id].hidden
+    && panels[id].mode === 'docked'
+    && panels[id].docked.region === region
+  ));
+
+  const slots = new Map<string, PanelId[]>();
+  for (const id of members) {
+    const key = dockSlotKey(panels[id]);
+    const bucket = slots.get(key);
+    if (bucket) bucket.push(id);
+    else slots.set(key, [id]);
+  }
+
+  const ordered = Array.from(slots.values());
+  for (const slot of ordered) {
+    slot.sort((a, b) => panels[a].docked.tabOrder - panels[b].docked.tabOrder);
+  }
+  ordered.sort((a, b) => {
+    const orderA = Math.min(...a.map((id) => panels[id].docked.orderInRegion));
+    const orderB = Math.min(...b.map((id) => panels[id].docked.orderInRegion));
+    if (orderA !== orderB) return orderA - orderB;
+    return PANEL_IDS.indexOf(a[0]) - PANEL_IDS.indexOf(b[0]);
+  });
+  return ordered;
+}
+
+export function normalizeDockSlots(panels: PanelStateMap): PanelStateMap {
+  for (const region of DOCK_REGIONS) {
+    const slots = getRegionSlots(panels, region);
+    slots.forEach((slot, slotIndex) => {
+      // A slot's size is whatever its members agree on; when they disagree
+      // (a panel just joined the group) the largest wins so nothing is clipped.
+      const slotSize = Math.max(...slot.map((id) => panels[id].docked.sizeInRegion));
+      const activeIndex = Math.max(0, slot.findIndex((id) => panels[id].docked.tabActive));
+      slot.forEach((id, tabOrder) => {
+        const current = panels[id].docked;
+        const next: DockedPanelState = {
+          region,
+          orderInRegion: slotIndex,
+          sizeInRegion: slotSize,
+          // A slot of one carries no group id — collapsing it back to null
+          // keeps "ungrouped" the single canonical representation.
+          tabGroupId: slot.length > 1 ? (current.tabGroupId ?? slot[0]) : null,
+          tabOrder,
+          tabActive: tabOrder === activeIndex,
+        };
+        if (
+          current.region !== next.region
+          || current.orderInRegion !== next.orderInRegion
+          || current.sizeInRegion !== next.sizeInRegion
+          || current.tabGroupId !== next.tabGroupId
+          || current.tabOrder !== next.tabOrder
+          || current.tabActive !== next.tabActive
+        ) {
+          panels[id] = { ...panels[id], docked: next };
+        }
+      });
+    });
+  }
+  return panels;
+}
+
 function maxZIndex(panels: PanelStateMap): number {
   return Math.max(0, ...PANEL_IDS.map((id) => panels[id].zIndex));
 }
@@ -203,12 +317,36 @@ function focusInPanelMap(panels: PanelStateMap, id: PanelId): PanelStateMap {
     updated[panelId] = { ...updated[panelId], zIndex: i + 1 };
   });
 
+  // Focusing a background tab brings it to the front of its own slot; without
+  // this a click routed by a shortcut could focus a panel nobody can see.
+  if (updated[id].mode === 'docked' && !updated[id].hidden) {
+    activateTabInPanelMap(updated, id);
+  }
+
   return updated;
+}
+
+function activateTabInPanelMap(panels: PanelStateMap, id: PanelId): PanelStateMap {
+  const target = panels[id];
+  if (target.mode !== 'docked') return panels;
+  const key = dockSlotKey(target);
+  for (const panelId of PANEL_IDS) {
+    const panel = panels[panelId];
+    if (panel.mode !== 'docked') continue;
+    if (panel.docked.region !== target.docked.region) continue;
+    if (dockSlotKey(panel) !== key) continue;
+    const shouldBeActive = panelId === id;
+    if (panel.docked.tabActive !== shouldBeActive) {
+      panels[panelId] = { ...panel, docked: { ...panel.docked, tabActive: shouldBeActive } };
+    }
+  }
+  return panels;
 }
 
 function panelSnapshotForMaximize(panel: PanelState): Partial<PanelState> {
   return {
     hidden: panel.hidden,
+    collapsed: panel.collapsed,
     focused: panel.focused,
     zIndex: panel.zIndex,
     mode: panel.mode,
@@ -227,13 +365,17 @@ function floatingPanelsEqual(a: FloatingPanelState, b: FloatingPanelState): bool
 function dockedPanelsEqual(a: DockedPanelState, b: DockedPanelState): boolean {
   return a.region === b.region
     && a.orderInRegion === b.orderInRegion
-    && a.sizeInRegion === b.sizeInRegion;
+    && a.sizeInRegion === b.sizeInRegion
+    && a.tabGroupId === b.tabGroupId
+    && a.tabOrder === b.tabOrder
+    && a.tabActive === b.tabActive;
 }
 
 function partialPanelStatesEqual(a: Partial<PanelState> | null, b: Partial<PanelState> | null): boolean {
   if (a === b) return true;
   if (!a || !b) return false;
   return a.hidden === b.hidden
+    && a.collapsed === b.collapsed
     && a.focused === b.focused
     && a.zIndex === b.zIndex
     && a.mode === b.mode
@@ -245,6 +387,7 @@ function partialPanelStatesEqual(a: Partial<PanelState> | null, b: Partial<Panel
 function panelStatesEqual(a: PanelState, b: PanelState): boolean {
   return a.id === b.id
     && a.hidden === b.hidden
+    && a.collapsed === b.collapsed
     && a.focused === b.focused
     && a.zIndex === b.zIndex
     && a.mode === b.mode
@@ -253,7 +396,7 @@ function panelStatesEqual(a: PanelState, b: PanelState): boolean {
     && partialPanelStatesEqual(a.preMaximizeState, b.preMaximizeState);
 }
 
-function panelMapsEqual(a: PanelStateMap, b: PanelStateMap): boolean {
+export function panelMapsEqual(a: PanelStateMap, b: PanelStateMap): boolean {
   return PANEL_IDS.every((id) => panelStatesEqual(a[id], b[id]));
 }
 
@@ -301,33 +444,52 @@ function commitPanels(
   slice: RegistryPersistenceSlice,
   producer: (draft: PanelStateMap) => PanelStateMap,
 ): PanelStateMap {
-  const next = producer(clonePanelStates(slice.panels));
+  const next = normalizeDockSlots(producer(clonePanelStates(slice.panels)));
   scheduleLayoutPersistence(next, slice.dockRegionSizes);
   return next;
+}
+
+const MAX_RECENTLY_CLOSED = 12;
+
+function pushRecentlyClosed(list: PanelId[], id: PanelId): PanelId[] {
+  const next = list.filter((entry) => entry !== id);
+  next.push(id);
+  return next.length > MAX_RECENTLY_CLOSED ? next.slice(next.length - MAX_RECENTLY_CLOSED) : next;
 }
 
 export const usePanelRegistry = create<PanelRegistryState>((set) => ({
   panels: createInitialPanelStates(),
   dockRegionSizes: createInitialDockRegionSizes(),
+  panelProps: {},
+  recentlyClosed: [],
 
-  openPanel: (id) => set((state) => {
+  openPanel: (id, props) => set((state) => {
     const panel = state.panels[id];
-    const sampleSelectorAlreadyDocked = id !== 'sampleSelector'
+    const isDrawer = PANEL_CATALOG[id].presentation === 'drawer';
+    const drawerAlreadyOpen = !isDrawer
       || (
         panel.mode === 'docked'
         && panel.docked.orderInRegion === 0
         && panel.preMaximizeState === null
       );
-    if (!panel.hidden && panel.focused && sampleSelectorAlreadyDocked) return state;
+    const nextProps = props === undefined
+      ? state.panelProps
+      : { ...state.panelProps, [id]: props };
+    const propsChanged = nextProps !== state.panelProps;
+    if (!panel.hidden && !panel.collapsed && panel.focused && drawerAlreadyOpen) {
+      return propsChanged ? { panelProps: nextProps } : state;
+    }
     return {
+      panelProps: nextProps,
+      recentlyClosed: state.recentlyClosed.filter((entry) => entry !== id),
       panels: commitPanels(state, (draft) => {
         draft[id].hidden = false;
-        if (id === 'sampleSelector') {
+        // Opening an explicitly-collapsed panel expands it: the user asked to
+        // see this panel, and handing them a titlebar would read as a no-op.
+        draft[id].collapsed = false;
+        if (isDrawer) {
           draft[id].mode = 'docked';
-          draft[id].docked = {
-            ...draft[id].docked,
-            orderInRegion: 0,
-          };
+          draft[id].docked = { ...draft[id].docked, orderInRegion: 0 };
           draft[id].preMaximizeState = null;
         }
         return focusInPanelMap(draft, id);
@@ -339,6 +501,7 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
     const panel = state.panels[id];
     if (panel.hidden && !panel.focused) return state;
     return {
+      recentlyClosed: pushRecentlyClosed(state.recentlyClosed, id),
       panels: commitPanels(state, (draft) => {
         draft[id].hidden = true;
         draft[id].focused = false;
@@ -347,17 +510,42 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
     };
   }),
 
-  togglePanel: (id) => {
+  togglePanel: (id, props) => {
     const panel = usePanelRegistry.getState().panels[id];
-    if (panel.hidden) usePanelRegistry.getState().openPanel(id);
+    if (panel.hidden) usePanelRegistry.getState().openPanel(id, props);
     else usePanelRegistry.getState().closePanel(id);
   },
 
+  reopenLastClosed: () => {
+    const { recentlyClosed } = usePanelRegistry.getState();
+    const id = recentlyClosed[recentlyClosed.length - 1];
+    if (!id) return;
+    usePanelRegistry.getState().openPanel(id);
+  },
+
+  setPanelProps: (id, props) => set((state) => ({
+    panelProps: { ...state.panelProps, [id]: props },
+  })),
+
   focusPanel: (id) => set((state) => {
     if (state.panels[id].hidden) return state;
-    if (state.panels[id].focused) return state;
+    if (state.panels[id].focused && state.panels[id].docked.tabActive) return state;
     return {
       panels: commitPanels(state, (draft) => focusInPanelMap(draft, id)),
+    };
+  }),
+
+  focusNextPanel: (direction) => set((state) => {
+    const visible = PANEL_IDS.filter((id) => !state.panels[id].hidden);
+    if (visible.length === 0) return state;
+    const currentIndex = visible.findIndex((id) => state.panels[id].focused);
+    const nextIndex = currentIndex < 0
+      ? 0
+      : (currentIndex + direction + visible.length) % visible.length;
+    const nextId = visible[nextIndex];
+    if (state.panels[nextId].focused && state.panels[nextId].docked.tabActive) return state;
+    return {
+      panels: commitPanels(state, (draft) => focusInPanelMap(draft, nextId)),
     };
   }),
 
@@ -382,27 +570,81 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
     };
   }),
 
-  dockPanel: (id, region) => set((state) => {
+  dockPanel: (id, region, slotIndex) => set((state) => {
     const panel = state.panels[id];
-    if (!panel.hidden && panel.mode === 'docked' && panel.docked.region === region && panel.focused) {
+    if (
+      slotIndex === undefined
+      && !panel.hidden
+      && panel.mode === 'docked'
+      && panel.docked.region === region
+      && panel.docked.tabGroupId === null
+      && panel.focused
+    ) {
       return state;
     }
     return {
       panels: commitPanels(state, (draft) => {
-        const orderInRegion = PANEL_IDS.filter((panelId) => (
-          panelId !== id
-          && !draft[panelId].hidden
-          && draft[panelId].mode === 'docked'
-          && draft[panelId].docked.region === region
-        )).length;
+        const slots = getRegionSlots(draft, region).filter((slot) => !slot.includes(id));
+        // Fractional order slides the panel BETWEEN two existing slots;
+        // normalizeDockSlots() compacts the result back to 0..n-1.
+        const order = slotIndex === undefined
+          ? slots.length
+          : Math.max(0, Math.min(slotIndex, slots.length)) - 0.5;
         draft[id].hidden = false;
         draft[id].mode = 'docked';
         draft[id].docked = {
           ...draft[id].docked,
           region,
-          orderInRegion,
+          orderInRegion: order,
+          tabGroupId: null,
+          tabOrder: 0,
+          tabActive: true,
         };
         return focusInPanelMap(draft, id);
+      }),
+    };
+  }),
+
+  dockPanelAsTab: (id, targetId) => set((state) => {
+    const target = state.panels[targetId];
+    if (id === targetId) return state;
+    if (target.hidden || target.mode !== 'docked') return state;
+    return {
+      panels: commitPanels(state, (draft) => {
+        const groupId = draft[targetId].docked.tabGroupId ?? targetId;
+        const existing = PANEL_IDS.filter((panelId) => (
+          panelId !== id
+          && !draft[panelId].hidden
+          && draft[panelId].mode === 'docked'
+          && dockSlotKey(draft[panelId]) === groupId
+        ));
+        // Adopt the target slot wholesale, then append at the end of its strip.
+        draft[targetId].docked = { ...draft[targetId].docked, tabGroupId: groupId };
+        draft[id].hidden = false;
+        draft[id].mode = 'docked';
+        draft[id].docked = {
+          ...draft[id].docked,
+          region: target.docked.region,
+          orderInRegion: target.docked.orderInRegion,
+          sizeInRegion: target.docked.sizeInRegion,
+          tabGroupId: groupId,
+          tabOrder: existing.length,
+          tabActive: true,
+        };
+        const focused = focusInPanelMap(draft, id);
+        return activateTabInPanelMap(focused, id);
+      }),
+    };
+  }),
+
+  activateTab: (id) => set((state) => {
+    const panel = state.panels[id];
+    if (panel.hidden || panel.mode !== 'docked') return state;
+    if (panel.docked.tabActive && panel.focused) return state;
+    return {
+      panels: commitPanels(state, (draft) => {
+        const focused = focusInPanelMap(draft, id);
+        return activateTabInPanelMap(focused, id);
       }),
     };
   }),
@@ -417,6 +659,9 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
         draft[id].hidden = false;
         draft[id].mode = 'floating';
         draft[id].floating = { ...draft[id].floating, x, y };
+        // Leaving a tab group must not leave the group id behind, or the panel
+        // would re-join that slot the next time it docks.
+        draft[id].docked = { ...draft[id].docked, tabGroupId: null, tabOrder: 0, tabActive: true };
         return focusInPanelMap(draft, id);
       }),
     };
@@ -425,9 +670,11 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
   maximizePanel: (id) => set((state) => {
     const panel = state.panels[id];
     if (panel.hidden || panel.mode === 'maximized') return state;
+    if (PANEL_CATALOG[id].resizable === false) return state;
     return {
       panels: commitPanels(state, (draft) => {
         draft[id].hidden = false;
+        draft[id].collapsed = false;
         draft[id].preMaximizeState = panelSnapshotForMaximize(panel);
         draft[id].mode = 'maximized';
         return focusInPanelMap(draft, id);
@@ -437,19 +684,61 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
 
   restorePanel: (id) => set((state) => {
     const panel = state.panels[id];
-    if (!panel.preMaximizeState) return state;
+    const snapshot = panel.preMaximizeState;
+    if (snapshot) {
+      return {
+        panels: commitPanels(state, (draft) => {
+          draft[id] = {
+            ...draft[id],
+            ...clonePartialPanelState(snapshot),
+            id,
+            preMaximizeState: null,
+          };
+          return draft;
+        }),
+      };
+    }
+    // A maximized panel with no snapshot must still be escapable: every route
+    // out of maximized (the titlebar control, the double-click, Escape) lands
+    // here, so returning `state` would strand the panel over the whole
+    // workarea for ever. Fall back to floating — the one mode that always
+    // renders, is always draggable, and can be docked anywhere afterwards.
+    if (panel.mode !== 'maximized') return state;
     return {
       panels: commitPanels(state, (draft) => {
-        draft[id] = {
-          ...draft[id],
-          ...clonePartialPanelState(panel.preMaximizeState),
-          id,
-          preMaximizeState: null,
-        };
+        draft[id].mode = 'floating';
+        draft[id].collapsed = false;
         return draft;
       }),
     };
   }),
+
+  collapsePanel: (id) => set((state) => {
+    const panel = state.panels[id];
+    if (panel.hidden || panel.collapsed || panel.mode === 'maximized') return state;
+    return {
+      panels: commitPanels(state, (draft) => {
+        draft[id].collapsed = true;
+        return draft;
+      }),
+    };
+  }),
+
+  expandPanel: (id) => set((state) => {
+    if (!state.panels[id].collapsed) return state;
+    return {
+      panels: commitPanels(state, (draft) => {
+        draft[id].collapsed = false;
+        return draft;
+      }),
+    };
+  }),
+
+  toggleCollapsePanel: (id) => {
+    const panel = usePanelRegistry.getState().panels[id];
+    if (panel.collapsed) usePanelRegistry.getState().expandPanel(id);
+    else usePanelRegistry.getState().collapsePanel(id);
+  },
 
   setDockRegionSize: (region, size) => set((state) => {
     const minSize = MIN_DOCK_REGION_SIZES[region];
@@ -479,52 +768,30 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
       return state;
     }
 
+    // The splitter moves SLOTS, not panels: every tab in the slot must take the
+    // new size or normalizeDockSlots() would widen it back to the group max.
+    const beforeKey = dockSlotKey(beforePanel);
+    const afterKey = dockSlotKey(afterPanel);
     return {
       panels: commitPanels(state, (draft) => {
-        draft[beforeId].docked = {
-          ...draft[beforeId].docked,
-          sizeInRegion: nextSizes.beforeSize,
-        };
-        draft[afterId].docked = {
-          ...draft[afterId].docked,
-          sizeInRegion: nextSizes.afterSize,
-        };
+        for (const panelId of PANEL_IDS) {
+          if (draft[panelId].mode !== 'docked' || draft[panelId].docked.region !== region) continue;
+          const key = dockSlotKey(draft[panelId]);
+          if (key === beforeKey) {
+            draft[panelId].docked = { ...draft[panelId].docked, sizeInRegion: nextSizes.beforeSize };
+          } else if (key === afterKey) {
+            draft[panelId].docked = { ...draft[panelId].docked, sizeInRegion: nextSizes.afterSize };
+          }
+        }
         return draft;
       }),
     };
   }),
 
-  setSampleSelectorDockOpen: (open) => set((state) => {
-    const panel = state.panels.sampleSelector;
-    if (open) {
-      const alreadyOpen = !panel.hidden
-        && panel.mode === 'docked'
-        && panel.docked.orderInRegion === 0
-        && panel.preMaximizeState === null;
-      if (alreadyOpen) return state;
-      return {
-        panels: commitPanels(state, (draft) => {
-          draft.sampleSelector.hidden = false;
-          draft.sampleSelector.mode = 'docked';
-          draft.sampleSelector.docked = {
-            ...draft.sampleSelector.docked,
-            orderInRegion: 0,
-          };
-          draft.sampleSelector.preMaximizeState = null;
-          return draft;
-        }),
-      };
-    }
-
-    if (panel.hidden && !panel.focused) return state;
-    return {
-      panels: commitPanels(state, (draft) => {
-        draft.sampleSelector.hidden = true;
-        draft.sampleSelector.focused = false;
-        return draft;
-      }),
-    };
-  }),
+  setSampleSelectorDockOpen: (open) => {
+    if (open) usePanelRegistry.getState().openPanel('sampleSelector');
+    else usePanelRegistry.getState().closePanel('sampleSelector');
+  },
 
   clampFloatingPanelsToWorkArea: (width, height) => set((state) => {
     if (!Number.isFinite(width) || !Number.isFinite(height) || width <= 0 || height <= 0) {
@@ -562,7 +829,7 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
   applyPreset: (presetId) => {
     const preset = loadPreset(presetId);
     if (!preset) return;
-    const panels = clonePanelStates(preset.panels);
+    const panels = normalizeDockSlots(clonePanelStates(preset.panels));
     const dockRegionSizes = { ...preset.dockRegionSizes };
     const current = usePanelRegistry.getState();
     if (panelMapsEqual(current.panels, panels) && dockRegionSizesEqual(current.dockRegionSizes, dockRegionSizes)) {
@@ -570,6 +837,13 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
     }
     scheduleLayoutPersistence(panels, dockRegionSizes);
     set({ panels, dockRegionSizes });
+  },
+
+  resetLayout: () => {
+    const panels = createInitialPanelStates();
+    const dockRegionSizes = createInitialDockRegionSizes();
+    scheduleLayoutPersistence(panels, dockRegionSizes);
+    set({ panels, dockRegionSizes, panelProps: {}, recentlyClosed: [] });
   },
 }));
 

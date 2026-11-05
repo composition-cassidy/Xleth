@@ -314,17 +314,53 @@ void XlethPitchShifterEffect::releaseEffect()
     alignedDryBuf_.setSize(0, 0);
 }
 
+void XlethPitchShifterEffect::primeDeferredReset()
+{
+    // Each call is a no-op when that spare is already primed. In steady state
+    // only the active mode's wrapper consumed its spare at the last reset, so
+    // that is the only one that pays; an inactive one re-primes only after a
+    // mode switch has swapped its spare in.
+    liveSmart_.primeSpare();
+    liveVoice_.primeSpare();
+}
+
+bool XlethPitchShifterEffect::resetOnAudioThread() noexcept
+{
+    // Only the audio thread consumes a spare (reset/process); the worker only
+    // ever primes one. So a spare seen ready here is still ready in reset().
+    const Mode mode = readModeRaw();
+    if ((mode == Mode::Smart && ! liveSmart_.isSpareReady())
+        || (mode == Mode::Voice && ! liveVoice_.isSpareReady()))
+        return false;
+
+    resetBypassRamp();
+    resetForMode(mode);
+    return true;
+}
+
 void XlethPitchShifterEffect::resetEffect()
+{
+    resetForMode(readModeRaw());
+}
+
+void XlethPitchShifterEffect::resetForMode(Mode mode)
 {
     granular_.reset();
     dryDelay_.reset();
     alignedDryBuf_.clear();
-    // LiveShifterWrapper::reset() calls the vendored shifter's reset(), which
-    // is NOT documented realtime safe. AudioProcessor::reset() is a message
-    // thread call, so this is legal here — but it must never migrate into
-    // processEffect().
-    liveSmart_.reset();
-    liveVoice_.reset();
+
+    // The running live wrapper resets now: a swap to its primed spare when
+    // primeDeferredReset() ran first, otherwise the vendored shifter's reset()
+    // plus inline priming, which is NOT realtime safe. Only the swap may run
+    // on the audio thread - resetOnAudioThread() declines otherwise - and
+    // neither may migrate into processEffect().
+    //
+    // The other wrapper is not running, so it resets lazily: markStale() makes
+    // its next process() swap in its own spare (realtime safe). If the mode
+    // changes between here and the next block, whichever wrapper ends up
+    // running is still reset - one now, the other on first use.
+    if (mode == Mode::Smart) liveSmart_.reset(); else liveSmart_.markStale();
+    if (mode == Mode::Voice) liveVoice_.reset(); else liveVoice_.markStale();
 }
 
 bool XlethPitchShifterEffect::copyLatencyAlignedBypassDry(juce::AudioBuffer<float>& dest,

@@ -11,6 +11,7 @@ import { buildResolvedTrackColorMap } from './trackColorResolver.js'
 import { buildTrackLayout } from './timelineRowLayout.js'
 import { normalizeTrackLayout, visibleTracksForLayout } from './trackFolderLayout.js'
 import useTimelineZoom from '../../hooks/useTimelineZoom.js'
+import { contentEndBeats, fitBeatsFor, minPpbFor, maxScrollFor, wheelZoomSteps } from './zoomFit.js'
 import useTimelineScroll from '../../hooks/useTimelineScroll.js'
 import useSnapStore from '../../stores/snapStore.js'
 import { subscribe } from '../../transportStore.js'
@@ -45,9 +46,9 @@ export default function VideoMirrorTimeline() {
   const snapGranularity = useSnapStore((s) => s.snapGranularity)
 
   // ── Shared tick↔px scale + horizontal pan (own instance; same hook/clamps) ─
-  const { pixelsPerBeat, pixelsPerBeatRef, zoomAtCursor } = useTimelineZoom()
+  const { pixelsPerBeat, pixelsPerBeatRef, setMinPpb, applyZoom, zoomAtCursor } = useTimelineZoom()
   const {
-    scrollOffset, scrollOffsetRef, applyScroll, scrollBy, scrollTo, setMaxScroll,
+    scrollOffset, scrollOffsetRef, maxScrollRef, applyScroll, scrollBy, scrollTo, setMaxScroll,
   } = useTimelineScroll()
 
   // ── Timeline data (read-only) ──────────────────────────────────────────────
@@ -294,13 +295,18 @@ export default function VideoMirrorTimeline() {
       const rect = e.currentTarget.getBoundingClientRect()
       const localX = e.clientX - rect.left
       const cursorBeat = pixelToBeat(localX, scrollOffsetRef.current, pixelsPerBeatRef.current)
-      zoomAtCursor(e.deltaY, cursorBeat, scrollOffsetRef, applyScroll)
+      const steps = wheelZoomSteps(e.deltaY, e.deltaMode)
+      if (steps === 0) return
+      // boundFor re-derives the clamp for the NEW zoom before the anchored
+      // scroll lands on it. See zoomAtCursor for the stammer that prevents.
+      zoomAtCursor(steps, cursorBeat, scrollOffsetRef, applyScroll,
+        (ppb) => setMaxScroll(scrollBoundForRef.current(ppb)))
     } else if (e.shiftKey || e.deltaX !== 0) {
       e.preventDefault()
       const delta = (e.shiftKey ? e.deltaY : e.deltaX) / (pixelsPerBeatRef.current || 40) * 0.8
       scrollBy(delta)
     }
-  }, [zoomAtCursor, applyScroll, scrollBy, pixelsPerBeatRef, scrollOffsetRef])
+  }, [zoomAtCursor, applyScroll, scrollBy, setMaxScroll, pixelsPerBeatRef, scrollOffsetRef])
 
   const normalizedFolderLayout = useMemo(
     () => normalizeTrackLayout(folderLayout, tracks),
@@ -327,29 +333,41 @@ export default function VideoMirrorTimeline() {
   }, [visibleTracks, mirrorTrackLayout, clips, regions, patternBlocks, patterns, themeRev])
 
   // ── Song length + max horizontal scroll ────────────────────────────────────
+  const songEndBeats = useMemo(
+    () => contentEndBeats([clips, patternBlocks], cues.map((cue) => cue.tick)),
+    [clips, patternBlocks, cues],
+  )
   const totalBeats = useMemo(() => {
     const minBeats = 64 * BEATS_PER_BAR
     const padBeats = 16 * BEATS_PER_BAR
-    let maxEnd = 0
-    for (const c of clips) {
-      const end = (c.positionTicks + c.durationTicks) / PPQ
-      if (end > maxEnd) maxEnd = end
-    }
-    for (const b of patternBlocks) {
-      const end = (b.positionTicks + b.durationTicks) / PPQ
-      if (end > maxEnd) maxEnd = end
-    }
-    for (const cue of cues) {
-      const end = cue.tick / PPQ
-      if (end > maxEnd) maxEnd = end
-    }
-    return Math.max(minBeats, maxEnd + padBeats)
-  }, [clips, patternBlocks, cues])
+    return Math.max(minBeats, songEndBeats + padBeats)
+  }, [songEndBeats])
+
+  // Same zoom-out limit + scroll bound as the Audio timeline (zoomFit.js).
+  const fitBeats = useMemo(() => fitBeatsFor(songEndBeats), [songEndBeats])
+  const minPpb = useMemo(() => minPpbFor(canvasWidth, fitBeats), [canvasWidth, fitBeats])
+  const scrollBoundFor = useCallback((ppb) => maxScrollFor({
+    ppb, canvasWidth, workspaceBeats: totalBeats, fitBeats, minPpb,
+  }), [canvasWidth, totalBeats, fitBeats, minPpb])
+  const scrollBoundForRef = useRef(scrollBoundFor)
+  scrollBoundForRef.current = scrollBoundFor
+
+  // Publish the limit; a view sitting at the old limit stays fitted, and one
+  // left below a limit that just rose is pulled up to it.
+  const prevMinPpbRef = useRef(null)
+  useEffect(() => {
+    const prevMin = prevMinPpbRef.current
+    prevMinPpbRef.current = minPpb
+    setMinPpb(minPpb)
+    const ppb = pixelsPerBeatRef.current
+    if ((prevMin != null && ppb <= prevMin * (1 + 1e-6)) || ppb < minPpb) applyZoom(minPpb)
+  }, [minPpb, setMinPpb, applyZoom, pixelsPerBeatRef])
 
   useEffect(() => {
-    const visibleBeats = canvasWidth / (pixelsPerBeat || 40)
-    setMaxScroll(Math.max(0, totalBeats - visibleBeats))
-  }, [totalBeats, canvasWidth, pixelsPerBeat, setMaxScroll])
+    const bound = scrollBoundFor(pixelsPerBeatRef.current)
+    setMaxScroll(bound)
+    if (scrollOffsetRef.current > bound) applyScroll(bound)
+  }, [scrollBoundFor, pixelsPerBeat, setMaxScroll, applyScroll, pixelsPerBeatRef, scrollOffsetRef])
 
   // ── Measure canvas area width (scrollbar sizing + max scroll) ──────────────
   useEffect(() => {
@@ -471,6 +489,7 @@ export default function VideoMirrorTimeline() {
           <TimelineScrollbar
             scrollOffsetRef={scrollOffsetRef}
             pixelsPerBeatRef={pixelsPerBeatRef}
+            maxScrollRef={maxScrollRef}
             totalBeats={totalBeats}
             canvasWidth={canvasWidth}
             onScroll={scrollBy}

@@ -12,6 +12,8 @@ import { PPQ, snapBeatToGrid, beatsToTicks } from '../../constants/timeline.js'
 import { registerEditorCommand } from '../../windowing/managers/EditorCommandRegistry'
 import { register as registerKeyboardBinding } from '../../windowing/managers/KeyboardManager'
 import { usePanelVisibility } from '../../windowing/contexts/PanelVisibilityContext'
+import { usePanelRegistry } from '../../windowing/registry/PanelRegistry.ts'
+import useQuickNotationStore from '../../stores/quickNotationStore.js'
 import { useToast } from '../Toast.jsx'
 import { DEFAULT_SCALE, nextScalePitch } from './scales.js'
 
@@ -113,6 +115,7 @@ export default function PianoRoll({
 }) {
   const { isVisible } = usePanelVisibility()
   const { showToast } = useToast()
+  const setQuickNotationContext = useQuickNotationStore((s) => s.setContext)
   const [pattern, setPattern] = useState(null)
   const [regions, setRegions] = useState([])
   const [activeTool, setActiveTool] = useState('pencil')
@@ -293,6 +296,17 @@ export default function PianoRoll({
     })
   }, [patternId, notifyChanged, showToast])
 
+  // Open Quick Notation for this pattern — chord tokens ("Dmin7***") expand
+  // to note events inserted via addNotesBatch, one undo entry per progression.
+  // Anchored at the viewport's left edge snapped to grid, same as Ctrl+V
+  // paste: the piano roll has no persistent edit cursor to read instead.
+  const handleOpenQuickNotation = useCallback(() => {
+    if (patternId == null) return
+    const anchorBeat = snapBeatToGrid(Math.max(0, scrollXRef.current / pixelsPerBeatRef.current), {})
+    setQuickNotationContext({ mode: 'chord', patternId, cursorTick: beatsToTicks(anchorBeat) })
+    usePanelRegistry.getState().openPanel('quickNotation')
+  }, [patternId, setQuickNotationContext])
+
   const handleAddNote = useCallback(async (note) => {
     try {
       await window.xleth?.timeline?.addNote(patternId, note)
@@ -411,19 +425,34 @@ export default function PianoRoll({
     window.xleth?.timeline?.previewNote?.(regionId, pitch, 0.8)
     let onMouseUp = null
     let onMouseLeave = null
+    let onPointerUp = null
+    let onPointerCancel = null
     const release = (sendNoteOff = true) => {
       if (!previewReleasesRef.current.delete(release)) return
       if (onMouseUp) window.removeEventListener('mouseup', onMouseUp)
       if (onMouseLeave) window.removeEventListener('mouseleave', onMouseLeave)
+      if (onPointerUp) window.removeEventListener('pointerup', onPointerUp)
+      if (onPointerCancel) window.removeEventListener('pointercancel', onPointerCancel)
       if (sendNoteOff) {
         window.xleth?.timeline?.previewNoteOff?.(regionId, pitch)
       }
     }
     onMouseUp = () => release(true)
     onMouseLeave = () => release(true)
+    // The piano roll canvas drags notes via pointer events and calls
+    // preventDefault() on pointerdown to drive its own gesture handling,
+    // which suppresses the browser's compatibility mouseup/mouseleave for
+    // that interaction — so a note previewed by placing/dragging on the
+    // canvas would never see mouseup and would ring forever. pointerup/
+    // pointercancel aren't suppressed, so listen for those too; release()
+    // is idempotent so this is safe alongside the plain-mouse keyboard path.
+    onPointerUp = () => release(true)
+    onPointerCancel = () => release(true)
     previewReleasesRef.current.add(release)
     window.addEventListener('mouseup', onMouseUp)
     window.addEventListener('mouseleave', onMouseLeave)
+    window.addEventListener('pointerup', onPointerUp)
+    window.addEventListener('pointercancel', onPointerCancel)
   }, [pattern?.regionId])
 
   // ── Keyboard shortcuts ────────────────────────────────────────────────────
@@ -748,6 +777,7 @@ export default function PianoRoll({
         scale={scale} onScaleChange={setScale}
         onZoomIn={handleZoomIn} onZoomOut={handleZoomOut}
         onOpenSamplerSettings={handleOpenSamplerSettings}
+        onOpenQuickNotation={handleOpenQuickNotation}
         samplerSettingsDisabled={samplerSettingsDisabled}
         onClose={onClose}
         floating={floating}

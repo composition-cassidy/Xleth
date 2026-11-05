@@ -7,6 +7,8 @@ import {
 import AudioPerformanceDiagnosticsPanel from './debug/AudioPerformanceDiagnosticsPanel.jsx'
 import XlethSelect from './common/XlethSelect.jsx'
 import VstBrowser from './mixer/VstBrowser.jsx'
+import ShortcutsSection from './settings/ShortcutsSection.jsx'
+import LogsSection from './settings/LogsSection.jsx'
 import { ThemeContext } from '../theming/runtime/ThemeProvider'
 import { resolveTheme, writeThemeToRoot } from '../theming/runtime/applyTheme'
 import {
@@ -53,17 +55,39 @@ const SETTINGS_KEY_AUDIO_DEVICE = 'audioOutputDevice'
 const SETTINGS_KEY_AUDIO_BUFFER = 'audioBufferSize'
 const SETTINGS_KEY_AUDIO_RATE   = 'audioSampleRate'
 
-export const SETTINGS_CATEGORIES = [
-  { id: 'project', label: 'Project', summary: 'Clip handling and safety defaults' },
-  { id: 'clipfx', label: 'Clip FX', summary: 'Default Vibrato and Scratch video companion FX' },
-  { id: 'transport', label: 'Transport', summary: 'Playback controls' },
-  { id: 'audio', label: 'Audio', summary: 'Output device, buffer size, and realtime diagnostics' },
-  { id: 'plugins', label: 'Plugins', summary: 'Scan and manage VST3 plugins' },
-  { id: 'graphics', label: 'Graphics', summary: 'GPU and preview diagnostics' },
-  { id: 'appearance', label: 'Appearance', summary: 'Accent color, brightness, and workspace backdrop' },
-  { id: 'launchers', label: 'Launchers', summary: 'Quick-launch external tools from the toolbar' },
-  { id: 'advanced', label: 'Advanced', summary: 'Export naming behavior' },
+// ─── Shell structure: two tabs, each with its own short sub-nav ─────────────
+//
+// The split is by WHAT A SETTING BELONGS TO, which is also what determines
+// whether it travels: Project settings are saved into the project and move
+// with it, Application settings are this installation's and stay behind. A
+// flat list of nine peers could not say that, and it left single-row pages
+// (Transport's one dropdown, Advanced's one dropdown) looking like whole
+// topics — both are now sections inside Project, where they are read in the
+// context they actually apply to.
+export const SETTINGS_TABS = [
+  { id: 'project', label: 'Project', summary: 'Settings saved with this project.' },
+  { id: 'application', label: 'Application', summary: 'Settings for this installation of XLETH.' },
 ]
+
+export const SETTINGS_CATEGORIES = [
+  { id: 'project', tab: 'project', label: 'General', summary: 'Clip handling, playback and safety defaults' },
+  { id: 'clipfx', tab: 'project', label: 'Clip FX', summary: 'Default Vibrato and Scratch video companion FX' },
+  { id: 'audio', tab: 'application', label: 'Audio', summary: 'Output device, buffer size, and realtime diagnostics' },
+  { id: 'plugins', tab: 'application', label: 'Plugins', summary: 'Scan and manage VST3 plugins' },
+  { id: 'graphics', tab: 'application', label: 'Graphics', summary: 'GPU and preview diagnostics' },
+  { id: 'appearance', tab: 'application', label: 'Appearance', summary: 'Accent color, brightness, and workspace backdrop' },
+  { id: 'shortcuts', tab: 'application', label: 'Shortcuts', summary: 'View and customise keyboard shortcuts' },
+  { id: 'launchers', tab: 'application', label: 'Launchers', summary: 'Quick-launch external tools from the toolbar' },
+  { id: 'logs', tab: 'application', label: 'Logs', summary: 'Export this session\'s console log' },
+]
+
+// Categories that used to be their own page. Kept so an existing deep link
+// (or a persisted "last open category") still lands somewhere sensible
+// instead of silently falling back to the first page.
+const MERGED_CATEGORY_ALIASES = {
+  transport: 'project',
+  advanced: 'project',
+}
 
 const AUTOSAVE_OPTIONS = [
   { value: 0, label: 'Off' },
@@ -82,6 +106,13 @@ const VIDEO_MODE_OPTIONS = [
   { value: 'auto', label: 'Auto (recommended)' },
   { value: 'software', label: 'Software' },
   { value: 'hardware', label: 'Hardware only' },
+]
+
+// Preview-proxy codec (engine ProxyCodec). Persisted in app settings as
+// 'proxyCodec' and pushed to the engine at startup (main.js applyEngineDefaults).
+const PROXY_CODEC_OPTIONS = [
+  { value: 'h264', label: 'H.264 (recommended)' },
+  { value: 'intra', label: 'All-intra (DNxHR / MJPEG): high quality' },
 ]
 
 const NAMING_FORMAT_OPTIONS = [
@@ -105,7 +136,12 @@ function normalizeBackdropPreference(value) {
 }
 
 function normalizeCategory(category) {
-  return SETTINGS_CATEGORIES.some(item => item.id === category) ? category : 'project'
+  if (SETTINGS_CATEGORIES.some(item => item.id === category)) return category
+  return MERGED_CATEGORY_ALIASES[category] || 'project'
+}
+
+function tabForCategory(category) {
+  return SETTINGS_CATEGORIES.find(item => item.id === category)?.tab || 'project'
 }
 
 // PROXY context only. This creates a fresh off-screen WebGL context inside
@@ -216,6 +252,14 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
   const [gpuStatus, setGpuStatus] = useState({ state: 'loading', adapters: [] })
   const [hwEncoderStatus, setHwEncoderStatus] = useState({ state: 'loading', encoders: [] })
   const [videoMode, setVideoMode] = useState('auto')
+  const [proxyCodec, setProxyCodec] = useState('h264')
+  // Engine-reported state: { requested, effective, h264Available } or null.
+  const [proxyCodecState, setProxyCodecState] = useState(null)
+  // "Delete regenerable files when closing a project" — default off. `error` is set
+  // when the engine did not confirm the value (the bridge call is optional-chained
+  // everywhere, so a missing call would otherwise leave UI and engine disagreeing).
+  const [purgeOnClose, setPurgeOnClose] = useState(false)
+  const [purgeOnCloseError, setPurgeOnCloseError] = useState('')
   const [diagState, setDiagState] = useState({ status: 'idle', message: '', path: '' })
   const [namingFormat, setNamingFormat] = useState('sampleNameOnly')
   const [audioDevices, setAudioDevices] = useState([])
@@ -325,6 +369,24 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
       setVideoMode(['auto', 'software', 'hardware'].includes(v) ? v : 'auto')
     }).catch(() => {})
 
+    // The engine is the source of truth for what is actually in effect (it
+    // holds the setting pushed at startup); the settings store is only read as
+    // a fallback if the engine call is unavailable.
+    xl?.proxy?.getCodec?.()?.then(state => {
+      if (state && (state.requested === 'h264' || state.requested === 'intra')) {
+        setProxyCodec(state.requested)
+        setProxyCodecState(state)
+      }
+    }).catch(() => {
+      xl?.settings?.get?.('proxyCodec')?.then(v => {
+        if (v === 'h264' || v === 'intra') setProxyCodec(v)
+      }).catch(() => {})
+    })
+
+    xl?.settings?.get?.('purgeRegenerableOnClose')?.then(v => {
+      setPurgeOnClose(v === true)
+    }).catch(() => {})
+
     xl?.settings?.get?.('sampleNamingFormat')?.then(v => {
       if (VALID_NAMING_FORMATS.includes(v)) setNamingFormat(v)
     }).catch(() => {})
@@ -415,6 +477,27 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
     [activeCategory]
   )
 
+  // The tab is derived from the selected category rather than held as its own
+  // state. Keeping a second source of truth invites the pair to disagree — a
+  // deep link straight to a category, or an alias resolving into the other
+  // tab, would otherwise land on a page its own tab strip says is not showing.
+  const activeTab = activeCategoryDef.tab
+  const activeTabDef = useMemo(
+    () => SETTINGS_TABS.find(tab => tab.id === activeTab) || SETTINGS_TABS[0],
+    [activeTab]
+  )
+  const visibleCategories = useMemo(
+    () => SETTINGS_CATEGORIES.filter(category => category.tab === activeTab),
+    [activeTab]
+  )
+
+  // Switching tabs selects that tab's first page, which is what makes the tab
+  // itself clickable at all — there is no "tab with nothing selected" state.
+  const selectTab = useCallback((tabId) => {
+    const first = SETTINGS_CATEGORIES.find(category => category.tab === tabId)
+    if (first) setActiveCategory(first.id)
+  }, [])
+
   function formatAdapterLine(a) {
     const vendor = a.vendor || 'Unknown'
     const name = (a.name || '').trim() || '(unnamed)'
@@ -496,6 +579,37 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
   async function applyVideoMode(mode) {
     setVideoMode(mode)
     await getXleth()?.settings?.set?.('videoMode', mode)
+  }
+
+  async function applyProxyCodec(codec) {
+    setProxyCodec(codec)
+    const xl = getXleth()
+    await xl?.settings?.set?.('proxyCodec', codec)
+    try {
+      const state = await xl?.proxy?.setCodec?.(codec)
+      if (state) setProxyCodecState(state)
+    } catch (e) {
+      console.error('[SettingsPanel] proxy.setCodec failed:', e)
+    }
+  }
+
+  async function applyPurgeOnClose(enabled) {
+    setPurgeOnClose(enabled)
+    setPurgeOnCloseError('')
+    const xl = getXleth()
+    await xl?.settings?.set?.('purgeRegenerableOnClose', enabled)
+    // The engine performs the purge, so it must hold the value too. It echoes the
+    // value in force; anything else means the call never landed.
+    try {
+      if (typeof xl?.project?.setPurgeOnClose !== 'function') {
+        throw new Error('window.xleth.project.setPurgeOnClose is not exposed')
+      }
+      const inForce = await xl.project.setPurgeOnClose(enabled)
+      if (inForce !== enabled) throw new Error(`engine reports ${JSON.stringify(inForce)}`)
+    } catch (e) {
+      console.error('[SettingsPanel] project.setPurgeOnClose failed:', e)
+      setPurgeOnCloseError('Could not apply this setting to the engine. Files will not be deleted on close until it is fixed.')
+    }
   }
 
   // ── Clip video-companion FX defaults ──────────────────────────────────────
@@ -990,7 +1104,24 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title="Project Safety" index={1}>
+      <SettingsSection title="Playback" index={1}>
+        <SettingsRow
+          label="Spacebar behavior"
+          htmlFor="settings-spacebar-mode"
+          description="Play/Pause holds position when stopped. Play/Stop returns to where playback started."
+        >
+          <XlethSelect
+            id="settings-spacebar-mode"
+            value={spacebarMode}
+            options={SPACEBAR_OPTIONS}
+            onChange={applySpacebarMode}
+            ariaLabel="Spacebar behavior"
+            className="settings-panel-select"
+          />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title="Project Safety" index={2}>
         <SettingsRow
           label="Autosave"
           htmlFor="settings-autosave-interval"
@@ -1002,6 +1133,23 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
             options={AUTOSAVE_OPTIONS}
             onChange={nextValue => applyAutosaveInterval(Number(nextValue))}
             ariaLabel="Autosave"
+            className="settings-panel-select"
+          />
+        </SettingsRow>
+      </SettingsSection>
+
+      <SettingsSection title="Export Naming" index={3}>
+        <SettingsRow
+          label="Filename Format"
+          htmlFor="settings-filename-format"
+          description="Controls generated sample/export names without changing project editing state."
+        >
+          <XlethSelect
+            id="settings-filename-format"
+            value={namingFormat}
+            options={NAMING_FORMAT_OPTIONS}
+            onChange={applyNamingFormat}
+            ariaLabel="Filename Format"
             className="settings-panel-select"
           />
         </SettingsRow>
@@ -1174,25 +1322,6 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
     )
   }
 
-  const renderTransport = () => (
-    <SettingsSection title="Playback" index={0}>
-      <SettingsRow
-        label="Spacebar behavior"
-        htmlFor="settings-spacebar-mode"
-        description="Play/Pause holds position when stopped. Play/Stop returns to where playback started."
-      >
-        <XlethSelect
-          id="settings-spacebar-mode"
-          value={spacebarMode}
-          options={SPACEBAR_OPTIONS}
-          onChange={applySpacebarMode}
-          ariaLabel="Spacebar behavior"
-          className="settings-panel-select"
-        />
-      </SettingsRow>
-    </SettingsSection>
-  )
-
   const renderAudio = () => (
     <>
       <SettingsSection title="Output Device" index={0}>
@@ -1316,7 +1445,59 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
         </div>
       </SettingsSection>
 
-      <SettingsSection title="Visual Preview Diagnostics" index={2}>
+      <SettingsSection title="Preview Proxies" index={2}>
+        <SettingsRow
+          label="Proxy codec"
+          htmlFor="settings-proxy-codec"
+          description="Format of the small preview copies Xleth makes of your video sources."
+        >
+          <XlethSelect
+            id="settings-proxy-codec"
+            value={proxyCodec}
+            options={PROXY_CODEC_OPTIONS}
+            onChange={applyProxyCodec}
+            ariaLabel="Proxy codec"
+            className="settings-panel-select"
+          />
+        </SettingsRow>
+        <div className="settings-panel-hint">
+          H.264 proxies take about a tenth of the disk space. All-intra proxies seek instantly but are 10 to 20 times larger. The choice applies to new proxies. When H.264 is selected, opening a project converts its older all-intra proxies in the background.
+        </div>
+        {proxyCodecState && proxyCodecState.requested === 'h264' && !proxyCodecState.h264Available && (
+          <div className="settings-panel-hint settings-panel-hint--warning">
+            No H.264 encoder is available on this system (Windows N editions need the Media Feature Pack), so new proxies use all-intra.
+          </div>
+        )}
+      </SettingsSection>
+
+      <SettingsSection title="Regenerable Files" index={3}>
+        <SettingsRow
+          label="Delete regenerable files when closing a project"
+          htmlFor="settings-purge-on-close"
+          description="Removes preview proxies, thumbnails and waveform caches when you close or switch projects, or quit."
+        >
+          <input
+            id="settings-purge-on-close"
+            type="checkbox"
+            className="settings-panel-checkbox"
+            checked={purgeOnClose}
+            onChange={e => applyPurgeOnClose(e.target.checked)}
+          />
+        </SettingsRow>
+        <div className="settings-panel-hint">
+          Saves disk space between sessions. Your source media and project file are never touched. Xleth rebuilds
+          whatever the project needs in the background the next time you open it — you can keep working meanwhile,
+          and the first playback may be slower until the previews are back. Previews whose source media is offline
+          are kept, because they cannot be rebuilt. File &gt; Clean up project removes leftovers on demand.
+        </div>
+        {purgeOnCloseError && (
+          <div className="settings-panel-hint settings-panel-hint--warning">
+            {purgeOnCloseError}
+          </div>
+        )}
+      </SettingsSection>
+
+      <SettingsSection title="Visual Preview Diagnostics" index={4}>
         <SettingsRow
           label="Visual preview diagnostic"
           description="Saves a plain-text report of the main preview and grid pipeline."
@@ -1827,29 +2008,12 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
     )
   }
 
-  const renderAdvanced = () => (
-    <SettingsSection title="Export Naming" index={0}>
-      <SettingsRow
-        label="Filename Format"
-        htmlFor="settings-filename-format"
-        description="Controls generated sample/export names without changing project editing state."
-      >
-        <XlethSelect
-          id="settings-filename-format"
-          value={namingFormat}
-          options={NAMING_FORMAT_OPTIONS}
-          onChange={applyNamingFormat}
-          ariaLabel="Filename Format"
-          className="settings-panel-select"
-        />
-      </SettingsRow>
-    </SettingsSection>
-  )
-
   const renderActiveCategory = () => {
     switch (activeCategory) {
-      case 'transport':
-        return renderTransport()
+      case 'shortcuts':
+        return <ShortcutsSection SettingsSection={SettingsSection} />
+      case 'logs':
+        return <LogsSection SettingsSection={SettingsSection} SettingsRow={SettingsRow} />
       case 'audio':
         return renderAudio()
       case 'plugins':
@@ -1860,8 +2024,6 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
         return renderAppearance()
       case 'launchers':
         return renderLaunchers()
-      case 'advanced':
-        return renderAdvanced()
       case 'clipfx':
         return renderClipFx()
       case 'project':
@@ -1885,18 +2047,49 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
         onMouseDown={event => event.stopPropagation()}
       >
         <div className="settings-panel-header">
-          <div>
+          <div className="settings-panel-headline">
             <div id="settings-panel-title" className="settings-panel-title">Settings</div>
-            <div className="settings-panel-subtitle">{activeCategoryDef.summary}</div>
+            {/* The scope, not the page. The page's own description lives on the
+                content heading below, so the two never say the same thing. */}
+            <div className="settings-panel-subtitle">{activeTabDef.summary}</div>
           </div>
+
+          <div
+            className="settings-panel-tabs"
+            role="tablist"
+            aria-label="Settings scope"
+          >
+            {SETTINGS_TABS.map(tab => {
+              const selected = activeTab === tab.id
+              return (
+                <button
+                  key={tab.id}
+                  type="button"
+                  role="tab"
+                  id={`settings-tab-${tab.id}`}
+                  aria-selected={selected}
+                  aria-controls="settings-panel-subnav"
+                  className={`settings-panel-tab${selected ? ' settings-panel-tab--active' : ''}`}
+                  onClick={() => selectTab(tab.id)}
+                >
+                  {tab.label}
+                </button>
+              )
+            })}
+          </div>
+
           <button className="settings-panel-close" onClick={onClose} aria-label="Close Settings">
             <X size={15} aria-hidden="true" />
           </button>
         </div>
 
         <div className="settings-panel-shell">
-          <nav className="settings-panel-categories" aria-label="Settings categories">
-            {SETTINGS_CATEGORIES.map(category => {
+          <nav
+            className="settings-panel-categories"
+            id="settings-panel-subnav"
+            aria-label={`${activeTabDef.label} settings`}
+          >
+            {visibleCategories.map(category => {
               const selected = activeCategory === category.id
               return (
                 <button
@@ -1917,6 +2110,7 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
               key={activeCategory}
               className="settings-panel-content-animate"
               data-settings-category={activeCategory}
+              data-settings-tab={activeTabDef.id}
             >
               <div className="settings-panel-category-heading">
                 <div className="settings-panel-category-title">{activeCategoryDef.label}</div>

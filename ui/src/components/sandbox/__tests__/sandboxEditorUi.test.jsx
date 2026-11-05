@@ -72,18 +72,28 @@ afterEach(() => { document.body.innerHTML = '' })
 const importWorkspace = () => import('../SandboxLayerWorkspace.jsx')
 const importStackPanel = () => import('../SandboxStackPanel.jsx')
 
-describe('layer card Duplicate button', () => {
-  it('renders on every card and calls duplicateLayer for that card', async () => {
+// The layer list is a compact RAIL of one-line rows now, not a stack of cards
+// (see SandboxLayerWorkspace.jsx) — the buttons moved, what they must do did
+// not. Duplicate is asserted by its title rather than a bespoke class: the row
+// buttons deliberately share one class, and a selector keyed on the tooltip is
+// the one that actually says "the Duplicate button" rather than "the third
+// button in the row".
+function rowButton(host, pattern, index = 0) {
+  return [...host.querySelectorAll('.sandbox-layer-row .sandbox-row-btn')]
+    .filter((b) => pattern.test(b.getAttribute('title') || ''))[index]
+}
+
+describe('layer row Duplicate button', () => {
+  it('renders on every row and calls duplicateLayer for that row', async () => {
     const duplicateLayer = vi.fn()
-    // Both cards INACTIVE (activeLayerId null) so neither upgrades to the real
-    // interactive canvas — this test is about the card header, not the canvas.
     const { host } = await mount(importWorkspace, {
       layers: [layer(), layer({ id: 2, name: 'DRUMS' })],
       activeLayerId: null,
       duplicateLayer,
     })
 
-    const buttons = [...host.querySelectorAll('.sandbox-layer-card-dup')]
+    const buttons = [...host.querySelectorAll('.sandbox-layer-row .sandbox-row-btn')]
+      .filter((b) => /Duplicate this layer/.test(b.getAttribute('title') || ''))
     expect(buttons).toHaveLength(2)
     // The tooltip has to say what "duplicate" actually carries, or the button
     // reads as "make an empty copy".
@@ -93,16 +103,31 @@ describe('layer card Duplicate button', () => {
     expect(duplicateLayer).toHaveBeenCalledWith(2)
   })
 
-  it('does not also activate the card it sits on', async () => {
+  it('does not also activate the row it sits on', async () => {
     const duplicateLayer = vi.fn()
     const setActiveLayer = vi.fn()
     const { host } = await mount(importWorkspace, {
       layers: [layer()], activeLayerId: null, duplicateLayer, setActiveLayer,
     })
 
-    await click(host.querySelector('.sandbox-layer-card-dup'))
+    await click(rowButton(host, /Duplicate this layer/))
     expect(duplicateLayer).toHaveBeenCalled()
     expect(setActiveLayer).not.toHaveBeenCalled()
+  })
+
+  // Phase 2: every row auditions its OWN layer without a composite render.
+  // The button is disabled until that layer has actually published a render —
+  // there is no PCM to play before then.
+  it('auditions the row layer through toggleLayerPreview', async () => {
+    const toggleLayerPreview = vi.fn()
+    const { host } = await mount(importWorkspace, {
+      layers: [layer(), layer({ id: 2, name: 'DRUMS' })],
+      activeLayerId: null,
+      toggleLayerPreview,
+    })
+
+    await click(rowButton(host, /Audition this layer alone/, 1))
+    expect(toggleLayerPreview).toHaveBeenCalledWith(2)
   })
 })
 

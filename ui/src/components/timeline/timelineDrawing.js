@@ -245,6 +245,22 @@ export function getSnapGridIntervalBeats(snapGranularity = '1/16') {
   return Number.isFinite(interval) && interval > 0 ? interval : GRANULARITY_BEATS['1/16']
 }
 
+// Zoomed far out (the whole-song fit can go well below 8 px/beat), drawing
+// every bar number and every beat line turns the ruler into overlapping text
+// and the grid into a solid fill. These pick the sparsest power-of-two bar
+// stride that keeps marks at least `minPx` apart. At normal zoom both return
+// 1 (every bar), which is exactly the old output.
+export const BAR_LABEL_MIN_PX = 36
+export const BAR_LINE_MIN_PX = 10
+export const BEAT_LINE_MIN_PX = 4
+export function barStrideFor(ppb, minPx) {
+  const barPx = ppb * BEATS_PER_BAR
+  if (!(barPx > 0)) return 1
+  let stride = 1
+  while (stride * barPx < minPx && stride < 1 << 20) stride *= 2
+  return stride
+}
+
 export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null, palette = null, trackLayout = null, snapGranularity = '1/16') {
   ctx.clearRect(0, 0, w, h)
   const p = palette ?? resolveTimelinePalette()
@@ -340,11 +356,11 @@ export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null
     ctx.stroke()
   }
 
-  // Beat lines (vertical, minor)
+  // Beat lines (vertical, minor) — dropped once they'd be < 4px apart.
   ctx.strokeStyle = p.gridBeat
   ctx.lineWidth = 0.5
   ctx.beginPath()
-  for (let beat = startBeat; beat <= endBeat; beat++) {
+  for (let beat = startBeat; ppb >= BEAT_LINE_MIN_PX && beat <= endBeat; beat++) {
     if (beat % BEATS_PER_BAR === 0) continue // bars drawn separately
     const x = Math.round(beatToPixel(beat, scrollOffset, ppb)) + 0.5
     if (x < 0) continue
@@ -377,12 +393,14 @@ export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null
     ctx.stroke()
   }
 
-  // Bar lines (vertical, major — every BEATS_PER_BAR beats)
+  // Bar lines (vertical, major — every BEATS_PER_BAR beats, thinned by a
+  // power-of-two stride when zoomed far out)
   ctx.strokeStyle = p.gridBar
   ctx.lineWidth = 1
   ctx.beginPath()
-  const firstBar = Math.floor(startBeat / BEATS_PER_BAR) * BEATS_PER_BAR
-  for (let beat = firstBar; beat <= endBeat; beat += BEATS_PER_BAR) {
+  const lineStepBeats = barStrideFor(ppb, BAR_LINE_MIN_PX) * BEATS_PER_BAR
+  const firstBar = Math.floor(startBeat / lineStepBeats) * lineStepBeats
+  for (let beat = firstBar; beat <= endBeat; beat += lineStepBeats) {
     const x = Math.round(beatToPixel(beat, scrollOffset, ppb)) + 0.5
     if (x < 0) continue
     if (x > w) break
@@ -416,17 +434,21 @@ export function drawRuler(ctx, w, h, scrollOffset, ppb, palette = null) {
   const startBeat = Math.floor(scrollOffset)
   const endBeat = Math.ceil(scrollOffset + w / ppb) + 1
 
-  // Beat tick marks
+  // Beat tick marks. Zoomed far out, beat ticks drop out and bar ticks thin
+  // to the same stride as the grid's bar lines.
   ctx.strokeStyle = p.rulerBorder
   ctx.lineWidth = 1
   ctx.beginPath()
-  for (let beat = startBeat; beat <= endBeat; beat++) {
+  const drawBeatTicks = ppb >= BEAT_LINE_MIN_PX
+  const tickStepBeats = drawBeatTicks ? 1 : barStrideFor(ppb, BAR_LINE_MIN_PX) * BEATS_PER_BAR
+  const labelStepBeats = barStrideFor(ppb, BAR_LABEL_MIN_PX) * BEATS_PER_BAR
+  for (let beat = Math.floor(startBeat / tickStepBeats) * tickStepBeats; beat <= endBeat; beat += tickStepBeats) {
     const x = Math.round(beatToPixel(beat, scrollOffset, ppb)) + 0.5
     if (x < 0) continue
     if (x > w) break
 
     const isBar = beat % BEATS_PER_BAR === 0
-    const tickH = isBar ? h * 0.6 : h * 0.3
+    const tickH = beat % labelStepBeats === 0 ? h * 0.6 : isBar ? h * (drawBeatTicks ? 0.6 : 0.3) : h * 0.3
     ctx.moveTo(x, h)
     ctx.lineTo(x, h - tickH)
   }
@@ -467,8 +489,8 @@ export function drawRuler(ctx, w, h, scrollOffset, ppb, palette = null) {
   ctx.fillStyle = p.rulerText
   ctx.font = uiCanvasFont('600 9px')
   ctx.textBaseline = 'top'
-  const firstBar = Math.floor(startBeat / BEATS_PER_BAR) * BEATS_PER_BAR
-  for (let beat = firstBar; beat <= endBeat; beat += BEATS_PER_BAR) {
+  const firstBar = Math.floor(startBeat / labelStepBeats) * labelStepBeats
+  for (let beat = firstBar; beat <= endBeat; beat += labelStepBeats) {
     const x = beatToPixel(beat, scrollOffset, ppb)
     if (x < -30) continue
     if (x > w) break

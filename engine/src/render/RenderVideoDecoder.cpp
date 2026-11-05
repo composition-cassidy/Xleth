@@ -1,6 +1,7 @@
 #include "RenderVideoDecoder.h"
 
 #include "FrameRateMath.h"
+#include "XlethDebug.h"
 #include "../video/SwsDestBuffer.h"
 
 #include <algorithm>
@@ -8,6 +9,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <thread>
 
 // ===========================================================================
 // DecoderContext
@@ -16,10 +18,13 @@
 void DecoderContext::close()
 {
     if (swsCtx)    { sws_freeContext(swsCtx);          swsCtx    = nullptr; }
-    if (frame)     { av_frame_free(&frame);                                 }
-    if (packet)    { av_packet_free(&packet);                               }
-    if (codecCtx)  { avcodec_free_context(&codecCtx);                      }
-    if (formatCtx) { avformat_close_input(&formatCtx);                     }
+    bgraScratch.clear();
+    bgraScratch.shrink_to_fit();
+    if (frame)           { av_frame_free(&frame);                           }
+    if (hwTransferFrame) { av_frame_free(&hwTransferFrame);                 }
+    if (packet)          { av_packet_free(&packet);                         }
+    if (codecCtx)        { avcodec_free_context(&codecCtx);                }
+    if (formatCtx)       { avformat_close_input(&formatCtx);               }
 
     videoStreamIdx   = -1;
     width            = 0;
@@ -29,7 +34,32 @@ void DecoderContext::close()
     sequentialHint   = false;
     isIntraOnly      = false;
     isHwAccel        = false;
+    framesDecodedThisCall = 0;
     sourcePath.clear();
+}
+
+// ===========================================================================
+// Software decode threading
+// ===========================================================================
+
+int RenderVideoDecoder::defaultDecodeThreads()
+{
+    const int hw = static_cast<int>(std::thread::hardware_concurrency());
+    return std::clamp(hw / 2, 1, kMaxDecodeThreads);
+}
+
+// Applied right before avcodec_open2 on the SOFTWARE path only. Frame
+// threading pipelines whole frames across workers (the win for long-GOP
+// H.264), slice threading splits one frame (the win for DNxHR/ProRes, which
+// are sliced); FFmpeg picks whichever the codec supports. The pipeline fill
+// after a seek costs at most (threads - 1) extra packets, which is noise
+// next to the GOP re-decode the seek already pays. Left alone for D3D11VA:
+// the hw path decodes on the GPU's video engine and gains nothing here.
+static void configureSoftwareDecodeThreads(AVCodecContext* codecCtx, int threads)
+{
+    if (!codecCtx || threads <= 1) return;
+    codecCtx->thread_count = threads;
+    codecCtx->thread_type  = FF_THREAD_FRAME | FF_THREAD_SLICE;
 }
 
 // ===========================================================================
@@ -60,15 +90,25 @@ void RenderVideoDecoder::closeAll()
     lruOrder_.clear();
 }
 
-bool RenderVideoDecoder::closeSource(const std::string& sourcePath)
+bool RenderVideoDecoder::closeKey(const std::string& key)
 {
-    auto it = contexts_.find(sourcePath);
+    auto it = contexts_.find(key);
     if (it == contexts_.end()) return false;
 
     it->second.ctx.close();
+    lruOrder_.erase(it->second.lruIt);
     contexts_.erase(it);
-    lruOrder_.remove(sourcePath);
     return true;
+}
+
+bool RenderVideoDecoder::closeSource(const std::string& sourcePath)
+{
+    // Every stream of the file — a caller closing a path is about to delete or
+    // overwrite it, and any one handle left open makes that fail on Windows.
+    bool closed = false;
+    for (int i = 0; i < kMaxStreamsPerSource; ++i)
+        closed = closeKey(streamKey(sourcePath, i)) || closed;
+    return closed;
 }
 
 // ===========================================================================
@@ -118,34 +158,111 @@ bool RenderVideoDecoder::initHwDevice(ID3D11Device* device, ID3D11DeviceContext*
 // Context pool — LRU management
 // ===========================================================================
 
-DecoderContext* RenderVideoDecoder::getOrOpenContext(const std::string& sourcePath)
+std::string RenderVideoDecoder::streamKey(const std::string& sourcePath, int streamIndex)
 {
-    auto it = contexts_.find(sourcePath);
-    if (it != contexts_.end()) {
-        promoteToMru(sourcePath);
-        it->second.lastTouched = std::chrono::steady_clock::now();
-        return &it->second.ctx;
-    }
+    // Stream 0 is keyed by the bare path so path lookups keep finding it.
+    if (streamIndex == 0) return sourcePath;
+    return sourcePath + "\x1f#" + std::to_string(streamIndex);
+}
 
-    // Evict if at capacity. sourcePath (about to be opened below) cannot
-    // itself be picked here: it isn't inserted into contexts_/lruOrder_
-    // until after this loop, so evictLruContext() only ever sees OTHER,
-    // already-open paths as candidates.
+RenderVideoDecoder::ContextEntry*
+RenderVideoDecoder::openStreamAt(const std::string& key, const std::string& sourcePath,
+                                 int streamIndex)
+{
+    // Evict if at capacity. key (about to be opened below) cannot itself be
+    // picked here: it isn't inserted into contexts_/lruOrder_ until after this
+    // loop, so evictLruContext() only ever sees OTHER, already-open contexts.
     while (static_cast<int>(contexts_.size()) >= contextBudget_) {
         if (!evictLruContext()) break;   // nothing left that's safe to evict
     }
 
-    // Open new context
     ContextEntry entry;
     if (!openSource(entry.ctx, sourcePath)) {
         return nullptr;
     }
 
-    lruOrder_.push_front(sourcePath);
+    lruOrder_.push_front(key);
     entry.lruIt = lruOrder_.begin();
     entry.lastTouched = std::chrono::steady_clock::now();
-    auto [insertIt, _] = contexts_.emplace(sourcePath, std::move(entry));
-    return &insertIt->second.ctx;
+    entry.streamIndex = streamIndex;
+    auto [insertIt, _] = contexts_.emplace(key, std::move(entry));
+    return &insertIt->second;
+}
+
+bool RenderVideoDecoder::canContinueForward(const DecoderContext& ctx, int64_t frameIndex) const
+{
+    // Intra-only decoders accept the first frame they produce as the target
+    // (decodeFrame), so they must always seek — which is cheap for them anyway.
+    if (ctx.isIntraOnly || ctx.lastDecodedFrame < 0 || !ctx.formatCtx) return false;
+    const int64_t gap = frameIndex - ctx.lastDecodedFrame;
+    if (gap < 1) return false;
+    if (gap == 1) return true;
+
+    // Forward decoding costs `gap` frames. A seek costs (target - keyframe)
+    // frames plus the seek and flush. If no keyframe lies between where the
+    // decoder is and the target, the seek would land at or before the current
+    // position, so forward is never worse. The container's index says.
+    AVStream* stream = ctx.formatCtx->streams[ctx.videoStreamIdx];
+    const int64_t targetPts = targetPtsForFrame(ctx, frameIndex);
+    const int idx = av_index_search_timestamp(stream, targetPts, AVSEEK_FLAG_BACKWARD);
+    if (idx >= 0) {
+        if (const AVIndexEntry* e = avformat_index_get_entry(stream, idx))
+            return e->timestamp <= targetPtsForFrame(ctx, ctx.lastDecodedFrame);
+    }
+    // No index to consult (e.g. a stream format without one): bounded guess.
+    return gap <= kForwardDecodeFallbackFrames;
+}
+
+DecoderContext* RenderVideoDecoder::acquireStream(const std::string& sourcePath,
+                                                  int64_t frameIndex)
+{
+    const auto now = std::chrono::steady_clock::now();
+    const auto busyWindow = std::chrono::milliseconds(kStreamBusyMs);
+
+    ContextEntry* best = nullptr;           // can reach frameIndex going forward
+    std::string   bestKey;
+    int64_t       bestGap = INT64_MAX;
+    ContextEntry* lru = nullptr;            // least recently used stream of this file
+    std::string   lruKey;
+    int           freeIndex = -1;
+
+    for (int i = 0; i < kMaxStreamsPerSource; ++i) {
+        std::string key = streamKey(sourcePath, i);
+        auto it = contexts_.find(key);
+        if (it == contexts_.end()) {
+            if (freeIndex < 0) freeIndex = i;
+            continue;
+        }
+        ContextEntry& e = it->second;
+        if (canContinueForward(e.ctx, frameIndex)) {
+            const int64_t gap = frameIndex - e.ctx.lastDecodedFrame;
+            if (gap < bestGap) { bestGap = gap; best = &e; bestKey = key; }
+        }
+        if (!lru || e.lastTouched < lru->lastTouched) { lru = &e; lruKey = key; }
+    }
+
+    // A stream used within busyWindow is presumed to be following a playing
+    // cell (a 24 fps source touches its stream every ~42 ms), so it is only
+    // taken over — and made to seek away — when the file is at its stream cap.
+    ContextEntry* chosen = nullptr;
+    std::string   key;
+    if (best) {
+        chosen = best; key = bestKey;              // continue forward, no seek
+    } else if (lru && (now - lru->lastTouched >= busyWindow || freeIndex < 0)) {
+        chosen = lru; key = lruKey;                // idle, or at the cap: seek it
+    } else {
+        key = streamKey(sourcePath, freeIndex);    // every stream is in use: add one
+    }
+
+    inFlightPath_ = key;   // pin before any eviction the open below may do
+    if (!chosen) {
+        chosen = openStreamAt(key, sourcePath, freeIndex);
+        if (!chosen) return nullptr;
+    } else {
+        promoteToMru(key);
+    }
+    chosen->lastTouched = now;
+    return &chosen->ctx;
 }
 
 bool RenderVideoDecoder::evictLruContext()
@@ -153,21 +270,16 @@ bool RenderVideoDecoder::evictLruContext()
     // Walk from the LRU end, skipping the context decode() is currently
     // using (inFlightPath_). That context should never actually be this far
     // back in lruOrder_ while pinned — it was just promoted to MRU by the
-    // getOrOpenContext() call that pinned it — but the guard is the one
+    // acquireStream() call that pinned it — but the guard is the one
     // invariant that must hold even if a future caller changes that: never
     // close a context with an in-flight decode on the video thread.
     for (auto rit = lruOrder_.rbegin(); rit != lruOrder_.rend(); ++rit) {
         if (!inFlightPath_.empty() && *rit == inFlightPath_) continue;
 
         const std::string victim = *rit;
-        std::fprintf(stderr, "[RenderDecoder] Evicting LRU context: '%s'\n", victim.c_str());
-
-        auto it = contexts_.find(victim);
-        if (it != contexts_.end()) {
-            it->second.ctx.close();
-            contexts_.erase(it);
-        }
-        lruOrder_.erase(std::next(rit).base());
+        XLETH_RENDER_LOG(std::fprintf(stderr,
+                     "[RenderDecoder] Evicting LRU context: '%s'\n", victim.c_str()));
+        closeKey(victim);
         return true;
     }
     return false;
@@ -175,7 +287,10 @@ bool RenderVideoDecoder::evictLruContext()
 
 void RenderVideoDecoder::setActiveContextBudget(int distinctPathCount)
 {
-    contextBudget_ = std::clamp(distinctPathCount, MAX_OPEN_CONTEXTS, kMaxOpenContextsCap);
+    // Headroom for the extra per-file streams a frame's cells may be playing
+    // from, on top of one context per distinct path.
+    contextBudget_ = std::clamp(distinctPathCount + (kMaxStreamsPerSource - 1),
+                                MAX_OPEN_CONTEXTS, kMaxOpenContextsCap);
 }
 
 void RenderVideoDecoder::pruneIdleContexts(double idleSeconds)
@@ -187,17 +302,21 @@ void RenderVideoDecoder::pruneIdleContexts(double idleSeconds)
 
     // Collect first, close after: closeSource() mutates contexts_/lruOrder_,
     // which would invalidate an in-progress iteration over contexts_.
+    // Extra streams belong to one playing cell and go stale much sooner.
+    const auto extraThreshold =
+        std::chrono::duration<double>(std::min(idleSeconds, kExtraStreamIdleSeconds));
     std::vector<std::string> toClose;
-    for (const auto& [path, entry] : contexts_) {
-        if (!inFlightPath_.empty() && path == inFlightPath_) continue;
-        if (now - entry.lastTouched >= threshold) {
-            toClose.push_back(path);
+    for (const auto& [key, entry] : contexts_) {
+        if (!inFlightPath_.empty() && key == inFlightPath_) continue;
+        if (now - entry.lastTouched >= (entry.streamIndex > 0 ? extraThreshold : threshold)) {
+            toClose.push_back(key);
         }
     }
-    for (const auto& path : toClose) {
-        std::fprintf(stderr, "[RenderDecoder] Closing idle context (untouched >= %.0fs): '%s'\n",
-                     idleSeconds, path.c_str());
-        closeSource(path);
+    for (const auto& key : toClose) {
+        XLETH_RENDER_LOG(std::fprintf(stderr,
+                     "[RenderDecoder] Closing idle context (untouched >= %.0fs): '%s'\n",
+                     idleSeconds, key.c_str()));
+        closeKey(key);
     }
 }
 
@@ -230,7 +349,7 @@ RenderVideoDecoder::openSourceInfos() const
     for (const auto& kv : contexts_) {
         const DecoderContext& c = kv.second.ctx;
         OpenSourceInfo info;
-        info.sourcePath = kv.first;
+        info.sourcePath = c.sourcePath;   // the file, not the stream key
         info.path       = c.isHwAccel ? DecodePath::Hardware : DecodePath::Software;
         info.intraOnly  = c.isIntraOnly;
         info.width      = c.width;
@@ -243,9 +362,12 @@ RenderVideoDecoder::openSourceInfos() const
 RenderVideoDecoder::DecodePath
 RenderVideoDecoder::decodePathFor(const std::string& sourcePath) const
 {
-    auto it = contexts_.find(sourcePath);
-    if (it == contexts_.end()) return DecodePath::None;
-    return it->second.ctx.isHwAccel ? DecodePath::Hardware : DecodePath::Software;
+    for (int i = 0; i < kMaxStreamsPerSource; ++i) {
+        auto it = contexts_.find(streamKey(sourcePath, i));
+        if (it != contexts_.end())
+            return it->second.ctx.isHwAccel ? DecodePath::Hardware : DecodePath::Software;
+    }
+    return DecodePath::None;
 }
 
 // ===========================================================================
@@ -337,6 +459,10 @@ bool RenderVideoDecoder::openSource(DecoderContext& ctx, const std::string& sour
         }
     }
 
+    const int swThreads = (decodeThreads_ > 0) ? decodeThreads_ : defaultDecodeThreads();
+    if (!ctx.isHwAccel)
+        configureSoftwareDecodeThreads(ctx.codecCtx, swThreads);
+
     // 6. Open codec
     {
         int openRet = avcodec_open2(ctx.codecCtx, codec, nullptr);
@@ -352,6 +478,7 @@ bool RenderVideoDecoder::openSource(DecoderContext& ctx, const std::string& sour
                 ctx.codecCtx = avcodec_alloc_context3(codec);
                 avcodec_parameters_to_context(ctx.codecCtx, stream->codecpar);
                 ctx.isHwAccel = false;
+                configureSoftwareDecodeThreads(ctx.codecCtx, swThreads);
                 int swRet = avcodec_open2(ctx.codecCtx, codec, nullptr);
                 if (swRet < 0) {
                     char swErr[AV_ERROR_MAX_STRING_SIZE] = {0};
@@ -423,12 +550,13 @@ bool RenderVideoDecoder::openSource(DecoderContext& ctx, const std::string& sour
         return false;
     }
 
-    std::fprintf(stderr, "[RenderDecoder] Opened '%s': %dx%d @ %d/%d fps (%.5f), codec=%s, hw=%s, intra=%s\n",
+    std::fprintf(stderr, "[RenderDecoder] Opened '%s': %dx%d @ %d/%d fps (%.5f), codec=%s, hw=%s, intra=%s, threads=%d\n",
                  sourcePath.c_str(), ctx.width, ctx.height,
                  ctx.frameRate.num, ctx.frameRate.den, av_q2d(ctx.frameRate),
                  codec->name,
                  ctx.isHwAccel ? "D3D11VA" : "SW",
-                 ctx.isIntraOnly ? "yes" : "no");
+                 ctx.isIntraOnly ? "yes" : "no",
+                 ctx.isHwAccel ? 1 : std::max(1, ctx.codecCtx->thread_count));
 
     return true;
 }
@@ -468,9 +596,16 @@ bool RenderVideoDecoder::seekToFrame(DecoderContext& ctx, int64_t frameIndex)
     // All other non-consecutive requests (random scrub, loop wraparound /
     // seek-back where target < lastDecodedFrame, or a second different frame of
     // the same source within one tick) fail the `+ 1` test and seek as before.
-    if (ctx.lastDecodedFrame >= 0 && frameIndex == ctx.lastDecodedFrame + 1) {
-        std::fprintf(stderr, "[RenderDecoder] Sequential hint: skipping seek for frame %lld\n",
-                     (long long)frameIndex);
+    //
+    // Generalised beyond +1: when no keyframe lies between the decoder's
+    // position and the target, decoding forward is never more work than a
+    // seek (which would land at or before where we already are). This is what
+    // a 24 fps source shown at a 60 fps preview, or a cell that just resumed a
+    // few frames on, looks like. See canContinueForward().
+    if (canContinueForward(ctx, frameIndex)) {
+        XLETH_RENDER_LOG(std::fprintf(stderr,
+                     "[RenderDecoder] Sequential: decoding forward %lld -> %lld, no seek\n",
+                     (long long)ctx.lastDecodedFrame, (long long)frameIndex));
         return true;
     }
 
@@ -536,12 +671,30 @@ bool RenderVideoDecoder::decodeFrame(DecoderContext& ctx, int64_t frameIndex)
     while (!gotFrame && maxAttempts-- > 0) {
         int ret = av_read_frame(ctx.formatCtx, ctx.packet);
         if (ret < 0) {
-            // EOF or error — try to drain
+            // EOF or error — drain. With frame threading the decoder holds up
+            // to (threads - 1) finished frames here, so keep receiving until
+            // one reaches the target; the last frame delivered before the
+            // drain runs dry is the closest the file has, exactly as the
+            // single-threaded drain returned its one buffered frame.
+            //
+            // Received into a scratch frame and moved over: avcodec_receive_
+            // frame unrefs its destination before doing anything, so receiving
+            // straight into ctx.frame would wipe the kept frame the moment the
+            // drain ran dry.
             avcodec_send_packet(ctx.codecCtx, nullptr);
-            ret = avcodec_receive_frame(ctx.codecCtx, ctx.frame);
-            if (ret == 0) {
+            AVFrame* drained = av_frame_alloc();
+            while (drained) {
+                if (avcodec_receive_frame(ctx.codecCtx, drained) < 0) break;
+                ++ctx.framesDecodedThisCall;
+                av_frame_unref(ctx.frame);
+                av_frame_move_ref(ctx.frame, drained);
                 gotFrame = true;
+                const int64_t pts = (ctx.frame->pts != AV_NOPTS_VALUE)
+                                        ? ctx.frame->pts
+                                        : ctx.frame->best_effort_timestamp;
+                if (ctx.isIntraOnly || pts >= acceptPTS) break;
             }
+            av_frame_free(&drained);
             break;
         }
 
@@ -580,6 +733,7 @@ bool RenderVideoDecoder::decodeFrame(DecoderContext& ctx, int64_t frameIndex)
                 break;
             }
 
+            ++ctx.framesDecodedThisCall;
             int64_t pts = (ctx.frame->pts != AV_NOPTS_VALUE)
                               ? ctx.frame->pts
                               : ctx.frame->best_effort_timestamp;
@@ -638,31 +792,40 @@ FrameCacheEntry RenderVideoDecoder::decode(const std::string& sourcePath,
         return empty;
     }
 
-    // Pin sourcePath for the duration of this call so eviction (LRU or idle)
-    // can never close the context this decode is using, on any return path.
-    inFlightPath_ = sourcePath;
+    // acquireStream pins the chosen stream's key in inFlightPath_ for the
+    // duration of this call, so eviction (LRU or idle) can never close the
+    // context this decode is using, on any return path.
     struct InFlightGuard {
         std::string& slot;
         ~InFlightGuard() { slot.clear(); }
     } inFlightGuard{inFlightPath_};
 
-    // Get or open the decoder context for this source
-    DecoderContext* ctx = getOrOpenContext(sourcePath);
+    using Clock = std::chrono::steady_clock;
+    const auto t0 = Clock::now();
+    const size_t openBefore = contexts_.size();
+
+    // Pick (or open) the stream of this file that should serve the frame
+    DecoderContext* ctx = acquireStream(sourcePath, frameIndex);
+    const bool wasOpen = contexts_.size() <= openBefore;
     if (!ctx) {
         return empty;
     }
+    const auto tOpened = Clock::now();
 
     // Seek to the target frame
+    const int64_t prevDecoded = ctx->lastDecodedFrame;
     if (!seekToFrame(*ctx, frameIndex)) {
         return empty;
     }
 
     // Decode until we get the frame
+    ctx->framesDecodedThisCall = 0;
     if (!decodeFrame(*ctx, frameIndex)) {
         std::fprintf(stderr, "[RenderDecoder] Failed to decode frame %lld from '%s'\n",
                      (long long)frameIndex, sourcePath.c_str());
         return empty;
     }
+    const auto tDecoded = Clock::now();
 
     // Route to hw or sw extraction
     FrameCacheEntry result;
@@ -673,6 +836,22 @@ FrameCacheEntry RenderVideoDecoder::decode(const std::string& sourcePath,
     }
 
     av_frame_unref(ctx->frame);
+
+    // Slow-decode breakdown — where a preview hitch came from. Gated.
+    const auto ms = [](Clock::time_point a, Clock::time_point b) {
+        return std::chrono::duration<double, std::milli>(b - a).count();
+    };
+    const double totalMs = ms(t0, Clock::now());
+    if (totalMs > 15.0) {
+        XLETH_RENDER_LOG(std::fprintf(stderr,
+            "[RenderDecoder] SLOW %.1fms '%s' frame=%lld (prev=%lld): open=%.1f%s "
+            "decode=%.1f (%d frames) extract=%.1f %dx%d %s\n",
+            totalMs, sourcePath.c_str(), (long long)frameIndex, (long long)prevDecoded,
+            ms(t0, tOpened), wasOpen ? "" : " [NEW]",
+            ms(tOpened, tDecoded), ctx->framesDecodedThisCall,
+            ms(tDecoded, Clock::now()), ctx->width, ctx->height,
+            ctx->isHwAccel ? "hw" : "sw"));
+    }
     return result;
 }
 
@@ -695,19 +874,35 @@ FrameCacheEntry RenderVideoDecoder::extractHwFrame(DecoderContext& ctx, AVFrame*
     // D3D11VA decode still runs on the GPU video engine (faster than SW decode
     // for 1080p H.264) — only the texture format conversion takes a GPU→CPU→GPU
     // detour. Zero-copy NV12 SRV + YUV shader is a future optimization.
-    AVFrame* swFrame = av_frame_alloc();
+    //
+    // The destination frame is kept on the context and reused. When it still
+    // holds buffers of the right shape, av_hwframe_transfer_data copies into
+    // them in place; otherwise (first frame, or the stream changed size) it is
+    // emptied so the transfer allocates fresh. Before this it was a new frame
+    // — a fresh NV12 allocation, ~1.4 MB at 720p, faulted in and freed per
+    // decoded frame.
+    if (!ctx.hwTransferFrame) ctx.hwTransferFrame = av_frame_alloc();
+    AVFrame* swFrame = ctx.hwTransferFrame;
     if (!swFrame) {
         std::fprintf(stderr, "[RenderDecoder] Failed to alloc SW frame for HW transfer\n");
         return {};
     }
+    if (swFrame->buf[0]) {
+        const auto* hwFrames = frame->hw_frames_ctx
+            ? reinterpret_cast<const AVHWFramesContext*>(frame->hw_frames_ctx->data)
+            : nullptr;
+        const bool reusable = hwFrames
+            && swFrame->width  == frame->width
+            && swFrame->height == frame->height
+            && swFrame->format == hwFrames->sw_format;
+        if (!reusable) av_frame_unref(swFrame);
+    }
     if (av_hwframe_transfer_data(swFrame, frame, 0) < 0) {
         std::fprintf(stderr, "[RenderDecoder] av_hwframe_transfer_data failed\n");
-        av_frame_free(&swFrame);
+        av_frame_unref(swFrame);
         return {};
     }
-    auto result = uploadSwFrame(ctx, swFrame, device, deviceCtx);
-    av_frame_free(&swFrame);
-    return result;
+    return uploadSwFrame(ctx, swFrame, device, deviceCtx);
 }
 
 // ===========================================================================
@@ -740,74 +935,78 @@ FrameCacheEntry RenderVideoDecoder::uploadSwFrame(DecoderContext& ctx, AVFrame* 
         srcFmt = static_cast<AVPixelFormat>(frame->format);
     }
 
-    // Lazy-init or reinit sws context if needed
+    // Output size: the decoded size, unless a cap is set (the preview sets it
+    // to its compositor surface — nothing on screen can show more pixels than
+    // that, and the compositor samples in UV space, so a smaller texture is
+    // transparent to it). sws_scale then converts AND downscales in one pass,
+    // which costs less than the plain conversion did, and the upload and the
+    // cache entry shrink with it: a 1280x720 proxy frame capped to 960x540 is
+    // 44% fewer bytes in every later step and in the 512 MB frame cache.
+    int outW = w, outH = h;
+    if (maxOutputW_ > 0 && maxOutputH_ > 0 && (w > maxOutputW_ || h > maxOutputH_)) {
+        const double scale = std::min(static_cast<double>(maxOutputW_) / w,
+                                      static_cast<double>(maxOutputH_) / h);
+        outW = std::max(1, static_cast<int>(std::lround(w * scale)));
+        outH = std::max(1, static_cast<int>(std::lround(h * scale)));
+    }
+
+    // Cached per context; rebuilt only when the source format or either size
+    // changes (sws_getCachedContext compares and reuses).
+    ctx.swsCtx = sws_getCachedContext(ctx.swsCtx, w, h, srcFmt,
+                                      outW, outH, AV_PIX_FMT_BGRA,
+                                      SWS_BILINEAR, nullptr, nullptr, nullptr);
     if (!ctx.swsCtx) {
-        ctx.swsCtx = sws_getContext(w, h, srcFmt,
-                                     w, h, AV_PIX_FMT_BGRA,
-                                     SWS_BILINEAR, nullptr, nullptr, nullptr);
-        if (!ctx.swsCtx) {
-            std::fprintf(stderr, "[RenderDecoder] Failed to create SwsContext (src fmt=%d)\n", srcFmt);
-            if (swFrame) av_frame_free(&swFrame);
-            return empty;
-        }
+        std::fprintf(stderr, "[RenderDecoder] Failed to create SwsContext (src fmt=%d)\n", srcFmt);
+        if (swFrame) av_frame_free(&swFrame);
+        return empty;
     }
 
     // Convert to BGRA. The destination carries sws_scale's write slack — see
     // video/SwsDestBuffer.h. A bare vector sized w*4*h here was the
     // STATUS_HEAP_CORRUPTION (0xC0000374): yuv422p sources (dnxhd proxies)
-    // overflowed it by 32 bytes on every decoded frame.
-    const int stride = w * 4;
-    auto bgraData = xleth::makeSwsDestBuffer(static_cast<size_t>(stride) * h);
-    uint8_t* dstSlice[1] = { bgraData.data() };
+    // overflowed it by 32 bytes on every decoded frame. The buffer is reused
+    // across frames (it used to be a fresh allocation per decoded frame).
+    const int stride = outW * 4;
+    const size_t needed = static_cast<size_t>(stride) * outH + xleth::kSwsDestPadding;
+    if (ctx.bgraScratch.size() < needed) ctx.bgraScratch.resize(needed);
+    uint8_t* dstSlice[1] = { ctx.bgraScratch.data() };
     int dstStride[1] = { stride };
 
     sws_scale(ctx.swsCtx, frame->data, frame->linesize, 0, h, dstSlice, dstStride);
 
     if (swFrame) av_frame_free(&swFrame);
 
-    // Create staging texture (CPU writable)
-    D3D11_TEXTURE2D_DESC stagingDesc = {};
-    stagingDesc.Width              = static_cast<UINT>(w);
-    stagingDesc.Height             = static_cast<UINT>(h);
-    stagingDesc.MipLevels          = 1;
-    stagingDesc.ArraySize          = 1;
-    stagingDesc.Format             = DXGI_FORMAT_B8G8R8A8_UNORM;
-    stagingDesc.SampleDesc.Count   = 1;
-    stagingDesc.SampleDesc.Quality = 0;
-    stagingDesc.Usage              = D3D11_USAGE_STAGING;
-    stagingDesc.BindFlags          = 0;
-    stagingDesc.CPUAccessFlags     = D3D11_CPU_ACCESS_WRITE;
-    stagingDesc.MiscFlags          = 0;
+    // One default-usage texture, initialised straight from the converted
+    // pixels. This used to create a CPU-writable STAGING texture with the
+    // pixels, a second DEFAULT texture, and CopyResource between them — two
+    // allocations and an extra full-frame GPU copy per decoded frame for
+    // exactly the same result.
+    D3D11_TEXTURE2D_DESC texDesc = {};
+    texDesc.Width              = static_cast<UINT>(outW);
+    texDesc.Height             = static_cast<UINT>(outH);
+    texDesc.MipLevels          = 1;
+    texDesc.ArraySize          = 1;
+    texDesc.Format             = DXGI_FORMAT_B8G8R8A8_UNORM;
+    texDesc.SampleDesc.Count   = 1;
+    texDesc.SampleDesc.Quality = 0;
+    texDesc.Usage              = D3D11_USAGE_DEFAULT;
+    texDesc.BindFlags          = D3D11_BIND_SHADER_RESOURCE;
+    texDesc.CPUAccessFlags     = 0;
+    texDesc.MiscFlags          = 0;
 
     D3D11_SUBRESOURCE_DATA initData = {};
-    initData.pSysMem          = bgraData.data();
+    initData.pSysMem          = ctx.bgraScratch.data();
     initData.SysMemPitch      = static_cast<UINT>(stride);
     initData.SysMemSlicePitch = 0;
 
-    Microsoft::WRL::ComPtr<ID3D11Texture2D> stagingTex;
-    HRESULT hr = device->CreateTexture2D(&stagingDesc, &initData, &stagingTex);
-    if (FAILED(hr)) {
-        std::fprintf(stderr, "[RenderDecoder] Failed to create staging texture, HR=0x%08X\n",
-                     static_cast<unsigned int>(hr));
-        return empty;
-    }
-
-    // Create default-usage texture (GPU readable, shader resource)
-    D3D11_TEXTURE2D_DESC defaultDesc = stagingDesc;
-    defaultDesc.Usage          = D3D11_USAGE_DEFAULT;
-    defaultDesc.BindFlags      = D3D11_BIND_SHADER_RESOURCE;
-    defaultDesc.CPUAccessFlags = 0;
-
     Microsoft::WRL::ComPtr<ID3D11Texture2D> defaultTex;
-    hr = device->CreateTexture2D(&defaultDesc, nullptr, &defaultTex);
+    HRESULT hr = device->CreateTexture2D(&texDesc, &initData, &defaultTex);
     if (FAILED(hr)) {
-        std::fprintf(stderr, "[RenderDecoder] Failed to create default texture, HR=0x%08X\n",
+        std::fprintf(stderr, "[RenderDecoder] Failed to create frame texture, HR=0x%08X\n",
                      static_cast<unsigned int>(hr));
         return empty;
     }
-
-    // Copy staging → default
-    deviceCtx->CopyResource(defaultTex.Get(), stagingTex.Get());
+    (void)deviceCtx;
 
     // Create SRV
     D3D11_SHADER_RESOURCE_VIEW_DESC srvDesc = {};
@@ -827,9 +1026,9 @@ FrameCacheEntry RenderVideoDecoder::uploadSwFrame(DecoderContext& ctx, AVFrame* 
     FrameCacheEntry entry;
     entry.texture        = defaultTex;
     entry.srv            = srv;
-    entry.width          = w;
-    entry.height         = h;
-    entry.memorySizeBytes = static_cast<size_t>(w) * h * 4;
+    entry.width          = outW;
+    entry.height         = outH;
+    entry.memorySizeBytes = static_cast<size_t>(outW) * outH * 4;
 
     return entry;
 }

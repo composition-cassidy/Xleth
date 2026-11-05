@@ -653,9 +653,39 @@ public:
 
     void reset() override
     {
-        bypassMix_ = bypassed_.load(std::memory_order_relaxed) ? 1.0f : 0.0f;
+        resetBypassRamp();
         resetEffect();
     }
+
+    // The audio-thread reset. Live playback calls this in the SAME block that
+    // clears the PDC compensation delay lines (seek, loop wrap, play after an
+    // audition), so the effect's pipeline restarts in step with the delay that
+    // compensates it on every other track. Deferred to the worker instead, the
+    // reset lands blocks late: the effect plays pre-jump audio out of its
+    // pipeline, then throws away the post-jump audio it absorbed meanwhile.
+    //
+    // Must be realtime safe: no allocation, no lock, bounded time. Return false
+    // to decline (nothing reset); the chain's worker then resets this effect
+    // off the audio thread, late. Default: reset(). Every stock effect's reset
+    // is a state clear, and test_effect_audio_thread_reset holds each one to it.
+    virtual bool resetOnAudioThread() noexcept
+    {
+        reset();
+        return true;
+    }
+
+    // Set by AudioGraph when resetOnAudioThread() declined; the worker's
+    // deferred pass takes it and resets this effect.
+    void markDeferredReset() noexcept { deferredReset_.store(true, std::memory_order_release); }
+    bool takeDeferredReset() noexcept { return deferredReset_.exchange(false, std::memory_order_acq_rel); }
+
+    // The expensive half of a two-phase reset. Live playback resets a chain
+    // under EffectChainManager's realtime claim, and the chain renders silence
+    // for as long as that takes; this runs first, OFF the audio thread and
+    // WITHOUT the claim, so processBlock may be running concurrently. Build
+    // here whatever reset() would otherwise build inline, touching nothing
+    // processBlock touches, and leave reset() a cheap swap. Default: nothing.
+    virtual void primeDeferredReset() {}
 
 protected:
     // Exposed so subclass can attach listeners or access params directly.
@@ -668,7 +698,16 @@ protected:
         return sTransportPos_.load(std::memory_order_relaxed);
     }
 
+    // What reset() does besides resetEffect(): snap the bypass crossfade to
+    // the current bypass state. For a resetOnAudioThread() override.
+    void resetBypassRamp() noexcept
+    {
+        bypassMix_ = bypassed_.load(std::memory_order_relaxed) ? 1.0f : 0.0f;
+    }
+
 private:
+    std::atomic<bool> deferredReset_ { false };
+
     // ── Bus construction ──────────────────────────────────────────────────────
     // All Xleth effects are stereo-in / stereo-out. When `withSidechainInput` is
     // set, a SECOND stereo input bus ("Sidechain") is declared but left DISABLED

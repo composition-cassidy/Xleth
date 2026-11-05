@@ -20,6 +20,50 @@ Audits performed 2026-08-26 (FAST) and 2026-08-27 (BALANCED).
 
 ---
 
+## "XLETH does not redistribute the weight" after the ONNX change (2026-09-18)
+
+Every clearance below rests on that claim, and each one states it. The
+Roformer tiers moved from PyTorch to exported ONNX graphs on this date, so it
+is worth recording precisely what changed and why the claim still holds.
+
+**What ships.** `xleth_separation/graphs/*.onnx`, ~2 MB each. They contain the
+graph only: operators, tensor shapes, and the constants the ARCHITECTURE
+computes — the mel band layout, the DC mask, reshape targets. All of that
+derives from the vendored model code under `xleth_separation/vendor/`, which is
+MIT and whose own licence question is recorded in `vendor/VENDOR-NOTICE.md`.
+Every tensor that comes from a checkpoint is an empty external-data reference
+with no bytes behind it.
+
+**What does not ship.** The weights. The user's machine downloads the author's
+own `.ckpt` from the author's own repository, exactly as before and from the
+same pinned URLs recorded below, and `weights.py` writes those tensors into the
+graph's external-data file locally at install time. Nothing about the download
+path, the URLs, the checksums or the licence gates changed.
+
+**Why this was not done the easy way.** Exporting a graph WITH its weights
+baked in, and hosting that, is the obvious implementation and it was rejected:
+a populated ONNX file is a derivative of the checkpoint, and distributing it
+would be redistribution — the precise thing the resolution for the BEST tier
+says would reopen its audit. The weightless design exists to avoid that, not to
+save space.
+
+**How it is enforced rather than intended.**
+`onnx_export.export_weightless_graph` refuses to write a graph in which any
+checkpoint tensor survived as an initializer or an inlined constant, and
+`tests/test_onnx_parity.py::test_the_shipped_graph_carries_no_weights` re-opens
+the committed artefact and asserts the same thing — the export is not what
+reaches a user, the committed file is.
+
+One detail found during the work, recorded because it is the kind of thing that
+would otherwise be missed: the rotary-embedding tables were initially baked in
+as constants, because the library caches them and returns a detached tensor the
+tracer captures as a literal. They are ~3 kB, they are NOT architecture
+constants (BALANCED's differ from a freshly constructed model's by 1.6e-4), and
+they are now exported as ordinary initializers filled from the user's
+checkpoint. See `_prepare_for_export` in `onnx_export.py`.
+
+---
+
 ## MDX-Net "Kim Vocal 2" — Tier 1 (FAST)
 
 **Status: CLEARED** · MIT, conditional on attribution.

@@ -1,5 +1,6 @@
 #include "FrameCollector.h"
 #include "AnimationManager.h"
+#include "XlethDebug.h"
 #include "FrameRateMath.h"
 
 #include "audio/ClipFade.h"
@@ -303,6 +304,10 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
     requestBuffer_.clear();
     std::vector<CellFrameRequest>& requests = requestBuffer_;
     int gapsSkipped = 0;
+
+    // One scan of the event list for every placement below (see
+    // activeByTrack_ in FrameCollector.h).
+    resolveActiveEvents(events, beatPos);
 
     // Helper lambda to build a CellFrameRequest from an active event
     auto buildRequest = [&](const VideoEvent* ev, int trackId,
@@ -651,8 +656,14 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
         // still holds the same frame it always did. This used to happen in
         // the BehindGrid caller reading requests.back(); moved here because
         // the opacity-culled path never pushes to `requests`.
-        if (kind == CellLayerKind::FullscreenBehind) {
-            auto& s = fullscreenHoldByTrack_[trackId];
+        //
+        // Grid cells hold exactly like a BehindGrid layer (same state, same
+        // fade-out suppression, same threshold). Only FullscreenInFront is
+        // transient. A track placed in several cells writes the same values
+        // once per cell — they all show the same event — so the shared
+        // per-track entry stays consistent.
+        if (kind == CellLayerKind::FullscreenBehind || kind == CellLayerKind::Grid) {
+            auto& s = holdByTrack_[trackId];
             s.lastFrame            = req.sourceFrameIndex;
             s.lastPath             = req.sourcePath;
             s.lastOrientation      = req.orientation;
@@ -673,17 +684,113 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
         return true;
     };
 
-    // GC fullscreen hold-state map: keep entries only for tracks still
-    // referenced by a BehindGrid layer. Bounds the map size to the live layer
-    // count rather than every track ever assigned.
+    // Hold-through-gap fill, shared by BehindGrid layers and grid cells. Called
+    // where a placement has NO request this frame (a real gap, not an opacity
+    // cull — buildRequest reports those as handled). Pushes the track's last
+    // served frame and returns true, or returns false to leave it a gap.
+    auto buildHeldRequest = [&](int trackId, int cellCol, int cellRow,
+                                int spanX, int spanY,
+                                float slotOpacity, int zOrder,
+                                CellLayerKind kind) -> bool
     {
-        std::unordered_set<int> behindTrackIds;
+        auto it = holdByTrack_.find(trackId);
+        const TrackInfo* trk = timeline.getTrack(trackId);
+        if (it == holdByTrack_.end() || !trk) return false;
+        const HoldState& hold = it->second;
+
+        if (!trk->videoHoldLastFrame || hold.lastFrame < 0
+            || hold.suppressAfterFadeOut)
+            return false;
+
+        // A muted track has no active event by construction (findActiveEvent),
+        // which is indistinguishable from a gap here — without this a muted
+        // track would keep showing its last frame and mute would look broken.
+        if (trk->muted) return false;
+
+        // Hold-expiry threshold. The stored value is already in BEATS and
+        // beatPos is in beats, so this is a direct comparison — no PPQ
+        // round-trip and no tempo lookup. Negative threshold = unlimited,
+        // which short-circuits to the pre-threshold behavior untouched.
+        //
+        // Only reached once the clip has actually ended, so the hold always
+        // fills a gap shorter than the threshold exactly as it did before.
+        if (trk->videoHoldLastFrameThresholdBeats >= 0.0
+            && (beatPos - hold.lastClipEndBeat) > trk->videoHoldLastFrameThresholdBeats)
+            return false;
+
+        if (kRenderLog) {
+            std::fprintf(stderr, "[FrameCollector] %s gap (track %d): hold=ON frame=%lld\n",
+                         kind == CellLayerKind::Grid ? "grid" : "FS-behind",
+                         trackId, (long long)hold.lastFrame);
+        }
+
+        CellFrameRequest req;
+        req.cellCol          = cellCol;
+        req.cellRow          = cellRow;
+        req.spanX            = spanX;
+        req.spanY            = spanY;
+        req.sourcePath       = hold.lastPath;
+        req.sourceFrameIndex = hold.lastFrame;
+        req.opacity          = std::min(1.0f, std::max(0.0f, slotOpacity));
+        req.layerKind        = kind;
+        req.zOrder           = zOrder;
+        req.orientation      = hold.lastOrientation;
+        req.trackId          = trackId;
+
+        // A held frame is the SAME picture the live path was drawing an
+        // instant ago, so it has to carry the same look. The compositor runs
+        // the full per-cell path on every layer kind, so leaving these at
+        // their defaults would strip the chain, the corner radius and ZPR the
+        // moment the clip ended — a visible pop at every gap boundary. Mirrors
+        // buildRequest's population; ping-pong is deliberately absent (a hold
+        // has no motion).
+        req.cornerRadius     = trk->cornerRadius;
+        req.gapScaleOverride = trk->gapScaleOverride;
+        if (!(applyPreviewEffectMute
+              && timeline.isVisualEffectChainPreviewMuted(trk->id)))
+            req.visualChain = trk->visualEffectChain;
+        if (animationMgr_) {
+            if (const CellAnimation* anim = animationMgr_->getAnimation(trackId)) {
+                req.currentZoom      = anim->currentZoom;
+                req.currentPanX      = anim->currentPanX;
+                req.currentPanY      = anim->currentPanY;
+                req.currentRotDeg    = anim->currentRotDeg;
+                req.tvRampIntensity  = anim->tvRampIntensity;
+                req.tvRampRollSpeed  = anim->tvRampRollSpeed;
+                req.tvRampScanlines  = anim->tvRampScanlines;
+                req.tvRampChroma     = anim->tvRampChroma;
+                req.tvRampNoise      = anim->tvRampNoise;
+                req.tvRampJitter     = anim->tvRampJitter;
+                req.tvRampColorBleed = anim->tvRampColorBleed;
+                // Bounce is grid geometry: the compositor ignores it on a
+                // fullscreen layer, so only a grid cell needs it carried.
+                if (kind == CellLayerKind::Grid) {
+                    req.bounceOffsetX = anim->bounceOffsetX;
+                    req.bounceOffsetY = anim->bounceOffsetY;
+                    req.bounceScaleX  = anim->bounceScaleX;
+                    req.bounceScaleY  = anim->bounceScaleY;
+                }
+            }
+        }
+
+        requests.push_back(std::move(req));
+        return true;
+    };
+
+    // GC the hold-state map: keep entries only for tracks still placed as a
+    // BehindGrid layer or a grid slot. Bounds the map size to the live layout
+    // rather than every track ever assigned.
+    {
+        std::unordered_set<int> holdableTrackIds;
         for (const auto& fl : layout.fullscreenLayers) {
             if (fl.placement == FullscreenLayerPlacement::BehindGrid && fl.trackId >= 0)
-                behindTrackIds.insert(fl.trackId);
+                holdableTrackIds.insert(fl.trackId);
         }
-        for (auto it = fullscreenHoldByTrack_.begin(); it != fullscreenHoldByTrack_.end(); ) {
-            if (!behindTrackIds.count(it->first)) it = fullscreenHoldByTrack_.erase(it);
+        for (const GridSlot& slot : layout.slots) {
+            if (slot.trackId >= 0) holdableTrackIds.insert(slot.trackId);
+        }
+        for (auto it = holdByTrack_.begin(); it != holdByTrack_.end(); ) {
+            if (!holdableTrackIds.count(it->first)) it = holdByTrack_.erase(it);
             else ++it;
         }
     }
@@ -706,83 +813,17 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
         if (fl.placement != FullscreenLayerPlacement::BehindGrid) continue;
         if (fl.trackId < 0) continue;
 
-        const VideoEvent* ev = findActiveEvent(events, timeline, fl.trackId, beatPos);
+        const VideoEvent* ev = activeEventFor(timeline, fl.trackId);
         if (buildRequest(ev, fl.trackId, 0, 0, fullW, fullH,
                          fl.opacity, fl.zOrder,
                          CellLayerKind::FullscreenBehind)) {
             // Active layer — hold-through-gap state already recorded inside
             // buildRequest (it runs regardless of the opacity cull, so a
             // frame invisible only because of a fade still updates the hold).
-        } else {
-            auto it = fullscreenHoldByTrack_.find(fl.trackId);
-            const TrackInfo* trk = timeline.getTrack(fl.trackId);
-
-            // Hold-expiry threshold. The stored value is already in BEATS and
-            // beatPos is in beats, so this is a direct comparison — no PPQ
-            // round-trip and no tempo lookup. Negative threshold = unlimited,
-            // which short-circuits to the pre-threshold behavior untouched.
-            //
-            // Only reached once the clip has actually ended, so the hold always
-            // fills a gap shorter than the threshold exactly as it did before.
-            bool holdExpired = false;
-            if (it != fullscreenHoldByTrack_.end() && trk
-                && trk->videoHoldLastFrameThresholdBeats >= 0.0) {
-                holdExpired = (beatPos - it->second.lastClipEndBeat)
-                            > trk->videoHoldLastFrameThresholdBeats;
-            }
-
-            if (it != fullscreenHoldByTrack_.end() && it->second.lastFrame >= 0
-                && trk && trk->videoHoldLastFrame
-                && !it->second.suppressAfterFadeOut
-                && !holdExpired) {
-                std::fprintf(stderr, "[FrameCollector] FS-behind gap (track %d): hold=ON frame=%lld\n",
-                             fl.trackId, (long long)it->second.lastFrame);
-                CellFrameRequest req;
-                req.cellCol          = 0;
-                req.cellRow          = 0;
-                req.spanX            = fullW;
-                req.spanY            = fullH;
-                req.sourcePath       = it->second.lastPath;
-                req.sourceFrameIndex = it->second.lastFrame;
-                req.opacity          = std::min(1.0f, std::max(0.0f, fl.opacity));
-                req.layerKind        = CellLayerKind::FullscreenBehind;
-                req.zOrder           = fl.zOrder;
-                req.orientation      = it->second.lastOrientation;
-                req.trackId          = fl.trackId;
-
-                // A held frame is the SAME picture the live path was drawing an
-                // instant ago, so it has to carry the same look. Now that the
-                // compositor runs the full per-cell path on fullscreen layers,
-                // leaving these at their defaults would strip the chain, the
-                // corner radius and ZPR the moment the clip ended — a visible
-                // pop at every gap boundary. Mirrors buildRequest's population;
-                // ping-pong is deliberately absent (a hold has no motion) and
-                // bounce is unused on this layer kind.
-                req.cornerRadius     = trk->cornerRadius;
-                req.gapScaleOverride = trk->gapScaleOverride;
-                if (!(applyPreviewEffectMute
-                      && timeline.isVisualEffectChainPreviewMuted(trk->id)))
-                    req.visualChain = trk->visualEffectChain;
-                if (animationMgr_) {
-                    if (const CellAnimation* anim = animationMgr_->getAnimation(fl.trackId)) {
-                        req.currentZoom      = anim->currentZoom;
-                        req.currentPanX      = anim->currentPanX;
-                        req.currentPanY      = anim->currentPanY;
-                        req.currentRotDeg    = anim->currentRotDeg;
-                        req.tvRampIntensity  = anim->tvRampIntensity;
-                        req.tvRampRollSpeed  = anim->tvRampRollSpeed;
-                        req.tvRampScanlines  = anim->tvRampScanlines;
-                        req.tvRampChroma     = anim->tvRampChroma;
-                        req.tvRampNoise      = anim->tvRampNoise;
-                        req.tvRampJitter     = anim->tvRampJitter;
-                        req.tvRampColorBleed = anim->tvRampColorBleed;
-                    }
-                }
-
-                requests.push_back(std::move(req));
-            } else {
-                ++gapsSkipped;
-            }
+        } else if (!buildHeldRequest(fl.trackId, 0, 0, fullW, fullH,
+                                     fl.opacity, fl.zOrder,
+                                     CellLayerKind::FullscreenBehind)) {
+            ++gapsSkipped;
         }
     }
 
@@ -793,13 +834,17 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
     for (const GridSlot& slot : layout.slots) {
         if (slot.trackId < 0) { ++gapsSkipped; continue; }
 
-        const VideoEvent* ev = findActiveEvent(events, timeline, slot.trackId, beatPos);
-        if (!ev) { ++gapsSkipped; continue; }
-
-        if (!buildRequest(ev, slot.trackId,
-                          slot.gridX, slot.gridY, slot.spanX, slot.spanY,
-                          slot.opacity, slot.zOrder, CellLayerKind::Grid)) {
-            ++gapsSkipped;
+        // A gap (no active event, or buildRequest could not resolve one) is
+        // filled with the track's held frame when it has Hold Last Frame on,
+        // exactly like a BehindGrid layer; otherwise the cell stays empty.
+        const VideoEvent* ev = activeEventFor(timeline, slot.trackId);
+        if (!ev || !buildRequest(ev, slot.trackId,
+                                 slot.gridX, slot.gridY, slot.spanX, slot.spanY,
+                                 slot.opacity, slot.zOrder, CellLayerKind::Grid)) {
+            if (!buildHeldRequest(slot.trackId,
+                                  slot.gridX, slot.gridY, slot.spanX, slot.spanY,
+                                  slot.opacity, slot.zOrder, CellLayerKind::Grid))
+                ++gapsSkipped;
         }
     }
 
@@ -809,7 +854,7 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
         if (fl.placement != FullscreenLayerPlacement::InFrontOfGrid) continue;
         if (fl.trackId < 0) continue;
 
-        const VideoEvent* ev = findActiveEvent(events, timeline, fl.trackId, beatPos);
+        const VideoEvent* ev = activeEventFor(timeline, fl.trackId);
         if (!buildRequest(ev, fl.trackId, 0, 0, fullW, fullH,
                           fl.opacity, fl.zOrder,
                           CellLayerKind::FullscreenInFront)) {
@@ -829,10 +874,11 @@ std::vector<CellFrameRequest>& FrameCollector::collectRequests(
             return a.zOrder < b.zOrder;
         });
 
-    std::fprintf(stderr, "[FrameCollector] Collecting for output frame %lld: %d active cells, %d gaps skipped\n",
+    XLETH_RENDER_LOG(std::fprintf(stderr,
+                 "[FrameCollector] Collecting for output frame %lld: %d active cells, %d gaps skipped\n",
                  (long long)outputFrameIndex,
                  static_cast<int>(requests.size()),
-                 gapsSkipped);
+                 gapsSkipped));
 
     return requests;
 }
@@ -864,9 +910,10 @@ FrameCollector::deduplicateRequests(std::vector<CellFrameRequest>& requests)
         }
     }
 
-    std::fprintf(stderr, "[FrameCollector] Dedup: %d cell requests -> %d unique frames to decode\n",
+    XLETH_RENDER_LOG(std::fprintf(stderr,
+                 "[FrameCollector] Dedup: %d cell requests -> %d unique frames to decode\n",
                  static_cast<int>(requests.size()),
-                 static_cast<int>(result.size()));
+                 static_cast<int>(result.size())));
 
     return result;
 }
@@ -890,13 +937,15 @@ std::vector<FrameCacheKey> FrameCollector::resolveFrames(
         }
     }
 
-    std::fprintf(stderr, "[FrameCollector] Resolve: %d cache hits, %d decodes needed\n",
-                 hits, static_cast<int>(misses.size()));
+    XLETH_RENDER_LOG(std::fprintf(stderr, "[FrameCollector] Resolve: %d cache hits, %d decodes needed\n",
+                 hits, static_cast<int>(misses.size())));
 
     // Detect sequential access patterns for the decoder hint.
     // If multiple misses are from the same source and their frame indices
-    // form a contiguous run, flag it.
-    if (misses.size() > 1) {
+    // form a contiguous run, flag it. Log-only (the decoder derives the
+    // sequential case itself), so it only runs when render logging is on —
+    // otherwise it built a string-keyed map per multi-miss frame for nothing.
+    if (xlethRenderLogEnabled() && misses.size() > 1) {
         std::unordered_map<std::string, std::vector<int64_t>> missFramesBySource;
         for (const auto& k : misses) {
             missFramesBySource[k.sourcePath.str()].push_back(k.frameIndex);
@@ -924,6 +973,24 @@ std::vector<FrameCacheKey> FrameCollector::resolveFrames(
 // Helpers
 // ===========================================================================
 
+namespace {
+
+// The one ordering both event lookups use: the latest-starting active event
+// wins; on an exact start tie the lowest pitch, then the lowest emission
+// order. Same-tick note-ons (a chord) all carry the same resolved flip state,
+// so any member draws an identical orientation — the tie-break only has to be
+// deterministic. Strict, so the first event seen keeps an exact tie.
+bool activeEventBeats(const VideoEvent& ev, const VideoEvent& best) noexcept
+{
+    return ev.startBeat > best.startBeat
+        || (ev.startBeat == best.startBeat
+            && (ev.pitch < best.pitch
+                || (ev.pitch == best.pitch
+                    && ev.originalEmissionOrder < best.originalEmissionOrder)));
+}
+
+} // namespace
+
 const VideoEvent* FrameCollector::findActiveEvent(
     const std::vector<VideoEvent>& events,
     const Timeline&                timeline,
@@ -936,25 +1003,37 @@ const VideoEvent* FrameCollector::findActiveEvent(
     const TrackInfo* track = timeline.getTrack(trackId);
     if (track && track->muted) return nullptr;
 
-    // Find the latest-starting active event on this track. Same-tick note-ons
-    // (a chord) now all carry the same resolved flip state, so any member draws
-    // an identical orientation — the tie-break just needs to be deterministic:
-    // lowest pitch, then lowest emission order.
     const VideoEvent* best = nullptr;
     for (const auto& ev : events) {
         if (ev.trackId != trackId) continue;
         if (beatPos < ev.startBeat) continue;
         if (beatPos >= ev.startBeat + ev.durationBeats) continue;
-        if (!best
-            || ev.startBeat > best->startBeat
-            || (ev.startBeat == best->startBeat
-                && (ev.pitch < best->pitch
-                    || (ev.pitch == best->pitch
-                        && ev.originalEmissionOrder < best->originalEmissionOrder)))) {
-            best = &ev;
-        }
+        if (!best || activeEventBeats(ev, *best)) best = &ev;
     }
     return best;
+}
+
+void FrameCollector::resolveActiveEvents(const std::vector<VideoEvent>& events,
+                                         double beatPos)
+{
+    activeByTrack_.clear();
+    for (const auto& ev : events) {
+        // Window test first: it rejects nearly every event with no lookup.
+        if (beatPos < ev.startBeat) continue;
+        if (beatPos >= ev.startBeat + ev.durationBeats) continue;
+        if (ev.trackId < 0) continue;
+        auto [it, inserted] = activeByTrack_.try_emplace(ev.trackId, &ev);
+        if (!inserted && activeEventBeats(ev, *it->second)) it->second = &ev;
+    }
+}
+
+const VideoEvent* FrameCollector::activeEventFor(const Timeline& timeline, int trackId) const
+{
+    if (trackId < 0) return nullptr;
+    const TrackInfo* track = timeline.getTrack(trackId);
+    if (track && track->muted) return nullptr;
+    auto it = activeByTrack_.find(trackId);
+    return it == activeByTrack_.end() ? nullptr : it->second;
 }
 
 int64_t FrameCollector::computeSourceFrame(

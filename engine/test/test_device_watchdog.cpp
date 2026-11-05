@@ -54,7 +54,7 @@ static void testStarvedCallbackTriggersRecovery()
 {
     Inputs in;
     in.counterMoved    = false;
-    in.msSinceProgress = 500;
+    in.msSinceProgress = 1500;
     CHECK(AudioEngine::shouldAttemptRecovery(in),
           "a callback frozen for the full starvation window must trigger a reopen");
 
@@ -65,14 +65,16 @@ static void testStarvedCallbackTriggersRecovery()
 
 // A scheduling hiccup or a poll landing between two buffers is not a dead
 // device. The largest buffer period the engine ever opens is 512 @ 44100 Hz
-// (~11.6 ms), so everything below that must be treated as healthy.
+// (~11.6 ms), and the window is wide enough on top of that to absorb the
+// window-open burst that starves the callback for ~500 ms on a low-power
+// laptop -- a false positive there costs a ~4 s device reopen on the RPC thread.
 static void testTransientGapIsNotRecovered()
 {
     Inputs in;
     in.counterMoved = false;
 
-    for (int64_t gapMs : { int64_t{0}, int64_t{12}, int64_t{50},
-                           int64_t{200}, int64_t{499} })
+    for (int64_t gapMs : { int64_t{0}, int64_t{12}, int64_t{50}, int64_t{200},
+                           int64_t{501}, int64_t{900}, int64_t{1499} })
     {
         in.msSinceProgress = gapMs;
         CHECK(!AudioEngine::shouldAttemptRecovery(in),
@@ -147,6 +149,80 @@ static void testBackoffSuppressesRetries()
     in.msUntilNextAttempt = 0;
     CHECK(!AudioEngine::shouldAttemptRecovery(in),
           "backoff bookkeeping must not resurrect a reopen for a live callback");
+}
+
+// The regression this file previously missed: the *bookkeeping* around a
+// reopen that took real wall-clock time. reopenAudioDevice() blocks for seconds
+// on a real driver (3.7-5.9 s measured on a Ryzen 7520U laptop), and the
+// deadlines used to be stamped from a clock read taken before it -- so the poll
+// immediately after a successful recovery saw a progress age already older than
+// the starvation window and a backoff deadline already in the past, and tore
+// the new device down before it could deliver its first block. Because the poll
+// runs on the RPC thread, that loop also wedged every other engine call behind
+// it: importing a source or adding a track never returned.
+static void testSlowSuccessfulReopenDoesNotImmediatelyRetrigger()
+{
+    const int64_t pollAt = 10000;             // the poll that fired the reopen
+    const int64_t doneAt = pollAt + 3700;     // the reopen blocked this long
+
+    // The callback had been frozen since just before the poll.
+    const auto st = AudioEngine::afterRecoveryAttempt(true, 0, pollAt - 500, doneAt);
+
+    CHECK(st.failedAttempts == 0,
+          "a successful reopen must clear the failure count");
+    CHECK(st.lastProgressMs == doneAt,
+          "the progress baseline must be stamped when the reopen finished, not when it started");
+    CHECK(st.nextAttemptMs > doneAt,
+          "a reopened device must get a grace period before it can be reopened again");
+
+    // The next poll lands a millisecond later, before the reopened driver has
+    // had any chance to produce a block. It must not reopen again.
+    Inputs in;
+    in.counterMoved       = false;
+    in.msSinceProgress    = (doneAt + 1) - st.lastProgressMs;
+    in.msUntilNextAttempt = st.nextAttemptMs - (doneAt + 1);
+    CHECK(!AudioEngine::shouldAttemptRecovery(in),
+          "the poll right after a slow reopen must not tear the new device down again");
+
+    // Nor the last poll before the grace expires -- by then the progress age
+    // has passed the starvation window, so only the grace is holding the
+    // watchdog off, which is exactly the behaviour under test.
+    const int64_t justBeforeGrace = st.nextAttemptMs - 1;
+    in.msSinceProgress    = justBeforeGrace - st.lastProgressMs;
+    in.msUntilNextAttempt = st.nextAttemptMs - justBeforeGrace;
+    CHECK(!AudioEngine::shouldAttemptRecovery(in),
+          "the post-reopen grace must hold even once the starvation window has passed");
+
+    // Once the grace elapses with the callback still dead, retrying is correct.
+    const int64_t afterGrace = st.nextAttemptMs + 1;
+    in.msSinceProgress    = afterGrace - st.lastProgressMs;
+    in.msUntilNextAttempt = st.nextAttemptMs - afterGrace;
+    CHECK(AudioEngine::shouldAttemptRecovery(in),
+          "a device still silent after the grace must be reopened again");
+}
+
+// A failed reopen must keep the progress age running -- it made no progress --
+// and move only the retry deadline, also stamped from when the attempt ended.
+static void testFailedReopenBacksOffFromCompletionTime()
+{
+    const int64_t frozenSince = 10000;
+    const int64_t doneAt      = 15000;
+
+    auto st = AudioEngine::afterRecoveryAttempt(false, 0, frozenSince, doneAt);
+    CHECK(st.failedAttempts == 1, "a failed reopen must count against the backoff");
+    CHECK(st.lastProgressMs == frozenSince,
+          "a failed reopen must not fake progress the callback never made");
+    CHECK(st.nextAttemptMs > doneAt,
+          "the retry deadline must be measured from when the attempt finished");
+
+    const int64_t shortRetry = st.nextAttemptMs - doneAt;
+
+    for (int i = 1; i < 5; ++i)
+        st = AudioEngine::afterRecoveryAttempt(false, st.failedAttempts, frozenSince, doneAt);
+
+    CHECK(st.failedAttempts == 5, "each failure must increment the attempt count");
+    CHECK(st.nextAttemptMs - doneAt > shortRetry,
+          "the fifth consecutive failure must escalate to the long backoff");
 }
 
 // An engine that never opened a device (the state every headless test fixture
@@ -297,6 +373,8 @@ int main()
     testSuspendedCallbackIsNeverRecovered();
     testResumeShortensTheStarvationWindow();
     testBackoffSuppressesRetries();
+    testSlowSuccessfulReopenDoesNotImmediatelyRetrigger();
+    testFailedReopenBacksOffFromCompletionTime();
     testUninitialisedEngineIsInert();
 
     std::cout << "passed: " << g_passed << "  failed: " << g_failed << "\n";

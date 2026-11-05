@@ -1,5 +1,5 @@
 // Base tick unit at 960 PPQ: a 16th note = 1/4 beat = 240 ticks
-const TICKS_PER_16TH = 240
+export const TICKS_PER_16TH = 240
 const TICKS_PER_32ND = 120
 
 /**

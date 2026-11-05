@@ -19,6 +19,14 @@ const {
 // buffer. The engine worker creates it via FrameOutput::initSharedMemory;
 // the Electron main process / preload opens the same name via shm_helper.node.
 const FRAME_SHM_NAME = 'XlethFrameBuffer';
+// The section is created once at 100% preview scale and never resized, because
+// a Windows named section's size is fixed at creation: once preload has opened
+// it, our own close/re-create hands back the SAME (old-sized) object and a
+// larger MapViewOfFile fails with ERROR_ACCESS_DENIED, killing the preview for
+// the rest of the session. Must match BASE_CANVAS_W/H in VideoPreview.jsx,
+// which is what previewResolutionScale is a fraction OF.
+const FRAME_SHM_BASE_W = 960;
+const FRAME_SHM_BASE_H = 540;
 const WORKSPACE_BACKDROP_DEFAULT_IMAGE = 'backdrop-1@1.25x.png';
 const WORKSPACE_BACKDROP_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp']);
 const BACKDROP_MEDIA_SETTINGS_KEY = 'backdropMedia';
@@ -39,11 +47,20 @@ try { fs.mkdirSync(path.dirname(logPath), { recursive: true }); } catch {}
 // synchronous disk write per log line. 'w' truncates on open, replacing the
 // old separate writeFileSync('') clear.
 const logStream = fs.createWriteStream(logPath, { flags: 'w' });
-function log(msg) {
+function writeLogLine(msg) {
   const line = `[${new Date().toISOString()}] ${msg}\n`;
   process.stdout.write(line);
   logStream.write(line);
 }
+
+// ── Session console log capture (Settings → Application → Logs) ──────────────
+// Every main-process line also lands in consoleLog's in-memory ring buffer, so
+// the exported session report contains the same narrative startup.log does
+// without each call site having to log twice. Renderer console output is
+// attached separately in createWindow(). init() is deferred until the settings
+// store is available below; record() works from the first line regardless.
+const consoleLog = require('./electron-main/console-log');
+const log = consoleLog.wrapMainLogger(writeLogLine);
 
 // ── Extracted main-process modules (S5 Stage 1) ──────────────────────────────
 // Engine-worker lifecycle and the local HTTP media server were moved verbatim
@@ -86,6 +103,10 @@ gridLayout.init({ safeHandler });
 recentProjects.init();
 const { loadSettings, saveSettings, getNewProjectGlobalStretchMethodDefault } = settingsStore;
 const { restartAutosaveTimer } = autosave;
+
+// Needs the settings store for its auto-export-on-quit preference, so it is
+// initialised here rather than beside its require at the top of the file.
+consoleLog.init({ loadSettings, saveSettings, getWin: () => win, log });
 
 // ── Extracted Phase 1 handler domains (S5 Stage 3) ─────────────────────────────
 // Project, Timeline (queries + mutations), Undo/Redo, Transport handlers and
@@ -509,6 +530,29 @@ async function applyEngineDefaults() {
       [saved.globalFormantPreserve]).catch(() => {});
   }
 
+  // Proxy codec (Settings > Graphics > Proxies). Pushed before any project can
+  // open, because project open is what decides whether legacy intra proxies get
+  // migrated to H.264. Unset → the engine's own default (H.264).
+  if (saved.proxyCodec === 'h264' || saved.proxyCodec === 'intra') {
+    const state = await callWorker('proxy_setCodec', [saved.proxyCodec]).catch(() => null);
+    if (!state || state.requested !== saved.proxyCodec) {
+      log(`applyEngineDefaults: restore proxy codec '${saved.proxyCodec}' failed: ${JSON.stringify(state)}`);
+    }
+  }
+
+  // "Delete regenerable files when closing a project" (Settings > Project). Pushed
+  // before any project can open or close: the ENGINE performs the purge, at the
+  // moment it tears the old project down (project switch or quit). Off by default,
+  // so only an explicit true needs pushing. The engine echoes the value in force,
+  // so a call that silently never arrived is logged instead of leaving the
+  // setting ON in the UI and OFF in the engine.
+  if (saved.purgeRegenerableOnClose === true) {
+    const inForce = await callWorker('project_setPurgeOnClose', [true]).catch(() => null);
+    if (inForce !== true) {
+      log(`applyEngineDefaults: restore purge-on-close failed: ${JSON.stringify(inForce)}`);
+    }
+  }
+
   // Per-machine audio device preferences (output device, buffer size, sample
   // rate) — hardware properties of this machine, not this project, persisted
   // in the same generic settings store as previewResolutionScale, never in
@@ -673,6 +717,13 @@ function createWindow() {
       win.webContents.send('xleth:project-loaded');
     });
   }
+
+  // Renderer console → the in-memory session buffer, which Settings →
+  // Application → Logs exports and which auto-export writes out on quit or
+  // crash. This is always on: capture costs one array push per line, unlike
+  // the startup.log pipe below, so the chatty-component problem that gates
+  // that pipe does not apply here.
+  consoleLog.attachToWebContents(win.webContents, 'renderer');
 
   // Pipe renderer console output to startup.log so we can read it externally.
   // Gated behind a debug flag — chatty timeline components (selectTool logs on
@@ -849,7 +900,7 @@ let frameShmMeta = null;  // { name, width, height, bufferSize, indexOffset, tot
 // VideoPreview's mount effect, so two restorePreviewSettings() runs race and
 // every preview RPC arrives twice. Both could miss the cache and both fire
 // initVideoSharedMemory, which on the engine side stops the video thread,
-// unmaps and recreates the frame mapping, then restarts it — and
+// reframes the mapping, then restarts it — and
 // stopVideoThread/startVideoThread are not reentrant. Chaining each call onto
 // the previous one means the second caller re-tests the cache only after the
 // first has published its result, so a same-size request collapses to one RPC
@@ -861,7 +912,11 @@ function ensureFrameShm(width, height) {
     if (frameShmMeta && frameShmMeta.width === width && frameShmMeta.height === height) {
       return frameShmMeta;
     }
-    const res = await callWorker('initVideoSharedMemory', [FRAME_SHM_NAME, width, height]);
+    // Capacity is the section size; width/height only move the live frame
+    // inside it. Math.max guards a caller asking for more than base scale.
+    const capW = Math.max(width, FRAME_SHM_BASE_W);
+    const capH = Math.max(height, FRAME_SHM_BASE_H);
+    const res = await callWorker('initVideoSharedMemory', [FRAME_SHM_NAME, width, height, capW, capH]);
     frameShmMeta = {
       name:        res.name,
       width:       res.width,
@@ -869,6 +924,7 @@ function ensureFrameShm(width, height) {
       bufferSize:  res.bufferSize,
       indexOffset: res.indexOffset,
       totalSize:   res.totalSize,
+      capacityBufferSize: res.capacityBufferSize,
     };
     log(`[IPC] ← shm ready: ${JSON.stringify(frameShmMeta)}`);
     return frameShmMeta;

@@ -673,19 +673,28 @@ std::unordered_map<int, std::string> OfflineRenderer::buildRenderProxyPlan(
 
         // Preserve 10-bit through the proxy for 10-bit sources (avoids banding).
         const bool highBitDepth = ProxyTranscoder::probeSourceBitDepth(src->filePath) > 8;
-        const std::string proxyPath = ProxyTranscoder::getSourcePreviewProxyPath(
-            src->filePath, proxiesDir_, bucket, highBitDepth);
 
         // Idempotent: reuse a valid proxy already on disk (this or a prior render/
-        // preview session) instead of regenerating.
-        if (ProxyTranscoder::sourcePreviewProxyExists(
-                src->filePath, proxiesDir_, bucket, highBitDepth)) {
+        // preview session, H.264 or legacy intra) instead of regenerating. Both
+        // decode frame-exactly through RenderVideoDecoder (BACKWARD seek, then
+        // decode forward to the target PTS), and the render reads mostly
+        // sequentially, where a GOP costs nothing.
+        if (const auto found = ProxyTranscoder::findSourcePreviewProxy(
+                src->filePath, proxiesDir_, bucket, highBitDepth);
+                found.found) {
             std::fprintf(stderr,
                 "[RenderProxy] source=%d peak=%.0fpx bucket=%dp refs=%d -> reuse %s\n",
-                sourceId, peakH, bucket, refs, proxyPath.c_str());
-            plan[sourceId] = proxyPath;
+                sourceId, peakH, bucket, refs, found.path.c_str());
+            plan[sourceId] = found.path;
             continue;
         }
+
+        // New proxies follow the proxy-codec setting (10-bit stays intra).
+        const ProxyCodec codec = ProxyTranscoder::codecForTargetSize(
+            static_cast<int>(std::lround(static_cast<double>(src->width) * bucket / src->height)),
+            bucket);
+        const std::string proxyPath = ProxyTranscoder::getSourcePreviewProxyPath(
+            src->filePath, proxiesDir_, bucket, highBitDepth, codec);
 
         std::fprintf(stderr,
             "[RenderProxy] source=%d peak=%.0fpx bucket=%dp refs=%d %s -> GENERATE %s\n",
@@ -693,7 +702,7 @@ std::unordered_map<int, std::string> OfflineRenderer::buildRenderProxyPlan(
             proxyPath.c_str());
 
         const bool ok = ProxyTranscoder::transcodeSourcePreview(
-            src->filePath, proxyPath, bucket, highBitDepth, /*progressCb=*/nullptr);
+            src->filePath, proxyPath, bucket, highBitDepth, /*progressCb=*/nullptr, codec);
         if (ok) {
             plan[sourceId] = proxyPath;
         } else {

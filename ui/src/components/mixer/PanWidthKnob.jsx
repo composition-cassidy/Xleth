@@ -209,12 +209,15 @@ export default function PanWidthKnob({
         onPointerCancel={drag.onPointerUp}
         onWheel={drag.onWheel}
         style={{ cursor: 'ns-resize', display: 'block', touchAction: 'none' }}
-        title="Drag vertical · Shift = fine · Ctrl+click = reset"
+        title={`${label ? `${label} — ` : ''}Drag vertical · Shift = fine · Ctrl+click = reset`}
       />
+      {/* .mixer-knob-label is the hook the mixer's shortest height tier uses to
+          drop the caption — see "Strip height tiers" in app.css. The canvas
+          title above carries the label so it survives that. */}
       {label && (
-        <div style={{
+        <div className="mixer-knob-label" style={{
           fontSize: 9, color: 'var(--theme-fx-axis-label)', textTransform: 'uppercase',
-          letterSpacing: 0.5, fontWeight: 500,
+          letterSpacing: 0.5, fontWeight: 500, whiteSpace: 'nowrap',
         }}>
           {label}
         </div>

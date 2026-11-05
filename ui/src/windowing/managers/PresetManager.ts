@@ -1,17 +1,32 @@
 import flCompose from '../presets/fl-compose.json';
 import vegasArrange from '../presets/vegas-arrange.json';
 import {
-  DEFAULT_DOCK_REGION_SIZES,
+  createInitialDockRegionSizes,
+  createInitialPanelStates,
+  MIN_DOCK_REGION_SIZES,
   type DockRegionSizes,
   type PanelStateMap,
 } from '../registry/PanelRegistry';
+import { isPanelId } from '../registry/panelCatalog';
+import {
+  mergeDockRegionSizes,
+  mergePanelStateMap,
+  normalizeFocus,
+} from '../registry/panelStateMerge';
 
 export interface Preset {
   panels: PanelStateMap;
   dockRegionSizes: DockRegionSizes;
 }
 
+// A preset is a SPARSE overlay: it states only what the layout decides and
+// inherits everything else from the catalog defaults. Panels it does not
+// mention stay closed at their default geometry, so adding a panel to the
+// catalog can never leave a preset half-populated — and, just as importantly,
+// a preset stops freezing a copy of every panel's default size the day it was
+// written.
 interface RawPreset {
+  focused?: unknown;
   panels?: unknown;
   dockRegionSizes?: unknown;
 }
@@ -21,22 +36,23 @@ const RAW_PRESETS: Record<string, RawPreset> = {
   'vegas-arrange': vegasArrange as RawPreset,
 };
 
-function normalizeDockRegionSizes(value: unknown): DockRegionSizes {
-  if (!value || typeof value !== 'object') return { ...DEFAULT_DOCK_REGION_SIZES };
-  const raw = value as Partial<Record<keyof DockRegionSizes, unknown>>;
-  return {
-    left: typeof raw.left === 'number' ? raw.left : DEFAULT_DOCK_REGION_SIZES.left,
-    right: typeof raw.right === 'number' ? raw.right : DEFAULT_DOCK_REGION_SIZES.right,
-    top: typeof raw.top === 'number' ? raw.top : DEFAULT_DOCK_REGION_SIZES.top,
-    bottom: typeof raw.bottom === 'number' ? raw.bottom : DEFAULT_DOCK_REGION_SIZES.bottom,
-  };
+export function listPresetIds(): string[] {
+  return Object.keys(RAW_PRESETS);
 }
 
 export function loadPreset(presetId: string): Preset | null {
   const raw = RAW_PRESETS[presetId];
-  if (!raw || !raw.panels || typeof raw.panels !== 'object') return null;
+  if (!raw) return null;
+
+  const panels = mergePanelStateMap(createInitialPanelStates(), raw.panels);
+  const focused = isPanelId(raw.focused) ? raw.focused : null;
+
   return {
-    panels: raw.panels as PanelStateMap,
-    dockRegionSizes: normalizeDockRegionSizes(raw.dockRegionSizes),
+    panels: normalizeFocus(panels, focused),
+    dockRegionSizes: mergeDockRegionSizes(
+      createInitialDockRegionSizes(),
+      raw.dockRegionSizes,
+      MIN_DOCK_REGION_SIZES,
+    ),
   };
 }

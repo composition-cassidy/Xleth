@@ -1,9 +1,17 @@
 import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
-import { drawRuler, resolveTimelinePalette } from '../timeline/timelineDrawing.js'
+import { resolveTimelinePalette } from '../timeline/timelineDrawing.js'
 import { RULER_HEIGHT } from '../../constants/timeline.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
 import { uiCanvasFont } from '../../styles/typography.js'
-import { getTransportState, subscribe as subscribeTransport } from '../../transportStore.js'
+import {
+  resolveView, viewSpan, sampleToX, xToSample, samplesPerPixel, scrollViewToInclude,
+} from './sandboxView.js'
+import { niceTimeStep, formatTick } from './sandboxFormat.js'
+import { getSandboxPreviewPosition } from './sandboxPreviewPlayer.js'
+import { nearestCrossingIndex, radiusForView } from '../sampler/zeroCrossing.js'
+import { opSampleRange, resolveOpRange } from './sandboxOpRange.js'
+import SandboxOverviewStrip from './SandboxOverviewStrip.jsx'
+import SandboxSelectionContextMenu from './SandboxSelectionContextMenu.jsx'
 import useSandboxStore, {
   gainEnvelopeAt, gainEnvelopeDbAt, sortEnvelopePoints, findEnvelopeOp,
   clampGainEnvelopeFollower, GAIN_ENVELOPE_MODE, GAIN_ENVELOPE_DB_MIN,
@@ -15,6 +23,14 @@ import { computeAutotuneCorrectionCurve, allowedPitchClasses, quantizeToNearestN
 // a squeezed panel never hands the canvas a degenerate (near-zero) height.
 const MIN_WAVE_HEIGHT = 160
 const MIN_SELECTION_PX = 3 // drags shorter than this collapse to "no selection", same gesture as a plain click
+
+// ── Selection edge handles (Phase 3) ────────────────────────────────────────
+// How close to an edge a press counts as "grab this edge" rather than "start a
+// new selection". A pixel radius, not a sample one, so it stays the same
+// physical target at every zoom — which is the whole reason the edges became
+// draggable: once you can zoom in far enough to place an edge precisely,
+// re-dragging the whole selection to nudge one side by 5ms is absurd.
+const EDGE_GRAB_PX = 6
 
 // AUTOTUNE pitch curve (P5-4) — padding added above/below the auto-fit cents
 // range so a curve hugging the top/bottom of its own span doesn't touch the
@@ -100,12 +116,13 @@ function columnAbsPeaks(colPeaks, numCols) {
 // drawn curve implies), so the recovered line runs slightly duller than the
 // true natural signal in heavily-modulated stretches — acceptable for a faint
 // guide line, not for anything load-bearing.
-function approxNaturalDbPerColumn(absPeaks, committedPoints, cols, numSamples) {
+function approxNaturalDbPerColumn(absPeaks, committedPoints, cols, sampleForCol) {
   const out = new Float32Array(cols)
   for (let x = 0; x < cols; x++) {
-    // Same px→sample mapping the main curve loop uses, so column x here means
-    // the same sample position it means everywhere else in this file.
-    const sample = Math.min(Math.max(0, numSamples - 1), Math.round((x / cols) * numSamples))
+    // The caller's own px→sample mapping, so column x here means the same
+    // sample position it means everywhere else in this file — including once
+    // the view is zoomed, where "x/cols of the buffer" stopped being true.
+    const sample = sampleForCol(x)
     const drawnGain = gainEnvelopeAt(committedPoints, sample)
     const basePeak = drawnGain > 1e-6 ? absPeaks[x] / drawnGain : absPeaks[x]
     out[x] = 20 * Math.log10(Math.max(1e-9, basePeak))
@@ -137,13 +154,22 @@ function smoothFollowerDbPerColumn(rawDb, samplesPerCol, sampleRate, attackMs, r
 // Min/max per pixel column, one pass over the raw samples. Cheap enough to
 // redo on every data/resize change — it is NOT redone on every drag frame,
 // the selection overlay is a separate canvas for that.
-function computeColumnPeaks(channelData, numCols) {
+// Peaks are taken over the VISIBLE sample range, not the whole buffer — that
+// is what zooming in actually buys: fewer samples folded into each column, so
+// the drawn envelope resolves individual cycles instead of a solid block. Once
+// the view is narrow enough that a column spans less than one sample, the
+// per-column min/max degenerates to that one sample's value, which is exactly
+// the point-per-sample picture a sample-level zoom should show.
+function computeColumnPeaks(channelData, numCols, startSample, endSample) {
   const n = channelData.length
   const out = { min: new Float32Array(numCols), max: new Float32Array(numCols) }
   if (n === 0 || numCols <= 0) return out
+  const from = Math.max(0, Math.min(n, Math.floor(startSample)))
+  const to = Math.max(from + 1, Math.min(n, Math.ceil(endSample)))
+  const span = to - from
   for (let col = 0; col < numCols; col++) {
-    const s0 = Math.floor((col * n) / numCols)
-    const s1 = Math.max(s0 + 1, Math.floor(((col + 1) * n) / numCols))
+    const s0 = from + Math.floor((col * span) / numCols)
+    const s1 = Math.max(s0 + 1, from + Math.floor(((col + 1) * span) / numCols))
     let mn = Infinity, mx = -Infinity
     for (let i = s0; i < s1 && i < n; i++) {
       const v = channelData[i]
@@ -269,15 +295,6 @@ function buildSpectrogramImage(spectrogram, bgHex, accentHex) {
   return { canvas: off, minHz, maxHz }
 }
 
-function pxToSample(px, w, numSamples) {
-  return Math.max(0, Math.min(numSamples, Math.round((px / Math.max(1, w)) * numSamples)))
-}
-
-function sampleToPx(sample, w, numSamples) {
-  if (!numSamples) return 0
-  return (sample / numSamples) * w
-}
-
 export default function SandboxWaveformCanvas() {
   const layers = useSandboxStore((s) => s.layers)
   const activeLayerId = useSandboxStore((s) => s.activeLayerId)
@@ -297,7 +314,22 @@ export default function SandboxWaveformCanvas() {
   const selectedOpId = useSandboxStore((s) => s.selectedOpId)
   const ensurePitchTrack = useSandboxStore((s) => s.ensurePitchTrack)
   const commitAutotuneManualStroke = useSandboxStore((s) => s.commitAutotuneManualStroke)
+  const view = useSandboxStore((s) => s.view)
+  const zoomByWheel = useSandboxStore((s) => s.zoomByWheel)
+  const panByFraction = useSandboxStore((s) => s.panByFraction)
+  const playback = useSandboxStore((s) => s.playback)
+  const followPlayhead = useSandboxStore((s) => s.followPlayhead)
   const layer = layers.find((l) => l.id === activeLayerId) ?? null
+
+  // ── The one viewport ────────────────────────────────────────────────────
+  // Resolved once per render against the CURRENT buffer length (see
+  // sandboxView.js on why the stored view may be null or stale), then closed
+  // over by every draw and every pointer handler below. Nothing in this file
+  // converts px↔sample any other way.
+  const numSamplesNow = layer?.renderedBuffer?.numSamples ?? 0
+  const vw = useMemo(() => resolveView(view, numSamplesNow), [view, numSamplesNow])
+  const s2x = useCallback((sample, w) => sampleToX(sample, vw, w), [vw])
+  const x2s = useCallback((px, w) => xToSample(px, vw, w, numSamplesNow), [vw, numSamplesNow])
 
   const containerRef = useRef(null)
   const stackRef = useRef(null)
@@ -308,6 +340,7 @@ export default function SandboxWaveformCanvas() {
   const paintCanvasRef = useRef(null)
   const spcSelectCanvasRef = useRef(null)
   const pitchCanvasRef = useRef(null)
+  const playheadCanvasRef = useRef(null)
   const sizeRef = useRef({ w: 0, h: MIN_WAVE_HEIGHT })
   const colPeaksRef = useRef(null) // { numChannels, cols: [{min,max}, ...] }
   // Offscreen spectrogram bitmap, rebuilt only when the spectrogram OBJECT
@@ -388,9 +421,6 @@ export default function SandboxWaveformCanvas() {
     )
   }, [pitchTrack, autotuneParams])
 
-  const [bpm, setBpm] = useState(() => getTransportState()?.bpm ?? 120)
-  useEffect(() => subscribeTransport((s) => { if (s?.bpm) setBpm(s.bpm) }), [])
-
   function applyCanvasSize(canvas, w, h, dpr) {
     canvas.width = Math.round(w * dpr)
     canvas.height = Math.round(h * dpr)
@@ -439,7 +469,9 @@ export default function SandboxWaveformCanvas() {
     const numChannels = buf.numChannels || 1
     colPeaksRef.current = {
       numSamples: buf.numSamples,
-      lanes: buf.channels.map((chan) => computeColumnPeaks(chan, Math.max(1, Math.round(w)))),
+      lanes: buf.channels.map((chan) => computeColumnPeaks(
+        chan, Math.max(1, Math.round(w)), vw.startSample, vw.endSample,
+      )),
     }
 
     if (viewMode === 'spc') {
@@ -458,7 +490,16 @@ export default function SandboxWaveformCanvas() {
         // frame boundary would misrepresent where a paint-out stroke's
         // feather (P3-2) actually falls.
         ctx.imageSmoothingEnabled = false
-        ctx.drawImage(cache.canvas, 0, 0, cache.canvas.width, cache.canvas.height, 0, 0, w, h)
+        // Source-rect crop, so the spectrogram zooms with everything else. The
+        // cached bitmap is one column per STFT frame across the whole buffer,
+        // so the visible sample range maps to a frame range by simple
+        // proportion — the frames are evenly spaced by construction (hop size
+        // is constant), which is what makes this legitimate rather than an
+        // approximation.
+        const frames = cache.canvas.width
+        const sx = (vw.startSample / Math.max(1, buf.numSamples)) * frames
+        const sw = Math.max(1e-6, (viewSpan(vw) / Math.max(1, buf.numSamples)) * frames)
+        ctx.drawImage(cache.canvas, sx, 0, sw, cache.canvas.height, 0, 0, w, h)
 
         // Log-frequency axis — gridlines + Hz labels at the landmarks the
         // spec calls for. Recomputed every draw (cheap text/line work)
@@ -531,7 +572,7 @@ export default function SandboxWaveformCanvas() {
         ctx.stroke()
       }
     }
-  }, [layer, viewMode])
+  }, [layer, viewMode, vw])
 
   const drawOverlay = useCallback(() => {
     const canvas = overlayCanvasRef.current
@@ -548,12 +589,50 @@ export default function SandboxWaveformCanvas() {
       startPx = Math.min(drag.startPx, drag.endPx)
       endPx = Math.max(drag.startPx, drag.endPx)
     } else if (selection && numSamples) {
-      startPx = sampleToPx(selection.startSample, w, numSamples)
-      endPx = sampleToPx(selection.endSample, w, numSamples)
+      startPx = s2x(selection.startSample, w)
+      endPx = s2x(selection.endSample, w)
     }
-    if (startPx == null || endPx - startPx < 1) return
-
     const palette = resolveTimelinePalette()
+
+    // ── The selected op's own range (Phase 3) ─────────────────────────────
+    // Drawn UNDER the selection, in a neutral hatch rather than the accent:
+    // it is context ("this entry acts here"), not a thing the pointer is
+    // currently holding. Ops with no locatable range draw nothing — see
+    // sandboxOpRange.js on why that is better than highlighting everything.
+    const selectedOp = layer?.ops?.find((o) => o.id === selectedOpId) ?? null
+    const opRange = resolveOpRange(opSampleRange(selectedOp), numSamples)
+    if (opRange) {
+      const ox0 = s2x(opRange.startSample, w)
+      const ox1 = s2x(opRange.endSample, w)
+      ctx.save()
+      ctx.fillStyle = tokenValue('--theme-text-muted') || '#888'
+      ctx.globalAlpha = 0.12
+      ctx.fillRect(ox0, 0, Math.max(1, ox1 - ox0), h)
+      ctx.globalAlpha = 0.5
+      ctx.strokeStyle = tokenValue('--theme-text-muted') || '#888'
+      ctx.setLineDash([3, 3])
+      ctx.lineWidth = 1
+      ctx.strokeRect(Math.round(ox0) + 0.5, 0.5, Math.max(1, ox1 - ox0), h - 1)
+      ctx.restore()
+    }
+
+    if (startPx == null) return
+
+    // A zero-width selection is the CURSOR — where Play starts and Paste
+    // lands. Drawn as a single line with a small cap, so it reads as a
+    // position rather than a collapsed region.
+    if (endPx - startPx < 1) {
+      const x = Math.round(startPx) + 0.5
+      ctx.strokeStyle = palette.accent
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.moveTo(x, 0)
+      ctx.lineTo(x, h)
+      ctx.stroke()
+      ctx.fillStyle = palette.accent
+      ctx.fillRect(x - 2.5, 0, 5, 3)
+      return
+    }
     ctx.fillStyle = tokenValue('--theme-accent-bg-subtle') || 'rgba(0,184,150,0.14)'
     ctx.fillRect(startPx, 0, endPx - startPx, h)
     ctx.strokeStyle = palette.accent
@@ -564,7 +643,17 @@ export default function SandboxWaveformCanvas() {
     ctx.moveTo(endPx - 0.5, 0)
     ctx.lineTo(endPx - 0.5, h)
     ctx.stroke()
-  }, [layer, selection])
+
+    // Grips — the visible half of the draggable edges (the cursor change is
+    // the other half). Small filled caps top and bottom rather than a full
+    // handle bar: they have to be findable without covering the material at
+    // the very boundary the user is trying to see.
+    ctx.fillStyle = palette.accent
+    for (const ex of [startPx + 0.5, endPx - 0.5]) {
+      ctx.fillRect(ex - 2.5, 0, 5, 6)
+      ctx.fillRect(ex - 2.5, h - 6, 5, 6)
+    }
+  }, [layer, selection, s2x, selectedOpId])
 
   // ── Envelope draw ────────────────────────────────────────────────────────
   //
@@ -644,8 +733,8 @@ export default function SandboxWaveformCanvas() {
     let naturalMinDb = 0
     let naturalRangeDb = 0
     if (envIsRelative && !envBypassed) {
-      const rawDb = approxNaturalDbPerColumn(absPeaks, committedPoints, cols, numSamples)
-      const samplesPerCol = numSamples / cols
+      const rawDb = approxNaturalDbPerColumn(absPeaks, committedPoints, cols, (x) => x2s(x, cols))
+      const samplesPerCol = samplesPerPixel(vw, cols)
       const sampleRate = layer?.renderedBuffer?.sampleRate || 48000
       naturalDb = smoothFollowerDbPerColumn(rawDb, samplesPerCol, sampleRate,
         envFollower.followerAttackMs, envFollower.followerReleaseMs)
@@ -672,9 +761,9 @@ export default function SandboxWaveformCanvas() {
     const ys = new Float32Array(cols)
     const over = new Uint8Array(cols)
     for (let x = 0; x < cols; x++) {
-      // Same px→sample mapping pxToSample uses, so a handle drawn at
-      // sampleToPx(p) lands on the column that evaluates to p's own dB.
-      const sample = Math.min(numSamples - 1, Math.round((x / cols) * numSamples))
+      // Same px→sample mapping the pointer handlers use, so a handle drawn at
+      // s2x(p) lands on the column that evaluates to p's own dB.
+      const sample = Math.min(numSamples - 1, x2s(x, cols))
       const displayGain = gainEnvelopeAt(display, sample)
       // An empty curve evaluates to 1.0, i.e. 0 dB — no special case needed.
       // The editable line's SHAPE never changes with mode — only its EFFECT
@@ -712,7 +801,7 @@ export default function SandboxWaveformCanvas() {
     // the waveform.
     if (active) {
       for (const pt of display) {
-        const x = sampleToPx(pt.samplePos, w, numSamples)
+        const x = s2x(pt.samplePos, w)
         const y = dbToY(pt.db, h)
         ctx.beginPath()
         ctx.arc(x, y, ENV_HANDLE_R, 0, Math.PI * 2)
@@ -726,7 +815,7 @@ export default function SandboxWaveformCanvas() {
       }
     }
     ctx.globalAlpha = 1
-  }, [layer, committedPoints, envelopeEditMode, envBypassed, envIsRelative, envFollower])
+  }, [layer, committedPoints, envelopeEditMode, envBypassed, envIsRelative, envFollower, vw, s2x, x2s])
 
   // ── Spectral paint draw (P3-2) ──────────────────────────────────────────
   //
@@ -755,8 +844,8 @@ export default function SandboxWaveformCanvas() {
 
     const drawDab = (d, color) => {
       const featherSamples = (Math.max(0, d.featherTimeMs) / 1000) * sampleRate
-      const x0 = sampleToPx(d.centerSample - d.halfWidthSamples - featherSamples, w, numSamples)
-      const x1 = sampleToPx(d.centerSample + d.halfWidthSamples + featherSamples, w, numSamples)
+      const x0 = s2x(d.centerSample - d.halfWidthSamples - featherSamples, w)
+      const x1 = s2x(d.centerSample + d.halfWidthSamples + featherSamples, w)
       const yTop = freqToPx(d.centerFreqHz + d.halfHeightHz + Math.max(0, d.featherFreqHz), h, minHz, maxHz)
       const yBot = freqToPx(d.centerFreqHz - d.halfHeightHz - Math.max(0, d.featherFreqHz), h, minHz, maxHz)
       ctx.fillStyle = color
@@ -765,8 +854,8 @@ export default function SandboxWaveformCanvas() {
 
       // The core (pre-feather) footprint, drawn a bit stronger so the brush's
       // actual centre reads clearly under the softer feathered fringe.
-      const cx0 = sampleToPx(d.centerSample - d.halfWidthSamples, w, numSamples)
-      const cx1 = sampleToPx(d.centerSample + d.halfWidthSamples, w, numSamples)
+      const cx0 = s2x(d.centerSample - d.halfWidthSamples, w)
+      const cx1 = s2x(d.centerSample + d.halfWidthSamples, w)
       const cyTop = freqToPx(d.centerFreqHz + d.halfHeightHz, h, minHz, maxHz)
       const cyBot = freqToPx(d.centerFreqHz - d.halfHeightHz, h, minHz, maxHz)
       ctx.globalAlpha = 0.4
@@ -777,7 +866,7 @@ export default function SandboxWaveformCanvas() {
     for (const d of paintDabs) drawDab(d, accent)
     for (const d of (paintDragRef.current || [])) drawDab(d, danger)
     ctx.globalAlpha = 1
-  }, [layer, viewMode, paintDabs])
+  }, [layer, viewMode, paintDabs, s2x])
 
   // ── SPC selection draw (rect/freehand t×f selection tool) ────────────────
   //
@@ -807,8 +896,8 @@ export default function SandboxWaveformCanvas() {
     const danger = tokenValue('--theme-danger') || '#e05260'
 
     const drawShape = (s, color) => {
-      const x0 = sampleToPx(s.centerSample - s.halfWidthSamples, w, numSamples)
-      const x1 = sampleToPx(s.centerSample + s.halfWidthSamples, w, numSamples)
+      const x0 = s2x(s.centerSample - s.halfWidthSamples, w)
+      const x1 = s2x(s.centerSample + s.halfWidthSamples, w)
       const yTop = freqToPx(s.centerFreqHz + s.halfHeightHz, h, minHz, maxHz)
       const yBot = freqToPx(s.centerFreqHz - s.halfHeightHz, h, minHz, maxHz)
       ctx.strokeStyle = color
@@ -820,7 +909,7 @@ export default function SandboxWaveformCanvas() {
 
     for (const s of (spcSelection?.shapes || [])) drawShape(s, accent)
     for (const s of (spcSelectDragRef.current || [])) drawShape(s, danger)
-  }, [layer, viewMode, spcSelection])
+  }, [layer, viewMode, spcSelection, s2x])
 
   // ── AUTOTUNE pitch curve draw (P5-4/P5-5) ───────────────────────────────
   //
@@ -896,8 +985,13 @@ export default function SandboxWaveformCanvas() {
     const danger = tokenValue('--theme-danger') || '#e05260'
     const placeholder = tokenValue('--theme-text-placeholder') || '#666'
 
-    const durationSec = layer.renderedBuffer.numSamples / (layer.renderedBuffer.sampleRate || 48000)
-    const xForTime = (tSec) => (durationSec > 0 ? (tSec / durationSec) * w : 0)
+    // Time → x THROUGH the viewport: the pitch track is sampled in the source
+    // buffer's own rate, so a time is converted to a sample index first and
+    // then mapped by the same s2x every other overlay uses. Before the
+    // viewport existed this was a direct duration-proportional map, which is
+    // the same thing only while the view happens to be fitted.
+    const rateForPitch = layer.renderedBuffer.sampleRate || 48000
+    const xForTime = (tSec) => s2x(tSec * rateForPitch, w)
 
     // While a stroke is in flight, use the axis frozen at pointerdown rather
     // than refitting to the in-progress stroke every move — refitting live
@@ -1025,21 +1119,62 @@ export default function SandboxWaveformCanvas() {
         ctx.textBaseline = 'alphabetic'
       }
     }
-  }, [autotuneOp, viewMode, layer, pitchTrack, correctionCurve, getPitchAxis])
+  }, [autotuneOp, viewMode, layer, pitchTrack, correctionCurve, getPitchAxis, s2x])
 
+  // ── Ruler: SECONDS, over the visible range ──────────────────────────────
+  //
+  // This used to call the timeline's own drawRuler with a pixels-per-BEAT
+  // derived from the project BPM. A sandbox layer is an offline buffer with no
+  // relationship to the project's tempo grid, so those beat numbers described
+  // nothing — and they disagreed with the status bar (seconds) and the op
+  // stack (sample indices) sitting either side of them. One vocabulary now:
+  // seconds, with the tick step chosen from a 1-2-5 ladder so the labels stay
+  // ~80px apart from a whole minute down to a few dozen samples.
   const drawRulerCanvas = useCallback(() => {
     const canvas = rulerCanvasRef.current
     const w = sizeRef.current.w
     if (!canvas || w === 0) return
     const ctx = canvas.getContext('2d')
     const palette = resolveTimelinePalette()
-    const numSamples = layer?.renderedBuffer?.numSamples
+    ctx.clearRect(0, 0, w, RULER_HEIGHT)
+    ctx.fillStyle = tokenValue('--theme-bg-secondary') || '#181818'
+    ctx.fillRect(0, 0, w, RULER_HEIGHT)
+
     const sampleRate = layer?.renderedBuffer?.sampleRate
-    const durationSec = numSamples && sampleRate ? numSamples / sampleRate : 4 * (60 / bpm)
-    const totalBeats = Math.max(0.25, durationSec * (bpm / 60))
-    const ppb = w / totalBeats
-    drawRuler(ctx, w, RULER_HEIGHT, 0, ppb, palette)
-  }, [layer, bpm])
+    if (!sampleRate || !numSamplesNow) return
+
+    const MIN_LABEL_PX = 78
+    const stepSec = niceTimeStep((samplesPerPixel(vw, w) / sampleRate) * MIN_LABEL_PX)
+    const startSec = vw.startSample / sampleRate
+    const endSec = vw.endSample / sampleRate
+
+    ctx.font = uiCanvasFont('9px')
+    ctx.textBaseline = 'alphabetic'
+    ctx.textAlign = 'left'
+    // A minor tick every fifth of a labelled step — enough to read position
+    // between labels without turning the strip into a picket fence.
+    const minorStep = stepSec / 5
+    ctx.strokeStyle = palette.rulerGridMinor || palette.laneSeparator
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    for (let t = Math.ceil(startSec / minorStep) * minorStep; t <= endSec; t += minorStep) {
+      const x = Math.round(s2x(t * sampleRate, w)) + 0.5
+      ctx.moveTo(x, RULER_HEIGHT - 4)
+      ctx.lineTo(x, RULER_HEIGHT)
+    }
+    ctx.stroke()
+
+    ctx.strokeStyle = palette.rulerText
+    ctx.fillStyle = palette.rulerText
+    ctx.beginPath()
+    for (let t = Math.ceil(startSec / stepSec) * stepSec; t <= endSec; t += stepSec) {
+      const x = Math.round(s2x(t * sampleRate, w)) + 0.5
+      ctx.moveTo(x, RULER_HEIGHT - 8)
+      ctx.lineTo(x, RULER_HEIGHT)
+      ctx.fillText(formatTick(t, stepSec), x + 3, RULER_HEIGHT - 10)
+    }
+    ctx.stroke()
+  }, [layer, vw, numSamplesNow, s2x])
 
   const redrawAll = useCallback(() => {
     drawBackground()
@@ -1081,6 +1216,7 @@ export default function SandboxWaveformCanvas() {
       if (paintCanvasRef.current) applyCanvasSize(paintCanvasRef.current, w, h, dpr)
       if (spcSelectCanvasRef.current) applyCanvasSize(spcSelectCanvasRef.current, w, h, dpr)
       if (pitchCanvasRef.current) applyCanvasSize(pitchCanvasRef.current, w, h, dpr)
+      if (playheadCanvasRef.current) applyCanvasSize(playheadCanvasRef.current, w, h, dpr)
       redrawAllRef.current()
     }
 
@@ -1107,10 +1243,61 @@ export default function SandboxWaveformCanvas() {
     return Math.max(0, Math.min(rect.width, e.clientX - rect.left))
   }, [])
 
+  // ── Zero-crossing snap (Phase 3) ────────────────────────────────────────
+  //
+  // Reuses the sampler's own pure nearestCrossingIndex rather than a second
+  // copy of the search — but NOT its snapToZeroCrossing wrapper, which fetches
+  // raw samples over the bridge by regionId. A sandbox layer's PCM is already
+  // decoded in this process (layer.renderedBuffer.channels), so the snap is a
+  // local array scan with no RPC and no await: it can run inside a drag.
+  //
+  // Suppressed while ALT is held, and skipped entirely when the search window
+  // never crosses zero — a snap is a convenience, and must never move an edge
+  // somewhere the user did not put it.
+  const snapSample = useCallback((sample, w, disabled) => {
+    if (disabled) return sample
+    const chan = layer?.renderedBuffer?.channels?.[0]
+    const n = layer?.renderedBuffer?.numSamples ?? 0
+    if (!chan?.length || !n) return sample
+    // radiusForView is the sampler's own zoom-proportional rule (~2px worth of
+    // samples, clamped) — imported rather than re-derived so a trim point
+    // dropped here and one dropped in the sampler snap by the same amount.
+    // It shrinks as you zoom in, which is deliberate: at sample-level zoom you
+    // are placing the edge exactly, and a snap that could still move it by a
+    // visible distance would be fighting you.
+    const radius = radiusForView(viewSpan(vw), w)
+    const from = Math.max(0, sample - radius)
+    const to = Math.min(n, sample + radius)
+    if (to - from < 2) return sample
+    const idx = nearestCrossingIndex(chan.subarray(from, to), sample - from)
+    return idx < 0 ? sample : from + idx
+  }, [layer, vw])
+
+  // Which part of an existing selection a press at `x` is grabbing: 'start',
+  // 'end', or null for "start a new selection". Only offered when a selection
+  // is actually visible — an invisible edge is not a target.
+  const hitSelectionEdge = useCallback((x, w) => {
+    if (!selection || selection.endSample <= selection.startSample) return null
+    const sx = s2x(selection.startSample, w)
+    const ex = s2x(selection.endSample, w)
+    if (ex - sx < MIN_SELECTION_PX) return null
+    if (Math.abs(x - sx) <= EDGE_GRAB_PX) return 'start'
+    if (Math.abs(x - ex) <= EDGE_GRAB_PX) return 'end'
+    return null
+  }, [selection, s2x])
+
   const handlePointerDown = useCallback((e) => {
     if (e.button !== 0 || !layer?.renderedBuffer) return
+    const w = sizeRef.current.w
     const x = getLocalX(e)
-    dragRef.current = { startPx: x, endPx: x }
+
+    // Grabbing an edge keeps the OPPOSITE edge anchored, so an adjustment is
+    // an adjustment rather than a fresh selection that happens to start where
+    // the old one ended.
+    const edge = hitSelectionEdge(x, w)
+    if (edge === 'start') dragRef.current = { startPx: s2x(selection.endSample, w), endPx: x, adjusting: true }
+    else if (edge === 'end') dragRef.current = { startPx: s2x(selection.startSample, w), endPx: x, adjusting: true }
+    else dragRef.current = { startPx: x, endPx: x, adjusting: false }
     drawOverlay()
 
     const onMove = (me) => {
@@ -1122,18 +1309,22 @@ export default function SandboxWaveformCanvas() {
         drawOverlay()
       }
     }
-    const onUp = () => {
+    const onUp = (ue) => {
       const drag = dragRef.current
       dragRef.current = null
       if (drag && layer?.renderedBuffer) {
-        const w = sizeRef.current.w
-        const numSamples = layer.renderedBuffer.numSamples
-        if (Math.abs(drag.endPx - drag.startPx) < MIN_SELECTION_PX) {
-          setSelection(null)
+        const noSnap = ue?.altKey
+        if (!drag.adjusting && Math.abs(drag.endPx - drag.startPx) < MIN_SELECTION_PX) {
+          // A plain click is a CURSOR, not "no selection": it is where Play
+          // starts from and where Paste lands. Storing it as a zero-width
+          // range keeps one representation of "where am I" instead of a
+          // second cursor field that could disagree with the selection.
+          const at = snapSample(x2s(drag.endPx, w), w, noSnap)
+          setSelection({ startSample: at, endSample: at })
         } else {
-          const a = pxToSample(Math.min(drag.startPx, drag.endPx), w, numSamples)
-          const b = pxToSample(Math.max(drag.startPx, drag.endPx), w, numSamples)
-          setSelection({ startSample: a, endSample: b })
+          const a = snapSample(x2s(Math.min(drag.startPx, drag.endPx), w), w, noSnap)
+          const b = snapSample(x2s(Math.max(drag.startPx, drag.endPx), w), w, noSnap)
+          setSelection({ startSample: a, endSample: Math.max(a + 1, b) })
         }
       }
       window.removeEventListener('mousemove', onMove)
@@ -1141,7 +1332,17 @@ export default function SandboxWaveformCanvas() {
     }
     window.addEventListener('mousemove', onMove)
     window.addEventListener('mouseup', onUp)
-  }, [layer, getLocalX, drawOverlay, setSelection])
+  }, [layer, getLocalX, drawOverlay, setSelection, x2s, s2x, selection, hitSelectionEdge, snapSample])
+
+  // Edge affordance: the cursor becomes a horizontal resize arrow over a
+  // grabbable selection edge. Without it the edges are a hidden feature —
+  // nothing about a 1px accent line says "you can pull this".
+  const handleOverlayHover = useCallback((e) => {
+    const canvas = overlayCanvasRef.current
+    if (!canvas || dragRef.current) return
+    const w = sizeRef.current.w
+    canvas.style.cursor = hitSelectionEdge(getLocalX(e), w) ? 'ew-resize' : 'text'
+  }, [getLocalX, hitSelectionEdge])
 
   // ── Envelope editing ─────────────────────────────────────────────────────
 
@@ -1159,7 +1360,7 @@ export default function SandboxWaveformCanvas() {
   // Index of the handle under the pointer, or -1.
   const hitHandle = useCallback((points, pos, numSamples) => {
     for (let i = 0; i < points.length; i++) {
-      const hx = sampleToPx(points[i].samplePos, pos.w, numSamples)
+      const hx = s2x(points[i].samplePos, pos.w)
       const hy = dbToY(points[i].db, pos.h)
       if (Math.hypot(hx - pos.x, hy - pos.y) <= ENV_HIT_R) return i
     }
@@ -1175,7 +1376,7 @@ export default function SandboxWaveformCanvas() {
 
     let points = committedPoints.map((p) => ({ ...p }))
     let index = hitHandle(points, pos, numSamples)
-    const sample = pxToSample(pos.x, pos.w, numSamples)
+    const sample = x2s(pos.x, pos.w)
     const curveDb = 20 * Math.log10(Math.max(1e-9, gainEnvelopeAt(points, sample)))
 
     // Armed mode captures the pointer, so a press that is NOT on the curve or
@@ -1227,7 +1428,7 @@ export default function SandboxWaveformCanvas() {
       // one it grabbed.
       const lo = i > 0 ? pts[i - 1].samplePos + 1 : 0
       const hi = i < pts.length - 1 ? pts[i + 1].samplePos - 1 : numSamples - 1
-      const wanted = pxToSample(p.x, p.w, numSamples)
+      const wanted = x2s(p.x, p.w)
       pts[i] = {
         samplePos: Math.max(lo, Math.min(Math.max(lo, hi), wanted)),
         db: yToDb(p.y, p.h),
@@ -1303,7 +1504,7 @@ export default function SandboxWaveformCanvas() {
     // shape SpectralPaintDab expects (SandboxOp.h), so commitSpectralPaintDabs
     // hands the store's params straight through with no translation.
     const makeDabAt = (p) => ({
-      centerSample: pxToSample(p.x, p.w, numSamples),
+      centerSample: x2s(p.x, p.w),
       halfWidthSamples: Math.max(1, Math.round(paintBrush.halfWidthSec * sampleRate)),
       centerFreqHz: pxToFreq(p.y, p.h, minHz, maxHz),
       halfHeightHz: paintBrush.halfHeightHz,
@@ -1506,8 +1707,8 @@ export default function SandboxWaveformCanvas() {
         if (!p) return
         const x0 = Math.min(start.x, p.x), x1 = Math.max(start.x, p.x)
         const y0 = Math.min(start.y, p.y), y1 = Math.max(start.y, p.y)
-        const s0 = pxToSample(x0, pos.w, numSamples)
-        const s1 = pxToSample(x1, pos.w, numSamples)
+        const s0 = x2s(x0, pos.w)
+        const s1 = x2s(x1, pos.w)
         const hzTop = pxToFreq(y0, pos.h, minHz, maxHz)
         const hzBot = pxToFreq(y1, pos.h, minHz, maxHz)
         spcSelectDragRef.current = [{
@@ -1534,7 +1735,7 @@ export default function SandboxWaveformCanvas() {
       // uses for a paint stroke (see handlePaintDown above), just committed
       // to the selection instead of straight to an op.
       const makeShapeAt = (p) => ({
-        centerSample: pxToSample(p.x, p.w, numSamples),
+        centerSample: x2s(p.x, p.w),
         halfWidthSamples: Math.max(1, Math.round(SPC_SELECT_FREEHAND_DEFAULT.halfWidthSec * sampleRate)),
         centerFreqHz: pxToFreq(p.y, p.h, minHz, maxHz),
         halfHeightHz: SPC_SELECT_FREEHAND_DEFAULT.halfHeightHz,
@@ -1565,6 +1766,124 @@ export default function SandboxWaveformCanvas() {
     }
   }, [spcSelectMode, spcSelectShape, viewMode, layer, spcSelectLocal, drawSpcSelect, setSpcSelection])
 
+  // Click the ruler to place the cursor — the standard "start playback here"
+  // gesture, and the one place it can be done without also risking a stray
+  // selection drag over the material itself. Stored as a zero-width selection,
+  // the same representation the waveform's own click produces.
+  const handleRulerSeek = useCallback((e) => {
+    if (e.button !== 0 || !layer?.renderedBuffer) return
+    const rect = rulerCanvasRef.current?.getBoundingClientRect()
+    if (!rect) return
+    const x = Math.max(0, Math.min(rect.width, e.clientX - rect.left))
+    const at = x2s(x, rect.width)
+    setSelection({ startSample: at, endSample: at })
+  }, [layer, x2s, setSelection])
+
+  // ── Right-click menu on the waveform (Phase 5) ──────────────────────────
+  // Only on the SELECTION layer: the envelope canvas already spends its right
+  // button deleting breakpoints, and the paint/region tools are mid-gesture
+  // surfaces. So the menu appears exactly where a plain selection was made,
+  // which is the one place it is unambiguous.
+  const [contextAt, setContextAt] = useState(null)
+  const handleOverlayContextMenu = useCallback((e) => {
+    if (!layer?.renderedBuffer) return
+    e.preventDefault()
+    e.stopPropagation()
+    setContextAt({ x: e.clientX, y: e.clientY })
+  }, [layer])
+
+  // ── Playhead (Phase 2) ───────────────────────────────────────────────────
+  //
+  // Its own canvas, and its own rAF loop that reads the position straight from
+  // the preview player's AudioContext clock — NOT from the store. A store
+  // write per frame would re-render the menu bar, the op rail, the status bar
+  // and every layer card sixty times a second to move one line.
+  //
+  // The composite mix places each layer at its own offsetSamples, so a
+  // composite position has to have this layer's offset subtracted before it
+  // means anything on this layer's waveform. A layer audition is already in
+  // this layer's timeline and needs no correction.
+  const playheadOffset = playback.kind === 'composite' ? (layer?.offsetSamples ?? 0) : 0
+  const playheadActive = playback.state === 'playing'
+    && (playback.kind === 'composite' || playback.layerId === layer?.id)
+
+  useEffect(() => {
+    const canvas = playheadCanvasRef.current
+    if (!canvas) return undefined
+    const clear = () => {
+      const ctx = canvas.getContext('2d')
+      ctx?.clearRect(0, 0, sizeRef.current.w, sizeRef.current.h)
+    }
+    if (!playheadActive) { clear(); return undefined }
+
+    let raf = 0
+    const accent = tokenValue('--theme-accent') || '#fe589a'
+    const tick = () => {
+      raf = requestAnimationFrame(tick)
+      const ctx = canvas.getContext('2d')
+      if (!ctx) return
+      const w = sizeRef.current.w
+      const h = sizeRef.current.h
+      ctx.clearRect(0, 0, w, h)
+      const pos = getSandboxPreviewPosition()
+      if (pos == null) return
+      const sample = pos - playheadOffset
+      // Keep a zoomed-in view following the playhead, but only when asked —
+      // see followPlayhead's comment in the store. scrollViewToInclude leaves
+      // the view untouched while the playhead is comfortably on screen, so
+      // this is not a store write per frame.
+      if (followPlayhead) {
+        const cur = useSandboxStore.getState().view
+        const next = scrollViewToInclude(cur, numSamplesNow, sample)
+        if (next !== cur) useSandboxStore.getState().setView(next)
+      }
+      const x = Math.round(s2x(sample, w)) + 0.5
+      if (x < -1 || x > w + 1) return
+      ctx.strokeStyle = accent
+      ctx.lineWidth = 1.5
+      ctx.beginPath()
+      ctx.moveTo(x, 0)
+      ctx.lineTo(x, h)
+      ctx.stroke()
+      ctx.fillStyle = accent
+      ctx.beginPath()
+      ctx.moveTo(x - 4, 0)
+      ctx.lineTo(x + 4, 0)
+      ctx.lineTo(x, 6)
+      ctx.closePath()
+      ctx.fill()
+    }
+    raf = requestAnimationFrame(tick)
+    return () => { cancelAnimationFrame(raf); clear() }
+  }, [playheadActive, playheadOffset, s2x, followPlayhead, numSamplesNow])
+
+  // ── Wheel: Ctrl/Meta = pointer-centred zoom, Shift = pan ─────────────────
+  //
+  // Same split the timeline uses (see VideoMirrorTimeline's handleWheel), and
+  // for the same reason: a PLAIN wheel must keep reaching the layer
+  // workspace's vertical scroller, or the panel becomes a place where the
+  // mouse wheel silently stops working as soon as the pointer crosses a
+  // waveform. Registered natively rather than through React's onWheel because
+  // it has to preventDefault, which a passive listener cannot.
+  useEffect(() => {
+    const el = stackRef.current
+    if (!el) return undefined
+    const onWheel = (e) => {
+      const w = sizeRef.current.w
+      if (e.ctrlKey || e.metaKey) {
+        e.preventDefault()
+        const rect = el.getBoundingClientRect()
+        zoomByWheel(e.deltaY, Math.max(0, Math.min(1, (e.clientX - rect.left) / Math.max(1, w))))
+      } else if (e.shiftKey || e.deltaX !== 0) {
+        e.preventDefault()
+        const delta = e.shiftKey ? e.deltaY : e.deltaX
+        panByFraction((delta / Math.max(1, w)) * 0.9)
+      }
+    }
+    el.addEventListener('wheel', onWheel, { passive: false })
+    return () => el.removeEventListener('wheel', onWheel)
+  }, [zoomByWheel, panByFraction])
+
   // ── SPC hover readout (time × Hz, for the status bar) ─────────────────────
   // Attached to the whole canvas STACK, not any one layer: canvases stacked
   // above the pointer's actual target have pointer-events:none while inert
@@ -1581,14 +1900,20 @@ export default function SandboxWaveformCanvas() {
     const sampleRate = layer.renderedBuffer.sampleRate || 48000
     const minHz = SPC_FREQ_MIN_HZ
     const maxHz = Math.min(SPC_FREQ_MAX_HZ, sampleRate / 2)
-    const sample = pxToSample(x, rect.width, numSamples)
+    const sample = x2s(x, rect.width)
     setSpcHoverReadout({ sec: sample / sampleRate, hz: pxToFreq(y, rect.height, minHz, maxHz) })
   }, [viewMode, layer, setSpcHoverReadout])
 
   const handleStackLeave = useCallback(() => setSpcHoverReadout(null), [setSpcHoverReadout])
 
+  // Reading order is overview → ruler → waveform. The ruler used to sit BELOW
+  // the waveform, which put the time axis furthest from the overview strip
+  // that indexes into it and left the two describing the same axis from
+  // opposite ends of the panel.
   return (
     <div className="sandbox-waveform-area" ref={containerRef}>
+      <SandboxOverviewStrip />
+      <canvas ref={rulerCanvasRef} className="sandbox-ruler-canvas" onMouseDown={handleRulerSeek} />
       <div
         className="sandbox-waveform-stack"
         ref={stackRef}
@@ -1600,6 +1925,8 @@ export default function SandboxWaveformCanvas() {
           ref={overlayCanvasRef}
           className="sandbox-waveform-overlay"
           onMouseDown={handlePointerDown}
+          onMouseMove={handleOverlayHover}
+          onContextMenu={handleOverlayContextMenu}
         />
         <canvas
           ref={envCanvasRef}
@@ -1622,8 +1949,11 @@ export default function SandboxWaveformCanvas() {
           className={`sandbox-waveform-pitch${autotuneOp?.params?.mode === 1 ? ' editing' : ''}`}
           onMouseDown={handlePitchDown}
         />
+        <canvas ref={playheadCanvasRef} className="sandbox-waveform-playhead" />
       </div>
-      <canvas ref={rulerCanvasRef} className="sandbox-ruler-canvas" />
+      {contextAt && (
+        <SandboxSelectionContextMenu at={contextAt} onClose={() => setContextAt(null)} />
+      )}
     </div>
   )
 }

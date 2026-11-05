@@ -5611,6 +5611,64 @@ html[data-xleth-backdrop="video"] .app-body {
   color: var(--theme-text-subtle);
 }
 
+/* Proxy codec migration badge — bottom-left of the video canvas, non-blocking
+   (pointer-events: none so it never steals canvas clicks / eyedropper picks). */
+/* The badges stack (a rebuild and a codec migration can run at once), so the
+   stack — not each badge — is what is pinned to the corner. */
+.proxy-badge-stack {
+  position: absolute;
+  left: 8px;
+  bottom: 8px;
+  z-index: 4;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  max-width: calc(100% - 16px);
+  pointer-events: none;
+}
+
+.proxy-migration-badge {
+  display: grid;
+  grid-template-columns: auto auto auto;
+  align-items: center;
+  column-gap: 6px;
+  row-gap: 4px;
+  max-width: calc(100% - 16px);
+  padding: 5px 8px;
+  border-radius: var(--radius-sm, 5px);
+  border: 1px solid var(--theme-border-default);
+  background: color-mix(in srgb, var(--theme-bg-secondary) 88%, transparent);
+  pointer-events: none;
+}
+
+.proxy-migration-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--theme-text);
+  white-space: nowrap;
+}
+
+.proxy-migration-count {
+  font-size: 11px;
+  font-variant-numeric: tabular-nums;
+  color: var(--theme-text-subtle);
+  white-space: nowrap;
+}
+
+.proxy-migration-bar {
+  grid-column: 1 / -1;
+  height: 3px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: var(--theme-bg-primary);
+}
+
+.proxy-migration-bar-fill {
+  height: 100%;
+  background: var(--theme-accent);
+  transition: width 400ms ease;
+}
+
 .poster-load-skip {
   margin-top: 6px;
   padding: 5px 14px;
@@ -9068,6 +9126,69 @@ html.fx-drag-active * {
   color: var(--theme-text-muted);
 }
 
+/* "Clean up project" confirmation — lists what will be deleted per category and
+   what is kept (offline media). Tokens only; the primary/cancel buttons are the
+   shared .confirm-dialog-btn set. */
+.cleanup-dialog {
+  max-width: 520px;
+}
+
+.cleanup-dialog-lead {
+  margin: 0 0 12px 0;
+  color: var(--theme-text-muted);
+  line-height: 1.5;
+}
+
+.cleanup-dialog-list {
+  list-style: none;
+  margin: 0 0 12px 0;
+  padding: 0;
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-sm, 4px);
+  background: var(--theme-bg-secondary);
+}
+
+.cleanup-dialog-item {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--theme-border-subtle);
+  font-size: 12px;
+}
+
+.cleanup-dialog-item:last-child {
+  border-bottom: none;
+}
+
+.cleanup-dialog-item-label {
+  color: var(--theme-text);
+}
+
+.cleanup-dialog-item-size {
+  flex: 0 0 auto;
+  color: var(--theme-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.cleanup-dialog-total .cleanup-dialog-item-label,
+.cleanup-dialog-total .cleanup-dialog-item-size {
+  font-weight: 600;
+  color: var(--theme-text);
+}
+
+.cleanup-dialog-note {
+  margin: 0 0 12px 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--theme-text-muted);
+}
+
+.cleanup-dialog-kept-names {
+  color: var(--theme-text-subtle);
+  overflow-wrap: anywhere;
+}
+
 .confirm-dialog-body {
   color: var(--theme-text-muted);
   line-height: 1.5;
@@ -10443,6 +10564,15 @@ html.fx-drag-active * {
   padding: 5px 9px 8px;
 }
 
+/* No chips to show (every track straight to Master with no bus inputs — the
+ * common case) and the row still reserved 14px of every strip for nothing.
+ * That is height the meter/fader wants, and the output select below already
+ * names the target, so an empty row collapses instead. */
+.mixer-route-badges:empty {
+  min-height: 0;
+  padding: 0;
+}
+
 .mixer-route-chip {
   min-width: 0;
   max-width: 100%;
@@ -10623,7 +10753,7 @@ html.fx-drag-active * {
   align-items: stretch;
   justify-content: center;
   gap: 7px;
-  min-height: 100px;
+  min-height: 80px;
   padding-bottom: 9px;
 }
 
@@ -10902,9 +11032,43 @@ html.fx-drag-active * {
 
 /* â”€â”€ Effect Chain Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
-/* Short floating/docked mixers keep every primary control visible by putting
- * the meter/fader beside the PAN/WIDTH stack. The query follows the panel's
- * own content box, so resizing works independently of viewport size. */
+/* ── Strip height tiers ──────────────────────────────────────────────
+ * A strip is a stack of fixed-height rows (name, FX badge, M/S/V, readout,
+ * PAN/WIDTH, output, chips) around ONE flexible row — the meter/fader area.
+ * Shrink the panel and only that row gives, so it hits its floor while the
+ * fixed rows still ask for their full height, and .mixer-strip's overflow
+ * hidden silently chops the bottom of the strip (or, where a row centres its
+ * own overflow, paints it over its neighbours).
+ *
+ * Each tier buys the fader back height by rearranging the rows that cost the
+ * most, cheapest first. The stacked PAN/WIDTH pair alone is 96px the fader can
+ * never reclaim, so it is the first thing to move.
+ *
+ * All queries follow the panel's own content box (container-type: size on
+ * .mixer-panel), so this tracks the panel as it is resized/docked/floated —
+ * never the viewport. Tiers are additive: each one layers on the ones above.
+ *
+ *   >430   PAN/WIDTH stacked below the fader            (full channel strip)
+ *   ≤430   PAN/WIDTH side by side below the fader       (+48px of fader)
+ *   ≤360   density pass — every fixed row loses a few px
+ *   ≤296   PAN/WIDTH beside the fader                   (+48px more)
+ *   ≤216   knob labels drop; the strip bottoms out around 175px
+ */
+
+/* Tier 1 — the PAN/WIDTH pair goes side by side. Same vertical reading as the
+ * full-height strip, one knob row instead of two. */
+@container mixer-panel (max-height: 430px) {
+  .mixer-strip-knobs {
+    flex-direction: row;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 12px;
+    padding: 4px 0 0;
+  }
+}
+
+/* Tier 2 — density: every fixed row gives up a few px, and the rack preview
+ * stops claiming a full module's worth of height. */
 @container mixer-panel (max-height: 360px) {
   .mixer-strip-label {
     height: 24px;
@@ -10923,17 +11087,6 @@ html.fx-drag-active * {
 
   .mixer-strip-controls {
     padding: 4px 9px;
-  }
-
-  .mixer-strip-bottom {
-    flex-direction: row;
-    align-items: stretch;
-    gap: 5px;
-    padding: 0 7px 4px;
-  }
-
-  .mixer-meter-fader-col {
-    flex: 1 1 auto;
   }
 
   .mixer-fader-readout {
@@ -10959,13 +11112,6 @@ html.fx-drag-active * {
     font-size: 8px;
   }
 
-  .mixer-strip-knobs {
-    width: 36px;
-    gap: 3px;
-    justify-content: center;
-    padding: 0;
-  }
-
   .mixer-output-route {
     padding: 4px 7px 0;
   }
@@ -10980,6 +11126,11 @@ html.fx-drag-active * {
     padding: 3px 7px 4px;
   }
 
+  .mixer-route-badges:empty {
+    min-height: 0;
+    padding: 0;
+  }
+
   .selected-effect-rack {
     gap: 5px;
     padding: 6px 7px;
@@ -10987,6 +11138,57 @@ html.fx-drag-active * {
 
   .selected-effect-rack-header {
     padding-bottom: 5px;
+  }
+}
+
+/* Tier 3 — the knob pair moves out of the vertical stack entirely and sits
+ * beside the meter/fader, which then owns the whole bottom module. */
+@container mixer-panel (max-height: 296px) {
+  .mixer-strip-bottom {
+    flex-direction: row;
+    align-items: stretch;
+    gap: 5px;
+    padding: 0 7px 4px;
+  }
+
+  .mixer-meter-fader-col {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .mixer-strip-knobs {
+    flex: 0 0 auto;
+    flex-direction: column;
+    align-items: center;
+    width: 40px;
+    gap: 4px;
+    padding: 0;
+  }
+}
+
+/* Tier 4 — last resort before the strip stops making sense. The knob labels go
+ * (the pair reads top-to-bottom as PAN then WIDTH, and both keep their hover
+ * titles), which is what stops the centred knob column from overflowing its
+ * row and painting PAN over the M/S/V buttons and WIDTH over the output
+ * select. Below this the strip's min-content is ~175px. */
+@container mixer-panel (max-height: 216px) {
+  .mixer-knob-label {
+    display: none;
+  }
+
+  .mixer-strip-knobs {
+    width: 32px;
+    gap: 4px;
+  }
+
+  .mixer-strip-fx-badge {
+    height: 16px;
+    margin: 3px 7px 3px;
+  }
+
+  .mixer-strip-fader-area {
+    min-height: 36px;
+    padding-bottom: 3px;
   }
 }
 
@@ -13199,6 +13401,13 @@ html.fx-drag-active * {
   stroke-width: 1.5;
   stroke-linejoin: round;
   pointer-events: none;
+}
+
+/* Mid/Side curves are dashed so they stay distinguishable from the similarly
+   tinted Left/Right ones. */
+.eqc-response-line-mid,
+.eqc-response-line-side {
+  stroke-dasharray: 5 3;
 }
 
 .eqc-node-badge {
@@ -17486,18 +17695,23 @@ html.fx-drag-active * {
 .settings-panel-header {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  padding: 16px 18px 14px;
+  gap: 18px;
+  padding: 14px 18px;
   border-bottom: 1px solid var(--theme-border-subtle);
   color: var(--theme-text);
   flex-shrink: 0;
 }
 
+.settings-panel-headline {
+  min-width: 0;
+  flex-shrink: 0;
+}
+
 .settings-panel-title {
   color: var(--theme-text-primary);
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 700;
+  letter-spacing: 0.01em;
 }
 
 .settings-panel-subtitle {
@@ -17528,6 +17742,132 @@ html.fx-drag-active * {
   color: var(--theme-text);
 }
 
+/* ── Settings: scope switcher ──────────────────────────────────────────────
+   Two scopes — what belongs to the project, and what belongs to this
+   installation. Deliberately a COMPACT segmented control inside the header,
+   not a full-width strip: a strip's segment boundary landed within a few
+   pixels of the sidebar/content divider below it, which read as two column
+   headings and implied the sidebar belonged to one tab and the content to the
+   other. Sized to its labels, it cannot line up with anything. */
+.settings-panel-tabs {
+  display: inline-flex;
+  gap: 2px;
+  padding: 3px;
+  margin-right: auto;
+  background: var(--theme-bg-secondary);
+  border: 1px solid var(--theme-border-subtle);
+  border-radius: var(--radius-md);
+  flex-shrink: 0;
+}
+
+.settings-panel-tab {
+  padding: 5px 15px;
+  background: transparent;
+  border: none;
+  border-radius: calc(var(--radius-md) - 3px);
+  color: var(--theme-text-muted);
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 650;
+  white-space: nowrap;
+  transition: color 140ms ease-out, background 140ms ease-out;
+}
+
+.settings-panel-tab:hover:not(.settings-panel-tab--active) {
+  color: var(--theme-text-primary);
+}
+
+.settings-panel-tab--active {
+  background: var(--theme-bg-elevated);
+  color: var(--theme-text-primary);
+  box-shadow: var(--theme-depth-elevation-1-top-highlight),
+    0 1px 2px rgb(0 0 0 / 0.28);
+}
+
+/* A card whose body is a LIST of like rows rather than a handful of unrelated
+   settings — the shortcut groups. Rows sit flush against their dividers
+   instead of floating in the card's usual gap, because 40-odd single-line
+   entries spaced for standalone settings read as a wall and scroll forever. */
+.settings-panel-section--list {
+  gap: 0;
+  padding-bottom: 4px;
+}
+
+.settings-panel-section--list > .settings-panel-hint {
+  margin-bottom: 4px;
+}
+
+.settings-panel-section--list > .settings-panel-row {
+  padding: 8px 0;
+}
+
+.settings-panel-section--list > .settings-panel-row + .settings-panel-row {
+  border-top: 1px solid var(--theme-border-subtle);
+}
+
+/* ── Settings: keyboard shortcut rows ─────────────────────────────────────── */
+.settings-panel-shortcut-row {
+  align-items: center;
+}
+
+/* A row carrying a description or a conflict note is taller than its key cap,
+   so it aligns from the top; a plain one-liner stays centred. */
+.settings-panel-shortcut-row:has(.settings-panel-field-copy),
+.settings-panel-shortcut-row:has(.settings-panel-hint) {
+  align-items: flex-start;
+}
+
+.settings-panel-shortcut-control {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* The key itself reads as a key cap, not a dropdown: it is a value you
+   replace by pressing something, and nothing about a select conveys that. */
+.settings-panel-shortcut-key {
+  min-width: 132px;
+  padding: 6px 10px;
+  font-family: var(--font-mono, ui-monospace, 'Cascadia Mono', Consolas, monospace);
+  font-size: 12px;
+  color: var(--theme-text-primary);
+  background: var(--theme-bg-input);
+  border: 1px solid var(--theme-border-subtle);
+  border-bottom-width: 2px;
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  text-align: center;
+  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.settings-panel-shortcut-key:hover:not(:disabled) {
+  border-color: var(--theme-accent);
+  background: var(--theme-bg-hover);
+}
+
+.settings-panel-shortcut-key:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.settings-panel-shortcut-key--custom {
+  border-color: var(--theme-accent);
+  color: var(--theme-accent);
+}
+
+.settings-panel-shortcut-key--listening {
+  border-color: var(--theme-accent);
+  background: var(--theme-bg-hover);
+  color: var(--theme-accent);
+  animation: settings-shortcut-listening 1.1s ease-in-out infinite;
+}
+
+@keyframes settings-shortcut-listening {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: 0.55; }
+}
+
 .settings-panel-shell {
   display: grid;
   grid-template-columns: 210px minmax(0, 1fr);
@@ -17538,10 +17878,10 @@ html.fx-drag-active * {
 .settings-panel-categories {
   display: flex;
   flex-direction: column;
-  gap: 4px;
+  gap: 1px;
   min-height: 0;
   overflow-y: auto;
-  padding: 12px;
+  padding: 10px 10px 14px;
   background: var(--theme-bg-secondary);
   border-right: 1px solid var(--theme-border-subtle);
 }
@@ -17589,7 +17929,6 @@ html.fx-drag-active * {
 
 .settings-panel-category--active {
   background: var(--theme-accent-bg-subtle);
-  border-color: var(--theme-border-subtle);
   color: var(--theme-text-primary);
 }
 
@@ -17602,20 +17941,20 @@ html.fx-drag-active * {
   min-width: 0;
   min-height: 0;
   overflow-y: auto;
-  padding: 18px;
+  padding: 18px 20px 22px;
   background: var(--theme-bg-primary);
 }
 
 .settings-panel-content-animate {
   display: flex;
   flex-direction: column;
-  gap: 14px;
+  gap: 12px;
   min-width: 0;
   animation: settings-category-switch 150ms ease-out both;
 }
 
 .settings-panel-category-heading {
-  padding: 0 2px 2px;
+  padding: 0 2px 4px;
 }
 
 .settings-panel-category-title {
@@ -17633,9 +17972,9 @@ html.fx-drag-active * {
 .settings-panel-section {
   display: flex;
   flex-direction: column;
-  gap: 12px;
+  gap: 11px;
   min-width: 0;
-  padding: 14px;
+  padding: 13px 15px 15px;
   background: var(--theme-bg-elevated);
   border: 1px solid var(--theme-border-subtle);
   border-radius: var(--radius-md);
@@ -17651,10 +17990,18 @@ html.fx-drag-active * {
 
 .settings-panel-section-title {
   color: var(--theme-text-muted);
-  font-size: 11px;
+  font-size: 10px;
   font-weight: 700;
-  letter-spacing: 0.06em;
+  letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+/* A hairline between consecutive rows. Only BETWEEN them — never above the
+   first row, which already has the section title over it, and never on a
+   hint or a note, which belong to the row they follow. */
+.settings-panel-section > .settings-panel-row + .settings-panel-row {
+  padding-top: 11px;
+  border-top: 1px solid var(--theme-border-subtle);
 }
 
 .settings-panel-section--theme-editor > .settings-panel-section-title {
@@ -24137,8 +24484,8 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
 }
 
 .settings-panel-categories {
-  gap: 2px;
-  padding: 10px;
+  gap: 1px;
+  padding: 10px 10px 14px;
   border-right: 1px solid var(--xleth-flat-border-strong);
   background: var(--xleth-flat-tab);
 }
@@ -24183,12 +24530,12 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
 }
 
 .settings-panel-content-pane {
-  padding: 18px;
+  padding: 18px 20px 22px;
   background: var(--xleth-flat-main);
 }
 
 .settings-panel-content-animate {
-  gap: 14px;
+  gap: 12px;
   animation: settings-category-switch 110ms ease-out both;
 }
 
@@ -24204,8 +24551,8 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
 }
 
 .settings-panel-section {
-  gap: 12px;
-  padding: 14px;
+  gap: 11px;
+  padding: 13px 15px 15px;
   border: 1px solid var(--xleth-flat-border-strong);
   border-radius: 0;
   background: var(--xleth-flat-panel);
@@ -24219,6 +24566,102 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   font-size: 10px;
   font-weight: 600;
   letter-spacing: 0.12em;
+}
+
+/* ── Flat skin: Settings scope switcher, row dividers and key caps ──────────
+   NOTE ON THIS FILE'S TWO LAYERS. Everything above re-skins the base
+   .settings-panel-* rules defined ~6500 lines earlier, and it wins by source
+   order. A structural value set only up there — a gap, a padding — is
+   therefore DEAD whenever this block restates the same property. The density
+   rules below are here rather than beside their base definitions for exactly
+   that reason. */
+.settings-panel-tabs {
+  padding: 2px;
+  border: 1px solid var(--xleth-flat-border-strong);
+  border-radius: 0;
+  background: var(--xleth-flat-tab);
+}
+
+.settings-panel-tab {
+  border-radius: 0;
+  color: var(--xleth-flat-text-secondary);
+  font-family: var(--xleth-global-font-family);
+  font-size: 12px;
+  font-weight: 600;
+  transition: background 90ms ease-out, color 90ms ease-out;
+}
+
+.settings-panel-tab:hover:not(.settings-panel-tab--active) {
+  background: var(--xleth-flat-chrome);
+  color: var(--xleth-flat-text);
+}
+
+.settings-panel-tab--active {
+  background: color-mix(in srgb, var(--xleth-flat-accent) 14%, var(--xleth-flat-chrome));
+  box-shadow: inset 0 -2px 0 0 var(--xleth-flat-accent);
+  color: var(--xleth-flat-text);
+}
+
+.settings-panel-tab:focus-visible {
+  outline: 1px solid var(--xleth-flat-accent);
+  outline-offset: -1px;
+}
+
+/* A hairline between consecutive rows so a long card scans as a list. Only
+   BETWEEN rows — the first already has the section title over it, and hints
+   and notes belong to the row they follow, not to a new one. */
+.settings-panel-section > .settings-panel-row + .settings-panel-row {
+  padding-top: 11px;
+  border-top: 1px solid var(--xleth-flat-border);
+}
+
+/* A card whose body is a LIST of like rows rather than a handful of unrelated
+   settings — the shortcut groups. Rows sit flush against their dividers
+   instead of floating in the card's usual gap: 45 single-line entries spaced
+   for standalone settings read as a wall and scroll forever. */
+.settings-panel-section--list {
+  gap: 0;
+  padding-bottom: 5px;
+}
+
+.settings-panel-section--list > .settings-panel-hint {
+  margin: 3px 0 6px;
+}
+
+.settings-panel-section--list > .settings-panel-row {
+  padding: 7px 0;
+}
+
+.settings-panel-section--list > .settings-panel-row + .settings-panel-row {
+  padding-top: 7px;
+  border-top: 1px solid var(--xleth-flat-border);
+}
+
+.settings-panel-shortcut-key {
+  min-width: 124px;
+  min-height: 28px;
+  padding: 5px 10px;
+  border: 1px solid var(--xleth-flat-border-strong);
+  border-radius: 0;
+  background: var(--xleth-flat-chrome);
+  color: var(--xleth-flat-text);
+  font-size: 11px;
+}
+
+.settings-panel-shortcut-key:hover:not(:disabled) {
+  border-color: var(--xleth-flat-accent);
+  background: color-mix(in srgb, var(--xleth-flat-accent) 10%, var(--xleth-flat-chrome));
+}
+
+.settings-panel-shortcut-key--custom {
+  border-color: var(--xleth-flat-accent);
+  color: var(--xleth-flat-accent);
+}
+
+.settings-panel-shortcut-key--listening {
+  border-color: var(--xleth-flat-accent);
+  background: color-mix(in srgb, var(--xleth-flat-accent) 16%, var(--xleth-flat-chrome));
+  color: var(--xleth-flat-text);
 }
 
 .settings-panel-label {
@@ -25324,7 +25767,7 @@ html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
   background: var(--xleth-flat-chrome);
   color: var(--xleth-flat-text-secondary);
 }
-.pattern-list-panel-collapsed { background: var(--xleth-flat-chrome); }
+.pattern-list-panel-collapsed { width: 18px; background: var(--xleth-flat-chrome); }
 .pattern-list-expand-btn,
 .pattern-list-collapse-btn { color: var(--xleth-flat-text-muted); }
 .pattern-list-expand-btn:hover,
@@ -32808,6 +33251,207 @@ canvas.clipfx-graph {
 
 /* The waveform canvas fills its well now (see SamplerWaveform's responsive
    height), so the well must not add its own intrinsic height on top. */
+.sampler-work-row .sampler-waveform-well { flex: 1 1 auto; }
+
+/* ── Pitch Shifter panel (XlethPitchShifterEffect) ────────────────────────────
+   Four modes select two DIFFERENT parameter sets (Granular vs Smart/Voice vs
+   Clip); PitchShifterPanel.jsx hides the controls that don't apply to the
+   active mode rather than graying them out — there is no declarative
+   plugin-ui visibility primitive for that, hence the hand-written panel. */
+
+.pitchshifter-panel {
+  position: fixed;
+  z-index: 200;
+  width: 420px;
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--xleth-flat-border);
+  border-radius: 0;
+  background: var(--xleth-flat-panel);
+  box-shadow: var(--theme-depth-hard-shadow);
+  color: var(--xleth-flat-text);
+  font-family: var(--xleth-global-font-family);
+  user-select: none;
+}
+
+.pitchshifter-panel-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 34px;
+  padding: 0 6px 0 12px;
+  background: var(--xleth-flat-chrome);
+  border-bottom: 1px solid var(--xleth-flat-border);
+  cursor: grab;
+}
+
+.pitchshifter-panel-header::before {
+  content: '';
+  width: 3px;
+  height: 14px;
+  background: var(--xleth-flat-accent);
+  flex-shrink: 0;
+}
+
+.pitchshifter-panel-header:active {
+  cursor: grabbing;
+}
+
+.pitchshifter-panel-title {
+  flex: 1;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.14em;
+  color: var(--xleth-flat-text);
+}
+
+.pitchshifter-panel-close {
+  width: 22px;
+  height: 22px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--xleth-flat-text-muted);
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.pitchshifter-panel-close:hover {
+  color: var(--xleth-flat-text);
+  background: var(--xleth-flat-section);
+}
+
+/* ── Mode segmented control ───────────────────────────────────────────────── */
+
+.pitchshifter-mode-row {
+  display: flex;
+  gap: 1px;
+  padding: 10px 12px 0;
+  background: var(--xleth-flat-border);
+}
+
+.pitchshifter-mode-btn {
+  flex: 1;
+  height: 26px;
+  border: 0;
+  border-radius: 0;
+  background: var(--xleth-flat-well);
+  color: var(--xleth-flat-text-muted);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+
+.pitchshifter-mode-btn:hover {
+  color: var(--xleth-flat-text);
+}
+
+.pitchshifter-mode-btn.active {
+  background: var(--xleth-flat-section);
+  color: var(--xleth-flat-accent);
+  box-shadow: inset 0 0 0 1px var(--xleth-flat-accent);
+}
+
+/* ── Knob row ─────────────────────────────────────────────────────────────── */
+
+.pitchshifter-knob-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 20px;
+  padding: 18px 16px;
+}
+
+.pitchshifter-knob-cell {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.pitchshifter-knob-value {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--xleth-flat-text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ── Clip mode: stretch method select + formant toggle ───────────────────── */
+
+.pitchshifter-clip-method {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+}
+
+.pitchshifter-clip-method-label {
+  font-size: 9px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--xleth-flat-text-muted);
+}
+
+.xleth-select-trigger.pitchshifter-clip-method-select {
+  width: 128px;
+  height: 24px;
+  padding: 0 6px;
+  border: 1px solid var(--xleth-flat-border-strong);
+  border-radius: 0;
+  background: var(--xleth-flat-well);
+  color: var(--xleth-flat-text-secondary);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+}
+
+.xleth-select-trigger.pitchshifter-clip-method-select:hover {
+  color: var(--xleth-flat-text);
+  border-color: var(--xleth-flat-accent);
+}
+
+.pitchshifter-clip-formant-btn {
+  align-self: center;
+  height: 24px;
+  padding: 0 12px;
+  margin-top: 18px;
+  border: 1px solid var(--xleth-flat-border-strong);
+  border-radius: 0;
+  background: var(--xleth-flat-well);
+  color: var(--xleth-flat-text-muted);
+  font-size: 9.5px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  cursor: pointer;
+}
+
+.pitchshifter-clip-formant-btn:hover {
+  color: var(--xleth-flat-text);
+  border-color: var(--xleth-flat-accent);
+}
+
+.pitchshifter-clip-formant-btn.active {
+  background: var(--xleth-flat-accent);
+  color: var(--xleth-flat-accent-text);
+  border-color: var(--xleth-flat-accent);
+}
+
+/* ── Clip mode hint ───────────────────────────────────────────────────────── */
+
+.pitchshifter-clip-hint {
+  padding: 0 16px 14px;
+  font-size: 9.5px;
+  color: var(--xleth-flat-text-subtle);
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
 .sampler-work-row .sampler-waveform-well { min-height: 120px; }
 
 /* ── Glue Comp panel (XlethGlueCompressorEffect, pluginId "glue") ───────────

@@ -1,16 +1,25 @@
 import {
   clearLayoutPersistenceWriter,
   createInitialDockRegionSizes,
+  createInitialPanelStates,
   MIN_DOCK_REGION_SIZES,
+  normalizeDockSlots,
   setLayoutPersistenceWriter,
   usePanelRegistry,
   type DockRegionSizes,
   type LayoutPersistenceWriter,
   type PanelStateMap,
 } from '../registry/PanelRegistry';
-import { PANEL_IDS } from '../registry/panelCatalog';
+import {
+  mergeDockRegionSizes,
+  mergePanelStateMap,
+  normalizeFocus,
+} from '../registry/panelStateMerge';
 
-export const LAYOUT_SCHEMA_VERSION = 2;
+// v3 added collapsed panels and dock tab groups. Older envelopes are not
+// rejected: every version is merged field-by-field over the current defaults,
+// so a v1 or v2 layout simply arrives with the new fields at their defaults.
+export const LAYOUT_SCHEMA_VERSION = 3;
 
 interface PersistenceAdapter {
   read(): Promise<string | null>;
@@ -72,27 +81,6 @@ function serializeLayoutEnvelope(panels: PanelStateMap, dockRegionSizes: DockReg
   return JSON.stringify(payload);
 }
 
-function isValidPanelStateMap(value: unknown): value is PanelStateMap {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Record<string, unknown>;
-  return PANEL_IDS.every((panelId) => (
-    Object.prototype.hasOwnProperty.call(record, panelId)
-    && record[panelId] != null
-  ));
-}
-
-const REGION_KEYS: ReadonlyArray<keyof DockRegionSizes> = ['left', 'right', 'top', 'bottom'];
-
-function isValidDockRegionSizes(value: unknown): value is DockRegionSizes {
-  if (!value || typeof value !== 'object') return false;
-  const record = value as Record<string, unknown>;
-  return REGION_KEYS.every((region) => {
-    const size = record[region];
-    if (typeof size !== 'number' || !Number.isFinite(size)) return false;
-    return size >= MIN_DOCK_REGION_SIZES[region];
-  });
-}
-
 export function init(): void {
   const writer: LayoutPersistenceWriter = (panels, dockRegionSizes) => {
     void currentAdapter.write(serializeLayoutEnvelope(panels, dockRegionSizes));
@@ -106,36 +94,43 @@ export function destroy(): void {
   clearLayoutPersistenceWriter();
 }
 
+/**
+ * Rebuild a live layout from persisted JSON.
+ *
+ * The old contract was all-or-nothing: any panel id missing from the envelope
+ * threw the WHOLE layout away, which meant every release that added a panel
+ * silently reset every user's arrangement. Now the envelope is merged over the
+ * current defaults, so unknown ids are ignored, missing ids keep their
+ * defaults, and one bad field costs one field.
+ *
+ * Returns false only when there is genuinely nothing to restore (no saved
+ * layout, or bytes that are not JSON at all).
+ */
 export async function loadPersistedState(): Promise<boolean> {
   const raw = await currentAdapter.read();
   if (raw === null) return false;
 
+  let parsed: Partial<PersistedLayoutEnvelope>;
   try {
-    const parsed = JSON.parse(raw) as Partial<PersistedLayoutEnvelope>;
-    if (!isValidPanelStateMap(parsed?.panels)) return false;
-
-    if (parsed.version === LAYOUT_SCHEMA_VERSION) {
-      if (!isValidDockRegionSizes(parsed.dockRegionSizes)) return false;
-      usePanelRegistry.setState({
-        panels: parsed.panels,
-        dockRegionSizes: parsed.dockRegionSizes,
-      });
-      return true;
-    }
-
-    if (parsed.version === 1) {
-      // Soft v1 -> v2 migration: keep panels, fill default dockRegionSizes.
-      usePanelRegistry.setState({
-        panels: parsed.panels,
-        dockRegionSizes: createInitialDockRegionSizes(),
-      });
-      return true;
-    }
-
-    return false;
+    parsed = JSON.parse(raw) as Partial<PersistedLayoutEnvelope>;
   } catch {
-    // Corrupt persisted layout data should leave the live registry untouched.
+    // Corrupt bytes leave the live registry untouched.
     return false;
   }
-}
 
+  if (typeof parsed !== 'object' || parsed === null) return false;
+  if (typeof parsed.panels !== 'object' || parsed.panels === null) return false;
+
+  const merged = mergePanelStateMap(createInitialPanelStates(), parsed.panels);
+  usePanelRegistry.setState({
+    // Slot invariants are re-derived rather than trusted: a persisted tab group
+    // whose other members are now hidden collapses back to a plain slot.
+    panels: normalizeDockSlots(normalizeFocus(merged)),
+    dockRegionSizes: mergeDockRegionSizes(
+      createInitialDockRegionSizes(),
+      parsed.dockRegionSizes,
+      MIN_DOCK_REGION_SIZES,
+    ),
+  });
+  return true;
+}

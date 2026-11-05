@@ -1,5 +1,5 @@
 import useSandboxStore, { hasMeaningfulSelection } from '../../stores/sandboxStore.js'
-import { useKeyboardBinding } from '../../windowing/managers/useKeyboardBinding.ts'
+import { useShortcutCommand } from '../../windowing/managers/useKeyboardBinding.ts'
 
 // ─── Sample Sandbox edit shortcuts ────────────────────────────────────────────
 //
@@ -30,16 +30,15 @@ import { useKeyboardBinding } from '../../windowing/managers/useKeyboardBinding.
 // returns false and the key falls through untouched — Ctrl+C with nothing
 // selected must not be swallowed by a panel that had nothing to copy.
 
-// One binding per combo, running `run`. Fixed arity — two combos — rather than
-// an array plus a loop, because a hook count that depends on an argument is a
-// rules-of-hooks hazard nobody should have to re-verify when this file grows.
+// One binding per CATALOG COMMAND, running `run`. The combos are no longer
+// spelled here: they live in shortcutCatalog (ids `sandbox.*`), so Settings →
+// Application → Shortcuts can rebind them and this file keeps owning only what
+// the action does. That is also where the uppercase Caps Lock spellings went —
+// they are aliases of a command's default now, not a second call.
 // `run` receives the current store state plus the ready active layer and
 // returns true if it acted.
-//
-// The uppercase spellings exist for Caps Lock, where event.key (which is what
-// KeyboardManager builds its combo string from) arrives as 'X' rather than 'x'.
-function useEditAction(comboA, comboB, run) {
-  const handler = (e) => {
+function useEditAction(commandId, run) {
+  useShortcutCommand(commandId, (e) => {
     const state = useSandboxStore.getState()
     const layer = readyLayer(state)
     if (!layer) return false
@@ -47,9 +46,7 @@ function useEditAction(comboA, comboB, run) {
     e.preventDefault()
     e.stopPropagation()
     return 'handled'
-  }
-  useKeyboardBinding('panel:sampleSandbox', comboA, handler)
-  useKeyboardBinding('panel:sampleSandbox', comboB, handler)
+  })
 }
 
 // The active layer, but only when it is in a state where an edit means
@@ -75,10 +72,10 @@ function runCut(state, layer) {
 }
 
 export function useSandboxEditShortcuts() {
-  useEditAction('Delete', 'Backspace', runCut)
-  useEditAction('Ctrl+x', 'Ctrl+X', runCut)
+  useEditAction('sandbox.delete', runCut)
+  useEditAction('sandbox.cut', runCut)
 
-  useEditAction('Ctrl+c', 'Ctrl+C', (state, layer) => {
+  useEditAction('sandbox.copy', (state, layer) => {
     if (!selected(state, layer)) return false
     state.copySelection(layer.id)
     return true
@@ -89,7 +86,7 @@ export function useSandboxEditShortcuts() {
   // selected range: "replace" would be a cut plus a paste, i.e. two undo steps
   // and a clobbered clipboard, and the engine's PASTE op has no replace-range
   // mode to do it in one (see PasteParams).
-  useEditAction('Ctrl+v', 'Ctrl+V', (state, layer) => {
+  useEditAction('sandbox.paste', (state, layer) => {
     if (!state.clipboard) return false
     state.pasteClipboard(layer.id, state.selection?.startSample ?? 0, true)
     return true
@@ -97,7 +94,7 @@ export function useSandboxEditShortcuts() {
 
   // DUPLICATE — the whole layer with its op-stack and mix params, not the
   // selection. Ctrl+C / Ctrl+V is how you duplicate a range.
-  useEditAction('Ctrl+d', 'Ctrl+D', (state, layer) => {
+  useEditAction('sandbox.duplicateLayer', (state, layer) => {
     state.duplicateLayer(layer.id)
     return true
   })

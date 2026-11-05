@@ -11,7 +11,9 @@ import { loadPreset } from '../managers/PresetManager';
 import { usePanelRegistry } from '../registry/PanelRegistry';
 import type { DockRegion, PanelStateMap, PresetId } from '../registry/PanelRegistry';
 import {
+  PANEL_CATALOG,
   PANEL_CATALOG_ORDER,
+  TOOLBAR_PANEL_IDS,
   panelTypeColorVar,
   type PanelId,
 } from '../registry/panelCatalog';
@@ -115,9 +117,9 @@ export function TopBarToggles() {
   return (
     <div className="xleth-top-bar-toggles">
       <div className="xleth-top-bar-group" aria-label="Panel visibility">
-        {PANEL_CATALOG_ORDER
-          .filter((entry) => entry.id !== 'sampleSelector' && entry.id !== 'quickNotation')
-          .map((entry) => <PanelToggleButton key={entry.id} entry={entry} />)}
+        {TOOLBAR_PANEL_IDS.map((id) => (
+          <PanelToggleButton key={id} entry={PANEL_CATALOG[id]} />
+        ))}
       </div>
       <div className="xleth-top-bar-separator" aria-hidden="true" />
       <div className="xleth-top-bar-group" aria-label="Layout presets">
@@ -134,11 +136,18 @@ export function TopBarToggles() {
               aria-label={preset.title}
               aria-pressed={active}
             >
-              {preset.id === 'fl-compose' ? <RotateCcw aria-hidden="true" /> : null}
               <span>{preset.label}</span>
             </XlethButton>
           );
         })}
+        <XlethIconButton
+          className="xleth-top-bar-preset-btn"
+          onClick={() => usePanelRegistry.getState().resetLayout()}
+          title="Reset layout to defaults"
+          aria-label="Reset layout to defaults"
+        >
+          <RotateCcw aria-hidden="true" />
+        </XlethIconButton>
       </div>
       <div className="xleth-top-bar-separator" aria-hidden="true" />
       <div className="xleth-top-bar-group" aria-label="Dock focused panel">

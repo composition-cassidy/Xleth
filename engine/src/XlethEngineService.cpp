@@ -59,6 +59,7 @@
 #include "import/FscScoreParser.h"
 #include "project/ProjectManager.h"
 #include "project/ProxyManager.h"
+#include "project/RegenerableFiles.h"
 #include "export/AudioExporter.h"
 #include "audio/WaveformMipmap.h"
 #include "dsp/AutoLoopPolicy.h"          // selection-first AUTO loop policy (policy v2 port)
@@ -79,6 +80,9 @@
 #include "render/MixEngineDelayResolver.h"
 #include "render/VisualFrameDiagnostics.h"  // opt-in pixel-content instrumentation
 #include "render/CanvasFit.h"
+#include "render/PresentationClockSmoother.h"
+#include <algorithm>
+#include <optional>
 #include "render/FrameCollector.h"
 #include "render/FrameCache.h"          // RenderFrameCache
 #include "render/SnapshotTransitionRenderer.h"  // snapshot transition preview seam (Slice 3b)
@@ -509,6 +513,32 @@ struct PreviewDiagCounters {
     std::atomic<int32_t>  lastVideoTickUs  {0};
     std::atomic<int32_t>  avgVideoTickUs   {0};
     std::atomic<int32_t>  maxVideoTickUs   {0};
+    // 1b. The per-tick proxy/poster self-heal pass between collect and resolve.
+    // Used to be the one stretch of the tick no stage timer covered, which is
+    // how a per-event disk probe in it hid inside lastTickUs unattributed.
+    std::atomic<int32_t>  lastSelfHealUs   {0};
+    std::atomic<int32_t>  avgSelfHealUs    {0};
+    std::atomic<int32_t>  maxSelfHealUs    {0};
+    // Playback cadence, counted per frame PUBLISHED to shm while playing
+    // (stopped-preview renders excluded). A frame index equal to the previous
+    // one is a repeat — a whole composite + readback that showed nothing new.
+    // A jump of more than one is (gap - 1) skipped frames; jumps outside
+    // [0, kCadenceSeekGap] are seeks / loop wraps and are not counted.
+    std::atomic<int64_t>  cadencePublished {0};
+    std::atomic<int64_t>  cadenceRepeated  {0};
+    std::atomic<int64_t>  cadenceSkipped   {0};
+    // Age of the published frame against the audio being presented at the
+    // moment of publication (µs): livePresentation - frameProjectSample. This
+    // is the engine's share of A/V offset; the renderer adds its own after.
+    std::atomic<int32_t>  lastFrameAgeUs   {0};
+    std::atomic<int32_t>  avgFrameAgeUs    {0};
+    std::atomic<int32_t>  maxFrameAgeUs    {0};
+    // Playback decode budgeting (cumulative): misses pushed past a tick's
+    // decode budget, cells composited from their last drawn frame because
+    // theirs was not decoded yet, and deferred misses decoded in idle time.
+    std::atomic<int64_t>  deferredDecodes  {0};
+    std::atomic<int64_t>  heldCellFrames   {0};
+    std::atomic<int64_t>  idleDecodes      {0};
 };
 PreviewDiagCounters g_previewDiag;
 
@@ -1749,8 +1779,75 @@ static void rebuildVideoEventsFromClips() {
 
 // ─── Region proxy triggers ───────────────────────────────────────────────────
 // Called from Timeline_AddClip / Timeline_AssignTrackToGrid / Timeline_ModifyRegion
-// to schedule a per-region DNxHR LB proxy when a quote region lands on a
-// normal (non-Chorus/non-Crash) grid cell.
+// to schedule a per-region proxy (H.264 or legacy intra, per the proxy-codec
+// setting — see ProxyCodec) when a quote region lands on a normal
+// (non-Chorus/non-Crash) grid cell.
+
+// ── Superseded-proxy retirement ──────────────────────────────────────────────
+// When an H.264 proxy replaces a legacy intra one (codec migration), the old file
+// is dead weight — often gigabytes. It cannot always be deleted right away: the
+// live-preview decoder or an export may still hold it open, and on Windows an
+// open FFmpeg handle (no FILE_SHARE_DELETE) makes the delete fail. So: close the
+// preview decoder's context for it, try to delete, and if that still fails park
+// the path here for sweepRetiredProxies() to retry. Anything still parked when
+// the app exits is caught by the next project open (the H.264 file then wins the
+// lookup and the leftover legacy file is retired again).
+//
+// Only ever called with no other engine lock held (it takes the compositor
+// mutex): the top of the video loop, or the RPC thread outside syncEventsMutex.
+static std::mutex               g_retiredProxyMtx;
+static std::vector<std::string> g_retiredProxyPending;   // guarded by g_retiredProxyMtx
+
+static bool tryDeleteProxyFile(const std::string& path) {
+    {
+        std::lock_guard<std::mutex> compLock(g_previewCompositorMutex);
+        if (g_previewRenderDecoder) g_previewRenderDecoder->closeSource(path);
+    }
+    return ProxyTranscoder::removeFileUtf8(path);
+}
+
+static void retireSupersededProxy(const std::string& path) {
+    if (path.empty() || !ProxyTranscoder::fileExistsUtf8(path)) return;
+    if (tryDeleteProxyFile(path)) {
+        std::cout << "[ProxyMigration] retired superseded proxy " << path << "\n";
+        return;
+    }
+    std::lock_guard<std::mutex> lk(g_retiredProxyMtx);
+    if (std::find(g_retiredProxyPending.begin(), g_retiredProxyPending.end(), path)
+            == g_retiredProxyPending.end()) {
+        g_retiredProxyPending.push_back(path);
+        std::cout << "[ProxyMigration] superseded proxy still in use, will retry: "
+                  << path << "\n";
+    }
+}
+
+// Retry parked deletions. Called every video tick; does real work at most every
+// few seconds and only while something is parked.
+static void sweepRetiredProxies() {
+    static auto nextSweep = std::chrono::steady_clock::time_point{};
+    const auto now = std::chrono::steady_clock::now();
+    if (now < nextSweep) return;
+    nextSweep = now + std::chrono::seconds(5);
+
+    std::vector<std::string> pending;
+    {
+        std::lock_guard<std::mutex> lk(g_retiredProxyMtx);
+        if (g_retiredProxyPending.empty()) return;
+        pending.swap(g_retiredProxyPending);
+    }
+    std::vector<std::string> stillBusy;
+    for (const std::string& path : pending) {
+        if (tryDeleteProxyFile(path))
+            std::cout << "[ProxyMigration] retired superseded proxy " << path << "\n";
+        else
+            stillBusy.push_back(path);
+    }
+    if (!stillBusy.empty()) {
+        std::lock_guard<std::mutex> lk(g_retiredProxyMtx);
+        g_retiredProxyPending.insert(g_retiredProxyPending.end(),
+                                     stillBusy.begin(), stillBusy.end());
+    }
+}
 
 // Drop the current proxy for a region: close the decoder, delete the file,
 // clear the metadata. Caller may re-enqueue afterwards if appropriate.
@@ -1790,6 +1887,19 @@ static void invalidateRegionProxy(int regionId) {
                       << "' (" << ec.message() << ") — forcing a re-transcode\n";
         }
     }
+    // The region may also have a proxy under the OTHER codec's name (an H.264
+    // migration beside its legacy intra predecessor). It holds the same stale
+    // pixels, and maybeEnqueueRegionProxy would happily engage it — drop it too.
+    if (g_projectManager) {
+        const std::string dir = g_projectManager->getProxiesDir();
+        for (ProxyCodec c : { ProxyCodec::H264, ProxyCodec::Intra }) {
+            const std::string other = ProxyTranscoder::getRegionProxyPath(dir, regionId, c);
+            if (other == oldPath || !ProxyTranscoder::fileExistsUtf8(other)) continue;
+            if (!tryDeleteProxyFile(other))
+                std::cerr << "[Proxy] WARNING: could not delete stale proxy '" << other
+                          << "' — it will be re-validated on next enqueue\n";
+        }
+    }
 }
 
 // Failed-generation backoff helpers (defined further below; forward-declared so
@@ -1805,10 +1915,16 @@ static void noteGenSuccess(int sourceId);
 // Does NOT take syncEventsMutex — reads region data lock-free and delegates
 // the actual enqueue to ProxyManager (which has its own internal mutex).
 // forceRetranscode: set when the region's INPUT video changed (swap/revert) so
-// an existing <regionId>.mxf — which then holds the PREVIOUS video — is
+// an existing region proxy — which then holds the PREVIOUS video — is
 // re-transcoded instead of being accepted as an already-good proxy.
+//
+// allowMigration: set only by the project-open pass (enqueueAllRegionProxies).
+// When the proxy-codec setting is H.264 and the region's proxy on disk is a
+// legacy intra one, the legacy proxy stays engaged and an H.264 re-encode is
+// queued beside it; drainProxyResults swaps to it and retires the old file.
 static void maybeEnqueueRegionProxy(int regionId, int trackId,
-                                    bool forceRetranscode = false) {
+                                    bool forceRetranscode = false,
+                                    bool allowMigration   = false) {
     if (!g_proxyManager || !g_timeline || !g_projectManager) return;
 
     SampleRegion* r = g_timeline->getRegionMutable(regionId);
@@ -1817,12 +1933,30 @@ static void maybeEnqueueRegionProxy(int regionId, int trackId,
     // Stop churning proxy jobs for a source that already failed too many times.
     if (genDisabled(r->sourceId)) return;
 
+    const std::string proxiesDir = g_projectManager->getProxiesDir();
+    const std::string h264Path   =
+        ProxyTranscoder::getRegionProxyPath(proxiesDir, regionId, ProxyCodec::H264);
+    const std::string intraPath  =
+        ProxyTranscoder::getRegionProxyPath(proxiesDir, regionId, ProxyCodec::Intra);
+    // Setting-level preference; refined by target size further down.
+    ProxyCodec        wantCodec  = ProxyTranscoder::preferredCodec();
+
     // If the region already claims a ready proxy but the file is gone (swept
     // away, project folder moved, etc.), treat as not-ready and re-enqueue.
+    // A ready proxy that IS on disk is good — unless this is the open-time pass
+    // and it is a legacy intra proxy due for migration (handled below).
+    bool alreadyEngaged = false;
     if (r->proxyReady && !r->proxyPath.empty()) {
-        if (std::filesystem::exists(r->proxyPath)) return;   // already good
-        r->proxyReady = false;
-        r->proxyPath.clear();
+        if (std::filesystem::exists(r->proxyPath)) {
+            const bool migratable = allowMigration && !forceRetranscode
+                                 && wantCodec == ProxyCodec::H264
+                                 && r->proxyPath != h264Path;
+            if (!migratable) return;   // already good
+            alreadyEngaged = true;
+        } else {
+            r->proxyReady = false;
+            r->proxyPath.clear();
+        }
     }
 
     const SourceMedia* src = g_timeline->getSource(r->sourceId);
@@ -1860,14 +1994,75 @@ static void maybeEnqueueRegionProxy(int regionId, int trackId,
     ProxyManager::Request req;
     req.regionId   = regionId;
     req.inputPath  = inputPath;
-    req.outputPath = (std::filesystem::path(g_projectManager->getProxiesDir())
-                     / (std::to_string(regionId) + ".mxf")).string();
     req.startTime  = inputStart;
     req.endTime    = inputEnd;
-    req.targetW    = (inputW / 2) & ~1;   // even dims required by yuv422p
+    req.targetW    = (inputW / 2) & ~1;   // even dims required by yuv422p/420p
     req.targetH    = (inputH / 2) & ~1;
     req.force      = forceRetranscode;
-    g_proxyManager->enqueue(req);
+
+    // Tiny proxies stay intra (see codecForTargetSize) — and are not migrated.
+    wantCodec = ProxyTranscoder::codecForTargetSize(req.targetW, req.targetH);
+    if (alreadyEngaged && wantCodec != ProxyCodec::H264) return;
+
+    // Which file to engage / build. Preference: an existing H.264 proxy, then an
+    // existing legacy intra proxy (ProxyManager short-circuits both to an instant
+    // "ready"), else a fresh build in the current codec setting. A forced
+    // re-transcode always builds in the current setting (invalidateRegionProxy
+    // already deleted both codecs' stale files).
+    const bool haveH264  = !forceRetranscode && std::filesystem::exists(h264Path);
+    const bool haveIntra = !forceRetranscode && std::filesystem::exists(intraPath);
+    bool migrate = false;
+    if (haveH264) {
+        req.codec = ProxyCodec::H264;
+        req.outputPath = h264Path;
+    } else if (haveIntra) {
+        req.codec = ProxyCodec::Intra;
+        req.outputPath = intraPath;
+        migrate = allowMigration && wantCodec == ProxyCodec::H264;
+    } else {
+        req.codec = wantCodec;
+        req.outputPath = (wantCodec == ProxyCodec::H264) ? h264Path : intraPath;
+        // allowMigration is set only by the project-open pass, so reaching a
+        // fresh build there means the proxy was MISSING when the project opened
+        // (purged, never built, or deleted while the app was closed). Count it in
+        // the rebuild batch — unless its input media is offline, in which case
+        // there is nothing to rebuild from and the job could only fail.
+        if (allowMigration && !forceRetranscode) {
+            if (!ProxyTranscoder::fileExistsUtf8(inputPath)) {
+                std::cerr << "[Rebuild] region=" << regionId << " input media missing ("
+                          << inputPath << ") — proxy cannot be rebuilt until it is relinked\n";
+                return;
+            }
+            req.rebuild = true;
+        }
+    }
+    if (alreadyEngaged && !haveH264) {
+        migrate = true;        // keep the engaged legacy proxy; re-encode beside it
+    } else {
+        // Fresh engage/build — or an engaged legacy proxy whose H.264 replacement
+        // already exists (short-circuits straight to it; the drain retires the
+        // legacy file).
+        g_proxyManager->enqueue(req);
+    }
+
+    if (!migrate) return;
+
+    // Migration re-encodes from the proxy's INPUT media. If that is gone, the
+    // legacy proxy is the only copy of these pixels — leave it alone.
+    if (!ProxyTranscoder::fileExistsUtf8(inputPath)) {
+        std::cerr << "[ProxyMigration] region=" << regionId
+                  << " source media missing (" << inputPath
+                  << ") — keeping the existing intra proxy, not migrating\n";
+        return;
+    }
+    ProxyManager::Request mig = req;
+    mig.codec      = ProxyCodec::H264;
+    mig.outputPath = h264Path;
+    mig.force      = false;
+    mig.migration  = true;
+    std::cout << "[ProxyMigration] region=" << regionId
+              << " intra proxy -> H.264 re-encode queued (" << h264Path << ")\n";
+    g_proxyManager->enqueue(mig);
 }
 
 // Front-load proxy transcodes for EVERY unique region currently on the timeline.
@@ -1882,13 +2077,16 @@ static void maybeEnqueueRegionProxy(int regionId, int trackId,
 // NOT take syncEventsMutex), so this is safe to call from the main thread
 // without blocking audio/video. The lazy video-tick trigger remains as a
 // fallback for clips added afterward.
-static void enqueueAllRegionProxies() {
+//
+// allowMigration=true only from project open: see maybeEnqueueRegionProxy.
+static void enqueueAllRegionProxies(bool allowMigration = false) {
     if (!g_timeline) return;
     std::unordered_set<int> seenRegions;
     for (const Clip* c : g_timeline->getAllClips()) {
         if (!c) continue;
         if (!seenRegions.insert(c->regionId).second) continue;
-        maybeEnqueueRegionProxy(c->regionId, c->trackId);
+        maybeEnqueueRegionProxy(c->regionId, c->trackId,
+                                /*forceRetranscode=*/false, allowMigration);
     }
 }
 
@@ -1911,13 +2109,15 @@ static void drainProxyResults() {
         std::string                   outputPath;
         double                        startTime;
         double                        endTime;
+        bool                          migration;
         std::unique_ptr<VideoDecoder> dec;   // nullptr if open failed
     };
     std::vector<Ready> ready;
     ready.reserve(results.size());
 
     for (auto& r : results) {
-        Ready out{ r.regionId, r.ok, r.outputPath, r.startTime, r.endTime, nullptr };
+        Ready out{ r.regionId, r.ok, r.outputPath, r.startTime, r.endTime,
+                   r.migration, nullptr };
         if (r.ok && !r.outputPath.empty() && std::filesystem::exists(r.outputPath)) {
             auto dec = std::make_unique<VideoDecoder>();
             if (dec->open(r.outputPath)) {
@@ -1936,10 +2136,23 @@ static void drainProxyResults() {
     }
 
     // Phase 3: install under syncEventsMutex — pure pointer/map mutations.
+    // Legacy intra files superseded by an installed H.264 migration are deleted
+    // AFTER the lock is released (retireSupersededProxy takes the compositor
+    // mutex and does file I/O).
+    std::vector<std::string> superseded;
+    {
     std::lock_guard<std::mutex> lk(syncEventsMutex);
     for (auto& r : ready) {
         SampleRegion* region = g_timeline ? g_timeline->getRegionMutable(r.regionId) : nullptr;
         if (!region) continue;
+
+        // A failed codec migration must not touch the region: its legacy intra
+        // proxy is still valid and engaged. Only log it.
+        if (!r.ok && r.migration) {
+            std::cerr << "[ProxyMigration] region=" << r.regionId
+                      << " H.264 re-encode FAILED — keeping the existing intra proxy\n";
+            continue;
+        }
 
         // Close any previous region decoder first (invalidation / re-transcode).
         regionDecoderOwner.erase(r.regionId);   // unique_ptr dtor closes it
@@ -1974,8 +2187,21 @@ static void drainProxyResults() {
 
         regionDecoderOwner[r.regionId] = std::move(r.dec);
         std::cout << "[Proxy] region=" << r.regionId
-                  << " ready -> " << r.outputPath << "\n";
+                  << (r.migration ? " migrated to H.264 -> " : " ready -> ")
+                  << r.outputPath << "\n";
+
+        // Now engaged on the H.264 file: its legacy intra predecessor (whose
+        // decoder the erase above just closed) is superseded.
+        if (g_projectManager) {
+            const std::string dir = g_projectManager->getProxiesDir();
+            if (r.outputPath == ProxyTranscoder::getRegionProxyPath(dir, r.regionId, ProxyCodec::H264))
+                superseded.push_back(
+                    ProxyTranscoder::getRegionProxyPath(dir, r.regionId, ProxyCodec::Intra));
+        }
     }
+    }
+    for (const std::string& path : superseded)
+        retireSupersededProxy(path);
 }
 
 // ── Lazy poster self-heal ─────────────────────────────────────────────────────
@@ -2420,14 +2646,27 @@ static void maybeEnqueueSourcePreviewProxy(int sourceId) {
         && !src->previewProxyPath.empty())
         return;
 
+    // Per-session attempt guards BEFORE the disk probe below — the same ordering
+    // maybeEnqueueSourcePoster adopted for the same reason. This runs for every
+    // event (not every distinct source) on every tick, and findSourcePreviewProxy
+    // is two stat calls plus path building. While a proxy was still building, or
+    // after its build failed, the old ordering re-probed the disk once per EVENT
+    // per tick: on a 3133-clip project that was ~180 ms of every tick and the
+    // preview fell to ~4 fps until the build finished (or forever, on a failure).
+    // A finished build engages through drainSourcePreviewResults(), and a target
+    // height change clears both this set and the ready flags, so nothing is lost.
+    if (genDisabled(sourceId)) return;                       // failed too many times
+    if (g_sourcePreviewEnqueued.count(sourceId) > 0) return; // one attempt per session
+
     const std::string proxiesDir = g_projectManager->getProxiesDir();
 
-    // Already healthy on disk for THIS height → engage now, no rebuild (covers a
-    // proxy built in a prior session whose JSON flags didn't round-trip, and the
-    // idempotent-restart requirement).
-    if (ProxyTranscoder::sourcePreviewProxyExists(src->filePath, proxiesDir, h)) {
-        const std::string proxy =
-            ProxyTranscoder::getSourcePreviewProxyPath(src->filePath, proxiesDir, h);
+    // Already healthy on disk for THIS height, in either codec → engage now, no
+    // rebuild (covers a proxy built in a prior session whose JSON flags didn't
+    // round-trip, and the idempotent-restart requirement). Codec migration is
+    // NOT started from here — only on project open (Project_Load).
+    if (const auto found = ProxyTranscoder::findSourcePreviewProxy(src->filePath, proxiesDir, h);
+            found.found) {
+        const std::string& proxy = found.path;
         if (!src->previewProxyReady || src->previewProxyPath != proxy
             || src->previewProxyHeight != h) {
             src->previewProxyReady  = true;
@@ -2448,19 +2687,20 @@ static void maybeEnqueueSourcePreviewProxy(int sourceId) {
         src->previewProxyPath.clear();
     }
 
-    if (genDisabled(sourceId)) return;                       // failed too many times
-    if (g_sourcePreviewEnqueued.count(sourceId) > 0) return; // one attempt per session
     g_sourcePreviewEnqueued.insert(sourceId);
 
     ProxyManager::SourcePreviewRequest req;
     req.sourceId    = sourceId;
     req.inputPath   = src->filePath;
-    req.outputPath  =
-        ProxyTranscoder::getSourcePreviewProxyPath(src->filePath, proxiesDir, h);
+    req.codec       = ProxyTranscoder::codecForTargetSize(
+        static_cast<int>(std::lround(static_cast<double>(src->width) * h / src->height)), h);
+    req.outputPath  = ProxyTranscoder::getSourcePreviewProxyPath(
+        src->filePath, proxiesDir, h, /*highBitDepth=*/false, req.codec);
     req.proxyHeight = h;
 
     std::cout << "[SourceProxy] whole-source preview proxy enqueue source=" << sourceId
-              << " (" << h << "p) -> " << req.outputPath << "\n";
+              << " (" << h << "p, " << ProxyTranscoder::codecTag(req.codec) << ") -> "
+              << req.outputPath << "\n";
     g_proxyManager->enqueueSourcePreview(req);
 }
 
@@ -2476,6 +2716,8 @@ static void drainSourcePreviewResults() {
         g_proxyManager->drainSourcePreviewResults();
     if (results.empty()) return;
 
+    std::vector<std::string> superseded;   // retired after the lock (see drainProxyResults)
+    {
     std::lock_guard<std::mutex> lk(syncEventsMutex);
     bool anyInstalled = false;
     for (auto& r : results) {
@@ -2490,7 +2732,25 @@ static void drainSourcePreviewResults() {
             anyInstalled = true;
             noteGenSuccess(r.sourceId);
             std::cout << "[SourceProxy] source=" << r.sourceId
-                      << " ready (" << r.proxyHeight << "p) -> " << r.outputPath << "\n";
+                      << (r.migration ? " migrated to H.264" : " ready")
+                      << " (" << r.proxyHeight << "p) -> " << r.outputPath << "\n";
+            // Preview now reads the H.264 file; the legacy intra proxy of the
+            // same height is superseded. (project.json is re-resolved from disk
+            // on load, so a save made before this point that still names the
+            // legacy file self-corrects — see ProjectManager::loadProject.)
+            if (g_projectManager && r.outputPath == ProxyTranscoder::getSourcePreviewProxyPath(
+                    src->filePath, g_projectManager->getProxiesDir(), r.proxyHeight,
+                    /*highBitDepth=*/false, ProxyCodec::H264)) {
+                superseded.push_back(ProxyTranscoder::getSourcePreviewProxyPath(
+                    src->filePath, g_projectManager->getProxiesDir(), r.proxyHeight,
+                    /*highBitDepth=*/false, ProxyCodec::Intra));
+            }
+        } else if (r.migration) {
+            // The legacy proxy is untouched and still engaged — nothing to undo,
+            // and a failed optional re-encode must not feed the generation
+            // back-off that would stop THIS source's ordinary proxy/poster work.
+            std::cerr << "[ProxyMigration] source=" << r.sourceId
+                      << " H.264 re-encode FAILED — keeping the existing intra proxy\n";
         } else {
             // Leave previewProxyReady=false → preview keeps using poster/original
             // for this source. g_sourcePreviewEnqueued still holds the id, so we
@@ -2501,6 +2761,9 @@ static void drainSourcePreviewResults() {
         }
     }
     if (anyInstalled) g_previewDirty = true;
+    }
+    for (const std::string& path : superseded)
+        retireSupersededProxy(path);
 }
 
 // JS↔C++ conversion helpers (model types)
@@ -3998,7 +4261,26 @@ static void videoThreadBody()
     };
     static StageTimer s_collectTimer, s_resolveTimer, s_decodeTimer,
                       s_compositeTimer, s_swizzleTimer, s_tickTimer,
-                      s_videoTickTimer;
+                      s_videoTickTimer, s_selfHealTimer, s_frameAgeTimer;
+    // Previous published playback frame index, for the cadence counters.
+    // -1 = none yet / reset by a stop or stopped-preview render.
+    int64_t lastPublishedPlaybackFrame = -1;
+
+    // Continuous audio clock for playback ticks (see PresentationClockSmoother.h)
+    // and the wake-up time it implies for the next frame.
+    PresentationClockSmoother presentationClock;
+
+    // Playback decode budgeting (see the decode loop): misses left over from a
+    // tick, a running per-miss cost estimate for deciding whether one more
+    // fits before the next deadline, and each cell's last drawn frame so a
+    // cell whose frame is not decoded yet can hold instead of vanishing.
+    std::vector<FrameCacheKey> deferredMisses;
+    int32_t missCostEmaUs = 5000;
+    std::unordered_map<uint64_t, FrameCacheKey> lastDrawnFrame;
+    const auto usSinceStart = [epoch = TickClock::now()](TickClock::time_point tp) {
+        return static_cast<int64_t>(
+            std::chrono::duration_cast<std::chrono::microseconds>(tp - epoch).count());
+    };
 
     // Latch: one event-rebuild attempt per "wanted a stopped render but the event
     // list was empty" episode. Bounds the self-heal below — a project that
@@ -4007,8 +4289,24 @@ static void videoThreadBody()
     // soon as a render actually runs. Video-thread-local, so a plain bool.
     bool rebuildTriedForEmptyEvents = false;
 
+    // Cadence of the whole-event-list proxy/poster self-heal sweeps (see the
+    // render block). Each sweep walks EVERY VideoEvent — 3133 on BFDIA 9 —
+    // through three idempotent, once-per-key-per-session checks; cheap per
+    // event, but ~1 ms of hash lookups and cache misses per tick on a laptop,
+    // every tick, for a result that only changes when a clip is added or a
+    // build finishes. So: sweep right after an event rebuild (that is when a
+    // new clip can first appear), when poster mode flips (it selects which
+    // sweeps run), and otherwise on a timer.
+    constexpr auto kSelfHealSweepInterval = std::chrono::milliseconds(500);
+    TickClock::time_point lastSelfHealSweep{};
+    bool lastSweepPosterMode = false;
+
     while (videoRunning) {
         g_previewDiag.videoTickCount.fetch_add(1, std::memory_order_relaxed);
+        bool eventsRebuiltThisTick = false;
+        // Set by a playback render below: when the smoothed audio clock reaches
+        // the middle of the NEXT output frame. Unset → steady previewFps pacing.
+        std::optional<TickClock::time_point> pacedNextTick;
 
         // [PreviewResGovernor] Apply a governor-decided resolution step now,
         // before g_previewCompositorMutex is taken further down this tick (the
@@ -4032,6 +4330,9 @@ static void videoThreadBody()
         // Install any finished whole-source preview-proxy builds (source-keyed).
         // Same lock rationale — do it before locking syncEventsMutex.
         drainSourcePreviewResults();
+        // Retry deleting superseded legacy proxies whose handles were still open
+        // (throttled internally; no-op unless something is parked).
+        sweepRetiredProxies();
 
         // Rebuild SyncManager's VideoEvent list if something dropped it (project
         // load, new project, clear timeline). MUST be before the lock below —
@@ -4046,6 +4347,7 @@ static void videoThreadBody()
         // Coalesced to at most one rebuild per tick by the exchange.
         if (g_videoEventsDirty.exchange(false, std::memory_order_acq_rel)) {
             rebuildVideoEventsFromClips();
+            eventsRebuiltThisTick = true;
             // Draw immediately rather than waiting for the next thing to happen
             // to mark the preview dirty.
             g_previewDirty.store(true, std::memory_order_release);
@@ -4084,6 +4386,7 @@ static void videoThreadBody()
 
             Transport& t = audioEngine->getTransport();
             bool isPlaying = t.isPlaying();
+            if (!isPlaying) presentationClock.reset();
 
             bool forceRender = g_previewDirty.exchange(false);
             uint64_t stoppedPreviewSeq = 0;
@@ -4128,22 +4431,59 @@ static void videoThreadBody()
                 // [PreviewUnify] GPU compositor path
                 if (g_previewCompositorReady && !previewPaused) {
                     g_previewDiag.compositorPathEntered.fetch_add(1, std::memory_order_relaxed);
-                    GridLayout layout = g_timeline
-                        ? g_timeline->getGridLayout() : GridLayout{};
+                    // Resolved for THIS frame's tick further down (gridLayoutAt).
+                    // Only previewFps is needed before then, and it is the same
+                    // in every snapshot, so read it off the active layout by
+                    // reference instead of copying a whole GridLayout that the
+                    // resolve below immediately replaced.
+                    GridLayout layout;
+                    layout.previewFps = g_timeline
+                        ? g_timeline->getGridLayout().previewFps : layout.previewFps;
 
                     // Compute output frame index from engine-owned presentation time.
                     // Playback remains audio-master-clock driven. Stopped preview
                     // renders use an explicit project sample and feed it into
                     // FrameCollector as projectStartSample with local frame 0.
-                    int64_t samplePos = hasStoppedPreviewRequest
-                        ? stoppedPreviewSample
-                        : audioEngine->getLivePresentationPositionSamples();
                     int     sampleRate = static_cast<int>(t.getSampleRate());
+                    // Playback reads the SMOOTHED transport position. The raw one
+                    // only moves once per audio block, and sampling that
+                    // staircase at the preview rate repeated and skipped output
+                    // frames. Latency is subtracted after smoothing so a PDC
+                    // change still applies immediately.
+                    const bool pacedPlayback = isPlaying && !hasStoppedPreviewRequest;
+                    const auto tClockSample = TickClock::now();
+                    int64_t samplePos;
+                    if (hasStoppedPreviewRequest) {
+                        samplePos = stoppedPreviewSample;
+                    } else if (pacedPlayback) {
+                        const int64_t smoothRaw = presentationClock.update(
+                            t.getPositionSamples(), usSinceStart(tClockSample), sampleRate);
+                        samplePos = std::max<int64_t>(
+                            0, smoothRaw - audioEngine->getLivePresentationLatencySamples());
+                    } else {
+                        samplePos = audioEngine->getLivePresentationPositionSamples();
+                    }
                     int previewFps = layout.previewFps;
                     if (previewFps < 1 || previewFps > 120) previewFps = 30;
                     AVRational fpsRat = { previewFps, 1 };
                     int64_t outputFrame = RenderClock::sampleToVideoFrame(
                         samplePos, sampleRate, fpsRat);
+                    // Wake for the next frame at its MIDPOINT on the audio clock,
+                    // rather than one steady_clock period after this tick. An
+                    // independent timer drifts in phase against the audio, so ticks
+                    // land near frame boundaries and ±1 ms of wake-up jitter decides
+                    // whether a frame repeats or is skipped; half a frame of margin
+                    // on both sides makes that jitter irrelevant.
+                    //
+                    // sampleToVideoFrame ROUNDS to the nearest frame (av_rescale_q),
+                    // so frame N owns [N - 0.5, N + 0.5) frame periods and its
+                    // centre is exactly videoFrameToSample(N) — not "start + half".
+                    if (pacedPlayback && sampleRate > 0) {
+                        const int64_t nextCentre =
+                            RenderClock::videoFrameToSample(outputFrame + 1, sampleRate, fpsRat);
+                        pacedNextTick = tClockSample + std::chrono::microseconds(
+                            presentationClock.usUntil(nextCentre, samplePos));
+                    }
                     const int64_t collectorOutputFrame = hasStoppedPreviewRequest ? 0 : outputFrame;
                     const int64_t collectorProjectStartSample =
                         hasStoppedPreviewRequest ? samplePos : 0;
@@ -4247,11 +4587,15 @@ static void videoThreadBody()
                     // Collect → dedup → resolve → decode misses → composite → readback
                     // [PreviewTickTiming] whole-tick start + stage 1 (collectRequests)
                     const auto tTickStart = TickClock::now();
+                    // `layout` IS gridLayoutAt(this frame's tick) — resolved above
+                    // from the same project sample and BPM the collector would
+                    // use — so hand it over rather than have the collector resolve
+                    // (cue search + GridLayout copy) the identical layout again.
                     auto& requests = g_previewCollector->collectRequests(
                         collectorOutputFrame, *g_timeline, sampleRate, fpsRat,
                         events, true, collectorProjectStartSample,
                         g_previewPosterMode, /*renderProxyBySource=*/nullptr,
-                        /*layoutOverride=*/nullptr,
+                        /*layoutOverride=*/&layout,
                         /*applyPreviewEffectMute=*/true);
                     s_collectTimer.record(
                         tickUsBetween(tTickStart, TickClock::now()),
@@ -4268,6 +4612,19 @@ static void videoThreadBody()
                     }
                     g_previewDiag.lastActiveVisualEvents.store(static_cast<int>(events.size()),
                                                               std::memory_order_relaxed);
+                    const auto tSelfHealStart = TickClock::now();
+
+                    // Whole-event sweeps below run on the cadence described at
+                    // lastSelfHealSweep's declaration, not every tick.
+                    const bool runSelfHealSweep =
+                        eventsRebuiltThisTick
+                        || lastSweepPosterMode != g_previewPosterMode
+                        || lastSelfHealSweep == TickClock::time_point{}
+                        || tSelfHealStart - lastSelfHealSweep >= kSelfHealSweepInterval;
+                    if (runSelfHealSweep) {
+                        lastSelfHealSweep   = tSelfHealStart;
+                        lastSweepPosterMode = g_previewPosterMode;
+                    }
 
                     // ── Lazy poster self-heal (PREVIEW-ONLY) ──────────────────
                     // In poster mode, make sure every active grid source has a
@@ -4279,7 +4636,7 @@ static void videoThreadBody()
                     // fires once per source per session, so this is cheap to run
                     // every tick. We hold syncEventsMutex (eLock) here, which
                     // maybeEnqueueSourcePoster requires.
-                    if (g_previewPosterMode) {
+                    if (g_previewPosterMode && runSelfHealSweep) {
                         for (const auto& ev : events) {
                             // PER-CELL poster (Fix 2): ensure the source's base
                             // poster exists as a FALLBACK, AND enqueue THIS cell's
@@ -4310,11 +4667,13 @@ static void videoThreadBody()
                     // de-duplicated by ProxyManager, and runs ffmpeg off-thread.
                     // Runs regardless of poster mode so the live fallback is
                     // prepped before the user toggles poster mode off.
-                    for (const auto& ev : events) {
-                        if (ev.regionId <= 0) continue;
-                        if (g_proxyEnqueuedRegions.count(ev.regionId) > 0) continue;
-                        g_proxyEnqueuedRegions.insert(ev.regionId);
-                        maybeEnqueueRegionProxy(ev.regionId, ev.trackId);
+                    if (runSelfHealSweep) {
+                        for (const auto& ev : events) {
+                            if (ev.regionId <= 0) continue;
+                            if (g_proxyEnqueuedRegions.count(ev.regionId) > 0) continue;
+                            g_proxyEnqueuedRegions.insert(ev.regionId);
+                            maybeEnqueueRegionProxy(ev.regionId, ev.trackId);
+                        }
                     }
 
                     // ── Whole-source preview-proxy self-heal ──────────────────
@@ -4331,7 +4690,7 @@ static void videoThreadBody()
                     // the single one-at-a-time generation mutex (g_genMutex) that the
                     // poster prepass needs, slowing warm-up. When the user toggles
                     // poster OFF, this resumes and builds proxies on demand.
-                    if (!g_previewPosterMode) {
+                    if (!g_previewPosterMode && runSelfHealSweep) {
                         for (const auto& ev : events) {
                             maybeEnqueueSourcePreviewProxy(ev.sourceId);
                         }
@@ -4339,6 +4698,10 @@ static void videoThreadBody()
 
                     // [PreviewTickTiming] stage 2 (deduplicate + resolveFrames / cache resolve)
                     const auto tResolveStart = TickClock::now();
+                    s_selfHealTimer.record(
+                        tickUsBetween(tSelfHealStart, tResolveStart),
+                        g_previewDiag.lastSelfHealUs, g_previewDiag.avgSelfHealUs,
+                        g_previewDiag.maxSelfHealUs);
                     auto deduplicated = FrameCollector::deduplicateRequests(requests);
 
                     // Size the decoder's open-context budget from this frame's
@@ -4379,6 +4742,20 @@ static void videoThreadBody()
                     auto* device = g_gpuDevice->getDevice();
                     auto* devCtx = g_gpuDevice->getContext();
                     int decodeSucc = 0, decodeFail = 0;
+                    // Identity of a placement for the hold-last-drawn-frame
+                    // bookkeeping: (track, layer kind). Every cell a track
+                    // occupies shows the same event, so one entry per track and
+                    // kind is exact — see FrameCollector's HoldState.
+                    const auto cellIdOf = [](const CellFrameRequest& req) {
+                        return (static_cast<uint64_t>(static_cast<uint32_t>(req.trackId)) << 8)
+                             | static_cast<uint64_t>(req.layerKind);
+                    };
+                    // Decode no larger than the surface we composite into (this
+                    // also covers the snapshot-transition decodes below, which
+                    // use the same decoder). Follows previewResolutionScale.
+                    if (g_previewCompositor->isInitialized())
+                        g_previewRenderDecoder->setMaxOutputSize(
+                            g_previewCompositor->getWidth(), g_previewCompositor->getHeight());
                     if (device && devCtx) {
                         // Sort misses by (sourcePath, frameIndex) ascending so a
                         // source with several outstanding misses decodes forward
@@ -4388,9 +4765,56 @@ static void videoThreadBody()
                         // different offsets. Reorders decode order only — output
                         // pixels are unchanged.
                         std::sort(misses.begin(), misses.end());
-                        for (const auto& key : misses) {
+                        // Under the budget below, order decides which cells get
+                        // their frame this tick and which hold. A cell that has
+                        // a held frame in the cache loses nothing visible by
+                        // waiting; a cell with none (its first frame — a note
+                        // that just started) shows NOTHING until its decode
+                        // lands. So misses nobody can hold through go first,
+                        // each group still in (path, frame) order so the
+                        // forward-decode fast path keeps engaging within it.
+                        // Ping-pong secondary frames have no cells of their own
+                        // and sort with the holdable group.
+                        if (pacedPlayback && misses.size() > 1) {
+                            const auto cannotHold = [&](const FrameCacheKey& key) {
+                                auto dit = deduplicated.find(key);
+                                if (dit == deduplicated.end()) return false;
+                                for (const CellFrameRequest* r : dit->second) {
+                                    auto held = lastDrawnFrame.find(cellIdOf(*r));
+                                    if (held == lastDrawnFrame.end()
+                                        || !g_previewRenderCache->contains(held->second))
+                                        return true;
+                                }
+                                return false;
+                            };
+                            std::stable_partition(misses.begin(), misses.end(), cannotHold);
+                        }
+                        // Decode budget (playback only). Several cells starting
+                        // notes on the same beat each need a cold seek into a
+                        // long-GOP proxy — measured 8 in one tick at ~30 ms each
+                        // on BFDIA 9 — and decoding them all before compositing
+                        // froze EVERY cell for a quarter second. Past the budget,
+                        // the rest wait: their cells hold the last frame they drew
+                        // (below) and the backlog drains in this tick's idle time
+                        // (bottom of the loop) or the next tick. At least one miss
+                        // always decodes, so a slow machine still makes progress.
+                        // Stopped-preview renders decode everything: nothing
+                        // would come back to finish them.
+                        const auto decodeBudget = std::chrono::microseconds(
+                            std::max(4000, 500000 / previewFps));
+                        deferredMisses.clear();
+                        for (size_t i = 0; i < misses.size(); ++i) {
+                            const auto& key = misses[i];
+                            if (pacedPlayback && i > 0
+                                && TickClock::now() - tDecodeStart > decodeBudget) {
+                                deferredMisses.assign(misses.begin() + i, misses.end());
+                                break;
+                            }
+                            const auto tMiss = TickClock::now();
                             auto entry = g_previewRenderDecoder->decode(
                                 key.sourcePath.str(), key.frameIndex, device, devCtx);
+                            missCostEmaUs = (missCostEmaUs * 7
+                                + tickUsBetween(tMiss, TickClock::now())) / 8;
                             if (entry.texture) {
                                 g_previewRenderCache->put(key, std::move(entry));
                                 ++decodeSucc;
@@ -4398,6 +4822,34 @@ static void videoThreadBody()
                                 ++decodeFail;
                             }
                         }
+                        g_previewDiag.deferredDecodes.fetch_add(
+                            static_cast<int64_t>(deferredMisses.size()),
+                            std::memory_order_relaxed);
+                    }
+                    // A cell whose frame is not decoded yet (deferred above, or
+                    // failed) shows the last frame it drew instead of vanishing
+                    // for the tick. The collector rebuilds `requests` every tick,
+                    // so the substitution only ever affects this composite.
+                    if (pacedPlayback) {
+                        int held = 0;
+                        for (auto& req : requests) {
+                            const uint64_t cellId = cellIdOf(req);
+                            const FrameCacheKey want{ req.sourcePath, req.sourceFrameIndex };
+                            if (g_previewRenderCache->contains(want)) {
+                                lastDrawnFrame[cellId] = want;
+                                continue;
+                            }
+                            auto it = lastDrawnFrame.find(cellId);
+                            if (it != lastDrawnFrame.end()
+                                && g_previewRenderCache->contains(it->second)) {
+                                req.sourcePath       = it->second.sourcePath;
+                                req.sourceFrameIndex = it->second.frameIndex;
+                                ++held;
+                            }
+                        }
+                        g_previewDiag.heldCellFrames.fetch_add(held, std::memory_order_relaxed);
+                    } else {
+                        lastDrawnFrame.clear();
                     }
                     // Long-running preview sessions shouldn't hold decoder
                     // contexts (file handles) forever once a source scrolls out
@@ -4712,6 +5164,36 @@ static void videoThreadBody()
                                     g_publishedStoppedPreviewSeq.store(
                                         stoppedPreviewSeq, std::memory_order_release);
                                 }
+                                // Playback cadence + frame age (instrumentation).
+                                if (isPlaying && !hasStoppedPreviewRequest) {
+                                    constexpr int64_t kCadenceSeekGap = 8;
+                                    g_previewDiag.cadencePublished.fetch_add(
+                                        1, std::memory_order_relaxed);
+                                    if (lastPublishedPlaybackFrame >= 0) {
+                                        const int64_t gap =
+                                            outputFrame - lastPublishedPlaybackFrame;
+                                        if (gap == 0)
+                                            g_previewDiag.cadenceRepeated.fetch_add(
+                                                1, std::memory_order_relaxed);
+                                        else if (gap > 1 && gap <= kCadenceSeekGap)
+                                            g_previewDiag.cadenceSkipped.fetch_add(
+                                                gap - 1, std::memory_order_relaxed);
+                                    }
+                                    lastPublishedPlaybackFrame = outputFrame;
+                                    if (sampleRate > 0) {
+                                        const int64_t ageSamples =
+                                            audioEngine->getLivePresentationPositionSamples()
+                                            - frameProjectSample;
+                                        s_frameAgeTimer.record(
+                                            static_cast<int32_t>(ageSamples * 1000000
+                                                                 / sampleRate),
+                                            g_previewDiag.lastFrameAgeUs,
+                                            g_previewDiag.avgFrameAgeUs,
+                                            g_previewDiag.maxFrameAgeUs);
+                                    }
+                                } else {
+                                    lastPublishedPlaybackFrame = -1;
+                                }
                                 blackWritten = isPlaying ? false : true;
                             }
                         } else if (rb.result == ReadbackResult::NotReady) {
@@ -4745,31 +5227,50 @@ static void videoThreadBody()
                         // [PreviewResGovernor] RENDER_PERF_AUDIT.txt Finding 8: step
                         // g_previewResolutionScale down when the composited tick is
                         // consistently over the frame budget, and back up when it is
-                        // comfortably under it. Rolling 60-sample window, same cadence
-                        // as the stage timers above. Only the DECISION happens here;
-                        // the actual re-init runs at the top of the next tick (see
+                        // comfortably under it. Only the DECISION happens here; the
+                        // actual re-init runs at the top of the next tick (see
                         // g_previewGovernorPendingLevel), since g_previewCompositorMutex
                         // (compLock) is already held in this scope.
+                        //
+                        // A window closes after 60 ticks OR one second, whichever comes
+                        // first. It used to be 60 ticks only, with three over-budget
+                        // windows needed per step — on exactly the machine that needs
+                        // it (measured: ~10 ticks/s with the whole app on two CPUs)
+                        // that was ~18 s per step and ~54 s to reach 25%, so the
+                        // preview crawled at full resolution for the whole of a typical
+                        // playback. Now: two over-budget windows step down, and a
+                        // window whose MEDIAN tick is over budget steps down at once —
+                        // the median, so a few decode spikes as playback starts on a
+                        // capable machine can never trigger it. Stepping up stays slow
+                        // on purpose (10 comfortable windows): each step re-inits the
+                        // compositor, and oscillating is worse than sitting one notch low.
                         {
-                            static int32_t s_tickWindow[60];
-                            static int     s_tickWindowCount = 0;
-                            static int     s_overBudgetWindows = 0;
-                            static int     s_underBudgetWindows = 0;
-
                             constexpr int   kWindowSize                  = 60;
-                            constexpr int   kOverBudgetWindowsToStepDown = 3;
+                            constexpr auto  kWindowMaxDuration           = std::chrono::seconds(1);
+                            constexpr int   kMinWindowSamples            = 5;
+                            constexpr int   kOverBudgetWindowsToStepDown = 2;
                             constexpr int   kUnderBudgetWindowsToStepUp  = 10; // "a longer window"
                             constexpr float kUnderBudgetRatio            = 0.60f;
 
+                            static int32_t s_tickWindow[kWindowSize];
+                            static int     s_tickWindowCount = 0;
+                            static int     s_overBudgetWindows = 0;
+                            static int     s_underBudgetWindows = 0;
+                            static TickClock::time_point s_windowStart = TickClock::now();
+
                             s_tickWindow[s_tickWindowCount++] = wholeTickUs;
-                            if (s_tickWindowCount >= kWindowSize) {
+                            const auto windowNow = TickClock::now();
+                            if (s_tickWindowCount >= kWindowSize
+                                || (s_tickWindowCount >= kMinWindowSamples
+                                    && windowNow - s_windowStart >= kWindowMaxDuration)) {
+                                const int n = s_tickWindowCount;
                                 int32_t sorted[kWindowSize];
-                                std::copy(std::begin(s_tickWindow), std::end(s_tickWindow), sorted);
-                                std::sort(std::begin(sorted), std::end(sorted));
-                                // ~95th percentile: 57th-smallest of 60 samples.
-                                const int32_t p95Us =
-                                    sorted[static_cast<int>(kWindowSize * 0.95f) - 1];
+                                std::copy(s_tickWindow, s_tickWindow + n, sorted);
+                                std::sort(sorted, sorted + n);
+                                const int32_t p95Us = sorted[std::max(0, (n * 95) / 100 - 1)];
+                                const int32_t p50Us = sorted[n / 2];
                                 s_tickWindowCount = 0;
+                                s_windowStart = windowNow;
 
                                 if (g_previewResolutionAutoMode.load(std::memory_order_relaxed)) {
                                     int previewFpsNow = 30;
@@ -4779,6 +5280,7 @@ static void videoThreadBody()
                                     }
                                     const int32_t framePeriodUs = 1000000 / previewFpsNow;
 
+                                    const bool severe = p50Us > framePeriodUs;
                                     if (p95Us > framePeriodUs) {
                                         ++s_overBudgetWindows;
                                         s_underBudgetWindows = 0;
@@ -4794,7 +5296,8 @@ static void videoThreadBody()
                                     }
 
                                     const int curIdx = previewScaleLevelIndex(g_previewResolutionScale);
-                                    if (s_overBudgetWindows >= kOverBudgetWindowsToStepDown && curIdx > 0) {
+                                    if ((severe || s_overBudgetWindows >= kOverBudgetWindowsToStepDown)
+                                        && curIdx > 0) {
                                         g_previewGovernorPendingLevel.store(
                                             curIdx - 1, std::memory_order_release);
                                         s_overBudgetWindows = 0;
@@ -4834,122 +5337,57 @@ static void videoThreadBody()
                             }
                         }
 
-                        // ── Readback health check (wallclock window + fast-trip) ──────────
-                        // Runs on the single video thread; function-local statics are safe.
+                        // ── Readback timing window (diagnostics only) ──────────────────────
+                        // Publishes avgReadbackUs over ~1 s of real time (and once after
+                        // the first 3 readbacks, so a slow machine shows a number before
+                        // the first window closes). Wall-clock, not a frame count, so the
+                        // window still closes when very few frames composite.
                         //
-                        // Why a wallclock window and NOT a composited-frame count:
-                        // compositeFrame()/readback() only run while playing or when
-                        // g_previewDirty forces a redraw. On a weak integrated GPU a blocking
-                        // Map of a 960×540 frame can take 60–140ms, so the preview crawls at
-                        // ~1 FPS and only a handful of composites happen across thousands of
-                        // video ticks. A "% 60 composited frames" gate therefore almost never
-                        // fires on exactly the machine that most needs to escape FastImmediate
-                        // — it stays stuck on the slow blocking path forever (avgReadbackUs
-                        // reads 0.00 because the window never closes). Gating on ~1s of real
-                        // time (steady_clock) instead evaluates the window regardless of how
-                        // few frames composited, and regardless of play/stop state.
-                        //
-                        // The fast-trip below is the real escape hatch for slow machines: a
-                        // 1s window still needs to *elapse*, but the very first composited
-                        // readbacks already reveal a slow Map, so we trip on the first few
-                        // samples and switch within the first frames of preview activity.
+                        // This used to also be a one-way "health switch" to
+                        // ReadbackPolicy::AsyncQueued when the first 3 Maps averaged over
+                        // 8 ms. That switch is gone: it was the thing killing the preview
+                        // on exactly the machines it was meant to rescue. Measured
+                        // 2026-09-23, BFDIA 9, 1 physical core + WARP: the first three
+                        // readbacks are warm-up (10-21 ms even where steady state is
+                        // 0.4 ms), so it tripped on every slow start, and the AsyncQueued
+                        // ring then delivered 0-7 fps for the rest of the session (also
+                        // with an explicit Flush after each CopyResource) against 41-47
+                        // fps on FastImmediate. It had already been measured at 1/3
+                        // throughput on a discrete GPU (VIDEO_PREVIEW_AUDIT Issue 7b).
+                        // And a ring delivers frames ticks late, which is A/V offset.
+                        // A slow GPU is the resolution governor's job — fewer pixels —
+                        // not a deeper queue.
                         {
                             using HealthClock = std::chrono::steady_clock;
 
-                            static bool                  s_inited        = false;
+                            static bool                    s_inited        = false;
                             static HealthClock::time_point s_windowStart;
-                            static uint64_t              s_prevValid     = 0;
-                            static uint64_t              s_prevInvalid   = 0;
-                            static float                 s_sumReadbackMs = 0.0f;
-                            static int                   s_sumCount      = 0;
-                            // Fast-trip accumulator: first kFastTripSamples readbacks only.
-                            static float                 s_fastTripSumMs = 0.0f;
-                            static int                   s_fastTripCount = 0;
-                            static bool                  s_fastTripDone  = false;
+                            static float                   s_sumReadbackMs = 0.0f;
+                            static int                     s_sumCount      = 0;
+                            static int                     s_earlyCount    = 0;
 
-                            constexpr int   kFastTripSamples = 3;
-                            constexpr float kStallThreshMs   = 8.0f;
-                            constexpr auto  kWindowDuration  = std::chrono::milliseconds(1000);
+                            constexpr int  kEarlySamples   = 3;
+                            constexpr auto kWindowDuration = std::chrono::milliseconds(1000);
 
                             const auto now = HealthClock::now();
                             if (!s_inited) { s_windowStart = now; s_inited = true; }
 
-                            const float sampleMs = rbUs * 0.001f;   // µs → ms
-                            s_sumReadbackMs += sampleMs;
+                            s_sumReadbackMs += rbUs * 0.001f;   // µs → ms
                             ++s_sumCount;
 
-                            // One-way switch (FastImmediate → AsyncQueued only) + diagnostics.
-                            // No-op if already switched, so the fast-trip and window paths can
-                            // never double-switch or fight each other.
-                            auto applySwitch = [&](PolicySwitchReason reason,
-                                                   uint64_t dInvalid, uint64_t dValid,
-                                                   float avgMs) {
-                                if (reason == PolicySwitchReason::None) return;
-                                if (g_previewCompositor->getActiveReadbackPolicy() !=
-                                        ReadbackPolicy::FastImmediate) return;
-                                g_previewCompositor->setReadbackPolicy(
-                                    ReadbackPolicy::AsyncQueued);
-                                g_previewDiag.readbackPolicyActive.store(
-                                    1, std::memory_order_relaxed);
-                                g_previewDiag.readbackPolicySwitchReason.store(
-                                    static_cast<int>(reason), std::memory_order_relaxed);
-                                std::fprintf(stderr,
-                                    "[PreviewUnify] Health switch: FastImmediate → AsyncQueued "
-                                    "(reason=%d dInvalid=%llu dValid=%llu avgMs=%.2f)\n",
-                                    static_cast<int>(reason),
-                                    static_cast<unsigned long long>(dInvalid),
-                                    static_cast<unsigned long long>(dValid), avgMs);
-                            };
-
-                            // ── Fast-trip: first kFastTripSamples readbacks only ──────────
-                            // A weak GPU shows 60ms+ per Map immediately; don't make it wait a
-                            // full 1s window. avgReadbackUs is populated here too so the early
-                            // signal is visible before the first window closes.
-                            if (!s_fastTripDone) {
-                                s_fastTripSumMs += sampleMs;
-                                if (++s_fastTripCount >= kFastTripSamples) {
-                                    s_fastTripDone = true;
-                                    const float avgMs = s_fastTripSumMs
-                                        / static_cast<float>(s_fastTripCount);
-                                    g_previewDiag.avgReadbackUs.store(
-                                        static_cast<int32_t>(avgMs * 1000.0f),
-                                        std::memory_order_relaxed);
-                                    if (avgMs > kStallThreshMs)
-                                        applySwitch(PolicySwitchReason::MapStallTooSlow,
-                                                    0, 0, avgMs);
-                                }
-                            }
-
-                            // ── Wallclock window: evaluate ~once per second of real time ──
-                            if (now - s_windowStart >= kWindowDuration && s_sumCount > 0) {
-                                const float avgMs =
-                                    s_sumReadbackMs / static_cast<float>(s_sumCount);
-
-                                uint64_t curValid   = g_previewDiag.readbackValidCount.load(
-                                    std::memory_order_relaxed);
-                                uint64_t curInvalid = g_previewDiag.readbackInvalidCount.load(
-                                    std::memory_order_relaxed);
-                                uint64_t dInvalid   = curInvalid - s_prevInvalid;
-                                uint64_t dValid     = curValid   - s_prevValid;
-
+                            const bool earlyPublish = s_earlyCount < kEarlySamples
+                                && ++s_earlyCount == kEarlySamples;
+                            const bool windowClosed = now - s_windowStart >= kWindowDuration;
+                            if (earlyPublish || windowClosed) {
                                 g_previewDiag.avgReadbackUs.store(
-                                    static_cast<int32_t>(avgMs * 1000.0f),
+                                    static_cast<int32_t>(s_sumReadbackMs * 1000.0f
+                                                         / static_cast<float>(s_sumCount)),
                                     std::memory_order_relaxed);
-
-                                s_prevValid     = curValid;
-                                s_prevInvalid   = curInvalid;
+                            }
+                            if (windowClosed) {
                                 s_sumReadbackMs = 0.0f;
                                 s_sumCount      = 0;
                                 s_windowStart   = now;
-
-                                PolicySwitchReason reason = PolicySwitchReason::None;
-                                if (dInvalid > 3)
-                                    reason = PolicySwitchReason::FatalInvalids;
-                                else if (avgMs > kStallThreshMs)
-                                    reason = PolicySwitchReason::MapStallTooSlow;
-                                else if (dValid < 15 && (dValid + dInvalid) > 30)
-                                    reason = PolicySwitchReason::PoorYield;
-                                applySwitch(reason, dInvalid, dValid, avgMs);
                             }
                         }
                     } else if (hasStoppedPreviewRequest) {
@@ -5070,13 +5508,51 @@ static void videoThreadBody()
             int f = g_timeline->getGridLayout().previewFps;
             if (f >= 1 && f <= 120) previewFps = f;
         }
-        nextFrameDeadline +=
-            std::chrono::microseconds(1000000 / previewFps);
+        const auto framePeriod = std::chrono::microseconds(1000000 / previewFps);
+        const auto pacingNow = std::chrono::steady_clock::now();
+        if (pacedNextTick) {
+            // Playback: the mid-point of the next frame on the audio clock.
+            // Bounded to two periods so a clock re-anchor can never park the
+            // thread; a target already in the past means this tick overran, so
+            // go straight away — the next tick then shows whatever frame the
+            // audio has reached, which is the drop-frame behaviour we want.
+            nextFrameDeadline = std::clamp(*pacedNextTick, pacingNow,
+                                           pacingNow + 2 * framePeriod);
+        } else {
+            nextFrameDeadline += framePeriod;
+            // If the loop has fallen behind (long decode / stall), reset the
+            // deadline to now rather than burst-rendering to catch up.
+            if (nextFrameDeadline < pacingNow)
+                nextFrameDeadline = pacingNow;
+        }
 
-        // If the loop has fallen behind (long decode / stall), reset the
-        // deadline to now rather than burst-rendering to catch up.
-        if (nextFrameDeadline < std::chrono::steady_clock::now())
-            nextFrameDeadline = std::chrono::steady_clock::now();
+        // Spend the idle part of the frame on decodes the budget deferred, so
+        // a burst drains between frames instead of stalling one. Only starts a
+        // decode the running per-miss estimate says will finish before the
+        // deadline. The keys are this tick's; if the playhead has moved on by
+        // the time one lands, the stream it warmed is positioned right behind
+        // the new request and continues forward cheaply.
+        if (!deferredMisses.empty() && g_previewRenderDecoder && g_previewRenderCache
+            && g_gpuDevice && g_gpuDevice->getDevice() && g_gpuDevice->getContext()) {
+            std::lock_guard<std::mutex> compLock(g_previewCompositorMutex);
+            while (!deferredMisses.empty()) {
+                const auto now = std::chrono::steady_clock::now();
+                if (now + std::chrono::microseconds(missCostEmaUs + 1000) > nextFrameDeadline)
+                    break;
+                const FrameCacheKey key = deferredMisses.front();
+                deferredMisses.erase(deferredMisses.begin());
+                if (g_previewRenderCache->contains(key)) continue;
+                auto entry = g_previewRenderDecoder->decode(
+                    key.sourcePath.str(), key.frameIndex,
+                    g_gpuDevice->getDevice(), g_gpuDevice->getContext());
+                missCostEmaUs = (missCostEmaUs * 7
+                    + tickUsBetween(now, std::chrono::steady_clock::now())) / 8;
+                if (entry.texture) {
+                    g_previewRenderCache->put(key, std::move(entry));
+                    g_previewDiag.idleDecodes.fetch_add(1, std::memory_order_relaxed);
+                }
+            }
+        }
 
         std::this_thread::sleep_until(nextFrameDeadline);
         videoThreadCompletedTicks.fetch_add(1, std::memory_order_release);
@@ -5339,6 +5815,95 @@ JsonApi::Value Initialize(const JsonApi::CallbackInfo& info)
     return JsonApi::Boolean::New(env, true);
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// Regenerable-file lifecycle — purge-on-close, "Clean up project", .tmp sweep
+// ─────────────────────────────────────────────────────────────────────────────
+// WHAT may be deleted is decided entirely by project/RegenerableFiles (the one
+// registry; see its header for the safety contract). This block only decides
+// WHEN it runs, and makes it safe on Windows by releasing every handle the
+// engine holds onto those files first — an open decoder blocks the delete.
+//
+// g_purgeOnClose mirrors the app setting "Delete regenerable files when closing
+// a project". The UI pushes it at engine start and on every change
+// (project_setPurgeOnClose), the same way it pushes the proxy codec. The engine
+// owns the purge — rather than the UI orchestrating "delete, then switch" —
+// because the engine knows the exact moment the OLD project is torn down: after
+// a project_load has proven the new project readable (a failed load must not
+// leave the still-open project stripped of its proxies), and inside shutdown.
+static std::atomic<bool> g_purgeOnClose{false};
+
+namespace {
+struct PurgeReport {
+    bool                          valid = false;
+    std::string                   projectDir;
+    xleth::project::RegenResult   result;
+};
+std::mutex  g_lastPurgeMtx;
+PurgeReport g_lastPurge;
+} // namespace
+
+// Close every decoder / cached frame that may hold a regenerable file open.
+// Idempotent, and safe to run before project_load / project_newBlank do their
+// own (identical) teardown, or after shutdown has already released most of it.
+static void releaseProjectMediaHandles()
+{
+    {
+        std::lock_guard<std::mutex> lock(syncEventsMutex);
+        if (syncManager) syncManager->clearEvents();
+        for (auto& d : decoderOwner)
+            if (d) d->close();
+        decoderOwner.clear();
+        decoderPtrs.clear();
+        for (auto& kv : regionDecoderOwner)
+            if (kv.second) kv.second->close();
+        regionDecoderOwner.clear();
+        if (frameCache) frameCache->clear();
+    }
+    if (g_frameServer) g_frameServer->closeAll();
+    {
+        std::lock_guard<std::mutex> lock(g_previewCompositorMutex);
+        if (g_previewRenderCache)   g_previewRenderCache->clear();
+        if (g_previewRenderDecoder) g_previewRenderDecoder->closeAll();
+    }
+}
+
+// Delete the regenerable files of the project that is CLOSING (`closingDir`),
+// if the user turned the setting on. Reads g_timeline, so it must run BEFORE the
+// timeline is replaced/cleared. Never touches source media or project.json.
+static void purgeClosingProject(const std::string& closingDir, const char* why)
+{
+    using namespace xleth::project;
+    if (!g_purgeOnClose.load(std::memory_order_relaxed)) return;
+    if (closingDir.empty() || !g_timeline) return;            // untitled: nothing on disk
+    // Only ever a folder that really holds a project. (scanRegenerable enforces
+    // the same; checking here first also skips the handle release below.)
+    if (!RegenLayout::forProjectDir(closingDir).looksLikeProject()) return;
+
+    // No job may be writing (or republishing a result) while we delete.
+    if (g_proxyManager) g_proxyManager->cancelAll();
+    releaseProjectMediaHandles();
+
+    const RegenLayout layout = RegenLayout::forProjectDir(closingDir);
+    const RegenScan   scan   = scanRegenerable(layout, *g_timeline);
+    const RegenResult res    = removeRegenerable(scan, RegenScope::Purge);
+    const RegenTotals kept   = retainedTotals(scan);
+
+    std::cout << "[Project] purge-on-close (" << why << "): freed "
+              << formatByteCount(res.removed.total.bytes) << " in "
+              << res.removed.total.files << " regenerable file(s)";
+    if (kept.files > 0)
+        std::cout << "; kept " << kept.files << " (" << formatByteCount(kept.bytes)
+                  << ") whose source media is offline";
+    if (res.failed > 0)
+        std::cout << "; " << res.failed << " in use and left in place";
+    std::cout << "\n";
+
+    std::lock_guard<std::mutex> lk(g_lastPurgeMtx);
+    g_lastPurge.valid      = true;
+    g_lastPurge.projectDir = closingDir;
+    g_lastPurge.result     = res;
+}
+
 void Shutdown(const JsonApi::CallbackInfo& info)
 {
     BridgeCallLog log("shutdown");
@@ -5391,6 +5956,19 @@ void Shutdown(const JsonApi::CallbackInfo& info)
     g_proxyManager.reset();
     std::fprintf(stderr, "[BridgeShutdown] proxy manager stopped\n");
 
+    // An audio export runs on g_exportThread and nothing ever joined it: the
+    // handle stayed joinable after the export finished, so the global's
+    // destructor at process exit called std::terminate — every bridge test
+    // that ran audio_exportStart died with 0xC0000409 AFTER printing its
+    // verdict. Ask a still-running export to stop, then join before the
+    // engine it renders through goes away.
+    if (g_exportThread && g_exportThread->joinable()) {
+        g_exportCancel.store(true);
+        g_exportThread->join();
+    }
+    g_exportThread.reset();
+    std::fprintf(stderr, "[BridgeShutdown] export thread joined\n");
+
     std::fprintf(stderr, "[BridgeShutdown] stopping audio engine\n");
     audioEngine->shutdown();
     audioEngine.reset();
@@ -5418,6 +5996,12 @@ void Shutdown(const JsonApi::CallbackInfo& info)
     // Phase 1B teardown — FrameServer (before frameCache)
     g_frameServer.reset();
     std::fprintf(stderr, "[BridgeShutdown] frame server released\n");
+
+    // Purge-on-close for the project the app is quitting with. Decoders and the
+    // proxy pool are already down, so nothing holds these files open. Runs before
+    // g_timeline / g_projectManager are released — the registry reads both.
+    if (g_projectManager)
+        purgeClosingProject(g_projectManager->getProjectDir(), "quit");
 
     // Phase 1 teardown (before audioEngine, after video thread)
     g_undoManager.reset();
@@ -5839,7 +6423,236 @@ JsonApi::Value Proxy_GetStatus(const JsonApi::CallbackInfo& info)
     obj.Set("inFlight",  JsonApi::Number::New(env, st.inFlight));
     obj.Set("completed", JsonApi::Number::New(env, st.completed));
     obj.Set("total",     JsonApi::Number::New(env, st.total));
+
+    // On-open H.264 migration batch (drives the video panel's progress badge).
+    ProxyManager::MigrationStatus mig{};
+    if (g_proxyManager) mig = g_proxyManager->getMigrationStatus();
+    JsonApi::Object m = JsonApi::Object::New(env);
+    m.Set("active",    JsonApi::Boolean::New(env, mig.active()));
+    m.Set("total",     JsonApi::Number::New(env, mig.total));
+    m.Set("completed", JsonApi::Number::New(env, mig.completed));
+    m.Set("failed",    JsonApi::Number::New(env, mig.failed));
+    m.Set("progress",  JsonApi::Number::New(env, mig.progress));
+    obj.Set("migration", m);
+
+    // Missing-file rebuild batch (proxies purged/never built, rebuilt on open) —
+    // drives the video panel's "Rebuilding previews" badge. Same shape as
+    // `migration`.
+    ProxyManager::RebuildStatus rb{};
+    if (g_proxyManager) rb = g_proxyManager->getRebuildStatus();
+    JsonApi::Object rebuild = JsonApi::Object::New(env);
+    rebuild.Set("active",    JsonApi::Boolean::New(env, rb.active()));
+    rebuild.Set("total",     JsonApi::Number::New(env, rb.total));
+    rebuild.Set("completed", JsonApi::Number::New(env, rb.completed));
+    rebuild.Set("failed",    JsonApi::Number::New(env, rb.failed));
+    rebuild.Set("progress",  JsonApi::Number::New(env, rb.progress));
+    obj.Set("rebuild", rebuild);
+    obj.Set("codec", JsonApi::String::New(env,
+        ProxyTranscoder::codecTag(ProxyTranscoder::preferredCodec())));
     return obj;
+}
+
+// Proxy codec setting — { requested, effective, h264Available }. `effective` is
+// what new proxies are actually encoded in (Intra when no H.264 encoder opens).
+static JsonApi::Object proxyCodecStateToJs(JsonApi::Env env) {
+    JsonApi::Object o = JsonApi::Object::New(env);
+    o.Set("requested", JsonApi::String::New(env,
+        ProxyTranscoder::codecTag(ProxyTranscoder::requestedCodec())));
+    o.Set("effective", JsonApi::String::New(env,
+        ProxyTranscoder::codecTag(ProxyTranscoder::preferredCodec())));
+    o.Set("h264Available", JsonApi::Boolean::New(env, ProxyTranscoder::h264EncoderAvailable()));
+    return o;
+}
+
+JsonApi::Value Proxy_GetCodec(const JsonApi::CallbackInfo& info)
+{
+    return proxyCodecStateToJs(info.Env());
+}
+
+// proxy_setCodec('h264' | 'intra') — the app-settings proxy codec. Applies to
+// proxies generated from now on; existing proxies are only converted by the
+// project-open migration (H.264 only). Returns the resulting codec state so the
+// caller can confirm the call reached the engine.
+JsonApi::Value Proxy_SetCodec(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsString()) {
+        JsonApi::TypeError::New(env, "proxy_setCodec(codec: 'h264' | 'intra')")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const std::string codec = info[0].As<JsonApi::String>().Utf8Value();
+    if (codec != "h264" && codec != "intra") {
+        JsonApi::TypeError::New(env, "proxy_setCodec: codec must be 'h264' or 'intra'")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    ProxyTranscoder::setPreferredCodec(codec == "h264" ? ProxyCodec::H264 : ProxyCodec::Intra);
+    return proxyCodecStateToJs(env);
+}
+
+// ── Regenerable-file RPCs (purge-on-close setting, Clean up project) ─────────
+// See the "Regenerable-file lifecycle" block above Shutdown() for the design.
+
+// { id, label, files, bytes } for every category that has something in it.
+static JsonApi::Array regenCategoriesToJs(JsonApi::Env env,
+                                          const xleth::project::RegenSummary& sum)
+{
+    using namespace xleth::project;
+    JsonApi::Array arr = JsonApi::Array::New(env, 0);
+    uint32_t n = 0;
+    for (int c = 0; c < kRegenCategoryCount; ++c) {
+        const RegenTotals& t = sum.perCategory[c];
+        if (t.files == 0) continue;
+        const auto cat = static_cast<RegenCategory>(c);
+        JsonApi::Object o = JsonApi::Object::New(env);
+        o.Set("id",    JsonApi::String::New(env, regenCategoryId(cat)));
+        o.Set("label", JsonApi::String::New(env, regenCategoryLabel(cat)));
+        o.Set("files", JsonApi::Number::New(env, t.files));
+        o.Set("bytes", JsonApi::Number::New(env, static_cast<double>(t.bytes)));
+        arr.Set(n++, o);
+    }
+    return arr;
+}
+
+static JsonApi::Object regenResultToJs(JsonApi::Env env, const xleth::project::RegenResult& r)
+{
+    JsonApi::Object o = JsonApi::Object::New(env);
+    o.Set("freedBytes",   JsonApi::Number::New(env, static_cast<double>(r.removed.total.bytes)));
+    o.Set("filesRemoved", JsonApi::Number::New(env, r.removed.total.files));
+    o.Set("filesFailed",  JsonApi::Number::New(env, r.failed));
+    o.Set("categories",   regenCategoriesToJs(env, r.removed));
+    return o;
+}
+
+// project_setPurgeOnClose(enabled: boolean) → boolean — the value now in force.
+// The app setting "Delete regenerable files when closing a project". Takes
+// effect at the next project switch / quit. Returning the value lets the caller
+// confirm the call really reached the engine (an undefined bridge call fails
+// silently through optional chaining).
+JsonApi::Value Project_SetPurgeOnClose(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    if (info.Length() < 1 || !info[0].IsBoolean()) {
+        JsonApi::TypeError::New(env, "project_setPurgeOnClose(enabled: boolean)")
+            .ThrowAsJavaScriptException();
+        return env.Undefined();
+    }
+    const bool enabled = info[0].As<JsonApi::Boolean>().Value();
+    g_purgeOnClose.store(enabled, std::memory_order_relaxed);
+    std::cout << "[Project] purge regenerable files on close: "
+              << (enabled ? "ON" : "off") << "\n";
+    return JsonApi::Boolean::New(env, g_purgeOnClose.load(std::memory_order_relaxed));
+}
+
+// project_takeLastPurge() → null | { projectDir, freedBytes, filesRemoved,
+//                                   filesFailed, categories[] }
+// The result of the most recent purge-on-close, returned ONCE (consumed) so the
+// UI can report the freed space after the project switch that triggered it.
+// null when no purge has run since the last take.
+JsonApi::Value Project_TakeLastPurge(const JsonApi::CallbackInfo& info)
+{
+    JsonApi::Env env = info.Env();
+    PurgeReport rep;
+    {
+        std::lock_guard<std::mutex> lk(g_lastPurgeMtx);
+        if (!g_lastPurge.valid) return env.Null();
+        rep = g_lastPurge;
+        g_lastPurge = PurgeReport{};
+    }
+    JsonApi::Object o = regenResultToJs(env, rep.result);
+    o.Set("projectDir", JsonApi::String::New(env, rep.projectDir));
+    return o;
+}
+
+// project_cleanupScan() — dry run of "Clean up project" for the confirmation
+// dialog. Deletes nothing.
+//   { hasProject, willFree: { files, bytes, categories[] },
+//     kept: { files, bytes, items[{ name, reason }] },   // NOT regenerable: offline media
+//     partialsSkipped }                                  // a job is running; its .tmp is left alone
+JsonApi::Value Project_CleanupScan(const JsonApi::CallbackInfo& info)
+{
+    using namespace xleth::project;
+    JsonApi::Env env = info.Env();
+    JsonApi::Object out = JsonApi::Object::New(env);
+
+    const bool hasProject = isInitialised() && g_projectManager && g_timeline
+                         && g_projectManager->hasProjectDir();
+    out.Set("hasProject", JsonApi::Boolean::New(env, hasProject));
+
+    RegenSummary  would{};
+    RegenTotals   kept{};
+    JsonApi::Array keptItems = JsonApi::Array::New(env, 0);
+    bool partialsSkipped = false;
+
+    if (hasProject) {
+        // A running job owns a <target>.tmp that is NOT a leftover.
+        const bool jobsRunning = g_proxyManager && g_proxyManager->hasActiveJobs();
+        partialsSkipped = jobsRunning;
+        const RegenScan scan = scanRegenerable(
+            RegenLayout::forProjectDir(g_projectManager->getProjectDir()), *g_timeline);
+        would = summarizeRegenerable(scan, RegenScope::Cleanup, /*includePartials=*/!jobsRunning);
+        kept  = retainedTotals(scan);
+        uint32_t n = 0;
+        for (const RegenEntry& e : scan.entries) {
+            if (e.cls != RegenClass::Retained || n >= 8) continue;   // a sample is enough
+            JsonApi::Object item = JsonApi::Object::New(env);
+            item.Set("name",   JsonApi::String::New(env, e.displayName));
+            item.Set("reason", JsonApi::String::New(env, e.note));
+            keptItems.Set(n++, item);
+        }
+    }
+
+    JsonApi::Object willFree = JsonApi::Object::New(env);
+    willFree.Set("files",      JsonApi::Number::New(env, would.total.files));
+    willFree.Set("bytes",      JsonApi::Number::New(env, static_cast<double>(would.total.bytes)));
+    willFree.Set("categories", regenCategoriesToJs(env, would));
+    out.Set("willFree", willFree);
+
+    JsonApi::Object keptObj = JsonApi::Object::New(env);
+    keptObj.Set("files", JsonApi::Number::New(env, kept.files));
+    keptObj.Set("bytes", JsonApi::Number::New(env, static_cast<double>(kept.bytes)));
+    keptObj.Set("items", keptItems);
+    out.Set("kept", keptObj);
+    out.Set("partialsSkipped", JsonApi::Boolean::New(env, partialsSkipped));
+    return out;
+}
+
+// project_cleanupRun() → { ok, freedBytes, filesRemoved, filesFailed, categories[] }
+// "Clean up project": delete the project's Orphan files (proxies/peaks nothing in
+// the project can read) and leftover partial outputs — right now. The project
+// stays open, so the files it is actively using are left alone; nothing that is
+// merely regenerable is touched. Re-scans (rather than trusting the dialog's
+// numbers) because the project can change between the dialog and the click.
+JsonApi::Value Project_CleanupRun(const JsonApi::CallbackInfo& info)
+{
+    using namespace xleth::project;
+    JsonApi::Env env = info.Env();
+    BridgeCallLog log("project.cleanupRun");
+
+    if (!isInitialised() || !g_projectManager || !g_timeline || !g_projectManager->hasProjectDir()) {
+        JsonApi::Object o = JsonApi::Object::New(env);
+        o.Set("ok",    JsonApi::Boolean::New(env, false));
+        o.Set("error", JsonApi::String::New(env, "Save the project to a folder first."));
+        log.done("no project dir");
+        return o;
+    }
+
+    const bool jobsRunning = g_proxyManager && g_proxyManager->hasActiveJobs();
+    const RegenScan scan = scanRegenerable(
+        RegenLayout::forProjectDir(g_projectManager->getProjectDir()), *g_timeline);
+    const RegenResult res = removeRegenerable(scan, RegenScope::Cleanup,
+                                              /*includePartials=*/!jobsRunning);
+    std::cout << "[Project] Clean up project: freed " << formatByteCount(res.removed.total.bytes)
+              << " in " << res.removed.total.files << " file(s)"
+              << (res.failed > 0 ? ", " + std::to_string(res.failed) + " in use and left in place"
+                                 : std::string())
+              << "\n";
+
+    JsonApi::Object o = regenResultToJs(env, res);
+    o.Set("ok", JsonApi::Boolean::New(env, true));
+    log.done(formatByteCount(res.removed.total.bytes));
+    return o;
 }
 
 // posterPrepass_getStatus() — read-only snapshot of the PER-CELL poster warm pass.
@@ -5969,12 +6782,18 @@ JsonApi::Value InitFrameOutput(const JsonApi::CallbackInfo& info)
 // open the same name see the same physical pages — the basis for zero-copy
 // delivery to the Electron main process / preload when this addon runs in a
 // forked worker. Control region is 64 bytes; indexOffset = W*H*4*2.
+//
+// capacityWidth/capacityHeight (optional) size the SECTION, which is created
+// once and never resized — width/height then move the live frame around
+// inside it as previewResolutionScale changes. See FrameOutput.h for why a
+// named section cannot be grown once a reader holds it open.
 JsonApi::Value InitVideoSharedMemory(const JsonApi::CallbackInfo& info)
 {
     JsonApi::Env env = info.Env();
 
     if (info.Length() < 3 || !info[0].IsString() || !info[1].IsNumber() || !info[2].IsNumber()) {
-        JsonApi::TypeError::New(env, "initVideoSharedMemory(name: string, width: number, height: number)")
+        JsonApi::TypeError::New(env, "initVideoSharedMemory(name: string, width: number, height: number"
+                                     ", capacityWidth?: number, capacityHeight?: number)")
             .ThrowAsJavaScriptException();
         return env.Undefined();
     }
@@ -5982,6 +6801,8 @@ JsonApi::Value InitVideoSharedMemory(const JsonApi::CallbackInfo& info)
     std::string name = info[0].As<JsonApi::String>().Utf8Value();
     int width  = info[1].As<JsonApi::Number>().Int32Value();
     int height = info[2].As<JsonApi::Number>().Int32Value();
+    int capW   = (info.Length() > 3 && info[3].IsNumber()) ? info[3].As<JsonApi::Number>().Int32Value() : width;
+    int capH   = (info.Length() > 4 && info[4].IsNumber()) ? info[4].As<JsonApi::Number>().Int32Value() : height;
 
     // Stop the video thread before reconfiguring frameOutput. Otherwise
     // FrameOutput::shutdown() (called from initSharedMemory) frees the
@@ -5989,7 +6810,7 @@ JsonApi::Value InitVideoSharedMemory(const JsonApi::CallbackInfo& info)
     // producing an ACCESS_VIOLATION. See the fix notes for details.
     stopVideoThread();
 
-    const bool shmOk = frameOutput.initSharedMemory(name.c_str(), width, height);
+    const bool shmOk = frameOutput.initSharedMemory(name.c_str(), width, height, capW, capH);
 
     // Restart the video thread regardless of success — on failure it will
     // simply idle (frameOutput.isInitialized() == false).
@@ -6000,10 +6821,18 @@ JsonApi::Value InitVideoSharedMemory(const JsonApi::CallbackInfo& info)
         return env.Undefined();
     }
 
-    const size_t totalSize = static_cast<size_t>(width) * static_cast<size_t>(height) * 4u * 2u + 64u;
+    // The section's real size, not the live frame's — this is what the reader
+    // must pass to MapViewOfFile so its view stays valid across every later
+    // resolution change.
+    const size_t totalSize = frameOutput.getRawBufferSize();
+    // Bytes in ONE half of the section. The reader sizes its copy-destination
+    // buffers by this, not by bufferSize, so they stay large enough when a
+    // later resolution change grows the live frame.
+    const size_t capacityBufferSize = static_cast<size_t>(capW) * static_cast<size_t>(capH) * 4u;
 
     JsonApi::Object obj = JsonApi::Object::New(env);
     obj.Set("name",        JsonApi::String::New(env, name));
+    obj.Set("capacityBufferSize", JsonApi::Number::New(env, static_cast<double>(capacityBufferSize)));
     obj.Set("width",       JsonApi::Number::New(env, frameOutput.getWidth()));
     obj.Set("height",      JsonApi::Number::New(env, frameOutput.getHeight()));
     obj.Set("bufferSize",  JsonApi::Number::New(env, frameOutput.getBufferSize()));
@@ -6451,6 +7280,10 @@ JsonApi::Value Project_NewBlank(const JsonApi::CallbackInfo& info)
     }
     g_proxyManager = std::make_unique<ProxyManager>();
 
+    // 2b. Purge-on-close for the project being closed (no-op unless the setting
+    //     is on). Before step 4: the registry reads the still-loaded timeline.
+    purgeClosingProject(g_projectManager->getProjectDir(), "new project");
+
     // 3. Close plugin editors, destroy all effect chains, clear the
     //    region→sample map so nothing references stale regions.
     if (audioEngine) {
@@ -6585,6 +7418,9 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
     BridgeCallLog log("project.load");
 
     restoreAndClearClipControlEdit();
+    // loadProject() re-points ProjectManager at `dir`; remember the project being
+    // closed so purge-on-close (below) still finds its folder.
+    const std::string closingDir = g_projectManager->getProjectDir();
     auto loaded = g_projectManager->loadProject(dir);
     if (!loaded) {
         log.done("false");
@@ -6618,6 +7454,22 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
         // one being opened.
         mix.resetMasterLoudness();
     }
+
+    // Abandon the previous project's proxy/poster jobs BEFORE the timeline swap.
+    // Results are keyed by region/source id, and ids restart per project, so a
+    // job still running for the old project (a multi-minute whole-source encode
+    // or codec migration) would otherwise publish into whichever NEW source or
+    // region happens to reuse its id. cancelAll() interrupts running transcodes
+    // within a frame (partial .tmp deleted) and keeps the ProxyManager object —
+    // the video thread drains through g_proxyManager without a lock.
+    if (g_proxyManager) g_proxyManager->cancelAll();
+
+    // Purge-on-close for the project being replaced. Only reached once the new
+    // project has loaded, so a failed open never strips the project the user is
+    // still in; still before the timeline swap, which the registry needs. Skipped
+    // when "opening" the folder that is already open.
+    if (!xleth::project::isSameFolder(closingDir, dir))
+        purgeClosingProject(closingDir, "open another project");
 
     *g_timeline = std::move(*loaded);
     if (g_undoManager) g_undoManager->clear();
@@ -6848,6 +7700,17 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
             if (d) d->close();
         decoderOwner.clear();
         decoderPtrs.clear();
+        // Region decoders and the per-session generation guards are keyed by ids
+        // that the loaded project reuses — same reset as project_newBlank.
+        for (auto& kv : regionDecoderOwner)
+            if (kv.second) kv.second->close();
+        regionDecoderOwner.clear();
+        g_posterEnqueued.clear();
+        g_proxyEnqueuedRegions.clear();
+        g_thumbnailEnqueued.clear();
+        g_sourcePreviewEnqueued.clear();
+        g_genFailCount.clear();
+        g_genDisabled.clear();
         if (frameCache) frameCache->clear();
     }
     // The loaded project's events have to be rebuilt before the preview can draw
@@ -6870,11 +7733,28 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
             ensureSourceDecoder(s->id);
     }
 
+    // Partial outputs of generations interrupted last time (app killed, crash)
+    // are never referenced — every artifact is written as <name>.tmp and only
+    // renamed into place when complete — but they can be gigabytes. Sweep them,
+    // silently and without asking, before anything new starts writing (a .tmp a
+    // live writer holds open is skipped automatically). The interrupted proxy is
+    // simply rebuilt below. Runs on every open, whatever the purge setting.
+    if (g_projectManager && g_timeline) {
+        using namespace xleth::project;
+        const RegenResult swept = sweepPartialFiles(
+            RegenLayout::forProjectDir(g_projectManager->getProjectDir()), *g_timeline);
+        if (swept.removed.total.files > 0)
+            std::cout << "[Project] swept " << swept.removed.total.files
+                      << " interrupted partial file(s) (.tmp), freed "
+                      << formatByteCount(swept.removed.total.bytes) << "\n";
+    }
+
     // Proactively transcode every region's preview proxy now that the timeline
     // is fully populated, rather than waiting for the first Play to hit each
     // clip. Idempotent: a project whose proxies already exist on disk enqueues
-    // no new transcodes (proxy_getStatus stays at pending==0).
-    enqueueAllRegionProxies();
+    // no new transcodes (proxy_getStatus stays at pending==0) — apart from the
+    // one-time H.264 migration of legacy intra region proxies.
+    enqueueAllRegionProxies(/*allowMigration=*/true);
 
     // Warm the one-poster-per-source cache for poster preview (Option B). On a
     // project whose posters already exist on disk this just engages them in
@@ -6894,6 +7774,13 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
     // enqueueSourcePreview is safe to call from the main thread — it only touches
     // ProxyManager's own resultMtx_-guarded state, not SourceMedia. The stale-flag
     // reset DOES touch SourceMedia so it goes under syncEventsMutex.
+    //
+    // Codec migration (proxy-codec setting = H.264): a source whose proxy on disk
+    // is a legacy intra one keeps using it, and an H.264 re-encode is queued
+    // beside it (different file name — the open legacy file is never
+    // overwritten). drainSourcePreviewResults switches preview over when it
+    // completes and retires the legacy file. A source whose media is missing is
+    // left on its legacy proxy (it cannot be re-encoded) and logged.
     if (g_proxyManager && g_projectManager) {
         const std::string proxiesDir = g_projectManager->getProxiesDir();
         for (const SourceMedia* s : sources) {
@@ -6902,9 +7789,49 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
 
             int h = std::min(g_previewProxyTargetHeight, s->height) & ~1;
             if (h < 2) h = 2;
+            const ProxyCodec wantCodec = ProxyTranscoder::codecForTargetSize(
+                static_cast<int>(std::lround(static_cast<double>(s->width) * h / s->height)), h);
 
-            const bool onDisk = ProxyTranscoder::sourcePreviewProxyExists(
-                s->filePath, proxiesDir, h);
+            const ProxyTranscoder::ProxyLookup found =
+                ProxyTranscoder::findSourcePreviewProxy(s->filePath, proxiesDir, h);
+            const bool onDisk = found.found;
+
+            // The base poster (written at import) is a regenerable file too: a
+            // purge, or a delete while the app was closed, removes it. Bring it
+            // back regardless of whether poster mode is on, so "everything that
+            // was purged returns" holds without waiting for poster mode. Reuses
+            // the lazy self-heal (dedups, validates an existing sidecar first).
+            // Offline media cannot be re-extracted from — leave it.
+            if (ProxyTranscoder::fileExistsUtf8(s->filePath)) {
+                std::lock_guard<std::mutex> lk(syncEventsMutex);   // its documented precondition
+                maybeEnqueueSourcePoster(s->id);
+            }
+
+            if (found.found && found.codec == ProxyCodec::H264) {
+                // Already migrated. A legacy file still beside it is leftover
+                // from a session that ended before it could be deleted.
+                retireSupersededProxy(ProxyTranscoder::getSourcePreviewProxyPath(
+                    s->filePath, proxiesDir, h, /*highBitDepth=*/false, ProxyCodec::Intra));
+            } else if (found.found && wantCodec == ProxyCodec::H264) {
+                if (!ProxyTranscoder::fileExistsUtf8(s->filePath)) {
+                    std::cerr << "[ProxyMigration] source=" << s->id
+                              << " media missing (" << s->filePath
+                              << ") — keeping the existing intra proxy, not migrating\n";
+                } else {
+                    ProxyManager::SourcePreviewRequest req;
+                    req.sourceId    = s->id;
+                    req.inputPath   = s->filePath;
+                    req.codec       = ProxyCodec::H264;
+                    req.outputPath  = ProxyTranscoder::getSourcePreviewProxyPath(
+                        s->filePath, proxiesDir, h, /*highBitDepth=*/false, ProxyCodec::H264);
+                    req.proxyHeight = h;
+                    req.migration   = true;
+                    std::cout << "[ProxyMigration] source=" << s->id
+                              << " intra proxy " << found.path
+                              << " -> H.264 re-encode queued (" << req.outputPath << ")\n";
+                    g_proxyManager->enqueueSourcePreview(req);
+                }
+            }
 
             // If the JSON flag says "ready" but the file is gone, reset it so
             // the video tick's self-heal doesn't keep returning early thinking
@@ -6922,17 +7849,30 @@ JsonApi::Value Project_Load(const JsonApi::CallbackInfo& info)
             }
 
             if (!onDisk) {
+                // A proxy that was purged (or never built) is rebuilt from its
+                // source. If the source is offline there is nothing to rebuild
+                // FROM — say so once instead of queueing a job that cannot
+                // succeed and would flash a doomed progress badge on every open.
+                if (!ProxyTranscoder::fileExistsUtf8(s->filePath)) {
+                    std::cerr << "[Rebuild] source=" << s->id << " media missing ("
+                              << s->filePath << ") — preview proxy cannot be rebuilt "
+                                 "until the source is relinked\n";
+                    continue;
+                }
                 // Enqueue directly (bypasses the per-session guard in
                 // maybeEnqueueSourcePreviewProxy so a stale-cleared source
                 // always gets a rebuild on load, not just the first session).
                 ProxyManager::SourcePreviewRequest req;
                 req.sourceId    = s->id;
                 req.inputPath   = s->filePath;
+                req.codec       = wantCodec;
                 req.outputPath  = ProxyTranscoder::getSourcePreviewProxyPath(
-                    s->filePath, proxiesDir, h);
+                    s->filePath, proxiesDir, h, /*highBitDepth=*/false, wantCodec);
                 req.proxyHeight = h;
+                req.rebuild     = true;   // drives the "Rebuilding previews" badge
                 std::cout << "[SourceProxy] proactive enqueue for source=" << s->id
-                          << " (" << h << "p) on project load\n";
+                          << " (" << h << "p, " << ProxyTranscoder::codecTag(wantCodec)
+                          << ") on project load\n";
                 g_proxyManager->enqueueSourcePreview(req);
             }
         }
@@ -19249,9 +20189,13 @@ JsonApi::Value Audio_ExportStart(const JsonApi::CallbackInfo& info)
     g_exportCancel.store(false);
     g_exportRunning.store(true);
 
-    // Join any prior thread handle before replacing it
+    // Join the prior thread handle before replacing it. The g_exportRunning
+    // guard above means that export has already finished (its body clears
+    // the flag as its last statement), so this returns at once; it used to
+    // detach, which also worked, but Shutdown now joins the same handle and
+    // one policy is easier to keep correct than two.
     if (g_exportThread && g_exportThread->joinable()) {
-        g_exportThread->detach();
+        g_exportThread->join();
     }
 
     // Suspend audio device callback so the render thread has exclusive
@@ -21278,7 +22222,8 @@ JsonApi::Value Audio_EQ_SetBandParam(const JsonApi::CallbackInfo& info)
     return JsonApi::Boolean::New(env, eq->setBandParam(bandIndex, pName, value));
 }
 
-// audio_eqGetResponseCurve(trackId, nodeId) → Float32Array (512 floats, dB)
+// audio_eqGetResponseCurve(trackId, nodeId) → Float32Array (5 x 512 floats, dB)
+// One trace per routing group, ChannelMode order: Stereo, Left, Right, Mid, Side.
 JsonApi::Value Audio_EQ_GetResponseCurve(const JsonApi::CallbackInfo& info)
 {
     JsonApi::Env env = info.Env();
@@ -21294,15 +22239,18 @@ JsonApi::Value Audio_EQ_GetResponseCurve(const JsonApi::CallbackInfo& info)
     const int trackId = info[0].As<JsonApi::Number>().Int32Value();
     const int nodeId  = info[1].As<JsonApi::Number>().Int32Value();
 
+    constexpr size_t kTotal = static_cast<size_t>(XlethParametricEQ::kNumChannelModes)
+                            * XlethParametricEQ::kResponseSize;
+
     auto* eq = getEQ(env, trackId, nodeId);
     if (!eq) {
-        auto ab = JsonApi::ArrayBuffer::New(env, sizeof(float) * XlethParametricEQ::kResponseSize);
+        auto ab = JsonApi::ArrayBuffer::New(env, sizeof(float) * kTotal);
         std::memset(ab.Data(), 0, ab.ByteLength());
-        return JsonApi::Float32Array::New(env, XlethParametricEQ::kResponseSize, ab, 0);
+        return JsonApi::Float32Array::New(env, kTotal, ab, 0);
     }
-    auto ab = JsonApi::ArrayBuffer::New(env, sizeof(float) * XlethParametricEQ::kResponseSize);
-    eq->getResponseCurve(static_cast<float*>(ab.Data()), XlethParametricEQ::kResponseSize);
-    return JsonApi::Float32Array::New(env, XlethParametricEQ::kResponseSize, ab, 0);
+    auto ab = JsonApi::ArrayBuffer::New(env, sizeof(float) * kTotal);
+    eq->getChannelResponseCurves(static_cast<float*>(ab.Data()), XlethParametricEQ::kResponseSize);
+    return JsonApi::Float32Array::New(env, kTotal, ab, 0);
 }
 
 // audio_eqGetSpectrumData(trackId, nodeId) → { post: Float32Array, pre: Float32Array | null }
@@ -22311,6 +23259,24 @@ JsonApi::Value Diag_GetVisualPreviewDiagnostic(const JsonApi::CallbackInfo& info
     c.Set("lastVideoTickUs", JsonApi::Number::New(env, g_previewDiag.lastVideoTickUs.load()));
     c.Set("avgVideoTickUs",  JsonApi::Number::New(env, g_previewDiag.avgVideoTickUs.load()));
     c.Set("maxVideoTickUs",  JsonApi::Number::New(env, g_previewDiag.maxVideoTickUs.load()));
+    c.Set("lastSelfHealUs",  JsonApi::Number::New(env, g_previewDiag.lastSelfHealUs.load()));
+    c.Set("avgSelfHealUs",   JsonApi::Number::New(env, g_previewDiag.avgSelfHealUs.load()));
+    c.Set("maxSelfHealUs",   JsonApi::Number::New(env, g_previewDiag.maxSelfHealUs.load()));
+    c.Set("cadencePublished", JsonApi::Number::New(env,
+          static_cast<double>(g_previewDiag.cadencePublished.load())));
+    c.Set("cadenceRepeated",  JsonApi::Number::New(env,
+          static_cast<double>(g_previewDiag.cadenceRepeated.load())));
+    c.Set("cadenceSkipped",   JsonApi::Number::New(env,
+          static_cast<double>(g_previewDiag.cadenceSkipped.load())));
+    c.Set("lastFrameAgeUs",  JsonApi::Number::New(env, g_previewDiag.lastFrameAgeUs.load()));
+    c.Set("avgFrameAgeUs",   JsonApi::Number::New(env, g_previewDiag.avgFrameAgeUs.load()));
+    c.Set("maxFrameAgeUs",   JsonApi::Number::New(env, g_previewDiag.maxFrameAgeUs.load()));
+    c.Set("deferredDecodes", JsonApi::Number::New(env,
+          static_cast<double>(g_previewDiag.deferredDecodes.load())));
+    c.Set("heldCellFrames",  JsonApi::Number::New(env,
+          static_cast<double>(g_previewDiag.heldCellFrames.load())));
+    c.Set("idleDecodes",     JsonApi::Number::New(env,
+          static_cast<double>(g_previewDiag.idleDecodes.load())));
     o.Set("counters", c);
 
     // ── Last-tick snapshot ───────────────────────────────────────────────────

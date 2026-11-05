@@ -124,12 +124,13 @@ struct SourceMedia {
     bool        posterReady = false;
 
     // ── Whole-source preview proxy (preview-only) ────────────────────────────
-    // ONE small all-intra proxy of the ENTIRE source, downscaled to
+    // ONE small proxy of the ENTIRE source (H.264 or legacy all-intra — see
+    // ProxyCodec in ProxyTranscoder.h; the path is codec-tagged), downscaled to
     // previewProxyHeight (aspect-preserved). When ready, ALL preview decode —
     // grid cells AND fullscreen/backdrop layers — reads frames from this proxy
     // instead of the 4K original (FrameCollector substitutes the path; frame
     // indices map 1:1 because every source frame is kept at the source fps).
-    // Random access into the small intra proxy is cheap, so LIVE preview stays
+    // Random access into the small proxy is cheap, so LIVE preview stays
     // smooth even when scrubbing into previously-unvisited regions. Generated
     // once in the background on the ProxyManager pool; persisted + reused across
     // sessions (re-validated against disk on load, like posterPath). NEVER
@@ -416,7 +417,8 @@ struct SampleRegion {
 
     // ── On-demand proxy state (per-region, quote-scoped) ─────────────────────
     // Generated when this region is placed on a non-Chorus/non-Crash grid cell.
-    // The proxy is a half-resolution DNxHR LB transcode covering only the
+    // The proxy is a half-resolution transcode (H.264 <id>.h264.mov, or legacy
+    // DNxHR LB <id>.mxf — see ProxyCodec) covering only the
     // [proxyStartTime, proxyEndTime] range in the source file (seconds).
     // When a VideoDecoder reads this proxy, time 0 in the proxy corresponds to
     // proxyStartTime in the source, so callers subtract proxyStartTime from

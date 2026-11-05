@@ -1742,12 +1742,55 @@ void AudioGraph::publishRealtimeView()
 void AudioGraph::resetProcessors(const RealtimeView& view) noexcept
 {
     for (const auto& rn : view.effects)
-        if (rn.processor != nullptr)
-            rn.processor->reset();
+    {
+        if (rn.processor == nullptr) continue;
+        if (rn.effect != nullptr)
+            rn.effect->takeDeferredReset();      // a full reset covers it
+        rn.processor->reset();
+    }
 
     for (const auto& rn : view.helpers)
         if (rn.processor != nullptr)
             rn.processor->reset();
+}
+
+bool AudioGraph::resetProcessorsOnAudioThread(const RealtimeView& view) noexcept
+{
+    bool complete = true;
+    for (const auto& rn : view.effects)
+    {
+        if (rn.processor == nullptr) continue;
+        if (rn.effect == nullptr)
+            complete = false;                    // VST3: reset() is not realtime safe
+        else if (! rn.effect->resetOnAudioThread())
+        {
+            rn.effect->markDeferredReset();
+            complete = false;
+        }
+    }
+
+    for (const auto& rn : view.helpers)
+        if (rn.processor != nullptr)
+            rn.processor->reset();
+
+    return complete;
+}
+
+void AudioGraph::resetDeferredProcessors(const RealtimeView& view) noexcept
+{
+    for (const auto& rn : view.effects)
+    {
+        if (rn.processor == nullptr) continue;
+        if (rn.effect == nullptr || rn.effect->takeDeferredReset())
+            rn.processor->reset();
+    }
+}
+
+void AudioGraph::primeDeferredResets(const RealtimeView& view)
+{
+    for (const auto& rn : view.effects)
+        if (rn.effect != nullptr)
+            rn.effect->primeDeferredReset();
 }
 
 void AudioGraph::deliverModulationGate(const RealtimeView& view,

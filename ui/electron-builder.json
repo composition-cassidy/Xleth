@@ -1,7 +1,7 @@
 {
   "appId": "com.xleth.app",
   "productName": "XLETH",
-  "files": ["dist/**/*", "src/plugin-ui/layouts/*.json", "main.js", "electron-main/**/*", "preload.js", "rpc-manifest.js", "runtimePaths.js", "workspaceBackdropCapability.js", "update-checker.js", "splash.html", "splash-preload.js", "welcome.html", "welcome-preload.js", "xleth.svg", "assets/icon.ico", "assets/fonts/*.otf"],
+  "files": ["dist/**/*", "src/plugin-ui/layouts/*.json", "src/fx-presets/factory/**/*.json", "main.js", "electron-main/**/*", "preload.js", "rpc-manifest.js", "runtimePaths.js", "workspaceBackdropCapability.js", "update-checker.js", "splash.html", "splash-preload.js", "welcome.html", "welcome-preload.js", "xleth.svg", "assets/icon.ico", "assets/fonts/*.otf"],
   "directories": {
     "output": "../dist"
   },
@@ -61,13 +61,23 @@
         "xleth_separation/**/*.py",
         "xleth_separation/models.json",
         "xleth_separation/vendor/VENDOR-NOTICE.md",
+        "xleth_separation/graphs/*.onnx",
+        "xleth_separation/graphs/*.onnx.json",
         "requirements.txt",
         "README.md",
         "NOTICE-separation-models.md",
         "!.venv/**/*",
+        "!runtime/**/*",
+        "!.runtime-cache/**/*",
         "!tests/**/*",
+        "!tools/**/*",
         "!**/__pycache__/**/*"
       ]
+    },
+    {
+      "from": "../tools/separation_sidecar/runtime",
+      "to": "separation_sidecar/runtime",
+      "filter": ["**/*"]
     },
     {
       "from": "addon-worker.js",

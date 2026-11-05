@@ -16,7 +16,7 @@ from __future__ import annotations
 import re
 import time
 from pathlib import Path
-from typing import Any, List, Optional, Protocol
+from typing import Any, Callable, List, Optional, Protocol
 
 from .audio_io import duration_seconds, load_audio, save_audio
 from .debleed import can_de_bleed, de_bleed
@@ -49,56 +49,60 @@ def build_separator(
     spec: ModelSpec,
     paths: dict,
     prefer_device: Optional[str] = None,
+    on_install_progress: Optional[Callable[[int, int], None]] = None,
 ) -> Any:
     """Construct the separator for `spec`'s architecture.
 
     `paths` is the store's role → path map: every architecture takes its
     weights from role 'weights', and one that needs a config takes it from
     role 'config' rather than reconstructing the filename.
+
+    `on_install_progress(done, total)` is reported by the Roformer tiers while
+    they write their weight file — the one-time step that fills the shipped
+    weightless graph from the checkpoint. It is ~0.3 s on an SSD and several
+    hundred MB of writing on anything slower, and it happens inside the
+    "loading" phase, so without this the bar would sit still through it.
     """
     if spec.arch == "mdx_net":
         return MdxSeparator(spec, paths["weights"], prefer_device=prefer_device)
 
     if spec.arch == "mel_band_roformer":
-        # Imported here, not at module scope. It pulls in the vendored model
-        # (and through it librosa and einops), which a session running only
-        # the FAST tier should not pay for — and, more importantly, an
-        # incomplete install of those must not stop mdx_net from working.
+        # Imported here, not at module scope, so that an import error in one
+        # tier's module cannot stop mdx_net from working. It no longer pulls in
+        # a heavy dependency tree — the vendored PyTorch model it used to build
+        # is now an exported graph — but the isolation is still worth keeping.
         from .roformer import MelBandRoformerSeparator
 
         return MelBandRoformerSeparator(
-            spec, paths["weights"], paths["config"], prefer_device=prefer_device)
+            spec, paths["weights"], paths["config"], prefer_device=prefer_device,
+            on_install_progress=on_install_progress)
 
     if spec.arch == "bs_roformer":
-        # Same lazy-import reasoning as mel_band_roformer above. bs_roformer.py
-        # itself avoids the librosa dependency (fixed frequency bands, not a
-        # mel filterbank), but still pulls in torch, einops and beartype.
         from .bs_roformer import BSRoformerSeparator
 
         return BSRoformerSeparator(
-            spec, paths["weights"], paths["config"], prefer_device=prefer_device)
+            spec, paths["weights"], paths["config"], prefer_device=prefer_device,
+            on_install_progress=on_install_progress)
 
     raise ValueError(f"model '{spec.id}': no separator for arch '{spec.arch}'")
 
 
 def device_for_arch(arch: str) -> str:
-    """Best device for `arch`, asked of the runtime that arch actually uses.
+    """Best device for `arch`.
 
-    Not one global answer. MDX-Net runs in onnxruntime and Mel-Band RoFormer
-    runs in torch, and a machine can easily have a CUDA onnxruntime next to a
-    CPU-only torch wheel — the ordinary result of following this project's own
-    requirements.txt, which pins CPU torch because the FAST tier only needs it
-    for an STFT. Reporting one device for both tiers would tell a BALANCED user
-    `cuda` and then run nine minutes of CPU inference.
+    All three tiers infer in onnxruntime now, so this is one question with one
+    answer and the `arch` argument is advisory. It used to be genuinely
+    per-arch: MDX-Net ran in onnxruntime and the Roformer tiers in torch, so a
+    machine with a CUDA onnxruntime beside a CPU-only torch wheel — the
+    ordinary result of following this project's own requirements.txt — ran
+    FAST on the GPU and BALANCED on the CPU, and one global answer would have
+    been wrong about the second by a factor of six.
+
+    The signature is kept because callers store the result PER MODEL and the
+    next architecture added may reintroduce the split.
     """
-    if arch in ("mel_band_roformer", "bs_roformer"):
-        # Both Roformer tiers infer in torch and share the same answer —
-        # bs_roformer.py re-exports roformer.py's available_device rather
-        # than asking torch a second, identical question.
-        from .roformer import available_device as roformer_device
-        return roformer_device()
-    from .mdx import available_device as mdx_device
-    return mdx_device()
+    from .ort_util import available_device
+    return available_device()
 
 
 def _maybe_de_bleed(job: Job, stems: dict, sample_rate: int, apply_debleed: bool) -> dict:
@@ -192,7 +196,10 @@ def run_separation(
 
     # ── 2. Load the model ────────────────────────────────────────────────
     job.set_phase("loading", 0.0, f"loading {spec.name}")
-    separator = build_separator(spec, paths, prefer_device=prefer_device)
+    separator = build_separator(
+        spec, paths, prefer_device=prefer_device,
+        on_install_progress=lambda done, total: job.set_phase_progress(
+            done / max(1, total), f"preparing {spec.name}"))
     job.device = separator.device
     job.warnings.extend(getattr(separator, "warnings", None)
                         or getattr(separator, "shape_warnings", []))

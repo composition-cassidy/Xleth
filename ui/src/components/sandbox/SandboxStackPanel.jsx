@@ -1,4 +1,4 @@
-import { GripVertical, Trash2, TriangleAlert } from 'lucide-react'
+import { Crosshair, GripVertical, Trash2, TriangleAlert } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import useSandboxStore, {
   RIPPLE_MODE, FADE_SHAPE, PITCH_MODE, findEnvelopeOp, clampGainEnvelopeFollower, GAIN_ENVELOPE_MODE,
@@ -9,6 +9,8 @@ import useSandboxStore, {
 } from '../../stores/sandboxStore.js'
 import { allowedPitchClasses } from './autotuneCorrectionPreview.js'
 import { FADE_SHAPES } from './sandboxToolConstants.js'
+import { formatRange, formatSamplesShort } from './sandboxFormat.js'
+import { opSampleRange, resolveOpRange } from './sandboxOpRange.js'
 
 const RIPPLE_MODE_NAME = Object.fromEntries(Object.entries(RIPPLE_MODE).map(([k, v]) => [v, k]))
 const FADE_SHAPE_NAME = Object.fromEntries(Object.entries(FADE_SHAPE).map(([k, v]) => [v, k]))
@@ -58,23 +60,34 @@ function AutotuneKeyboard({ rootPc, activePcs, onToggle }) {
 
 // A short human-readable summary of an op's params — shown on every module
 // row (selected or not), so the collapsed rail is still scannable.
-function describeParams(op) {
+//
+// ── Seconds, not sample indices ─────────────────────────────────────────────
+// These rows used to print raw indices ("12000–48000", "@ 132300, 8820 smp").
+// Nobody reads a stack of those: the numbers are six digits wide, they do not
+// compare against anything else on screen (the status bar and the ruler are
+// both in seconds), and two ops a millisecond apart look identical at a
+// glance. `rate` is the layer's own rendered sample rate; with no buffer yet
+// there is nothing to convert against, and the helpers fall back to printing
+// the raw index rather than inventing a rate.
+function describeParams(op, rate) {
   const p = op.params || {}
+  const at = (smp) => (rate ? formatSamplesShort(smp, rate) : `${smp} smp`)
+  const range = (a, b) => formatRange(a, b, rate)
   switch (op.type) {
     case 'trim':
-      return `${p.startSample}–${p.endSample}`
+      return range(p.startSample, p.endSample)
     case 'cut':
-      return `${p.startSample}–${p.endSample} (${RIPPLE_MODE_NAME[p.mode] ?? p.mode})`
+      return `${range(p.startSample, p.endSample)} (${RIPPLE_MODE_NAME[p.mode] ?? p.mode})`
     case 'paste':
       return p.clipboardId >= 0
-        ? `@ ${p.atSample}, ${p.clipboardLengthSamples} smp, ${p.insert ? 'insert' : 'overwrite'}`
-        : `@ ${p.atSample}, silence × ${p.clipboardLengthSamples} smp, ${p.insert ? 'insert' : 'overwrite'}`
+        ? `@ ${at(p.atSample)}, ${at(p.clipboardLengthSamples)} of audio, ${p.insert ? 'insert' : 'overwrite'}`
+        : `@ ${at(p.atSample)}, ${at(p.clipboardLengthSamples)} of silence, ${p.insert ? 'insert' : 'overwrite'}`
     case 'splice':
-      return `@ ${p.atSample} (${RIPPLE_MODE_NAME[p.mode] ?? p.mode}${p.mode === RIPPLE_MODE.gap ? `, gap ${p.gapSamples}` : ''})`
+      return `@ ${at(p.atSample)} (${RIPPLE_MODE_NAME[p.mode] ?? p.mode}${p.mode === RIPPLE_MODE.gap ? `, gap ${at(p.gapSamples)}` : ''})`
     case 'reverse':
-      return `${p.startSample}–${p.endSample}`
+      return range(p.startSample, p.endSample)
     case 'fade':
-      return `${p.fadeIn ? 'in' : 'out'}, ${p.lengthSamples} smp (${FADE_SHAPE_NAME[p.shape] ?? p.shape})`
+      return `${p.fadeIn ? 'in' : 'out'}, ${at(p.lengthSamples)} (${FADE_SHAPE_NAME[p.shape] ?? p.shape})`
     case 'gain':
       return p.normalize ? `normalize → ${p.targetPeakDb} dBFS` : `${p.gainDb} dB`
     case 'gainEnvelope': {
@@ -87,7 +100,7 @@ function describeParams(op) {
       return `${pts.length} pt, ${Math.min(...dbs).toFixed(1)}…${Math.max(...dbs).toFixed(1)} dB (${modeLabel})`
     }
     case 'crossfade':
-      return `@ ${p.atSample}, ${p.lengthSamples} smp (${FADE_SHAPE_NAME[p.shape] ?? p.shape})`
+      return `@ ${at(p.atSample)}, ${at(p.lengthSamples)} (${FADE_SHAPE_NAME[p.shape] ?? p.shape})`
     case 'pitch': {
       const cents = `${p.cents >= 0 ? '+' : ''}${p.cents}¢`
       // Varispeed's length change is the thing a user most needs told, and the
@@ -103,10 +116,10 @@ function describeParams(op) {
     case 'formantShift':
       return `${p.cents >= 0 ? '+' : ''}${p.cents}¢`
     case 'declip':
-      return `${p.startSample}–${p.endSample}, thresh ${p.threshold}, max run ${p.maxRunSamples} smp`
+      return `${range(p.startSample, p.endSample)}, thresh ${p.threshold}, max run ${at(p.maxRunSamples)}`
     case 'denoise':
       return p.noiseEndSample > p.noiseStartSample
-        ? `profile ${p.noiseStartSample}–${p.noiseEndSample}, -${p.reductionDb} dB, ×${p.sensitivity}`
+        ? `profile ${range(p.noiseStartSample, p.noiseEndSample)}, -${p.reductionDb} dB, ×${p.sensitivity}`
         : 'no profile learned yet'
     case 'spectralPaint': {
       const dabs = p.dabs || []
@@ -533,7 +546,7 @@ const HAS_INLINE_PARAMS = new Set([
 function OpModule({
   op, index, layerId, selected, onSelect, onToggleBypass, onRemove, setOpParams, hasSelection,
   onLearnNoiseProfile, setGainEnvelopeFollower, onClearSpectralPaint, refusedOps, refusalReason,
-  dragging, dropEdge, onDragStart, onDragOver, onDrop, onDragEnd,
+  dragging, dropEdge, onDragStart, onDragOver, onDrop, onDragEnd, sampleRate, numSamples, onReveal,
 }) {
   const dropClass = dropEdge === 'above' ? ' drop-above' : dropEdge === 'below' ? ' drop-below' : ''
   // The refusal is a per-LAYER fact (only one op type can produce it today),
@@ -556,8 +569,21 @@ function OpModule({
         <span className="sandbox-op-index">{String(index + 1).padStart(2, '0')}</span>
         <div className="sandbox-op-label">
           <span className="sandbox-op-type">{op.type}</span>
-          <span className="sandbox-op-params">{describeParams(op)}</span>
+          <span className="sandbox-op-params">{describeParams(op, sampleRate)}</span>
         </div>
+        {/* Phase 3: point the waveform at what this entry actually does. Only
+            offered for ops that HAVE a locatable range — see sandboxOpRange.js
+            on why a whole-buffer op shows nothing rather than framing
+            everything. */}
+        {!!resolveOpRange(opSampleRange(op), numSamples) && (
+          <button
+            className="sandbox-op-reveal"
+            onClick={(e) => { e.stopPropagation(); onReveal(op) }}
+            title="Zoom the waveform to the range this operation covers"
+          >
+            <Crosshair size={11} />
+          </button>
+        )}
         {refused && (
           <span className="sandbox-op-refusal-badge" title={refusalReason || 'Autotune declined this input.'}>
             <TriangleAlert size={11} />
@@ -610,6 +636,7 @@ export default function SandboxStackPanel() {
   const setGainEnvelopeFollower = useSandboxStore((s) => s.setGainEnvelopeFollower)
   const clearSpectralPaint = useSandboxStore((s) => s.clearSpectralPaint)
   const reorderOp = useSandboxStore((s) => s.reorderOp)
+  const revealRange = useSandboxStore((s) => s.revealRange)
   const history = useSandboxStore((s) => s.history)
   const undo = useSandboxStore((s) => s.undo)
   const redo = useSandboxStore((s) => s.redo)
@@ -634,6 +661,14 @@ export default function SandboxStackPanel() {
   useEffect(() => { setSelectedOpId(null) }, [activeLayerId, setSelectedOpId])
 
   const handleToggleBypass = (layerId, opId, enabled) => setOpBypassed(layerId, opId, enabled)
+
+  // Frame the op's own range on the waveform. Selecting the row already
+  // highlights that range (SandboxWaveformCanvas draws it off selectedOpId);
+  // this is the second half — go there when it is off screen.
+  const handleReveal = (op) => {
+    const range = resolveOpRange(opSampleRange(op), layer?.renderedBuffer?.numSamples ?? 0)
+    if (range) revealRange(range.startSample, range.endSample)
+  }
   const handleSelectOp = (opId) => setSelectedOpId(selectedOpId === opId ? null : opId)
 
   const handleDragStart = (index) => (e) => {
@@ -719,6 +754,9 @@ export default function SandboxStackPanel() {
             onDragOver={handleDragOver(index)}
             onDrop={handleDrop(index)}
             onDragEnd={handleDragEnd}
+            sampleRate={layer.renderedBuffer?.sampleRate}
+            numSamples={layer.renderedBuffer?.numSamples ?? 0}
+            onReveal={handleReveal}
           />
         ))}
       </div>

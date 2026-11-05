@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import { X } from 'lucide-react'
-import useEqStore, { BAND_TYPES, CHANNEL_META } from '../../stores/eqStore.js'
+import useEqStore, { BAND_TYPES, CHANNEL_META, CHANNEL_MODES } from '../../stores/eqStore.js'
 import {
   SVG_W, SVG_H, PAD_L, PAD_T, PLOT_W, PLOT_H,
   FREQ_MIN, FREQ_MAX, RESPONSE_SIZE,
@@ -19,7 +19,7 @@ import EqBandPanel from './EqBandPanel.jsx'
 
 // ── Response curve path ──────────────────────────────────────────────────────
 
-function responseToPath(data, dbZoom) {
+function traceToPath(data, dbZoom) {
   if (!data || data.length === 0) return ''
   const parts = []
   for (let i = 0; i < RESPONSE_SIZE; i++) {
@@ -31,6 +31,29 @@ function responseToPath(data, dbZoom) {
     parts.push(i === 0 ? `M ${x.toFixed(1)} ${y.toFixed(1)}` : `L ${x.toFixed(1)} ${y.toFixed(1)}`)
   }
   return parts.join(' ')
+}
+
+// A routed trace (Left/Right/Mid/Side) with no bands on it is a flat 0 dB line
+// lying under the grid's zero line — drawing it would only add noise. The
+// Stereo trace is always drawn: it is the standard curve and the reference.
+const FLAT_TRACE_DB = 0.01
+const isFlatTrace = (data) => {
+  for (let i = 0; i < data.length; i++) if (Math.abs(data[i]) > FLAT_TRACE_DB) return false
+  return true
+}
+
+// Which channels get a line: Stereo always, a routed channel only once a band
+// actually shapes it.
+function visibleTraceChannels(curves) {
+  if (!curves) return []
+  return CHANNEL_MODES.filter(ch => curves[ch] && (ch === 'stereo' || !isFlatTrace(curves[ch])))
+}
+
+// { channel: svgPath } for every visible trace.
+function responseToPaths(curves, dbZoom) {
+  const paths = {}
+  for (const ch of visibleTraceChannels(curves)) paths[ch] = traceToPath(curves[ch], dbZoom)
+  return paths
 }
 
 // ── Main EQ Panel ────────────────────────────────────────────────────────────
@@ -74,14 +97,14 @@ export default function EqPanel() {
   const panelDragRef = useRef(null)
 
   // SVG path state (30fps polling)
-  const [responsePath, setResponsePath] = useState('')
+  const [responsePaths, setResponsePaths] = useState({})
   const [spectrumPaths, setSpectrumPaths] = useState({ fill: '', maxHold: '' })
   const [preSpectrumPaths, setPreSpectrumPaths] = useState({ fill: '', maxHold: '' })
   const [bandGR, setBandGR] = useState(null)
   const rafRef = useRef(null)
   const lastPollRef = useRef(0)
   const svgRef = useRef(null)
-  const responseCurveRef = useRef(null)
+  const responseCurveRef = useRef(null)   // { stereo, left, right, mid, side }
   const spectrumDataRef = useRef(null)   // latest spec data for hover readout
 
   // Hover readout (cursor position on the curve)
@@ -103,7 +126,7 @@ export default function EqPanel() {
 
   useEffect(() => {
     if (responseCurveRef.current) {
-      setResponsePath(responseToPath(responseCurveRef.current, dbZoom))
+      setResponsePaths(responseToPaths(responseCurveRef.current, dbZoom))
     }
   }, [dbZoom])
 
@@ -148,13 +171,19 @@ export default function EqPanel() {
       const now = performance.now()
 
       const cursor = cursorRef.current
-      if (cursor.inPlot && !dragRef.current && responseCurveRef.current) {
+      if (cursor.inPlot && !dragRef.current && responseCurveRef.current?.stereo) {
         const freq = clamp(xToFreq(cursor.svgX), FREQ_MIN, FREQ_MAX)
         const freqStr = freq >= 1000
           ? `${(freq / 1000).toFixed(2).replace(/\.?0+$/, '')} kHz`
           : `${Math.round(freq)} Hz`
-        const eqDelta = evalResponseAt(responseCurveRef.current, freq)
-        const deltaStr = (eqDelta >= 0 ? '+' : '') + eqDelta.toFixed(1) + ' dB'
+        // One delta when only the Stereo curve is drawn; once routed curves
+        // appear, one per curve, tagged with its channel.
+        const curves = responseCurveRef.current
+        const shown = visibleTraceChannels(curves)
+        const fmtDelta = (d) => (d >= 0 ? '+' : '') + d.toFixed(1)
+        const deltaStr = shown.length === 1
+          ? `${fmtDelta(evalResponseAt(curves.stereo, freq))} dB`
+          : shown.map(ch => `${CHANNEL_META[ch].short} ${fmtDelta(evalResponseAt(curves[ch], freq))}`).join(' · ') + ' dB'
         const specRaw = preSpectrumRef.current
           ? spectrumDataRef.current?.pre
           : spectrumDataRef.current?.post
@@ -188,7 +217,7 @@ export default function EqPanel() {
         if (!active) return
         if (resp) {
           responseCurveRef.current = resp
-          setResponsePath(responseToPath(resp, useEqStore.getState().dbZoom))
+          setResponsePaths(responseToPaths(resp, useEqStore.getState().dbZoom))
         }
         if (spec) {
           spectrumDataRef.current = spec
@@ -307,7 +336,8 @@ export default function EqPanel() {
     // Empty space — deselect and check response curve
     setSelectedBand(-1)
 
-    const curve = responseCurveRef.current
+    // Click-to-add snaps to the standard (Stereo) curve: a new band is Stereo.
+    const curve = responseCurveRef.current?.stereo
     if (!curve) return
     if (mx < PAD_L || mx > PAD_L + PLOT_W) return
 
@@ -408,7 +438,7 @@ export default function EqPanel() {
           selectedBandIndex={selectedBandIndex}
           dbZoom={dbZoom}
           rangeDb={analyzerSettings.rangeDb}
-          responsePath={responsePath}
+          responsePaths={responsePaths}
           spectrumPaths={spectrumPaths}
           preSpectrumPaths={preSpectrumPaths}
           hoverReadout={hoverReadout}

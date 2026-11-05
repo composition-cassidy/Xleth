@@ -1,23 +1,19 @@
-import { MousePointer2, Scissors, Spline, Grid2x2, BoxSelect, Square, Lasso } from 'lucide-react'
+import { MousePointer2, Spline, Grid2x2, BoxSelect, Square, Lasso } from 'lucide-react'
 import useSandboxStore, {
   SPECTRAL_PAINT_AMOUNT_DB_MIN, SPECTRAL_PAINT_AMOUNT_DB_MAX,
 } from '../../stores/sandboxStore.js'
+import DragNumberField from '../grid/zprTimeline/DragNumberField.jsx'
+import { activeToolOf } from './sandboxToolConstants.js'
 
 // Vertical tool column at the left edge of the workspace, below the menu bar.
-// The tool SET swaps per view (mockup): WAVEFORM = Select/Chop/Envelope,
-// SPECTRAL = Select/Paint/Region. Envelope draws over either view in the real
-// app (drawEnvelope/handleEnvDown never gate on viewMode) but only appears in
-// the WAV set per the mockup, so picking it while in SPC view switches back
-// to WAV — the same direction Paint/Region already force a switch TO spc.
+// The tool SET swaps per view: WAVEFORM = Select/Envelope, SPECTRAL =
+// Select/Paint/Region. Envelope draws over either view in the real app
+// (drawEnvelope/handleEnvDown never gate on viewMode) but only appears in the
+// WAV set, so picking it while in SPC view switches back to WAV — the same
+// direction Paint/Region already force a switch TO spc.
 // "Region" is this app's real third SPC tool (rect/freehand t×f select →
 // Attenuate/Boost/Mute/Copy to New Layer); there is no separate "Erase"
 // gesture, so Region fills that slot rather than a fabricated eraser.
-const HINTS = {
-  select: 'drag = select · space = preview',
-  envelope: 'click line = add point · drag = move · right-click = delete',
-  paint: 'drag on the spectrogram = paint attenuation · release = commit',
-  region: 'drag on the spectrogram = select a region · then Attenuate/Boost/Mute/Copy',
-}
 
 export default function SandboxToolColumn() {
   const activeLayerId = useSandboxStore((s) => s.activeLayerId)
@@ -37,7 +33,9 @@ export default function SandboxToolColumn() {
 
   const layer = layers.find((l) => l.id === activeLayerId) ?? null
   const hasLayer = !!layer && layer.renderState === 'ready'
-  const activeTool = paintEditMode ? 'paint' : envelopeEditMode ? 'envelope' : spcSelectMode ? 'region' : 'select'
+  // The hint for this tool is rendered by the status bar, which has the width
+  // for a sentence — see TOOL_HINTS in sandboxToolConstants.js.
+  const activeTool = activeToolOf({ paintEditMode, envelopeEditMode, spcSelectMode })
 
   const selectTool = () => { setEnvelopeEditMode(false); setPaintEditMode(false); setSpcSelectMode(false) }
   const armEnvelope = () => { setEnvelopeEditMode(true); if (viewMode !== 'wav') setViewMode('wav') }
@@ -57,10 +55,11 @@ export default function SandboxToolColumn() {
 
       {viewMode === 'wav' ? (
         <>
-          <button className="sandbox-toolcol-tool ghost" disabled title="Chop / splice tool — coming soon">
-            <Scissors size={18} />
-            <span>Chop</span>
-          </button>
+          {/* The CHOP ghost that used to sit here was a permanently disabled
+              button for a tool that does not exist. A control that can never
+              be pressed teaches nothing except that the panel is unfinished —
+              Splice/Crossfade already live in EFFECT ▾, which is where the
+              capability actually is. */}
           <button
             className={`sandbox-toolcol-tool${activeTool === 'envelope' ? ' active' : ''}`}
             disabled={!hasLayer}
@@ -117,53 +116,59 @@ export default function SandboxToolColumn() {
 
       {activeTool === 'paint' && (
         <div className="sandbox-toolcol-params">
-          <label title="Brush half-width in time">
-            Size
-            <input
-              type="number" step="0.01" min="0.001" className="sandbox-toolbar-number"
-              value={paintBrush.halfWidthSec}
-              onChange={(e) => setPaintBrush({ halfWidthSec: Math.max(0.001, Number(e.target.value)) })}
-            />
-            s
-          </label>
-          <label title="Brush half-height in frequency">
-            ×
-            <input
-              type="number" step="10" min="1" className="sandbox-toolbar-number"
-              value={paintBrush.halfHeightHz}
-              onChange={(e) => setPaintBrush({ halfHeightHz: Math.max(1, Number(e.target.value)) })}
-            />
-            Hz
-          </label>
-          <label title="Attenuation at the brush's core">
-            Amount
-            <input
-              type="number" step="1" min={SPECTRAL_PAINT_AMOUNT_DB_MIN} max={SPECTRAL_PAINT_AMOUNT_DB_MAX}
-              className="sandbox-toolbar-number"
-              value={paintBrush.amountDb}
-              onChange={(e) => setPaintBrush({ amountDb: Number(e.target.value) })}
-            />
-            dB
-          </label>
-          <label title="Feather past the brush's core, time × frequency">
-            Feather
-            <input
-              type="number" step="1" min="0" className="sandbox-toolbar-number"
-              value={paintBrush.featherTimeMs}
-              onChange={(e) => setPaintBrush({ featherTimeMs: Math.max(0, Number(e.target.value)) })}
-            />
-            ms ×
-            <input
-              type="number" step="10" min="0" className="sandbox-toolbar-number"
-              value={paintBrush.featherFreqHz}
-              onChange={(e) => setPaintBrush({ featherFreqHz: Math.max(0, Number(e.target.value)) })}
-            />
-            Hz
-          </label>
+          {/* Drag-scrub rather than typed number boxes — a brush size is a
+              feel, not a figure, and typing 0.05 into a spinner to widen a
+              stroke is the interaction that made this panel read as a test
+              harness. Click still types, for when the exact number matters.
+              paintBrush is local session state (no bridge call), so live and
+              committed updates are the same write. */}
+          <DragNumberField
+            className="sandbox-drag-field" label="Size" suffix="s" precision={3} step={0.002}
+            min={0.001} max={2} value={paintBrush.halfWidthSec}
+            onLiveChange={(v) => setPaintBrush({ halfWidthSec: v })}
+            onCommit={(v) => setPaintBrush({ halfWidthSec: v })}
+          />
+          <DragNumberField
+            className="sandbox-drag-field" label="Freq" suffix="Hz" precision={0} step={5}
+            min={1} max={10000} value={paintBrush.halfHeightHz}
+            onLiveChange={(v) => setPaintBrush({ halfHeightHz: v })}
+            onCommit={(v) => setPaintBrush({ halfHeightHz: v })}
+          />
+          <DragNumberField
+            className="sandbox-drag-field" label="Amt" suffix="dB" precision={0} step={0.5}
+            min={SPECTRAL_PAINT_AMOUNT_DB_MIN} max={SPECTRAL_PAINT_AMOUNT_DB_MAX}
+            value={paintBrush.amountDb}
+            onLiveChange={(v) => setPaintBrush({ amountDb: v })}
+            onCommit={(v) => setPaintBrush({ amountDb: v })}
+          />
+          <DragNumberField
+            className="sandbox-drag-field" label="Fth t" suffix="ms" precision={0} step={0.5}
+            min={0} max={500} value={paintBrush.featherTimeMs}
+            onLiveChange={(v) => setPaintBrush({ featherTimeMs: v })}
+            onCommit={(v) => setPaintBrush({ featherTimeMs: v })}
+          />
+          <DragNumberField
+            className="sandbox-drag-field" label="Fth f" suffix="Hz" precision={0} step={5}
+            min={0} max={5000} value={paintBrush.featherFreqHz}
+            onLiveChange={(v) => setPaintBrush({ featherFreqHz: v })}
+            onCommit={(v) => setPaintBrush({ featherFreqHz: v })}
+          />
         </div>
       )}
 
-      <div className="sandbox-toolcol-hint">{HINTS[activeTool]}</div>
+      {/* Always-true navigation keys, at the foot of the column. Not per-tool:
+          these work in every mode, which is exactly why they belong somewhere
+          permanent rather than inside one tool's hint. */}
+      <div className="sandbox-toolcol-keys">
+        <div className="sandbox-toolcol-keys-title">KEYS</div>
+        <div><kbd>Space</kbd> mix</div>
+        <div><kbd>⇧Spc</kbd> layer</div>
+        <div><kbd>L</kbd> loop</div>
+        <div><kbd>^whl</kbd> zoom</div>
+        <div><kbd>⇧whl</kbd> scroll</div>
+        <div><kbd>^E</kbd> to sel</div>
+        <div><kbd>^F</kbd> fit</div>
+      </div>
     </div>
   )
 }

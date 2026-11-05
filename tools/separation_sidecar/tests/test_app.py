@@ -37,7 +37,10 @@ def test_health_is_unauthenticated_and_survives_a_partial_install(client):
     res = client.get("/health")
     assert res.status_code == 200
     body = res.json()
-    assert "device" in body and "torch" in body and "onnxruntime" in body
+    assert "device" in body and "onnxruntime" in body
+    # torch used to be reported here. It is not a runtime dependency any more,
+    # and a `torch: null` on every healthy install would read as a fault.
+    assert "torch" not in body
     assert body["authRequired"] is True
 
 
@@ -108,10 +111,14 @@ def test_models_reports_the_balanced_tier_and_its_conditions(client, auth):
 
 
 def test_models_reports_per_architecture_devices(client, auth):
-    """MDX-Net infers in onnxruntime and Mel-Band RoFormer in torch, and this
-    project's requirements pin CPU torch next to a CUDA-capable onnxruntime.
-    One global device field would be right about FAST and wrong about BALANCED
-    by a factor of six."""
+    """A device per model, even though all three tiers now share one runtime.
+
+    This mattered acutely when they did not: MDX-Net inferred in onnxruntime
+    and the Roformer tiers in torch, so the project's own requirements (CPU
+    torch beside a CUDA-capable onnxruntime) produced a machine where one
+    global device field was right about FAST and wrong about BALANCED by a
+    factor of six. The tiers agree now, but the per-model field is what the
+    strip renders and what a future divergence would flow through."""
     body = client.get("/models", headers=auth).json()
     assert set(body["archs"]) == {"mdx_net", "mel_band_roformer", "bs_roformer"}
     for model in body["models"]:
@@ -256,10 +263,10 @@ def no_runtime(monkeypatch):
     """Force the "incomplete install" condition regardless of what is actually
     installed. Setting a sys.modules entry to None makes `import x` raise
     ImportError, so this reproduces the missing-package state on a machine
-    where torch and onnxruntime ARE present — the gate tests below must not
-    silently become no-ops just because the dev box got its dependencies."""
+    where the dependencies ARE present — the gate tests below must not silently
+    become no-ops just because the dev box got its dependencies."""
     monkeypatch.setitem(sys.modules, "onnxruntime", None)
-    monkeypatch.setitem(sys.modules, "torch", None)
+    monkeypatch.setitem(sys.modules, "yaml", None)
 
 
 def test_separate_refuses_when_the_runtime_cannot_finish_the_job(
@@ -279,8 +286,11 @@ def test_separate_refuses_when_the_runtime_cannot_finish_the_job(
 def test_health_names_every_missing_package_not_just_the_first(client, no_runtime):
     body = client.get("/health").json()
     assert body["ok"] is False
-    assert set(body["missing"]) == {"onnxruntime", "torch"}
-    assert "onnxruntime" in body["error"] and "torch" in body["error"]
+    assert set(body["missing"]) == {"onnxruntime"}
+    assert "onnxruntime" in body["error"]
+    # The remedy has to make sense to someone who installed a packaged build
+    # and has never seen this repository.
+    assert "tools/separation_sidecar" not in body["error"]
 
 
 def test_health_is_ok_when_the_runtime_is_complete(client):
@@ -408,27 +418,68 @@ def test_an_unaudited_model_is_refused_even_when_acknowledged(tmp_path, auth):
 
 def test_a_missing_roformer_package_does_not_break_the_fast_tier(
         client, auth, tmp_path, monkeypatch):
-    """The tiers depend on different packages and have to fail independently.
-    Someone who installed the base requirements can run FAST; BALANCED
-    additionally needs the Mel-Band RoFormer stack. Gating FAST on einops would
-    break a working feature to report a missing one."""
+    """The tiers have to fail independently, even now that they nearly agree.
+
+    They used to depend on genuinely different stacks: FAST needed
+    onnxruntime, BALANCED needed torch, einops, librosa,
+    rotary-embedding-torch and beartype on top. The Roformer tiers now run
+    exported ONNX graphs, so the only thing they need that FAST does not is
+    PyYAML, to read the model's own config.
+
+    The property under test is unchanged and still worth holding: a tier whose
+    dependency is missing must not take a working tier down with it.
+    """
     pytest.importorskip("onnxruntime")
-    pytest.importorskip("torch")
-    for module in ("einops", "librosa", "rotary_embedding_torch"):
-        monkeypatch.setitem(sys.modules, module, None)
+    monkeypatch.setitem(sys.modules, "yaml", None)
 
     body = client.get("/health").json()
     assert body["ok"] is True, "the core runtime is complete"
     assert body["archs"]["mdx_net"]["ok"] is True
     assert body["archs"]["mel_band_roformer"]["ok"] is False
-    assert "einops" in body["archs"]["mel_band_roformer"]["missing"]
+    assert "yaml" in body["archs"]["mel_band_roformer"]["missing"]
 
     wav = tmp_path / "in.wav"
     wav.write_bytes(b"RIFF....WAVE")
     res = client.post("/separate", headers=auth, json={
         "inputPath": str(wav), "tier": "balanced", "acknowledgeLicense": True})
     assert res.status_code == 503
-    assert "einops" in res.json()["detail"]
+    assert "yaml" in res.json()["detail"]
+
+
+def test_torch_is_not_a_runtime_dependency():
+    """The whole point of the ONNX move, asserted rather than assumed.
+
+    An accidental `import torch` anywhere in the runtime path would reintroduce
+    a ~1 GB dependency that the bundled runtime does not ship, and the symptom
+    on a user's machine would be the separation tiers failing with an
+    ImportError for a package they were never told to install. Importing torch
+    in tests/test_dsp.py and in the export tool is fine — neither is in this
+    list.
+    """
+    import importlib
+    import pkgutil
+
+    import xleth_separation
+
+    offenders = []
+    for info in pkgutil.walk_packages(xleth_separation.__path__,
+                                      prefix="xleth_separation."):
+        name = info.name
+        # The export tool legitimately needs torch; it never runs on a user's
+        # machine and is not imported by anything that does.
+        if name.endswith(".onnx_export") or ".vendor" in name:
+            continue
+        module = importlib.import_module(name)
+        source = getattr(module, "__file__", None)
+        if not source:
+            continue
+        text = Path(source).read_text(encoding="utf-8")
+        for line in text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("import torch") or stripped.startswith("from torch"):
+                offenders.append(f"{name}: {stripped}")
+
+    assert not offenders, "torch is imported in the runtime path: " + "; ".join(offenders)
 
 
 def test_health_reports_a_device_per_architecture(client):

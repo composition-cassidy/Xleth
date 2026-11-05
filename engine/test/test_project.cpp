@@ -815,6 +815,40 @@ int main() {
     }
 
 
+    // Test 5.9: a FAILED load must leave the ProjectManager describing the project
+    // that is still open. It used to overwrite projectDir_ before checking that
+    // project.json existed (and created the folder tree for the bad path), so a
+    // failed open left saves / Clean up / purge-on-close aimed at the wrong folder.
+    std::cout << "\n[5.9] failed loadProject leaves the manager untouched\n";
+    {
+        ProjectManager pmFail;
+        auto real = pmFail.loadProject(tempDir);
+        CHECK(real.has_value(), "precondition: the real project loads");
+        const std::string dirBefore  = pmFail.getProjectDir();
+        const std::string nameBefore = pmFail.getProjectName();
+        const int         wBefore    = pmFail.getVideoWidth();
+
+        const fs::path bogus = fs::temp_directory_path() / "xleth_test_project_no_such_folder";
+        fs::remove_all(bogus);
+        auto failed = pmFail.loadProject(bogus.string());
+        CHECK(!failed.has_value(), "loading a folder with no project.json fails");
+        CHECK(pmFail.getProjectDir() == dirBefore,   "…and the manager still points at the open project");
+        CHECK(pmFail.getProjectName() == nameBefore, "…and keeps its name");
+        CHECK(pmFail.getVideoWidth() == wBefore,     "…and its canvas settings");
+        CHECK(!fs::exists(bogus),                    "…and no folder tree was created for the bad path");
+
+        const fs::path corrupt = fs::temp_directory_path() / "xleth_test_project_corrupt";
+        fs::remove_all(corrupt);
+        fs::create_directories(corrupt);
+        { std::ofstream(corrupt / "project.json") << "{ this is not json"; }
+        CHECK(!pmFail.loadProject(corrupt.string()).has_value(), "a corrupt project.json fails to load");
+        CHECK(pmFail.getProjectDir() == dirBefore, "…and the manager still points at the open project");
+        fs::remove_all(corrupt);
+
+        // A later successful load still works (the rollback is not sticky).
+        CHECK(pmFail.loadProject(tempDir).has_value(), "the real project still loads afterwards");
+    }
+
     // Test 6: clean up temp directory.
     std::cout << "\n[6] cleanup\n";
     {

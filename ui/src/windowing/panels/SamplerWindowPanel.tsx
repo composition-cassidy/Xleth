@@ -1,11 +1,17 @@
 import React from 'react';
 import { PanelFrame } from '../components/PanelFrame';
 import SamplerPanelContent from '../../components/sampler/SamplerPanelContent.jsx';
-import useSamplerPanelStore from '../../stores/samplerPanelStore.js';
 import { usePanelRegistry } from '../registry/PanelRegistry';
+import { usePanelProps } from '../registry/usePanelValue';
+
+interface SamplerPanelProps {
+  regionId?: unknown;
+}
 
 export default function SamplerWindowPanel() {
-  const regionId = useSamplerPanelStore((s) => s.regionId);
+  // Handed over by whoever opened the panel:
+  //   usePanelRegistry.getState().openPanel('sampler', { regionId })
+  const regionId = usePanelProps<SamplerPanelProps>('sampler')?.regionId ?? null;
 
   const handleClose = () => {
     usePanelRegistry.getState().closePanel('sampler');

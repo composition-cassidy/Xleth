@@ -179,6 +179,17 @@ public:
         return true;
     }
 
+    // Primes each live wrapper's spare shifter (only the ones a reset has
+    // consumed), so resetEffect() is a swap. See LiveShifterWrapper.h,
+    // TWO-PHASE RESET.
+    void primeDeferredReset() override;
+
+    // Realtime safe only as a spare swap: declines when the running live
+    // wrapper has no primed spare, since priming inline costs ~10 ms and
+    // allocates (the worker then resets it, late). See
+    // XlethEffectBase::resetOnAudioThread.
+    bool resetOnAudioThread() noexcept override;
+
     // Underlying modules, for the conformance tests only.
     const xleth::dsp::GranularShifter&    getGranularShifter() const noexcept { return granular_; }
     const xleth::dsp::LiveShifterWrapper& getSmartShifter()    const noexcept { return liveSmart_; }
@@ -205,6 +216,10 @@ private:
     // Read `mode` from its raw APVTS atomic and clamp into the enum.
     // Audio-thread safe (a relaxed load plus a clamp).
     Mode readModeRaw() const noexcept;
+
+    // resetEffect() for a mode read once by the caller, so the mode checked
+    // and the mode reset are the same one.
+    void resetForMode(Mode mode);
 
     // Push this block's smoothed parameter values into the active module and
     // advance the smoothers by `numSamples`. Audio thread; no allocation.

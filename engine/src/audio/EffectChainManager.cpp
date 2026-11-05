@@ -1066,11 +1066,67 @@ bool EffectChainManager::tryResetProcessorsOffThread()
 
     // The same processor set the audio thread used to reset in-block: the
     // realtime view's effects plus its helper (wire gain / PDC delay) nodes.
+    // A full reset covers anything a jump reset left pending.
+    deferredResetPending_.store(false, std::memory_order_relaxed);
+    fullResetPending_.store(false, std::memory_order_relaxed);
     if (const auto view = realtimeView())
         AudioGraph::resetProcessors(*view);
 
     resetInProgress_.store(false, std::memory_order_release);
     return true;
+}
+
+bool EffectChainManager::resetOnAudioThread() noexcept
+{
+    if (! beginRealtimeUse())
+    {
+        // The worker is inside this chain. Too late to reset it in this block;
+        // have the worker reset all of it once it is done.
+        fullResetPending_.store(true, std::memory_order_release);
+        return false;
+    }
+
+    bool complete = true;
+    if (const auto view = realtimeView())
+        complete = AudioGraph::resetProcessorsOnAudioThread(*view);
+    if (! complete)
+        deferredResetPending_.store(true, std::memory_order_release);
+
+    endRealtimeUse();
+    return complete;
+}
+
+bool EffectChainManager::tryResetDeferredOffThread()
+{
+    if (! deferredResetPending_.load(std::memory_order_acquire)
+        && ! fullResetPending_.load(std::memory_order_acquire))
+        return true;
+
+    resetInProgress_.store(true, std::memory_order_seq_cst);
+    if (realtimeInUse_.load(std::memory_order_seq_cst))
+    {
+        resetInProgress_.store(false, std::memory_order_release);
+        return false;
+    }
+
+    // Cleared before resetting, under the claim: the audio thread can only set
+    // them again from a later jump, which then gets its own pass.
+    const bool full = fullResetPending_.exchange(false, std::memory_order_acq_rel);
+    deferredResetPending_.store(false, std::memory_order_relaxed);
+    if (const auto view = realtimeView())
+    {
+        if (full) AudioGraph::resetProcessors(*view);
+        else      AudioGraph::resetDeferredProcessors(*view);
+    }
+
+    resetInProgress_.store(false, std::memory_order_release);
+    return true;
+}
+
+void EffectChainManager::primeDeferredReset()
+{
+    if (const auto view = realtimeView())
+        AudioGraph::primeDeferredResets(*view);
 }
 
 double EffectChainManager::getMaxTailLengthSeconds() const

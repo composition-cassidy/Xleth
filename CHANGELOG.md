@@ -36,6 +36,52 @@
 
 ### Changed
 
+- **Video preview and export decode use more than one core.** Software video
+  decode (every DNxHR/intra proxy, any file hardware decode declines, and every
+  export on a machine without D3D11VA) ran on FFmpeg's default of ONE thread.
+  `RenderVideoDecoder` now opens software codecs with frame + slice threading on
+  half the machine's threads (capped at 4, so audio, UI and the renderer keep
+  theirs); hardware-decoded files are unchanged. The end-of-file drain was made
+  threading-safe at the same time: it used to accept the first buffered frame
+  regardless of its timestamp, which with a pipeline of frames would have
+  delivered an earlier frame than asked for near the end of a file. The
+  hardware path also stops allocating a fresh CPU-side frame for every decoded
+  frame — the ~1.4 MB NV12 transfer target is kept per stream and reused.
+- **The preview tick does less work per frame on big projects.** Four
+  per-tick costs that scale with project size, not with what is on screen:
+  (1) every placement scanned the whole event list for its active event — ~17
+  full passes over 3133 events on a 4x4 grid plus backdrop; the collector now
+  makes one pass per frame and each placement looks its track up. (2) The
+  proxy/poster self-heal sweeps walked every event every tick; they now run
+  right after an event rebuild (when a new clip can first appear), when poster
+  mode flips, and otherwise twice a second — they are idempotent and
+  once-per-key, so nothing is lost. (3) The tick copied the active
+  `GridLayout` only to overwrite it with the frame's own, then had the
+  collector resolve that same layout again; one resolve now feeds both.
+  (4) Three unconditional stderr writes were still on the per-frame path — the
+  compositor's "texture is null" line (which the playback decode budget now
+  makes routine, not an error), the frame cache's every-100-gets STATS line and
+  its per-eviction CAPACITY line (one per decoded frame once the cache is
+  full); all follow `XLETH_RENDER_LOG`.
+- **Under the playback decode budget, new cells get their frame first.** When
+  several cells start on the same beat and the budget defers some decodes, the
+  order used to be plain (file, frame) order, so a cell that could hold its
+  previous frame might be decoded before a cell with nothing to show. Misses
+  for cells that have no held frame now go first, each group keeping file order
+  so forward decoding still chains.
+
+- **Zooming the Timeline all the way out now shows the whole song.** The
+  zoom-out limit used to be a fixed 8 px/beat, about 22 bars in a typical panel,
+  whatever the song's length. It is now the zoom at which the entire song (plus
+  a small tail) fills the panel, in both the Audio timeline and the Video tab's
+  mirror. Fully zoomed out, the view stays fitted when you resize the panel or
+  the song grows, and the scrollbar keeps its place instead of disappearing and
+  shifting the tracks. Zooming out from anywhere now glides back to the song's
+  start. Far out, the ruler numbers every 2nd, 4th, 8th… bar instead of
+  printing overlapping labels. Touchpad pinch and precision-wheel zoom now move
+  in proportion to the gesture, where every tiny event used to count as a full
+  mouse-wheel notch.
+
 - **The XLETH Filter panel now moves with its own modulators.** A slot's LFO,
   Envelope or Dynamics follower changed the sound but nothing on screen: the
   response curve sat at the parked knob positions, so a two-octave sweep looked
@@ -111,6 +157,32 @@
 
 ### Added
 
+- **Optionally delete regenerable files when a project closes.** A new setting,
+  **Delete regenerable files when closing a project** (Settings, Graphics,
+  Regenerable Files; off by default), removes a project's preview proxies,
+  thumbnails and waveform caches when you close it — by opening or starting
+  another project, or by quitting — and tells you how much space that freed. Your
+  source media and `project.json` are never touched. Whatever was removed is
+  rebuilt in the background the next time you open the project: it opens
+  immediately, stays fully usable, and a **Rebuilding previews** badge on the
+  video panel shows progress (a waveform cache returns the first time that
+  waveform is drawn). Proxies whose source media is offline are kept, because
+  they cannot be rebuilt and are the only copy left of those frames. A project
+  reopened from the folder it already has open, and an open that fails, delete
+  nothing.
+
+- **File, Clean up project.** Shows exactly what would be freed — proxies and
+  waveform caches nothing in the project can read any more (for example those of
+  a source you removed) plus the half-written leftovers of interrupted jobs —
+  and deletes them only after you confirm. Files the project is using are left
+  alone, and offline-media proxies are listed as kept, with the reason.
+
+- **Interrupted-job leftovers are swept every time a project opens.** Proxy,
+  poster and waveform-cache writers all write `<name>.tmp` and rename on
+  success, so a `.tmp` from a crash or a killed app is never referenced; those
+  are now deleted silently on open (previously only proxy leftovers were, and
+  only in the proxies folder).
+
 - **Note Fade: every note's video can fade itself in and out.** A new
   Pattern-track-only section (Grid Settings track card, and Track Video
   Properties) applies an automatic fade to the video of every note on the
@@ -129,3 +201,30 @@
   middle button, drag across the span, release: in/out land on the swept range
   and the label dropdown opens focused, so the only thing left is picking a
   label. A middle-click with no drag leaves the existing points untouched.
+
+### Fixed
+
+- **The engine no longer crashes at exit after an audio export.** The audio
+  export ran on a global thread that nothing ever joined, so once the export
+  had finished the handle was still joinable when the process shut down and its
+  destructor called `std::terminate` (0xC0000409). Every bridge test that ran
+  `audio_exportStart` — the FET and Vari-Mu compressor suites among them — died
+  this way after printing a clean verdict, which the test runner counted as a
+  failure. `shutdown` now cancels a still-running export and joins the thread
+  before the audio engine it renders through is torn down.
+- **Timeline zoom no longer stammers back and forth when zoomed far out.** The
+  view animator's spring used a numeric step that was only stable while frames
+  took under ~30 ms. Zoomed out is the heaviest redraw and so the slowest frame
+  rate, and there the zoom swung past its target and back on every frame (and
+  the scroll with it) until something else moved. The spring now uses its
+  exact closed-form step, which holds at any frame rate. The Piano Roll shares
+  the same animator and gets the same fix. Separately, the Video tab's timeline
+  clamped a zoom-out against the previous zoom's scroll limit, which let the
+  view run past the end of the song and snap back on the next wheel notch.
+
+- **A failed Open Project no longer leaves the app pointed at the wrong
+  folder.** Opening a folder without a `project.json` (or with a corrupt one)
+  used to fail *after* the project manager had already switched to that folder
+  and created its subfolders, so the project you were still working in would
+  save, clean up and resolve media against the wrong place. A failed open now
+  changes nothing and creates nothing.

@@ -45,6 +45,7 @@ import ResonanceSuppressorPanel from './ResonanceSuppressorPanel.jsx'
 import ApexPanel from './ApexPanel.jsx'
 import GlossPanel from './GlossPanel.jsx'
 import AmpPanel from './AmpPanel.jsx'
+import PitchShifterPanel from './PitchShifterPanel.jsx'
 import GlueCompPanel from './GlueCompPanel.jsx'
 import OptoCompPanel from './OptoCompPanel.jsx'
 import FetCompPanel from './FetCompPanel.jsx'
@@ -73,6 +74,7 @@ export default function EffectEditorHost() {
       <ApexPanel />
       <GlossPanel />
       <AmpPanel />
+      <PitchShifterPanel />
       <GlueCompPanel />
       <OptoCompPanel />
       <FetCompPanel />

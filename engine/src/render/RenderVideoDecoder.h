@@ -9,8 +9,9 @@
  *                     FFmpeg's D3D11VA hwframes pool.  We CopySubresourceRegion
  *                     into a standalone texture for the FrameCache.
  *
- *   Path B (Software): CPU decode → sws_scale to BGRA → staging texture upload
- *                      → CopyResource to default-usage texture → SRV.
+ *   Path B (Software): CPU decode → sws_scale to BGRA (downscaled to the
+ *                      setMaxOutputSize cap, if any) → default-usage texture
+ *                      created with the pixels as initial data → SRV.
  *
  * Per-source DecoderContext keeps the AVFormatContext/AVCodecContext open so
  * sequential reads don't re-open the file.  LRU eviction keeps at most an
@@ -24,11 +25,14 @@
  * is currently using — its path is pinned in inFlightPath_ for the duration
  * of the call.
  *
- * Sequential fast path: if the requested frame == lastDecodedFrame + 1, skip
- * the seek and just read forward (forward playback and chorus tracks benefit
- * hugely from this). This is detected automatically inside seekToFrame() from
- * lastDecodedFrame — it does NOT depend on the external sequentialHint flag,
- * which was never wired up by any caller.
+ * Sequential fast path: if no keyframe lies between lastDecodedFrame and the
+ * requested frame (lastDecodedFrame + 1 always qualifies), skip the seek and
+ * just read forward (forward playback and chorus tracks benefit hugely from
+ * this). This is detected automatically inside seekToFrame() — it does NOT
+ * depend on the external sequentialHint flag, which was never wired up by any
+ * caller. A file may hold several streams (contexts) so cells playing it at
+ * different offsets each keep their own forward position — see
+ * kMaxStreamsPerSource.
  *
  * DNxHR awareness: intra-frame codecs (every frame is a keyframe) never need
  * to decode a GOP — seeking lands exactly on the target frame.
@@ -63,7 +67,12 @@ struct DecoderContext {
     AVCodecContext*  codecCtx     = nullptr;
     AVFrame*         frame        = nullptr;
     AVPacket*        packet       = nullptr;
+    // hw path: the CPU-side NV12 frame av_hwframe_transfer_data lands in.
+    // Kept across decodes so the transfer reuses its buffers instead of
+    // allocating (and page-faulting in) a fresh ~1.4 MB frame every time.
+    AVFrame*         hwTransferFrame = nullptr;
     SwsContext*      swsCtx       = nullptr;   // sw path: src fmt → BGRA
+    std::vector<uint8_t> bgraScratch;           // sws destination, reused per frame
     int              videoStreamIdx = -1;
 
     int              width        = 0;
@@ -82,6 +91,7 @@ struct DecoderContext {
                                                 // now auto-detects via lastDecodedFrame
     bool             isIntraOnly      = false;  // DNxHR, MJPEG, ProRes, etc.
     bool             isHwAccel        = false;  // using D3D11VA path
+    int              framesDecodedThisCall = 0; // diagnostics: frames decoded by the last decode()
 
     std::string      sourcePath;
 
@@ -105,6 +115,26 @@ public:
     // Default idle threshold for pruneIdleContexts().
     static constexpr double kIdleContextSeconds = 30.0;
 
+    // ── Multiple decode streams per file ───────────────────────────────────
+    // Several grid cells often play the SAME file at different offsets — with
+    // the whole-source preview proxy that is every cell. One context per file
+    // made them take turns: each cell's next frame had to seek away from where
+    // the previous cell left the decoder, and on a long-GOP proxy every such
+    // seek re-decodes up to a GOP (measured, BFDIA 9: 16-48 frames per miss,
+    // 15-35 ms each, on seven interleaved offsets into one 720p H.264 proxy).
+    // A file may therefore hold up to kMaxStreamsPerSource contexts; a request
+    // goes to the stream that can reach it by decoding forward; otherwise an
+    // idle stream is seeked, and a new stream is opened only while every
+    // existing one has been used within kStreamBusyMs.
+    static constexpr int    kMaxStreamsPerSource   = 6;
+    // Extra streams are per-playing-cell and go stale quickly.
+    static constexpr double kExtraStreamIdleSeconds = 5.0;
+    // A stream used this recently is presumed to be following a playing cell.
+    static constexpr int    kStreamBusyMs          = 200;
+    // Containers with no keyframe index: decode forward instead of seeking
+    // when the target is at most this many frames ahead.
+    static constexpr int    kForwardDecodeFallbackFrames = 24;
+
     RenderVideoDecoder();
     ~RenderVideoDecoder();
 
@@ -123,6 +153,25 @@ public:
 
     /** True if D3D11VA hardware decode is available. */
     bool hasHwAccel() const { return hwDeviceCtx_ != nullptr; }
+
+    /** Cap decoded frames to fit within w x h (aspect preserved, never
+     *  upscaled); 0 x 0 = no cap, the default. The preview sets this to its
+     *  compositor surface. Export never sets it, so export decodes originals
+     *  at full size exactly as before. Takes effect on the next decode; frames
+     *  already cached keep the size they were decoded at. */
+    void setMaxOutputSize(int w, int h) { maxOutputW_ = w; maxOutputH_ = h; }
+
+    /** Worker threads for SOFTWARE decode (frame + slice threading). 0 — the
+     *  default — picks clamp(hardware_concurrency / 2, 1, kMaxDecodeThreads):
+     *  half the machine, so the audio callback, the UI and the renderer keep
+     *  their cores, capped because frame threading past four buys little at
+     *  preview sizes. Applies to contexts opened AFTER the call. FFmpeg's own
+     *  default is ONE thread, which left every sw decode (DNxHR proxies, any
+     *  file D3D11VA declines, every export on a machine without hw decode)
+     *  serial on one core. The hw (D3D11VA) path is unaffected. */
+    void setDecodeThreads(int threads) { decodeThreads_ = threads; }
+    static constexpr int kMaxDecodeThreads = 4;
+    static int defaultDecodeThreads();
 
     // ── Decode ─────────────────────────────────────────────────────────────
 
@@ -174,7 +223,7 @@ public:
      *  the grid is actively using). Clamped to
      *  [MAX_OPEN_CONTEXTS, kMaxOpenContextsCap]. Call once per frame, before
      *  the decode-miss loop; cheap, no I/O, does not itself evict anything
-     *  (the next getOrOpenContext() call applies the new ceiling). */
+     *  (the next stream open applies the new ceiling). */
     void setActiveContextBudget(int distinctPathCount);
 
     /** Close any open context untouched for >= idleSeconds, so a long
@@ -216,10 +265,24 @@ private:
         DecoderContext      ctx;
         LruList::iterator   lruIt;
         std::chrono::steady_clock::time_point lastTouched;
+        int                 streamIndex = 0;   // 0 = the file's primary stream
     };
+    // Keyed by streamKey(path, i). Stream 0's key IS the path, so a plain
+    // path lookup still finds a file's primary context.
     std::unordered_map<std::string, ContextEntry> contexts_;
 
-    // Adaptive ceiling applied by getOrOpenContext(); set via
+    static std::string streamKey(const std::string& sourcePath, int streamIndex);
+    // Picks (opening if need be) the stream that should decode frameIndex.
+    DecoderContext* acquireStream(const std::string& sourcePath, int64_t frameIndex);
+    // Opens a context under an explicit key (evicting to the budget first).
+    ContextEntry* openStreamAt(const std::string& key, const std::string& sourcePath,
+                               int streamIndex);
+    // True if decoding forward from ctx's position reaches frameIndex without
+    // passing a keyframe — i.e. forward is never more work than seeking.
+    bool canContinueForward(const DecoderContext& ctx, int64_t frameIndex) const;
+    bool closeKey(const std::string& key);
+
+    // Adaptive ceiling applied by openStreamAt(); set via
     // setActiveContextBudget(), starts at the historical fixed value.
     int contextBudget_ = MAX_OPEN_CONTEXTS;
 
@@ -228,7 +291,6 @@ private:
     // under itself on the video thread.
     std::string inFlightPath_;
 
-    DecoderContext* getOrOpenContext(const std::string& sourcePath);
     // Closes one LRU-eligible context (never inFlightPath_). Returns false
     // if nothing was safe to evict (e.g. every open context is pinned).
     bool evictLruContext();
@@ -265,4 +327,8 @@ private:
 
     // ── D3D11VA hw device context (shared across all decoder contexts) ──────
     AVBufferRef* hwDeviceCtx_ = nullptr;   // AVHWDeviceContext wrapping our device
+
+    int maxOutputW_ = 0;   // setMaxOutputSize(); 0 = decode size
+    int maxOutputH_ = 0;
+    int decodeThreads_ = 0;   // setDecodeThreads(); 0 = defaultDecodeThreads()
 };

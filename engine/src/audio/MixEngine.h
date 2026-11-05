@@ -976,12 +976,17 @@ public:
     // Main/applier thread only.
     int applyPendingLfoModulation();
 
-    // Services effect-chain reset requests posted by the audio thread (seek,
-    // transport stop, play after an audition). Realtime playback never calls
-    // AudioProcessor::reset() in the callback — it is not realtime-safe — so
-    // the applier thread resets the chains here, coalescing any number of
-    // requests into one pass, each chain claimed via
-    // EffectChainManager::tryResetProcessorsOffThread. Takes chainsMutex_.
+    // Services effect-chain reset requests posted by the audio thread. A
+    // transport stop resets whole chains here. A jump (seek, loop wrap, play
+    // after an audition) already reset every realtime-safe node in the jump
+    // block (see jumpChainResetPending_); this pass only finishes the rest
+    // (VST3 nodes, a Pitch Shifter that had no primed spare). Coalesces any
+    // number of requests into one pass, each chain claimed via
+    // EffectChainManager::tryResetProcessorsOffThread /
+    // tryResetDeferredOffThread. The expensive part of
+    // a reset is primed before and after the claims
+    // (EffectChainManager::primeDeferredReset), so a claim holds a chain
+    // silent for microseconds, not for the whole reset. Takes chainsMutex_.
     // Returns 1 when it ran a reset pass, 0 when nothing was pending. Public so
     // tests can service deterministically; the applier thread calls exactly this.
     int serviceEffectChainResets();
@@ -1268,6 +1273,12 @@ private:
         void resetToDelaySamples(int delaySamples);
         void setTargetDelaySamples(int delaySamples);
         void process(juce::AudioBuffer<float>& buffer, int numSamples);
+        // Longest delay any read tap may still be using (a retarget crossfade
+        // reads both the source and the target delay).
+        int getCurrentDelaySamples() const noexcept
+        {
+            return std::max({ currentDelaySamples_, sourceDelaySamples_, targetDelaySamples_ });
+        }
 
     private:
         static constexpr int kCrossfadeSamples = 64;
@@ -1900,10 +1911,11 @@ private:
     // held pattern notes so stale voices don't ring past the seek point.
     int64_t lastBufferEnd_ = -1;
 
-    // Transport stop/seek reset request for effect processors. Audio thread
-    // posts through requestEffectChainReset():
+    // Transport stop reset request for effect processors. Audio thread posts
+    // through requestEffectChainReset():
     //   - realtime: bumps effectResetRequestGen_; serviceEffectChainResets()
-    //     resets the chains off-thread, typically within 1-2 blocks.
+    //     resets the chains off-thread, typically within 1-2 blocks. Only for
+    //     a STOP: nothing plays until the next start, so late is harmless.
     //   - non-realtime (export): sets pendingEffectChainReset_ and the chains
     //     reset inline under chainsMutex_, exactly as before, so an export stays
     //     deterministic.
@@ -1911,6 +1923,21 @@ private:
     bool pendingEffectChainReset_ = false;              // audio thread only
     std::atomic<uint64_t> effectResetRequestGen_ { 0 }; // audio thread -> worker
     uint64_t effectResetServicedGen_ = 0;               // worker only (under chainsMutex_)
+
+    // Transport JUMP while playing (seek, loop wrap, play after an audition).
+    // The PDC compensation delay lines reset inline in the jump block, so the
+    // chains must too - a worker reset lands blocks later, and a latent effect
+    // then plays pre-jump audio and drops post-jump audio against every
+    // compensated track. requestJumpChainReset() sets
+    // jumpChainResetPending_; the same block resets every chain on the audio
+    // thread (EffectChainManager::resetOnAudioThread) and bumps
+    // jumpResetRequestGen_ so the worker re-primes the spares that consumed and
+    // finishes any node that could not reset realtime safely. Non-realtime:
+    // the inline full reset above, as for a stop.
+    void requestJumpChainReset() noexcept;
+    bool jumpChainResetPending_ = false;                // audio thread only
+    std::atomic<uint64_t> jumpResetRequestGen_ { 0 };   // audio thread -> worker
+    uint64_t jumpResetServicedGen_ = 0;                 // worker only (under chainsMutex_)
     // An audition ran a track/master chain while stopped. Those tails must not
     // bleed into playback, but must not be wiped mid-audition either, so the
     // reset is requested on the next play start. Audio thread only.

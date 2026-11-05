@@ -81,46 +81,85 @@ void FrameOutput::initializeExternal(uint8_t* ptr, size_t bytes, int width, int 
 
 // ─────────────────────────────────────────────────────────────────────────────
 
-bool FrameOutput::initSharedMemory(const char* name, int width, int height)
+bool FrameOutput::initSharedMemory(const char* name, int width, int height,
+                                   int capacityWidth, int capacityHeight)
 {
 #ifdef _WIN32
     if (!name || width <= 0 || height <= 0) return false;
 
+    const int capW = (capacityWidth  > 0) ? capacityWidth  : width;
+    const int capH = (capacityHeight > 0) ? capacityHeight : height;
+
     const size_t frameBytes = static_cast<size_t>(width) * static_cast<size_t>(height) * 4u;
-    const size_t totalSize  = frameBytes * 2u + 64u;  // 64-byte control region
+    const size_t liveBytes  = frameBytes * 2u + 64u;  // 64-byte control region
+    const size_t capacity   = static_cast<size_t>(capW) * static_cast<size_t>(capH) * 4u * 2u + 64u;
 
-    shutdown();
-
-    HANDLE hMap = CreateFileMappingA(
-        INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
-        0, static_cast<DWORD>(totalSize), name);
-    if (!hMap) {
-        std::cerr << "[FrameOutput] CreateFileMappingA failed: " << GetLastError() << "\n";
+    if (liveBytes > capacity) {
+        std::cerr << "[FrameOutput] initSharedMemory: " << width << "x" << height
+                  << " exceeds the " << capW << "x" << capH << " section capacity\n";
         return false;
     }
 
-    void* view = MapViewOfFile(hMap, FILE_MAP_ALL_ACCESS, 0, 0, totalSize);
+    // Resize in place when we already hold this section. A named section's
+    // size is immutable, so tearing ours down and re-creating it is not a
+    // resize at all — see the header note.
+    if (shmView_ && hMapFile_ && shmName_ == name && capacity <= dataSize_) {
+        width_    = width;
+        height_   = height;
+        std::memset(dataPtr_, 0, liveBytes);
+        indexPtr_ = new (dataPtr_ + frameBytes * 2) std::atomic<int32_t>(0);
+
+        std::cout << "[FrameOutput] Shared memory '" << name << "' reframed: "
+                  << width << "x" << height << " in a " << (dataSize_ / 1024)
+                  << " KB section\n" << std::flush;
+        return true;
+    }
+
+    shutdown();
+
+    SetLastError(0);
+    HANDLE hMap = CreateFileMappingA(
+        INVALID_HANDLE_VALUE, nullptr, PAGE_READWRITE,
+        0, static_cast<DWORD>(capacity), name);
+    const DWORD createErr = GetLastError();
+    if (!hMap) {
+        std::cerr << "[FrameOutput] CreateFileMappingA failed: " << createErr << "\n";
+        return false;
+    }
+
+    void* view = MapViewOfFile(hMap, FILE_MAP_ALL_ACCESS, 0, 0, capacity);
     if (!view) {
-        std::cerr << "[FrameOutput] MapViewOfFile failed: " << GetLastError() << "\n";
+        const DWORD mapErr = GetLastError();
+        std::cerr << "[FrameOutput] MapViewOfFile failed: " << mapErr << "\n";
+        // The one failure mode worth naming: CreateFileMapping handed back a
+        // pre-existing section (our requested size ignored) that is smaller
+        // than the view we just asked for.
+        if (createErr == ERROR_ALREADY_EXISTS && mapErr == ERROR_ACCESS_DENIED) {
+            std::cerr << "[FrameOutput] '" << name << "' already exists at a smaller size and a"
+                         " reader still holds it open; cannot grow it to "
+                      << (capacity / 1024) << " KB\n";
+        }
         CloseHandle(hMap);
         return false;
     }
 
     hMapFile_ = hMap;
     shmView_  = view;
+    shmName_  = name;
     width_    = width;
     height_   = height;
     dataPtr_  = static_cast<uint8_t*>(view);
-    dataSize_ = totalSize;
+    dataSize_ = capacity;
 
-    std::memset(dataPtr_, 0, totalSize);
+    std::memset(dataPtr_, 0, capacity);
     indexPtr_ = new (dataPtr_ + frameBytes * 2) std::atomic<int32_t>(0);
 
     std::cout << "[FrameOutput] Shared memory '" << name << "' created: "
-              << width << "x" << height << " (" << (totalSize / 1024) << " KB)\n" << std::flush;
+              << width << "x" << height << " in a " << capW << "x" << capH
+              << " section (" << (capacity / 1024) << " KB)\n" << std::flush;
     return true;
 #else
-    (void)name; (void)width; (void)height;
+    (void)name; (void)width; (void)height; (void)capacityWidth; (void)capacityHeight;
     std::cerr << "[FrameOutput] initSharedMemory only supported on Windows\n";
     return false;
 #endif
@@ -143,6 +182,7 @@ void FrameOutput::shutdown()
 #ifdef _WIN32
     if (shmView_)  { UnmapViewOfFile(shmView_);         shmView_  = nullptr; }
     if (hMapFile_) { CloseHandle(static_cast<HANDLE>(hMapFile_)); hMapFile_ = nullptr; }
+    shmName_.clear();
 #endif
 
     dataPtr_ = nullptr;

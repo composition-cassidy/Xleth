@@ -26,11 +26,9 @@
 // Needs an audio device. Run after rebuilding the native addon:
 //   node bridge/test_varimu_bridge.js
 //
-// KNOWN (pre-existing, not this effect): any process that ran audio_exportStart
-// dies with 0xC0000409 at exit — XlethEngineService's global g_exportThread is
-// left joinable after an export and its destructor calls std::terminate. The
-// "=== N/N passed" line is the verdict until that is fixed; the exit code is
-// masked by the crash.
+// The exit code is meaningful: shutdown() joins the audio-export thread, so a
+// process that ran audio_exportStart no longer dies with 0xC0000409 at exit
+// (it used to, with the verdict line already printed).
 //
 
 const fs = require('fs');

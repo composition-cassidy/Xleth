@@ -2274,4 +2274,34 @@ void Sampler::processBlock(juce::AudioBuffer<float>& outputBuffer,
         if (!v.active) continue;
         processVoice(v, outputBuffer, numSamples, engineSampleRate);
     }
+
+    // ── Publish the playhead ─────────────────────────────────────────────────
+    // Once per block, after every voice has advanced. Outside the per-sample
+    // loop on purpose: the panel polls this at ~30 Hz, so block granularity is
+    // already finer than anything it can draw, and the inner loop stays exactly
+    // as it was.
+    //
+    // When a chord is sounding, several voices share a slot. The FIRST active,
+    // unfinished stream wins rather than an average: a playhead is a position
+    // in the sample, and the mean of two read heads is a place neither of them
+    // is. Relaxed stores — see playPositionForSlot() for why that is enough.
+    {
+        std::array<int64_t, MAX_SAMPLE_SLOTS> pos;
+        pos.fill(-1);
+        for (const auto& v : voices_)
+        {
+            if (!v.active) continue;
+            for (int i = 0; i < v.numStreams; ++i)
+            {
+                const auto& st = v.streams[static_cast<size_t>(i)];
+                if (!st.active || st.finished) continue;
+                if (st.slotIndex < 0 || st.slotIndex >= MAX_SAMPLE_SLOTS) continue;
+                auto& slot = pos[static_cast<size_t>(st.slotIndex)];
+                if (slot < 0) slot = static_cast<int64_t>(st.playPosition);
+            }
+        }
+        for (int i = 0; i < MAX_SAMPLE_SLOTS; ++i)
+            slotPlayPos_[static_cast<size_t>(i)].v.store(pos[static_cast<size_t>(i)],
+                                                         std::memory_order_relaxed);
+    }
 }

@@ -1,9 +1,11 @@
 import { create } from 'zustand'
 
-// Carries the "props" for the Sample Sandbox floating panel. The windowing
-// system's openPanel() only takes a panel id, so the region a context-menu
-// entry point wants opened rides through this dedicated store — mirroring
-// splitSyllablesPanelStore / samplerPanelStore.
+// Carries the one-shot open request for the Sample Sandbox panel.
+//
+// openPanel(id, props) now exists, and the panels that only needed to pass an
+// argument were migrated onto it (see usePanelProps). This store stays because
+// its payload is not props: it is a request that is CONSUMED and cleared, with
+// a lifetime shorter than the panel's.
 //
 // `openTarget` is consumed once by SandboxPanelContent (added as a new layer,
 // same as a drag-and-drop drop), then cleared — it is a one-shot "please open
