@@ -19,6 +19,7 @@ import { getPickerPath, getPickerPaths, openFilePicker as openXlethFilePicker } 
 import usePianoRollStore from './stores/usePianoRollStore.js'
 import useWorldProcessingStore from './stores/worldProcessingStore.js'
 import AppShell from './windowing/AppShell.tsx'
+import HintBar from './components/HintBar.jsx'
 import XlethRootContext from './windowing/contexts/XlethRootContext.jsx'
 import { usePanelRegistry } from './windowing/registry/PanelRegistry'
 import { runEditorCommand } from './windowing/managers/EditorCommandRegistry'
@@ -660,6 +661,8 @@ function XlethRootInner() {
           </XlethRootContext.Provider>
         </div>
       </div>
+
+      <HintBar />
 
       <RenderDialog
         isOpen={renderDialogOpen}

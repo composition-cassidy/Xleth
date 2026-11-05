@@ -126,6 +126,10 @@ export function Titlebar({ id, focused, children }: TitlebarProps) {
       onKeyDown={onTitlebarKeyDown}
       role="toolbar"
       aria-label={`${entry.title} title bar`}
+      data-hint={mode === 'floating'
+        ? `${entry.title}: drag to move, drop on an edge to dock`
+        : `${entry.title} title bar`}
+      data-hint-mods={mode === 'floating' ? 'Arrows move 8 px, Shift+Arrows 48 px; double-click maximizes' : undefined}
       aria-orientation="horizontal"
       tabIndex={mode === 'floating' ? 0 : -1}
     >
@@ -158,6 +162,7 @@ export function Titlebar({ id, focused, children }: TitlebarProps) {
           aria-label={collapseLabel}
           aria-expanded={!collapsed}
           title={collapseLabel}
+          data-hint={collapseLabel}
           onPointerDown={stopControlPointerDown}
           onClick={toggleCollapse}
         >
@@ -171,6 +176,8 @@ export function Titlebar({ id, focused, children }: TitlebarProps) {
             className="xleth-windowing-control-button"
             aria-label={mode === 'maximized' ? `Restore ${entry.title}` : `Maximize ${entry.title}`}
             title={mode === 'maximized' ? `Restore ${entry.title}` : `Maximize ${entry.title}`}
+            data-hint={mode === 'maximized' ? `Restore ${entry.title}` : `Maximize ${entry.title}`}
+            data-hint-mods={mode === 'maximized' ? 'Esc restores' : undefined}
             onPointerDown={stopControlPointerDown}
             onClick={toggleMaximize}
           >
@@ -184,6 +191,8 @@ export function Titlebar({ id, focused, children }: TitlebarProps) {
           className="xleth-windowing-control-button"
           aria-label={`Close ${entry.title}`}
           title={`Close ${entry.title}`}
+          data-hint={`Close ${entry.title}`}
+          data-hint-mods="Ctrl+Shift+T reopens the last closed panel"
           onPointerDown={stopControlPointerDown}
           onClick={hidePanel}
         >

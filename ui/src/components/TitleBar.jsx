@@ -486,6 +486,7 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction, a
             className="titlebar-btn"
             onClick={() => window.xleth.window.minimize()}
             aria-label="Minimize"
+            data-hint="Minimize the window"
           >
             <Minus size={14} />
           </XlethIconButton>
@@ -494,6 +495,8 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction, a
             className="titlebar-btn"
             onClick={() => window.xleth.window.maximize()}
             aria-label="Maximize"
+            data-hint="Maximize or restore the window"
+            data-hint-mods="Double-click an empty part of the top bar"
           >
             <Square size={14} />
           </XlethIconButton>
@@ -502,6 +505,7 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction, a
             className="titlebar-btn titlebar-btn-close"
             onClick={() => window.xleth.window.close()}
             aria-label="Close"
+            data-hint="Close Xleth"
           >
             <X size={14} />
           </XlethIconButton>
