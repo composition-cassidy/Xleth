@@ -1,0 +1,18 @@
+@layer kit {
+  .empty {
+    box-sizing: border-box;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: var(--row-h);
+    padding: var(--space-1) var(--space-2);
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+  }
+
+  .message {
+    min-width: 0;
+  }
+}

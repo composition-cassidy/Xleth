@@ -1,0 +1,82 @@
+/* Button and IconButton (also the base look of Toggle). Neutral outline at rest;
+ * "on" is the inverted ink chip (DESIGN.md 3.2), never a hue. No hover lift. */
+@layer kit {
+  .btn {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-1);
+    height: var(--ctl-h-md);
+    min-width: var(--hit-min);
+    padding: 0 var(--space-2);
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    font-weight: var(--weight-medium);
+    line-height: 1;
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+    -webkit-app-region: no-drag;
+  }
+
+  .btn[data-size="sm"] { height: var(--ctl-h-sm); }
+  .btn[data-size="lg"] { height: var(--ctl-h-lg); }
+
+  .btn[data-variant="ghost"] {
+    border-color: transparent;
+    background: transparent;
+    color: var(--ui-ink-2);
+  }
+
+  .icon {
+    width: var(--ctl-h-md);
+    padding: 0;
+  }
+
+  .icon[data-size="sm"] { width: var(--ctl-h-sm); }
+  .icon[data-size="lg"] { width: var(--ctl-h-lg); }
+
+  .icon svg {
+    width: var(--type-16);
+    height: var(--type-16);
+  }
+
+  .glyph {
+    display: inline-flex;
+  }
+
+  .btn:is(:hover, [data-state="hover"]):not(:disabled) {
+    background: var(--ui-g2);
+    color: var(--ui-ink);
+  }
+
+  .btn[data-variant="ghost"]:is(:hover, [data-state="hover"]):not(:disabled) {
+    background: var(--ui-g3);
+  }
+
+  .btn:is(:active, [data-state="active"]):not(:disabled) {
+    background: var(--ui-g0);
+    color: var(--ui-ink);
+  }
+
+  .btn:is(:focus-visible, [data-state="focus"]) {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 1px;
+  }
+
+  .btn[aria-pressed="true"] {
+    border-color: var(--ui-on);
+    background: var(--ui-on);
+    color: var(--ui-on-fg);
+  }
+
+  .btn:disabled {
+    opacity: var(--ui-mute-opacity);
+    cursor: default;
+  }
+}
