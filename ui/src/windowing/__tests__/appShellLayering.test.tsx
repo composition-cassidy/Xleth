@@ -148,10 +148,14 @@ describe('Workspace bounds layout contract', () => {
 });
 
 describe('App shell grid layout contract', () => {
-  it('defines --xleth-top-chrome-height and --xleth-bottom-chrome-height tokens', () => {
+  it('defines the chrome row heights once, in the kit token sheet', () => {
+    const tokensCss = readUiSource('ui-kit/tokens.css');
     const appCss = readUiSource('styles/app.css');
-    expect(appCss).toMatch(/--xleth-top-chrome-height:\s*\d+px/);
-    expect(appCss).toMatch(/--xleth-bottom-chrome-height:\s*\d+px/);
+    expect(tokensCss).toMatch(/--shell-topbar-h:\s*36px/);
+    expect(tokensCss).toMatch(/--xleth-top-chrome-height:\s*var\(--shell-topbar-h\)/);
+    expect(tokensCss).toMatch(/--xleth-bottom-chrome-height:/);
+    // No legacy redefinition left to win or lose against the token layer.
+    expect(appCss).not.toMatch(/--xleth-(top|bottom)-chrome-height:/);
   });
 
   it('app shell uses CSS grid so chrome row heights are explicitly bounded', () => {

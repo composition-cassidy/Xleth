@@ -68,6 +68,14 @@
     --row-h-compact: 20px;   /* read-only or keyboard-primary lists only */
     --hit-min: 24px;         /* every hit area is at least this wide and tall */
 
+    /* ── Shell chrome rows (DESIGN.md 8) ─────────────────────────────────── */
+    --shell-topbar-h: 36px;  /* menus, transport, panel toggles, window controls */
+    --shell-hintbar-h: 22px; /* hovered control + its modifiers */
+    /* The app grid (legacy .app) reads these two names; they are defined here
+     * and nowhere else. The bottom row holds nothing until the hint bar lands. */
+    --xleth-top-chrome-height: var(--shell-topbar-h);
+    --xleth-bottom-chrome-height: 0px;
+
     /* ── Radius and elevation ────────────────────────────────────────────── */
     --ui-radius-0: 0;        /* chrome, panels */
     --ui-radius-1: 2px;      /* controls */

@@ -1,0 +1,143 @@
+/* Transport cluster in the top bar (ui/DESIGN.md section 8). Dense, neutral at
+ * rest: the play control is not the hero, and it takes the value colour only
+ * while playing. */
+@layer kit {
+  .cluster {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    height: 100%;
+    font-family: var(--ui-font);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .group {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .sep {
+    width: 1px;
+    height: var(--space-4);
+    margin: 0 var(--space-1);
+    background: var(--ui-g4);
+  }
+
+  /* Every interactive element opts out of the window drag region; the gaps
+   * between groups and the rest of the bar still drag the window. */
+  .btn,
+  .readout,
+  .bpm,
+  .bpmInput {
+    -webkit-app-region: no-drag;
+  }
+
+  .btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--ctl-h-md);
+    height: var(--ctl-h-md);
+    padding: 0;
+    border: 1px solid transparent;
+    border-radius: var(--ui-radius-1);
+    background: transparent;
+    color: var(--ui-ink-2);
+    cursor: pointer;
+  }
+
+  .btn svg {
+    width: var(--type-16);
+    height: var(--type-16);
+  }
+
+  .btn:hover:not(:disabled) {
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+  }
+
+  .btn:focus-visible,
+  .bpm:focus-visible,
+  .bpmInput:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 0;
+  }
+
+  .btn:disabled {
+    opacity: var(--ui-mute-opacity);
+    cursor: default;
+  }
+
+  /* Playing: the pause glyph replaces play (shape), and only now does the
+   * control take the value colour. */
+  .btn[data-playing="true"] {
+    color: var(--ui-value);
+  }
+
+  /* Toggles that are on: the inverted-ink chip (DESIGN.md 3.2), never a hue. */
+  .btn[aria-pressed="true"] {
+    background: var(--ui-on);
+    color: var(--ui-on-fg);
+  }
+
+  .btn[aria-pressed="true"]:hover {
+    background: var(--ui-on);
+    color: var(--ui-on-fg);
+  }
+
+  /* Recessed readout wells: timecode and BAR.BEAT in the timecode face. */
+  .readout {
+    display: inline-flex;
+    align-items: center;
+    height: var(--ctl-h-sm);
+    padding: 0 var(--space-2);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g0);
+    color: var(--ui-ink);
+    font-family: var(--ui-font-mono);
+    font-size: var(--type-13);
+    font-weight: var(--weight-medium);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+    cursor: default;
+  }
+
+  .bpm {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--space-1);
+    height: var(--ctl-h-sm);
+    min-width: var(--hit-min);
+    padding: 0 var(--space-2);
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g0);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-13);
+    font-weight: var(--weight-medium);
+    font-variant-numeric: tabular-nums;
+    line-height: var(--ctl-h-sm);
+    cursor: text;
+  }
+
+  .bpmUnit {
+    color: var(--ui-ink-3);
+    font-size: var(--type-11);
+    font-weight: var(--weight-regular);
+  }
+
+  .bpmInput {
+    width: 7ch;
+    height: var(--ctl-h-sm);
+    padding: 0 var(--space-2);
+    border: 1px solid var(--ui-select);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g0);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-13);
+    font-variant-numeric: tabular-nums;
+  }
+}

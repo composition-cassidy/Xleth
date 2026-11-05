@@ -1,7 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { timelineEvents } from './timelineEvents.js'
 import TitleBar from './components/TitleBar.jsx'
-import TransportBar from './components/TransportBar.jsx'
 import SamplePicker from './components/SamplePicker/SamplePicker.jsx'
 import RenderDialog from './components/RenderDialog.jsx'
 import ExportZipDialog from './components/ExportZipDialog.jsx'
@@ -661,8 +660,6 @@ function XlethRootInner() {
           </XlethRootContext.Provider>
         </div>
       </div>
-
-      <TransportBar />
 
       <RenderDialog
         isOpen={renderDialogOpen}

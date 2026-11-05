@@ -5,8 +5,9 @@ import { playheadClock } from '../services/PlayheadClock.js'
 import useMixerStore from '../stores/mixerStore.js'
 import useAutoScrollStore from '../stores/autoScrollStore.js'
 import { isSamplePickerOpen } from '../stores/samplePickerGate.js'
+import styles from './TransportBar.module.css'
 
-function formatTime(ms) {
+export function formatTime(ms) {
   const totalMs = Math.max(0, ms)
   const minutes = Math.floor(totalMs / 60000)
   const seconds = Math.floor((totalMs % 60000) / 1000)
@@ -14,32 +15,53 @@ function formatTime(ms) {
   return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}.${String(millis).padStart(3, '0')}`
 }
 
-// Isolated position display — subscribes to 10fps updates without re-rendering
-// the rest of the transport bar (play buttons, BPM editor, etc.).
+/** BAR.BEAT, both 1-based, from a position in beats (4/4, as before). */
+export function formatBarBeat(positionBeats) {
+  const beats = Math.max(0, Number.isFinite(positionBeats) ? positionBeats : 0)
+  const bar = Math.floor(beats / 4) + 1
+  const beat = Math.floor(beats % 4) + 1
+  return `${bar}.${beat}`
+}
+
+// Isolated position readouts: subscribe to 10fps updates without re-rendering
+// the rest of the transport (play buttons, BPM editor, etc.).
 const PositionDisplay = memo(function PositionDisplay() {
-  const [pos, setPos] = useState({ ms: 0, beats: 0, bars: 1 })
+  const [pos, setPos] = useState({ ms: 0, beats: 0 })
 
   useEffect(() => {
     return playheadClock.onDisplayUpdate((posMs, bpm, positionBeats) => {
       const beats = Number.isFinite(positionBeats) ? positionBeats : posMs * bpm / 60000
-      setPos({ ms: posMs, beats, bars: Math.floor(beats / 4) + 1 })
+      setPos({ ms: posMs, beats })
     })
   }, [])
 
+  const time = formatTime(pos.ms)
+  const barBeat = formatBarBeat(pos.beats)
   return (
-    <div className="transport-position">
-      <div className="transport-time">{formatTime(pos.ms)}</div>
-      <div className="transport-beat-info">
-        <span className="transport-label">BAR</span>
-        <span className="transport-value">{Math.floor(pos.bars)}</span>
-        <span className="transport-sep">/</span>
-        <span className="transport-label">BEAT</span>
-        <span className="transport-value">{(pos.beats % 4).toFixed(1)}</span>
-      </div>
-    </div>
+    <>
+      <output
+        className={styles.readout}
+        aria-label={`Time ${time}`}
+        data-hint="Song position: minutes, seconds, milliseconds"
+      >
+        {time}
+      </output>
+      <output
+        className={styles.readout}
+        aria-label={`Bar ${barBeat.split('.')[0]}, beat ${barBeat.split('.')[1]}`}
+        data-hint="Song position: bar and beat"
+      >
+        {barBeat}
+      </output>
+    </>
   )
 })
 
+/**
+ * Transport: rewind, stop, play/pause, forward, timecode, BAR.BEAT, BPM with
+ * tempo lock, auto-scroll. Rendered as the centred cluster of the top bar.
+ * Owns the global transport keys (Space, Home, M), unchanged.
+ */
 export default function TransportBar() {
   const [isPlaying, setIsPlaying] = useState(false)
   const [bpm, setBpm] = useState(140)
@@ -142,72 +164,71 @@ export default function TransportBar() {
     if (e.key === 'Escape') setEditingBpm(false)
   }, [commitBpm])
 
+  const playLabel = isPlaying ? 'Pause' : 'Play'
+  const tempoLockLabel = tempoLocked
+    ? 'Tempo lock on: clips keep their speed when the BPM changes'
+    : 'Tempo lock off: clips keep a fixed stretch ratio'
+  const autoScrollLabel = autoScrollEnabled
+    ? 'Auto scroll on: the timeline follows the playhead during playback'
+    : 'Auto scroll off: the timeline stays put during playback'
+
   return (
-    <div className="transport-bar">
-      {/* ── Transport controls ─────────────────────────────────────────── */}
-      <div className="transport-controls">
+    <div className={styles.cluster} role="group" aria-label="Transport" data-testid="transport-cluster">
+      <div className={styles.group}>
         <button
-          className="transport-btn"
+          type="button"
+          className={styles.btn}
           onClick={() => window.xleth?.stop()}
-          title="Rewind (Home)"
+          aria-label="Rewind"
+          data-hint="Rewind to the start"
+          data-hint-mods="Home"
         >
-          <SkipBack size={16} />
+          <SkipBack aria-hidden="true" />
         </button>
         <button
-          className="transport-btn"
+          type="button"
+          className={styles.btn}
           onClick={() => window.xleth?.stop()}
-          title="Stop"
+          aria-label="Stop"
+          data-hint="Stop"
         >
-          <Square size={14} />
-        </button>
-        {isPlaying ? (
-          <button
-            className="transport-btn transport-btn-active"
-            onClick={() => window.xleth?.pause()}
-            title="Pause (Space)"
-          >
-            <Pause size={16} />
-          </button>
-        ) : (
-          <button
-            className="transport-btn transport-btn-play"
-            onClick={() => window.xleth?.play()}
-            title="Play (Space)"
-          >
-            <Play size={16} />
-          </button>
-        )}
-        <button
-          className="transport-btn"
-          onClick={() => {}}
-          title="Forward"
-        >
-          <SkipForward size={16} />
+          <Square aria-hidden="true" />
         </button>
         <button
-          className={`transport-btn transport-auto-scroll ${autoScrollEnabled ? 'transport-btn-active' : ''}`}
-          onClick={toggleAutoScroll}
-          title={autoScrollEnabled
-            ? 'Auto Scroll: ON — timeline follows the playhead during playback'
-            : 'Auto Scroll: OFF — timeline stays put during playback'}
+          type="button"
+          className={styles.btn}
+          data-playing={isPlaying ? 'true' : 'false'}
+          onClick={() => (isPlaying ? window.xleth?.pause() : window.xleth?.play())}
+          aria-label={playLabel}
+          data-hint={playLabel}
+          data-hint-mods={spacebarMode === 'play-stop' ? 'Space: play / stop and return' : 'Space: play / pause'}
         >
-          <Crosshair size={14} />
+          {isPlaying ? <Pause aria-hidden="true" /> : <Play aria-hidden="true" />}
+        </button>
+        {/* Forward has never been wired to the engine. It stays visible so the
+            transport reads as a set, but it is disabled rather than a button
+            that silently does nothing. */}
+        <button
+          type="button"
+          className={styles.btn}
+          disabled
+          aria-label="Forward (not available yet)"
+          data-hint="Forward: not available yet"
+        >
+          <SkipForward aria-hidden="true" />
         </button>
       </div>
 
-      {/* ── Position display (isolated memo — only this subtree re-renders at 10fps) ── */}
+      <span className={styles.sep} aria-hidden="true" />
       <PositionDisplay />
+      <span className={styles.sep} aria-hidden="true" />
 
-      {/* ── Spacer ──────────────────────────────────────────────────────── */}
-      <div className="transport-spacer" />
-
-      {/* ── BPM ─────────────────────────────────────────────────────────── */}
-      <div className="transport-bpm">
+      <div className={styles.group}>
         {editingBpm ? (
           <input
             ref={bpmRef}
             type="number"
-            className="transport-bpm-input"
+            className={styles.bpmInput}
             value={bpmInput}
             onChange={(e) => setBpmInput(e.target.value)}
             onBlur={commitBpm}
@@ -215,26 +236,50 @@ export default function TransportBar() {
             min={20}
             max={999}
             step={1}
+            aria-label="Tempo in BPM"
             autoFocus
           />
         ) : (
-          <button className="transport-bpm-display" onClick={startEditBpm} title="Click to edit BPM">
+          <button
+            type="button"
+            className={styles.bpm}
+            onClick={startEditBpm}
+            aria-label={`Tempo ${Math.round(bpm)} BPM, click to edit`}
+            data-hint="Tempo: click to type a new BPM"
+            data-hint-mods="Enter commits, Esc cancels"
+          >
             {Math.round(bpm)}
+            <span className={styles.bpmUnit} aria-hidden="true">BPM</span>
           </button>
         )}
-        <span className="transport-bpm-label">BPM</span>
         <button
-          className={`transport-btn transport-tempo-lock ${tempoLocked ? 'transport-btn-active' : ''}`}
+          type="button"
+          className={styles.btn}
+          aria-pressed={tempoLocked}
           onClick={() => {
             const next = !tempoLocked
             setTempoLocked(next)
             window.xleth?.timeline?.setTempoLocked?.(next)
           }}
-          title={tempoLocked ? 'Tempo lock ON — clips maintain speed on BPM change' : 'Tempo lock OFF — clips keep fixed stretch ratio'}
+          aria-label="Tempo lock"
+          data-hint={tempoLockLabel}
         >
-          {tempoLocked ? <Lock size={12} /> : <LockOpen size={12} />}
+          {tempoLocked ? <Lock aria-hidden="true" /> : <LockOpen aria-hidden="true" />}
         </button>
       </div>
+
+      <span className={styles.sep} aria-hidden="true" />
+
+      <button
+        type="button"
+        className={styles.btn}
+        aria-pressed={autoScrollEnabled}
+        onClick={toggleAutoScroll}
+        aria-label="Auto scroll"
+        data-hint={autoScrollLabel}
+      >
+        <Crosshair aria-hidden="true" />
+      </button>
     </div>
   )
 }

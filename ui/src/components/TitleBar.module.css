@@ -1,0 +1,35 @@
+/* Top bar (ui/DESIGN.md section 8):
+ *   Menus | transport cluster (centred) | panel toggles + window controls
+ * The bar itself is the window drag region; every control opts out. */
+@layer kit {
+  .bar {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    align-items: center;
+    column-gap: var(--space-3);
+    height: var(--shell-topbar-h);
+    min-height: var(--shell-topbar-h);
+    padding: 0 0 0 var(--space-2);
+    background: var(--ui-g2);
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .left {
+    justify-self: start;
+    min-width: 0;
+    overflow: hidden;
+  }
+
+  .center {
+    justify-self: center;
+    height: 100%;
+  }
+
+  .right {
+    justify-self: end;
+    display: flex;
+    align-items: center;
+    height: 100%;
+    min-width: 0;
+  }
+}

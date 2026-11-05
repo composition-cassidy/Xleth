@@ -23,6 +23,8 @@ import { useQuickLaunchersStore } from '../stores/quickLaunchersStore.js'
 import { XlethButton, XlethIconButton } from './common/XlethButton.jsx'
 import { useDockMagnification } from '../hooks/useDockMagnification.js'
 import { CLEANUP_PROJECT_LABEL } from './projectCleanup.js'
+import TransportBar from './TransportBar.jsx'
+import styles from './TitleBar.module.css'
 
 const DROPDOWN_OPEN_DELAY_MS = 40
 const DROPDOWN_CLOSE_MS = 80
@@ -420,8 +422,8 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction, a
   }, [handleAction, handleLayout])
 
   return (
-    <div className="titlebar" ref={barRef}>
-      <div className="titlebar-left">
+    <div className={`titlebar ${styles.bar}`} ref={barRef}>
+      <div className={`titlebar-left ${styles.left}`}>
         <nav className="titlebar-menus" aria-label="Application menu">
           {TITLEBAR_MENUS.map((menu, idx) => {
             const direct = isDirectTitlebarMenu(menu)
@@ -457,47 +459,53 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction, a
         <ToastStatusText />
       </div>
 
-      <div className="titlebar-launchers titlebar-dock" ref={dockRef}>
-        {/* Backing plate — useDockMagnification reshapes its clip-path so it
-            conforms to the magnified icons. Must stay the first child. */}
-        <div className="titlebar-dock-plate" aria-hidden="true" />
-
-        {PANEL_CATALOG_ORDER
-          // The browser has its own edge tab; Devices is a detail-dock tab
-          // with nothing to launch until Phase 4a.
-          .filter((entry) => entry.id !== 'sampleSelector' && entry.id !== 'devices')
-          .map((entry) => <TitleBarLauncherButton key={entry.id} entry={entry} />)}
-
-        {quickLaunchers.map((launcher) => (
-          <QuickLauncherButton key={launcher.id} launcher={launcher} />
-        ))}
+      <div className={styles.center}>
+        <TransportBar />
       </div>
 
-      <div className="titlebar-controls">
-        <XlethIconButton
-          type="button"
-          className="titlebar-btn"
-          onClick={() => window.xleth.window.minimize()}
-          aria-label="Minimize"
-        >
-          <Minus size={14} />
-        </XlethIconButton>
-        <XlethIconButton
-          type="button"
-          className="titlebar-btn"
-          onClick={() => window.xleth.window.maximize()}
-          aria-label="Maximize"
-        >
-          <Square size={14} />
-        </XlethIconButton>
-        <XlethIconButton
-          type="button"
-          className="titlebar-btn titlebar-btn-close"
-          onClick={() => window.xleth.window.close()}
-          aria-label="Close"
-        >
-          <X size={14} />
-        </XlethIconButton>
+      <div className={styles.right}>
+        <div className="titlebar-launchers titlebar-dock" ref={dockRef}>
+          {/* Backing plate — useDockMagnification reshapes its clip-path so it
+              conforms to the magnified icons. Must stay the first child. */}
+          <div className="titlebar-dock-plate" aria-hidden="true" />
+
+          {PANEL_CATALOG_ORDER
+            // The browser has its own edge tab; Devices is a detail-dock tab
+            // with nothing to launch until Phase 4a.
+            .filter((entry) => entry.id !== 'sampleSelector' && entry.id !== 'devices')
+            .map((entry) => <TitleBarLauncherButton key={entry.id} entry={entry} />)}
+
+          {quickLaunchers.map((launcher) => (
+            <QuickLauncherButton key={launcher.id} launcher={launcher} />
+          ))}
+        </div>
+
+        <div className="titlebar-controls">
+          <XlethIconButton
+            type="button"
+            className="titlebar-btn"
+            onClick={() => window.xleth.window.minimize()}
+            aria-label="Minimize"
+          >
+            <Minus size={14} />
+          </XlethIconButton>
+          <XlethIconButton
+            type="button"
+            className="titlebar-btn"
+            onClick={() => window.xleth.window.maximize()}
+            aria-label="Maximize"
+          >
+            <Square size={14} />
+          </XlethIconButton>
+          <XlethIconButton
+            type="button"
+            className="titlebar-btn titlebar-btn-close"
+            onClick={() => window.xleth.window.close()}
+            aria-label="Close"
+          >
+            <X size={14} />
+          </XlethIconButton>
+        </div>
       </div>
     </div>
   )
