@@ -4,8 +4,8 @@ Read this before touching any stylesheet or component. It is the contract for th
 UI rebuild. Phase 0 (this file, cascade layers, tokens, guards, render harness)
 changes almost nothing visually; later phases are measured against it.
 
-Status: **Phase 0 in progress.** Sections marked *(Step N)* describe work that lands in a
-later Phase 0 commit; the decisions are final, the code is not yet.
+Status: **Phase 0 landed** (layers, tokens, `format.ts`, guards, `npm run shots`). The kit
+itself (components) starts in Phase 1; nothing consumes the kit tokens yet.
 
 ---
 
@@ -31,7 +31,7 @@ later Phase 0 commit; the decisions are final, the code is not yet.
 ## 2. Stylesheet architecture
 
 Cascade order, lowest to highest: `@layer reset, legacy, tokens, kit;` (declared in
-`ui/src/styles/layers.css`, imported first in `main.jsx`) *(Step 2)*.
+`ui/src/styles/layers.css`, imported first in `main.jsx`).
 
 - **Every existing stylesheet lives in `legacy`.** Unlayered CSS beats every layer, so a sheet
   left unlayered would silently override kit styles. Vite emits the layers correctly (verified
@@ -56,10 +56,12 @@ Cascade order, lowest to highest: `@layer reset, legacy, tokens, kit;` (declared
   layer order). Later phases must **delete** the legacy rule they replace, never fight it.
 - `ui/src/styles/app.css` is frozen: **do not append to it.** `npm run check:legacy-css`
   fails if its line count exceeds `ui/scripts/legacy-css-baseline.json`. The baseline only goes
-  down; update it whenever lines are removed. *(Step 5)*
+  down; after deleting rules run `npm run check:legacy-css -- --update` (it refuses to raise
+  it). The unit suite enforces the same ratchet.
 - New styles go in `ui/src/ui-kit/**` (`@layer kit`) or `*.module.css`. `npm run lint:css`
   rejects, in those files: hex/named/`rgb()`/`hsl()` colours (only `tokens.css` may define
-  them), `px` font sizes, and `transition: all`. *(Step 5)*
+  them), `px` font sizes (including in the `font` shorthand), and `transition: all`. Built-in
+  stylelint rules only; no plugins. Legacy sheets are not linted.
 - No Tailwind, no CSS-in-JS, no component library.
 - `tokenValue()` must never be called at module scope (it returns `''` before `ThemeProvider`
   mounts). Canvas stays canvas; never replace draw calls with DOM overlays.
@@ -136,7 +138,7 @@ No parallel `--ui-id-*` set exists or may be added.
 Consequence: changing a palette value **recolours existing projects** for every `auto` and
 `paletteSlot` track pointing at it. Therefore palette edits are minimal: only entries that
 fail the rules below change, and every change is listed with before/after hex in the commit
-that makes it *(Step 3)*.
+that makes it (the table below).
 
 **Rules** (asserted by the unit test against `xleth-default.json`):
 1. OKLCH, lightness alternating about 0.68 / 0.78, chroma about 0.12 (existing hues keep their
@@ -214,12 +216,14 @@ The kit tokens (`--ui-*`) follow the base tokens through `deriveTheme`, so for a
   `@font-face` rules point at `../../../*.otf`, which does not exist in a clean checkout.)
 - **Scale (px at 100% UI scale):** `--type-10` meter ticks and units only · `--type-11` label ·
   `--type-12` default control text · `--type-13` section header · `--type-16` panel and dialog
-  title. How the tokens are expressed (so the global 100–200% UI scale applies) is settled
-  in `tokens.css`; kit stylesheets only ever reference the tokens.
+  title. The tokens are plain px. The global UI scale (DAW Floor) is the Electron window zoom
+  factor (`window:zoomIn/zoomOut`, 0.5 to 3.0 in `main.js`), which scales px uniformly, so no
+  separate scale variable exists. Kit stylesheets only ever reference the tokens.
 - **Weights:** 400 / 500 / 600. **Sentence case.** No letter-spaced uppercase labels.
 - **Numbers:** every value uses `font-variant-numeric: tabular-nums`. Timecode and bars|beats
-  readouts use **IBM Plex Mono** 400/500 via `@fontsource/ibm-plex-mono` *(Step 3)*; the face
-  is referenced today but not installed, so it currently falls back to Consolas.
+  readouts use **IBM Plex Mono** 400/500 via `@fontsource/ibm-plex-mono` (imported in
+  `main.jsx`; `--ui-font-mono`). Legacy `app.css` already referenced the face, so timecode
+  now renders in it instead of falling back to Consolas.
 
 ## 5. Spacing, size, radius
 
@@ -233,7 +237,7 @@ The kit tokens (`--ui-*`) follow the base tokens through `deriveTheme`, so for a
   popovers). The legacy 4/6/8 `--radius-*` tokens stay for `legacy`.
 - Keep the existing z-index ladder (`--xleth-z-*`, documented at the top of `windowing.css`).
 
-## 6. Value format *(`ui-kit/format.ts`, Step 4)*
+## 6. Value format (`ui-kit/format.ts`: `formatValue`, `formatValueText`)
 
 Number, **thin space U+2009**, unit. **True minus U+2212**, never a hyphen-minus.
 
@@ -287,6 +291,7 @@ tooltips are not documentation.
 - **Inline styles:** about 511 `style={{…}}` objects bypass tokens. Later phases.
 - **`app.css`:** 34,380 lines, six `:root` blocks, four appended override passes. It shrinks only
   by deletion, phase by phase, ratcheted by the baseline file.
-- **Shots harness limits** *(Step 6)*: `npm run shots` runs without the engine
+- **Shots harness limits:** `npm run shots` (`tests/ui-render/shots.mjs`; `--label`, `--no-build`,
+  `--compare A B`) runs without the engine
   (`window.xleth` absent) and covers chrome only. Anything needing live audio, video or the
   bridge must be checked in the real Electron app.
