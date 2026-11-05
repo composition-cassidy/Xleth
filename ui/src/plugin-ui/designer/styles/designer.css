@@ -1,3 +1,4 @@
+@layer legacy {
 /* ── Plugin UI Designer (developer mode) ──────────────────────────────────────
    Compiled in only when VITE_XLETH_PLUGIN_UI_DESIGNER=1 — gated by lazy import
    in CompressorPanel.jsx. Theme tokens only; no hardcoded colours / shadows.
@@ -1185,3 +1186,4 @@
 .pluginui-designer-selection-handle--s  { bottom: -4px; left: calc(50% - 4px); }
 .pluginui-designer-selection-handle--w  { top: calc(50% - 4px); left: -4px; }
 .pluginui-designer-selection-handle--e  { top: calc(50% - 4px); right: -4px; }
+}

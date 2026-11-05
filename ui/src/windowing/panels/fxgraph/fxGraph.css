@@ -1,3 +1,4 @@
+@layer legacy {
 /* FX Graph panel styles.
  *
  * Split out of windowing.css, which had grown to hold roughly two thousand
@@ -2098,4 +2099,5 @@
 .xleth-graph-state-preview__mapping-editor-preview-label {
   color: var(--theme-text-muted);
   opacity: 0.7;
+}
 }

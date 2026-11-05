@@ -1,3 +1,4 @@
+@layer legacy {
 /* FXG.3-e — FX Graph add-effect picker.
  * Tokenized only; no hardcoded production colors. Mirrors the modal token
  * vocabulary used by confirm-dialog and the graph-state preview controls. */
@@ -210,4 +211,5 @@
 .xleth-fx-graph-effect-picker__cancel:focus-visible {
   outline: 1px solid var(--theme-border-focus);
   outline-offset: 1px;
+}
 }

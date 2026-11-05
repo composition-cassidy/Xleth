@@ -1,3 +1,4 @@
+@layer legacy {
 /* Loop Lab (DEV) — flat, zero-radius, token-driven, single teal accent. */
 
 .ll-overlay {
@@ -294,3 +295,4 @@
   align-items: flex-start;
 }
 .ll-launcher-group .ll-launcher { position: static; bottom: auto; left: auto; }
+}

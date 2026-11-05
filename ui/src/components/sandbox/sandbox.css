@@ -1,3 +1,4 @@
+@layer legacy {
 /* Sample Sandbox — mockup-aligned restructure (menu bar / tool column /
    layer cards / op-list rail / transport / readout).
    Flat, zero border-radius, existing surface hierarchy tokens. Teal accent
@@ -1706,4 +1707,5 @@
 
 .sandbox-status-item--zoom {
   color: var(--theme-accent);
+}
 }

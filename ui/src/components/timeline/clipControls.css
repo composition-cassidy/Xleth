@@ -1,3 +1,4 @@
+@layer legacy {
 .timeline-clip-control-tooltip {
   min-width: 52px;
   padding: 4px 7px;
@@ -10,4 +11,5 @@
   text-align: center;
   white-space: nowrap;
   user-select: none;
+}
 }

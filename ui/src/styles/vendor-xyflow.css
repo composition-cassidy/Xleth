@@ -1,0 +1,3 @@
+/* React Flow's stylesheet, layered into `legacy` (it cannot be edited in place).
+ * Imported from components/mixer/NodeEditor.jsx where the package CSS used to be. */
+@import '@xyflow/react/dist/style.css' layer(legacy);

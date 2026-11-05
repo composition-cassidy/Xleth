@@ -1,3 +1,4 @@
+@layer legacy {
 .clip-control-tuner {
   position: absolute;
   z-index: 80;
@@ -274,4 +275,5 @@
   border-radius: 5px;
   box-shadow: 0 4px 12px rgba(0, 0, 0, .3);
   cursor: pointer;
+}
 }

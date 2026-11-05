@@ -1,3 +1,4 @@
+@layer legacy {
 /* z-index ladder for the windowing system:
  *   app titlebar/menu:         var(--xleth-z-titlebar)
  *   backdrop FX underlay:      var(--xleth-z-backdrop-underlay)
@@ -1328,4 +1329,5 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 .xleth-dock-splitter:focus-visible {
   outline: 2px solid var(--theme-accent);
   outline-offset: -2px;
+}
 }

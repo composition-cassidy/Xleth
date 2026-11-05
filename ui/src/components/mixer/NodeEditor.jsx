@@ -8,7 +8,7 @@ import {
   Position,
   MarkerType,
 } from '@xyflow/react'
-import '@xyflow/react/dist/style.css'
+import '../../styles/vendor-xyflow.css'
 import useNodeGraphStore from '../../stores/nodeGraphStore.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
 import TrackContextMenu from '../timeline/TrackContextMenu.jsx'

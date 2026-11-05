@@ -1,3 +1,6 @@
+// Must stay the first import: the first CSS in the bundle fixes the cascade
+// layer order (see styles/layers.css and ui/DESIGN.md section 2).
+import './styles/layers.css'
 import React from 'react'
 import ReactDOM from 'react-dom/client'
 import XlethRoot from './XlethRoot.jsx'
@@ -16,7 +19,7 @@ import '@fontsource/noto-sans/500.css'
 import '@fontsource/noto-sans/600.css'
 import '@fontsource/noto-sans/700.css'
 
-import './styles/app.css'
+import './styles/legacy.css'
 
 const params = new URLSearchParams(window.location.search)
 const view = params.get('view')

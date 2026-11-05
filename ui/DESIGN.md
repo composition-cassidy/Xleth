@@ -34,7 +34,24 @@ Cascade order, lowest to highest: `@layer reset, legacy, tokens, kit;` (declared
 `ui/src/styles/layers.css`, imported first in `main.jsx`) *(Step 2)*.
 
 - **Every existing stylesheet lives in `legacy`.** Unlayered CSS beats every layer, so a sheet
-  left unlayered would silently override kit styles. Layering is checked against the *built* CSS.
+  left unlayered would silently override kit styles. Vite emits the layers correctly (verified
+  on the built CSS: the only top-level constructs are the `@layer` order statement, `@layer
+  legacy { … }` blocks and the fontsource `@font-face` rules).
+  - `app.css` is layered **without being edited**, via `styles/legacy.css`
+    (`@import './app.css' layer(legacy)`), imported in `main.jsx` at the position `app.css`
+    always had, so the relative order of all legacy sheets is unchanged.
+  - The package stylesheet `@xyflow/react/dist/style.css` is layered the same way
+    (`styles/vendor-xyflow.css`).
+  - The nine component sheets (`windowing`, `fxGraph`, `fxGraphEffectPicker`, `clipControls`,
+    `clipControlTuner`, `loopLab`, `EffectModule.sidechain`, `sandbox`, `designer`) are wrapped
+    in-file in `@layer legacy { … }` because components import them from JS.
+  - `@fontsource/*` sheets contain only `@font-face`, which is not part of the cascade.
+  - **Known exception:** `components/debug/DebugCapturePanel.jsx` injects a `<style>` at
+    runtime (unlayered, debug tool only). Do not copy that pattern.
+  - `styles/__tests__/layers.test.js` fails the suite if any stylesheet or CSS import is
+    unlayered, or if `layers.css` is not the first import of `main.jsx`.
+  - `welcome.html` / `splash.html` are separate pages with their own inline CSS and are outside
+    the renderer bundle.
 - **`!important` inside `legacy` still beats kit declarations** (important declarations invert
   layer order). Later phases must **delete** the legacy rule they replace, never fight it.
 - `ui/src/styles/app.css` is frozen: **do not append to it.** `npm run check:legacy-css`
