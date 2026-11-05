@@ -1,8 +1,8 @@
 import React from 'react';
 import type { CSSProperties, KeyboardEvent, MouseEvent, PointerEvent, ReactNode } from 'react';
-import { ChevronDown, ChevronUp, Maximize2, Square, X } from 'lucide-react';
+import { ArrowDownToLine, ChevronDown, ChevronUp, Maximize2, Square, X } from 'lucide-react';
 import { armPanelDrag, useIsTabDropTarget } from '../managers/DragManager';
-import { PANEL_CATALOG, panelTypeColorVar, type PanelId } from '../registry/panelCatalog';
+import { isDetailDockTab, PANEL_CATALOG, panelTypeColorVar, type PanelId } from '../registry/panelCatalog';
 import { usePanelRegistry } from '../registry/PanelRegistry';
 import { usePanelValue } from '../registry/usePanelValue';
 import { XlethIconButton } from '../../components/common/XlethButton.jsx';
@@ -35,6 +35,7 @@ export function Titlebar({ id, focused, children }: TitlebarProps) {
   const restorePanel = usePanelRegistry((state) => state.restorePanel);
   const toggleCollapsePanel = usePanelRegistry((state) => state.toggleCollapsePanel);
   const moveFloatingPanel = usePanelRegistry((state) => state.moveFloatingPanel);
+  const dockPanel = usePanelRegistry((state) => state.dockPanel);
   const isDropTarget = useIsTabDropTarget(id);
 
   const stopControlPointerDown = (event: PointerEvent<HTMLButtonElement>) => {
@@ -99,6 +100,15 @@ export function Titlebar({ id, focused, children }: TitlebarProps) {
   };
 
   const collapseLabel = collapsed ? `Expand ${entry.title}` : `Collapse ${entry.title}`;
+  // A popped-out detail-dock panel can go home in one click (dragging it to
+  // the bottom edge still works too).
+  const canReturnToDock = mode === 'floating' && isDetailDockTab(id);
+  const returnLabel = `Return ${entry.title} to the dock`;
+  const returnToDock = (event: MouseEvent<HTMLButtonElement>) => {
+    event.stopPropagation();
+    console.log(`[Shell] re-dock ${id} from its window`);
+    dockPanel(id, 'bottom');
+  };
 
   return (
     <div
@@ -129,6 +139,19 @@ export function Titlebar({ id, focused, children }: TitlebarProps) {
       {children ? <div className="xleth-windowing-titlebar-content">{children}</div> : null}
       <span className="xleth-windowing-drag-zone" aria-hidden="true" />
       <div className="xleth-windowing-controls" aria-label={`${entry.title} panel controls`}>
+        {canReturnToDock ? (
+          <XlethIconButton
+            type="button"
+            className="xleth-windowing-control-button"
+            aria-label={returnLabel}
+            title={returnLabel}
+            data-hint={returnLabel}
+            onPointerDown={stopControlPointerDown}
+            onClick={returnToDock}
+          >
+            <ArrowDownToLine aria-hidden="true" strokeWidth={2} />
+          </XlethIconButton>
+        ) : null}
         <XlethIconButton
           type="button"
           className="xleth-windowing-control-button"

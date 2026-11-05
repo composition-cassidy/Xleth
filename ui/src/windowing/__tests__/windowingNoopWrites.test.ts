@@ -137,12 +137,12 @@ describe('windowing no-op writes', () => {
 
   it('clamps existing floating panels into a smaller WorkArea rect', () => {
     const registry = usePanelRegistry.getState();
-    registry.openPanel('mixer');
-    registry.resizeFloatingPanel('mixer', 900, 600, 420, 240);
+    registry.openPanel('inspector');
+    registry.resizeFloatingPanel('inspector', 900, 600, 420, 240);
 
     registerWorkAreaRect({ left: 320, top: 64, right: 920, bottom: 464, width: 600, height: 400 });
 
-    expect(usePanelRegistry.getState().panels.mixer.floating).toEqual({
+    expect(usePanelRegistry.getState().panels.inspector.floating).toEqual({
       x: 180,
       y: 160,
       width: 420,

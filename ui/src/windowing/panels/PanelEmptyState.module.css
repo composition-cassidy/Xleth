@@ -1,5 +1,6 @@
 @layer kit {
-  /* Honest empty state until Phase 3 gives the inspector real content. */
+  /* Honest empty state for a panel whose real content arrives in a later phase
+   * (Inspector: Phase 3, Devices: Phase 4a). */
   .body {
     display: flex;
     align-items: center;

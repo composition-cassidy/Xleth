@@ -1,5 +1,6 @@
 import {
   AudioWaveform,
+  Blocks,
   FlaskConical,
   Music2,
   PanelLeft,
@@ -31,6 +32,7 @@ export const PANEL_IDS = [
   'splitSyllables',
   'sampleSandbox',
   'inspector',
+  'devices',
 ] as const;
 
 export type PanelId = (typeof PANEL_IDS)[number];
@@ -85,6 +87,10 @@ export interface PanelCatalogEntry {
   // dockFill panel in a region, its last open slot fills. Media views set it so
   // the arrangement and the picture get the room, not the side panels.
   dockFill?: boolean;
+  // Position in the detail dock's tab strip (Devices, Mixer, Piano Roll,
+  // Sampler, FX Graph). Present = this panel is a detail-dock tab: it opens
+  // docked at the bottom, its tab is always shown, and it pops out on demand.
+  dockTabOrder?: number;
   // Whether the top bar offers a visibility toggle for this panel. Drawers are
   // excluded automatically (they carry their own edge tab); set this false for
   // a panel that is only ever opened from a context menu and would be noise in
@@ -137,6 +143,7 @@ export const PANEL_CATALOG = {
     minHeight: 120,
     minDockedSize: 220,
     presentation: 'window',
+    dockTabOrder: 2,
   },
   preview: {
     id: 'preview',
@@ -168,6 +175,7 @@ export const PANEL_CATALOG = {
     minHeight: 260,
     minDockedSize: 260,
     presentation: 'window',
+    dockTabOrder: 1,
   },
   fxGraph: {
     id: 'fxGraph',
@@ -181,6 +189,7 @@ export const PANEL_CATALOG = {
     minHeight: 120,
     minDockedSize: 240,
     presentation: 'window',
+    dockTabOrder: 4,
   },
   nodeEditor: {
     id: 'nodeEditor',
@@ -219,6 +228,7 @@ export const PANEL_CATALOG = {
     minHeight: 120,
     minDockedSize: 220,
     presentation: 'window',
+    dockTabOrder: 3,
   },
   quickNotation: {
     id: 'quickNotation',
@@ -274,6 +284,22 @@ export const PANEL_CATALOG = {
     minDockedSize: 260,
     presentation: 'window',
   },
+  devices: {
+    id: 'devices',
+    title: 'Devices',
+    typeColorToken: '--theme-text-muted',
+    icon: Blocks,
+    // A dock tab only: Phase 4a builds the device view, so nothing launches it
+    // from the top bar yet.
+    showInToolbar: false,
+    defaultFloating: { x: 260, y: 360, width: 960, height: 300 },
+    keepAliveWhenHidden: false,
+    minWidth: 280,
+    minHeight: 120,
+    minDockedSize: 220,
+    presentation: 'window',
+    dockTabOrder: 0,
+  },
 } satisfies Record<PanelId, PanelCatalogEntry>;
 
 export const QUARANTINED_PANEL_IDS: PanelId[] = PANEL_IDS.filter(
@@ -294,6 +320,16 @@ export const DRAWER_PANEL_IDS: PanelId[] = PANEL_IDS.filter(
 );
 
 export const PANEL_CATALOG_ORDER = ACTIVE_PANEL_IDS.map((id) => PANEL_CATALOG[id]);
+
+// The detail dock's tabs, in strip order.
+export const DETAIL_DOCK_TAB_IDS: PanelId[] = ACTIVE_PANEL_IDS
+  .filter((id) => (PANEL_CATALOG[id] as PanelCatalogEntry).dockTabOrder !== undefined)
+  .sort((a, b) => (PANEL_CATALOG[a] as PanelCatalogEntry).dockTabOrder!
+    - (PANEL_CATALOG[b] as PanelCatalogEntry).dockTabOrder!);
+
+export function isDetailDockTab(id: PanelId): boolean {
+  return (PANEL_CATALOG[id] as PanelCatalogEntry).dockTabOrder !== undefined;
+}
 
 // Panels the top bar offers a toggle for.
 export const TOOLBAR_PANEL_IDS: PanelId[] = WINDOW_PANEL_IDS.filter(

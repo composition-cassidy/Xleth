@@ -38,10 +38,15 @@ describe('AppShell boot', () => {
     const registry = usePanelRegistry.getState();
     for (const id of WINDOW_PANEL_IDS) registry.openPanel(id);
 
-    // The timeline starts docked in the center, so it is the one window panel
-    // the floating layer does not carry.
-    const key = floatingPanelKey(usePanelRegistry.getState().panels);
-    expect(key.split('|').sort()).toEqual(WINDOW_PANEL_IDS.filter((id) => id !== 'timeline').sort());
+    // Docked and open means "rendered by its region", not by the floating
+    // layer: the timeline (center) and the one detail-dock tab left open (the
+    // dock shows one panel at a time; the others close back to their tabs and
+    // are carried hidden here like any closed panel).
+    const panels = usePanelRegistry.getState().panels;
+    const dockedOpen = WINDOW_PANEL_IDS.filter((id) => panels[id].mode === 'docked' && !panels[id].hidden);
+    expect(dockedOpen).toContain('timeline');
+    const key = floatingPanelKey(panels);
+    expect(key.split('|').sort()).toEqual(WINDOW_PANEL_IDS.filter((id) => !dockedOpen.includes(id)).sort());
   });
 
   it('mounts the center region and no empty work-area surface', () => {

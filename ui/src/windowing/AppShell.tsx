@@ -1,5 +1,6 @@
 import React from 'react';
 import { useEffect, useRef } from 'react';
+import { DetailDock } from './components/DetailDock';
 import { DockRegion } from './components/DockRegion';
 import { SampleSelectorDrawer } from './components/SampleSelectorDrawer';
 import { SnapGhost } from './components/SnapGhost';
@@ -40,6 +41,7 @@ const QuickNotationPanel = React.lazy(() => import('./panels/QuickNotationPanel'
 const SplitSyllablesPanel = React.lazy(() => import('./panels/SplitSyllablesPanel'));
 const SampleSandboxPanel = React.lazy(() => import('./panels/SampleSandboxPanel'));
 const InspectorPanel = React.lazy(() => import('./panels/InspectorPanel'));
+const DevicesPanel = React.lazy(() => import('./panels/DevicesPanel'));
 
 export interface WindowingAppShellProps {
   backdropImageUrl?: string;
@@ -62,6 +64,7 @@ const PANEL_BODIES: Record<PanelId, React.LazyExoticComponent<React.FC>> = {
   splitSyllables: SplitSyllablesPanel,
   sampleSandbox: SampleSandboxPanel,
   inspector: InspectorPanel,
+  devices: DevicesPanel,
 };
 
 function workAreaRectsEqual(a: WorkAreaRect | null, b: WorkAreaRect): boolean {
@@ -205,7 +208,9 @@ export function AppShell({ backdropImageUrl = '' }: WindowingAppShellProps) {
                 renderPanel={renderPanel}
                 excludePanelIds={DRAWER_PANEL_IDS}
               />
-              <DockRegion side="bottom" renderPanel={renderPanel} excludePanelIds={DRAWER_PANEL_IDS} />
+              {/* The bottom region is the tabbed detail dock: one panel at a
+                  time under a tab strip that is always there. */}
+              <DetailDock renderPanel={renderPanel} />
             </div>
             <DockRegion side="right" renderPanel={renderPanel} excludePanelIds={DRAWER_PANEL_IDS} />
           </div>

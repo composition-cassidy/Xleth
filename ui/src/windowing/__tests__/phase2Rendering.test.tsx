@@ -61,10 +61,10 @@ describe('PanelFrame rendering', () => {
   it('gives each open panel its own accent color', () => {
     const registry = usePanelRegistry.getState();
     registry.openPanel('preview');
-    registry.openPanel('mixer');
-    registry.openPanel('pianoRoll');
+    registry.openPanel('inspector');
+    registry.openPanel('sampleSandbox');
 
-    for (const id of ['preview', 'mixer', 'pianoRoll'] as const) {
+    for (const id of ['preview', 'inspector', 'sampleSandbox'] as const) {
       const html = renderPanel(id);
       expect(html).toContain(`data-panel-id="${id}"`);
       expect(html).toContain(`--xleth-windowing-panel-color:${panelTypeColorVar(id)}`);
@@ -72,24 +72,24 @@ describe('PanelFrame rendering', () => {
 
     // All three are live in the floating layer, each with a distinct token.
     expect(floatingPanelKey(usePanelRegistry.getState().panels).split('|'))
-      .toEqual(expect.arrayContaining(['preview', 'mixer', 'pianoRoll']));
+      .toEqual(expect.arrayContaining(['preview', 'inspector', 'sampleSandbox']));
   });
 
   it('serializes focused panel z-index stacking in SSR markup', () => {
     const registry = usePanelRegistry.getState();
     registry.openPanel('preview');
-    registry.openPanel('mixer');
-    registry.focusPanel('mixer');
+    registry.openPanel('inspector');
+    registry.focusPanel('inspector');
     registry.focusPanel('preview');
 
     const previewStyle = sectionStyleFor(renderPanel('preview'), 'preview');
-    const mixerStyle = sectionStyleFor(renderPanel('mixer'), 'mixer');
+    const inspectorStyle = sectionStyleFor(renderPanel('inspector'), 'inspector');
     expect(previewStyle).toContain('z-index:calc(var(--xleth-z-window-floating-base) + ');
-    expect(mixerStyle).toContain('z-index:calc(var(--xleth-z-window-floating-base) + ');
+    expect(inspectorStyle).toContain('z-index:calc(var(--xleth-z-window-floating-base) + ');
 
     const previewZ = floatingLayerOffsetFor(previewStyle);
-    const mixerZ = floatingLayerOffsetFor(mixerStyle);
+    const inspectorZ = floatingLayerOffsetFor(inspectorStyle);
 
-    expect(previewZ).toBeGreaterThan(mixerZ);
+    expect(previewZ).toBeGreaterThan(inspectorZ);
   });
 });

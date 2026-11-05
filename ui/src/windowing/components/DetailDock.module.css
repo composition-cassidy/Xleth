@@ -1,0 +1,115 @@
+/* Detail dock (ui/DESIGN.md section 8): a 28px tab strip over one docked panel.
+ * Collapsed, the dock IS the strip. */
+@layer kit {
+  .dock {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    flex: 0 0 auto;
+    min-height: var(--panel-header-h);
+    /* However tall a stored size is, the arrangement keeps 40% of the column. */
+    max-height: 60%;
+    background: var(--ui-g1);
+    border-top: 1px solid var(--ui-g4);
+  }
+
+  /* The shared region resizer straddles the dock's top edge instead of sitting
+   * inside it, so it never eats into the tabs' 24px hit area. */
+  .dock :global(.xleth-dock-region-resizer--bottom) {
+    top: calc(var(--space-1) * -1);
+    height: var(--space-2);
+  }
+
+  .strip {
+    display: flex;
+    align-items: stretch;
+    flex: 0 0 var(--panel-header-h);
+    height: var(--panel-header-h);
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    background: var(--ui-g2);
+    scrollbar-width: none;
+  }
+
+  .tab {
+    display: flex;
+    align-items: stretch;
+    flex: 0 0 auto;
+    border-right: 1px solid var(--ui-g4);
+  }
+
+  .tabButton,
+  .popButton {
+    margin: 0;
+    border: 0;
+    background: transparent;
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    font-weight: var(--weight-medium);
+    cursor: pointer;
+  }
+
+  .tabButton {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: var(--hit-min);
+    padding: 0 var(--space-2) 0 var(--space-3);
+    white-space: nowrap;
+  }
+
+  .popButton {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--hit-min);
+    min-height: var(--hit-min);
+    padding: 0;
+    color: var(--ui-ink-3);
+  }
+
+  .popButton svg {
+    width: var(--type-13);
+    height: var(--type-13);
+  }
+
+  .tabButton:hover,
+  .popButton:hover {
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+  }
+
+  .tabButton:focus-visible,
+  .popButton:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  /* The open tab continues into the body below it (same g1 ground) and is set
+   * in ink at 600: shape and weight, not colour alone. */
+  .tab[data-state="open"] {
+    background: var(--ui-g1);
+  }
+
+  .tab[data-state="open"] .tabButton {
+    color: var(--ui-ink);
+    font-weight: var(--weight-semibold);
+  }
+
+  /* Popped out: the panel lives in its own window. The return-to-dock glyph in
+   * the pop button carries the state as well. */
+  .tab[data-state="popped"] .tabButton {
+    color: var(--ui-ink-3);
+  }
+
+  .body {
+    position: relative;
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+    min-width: 0;
+    overflow: hidden;
+  }
+}

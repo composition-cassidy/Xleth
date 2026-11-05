@@ -1,6 +1,6 @@
 import React from 'react';
 import { PanelFrame } from '../components/PanelFrame';
-import styles from './InspectorPanel.module.css';
+import styles from './PanelEmptyState.module.css';
 
 /**
  * Properties of the current selection. Phase 1 only reserves its place in the

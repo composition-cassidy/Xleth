@@ -463,7 +463,9 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction, a
         <div className="titlebar-dock-plate" aria-hidden="true" />
 
         {PANEL_CATALOG_ORDER
-          .filter((entry) => entry.id !== 'sampleSelector')
+          // The browser has its own edge tab; Devices is a detail-dock tab
+          // with nothing to launch until Phase 4a.
+          .filter((entry) => entry.id !== 'sampleSelector' && entry.id !== 'devices')
           .map((entry) => <TitleBarLauncherButton key={entry.id} entry={entry} />)}
 
         {quickLaunchers.map((launcher) => (

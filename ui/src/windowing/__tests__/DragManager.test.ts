@@ -23,8 +23,12 @@ const originalDockPanel = usePanelRegistry.getState().dockPanel;
 function resetRegistry() {
   cancelDrag();
   registerWorkAreaRect({ left: -Infinity, top: -Infinity, right: Infinity, bottom: Infinity, width: Infinity, height: Infinity });
+  // pianoRoll stands in for any floating window here; it now starts in the
+  // detail dock, so float it explicitly.
+  const panels = createInitialPanelStates();
+  panels.pianoRoll = { ...panels.pianoRoll, mode: 'floating' };
   usePanelRegistry.setState({
-    panels: createInitialPanelStates(),
+    panels,
     moveFloatingPanel: originalMoveFloatingPanel,
     dockPanel: originalDockPanel,
   });

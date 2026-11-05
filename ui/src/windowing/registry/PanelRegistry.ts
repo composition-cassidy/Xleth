@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 import { DEFAULT_PRESET_ID, loadPreset } from '../managers/PresetManager';
-import { PANEL_CATALOG, PANEL_IDS, type PanelId } from './panelCatalog';
+import { isDetailDockTab, PANEL_CATALOG, PANEL_IDS, type PanelId } from './panelCatalog';
 
 export type PanelMode = 'floating' | 'docked' | 'maximized';
 /** An edge region: it has a stored thickness and a resizer. */
@@ -77,8 +77,9 @@ export const CENTER_FALLBACK_PANEL_ID: PanelId = 'timeline';
 export const DEFAULT_DOCK_REGION_SIZES: DockRegionSizes = {
   left: 280,
   right: 280,
-  top: 140,
-  bottom: 140,
+  top: 340,
+  // 28px tab strip + the mixer's 260px minimum.
+  bottom: 288,
 };
 
 export const SAMPLE_SELECTOR_DOCK_HANDLE_WIDTH = 32;
@@ -87,7 +88,9 @@ export const MIN_DOCK_REGION_SIZES: DockRegionSizes = {
   left: 220,
   right: 220,
   top: 100,
-  bottom: 100,
+  // The detail dock: 28px tab strip + a body that can still show a toolbar row
+  // and some content.
+  bottom: 160,
 };
 
 // Derived from the catalog — the panel declares its own minimum exactly once.
@@ -194,9 +197,9 @@ export function createPanelState(id: PanelId, index: number): PanelState {
     collapsed: false,
     focused,
     zIndex: focused ? index + 1 : 0,
-    // The arrangement starts docked in the center; nothing starts floating over
-    // an empty workspace any more.
-    mode: PANEL_CATALOG[id].presentation === 'drawer' || isCenter ? 'docked' : 'floating',
+    // The arrangement starts docked in the center and the detail-dock tabs
+    // start in the dock; nothing starts floating over an empty workspace.
+    mode: PANEL_CATALOG[id].presentation === 'drawer' || isCenter || isDetailDockTab(id) ? 'docked' : 'floating',
     floating: { ...PANEL_CATALOG[id].defaultFloating },
     docked: defaultDockedState(id),
     preMaximizeState: null,
@@ -333,8 +336,29 @@ export function ensureCenterOccupied(panels: PanelStateMap): PanelStateMap {
   return panels;
 }
 
+/**
+ * The detail dock (the bottom region) shows one panel at a time: it is a tab
+ * strip, not a row of slots. When more than one panel is open there, the most
+ * recently focused one (highest zIndex: opening and docking both focus) stays
+ * and the others close back to their tabs. An empty bottom region is simply a
+ * collapsed dock.
+ */
+export function enforceSingleDetailPanel(panels: PanelStateMap): PanelStateMap {
+  const open = PANEL_IDS.filter((id) => (
+    !panels[id].hidden && panels[id].mode === 'docked' && panels[id].docked.region === 'bottom'
+  ));
+  if (open.length <= 1) return panels;
+  const keep = open.reduce((best, id) => (panels[id].zIndex > panels[best].zIndex ? id : best), open[0]);
+  for (const id of open) {
+    if (id === keep) continue;
+    panels[id] = { ...panels[id], hidden: true, focused: false };
+  }
+  return panels;
+}
+
 export function normalizeDockSlots(panels: PanelStateMap): PanelStateMap {
   ensureCenterOccupied(panels);
+  enforceSingleDetailPanel(panels);
   for (const region of DOCK_AREAS) {
     const slots = getRegionSlots(panels, region);
     slots.forEach((slot, slotIndex) => {

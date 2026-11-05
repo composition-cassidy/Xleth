@@ -160,7 +160,7 @@ describe('StatePersistence', () => {
     const mixer = usePanelRegistry.getState().panels.mixer;
     expect(mixer.hidden).toBe(false);                 // valid field survives
     expect(mixer.floating.x).toBe(42);                // valid field survives
-    expect(mixer.mode).toBe('floating');              // bad enum -> default
+    expect(mixer.mode).toBe('docked');                // bad enum -> default (dock tab)
     expect(mixer.floating.y).toBe(PANEL_CATALOG.mixer.defaultFloating.y);
     expect(mixer.floating.width).toBe(PANEL_CATALOG.mixer.defaultFloating.width);
     expect(mixer.floating.height).toBe(500);

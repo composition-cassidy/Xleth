@@ -114,7 +114,9 @@ export function PanelFrame({
           {...accessibility}
         >
           {tabStrip}
-          <Titlebar id={id} focused={focused}>{titlebarContent}</Titlebar>
+          {slot?.chromeless
+            ? null
+            : <Titlebar id={id} focused={focused}>{titlebarContent}</Titlebar>}
           {collapsed ? null : <div className="xleth-panel-body" id={`xleth-panel-body-${id}`}>{children}</div>}
         </section>
       </PanelVisibilityProvider>

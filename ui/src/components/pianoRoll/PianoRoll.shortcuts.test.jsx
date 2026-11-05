@@ -67,7 +67,11 @@ describe('Piano Roll keyboard ownership', () => {
 
     resetBindingsForTest()
     resetPianoRollClipboardForTest()
-    usePanelRegistry.setState({ panels: createInitialPanelStates() })
+    // The detail dock shows one panel at a time, so for both to be open the
+    // mixer is popped out while the piano roll sits in the dock.
+    const panels = createInitialPanelStates()
+    panels.mixer = { ...panels.mixer, mode: 'floating' }
+    usePanelRegistry.setState({ panels })
     usePanelRegistry.getState().openPanel('pianoRoll')
     usePanelRegistry.getState().openPanel('mixer')
     usePianoRollStore.setState({ activeCenterTab: 'timeline' })
