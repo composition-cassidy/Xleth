@@ -1,5 +1,6 @@
 import flCompose from '../presets/fl-compose.json';
 import vegasArrange from '../presets/vegas-arrange.json';
+import xlethArrange from '../presets/xleth-arrange.json';
 import {
   createInitialDockRegionSizes,
   createInitialPanelStates,
@@ -32,9 +33,29 @@ interface RawPreset {
 }
 
 const RAW_PRESETS: Record<string, RawPreset> = {
+  'xleth-arrange': xlethArrange as RawPreset,
   'fl-compose': flCompose as RawPreset,
   'vegas-arrange': vegasArrange as RawPreset,
 };
+
+/** The layout a fresh install, a migrated layout and "Reset layout" land on. */
+export const DEFAULT_PRESET_ID = 'xleth-arrange';
+
+export interface LayoutPresetEntry {
+  id: string;
+  /** Menu label. Says what the layout IS, not where its name came from. */
+  label: string;
+}
+
+// View -> Layouts, in menu order. The two older presets keep their ids (and
+// their Ctrl+Shift+1/2 shortcuts); only their labels changed, because neither
+// floats the arrangement any more: each now differs from the default by the
+// one window it pops out.
+export const LAYOUT_PRESETS: readonly LayoutPresetEntry[] = [
+  { id: 'xleth-arrange', label: 'Tiled (default)' },
+  { id: 'fl-compose', label: 'Floating mixer' },
+  { id: 'vegas-arrange', label: 'Floating preview' },
+];
 
 export function listPresetIds(): string[] {
   return Object.keys(RAW_PRESETS);

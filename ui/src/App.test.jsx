@@ -6,7 +6,13 @@ import {
   hydrateProductionLayout,
 } from './XlethRoot.jsx'
 import { timelineEvents } from './timelineEvents.js'
-import { TITLEBAR_MENUS, isDirectTitlebarMenu } from './components/TitleBar.jsx'
+import {
+  RESET_LAYOUT_ID,
+  TITLEBAR_MENUS,
+  applyLayoutChoice,
+  isDirectTitlebarMenu,
+} from './components/TitleBar.jsx'
+import { LAYOUT_PRESETS } from './windowing/managers/PresetManager'
 import usePianoRollStore from './stores/usePianoRollStore.js'
 import { createInitialPanelStates, usePanelRegistry } from './windowing/registry/PanelRegistry'
 import * as EditorCommandRegistry from './windowing/managers/EditorCommandRegistry'
@@ -174,7 +180,7 @@ describe('XlethRoot New Project reset', () => {
     expect(loadPersistedStateMock).toHaveBeenCalledTimes(1)
   })
 
-  it('falls back to fl-compose when persisted layout hydration fails', async () => {
+  it('falls back to the default xleth-arrange layout when persisted layout hydration fails', async () => {
     vi.spyOn(StatePersistence, 'setPersistenceAdapter').mockImplementation(() => {})
     vi.spyOn(StatePersistence, 'loadPersistedState').mockResolvedValue(false)
     const applyPresetSpy = vi.fn()
@@ -187,7 +193,7 @@ describe('XlethRoot New Project reset', () => {
     })
 
     expect(hydrated).toBe(false)
-    expect(applyPresetSpy).toHaveBeenCalledWith('fl-compose')
+    expect(applyPresetSpy).toHaveBeenCalledWith('xleth-arrange')
   })
 
   it('maps root keyboard shortcuts without triggering inside inputs', () => {
@@ -308,7 +314,7 @@ describe('XlethRoot New Project reset', () => {
     ])
   })
 
-  it('configures the View dropdown as zoom controls only', () => {
+  it('keeps the View dropdown zoom actions unchanged', () => {
     const viewMenu = TITLEBAR_MENUS.find(menu => menu.label === 'View')
 
     expect(viewMenu).toBeTruthy()
@@ -323,6 +329,24 @@ describe('XlethRoot New Project reset', () => {
       'Zoom Out',
       'RESET',
     ])
+  })
+
+  it('offers the tiled default first under View > Layouts, with honest names for the others', () => {
+    expect(LAYOUT_PRESETS.map((preset) => [preset.id, preset.label])).toEqual([
+      ['xleth-arrange', 'Tiled (default)'],
+      ['fl-compose', 'Floating mixer'],
+      ['vegas-arrange', 'Floating preview'],
+    ])
+  })
+
+  it('View > Layouts applies a preset, and Reset layout restores the default', () => {
+    const registry = { applyPreset: vi.fn(), resetLayout: vi.fn() }
+
+    applyLayoutChoice('vegas-arrange', registry)
+    applyLayoutChoice(RESET_LAYOUT_ID, registry)
+
+    expect(registry.applyPreset).toHaveBeenCalledWith('vegas-arrange')
+    expect(registry.resetLayout).toHaveBeenCalledTimes(1)
   })
 
   it('routes Delete to the focused editor command registry', async () => {

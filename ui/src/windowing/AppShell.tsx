@@ -39,6 +39,7 @@ const SamplerWindowPanel = React.lazy(() => import('./panels/SamplerWindowPanel'
 const QuickNotationPanel = React.lazy(() => import('./panels/QuickNotationPanel'));
 const SplitSyllablesPanel = React.lazy(() => import('./panels/SplitSyllablesPanel'));
 const SampleSandboxPanel = React.lazy(() => import('./panels/SampleSandboxPanel'));
+const InspectorPanel = React.lazy(() => import('./panels/InspectorPanel'));
 
 export interface WindowingAppShellProps {
   backdropImageUrl?: string;
@@ -60,6 +61,7 @@ const PANEL_BODIES: Record<PanelId, React.LazyExoticComponent<React.FC>> = {
   quickNotation: QuickNotationPanel,
   splitSyllables: SplitSyllablesPanel,
   sampleSandbox: SampleSandboxPanel,
+  inspector: InspectorPanel,
 };
 
 function workAreaRectsEqual(a: WorkAreaRect | null, b: WorkAreaRect): boolean {
@@ -190,7 +192,12 @@ export function AppShell({ backdropImageUrl = '' }: WindowingAppShellProps) {
           >
             <DockRegion side="left" renderPanel={renderPanel} excludePanelIds={DRAWER_PANEL_IDS} />
             <div className="xleth-center-column">
-              <DockRegion side="top" renderPanel={renderPanel} excludePanelIds={DRAWER_PANEL_IDS} />
+              <DockRegion
+                side="top"
+                className={styles.top}
+                renderPanel={renderPanel}
+                excludePanelIds={DRAWER_PANEL_IDS}
+              />
               {/* Mandatory: the registry never lets the center go empty. */}
               <DockRegion
                 side="center"

@@ -17,4 +17,11 @@
     min-height: 0;
     background: var(--ui-g0);
   }
+
+  /* Preview + Inspector. Its height is stored and clamped like every region
+   * (MIN_DOCK_REGION_SIZES); on a short window it also never takes more than
+   * 40% of the column, so the arrangement keeps the majority. */
+  .top {
+    max-height: 40%;
+  }
 }

@@ -3,6 +3,7 @@ import {
   FlaskConical,
   Music2,
   PanelLeft,
+  PanelRight,
   Scissors,
   Video,
   Workflow,
@@ -29,6 +30,7 @@ export const PANEL_IDS = [
   'quickNotation',
   'splitSyllables',
   'sampleSandbox',
+  'inspector',
 ] as const;
 
 export type PanelId = (typeof PANEL_IDS)[number];
@@ -257,6 +259,19 @@ export const PANEL_CATALOG = {
     minWidth: 280,
     minHeight: 120,
     minDockedSize: 320,
+    presentation: 'window',
+  },
+  inspector: {
+    id: 'inspector',
+    title: 'Inspector',
+    typeColorToken: '--theme-text-muted',
+    icon: PanelRight,
+    // No fKey: F5-F12 are all taken and shortcuts do not change in Phase 1.
+    defaultFloating: { x: 420, y: 80, width: 340, height: 480 },
+    keepAliveWhenHidden: false,
+    minWidth: 280,
+    minHeight: 120,
+    minDockedSize: 260,
     presentation: 'window',
   },
 } satisfies Record<PanelId, PanelCatalogEntry>;

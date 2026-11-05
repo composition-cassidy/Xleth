@@ -18,6 +18,7 @@ import {
 import { ToastStatusText } from './Toast.jsx'
 import { usePanelRegistry } from '../windowing/registry/PanelRegistry'
 import { PANEL_CATALOG_ORDER } from '../windowing/registry/panelCatalog'
+import { LAYOUT_PRESETS } from '../windowing/managers/PresetManager'
 import { useQuickLaunchersStore } from '../stores/quickLaunchersStore.js'
 import { XlethButton, XlethIconButton } from './common/XlethButton.jsx'
 import { useDockMagnification } from '../hooks/useDockMagnification.js'
@@ -73,6 +74,16 @@ export const TITLEBAR_MENUS = [
     items: [],
   },
 ]
+
+export const RESET_LAYOUT_ID = 'reset'
+export const RESET_LAYOUT_LABEL = 'Reset layout'
+
+/** View -> Layouts: apply a preset by id, or RESET_LAYOUT_ID for the default. */
+export function applyLayoutChoice(presetId, registry = usePanelRegistry.getState()) {
+  console.log(`[Shell] View > Layouts: ${presetId}`)
+  if (presetId === RESET_LAYOUT_ID) registry.resetLayout()
+  else registry.applyPreset(presetId)
+}
 
 const TITLEBAR_MENU_ICONS = {
   File: Folder,
@@ -149,6 +160,58 @@ function ToolbarDropdown({ actions, label, onAction }) {
             </XlethButton>
           )
         })}
+      </div>
+    </div>
+  )
+}
+
+// View: the zoom strip, then View -> Layouts. Layouts act on the panel registry
+// directly; they are not file/edit actions and never reach XlethRoot.
+function ViewDropdown({ onAction, onLayout }) {
+  return (
+    <div className="titlebar-dropdown-panel titlebar-dropdown-panel--file" role="menu" aria-label="View">
+      <div className="titlebar-export-row" role="group" aria-label="View zoom actions">
+        <span className="titlebar-export-label">Zoom:</span>
+        <div className="titlebar-export-actions">
+          {VIEW_DROPDOWN_ACTIONS.map((item) => {
+            const Icon = item.icon
+            return (
+              <XlethButton
+                type="button"
+                key={item.action}
+                className={`titlebar-toolbar-btn ${item.text ? 'titlebar-toolbar-btn--text' : ''}`}
+                onClick={() => onAction(item.action)}
+                title={item.shortcut ? `${item.label} (${item.shortcut})` : item.label}
+                aria-label={item.label}
+                role="menuitem"
+              >
+                {Icon ? <Icon size={18} strokeWidth={2} aria-hidden="true" /> : item.label}
+              </XlethButton>
+            )
+          })}
+        </div>
+      </div>
+      <div role="group" aria-label="Layouts" data-testid="titlebar-view-layouts">
+        <span className="titlebar-export-label">Layouts</span>
+        {LAYOUT_PRESETS.map((preset) => (
+          <XlethButton
+            type="button"
+            key={preset.id}
+            className="titlebar-dropdown-item"
+            role="menuitem"
+            onClick={() => onLayout(preset.id)}
+          >
+            <span>{preset.label}</span>
+          </XlethButton>
+        ))}
+        <XlethButton
+          type="button"
+          className="titlebar-dropdown-item"
+          role="menuitem"
+          onClick={() => onLayout(RESET_LAYOUT_ID)}
+        >
+          <span>{RESET_LAYOUT_LABEL}</span>
+        </XlethButton>
       </div>
     </div>
   )
@@ -328,6 +391,11 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction, a
     if (onAction) onAction(label)
   }, [closeDropdown, onAction])
 
+  const handleLayout = useCallback((presetId) => {
+    closeDropdown()
+    applyLayoutChoice(presetId)
+  }, [closeDropdown])
+
   const handleMenuClick = useCallback((idx) => {
     const menu = TITLEBAR_MENUS[idx]
     console.log('[MenuBar] pill click:', menu.label)
@@ -346,10 +414,10 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction, a
       return <ToolbarDropdown actions={EDIT_DROPDOWN_ACTIONS} label="Edit actions" onAction={handleAction} />
     }
     if (menu.dropdown === 'view') {
-      return <ToolbarDropdown actions={VIEW_DROPDOWN_ACTIONS} label="View zoom actions" onAction={handleAction} />
+      return <ViewDropdown onAction={handleAction} onLayout={handleLayout} />
     }
     return null
-  }, [handleAction])
+  }, [handleAction, handleLayout])
 
   return (
     <div className="titlebar" ref={barRef}>

@@ -110,3 +110,20 @@ describe('fill slot', () => {
     expect(fillSlotIndex([slot('mixer', true)])).toBe(-1);
   });
 });
+
+describe('default layout', () => {
+  beforeEach(reset);
+
+  it('resetLayout lands on the tiled default: browser, preview + inspector, arrangement', () => {
+    const registry = usePanelRegistry.getState();
+    registry.applyPreset('fl-compose');
+    registry.resetLayout();
+
+    const state = usePanelRegistry.getState();
+    expect(getRegionSlots(state.panels, 'center')).toEqual([['timeline']]);
+    expect(getRegionSlots(state.panels, 'top')).toEqual([['preview'], ['inspector']]);
+    expect(state.panels.sampleSelector.hidden).toBe(false);
+    expect(state.panels.mixer.hidden).toBe(true);
+    expect(state.dockRegionSizes.top).toBe(340);
+  });
+});

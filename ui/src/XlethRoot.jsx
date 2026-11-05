@@ -27,6 +27,7 @@ import { comboFromEvent } from './windowing/managers/shortcutCatalog.ts'
 import { load as loadShortcutOverrides, resolveCombos } from './windowing/managers/shortcutOverrides.ts'
 import { ElectronAdapter } from './windowing/managers/StatePersistence'
 import * as StatePersistence from './windowing/managers/StatePersistence'
+import { DEFAULT_PRESET_ID } from './windowing/managers/PresetManager'
 
 const EXPORT_AUDIO_LABEL = 'Export Audio…'
 const EXPORT_VIDEO_LABEL = 'Export Video…'
@@ -124,7 +125,7 @@ export async function hydrateProductionLayout({
   statePersistence.setPersistenceAdapter(adapter)
   const hydrated = await statePersistence.loadPersistedState()
   if (!hydrated) {
-    panelRegistry.getState().applyPreset('fl-compose')
+    panelRegistry.getState().applyPreset(DEFAULT_PRESET_ID)
   }
   return hydrated
 }

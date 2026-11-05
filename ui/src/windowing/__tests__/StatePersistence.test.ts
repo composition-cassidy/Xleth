@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import * as SP from '../managers/StatePersistence';
+import { DEFAULT_PRESET_ID, loadPreset } from '../managers/PresetManager';
 import {
   createInitialDockRegionSizes,
   createInitialPanelStates,
@@ -213,12 +214,12 @@ describe('StatePersistence', () => {
     expect(usePanelRegistry.getState().panels.pianoRoll.mode).toBe('floating');
   });
 
-  it('loadPersistedState soft-migrates v1 envelopes by filling default dockRegionSizes', async () => {
+  it('loadPersistedState fills default dockRegionSizes when a tiled envelope omits them', async () => {
     const adapter = makeAdapter();
     const panels = createInitialPanelStates();
     panels.mixer.hidden = false;
     await adapter.write(JSON.stringify({
-      version: 1,
+      version: SP.LAYOUT_SCHEMA_VERSION,
       panels,
     }));
     SP.setPersistenceAdapter(adapter);
@@ -226,6 +227,34 @@ describe('StatePersistence', () => {
     expect(usePanelRegistry.getState().panels.mixer.hidden).toBe(false);
     expect(usePanelRegistry.getState().dockRegionSizes).toEqual(DEFAULT_DOCK_REGION_SIZES);
   });
+
+  it.each([1, 2, 3, undefined])(
+    'migrates a pre-tiled (v%s) layout once to the default layout and writes it back',
+    async (version) => {
+      const adapter = makeAdapter();
+      // The old default: a floating arrangement over an empty work area.
+      const panels = createInitialPanelStates() as unknown as Record<string, Record<string, unknown>>;
+      panels.timeline = { ...panels.timeline, mode: 'floating' };
+      panels.mixer = { ...panels.mixer, hidden: false, mode: 'docked' };
+      await adapter.write(JSON.stringify({ version, panels }));
+      SP.setPersistenceAdapter(adapter);
+
+      await expect(SP.loadPersistedState()).resolves.toBe(true);
+
+      const expected = loadPreset(DEFAULT_PRESET_ID)!;
+      const state = usePanelRegistry.getState();
+      expect(state.panels.timeline.docked.region).toBe('center');
+      expect(state.panels.preview.docked.region).toBe('top');
+      expect(state.panels.inspector.hidden).toBe(false);
+      expect(state.dockRegionSizes).toEqual(expected.dockRegionSizes);
+
+      // Written back as v4 straight away, so the next launch merges it instead
+      // of migrating again.
+      const written = JSON.parse((await adapter.read())!);
+      expect(written.version).toBe(SP.LAYOUT_SCHEMA_VERSION);
+      expect(written.panels.timeline.docked.region).toBe('center');
+    },
+  );
 
   it('init wires writes through adapter on state change', async () => {
     const adapter = makeAdapter();

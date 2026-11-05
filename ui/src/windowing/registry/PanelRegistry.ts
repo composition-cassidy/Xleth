@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { loadPreset } from '../managers/PresetManager';
+import { DEFAULT_PRESET_ID, loadPreset } from '../managers/PresetManager';
 import { PANEL_CATALOG, PANEL_IDS, type PanelId } from './panelCatalog';
 
 export type PanelMode = 'floating' | 'docked' | 'maximized';
@@ -932,9 +932,13 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
     set({ panels, dockRegionSizes });
   },
 
+  // Back to the default layout (xleth-arrange), not to the bare catalog base
+  // state: the base state is only what presets and saved layouts merge over.
   resetLayout: () => {
-    const panels = createInitialPanelStates();
-    const dockRegionSizes = createInitialDockRegionSizes();
+    const preset = loadPreset(DEFAULT_PRESET_ID);
+    const panels = normalizeDockSlots(clonePanelStates(preset ? preset.panels : createInitialPanelStates()));
+    const dockRegionSizes = preset ? { ...preset.dockRegionSizes } : createInitialDockRegionSizes();
+    console.log(`[Shell] reset layout to ${DEFAULT_PRESET_ID}`);
     scheduleLayoutPersistence(panels, dockRegionSizes);
     set({ panels, dockRegionSizes, panelProps: {}, recentlyClosed: [] });
   },

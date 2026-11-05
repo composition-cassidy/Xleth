@@ -15,11 +15,18 @@ import {
   mergePanelStateMap,
   normalizeFocus,
 } from '../registry/panelStateMerge';
+import { DEFAULT_PRESET_ID, loadPreset } from './PresetManager';
 
-// v3 added collapsed panels and dock tab groups. Older envelopes are not
-// rejected: every version is merged field-by-field over the current defaults,
-// so a v1 or v2 layout simply arrives with the new fields at their defaults.
-export const LAYOUT_SCHEMA_VERSION = 3;
+// v3 added collapsed panels and dock tab groups. v4 is the tiled shell: a
+// mandatory center and a tabbed detail dock. Envelopes from v4 on are merged
+// field-by-field over the current defaults, so a later version that only adds
+// fields keeps the user's arrangement.
+export const LAYOUT_SCHEMA_VERSION = 4;
+
+// Below this, a saved layout was arranged for the floating-timeline shell.
+// Merging it would rebuild that shell (a floating arrangement over an empty
+// work area), so it is replaced once by the default layout instead.
+export const FIRST_TILED_LAYOUT_VERSION = 4;
 
 interface PersistenceAdapter {
   read(): Promise<string | null>;
@@ -120,6 +127,20 @@ export async function loadPersistedState(): Promise<boolean> {
 
   if (typeof parsed !== 'object' || parsed === null) return false;
   if (typeof parsed.panels !== 'object' || parsed.panels === null) return false;
+
+  const version = typeof parsed.version === 'number' ? parsed.version : 0;
+  if (version < FIRST_TILED_LAYOUT_VERSION) {
+    const preset = loadPreset(DEFAULT_PRESET_ID);
+    if (preset) {
+      const panels = normalizeDockSlots(normalizeFocus(preset.panels));
+      usePanelRegistry.setState({ panels, dockRegionSizes: preset.dockRegionSizes });
+      // Written now rather than on the next edit, so the migration happens
+      // exactly once even if the user changes nothing this session.
+      await currentAdapter.write(serializeLayoutEnvelope(panels, preset.dockRegionSizes));
+      console.log(`[Shell] layout v${version} -> v${LAYOUT_SCHEMA_VERSION}: migrated to ${DEFAULT_PRESET_ID}`);
+      return true;
+    }
+  }
 
   const merged = mergePanelStateMap(createInitialPanelStates(), parsed.panels);
   usePanelRegistry.setState({
