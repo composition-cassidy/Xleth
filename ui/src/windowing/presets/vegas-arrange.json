@@ -4,8 +4,8 @@
   "panels": {
     "timeline": {
       "hidden": false,
-      "mode": "floating",
-      "floating": { "x": 0, "y": 480, "width": 1280, "height": 280 }
+      "mode": "docked",
+      "docked": { "region": "center", "orderInRegion": 0 }
     },
     "sampleSelector": {
       "hidden": false,
@@ -15,7 +15,7 @@
     "preview": {
       "hidden": false,
       "mode": "floating",
-      "floating": { "x": 640, "y": 60, "width": 640, "height": 360 }
+      "floating": { "x": 640, "y": 40, "width": 640, "height": 360 }
     }
   }
 }

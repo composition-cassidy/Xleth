@@ -33,10 +33,10 @@ describe('PanelVisibility keep-alive rendering', () => {
 
   it('hidden panel with keepAliveWhenHidden=true renders display:none wrapper', () => {
     const registry = usePanelRegistry.getState();
-    registry.openPanel('timeline');
-    registry.closePanel('timeline');
+    registry.openPanel('preview');
+    registry.closePanel('preview');
 
-    const html = renderPanel('timeline');
+    const html = renderPanel('preview');
 
     expect(html).toContain('data-panel-mode="hidden-alive"');
     expect(html).toMatch(/display:\s?none/);

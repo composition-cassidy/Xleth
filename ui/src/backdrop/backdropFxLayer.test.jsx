@@ -548,7 +548,7 @@ describe('BackdropLayer', () => {
       registerWorkAreaRect(workAreaRect)
 
       await act(async () => {
-        beginDrag('timeline', 40, 60, 20, 30)
+        beginDrag('preview', 40, 60, 20, 30)
         panelRect = { left: 70, top: 110, width: 100, height: 80, right: 170, bottom: 190 }
         updateDrag(80, 120)
       })
@@ -630,23 +630,25 @@ describe('BackdropLayer', () => {
     expect(isEmptyBackdropClickTarget(child, workArea)).toBe(false)
   })
 
-  it('does not paint the solid preview placeholder over image or video backdrops', () => {
-    const source = readFileSync(path.resolve(process.cwd(), 'src/styles/app.css'), 'utf8')
+  it('has no empty work-area surface and no fake PREVIEW placeholder left to paint', () => {
+    // The tiled shell gives every pixel of the work area to a region, so the
+    // empty floating work area (and the "PREVIEW" slab drawn on it) is gone.
+    const appCss = readFileSync(path.resolve(process.cwd(), 'src/styles/app.css'), 'utf8')
+    const windowingCss = readFileSync(path.resolve(process.cwd(), 'src/windowing/components/windowing.css'), 'utf8')
 
-    expect(source).toMatch(/\.xleth-backdrop-off \.xleth-floating-work-area::before/)
-    expect(source).toMatch(/\.xleth-backdrop-off \.xleth-floating-work-area::after/)
-    expect(source).not.toMatch(/(?:^|\n)\.xleth-floating-work-area::(?:before|after)\s*\{/)
+    expect(appCss).not.toMatch(/xleth-floating-work-area/)
+    expect(windowingCss).not.toMatch(/xleth-floating-work-area/)
   })
 
   it('keeps native acrylic workspace surfaces transparent after flat palette rules', () => {
     const appCss = readFileSync(path.resolve(process.cwd(), 'src/styles/app.css'), 'utf8')
     const windowingCss = readFileSync(path.resolve(process.cwd(), 'src/windowing/components/windowing.css'), 'utf8')
     const flatRuleIndex = appCss.lastIndexOf('.app,\n.app-body,\n.xleth-windowing-app')
-    const acrylicRuleIndex = appCss.lastIndexOf('html[data-xleth-backdrop="native-acrylic"] .xleth-floating-work-area')
+    const acrylicRuleIndex = appCss.lastIndexOf('html[data-xleth-backdrop="native-acrylic"] .xleth-center-column')
 
     expect(acrylicRuleIndex).toBeGreaterThan(flatRuleIndex)
-    expect(appCss).toMatch(/\.app\.xleth-backdrop-native-acrylic,[\s\S]*html\[data-xleth-backdrop="native-acrylic"\] \.xleth-floating-work-area\s*\{[\s\S]*background:\s*transparent/)
-    expect(windowingCss).toMatch(/\.xleth-backdrop-native-acrylic \.xleth-windowing-app,[\s\S]*\.xleth-backdrop-native-acrylic \.xleth-floating-work-area\s*\{[\s\S]*background:\s*transparent/)
+    expect(appCss).toMatch(/\.app\.xleth-backdrop-native-acrylic,[\s\S]*html\[data-xleth-backdrop="native-acrylic"\] \.xleth-center-column\s*\{[\s\S]*background:\s*transparent/)
+    expect(windowingCss).toMatch(/\.xleth-backdrop-native-acrylic \.xleth-windowing-app,[\s\S]*\.xleth-backdrop-native-acrylic \.xleth-center-column\s*\{[\s\S]*background:\s*transparent/)
   })
 })
 

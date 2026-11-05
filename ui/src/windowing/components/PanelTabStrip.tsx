@@ -3,11 +3,11 @@ import type { CSSProperties, KeyboardEvent, PointerEvent } from 'react';
 import { X } from 'lucide-react';
 import { armPanelDrag, useIsTabDropTarget } from '../managers/DragManager';
 import { PANEL_CATALOG, panelTypeColorVar, type PanelId } from '../registry/panelCatalog';
-import { usePanelRegistry, type DockRegion } from '../registry/PanelRegistry';
+import { usePanelRegistry, type DockArea } from '../registry/PanelRegistry';
 import './windowing.css';
 
 export interface PanelTabStripProps {
-  region: DockRegion;
+  region: DockArea;
   tabIds: readonly PanelId[];
   activeId: PanelId;
 }

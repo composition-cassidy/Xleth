@@ -11,17 +11,20 @@ import { DockSlotProvider } from '../contexts/DockSlotContext';
 import { PANEL_CATALOG, WINDOW_PANEL_IDS, type PanelId } from '../registry/panelCatalog';
 import {
   getRegionSlots,
+  isEdgeRegion,
   usePanelRegistry,
-  type DockRegion as DockRegionSide,
+  type DockArea,
   type PanelStateMap,
 } from '../registry/PanelRegistry';
 import { DockRegionResizer } from './DockRegionResizer';
 import { PanelFrame } from './PanelFrame';
 
 export interface DockRegionProps {
-  side: DockRegionSide;
+  side: DockArea;
   renderPanel?: (id: PanelId) => ReactNode;
   excludePanelIds?: readonly PanelId[];
+  /** Extra class for the region element (kit styling). */
+  className?: string;
 }
 
 const EMPTY_PANEL_IDS: readonly PanelId[] = Object.freeze([]);
@@ -48,7 +51,7 @@ function DockTestBody({ label }: { label: string }) {
  * "id:size:active:collapsed".
  */
 export function dockedPanelKey(
-  side: DockRegionSide,
+  side: DockArea,
   excludePanelIds: readonly PanelId[],
   panels: PanelStateMap,
 ): string {
@@ -100,8 +103,9 @@ export function parseDockedPanelKey(key: string): DockedSlotEntry[] {
   });
 }
 
-function axisForRegion(side: DockRegionSide): DockedPanelResizeAxis {
-  return side === 'top' || side === 'bottom' ? 'horizontal' : 'vertical';
+function axisForRegion(side: DockArea): DockedPanelResizeAxis {
+  // Top, bottom and the center lay their slots out side by side.
+  return side === 'left' || side === 'right' ? 'vertical' : 'horizontal';
 }
 
 function localAxisCoordinate(rect: DOMRect, regionRect: DOMRect, axis: DockedPanelResizeAxis, edge: 'start' | 'end'): number {
@@ -145,7 +149,7 @@ function collectSnapTargets(
 }
 
 interface DockedPanelSplitterProps {
-  region: DockRegionSide;
+  region: DockArea;
   beforeId: PanelId;
   afterId: PanelId;
   beforeTitle: string;
@@ -255,27 +259,55 @@ function DockedPanelSplitter({
   );
 }
 
-export function DockRegion({ side, renderPanel, excludePanelIds = EMPTY_PANEL_IDS }: DockRegionProps) {
+/**
+ * Which slot absorbs the region's leftover main-axis space.
+ *
+ * The first open slot whose active panel is a catalog `dockFill` panel wins
+ * (Preview beside the Inspector, the Timeline in the center); otherwise the
+ * last open slot does. A collapsed slot is chrome only and never fills, so the
+ * fill falls back to the last slot that is still open. Returns -1 only when
+ * every slot is collapsed.
+ */
+export function fillSlotIndex(slots: readonly DockedSlotEntry[]): number {
+  const preferred = slots.findIndex((slot) => !slot.collapsed && PANEL_CATALOG[slot.activeId].dockFill === true);
+  if (preferred >= 0) return preferred;
+  for (let index = slots.length - 1; index >= 0; index -= 1) {
+    if (!slots[index].collapsed) return index;
+  }
+  return -1;
+}
+
+export function DockRegion({ side, renderPanel, excludePanelIds = EMPTY_PANEL_IDS, className }: DockRegionProps) {
+  // The center has no stored size and no resizer: it is whatever the edge
+  // regions leave. Hooks still run unconditionally; for the center they read
+  // an edge key and the result is ignored.
+  const edge = isEdgeRegion(side) ? side : null;
   const reactiveDockedPanelKey = usePanelRegistry((state) => dockedPanelKey(side, excludePanelIds, state.panels));
-  const reactiveSize = usePanelRegistry((state) => state.dockRegionSizes[side]);
+  const reactiveSize = usePanelRegistry((state) => (edge ? state.dockRegionSizes[edge] : 0));
   const isSSR = typeof window === 'undefined';
   const dockedKey = isSSR ? dockedPanelKey(side, excludePanelIds, usePanelRegistry.getState().panels) : reactiveDockedPanelKey;
-  const committedSize = isSSR ? usePanelRegistry.getState().dockRegionSizes[side] : reactiveSize;
-  const preview = useDockRegionResizePreview(side);
+  const committedSize = isSSR ? (edge ? usePanelRegistry.getState().dockRegionSizes[edge] : 0) : reactiveSize;
+  const preview = useDockRegionResizePreview(edge ?? 'left');
   const splitterPreview = useDockedPanelResizePreview(side);
-  const effectiveSize = preview?.size ?? committedSize;
+  const effectiveSize = edge ? (preview?.size ?? committedSize) : 0;
   const docked = parseDockedPanelKey(dockedKey);
 
   if (docked.length === 0) return null;
 
-  const sizeStyle: CSSProperties = (side === 'left' || side === 'right')
-    ? { width: `${effectiveSize}px` }
-    : { height: `${effectiveSize}px` };
+  const fillIndex = fillSlotIndex(docked);
+  // Every slot collapsed: the region is chrome only and must not hold its full
+  // stored size open as a dead band, so it shrinks to its content.
+  const sizeStyle: CSSProperties = !edge || fillIndex < 0
+    ? {}
+    : (edge === 'left' || edge === 'right')
+      ? { width: `${effectiveSize}px` }
+      : { height: `${effectiveSize}px` };
 
   return (
     <div
-      className={`xleth-dock-region xleth-dock-region--${side}`}
+      className={`xleth-dock-region xleth-dock-region--${side}${className ? ` ${className}` : ''}`}
       data-region={side}
+      data-testid={`xleth-dock-region-${side}`}
       style={sizeStyle}
     >
       {docked.map((entry, index) => {
@@ -286,12 +318,11 @@ export function DockRegion({ side, renderPanel, excludePanelIds = EMPTY_PANEL_ID
             ? splitterPreview.afterSize
             : entry.size;
         const next = docked[index + 1];
-        const isLast = next === undefined;
         // A collapsed slot is its own chrome and nothing else, so it neither
         // grows to fill the region nor offers a splitter to drag.
         const slotClassName = [
           'xleth-docked-panel-slot',
-          isLast && !entry.collapsed ? 'xleth-docked-panel-slot--fill' : '',
+          index === fillIndex ? 'xleth-docked-panel-slot--fill' : '',
           entry.collapsed ? 'xleth-docked-panel-slot--collapsed' : '',
         ].filter(Boolean).join(' ');
         const showSplitter = Boolean(next) && !entry.collapsed && !next!.collapsed;
@@ -331,7 +362,7 @@ export function DockRegion({ side, renderPanel, excludePanelIds = EMPTY_PANEL_ID
           </React.Fragment>
         )
       })}
-      <DockRegionResizer region={side} currentSize={committedSize} />
+      {edge && fillIndex >= 0 ? <DockRegionResizer region={edge} currentSize={committedSize} /> : null}
     </div>
   );
 }

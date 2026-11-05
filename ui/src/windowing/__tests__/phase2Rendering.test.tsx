@@ -38,11 +38,11 @@ describe('PanelFrame rendering', () => {
 
   it('renders maximized panels without transform or resize handles', () => {
     const registry = usePanelRegistry.getState();
-    registry.openPanel('timeline');
-    registry.maximizePanel('timeline');
+    registry.openPanel('preview');
+    registry.maximizePanel('preview');
 
-    const html = renderPanel('timeline');
-    const style = sectionStyleFor(html, 'timeline');
+    const html = renderPanel('preview');
+    const style = sectionStyleFor(html, 'preview');
 
     expect(html).toContain('data-panel-mode="maximized"');
     expect(style).not.toContain('transform');
@@ -50,8 +50,8 @@ describe('PanelFrame rendering', () => {
   });
 
   it('renders all eight resize handles for floating panels', () => {
-    usePanelRegistry.getState().openPanel('timeline');
-    const html = renderPanel('timeline');
+    usePanelRegistry.getState().openPanel('preview');
+    const html = renderPanel('preview');
 
     for (const edge of RESIZE_EDGES) {
       expect(html).toContain(`data-testid="xleth-resize-handle-${edge}"`);
@@ -60,11 +60,11 @@ describe('PanelFrame rendering', () => {
 
   it('gives each open panel its own accent color', () => {
     const registry = usePanelRegistry.getState();
-    registry.openPanel('timeline');
+    registry.openPanel('preview');
     registry.openPanel('mixer');
     registry.openPanel('pianoRoll');
 
-    for (const id of ['timeline', 'mixer', 'pianoRoll'] as const) {
+    for (const id of ['preview', 'mixer', 'pianoRoll'] as const) {
       const html = renderPanel(id);
       expect(html).toContain(`data-panel-id="${id}"`);
       expect(html).toContain(`--xleth-windowing-panel-color:${panelTypeColorVar(id)}`);
@@ -72,24 +72,24 @@ describe('PanelFrame rendering', () => {
 
     // All three are live in the floating layer, each with a distinct token.
     expect(floatingPanelKey(usePanelRegistry.getState().panels).split('|'))
-      .toEqual(expect.arrayContaining(['timeline', 'mixer', 'pianoRoll']));
+      .toEqual(expect.arrayContaining(['preview', 'mixer', 'pianoRoll']));
   });
 
   it('serializes focused panel z-index stacking in SSR markup', () => {
     const registry = usePanelRegistry.getState();
-    registry.openPanel('timeline');
+    registry.openPanel('preview');
     registry.openPanel('mixer');
     registry.focusPanel('mixer');
-    registry.focusPanel('timeline');
+    registry.focusPanel('preview');
 
-    const timelineStyle = sectionStyleFor(renderPanel('timeline'), 'timeline');
+    const previewStyle = sectionStyleFor(renderPanel('preview'), 'preview');
     const mixerStyle = sectionStyleFor(renderPanel('mixer'), 'mixer');
-    expect(timelineStyle).toContain('z-index:calc(var(--xleth-z-window-floating-base) + ');
+    expect(previewStyle).toContain('z-index:calc(var(--xleth-z-window-floating-base) + ');
     expect(mixerStyle).toContain('z-index:calc(var(--xleth-z-window-floating-base) + ');
 
-    const timelineZ = floatingLayerOffsetFor(timelineStyle);
+    const previewZ = floatingLayerOffsetFor(previewStyle);
     const mixerZ = floatingLayerOffsetFor(mixerStyle);
 
-    expect(timelineZ).toBeGreaterThan(mixerZ);
+    expect(previewZ).toBeGreaterThan(mixerZ);
   });
 });

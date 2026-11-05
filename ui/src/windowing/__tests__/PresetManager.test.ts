@@ -18,11 +18,13 @@ describe('PresetManager', () => {
     expect(loadPreset('fl-compose')).not.toBeNull();
   });
 
-  it('fl-compose: timeline visible floating, mixer docked, sampleSelector docked, preview hidden', () => {
+  it('fl-compose: timeline in the center, mixer floating, sampleSelector docked, preview hidden', () => {
     const preset = loadPreset('fl-compose')!;
     expect(preset.panels.timeline.hidden).toBe(false);
-    expect(preset.panels.timeline.mode).toBe('floating');
-    expect(preset.panels.mixer.mode).toBe('docked');
+    expect(preset.panels.timeline.mode).toBe('docked');
+    expect(preset.panels.timeline.docked.region).toBe('center');
+    expect(preset.panels.mixer.hidden).toBe(false);
+    expect(preset.panels.mixer.mode).toBe('floating');
     expect(preset.panels.sampleSelector.mode).toBe('docked');
     expect(preset.panels.preview.hidden).toBe(true);
     expect(preset.panels.timeline.focused).toBe(true);
@@ -33,12 +35,12 @@ describe('PresetManager', () => {
     expect(preset.dockRegionSizes).toEqual({ left: 258, right: 280, top: 240, bottom: 320 });
   });
 
-  it('vegas-arrange: preview visible floating top-right, timeline floating bottom, mixer hidden', () => {
+  it('vegas-arrange: preview floating, timeline in the center, mixer hidden', () => {
     const preset = loadPreset('vegas-arrange')!;
     expect(preset.panels.preview.hidden).toBe(false);
     expect(preset.panels.preview.mode).toBe('floating');
-    expect(preset.panels.timeline.mode).toBe('floating');
-    expect(preset.panels.timeline.floating.y).toBe(480);
+    expect(preset.panels.timeline.mode).toBe('docked');
+    expect(preset.panels.timeline.docked.region).toBe('center');
     expect(preset.panels.mixer.hidden).toBe(true);
     expect(preset.panels.preview.focused).toBe(true);
   });
@@ -51,7 +53,7 @@ describe('PresetManager', () => {
     usePanelRegistry.getState().applyPreset('fl-compose');
     const state = usePanelRegistry.getState();
     expect(state.panels.timeline.hidden).toBe(false);
-    expect(state.panels.mixer.mode).toBe('docked');
+    expect(state.panels.mixer.mode).toBe('floating');
     expect(state.panels.sampleSelector.mode).toBe('docked');
     expect(state.panels.preview.hidden).toBe(true);
     expect(state.dockRegionSizes).toEqual({ left: 258, right: 280, top: 240, bottom: 320 });

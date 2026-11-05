@@ -1,7 +1,7 @@
 import {
   MIN_DOCKED_PANEL_MAIN_SIZES,
   usePanelRegistry,
-  type DockRegion,
+  type DockArea,
 } from '../registry/PanelRegistry';
 import type { PanelId } from '../registry/panelCatalog';
 import type { PointerGestureSource } from './pointerGesture';
@@ -20,7 +20,7 @@ export interface DockedPanelResizePreview {
 }
 
 export interface DockedPanelResizeStartBounds {
-  region: DockRegion;
+  region: DockArea;
   axis: DockedPanelResizeAxis;
   beforeId: PanelId;
   afterId: PanelId;
@@ -55,7 +55,7 @@ function validSnapTargets(start: DockedPanelResizeStartBounds): number[] {
   return start.snapTargets.filter((target) => target >= minPosition && target <= maxPosition);
 }
 
-const machine = createEdgeResizeMachine<DockRegion, DockedPanelResizeStartBounds, DockedPanelResizePreview>({
+const machine = createEdgeResizeMachine<DockArea, DockedPanelResizeStartBounds, DockedPanelResizePreview>({
   name: 'docked-panel-resize',
   arePreviewsEqual: (a, b) => (
     a.beforeId === b.beforeId
@@ -133,6 +133,6 @@ export function subscribeDockedPanelResize(listener: () => void): () => void {
   return machine.subscribe(listener);
 }
 
-export function useDockedPanelResizePreview(region: DockRegion): DockedPanelResizePreview | null {
+export function useDockedPanelResizePreview(region: DockArea): DockedPanelResizePreview | null {
   return machine.usePreview(region);
 }

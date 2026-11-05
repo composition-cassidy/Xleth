@@ -1,9 +1,9 @@
 import React, { createContext, useContext, useMemo, type ReactNode } from 'react';
-import type { DockRegion } from '../registry/PanelRegistry';
+import type { DockArea } from '../registry/PanelRegistry';
 import type { PanelId } from '../registry/panelCatalog';
 
 export interface DockSlotContextValue {
-  region: DockRegion;
+  region: DockArea;
   /** Every panel sharing this slot, in tab order. One entry = no tab strip. */
   tabIds: readonly PanelId[];
   activeId: PanelId;

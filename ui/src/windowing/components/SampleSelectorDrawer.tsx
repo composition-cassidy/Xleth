@@ -14,7 +14,12 @@ import LeftPanel from '../../components/LeftPanel.jsx';
 import { PanelVisibilityProvider } from '../contexts/PanelVisibilityContext';
 import { useXlethRootContext } from '../contexts/XlethRootContext.jsx';
 import { DockRegionResizer } from './DockRegionResizer';
-import { usePanelRegistry, type DockRegion as DockRegionSide, type PanelRegistryState } from '../registry/PanelRegistry';
+import {
+  isEdgeRegion,
+  usePanelRegistry,
+  type DockRegion as DockRegionSide,
+  type PanelRegistryState,
+} from '../registry/PanelRegistry';
 import { panelTypeColorVar } from '../registry/panelCatalog';
 import './windowing.css';
 
@@ -76,9 +81,11 @@ export function SampleSelectorDrawer() {
   const hidden = typeof window === 'undefined'
     ? usePanelRegistry.getState().panels.sampleSelector.hidden
     : reactiveHidden;
-  const side: DockRegionSide = typeof window === 'undefined'
+  const storedSide = typeof window === 'undefined'
     ? usePanelRegistry.getState().panels.sampleSelector.docked.region
     : reactiveSide;
+  // The merge layer already keeps a drawer on an edge; this only narrows the type.
+  const side: DockRegionSide = isEdgeRegion(storedSide) ? storedSide : 'left';
   const reactiveDrawerSize = usePanelRegistry((state) => state.dockRegionSizes[side]);
   const drawerSize = typeof window === 'undefined'
     ? usePanelRegistry.getState().dockRegionSizes[side]

@@ -4,9 +4,14 @@ import { DockRegion } from './components/DockRegion';
 import { SampleSelectorDrawer } from './components/SampleSelectorDrawer';
 import { SnapGhost } from './components/SnapGhost';
 import { useDockRegionResizePreview } from './managers/DockRegionResizeManager';
-import { registerWorkAreaRect, type WorkAreaRect } from './managers/DragManager';
+import {
+  getRegisteredWorkAreaRect,
+  registerWorkAreaRect,
+  type WorkAreaRect,
+} from './managers/DragManager';
 import * as KeyboardManager from './managers/KeyboardManager';
 import {
+  isEdgeRegion,
   SAMPLE_SELECTOR_DOCK_HANDLE_WIDTH,
   usePanelRegistry,
 } from './registry/PanelRegistry';
@@ -21,6 +26,7 @@ import EffectEditorHost from '../components/mixer/EffectEditorHost.jsx';
 import ClipFxEditorHost from '../components/timeline/ClipFxEditorHost.jsx';
 import BackdropLayer from '../backdrop/BackdropLayer.jsx';
 import './components/windowing.css';
+import styles from './AppShell.module.css';
 
 const TimelinePanel = React.lazy(() => import('./panels/TimelinePanel'));
 const MixerPanel = React.lazy(() => import('./panels/MixerPanel'));
@@ -100,7 +106,8 @@ export function AppShell({ backdropImageUrl = '' }: WindowingAppShellProps) {
     : floatingPanelIds.split('|') as PanelId[];
 
   const sampleSelectorHidden = useRegistryValue((state) => state.panels.sampleSelector.hidden);
-  const sampleDockSide = useRegistryValue((state) => state.panels.sampleSelector.docked.region);
+  const storedSampleDockSide = useRegistryValue((state) => state.panels.sampleSelector.docked.region);
+  const sampleDockSide = isEdgeRegion(storedSampleDockSide) ? storedSampleDockSide : 'left';
   const committedSampleDockRegionSize = useRegistryValue((state) => state.dockRegionSizes[sampleDockSide]);
   const sampleDockResizePreview = useDockRegionResizePreview(sampleDockSide);
   const sampleDockSize = sampleDockResizePreview?.size ?? committedSampleDockRegionSize;
@@ -146,6 +153,17 @@ export function AppShell({ backdropImageUrl = '' }: WindowingAppShellProps) {
     };
   }, []);
 
+  // The floating layer is for pop-outs only. Whatever opens a window (a preset,
+  // an F-key, a pop-out) gets its bounds clamped to the work area right away,
+  // not only on the next window resize.
+  useEffect(() => {
+    if (floatingPanelIds === '') return;
+    const rect = getRegisteredWorkAreaRect();
+    if (rect.width > 0 && rect.height > 0) {
+      usePanelRegistry.getState().clampFloatingPanelsToWorkArea(rect.width, rect.height);
+    }
+  }, [floatingPanelIds]);
+
   const renderPanel = (panelId: PanelId) => {
     const PanelBody = PANEL_BODIES[panelId];
     return (
@@ -166,11 +184,20 @@ export function AppShell({ backdropImageUrl = '' }: WindowingAppShellProps) {
         <SampleSelectorDrawer />
         <div className="xleth-app-workarea" data-testid="xleth-app-workarea" ref={workAreaRef}>
           <BackdropLayer workAreaRef={workAreaRef} backdropImageUrl={backdropImageUrl} />
-          <div className="xleth-docked-window-layer" data-testid="xleth-docked-window-layer">
+          <div
+            className={`xleth-docked-window-layer ${styles.dockedLayer}`}
+            data-testid="xleth-docked-window-layer"
+          >
             <DockRegion side="left" renderPanel={renderPanel} excludePanelIds={DRAWER_PANEL_IDS} />
             <div className="xleth-center-column">
               <DockRegion side="top" renderPanel={renderPanel} excludePanelIds={DRAWER_PANEL_IDS} />
-              <div className="xleth-floating-work-area" data-backdrop-empty-surface="true" />
+              {/* Mandatory: the registry never lets the center go empty. */}
+              <DockRegion
+                side="center"
+                className={styles.center}
+                renderPanel={renderPanel}
+                excludePanelIds={DRAWER_PANEL_IDS}
+              />
               <DockRegion side="bottom" renderPanel={renderPanel} excludePanelIds={DRAWER_PANEL_IDS} />
             </div>
             <DockRegion side="right" renderPanel={renderPanel} excludePanelIds={DRAWER_PANEL_IDS} />

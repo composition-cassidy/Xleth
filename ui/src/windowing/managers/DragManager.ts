@@ -1,5 +1,5 @@
 import { useSyncExternalStore } from 'react';
-import { PANEL_TITLEBAR_HEIGHT, usePanelRegistry } from '../registry/PanelRegistry';
+import { isPinnedToCenter, PANEL_TITLEBAR_HEIGHT, usePanelRegistry } from '../registry/PanelRegistry';
 import type { DockRegion } from '../registry/PanelRegistry';
 import { PANEL_CATALOG, isPanelId, type PanelId } from '../registry/panelCatalog';
 import { beginPointerGesture, type PointerGestureSource } from './pointerGesture';
@@ -265,6 +265,8 @@ export function armPanelDrag(
   panelY: number,
   source?: PointerGestureSource | null,
 ): void {
+  // The only panel in the center cannot leave it, so there is nothing to drag.
+  if (isPinnedToCenter(usePanelRegistry.getState().panels, panelId)) return;
   let promoted = false;
   // target: null => listen, but do not capture. See the note above.
   const detach = beginPointerGesture({ target: null, pointerId: source?.pointerId ?? null }, {
@@ -336,6 +338,7 @@ export function beginDrag(
   panelY: number,
   source?: PointerGestureSource | null,
 ): void {
+  if (isPinnedToCenter(usePanelRegistry.getState().panels, panelId)) return;
   unbindWindowListeners();
   // startDrag already published the new state; attaching listeners changes
   // nothing observable, so there is exactly one notification per drag start.

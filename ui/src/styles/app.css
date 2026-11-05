@@ -22682,8 +22682,7 @@ input[type="radio"] {
 .xleth-windowing-app,
 .xleth-windowing-shell,
 .xleth-app-workarea,
-.xleth-center-column,
-.xleth-floating-work-area {
+.xleth-center-column {
   background: var(--xleth-flat-main);
   color: var(--xleth-flat-text);
   font-family: var(--xleth-global-font-family);
@@ -22697,14 +22696,12 @@ input[type="radio"] {
 .app.xleth-backdrop-native-acrylic .xleth-windowing-shell,
 .app.xleth-backdrop-native-acrylic .xleth-app-workarea,
 .app.xleth-backdrop-native-acrylic .xleth-center-column,
-.app.xleth-backdrop-native-acrylic .xleth-floating-work-area,
 html[data-xleth-backdrop="native-acrylic"] .app,
 html[data-xleth-backdrop="native-acrylic"] .app-body,
 html[data-xleth-backdrop="native-acrylic"] .xleth-windowing-app,
 html[data-xleth-backdrop="native-acrylic"] .xleth-windowing-shell,
 html[data-xleth-backdrop="native-acrylic"] .xleth-app-workarea,
-html[data-xleth-backdrop="native-acrylic"] .xleth-center-column,
-html[data-xleth-backdrop="native-acrylic"] .xleth-floating-work-area {
+html[data-xleth-backdrop="native-acrylic"] .xleth-center-column {
   background: transparent;
   background-image: none;
 }
@@ -22712,35 +22709,6 @@ html[data-xleth-backdrop="native-acrylic"] .xleth-floating-work-area {
 .xleth-windowing-shell {
   min-height: 0;
   transition: none;
-}
-
-.xleth-floating-work-area {
-  position: relative;
-}
-
-.xleth-backdrop-off .xleth-floating-work-area::before,
-html[data-xleth-backdrop="off"] .xleth-floating-work-area::before {
-  content: "";
-  position: absolute;
-  inset: 14px;
-  background: var(--xleth-flat-well);
-  border: 1px solid var(--xleth-flat-preview-border);
-  pointer-events: none;
-}
-
-.xleth-backdrop-off .xleth-floating-work-area::after,
-html[data-xleth-backdrop="off"] .xleth-floating-work-area::after {
-  content: "PREVIEW";
-  position: absolute;
-  inset: 14px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #222222;
-  font-size: 9px;
-  letter-spacing: 0.15em;
-  text-transform: uppercase;
-  pointer-events: none;
 }
 
 .titlebar {

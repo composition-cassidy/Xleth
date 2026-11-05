@@ -125,7 +125,7 @@ describe('windowing no-op writes', () => {
     registerWorkAreaRect(rect);
     expect(countRegistryNotifications(() => registerWorkAreaRect({ ...rect }))).toBe(0);
 
-    beginDrag('timeline', 500, 400, 100, 100);
+    beginDrag('preview', 500, 400, 100, 100);
     const dragState = getDragState();
     expect(dragState.state).toBe('dragging');
     if (dragState.state === 'dragging') {

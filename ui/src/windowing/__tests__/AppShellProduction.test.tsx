@@ -38,8 +38,18 @@ describe('AppShell boot', () => {
     const registry = usePanelRegistry.getState();
     for (const id of WINDOW_PANEL_IDS) registry.openPanel(id);
 
+    // The timeline starts docked in the center, so it is the one window panel
+    // the floating layer does not carry.
     const key = floatingPanelKey(usePanelRegistry.getState().panels);
-    expect(key.split('|').sort()).toEqual([...WINDOW_PANEL_IDS].sort());
+    expect(key.split('|').sort()).toEqual(WINDOW_PANEL_IDS.filter((id) => id !== 'timeline').sort());
+  });
+
+  it('mounts the center region and no empty work-area surface', () => {
+    const html = renderToStaticMarkup(<AppShell />);
+    expect(html).toContain('data-testid="xleth-dock-region-center"');
+    expect(html).toContain('data-docked-slot-id="timeline"');
+    expect(html).not.toContain('xleth-floating-work-area');
+    expect(html).not.toContain('data-backdrop-empty-surface');
   });
 
   it('never renders a quarantined panel or a drawer panel in the floating layer', () => {

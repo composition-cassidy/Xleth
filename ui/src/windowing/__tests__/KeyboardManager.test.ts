@@ -10,6 +10,7 @@ import {
 } from '../managers/KeyboardManager';
 import {
   createInitialPanelStates,
+  isPinnedToCenter,
   usePanelRegistry,
 } from '../registry/PanelRegistry';
 import { PANEL_FKEY_BINDINGS } from '../registry/panelCatalog';
@@ -62,12 +63,16 @@ describe('KeyboardManager', () => {
     expect(usePanelRegistry.getState().panels.mixer.hidden).toBe(true);
   });
 
-  it('F5 toggles timeline', () => {
-    expect(usePanelRegistry.getState().panels.timeline.hidden).toBe(false);
+  it('F5 brings the arrangement forward instead of emptying the center', () => {
+    usePanelRegistry.getState().openPanel('mixer');
+    expect(usePanelRegistry.getState().panels.timeline.focused).toBe(false);
 
     handleKeyEvent(keyEvent('F5'));
 
-    expect(usePanelRegistry.getState().panels.timeline.hidden).toBe(true);
+    // The timeline is the only panel in the center, so it cannot close; its
+    // toggle focuses it rather than doing nothing.
+    expect(usePanelRegistry.getState().panels.timeline.hidden).toBe(false);
+    expect(usePanelRegistry.getState().panels.timeline.focused).toBe(true);
   });
 
   it('F11 opens the safe fxGraph shell without opening quarantined nodeEditor', () => {
@@ -87,8 +92,10 @@ describe('KeyboardManager', () => {
 
     handleKeyEvent(keyEvent('Escape'));
 
+    // It came out of the center and goes back there.
     const panel = usePanelRegistry.getState().panels.timeline;
-    expect(panel.mode).toBe('floating');
+    expect(panel.mode).toBe('docked');
+    expect(panel.docked.region).toBe('center');
     expect(panel.preMaximizeState).toBeNull();
   });
 
@@ -179,8 +186,10 @@ describe('KeyboardManager', () => {
     handleKeyEvent(keyEvent('F9'));
     expect(usePanelRegistry.getState().panels.mixer.hidden).toBe(false);
 
+    // F5 still reaches the timeline (it stays open: it holds the center).
+    usePanelRegistry.getState().focusPanel('mixer');
     handleKeyEvent(keyEvent('F5'));
-    expect(usePanelRegistry.getState().panels.timeline.hidden).toBe(true);
+    expect(usePanelRegistry.getState().panels.timeline.focused).toBe(true);
   });
 
   describe('Ctrl+Shift preset bindings', () => {
@@ -201,8 +210,9 @@ describe('KeyboardManager', () => {
 
       const panels = usePanelRegistry.getState().panels;
       expect(panels.timeline.hidden).toBe(false);
-      expect(panels.timeline.mode).toBe('floating');
-      expect(panels.mixer.mode).toBe('docked');
+      expect(panels.timeline.mode).toBe('docked');
+      expect(panels.timeline.docked.region).toBe('center');
+      expect(panels.mixer.mode).toBe('floating');
       expect(panels.sampleSelector.mode).toBe('docked');
       expect(panels.preview.hidden).toBe(true);
     });
@@ -219,14 +229,16 @@ describe('KeyboardManager', () => {
       const panels = usePanelRegistry.getState().panels;
       expect(panels.preview.hidden).toBe(false);
       expect(panels.preview.mode).toBe('floating');
-      expect(panels.timeline.mode).toBe('floating');
+      expect(panels.timeline.mode).toBe('docked');
+      expect(panels.timeline.docked.region).toBe('center');
       expect(panels.mixer.hidden).toBe(true);
     });
 
     it('plain 1 without modifiers does not trigger preset', () => {
       handleKeyEvent({ key: '1', code: 'Digit1', type: 'keydown' } as KeyboardEvent);
 
-      expect(usePanelRegistry.getState().panels.mixer.mode).not.toBe('docked');
+      // fl-compose opens the mixer; nothing here may have.
+      expect(usePanelRegistry.getState().panels.mixer.hidden).toBe(true);
     });
 
     it('still matches an event that reports the digit in event.key', () => {
@@ -240,7 +252,7 @@ describe('KeyboardManager', () => {
         shiftKey: true,
       } as KeyboardEvent);
 
-      expect(usePanelRegistry.getState().panels.mixer.mode).toBe('docked');
+      expect(usePanelRegistry.getState().panels.mixer.hidden).toBe(false);
     });
 
     it('tolerates an event with no code at all', () => {
@@ -258,9 +270,13 @@ describe('KeyboardManager', () => {
 
     it('binds exactly the F-keys the catalog declares, to the panels it names', () => {
       for (const [fKey, panelId] of PANEL_FKEY_BINDINGS) {
-        const before = usePanelRegistry.getState().panels[panelId].hidden;
+        const before = usePanelRegistry.getState().panels;
+        const pinned = isPinnedToCenter(before, panelId);
         handleKeyEvent(keyEvent(fKey));
-        expect(usePanelRegistry.getState().panels[panelId].hidden).toBe(!before);
+        const after = usePanelRegistry.getState().panels[panelId];
+        // The center's only panel answers its key by taking focus.
+        if (pinned) expect(after.focused).toBe(true);
+        else expect(after.hidden).toBe(!before[panelId].hidden);
       }
     });
 

@@ -149,17 +149,17 @@ describe('PanelRegistry schema', () => {
   // snapshot (an older persisted layout, a hand-edited one), the panel still
   // has to come back to a window the user can move and dock.
   it('restorePanel un-maximizes a panel that has lost its snapshot', () => {
-    usePanelRegistry.getState().openPanel('timeline');
-    usePanelRegistry.getState().maximizePanel('timeline');
+    usePanelRegistry.getState().openPanel('preview');
+    usePanelRegistry.getState().maximizePanel('preview');
     usePanelRegistry.setState((state) => ({
-      panels: { ...state.panels, timeline: { ...state.panels.timeline, preMaximizeState: null } },
+      panels: { ...state.panels, timeline: { ...state.panels.preview, preMaximizeState: null } },
     }));
 
-    usePanelRegistry.getState().restorePanel('timeline');
+    usePanelRegistry.getState().restorePanel('preview');
 
-    const timeline = usePanelRegistry.getState().panels.timeline;
-    expect(timeline.mode).toBe('floating');
-    expect(timeline.hidden).toBe(false);
+    const preview = usePanelRegistry.getState().panels.preview;
+    expect(preview.mode).toBe('floating');
+    expect(preview.hidden).toBe(false);
   });
 
   it('exposes all phase 1 registry mutations', () => {
@@ -204,11 +204,11 @@ describe('PanelFrame render paths', () => {
   });
 
   it('renders floating panels with titlebar chrome', () => {
-    usePanelRegistry.getState().openPanel('timeline');
-    const html = renderPanel('timeline');
+    usePanelRegistry.getState().openPanel('preview');
+    const html = renderPanel('preview');
     expect(html).toContain('data-panel-mode="floating"');
     expect(html).toContain('xleth-windowing-titlebar');
-    expect(html).toContain('data-testid="xleth-windowing-underline-timeline"');
+    expect(html).toContain('data-testid="xleth-windowing-underline-preview"');
   });
 
   it('renders layout preset and dock controls in the top toolbar', () => {

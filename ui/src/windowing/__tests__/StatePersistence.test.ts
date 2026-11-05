@@ -175,11 +175,11 @@ describe('StatePersistence', () => {
   it('loadPersistedState restores a maximized panel with its restore target', async () => {
     const adapter = makeAdapter();
     const panels = createInitialPanelStates();
-    usePanelRegistry.getState().openPanel('timeline');
-    usePanelRegistry.getState().dockPanel('timeline', 'top');
-    usePanelRegistry.getState().maximizePanel('timeline');
-    panels.timeline = usePanelRegistry.getState().panels.timeline;
-    expect(panels.timeline.preMaximizeState).not.toBeNull();
+    usePanelRegistry.getState().openPanel('pianoRoll');
+    usePanelRegistry.getState().dockPanel('pianoRoll', 'top');
+    usePanelRegistry.getState().maximizePanel('pianoRoll');
+    panels.pianoRoll = usePanelRegistry.getState().panels.pianoRoll;
+    expect(panels.pianoRoll.preMaximizeState).not.toBeNull();
 
     await adapter.write(JSON.stringify({
       version: SP.LAYOUT_SCHEMA_VERSION,
@@ -190,19 +190,19 @@ describe('StatePersistence', () => {
     SP.setPersistenceAdapter(adapter);
     await expect(SP.loadPersistedState()).resolves.toBe(true);
 
-    expect(usePanelRegistry.getState().panels.timeline.mode).toBe('maximized');
-    usePanelRegistry.getState().restorePanel('timeline');
-    const timeline = usePanelRegistry.getState().panels.timeline;
-    expect(timeline.mode).toBe('docked');
-    expect(timeline.docked.region).toBe('top');
-    expect(timeline.preMaximizeState).toBeNull();
+    expect(usePanelRegistry.getState().panels.pianoRoll.mode).toBe('maximized');
+    usePanelRegistry.getState().restorePanel('pianoRoll');
+    const pianoRoll = usePanelRegistry.getState().panels.pianoRoll;
+    expect(pianoRoll.mode).toBe('docked');
+    expect(pianoRoll.docked.region).toBe('top');
+    expect(pianoRoll.preMaximizeState).toBeNull();
   });
 
   it('loadPersistedState un-maximizes a panel whose restore target was lost', async () => {
     const adapter = makeAdapter();
     const panels = createInitialPanelStates() as Record<string, any>;
     // Exactly what builds before this fix wrote: maximized, nothing to restore to.
-    panels.timeline = { ...panels.timeline, hidden: false, mode: 'maximized', preMaximizeState: null };
+    panels.pianoRoll = { ...panels.pianoRoll, hidden: false, mode: 'maximized', preMaximizeState: null };
     await adapter.write(JSON.stringify({
       version: SP.LAYOUT_SCHEMA_VERSION,
       panels,
@@ -210,7 +210,7 @@ describe('StatePersistence', () => {
     }));
     SP.setPersistenceAdapter(adapter);
     await expect(SP.loadPersistedState()).resolves.toBe(true);
-    expect(usePanelRegistry.getState().panels.timeline.mode).toBe('floating');
+    expect(usePanelRegistry.getState().panels.pianoRoll.mode).toBe('floating');
   });
 
   it('loadPersistedState soft-migrates v1 envelopes by filling default dockRegionSizes', async () => {

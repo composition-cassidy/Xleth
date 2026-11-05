@@ -3,8 +3,18 @@ import { loadPreset } from '../managers/PresetManager';
 import { PANEL_CATALOG, PANEL_IDS, type PanelId } from './panelCatalog';
 
 export type PanelMode = 'floating' | 'docked' | 'maximized';
+/** An edge region: it has a stored thickness and a resizer. */
 export type DockRegion = 'left' | 'right' | 'top' | 'bottom';
-export type PresetId = 'fl-compose' | 'vegas-arrange' | string;
+/**
+ * Where a docked panel lives. `center` is the work area itself: it has no
+ * stored size (it takes whatever the edge regions leave) and it is never empty.
+ */
+export type DockArea = DockRegion | 'center';
+export type PresetId = 'xleth-arrange' | 'fl-compose' | 'vegas-arrange' | string;
+
+export function isEdgeRegion(value: unknown): value is DockRegion {
+  return value === 'left' || value === 'right' || value === 'top' || value === 'bottom';
+}
 
 /** Height of a panel titlebar in px. Mirrored by --xleth-panel-titlebar-height. */
 export const PANEL_TITLEBAR_HEIGHT = 32;
@@ -17,7 +27,7 @@ export interface FloatingPanelState {
 }
 
 export interface DockedPanelState {
-  region: DockRegion;
+  region: DockArea;
   /** Slot order within the region. Every member of a tab group shares one. */
   orderInRegion: number;
   /** Extent of the whole slot along the region main axis. Shared by a group. */
@@ -55,6 +65,14 @@ export type PanelStateMap = Record<PanelId, PanelState>;
 export type DockRegionSizes = Record<DockRegion, number>;
 
 export const DOCK_REGIONS: readonly DockRegion[] = ['left', 'right', 'top', 'bottom'];
+export const DOCK_AREAS: readonly DockArea[] = ['left', 'right', 'top', 'bottom', 'center'];
+
+/**
+ * The panel the shell puts back into the center when nothing else is there.
+ * The center is the arrangement's home; an empty one would expose the
+ * workspace ground, which is exactly the dead space the tiled shell removes.
+ */
+export const CENTER_FALLBACK_PANEL_ID: PanelId = 'timeline';
 
 export const DEFAULT_DOCK_REGION_SIZES: DockRegionSizes = {
   left: 280,
@@ -101,7 +119,7 @@ export interface PanelRegistryState {
   focusNextPanel: (direction: 1 | -1) => void;
   moveFloatingPanel: (id: PanelId, x: number, y: number) => void;
   resizeFloatingPanel: (id: PanelId, x: number, y: number, width: number, height: number) => void;
-  dockPanel: (id: PanelId, region: DockRegion, slotIndex?: number) => void;
+  dockPanel: (id: PanelId, region: DockArea, slotIndex?: number) => void;
   dockPanelAsTab: (id: PanelId, targetId: PanelId) => void;
   activateTab: (id: PanelId) => void;
   undockPanel: (id: PanelId, x: number, y: number) => void;
@@ -112,7 +130,7 @@ export interface PanelRegistryState {
   toggleCollapsePanel: (id: PanelId) => void;
   setDockRegionSize: (region: DockRegion, size: number) => void;
   resizeDockedPanelPair: (
-    region: DockRegion,
+    region: DockArea,
     beforeId: PanelId,
     beforeSize: number,
     afterId: PanelId,
@@ -161,20 +179,24 @@ function scheduleLayoutPersistence(
 
 function defaultDockedState(id: PanelId): DockedPanelState {
   const base = { tabGroupId: null, tabOrder: 0, tabActive: true } as const;
+  if (id === CENTER_FALLBACK_PANEL_ID) return { region: 'center', orderInRegion: 0, sizeInRegion: 480, ...base };
   if (id === 'sampleSelector') return { region: 'left', orderInRegion: 0, sizeInRegion: 240, ...base };
   if (id === 'mixer') return { region: 'bottom', orderInRegion: 0, sizeInRegion: 240, ...base };
   return { region: 'bottom', orderInRegion: 0, sizeInRegion: 280, ...base };
 }
 
 export function createPanelState(id: PanelId, index: number): PanelState {
-  const focused = id === 'timeline';
+  const isCenter = id === CENTER_FALLBACK_PANEL_ID;
+  const focused = isCenter;
   return {
     id,
-    hidden: id !== 'timeline',
+    hidden: !isCenter,
     collapsed: false,
     focused,
     zIndex: focused ? index + 1 : 0,
-    mode: PANEL_CATALOG[id].presentation === 'drawer' ? 'docked' : 'floating',
+    // The arrangement starts docked in the center; nothing starts floating over
+    // an empty workspace any more.
+    mode: PANEL_CATALOG[id].presentation === 'drawer' || isCenter ? 'docked' : 'floating',
     floating: { ...PANEL_CATALOG[id].defaultFloating },
     docked: defaultDockedState(id),
     preMaximizeState: null,
@@ -231,7 +253,7 @@ export function dockSlotKey(panel: PanelState): string {
 }
 
 /** Visible docked panels of one region, grouped into slots in render order. */
-export function getRegionSlots(panels: PanelStateMap, region: DockRegion): PanelId[][] {
+export function getRegionSlots(panels: PanelStateMap, region: DockArea): PanelId[][] {
   const members = PANEL_IDS.filter((id) => (
     !panels[id].hidden
     && panels[id].mode === 'docked'
@@ -259,8 +281,61 @@ export function getRegionSlots(panels: PanelStateMap, region: DockRegion): Panel
   return ordered;
 }
 
+/** A panel that is visibly docked in the center, or maximized out of it. */
+function occupiesCenter(panel: PanelState): boolean {
+  if (panel.hidden) return false;
+  if (panel.mode === 'docked') return panel.docked.region === 'center';
+  // Maximizing lifts the panel out of its slot but it comes back on restore,
+  // so the center still belongs to it.
+  return panel.mode === 'maximized'
+    && panel.preMaximizeState?.mode === 'docked'
+    && panel.preMaximizeState.docked?.region === 'center';
+}
+
+export function centerOccupants(panels: PanelStateMap): PanelId[] {
+  return PANEL_IDS.filter((id) => occupiesCenter(panels[id]));
+}
+
+/**
+ * True when `id` is the only thing holding the center. Such a panel may not be
+ * closed, collapsed, undocked or docked elsewhere: every one of those would
+ * leave the work area empty.
+ */
+export function isPinnedToCenter(panels: PanelStateMap, id: PanelId): boolean {
+  const occupants = centerOccupants(panels);
+  return occupants.length === 1 && occupants[0] === id;
+}
+
+/**
+ * Safety net for layouts the registry did not produce itself (a saved file, a
+ * preset). The actions below refuse to empty the center, so in normal use this
+ * never fires.
+ */
+export function ensureCenterOccupied(panels: PanelStateMap): PanelStateMap {
+  if (centerOccupants(panels).length > 0) return panels;
+  const id = CENTER_FALLBACK_PANEL_ID;
+  console.log(`[Shell] center was empty; docking ${id} into it`);
+  panels[id] = {
+    ...panels[id],
+    hidden: false,
+    collapsed: false,
+    mode: 'docked',
+    preMaximizeState: null,
+    docked: {
+      ...panels[id].docked,
+      region: 'center',
+      orderInRegion: 0,
+      tabGroupId: null,
+      tabOrder: 0,
+      tabActive: true,
+    },
+  };
+  return panels;
+}
+
 export function normalizeDockSlots(panels: PanelStateMap): PanelStateMap {
-  for (const region of DOCK_REGIONS) {
+  ensureCenterOccupied(panels);
+  for (const region of DOCK_AREAS) {
     const slots = getRegionSlots(panels, region);
     slots.forEach((slot, slotIndex) => {
       // A slot's size is whatever its members agree on; when they disagree
@@ -500,6 +575,10 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
   closePanel: (id) => set((state) => {
     const panel = state.panels[id];
     if (panel.hidden && !panel.focused) return state;
+    if (isPinnedToCenter(state.panels, id)) {
+      console.log(`[Shell] close refused: ${id} is the only panel in the center`);
+      return state;
+    }
     return {
       recentlyClosed: pushRecentlyClosed(state.recentlyClosed, id),
       panels: commitPanels(state, (draft) => {
@@ -511,8 +590,12 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
   }),
 
   togglePanel: (id, props) => {
-    const panel = usePanelRegistry.getState().panels[id];
+    const { panels } = usePanelRegistry.getState();
+    const panel = panels[id];
     if (panel.hidden) usePanelRegistry.getState().openPanel(id, props);
+    // The center panel cannot close, so its toggle brings it forward instead of
+    // silently doing nothing.
+    else if (isPinnedToCenter(panels, id)) usePanelRegistry.getState().focusPanel(id);
     else usePanelRegistry.getState().closePanel(id);
   },
 
@@ -572,6 +655,10 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
 
   dockPanel: (id, region, slotIndex) => set((state) => {
     const panel = state.panels[id];
+    if (region !== 'center' && isPinnedToCenter(state.panels, id)) {
+      console.log(`[Shell] dock refused: ${id} is the only panel in the center`);
+      return state;
+    }
     if (
       slotIndex === undefined
       && !panel.hidden
@@ -609,6 +696,7 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
     const target = state.panels[targetId];
     if (id === targetId) return state;
     if (target.hidden || target.mode !== 'docked') return state;
+    if (target.docked.region !== 'center' && isPinnedToCenter(state.panels, id)) return state;
     return {
       panels: commitPanels(state, (draft) => {
         const groupId = draft[targetId].docked.tabGroupId ?? targetId;
@@ -651,6 +739,10 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
 
   undockPanel: (id, x, y) => set((state) => {
     const panel = state.panels[id];
+    if (isPinnedToCenter(state.panels, id)) {
+      console.log(`[Shell] pop-out refused: ${id} is the only panel in the center`);
+      return state;
+    }
     if (!panel.hidden && panel.mode === 'floating' && panel.floating.x === x && panel.floating.y === y && panel.focused) {
       return state;
     }
@@ -716,6 +808,7 @@ export const usePanelRegistry = create<PanelRegistryState>((set) => ({
   collapsePanel: (id) => set((state) => {
     const panel = state.panels[id];
     if (panel.hidden || panel.collapsed || panel.mode === 'maximized') return state;
+    if (isPinnedToCenter(state.panels, id)) return state;
     return {
       panels: commitPanels(state, (draft) => {
         draft[id].collapsed = true;

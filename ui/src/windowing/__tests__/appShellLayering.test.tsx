@@ -228,7 +228,7 @@ describe('PanelFrame selector stability', () => {
 
   it('panel hidden and mode remain the same primitive values after an unrelated panel is focused', () => {
     const reg = usePanelRegistry.getState();
-    reg.openPanel('timeline');
+    reg.openPanel('preview');
     reg.openPanel('mixer');
 
     const mixerHiddenBefore = usePanelRegistry.getState().panels.mixer.hidden;
@@ -236,7 +236,7 @@ describe('PanelFrame selector stability', () => {
 
     // Focus timeline — changes timeline's focused/zIndex but should not change
     // mixer's hidden or mode values.
-    reg.focusPanel('timeline');
+    reg.focusPanel('preview');
 
     expect(usePanelRegistry.getState().panels.mixer.hidden).toBe(mixerHiddenBefore);
     expect(usePanelRegistry.getState().panels.mixer.mode).toBe(mixerModeBefore);
@@ -254,8 +254,8 @@ describe('PanelFrame selector stability', () => {
     // as a no-op.  Verify by checking the workAreaRect captured at drag-start.
     registerWorkAreaRect({ left: 100, top: 200, right: 900, bottom: 700, width: 800, height: 500 });
 
-    usePanelRegistry.getState().openPanel('timeline');
-    beginDrag('timeline', 500, 400, 100, 100);
+    usePanelRegistry.getState().openPanel('preview');
+    beginDrag('preview', 500, 400, 100, 100);
     const state1 = getDragState();
     expect(state1.state).toBe('dragging');
     if (state1.state === 'dragging') {
@@ -266,7 +266,7 @@ describe('PanelFrame selector stability', () => {
     // Now register a rect with a changed left coordinate — this must NOT be a
     // no-op; the new value should be picked up by the next drag.
     registerWorkAreaRect({ left: 50, top: 200, right: 900, bottom: 700, width: 850, height: 500 });
-    beginDrag('timeline', 500, 400, 100, 100);
+    beginDrag('preview', 500, 400, 100, 100);
     const state2 = getDragState();
     expect(state2.state).toBe('dragging');
     if (state2.state === 'dragging') {
@@ -279,10 +279,10 @@ describe('PanelFrame selector stability', () => {
 
   it('PanelFrame renders consistent HTML on consecutive calls without intervening mutations', () => {
     const reg = usePanelRegistry.getState();
-    reg.openPanel('timeline');
+    reg.openPanel('preview');
 
     const render = () => renderToStaticMarkup(
-      <PanelFrame id="timeline"><div>content</div></PanelFrame>
+      <PanelFrame id="preview"><div>content</div></PanelFrame>
     );
     const html1 = render();
     const html2 = render();
@@ -293,12 +293,12 @@ describe('PanelFrame selector stability', () => {
 
   it('PanelFrame renders correctly after an unrelated store mutation (simulates top-level rerender)', () => {
     const reg = usePanelRegistry.getState();
-    reg.openPanel('timeline');
+    reg.openPanel('preview');
     // Explicitly focus timeline so we can observe the focused→unfocused transition
-    reg.focusPanel('timeline');
+    reg.focusPanel('preview');
 
     const htmlBefore = renderToStaticMarkup(
-      <PanelFrame id="timeline"><div>x</div></PanelFrame>
+      <PanelFrame id="preview"><div>x</div></PanelFrame>
     );
     expect(htmlBefore).toContain('data-panel-mode="floating"');
     expect(htmlBefore).toContain('data-focused="true"');
@@ -309,7 +309,7 @@ describe('PanelFrame selector stability', () => {
     reg.openPanel('mixer');
 
     const htmlAfter = renderToStaticMarkup(
-      <PanelFrame id="timeline"><div>x</div></PanelFrame>
+      <PanelFrame id="preview"><div>x</div></PanelFrame>
     );
     // Both renders must produce valid markup — a throw here would indicate a
     // maximum-update-depth or getSnapshot-cache failure.

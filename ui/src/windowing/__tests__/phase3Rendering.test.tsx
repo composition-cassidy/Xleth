@@ -25,10 +25,10 @@ function resetRegistry() {
 
 function configureDockedDemoLayout() {
   const registry = usePanelRegistry.getState();
-  registry.openPanel('timeline');
+  registry.openPanel('preview');
   registry.openPanel('mixer');
   registry.dockPanel('mixer', 'bottom');
-  registry.focusPanel('timeline');
+  registry.focusPanel('preview');
 }
 
 describe('registry docking behavior', () => {
@@ -71,9 +71,9 @@ describe('dock region SSR markup', () => {
 
   it('DockRegion renders sized docked slots and splitters between siblings', () => {
     const panels = createInitialPanelStates();
-    panels.timeline.hidden = false;
-    panels.timeline.mode = 'docked';
-    panels.timeline.docked = { ...panels.timeline.docked, region: 'bottom', orderInRegion: 0, sizeInRegion: 300 };
+    panels.preview.hidden = false;
+    panels.preview.mode = 'docked';
+    panels.preview.docked = { ...panels.preview.docked, region: 'bottom', orderInRegion: 0, sizeInRegion: 300 };
     panels.mixer.hidden = false;
     panels.mixer.mode = 'docked';
     panels.mixer.docked = { ...panels.mixer.docked, region: 'bottom', orderInRegion: 1, sizeInRegion: 260 };
@@ -81,11 +81,11 @@ describe('dock region SSR markup', () => {
 
     const html = renderToStaticMarkup(<DockRegion side="bottom" />);
 
-    expect(html).toContain('data-docked-slot-id="timeline"');
+    expect(html).toContain('data-docked-slot-id="preview"');
     expect(html).toContain('data-docked-slot-id="mixer"');
     expect(html).toContain('--xleth-docked-panel-size:300px');
     expect(html).toContain('--xleth-docked-panel-size:260px');
-    expect(html).toContain('data-testid="xleth-dock-splitter-timeline-mixer"');
+    expect(html).toContain('data-testid="xleth-dock-splitter-preview-mixer"');
   });
 
   it('DockRegion returns null when no panels are docked to that region', () => {
@@ -104,7 +104,7 @@ describe('dock region SSR markup', () => {
     // The floating layer is driven off the same state and must not claim it.
     const floating = floatingPanelKey(usePanelRegistry.getState().panels).split('|');
     expect(floating).not.toContain('mixer');
-    expect(floating).toContain('timeline');
+    expect(floating).toContain('preview');
   });
 
   it('renders the shell harness', () => {
@@ -119,13 +119,13 @@ describe('snap ghost SSR markup', () => {
 
   it('SnapGhost renders with data-snap-target when snap target is active', () => {
     registerWorkAreaRect({ left: 0, top: 0, right: 1200, bottom: 800, width: 1200, height: 800 });
-    usePanelRegistry.getState().openPanel('timeline');
+    usePanelRegistry.getState().openPanel('preview');
     beginDrag(
-      'timeline',
+      'preview',
       200,
       400,
-      usePanelRegistry.getState().panels.timeline.floating.x,
-      usePanelRegistry.getState().panels.timeline.floating.y,
+      usePanelRegistry.getState().panels.preview.floating.x,
+      usePanelRegistry.getState().panels.preview.floating.y,
     );
     updateDrag(20, 400);
 
@@ -136,13 +136,13 @@ describe('snap ghost SSR markup', () => {
 
   it('SnapGhost renders nothing when no snap target', () => {
     registerWorkAreaRect({ left: 0, top: 0, right: 1200, bottom: 800, width: 1200, height: 800 });
-    usePanelRegistry.getState().openPanel('timeline');
+    usePanelRegistry.getState().openPanel('preview');
     beginDrag(
-      'timeline',
+      'preview',
       200,
       400,
-      usePanelRegistry.getState().panels.timeline.floating.x,
-      usePanelRegistry.getState().panels.timeline.floating.y,
+      usePanelRegistry.getState().panels.preview.floating.x,
+      usePanelRegistry.getState().panels.preview.floating.y,
     );
     updateDrag(600, 400);
 

@@ -157,16 +157,6 @@
   overflow: hidden;
 }
 
-.xleth-floating-work-area {
-  flex: 1;
-  position: relative;
-  overflow: hidden;
-  min-height: 0;
-  min-width: 0;
-  background: var(--theme-primitive-app-bg);
-  background-image: none;
-}
-
 .xleth-backdrop-off .xleth-backdrop-layer,
 html[data-xleth-backdrop="off"] .xleth-backdrop-layer,
 .xleth-backdrop-native-acrylic .xleth-backdrop-layer,
@@ -177,8 +167,7 @@ html[data-xleth-backdrop="native-acrylic"] .xleth-backdrop-layer {
 .xleth-backdrop-native-acrylic .xleth-windowing-app,
 .xleth-backdrop-native-acrylic .xleth-windowing-shell,
 .xleth-backdrop-native-acrylic .xleth-app-workarea,
-.xleth-backdrop-native-acrylic .xleth-center-column,
-.xleth-backdrop-native-acrylic .xleth-floating-work-area {
+.xleth-backdrop-native-acrylic .xleth-center-column {
   background: transparent;
   background-image: none;
 }
@@ -187,22 +176,18 @@ html[data-xleth-backdrop="native-acrylic"] .xleth-backdrop-layer {
 .xleth-backdrop-image .xleth-windowing-shell,
 .xleth-backdrop-image .xleth-app-workarea,
 .xleth-backdrop-image .xleth-center-column,
-.xleth-backdrop-image .xleth-floating-work-area,
 .xleth-backdrop-video .xleth-windowing-app,
 .xleth-backdrop-video .xleth-windowing-shell,
 .xleth-backdrop-video .xleth-app-workarea,
 .xleth-backdrop-video .xleth-center-column,
-.xleth-backdrop-video .xleth-floating-work-area,
 html[data-xleth-backdrop="image"] .xleth-windowing-app,
 html[data-xleth-backdrop="image"] .xleth-windowing-shell,
 html[data-xleth-backdrop="image"] .xleth-app-workarea,
 html[data-xleth-backdrop="image"] .xleth-center-column,
-html[data-xleth-backdrop="image"] .xleth-floating-work-area,
 html[data-xleth-backdrop="video"] .xleth-windowing-app,
 html[data-xleth-backdrop="video"] .xleth-windowing-shell,
 html[data-xleth-backdrop="video"] .xleth-app-workarea,
-html[data-xleth-backdrop="video"] .xleth-center-column,
-html[data-xleth-backdrop="video"] .xleth-floating-work-area {
+html[data-xleth-backdrop="video"] .xleth-center-column {
   background: transparent;
 }
 
@@ -1110,14 +1095,6 @@ html[data-xleth-backdrop="video"] .xleth-floating-work-area {
 
 .xleth-app-workarea {
   background: var(--xleth-flat-main, #0f0f0f);
-}
-
-.xleth-floating-work-area {
-  margin: 0;
-  border: 0;
-  border-radius: 0;
-  background: var(--xleth-flat-main, #0f0f0f);
-  box-shadow: none;
 }
 
 .xleth-panel-frame {

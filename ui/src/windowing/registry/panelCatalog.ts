@@ -78,6 +78,11 @@ export interface PanelCatalogEntry {
   // region with another (the splitter clamp).
   minDockedSize: number;
   presentation: PanelPresentation;
+  // When docked, this panel's slot takes the space its region has left over
+  // (the region's fill slot) instead of keeping a stored size. Without any
+  // dockFill panel in a region, its last open slot fills. Media views set it so
+  // the arrangement and the picture get the room, not the side panels.
+  dockFill?: boolean;
   // Whether the top bar offers a visibility toggle for this panel. Drawers are
   // excluded automatically (they carry their own edge tab); set this false for
   // a panel that is only ever opened from a context menu and would be noise in
@@ -101,6 +106,7 @@ export const PANEL_CATALOG = {
     minHeight: 120,
     minDockedSize: 240,
     presentation: 'window',
+    dockFill: true,
   },
   sampleSelector: {
     id: 'sampleSelector',
@@ -142,6 +148,7 @@ export const PANEL_CATALOG = {
     minHeight: 120,
     minDockedSize: 180,
     presentation: 'window',
+    dockFill: true,
   },
   mixer: {
     id: 'mixer',

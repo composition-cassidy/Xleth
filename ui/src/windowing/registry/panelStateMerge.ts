@@ -1,5 +1,6 @@
 import { PANEL_CATALOG, PANEL_IDS, isPanelId, type PanelId } from './panelCatalog';
 import type {
+  DockArea,
   DockRegion,
   DockRegionSizes,
   DockedPanelState,
@@ -22,6 +23,8 @@ const PANEL_MODES: readonly PanelMode[] = ['floating', 'docked', 'maximized'];
 /** Modes a maximized panel may restore INTO — 'maximized' is not one of them. */
 const RESTORABLE_MODES: readonly PanelMode[] = ['floating', 'docked'];
 const DOCK_REGION_NAMES: readonly DockRegion[] = ['left', 'right', 'top', 'bottom'];
+/** Where a docked panel may live: the four edges plus the center. */
+const DOCK_AREA_NAMES: readonly DockArea[] = [...DOCK_REGION_NAMES, 'center'];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -61,8 +64,10 @@ function mergeFloating(
 function mergeDocked(base: DockedPanelState, overlay: unknown, id: PanelId): DockedPanelState {
   if (!isRecord(overlay)) return base;
   const rawTabGroup = overlay.tabGroupId;
+  // A drawer is edge-mounted by definition; it can never be the work area.
+  const areas: readonly DockArea[] = PANEL_CATALOG[id].presentation === 'drawer' ? DOCK_REGION_NAMES : DOCK_AREA_NAMES;
   return {
-    region: pickEnum(overlay.region, DOCK_REGION_NAMES, base.region),
+    region: pickEnum(overlay.region, areas, base.region),
     orderInRegion: Math.max(0, Math.round(pickFinite(overlay.orderInRegion, base.orderInRegion))),
     sizeInRegion: Math.max(
       PANEL_CATALOG[id].minDockedSize,

@@ -37,10 +37,10 @@ describe('DragManager', () => {
   it('transitions idle to dragging and back to idle', () => {
     expect(getDragState().state).toBe('idle');
 
-    beginDrag('timeline', 10, 12, 100, 140);
+    beginDrag('pianoRoll', 10, 12, 100, 140);
     expect(getDragState()).toMatchObject({
       state: 'dragging',
-      panelId: 'timeline',
+      panelId: 'pianoRoll',
       startMouseX: 10,
       startMouseY: 12,
       startPanelX: 100,
@@ -61,7 +61,7 @@ describe('DragManager', () => {
   });
 
   it('commits the final position exactly once on endDrag', () => {
-    const start = usePanelRegistry.getState().panels.timeline.floating;
+    const start = usePanelRegistry.getState().panels.pianoRoll.floating;
     const calls: Array<[number, number]> = [];
 
     usePanelRegistry.setState({
@@ -71,20 +71,20 @@ describe('DragManager', () => {
       },
     });
 
-    beginDrag('timeline', 20, 40, start.x, start.y);
+    beginDrag('pianoRoll', 20, 40, start.x, start.y);
     updateDrag(95, 24);
     updateDrag(120, 88);
     endDrag();
 
     expect(calls).toEqual([[start.x + 100, start.y + 48]]);
-    expect(usePanelRegistry.getState().panels.timeline.floating).toMatchObject({
+    expect(usePanelRegistry.getState().panels.pianoRoll.floating).toMatchObject({
       x: start.x + 100,
       y: start.y + 48,
     });
   });
 
   it('cancels without committing to the registry', () => {
-    const start = usePanelRegistry.getState().panels.timeline.floating;
+    const start = usePanelRegistry.getState().panels.pianoRoll.floating;
     let calls = 0;
 
     usePanelRegistry.setState({
@@ -94,12 +94,12 @@ describe('DragManager', () => {
       },
     });
 
-    beginDrag('timeline', 0, 0, start.x, start.y);
+    beginDrag('pianoRoll', 0, 0, start.x, start.y);
     updateDrag(50, 70);
     cancelDrag();
 
     expect(calls).toBe(0);
-    expect(usePanelRegistry.getState().panels.timeline.floating).toMatchObject({
+    expect(usePanelRegistry.getState().panels.pianoRoll.floating).toMatchObject({
       x: start.x,
       y: start.y,
     });
@@ -109,11 +109,11 @@ describe('DragManager', () => {
     const snapshots: Array<{ dx: number; dy: number } | null> = [];
 
     function Probe() {
-      snapshots.push(useDragOffset('timeline'));
+      snapshots.push(useDragOffset('pianoRoll'));
       return React.createElement('span');
     }
 
-    beginDrag('timeline', 10, 20, 100, 120);
+    beginDrag('pianoRoll', 10, 20, 100, 120);
     updateDrag(42, 66);
 
     renderToStaticMarkup(React.createElement(Probe));
@@ -127,11 +127,11 @@ describe('DragManager', () => {
     const snapshots: Array<{ dx: number; dy: number } | null> = [];
 
     function Probe() {
-      snapshots.push(useDragOffset('timeline'));
+      snapshots.push(useDragOffset('pianoRoll'));
       return React.createElement('span');
     }
 
-    beginDrag('timeline', 120, 120, 80, 60);
+    beginDrag('pianoRoll', 120, 120, 80, 60);
     updateDrag(40, 20);
 
     renderToStaticMarkup(React.createElement(Probe));
@@ -149,12 +149,12 @@ describe('DragManager', () => {
       },
     });
 
-    beginDrag('timeline', 120, 120, 80, 60);
+    beginDrag('pianoRoll', 120, 120, 80, 60);
     updateDrag(40, 20);
     endDrag();
 
     expect(calls).toEqual([[0, 0]]);
-    expect(usePanelRegistry.getState().panels.timeline.floating).toMatchObject({
+    expect(usePanelRegistry.getState().panels.pianoRoll.floating).toMatchObject({
       x: 0,
       y: 0,
     });
@@ -166,7 +166,7 @@ describe('DragManager', () => {
       calls += 1;
     });
 
-    beginDrag('timeline', 0, 0, 0, 0);
+    beginDrag('pianoRoll', 0, 0, 0, 0);
     expect(calls).toBe(1);
 
     unsubscribe();
@@ -178,7 +178,7 @@ describe('DragManager', () => {
 
   it('sets snap target when mouse is within 40px of work-area edge', () => {
     registerWorkAreaRect({ left: 0, top: 0, right: 1200, bottom: 800, width: 1200, height: 800 });
-    beginDrag('timeline', 200, 400, 100, 100);
+    beginDrag('pianoRoll', 200, 400, 100, 100);
 
     updateDrag(30, 400);
     expect((getDragState() as ActiveDragState).currentSnapTarget).toBe('left');
@@ -204,7 +204,7 @@ describe('DragManager', () => {
       },
     });
 
-    beginDrag('timeline', 200, 400, 100, 100);
+    beginDrag('pianoRoll', 200, 400, 100, 100);
     updateDrag(20, 400);
     vi.advanceTimersByTime(150);
     endDrag();
@@ -232,8 +232,8 @@ describe('DragManager', () => {
       },
     });
 
-    const start = usePanelRegistry.getState().panels.timeline.floating;
-    beginDrag('timeline', 200, 400, start.x, start.y);
+    const start = usePanelRegistry.getState().panels.pianoRoll.floating;
+    beginDrag('pianoRoll', 200, 400, start.x, start.y);
     updateDrag(20, 400);
     vi.advanceTimersByTime(50);
     endDrag();

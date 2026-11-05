@@ -29,151 +29,151 @@ describe('dock tab groups', () => {
 
   it('docking two panels to one region gives each its own slot', () => {
     const registry = usePanelRegistry.getState();
-    registry.dockPanel('timeline', 'bottom');
+    registry.dockPanel('pianoRoll', 'bottom');
     registry.dockPanel('mixer', 'bottom');
 
-    expect(slotIdsFor('bottom')).toEqual([['timeline'], ['mixer']]);
+    expect(slotIdsFor('bottom')).toEqual([['pianoRoll'], ['mixer']]);
     const panels = usePanelRegistry.getState().panels;
-    expect(panels.timeline.docked.orderInRegion).toBe(0);
+    expect(panels.pianoRoll.docked.orderInRegion).toBe(0);
     expect(panels.mixer.docked.orderInRegion).toBe(1);
-    expect(panels.timeline.docked.tabGroupId).toBeNull();
+    expect(panels.pianoRoll.docked.tabGroupId).toBeNull();
   });
 
   it('dockPanelAsTab merges two panels into one slot with one active tab', () => {
     const registry = usePanelRegistry.getState();
-    registry.dockPanel('timeline', 'bottom');
-    registry.dockPanelAsTab('mixer', 'timeline');
+    registry.dockPanel('pianoRoll', 'bottom');
+    registry.dockPanelAsTab('mixer', 'pianoRoll');
 
-    expect(slotIdsFor('bottom')).toEqual([['timeline', 'mixer']]);
+    expect(slotIdsFor('bottom')).toEqual([['pianoRoll', 'mixer']]);
     const panels = usePanelRegistry.getState().panels;
-    expect(dockSlotKey(panels.timeline)).toBe(dockSlotKey(panels.mixer));
+    expect(dockSlotKey(panels.pianoRoll)).toBe(dockSlotKey(panels.mixer));
     expect(panels.mixer.docked.tabActive).toBe(true);
-    expect(panels.timeline.docked.tabActive).toBe(false);
+    expect(panels.pianoRoll.docked.tabActive).toBe(false);
     // The slot has one size, not one per member.
-    expect(panels.timeline.docked.sizeInRegion).toBe(panels.mixer.docked.sizeInRegion);
+    expect(panels.pianoRoll.docked.sizeInRegion).toBe(panels.mixer.docked.sizeInRegion);
   });
 
   it('activateTab moves the visible tab without disturbing the slot', () => {
     const registry = usePanelRegistry.getState();
-    registry.dockPanel('timeline', 'bottom');
-    registry.dockPanelAsTab('mixer', 'timeline');
-    registry.activateTab('timeline');
+    registry.dockPanel('pianoRoll', 'bottom');
+    registry.dockPanelAsTab('mixer', 'pianoRoll');
+    registry.activateTab('pianoRoll');
 
     const panels = usePanelRegistry.getState().panels;
-    expect(panels.timeline.docked.tabActive).toBe(true);
+    expect(panels.pianoRoll.docked.tabActive).toBe(true);
     expect(panels.mixer.docked.tabActive).toBe(false);
-    expect(slotIdsFor('bottom')).toEqual([['timeline', 'mixer']]);
+    expect(slotIdsFor('bottom')).toEqual([['pianoRoll', 'mixer']]);
   });
 
   it('undocking the last tab collapses the group back to a plain slot', () => {
     const registry = usePanelRegistry.getState();
-    registry.dockPanel('timeline', 'bottom');
-    registry.dockPanelAsTab('mixer', 'timeline');
+    registry.dockPanel('pianoRoll', 'bottom');
+    registry.dockPanelAsTab('mixer', 'pianoRoll');
     registry.undockPanel('mixer', 100, 100);
 
     const panels = usePanelRegistry.getState().panels;
     expect(panels.mixer.mode).toBe('floating');
     // A group of one carries no group id, so re-docking cannot silently rejoin.
-    expect(panels.timeline.docked.tabGroupId).toBeNull();
+    expect(panels.pianoRoll.docked.tabGroupId).toBeNull();
     expect(panels.mixer.docked.tabGroupId).toBeNull();
-    expect(slotIdsFor('bottom')).toEqual([['timeline']]);
+    expect(slotIdsFor('bottom')).toEqual([['pianoRoll']]);
   });
 
   it('reopening a panel never absorbs it into a neighbour slot', () => {
     const registry = usePanelRegistry.getState();
-    registry.dockPanel('timeline', 'bottom');
+    registry.dockPanel('pianoRoll', 'bottom');
     registry.dockPanel('mixer', 'bottom');
     registry.closePanel('mixer');
     registry.openPanel('mixer');
 
-    expect(slotIdsFor('bottom')).toEqual([['timeline'], ['mixer']]);
+    expect(slotIdsFor('bottom')).toEqual([['pianoRoll'], ['mixer']]);
   });
 
   it('closing a tab leaves the remaining tab visible', () => {
     const registry = usePanelRegistry.getState();
-    registry.dockPanel('timeline', 'bottom');
-    registry.dockPanelAsTab('mixer', 'timeline');
+    registry.dockPanel('pianoRoll', 'bottom');
+    registry.dockPanelAsTab('mixer', 'pianoRoll');
     registry.closePanel('mixer');
 
     const panels = usePanelRegistry.getState().panels;
-    expect(slotIdsFor('bottom')).toEqual([['timeline']]);
-    expect(panels.timeline.docked.tabActive).toBe(true);
+    expect(slotIdsFor('bottom')).toEqual([['pianoRoll']]);
+    expect(panels.pianoRoll.docked.tabActive).toBe(true);
   });
 
   it('focusing a background tab brings it to the front of its slot', () => {
     const registry = usePanelRegistry.getState();
-    registry.dockPanel('timeline', 'bottom');
-    registry.dockPanelAsTab('mixer', 'timeline');
-    expect(usePanelRegistry.getState().panels.timeline.docked.tabActive).toBe(false);
+    registry.dockPanel('pianoRoll', 'bottom');
+    registry.dockPanelAsTab('mixer', 'pianoRoll');
+    expect(usePanelRegistry.getState().panels.pianoRoll.docked.tabActive).toBe(false);
 
-    registry.focusPanel('timeline');
-    expect(usePanelRegistry.getState().panels.timeline.docked.tabActive).toBe(true);
+    registry.focusPanel('pianoRoll');
+    expect(usePanelRegistry.getState().panels.pianoRoll.docked.tabActive).toBe(true);
   });
 
   it('a splitter resize moves the whole slot, not just the visible tab', () => {
     const registry = usePanelRegistry.getState();
-    registry.dockPanel('timeline', 'bottom');
-    registry.dockPanelAsTab('mixer', 'timeline');
     registry.dockPanel('pianoRoll', 'bottom');
+    registry.dockPanelAsTab('mixer', 'pianoRoll');
+    registry.dockPanel('preview', 'bottom');
 
-    registry.resizeDockedPanelPair('bottom', 'mixer', 400, 'pianoRoll', 300);
+    registry.resizeDockedPanelPair('bottom', 'mixer', 400, 'preview', 300);
 
     const panels = usePanelRegistry.getState().panels;
     expect(panels.mixer.docked.sizeInRegion).toBe(400);
     // Without this the hidden tab would keep the old size and
     // normalizeDockSlots would widen the slot right back.
-    expect(panels.timeline.docked.sizeInRegion).toBe(400);
-    expect(panels.pianoRoll.docked.sizeInRegion).toBe(300);
+    expect(panels.pianoRoll.docked.sizeInRegion).toBe(400);
+    expect(panels.preview.docked.sizeInRegion).toBe(300);
   });
 
   it('renders a tab strip for a shared slot and only the active panel body', () => {
     const registry = usePanelRegistry.getState();
-    registry.dockPanel('timeline', 'bottom');
-    registry.dockPanelAsTab('mixer', 'timeline');
+    registry.dockPanel('pianoRoll', 'bottom');
+    registry.dockPanelAsTab('mixer', 'pianoRoll');
 
     const html = renderToStaticMarkup(<DockRegion side="bottom" />);
 
     expect(html).toContain('data-testid="xleth-panel-tabstrip"');
-    expect(html).toContain('data-tab-id="timeline"');
+    expect(html).toContain('data-tab-id="pianoRoll"');
     expect(html).toContain('data-tab-id="mixer"');
     expect(html).toContain('role="tablist"');
-    // Mixer is the active tab; Timeline stays mounted but unpainted.
+    // Mixer is the active tab; Piano Roll stays mounted but unpainted.
     expect(html).toContain('data-panel-mode="docked"');
     expect(html).toContain('data-panel-mode="inactive-tab"');
     expect(html).toContain('data-slot-tab-count="2"');
   });
 
   it('a single-panel slot renders no tab strip', () => {
-    usePanelRegistry.getState().dockPanel('timeline', 'bottom');
+    usePanelRegistry.getState().dockPanel('pianoRoll', 'bottom');
     const html = renderToStaticMarkup(<DockRegion side="bottom" />);
     expect(html).not.toContain('xleth-panel-tabstrip');
   });
 
   it('dockedPanelKey round-trips slot membership through parseDockedPanelKey', () => {
     const registry = usePanelRegistry.getState();
-    registry.dockPanel('timeline', 'bottom');
-    registry.dockPanelAsTab('mixer', 'timeline');
     registry.dockPanel('pianoRoll', 'bottom');
+    registry.dockPanelAsTab('mixer', 'pianoRoll');
+    registry.dockPanel('preview', 'bottom');
 
     const key = dockedPanelKey('bottom', [], usePanelRegistry.getState().panels);
     const parsed = parseDockedPanelKey(key);
 
-    expect(parsed.map((slot) => slot.ids)).toEqual([['timeline', 'mixer'], ['pianoRoll']]);
+    expect(parsed.map((slot) => slot.ids)).toEqual([['pianoRoll', 'mixer'], ['preview']]);
     expect(parsed[0].activeId).toBe('mixer');
-    expect(parsed[1].activeId).toBe('pianoRoll');
+    expect(parsed[1].activeId).toBe('preview');
   });
 
   it('clamps a slot pair against the catalog minimums', () => {
     const registry = usePanelRegistry.getState();
-    registry.dockPanel('timeline', 'bottom');
+    registry.dockPanel('pianoRoll', 'bottom');
     registry.dockPanel('mixer', 'bottom');
 
     // Ask for far less than the mixer's declared minimum.
-    registry.resizeDockedPanelPair('bottom', 'timeline', 900, 'mixer', 20);
+    registry.resizeDockedPanelPair('bottom', 'pianoRoll', 900, 'mixer', 20);
 
     const panels = usePanelRegistry.getState().panels;
     expect(panels.mixer.docked.sizeInRegion).toBe(PANEL_CATALOG.mixer.minDockedSize);
-    expect(panels.timeline.docked.sizeInRegion)
+    expect(panels.pianoRoll.docked.sizeInRegion)
       .toBe(920 - PANEL_CATALOG.mixer.minDockedSize);
   });
 });
@@ -214,13 +214,13 @@ describe('panel collapse', () => {
 
   it('a collapsed docked slot neither fills the region nor grows a splitter', () => {
     const registry = usePanelRegistry.getState();
-    registry.dockPanel('timeline', 'bottom');
+    registry.dockPanel('pianoRoll', 'bottom');
     registry.dockPanel('mixer', 'bottom');
     registry.collapsePanel('mixer');
 
     const html = renderToStaticMarkup(<DockRegion side="bottom" />);
     expect(html).toContain('xleth-docked-panel-slot--collapsed');
-    expect(html).not.toContain('xleth-dock-splitter-timeline-mixer');
+    expect(html).not.toContain('xleth-dock-splitter-pianoRoll-mixer');
   });
 
   it('maximizing clears collapse and restoring brings it back', () => {
