@@ -421,9 +421,11 @@ describe('ClipScratchEditorPanel write path', () => {
     expect(storeSource).toMatch(/from '\.\.\/components\/timeline\/clipModulationPatch\.js'/)
   })
 
-  it('the Scratch dropdown section launches the graph editor', () => {
+  it('the Scratch section (in the Inspector since Phase 3) launches the graph editor', () => {
+    const inspectorSource = readFileSync(resolve(COMPONENTS_DIR, 'inspector', 'ClipInspector.jsx'), 'utf8')
+    expect(inspectorSource).toMatch(/openClipFxEditor\('scratch', clipId\)/)
+    expect(inspectorSource).toMatch(/from '\.\.\/timeline\/clipScratch\.js'/)
     const timelineSource = readFileSync(resolve(COMPONENTS_DIR, 'TimelineView.jsx'), 'utf8')
-    expect(timelineSource).toMatch(/openClipFxEditor\('scratch', contextMenu\.clipId\)/)
     // ...and the preset vocabulary is shared with the editor, not duplicated.
     expect(timelineSource).toMatch(/from '\.\/timeline\/clipScratch\.js'/)
     expect(timelineSource).not.toMatch(/^const SCRATCH_PRESETS = \[/m)

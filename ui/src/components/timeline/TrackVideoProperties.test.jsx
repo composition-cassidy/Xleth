@@ -32,14 +32,14 @@ let container, root, timeline
 async function flush() { await act(async () => { await Promise.resolve(); await Promise.resolve() }) }
 
 async function render(trackId) {
-  await act(async () => { root.render(<TrackVideoProperties trackId={trackId} onBack={() => {}} />) })
+  await act(async () => { root.render(<TrackVideoProperties trackId={trackId} />) })
   await flush()
 }
 
 function findHoldGapCheckbox() {
-  const label = Array.from(container.querySelectorAll('label.tvp-checkbox-row'))
-    .find(l => l.textContent.includes('Hold last frame between notes'))
-  return label?.querySelector('input[type=checkbox]') ?? null
+  // A kit Toggle (button[aria-pressed]) since the Inspector rebuild (Phase 3).
+  return Array.from(container.querySelectorAll('button[aria-pressed]'))
+    .find(b => b.textContent.includes('Hold last frame between notes')) ?? null
 }
 
 describe('TrackVideoProperties — fullscreen hold-last-frame-between-notes checkbox', () => {
@@ -64,7 +64,7 @@ describe('TrackVideoProperties — fullscreen hold-last-frame-between-notes chec
     await render(3)
     const checkbox = findHoldGapCheckbox()
     expect(checkbox).toBeTruthy()
-    expect(checkbox.checked).toBe(true)
+    expect(checkbox.getAttribute('aria-pressed')).toBe('true')
   })
 
   it('unchecking commits placement=front via setFullscreenLayers, zOrder untouched', async () => {

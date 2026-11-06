@@ -1,0 +1,155 @@
+/* The Inspector: properties of the arrangement's current selection. A dense
+ * label / control column; sections in the order a user works through them. */
+@layer kit {
+  .root {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    min-height: 0;
+    overflow-y: auto;
+    background: var(--ui-g1);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+  }
+
+  /* Identity header: the track colour, the name, what it is. */
+  .head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: var(--panel-header-h);
+    padding: var(--space-1) var(--space-2);
+    background: var(--ui-g2);
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .swatch {
+    flex: 0 0 auto;
+    width: 4px;
+    align-self: stretch;
+    border-radius: var(--ui-radius-0);
+    background: var(--ui-g4);
+  }
+
+  .headText {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .title {
+    margin: 0;
+    overflow: hidden;
+    color: var(--ui-ink);
+    font-size: var(--type-13);
+    font-weight: var(--weight-semibold);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .meta {
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  .section {
+    display: flex;
+    flex-direction: column;
+    padding-bottom: var(--space-1);
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: var(--row-h);
+    padding: 2px var(--space-2);
+  }
+
+  .rowLabel {
+    flex: 0 0 9ch;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  .rowControl {
+    display: flex;
+    flex: 1 1 auto;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1);
+    min-width: 0;
+  }
+
+  /* Controls that only exist while their parent toggle is on. */
+  .group {
+    margin: 0 var(--space-2) var(--space-1) calc(var(--space-2) + 4px);
+    padding-left: var(--space-1);
+    border-left: 1px solid var(--ui-g4);
+  }
+
+  .status {
+    margin: 0;
+    padding: var(--space-1) var(--space-2);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  .hint {
+    margin: 0;
+    padding: 2px var(--space-2);
+    color: var(--ui-ink-3);
+    font-size: var(--type-11);
+  }
+
+  /* Hosted legacy sections (flip, corner radius, gap, visual FX) keep their own
+   * internals until their own rebuild; this only gives them the column's padding. */
+  .hosted {
+    padding: var(--space-1) var(--space-2);
+  }
+
+  .summary {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1) var(--space-3);
+    margin: 0;
+    padding: var(--space-1) var(--space-2);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .summary dt {
+    display: inline;
+    color: var(--ui-ink-3);
+  }
+
+  .summary dd {
+    display: inline;
+    margin: 0 0 0 var(--space-1);
+    color: var(--ui-ink);
+  }
+
+  .empty {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 100%;
+    min-height: 0;
+    padding: var(--space-4);
+    background: var(--ui-g1);
+  }
+
+  .emptyText {
+    max-width: 28ch;
+    margin: 0;
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    line-height: 1.5;
+    text-align: center;
+  }
+}

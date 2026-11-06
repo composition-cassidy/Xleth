@@ -1,17 +1,16 @@
 import React from 'react';
 import { PanelFrame } from '../components/PanelFrame';
-import styles from './PanelEmptyState.module.css';
+import InspectorBody from '../../components/inspector/InspectorBody.jsx';
 
 /**
- * Properties of the current selection. Phase 1 only reserves its place in the
- * shell; Phase 3 fills it. Until then it says so instead of showing fake fields.
+ * Properties of the arrangement's current selection (a track or a clip). The
+ * arrangement publishes its selection to useInspectorStore; nothing selected
+ * shows an honest empty state.
  */
 export default function InspectorPanel() {
   return (
     <PanelFrame id="inspector">
-      <div className={styles.body} data-testid="xleth-inspector-empty">
-        <p className={styles.empty}>Select a clip or track to edit its properties</p>
-      </div>
+      <InspectorBody />
     </PanelFrame>
   );
 }

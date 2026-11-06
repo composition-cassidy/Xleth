@@ -1351,8 +1351,7 @@ html[data-xleth-backdrop="video"] .app-body {
 .gsp-dim-input,
 .gsp-link-btn,
 .grid-tab-btn,
-.vtl-row-handle,
-.tvp-opacity-row input[type=range] {
+.vtl-row-handle {
   -webkit-app-region: no-drag;
   pointer-events: auto;
 }
@@ -5891,132 +5890,8 @@ html[data-xleth-backdrop="video"] .app-body {
   gap: 10px;
 }
 
-.tvp-breadcrumb {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--theme-text-muted);
-  padding-bottom: 6px;
-  border-bottom: 1px solid var(--theme-border-subtle);
-}
-
-.tvp-back-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  background: transparent;
-  color: var(--theme-text-muted);
-  border: none;
-  border-radius: var(--radius-sm);
-  padding: 2px 4px 2px 2px;
-  cursor: pointer;
-  font-size: 12px;
-}
-
-.tvp-back-btn:hover {
-  color: var(--theme-text);
-  background: var(--theme-bg-elevated);
-}
-
-.tvp-breadcrumb-sep {
-  color: var(--theme-text-subtle);
-}
-
-.tvp-breadcrumb-current {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--theme-text);
-  font-weight: 600;
-}
-
-.tvp-breadcrumb-type {
-  font-weight: 400;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--theme-text-subtle);
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: 10px;
-  padding: 0 6px;
-}
-
-.tvp-section {
-  gap: 8px;
-}
-
-.tvp-section-title {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  color: var(--theme-text-muted);
-  font-weight: 600;
-  padding-bottom: 5px;
-  border-bottom: 1px solid var(--theme-border-subtle);
-}
-
-.tvp-checkbox-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  font-size: 12px;
-  color: var(--theme-text);
-}
-
-.tvp-hint {
-  color: var(--theme-text-subtle);
-  font-size: 11px;
-}
-
 /* ── Hold Last Frame threshold ─────────────────────────────────────────────
    Indented under the Hold Last Frame checkbox it qualifies. */
-.tvp-hold-threshold {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  margin-top: 8px;
-  padding-left: 22px;
-}
-
-.tvp-hold-threshold-field {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 12px;
-  color: var(--theme-text);
-}
-
-.tvp-hold-threshold-input {
-  width: 68px;
-  background: var(--theme-bg-elevated);
-  color: var(--theme-text);
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: var(--radius-sm);
-  padding: 2px 6px;
-  font-size: 12px;
-}
-
-.tvp-hold-threshold-input:focus {
-  outline: none;
-  border-color: var(--theme-border-focus);
-}
-
-.tvp-back-inline {
-  margin-left: 8px;
-  background: var(--theme-bg-elevated);
-  color: var(--theme-text);
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: var(--radius-sm);
-  padding: 2px 8px;
-  cursor: pointer;
-  font-size: 12px;
-}
-
 .grid-tab-row {
   display: flex;
   align-items: center;
@@ -6308,34 +6183,6 @@ html[data-xleth-backdrop="video"] .app-body {
 }
 
 /* ── Track Detail: fullscreen opacity control ───────────────────────────── */
-.tvp-opacity-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-}
-
-.tvp-opacity-label {
-  font-size: 11px;
-  color: var(--theme-text-subtle);
-  flex-shrink: 0;
-}
-
-.tvp-opacity-row input[type=range] {
-  flex: 1;
-  min-width: 0;
-  accent-color: var(--theme-accent);
-  cursor: pointer;
-}
-
-.tvp-opacity-val {
-  min-width: 36px;
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-  font-size: 11px;
-  color: var(--theme-text-muted);
-  flex-shrink: 0;
-}
-
 /* ── Summary badge variant for the grid editor overlay ── */
 .grid-editor-badge-fs-summary {
   border-left: 2px solid var(--theme-accent);
@@ -26662,113 +26509,8 @@ html[data-xleth-backdrop="native-acrylic"] .xleth-center-column {
   background: var(--xleth-flat-panel);
 }
 
-.tvp-breadcrumb {
-  min-height: 36px;
-  padding: 0 12px;
-  border-bottom: 1px solid var(--xleth-flat-border);
-  background: var(--xleth-flat-section);
-}
-
-.tvp-back-btn {
-  min-height: 26px;
-  padding: 0 7px 0 2px;
-  border: 1px solid transparent;
-  border-radius: 0;
-  color: var(--xleth-flat-text-muted);
-}
-
-.tvp-back-btn:hover,
-.tvp-back-btn:focus-visible {
-  border-color: var(--xleth-flat-border-strong);
-  background: var(--xleth-flat-well);
-  color: var(--xleth-flat-text-secondary);
-  outline: 0;
-}
-
-.tvp-breadcrumb-current {
-  color: var(--xleth-flat-text-secondary);
-}
-
-.tvp-breadcrumb-type {
-  border-radius: 0;
-  border-color: var(--xleth-flat-border-strong);
-  color: var(--xleth-flat-text-muted);
-}
-
-.tvp-summary-row {
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
-  border-bottom: 1px solid var(--xleth-flat-border);
-  background: var(--xleth-flat-well);
-}
-
-.tvp-summary-chip {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  min-height: 34px;
-  padding: 0 12px;
-  border-right: 1px solid var(--xleth-flat-border);
-  color: var(--xleth-flat-text-secondary);
-  font-size: 12px;
-  min-width: 0;
-}
-
-.tvp-summary-chip:last-child {
-  border-right: 0;
-}
-
-.tvp-summary-label {
-  color: var(--xleth-flat-text-muted);
-  font-size: 9px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.tvp-summary-chip.active,
-.tvp-summary-chip--behind,
-.tvp-summary-chip--front {
-  color: var(--xleth-flat-accent);
-}
-
-.tvp-section {
-  gap: 0;
-  border-bottom: 1px solid var(--xleth-flat-border);
-}
-
-.tvp-section-title {
-  min-height: 30px;
-  padding: 0 12px;
-  border-bottom: 1px solid var(--xleth-flat-border);
-  background: var(--xleth-flat-section);
-  color: var(--xleth-flat-text-subtle);
-  font-size: 9px;
-  font-weight: 400;
-  letter-spacing: 0.12em;
-}
-
-.tvp-checkbox-row {
-  min-height: 40px;
-  padding: 0 12px;
-  color: var(--xleth-flat-text-secondary);
-}
-
-.tvp-checkbox {
-  accent-color: var(--xleth-flat-accent);
-}
-
-.tvp-hint {
-  color: var(--xleth-flat-text-muted);
-}
-
-.tvp-opacity-row,
 .tvp-root .grid-tab-track-sliders {
   padding: 12px;
-}
-
-.tvp-opacity-row input[type=range] {
-  accent-color: var(--xleth-flat-accent);
 }
 
 .track-flip-section {
@@ -26990,8 +26732,7 @@ html[data-xleth-backdrop="native-acrylic"] .xleth-center-column {
 
 @media (max-width: 760px) {
   .video-overview-tab .gsp-layout-row,
-  .video-overview-tab .gsp-layout-controls,
-  .tvp-summary-row {
+.video-overview-tab .gsp-layout-controls {
     grid-template-columns: 1fr;
   }
 
@@ -27023,77 +26764,16 @@ html[data-xleth-backdrop="native-acrylic"] .xleth-center-column {
   background: var(--xleth-flat-well);
 }
 
-.tvp-content {
-  display: flex;
-  flex-direction: column;
-  gap: 14px;
-  width: 100%;
-  max-width: 640px;
-}
-
 /* ── Compact summary chip row (was: full-width 4-col spread) ────────────── */
-.tvp-root .tvp-summary-row {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  border-bottom: 0;
-  background: transparent;
-  padding: 0;
-}
-
-.tvp-root .tvp-summary-chip {
-  flex: 0 0 auto;
-  min-height: 28px;
-  padding: 0 10px;
-  border: 1px solid var(--xleth-flat-border);
-  background: var(--xleth-flat-panel);
-}
-
 /* ── Card container (was: full-bleed strip + hairline separator) ────────── */
-.tvp-root .tvp-section {
-  gap: 0;
-  padding: 0;
-  border: 0;
-  background: var(--xleth-flat-panel);
-}
-
 /* ── One header-row pattern for every card ───────────────────────────────
    Small-caps title on the left; count badge / actions (where present) on
    the right. Shared verbatim by tvp-section-title (Video Flip, Hold Last
    Frame, Fullscreen Layer, Layout) and — via the bleed-to-edge technique
    below — by the Visual FX and Slide Note Effect headers, which live one
    level deeper inside their own self-contained components. */
-.tvp-root .tvp-section-title {
-  min-height: 34px;
-  padding: 0 16px;
-  gap: 6px;
-  background: var(--xleth-flat-section);
-  border-bottom: 1px solid var(--xleth-flat-border);
-  color: var(--xleth-flat-text-muted);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.12em;
-}
-
-.tvp-root .tvp-section-body {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 16px;
-}
-
 /* Rows that used to self-pad against a full-bleed card now sit inside a
    padded body wrapper — drop their own inset so it isn't applied twice. */
-.tvp-root .tvp-section-body .tvp-checkbox-row {
-  min-height: auto;
-  padding: 0;
-}
-
-.tvp-root .tvp-section-body .tvp-opacity-row {
-  margin: 0;
-  padding: 0;
-}
-
 /* Visual FX + Slide Note Effect bring their own header as the first child
    of a component that's also their card body — bleed it back out to the
    card edges so it reads as the same header strip as tvp-section-title. */
@@ -27159,7 +26839,6 @@ html[data-xleth-backdrop="native-acrylic"] .xleth-center-column {
 }
 
 /* Helper text — one contrast step up from the flat pass's default muted. */
-.tvp-root .tvp-hint,
 .tvp-root .track-flip-hint {
   color: var(--xleth-flat-text-secondary);
 }
@@ -27228,51 +26907,6 @@ html[data-xleth-backdrop="native-acrylic"] .xleth-center-column {
    rangeFillStyle in utils/sliderHelpers.js); pseudo-elements inherit it from
    their host element, so the gradient can live on ::-webkit-slider-runnable-
    track directly and still track a value CSS alone cannot read. */
-.tvp-root .tvp-content input[type="range"] {
-  height: 4px;
-}
-
-.tvp-root .tvp-content input[type="range"]::-webkit-slider-runnable-track {
-  height: 4px;
-  background: linear-gradient(
-    to right,
-    color-mix(in srgb, var(--xleth-flat-accent) 45%, var(--xleth-flat-border)) 0%,
-    color-mix(in srgb, var(--xleth-flat-accent) 45%, var(--xleth-flat-border)) var(--val, 0%),
-    var(--xleth-flat-border) var(--val, 0%),
-    var(--xleth-flat-border) 100%
-  );
-}
-
-.tvp-root .tvp-content input[type="range"]::-webkit-slider-thumb {
-  width: 14px;
-  height: 14px;
-  margin-top: -5px;
-  border: 0;
-  border-radius: 999px;
-  background: var(--xleth-flat-accent);
-  box-shadow: none;
-  -webkit-appearance: none;
-  appearance: none;
-}
-
-.tvp-root .tvp-content input[type="range"]::-moz-range-track {
-  height: 4px;
-  background: var(--xleth-flat-border);
-}
-
-.tvp-root .tvp-content input[type="range"]::-moz-range-progress {
-  height: 4px;
-  background: color-mix(in srgb, var(--xleth-flat-accent) 45%, var(--xleth-flat-border));
-}
-
-.tvp-root .tvp-content input[type="range"]::-moz-range-thumb {
-  width: 14px;
-  height: 14px;
-  border: 0;
-  border-radius: 999px;
-  background: var(--xleth-flat-accent);
-}
-
 /* Custom Gap: reflow into one label-left row (checkbox-label · slider ·
    value pill) instead of a label/readout row stacked over a full-width bar. */
 .tvp-root .grid-tab-gap-row {
@@ -27301,8 +26935,7 @@ html[data-xleth-backdrop="native-acrylic"] .xleth-center-column {
 .tvp-root .fx-params-grid span:not(:empty),
 .tvp-root .grid-tab-slide-params span:not(:empty),
 .tvp-root .grid-tab-gap-readout,
-.tvp-root .grid-tab-corner-radius-readout,
-.tvp-root .tvp-opacity-val {
+.tvp-root .grid-tab-corner-radius-readout {
   display: inline-flex;
   align-items: center;
   justify-content: center;

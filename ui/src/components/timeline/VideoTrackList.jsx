@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { GripVertical, SlidersHorizontal } from 'lucide-react'
 import { timelineEvents } from '../../timelineEvents.js'
-import useVideoTabStore from '../../stores/useVideoTabStore.js'
+import useInspectorStore, { revealInspector } from '../../stores/useInspectorStore.js'
 import TrackContextMenu from './TrackContextMenu.jsx'
 import {
   partitionAndSortTracks,
@@ -34,7 +34,12 @@ const notifyTracks = () => timelineEvents.dispatchEvent(new Event('timeline-trac
  *   layout – current grid layout (slots + fullscreenLayers)
  */
 export default function VideoTrackList({ tracks = [], layout }) {
-  const openTrackVideoProperties = useVideoTabStore((s) => s.openTrackVideoProperties)
+  // Edit = select the track in the arrangement and show it in the Inspector.
+  const requestTrackSelection = useInspectorStore((s) => s.requestTrackSelection)
+  const openTrackVideoProperties = useCallback((trackId) => {
+    requestTrackSelection(trackId)
+    revealInspector()
+  }, [requestTrackSelection])
 
   const [menu, setMenu] = useState(null) // { track, x, y }
 
@@ -133,7 +138,7 @@ export default function VideoTrackList({ tracks = [], layout }) {
     const track = menu.track
     return [
       {
-        label: 'Video Properties…',
+        label: 'Show in Inspector',
         checked: !!track.videoFlipConfig?.enabled,
         onClick: () => openTrackVideoProperties(track.id),
       },
