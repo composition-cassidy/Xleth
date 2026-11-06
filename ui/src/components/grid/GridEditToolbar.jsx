@@ -184,6 +184,9 @@ export default function GridEditToolbar() {
     await runSnapshotMutation('renameSnapshot', (tl) => tl?.renameSnapshot?.(snapshot.id, name))
   }
 
+  const fsLayers = layout.fullscreenLayers ?? []
+  const fsBehind = fsLayers.filter((l) => l.placement === 'behind').length
+  const fsFront = fsLayers.filter((l) => l.placement === 'front').length
   const canvasW = layout.canvasWidth ?? 1920
   const canvasH = layout.canvasHeight ?? 1080
   const previewFps = Number(layout.previewFps ?? 30)
@@ -294,6 +297,12 @@ export default function GridEditToolbar() {
           <Trash2 aria-hidden="true" />
         </IconButton>
       </div>
+
+      {fsLayers.length > 0 && (
+        <span className={styles.readout} data-hint="Fullscreen layers: behind and in front of the grid">
+          Fullscreen <span className={styles.numbers}>{fsBehind}</span> behind · <span className={styles.numbers}>{fsFront}</span> front
+        </span>
+      )}
 
       <Button size="sm" glyph={<Eraser aria-hidden="true" />} onClick={handleClearLayout} hint="Remove every grid slot and fullscreen layer">
         Clear layout

@@ -2293,9 +2293,7 @@ html[data-xleth-backdrop="video"] .app-body {
 }
 
 .pattern-list-title {
-  font: 600 10px var(--xleth-global-font-family);
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
+  font: 600 11px var(--xleth-global-font-family);
   color: var(--theme-text-muted);
 }
 
@@ -5446,36 +5444,6 @@ html[data-xleth-backdrop="video"] .app-body {
   vertical-align: middle;
 }
 
-.grid-editor-badges {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  z-index: 15;
-  pointer-events: none;
-}
-
-.grid-editor-badge {
-  padding: 3px 8px;
-  border-radius: 3px;
-  font-size: 10px;
-  font-weight: 600;
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  background: var(--theme-overlay-heavy);
-  color: var(--theme-fg-inverse);
-}
-
-.grid-editor-badge-fs-back {
-  border-left: 2px solid var(--theme-accent);
-}
-
-.grid-editor-badge-fs-front {
-  border-left: 2px solid #ff9500;
-}
-
 /* ─── Free-canvas drag/drop UI ────────────────────────────────────────────
    Drag-from-palette ghost preview, snap toolbar, track palette. The
    palette is a horizontal strip docked to the bottom of the overlay and
@@ -5541,10 +5509,6 @@ html[data-xleth-backdrop="video"] .app-body {
 /* ── Video-tab flat track list (VideoTrackList) ─────────────────────────── */
 /* ── Track Detail: fullscreen opacity control ───────────────────────────── */
 /* ── Summary badge variant for the grid editor overlay ── */
-.grid-editor-badge-fs-summary {
-  border-left: 2px solid var(--theme-accent);
-}
-
 /* ── Compact track summary shown in the left panel during grid edit mode ── */
 
 /* â”€â”€ Per-track settings: sliders, bounce, VFX â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
@@ -22914,9 +22878,7 @@ html[data-xleth-backdrop="native-acrylic"] .xleth-center-column {
   border-bottom: 1px solid var(--xleth-flat-border);
 }
 .pattern-list-title {
-  color: var(--xleth-flat-text-subtle);
-  font-size: 9px;
-  letter-spacing: 0.14em;
+  color: var(--ui-ink-2);
 }
 .pattern-list-body { padding: 0; }
 .pattern-list-row {

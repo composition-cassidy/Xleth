@@ -220,7 +220,6 @@ export default function VideoTrackList({ tracks = [], layout, identity: identity
   return (
     <div className={styles.root}>
       <div className={styles.listHeader}>
-        <span>Layers</span>
         <span className={styles.count}>{placed.length} placed, frontmost first</span>
       </div>
 

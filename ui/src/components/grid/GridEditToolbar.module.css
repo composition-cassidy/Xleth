@@ -34,6 +34,12 @@
     font-variant-numeric: tabular-nums;
   }
 
+  .readout {
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    white-space: nowrap;
+  }
+
   .rename {
     box-sizing: border-box;
     width: 16ch;

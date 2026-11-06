@@ -425,16 +425,6 @@ export default function GridEditorOverlay() {
     }
   }, [resizeState, layout, totalFineX, totalFineY])
 
-  const fsLayers = layout.fullscreenLayers ?? []
-  const behindLayers = fsLayers
-    .filter(l => l.placement === 'behind')
-    .map(l => ({ ...l, track: tracksById.get(l.trackId) }))
-    .filter(x => x.track)
-  const frontLayers = fsLayers
-    .filter(l => l.placement === 'front')
-    .map(l => ({ ...l, track: tracksById.get(l.trackId) }))
-    .filter(x => x.track)
-
   // Build context-menu items for an assigned slot (right-click).
   const buildContextItems = (slot) => {
     if (!slot) return []
@@ -586,14 +576,8 @@ export default function GridEditorOverlay() {
         />
       )}
 
-      {/* ── Fullscreen layer badges ───────────────────────────────────── */}
-      {(behindLayers.length > 0 || frontLayers.length > 0) && (
-        <div className="grid-editor-badges">
-          <span className="grid-editor-badge grid-editor-badge-fs-summary">
-            Fullscreen · {behindLayers.length} Behind · {frontLayers.length} Front
-          </span>
-        </div>
-      )}
+      {/* Fullscreen layer counts are shown in the Edit Grid row (GridEditToolbar),
+          not over the picture where they covered the cells' name chips. */}
 
       {/* ── Right-click context menu on an assigned slot ──────────────── */}
       {contextMenu && (

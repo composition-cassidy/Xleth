@@ -2,7 +2,10 @@
  * spans alternate two greys, cue pins are ink. The accent is reserved for the
  * selected pin's outline (selection), never for the lane's fill. */
 @layer kit {
+  /* border-box: the lane and its header cell are both exactly CUE_LANE_HEIGHT, so
+   * the canvas and header columns stay row-aligned below it. */
   .lane {
+    box-sizing: border-box;
     position: relative;
     z-index: 5;
     flex: 0 0 auto;
