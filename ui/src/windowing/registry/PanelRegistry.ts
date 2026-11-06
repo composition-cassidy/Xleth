@@ -78,8 +78,9 @@ export const DEFAULT_DOCK_REGION_SIZES: DockRegionSizes = {
   left: 280,
   right: 280,
   top: 340,
-  // 28px tab strip + the mixer's 260px minimum.
-  bottom: 288,
+  // 1px border + 28px tab strip + 4px padding + the 256px device (--device-h)
+  // + the chain's thin horizontal scrollbar (ui/DESIGN.md "Device system").
+  bottom: 304,
 };
 
 export const SAMPLE_SELECTOR_DOCK_HANDLE_WIDTH = 32;

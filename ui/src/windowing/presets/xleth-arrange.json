@@ -1,6 +1,6 @@
 {
   "focused": "timeline",
-  "dockRegionSizes": { "left": 258, "right": 280, "top": 340, "bottom": 288 },
+  "dockRegionSizes": { "left": 258, "right": 280, "top": 340, "bottom": 304 },
   "panels": {
     "timeline": {
       "hidden": false,
