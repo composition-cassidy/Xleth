@@ -2,6 +2,9 @@ import { useRef, useEffect, useState, useCallback } from 'react'
 import { Import, Grid3x3, Image, Film, Loader2 } from 'lucide-react'
 import GridEditorOverlay from './GridEditorOverlay.jsx'
 import GridEditorDock from './GridEditorDock.jsx'
+import GridEditToolbar from './grid/GridEditToolbar.jsx'
+import PreviewTimecode from './PreviewTimecode.jsx'
+import { Toggle } from '../ui-kit'
 import ProxyBatchBadge from './ProxyBatchBadge.jsx'
 import { tokenValue } from '../theming/tokenValue.ts'
 import useGridEditStore from '../stores/useGridEditStore.js'
@@ -1026,6 +1029,7 @@ export default function VideoPreview({ headerActions = null } = {}) {
     <div className={`video-preview ${videoFile ? 'has-video' : 'is-empty'}`} ref={containerRef}>
       <div className="video-header">
         <div className="video-header-left">
+          <PreviewTimecode />
           {videoFile && <span className="video-filename">{videoFile}</span>}
         </div>
         <div className="video-header-right">
@@ -1092,14 +1096,15 @@ export default function VideoPreview({ headerActions = null } = {}) {
             </span>
           )}
 
-          <button
-            className={`video-import-btn ${gridEditMode ? 'active' : ''}`}
-            onClick={() => setGridEditMode && setGridEditMode(!gridEditMode)}
-            title="Toggle grid editor"
+          <Toggle
+            size="sm"
+            on={gridEditMode}
+            onChange={(next) => setGridEditMode?.(next)}
+            glyph={<Grid3x3 aria-hidden="true" />}
+            hint="Edit the grid layout on the picture"
           >
-            <Grid3x3 size={13} />
-            <span>Edit Grid</span>
-          </button>
+            Edit grid
+          </Toggle>
           <button className="video-import-btn" onClick={handleImport} disabled={importing}>
             <Import size={13} />
             <span>{importing ? 'Loading...' : 'Import'}</span>
@@ -1107,6 +1112,7 @@ export default function VideoPreview({ headerActions = null } = {}) {
           {headerActions}
         </div>
       </div>
+      {gridEditMode && <GridEditToolbar />}
       <div className={`video-canvas-wrapper ${gridEditMode ? 'grid-editing' : ''}`} ref={wrapperRef}>
         <div className="video-canvas-area" ref={canvasAreaRef}>
           <canvas ref={canvasRef} width={960} height={540} className="video-canvas" />

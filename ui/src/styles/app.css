@@ -1350,8 +1350,7 @@ html[data-xleth-backdrop="video"] .app-body {
 .left-panel-tab,
 .gsp-dim-input,
 .gsp-link-btn,
-.grid-tab-btn,
-.vtl-row-handle {
+.grid-tab-btn {
   -webkit-app-region: no-drag;
   pointer-events: auto;
 }
@@ -5304,17 +5303,6 @@ html[data-xleth-backdrop="video"] .app-body {
   color: var(--theme-accent);
 }
 
-.video-canvas-wrapper.grid-editing .video-canvas {
-  opacity: 0.35;
-  transition: opacity 150ms ease;
-}
-
-.video-import-btn.active {
-  background: var(--theme-accent);
-  color: var(--theme-bg-primary);
-  border-color: var(--theme-accent);
-}
-
 .grid-editor-overlay {
   /* Match the canvas's object-fit: contain rendering area. The explicit
      fitted bounds come from VideoPreview, which measures the canvas area.
@@ -5518,15 +5506,6 @@ html[data-xleth-backdrop="video"] .app-body {
   background: transparent;
   transition: background 100ms;
 }
-.grid-editor-slot:hover .grid-editor-slot-resize {
-  background: var(--theme-accent);
-  opacity: 0.25;
-}
-.grid-editor-slot-resize:hover,
-.grid-editor-slot-resize:active {
-  background: var(--theme-accent) !important;
-  opacity: 0.7 !important;
-}
 .grid-editor-slot-resize-e {
   top: 0;
   right: -3px;
@@ -5633,212 +5612,9 @@ html[data-xleth-backdrop="video"] .app-body {
   border-radius: 2px;
 }
 
-.grid-editor-toolbar {
-  position: absolute;
-  top: 8px;
-  left: 8px;
-  display: flex;
-  gap: 6px;
-  z-index: 16;
-  pointer-events: auto;
-}
-
-.grid-editor-snap-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 4px 9px;
-  border-radius: var(--radius-sm, 3px);
-  font: 600 11px var(--xleth-global-font-family);
-  text-transform: uppercase;
-  letter-spacing: 0.5px;
-  background: var(--theme-overlay-heavy);
-  color: var(--theme-fg-inverse);
-  border: 1px solid transparent;
-  cursor: pointer;
-}
-
-.grid-editor-snap-btn.on {
-  background: var(--theme-accent);
-  color: var(--theme-bg-primary);
-  border-color: var(--theme-accent);
-}
-
-.grid-editor-snap-btn.off {
-  opacity: 0.75;
-}
-
-.grid-editor-snap-btn:hover {
-  opacity: 1;
-}
-
 /* ── Assignment Dock ──────────────────────────────────────────────────────
    Replaces the old floating palette. Flush bottom dock, single-row
    horizontal scroll strip, structured header with placement filters. */
-
-.grid-editor-dock {
-  flex-shrink: 0;
-  pointer-events: auto;
-  background: var(--theme-bg-primary);
-  border-top: 1px solid var(--theme-border-subtle);
-  display: flex;
-  flex-direction: column;
-  box-sizing: border-box;
-  width: var(--xleth-canvas-content-width, 100%);
-  max-width: 100%;
-  margin-left: auto;
-  margin-right: auto;
-}
-
-.grid-editor-dock-header {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 5px 10px;
-  border-bottom: 1px solid var(--theme-border-subtle);
-  flex-shrink: 0;
-}
-
-.grid-editor-dock-title {
-  font-size: 9px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.7px;
-  color: var(--theme-text-muted);
-  flex-shrink: 0;
-}
-
-.grid-editor-dock-filters {
-  display: flex;
-  gap: 2px;
-}
-
-.grid-editor-dock-filter {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 2px 7px;
-  background: transparent;
-  border: 1px solid transparent;
-  border-radius: var(--radius-sm, 3px);
-  font: 600 10px var(--xleth-global-font-family);
-  color: var(--theme-text-muted);
-  cursor: pointer;
-  transition: background 100ms, color 100ms, border-color 100ms;
-}
-
-.grid-editor-dock-filter:hover {
-  color: var(--theme-text);
-  background: var(--theme-bg-secondary);
-}
-
-.grid-editor-dock-filter.active {
-  color: var(--theme-accent);
-  border-color: var(--theme-accent);
-  background: var(--theme-focus-ring);
-}
-
-.grid-editor-dock-count {
-  font-size: 9px;
-  font-weight: 400;
-  opacity: 0.7;
-}
-
-.grid-editor-dock-hint {
-  font-size: 9px;
-  color: var(--theme-text-muted);
-  opacity: 0.55;
-  margin-left: auto;
-  white-space: nowrap;
-}
-
-.grid-editor-dock-strip {
-  display: flex;
-  flex-direction: row;
-  align-items: center;
-  gap: 5px;
-  overflow-x: auto;
-  overflow-y: hidden;
-  padding: 6px 10px;
-  flex-shrink: 0;
-  scrollbar-width: thin;
-  scrollbar-color: var(--theme-border-subtle) transparent;
-}
-
-.grid-editor-dock-strip::-webkit-scrollbar {
-  height: 10px;
-}
-
-.grid-editor-dock-strip::-webkit-scrollbar-track {
-  background: transparent;
-}
-
-.grid-editor-dock-strip::-webkit-scrollbar-thumb {
-  background: var(--theme-border-subtle);
-  border-radius: 2px;
-}
-
-.grid-editor-dock-empty {
-  color: var(--theme-text-muted);
-  font-size: 11px;
-  font-style: italic;
-  white-space: nowrap;
-}
-
-.grid-editor-dock-chip {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-  padding: 5px 10px;
-  background: var(--theme-bg-secondary);
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: var(--radius-sm, 3px);
-  color: var(--theme-text);
-  font: 500 12px var(--xleth-global-font-family);
-  cursor: grab;
-  user-select: none;
-  white-space: nowrap;
-  flex-shrink: 0;
-  transition: background 120ms, border-color 120ms, color 120ms;
-}
-
-.grid-editor-dock-chip:hover {
-  border-color: var(--theme-accent);
-  background: var(--theme-bg-surface);
-  color: var(--theme-accent);
-}
-
-.grid-editor-dock-chip:active {
-  cursor: grabbing;
-}
-
-.grid-editor-dock-chip.placed {
-  opacity: 0.5;
-  border-style: dashed;
-}
-
-.grid-editor-dock-chip-type {
-  font-size: 8px;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.2px;
-  color: var(--theme-text-muted);
-  background: var(--theme-bg-primary);
-  padding: 1px 4px;
-  border-radius: 2px;
-  line-height: 1.3;
-  flex-shrink: 0;
-}
-
-.grid-editor-dock-chip-factor {
-  font-size: 9px;
-  font-weight: 600;
-  color: var(--theme-text-muted);
-  background: var(--theme-bg-primary);
-  padding: 1px 4px;
-  border-radius: 2px;
-  line-height: 1.3;
-}
 
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Grid Layout Tab (Part A â€” LeftPanel)
@@ -6091,97 +5867,6 @@ html[data-xleth-backdrop="video"] .app-body {
 }
 
 /* ── Video-tab flat track list (VideoTrackList) ─────────────────────────── */
-.vtl-section {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.vtl-list {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.vtl-list--unplaced {
-  opacity: 0.8;
-}
-
-.vtl-unplaced-header {
-  margin-top: 6px;
-}
-
-.vtl-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 4px 8px;
-  min-height: 30px;
-  background: var(--theme-depth-well-bg);
-  border: 1px solid var(--theme-border-subtle);
-  border-left: 3px solid var(--vtl-row-color, var(--theme-border-subtle));
-  border-radius: var(--radius-sm);
-  box-shadow: var(--theme-depth-well-inner-shadow);
-  user-select: none;
-}
-
-.vtl-row--draggable {
-  cursor: grab;
-}
-
-.vtl-row-handle {
-  display: inline-flex;
-  align-items: center;
-  color: var(--theme-text-subtle);
-  cursor: grab;
-  flex-shrink: 0;
-}
-
-.vtl-row-handle--disabled {
-  cursor: default;
-  opacity: 0.35;
-}
-
-.vtl-row-stripe {
-  width: 8px;
-  height: 16px;
-  border-radius: 2px;
-  flex-shrink: 0;
-}
-
-.vtl-row-name {
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 12px;
-  color: var(--theme-text);
-}
-
-.vtl-row-badge {
-  flex-shrink: 0;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.2px;
-  padding: 1px 6px;
-  border-radius: 10px;
-  color: var(--theme-text-muted);
-  background: var(--theme-bg-elevated);
-  border: 1px solid var(--theme-border-subtle);
-}
-
-.vtl-row-badge--behind,
-.vtl-row-badge--front {
-  color: var(--theme-accent);
-  border-color: var(--theme-accent);
-  background: var(--theme-accent-bg-subtle);
-}
-
-.vtl-row-badge--unplaced {
-  color: var(--theme-text-subtle);
-}
-
 /* ── Track Detail: fullscreen opacity control ───────────────────────────── */
 /* ── Summary badge variant for the grid editor overlay ── */
 .grid-editor-badge-fs-summary {
@@ -26369,141 +26054,6 @@ html[data-xleth-backdrop="native-acrylic"] .xleth-center-column {
   gap: 10px;
 }
 
-.vtl-section {
-  gap: 0;
-  border-bottom: 1px solid var(--xleth-flat-border);
-}
-
-.vtl-section .grid-tab-section-header {
-  min-height: 30px;
-  padding: 0 12px;
-  border-bottom: 1px solid var(--xleth-flat-border);
-  background: var(--xleth-flat-section);
-}
-
-.vtl-section .grid-tab-section-header > span:first-child {
-  color: var(--xleth-flat-text-subtle);
-  font-size: 9px;
-  font-weight: 400;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.vtl-section .grid-tab-section-count {
-  color: var(--xleth-flat-text-muted);
-  font-size: 11px;
-}
-
-.vtl-list {
-  gap: 0;
-  padding: 8px 10px;
-}
-
-.vtl-list--unplaced {
-  opacity: 1;
-  padding-top: 8px;
-}
-
-.vtl-unplaced-header {
-  margin-top: 0;
-  border-top: 1px solid var(--xleth-flat-border);
-}
-
-.vtl-row {
-  display: grid;
-  grid-template-columns: 18px minmax(0, 1fr) 82px 104px;
-  align-items: center;
-  min-height: 34px;
-  gap: 8px;
-  padding: 0 10px;
-  border: 1px solid var(--xleth-flat-border);
-  border-left: 1px solid var(--xleth-flat-border);
-  border-radius: 0;
-  background: var(--xleth-flat-well);
-  box-shadow: none;
-  color: var(--xleth-flat-text-secondary);
-}
-
-.vtl-row + .vtl-row {
-  margin-top: 3px;
-}
-
-.vtl-row:hover,
-.vtl-row:focus-visible {
-  border-color: var(--xleth-flat-border-strong);
-  background: var(--xleth-flat-chrome);
-  outline: 0;
-}
-
-.vtl-row--draggable {
-  cursor: grab;
-}
-
-.vtl-row-handle {
-  width: 18px;
-  justify-content: center;
-  color: var(--xleth-flat-text-muted);
-}
-
-.vtl-row-handle--disabled {
-  opacity: 0.45;
-}
-
-.vtl-row-stripe {
-  display: none;
-}
-
-.vtl-row-name {
-  color: var(--xleth-flat-text-secondary);
-  font-size: 13px;
-  font-weight: 600;
-}
-
-.vtl-row-edit {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  min-height: 24px;
-  padding: 0 8px;
-  border: 1px solid transparent;
-  border-radius: 0;
-  background: transparent;
-  color: var(--xleth-flat-text-muted);
-  font: inherit;
-  font-size: 10px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  cursor: pointer;
-}
-
-.vtl-row-edit:hover,
-.vtl-row-edit:focus-visible {
-  border-color: var(--xleth-flat-border-strong);
-  color: var(--xleth-flat-accent);
-  outline: 0;
-}
-
-.vtl-row-badge {
-  justify-self: stretch;
-  min-width: 78px;
-  padding: 2px 7px;
-  border: 1px solid var(--xleth-flat-border-strong);
-  border-radius: 0;
-  background: var(--xleth-flat-panel);
-  color: var(--xleth-flat-text-muted);
-  font-size: 10px;
-  font-weight: 500;
-  text-align: center;
-  white-space: nowrap;
-}
-
-.vtl-row-badge--behind,
-.vtl-row-badge--front {
-  border-color: var(--xleth-flat-border-strong);
-  background: var(--xleth-flat-panel);
-  color: var(--xleth-flat-accent);
-}
-
 .tvp-root {
   gap: 0;
   background: var(--xleth-flat-panel);
@@ -26743,9 +26293,6 @@ html[data-xleth-backdrop="native-acrylic"] .xleth-center-column {
       "gap";
   }
 
-  .vtl-row-edit span {
-    display: none;
-  }
 }
 
 /* ══════════════════════════════════════════════════════════════════════════

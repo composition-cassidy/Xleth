@@ -1,5 +1,10 @@
 import { useState, useEffect, useCallback, useRef, useMemo } from 'react'
-import { X, Magnet } from 'lucide-react'
+import { X } from 'lucide-react'
+import { pickLabelInk } from '../ui-kit/colorMath'
+import { tokenValue } from '../theming/tokenValue.ts'
+import useGridEditStore from '../stores/useGridEditStore.js'
+import useTrackIdentityColors from './inspector/useTrackIdentityColors.js'
+import styles from './GridEditorOverlay.module.css'
 import { timelineEvents } from '../timelineEvents.js'
 import ContextMenu from './ContextMenu.jsx'
 import { activeDragTrackId, setActiveDragTrackId } from './gridEditorDragState.js'
@@ -40,7 +45,8 @@ export default function GridEditorOverlay() {
   const [moveState, setMoveState] = useState(null)
   // dragGhost — preview rect under the cursor while dragging from the dock.
   const [dragGhost, setDragGhost] = useState(null) // { gridX, gridY, spanX, spanY }
-  const [snapEnabled, setSnapEnabled] = useState(true)
+  // Snap is shown and toggled in the Preview's Edit Grid row (GridEditToolbar).
+  const snapEnabled = useGridEditStore((s) => s.snapEnabled)
   const rootRef = useRef(null)
 
   // ── Fetch layout + tracks ────────────────────────────────────────────────
@@ -76,6 +82,17 @@ export default function GridEditorOverlay() {
   }, [fetchLayout, fetchTracks])
 
   const notify = () => timelineEvents.dispatchEvent(new Event('timeline-grid-changed'))
+
+  // Each cell is outlined in its track's identity colour (the same colour as
+  // its arrangement lane); its name chip uses the automatic label ink.
+  const identity = useTrackIdentityColors(tracks)
+  const labelInks = useMemo(() => {
+    const light = tokenValue('--ui-ink') || '#E6E6E6'
+    const dark = tokenValue('--ui-g1') || '#1B1B1B'
+    const out = {}
+    for (const [id, hex] of Object.entries(identity)) out[id] = pickLabelInk(hex, light, dark).ink
+    return out
+  }, [identity])
 
   // Lookup helpers
   const tracksById = useMemo(() => {
@@ -498,8 +515,10 @@ export default function GridEditorOverlay() {
         return (
           <div
             key={`slot-${slot.trackId}`}
-            className={`grid-editor-slot assigned ${isMoving ? 'moving' : ''}`}
+            className={`grid-editor-slot assigned ${styles.slot} ${isMoving ? 'moving' : ''}`}
             style={{
+              '--cell-color': identity[slot.trackId],
+              '--cell-ink': labelInks[slot.trackId],
               left:   `${left}%`,
               top:    `${top}%`,
               width:  `${width}%`,
@@ -520,7 +539,7 @@ export default function GridEditorOverlay() {
                 }}
               />
             )}
-            <span className="grid-editor-cell-label">
+            <span className={`grid-editor-cell-label ${styles.label}`}>
               {track?.name ?? `Track ${slot.trackId}`}
               {factor > 1 && (
                 <span className="grid-editor-cell-factor">{factor}×</span>
@@ -585,20 +604,6 @@ export default function GridEditorOverlay() {
           onClose={() => setContextMenu(null)}
         />
       )}
-
-      {/* ── Toolbar (snap toggle) ──────────────────────────────────────── */}
-      <div className="grid-editor-toolbar">
-        <button
-          className={`grid-editor-snap-btn ${snapEnabled ? 'on' : 'off'}`}
-          onClick={() => setSnapEnabled(s => !s)}
-          title={snapEnabled
-            ? 'Snap on — placements align to each track\'s subdivision sub-step. Click to disable.'
-            : 'Snap off — free 1-unit positioning. Click to enable.'}
-        >
-          <Magnet size={13} />
-          <span>Snap: {snapEnabled ? 'on' : 'off'}</span>
-        </button>
-      </div>
 
     </div>
   )

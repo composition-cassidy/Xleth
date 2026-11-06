@@ -10,6 +10,12 @@
     font-weight: var(--weight-regular);
   }
 
+  /* Icon glyphs (an SVG) sit at text size, like a letter glyph would. */
+  .glyph svg {
+    width: var(--type-13);
+    height: var(--type-13);
+  }
+
   .toggle[data-on="true"] .glyph {
     font-weight: var(--weight-semibold);
   }

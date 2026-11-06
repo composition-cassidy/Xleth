@@ -1,0 +1,27 @@
+@layer kit {
+  .readout {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--space-1);
+    color: var(--ui-ink);
+    font-size: var(--type-12);
+    white-space: nowrap;
+  }
+
+  .timecode,
+  .frame {
+    font-family: var(--ui-font-mono);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .frame {
+    min-width: 6ch;
+  }
+
+  .frameLabel {
+    margin-left: var(--space-1);
+    color: var(--ui-ink-3);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+  }
+}

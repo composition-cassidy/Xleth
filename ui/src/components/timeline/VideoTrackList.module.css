@@ -1,0 +1,91 @@
+/* The compositing layer list (Edit Grid strip, "Layers"): one 24px row per
+ * track, identity stripe on the left, frontmost at the top. */
+@layer kit {
+  .root {
+    display: flex;
+    flex-direction: column;
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+  }
+
+  .listHeader {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    height: 20px;
+    padding: 0 var(--space-2);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  .count {
+    color: var(--ui-ink-3);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .list {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-height: var(--row-h);
+    padding: 0 var(--space-1) 0 0;
+    border-left: 4px solid var(--track-color, var(--ui-g4));
+    border-bottom: 1px solid var(--ui-g2);
+    background: var(--ui-g1);
+  }
+
+  .row:hover {
+    background: var(--ui-g2);
+  }
+
+  .row:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  .handle {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--hit-min);
+    height: var(--row-h);
+    color: var(--ui-ink-3);
+    cursor: grab;
+  }
+
+  .handle[data-disabled] {
+    cursor: default;
+    opacity: 0.4;
+  }
+
+  .name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .badge {
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .badge[data-kind="unplaced"] {
+    color: var(--ui-ink-3);
+  }
+
+  .empty {
+    margin: 0;
+    padding: var(--space-1) var(--space-2);
+    color: var(--ui-ink-2);
+  }
+}

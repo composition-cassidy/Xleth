@@ -50,6 +50,11 @@
     display: inline-flex;
   }
 
+  .glyph svg {
+    width: var(--type-13);
+    height: var(--type-13);
+  }
+
   .btn:is(:hover, [data-state="hover"]):not(:disabled) {
     background: var(--ui-g2);
     color: var(--ui-ink);

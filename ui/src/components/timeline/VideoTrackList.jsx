@@ -1,5 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { GripVertical, SlidersHorizontal } from 'lucide-react'
+import { IconButton } from '../../ui-kit'
+import useTrackIdentityColors from '../inspector/useTrackIdentityColors.js'
+import styles from './VideoTrackList.module.css'
 import { timelineEvents } from '../../timelineEvents.js'
 import useInspectorStore, { revealInspector } from '../../stores/useInspectorStore.js'
 import TrackContextMenu from './TrackContextMenu.jsx'
@@ -32,8 +35,13 @@ const notifyTracks = () => timelineEvents.dispatchEvent(new Event('timeline-trac
  * Props:
  *   tracks – array of track objects (getTracks order)
  *   layout – current grid layout (slots + fullscreenLayers)
+ *   identity – optional { [trackId]: hex } identity colours (computed here if absent)
+ *
+ * The vtl-* class names are test/hook names only; styling is the CSS module.
  */
-export default function VideoTrackList({ tracks = [], layout }) {
+export default function VideoTrackList({ tracks = [], layout, identity: identityProp }) {
+  const ownIdentity = useTrackIdentityColors(identityProp ? null : tracks)
+  const identity = identityProp ?? ownIdentity
   // Edit = select the track in the arrangement and show it in the Inspector.
   const requestTrackSelection = useInspectorStore((s) => s.requestTrackSelection)
   const openTrackVideoProperties = useCallback((trackId) => {
@@ -168,7 +176,9 @@ export default function VideoTrackList({ tracks = [], layout }) {
     return (
       <div
         key={track.id}
-        className={`vtl-row${draggable ? ' vtl-row--draggable' : ''}`}
+        className={`vtl-row ${styles.row}`}
+        style={{ '--track-color': identity[track.id] }}
+        data-draggable={draggable || undefined}
         role="listitem"
         tabIndex={0}
         onMouseEnter={draggable ? () => handleDragOver(dragIdx) : undefined}
@@ -177,66 +187,58 @@ export default function VideoTrackList({ tracks = [], layout }) {
           if (e.key === 'Enter') openTrackVideoProperties(track.id)
         }}
         onContextMenu={(e) => openMenu(track, e)}
-        title="Double-click to edit video properties. Right-click for placement."
+        title="Double-click to show in the Inspector. Right-click for placement."
       >
-        {draggable ? (
-          <span
-            className="vtl-row-handle"
-            title="Drag to reorder compositing order"
-            onMouseDown={(e) => handleDragStart(track.id, dragIdx, e)}
-          >
-            <GripVertical size={13} aria-hidden="true" />
-          </span>
-        ) : (
-          <span className="vtl-row-handle vtl-row-handle--disabled" aria-hidden="true">
-            <GripVertical size={13} />
-          </span>
-        )}
-        <span className="vtl-row-name" title={track.name}>{track.name}</span>
-        <button
-          type="button"
+        <span
+          className={`vtl-row-handle ${styles.handle}`}
+          data-disabled={draggable ? undefined : true}
+          title={draggable ? 'Drag to reorder compositing order' : undefined}
+          aria-hidden={draggable ? undefined : true}
+          onMouseDown={draggable ? (e) => handleDragStart(track.id, dragIdx, e) : undefined}
+        >
+          <GripVertical size={13} aria-hidden="true" />
+        </span>
+        <span className={`vtl-row-name ${styles.name}`} title={track.name}>{track.name}</span>
+        <span className={`vtl-row-badge ${styles.badge}`} data-kind={placement.kind}>
+          {placementBadgeLabel(placement)}
+        </span>
+        <IconButton
+          size="sm"
           className="vtl-row-edit"
+          label={`Show ${track.name} in the Inspector`}
           onClick={(e) => {
             e.stopPropagation()
             openTrackVideoProperties(track.id)
           }}
-          title={`Edit video properties for ${track.name}`}
-          aria-label={`Edit video properties for ${track.name}`}
         >
-          <SlidersHorizontal size={12} aria-hidden="true" />
-          <span>Edit</span>
-        </button>
-        <span className={`vtl-row-badge vtl-row-badge--${placement.kind}`}>
-          {placementBadgeLabel(placement)}
-        </span>
+          <SlidersHorizontal aria-hidden="true" />
+        </IconButton>
       </div>
     )
   }
 
   return (
-    <div className="grid-tab-section vtl-section">
-      <div className="grid-tab-section-header">
-        <span>Tracks</span>
-        <span className="grid-tab-section-count">{placed.length} placed</span>
+    <div className={styles.root}>
+      <div className={styles.listHeader}>
+        <span>Layers</span>
+        <span className={styles.count}>{placed.length} placed, frontmost first</span>
       </div>
 
-      {/* Placed stack — frontmost at top, drag to reorder compositing order. */}
-      <div className="vtl-list" role="list" aria-label="Placed video tracks">
+      <div className={`vtl-list ${styles.list}`} role="list" aria-label="Placed video tracks">
         {displayPlaced.length === 0 && (
-          <div className="grid-tab-empty">No tracks placed in the video yet</div>
+          <p className={styles.empty}>No tracks placed in the video yet.</p>
         )}
         {displayPlaced.map((entry, idx) =>
           renderRow(entry.track, entry.placement, true, idx))}
       </div>
 
-      {/* Unplaced — no zOrder, don't render. Kept visually separate. */}
       {unplaced.length > 0 && (
         <>
-          <div className="grid-tab-section-header vtl-unplaced-header">
+          <div className={styles.listHeader}>
             <span>Unplaced</span>
-            <span className="grid-tab-section-count">{unplaced.length}</span>
+            <span className={styles.count}>{unplaced.length}</span>
           </div>
-          <div className="vtl-list vtl-list--unplaced" role="list" aria-label="Unplaced tracks">
+          <div className={`vtl-list vtl-list--unplaced ${styles.list}`} role="list" aria-label="Unplaced tracks">
             {unplaced.map((track) =>
               renderRow(track, { kind: 'unplaced' }, false, -1))}
           </div>
