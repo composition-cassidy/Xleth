@@ -9,7 +9,7 @@
     display: flex;
     flex-direction: column;
     flex: 0 0 auto;
-    width: var(--device-w);
+    width: var(--device-w, auto);
     height: var(--device-h);
     border: 1px solid var(--ui-g4);
     background: var(--ui-g1);
@@ -128,9 +128,11 @@
     padding: 2px 0;
   }
 
+  /* Rotated 180deg so the name reads bottom to top; flex-end therefore lands
+   * at the top of the strip, under the activator. */
   .device[data-folded="true"] .name {
     flex-direction: column;
-    justify-content: flex-start;
+    justify-content: flex-end;
     height: auto;
     padding: var(--space-2) 0;
     writing-mode: vertical-rl;

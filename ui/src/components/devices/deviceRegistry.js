@@ -6,11 +6,18 @@
 //
 // Entry shape:
 //   Body          — React component ({ target, registerApplied, deviceKey, presentation })
-//   width         — device width in px (height is always --device-h)
+//   width         — device width in px, or omitted to fit the body (height is always --device-h)
 //   presetType    — preset effectType (defaults to the pluginId)
 //   useEditorStore — the editor store whose `target` marks the device as popped out
 
-export const DEVICE_BODIES = {}
+import CompressorDevice from './CompressorDevice.jsx'
+import useCompressorStore from '../../stores/compressorStore.js'
+
+export const DEVICE_BODIES = {
+  // Width omitted: the frame fits the body's fixed-width sections (the
+  // sidechain section folds, so the width follows it).
+  compressor: { Body: CompressorDevice, useEditorStore: useCompressorStore },
+}
 
 export function deviceBodyFor(pluginId) {
   return DEVICE_BODIES[pluginId] ?? null

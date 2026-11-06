@@ -199,7 +199,10 @@ function parseEffectParameters(raw) {
   return Array.isArray(raw) ? raw : []
 }
 
-function SidechainControls({ effect, storeKey }) {
+// Sidechain state and the one write path (setEffectExternalSidechain) for an
+// effect that supports an external sidechain. Shared by the Mixer chain row and
+// the Compressor device's Sidechain section.
+export function useEffectSidechain({ effect, storeKey }) {
   const targetTrackId = resolveTrackId(storeKey)
   const routeKey = `${targetTrackId}::${effect.effectInstanceId}`
   const requiresExternalParam = effect.pluginId === 'compressor'
@@ -297,6 +300,26 @@ function SidechainControls({ effect, storeKey }) {
     }
     return result
   }
+
+  return {
+    requiresExternalParam,
+    externalEnabled,
+    route,
+    routeError,
+    sourceTrack,
+    eligibleSources,
+    selectedSourceValue,
+    hasSelectableSource,
+    statusText,
+    applySidechain,
+  }
+}
+
+function SidechainControls({ effect, storeKey }) {
+  const {
+    requiresExternalParam, externalEnabled, route, routeError, sourceTrack, eligibleSources,
+    selectedSourceValue, hasSelectableSource, statusText, applySidechain,
+  } = useEffectSidechain({ effect, storeKey })
 
   const handleSectionMouseDown = (event) => {
     stopEffectModuleEvent(event)

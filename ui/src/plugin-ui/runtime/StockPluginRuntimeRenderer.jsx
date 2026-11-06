@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useMemo } from 'react'
+import { useState, useEffect, useMemo } from 'react'
 import { validate } from '../schema/validate.js'
 import { getManifest } from '../manifests/index.js'
 import { SHIPPED_LAYOUTS } from '../layouts/index.js'
@@ -7,6 +7,7 @@ import { resolveComponent } from './registry.js'
 import { PluginUIContext } from './PluginUIContext.js'
 import { useMeterBus, useEffectMeterPolling } from './useEffectMeterPolling.js'
 import EffectPresetBar from '../../fx-presets/EffectPresetBar.jsx'
+import useStockEffectParams from './useStockEffectParams.js'
 
 // ── Unknown / invalid node placeholders ──────────────────────────────────────
 
@@ -60,7 +61,8 @@ export default function StockPluginRuntimeRenderer({
   const [layoutErrors, setLayoutErrors] = useState([])
 
   // Param state: keyed by param id, hydrated from engine on target change
-  const [params, setParams] = useState(() => buildDefaultParams(manifest))
+  // (shared with the device bodies, see useStockEffectParams.js).
+  const { params, setParam, syncParamsFromPreset } = useStockEffectParams(pluginId, manifest, target)
 
   // Meter bus: mutable registry of nodeId → { slotIndex, updateFn }
   const meterBus = useMeterBus()
@@ -138,46 +140,6 @@ export default function StockPluginRuntimeRenderer({
     return () => unsub?.()
   }, [pluginId, target, manifest, overrideActive])
 
-  // Hydrate params from engine when target changes
-  useEffect(() => {
-    if (!target) {
-      setParams(buildDefaultParams(manifest))
-      return
-    }
-    const { trackId, nodeId } = target
-    const defaults = buildDefaultParams(manifest)
-    setParams(defaults)
-
-    ;(async () => {
-      try {
-        const raw  = await window.xleth?.audio?.getEffectParameters(trackId, nodeId)
-        const list = typeof raw === 'string' ? JSON.parse(raw) : (Array.isArray(raw) ? raw : [])
-        setParams(prev => {
-          const next = { ...prev }
-          for (const p of list) {
-            if (p.id in next) next[p.id] = p.value
-          }
-          return next
-        })
-      } catch (e) {
-        console.warn(`[PluginUI] hydrate params failed for "${pluginId}":`, e?.message)
-      }
-    })()
-  }, [target, pluginId, manifest])
-
-  const setParam = useCallback((paramId, value) => {
-    if (!target) return
-    setParams(prev => ({ ...prev, [paramId]: value }))
-    window.xleth?.audio?.setEffectParameter(target.trackId, target.nodeId, paramId, value)
-  }, [target])
-
-  // Sync local knob state from an applied preset (or its undo) — the adapter
-  // already wrote the engine, so this only mirrors the known blob into React.
-  const syncParamsFromPreset = useCallback((state) => {
-    if (!state || typeof state.params !== 'object') return
-    setParams(prev => ({ ...prev, ...state.params }))
-  }, [])
-
   // ── Context value (stable reference per render cycle) ──────────────────
 
   const ctx = useMemo(() => ({
@@ -237,11 +199,3 @@ export default function StockPluginRuntimeRenderer({
   )
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-function buildDefaultParams(manifest) {
-  if (!manifest) return {}
-  return Object.fromEntries(
-    Object.entries(manifest.params).map(([id, meta]) => [id, meta.defaultValue])
-  )
-}

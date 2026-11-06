@@ -29,8 +29,8 @@ export interface DeviceFrameProps extends DataAttrs {
   onFoldChange?: (folded: boolean) => void;
   /** Docked in the chain, or popped out into its own window (the only place the offset shadow appears). */
   presentation?: 'docked' | 'floating';
-  /** Body width in px. Height is always `--device-h`. */
-  width: number;
+  /** Device width in px. Omit to fit the body's sections. Height is always `--device-h`. */
+  width?: number;
   /** The preset menu (title bar, after the name). */
   presetSlot?: ReactNode;
   /** A/B compare. Omitted = no A/B for this device. */
@@ -69,7 +69,7 @@ export default function DeviceFrame(props: DeviceFrameProps) {
   const strip = folded || poppedOut;
   const frameStyle = {
     ...style,
-    '--device-w': `${width}px`,
+    ...(width ? { '--device-w': `${width}px` } : null),
     ...(identityColor ? { '--device-id': identityColor } : null),
   } as CSSProperties;
 

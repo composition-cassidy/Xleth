@@ -182,7 +182,6 @@
 
 /* ── Compressor / Limiter / Transient panel: Edit UI button (header) ─────────── */
 
-.compressor-panel-edit-ui,
 .limiter-panel-edit-ui,
 .transientproc-panel-edit-ui,
 .distortion-panel-edit-ui,
@@ -200,7 +199,6 @@
   cursor: pointer;
 }
 
-.compressor-panel-edit-ui:hover,
 .limiter-panel-edit-ui:hover,
 .transientproc-panel-edit-ui:hover,
 .distortion-panel-edit-ui:hover,
@@ -209,7 +207,6 @@
   background: var(--theme-fx-surface-tint-subtle);
 }
 
-.compressor-panel-edit-ui--active,
 .limiter-panel-edit-ui--active,
 .transientproc-panel-edit-ui--active,
 .distortion-panel-edit-ui--active,
@@ -220,7 +217,6 @@
 
 /* ── Compressor / Limiter / Transient / Overdone panel layout when designer is open */
 
-.compressor-panel--designer-open,
 .limiter-panel--designer-open,
 .transientproc-panel--designer-open,
 .ott-panel--designer-open,
@@ -232,7 +228,6 @@
   overflow: hidden;
 }
 
-.compressor-panel-runtime-pane,
 .limiter-panel-runtime-pane,
 .transientproc-panel-runtime-pane,
 .ott-panel-runtime-pane,
@@ -244,7 +239,6 @@
   min-width: 0;
 }
 
-.compressor-panel-split,
 .limiter-panel-split,
 .transientproc-panel-split,
 .ott-panel-split,
