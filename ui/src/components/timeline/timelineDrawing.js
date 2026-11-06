@@ -669,15 +669,15 @@ function getTimelineBodyMaterial({
   }
 }
 
-// ── Hold Last Frame zones (video timeline only) ─────────────────────────────
+// ── Hold Last Frame zones (arrangement) ─────────────────────────────────────
 // Informational chrome showing, per clip on a hold-enabled track, how far past
 // the clip's end the held frame stays on screen. Drawn on the same content
 // canvas as the clips (never a DOM overlay — the timeline scrolls and zooms by
 // redrawing this canvas, so an overlay would drift and corrupt hit-testing).
 //
 // Deliberately NOT wired into drawClips: the audio timeline shares that
-// function and must keep rendering exactly as before. Only VideoMirrorCanvas
-// calls this.
+// function and must keep rendering exactly as before. TimelineCanvas calls
+// this right after drawClips (the Video tab mirror that used to, is gone).
 //
 // Cost: pure arithmetic over the clip array already in the store. No engine
 // queries, no per-frame IPC. Returns immediately when no track holds.

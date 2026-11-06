@@ -5,15 +5,15 @@
 // Regression: canvas aspect/resolution/FPS changes and grid resize must never
 // silently lose user-authored grid placements or fullscreen layers.
 //
-// Phase 3 relocated these controls: canvas (aspect/resolution/FPS) now lives in
-// VideoCanvasSettingsPopover; grid size lives inline in VideoOverviewTab. The
+// Canvas (aspect/resolution/FPS) lives in VideoCanvasSettingsPopover; grid size
+// lives in the Preview's Edit Grid row (see grid/GridEditToolbar.test.jsx for the
+// grid-shrink regressions). The
 // slot-preservation logic (confirmGridResize keeps out-of-bounds placements;
 // persistCanvas re-reads the engine layout as its base) moved verbatim, so the
 // same regression assertions apply.
 import React, { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRoot } from 'react-dom/client'
-import VideoOverviewTab from './VideoOverviewTab.jsx'
 import VideoCanvasSettingsPopover from './VideoCanvasSettingsPopover.jsx'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
@@ -52,16 +52,6 @@ const trackList = (layout) => [
 let container, root, setGridLayout, setFullscreenLayers, setPreviewFps, getGridLayout, getTracks
 
 async function flush() { await act(async () => { await Promise.resolve() }) }
-
-// VideoOverviewTab hosts the inline grid-size inputs. It fetches the layout from
-// the engine on mount, so seed getGridLayout with the layout under test.
-async function renderTab(layout) {
-  getGridLayout.mockResolvedValue(layout)
-  getTracks.mockResolvedValue(trackList(layout))
-  await act(async () => { root.render(<VideoOverviewTab />) })
-  await flush()
-  await flush()
-}
 
 // VideoCanvasSettingsPopover hosts aspect/resolution/FPS. persistCanvas re-reads
 // getGridLayout() as its base — the engine layout, not the React prop.
@@ -174,37 +164,5 @@ describe('Video tab — canvas conversion never loses placements', () => {
 
     expect(setPreviewFps).toHaveBeenCalledWith(60)
     expect(setGridLayout).not.toHaveBeenCalled()
-  })
-
-  // ── Grid shrink: no silent deletion ─────────────────────────────────────────
-  it('column reduction 3 -> 2 keeps ALL slots (out-of-bounds preserved, not deleted) when confirmed', async () => {
-    vi.spyOn(window, 'confirm').mockReturnValue(true)
-    await renderTab(REAL_LAYOUT)
-    await changeInput(container.querySelector('.gsp-dim-input'), '2')
-
-    const p = lastGridLayout()
-    expect(p.columns).toBe(2)
-    // trackId 346 (gridX=16,spanX=8 -> out of bounds at 2 cols) MUST still be here.
-    expect(ids(p.slots)).toEqual([106, 195, 346, 668, 972])
-  })
-
-  it('column reduction that would orphan a placement asks for confirmation and aborts on cancel', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(false)
-    await renderTab(REAL_LAYOUT)
-    await changeInput(container.querySelector('.gsp-dim-input'), '1')
-
-    expect(confirmSpy).toHaveBeenCalledTimes(1)
-    expect(setGridLayout).not.toHaveBeenCalled() // cancelled → nothing persisted
-  })
-
-  it('column INCREASE never prompts (no placement can be orphaned)', async () => {
-    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true)
-    await renderTab(REAL_LAYOUT)
-    await changeInput(container.querySelector('.gsp-dim-input'), '5')
-
-    expect(confirmSpy).not.toHaveBeenCalled()
-    const p = lastGridLayout()
-    expect(p.columns).toBe(5)
-    expect(ids(p.slots)).toEqual([106, 195, 346, 668, 972])
   })
 })

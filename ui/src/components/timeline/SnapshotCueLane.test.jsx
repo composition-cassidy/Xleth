@@ -5,12 +5,12 @@
 // (grid snap by default, Alt frees the snap but still quantizes to a whole
 // tick), and (2) the complete payload (including easing) every write hands to
 // window.xleth.timeline.setCueTransition. A focused integration test drives a
-// real Start/End handle drag through VideoMirrorCanvas and asserts the emitted
+// real Start/End handle drag through the arrangement's SnapshotCueLane and asserts the emitted
 // payload — the UI only authors the window; the engine renders the blend.
 import React, { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRoot } from 'react-dom/client'
-import VideoMirrorCanvas, {
+import SnapshotCueLane, {
   buildCueTransition,
   transitionHandleTick,
   clampStartOffsetTicks,
@@ -39,7 +39,7 @@ import VideoMirrorCanvas, {
   normalizeTransitionDisplacementAmount,
   normalizeTransitionDisplacementScale,
   normalizeTransitionEffectSeed,
-} from './VideoMirrorCanvas.jsx'
+} from './SnapshotCueLane.jsx'
 import {
   LINEAR_TRANSITION_CURVE,
   TRANSITION_EASING_PRESETS,
@@ -52,7 +52,7 @@ import {
   snapCardinalTransitionAngle,
   snapLineSweepAngle,
 } from './LineSweepDirectionControl.jsx'
-import { PPQ } from '../../constants/timeline.js'
+import { beatsToTicks } from '../../constants/timeline.js'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
@@ -323,7 +323,7 @@ describe('clamp offsets never cross the pin', () => {
 
 // ── Integration: a real handle drag emits the setCueTransition payload ───────
 
-describe('VideoMirrorCanvas — Start/End handle drag', () => {
+describe('SnapshotCueLane — Start/End handle drag', () => {
   let container, root
   let clientWidthSpy, clientHeightSpy, rectSpy, ctxSpy
 
@@ -462,8 +462,8 @@ describe('VideoMirrorCanvas — Start/End handle drag', () => {
     }
     // First render mounts (the size effect sets the internal size ref); the
     // second render lets the cue lane read that width for its handle geometry.
-    await act(async () => { root.render(<VideoMirrorCanvas {...props} />) })
-    await act(async () => { root.render(<VideoMirrorCanvas {...props} />) })
+    await act(async () => { root.render(<SnapshotCueLane {...props} />) })
+    await act(async () => { root.render(<SnapshotCueLane {...props} />) })
     return { onRemoveCue }
   }
 
@@ -495,7 +495,7 @@ describe('VideoMirrorCanvas — Start/End handle drag', () => {
     expect(tick).toBe(PIN_TICK)
     expect(Object.keys(payload).sort()).toEqual([...TRANSITION_KEYS].sort())
     expect(payload.enabled).toBe(true)
-    expect(payload.endOffsetTicks).toBe(10 * PPQ)   // 9600
+    expect(payload.endOffsetTicks).toBe(beatsToTicks(10))   // 9600
     expect(payload.startOffsetTicks).toBe(480)      // untouched outgoing handle
     expect(Number.isInteger(payload.endOffsetTicks)).toBe(true)
     expect(container.textContent).not.toContain('Freeze outgoing')

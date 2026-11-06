@@ -1,17 +1,12 @@
 // @vitest-environment jsdom
 //
-// Ported from the deleted components/grid/GridSettingsPanel.canvas.test.jsx.
-// Phase 3 removed the standalone Grid Settings panel. Its canvas controls
-// (Aspect / Size / FPS) now live in VideoCanvasSettingsPopover, and its live
-// grid preview renders inline in VideoOverviewTab. The DOM class names
-// (gsp-canvas-select / gsp-preview-svg / gsp-preview-frame / gsp-dim-input) are
-// unchanged, so the same assertions apply. Canvas-control tests render the
-// popover directly (it is normally opened from VideoOverviewTab's header
-// button); preview tests render VideoOverviewTab.
+// The project canvas popover (Aspect / Size / FPS). Ported from the deleted
+// GridSettingsPanel.canvas.test.jsx; since Phase 3 the popover opens from the
+// Preview's Edit Grid row (GridEditToolbar). The Video tab and its inline
+// grid mini-preview are gone: the grid is edited on the picture itself.
 import React, { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { createRoot } from 'react-dom/client'
-import VideoOverviewTab from './VideoOverviewTab.jsx'
 import VideoCanvasSettingsPopover from './VideoCanvasSettingsPopover.jsx'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
@@ -33,15 +28,6 @@ function installEngineMock() {
   getTracks           = vi.fn().mockResolvedValue([])
   getGridLayout       = vi.fn()
   window.xleth = { timeline: { setGridLayout, setPreviewFps, setFullscreenLayers, getTracks, getGridLayout } }
-}
-
-// ── VideoOverviewTab renders the inline grid preview; it fetches the layout
-//    from the engine on mount, so the preview reflects getGridLayout. ─────────
-async function renderTab(layout = BASE_LAYOUT) {
-  getGridLayout.mockResolvedValue(layout)
-  await act(async () => { root.render(<VideoOverviewTab />) })
-  await flush()
-  await flush()
 }
 
 // ── VideoCanvasSettingsPopover hosts the Aspect/Size/FPS controls. Render it
@@ -112,45 +98,6 @@ describe('VideoCanvasSettingsPopover — dropdown controls use XlethSelect', () 
     const [, sizeTrigger] = canvasSelects()
     expect(sizeTrigger.tagName).toBe('BUTTON')
     expect(sizeTrigger.getAttribute('aria-haspopup')).toBe('listbox')
-  })
-})
-
-describe('VideoOverviewTab — live grid mini-preview', () => {
-  beforeEach(() => {
-    container = document.createElement('div')
-    document.body.appendChild(container)
-    root = createRoot(container)
-    installEngineMock()
-  })
-
-  afterEach(() => {
-    act(() => { root.unmount() })
-    container.remove()
-    vi.clearAllMocks()
-  })
-
-  it('mini-preview SVG viewBox matches 4:3 canvas (160×120)', async () => {
-    await renderTab({ ...BASE_LAYOUT, canvasWidth: 1024, canvasHeight: 768, canvasAspectRatio: '4:3' })
-    const svg = container.querySelector('.gsp-preview-svg')
-    expect(svg?.getAttribute('viewBox')).toBe('0 0 160 120')
-  })
-
-  it('mini-preview SVG viewBox matches 9:16 canvas (portrait)', async () => {
-    await renderTab({ ...BASE_LAYOUT, canvasWidth: 720, canvasHeight: 1280, canvasAspectRatio: '9:16' })
-    const svg = container.querySelector('.gsp-preview-svg')
-    expect(svg?.getAttribute('viewBox')).toBe('0 0 160 284')
-  })
-
-  it('mini-preview SVG viewBox is 160×90 for default 16:9 canvas', async () => {
-    await renderTab()
-    const svg = container.querySelector('.gsp-preview-svg')
-    expect(svg?.getAttribute('viewBox')).toBe('0 0 160 90')
-  })
-
-  it('mini-preview frame inline style reflects project canvas aspect ratio', async () => {
-    await renderTab({ ...BASE_LAYOUT, canvasWidth: 1024, canvasHeight: 768, canvasAspectRatio: '4:3' })
-    const frame = container.querySelector('.gsp-preview-frame')
-    expect(frame?.style.aspectRatio).toBe('1024 / 768')
   })
 })
 

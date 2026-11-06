@@ -32,6 +32,9 @@ export default function TrackHeaderList({
   automationGroupRows = [],
   automationLaneRows = [],
   onToggleAutomationGroup,
+  // Fixed (non-scrolling) rows pinned under the ruler spacer, mirroring the
+  // canvas column's pinned lanes (the Snapshots cue lane).
+  pinnedHeader = null,
 }) {
   const dragRef = useRef(null)
   const trackById = useMemo(() => new Map(tracks.map(track => [track.id, track])), [tracks])
@@ -218,6 +221,7 @@ export default function TrackHeaderList({
   return (
     <div className="timeline-header-column" style={{ width }}>
       <div className="timeline-header-spacer" style={{ height: RULER_HEIGHT }} />
+      {pinnedHeader}
       <div className="timeline-header-scroll" onScroll={handleScroll}
         onMouseDown={(event) => { if (event.target === event.currentTarget) onClearSelection?.() }}>
         {renderAutomationGroup(-1)}

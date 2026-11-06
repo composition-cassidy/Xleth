@@ -1859,7 +1859,7 @@ export default function SandboxWaveformCanvas() {
 
   // ── Wheel: Ctrl/Meta = pointer-centred zoom, Shift = pan ─────────────────
   //
-  // Same split the timeline uses (see VideoMirrorTimeline's handleWheel), and
+  // Same split the timeline uses (see TimelineView's handleWheel), and
   // for the same reason: a PLAIN wheel must keep reaching the layer
   // workspace's vertical scroller, or the panel becomes a place where the
   // mouse wheel silently stops working as soon as the pointer crosses a

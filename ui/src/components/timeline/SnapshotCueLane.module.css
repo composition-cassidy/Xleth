@@ -1,0 +1,80 @@
+/* The Snapshots cue lane pinned under the arrangement ruler. Neutral: snapshot
+ * spans alternate two greys, cue pins are ink. The accent is reserved for the
+ * selected pin's outline (selection), never for the lane's fill. */
+@layer kit {
+  .lane {
+    position: relative;
+    z-index: 5;
+    flex: 0 0 auto;
+    background: var(--ui-g1);
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .lane :global(.vmt-cue-span) {
+    border-right: 1px solid var(--ui-g4);
+    background: var(--ui-g2);
+  }
+
+  .lane :global(.vmt-cue-span-1) {
+    background: var(--ui-g3);
+  }
+
+  .lane :global(.vmt-cue-span > span) {
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+    line-height: var(--row-h);
+  }
+
+  .lane :global(.vmt-cue-marker) {
+    background: linear-gradient(90deg,
+      transparent 0, transparent 5px,
+      var(--ui-ink) 5px, var(--ui-ink) 6px,
+      transparent 6px);
+  }
+
+  .lane :global(.vmt-cue-marker::before) {
+    background: var(--ui-ink);
+    box-shadow: 0 0 0 1px var(--ui-g0);
+  }
+
+  .lane :global(.vmt-cue-marker:hover::before) {
+    box-shadow: 0 0 0 1px var(--ui-g0);
+  }
+
+  .lane :global(.vmt-cue-marker-wrap.is-selected .vmt-cue-marker::before) {
+    box-shadow: 0 0 0 1px var(--ui-select);
+  }
+
+  /* Header cell in the track-header column, same height as the lane. */
+  .header {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-1);
+    padding: 0 var(--space-1) 0 var(--space-2);
+    background: var(--ui-g2);
+    border-bottom: 1px solid var(--ui-g4);
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+  }
+}
+
+@layer kit {
+  /* Transition window: a neutral band (ink at low alpha), handles in ink. No glow. */
+  .lane :global(.vmt-transition-band) {
+    border: 1px solid color-mix(in srgb, var(--ui-ink) 40%, transparent);
+    background: color-mix(in srgb, var(--ui-ink) 14%, transparent);
+  }
+
+  .lane :global(.vmt-transition-handle) {
+    background: var(--ui-ink);
+    box-shadow: 0 0 0 1px var(--ui-g0);
+  }
+
+  .lane :global(.vmt-transition-handle:hover) {
+    box-shadow: 0 0 0 1px var(--ui-select);
+  }
+}

@@ -94,24 +94,6 @@
       "count": 5
     }
   },
-  "src/components/timeline/VideoMirrorCanvas.jsx": {
-    "no-restricted-syntax": {
-      "count": 5
-    }
-  },
-  "src/components/timeline/VideoMirrorTimeline.jsx": {
-    "no-restricted-syntax": {
-      "count": 4
-    },
-    "react-hooks/exhaustive-deps": {
-      "count": 1
-    }
-  },
-  "src/components/timeline/VideoMirrorTransition.test.jsx": {
-    "no-restricted-syntax": {
-      "count": 1
-    }
-  },
   "src/components/timeline/__tests__/hiResFetchIntegration.test.js": {
     "no-restricted-syntax": {
       "count": 4

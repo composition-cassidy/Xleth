@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useImperativeHandle, forwardRef, useCallback, useMemo } from 'react'
-import { drawGrid, drawClips, drawDropPreview, drawPatternBlocks, drawAutomationClips, drawWorldSpinners, drawGhostClips, resolveTimelinePalette } from './timelineDrawing.js'
+import { drawGrid, drawClips, drawHoldZones, drawDropPreview, drawPatternBlocks, drawAutomationClips, drawWorldSpinners, drawGhostClips, resolveTimelinePalette } from './timelineDrawing.js'
 import { buildResolvedTrackColorMap } from './trackColorResolver.js'
 import useWorldProcessingStore from '../../stores/worldProcessingStore.js'
 import useGhostClipStore from '../../stores/ghostClipStore.js'
@@ -289,6 +289,14 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       timelineDisplaySettingsRef.current, trackColorById, trackLayoutRef.current,
       clipControlDraftRef.current,
       { spec: clipControlSpecRef.current, hoveredControl: hoveredClipControlRef.current }
+    )
+    // Hold Last Frame zones: how far past each clip's end a held frame stays on
+    // screen. Drawn only by the Video tab's mirror until Phase 3; the
+    // arrangement is the one timeline now. Returns at once when no track holds.
+    drawHoldZones(
+      ctx, w, h,
+      scrollOffsetRef.current, pixelsPerBeatRef.current,
+      clipsRef.current, tidx, tracksRef.current, palette, trackLayoutRef.current
     )
     drawPatternBlocks(
       ctx, w, h,

@@ -10,6 +10,7 @@ import { sourceTicksForTimelineTicks } from './timeline/clipSourceDomain.js'
 import { tokenValue } from '../theming/tokenValue.ts'
 import TimelineRuler from './timeline/TimelineRuler.jsx'
 import LoopRegionBar from './timeline/LoopRegionBar.jsx'
+import SnapshotCueLane, { SnapshotCueLaneHeader, useSnapshotCues } from './timeline/SnapshotCueLane.jsx'
 import TimelineScrollbar from './timeline/TimelineScrollbar.jsx'
 import TimelineToolbar from './timeline/TimelineToolbar.jsx'
 import Fader from './controls/Fader.jsx'
@@ -555,6 +556,9 @@ export default function TimelineView({
   const [isPlaying, setIsPlaying] = useState(false)
   const isPlayingRef = useRef(false)
   const playheadBeatRef = useRef(0)
+  // Snapshots cue lane, pinned under the ruler on the arrangement's own scale.
+  const cueLaneRef = useRef(null)
+  const snapshotCues = useSnapshotCues(playheadBeatRef)
   const bpmRef = useRef(140)
   const stoppedPreviewSeekSchedulerRef = useRef(null)
 
@@ -633,6 +637,7 @@ export default function TimelineView({
     // canvases while the animator eases.
     canvasRef.current?.repositionFxBadges()
     loopRegionBarRef.current?.applyView()
+    cueLaneRef.current?.applyView()
     scrollbarRef.current?.applyView()
   }, [])
 
@@ -4487,6 +4492,12 @@ export default function TimelineView({
               automationGroupRows={trackLayout.automationGroupRows}
               automationLaneRows={trackLayout.automationLaneRows}
               onToggleAutomationGroup={handleToggleAutomationGroup}
+              pinnedHeader={(
+                <SnapshotCueLaneHeader
+                  onAddCue={snapshotCues.addCueAtPlayhead}
+                  disabled={!snapshotCues.activeSnapshotId}
+                />
+              )}
             />
 
             {/* Resize handle — 4px drag zone between header column and canvas */}
@@ -4518,6 +4529,20 @@ export default function TimelineView({
                   rulerHeight={RULER_HEIGHT}
                 />
               </div>
+              <SnapshotCueLane
+                ref={cueLaneRef}
+                pixelsPerBeatRef={pixelsPerBeatRef}
+                scrollOffsetRef={scrollOffsetRef}
+                cues={snapshotCues.cues}
+                snapshots={snapshotCues.snapshots}
+                defaultSnapshotId={snapshotCues.defaultSnapshotId}
+                totalBeats={totalBeats}
+                snapGranularity={snapGranularity}
+                onMoveCue={snapshotCues.moveCue}
+                onRemoveCue={snapshotCues.removeCue}
+                onRepointCue={snapshotCues.repointCue}
+                onSetCueTransition={snapshotCues.setCueTransition}
+              />
               <div
                 className="timeline-canvas-scroll"
                 ref={scrollContainerRef}
