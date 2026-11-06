@@ -1,0 +1,49 @@
+@layer kit {
+  .section {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    flex: 0 0 auto;
+    width: var(--section-w, auto);
+    min-height: 0;
+    border-left: 1px solid var(--ui-g4);
+  }
+
+  /* The device body's top border already separates it from the title bar. */
+  .header {
+    border-top: 0;
+  }
+
+  /* A 24x24 fold button inside a 20px strip: it overhangs, hit area intact. */
+  .fold {
+    margin: -2px -4px -2px 0;
+  }
+
+  .content {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2);
+    min-height: 0;
+    padding: var(--space-1) var(--space-1);
+  }
+
+  .folded {
+    align-items: center;
+    width: var(--device-fold-w);
+    padding-top: 2px;
+    background: var(--ui-g2);
+  }
+
+  .foldedName {
+    padding: var(--space-2) 0;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    font-weight: var(--weight-medium);
+    white-space: nowrap;
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+  }
+}

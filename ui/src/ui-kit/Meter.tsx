@@ -35,6 +35,12 @@ export interface MeterProps extends HintProps, DataAttrs {
   fallDbPerSec?: number;
   holdMs?: number;
   onClipChange?: (clipped: boolean) => void;
+  /**
+   * 'up' (default): a level meter, filling from `min` at the bottom.
+   * 'down': a gain-reduction meter. Values are dB of reduction (0 = none), the
+   * bar hangs from the top and the scale prints as negative dB. No clip LED.
+   */
+  direction?: 'up' | 'down';
   className?: string;
 }
 
@@ -70,8 +76,10 @@ export function meterWidth(channels: 1 | 2, showScale: boolean): number {
 export default function Meter(props: MeterProps) {
   const {
     subscribe, label, channels = 1, min = -60, max = 0, scaleDb = DEFAULT_SCALE_DB, showScale = true,
-    clipDb = 0, fallDbPerSec, holdMs, onClipChange, hint, hintMods, className, ...rest
+    clipDb: clipDbProp = 0, fallDbPerSec, holdMs, onClipChange, direction = 'up', hint, hintMods, className, ...rest
   } = props;
+  const down = direction === 'down';
+  const clipDb = down ? Number.POSITIVE_INFINITY : clipDbProp;
 
   const epoch = useThemeEpoch();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -81,8 +89,8 @@ export default function Meter(props: MeterProps) {
   const lastTsRef = useRef(0);
   const paletteRef = useRef<Palette | null>(null);
   const clippedRef = useRef(false);
-  const optsRef = useRef({ min, max, scaleDb, showScale, clipDb, fallDbPerSec, holdMs, channels, onClipChange });
-  optsRef.current = { min, max, scaleDb, showScale, clipDb, fallDbPerSec, holdMs, channels, onClipChange };
+  const optsRef = useRef({ min, max, scaleDb, showScale, clipDb, fallDbPerSec, holdMs, channels, onClipChange, down });
+  optsRef.current = { min, max, scaleDb, showScale, clipDb, fallDbPerSec, holdMs, channels, onClipChange, down };
   const [clipped, setClipped] = useState(false);
 
   const width = meterWidth(channels, showScale);
@@ -105,7 +113,9 @@ export default function Meter(props: MeterProps) {
     ctx.clearRect(0, 0, cssW, cssH);
 
     const span = o.max - o.min || 1;
-    const yOf = (db: number) => cssH - ((Math.min(o.max, Math.max(o.min, db)) - o.min) / span) * cssH;
+    const frac = (db: number) => (Math.min(o.max, Math.max(o.min, db)) - o.min) / span;
+    // Up: min at the bottom. Down (gain reduction): 0 dB of reduction at the top.
+    const yOf = (db: number) => (o.down ? frac(db) * cssH : cssH - frac(db) * cssH);
 
     const barsW = o.channels * BAR_W + (o.channels - 1) * BAR_GAP;
     for (let c = 0; c < o.channels; c += 1) {
@@ -116,7 +126,8 @@ export default function Meter(props: MeterProps) {
       if (st.level > o.min) {
         const y = yOf(st.level);
         ctx.fillStyle = st.level >= o.clipDb ? pal.clip : pal.fill;
-        ctx.fillRect(x, y, BAR_W, cssH - y);
+        if (o.down) ctx.fillRect(x, 0, BAR_W, y);
+        else ctx.fillRect(x, y, BAR_W, cssH - y);
       }
       if (st.peak > o.min) {
         ctx.fillStyle = pal.peak;
@@ -133,12 +144,13 @@ export default function Meter(props: MeterProps) {
       for (const db of o.scaleDb) {
         if (db > o.max || db < o.min) continue;
         const y = yOf(db);
-        if (y - lastY < MIN_LABEL_GAP) continue;
+        if (Math.abs(y - lastY) < MIN_LABEL_GAP) continue;
         lastY = y;
         ctx.fillStyle = pal.tick;
         ctx.fillRect(barsW + 1, Math.round(y), 3, 1);
         const ty = Math.min(cssH - 5, Math.max(5, y));
-        ctx.fillText(String(db).replace('-', '−'), barsW + 6, ty);
+        const shown = o.down && db > 0 ? -db : db;
+        ctx.fillText(String(shown).replace('-', '−'), barsW + 6, ty);
       }
     }
   }, []);
@@ -228,19 +240,20 @@ export default function Meter(props: MeterProps) {
     <div
       {...rest}
       className={`${styles.meter}${className ? ` ${className}` : ''}`}
+      data-direction={direction}
       style={{ '--meter-w': `${width}px`, '--bars-w': `${meterWidth(channels, false)}px` } as CSSProperties}
       role="group"
       aria-label={`${label} meter`}
       {...hintAttrs({ hint, hintMods })}
     >
-      <button
+      {down ? null : <button
         type="button"
         className={styles.clip}
         data-clipped={clipped}
         aria-label={clipped ? `${label}: clipped. Click to clear` : `${label}: no clipping`}
         data-hint={clipped ? 'Clipped. Click to clear the clip indicator.' : 'Clip indicator. Latches when the level reaches 0 dB.'}
         onClick={clearClip}
-      />
+      />}
       <canvas ref={canvasRef} className={styles.canvas} aria-hidden="true" />
     </div>
   );

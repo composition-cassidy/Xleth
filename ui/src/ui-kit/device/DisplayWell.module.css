@@ -1,0 +1,39 @@
+@layer kit {
+  .well {
+    position: relative;
+    box-sizing: border-box;
+    flex: 0 0 auto;
+    width: var(--well-w);
+    margin: var(--device-well-pad);
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g0);
+    overflow: hidden;
+  }
+
+  .canvas {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  /* Hosted canvases fill the well; their own frame borders go. */
+  .canvas > :global(*) {
+    flex: 1 1 auto;
+    min-height: 0;
+    border: 0;
+  }
+
+  .canvas :global(canvas) {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  .views {
+    position: absolute;
+    top: var(--space-1);
+    right: var(--space-1);
+    z-index: 1;
+  }
+}

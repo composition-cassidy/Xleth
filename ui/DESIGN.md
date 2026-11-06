@@ -279,7 +279,60 @@ tooltips are not documentation.
 └ Hint bar: hovered control + its modifiers                     ┘ 22
 ```
 
-## 9. Known gaps (deliberately out of scope for Phase 0)
+## 9. Device system (Phase 4a)
+
+Every stock effect is a **device**: one frame, one title bar, one height. Kit:
+`ui-kit/device/` (`DeviceFrame`, `DeviceSection`, `DisplayWell`, `DeviceMenu`). App wiring:
+`components/devices/` (`EffectDevice`, `DeviceChain`, `deviceNames.js`, the preset and A/B hooks).
+
+**Size.** `--device-h` **256px** for every device, docked or floating; `--device-title-h` 24px;
+the body is the rest. Only the width varies with complexity. A folded device is a vertical title
+strip `--device-fold-w` 28px wide. The detail dock opens at **304px** (1px border, 28px tab strip,
+4px padding, the 256px device, the chain's thin horizontal scrollbar).
+
+**Title bar, identical on every device, in this order:**
+1. **Activator**: the bypass `Toggle` (power glyph), shown at rest. On = inverted ink chip.
+2. **Fold**: collapses the device to the vertical strip (state per device instance).
+3. **Name**: sentence case from the one map, `DEVICE_NAMES`. Also the drag handle (reorder in
+   the chain, move when floating). A 2px stripe in the owning track's identity colour runs
+   along the top edge: the identity thread continues from the strip to the device.
+4. **Preset menu**: kit `Select` driven by `useEffectPresets` (the same presetManager /
+   adapter path as the legacy preset strip). Save / delete / undo-load are in the more menu.
+5. **A/B compare**: `useAbCompare`, renderer-only: each side is a preset-adapter state blob,
+   switching captures the current side and applies the other through the existing setters.
+   Not an undo entry (stock parameters have no undo; see below).
+6. **More** (`DeviceMenu`): preset actions, copy A/B, delete.
+7. **Pop-out** (docked) or **close** (floating): opens the same device in a window through
+   `EffectEditorHost`. While popped out, the docked slot is a strip with a return button, so a
+   device is never live twice.
+
+Devices whose editor has not moved to the frame yet (Phase 4b) keep the same title bar
+minus presets and A/B, and a body that opens their existing editor. No fake content.
+
+**Body.** Sections left to right in **signal order**, each under a `SectionHeader` strip
+(`DeviceSection`, which can fold). **One** recessed `DisplayWell` (g0) is the hero; it hosts an
+existing canvas, drawn from real engine data, and switches views in place from its corner.
+**At most one oversized hero control** per device (Compressor: threshold, 44px dial).
+
+**Bypassed.** Three signals, never colour alone: the activator shows off, "Off" is printed
+after the name, the body dims to `--ui-mute-opacity`. Controls stay editable.
+
+**Shadow.** The hard offset shadow appears on a popped-out device only, never in the chain.
+
+**Chain (Devices tab).** The selected mixer track's insert chain (`useMixerStore.selectedChainKey`,
+`useEffectChainStore.chains[key]`), left to right, scrolling horizontally. No track selected =
+the master chain. Ends in a plain text drop zone, "Drop effects here", which opens the existing
+FX picker. Reorder = drag a device by its name: local preview while dragging, **one**
+`moveEffect` on drop. A track whose FX Graph owns its effects shows that, not a chain.
+
+**Undo.** Stock-effect parameters, bypass and chain moves have **no undo** in the engine today
+(null UndoManager; the only chain command is `LoadEffectChainCommand`). The devices keep exactly
+that behaviour; the one-step revert after a preset load remains. "Every edit is undoable"
+(DAW Floor) is open and needs engine work.
+
+**Debug logs** use the `[Device]` prefix.
+
+## 10. Known gaps (deliberately out of scope for Phase 0)
 
 - **Settings > Appearance:** `appearanceTheme.js` builds its theme from hard-coded **hue-240**
   anchors and overrides `bg-primary`, `bg-surface`, `bg-inset` and the text tiers. **Users who

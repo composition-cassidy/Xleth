@@ -76,6 +76,12 @@
     --xleth-top-chrome-height: var(--shell-topbar-h);
     --xleth-bottom-chrome-height: var(--shell-hintbar-h);
 
+    /* ── Device system (DESIGN.md "Device system") ───────────────────────── */
+    --device-h: 256px;        /* EVERY device, docked or floating; only width varies */
+    --device-title-h: 24px;   /* the one title bar */
+    --device-fold-w: 28px;    /* a folded device is a vertical title strip this wide */
+    --device-well-pad: 4px;   /* inset of the recessed display well */
+
     /* ── Radius and elevation ────────────────────────────────────────────── */
     --ui-radius-0: 0;        /* chrome, panels */
     --ui-radius-1: 2px;      /* controls */

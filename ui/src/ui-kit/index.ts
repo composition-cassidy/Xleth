@@ -39,3 +39,5 @@ export { default as EmptyState } from './EmptyState';
 export type { EmptyStateProps } from './EmptyState';
 export { default as Select, getSelectedOption } from './Select';
 export type { SelectOption, SelectProps } from './Select';
+
+export * from './device';
