@@ -8,6 +8,7 @@ import { resolveAutoTrackColor, normalizeTrackPalette, TRACK_PALETTE_FALLBACK } 
 import { folderMapForLayout } from './trackFolderLayout.js'
 import { FOLDER_ROW_HEIGHT } from './timelineRowLayout.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
+import styles from './TrackHeaderList.module.css'
 
 export default function TrackHeaderList({
   tracks,
@@ -36,6 +37,9 @@ export default function TrackHeaderList({
   // Fixed (non-scrolling) rows pinned under the ruler spacer, mirroring the
   // canvas column's pinned lanes (the Snapshots cue lane).
   pinnedHeader = null,
+  // Empty project: two ghost rows that add the first track of either kind.
+  onAddClipTrack,
+  onAddPatternTrack,
 }) {
   const dragRef = useRef(null)
   const trackById = useMemo(() => new Map(tracks.map(track => [track.id, track])), [tracks])
@@ -268,9 +272,22 @@ export default function TrackHeaderList({
         })}
         <div className="timeline-root-drop-zone" onMouseDown={() => onClearSelection?.()} onDragOver={allowDrop}
           onDrop={(event) => dropAt(event, { kind: 'root', index: rootOrder.length })} />
-        <button className="timeline-add-track" style={{ height: ADD_TRACK_ROW_HEIGHT }} onClick={onAddTrack} title="Add track">
-          <Plus size={14} /><span>Add Track</span>
-        </button>
+        {rootOrder.length === 0 ? (
+          <div className={styles.ghosts} role="group" aria-label="Add the first track">
+            <button type="button" className={styles.ghost} style={{ height: trackHeight }} onClick={onAddClipTrack}
+              data-hint="Add a clip track: audio and video clips">
+              <Plus size={14} aria-hidden="true" /><span>Clip track</span>
+            </button>
+            <button type="button" className={styles.ghost} style={{ height: trackHeight }} onClick={onAddPatternTrack}
+              data-hint="Add a pattern track: notes that trigger samples">
+              <Plus size={14} aria-hidden="true" /><span>Pattern track</span>
+            </button>
+          </div>
+        ) : (
+          <button className="timeline-add-track" style={{ height: ADD_TRACK_ROW_HEIGHT }} onClick={onAddTrack} title="Add track">
+            <Plus size={14} /><span>Add Track</span>
+          </button>
+        )}
       </div>
 
       {openColorPickerId !== null && colorPickerAnchorRect !== null && (() => {

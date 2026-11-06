@@ -1,0 +1,41 @@
+/* Empty arrangement: ghost rows in the header column, lane-height, neutral. */
+@layer kit {
+  .ghosts {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .ghost {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    width: 100%;
+    min-height: var(--hit-min);
+    margin: 0;
+    padding: 0 var(--space-3);
+    border: 0;
+    border-bottom: 1px dashed var(--ui-g4);
+    background: transparent;
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .ghost:hover {
+    background: var(--ui-g2);
+    color: var(--ui-ink);
+  }
+
+  .ghost:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  .ghost svg {
+    width: var(--type-13);
+    height: var(--type-13);
+  }
+}

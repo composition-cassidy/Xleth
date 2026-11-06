@@ -1,5 +1,4 @@
 import { lazy, Suspense, useEffect, useMemo, useState, useCallback, useRef } from 'react'
-import { Layers, Plus } from 'lucide-react'
 import TrackHeaderList from './timeline/TrackHeaderList.jsx'
 import PatternListPanel from './timeline/PatternListPanel.jsx'
 import TimelineCanvas from './timeline/TimelineCanvas.jsx'
@@ -4417,8 +4416,6 @@ export default function TimelineView({
 
   // ── Render ─────────────────────────────────────────────────────────────────
 
-  const hasTracks = tracks.length > 0 || normalizedFolderLayout.folders.length > 0
-
   return (
     <div className="timeline-view" ref={timelineViewRef} tabIndex={-1}>
       {/* ── Toolbar ──────────────────────────────────────────────────────── */}
@@ -4445,8 +4442,9 @@ export default function TimelineView({
         {headerDragLineX !== null && (
           <div className="timeline-header-drag-line" style={{ left: headerDragLineX }} />
         )}
-        {hasTracks ? (
-          <>
+        {/* The arrangement keeps its structure with no tracks: ruler, header
+            column with two ghost rows, the canvas (and its drop target). */}
+        <>
             {/* Left-most: pattern list (FL-style strip) */}
             <PatternListPanel
               patterns={patterns}
@@ -4492,6 +4490,8 @@ export default function TimelineView({
               automationGroupRows={trackLayout.automationGroupRows}
               automationLaneRows={trackLayout.automationLaneRows}
               onToggleAutomationGroup={handleToggleAutomationGroup}
+              onAddClipTrack={() => handleAddTrack('Clip')}
+              onAddPatternTrack={() => handleAddTrack('Pattern')}
               pinnedHeader={(
                 <SnapshotCueLaneHeader
                   onAddCue={snapshotCues.addCueAtPlayhead}
@@ -4701,19 +4701,7 @@ export default function TimelineView({
                 pixelsPerBeat={pixelsPerBeat}
               />
             </div>
-          </>
-        ) : (
-          /* ── Empty state ──────────────────────────────────────────────── */
-          <div className="timeline-empty">
-            <Layers size={36} strokeWidth={1} className="tab-placeholder-icon" />
-            <p>No tracks yet</p>
-            <p className="tab-placeholder-hint">Click + to add tracks to the timeline</p>
-            <button className="timeline-empty-add" onClick={handleAddTrackClick}>
-              <Plus size={14} />
-              <span>Add Track</span>
-            </button>
-          </div>
-        )}
+        </>
         {CLIP_CONTROL_TUNER_ENABLED && ClipControlTuner && (
           clipControlTunerOpen ? (
             <Suspense fallback={null}>
