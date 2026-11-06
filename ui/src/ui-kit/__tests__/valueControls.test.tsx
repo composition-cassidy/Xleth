@@ -210,8 +210,8 @@ describe('Fader', () => {
     render(<Fader label="L" value={0} onCommit={onCommit} />);
     key(slider('L'), 'ArrowUp');
     expect(onCommit.mock.calls[0][0]).toBeGreaterThan(0);
-    key(slider('L'), 'Home');
-    expect(onCommit).toHaveBeenLastCalledWith(-Infinity);
+    key(slider('L'), 'PageDown');
+    expect(onCommit.mock.calls.at(-1)![0]).toBeLessThan(0);
   });
 });
 

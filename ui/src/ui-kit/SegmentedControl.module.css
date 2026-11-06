@@ -8,6 +8,7 @@
     background: var(--ui-g3);
     font-family: var(--ui-font);
     overflow: hidden;
+    -webkit-app-region: no-drag;
   }
 
   .group[data-size="sm"] { height: var(--ctl-h-sm); }

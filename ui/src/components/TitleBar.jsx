@@ -1,12 +1,8 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
   AudioWaveform,
-  Folder,
-  Layout,
   Minus,
-  Pencil,
   Redo2,
-  Settings,
   Square,
   Trash2,
   Undo2,
@@ -21,6 +17,7 @@ import { PANEL_CATALOG_ORDER } from '../windowing/registry/panelCatalog'
 import { LAYOUT_PRESETS } from '../windowing/managers/PresetManager'
 import { useQuickLaunchersStore } from '../stores/quickLaunchersStore.js'
 import { XlethButton, XlethIconButton } from './common/XlethButton.jsx'
+import { Button, IconButton } from '../ui-kit'
 import { useDockMagnification } from '../hooks/useDockMagnification.js'
 import { CLEANUP_PROJECT_LABEL } from './projectCleanup.js'
 import TransportBar from './TransportBar.jsx'
@@ -85,13 +82,6 @@ export function applyLayoutChoice(presetId, registry = usePanelRegistry.getState
   console.log(`[Shell] View > Layouts: ${presetId}`)
   if (presetId === RESET_LAYOUT_ID) registry.resetLayout()
   else registry.applyPreset(presetId)
-}
-
-const TITLEBAR_MENU_ICONS = {
-  File: Folder,
-  Edit: Pencil,
-  View: Layout,
-  Settings,
 }
 
 export function isDirectTitlebarMenu(menu) {
@@ -427,7 +417,6 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction, a
         <nav className="titlebar-menus" aria-label="Application menu">
           {TITLEBAR_MENUS.map((menu, idx) => {
             const direct = isDirectTitlebarMenu(menu)
-            const MenuIcon = TITLEBAR_MENU_ICONS[menu.label]
             const menuIsRendered = renderedMenu === idx
             const menuIsOpen = openMenu === idx
             const menuIsActive = menuIsOpen || activeMenuLabel === menu.label
@@ -436,17 +425,19 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction, a
                 key={menu.label}
                 className={`titlebar-menu ${menuIsOpen ? 'open' : ''}${menuIsActive ? ' active' : ''}`}
               >
-                <XlethButton
-                  type="button"
-                  className="titlebar-menu-trigger"
-                  active={menuIsActive}
+                {/* `titlebar-menu-trigger` is kept as a plain hook class (no styles): the
+                    window manager tests and dropdown positioning look it up. */}
+                <Button
+                  variant="ghost"
+                  className={`titlebar-menu-trigger ${styles.menuTrigger}`}
+                  data-open={menuIsActive ? 'true' : undefined}
                   onClick={() => handleMenuClick(idx)}
                   aria-haspopup={direct ? undefined : 'menu'}
                   aria-expanded={direct ? undefined : menuIsOpen}
+                  hint={direct ? `${menu.label}` : `${menu.label} menu`}
                 >
-                  {MenuIcon && <MenuIcon className="titlebar-menu-icon" size={20} strokeWidth={2} aria-hidden="true" />}
-                  <span>{menu.label}</span>
-                </XlethButton>
+                  {menu.label}
+                </Button>
                 {!direct && menuIsRendered && (
                   <div className="titlebar-dropdown" data-state={dropdownState}>
                     {renderDropdown(menu)}
@@ -480,35 +471,30 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction, a
           ))}
         </div>
 
-        <div className="titlebar-controls">
-          <XlethIconButton
-            type="button"
-            className="titlebar-btn"
+        <div className={styles.controls}>
+          <IconButton
+            label="Minimize"
             onClick={() => window.xleth.window.minimize()}
-            aria-label="Minimize"
-            data-hint="Minimize the window"
+            hint="Minimize the window"
           >
             <Minus size={14} />
-          </XlethIconButton>
-          <XlethIconButton
-            type="button"
-            className="titlebar-btn"
+          </IconButton>
+          <IconButton
+            label="Maximize"
             onClick={() => window.xleth.window.maximize()}
-            aria-label="Maximize"
-            data-hint="Maximize or restore the window"
-            data-hint-mods="Double-click an empty part of the top bar"
+            hint="Maximize or restore the window"
+            hintMods="Double-click an empty part of the top bar"
           >
             <Square size={14} />
-          </XlethIconButton>
-          <XlethIconButton
-            type="button"
-            className="titlebar-btn titlebar-btn-close"
+          </IconButton>
+          <IconButton
+            className={styles.close}
+            label="Close"
             onClick={() => window.xleth.window.close()}
-            aria-label="Close"
-            data-hint="Close Xleth"
+            hint="Close Xleth"
           >
             <X size={14} />
-          </XlethIconButton>
+          </IconButton>
         </div>
       </div>
     </div>

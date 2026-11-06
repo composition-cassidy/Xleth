@@ -16,3 +16,24 @@ export function hintAttrs({ hint, hintMods }: HintProps): { 'data-hint'?: string
 
 /** The modifier help every draggable value control shares (DESIGN.md section 7). */
 export const VALUE_HINT_MODS = 'Drag: change · Shift: fine · Ctrl+click: reset · Double-click: type · Wheel: step';
+
+// ── Reading hints back (the hint bar) ─────────────────────────────────────────
+
+const HINT_SELECTOR = '[data-hint], [aria-label], [title]';
+const EMPTY_HINT = { text: '', mods: '' };
+
+/**
+ * What the hint bar says for a hovered node: the nearest element that documents
+ * itself. Its `data-hint` wins, then `aria-label`, then `title`; `data-hint-mods`
+ * (modifier help) is shown on the right.
+ */
+export function resolveHint(target: unknown): { text: string; mods: string } {
+  const node = target as { closest?: (selector: string) => Element | null } | null;
+  const element = node && typeof node.closest === 'function' ? node.closest(HINT_SELECTOR) : null;
+  if (!element) return EMPTY_HINT;
+  const text = element.getAttribute('data-hint')
+    || element.getAttribute('aria-label')
+    || element.getAttribute('title')
+    || '';
+  return { text: text.trim(), mods: (element.getAttribute('data-hint-mods') || '').trim() };
+}

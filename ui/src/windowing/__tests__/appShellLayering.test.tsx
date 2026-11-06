@@ -193,8 +193,12 @@ describe('App shell grid layout contract', () => {
 
   it('top chrome buttons and menu triggers carry no-drag so pointer events reach them', () => {
     const appCss = readUiSource('styles/app.css');
-    expect(appCss).toMatch(/\.titlebar-menu-trigger[^{]*\{[^}]*-webkit-app-region:\s*no-drag/s);
-    expect(appCss).toMatch(/\.titlebar-btn[^{]*\{[^}]*-webkit-app-region:\s*no-drag/s);
+    // Menu triggers and window controls are kit Button / IconButton, which opt out of the drag region.
+    expect(readUiSource('ui-kit/Button.module.css')).toMatch(/\.btn\s*\{[^}]*-webkit-app-region:\s*no-drag/s);
+    const titleBar = readUiSource('components/TitleBar.jsx');
+    expect(titleBar).toMatch(/<Button[^>]*titlebar-menu-trigger/s);
+    expect(titleBar).toMatch(/<IconButton[^>]*label="Minimize"/s);
+    // The dock launchers are still legacy and keep their rule until their own phase.
     expect(appCss).toMatch(/\.titlebar-launcher-btn[^{]*\{[^}]*-webkit-app-region:\s*no-drag/s);
   });
 });

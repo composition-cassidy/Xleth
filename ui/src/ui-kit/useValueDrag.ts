@@ -6,8 +6,10 @@
 //   Ctrl/Cmd+click  reset to defaultValue
 //   Double-click    inline text entry that parses units ("5k", "-6 dB", "1/8D")
 //   Wheel           one step (Shift = fine)
-//   Arrow keys      nudge one step (Shift x10); PageUp/PageDown x10; Home/End = ends;
+//   Arrow keys      nudge one step (Shift x10); PageUp/PageDown x10;
 //                   Enter or F2 opens the editor
+//                   (Home / End are deliberately NOT bound: they are app shortcuts,
+//                   and Home = rewind must work while a control has focus.)
 //   Escape          cancels a drag back to its start value, or an edit
 //
 // Callbacks (the kit never touches IPC or the engine):
@@ -262,8 +264,6 @@ export function useValueDrag(options: UseValueDragOptions) {
       case 'ArrowDown': case 'ArrowLeft': next = stepValue(stepCfg, o.value, -1, mult); break;
       case 'PageUp': next = stepValue(stepCfg, o.value, 1, 10); break;
       case 'PageDown': next = stepValue(stepCfg, o.value, -1, 10); break;
-      case 'Home': next = scaleBounds(o.scale).lo; break;
-      case 'End': next = scaleBounds(o.scale).hi; break;
       case 'Enter': case 'F2': e.preventDefault(); e.stopPropagation(); beginEdit(); return;
       default: return;
     }

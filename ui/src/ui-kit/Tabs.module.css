@@ -6,6 +6,7 @@
     height: var(--panel-header-h);
     background: var(--ui-g2);
     border-bottom: 1px solid var(--ui-g4);
+    -webkit-app-region: no-drag;
     font-family: var(--ui-font);
   }
 

@@ -190,7 +190,7 @@ describe('wheel and keys', () => {
     expect(onCommit.mock.calls[0][0]).toBeCloseTo(49.9);
   });
 
-  it('arrow keys nudge one step; Shift x10; PageUp x10; Home / End', () => {
+  it('arrow keys nudge one step; Shift x10; PageUp x10', () => {
     const onCommit = vi.fn();
     act(() => root.render(<Harness onCommit={onCommit} />));
     key(cell(), 'ArrowUp');
@@ -201,10 +201,16 @@ describe('wheel and keys', () => {
     expect(onCommit).toHaveBeenLastCalledWith(51);
     key(cell(), 'PageUp');
     expect(onCommit).toHaveBeenLastCalledWith(60);
-    key(cell(), 'Home');
-    expect(onCommit).toHaveBeenLastCalledWith(0);
+  });
+
+  it('Home / End are not bound: they stay app shortcuts (Home = rewind)', () => {
+    const onCommit = vi.fn();
+    act(() => root.render(<Harness onCommit={onCommit} />));
+    const ev = new KeyboardEvent('keydown', { key: 'Home', bubbles: true, cancelable: true });
+    act(() => { cell().dispatchEvent(ev); });
+    expect(ev.defaultPrevented).toBe(false);
     key(cell(), 'End');
-    expect(onCommit).toHaveBeenLastCalledWith(100);
+    expect(onCommit).not.toHaveBeenCalled();
   });
 
   it('modified keys are left to the app shortcuts', () => {

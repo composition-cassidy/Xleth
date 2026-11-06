@@ -5,7 +5,7 @@ export { formatValue, formatValueText, THIN_SPACE, MINUS } from './format';
 export type { Unit, FormatOptions } from './format';
 export { parseValue, parseSyncDivision, syncBeats, syncCodec, syncLabel } from './parse';
 export type { Codec, SyncDivision } from './parse';
-export { hintAttrs, VALUE_HINT_MODS } from './hint';
+export { hintAttrs, resolveHint, VALUE_HINT_MODS } from './hint';
 export type { HintProps } from './hint';
 export { dbTaperScale, linearScale, logScale, skewScale } from './valueScale';
 export type { Scale } from './valueScale';

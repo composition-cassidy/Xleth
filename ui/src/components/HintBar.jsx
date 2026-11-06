@@ -1,23 +1,12 @@
 import { useEffect, useState } from 'react'
+import { resolveHint } from '../ui-kit/hint'
 import styles from './HintBar.module.css'
 
-const HINT_SELECTOR = '[data-hint], [aria-label], [title]'
 const EMPTY = { text: '', mods: '' }
 
-/**
- * What the hint bar says for a hovered node: the nearest element that
- * documents itself. Its `data-hint` wins, then `aria-label`, then `title`;
- * `data-hint-mods` (modifier help) is shown on the right.
- */
-export function resolveHint(target) {
-  const element = target && typeof target.closest === 'function' ? target.closest(HINT_SELECTOR) : null
-  if (!element) return EMPTY
-  const text = element.getAttribute('data-hint')
-    || element.getAttribute('aria-label')
-    || element.getAttribute('title')
-    || ''
-  return { text: text.trim(), mods: (element.getAttribute('data-hint-mods') || '').trim() }
-}
+// Reading hints is part of the kit's hint plumbing (ui-kit/hint.ts): controls
+// write data-hint / data-hint-mods, this bar reads them with the same resolver.
+export { resolveHint }
 
 /**
  * The 22px bar along the bottom of the window. It never shows a value that is

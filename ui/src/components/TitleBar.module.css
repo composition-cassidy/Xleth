@@ -32,4 +32,32 @@
     height: 100%;
     min-width: 0;
   }
+
+  /* Menu triggers are kit Buttons (ghost). Open or active = the hover look, so
+   * an open menu reads as pressed without an underline or a glow. */
+  button.menuTrigger {
+    padding: 0 var(--space-2);
+  }
+
+  button.menuTrigger[data-open="true"] {
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+  }
+
+  /* Window controls: kit IconButtons behind a hairline divider. */
+  .controls {
+    display: flex;
+    align-items: center;
+    gap: 1px;
+    height: 100%;
+    margin-left: var(--space-2);
+    padding-left: var(--space-1);
+    border-left: 1px solid var(--ui-g4);
+  }
+
+  /* Close warns on hover: the clip/error colour, with dark ink on it (6:1). */
+  button.close:hover:not(:disabled) {
+    background: var(--ui-clip);
+    color: var(--ui-g0);
+  }
 }

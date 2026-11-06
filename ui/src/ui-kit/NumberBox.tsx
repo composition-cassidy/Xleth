@@ -13,6 +13,8 @@ export interface NumberBoxProps extends ValueControlProps, DataAttrs {
   width?: number;
   /** Hide the visible label (it stays the accessible name). */
   hideLabel?: boolean;
+  /** Field height: 'sm' 24px (default), 'md' 28px (matches IconButtons in a toolbar). */
+  size?: 'sm' | 'md';
 }
 
 /**
@@ -22,7 +24,7 @@ export interface NumberBoxProps extends ValueControlProps, DataAttrs {
  */
 export default function NumberBox(props: NumberBoxProps) {
   const {
-    label, value, defaultValue, disabled = false, bipolar = false, centre, width = 72, hideLabel = false,
+    label, value, defaultValue, disabled = false, bipolar = false, centre, width = 72, hideLabel = false, size = 'sm',
     pxPerRange = DEFAULT_NUMBERBOX_PX, hint, hintMods, className, onChange, onCommit, onCancel,
     min, max, scale, unit, formatOptions, format, parse, codec, step, stepNorm, quantize,
     ...rest
@@ -71,6 +73,8 @@ export default function NumberBox(props: NumberBoxProps) {
       aria-valuenow={aria.now}
       aria-valuetext={`${label}, ${text}`}
       aria-disabled={disabled || undefined}
+      data-size={size}
+      data-no-label={hideLabel || undefined}
       data-dragging={drag.dragging}
       data-bipolar={bipolar || undefined}
       data-disabled={disabled || undefined}

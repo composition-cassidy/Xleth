@@ -19,10 +19,24 @@
     font-variant-numeric: tabular-nums;
     color: var(--ui-ink);
     cursor: ew-resize;
+    -webkit-app-region: no-drag;
     touch-action: none;
     user-select: none;
     overflow: hidden;
     outline: none;
+  }
+
+  /* No visible label: the value centres in the field. */
+  .box[data-no-label] {
+    justify-content: center;
+  }
+
+  .box[data-no-label] .value {
+    margin-left: 0;
+  }
+
+  .box[data-size="md"] {
+    height: var(--ctl-h-md);
   }
 
   .label {

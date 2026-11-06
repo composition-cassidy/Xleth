@@ -1087,57 +1087,6 @@ html[data-xleth-backdrop="video"] .app-body {
   -webkit-app-region: no-drag;
 }
 
-.titlebar-menu-trigger {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  min-height: var(--theme-control-height-compact);
-  padding: var(--theme-control-padding-compact);
-  background: transparent;
-  border: none;
-  border-radius: 0;
-  color: var(--theme-text-muted);
-  font-family: inherit;
-  font-size: var(--theme-control-value-font-compact);
-  font-weight: 600;
-  letter-spacing: 0;
-  line-height: 1;
-  text-transform: none;
-  cursor: pointer;
-  -webkit-appearance: none;
-  appearance: none;
-  transition:
-    background var(--transition-fast),
-    border-color var(--transition-fast),
-    box-shadow var(--transition-fast),
-    color var(--transition-fast);
-  text-decoration: none;
-  -webkit-app-region: no-drag;
-}
-
-.titlebar-menu-trigger:hover,
-.titlebar-menu.open .titlebar-menu-trigger {
-  color: var(--theme-text-primary);
-  background: transparent;
-  box-shadow: none;
-}
-
-.titlebar-menu.open .titlebar-menu-trigger {
-  background: transparent;
-  color: var(--theme-text-primary);
-  box-shadow: none;
-  text-decoration-line: underline;
-  text-decoration-color: var(--theme-accent);
-  text-decoration-thickness: var(--theme-chrome-underline-thickness);
-  text-underline-offset: calc(var(--theme-chrome-underline-thickness) * 2);
-}
-
-.titlebar-menu-icon {
-  display: none;
-  flex: 0 0 auto;
-  color: currentColor;
-}
-
 /* â”€â”€ Dropdown â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 .titlebar-dropdown {
@@ -1386,68 +1335,14 @@ html[data-xleth-backdrop="video"] .app-body {
   color: var(--theme-text-muted);
 }
 
-/* â”€â”€ Window controls â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
-
-.titlebar-controls {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: var(--theme-control-gap-compact);
-  margin-left: var(--theme-control-gap-compact);
-  padding-left: var(--theme-control-gap-compact);
-  /* Divider separating the tool launchers from the window-control zone. */
-  border-left: 1px solid var(--theme-depth-elevation-2-border);
-  -webkit-app-region: no-drag;
-  z-index: 1;
-}
-
-.titlebar-btn {
-  width: var(--theme-control-height-compact);
-  height: var(--theme-control-height-compact);
-  flex: 0 0 var(--theme-control-height-compact);
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-sm);
-  box-shadow: none;
-  color: var(--theme-text-muted);
-  cursor: pointer;
-  -webkit-appearance: none;
-  appearance: none;
-  transition:
-    background var(--transition-fast),
-    border-color var(--transition-fast),
-    box-shadow var(--transition-fast),
-    color var(--transition-fast);
-  -webkit-app-region: no-drag;
-}
-
 /* Divider lines between the minimize / maximize / close zones. */
-.titlebar-controls .titlebar-btn + .titlebar-btn {
-  margin-left: 0;
-}
-
-.titlebar-btn:hover {
-  background: var(--theme-primitive-control-hover-bg);
-  color: var(--theme-text-primary);
-}
-
-.titlebar-btn-close:hover {
-  background: var(--theme-semantic-danger-bg, var(--theme-primitive-control-hover-bg));
-  color: var(--theme-semantic-danger-text, var(--theme-text-primary));
-}
-
 /* ── Interactive titlebar elements: explicit no-drag + pointer-events so
    Electron's drag-region hit-tester never captures these as drag targets.
    Inherited pointer-events is insufficient on Windows frameless windows. ── */
-.titlebar-menu-trigger,
 .titlebar-dropdown-panel,
 .titlebar-dropdown-item,
 .titlebar-toolbar-btn,
-.titlebar-launcher-btn,
-.titlebar-btn {
+.titlebar-launcher-btn {
   -webkit-app-region: no-drag;
   pointer-events: auto;
 }
@@ -18007,49 +17902,19 @@ html.fx-drag-active * {
   position: relative;
 }
 
-.titlebar-menu-trigger.xleth-button,
-.titlebar-launcher-btn.xleth-icon-button,
-.titlebar-btn.xleth-icon-button {
+.titlebar-launcher-btn.xleth-icon-button {
   background: transparent;
   border: none;
   box-shadow: none;
 }
 
-.titlebar-menu-trigger.xleth-button {
-  height: var(--theme-control-height-compact);
-  min-height: var(--theme-control-height-compact);
-  padding: 0 6px;
-}
-
-.titlebar-launcher-btn.xleth-icon-button:hover:not(:disabled),
-.titlebar-btn.xleth-icon-button:hover:not(:disabled) {
+.titlebar-launcher-btn.xleth-icon-button:hover:not(:disabled) {
   background: var(--theme-primitive-control-hover-bg);
   border: none;
   box-shadow: none;
 }
 
-.titlebar-menu-trigger.xleth-button:hover:not(:disabled) {
-  background: transparent;
-  border: none;
-  box-shadow: none;
-  color: var(--theme-text-primary);
-}
-
-.titlebar-menu.open .titlebar-menu-trigger.xleth-button,
-.titlebar-menu-trigger.xleth-button[data-active="true"] {
-  background: transparent;
-  color: var(--theme-text-primary);
-  border: none;
-  box-shadow: none;
-  text-decoration-line: underline;
-  text-decoration-color: var(--theme-accent);
-  text-decoration-thickness: var(--theme-chrome-underline-thickness);
-  text-underline-offset: calc(var(--theme-chrome-underline-thickness) * 2);
-}
-
-.titlebar-menu-trigger.xleth-button[data-active="true"]::after,
-.titlebar-launcher-btn.xleth-icon-button[data-active="true"]::after,
-.titlebar-btn.xleth-icon-button[data-active="true"]::after {
+.titlebar-launcher-btn.xleth-icon-button[data-active="true"]::after {
   content: none;
 }
 
@@ -21877,8 +21742,7 @@ input[type="radio"] {
 }
 
 .titlebar-left,
-.titlebar-launchers,
-.titlebar-controls {
+.titlebar-launchers {
   min-height: 38px;
 }
 
@@ -21886,52 +21750,11 @@ input[type="radio"] {
   gap: 12px;
 }
 
-.titlebar-menu-trigger.xleth-button {
-  min-width: 46px;
-  height: 38px;
-  padding: 0 8px;
-  border: 1px solid transparent;
-  border-radius: var(--xleth-shell-control-radius);
-  color: var(--theme-text-muted);
-  font-size: 13px;
-  font-weight: 700;
-  text-decoration: none;
-}
-
-.titlebar-menu-trigger.xleth-button:hover:not(:disabled) {
-  background: color-mix(in srgb, var(--theme-primitive-control-hover-bg) 72%, transparent);
-  border-color: color-mix(in srgb, var(--theme-border-subtle) 72%, transparent);
-}
-
-.titlebar-menu.open .titlebar-menu-trigger.xleth-button,
-.titlebar-menu.active .titlebar-menu-trigger.xleth-button,
-.titlebar-menu-trigger.xleth-button[data-active="true"] {
-  background: transparent;
-  border-color: transparent;
-  color: var(--theme-text-primary);
-  box-shadow: none;
-  text-decoration: none;
-}
-
-.titlebar-menu-trigger.xleth-button[data-active="true"]::after,
-.titlebar-menu.active .titlebar-menu-trigger.xleth-button::after {
-  content: "";
-  position: absolute;
-  left: 8px;
-  right: 8px;
-  bottom: 5px;
-  height: 2px;
-  border-radius: 999px;
-  background: var(--theme-accent);
-  box-shadow: var(--theme-depth-accent-glow-subtle);
-}
-
 .titlebar-launchers {
   gap: 6px;
 }
 
-.titlebar-launcher-btn.xleth-icon-button,
-.titlebar-btn.xleth-icon-button {
+.titlebar-launcher-btn.xleth-icon-button {
   width: 34px;
   height: 34px;
   min-height: 34px;
@@ -21945,8 +21768,7 @@ input[type="radio"] {
     var(--theme-depth-top-light-bevel);
 }
 
-.titlebar-launcher-btn.xleth-icon-button:hover:not(:disabled),
-.titlebar-btn.xleth-icon-button:hover:not(:disabled) {
+.titlebar-launcher-btn.xleth-icon-button:hover:not(:disabled) {
   border: 1px solid var(--theme-primitive-control-border);
   background: var(--theme-primitive-control-hover-bg);
   color: var(--theme-text-primary);
@@ -21976,12 +21798,6 @@ input[type="radio"] {
   height: 18px;
   line-height: 18px;
   font-size: 10px;
-}
-
-.titlebar-controls {
-  gap: 5px;
-  margin-left: 8px;
-  padding-left: 8px;
 }
 
 .left-panel {
@@ -22285,8 +22101,7 @@ html[data-xleth-backdrop="native-acrylic"] .xleth-center-column {
 }
 
 .titlebar-left,
-.titlebar-launchers,
-.titlebar-controls {
+.titlebar-launchers {
   min-height: 30px;
 }
 
@@ -22294,45 +22109,12 @@ html[data-xleth-backdrop="native-acrylic"] .xleth-center-column {
   gap: 20px;
 }
 
-.titlebar-menu-trigger.xleth-button {
-  min-width: auto;
-  height: 30px;
-  min-height: 30px;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-  color: var(--xleth-flat-text-muted);
-  font-size: 11px;
-  font-weight: 400;
-  line-height: 30px;
-}
-
-.titlebar-menu-trigger.xleth-button:hover:not(:disabled),
-.titlebar-menu.open .titlebar-menu-trigger.xleth-button,
-.titlebar-menu.active .titlebar-menu-trigger.xleth-button,
-.titlebar-menu-trigger.xleth-button[data-active="true"] {
-  background: transparent;
-  border-color: transparent;
-  box-shadow: none;
-  color: var(--xleth-flat-text-secondary);
-  text-decoration: none;
-}
-
-.titlebar-menu-trigger.xleth-button::after,
-.titlebar-menu-trigger.xleth-button[data-active="true"]::after,
-.titlebar-menu.active .titlebar-menu-trigger.xleth-button::after {
-  content: none;
-}
-
 .titlebar-launchers {
   gap: 11px;
   padding: 0 8px;
 }
 
-.titlebar-launcher-btn.xleth-icon-button,
-.titlebar-btn.xleth-icon-button {
+.titlebar-launcher-btn.xleth-icon-button {
   position: relative;
   width: 13px;
   height: 30px;
@@ -22347,8 +22129,7 @@ html[data-xleth-backdrop="native-acrylic"] .xleth-center-column {
 }
 
 .titlebar-launcher-btn.xleth-icon-button:hover:not(:disabled),
-.titlebar-launcher-btn.xleth-icon-button[data-active="true"],
-.titlebar-btn.xleth-icon-button:hover:not(:disabled) {
+.titlebar-launcher-btn.xleth-icon-button[data-active="true"] {
   background: transparent;
   border: 0;
   box-shadow: none;
@@ -22374,23 +22155,6 @@ html[data-xleth-backdrop="native-acrylic"] .xleth-center-column {
    ticks between the launcher icons. */
 .titlebar-launcher-btn::after {
   content: none;
-}
-
-.titlebar-controls {
-  gap: 1px;
-  margin-left: 18px;
-  padding-left: 4px;
-  border-left: 1px solid var(--xleth-flat-border);
-}
-
-.titlebar-btn.xleth-icon-button {
-  width: 28px;
-  flex-basis: 28px;
-}
-
-.titlebar-btn svg {
-  width: 12px;
-  height: 12px;
 }
 
 /* ── Dock-style proximity magnification (toolbar icon cluster) ──────────

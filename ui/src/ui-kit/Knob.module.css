@@ -16,6 +16,7 @@
     font-variant-numeric: tabular-nums;
     color: var(--ui-ink);
     cursor: ns-resize;
+    -webkit-app-region: no-drag;
     touch-action: none;
     user-select: none;
     outline: none;

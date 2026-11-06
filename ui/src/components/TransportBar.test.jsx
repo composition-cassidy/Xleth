@@ -7,7 +7,7 @@ import TransportBar, { formatBarBeat, formatTime } from './TransportBar.jsx'
 describe('Transport cluster', () => {
   it('lays the controls out in transport order', () => {
     const html = renderToStaticMarkup(<TransportBar />)
-    const order = ['Rewind', 'Stop', 'Play', 'Forward (not available yet)', 'Time 00:00.000', 'Bar 1, beat 1', 'Tempo 140 BPM, click to edit', 'Tempo lock', 'Auto scroll']
+    const order = ['Rewind', 'Stop', 'Play', 'Forward (not available yet)', 'Time 00:00.000', 'Bar 1, beat 1', 'Tempo', 'Tempo lock', 'Auto scroll']
     const positions = order.map((label) => html.indexOf(`aria-label="${label}"`))
     positions.forEach((position, index) => expect(position, order[index]).toBeGreaterThan(-1))
     expect([...positions].sort((a, b) => a - b)).toEqual(positions)
@@ -32,7 +32,19 @@ describe('Transport cluster', () => {
   })
 
   it('keeps every interactive transport element out of the window drag region', () => {
-    const css = readFileSync(path.resolve(process.cwd(), 'src/components/TransportBar.module.css'), 'utf8')
-    expect(css).toMatch(/\.btn,\s*\.readout,\s*\.bpm,\s*\.bpmInput\s*\{\s*-webkit-app-region:\s*no-drag/)
+    const read = (f) => readFileSync(path.resolve(process.cwd(), 'src', f), 'utf8')
+    // Readout wells are local; the buttons and the tempo field are kit components that opt out themselves.
+    expect(read('components/TransportBar.module.css')).toMatch(/\.readout\s*\{[^}]*-webkit-app-region:\s*no-drag/s)
+    expect(read('ui-kit/Button.module.css')).toMatch(/\.btn\s*\{[^}]*-webkit-app-region:\s*no-drag/s)
+    expect(read('ui-kit/NumberBox.module.css')).toMatch(/\.box\s*\{[^}]*-webkit-app-region:\s*no-drag/s)
+  })
+
+  it('is built from kit controls: IconButtons and a NumberBox tempo field', () => {
+    const html = renderToStaticMarkup(<TransportBar />)
+    expect(html).toContain('role="slider"') // the tempo NumberBox
+    expect(html).toContain('aria-label="Tempo"')
+    expect(html).toContain('aria-pressed="true"') // tempo lock is on by default
+    expect(html).toContain('aria-valuetext="Tempo, 140 BPM"')
+    expect(html).not.toContain('class="undefined')
   })
 })
