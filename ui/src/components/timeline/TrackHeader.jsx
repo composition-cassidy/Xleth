@@ -3,9 +3,15 @@ import { Trash2 } from 'lucide-react'
 import { TRACK_HEIGHT } from '../../constants/timeline.js'
 import { TRACK_PALETTE_FALLBACK, pickPatternAccentText } from './trackColorResolver.js'
 import { PianoIcon, WaveformIcon, EllipsisIcon } from './TrackTypeIcons.jsx'
+import { Toggle } from '../../ui-kit'
+import { pickLabelInk } from '../../ui-kit/colorMath'
+import styles from './TrackHeader.module.css'
+
+// Below this lane height the header drops its type-icon row so the name fits.
+const COMPACT_HEADER_BELOW = 32
 
 export default function TrackHeader({
-  track, index, trackColor, isFocused, isSelected,
+  track, index, trackColor, labelInks = null, isFocused, isSelected,
   trackHeight = TRACK_HEIGHT,
   onMute, onSolo, onVisualOnly, onRename, onRemove, onRequestContextMenu, onFocus, onSelect,
   onDragStart, onDragOver, onDrop,
@@ -18,7 +24,12 @@ export default function TrackHeader({
 
   const isPatternTrack = track.type === 'Pattern'
   const color = trackColor || TRACK_PALETTE_FALLBACK[index % 16]
-  const patternTextColor = isPatternTrack ? pickPatternAccentText(color) : null
+  // Pattern headers are tinted glass (text in the track colour on a dark wash);
+  // clip headers are a solid identity fill, so their text takes the automatic
+  // label ink: whichever of ink / g1 contrasts more with that colour.
+  const headerTextColor = isPatternTrack
+    ? pickPatternAccentText(color)
+    : (labelInks && /^#[0-9a-f]{6}$/i.test(color) ? pickLabelInk(color, labelInks.light, labelInks.dark).ink : null)
 
   const startEdit = useCallback(() => {
     setEditing(true)
@@ -54,11 +65,11 @@ export default function TrackHeader({
 
   return (
     <div
-      className={`track-header${track.muted ? ' track-header--muted' : ''}${track.visualOnly ? ' track-header--visual-only' : ''}${isPatternTrack ? ' track-header--pattern' : ''}${isFocused ? ' track-header--focused' : ''}${isSelected ? ' track-header--selected' : ''}`}
+      className={`track-header${track.muted ? ' track-header--muted' : ''}${track.visualOnly ? ' track-header--visual-only' : ''}${isPatternTrack ? ' track-header--pattern' : ''}${isFocused ? ' track-header--focused' : ''}${isSelected ? ' track-header--selected' : ''} ${trackHeight < COMPACT_HEADER_BELOW ? styles.compact : ''}`}
       style={{
         height: trackHeight,
         '--track-header-fill': color,
-        ...(patternTextColor ? { '--track-header-text': patternTextColor } : {}),
+        ...(headerTextColor ? { '--track-header-text': headerTextColor } : {}),
       }}
       draggable
       onMouseDown={() => onFocus?.(track.id)}
@@ -128,24 +139,29 @@ export default function TrackHeader({
         </div>
       </div>
 
-      {/* M / S / V cluster — consistent with the mixer strip */}
-      <div className="track-header-controls">
-        <div className="track-header-btn-cluster">
-          <button
-            className={`track-header-btn track-header-btn--mute${track.muted ? ' active' : ''}`}
-            onClick={() => onMute(track.id)}
-            title="Mute"
-          >M</button>
-          <button
-            className={`track-header-btn track-header-btn--solo${track.solo ? ' active' : ''}`}
-            onClick={() => onSolo(track.id)}
-            title="Solo"
-          >S</button>
-          <button
-            className={`track-header-btn track-header-btn--visual${track.visualOnly ? ' active' : ''}`}
-            onClick={() => onVisualOnly(track.id)}
-            title="Visual Only — silences audio, keeps grid triggers"
-          >V</button>
+      {/* M / S / V: kit Toggles, visible at rest. On = the inverted ink chip
+          (solo in the solo colour); a muted track also dims its lane content
+          and its identity block, so state is never colour alone. */}
+      <div className={styles.controls}>
+        <div className={styles.cluster} role="group" aria-label={`${track.name} state`}>
+          <Toggle
+            size="sm" className={styles.state} data-kind="mute"
+            on={!!track.muted} onChange={() => onMute(track.id)}
+            glyph="M" aria-label={`Mute ${track.name}`}
+            hint="Mute: silences the track; its clips dim"
+          />
+          <Toggle
+            size="sm" className={styles.state} data-kind="solo"
+            on={!!track.solo} onChange={() => onSolo(track.id)}
+            glyph="S" aria-label={`Solo ${track.name}`}
+            hint="Solo: hear only soloed tracks"
+          />
+          <Toggle
+            size="sm" className={styles.state} data-kind="visual"
+            on={!!track.visualOnly} onChange={() => onVisualOnly(track.id)}
+            glyph="V" aria-label={`Visual only ${track.name}`}
+            hint="Visual only: silences audio, keeps grid triggers"
+          />
         </div>
 
         <button

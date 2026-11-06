@@ -15,6 +15,7 @@ import { currentRegime } from './waveformRegime.js'
 import { hiResCoversWindow } from './hiResCoverage.js'
 import { findCoveringEntry } from './hiResRegionCache.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
+import { pickLabelInk } from '../../ui-kit/colorMath'
 import { uiCanvasFont } from '../../styles/typography.js'
 import { normalizeTrackPalette, TRACK_PALETTE_FALLBACK, pickPatternAccentText } from './trackColorResolver.js'
 import { getRegionPlaybackDurationSec } from './regionDuration.js'
@@ -138,6 +139,11 @@ export function resolveTimelinePalette() {
     danger:            tokenValue('--theme-danger'),
     warning:           tokenValue('--theme-warning'),
     fgInverse:         tokenValue('--theme-fg-inverse'),
+    // Kit inks: snap markers, automatic label ink (whichever of ink / g1
+    // contrasts more with a clip's colour), selection outline.
+    ink:               tokenValue('--ui-ink'),
+    inkDark:           tokenValue('--ui-g1'),
+    select:            tokenValue('--ui-select'),
     // Depth
     wellTopShadow:     tokenValue('--theme-timeline-well-top-shadow'),
     // Track palette — resolved once per redraw, threaded into draw functions
@@ -379,7 +385,9 @@ export function drawGrid(ctx, w, h, scrollOffset, ppb, trackCount, tracks = null
     const snapAlpha = snapInterval >= BEATS_PER_BAR ? 0.30
       : snapInterval >= 1 ? 0.24
         : Math.min(0.22, Math.max(0.12, snapSpacingPx / 80))
-    ctx.strokeStyle = withAlpha(p.accent || p.gridBeat, snapAlpha)
+    // Ink at low alpha (half the old accent alpha): chrome never colours the
+    // content area. Spacing thresholds unchanged.
+    ctx.strokeStyle = withAlpha(p.ink || p.gridBeat, snapAlpha * 0.5)
     ctx.lineWidth = snapInterval >= 1 ? 1 : 0.75
     ctx.beginPath()
     for (let beat = firstSnap; beat <= endBeat + snapInterval / 2; beat += snapInterval) {
@@ -624,7 +632,7 @@ function getTimelineBodyMaterial({
   gradientDirection, ctx, x, y, w, h,
 }) {
   const cm = _contrastMul(contrast)
-  const mm = muted ? 0.3 : 1.0
+  const mm = muted ? MUTE_OPACITY : 1.0
 
   let fillAlphaA = 0
   let fillAlphaB = 0
@@ -844,21 +852,73 @@ function fitText(ctx, text, maxWidth, { allowBareEllipsis = false } = {}) {
 
 function getTitleStripStyle(baseHex, mode, selected, muted, contrast) {
   const cm = _contrastMul(contrast)
-  const mm = muted ? 0.3 : 1.0
+  const mm = muted ? MUTE_OPACITY : 1.0
   let stripA
   if (mode === 'minimal')       stripA = selected ? 0.34 : 0.26
   else if (mode === 'gradient') stripA = selected ? 0.88 : 0.78
   else if (mode === 'solid')    stripA = selected ? 0.92 : 0.84
   else                          stripA = selected ? 0.92 : 0.80
-  const fill      = hexToRgba(baseHex, _clampAlpha(stripA * cm * mm))
+  const alpha     = _clampAlpha(stripA * cm * mm)
+  const fill      = hexToRgba(baseHex, alpha)
   const separator = hexToRgba(baseHex, _clampAlpha(0.55 * cm * mm))
-  return { fill, separator }
+  return { fill, separator, alpha }
 }
 
-// Dark text spec'd for Clip tracks — legible against a full-saturation solid
-// fill of any hue. Pattern tracks use pickPatternAccentText(hex) instead
-// (see trackColorResolver.js), since their fill is a mostly-dark glass tint.
-const CLIP_TRACK_TEXT_DARK = 'rgba(26, 26, 26, 0.85)'
+// Muted content dims to the DESIGN.md mute opacity (--ui-mute-opacity) and
+// shows a mute glyph; colour is never the only signal.
+const MUTE_OPACITY = 0.45
+
+// Clip label ink: whichever of ink / g1 contrasts more with the colour the text
+// actually sits on, the title strip composited over the lane (DESIGN.md 3.4,
+// pickLabelInk). Never a fixed white or dark. Pattern tracks keep
+// pickPatternAccentText(hex): their strip is a dark glass tint.
+const _labelInkCache = new Map()
+let _labelInkPalette = null
+function clipLabelInk(p, baseHex, alpha) {
+  if (_labelInkPalette !== p) { _labelInkCache.clear(); _labelInkPalette = p }
+  const key = baseHex + '|' + alpha.toFixed(2)
+  let ink = _labelInkCache.get(key)
+  if (ink) return ink
+  const lane = /^#[0-9a-f]{6}$/i.test(p.bg) ? p.bg : '#141414'
+  const light = p.ink || '#E6E6E6'
+  const dark = p.inkDark || '#1B1B1B'
+  ink = pickLabelInk(blendHex(lane, baseHex, alpha), light, dark).ink
+  _labelInkCache.set(key, ink)
+  return ink
+}
+
+function blendHex(bgHex, fgHex, alpha) {
+  const b = hexToRgb(bgHex)
+  const f = hexToRgb(fgHex)
+  const a = clampNumber(alpha, 0, 1)
+  const h = (v) => Math.round(v).toString(16).padStart(2, '0')
+  return '#' + h(b.r + (f.r - b.r) * a) + h(b.g + (f.g - b.g) * a) + h(b.b + (f.b - b.b) * a)
+}
+
+// A small crossed-speaker glyph (8×8) for muted clips and pattern blocks.
+const MUTE_GLYPH_W = 11
+function drawMuteGlyph(ctx, x, cy, color) {
+  ctx.save()
+  ctx.fillStyle = color
+  ctx.strokeStyle = color
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  ctx.moveTo(x, cy - 1.5)
+  ctx.lineTo(x + 2, cy - 1.5)
+  ctx.lineTo(x + 4.5, cy - 4)
+  ctx.lineTo(x + 4.5, cy + 4)
+  ctx.lineTo(x + 2, cy + 1.5)
+  ctx.lineTo(x, cy + 1.5)
+  ctx.closePath()
+  ctx.fill()
+  ctx.beginPath()
+  ctx.moveTo(x + 6, cy - 2)
+  ctx.lineTo(x + 9, cy + 2)
+  ctx.moveTo(x + 9, cy - 2)
+  ctx.lineTo(x + 6, cy + 2)
+  ctx.stroke()
+  ctx.restore()
+}
 
 // ── Pattern-track "tinted glass" material (Pass 7) ──────────────────────────
 // Fixed, non-configurable treatment — deliberately bypasses the Clip body-mode
@@ -877,7 +937,7 @@ const PATTERN_HATCH_GAP_PX          = 10     // 5:1 gap:stripe ratio
 const PATTERN_HATCH_STEP = (PATTERN_HATCH_STRIPE_PX + PATTERN_HATCH_GAP_PX) * Math.SQRT2
 
 function getPatternGlassStyle(baseHex, selected, muted) {
-  const mm = muted ? 0.3 : 1.0
+  const mm = muted ? MUTE_OPACITY : 1.0
   const sel = selected ? 1.2 : 1.0 // selection ring (drawn separately) carries most of the cue
   return {
     fill:            hexToRgba(baseHex, _clampAlpha(PATTERN_FILL_ALPHA * sel * mm)),
@@ -1106,8 +1166,10 @@ export function drawClipInlineControls(
       : (isHovered
           ? spec.appearance.fadeHoverAlpha
           : (selected ? spec.appearance.fadeSelectedAlpha : spec.appearance.fadeIdleAlpha))
-    ctx.strokeStyle = `rgba(255,255,255,${spec.appearance.fadeStrokeAlpha})`
-    ctx.lineWidth = spec.appearance.fadeStrokeWidth
+    // Selected / active handles: a 1px selection outline. No glow.
+    const selectOutline = (selected || isActive) ? (resolveTimelinePalette().select || accent) : null
+    ctx.strokeStyle = selectOutline || `rgba(255,255,255,${spec.appearance.fadeStrokeAlpha})`
+    ctx.lineWidth = selectOutline ? 1 : spec.appearance.fadeStrokeWidth
     ctx.shadowColor = accent
     ctx.shadowBlur = isActiveFadeIn || isActiveFadeOut
       ? spec.appearance.fadeActiveShadowBlur
@@ -1121,7 +1183,7 @@ export function drawClipInlineControls(
     ctx.lineTo(fadeInWedge.left, fadeInWedge.top)
     ctx.closePath()
     ctx.fill()
-    if (spec.appearance.fadeStrokeWidth > 0) ctx.stroke()
+    if (selectOutline || spec.appearance.fadeStrokeWidth > 0) ctx.stroke()
     const fadeOutWedge = geometry.fadeOut.wedge
     ctx.beginPath()
     ctx.moveTo(fadeOutWedge.right, fadeOutWedge.bottom)
@@ -1129,7 +1191,7 @@ export function drawClipInlineControls(
     ctx.lineTo(fadeOutWedge.right, fadeOutWedge.top)
     ctx.closePath()
     ctx.fill()
-    if (spec.appearance.fadeStrokeWidth > 0) ctx.stroke()
+    if (selectOutline || spec.appearance.fadeStrokeWidth > 0) ctx.stroke()
     ctx.shadowBlur = 0
 
     if (spec.gain.edgeRailWidth > 0) {
@@ -1182,8 +1244,9 @@ export function drawClipInlineControls(
           ? spec.appearance.pillHoverMixToWhite
           : (selected ? spec.appearance.pillSelectedMixToWhite : spec.appearance.pillIdleMixToWhite))
     ctx.fillStyle = mixHex(baseHex, { r: 255, g: 255, b: 255 }, pillMix)
-    ctx.strokeStyle = `rgba(0,0,0,${spec.appearance.pillStrokeAlpha})`
-    ctx.lineWidth = spec.appearance.pillStrokeWidth
+    const pillOutline = (selected || isActiveVolume) ? (resolveTimelinePalette().select || accent) : null
+    ctx.strokeStyle = pillOutline || `rgba(0,0,0,${spec.appearance.pillStrokeAlpha})`
+    ctx.lineWidth = pillOutline ? 1 : spec.appearance.pillStrokeWidth
     ctx.shadowColor = isUnity ? `rgba(255,255,255,${spec.appearance.unityShadowAlpha})` : accent
     ctx.shadowBlur = isActiveVolume
       ? spec.appearance.pillActiveShadowBlur
@@ -1192,7 +1255,7 @@ export function drawClipInlineControls(
           : (selected ? spec.appearance.pillSelectedShadowBlur : spec.appearance.pillIdleShadowBlur))
     roundedRect(ctx, pillX, pillY, pillW, pillH, spec.gain.pillRadius)
     ctx.fill()
-    if (spec.appearance.pillStrokeWidth > 0) ctx.stroke()
+    if (pillOutline || spec.appearance.pillStrokeWidth > 0) ctx.stroke()
     ctx.shadowBlur = 0
 
     ctx.strokeStyle = `rgba(14,15,24,${spec.appearance.glyphAlpha})`
@@ -1331,7 +1394,7 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
     const hex = trackColorById?.[clip.trackId] || fallbackHex
     const selected = selectedClipIds.has(clip.id)
     const isMuted = mutedTrackIds?.has(clip.trackId)
-    const mutedMul = isMuted ? 0.3 : 1.0
+    const mutedMul = isMuted ? MUTE_OPACITY : 1.0
 
     // ── Body material (Pass 5C) ──────────────────────────────────────────
     const _mat = getTimelineBodyMaterial({
@@ -1585,9 +1648,14 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
         ctx.fillStyle = ts.separator
         ctx.fillRect(layout.titleX, layout.titleY + layout.titleH - 1, layout.titleW, 1)
 
+        const labelInk = clipLabelInk(p, /^#[0-9a-f]{6}$/i.test(hex) ? hex : '#808080', ts.alpha)
+        const muteReserve = isMuted ? MUTE_GLYPH_W : 0
+        if (isMuted && layout.titleW > MUTE_GLYPH_W + TITLE_TEXT_PAD_X * 2) {
+          drawMuteGlyph(ctx, layout.titleX + handleReserveLeft + TITLE_TEXT_PAD_X, layout.titleY + layout.titleH / 2, labelInk)
+        }
         const titleAvailW = Math.max(
           0,
-          layout.titleW - TITLE_TEXT_PAD_X * 2 - handleReserveRight - handleReserveLeft,
+          layout.titleW - TITLE_TEXT_PAD_X * 2 - handleReserveRight - handleReserveLeft - muteReserve,
         )
 
         let drawNameOk = false
@@ -1617,20 +1685,20 @@ export function drawClips(ctx, w, h, scrollOffset, ppb, clips, trackIdToIndex, r
           ctx.save()
           ctx.beginPath()
           ctx.rect(
-            layout.titleX + handleReserveLeft + TITLE_TEXT_PAD_X,
+            layout.titleX + handleReserveLeft + muteReserve + TITLE_TEXT_PAD_X,
             layout.titleY,
             titleAvailW,
             layout.titleH,
           )
           ctx.clip()
-          ctx.fillStyle = CLIP_TRACK_TEXT_DARK
+          ctx.fillStyle = labelInk
           ctx.font = uiCanvasFont('600 10px')
           ctx.textBaseline = 'middle'
           const fitted = fitText(ctx, clipLabel, titleAvailW, { allowBareEllipsis })
           if (fitted) {
             ctx.fillText(
               fitted,
-              layout.titleX + handleReserveLeft + TITLE_TEXT_PAD_X,
+              layout.titleX + handleReserveLeft + muteReserve + TITLE_TEXT_PAD_X,
               layout.titleY + layout.titleH / 2,
             )
           }
@@ -1755,7 +1823,7 @@ export function drawPatternBlocks(ctx, w, h, scrollOffset, ppb, blocks, trackIdT
     const hex = trackColorById?.[block.trackId] || fallbackHex
     const selected = selectedBlockIds?.has(block.id)
     const isMuted = mutedTrackIds?.has(block.trackId)
-    const mutedMul = isMuted ? 0.3 : 1.0
+    const mutedMul = isMuted ? MUTE_OPACITY : 1.0
 
     // ── Tinted-glass material (Pass 7) — fixed, not routed through the
     // Clip body-mode setting; derives entirely from the track's own color.
@@ -1879,9 +1947,13 @@ export function drawPatternBlocks(ctx, w, h, scrollOffset, ppb, blocks, trackIdT
     if (blockW > TINY_CLIP_MAX_W && layout.useStrip && showName !== 'never') {
       const handleReserveRight = (selected && blockW > HANDLE_W * 3) ? HANDLE_W : 0
       const glyphReserve = hasLoopGlyph ? PATTERN_LOOP_GLYPH_RESERVE : 0
+      const muteReserve = isMuted ? MUTE_GLYPH_W : 0
+      if (isMuted && layout.titleW > MUTE_GLYPH_W + TITLE_TEXT_PAD_X * 2) {
+        drawMuteGlyph(ctx, layout.titleX + TITLE_TEXT_PAD_X, layout.titleY + layout.titleH / 2, accentText)
+      }
       const titleAvailW = Math.max(
         0,
-        layout.titleW - TITLE_TEXT_PAD_X * 2 - handleReserveRight - glyphReserve,
+        layout.titleW - TITLE_TEXT_PAD_X * 2 - handleReserveRight - glyphReserve - muteReserve,
       )
 
       let drawNameOk = false
@@ -1897,7 +1969,7 @@ export function drawPatternBlocks(ctx, w, h, scrollOffset, ppb, blocks, trackIdT
         ctx.save()
         ctx.beginPath()
         ctx.rect(
-          layout.titleX + TITLE_TEXT_PAD_X,
+          layout.titleX + muteReserve + TITLE_TEXT_PAD_X,
           layout.titleY,
           titleAvailW,
           layout.titleH,
@@ -1910,7 +1982,7 @@ export function drawPatternBlocks(ctx, w, h, scrollOffset, ppb, blocks, trackIdT
         if (fitted) {
           ctx.fillText(
             fitted,
-            layout.titleX + TITLE_TEXT_PAD_X,
+            layout.titleX + muteReserve + TITLE_TEXT_PAD_X,
             layout.titleY + layout.titleH / 2,
           )
         }

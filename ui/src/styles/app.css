@@ -2506,10 +2506,6 @@ html[data-xleth-backdrop="video"] .app-body {
   background: var(--theme-bg-surface);
 }
 
-.track-header--muted .track-header-block {
-  opacity: 0.55;
-}
-
 .track-header--visual-only {
   border-left: none;
 }
@@ -2588,12 +2584,12 @@ html[data-xleth-backdrop="video"] .app-body {
   border: none;
   padding: 0;
   background: transparent;
-  color: rgba(26, 26, 26, 0.55);
+  color: var(--track-header-text, rgba(26, 26, 26, 0.55));
   cursor: pointer;
 }
 
 .track-header-menu-btn:hover {
-  color: rgba(26, 26, 26, 0.85);
+  color: var(--track-header-text, rgba(26, 26, 26, 0.85));
 }
 
 .track-header-name {
@@ -2602,7 +2598,7 @@ html[data-xleth-backdrop="video"] .app-body {
   font-size: 12px;
   font-weight: 600;
   line-height: 1.2;
-  color: rgba(26, 26, 26, 0.85);
+  color: var(--track-header-text, rgba(26, 26, 26, 0.85));
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -2615,7 +2611,7 @@ html[data-xleth-backdrop="video"] .app-body {
   font-size: 12px;
   font-weight: 600;
   font-family: inherit;
-  color: rgba(26, 26, 26, 0.85);
+  color: var(--track-header-text, rgba(26, 26, 26, 0.85));
   background: transparent;
   border: none;
   border-bottom: 1px solid rgba(26, 26, 26, 0.35);
@@ -2627,7 +2623,7 @@ html[data-xleth-backdrop="video"] .app-body {
   font-size: 8px;
   font-weight: 700;
   text-transform: uppercase;
-  color: rgba(26, 26, 26, 0.85);
+  color: var(--track-header-text, rgba(26, 26, 26, 0.85));
   opacity: 0.85;
   border: 1px solid currentColor;
   border-radius: 2px;
@@ -2639,7 +2635,7 @@ html[data-xleth-backdrop="video"] .app-body {
 .track-header-type-icon {
   display: flex;
   align-items: center;
-  color: rgba(26, 26, 26, 0.55);
+  color: var(--track-header-text, rgba(26, 26, 26, 0.55));
   margin-top: 1px;
 }
 
@@ -2668,75 +2664,9 @@ html[data-xleth-backdrop="video"] .app-body {
 }
 
 /* â”€â”€ M / S / V cluster â”€â”€ plain panel background, consistent with the mixer â”€â”€ */
-.track-header-controls {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0 6px;
-}
-
-.track-header-btn {
-  width: 22px;
-  height: 22px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border-radius: 3px;
-  background: transparent;
-  border: 0.5px solid var(--theme-border-subtle);
-  color: var(--theme-text-muted);
-  font-size: 10px;
-  font-weight: 500;
-  font-family: inherit;
-  cursor: pointer;
-  flex-shrink: 0;
-  padding: 0;
-  transition: border-color var(--transition-fast), background var(--transition-fast),
-              box-shadow var(--transition-fast);
-  box-shadow: var(--theme-depth-elevation-1-top-highlight);
-}
-
-.track-header-btn:hover {
-  border-color: var(--theme-button-hover-border);
-}
-
-.track-header-btn:focus-visible {
-  outline: none;
-  box-shadow: var(--theme-depth-elevation-1-top-highlight), var(--theme-depth-accent-ring);
-}
-
 /* Mute — red when active */
-.track-header-btn--mute.active {
-  background: var(--theme-semantic-danger-bg-medium);
-  border-color: var(--theme-timeline-mute-active);
-  color: var(--theme-timeline-mute-active);
-  box-shadow: var(--theme-depth-pressed-inner-shadow);
-}
-
 /* Solo — amber when active */
-.track-header-btn--solo.active {
-  background: var(--theme-semantic-warning-bg-subtle);
-  border-color: var(--theme-timeline-solo-active);
-  color: var(--theme-timeline-solo-active);
-  box-shadow: var(--theme-depth-pressed-inner-shadow);
-}
-
 /* Visual Only — teal when active */
-.track-header-btn--visual.active {
-  background: var(--theme-focus-ring);
-  border-color: var(--theme-accent);
-  color: var(--theme-accent);
-  box-shadow: var(--theme-depth-pressed-inner-shadow);
-}
-
-.track-header-btn-cluster {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  flex-shrink: 0;
-}
-
 .track-delete-btn {
   display: flex;
   align-items: center;
@@ -5317,7 +5247,7 @@ html[data-xleth-backdrop="video"] .app-body {
   width: 100%;
   padding: 0 7px;
   border-bottom: 1px solid var(--theme-border-subtle);
-  background: color-mix(in srgb, var(--theme-bg-surface) 82%, var(--theme-accent) 8%);
+  background: var(--ui-g2);
   color: var(--theme-text);
   user-select: none;
   cursor: grab;
@@ -23167,27 +23097,6 @@ html[data-xleth-backdrop="native-acrylic"] .xleth-center-column {
 .track-header:hover { background: #1b1b1b; }
 
 .track-header-name { font-size: 11.5px; }
-
-.track-header-btn {
-  width: 17px;
-  height: 17px;
-  border: 1px solid var(--xleth-flat-border-strong);
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-  color: var(--xleth-flat-text-muted);
-  font-size: 9px;
-}
-.track-header-btn:hover {
-  border-color: var(--xleth-flat-border-strong);
-  background: transparent;
-}
-.track-header-btn--mute.active,
-.track-header-btn--solo.active,
-.track-header-btn--visual.active {
-  box-shadow: none;
-}
-.track-header-btn-cluster { gap: 2px; }
 
 .track-delete-btn { border-radius: 0; }
 

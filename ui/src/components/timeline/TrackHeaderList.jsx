@@ -6,6 +6,7 @@ import TrackContextMenu from './TrackContextMenu.jsx'
 import { RULER_HEIGHT, HEADER_WIDTH, ADD_TRACK_ROW_HEIGHT } from '../../constants/timeline.js'
 import { resolveAutoTrackColor, normalizeTrackPalette, TRACK_PALETTE_FALLBACK } from './trackColorResolver.js'
 import { folderMapForLayout } from './trackFolderLayout.js'
+import { FOLDER_ROW_HEIGHT } from './timelineRowLayout.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
 
 export default function TrackHeaderList({
@@ -87,6 +88,8 @@ export default function TrackHeaderList({
   }, [])
 
   const rawPalette = Array.from({ length: 16 }, (_, i) => tokenValue(`--theme-track-palette-${i + 1}`))
+  // The two candidate label inks for text on an identity colour (DESIGN.md 3.4).
+  const labelInks = { light: tokenValue('--ui-ink') || '#E6E6E6', dark: tokenValue('--ui-g1') || '#1B1B1B' }
   const trackPalette = normalizeTrackPalette(rawPalette)
 
   const closeColorPicker = useCallback(() => {
@@ -178,6 +181,7 @@ export default function TrackHeaderList({
           index={canonicalIndex}
           trackHeight={trackHeight}
           trackColor={color}
+          labelInks={labelInks}
           isFocused={focusedTrackId === track.id}
           isSelected={selectedTrackIds.has(track.id)}
           onMute={onMute}
@@ -317,7 +321,7 @@ function FolderHeader({ folder, editing, onFinishEdit, onRename, onToggle, onRem
     onFinishEdit?.()
   }
   return (
-    <div className="track-folder-header" style={{ height: 32 }} draggable
+    <div className="track-folder-header" style={{ height: FOLDER_ROW_HEIGHT }} draggable
       onContextMenu={onContextMenu}
       onDragStart={(event) => {
         if (event.target.closest?.('button, input')) {

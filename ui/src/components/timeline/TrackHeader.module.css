@@ -1,0 +1,67 @@
+/* Track header state controls (M / S / V) and the muted dim. */
+@layer kit {
+  .controls {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: 0 var(--space-1);
+  }
+
+  .cluster {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  /* Square 24px chips: the hit-area floor, glyph-only. */
+  .state {
+    min-width: var(--ctl-h-sm);
+    padding: 0;
+    justify-content: center;
+    font-size: var(--type-11);
+  }
+
+  /* Solo keeps its own colour when on (not the generic inverted chip). */
+  .state[data-kind="solo"][aria-pressed="true"] {
+    border-color: var(--ui-solo);
+    background: var(--ui-solo);
+    color: var(--ui-g0);
+  }
+
+  /* Muted: the identity fill dims to the mute opacity (a g1 veil over it, like
+   * the lane content), while the name stays legible above the veil in ink. */
+  :global(.track-header--muted .track-header-block)::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: var(--ui-g1);
+    opacity: calc(1 - var(--ui-mute-opacity));
+    pointer-events: none;
+  }
+
+  :global(.track-header--muted) :is(:global(.track-header-name-wrap), :global(.track-header-type-icon)) {
+    position: relative;
+    z-index: 1;
+  }
+
+  :global(.track-header--muted .track-header-color-btn) {
+    z-index: 1;
+  }
+
+  :global(.track-header--muted) :is(:global(.track-header-name), :global(.track-header-menu-btn), :global(.track-header-type-icon), :global(.track-header-hold-badge)) {
+    color: var(--ui-ink);
+  }
+}
+
+@layer kit {
+  /* Short lanes (below 32px): one row, name only; the type icon row would clip it. */
+  .compact :global(.track-header-type-icon) {
+    display: none;
+  }
+
+  .compact :global(.track-header-block) {
+    padding-top: 0;
+    padding-bottom: 0;
+  }
+}

@@ -26,14 +26,18 @@ import { DEFAULT_TRACK_HEIGHT, TRACK_HEIGHT } from '../../constants/timeline.js'
 // Child macro automation lanes are shorter than full tracks — enough vertical
 // room for a clip body + a small curve preview, but visibly subordinate to the
 // parent track row.
-export const MACRO_LANE_HEIGHT = 36
-export const FOLDER_ROW_HEIGHT = 32
+// Heights at DEFAULT_TRACK_HEIGHT (36); child lanes scale with the track height.
+// Rescaled with the 50 -> 36 default (Phase 3): 36 -> 26 and 32 -> 24 keep the
+// same proportion to the track row. The folder row is fixed at the 28px panel-
+// header height.
+export const MACRO_LANE_HEIGHT = 26
+export const FOLDER_ROW_HEIGHT = 28
 
 // Automation clips (Phase B) — lanes grouped under their owning track (or the
 // pinned Master group, ownerTrackId -1), collapsible as a whole group. Shorter
 // than a full track row like macro lanes, but with their own header row so the
 // group can collapse independent of the lanes inside it.
-export const AUTOMATION_LANE_HEIGHT = 32
+export const AUTOMATION_LANE_HEIGHT = 24
 export const AUTOMATION_GROUP_HEADER_HEIGHT = 20
 
 function readLanes(graphState) {
