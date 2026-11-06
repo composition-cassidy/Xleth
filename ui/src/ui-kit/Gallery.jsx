@@ -19,6 +19,9 @@ import {
   SegmentedControl, Select, Tabs, Toggle, Toolbar, ToolbarSeparator, syncCodec,
 } from './index'
 import styles from './Gallery.module.css'
+import EffectDevice from '../components/devices/EffectDevice.jsx'
+import useDeviceUiStore from '../components/devices/deviceUiStore.js'
+import useCompressorStore from '../stores/compressorStore.js'
 
 const params = new URLSearchParams(typeof window === 'undefined' ? '' : window.location.search)
 const FROZEN = params.get('shots') === '1'
@@ -45,6 +48,22 @@ function Section({ title, children }) {
       <div className={styles.row}>{children}</div>
     </section>
   )
+}
+
+// The Compressor device in every state (Phase 4a). No engine here: values are
+// the manifest defaults and the displays are idle (no fabricated signal). Each
+// specimen is its own node id so fold / pop-out state does not leak across.
+const GALLERY_TRACK = '9'
+const compressorFx = (nodeId, extra = {}) => ({
+  nodeId, pluginId: 'compressor', position: 0, bypassed: false,
+  effectInstanceId: `gallery-${nodeId}`, sidechain: { supported: true, channels: 2, enabled: false }, ...extra,
+})
+function useGalleryDeviceStates() {
+  useState(() => {
+    useDeviceUiStore.getState().setFolded(`${GALLERY_TRACK}:3`, true)
+    useCompressorStore.setState({ target: { trackId: 9, nodeId: 4, storeKey: GALLERY_TRACK } })
+    return null
+  })
 }
 
 const stateProp = (s) => (s === 'rest' ? {} : { 'data-state': s })
@@ -83,6 +102,7 @@ export default function Gallery() {
     return () => { document.documentElement.style.zoom = '' }
   }, [])
 
+  useGalleryDeviceStates()
   const feed = useSyntheticFeed(-18)
   const clippedFeed = useSyntheticFeed(-24, true)
   const quietFeed = useSyntheticFeed(-48)
@@ -201,6 +221,14 @@ export default function Gallery() {
         <Spec caption="section header in a device" wide><div className={styles.narrow}><SectionHeader actions={<Toggle size="sm" on={false}>Sync</Toggle>}>Feedback</SectionHeader></div></Spec>
         <Spec caption="empty state, inside its region" wide><div className={styles.region}><EmptyState message="No tracks. Add a clip track or a pattern track." actionLabel="Add track" onAction={() => {}} /></div></Spec>
         <Spec caption="empty state, no action"><div className={styles.region}><EmptyState message="No presets saved." /></div></Spec>
+      </Section>
+
+      <Section title="Device: Compressor (no engine: defaults, idle display)">
+        <Spec caption="active, docked (sidechain folded)" wide><EffectDevice effect={compressorFx(1)} storeKey={GALLERY_TRACK} identityColor="var(--theme-track-palette-2)" dragHandleProps={{}} /></Spec>
+        <Spec caption="bypassed: activator off, Off, dimmed body" wide><EffectDevice effect={compressorFx(2, { bypassed: true })} storeKey={GALLERY_TRACK} identityColor="var(--theme-track-palette-2)" dragHandleProps={{}} /></Spec>
+        <Spec caption="folded"><div className={styles.inline}><EffectDevice effect={compressorFx(3)} storeKey={GALLERY_TRACK} identityColor="var(--theme-track-palette-2)" /><EffectDevice effect={compressorFx(4)} storeKey={GALLERY_TRACK} identityColor="var(--theme-track-palette-2)" /></div></Spec>
+        <Spec caption="popped out: the floating window (offset shadow only here)" wide><div className={styles.floatingStage}><EffectDevice effect={compressorFx(4)} storeKey={GALLERY_TRACK} presentation="floating" onClose={() => {}} dragHandleProps={{}} /></div></Spec>
+        <Spec caption="not migrated yet (Phase 4b): same title bar"><EffectDevice effect={{ nodeId: 5, pluginId: 'delay', bypassed: false }} storeKey={GALLERY_TRACK} identityColor="var(--theme-track-palette-2)" /></Spec>
       </Section>
     </div>
   )

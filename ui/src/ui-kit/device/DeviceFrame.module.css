@@ -128,10 +128,11 @@
     padding: 2px 0;
   }
 
-  /* Rotated 180deg so the name reads bottom to top; flex-end therefore lands
-   * at the top of the strip, under the activator. */
+  /* Vertical writing mode makes the flex ROW run top to bottom; rotated 180deg
+   * the name reads bottom to top, so flex-end lands it at the top of the
+   * strip, under the activator. */
   .device[data-folded="true"] .name {
-    flex-direction: column;
+    flex-direction: row;
     justify-content: flex-end;
     height: auto;
     padding: var(--space-2) 0;

@@ -12,7 +12,7 @@ import useAbCompare from './useAbCompare.js'
 import DevicePresetMenu, { presetMoreItems } from './DevicePresetMenu.jsx'
 import styles from './EffectDevice.module.css'
 
-const STUB_WIDTH = 176
+const STUB_WIDTH = 200
 const NO_EDITOR_STORE = () => null
 
 // One chain entry as a device. Wires the frame to the existing stores:
