@@ -7,7 +7,8 @@
 
   "_comment_detach": "Post-Track-B formula tuning, every §3.2 derived token is emitted correctly by deriveTheme(), so no derivationDetached entries are required for the shipped default.",
 
-  "derivationDetached": ["--theme-text-muted", "--theme-border-subtle"],
+  "ramp": "dark",
+  "derivationDetached": ["--theme-text-muted", "--theme-text-subtle", "--theme-text-placeholder", "--theme-border-subtle"],
 
   "tokens": {
     "--theme-bg-primary": "#141414",
@@ -17,6 +18,8 @@
     "--theme-danger":     "#FF4757",
 
     "--theme-text-muted":    "var(--theme-ui-ink-2)",
+    "--theme-text-subtle":   "var(--theme-ui-ink-3)",
+    "--theme-text-placeholder": "var(--theme-ui-ink-3)",
     "--theme-border-subtle": "var(--theme-ui-g4)",
 
     "--theme-chrome-shadow":                "0 12px 40px rgba(0, 0, 0, 0.6)",
@@ -25,7 +28,6 @@
     "--theme-fx-plugin-shadow":             "0 8px 32px rgba(0, 0, 0, 0.5)",
     "--theme-fx-plugin-shadow-top":         "0 -4px 24px rgba(0, 0, 0, 0.5)",
     "--theme-fx-drag-indicator":            "#FFFFFF",
-    "--theme-sampler-key-border":           "#2A2A38",
     "--theme-sampler-key-black":            "#000000",
     "--theme-pianoroll-resize-handle-stripe": "rgba(255, 255, 255, 0.25)",
     "--theme-grid-editor-text-shadow":      "rgba(0, 0, 0, 0.8)",
@@ -37,9 +39,7 @@
     "--theme-lipsync-handle":               "#33CED6",
     "--theme-waveform-envelope-fill":       "rgba(51, 206, 214, 0.35)",
     "--theme-waveform-rms-body":            "rgba(51, 206, 214, 0.55)",
-    "--theme-syllable-splitter-wave-dim":   "#3a3a4a",
-    "--theme-syllable-splitter-label-fg":   "#d0d0d8",
-    "--theme-syllable-splitter-bg":         "#1b1b24",
+    "--theme-syllable-splitter-label-fg":   "var(--theme-ui-ink-2)",
     "--theme-syllable-section-alt":         "rgba(51, 206, 214, 0.06)",
     "--theme-drag-preview-default":         "#6aa9ff",
     "--theme-fg-inverse":                   "#ffffff",
@@ -57,7 +57,6 @@
     "--theme-semantic-warning-border":      "#d8a23a",
     "--theme-semantic-warning-text":        "#f2d079",
     "--theme-semantic-warning-bg-subtle":   "rgba(255, 170, 51, 0.15)",
-    "--theme-pattern-list-item-hover-bg":   "#1d1f28",
     "--theme-fx-surface-tint-subtle":       "rgba(255, 255, 255, 0.05)",
     "--theme-fx-surface-tint-medium":       "rgba(255, 255, 255, 0.12)",
     "--theme-fx-surface-tint-strong":       "rgba(255, 255, 255, 0.25)",
@@ -72,7 +71,6 @@
     "--theme-sampler-mod-bg-pan":           "#2A1E3A",
     "--theme-sampler-mod-bg-volume":        "#1E3A3C",
     "--theme-toast-shadow":                 "0 6px 20px rgba(0, 0, 0, 0.5)",
-    "--theme-timeline-lane-bg":             "#07070B",
 
     "--theme-track-palette-1":  "#58B2CE",
     "--theme-track-palette-2":  "#77BE87",

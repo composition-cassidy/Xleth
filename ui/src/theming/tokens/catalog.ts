@@ -520,12 +520,12 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   explicit('--theme-mixer-panel-height', '400px', 'solid', 'Workspace panels', 'mixer', 'dimension'),
 
   // ─── Workspace: Piano roll (§3.4.14) ──────────────────────────────────
-  explicit('--theme-pianoroll-grid-bg', '#111118', 'any', 'Workspace panels', 'piano-roll'),
+  ref('--theme-pianoroll-grid-bg', '--theme-ui-g0', 'any', 'Workspace panels', 'piano-roll'),
   explicit('--theme-pianoroll-bar-line',         'rgba(255, 255, 255, 0.14)', 'solid', 'Workspace panels', 'piano-roll'),
   explicit('--theme-pianoroll-beat-line',        'rgba(255, 255, 255, 0.06)', 'solid', 'Workspace panels', 'piano-roll'),
   explicit('--theme-pianoroll-subdivision-line', 'rgba(255, 255, 255, 0.04)', 'solid', 'Workspace panels', 'piano-roll'),
-  explicit('--theme-pianoroll-key-black-bg', '#0A0A10', 'any', 'Workspace panels', 'piano-roll'),
-  explicit('--theme-pianoroll-key-white-bg', '#15151C', 'any', 'Workspace panels', 'piano-roll'),
+  ref('--theme-pianoroll-key-black-bg', '--theme-ui-g0', 'any', 'Workspace panels', 'piano-roll'),
+  ref('--theme-pianoroll-key-white-bg', '--theme-ui-g1', 'any', 'Workspace panels', 'piano-roll'),
   // Highlighted (hover/preview) key states — match the literals previously
   // hardcoded in PianoRollKeyboard.jsx; light theme overrides for contrast.
   explicit('--theme-pianoroll-key-black-highlight', '#4a3a58', 'any', 'Workspace panels', 'piano-roll'),
@@ -567,7 +567,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   explicit('--theme-pianoroll-resize-handle-stripe', 'rgba(255, 255, 255, 0.25)', 'solid', 'Workspace panels', 'piano-roll'),
   // Velocity lane background — semantically distinct from key-black-bg so the
   // lane surface can be independently tuned per theme.
-  explicit('--theme-pianoroll-velocity-bg',           '#090912',                  'any',   'Workspace panels', 'piano-roll'),
+  ref('--theme-pianoroll-velocity-bg', '--theme-ui-g0', 'any',   'Workspace panels', 'piano-roll'),
   // Dashed guide lines at 25 / 50 / 75 % velocity — internal lane structure.
   explicit('--theme-pianoroll-velocity-level-line',   'rgba(255, 255, 255, 0.05)','solid', 'Workspace panels', 'piano-roll'),
   // Canvas-drawn top-edge shadow at the grid boundary — theme-controlled so
@@ -611,7 +611,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   ref('--theme-sampler-arp-cell-inactive', '--theme-bg-surface',   'any',   'Workspace panels', 'sampler'),
   ref('--theme-sampler-mono-poly-toggle',  '--theme-accent',       'solid', 'Workspace panels', 'sampler'),
   explicit('--theme-sampler-declick-region','rgba(255, 255, 255, 0.06)','any','Workspace panels','sampler'),
-  explicit('--theme-sampler-key-border', '#2A2A38', 'solid', 'Workspace panels', 'sampler'),
+  ref('--theme-sampler-key-border', '--theme-ui-g4', 'solid', 'Workspace panels', 'sampler'),
   explicit('--theme-sampler-key-black',  '#000000', 'solid', 'Workspace panels', 'sampler'),
 
   // ─── Workspace: Timeline (§3.4.16) ────────────────────────────────────
@@ -660,7 +660,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   // Dedicated arrangement lane/work-bed background. Isolated from --theme-bg-inset
   // so the Timeline canvas bed contrast can be tuned independently of shared inset
   // surfaces (Piano Roll, SmartBalance). Not consumed until Pass 5E.3.
-  explicit('--theme-timeline-lane-bg', '#07070B', 'any', 'Workspace panels', 'timeline'),
+  ref('--theme-timeline-lane-bg', '--theme-ui-g0', 'any', 'Workspace panels', 'timeline'),
 
   // ─── Workspace: Grid editor (§3.4.17) ─────────────────────────────────
   ref('--theme-grid-canvas-bg',          '--theme-bg-primary',   'any',   'Workspace panels', 'grid-editor'),
@@ -704,7 +704,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   ref('--theme-nodeeditor-node-selected','--theme-accent',     'solid', 'Workspace panels', 'node-editor'),
   ref('--theme-nodeeditor-node-titlebar-bg','--theme-bg-elevated','any','Workspace panels', 'node-editor'),
   ref('--theme-nodeeditor-node-titlebar-fg','--theme-text',    'solid', 'Workspace panels', 'node-editor'),
-  explicit('--theme-nodeeditor-port-default', '#555566', 'solid', 'Workspace panels', 'node-editor'),
+  ref('--theme-nodeeditor-port-default', '--theme-ui-boundary', 'solid', 'Workspace panels', 'node-editor'),
   ref('--theme-nodeeditor-port-hover',        '--theme-accent-hover','solid','Workspace panels','node-editor'),
   explicit('--theme-nodeeditor-port-connected','#FFAA33', 'solid', 'Workspace panels', 'node-editor'),
   ref('--theme-nodeeditor-connection',        '--theme-text-muted',   'solid', 'Workspace panels', 'node-editor'),
@@ -718,7 +718,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   ref('--theme-nodeeditor-zoom-fg', '--theme-text',       'solid', 'Workspace panels', 'node-editor'),
 
   // ─── Workspace: Preview player (§3.4.22) ──────────────────────────────
-  explicit('--theme-preview-loaded-bg', '#111118', 'any', 'Workspace panels', 'preview-player'),
+  ref('--theme-preview-loaded-bg', '--theme-ui-g0', 'any', 'Workspace panels', 'preview-player'),
   ref('--theme-preview-empty-bg',   '--theme-bg-primary',   'any',   'Workspace panels', 'preview-player'),
   ref('--theme-preview-fps-fg',     '--theme-text-muted',   'solid', 'Workspace panels', 'preview-player'),
   ref('--theme-preview-resolution-fg','--theme-text-muted', 'solid', 'Workspace panels', 'preview-player'),
@@ -763,7 +763,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   ref('--theme-patternlist-color-5', '--theme-panel-grid',   'solid', 'Workspace panels', 'pattern-list'),
   ref('--theme-patternlist-color-6', '--theme-panel-node',   'solid', 'Workspace panels', 'pattern-list'),
   ref('--theme-patternlist-color-7', '--theme-warning',      'solid', 'Workspace panels', 'pattern-list'),
-  explicit('--theme-pattern-list-item-hover-bg', '#1d1f28', 'any', 'Workspace panels', 'pattern-list'),
+  ref('--theme-pattern-list-item-hover-bg', '--theme-ui-g2', 'any', 'Workspace panels', 'pattern-list'),
 
   // ─── Stock effects: Shared primitives (§3.4.7) ────────────────────────
   ref('--theme-fx-plugin-bg',              '--theme-bg-surface',   'any',   'Stock effects', 'stock-effects.shared'),
@@ -782,8 +782,8 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   ref('--theme-fx-knob-lg-indicator',  '--theme-text',             'solid',  'Stock effects', 'stock-effects.shared'),
   ref('--theme-fx-knob-lg-label',      '--theme-text-muted',       'solid',  'Stock effects', 'stock-effects.shared'),
   ref('--theme-fx-knob-lg-value',      '--theme-text',             'solid',  'Stock effects', 'stock-effects.shared'),
-  explicit('--theme-fx-knob-lg-bg',    '#1A1A24',                  'any',    'Stock effects', 'stock-effects.shared'),
-  explicit('--theme-fx-knob-lg-border','#2A2A38',                  'solid',  'Stock effects', 'stock-effects.shared'),
+  ref('--theme-fx-knob-lg-bg', '--theme-ui-g1', 'any',    'Stock effects', 'stock-effects.shared'),
+  ref('--theme-fx-knob-lg-border', '--theme-ui-g4', 'solid',  'Stock effects', 'stock-effects.shared'),
   // Small knob
   explicit('--theme-fx-knob-sm-track', 'rgba(255, 255, 255, 0.08)', 'linear', 'Stock effects', 'stock-effects.shared'),
   ref('--theme-fx-knob-sm-fill',       '--theme-accent',           'linear', 'Stock effects', 'stock-effects.shared'),
@@ -938,11 +938,11 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   ref('--theme-syllable-save-button',    '--theme-accent',        'solid', 'Specialized editors', 'syllable-splitter'),
   derivedFormula('--theme-syllable-accent-light', 'solid', 'Specialized editors', 'syllable-splitter'),
   // dimmed canvas waveform color for inactive regions
-  explicit('--theme-syllable-splitter-wave-dim',  '#3a3a4a', 'solid', 'Specialized editors', 'syllable-splitter'),
+  ref('--theme-syllable-splitter-wave-dim', '--theme-ui-g4', 'solid', 'Specialized editors', 'syllable-splitter'),
   // canvas-painted label text; intentionally dimmer than --theme-text because canvas text lacks subpixel anti-aliasing and reads brighter at the same value
   explicit('--theme-syllable-splitter-label-fg',  '#d0d0d8', 'solid', 'Specialized editors', 'syllable-splitter'),
   // canvas background constant — darker than --theme-bg-primary (SyllableSplitter.jsx:10).
-  explicit('--theme-syllable-splitter-bg', '#1b1b24', 'any', 'Specialized editors', 'syllable-splitter'),
+  ref('--theme-syllable-splitter-bg', '--theme-ui-g1', 'any', 'Specialized editors', 'syllable-splitter'),
   // alternating section tint for the syllable timeline (SyllableSplitter.jsx:15).
   derivedFormula('--theme-syllable-section-alt', 'any', 'Specialized editors', 'syllable-splitter'),
 
@@ -1038,16 +1038,17 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   alias('--theme-ui-clip',   '--theme-danger',  'ui-semantic', 'Foundations'),
   alias('--theme-ui-on-bg',  '--theme-ui-ink',  'ui-semantic', 'Foundations'),
   alias('--theme-ui-on-fg',  '--theme-ui-g1',   'ui-semantic', 'Foundations'),
-  // Record/arm: FILLS AND GLYPHS ONLY (4.40:1 on g1); text uses rec-text.
-  explicit('--theme-ui-rec',      '#E5484D', 'solid', 'Foundations', 'ui-semantic'),
-  explicit('--theme-ui-rec-text', '#F06A6E', 'solid', 'Foundations', 'ui-semantic'),
-  explicit('--theme-ui-solo',     '#E8B53A', 'solid', 'Foundations', 'ui-semantic'),
+  // Record/arm: FILLS AND GLYPHS ONLY (4.40:1 on g1 in dark); text uses rec-text.
+  // rec, rec-text, solo and the signal hues come from the active ramp (neutralRamp.ts).
+  derivedFormula('--theme-ui-rec', 'solid', 'Foundations', 'ui-semantic'),
+  derivedFormula('--theme-ui-rec-text', 'solid', 'Foundations', 'ui-semantic'),
+  derivedFormula('--theme-ui-solo', 'solid', 'Foundations', 'ui-semantic'),
 
   // ─── UI kit: signal-type hues (ui/DESIGN.md §3.3) ─────────────────────
-  explicit('--theme-ui-signal-audio',     '#6FA7EE', 'solid', 'Foundations', 'ui-signal'),
-  explicit('--theme-ui-signal-events',    '#69BA7C', 'solid', 'Foundations', 'ui-signal'),
-  explicit('--theme-ui-signal-parameter', '#AA95E8', 'solid', 'Foundations', 'ui-signal'),
-  explicit('--theme-ui-signal-video',     '#CF88C8', 'solid', 'Foundations', 'ui-signal'),
+  derivedFormula('--theme-ui-signal-audio', 'solid', 'Foundations', 'ui-signal'),
+  derivedFormula('--theme-ui-signal-events', 'solid', 'Foundations', 'ui-signal'),
+  derivedFormula('--theme-ui-signal-parameter', 'solid', 'Foundations', 'ui-signal'),
+  derivedFormula('--theme-ui-signal-video', 'solid', 'Foundations', 'ui-signal'),
 ];
 
 // ──────────────────────────────────────────────────────────────────────────

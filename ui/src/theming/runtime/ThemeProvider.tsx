@@ -83,8 +83,12 @@ export function ThemeProvider({ children, writer, onLoaded }: ThemeProviderProps
     if (!resolved) return;
     writeThemeToRoot(resolved.values, appliedRef.current ?? undefined);
     appliedRef.current = resolved.values;
+    // Native controls (scrollbars, inputs, the caret) follow the ramp's polarity.
+    document.documentElement.style.colorScheme = resolved.ramp === 'light' ? 'light' : 'dark';
+    document.documentElement.setAttribute('data-xleth-ramp', resolved.ramp);
+    console.debug(`[Theme] applied slug=${slug} ramp=${resolved.ramp}`);
     window.dispatchEvent(new CustomEvent('xleth-theme-changed'));
-  }, [resolved]);
+  }, [resolved, slug]);
 
   const setTheme = useCallback(async (nextSlug: string, next: ThemeFile) => {
     setSlug(nextSlug);

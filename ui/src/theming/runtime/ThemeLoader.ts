@@ -15,6 +15,7 @@ import shippedDefault from '../shipped/xleth-default.json';
 import shippedLight from '../shipped/xleth-light.json';
 import shippedWarm  from '../shipped/xleth-warm.json';
 import shippedCool  from '../shipped/xleth-cool.json';
+import shippedHighContrast from '../shipped/xleth-high-contrast.json';
 
 const ACTIVE_THEME_SETTING_KEY = 'activeTheme';
 export const DEFAULT_THEME_NAME = 'xleth-default';
@@ -24,6 +25,7 @@ const SHIPPED_THEMES: Record<string, ThemeFile> = {
   'xleth-light':         shippedLight   as unknown as ThemeFile,
   'xleth-warm':          shippedWarm    as unknown as ThemeFile,
   'xleth-cool':          shippedCool    as unknown as ThemeFile,
+  'xleth-high-contrast': shippedHighContrast as unknown as ThemeFile,
 };
 
 export interface LoadResult {

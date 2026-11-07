@@ -74,6 +74,12 @@ export interface ThemeFile {
   /** If true, the theme is immutable — edits fork a copy. Shipped themes. */
   locked?: boolean;
   /**
+   * Which neutral ramp (tokens/neutralRamp.ts) the theme's `--theme-ui-*` steps and
+   * semantic colours come from. Optional: files saved before Phase 7 have none and
+   * the ramp is inferred from bg-surface (light surface = 'light', else 'dark').
+   */
+  ramp?: 'dark' | 'light' | 'hc';
+  /**
    * Explicit token values. Any token name mapped here wins over derivation
    * (provided the token is listed in `derivationDetached` if it's in §3.2).
    * Keys MUST start with `--theme-`.

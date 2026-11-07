@@ -30,6 +30,7 @@
 //   (see spec §3.2; the darker-on-hover pattern is deliberate for this palette.)
 
 import type { BaseTokens } from './base';
+import { DEFAULT_RAMP, RAMPS, type RampName } from './neutralRamp';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Color math
@@ -147,7 +148,12 @@ export type DerivedTokens = Record<string, string>;
  * palette. Each tuned formula is annotated with its ΔE2000 distance to the
  * shipped anchor; pinning tests enforce the thresholds in derivation.test.ts.
  */
-export function deriveTheme(base: BaseTokens, derivationDetached: ReadonlyArray<string> = []): DerivedTokens {
+export function deriveTheme(
+  base: BaseTokens,
+  derivationDetached: ReadonlyArray<string> = [],
+  rampName: RampName = DEFAULT_RAMP,
+): DerivedTokens {
+  const ramp = RAMPS[rampName] ?? RAMPS[DEFAULT_RAMP];
   const detached = new Set(derivationDetached);
   const bgPrimary = base['--theme-bg-primary'];
   const bgSurface = base['--theme-bg-surface'];
@@ -232,22 +238,32 @@ export function deriveTheme(base: BaseTokens, derivationDetached: ReadonlyArray<
   put('--theme-waveform-envelope-fill',        withAlpha(accent, 0.35));
   put('--theme-waveform-rms-body',             withAlpha(accent, 0.55));
 
-  // ── UI kit neutral ramp (ui/DESIGN.md §3.1) ──────────────────────────────
-  // g0/g1/ink are the base tokens themselves; the rest are fixed lightness
-  // steps from bg-surface (g2..g4) and from text (ink-2, ink-3, boundary).
-  // The deltas reproduce the contract values exactly from the Default base
-  // (#141414 / #1B1B1B / #E6E6E6): g2 #222222, g3 #2B2B2B, g4 #3A3A3A,
-  // ink-2 #B4B4B4, ink-3 #929292, boundary #747474. Hue and saturation are
-  // inherited, so a neutral base yields a neutral ramp.
+  // ── UI kit neutral ramp + semantic colours (ui/DESIGN.md section 3) ─────────
+  // Steps and semantic values come from the one ramp table (neutralRamp.ts). g0/g1/
+  // ink are the base tokens themselves; the rest are signed lightness steps from
+  // bg-surface (g2..g4) and from text (ink-2, ink-3, boundary). On the dark ramp
+  // the Default base (#141414 / #1B1B1B / #E6E6E6) reproduces the contract values
+  // exactly. Hue and saturation are inherited, so a neutral base yields a neutral
+  // ramp.
+  const st = ramp.steps;
   put('--theme-ui-g0',       bgPrimary);
   put('--theme-ui-g1',       bgSurface);
-  put('--theme-ui-g2',       shift(bgSurface, { dL: 2.745 }));
-  put('--theme-ui-g3',       shift(bgSurface, { dL: 6.275 }));
-  put('--theme-ui-g4',       shift(bgSurface, { dL: 12.157 }));
+  put('--theme-ui-g2',       shift(bgSurface, { dL: st.g2 }));
+  put('--theme-ui-g3',       shift(bgSurface, { dL: st.g3 }));
+  put('--theme-ui-g4',       shift(bgSurface, { dL: st.g4 }));
   put('--theme-ui-ink',      text);
-  put('--theme-ui-ink-2',    shift(text, { dL: -19.608 }));
-  put('--theme-ui-ink-3',    shift(text, { dL: -32.941 }));
-  put('--theme-ui-boundary', shift(text, { dL: -44.706 }));
+  put('--theme-ui-ink-2',    shift(text, { dL: st.ink2 }));
+  put('--theme-ui-ink-3',    shift(text, { dL: st.ink3 }));
+  put('--theme-ui-boundary', shift(text, { dL: st.boundary }));
+
+  const sem = ramp.semantic;
+  put('--theme-ui-rec',              sem.rec);
+  put('--theme-ui-rec-text',         sem.recText);
+  put('--theme-ui-solo',             sem.solo);
+  put('--theme-ui-signal-audio',     sem.signalAudio);
+  put('--theme-ui-signal-events',    sem.signalEvents);
+  put('--theme-ui-signal-parameter', sem.signalParameter);
+  put('--theme-ui-signal-video',     sem.signalVideo);
 
   return out;
 }

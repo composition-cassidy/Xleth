@@ -19,13 +19,17 @@ describe('--theme-timeline-lane-bg — Pass 5E.1 registration', () => {
     expect(def.kind).toBe('color');
   });
 
-  it('resolves to #07070B in the default theme', () => {
+  // Phase 7: the lane bed is the ramp's ground (g0) in every theme, so it is neutral
+  // in dark, light and high contrast alike.
+  it('follows the ramp ground (g0) in the default theme', () => {
     const { values } = resolveTheme(defaultTheme as Parameters<typeof resolveTheme>[0]);
-    expect(values[TOKEN]).toBe('#07070B');
+    expect(values[TOKEN]).toBe('var(--theme-ui-g0)');
+    expect(values['--theme-ui-g0']).toBe('#141414');
   });
 
-  it('resolves to #CACAC6 in the light theme', () => {
+  it('follows the ramp ground (g0) in the light theme', () => {
     const { values } = resolveTheme(lightTheme as Parameters<typeof resolveTheme>[0]);
-    expect(values[TOKEN]).toBe('#CACAC6');
+    expect(values[TOKEN]).toBe('var(--theme-ui-g0)');
+    expect(values['--theme-ui-g0']).toBe('#DCDCDC');
   });
 });

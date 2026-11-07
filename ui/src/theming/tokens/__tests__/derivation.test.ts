@@ -253,6 +253,14 @@ describe('deriveTheme — structural contracts', () => {
       '--theme-ui-ink-2',
       '--theme-ui-ink-3',
       '--theme-ui-boundary',
+      // Ramp-driven semantic + signal colours (neutralRamp.ts)
+      '--theme-ui-rec',
+      '--theme-ui-rec-text',
+      '--theme-ui-solo',
+      '--theme-ui-signal-audio',
+      '--theme-ui-signal-events',
+      '--theme-ui-signal-parameter',
+      '--theme-ui-signal-video',
     ];
     for (const k of expected) expect(d[k]).toBeTruthy();
     expect(Object.keys(d).length).toBe(expected.length);

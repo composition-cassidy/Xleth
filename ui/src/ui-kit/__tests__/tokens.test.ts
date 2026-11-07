@@ -144,7 +144,7 @@ describe('Default theme sits on the ramp (legacy surfaces)', () => {
     for (const name of [
       '--theme-bg-primary', '--theme-bg-secondary', '--theme-bg-tertiary', '--theme-bg-surface',
       '--theme-bg-hover', '--theme-bg-active', '--theme-bg-elevated', '--theme-bg-inset',
-      '--theme-text', '--theme-text-subtle', '--theme-text-placeholder',
+      '--theme-text',
       '--theme-ui-g0', '--theme-ui-g1', '--theme-ui-g2', '--theme-ui-g3', '--theme-ui-g4',
     ]) {
       const hex = values[name];

@@ -7,6 +7,7 @@
 // not an `error`. This keeps older releases able to load themes authored
 // against future catalogs.
 
+import { isRampName } from '../tokens/neutralRamp';
 import { TOKENS_BY_NAME, BASE_TOKEN_NAMES_SET, DERIVED_FORMULA_TOKEN_NAMES_SET } from '../tokens/catalog';
 import {
   CURRENT_SCHEMA_VERSION,
@@ -159,6 +160,9 @@ export function validateTheme(input: unknown): ValidationResult {
 
   if (t.tokens !== undefined && (typeof t.tokens !== 'object' || t.tokens === null)) {
     issues.push({ severity: 'error', path: 'tokens', message: 'must be an object' });
+  }
+  if (t.ramp !== undefined && !isRampName(t.ramp)) {
+    issues.push({ severity: 'warning', path: 'ramp', message: `unknown ramp "${String(t.ramp)}"; inferred from bg-surface instead` });
   }
   if (t.derivationDetached !== undefined && !Array.isArray(t.derivationDetached)) {
     issues.push({ severity: 'error', path: 'derivationDetached', message: 'must be an array' });
