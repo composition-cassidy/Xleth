@@ -18,6 +18,27 @@
     font-size: var(--type-12);
   }
 
+  /* ── Tabs row: the tab strip, then the host's own controls (the drawer's) ── */
+  .tabsRow {
+    flex: none;
+    display: flex;
+    align-items: stretch;
+    background: var(--ui-g2);
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .tabsRow > .tabsFill {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    border-bottom: 0;
+  }
+
+  /* Tighter tabs so both names stay whole beside the drawer's controls. */
+  .tabsRow > .tabsFill [role="tab"] {
+    padding: 0 var(--space-2);
+  }
+
   /* ── Search ───────────────────────────────────────────────────────────── */
   .searchRow {
     flex: none;

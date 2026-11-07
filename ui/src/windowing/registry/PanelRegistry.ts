@@ -83,7 +83,7 @@ export const DEFAULT_DOCK_REGION_SIZES: DockRegionSizes = {
   bottom: 304,
 };
 
-export const SAMPLE_SELECTOR_DOCK_HANDLE_WIDTH = 32;
+export const SAMPLE_SELECTOR_DOCK_HANDLE_WIDTH = 28;
 
 export const MIN_DOCK_REGION_SIZES: DockRegionSizes = {
   left: 220,

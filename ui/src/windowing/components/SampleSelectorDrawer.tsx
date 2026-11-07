@@ -11,6 +11,8 @@ import {
   PanelTop,
 } from 'lucide-react';
 import LeftPanel from '../../components/LeftPanel.jsx';
+import useBrowserStore from '../../stores/browserStore.js';
+import { MediaIcon, SamplerIcon } from '../../ui-kit';
 import { PanelVisibilityProvider } from '../contexts/PanelVisibilityContext';
 import { useXlethRootContext } from '../contexts/XlethRootContext.jsx';
 import { DockRegionResizer } from './DockRegionResizer';
@@ -22,6 +24,7 @@ import {
 } from '../registry/PanelRegistry';
 import { panelTypeColorVar } from '../registry/panelCatalog';
 import './windowing.css';
+import styles from './SampleSelectorDrawer.module.css';
 
 const SAMPLE_SELECTOR_DRAWER_TWEEN_MS = 180;
 
@@ -31,11 +34,17 @@ type SampleSelectorRegistryActions = Pick<
 >;
 
 const DOCK_SIDE_OPTIONS: ReadonlyArray<{ side: DockRegionSide; label: string; Icon: typeof PanelLeft }> = [
-  { side: 'left', label: 'Dock Left', Icon: PanelLeft },
-  { side: 'right', label: 'Dock Right', Icon: PanelRight },
-  { side: 'top', label: 'Dock Top', Icon: PanelTop },
-  { side: 'bottom', label: 'Dock Bottom', Icon: PanelBottom },
+  { side: 'left', label: 'Left', Icon: PanelLeft },
+  { side: 'right', label: 'Right', Icon: PanelRight },
+  { side: 'top', label: 'Top', Icon: PanelTop },
+  { side: 'bottom', label: 'Bottom', Icon: PanelBottom },
 ];
+
+// The collapsed rail's shortcuts: one per Browser tab, same glyphs as the tabs.
+const RAIL_TABS = [
+  { id: 'media', label: 'Project media', Icon: MediaIcon },
+  { id: 'samples', label: 'Samples', Icon: SamplerIcon },
+] as const;
 
 function collapseIconForSide(side: DockRegionSide): typeof ChevronLeft {
   if (side === 'right') return ChevronRight;
@@ -101,6 +110,9 @@ export function SampleSelectorDrawer() {
   const CollapseIcon = collapseIconForSide(side);
   const ExpandIcon = expandIconForSide(side);
   const orientation = side === 'top' || side === 'bottom' ? 'horizontal' : 'vertical';
+  const dockIndex = Math.max(0, DOCK_SIDE_OPTIONS.findIndex((option) => option.side === side));
+  const currentDock = DOCK_SIDE_OPTIONS[dockIndex];
+  const nextDock = DOCK_SIDE_OPTIONS[(dockIndex + 1) % DOCK_SIDE_OPTIONS.length];
   const reduceDrawerMotion = prefersReducedDrawerMotion();
   const [renderPhase, setRenderPhase] = useState<SampleSelectorDrawerPhase>(
     () => (expanded ? 'expanded' : 'collapsed'),
@@ -160,16 +172,42 @@ export function SampleSelectorDrawer() {
         style={drawerStyle}
       >
         {!shouldRenderDrawer ? (
-          <button
-            type="button"
-            className="xleth-sample-selector-drawer__edge-toggle xleth-sample-selector-drawer__edge-toggle--collapsed"
-            aria-label="Open Sample Selector drawer"
-            title="Open Sample Selector"
-            onMouseDown={stopControlMouseDown}
-            onClick={() => openSampleSelectorDrawer(registry)}
+          <div
+            className={styles.rail}
+            data-side={side}
+            role="toolbar"
+            aria-label="Browser, collapsed"
+            aria-orientation={orientation === 'horizontal' ? 'horizontal' : 'vertical'}
           >
-            <ExpandIcon aria-hidden="true" strokeWidth={2} />
-          </button>
+            <button
+              type="button"
+              className={`xleth-sample-selector-drawer__edge-toggle xleth-sample-selector-drawer__edge-toggle--collapsed ${styles.control}`}
+              aria-label="Open Sample Selector drawer"
+              data-hint="Open the Browser"
+              data-hint-mods="F6"
+              onMouseDown={stopControlMouseDown}
+              onClick={() => openSampleSelectorDrawer(registry)}
+            >
+              <ExpandIcon aria-hidden="true" size={14} />
+            </button>
+            <span className={styles.railDivider} aria-hidden="true" />
+            {RAIL_TABS.map(({ id, label, Icon }) => (
+              <button
+                key={id}
+                type="button"
+                className={styles.control}
+                aria-label={`Open ${label}`}
+                data-hint={`Open the Browser on ${label}`}
+                onMouseDown={stopControlMouseDown}
+                onClick={() => {
+                  useBrowserStore.getState().setTab(id);
+                  openSampleSelectorDrawer(registry);
+                }}
+              >
+                <Icon size={16} />
+              </button>
+            ))}
+          </div>
         ) : (
           <aside
             className="xleth-sample-selector-drawer"
@@ -177,38 +215,37 @@ export function SampleSelectorDrawer() {
             aria-hidden={drawerState === 'collapsing' ? true : undefined}
             onMouseDown={() => registry.focusPanel('sampleSelector')}
           >
-            <button
-              type="button"
-              className="xleth-sample-selector-drawer__edge-toggle xleth-sample-selector-drawer__edge-toggle--expanded"
-              aria-label="Collapse Sample Selector drawer"
-              title="Collapse Sample Selector"
-              onMouseDown={stopControlMouseDown}
-              onClick={() => collapseSampleSelectorDrawer(registry)}
-            >
-              <CollapseIcon aria-hidden="true" strokeWidth={2} />
-            </button>
-            <div className="xleth-sample-selector-drawer__dock-picker" role="group" aria-label="Dock position">
-              {DOCK_SIDE_OPTIONS.map(({ side: optionSide, label, Icon }) => (
-                <button
-                  key={optionSide}
-                  type="button"
-                  className={`xleth-sample-selector-drawer__dock-picker-btn${optionSide === side ? ' active' : ''}`}
-                  aria-label={label}
-                  aria-pressed={optionSide === side}
-                  title={label}
-                  onMouseDown={stopControlMouseDown}
-                  onClick={() => usePanelRegistry.getState().dockPanel('sampleSelector', optionSide)}
-                >
-                  <Icon aria-hidden="true" strokeWidth={2} size={13} />
-                </button>
-              ))}
-            </div>
             <div className="xleth-sample-selector-drawer__body">
               <LeftPanel
                 onOpenPicker={onOpenPicker}
                 activeSampleId={activeSampleId}
                 setActiveSampleId={setActiveSampleId}
                 orientation={orientation}
+                actions={(
+                <div className={styles.controls}>
+                  <button
+                    type="button"
+                    className={styles.control}
+                    aria-label={`Dock position: ${currentDock.label}. Move to ${nextDock.label}`}
+                    data-hint={`Dock position: ${currentDock.label}. Click to move the Browser to the ${nextDock.label.toLowerCase()}.`}
+                    onMouseDown={stopControlMouseDown}
+                    onClick={() => usePanelRegistry.getState().dockPanel('sampleSelector', nextDock.side)}
+                  >
+                    <currentDock.Icon aria-hidden="true" size={14} />
+                  </button>
+                  <button
+                    type="button"
+                    className={`xleth-sample-selector-drawer__edge-toggle xleth-sample-selector-drawer__edge-toggle--expanded ${styles.control}`}
+                    aria-label="Collapse Sample Selector drawer"
+                    data-hint="Collapse the Browser to its rail"
+                    data-hint-mods="F6"
+                    onMouseDown={stopControlMouseDown}
+                    onClick={() => collapseSampleSelectorDrawer(registry)}
+                  >
+                    <CollapseIcon aria-hidden="true" size={14} />
+                  </button>
+                </div>
+                )}
               />
             </div>
             <DockRegionResizer region={side} currentSize={drawerSize} />

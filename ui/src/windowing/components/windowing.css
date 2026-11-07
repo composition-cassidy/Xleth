@@ -14,8 +14,8 @@
 .xleth-windowing-shell {
   --xleth-sample-dock-width: 258px;
   --xleth-sample-dock-height: 258px;
-  --xleth-sample-dock-handle-width: 32px;
-  --xleth-sample-dock-handle-height: 32px;
+  --xleth-sample-dock-handle-width: 28px;
+  --xleth-sample-dock-handle-height: 28px;
   position: relative;
   display: flex;
   flex-direction: row;
@@ -457,96 +457,9 @@ html[data-xleth-backdrop="video"] .xleth-center-column {
   background: var(--theme-bg-surface, transparent);
 }
 
-.xleth-sample-selector-drawer__edge-toggle {
-  position: absolute;
-  top: 50%;
-  right: -8px;
-  z-index: var(--xleth-z-window-drawer);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 34px;
-  height: 72px;
-  padding: 0;
-  border: 1px solid var(--theme-depth-elevation-1-border);
-  border-left-color: color-mix(in srgb, var(--theme-depth-elevation-1-border) 68%, transparent);
-  border-radius: 0 var(--theme-chrome-radius-md, 6px) var(--theme-chrome-radius-md, 6px) 0;
-  background:
-    linear-gradient(
-      180deg,
-      color-mix(in srgb, var(--theme-depth-elevation-1-bg) 82%, rgba(255, 255, 255, 0.12)) 0%,
-      var(--theme-depth-floating-bg) 100%
-    );
-  color: var(--theme-text-muted);
-  box-shadow:
-    var(--theme-depth-elevation-1-top-highlight),
-    var(--theme-depth-elevation-1-bottom-edge),
-    0 2px 7px rgba(0, 0, 0, 0.32);
-  cursor: pointer;
-  transform: translateY(-50%);
-  transition:
-    background var(--theme-transition-fast, 0.1s ease),
-    color var(--theme-transition-fast, 0.1s ease),
-    border-color var(--theme-transition-fast, 0.1s ease),
-    box-shadow var(--theme-transition-fast, 0.1s ease);
-}
-
-.xleth-sample-selector-drawer-host[data-drawer-side="right"] .xleth-sample-selector-drawer__edge-toggle {
-  right: auto;
-  left: -8px;
-  border-left-color: var(--theme-depth-elevation-1-border);
-  border-right-color: color-mix(in srgb, var(--theme-depth-elevation-1-border) 68%, transparent);
-  border-radius: var(--theme-chrome-radius-md, 6px) 0 0 var(--theme-chrome-radius-md, 6px);
-}
-
-.xleth-sample-selector-drawer-host[data-drawer-side="top"] .xleth-sample-selector-drawer__edge-toggle,
-.xleth-sample-selector-drawer-host[data-drawer-side="bottom"] .xleth-sample-selector-drawer__edge-toggle {
-  top: auto;
-  right: auto;
-  left: 50%;
-  width: 72px;
-  height: 34px;
-  transform: translateX(-50%);
-  border-left-color: var(--theme-depth-elevation-1-border);
-}
-
-.xleth-sample-selector-drawer-host[data-drawer-side="top"] .xleth-sample-selector-drawer__edge-toggle {
-  bottom: -8px;
-  border-top-color: color-mix(in srgb, var(--theme-depth-elevation-1-border) 68%, transparent);
-  border-radius: 0 0 var(--theme-chrome-radius-md, 6px) var(--theme-chrome-radius-md, 6px);
-}
-
-.xleth-sample-selector-drawer-host[data-drawer-side="bottom"] .xleth-sample-selector-drawer__edge-toggle {
-  top: -8px;
-  border-bottom-color: color-mix(in srgb, var(--theme-depth-elevation-1-border) 68%, transparent);
-  border-radius: var(--theme-chrome-radius-md, 6px) var(--theme-chrome-radius-md, 6px) 0 0;
-}
-
-.xleth-sample-selector-drawer__edge-toggle:hover {
-  border-color: var(--theme-depth-floating-focused-border);
-  background: var(--theme-bg-hover);
-  color: var(--theme-text);
-  box-shadow:
-    var(--theme-depth-elevation-1-top-highlight),
-    var(--theme-depth-elevation-1-bottom-edge),
-    var(--theme-depth-accent-glow-subtle),
-    0 3px 9px rgba(0, 0, 0, 0.38);
-}
-
-.xleth-sample-selector-drawer__edge-toggle:focus-visible {
-  outline: none;
-  box-shadow:
-    var(--theme-depth-elevation-1-top-highlight),
-    var(--theme-depth-elevation-1-bottom-edge),
-    var(--theme-depth-accent-ring),
-    0 2px 7px rgba(0, 0, 0, 0.32);
-}
-
-.xleth-sample-selector-drawer__edge-toggle svg {
-  width: 14px;
-  height: 14px;
-}
-
+/* The Browser drawer: layout only. Its controls and collapsed rail are styled in
+   SampleSelectorDrawer.module.css; the list inside is components/browser. No slide
+   animation: a panel that opens, opens. */
 .xleth-sample-selector-drawer {
   position: relative;
   display: flex;
@@ -555,100 +468,29 @@ html[data-xleth-backdrop="video"] .xleth-center-column {
   height: 100%;
   min-width: 0;
   overflow: visible;
-  border: 1px solid var(--theme-depth-floating-border);
-  border-left: 0;
-  border-top: 0;
-  border-bottom: 0;
-  border-radius: 0;
-  background: var(--theme-depth-floating-bg);
-  color: var(--theme-text);
-  box-shadow: var(--theme-depth-floating-top-highlight);
-  opacity: 1;
-  transform: translateX(0);
-  transition:
-    opacity 120ms ease-out,
-    transform 180ms cubic-bezier(0.16, 1, 0.3, 1);
-  animation: xleth-sample-selector-drawer-enter-left 180ms cubic-bezier(0.16, 1, 0.3, 1);
-  will-change: opacity, transform;
+  border: 0;
+  border-right: 1px solid var(--ui-g4);
+  background: var(--ui-g1);
+  color: var(--ui-ink);
 }
 
 .xleth-sample-selector-drawer-host[data-drawer-side="right"] .xleth-sample-selector-drawer {
-  border-left: 1px solid var(--theme-depth-floating-border);
   border-right: 0;
-  border-top: 0;
-  border-bottom: 0;
-  animation-name: xleth-sample-selector-drawer-enter-right;
+  border-left: 1px solid var(--ui-g4);
 }
 
 .xleth-sample-selector-drawer-host[data-drawer-side="top"] .xleth-sample-selector-drawer {
-  border-top: 0;
-  border-left: 0;
   border-right: 0;
-  border-bottom: 1px solid var(--theme-depth-floating-border);
-  animation-name: xleth-sample-selector-drawer-enter-top;
+  border-bottom: 1px solid var(--ui-g4);
 }
 
 .xleth-sample-selector-drawer-host[data-drawer-side="bottom"] .xleth-sample-selector-drawer {
-  border-bottom: 0;
-  border-left: 0;
   border-right: 0;
-  border-top: 1px solid var(--theme-depth-floating-border);
-  animation-name: xleth-sample-selector-drawer-enter-bottom;
+  border-top: 1px solid var(--ui-g4);
 }
 
 .xleth-sample-selector-drawer-host[data-drawer-state="collapsing"] .xleth-sample-selector-drawer {
-  opacity: 0;
-  transform: translateX(-6px);
-  animation: none;
   pointer-events: none;
-}
-
-.xleth-sample-selector-drawer-host[data-drawer-side="right"][data-drawer-state="collapsing"] .xleth-sample-selector-drawer {
-  transform: translateX(6px);
-}
-
-.xleth-sample-selector-drawer-host[data-drawer-side="top"][data-drawer-state="collapsing"] .xleth-sample-selector-drawer {
-  transform: translateY(-6px);
-}
-
-.xleth-sample-selector-drawer-host[data-drawer-side="bottom"][data-drawer-state="collapsing"] .xleth-sample-selector-drawer {
-  transform: translateY(6px);
-}
-
-.xleth-sample-selector-drawer__dock-picker {
-  flex: 0 0 auto;
-  display: flex;
-  gap: 4px;
-  padding: 6px 8px 0;
-}
-
-.xleth-sample-selector-drawer__dock-picker-btn {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 1px solid transparent;
-  border-radius: var(--theme-chrome-radius-sm, 4px);
-  background: transparent;
-  color: var(--theme-text-muted);
-  cursor: pointer;
-  transition:
-    background var(--theme-transition-fast, 0.1s ease),
-    color var(--theme-transition-fast, 0.1s ease),
-    border-color var(--theme-transition-fast, 0.1s ease);
-}
-
-.xleth-sample-selector-drawer__dock-picker-btn:hover {
-  background: var(--theme-bg-hover);
-  color: var(--theme-text);
-}
-
-.xleth-sample-selector-drawer__dock-picker-btn.active {
-  border-color: var(--theme-depth-accent-ring, var(--theme-accent));
-  color: var(--theme-accent);
-  background: color-mix(in srgb, var(--theme-accent) 14%, transparent);
 }
 
 .xleth-sample-selector-drawer__body {
@@ -657,55 +499,7 @@ html[data-xleth-backdrop="video"] .xleth-center-column {
   overflow: hidden;
   display: flex;
   flex-direction: column;
-  background: var(--theme-bg-primary);
-}
-
-@keyframes xleth-sample-selector-drawer-enter-left {
-  from {
-    opacity: 0.82;
-    transform: translateX(-4px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
-@keyframes xleth-sample-selector-drawer-enter-right {
-  from {
-    opacity: 0.82;
-    transform: translateX(4px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateX(0);
-  }
-}
-
-@keyframes xleth-sample-selector-drawer-enter-top {
-  from {
-    opacity: 0.82;
-    transform: translateY(-4px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-@keyframes xleth-sample-selector-drawer-enter-bottom {
-  from {
-    opacity: 0.82;
-    transform: translateY(4px);
-  }
-
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
+  background: var(--ui-g1);
 }
 
 @media (prefers-reduced-motion: reduce) {

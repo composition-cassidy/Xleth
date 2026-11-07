@@ -26,7 +26,7 @@ export const BROWSER_TABS = [
   },
 ]
 
-export default function LeftPanel({ onOpenPicker, activeSampleId, setActiveSampleId, orientation = 'vertical', tab: forcedTab }) {
+export default function LeftPanel({ onOpenPicker, activeSampleId, setActiveSampleId, orientation = 'vertical', tab: forcedTab, actions = null }) {
   // `tab` pins the tab (the Gallery shows both at once); the app leaves it to the store.
   const storeTab = useBrowserStore((s) => s.tab)
   const setStoreTab = useBrowserStore((s) => s.setTab)
@@ -40,7 +40,10 @@ export default function LeftPanel({ onOpenPicker, activeSampleId, setActiveSampl
 
   return (
     <div className={styles.browser} data-orientation={orientation}>
-      <Tabs label="Browser" tabs={BROWSER_TABS} value={tab} onChange={setTab} />
+      <div className={styles.tabsRow}>
+        <Tabs className={styles.tabsFill} label="Browser" tabs={BROWSER_TABS} value={tab} onChange={setTab} />
+        {actions}
+      </div>
       <div className={styles.searchRow}>
         <SearchField
           key={tab}
