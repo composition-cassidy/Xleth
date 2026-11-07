@@ -1,4 +1,5 @@
 import { useRef, useState, useEffect, useMemo } from 'react'
+import styles from './SamplePicker.module.css'
 
 /**
  * PickerVideoPreview — muted <video> element synced to SourcePlayer audio.
@@ -79,7 +80,7 @@ export default function PickerVideoPreview({
 
   return (
     <div
-      className="picker-video-preview"
+      className={styles.videoPreview}
       style={{ '--picker-video-aspect': aspectRatio }}
     >
       {videoUrl ? (
@@ -89,15 +90,15 @@ export default function PickerVideoPreview({
           muted
           playsInline
           preload="auto"
-          className="picker-video-frame"
+          className={styles.videoFrame}
           draggable={false}
-          onLoadedData={() => console.log('[VideoPreview] Video loaded OK')}
-          onError={() => console.error('[VideoPreview] Video error:',
+          onLoadedData={() => console.log('[Browser] Video loaded OK')}
+          onError={() => console.error('[Browser] Video error:',
             videoRef.current?.error?.code, videoRef.current?.error?.message)}
-          onCanPlay={() => console.log('[VideoPreview] Can play')}
+          onCanPlay={() => console.log('[Browser] Can play')}
         />
       ) : (
-        <div className="picker-video-placeholder"><span>Loading video...</span></div>
+        <div className={styles.videoPlaceholder}>Loading video…</div>
       )}
     </div>
   )

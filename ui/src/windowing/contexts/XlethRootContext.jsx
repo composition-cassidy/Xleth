@@ -4,6 +4,8 @@ const NOOP = () => {}
 
 const defaultValue = {
   onOpenPicker: NOOP,
+  pickerSource: null,
+  onClosePicker: NOOP,
   activeSampleId: null,
   setActiveSampleId: NOOP,
   currentPatternIdByTrack: {},

@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
-import { ArrowLeft } from 'lucide-react'
+import { X } from 'lucide-react'
 import { timelineEvents } from '../../timelineEvents.js'
 import PickerVideoPreview from './PickerVideoPreview.jsx'
 import WaveformScrubber from './WaveformScrubber.jsx'
@@ -7,7 +7,8 @@ import ControlsRow from './ControlsRow.jsx'
 import MarkedSamplesList from './MarkedSamplesList.jsx'
 import { normalizeSelection } from './selection.js'
 import { usePanelRegistry } from '../../windowing/registry/PanelRegistry.ts'
-import { setSamplePickerOpen } from '../../stores/samplePickerGate.js'
+import { setSamplePickerOpen, setSamplePickerRoot } from '../../stores/samplePickerGate.js'
+import styles from './SamplePicker.module.css'
 
 import {
   DEFAULT_LABELS, loadCustomLabels, saveCustomLabels
@@ -56,11 +57,23 @@ function nameCollides(allRegions, label, name, excludeId = null) {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 /**
+ * The sample picker, shown as a sheet over the Preview/Inspector row (see
+ * windowing/components/PickerSheet). The arrangement under it stays live.
+ *
  * Props:
- *   source   – { id, name, filePath, duration, width, height, fps, hasVideo }
- *   onClose  – () => void
+ *   source    – { id, name, filePath, duration, width, height, fps, hasVideo }
+ *   onClose   – () => void
+ *   scopeRef  – optional ref to the element that bounds the picker's keys (the
+ *               sheet). Default: the picker's own root. Space, I, O and Esc act
+ *               only for events inside it, so they never steal the transport's
+ *               keys while the user is working in the arrangement.
  */
-export default function SamplePicker({ source, onClose }) {
+export default function SamplePicker({ source, onClose, scopeRef }) {
+  const rootRef = useRef(null)
+  const inScope = (target) => {
+    const scope = scopeRef?.current || rootRef.current
+    return !!scope && !!target && scope.contains(target)
+  }
   // ── Bridge/media state ──────────────────────────────────────────────────────
   const [waveformData,  setWaveformData]  = useState(null)   // { peaks, duration, pixelWidth }
   const [waveformError, setWaveformError] = useState(false)
@@ -111,6 +124,7 @@ export default function SamplePicker({ source, onClose }) {
     // Gate TransportBar's global spacebar/transport shortcuts for as long as
     // this window is mounted, so Timeline playback can't fire alongside — or
     // instead of — sample preview, regardless of which element has focus.
+    setSamplePickerRoot(scopeRef?.current || rootRef.current)
     setSamplePickerOpen(true)
 
     // Load source audio into the C++ engine (decodes entire file to RAM)
@@ -471,6 +485,9 @@ export default function SamplePicker({ source, onClose }) {
   // not on every inPoint/duration change that recreates handlePlaySelection.
   useEffect(() => {
     const handler = (e) => {
+      // The arrangement is live under the sheet: only keys from inside it are ours.
+      if (!inScope(e.target)) return
+
       // Space first, and gated only on text entry: capture-phase
       // stopImmediatePropagation keeps it from ever reaching the focused
       // button, and preventDefault kills that button's native activation.
@@ -500,6 +517,7 @@ export default function SamplePicker({ source, onClose }) {
     // than relying on the keydown preventDefault alone.
     const keyUpHandler = (e) => {
       if (!isSpaceKey(e)) return
+      if (!inScope(e.target)) return
       if (isTextEntryTarget(e.target)) return
       e.preventDefault()
       e.stopImmediatePropagation()
@@ -520,42 +538,47 @@ export default function SamplePicker({ source, onClose }) {
   ].filter(Boolean).join(' - ')
 
   return (
-    <div className="sample-picker">
+    <div className={styles.picker} ref={rootRef} data-testid="sample-picker">
       {/* ── Header ─────────────────────────────────────────────────────── */}
-      <div className="sample-picker-header">
-        <button className="sample-picker-back" onClick={onClose} title="Back (Esc)">
-          <ArrowLeft size={14} />
-          <span>Back</span>
-        </button>
-        <span className="sample-picker-source-name" title={source.filePath}>
+      <div className={styles.header}>
+        <span className={styles.title} title={source.filePath}>
           {source.name}
         </span>
         {sourceMeta && (
-          <span className="sample-picker-source-meta">
+          <span className={styles.meta}>
             {sourceMeta}
           </span>
         )}
+        <button
+          type="button"
+          className={`sample-picker-back ${styles.close}`}
+          onClick={onClose}
+          aria-label="Close sample picker"
+          data-hint="Close the sample picker and return to the Preview"
+          data-hint-mods="Esc"
+        >
+          <X size={14} aria-hidden="true" />
+          <span>Close</span>
+        </button>
       </div>
 
-      <div className="sample-picker-workspace">
-        <div className="sample-picker-main">
-          <div className="sample-picker-preview-stack">
-            {source.hasVideo !== false ? (
-              <PickerVideoPreview
-                filePath={source.filePath}
-                currentTime={currentTime}
-                isPlaying={playing}
-                sourceWidth={source.width}
-                sourceHeight={source.height}
-              />
-            ) : (
-              <div className="picker-video-preview picker-video-preview--audio-only">
-                <div className="picker-video-placeholder">
-                  <span>Audio source</span>
-                </div>
-              </div>
-            )}
+      <div className={styles.workspace}>
+        <div className={styles.videoColumn}>
+          {source.hasVideo !== false ? (
+            <PickerVideoPreview
+              filePath={source.filePath}
+              currentTime={currentTime}
+              isPlaying={playing}
+              sourceWidth={source.width}
+              sourceHeight={source.height}
+            />
+          ) : (
+            <div className={styles.audioOnly}>Audio source</div>
+          )}
+        </div>
 
+        <div className={styles.center}>
+          <div className={styles.waveform}>
             <WaveformScrubber
               filePath={source.filePath}
               waveformData={waveformData}
@@ -573,7 +596,7 @@ export default function SamplePicker({ source, onClose }) {
             />
           </div>
 
-          <div className="sample-picker-control-strip">
+          <div className={styles.controlStrip}>
             <ControlsRow
               playing={playing}
               label={label}
@@ -601,8 +624,8 @@ export default function SamplePicker({ source, onClose }) {
           </div>
         </div>
 
-        <aside className="sample-picker-rail" aria-label="Marked samples">
-          {/* Splitting syllables now opens a dedicated floating panel via the
+        <aside className={styles.rail} aria-label="Marked samples">
+          {/* Splitting syllables opens a dedicated floating panel via the
               scissors button on each Quote row (see onSplit). */}
           <MarkedSamplesList
             samples={samples}

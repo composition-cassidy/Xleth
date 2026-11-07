@@ -1,0 +1,178 @@
+/* The sample picker's own layout: a sheet's contents (header, source picture,
+ * waveform + controls, marked list). The controls row, waveform canvas and
+ * marked rows inside are still their legacy styles until their own pass. Tokens
+ * only; no gradients, no card shadows. */
+@layer kit {
+  .picker {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    background: var(--ui-g1);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+  }
+
+  .header {
+    flex: none;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    height: var(--panel-header-h);
+    padding: 0 var(--space-1) 0 var(--space-2);
+    background: var(--ui-g2);
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .title {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--type-13);
+    font-weight: var(--weight-semibold);
+  }
+
+  .meta {
+    flex: none;
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+    color: var(--ui-ink-2);
+    white-space: nowrap;
+  }
+
+  .close {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    height: var(--hit-min);
+    margin-left: auto;
+    padding: 0 var(--space-2);
+    border: 0;
+    border-radius: var(--ui-radius-1);
+    background: transparent;
+    color: var(--ui-ink-2);
+    font: inherit;
+    font-size: var(--type-12);
+    cursor: pointer;
+  }
+
+  .close:hover {
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+  }
+
+  .close:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  .workspace {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: clamp(160px, 20%, 224px) minmax(0, 1fr) clamp(200px, 22%, 248px);
+  }
+
+  .videoColumn {
+    box-sizing: border-box;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: var(--space-2);
+    background: var(--ui-g0);
+    border-right: 1px solid var(--ui-g4);
+    overflow: hidden;
+  }
+
+  .videoPreview {
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+
+  .videoFrame {
+    display: block;
+    width: auto;
+    height: auto;
+    max-width: 100%;
+    max-height: 100%;
+    aspect-ratio: var(--picker-video-aspect, 16 / 9);
+    object-fit: contain;
+    background: var(--ui-g0);
+    border: 1px solid var(--ui-g4);
+  }
+
+  .videoPlaceholder,
+  .audioOnly {
+    color: var(--ui-ink-2);
+    font-size: var(--type-12);
+    text-align: center;
+  }
+
+  .center {
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+
+  .waveform {
+    flex: none;
+    min-width: 0;
+  }
+
+  .controlStrip {
+    box-sizing: border-box;
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    padding: var(--space-2);
+    overflow-y: auto;
+    background: var(--ui-g2);
+    border-top: 1px solid var(--ui-g4);
+  }
+
+  /* The control row wraps instead of being cut off when the sheet is narrow
+   * (the legacy row is a fixed seven-column grid). */
+  .controlStrip :global(.picker-controls-row) {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .controlStrip :global(.picker-controls-divider) {
+    display: none;
+  }
+
+  .controlStrip :global(.picker-label-select-wrap) {
+    flex: 0 1 148px;
+  }
+
+  .controlStrip :global(.picker-name-input) {
+    flex: 1 1 140px;
+  }
+
+  .rail {
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    overflow: hidden;
+    border-left: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
+  }
+}

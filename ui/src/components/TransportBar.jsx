@@ -4,7 +4,7 @@ import { subscribe } from '../transportStore.js'
 import { playheadClock } from '../services/PlayheadClock.js'
 import useMixerStore from '../stores/mixerStore.js'
 import useAutoScrollStore from '../stores/autoScrollStore.js'
-import { isSamplePickerOpen } from '../stores/samplePickerGate.js'
+import { isSamplePickerKeyTarget } from '../stores/samplePickerGate.js'
 import { IconButton, NumberBox, THIN_SPACE, logScale } from '../ui-kit'
 import styles from './TransportBar.module.css'
 
@@ -109,9 +109,9 @@ export default function TransportBar() {
     const onKey = (e) => {
       // Don't capture if focus is on an input (the tempo editor included)
       if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return
-      // Sample Selection window owns the spacebar (and other transport keys)
-      // while it's open — never let Timeline playback respond underneath it.
-      if (isSamplePickerOpen()) return
+      // The Sample Picker sheet owns the spacebar (and other transport keys) while
+      // focus is inside it. Out in the arrangement the transport keeps its keys.
+      if (isSamplePickerKeyTarget(e)) return
 
       if (e.code === 'Space') {
         e.preventDefault()

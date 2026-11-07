@@ -24,6 +24,7 @@ import useDeviceUiStore from '../components/devices/deviceUiStore.js'
 import useCompressorStore from '../stores/compressorStore.js'
 import MixerGalleryFixture from '../components/mixer/MixerGalleryFixture.jsx'
 import BrowserGalleryFixture from '../components/browser/BrowserGalleryFixture.jsx'
+import PickerGalleryFixture from '../components/SamplePicker/PickerGalleryFixture.jsx'
 
 const params = new URLSearchParams(typeof window === 'undefined' ? '' : window.location.search)
 const FROZEN = params.get('shots') === '1'
@@ -267,6 +268,11 @@ export default function Gallery() {
       <Section title="Browser: Media and Samples (MOCK data, gallery only)">
         <Spec caption="Media: video, audio-only, a pending proxy, a long name. Rows are 24px; the strip shows the selected source."><BrowserGalleryFixture tab="media" /></Spec>
         <Spec caption="Samples: groups with disclosure triangles, label stripe, selection outline, a swapped-audio mark, root note on Pitch"><BrowserGalleryFixture tab="samples" /></Spec>
+      </Section>
+
+      <Section title="Sample picker sheet (MOCK data, gallery only)">
+        <Spec caption="At the sheet's default size, 1086 x 340 (a 1366 window less the Browser). No engine: the waveform says so instead of drawing one." wide><PickerGalleryFixture /></Spec>
+        <Spec caption="At the floor, 760 x 280 (a narrow window and a short top row): the controls wrap instead of being cut" wide><PickerGalleryFixture width={760} height={280} /></Spec>
       </Section>
 
       <Section title="Mixer: 16 strips, mixed states (MOCK data, gallery only)">

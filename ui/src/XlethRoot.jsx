@@ -1,7 +1,6 @@
 import { useEffect, useState, useCallback, useMemo } from 'react'
 import { timelineEvents } from './timelineEvents.js'
 import TitleBar from './components/TitleBar.jsx'
-import SamplePicker from './components/SamplePicker/SamplePicker.jsx'
 import RenderDialog from './components/RenderDialog.jsx'
 import ExportZipDialog from './components/ExportZipDialog.jsx'
 import MidiImportDialog from './components/MidiImport/MidiImportDialog.jsx'
@@ -600,6 +599,8 @@ function XlethRootInner() {
 
   const rootContextValue = useMemo(() => ({
     onOpenPicker: handleOpenPicker,
+    pickerSource,
+    onClosePicker: handleClosePicker,
     activeSampleId,
     setActiveSampleId,
     currentPatternIdByTrack,
@@ -611,6 +612,8 @@ function XlethRootInner() {
     onOpenMidiImport,
   }), [
     handleOpenPicker,
+    pickerSource,
+    handleClosePicker,
     activeSampleId,
     currentPatternIdByTrack,
     activeCenterTab,
@@ -650,16 +653,12 @@ function XlethRootInner() {
         activeMenuLabel={showSettings ? 'Settings' : null}
       />
 
+      {/* One shell, always mounted. The sample picker is a sheet inside it
+          (windowing/components/PickerSheet), so the arrangement stays visible. */}
       <div className="app-body" style={{ position: 'relative' }}>
-        {pickerSource && (
-          <SamplePicker source={pickerSource} onClose={handleClosePicker} />
-        )}
-
-        <div style={{ display: pickerSource ? 'none' : 'contents' }}>
-          <XlethRootContext.Provider value={rootContextValue}>
-            <AppShell backdropImageUrl={workspaceBackdropImageUrl} />
-          </XlethRootContext.Provider>
-        </div>
+        <XlethRootContext.Provider value={rootContextValue}>
+          <AppShell backdropImageUrl={workspaceBackdropImageUrl} />
+        </XlethRootContext.Provider>
       </div>
 
       <HintBar />

@@ -3,6 +3,7 @@ import { useEffect, useRef } from 'react';
 import { DetailDock } from './components/DetailDock';
 import { DockRegion } from './components/DockRegion';
 import { SampleSelectorDrawer } from './components/SampleSelectorDrawer';
+import { PickerSheet } from './components/PickerSheet';
 import { SnapGhost } from './components/SnapGhost';
 import { useDockRegionResizePreview } from './managers/DockRegionResizeManager';
 import {
@@ -194,7 +195,10 @@ export function AppShell({ backdropImageUrl = '' }: WindowingAppShellProps) {
             data-testid="xleth-docked-window-layer"
           >
             <DockRegion side="left" renderPanel={renderPanel} excludePanelIds={DRAWER_PANEL_IDS} />
-            <div className="xleth-center-column">
+            <div className={`xleth-center-column ${styles.centerColumn}`}>
+              {/* The sample picker opens as a sheet over the top row; the
+                  arrangement and detail dock below it stay mounted and live. */}
+              <PickerSheet />
               <DockRegion
                 side="top"
                 className={styles.top}
