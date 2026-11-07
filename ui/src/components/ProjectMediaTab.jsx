@@ -70,7 +70,6 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
     try {
       const dataUrl = await window.xleth?.project?.getSourceThumbnail(source.filePath, source.duration)
       if (dataUrl && generation === projectGeneration.current) {
-        console.log(`[Browser] Thumbnail generated: id=${source.id}`)
         setThumbnails(prev => ({ ...prev, [source.id]: dataUrl }))
       }
     } catch (e) {
@@ -124,7 +123,6 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
   // ── Import via dialog ─────────────────────────────────────────────────────
   const handleImportDialog = useCallback(async () => {
     if (importing) return
-    console.log('[Browser] Import requested (dialog)')
     setImporting(true)
 
     try {
@@ -138,7 +136,6 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
       })
       const filePaths = getPickerPaths(picked)
       if (filePaths.length === 0) {
-        console.log('[Browser] Import cancelled')
         return
       }
       await importFiles(filePaths)
@@ -168,7 +165,6 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
 
     for (const fp of filePaths) {
       const name = fp.replace(/^.*[\\/]/, '')
-      console.log(`[Browser] Importing ${name}`)
 
       try {
         const sourceId = await window.xleth?.project?.importSource(fp)
@@ -176,7 +172,6 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
           throw new Error('Engine rejected the media file.')
         }
         didImport = true
-        console.log(`[Browser] Import complete: id=${sourceId} ${name}`)
       } catch (e) {
         console.error(`[Browser] Error importing ${name}:`, e)
         showToast(`Import failed: ${name} (${e?.message || 'unknown error'})`, 'error')
@@ -228,7 +223,6 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
       label: 'Reveal in Explorer',
       icon: FolderSearch,
       onClick: () => {
-        console.log(`[Browser] Reveal: ${contextMenu.source.filePath}`)
         window.xleth?.shell?.showItemInFolder(contextMenu.source.filePath)
       },
     },
@@ -244,7 +238,6 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
       label: 'Re-transcode Proxy',
       icon: RefreshCw,
       onClick: () => {
-        console.log(`[Browser] Re-transcode requested: id=${contextMenu.source.id}`)
         // Future: dedicated re-transcode endpoint
       },
     },
@@ -255,7 +248,6 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
       danger: true,
       onClick: async () => {
         const id = contextMenu.source.id
-        console.log(`[Browser] Source removed: id=${id}`)
         try {
           await window.xleth?.project?.removeSource(id)
         } catch (e) {
@@ -291,7 +283,6 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
         try {
           await window.xleth?.timeline?.addRegion(region)
           timelineEvents.dispatchEvent(new Event('timeline-regions-changed'))
-          console.log(`[Browser] Imported source "${src.name}" as ${label} sample`)
         } catch (e) {
           console.warn('[Browser] addRegion failed:', e.message)
         }

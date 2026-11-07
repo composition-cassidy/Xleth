@@ -108,7 +108,6 @@ export default function DeviceChain() {
     document.body.style.cursor = ''
     setDragOrder(null)
     if (d?.active && d.currentIndex !== d.fromIndex) {
-      console.debug('[Device] move', key, d.nodeId, d.fromIndex, '->', d.currentIndex)
       moveEffect(key, d.nodeId, d.currentIndex)
     }
   }, [key, moveEffect, onPointerMove])

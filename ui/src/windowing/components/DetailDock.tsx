@@ -60,15 +60,12 @@ export function activateDetailTab(id: PanelId): void {
   const registry = usePanelRegistry.getState();
   const state = detailTabState(registry.panels[id]);
   if (state === 'open') {
-    console.log(`[Shell] detail dock: collapse (${id})`);
     registry.closePanel(id);
   } else if (state === 'docked') {
-    console.log(`[Shell] detail dock: open ${id}`);
     registry.openPanel(id);
   } else if (state === 'popped') {
     registry.focusPanel(id);
   } else {
-    console.log(`[Shell] detail dock: return ${id} from its closed window`);
     registry.dockPanel(id, 'bottom');
   }
 }
@@ -79,7 +76,6 @@ export function togglePopOutDetailTab(id: PanelId): void {
   const panel = registry.panels[id];
   const state = detailTabState(panel);
   if (state === 'popped' || state === 'stowed') {
-    console.log(`[Shell] detail dock: re-dock ${id}`);
     registry.dockPanel(id, 'bottom');
     return;
   }
@@ -88,7 +84,6 @@ export function togglePopOutDetailTab(id: PanelId): void {
   // Centred in the work area; AppShell clamps it to the work area afterwards.
   const x = fits ? Math.max(0, Math.round((area.width - panel.floating.width) / 2)) : panel.floating.x;
   const y = fits ? Math.max(0, Math.round((area.height - panel.floating.height) / 3)) : panel.floating.y;
-  console.log(`[Shell] detail dock: pop out ${id}`);
   registry.undockPanel(id, x, y);
 }
 

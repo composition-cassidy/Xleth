@@ -100,7 +100,6 @@ export default function GridEditToolbar() {
     if (!confirmGridResize(layout.slots, cols, rows)) return
     setLayout((l) => ({ ...l, columns: cols, rows }))
     await window.xleth?.timeline?.setGridLayout({ ...layout, columns: cols, rows })
-    console.log(`[Arrange] grid resized to ${cols}x${rows}`)
     notify()
   }, [layout])
 
@@ -117,13 +116,11 @@ export default function GridEditToolbar() {
     const v = Math.max(0, Math.min(GAP_MAX, Math.round(percent) / 100))
     setLayout((l) => ({ ...l, gapScale: v }))
     await window.xleth?.timeline?.setGridLayout({ ...layout, gapScale: v })
-    console.log(`[Arrange] grid gap → ${v}`)
     notify()
   }, [layout])
 
   const handleClearLayout = useCallback(async () => {
     if (!window.confirm('Clear all grid slots and fullscreen layers?')) return
-    console.log('[Arrange] grid layout cleared')
     await window.xleth?.timeline?.setGridLayout({ ...layout, slots: [], fullscreenLayers: [] })
     notify()
   }, [layout])

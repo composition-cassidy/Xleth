@@ -2562,7 +2562,6 @@ export default function TimelineView({
   // Track menu → select this track (clearing clip/block selection so the
   // Inspector shows the track) and reveal the Inspector.
   const selectTrackInInspector = useCallback((trackId) => {
-    console.log(`[Arrange] select track ${trackId} and reveal the Inspector`)
     setSelectedTrackIds(new Set([trackId]))
     setSelectedClipIds(new Set())
     setSelectedBlockIds(new Set())
@@ -4356,7 +4355,6 @@ export default function TimelineView({
   }, [setInspectorClipActions, setInspectorClip])
 
   const openClipInInspector = useCallback((clipId) => {
-    console.log(`[Arrange] select clip ${clipId} and reveal the Inspector`)
     setSelectedClipIds(new Set([clipId]))
     setSelectedBlockIds(new Set())
     revealInspector()

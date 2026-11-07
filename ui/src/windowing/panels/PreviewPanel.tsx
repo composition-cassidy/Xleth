@@ -19,7 +19,6 @@ export function popOutPreview(): void {
   const fits = Number.isFinite(area.width) && area.width > 0 && Number.isFinite(area.height) && area.height > 0;
   const x = fits ? Math.max(0, Math.round((area.width - panel.floating.width) / 2)) : panel.floating.x;
   const y = fits ? Math.max(0, Math.round((area.height - panel.floating.height) / 3)) : panel.floating.y;
-  console.log('[Shell] pop out preview');
   registry.undockPanel('preview', x, y);
 }
 

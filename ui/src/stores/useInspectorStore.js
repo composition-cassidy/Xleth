@@ -35,7 +35,6 @@ const useInspectorStore = create((set, get) => ({
 
   setSelection: (selection) => {
     if (sameSelection(get().selection, selection)) return
-    console.log('[Arrange] inspector selection →', selection ? JSON.stringify(selection) : 'none')
     set({ selection })
   },
   setClipContext: (clip) => set({ clip }),

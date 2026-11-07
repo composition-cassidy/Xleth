@@ -131,7 +131,6 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
       }
     }
     init()
-    console.log('[Browser] Loaded')
 
     const onRegionsChanged = () => fetchRegions()
     const onSourcesChanged = () => fetchSources()
@@ -192,7 +191,6 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
   const startRename = useCallback((region) => {
     setEditingNameId(region.id)
     setEditingNameValue(region.name || '')
-    console.log(`[Browser] Rename started: "${region.name}"`)
   }, [])
 
   const commitRename = useCallback(async () => {
@@ -222,7 +220,6 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
       return  // keep edit mode open so the user can correct and retry
     }
 
-    console.log(`[Browser] Renamed: "${region.name}" → "${newName}"`)
     try {
       await window.xleth?.timeline?.modifyRegion(editingNameId, { ...region, name: newName })
     } catch (e) {
@@ -242,7 +239,6 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
 
   // ── Change label ───────────────────────────────────────────────────────────
   const changeLabel = useCallback(async (region, newLabel) => {
-    console.log(`[Browser] Label changed: "${region.name}" → ${newLabel}`)
     try {
       await window.xleth?.timeline?.modifyRegion(region.id, { ...region, label: newLabel })
     } catch (e) {
@@ -253,7 +249,6 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
 
   // ── Delete ─────────────────────────────────────────────────────────────────
   const handleDelete = useCallback(async (region) => {
-    console.log(`[Browser] Deleted: "${region.name}" (id=${region.id})`)
     try {
       await window.xleth?.timeline?.removeRegion(region.id)
     } catch (e) {
@@ -275,7 +270,6 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
         if (result) {
           setRootNotes(prev => ({ ...prev, [sid]: result.note }))
           if (result.note >= 0) {
-            console.log(`[Browser] Root note detected: ${src.name} → MIDI ${result.note}`)
           }
         }
       } catch (e) {
@@ -298,7 +292,6 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
         icon: DrawToolIcon,
         onClick: () => {
           if (src && onOpenPicker) {
-            console.log(`[Browser] Edit in Picker: "${region.name}"`)
             onOpenPicker(src)
           }
         },
@@ -518,7 +511,6 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
   // plays it through the same preview path the row's play button uses.
   const handleSelect = useCallback(async (id) => {
     setActiveSampleId(id)
-    console.log(`[Browser] Selected: id=${id}`)
     if (!autoPreview) return
     const region = regions.find(r => r.id === id)
     const src = region ? sources[region.sourceId] : null

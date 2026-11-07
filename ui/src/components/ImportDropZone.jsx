@@ -61,7 +61,6 @@ export default function ImportDropZone({ onFilesDropped, onMidiFileDropped, chil
     const midiFile = files.find(f => MIDI_EXT.test(f.name))
     if (midiFile && onMidiFileDropped) {
       const path = getPath(midiFile)
-      console.log('[Browser] MIDI import requested (drop):', path)
       onMidiFileDropped(path)
     }
 
@@ -72,10 +71,8 @@ export default function ImportDropZone({ onFilesDropped, onMidiFileDropped, chil
       .filter(Boolean)
 
     if (avPaths.length > 0) {
-      console.log(`[Browser] Import requested (drop): ${avPaths.length} file(s)`)
       onFilesDropped(avPaths)
     } else if (!midiFile) {
-      console.log('[Browser] Drop ignored — no supported media files')
     }
   }, [disabled, onFilesDropped, onMidiFileDropped])
 

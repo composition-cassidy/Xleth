@@ -84,7 +84,6 @@ export function startPreview({ region, sourceFilePath, mediaPort }) {
   audio.addEventListener('ended', finishPreview, { once: true })
 
   emit()
-  console.log(`[Browser] Preview: "${region.name}" ${region.startTime.toFixed(2)}–${region.endTime.toFixed(2)}s`)
   return true
 }
 
@@ -92,7 +91,6 @@ export function startPreview({ region, sourceFilePath, mediaPort }) {
 export function togglePreview(args) {
   if (activeId === args.region.id) {
     stopPreview()
-    console.log(`[Browser] Preview stopped: "${args.region.name}"`)
     return false
   }
   return startPreview(args)

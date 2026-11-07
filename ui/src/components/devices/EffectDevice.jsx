@@ -44,7 +44,6 @@ function useCommonDeviceState({ effect, storeKey, canBypass = true, moveItems = 
 
   const onBypassChange = canBypass && live
     ? (bypassed) => {
-        console.debug('[Device] bypass', storeKey, effect.nodeId, bypassed)
         setBypass(storeKey, effect.nodeId, bypassed)
       }
     : undefined
@@ -92,7 +91,6 @@ function MigratedDevice({
   const popOut = useCallback(() => {
     const opener = EFFECT_EDITORS[effect.pluginId]
     if (!opener || !target) return
-    console.debug('[Device] pop out', effect.pluginId, storeKey, effect.nodeId)
     opener(target.trackId, target.nodeId, storeKey)
   }, [effect.pluginId, target, storeKey, effect.nodeId])
 

@@ -110,7 +110,6 @@ export function Titlebar({ id, focused, children }: TitlebarProps) {
   const returnToDock = (event: MouseEvent<HTMLButtonElement>) => {
     event.stopPropagation();
     if (!dockHome) return;
-    console.log(`[Shell] re-dock ${id} from its window`);
     const panel = usePanelRegistry.getState().panels[id];
     const slot = dockHome !== 'bottom' && panel.docked.region === dockHome ? panel.docked.orderInRegion : undefined;
     dockPanel(id, dockHome, slot);

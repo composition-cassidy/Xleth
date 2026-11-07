@@ -37,7 +37,6 @@ export default function useAbCompare({ effectType, target, onApplied }) {
         slotsRef.current[next] = current
       }
       setSide(next)
-      console.debug('[Device] A/B', effectType, side, '->', next)
     } catch (err) {
       console.warn('[Device] A/B switch failed:', err?.message)
     } finally {

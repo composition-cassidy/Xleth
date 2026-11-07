@@ -65,7 +65,6 @@ export default function TrackVideoProperties({ trackId }) {
   }, [])
 
   useEffect(() => {
-    console.log(`[Arrange] inspector shows track ${trackId}`)
     refresh()
     const onChange = () => refresh()
     timelineEvents.addEventListener('timeline-tracks-changed', onChange)
@@ -86,7 +85,6 @@ export default function TrackVideoProperties({ trackId }) {
   const handleCommitFlip = useCallback(async (config) => {
     try {
       await window.xleth?.timeline?.setVideoFlipConfig(trackId, config)
-      console.log(`[Arrange] flip config committed for track ${trackId}`)
       fetchTracks()
     } catch (err) {
       console.error('[Arrange] setVideoFlipConfig failed:', err)
@@ -96,7 +94,6 @@ export default function TrackVideoProperties({ trackId }) {
   const handleToggleHold = useCallback(async (hold) => {
     try {
       await window.xleth?.timeline?.setVideoHoldLastFrame(trackId, hold)
-      console.log(`[Arrange] track ${trackId} videoHoldLastFrame → ${hold}`)
       fetchTracks()
     } catch (err) {
       console.error('[Arrange] setVideoHoldLastFrame failed:', err)
@@ -110,7 +107,6 @@ export default function TrackVideoProperties({ trackId }) {
   const commitThreshold = useCallback(async (beats) => {
     try {
       await window.xleth?.timeline?.setVideoHoldLastFrameThreshold(trackId, beats)
-      console.log(`[Arrange] track ${trackId} videoHoldLastFrameThresholdBeats → ${beats < 0 ? 'unlimited' : beats}`)
       fetchTracks()
     } catch (err) {
       console.error('[Arrange] setVideoHoldLastFrameThreshold failed:', err)
@@ -133,7 +129,6 @@ export default function TrackVideoProperties({ trackId }) {
   // only the placement field, never zOrder (see setFullscreenPlacementMode).
   const handleSetPlacementMode = useCallback(async (mode) => {
     if (!track || !layout) return
-    console.log(`[Arrange] track ${trackId} fullscreen hold-between-notes → ${mode}`)
     await setFullscreenPlacementMode(track, layout, mode)
   }, [track, layout, trackId])
 
@@ -143,7 +138,6 @@ export default function TrackVideoProperties({ trackId }) {
       l.trackId === trackId ? { ...l, opacity: value } : l)
     try {
       await window.xleth?.timeline?.setFullscreenLayers(next)
-      console.log(`[Arrange] fullscreen opacity for track ${trackId} → ${value}`)
       notifyGrid()
       refresh()
     } catch (err) {
@@ -156,7 +150,6 @@ export default function TrackVideoProperties({ trackId }) {
       const all = await window.xleth?.timeline?.getTracks()
       if (!Array.isArray(all)) return
       for (const t of all) await window.xleth?.timeline?.setTrackCornerRadius(t.id, value)
-      console.log(`[Arrange] corner radius ${value} applied to all tracks`)
       fetchTracks()
     } catch (err) {
       console.error('[Arrange] applyCornerRadiusToAll failed:', err)

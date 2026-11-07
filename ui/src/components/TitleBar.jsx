@@ -77,7 +77,6 @@ export const RESET_LAYOUT_LABEL = 'Reset layout'
 
 /** View -> Layouts: apply a preset by id, or RESET_LAYOUT_ID for the default. */
 export function applyLayoutChoice(presetId, registry = usePanelRegistry.getState()) {
-  console.log(`[Shell] View > Layouts: ${presetId}`)
   if (presetId === RESET_LAYOUT_ID) registry.resetLayout()
   else registry.applyPreset(presetId)
 }

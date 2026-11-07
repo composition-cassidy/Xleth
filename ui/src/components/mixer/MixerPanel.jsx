@@ -23,7 +23,6 @@ export async function addTrackFromMixer(trackCount) {
   if (!timeline?.addTrack) return null
   try {
     const id = await timeline.addTrack({ name: `Track ${trackCount + 1}`, order: trackCount })
-    console.log(`[Mixer] track added (id ${id})`)
     timelineEvents.dispatchEvent(new Event('timeline-tracks-changed'))
     return id
   } catch (e) {

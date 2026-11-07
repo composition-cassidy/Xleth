@@ -36,13 +36,11 @@ const useBrowserStore = create((set, get) => ({
   setTab: (tab) => {
     if (tab !== 'media' && tab !== 'samples') return
     set({ tab })
-    console.log(`[Browser] Tab → ${tab}`)
   },
 
   setAutoPreview: (value) => {
     set({ autoPreview: !!value })
     writeJson(AUTO_PREVIEW_KEY, !!value)
-    console.log(`[Browser] Auto-preview → ${value ? 'on' : 'off'}`)
   },
 
   /** Remember a committed search, most recent first, no duplicates. */

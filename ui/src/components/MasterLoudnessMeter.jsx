@@ -306,7 +306,6 @@ export default function MasterLoudnessMeter() {
     } catch {
       // no-op: the choice still applies for this session
     }
-    console.log(`[Mixer] loudness target: ${key}`)
     setTarget(resolveTarget())
   }, [])
 

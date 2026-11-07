@@ -92,10 +92,8 @@ export default function PickerVideoPreview({
           preload="auto"
           className={styles.videoFrame}
           draggable={false}
-          onLoadedData={() => console.log('[Browser] Video loaded OK')}
           onError={() => console.error('[Browser] Video error:',
             videoRef.current?.error?.code, videoRef.current?.error?.message)}
-          onCanPlay={() => console.log('[Browser] Can play')}
         />
       ) : (
         <div className={styles.videoPlaceholder}>Loading video…</div>

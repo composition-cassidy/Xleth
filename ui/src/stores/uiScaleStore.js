@@ -40,7 +40,6 @@ export const useUiScaleStore = create((set, get) => ({
     if (!win) { set({ hydrated: true }); return }
     unsubscribe = win.onZoomChanged?.((factor) => {
       const percent = percentFromFactor(factor)
-      if (percent !== get().percent) console.debug(`[Theme] ui scale -> ${percent}%`)
       set({ percent, hydrated: true })
     }) ?? null
     Promise.resolve(win.getZoom?.())

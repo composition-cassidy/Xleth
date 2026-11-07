@@ -98,12 +98,10 @@ export default function SampleRow({
     // Clean up the temporary element after browser captures it
     setTimeout(() => document.body.removeChild(el), 0)
 
-    console.log(`[Browser] Drag started: "${region.name}"`)
   }, [region])
 
   const handleDragEnd = useCallback(() => {
     window.__xlethDragSample = null
-    console.log(`[Browser] Drag ended: "${region.name}"`)
   }, [region])
 
   // ── Rename key handling ────────────────────────────────────────────────────
