@@ -10,41 +10,42 @@
 // document-root CSS filters, so content painted outside the token system
 // (e.g. the video preview) is unaffected.
 
+import { RAMPS } from '../tokens/neutralRamp';
+
 export const APPEARANCE_THEME_SLUG = 'user-appearance';
 export const DEFAULT_APPEARANCE_ACCENT = '#33CED6';
 export const DEFAULT_APPEARANCE_DARKNESS = 0;
 
-// Every anchor below is hue 240 (the shipped blue-grey cast), so a single
-// absolute hue replaces it across the whole chrome family. This is the UI
-// *chrome* hue and is deliberately independent of --theme-accent: that is what
-// lets you run, say, dark pink surfaces under a green accent.
+// Phase 7: the anchors are the NEUTRAL ramp (ui/DESIGN.md section 3.1), not the old
+// hue-240 blue-grey. Chrome is grey by default so picture colour is judged against a
+// neutral surround. A faint tint is still offered: `hue` picks its direction and
+// `saturation` (kept as the option/setting name) is now the tint AMOUNT as a
+// percentage of NEUTRAL_TINT_CAP_CHROMA, the OKLCH chroma at which chrome stops
+// reading as neutral. 0 is exact grey (the default), 100 is right at the cap, and
+// the slider runs past it (to APPEARANCE_TINT_MAX) so the editor can warn, rather
+// than silently refuse, when someone asks for tinted chrome.
 export const DEFAULT_APPEARANCE_HUE = 240;
-// Multiplier on each anchor's shipped saturation, as a percentage. A multiplier
-// rather than an absolute value so the palette keeps its internal relationships
-// (surfaces carry slightly more saturation than the text tiers). Needed because
-// the shipped saturation is only ~16% — enough for a faint cast, not enough to
-// read as an actual color, so a hue change alone looks nearly grey.
-export const DEFAULT_APPEARANCE_SATURATION = 100;
+export const DEFAULT_APPEARANCE_SATURATION = 0;
+export const APPEARANCE_TINT_MAX = 300;
+// Must equal TINT_CHROMA_CAP in runtime/chromeTint.ts (a unit test asserts it).
+export const NEUTRAL_TINT_CAP_CHROMA = 0.012;
 // Scales how far each text tier sits from its background. See contrastTarget().
 export const DEFAULT_APPEARANCE_CONTRAST = 100;
+// Below 80% the dimmest text tier (ink-3, 5.5:1 on the panel) drops under the 4.5:1
+// DAW Floor, so the knob does not go there.
+export const APPEARANCE_CONTRAST_MIN = 80;
+export const APPEARANCE_CONTRAST_MAX = 160;
 
-// Shipped Xleth Default values for the three tokens brightness drives, per
-// ui/src/theming/tokens/base.ts BASE_DEFAULTS. These are the darkness=0
-// anchor — the slider's "Lowest is near-black with light text" endpoint.
+// The dark ramp's neutral values (ui/DESIGN.md 3.1; tokens/neutralRamp.ts). These are the
+// darkness=0 anchors: the slider's "lowest is near-black with light text" endpoint.
 const BRIGHTNESS_ANCHORS = {
-  '--theme-bg-primary': '#0A0A0F',
-  '--theme-bg-surface': '#1A1A24',
-  '--theme-text': '#E8E8ED',
-  // The recessed "well" surface behind inputs, meters, readouts, canvases and
-  // the mixer/sampler chrome (via --mx-s0 / --sampler-s0 / --xleth-flat-well,
-  // all of which alias this). It ships as an explicit fixed color in the
-  // catalog (tokens/catalog.ts) and so was the one anchor the brightness
-  // slider never moved — leaving every well pitch-black in a light theme.
-  // Mirrored here alongside the others: at darkness=0 it stays the shipped
-  // #0d0d14, and it lands slightly darker than bg-primary at every point
-  // (L 4.9 vs 2.9 at the dark end, 95.1 vs 97.1 at the light end), so the
-  // "inset is recessed" relationship holds across the whole range.
-  '--theme-bg-inset': '#0d0d14',
+  '--theme-bg-primary': RAMPS.dark.base['--theme-bg-primary'], // g0
+  '--theme-bg-surface': RAMPS.dark.base['--theme-bg-surface'], // g1
+  '--theme-text': RAMPS.dark.base['--theme-text'],             // ink
+  // The recessed "well" behind inputs, meters, canvases and the mixer/sampler chrome
+  // (aliased as --xleth-flat-well / --mx-s0 / --sampler-s0). It is g0 in the default
+  // theme; it is mirrored here so brightness moves it with the rest.
+  '--theme-bg-inset': RAMPS.dark.base['--theme-bg-primary'],
 };
 
 function normalizeHex(hex) {
@@ -102,41 +103,71 @@ function hslToHex({ h, s, l }) {
   return rgbToHex((r + m) * 255, (g + m) * 255, (b + m) * 255);
 }
 
+// ── Tint: chroma-targeted greys ───────────────────────────────────────────
+// A colour at HSL lightness `l` whose OKLCH chroma is `chroma` (0 = exact grey).
+// Targeting chroma rather than HSL saturation keeps "how tinted is the chrome"
+// comparable across brightness and hue (the same HSL saturation is far more visible
+// at mid lightness, and in blue than in yellow), which is what the neutral cap needs.
+
+// OKLCH chroma of a #RRGGBB colour (Ottosson's OKLab). Mirrors ui-kit/colorMath.ts,
+// which cannot be imported here because it imports this module.
+function oklabChroma(hex) {
+  const { r, g, b } = hexToRgb(hex);
+  const lin = (c8) => {
+    const c = c8 / 255;
+    return c <= 0.04045 ? c / 12.92 : Math.pow((c + 0.055) / 1.055, 2.4);
+  };
+  const [R, G, B] = [lin(r), lin(g), lin(b)];
+  const l = Math.cbrt(0.4122214708 * R + 0.5363325363 * G + 0.0514459929 * B);
+  const m = Math.cbrt(0.2119034982 * R + 0.6806995451 * G + 0.1073969566 * B);
+  const s = Math.cbrt(0.0883024619 * R + 0.2817188376 * G + 0.6299787005 * B);
+  const A = 1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s;
+  const Bb = 0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s;
+  return Math.hypot(A, Bb);
+}
+
+function colorAt(h, l, chroma) {
+  if (!(chroma > 1e-6)) return hslToHex({ h, s: 0, l });
+  if (oklabChroma(hslToHex({ h, s: 100, l })) <= chroma) return hslToHex({ h, s: 100, l });
+  let lo = 0;
+  let hi = 100;
+  for (let i = 0; i < 14; i += 1) {
+    const mid = (lo + hi) / 2;
+    if (oklabChroma(hslToHex({ h, s: mid, l })) < chroma) lo = mid;
+    else hi = mid;
+  }
+  // Stay on the neutral side of the target: 'right at the cap' must not tip over it.
+  return hslToHex({ h, s: lo, l });
+}
+
+// The tint of the chrome as a chroma target.
+function tintOf({ hue, tint }) {
+  return { h: hue, chroma: (tint / 100) * NEUTRAL_TINT_CAP_CHROMA };
+}
+
 // ── Surfaces: a plain linear ramp ─────────────────────────────────────────
 // Moves a token's lightness from its dark-default anchor toward its mirror
-// image (100 - L) as `darkness` runs 0 -> 100, holding hue/saturation fixed.
-// At darkness=0 this is byte-identical to the anchor; at darkness=100 it
-// lands on the mirrored lightness — together the two endpoints match the
-// "near-black / light text" .. "light grey / dark text" slider labels
-// without hardcoding either endpoint color by hand.
+// image (100 - L) as `darkness` runs 0 -> 100. At darkness=0 this is
+// byte-identical to the anchor; at darkness=100 it lands on the mirrored
+// lightness - together the two endpoints match the "near-black / light text" ..
+// "light grey / dark text" slider labels without hardcoding either endpoint.
 //
 // The ramp is deliberately LINEAR. The slider has to behave like a real
 // brightness control: 0% genuinely darkest, 50% genuinely mid, 100% genuinely
 // lightest, with visible movement at every step. Earlier revisions tried to
 // flatten this curve to dodge the mid-slider contrast collapse; that bought
 // legibility by making most of the slider do nothing, which is the wrong
-// trade. Contrast is now handled where it belongs — in the text, below.
+// trade. Contrast is handled where it belongs - in the text, below.
 function brightnessShift(anchorHex, darkness, tintOpts) {
-  const { s, l } = tintOf(anchorHex, tintOpts);
+  const { l } = hexToHsl(anchorHex);
   const t = Math.max(0, Math.min(100, darkness)) / 100;
   const targetL = 100 - l;
-  return hslToHex({ h: tintOpts.hue, s, l: l + t * (targetL - l) });
-}
-
-// Re-tints an anchor: the chrome hue replaces the anchor's own (all anchors are
-// 240, so this is a clean substitution) and its saturation is scaled. Lightness
-// is untouched here — brightness and the contrast solver own that axis.
-function tintOf(anchorHex, { hue, saturation }) {
-  const hsl = hexToHsl(anchorHex);
-  return {
-    h: hue,
-    s: Math.max(0, Math.min(100, hsl.s * saturation)),
-    l: hsl.l,
-  };
+  const { h, chroma } = tintOf(tintOpts);
+  return colorAt(h, l + t * (targetL - l), chroma);
 }
 
 // Scales a tier's target ratio. Done in "distance above 1.0" space because a
-// ratio of 1.0 means *no* contrast — scaling 14:1 by 0.5 would give 7:1, still
+// ratio of 1.0 means *no* contrast - scaling 14:1 by 0.5 would give 7:1, still
 // punchy, not "half the contrast". This mapping is monotonic, so the tier
 // ordering (primary > muted > subtle) survives any setting for free.
 function contrastTarget(shippedRatio, contrastScale) {
@@ -150,18 +181,16 @@ function contrastTarget(shippedRatio, contrastScale) {
 // any L and its mirror 100-L meet at exactly 50, so at mid-slider the
 // background and every text tier all converged on L=50 and contrast fell to
 // ~1.06 (invisible). No easing curve fixes that, because contrast was never
-// an input to the calculation — it was only ever an accident of the two
-// ramps' relative positions.
+// an input to the calculation.
 //
 // Text is now computed from the resolved background: pick the direction that
 // can actually produce contrast (lighter or darker than this background),
 // then move exactly as far as needed to hit the tier's target ratio. Because
 // the target is a ratio against the real background, the two can no longer
-// converge — contrast is guaranteed by construction at every slider position.
+// converge - contrast is guaranteed by construction at every slider position.
 
 // WCAG 2.1 relative luminance. This, not HSL lightness, is what perceived
-// contrast is actually computed from — the whole reason the old L-space math
-// couldn't reason about legibility.
+// contrast is actually computed from.
 export function relativeLuminance(hex) {
   const { r, g, b } = hexToRgb(hex);
   const ch = (c) => {
@@ -179,69 +208,55 @@ export function contrastOf(lumA, lumB) {
 }
 
 // Solve for the HSL lightness that produces `targetLum` at a fixed hue and
-// saturation. Luminance rises monotonically with L, so bisection converges;
-// 24 iterations resolves far finer than an 8-bit channel can represent.
-function lightnessForLuminance(h, s, targetLum) {
+// chroma. Luminance rises monotonically with L, so bisection converges.
+function lightnessForLuminance(h, chroma, targetLum) {
   let lo = 0;
   let hi = 100;
-  for (let i = 0; i < 24; i += 1) {
+  for (let i = 0; i < 20; i += 1) {
     const mid = (lo + hi) / 2;
-    if (relativeLuminance(hslToHex({ h, s, l: mid })) < targetLum) lo = mid;
+    if (relativeLuminance(colorAt(h, mid, chroma)) < targetLum) lo = mid;
     else hi = mid;
   }
   return (lo + hi) / 2;
 }
 
-// The shipped text tiers. Each contributes two things: its hue/saturation
-// (so the palette keeps its faint blue cast rather than going pure grey) and
-// its contrast ratio against the shipped dark bg-surface. Those ratios are
-// the spec — the promise is that a tier is never LESS readable at any
-// brightness than it is in the shipped dark theme, wherever physics allows.
+// The text tiers. Each contributes its contrast ratio against the shipped dark
+// bg-surface (g1): that ratio is the spec - a tier is never LESS readable at any
+// brightness than it is in the shipped dark theme, wherever physics allows. They
+// are the ramp's ink / ink-2 / ink-3 (ink-3 is the dimmest text allowed anywhere,
+// 5.54:1), so every tier clears the 4.5:1 floor.
 const TEXT_ANCHORS = {
-  '--theme-text': '#E8E8ED',
-  '--theme-text-muted': '#8888A0',
-  '--theme-text-subtle': '#555566',
-  '--theme-text-placeholder': '#555566',
+  '--theme-text': RAMPS.dark.base['--theme-text'],              // ink
+  '--theme-text-muted': '#B4B4B4',                              // ink-2
+  '--theme-text-subtle': '#929292',                             // ink-3
+  '--theme-text-placeholder': '#929292',                        // ink-3
 };
 
-// --theme-border-subtle is derived from TEXT in derivation.ts (a fixed
-// -72.7 L offset). That breaks once text goes dark for a light theme: the
-// offset underflows, clamps at 0, and every border paints pure black. It is
-// really a surface-relative token, so it is re-derived here as a fixed step
-// off bg-surface instead, flipping direction with the theme's polarity.
-const BORDER_SUBTLE_ANCHOR = '#2A2A38';
+// --theme-border-subtle is the ramp's g4 divider: a fixed lightness step off the
+// surface, flipping direction with the theme's polarity so it reads as a recess at
+// both ends instead of clamping to black.
+const BORDER_SUBTLE_ANCHOR = '#3A3A3A';
+
+// Control outlines (ui-boundary) must clear 3:1 on EVERY surface step, not just the
+// panel; solved against the least favourable one with a little headroom.
+const BOUNDARY_TARGET = 3.1;
+// WCAG AA is 4.5:1; every ink tier holds it on every ramp surface. Solved with a little
+// headroom so 8-bit rounding of the result cannot land a hair under the floor.
+const FLOOR_RATIO = 4.56;
 
 /**
- * True when this background wants light text — i.e. white out-contrasts black
- * against it. The switchover sits at relative luminance ~0.179 (where
- * (L+0.05)^2 === 1.05*0.05), which is the point of MAXIMUM difficulty: both
- * poles yield only ~4.58:1 there. That 4.58 is the floor of this whole
- * design, and it still clears WCAG AA for body text (4.5) — so even the
- * hardest possible background stays readable.
- */
-function prefersLightText(bgHex) {
-  const bgLum = relativeLuminance(bgHex);
-  return contrastOf(1, bgLum) >= contrastOf(0, bgLum);
-}
-
-/**
- * Resolve one text tier against a background.
+ * Resolve one text tier against a reference background.
  *
  * `goLight` is decided ONCE from bg-surface and passed to every tier, so the
- * tiers always move as a family. Deciding per-tier would let a low-target
- * tier pick the opposite pole from primary text near the switchover (light
- * grey subtext beside black body text on the same card).
- *
- * When the target ratio is unreachable in the chosen direction the value
- * clamps to the pole (pure white / pure black) — the most contrast that
- * background physically admits.
+ * tiers always move as a family. When the target ratio is unreachable in the
+ * chosen direction the value clamps to the pole (pure white / pure black) - the
+ * most contrast that background physically admits.
  */
-function contrastText(anchorHex, bgHex, goLight, tintOpts, contrastScale) {
-  const { h, s } = tintOf(anchorHex, tintOpts);
+function contrastText(anchorHex, bgHex, goLight, tintOpts, contrastScale, fixedTarget, floorBgHex) {
+  const { h, chroma } = tintOf(tintOpts);
   // The target is measured from the UNTINTED shipped anchors: it is a ratio
-  // spec, so it must not drift when the user changes hue or saturation. Only
-  // the resolved output color carries the tint.
-  const target = contrastTarget(
+  // spec, so it must not drift when the tint changes.
+  const target = fixedTarget ?? contrastTarget(
     contrastOf(
       relativeLuminance(anchorHex),
       relativeLuminance(BRIGHTNESS_ANCHORS['--theme-bg-surface']),
@@ -250,26 +265,40 @@ function contrastText(anchorHex, bgHex, goLight, tintOpts, contrastScale) {
   );
   const bgLum = relativeLuminance(bgHex);
   // Invert the contrast formula for the needed luminance in each direction.
-  const lum = goLight
+  let lum = goLight
     ? Math.min(1, target * (bgLum + 0.05) - 0.05)
     : Math.max(0, (bgLum + 0.05) / target - 0.05);
-  // Solving in the TINTED hue matters: luminance is hue-weighted (green 0.7152
-  // vs blue 0.0722), so the same target ratio lands on a very different
-  // lightness for green chrome than for blue. lightnessForLuminance handles it.
-  return hslToHex({ h, s, l: lightnessForLuminance(h, s, lum) });
+  // The ratio is the spec on `bgHex` (the panel). The Floor must also hold on every other
+  // ramp surface, so where the panel-relative value would fall short on the least
+  // favourable one (`floorBgHex`), the text moves further out to reach FLOOR_RATIO there.
+  if (floorBgHex) {
+    const floorLum = relativeLuminance(floorBgHex);
+    lum = goLight
+      ? Math.max(lum, Math.min(1, FLOOR_RATIO * (floorLum + 0.05) - 0.05))
+      : Math.min(lum, Math.max(0, (floorLum + 0.05) / FLOOR_RATIO - 0.05));
+  }
+  let l = lightnessForLuminance(h, chroma, lum);
+  // 8-bit rounding can land a hair under the ratio the solver asked for (a single step is
+  // ~0.1:1 near black). Step toward the pole until both requirements actually hold.
+  const need = [[bgHex, target]];
+  if (floorBgHex) need.push([floorBgHex, FLOOR_RATIO]);
+  for (let i = 0; i < 40 && l > 0 && l < 100; i += 1) {
+    const hex = colorAt(h, l, chroma);
+    const short = need.some(([bg, ratio]) => contrastOf(relativeLuminance(hex), relativeLuminance(bg)) < ratio - 1e-9);
+    if (!short) break;
+    l += goLight ? 0.2 : -0.2;
+  }
+  return colorAt(h, l, chroma);
 }
 
-// Border: same fixed lightness step off the surface as the shipped palette
-// (+7.1 L), flipped to -7.1 once the theme turns light so borders read as a
-// recess at both ends instead of clamping to black.
+// Border: the same lightness step off the surface as the ramp's g4.
 function borderSubtle(bgHex, goLight, tintOpts) {
   const anchor = hexToHsl(BORDER_SUBTLE_ANCHOR);
   const shippedSurface = hexToHsl(BRIGHTNESS_ANCHORS['--theme-bg-surface']);
   const step = anchor.l - shippedSurface.l;
   const bg = hexToHsl(bgHex);
-  const { h, s } = tintOf(BORDER_SUBTLE_ANCHOR, tintOpts);
-  const l = Math.max(0, Math.min(100, bg.l + (goLight ? step : -step)));
-  return hslToHex({ h, s, l });
+  const { h, chroma } = tintOf(tintOpts);
+  return colorAt(h, Math.max(0, Math.min(100, bg.l + (goLight ? step : -step))), chroma);
 }
 
 const clampNumber = (value, lo, hi, fallback) =>
@@ -279,38 +308,73 @@ const clampNumber = (value, lo, hi, fallback) =>
  * Build a ThemeFile from the user's appearance preferences.
  *
  * @param {string} accent  Hex color string, e.g. '#33CED6'. Independent of the
- *   chrome hue below, so a green accent over pink chrome is a valid combination.
+ *   chrome tint, so a green accent over pink-tinted chrome is a valid combination.
  * @param {number} darkness  0 = shipped dark default, 100 = mirrored light
  * @param {object} [options]
- * @param {number} [options.hue]  Chrome hue 0-360 (default 240, the shipped cast)
- * @param {number} [options.saturation]  % of shipped chrome saturation, 0-300
- * @param {number} [options.contrast]  % of shipped text contrast, 60-160. The
- *   floor is 60 rather than 0 on purpose: below roughly 60% the decorative
- *   subtle tier drops under ~1.8:1 and stops being readable at all, which is
- *   not a setting worth offering.
+ * @param {number} [options.hue]  Tint direction 0-360 (wraps). Irrelevant at tint 0.
+ * @param {number} [options.saturation]  Tint amount, % of NEUTRAL_TINT_CAP_CHROMA,
+ *   0-APPEARANCE_TINT_MAX. 0 (default) is exact grey; above 100 is "tinted chrome".
+ * @param {number} [options.contrast]  % of shipped text contrast,
+ *   APPEARANCE_CONTRAST_MIN-APPEARANCE_CONTRAST_MAX.
  * @returns {import('../schema/types').ThemeFile}
  */
 export function buildAppearanceTheme(accent, darkness, options = {}) {
   const d = Number.isFinite(darkness) ? darkness : DEFAULT_APPEARANCE_DARKNESS;
-  // Hue wraps rather than clamps — it is a circular axis, so 370 is 10.
+  // Hue wraps rather than clamps - it is a circular axis, so 370 is 10.
   const hue = Number.isFinite(options.hue)
     ? ((options.hue % 360) + 360) % 360
     : DEFAULT_APPEARANCE_HUE;
   const tintOpts = {
     hue,
-    saturation: clampNumber(options.saturation, 0, 300, DEFAULT_APPEARANCE_SATURATION) / 100,
+    tint: clampNumber(options.saturation, 0, APPEARANCE_TINT_MAX, DEFAULT_APPEARANCE_SATURATION),
   };
-  const contrastScale = clampNumber(options.contrast, 60, 160, DEFAULT_APPEARANCE_CONTRAST) / 100;
+  const contrastScale = clampNumber(
+    options.contrast, APPEARANCE_CONTRAST_MIN, APPEARANCE_CONTRAST_MAX, DEFAULT_APPEARANCE_CONTRAST,
+  ) / 100;
 
   const bgPrimary = brightnessShift(BRIGHTNESS_ANCHORS['--theme-bg-primary'], d, tintOpts);
   const bgSurface = brightnessShift(BRIGHTNESS_ANCHORS['--theme-bg-surface'], d, tintOpts);
   const bgInset = brightnessShift(BRIGHTNESS_ANCHORS['--theme-bg-inset'], d, tintOpts);
 
-  // One polarity decision for the whole theme, taken from bg-surface (the
-  // most common surface text actually sits on). bg-primary and bg-inset track
-  // it closely enough that text stays correct on them too — and where they
-  // differ they are FURTHER from the text pole, so contrast only improves.
-  const goLight = prefersLightText(bgSurface);
+  // The ramp's four surfaces (g0..g3) must all be able to carry text at the Floor. White
+  // clears 4.5:1 only on surfaces with relative luminance <= ~0.183, black only on >= ~0.175,
+  // so near mid brightness the raised steps (g2, g3) can push a surface past the pole that
+  // suits the panel. For light text the raised steps are therefore clamped to that
+  // luminance (they flatten toward the panel rather than leaving the text's reach); for dark
+  // text, raising only helps. The polarity is whichever pole has the better worst case.
+  const { h: tintH, chroma: tintC } = tintOf(tintOpts);
+  const surfaceL = hexToHsl(bgSurface).l;
+  const WHITE_MAX_LUM = 1.05 / FLOOR_RATIO - 0.05;
+  const raised = (step, clampForLightText) => {
+    let l = Math.max(0, Math.min(100, surfaceL + step));
+    let hex = colorAt(tintH, l, tintC);
+    if (clampForLightText) {
+      const cap = Math.max(WHITE_MAX_LUM, relativeLuminance(bgSurface));
+      while (l > surfaceL && relativeLuminance(hex) > cap) {
+        l -= 0.25;
+        hex = colorAt(tintH, l, tintC);
+      }
+    }
+    return hex;
+  };
+  const surfacesFor = (lightText) => [
+    bgPrimary,
+    bgSurface,
+    raised(RAMPS.dark.steps.g2, lightText),
+    raised(RAMPS.dark.steps.g3, lightText),
+  ];
+  const worstRatio = (surfaces, poleLum) => Math.min(...surfaces.map((x) => contrastOf(poleLum, relativeLuminance(x))));
+  const lightSurfaces = surfacesFor(true);
+  const darkSurfaces = surfacesFor(false);
+  const goLight = worstRatio(lightSurfaces, 1) >= worstRatio(darkSurfaces, 0);
+  const ramp = goLight ? 'dark' : 'light';
+  const surfaces = goLight ? lightSurfaces : darkSurfaces;
+  const lums = surfaces.map(relativeLuminance);
+  const refBg = surfaces[lums.indexOf(goLight ? Math.max(...lums) : Math.min(...lums))];
+
+  const text = contrastText(TEXT_ANCHORS['--theme-text'], bgSurface, goLight, tintOpts, contrastScale, undefined, refBg);
+  const muted = contrastText(TEXT_ANCHORS['--theme-text-muted'], bgSurface, goLight, tintOpts, contrastScale, undefined, refBg);
+  const subtle = contrastText(TEXT_ANCHORS['--theme-text-subtle'], bgSurface, goLight, tintOpts, contrastScale, undefined, refBg);
 
   return {
     schemaVersion: 1,
@@ -318,28 +382,65 @@ export function buildAppearanceTheme(accent, darkness, options = {}) {
     author: 'user',
     description: '',
     locked: false,
-    // These four are normally derived by fixed lightness offsets in
-    // derivation.ts. Those offsets assume a dark theme and a text color that
-    // never moves far, so they underflow into flat black once the theme goes
-    // light. Detached here because this file resolves them against the actual
-    // background instead.
+    ramp,
+    // The legacy text and border tokens, and the ramp's ink-2 / ink-3 / boundary, are
+    // normally derived by fixed lightness steps. Those steps assume the shipped base
+    // text, so they are resolved here against the actual surfaces instead.
     derivationDetached: [
       '--theme-text-muted',
       '--theme-text-subtle',
       '--theme-text-placeholder',
       '--theme-border-subtle',
+      '--theme-ui-g2',
+      '--theme-ui-g3',
+      '--theme-ui-ink-2',
+      '--theme-ui-ink-3',
+      '--theme-ui-boundary',
     ],
     tokens: {
       '--theme-accent': accent ?? DEFAULT_APPEARANCE_ACCENT,
       '--theme-bg-primary': bgPrimary,
       '--theme-bg-surface': bgSurface,
       '--theme-bg-inset': bgInset,
-      '--theme-text': contrastText(TEXT_ANCHORS['--theme-text'], bgSurface, goLight, tintOpts, contrastScale),
-      '--theme-text-muted': contrastText(TEXT_ANCHORS['--theme-text-muted'], bgSurface, goLight, tintOpts, contrastScale),
-      '--theme-text-subtle': contrastText(TEXT_ANCHORS['--theme-text-subtle'], bgSurface, goLight, tintOpts, contrastScale),
-      '--theme-text-placeholder': contrastText(TEXT_ANCHORS['--theme-text-placeholder'], bgSurface, goLight, tintOpts, contrastScale),
+      '--theme-text': text,
+      '--theme-text-muted': muted,
+      '--theme-text-subtle': subtle,
+      '--theme-text-placeholder': subtle,
       '--theme-border-subtle': borderSubtle(bgSurface, goLight, tintOpts),
+      '--theme-ui-g2': surfaces[2],
+      '--theme-ui-g3': surfaces[3],
+      '--theme-ui-ink-2': muted,
+      '--theme-ui-ink-3': subtle,
+      '--theme-ui-boundary': contrastText(TEXT_ANCHORS['--theme-text'], refBg, goLight, tintOpts, contrastScale, BOUNDARY_TARGET),
     },
+  };
+}
+
+// The settings keys `appearanceHue` / `appearanceSaturation` / `appearanceContrast` predate
+// the neutral ramp. Saturation used to be a multiplier on the blue-grey anchors' own ~16%
+// saturation (100 = the shipped cast); it is now a tint amount measured against the neutral
+// cap. Files saved with `appearanceModelVersion` < 2 are re-read through this once.
+export const APPEARANCE_MODEL_VERSION = 2;
+const LEGACY_CAST_CHROMA = 0.025; // typical OKLCH chroma of the old 100% blue-grey surfaces
+
+/**
+ * Map pre-Phase-7 knob positions onto the current model. The untouched legacy default
+ * (hue 240, saturation 100) becomes exact grey; a deliberately tinted theme keeps its hue
+ * and a proportional tint (clamped to the slider), so it still reads as the cast the user
+ * chose. Contrast is raised to the new minimum. Nothing here rewrites a saved theme file:
+ * the file keeps loading as-is, this only decides where the sliders re-open.
+ */
+export function migrateLegacyAppearance({ hue, saturation, contrast }) {
+  const h = Number.isFinite(hue) ? ((hue % 360) + 360) % 360 : DEFAULT_APPEARANCE_HUE;
+  const mult = Number.isFinite(saturation) ? Math.max(0, saturation) : 100;
+  const untouched = h === 240 && mult === 100;
+  const tint = untouched
+    ? 0
+    : Math.min(APPEARANCE_TINT_MAX, Math.round(((mult / 100) * LEGACY_CAST_CHROMA) / NEUTRAL_TINT_CAP_CHROMA * 100 / 5) * 5);
+  return {
+    hue: h,
+    saturation: tint,
+    contrast: clampNumber(contrast, APPEARANCE_CONTRAST_MIN, APPEARANCE_CONTRAST_MAX, DEFAULT_APPEARANCE_CONTRAST),
   };
 }
 

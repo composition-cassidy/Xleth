@@ -15,6 +15,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { ReactNode } from 'react';
 
 import { resolveTheme, writeThemeToRoot, type ResolvedTheme } from './applyTheme';
+import { findTintedSurfaces } from './chromeTint';
 import { DEFAULT_THEME_NAME, loadActiveTheme, type LoadResult } from './ThemeLoader';
 import { createThemeWriter, type ThemeWriter } from './ThemeWriter';
 import type { ThemeFile, TokenValue } from '../schema/types';
@@ -87,6 +88,10 @@ export function ThemeProvider({ children, writer, onLoaded }: ThemeProviderProps
     document.documentElement.style.colorScheme = resolved.ramp === 'light' ? 'light' : 'dark';
     document.documentElement.setAttribute('data-xleth-ramp', resolved.ramp);
     console.debug(`[Theme] applied slug=${slug} ramp=${resolved.ramp}`);
+    const tinted = findTintedSurfaces(resolved.values);
+    if (tinted.length > 0) {
+      console.warn(`[Theme] ${slug} has tinted chrome: ${tinted.map(t => `${t.token}=${t.hex}`).join(', ')} (it still loads; the theme editor offers Neutralize)`);
+    }
     window.dispatchEvent(new CustomEvent('xleth-theme-changed'));
   }, [resolved, slug]);
 

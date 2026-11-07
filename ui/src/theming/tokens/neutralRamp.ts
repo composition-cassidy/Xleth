@@ -139,7 +139,7 @@ export function isRampName(v: unknown): v is RampName {
 
 /** WCAG relative luminance of a #RRGGBB / #RGB colour; NaN for anything else. */
 function luminance(hex: string): number {
-  const m = /^#([0-9a-f]{3}|[0-9a-f]{6})/i.exec(hex.trim());
+  const m = /^#([0-9a-f]{6}|[0-9a-f]{3})(?![0-9a-f])/i.exec(hex.trim());
   if (!m) return NaN;
   let h = m[1];
   if (h.length === 3) h = h.split('').map((c) => c + c).join('');

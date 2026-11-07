@@ -8,6 +8,9 @@ import ThemeList, { type UserThemeMeta } from './ThemeList'
 import SimpleMode from './SimpleMode'
 import AdvancedMode from './AdvancedMode'
 import PreviewPane from './PreviewPane'
+import ChromeReadouts from './ChromeReadouts'
+import { applyChromeKnobs, neutralizeTheme, type ChromeKnobs } from '../runtime/chromeKnobs'
+import { resolveHex } from '../runtime/chromeTint'
 
 interface Props {
   onClose: () => void
@@ -126,6 +129,20 @@ export function ThemeEditorContent({
     }))
   }, [])
 
+  // Surface knobs (brightness / contrast / tint) re-derive the neutral ramp. The accent is
+  // carried through from the working theme so the knobs never reset it.
+  const accentOf = (theme: ThemeFile): string =>
+    resolveHex(resolveTheme(theme).values, '--theme-accent') ?? '#33CED6'
+
+  const handleChromeChange = useCallback((knobs: ChromeKnobs) => {
+    setWorkingTheme(prev => applyChromeKnobs(prev, accentOf(prev), knobs))
+  }, [])
+
+  const handleNeutralize = useCallback(() => {
+    setWorkingTheme(prev => neutralizeTheme(prev, accentOf(prev), resolveTheme(prev).values))
+    console.debug('[Theme] editor: neutralized chrome tint')
+  }, [])
+
   const handleDetachToggle = useCallback((name: string) => {
     setWorkingTheme(prev => {
       const detached = prev.derivationDetached ?? []
@@ -195,8 +212,6 @@ export function ThemeEditorContent({
     }
   }, [saveNameInput, workingTheme, setTheme])
 
-  const flatTokens = workingTheme.tokens as Record<string, string>
-
   return (
     <div className={`theme-editor-content${embedded ? ' theme-editor-content--embedded' : ''}`}>
       {showHeader && (
@@ -231,14 +246,22 @@ export function ThemeEditorContent({
             </button>
           </div>
           {activeTab === 'simple' ? (
-            <SimpleMode tokens={flatTokens} onTokenChange={handleTokenChange} />
+            <SimpleMode
+              values={resolvedValues}
+              onChromeChange={handleChromeChange}
+              onTokenChange={handleTokenChange}
+              onNeutralize={handleNeutralize}
+            />
           ) : (
+            <>
+            <ChromeReadouts values={resolvedValues} onNeutralize={handleNeutralize} />
             <AdvancedMode
               workingTheme={workingTheme}
               resolvedValues={resolvedValues}
               onTokenChange={handleTokenChange}
               onDetachToggle={handleDetachToggle}
             />
+            </>
           )}
         </div>
 

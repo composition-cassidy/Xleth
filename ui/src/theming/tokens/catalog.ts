@@ -181,7 +181,8 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   // panels (piano-roll body, mixer SmartBalance canvas). Sits below
   // bg-primary on the depth scale; not a derived formula because the
   // offset from bg-primary is not consistent across themes.
-  explicit('--theme-bg-inset', '#0d0d14', 'any', 'Foundations', 'base'),
+  // The recessed well is the ramp's ground (g0) unless a theme sets it (Appearance does).
+  ref('--theme-bg-inset', '--theme-ui-g0', 'any', 'Foundations', 'base'),
   // Modal/overlay backdrop tints - stepped opacity scale for dark overlays
   explicit('--theme-overlay-subtle', 'rgba(0, 0, 0, 0.25)', 'solid', 'Foundations', 'base'),
   explicit('--theme-overlay-medium', 'rgba(0, 0, 0, 0.60)', 'solid', 'Foundations', 'base'),
@@ -204,7 +205,7 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   // "contrast text color on colored bg", not "inset panel surface".
   // Future convergence with --theme-text-inverse (derived) is a candidate —
   // see theming-catalog-gaps.md "Future cleanup".
-  explicit('--theme-text-on-accent', '#0d0d14', 'solid', 'Foundations', 'text'),
+  explicit('--theme-text-on-accent', '#141414', 'solid', 'Foundations', 'text'),
 
   // ─── Foundations: Border family (§3.2) ────────────────────────────────
   derivedFormula('--theme-border-subtle', 'solid', 'Foundations', 'borders'),

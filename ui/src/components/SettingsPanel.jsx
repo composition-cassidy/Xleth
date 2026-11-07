@@ -12,15 +12,21 @@ import LogsSection from './settings/LogsSection.jsx'
 import { ThemeContext } from '../theming/runtime/ThemeProvider'
 import { resolveTheme, writeThemeToRoot } from '../theming/runtime/applyTheme'
 import {
+  APPEARANCE_CONTRAST_MAX,
+  APPEARANCE_CONTRAST_MIN,
+  APPEARANCE_MODEL_VERSION,
   APPEARANCE_THEME_SLUG,
+  APPEARANCE_TINT_MAX,
   DEFAULT_APPEARANCE_ACCENT,
   DEFAULT_APPEARANCE_CONTRAST,
   DEFAULT_APPEARANCE_DARKNESS,
   DEFAULT_APPEARANCE_HUE,
   DEFAULT_APPEARANCE_SATURATION,
   buildAppearanceTheme,
+  migrateLegacyAppearance,
   normalizeAccentHex,
 } from '../theming/runtime/appearanceTheme'
+import ChromeReadouts from '../theming/editor/ChromeReadouts'
 import {
   BACKDROP_FX_PRESETS,
   BACKDROP_FX_QUALITIES,
@@ -400,19 +406,29 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
       if (Number.isFinite(n)) setBrightness(Math.min(100, Math.max(0, n)))
     }).catch(() => {})
 
-    xl?.settings?.get?.('appearanceHue')?.then(v => {
-      const n = Number(v)
-      if (Number.isFinite(n)) setChromeHue(Math.min(359, Math.max(0, n)))
-    }).catch(() => {})
-
-    xl?.settings?.get?.('appearanceSaturation')?.then(v => {
-      const n = Number(v)
-      if (Number.isFinite(n)) setChromeSaturation(Math.min(300, Math.max(0, n)))
-    }).catch(() => {})
-
-    xl?.settings?.get?.('appearanceContrast')?.then(v => {
-      const n = Number(v)
-      if (Number.isFinite(n)) setTextContrast(Math.min(160, Math.max(60, n)))
+    // Hue / tint / contrast reopen where the user left them. Settings saved before the
+    // neutral ramp (no model version) are mapped once onto the current model; the saved
+    // theme file itself is untouched and keeps loading.
+    Promise.all([
+      xl?.settings?.get?.('appearanceModelVersion'),
+      xl?.settings?.get?.('appearanceHue'),
+      xl?.settings?.get?.('appearanceSaturation'),
+      xl?.settings?.get?.('appearanceContrast'),
+    ]).then(([version, hue, sat, contrast]) => {
+      const stored = { hue: Number(hue), saturation: Number(sat), contrast: Number(contrast) }
+      const knobs = Number(version) >= APPEARANCE_MODEL_VERSION
+        ? {
+            hue: Number.isFinite(stored.hue) ? Math.min(359, Math.max(0, stored.hue)) : DEFAULT_APPEARANCE_HUE,
+            saturation: Number.isFinite(stored.saturation) ? Math.min(APPEARANCE_TINT_MAX, Math.max(0, stored.saturation)) : DEFAULT_APPEARANCE_SATURATION,
+            contrast: Number.isFinite(stored.contrast) ? Math.min(APPEARANCE_CONTRAST_MAX, Math.max(APPEARANCE_CONTRAST_MIN, stored.contrast)) : DEFAULT_APPEARANCE_CONTRAST,
+          }
+        : migrateLegacyAppearance(stored)
+      if (Number(version) < APPEARANCE_MODEL_VERSION || version == null) {
+        console.debug(`[Theme] appearance knobs migrated: hue ${knobs.hue} tint ${knobs.saturation} contrast ${knobs.contrast}`)
+      }
+      setChromeHue(knobs.hue)
+      setChromeSaturation(knobs.saturation)
+      setTextContrast(knobs.contrast)
     }).catch(() => {})
 
     if (xl?.gpu?.getAvailableGpus) {
@@ -921,6 +937,7 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
       void xl?.settings?.set?.('appearanceHue', options.hue ?? DEFAULT_APPEARANCE_HUE)
       void xl?.settings?.set?.('appearanceSaturation', options.saturation ?? DEFAULT_APPEARANCE_SATURATION)
       void xl?.settings?.set?.('appearanceContrast', options.contrast ?? DEFAULT_APPEARANCE_CONTRAST)
+      void xl?.settings?.set?.('appearanceModelVersion', APPEARANCE_MODEL_VERSION)
     }, 400)
   }, [themeContext])
 
@@ -957,13 +974,13 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
   }
 
   function handleChromeSaturationChange(event) {
-    const next = Math.min(300, Math.max(0, Number(event.target.value)))
+    const next = Math.min(APPEARANCE_TINT_MAX, Math.max(0, Number(event.target.value)))
     setChromeSaturation(next)
     applyAppearance(accentColor, brightness, appearanceOptions({ saturation: next }))
   }
 
   function handleTextContrastChange(event) {
-    const next = Math.min(160, Math.max(60, Number(event.target.value)))
+    const next = Math.min(APPEARANCE_CONTRAST_MAX, Math.max(APPEARANCE_CONTRAST_MIN, Number(event.target.value)))
     setTextContrast(next)
     applyAppearance(accentColor, brightness, appearanceOptions({ contrast: next }))
   }
@@ -1579,9 +1596,9 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
             </div>
           </SettingsRow>
           <SettingsRow
-            label="Hue"
+            label="Tint hue"
             htmlFor="settings-appearance-hue"
-            description="Tints panels, text, and borders. Independent of the accent, so a warm chrome can carry a cool accent."
+            description="Direction of the colour cast on panels, text, and borders. No effect while Tint is 0 %."
           >
             <div className="settings-panel-range-row">
               <input
@@ -1593,31 +1610,31 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
                 className="settings-panel-range settings-panel-range--hue"
                 value={chromeHue}
                 onChange={handleChromeHueChange}
-                aria-label="Hue"
+                aria-label="Tint hue"
               />
               <span className="settings-panel-range-value">{chromeHue}&deg;</span>
             </div>
           </SettingsRow>
           <SettingsRow
-            label="Saturation"
+            label="Tint"
             htmlFor="settings-appearance-saturation"
-            description="How strongly the hue reads. 0% is neutral grey; the default 100% is a faint cast."
+            description="How strongly the hue reads. 0 % is neutral grey, which is what picture colour on the Preview is judged against; 100 % is the most cast that still reads as neutral. Past it the chrome is tinted."
           >
             <div className="settings-panel-range-row">
               <input
                 id="settings-appearance-saturation"
                 type="range"
                 min="0"
-                max="300"
+                max={APPEARANCE_TINT_MAX}
                 step="5"
                 className="settings-panel-range settings-panel-range--saturation"
                 // Track previews the chosen hue so the control shows what it does.
                 style={{
-                  '--range-track-image': `linear-gradient(to right, hsl(${chromeHue} 0% 45%), hsl(${chromeHue} 60% 45%))`,
+                  '--range-track-image': `linear-gradient(to right, hsl(${chromeHue} 0% 45%), hsl(${chromeHue} 12% 45%) ${Math.round(10000 / APPEARANCE_TINT_MAX) / 100}%, hsl(${chromeHue} 60% 45%))`,
                 }}
                 value={chromeSaturation}
                 onChange={handleChromeSaturationChange}
-                aria-label="Saturation"
+                aria-label="Tint"
               />
               <span className="settings-panel-range-value">{chromeSaturation}%</span>
             </div>
@@ -1631,8 +1648,8 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
               <input
                 id="settings-appearance-contrast"
                 type="range"
-                min="60"
-                max="160"
+                min={APPEARANCE_CONTRAST_MIN}
+                max={APPEARANCE_CONTRAST_MAX}
                 step="5"
                 className="settings-panel-range"
                 value={textContrast}
@@ -1642,6 +1659,13 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
               <span className="settings-panel-range-value">{textContrast}%</span>
             </div>
           </SettingsRow>
+          <ChromeReadouts
+            values={themeContext?.resolved?.values ?? {}}
+            onNeutralize={() => {
+              setChromeSaturation(0)
+              applyAppearance(accentColor, brightness, appearanceOptions({ saturation: 0 }))
+            }}
+          />
         </SettingsSection>
 
         <SettingsSection title="Backdrop Media" index={1}>

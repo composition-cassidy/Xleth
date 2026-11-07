@@ -1,0 +1,74 @@
+/* Simple mode of the theme editor (Phase 7). Replaces the .simple-mode rules in app.css. */
+@layer kit {
+  .root {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: var(--space-4);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+  }
+
+  .section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .heading {
+    margin: 0 0 var(--space-1);
+    padding-bottom: var(--space-1);
+    border-bottom: 1px solid var(--ui-g4);
+    color: var(--ui-ink-2);
+    font-size: var(--type-13);
+    font-weight: var(--weight-semibold);
+  }
+
+  .row {
+    display: grid;
+    grid-template-columns: 96px minmax(0, 1fr) 96px;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: var(--hit-min);
+  }
+
+  .label {
+    color: var(--ui-ink);
+    font-weight: var(--weight-medium);
+  }
+
+  .value {
+    color: var(--ui-ink-2);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+    white-space: nowrap;
+  }
+
+  .range {
+    width: 100%;
+    min-height: var(--hit-min);
+    margin: 0;
+    accent-color: var(--ui-value);
+    background: transparent;
+  }
+
+  .color {
+    width: 44px;
+    height: var(--ctl-h-sm);
+    padding: 2px;
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g3);
+    cursor: pointer;
+  }
+
+  .footer {
+    margin: 0;
+    color: var(--ui-ink-3);
+    font-size: var(--type-11);
+  }
+}
