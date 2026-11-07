@@ -10,6 +10,7 @@ import MasterStrip from './MasterStrip.jsx'
 import FxChainMenuLayer from './FxChainMenuLayer.jsx'
 import MasterLoudnessMeter, { pollMasterLoudness } from '../MasterLoudnessMeter.jsx'
 import { buildMixerFolderLayout } from './mixerFolderLayout.js'
+import RoutingBand from './RoutingBand.jsx'
 import useMixerIdentity from './useMixerIdentity.js'
 import useMixerUiStore, { STRIP_WIDTHS } from './mixerUiStore.js'
 import styles from './MixerPanel.module.css'
@@ -179,6 +180,7 @@ export default function MixerPanel() {
           ) : orderedIds.map(id => (
             <MixerStrip key={id} trackId={id} index={indexOf[id]} color={identity[id]} stripW={stripW} />
           ))}
+          {orderedIds.length > 0 ? <RoutingBand orderedIds={orderedIds} stripW={stripW} idColors={identity} /> : null}
         </div>
       </div>
 

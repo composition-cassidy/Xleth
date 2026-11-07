@@ -144,7 +144,7 @@
   /* Hangs the routing cables: the band canvas draws over this. */
   .cableSpace {
     flex: none;
-    height: 20px;
+    height: var(--cable-h, 20px);
   }
 
   .strip .out {

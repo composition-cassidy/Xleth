@@ -27,10 +27,13 @@
   }
 
   .lane {
+    --cable-h: 20px;   /* the routing band over each strip's cable row */
+    --out-h: 26px;     /* the Output selector under it (24px + 2px) */
     position: relative;
     display: flex;
     flex: 1;
     width: max-content;
+    min-width: 100%;
     min-height: 0;
   }
 
