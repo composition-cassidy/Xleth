@@ -455,7 +455,7 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction, a
       </div>
 
       <div className={styles.right}>
-        <div className="titlebar-launchers titlebar-dock" ref={dockRef}>
+        <div className={`titlebar-launchers titlebar-dock ${styles.dock}`} ref={dockRef}>
           {/* Backing plate — useDockMagnification reshapes its clip-path so it
               conforms to the magnified icons. Must stay the first child. */}
           <div className="titlebar-dock-plate" aria-hidden="true" />

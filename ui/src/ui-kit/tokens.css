@@ -88,4 +88,13 @@
     --ui-radius-2: 4px;      /* chips, popovers */
     --ui-shadow-float: 4px 5px 0 rgba(0, 0, 0, 0.5);   /* floating surfaces ONLY; never on docked panels */
   }
+  /* UI scale (Phase 7): window zoom shrinks the CSS viewport, so 200 % on a 1366 px window is
+   * 683 CSS px. Below this width the top bar cannot hold menus, transport, panel toggles and
+   * window controls in one row, so it becomes two rows of --shell-topbar-h / 2 (the bar's own
+   * grid lays them out; see components/TitleBar.module.css). */
+  @media (max-width: 1100px) {
+    :root {
+      --shell-topbar-h: 72px;
+    }
+  }
 }

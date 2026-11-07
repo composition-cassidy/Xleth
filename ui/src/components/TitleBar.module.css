@@ -55,6 +55,54 @@
     border-left: 1px solid var(--ui-g4);
   }
 
+  /* Narrow CSS viewport (a small window, or a high UI scale): two rows, so nothing overlaps.
+   * Row 1: menus, panel toggles, window controls. Row 2: the transport cluster, whole. The
+   * `.right` wrapper dissolves so its two children join the grid. Panel toggles keep their
+   * 24 px hit area and scroll, rather than shrink, if the row is narrower still. */
+  @media (max-width: 1100px) {
+    .bar {
+      grid-template-columns: auto minmax(0, 1fr) auto;
+      grid-template-rows: repeat(2, calc(var(--shell-topbar-h) / 2));
+      grid-template-areas:
+        "left dock controls"
+        "center center center";
+      row-gap: 0;
+      padding-right: 0;
+    }
+
+    .left { grid-area: left; }
+
+    .center {
+      grid-area: center;
+      justify-self: start;
+      min-width: 0;
+    }
+
+    .right { display: contents; }
+
+    .controls {
+      grid-area: controls;
+      margin-left: 0;
+    }
+
+    .dock {
+      grid-area: dock;
+      justify-self: end;
+      max-width: 100%;
+      min-width: 0;
+      overflow-x: auto;
+      scrollbar-width: none;
+      gap: 0;
+      padding: 0 var(--space-1);
+    }
+
+    .dock > button {
+      flex: 0 0 auto;
+      min-width: var(--hit-min);
+      min-height: var(--hit-min);
+    }
+  }
+
   /* Close warns on hover: the clip/error colour, with dark ink on it (6:1). */
   button.close:hover:not(:disabled) {
     background: var(--ui-clip);

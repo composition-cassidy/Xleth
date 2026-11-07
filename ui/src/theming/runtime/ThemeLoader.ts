@@ -53,7 +53,16 @@ export function makeRendererBridge(): ThemeBridge {
   return {
     async readActiveName() {
       const x = (globalThis as unknown as { xleth?: { settings?: { get: (k: string) => Promise<unknown> } } }).xleth;
-      if (!x?.settings?.get) return null;
+      if (!x?.settings?.get) {
+        // No engine bridge: only the render harness (tests/ui-render/shots.mjs) and the unit
+        // tests run like this, so `?theme=<slug>` there picks a shipped theme to photograph.
+        // The Electron app always has window.xleth and never reaches this branch.
+        try {
+          const q = new URLSearchParams(globalThis.location?.search ?? '').get('theme');
+          if (q && SHIPPED_THEMES[q]) return q;
+        } catch { /* no location */ }
+        return null;
+      }
       const v = await x.settings.get(ACTIVE_THEME_SETTING_KEY);
       return typeof v === 'string' && v.length > 0 ? v : null;
     },

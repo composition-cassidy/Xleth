@@ -19,6 +19,10 @@
 //            --executable <path>                use a specific browser binary
 //            --port <n>                         preview port (default 4173)
 //            --threshold <0..1>                 pixelmatch threshold for --compare (default 0.1)
+//            --theme <slug>                     shipped theme to photograph (xleth-default|light|warm|cool|high-contrast)
+//            --scale <100..200>                 UI scale %: CDP metrics override, so the CSS viewport shrinks and
+//                                               devicePixelRatio rises exactly as Electron window zoom does
+//            --viewport <WxH>                   only this viewport (default: all three)
 
 import fs from 'node:fs'
 import path from 'node:path'
@@ -50,6 +54,9 @@ function parseArgs(argv) {
     else if (a === '--executable') args.executable = argv[++i]
     else if (a === '--port') args.port = Number(argv[++i])
     else if (a === '--threshold') args.threshold = Number(argv[++i])
+    else if (a === '--theme') args.theme = argv[++i]
+    else if (a === '--scale') args.scale = Number(argv[++i])
+    else if (a === '--viewport') args.viewport = argv[++i]
     else if (a === '--compare') { args.compare = [argv[++i], argv[++i]] }
     else throw new Error(`unknown argument: ${a}`)
   }
@@ -157,6 +164,35 @@ function auditTextInPage({ minContrast, minFontPx }) {
   return out
 }
 
+// Runs inside the page. Strips whose content is wider than the strip and that neither
+// scroll nor clip on purpose are reported: at 200 % on a 1366 x 768 window (683 x 384 CSS
+// px) these are the transport cluster, the dock tab strip and the hint bar.
+function overflowInPage() {
+  const SELECTORS = [
+    ['transport / title bar', '[class*="titlebar"], [class*="TitleBar"], header'],
+    ['dock tab strip', '[role="tablist"]'],
+    ['hint bar', '[class*="hintBar"], [class*="HintBar"], [data-testid="hint-bar"]'],
+  ]
+  const out = []
+  for (const [name, sel] of SELECTORS) {
+    document.querySelectorAll(sel).forEach((el) => {
+      const r = el.getBoundingClientRect()
+      if (r.width === 0 || r.height === 0) return
+      const over = el.scrollWidth - el.clientWidth
+      // Children that stick out past the strip's own box and past the viewport edge.
+      let outside = 0
+      el.querySelectorAll('*').forEach((c) => {
+        const cr = c.getBoundingClientRect()
+        if (cr.width > 0 && (cr.right > Math.min(r.right, innerWidth) + 1 || cr.left < r.left - 1)) outside += 1
+      })
+      const cs = getComputedStyle(el)
+      const scrolls = /(auto|scroll)/.test(cs.overflowX)
+      if (over > 1 || outside > 0) out.push({ strip: name, tag: el.tagName.toLowerCase(), cls: String(el.className).slice(0, 60), clientWidth: el.clientWidth, scrollWidth: el.scrollWidth, childrenOutside: outside, scrollsHorizontally: scrolls })
+    })
+  }
+  return out
+}
+
 const GALLERY_OUT_DIR = path.join('tests', 'ui-render', 'out', '_gallery-build')
 
 // Phase 2: the dev-only UI kit gallery, full page, at 100% and 150% zoom.
@@ -241,19 +277,30 @@ async function capture(args) {
     browser: `${args.executable || args.channel} ${browser.version()}`,
     thresholds: { minContrast: MIN_CONTRAST, minFontPx: MIN_FONT_PX },
     note: 'No engine: window.xleth is absent. Chrome only; canvas text is not covered.',
+    theme: args.theme || 'xleth-default',
+    scale: args.scale || 100,
     viewports: {},
   }
 
   try {
-    for (const vp of VIEWPORTS) {
-      const context = await browser.newContext({ viewport: { width: vp.width, height: vp.height }, deviceScaleFactor: 1, reducedMotion: 'reduce' })
+    const scale = (args.scale || 100) / 100
+    const viewports = args.viewport ? VIEWPORTS.filter((v) => v.name === args.viewport) : VIEWPORTS
+    if (viewports.length === 0) throw new Error(`unknown --viewport ${args.viewport}`)
+    for (const vp of viewports) {
+      // Same effect as Electron window zoom: fewer CSS pixels (the layout viewport shrinks by the
+      // scale) and more device pixels per CSS pixel, so the screenshot is still vp.width x vp.height.
+      const context = await browser.newContext({
+        viewport: { width: Math.round(vp.width / scale), height: Math.round(vp.height / scale) },
+        deviceScaleFactor: scale,
+        reducedMotion: 'reduce',
+      })
       const page = await context.newPage()
       const pageErrors = []
       const consoleErrors = []
       page.on('pageerror', (e) => pageErrors.push(String(e.message || e)))
       page.on('console', (m) => { if (m.type() === 'error') consoleErrors.push(m.text().slice(0, 300)) })
 
-      await page.goto(url, { waitUntil: 'networkidle' })
+      await page.goto(args.theme ? `${url}?theme=${encodeURIComponent(args.theme)}` : url, { waitUntil: 'networkidle' })
       await page.evaluate(() => document.fonts.ready)
       // Freeze motion and the text caret so two runs of the same build are pixel-identical.
       await page.addStyleTag({ content: '*,*::before,*::after{animation:none!important;transition:none!important;caret-color:transparent!important}' })
@@ -262,8 +309,9 @@ async function capture(args) {
       const shotPath = path.join(outDir, `shot-${vp.name}.png`)
       await page.screenshot({ path: shotPath })
       const audit = await page.evaluate(auditTextInPage, { minContrast: MIN_CONTRAST, minFontPx: MIN_FONT_PX })
-      report.viewports[vp.name] = { ...audit, pageErrors, consoleErrors }
-      log(`${vp.name}: ${audit.total} text nodes, ${audit.lowContrast} < ${MIN_CONTRAST}:1, ${audit.small} < ${MIN_FONT_PX}px, ${pageErrors.length} page errors`)
+      const overflow = await page.evaluate(overflowInPage)
+      report.viewports[vp.name] = { ...audit, overflow, pageErrors, consoleErrors }
+      log(`${vp.name} @${Math.round(scale * 100)}% ${args.theme || 'xleth-default'}: ${audit.total} text nodes, ${audit.lowContrast} < ${MIN_CONTRAST}:1, ${audit.small} < ${MIN_FONT_PX}px, ${overflow.length} overflowing, ${pageErrors.length} page errors`)
       await context.close()
     }
   } finally {

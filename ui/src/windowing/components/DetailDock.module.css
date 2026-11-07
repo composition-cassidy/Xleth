@@ -60,6 +60,18 @@
     white-space: nowrap;
   }
 
+  /* Narrow CSS viewport (small window or high UI scale): the names stay, the glyphs go, so the
+   * five tabs and their pop-out buttons fit a 683 px window at 200 % without scrolling. */
+  @media (max-width: 800px) {
+    .tabButton > svg {
+      display: none;
+    }
+
+    .tabButton {
+      padding: 0 var(--space-1) 0 var(--space-2);
+    }
+  }
+
   .popButton {
     display: inline-flex;
     align-items: center;
