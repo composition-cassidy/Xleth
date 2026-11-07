@@ -94,7 +94,6 @@ describe('every canvas that reads devicePixelRatio is told when it changes', () 
   // Not canvases that live across a zoom: the helper itself, a one-shot capture, the signal module.
   const EXEMPT = new Set([
     'components/mixer/mixerCanvasTheme.js',
-    'components/debug/DebugCapturePanel.jsx',
     'ui-kit/dpr.ts',
   ]);
 

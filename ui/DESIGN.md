@@ -46,8 +46,6 @@ Cascade order, lowest to highest: `@layer reset, legacy, tokens, kit;` (declared
     `clipControlTuner`, `loopLab`, `EffectModule.sidechain`, `sandbox`, `designer`) are wrapped
     in-file in `@layer legacy { … }` because components import them from JS.
   - `@fontsource/*` sheets contain only `@font-face`, which is not part of the cascade.
-  - **Known exception:** `components/debug/DebugCapturePanel.jsx` injects a `<style>` at
-    runtime (unlayered, debug tool only). Do not copy that pattern.
   - `styles/__tests__/layers.test.js` fails the suite if any stylesheet or CSS import is
     unlayered, or if `layers.css` is not the first import of `main.jsx`.
   - `welcome.html` / `splash.html` are separate pages with their own inline CSS and are outside
