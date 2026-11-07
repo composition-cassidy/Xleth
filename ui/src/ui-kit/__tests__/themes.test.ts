@@ -135,6 +135,14 @@ describe.each(SLUGS)('%s', (slug) => {
     }
   });
 
+  it('warning text reads on its own tinted background over every surface (Poster, Preview != Render)', () => {
+    const wt = hex(slug, '--theme-semantic-warning-text');
+    for (const [i, g] of G.entries()) {
+      const bg = composite(values['--theme-semantic-warning-bg-subtle'], g);
+      expect(contrastRatio(wt, bg), `${slug} warning-text on warning-bg over g${i}`).toBeGreaterThanOrEqual(hc ? 7 : 4.5);
+    }
+  });
+
   it('rec is fills and glyphs only: 3:1 on g1', () => {
     expect(contrastRatio(hex(slug, '--theme-ui-rec'), G[1])).toBeGreaterThanOrEqual(3);
   });

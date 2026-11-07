@@ -85,7 +85,7 @@
     "--theme-timeline-hold-zone-edge": "rgba(0, 0, 0, 0.32)",
     "--theme-timeline-pattern-lane-tint": "rgba(0, 40, 120, 0.04)",
     "--theme-timeline-well-top-shadow": "rgba(0, 0, 0, 0.10)",
-    "--theme-semantic-warning-text": "#7A5A00",
+    "--theme-semantic-warning-text": "#664B00",
     "--theme-semantic-warning-border": "#8A6200",
     "--theme-semantic-success-border": "#176F36",
     "--theme-semantic-warning-bg-subtle": "rgba(138, 98, 0, 0.15)",

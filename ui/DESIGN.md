@@ -4,7 +4,7 @@ Read this before touching any stylesheet or component. It is the contract for th
 UI rebuild. Phase 0 (this file, cascade layers, tokens, guards, render harness)
 changes almost nothing visually; later phases are measured against it.
 
-Status: **Phase 0 landed** (layers, tokens, `format.ts`, guards, `npm run shots`). The kit
+Status: **Phase 0 and Phase 7 landed** (layers, tokens, `format.ts`, guards, `npm run shots`). The kit
 itself (components) starts in Phase 1; nothing consumes the kit tokens yet.
 
 ---
@@ -171,13 +171,13 @@ that remain average 15° apart, so some crowding is inherent. All six changes ar
 `ui-kit/__tests__/tokens.test.ts`, which also fails if any other slot moves.
 
 Where edits land: `xleth-default.json` (explicit values) and `TRACK_PALETTE_FALLBACK` in
-`trackColorResolver.js`. The catalog's own defaults are **not** changed, because `xleth-warm`
-and `xleth-cool` inherit them and must stay as they are. `xleth-light` overrides all 16 and is
-untouched (it has the same five exclusion violations and fails the `ink`/`g1` label rule on 14
-slots; fixing that is Phase 7).
+`trackColorResolver.js`. The catalog's own defaults are **not** changed, so a custom theme that
+inherits them keeps its colours. Phase 7 gave every shipped theme (light, high contrast, warm, cool) these same
+16 explicit values (3.6); light's own darker set, which broke the exclusion rule and failed the label rule on 14
+slots, is gone.
 
 The palette is generated against the *default* accent and is **not recomputed when a user
-changes their accent**. Phase 7 adds a theme-editor warning for accent/identity hue clashes.
+changes their accent**. Phase 7 added the theme-editor warning for accent/identity hue clashes (3.6).
 
 ### 3.5 How legacy surfaces map onto the ramp (Default theme only)
 
@@ -202,9 +202,92 @@ never uses them. Panel-local tinted tokens in the Default theme (for example
 `--theme-timeline-lane-bg`, `--theme-syllable-splitter-bg`, `--theme-sampler-key-border`) and
 hard-coded hexes inside `app.css` are **not** touched in Phase 0; each moves with its panel.
 
-The kit tokens (`--ui-*`) follow the base tokens through `deriveTheme`, so for a tinted base
-(warm, cool, an Appearance theme) they are tinted too, and for the shipped Light theme the
-`ink-*` steps do not invert. **The kit is dark-only until Phase 7.**
+The kit tokens (`--ui-*`) follow the base tokens through `deriveTheme`. Since Phase 7 the ramp
+steps and the semantic colours come from one table per theme (section 3.6), so the kit is
+theme-aware: dark, light and high contrast.
+
+### 3.6 Themes, UI scale and the workspace (Phase 7)
+
+**One table, three themes.** `theming/tokens/neutralRamp.ts` is the single source of the
+neutral ramp and the semantic and signal colours. A theme file names its `ramp` (`dark`,
+`light`, `hc`); without the field (every file saved before Phase 7) the ramp is inferred from
+`bg-surface` luminance (light surface = `light`, else `dark`; `hc` is never inferred). A ramp row
+is a set of signed lightness steps from the theme's own base tokens (g2, g3, g4 from `bg-surface`;
+ink-2, ink-3, boundary from `text`), so a custom theme that changes a base still gets a coherent
+ramp, plus its `rec`, `rec-text`, `solo` and the four signal hues. A theme that omits a base takes
+it from its ramp row (the old hue-240 anchors survive only in `tokens/base.ts` for the derivation
+tests). Panel-local surfaces that were blue-tinted (timeline lane bed, Preview surround
+`--theme-preview-loaded-bg`, piano-roll bed and keys, velocity lane, knob wells, syllable splitter,
+node ports, pattern hover) are `ref`s to the ramp, so they are neutral in every theme.
+
+| Theme | g0 | g1 | g2 | g3 | g4 | boundary | ink | ink-2 | ink-3 | accent |
+|---|---|---|---|---|---|---|---|---|---|---|
+| dark (Default) | `#141414` | `#1B1B1B` | `#222222` | `#2B2B2B` | `#3A3A3A` | `#747474` | `#E6E6E6` | `#B4B4B4` | `#929292` | `#33CED6` |
+| light | `#DCDCDC` | `#E9E9E9` | `#F0F0F0` | `#F7F7F7` | `#C4C4C4` | `#6E6E6E` | `#1A1A1A` | `#444444` | `#5C5C5C` | `#006C71` |
+| high contrast | `#000000` | `#0A0A0A` | `#141414` | `#1F1F1F` | `#595959` | `#D0D0D0` | `#FFFFFF` | `#E0E0E0` | `#C8C8C8` | `#33CED6` |
+
+On g1: dark ink 13.8 / ink-2 8.3 / ink-3 5.5 / boundary 3.7; light 14.3 / 8.0 / 5.5 / 4.2; high
+contrast 19.8 / 15.0 / 11.8 / 12.8. Light's ground (g0) is its *darkest* step and controls are raised
+toward white; g4 is a decorative divider in dark and light, and a visible one (2.4:1) in high contrast.
+Semantic and signal colours keep the dark ramp's OKLCH hue and chroma and only move in lightness (light:
+darker; high contrast: brighter), so the hue-exclusion rules of 3.3 and 3.4 hold in every theme. High
+contrast also strengthens the grid: timeline and piano-roll bar / beat / step lines are 65 / 40 / 22 %
+white over g0 (7.4 / 3.7 / 1.8:1), asserted by test. In dark and light the bar line is about 2.3 and 2.0:1,
+below the 3:1 Floor for bar lines: **open**, left as designed to keep the grid's quiet look.
+
+**Floors, asserted per theme** (`ui-kit/__tests__/themes.test.ts`, all five shipped themes): ink, ink-2,
+ink-3 at least 4.5:1 on g0..g3 (7:1 in high contrast); boundary at least 3:1 (7:1); `value`, `clip`
+(on g0..g2; danger text uses `--theme-semantic-danger-text`), `rec-text`, `solo` and the four signals at
+least 4.5:1 (7:1); `rec` at least 3:1; warning text on its own tinted background; automatic identity
+labels at 4.5:1; every chrome surface an exact grey. `--theme-text-subtle` and `-placeholder` now equal
+ink-3, so nothing dimmer than ink-3 remains. `color-scheme` follows the ramp.
+
+**One identity palette across themes.** Light, high contrast, warm and cool use Default's 16 colours,
+so a track keeps its colour when the theme changes. (Light used to ship its own darker 16 and failed the
+label rule on 14 of them.)
+
+**Warm and cool are accent variants.** Their JSON is Default's with the accent family changed
+(`--theme-accent`, its derived fills, the volume mod tint): warm amber `#E8943A`, cool cobalt
+`#6490F2` (lightened from `#5B8AF0`, which was 4.27:1 on g3). Surfaces and ink are identical to Default
+(asserted). The amber hue sits within 20 degrees of three identity colours; the theme editor warns
+about any accent that does (`accentIdentityClashes`).
+
+**Custom themes keep loading.** Nothing on disk is rewritten and `schemaVersion` stays 1. A saved file
+resolves to the colours it was saved with; the ramp is inferred; a file whose chrome is tinted logs a
+`[Theme]` warning and shows "Tinted chrome" in the editor with a one-click Neutralize. `user-appearance`
+(Settings > Appearance) used to anchor on hue 240 with saturation 100 (about a 16 % cast) as its default;
+it now anchors on the neutral ramp. Its `saturation` option is the **tint amount as a percentage of the
+neutral cap** (`TINT_CHROMA_CAP` = OKLCH chroma 0.012): 0 is grey and is the default, 100 is the cap, and
+the slider runs to 300 so that pushing past the cap warns instead of silently refusing. Settings saved before
+`appearanceModelVersion` 2 are mapped once (`migrateLegacyAppearance`: the untouched 240 / 100 default becomes
+0, a deliberate cast keeps its hue and a proportional tint, contrast below the new minimum is raised). Text
+contrast cannot go below 80 %, which is where ink-3 reaches 4.5:1. The ink tiers are solved against the panel,
+then nudged out where a ramp surface would fall under 4.5:1, and the polarity is whichever pole has the better
+worst case over g0..g3. Physical limit: near mid brightness no single colour reaches 4.5:1 on a spread of
+surfaces, so there g2 and g3 are flattened toward the panel instead of leaving the text's reach.
+
+**Theme editor.** Simple mode is brightness, text contrast, tint and tint hue (surfaces) plus accent and
+danger; the knobs are read back from any resolved theme, so they open correctly on a custom one. Live
+readouts show ink, ink 3 and boundary against the panel (ratio, and Pass or Below, never colour alone).
+Advanced mode shows the same readouts and warning above the token tree.
+
+**UI scale.** The scale is the Electron window zoom factor: real zoom, so hit-testing is right; never a
+CSS transform. 100 to 200 % in 10 % steps (`electron-main/ui-scale.js`), persisted as the percent `uiScale`,
+restored when the workspace window loads, mirrored in the renderer by `stores/uiScaleStore.js` through
+`xleth:window:zoomChanged`. The Settings > Appearance slider, Zoom In / Zoom Out / Reset Zoom and their
+shortcuts all move that one value (`window.setZoom` and `window.getZoom` sit beside the old three).
+Chromium reports zoom as a `devicePixelRatio` change without resizing the CSS box, so every canvas has to
+re-size its backing store: `useThemeEpoch()` also bumps on a DPR change (15 canvases already keyed on it
+follow), `ui-kit/dpr.ts` (`useDprEpoch`, `subscribeDpr`) is the shared signal for the rest, and
+`ui-kit/__tests__/dpr.test.ts` fails for any file that reads `devicePixelRatio` without one of them or a
+per-frame size check. At 200 % a 1366 px window is 683 CSS px: below 1100 CSS px the top bar is two rows
+(`--shell-topbar-h` doubles) and below 800 the detail dock tabs drop their glyphs. A window narrower than
+that still scrolls the panel toggles rather than shrinking them under 24 px.
+
+**Workspace backdrop: removed.** The image, video and native-acrylic backdrop modes, Backdrop FX, their
+Settings sections, `BackdropLayer`, the `xleth:backdrop:*` IPC and the transparent acrylic window are gone;
+the workspace window is opaque. The docked layer already covered the backdrop everywhere (Phase 1), and the
+main renderer has no start-screen surface to host one (Welcome is its own window).
 
 ## 4. Typography
 
@@ -217,7 +300,7 @@ The kit tokens (`--ui-*`) follow the base tokens through `deriveTheme`, so for a
 - **Scale (px at 100% UI scale):** `--type-10` meter ticks and units only · `--type-11` label ·
   `--type-12` default control text · `--type-13` section header · `--type-16` panel and dialog
   title. The tokens are plain px. The global UI scale (DAW Floor) is the Electron window zoom
-  factor (`window:zoomIn/zoomOut`, 0.5 to 3.0 in `main.js`), which scales px uniformly, so no
+  factor (`window:zoomIn/zoomOut/setZoom`, 100 to 200 %, see 3.6), which scales px uniformly, so no
   separate scale variable exists. Kit stylesheets only ever reference the tokens.
 - **Weights:** 400 / 500 / 600. **Sentence case.** No letter-spaced uppercase labels.
 - **Numbers:** every value uses `font-variant-numeric: tabular-nums`. Timecode and bars|beats
@@ -400,13 +483,12 @@ import a generic music, slider or tool glyph. The Gallery shows every glyph at 1
 
 ## 12. Known gaps (deliberately out of scope for Phase 0)
 
-- **Settings > Appearance:** `appearanceTheme.js` builds its theme from hard-coded **hue-240**
-  anchors and overrides `bg-primary`, `bg-surface`, `bg-inset` and the text tiers. **Users who
-  have applied an Appearance theme will not see the neutral ramp until Phase 7.** The only edit
-  Phase 0 makes to that file is exporting `relativeLuminance` and `contrastOf`.
-- **Other shipped themes:** `xleth-warm`, `xleth-cool` and `xleth-light` are unchanged.
-- **Neutral switch scope:** only `xleth-default.json` moves to the ramp; legacy muted text is
-  repointed (`--xleth-flat-text-muted` → the `ink-3` equivalent) so it clears 4.5:1.
+- **Settings > Appearance, other shipped themes:** resolved in Phase 7 (3.6).
+- **Bar lines below 3:1** in dark and light (about 2.3 and 2.0:1); high contrast meets it. Open.
+- **Mid-brightness Appearance:** semantic colours (accent, solo, signals) are the ramp's fixed values and are
+  not re-solved for an arbitrary brightness; only ink, ink-2, ink-3 and boundary are guaranteed there.
+- **Narrow windows at high scale:** below about 683 CSS px (a window under 1366 px at 200 %) the Preview and
+  the timeline toolbar still run out of room; only the top bar, the dock tabs and the hint bar are laid out for it.
 - **Inline styles:** about 511 `style={{…}}` objects bypass tokens. Later phases.
 - **`app.css`:** 34,380 lines, six `:root` blocks, four appended override passes. It shrinks only
   by deletion, phase by phase, ratcheted by the baseline file.

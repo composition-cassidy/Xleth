@@ -121,7 +121,7 @@ function auditTextInPage({ minContrast, minFontPx }) {
   }
 
   const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT)
-  const out = { total: 0, lowContrast: 0, small: 0, uncertainBackground: 0, entries: [] }
+  const out = { total: 0, lowContrast: 0, small: 0, uncertainBackground: 0, disabledExempt: 0, entries: [] }
   const range = document.createRange()
   for (let node = walker.nextNode(); node; node = walker.nextNode()) {
     const text = node.nodeValue.replace(/\s+/g, ' ').trim()
@@ -144,7 +144,11 @@ function auditTextInPage({ minContrast, minFontPx }) {
 
     out.total += 1
     const reasons = []
-    if (cr < minContrast) { reasons.push('contrast'); out.lowContrast += 1 }
+    // WCAG 1.4.3: text in an inactive (disabled) control is exempt from the contrast minimum.
+    // The DESIGN.md dim (45 %) is how disabled reads; it is counted, never hidden, and its size is still checked.
+    const disabled = !!el.closest('[disabled], [aria-disabled="true"]')
+    if (cr < minContrast && disabled) out.disabledExempt += 1
+    else if (cr < minContrast) { reasons.push('contrast'); out.lowContrast += 1 }
     if (fontPx < minFontPx) { reasons.push('size'); out.small += 1 }
     if (uncertain) out.uncertainBackground += 1
     if (reasons.length) {
@@ -182,6 +186,8 @@ function overflowInPage() {
       // Children that stick out past the strip's own box and past the viewport edge.
       let outside = 0
       el.querySelectorAll('*').forEach((c) => {
+        // Hover tooltips and decorative plates hang outside the strip on purpose.
+        if (c.getAttribute('aria-hidden') === 'true' || /tooltip/.test(String(c.className))) return
         const cr = c.getBoundingClientRect()
         if (cr.width > 0 && (cr.right > Math.min(r.right, innerWidth) + 1 || cr.left < r.left - 1)) outside += 1
       })

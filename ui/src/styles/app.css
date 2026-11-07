@@ -1657,9 +1657,9 @@ html, body, #root {
 
 /* Poster mode ON — amber pill (a deliberate "not full fidelity" cue) */
 .preview-poster-btn.poster {
-  background: rgba(231, 174, 64, 0.18);
-  color: #e7ae40;
-  border-color: #e7ae40;
+  background: var(--theme-semantic-warning-bg-subtle);
+  color: var(--theme-semantic-warning-text);
+  border-color: var(--theme-semantic-warning-border);
   box-shadow: var(--theme-depth-pressed-inner-shadow);
 }
 
@@ -1681,9 +1681,9 @@ html, body, #root {
   align-items: center;
   padding: 2px 8px;
   border-radius: 8px;
-  border: 1px solid rgba(231, 174, 64, 0.5);
-  background: rgba(231, 174, 64, 0.12);
-  color: #e7ae40;
+  border: 1px solid var(--theme-semantic-warning-border);
+  background: var(--theme-semantic-warning-bg-subtle);
+  color: var(--theme-semantic-warning-text);
   font-size: 10px;
   font-weight: 700;
   letter-spacing: 0.03em;
@@ -5897,7 +5897,7 @@ html.fx-drag-active * {
   color: var(--theme-text);
 }
 .timeline-syllable-btn:disabled {
-  opacity: 0.35;
+  opacity: 0.45;
   cursor: not-allowed;
 }
 .timeline-syllable-btn:disabled:hover {
@@ -16937,9 +16937,9 @@ input[type="radio"] {
 }
 
 .preview-poster-btn.poster {
-  border-color: #e7ae40;
+  border-color: var(--theme-semantic-warning-border);
   background: var(--xleth-flat-well);
-  color: #e7ae40;
+  color: var(--theme-semantic-warning-text);
   box-shadow: none;
 }
 
@@ -18563,7 +18563,7 @@ input[type="radio"] {
 
 .timeline-toolbar-tag {
   color: var(--xleth-flat-text-subtle);
-  font-size: 9px;
+  font-size: 10px;
   letter-spacing: 0.1em;
   text-transform: uppercase;
 }
