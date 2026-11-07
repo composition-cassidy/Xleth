@@ -710,6 +710,14 @@ window.xleth = ({
     zoomIn:   () => ipcRenderer.send('xleth:window:zoomIn'),
     zoomOut:  () => ipcRenderer.send('xleth:window:zoomOut'),
     resetZoom: () => ipcRenderer.send('xleth:window:resetZoom'),
+    // UI scale (Phase 7): absolute set (factor 1.0-2.0), live read, and change notifications.
+    setZoom:  (factor) => ipcRenderer.send('xleth:window:setZoom', factor),
+    getZoom:  () => invoke('xleth:window:getZoom'),
+    onZoomChanged: (cb) => {
+      const h = (_, factor) => cb(factor);
+      ipcRenderer.on('xleth:window:zoomChanged', h);
+      return () => ipcRenderer.removeListener('xleth:window:zoomChanged', h);
+    },
     openNodeEditor:  (key, pos) => ipcRenderer.send('xleth:window:openNodeEditor', key, pos),
     closeNodeEditor: () => ipcRenderer.send('xleth:window:closeNodeEditor'),
   },

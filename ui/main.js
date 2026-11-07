@@ -584,14 +584,18 @@ function startEngineBackgroundTasks() {
 
 let win = null;
 let splashWin = null;
-const DEFAULT_ZOOM_FACTOR = 1;
-const MIN_ZOOM_FACTOR = 0.5;
-const MAX_ZOOM_FACTOR = 3;
-const ZOOM_STEP = 0.1;
-
-function clampZoomFactor(factor) {
-  return Math.min(MAX_ZOOM_FACTOR, Math.max(MIN_ZOOM_FACTOR, factor));
-}
+// UI scale (Phase 7): the window zoom factor IS the global UI scale. 100 % to 200 % in 10 %
+// steps, persisted as `uiScale` (a percent) in settings.json and restored when the workspace
+// window loads. The Zoom In / Zoom Out / Reset Zoom menu items and their shortcuts, and the
+// Settings > Appearance control, all move this one value. Real Chromium zoom, so hit-testing
+// stays correct; never a CSS transform.
+const {
+  DEFAULT_ZOOM_FACTOR,
+  ZOOM_STEP,
+  UI_SCALE_SETTINGS_KEY,
+  clampZoomFactor,
+  factorFromStoredPercent,
+} = require('./electron-main/ui-scale');
 
 function getTargetWindow(event) {
   const senderWindow = BrowserWindow.fromWebContents(event.sender);
@@ -603,9 +607,27 @@ function setWindowZoom(targetWindow, factor) {
   const wc = targetWindow?.webContents;
   if (!wc || wc.isDestroyed()) return DEFAULT_ZOOM_FACTOR;
 
-  const nextFactor = clampZoomFactor(Number(factor.toFixed(2)));
+  const nextFactor = clampZoomFactor(Number(factor));
   wc.setZoomFactor(nextFactor);
+  // Only the workspace window owns the persisted value; child windows follow Chromium's
+  // per-origin zoom and are told about it too.
+  if (targetWindow === win) {
+    const s = loadSettings();
+    const percent = Math.round(nextFactor * 100);
+    if (s[UI_SCALE_SETTINGS_KEY] !== percent) { s[UI_SCALE_SETTINGS_KEY] = percent; saveSettings(s); }
+  }
+  wc.send('xleth:window:zoomChanged', nextFactor);
   return nextFactor;
+}
+
+// Restore the saved scale once the renderer exists. Idempotent: Chromium may already hold it.
+function restoreUiScale(targetWindow) {
+  const wc = targetWindow?.webContents;
+  if (!wc || wc.isDestroyed()) return;
+  const factor = factorFromStoredPercent(loadSettings()[UI_SCALE_SETTINGS_KEY]);
+  wc.setZoomFactor(factor);
+  wc.send('xleth:window:zoomChanged', factor);
+  log(`[Theme] ui scale restored -> ${Math.round(factor * 100)}%`);
 }
 
 function nudgeWindowZoom(targetWindow, direction) {
@@ -715,6 +737,7 @@ function createWindow() {
   if (!addonError) {
     win.webContents.once('did-finish-load', () => {
       win.webContents.send('xleth:project-loaded');
+      restoreUiScale(win);
     });
   }
 
@@ -2407,6 +2430,15 @@ ipcMain.on('xleth:window:zoomOut', (event) => {
 ipcMain.on('xleth:window:resetZoom', (event) => {
   const nextFactor = setWindowZoom(getTargetWindow(event), DEFAULT_ZOOM_FACTOR);
   log(`[IPC] window:resetZoom -> ${nextFactor}`);
+});
+// The Settings control sets an absolute value; getZoom lets it open at the live one.
+ipcMain.on('xleth:window:setZoom', (event, factor) => {
+  const nextFactor = setWindowZoom(getTargetWindow(event), Number(factor));
+  log(`[IPC] window:setZoom -> ${nextFactor}`);
+});
+ipcMain.handle('xleth:window:getZoom', (event) => {
+  const wc = getTargetWindow(event)?.webContents;
+  return wc && !wc.isDestroyed() ? wc.getZoomFactor() : DEFAULT_ZOOM_FACTOR;
 });
 
 // ── Node Editor child windows ─────────────────────────────────────────────────

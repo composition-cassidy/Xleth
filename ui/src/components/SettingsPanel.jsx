@@ -28,6 +28,13 @@ import {
 } from '../theming/runtime/appearanceTheme'
 import ChromeReadouts from '../theming/editor/ChromeReadouts'
 import {
+  UI_SCALE_DEFAULT,
+  UI_SCALE_MAX,
+  UI_SCALE_MIN,
+  UI_SCALE_STEP,
+  useUiScaleStore,
+} from '../stores/uiScaleStore.js'
+import {
   BACKDROP_FX_PRESETS,
   BACKDROP_FX_QUALITIES,
   useBackdropFxSettingsStore,
@@ -246,6 +253,8 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
   const appearancePersistTimerRef = useRef(null)
   const [accentColor, setAccentColor] = useState(DEFAULT_APPEARANCE_ACCENT)
   const [brightness, setBrightness] = useState(DEFAULT_APPEARANCE_DARKNESS)
+  const uiScalePercent = useUiScaleStore((state) => state.percent)
+  const setUiScalePercent = useUiScaleStore((state) => state.setPercent)
   const [chromeHue, setChromeHue] = useState(DEFAULT_APPEARANCE_HUE)
   const [chromeSaturation, setChromeSaturation] = useState(DEFAULT_APPEARANCE_SATURATION)
   const [textContrast, setTextContrast] = useState(DEFAULT_APPEARANCE_CONTRAST)
@@ -1668,7 +1677,39 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
           />
         </SettingsSection>
 
-        <SettingsSection title="Backdrop Media" index={1}>
+        <SettingsSection title="Interface scale" index={1}>
+          <SettingsRow
+            label="UI scale"
+            htmlFor="settings-ui-scale"
+            description="Scales the whole interface, text and controls together (100 % to 200 %). The Zoom In, Zoom Out and Reset Zoom commands and their shortcuts move this same value."
+          >
+            <div className="settings-panel-range-row">
+              <input
+                id="settings-ui-scale"
+                type="range"
+                min={UI_SCALE_MIN}
+                max={UI_SCALE_MAX}
+                step={UI_SCALE_STEP}
+                className="settings-panel-range"
+                value={uiScalePercent}
+                onChange={(event) => setUiScalePercent(Number(event.target.value))}
+                aria-label="UI scale"
+                aria-valuetext={`UI scale, ${uiScalePercent} percent`}
+              />
+              <span className="settings-panel-range-value">{uiScalePercent}%</span>
+              <button
+                type="button"
+                className="settings-panel-button"
+                onClick={() => setUiScalePercent(UI_SCALE_DEFAULT)}
+                disabled={uiScalePercent === UI_SCALE_DEFAULT}
+              >
+                Reset
+              </button>
+            </div>
+          </SettingsRow>
+        </SettingsSection>
+
+        <SettingsSection title="Backdrop Media" index={2}>
           <SettingsRow
             label="Source"
             htmlFor="settings-backdrop-media-source"

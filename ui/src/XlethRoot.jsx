@@ -16,6 +16,7 @@ import { CLEANUP_PROJECT_LABEL, reportPurgeOnClose, runCleanupProject } from './
 import XlethFilePickerProvider from './components/filePicker/XlethFilePickerProvider.jsx'
 import { getPickerPath, getPickerPaths, openFilePicker as openXlethFilePicker } from './components/filePicker/filePickerService.js'
 import usePianoRollStore from './stores/usePianoRollStore.js'
+import { useUiScaleStore } from './stores/uiScaleStore.js'
 import useWorldProcessingStore from './stores/worldProcessingStore.js'
 import AppShell from './windowing/AppShell.tsx'
 import HintBar from './components/HintBar.jsx'
@@ -425,6 +426,11 @@ function XlethRootInner() {
 
   useEffect(() => {
     usePianoRollStore.getState().init()
+  }, [])
+
+  // Mirror the global UI scale (window zoom) so Settings and the canvases follow it.
+  useEffect(() => {
+    useUiScaleStore.getState().hydrate()
   }, [])
 
   useEffect(() => {
