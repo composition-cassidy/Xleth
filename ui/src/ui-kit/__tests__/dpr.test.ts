@@ -76,7 +76,7 @@ describe('every canvas that reads devicePixelRatio is told when it changes', () 
     for (const e of fs.readdirSync(dir, { withFileTypes: true })) {
       const p = path.join(dir, e.name);
       if (e.isDirectory()) {
-        if (['node_modules', '__tests__', 'sampler.bak'].includes(e.name)) continue;
+        if (['node_modules', '__tests__'].includes(e.name)) continue;
         walk(p, out);
       } else if (/\.(jsx?|tsx?)$/.test(e.name) && !/\.test\./.test(e.name)) out.push(p);
     }
