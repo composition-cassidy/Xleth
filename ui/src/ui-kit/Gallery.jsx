@@ -62,6 +62,7 @@ const compressorFx = (nodeId, extra = {}) => ({
 // are base, base + 1, base + 2 so no state leaks between them.
 const PHASE_4B_DEVICES = [
   { pluginId: 'delay', title: 'Delay', base: 11 },
+  { pluginId: 'flanger', title: 'Flanger', base: 21 },
 ]
 const deviceFx = (pluginId, nodeId, extra = {}) => ({
   nodeId, pluginId, position: 0, bypassed: false, effectInstanceId: `gallery-${nodeId}`, ...extra,
