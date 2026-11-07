@@ -367,7 +367,38 @@ unset) writing the `xleth.export.loudnessTarget` key the export dialog shares.
 **Gallery.** `?view=ui-kit` shows 16 strips with mixed states from `MixerGalleryFixture` (MOCK
 data, gallery only; a test fails if anything else imports it).
 
-## 11. Known gaps (deliberately out of scope for Phase 0)
+## 11. Browser, sample picker, icons (Phase 6)
+
+**Browser** (`components/LeftPanel.jsx` and `components/browser/`). Kit `Tabs` (Media | Samples, sentence case, each with its
+glyph) and the drawer's own controls share one 28px row; below it one search field per tab (Enter remembers a search, an
+empty focused field offers the last 8, per tab, `localStorage`); then the list. Rows are **24px**: a type glyph or the label's
+identity colour as a 2px edge stripe, the name, then tabular numerals (a sample is `0.42 s`, a source is `3:24`). Groups have
+disclosure triangles. Selected = a 1px `--ui-select` outline, never fill alone. **Preview on select** goes through
+`components/samplePreview.js`, the one `<audio>` the row's play button has always used (media-server URL, seek on
+`loadedmetadata`, cut at the region end); an **Auto-preview** toggle (on by default) controls whether selecting a sample, or an
+audio-only source, plays it. A video source shows its still, resolution, frame rate, length and proxy state in a ruled strip under
+the list, with a play button for its sound. **Empty state** is the kit `EmptyState` in the first row with an "Import media"
+action, and the whole Media list region is the drop target (outline + "Drop files to import", for files from outside the app only).
+**Collapsed** the drawer is a 28px rail holding an expand control and the two tab icons, so it is somewhere to go; the dock-side
+control is a single button that cycles Left, Right, Top, Bottom. Debug logs use `[Browser]`.
+
+**Sample picker as a sheet** (`windowing/components/PickerSheet.tsx`). The picker no longer replaces the shell: `XlethRoot`
+keeps one `AppShell` mounted, and the sheet is absolutely positioned at the top of the centre column, as tall as the top dock
+region (floor 280px) and as wide as that column, so it covers **Preview and Inspector only**. The Browser stays beside it as the
+source list (double-click another source and the picker retargets, remounting so the old source unloads), and the arrangement, the
+transport and the detail dock stay visible and live. It carries the one hard offset shadow, as a floating surface. Inside:
+source picture, waveform + controls, marked list. **Keyboard:** opening moves focus into the sheet and closing returns it to where
+it was; Esc, Space, I and O act only for events *inside* the sheet (`samplePickerGate.isSamplePickerKeyTarget`), so out in the
+arrangement Space is the transport's again. The controls row, waveform canvas and marked rows inside are still their legacy styles.
+
+**Icons** (`ui-kit/icons/`). One family: 16px grid, 1.5px stroke, square caps, mitred joins, `currentColor`, no fills; the stroke
+cannot be overridden. Drawn from Xleth's own vocabulary (cells, pattern blocks, syllable cuts, patch cables), never music notes
+or slider caps: the 13 panels, the four timeline tools (select, draw, slice, delete), `sourceVideo`, `sourceAudio`, `media`. Panels
+get them from `panelCatalog`, so the launcher, dock tab and panel tab always agree. Lucide stays for generic actions (close,
+chevrons, plus, search, undo, zoom, more, play/stop). `windowing/__tests__/panelIcons.test.tsx` fails if the identity files
+import a generic music, slider or tool glyph. The Gallery shows every glyph at 16, 24 and 48px.
+
+## 12. Known gaps (deliberately out of scope for Phase 0)
 
 - **Settings > Appearance:** `appearanceTheme.js` builds its theme from hard-coded **hue-240**
   anchors and overrides `bg-primary`, `bg-surface`, `bg-inset` and the text tiers. **Users who
