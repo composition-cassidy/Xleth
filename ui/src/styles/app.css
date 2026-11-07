@@ -1407,7 +1407,7 @@ html, body, #root {
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 10px;
+  padding: 4px 10px;
   background: var(--theme-bg-surface);
   border: 1px solid var(--theme-border-subtle);
   border-radius: var(--radius-sm);
@@ -1440,7 +1440,7 @@ html, body, #root {
   font-family: inherit;
   font-size: 11px;
   font-weight: 600;
-  padding: 3px 6px;
+  padding: 4px 6px;
   cursor: pointer;
   transition: border-color var(--transition-fast), color var(--transition-fast);
 }
@@ -1451,7 +1451,7 @@ html, body, #root {
 }
 
 .preview-fx-btn {
-  padding: 3px 9px;
+  padding: 4px 9px;
   border-radius: 10px;
   border: 1px solid var(--theme-border-subtle);
   font-family: inherit;
@@ -1490,7 +1490,7 @@ html, body, #root {
   display: inline-flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 9px;
+  padding: 4px 9px;
   border-radius: 10px;
   border: 1px solid var(--theme-border-subtle);
   font-family: inherit;
@@ -2057,10 +2057,10 @@ html, body, #root {
   align-items: center;
   justify-content: center;
   flex-shrink: 0;
-  width: 12px;
-  height: 14px;
+  width: 24px;
+  height: 24px;
   border: none;
-  padding: 0;
+  padding: 0; margin: -5px -6px;
   background: transparent;
   color: var(--track-header-text, rgba(26, 26, 26, 0.55));
   cursor: pointer;
@@ -2098,7 +2098,7 @@ html, body, #root {
 }
 
 .track-header-hold-badge {
-  font-size: 8px;
+  font-size: 10px;
   font-weight: 700;
   text-transform: uppercase;
   color: var(--track-header-text, rgba(26, 26, 26, 0.85));
@@ -5686,13 +5686,13 @@ html.fx-drag-active * {
   position: absolute;
   top: 6px;
   padding-left: 4px;
-  font-size: 9px;
-  color: #606060;
+  font-size: 10px;
+  color: #929292;
   font-variant-numeric: tabular-nums;
   white-space: nowrap;
   pointer-events: none;
 }
-.piano-roll-ruler-tick.bar { color: #969696; }
+.piano-roll-ruler-tick.bar { color: #b4b4b4; }
 
 /* ── Velocity lane gutter (axis + label) ───────────────────────────────── */
 .piano-roll-velocity-gutter {
@@ -5706,16 +5706,16 @@ html.fx-drag-active * {
   position: absolute;
   left: 6px;
   top: 4px;
-  font-size: 8px;
+  font-size: 10px;
   letter-spacing: 0.12em;
   text-transform: uppercase;
-  color: #424242;
+  color: #929292;
 }
 .piano-roll-velocity-axis {
   position: absolute;
   right: 5px;
-  font-size: 8px;
-  color: #424242;
+  font-size: 10px;
+  color: #929292;
   font-variant-numeric: tabular-nums;
 }
 
@@ -14654,16 +14654,16 @@ input[type="radio"] {
 }
 
 .titlebar-launchers {
-  gap: 11px;
-  padding: 0 8px;
+  gap: 0;
+  padding: 0;
 }
 
 .titlebar-launcher-btn.xleth-icon-button {
   position: relative;
-  width: 13px;
+  width: 24px;
   height: 30px;
   min-height: 30px;
-  flex: 0 0 13px;
+  flex: 0 0 24px;
   padding: 0;
   border: 0;
   border-radius: 0;
@@ -16439,7 +16439,7 @@ input[type="radio"] {
 
 .timeline-snap-select,
 .timeline-declick-input {
-  height: 22px;
+  height: 24px;
   border: 1px solid var(--xleth-flat-border-strong);
   border-radius: 0;
   background: var(--xleth-flat-well);
@@ -16464,7 +16464,7 @@ input[type="radio"] {
 .timeline-zoom-display { color: var(--xleth-flat-text-muted); }
 
 .timeline-syllable-btn {
-  height: 22px;
+  height: 24px;
   border: 1px solid var(--xleth-flat-border-strong);
   border-radius: 0;
   background: var(--xleth-flat-well);

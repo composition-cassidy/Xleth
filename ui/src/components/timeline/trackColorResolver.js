@@ -110,7 +110,7 @@ export function resolveAutoTrackColor(track, visibleIndex, trackPalette, fallbac
 // WCAG relative luminance is too low to read against that dark backdrop, in
 // which case a near-white fallback takes over.
 const PATTERN_TEXT_NEAR_WHITE = '#F2F2F2'
-const PATTERN_TEXT_LUMINANCE_MIN = 0.27
+const PATTERN_TEXT_LUMINANCE_MIN = 0.32
 
 function srgbChannelToLinear(c8) {
   const c = c8 / 255

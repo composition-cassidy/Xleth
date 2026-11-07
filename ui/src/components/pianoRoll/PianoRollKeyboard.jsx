@@ -92,9 +92,9 @@ const PianoRollKeyboard = forwardRef(function PianoRollKeyboard({
           alignItems: 'center',
           justifyContent: 'flex-end',
           paddingRight: 5,
-          fontSize: 8,
+          fontSize: 10,
           letterSpacing: '0.02em',
-          color: isBlack ? '#5a5a5a' : '#2a2a2a',
+          color: isBlack ? '#929292' : '#2a2a2a',
           cursor: 'pointer',
           userSelect: 'none',
         }}
