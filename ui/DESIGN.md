@@ -42,8 +42,8 @@ Cascade order, lowest to highest: `@layer reset, legacy, tokens, kit;` (declared
     always had, so the relative order of all legacy sheets is unchanged.
   - The package stylesheet `@xyflow/react/dist/style.css` is layered the same way
     (`styles/vendor-xyflow.css`).
-  - The nine component sheets (`windowing`, `fxGraph`, `fxGraphEffectPicker`, `clipControls`,
-    `clipControlTuner`, `loopLab`, `EffectModule.sidechain`, `sandbox`, `designer`) are wrapped
+  - The eight component sheets (`windowing`, `fxGraph`, `fxGraphEffectPicker`, `clipControls`,
+    `clipControlTuner`, `EffectModule.sidechain`, `sandbox`, `designer`) are wrapped
     in-file in `@layer legacy { … }` because components import them from JS.
   - `@fontsource/*` sheets contain only `@font-face`, which is not part of the cascade.
   - `styles/__tests__/layers.test.js` fails the suite if any stylesheet or CSS import is
