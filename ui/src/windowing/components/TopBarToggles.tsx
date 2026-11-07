@@ -1,6 +1,5 @@
 import React from 'react';
 import {
-  Music2,
   PanelBottom,
   PanelLeft,
   PanelRight,
@@ -19,6 +18,7 @@ import {
 } from '../registry/panelCatalog';
 import { useXlethRootContext } from '../contexts/XlethRootContext.jsx';
 import { XlethButton, XlethIconButton } from '../../components/common/XlethButton.jsx';
+import { PianoRollIcon } from '../../ui-kit/icons';
 
 interface LayoutPresetButton {
   id: PresetId;
@@ -93,6 +93,8 @@ function PanelToggleButton({ entry }: { entry: (typeof PANEL_CATALOG_ORDER)[numb
       style={{ '--xleth-windowing-panel-color': panelTypeColorVar(id) } as React.CSSProperties}
       onClick={() => usePanelRegistry.getState().togglePanel(id)}
       title={entry.fKey ? `${entry.title} (${entry.fKey})` : entry.title}
+      data-hint={`${entry.title}: show or hide the panel`}
+      data-hint-mods={entry.fKey || undefined}
       aria-label={`Toggle ${entry.title}`}
       aria-pressed={!hidden}
     >
@@ -185,7 +187,7 @@ export function TopBarToggles() {
           title="Import MIDI"
           aria-label="Import MIDI"
         >
-          <Music2 aria-hidden="true" />
+          <PianoRollIcon aria-hidden="true" />
         </XlethIconButton>
       </div>
     </div>

@@ -1,23 +1,20 @@
-import {
-  AudioWaveform,
-  Blocks,
-  FlaskConical,
-  Music2,
-  PanelLeft,
-  PanelRight,
-  Scissors,
-  Video,
-  Workflow,
-  type LucideIcon,
-} from 'lucide-react';
 import type { ComponentType } from 'react';
 import {
-  FxGraphGlyphIcon,
-  MixerGlyphIcon,
-  PianoRollGlyphIcon,
-  TimelineGlyphIcon,
-  type GlyphIconProps,
-} from './panelGlyphs';
+  BrowserIcon,
+  DevicesIcon,
+  FxGraphIcon,
+  InspectorIcon,
+  MixerIcon,
+  NodeEditorIcon,
+  PianoRollIcon,
+  PreviewIcon,
+  QuickNotationIcon,
+  SamplerIcon,
+  SandboxIcon,
+  SplitSyllablesIcon,
+  TimelineIcon,
+  type IconProps,
+} from '../../ui-kit/icons';
 
 export const PANEL_IDS = [
   'timeline',
@@ -64,7 +61,9 @@ export interface PanelCatalogEntry {
   id: PanelId;
   title: string;
   typeColorToken: PanelTypeColorToken;
-  icon: LucideIcon | ComponentType<GlyphIconProps>;
+  // One purpose-drawn glyph per panel (ui-kit/icons): the same icon in the
+  // launcher, the dock tab and the panel tab.
+  icon: ComponentType<IconProps>;
   // The single declaration of this panel's function-key toggle. KeyboardManager
   // generates its bindings from these — there is no second hand-written mapping.
   // A collision throws at module load (see PANEL_FKEY_BINDINGS below).
@@ -109,7 +108,7 @@ export const PANEL_CATALOG = {
     id: 'timeline',
     title: 'Timeline',
     typeColorToken: '--theme-panel-timeline',
-    icon: TimelineGlyphIcon,
+    icon: TimelineIcon,
     fKey: 'F5',
     defaultFloating: { x: 260, y: 60, width: 1200, height: 480 },
     keepAliveWhenHidden: true,
@@ -123,7 +122,7 @@ export const PANEL_CATALOG = {
     id: 'sampleSelector',
     title: 'Sample Selector',
     typeColorToken: '--theme-text-muted',
-    icon: PanelLeft,
+    icon: BrowserIcon,
     fKey: 'F6',
     defaultFloating: { x: 24, y: 72, width: 300, height: 640 },
     keepAliveWhenHidden: false,
@@ -138,7 +137,7 @@ export const PANEL_CATALOG = {
     id: 'pianoRoll',
     title: 'Piano Roll',
     typeColorToken: '--theme-panel-pianoroll',
-    icon: PianoRollGlyphIcon,
+    icon: PianoRollIcon,
     fKey: 'F7',
     defaultFloating: { x: 320, y: 140, width: 960, height: 540 },
     keepAliveWhenHidden: false,
@@ -152,7 +151,7 @@ export const PANEL_CATALOG = {
     id: 'preview',
     title: 'Preview',
     typeColorToken: '--theme-panel-preview',
-    icon: Video,
+    icon: PreviewIcon,
     fKey: 'F8',
     defaultFloating: { x: 400, y: 100, width: 640, height: 360 },
     keepAliveWhenHidden: true,
@@ -167,7 +166,7 @@ export const PANEL_CATALOG = {
     id: 'mixer',
     title: 'Mixer',
     typeColorToken: '--theme-panel-mixer',
-    icon: MixerGlyphIcon,
+    icon: MixerIcon,
     fKey: 'F9',
     // +176 over the pre-loudness-meter default: the meter is a third pinned
     // column beside the rack and master strip, and without the extra width it
@@ -185,7 +184,7 @@ export const PANEL_CATALOG = {
     id: 'fxGraph',
     title: 'FX Graph',
     typeColorToken: '--theme-panel-node',
-    icon: FxGraphGlyphIcon,
+    icon: FxGraphIcon,
     fKey: 'F11',
     defaultFloating: { x: 360, y: 120, width: 980, height: 640 },
     keepAliveWhenHidden: false,
@@ -199,7 +198,7 @@ export const PANEL_CATALOG = {
     id: 'nodeEditor',
     title: 'Node Editor',
     typeColorToken: '--theme-panel-node',
-    icon: Workflow,
+    icon: NodeEditorIcon,
     // No fKey: quarantined panels get no shortcut, and F11 belongs to fxGraph.
     defaultFloating: { x: 400, y: 160, width: 900, height: 600 },
     keepAliveWhenHidden: false,
@@ -215,7 +214,7 @@ export const PANEL_CATALOG = {
     id: 'sampler',
     title: 'Sampler',
     typeColorToken: '--theme-panel-mixer',
-    icon: AudioWaveform,
+    icon: SamplerIcon,
     fKey: 'F12',
     // Fixed size per the mockup — see resizable:false below. Sized to the main
     // tab's actual content rather than guessed: 820 wide because the mockup's
@@ -238,7 +237,7 @@ export const PANEL_CATALOG = {
     id: 'quickNotation',
     title: 'Quick Notation',
     typeColorToken: '--theme-text-muted',
-    icon: Music2,
+    icon: QuickNotationIcon,
     // Opened from the piano roll's notation entry, never from the toolbar.
     showInToolbar: false,
     defaultFloating: { x: 360, y: 140, width: 480, height: 314 },
@@ -252,7 +251,7 @@ export const PANEL_CATALOG = {
     id: 'splitSyllables',
     title: 'Split Syllables',
     typeColorToken: '--theme-text-muted',
-    icon: Scissors,
+    icon: SplitSyllablesIcon,
     // Context-opened from a sample row (no F-key). keepAliveWhenHidden keeps the
     // cached waveform mipmap + marker edits alive across close/reopen.
     defaultFloating: { x: 140, y: 160, width: 1000, height: 352 },
@@ -266,7 +265,7 @@ export const PANEL_CATALOG = {
     id: 'sampleSandbox',
     title: 'Sample Sandbox',
     typeColorToken: '--theme-panel-mixer',
-    icon: FlaskConical,
+    icon: SandboxIcon,
     fKey: 'F10',
     defaultFloating: { x: 200, y: 90, width: 1180, height: 640 },
     keepAliveWhenHidden: false,
@@ -279,7 +278,7 @@ export const PANEL_CATALOG = {
     id: 'inspector',
     title: 'Inspector',
     typeColorToken: '--theme-text-muted',
-    icon: PanelRight,
+    icon: InspectorIcon,
     // No fKey: F5-F12 are all taken and shortcuts do not change in Phase 1.
     defaultFloating: { x: 420, y: 80, width: 340, height: 480 },
     keepAliveWhenHidden: false,
@@ -293,7 +292,7 @@ export const PANEL_CATALOG = {
     id: 'devices',
     title: 'Devices',
     typeColorToken: '--theme-text-muted',
-    icon: Blocks,
+    icon: DevicesIcon,
     // A dock tab only: Phase 4a builds the device view, so nothing launches it
     // from the top bar yet.
     showInToolbar: false,

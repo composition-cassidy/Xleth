@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { Pencil, Type, Download, ArrowLeftRight, RotateCcw, Trash2, Scissors, Sliders, List, LayoutGrid, FlaskConical, Volume2, X } from 'lucide-react'
+import { Type, Download, ArrowLeftRight, RotateCcw, Trash2, List, LayoutGrid, Volume2, X } from 'lucide-react'
 import { timelineEvents } from '../timelineEvents.js'
 import { DEFAULT_LABELS, loadCustomLabels, labelColor } from '../constants/labels.js'
 import SampleGroup from './SampleGroup.jsx'
@@ -9,7 +9,7 @@ import useSandboxPanelStore from '../stores/sandboxPanelStore.js'
 import useBrowserStore from '../stores/browserStore.js'
 import { usePanelRegistry } from '../windowing/registry/PanelRegistry.ts'
 import { getPickerPath, openFilePicker } from './filePicker/filePickerService.js'
-import { EmptyState, SegmentedControl, Toggle } from '../ui-kit'
+import { DrawToolIcon, EmptyState, SamplerIcon, SandboxIcon, SegmentedControl, SplitSyllablesIcon, Toggle } from '../ui-kit'
 import { moveRowFocus } from './browser/browserFormat.js'
 import { getMediaPort, startPreview } from './samplePreview.js'
 import styles from './browser/Browser.module.css'
@@ -295,7 +295,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
       // Edit in Sample Picker
       {
         label: 'Edit in Sample Picker',
-        icon: Pencil,
+        icon: DrawToolIcon,
         onClick: () => {
           if (src && onOpenPicker) {
             console.log(`[Browser] Edit in Picker: "${region.name}"`)
@@ -312,7 +312,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
       // Sampler Settings (Pitch regions only — they're the ones played via the sampler engine)
       ...(region.label === 'Pitch' ? [{
         label: 'Sampler Settings',
-        icon: Sliders,
+        icon: SamplerIcon,
         onClick: () => {
           timelineEvents.dispatchEvent(new CustomEvent('open-sampler-settings', {
             detail: { regionId: region.id }
@@ -332,7 +332,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
       // Split Syllables (only for Quote regions)
       ...(region.label === 'Quote' ? [{
         label: 'Split Syllables',
-        icon: Scissors,
+        icon: SplitSyllablesIcon,
         onClick: () => {
           usePanelRegistry.getState().openPanel('splitSyllables', { region })
         },
@@ -340,7 +340,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
       // Open in Sample Sandbox (any region — loads it as a fresh sandbox layer)
       {
         label: 'Open in Sample Sandbox',
-        icon: FlaskConical,
+        icon: SandboxIcon,
         onClick: () => {
           useSandboxPanelStore.getState().setOpenTarget(region)
           usePanelRegistry.getState().openPanel('sampleSandbox')

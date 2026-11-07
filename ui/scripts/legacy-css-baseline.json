@@ -1,5 +1,5 @@
 {
   "file": "src/styles/app.css",
-  "maxLines": 26569,
+  "maxLines": 26567,
   "note": "Frozen legacy stylesheet. This number may only go down; lower it with `npm run check:legacy-css -- --update` after deleting rules. See ui/DESIGN.md section 2."
 }

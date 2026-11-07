@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useMemo, useRef, useSyncExternalStore } from 'react'
-import { Plus, Trash2, RefreshCw, FolderSearch, Music, Music2, Play, Square } from 'lucide-react'
+import { Plus, Trash2, RefreshCw, FolderSearch, Play, Square } from 'lucide-react'
 import { timelineEvents } from '../timelineEvents.js'
 import ImportDropZone from './ImportDropZone.jsx'
 import { useXlethRootContext } from '../windowing/contexts/XlethRootContext.jsx'
@@ -8,7 +8,7 @@ import ContextMenu from './ContextMenu.jsx'
 import { useToast } from './Toast.jsx'
 import { DEFAULT_LABELS, loadCustomLabels, labelColor } from '../constants/labels.js'
 import { getPickerPaths, openFilePicker } from './filePicker/filePickerService.js'
-import { EmptyState, IconButton } from '../ui-kit'
+import { EmptyState, IconButton, PianoRollIcon, SamplerIcon } from '../ui-kit'
 import useBrowserStore from '../stores/browserStore.js'
 import { formatClock, moveRowFocus } from './browser/browserFormat.js'
 import {
@@ -234,7 +234,7 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
     },
     {
       label: 'Import as Sample',
-      icon: Music,
+      icon: SamplerIcon,
       onClick: () => {
         // Open label picker as a second context menu at the same position
         setLabelPickerMenu({ x: contextMenu.x, y: contextMenu.y, source: contextMenu.source })
@@ -339,7 +339,7 @@ export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
             hint="Import a MIDI file into a pattern"
             onClick={() => onOpenMidiImport?.()}
           >
-            <Music2 size={14} aria-hidden="true" />
+            <PianoRollIcon size={14} aria-hidden="true" />
           </IconButton>
           <IconButton
             size="sm"

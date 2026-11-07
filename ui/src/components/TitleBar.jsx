@@ -1,12 +1,10 @@
 import { useState, useEffect, useRef, useCallback } from 'react'
 import {
-  AudioWaveform,
   Minus,
   Redo2,
   Square,
   Trash2,
   Undo2,
-  Video,
   X,
   ZoomIn,
   ZoomOut,
@@ -17,7 +15,7 @@ import { PANEL_CATALOG_ORDER } from '../windowing/registry/panelCatalog'
 import { LAYOUT_PRESETS } from '../windowing/managers/PresetManager'
 import { useQuickLaunchersStore } from '../stores/quickLaunchersStore.js'
 import { XlethButton, XlethIconButton } from './common/XlethButton.jsx'
-import { Button, IconButton } from '../ui-kit'
+import { Button, IconButton, SourceAudioIcon, SourceVideoIcon } from '../ui-kit'
 import { useDockMagnification } from '../hooks/useDockMagnification.js'
 import { CLEANUP_PROJECT_LABEL } from './projectCleanup.js'
 import TransportBar from './TransportBar.jsx'
@@ -115,7 +113,7 @@ function FileDropdown({ onAction }) {
             title="Export Audio (Ctrl+E)"
             aria-label="Export Audio"
           >
-            <AudioWaveform size={18} strokeWidth={2} aria-hidden="true" />
+            <SourceAudioIcon size={16} aria-hidden="true" />
           </XlethIconButton>
           <XlethIconButton
             type="button"
@@ -124,7 +122,7 @@ function FileDropdown({ onAction }) {
             title="Export Video (Ctrl+Shift+E)"
             aria-label="Export Video"
           >
-            <Video size={18} strokeWidth={2} aria-hidden="true" />
+            <SourceVideoIcon size={16} aria-hidden="true" />
           </XlethIconButton>
         </div>
       </div>
@@ -222,12 +220,14 @@ function TitleBarLauncherButton({ entry }) {
       data-active={String(panelVisible)}
       style={{ '--xleth-windowing-panel-color': `var(${entry.typeColorToken})` }}
       onClick={() => usePanelRegistry.getState().togglePanel(entry.id)}
-      title={`${entry.title} (${entry.fKey})`}
+      title={entry.fKey ? `${entry.title} (${entry.fKey})` : entry.title}
+      data-hint={`${entry.title}: show or hide the panel`}
+      data-hint-mods={entry.fKey || undefined}
       aria-label={`Toggle ${entry.title}`}
       aria-pressed={panelVisible}
       data-dock-label={entry.title}
     >
-      <Icon size={22} strokeWidth={2} aria-hidden="true" />
+      <Icon size={16} aria-hidden="true" />
     </XlethIconButton>
   )
 }

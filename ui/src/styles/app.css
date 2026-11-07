@@ -16725,14 +16725,12 @@ html[data-xleth-backdrop="native-acrylic"] .xleth-center-column {
   color: var(--xleth-flat-text-muted);
 }
 
-/* Lucide draws on a 24x24 grid with stroke-width 2, so at 13px every stroke
-   lands on 1.08px and anti-aliases into mush. Normalising the stroke back to
-   a whole pixel at rest keeps the glyphs legible, and geometricPrecision stops
-   the renderer snapping strokes as the dock magnifies them. */
+/* The launchers use the Xleth icon family (ui-kit/icons): 1.5 stroke on a 16px
+   grid, so nothing overrides the stroke here. geometricPrecision stops the
+   renderer snapping strokes as the dock magnifies them. */
 .titlebar-launcher-btn svg {
   width: 13px;
   height: 13px;
-  stroke-width: 1.85;
   shape-rendering: geometricPrecision;
 }
 

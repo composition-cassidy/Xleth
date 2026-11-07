@@ -159,7 +159,8 @@ export function DetailDock({ renderPanel }: DetailDockProps) {
                 onClick={() => activateDetailTab(tab.id)}
                 onKeyDown={onTabKeyDown(index)}
               >
-                {entry.title}
+                <entry.icon size={14} aria-hidden="true" />
+                <span>{entry.title}</span>
               </button>
               <button
                 type="button"

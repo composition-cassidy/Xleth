@@ -1,15 +1,16 @@
 import { useState, useRef } from 'react'
-import { MousePointer2, Pencil, Scissors, Trash2, Plus, AlignJustify, FolderPlus, Layers } from 'lucide-react'
+import { Plus, AlignJustify, FolderPlus, Layers } from 'lucide-react'
+import { DeleteToolIcon, DrawToolIcon, SelectToolIcon, SliceToolIcon } from '../../ui-kit'
 import { labelHexColor } from '../../constants/labels.js'
 import { getSelectableSyllables } from '../SyllableSplitter/syllableModel.js'
 import useTimelineDisplayStore from '../../stores/timelineDisplayStore.js'
 import TimelineDisplayPopover from './TimelineDisplayPopover.jsx'
 
 const TOOLS = [
-  { id: 'select', label: 'Select', shortcut: 'S', icon: MousePointer2 },
-  { id: 'pencil', label: 'Pencil', shortcut: 'P', icon: Pencil },
-  { id: 'split',  label: 'Split',  shortcut: 'C', icon: Scissors },
-  { id: 'delete', label: 'Delete', shortcut: 'D', icon: Trash2 },
+  { id: 'select', label: 'Select', shortcut: 'S', icon: SelectToolIcon },
+  { id: 'pencil', label: 'Pencil', shortcut: 'P', icon: DrawToolIcon },
+  { id: 'split',  label: 'Split',  shortcut: 'C', icon: SliceToolIcon },
+  { id: 'delete', label: 'Delete', shortcut: 'D', icon: DeleteToolIcon },
 ]
 
 const SNAP_OPTIONS = ['1/64', '1/32', '1/16', '1/8', 'Beat', 'Half', 'Bar']
@@ -58,8 +59,12 @@ export default function TimelineToolbar({
             className={`timeline-tool-btn ${activeTool === id ? 'active' : ''}`}
             onClick={() => setActiveTool(id)}
             title={`${label} (${shortcut})`}
+            aria-label={label}
+            aria-pressed={activeTool === id}
+            data-hint={`${label} tool`}
+            data-hint-mods={`Key: ${shortcut}`}
           >
-            <Icon size={14} />
+            <Icon size={16} />
           </button>
         ))}
       </div>
