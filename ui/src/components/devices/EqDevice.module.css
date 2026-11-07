@@ -1,0 +1,120 @@
+@layer kit {
+  /* Hosts the EQ canvas edge to edge in the display well. */
+  .display {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    touch-action: none;
+  }
+
+  .band {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-1);
+    width: 100%;
+    min-width: 0;
+  }
+
+  .knobs {
+    display: flex;
+    justify-content: center;
+    gap: 2px;
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-1);
+    min-width: 0;
+  }
+
+  .empty {
+    margin: 0;
+    padding: 0 var(--space-2);
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+    line-height: 1.5;
+    text-align: center;
+  }
+
+  .dyn {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: 2px;
+  }
+
+  .readout {
+    flex: 1 0 100%;
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+    text-align: center;
+  }
+
+  /* The band-type menu: a floating surface, so it carries the offset shadow. */
+  .menu {
+    position: fixed;
+    z-index: 400;
+    display: flex;
+    flex-direction: column;
+    box-sizing: border-box;
+    width: 160px;
+    padding: var(--space-1) 0;
+    border: 1px solid var(--ui-boundary);
+    background: var(--ui-g2);
+    box-shadow: var(--ui-shadow-float);
+    font-family: var(--ui-font);
+  }
+
+  .menuItem {
+    display: flex;
+    align-items: center;
+    height: var(--ctl-h-sm);
+    padding: 0 var(--space-2);
+    border: 0;
+    background: transparent;
+    color: var(--ui-ink);
+    font-family: inherit;
+    font-size: var(--type-12);
+    text-align: left;
+    cursor: default;
+  }
+
+  .menuItem:hover,
+  .menuItem:focus-visible {
+    background: var(--ui-g3);
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  /* The current type is marked by a glyph as well as ink, never colour alone. */
+  .menuItem[aria-checked="true"]::before {
+    content: "\2713";
+    width: var(--space-3);
+    margin-left: calc(-1 * var(--space-1));
+    margin-right: var(--space-1);
+  }
+
+  .menuItem[aria-checked="false"]::before {
+    content: "";
+    width: var(--space-3);
+    margin-left: calc(-1 * var(--space-1));
+    margin-right: var(--space-1);
+  }
+
+  .menuItem[aria-checked="true"] {
+    font-weight: var(--weight-semibold);
+  }
+
+  .menuSep {
+    height: 1px;
+    margin: var(--space-1) 0;
+    background: var(--ui-g4);
+  }
+}

@@ -22,6 +22,8 @@ import ReverbDevice from './ReverbDevice.jsx'
 import useReverbStore from '../../stores/reverbStore.js'
 import LimiterDevice from './LimiterDevice.jsx'
 import useLimiterStore from '../../stores/limiterStore.js'
+import EqDevice from './EqDevice.jsx'
+import useEqStore from '../../stores/eqStore.js'
 
 export const DEVICE_BODIES = {
   // Width omitted: the frame fits the body's fixed-width sections (the
@@ -32,6 +34,7 @@ export const DEVICE_BODIES = {
   uniflange: { Body: UniFlangeDevice, useEditorStore: useUniFlangeStore },
   reverb: { Body: ReverbDevice, useEditorStore: useReverbStore },
   limiter: { Body: LimiterDevice, useEditorStore: useLimiterStore },
+  xletheq: { Body: EqDevice, useEditorStore: useEqStore },
 }
 
 export function deviceBodyFor(pluginId) {

@@ -66,6 +66,7 @@ const PHASE_4B_DEVICES = [
   { pluginId: 'uniflange', title: 'UniFlange', base: 31 },
   { pluginId: 'reverb', title: 'Reverb', base: 41 },
   { pluginId: 'limiter', title: 'Limiter', base: 51 },
+  { pluginId: 'xletheq', title: 'Parametric EQ', base: 61 },
 ]
 const deviceFx = (pluginId, nodeId, extra = {}) => ({
   nodeId, pluginId, position: 0, bypassed: false, effectInstanceId: `gallery-${nodeId}`, ...extra,

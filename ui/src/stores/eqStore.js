@@ -38,7 +38,10 @@ export const BAND_COLORS = [
   'var(--theme-eq-band-13)', 'var(--theme-eq-band-14)', 'var(--theme-eq-band-15)', 'var(--theme-eq-band-16)',
 ]
 
-const useEqStore = create((set, get) => ({
+// The store body is exported so a device can own a PRIVATE instance (the Devices
+// tab hosts several EQs at once; the default store below tracks only the one
+// open in a window). Same actions, same engine calls.
+export const eqStoreInitializer = (set, get) => ({
   // { trackId, nodeId, storeKey } or null
   target: null,
 
@@ -271,6 +274,8 @@ const useEqStore = create((set, get) => ({
       for (const [p, v] of specParams) await get().setBandParam(newIdx, p, v)
     }
   },
-}))
+})
+
+const useEqStore = create(eqStoreInitializer)
 
 export default useEqStore
