@@ -265,6 +265,21 @@ then nudged out where a ramp surface would fall under 4.5:1, and the polarity is
 worst case over g0..g3. Physical limit: near mid brightness no single colour reaches 4.5:1 on a spread of
 surfaces, so there g2 and g3 are flattened toward the panel instead of leaving the text's reach.
 
+**Accent never on chrome (load-time migration).** A saved user theme or Appearance file used to load verbatim, and
+the ramp stepped ink-2 / ink-3 / boundary off a text colour that carried the accent's hue by HSL lightness, which
+amplifies a faint cast into a strongly coloured outline (chroma 0.008 -> 0.10). Three layers now hold the line.
+(1) `deriveTheme` never gives a `--theme-ui-*` step more OKLCH chroma than the base it steps from. (2)
+`buildAppearanceTheme` holds text, boundary and dividers at the neutral cap whatever the tint slider says; only
+surfaces may pass it (and warn). (3) `migrateChrome` (`runtime/chromeMigration.ts`, `chromeModel` 2) runs in
+memory when a user theme loads (boot and the editor): it caps explicit surface chroma at 0.010 and ink chroma at
+0.008 keeping lightness and hue, points the legacy text tiers and border-subtle at ink-2 / ink-3 / g4 like the
+shipped themes, drops stale old-default cyan accent fills on a non-cyan theme, and stamps the file. It is
+idempotent, never reads accent, danger or identity colours, and never writes the file: that only happens when the
+user saves. `findTintedInk` (ink chroma > 0.02) logs a `[Theme]` warning. Guarded by
+`theming/__tests__/chromeAccentGuard.test.ts` over the five shipped themes, three saved-theme fixtures and the
+Appearance builder at its extreme tint; `npm run shots -- --theme-file <json>` photographs a saved theme through
+the same path.
+
 **Theme editor.** Simple mode is brightness, text contrast, tint and tint hue (surfaces) plus accent and
 danger; the knobs are read back from any resolved theme, so they open correctly on a custom one. Live
 readouts show ink, ink 3 and boundary against the panel (ratio, and Pass or Below, never colour alone).

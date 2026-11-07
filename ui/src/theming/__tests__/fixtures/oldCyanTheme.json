@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "name": "Old custom (cyan accent)",
+  "author": "fixture",
+  "description": "Fixture: pre-Phase-7 saved theme, cyan accent with cyan-tinted text. Five base tokens, no ramp.",
+  "locked": false,
+  "derivationDetached": [],
+  "tokens": {
+    "--theme-bg-primary": "#091213",
+    "--theme-bg-surface": "#14201F",
+    "--theme-accent": "#33CED6",
+    "--theme-text": "#E2F7F8",
+    "--theme-danger": "#FF4757",
+    "--theme-bg-inset": "#0A1516",
+    "--theme-accent-bg-subtle": "rgba(51, 206, 214, 0.08)"
+  }
+}

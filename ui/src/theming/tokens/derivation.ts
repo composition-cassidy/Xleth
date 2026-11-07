@@ -31,6 +31,7 @@
 
 import type { BaseTokens } from './base';
 import { DEFAULT_RAMP, RAMPS, type RampName } from './neutralRamp';
+import { capChroma, hexToOklch } from '../../ui-kit/colorMath';
 
 // ──────────────────────────────────────────────────────────────────────────
 // Color math
@@ -245,16 +246,26 @@ export function deriveTheme(
   // the Default base (#141414 / #1B1B1B / #E6E6E6) reproduces the contract values
   // exactly. Hue and saturation are inherited, so a neutral base yields a neutral
   // ramp.
+  //
+  // A step moves HSL lightness and keeps HSL saturation, so on a tinted base it AMPLIFIES
+  // the cast: a near-white text of OKLCH chroma 0.008 becomes a chroma-0.10 boundary. The
+  // ramp is therefore never allowed more chroma than the base it steps from (`stepOf`).
+  // Neutral bases are unaffected (0 stays 0); this is what keeps outlines and labels grey
+  // on a theme whose text or surface carries a hue.
   const st = ramp.steps;
+  const stepOf = (from: string, dL: number): string => {
+    const stepped = shift(from, { dL });
+    return capChroma(stepped, hexToOklch(normalizeHex(from)).c);
+  };
   put('--theme-ui-g0',       bgPrimary);
   put('--theme-ui-g1',       bgSurface);
-  put('--theme-ui-g2',       shift(bgSurface, { dL: st.g2 }));
-  put('--theme-ui-g3',       shift(bgSurface, { dL: st.g3 }));
-  put('--theme-ui-g4',       shift(bgSurface, { dL: st.g4 }));
+  put('--theme-ui-g2',       stepOf(bgSurface, st.g2));
+  put('--theme-ui-g3',       stepOf(bgSurface, st.g3));
+  put('--theme-ui-g4',       stepOf(bgSurface, st.g4));
   put('--theme-ui-ink',      text);
-  put('--theme-ui-ink-2',    shift(text, { dL: st.ink2 }));
-  put('--theme-ui-ink-3',    shift(text, { dL: st.ink3 }));
-  put('--theme-ui-boundary', shift(text, { dL: st.boundary }));
+  put('--theme-ui-ink-2',    stepOf(text, st.ink2));
+  put('--theme-ui-ink-3',    stepOf(text, st.ink3));
+  put('--theme-ui-boundary', stepOf(text, st.boundary));
 
   const sem = ramp.semantic;
   put('--theme-ui-rec',              sem.rec);

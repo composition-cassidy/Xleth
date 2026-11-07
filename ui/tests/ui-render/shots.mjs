@@ -20,6 +20,8 @@
 //            --port <n>                         preview port (default 4173)
 //            --threshold <0..1>                 pixelmatch threshold for --compare (default 0.1)
 //            --theme <slug>                     shipped theme to photograph (xleth-default|light|warm|cool|high-contrast)
+//            --theme-file <path>                a saved-theme JSON to photograph through the user-theme path (migration
+//                                               included), e.g. src/theming/__tests__/fixtures/oldCyanTheme.json
 //            --scale <100..200>                 UI scale %: CDP metrics override, so the CSS viewport shrinks and
 //                                               devicePixelRatio rises exactly as Electron window zoom does
 //            --viewport <WxH>                   only this viewport (default: all three)
@@ -55,10 +57,16 @@ function parseArgs(argv) {
     else if (a === '--port') args.port = Number(argv[++i])
     else if (a === '--threshold') args.threshold = Number(argv[++i])
     else if (a === '--theme') args.theme = argv[++i]
+    else if (a === '--theme-file') args.themeFile = argv[++i]
     else if (a === '--scale') args.scale = Number(argv[++i])
     else if (a === '--viewport') args.viewport = argv[++i]
     else if (a === '--compare') { args.compare = [argv[++i], argv[++i]] }
     else throw new Error(`unknown argument: ${a}`)
+  }
+  if (args.themeFile) {
+    if (args.theme) throw new Error('--theme and --theme-file are exclusive')
+    args.themeFixture = JSON.parse(fs.readFileSync(path.resolve(args.themeFile), 'utf8').replace(/^\uFEFF/, ''))
+    args.theme = 'fixture-theme'
   }
   if (args.compare && args.compare.some((x) => !x)) throw new Error('--compare needs two labels')
   if (!/^[\w.-]+$/.test(args.label)) throw new Error('--label may only contain letters, digits, ., _ and -')
@@ -301,6 +309,9 @@ async function capture(args) {
         reducedMotion: 'reduce',
       })
       const page = await context.newPage()
+      if (args.themeFixture) {
+        await page.addInitScript((fx) => { globalThis.__XLETH_THEME_FIXTURE__ = fx }, { slug: args.theme, theme: args.themeFixture })
+      }
       const pageErrors = []
       const consoleErrors = []
       page.on('pageerror', (e) => pageErrors.push(String(e.message || e)))
@@ -316,7 +327,11 @@ async function capture(args) {
       await page.screenshot({ path: shotPath })
       const audit = await page.evaluate(auditTextInPage, { minContrast: MIN_CONTRAST, minFontPx: MIN_FONT_PX })
       const overflow = await page.evaluate(overflowInPage)
-      report.viewports[vp.name] = { ...audit, overflow, pageErrors, consoleErrors }
+      // The resolved neutral-chrome tokens, so a run shows what the theme put on outlines and labels.
+      const chromeTokens = await page.evaluate(() => Object.fromEntries(
+        ['--theme-accent', '--theme-ui-boundary', '--theme-ui-ink', '--theme-ui-ink-2', '--theme-ui-ink-3', '--theme-ui-g4']
+          .map((n) => [n, document.documentElement.style.getPropertyValue(n).trim()])))
+      report.viewports[vp.name] = { ...audit, overflow, pageErrors, consoleErrors, chromeTokens }
       log(`${vp.name} @${Math.round(scale * 100)}% ${args.theme || 'xleth-default'}: ${audit.total} text nodes, ${audit.lowContrast} < ${MIN_CONTRAST}:1, ${audit.small} < ${MIN_FONT_PX}px, ${overflow.length} overflowing, ${pageErrors.length} page errors`)
       await context.close()
     }

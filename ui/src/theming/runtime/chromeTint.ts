@@ -24,6 +24,27 @@ export const CHROME_SURFACE_TOKENS: ReadonlyArray<string> = [
   '--theme-preview-loaded-bg',
 ];
 
+/**
+ * OKLCH chroma above which an ink token (text tier, outline, divider) reads as coloured. Looser
+ * than the surface cap because text and thin lines need a little room to stay AA, but far below
+ * anything an accent hue produces (cyan ink is ~0.12).
+ */
+export const INK_CHROMA_CAP = 0.02;
+
+/** Tokens that paint labels, control outlines and dividers. Only the accent may be coloured. */
+export const CHROME_INK_TOKENS: ReadonlyArray<string> = [
+  '--theme-text',
+  '--theme-text-muted',
+  '--theme-text-subtle',
+  '--theme-text-placeholder',
+  '--theme-border-subtle',
+  '--theme-ui-ink',
+  '--theme-ui-ink-2',
+  '--theme-ui-ink-3',
+  '--theme-ui-boundary',
+  '--theme-ui-g4',
+];
+
 /** Follow `var(--x)` references through a resolved token map to a concrete #RRGGBB, or null. */
 export function resolveHex(values: Record<string, string>, name: string, depth = 0): string | null {
   const raw = values[name];
@@ -50,6 +71,18 @@ export interface TintedSurface {
 export function findTintedSurfaces(values: Record<string, string>, cap = TINT_CHROMA_CAP): TintedSurface[] {
   const out: TintedSurface[] = [];
   for (const token of CHROME_SURFACE_TOKENS) {
+    const hex = resolveHex(values, token);
+    if (!hex) continue;
+    const chroma = chromaOf(hex);
+    if (chroma > cap) out.push({ token, hex, chroma });
+  }
+  return out.sort((a, b) => b.chroma - a.chroma);
+}
+
+/** Ink tokens (labels, outlines, dividers) in a resolved theme whose chroma exceeds the cap, worst first. */
+export function findTintedInk(values: Record<string, string>, cap = INK_CHROMA_CAP): TintedSurface[] {
+  const out: TintedSurface[] = [];
+  for (const token of CHROME_INK_TOKENS) {
     const hex = resolveHex(values, token);
     if (!hex) continue;
     const chroma = chromaOf(hex);

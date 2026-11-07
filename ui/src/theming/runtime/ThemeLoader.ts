@@ -11,6 +11,7 @@
 
 import { validateTheme } from '../schema/themeSchema';
 import type { ThemeFile, ValidationResult } from '../schema/types';
+import { migrateChrome } from './chromeMigration';
 import shippedDefault from '../shipped/xleth-default.json';
 import shippedLight from '../shipped/xleth-light.json';
 import shippedWarm  from '../shipped/xleth-warm.json';
@@ -60,6 +61,10 @@ export function makeRendererBridge(): ThemeBridge {
         try {
           const q = new URLSearchParams(globalThis.location?.search ?? '').get('theme');
           if (q && SHIPPED_THEMES[q]) return q;
+          // A saved-theme fixture the harness injected (tests/ui-render/shots.mjs --theme-file):
+          // it goes through the same user-theme path, migration included.
+          const fx = (globalThis as unknown as { __XLETH_THEME_FIXTURE__?: { slug?: string } }).__XLETH_THEME_FIXTURE__;
+          if (q && fx?.slug === q) return q;
         } catch { /* no location */ }
         return null;
       }
@@ -67,7 +72,12 @@ export function makeRendererBridge(): ThemeBridge {
       return typeof v === 'string' && v.length > 0 ? v : null;
     },
     async readUserTheme(name) {
-      const x = (globalThis as unknown as { xleth?: { theme?: { loadUser: (name: string) => Promise<unknown> } } }).xleth;
+      const g = globalThis as unknown as {
+        xleth?: { theme?: { loadUser: (name: string) => Promise<unknown> } };
+        __XLETH_THEME_FIXTURE__?: { slug?: string; theme?: unknown };
+      };
+      const x = g.xleth;
+      if (!x && g.__XLETH_THEME_FIXTURE__?.slug === name) return g.__XLETH_THEME_FIXTURE__.theme ?? null;
       if (!x?.theme?.loadUser) return null;
       try { return await x.theme.loadUser(name); }
       catch { return null; }
@@ -97,7 +107,13 @@ export async function loadActiveTheme(bridge: ThemeBridge = makeRendererBridge()
   if (!validation.valid) {
     return fallback(requested, validation, `user theme "${requested}" failed validation`);
   }
-  return { theme: raw as ThemeFile, source: 'user', requestedName: requested, validation };
+  // Saved themes predate the neutral-chrome contract: migrate in memory (never written back here).
+  const migrated = migrateChrome(raw as ThemeFile);
+  if (migrated.changed) {
+    console.debug(`[Theme] chrome migration "${requested}": ${migrated.notes.length} change(s)`);
+    for (const n of migrated.notes) console.debug(`[Theme]   ${n}`);
+  }
+  return { theme: migrated.theme, source: 'user', requestedName: requested, validation };
 }
 
 function fallback(requested: string, validation: ValidationResult, reason: string): LoadResult {

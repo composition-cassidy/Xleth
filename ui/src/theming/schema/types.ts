@@ -80,6 +80,12 @@ export interface ThemeFile {
    */
   ramp?: 'dark' | 'light' | 'hc';
   /**
+   * Version of the chrome model the file was written or migrated under (runtime/chromeMigration.ts).
+   * Absent = saved before the neutral-chrome contract: it is migrated in memory on load, and the
+   * file on disk is only rewritten when the user saves.
+   */
+  chromeModel?: number;
+  /**
    * Explicit token values. Any token name mapped here wins over derivation
    * (provided the token is listed in `derivationDetached` if it's in §3.2).
    * Keys MUST start with `--theme-`.

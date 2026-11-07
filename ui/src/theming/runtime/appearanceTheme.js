@@ -27,6 +27,8 @@ export const DEFAULT_APPEARANCE_DARKNESS = 0;
 export const DEFAULT_APPEARANCE_HUE = 240;
 export const DEFAULT_APPEARANCE_SATURATION = 0;
 export const APPEARANCE_TINT_MAX = 300;
+// Text, outlines and dividers never carry more tint than the neutral cap, whatever the slider says.
+const INK_TINT_MAX = 100;
 // Must equal TINT_CHROMA_CAP in runtime/chromeTint.ts (a unit test asserts it).
 export const NEUTRAL_TINT_CAP_CHROMA = 0.012;
 // Scales how far each text tier sits from its background. See contrastTarget().
@@ -372,9 +374,16 @@ export function buildAppearanceTheme(accent, darkness, options = {}) {
   const lums = surfaces.map(relativeLuminance);
   const refBg = surfaces[lums.indexOf(goLight ? Math.max(...lums) : Math.min(...lums))];
 
-  const text = contrastText(TEXT_ANCHORS['--theme-text'], bgSurface, goLight, tintOpts, contrastScale, undefined, refBg);
-  const muted = contrastText(TEXT_ANCHORS['--theme-text-muted'], bgSurface, goLight, tintOpts, contrastScale, undefined, refBg);
-  const subtle = contrastText(TEXT_ANCHORS['--theme-text-subtle'], bgSurface, goLight, tintOpts, contrastScale, undefined, refBg);
+  // Only the SURFACES may carry the tint past the neutral cap (the editor warns when they do).
+  // Text tiers, outlines and dividers are held at the cap at most, so a 300% tint never turns
+  // labels and control outlines into the tint colour.
+  const inkTintOpts = { hue: tintOpts.hue, tint: Math.min(tintOpts.tint, INK_TINT_MAX) };
+  const text = contrastText(TEXT_ANCHORS['--theme-text'], bgSurface, goLight, inkTintOpts, contrastScale, undefined, refBg);
+  const muted = contrastText(TEXT_ANCHORS['--theme-text-muted'], bgSurface, goLight, inkTintOpts, contrastScale, undefined, refBg);
+  const subtle = contrastText(TEXT_ANCHORS['--theme-text-subtle'], bgSurface, goLight, inkTintOpts, contrastScale, undefined, refBg);
+
+  // The divider (legacy border-subtle and the ramp's g4) is a line, not a surface: it holds at the cap.
+  const borderDivider = borderSubtle(bgSurface, goLight, inkTintOpts);
 
   return {
     schemaVersion: 1,
@@ -393,6 +402,7 @@ export function buildAppearanceTheme(accent, darkness, options = {}) {
       '--theme-border-subtle',
       '--theme-ui-g2',
       '--theme-ui-g3',
+      '--theme-ui-g4',
       '--theme-ui-ink-2',
       '--theme-ui-ink-3',
       '--theme-ui-boundary',
@@ -406,12 +416,13 @@ export function buildAppearanceTheme(accent, darkness, options = {}) {
       '--theme-text-muted': muted,
       '--theme-text-subtle': subtle,
       '--theme-text-placeholder': subtle,
-      '--theme-border-subtle': borderSubtle(bgSurface, goLight, tintOpts),
+      '--theme-border-subtle': borderDivider,
+      '--theme-ui-g4': borderDivider,
       '--theme-ui-g2': surfaces[2],
       '--theme-ui-g3': surfaces[3],
       '--theme-ui-ink-2': muted,
       '--theme-ui-ink-3': subtle,
-      '--theme-ui-boundary': contrastText(TEXT_ANCHORS['--theme-text'], refBg, goLight, tintOpts, contrastScale, BOUNDARY_TARGET),
+      '--theme-ui-boundary': contrastText(TEXT_ANCHORS['--theme-text'], refBg, goLight, inkTintOpts, contrastScale, BOUNDARY_TARGET),
     },
   };
 }

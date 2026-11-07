@@ -11,6 +11,7 @@ import PreviewPane from './PreviewPane'
 import ChromeReadouts from './ChromeReadouts'
 import { applyChromeKnobs, neutralizeTheme, type ChromeKnobs } from '../runtime/chromeKnobs'
 import { resolveHex } from '../runtime/chromeTint'
+import { CHROME_MODEL_VERSION, migrateChrome } from '../runtime/chromeMigration'
 
 interface Props {
   onClose: () => void
@@ -100,7 +101,7 @@ export function ThemeEditorContent({
     ;(async () => {
       try {
         const raw = await xlethTheme()?.loadUser?.(selectedSlug)
-        if (raw) setWorkingTheme({ ...(raw as ThemeFile), locked: false })
+        if (raw) setWorkingTheme({ ...migrateChrome(raw as ThemeFile).theme, locked: false })
       } catch (e) {
         console.warn('[ThemeEditor] loadUser failed:', e)
       }
@@ -195,6 +196,7 @@ export function ThemeEditorContent({
         schemaVersion: 1,
         name,
         locked: false,
+        chromeModel: CHROME_MODEL_VERSION,
         derivationDetached: [],
         tokens: cleanTokens,
       }

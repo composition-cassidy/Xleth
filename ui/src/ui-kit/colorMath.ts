@@ -74,6 +74,23 @@ export function oklchToHex(color: Oklch): string {
   );
 }
 
+/**
+ * `hex` with its OKLCH chroma limited to `maxChroma` (lightness and hue kept). A colour that
+ * is already at or under the limit is returned unchanged (as given, not re-encoded). 8-bit
+ * rounding can land a hair over the target, so the result is re-checked and stepped down.
+ */
+export function capChroma(hex: string, maxChroma: number): string {
+  const src = hexToOklch(hex);
+  if (src.c <= maxChroma) return hex;
+  let target = maxChroma;
+  let out = oklchToHex({ ...src, c: target });
+  for (let i = 0; i < 12 && hexToOklch(out).c > maxChroma; i += 1) {
+    target *= 0.85;
+    out = oklchToHex({ ...src, c: target });
+  }
+  return out;
+}
+
 /** Shortest angular distance between two hues, degrees in [0, 180]. */
 export function hueDistance(a: number, b: number): number {
   const d = Math.abs(a - b) % 360;

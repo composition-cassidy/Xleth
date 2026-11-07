@@ -15,7 +15,7 @@ import { createContext, useCallback, useContext, useEffect, useMemo, useRef, use
 import type { ReactNode } from 'react';
 
 import { resolveTheme, writeThemeToRoot, type ResolvedTheme } from './applyTheme';
-import { findTintedSurfaces } from './chromeTint';
+import { findTintedInk, findTintedSurfaces } from './chromeTint';
 import { DEFAULT_THEME_NAME, loadActiveTheme, type LoadResult } from './ThemeLoader';
 import { createThemeWriter, type ThemeWriter } from './ThemeWriter';
 import type { ThemeFile, TokenValue } from '../schema/types';
@@ -91,6 +91,10 @@ export function ThemeProvider({ children, writer, onLoaded }: ThemeProviderProps
     const tinted = findTintedSurfaces(resolved.values);
     if (tinted.length > 0) {
       console.warn(`[Theme] ${slug} has tinted chrome: ${tinted.map(t => `${t.token}=${t.hex}`).join(', ')} (it still loads; the theme editor offers Neutralize)`);
+    }
+    const tintedInk = findTintedInk(resolved.values);
+    if (tintedInk.length > 0) {
+      console.warn(`[Theme] ${slug} has coloured labels/outlines: ${tintedInk.map(t => `${t.token}=${t.hex}`).join(', ')} (only the accent may carry colour)`);
     }
     window.dispatchEvent(new CustomEvent('xleth-theme-changed'));
   }, [resolved, slug]);
