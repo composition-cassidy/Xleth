@@ -1,31 +1,42 @@
-import React, { useCallback, useEffect, useRef } from 'react'
+import { memo, useCallback, useEffect, useRef } from 'react'
+import { VolumeX } from 'lucide-react'
+import { Button, Fader, Knob, Meter, NumberBox, Select, Toggle, dbTaperScale } from '../../ui-kit'
 import useMixerStore, { MASTER_OUTPUT_TARGET_ID, normalizeOutputTargetId } from '../../stores/mixerStore.js'
 import useTimelineFocusStore from '../../stores/timelineFocusStore.js'
-import PanWidthKnob from './PanWidthKnob.jsx'
-import VolumeFader, { FaderReadout } from './VolumeFader.jsx'
-import PeakMeter from './PeakMeter.jsx'
 import useEffectChainStore, { resolveFxMode } from '../../stores/effectChainStore.js'
 import useFxChainDragStore from '../../stores/fxChainDragStore.js'
+import { usePanelRegistry } from '../../windowing/registry/PanelRegistry'
+import { subscribeMeter } from './mixerMeterBus.js'
+import { dbToGain, formatPan, formatWidth, gainToDb, insertLabel, parsePan, parseWidth } from './mixerMath.js'
+import styles from './MixerStrip.module.css'
 
 const EMPTY_CHAIN = []
 
-function FxBadge({ chain = EMPTY_CHAIN, fxMode = 'chain' }) {
-  const graphModeActive = fxMode === 'graph'
-  const empty = chain.length === 0
-  const label = graphModeActive ? 'FX Graph' : empty ? 'No FX' : `FX ${chain.length}`
-
-  return (
-    <div
-      className={`mixer-strip-fx-badge${graphModeActive ? ' mixer-strip-fx-badge--graph' : ''}${empty && !graphModeActive ? ' mixer-strip-fx-badge--empty' : ''}`}
-      title={label}
-    >
-      {graphModeActive && <span className="mixer-strip-fx-badge-dot" aria-hidden="true" />}
-      <span className="mixer-strip-fx-badge-text">{label}</span>
-    </div>
-  )
+/** Stable `subscribe` for a kit Meter: this strip's levels from the mixer's one poll loop. */
+export function useMeterSubscribe(key) {
+  return useCallback((push) => subscribeMeter(key, push), [key])
 }
 
-export default function MixerStrip({ trackId }) {
+/** Which way a strip is being treated by the FX-chain library drag, for the drop outline. */
+export function useFxDropState(fxKey) {
+  const dragActive = useFxChainDragStore(s => s.effects != null)
+  const dragSourceKey = useFxChainDragStore(s => s.sourceKey)
+  const dragHoverKey = useFxChainDragStore(s => s.hoverKey)
+  const isSource = dragActive && dragSourceKey === fxKey
+  const isTarget = dragActive && !isSource
+  if (isSource) return 'source'
+  if (isTarget) return dragHoverKey === fxKey ? 'hover' : 'target'
+  return undefined
+}
+
+/** Select this strip's chain and open the Devices tab on it. */
+export function openDevicesFor(chainKey, trackId) {
+  if (trackId != null) useTimelineFocusStore.getState().setFocusedTrackId(trackId)
+  useMixerStore.getState().setSelectedChainKey(chainKey)
+  usePanelRegistry.getState().openPanel('devices')
+}
+
+function MixerStrip({ trackId, index, color, stripW = 84 }) {
   const fxKey = String(trackId)
   const track = useMixerStore(s => s.tracks[trackId])
   const tracks = useMixerStore(s => s.tracks)
@@ -40,22 +51,31 @@ export default function MixerStrip({ trackId }) {
   const toggleMute = useMixerStore(s => s.toggleMute)
   const toggleSolo = useMixerStore(s => s.toggleSolo)
   const toggleVisualOnly = useMixerStore(s => s.toggleVisualOnly)
-  const selectedChainKey = useMixerStore(s => s.selectedChainKey)
+  const selected = useMixerStore(s => s.selectedChainKey === fxKey)
   const setSelectedChainKey = useMixerStore(s => s.setSelectedChainKey)
   const setFocusedTrackId = useTimelineFocusStore(s => s.setFocusedTrackId)
   const chain = useEffectChainStore(s => s.chains[fxKey] ?? EMPTY_CHAIN)
   const fxMode = useEffectChainStore(s => resolveFxMode(s.fxModes, fxKey))
-
-  // FX Chain Library: the strip only reports the right-click and advertises
-  // itself as a drop target via data-fx-key. FxChainMenuLayer owns the menu,
-  // the dialog, the ghost and the hit-testing.
   const openFxChainMenu = useFxChainDragStore(s => s.openMenu)
-  const dragActive = useFxChainDragStore(s => s.effects != null)
-  const dragSourceKey = useFxChainDragStore(s => s.sourceKey)
-  const dragHoverKey = useFxChainDragStore(s => s.hoverKey)
-  const isDragSource = dragActive && dragSourceKey === fxKey
-  const isDropTarget = dragActive && !isDragSource
-  const isDropHover = isDropTarget && dragHoverKey === fxKey
+  const fxDrop = useFxDropState(fxKey)
+  const subscribe = useMeterSubscribe(fxKey)
+  const stripRef = useRef(null)
+
+  const routeTargetId = normalizeOutputTargetId(outputRoutes[trackId])
+  const routeTarget = routeTargetId === MASTER_OUTPUT_TARGET_ID ? null : tracks[routeTargetId]
+
+  useEffect(() => {
+    if (selected) stripRef.current?.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' })
+  }, [selected])
+
+  useEffect(() => {
+    if (routeTargetId !== MASTER_OUTPUT_TARGET_ID && !routeTarget) refreshRouting()
+  }, [routeTargetId, routeTarget, refreshRouting])
+
+  const handleSelect = useCallback(() => {
+    setFocusedTrackId(trackId)
+    setSelectedChainKey(fxKey)
+  }, [setFocusedTrackId, setSelectedChainKey, trackId, fxKey])
 
   const handleContextMenu = useCallback((e) => {
     e.preventDefault()
@@ -63,157 +83,108 @@ export default function MixerStrip({ trackId }) {
     openFxChainMenu(fxKey, e.clientX, e.clientY)
   }, [openFxChainMenu, fxKey])
 
-  const handleVolume = useCallback((gain) => setVolume(trackId, gain), [trackId, setVolume])
-  const handlePanLive = useCallback((v) => setPan(trackId, v), [trackId, setPan])
-  const handlePanCommit = useCallback((v) => setPan(trackId, v), [trackId, setPan])
-  const handleSpreadLive = useCallback((v) => setSpread(trackId, v), [trackId, setSpread])
-  const handleSpreadCommit = useCallback((v) => setSpread(trackId, v), [trackId, setSpread])
-  const routeTargetId = normalizeOutputTargetId(outputRoutes[trackId])
-  const routeTarget = routeTargetId === MASTER_OUTPUT_TARGET_ID ? null : tracks[routeTargetId]
-  const busInputCount = Object.entries(outputRoutes).reduce((count, [sourceId, targetId]) => {
-    if (Number(sourceId) === Number(trackId)) return count
-    return normalizeOutputTargetId(targetId) === Number(trackId) && tracks[sourceId] ? count + 1 : count
-  }, 0)
-  const outputTargets = getEligibleOutputTargets(trackId)
-  const hasSelectedTarget = outputTargets.some(option => option.targetTrackId === routeTargetId)
-  const selectedMissingTarget = routeTargetId !== MASTER_OUTPUT_TARGET_ID && !hasSelectedTarget
-  const selected = selectedChainKey === String(trackId)
-  const stripRef = useRef(null)
-
-  useEffect(() => {
-    if (selected) stripRef.current?.scrollIntoView({ behavior: 'smooth', inline: 'nearest', block: 'nearest' })
-  }, [selected])
-
-  const handleSelectStrip = useCallback(() => {
-    setFocusedTrackId(trackId)
-    setSelectedChainKey(String(trackId))
-  }, [setFocusedTrackId, setSelectedChainKey, trackId])
-
-  const handleOutputRouteChange = useCallback((e) => {
-    setOutputRoute(trackId, Number(e.target.value))
-  }, [trackId, setOutputRoute])
-
-  useEffect(() => {
-    if (routeTargetId !== MASTER_OUTPUT_TARGET_ID && !routeTarget) {
-      refreshRouting()
-    }
-  }, [routeTargetId, routeTarget, refreshRouting])
+  // Volume keeps pushing to the bridge on every live tick, exactly as the
+  // legacy fader did (there is no release-only commit for a track fader).
+  const handleVolume = useCallback((db) => setVolume(trackId, dbToGain(db)), [trackId, setVolume])
+  const handlePan = useCallback((v) => setPan(trackId, v), [trackId, setPan])
+  const handleSpread = useCallback((v) => setSpread(trackId, v), [trackId, setSpread])
+  const handleRoute = useCallback((target) => setOutputRoute(trackId, Number(target)), [trackId, setOutputRoute])
 
   if (!track) return null
+
+  const name = track.name || `Track ${trackId}`
+  const outputTargets = getEligibleOutputTargets(trackId)
+  const hasSelectedTarget = outputTargets.some(o => o.targetTrackId === routeTargetId)
+  const routeOptions = outputTargets.map(o => ({ value: o.targetTrackId, label: o.name }))
+  if (routeTargetId !== MASTER_OUTPUT_TARGET_ID && !hasSelectedTarget) {
+    routeOptions.unshift({ value: routeTargetId, label: 'Missing track', disabled: true })
+  }
+  const db = gainToDb(track.volume)
+  const knobW = Math.floor((stripW - 4) / 2)
 
   return (
     <div
       ref={stripRef}
-      className={`mixer-strip ${selected ? 'mixer-strip--selected' : ''} ${track.muted ? 'mixer-strip--muted' : ''} ${track.visualOnly ? 'mixer-strip--visual-only' : ''}${isDropTarget ? ' mixer-strip--fx-droptarget' : ''}${isDropHover ? ' mixer-strip--fx-drophover' : ''}${isDragSource ? ' mixer-strip--fx-dragsource' : ''}`}
-      onClick={handleSelectStrip}
-      onContextMenu={handleContextMenu}
+      className={styles.strip}
+      style={{ '--strip-id': color, '--strip-w': `${stripW}px` }}
+      data-selected={selected}
+      data-muted={track.muted || undefined}
+      data-visual-only={track.visualOnly || undefined}
+      data-fx-drop={fxDrop}
       data-fx-key={fxKey}
+      data-testid={`mixer-strip-${trackId}`}
+      role="group"
+      aria-label={`Track ${index} ${name}${track.muted ? ', muted' : ''}${track.solo ? ', soloed' : ''}`}
       aria-selected={selected}
+      onClick={handleSelect}
+      onContextMenu={handleContextMenu}
     >
-      {/* Track name */}
-      <div className="mixer-strip-label" title={track.name}>
-        {track.name}
+      <div className={styles.head} title={name}>
+        <span className={styles.num}>{index}</span>
+        <span className={styles.name}>{name}</span>
+        {track.muted ? <VolumeX className={styles.muteGlyph} size={12} aria-hidden="true" /> : null}
       </div>
 
-      <FxBadge chain={chain} fxMode={fxMode} />
+      <Button
+        size="sm"
+        className={styles.inserts}
+        aria-label={`${name}: ${insertLabel(chain, fxMode)}. Open in Devices`}
+        hint="Inserts on this track. Opens the Devices tab."
+        onClick={(e) => { e.stopPropagation(); openDevicesFor(fxKey, trackId) }}
+      >
+        {insertLabel(chain, fxMode)}
+      </Button>
 
-      {/* Mute / Solo / Visual-only */}
-      <div className="mixer-strip-controls">
-        <button
-          className={`mixer-ms-btn ${track.muted ? 'muted' : ''}`}
-          onClick={() => toggleMute(trackId)}
-          title="Mute"
-        >
-          M
-        </button>
-        <button
-          className={`mixer-ms-btn ${track.solo ? 'active' : ''}`}
-          onClick={() => toggleSolo(trackId)}
-          title="Solo"
-        >
-          S
-        </button>
-        <button
-          className={`mixer-ms-btn ${track.visualOnly ? 'active' : ''}`}
-          onClick={() => toggleVisualOnly(trackId)}
-          title="Visual Only — silences audio, keeps grid triggers"
-        >
-          V
-        </button>
+      <div className={styles.toggles}>
+        <Toggle
+          size="sm" className={styles.toggle} on={!!track.muted} onChange={() => toggleMute(trackId)}
+          aria-label={`Mute ${name}`} hint="Mute. Dims the strip and silences this track."
+        >M</Toggle>
+        <Toggle
+          size="sm" className={`${styles.toggle} ${styles.solo}`} on={!!track.solo} onChange={() => toggleSolo(trackId)}
+          aria-label={`Solo ${name}`} hint="Solo. Plays only soloed tracks."
+        >S</Toggle>
+        <Toggle
+          size="sm" className={styles.toggle} on={!!track.visualOnly} onChange={() => toggleVisualOnly(trackId)}
+          aria-label={`Visual only ${name}`} hint="Visual only. Silences the audio, keeps grid triggers."
+        >V</Toggle>
       </div>
 
-      {/* Meter + Fader + Knobs — keystone module */}
-      <div className="mixer-strip-bottom">
-        <div className="mixer-meter-fader-col">
-          <FaderReadout value={track.volume} onChange={handleVolume} />
-          <div className="mixer-strip-fader-area">
-            <PeakMeter trackId={trackId} />
-            <VolumeFader value={track.volume} onChange={handleVolume} />
-          </div>
-        </div>
-        <div className="mixer-strip-knobs">
-          <PanWidthKnob
-            value={track.pan}
-            min={-1}
-            max={1}
-            defaultValue={0}
-            label="PAN"
-            onLiveChange={handlePanLive}
-            onCommit={handlePanCommit}
-            size={28}
-            dragRange={120}
-            trackCssVar="--theme-mixer-pan-knob-track"
-            fillCssVar="--theme-mixer-pan-knob-fill"
-          />
-          <PanWidthKnob
-            value={track.spread}
-            min={0}
-            max={2}
-            defaultValue={1}
-            label="WIDTH"
-            onLiveChange={handleSpreadLive}
-            onCommit={handleSpreadCommit}
-            size={28}
-            dragRange={120}
-            trackCssVar="--theme-mixer-width-knob-track"
-            fillCssVar="--theme-mixer-width-knob-fill"
-          />
-        </div>
+      <div className={styles.knobs}>
+        <Knob
+          className={styles.knob} label="Pan" size={20} width={knobW} bipolar min={-1} max={1} defaultValue={0}
+          value={track.pan} format={formatPan} parse={parsePan}
+          onChange={handlePan} onCommit={handlePan} hint={`Pan of ${name}`}
+        />
+        <Knob
+          className={styles.knob} label="Width" size={20} width={knobW} min={0} max={2} defaultValue={1}
+          value={track.spread} format={formatWidth} parse={parseWidth}
+          onChange={handleSpread} onCommit={handleSpread} hint={`Stereo width of ${name}`}
+        />
       </div>
 
-      {/* Output routing — sits beneath the meter/fader, per the design */}
-      <div className="mixer-output-route">
-        <select
-          id={`mixer-output-${trackId}`}
-          className="mixer-output-select"
-          value={routeTargetId}
-          onChange={handleOutputRouteChange}
-          title={routingError || 'Output'}
-          aria-label="Output"
-        >
-          {selectedMissingTarget && (
-            <option value={routeTargetId} disabled>Missing track</option>
-          )}
-          {outputTargets.map(option => (
-            <option key={option.targetTrackId} value={option.targetTrackId}>
-              {option.name}
-            </option>
-          ))}
-        </select>
+      <div className={styles.field}>
+        <NumberBox
+          label={`${name} volume`} hideLabel width={stripW - 8} scale={dbTaperScale} unit="dB" defaultValue={0}
+          value={db} onChange={handleVolume} onCommit={handleVolume} hint={`Volume of ${name}`}
+        />
       </div>
 
-      <div className="mixer-route-badges" aria-live="polite">
-        {routeTargetId !== MASTER_OUTPUT_TARGET_ID && (
-          <span className="mixer-route-chip" title={routeTarget ? `Output to ${routeTarget.name}` : 'Output target missing'}>
-            {`→ ${routeTarget?.name || 'Missing track'}`}
-          </span>
-        )}
-        {busInputCount > 0 && (
-          <span className="mixer-route-chip mixer-route-chip--input" title={`${busInputCount} routed input${busInputCount === 1 ? '' : 's'}`}>
-            {`${busInputCount} input${busInputCount === 1 ? '' : 's'}`}
-          </span>
-        )}
+      <div className={styles.faderRow}>
+        <Fader
+          label={`${name} volume`} scale={dbTaperScale} unit="dB" defaultValue={0} width={28}
+          value={db} onChange={handleVolume} onCommit={handleVolume} hint={`Volume of ${name}`}
+        />
+        <Meter label={name} channels={2} subscribe={subscribe} hint={`Level of ${name}`} />
       </div>
+
+      <div className={styles.cableSpace} aria-hidden="true" />
+      <Select
+        size="sm" className={styles.out} ariaLabel={`Output of ${name}`} value={routeTargetId}
+        options={routeOptions} onChange={handleRoute} hint={routingError || `Where ${name} sends its output`}
+      />
     </div>
   )
 }
+
+export default memo(MixerStrip)

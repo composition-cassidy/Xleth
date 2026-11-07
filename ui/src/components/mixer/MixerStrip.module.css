@@ -1,0 +1,161 @@
+/* Mixer strips (ui/DESIGN.md sections 3.2, 5, 9). One anatomy for every track and
+ * the master: identity stripe, number + name, inserts, M/S/V, pan + width, a
+ * numeric volume field above the fader + meter, then the routing port.
+ * Muted dims the whole strip except the M/S/V row, so the state control stays
+ * legible; selection is a 1px outline. Flat: no shadow, no glow, no gradient. */
+@layer kit {
+  .strip {
+    box-sizing: border-box;
+    position: relative;
+    display: flex;
+    flex: 0 0 var(--strip-w, 84px);
+    flex-direction: column;
+    gap: 2px;
+    width: var(--strip-w, 84px);
+    min-width: 0;
+    height: 100%;
+    padding: 0 2px;
+    border-right: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-variant-numeric: tabular-nums;
+    cursor: default;
+  }
+
+  .strip[data-selected="true"] {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  .strip[data-muted="true"] > :not(.toggles) {
+    opacity: var(--ui-mute-opacity);
+  }
+
+  /* FX chain library drag: where a chain may be dropped. */
+  .strip[data-fx-drop="target"] {
+    outline: 1px dashed var(--ui-boundary);
+    outline-offset: -1px;
+  }
+
+  .strip[data-fx-drop="hover"] {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+    background: var(--ui-g2);
+  }
+
+  .strip[data-fx-drop="source"] {
+    background: var(--ui-g2);
+  }
+
+  /* Identity colour: the 3px edge, the same colour as the lane, the device and the layer. */
+  .head {
+    box-sizing: border-box;
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: var(--space-1);
+    height: 21px;
+    min-width: 0;
+    margin: 0 -2px;
+    padding: 0 var(--space-1);
+    border-top: 3px solid var(--strip-id, var(--ui-g4));
+    background: var(--ui-g2);
+  }
+
+  .num {
+    flex: none;
+    min-width: 12px;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    text-align: right;
+  }
+
+  .name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    font-size: var(--type-12);
+    font-weight: var(--weight-semibold);
+    white-space: nowrap;
+    text-overflow: ellipsis;
+  }
+
+  .muteGlyph {
+    flex: none;
+    color: var(--ui-ink);
+  }
+
+  .strip .inserts {
+    flex: none;
+    width: 100%;
+    min-width: 0;
+    padding: 0 var(--space-1);
+    font-size: var(--type-11);
+  }
+
+  .toggles {
+    display: grid;
+    flex: none;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 1px;
+    height: var(--ctl-h-sm);
+  }
+
+  .toggles > .toggle {
+    min-width: 0;
+    padding: 0;
+    justify-content: center;
+    font-size: var(--type-11);
+    font-weight: var(--weight-semibold);
+  }
+
+  .strip .toggles > .solo[data-on="true"] {
+    border-color: var(--ui-solo);
+    background: var(--ui-solo);
+    color: var(--ui-g1);
+  }
+
+  .knobs {
+    display: flex;
+    flex: none;
+    justify-content: center;
+  }
+
+  /* The kit knob cell pads 4px top and bottom; the strip spends that on the fader. */
+  .knobs > .knob {
+    padding: 0;
+  }
+
+  .field {
+    flex: none;
+    display: flex;
+    justify-content: center;
+  }
+
+  .faderRow {
+    display: flex;
+    flex: 1 1 auto;
+    justify-content: center;
+    gap: var(--space-1);
+    min-height: 0;
+  }
+
+  /* Hangs the routing cables: the band canvas draws over this. */
+  .cableSpace {
+    flex: none;
+    height: 20px;
+  }
+
+  .strip .out {
+    flex: none;
+    min-width: 0;
+    width: 100%;
+    margin-bottom: 2px;
+    font-size: var(--type-11);
+  }
+
+  .master {
+    background: var(--ui-g1);
+  }
+}

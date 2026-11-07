@@ -6,16 +6,6 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 async function loadMasterStripFixture() {
-  vi.doMock('../PeakMeter.jsx', () => ({
-    default: () => <div data-testid="peak-meter" />,
-  }))
-  vi.doMock('../VolumeFader.jsx', () => ({
-    default: ({ value, onChange }) => (
-      <input data-testid="volume-fader" value={value} onChange={(e) => onChange(Number(e.target.value))} />
-    ),
-    FaderReadout: ({ value }) => <div data-testid="fader-readout">{value}</div>,
-  }))
-
   const masterModule = await import('../MasterStrip.jsx')
   const { default: useMixerStore } = await import('../../../stores/mixerStore.js')
   return { MasterStrip: masterModule.default, useMixerStore }
@@ -31,54 +21,68 @@ async function renderMasterStrip(Component) {
   return { container, root }
 }
 
-describe('MasterStrip selection', () => {
+describe('MasterStrip', () => {
   beforeEach(() => {
     vi.resetModules()
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
+    window.xleth = { audio: { setMasterVolume: vi.fn() } }
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null)
   })
 
   afterEach(() => {
     document.body.innerHTML = ''
+    delete window.xleth
     delete globalThis.IS_REACT_ACT_ENVIRONMENT
-    vi.doUnmock('../PeakMeter.jsx')
-    vi.doUnmock('../VolumeFader.jsx')
+    vi.restoreAllMocks()
   })
 
-  it('renders the master FX badge and selects master on click', async () => {
+  it('renders the master inserts count and selects master on click', async () => {
     const { MasterStrip, useMixerStore } = await loadMasterStripFixture()
-    useMixerStore.setState({
-      master: { volume: 1 },
-      selectedChainKey: null,
-    })
+    useMixerStore.setState({ master: { volume: 1 }, selectedChainKey: null })
 
     const { container, root } = await renderMasterStrip(MasterStrip)
-    const strip = container.querySelector('.mixer-strip--master')
+    const strip = container.querySelector('[data-testid="master-strip"]')
 
-    // Strips show a compact FX badge; the editable chain lives in SelectedEffectRack.
-    expect(container.querySelector('.mixer-strip-fx-badge-text').textContent).toBe('No FX')
+    expect(strip.textContent).toContain('Master')
+    expect(strip.textContent).toContain('No FX')
 
     await act(async () => {
       strip.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
 
     expect(useMixerStore.getState().selectedChainKey).toBe('master')
-    expect(strip.className).toContain('mixer-strip--selected')
+    expect(strip.getAttribute('data-selected')).toBe('true')
     await act(async () => {
       root.unmount()
     })
   })
 
-  it('does not render track M/S/V controls on the master strip', async () => {
+  it('does not render track M/S/V controls, pan or width on the master strip', async () => {
     const { MasterStrip, useMixerStore } = await loadMasterStripFixture()
-    useMixerStore.setState({
-      master: { volume: 1 },
-      selectedChainKey: null,
-    })
+    useMixerStore.setState({ master: { volume: 1 }, selectedChainKey: null })
 
     const { container, root } = await renderMasterStrip(MasterStrip)
+    const names = Array.from(container.querySelectorAll('[aria-pressed], [role="slider"]'))
+      .map(el => el.getAttribute('aria-label'))
 
-    expect(container.querySelector('.mixer-strip-controls')).toBeNull()
-    expect(container.querySelectorAll('.mixer-ms-btn')).toHaveLength(0)
+    expect(container.querySelectorAll('[aria-pressed]')).toHaveLength(0)
+    expect(names).not.toContain('Pan')
+    expect(names).not.toContain('Width')
+    expect(names).toContain('Master volume')
+    await act(async () => {
+      root.unmount()
+    })
+  })
+
+  it('shows the master level in dB with a unit', async () => {
+    const { MasterStrip, useMixerStore } = await loadMasterStripFixture()
+    useMixerStore.setState({ master: { volume: 0.5 }, selectedChainKey: null })
+
+    const { container, root } = await renderMasterStrip(MasterStrip)
+    const fader = Array.from(container.querySelectorAll('[role="slider"]'))
+      .find(el => el.getAttribute('aria-label') === 'Master volume')
+
+    expect(fader.getAttribute('aria-valuetext')).toContain('−6.0 dB')
     await act(async () => {
       root.unmount()
     })

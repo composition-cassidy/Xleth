@@ -1,0 +1,92 @@
+/* The Mixer tab (ui/DESIGN.md section 8). Track strips scroll horizontally in the
+ * middle; the master strip and the loudness dock are fixed at the right. There is
+ * no inspector column: a track's detail lives in the Inspector and the Devices tab. */
+@layer kit {
+  .panel {
+    box-sizing: border-box;
+    display: flex;
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+    background: var(--ui-g1);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    overflow: hidden;
+  }
+
+  .scroll {
+    display: flex;
+    flex: 1;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+    scrollbar-color: var(--ui-g4) var(--ui-g1);
+  }
+
+  .lane {
+    position: relative;
+    display: flex;
+    flex: 1;
+    width: max-content;
+    min-height: 0;
+  }
+
+  /* Folder labels above their strips; strips are fixed-width so the spans line up. */
+  .folderRow {
+    display: flex;
+    flex: none;
+    width: max-content;
+    height: var(--row-h-compact);
+  }
+
+  .folder {
+    box-sizing: border-box;
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: var(--space-1);
+    min-width: 0;
+    padding: 0 var(--space-1);
+    border-left: 1px solid var(--ui-g4);
+    background: var(--ui-g2);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    white-space: nowrap;
+  }
+
+  .folderName {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .folderSpacer {
+    flex: none;
+  }
+
+  .dock {
+    display: flex;
+    flex: none;
+    border-left: 1px solid var(--ui-boundary);
+  }
+
+  .empty {
+    align-self: flex-start;
+    padding: var(--space-3) var(--space-3);
+  }
+
+  .routingError {
+    position: absolute;
+    top: var(--space-1);
+    right: var(--space-2);
+    z-index: 2;
+    padding: 2px var(--space-2);
+    border: 1px solid var(--ui-clip);
+    background: var(--ui-g2);
+    color: var(--ui-ink);
+    font-size: var(--type-11);
+  }
+}

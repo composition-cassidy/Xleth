@@ -6,29 +6,17 @@ import { createRoot } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 async function loadMixerStripFixture() {
-  vi.doMock('../PeakMeter.jsx', () => ({
-    default: () => <div data-testid="peak-meter" />,
-  }))
-  vi.doMock('../VolumeFader.jsx', () => ({
-    default: ({ value, onChange }) => (
-      <input data-testid="volume-fader" value={value} onChange={(e) => onChange(Number(e.target.value))} />
-    ),
-    FaderReadout: ({ value }) => <div data-testid="fader-readout">{value}</div>,
-  }))
-  vi.doMock('../PanWidthKnob.jsx', () => ({
-    default: ({ label }) => <div data-testid={`knob-${label}`} />,
-  }))
-
   const stripModule = await import('../MixerStrip.jsx')
   const { default: useMixerStore } = await import('../../../stores/mixerStore.js')
   const { default: useTimelineFocusStore } = await import('../../../stores/timelineFocusStore.js')
-  return { MixerStrip: stripModule.default, useMixerStore, useTimelineFocusStore }
+  const { usePanelRegistry } = await import('../../../windowing/registry/PanelRegistry')
+  return { MixerStrip: stripModule.default, useMixerStore, useTimelineFocusStore, usePanelRegistry }
 }
 
-function seedMixer(store, outputRoutes = {}) {
+function seedMixer(store, outputRoutes = {}, overrides = {}) {
   store.setState({
     tracks: {
-      1: { id: 1, name: 'Track A', volume: 1, pan: 0, spread: 1, muted: false, solo: false, visualOnly: false },
+      1: { id: 1, name: 'Track A', volume: 1, pan: 0, spread: 1, muted: false, solo: false, visualOnly: false, ...overrides },
       2: { id: 2, name: 'Bus Name', volume: 1, pan: 0, spread: 1, muted: false, solo: false, visualOnly: false },
       3: { id: 3, name: 'Visual', volume: 1, pan: 0, spread: 1, muted: false, solo: false, visualOnly: true },
     },
@@ -39,12 +27,12 @@ function seedMixer(store, outputRoutes = {}) {
   })
 }
 
-async function renderStrip(Component, trackId) {
+async function renderStrip(Component, trackId, props = {}) {
   const container = document.createElement('div')
   document.body.appendChild(container)
   const root = createRoot(container)
   await act(async () => {
-    root.render(<Component trackId={trackId} />)
+    root.render(<Component trackId={trackId} index={trackId} color="#58B2CE" {...props} />)
   })
   return { container, root }
 }
@@ -55,16 +43,25 @@ async function unmountRoot(root) {
   })
 }
 
-describe('MixerStrip output routing UI', () => {
+const click = (el) => act(async () => { el.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+const outputTrigger = (container) => container.querySelector('button[aria-haspopup="listbox"]')
+const optionLabels = () => Array.from(document.querySelectorAll('[role="option"]')).map(o => o.textContent)
+
+describe('MixerStrip', () => {
   beforeEach(() => {
     vi.resetModules()
     window.xleth = {
       timeline: {
         setTrackOutputRoute: vi.fn(async (_trackId, targetTrackId) => ({ ok: true, targetTrackId })),
+        setTrackMuted: vi.fn(),
+        setTrackSolo: vi.fn(),
+        setTrackVisualOnly: vi.fn(),
         getRouting: vi.fn(async () => []),
       },
+      audio: { setTrackVolume: vi.fn(), setTrackPan: vi.fn(), setTrackSpread: vi.fn() },
     }
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
+    vi.spyOn(HTMLCanvasElement.prototype, 'getContext').mockReturnValue(null)
     window.HTMLIFrameElement = window.HTMLIFrameElement || class HTMLIFrameElement extends window.HTMLElement {}
   })
 
@@ -72,24 +69,30 @@ describe('MixerStrip output routing UI', () => {
     document.body.innerHTML = ''
     delete window.xleth
     delete globalThis.IS_REACT_ACT_ENVIRONMENT
-    vi.doUnmock('../PeakMeter.jsx')
-    vi.doUnmock('../VolumeFader.jsx')
-    vi.doUnmock('../PanWidthKnob.jsx')
+    vi.restoreAllMocks()
   })
 
-  it('renders an Output selector showing Master by default', async () => {
+  it('shows number, name, the inserts count and an Output selector reading Master', async () => {
     const { MixerStrip, useMixerStore } = await loadMixerStripFixture()
     seedMixer(useMixerStore)
 
     const { container, root } = await renderStrip(MixerStrip, 1)
-    const select = container.querySelector('.mixer-output-select')
 
-    expect(select).not.toBeNull()
-    expect(select.getAttribute('aria-label')).toBe('Output')
-    expect(select.value).toBe('-1')
-    expect(Array.from(select.options).map(option => option.textContent)).toContain('Master')
-    // Strips show a compact FX badge; the editable chain lives in SelectedEffectRack.
-    expect(container.querySelector('.mixer-strip-fx-badge-text').textContent).toBe('No FX')
+    expect(container.querySelector('[data-testid="mixer-strip-1"]').getAttribute('aria-label')).toBe('Track 1 Track A')
+    expect(container.textContent).toContain('Track A')
+    expect(container.textContent).toContain('No FX')
+    expect(outputTrigger(container).getAttribute('aria-label')).toBe('Output of Track A')
+    expect(outputTrigger(container).textContent).toBe('Master')
+    await unmountRoot(root)
+  })
+
+  it('carries the track identity colour on the strip', async () => {
+    const { MixerStrip, useMixerStore } = await loadMixerStripFixture()
+    seedMixer(useMixerStore)
+
+    const { container, root } = await renderStrip(MixerStrip, 1, { color: '#DB6E3B' })
+
+    expect(container.querySelector('[data-testid="mixer-strip-1"]').style.getPropertyValue('--strip-id')).toBe('#DB6E3B')
     await unmountRoot(root)
   })
 
@@ -99,63 +102,36 @@ describe('MixerStrip output routing UI', () => {
     useTimelineFocusStore.setState({ focusedTrackId: null })
 
     const { container, root } = await renderStrip(MixerStrip, 2)
-
-    await act(async () => {
-      container.querySelector('.mixer-strip').dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
+    await click(container.querySelector('[data-testid="mixer-strip-2"]'))
 
     expect(useMixerStore.getState().selectedChainKey).toBe('2')
     expect(useTimelineFocusStore.getState().focusedTrackId).toBe(2)
     await unmountRoot(root)
   })
 
-  it('marks the selected strip with an active class and aria state', async () => {
+  it('marks the selected strip with a data flag and aria state', async () => {
     const { MixerStrip, useMixerStore } = await loadMixerStripFixture()
     seedMixer(useMixerStore)
     useMixerStore.setState({ selectedChainKey: '1' })
 
     const { container, root } = await renderStrip(MixerStrip, 1)
-    const strip = container.querySelector('.mixer-strip')
+    const strip = container.querySelector('[data-testid="mixer-strip-1"]')
 
-    expect(strip.className).toContain('mixer-strip--selected')
+    expect(strip.getAttribute('data-selected')).toBe('true')
     expect(strip.getAttribute('aria-selected')).toBe('true')
     await unmountRoot(root)
   })
 
-  it('selecting a bus calls the route action with the source and target ids', async () => {
+  it('picking a bus calls the route action with the source and target ids', async () => {
     const { MixerStrip, useMixerStore } = await loadMixerStripFixture()
     seedMixer(useMixerStore)
 
     const { container, root } = await renderStrip(MixerStrip, 1)
-    const select = container.querySelector('.mixer-output-select')
-
-    await act(async () => {
-      select.value = '2'
-      select.dispatchEvent(new Event('change', { bubbles: true }))
-      await Promise.resolve()
-    })
+    await click(outputTrigger(container))
+    const bus = Array.from(document.querySelectorAll('[role="option"]')).find(o => o.textContent === 'Bus Name')
+    await click(bus)
 
     expect(window.xleth.timeline.setTrackOutputRoute).toHaveBeenCalledWith(1, 2)
-    await unmountRoot(root)
-  })
-
-  it('renders the source route chip when routed to a bus', async () => {
-    const { MixerStrip, useMixerStore } = await loadMixerStripFixture()
-    seedMixer(useMixerStore, { 1: 2 })
-
-    const { container, root } = await renderStrip(MixerStrip, 1)
-
-    expect(container.textContent).toContain('→ Bus Name')
-    await unmountRoot(root)
-  })
-
-  it('renders the bus input-count badge', async () => {
-    const { MixerStrip, useMixerStore } = await loadMixerStripFixture()
-    seedMixer(useMixerStore, { 1: 2 })
-
-    const { container, root } = await renderStrip(MixerStrip, 2)
-
-    expect(container.textContent).toContain('1 input')
     await unmountRoot(root)
   })
 
@@ -164,13 +140,81 @@ describe('MixerStrip output routing UI', () => {
     seedMixer(useMixerStore, { 2: 1 })
 
     const { container, root } = await renderStrip(MixerStrip, 1)
-    const optionTexts = Array.from(container.querySelector('.mixer-output-select').options)
-      .map(option => option.textContent)
+    await click(outputTrigger(container))
 
-    expect(optionTexts).toContain('Master')
-    expect(optionTexts).not.toContain('Track A')
-    expect(optionTexts).not.toContain('Bus Name')
-    expect(optionTexts).not.toContain('Visual')
+    expect(optionLabels()).toContain('Master')
+    expect(optionLabels()).not.toContain('Track A')
+    expect(optionLabels()).not.toContain('Bus Name')
+    expect(optionLabels()).not.toContain('Visual')
+    await unmountRoot(root)
+  })
+
+  it('shows the bus a track is routed to', async () => {
+    const { MixerStrip, useMixerStore } = await loadMixerStripFixture()
+    seedMixer(useMixerStore, { 1: 2 })
+
+    const { container, root } = await renderStrip(MixerStrip, 1)
+
+    expect(outputTrigger(container).textContent).toBe('Bus Name')
+    await unmountRoot(root)
+  })
+
+  it('shows mute, solo and visual-only at rest and dims a muted strip with a glyph', async () => {
+    const { MixerStrip, useMixerStore } = await loadMixerStripFixture()
+    seedMixer(useMixerStore, {}, { muted: true, solo: true })
+
+    const { container, root } = await renderStrip(MixerStrip, 1)
+    const strip = container.querySelector('[data-testid="mixer-strip-1"]')
+    const pressed = (name) => container.querySelector(`button[aria-label="${name} Track A"]`).getAttribute('aria-pressed')
+
+    expect(pressed('Mute')).toBe('true')
+    expect(pressed('Solo')).toBe('true')
+    expect(pressed('Visual only')).toBe('false')
+    expect(strip.getAttribute('data-muted')).toBe('true')
+    expect(strip.getAttribute('aria-label')).toContain('muted')
+    expect(strip.querySelector('svg.lucide-volume-x, svg[class*="volume-x"]')).not.toBeNull()
+    await unmountRoot(root)
+  })
+
+  it('wires M, S and V to the existing store actions', async () => {
+    const { MixerStrip, useMixerStore } = await loadMixerStripFixture()
+    seedMixer(useMixerStore)
+
+    const { container, root } = await renderStrip(MixerStrip, 1)
+    await click(container.querySelector('button[aria-label="Mute Track A"]'))
+    await click(container.querySelector('button[aria-label="Solo Track A"]'))
+    await click(container.querySelector('button[aria-label="Visual only Track A"]'))
+
+    expect(window.xleth.timeline.setTrackMuted).toHaveBeenCalledWith(1, true)
+    expect(window.xleth.timeline.setTrackSolo).toHaveBeenCalledWith(1, true)
+    expect(window.xleth.timeline.setTrackVisualOnly).toHaveBeenCalledWith(1, true)
+    await unmountRoot(root)
+  })
+
+  it('has a bipolar pan knob, a width knob, a volume field and a volume fader, all with unit text', async () => {
+    const { MixerStrip, useMixerStore } = await loadMixerStripFixture()
+    seedMixer(useMixerStore)
+
+    const { container, root } = await renderStrip(MixerStrip, 1)
+    const sliders = Array.from(container.querySelectorAll('[role="slider"]'))
+    const text = (label) => sliders.find(s => s.getAttribute('aria-label') === label)?.getAttribute('aria-valuetext')
+
+    expect(text('Pan')).toBe('Pan, C')
+    expect(text('Width')).toBe('Width, 100 %')
+    expect(text('Track A volume')).toContain('0.0 dB')
+    await unmountRoot(root)
+  })
+
+  it('opens the Devices tab on this strip from the inserts button', async () => {
+    const { MixerStrip, useMixerStore, usePanelRegistry } = await loadMixerStripFixture()
+    seedMixer(useMixerStore)
+    usePanelRegistry.getState().closePanel('devices')
+
+    const { container, root } = await renderStrip(MixerStrip, 2)
+    await click(Array.from(container.querySelectorAll('button')).find(b => b.textContent === 'No FX'))
+
+    expect(useMixerStore.getState().selectedChainKey).toBe('2')
+    expect(usePanelRegistry.getState().panels.devices.hidden).toBe(false)
     await unmountRoot(root)
   })
 
