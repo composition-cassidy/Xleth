@@ -1,21 +1,27 @@
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
-import { Music, Search, Pencil, Type, Download, ArrowLeftRight, RotateCcw, Trash2, Scissors, Sliders, List, LayoutGrid, FlaskConical } from 'lucide-react'
+import { Pencil, Type, Download, ArrowLeftRight, RotateCcw, Trash2, Scissors, Sliders, List, LayoutGrid, FlaskConical, Volume2, X } from 'lucide-react'
 import { timelineEvents } from '../timelineEvents.js'
 import { DEFAULT_LABELS, loadCustomLabels, labelColor } from '../constants/labels.js'
 import SampleGroup from './SampleGroup.jsx'
 import ContextMenu from './ContextMenu.jsx'
 import useSampleViewModeStore from '../stores/sampleViewModeStore.js'
 import useSandboxPanelStore from '../stores/sandboxPanelStore.js'
+import useBrowserStore from '../stores/browserStore.js'
 import { usePanelRegistry } from '../windowing/registry/PanelRegistry.ts'
 import { getPickerPath, openFilePicker } from './filePicker/filePickerService.js'
+import { EmptyState, SegmentedControl, Toggle } from '../ui-kit'
+import { moveRowFocus } from './browser/browserFormat.js'
+import { getMediaPort, startPreview } from './samplePreview.js'
+import styles from './browser/Browser.module.css'
 
 /**
  * Sample Selector tab — organises all marked regions by label.
  *
  * Props:
  *   onOpenPicker – (source) => void  — opens SamplePicker in center area
+ *   query        – the Browser's search text for this tab
  */
-export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setActiveSampleId }) {
+export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setActiveSampleId, query = '' }) {
   // ── View mode (list | thumbnails) ─────────────────────────────────────────
   const viewMode    = useSampleViewModeStore(s => s.viewMode)
   const setViewMode = useSampleViewModeStore(s => s.setViewMode)
@@ -28,8 +34,11 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
   const [collapsedGroups,  setCollapsedGroups]  = useState(new Set())
   const [editingNameId,    setEditingNameId]    = useState(null)
   const [editingNameValue, setEditingNameValue] = useState('')
-  const [searchQuery,      setSearchQuery]      = useState('')
-  const [rootNotes,        setRootNotes]        = useState({})  // { [sourceId]: midiNote }
+  const searchQuery = query
+  const autoPreview    = useBrowserStore(s => s.autoPreview)
+  const setAutoPreview = useBrowserStore(s => s.setAutoPreview)
+  const setBrowserTab  = useBrowserStore(s => s.setTab)
+  const [rootNotes,       setRootNotes]        = useState({})  // { [sourceId]: midiNote }
   const [renameError,      setRenameError]      = useState(null)
 
   // Dedup pass runs once per mount even if regions-changed fires repeatedly.
@@ -41,7 +50,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
       const regs = await window.xleth?.timeline?.getRegions()
       if (Array.isArray(regs)) setRegions(regs)
     } catch (e) {
-      console.error('[SampleSelector] getRegions error:', e)
+      console.error('[Browser] getRegions error:', e)
     }
   }, [])
 
@@ -54,7 +63,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
         setSources(map)
       }
     } catch (e) {
-      console.error('[SampleSelector] getSources error:', e)
+      console.error('[Browser] getSources error:', e)
     }
   }, [])
 
@@ -91,12 +100,12 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
     for (const r of renames) {
       try {
         await window.xleth?.timeline?.modifyRegion(r.region.id, { ...r.region, name: r.newName })
-        console.warn(`[SampleDedup] Renamed "${r.oldName}" → "${r.newName}" (id=${r.region.id}, label=${r.region.label})`)
+        console.warn(`[Browser] Renamed "${r.oldName}" → "${r.newName}" (id=${r.region.id}, label=${r.region.label})`)
       } catch (e) {
-        console.error(`[SampleDedup] modifyRegion failed for id=${r.region.id}:`, e.message)
+        console.error(`[Browser] modifyRegion failed for id=${r.region.id}:`, e.message)
       }
     }
-    console.warn(`[SampleDedup] Renamed ${renames.length} duplicate sample name(s).`)
+    console.warn(`[Browser] Renamed ${renames.length} duplicate sample name(s).`)
     return renames.length
   }, [])
 
@@ -118,11 +127,11 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
         }
         setRegions(regs)
       } catch (e) {
-        console.error('[SampleSelector] Initial load error:', e)
+        console.error('[Browser] Initial load error:', e)
       }
     }
     init()
-    console.log('[SampleSelector] Loaded')
+    console.log('[Browser] Loaded')
 
     const onRegionsChanged = () => fetchRegions()
     const onSourcesChanged = () => fetchSources()
@@ -183,7 +192,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
   const startRename = useCallback((region) => {
     setEditingNameId(region.id)
     setEditingNameValue(region.name || '')
-    console.log(`[SampleSelector] Rename started: "${region.name}"`)
+    console.log(`[Browser] Rename started: "${region.name}"`)
   }, [])
 
   const commitRename = useCallback(async () => {
@@ -213,11 +222,11 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
       return  // keep edit mode open so the user can correct and retry
     }
 
-    console.log(`[SampleSelector] Renamed: "${region.name}" → "${newName}"`)
+    console.log(`[Browser] Renamed: "${region.name}" → "${newName}"`)
     try {
       await window.xleth?.timeline?.modifyRegion(editingNameId, { ...region, name: newName })
     } catch (e) {
-      console.warn('[SampleSelector] modifyRegion failed:', e.message)
+      console.warn('[Browser] modifyRegion failed:', e.message)
     }
     // Optimistic update
     setRegions(prev => prev.map(r => r.id === editingNameId ? { ...r, name: newName } : r))
@@ -233,22 +242,22 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
 
   // ── Change label ───────────────────────────────────────────────────────────
   const changeLabel = useCallback(async (region, newLabel) => {
-    console.log(`[SampleSelector] Label changed: "${region.name}" → ${newLabel}`)
+    console.log(`[Browser] Label changed: "${region.name}" → ${newLabel}`)
     try {
       await window.xleth?.timeline?.modifyRegion(region.id, { ...region, label: newLabel })
     } catch (e) {
-      console.warn('[SampleSelector] modifyRegion failed:', e.message)
+      console.warn('[Browser] modifyRegion failed:', e.message)
     }
     setRegions(prev => prev.map(r => r.id === region.id ? { ...r, label: newLabel } : r))
   }, [])
 
   // ── Delete ─────────────────────────────────────────────────────────────────
   const handleDelete = useCallback(async (region) => {
-    console.log(`[SampleSelector] Deleted: "${region.name}" (id=${region.id})`)
+    console.log(`[Browser] Deleted: "${region.name}" (id=${region.id})`)
     try {
       await window.xleth?.timeline?.removeRegion(region.id)
     } catch (e) {
-      console.warn('[SampleSelector] removeRegion failed:', e.message)
+      console.warn('[Browser] removeRegion failed:', e.message)
     }
     setRegions(prev => prev.filter(r => r.id !== region.id))
     if (activeSampleId === region.id) setActiveSampleId(null)
@@ -266,11 +275,11 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
         if (result) {
           setRootNotes(prev => ({ ...prev, [sid]: result.note }))
           if (result.note >= 0) {
-            console.log(`[SampleSelector] Root note detected: ${src.name} → MIDI ${result.note}`)
+            console.log(`[Browser] Root note detected: ${src.name} → MIDI ${result.note}`)
           }
         }
       } catch (e) {
-        console.warn('[SampleSelector] detectRootNote error:', e.message)
+        console.warn('[Browser] detectRootNote error:', e.message)
         setRootNotes(prev => ({ ...prev, [sid]: -1 }))
       }
     }
@@ -289,7 +298,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
         icon: Pencil,
         onClick: () => {
           if (src && onOpenPicker) {
-            console.log(`[SampleSelector] Edit in Picker: "${region.name}"`)
+            console.log(`[Browser] Edit in Picker: "${region.name}"`)
             onOpenPicker(src)
           }
         },
@@ -316,7 +325,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
         .filter(l => l !== region.label)
         .map(l => ({
           label: `Move to ${l}`,
-          icon: <span className="tab-label-dot" style={{ background: labelColor(l) }} />,
+          icon: <span className={styles.swatch} style={{ background: labelColor(l) }} />,
           onClick: () => changeLabel(region, l),
         })),
       { type: 'separator' },
@@ -346,7 +355,7 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
           try {
             await window.xleth?.audio?.exportRegion(region.id)
           } catch (e) {
-            console.error('[SampleSelector] Export audio failed:', e)
+            console.error('[Browser] Export audio failed:', e)
           }
         },
       },
@@ -382,10 +391,10 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
               timelineEvents.dispatchEvent(new CustomEvent('timeline-waveform-invalidate',
                 { detail: { regionId: region.id } }))
             } else if (result?.error) {
-              console.error('[SampleSelector] Swap audio failed:', result.error)
+              console.error('[Browser] Swap audio failed:', result.error)
             }
           } catch (e) {
-            console.error('[SampleSelector] Swap audio error:', e)
+            console.error('[Browser] Swap audio error:', e)
           }
         },
       },
@@ -403,10 +412,10 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
               timelineEvents.dispatchEvent(new CustomEvent('timeline-waveform-invalidate',
                 { detail: { regionId: region.id } }))
             } else if (result?.error) {
-              console.error('[SampleSelector] Revert audio failed:', result.error)
+              console.error('[Browser] Revert audio failed:', result.error)
             }
           } catch (e) {
-            console.error('[SampleSelector] Revert audio error:', e)
+            console.error('[Browser] Revert audio error:', e)
           }
         },
       }] : []),
@@ -420,9 +429,9 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
           onClick: async () => {
             try {
               const result = await window.xleth?.video?.exportRegion(region.id)
-              if (result?.error) console.error('[SampleSelector] Export video failed:', result.error)
+              if (result?.error) console.error('[Browser] Export video failed:', result.error)
             } catch (e) {
-              console.error('[SampleSelector] Export video failed:', e)
+              console.error('[Browser] Export video failed:', e)
             }
           },
         },
@@ -464,10 +473,10 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
                     + `Playback has been clamped to the original duration — the video is not stretched.`)
                 }
               } else if (result?.error) {
-                console.error('[SampleSelector] Swap video failed:', result.error)
+                console.error('[Browser] Swap video failed:', result.error)
               }
             } catch (e) {
-              console.error('[SampleSelector] Swap video error:', e)
+              console.error('[Browser] Swap video error:', e)
             }
           },
         },
@@ -485,10 +494,10 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
                 timelineEvents.dispatchEvent(new CustomEvent('timeline-video-invalidate',
                   { detail: { regionId: region.id, sourceId: region.sourceId } }))
               } else if (result?.error) {
-                console.error('[SampleSelector] Revert video failed:', result.error)
+                console.error('[Browser] Revert video failed:', result.error)
               }
             } catch (e) {
-              console.error('[SampleSelector] Revert video error:', e)
+              console.error('[Browser] Revert video error:', e)
             }
           },
         }] : []),
@@ -504,131 +513,107 @@ export default function SampleSelectorTab({ onOpenPicker, activeSampleId, setAct
     ]
   }, [contextMenu, sources, allLabels, onOpenPicker, startRename, changeLabel, handleDelete])
 
-  // ── Render ─────────────────────────────────────────────────────────────────
-  return (
-    <div className="sample-selector-tab">
-      {/* ── Search bar ─────────────────────────────────────────────── */}
-      <div className="tab-search-bar tab-search-bar--with-actions">
-        <Search size={14} className="tab-search-icon" />
-        <input
-          type="text"
-          className="tab-search-input tab-search-input--with-actions"
-          placeholder="Search samples..."
-          value={searchQuery}
-          onChange={e => setSearchQuery(e.target.value)}
-          onKeyDown={e => e.stopPropagation()}
-        />
-        <div className="tab-search-bar-actions" role="group" aria-label="View mode">
-          <button
-            type="button"
-            className={`tab-view-toggle-btn ${viewMode === 'list' ? 'active' : ''}`}
-            onClick={() => setViewMode('list')}
-            title="List view"
-            aria-pressed={viewMode === 'list'}
-          >
-            <List size={13} />
-          </button>
-          <button
-            type="button"
-            className={`tab-view-toggle-btn ${viewMode === 'thumbnails' ? 'active' : ''}`}
-            onClick={() => setViewMode('thumbnails')}
-            title="Thumbnail view"
-            aria-pressed={viewMode === 'thumbnails'}
-          >
-            <LayoutGrid size={13} />
-          </button>
-        </div>
-      </div>
+  // ── Select (+ preview) ─────────────────────────────────────────────────────
+  // Selecting a sample makes it the active draw sample and, with Auto-preview on,
+  // plays it through the same preview path the row's play button uses.
+  const handleSelect = useCallback(async (id) => {
+    setActiveSampleId(id)
+    console.log(`[Browser] Selected: id=${id}`)
+    if (!autoPreview) return
+    const region = regions.find(r => r.id === id)
+    const src = region ? sources[region.sourceId] : null
+    if (!region || !src?.filePath) return
+    startPreview({ region, sourceFilePath: src.filePath, mediaPort: await getMediaPort() })
+  }, [autoPreview, regions, sources, setActiveSampleId])
 
-      {/* ── Header ─────────────────────────────────────────────────── */}
-      <div className="tab-placeholder-header">
-        <span className="tab-section-label">Samples</span>
-        <span className="tab-item-count">{regions.length}</span>
+  // ── Render ─────────────────────────────────────────────────────────────────
+  const noneMatch = !!searchQuery && [...grouped.values()].every(arr => arr.length === 0)
+  return (
+    <div className={styles.tab}>
+      {/* ── List header ────────────────────────────────────────────── */}
+      <div className={styles.listHeader}>
+        <span className={styles.listTitle}>Samples</span>
+        <span className={styles.count}>{regions.length}</span>
+        <span className={styles.spacer} />
+        <Toggle
+          size="sm"
+          on={autoPreview}
+          onChange={setAutoPreview}
+          glyph={<Volume2 size={12} />}
+          hint="Auto-preview: selecting a sample plays it"
+        >
+          Auto-preview
+        </Toggle>
+        <SegmentedControl
+          label="View mode"
+          size="sm"
+          value={viewMode}
+          onChange={setViewMode}
+          options={[
+            { value: 'list', label: <List size={13} aria-hidden="true" />, ariaLabel: 'List view', hint: 'List view' },
+            { value: 'thumbnails', label: <LayoutGrid size={13} aria-hidden="true" />, ariaLabel: 'Thumbnail view', hint: 'Thumbnail view' },
+          ]}
+        />
       </div>
 
       {/* ── Rename collision error banner ──────────────────────────── */}
       {renameError && (
-        <div
-          className="sample-selector-error-banner"
-          role="alert"
-          style={{
-            background: 'var(--theme-semantic-danger-bg-subtle)',
-            color: 'var(--theme-semantic-danger-text)',
-            padding: '6px 10px',
-            fontSize: '12px',
-            margin: '4px 8px',
-            borderRadius: '4px',
-            display: 'flex',
-            justifyContent: 'space-between',
-            alignItems: 'center',
-            gap: '8px',
-          }}
-        >
+        <div className={styles.error} role="alert">
           <span>{renameError}</span>
           <button
+            type="button"
+            className={styles.errorDismiss}
             onClick={() => setRenameError(null)}
-            style={{
-              background: 'transparent',
-              border: 'none',
-              color: 'var(--theme-semantic-danger-text)',
-              cursor: 'pointer',
-              fontSize: '14px',
-              padding: '0 4px',
-              lineHeight: 1,
-            }}
-            title="Dismiss"
+            aria-label="Dismiss"
           >
-            ×
+            <X size={12} aria-hidden="true" />
           </button>
         </div>
       )}
 
       {/* ── Groups or empty state ──────────────────────────────────── */}
-      {regions.length === 0 && !searchQuery ? (
-        <div className="tab-placeholder-empty">
-          <Music size={28} strokeWidth={1} className="tab-placeholder-icon" />
-          <p>No samples marked yet</p>
-          <p className="tab-placeholder-hint">
-            Double-click a source in Project Media to open the Sample Picker
-          </p>
-        </div>
-      ) : (
-        <div className="sample-groups">
-          {[...grouped.entries()]
-            .filter(([, items]) => items.length > 0)
-            .map(([label, items]) => (
-              <SampleGroup
-                key={label}
-                label={label}
-                samples={items}
-                collapsed={collapsedGroups.has(label)}
-                onToggle={() => toggleCollapse(label)}
-                activeSampleId={activeSampleId}
-                onSelect={(id) => {
-                  setActiveSampleId(id)
-                  console.log(`[SampleSelector] Selected: id=${id}`)
-                }}
-                onContextMenu={handleContextMenu}
-                editingNameId={editingNameId}
-                editingNameValue={editingNameValue}
-                onRenameChange={setEditingNameValue}
-                onRenameCommit={commitRename}
-                onRenameCancel={cancelRename}
-                sources={sources}
-                rootNotes={rootNotes}
-                onFetchRootNotes={fetchRootNotesForGroup}
-                viewMode={viewMode}
-                onOpenPicker={onOpenPicker}
-              />
-            ))}
-          {/* Show message when search yields nothing */}
-          {searchQuery && [...grouped.values()].every(arr => arr.length === 0) && (
-            <div className="tab-placeholder-empty" style={{ paddingTop: 12 }}>
-              <p className="tab-placeholder-hint">No samples match "{searchQuery}"</p>
-            </div>
-          )}
-        </div>
-      )}
+      <div
+        className={styles.list}
+        role="listbox"
+        aria-label="Samples"
+        onKeyDown={moveRowFocus}
+      >
+        {regions.length === 0 && !searchQuery ? (
+          <EmptyState
+            message="No samples marked. Double-click a source in Media to open the picker."
+            actionLabel="Open Media"
+            onAction={() => setBrowserTab('media')}
+          />
+        ) : (
+          <>
+            {[...grouped.entries()]
+              .filter(([, items]) => items.length > 0)
+              .map(([label, items]) => (
+                <SampleGroup
+                  key={label}
+                  label={label}
+                  samples={items}
+                  collapsed={collapsedGroups.has(label)}
+                  onToggle={() => toggleCollapse(label)}
+                  activeSampleId={activeSampleId}
+                  onSelect={handleSelect}
+                  onContextMenu={handleContextMenu}
+                  editingNameId={editingNameId}
+                  editingNameValue={editingNameValue}
+                  onRenameChange={setEditingNameValue}
+                  onRenameCommit={commitRename}
+                  onRenameCancel={cancelRename}
+                  sources={sources}
+                  rootNotes={rootNotes}
+                  onFetchRootNotes={fetchRootNotesForGroup}
+                  viewMode={viewMode}
+                  onOpenPicker={onOpenPicker}
+                />
+              ))}
+            {noneMatch && <EmptyState message={`No samples match "${searchQuery.trim()}".`} />}
+          </>
+        )}
+      </div>
 
       {/* ── Context menu ───────────────────────────────────────────── */}
       {contextMenu && (

@@ -81,7 +81,7 @@ export default function MixerGalleryFixture({ stripMode = 'normal' }) {
     })
     useEffectChainStore.setState({ chains: { ...prior.chains, 1: [{ nodeId: 1 }, { nodeId: 2 }], 2: [{ nodeId: 3 }], 7: [{ nodeId: 4 }, { nodeId: 5 }, { nodeId: 6 }] } })
     // The dock reads the engine through window.xleth; a MOCK stands in, for the gallery only.
-    window.xleth = { audio: { getMasterLoudness: async () => MOCK_LOUDNESS, setMasterLoudnessEnabled: () => {} } }
+    window.xleth = { ...(window.xleth || {}), audio: { ...(window.xleth?.audio || {}), getMasterLoudness: async () => MOCK_LOUDNESS, setMasterLoudnessEnabled: () => {} } }
     pollMasterLoudness()
     // The strips only mount once the store above is seeded, so their meters
     // subscribe a render later: push the (steady) mock levels after that.

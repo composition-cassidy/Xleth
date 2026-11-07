@@ -177,8 +177,9 @@ describe('SampleSelectorDrawer', () => {
     const html = renderToStaticMarkup(<SampleSelectorDrawer />);
 
     expect(html).toContain('xleth-sample-selector-drawer');
-    expect(html).toContain('Project Media');
-    expect(html).toContain('Sample Selector');
+    expect(html).toContain('role="tablist" aria-label="Browser"');
+    expect(html).toContain('data-text="Media"');
+    expect(html).toContain('data-text="Samples"');
     // The GRID tab (Grid Settings) was removed in Phase 3 — grid/canvas/track
     // video settings now live in the Timeline's Video tab, not the left drawer.
     expect(html).not.toContain('Grid Settings');

@@ -1,27 +1,29 @@
-import { Music2, Loader2, Check } from 'lucide-react'
-import ProgressBar from './ProgressBar.jsx'
+import { Loader2 } from 'lucide-react'
+import { SourceAudioIcon, SourceVideoIcon } from '../ui-kit'
+import { formatClock } from './browser/browserFormat.js'
+import styles from './browser/Browser.module.css'
 
 /**
- * Renders a single imported source in the media list.
+ * One imported source in the Media list: a 24px row with its type glyph, name,
+ * proxy state and duration. (The file is still called SourceCard; it is a row
+ * now, not a card.)
  *
  * Props:
  *   source        – { id, name, filePath, width, height, fps, duration, proxyReady, hasVideo }
- *   thumbnail     – base64 data URL or null
+ *   selected      – boolean
+ *   onSelect      – (source) => void
  *   onContextMenu – (e) => void
  *   onDoubleClick – (source) => void  — opens Sample Picker
  */
 export default function SourceCard({
   source,
-  thumbnail,
+  selected = false,
+  onSelect,
   onContextMenu,
   onDoubleClick,
 }) {
   const isVideo = source.hasVideo !== false
-  const duration = formatDuration(source.duration || 0)
-  const resolution = isVideo && source.width
-    ? `${source.width}×${source.height}`
-    : null
-  const fpsStr = isVideo && source.fps ? `${Math.round(source.fps)}fps` : null
+  const Glyph = isVideo ? SourceVideoIcon : SourceAudioIcon
 
   // Audio-only sources are draggable onto the timeline — a drop creates both
   // a full-span region and a clip referencing it, so it plays like any sample.
@@ -41,60 +43,42 @@ export default function SourceCard({
     window.__xlethDragSource = null
   } : undefined
 
+  const kind = isVideo ? 'Video' : 'Audio'
+  const proxyPending = !source.proxyReady
+
   return (
     <div
-      className="source-card"
+      className={styles.row}
+      data-browser-row=""
+      data-selected={selected ? 'true' : 'false'}
+      data-kind={isVideo ? 'video' : 'audio'}
+      role="option"
+      aria-selected={selected}
+      tabIndex={0}
+      onClick={() => onSelect?.(source)}
       onContextMenu={onContextMenu}
       onDoubleClick={onDoubleClick ? () => onDoubleClick(source) : undefined}
+      onKeyDown={(e) => {
+        if (e.target !== e.currentTarget) return
+        if (e.key === 'Enter') { e.preventDefault(); onDoubleClick ? onDoubleClick(source) : onSelect?.(source) }
+        if (e.key === ' ') { e.preventDefault(); onSelect?.(source) }
+      }}
       draggable={draggable}
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
-      style={onDoubleClick || draggable ? { cursor: draggable ? 'grab' : 'pointer' } : undefined}
-      title={draggable ? 'Drag onto a timeline track to add as a clip' : undefined}
+      data-hint={`${kind} source: ${source.name}. Double-click to mark samples.${draggable ? ' Drag onto a timeline track to add it as a clip.' : ''}`}
+      data-hint-mods={draggable ? 'Enter: open picker · Right-click: menu · Drag: add clip' : 'Enter: open picker · Right-click: menu'}
     >
-      {/* ── Thumbnail ───────────────────────────────────────────────── */}
-      <div className="source-card-thumbnail">
-        {thumbnail ? (
-          <img src={thumbnail} alt={source.name} draggable={false} />
-        ) : isVideo ? (
-          <div className="source-card-thumbnail-placeholder" />
-        ) : (
-          <div className="source-card-thumbnail-placeholder">
-            <Music2 size={18} />
-          </div>
-        )}
-      </div>
-
-      {/* ── Info ─────────────────────────────────────────────────────── */}
-      <div className="source-card-info">
-        <span className="source-card-filename" title={source.name}>
-          {source.name}
+      <span className={styles.typeGlyph} title={kind}>
+        <Glyph size={14} aria-label={`${kind} source`} />
+      </span>
+      <span className={styles.name} title={source.name}>{source.name}</span>
+      {proxyPending && (
+        <span className={styles.rowGlyph} role="img" aria-label="Transcoding proxy" title="Transcoding proxy">
+          <Loader2 size={12} className={styles.spin} aria-hidden="true" />
         </span>
-        <div className="source-card-meta">
-          {resolution && <span className="source-card-badge">{resolution}</span>}
-          {fpsStr && <span className="source-card-badge">{fpsStr}</span>}
-          <span className="source-card-duration">{duration}</span>
-        </div>
-        {!source.proxyReady && (
-          <ProgressBar progress={null} className="source-card-progress" />
-        )}
-      </div>
-
-      {/* ── Status ───────────────────────────────────────────────────── */}
-      <div className="source-card-status">
-        {source.proxyReady ? (
-          <Check size={14} className="source-card-status-done" />
-        ) : (
-          <Loader2 size={14} className="source-card-status-spin" />
-        )}
-      </div>
+      )}
+      <span className={styles.duration}>{formatClock(source.duration || 0)}</span>
     </div>
   )
-}
-
-function formatDuration(seconds) {
-  const s = Math.max(0, seconds)
-  const m = Math.floor(s / 60)
-  const sec = Math.floor(s % 60)
-  return `${m}:${String(sec).padStart(2, '0')}`
 }

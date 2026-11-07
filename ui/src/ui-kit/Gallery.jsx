@@ -23,6 +23,7 @@ import EffectDevice from '../components/devices/EffectDevice.jsx'
 import useDeviceUiStore from '../components/devices/deviceUiStore.js'
 import useCompressorStore from '../stores/compressorStore.js'
 import MixerGalleryFixture from '../components/mixer/MixerGalleryFixture.jsx'
+import BrowserGalleryFixture from '../components/browser/BrowserGalleryFixture.jsx'
 
 const params = new URLSearchParams(typeof window === 'undefined' ? '' : window.location.search)
 const FROZEN = params.get('shots') === '1'
@@ -261,6 +262,11 @@ export default function Gallery() {
             ))}
           </div>
         </Spec>
+      </Section>
+
+      <Section title="Browser: Media and Samples (MOCK data, gallery only)">
+        <Spec caption="Media: video, audio-only, a pending proxy, a long name. Rows are 24px; the strip shows the selected source."><BrowserGalleryFixture tab="media" /></Spec>
+        <Spec caption="Samples: groups with disclosure triangles, label stripe, selection outline, a swapped-audio mark, root note on Pitch"><BrowserGalleryFixture tab="samples" /></Spec>
       </Section>
 
       <Section title="Mixer: 16 strips, mixed states (MOCK data, gallery only)">

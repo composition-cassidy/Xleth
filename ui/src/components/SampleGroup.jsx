@@ -1,11 +1,13 @@
 import { useEffect, useRef } from 'react'
-import { ChevronRight } from 'lucide-react'
 import { labelColor } from '../constants/labels.js'
 import SampleRow from './SampleRow.jsx'
 import SampleThumbnail from './SampleThumbnail.jsx'
+import Disclosure from './browser/Disclosure.jsx'
+import styles from './browser/Browser.module.css'
 
 /**
- * Collapsible section for one label group in the Sample Selector.
+ * Collapsible section for one label group in the Sample Selector: a disclosure
+ * triangle, the label's identity colour, its name and its count, then the rows.
  *
  * Props:
  *   label            – string (e.g. "Kick", "Pitch")
@@ -53,22 +55,25 @@ export default function SampleGroup({
   }, [label, collapsed, samples, onFetchRootNotes])
 
   return (
-    <div className="sample-group">
+    <div className={styles.group} role="group" aria-label={`${label}, ${samples.length} samples`}>
       {/* ── Group header ───────────────────────────────────────────── */}
-      <button className="sample-group-header" onClick={onToggle}>
-        <ChevronRight
-          size={12}
-          className={`sample-group-chevron ${!collapsed ? 'expanded' : ''}`}
-        />
-        <span className="tab-label-dot" style={{ background: labelColor(label) }} />
-        <span className="sample-group-name">{label}</span>
-        <span className="tab-item-count">{samples.length}</span>
+      <button
+        type="button"
+        className={styles.groupHeader}
+        onClick={onToggle}
+        aria-expanded={!collapsed}
+        data-hint={`${label} samples. Click to ${collapsed ? 'expand' : 'collapse'}.`}
+      >
+        <Disclosure open={!collapsed} />
+        <span className={styles.swatch} style={{ background: labelColor(label) }} aria-hidden="true" />
+        <span className={styles.groupName}>{label}</span>
+        <span className={styles.count}>{samples.length}</span>
       </button>
 
       {/* ── Rows / Thumbnails ──────────────────────────────────────── */}
       {!collapsed && samples.length > 0 && (
         viewMode === 'thumbnails' ? (
-          <div className="sample-thumbnail-grid">
+          <div className={styles.thumbGrid}>
             {samples.map(region => {
               const src = sources[region.sourceId]
               return (
@@ -88,7 +93,7 @@ export default function SampleGroup({
             })}
           </div>
         ) : (
-          <div className="sample-group-rows">
+          <div className={styles.rows}>
             {samples.map(region => {
               const src = sources[region.sourceId]
               return (

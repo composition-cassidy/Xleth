@@ -44,6 +44,23 @@ describe('dev-only gallery', () => {
     expect(importers.sort()).toEqual(['components/mixer/MixerGalleryFixture.jsx', 'ui-kit/Gallery.jsx']);
   });
 
+  it('shows the populated Browser as MOCK data, and only the gallery imports its fixture', () => {
+    expect(html).toContain('Browser: Media and Samples (MOCK data, gallery only)');
+    expect(html).toContain('data-testid="browser-gallery-fixture"');
+    expect(html).toContain('Icon set: 16px grid, 1.5px stroke, currentColor');
+    const importers: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) { if (entry.name !== 'node_modules') walk(full); continue; }
+        if (!/\.(jsx?|tsx?)$/.test(entry.name) || full.includes('__tests__')) continue;
+        if (readFileSync(full, 'utf8').includes('BrowserGalleryFixture')) importers.push(path.relative(path.resolve(__dirname, '../..'), full).split(path.sep).join('/'));
+      }
+    };
+    walk(path.resolve(__dirname, '../..'));
+    expect(importers.sort()).toEqual(['components/browser/BrowserGalleryFixture.jsx', 'ui-kit/Gallery.jsx']);
+  });
+
   it('is mounted only behind VITE_XLETH_UI_KIT_GALLERY (main.jsx), lazily, at ?view=ui-kit', () => {
     const main = readFileSync(path.resolve(__dirname, '../../main.jsx'), 'utf8');
     expect(main).toMatch(/VITE_XLETH_UI_KIT_GALLERY/);

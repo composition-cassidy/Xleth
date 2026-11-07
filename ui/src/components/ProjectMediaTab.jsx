@@ -1,5 +1,5 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
-import { FolderOpen, Plus, Trash2, RefreshCw, FolderSearch, Music, Music2 } from 'lucide-react'
+import { useState, useEffect, useCallback, useMemo, useRef, useSyncExternalStore } from 'react'
+import { Plus, Trash2, RefreshCw, FolderSearch, Music, Music2, Play, Square } from 'lucide-react'
 import { timelineEvents } from '../timelineEvents.js'
 import ImportDropZone from './ImportDropZone.jsx'
 import { useXlethRootContext } from '../windowing/contexts/XlethRootContext.jsx'
@@ -8,6 +8,17 @@ import ContextMenu from './ContextMenu.jsx'
 import { useToast } from './Toast.jsx'
 import { DEFAULT_LABELS, loadCustomLabels, labelColor } from '../constants/labels.js'
 import { getPickerPaths, openFilePicker } from './filePicker/filePickerService.js'
+import { EmptyState, IconButton } from '../ui-kit'
+import useBrowserStore from '../stores/browserStore.js'
+import { formatClock, moveRowFocus } from './browser/browserFormat.js'
+import {
+  getActivePreviewId,
+  getMediaPort,
+  startPreview,
+  subscribePreview,
+  togglePreview,
+} from './samplePreview.js'
+import styles from './browser/Browser.module.css'
 
 const SOURCE_IMPORT_FILTERS = [
   { name: 'All Supported', extensions: ['mp4', 'avi', 'mov', 'mkv', 'wav', 'mp3', 'flac', 'ogg', 'aac', 'm4a'] },
@@ -16,7 +27,16 @@ const SOURCE_IMPORT_FILTERS = [
   { name: 'All Files', extensions: ['*'] },
 ]
 
-export default function ProjectMediaTab({ onOpenPicker }) {
+function previewRegionFor(source) {
+  return {
+    id: `source-${source.id}`,
+    name: source.name,
+    startTime: 0,
+    endTime: source.duration || 0,
+  }
+}
+
+export default function ProjectMediaTab({ onOpenPicker, query = '' }) {
   const { onOpenMidiImport } = useXlethRootContext()
   const { showToast } = useToast()
   const [sources, setSources] = useState([])
@@ -24,6 +44,8 @@ export default function ProjectMediaTab({ onOpenPicker }) {
   const [importing, setImporting] = useState(false)
   const [contextMenu, setContextMenu] = useState(null) // { x, y, source }
   const [labelPickerMenu, setLabelPickerMenu] = useState(null) // { x, y, source }
+  const [selectedId, setSelectedId] = useState(null)
+  const autoPreview = useBrowserStore((s) => s.autoPreview)
   const prevSourceIds = useRef(new Set())
   const sourceRequestId = useRef(0)
   const projectGeneration = useRef(0)
@@ -37,7 +59,7 @@ export default function ProjectMediaTab({ onOpenPicker }) {
         return srcs.map(s => ({ ...s, name: s.name ?? s.fileName }))
       }
     } catch (e) {
-      console.error('[ProjectMedia] Error fetching sources:', e)
+      console.error('[Browser] Error fetching sources:', e)
     }
     return null
   }, [])
@@ -48,11 +70,11 @@ export default function ProjectMediaTab({ onOpenPicker }) {
     try {
       const dataUrl = await window.xleth?.project?.getSourceThumbnail(source.filePath, source.duration)
       if (dataUrl && generation === projectGeneration.current) {
-        console.log(`[ProjectMedia] Thumbnail generated: id=${source.id}`)
+        console.log(`[Browser] Thumbnail generated: id=${source.id}`)
         setThumbnails(prev => ({ ...prev, [source.id]: dataUrl }))
       }
     } catch (e) {
-      console.error(`[ProjectMedia] Thumbnail error for id=${source.id}:`, e)
+      console.error(`[Browser] Thumbnail error for id=${source.id}:`, e)
     }
   }, [])
 
@@ -102,7 +124,7 @@ export default function ProjectMediaTab({ onOpenPicker }) {
   // ── Import via dialog ─────────────────────────────────────────────────────
   const handleImportDialog = useCallback(async () => {
     if (importing) return
-    console.log('[ProjectMedia] Import requested (dialog)')
+    console.log('[Browser] Import requested (dialog)')
     setImporting(true)
 
     try {
@@ -116,12 +138,12 @@ export default function ProjectMediaTab({ onOpenPicker }) {
       })
       const filePaths = getPickerPaths(picked)
       if (filePaths.length === 0) {
-        console.log('[ProjectMedia] Import cancelled')
+        console.log('[Browser] Import cancelled')
         return
       }
       await importFiles(filePaths)
     } catch (e) {
-      console.error('[ProjectMedia] Import error:', e)
+      console.error('[Browser] Import error:', e)
     } finally {
       setImporting(false)
     }
@@ -134,7 +156,7 @@ export default function ProjectMediaTab({ onOpenPicker }) {
     try {
       await importFiles(filePaths)
     } catch (e) {
-      console.error('[ProjectMedia] Drop import error:', e)
+      console.error('[Browser] Drop import error:', e)
     } finally {
       setImporting(false)
     }
@@ -146,7 +168,7 @@ export default function ProjectMediaTab({ onOpenPicker }) {
 
     for (const fp of filePaths) {
       const name = fp.replace(/^.*[\\/]/, '')
-      console.log(`[ProjectMedia] Importing ${name}`)
+      console.log(`[Browser] Importing ${name}`)
 
       try {
         const sourceId = await window.xleth?.project?.importSource(fp)
@@ -154,9 +176,9 @@ export default function ProjectMediaTab({ onOpenPicker }) {
           throw new Error('Engine rejected the media file.')
         }
         didImport = true
-        console.log(`[ProjectMedia] Import complete: id=${sourceId} ${name}`)
+        console.log(`[Browser] Import complete: id=${sourceId} ${name}`)
       } catch (e) {
-        console.error(`[ProjectMedia] Error importing ${name}:`, e)
+        console.error(`[Browser] Error importing ${name}:`, e)
         showToast(`Import failed: ${name} (${e?.message || 'unknown error'})`, 'error')
       }
     }
@@ -206,7 +228,7 @@ export default function ProjectMediaTab({ onOpenPicker }) {
       label: 'Reveal in Explorer',
       icon: FolderSearch,
       onClick: () => {
-        console.log(`[ProjectMedia] Reveal: ${contextMenu.source.filePath}`)
+        console.log(`[Browser] Reveal: ${contextMenu.source.filePath}`)
         window.xleth?.shell?.showItemInFolder(contextMenu.source.filePath)
       },
     },
@@ -222,7 +244,7 @@ export default function ProjectMediaTab({ onOpenPicker }) {
       label: 'Re-transcode Proxy',
       icon: RefreshCw,
       onClick: () => {
-        console.log(`[ProjectMedia] Re-transcode requested: id=${contextMenu.source.id}`)
+        console.log(`[Browser] Re-transcode requested: id=${contextMenu.source.id}`)
         // Future: dedicated re-transcode endpoint
       },
     },
@@ -233,11 +255,11 @@ export default function ProjectMediaTab({ onOpenPicker }) {
       danger: true,
       onClick: async () => {
         const id = contextMenu.source.id
-        console.log(`[ProjectMedia] Source removed: id=${id}`)
+        console.log(`[Browser] Source removed: id=${id}`)
         try {
           await window.xleth?.project?.removeSource(id)
         } catch (e) {
-          console.error(`[ProjectMedia] Engine removeSource failed: id=${id}`, e)
+          console.error(`[Browser] Engine removeSource failed: id=${id}`, e)
         }
         setSources(prev => prev.filter(s => s.id !== id))
         setThumbnails(prev => {
@@ -246,6 +268,7 @@ export default function ProjectMediaTab({ onOpenPicker }) {
           return next
         })
         prevSourceIds.current.delete(id)
+        setSelectedId(cur => (cur === id ? null : cur))
         timelineEvents.dispatchEvent(new Event('timeline-sources-changed'))
       },
     },
@@ -255,7 +278,7 @@ export default function ProjectMediaTab({ onOpenPicker }) {
   const labelPickerItems = labelPickerMenu ? [
     ...[...DEFAULT_LABELS, ...loadCustomLabels()].map(label => ({
       label,
-      icon: <span className="tab-label-dot" style={{ background: labelColor(label) }} />,
+      icon: <span className={styles.swatch} style={{ background: labelColor(label) }} />,
       onClick: async () => {
         const src = labelPickerMenu.source
         const region = {
@@ -268,13 +291,34 @@ export default function ProjectMediaTab({ onOpenPicker }) {
         try {
           await window.xleth?.timeline?.addRegion(region)
           timelineEvents.dispatchEvent(new Event('timeline-regions-changed'))
-          console.log(`[ProjectMedia] Imported source "${src.name}" as ${label} sample`)
+          console.log(`[Browser] Imported source "${src.name}" as ${label} sample`)
         } catch (e) {
-          console.warn('[ProjectMedia] addRegion failed:', e.message)
+          console.warn('[Browser] addRegion failed:', e.message)
         }
       },
     })),
   ] : []
+
+  // ── Selection + preview ───────────────────────────────────────────────────
+  // Selecting an audio-only source plays it through the shared preview path when
+  // Auto-preview is on. A video source shows its still in the strip below and
+  // previews its sound from the strip's play button.
+  const handleSelect = useCallback(async (source) => {
+    setSelectedId(source.id)
+    if (!autoPreview || source.hasVideo !== false) return
+    startPreview({
+      region: previewRegionFor(source),
+      sourceFilePath: source.filePath,
+      mediaPort: await getMediaPort(),
+    })
+  }, [autoPreview])
+
+  const visibleSources = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return q ? sources.filter(s => String(s.name || '').toLowerCase().includes(q)) : sources
+  }, [sources, query])
+
+  const selected = sources.find(s => s.id === selectedId) || null
 
   // ── Render ────────────────────────────────────────────────────────────────
   return (
@@ -283,51 +327,64 @@ export default function ProjectMediaTab({ onOpenPicker }) {
       onMidiFileDropped={(fp) => onOpenMidiImport?.(fp)}
       disabled={importing}
     >
-      <div className="project-media-tab">
-        {/* ── Header ─────────────────────────────────────────────────── */}
-        <div className="tab-placeholder-header">
-          <span className="tab-section-label">Sources</span>
-          <button
-            className="tab-icon-btn"
-            title="Import MIDI"
+      <div className={styles.tab}>
+        {/* ── List header ─────────────────────────────────────────────── */}
+        <div className={styles.listHeader}>
+          <span className={styles.listTitle}>Sources</span>
+          <span className={styles.count}>{sources.length}</span>
+          <span className={styles.spacer} />
+          <IconButton
+            size="sm"
+            label="Import MIDI"
+            hint="Import a MIDI file into a pattern"
             onClick={() => onOpenMidiImport?.()}
           >
-            <Music2 size={14} />
-          </button>
-          <button
-            className="tab-icon-btn"
-            title="Import source"
+            <Music2 size={14} aria-hidden="true" />
+          </IconButton>
+          <IconButton
+            size="sm"
+            label="Import media"
+            hint="Import audio or video files into this project"
+            hintMods="Ctrl+I · or drop files on the list"
             onClick={handleImportDialog}
             disabled={importing}
           >
-            <Plus size={14} />
-          </button>
+            <Plus size={14} aria-hidden="true" />
+          </IconButton>
         </div>
 
         {/* ── Source list or empty state ──────────────────────────────── */}
-        {sources.length === 0 ? (
-          <div className="tab-placeholder-empty">
-            <FolderOpen size={32} strokeWidth={1} className="tab-placeholder-icon" />
-            <p>No sources imported</p>
-            <p className="tab-placeholder-hint">
-              Import video or audio files to get started
-            </p>
-            <p className="tab-placeholder-hint" style={{ marginTop: 4, opacity: 0.5 }}>
-              Click + or drag files here
-            </p>
-          </div>
-        ) : (
-          <div className="source-list">
-            {sources.map(source => (
+        <div
+          className={styles.list}
+          role="listbox"
+          aria-label="Project media"
+          onKeyDown={moveRowFocus}
+        >
+          {sources.length === 0 ? (
+            <EmptyState
+              message="No media. Import audio or video, or drop files on this list."
+              actionLabel="Import media"
+              onAction={handleImportDialog}
+            />
+          ) : visibleSources.length === 0 ? (
+            <EmptyState message={`No media matches "${query.trim()}".`} />
+          ) : (
+            visibleSources.map(source => (
               <SourceCard
                 key={source.id}
                 source={source}
-                thumbnail={thumbnails[source.id] || null}
+                selected={source.id === selectedId}
+                onSelect={handleSelect}
                 onContextMenu={(e) => handleContextMenu(e, source)}
                 onDoubleClick={onOpenPicker || null}
               />
-            ))}
-          </div>
+            ))
+          )}
+        </div>
+
+        {/* ── Selection strip ─────────────────────────────────────────── */}
+        {selected && (
+          <SelectionStrip source={selected} thumbnail={thumbnails[selected.id] || null} />
         )}
 
         {/* ── Context menu ────────────────────────────────────────────── */}
@@ -351,5 +408,56 @@ export default function ProjectMediaTab({ onOpenPicker }) {
         )}
       </div>
     </ImportDropZone>
+  )
+}
+
+/**
+ * What the selected source is, under the list: its still (when it has picture),
+ * resolution, frame rate, length, proxy state and a play/stop for its sound. A
+ * ruled strip in the panel's own flow, not a card.
+ */
+function SelectionStrip({ source, thumbnail }) {
+  const isVideo = source.hasVideo !== false
+  const playing = useSyncExternalStore(subscribePreview, getActivePreviewId) === `source-${source.id}`
+  const facts = [
+    isVideo && source.width ? `${source.width}×${source.height}` : null,
+    isVideo && source.fps ? `${Math.round(source.fps)} fps` : null,
+    formatClock(source.duration || 0),
+  ].filter(Boolean).join(' · ')
+
+  const toggle = async () => {
+    togglePreview({
+      region: previewRegionFor(source),
+      sourceFilePath: source.filePath,
+      mediaPort: await getMediaPort(),
+    })
+  }
+
+  return (
+    <div className={styles.strip}>
+      {isVideo && (
+        <div className={styles.stripThumb}>
+          {thumbnail
+            ? <img src={thumbnail} alt={`Still from ${source.name}`} draggable={false} />
+            : <span className={styles.stripThumbEmpty}>No still</span>}
+        </div>
+      )}
+      <div className={styles.stripInfo}>
+        <span className={styles.stripName} title={source.filePath}>{source.name}</span>
+        <span className={styles.stripFacts}>{facts}</span>
+        <span className={styles.stripFacts} data-state={source.proxyReady ? 'ready' : 'pending'}>
+          {source.proxyReady ? 'Proxy ready' : 'Transcoding proxy…'}
+        </span>
+      </div>
+      <IconButton
+        size="sm"
+        label={playing ? 'Stop preview' : 'Preview sound'}
+        pressed={playing}
+        hint="Play this source's audio"
+        onClick={toggle}
+      >
+        {playing ? <Square size={10} aria-hidden="true" /> : <Play size={10} aria-hidden="true" />}
+      </IconButton>
+    </div>
   )
 }
