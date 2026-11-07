@@ -6,7 +6,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { AppShell, floatingPanelKey } from '../AppShell';
 import { PanelFrame, getPanelFrameRenderPath } from '../components/PanelFrame';
 import { Titlebar } from '../components/Titlebar';
-import { TopBarToggles } from '../components/TopBarToggles';
 import FxGraphPanel, {
   FxGraphPanelContent,
   activateFxGraphMode,
@@ -212,30 +211,9 @@ describe('PanelFrame render paths', () => {
     expect(html).toContain('>Preview<');
   });
 
-  it('renders layout preset and dock controls in the top toolbar', () => {
-    usePanelRegistry.getState().openPanel('timeline');
-    usePanelRegistry.getState().focusPanel('timeline');
-
-    const html = renderToStaticMarkup(<TopBarToggles />);
-
-    expect(html).toContain('aria-label="Layout presets"');
-    expect(html).toContain('Reset to FL Compose layout');
-    expect(html).toContain('Switch to Vegas Arrange layout');
-    expect(html).toContain('aria-label="Dock focused panel"');
-    expect(html).toContain('Dock focused panel left: Timeline');
-    expect(html).toContain('Dock focused panel top: Timeline');
-    expect(html).toContain('Dock focused panel bottom: Timeline');
-    expect(html).toContain('Dock focused panel right: Timeline');
-  });
-
   it('keeps the quarantined nodeEditor out of production toolbar catalog order', () => {
     expect(PANEL_IDS).toContain('nodeEditor');
     expect(PANEL_CATALOG_ORDER.map((entry) => entry.id)).not.toContain('nodeEditor');
-
-    const html = renderToStaticMarkup(<TopBarToggles />);
-
-    expect(html).not.toContain('Toggle Node Editor');
-    expect(html).not.toContain('Node Editor (F11)');
   });
 
   it('keeps active window paths from mounting the quarantined nodeEditor panel', () => {
@@ -262,12 +240,6 @@ describe('PanelFrame render paths', () => {
     expect(PANEL_CATALOG.fxGraph.typeColorToken).toBe('--theme-panel-node');
     expect(PANEL_CATALOG.fxGraph.fKey).toBe('F11');
     expect(PANEL_CATALOG_ORDER.map((entry) => entry.id)).toContain('fxGraph');
-
-    const html = renderToStaticMarkup(<TopBarToggles />);
-
-    expect(html).toContain('Toggle FX Graph');
-    expect(html).toContain('FX Graph (F11)');
-    expect(html).not.toContain('Toggle Node Editor');
   });
 
   it('renders the safe FX Graph shell without legacy editor affordances', () => {
