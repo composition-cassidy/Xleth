@@ -187,3 +187,5 @@ art/
 /splash/
 /welcome-screen.html
 /xleth.txt
+
+ui/tests/baseline/.output/
