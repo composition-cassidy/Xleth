@@ -3395,7 +3395,7 @@ html, body, #root {
   background: var(--theme-bg-inset);
   border: 1px solid var(--theme-border-subtle);
   border-radius: 3px;
-  font-size: 9px;
+  font-size: 10px;
   font-family: inherit;
   color: var(--theme-text-subtle);
   margin-left: 1px;
@@ -13237,7 +13237,7 @@ html, body, #root {
 }
 
 .pluginui-visualizer-placeholder-text {
-  font-size: 9px;
+  font-size: 10px;
   color: var(--theme-text-subtle);
   font-style: italic;
 }
