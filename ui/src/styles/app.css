@@ -7292,7 +7292,6 @@ html.fx-drag-active * {
    Track header â€” Pattern track variant + sub-label
    â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
-
 .track-header-region-name {
   opacity: 0.9;
 }
@@ -13091,170 +13090,6 @@ html.fx-drag-active * {
   text-align: right;
 }
 
-/* â”€â”€ Delay Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
-
-/* Flat, square, hard-shadowed floating panel. Surfaces step
-   well -> panel -> chrome; the accent appears only on live state. */
-.delay-panel {
-  position: fixed;
-  z-index: 200;
-  width: 700px;
-  display: flex;
-  flex-direction: column;
-  border: 1px solid var(--xleth-flat-border);
-  border-radius: 0;
-  background: var(--xleth-flat-panel);
-  box-shadow: var(--theme-depth-hard-shadow);
-  color: var(--xleth-flat-text);
-  font-family: var(--xleth-global-font-family);
-  user-select: none;
-}
-
-/* ── Header ──────────────────────────────────────────────────────────────── */
-
-.delay-panel-header {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  height: 34px;
-  padding: 0 6px 0 12px;
-  background: var(--xleth-flat-chrome);
-  border-bottom: 1px solid var(--xleth-flat-border);
-  cursor: grab;
-}
-
-.delay-panel-header::before {
-  content: '';
-  width: 3px;
-  height: 14px;
-  background: var(--xleth-flat-accent);
-  flex-shrink: 0;
-}
-
-.delay-panel-header:active {
-  cursor: grabbing;
-}
-
-.delay-panel-title {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.14em;
-  color: var(--xleth-flat-text);
-}
-
-.delay-panel-sub {
-  flex: 1;
-  font-size: 8.5px;
-  font-weight: 600;
-  letter-spacing: 0.16em;
-  color: var(--xleth-flat-text-muted);
-}
-
-.delay-panel-close {
-  width: 22px;
-  height: 22px;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  color: var(--xleth-flat-text-muted);
-  cursor: pointer;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-}
-
-.delay-panel-close:hover {
-  color: var(--xleth-flat-text);
-  background: var(--xleth-flat-section);
-}
-
-/* ── Stage: the dominant echo-field visualization ────────────────────────── */
-
-.delay-stage {
-  height: 236px;
-  overflow: hidden;
-  background: var(--xleth-flat-well);
-  border-bottom: 1px solid var(--xleth-flat-border);
-  flex-shrink: 0;
-}
-
-.delay-stage-canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
-}
-
-/* ── Strip: one flat control row, no titles ──────────────────────────────── */
-/* 1px gaps double as divider hairlines between the three top-level cells
-   (mix / time-group / right-group) — same trick the old tiered grid used. */
-.delay-strip {
-  display: flex;
-  align-items: stretch;
-  gap: 1px;
-  background: var(--xleth-flat-border);
-}
-
-.delay-strip > * {
-  background: var(--xleth-flat-panel);
-}
-
-/* ── Time group: the two taps, their per-tap mode dropdowns, and the ─────── */
-/* ── stereo-mode selector spanning beneath both ──────────────────────────── */
-
-.delay-strip-time {
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
-}
-
-.delay-strip-time-knobs {
-  display: flex;
-  gap: 18px;
-  padding: 14px 16px 8px;
-  justify-content: center;
-}
-
-.delay-time-cell {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 5px;
-  width: 84px;
-}
-
-.delay-time-chan {
-  font-size: 8.5px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  color: var(--xleth-flat-text-muted);
-}
-
-.delay-time-cell.is-synced .delay-time-chan {
-  color: var(--xleth-flat-accent);
-}
-
-.delay-time-sub {
-  font-size: 8.5px;
-  letter-spacing: 0.06em;
-  color: var(--xleth-flat-text-muted);
-  font-variant-numeric: tabular-nums;
-}
-
-/* Single mode: the R cell mirrors L and never writes time_r/sync_div_r; its
-   mode dropdown is unmounted entirely rather than just disabled. */
-.delay-time-cell.is-locked {
-  opacity: 0.5;
-}
-
-.delay-time-cell.is-locked .delay-time-chan {
-  color: var(--xleth-flat-text-subtle);
-}
-
-.delay-time-cell.is-locked .delay-time-knob {
-  pointer-events: none;
-}
-
 .xleth-select-trigger.delay-mode-select {
   width: 100%;
   height: 20px;
@@ -13271,17 +13106,6 @@ html.fx-drag-active * {
 .xleth-select-trigger.delay-mode-select:hover {
   color: var(--xleth-flat-text);
   border-color: var(--xleth-flat-accent);
-}
-
-.delay-time-cell.is-synced .xleth-select-trigger.delay-mode-select {
-  color: var(--xleth-flat-text);
-  border-color: var(--xleth-flat-accent);
-}
-
-.delay-strip-stereo-mode {
-  display: flex;
-  justify-content: center;
-  padding: 4px 16px 14px;
 }
 
 .xleth-select-trigger.delay-stereo-mode-select {
@@ -13301,128 +13125,6 @@ html.fx-drag-active * {
 .xleth-select-trigger.delay-stereo-mode-select:hover {
   color: var(--xleth-flat-text);
   border-color: var(--xleth-flat-accent);
-}
-
-/* ── Right group: FEEDBACK / MOD RATE / MOD DEPTH, then WIDTH / DUCK ─────── */
-/* ── beside the compact filter curve ─────────────────────────────────────── */
-
-.delay-strip-right {
-  display: flex;
-  flex-direction: column;
-  flex: 1;
-  min-width: 0;
-}
-
-.delay-strip-primary-knobs {
-  display: flex;
-  gap: 22px;
-  padding: 14px 18px 8px;
-}
-
-.delay-strip-secondary {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 6px 18px 14px;
-  flex: 1;
-  min-height: 0;
-}
-
-/* ── Mix fader ───────────────────────────────────────────────────────────── */
-
-.delay-mix {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 6px;
-  padding: 14px 10px 12px;
-  width: 56px;
-  flex-shrink: 0;
-}
-
-.delay-mix-track {
-  position: relative;
-  width: 14px;
-  flex: 1;
-  min-height: 110px;
-  background: var(--xleth-flat-well);
-  border: 1px solid var(--xleth-flat-border-strong);
-  border-radius: 0;
-  cursor: ns-resize;
-  touch-action: none;
-}
-
-.delay-mix-track:focus-visible {
-  outline: 1px solid var(--xleth-flat-accent);
-  outline-offset: 1px;
-}
-
-.delay-mix-fill {
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  background: var(--xleth-flat-accent);
-  pointer-events: none;
-}
-
-.delay-mix-thumb {
-  position: absolute;
-  left: -3px;
-  right: -3px;
-  height: 3px;
-  margin-bottom: -1px;
-  background: var(--xleth-flat-text);
-  pointer-events: none;
-}
-
-.delay-mix-value {
-  font-size: 10px;
-  font-weight: 700;
-  color: var(--xleth-flat-text);
-  font-variant-numeric: tabular-nums;
-}
-
-.delay-unit {
-  font-size: 8px;
-  color: var(--xleth-flat-text-muted);
-  margin-left: 1px;
-}
-
-.delay-mix-label {
-  font-size: 8.5px;
-  font-weight: 700;
-  letter-spacing: 0.16em;
-  color: var(--xleth-flat-text-muted);
-}
-
-.delay-knob-cell {
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  gap: 3px;
-  flex-shrink: 0;
-}
-
-.delay-knob-value {
-  font-size: 9px;
-  font-weight: 600;
-  color: var(--xleth-flat-text-secondary);
-  font-variant-numeric: tabular-nums;
-}
-
-.delay-filter {
-  flex: 1;
-  min-width: 130px;
-  height: 68px;
-  border: 1px solid var(--xleth-flat-border-strong);
-  background: var(--xleth-flat-well);
-}
-
-.delay-filter-canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
 }
 
 /* â”€â”€ Reverb Panel â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
@@ -17695,7 +17397,6 @@ html, body, #root {
   outline-offset: 1px;
 }
 
-
 /* -- MIDI Import dialog ------------------------------------------------ */
 
 .midi-dialog-backdrop {
@@ -19306,7 +19007,6 @@ html, body, #root {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 }
-
 
 .pluginui-visualizer-canvas {
   display: block;

@@ -58,9 +58,18 @@ const compressorFx = (nodeId, extra = {}) => ({
   nodeId, pluginId: 'compressor', position: 0, bypassed: false,
   effectInstanceId: `gallery-${nodeId}`, sidechain: { supported: true, channels: 2, enabled: false }, ...extra,
 })
+// Phase 4b devices, three specimens each (active, bypassed, folded). Node ids
+// are base, base + 1, base + 2 so no state leaks between them.
+const PHASE_4B_DEVICES = [
+  { pluginId: 'delay', title: 'Delay', base: 11 },
+]
+const deviceFx = (pluginId, nodeId, extra = {}) => ({
+  nodeId, pluginId, position: 0, bypassed: false, effectInstanceId: `gallery-${nodeId}`, ...extra,
+})
 function useGalleryDeviceStates() {
   useState(() => {
     useDeviceUiStore.getState().setFolded(`${GALLERY_TRACK}:3`, true)
+    for (const d of PHASE_4B_DEVICES) useDeviceUiStore.getState().setFolded(`${GALLERY_TRACK}:${d.base + 2}`, true)
     useCompressorStore.setState({ target: { trackId: 9, nodeId: 4, storeKey: GALLERY_TRACK } })
     return null
   })
@@ -228,8 +237,16 @@ export default function Gallery() {
         <Spec caption="bypassed: activator off, Off, dimmed body" wide><EffectDevice effect={compressorFx(2, { bypassed: true })} storeKey={GALLERY_TRACK} identityColor="var(--theme-track-palette-2)" dragHandleProps={{}} /></Spec>
         <Spec caption="folded"><div className={styles.inline}><EffectDevice effect={compressorFx(3)} storeKey={GALLERY_TRACK} identityColor="var(--theme-track-palette-2)" /><EffectDevice effect={compressorFx(4)} storeKey={GALLERY_TRACK} identityColor="var(--theme-track-palette-2)" /></div></Spec>
         <Spec caption="popped out: the floating window (offset shadow only here)" wide><div className={styles.floatingStage}><EffectDevice effect={compressorFx(4)} storeKey={GALLERY_TRACK} presentation="floating" onClose={() => {}} dragHandleProps={{}} /></div></Spec>
-        <Spec caption="not migrated yet (Phase 4b): same title bar"><EffectDevice effect={{ nodeId: 5, pluginId: 'delay', bypassed: false }} storeKey={GALLERY_TRACK} identityColor="var(--theme-track-palette-2)" /></Spec>
+        <Spec caption="not migrated yet: same title bar"><EffectDevice effect={{ nodeId: 5, pluginId: 'chorus', bypassed: false }} storeKey={GALLERY_TRACK} identityColor="var(--theme-track-palette-2)" /></Spec>
       </Section>
+
+      {PHASE_4B_DEVICES.map((d) => (
+        <Section key={d.pluginId} title={`Device: ${d.title} (no engine: defaults, idle display)`}>
+          <Spec caption="active, docked" wide><EffectDevice effect={deviceFx(d.pluginId, d.base)} storeKey={GALLERY_TRACK} identityColor="var(--theme-track-palette-2)" dragHandleProps={{}} /></Spec>
+          <Spec caption="bypassed: activator off, Off, dimmed body" wide><EffectDevice effect={deviceFx(d.pluginId, d.base + 1, { bypassed: true })} storeKey={GALLERY_TRACK} identityColor="var(--theme-track-palette-2)" dragHandleProps={{}} /></Spec>
+          <Spec caption="folded"><EffectDevice effect={deviceFx(d.pluginId, d.base + 2)} storeKey={GALLERY_TRACK} identityColor="var(--theme-track-palette-2)" /></Spec>
+        </Section>
+      ))}
     </div>
   )
 }
