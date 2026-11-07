@@ -4,8 +4,9 @@ Read this before touching any stylesheet or component. It is the contract for th
 UI rebuild. Phase 0 (this file, cascade layers, tokens, guards, render harness)
 changes almost nothing visually; later phases are measured against it.
 
-Status: **Phase 0 and Phase 7 landed** (layers, tokens, `format.ts`, guards, `npm run shots`). The kit
-itself (components) starts in Phase 1; nothing consumes the kit tokens yet.
+Status: **Phases 0 to 8 landed.** Phase 0 laid the layers, tokens, `format.ts`, guards and `npm run shots`;
+Phases 1 to 7 built the shell and the kit; Phase 8 (section 13) removed the dead UI code and the CSS and
+dialogs the rebuild superseded.
 
 ---
 
@@ -488,9 +489,74 @@ import a generic music, slider or tool glyph. The Gallery shows every glyph at 1
 - **Narrow windows at high scale:** below about 683 CSS px (a window under 1366 px at 200 %) the Preview and
   the timeline toolbar still run out of room; only the top bar, the dock tabs and the hint bar are laid out for it.
 - **Inline styles:** about 511 `style={{…}}` objects bypass tokens. Later phases.
-- **`app.css`:** 34,380 lines, six `:root` blocks, four appended override passes. It shrinks only
-  by deletion, phase by phase, ratcheted by the baseline file.
+- **`app.css`:** 23,858 lines after Phase 8 (34,380 at Phase 0), two `:root` blocks, four appended override
+  passes still in place (they style surfaces that are still legacy). It shrinks only by deletion, ratcheted by
+  the baseline file. See 13.4 for what remains.
 - **Shots harness limits:** `npm run shots` (`tests/ui-render/shots.mjs`; `--label`, `--no-build`,
   `--compare A B`) runs without the engine
   (`window.xleth` absent) and covers chrome only. Anything needing live audio, video or the
   bridge must be checked in the real Electron app.
+
+## 13. Cleanup and final verification (Phase 8)
+
+### 13.1 Overlays: Dialog, Menu, Toast
+
+`ui-kit/Dialog.tsx` and `ui-kit/Menu.tsx` are the two floating-surface primitives; both carry the hard offset
+shadow and nothing else (no blur, no glow, no entry animation).
+
+- **Dialog** (`Dialog`, `DialogText`, `DialogList`, `DialogListItem`): a modal. The title is 16px and **the body is
+  16px / 1.5**: dialogs are read like prose, the one DAW Floor exception (controls inside keep their 12px kit sizes).
+  Focus moves to the element marked `data-autofocus` (else the first control), is trapped while open and returns
+  to where it was. Escape and a press on the backdrop close it, `dismissable={false}` for a dialog that must be
+  answered or is running a task; Enter runs `onEnter` unless focus is on a button, link or field. The footer holds kit
+  Buttons, default action last: `variant="primary"` is the inverted ink chip, `variant="danger"` outlines in the
+  error text colour. The scrim is `--ui-scrim`, a flat dim.
+- **Menu** (`Menu`, `MenuItem`, `MenuSeparator`, `MenuCustom`): 24px rows, 12px text, arrows / Home / End,
+  Enter or Space selects, Escape closes and focus returns. A press inside any menu surface is never "outside",
+  so a submenu is just a second `Menu`. A checkable row (`checked` defined) is `menuitemcheckbox` with a check
+  glyph. `components/ContextMenu.jsx` keeps its item-array API on top of it (about a dozen callers);
+  `timeline/TrackContextMenu.jsx` keeps its submenus.
+- **Toast** (`components/Toast.jsx`, `Toast.module.css`): the one-line status text in the top bar, with a glyph per
+  level so colour is not the only signal; errors are announced as alerts.
+- Migrated in Phase 8: Unsaved changes, Clean up project, Convert track, Automation delete, Missing media,
+  Missing plugins, Export as ZIP, every context menu, the toast. Gallery: `?view=ui-kit`, "Menu and Dialog".
+- z-order: dialogs sit at `--xleth-z-modal` (9200), menus and popovers at `--xleth-z-popover` (10000), so a Select
+  or a menu inside a dialog opens above it and the file-picker modal stays above both.
+
+### 13.2 Removed
+
+37 files (32 source, 5 tests), 10 stale Electron snapshots and 2,557 lines of `app.css` (335 dead rules, 50 unused or duplicate custom properties): `components/sampler.bak/`, `ResizablePanel`,
+the grid `TrackCard`, `FadeBezierEditor`, the sampler `MiniKeyboard`, `TopBarToggles`,
+`GraphNodeParameterInspector`, `XlethKnob`, `XlethPanelHeader`, `ModulationRack`, the retired EQ popup / panel /
+inspector cluster, `DebugCapturePanel`, the Loop Lab overlay (`LoopLab*`, `loopLab.css`; the pure logic
+`loopLabMeta.js`, `loopLabRater.js` and `electron-main/loopLabExport.js` stay, so it can be mounted again),
+three unreferenced orphans, 335 dead CSS rules and 50 unused or duplicate custom properties. 56 per-interaction
+debug logs went too; error and warning logs stay, as do the once-per-event `[Shell]` and `[Theme]` logs.
+Kept on purpose: `mixer/NodeEditor.jsx` (still named by the quarantined `nodeEditor` panel in `panelCatalog.ts`,
+with `nodeGraphStore.js`, `vendor-xyflow.css` and `@xyflow/react`).
+
+### 13.3 Baselines
+
+`npm run shots` (no engine) is the render check. The Electron suite (`tests/baseline/capture.spec.ts`) was rewritten
+for the docked shell and its stale Phase 0 snapshots removed. **No new Electron snapshots are committed**: they need
+the engine, and `xleth_native.node` was older than the latest engine and bridge commits when this phase ran. Capture
+them with `npm run baseline` on a machine with a fresh addon (see `tests/baseline/MANUAL.md`).
+
+### 13.4 What is still legacy
+
+`app.css` still styles about 150 live components that have not moved to the kit; the four appended passes
+(`Mockup-aligned DAW shell pass`, `Flat mockup parity pass`, `Flat menus and settings parity pass`, `Flat grid
+track-card polish pass`) style those surfaces and are not superseded. Largest consumers by rule lines: the sampler
+panel (about 1,300), the plugin-ui runtime (about 860), Settings (about 620), the sampler modulation cards
+(about 550), Amp, Filter and Phanjer panels. Dialogs not yet on the kit: Export (RenderDialog), MIDI import and
+the Settings panel (each 650 to 1,800 lines of its own layout). `ProgressBar` and the picker sheet's controls row
+are legacy too. `UpdateBanner` is a stub that renders nothing.
+
+### 13.5 Floor status after the populated-shell audit
+
+Measured with the fake engine (16 tracks), every detail-dock tab, dark / light / high contrast, 1366x768,
+1920x1080, 2560x1440 and 1920 at 150 %: no text under 10px; no text under 4.5:1 except deliberately dimmed states
+(muted or bypassed content at the 45 % mute opacity, disabled controls). Open hit-area items (under 24px, canvas or
+overlay controls): the track identity stripe button (6px wide), the clip FX badge (24x14), loop-region toggle,
+snapshot cue markers, Pattern-list collapse. The Theme Editor (`theming/editor/ThemeEditor.tsx` and its modes) is not
+mounted anywhere; only `ChromeReadouts` is reachable, through Settings > Appearance.
