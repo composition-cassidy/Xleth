@@ -26,7 +26,6 @@ import {
 } from './registry/panelCatalog';
 import EffectEditorHost from '../components/mixer/EffectEditorHost.jsx';
 import ClipFxEditorHost from '../components/timeline/ClipFxEditorHost.jsx';
-import BackdropLayer from '../backdrop/BackdropLayer.jsx';
 import './components/windowing.css';
 import styles from './AppShell.module.css';
 
@@ -43,10 +42,6 @@ const SplitSyllablesPanel = React.lazy(() => import('./panels/SplitSyllablesPane
 const SampleSandboxPanel = React.lazy(() => import('./panels/SampleSandboxPanel'));
 const InspectorPanel = React.lazy(() => import('./panels/InspectorPanel'));
 const DevicesPanel = React.lazy(() => import('./panels/DevicesPanel'));
-
-export interface WindowingAppShellProps {
-  backdropImageUrl?: string;
-}
 
 // Exhaustive by construction: a panel added to the catalog without a body here
 // is a type error rather than a panel that toggles in the top bar and never
@@ -101,7 +96,7 @@ export function floatingPanelKey(panels: PanelStateMap): string {
     .join('|');
 }
 
-export function AppShell({ backdropImageUrl = '' }: WindowingAppShellProps) {
+export function AppShell() {
   const hasDom = typeof window !== 'undefined';
   const workAreaRef = useRef<HTMLDivElement>(null);
   const lastWorkAreaRectRef = useRef<WorkAreaRect | null>(null);
@@ -189,7 +184,6 @@ export function AppShell({ backdropImageUrl = '' }: WindowingAppShellProps) {
       >
         <SampleSelectorDrawer />
         <div className="xleth-app-workarea" data-testid="xleth-app-workarea" ref={workAreaRef}>
-          <BackdropLayer workAreaRef={workAreaRef} backdropImageUrl={backdropImageUrl} />
           <div
             className={`xleth-docked-window-layer ${styles.dockedLayer}`}
             data-testid="xleth-docked-window-layer"

@@ -79,30 +79,6 @@ function updateFrameShmMeta(meta) {
   Object.assign(frameShm.meta, meta);
 }
 
-function normalizeBackdropState(state) {
-  const mode = state && ['native-acrylic', 'image', 'video'].includes(state.mode) ? state.mode : 'off';
-  const preference = state && ['off', 'acrylic', 'image', 'video', 'none'].includes(state.preference)
-    ? state.preference
-    : 'none';
-  return {
-    capability: state && state.capability ? state.capability : null,
-    preference,
-    mode,
-    imagePath: typeof state?.imagePath === 'string' ? state.imagePath : null,
-    imageUrl: typeof state?.imageUrl === 'string' ? state.imageUrl : null,
-    videoPath: typeof state?.videoPath === 'string' ? state.videoPath : null,
-    videoUrl: typeof state?.videoUrl === 'string' ? state.videoUrl : null,
-    lastError: typeof state?.lastError === 'string' ? state.lastError : null,
-  };
-}
-
-let backdropCurrent = normalizeBackdropState(null);
-try {
-  backdropCurrent = normalizeBackdropState(ipcRenderer.sendSync('xleth:backdrop:getStateSync'));
-} catch (e) {
-  console.warn('[preload] backdrop state seed failed:', e.message);
-}
-
 window.xleth = ({
 
   // ── Media server (for <video> elements) ────────────────────────────────────
@@ -484,35 +460,6 @@ window.xleth = ({
     getFavorites:   ()                => invoke('xleth:filePicker:getFavorites'),
     setFavorites:   (favorites)       => invoke('xleth:filePicker:setFavorites', favorites),
     probeDurations: (paths)           => invoke('xleth:filePicker:probeDurations', paths),
-  },
-
-  // Workspace backdrop state
-  backdrop: {
-    get current() { return backdropCurrent },
-    getState: async () => {
-      backdropCurrent = normalizeBackdropState(await invoke('xleth:backdrop:getState'));
-      return backdropCurrent;
-    },
-    onModeChanged: (cb) => {
-      const h = (_e, state) => {
-        backdropCurrent = normalizeBackdropState(state);
-        cb(backdropCurrent);
-      };
-      ipcRenderer.on('xleth:backdrop:modeChanged', h);
-      return () => ipcRenderer.removeListener('xleth:backdrop:modeChanged', h);
-    },
-    chooseImage: async () => {
-      backdropCurrent = normalizeBackdropState(await invoke('xleth:backdrop:chooseImage'));
-      return backdropCurrent;
-    },
-    chooseVideo: async () => {
-      backdropCurrent = normalizeBackdropState(await invoke('xleth:backdrop:chooseVideo'));
-      return backdropCurrent;
-    },
-    setMedia: async (settings) => {
-      backdropCurrent = normalizeBackdropState(await invoke('xleth:backdrop:setMedia', settings));
-      return backdropCurrent;
-    },
   },
 
   // Window layout (persisted to userData/layout.json)

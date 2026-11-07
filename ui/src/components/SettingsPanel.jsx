@@ -34,22 +34,12 @@ import {
   UI_SCALE_STEP,
   useUiScaleStore,
 } from '../stores/uiScaleStore.js'
-import {
-  BACKDROP_FX_PRESETS,
-  BACKDROP_FX_QUALITIES,
-  useBackdropFxSettingsStore,
-} from '../backdrop/backdropFxSettings.js'
 import { useQuickLaunchersStore } from '../stores/quickLaunchersStore.js'
 import {
   useClipVideoFxDefaultsStore,
 } from '../stores/clipVideoFxDefaultsStore.js'
 import { clipHasVideo, planClipVideoFxApply } from './timeline/clipVideoFxApply.js'
 import { timelineEvents } from '../timelineEvents.js'
-import {
-  BACKDROP_MEDIA_SOURCE_TYPES,
-  backdropMediaFromBackdropState,
-  useBackdropMediaSettingsStore,
-} from '../backdrop/backdropMediaSettings.js'
 import { getPickerPath, openFilePicker } from './filePicker/filePickerService.js'
 import { IMAGE_EXTENSIONS } from './filePicker/filePickerHelpers.js'
 
@@ -88,7 +78,7 @@ export const SETTINGS_CATEGORIES = [
   { id: 'audio', tab: 'application', label: 'Audio', summary: 'Output device, buffer size, and realtime diagnostics' },
   { id: 'plugins', tab: 'application', label: 'Plugins', summary: 'Scan and manage VST3 plugins' },
   { id: 'graphics', tab: 'application', label: 'Graphics', summary: 'GPU and preview diagnostics' },
-  { id: 'appearance', tab: 'application', label: 'Appearance', summary: 'Accent color, brightness, and workspace backdrop' },
+  { id: 'appearance', tab: 'application', label: 'Appearance', summary: 'Theme, accent color, brightness, and UI scale' },
   { id: 'shortcuts', tab: 'application', label: 'Shortcuts', summary: 'View and customise keyboard shortcuts' },
   { id: 'launchers', tab: 'application', label: 'Launchers', summary: 'Quick-launch external tools from the toolbar' },
   { id: 'logs', tab: 'application', label: 'Logs', summary: 'Export this session\'s console log' },
@@ -137,15 +127,6 @@ const NAMING_FORMAT_OPTIONS = [
 
 function getXleth() {
   return typeof window !== 'undefined' ? window.xleth : undefined
-}
-
-function getInitialBackdropState() {
-  const current = getXleth()?.backdrop?.current
-  return current || { capability: null, preference: 'acrylic', mode: 'off' }
-}
-
-function normalizeBackdropPreference(value) {
-  return ['off', 'acrylic', 'image'].includes(value) ? value : 'acrylic'
 }
 
 function normalizeCategory(category) {
@@ -247,7 +228,6 @@ function SettingsRow({ label, htmlFor, description, children }) {
 }
 
 export default function SettingsPanel({ onClose, initialCategory = 'project' }) {
-  const backdropVideoInputRef = useRef(null)
   const themeContext = useContext(ThemeContext)
   const appearanceAppliedRef = useRef(null)
   const appearancePersistTimerRef = useRef(null)
@@ -285,14 +265,6 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
   const [audioDefaultBufferSize, setAudioDefaultBufferSize] = useState(null)
   const [audioBufferSize, setAudioBufferSizeState] = useState(null)
   const [audioSampleRate, setAudioSampleRateState] = useState(null)
-  const [backdropState, setBackdropState] = useState(getInitialBackdropState)
-  const backdropFxSettings = useBackdropFxSettingsStore((state) => state.settings)
-  const hydrateBackdropFxSettings = useBackdropFxSettingsStore((state) => state.hydrate)
-  const setBackdropFxSettings = useBackdropFxSettingsStore((state) => state.setSettings)
-  const backdropMediaSettings = useBackdropMediaSettingsStore((state) => state.settings)
-  const hydrateBackdropMediaSettings = useBackdropMediaSettingsStore((state) => state.hydrate)
-  const setBackdropMediaSettings = useBackdropMediaSettingsStore((state) => state.setSettings)
-  const syncBackdropMediaFromState = useBackdropMediaSettingsStore((state) => state.syncFromBackdropState)
 
   const launchers = useQuickLaunchersStore((s) => s.launchers)
   const hydrateLaunchers = useQuickLaunchersStore((s) => s.hydrate)
@@ -472,30 +444,6 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
       setHwEncoderStatus({ state: 'unavailable', encoders: [] })
     }
   }, [])
-
-  useEffect(() => {
-    void hydrateBackdropFxSettings()
-  }, [hydrateBackdropFxSettings])
-
-  useEffect(() => {
-    void hydrateBackdropMediaSettings()
-  }, [hydrateBackdropMediaSettings])
-
-  useEffect(() => {
-    const xl = getXleth()
-    const applyBackdropState = (state) => {
-      if (!state) return
-      setBackdropState(state)
-      syncBackdropMediaFromState(state)
-    }
-
-    applyBackdropState(xl?.backdrop?.current)
-    xl?.backdrop?.getState?.()
-      .then(applyBackdropState)
-      .catch((err) => console.warn('[Settings] backdrop.getState failed:', err?.message || err))
-
-    return xl?.backdrop?.onModeChanged?.(applyBackdropState)
-  }, [syncBackdropMediaFromState])
 
   const activeCategoryDef = useMemo(
     () => SETTINGS_CATEGORIES.find(category => category.id === activeCategory) || SETTINGS_CATEGORIES[0],
@@ -723,131 +671,6 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
   }
 
 
-  async function applyBackdropMediaSource(value) {
-    const next = ['none', 'acrylic', 'image', 'video'].includes(value) ? value : 'none'
-    const settings = await setBackdropMediaSettings({ sourceType: next, lastError: '' })
-    setBackdropState(backdropMediaFromBackdropState({
-      mode: settings.sourceType === 'none'
-        ? 'off'
-        : settings.sourceType === 'acrylic'
-          ? 'native-acrylic'
-          : settings.sourceType,
-      preference: settings.sourceType,
-      imagePath: settings.imagePath,
-      videoPath: settings.videoPath,
-      lastError: settings.lastError,
-    }, settings))
-  }
-
-  async function chooseWorkspaceBackdropImage() {
-    try {
-      const picked = await openFilePicker({
-        mode: 'openFile',
-        title: 'Choose Workspace Backdrop',
-        subtitle: 'Select a PNG, JPEG, or WebP image for the workspace.',
-        actionLabel: 'Use Image',
-        filters: [{ name: 'Images', extensions: IMAGE_EXTENSIONS }],
-        legacyPicker: async () => {
-          const state = await getXleth()?.backdrop?.chooseImage?.()
-          return state?.imagePath || null
-        },
-      })
-      const filePath = getPickerPath(picked)
-      if (!filePath) return
-      const settings = await setBackdropMediaSettings({
-        sourceType: 'image',
-        imagePath: filePath,
-        lastError: '',
-      })
-      const state = getXleth()?.backdrop?.current || {
-        capability: backdropState?.capability || null,
-        preference: 'image',
-        mode: 'image',
-        imagePath: settings.imagePath || filePath,
-        imageUrl: null,
-        videoPath: settings.videoPath || null,
-        videoUrl: null,
-        lastError: settings.lastError || null,
-      }
-      setBackdropState(state)
-      syncBackdropMediaFromState(state)
-    } catch (err) {
-      console.warn('[Settings] workspace backdrop image chooser failed:', err?.message || err)
-    }
-  }
-
-  async function chooseWorkspaceBackdropVideo() {
-    try {
-      const picked = await openFilePicker({
-        mode: 'openFile',
-        title: 'Choose Workspace Background Video',
-        subtitle: 'Select an MP4 video loop for the workspace.',
-        actionLabel: 'Use Video',
-        filters: [{ name: 'MP4 Video', extensions: ['mp4'] }],
-        legacyPicker: async () => {
-          const state = await getXleth()?.backdrop?.chooseVideo?.()
-          return state?.videoPath || null
-        },
-      })
-      const filePath = getPickerPath(picked)
-      if (filePath) {
-        const settings = await setBackdropMediaSettings({
-          sourceType: 'video',
-          videoPath: filePath,
-          lastError: '',
-        })
-        const state = getXleth()?.backdrop?.current || {
-          capability: backdropState?.capability || null,
-          preference: 'video',
-          mode: 'video',
-          imagePath: settings.imagePath || null,
-          imageUrl: null,
-          videoPath: settings.videoPath || filePath,
-          videoUrl: null,
-          lastError: settings.lastError || null,
-        }
-        setBackdropState(state)
-        syncBackdropMediaFromState(state)
-        return
-      }
-      if (picked?.unavailable) backdropVideoInputRef.current?.click()
-    } catch (err) {
-      console.warn('[Settings] workspace backdrop video chooser failed:', err?.message || err)
-    }
-  }
-
-  async function handleBackdropVideoFileChange(event) {
-    const file = event.target.files?.[0]
-    event.target.value = ''
-    if (!file) return
-    const xl = getXleth()
-    const filePath = xl?.getDroppedFilePath?.(file)
-      || xl?.file?.getPathForFile?.(file)
-      || ''
-    if (!filePath) {
-      await setBackdropMediaSettings({
-        sourceType: 'video',
-        lastError: 'Video backdrop could not be selected. The file path was unavailable.',
-      })
-      return
-    }
-    const next = await setBackdropMediaSettings({
-      sourceType: 'video',
-      videoPath: filePath,
-      lastError: '',
-    })
-    setBackdropState({
-      capability: backdropState?.capability || null,
-      preference: 'video',
-      mode: 'video',
-      imagePath: next.imagePath || null,
-      imageUrl: null,
-      videoPath: next.videoPath || null,
-      videoUrl: null,
-      lastError: next.lastError || null,
-    })
-  }
-
   async function applyNamingFormat(v) {
     const validated = VALID_NAMING_FORMATS.includes(v) ? v : 'sampleNameOnly'
     setNamingFormat(validated)
@@ -910,10 +733,6 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
     }
     await getXleth()?.settings?.set?.(SETTINGS_KEY_AUDIO_RATE, rate)
     await refreshAudioDeviceInfo()
-  }
-
-  function applyBackdropFxSettings(patch) {
-    void setBackdropFxSettings(patch)
   }
 
   const applyAppearance = useCallback((accent, darkness, options = {}) => {
@@ -1555,15 +1374,6 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
   )
 
   const renderAppearance = () => {
-    const backdropFxDisabled = !backdropFxSettings.enabled
-    const studioGridOverlayDisabled = backdropFxDisabled || backdropFxSettings.preset !== 'subtle-glass'
-    const backdropMediaSource = backdropMediaSettings.sourceType
-    const activeMediaPath = backdropMediaSource === 'video'
-      ? backdropMediaSettings.videoPath
-      : backdropMediaSource === 'image'
-        ? backdropMediaSettings.imagePath || backdropState?.imagePath
-        : ''
-    const mediaStatus = backdropMediaSettings.lastError || backdropState?.lastError || ''
     return (
       <>
         <SettingsSection title="Theme" index={0}>
@@ -1709,180 +1519,6 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
           </SettingsRow>
         </SettingsSection>
 
-        <SettingsSection title="Backdrop Media" index={2}>
-          <SettingsRow
-            label="Source"
-            htmlFor="settings-backdrop-media-source"
-            description="Workspace chrome behind panels."
-          >
-            <XlethSelect
-              id="settings-backdrop-media-source"
-              value={backdropMediaSource}
-              options={BACKDROP_MEDIA_SOURCE_TYPES}
-              onChange={applyBackdropMediaSource}
-              ariaLabel="Backdrop Media source"
-              className="settings-panel-select"
-            />
-          </SettingsRow>
-          {backdropMediaSource === 'image' && (
-            <SettingsRow
-              label="Image file"
-              description="Copies PNG, JPEG, or WebP files into XLETH/art."
-            >
-              <button
-                type="button"
-                className="settings-panel-button settings-panel-button--icon"
-                onClick={chooseWorkspaceBackdropImage}
-              >
-                <ImageIcon size={14} aria-hidden="true" />
-                <span>{activeMediaPath ? 'Change Image...' : 'Select Image...'}</span>
-              </button>
-            </SettingsRow>
-          )}
-          {backdropMediaSource === 'video' && (
-            <SettingsRow
-              label="Video file"
-              description="Selects a silent looping MP4 background video."
-            >
-              <button
-                type="button"
-                className="settings-panel-button settings-panel-button--icon"
-                onClick={chooseWorkspaceBackdropVideo}
-              >
-                <Film size={14} aria-hidden="true" />
-                <span>{activeMediaPath ? 'Change MP4...' : 'Select MP4...'}</span>
-              </button>
-            </SettingsRow>
-          )}
-          <input
-            ref={backdropVideoInputRef}
-            type="file"
-            accept=".mp4,video/mp4"
-            className="settings-panel-hidden-file-input"
-            aria-hidden="true"
-            tabIndex={-1}
-            onChange={handleBackdropVideoFileChange}
-          />
-          {activeMediaPath && (
-            <div className="settings-panel-hint">
-              Active file: {activeMediaPath}
-            </div>
-          )}
-          {backdropMediaSource === 'video' && (
-            <div className="settings-panel-hint">
-              Video is always muted and looped.
-            </div>
-          )}
-          {backdropMediaSource === 'acrylic' && backdropState?.capability && !backdropState.capability.supportsNativeSystemBackdrop && (
-            <div className="settings-panel-hint settings-panel-hint--warning">
-              Acrylic is unsupported on this system; Xleth is using the solid workspace background.
-            </div>
-          )}
-          {mediaStatus && (
-            <div className="settings-panel-hint settings-panel-hint--warning">
-              {mediaStatus}
-            </div>
-          )}
-          {backdropMediaSource === 'image' && !backdropState?.imageUrl && (
-            <div className="settings-panel-hint settings-panel-hint--warning">
-              No backdrop image was found in XLETH/art.
-            </div>
-          )}
-        </SettingsSection>
-
-        <SettingsSection title="Backdrop FX" index={2}>
-          <SettingsRow
-            label="Enable reactive backdrop"
-            htmlFor="settings-backdrop-fx-enabled"
-            description="Adds restrained renderer-only effects behind workspace panels."
-          >
-            <input
-              id="settings-backdrop-fx-enabled"
-              type="checkbox"
-              className="settings-panel-checkbox"
-              checked={backdropFxSettings.enabled}
-              onChange={event => applyBackdropFxSettings({ enabled: event.target.checked })}
-            />
-          </SettingsRow>
-          <SettingsRow label="Preset" htmlFor="settings-backdrop-fx-preset">
-            <XlethSelect
-              id="settings-backdrop-fx-preset"
-              value={backdropFxSettings.preset}
-              options={BACKDROP_FX_PRESETS}
-              onChange={preset => applyBackdropFxSettings({ preset })}
-              disabled={backdropFxDisabled}
-              ariaLabel="Backdrop FX preset"
-              className="settings-panel-select"
-            />
-          </SettingsRow>
-          <SettingsRow label="Studio Grid overlay" htmlFor="settings-backdrop-fx-studio-grid">
-            <input
-              id="settings-backdrop-fx-studio-grid"
-              type="checkbox"
-              className="settings-panel-checkbox"
-              checked={backdropFxSettings.studioGridOverlay}
-              disabled={studioGridOverlayDisabled}
-              onChange={event => applyBackdropFxSettings({ studioGridOverlay: event.target.checked })}
-            />
-          </SettingsRow>
-          <SettingsRow label="Quality" htmlFor="settings-backdrop-fx-quality">
-            <XlethSelect
-              id="settings-backdrop-fx-quality"
-              value={backdropFxSettings.quality}
-              options={BACKDROP_FX_QUALITIES}
-              onChange={quality => applyBackdropFxSettings({ quality })}
-              disabled={backdropFxDisabled}
-              ariaLabel="Backdrop FX quality"
-              className="settings-panel-select"
-            />
-          </SettingsRow>
-          <SettingsRow label="Intensity" htmlFor="settings-backdrop-fx-intensity">
-            <div className="settings-panel-range-row">
-              <input
-                id="settings-backdrop-fx-intensity"
-                type="range"
-                min="0"
-                max="100"
-                step="1"
-                className="settings-panel-range"
-                value={backdropFxSettings.intensity}
-                disabled={backdropFxDisabled}
-                onChange={event => applyBackdropFxSettings({ intensity: Number(event.target.value) })}
-              />
-              <span className="settings-panel-range-value">{backdropFxSettings.intensity}%</span>
-            </div>
-          </SettingsRow>
-          <SettingsRow label="React to cursor" htmlFor="settings-backdrop-fx-cursor">
-            <input
-              id="settings-backdrop-fx-cursor"
-              type="checkbox"
-              className="settings-panel-checkbox"
-              checked={backdropFxSettings.reactToCursor}
-              disabled={backdropFxDisabled}
-              onChange={event => applyBackdropFxSettings({ reactToCursor: event.target.checked })}
-            />
-          </SettingsRow>
-          <SettingsRow label="React to windows" htmlFor="settings-backdrop-fx-windows">
-            <input
-              id="settings-backdrop-fx-windows"
-              type="checkbox"
-              className="settings-panel-checkbox"
-              checked={backdropFxSettings.reactToWindows}
-              disabled={backdropFxDisabled}
-              onChange={event => applyBackdropFxSettings({ reactToWindows: event.target.checked })}
-            />
-          </SettingsRow>
-          <SettingsRow label="React to backdrop clicks" htmlFor="settings-backdrop-fx-clicks">
-            <input
-              id="settings-backdrop-fx-clicks"
-              type="checkbox"
-              className="settings-panel-checkbox"
-              checked={backdropFxSettings.reactToClicks}
-              disabled={backdropFxDisabled}
-              onChange={event => applyBackdropFxSettings({ reactToClicks: event.target.checked })}
-            />
-          </SettingsRow>
-        </SettingsSection>
       </>
     )
   }

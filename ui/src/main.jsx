@@ -29,16 +29,6 @@ const params = new URLSearchParams(window.location.search)
 const view = params.get('view')
 const storeKey = params.get('key')
 const trackPos = params.get('pos')
-const initialBackdropMode = ['native-acrylic', 'image', 'video'].includes(window.xleth?.backdrop?.current?.mode)
-  ? window.xleth.backdrop.current.mode
-  : 'off'
-
-if (view === 'node-editor') {
-  document.documentElement.removeAttribute('data-xleth-backdrop')
-} else {
-  document.documentElement.setAttribute('data-xleth-backdrop', initialBackdropMode)
-}
-
 // Dev-only UI kit gallery (ui/src/ui-kit/Gallery.jsx): compiled in only when built
 // with VITE_XLETH_UI_KIT_GALLERY=1 (`npm run dev:ui-kit`, `npm run shots:gallery`),
 // and shown at `?view=ui-kit`. The normal build never contains it.

@@ -50,7 +50,6 @@
 
   /* App-shell layer order: workspace panels < app chrome < portaled overlays. */
   --xleth-z-workspace: 0;
-  --xleth-z-backdrop-underlay: 0;
   --xleth-z-workspace-panel-layer: 1;
   --xleth-z-window-docked: 30;
   /* Dock resize gutters sit ABOVE docked panel content (so they are grabbable)
@@ -85,21 +84,6 @@ html, body, #root {
   font-size: 14px;
   line-height: 1.4;
   -webkit-font-smoothing: antialiased;
-}
-
-html[data-xleth-backdrop="native-acrylic"],
-html[data-xleth-backdrop="native-acrylic"] body,
-html[data-xleth-backdrop="native-acrylic"] #root {
-  background: transparent;
-}
-
-html[data-xleth-backdrop="image"],
-html[data-xleth-backdrop="image"] body,
-html[data-xleth-backdrop="image"] #root,
-html[data-xleth-backdrop="video"],
-html[data-xleth-backdrop="video"] body,
-html[data-xleth-backdrop="video"] #root {
-  background: var(--theme-bg-primary);
 }
 
 /* ── Scrollbar ────────────────────────────────────────────────────────────── */
@@ -899,47 +883,12 @@ html[data-xleth-backdrop="video"] #root {
   background-image: none;
 }
 
-.app.xleth-backdrop-native-acrylic {
-  background: transparent;
-  background-image: none;
-}
-
-.app.xleth-backdrop-off {
-  background: var(--theme-primitive-app-bg);
-  background-image: none;
-}
-
-.app.xleth-backdrop-image {
-  background-color: var(--theme-bg-primary);
-  background-image: var(--xleth-workspace-backdrop-image);
-  background-position: center;
-  background-repeat: no-repeat;
-  background-size: cover;
-}
-
-.app.xleth-backdrop-video {
-  background: var(--theme-primitive-app-bg);
-  background-image: none;
-}
-
 .app-body {
   position: relative;
   min-height: 0;
   min-width: 0;
   overflow: hidden;
   background: var(--theme-primitive-app-bg);
-}
-
-.xleth-backdrop-native-acrylic .app-body {
-  background: transparent;
-  background-image: none;
-}
-
-.xleth-backdrop-image .app-body,
-.xleth-backdrop-video .app-body,
-html[data-xleth-backdrop="image"] .app-body,
-html[data-xleth-backdrop="video"] .app-body {
-  background: transparent;
 }
 
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -16567,22 +16516,6 @@ input[type="radio"] {
   font-family: var(--xleth-global-font-family);
   box-shadow: none;
   text-shadow: none;
-}
-
-.app.xleth-backdrop-native-acrylic,
-.app.xleth-backdrop-native-acrylic .app-body,
-.app.xleth-backdrop-native-acrylic .xleth-windowing-app,
-.app.xleth-backdrop-native-acrylic .xleth-windowing-shell,
-.app.xleth-backdrop-native-acrylic .xleth-app-workarea,
-.app.xleth-backdrop-native-acrylic .xleth-center-column,
-html[data-xleth-backdrop="native-acrylic"] .app,
-html[data-xleth-backdrop="native-acrylic"] .app-body,
-html[data-xleth-backdrop="native-acrylic"] .xleth-windowing-app,
-html[data-xleth-backdrop="native-acrylic"] .xleth-windowing-shell,
-html[data-xleth-backdrop="native-acrylic"] .xleth-app-workarea,
-html[data-xleth-backdrop="native-acrylic"] .xleth-center-column {
-  background: transparent;
-  background-image: none;
 }
 
 .xleth-windowing-shell {

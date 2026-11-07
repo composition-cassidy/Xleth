@@ -1,9 +1,9 @@
 /* Tiled shell layout (ui/DESIGN.md section 8). Kit layer: beats every legacy rule
  * that is not !important. */
 @layer kit {
-  /* Every pixel of the work area belongs to a region. The docked layer is opaque,
-   * so neither a gap between regions nor a splitter can show the workspace
-   * backdrop behind it. The backdrop settings themselves are untouched. */
+  /* Every pixel of the work area belongs to a region. The docked layer is opaque
+   * (the ramp's ground, g0), so neither a gap between regions nor a splitter can
+   * show anything behind it. The workspace backdrop modes are gone (Phase 7). */
   .dockedLayer {
     background: var(--ui-g0);
   }

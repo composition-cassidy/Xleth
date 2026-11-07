@@ -7,13 +7,6 @@ const os = require('os');
 const { spawn, execFile } = require('child_process');
 const { runtimeResource, userDataPath } = require('./runtimePaths');
 const { checkForUpdates } = require('./update-checker');
-const {
-  WORKSPACE_BACKDROP_DEFAULT_PREFERENCE,
-  applyWorkspaceBackdropMaterial,
-  getWorkspaceBackdropCachePath,
-  loadWorkspaceBackdropCapability,
-  sanitizeWorkspaceBackdropPreference,
-} = require('./workspaceBackdropCapability');
 
 // Fixed name for the Windows file mapping that backs the FrameOutput double
 // buffer. The engine worker creates it via FrameOutput::initSharedMemory;
@@ -27,10 +20,6 @@ const FRAME_SHM_NAME = 'XlethFrameBuffer';
 // which is what previewResolutionScale is a fraction OF.
 const FRAME_SHM_BASE_W = 960;
 const FRAME_SHM_BASE_H = 540;
-const WORKSPACE_BACKDROP_DEFAULT_IMAGE = 'backdrop-1@1.25x.png';
-const WORKSPACE_BACKDROP_IMAGE_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp']);
-const BACKDROP_MEDIA_SETTINGS_KEY = 'backdropMedia';
-const BACKDROP_MEDIA_SOURCE_TYPES = new Set(['none', 'acrylic', 'image', 'video']);
 
 
 // ── User settings (persisted across sessions, not per-project) ───────────────
@@ -191,300 +180,6 @@ rpcRegistry.init({ safeHandler, graphHandler });
 const { pluginIdSafe, validateLayoutStructure, parseImportedPluginUiLayout } = pluginUiLayouts;
 const { DECAL_ASSET_MAX_BYTES, _decalMagicCheck, _ensureDecalAssetDir, _readDecalAssetIndex, _writeDecalAssetIndex, _decalAssetFilePath } = decals;
 const _crypto = require('crypto');
-
-let workspaceBackdropCapability = null;
-let workspaceBackdropState = {
-  capability: null,
-  preference: 'none',
-  mode: 'off',
-  imagePath: null,
-  imageUrl: null,
-  videoPath: null,
-  videoUrl: null,
-  lastError: null,
-};
-
-function getWorkspaceBackdropPreference(settings = loadSettings()) {
-  return sanitizeWorkspaceBackdropPreference(settings.workspaceBackdrop);
-}
-
-function stringOrEmpty(value) {
-  return typeof value === 'string' ? value : '';
-}
-
-function sanitizeBackdropMediaSettings(value, settings = loadSettings()) {
-  const source = typeof value === 'string'
-    ? { sourceType: value }
-    : value && typeof value === 'object'
-      ? value
-      : {};
-  const legacyPreference = getWorkspaceBackdropPreference(settings);
-  let sourceType = BACKDROP_MEDIA_SOURCE_TYPES.has(source.sourceType)
-    ? source.sourceType
-    : null;
-  if (!sourceType) {
-    sourceType = ['acrylic', 'image', 'video'].includes(legacyPreference)
-      ? legacyPreference
-      : 'none';
-  }
-  return {
-    sourceType,
-    imagePath: stringOrEmpty(source.imagePath),
-    videoPath: stringOrEmpty(source.videoPath),
-    lastError: stringOrEmpty(source.lastError),
-  };
-}
-
-function getWorkspaceBackdropArtDir() {
-  return runtimeResource('art');
-}
-
-function isWorkspaceBackdropImageName(name) {
-  return typeof name === 'string'
-    && path.basename(name) === name
-    && WORKSPACE_BACKDROP_IMAGE_EXTENSIONS.has(path.extname(name).toLowerCase());
-}
-
-function isWorkspaceBackdropImagePath(filePath) {
-  return typeof filePath === 'string'
-    && WORKSPACE_BACKDROP_IMAGE_EXTENSIONS.has(path.extname(filePath).toLowerCase());
-}
-
-function isWorkspaceBackdropVideoPath(filePath) {
-  return typeof filePath === 'string' && path.extname(filePath).toLowerCase() === '.mp4';
-}
-
-function buildXlethMediaUrl(filePath) {
-  const normalised = filePath.replace(/\\/g, '/');
-  const driveMatch = normalised.match(/^([a-zA-Z]):\/(.*)$/);
-  if (driveMatch) {
-    const [, drive, rest] = driveMatch;
-    return 'xleth-media://' + drive.toLowerCase() + '/' +
-      rest.split('/').map(encodeURIComponent).join('/');
-  }
-  return 'xleth-media:///' + normalised.split('/').map(encodeURIComponent).join('/');
-}
-
-function resolveWorkspaceBackdropImage(settings = loadSettings(), mediaSettings = null) {
-  if (isWorkspaceBackdropImagePath(mediaSettings?.imagePath)) {
-    try {
-      if (fs.existsSync(mediaSettings.imagePath)) {
-        return {
-          name: path.basename(mediaSettings.imagePath),
-          path: mediaSettings.imagePath,
-          url: buildXlethMediaUrl(mediaSettings.imagePath),
-        };
-      }
-    } catch {}
-  }
-
-  const artDir = getWorkspaceBackdropArtDir();
-  const configuredName = isWorkspaceBackdropImageName(settings.workspaceBackdropImage)
-    ? settings.workspaceBackdropImage
-    : null;
-  const candidates = [
-    configuredName,
-    WORKSPACE_BACKDROP_DEFAULT_IMAGE,
-  ].filter(Boolean);
-
-  try {
-    const discovered = fs.readdirSync(artDir)
-      .filter(isWorkspaceBackdropImageName)
-      .sort((a, b) => a.localeCompare(b));
-    candidates.push(...discovered);
-  } catch {}
-
-  for (const name of candidates) {
-    const candidatePath = path.join(artDir, name);
-    try {
-      if (fs.existsSync(candidatePath)) {
-        return {
-          name,
-          path: candidatePath,
-          url: buildXlethMediaUrl(candidatePath),
-        };
-      }
-    } catch {}
-  }
-  return { name: null, path: null, url: null };
-}
-
-function resolveWorkspaceBackdropVideo(mediaSettings) {
-  const videoPath = isWorkspaceBackdropVideoPath(mediaSettings?.videoPath)
-    ? mediaSettings.videoPath
-    : null;
-  if (!videoPath) return { path: null, url: null, lastError: null };
-  try {
-    if (fs.existsSync(videoPath)) {
-      return { path: videoPath, url: buildXlethMediaUrl(videoPath), lastError: null };
-    }
-  } catch {}
-  return {
-    path: videoPath,
-    url: null,
-    lastError: 'Video backdrop could not be played. The file may be missing or unsupported.',
-  };
-}
-
-function ensureWorkspaceBackdropCapability() {
-  if (workspaceBackdropCapability) return workspaceBackdropCapability;
-  try {
-    workspaceBackdropCapability = loadWorkspaceBackdropCapability({
-      cachePath: getWorkspaceBackdropCachePath(app),
-    });
-  } catch (e) {
-    log(`[Backdrop] capability cache unavailable: ${e.message}`);
-    workspaceBackdropCapability = loadWorkspaceBackdropCapability();
-  }
-  return workspaceBackdropCapability;
-}
-
-function getWorkspaceBackdropStateSnapshot() {
-  return {
-    capability: workspaceBackdropState.capability || ensureWorkspaceBackdropCapability(),
-    preference: workspaceBackdropState.preference,
-    mode: ['native-acrylic', 'image', 'video'].includes(workspaceBackdropState.mode)
-      ? workspaceBackdropState.mode
-      : 'off',
-    imagePath: workspaceBackdropState.imagePath,
-    imageUrl: workspaceBackdropState.imageUrl,
-    videoPath: workspaceBackdropState.videoPath,
-    videoUrl: workspaceBackdropState.videoUrl,
-    lastError: workspaceBackdropState.lastError,
-  };
-}
-
-function logWorkspaceBackdropApply(reason, applyResult) {
-  const state = getWorkspaceBackdropStateSnapshot();
-  const c = state.capability || {};
-  const nativeApply = applyResult.requestedMaterial === 'acrylic'
-    ? (applyResult.applySucceeded ? 'success' : 'failure')
-    : 'not-requested';
-  const error = applyResult.error
-    ? ` error=${String(applyResult.error.message || applyResult.error)}`
-    : '';
-  log(
-    `[Backdrop] ${reason} platform=${c.platform || 'unknown'} osVersion=${c.osVersion || 'unknown'} ` +
-    `windowsBuild=${c.windowsBuild ?? 'unknown'} supportsNativeSystemBackdrop=${!!c.supportsNativeSystemBackdrop} ` +
-    `preference=${state.preference} setBackgroundMaterial=${!!applyResult.materialMethodExists} ` +
-    `nativeAcrylicApply=${nativeApply} finalMode=${state.mode}${error}`
-  );
-}
-
-function notifyWorkspaceBackdropChanged() {
-  if (!win || win.isDestroyed()) return;
-  win.webContents.send('xleth:backdrop:modeChanged', getWorkspaceBackdropStateSnapshot());
-}
-
-function applyMainWorkspaceBackdrop(reason = 'startup', { notify = false } = {}) {
-  const capability = ensureWorkspaceBackdropCapability();
-  const settings = loadSettings();
-  const mediaSettings = sanitizeBackdropMediaSettings(settings[BACKDROP_MEDIA_SETTINGS_KEY], settings);
-  const sourceType = mediaSettings.sourceType;
-  const materialPreference = sourceType === 'acrylic'
-    ? 'acrylic'
-    : sourceType === 'image'
-      ? 'image'
-      : 'off';
-  const applyResult = applyWorkspaceBackdropMaterial(win, { capability, preference: materialPreference });
-  const image = sourceType === 'image'
-    ? resolveWorkspaceBackdropImage(settings, mediaSettings)
-    : { path: null, url: null };
-  const video = sourceType === 'video'
-    ? resolveWorkspaceBackdropVideo(mediaSettings)
-    : { path: null, url: null, lastError: null };
-  workspaceBackdropState = {
-    capability,
-    preference: sourceType,
-    mode: sourceType === 'video'
-      ? 'video'
-      : sourceType === 'acrylic'
-        ? (applyResult.mode === 'native-acrylic' ? 'native-acrylic' : 'off')
-        : (sourceType === 'image' && applyResult.mode === 'image' ? 'image' : 'off'),
-    imagePath: image.path,
-    imageUrl: image.url,
-    videoPath: video.path,
-    videoUrl: video.url,
-    lastError: mediaSettings.lastError || video.lastError,
-  };
-  logWorkspaceBackdropApply(reason, applyResult);
-  if (notify) notifyWorkspaceBackdropChanged();
-  return getWorkspaceBackdropStateSnapshot();
-}
-
-function backdropImportNameForSource(srcPath) {
-  const ext = path.extname(srcPath).toLowerCase();
-  if (!WORKSPACE_BACKDROP_IMAGE_EXTENSIONS.has(ext)) {
-    throw new Error('Workspace backdrops must be PNG, JPEG, or WebP images.');
-  }
-  const stem = path.basename(srcPath, ext)
-    .replace(/[^a-zA-Z0-9._-]+/g, '-')
-    .replace(/^-+|-+$/g, '')
-    .slice(0, 48) || 'workspace-backdrop';
-  return `${stem}-${Date.now()}${ext}`;
-}
-
-async function chooseWorkspaceBackdropImage() {
-  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-    title: 'Choose Workspace Backdrop',
-    filters: [{ name: 'Images (PNG, JPEG, WebP)', extensions: ['png', 'jpg', 'jpeg', 'webp'] }],
-    properties: ['openFile'],
-  });
-  if (canceled || !filePaths.length) return getWorkspaceBackdropStateSnapshot();
-
-  const srcPath = filePaths[0];
-  const destName = backdropImportNameForSource(srcPath);
-  const artDir = getWorkspaceBackdropArtDir();
-  fs.mkdirSync(artDir, { recursive: true });
-  const destPath = path.join(artDir, destName);
-  fs.copyFileSync(srcPath, destPath);
-
-  const settings = loadSettings();
-  settings.workspaceBackdrop = 'image';
-  settings.workspaceBackdropImage = destName;
-  settings[BACKDROP_MEDIA_SETTINGS_KEY] = sanitizeBackdropMediaSettings({
-    ...(settings[BACKDROP_MEDIA_SETTINGS_KEY] || {}),
-    sourceType: 'image',
-    imagePath: destPath,
-    lastError: '',
-  }, settings);
-  saveSettings(settings);
-  return applyMainWorkspaceBackdrop('image-chosen', { notify: true });
-}
-
-async function chooseWorkspaceBackdropVideo() {
-  const { canceled, filePaths } = await dialog.showOpenDialog(win, {
-    title: 'Choose Workspace Background Video',
-    filters: [{ name: 'Background Video (MP4)', extensions: ['mp4'] }],
-    properties: ['openFile'],
-  });
-  if (canceled || !filePaths.length) return getWorkspaceBackdropStateSnapshot();
-
-  const srcPath = filePaths[0];
-  if (!isWorkspaceBackdropVideoPath(srcPath)) {
-    throw new Error('Workspace background videos must be MP4 files.');
-  }
-
-  const settings = loadSettings();
-  settings.workspaceBackdrop = 'video';
-  settings[BACKDROP_MEDIA_SETTINGS_KEY] = sanitizeBackdropMediaSettings({
-    ...(settings[BACKDROP_MEDIA_SETTINGS_KEY] || {}),
-    sourceType: 'video',
-    videoPath: srcPath,
-    lastError: '',
-  }, settings);
-  saveSettings(settings);
-  return applyMainWorkspaceBackdrop('video-chosen', { notify: true });
-}
-
-function setWorkspaceBackdropMedia(value) {
-  const settings = loadSettings();
-  const next = sanitizeBackdropMediaSettings(value, settings);
-  settings[BACKDROP_MEDIA_SETTINGS_KEY] = next;
-  settings.workspaceBackdrop = next.sourceType === 'none' ? 'off' : next.sourceType;
-  saveSettings(settings);
-  return applyMainWorkspaceBackdrop('media-settings-changed', { notify: true });
-}
 
 function ffmpegExecutable() {
   const exe = runtimeResource('ffmpeg', process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg');
@@ -692,11 +387,12 @@ function createWindow() {
     minWidth: 900,
     minHeight: 600,
     icon: path.join(__dirname, 'assets', 'icon.ico'),
-    backgroundColor: '#00000000',
-    backgroundMaterial: 'none',
+    // Opaque (Phase 7): the workspace backdrop modes needed a transparent window; with them
+    // gone the window is a plain one on the neutral ground (--theme-ui-g0 of the default theme).
+    backgroundColor: '#141414',
     frame: false,
     show: false,
-    transparent: true,
+    transparent: false,
     webPreferences: {
       // contextIsolation disabled so preload can hand the renderer live
       // references — the shm_helper handle and the frame buffers it fills.
@@ -709,7 +405,6 @@ function createWindow() {
       preload: runtimeResource('app', 'preload.js'),
     },
   });
-  applyMainWorkspaceBackdrop('startup');
 
   const addonError = getAddonError();
   if (addonError) {
@@ -1048,33 +743,11 @@ ipcMain.handle('xleth:importVideo', safeHandler(async () => {
 // Extracted to electron-main/timeline.js (S5 Stage 3).
 
 // ── Global clip-processing defaults ─────────────────────────────────────────
-ipcMain.handle('xleth:settings:get',    (_, key) => {
-  const settings = loadSettings()
-  if (key === 'workspaceBackdrop') return getWorkspaceBackdropPreference(settings)
-  if (key === BACKDROP_MEDIA_SETTINGS_KEY) return sanitizeBackdropMediaSettings(settings[BACKDROP_MEDIA_SETTINGS_KEY], settings)
-  return settings[key]
-})
+ipcMain.handle('xleth:settings:get',    (_, key) => loadSettings()[key])
 ipcMain.handle('xleth:settings:set',    (_, key, value) => {
   const s = loadSettings()
-  if (key === BACKDROP_MEDIA_SETTINGS_KEY) {
-    return setWorkspaceBackdropMedia(value)
-  }
-  if (key === 'workspaceBackdrop') {
-    const previous = getWorkspaceBackdropPreference(s)
-    const next = sanitizeWorkspaceBackdropPreference(value)
-    s[key] = next
-    saveSettings(s)
-    if (next !== previous) {
-      return applyMainWorkspaceBackdrop('preference-changed', { notify: true })
-    }
-    return getWorkspaceBackdropStateSnapshot()
-  }
   s[key] = value; saveSettings(s)
 })
-ipcMain.handle('xleth:backdrop:getState', () => getWorkspaceBackdropStateSnapshot())
-ipcMain.handle('xleth:backdrop:chooseImage', () => chooseWorkspaceBackdropImage())
-ipcMain.handle('xleth:backdrop:chooseVideo', () => chooseWorkspaceBackdropVideo())
-ipcMain.handle('xleth:backdrop:setMedia', (_, value) => setWorkspaceBackdropMedia(value))
 
 // -- Custom file picker filesystem bridge ------------------------------------
 
@@ -2714,10 +2387,6 @@ app.on('before-quit', (event) => {
 // Also expose the frame-shm meta synchronously for preload (sendSync path).
 ipcMain.on('xleth:video:getFrameShmSync', (event) => {
   event.returnValue = frameShmMeta;
-});
-
-ipcMain.on('xleth:backdrop:getStateSync', (event) => {
-  event.returnValue = getWorkspaceBackdropStateSnapshot();
 });
 
 process.on('uncaughtException', (e) => {

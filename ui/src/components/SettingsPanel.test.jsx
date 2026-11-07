@@ -5,26 +5,11 @@ import { createRoot } from 'react-dom/client'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
 import SettingsPanel, { SETTINGS_CATEGORIES, SETTINGS_TABS } from './SettingsPanel.jsx'
-import {
-  DEFAULT_BACKDROP_FX_SETTINGS,
-  useBackdropFxSettingsStore,
-} from '../backdrop/backdropFxSettings.js'
-import {
-  useBackdropMediaSettingsStore,
-} from '../backdrop/backdropMediaSettings.js'
 
 describe('SettingsPanel consolidated shell', () => {
   beforeEach(() => {
     document.body.innerHTML = ''
-    window.xleth = {
-      backdrop: {
-        current: { capability: null, preference: 'acrylic', mode: 'off' },
-        chooseImage: () => Promise.resolve(null),
-        chooseVideo: () => Promise.resolve(null),
-      },
-    }
-    useBackdropFxSettingsStore.getState().resetForTests()
-    useBackdropMediaSettingsStore.getState().resetForTests()
+    window.xleth = {}
     globalThis.IS_REACT_ACT_ENVIRONMENT = true
   })
 
@@ -106,7 +91,7 @@ describe('SettingsPanel consolidated shell', () => {
       ['audio', 'Performance report'],
       ['plugins', 'VST3 Browser'],
       ['graphics', 'Video encode/decode'],
-      ['appearance', 'Backdrop Media'],
+      ['appearance', 'UI scale'],
       ['shortcuts', 'Panel Toggles'],
       ['logs', 'Session Log'],
     ]
@@ -156,7 +141,7 @@ describe('SettingsPanel consolidated shell', () => {
     }
   })
 
-  it('offers Backdrop Media source modes separately from Backdrop FX', async () => {
+  it('offers a 100-200 % UI scale in 10 % steps, a capped tint, and no workspace backdrop', async () => {
     const container = document.createElement('div')
     document.body.appendChild(container)
     const root = createRoot(container)
@@ -166,246 +151,19 @@ describe('SettingsPanel consolidated shell', () => {
         root.render(<SettingsPanel initialCategory="appearance" onClose={() => {}} />)
       })
 
-      expect(container.textContent).toContain('Backdrop Media')
-      expect(container.textContent).toContain('Backdrop FX')
-      expect(container.textContent).toContain('Enable reactive backdrop')
+      const scale = container.querySelector('#settings-ui-scale')
+      expect(scale).not.toBeNull()
+      expect(scale.getAttribute('type')).toBe('range')
+      expect(scale.getAttribute('min')).toBe('100')
+      expect(scale.getAttribute('max')).toBe('200')
+      expect(scale.getAttribute('step')).toBe('10')
 
-      await act(async () => {
-        container.querySelector('[aria-label="Backdrop Media source"]').dispatchEvent(new MouseEvent('click', {
-          bubbles: true,
-        }))
-      })
-
-      const optionLabels = Array.from(document.body.querySelectorAll('[role="option"]'))
-        .map((option) => option.textContent)
-      expect(optionLabels).toEqual(['None', 'Acrylic', 'Image', 'Video'])
-    } finally {
-      await act(async () => root.unmount())
-      container.remove()
-    }
-  })
-
-  it('persists Acrylic as a backdrop media source when selected', async () => {
-    const setMedia = vi.fn().mockResolvedValue({
-      capability: { supportsNativeSystemBackdrop: true },
-      preference: 'acrylic',
-      mode: 'native-acrylic',
-      imagePath: null,
-      imageUrl: null,
-      videoPath: null,
-      videoUrl: null,
-      lastError: null,
-    })
-    window.xleth.backdrop.setMedia = setMedia
-    useBackdropMediaSettingsStore.setState({
-      settings: {
-        sourceType: 'none',
-        imagePath: '',
-        videoPath: '',
-        lastError: '',
-      },
-      hydrated: true,
-    })
-    const container = document.createElement('div')
-    document.body.appendChild(container)
-    const root = createRoot(container)
-
-    try {
-      await act(async () => {
-        root.render(<SettingsPanel initialCategory="appearance" onClose={() => {}} />)
-      })
-
-      await act(async () => {
-        container.querySelector('[aria-label="Backdrop Media source"]').dispatchEvent(new MouseEvent('click', {
-          bubbles: true,
-        }))
-      })
-
-      const acrylicOption = Array.from(document.body.querySelectorAll('[role="option"]'))
-        .find((option) => option.textContent === 'Acrylic')
-      expect(acrylicOption).not.toBeNull()
-
-      await act(async () => {
-        acrylicOption.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-      })
-
-      expect(setMedia).toHaveBeenCalledWith(expect.objectContaining({
-        sourceType: 'acrylic',
-      }))
-      expect(useBackdropMediaSettingsStore.getState().settings.sourceType).toBe('acrylic')
-    } finally {
-      await act(async () => root.unmount())
-      container.remove()
-    }
-  })
-
-  it('shows MP4 controls and active video path when Video media is selected', async () => {
-    window.xleth.backdrop.current = {
-      capability: null,
-      preference: 'video',
-      mode: 'video',
-      imagePath: null,
-      imageUrl: null,
-      videoPath: 'C:\\Loops\\calm.mp4',
-      videoUrl: 'xleth-media://c/Loops/calm.mp4',
-      lastError: 'Video backdrop could not be played. The file may be missing or unsupported.',
-    }
-    useBackdropMediaSettingsStore.setState({
-      settings: {
-        sourceType: 'video',
-        imagePath: '',
-        videoPath: 'C:\\Loops\\calm.mp4',
-        lastError: 'Video backdrop could not be played. The file may be missing or unsupported.',
-      },
-      hydrated: true,
-    })
-    const container = document.createElement('div')
-    document.body.appendChild(container)
-    const root = createRoot(container)
-
-    try {
-      await act(async () => {
-        root.render(<SettingsPanel initialCategory="appearance" onClose={() => {}} />)
-      })
-
-      expect(container.textContent).toContain('Change MP4...')
-      expect(container.textContent).toContain('Active file: C:\\Loops\\calm.mp4')
-      expect(container.textContent).toContain('Video is always muted and looped.')
-      expect(container.textContent).toContain('Video backdrop could not be played.')
-    } finally {
-      await act(async () => root.unmount())
-      container.remove()
-    }
-  })
-
-  it('falls back to renderer MP4 selection when the main backdrop media handler is unavailable', async () => {
-    const set = vi.fn().mockResolvedValue(undefined)
-    const getDroppedFilePath = vi.fn().mockReturnValue('C:\\Loops\\fallback.mp4')
-    window.xleth = {
-      ...window.xleth,
-      getDroppedFilePath,
-      settings: { set },
-    }
-    useBackdropMediaSettingsStore.setState({
-      settings: {
-        sourceType: 'video',
-        imagePath: '',
-        videoPath: '',
-        lastError: '',
-      },
-      hydrated: true,
-    })
-    const container = document.createElement('div')
-    document.body.appendChild(container)
-    const root = createRoot(container)
-
-    try {
-      await act(async () => {
-        root.render(<SettingsPanel initialCategory="appearance" onClose={() => {}} />)
-      })
-
-      const input = container.querySelector('.settings-panel-hidden-file-input')
-      const file = new File([''], 'fallback.mp4', { type: 'video/mp4' })
-      Object.defineProperty(input, 'files', { configurable: true, value: [file] })
-
-      await act(async () => {
-        input.dispatchEvent(new Event('change', { bubbles: true }))
-      })
-
-      expect(getDroppedFilePath).toHaveBeenCalledWith(file)
-      expect(set).toHaveBeenCalledWith('backdropMedia', expect.objectContaining({
-        sourceType: 'video',
-        videoPath: 'C:\\Loops\\fallback.mp4',
-      }))
-      expect(useBackdropMediaSettingsStore.getState().settings.videoPath).toBe('C:\\Loops\\fallback.mp4')
-    } finally {
-      await act(async () => root.unmount())
-      container.remove()
-    }
-  })
-
-  it('shows only the final Backdrop FX preset labels in the preset dropdown', async () => {
-    useBackdropFxSettingsStore.setState({
-      settings: {
-        ...DEFAULT_BACKDROP_FX_SETTINGS,
-        enabled: true,
-      },
-      hydrated: true,
-    })
-    const container = document.createElement('div')
-    document.body.appendChild(container)
-    const root = createRoot(container)
-
-    try {
-      await act(async () => {
-        root.render(<SettingsPanel initialCategory="appearance" onClose={() => {}} />)
-      })
-
-      await act(async () => {
-        container.querySelector('[aria-label="Backdrop FX preset"]').dispatchEvent(new MouseEvent('click', {
-          bubbles: true,
-        }))
-      })
-
-      const optionLabels = Array.from(document.body.querySelectorAll('[role="option"]'))
-        .map((option) => option.textContent)
-      expect(optionLabels).toEqual(['Static Enhanced', 'Subtle Glass'])
-    } finally {
-      await act(async () => root.unmount())
-      container.remove()
-    }
-  })
-
-  it('shows the Studio Grid overlay checkbox disabled for Static Enhanced', async () => {
-    useBackdropFxSettingsStore.setState({
-      settings: {
-        ...DEFAULT_BACKDROP_FX_SETTINGS,
-        enabled: true,
-        preset: 'static-enhanced',
-      },
-      hydrated: true,
-    })
-    const container = document.createElement('div')
-    document.body.appendChild(container)
-    const root = createRoot(container)
-
-    try {
-      await act(async () => {
-        root.render(<SettingsPanel initialCategory="appearance" onClose={() => {}} />)
-      })
-
-      const overlayCheckbox = container.querySelector('#settings-backdrop-fx-studio-grid')
-      expect(container.textContent).toContain('Studio Grid overlay')
-      expect(overlayCheckbox).not.toBeNull()
-      expect(overlayCheckbox.disabled).toBe(true)
-    } finally {
-      await act(async () => root.unmount())
-      container.remove()
-    }
-  })
-
-  it('enables the Studio Grid overlay checkbox for enabled Subtle Glass', async () => {
-    useBackdropFxSettingsStore.setState({
-      settings: {
-        ...DEFAULT_BACKDROP_FX_SETTINGS,
-        enabled: true,
-        preset: 'subtle-glass',
-      },
-      hydrated: true,
-    })
-    const container = document.createElement('div')
-    document.body.appendChild(container)
-    const root = createRoot(container)
-
-    try {
-      await act(async () => {
-        root.render(<SettingsPanel initialCategory="appearance" onClose={() => {}} />)
-      })
-
-      const overlayCheckbox = container.querySelector('#settings-backdrop-fx-studio-grid')
-      expect(container.textContent).toContain('Studio Grid overlay')
-      expect(overlayCheckbox).not.toBeNull()
-      expect(overlayCheckbox.disabled).toBe(false)
+      expect(container.querySelector('#settings-appearance-saturation')).not.toBeNull()
+      expect(container.textContent).toContain('Tint')
+      expect(container.textContent).not.toContain('Backdrop')
+      expect(container.textContent).not.toContain('backdrop')
+      // The Floor-preserving minimum for text contrast.
+      expect(container.querySelector('#settings-appearance-contrast').getAttribute('min')).toBe('80')
     } finally {
       await act(async () => root.unmount())
       container.remove()

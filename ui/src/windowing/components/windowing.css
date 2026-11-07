@@ -1,7 +1,6 @@
 @layer legacy {
 /* z-index ladder for the windowing system:
  *   app titlebar/menu:         var(--xleth-z-titlebar)
- *   backdrop FX underlay:      var(--xleth-z-backdrop-underlay)
  *   docked panel frame:        var(--xleth-z-window-docked)
  *   floating/maximized frame:  var(--xleth-z-window-floating-base) + panel.zIndex
  *   left pull-out drawer:      var(--xleth-z-window-drawer)
@@ -85,56 +84,6 @@
   z-index: var(--xleth-z-workspace-panel-layer);
 }
 
-.xleth-backdrop-layer {
-  position: absolute;
-  inset: 0;
-  z-index: var(--xleth-z-backdrop-underlay);
-  overflow: hidden;
-  pointer-events: none;
-}
-
-.xleth-backdrop-media {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-}
-
-.xleth-backdrop-media--image {
-  background-position: center;
-  background-repeat: no-repeat;
-  background-size: cover;
-}
-
-.xleth-backdrop-media-element {
-  display: block;
-  object-fit: cover;
-  object-position: center;
-  border: 0;
-}
-
-.xleth-backdrop-media--video::-webkit-media-controls {
-  display: none !important;
-}
-
-.xleth-backdrop-layer--static-video-fx::after {
-  content: "";
-  position: absolute;
-  inset: 0;
-  pointer-events: none;
-  background: var(--theme-primitive-app-bg);
-  opacity: 0;
-}
-
-.xleth-backdrop-fx-canvas {
-  position: absolute;
-  inset: 0;
-  width: 100%;
-  height: 100%;
-  pointer-events: none;
-}
-
 .xleth-docked-window-layer {
   display: flex;
   flex-direction: row;
@@ -155,40 +104,6 @@
   min-width: 0;
   min-height: 0;
   overflow: hidden;
-}
-
-.xleth-backdrop-off .xleth-backdrop-layer,
-html[data-xleth-backdrop="off"] .xleth-backdrop-layer,
-.xleth-backdrop-native-acrylic .xleth-backdrop-layer,
-html[data-xleth-backdrop="native-acrylic"] .xleth-backdrop-layer {
-  display: none;
-}
-
-.xleth-backdrop-native-acrylic .xleth-windowing-app,
-.xleth-backdrop-native-acrylic .xleth-windowing-shell,
-.xleth-backdrop-native-acrylic .xleth-app-workarea,
-.xleth-backdrop-native-acrylic .xleth-center-column {
-  background: transparent;
-  background-image: none;
-}
-
-.xleth-backdrop-image .xleth-windowing-app,
-.xleth-backdrop-image .xleth-windowing-shell,
-.xleth-backdrop-image .xleth-app-workarea,
-.xleth-backdrop-image .xleth-center-column,
-.xleth-backdrop-video .xleth-windowing-app,
-.xleth-backdrop-video .xleth-windowing-shell,
-.xleth-backdrop-video .xleth-app-workarea,
-.xleth-backdrop-video .xleth-center-column,
-html[data-xleth-backdrop="image"] .xleth-windowing-app,
-html[data-xleth-backdrop="image"] .xleth-windowing-shell,
-html[data-xleth-backdrop="image"] .xleth-app-workarea,
-html[data-xleth-backdrop="image"] .xleth-center-column,
-html[data-xleth-backdrop="video"] .xleth-windowing-app,
-html[data-xleth-backdrop="video"] .xleth-windowing-shell,
-html[data-xleth-backdrop="video"] .xleth-app-workarea,
-html[data-xleth-backdrop="video"] .xleth-center-column {
-  background: transparent;
 }
 
 .xleth-dock-region {
@@ -437,7 +352,6 @@ html[data-xleth-backdrop="video"] .xleth-center-column {
   width: 12px;
   height: 12px;
 }
-
 
 .xleth-panel-body {
   flex: 1 1 auto;

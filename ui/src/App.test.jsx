@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   getFileMenuShortcutLabel,
-  getWorkspaceBackdropClassName,
   handleXlethRootMenuAction,
   hydrateProductionLayout,
 } from './XlethRoot.jsx'
@@ -374,13 +373,5 @@ describe('XlethRoot New Project reset', () => {
     expect(setSettingsInitialCategory).toHaveBeenCalledWith('project')
     expect(setShowSettings).toHaveBeenCalledWith(true)
     expect(setShowThemeEditor).not.toHaveBeenCalled()
-  })
-
-  it('maps workspace backdrop modes to root classes', () => {
-    expect(getWorkspaceBackdropClassName('native-acrylic')).toBe('xleth-backdrop-native-acrylic')
-    expect(getWorkspaceBackdropClassName('image')).toBe('xleth-backdrop-image')
-    expect(getWorkspaceBackdropClassName('video')).toBe('xleth-backdrop-video')
-    expect(getWorkspaceBackdropClassName('off')).toBe('xleth-backdrop-off')
-    expect(getWorkspaceBackdropClassName('unsupported')).toBe('xleth-backdrop-off')
   })
 })

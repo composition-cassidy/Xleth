@@ -109,7 +109,6 @@ export function PanelFrame({
           data-panel-id={id}
           data-panel-mode="docked"
           data-collapsed={collapsed ? 'true' : 'false'}
-          data-backdrop-fx-panel-rect="true"
           style={{ '--xleth-windowing-panel-color': panelTypeColorVar(id) } as CSSProperties}
           onMouseDownCapture={claimFocus}
           {...accessibility}
@@ -165,7 +164,6 @@ export function PanelFrame({
         data-panel-mode={mode}
         data-focused={focused}
         data-collapsed={collapsed ? 'true' : 'false'}
-        data-backdrop-fx-panel-rect="true"
         style={frameStyle}
         onMouseDownCapture={claimFocus}
         {...accessibility}

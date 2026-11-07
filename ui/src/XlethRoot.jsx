@@ -63,13 +63,6 @@ async function currentProjectRoot(xl = window.xleth) {
   }
 }
 
-export function getWorkspaceBackdropClassName(mode) {
-  if (mode === 'native-acrylic') return 'xleth-backdrop-native-acrylic'
-  if (mode === 'image') return 'xleth-backdrop-image'
-  if (mode === 'video') return 'xleth-backdrop-video'
-  return 'xleth-backdrop-off'
-}
-
 /**
  * Save the current project via Save / Save-As flow.
  * Returns:
@@ -391,17 +384,6 @@ export default function XlethRoot() {
 
 function XlethRootInner() {
   const { showToast } = useToast()
-  const [workspaceBackdropMode, setWorkspaceBackdropMode] = useState(() => (
-    ['native-acrylic', 'image', 'video'].includes(window.xleth?.backdrop?.current?.mode)
-      ? window.xleth.backdrop.current.mode
-      : 'off'
-  ))
-  const [workspaceBackdropImageUrl, setWorkspaceBackdropImageUrl] = useState(() => (
-    window.xleth?.backdrop?.current?.mode === 'image'
-      ? window.xleth.backdrop.current.imageUrl || ''
-      : ''
-  ))
-
   // TODO: lift to Zustand in 6d. These root-owned UI selections still bridge
   // the production windowing wrappers with the legacy app components.
   const [pickerSource, setPickerSource] = useState(null)
@@ -431,22 +413,6 @@ function XlethRootInner() {
   // Mirror the global UI scale (window zoom) so Settings and the canvases follow it.
   useEffect(() => {
     useUiScaleStore.getState().hydrate()
-  }, [])
-
-  useEffect(() => {
-    const applyBackdropState = (state) => {
-      const mode = ['native-acrylic', 'image', 'video'].includes(state?.mode) ? state.mode : 'off'
-      setWorkspaceBackdropMode(mode)
-      setWorkspaceBackdropImageUrl(mode === 'image' ? state?.imageUrl || '' : '')
-      document.documentElement.setAttribute('data-xleth-backdrop', mode)
-    }
-
-    applyBackdropState(window.xleth?.backdrop?.current)
-    window.xleth?.backdrop?.getState?.()
-      .then(applyBackdropState)
-      .catch((e) => console.warn('[XlethRoot] backdrop state failed:', e?.message || e))
-
-    return window.xleth?.backdrop?.onModeChanged?.(applyBackdropState)
   }, [])
 
   useEffect(() => {
@@ -644,12 +610,7 @@ function XlethRootInner() {
 
   return (
     <div
-      className={`app ${getWorkspaceBackdropClassName(workspaceBackdropMode)}`}
-      style={{
-        '--xleth-workspace-backdrop-image': workspaceBackdropImageUrl
-          ? `url("${workspaceBackdropImageUrl.replace(/"/g, '\\"')}")`
-          : 'none',
-      }}
+      className="app"
       onDragOver={handleAppDragOver}
       onDrop={handleAppDrop}
     >
@@ -663,7 +624,7 @@ function XlethRootInner() {
           (windowing/components/PickerSheet), so the arrangement stays visible. */}
       <div className="app-body" style={{ position: 'relative' }}>
         <XlethRootContext.Provider value={rootContextValue}>
-          <AppShell backdropImageUrl={workspaceBackdropImageUrl} />
+          <AppShell />
         </XlethRootContext.Provider>
       </div>
 

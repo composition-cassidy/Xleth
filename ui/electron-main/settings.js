@@ -6,8 +6,7 @@
 // loadSettings/saveSettings) and userData/layout.json (raw string payload via
 // the xleth:layout:read/write handlers, registered at require time — the same
 // module-scope timing they had in main.js). The xleth:settings:get/set
-// handlers stay in main.js: they are entangled with the workspace-backdrop
-// logic, not with this store.
+// handlers stay in main.js beside the other settings-adjacent IPC.
 
 const { ipcMain } = require('electron');
 const fs = require('fs');
