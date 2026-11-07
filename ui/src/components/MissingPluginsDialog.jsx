@@ -1,4 +1,5 @@
 import { useState, useCallback } from 'react'
+import { Button, Dialog, DialogList, DialogListItem, DialogText } from '../ui-kit'
 
 // ── MissingPluginsDialog ─────────────────────────────────────────────────────
 // Shown after project load when one or more VST3 plugins could not be found.
@@ -68,70 +69,51 @@ export default function MissingPluginsDialog({ plugins: initialPlugins, onClose 
   }
 
   return (
-    <div className="export-dialog-backdrop missing-plugins-backdrop">
-      <div className="export-dialog missing-plugins-dialog">
+    <Dialog
+      title="Missing plugins"
+      width="lg"
+      dismissable={false}
+      actions={
+        <>
+          <Button size="lg" onClick={onClose} disabled={removing}>Ignore all</Button>
+          <Button size="lg" variant="danger" onClick={handleRemoveAll} disabled={removing}>
+            {removing ? 'Removing…' : 'Remove all missing'}
+          </Button>
+        </>
+      }
+    >
+      <DialogText>
+        The following plugins could not be loaded. Audio will pass through without processing
+        until they are resolved.
+      </DialogText>
 
-        <div className="export-dialog-header">
-          <span className="export-dialog-title">Missing Plugins</span>
-        </div>
-
-        <div className="export-dialog-body missing-plugins-body">
-          <p className="missing-plugins-desc">
-            The following plugins could not be loaded. Audio will pass through without processing
-            until they are resolved.
-          </p>
-
-          <div className="missing-plugins-list">
-            {plugins.map((p) => (
-              <div key={`${p.trackId}-${p.nodeId}`} className="missing-plugin-row">
-                <div className="missing-plugin-info">
-                  <span className="missing-plugin-name">{p.pluginName || p.pluginId}</span>
-                  {p.pluginVendor && (
-                    <span className="missing-plugin-vendor">{p.pluginVendor}</span>
-                  )}
-                  <span className="missing-plugin-chain">{trackLabel(p.trackId)}</span>
-                </div>
-                <div className="missing-plugin-actions">
-                  <button
-                    className="missing-plugin-btn"
-                    onClick={() => handleRetry(p.trackId, p.nodeId)}
-                    disabled={retrying[p.nodeId]}
-                    title="Try to load plugin again"
-                  >
-                    {retrying[p.nodeId] ? '…' : 'Retry'}
-                  </button>
-                  <button
-                    className="missing-plugin-btn missing-plugin-btn-remove"
-                    onClick={() => handleRemove(p.trackId, p.nodeId)}
-                    disabled={retrying[p.nodeId]}
-                    title="Remove this placeholder from the chain"
-                  >
-                    Remove
-                  </button>
-                </div>
-              </div>
-            ))}
-          </div>
-        </div>
-
-        <div className="export-dialog-footer">
-          <button
-            className="export-dialog-footer button"
-            onClick={onClose}
-            disabled={removing}
+      <DialogList label="Missing plugins">
+        {plugins.map((p) => (
+          <DialogListItem
+            key={`${p.trackId}-${p.nodeId}`}
+            label={p.pluginName || p.pluginId}
+            detail={[p.pluginVendor, trackLabel(p.trackId)].filter(Boolean).join(' · ')}
           >
-            Ignore All
-          </button>
-          <button
-            className="export-dialog-footer button export-btn-danger"
-            onClick={handleRemoveAll}
-            disabled={removing}
-          >
-            {removing ? 'Removing…' : 'Remove All Missing'}
-          </button>
-        </div>
-
-      </div>
-    </div>
+            <Button
+              size="sm"
+              onClick={() => handleRetry(p.trackId, p.nodeId)}
+              disabled={retrying[p.nodeId]}
+              title="Try to load plugin again"
+            >
+              {retrying[p.nodeId] ? '…' : 'Retry'}
+            </Button>
+            <Button
+              size="sm"
+              variant="danger"
+              onClick={() => handleRemove(p.trackId, p.nodeId)}
+              disabled={retrying[p.nodeId]}
+              title="Remove this placeholder from the chain"
+            >
+              Remove
+            </Button>
+          </DialogListItem>
+        ))}
+      </DialogList>
+    </Dialog>
   )
 }

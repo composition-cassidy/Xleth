@@ -43,12 +43,13 @@ async function renderDialog(props) {
 }
 
 const q = (sel) => document.body.querySelector(sel)
+const para = (text) => Array.from(document.body.querySelectorAll('p')).find((p) => p.textContent.includes(text))
 const button = (text) => Array.from(document.body.querySelectorAll('button')).find((b) => b.textContent.trim().startsWith(text))
 
 describe('CleanupProjectDialog', () => {
   it('lists every category with its size and the total that will be freed', async () => {
     await renderDialog()
-    const text = q('.cleanup-dialog-list').textContent
+    const text = q('ul[aria-label="Files to delete"]').textContent
     expect(text).toContain('Video proxies')
     expect(text).toContain('2 files · 2 GB')
     expect(text).toContain('Unfinished files from interrupted jobs')
@@ -58,7 +59,7 @@ describe('CleanupProjectDialog', () => {
 
   it('says what is KEPT and why, naming the files', async () => {
     await renderDialog()
-    const note = q('.cleanup-dialog-note').textContent
+    const note = para('Kept:').textContent
     expect(note).toContain('Kept: 1 file (300 MB)')
     expect(note).toContain('source media is offline')
     expect(note).toContain('gone.preview.720p.h264.mov')
@@ -66,7 +67,7 @@ describe('CleanupProjectDialog', () => {
 
   it('promises source media and project file are untouched', async () => {
     await renderDialog()
-    expect(q('.cleanup-dialog-lead').textContent).toMatch(/source media and the project\s+file are never touched/)
+    expect(para('source media and the project').textContent).toMatch(/source media and the project\s+file are never touched/)
   })
 
   it('explains skipped partials while a background job runs', async () => {
@@ -85,7 +86,7 @@ describe('CleanupProjectDialog', () => {
 
     await act(async () => { button('Cancel').click() })
     await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape' })) })
-    await act(async () => { q('.cleanup-dialog-backdrop').click() })
+    await act(async () => { q('[role="dialog"]').parentElement.dispatchEvent(new MouseEvent('mousedown', { bubbles: true })) })
     expect(onCancel).toHaveBeenCalledTimes(3)
     expect(onConfirm).toHaveBeenCalledTimes(1)
   })
@@ -93,7 +94,7 @@ describe('CleanupProjectDialog', () => {
   it('does not close when the dialog body itself is clicked', async () => {
     const onCancel = vi.fn()
     await renderDialog({ onCancel })
-    await act(async () => { q('.cleanup-dialog').click() })
+    await act(async () => { q('[role="dialog"]').dispatchEvent(new MouseEvent('mousedown', { bubbles: true })) })
     expect(onCancel).not.toHaveBeenCalled()
   })
 

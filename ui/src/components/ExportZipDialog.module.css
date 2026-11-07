@@ -1,0 +1,69 @@
+/* Export-as-ZIP dialog content. The dialog frame is the kit Dialog; this is only the radio group
+ * and the progress readout. Dialog text is read like prose (16px title, 13px hint). */
+@layer kit {
+  .modes {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    margin: 0;
+    padding: 0;
+    border: 0;
+  }
+
+  .legend {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip-path: inset(50%);
+  }
+
+  .mode {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-2);
+    min-height: var(--hit-min);
+    cursor: pointer;
+  }
+
+  .mode input {
+    flex: none;
+    width: var(--space-4);
+    height: var(--space-4);
+    margin: var(--space-1) 0 0;
+    accent-color: var(--ui-value);
+  }
+
+  .mode input:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 2px;
+  }
+
+  .modeText {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .modeTitle {
+    font-size: var(--type-16);
+    font-weight: var(--weight-medium);
+  }
+
+  .modeHint {
+    color: var(--ui-ink-2);
+    font-size: var(--type-13);
+    line-height: 1.5;
+  }
+
+  .progress {
+    margin-top: var(--space-4);
+  }
+
+  .progressLabel {
+    margin-top: var(--space-2);
+    color: var(--ui-ink-2);
+    font-size: var(--type-13);
+    font-variant-numeric: tabular-nums;
+  }
+}

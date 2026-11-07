@@ -335,9 +335,9 @@ describe('kit stylesheets', () => {
     expect(css).not.toMatch(/\bfilter\s*:\s*blur|drop-shadow|backdrop-filter/);
   });
 
-  it('only the floating Select popup carries a shadow', () => {
+  it('only floating surfaces (Select popup, Menu, Dialog) carry a shadow', () => {
     const withShadow = sheets.filter((f) => /box-shadow/.test(readFileSync(path.join(dir, f), 'utf8')));
-    expect(withShadow).toEqual(['Select.module.css']);
+    expect(withShadow).toEqual(['Dialog.module.css', 'Menu.module.css', 'Select.module.css']);
   });
 
   // Every interactive control has a hover/focus-visible state and a disabled state.

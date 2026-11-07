@@ -5,7 +5,8 @@ import styles from './Button.module.css';
 import type { DataAttrs } from './valueProps';
 
 type Size = 'sm' | 'md' | 'lg';
-type Variant = 'default' | 'ghost';
+/** `primary` is the inverted ink chip (the one default action of a dialog); `danger` outlines in the error text colour. */
+type Variant = 'default' | 'ghost' | 'primary' | 'danger';
 
 interface BaseProps extends HintProps, DataAttrs, Omit<ButtonHTMLAttributes<HTMLButtonElement>, 'children' | 'aria-label'> {
   size?: Size;

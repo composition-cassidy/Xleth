@@ -15,7 +15,8 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Mic, Play, Scissors, Settings, Square, X } from 'lucide-react'
 import {
-  Button, EmptyState, Fader, FaderMeter, IconButton, Knob, Meter, NumberBox, PanelHeader, SectionHeader,
+  Button, Dialog, DialogList, DialogListItem, DialogText, EmptyState, Fader, FaderMeter, IconButton, Knob, Menu, MenuItem,
+  MenuSeparator, Meter, NumberBox, PanelHeader, SectionHeader,
   SegmentedControl, Select, Tabs, Toggle, Toolbar, ToolbarSeparator, syncCodec, Icon, GLYPH_NAMES,
 } from './index'
 import styles from './Gallery.module.css'
@@ -101,6 +102,64 @@ function useSyntheticFeed(base = -18, clipAtStart = false) {
     }, 33)
     return () => clearInterval(id)
   }, [base, clipAtStart])
+}
+
+/** Opens the real Menu and Dialog on demand (they are portaled, fixed-position surfaces). */
+function OverlayDemos() {
+  const [menu, setMenu] = useState(null)
+  const [dialog, setDialog] = useState(null)
+  const close = () => { setMenu(null); setDialog(null) }
+  return (
+    <>
+      <Spec caption="menu: rows 24px, arrows / Home / End, Esc closes">
+        <Button
+          onClick={(e) => { const r = e.currentTarget.getBoundingClientRect(); setMenu({ x: r.left, y: r.bottom + 4 }) }}
+        >
+          Open menu
+        </Button>
+      </Spec>
+      <Spec caption="dialog: 16px prose, list, actions">
+        <div className={styles.inline}>
+          <Button onClick={() => setDialog('confirm')}>Open confirm</Button>
+          <Button onClick={() => setDialog('list')}>Open list</Button>
+        </div>
+      </Spec>
+      {menu && (
+        <Menu x={menu.x} y={menu.y} onClose={close} label="Clip menu">
+          <MenuItem checked>Snap to grid</MenuItem>
+          <MenuItem checked={false}>Ripple edit</MenuItem>
+          <MenuSeparator />
+          <MenuItem>Duplicate</MenuItem>
+          <MenuItem disabled>Paste</MenuItem>
+          <MenuItem danger>Delete</MenuItem>
+        </Menu>
+      )}
+      {dialog === 'confirm' && (
+        <Dialog
+          title="Unsaved changes"
+          width="sm"
+          onClose={close}
+          actions={<><Button size="lg" onClick={close}>Cancel</Button><Button size="lg" variant="danger" onClick={close}>Discard</Button><Button size="lg" variant="primary" onClick={close} data-autofocus>Save</Button></>}
+        >
+          <DialogText>You have unsaved changes. Save them before starting a new project?</DialogText>
+        </Dialog>
+      )}
+      {dialog === 'list' && (
+        <Dialog
+          title="Clean up project"
+          onClose={close}
+          actions={<><Button size="lg" onClick={close}>Cancel</Button><Button size="lg" variant="primary" onClick={close} data-autofocus>Clean up 2.5 GB</Button></>}
+        >
+          <DialogText>Delete leftover and unused preview files to free disk space. Your source media is never touched.</DialogText>
+          <DialogList label="Files to delete">
+            <DialogListItem label="Video proxies" value="2 files · 2.0 GB" />
+            <DialogListItem label="Unfinished files from interrupted jobs" value="3 files · 0.5 GB" />
+            <DialogListItem strong label="Will free" value="5 files · 2.5 GB" />
+          </DialogList>
+        </Dialog>
+      )}
+    </>
+  )
 }
 
 export default function Gallery() {
@@ -213,6 +272,15 @@ export default function Gallery() {
           <IconButton label="Close" disabled><X /></IconButton>
         </div></Spec>
         <Spec caption="long label"><Button>{LONG}</Button></Spec>
+        <Spec caption="dialog variants: primary (the one default action) / danger / default, size 32"><div className={styles.inline}>
+          <Button size="lg">Cancel</Button>
+          <Button size="lg" variant="danger">Discard</Button>
+          <Button size="lg" variant="primary">Save</Button>
+        </div></Spec>
+      </Section>
+
+      <Section title="Menu and Dialog (floating surfaces: hard offset shadow)">
+        <OverlayDemos />
       </Section>
 
       <Section title="SegmentedControl, Select, Tabs, Toolbar">

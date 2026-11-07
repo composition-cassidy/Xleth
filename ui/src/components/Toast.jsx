@@ -1,4 +1,8 @@
 import { createContext, useCallback, useContext, useEffect, useRef, useState } from 'react'
+import { AlertTriangle, Check, Info } from 'lucide-react'
+import styles from './Toast.module.css'
+
+const LEVEL_GLYPH = { info: Info, success: Check, error: AlertTriangle }
 
 const ToastCtx = createContext(null)
 
@@ -47,14 +51,19 @@ export function ToastStatusText() {
   const current = toasts[toasts.length - 1]
   if (!current) return null
 
+  const Glyph = LEVEL_GLYPH[current.level] || Info
   return (
-    <span
-      key={current.id}
-      className={`toast-status toast-status-${current.level}`}
-      onClick={() => dismiss(current.id)}
-      role="status"
-    >
-      {current.message}
+    <span role={current.level === 'error' ? 'alert' : 'status'} key={current.id}>
+      <button
+        type="button"
+        className={styles.toast}
+        data-level={current.level}
+        onClick={() => dismiss(current.id)}
+        title="Dismiss"
+      >
+        <span className={styles.glyph} aria-hidden="true"><Glyph size={12} /></span>
+        <span className={styles.message}>{current.message}</span>
+      </button>
     </span>
   )
 }

@@ -1,5 +1,4 @@
-import { useEffect } from 'react'
-import { createPortal } from 'react-dom'
+import { Button, Dialog, DialogList, DialogListItem, DialogText } from '../ui-kit'
 import { formatFreed } from './projectCleanup.js'
 
 /**
@@ -13,78 +12,55 @@ import { formatFreed } from './projectCleanup.js'
  * Esc → cancel, Enter → confirm, backdrop click → cancel.
  */
 export default function CleanupProjectDialog({ scan, onConfirm, onCancel }) {
-  useEffect(() => {
-    const handler = (e) => {
-      if (e.key === 'Escape') onCancel?.()
-      if (e.key === 'Enter') onConfirm?.()
-    }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [onCancel, onConfirm])
-
   const willFree = scan?.willFree || { files: 0, bytes: 0, categories: [] }
   const kept = scan?.kept || { files: 0, bytes: 0, items: [] }
+  const count = (n) => `${n} file${n === 1 ? '' : 's'}`
 
-  return createPortal(
-    <div className="confirm-dialog-backdrop cleanup-dialog-backdrop" onClick={onCancel}>
-      <div
-        className="confirm-dialog cleanup-dialog"
-        role="dialog"
-        aria-modal="true"
-        aria-labelledby="cleanup-dialog-title"
-        onClick={(e) => e.stopPropagation()}
-      >
-        <div className="confirm-dialog-header" id="cleanup-dialog-title">Clean up project</div>
-
-        <p className="cleanup-dialog-lead">
-          Delete leftover and unused preview files to free disk space. Xleth
-          rebuilds anything it still needs. Your source media and the project
-          file are never touched.
-        </p>
-
-        <ul className="cleanup-dialog-list" aria-label="Files to delete">
-          {willFree.categories.map((c) => (
-            <li className="cleanup-dialog-item" key={c.id}>
-              <span className="cleanup-dialog-item-label">{c.label}</span>
-              <span className="cleanup-dialog-item-size">
-                {c.files} file{c.files === 1 ? '' : 's'} · {formatFreed(c.bytes)}
-              </span>
-            </li>
-          ))}
-          <li className="cleanup-dialog-item cleanup-dialog-total">
-            <span className="cleanup-dialog-item-label">Will free</span>
-            <span className="cleanup-dialog-item-size">
-              {willFree.files} file{willFree.files === 1 ? '' : 's'} · {formatFreed(willFree.bytes)}
-            </span>
-          </li>
-        </ul>
-
-        {kept.files > 0 && (
-          <p className="cleanup-dialog-note">
-            Kept: {kept.files} file{kept.files === 1 ? '' : 's'} ({formatFreed(kept.bytes)}). Their
-            source media is offline, so they cannot be rebuilt — relink the media to include them.
-            {kept.items?.length > 0 && (
-              <span className="cleanup-dialog-kept-names">
-                {' '}({kept.items.map((i) => i.name).join(', ')}{kept.files > kept.items.length ? ', …' : ''})
-              </span>
-            )}
-          </p>
-        )}
-        {scan?.partialsSkipped && (
-          <p className="cleanup-dialog-note">
-            A background job is still running, so its unfinished files are left alone.
-          </p>
-        )}
-
-        <div className="confirm-dialog-footer">
-          <button className="confirm-dialog-btn" onClick={onCancel}>Cancel</button>
-          <button className="confirm-dialog-btn primary" onClick={onConfirm} autoFocus>
+  return (
+    <Dialog
+      title="Clean up project"
+      width="md"
+      onClose={onCancel}
+      onEnter={onConfirm}
+      actions={
+        <>
+          <Button size="lg" onClick={onCancel}>Cancel</Button>
+          <Button size="lg" variant="primary" onClick={onConfirm} data-autofocus>
             Clean up {formatFreed(willFree.bytes)}
-          </button>
-        </div>
-      </div>
-    </div>,
-    document.body
+          </Button>
+        </>
+      }
+    >
+      <DialogText>
+        Delete leftover and unused preview files to free disk space. Xleth
+        rebuilds anything it still needs. Your source media and the project
+        file are never touched.
+      </DialogText>
+
+      <DialogList label="Files to delete">
+        {willFree.categories.map((c) => (
+          <DialogListItem key={c.id} label={c.label} value={`${count(c.files)} · ${formatFreed(c.bytes)}`} />
+        ))}
+        <DialogListItem strong label="Will free" value={`${count(willFree.files)} · ${formatFreed(willFree.bytes)}`} />
+      </DialogList>
+
+      {kept.files > 0 && (
+        <DialogText tone="secondary">
+          Kept: {count(kept.files)} ({formatFreed(kept.bytes)}). Their
+          source media is offline, so they cannot be rebuilt — relink the media to include them.
+          {kept.items?.length > 0 && (
+            <>
+              {' '}({kept.items.map((i) => i.name).join(', ')}{kept.files > kept.items.length ? ', …' : ''})
+            </>
+          )}
+        </DialogText>
+      )}
+      {scan?.partialsSkipped && (
+        <DialogText tone="secondary">
+          A background job is still running, so its unfinished files are left alone.
+        </DialogText>
+      )}
+    </Dialog>
   )
 }
 

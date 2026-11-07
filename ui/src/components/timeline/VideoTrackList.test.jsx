@@ -40,7 +40,7 @@ function rows(scope = container) {
 }
 
 function menuItemByLabel(label) {
-  return Array.from(document.querySelectorAll('.track-context-menu .context-menu-item'))
+  return Array.from(document.querySelectorAll('.track-context-menu [role^="menuitem"]'))
     .find(b => b.textContent.includes(label))
 }
 

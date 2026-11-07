@@ -43,3 +43,8 @@ export type { SelectOption, SelectProps } from './Select';
 export * from './device';
 
 export * from './icons';
+
+export { Menu, MenuItem, MenuSeparator, MenuCustom } from './Menu';
+export type { MenuProps, MenuItemProps } from './Menu';
+export { default as Dialog, DialogText, DialogList, DialogListItem } from './Dialog';
+export type { DialogProps } from './Dialog';

@@ -33,6 +33,23 @@
     color: var(--ui-ink-2);
   }
 
+  .btn[data-variant="primary"] {
+    border-color: var(--ui-on);
+    background: var(--ui-on);
+    color: var(--ui-on-fg);
+  }
+
+  .btn[data-variant="primary"]:is(:hover, [data-state="hover"]):not(:disabled) {
+    background: var(--ui-on);
+    color: var(--ui-on-fg);
+    border-color: var(--ui-value);
+  }
+
+  .btn[data-variant="danger"] {
+    border-color: var(--ui-clip);
+    color: var(--theme-semantic-danger-text, var(--ui-rec-text));
+  }
+
   .icon {
     width: var(--ctl-h-md);
     padding: 0;
