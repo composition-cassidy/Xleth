@@ -27,6 +27,8 @@ import {
   normalizeAccentHex,
 } from '../theming/runtime/appearanceTheme'
 import ChromeReadouts from '../theming/editor/ChromeReadouts'
+import { ThemeEditorContent } from '../theming/editor/ThemeEditor'
+import { Button } from '../ui-kit'
 import {
   UI_SCALE_DEFAULT,
   UI_SCALE_MAX,
@@ -229,6 +231,7 @@ function SettingsRow({ label, htmlFor, description, children }) {
 
 export default function SettingsPanel({ onClose, initialCategory = 'project' }) {
   const themeContext = useContext(ThemeContext)
+  const [themeEditorOpen, setThemeEditorOpen] = useState(false)
   const appearanceAppliedRef = useRef(null)
   const appearancePersistTimerRef = useRef(null)
   const [accentColor, setAccentColor] = useState(DEFAULT_APPEARANCE_ACCENT)
@@ -1487,7 +1490,29 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
           />
         </SettingsSection>
 
-        <SettingsSection title="Interface scale" index={1}>
+        {themeContext && (
+          <SettingsSection title="Theme editor" index={1}>
+            <SettingsRow
+              label="Edit themes"
+              description="Pick a shipped or saved theme, adjust the surface ramp and accent, or set every token by hand. Apply makes it the active theme; Save as New Theme keeps a copy."
+            >
+              <Button
+                aria-expanded={themeEditorOpen}
+                aria-controls="settings-theme-editor"
+                onClick={() => setThemeEditorOpen((open) => !open)}
+              >
+                {themeEditorOpen ? 'Close editor' : 'Open editor'}
+              </Button>
+            </SettingsRow>
+            {themeEditorOpen && (
+              <div id="settings-theme-editor" data-theme-editor-host>
+                <ThemeEditorContent embedded onRequestClose={() => setThemeEditorOpen(false)} />
+              </div>
+            )}
+          </SettingsSection>
+        )}
+
+        <SettingsSection title="Interface scale" index={2}>
           <SettingsRow
             label="UI scale"
             htmlFor="settings-ui-scale"

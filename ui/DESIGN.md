@@ -268,7 +268,11 @@ surfaces, so there g2 and g3 are flattened toward the panel instead of leaving t
 **Theme editor.** Simple mode is brightness, text contrast, tint and tint hue (surfaces) plus accent and
 danger; the knobs are read back from any resolved theme, so they open correctly on a custom one. Live
 readouts show ink, ink 3 and boundary against the panel (ratio, and Pass or Below, never colour alone).
-Advanced mode shows the same readouts and warning above the token tree.
+Advanced mode shows the same readouts and warning above the token tree. It is reached from Settings >
+Application > Appearance > Theme editor: "Open editor" mounts `ThemeEditorContent` (embedded) under the
+Appearance sliders, "Close editor" unmounts it (so each opening starts from the active theme, and **Revert**
+restores the theme that was active when it opened). **Apply** sets the active theme; **Save as New Theme** keeps
+a copy. The section is absent when there is no `ThemeProvider`.
 
 **UI scale.** The scale is the Electron window zoom factor: real zoom, so hit-testing is right; never a
 CSS transform. 100 to 200 % in 10 % steps (`electron-main/ui-scale.js`), persisted as the percent `uiScale`,
@@ -558,5 +562,6 @@ Measured with the fake engine (16 tracks), every detail-dock tab, dark / light /
 1920x1080, 2560x1440 and 1920 at 150 %: no text under 10px; no text under 4.5:1 except deliberately dimmed states
 (muted or bypassed content at the 45 % mute opacity, disabled controls). Open hit-area items (under 24px, canvas or
 overlay controls): the track identity stripe button (6px wide), the clip FX badge (24x14), loop-region toggle,
-snapshot cue markers, Pattern-list collapse. The Theme Editor (`theming/editor/ThemeEditor.tsx` and its modes) is not
-mounted anywhere; only `ChromeReadouts` is reachable, through Settings > Appearance.
+snapshot cue markers, Pattern-list collapse. The Theme Editor (`theming/editor/ThemeEditor.tsx`) was unmounted from Phase 6c
+until the end of Phase 8; it is mounted again in Settings > Appearance (section 3.6, `SettingsThemeEditor.test.jsx`).
+It is still built on legacy `theme-editor-*` CSS in `app.css`, not the kit.
