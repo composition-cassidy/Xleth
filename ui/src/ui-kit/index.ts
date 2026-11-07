@@ -41,3 +41,5 @@ export { default as Select, getSelectedOption } from './Select';
 export type { SelectOption, SelectProps } from './Select';
 
 export * from './device';
+
+export * from './icons';

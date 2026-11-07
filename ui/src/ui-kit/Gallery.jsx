@@ -16,7 +16,7 @@ import { useEffect, useMemo, useState } from 'react'
 import { Mic, Play, Scissors, Settings, Square, X } from 'lucide-react'
 import {
   Button, EmptyState, Fader, FaderMeter, IconButton, Knob, Meter, NumberBox, PanelHeader, SectionHeader,
-  SegmentedControl, Select, Tabs, Toggle, Toolbar, ToolbarSeparator, syncCodec,
+  SegmentedControl, Select, Tabs, Toggle, Toolbar, ToolbarSeparator, syncCodec, Icon, GLYPH_NAMES,
 } from './index'
 import styles from './Gallery.module.css'
 import EffectDevice from '../components/devices/EffectDevice.jsx'
@@ -244,6 +244,23 @@ export default function Gallery() {
         <Spec caption="folded"><div className={styles.inline}><EffectDevice effect={compressorFx(3)} storeKey={GALLERY_TRACK} identityColor="var(--theme-track-palette-2)" /><EffectDevice effect={compressorFx(4)} storeKey={GALLERY_TRACK} identityColor="var(--theme-track-palette-2)" /></div></Spec>
         <Spec caption="popped out: the floating window (offset shadow only here)" wide><div className={styles.floatingStage}><EffectDevice effect={compressorFx(4)} storeKey={GALLERY_TRACK} presentation="floating" onClose={() => {}} dragHandleProps={{}} /></div></Spec>
         <Spec caption="not migrated yet: same title bar"><EffectDevice effect={{ nodeId: 5, pluginId: 'chorus', bypassed: false }} storeKey={GALLERY_TRACK} identityColor="var(--theme-track-palette-2)" /></Spec>
+      </Section>
+
+      <Section title="Icon set: 16px grid, 1.5px stroke, currentColor">
+        <Spec caption="all glyphs at 16 px (the size they ship at), 24 px, and 48 px to check the drawing" wide>
+          <div className={styles.iconGrid}>
+            {GLYPH_NAMES.map((name) => (
+              <figure key={name} className={styles.iconCell}>
+                <span className={styles.iconSizes}>
+                  <Icon name={name} size={16} />
+                  <Icon name={name} size={24} />
+                  <Icon name={name} size={48} />
+                </span>
+                <figcaption className={styles.caption}>{name}</figcaption>
+              </figure>
+            ))}
+          </div>
+        </Spec>
       </Section>
 
       <Section title="Mixer: 16 strips, mixed states (MOCK data, gallery only)">
