@@ -64,6 +64,7 @@ const PHASE_4B_DEVICES = [
   { pluginId: 'delay', title: 'Delay', base: 11 },
   { pluginId: 'flanger', title: 'Flanger', base: 21 },
   { pluginId: 'uniflange', title: 'UniFlange', base: 31 },
+  { pluginId: 'reverb', title: 'Reverb', base: 41 },
 ]
 const deviceFx = (pluginId, nodeId, extra = {}) => ({
   nodeId, pluginId, position: 0, bypassed: false, effectInstanceId: `gallery-${nodeId}`, ...extra,
