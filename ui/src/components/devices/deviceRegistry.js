@@ -16,6 +16,8 @@ import DelayDevice from './DelayDevice.jsx'
 import useDelayStore from '../../stores/delayStore.js'
 import FlangerDevice from './FlangerDevice.jsx'
 import useFlangerStore from '../../stores/flangerStore.js'
+import UniFlangeDevice from './UniFlangeDevice.jsx'
+import useUniFlangeStore from '../../stores/uniFlangeStore.js'
 
 export const DEVICE_BODIES = {
   // Width omitted: the frame fits the body's fixed-width sections (the
@@ -23,6 +25,7 @@ export const DEVICE_BODIES = {
   compressor: { Body: CompressorDevice, useEditorStore: useCompressorStore },
   delay: { Body: DelayDevice, useEditorStore: useDelayStore },
   flanger: { Body: FlangerDevice, useEditorStore: useFlangerStore },
+  uniflange: { Body: UniFlangeDevice, useEditorStore: useUniFlangeStore },
 }
 
 export function deviceBodyFor(pluginId) {
