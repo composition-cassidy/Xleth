@@ -40,6 +40,30 @@
     padding: 0 var(--space-1);
   }
 
+  /* A meter that takes the section's spare height. */
+  .grow {
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .row {
+    display: flex;
+    align-items: stretch;
+    align-self: stretch;
+    flex: 1 1 auto;
+    gap: var(--space-2);
+    min-height: 0;
+    padding: var(--space-1);
+  }
+
+  .readouts {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    gap: var(--space-1);
+  }
+
   /* A cell that stays narrow while its section is wider (a select under a knob). */
   .cell {
     display: flex;

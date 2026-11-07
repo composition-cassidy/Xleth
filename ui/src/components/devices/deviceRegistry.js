@@ -20,6 +20,8 @@ import UniFlangeDevice from './UniFlangeDevice.jsx'
 import useUniFlangeStore from '../../stores/uniFlangeStore.js'
 import ReverbDevice from './ReverbDevice.jsx'
 import useReverbStore from '../../stores/reverbStore.js'
+import LimiterDevice from './LimiterDevice.jsx'
+import useLimiterStore from '../../stores/limiterStore.js'
 
 export const DEVICE_BODIES = {
   // Width omitted: the frame fits the body's fixed-width sections (the
@@ -29,6 +31,7 @@ export const DEVICE_BODIES = {
   flanger: { Body: FlangerDevice, useEditorStore: useFlangerStore },
   uniflange: { Body: UniFlangeDevice, useEditorStore: useUniFlangeStore },
   reverb: { Body: ReverbDevice, useEditorStore: useReverbStore },
+  limiter: { Body: LimiterDevice, useEditorStore: useLimiterStore },
 }
 
 export function deviceBodyFor(pluginId) {
