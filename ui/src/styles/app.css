@@ -26,30 +26,7 @@
 }
 
 :root {
-  /* Typography */
-  --xleth-global-font-family: "Neuzeit Grotesk", "Inter", "Noto Sans", "Segoe UI", system-ui, sans-serif;
-
-  /* Sizing */
-  --titlebar-h:   48px;
-  --panel-min-w: 250px;
-  --panel-max-w: 400px;
-  --divider-w:     4px;
-  --mixer-h:      400px;
-
-  /* Radius */
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
-
-  /* Transitions */
-  --transition-fast: 0.1s ease;
-  --transition:      0.15s ease;
-
-  /* App-shell chrome row heights — grid uses these to bound the workspace. */
-  --xleth-bottom-chrome-overhang: 0px;
-
   /* App-shell layer order: workspace panels < app chrome < portaled overlays. */
-  --xleth-z-workspace: 0;
   --xleth-z-workspace-panel-layer: 1;
   --xleth-z-window-docked: 30;
   /* Dock resize gutters sit ABOVE docked panel content (so they are grabbable)
@@ -8390,24 +8367,9 @@ html.fx-drag-active * {
 /* â”€â”€ EQ Theme Variables â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 :root {
-  /* Panel chrome â€” key vars include --xleth-global-* cascade for future theme editor */
-  --xleth-eq-bg-panel:           var(--xleth-global-bg-panel, var(--theme-bg-primary));
-  --xleth-eq-bg-plot:            var(--theme-bg-secondary);
-  --xleth-eq-bg-header:          var(--theme-bg-primary);
-  --xleth-eq-bg-row-alt:         var(--theme-bg-surface);
-  --xleth-eq-border:             var(--xleth-global-border, var(--theme-border-subtle));
-  --xleth-eq-border-strong:      var(--theme-border-subtle);
-  --xleth-eq-danger:             var(--theme-danger);
-
-  /* Text */
-  --xleth-eq-text-primary:       var(--xleth-global-text-primary, var(--theme-text));
-  --xleth-eq-text-secondary:     var(--theme-text-muted);
-  --xleth-eq-text-tertiary:      var(--theme-text-subtle);
-  --xleth-eq-text-muted:         #4B5563;
 
   /* Accent */
   --xleth-eq-accent:             var(--xleth-global-accent, var(--theme-accent));
-  --xleth-eq-accent-dim:         #4A6A8A;
 
   /* Channel routing tints (flat redesign) — a monochromatic derivation of
      the live EQ accent hue via color-mix(), so every tint tracks theme
@@ -8419,49 +8381,6 @@ html.fx-drag-active * {
   --xleth-eq-ch-mid:             color-mix(in srgb, var(--xleth-eq-accent) 40%, white 60%);
   --xleth-eq-ch-side:            color-mix(in srgb, var(--xleth-eq-accent) 88%, black 12%);
 
-  /* Mode colors */
-  --xleth-eq-mode-static:        var(--theme-accent);
-  --xleth-eq-mode-dynamic:       #F0A3D0;
-  --xleth-eq-mode-spectral:      #7AD4C9;
-
-  /* Spectrum analyzer (legacy single-tone fill — kept for back-compat with
-     consumers outside the EQ panel; the live panel now uses the gradient
-     vars below). */
-  --xleth-eq-spec-post-fill:     rgba(122, 184, 255, 0.28);
-  --xleth-eq-spec-post-stroke:   rgba(122, 184, 255, 0.7);
-  --xleth-eq-spec-pre-fill:      rgba(74, 85, 104, 0.35);
-  --xleth-eq-spec-pre-stroke:    rgba(74, 85, 104, 0.5);
-  --xleth-eq-spec-maxhold:       rgba(122, 184, 255, 0.9);
-
-  /* EQ-A spectrum-fill gradient + stroke vars. Fallback chain mirrors the
-     existing EQ token style: --xleth-global-* override → theme-editor token
-     → hardcoded default. The hardcoded fallbacks must match the catalog
-     defaults in ui/src/theming/tokens/catalog.ts for stock-effects.eq. */
-  --xleth-eq-spectrum-top:        var(--xleth-global-eq-spectrum-top,        var(--theme-eq-spectrum-fill-top,        rgba(122, 184, 255, 0.55)));
-  --xleth-eq-spectrum-bottom:     var(--xleth-global-eq-spectrum-bottom,     var(--theme-eq-spectrum-fill-bottom,     rgba(122, 184, 255, 0.05)));
-  --xleth-eq-spectrum-stroke:     var(--xleth-global-eq-spectrum-stroke,     var(--theme-eq-spectrum-stroke,          rgba(122, 184, 255, 0.85)));
-  --xleth-eq-pre-spectrum-top:    var(--xleth-global-eq-pre-spectrum-top,    var(--theme-eq-pre-spectrum-fill-top,    rgba(74, 85, 104, 0.40)));
-  --xleth-eq-pre-spectrum-bottom: var(--xleth-global-eq-pre-spectrum-bottom, var(--theme-eq-pre-spectrum-fill-bottom, rgba(74, 85, 104, 0.05)));
-  --xleth-eq-pre-spectrum-stroke: var(--xleth-global-eq-pre-spectrum-stroke, var(--theme-eq-pre-spectrum-stroke,      rgba(74, 85, 104, 0.55)));
-
-  /* Grid */
-  --xleth-eq-grid:               #1A1D26;
-  --xleth-eq-grid-zero:          #3A4050;
-
-  /* GR direction colors (semantic â€” not exposed in font/theme editor) */
-  --xleth-eq-gr-cut:             #F0A3D0;
-  --xleth-eq-gr-boost:           #7AE67A;
-
-  /* Typography */
-  --xleth-eq-font-family:        var(--xleth-global-font-family, "Inter", "Noto Sans", "Segoe UI", system-ui, sans-serif);
-  --xleth-eq-font-size-scale:    1;
-  --xleth-eq-font-size-base:     12px;
-  --xleth-eq-font-mono:          ui-monospace, SFMono-Regular, Menlo, monospace;
-
-  /* Layout tokens */
-  --xleth-eq-radius-sm:          var(--radius-sm,     4px);
-  --xleth-eq-radius-md:          var(--xleth-global-radius-md,   var(--radius-md,     6px));
-  --xleth-eq-radius-lg:          var(--radius-lg,     8px);
 }
 
 /* â”€â”€ EQ-D: floating band popup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
@@ -12583,13 +12502,6 @@ html.fx-drag-active * {
   /* Typography */
   --xleth-global-font-family: "Neuzeit Grotesk", "Inter", "Noto Sans", "Segoe UI", system-ui, sans-serif;
 
-  /* Sizing */
-  --titlebar-h:   48px;
-  --panel-min-w: 250px;
-  --panel-max-w: 400px;
-  --divider-w:     4px;
-  --mixer-h:      400px;
-
   /* Radius */
   --radius-sm: 4px;
   --radius-md: 6px;
@@ -12597,7 +12509,6 @@ html.fx-drag-active * {
 
   /* Transitions */
   --transition-fast: 0.1s ease;
-  --transition:      0.15s ease;
 }
 
 /* â”€â”€ Reset â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
@@ -15045,11 +14956,6 @@ input[type="radio"] {
 
 .qn-panel__notation {
   min-height: var(--theme-notation-min-height-compact);
-}
-
-/* Mockup-aligned DAW shell pass */
-:root {
-  --xleth-shell-control-radius: 7px;
 }
 
 .titlebar {
