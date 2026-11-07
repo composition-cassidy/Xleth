@@ -5,6 +5,7 @@ import useSmartBalanceStore from '../../stores/smartBalanceStore.js'
 import Knob from '../sampler/Knob.jsx'
 import EffectPresetBar from '../../fx-presets/EffectPresetBar.jsx'
 
+import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
 // ── Band definitions ────────────────────────────────────────────────────────
 // Bands match the engine's LR4 binary-tree crossover (150/800/4000 Hz).
 
@@ -333,6 +334,7 @@ function drawDebugOverlay(ctx, w, h, bandRanges, vizData, showDebug) {
 // ── SmartBalancePanel ───────────────────────────────────────────────────────
 
 export default function SmartBalancePanel() {
+  const dprEpoch = useThemeEpoch() // Phase 7: re-size and redraw at the new devicePixelRatio when the UI scale changes
   const target = useSmartBalanceStore(s => s.target)
   const close  = useSmartBalanceStore(s => s.close)
 
@@ -452,7 +454,7 @@ export default function SmartBalancePanel() {
     ro.observe(wrap)
     resize()
     return () => ro.disconnect()
-  }, [target])
+  }, [target, dprEpoch])
 
   // Polling + draw loop. ~30 fps for engine reads, 60 fps for canvas
   // (so transient pulse decay stays smooth between polls).

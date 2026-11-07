@@ -14,6 +14,7 @@ import {
   MIP_LEVELS,
 } from './splitSyllablesMipmap.js'
 
+import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
 // ── Constants ────────────────────────────────────────────────────────────────
 const CANVAS_H   = 138   // waveform canvas height
 const HANDLE_HIT = 8     // hit-test radius around marker (px)
@@ -112,6 +113,7 @@ export default function SyllableSplitter({
   onSave,
   compact = false,
 }) {
+  const dprEpoch = useThemeEpoch() // Phase 7: re-size and redraw at the new devicePixelRatio when the UI scale changes
   const canvasRef          = useRef(null)
   const containerRef       = useRef(null)
   const waveformWrapRef    = useRef(null)
@@ -381,7 +383,7 @@ export default function SyllableSplitter({
       ctx.fillText(`${z.toFixed(1)}×`, w - 4, 4)
       ctx.textAlign = 'left'
     }
-  }, [markers, regionDur, mip, regionPeaks, sections, zoomLevel, scrollOffsetMs])
+  }, [markers, regionDur, mip, regionPeaks, sections, zoomLevel, scrollOffsetMs, dprEpoch])
 
   useEffect(() => { draw() }, [draw])
   useEffect(() => {

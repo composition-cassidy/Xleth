@@ -19,6 +19,7 @@ import useSandboxStore, {
 } from '../../stores/sandboxStore.js'
 import { computeAutotuneCorrectionCurve, allowedPitchClasses, quantizeToNearestNote } from './autotuneCorrectionPreview.js'
 
+import { subscribeDpr } from '../../ui-kit/dpr'
 // Fallback used only before the first layout measurement, and as a floor so
 // a squeezed panel never hands the canvas a degenerate (near-zero) height.
 const MIN_WAVE_HEIGHT = 160
@@ -1206,9 +1207,10 @@ export default function SandboxWaveformCanvas() {
       // the ruler), so its own clientHeight — not a fixed constant — is the
       // canvas's true available headroom.
       const h = Math.max(MIN_WAVE_HEIGHT, Math.floor(stackRef.current?.clientHeight || 0))
-      if (w === 0 || (w === sizeRef.current.w && h === sizeRef.current.h)) return
-      sizeRef.current = { w, h }
       const dpr = window.devicePixelRatio || 1
+      // Window zoom changes the DPR without changing the CSS box: re-size for it too.
+      if (w === 0 || (w === sizeRef.current.w && h === sizeRef.current.h && dpr === sizeRef.current.dpr)) return
+      sizeRef.current = { w, h, dpr }
       if (rulerCanvasRef.current) applyCanvasSize(rulerCanvasRef.current, w, RULER_HEIGHT, dpr)
       if (bgCanvasRef.current) applyCanvasSize(bgCanvasRef.current, w, h, dpr)
       if (overlayCanvasRef.current) applyCanvasSize(overlayCanvasRef.current, w, h, dpr)
@@ -1224,7 +1226,8 @@ export default function SandboxWaveformCanvas() {
     const timerId = setTimeout(sizeAndDraw, 50)
     const observer = new ResizeObserver(sizeAndDraw)
     observer.observe(container)
-    return () => { clearTimeout(timerId); observer.disconnect() }
+    const offDpr = subscribeDpr(sizeAndDraw)
+    return () => { clearTimeout(timerId); observer.disconnect(); offDpr() }
   }, [])
 
   // drawEnvelope reads colPeaksRef, which drawBackground fills — so the

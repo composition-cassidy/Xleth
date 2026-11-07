@@ -1,6 +1,7 @@
 import { useEffect, useRef, useCallback, useState, forwardRef, useImperativeHandle } from 'react'
 import { ticksToBeats } from '../../constants/timeline.js'
 
+import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
 // Flat redesign palette (matches PianoRollCanvas MOCK).
 const VEL_BG = '#181818'
 const ACCENT_RGB = '0, 184, 150'
@@ -20,6 +21,7 @@ const VelocityLane = forwardRef(function VelocityLane({
   onSetVelocity,
   onSetVelocities,
 }, ref) {
+  const dprEpoch = useThemeEpoch() // Phase 7: re-size and redraw at the new devicePixelRatio when the UI scale changes
   const canvasRef = useRef(null)
   const containerRef = useRef(null)
   const dragRef = useRef(null)
@@ -39,7 +41,7 @@ const VelocityLane = forwardRef(function VelocityLane({
     c.style.height = `${height}px`
     const ctx = c.getContext('2d')
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
-  }, [width, height])
+  }, [width, height, dprEpoch])
 
   function redraw() {
     const c = canvasRef.current
@@ -87,7 +89,7 @@ const VelocityLane = forwardRef(function VelocityLane({
   // below, once per animator frame, not through props/state.
   useEffect(() => {
     redraw()
-  }, [notes, selectedNoteIds, width, height, dragTick])
+  }, [notes, selectedNoteIds, width, height, dragTick, dprEpoch])
 
   useImperativeHandle(ref, () => ({ redraw }), [width, height])
 

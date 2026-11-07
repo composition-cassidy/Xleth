@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { tokenValue } from '../../../theming/tokenValue.ts'
 import { evaluateTrack } from './zprCurveMath.js'
 
+import { useThemeEpoch } from '../../../theming/useThemeEpoch.js'
 // Canvas keyframe timeline for the ZPR effect card. Modeled on
 // pianoRoll/PianoRollCanvas.jsx: a DOM label gutter beside a single canvas
 // that owns the ruler, rows, curves, keyframes and playhead — never DOM
@@ -77,6 +78,7 @@ export default function ZprKeyframeCanvas({
   onTogglePositionExpanded,
   timeLabels, // [{ frac: 0..1, label: string }]
 }) {
+  const dprEpoch = useThemeEpoch() // Phase 7: re-size and redraw at the new devicePixelRatio when the UI scale changes
   const canvasRef = useRef(null)
   const wrapRef = useRef(null)
   const [width, setWidth] = useState(600)
@@ -255,7 +257,7 @@ export default function ZprKeyframeCanvas({
       ctx.fill()
     }
   }, [tracks, width, totalHeight, rowsHeight, visibleRows, positionExpanded,
-      scrubT, selectedKey, selectedSegment, timeLabels, timeToX, valueToY, rowTop])
+      scrubT, selectedKey, selectedSegment, timeLabels, timeToX, valueToY, rowTop, dprEpoch])
 
   // ── hit testing ──────────────────────────────────────────────────────
   const hitTestKeyframe = useCallback((px, py) => {

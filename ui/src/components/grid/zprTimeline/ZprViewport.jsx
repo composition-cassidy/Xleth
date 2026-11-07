@@ -6,6 +6,7 @@ import {
   createAngleAccumulator, pointerAngle,
 } from './zprRectMath.js'
 
+import { useThemeEpoch } from '../../../theming/useThemeEpoch.js'
 // ZprViewport — Vegas Pan/Crop-style spatial editor for the ZPR transform.
 //
 // Everything inside the frame is drawn on ONE canvas: the backdrop, the camera
@@ -62,6 +63,7 @@ export default function ZprViewport({
   motionKeys = [],
   scrubT = 0,
 }) {
+  const dprEpoch = useThemeEpoch() // Phase 7: re-size and redraw at the new devicePixelRatio when the UI scale changes
   const wrapRef = useRef(null)
   const canvasRef = useRef(null)
   const dragRef = useRef(null)
@@ -272,7 +274,7 @@ export default function ZprViewport({
     ctx.moveTo(pv.x, pv.y - PIVOT_PX - 3); ctx.lineTo(pv.x, pv.y + PIVOT_PX + 3)
     ctx.stroke()
   }, [rect, width, height, stage, uvToPx, image, aspectLocked, hoverId,
-      motionPath, motionKeys, scrubT, stemUv, livePivot.x, livePivot.y])
+      motionPath, motionKeys, scrubT, stemUv, livePivot.x, livePivot.y, dprEpoch])
 
   // ── hit testing ─────────────────────────────────────────────────────────
   const hitTest = useCallback((px, py) => {

@@ -24,6 +24,7 @@ import {
   normalizeClipFades,
 } from './clipControlSpec.js'
 
+import { subscribeDpr } from '../../ui-kit/dpr'
 const PLAYHEAD_LINE_WIDTH = 1
 
 // Dev-only frame-time probe: rolling buffer of redrawContent() durations,
@@ -480,9 +481,11 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
     const rw = Math.floor(container.clientWidth)
     const rh = Math.floor(container.clientHeight)
     if (rw === 0 || rh === 0) return
-    if (rw === sizeRef.current.w && rh === sizeRef.current.h) return
-    sizeRef.current = { w: rw, h: rh }
     const dpr = window.devicePixelRatio || 1
+    // The UI scale (window zoom) changes the DPR without changing the CSS box, so the
+    // backing store has to be re-sized for a DPR change too.
+    if (rw === sizeRef.current.w && rh === sizeRef.current.h && dpr === sizeRef.current.dpr) return
+    sizeRef.current = { w: rw, h: rh, dpr }
 
     console.log(`[Timeline] Canvas init ${rw}×${rh} (DPR ${dpr})`)
 
@@ -507,7 +510,8 @@ const TimelineCanvas = forwardRef(function TimelineCanvas(
       sizeAndDraw(container, 'resize')
     })
     observer.observe(container)
-    return () => { clearTimeout(timerId); observer.disconnect() }
+    const offDpr = subscribeDpr(() => sizeAndDraw(container, 'dpr'))
+    return () => { clearTimeout(timerId); observer.disconnect(); offDpr() }
   }, [trackCount])
 
   // Invalidate the gesture-cached container rect on any window resize or

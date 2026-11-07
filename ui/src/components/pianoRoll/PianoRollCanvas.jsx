@@ -4,6 +4,7 @@ import { PITCH_MIN, PITCH_MAX, isBlackKey, pitchLabel } from './PianoRollKeyboar
 import { tokenValue } from '../../theming/tokenValue.ts'
 import { DEFAULT_SCALE, isPitchInScale, snapPitchToScale } from './scales.js'
 
+import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
 const RESIZE_HANDLE_PX = 6       // screen px, each side of an editable edge (acceptable range 4-8)
 const MIN_NOTE_HITBOX_PX = 6     // minimum grabbable width regardless of rendered/zoomed size
 const MIN_NOTE_DURATION_TICKS = 60
@@ -302,6 +303,7 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
   onDropFsc,
   scale = DEFAULT_SCALE,
 }, ref) {
+  const dprEpoch = useThemeEpoch() // Phase 7: re-size and redraw at the new devicePixelRatio when the UI scale changes
   const bgRef = useRef(null)
   const ctRef = useRef(null)
   const ovRef = useRef(null)
@@ -379,7 +381,7 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
       const ctx = c.getContext('2d')
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     })
-  }, [width, height])
+  }, [width, height, dprEpoch])
 
   // Imperative redraw: reads pixelsPerBeat/scrollX/scrollY from refs (NOT
   // props) so it draws the CURRENT value regardless of whether it's called
@@ -434,7 +436,7 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
   // to reach this effect, the exact thing the animator refactor removes.
   useEffect(() => {
     redraw()
-  }, [notes, selectedNoteIds, width, height, patternLengthTicks, themeTick,
+  }, [notes, selectedNoteIds, width, height, patternLengthTicks, themeTick, dprEpoch,
       scale.enabled, scale.root, scale.mode])
 
   // Redraw all canvases when the active theme changes — tokenValue() reads

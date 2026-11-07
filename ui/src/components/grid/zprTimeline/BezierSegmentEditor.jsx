@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { useTokenValue } from '../../../theming/tokenValue.ts'
 import { paramTrackEase, BEZIER_PRESETS, curveMatchesPreset } from './zprCurveMath.js'
 
+import { useThemeEpoch } from '../../../theming/useThemeEpoch.js'
 // Inline bezier segment editor: fixed endpoints at (0,0)/(1,1), two draggable
 // control handles. x is clamped to [0,1] (required for a monotonic x->t
 // solve); y is allowed OUTSIDE the unit square so overshoot/anticipation
@@ -13,6 +14,7 @@ const VIEW_Y_MAX = 2.0
 const PAD = 20
 
 export default function BezierSegmentEditor({ curve, onChange, onCommit }) {
+  const dprEpoch = useThemeEpoch() // Phase 7: re-size and redraw at the new devicePixelRatio when the UI scale changes
   const canvasRef = useRef(null)
   const dragRef = useRef(null) // 'p1' | 'p2' | null
   const [size, setSize] = useState({ w: 260, h: 200 })
@@ -122,7 +124,7 @@ export default function BezierSegmentEditor({ curve, onChange, onCommit }) {
       ctx.arc(px, py, 5, 0, Math.PI * 2)
       ctx.fill()
     })
-  }, [curve, size, toPx, accent, gridColor, textColor, panelColor])
+  }, [curve, size, toPx, accent, gridColor, textColor, panelColor, dprEpoch])
 
   // ── resize observer ──────────────────────────────────────────────────
   const wrapRef = useRef(null)

@@ -2,6 +2,7 @@ import React, { useEffect, useRef } from 'react'
 import { formatValue } from '../../ui-kit'
 import { readMixerCanvasTheme, syncCanvasSize, MONO_SM } from '../mixer/mixerCanvasTheme.js'
 
+import { subscribeDpr } from '../../ui-kit/dpr'
 // The Flanger's LFO, drawn from the two parameters that define it. Not a signal
 // tap: nothing here moves unless Rate or Depth does (the Sweep view is the
 // same kind of display). Two cycles of a sine, the centre rule is the base
@@ -86,10 +87,12 @@ export default function FlangerLfoCanvas({ params }) {
     }
 
     paint()
-    if (typeof ResizeObserver === 'undefined') return undefined
+    // Window zoom changes the DPR without resizing the box: repaint at the new density.
+    const offDpr = subscribeDpr(paint)
+    if (typeof ResizeObserver === 'undefined') return offDpr
     const ro = new ResizeObserver(paint)
     ro.observe(canvas)
-    return () => ro.disconnect()
+    return () => { ro.disconnect(); offDpr() }
   }, [params])
 
   return (

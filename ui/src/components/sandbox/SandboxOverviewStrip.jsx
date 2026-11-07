@@ -3,6 +3,7 @@ import useSandboxStore from '../../stores/sandboxStore.js'
 import { resolveView, viewSpan, isFitted } from './sandboxView.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
 
+import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
 // ── Overview strip ──────────────────────────────────────────────────────────
 //
 // The whole buffer at a glance, with the visible window drawn over it. Once
@@ -49,6 +50,7 @@ function overviewPeaks(buf, cols) {
 }
 
 export default function SandboxOverviewStrip() {
+  const dprEpoch = useThemeEpoch() // Phase 7: re-size and redraw at the new devicePixelRatio when the UI scale changes
   const layers = useSandboxStore((s) => s.layers)
   const activeLayerId = useSandboxStore((s) => s.activeLayerId)
   const view = useSandboxStore((s) => s.view)
@@ -102,7 +104,7 @@ export default function SandboxOverviewStrip() {
     ctx.strokeStyle = tokenValue('--theme-accent') || '#fe589a'
     ctx.lineWidth = 1
     ctx.strokeRect(Math.round(x0) + 0.5, 0.5, Math.max(1, x1 - x0), STRIP_H - 1)
-  }, [buf, view, numSamples])
+  }, [buf, view, numSamples, dprEpoch])
 
   useEffect(() => {
     draw()

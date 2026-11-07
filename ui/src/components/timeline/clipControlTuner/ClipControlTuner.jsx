@@ -15,6 +15,7 @@ import {
   setPathValue,
 } from '../clipControlSpec.js'
 import { drawClipFadeOverlay, drawClipInlineControls } from '../timelineDrawing.js'
+import { useThemeEpoch } from '../../../theming/useThemeEpoch.js'
 import './clipControlTuner.css'
 
 const DEFAULTS_HASH = clipControlDefaultsHash(CLIP_CONTROL_DEFAULTS)
@@ -60,6 +61,7 @@ function persistedSession() {
 }
 
 function PreviewCanvas({ width, height, state, spec, previewState, onPreviewStateChange }) {
+  const dprEpoch = useThemeEpoch() // Phase 7: re-size and redraw at the new devicePixelRatio when the UI scale changes
   const canvasRef = useRef(null)
   const dragRef = useRef(null)
   const [hoverKind, setHoverKind] = useState(null)
@@ -108,7 +110,7 @@ function PreviewCanvas({ width, height, state, spec, previewState, onPreviewStat
       ctx, clip, 0, 0, width, height, previewState.trackColor,
       selected, activeControl, hoveredControl, spec,
     )
-  }, [clip, dragKind, height, hoverKind, previewState, spec, state, width])
+  }, [clip, dragKind, height, hoverKind, previewState, spec, state, width, dprEpoch])
 
   const localPoint = useCallback((event) => {
     const bounds = canvasRef.current?.getBoundingClientRect()

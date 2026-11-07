@@ -29,6 +29,7 @@ import { useEffect, useRef } from 'react'
 import { clamp, freqToNorm } from './mixerFilterMath.js'
 import { withAlpha, readMixerCanvasTheme, syncCanvasSize, MONO_SM } from './mixerCanvasTheme.js'
 
+import { subscribeDpr } from '../../ui-kit/dpr'
 // ── Axis + engine constants (mirror PhanjerEffect.h) ─────────────────────────
 const AXIS_FREQ_MIN = 20
 const AXIS_FREQ_MAX = 20000
@@ -302,6 +303,8 @@ export default function PhanjerResponseCanvas({ params }) {
       if (!raf) raf = requestAnimationFrame(draw)
     }
     schedule()
+    // Window zoom changes the DPR without resizing the box: redraw at the new density.
+    const offDpr = subscribeDpr(schedule)
 
     let ro = null
     if (typeof ResizeObserver !== 'undefined') {
@@ -312,6 +315,7 @@ export default function PhanjerResponseCanvas({ params }) {
     return () => {
       if (raf) cancelAnimationFrame(raf)
       if (ro) ro.disconnect()
+      offDpr()
     }
   }, [params])
 
