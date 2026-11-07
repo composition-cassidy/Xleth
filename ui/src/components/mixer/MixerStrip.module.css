@@ -28,7 +28,9 @@
     outline-offset: -1px;
   }
 
-  .strip[data-muted="true"] > :not(.toggles) {
+  /* The name stays at full ink so a muted track is still readable (4.5:1); the stripe,
+   * the glyph and the M chip say it is muted. */
+  .strip[data-muted="true"] > :not(.toggles):not(.head) {
     opacity: var(--ui-mute-opacity);
   }
 

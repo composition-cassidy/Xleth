@@ -332,7 +332,42 @@ that behaviour; the one-step revert after a preset load remains. "Every edit is 
 
 **Debug logs** use the `[Device]` prefix.
 
-## 10. Known gaps (deliberately out of scope for Phase 0)
+## 10. Mixer (Phase 5)
+
+The Mixer tab of the detail dock: identical strips scrolling between a fixed Master + loudness
+dock. There is **no inspector column**: a track's detail lives in the Inspector and the Devices
+tab (the inserts button opens Devices on that track). Components: `components/mixer/`
+(`MixerPanel`, `MixerStrip`, `MasterStrip`, `RoutingBand`) and `components/MasterLoudnessMeter.jsx`.
+
+**Strip** (84 px normal, 68 px compact, the setting is renderer-only UI state), top to bottom:
+identity stripe (3 px top edge, the same colour as lane, device and layer) with number and name ·
+inserts button · M / S / V Toggles at rest · Pan (bipolar) and Width Knobs · volume NumberBox ·
+Fader + Meter (printed dB scale, peak hold, clip latch) · routing cable row · Output Select.
+**Muted** dims every row but the name and the M/S/V row (`--ui-mute-opacity`) and shows a mute glyph;
+**selected** is a 1px `--ui-select` outline. M/S/V are real engine state; **there is no arm**
+(the engine has no record-arm) and **no sends** (`TrackInfo.sends` is reserved and always empty),
+so neither is drawn.
+
+**Meters.** The mixer's one existing 125 ms `getAllPeaks` poll writes `peaksSnapshot` and then
+fans levels out through `mixerMeterBus` to the kit Meters (dB, own rAF ballistics, asleep at
+rest). No timer was added and nothing is a DOM segment.
+
+**Routing.** `RoutingBand` is one canvas over each strip's cable row, drawn from the store's own
+`outputRoutes` and `sidechainRoutes` (`routingCables.js` is the pure geometry): a dot in the
+track's identity colour, a run to the Master rail (arrow into the dock) or a lane to the bus it
+feeds, and sidechain cables thinner, dashed and lower contrast, all in `--ui-signal-audio`.
+Disabled, stale or dangling routes are not drawn. The canvas redraws on change only and takes no
+pointer events; the Output Selects are the controls.
+
+**Loudness dock.** Off, or nothing measured: every value is "—" with its unit and no bars are
+drawn. Values go through `formatValue`; a true peak over the ceiling is flagged "Over" in words.
+The target is a labelled Select (platform targets, `none` omitted because the meter reads it as
+unset) writing the `xleth.export.loudnessTarget` key the export dialog shares.
+
+**Gallery.** `?view=ui-kit` shows 16 strips with mixed states from `MixerGalleryFixture` (MOCK
+data, gallery only; a test fails if anything else imports it).
+
+## 11. Known gaps (deliberately out of scope for Phase 0)
 
 - **Settings > Appearance:** `appearanceTheme.js` builds its theme from hard-coded **hue-240**
   anchors and overrides `bg-primary`, `bg-surface`, `bg-inset` and the text tiers. **Users who

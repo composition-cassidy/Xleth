@@ -2,7 +2,7 @@
  * @vitest-environment jsdom
  */
 import React from 'react';
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { describe, expect, it } from 'vitest';
@@ -26,6 +26,22 @@ describe('dev-only gallery', () => {
 
   it('labels the synthetic meter signal as such', () => {
     expect(html).toContain('synthetic test signal');
+  });
+
+  it('shows the populated mixer fixture as MOCK data, and only the gallery imports it', () => {
+    expect(html).toContain('Mixer: 16 strips, mixed states (MOCK data, gallery only)');
+    expect(html).toContain('data-testid="mixer-gallery-fixture"');
+    const importers: string[] = [];
+    const walk = (dir: string) => {
+      for (const entry of readdirSync(dir, { withFileTypes: true })) {
+        const full = path.join(dir, entry.name);
+        if (entry.isDirectory()) { if (entry.name !== 'node_modules') walk(full); continue; }
+        if (!/\.(jsx?|tsx?)$/.test(entry.name) || full.includes('__tests__')) continue;
+        if (readFileSync(full, 'utf8').includes('MixerGalleryFixture')) importers.push(path.relative(path.resolve(__dirname, '../..'), full).split(path.sep).join('/'));
+      }
+    };
+    walk(path.resolve(__dirname, '../..'));
+    expect(importers.sort()).toEqual(['components/mixer/MixerGalleryFixture.jsx', 'ui-kit/Gallery.jsx']);
   });
 
   it('is mounted only behind VITE_XLETH_UI_KIT_GALLERY (main.jsx), lazily, at ?view=ui-kit', () => {

@@ -22,6 +22,7 @@ import styles from './Gallery.module.css'
 import EffectDevice from '../components/devices/EffectDevice.jsx'
 import useDeviceUiStore from '../components/devices/deviceUiStore.js'
 import useCompressorStore from '../stores/compressorStore.js'
+import MixerGalleryFixture from '../components/mixer/MixerGalleryFixture.jsx'
 
 const params = new URLSearchParams(typeof window === 'undefined' ? '' : window.location.search)
 const FROZEN = params.get('shots') === '1'
@@ -243,6 +244,11 @@ export default function Gallery() {
         <Spec caption="folded"><div className={styles.inline}><EffectDevice effect={compressorFx(3)} storeKey={GALLERY_TRACK} identityColor="var(--theme-track-palette-2)" /><EffectDevice effect={compressorFx(4)} storeKey={GALLERY_TRACK} identityColor="var(--theme-track-palette-2)" /></div></Spec>
         <Spec caption="popped out: the floating window (offset shadow only here)" wide><div className={styles.floatingStage}><EffectDevice effect={compressorFx(4)} storeKey={GALLERY_TRACK} presentation="floating" onClose={() => {}} dragHandleProps={{}} /></div></Spec>
         <Spec caption="not migrated yet: same title bar"><EffectDevice effect={{ nodeId: 5, pluginId: 'chorus', bypassed: false }} storeKey={GALLERY_TRACK} identityColor="var(--theme-track-palette-2)" /></Spec>
+      </Section>
+
+      <Section title="Mixer: 16 strips, mixed states (MOCK data, gallery only)">
+        <Spec caption="normal width: selected 5, muted 3, soloed 6, visual-only 8, clipped meter 4, bus 2,3 to 5 and 8 to 10, sidechain 1 to 6. No arm state: the engine has no record-arm." wide><MixerGalleryFixture /></Spec>
+        <Spec caption="compact width: the same tracks in 68 px strips" wide><MixerGalleryFixture stripMode="compact" /></Spec>
       </Section>
 
       {PHASE_4B_DEVICES.map((d) => (
