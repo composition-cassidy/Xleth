@@ -965,3 +965,55 @@ one Open editor button. `FloatingDevice` is the only pop-out for a stock effect.
 and the two APEX canvases still import 17 files from `plugin-ui/runtime` (meter polling, the dynamics subscription, the painters,
 `useStockEffectParams`). The other 28 runtime files (the renderer, the node components, `PluginUIKitKnob`) are not reachable from the
 app entry and add nothing to the bundle; whether they and the Designer go is a separate decision.
+
+## 20. Video effects as devices, and the Inspector (round 2, step 17)
+
+**Audio | Video.** The Devices tab's chain head (`ChainHead.jsx`, shared by both views) is the track name on its identity colour
+edge with two pressed-state glyph buttons, Audio and Video (`videoDeviceStore.view`, session only). Video shows the selected
+track's picture as devices (`components/devices/video/`); Master has no picture and says so. The same `DeviceFrame`, the
+same identity stripe, the same picker: the sound and the picture of a track read as one instrument.
+
+**Order.** First a pinned **Per note** group (configs the engine evaluates per triggered note, with no order of their own,
+so they are not reorderable): Ping-pong loop (source time), Zoom/pan/rot, Bounce (cell position, grid cells only), then on
+pattern tracks Note fade and Slide note effect. Then the visual effect chain in evaluation order: drag a device by its name
+(local preview, **one** `setTrackVisualEffectChainOrder` on drop) or Move left / right. Outline, Drop shadow and Visual echo
+are composite-time stages that run after the chain wherever they sit; their devices say so. "Zoom/pan/rot (chain)" places
+the track's own animation at that point of the chain while it animates (and frames the cell statically otherwise). Ends in
+"Drop video effects here": the audio chain's `TrackContextMenu` picker, groups Per note and Chain.
+
+**Writes.** `videoFxWrites.js` is the one module that writes visual effects: every call is the one the legacy panel made,
+followed by `timeline-tracks-changed`. Chain entries have no ids; they are addressed by index, so the chain is refetched
+after every write and a popped-out device never holds its own copy. Knobs and boxes preview locally and commit once; each
+engine call is one undo command, as before (unlike stock audio parameters, visual effects do have undo). Colours are a swatch
+over the system colour dialog that commits once, on close. Ranges, defaults, steps and commit-time snaps are the old
+sliders' (`videoFxCatalog.js`).
+
+**Displays.** Bounce: displacement against time, each repeat halved. Note fade: the opacity across a one-beat note at the
+project tempo. Both are canvas, drawn from a line-for-line port of the engine's maths (`videoMotionMath.js`, from
+`AnimationManager.cpp`, `NoteFade.h`, `ClipFade.h`) and redrawn on a parameter, theme or pixel-ratio change only. A slide-note
+bounce follows the note's own slide curve and has no display. The chain effects have none: the engine publishes nothing to
+draw.
+
+**Zoom/pan/rot.** `ZprTimelineCard` has two layouts. In the device the well holds the framing viewport and the keyframe lanes,
+then Length, Ends and At playhead. The pop-out window (the one device that is not `--device-h` tall) is the full editor: big
+viewport, Lock aspect, Reset pin, Record and its tolerance, the derived window and centre, lanes, the segment curve editor.
+Presets (the `xform` adapter) are in the title bar. Lanes use the band palette (pan X, pan Y, zoom, rotation); the disabled
+Opacity lane is gone (no such channel).
+
+**Inspector.** Only properties of the selection, as label / value rows. On / off is `RowToggle`: a kit Toggle with no text,
+named by its row, a check when on and an empty box when off, so no row echoes its label. Track: Placement (and, when
+fullscreen, Hold gaps and Opacity), Hold last frame, Cell shape (Corners commits once per gesture, Own gap), Video flip,
+**Video effects (N)** (opens Devices on Video). Video flip: Flip; **Style**, four glyph segments that write exactly the cycles
+the engine's `migrateVideoFlipMode` builds for the legacy None / HorizontalEven / Clockwise / CounterClockwise (Custom is
+printed for any other cycle); Cycle, one cell per state (up to 12) whose menu sets the orientation, moves it, makes it the
+start or removes it; Modifier; Start state; and the preview, one row of eight cells in an eight-column grid that always fits
+the column. The preview resolves example pitches (there is no upcoming-events call). Clip: Reverse, Stretch, Formant;
+Vibrato and Scratch as switch plus Edit (their editors already had every inline control); Swirl and Wave switches. The
+companion amounts and preview moved to a Picture section in the vibrato and scratch editors (`ClipPictureSection`, through
+each editor store's `commitVideo`).
+
+**Audit.** `p75-visualfx` adds every effect through the picker; `p76-visualfx-scroll` shoots the Video view page by page as
+85-NNofMM; p80 is unchanged. Measured on the real components in an isolated harness (stub `window.xleth`): devices 256px tall,
+2 font sizes (11, 12px); Inspector 3 (11, 12, 13px); 0 text under 10px, 0 under 4.5:1 outside the bypassed device's mute
+opacity, no letter-spaced uppercase, no native range or number input, nothing clipped at 363 or 280px. The Electron capture
+needs a current engine addon.

@@ -36,8 +36,10 @@ export const AUDIO_EFFECTS = [
   ['smartbalance', 'Smart Balance', 'Utility', [M + 'SmartBalancePanel.jsx', D + 'SmartBalanceDevice.jsx', D + 'SmartBalanceCanvas.jsx', D + 'smartBalanceGeometry.js']],
 ];
 
-// ── Visual effects: components/grid/VisualFXAddDropdown.jsx (NC_ITEMS + C_ITEMS) ──
+// ── Visual effects: the Devices tab's Video view (components/devices/video/videoFxCatalog.js,
+//    round 2 step 17; before it, components/grid/VisualFXAddDropdown.jsx in the Inspector) ──
 const G = 'components/grid/';
+const V = 'components/devices/video/';
 export const VISUAL_EFFECTS = [
   ['bounce', 'Bounce', 'non-chainable', 0],
   ['zoomPanRot', 'Zoom/Pan/Rot', 'non-chainable', 0],
@@ -53,8 +55,8 @@ export const VISUAL_EFFECTS = [
   ['vfx-8', 'Visual Echo', 'chainable typeId 8', 8],
 ];
 export const VISUAL_EFFECT_FILES = {
-  'non-chainable': [G + 'NonChainableEffectParams.jsx', G + 'effectParamViews.jsx', G + 'EffectRow.jsx'],
-  chainable: [G + 'ChainableEffectParams.jsx', G + 'effectParamViews.jsx', G + 'EffectRow.jsx'],
+  'non-chainable': [V + 'NoteDevice.jsx', V + 'noteDisplays.jsx', V + 'videoMotionMath.js', V + 'videoFxCatalog.js'],
+  chainable: [V + 'VideoChainDevice.jsx', V + 'ColourSwatch.jsx', V + 'videoFxCatalog.js'],
 };
 export const VISUAL_EFFECT_FILES_EXTRA = {
   zoomPanRot: [G + 'zprTimeline/'],
