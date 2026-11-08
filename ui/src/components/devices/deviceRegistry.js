@@ -24,9 +24,10 @@ import LimiterDevice from './LimiterDevice.jsx'
 import useLimiterStore from '../../stores/limiterStore.js'
 import EqDevice from './EqDevice.jsx'
 import useEqStore from '../../stores/eqStore.js'
-import { GlueDevice, OptoDevice } from './CompressorFamilyDevice.jsx'
+import { FetDevice, GlueDevice, OptoDevice } from './CompressorFamilyDevice.jsx'
 import useGlueCompStore from '../../stores/glueCompStore.js'
 import useOptoCompStore from '../../stores/optoCompStore.js'
+import useFetCompStore from '../../stores/fetCompStore.js'
 
 export const DEVICE_BODIES = {
   // Width omitted: the frame fits the body's fixed-width sections (the
@@ -41,6 +42,7 @@ export const DEVICE_BODIES = {
   // The character compressors on CompressorCore share CompressorFamilyDevice.
   glue: { Body: GlueDevice, useEditorStore: useGlueCompStore },
   opto: { Body: OptoDevice, useEditorStore: useOptoCompStore },
+  fet: { Body: FetDevice, useEditorStore: useFetCompStore },
 }
 
 export function deviceBodyFor(pluginId) {

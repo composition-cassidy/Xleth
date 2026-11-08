@@ -147,7 +147,7 @@ export const MODELS = {
         items: [knob('input', 'Input', 'dB', -24, 36, 0, { size: 44, width: 68, formatOptions: SIGNED, hint: 'Input drive into the compression curve. There is no threshold.' })],
       },
       {
-        title: 'Character', width: 244,
+        title: 'Character', width: 204,
         items: [
           seg('ratio', 'Ratio', [
             ratioOption(0, 4), ratioOption(1, 8), ratioOption(2, 12), ratioOption(3, 20),
