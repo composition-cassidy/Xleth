@@ -304,7 +304,7 @@
     border-bottom: 1px solid var(--ui-g4);
   }
 
-  .op[data-selected] { background: var(--ui-g3); box-shadow: inset 2px 0 0 var(--ui-select); }
+  .op[data-selected] { background: color-mix(in srgb, var(--ui-value) 24%, var(--ui-g3)); }
   .op[data-dragging] { opacity: 0.5; }
   .op[data-drop="above"] { box-shadow: inset 0 2px 0 var(--ui-select); }
   .op[data-drop="below"] { box-shadow: inset 0 -2px 0 var(--ui-select); }
@@ -489,7 +489,7 @@
   }
 
   .layerRow:hover { background: var(--ui-g2); }
-  .layerRow[data-active] { background: var(--ui-g3); box-shadow: inset 2px 0 0 var(--ui-select); }
+  .layerRow[data-active] { background: color-mix(in srgb, var(--ui-value) 24%, var(--ui-g3)); }
   .layerRow[data-muted] .layerName,
   .layerRow[data-muted] .layerMeta { opacity: var(--ui-mute-opacity); }
 

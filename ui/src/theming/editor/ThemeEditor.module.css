@@ -115,10 +115,9 @@
   .listItem:hover { background: var(--ui-g3); color: var(--ui-ink); }
 
   .listItem[aria-selected="true"] {
-    background: var(--ui-g3);
+    background: color-mix(in srgb, var(--ui-value) 24%, var(--ui-g3));
     color: var(--ui-ink);
     font-weight: var(--weight-semibold);
-    box-shadow: inset 2px 0 0 var(--ui-ink);
   }
 
   .listItem:focus-visible {

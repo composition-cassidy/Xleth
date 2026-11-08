@@ -76,7 +76,7 @@
   }
 
   .sideItem:hover { background: var(--ui-g3); color: var(--ui-ink); }
-  .sideItem[aria-current="true"] { background: var(--ui-g3); color: var(--ui-ink); font-weight: var(--weight-semibold); box-shadow: inset 2px 0 0 var(--ui-ink); }
+  .sideItem[aria-current="true"] { background: color-mix(in srgb, var(--ui-value) 24%, var(--ui-g3)); color: var(--ui-ink); font-weight: var(--weight-semibold); }
 
   .sideItem:focus-visible,
   .row:focus-visible {
@@ -130,7 +130,7 @@
   }
 
   .row:hover { background: var(--ui-g1); }
-  .row[aria-selected="true"] { background: var(--ui-g3); box-shadow: inset 2px 0 0 var(--ui-select); font-weight: var(--weight-semibold); }
+  .row[aria-selected="true"] { background: color-mix(in srgb, var(--ui-value) 24%, var(--ui-g3)); font-weight: var(--weight-semibold); }
 
   .rowName {
     display: flex;
