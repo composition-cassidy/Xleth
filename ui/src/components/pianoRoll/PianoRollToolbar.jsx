@@ -82,7 +82,7 @@ export default function PianoRollToolbar({
     ...(hasPattern ? [{ value: RENAME_PATTERN, label: 'Rename pattern…', group: 'Pattern' }] : []),
   ]
   const regionOptions = [
-    { value: -1, label: 'No sample (assign later)' },
+    { value: -1, label: 'No sample' },
     ...(Array.isArray(regions) ? regions : []).map((r) => ({ value: r.id, label: r.name })),
   ]
 

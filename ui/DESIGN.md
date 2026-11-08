@@ -677,3 +677,55 @@ those considered, pitch drift, crossfade); telemetry (apply, 30 s nudge) is unch
 
 **Audit.** `tests/ui-audit/phases/p41-sampler-default-dock.mjs` shoots Main (31), Playback (32) and the four modulation
 sources (36-39) at the default dock height and reports any vertical scroller; p40 still shoots 30 / 35, p200 shoots 203.
+
+## 15. Piano Roll (round 2, step 12)
+
+FL editing grammar inside fixed regions (`components/pianoRoll/`, `PianoRoll.module.css`). Engine calls, note data and
+quantize logic are unchanged; every drag previews locally and commits once on release.
+
+**Regions.** One CSS grid: keys (56px) | grid | vertical scrollbar; rows ruler 24 | grid | horizontal scrollbar + wheel-to-zoom
+strip 24 | splitter 4 | event lane (48 to 240px, default 80, persisted per machine as `xleth.pianoRoll.laneHeight`; drag,
+arrows, double-click resets). Canvases are sized from the measured grid cell, never by subtracting chrome constants (that
+subtraction was the old 40px dead band). Past the pattern end the grid and the ruler are flat ground with half-strength bar
+lines and a 1px ink-2 end line.
+
+**Canvas only.** Keys, ruler, grid, notes, ghosts and the lane are canvases (the keyboard used to be 120 inline-styled divs).
+`pianoRollGeometry.js` holds the shared pure maths (`rowY`, `pitchAtY`, `visibleRows`, `gridTiers`, `rulerMarks`);
+`pianoRollPalette.js` reads every canvas colour from tokens at draw time.
+
+**Grid and keys.** Bars, beats and 16th steps are three line tiers; a tier is drawn only when its lines are at least 6px apart.
+Black-key rows are the darker ground. With a scale set, in-scale rows are lifted toward ink (7 %), so the black-key shading
+stays visible underneath. Keys are neutral (white keys ink-2, black keys g1 at 62 % width), every C and the hovered key are
+labelled, and a pitch that has notes gets a value-colour tick in the 3px gutter at the key's edge.
+
+**Notes.** Colour is the **owning track's identity colour** (the track of the pattern's first block; the value colour when
+the pattern is not placed). It is not a sampler slot: every note plays every sounding slot at once (`Sampler.h`), so there is
+no per-note slot to colour by. Velocity is fill opacity (0.3 to 1). Selection is a 1px `--ui-select` outline plus a brighter
+fill. Labels are 10/11px, printed only when they fit, with the ink solved against the composited fill (ink or g1, falling
+back to white or black near mid lightness, so always at least 4.5:1). Slide notes keep their colour and carry a ramp glyph at
+the right end. **Pitch / Sample view:** Pitch prints note names; Sample prints the transposition the sampler applies to the
+reference slot, `(pitch − root) + slot tuning`, as `Root`, `+7`, `−12`. The reference slot is the title's slot Select, shown
+only when the region has several slots; it changes labels only.
+
+**Ghost notes.** Notes of other patterns placed over this pattern's first block (read-only `getTracks`, `getPatternBlocks`,
+`getPattern`, refetched on the timeline's change events, never during a drag): solid g4 blocks when they play the same
+sample region, boundary outlines when they play another. Never hit-tested. Toggle: Ghosts.
+
+**Event lane.** Lollipops in the identity colour: 1px stem, round head, a short tail on each head when notes share a start
+tick; selected heads get a `--ui-select` ring; the dragged value is printed in 1..127. The drag reads values on the scale it
+draws. The only target is Velocity (slide shape is two values and has no 1-D lane).
+
+**Toolbar.** Pattern Select (its list holds New pattern and Rename pattern…; renaming no longer lives on a double-clicked
+title), Sample region Select, reference-slot Select, Sampler settings; tools Select S, Pencil P, Split C, Delete D (kit
+IconButtons, Xleth tool glyphs, hints naming the shortcut and the mouse grammar); Slide; Length; **Snap** (1/32 to Bar,
+default 1/16, which is what the editor always used; Alt and Ctrl keep their meaning); Scale; Pitch / Sample; Ghosts; zoom;
+Quick Notation; detach and close. Below 1240px of dock width the Length and Snap captions drop out (the Selects keep their
+names and hints). The piano roll's own floating title bar is gone: the window frame's title bar returns it to the dock.
+
+**Mouse grammar.** Unchanged except **middle-drag pans** both axes (approved at the step 12 checkpoint). Right-click deletes
+one note with any tool; there is no right-drag sweep (no batch remove exists, so it would make one undo entry per note).
+
+**No pattern.** `getPattern` is only called for a non-negative integer id still in the pattern list; otherwise the panel
+shows the kit EmptyState ("Select a pattern: …", New pattern).
+
+**Audit.** `p30-pianoroll` shoots 20 to 23 and 24 (Sample view); p01 shoots 04 (no pattern open), p200 shoots 201.
