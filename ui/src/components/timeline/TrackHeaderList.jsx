@@ -1,5 +1,7 @@
 import { useCallback, useMemo, useRef, useState, useEffect } from 'react'
-import { ChevronDown, ChevronRight, EyeOff, Folder, Plus, Sliders, Trash2, Activity } from 'lucide-react'
+import { EyeOff, Folder, Plus, Sliders, Trash2, Activity } from 'lucide-react'
+import { IconButton } from '../../ui-kit'
+import Disclosure from '../browser/Disclosure.jsx'
 import TrackHeader from './TrackHeader.jsx'
 import TrackColorPopover from './TrackColorPopover.jsx'
 import TrackContextMenu from './TrackContextMenu.jsx'
@@ -13,7 +15,7 @@ import styles from './TrackHeaderList.module.css'
 export default function TrackHeaderList({
   tracks,
   focusedTrackId, onFocusTrack, onOpenInMixer,
-  onAddTrack, onMute, onSolo, onVisualOnly, onRename, onRemove, onRequestContextMenu,
+  onAddTrack, onMute, onSolo, onVisualOnly, onRename, onRequestContextMenu,
   onSetTrackColor,
   folderLayout,
   selectedTrackIds = new Set(),
@@ -147,24 +149,25 @@ export default function TrackHeaderList({
       <div key={`automation-group:${ownerTrackId}`} className="track-header-automation-group">
         <button
           type="button"
-          className="track-header-automation-group-header"
+          className={`track-header-automation-group-header ${styles.groupHeader}`}
           style={{ height: groupRow.height }}
           onClick={() => onToggleAutomationGroup?.(ownerTrackId, !groupRow.collapsed)}
-          title={groupRow.collapsed ? 'Expand automation lanes' : 'Collapse automation lanes'}
+          aria-expanded={!groupRow.collapsed}
+          data-hint={groupRow.collapsed ? 'Expand automation lanes' : 'Collapse automation lanes'}
         >
-          {groupRow.collapsed ? <ChevronRight size={11} /> : <ChevronDown size={11} />}
-          <Activity size={11} className="track-header-automation-group-icon" strokeWidth={2} />
-          <span className="track-header-automation-group-label">{groupRow.label || 'Automation'}</span>
-          <span className="track-header-automation-group-count">{groupRow.laneCount}</span>
+          <Disclosure open={!groupRow.collapsed} />
+          <Activity size={12} className={styles.groupIcon} aria-hidden="true" />
+          <span className={styles.groupLabel}>{groupRow.label || 'Automation'}</span>
+          <span className={styles.count} role="img" aria-label={`${groupRow.laneCount} lanes`}>{groupRow.laneCount}</span>
         </button>
         {!groupRow.collapsed && laneRows.map((lane) => (
           <div
             key={lane.id}
-            className="track-header-automation-lane"
+            className={`track-header-automation-lane ${styles.autoLane}`}
             style={{ height: lane.height }}
             title={lane.label || `Lane ${lane.index + 1}`}
           >
-            <span className="track-header-automation-lane-label">{lane.label || `Lane ${lane.index + 1}`}</span>
+            <span className={styles.laneLabel}>{lane.label || `Lane ${lane.index + 1}`}</span>
           </div>
         ))}
       </div>
@@ -192,7 +195,6 @@ export default function TrackHeaderList({
           onSolo={onSolo}
           onVisualOnly={onVisualOnly}
           onRename={onRename}
-          onRemove={onRemove}
           onRequestContextMenu={onRequestContextMenu}
           onFocus={onFocusTrack}
           onSelect={onSelectTrack}
@@ -206,18 +208,17 @@ export default function TrackHeaderList({
         {laneRows.map(lane => (
           <div
             key={lane.id}
-            className={`track-header-macro-lane${lane.targetUnavailable ? ' track-header-macro-lane--orphan' : ''}`}
+            className={`track-header-macro-lane ${styles.macroLane}${lane.targetUnavailable ? ` track-header-macro-lane--orphan ${styles.orphan}` : ''}`}
             style={{ height: lane.height, borderLeftColor: color }}
             title={lane.label}
           >
-            <Sliders size={10} className="track-header-macro-lane-icon" strokeWidth={2} />
-            <span className="track-header-macro-lane-label">{lane.label}</span>
+            <Sliders size={12} className={styles.groupIcon} aria-hidden="true" />
+            <span className={styles.laneLabel}>{lane.label}</span>
             {onHideMacroLane && (
-              <button className="track-header-macro-lane-hide" title="Hide automation lane"
-                aria-label="Hide automation lane"
+              <IconButton size="sm" label="Hide automation lane" hint="Hide this automation lane"
                 onClick={() => onHideMacroLane(lane.parentTrackId, lane.macroNodeId)}>
-                <EyeOff size={10} strokeWidth={2} />
-              </button>
+                <EyeOff size={12} />
+              </IconButton>
             )}
           </div>
         ))}
@@ -227,10 +228,10 @@ export default function TrackHeaderList({
 
   const rootOrder = folderLayout?.rootOrder ?? tracks.map(track => ({ kind: 'track', id: track.id }))
   return (
-    <div className="timeline-header-column" style={{ width }}>
-      <div className="timeline-header-spacer" style={{ height: RULER_HEIGHT }} />
+    <div className={`timeline-header-column ${styles.column}`} style={{ width }}>
+      <div className={`timeline-header-spacer ${styles.spacer}`} style={{ height: RULER_HEIGHT }} />
       {pinnedHeader}
-      <div className="timeline-header-scroll" onScroll={handleScroll}
+      <div className={`timeline-header-scroll ${styles.scroll}`} onScroll={handleScroll}
         onMouseDown={(event) => { if (event.target === event.currentTarget) onClearSelection?.() }}>
         {renderAutomationGroup(-1)}
         {rootOrder.map((item, rootIndex) => {
@@ -262,7 +263,7 @@ export default function TrackHeaderList({
                 }}
               />
               {!folder.collapsed && folder.trackIds.length > 0 && (
-                <div className="track-folder-members">
+                <div className={`track-folder-members ${styles.members}`}>
                   {folder.trackIds.map((trackId, memberIndex) =>
                     renderTrack(trackId, { kind: 'folder', folderId: folder.id, index: memberIndex }))}
                 </div>
@@ -270,7 +271,7 @@ export default function TrackHeaderList({
             </div>
           )
         })}
-        <div className="timeline-root-drop-zone" onMouseDown={() => onClearSelection?.()} onDragOver={allowDrop}
+        <div className={`timeline-root-drop-zone ${styles.dropZone}`} onMouseDown={() => onClearSelection?.()} onDragOver={allowDrop}
           onDrop={(event) => dropAt(event, { kind: 'root', index: rootOrder.length })} />
         {rootOrder.length === 0 ? (
           <div className={styles.ghosts} role="group" aria-label="Add the first track">
@@ -284,8 +285,9 @@ export default function TrackHeaderList({
             </button>
           </div>
         ) : (
-          <button className="timeline-add-track" style={{ height: ADD_TRACK_ROW_HEIGHT }} onClick={onAddTrack} title="Add track">
-            <Plus size={14} /><span>Add Track</span>
+          <button type="button" className={`timeline-add-track ${styles.addTrack}`} style={{ height: ADD_TRACK_ROW_HEIGHT }} onClick={onAddTrack}
+            data-hint="Add a track" aria-label="Add track">
+            <Plus size={14} aria-hidden="true" /><span>Add track</span>
           </button>
         )}
       </div>
@@ -338,7 +340,7 @@ function FolderHeader({ folder, editing, onFinishEdit, onRename, onToggle, onRem
     onFinishEdit?.()
   }
   return (
-    <div className="track-folder-header" style={{ height: FOLDER_ROW_HEIGHT }} draggable
+    <div className={`track-folder-header ${styles.folder}`} style={{ height: FOLDER_ROW_HEIGHT }} draggable
       onContextMenu={onContextMenu}
       onDragStart={(event) => {
         if (event.target.closest?.('button, input')) {
@@ -347,27 +349,33 @@ function FolderHeader({ folder, editing, onFinishEdit, onRename, onToggle, onRem
         }
         onDragStart(event, folder.id)
       }} onDragOver={onDragOver} onDrop={onDrop}>
-      <button className="track-folder-toggle" onClick={() => onToggle?.(folder.id, !folder.collapsed)}
-        title={folder.collapsed ? 'Expand folder' : 'Collapse folder'}>
-        {folder.collapsed ? <ChevronRight size={13} /> : <ChevronDown size={13} />}
+      <button type="button" className={`track-folder-toggle ${styles.disclosureBtn}`}
+        onClick={() => onToggle?.(folder.id, !folder.collapsed)}
+        aria-expanded={!folder.collapsed}
+        aria-label={folder.collapsed ? `Expand folder ${folder.name}` : `Collapse folder ${folder.name}`}
+        data-hint={folder.collapsed ? 'Expand folder' : 'Collapse folder'}>
+        <Disclosure open={!folder.collapsed} />
       </button>
-      <Folder size={14} className="track-folder-icon" />
+      <Folder size={14} className={styles.folderGlyph} aria-hidden="true" />
       {editing ? (
-        <input ref={inputRef} className="track-folder-name-input" value={name}
+        <input ref={inputRef} className={`track-folder-name-input ${styles.folderInput}`} value={name}
+          aria-label="Folder name"
           onChange={event => setName(event.target.value)} onBlur={commit}
           onKeyDown={event => {
             if (event.key === 'Enter') commit()
             if (event.key === 'Escape') { setName(folder.name); onFinishEdit?.() }
           }} />
       ) : (
-        <span className="track-folder-name" title={folder.name}
+        <span className={`track-folder-name ${styles.folderName}`} title={folder.name}
           onDoubleClick={() => onFinishEdit?.(folder.id)}>{folder.name}</span>
       )}
-      <span className="track-folder-count">{folder.trackIds.length}</span>
-      <button className="track-folder-delete" onClick={() => onRemove?.(folder.id)}
-        title="Delete Folder (Keep Tracks)" aria-label="Delete Folder (Keep Tracks)">
-        <Trash2 size={11} />
-      </button>
+      <span className={`track-folder-count ${styles.count}`} role="img"
+        aria-label={`${folder.trackIds.length} ${folder.trackIds.length === 1 ? 'track' : 'tracks'}`}>{folder.trackIds.length}</span>
+      <IconButton size="sm" label="Delete folder, keep tracks" className={styles.folderDelete}
+        hint="Delete folder" hintMods="Its tracks stay"
+        onClick={() => onRemove?.(folder.id)}>
+        <Trash2 size={12} />
+      </IconButton>
     </div>
   )
 }

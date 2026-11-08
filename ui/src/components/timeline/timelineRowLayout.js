@@ -38,7 +38,7 @@ export const FOLDER_ROW_HEIGHT = 28
 // than a full track row like macro lanes, but with their own header row so the
 // group can collapse independent of the lanes inside it.
 export const AUTOMATION_LANE_HEIGHT = 24
-export const AUTOMATION_GROUP_HEADER_HEIGHT = 20
+export const AUTOMATION_GROUP_HEADER_HEIGHT = 24
 
 function readLanes(graphState) {
   return Array.isArray(graphState?.macroAutomationLanes) ? graphState.macroAutomationLanes : []

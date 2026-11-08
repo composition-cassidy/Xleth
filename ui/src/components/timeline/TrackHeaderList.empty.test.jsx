@@ -47,16 +47,16 @@ describe('TrackHeaderList — empty arrangement', () => {
     expect(clip).toBeTruthy()
     expect(pattern).toBeTruthy()
     expect(clip.style.height).toBe('36px')
-    expect(byText('Add Track')).toBeUndefined()
+    expect(byText('Add track')).toBeUndefined()
     act(() => { clip.click() })
     act(() => { pattern.click() })
     expect(onAddClipTrack).toHaveBeenCalledTimes(1)
     expect(onAddPatternTrack).toHaveBeenCalledTimes(1)
   })
 
-  it('with tracks, the ghost rows give way to the Add Track footer', () => {
+  it('with tracks, the ghost rows give way to the Add track footer', () => {
     render({ tracks: [{ id: 1, name: 'One', type: 'Clip' }] })
     expect(byText('Clip track')).toBeUndefined()
-    expect(byText('Add Track')).toBeTruthy()
+    expect(byText('Add track')).toBeTruthy()
   })
 })

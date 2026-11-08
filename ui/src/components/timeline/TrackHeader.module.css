@@ -1,14 +1,163 @@
-/* Track header state controls (M / S / V) and the muted dim. */
+/* Track header (DESIGN.md 22): a neutral g2 row. Identity is a 6px stripe down the
+ * left edge and a colour chip that carries the type glyph. The name is ink on g2
+ * in every state; only the stripe and chip dim when the track is muted. */
 @layer kit {
-  .controls {
-    flex: 0 0 auto;
+  .row {
+    position: relative;
+    box-sizing: border-box;
+    display: grid;
+    grid-template-columns: var(--hit-min) minmax(0, 1fr) var(--hit-min) auto;
+    grid-template-areas: "chip name menu state";
+    align-items: center;
+    column-gap: var(--space-1);
+    padding: 0 var(--space-1) 0 calc(6px + var(--space-1));
+    border-bottom: 1px solid var(--ui-g0);
+    background: var(--ui-g2);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    user-select: none;
+    cursor: default;
+  }
+
+  .row:hover,
+  .row[data-focused="true"] {
+    background: var(--ui-g3);
+  }
+
+  /* Selection is an outline, never fill alone. */
+  .row[data-selected="true"] {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  /* Tall lanes: the name row, then the M / S / V row under it. */
+  .row[data-stack="true"] {
+    grid-template-columns: var(--hit-min) minmax(0, 1fr) var(--hit-min);
+    grid-template-areas:
+      "chip name menu"
+      "state state state";
+    align-content: center;
+    row-gap: var(--space-1);
+  }
+
+  .stripe {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    left: 0;
+    width: 6px;
+    background: var(--track-header-fill);
+  }
+
+  /* A pattern track's stripe is dashed, so clip and pattern tracks differ by more than their glyph. */
+  .row[data-kind="pattern"] .stripe {
+    background: repeating-linear-gradient(
+      to bottom,
+      var(--track-header-fill) 0,
+      var(--track-header-fill) 5px,
+      color-mix(in srgb, var(--track-header-fill) 30%, var(--ui-g2)) 5px,
+      color-mix(in srgb, var(--track-header-fill) 30%, var(--ui-g2)) 8px
+    );
+  }
+
+  /* The chip's button is the 24x24 hit area; the face is the 18px swatch. */
+  .chip {
+    grid-area: chip;
+    box-sizing: border-box;
+    width: var(--hit-min);
+    height: var(--hit-min);
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+  }
+
+  .chip:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  .chipFace {
+    box-sizing: border-box;
+    width: 18px;
+    height: 18px;
+    border-radius: 2px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: var(--track-header-fill);
+    color: var(--track-header-ink, var(--ui-g1));
+  }
+
+  .chip:hover .chipFace {
+    box-shadow: 0 0 0 1px var(--ui-ink);
+  }
+
+  .row[data-kind="pattern"] .chipFace {
+    outline: 1px dashed var(--ui-g2);
+    outline-offset: -3px;
+  }
+
+  .nameWrap {
+    grid-area: name;
     display: flex;
     align-items: center;
     gap: var(--space-1);
+    min-width: 0;
+  }
+
+  .name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--type-12);
+    font-weight: 500;
+    line-height: 1.2;
+    color: var(--ui-ink);
+    cursor: text;
+  }
+
+  .nameInput {
+    flex: 1 1 auto;
+    min-width: 0;
+    box-sizing: border-box;
+    height: 22px;
     padding: 0 var(--space-1);
+    border: 1px solid var(--ui-select);
+    border-radius: 2px;
+    background: var(--ui-g0);
+    color: var(--ui-ink);
+    font-family: inherit;
+    font-size: var(--type-12);
+    font-weight: 500;
+    outline: none;
+  }
+
+  .hold {
+    flex: none;
+    box-sizing: border-box;
+    min-width: 16px;
+    padding: 0 3px;
+    border: 1px solid var(--ui-boundary);
+    border-radius: 2px;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    line-height: 14px;
+    text-align: center;
+  }
+
+  .menu {
+    grid-area: menu;
   }
 
   .cluster {
+    grid-area: state;
     display: flex;
     align-items: center;
     gap: 2px;
@@ -29,39 +178,8 @@
     color: var(--ui-g0);
   }
 
-  /* Muted: the identity fill dims to the mute opacity (a g1 veil over it, like
-   * the lane content), while the name stays legible above the veil in ink. */
-  :global(.track-header--muted .track-header-block)::after {
-    content: "";
-    position: absolute;
-    inset: 0;
-    background: var(--ui-g1);
-    opacity: calc(1 - var(--ui-mute-opacity));
-    pointer-events: none;
-  }
-
-  :global(.track-header--muted) :is(:global(.track-header-name-wrap), :global(.track-header-type-icon)) {
-    position: relative;
-    z-index: 1;
-  }
-
-  :global(.track-header--muted .track-header-color-btn) {
-    z-index: 1;
-  }
-
-  :global(.track-header--muted) :is(:global(.track-header-name), :global(.track-header-menu-btn), :global(.track-header-type-icon), :global(.track-header-hold-badge)) {
-    color: var(--ui-ink);
-  }
-}
-
-@layer kit {
-  /* Short lanes (below 32px): one row, name only; the type icon row would clip it. */
-  .compact :global(.track-header-type-icon) {
-    display: none;
-  }
-
-  .compact :global(.track-header-block) {
-    padding-top: 0;
-    padding-bottom: 0;
+  /* Muted: the identity dims to the mute opacity. The name, menu and toggles do not. */
+  .row[data-muted="true"] :is(.stripe, .chipFace) {
+    opacity: var(--ui-mute-opacity);
   }
 }

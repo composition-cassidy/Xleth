@@ -39,3 +39,229 @@
     height: var(--type-13);
   }
 }
+
+/* The header column (DESIGN.md 22): neutral g1, rows of g2. */
+@layer kit {
+  .column {
+    box-sizing: border-box;
+    flex-shrink: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    border-right: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
+  }
+
+  .spacer {
+    box-sizing: border-box;
+    flex-shrink: 0;
+    border-bottom: 1px solid var(--ui-g4);
+    background: var(--ui-g2);
+  }
+
+  .scroll {
+    flex: 1;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .dropZone {
+    min-height: 6px;
+  }
+
+  .addTrack {
+    box-sizing: border-box;
+    display: flex;
+    flex-shrink: 0;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-1);
+    width: 100%;
+    min-height: var(--hit-min);
+    margin: 0;
+    padding: 0 var(--space-2);
+    border: 0;
+    border-bottom: 1px solid var(--ui-g4);
+    background: transparent;
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    cursor: pointer;
+  }
+
+  .addTrack:hover {
+    background: var(--ui-g2);
+    color: var(--ui-ink);
+  }
+
+  .addTrack:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  /* Folder rows: a disclosure, a folder glyph, the name, the child count in tabular numerals. */
+  .folder {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    width: 100%;
+    padding: 0 var(--space-1);
+    border-bottom: 1px solid var(--ui-g0);
+    background: var(--ui-g2);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    user-select: none;
+    cursor: grab;
+  }
+
+  .folder:active {
+    cursor: grabbing;
+  }
+
+  .disclosureBtn {
+    flex: none;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    width: var(--hit-min);
+    height: var(--hit-min);
+    margin: 0;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: pointer;
+  }
+
+  .disclosureBtn:hover {
+    background: var(--ui-g3);
+  }
+
+  .disclosureBtn:focus-visible,
+  .groupHeader:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  .folderGlyph {
+    flex: none;
+    color: var(--ui-ink-2);
+  }
+
+  .folderName {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--type-12);
+    font-weight: 600;
+  }
+
+  .folderInput {
+    flex: 1 1 auto;
+    min-width: 0;
+    box-sizing: border-box;
+    height: 22px;
+    padding: 0 var(--space-1);
+    border: 1px solid var(--ui-select);
+    border-radius: 2px;
+    background: var(--ui-g0);
+    color: var(--ui-ink);
+    font-family: inherit;
+    font-size: var(--type-12);
+    font-weight: 600;
+    outline: none;
+  }
+
+  .count {
+    flex: none;
+    min-width: 18px;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+
+  /* An action rather than a state: it appears on hover or focus, but stays reachable by keyboard. */
+  .folderDelete {
+    opacity: 0;
+  }
+
+  .folder:hover .folderDelete,
+  .folder:focus-within .folderDelete {
+    opacity: 1;
+  }
+
+  .members {
+    min-width: 0;
+    margin-left: var(--space-2);
+    border-left: 1px solid var(--ui-g4);
+  }
+
+  /* Lane label rows under a track: a macro's automation lane and the automation clip groups. */
+  .macroLane,
+  .autoLane {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: 0 var(--space-1) 0 var(--space-3);
+    border-left: 3px solid var(--ui-g4);
+    border-bottom: 1px solid var(--ui-g0);
+    background: var(--ui-g1);
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+  }
+
+  .autoLane {
+    border-left-color: var(--ui-value);
+  }
+
+  .orphan {
+    opacity: var(--ui-mute-opacity);
+  }
+
+  .laneLabel,
+  .groupLabel {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--type-11);
+  }
+
+  .groupLabel {
+    font-weight: 600;
+  }
+
+  .groupIcon {
+    flex: none;
+    color: var(--ui-ink-2);
+  }
+
+  .groupHeader {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    width: 100%;
+    margin: 0;
+    padding: 0 var(--space-1) 0 var(--space-2);
+    border: 0;
+    border-bottom: 1px solid var(--ui-g0);
+    background: var(--ui-g1);
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .groupHeader:hover {
+    background: var(--ui-g2);
+    color: var(--ui-ink);
+  }
+}

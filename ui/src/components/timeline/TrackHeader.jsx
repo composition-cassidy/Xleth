@@ -1,19 +1,25 @@
 import { useState, useRef, useCallback } from 'react'
-import { Trash2 } from 'lucide-react'
 import { TRACK_HEIGHT } from '../../constants/timeline.js'
-import { TRACK_PALETTE_FALLBACK, pickPatternAccentText } from './trackColorResolver.js'
+import { TRACK_PALETTE_FALLBACK } from './trackColorResolver.js'
 import { PianoIcon, WaveformIcon, EllipsisIcon } from './TrackTypeIcons.jsx'
-import { Toggle } from '../../ui-kit'
+import { IconButton, Toggle } from '../../ui-kit'
 import { pickLabelInk } from '../../ui-kit/colorMath'
 import styles from './TrackHeader.module.css'
 
-// Below this lane height the header drops its type-icon row so the name fits.
-const COMPACT_HEADER_BELOW = 32
+// From this lane height up the header stacks: name row, then the M / S / V row.
+const STACK_HEADER_FROM = 56
 
+/**
+ * One track's header (DESIGN.md 22): a neutral g2 row. Identity is a 6px stripe
+ * down the left edge and a colour chip that holds the type glyph (and opens the
+ * colour popover); the clips already carry the full colour, so the header does
+ * not. The name is ink on g2 in every state, muted included: only the stripe and
+ * chip dim. M / S / V are kit Toggles, visible at rest.
+ */
 export default function TrackHeader({
   track, index, trackColor, labelInks = null, isFocused, isSelected,
   trackHeight = TRACK_HEIGHT,
-  onMute, onSolo, onVisualOnly, onRename, onRemove, onRequestContextMenu, onFocus, onSelect,
+  onMute, onSolo, onVisualOnly, onRename, onRequestContextMenu, onFocus, onSelect,
   onDragStart, onDragOver, onDrop,
   onOpenColorPicker,
   onOpenInMixer,
@@ -24,12 +30,10 @@ export default function TrackHeader({
 
   const isPatternTrack = track.type === 'Pattern'
   const color = trackColor || TRACK_PALETTE_FALLBACK[index % 16]
-  // Pattern headers are tinted glass (text in the track colour on a dark wash);
-  // clip headers are a solid identity fill, so their text takes the automatic
-  // label ink: whichever of ink / g1 contrasts more with that colour.
-  const headerTextColor = isPatternTrack
-    ? pickPatternAccentText(color)
-    : (labelInks && /^#[0-9a-f]{6}$/i.test(color) ? pickLabelInk(color, labelInks.light, labelInks.dark).ink : null)
+  // The glyph on the chip takes whichever of ink / g1 contrasts more with the identity colour.
+  const chipInk = labelInks && /^#[0-9a-f]{6}$/i.test(color)
+    ? pickLabelInk(color, labelInks.light, labelInks.dark).ink
+    : null
 
   const startEdit = useCallback(() => {
     setEditing(true)
@@ -65,11 +69,16 @@ export default function TrackHeader({
 
   return (
     <div
-      className={`track-header${track.muted ? ' track-header--muted' : ''}${track.visualOnly ? ' track-header--visual-only' : ''}${isPatternTrack ? ' track-header--pattern' : ''}${isFocused ? ' track-header--focused' : ''}${isSelected ? ' track-header--selected' : ''} ${trackHeight < COMPACT_HEADER_BELOW ? styles.compact : ''}`}
+      className={`track-header${track.muted ? ' track-header--muted' : ''}${track.visualOnly ? ' track-header--visual-only' : ''}${isPatternTrack ? ' track-header--pattern' : ''}${isFocused ? ' track-header--focused' : ''}${isSelected ? ' track-header--selected' : ''} ${styles.row}`}
+      data-muted={track.muted ? 'true' : 'false'}
+      data-focused={isFocused ? 'true' : 'false'}
+      data-selected={isSelected ? 'true' : 'false'}
+      data-kind={isPatternTrack ? 'pattern' : 'clip'}
+      data-stack={trackHeight >= STACK_HEADER_FROM ? 'true' : 'false'}
       style={{
         height: trackHeight,
         '--track-header-fill': color,
-        ...(headerTextColor ? { '--track-header-text': headerTextColor } : {}),
+        ...(chipInk ? { '--track-header-ink': chipInk } : {}),
       }}
       draggable
       onMouseDown={() => onFocus?.(track.id)}
@@ -84,93 +93,82 @@ export default function TrackHeader({
         onRequestContextMenu?.(track, e.clientX, e.clientY)
       }}
     >
-      {isFocused && <div className="track-header-focus-bar" />}
+      <span className={styles.stripe} aria-hidden="true" />
 
-      {/* Colored identity block — flat solid fill for Clip tracks; tinted
-          glass + diagonal hatch + inset stroke (all CSS-derived from
-          --track-header-fill) for Pattern tracks. */}
-      <div className="track-header-block">
-        <button
-          className="track-header-color-btn"
-          onMouseDown={(e) => { e.stopPropagation() }}
-          onClick={(e) => {
-            e.stopPropagation()
-            onOpenColorPicker?.(track.id, e.currentTarget.getBoundingClientRect())
-          }}
-          title="Change track color"
-          aria-label="Change track color"
-        />
+      <button
+        type="button"
+        className={`track-header-color-btn ${styles.chip}`}
+        onMouseDown={(e) => { e.stopPropagation() }}
+        onClick={(e) => {
+          e.stopPropagation()
+          onOpenColorPicker?.(track.id, e.currentTarget.getBoundingClientRect())
+        }}
+        aria-label="Change track color"
+        data-hint="Track colour"
+        data-hint-mods={isPatternTrack ? 'Pattern track' : 'Clip track'}
+      >
+        <span className={styles.chipFace}>
+          {isPatternTrack ? <PianoIcon size={12} /> : <WaveformIcon size={12} />}
+        </span>
+      </button>
 
-        <div className="track-header-name-wrap" title={track.name}>
-          <button
-            className="track-header-menu-btn"
-            onMouseDown={(e) => { e.stopPropagation() }}
-            onClick={handleOpenMenu}
-            title="Track menu"
-            aria-label="Track menu"
-          >
-            <EllipsisIcon size={11} />
-          </button>
-
-          {editing ? (
-            <input
-              ref={inputRef}
-              className="track-header-name-input"
-              value={nameInput}
-              onChange={(e) => setNameInput(e.target.value)}
-              onBlur={commitEdit}
-              onKeyDown={onKeyDown}
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={(e) => e.stopPropagation()}
-              autoFocus
-            />
-          ) : (
-            <span className="track-header-name" onDoubleClick={startEdit}>
-              {track.name}
-            </span>
-          )}
-          {track.videoHoldLastFrame && (
-            <span className="track-header-hold-badge" title="Hold Last Frame">H</span>
-          )}
-        </div>
-
-        <div className="track-header-type-icon" aria-hidden="true">
-          {isPatternTrack ? <PianoIcon size={13} /> : <WaveformIcon size={13} />}
-        </div>
+      <div className={`track-header-name-wrap ${styles.nameWrap}`} title={track.name}>
+        {editing ? (
+          <input
+            ref={inputRef}
+            className={`track-header-name-input ${styles.nameInput}`}
+            value={nameInput}
+            onChange={(e) => setNameInput(e.target.value)}
+            onBlur={commitEdit}
+            onKeyDown={onKeyDown}
+            onMouseDown={(e) => e.stopPropagation()}
+            onClick={(e) => e.stopPropagation()}
+            aria-label="Track name"
+            autoFocus
+          />
+        ) : (
+          <span className={`track-header-name ${styles.name}`} onDoubleClick={startEdit}>
+            {track.name}
+          </span>
+        )}
+        {track.videoHoldLastFrame && (
+          <span className={styles.hold} role="img" aria-label="Hold last frame" data-hint="Hold last frame">H</span>
+        )}
       </div>
 
-      {/* M / S / V: kit Toggles, visible at rest. On = the inverted ink chip
-          (solo in the solo colour); a muted track also dims its lane content
-          and its identity block, so state is never colour alone. */}
-      <div className={styles.controls}>
-        <div className={styles.cluster} role="group" aria-label={`${track.name} state`}>
-          <Toggle
-            size="sm" className={styles.state} data-kind="mute"
-            on={!!track.muted} onChange={() => onMute(track.id)}
-            glyph="M" aria-label={`Mute ${track.name}`}
-            hint="Mute: silences the track; its clips dim"
-          />
-          <Toggle
-            size="sm" className={styles.state} data-kind="solo"
-            on={!!track.solo} onChange={() => onSolo(track.id)}
-            glyph="S" aria-label={`Solo ${track.name}`}
-            hint="Solo: hear only soloed tracks"
-          />
-          <Toggle
-            size="sm" className={styles.state} data-kind="visual"
-            on={!!track.visualOnly} onChange={() => onVisualOnly(track.id)}
-            glyph="V" aria-label={`Visual only ${track.name}`}
-            hint="Visual only: silences audio, keeps grid triggers"
-          />
-        </div>
+      <IconButton
+        size="sm"
+        label="Track menu"
+        className={styles.menu}
+        onMouseDown={(e) => { e.stopPropagation() }}
+        onClick={handleOpenMenu}
+        hint="Track menu"
+      >
+        <EllipsisIcon size={12} />
+      </IconButton>
 
-        <button
-          className="track-delete-btn"
-          onClick={() => onRemove(track.id)}
-          title="Delete track"
-        >
-          <Trash2 size={12} />
-        </button>
+      {/* M / S / V: kit Toggles, visible at rest. On = the inverted ink chip
+          (solo in the solo colour). A muted track also dims its stripe, chip and
+          lane content, so state is never colour alone. */}
+      <div className={styles.cluster} role="group" aria-label={`${track.name} state`}>
+        <Toggle
+          size="sm" className={styles.state} data-kind="mute"
+          on={!!track.muted} onChange={() => onMute(track.id)}
+          glyph="M" aria-label={`Mute ${track.name}`}
+          hint="Mute: silences the track; its clips dim"
+        />
+        <Toggle
+          size="sm" className={styles.state} data-kind="solo"
+          on={!!track.solo} onChange={() => onSolo(track.id)}
+          glyph="S" aria-label={`Solo ${track.name}`}
+          hint="Solo: hear only soloed tracks"
+        />
+        <Toggle
+          size="sm" className={styles.state} data-kind="visual"
+          on={!!track.visualOnly} onChange={() => onVisualOnly(track.id)}
+          glyph="V" aria-label={`Visual only ${track.name}`}
+          hint="Visual only: silences audio, keeps grid triggers"
+        />
       </div>
     </div>
   )

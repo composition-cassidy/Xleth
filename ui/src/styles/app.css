@@ -1646,17 +1646,6 @@ html, body, #root {
   color: var(--theme-fg-inverse);
 }
 
-/* â”€â”€ Track header column (left, fixed width) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
-
-.timeline-header-column {
-  flex-shrink: 0;
-  display: flex;
-  flex-direction: column;
-  border-right: 2px solid var(--theme-timeline-lane-bg);
-  background: var(--theme-bg-surface);
-  overflow: hidden;
-}
-
 .timeline-header-resize-handle {
   width: 4px;
   flex-shrink: 0;
@@ -1676,262 +1665,9 @@ html, body, #root {
   transform: translateX(-1px);
 }
 
-.timeline-header-spacer {
-  flex-shrink: 0;
-  border-bottom: 1px solid var(--theme-border-subtle);
-  background: var(--theme-bg-secondary);
-}
-
-.timeline-header-scroll {
-  flex: 1;
-  min-height: 0;
-  overflow-y: auto;
-  overflow-x: hidden;
-}
-
-/* â”€â”€ Individual track header â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
-
-.track-header {
-  position: relative;
-  display: flex;
-  align-items: stretch;
-  gap: 0;
-  padding: 0;
-  border-bottom: 2px solid var(--theme-timeline-lane-bg);
-  user-select: none;
-  cursor: default;
-  background: transparent;
-  transition: background var(--transition-fast);
-}
-
-.track-header-focus-bar {
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  width: var(--theme-timeline-panel-accent-width);
-  background: var(--theme-accent);
-  pointer-events: none;
-  z-index: 3;
-}
-
-.track-header:hover {
-  background: var(--theme-bg-surface);
-}
-
-.track-header--visual-only {
-  border-left: none;
-}
-
-.track-header.dragging {
-  opacity: 0.4;
-}
-
-/* â”€â”€ Colored identity block â”€â”€ Clip tracks: flat solid fill, no shine.
-   Pattern tracks: "tinted glass" â€” a ~10% track-color wash over the dark
-   header background, a 2px inset stroke, and a static 45Â° hatch, all derived
-   from --track-header-fill via color-mix() at the CSS usage site. â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
-.track-header-block {
-  position: relative;
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  justify-content: center;
-  gap: 1px;
-  padding: 2px 8px 2px 10px;
-  overflow: hidden;
-  background: var(--track-header-fill, var(--theme-timeline-track-color-stripe));
-  transition: background var(--transition-fast);
-}
-
-.track-header--pattern .track-header-block {
-  background:
-    repeating-linear-gradient(
-      45deg,
-      color-mix(in srgb, var(--track-header-fill, var(--theme-timeline-track-color-stripe)) 18%, transparent) 0px,
-      color-mix(in srgb, var(--track-header-fill, var(--theme-timeline-track-color-stripe)) 18%, transparent) 2px,
-      transparent 2px,
-      transparent 12px
-    ),
-    color-mix(in srgb, var(--track-header-fill, var(--theme-timeline-track-color-stripe)) 10%, transparent);
-  box-shadow: inset 0 0 0 2px var(--track-header-fill, var(--theme-timeline-track-color-stripe));
-}
-
-.track-header-color-btn {
-  position: absolute;
-  top: 0;
-  left: 0;
-  bottom: 0;
-  width: 6px;
-  border: none;
-  padding: 0;
-  cursor: pointer;
-  background: transparent;
-  transition: box-shadow var(--transition-fast);
-}
-
-.track-header-color-btn:hover {
-  box-shadow: inset 2px 0 0 rgba(0, 0, 0, 0.35);
-}
-
-.track-header-color-btn:focus-visible {
-  outline: none;
-  box-shadow: inset 2px 0 0 rgba(0, 0, 0, 0.6);
-}
-
-.track-header-name-wrap {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  min-width: 0;
-}
-
-.track-header-menu-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  flex-shrink: 0;
-  width: 24px;
-  height: 24px;
-  border: none;
-  padding: 0; margin: -5px -6px;
-  background: transparent;
-  color: var(--track-header-text, rgba(26, 26, 26, 0.55));
-  cursor: pointer;
-}
-
-.track-header-menu-btn:hover {
-  color: var(--track-header-text, rgba(26, 26, 26, 0.85));
-}
-
-.track-header-name {
-  flex: 1 1 auto;
-  min-width: 0;
-  font-size: 12px;
-  font-weight: 600;
-  line-height: 1.2;
-  color: var(--track-header-text, rgba(26, 26, 26, 0.85));
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  cursor: text;
-}
-
-.track-header-name-input {
-  flex: 1;
-  min-width: 0;
-  font-size: 12px;
-  font-weight: 600;
-  font-family: inherit;
-  color: var(--track-header-text, rgba(26, 26, 26, 0.85));
-  background: transparent;
-  border: none;
-  border-bottom: 1px solid rgba(26, 26, 26, 0.35);
-  outline: none;
-  padding: 0;
-}
-
-.track-header-hold-badge {
-  font-size: 10px;
-  font-weight: 700;
-  text-transform: uppercase;
-  color: var(--track-header-text, rgba(26, 26, 26, 0.85));
-  opacity: 0.85;
-  border: 1px solid currentColor;
-  border-radius: 2px;
-  padding: 0 2px;
-  line-height: 1.2;
-  flex-shrink: 0;
-}
-
-.track-header-type-icon {
-  display: flex;
-  align-items: center;
-  color: var(--track-header-text, rgba(26, 26, 26, 0.55));
-  margin-top: 1px;
-}
-
-/* â”€â”€ Pattern tracks â”€â”€ track color (or the near-white fallback computed in
-   TrackHeader.jsx when the color itself is too dark to read) instead of the
-   dark-on-fill text above, since the fill here is a mostly-dark glass tint
-   rather than a solid light color. â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
-.track-header--pattern .track-header-name,
-.track-header--pattern .track-header-name-input,
-.track-header--pattern .track-header-hold-badge {
-  color: var(--track-header-text, var(--track-header-fill, var(--theme-timeline-track-color-stripe)));
-}
-
-.track-header--pattern .track-header-name-input {
-  border-bottom-color: color-mix(in srgb, var(--track-header-text, var(--track-header-fill)) 60%, transparent);
-}
-
-.track-header--pattern .track-header-menu-btn,
-.track-header--pattern .track-header-type-icon {
-  color: var(--track-header-text, var(--track-header-fill, var(--theme-timeline-track-color-stripe)));
-  opacity: 0.8;
-}
-
-.track-header--pattern .track-header-menu-btn:hover {
-  opacity: 1;
-}
-
 /* â”€â”€ M / S / V cluster â”€â”€ plain panel background, consistent with the mixer â”€â”€ */
 /* Mute — red when active */
 /* Solo — amber when active */
-/* Visual Only — teal when active */
-.track-delete-btn {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 20px;
-  height: 20px;
-  border: none;
-  border-radius: 3px;
-  background: transparent;
-  color: var(--theme-text-subtle);
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.15s;
-  margin-left: 2px;
-  padding: 0;
-}
-
-.track-header:hover .track-delete-btn {
-  opacity: 0.6;
-}
-
-.track-delete-btn:hover {
-  opacity: 1;
-  color: var(--theme-danger);
-  background: var(--theme-semantic-danger-bg-subtle);
-}
-
-/* â”€â”€ Add Track button â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
-
-.timeline-add-track {
-  display: flex;
-  flex-shrink: 0;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-  width: 100%;
-  padding: 0 8px;
-  background: transparent;
-  border: none;
-  border-bottom: 1px solid var(--theme-border-subtle);
-  color: var(--theme-text-subtle);
-  font-size: 11px;
-  font-weight: 500;
-  font-family: inherit;
-  cursor: pointer;
-  transition: all var(--transition-fast);
-}
-
-.timeline-add-track:hover {
-  background: var(--theme-bg-surface);
-  color: var(--theme-text-muted);
-}
 
 /* â”€â”€ Canvas area (right, flex-grow) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
@@ -2254,97 +1990,6 @@ html, body, #root {
   display: inline-flex;
   color: var(--theme-text-secondary);
   pointer-events: none;
-}
-
-/* Left-header macro automation child-lane label rows */
-.track-header-macro-lane {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  padding: 0 8px 0 18px;
-  box-sizing: border-box;
-  border-left: 3px solid var(--theme-border-subtle);
-  border-bottom: 1px solid var(--theme-border-subtle);
-  background: var(--theme-bg-secondary, var(--theme-bg-primary));
-  color: var(--theme-text-secondary);
-}
-.track-header-macro-lane--orphan { opacity: 0.6; }
-.track-header-macro-lane-icon { color: var(--theme-text-tertiary); flex: 0 0 auto; }
-.track-header-macro-lane-label {
-  flex: 1 1 auto;
-  font-size: 10px;
-  letter-spacing: 0.2px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.track-header-macro-lane-hide {
-  flex: 0 0 auto;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 2px;
-  border: none;
-  background: transparent;
-  color: var(--theme-text-tertiary);
-  cursor: pointer;
-  border-radius: 3px;
-}
-.track-header-macro-lane-hide:hover {
-  color: var(--theme-text);
-  background: var(--theme-surface-overlay, rgba(0, 0, 0, 0.2));
-}
-
-/* Automation clip lane groups (Phase B) — collapsible header + lane rows,
-   under a track (or the pinned Master group at the top of the header list). */
-.track-header-automation-group-header {
-  display: flex;
-  align-items: center;
-  gap: 5px;
-  width: 100%;
-  padding: 0 8px 0 10px;
-  box-sizing: border-box;
-  border: none;
-  border-bottom: 1px solid var(--theme-border-subtle);
-  background: var(--theme-bg-secondary, var(--theme-bg-primary));
-  color: var(--theme-text-secondary);
-  cursor: pointer;
-  text-align: left;
-}
-.track-header-automation-group-header:hover {
-  color: var(--theme-text);
-}
-.track-header-automation-group-icon { color: var(--theme-border-focus); flex: 0 0 auto; }
-.track-header-automation-group-label {
-  flex: 1 1 auto;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.2px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
-}
-.track-header-automation-group-count {
-  flex: 0 0 auto;
-  font-size: 9px;
-  color: var(--theme-text-tertiary);
-}
-.track-header-automation-lane {
-  display: flex;
-  align-items: center;
-  padding: 0 8px 0 24px;
-  box-sizing: border-box;
-  border-left: 3px solid var(--theme-border-focus);
-  border-bottom: 1px solid var(--theme-border-subtle);
-  background: var(--theme-bg-secondary, var(--theme-bg-primary));
-  color: var(--theme-text-tertiary);
-}
-.track-header-automation-lane-label {
-  font-size: 10px;
-  letter-spacing: 0.2px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
 }
 
 .timeline-canvas-layer {
@@ -3653,72 +3298,6 @@ html, body, #root {
   z-index: 10;
 }
 
-.track-folder-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  width: 100%;
-  padding: 0 7px;
-  border-bottom: 1px solid var(--theme-border-subtle);
-  background: var(--ui-g2);
-  color: var(--theme-text);
-  user-select: none;
-  cursor: grab;
-}
-.track-folder-header:active { cursor: grabbing; }
-.track-folder-members {
-  min-width: 0;
-  margin-left: 12px;
-  border-left: 1px solid color-mix(in srgb, var(--theme-accent) 30%, var(--theme-border-subtle));
-}
-.track-folder-toggle,
-.track-folder-delete {
-  width: 20px;
-  height: 20px;
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  flex: 0 0 auto;
-  padding: 0;
-  border: 0;
-  background: transparent;
-  color: var(--theme-text-muted);
-  cursor: pointer;
-}
-.track-folder-toggle:hover,
-.track-folder-delete:hover { color: var(--theme-text); background: var(--theme-bg-hover); }
-.track-folder-delete { margin-left: auto; opacity: 0; }
-.track-folder-header:hover .track-folder-delete { opacity: 0.75; }
-.track-folder-delete:hover { color: var(--theme-danger); opacity: 1; }
-.track-folder-icon { flex: 0 0 auto; color: var(--theme-accent); }
-.track-folder-name {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  font-size: 11px;
-  font-weight: 650;
-}
-.track-folder-name-input {
-  min-width: 0;
-  flex: 1;
-  height: 22px;
-  padding: 1px 5px;
-  border: 1px solid var(--theme-accent);
-  background: var(--theme-bg-inset);
-  color: var(--theme-text);
-  font: 600 11px inherit;
-  outline: none;
-}
-.track-folder-count {
-  flex: 0 0 auto;
-  min-width: 18px;
-  color: var(--theme-text-subtle);
-  font-size: 10px;
-  text-align: center;
-}
-.timeline-root-drop-zone { min-height: 6px; }
-
 .grid-editor-cell {
   position: absolute;
   border: 1px solid rgba(255, 255, 255, 0.25);
@@ -3942,7 +3521,6 @@ html, body, #root {
 /* ── Phase 2: CornerRadiusControl ────────────────────────────────────────── */
 
 /* ── Phase 2: CustomGapControl ──────────────────────────────────────────── */
-
 
 /* ── Compact Grid Settings Panel (gsp-*) ────────────────────────────────────
    Replaces the old Layout + Preview sections with a two-column compact block.
@@ -4566,14 +4144,6 @@ html, body, #root {
     var(--theme-depth-elevation-1-bottom-edge),
     0 1px 2px rgba(0,0,0,0.25),
     var(--theme-depth-accent-ring);
-}
-
-/* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
-   Track header â€” Pattern track variant + sub-label
-   â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
-
-.track-header-region-name {
-  opacity: 0.9;
 }
 
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -9866,7 +9436,6 @@ html, body, #root {
   border-color: transparent;
 }
 
-
 [data-pluginui-id="peak-bars"] .pluginui-meter-label span {
   display: none;
 }
@@ -10692,7 +10261,6 @@ input[type="radio"] {
    its band. Declared after the shared rule above so it wins the
    equal-specificity cascade against that rule's `border` shorthand. */
 
-
 .track-color-popover {
   min-width: 132px;
   padding: 8px;
@@ -11426,43 +10994,6 @@ input[type="radio"] {
   color: var(--xleth-flat-text-subtle);
 }
 
-/* ── Track header column ───────────────────────────────────────────────────── */
-.timeline-header-column {
-  background: var(--xleth-flat-panel);
-  border-right: 2px solid var(--theme-timeline-lane-bg);
-}
-.timeline-header-spacer {
-  background: var(--xleth-flat-chrome);
-  border-bottom: 1px solid var(--xleth-flat-border);
-}
-
-.track-header {
-  gap: 0;
-  background: transparent;
-  border-bottom: 2px solid var(--theme-timeline-lane-bg);
-}
-.track-header:hover { background: #1b1b1b; }
-
-.track-header-name { font-size: 11.5px; }
-
-.track-delete-btn { border-radius: 0; }
-
-.timeline-add-track {
-  border-bottom: 1px solid var(--xleth-flat-preview-border);
-  color: var(--xleth-flat-text-muted);
-}
-.timeline-add-track:hover {
-  background: #1b1b1b;
-  color: var(--xleth-flat-text-secondary);
-}
-
-/* Macro automation lane labels under their track */
-.track-header-macro-lane {
-  background: var(--xleth-flat-chrome);
-  border-bottom: 1px solid var(--xleth-flat-border);
-  color: var(--xleth-flat-text-muted);
-}
-
 /* ── Ruler height matches RULER_HEIGHT (26) ─────────────────────────────────── */
 .timeline-ruler-container { height: 26px; }
 
@@ -12005,11 +11536,6 @@ input[type="radio"] {
   font-size: 10px;
   background: var(--theme-bg-secondary, var(--theme-bg-primary));
 }
-.track-header--selected {
-  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--theme-accent) 55%, transparent);
-  background-color: color-mix(in srgb, var(--theme-accent) 9%, transparent);
-}
-
 .vmt-transition-parameter {
   display: grid;
   grid-template-columns: 68px minmax(52px, 1fr) 32px;
