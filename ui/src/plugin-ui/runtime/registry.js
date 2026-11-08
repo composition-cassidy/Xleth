@@ -20,8 +20,6 @@ import CompressorSliderNode from './components/CompressorSliderNode.jsx'
 import CompressorHSliderNode from './components/CompressorHSliderNode.jsx'
 import CompressorDryWetNode from './components/CompressorDryWetNode.jsx'
 import CompressorLookaheadNode from './components/CompressorLookaheadNode.jsx'
-import OverdoneBandStackNode from './components/OverdoneBandStackNode.jsx'
-import OverdoneCrossoverNode from './components/OverdoneCrossoverNode.jsx'
 // Freeform-A additions:
 import FreeformLayerNode from './components/FreeformLayerNode.jsx'
 import DecorTextNode     from './components/DecorTextNode.jsx'
@@ -48,8 +46,6 @@ export const COMPONENT_REGISTRY = {
   compressorHSlider:   CompressorHSliderNode,
   compressorDryWet:    CompressorDryWetNode,
   compressorLookahead: CompressorLookaheadNode,
-  overdoneBandStack:   OverdoneBandStackNode,
-  overdoneCrossovers:  OverdoneCrossoverNode,
   // Freeform-A:
   freeformLayer: FreeformLayerNode,
   decorText:     DecorTextNode,

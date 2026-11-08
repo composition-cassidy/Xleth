@@ -3,8 +3,9 @@
  */
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
+import { SHIPPED_LAYOUTS } from '../../../plugin-ui/layouts/index.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import useEffectChainStore from '../../../stores/effectChainStore.js'
 import useMixerStore from '../../../stores/mixerStore.js'
@@ -119,7 +120,7 @@ describe('Transient processor device in the chain', () => {
     expect(texts).toContain('Play to see transients')
   })
 
-  it('pop-out opens the same device in a window; the legacy panel and its CSS are gone', async () => {
+  it('pop-out opens the same device in a window; the legacy panel, its layout and its CSS are gone', async () => {
     await mount(<TransientProcPanel />)
     act(() => q('button[aria-label="Open Transient processor in a window"]').click())
     await flush()
@@ -128,5 +129,7 @@ describe('Transient processor device in the chain', () => {
     const src = readFileSync(path.resolve(__dirname, '../../mixer/TransientProcPanel.jsx'), 'utf8')
     expect(src).not.toMatch(/StockPluginRuntimeRenderer|PluginUIDesigner|transientproc-panel/)
     expect(readFileSync(path.resolve(__dirname, '../../../styles/app.css'), 'utf8')).not.toMatch(/\.transientproc-/)
+    expect(SHIPPED_LAYOUTS.transientproc).toBeUndefined()
+    expect(existsSync(path.resolve(__dirname, '../../../plugin-ui/layouts/transient.json'))).toBe(false)
   })
 })

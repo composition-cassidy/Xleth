@@ -25,8 +25,6 @@ const PLUGIN_UI_LAYOUT_KIND = 'plugin-ui-layout'
 const SHIPPED_PLUGIN_UI_LAYOUT_FILES = {
   compressor:    runtimeResource('app', 'src', 'plugin-ui', 'layouts', 'compressor.json'),
   limiter:       runtimeResource('app', 'src', 'plugin-ui', 'layouts', 'limiter.json'),
-  transientproc: runtimeResource('app', 'src', 'plugin-ui', 'layouts', 'transient.json'),
-  overdone:      runtimeResource('app', 'src', 'plugin-ui', 'layouts', 'overdone.json'),
   distortion:    runtimeResource('app', 'src', 'plugin-ui', 'layouts', 'distortion.json'),
 }
 

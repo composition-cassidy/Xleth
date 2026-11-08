@@ -3,8 +3,10 @@
  */
 import React, { act } from 'react'
 import { createRoot } from 'react-dom/client'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
+import { SHIPPED_LAYOUTS } from '../../../plugin-ui/layouts/index.js'
+import { COMPONENT_REGISTRY } from '../../../plugin-ui/runtime/registry.js'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import useEffectChainStore from '../../../stores/effectChainStore.js'
 import useMixerStore from '../../../stores/mixerStore.js'
@@ -147,7 +149,7 @@ describe('Overdone device in the chain', () => {
     expect(high).toEqual({ up: 0, down: 0 })
   })
 
-  it('pop-out opens the same device in a window; the legacy panel and its CSS are gone', async () => {
+  it('pop-out opens the same device in a window; the legacy panel, its layout, its runtime nodes and its CSS are gone', async () => {
     await mount(<OTTPanel />)
     act(() => q('button[aria-label="Open Overdone in a window"]').click())
     await flush()
@@ -157,6 +159,10 @@ describe('Overdone device in the chain', () => {
     expect(useOverdoneStore.getState().target).toBeNull()
     const src = readFileSync(path.resolve(__dirname, '../../mixer/OTTPanel.jsx'), 'utf8')
     expect(src).not.toMatch(/StockPluginRuntimeRenderer|PluginUIDesigner|ott-/)
-    expect(readFileSync(path.resolve(__dirname, '../../../styles/app.css'), 'utf8')).not.toMatch(/\.ott-/)
+    expect(readFileSync(path.resolve(__dirname, '../../../styles/app.css'), 'utf8')).not.toMatch(/\.ott-|pluginui-overdone/)
+    expect(SHIPPED_LAYOUTS.overdone).toBeUndefined()
+    expect(existsSync(path.resolve(__dirname, '../../../plugin-ui/layouts/overdone.json'))).toBe(false)
+    expect(COMPONENT_REGISTRY.overdoneBandStack).toBeUndefined()
+    expect(COMPONENT_REGISTRY.overdoneCrossovers).toBeUndefined()
   })
 })
