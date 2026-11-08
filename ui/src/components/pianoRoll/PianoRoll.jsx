@@ -10,6 +10,7 @@ import PianoRollScrollbarH from './PianoRollScrollbarH.jsx'
 import PianoRollSplitter, { readStoredLaneHeight } from './PianoRollSplitter.jsx'
 import styles from './PianoRoll.module.css'
 import usePatternContext from './usePatternContext.js'
+import { EmptyState } from '../../ui-kit'
 import { timelineEvents } from '../../timelineEvents.js'
 import { PPQ, snapBeatToGrid, beatsToTicks } from '../../constants/timeline.js'
 import { registerEditorCommand } from '../../windowing/managers/EditorCommandRegistry'
@@ -75,6 +76,17 @@ export async function importFscScore({ file, patternId, xleth, notify, showToast
   }
   notify?.()
   return { status: 'ok', count: notes.length }
+}
+
+// A pattern id the engine can answer for: a non-negative integer that, once the
+// pattern list is known, is still in it. The panel mounts with patternId=null
+// (nothing opened yet) and keeps a stale id after its pattern is deleted;
+// asking getPattern for either is what used to log
+// "timeline_getPattern(id: number)" twice per open.
+export function isUsablePatternId(id, availablePatterns) {
+  if (!Number.isInteger(id) || id < 0) return false
+  if (!Array.isArray(availablePatterns) || availablePatterns.length === 0) return true
+  return availablePatterns.some((p) => p.id === id)
 }
 
 const DEFAULT_PX_PER_BEAT = 80
@@ -223,14 +235,19 @@ export default function PianoRoll({
     }
   }, [])
 
+  const hasPattern = isUsablePatternId(patternId, availablePatterns)
   const fetchPattern = useCallback(async () => {
+    if (!hasPattern) {
+      setPattern(null)
+      return
+    }
     try {
       const p = await window.xleth?.timeline?.getPattern(patternId)
       if (p) setPattern(p)
     } catch (e) {
       console.warn('[PianoRoll] getPattern failed:', e.message)
     }
-  }, [patternId])
+  }, [patternId, hasPattern])
 
   useEffect(() => {
     fetchPattern()
@@ -278,7 +295,7 @@ export default function PianoRoll({
     const ro = new ResizeObserver(update)
     ro.observe(el)
     return () => ro.disconnect()
-  }, [])
+  }, [hasPattern])
 
   // Initial scroll: center around C4 (pitch 60) — instant, not eased; this
   // is the panel settling into place, not a user gesture.
@@ -676,7 +693,7 @@ export default function PianoRoll({
     if (!el) return
     el.addEventListener('wheel', handleWheel, { passive: false })
     return () => el.removeEventListener('wheel', handleWheel)
-  }, [handleWheel])
+  }, [handleWheel, hasPattern])
 
   const notes = pattern?.notes || []
   const { noteColor, ghosts } = usePatternContext(patternId, pattern, { ghostsEnabled: showGhosts })
@@ -784,7 +801,7 @@ export default function PianoRoll({
         onDetach={onDetach}
         onDock={onDock}
         availablePatterns={availablePatterns}
-        currentPatternId={currentPatternId}
+        currentPatternId={hasPattern ? currentPatternId : null}
         onSwitchPattern={onSwitchPattern}
         onNewPattern={onNewPattern}
         regions={regions}
@@ -802,6 +819,15 @@ export default function PianoRoll({
         onRefSlotChange={setRefSlotIndex}
       />
       </div>
+      {!hasPattern ? (
+        <div className={styles.empty}>
+          <EmptyState
+            message="Select a pattern: double-click one in the Patterns list or a pattern block in the arrangement."
+            actionLabel={onNewPattern ? 'New pattern' : undefined}
+            onAction={onNewPattern}
+          />
+        </div>
+      ) : (
       <div
         ref={containerRef}
         className={styles.body}
@@ -916,6 +942,7 @@ export default function PianoRoll({
         />
         <div className={`${styles.cell} ${styles.corner}`} />
       </div>
+      )}
     </div>
   )
 }
