@@ -157,7 +157,7 @@ export default function GlossDevice({ target, registerApplied }) {
 
   return (
     <>
-      <DeviceSection title="Amount" width={108}>
+      <DeviceSection title="Amount" width={124}>
         <AutomatableKnob
           paramId={AMOUNT_ID}
           target={target}
@@ -176,7 +176,7 @@ export default function GlossDevice({ target, registerApplied }) {
         />
       </DeviceSection>
 
-      <DeviceSection title="Bank" width={164}>
+      <DeviceSection title="Bank" width={202}>
         <SegmentedControl
           size="lg"
           label="Bank"

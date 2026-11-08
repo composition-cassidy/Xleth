@@ -159,11 +159,11 @@ export const MODELS = {
         title: 'Time', width: 148,
         items: [
           knob('attack', 'Attack', null, 1, 7, 3, {
-            size: 44, width: 68, format: (v) => v.toFixed(1), caption: (v) => formatDuration(fetAttackSeconds(v) * 1000),
+            size: 36, width: 68, format: (v) => v.toFixed(1), caption: (v) => formatDuration(fetAttackSeconds(v) * 1000),
             hint: 'Attack, 1 slow to 7 fast, as on the unit',
           }),
           knob('release', 'Release', null, 1, 7, 5, {
-            size: 44, width: 68, format: (v) => v.toFixed(1), caption: (v) => formatDuration(fetReleaseSeconds(v) * 1000),
+            size: 36, width: 68, format: (v) => v.toFixed(1), caption: (v) => formatDuration(fetReleaseSeconds(v) * 1000),
             hint: 'Release, 1 slow to 7 fast, as on the unit',
           }),
         ],

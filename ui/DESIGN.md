@@ -729,3 +729,50 @@ one note with any tool; there is no right-drag sweep (no batch remove exists, so
 shows the kit EmptyState ("Select a pattern: …", New pattern).
 
 **Audit.** `p30-pianoroll` shoots 20 to 23 and 24 (Sample view); p01 shoots 04 (no pattern open), p200 shoots 201.
+
+## 16. Character compressors and GLOSS (round 2, step 13)
+
+Glue comp, Opto comp, FET comp and Vari-mu comp share `CompressorCore` in the engine, so they are **one device body**:
+`components/devices/CompressorFamilyDevice.jsx`, driven by a model config (`compressorFamilyModels.js`) whose ranges,
+defaults and index orders mirror each effect's `createLayout()`. A test pins the config to those tables. Registered as
+`glue`, `opto`, `fet`, `varimu` in `DEVICE_BODIES`; their `*CompPanel.jsx` files are thin `FloatingDevice` wrappers.
+
+**Hero.** A gain-reduction well (`DisplayWell`, kit `Meter` with `direction="down"`, a numeric dB readout under it). The
+engine feeds these four effects one meter slot (gain reduction, dB, slot 2) and no history, so **there is no trace**;
+Compressor's `compressor.combined` and Limiter's `limiter.gainReductionHistory` are the only history feeds. Vari-mu in
+Mid-side reads slots 4 and 5 (`VARIMU_GR_MID`, `VARIMU_GR_SIDE` in `constants/meterSlots.js`) and draws two bars with a
+Mid and a Side readout.
+
+**Sections in signal order:** Input, Character, Time, then Sidechain (Glue only) and Output. Opto has no Time section:
+attack, release and ratio are properties of its cell, not controls. The model's **character switch is the hero** (Glue
+ratio, Opto Compress / Limit, FET ratio, Vari-mu time constant): a large `SegmentedControl` in the widest section. Knobs
+stay at normal sizes.
+
+| Model | Input | Character | Time | Output | Width |
+|---|---|---|---|---|---|
+| Glue comp | Threshold | Ratio (hero), Topology, Color | Attack, Release steps | Makeup; Sidechain: high-pass, Freq | 778 |
+| Opto comp | Peak reduction | Mode: Compress / Limit (hero) | none | Gain | 438 |
+| FET comp | Input (no threshold) | Ratio 4 / 8 / 12 / 20 / All (hero) | Attack, Release knobs 1 to 7 | Output | 618 |
+| Vari-mu comp | Input (no threshold) | Mode: Linked / Mid-side | Time constant 1 to 6 (hero) | Output | 662 |
+
+- **Stepped values** are kit `SegmentedControl`s that commit once per click. FET's attack and release are *continuous*
+  knobs numbered as on the unit (1 slow to 7 fast); the time each number means prints under the knob.
+- **Durations.** `format.ts` has no µs or s unit, so captions and the Vari-mu attack / release readout go through
+  `formatDuration` (µs below 0.1 ms, ms below 1 s, else s) with the same number rules as `formatValue`.
+- **Writes** are the legacy panels': `useDeviceParams` previews locally with one engine write per frame and commits once on
+  release. No undo exists for stock-effect parameters (section 9); the devices keep that.
+- **Automation.** The legacy knobs offered right-click "Create automation clip", the automated read-only state and the
+  base-value write. `AutomatableKnob` keeps all three for these bodies (the same `useKnobAutomation` hook, the same
+  `paramId` + target opt-in); the kit `Knob` only gained an `onContextMenu` pass-through. The other seven devices do not
+  have it yet.
+
+**GLOSS** (`GlossDevice.jsx`): Amount (the engine's band mix, 0 to 100 %, default 0) as the one oversized knob; banks A to D
+as a `SegmentedControl` that loads the factory APEX presets exactly as the legacy panel did (Amount untouched, the lit
+letter sticky per instance, derived from the engine state when there is no memory). No gain-reduction readout: the legacy
+panel never had one. GLOSS shares the APEX store (the target's `skin` picks the editor) and registers
+`presetType: 'apex'`, so the title bar's presets and A/B use the APEX adapter and keep the curves.
+
+**Verification.** Measured on the real devices in an isolated harness (stub `window.xleth`): every device has 2 distinct
+font sizes (11 and 12px), 0 text under 10px, 0 under 4.5:1, no letter-spaced uppercase. The 2026-11-07 editors had 4 to 6
+sizes. The full audit capture (shots 40-*, 44 to 47, 50) needs the engine; its phase p10 now labels these five as kit
+devices.
