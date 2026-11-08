@@ -8,6 +8,7 @@ import { buildEffectChainMenuItems, getEffectChainRowKey, openFxGraphWorkspace }
 import TrackContextMenu from '../timeline/TrackContextMenu.jsx'
 import useTrackIdentityColors from '../inspector/useTrackIdentityColors.js'
 import EffectDevice from './EffectDevice.jsx'
+import ChainHead from './ChainHead.jsx'
 import styles from './DeviceChain.module.css'
 
 const EMPTY_CHAIN = []
@@ -134,12 +135,17 @@ export default function DeviceChain() {
 
   if (fxMode === 'graph') {
     return (
-      <div className={styles.empty}>
-        <EmptyState
-          message={`${chainName} routes its effects in the FX Graph, so there is no chain to show here.`}
-          actionLabel="Open FX Graph"
-          onAction={() => openFxGraphWorkspace()}
-        />
+      <div className={styles.scroller} data-testid="xleth-device-chain">
+        <div className={styles.row}>
+          <ChainHead name={chainName} identityColor={identityColor} videoDisabled={master} />
+          <div className={styles.empty}>
+            <EmptyState
+              message={`${chainName} routes its effects in the FX Graph, so there is no chain to show here.`}
+              actionLabel="Open FX Graph"
+              onAction={() => openFxGraphWorkspace()}
+            />
+          </div>
+        </div>
       </div>
     )
   }
@@ -147,9 +153,7 @@ export default function DeviceChain() {
   return (
     <div className={styles.scroller} data-testid="xleth-device-chain" aria-label={`${chainName} devices`} role="list">
       <div className={styles.row} ref={rowRef}>
-        <div className={styles.head} style={identityColor ? { '--chain-id': identityColor } : undefined} title={chainName}>
-          <span className={styles.headName}>{chainName}</span>
-        </div>
+        <ChainHead name={chainName} identityColor={identityColor} videoDisabled={master} />
         {displayChain.map((effect, index) => {
           const live = Number.isInteger(effect.nodeId) && effect.nodeId >= 0
           const moveItems = live ? [

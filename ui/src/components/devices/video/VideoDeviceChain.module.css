@@ -1,0 +1,21 @@
+@layer kit {
+  /* The pinned per-note group at the start of the Video chain: a caption strip
+   * over its devices, set off from the reorderable chain by a divider. */
+  .group {
+    position: relative;
+    display: flex;
+    align-items: flex-start;
+    gap: 2px;
+    padding-right: var(--space-1);
+    margin-right: 2px;
+    border-right: 1px solid var(--ui-boundary);
+  }
+
+  .empty {
+    display: flex;
+    align-items: center;
+    width: 320px;
+    height: var(--device-h);
+    padding: var(--space-2);
+  }
+}

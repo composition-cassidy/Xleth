@@ -29,30 +29,6 @@
     outline: 1px solid var(--ui-select);
   }
 
-  /* Which chain this is: the track name, vertical, on its identity colour edge. */
-  .head {
-    box-sizing: border-box;
-    display: flex;
-    flex: 0 0 var(--device-fold-w);
-    justify-content: center;
-    height: var(--device-h);
-    padding: var(--space-2) 0;
-    border-left: 2px solid var(--chain-id, var(--ui-g4));
-    background: var(--ui-g2);
-  }
-
-  .headName {
-    overflow: hidden;
-    color: var(--ui-ink);
-    font-family: var(--ui-font);
-    font-size: var(--type-12);
-    font-weight: var(--weight-semibold);
-    white-space: nowrap;
-    text-overflow: ellipsis;
-    writing-mode: vertical-rl;
-    transform: rotate(180deg);
-  }
-
   /* The end of the chain: plain text, no illustration. Opens the FX picker. */
   .drop {
     box-sizing: border-box;
@@ -80,8 +56,10 @@
   }
 
   .empty {
-    flex: 1 1 auto;
+    display: flex;
+    align-items: center;
+    width: 360px;
+    height: var(--device-h);
     padding: var(--space-2);
-    background: var(--ui-g1);
   }
 }

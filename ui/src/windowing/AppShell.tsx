@@ -31,6 +31,7 @@ import {
   type PanelId,
 } from './registry/panelCatalog';
 import EffectEditorHost from '../components/mixer/EffectEditorHost.jsx';
+import VideoDeviceWindow from '../components/devices/video/VideoDeviceWindow.jsx';
 import ClipFxEditorHost from '../components/timeline/ClipFxEditorHost.jsx';
 import './components/windowing.css';
 import styles from './AppShell.module.css';
@@ -258,6 +259,7 @@ export function AppShell() {
           `transform`. The Mixer Chain and FX Graph only *request* editors via
           their effect stores; this host owns the editors' mounting. */}
       {hasDom ? <EffectEditorHost /> : null}
+      {hasDom ? <VideoDeviceWindow /> : null}
       {/* Global per-clip FX editor host. Same containment rule as
           EffectEditorHost above: mounted at the transform-free windowing root and
           OUTSIDE every PanelFrame subtree, so a floating Timeline's `transform`

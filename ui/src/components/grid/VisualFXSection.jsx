@@ -3,19 +3,14 @@ import EffectRow from './EffectRow.jsx'
 import VisualFXSectionHeader from './VisualFXSectionHeader.jsx'
 import VisualFXAddDropdown from './VisualFXAddDropdown.jsx'
 import NonChainableEffectParams from './NonChainableEffectParams.jsx'
-import ChainableEffectParams from './ChainableEffectParams.jsx'
+import { Button } from '../../ui-kit'
+import { openVideoDevicesFor } from '../devices/video/openVideoDevices.js'
 
 const NC_ITEMS = [
   { id: 'bounce',     label: 'Bounce',         field: 'bounce',     ipc: 'setTrackBounceSettings'     },
   { id: 'zoomPanRot', label: 'Zoom/Pan/Rot',   field: 'zoomPanRot', ipc: 'setTrackZoomPanRotSettings' },
   { id: 'pingPong',   label: 'Ping-Pong Loop', field: 'pingPong',   ipc: 'setTrackPingPongSettings'   },
 ]
-
-const CHAIN_NAMES = {
-  0: 'Desaturation', 1: 'Tint', 2: 'Brightness & Contrast',
-  3: 'TV Simulator', 4: 'Zoom/Pan/Rot (per-cell)', 5: 'Chroma Key',
-  6: 'Outline', 7: 'Drop Shadow', 8: 'Visual Echo',
-}
 
 export default function VisualFXSection({ track, fetchTracks }) {
   const [shownList, setShownList] = useState(() => {
@@ -28,8 +23,9 @@ export default function VisualFXSection({ track, fetchTracks }) {
   const [recentlyAdded,  setRecentlyAdded]  = useState(null)
   const [dropdownOpen,   setDropdownOpen]   = useState(false)
 
+  // The visual effect chain lives in the Devices tab (Video view) now.
   const chain      = track.visualEffectChain ?? []
-  const shownCount = shownList.length + chain.length
+  const shownCount = shownList.length
 
   // ── Non-chainable ──────────────────────────────────────────────────────────
 
@@ -58,32 +54,6 @@ export default function VisualFXSection({ track, fetchTracks }) {
     fetchTracks()
   }, [track, fetchTracks])
 
-  // ── Chainable ──────────────────────────────────────────────────────────────
-
-  const handleAddChain = useCallback(async (typeId) => {
-    if (chain.some(fx => fx.type === typeId)) {
-      const name = CHAIN_NAMES[typeId] ?? 'effect'
-      if (!window.confirm(`This track already has a ${name}. Add another?`)) return false
-    }
-    const newIdx = chain.length
-    await window.xleth?.timeline?.addVisualEffect(track.id, typeId)
-    setRecentlyAdded({ kind: 'chain', idx: newIdx })
-    fetchTracks()
-    return true
-  }, [track.id, chain, fetchTracks])
-
-  const handleRemoveChain = useCallback(async (fxIdx) => {
-    await window.xleth?.timeline?.removeVisualEffect(track.id, fxIdx)
-    fetchTracks()
-  }, [track.id, fetchTracks])
-
-  const handleToggleChain = useCallback(async (fxIdx) => {
-    const fx = chain[fxIdx]
-    if (!fx) return
-    await window.xleth?.timeline?.setVisualEffectBypassed(track.id, fxIdx, !fx.bypassed)
-    fetchTracks()
-  }, [track.id, chain, fetchTracks])
-
   // ── Reorder ────────────────────────────────────────────────────────────────
 
   const handleNCReorder = useCallback((fromIdx, insertBefore) => {
@@ -96,24 +66,10 @@ export default function VisualFXSection({ track, fetchTracks }) {
     })
   }, [])
 
-  const handleChainReorder = useCallback(async (fromIdx, insertBefore) => {
-    const n = chain.length
-    // Build identity index array, then splice to get the permutation
-    const indices = Array.from({ length: n }, (_, i) => i)
-    const [moved] = indices.splice(fromIdx, 1)
-    const at = insertBefore > fromIdx ? insertBefore - 1 : insertBefore
-    indices.splice(at, 0, moved)
-    // indices[i] is the original chain index that should now be at position i
-    await window.xleth?.timeline?.setTrackVisualEffectChainOrder(track.id, indices)
-    fetchTracks()
-  }, [track.id, chain, fetchTracks])
-
   // ── Clear all ──────────────────────────────────────────────────────────────
 
   const handleClearAll = useCallback(async () => {
     if (shownCount > 3 && !window.confirm('Clear all visual effects on this track?')) return
-    for (let i = chain.length - 1; i >= 0; --i)
-      await window.xleth?.timeline?.removeVisualEffect(track.id, i)
     for (const id of shownList) {
       const item = NC_ITEMS.find(nc => nc.id === id)
       if (item)
@@ -122,7 +78,7 @@ export default function VisualFXSection({ track, fetchTracks }) {
     setShownList([])
     setRecentlyAdded(null)
     fetchTracks()
-  }, [track, chain, shownList, shownCount, fetchTracks])
+  }, [track, shownList, shownCount, fetchTracks])
 
   return (
     <div className="fx-section">
@@ -137,7 +93,6 @@ export default function VisualFXSection({ track, fetchTracks }) {
           open={dropdownOpen}
           shownList={shownList}
           onAddNonChainable={(id) => { setDropdownOpen(false); handleAddNC(id) }}
-          onAddChainable={handleAddChain}
           onClose={() => setDropdownOpen(false)}
         />
       </div>
@@ -165,26 +120,10 @@ export default function VisualFXSection({ track, fetchTracks }) {
           )
         })}
 
-        {(shownList.length > 0 || chain.length > 0) && <div className="fx-divider" />}
-
-        {chain.map((fx, fxIdx) => (
-          <EffectRow
-            key={fxIdx}
-            glyph="●"
-            enabled={!fx.bypassed}
-            label={CHAIN_NAMES[fx.type] ?? `Effect ${fx.type}`}
-            hasParams={true}
-            defaultExpanded={recentlyAdded?.kind === 'chain' && recentlyAdded.idx === fxIdx}
-            groupKind="chain"
-            sourceIndex={fxIdx}
-            onReorder={handleChainReorder}
-            onToggle={() => handleToggleChain(fxIdx)}
-            onRemove={() => handleRemoveChain(fxIdx)}
-          >
-            <ChainableEffectParams fx={fx} trackId={track.id} fxIdx={fxIdx}
-              fetchTracks={fetchTracks} />
-          </EffectRow>
-        ))}
+        <div className="fx-divider" />
+        <Button size="sm" onClick={() => openVideoDevicesFor(track.id)}>
+          {`Chain effects (${chain.length}) in Devices`}
+        </Button>
       </div>
     </div>
   )

@@ -6,20 +6,8 @@ const NC_ITEMS = [
   { id: 'pingPong',   label: 'Ping-Pong Loop'  },
 ]
 
-const C_ITEMS = [
-  { typeId: 0, label: 'Desaturation'            },
-  { typeId: 1, label: 'Tint'                    },
-  { typeId: 2, label: 'Brightness & Contrast'   },
-  { typeId: 3, label: 'TV Simulator'            },
-  { typeId: 4, label: 'Zoom/Pan/Rot (per-cell)' },
-  { typeId: 5, label: 'Chroma Key'              },
-  { typeId: 6, label: 'Outline'                 },
-  { typeId: 7, label: 'Drop Shadow'             },
-  { typeId: 8, label: 'Visual Echo'             },
-]
-
 export default function VisualFXAddDropdown({
-  open, shownList, onAddNonChainable, onAddChainable, onClose,
+  open, shownList, onAddNonChainable, onClose,
 }) {
   const ref = useRef(null)
 
@@ -52,19 +40,6 @@ export default function VisualFXAddDropdown({
           </div>
         )
       })}
-      <div className="fx-dropdown-divider" />
-      {C_ITEMS.map(item => (
-        <div
-          key={item.typeId}
-          className="fx-dropdown-item"
-          onClick={async () => {
-            const added = await onAddChainable(item.typeId)
-            if (added !== false) onClose()
-          }}
-        >
-          {item.label}
-        </div>
-      ))}
     </div>
   )
 }

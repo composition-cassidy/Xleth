@@ -4574,47 +4574,6 @@ html, body, #root {
   opacity: 0.8;
 }
 
-/* ── Chroma Key: colour swatch + eyedropper share the middle grid column ──── */
-.fx-chroma-key-row {
-  display: flex;
-  gap: 4px;
-  align-items: center;
-  min-width: 0;
-}
-
-.fx-chroma-key-row input[type=color] {
-  flex: 1 1 auto;
-}
-
-.fx-eyedropper-btn {
-  flex: 0 0 auto;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  width: 22px;
-  height: 22px;
-  padding: 0;
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: 2px;
-  background: var(--theme-bg-elevated);
-  color: var(--theme-text-muted);
-  cursor: pointer;
-}
-
-.fx-eyedropper-btn:hover:not(:disabled) {
-  color: var(--theme-text);
-  border-color: var(--theme-border);
-}
-
-/* Armed: the next preview click resolves the pick. */
-.fx-eyedropper-btn.active {
-  color: var(--theme-accent);
-  border-color: var(--theme-accent);
-}
-
-.fx-eyedropper-btn:disabled {
-  cursor: default;
-}
 
 /* Dir buttons inside fx-params-grid */
 .fx-dir-group {
@@ -4663,12 +4622,6 @@ html, body, #root {
   color: var(--theme-accent);
 }
 
-.fx-dropdown-divider {
-  height: 0;
-  border: none;
-  border-top: 0.5px solid var(--theme-border-subtle);
-  margin: 4px 0;
-}
 
 /* ── Phase 4 drag-and-drop ───────────────────────────────────────────────── */
 
@@ -11363,10 +11316,6 @@ input[type="radio"] {
   color: var(--xleth-flat-accent);
 }
 
-.fx-dropdown-divider {
-  border-top-color: var(--xleth-flat-border);
-  margin: 5px 0;
-}
 
 .track-color-popover {
   min-width: 132px;
@@ -12099,10 +12048,6 @@ input[type="radio"] {
   color: var(--xleth-flat-accent);
 }
 
-.fx-section-header-wrap .fx-dropdown-divider {
-  margin: 5px 0;
-  border-top: 1px solid var(--xleth-flat-border);
-}
 
 .fx-rows {
   gap: 4px;
