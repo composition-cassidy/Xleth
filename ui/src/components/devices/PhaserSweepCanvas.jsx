@@ -1,5 +1,5 @@
-// ─── PhaserVisualizerCanvas.jsx ───────────────────────────────────────────────
-// Flat, hard-edged log-frequency response for the Phaser panel: a dry baseline
+// ─── PhaserSweepCanvas.jsx ────────────────────────────────────────────────────
+// Flat, hard-edged log-frequency response for the Phaser device: a dry baseline
 // with sweeping notch dips (phase-cancellation bands) moving inside the sweep
 // range. The sweep range itself is the control surface for freq_low/freq_high —
 // its edges are draggable directly on the canvas, following the same
@@ -17,16 +17,21 @@
 // edge zero-lag feedback without waiting on a React round trip.
 //
 // Data source: param-driven only. No engine data, no IPC calls except the
-// freq_low/freq_high writes made through onPreview/onCommit.
+// freq_low/freq_high writes made through onPreview/onCommit. The notches are a
+// model of the sweep (rate, depth, width, stages, feedback polarity), not a
+// measurement of the audio.
 //
 // Lifecycle note:
-//   PhaserPanel returns null when target is null, which fully unmounts this
-//   component. React calls the useEffect cleanup → cancelled = true +
-//   cancelAnimationFrame → zero background animation after close.
+//   The device body unmounts when the device is folded, popped out or removed;
+//   the effect cleanup then stops the loop. While mounted, the loop pauses when
+//   the canvas is scrolled out of view (visibleLoop.js).
 
 import { useEffect, useRef, useCallback } from 'react'
-import { clamp, freqToNorm, normToFreq, pickFilterHandle, formatHz } from './mixerFilterMath.js'
-import { withAlpha, readMixerCanvasTheme, syncCanvasSize, MONO, MONO_SM } from './mixerCanvasTheme.js'
+import { formatValue, hintAttrs } from '../../ui-kit'
+import { clamp, freqToNorm, normToFreq, pickFilterHandle } from '../mixer/mixerFilterMath.js'
+import { withAlpha, readMixerCanvasTheme, syncCanvasSize } from '../mixer/mixerCanvasTheme.js'
+import { uiCanvasFont } from '../../styles/typography.js'
+import { startVisibleLoop } from './visibleLoop.js'
 
 // ── Pure helpers (exported for unit tests) ───────────────────────────────────
 
@@ -112,7 +117,6 @@ function gaussianNotch(logFreq, logCenter, sigma) {
 export default function PhaserVisualizerCanvas({ params, onPreview, onCommit }) {
   const canvasRef = useRef(null)
   const paramsRef = useRef(params)
-  const rafRef    = useRef(0)
 
   // Drag/hover state lives in refs, not React state — the rAF loop already
   // repaints every frame, so a ref read there is zero-lag and needs no extra
@@ -133,7 +137,6 @@ export default function PhaserVisualizerCanvas({ params, onPreview, onCommit }) 
     const canvas = canvasRef.current
     if (!canvas) return
 
-    let cancelled = false
     const t0 = performance.now()
 
     const MAX_SAMPLES = 700
@@ -141,12 +144,10 @@ export default function PhaserVisualizerCanvas({ params, onPreview, onCommit }) 
     const samplesR = new Float32Array(MAX_SAMPLES)
 
     function draw(now) {
-      if (cancelled) return
-
       const p = paramsRef.current
       const { cssW, cssH, dpr } = syncCanvasSize(canvas, 420, 176)
       const ctx = canvas.getContext('2d', { alpha: false })
-      if (!ctx) { rafRef.current = requestAnimationFrame(draw); return }
+      if (!ctx) return
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
       const th = readMixerCanvasTheme(canvas)
@@ -175,11 +176,11 @@ export default function PhaserVisualizerCanvas({ params, onPreview, onCommit }) 
       const wetAlpha = 0.25 + mixN * 0.75
 
       // ── Layout — fills the stage edge to edge ─────────────────────────────
-      const LABEL_H = 13
+      const LABEL_H = 16
       const drawX0 = PAD_X
       const drawX1 = cssW - PAD_X
       const drawW  = drawX1 - drawX0
-      const respTop = 12
+      const respTop = 14
       const respBot = cssH - LABEL_H
       const respH   = respBot - respTop
       const baseline = respTop + respH * 0.42
@@ -335,35 +336,27 @@ export default function PhaserVisualizerCanvas({ params, onPreview, onCommit }) 
       drawHandle(freqHi, Math.round(bandX1) + 0.5, activeHandle === 'hi')
 
       // ── Frequency readouts, pinned to the plot corners ─────────────────────
-      ctx.font = MONO
+      ctx.font = uiCanvasFont('500 10px')
       ctx.textBaseline = 'top'
       ctx.textAlign = 'left'
-      ctx.fillStyle = activeHandle === 'lo' ? th.accent : withAlpha(th.textMuted, 1)
-      ctx.fillText(`LOW ${formatHz(freqLo)}`, drawX0 + 2, respTop + 2)
+      ctx.fillStyle = activeHandle === 'lo' ? th.accent : th.textMuted
+      ctx.fillText(`Low ${formatValue(freqLo, 'Hz')}`, drawX0 + 2, respTop + 10)
       ctx.textAlign = 'right'
-      ctx.fillStyle = activeHandle === 'hi' ? th.accent : withAlpha(th.textMuted, 1)
-      ctx.fillText(`HIGH ${formatHz(freqHi)}`, drawX1 - 2, respTop + 2)
+      ctx.fillStyle = activeHandle === 'hi' ? th.accent : th.textMuted
+      ctx.fillText(`High ${formatValue(freqHi, 'Hz')}`, drawX1 - 2, respTop + 10)
 
       // ── Frequency axis tick labels ─────────────────────────────────────────
       const LABEL_FREQS = [20,    100,   1000, 4000, 16000]
       const LABEL_TEXTS = ['20', '100',  '1k', '4k', '16k']
-      ctx.font = MONO_SM
       ctx.textAlign = 'center'
       ctx.textBaseline = 'top'
-      ctx.fillStyle = withAlpha(th.textSubtle, 0.9)
+      ctx.fillStyle = th.textSubtle
       for (let i = 0; i < LABEL_FREQS.length; i++) {
         ctx.fillText(LABEL_TEXTS[i], fToX(LABEL_FREQS[i]), respBot + 3)
       }
-
-      rafRef.current = requestAnimationFrame(draw)
     }
 
-    rafRef.current = requestAnimationFrame(draw)
-
-    return () => {
-      cancelled = true
-      cancelAnimationFrame(rafRef.current)
-    }
+    return startVisibleLoop(canvas, draw)
   }, []) // Empty deps — all per-frame data flows through refs.
 
   // ── Drag interaction — mirrors DelayFilterCurve's contract exactly ────────
@@ -423,13 +416,15 @@ export default function PhaserVisualizerCanvas({ params, onPreview, onCommit }) 
   return (
     <canvas
       ref={canvasRef}
-      className="phaser-stage-canvas"
+      className="phaser-sweep-canvas"
+      role="img"
+      aria-label="Phaser sweep. Drag the band edges to set Low and High."
+      {...hintAttrs({ hint: 'Drag the sweep band edges to set Low and High', hintMods: 'Drag: move an edge' })}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerUp}
       onPointerLeave={() => { if (!dragRef.current) hoverRef.current = null }}
-      title="Drag the sweep band edges to set FREQ LOW / FREQ HIGH"
       style={{ display: 'block', width: '100%', height: '100%', cursor: 'ew-resize', touchAction: 'none' }}
     />
   )

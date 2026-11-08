@@ -22,6 +22,10 @@ const RANGES = {
   mix: [0, 100],
 }
 
+// The engine's NormalisableRange skew, for the automation maths only (the knob's
+// own travel stays linear, as before).
+const SKEW = { rate: 0.5 }
+
 const WELL_W = 300
 const voiceCount = plainFormat(0)
 
@@ -39,6 +43,7 @@ export default function ChorusDevice({ target, registerApplied }) {
       key={id}
       paramId={id}
       target={target}
+      skew={SKEW[id] ?? 1}
       label={label}
       value={params[id]}
       min={RANGES[id][0]}
