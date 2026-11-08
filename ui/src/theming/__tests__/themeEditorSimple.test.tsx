@@ -34,7 +34,7 @@ describe('theme editor Simple mode', () => {
   });
 
   it('stops the contrast slider at the Floor-preserving minimum', () => {
-    expect(html).toMatch(/id="simple-contrast"[^>]*min="80"/);
+    expect(html).toMatch(/id="simple-contrast"[^>]*aria-valuemin="80"/);
   });
 
   it('shows live contrast readouts for ink, ink 3 and boundary against the panel', () => {

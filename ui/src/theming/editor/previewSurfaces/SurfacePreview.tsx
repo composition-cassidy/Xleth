@@ -1,20 +1,22 @@
+import styles from './Preview.module.css'
+
+const SURFACES = [
+  ['Primary', '--theme-bg-primary'],
+  ['Surface', '--theme-bg-surface'],
+  ['Secondary', '--theme-bg-secondary'],
+  ['Tertiary', '--theme-bg-tertiary'],
+] as const
+
 export default function SurfacePreview() {
   return (
-    <div className="ps-card">
-      <div className="ps-label">Surfaces</div>
-      <div className="ps-surface-stack">
-        <div className="ps-swatch" style={{ background: 'var(--theme-bg-primary)' }}>
-          <span className="ps-swatch-label">Primary</span>
-        </div>
-        <div className="ps-swatch" style={{ background: 'var(--theme-bg-surface)' }}>
-          <span className="ps-swatch-label">Surface</span>
-        </div>
-        <div className="ps-swatch" style={{ background: 'var(--theme-bg-secondary)' }}>
-          <span className="ps-swatch-label">Secondary</span>
-        </div>
-        <div className="ps-swatch" style={{ background: 'var(--theme-bg-tertiary)' }}>
-          <span className="ps-swatch-label">Tertiary</span>
-        </div>
+    <div className={styles.card}>
+      <div className={styles.cardLabel}>Surfaces</div>
+      <div className={styles.swatches}>
+        {SURFACES.map(([label, token]) => (
+          <div key={token} className={styles.swatch} style={{ background: `var(${token})` }}>
+            <span className={styles.swatchLabel}>{label}</span>
+          </div>
+        ))}
       </div>
     </div>
   )

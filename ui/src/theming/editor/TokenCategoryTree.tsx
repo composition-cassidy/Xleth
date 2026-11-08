@@ -1,6 +1,8 @@
 import { useState } from 'react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
 import type { SubsystemMeta, TokenDef } from '../tokens/catalog'
 import TokenRow from './TokenRow'
+import styles from './ThemeEditor.module.css'
 
 interface Props {
   category: string
@@ -29,30 +31,27 @@ export default function TokenCategoryTree({
   if (relevantSubs.length === 0) return null
 
   return (
-    <div className="tct-category">
-      <button className="tct-category-header" onClick={() => setCategoryOpen(o => !o)}>
-        <span className="tct-chevron">{categoryOpen ? '▾' : '▸'}</span>
-        <span className="tct-category-label">{category}</span>
+    <div className={styles.category}>
+      <button type="button" className={styles.treeHeader} aria-expanded={categoryOpen} onClick={() => setCategoryOpen(o => !o)}>
+        {categoryOpen ? <ChevronDown size={12} aria-hidden="true" /> : <ChevronRight size={12} aria-hidden="true" />}
+        <span className={styles.categoryName}>{category}</span>
       </button>
 
       {categoryOpen && relevantSubs.map(sub => {
         const tokens = bySubsystem[sub.key] ?? []
         const isOpen = openSubs.has(sub.key)
         return (
-          <div key={sub.key} className="tct-subsystem">
-            <button
-              className={`tct-subsystem-header ${sub.plannedDeferred ? 'tct-subsystem-header--deferred' : ''}`}
-              onClick={() => toggleSub(sub.key)}
-            >
-              <span className="tct-chevron">{isOpen ? '▾' : '▸'}</span>
-              <span className="tct-subsystem-label">
+          <div key={sub.key} className={styles.subsystem}>
+            <button type="button" className={styles.treeHeader} aria-expanded={isOpen} onClick={() => toggleSub(sub.key)}>
+              {isOpen ? <ChevronDown size={12} aria-hidden="true" /> : <ChevronRight size={12} aria-hidden="true" />}
+              <span className={styles.subName} data-deferred={sub.plannedDeferred || undefined}>
                 {sub.displayName}
-                {sub.plannedDeferred && <span className="tct-deferred-badge"> (coming soon)</span>}
+                {sub.plannedDeferred && ' (coming soon)'}
               </span>
-              <span className="tct-token-count">{tokens.length}</span>
+              <span className={styles.count}>{tokens.length}</span>
             </button>
             {isOpen && (
-              <div className="tct-token-list">
+              <div className={styles.tokens}>
                 {tokens.map(token => (
                   <TokenRow
                     key={token.name}

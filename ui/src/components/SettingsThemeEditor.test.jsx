@@ -59,7 +59,7 @@ describe('Settings > Appearance hosts the Theme Editor', () => {
       const button = [...container.querySelectorAll('button')].find((b) => b.textContent === 'Open editor')
       expect(button).toBeTruthy()
       expect(button.getAttribute('aria-expanded')).toBe('false')
-      expect(container.querySelector('.theme-editor-content')).toBeNull()
+      expect(container.querySelector('[data-theme-editor-host]')).toBeNull()
     } finally {
       await cleanup()
     }
@@ -75,21 +75,20 @@ describe('Settings > Appearance hosts the Theme Editor', () => {
       const find = (text) => [...container.querySelectorAll('button')].find((b) => b.textContent === text)
       await act(async () => find('Open editor').click())
 
-      const editor = container.querySelector('.theme-editor-content')
+      const editor = container.querySelector('[data-theme-editor-host]')
       expect(editor).not.toBeNull()
-      expect(editor.classList.contains('theme-editor-content--embedded')).toBe(true)
-      // Embedded, so the overlay chrome (header, close X, backdrop) is not rendered.
-      expect(container.querySelector('.theme-editor-backdrop')).toBeNull()
-      expect(container.querySelector('.theme-editor-header')).toBeNull()
+      expect(editor.querySelector('[role="tablist"]')).not.toBeNull()
+      // Embedded in Settings: there is no overlay of its own (no dialog inside the host).
+      expect(editor.querySelector('[role="dialog"]')).toBeNull()
       // Its two modes, theme list, preview and the Apply / Revert footer are all reachable.
       expect(editor.textContent).toContain('Simple')
       expect(editor.textContent).toContain('Advanced')
       const inEditor = (text) => [...editor.querySelectorAll('button')].some((b) => b.textContent === text)
-      for (const text of ['Apply', 'Revert', 'Save as New Theme']) expect(inEditor(text)).toBe(true)
+      for (const text of ['Apply theme', 'Revert', 'Save as new theme']) expect(inEditor(text)).toBe(true)
       expect(find('Close editor').getAttribute('aria-expanded')).toBe('true')
 
       await act(async () => find('Close editor').click())
-      expect(container.querySelector('.theme-editor-content')).toBeNull()
+      expect(container.querySelector('[data-theme-editor-host] [role="tablist"]')).toBeNull()
       expect(find('Open editor')).toBeTruthy()
     } finally {
       await cleanup()
@@ -106,7 +105,7 @@ describe('Settings > Appearance hosts the Theme Editor', () => {
     try {
       const find = (text) => [...container.querySelectorAll('button')].find((b) => b.textContent === text)
       await act(async () => find('Open editor').click())
-      const editorApply = [...container.querySelectorAll('.theme-editor-footer .theme-editor-btn--primary')].find((b) => b.textContent === 'Apply')
+      const editorApply = [...container.querySelectorAll('[data-theme-editor-host] button')].find((b) => b.textContent === 'Apply theme')
       await act(async () => editorApply.click())
       expect(ctx.setTheme).toHaveBeenCalledTimes(1)
       expect(ctx.setTheme.mock.calls[0][0]).toBe(SLUG)

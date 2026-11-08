@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { formatValue } from '../../ui-kit/format'
+import NumberBox from '../../ui-kit/NumberBox'
 import {
   APPEARANCE_CONTRAST_MAX,
   APPEARANCE_CONTRAST_MIN,
@@ -24,35 +25,37 @@ interface Props {
 interface SliderProps {
   id: string
   label: string
+  /** Plain-language note beside the control: what it does and where it stops. */
   hint: string
   min: number
   max: number
   step: number
   value: number
-  display: string
+  format: (v: number) => string
   onChange: (v: number) => void
-  trackImage?: string
 }
 
-function Slider({ id, label, hint, min, max, step, value, display, onChange, trackImage }: SliderProps) {
+/** A label, a kit NumberBox (drag it or type a value) and a one-line note. */
+function Slider({ id, label, hint, min, max, step, value, format, onChange }: SliderProps) {
   return (
     <div className={styles.row}>
-      <label className={styles.label} htmlFor={id}>{label}</label>
-      <input
+      <span className={styles.label}>{label}</span>
+      <NumberBox
         id={id}
-        type="range"
-        className={styles.range}
+        label={label}
+        hideLabel
+        width={88}
         min={min}
         max={max}
         step={step}
+        format={format}
+        quantize={(v) => Math.round(v / step) * step}
         value={value}
-        style={trackImage ? ({ '--range-track-image': trackImage } as React.CSSProperties) : undefined}
-        aria-valuetext={`${label}, ${display}`}
-        data-hint={label}
-        data-hint-mods={hint}
-        onChange={(e) => onChange(Number(e.target.value))}
+        onChange={onChange}
+        hint={label}
+        hintMods={hint}
       />
-      <span className={styles.value}>{display}</span>
+      <span className={styles.note}>{hint}</span>
     </div>
   )
 }
@@ -90,7 +93,6 @@ export default function SimpleMode({ values, onChromeChange, onTokenChange, onNe
 
   const accent = hex6(values['--theme-accent'], '#33CED6')
   const danger = hex6(values['--theme-danger'], '#FF4757')
-  const tintPct = formatValue(knobs.tint, '%')
   const overCap = knobs.tint > 100
 
   return (
@@ -103,16 +105,19 @@ export default function SimpleMode({ values, onChromeChange, onTokenChange, onNe
         ] as const).map(([label, token, value, hint]) => (
           <div className={styles.row} key={token}>
             <label className={styles.label} htmlFor={`simple-${token}`}>{label}</label>
-            <input
-              id={`simple-${token}`}
-              type="color"
-              className={styles.color}
-              value={value}
-              data-hint={label}
-              data-hint-mods={hint}
-              onChange={(e) => onTokenChange(token, e.target.value)}
-            />
-            <span className={styles.value}>{value.toUpperCase()}</span>
+            <span className={styles.colourCell}>
+              <input
+                id={`simple-${token}`}
+                type="color"
+                className={styles.color}
+                value={value}
+                data-hint={label}
+                data-hint-mods={hint}
+                onChange={(e) => onTokenChange(token, e.target.value)}
+              />
+              <span className={styles.value}>{value.toUpperCase()}</span>
+            </span>
+            <span className={styles.note}>{hint}</span>
           </div>
         ))}
       </section>
@@ -125,7 +130,7 @@ export default function SimpleMode({ values, onChromeChange, onTokenChange, onNe
           hint="Lowest is near-black with light text; highest is light grey with dark text"
           min={0} max={100} step={1}
           value={knobs.brightness}
-          display={formatValue(knobs.brightness, '%')}
+          format={(v) => formatValue(v, '%')}
           onChange={(v) => set({ brightness: v })}
         />
         <Slider
@@ -134,18 +139,19 @@ export default function SimpleMode({ values, onChromeChange, onTokenChange, onNe
           hint="Separation between text and its panel; never below the 4.5 to 1 floor"
           min={APPEARANCE_CONTRAST_MIN} max={APPEARANCE_CONTRAST_MAX} step={5}
           value={knobs.contrast}
-          display={formatValue(knobs.contrast, '%')}
+          format={(v) => formatValue(v, '%')}
           onChange={(v) => set({ contrast: v })}
         />
         <Slider
           id="simple-tint"
           label="Tint"
-          hint={`Colour cast on panels. 100 % is the neutral cap (chroma ${TINT_CHROMA_CAP}); past it the chrome is tinted`}
+          hint={overCap
+            ? `Past the neutral cap (chroma ${TINT_CHROMA_CAP}): the chrome is tinted`
+            : `Colour cast on panels. 100 % is the neutral cap (chroma ${TINT_CHROMA_CAP}); past it the chrome is tinted`}
           min={0} max={APPEARANCE_TINT_MAX} step={5}
           value={knobs.tint}
-          display={overCap ? `${tintPct} (past cap)` : tintPct}
+          format={(v) => formatValue(v, '%')}
           onChange={(v) => set({ tint: v })}
-          trackImage={`linear-gradient(to right, var(--ui-g3) 0%, var(--ui-g3) ${(100 / APPEARANCE_TINT_MAX) * 100}%, var(--ui-rec-text) 100%)`}
         />
         <Slider
           id="simple-tint-hue"
@@ -153,7 +159,7 @@ export default function SimpleMode({ values, onChromeChange, onTokenChange, onNe
           hint="Direction of the cast. No effect at 0 %"
           min={0} max={359} step={1}
           value={knobs.hue}
-          display={`${knobs.hue}°`}
+          format={(v) => `${Math.round(v)}°`}
           onChange={(v) => set({ hue: v })}
         />
       </section>

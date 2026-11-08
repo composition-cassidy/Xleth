@@ -1,3 +1,6 @@
+import type { CSSProperties } from 'react'
+import styles from './Preview.module.css'
+
 const TRACKS = [
   { name: 'Vocals', color: 'var(--theme-accent)' },
   { name: 'Drums',  color: 'var(--theme-smartbalance-band-sub)' },
@@ -6,16 +9,16 @@ const TRACKS = [
 
 export default function TimelinePreview() {
   return (
-    <div className="ps-card">
-      <div className="ps-label">Timeline</div>
-      <div className="ps-timeline-tracks">
+    <div className={styles.card}>
+      <div className={styles.cardLabel}>Timeline</div>
+      <div className={styles.tracks}>
         {TRACKS.map(t => (
-          <div key={t.name} className="ps-track-row">
-            <div className="ps-track-header">
-              <div className="ps-track-dot" style={{ background: t.color }} />
-              <span className="ps-track-name">{t.name}</span>
+          <div key={t.name} className={styles.track} style={{ '--track-color': t.color } as CSSProperties}>
+            <div className={styles.trackHead}>
+              <div className={styles.trackDot} />
+              <span className={styles.trackName}>{t.name}</span>
             </div>
-            <div className="ps-track-clip" style={{ background: t.color + '33', border: `1px solid ${t.color}` }} />
+            <div className={styles.trackClip} />
           </div>
         ))}
       </div>

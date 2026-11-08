@@ -30,7 +30,7 @@
 
   .row {
     display: grid;
-    grid-template-columns: 96px minmax(0, 1fr) 96px;
+    grid-template-columns: 96px 88px minmax(0, 1fr);
     align-items: center;
     gap: var(--space-2);
     min-height: var(--hit-min);
@@ -42,18 +42,23 @@
   }
 
   .value {
-    color: var(--ui-ink-2);
-    font-variant-numeric: tabular-nums;
-    text-align: right;
+    color: var(--ui-ink);
+    font-family: var(--ui-font-mono);
+    font-size: var(--type-11);
     white-space: nowrap;
   }
 
-  .range {
-    width: 100%;
-    min-height: var(--hit-min);
-    margin: 0;
-    accent-color: var(--ui-value);
-    background: transparent;
+  .note {
+    min-width: 0;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    line-height: 1.4;
+  }
+
+  .colourCell {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
   }
 
   .color {
@@ -68,7 +73,7 @@
 
   .footer {
     margin: 0;
-    color: var(--ui-ink-3);
+    color: var(--ui-ink-2);
     font-size: var(--type-11);
   }
 }

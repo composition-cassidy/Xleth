@@ -27,9 +27,9 @@ export default async ({ page, sleep }) => {
   await step('theme editor', async () => {
     await page.getByRole('button', { name: 'Appearance', exact: true }).first().click(); await sleep(800);
     await page.getByRole('button', { name: /Open editor/ }).first().click({ timeout: 4000 }); await sleep(1800);
-    const scroller = await page.evaluate(() => { document.querySelectorAll('[data-audit-scroller]').forEach((e) => e.removeAttribute('data-audit-scroller')); const ed = [...document.querySelectorAll('[class*="theme-editor"]')][0]; return ed ? String(ed.className).slice(0, 40) : null; });
+    const scroller = await page.evaluate(() => { document.querySelectorAll('[data-audit-scroller]').forEach((e) => e.removeAttribute('data-audit-scroller')); const ed = document.querySelector('[data-theme-editor-host]'); return ed ? 'data-theme-editor-host' : null; });
     out.push('theme editor root class: ' + scroller);
-    out.push(await shot(page, '129-theme-editor', { surface: 'theme-editor', scope: '[class*="theme-editor"]', live: true, note: 'Settings > Appearance > Open editor' }));
+    out.push(await shot(page, '129-theme-editor', { surface: 'theme-editor', scope: '[data-theme-editor-host]', live: true, note: 'Settings > Appearance > Open editor' }));
     await page.getByRole('button', { name: /Close editor/ }).first().click().catch(() => {}); await sleep(500);
   });
   return out.join('\n');

@@ -1,0 +1,290 @@
+/* The theme editor inside Settings > Appearance: a theme list, a Simple / Advanced editor and a live preview.
+ * Kit controls and tokens only; four type sizes (13, 12, 11 and the 16 of the Settings page around it). Token
+ * names and values are code-like, so they are mono. */
+@layer kit {
+  .root {
+    container-type: inline-size;
+    display: flex;
+    flex-direction: column;
+    height: clamp(440px, calc(100vh - 260px), 680px);
+    min-width: 0;
+    overflow: hidden;
+    border: 1px solid var(--ui-g4);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g0);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+  }
+
+  .body {
+    display: grid;
+    flex: 1 1 auto;
+    grid-template-columns: 168px minmax(0, 1fr) 232px;
+    min-height: 0;
+  }
+
+  .center {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .preview {
+    min-height: 0;
+    overflow-y: auto;
+    padding: var(--space-3);
+    border-left: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
+  }
+
+  .footer {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border-top: 1px solid var(--ui-g4);
+    background: var(--ui-g2);
+  }
+
+  .spacer { flex: 1 1 auto; }
+
+  .savePrompt {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border-top: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
+  }
+
+  .savePrompt > :nth-child(2) { flex: 1 1 200px; }
+
+  .saveLabel {
+    font-weight: var(--weight-medium);
+    color: var(--ui-ink);
+  }
+
+  /* Theme list */
+  .list {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    border-right: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
+  }
+
+  .listHeader {
+    padding: var(--space-2) var(--space-3);
+    border-bottom: 1px solid var(--ui-g4);
+    font-size: var(--type-13);
+    font-weight: var(--weight-semibold);
+  }
+
+  .listItems {
+    flex: 1 1 auto;
+    margin: 0;
+    padding: var(--space-1);
+    overflow-y: auto;
+    list-style: none;
+  }
+
+  .listGroup {
+    padding: var(--space-2) var(--space-2) var(--space-1);
+    font-size: var(--type-11);
+    font-weight: var(--weight-medium);
+    color: var(--ui-ink-2);
+  }
+
+  .listItem {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-1);
+    min-height: var(--ctl-h-md);
+    padding: 0 var(--space-2);
+    border-radius: var(--ui-radius-1);
+    color: var(--ui-ink-2);
+    font-weight: var(--weight-medium);
+    cursor: pointer;
+  }
+
+  .listItem:hover { background: var(--ui-g3); color: var(--ui-ink); }
+
+  .listItem[aria-selected="true"] {
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+    font-weight: var(--weight-semibold);
+    box-shadow: inset 2px 0 0 var(--ui-ink);
+  }
+
+  .listItem:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  .listName {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .badge {
+    flex: 0 0 auto;
+    font-size: var(--type-11);
+    font-weight: var(--weight-regular);
+    color: var(--ui-ink-2);
+  }
+
+  /* Advanced: every token */
+  .advanced {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+    padding: var(--space-2) var(--space-3);
+  }
+
+  .category { margin-bottom: var(--space-2); }
+
+  .treeHeader {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    width: 100%;
+    min-height: var(--row-h);
+    padding: 0 var(--space-1);
+    border: 0;
+    border-radius: var(--ui-radius-1);
+    background: transparent;
+    color: var(--ui-ink);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .treeHeader:hover { background: var(--ui-g3); }
+
+  .treeHeader:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  .categoryName {
+    font-size: var(--type-13);
+    font-weight: var(--weight-semibold);
+  }
+
+  .subsystem { margin-left: var(--space-3); }
+
+  .subName {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-weight: var(--weight-medium);
+    color: var(--ui-ink);
+  }
+
+  .subName[data-deferred] { color: var(--ui-ink-2); }
+
+  .count {
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .tokens { margin: 0 0 var(--space-1) var(--space-4); }
+
+  .tokenRow {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: var(--row-h);
+    padding: 0 var(--space-1);
+  }
+
+  .tokenRow + .tokenRow { border-top: 1px solid var(--ui-g4); }
+
+  .tokenRow[data-detached] .tokenName::after {
+    content: " (detached)";
+    font-family: var(--ui-font);
+    color: var(--ui-ink-2);
+  }
+
+  .swatch {
+    flex: 0 0 auto;
+    width: 14px;
+    height: 14px;
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+  }
+
+  .tokenName {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    font-family: var(--ui-font-mono);
+    font-size: var(--type-11);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .tokenControl {
+    display: flex;
+    flex: 0 1 45%;
+    align-items: center;
+    justify-content: flex-end;
+    min-width: 0;
+  }
+
+  .tokenValue {
+    min-width: 0;
+    overflow: hidden;
+    font-family: var(--ui-font-mono);
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .picker {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .pickerInput {
+    box-sizing: border-box;
+    width: var(--ctl-h-md);
+    height: var(--ctl-h-sm);
+    padding: 2px;
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g0);
+    cursor: pointer;
+  }
+
+  .pickerInput:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 1px;
+  }
+
+  .pickerHex {
+    font-family: var(--ui-font-mono);
+    font-size: var(--type-11);
+    color: var(--ui-ink);
+  }
+
+  /* Narrow settings column: the preview drops below the editor, the list above it. */
+  @container (max-width: 640px) {
+    .root { height: auto; max-height: none; }
+    .body { grid-template-columns: minmax(0, 1fr); }
+    .list { max-height: 148px; border-right: 0; border-bottom: 1px solid var(--ui-g4); }
+    .center { min-height: 360px; }
+    .preview { border-left: 0; border-top: 1px solid var(--ui-g4); }
+  }
+}

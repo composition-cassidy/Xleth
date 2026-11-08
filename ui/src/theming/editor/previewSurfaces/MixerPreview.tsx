@@ -1,16 +1,18 @@
+import styles from './Preview.module.css'
+
 const CHANNELS = ['Kick', 'Bass', 'Lead', 'FX']
 
 export default function MixerPreview() {
   return (
-    <div className="ps-card">
-      <div className="ps-label">Mixer</div>
-      <div className="ps-mixer-row">
+    <div className={styles.card}>
+      <div className={styles.cardLabel}>Mixer</div>
+      <div className={styles.mixerRow}>
         {CHANNELS.map(ch => (
-          <div key={ch} className="ps-mixer-channel">
-            <div className="ps-mixer-fader-track">
-              <div className="ps-mixer-fader-thumb" />
+          <div key={ch} className={styles.channel}>
+            <div className={styles.faderTrack}>
+              <div className={styles.faderThumb} />
             </div>
-            <div className="ps-mixer-ch-label">{ch}</div>
+            <div className={styles.channelLabel}>{ch}</div>
           </div>
         ))}
       </div>
