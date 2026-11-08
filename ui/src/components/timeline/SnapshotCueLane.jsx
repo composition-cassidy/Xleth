@@ -10,20 +10,17 @@
 import {
   forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState,
 } from 'react'
-import { Plus, Trash2, X } from 'lucide-react'
-import { IconButton } from '../../ui-kit'
+import { Check, Plus, Trash2, X } from 'lucide-react'
+import { IconButton, NumberBox, Select, Toggle, formatValue, THIN_SPACE } from '../../ui-kit'
 import styles from './SnapshotCueLane.module.css'
 import {
   PPQ, pixelToBeat, beatToPlayheadPixel, snapBeatToGrid, ticksToBeats, beatsToTicks,
 } from '../../constants/timeline.js'
 import { timelineEvents } from '../../timelineEvents.js'
-import XlethSelect from '../common/XlethSelect.jsx'
 import SnapshotTransitionBezierEditor, {
   normalizeTransitionEasing,
 } from './SnapshotTransitionBezierEditor.jsx'
 import LineSweepDirectionControl, { normalizeLineSweepAngle } from './LineSweepDirectionControl.jsx'
-import Fader from '../controls/Fader.jsx'
-import { quantizedFromNorm } from '../../utils/sliderHelpers.js'
 
 const PLAYHEAD_LINE_WIDTH = 1
 
@@ -181,18 +178,50 @@ export function buildCueTransition(current, patch = {}) {
   return merged
 }
 
-function TransitionParameterControl({ label, value, min, max, step, valueText, onChange }) {
+// How each parameter prints and parses: the engine's raw value on the rail, a
+// value with its unit in the box (DESIGN.md 6).
+const PARAMETER_KINDS = {
+  percent: {
+    format: (v) => formatValue(v * 100, '%'),
+    parse: (text) => { const n = parseFloat(String(text).replace(',', '.')); return Number.isFinite(n) ? n / 100 : null },
+  },
+  px: {
+    format: (v) => `${Math.round(v)}${THIN_SPACE}px`,
+    parse: (text) => { const n = parseFloat(String(text).replace(',', '.')); return Number.isFinite(n) ? n : null },
+  },
+  plain: {
+    format: (v) => String(Math.round(v)),
+    parse: (text) => { const n = parseFloat(text); return Number.isFinite(n) ? n : null },
+  },
+  decimal1: {
+    format: (v) => v.toFixed(1),
+    parse: (text) => { const n = parseFloat(String(text).replace(',', '.')); return Number.isFinite(n) ? n : null },
+  },
+}
+
+// A kit NumberBox: the drag previews locally and writes ONE setCueTransition on
+// release (the old slider wrote on every pointer step). Same patch, same range
+// and step as before; the value is quantised to the step.
+function TransitionParameterControl({ label, value, min, max, step, kind, onChange }) {
+  const { format, parse } = PARAMETER_KINDS[kind] ?? PARAMETER_KINDS.plain
+  const quantize = useCallback((v) => {
+    const q = min + Math.round((v - min) / step) * step
+    return Math.min(max, Math.max(min, Math.round(q * 1e6) / 1e6))
+  }, [min, max, step])
   return (
-    <label className="vmt-transition-parameter">
-      <span>{label}</span>
-      <Fader
-        orientation="horizontal" fill thickness={14}
-        value={value} min={min} max={max} defaultValue={value}
-        fromNorm={quantizedFromNorm(min, max, step)}
-        onLiveChange={onChange}
-      />
-      <output>{valueText}</output>
-    </label>
+    <NumberBox
+      className="vmt-transition-parameter"
+      label={label}
+      value={value}
+      min={min}
+      max={max}
+      step={step}
+      quantize={quantize}
+      format={format}
+      parse={parse}
+      width={208}
+      onCommit={onChange}
+    />
   )
 }
 
@@ -249,72 +278,77 @@ function CueMarker({
   return (
     <div
       ref={markerRef}
-      className={'vmt-cue-marker-wrap' + (selected ? ' is-selected' : '') + (x > laneWidth - 160 ? ' is-editor-left' : '')}
+      className={'vmt-cue-marker-wrap ' + styles.markerWrap + (selected ? ' is-selected' : '') + (x > laneWidth - 160 ? ' is-editor-left' : '')}
       style={{ transform: 'translateX(' + x + 'px)' }}
       data-tick={cue.tick}
     >
       <button
         type="button"
-        className="vmt-cue-marker"
+        className={`vmt-cue-marker ${styles.marker}`}
         onPointerDown={handlePointerDown}
         onMouseDown={(e) => e.stopPropagation()}
         aria-label={'Snapshot cue at tick ' + cue.tick}
-        title="Drag to move; click to choose snapshot"
+        data-hint="Snapshot cue"
+        data-hint-mods="Drag: move · Click: choose its snapshot and transition"
       />
       {selected && (
-        <div className="vmt-cue-editor" onMouseDown={(e) => e.stopPropagation()}>
-          <div className="vmt-cue-editor-row">
-            <XlethSelect
-              className="vmt-cue-select"
+        <div className={`vmt-cue-editor ${styles.editor}`} role="group" aria-label="Snapshot cue" onMouseDown={(e) => e.stopPropagation()}>
+          <div className={`vmt-cue-editor-row ${styles.editorRow}`}>
+            <Select
+              size="sm"
+              className={`vmt-cue-select ${styles.snapshotSelect}`}
               value={cue.snapshotId}
               options={options}
               onChange={(snapshotId) => onRepointCue(cue.tick, snapshotId)}
               ariaLabel={'Snapshot for cue at tick ' + cue.tick}
               disabled={options.length === 0}
+              hint="Snapshot this cue switches to"
             />
-            <button
-              type="button"
+            <IconButton
+              size="sm"
               className="vmt-cue-action vmt-close-cue-editor"
               onClick={onClose}
-              aria-label={'Close cue editor at tick ' + cue.tick}
-              title="Close"
+              label={'Close cue editor at tick ' + cue.tick}
+              hint="Close the cue editor"
             >
-              <X size={14} strokeWidth={2.25} aria-hidden="true" />
-            </button>
-            <button
-              type="button"
+              <X size={14} aria-hidden="true" />
+            </IconButton>
+            <IconButton
+              size="sm"
+              variant="danger"
               className="vmt-cue-action vmt-delete-cue"
               onClick={() => onRemoveCue(cue.tick)}
-              aria-label={'Delete cue at tick ' + cue.tick}
-              title="Delete cue"
+              label={'Delete cue at tick ' + cue.tick}
+              hint="Delete this cue"
             >
-              <Trash2 size={13} strokeWidth={2} aria-hidden="true" />
-            </button>
+              <Trash2 size={13} aria-hidden="true" />
+            </IconButton>
           </div>
           {/* Boundary animation. The pin (this marker) stays put; only the
               Start/End handles on the timeline and these fields change. */}
-          <div className="vmt-transition-editor">
-            <label className="vmt-transition-row">
-              <input
-                type="checkbox"
-                className="vmt-transition-enable"
-                checked={!!cue.transition?.enabled}
-                onChange={(e) => onSetCueTransition(
-                  cue.tick, buildCueTransition(cue.transition, { enabled: e.target.checked }),
-                )}
-              />
-              <span>Transition</span>
-            </label>
+          <div className={`vmt-transition-editor ${styles.transitionEditor}`}>
+            <Toggle
+              size="sm"
+              className={`vmt-transition-enable ${styles.transitionToggle}`}
+              on={!!cue.transition?.enabled}
+              onChange={(enabled) => onSetCueTransition(
+                cue.tick, buildCueTransition(cue.transition, { enabled }),
+              )}
+              glyph={<Check size={12} aria-hidden="true" />}
+              hint="Transition: blend between the two snapshots around this cue instead of cutting"
+            >Transition</Toggle>
             {cue.transition?.enabled && (
-              <div className="vmt-transition-fields">
-                <XlethSelect
-                  className="vmt-transition-type"
+              <div className={`vmt-transition-fields ${styles.fields}`}>
+                <Select
+                  size="sm"
+                  className={`vmt-transition-type ${styles.typeSelect}`}
                   value={transitionType}
                   options={TRANSITION_TYPE_OPTIONS}
                   onChange={(type) => onSetCueTransition(
                     cue.tick, buildCueTransition(cue.transition, { type }),
                   )}
                   ariaLabel={'Animation type for cue at tick ' + cue.tick}
+                  hint="Animation of the transition"
                 />
                 {['lineSweep', 'push', 'slide', 'blurThrough'].includes(transitionType) && (
                   <LineSweepDirectionControl
@@ -333,7 +367,7 @@ function CueMarker({
                     min={0}
                     max={0.10}
                     step={0.005}
-                    valueText={`${Math.round(normalizeTransitionEdgeSoftness(cue.transition?.edgeSoftness) * 100)}%`}
+                    kind="percent"
                     onChange={(edgeSoftness) => onSetCueTransition(
                       cue.tick, buildCueTransition(cue.transition, { edgeSoftness }),
                     )}
@@ -346,7 +380,7 @@ function CueMarker({
                     min={0}
                     max={0.30}
                     step={0.01}
-                    valueText={`${Math.round(normalizeTransitionZoomAmount(cue.transition?.zoomAmount) * 100)}%`}
+                    kind="percent"
                     onChange={(zoomAmount) => onSetCueTransition(
                       cue.tick, buildCueTransition(cue.transition, { zoomAmount }),
                     )}
@@ -359,7 +393,7 @@ function CueMarker({
                     min={1}
                     max={8}
                     step={1}
-                    valueText={`${normalizeTransitionDissolveGrain(cue.transition?.dissolveGrainPx)} px`}
+                    kind="px"
                     onChange={(dissolveGrainPx) => onSetCueTransition(
                       cue.tick, buildCueTransition(cue.transition, { dissolveGrainPx }),
                     )}
@@ -373,7 +407,7 @@ function CueMarker({
                       min={0}
                       max={1}
                       step={0.01}
-                      valueText={`${Math.round(normalizeTransitionRadialOrigin(cue.transition?.radialOriginX) * 100)}%`}
+                      kind="percent"
                       onChange={(radialOriginX) => onSetCueTransition(
                         cue.tick, buildCueTransition(cue.transition, { radialOriginX }),
                       )}
@@ -384,7 +418,7 @@ function CueMarker({
                       min={0}
                       max={1}
                       step={0.01}
-                      valueText={`${Math.round(normalizeTransitionRadialOrigin(cue.transition?.radialOriginY) * 100)}%`}
+                      kind="percent"
                       onChange={(radialOriginY) => onSetCueTransition(
                         cue.tick, buildCueTransition(cue.transition, { radialOriginY }),
                       )}
@@ -395,7 +429,7 @@ function CueMarker({
                       min={0}
                       max={0.10}
                       step={0.005}
-                      valueText={`${Math.round(normalizeTransitionEdgeSoftness(cue.transition?.edgeSoftness) * 100)}%`}
+                      kind="percent"
                       onChange={(edgeSoftness) => onSetCueTransition(
                         cue.tick, buildCueTransition(cue.transition, { edgeSoftness }),
                       )}
@@ -409,7 +443,7 @@ function CueMarker({
                     min={1}
                     max={128}
                     step={1}
-                    valueText={`${normalizeTransitionPixelateBlock(cue.transition?.pixelateMaxBlockPx)} px`}
+                    kind="px"
                     onChange={(pixelateMaxBlockPx) => onSetCueTransition(
                       cue.tick, buildCueTransition(cue.transition, { pixelateMaxBlockPx }),
                     )}
@@ -423,7 +457,7 @@ function CueMarker({
                       min={0}
                       max={1}
                       step={0.05}
-                      valueText={`${Math.round(normalizeTransitionGlitchIntensity(cue.transition?.glitchIntensity) * 100)}%`}
+                      kind="percent"
                       onChange={(glitchIntensity) => onSetCueTransition(
                         cue.tick, buildCueTransition(cue.transition, { glitchIntensity }),
                       )}
@@ -434,7 +468,7 @@ function CueMarker({
                       min={4}
                       max={128}
                       step={1}
-                      valueText={`${normalizeTransitionGlitchBlock(cue.transition?.glitchBlockPx)} px`}
+                      kind="px"
                       onChange={(glitchBlockPx) => onSetCueTransition(
                         cue.tick, buildCueTransition(cue.transition, { glitchBlockPx }),
                       )}
@@ -445,7 +479,7 @@ function CueMarker({
                       min={0}
                       max={255}
                       step={1}
-                      valueText={`${normalizeTransitionEffectSeed(cue.transition?.effectSeed)}`}
+                      kind="plain"
                       onChange={(effectSeed) => onSetCueTransition(
                         cue.tick, buildCueTransition(cue.transition, { effectSeed }),
                       )}
@@ -459,7 +493,7 @@ function CueMarker({
                     min={0}
                     max={48}
                     step={1}
-                    valueText={`${Math.round(normalizeTransitionBlurRadius(cue.transition?.blurRadiusPx))} px`}
+                    kind="px"
                     onChange={(blurRadiusPx) => onSetCueTransition(
                       cue.tick, buildCueTransition(cue.transition, { blurRadiusPx }),
                     )}
@@ -473,7 +507,7 @@ function CueMarker({
                       min={0}
                       max={0.20}
                       step={0.01}
-                      valueText={`${Math.round(normalizeTransitionDisplacementAmount(cue.transition?.displacementAmount) * 100)}%`}
+                      kind="percent"
                       onChange={(displacementAmount) => onSetCueTransition(
                         cue.tick, buildCueTransition(cue.transition, { displacementAmount }),
                       )}
@@ -484,7 +518,7 @@ function CueMarker({
                       min={1}
                       max={24}
                       step={0.5}
-                      valueText={`${normalizeTransitionDisplacementScale(cue.transition?.displacementScale).toFixed(1)}`}
+                      kind="decimal1"
                       onChange={(displacementScale) => onSetCueTransition(
                         cue.tick, buildCueTransition(cue.transition, { displacementScale }),
                       )}
@@ -495,7 +529,7 @@ function CueMarker({
                       min={0}
                       max={255}
                       step={1}
-                      valueText={`${normalizeTransitionEffectSeed(cue.transition?.effectSeed)}`}
+                      kind="plain"
                       onChange={(effectSeed) => onSetCueTransition(
                         cue.tick, buildCueTransition(cue.transition, { effectSeed }),
                       )}
@@ -581,7 +615,7 @@ function TransitionBand({
     <>
       <div
         ref={bandRef}
-        className="vmt-transition-band"
+        className={`vmt-transition-band ${styles.band}`}
         style={{ left: startX, width: Math.max(0, endX - startX) }}
         aria-hidden="true"
       />
@@ -589,25 +623,25 @@ function TransitionBand({
         <>
           <div
             ref={startRef}
-            className="vmt-transition-handle vmt-transition-handle-start"
+            className={`vmt-transition-handle vmt-transition-handle-start ${styles.handle}`}
             style={{ transform: 'translateX(' + startX + 'px)' }}
             onPointerDown={startDrag('start')}
             onMouseDown={(e) => e.stopPropagation()}
             role="slider"
             aria-label={'Transition start for cue at tick ' + pinTick}
             aria-valuenow={startOffset}
-            title="Drag to set the transition start (snaps to grid; hold Alt to free)"
+            data-hint="Transition start" data-hint-mods="Drag: set it · Snaps to the grid · Alt: free"
           />
           <div
             ref={endRef}
-            className="vmt-transition-handle vmt-transition-handle-end"
+            className={`vmt-transition-handle vmt-transition-handle-end ${styles.handle}`}
             style={{ transform: 'translateX(' + endX + 'px)' }}
             onPointerDown={startDrag('end')}
             onMouseDown={(e) => e.stopPropagation()}
             role="slider"
             aria-label={'Transition end for cue at tick ' + pinTick}
             aria-valuenow={endOffset}
-            title="Drag to set the transition end (snaps to grid; hold Alt to free)"
+            data-hint="Transition end" data-hint-mods="Drag: set it · Snaps to the grid · Alt: free"
           />
         </>
       )}
@@ -646,14 +680,14 @@ export function CueLane({
 
   return (
     <div
-      className="vmt-cue-lane"
+      className={`vmt-cue-lane ${styles.cueLane}`}
       style={{ top, height: CUE_LANE_HEIGHT }}
       onMouseDown={(e) => e.stopPropagation()}
       onClick={(e) => {
         if (e.target === e.currentTarget) setSelectedTick(null)
       }}
     >
-      <div className="vmt-cue-spans" aria-hidden="true">
+      <div className={`vmt-cue-spans ${styles.spans}`} aria-hidden="true">
         {spans.map((span, index) => {
           const left = mirrorTickToPixel(span.startTick, scrollOffsetRef.current, pixelsPerBeatRef.current)
           const right = mirrorTickToPixel(span.endTick, scrollOffsetRef.current, pixelsPerBeatRef.current)
@@ -661,7 +695,7 @@ export function CueLane({
           return (
             <div
               key={span.startTick + '-' + span.endTick + '-' + index}
-              className={'vmt-cue-span vmt-cue-span-' + (index % 2)}
+              className={'vmt-cue-span vmt-cue-span-' + (index % 2) + ' ' + styles.span}
               style={{ left, width: Math.max(0, right - left) }}
             >
               <span>{label}</span>
@@ -889,7 +923,7 @@ export function SnapshotCueLaneHeader({ onAddCue, disabled }) {
   return (
     <div className={styles.header} style={{ height: CUE_LANE_HEIGHT }} data-testid="snapshot-cue-lane-header">
       <span>Snapshots</span>
-      <IconButton size="sm" label="Add snapshot cue at playhead" onClick={onAddCue} disabled={disabled}>
+      <IconButton size="sm" label="Add snapshot cue at playhead" onClick={onAddCue} disabled={disabled} hint="Add a snapshot cue at the playhead">
         <Plus aria-hidden="true" />
       </IconButton>
     </div>

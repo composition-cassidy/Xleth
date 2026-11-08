@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { ChevronDown, RotateCcw } from 'lucide-react'
-import XlethSelect from '../common/XlethSelect.jsx'
+import { Button, Select } from '../../ui-kit'
+import styles from './SnapshotCueLane.module.css'
 
 export const LINEAR_TRANSITION_CURVE = Object.freeze({ x1: 0, y1: 0, x2: 1, y2: 1 })
 
@@ -17,6 +18,9 @@ const PRESET_OPTIONS = [
     value, label: preset.label,
   })),
 ]
+
+// Text in the SVG is sized in viewBox units; the graph renders at about 1.2x, so 10 reads as 12px.
+const LABEL_SIZE = 10
 
 const clampUnit = (value) => Math.min(1, Math.max(0, value))
 
@@ -202,11 +206,12 @@ export default function SnapshotTransitionBezierEditor({ easing, onChange }) {
   }
 
   return (
-    <div className={'vmt-easing-editor' + (expanded ? ' is-expanded' : '')}>
+    <div className={'vmt-easing-editor ' + styles.easing + (expanded ? ' is-expanded' : '')}>
       <button
         type="button"
-        className="vmt-easing-summary"
+        className={`vmt-easing-summary ${styles.easingSummary}`}
         aria-expanded={expanded}
+        data-hint="Easing: the curve of the blend before and after the pin"
         onClick={() => setExpanded((value) => !value)}
       >
         <span>Easing</span>
@@ -220,7 +225,7 @@ export default function SnapshotTransitionBezierEditor({ easing, onChange }) {
         <div className="vmt-easing-expanded">
           <svg
             ref={svgRef}
-            className="vmt-easing-graph"
+            className={`vmt-easing-graph ${styles.easingGraph}`}
             viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
             role="group"
             aria-label="Snapshot transition easing curves"
@@ -239,15 +244,16 @@ export default function SnapshotTransitionBezierEditor({ easing, onChange }) {
             <circle className="vmt-easing-anchor" cx={START.x} cy={START.y} r="3" />
             <circle className="vmt-easing-anchor is-pin" cx={PIN.x} cy={PIN.y} r="2" />
             <circle className="vmt-easing-anchor" cx={END.x} cy={END.y} r="3" />
-            <text className="vmt-easing-label" x={START.x} y={HEIGHT - 1}>Start</text>
-            <text className="vmt-easing-label" x={PIN.x} y={HEIGHT - 1} textAnchor="middle">Pin</text>
-            <text className="vmt-easing-label" x={END.x} y={HEIGHT - 1} textAnchor="end">End</text>
+            <text className="vmt-easing-label" fontSize={LABEL_SIZE} x={START.x} y={HEIGHT - 1}>Start</text>
+            <text className="vmt-easing-label" fontSize={LABEL_SIZE} x={PIN.x} y={HEIGHT - 1} textAnchor="middle">Pin</text>
+            <text className="vmt-easing-label" fontSize={LABEL_SIZE} x={END.x} y={HEIGHT - 1} textAnchor="end">End</text>
           </svg>
 
-          <div className="vmt-easing-presets">
-            <label>
-              <span>Start → Pin</span>
-              <XlethSelect
+          <div className={`vmt-easing-presets ${styles.presets}`}>
+            <label className={styles.presetRow}>
+              <span>Start → pin</span>
+              <Select
+                size="sm"
                 className="vmt-easing-preset-select"
                 value={curvePresetValue(draft.startToPin)}
                 options={PRESET_OPTIONS}
@@ -255,9 +261,10 @@ export default function SnapshotTransitionBezierEditor({ easing, onChange }) {
                 ariaLabel="Start to pin easing preset"
               />
             </label>
-            <label>
-              <span>Pin → End</span>
-              <XlethSelect
+            <label className={styles.presetRow}>
+              <span>Pin → end</span>
+              <Select
+                size="sm"
                 className="vmt-easing-preset-select"
                 value={curvePresetValue(draft.pinToEnd)}
                 options={PRESET_OPTIONS}
@@ -266,14 +273,15 @@ export default function SnapshotTransitionBezierEditor({ easing, onChange }) {
               />
             </label>
           </div>
-          <button
-            type="button"
+          <Button
+            size="sm"
             className="vmt-easing-reset"
+            glyph={<RotateCcw size={12} />}
             onClick={() => commit(normalizeTransitionEasing())}
+            hint="Reset both halves to a straight blend"
           >
-            <RotateCcw size={11} aria-hidden="true" />
-            Reset both to Linear
-          </button>
+            Reset both to linear
+          </Button>
         </div>
       )}
     </div>

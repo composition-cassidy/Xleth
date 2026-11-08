@@ -1,6 +1,7 @@
-/* The Snapshots cue lane pinned under the arrangement ruler. Neutral: snapshot
- * spans alternate two greys, cue pins are ink. The accent is reserved for the
- * selected pin's outline (selection), never for the lane's fill. */
+/* The Snapshots cue lane pinned under the arrangement ruler (DESIGN.md 22). Neutral:
+ * snapshot spans alternate two greys, cue pins are ink. The value colour is reserved for
+ * the selection outline and the curve a transition draws, never for the lane's fill.
+ * The cue editor is a floating surface (hard offset shadow) of kit controls. */
 @layer kit {
   /* border-box: the lane and its header cell are both exactly CUE_LANE_HEIGHT, so
    * the canvas and header columns stay row-aligned below it. */
@@ -13,40 +14,103 @@
     border-bottom: 1px solid var(--ui-g4);
   }
 
-  .lane :global(.vmt-cue-span) {
+  .cueLane {
+    position: absolute;
+    left: 0;
+    right: 0;
+    z-index: 3;
+    overflow: visible;
+    user-select: none;
+  }
+
+  .spans {
+    position: absolute;
+    inset: 0;
+    overflow: hidden;
+    pointer-events: none;
+  }
+
+  .span {
+    box-sizing: border-box;
+    position: absolute;
+    top: 1px;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    min-width: 0;
+    overflow: hidden;
     border-right: 1px solid var(--ui-g4);
     background: var(--ui-g2);
   }
 
-  .lane :global(.vmt-cue-span-1) {
+  .span:global(.vmt-cue-span-1) {
     background: var(--ui-g3);
   }
 
-  .lane :global(.vmt-cue-span > span) {
+  .span > span {
+    position: sticky;
+    left: var(--space-1);
+    max-width: calc(100% - var(--space-2));
+    padding: 0 var(--space-1);
+    overflow: hidden;
     color: var(--ui-ink-2);
     font-family: var(--ui-font);
     font-size: var(--type-11);
-    line-height: var(--row-h);
+    line-height: 16px;
+    white-space: nowrap;
+    text-overflow: ellipsis;
   }
 
-  .lane :global(.vmt-cue-marker) {
+  .markerWrap {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 0;
+    height: 100%;
+    z-index: 4;
+    will-change: transform;
+  }
+
+  .markerWrap:global(.is-selected) {
+    z-index: 6;
+  }
+
+  /* The pin is 7px wide and the hit area 24: the button is wider than what is drawn. */
+  .marker {
+    position: absolute;
+    top: 2px;
+    left: -12px;
+    width: var(--hit-min);
+    height: 26px;
+    padding: 0;
+    border: 0;
+    border-radius: 2px 2px 0 0;
     background: linear-gradient(90deg,
-      transparent 0, transparent 5px,
-      var(--ui-ink) 5px, var(--ui-ink) 6px,
-      transparent 6px);
+      transparent 0, transparent 11px,
+      var(--ui-ink) 11px, var(--ui-ink) 12px,
+      transparent 12px);
+    cursor: ew-resize;
   }
 
-  .lane :global(.vmt-cue-marker::before) {
+  .marker::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 8px;
+    width: 8px;
+    height: 8px;
+    border-radius: 2px;
     background: var(--ui-ink);
     box-shadow: 0 0 0 1px var(--ui-g0);
   }
 
-  .lane :global(.vmt-cue-marker:hover::before) {
-    box-shadow: 0 0 0 1px var(--ui-g0);
+  .markerWrap:global(.is-selected) .marker::before {
+    box-shadow: 0 0 0 1px var(--ui-select);
   }
 
-  .lane :global(.vmt-cue-marker-wrap.is-selected .vmt-cue-marker::before) {
-    box-shadow: 0 0 0 1px var(--ui-select);
+  .marker:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
   }
 
   /* Header cell in the track-header column, same height as the lane. */
@@ -63,21 +127,343 @@
     font-family: var(--ui-font);
     font-size: var(--type-11);
   }
-}
 
-@layer kit {
-  /* Transition window: a neutral band (ink at low alpha), handles in ink. No glow. */
-  .lane :global(.vmt-transition-band) {
+  /* Transition window: a neutral band (ink at low alpha), grips in ink. No glow. */
+  .band {
+    position: absolute;
+    top: 19px;
+    height: 9px;
+    z-index: 3;
+    pointer-events: none;
     border: 1px solid color-mix(in srgb, var(--ui-ink) 40%, transparent);
+    border-radius: 2px;
     background: color-mix(in srgb, var(--ui-ink) 14%, transparent);
   }
 
-  .lane :global(.vmt-transition-handle) {
+  .handle {
+    position: absolute;
+    top: 15px;
+    left: -3px;
+    width: 6px;
+    height: 16px;
+    z-index: 5;
+    border-radius: 2px;
     background: var(--ui-ink);
     box-shadow: 0 0 0 1px var(--ui-g0);
+    cursor: ew-resize;
+    will-change: transform;
   }
 
-  .lane :global(.vmt-transition-handle:hover) {
+  /* The 6px grip has a 24px hit area. */
+  .handle::after {
+    content: "";
+    position: absolute;
+    inset: -4px -9px;
+  }
+
+  .handle:hover {
     box-shadow: 0 0 0 1px var(--ui-select);
+  }
+}
+
+/* The cue editor: a floating popover under the selected pin. */
+@layer kit {
+  .editor {
+    box-sizing: border-box;
+    position: absolute;
+    /* Out of the cue lane's own height, so both transition grips stay reachable while it is open. */
+    top: calc(100% + var(--space-1));
+    left: var(--space-2);
+    z-index: 7;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    width: 232px;
+    padding: var(--space-1);
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-2);
+    background: var(--ui-g2);
+    box-shadow: var(--ui-shadow-float);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    cursor: default;
+  }
+
+  .markerWrap:global(.is-editor-left) .editor {
+    right: var(--space-2);
+    left: auto;
+  }
+
+  .editorRow {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .snapshotSelect {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .transitionEditor {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding-top: var(--space-1);
+    border-top: 1px solid var(--ui-g4);
+  }
+
+  .transitionToggle {
+    align-self: flex-start;
+  }
+
+  .fields {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .typeSelect {
+    width: 100%;
+  }
+
+  /* Direction compass (line sweep, push, slide, blur through). */
+  .compassBox {
+    display: grid;
+    grid-template-columns: 54px minmax(0, 1fr);
+    grid-template-rows: auto auto;
+    align-items: center;
+    column-gap: var(--space-1);
+    row-gap: 2px;
+    padding: var(--space-1);
+    border: 1px solid var(--ui-g4);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g1);
+  }
+
+  .compassBox :global(.vmt-line-sweep-direction-heading) {
+    grid-column: 2;
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-1);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    font-weight: var(--weight-semibold);
+  }
+
+  .compassBox :global(.vmt-line-sweep-direction-readout) {
+    color: var(--ui-ink);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .compassBox :global(.vmt-line-sweep-direction-hint) {
+    grid-column: 2;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    line-height: 1.25;
+  }
+
+  .compassBox :global(.vmt-line-sweep-compass) {
+    grid-row: 1 / span 2;
+    width: 50px;
+    height: 50px;
+    overflow: visible;
+    cursor: crosshair;
+    touch-action: none;
+    outline: none;
+  }
+
+  .compassBox :global(.vmt-line-sweep-compass-ring) {
+    fill: var(--ui-g2);
+    stroke: var(--ui-boundary);
+    stroke-width: 2;
+  }
+
+  .compassBox :global(.vmt-line-sweep-compass-axis) {
+    fill: none;
+    stroke: var(--ui-g4);
+    stroke-width: 1;
+  }
+
+  .compassBox :global(.vmt-line-sweep-compass-tick),
+  .compassBox :global(.vmt-line-sweep-compass-center) {
+    fill: var(--ui-ink-2);
+  }
+
+  .compassBox :global(.vmt-line-sweep-compass-needle) {
+    stroke: var(--ui-value);
+    stroke-width: 3;
+    stroke-linecap: round;
+  }
+
+  .compassBox :global(.vmt-line-sweep-compass-handle) {
+    fill: var(--ui-value);
+    stroke: var(--ui-g1);
+    stroke-width: 2;
+  }
+
+  .compassBox :global(.vmt-line-sweep-compass:hover .vmt-line-sweep-compass-ring),
+  .compassBox :global(.vmt-line-sweep-compass:focus-visible .vmt-line-sweep-compass-ring) {
+    stroke: var(--ui-select);
+  }
+
+  /* Easing: a summary row that opens the two-curve editor. */
+  .easing {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding-top: var(--space-1);
+    border-top: 1px solid var(--ui-g4);
+  }
+
+  .easingSummary {
+    box-sizing: border-box;
+    display: grid;
+    grid-template-columns: auto 1fr auto;
+    align-items: center;
+    gap: var(--space-1);
+    width: 100%;
+    min-height: var(--hit-min);
+    padding: 0 var(--space-1);
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .easingSummary:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 1px;
+  }
+
+  .easingSummary :global(.vmt-easing-mini) {
+    width: 62px;
+    height: 20px;
+    justify-self: end;
+    overflow: visible;
+  }
+
+  .easingSummary :global(.vmt-easing-mini path) {
+    fill: none;
+    stroke: var(--ui-value);
+    stroke-width: 5;
+    stroke-linecap: round;
+  }
+
+  .easing:global(.is-expanded) .easingSummary > svg:last-child {
+    transform: rotate(180deg);
+  }
+
+  .easing :global(.vmt-easing-expanded) {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .easingGraph {
+    display: block;
+    box-sizing: border-box;
+    width: 100%;
+    height: auto;
+    aspect-ratio: 176 / 96;
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g0);
+    touch-action: none;
+  }
+
+  .easingGraph :global(.vmt-easing-grid) {
+    stroke: var(--ui-g4);
+    stroke-width: 0.75;
+  }
+
+  .easingGraph :global(.vmt-easing-linear) {
+    stroke: var(--ui-ink-3);
+    stroke-width: 0.8;
+    stroke-dasharray: 3 3;
+  }
+
+  .easingGraph :global(.vmt-easing-path) {
+    fill: none;
+    stroke: var(--ui-value);
+    stroke-width: 2;
+    stroke-linecap: round;
+  }
+
+  .easingGraph :global(.vmt-easing-guide) {
+    stroke: var(--ui-ink-3);
+    stroke-width: 0.9;
+    stroke-dasharray: 3 2;
+    pointer-events: none;
+  }
+
+  .easingGraph :global(.vmt-easing-control) {
+    fill: var(--ui-value);
+    stroke: var(--ui-g0);
+    stroke-width: 1.5;
+    cursor: grab;
+    outline: none;
+  }
+
+  .easingGraph :global(.vmt-easing-control:active) {
+    cursor: grabbing;
+  }
+
+  .easingGraph :global(.vmt-easing-control.is-pin-outer) {
+    fill: var(--ui-g0);
+    stroke: var(--ui-value);
+    stroke-width: 2;
+  }
+
+  .easingGraph :global(.vmt-easing-control.is-pin-inner) {
+    stroke-width: 1;
+  }
+
+  .easingGraph :global(.vmt-easing-control:focus-visible) {
+    stroke: var(--ui-ink);
+    stroke-width: 2.5;
+  }
+
+  .easingGraph :global(.vmt-easing-anchor) {
+    fill: var(--ui-ink-2);
+    pointer-events: none;
+  }
+
+  .easingGraph :global(.vmt-easing-anchor.is-pin) {
+    fill: var(--ui-value);
+    stroke: var(--ui-g0);
+    stroke-width: 1;
+  }
+
+  .easingGraph :global(.vmt-easing-label) {
+    fill: var(--ui-ink-2);
+    pointer-events: none;
+  }
+
+  .presets {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .presetRow {
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr);
+    align-items: center;
+    gap: var(--space-1);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    white-space: nowrap;
+  }
+
+  .easing :global(.vmt-easing-reset) {
+    width: 100%;
+    justify-content: center;
   }
 }

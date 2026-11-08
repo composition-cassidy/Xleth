@@ -1,0 +1,158 @@
+/* Macro automation lanes under a track (DESIGN.md 22). A macro drives a parameter, so its
+ * curve wears the parameter signal hue (3.3); selection is a 1px --ui-select outline.
+ * The lane's curve is drawn as an SVG polyline and its points are positioned buttons
+ * hit-tested by geometry, as before; only the paint moved onto tokens. The layer sits
+ * inside the canvas scroll area and passes pointer events through where it is empty. */
+@layer kit {
+  .layer {
+    pointer-events: none;
+    z-index: 6;
+  }
+
+  .lane {
+    box-sizing: border-box;
+    pointer-events: auto;
+    font-family: var(--ui-font);
+  }
+
+  .orphan {
+    opacity: var(--ui-mute-opacity);
+  }
+
+  .orphanTag {
+    position: absolute;
+    left: var(--space-1);
+    top: 50%;
+    transform: translateY(-50%);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    pointer-events: none;
+  }
+
+  .clip {
+    box-sizing: border-box;
+    border: 1px solid var(--ui-g4);
+    border-radius: var(--ui-radius-1);
+    background: color-mix(in srgb, var(--ui-g0) 72%, transparent);
+    cursor: grab;
+    overflow: visible;
+  }
+
+  .clip:global(.is-selected) {
+    border-color: var(--ui-select);
+    box-shadow: inset 0 0 0 1px var(--ui-select);
+  }
+
+  .clip:global(.is-hover-body) {
+    background: color-mix(in srgb, var(--ui-g3) 72%, transparent);
+  }
+
+  .clip:is(:global(.is-hover-point), :global(.is-hover-segment)) {
+    border-color: var(--ui-signal-parameter);
+  }
+
+  /* A looped clip has a dashed outline: the loop is not colour alone. */
+  .clip:global(.is-looped) {
+    border-style: dashed;
+  }
+
+  .curve {
+    overflow: hidden;
+  }
+
+  .curve :global(.macro-automation-clip-curve-main) {
+    stroke: var(--ui-signal-parameter);
+    stroke-width: 1.5;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .curve :global(.macro-automation-clip-curve-ghost) {
+    stroke: var(--ui-signal-parameter);
+    stroke-width: 1.2;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    stroke-dasharray: 3 3;
+    opacity: 0.4;
+  }
+
+  .curve :global(.macro-automation-clip-curve-segment-hover) {
+    stroke: var(--ui-ink);
+    stroke-width: 3;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+    opacity: 0.86;
+  }
+
+  .curve :global(.macro-automation-loop-divider) {
+    stroke: var(--ui-signal-parameter);
+    stroke-width: 1;
+    stroke-dasharray: 2 3;
+    opacity: 0.4;
+  }
+
+  /* The button is the hit area; the dot is drawn inside it. */
+  .point {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    cursor: move;
+    pointer-events: auto;
+  }
+
+  .point::before {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: 8px;
+    height: 8px;
+    box-sizing: border-box;
+    transform: translate(-50%, -50%);
+    border: 1px solid var(--ui-signal-parameter);
+    border-radius: 50%;
+    background: var(--ui-g1);
+  }
+
+  .point:hover::before,
+  .point:global(.is-hovered)::before {
+    background: var(--ui-signal-parameter);
+  }
+
+  .point:global(.macro-automation-point--loop-boundary)::before {
+    box-shadow: 0 0 0 1px var(--ui-g0), 0 0 0 2px var(--ui-signal-parameter);
+  }
+
+  .handle {
+    position: absolute;
+    top: 0;
+    bottom: 0;
+    width: 6px;
+    cursor: ew-resize;
+    background: transparent;
+    pointer-events: none;
+  }
+
+  .handleLeft {
+    left: 0;
+  }
+
+  .handleRight {
+    right: 0;
+  }
+
+  .clip:global(.is-selected) .handle,
+  .clip:global(.is-hover-resize-start) .handleLeft,
+  .clip:global(.is-hover-resize-end) .handleRight {
+    background: var(--ui-select);
+  }
+
+  .loopGlyph {
+    position: absolute;
+    top: 2px;
+    right: 3px;
+    display: inline-flex;
+    color: var(--ui-ink-2);
+    pointer-events: none;
+  }
+}

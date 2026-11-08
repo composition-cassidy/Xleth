@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import styles from './SnapshotCueLane.module.css'
 
 export const CARDINAL_SWEEP_ANGLES = [0, 90, 180, 270]
 export const CARDINAL_SWEEP_SNAP_DEGREES = 5
@@ -117,7 +118,7 @@ export default function LineSweepDirectionControl({
   }, [cardinalOnly, onCommit])
 
   return (
-    <div className="vmt-line-sweep-direction">
+    <div className={`vmt-line-sweep-direction ${styles.compassBox}`}>
       <div className="vmt-line-sweep-direction-heading">
         <span>Direction</span>
         <span className="vmt-line-sweep-direction-readout">{draftAngle}°</span>
@@ -133,9 +134,8 @@ export default function LineSweepDirectionControl({
         aria-valuemax={359}
         aria-valuenow={draftAngle}
         aria-valuetext={`${direction}, ${draftAngle} degrees`}
-        title={cardinalOnly
-          ? 'Choose the cardinal direction where the incoming snapshot enters.'
-          : 'Drag to set where the incoming snapshot enters. Snaps to cardinal directions; hold Ctrl for a precise angle.'}
+        data-hint="Where the incoming snapshot enters"
+        data-hint-mods={cardinalOnly ? 'Click or arrows: a cardinal direction' : 'Drag: set the angle · Snaps to the cardinals · Ctrl: precise'}
         onPointerDown={handlePointerDown}
         onPointerMove={handlePointerMove}
         onPointerUp={commitPointer}
@@ -159,7 +159,7 @@ export default function LineSweepDirectionControl({
         <circle className="vmt-line-sweep-compass-center" cx="50" cy="50" r="3" />
       </svg>
       <span className="vmt-line-sweep-direction-hint">
-        {direction}{cardinalOnly ? ' · Cardinal directions' : ' · Ctrl for precise angle'}
+        {direction}{cardinalOnly ? ' · Cardinal directions' : ' · Ctrl for a precise angle'}
       </span>
     </div>
   )

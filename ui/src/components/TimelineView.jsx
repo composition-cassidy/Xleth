@@ -8,7 +8,7 @@ import { drawLengthForSnap, adoptDrawLength, resetDrawLength } from './timeline/
 import { sourceTicksForTimelineTicks } from './timeline/clipSourceDomain.js'
 import { tokenValue } from '../theming/tokenValue.ts'
 import TimelineRuler from './timeline/TimelineRuler.jsx'
-import LoopRegionBar from './timeline/LoopRegionBar.jsx'
+import LoopRegionBar, { loopRegionOverlayClassName } from './timeline/LoopRegionBar.jsx'
 import SnapshotCueLane, { SnapshotCueLaneHeader, useSnapshotCues } from './timeline/SnapshotCueLane.jsx'
 import TimelineScrollbar from './timeline/TimelineScrollbar.jsx'
 import TimelineToolbar from './timeline/TimelineToolbar.jsx'
@@ -4518,7 +4518,7 @@ export default function TimelineView({
               {/* Vegas-style loop/render region overlay — sits over the ruler.
                   Repositions on zoom/scroll off the same refs the ruler canvas
                   draws with, pushed per frame by commitViewportRedraw. */}
-              <div className="loop-region-overlay" style={{ height: RULER_HEIGHT }}>
+              <div className={`loop-region-overlay ${loopRegionOverlayClassName}`} style={{ height: RULER_HEIGHT }}>
                 <LoopRegionBar
                   ref={loopRegionBarRef}
                   pixelsPerBeatRef={pixelsPerBeatRef}

@@ -95,7 +95,7 @@ describe('MacroAutomationLanes', () => {
   it('renders an orphaned lane safely with no editable point handles', () => {
     const html = render(gs({ targetUnavailable: true }))
     expect(html).toContain('macro-automation-lane--orphan')
-    expect(html).toContain('macro unavailable')
+    expect(html).toContain('Macro unavailable')
     // orphan lanes are not editable → no point handles rendered
     expect(html).not.toContain('macro-automation-point')
   })

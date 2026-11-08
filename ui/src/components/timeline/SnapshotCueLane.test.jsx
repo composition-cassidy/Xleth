@@ -403,43 +403,27 @@ describe('SnapshotCueLane — Start/End handle drag', () => {
     }))
   }
 
-  // TransitionParameterControl now renders the shared Fader primitive (see
-  // ui/src/components/controls/Fader.jsx) instead of a native
-  // <input type="range">, so it has no aria-label/value to query or set
-  // directly. Faders carry no per-field attribute of their own — the label
-  // lives in the sibling <span> — so locate by that instead.
-  function faderRowFor(container, label) {
-    const rows = [...container.querySelectorAll('.vmt-transition-parameter')]
-    return rows.find((row) => row.querySelector('span')?.textContent === label) ?? null
-  }
+  // TransitionParameterControl renders the kit NumberBox: a role="slider" named by its
+  // label, previewing locally while dragged and committing ONCE (setCueTransition) on
+  // release or after a typed value. Tests type the value: the NumberBox's own drag and
+  // keyboard gestures are covered in ui-kit/__tests__.
   function faderFor(container, label) {
-    return faderRowFor(container, label)?.querySelector('.xleth-fader') ?? null
+    return [...container.querySelectorAll('.vmt-transition-parameter')]
+      .find((box) => box.getAttribute('aria-label') === label) ?? null
   }
 
-  // Fader batches pointermove into one dragLaw update per animation frame
-  // (see Fader.jsx) — every simulated move needs a flushed frame before its
-  // effect is observable.
-  async function flushFrame() {
+  async function typeValue(box, text) {
+    await act(async () => { box.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true })) })
+    const input = box.querySelector('input')
+    expect(input, 'the NumberBox opened its type-in field').toBeTruthy()
     await act(async () => {
-      await new Promise((resolve) => requestAnimationFrame(resolve))
+      const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set
+      setter.call(input, text)
+      input.dispatchEvent(new Event('input', { bubbles: true }))
     })
-  }
-
-  // Drives a real grab-relative drag on a horizontal Fader from `from` to
-  // `to` within [min, max] and commits on release — the same gesture a user
-  // performs, replacing the old "set .value + dispatch input" shortcut that
-  // only worked on a native range input. dragRangePx=1000 matches this
-  // file's global clientWidth mock (see beforeEach), which Fader reads via
-  // resolveDragRange() for its horizontal fill-mode groove.
-  async function dragFaderTo(el, { min, max, from, to, dragRangePx = 1000 }) {
-    const startNorm = (from - min) / (max - min)
-    const targetNorm = (to - min) / (max - min)
-    const startX = 100
-    const endX = startX + (targetNorm - startNorm) * dragRangePx
-    await act(async () => { pointer('pointerdown', el, startX) })
-    await act(async () => { pointer('pointermove', el, endX) })
-    await flushFrame()
-    await act(async () => { pointer('pointerup', el, endX) })
+    await act(async () => {
+      input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter' }))
+    })
   }
 
   async function renderCanvas(onSetCueTransition, transition = INITIAL) {
@@ -589,7 +573,7 @@ describe('SnapshotCueLane — Start/End handle drag', () => {
     expect(zoom).toBeTruthy()
     expect(faderFor(container, 'Dissolve grain')).toBeNull()
     expect(container.querySelector('.vmt-line-sweep-compass')).toBeNull()
-    await dragFaderTo(zoom, { min: 0, max: 0.30, from: 0.2, to: 0.24 })
+    await typeValue(zoom, '24')
     expect(onSetCueTransition.mock.calls.at(-1)[1].zoomAmount).toBe(0.24)
 
     onSetCueTransition.mockClear()
@@ -602,7 +586,7 @@ describe('SnapshotCueLane — Start/End handle drag', () => {
     const grain = faderFor(container, 'Dissolve grain')
     expect(grain).toBeTruthy()
     expect(faderFor(container, 'Zoom intensity')).toBeNull()
-    await dragFaderTo(grain, { min: 1, max: 8, from: 5, to: 7 })
+    await typeValue(grain, '7')
     expect(onSetCueTransition.mock.calls.at(-1)[1].dissolveGrainPx).toBe(7)
   })
 
@@ -623,7 +607,7 @@ describe('SnapshotCueLane — Start/End handle drag', () => {
     expect(faderFor(container, 'Feather')).toBeTruthy()
     const typeSelect = container.querySelector('[aria-label^="Animation type for cue"]')
     await act(async () => { typeSelect.click() })
-    expect([...document.querySelectorAll('.xleth-select-group-label')].map(node => node.textContent))
+    expect([...document.querySelectorAll('[role="listbox"] [role="presentation"]')].map(node => node.textContent))
       .toEqual(['Basic', 'Advanced'])
     expect(document.querySelector('[role="option"][data-value="displacement"]')).toBeTruthy()
 
@@ -631,7 +615,7 @@ describe('SnapshotCueLane — Start/End handle drag', () => {
     const maxBlock = faderFor(container, 'Max block')
     expect(maxBlock).toBeTruthy()
     expect(faderFor(container, 'Intensity')).toBeNull()
-    await dragFaderTo(maxBlock, { min: 1, max: 128, from: 48, to: 64 })
+    await typeValue(maxBlock, '64')
     const pixelatePayload = onSetCueTransition.mock.calls.at(-1)[1]
     expect(pixelatePayload.pixelateMaxBlockPx).toBe(64)
     expect(Object.keys(pixelatePayload).sort()).toEqual([...TRANSITION_KEYS].sort())
@@ -752,7 +736,7 @@ describe('SnapshotCueLane — Start/End handle drag', () => {
     onSetCueTransition.mockClear()
     const presetSelect = container.querySelector('.vmt-easing-preset-select')
     await act(async () => { presetSelect.click() })
-    const easeOutOption = document.body.querySelector('.xleth-select-option[data-value="easeOut"]')
+    const easeOutOption = document.body.querySelector('[role="option"][data-value="easeOut"]')
     expect(easeOutOption).toBeTruthy()
     await act(async () => { easeOutOption.click() })
     expect(onSetCueTransition).toHaveBeenCalledOnce()
