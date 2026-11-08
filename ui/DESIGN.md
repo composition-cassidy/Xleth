@@ -44,7 +44,7 @@ Cascade order, lowest to highest: `@layer reset, legacy, tokens, kit;` (declared
   - The package stylesheet `@xyflow/react/dist/style.css` is layered the same way
     (`styles/vendor-xyflow.css`).
   - The six component sheets (`windowing`, `clipControls`,
-    `clipControlTuner`, `EffectModule.sidechain`, `sandbox`, `designer`) are wrapped
+    `clipControlTuner`, `EffectModule.sidechain`, `designer`; `sandbox` was the seventh until round 2 step 20 deleted it) are wrapped
     in-file in `@layer legacy { … }` because components import them from JS.
   - `@fontsource/*` sheets contain only `@font-face`, which is not part of the cascade.
   - `styles/__tests__/layers.test.js` fails the suite if any stylesheet or CSS import is
@@ -636,9 +636,9 @@ them with `npm run baseline` on a machine with a fresh addon (see `tests/baselin
 (`Mockup-aligned DAW shell pass`, `Flat mockup parity pass`, `Flat menus and settings parity pass`, `Flat grid
 track-card polish pass`) style those surfaces and are not superseded. Largest consumers by rule lines: the plugin-ui
 runtime (about 860), Settings (about 620) and the Phanjer panel (Amp and Filter moved to devices in step 15). (The sampler panel and its modulation cards,
-once the largest, moved to the kit in round 2 step 11; see section 14.) Dialogs not yet on the kit: Export (RenderDialog), MIDI import and
-the Settings panel (each 650 to 1,800 lines of its own layout). `ProgressBar` and the picker sheet's controls row
-are legacy too. `UpdateBanner` is a stub that renders nothing.
+once the largest, moved to the kit in round 2 step 11; see section 14.) Export, MIDI import, the file picker, Settings, the Sample Sandbox, Quick
+Notation and Split Syllables moved to the kit in round 2 step 20 (section 23). The picker sheet's controls row is
+legacy. `UpdateBanner` is a stub that renders nothing.
 
 ### 13.5 Floor status after the populated-shell audit
 
@@ -648,7 +648,7 @@ Measured with the fake engine (16 tracks), every detail-dock tab, dark / light /
 overlay controls): the track identity stripe button (6px wide), the clip FX badge (24x14), loop-region toggle,
 snapshot cue markers, Pattern-list collapse. The Theme Editor (`theming/editor/ThemeEditor.tsx`) was unmounted from Phase 6c
 until the end of Phase 8; it is mounted again in Settings > Appearance (section 3.6, `SettingsThemeEditor.test.jsx`).
-It is still built on legacy `theme-editor-*` CSS in `app.css`, not the kit.
+It moved onto the kit in round 2 step 20 (section 23).
 
 ## 14. Sampler (round 2, step 11)
 
@@ -1135,3 +1135,70 @@ not photographed after the restyle: in this build FX Graph's Add menu did not ad
 in the harness. The Electron capture still lacks a current engine addon. **Owed with the engine:** header readability
 with 12+ tracks; mute, solo and arm at rest; folder collapse; snapshot cues; loop region dragging; quantize; vibrato and
 scratch editing; automation lane drawing.
+
+## 23. Settings, floating tools and dialogs (round 2, step 20)
+
+These are read-and-configure surfaces. Controls are kit controls at 12px; where a dialog reads like prose it keeps the 16px
+reading exception of 13.1. Every surface below measures **0 text under 10px, 0 under 4.5:1 (one disabled label aside),
+no letter-spaced uppercase and at most 4 font sizes**, audit capture at 1920x1080, 100 %, against the 2026-11-07 run.
+
+**Kit additions.** `TextField` (single-line input, 24 / 28 / 32, `mono` for code-like text), `Checkbox` (a real input,
+inverted-chip check, indeterminate), `Progress` (rail plus a printed readout; `null` is a labelled indeterminate state,
+and the slide only runs when motion is allowed). `Dialog` gained `width="xl"`, `fill` (a tall panel), `flush` (a body of
+controls: no padding, 12px, panes scroll themselves) and `above` (stacks over popovers: the file picker opens from other
+dialogs). `formatValue` gained `Mbps`, `kbps`, `MB`, `LUFS`, `dBTP`, `dBFS` and `s` (a duration: `12.5 s`, then `2:05`).
+
+**Settings** (`components/SettingsPanel.jsx`, `settings/`). A left **nav that lists both scope groups** (Project, Application,
+each with its one-line scope note) replaces the tab strip plus sub-nav; the content column is label / description / control
+rows (`settingsKit.jsx`: `SettingsSection`, `SettingsRow`, `SettingsHint`, `SettingsValue`). On / off settings are a `Toggle`
+that says **On** or **Off**; sliders are `NumberBox`es (the old range inputs); the Clip FX defaults, UI scale and similar
+controls **commit once on release** where the old inputs wrote per change. Appearance sliders still preview live (a theme
+write, no IPC). The hue / tint track gradients are gone with the range inputs. **Plugins** is a 24px-row table (name,
+vendor, format, 11px or larger) with kit Add path and Scan plugins and a `Progress` that fills with scanned / total.
+**Shortcuts** is a searchable table (action, shortcut, conflicts) with one key cap per key, a "Custom" word beside a
+changed binding, and a glyph plus words for a clash; capture and override logic are untouched. **Logs** is kit rows with
+mono counts, times and paths. **Gap:** the log view with level filters the brief asked for is **not built**: the logs bridge
+(`window.xleth.logs`) never returns lines by design, so a view needs an IPC change. **Theme editor** is a theme listbox,
+Simple / Advanced `Tabs`, NumberBoxes for brightness, contrast, tint and hue, mono token names and values, IconButton
+detach toggles, Apply theme / Revert / Save as new theme; the contrast readouts and neutral-ramp controls are kept. The
+live preview cards read the working theme's `--theme-*` tokens on purpose (they show that theme, not the kit's `--ui-*`
+tokens, which resolve from the document root). The unused standalone modal wrapper is gone.
+
+**Sample Sandbox** (`components/sandbox/`). `sandbox.css` (1,712 lines) is deleted. Effect and View are kit `Menu`s
+anchored under kit Buttons, the selection right-click menu is a kit `Menu`, tools are `Toggle`s with a brush `NumberBox`
+set and a SegmentedControl for the region shape, the transport is IconButtons and a Select, op rows and their parameters
+are Toggle, IconButton, NumberBox (preview locally, one commit), Select and Checkbox, the layer rail carries kit mix
+controls, and the separation strip uses `Progress`, Checkbox and Select. States are a dot **and** a word. The waveform,
+spectrogram, ruler, overview strip and overlays are still canvas; their stacking rules live in `SandboxCanvas.module.css`.
+**Open:** the black keys of the autotune note picker are narrower than 24px (canvas-like geometry); each key has a name and
+`aria-pressed`.
+
+**Quick Notation** is a mono notation input (a highlight layer under a transparent textarea, so rests dim and length marks
+take the value colour), an always-visible **symbol key** (each symbol inserts at the caret, with a sentence-case
+description), a NumberBox for the 32nd offset, a Checkbox for the preview, a status line that now prints parse problems,
+and a primary action that says what it inserts ("Insert 12 clips"). **Split Syllables** is a grid of syllable cards (number,
+play IconButton, TextField) and Clear all / Save syllables; the marker canvas and its drag logic are unchanged.
+
+**Dialogs.** The **file picker**, **Export** and **MIDI import** are kit `Dialog`s. Export destinations are `Tabs`; every row
+is a label and a kit control (`exportKit.jsx`); progress is `Progress`; the loudness report says Pass or Over in words; the
+primary action is "Export audio" or "Export video"; the **Custom** preset name is an inline field (Electron has no
+`window.prompt`). MIDI import's primary action counts ("Import 3 tracks"); transpose is a NumberBox in semitones; position is
+a SegmentedControl. The file picker's path field is mono. **Convert** and the Missing, Unsaved and Cleanup dialogs were
+already kit (13.1).
+
+**Welcome** (`welcome.html`) is a separate BrowserWindow that cannot import the React kit. It was restyled in a parallel
+session ("startup screen and splash design cleanup"): it measures 3 font sizes, no caps, none under 10px. It carries a frozen
+copy of the dark ramp, so it must be re-synced by hand if the ramp changes.
+
+**Removed.** `ProgressBar`, `InfoTip`, `sandbox.css`, the standalone theme editor modal, the Settings CSS-pinning test.
+`app.css` 10,505 -> 5,574 lines in this step (legacy baseline lowered each commit).
+
+**Audit (2026-11-07 -> now), font sizes / letter-spaced caps / text under 10px:** Quick Notation 5 / 4 / 3 -> 3 / 0 / 0;
+Sandbox 6 / 11 / 15 -> 3 / 0 / 0; Settings Plugins 6 / 24 / 48 -> 4 / 0 / 0; Theme editor 5 / 11 / 12 -> 3 / 0 / 0; every
+other Settings page 4 / 0 / 0; Export tabs 7 -> 3 (Custom 4); MIDI import 7 -> 3; file picker 5 -> 3.
+
+**Not captured or not checked.** The Convert dialog and the media, sampler-knob and sandbox-selection menus need project
+state the harness does not set up (the media-row menu was taken). Split Syllables is photographed empty (no region is
+selected in the harness). MIDI import 132 has one 3.8:1 node: its disabled "Override project tempo" label (the 45 % disabled
+dim). Nothing was run against the engine: **owed** are a plugin scan, editing a shortcut, the full Sandbox workflow, Quick
+Notation entry, Split Syllables, an export, a MIDI import and the Welcome window on cold start.
