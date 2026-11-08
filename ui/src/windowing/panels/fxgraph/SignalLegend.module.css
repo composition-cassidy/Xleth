@@ -1,0 +1,44 @@
+@layer kit {
+  .legend {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    margin: 0 0 0 auto;
+    padding: 0;
+    list-style: none;
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+    line-height: 1;
+  }
+
+  .item {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    white-space: nowrap;
+  }
+
+  .swatch { flex: none; }
+
+  .line {
+    fill: none;
+    stroke-linecap: round;
+    stroke-width: 2;
+  }
+
+  .line[data-signal="audio"] { stroke: var(--ui-signal-audio); }
+
+  .line[data-signal="parameter"] {
+    stroke: var(--ui-signal-parameter);
+    stroke-dasharray: 5 4;
+    stroke-width: 1.5;
+  }
+
+  .line[data-signal="sidechain"] {
+    stroke: var(--ui-signal-audio);
+    stroke-dasharray: 1 5;
+    stroke-width: 2.5;
+    opacity: 0.6;
+  }
+}

@@ -17,6 +17,7 @@ import GraphStatePreview, {
 import FxGraphEffectPicker, {
   type FxEffectPickerSelection,
 } from './fxgraph/FxGraphEffectPicker';
+import SignalLegend from './fxgraph/SignalLegend';
 import type {
   GraphEffectParameterDescriptor,
   GraphParameterResult,
@@ -327,6 +328,7 @@ export function FxGraphPanelContent({
             {hasTrack ? trackLabel : 'No track selected'}
           </h2>
         </div>
+        {showPersistedPreview && <SignalLegend />}
         <div className="xleth-fx-graph-panel__status">
           {statusText}
         </div>

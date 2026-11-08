@@ -33,6 +33,10 @@ import {
   type LfoNodeData,
   type LfoNodePatch,
 } from './LfoEditor';
+import { Maximize, Spline, X as CloseGlyph } from 'lucide-react';
+import { IconButton, formatValue } from '../../../ui-kit';
+import GraphMinimap from './GraphMinimap';
+import canvasStyles from './GraphCanvas.module.css';
 import './fxGraph.css';
 
 // FXG.4-g — Bezier mapping editor types.
@@ -337,6 +341,12 @@ const DEFAULT_VIEWPORT: GraphStateViewport = Object.freeze({ x: 0, y: 0, zoom: 1
 // Continuous zoom sensitivity: Math.exp(-deltaY * k).
 // k=0.001 → ~10% per standard 100px wheel notch; trackpad frames are tiny so feel smooth.
 const WHEEL_ZOOM_SENSITIVITY = 0.001;
+// One minor grid cell, in graph pixels; a major line every five.
+const GRID_CELL_PX = 24;
+// Below this the minor lines would sit closer than 8px and are left out.
+const GRID_MINOR_MIN_PX = 8;
+// Hint for the minimap: show it once a node is this far outside the window.
+const MINIMAP_MARGIN_PX = 4;
 
 function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
@@ -2618,6 +2628,55 @@ export default function GraphStatePreview({
   const canvasStyle: React.CSSProperties = {
     transform: `translate(${viewport.x}px, ${viewport.y}px) scale(${viewport.zoom})`,
   };
+  // The grid follows pan and zoom through custom properties only (see GraphCanvas.module.css).
+  const gridStep = GRID_CELL_PX * viewport.zoom;
+  const viewportStyle = {
+    '--grid-x': `${viewport.x}px`,
+    '--grid-y': `${viewport.y}px`,
+    '--grid-step': `${gridStep}px`,
+  } as React.CSSProperties;
+
+  // The viewport's size, for the minimap's visible-window outline and its show rule.
+  const [viewSize, setViewSize] = React.useState<{ width: number; height: number } | null>(null);
+  React.useEffect(() => {
+    const element = viewportRef.current;
+    if (!element || typeof ResizeObserver === 'undefined') return undefined;
+    const measure = () => {
+      const rect = element.getBoundingClientRect();
+      setViewSize((prev) => (
+        prev && prev.width === rect.width && prev.height === rect.height
+          ? prev
+          : { width: rect.width, height: rect.height }
+      ));
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, []);
+
+  // Cable hover and selection. Hover is ignored while a node drags or a cable is being drawn.
+  const [hoveredEdgeId, setHoveredEdgeId] = React.useState<string | null>(null);
+  const [selectedEdgeId, setSelectedEdgeId] = React.useState<string | null>(null);
+  const hoverClearTimerRef = React.useRef<number | null>(null);
+  const hoverEdge = React.useCallback((edgeId: string) => {
+    if (hoverClearTimerRef.current != null) {
+      window.clearTimeout(hoverClearTimerRef.current);
+      hoverClearTimerRef.current = null;
+    }
+    setHoveredEdgeId(edgeId);
+  }, []);
+  // A short grace period, so the pointer can travel from the cable to its buttons.
+  const unhoverEdge = React.useCallback(() => {
+    if (hoverClearTimerRef.current != null) window.clearTimeout(hoverClearTimerRef.current);
+    hoverClearTimerRef.current = window.setTimeout(() => {
+      hoverClearTimerRef.current = null;
+      setHoveredEdgeId(null);
+    }, 160);
+  }, []);
+  React.useEffect(() => () => {
+    if (hoverClearTimerRef.current != null) window.clearTimeout(hoverClearTimerRef.current);
+  }, []);
   const hasHeader = notice != null || model.empty;
   const canDragNodes = typeof onNodePositionChange === 'function' || typeof onSpliceNodeIntoEdge === 'function';
   const canEditViewport = typeof onViewportChange === 'function';
@@ -2991,6 +3050,7 @@ export default function GraphStatePreview({
     const isMiddle = event.button === 1;
     const isLeft   = event.button === 0;
     if (!isLeft && !isMiddle) return;
+    setSelectedEdgeId(null);
 
     // Left-click without Space: skip if pointer is over a node (node drag takes over).
     // Middle-click or Space+left always pans regardless of target.
@@ -3309,6 +3369,32 @@ export default function GraphStatePreview({
     }
   }, [onConnectMacroToParameter, onConnectEnvelopeToParameter, onConnectLfoToParameter, onConnectSidechain, onConnectNodes, resetConnect]);
 
+  // A selected cable that has since been removed is no longer selected.
+  const activeSelectedEdgeId = selectedEdgeId != null && model.edges.some((edge) => edge.id === selectedEdgeId)
+    ? selectedEdgeId
+    : null;
+  const cableGestureActive = draggingNodeId != null || connectingFromNodeId != null;
+
+  // The minimap shows once any node lies outside the visible window.
+  const graphExceedsView = React.useMemo(() => {
+    if (!viewSize || model.empty) return false;
+    const z = viewport.zoom || 1;
+    const left = -viewport.x / z + MINIMAP_MARGIN_PX;
+    const top = -viewport.y / z + MINIMAP_MARGIN_PX;
+    const right = (viewSize.width - viewport.x) / z - MINIMAP_MARGIN_PX;
+    const bottom = (viewSize.height - viewport.y) / z - MINIMAP_MARGIN_PX;
+    return model.nodes.some((node) => (
+      !node.virtual
+      && (node.x < left || node.y < top || node.x + node.width > right || node.y + node.height > bottom)
+    ));
+  }, [model.empty, model.nodes, viewSize, viewport.x, viewport.y, viewport.zoom]);
+  const minimapEdges = React.useMemo(
+    () => (Array.isArray(graphState?.edges) ? graphState.edges : [])
+      .filter((edge) => edge.type === 'audio' || edge.type === 'parameter' || edge.type === 'sidechain')
+      .map((edge) => ({ sourceNodeId: edge.sourceNodeId, targetNodeId: edge.targetNodeId, type: edge.type })),
+    [graphState?.edges],
+  );
+
   const connectingNode = connectingFromNodeId
     ? model.nodes.find((node) => node.id === connectingFromNodeId)
     : undefined;
@@ -3372,8 +3458,10 @@ export default function GraphStatePreview({
         </div>
       )}
       <div
-        className="xleth-graph-state-preview__viewport"
+        className={`xleth-graph-state-preview__viewport ${canvasStyles.viewport}`}
         ref={viewportRef}
+        style={viewportStyle}
+        data-grid-minor={gridStep >= GRID_MINOR_MIN_PX ? undefined : 'false'}
         data-pannable={canEditViewport ? 'true' : undefined}
         data-panning={panning ? 'true' : undefined}
         onPointerDown={canEditViewport ? handleViewportPointerDown : undefined}
@@ -3400,23 +3488,46 @@ export default function GraphStatePreview({
               aria-label="Static graph cables"
             >
               {model.edges.map((edge) => (
-                <path
-                  className={[
-                    'xleth-graph-state-preview__edge',
-                    `xleth-graph-state-preview__edge--${edge.type}`,
-                    edge.id === spliceTargetEdgeId ? 'xleth-graph-state-preview__edge--splice-target' : '',
-                  ].filter(Boolean).join(' ')}
-                  data-edge-id={edge.id}
-                  data-edge-type={edge.type}
-                  data-splice-target={edge.id === spliceTargetEdgeId ? 'true' : undefined}
-                  key={edge.id}
-                  d={edge.path}
-                  aria-label={edge.label}
-                />
+                <React.Fragment key={edge.id}>
+                  {edge.id === activeSelectedEdgeId && (
+                    <path className={canvasStyles.halo} d={edge.path} aria-hidden="true" />
+                  )}
+                  <path
+                    className={[
+                      'xleth-graph-state-preview__edge',
+                      `xleth-graph-state-preview__edge--${edge.type}`,
+                      edge.id === spliceTargetEdgeId ? 'xleth-graph-state-preview__edge--splice-target' : '',
+                      canvasStyles.cable,
+                    ].filter(Boolean).join(' ')}
+                    data-edge-id={edge.id}
+                    data-edge-type={edge.type}
+                    data-splice-target={edge.id === spliceTargetEdgeId ? 'true' : undefined}
+                    data-hovered={edge.id === hoveredEdgeId && !cableGestureActive ? 'true' : undefined}
+                    data-selected={edge.id === activeSelectedEdgeId ? 'true' : undefined}
+                    d={edge.path}
+                    aria-label={edge.label}
+                  />
+                  {canDisconnect && (
+                    <path
+                      className={canvasStyles.hit}
+                      data-edge-hit-for={edge.id}
+                      d={edge.path}
+                      aria-hidden="true"
+                      onPointerEnter={cableGestureActive ? undefined : () => hoverEdge(edge.id)}
+                      onPointerLeave={unhoverEdge}
+                      onPointerDown={(event) => {
+                        if (event.button !== 0) return;
+                        // Picking a cable must not start a pan.
+                        event.stopPropagation();
+                        setSelectedEdgeId(edge.id);
+                      }}
+                    />
+                  )}
+                </React.Fragment>
               ))}
               {connectLinePath && (
                 <path
-                  className="xleth-graph-state-preview__edge xleth-graph-state-preview__edge--connecting"
+                  className={`xleth-graph-state-preview__edge xleth-graph-state-preview__edge--connecting ${canvasStyles.connecting}`}
                   d={connectLinePath}
                   aria-hidden="true"
                 />
@@ -3467,56 +3578,68 @@ export default function GraphStatePreview({
               <div className="xleth-graph-state-preview__overlay" aria-label="Graph cable controls">
                 {model.edges
                   .filter((edge) => edge.type === 'audio' || edge.type === 'parameter' || edge.type === 'sidechain')
-                  .map((edge) => (
-                    <React.Fragment key={edge.id}>
-                      {canDisconnect && (
-                        <button
-                          className={`xleth-graph-state-preview__disconnect xleth-graph-state-preview__disconnect--${edge.type}`}
-                          type="button"
-                          style={{ left: edge.midX, top: edge.midY }}
-                          data-edge-id={edge.id}
-                          data-edge-type={edge.type}
-                          aria-label={`Disconnect ${edge.label}`}
-                          onPointerDown={(event) => event.stopPropagation()}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            onDisconnectEdge?.(edge.id);
-                          }}
-                        >
-                          {'×'}
-                        </button>
-                      )}
-                      {edge.type === 'parameter' && canEditMappings && (
-                        <button
-                          className={[
-                            'xleth-graph-state-preview__disconnect',
-                            'xleth-graph-state-preview__disconnect--parameter',
-                            'xleth-graph-state-preview__edge-edit',
-                            mappingEditorState?.edgeId === edge.id
-                              ? 'xleth-graph-state-preview__edge-edit--open'
-                              : '',
-                          ].filter(Boolean).join(' ')}
-                          type="button"
-                          style={{ left: edge.midX - 22, top: edge.midY }}
-                          data-edge-id={edge.id}
-                          data-edge-type={edge.type}
-                          aria-label={`Edit mapping for ${edge.label}`}
-                          aria-pressed={mappingEditorState?.edgeId === edge.id}
-                          onPointerDown={(event) => event.stopPropagation()}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            setMappingEditorState((prev) =>
-                              prev?.edgeId === edge.id
-                                ? null
-                                : { edgeId: edge.id, x: event.clientX + 12, y: event.clientY - 20 },
-                            );
-                          }}
-                        >
-                          {'~'}
-                        </button>
-                      )}
-                    </React.Fragment>
-                  ))}
+                  .map((edge) => {
+                    const buttonsActive = !cableGestureActive
+                      && (edge.id === hoveredEdgeId || edge.id === activeSelectedEdgeId);
+                    return (
+                      <React.Fragment key={edge.id}>
+                        {canDisconnect && (
+                          <button
+                            className={`xleth-graph-state-preview__disconnect xleth-graph-state-preview__disconnect--${edge.type} ${canvasStyles.cableButton}`}
+                            type="button"
+                            style={{ left: edge.midX, top: edge.midY }}
+                            data-edge-id={edge.id}
+                            data-edge-type={edge.type}
+                            data-active={buttonsActive ? 'true' : undefined}
+                            aria-label={`Disconnect ${edge.label}`}
+                            onPointerEnter={() => hoverEdge(edge.id)}
+                            onPointerLeave={unhoverEdge}
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              onDisconnectEdge?.(edge.id);
+                            }}
+                          >
+                            <CloseGlyph size={12} strokeWidth={1.5} aria-hidden="true" />
+                          </button>
+                        )}
+                        {edge.type === 'parameter' && canEditMappings && (
+                          <button
+                            className={[
+                              'xleth-graph-state-preview__disconnect',
+                              'xleth-graph-state-preview__disconnect--parameter',
+                              'xleth-graph-state-preview__edge-edit',
+                              mappingEditorState?.edgeId === edge.id
+                                ? 'xleth-graph-state-preview__edge-edit--open'
+                                : '',
+                              canvasStyles.cableButton,
+                            ].filter(Boolean).join(' ')}
+                            type="button"
+                            style={{ left: edge.midX - 26, top: edge.midY }}
+                            data-edge-id={edge.id}
+                            data-edge-type={edge.type}
+                            data-active={buttonsActive ? 'true' : undefined}
+                            data-open={mappingEditorState?.edgeId === edge.id ? 'true' : undefined}
+                            aria-label={`Edit mapping for ${edge.label}`}
+                            aria-pressed={mappingEditorState?.edgeId === edge.id}
+                            onPointerEnter={() => hoverEdge(edge.id)}
+                            onPointerLeave={unhoverEdge}
+                            onPointerDown={(event) => event.stopPropagation()}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setMappingEditorState((prev) =>
+                                prev?.edgeId === edge.id
+                                  ? null
+                                  : { edgeId: edge.id, x: event.clientX + 12, y: event.clientY - 20 },
+                              );
+                            }}
+                          >
+                            <Spline size={12} strokeWidth={1.5} aria-hidden="true" />
+                          </button>
+                        )}
+                      </React.Fragment>
+                    );
+                  })}
               </div>
             )}
           </div>
@@ -3631,6 +3754,31 @@ export default function GraphStatePreview({
             );
           })()}
         </div>
+        {canEditViewport && !model.empty && (
+          <div
+            className={canvasStyles.controls}
+            onPointerDown={(event) => event.stopPropagation()}
+            onWheel={(event) => event.stopPropagation()}
+            onContextMenu={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
+          >
+            <IconButton label="Fit graph to view" size="sm" onClick={handleFitView}>
+              <Maximize size={14} strokeWidth={1.5} aria-hidden="true" />
+            </IconButton>
+            <span className={canvasStyles.zoomReadout} aria-label="Zoom">
+              {formatValue(viewport.zoom * 100, '%')}
+            </span>
+          </div>
+        )}
+        {canEditViewport && viewSize && graphExceedsView && onViewportChange && (
+          <GraphMinimap
+            nodes={model.nodes}
+            edges={minimapEdges}
+            viewport={{ x: viewport.x, y: viewport.y, zoom: viewport.zoom }}
+            viewSize={viewSize}
+            onViewportChange={onViewportChange}
+          />
+        )}
       </div>
     </section>
   );

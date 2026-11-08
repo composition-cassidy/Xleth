@@ -387,44 +387,6 @@
   font-weight: 700;
 }
 
-.xleth-graph-state-preview__viewport {
-  /* Explicit placement, not auto-flow: __chrome (row 1) is now conditionally
-   * rendered — it disappears whenever there's no notice/empty-state text,
-   * which is the COMMON case once a graph has real content and isn't
-   * dormant. Auto-flow would then make the viewport the grid's first (and
-   * only) item, landing it in the `auto` row instead of `1fr` — an auto row
-   * sizes to its content, and a height:100% child inside an auto-sized row
-   * has no definite size to resolve against, so it collapses to zero and the
-   * whole canvas goes blank. Pinning it to row 2 keeps it in the fill row
-   * whether or not row 1 has anything in it. */
-  grid-row: 2;
-  width: 100%;
-  height: 100%;
-  min-width: 0;
-  min-height: 0;
-  overflow: hidden;
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: var(--theme-chrome-radius-sm);
-  /* A flat backdrop, not a dot grid. The dots competed with the cables and the
-   * node shadows for attention; a plain well reads as depth the modules sit on
-   * top of. --theme-bg-inset is the appearance system's own recessed backdrop
-   * (never an accent), so it tracks the active theme. It is used here rather
-   * than --theme-bg-primary because the FX Graph panel's flat-parity block in
-   * app.css remaps bg-primary to the *card* surface inside this subtree, which
-   * would leave the canvas and the modules sitting on it the same color. */
-  background: var(--theme-bg-inset);
-  touch-action: none;
-}
-
-.xleth-graph-state-preview__viewport[data-pannable="true"] {
-  cursor: grab;
-}
-
-.xleth-graph-state-preview__viewport[data-panning="true"] {
-  cursor: grabbing;
-  user-select: none;
-}
-
 .xleth-graph-state-preview__stage {
   position: relative;
   width: 100%;
@@ -459,56 +421,6 @@
 
 .xleth-graph-state-preview__edges {
   overflow: visible;
-}
-
-.xleth-graph-state-preview__edge {
-  fill: none;
-  stroke-linecap: round;
-  stroke-width: 2;
-  vector-effect: non-scaling-stroke;
-}
-
-.xleth-graph-state-preview__edge--audio {
-  stroke: color-mix(in srgb, var(--theme-accent) 44%, var(--theme-border-strong));
-}
-
-/* A soft bloom around each cable so it reads as a lit signal path against the
- * flat backdrop. drop-shadow follows the stroke's alpha rather than a bounding
- * box, so it haloes the curve itself. Kept small and heavily diluted — a strong
- * glow on a dense graph turns into fog. It sits on the path rather than the
- * parent <svg> because that layer is an unbounded transform anchor with no
- * intrinsic size, and a filter there would establish a region that clips the
- * cables to nothing. */
-.xleth-graph-state-preview__edge--audio {
-  filter: drop-shadow(0 0 3px color-mix(in srgb, var(--theme-accent) 34%, transparent));
-}
-
-.xleth-graph-state-preview__edge--parameter,
-.xleth-graph-state-preview__edge--sidechain {
-  filter: drop-shadow(0 0 2px color-mix(in srgb, var(--theme-accent-active) 24%, transparent));
-}
-
-/* Drag-drop cable splice: highlights the audio cable under the dragged
- * node's center as a valid drop target. */
-.xleth-graph-state-preview__edge--splice-target {
-  stroke: var(--theme-accent-active);
-  stroke-width: 4;
-}
-
-.xleth-graph-state-preview__edge--unknown {
-  stroke: var(--theme-text-muted);
-  stroke-dasharray: 7 6;
-  opacity: 0.75;
-}
-
-/* FXG.4-e/f — Macro/Envelope -> Parameter links read as control cables, distinct
- * from audio cables: dashed, and tinted with a lighter/higher-contrast derivation
- * of the panel accent (--theme-accent-active) rather than an unrelated warning
- * hue, so the modulation identity stays inside the monochromatic accent theme. */
-.xleth-graph-state-preview__edge--parameter {
-  stroke: color-mix(in srgb, var(--theme-accent-active) 64%, var(--theme-border-strong));
-  stroke-dasharray: 4 4;
-  stroke-width: 1.5;
 }
 
 .xleth-graph-state-preview__node {
@@ -1340,12 +1252,6 @@
   box-shadow: 0 0 0 2px color-mix(in srgb, var(--theme-success) 14%, transparent);
 }
 
-.xleth-graph-state-preview__edge--sidechain {
-  stroke: color-mix(in srgb, var(--theme-success) 60%, var(--theme-border-strong));
-  stroke-dasharray: 2 4;
-  stroke-width: 1.5;
-}
-
 .xleth-graph-state-preview__node--sidechain-input {
   border-color: color-mix(in srgb, var(--theme-success) 40%, var(--theme-border-subtle));
 }
@@ -1562,18 +1468,6 @@
   outline-offset: 1px;
 }
 
-.xleth-graph-state-preview__edge--connecting {
-  stroke: var(--theme-accent);
-  stroke-dasharray: 5 5;
-  opacity: 0.85;
-}
-
-.xleth-graph-state-preview__canvas[data-connecting-kind="macro"] .xleth-graph-state-preview__edge--connecting,
-.xleth-graph-state-preview__canvas[data-connecting-kind="envelope"] .xleth-graph-state-preview__edge--connecting,
-.xleth-graph-state-preview__canvas[data-connecting-kind="lfo"] .xleth-graph-state-preview__edge--connecting {
-  stroke: color-mix(in srgb, var(--theme-accent-active) 70%, var(--theme-border-strong));
-}
-
 .xleth-graph-state-preview__overlay {
   /* FXG.5 — see .xleth-graph-state-preview__edges/__nodes: the canvas layer
    * has no intrinsic size, so anchor with top/left:0 rather than inset:0. */
@@ -1581,56 +1475,6 @@
   top: 0;
   left: 0;
   pointer-events: none;
-}
-
-.xleth-graph-state-preview__disconnect {
-  position: absolute;
-  display: grid;
-  place-items: center;
-  width: 18px;
-  height: 18px;
-  padding: 0;
-  border: 1px solid var(--theme-border-strong);
-  border-radius: 999px;
-  background: var(--theme-bg-surface);
-  color: var(--theme-text-muted);
-  font-size: 12px;
-  font-weight: 700;
-  line-height: 1;
-  transform: translate(-50%, -50%);
-  /* FXG.3-l — edge delete controls stay out of the way until the pointer is on
-   * the canvas (hover) or the control is focused, so cables read cleanly
-   * instead of being peppered with always-on buttons. They remain in the DOM
-   * and fully keyboard-reachable. */
-  opacity: 0;
-  pointer-events: none;
-  transition: opacity 120ms ease;
-}
-
-.xleth-graph-state-preview__stage:hover .xleth-graph-state-preview__disconnect,
-.xleth-graph-state-preview__overlay:focus-within .xleth-graph-state-preview__disconnect,
-.xleth-graph-state-preview__disconnect:focus-visible {
-  opacity: 1;
-  pointer-events: auto;
-  cursor: pointer;
-}
-
-.xleth-graph-state-preview__disconnect:hover {
-  border-color: var(--theme-accent);
-  color: var(--theme-text);
-}
-
-.xleth-graph-state-preview__disconnect--parameter {
-  border-color: color-mix(in srgb, var(--theme-accent-active) 50%, var(--theme-border-strong));
-}
-
-.xleth-graph-state-preview__disconnect--parameter:hover {
-  border-color: var(--theme-accent-active);
-}
-
-.xleth-graph-state-preview__disconnect:focus-visible {
-  outline: 1px solid var(--theme-border-focus);
-  outline-offset: 1px;
 }
 
 .xleth-graph-state-preview__context-menu {
@@ -1873,19 +1717,6 @@
 }
 
 /* ── FXG.4-g Bezier Mapping Editor ─────────────────────────────────────── */
-
-.xleth-graph-state-preview__edge-edit {
-  border-color: color-mix(in srgb, var(--theme-accent) 50%, var(--theme-border-strong));
-  font-size: 11px;
-}
-
-.xleth-graph-state-preview__edge-edit--open {
-  border-color: var(--theme-accent);
-  background: color-mix(in srgb, var(--theme-accent) 15%, var(--theme-bg-surface));
-  color: var(--theme-text);
-  opacity: 1;
-  pointer-events: auto;
-}
 
 .xleth-graph-state-preview__mapping-editor {
   position: fixed;
