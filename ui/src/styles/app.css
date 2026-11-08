@@ -1349,15 +1349,6 @@ html, body, #root {
    Video Preview
    â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
-.video-preview {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  background: var(--theme-bg-secondary);
-  border-bottom: 1px solid var(--theme-border-subtle);
-}
-
 .video-header {
   display: flex;
   align-items: center;
@@ -1537,25 +1528,6 @@ html, body, #root {
   letter-spacing: 0.03em;
   white-space: nowrap;
   cursor: help;
-}
-
-.video-canvas-wrapper {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  background: var(--theme-preview-loaded-bg);
-  overflow: hidden;
-  display: flex;
-  flex-direction: column;
-  box-shadow: var(--theme-depth-well-inner-shadow);
-}
-
-.video-canvas {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: contain;
-  background: var(--theme-bg-primary);
 }
 
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -3755,17 +3727,6 @@ html, body, #root {
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Grid Editor Overlay (Part B â€” VideoPreview)
    â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
-
-.video-canvas-wrapper {
-  position: relative;
-}
-
-.video-canvas-area {
-  position: relative;
-  flex: 1;
-  min-height: 0;
-  overflow: hidden;
-}
 
 /* ── Poster prepass loading overlay ───────────────────────────────────────────
    Shown while poster preview holds the video compositor to warm the
@@ -14923,13 +14884,6 @@ input[type="radio"] {
   color: var(--xleth-flat-text);
 }
 
-.video-preview {
-  position: relative;
-  background: var(--xleth-flat-main);
-  border: 0;
-  box-shadow: none;
-}
-
 /* Flat-theme preview toolbar — always visible (FPS, mode, resolution, FX,
    Edit Grid, Import). Square, flat, neutral palette matching the chrome. */
 .video-header {
@@ -15035,32 +14989,6 @@ input[type="radio"] {
 
 .preview-fidelity-badge {
   border-radius: 0;
-}
-
-.video-canvas-wrapper {
-  margin: 14px;
-  border: 1px solid var(--xleth-flat-preview-border);
-  background: var(--xleth-flat-well);
-  box-shadow: none;
-}
-
-.video-preview.is-empty .video-canvas-wrapper::after {
-  content: "PREVIEW";
-  position: absolute;
-  inset: 0;
-  z-index: 2;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  color: #222222;
-  font-size: 9px;
-  letter-spacing: 0.15em;
-  text-transform: uppercase;
-  pointer-events: none;
-}
-
-.video-canvas {
-  background: var(--xleth-flat-well);
 }
 
 .xleth-panel-frame,

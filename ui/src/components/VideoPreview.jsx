@@ -13,6 +13,7 @@ import { uiCanvasFont } from '../styles/typography.js'
 import { getPickerPath, openFilePicker } from './filePicker/filePickerService.js'
 import { VIDEO_EXTENSIONS } from './filePicker/filePickerHelpers.js'
 import { subscribe, completePick, cancelPick } from './grid/chromaKeyEyedropper.js'
+import styles from './VideoPreview.module.css'
 
 // Mirrors CANVAS_W/CANVAS_H in XlethEngineService.cpp — the shm surface's
 // base resolution before previewResolutionScale is applied.
@@ -188,6 +189,9 @@ export default function VideoPreview({ headerActions = null } = {}) {
   // instead of live video. Default ON. Preview-only — never affects render.
   const [posterMode, setPosterMode] = useState(true)
   const [initReady, setInitReady] = useState(false)
+  // True once a frame has been drawn to the canvas. Drives the placeholder, which
+  // exists only for the time before there is a picture.
+  const [hasFrame, setHasFrame] = useState(false)
   // Poster prepass overlay state. holdingVideo === true means the engine is
   // holding the video compositor while the one-poster-per-source cache warms up
   // (audio keeps playing). { active, completed, total, pending, holdingVideo }.
@@ -525,6 +529,7 @@ export default function VideoPreview({ headerActions = null } = {}) {
     let bufA = null, bufB = null
     let sabWidth = 0, sabHeight = 0, bufferSize = 0
     let lastIndex = -1
+    let hasFrameLatched = false
 
     try {
       shm = window.xleth?.video?.openFrameShm?.()
@@ -804,6 +809,7 @@ export default function VideoPreview({ headerActions = null } = {}) {
             diag.shm.lastFrameW = sabWidth
             diag.shm.lastFrameH = sabHeight
             diag.lastTickAction = 'frame'
+            if (!hasFrameLatched) { hasFrameLatched = true; setHasFrame(true) }
           } else {
             diag.texUploadFailures += 1
             diag.lastTickAction = 'upload-failed'
@@ -1026,7 +1032,7 @@ export default function VideoPreview({ headerActions = null } = {}) {
   }, [eyedropperActive])
 
   return (
-    <div className={`video-preview ${videoFile ? 'has-video' : 'is-empty'}`} ref={containerRef}>
+    <div className={styles.root} ref={containerRef}>
       <div className="video-header">
         <div className="video-header-left">
           <PreviewTimecode />
@@ -1113,9 +1119,14 @@ export default function VideoPreview({ headerActions = null } = {}) {
         </div>
       </div>
       {gridEditMode && <GridEditToolbar />}
-      <div className={`video-canvas-wrapper ${gridEditMode ? 'grid-editing' : ''}`} ref={wrapperRef}>
-        <div className="video-canvas-area" ref={canvasAreaRef}>
-          <canvas ref={canvasRef} width={960} height={540} className="video-canvas" />
+      <div className={styles.stage} data-grid-editing={gridEditMode ? 'true' : undefined} ref={wrapperRef}>
+        <div className={styles.area} ref={canvasAreaRef}>
+          <canvas ref={canvasRef} width={960} height={540} className={styles.canvas} />
+          {!hasFrame && (
+            <div className={styles.placeholder} role="status">
+              {mode === 'no-shm' || mode === 'shm-error' ? 'Preview unavailable' : 'No frame yet'}
+            </div>
+          )}
           {gridEditMode && <GridEditorOverlay />}
 
           {/* Poster prepass loading overlay. Shown while the engine holds the

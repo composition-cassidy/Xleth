@@ -1,0 +1,56 @@
+/* The Preview's own layout (ui/DESIGN.md section 8.1). The picture always scales
+ * to fit the panel (object-fit: contain on an absolutely positioned canvas), so
+ * the render resolution only changes how soft it is, never how big it is. The
+ * surround is the neutral ground g0 so picture colour is judged against grey. */
+@layer kit {
+  .root {
+    position: relative;
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-height: 0;
+    min-width: 0;
+    background: var(--ui-g1);
+  }
+
+  .stage {
+    position: relative;
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--ui-g0);
+    overflow: hidden;
+  }
+
+  .area {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  /* Out of flow: the canvas can never size its box from its bitmap. */
+  .canvas {
+    position: absolute;
+    inset: 0;
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: contain;
+    background: var(--ui-g0);
+  }
+
+  /* Only before the first frame has been drawn. Sentence case, 12px, ink-3 on g0. */
+  .placeholder {
+    position: absolute;
+    inset: 0;
+    z-index: 2;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    color: var(--ui-ink-3);
+    font-size: var(--type-12);
+    pointer-events: none;
+  }
+}
