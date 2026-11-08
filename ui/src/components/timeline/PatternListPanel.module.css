@@ -1,0 +1,147 @@
+/* The Patterns column (DESIGN.md 22): 24px list rows on g1. A pattern's identity is the
+ * 3px edge stripe; its length is in steps, with the unit. The pattern open in the
+ * Piano Roll is the selected row: a 1px --ui-select outline, never fill alone. */
+@layer kit {
+  .panel {
+    box-sizing: border-box;
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    width: 136px;
+    overflow: hidden;
+    border-right: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+  }
+
+  .collapsed {
+    box-sizing: border-box;
+    flex: none;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: var(--hit-min);
+    padding-top: var(--space-1);
+    border-right: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
+  }
+
+  .header {
+    box-sizing: border-box;
+    flex: none;
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-height: 28px;
+    padding: 0 var(--space-1) 0 var(--space-2);
+    border-bottom: 1px solid var(--ui-g4);
+    background: var(--ui-g2);
+  }
+
+  .title {
+    flex: 1 1 auto;
+    font-size: var(--type-13);
+    font-weight: 600;
+    color: var(--ui-ink);
+  }
+
+  .total {
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .body {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+  }
+
+  .empty {
+    padding: var(--space-3) var(--space-2);
+    color: var(--ui-ink-2);
+    font-size: var(--type-12);
+    text-align: center;
+  }
+
+  .row {
+    position: relative;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    height: var(--hit-min);
+    padding: 0 var(--space-1) 0 var(--space-2);
+    color: var(--ui-ink);
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .row:hover,
+  .row:global(.is-hover) {
+    background: var(--ui-g2);
+  }
+
+  .row[data-selected="true"] {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+    background: var(--ui-g3);
+  }
+
+  .row:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  .swatch {
+    flex: none;
+    width: 3px;
+    height: 14px;
+  }
+
+  .name {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .nameInput {
+    flex: 1 1 auto;
+    min-width: 0;
+    box-sizing: border-box;
+    height: 22px;
+    padding: 0 var(--space-1);
+    border: 1px solid var(--ui-select);
+    border-radius: 2px;
+    background: var(--ui-g0);
+    color: var(--ui-ink);
+    font-family: inherit;
+    font-size: var(--type-12);
+    outline: none;
+  }
+
+  .meta {
+    flex: none;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
+  .footer {
+    flex: none;
+    padding: var(--space-1);
+    border-top: 1px solid var(--ui-g4);
+    background: var(--ui-g2);
+  }
+
+  .newBtn {
+    width: 100%;
+    justify-content: center;
+  }
+}

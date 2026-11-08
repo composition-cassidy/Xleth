@@ -33,7 +33,7 @@ export default async ({ page, sleep }) => {
   await step('10', async () => out.push(await shot(page, '10-timeline-default-clips-and-patterns', { surface: 'panel-timeline', scope: '[data-testid="xleth-docked-window-layer"]' })));
 
   await step('18', async () => {
-    const b = await page.locator('button[aria-label="Select"]').first().boundingBox();
+    const b = await page.locator('button[aria-label="Select tool"]').first().boundingBox();
     out.push(await shot(page, '18-timeline-toolbar', { surface: 'timeline-toolbar', clip: { x: 258, y: Math.max(0, b.y - 10), width: 1662, height: 44 }, scope: '[data-testid="xleth-docked-window-layer"] [class*="toolbar"], [data-testid="xleth-docked-window-layer"]' }));
   });
 
@@ -64,7 +64,7 @@ export default async ({ page, sleep }) => {
   });
 
   await step('15', async () => {
-    await page.locator('.tab-icon-btn[title*="older"]').first().click({ timeout: 5000 }); await sleep(800);
+    await page.locator('button[aria-label*="older"]').first().click({ timeout: 5000 }); await sleep(800);
     out.push(await shot(page, '15-timeline-folder-row', { surface: 'panel-timeline', scope: '[data-testid="xleth-docked-window-layer"]', note: 'empty folder row created via toolbar (project copy)' }));
     await page.keyboard.press('Control+z'); await sleep(600);
   });

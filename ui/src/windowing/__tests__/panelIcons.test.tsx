@@ -76,7 +76,7 @@ describe('panel and tool icons', () => {
   it('the timeline tools use the tool glyphs and name themselves', () => {
     const toolbar = read('components/timeline/TimelineToolbar.jsx');
     for (const name of ['SelectToolIcon', 'DrawToolIcon', 'SliceToolIcon', 'DeleteToolIcon']) expect(toolbar).toContain(name);
-    expect(toolbar).toContain('aria-label={label}');
-    expect(toolbar).toContain('data-hint={`${label} tool`}');
+    expect(toolbar).toContain('label={`${label} tool`}');
+    expect(toolbar).toContain('hint={`${label} tool (${shortcut})`}');
   });
 });

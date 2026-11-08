@@ -1,19 +1,37 @@
 import { useState, useRef } from 'react'
 import { Plus, AlignJustify, FolderPlus, Layers } from 'lucide-react'
-import { DeleteToolIcon, DrawToolIcon, SelectToolIcon, SliceToolIcon } from '../../ui-kit'
+import {
+  IconButton, SegmentedControl, Select, Toolbar, ToolbarSeparator, THIN_SPACE,
+  DeleteToolIcon, DrawToolIcon, SelectToolIcon, SliceToolIcon, QuickNotationIcon,
+} from '../../ui-kit'
 import { labelHexColor } from '../../constants/labels.js'
 import { getSelectableSyllables } from '../SyllableSplitter/syllableModel.js'
 import useTimelineDisplayStore from '../../stores/timelineDisplayStore.js'
 import TimelineDisplayPopover from './TimelineDisplayPopover.jsx'
+import styles from './TimelineToolbar.module.css'
+
+// The arrangement toolbar (DESIGN.md 22): one 38px row of kit controls, sentence
+// case, every tool with its one-letter key in the hint bar. The sample
+// indicator says what it means ("Painting with: Pitch 1") and is absent when
+// no sample is selected.
 
 const TOOLS = [
-  { id: 'select', label: 'Select', shortcut: 'S', icon: SelectToolIcon },
-  { id: 'pencil', label: 'Pencil', shortcut: 'P', icon: DrawToolIcon },
-  { id: 'split',  label: 'Split',  shortcut: 'C', icon: SliceToolIcon },
-  { id: 'delete', label: 'Delete', shortcut: 'D', icon: DeleteToolIcon },
+  { id: 'select', label: 'Select', shortcut: 'S', icon: SelectToolIcon, mods: 'Drag empty: lasso · Shift+click: add or remove · Drag a clip: move · Alt: no snap' },
+  { id: 'pencil', label: 'Pencil', shortcut: 'P', icon: DrawToolIcon, mods: 'Click or drag: paint the selected sample · Alt: no snap' },
+  { id: 'split',  label: 'Split',  shortcut: 'C', icon: SliceToolIcon, mods: 'Click a clip: split it at the pointer' },
+  { id: 'delete', label: 'Delete', shortcut: 'D', icon: DeleteToolIcon, mods: 'Click or drag over clips to delete them' },
 ]
 
-const SNAP_OPTIONS = ['1/64', '1/32', '1/16', '1/8', 'Beat', 'Half', 'Bar']
+// Values are the keys snapBeatToGrid understands; only the words are ours.
+const SNAP_OPTIONS = [
+  { value: '1/64', label: '1/64' },
+  { value: '1/32', label: '1/32' },
+  { value: '1/16', label: '1/16' },
+  { value: '1/8', label: '1/8' },
+  { value: 'Beat', label: 'Beat' },
+  { value: 'Half', label: 'Half note' },
+  { value: 'Bar', label: 'Bar' },
+]
 
 export default function TimelineToolbar({
   activeTool, setActiveTool,
@@ -36,7 +54,6 @@ export default function TimelineToolbar({
   const setTimelineDisplaySetting = useTimelineDisplayStore((s) => s.setTimelineDisplaySetting)
 
   const activeRegion = activeSampleId ? regions[activeSampleId] : null
-  const sampleColor = activeRegion ? labelHexColor(activeRegion.label) : null
 
   // The region whose syllables should drive the selector (template takes precedence)
   const syllableRegion = pencilTemplate
@@ -49,145 +66,123 @@ export default function TimelineToolbar({
     selectableSyllables.length > 0
   const currentSyllableIdx = pencilTemplate?.syllableIndex ?? -1
 
+  // What the pencil paints: the template (a syllable of a quote) or the selected sample.
+  const paintName = pencilTemplate ? pencilTemplate.displayName : (activeRegion ? activeRegion.name : null)
+  const paintColor = pencilTemplate
+    ? labelHexColor(pencilTemplate.label)
+    : (activeRegion ? labelHexColor(activeRegion.label) : null)
+
+  const quickNotationReady = !!syllableRegion && syllableRegion.label === 'Quote' && selectableSyllables.length > 0
+  const ppb = pixelsPerBeat.toFixed(pixelsPerBeat < 10 ? 1 : 0)
+
   return (
-    <div className="timeline-toolbar">
-      {/* ── Tool buttons ─────────────────────────────────────── */}
-      <div className="timeline-toolbar-tools">
-        {TOOLS.map(({ id, label, shortcut, icon: Icon }) => (
-          <button
+    <div className={`timeline-toolbar ${styles.bar}`}>
+      <Toolbar label="Arrangement tools" className={styles.tools}>
+        {TOOLS.map(({ id, label, shortcut, icon: Icon, mods }) => (
+          <IconButton
             key={id}
-            className={`timeline-tool-btn ${activeTool === id ? 'active' : ''}`}
+            size="sm"
+            label={`${label} tool`}
+            pressed={activeTool === id}
             onClick={() => setActiveTool(id)}
-            title={`${label} (${shortcut})`}
-            aria-label={label}
-            aria-pressed={activeTool === id}
-            data-hint={`${label} tool`}
-            data-hint-mods={`Key: ${shortcut}`}
+            hint={`${label} tool (${shortcut})`}
+            hintMods={mods}
           >
             <Icon size={16} />
-          </button>
+          </IconButton>
         ))}
-      </div>
+      </Toolbar>
 
-      {/* ── Separator ────────────────────────────────────────── */}
-      <div className="timeline-toolbar-sep" />
+      {paintName ? (
+        <>
+          <ToolbarSeparator />
+          <div className={styles.paint} data-hint="The pencil paints clips of this sample"
+            data-hint-mods={pencilTemplate ? 'Choose a syllable below, or the whole quote' : 'Pick another sample in the browser'}>
+            <span className={styles.paintLabel}>Painting with:</span>
+            <span className={styles.paintDot} data-template={pencilTemplate ? 'true' : 'false'}
+              style={paintColor ? { backgroundColor: paintColor } : undefined} aria-hidden="true" />
+            <span className={`timeline-active-sample-name ${styles.paintName}`} title={paintName}>{paintName}</span>
+          </div>
+        </>
+      ) : null}
 
-      {/* ── Active sample indicator ──────────────────────────── */}
-      <div className="timeline-active-sample" title={
-        pencilTemplate
-          ? `Template: ${pencilTemplate.displayName}`
-          : activeRegion ? `Active: ${activeRegion.name}` : 'No sample selected'
-      }>
-        {pencilTemplate ? (
-          <>
-            <span
-              className="timeline-active-sample-dot"
-              style={{
-                backgroundColor: labelHexColor(pencilTemplate.label),
-                outline: '1.5px solid var(--theme-border-focus)',
-                outlineOffset: '1px',
-              }}
-            />
-            <span className="timeline-active-sample-name">
-              {pencilTemplate.displayName}
-            </span>
-          </>
-        ) : (
-          <>
-            {sampleColor && (
-              <span className="timeline-active-sample-dot" style={{ backgroundColor: sampleColor }} />
-            )}
-            <span className="timeline-active-sample-name">
-              {activeRegion ? activeRegion.name : 'No sample'}
-            </span>
-          </>
-        )}
-      </div>
-
-      {/* ── Syllable picker (pencil + Quote with syllables) ──── */}
       {showSyllablePicker && (
         <>
-          <div className="timeline-toolbar-sep" />
-          <div className="timeline-syllable-picker" title="Pick syllable (1-9 keys)">
-            {selectableSyllables.map(({ syllable: syl, sourceIndex, number }) => (
-              <button
-                key={sourceIndex}
-                className={`timeline-syllable-btn ${currentSyllableIdx === sourceIndex ? 'active' : ''}`}
-                onClick={() => onSelectSyllable?.(sourceIndex)}
-                title={syl.text ? `${number}: ${syl.text}` : `Syllable ${number}`}
-              >
-                {number}
-              </button>
-            ))}
-            <button
-              className={`timeline-syllable-btn ${currentSyllableIdx === -1 ? 'active' : ''}`}
-              onClick={() => onSelectSyllable?.(-1)}
-              title="Draw whole quote"
-            >
-              whole
-            </button>
-          </div>
+          <ToolbarSeparator />
+          <SegmentedControl
+            size="sm"
+            label="Syllable to paint"
+            value={currentSyllableIdx}
+            onChange={(v) => onSelectSyllable?.(Number(v))}
+            hint="Syllable to paint: keys 1 to 9"
+            options={[
+              ...selectableSyllables.map(({ syllable: syl, sourceIndex, number }) => ({
+                value: sourceIndex,
+                label: String(number),
+                ariaLabel: syl.text ? `Syllable ${number}: ${syl.text}` : `Syllable ${number}`,
+                hint: syl.text ? `Syllable ${number}: ${syl.text}` : `Syllable ${number}`,
+              })),
+              { value: -1, label: 'Whole', hint: 'Paint the whole quote' },
+            ]}
+          />
         </>
       )}
 
-      {/* ── Quick Notation button ─────────────────────────────── */}
-      <div className="timeline-toolbar-sep" />
-      <button
-        className="timeline-syllable-btn"
+      <ToolbarSeparator />
+      <IconButton
+        size="sm"
+        label="Quick notation"
         onClick={() => onOpenQuickNotation?.()}
-        disabled={!syllableRegion || syllableRegion.label !== 'Quote' || selectableSyllables.length === 0}
-        title={syllableRegion?.label === 'Quote' && selectableSyllables.length > 0
-          ? 'Quick Notation — place clips by typing rhythm patterns'
-          : 'Quick Notation (select a Quote with syllables first)'}
+        disabled={!quickNotationReady}
+        hint={quickNotationReady
+          ? 'Quick notation: place clips by typing rhythm patterns'
+          : 'Quick notation: select a quote with syllables first'}
       >
-        QN
-      </button>
+        <QuickNotationIcon size={16} />
+      </IconButton>
 
-      {/* ── Separator ────────────────────────────────────────── */}
-      <div className="timeline-toolbar-sep" />
-
-      {/* ── Snap granularity dropdown ────────────────────────── */}
-      <div className="timeline-toolbar-info">
-        <span className="timeline-toolbar-tag">Snap</span>
-        <select
-          className="timeline-snap-select"
+      <ToolbarSeparator />
+      <label className={styles.field}>
+        <span className={styles.fieldLabel}>Snap</span>
+        <Select
+          size="sm"
+          className={styles.snap}
+          ariaLabel="Snap"
           value={snapGranularity}
-          onChange={e => onSnapGranularityChange?.(e.target.value)}
-          title="Snap granularity"
-        >
-          {SNAP_OPTIONS.map(opt => (
-            <option key={opt} value={opt}>{opt}</option>
-          ))}
-        </select>
-      </div>
+          options={SNAP_OPTIONS}
+          onChange={(v) => onSnapGranularityChange?.(v)}
+          hint="Snap for placing, moving and resizing clips"
+          hintMods="Alt: no snap · Ctrl: 1/8"
+        />
+      </label>
 
       {/* Declick has no toolbar control — the engine keeps applying its
           declick envelope, the value is just no longer user-editable here. */}
 
-      {/* ── Quantize ─────────────────────────────────────────── */}
-      <div className="timeline-toolbar-sep" />
-      <button
-        className="timeline-tool-btn"
+      <ToolbarSeparator />
+      <IconButton
+        size="sm"
+        label="Quantize"
         onClick={onOpenQuantize}
         disabled={quantizeSelectionCount === 0}
-        title={quantizeSelectionCount === 0
-          ? 'Quantize (select clips first)'
+        hint={quantizeSelectionCount === 0
+          ? 'Quantize: select clips first'
           : `Quantize ${quantizeSelectionCount} selected`}
       >
-        <AlignJustify size={14} />
-      </button>
+        <AlignJustify size={16} />
+      </IconButton>
 
-      {/* ── Timeline Display settings ────────────────────────── */}
-      <div className="timeline-toolbar-sep" />
       <div className="tl-display-root">
-        <button
+        <IconButton
           ref={displayBtnRef}
-          className={`timeline-tool-btn ${showDisplayPopover ? 'active' : ''}`}
+          size="sm"
+          label="Timeline display settings"
+          pressed={showDisplayPopover}
           onClick={() => setShowDisplayPopover(v => !v)}
-          title="Timeline display settings"
+          hint="Timeline display: clip bodies, names, waveforms and pitch chips"
         >
-          <Layers size={14} />
-        </button>
+          <Layers size={16} />
+        </IconButton>
         {showDisplayPopover && (
           <TimelineDisplayPopover
             settings={timelineDisplaySettings}
@@ -199,19 +194,26 @@ export default function TimelineToolbar({
       </div>
 
       {/* ── Right side: zoom + add track ─────────────────────── */}
-      <div className="timeline-toolbar-actions">
-        <span className="timeline-zoom-display">
-          {pixelsPerBeat.toFixed(pixelsPerBeat < 10 ? 1 : 0)} px/beat
-        </span>
-        <button className="tab-icon-btn" title={selectedTrackCount > 0
+      <span className={styles.spacer} />
+      <span className={`timeline-zoom-display ${styles.zoom}`} role="status" aria-label={`Zoom ${ppb} pixels per beat`}
+        data-hint={`Zoom: ${ppb} pixels per beat`} data-hint-mods="Ctrl+wheel: zoom · Alt+wheel: lane height · Shift+wheel: scroll">
+        {ppb}{THIN_SPACE}px/beat
+      </span>
+      <IconButton
+        size="sm"
+        label={selectedTrackCount > 0
           ? `Create folder with ${selectedTrackCount} selected track${selectedTrackCount === 1 ? '' : 's'}`
-          : 'Create empty track folder'} onClick={onAddFolder}>
-          <FolderPlus size={14} />
-        </button>
-        <button className="tab-icon-btn" title="Add track" onClick={onAddTrack}>
-          <Plus size={14} />
-        </button>
-      </div>
+          : 'Create empty track folder'}
+        onClick={onAddFolder}
+        hint={selectedTrackCount > 0
+          ? `New folder with the ${selectedTrackCount} selected track${selectedTrackCount === 1 ? '' : 's'}`
+          : 'New empty track folder'}
+      >
+        <FolderPlus size={16} />
+      </IconButton>
+      <IconButton size="sm" label="Add track" onClick={onAddTrack} hint="Add a track">
+        <Plus size={16} />
+      </IconButton>
     </div>
   )
 }

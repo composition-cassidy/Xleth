@@ -1,7 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { ChevronLeft, ChevronRight, Plus } from 'lucide-react'
 import { timelineEvents } from '../../timelineEvents.js'
+import { ticksToBeats } from '../../constants/timeline.js'
+import { Button, IconButton, THIN_SPACE } from '../../ui-kit'
+import usePianoRollStore from '../../stores/usePianoRollStore.js'
 import PatternPreviewTooltip from './patternPreview/PatternPreviewTooltip.jsx'
+import styles from './PatternListPanel.module.css'
 
 const HOVER_PREVIEW_DELAY_MS = 220
 
@@ -20,6 +24,13 @@ const HOVER_PREVIEW_DELAY_MS = 220
 
 const PATTERN_ACCENT = 'var(--theme-drag-preview-default)'
 
+// A pattern's length in 16th-note steps, the unit the Piano Roll grid counts in
+// ("16 steps"). A fraction survives to one decimal; a whole number prints bare.
+export function patternStepsLabel(lengthTicks) {
+  const steps = Math.round(ticksToBeats(lengthTicks || 0) * 4 * 10) / 10
+  return `${steps}${THIN_SPACE}${steps === 1 ? 'step' : 'steps'}`
+}
+
 export default function PatternListPanel({
   patterns = {},          // { id: Pattern }
   onOpenPianoRoll,        // (patternId) => void
@@ -29,6 +40,8 @@ export default function PatternListPanel({
   onToggleCollapsed,
 }) {
   const [hoverId, setHoverId] = useState(null)
+  // The pattern open in the Piano Roll is the selected one.
+  const selectedPatternId = usePianoRollStore((s) => s.patternId)
   const [editingId, setEditingId] = useState(null)
   const [nameInput, setNameInput] = useState('')
   const inputRef = useRef(null)
@@ -149,37 +162,32 @@ export default function PatternListPanel({
 
   if (collapsed) {
     return (
-      <div className="pattern-list-panel pattern-list-panel-collapsed">
-        <button
-          className="pattern-list-expand-btn"
-          onClick={onToggleCollapsed}
-          title="Expand pattern list"
-        >
+      <div className={`pattern-list-panel pattern-list-panel-collapsed ${styles.collapsed}`}>
+        <IconButton size="sm" label="Expand pattern list" onClick={onToggleCollapsed} hint="Expand the pattern list">
           <ChevronRight size={14} />
-        </button>
+        </IconButton>
       </div>
     )
   }
 
   return (
-    <div className="pattern-list-panel">
-      <div className="pattern-list-header">
-        <span className="pattern-list-title">Patterns</span>
-        <button
-          className="pattern-list-collapse-btn"
-          onClick={onToggleCollapsed}
-          title="Collapse"
-        >
+    <div className={`pattern-list-panel ${styles.panel}`}>
+      <div className={`pattern-list-header ${styles.header}`}>
+        <span className={`pattern-list-title ${styles.title}`}>Patterns</span>
+        <span className={styles.total} role="img" aria-label={`${sortedPatterns.length} patterns`}>{sortedPatterns.length}</span>
+        <IconButton size="sm" label="Collapse pattern list" onClick={onToggleCollapsed} hint="Collapse the pattern list">
           <ChevronLeft size={14} />
-        </button>
+        </IconButton>
       </div>
 
-      <div className="pattern-list-body">
+      <div className={`pattern-list-body ${styles.body}`} role="listbox" aria-label="Patterns">
         {sortedPatterns.length === 0 ? (
-          <div className="pattern-list-empty">No patterns yet</div>
+          <div className={styles.empty}>No patterns yet</div>
         ) : (
           sortedPatterns.map((p) => {
             const isEditing = editingId === p.id
+            const label = p.name || `Pattern ${p.id}`
+            const selected = selectedPatternId === p.id
             return (
               <div
                 key={p.id}
@@ -187,36 +195,47 @@ export default function PatternListPanel({
                   if (el) rowElsRef.current.set(p.id, el)
                   else rowElsRef.current.delete(p.id)
                 }}
-                className={`pattern-list-row ${hoverId === p.id ? 'is-hover' : ''}`}
+                role="option"
+                aria-selected={selected}
+                tabIndex={0}
+                className={`pattern-list-row ${styles.row}${hoverId === p.id ? ' is-hover' : ''}`}
+                data-selected={selected ? 'true' : 'false'}
                 draggable={!isEditing}
                 onDragStart={(e) => handleDragStart(e, p)}
                 onDragEnd={handleDragEnd}
                 onClick={() => { if (!isEditing) handleClick(p.id) }}
+                onKeyDown={(e) => {
+                  if (isEditing || e.target !== e.currentTarget) return
+                  if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); handleClick(p.id) }
+                  else if (e.key === 'F2') { e.preventDefault(); startEdit(p) }
+                }}
                 onMouseEnter={() => handleRowMouseEnter(p.id)}
                 onMouseLeave={handleRowMouseLeave}
-                title={isEditing ? undefined : `${p.name || `Pattern ${p.id}`} — ${p.notes?.length || 0} note(s)`}
+                data-hint={`${label}: ${p.notes?.length || 0} notes`}
+                data-hint-mods="Click: open in the Piano Roll · Drag onto a pattern track · Double-click or F2: rename"
               >
-                <span className="pattern-list-row-swatch" style={{ background: PATTERN_ACCENT }} />
+                <span className={styles.swatch} style={{ background: PATTERN_ACCENT }} aria-hidden="true" />
                 {isEditing ? (
                   <input
                     ref={inputRef}
-                    className="pattern-list-row-name-input"
+                    className={styles.nameInput}
                     value={nameInput}
                     onChange={(e) => setNameInput(e.target.value)}
                     onBlur={commitEdit}
                     onKeyDown={onEditKeyDown}
                     onClick={(e) => e.stopPropagation()}
+                    aria-label="Pattern name"
                     autoFocus
                   />
                 ) : (
                   <span
-                    className="pattern-list-row-name"
+                    className={`pattern-list-row-name ${styles.name}`}
                     onDoubleClick={(e) => { e.stopPropagation(); startEdit(p) }}
                   >
-                    {p.name || `Pattern ${p.id}`}
+                    {label}
                   </span>
                 )}
-                <span className="pattern-list-row-meta">{p.notes?.length || 0}</span>
+                <span className={styles.meta}>{patternStepsLabel(p.lengthTicks)}</span>
               </div>
             )
           })
@@ -224,11 +243,10 @@ export default function PatternListPanel({
       </div>
 
       {onNewPattern && (
-        <div className="pattern-list-footer">
-          <button className="pattern-list-new-btn" onClick={onNewPattern} title="New pattern">
-            <Plus size={12} />
-            <span>New Pattern</span>
-          </button>
+        <div className={styles.footer}>
+          <Button size="sm" className={styles.newBtn} glyph={<Plus size={12} />} onClick={onNewPattern} hint="Create a new pattern">
+            New pattern
+          </Button>
         </div>
       )}
 
