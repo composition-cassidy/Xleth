@@ -191,3 +191,30 @@ describe('route list', () => {
     expect(lastSet().routes[0]).toMatchObject({ source: 0, target: TARGET_SLOT_SEM, index: 0, stage: 0 })
   })
 })
+
+describe('editor dropdowns', () => {
+  const pick = async (attr, value) => {
+    await act(async () => { h.container.querySelector(`[${attr}]`).click() })
+    await act(async () => { document.querySelector(`[role="listbox"] [role="option"][data-value="${value}"]`).click() })
+    await h.settle()
+  }
+
+  it('Env "Times in" switches to note values and commits', async () => {
+    await mount()
+    await pick('data-env-field="tempoSync"', 'sync')
+    expect(lastSet().envs[0].tempoSync).toBe(true)
+    expect(h.slider('Attack').getAttribute('aria-valuetext')).toBe('Attack, Off')
+  })
+
+  it('LFO Mode and Rate in commit; Segment waits for a selected point', async () => {
+    await mount()
+    await act(async () => { sourceTab('LFO 1').dispatchEvent(mouse('pointerdown')) })
+    await act(async () => { window.dispatchEvent(mouse('pointerup')) })
+    await h.settle()
+    expect(h.container.querySelector('[data-lfo-field="segment"]').disabled).toBe(true)
+    await pick('data-lfo-field="behavior"', 1)
+    expect(lastSet().lfos[0].behavior).toBe(1)
+    await pick('data-lfo-field="tempoSync"', 'sync')
+    expect(lastSet().lfos[0].tempoSync).toBe(true)
+  })
+})

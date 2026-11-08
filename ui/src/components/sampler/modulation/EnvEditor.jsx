@@ -1,4 +1,5 @@
-import { Knob, NumberBox, SegmentedControl } from '../../../ui-kit'
+import { Knob, NumberBox } from '../../../ui-kit'
+import FieldSelect from '../FieldSelect.jsx'
 import { ModKnob, ModNumberBox } from '../kitMod.jsx'
 import { formatSigned2, noteValueCodec, parseOffset } from '../samplerFormat.js'
 import ModEnvPreview from './ModEnvPreview.jsx'
@@ -82,13 +83,11 @@ export default function EnvEditor({ env, color, bpm, preview, commit, source = n
   return (
     <div className={styles.editor} data-editor="env">
       <div className={styles.editorHead}>
-        <SegmentedControl
-          size="sm" label={`${label} time base`} value={sync ? 'sync' : 'ms'}
-          options={[
-            { value: 'ms', label: 'ms', hint: 'Stage times in milliseconds' },
-            { value: 'sync', label: 'Sync', hint: 'Stage times as note values at the project tempo' },
-          ]}
+        <FieldSelect
+          label="Times in" width={124} value={sync ? 'sync' : 'ms'}
+          options={[{ value: 'ms', label: 'Milliseconds' }, { value: 'sync', label: 'Note values' }]}
           onChange={(v) => { preview({ tempoSync: v === 'sync' }); commit() }}
+          hint="Stage times in milliseconds, or as note values at the project tempo"
           data-env-field="tempoSync"
         />
         {curveBox('attackTension', 'Attack curve')}

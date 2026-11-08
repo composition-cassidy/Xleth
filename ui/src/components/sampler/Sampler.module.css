@@ -774,10 +774,6 @@
     padding-right: var(--space-1);
   }
 
-  .snapSelect {
-    width: 60px;
-  }
-
   /* The source label that follows the pointer during drag-to-route: a floating
    * surface, so it carries the hard offset shadow. */
   .dragGhost {

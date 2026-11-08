@@ -1,7 +1,8 @@
 import { useState } from 'react'
 import {
-  IconButton, Knob, SegmentedControl, Select, Toggle, skewScale,
+  IconButton, Knob, Toggle, skewScale,
 } from '../../../ui-kit'
+import FieldSelect from '../FieldSelect.jsx'
 import { ModKnob, ModNumberBox } from '../kitMod.jsx'
 import { formatSigned2, formatTime, noteValueCodec, parseOffset } from '../samplerFormat.js'
 import ModShapeCanvas from './ModShapeCanvas.jsx'
@@ -130,10 +131,11 @@ export default function LfoEditor({ lfo, color, bpm, preview, commit, source = n
   return (
     <div className={styles.editor} data-editor="lfo">
       <div className={styles.editorHead}>
-        <SegmentedControl
-          size="sm" label={`${label} behaviour`} value={lfo.behavior ?? 0}
-          options={BEHAVIORS.map((b) => ({ value: b.v, label: b.l, hint: b.title }))}
-          onChange={(v) => { preview({ behavior: v }); commit() }}
+        <FieldSelect
+          label="Mode" width={84} value={lfo.behavior ?? 0}
+          options={BEHAVIORS.map((b) => ({ value: b.v, label: b.l }))}
+          onChange={(v) => { preview({ behavior: Number(v) }); commit() }}
+          hint={BEHAVIORS.map((b) => `${b.l}: ${b.title}`).join('. ')}
           data-lfo-field="behavior"
         />
         <Toggle
@@ -150,16 +152,16 @@ export default function LfoEditor({ lfo, color, bpm, preview, commit, source = n
             </IconButton>
           ))}
         </div>
-        <SegmentedControl
-          size="sm" label="Segment of the selected point" value={selPoint ? (selPoint.seg ?? SEG_LINE) : -1}
-          options={SEG_TOOLS} disabled={!selPoint}
-          onChange={(seg) => { if (selPoint) setPointsFinal(withSel({ seg })) }}
-          hint={selPoint ? 'Segment type for the selected point' : 'Select a point on the shape first'}
+        <FieldSelect
+          label="Segment" width={84} value={selPoint ? (selPoint.seg ?? SEG_LINE) : -1}
+          options={SEG_TOOLS.map((t) => ({ value: t.value, label: t.label }))} disabled={!selPoint} placeholder="—"
+          onChange={(seg) => { if (selPoint) setPointsFinal(withSel({ seg: Number(seg) })) }}
+          hint={selPoint ? SEG_TOOLS.map((t) => t.hint).join('. ') : 'Select a point on the shape first'}
+          data-lfo-field="segment"
         />
-        <span className={styles.caption}>Snap</span>
-        <Select size="sm" className={styles.snapSelect} ariaLabel="Snap time" value={snapX} options={SNAP_X}
+        <FieldSelect label="Snap time" width={64} value={snapX} options={SNAP_X}
           onChange={(v) => setSnapX(Number(v))} hint="Snap points in time: divisions per cycle" />
-        <Select size="sm" className={styles.snapSelect} ariaLabel="Snap value" value={snapY} options={SNAP_Y}
+        <FieldSelect label="Snap value" width={64} value={snapY} options={SNAP_Y}
           onChange={(v) => setSnapY(Number(v))} hint="Snap points in value: divisions of the range" />
         <span className={styles.spacer} />
         <ModNumberBox
@@ -195,13 +197,11 @@ export default function LfoEditor({ lfo, color, bpm, preview, commit, source = n
 
       <div className={styles.knobRow}>
         <div className={styles.rateBox}>
-          <SegmentedControl
-            size="sm" label={`${label} rate base`} value={sync ? 'sync' : 'hz'}
-            options={[
-              { value: 'hz', label: 'Hz', hint: 'Rate in cycles per second' },
-              { value: 'sync', label: 'Sync', hint: 'Rate as a note value at the project tempo' },
-            ]}
+          <FieldSelect
+            label="Rate in" width={104} value={sync ? 'sync' : 'hz'}
+            options={[{ value: 'hz', label: 'Hertz' }, { value: 'sync', label: 'Note values' }]}
             onChange={(v) => { preview({ tempoSync: v === 'sync' }); commit() }}
+            hint="Rate in cycles per second, or as a note value at the project tempo"
             data-lfo-field="tempoSync"
           />
           {sync ? (
