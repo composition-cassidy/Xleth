@@ -1,26 +1,25 @@
 import {
-  Play, Square, Repeat, Crosshair, ZoomIn, ZoomOut, Maximize2, Scan,
+  Play, Square, Repeat, Crosshair, ZoomIn, ZoomOut, Maximize2, Scan, Check, Plus,
 } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 import useSandboxStore, { hasMeaningfulSelection } from '../../stores/sandboxStore.js'
-import XlethSelect from '../common/XlethSelect.jsx'
+import { Button, IconButton, Select } from '../../ui-kit'
 import { DEFAULT_LABELS, loadCustomLabels } from '../../constants/labels.js'
 import { formatTime } from './sandboxFormat.js'
+import styles from './Sandbox.module.css'
 
-// Bottom transport. Reorganised (Phase 2/4) around what a transport is
-// actually for: PLAY, what it will play, and how the view follows it. Zoom
-// controls live here too — they are navigation, not editing, and the tool
-// column is for tools that own the pointer.
+// Bottom transport. Organised around what a transport is actually for: PLAY,
+// what it will play, and how the view follows it. Zoom controls live here too
+// — they are navigation, not editing, and the tool column is for tools that
+// own the pointer.
 //
-// SWAP IN and BAKE moved to the RIGHT, behind a divider: they act on the
-// active layer and commit something outside this panel (a project sample, a
-// baked asset), which makes them the two heaviest buttons in the room. They
-// used to sit first, where Play belongs.
+// Swap in and Bake sit on the RIGHT, behind a divider: they act on the active
+// layer and commit something outside this panel (a project sample, a baked
+// asset), which makes them the two heaviest buttons in the room.
 //
 // bakedAssets/addBakedAssetAsSource are carried forward unchanged; bakeComposite
-// itself still has no UI trigger anywhere in this codebase (verified — no call
-// site existed before this restructure either), so no new button was added for
-// it here.
+// itself still has no UI trigger anywhere in this codebase, so no new button
+// was added for it here.
 function SwapTargetPicker({ layerId, swapInLayer }) {
   const [regions, setRegions] = useState(null) // null = still loading
 
@@ -35,7 +34,7 @@ function SwapTargetPicker({ layerId, swapInLayer }) {
   // Group order mirrors the SAMPLES tab's own list (SampleSelectorTab):
   // DEFAULT_LABELS first, in their fixed order, then any custom labels —
   // rather than the region list's raw (creation-order) sequence, which
-  // interleaves categories and defeats XlethSelect's group-header rendering.
+  // interleaves categories and defeats the select's group-header rendering.
   const labelOrder = useMemo(() => [...DEFAULT_LABELS, ...loadCustomLabels()], [])
 
   const options = useMemo(() => {
@@ -58,8 +57,8 @@ function SwapTargetPicker({ layerId, swapInLayer }) {
   }
 
   return (
-    <XlethSelect
-      className="sandbox-swap-target-select"
+    <Select
+      className={styles.swapSelect}
       value={null}
       options={options}
       onChange={handlePick}
@@ -67,7 +66,7 @@ function SwapTargetPicker({ layerId, swapInLayer }) {
       placeholder={
         regions == null ? 'Loading samples…'
           : options.length === 0 ? 'No project samples yet'
-          : 'SWAP IN — pick a sample to replace…'
+          : 'Swap in: pick a sample to replace…'
       }
       ariaLabel="Pick a sample to swap this render into"
     />
@@ -95,17 +94,20 @@ export default function SandboxTransport() {
   const layer = layers.find((l) => l.id === activeLayerId) ?? null
 
   const canBake = !!layer && layer.renderState === 'ready'
-  const bakeLabel = layer?.bakeState === 'baking' ? 'Baking…' : layer?.bakeState === 'baked' ? 'Baked ✓' : 'BAKE'
+  const baking = layer?.bakeState === 'baking'
+  const baked = layer?.bakeState === 'baked'
+  const bakeLabel = baking ? 'Baking…' : baked ? 'Baked' : 'Bake layer'
 
   const isSwapping = layer?.swapInState === 'swapping'
+  const swapped = layer?.swapInState === 'swapped'
   const hasSwapTarget = layer?.sourceRegionId != null
   const canSwap = canBake && hasSwapTarget && !isSwapping
   const needsSwapTarget = canBake && !hasSwapTarget && !isSwapping
   const swapLabel =
-    layer?.swapInState === 'swapping' ? 'Swapping…'
-    : layer?.swapInState === 'swapped' ? 'Swapped ✓'
-    : layer?.swapTargetName ? `SWAP IN — replace ${layer.swapTargetName}`
-    : 'SWAP IN'
+    isSwapping ? 'Swapping…'
+    : swapped ? 'Swapped'
+    : layer?.swapTargetName ? `Swap in: replace ${layer.swapTargetName}`
+    : 'Swap in'
   const swapTitle =
     layer?.swapInState === 'error' ? layer.swapInError
     : !hasSwapTarget ? 'Pick a sample to replace — this layer has no bound target yet'
@@ -118,12 +120,10 @@ export default function SandboxTransport() {
   const hasLayers = layers.length > 0
   const isPlaying = playback.state === 'playing'
   const isQueued = playback.state === 'rendering'
-  const playClass = isPlaying ? ' playing' : isQueued ? ' queued' : ''
 
   // The transport says WHAT Space will play, because the rule is not
   // guessable: a real selection plays as a bounded range, otherwise playback
-  // runs from the cursor to the end. Before this readout the same keypress
-  // did two visibly different things with no explanation.
+  // runs from the cursor to the end.
   const sampleRate = layer?.renderedBuffer?.sampleRate
   const rangeIsSelection = hasMeaningfulSelection(selection, sampleRate)
   const playFrom = (selection?.startSample ?? 0)
@@ -138,91 +138,95 @@ export default function SandboxTransport() {
       : 'Play from the cursor (Space) — renders the composite first if needed'
 
   return (
-    <div className="sandbox-transport">
-      <button
-        className={`sandbox-tbtn sandbox-tbtn--primary${playClass}`}
+    <div className={styles.transport} role="toolbar" aria-label="Sandbox transport">
+      <IconButton
+        label={isPlaying ? 'Stop' : 'Play'}
+        pressed={isPlaying}
         disabled={!hasLayers || isQueued}
         onClick={() => toggleCompositePreview()}
-        title={playTitle}
+        hint={isPlaying ? 'Stop' : 'Play'}
+        hintMods={playTitle}
       >
-        {isPlaying ? <Square size={14} /> : <Play size={14} />}
-      </button>
-      <button
-        className={`sandbox-tbtn sandbox-tbtn--icon${loopPlayback ? ' active' : ''}`}
-        onClick={() => toggleLoopPlayback()}
-        title="Loop the played range (L)"
-      ><Repeat size={13} /></button>
-      <button
-        className={`sandbox-tbtn sandbox-tbtn--icon${followPlayhead ? ' active' : ''}`}
+        {isPlaying ? <Square /> : <Play />}
+      </IconButton>
+      <IconButton label="Loop" pressed={loopPlayback} onClick={() => toggleLoopPlayback()} hint="Loop" hintMods="Loop the played range (L)">
+        <Repeat />
+      </IconButton>
+      <IconButton
+        label="Follow playhead"
+        pressed={followPlayhead}
         onClick={() => toggleFollowPlayhead()}
-        title="Scroll the view to follow the playhead"
-      ><Crosshair size={13} /></button>
+        hint="Follow playhead"
+        hintMods="Scroll the view to follow the playhead"
+      >
+        <Crosshair />
+      </IconButton>
 
-      <span className={`sandbox-transport-range${rangeIsSelection ? ' selection' : ''}`} title={
-        rangeIsSelection ? 'Space plays the selection' : 'Space plays from the cursor to the end'
-      }>
-        {rangeIsSelection ? 'SEL' : 'CUR'} {rangeText}
+      <span
+        className={styles.range}
+        data-selection={rangeIsSelection || undefined}
+        title={rangeIsSelection ? 'Space plays the selection' : 'Space plays from the cursor to the end'}
+      >
+        {rangeIsSelection ? 'Selection' : 'Cursor'} {rangeText}
       </span>
 
-      <div className="sandbox-transport-divider" />
+      <div className={styles.divider} />
 
-      <button className="sandbox-tbtn sandbox-tbtn--icon" onClick={() => zoomBy(1.6)} title="Zoom out (−)">
-        <ZoomOut size={13} />
-      </button>
-      <button className="sandbox-tbtn sandbox-tbtn--icon" onClick={() => zoomBy(1 / 1.6)} title="Zoom in (+)">
-        <ZoomIn size={13} />
-      </button>
-      <button
-        className="sandbox-tbtn sandbox-tbtn--icon"
-        onClick={() => zoomToSelection()}
-        title="Zoom to selection (Ctrl+E)"
-      ><Scan size={13} /></button>
-      <button className="sandbox-tbtn sandbox-tbtn--icon" onClick={() => zoomToFit()} title="Fit whole layer (Ctrl+F)">
-        <Maximize2 size={13} />
-      </button>
+      <IconButton label="Zoom out" onClick={() => zoomBy(1.6)} hint="Zoom out" hintMods="Minus key"><ZoomOut /></IconButton>
+      <IconButton label="Zoom in" onClick={() => zoomBy(1 / 1.6)} hint="Zoom in" hintMods="Plus key"><ZoomIn /></IconButton>
+      <IconButton label="Zoom to selection" onClick={() => zoomToSelection()} hint="Zoom to selection" hintMods="Ctrl+E"><Scan /></IconButton>
+      <IconButton label="Fit whole layer" onClick={() => zoomToFit()} hint="Fit whole layer" hintMods="Ctrl+F"><Maximize2 /></IconButton>
 
-      <div className="sandbox-transport-spacer" />
+      <div className={styles.spacer} />
 
       {needsSwapTarget ? (
         <SwapTargetPicker layerId={layer.id} swapInLayer={swapInLayer} />
       ) : (
-        <button
-          className={`sandbox-tbtn${layer?.swapInState === 'error' ? ' sandbox-tbtn--error' : ''}`}
+        <Button
+          variant={layer?.swapInState === 'error' ? 'danger' : 'default'}
+          glyph={swapped ? <Check /> : undefined}
           disabled={!canSwap}
           onClick={() => layer && swapInLayer(layer.id)}
-          title={swapTitle}
+          hint={swapLabel}
+          hintMods={swapTitle}
         >
           {swapLabel}
-        </button>
+        </Button>
       )}
-      <button
-        className="sandbox-tbtn"
+      <Button
+        glyph={baked ? <Check /> : undefined}
         disabled={!canBake}
         onClick={() => layer && bakeLayer(layer.id)}
-        title="Commit the current render as this layer's clean baseline"
+        hint="Bake layer"
+        hintMods="Commit the current render as this layer's clean baseline"
       >
         {bakeLabel}
-      </button>
+      </Button>
       {layer?.swapInState === 'swapped' && layer.lastSwap && (
-        <span className="sandbox-swap-confirmation">
+        <span className={styles.note}>
           Swapped into "{layer.swapTargetName ?? 'target'}" — {layer.lastSwap.samplers} sampler
           {layer.lastSwap.samplers === 1 ? '' : 's'}, {layer.lastSwap.clips} clip
           {layer.lastSwap.clips === 1 ? '' : 's'} updated. Undo restores the previous sample.
         </span>
       )}
       {layer?.swapInState === 'error' && layer.swapInError && (
-        <span className="sandbox-swap-confirmation sandbox-swap-confirmation--error">{layer.swapInError}</span>
+        <span className={styles.note} data-tone="error">{layer.swapInError}</span>
       )}
       {bakedAssets.length > 0 && (
-        <div className="sandbox-baked-asset-list">
+        <div className={styles.baked}>
           {bakedAssets.map((a) => (
-            <div key={a.sampleId} className="sandbox-baked-asset-row">
-              <span className="sandbox-baked-asset-name" title={a.name}>{a.name}</span>
-              <button
-                className="sandbox-mini-btn"
+            <div key={a.sampleId} className={styles.bakedRow}>
+              <span className={styles.bakedName} title={a.name}>{a.name}</span>
+              <IconButton
+                size="sm"
+                variant="ghost"
+                label={`Add ${a.name} as a source`}
+                hint="Add as source"
+                hintMods="Add this baked asset back into the workspace as a new source"
                 onClick={() => addBakedAssetAsSource(a.sampleId, a.name)}
-                title="Add this baked asset back into the workspace as a new source"
-              >+</button>
+              >
+                <Plus />
+              </IconButton>
             </div>
           ))}
         </div>

@@ -4,6 +4,8 @@ import useSandboxStore from '../../stores/sandboxStore.js'
 import { formatSamples, formatSamplesShort, formatHz } from './sandboxFormat.js'
 import { resolveView, viewSpan, isFitted } from './sandboxView.js'
 import { activeToolOf, TOOL_HINTS } from './sandboxToolConstants.js'
+import SandboxRenderChip from './SandboxRenderChip.jsx'
+import styles from './Sandbox.module.css'
 
 // Bottom readout bar — cursor position, selection start/end/length, undo
 // depth, clipboard size. Live: every value here is read straight off the
@@ -35,11 +37,10 @@ function spcSelectionSpan(spcSelection, sampleRate) {
 }
 
 // Composite auto-render state, folded into the same idle/rendering/ready/
-// error vocabulary the per-layer render chip already uses (sandbox.css's
-// `.sandbox-render-chip--*` rules), so this bar's composite chip needs no
-// styling of its own. `debouncePending`/`pending` (sandboxStore's
-// compositeAutoRender) both mean "a render is scheduled or in flight" —
-// see _scheduleCompositeAutoRender / _runCompositeAutoRender.
+// error vocabulary the per-layer render chip uses. `debouncePending` /
+// `pending` (sandboxStore's compositeAutoRender) both mean "a render is
+// scheduled or in flight" — see _scheduleCompositeAutoRender /
+// _runCompositeAutoRender.
 function compositeChipState(composite, compositeAutoRender) {
   if (composite.renderState === 'error') return 'error'
   if (compositeAutoRender.debouncePending || compositeAutoRender.pending || composite.renderState === 'rendering') return 'rendering'
@@ -48,7 +49,7 @@ function compositeChipState(composite, compositeAutoRender) {
 }
 
 const COMPOSITE_CHIP_LABEL = {
-  idle: 'IDLE', rendering: 'COMPOSITING…', ready: 'CACHED', error: 'RENDER FAILED',
+  idle: 'idle', rendering: 'compositing…', ready: 'cached', error: 'render failed',
 }
 
 export default function SandboxStatusBar() {
@@ -69,9 +70,7 @@ export default function SandboxStatusBar() {
   const spcSelectMode = useSandboxStore((s) => s.spcSelectMode)
   const layer = layers.find((l) => l.id === activeLayerId) ?? null
 
-  // What the pointer currently does, in the middle of the bar. This lived in
-  // the 64px tool column, where a sentence wrapped to five lines and read as
-  // decoration.
+  // What the pointer currently does, in the middle of the bar.
   const toolHint = TOOL_HINTS[activeToolOf({ paintEditMode, envelopeEditMode, spcSelectMode })]
 
   const numSamples = layer?.renderedBuffer?.numSamples ?? 0
@@ -103,36 +102,33 @@ export default function SandboxStatusBar() {
         : '—'
 
   return (
-    <div className="sandbox-status-bar">
-      <div className="sandbox-readout-group">
-        <span className="sandbox-status-item">Cursor: {formatSamples(cursorSample, sampleRate)}</span>
-        <span className="sandbox-status-item">
-          Sel: {hasSelection ? `${formatSamples(selection.startSample, sampleRate)} – ${formatSamples(selection.endSample, sampleRate)}` : '—'}
+    <div className={styles.status}>
+      <div className={styles.readouts}>
+        <span className={styles.readout}>Cursor <span className={styles.mono}>{formatSamples(cursorSample, sampleRate)}</span></span>
+        <span className={styles.readout}>
+          Selection <span className={styles.mono}>{hasSelection ? `${formatSamples(selection.startSample, sampleRate)} – ${formatSamples(selection.endSample, sampleRate)}` : '—'}</span>
         </span>
-        <span className="sandbox-status-item">Len: {hasSelection ? formatSamplesShort(lengthSamples, sampleRate) : '—'}</span>
+        <span className={styles.readout}>Length <span className={styles.mono}>{hasSelection ? formatSamplesShort(lengthSamples, sampleRate) : '—'}</span></span>
         {/* Zoom, stated as a span rather than a percentage: "0.42s visible" is
             the number you can act on when deciding whether to zoom further,
             and "1400%" is not. Hidden while fitted, where the waveform's own
             extent already says it. */}
         {!fitted && (
-          <span className="sandbox-status-item sandbox-status-item--zoom" title="Visible range — Ctrl+F fits the whole layer">
-            View: {formatSamplesShort(visibleSamples, sampleRate)}
+          <span className={styles.readout} title="Visible range — Ctrl+F fits the whole layer">
+            View <span className={styles.mono}>{formatSamplesShort(visibleSamples, sampleRate)}</span>
           </span>
         )}
-        {viewMode === 'spc' && <span className="sandbox-status-item">t × Hz: {spcReadout}</span>}
+        {viewMode === 'spc' && <span className={styles.readout}>Time × Hz <span className={styles.mono}>{spcReadout}</span></span>}
       </div>
-      <span className="sandbox-status-hint">{toolHint}</span>
+      <span className={styles.hint}>{toolHint}</span>
 
-      <div className="sandbox-readout-group">
-        <span className="sandbox-status-item">Layers: {layers.length}</span>
-        <span className="sandbox-status-item">Undo depth: {history.sandboxUndoCount}</span>
-        <span className="sandbox-status-item">
-          Clipboard: {clipboard ? formatSamplesShort(clipboard.numSamples, sampleRate) : 'empty'}
+      <div className={styles.readouts}>
+        <span className={styles.readout}>Layers {layers.length}</span>
+        <span className={styles.readout}>Undo depth {history.sandboxUndoCount}</span>
+        <span className={styles.readout}>
+          Clipboard {clipboard ? formatSamplesShort(clipboard.numSamples, sampleRate) : 'empty'}
         </span>
-        <span className={`sandbox-render-chip sandbox-render-chip--${chipState}`}>
-          <span className="sandbox-render-chip-dot" />
-          Composite: {COMPOSITE_CHIP_LABEL[chipState]}
-        </span>
+        <SandboxRenderChip state={chipState}>Composite: {COMPOSITE_CHIP_LABEL[chipState]}</SandboxRenderChip>
       </div>
     </div>
   )

@@ -14,6 +14,7 @@ import SandboxSeparationStrip from './SandboxSeparationStrip.jsx'
 import SandboxTransport from './SandboxTransport.jsx'
 import SandboxStatusBar from './SandboxStatusBar.jsx'
 import './sandbox.css'
+import styles from './Sandbox.module.css'
 
 export default function SandboxPanelContent() {
   const openTarget = useSandboxPanelStore((s) => s.openTarget)
@@ -120,9 +121,9 @@ export default function SandboxPanelContent() {
   }, [])
 
   return (
-    <div className="sandbox-panel-content">
+    <div className={styles.root}>
       <SandboxMenuBar onOpenAdvancedSeparation={() => setSeparationAdvancedOpen(true)} />
-      <div className="sandbox-edbody">
+      <div className={styles.edbody}>
         <SandboxToolColumn />
         <SandboxLayerWorkspace />
         <SandboxStackPanel />

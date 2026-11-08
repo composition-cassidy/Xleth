@@ -134,12 +134,21 @@ async function mount({ separationState = {}, layers = [readyLayer()], activeLaye
 
 // Opens the EFFECT ▾ dropdown so its SEPARATE tier buttons are queryable.
 async function openEffectMenu(host) {
-  const btn = [...host.querySelectorAll('button')].find((b) => b.textContent.includes('EFFECT'))
+  const btn = [...host.querySelectorAll('button')].find((b) => b.textContent.trim().startsWith('Effect'))
   await act(async () => { btn.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
 }
 
-function tierButtons(host) {
-  return [...host.querySelectorAll('.sandbox-separation-tier')]
+// The Effect menu is a kit Menu in a portal, so its items are looked up on the document. Each tier is
+// presented as { el, textContent, disabled, title } so the assertions below read the same as before.
+function tierButtons() {
+  return [...document.querySelectorAll('[role="group"][aria-label="Separate"] [role="menuitem"]')]
+    .filter((el) => /^(Fast|Balanced|Best)$/.test(el.textContent.trim()))
+    .map((el) => ({
+      el,
+      textContent: el.textContent.trim().toUpperCase(),
+      disabled: el.getAttribute('aria-disabled') === 'true',
+      title: el.querySelector('[title]')?.getAttribute('title') ?? '',
+    }))
 }
 
 describe('Sample Sandbox separation UI (SandboxMenuBar SEPARATE + SandboxSeparationStrip)', () => {
@@ -305,8 +314,8 @@ describe('Sample Sandbox separation UI (SandboxMenuBar SEPARATE + SandboxSeparat
     expect(host.querySelector('.sandbox-separation-advanced')).toBeNull()
 
     await openEffectMenu(host)
-    const openAdvanced = [...host.querySelectorAll('button')]
-      .find((b) => b.className.includes('sandbox-menu-item--advanced-separation'))
+    const openAdvanced = [...document.querySelectorAll('[role="menuitem"]')]
+      .find((b) => b.textContent.includes('Advanced'))
     await act(async () => { openAdvanced.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
 
     const row = host.querySelector('.sandbox-separation-advanced')
@@ -349,7 +358,7 @@ describe('Sample Sandbox separation UI (SandboxMenuBar SEPARATE + SandboxSeparat
 
     await openEffectMenu(host)
     const fastButton = tierButtons(host).find((b) => b.textContent === 'FAST')
-    await act(async () => { fastButton.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+    await act(async () => { fastButton.el.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
 
     expect(window.xleth.separation.separateBuffer.mock.calls[0][0].deBleed).toBe(true)
   })
