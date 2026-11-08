@@ -410,6 +410,15 @@ layout. The top row and the arrangement are hidden (still mounted, reporting not
 hint bar stay. With the dock collapsed the command opens the last-used tab first. Collapsing the dock or opening the
 sample picker ends focus mode. State lives in `layout/shellLayoutStore.ts`, not in the saved layout.
 
+**Preview.** The picture is an absolutely positioned canvas with `object-fit: contain` on the neutral ground g0, so the
+render resolution (25 % to 100 %) changes only how soft it is, never how big. The placeholder ("No frame yet") is a real
+element that exists only until the first frame has been drawn. The header (`components/PreviewHeader.jsx`) is one 28px
+row: timecode and frame number left; right, FPS (only while playing), state chips, **View** menu (renderer, resolution,
+quality: Poster frames or Live frames), then FX, Edit grid and Import as kit controls. A chip appears only when its state
+differs from the default and is neutral with an info glyph and a `data-hint`: **Poster** while Poster frames are on,
+and the renderer by name when it is not WebGL. There is no "Preview = Render" badge; the Poster hint says exports are
+always full-fidelity. Below 720px the chips keep only their glyph; below 600px Edit grid and Import do too.
+
 ## 9. Device system (Phase 4a)
 
 Every stock effect is a **device**: one frame, one title bar, one height. Kit:

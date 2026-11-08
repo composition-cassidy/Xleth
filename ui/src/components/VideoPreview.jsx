@@ -1,10 +1,9 @@
 import { useRef, useEffect, useState, useCallback } from 'react'
-import { Import, Grid3x3, Image, Film, Loader2 } from 'lucide-react'
+import { Loader2 } from 'lucide-react'
 import GridEditorOverlay from './GridEditorOverlay.jsx'
 import GridEditorDock from './GridEditorDock.jsx'
 import GridEditToolbar from './grid/GridEditToolbar.jsx'
-import PreviewTimecode from './PreviewTimecode.jsx'
-import { Toggle } from '../ui-kit'
+import PreviewHeader from './PreviewHeader.jsx'
 import ProxyBatchBadge from './ProxyBatchBadge.jsx'
 import { tokenValue } from '../theming/tokenValue.ts'
 import useGridEditStore from '../stores/useGridEditStore.js'
@@ -161,7 +160,6 @@ export default function VideoPreview({ headerActions = null } = {}) {
   // gl viewport, sabWidth/sabHeight closures) after previewResolutionScale
   // changes the compositor's — and therefore the shm's — output dimensions.
   const applyShmResizeRef = useRef(null)
-  const [videoFile, setVideoFile] = useState(null)
   const [importing, setImporting] = useState(false)
   const [fps, setFps] = useState(0)
   const [mode, setMode] = useState('init')
@@ -322,8 +320,7 @@ export default function VideoPreview({ headerActions = null } = {}) {
   // surface got stuck at 50% while the badge read 75%. Catching keeps it from
   // becoming an unhandled rejection; the reconcile poll above is what actually
   // repairs the divergence, within one 500 ms tick.
-  const handleResolutionChange = useCallback(async (e) => {
-    const raw = e.target.value
+  const handleResolutionChange = useCallback(async (raw) => {
     try {
       if (raw === 'auto') {
         setAutoResolution(true)
@@ -452,10 +449,8 @@ export default function VideoPreview({ headerActions = null } = {}) {
       })
       const pickedPath = getPickerPath(picked)
       if (!pickedPath) return
-      const filePath = picked.legacy
-        ? pickedPath
-        : await window.xleth?.importVideoFromPath?.(pickedPath)
-      if (filePath) setVideoFile(filePath.replace(/^.*[\\/]/, ''))
+      // The engine does the import; nothing here needs the file name any more.
+      if (!picked.legacy) await window.xleth?.importVideoFromPath?.(pickedPath)
     } catch (e) {
       console.error('Video import failed:', e)
     } finally {
@@ -1033,91 +1028,23 @@ export default function VideoPreview({ headerActions = null } = {}) {
 
   return (
     <div className={styles.root} ref={containerRef}>
-      <div className="video-header">
-        <div className="video-header-left">
-          <PreviewTimecode />
-          {videoFile && <span className="video-filename">{videoFile}</span>}
-        </div>
-        <div className="video-header-right">
-          <span className="video-fps">{fps} FPS</span>
-          <span className="video-mode">{mode}</span>
-
-          {/* Current preview output resolution. Shows scale qualifier when
-              not at 100% so the user always knows whether the preview is
-              running at native resolution or downsampled, and an "auto" tag
-              when the governor (not the user) picked that scale — see
-              RENDER_PERF_AUDIT Finding 8. */}
-          {outputDims.w > 0 && (
-            <span className="video-resolution" title="Current preview output resolution">
-              {outputDims.w}×{outputDims.h}
-              {resolutionScale < 0.999 && ` (${Math.round(resolutionScale * 100)}%)`}
-              {autoResolution && ' · auto'}
-            </span>
-          )}
-
-          {/* Resolution scale dropdown */}
-          <select
-            className="preview-resolution-select"
-            value={autoResolution ? 'auto' : resolutionScale}
-            onChange={handleResolutionChange}
-            title="Preview resolution (lower = faster). Auto adjusts this automatically to keep the preview at its target frame rate."
-          >
-            <option value="auto">Auto</option>
-            <option value="1.0">100%</option>
-            <option value="0.75">75%</option>
-            <option value="0.5">50%</option>
-            <option value="0.25">25%</option>
-          </select>
-
-          {/* Effects bypass toggle */}
-          <button
-            className={`preview-fx-btn ${effectsBypass ? 'bypassed' : 'active'}`}
-            onClick={handleEffectsBypassToggle}
-            title={effectsBypass ? 'Effects bypassed (click to enable)' : 'Effects active (click to bypass)'}
-          >
-            FX
-          </button>
-
-          {/* Poster fast-preview toggle. Poster = grid cells show one static
-              representative frame (fast); Live = full per-frame decode. */}
-          <button
-            className={`preview-poster-btn ${posterMode ? 'poster' : 'live'}`}
-            onClick={handlePosterModeToggle}
-            title={posterMode
-              ? 'Poster preview: grid cells show a static frame (fast). Click for live video.'
-              : 'Live preview: grid cells decode every frame. Click for fast poster mode.'}
-          >
-            {posterMode ? <Image size={13} /> : <Film size={13} />}
-            <span>{posterMode ? 'Poster' : 'Live'}</span>
-          </button>
-
-          {/* Persistent fidelity warning: poster preview does NOT match the
-              rendered output. Render is always frame-accurate regardless. */}
-          {posterMode && (
-            <span
-              className="preview-fidelity-badge"
-              title="Poster preview shows static frames for speed. The exported render is always full-fidelity, frame-accurate video — this preview does not match it."
-            >
-              Preview ≠ Render
-            </span>
-          )}
-
-          <Toggle
-            size="sm"
-            on={gridEditMode}
-            onChange={(next) => setGridEditMode?.(next)}
-            glyph={<Grid3x3 aria-hidden="true" />}
-            hint="Edit the grid layout on the picture"
-          >
-            Edit grid
-          </Toggle>
-          <button className="video-import-btn" onClick={handleImport} disabled={importing}>
-            <Import size={13} />
-            <span>{importing ? 'Loading...' : 'Import'}</span>
-          </button>
-          {headerActions}
-        </div>
-      </div>
+      <PreviewHeader
+        fps={fps}
+        mode={mode}
+        outputDims={outputDims}
+        resolutionScale={resolutionScale}
+        autoResolution={autoResolution}
+        onResolutionChange={handleResolutionChange}
+        effectsBypass={effectsBypass}
+        onEffectsToggle={handleEffectsBypassToggle}
+        posterMode={posterMode}
+        onPosterToggle={handlePosterModeToggle}
+        gridEditMode={gridEditMode}
+        onGridEditChange={(next) => setGridEditMode?.(next)}
+        importing={importing}
+        onImport={handleImport}
+        headerActions={headerActions}
+      />
       {gridEditMode && <GridEditToolbar />}
       <div className={styles.stage} data-grid-editing={gridEditMode ? 'true' : undefined} ref={wrapperRef}>
         <div className={styles.area} ref={canvasAreaRef}>

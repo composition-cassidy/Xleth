@@ -1,4 +1,5 @@
 // Preview: playing at 25 / 50 / 100 % render resolution (FPS readout), Edit Grid, Poster vs live.
+// Round 2: resolution and quality live in the Preview header's View menu.
 import { shot } from '../shotlib.mjs';
 
 export default async ({ page, sleep }) => {
@@ -9,23 +10,22 @@ export default async ({ page, sleep }) => {
   // dock collapsed so the Preview has room
   const sel = page.locator('[data-detail-tab][aria-selected="true"]').first();
   if (await sel.count()) { await sel.click(); await sleep(800); }
-  const rs = page.locator('select[title^="Preview resolution"]').first();
-  const opts = await rs.locator('option').allTextContents();
-  out.push('resolution options: ' + opts.join(' | '));
+  const viewButton = () => page.locator('[data-testid="preview-header"]').getByRole('button', { name: 'View', exact: true });
+  const pick = async (name) => {
+    await viewButton().click(); await sleep(250);
+    await page.getByRole('menuitemcheckbox', { name, exact: false }).first().click(); await sleep(900);
+  };
   const play = async () => { await page.locator('button[aria-label="Play"]').first().click(); await sleep(3500); };
   const stop = async () => { await page.locator('button[aria-label="Stop"]').first().click(); await sleep(600); };
   for (const pct of ['25', '50', '100']) {
     await step('res' + pct, async () => {
-      const label = opts.find((o) => new RegExp('\\b' + pct + '\\s*%').test(o)) || opts.find((o) => o.includes(pct));
-      if (!label) { out.push(`no option for ${pct}%`); return; }
-      await rs.selectOption({ label }); await sleep(900);
+      await pick(pct + '%');
       await play();
-      out.push(await shot(page, `80-preview-playing-${pct}pct`, { surface: 'panel-preview', scope: TOP, live: true, note: `render resolution "${label}", transport playing ~3.5 s` }));
+      out.push(await shot(page, `80-preview-playing-${pct}pct`, { surface: 'panel-preview', scope: TOP, live: true, note: `render resolution ${pct}% (View > Resolution), transport playing ~3.5 s` }));
       await stop();
     });
   }
-  const auto = opts.find((o) => /auto/i.test(o)); if (auto) await rs.selectOption({ label: auto });
-  await sleep(600);
+  await pick('Auto'); await sleep(600);
 
   await step('edit grid', async () => {
     await page.getByRole('button', { name: 'Edit grid', exact: true }).first().click(); await sleep(1200);
@@ -35,14 +35,14 @@ export default async ({ page, sleep }) => {
   });
 
   await step('poster/live', async () => {
-    const poster = page.getByRole('button', { name: /^Poster/ }).first();
-    const label0 = await poster.textContent();
-    await poster.click(); await sleep(1500);
-    out.push('poster button after click: ' + (await page.getByRole('button', { name: /^(Poster|Live)/ }).first().textContent()) + ' (was ' + label0 + ')');
+    const chip = () => page.locator('[data-testid="preview-header"] [data-hint^="Poster frames"]').count();
+    out.push('poster chip before: ' + (await chip()));
+    await pick('Live frames'); await sleep(600);
+    out.push('poster chip after choosing Live frames: ' + (await chip()));
     await play();
-    out.push(await shot(page, '84-preview-live-mode-playing', { surface: 'panel-preview', scope: TOP, live: true, note: 'Poster preview toggled off (live grid cells), playing' }));
+    out.push(await shot(page, '84-preview-live-mode-playing', { surface: 'panel-preview', scope: TOP, live: true, note: 'Quality = Live frames (View > Quality), playing' }));
     await stop();
-    await page.getByRole('button', { name: /^(Poster|Live)/ }).first().click(); await sleep(800);
+    await pick('Poster frames'); await sleep(600);
   });
   return out.join('\n');
 };
