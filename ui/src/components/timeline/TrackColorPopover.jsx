@@ -1,23 +1,29 @@
-import { useState, useEffect, useRef } from 'react'
-import { createPortal } from 'react-dom'
+import { useState, useEffect } from 'react'
+import { Menu, MenuItem, MenuSeparator, MenuCustom } from '../../ui-kit'
 import {
   normalizeTrackColorAssignment,
   isValidTrackCustomColor,
   normalizeTrackCustomColor,
   TRACK_PALETTE_FALLBACK,
 } from './trackColorResolver.js'
+import { trackColorName, trackColorSlotLabel } from './trackColorNames.js'
+import styles from './TrackColorPopover.module.css'
 
+const COLUMNS = 8
+
+/**
+ * The track colour popover (DESIGN.md 22): a kit Menu holding Auto, the 16 identity
+ * swatches (each named in the hint bar and in its accessible name) and a custom colour.
+ * The selected swatch is outlined, never fill alone. Arrow keys walk the swatches
+ * (left and right by one, up and down by a row).
+ */
 export default function TrackColorPopover({
   anchorRect, track, palette,
   onChooseAuto, onChooseSlot, onChooseCustom,
   resolvedTrackColor,
   onClose,
 }) {
-  const popRef = useRef(null)
   const { mode, slot, customColor } = normalizeTrackColorAssignment(track)
-
-  const top = anchorRect.bottom + 4
-  const left = anchorRect.left
 
   const initDraft = (mode === 'custom' && customColor) ? customColor : (resolvedTrackColor || TRACK_PALETTE_FALLBACK[0])
   const [draftHex, setDraftHex] = useState(initDraft)
@@ -37,11 +43,9 @@ export default function TrackColorPopover({
     if (isValidTrackCustomColor(hex)) onChooseCustom?.(normalizeTrackCustomColor(hex))
   }
 
-  function handleTextChange(e) {
-    setDraftHex(e.target.value)
-  }
-
   function handleTextKeyDown(e) {
+    // The menu's own arrow and Home/End handling would take the caret keys; Escape still closes it.
+    if (e.key !== 'Escape') e.stopPropagation()
     if (e.key === 'Enter') {
       const normalized = normalizeTrackCustomColor(draftHex)
       if (normalized) onChooseCustom?.(normalized)
@@ -56,32 +60,7 @@ export default function TrackColorPopover({
     }
   }
 
-  // Viewport clamp after mount
-  useEffect(() => {
-    const el = popRef.current
-    if (!el) return
-    const rect = el.getBoundingClientRect()
-    if (rect.right > window.innerWidth)   el.style.left = `${window.innerWidth  - rect.width  - 4}px`
-    if (rect.bottom > window.innerHeight) el.style.top  = `${window.innerHeight - rect.height - 4}px`
-  }, [top, left])
-
-  // Outside click
-  useEffect(() => {
-    const handler = (e) => {
-      if (popRef.current && !popRef.current.contains(e.target)) onClose()
-    }
-    document.addEventListener('mousedown', handler)
-    return () => document.removeEventListener('mousedown', handler)
-  }, [onClose])
-
-  // Escape key
-  useEffect(() => {
-    const handler = (e) => { if (e.key === 'Escape') onClose() }
-    window.addEventListener('keydown', handler)
-    return () => window.removeEventListener('keydown', handler)
-  }, [onClose])
-
-  // Close on scroll or resize (fixed position detaches from anchor)
+  // A fixed-position popover detaches from its anchor when the view moves.
   useEffect(() => {
     const close = () => onClose()
     window.addEventListener('resize', close)
@@ -92,71 +71,82 @@ export default function TrackColorPopover({
     }
   }, [onClose])
 
-  return createPortal(
-    <div
-      ref={popRef}
-      className="track-color-popover"
-      style={{ top, left }}
-      onMouseDown={(e) => e.stopPropagation()}
-    >
-      <div className="track-color-popover-title">Track color</div>
+  function handleGridKeyDown(e) {
+    const step = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -COLUMNS, ArrowDown: COLUMNS }[e.key]
+    if (!step) return
+    const swatches = Array.from(e.currentTarget.querySelectorAll('button'))
+    const at = swatches.indexOf(document.activeElement)
+    if (at < 0) return
+    const next = at + step
+    // Leaving the grid vertically hands over to the menu's own walk (Auto above, Custom below).
+    if (next < 0 || next >= swatches.length) { if (Math.abs(step) === 1) e.preventDefault(); return }
+    e.preventDefault()
+    e.stopPropagation()
+    swatches[next].focus()
+  }
 
-      <button
-        className={`track-color-auto-option${mode === 'auto' ? ' is-selected' : ''}`}
-        onClick={onChooseAuto}
-        aria-pressed={mode === 'auto'}
-      >
-        Auto
-      </button>
-
-      <div className="track-color-swatch-grid">
-        {palette.map((hex, i) => {
-          const slotNum = i + 1
-          const selected = mode === 'paletteSlot' && slot === slotNum
-          return (
-            <button
-              key={slotNum}
-              className={`track-color-swatch${selected ? ' is-selected' : ''}`}
-              style={{ background: hex }}
-              onClick={() => onChooseSlot(slotNum)}
-              title={`Use track color ${slotNum}`}
-              aria-label={`Use track color ${slotNum}`}
-              aria-pressed={selected}
-            />
-          )
-        })}
-      </div>
-
-      <div className={`track-color-custom-section${mode === 'custom' ? ' is-selected' : ''}`}>
-        <div className="track-color-custom-label">Custom</div>
-        <div className="track-color-custom-row">
-          <input
-            type="color"
-            className="track-color-custom-input"
-            value={colorInputVal}
-            onChange={handleColorChange}
-            aria-label="Custom track color"
-          />
-          <input
-            type="text"
-            className={`track-color-hex-input${draftHex.length > 0 && !draftValid ? ' is-invalid' : ''}`}
-            value={draftHex}
-            onChange={handleTextChange}
-            onKeyDown={handleTextKeyDown}
-            onBlur={handleTextBlur}
-            aria-label="Custom track color hex"
-            placeholder="#RRGGBB"
-            maxLength={7}
-            spellCheck={false}
-          />
+  return (
+    <Menu x={anchorRect.left} y={anchorRect.bottom + 4} onClose={onClose} label="Track color" className={styles.menu}>
+      <MenuItem checked={mode === 'auto'} onSelect={onChooseAuto}>Auto</MenuItem>
+      <MenuSeparator />
+      <MenuCustom>
+        <div className={styles.grid} role="group" aria-label="Identity colours" onKeyDown={handleGridKeyDown}>
+          {palette.map((hex, i) => {
+            const slotNum = i + 1
+            const selected = mode === 'paletteSlot' && slot === slotNum
+            return (
+              <button
+                key={slotNum}
+                type="button"
+                role="menuitemradio"
+                aria-checked={selected}
+                tabIndex={-1}
+                className={styles.swatch}
+                data-selected={selected ? 'true' : 'false'}
+                style={{ '--swatch': hex }}
+                onClick={() => onChooseSlot(slotNum)}
+                aria-label={`Use track color ${slotNum}: ${trackColorName(hex)}`}
+                data-hint={trackColorSlotLabel(slotNum, hex)}
+                data-hint-mods={selected ? 'Current colour' : 'Click: use this colour'}
+              />
+            )
+          })}
         </div>
-        {draftHex.length > 0 && !draftValid && (
-          <div className="track-color-custom-error" aria-live="polite">
-            Use #RRGGBB format
+      </MenuCustom>
+      <MenuSeparator />
+      <MenuCustom>
+        <div className={styles.custom} data-selected={mode === 'custom' ? 'true' : 'false'}>
+          <span className={styles.customLabel}>Custom</span>
+          <div className={styles.customRow}>
+            <input
+              type="color"
+              className={styles.colorInput}
+              value={colorInputVal}
+              onChange={handleColorChange}
+              aria-label="Custom track color"
+              data-hint="Pick a custom colour"
+            />
+            <input
+              type="text"
+              className={`${styles.hexInput}${draftHex.length > 0 && !draftValid ? ` ${styles.invalid}` : ''}`}
+              value={draftHex}
+              onChange={(e) => setDraftHex(e.target.value)}
+              onKeyDown={handleTextKeyDown}
+              onBlur={handleTextBlur}
+              aria-label="Custom track color hex"
+              aria-invalid={draftHex.length > 0 && !draftValid ? true : undefined}
+              placeholder="#RRGGBB"
+              maxLength={7}
+              spellCheck={false}
+              data-hint="Hex colour"
+              data-hint-mods="Enter: apply"
+            />
           </div>
-        )}
-      </div>
-    </div>,
-    document.body
+          {draftHex.length > 0 && !draftValid && (
+            <div className={styles.error} role="alert">Use #RRGGBB format</div>
+          )}
+        </div>
+      </MenuCustom>
+    </Menu>
   )
 }

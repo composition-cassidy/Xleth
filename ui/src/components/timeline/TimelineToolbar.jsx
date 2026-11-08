@@ -172,26 +172,27 @@ export default function TimelineToolbar({
         <AlignJustify size={16} />
       </IconButton>
 
-      <div className="tl-display-root">
-        <IconButton
-          ref={displayBtnRef}
-          size="sm"
-          label="Timeline display settings"
-          pressed={showDisplayPopover}
-          onClick={() => setShowDisplayPopover(v => !v)}
-          hint="Timeline display: clip bodies, names, waveforms and pitch chips"
-        >
-          <Layers size={16} />
-        </IconButton>
-        {showDisplayPopover && (
-          <TimelineDisplayPopover
-            settings={timelineDisplaySettings}
-            onSet={setTimelineDisplaySetting}
-            onClose={() => setShowDisplayPopover(false)}
-            triggerRef={displayBtnRef}
-          />
-        )}
-      </div>
+      {/* A press on the button never counts as "outside" for the popover's menu, so the
+          click toggles it instead of closing and reopening it. */}
+      <IconButton
+        ref={displayBtnRef}
+        size="sm"
+        label="Timeline display settings"
+        pressed={showDisplayPopover}
+        onMouseDown={(e) => e.stopPropagation()}
+        onClick={() => setShowDisplayPopover(v => !v)}
+        hint="Timeline display: clip bodies, names, waveforms and pitch chips"
+      >
+        <Layers size={16} />
+      </IconButton>
+      {showDisplayPopover && (
+        <TimelineDisplayPopover
+          settings={timelineDisplaySettings}
+          onSet={setTimelineDisplaySetting}
+          onClose={() => setShowDisplayPopover(false)}
+          triggerRef={displayBtnRef}
+        />
+      )}
 
       {/* ── Right side: zoom + add track ─────────────────────── */}
       <span className={styles.spacer} />

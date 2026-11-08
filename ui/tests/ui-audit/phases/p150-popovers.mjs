@@ -9,7 +9,7 @@ export default async ({ page, sleep }) => {
   if (await sel.count()) { await sel.click(); await sleep(700); }
   const popRoot = () => page.evaluate(() => {
     document.querySelectorAll('[data-audit-pop]').forEach((e) => e.removeAttribute('data-audit-pop'));
-    const c = [...document.querySelectorAll('[class*="popover"], [role="dialog"], [class*="-pop"]')].filter((e) => e.checkVisibility() && e.getBoundingClientRect().width > 80);
+    const c = [...document.querySelectorAll('[class*="popover"], [role="dialog"], [class*="-pop"], [role="menu"]')].filter((e) => e.checkVisibility() && e.getBoundingClientRect().width > 80);
     const t = c.sort((a, b) => a.getBoundingClientRect().width * a.getBoundingClientRect().height - b.getBoundingClientRect().width * b.getBoundingClientRect().height)[0];
     if (t) { t.setAttribute('data-audit-pop', '1'); return String(t.className).slice(0, 40); }
     return null;

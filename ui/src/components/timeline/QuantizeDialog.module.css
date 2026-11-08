@@ -1,0 +1,36 @@
+/* The Quantize dialog body (DESIGN.md 22): prose summary at the dialog's 16px, the two
+ * edge pickers at the kit's control sizes. */
+@layer kit {
+  .summary {
+    margin: 0 0 var(--space-3);
+    color: var(--ui-ink);
+  }
+
+  .numbers {
+    font-variant-numeric: tabular-nums;
+  }
+
+  .edges {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+
+  .edge {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-1);
+  }
+
+  .edgeLabel {
+    color: var(--ui-ink-2);
+    font-size: var(--type-12);
+  }
+
+  .warn {
+    margin: var(--space-2) 0 0;
+    color: var(--theme-semantic-danger-text, var(--ui-ink));
+    font-size: var(--type-12);
+  }
+}

@@ -1,0 +1,104 @@
+/* The track colour popover (DESIGN.md 22): the 16 identity swatches in two rows of eight,
+ * 24px each (the hit-area floor). A swatch is an outline when selected, never fill alone. */
+@layer kit {
+  .menu {
+    min-width: 0;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(8, var(--hit-min));
+    gap: var(--space-1);
+  }
+
+  .swatch {
+    box-sizing: border-box;
+    width: var(--hit-min);
+    height: var(--hit-min);
+    margin: 0;
+    padding: 0;
+    border: 1px solid var(--ui-g0);
+    border-radius: var(--ui-radius-1);
+    background: var(--swatch);
+    cursor: pointer;
+  }
+
+  .swatch:hover {
+    outline: 1px solid var(--ui-ink-2);
+    outline-offset: 1px;
+  }
+
+  .swatch[data-selected="true"] {
+    outline: 2px solid var(--ui-select);
+    outline-offset: 1px;
+  }
+
+  .swatch:focus-visible {
+    outline: 2px solid var(--ui-ink);
+    outline-offset: 1px;
+  }
+
+  .custom {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .customLabel {
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  .customRow {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  /* The native colour well, restyled as a swatch button. */
+  .colorInput {
+    box-sizing: border-box;
+    width: var(--hit-min);
+    height: var(--hit-min);
+    margin: 0;
+    padding: 0;
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g3);
+    cursor: pointer;
+  }
+
+  .custom[data-selected="true"] .colorInput {
+    outline: 2px solid var(--ui-select);
+    outline-offset: 1px;
+  }
+
+  .hexInput {
+    box-sizing: border-box;
+    flex: 1 1 auto;
+    min-width: 0;
+    width: 100px;
+    height: var(--hit-min);
+    padding: 0 var(--space-1);
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g0);
+    color: var(--ui-ink);
+    font-family: var(--ui-font-mono);
+    font-size: var(--type-12);
+    outline: none;
+  }
+
+  .hexInput:focus-visible {
+    border-color: var(--ui-select);
+  }
+
+  .invalid {
+    border-color: var(--theme-semantic-danger-text, var(--ui-rec-text));
+  }
+
+  .error {
+    color: var(--theme-semantic-danger-text, var(--ui-rec-text));
+    font-size: var(--type-11);
+  }
+}

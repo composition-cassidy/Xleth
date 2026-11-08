@@ -49,7 +49,7 @@ async function renderPopover(layout = BASE_LAYOUT) {
 }
 
 function canvasSelects() {
-  // XlethSelect renders a <button class="xleth-select-trigger gsp-canvas-select">
+  // The kit Select renders a <button class="gsp-canvas-select">
   return Array.from(container.querySelectorAll('.gsp-canvas-select'))
 }
 
@@ -63,16 +63,23 @@ async function changeSelect(trigger, value) {
   await flush()
 }
 
-async function changeInput(input, value) {
+// A dimension is a kit NumberBox now: double-click opens its type-in field, Enter commits once.
+async function changeInput(box, value) {
+  await act(async () => { box.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true })) })
+  const input = box.querySelector('input')
+  if (!input) throw new Error('the NumberBox did not open its type-in field')
   const setter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value').set
   await act(async () => {
     setter.call(input, String(value))
     input.dispatchEvent(new Event('input', { bubbles: true }))
   })
+  await act(async () => {
+    input.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, cancelable: true, key: 'Enter' }))
+  })
   await flush()
 }
 
-describe('VideoCanvasSettingsPopover — dropdown controls use XlethSelect', () => {
+describe('VideoCanvasSettingsPopover — dropdown controls use the kit Select', () => {
   beforeEach(() => {
     container = document.createElement('div')
     document.body.appendChild(container)
