@@ -10,7 +10,6 @@ import {
   Music,
   Star,
   Video,
-  X,
 } from 'lucide-react'
 import {
   basename,
@@ -22,6 +21,8 @@ import {
   samePath,
   uniqueParentDirectories,
 } from './filePickerHelpers.js'
+import { Button, Dialog, IconButton, TextField } from '../../ui-kit'
+import styles from './FilePicker.module.css'
 
 function pickerApi() {
   return window.xleth?.filePicker || null
@@ -57,7 +58,7 @@ function iconForEntry(entry) {
 
 function actionLabelFor(options) {
   if (options.actionLabel) return options.actionLabel
-  if (options.mode === 'openDirectory') return 'Select Folder'
+  if (options.mode === 'openDirectory') return 'Select folder'
   if (options.mode === 'saveFile') return 'Save'
   if (options.mode === 'openFiles') return 'Import'
   return 'Open'
@@ -396,136 +397,138 @@ export default function XlethFilePickerModal({ options, onCancel, onAccept }) {
       : !currentDir && !pathInput.trim()
 
   return (
-    <div className="xleth-file-picker-backdrop" onMouseDown={event => {
-      if (event.target === event.currentTarget) onCancel()
-    }}>
-      <div className="xleth-file-picker" role="dialog" aria-modal="true" aria-label={title}>
-        <div className="xleth-file-picker__header">
-          <div>
-            <div className="xleth-file-picker__title">{title}</div>
-            <div className="xleth-file-picker__subtitle">{options.subtitle || 'Choose a filesystem path for this XLETH task.'}</div>
-          </div>
-          <button type="button" className="xleth-file-picker__icon-btn" onClick={onCancel} title="Close">
-            <X size={16} />
-          </button>
-        </div>
+    <Dialog
+      title={title}
+      width="xl"
+      flush
+      fill
+      above
+      onClose={onCancel}
+      actions={
+        <>
+          <Button size="lg" onClick={onCancel}>Cancel</Button>
+          <Button size="lg" variant="primary" data-picker-primary="" disabled={acceptDisabled} onClick={acceptSelection}>
+            {actionLabel}
+          </Button>
+        </>
+      }
+    >
+      <div className={styles.selection}>{options.subtitle || 'Choose a filesystem path for this XLETH task.'}</div>
 
-        <div className="xleth-file-picker__pathbar">
-          <input
-            className="xleth-file-picker__path-input"
-            value={pathInput}
-            onChange={event => setPathInput(event.target.value)}
-            onKeyDown={handlePathKeyDown}
-            spellCheck={false}
-            autoFocus
-            aria-label="File path"
+      <div className={styles.pathbar}>
+        <TextField
+          className={styles.pathField}
+          data-picker-path=""
+          label="File path"
+          mono
+          value={pathInput}
+          onChange={setPathInput}
+          onKeyDown={handlePathKeyDown}
+          spellCheck={false}
+          autoFocus
+          data-autofocus=""
+        />
+        <IconButton label="Go back" onClick={goBack} disabled={history.length === 0}><ArrowLeft /></IconButton>
+        <IconButton label="Go up one folder" onClick={goUp} disabled={!canGoUp}><ArrowUp /></IconButton>
+        <IconButton label="Add new folder" onClick={() => setNewFolderOpen(v => !v)}><FolderPlus /></IconButton>
+        <IconButton
+          label={isFavorite ? 'Remove favorite' : 'Favorite current folder'}
+          pressed={isFavorite}
+          onClick={toggleFavorite}
+        >
+          <Star fill={isFavorite ? 'currentColor' : 'none'} />
+        </IconButton>
+      </div>
+
+      {newFolderOpen && (
+        <div className={styles.newFolder}>
+          <TextField
+            label="New folder name"
+            value={newFolderName}
+            onChange={setNewFolderName}
+            onKeyDown={event => {
+              if (event.key === 'Enter') createFolder()
+              if (event.key === 'Escape') { event.stopPropagation(); setNewFolderOpen(false) }
+            }}
           />
-          <button type="button" className="xleth-file-picker__icon-btn" onClick={goBack} disabled={history.length === 0} title="Go back">
-            <ArrowLeft size={16} />
-          </button>
-          <button type="button" className="xleth-file-picker__icon-btn" onClick={goUp} disabled={!canGoUp} title="Go up one folder">
-            <ArrowUp size={16} />
-          </button>
-          <button type="button" className="xleth-file-picker__icon-btn" onClick={() => setNewFolderOpen(v => !v)} title="Add new folder">
-            <FolderPlus size={16} />
-          </button>
-          <button type="button" className={`xleth-file-picker__icon-btn${isFavorite ? ' is-active' : ''}`} onClick={toggleFavorite} title={isFavorite ? 'Remove favorite' : 'Favorite current folder'}>
-            <Star size={16} fill={isFavorite ? 'currentColor' : 'none'} />
-          </button>
+          <Button variant="primary" onClick={createFolder}>Create folder</Button>
+          <Button onClick={() => setNewFolderOpen(false)}>Cancel</Button>
         </div>
+      )}
 
-        {newFolderOpen && (
-          <div className="xleth-file-picker__new-folder">
-            <input
-              value={newFolderName}
-              onChange={event => setNewFolderName(event.target.value)}
-              onKeyDown={event => {
-                if (event.key === 'Enter') createFolder()
-                if (event.key === 'Escape') setNewFolderOpen(false)
-              }}
-              aria-label="New folder name"
-            />
-            <button type="button" onClick={createFolder}>Create</button>
-            <button type="button" onClick={() => setNewFolderOpen(false)}>Cancel</button>
-          </div>
-        )}
-
-        <div className="xleth-file-picker__body">
-          <aside className="xleth-file-picker__sidebar">
-            {sidebarSections.map(section => (
-              <div key={section.title} className="xleth-file-picker__sidebar-section">
-                <div className="xleth-file-picker__sidebar-title">{section.title}</div>
-                {section.items.length === 0 ? (
-                  section.empty ? <div className="xleth-file-picker__sidebar-empty">{section.empty}</div> : null
-                ) : (
-                  section.items.map(item => {
-                    const Icon = item.icon || Folder
-                    return (
-                      <button
-                        type="button"
-                        key={`${section.title}-${item.path}`}
-                        className={`xleth-file-picker__sidebar-item${samePath(item.path, currentDir) ? ' is-active' : ''}`}
-                        title={item.path}
-                        onClick={() => navigateTo(item.path)}
-                      >
-                        <Icon size={14} />
-                        <span>{item.label}</span>
-                      </button>
-                    )
-                  })
-                )}
-              </div>
-            ))}
-          </aside>
-
-          <main className="xleth-file-picker__main">
-            <div className="xleth-file-picker__table-head">
-              <span>Name</span>
-              <span>Length</span>
-            </div>
-            <div className="xleth-file-picker__table" role="listbox" aria-label="Files and folders">
-              {loading ? (
-                <div className="xleth-file-picker__empty">Loading...</div>
-              ) : visibleEntries.length === 0 ? (
-                <div className="xleth-file-picker__empty">No matching items</div>
+      <div className={styles.body}>
+        <aside className={styles.sidebar} aria-label="Places">
+          {sidebarSections.map(section => (
+            <div key={section.title} className={styles.sideSection}>
+              <div className={styles.sideTitle}>{section.title}</div>
+              {section.items.length === 0 ? (
+                section.empty ? <div className={styles.sideEmpty}>{section.empty}</div> : null
               ) : (
-                visibleEntries.map(entry => {
-                  const Icon = iconForEntry(entry)
-                  const selected = selectedPaths.has(entry.path)
+                section.items.map(item => {
+                  const Icon = item.icon || Folder
                   return (
                     <button
                       type="button"
-                      key={entry.path}
-                      className={`xleth-file-picker__row${selected ? ' is-selected' : ''}`}
-                      title={entry.path}
-                      onClick={event => handleRowClick(entry, event)}
-                      onDoubleClick={() => handleRowDoubleClick(entry)}
+                      key={`${section.title}-${item.path}`}
+                      className={styles.sideItem}
+                      aria-current={samePath(item.path, currentDir) ? 'true' : undefined}
+                      title={item.path}
+                      onClick={() => navigateTo(item.path)}
                     >
-                      <span className="xleth-file-picker__row-name">
-                        <Icon size={15} />
-                        <span>{entry.name}</span>
-                      </span>
-                      <span className="xleth-file-picker__row-length">{formatLength(entry, durations[entry.path])}</span>
+                      <Icon size={14} aria-hidden="true" />
+                      <span>{item.label}</span>
                     </button>
                   )
                 })
               )}
             </div>
-          </main>
-        </div>
+          ))}
+        </aside>
 
-        {error && <div className="xleth-file-picker__error">{error}</div>}
-
-        <div className="xleth-file-picker__footer">
-          <div className="xleth-file-picker__hint">
-            {mode === 'saveFile' ? basename(pathInput) : selectedEntries.map(entry => entry.name).join(', ')}
+        <main className={styles.main}>
+          <div className={styles.head}>
+            <span>Name</span>
+            <span>Length</span>
           </div>
-          <button type="button" onClick={onCancel}>Cancel</button>
-          <button type="button" className="xleth-file-picker__primary" disabled={acceptDisabled} onClick={acceptSelection}>
-            {actionLabel}
-          </button>
-        </div>
+          <div className={styles.list} role="listbox" aria-label="Files and folders">
+            {loading ? (
+              <div className={styles.empty}>Loading…</div>
+            ) : visibleEntries.length === 0 ? (
+              <div className={styles.empty}>No matching items</div>
+            ) : (
+              visibleEntries.map(entry => {
+                const Icon = iconForEntry(entry)
+                const selected = selectedPaths.has(entry.path)
+                return (
+                  <button
+                    type="button"
+                    role="option"
+                    aria-selected={selected}
+                    key={entry.path}
+                    className={styles.row}
+                    data-picker-row=""
+                    title={entry.path}
+                    onClick={event => handleRowClick(entry, event)}
+                    onDoubleClick={() => handleRowDoubleClick(entry)}
+                  >
+                    <span className={styles.rowName}>
+                      <Icon size={14} aria-hidden="true" />
+                      <span>{entry.name}</span>
+                    </span>
+                    <span className={styles.rowLength}>{formatLength(entry, durations[entry.path])}</span>
+                  </button>
+                )
+              })
+            )}
+          </div>
+        </main>
       </div>
-    </div>
+
+      {error && <div className={styles.error} role="alert">{error}</div>}
+
+      <div className={styles.selection}>
+        {mode === 'saveFile' ? basename(pathInput) : selectedEntries.map(entry => entry.name).join(', ')}
+      </div>
+    </Dialog>
   )
 }

@@ -31,6 +31,10 @@
   .panel[data-width="sm"] { max-width: 420px; }
   .panel[data-width="md"] { max-width: 560px; }
   .panel[data-width="lg"] { max-width: 720px; }
+  .panel[data-width="xl"] { max-width: 1040px; }
+  .panel[data-fill] { height: min(720px, 100%); }
+
+  .backdrop[data-above] { z-index: var(--xleth-z-filepicker, 15000); }
 
   .header {
     display: flex;
@@ -59,6 +63,16 @@
     font-size: var(--type-16);
     font-weight: var(--weight-regular);
     line-height: 1.5;
+  }
+
+  .body[data-flush] {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-3);
+    overflow: hidden;
+    font-size: var(--type-12);
+    line-height: 1.4;
   }
 
   .footer {

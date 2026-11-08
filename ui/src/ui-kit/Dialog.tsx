@@ -20,8 +20,17 @@ export interface DialogProps {
   children: ReactNode;
   /** The footer: Buttons, right-aligned. Put the default action last (`variant="primary"`). */
   actions?: ReactNode;
-  width?: 'sm' | 'md' | 'lg';
+  width?: 'sm' | 'md' | 'lg' | 'xl';
   className?: string;
+  /**
+   * A body made only of controls and lists (a file picker, an export form): no padding, 12px text, and the
+   * panes inside scroll on their own. The prose rule (16px) is for dialogs that are read.
+   */
+  flush?: boolean;
+  /** Fix the dialog to a tall panel (so a flush body's panes have a height to scroll in). */
+  fill?: boolean;
+  /** Stack above popovers and menus (the file picker opens from other dialogs and from popovers). */
+  above?: boolean;
 }
 
 /**
@@ -29,7 +38,7 @@ export interface DialogProps {
  * (to the element marked `data-autofocus`, else the first control), is trapped while open and
  * returns to where it was on close.
  */
-export default function Dialog({ title, onClose, onEnter, dismissable = true, children, actions, width = 'md', className }: DialogProps) {
+export default function Dialog({ title, onClose, onEnter, dismissable = true, children, actions, width = 'md', className, flush = false, fill = false, above = false }: DialogProps) {
   const titleId = useId();
   const panel = useRef<HTMLDivElement>(null);
   const callbacks = useRef({ onClose, onEnter, dismissable });
@@ -73,6 +82,7 @@ export default function Dialog({ title, onClose, onEnter, dismissable = true, ch
   return createPortal(
     <div
       className={styles.backdrop}
+      data-above={above || undefined}
       onMouseDown={(e) => { if (e.target === e.currentTarget && dismissable) onClose?.(); }}
     >
       <div
@@ -83,6 +93,7 @@ export default function Dialog({ title, onClose, onEnter, dismissable = true, ch
         tabIndex={-1}
         className={`${styles.panel}${className ? ` ${className}` : ''}`}
         data-width={width}
+        data-fill={fill || undefined}
         onKeyDown={trap}
       >
         <div className={styles.header}>
@@ -91,7 +102,7 @@ export default function Dialog({ title, onClose, onEnter, dismissable = true, ch
             <IconButton label="Close" size="sm" onClick={onClose}><X size={14} /></IconButton>
           ) : null}
         </div>
-        <div className={styles.body}>{children}</div>
+        <div className={styles.body} data-flush={flush || undefined}>{children}</div>
         {actions ? <div className={styles.footer}>{actions}</div> : null}
       </div>
     </div>,
