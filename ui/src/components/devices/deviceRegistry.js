@@ -42,6 +42,8 @@ import FilterDevice from './FilterDevice.jsx'
 import useFilterStore from '../../stores/filterStore.js'
 import DistortionDevice from './DistortionDevice.jsx'
 import useDistortionStore from '../../stores/distortionStore.js'
+import WaveshaperDevice from './WaveshaperDevice.jsx'
+import useWaveshaperStore from '../../stores/waveshaperStore.js'
 
 export const DEVICE_BODIES = {
   // Width omitted: the frame fits the body's fixed-width sections (the
@@ -57,6 +59,9 @@ export const DEVICE_BODIES = {
   // the global useFilterStore only marks the popped-out instance.
   xlethfilter: { Body: FilterDevice, useEditorStore: useFilterStore },
   distortion: { Body: DistortionDevice, useEditorStore: useDistortionStore },
+  // The Waveshaper owns a private store per device (the curve points); the global
+  // useWaveshaperStore only marks the popped-out instance.
+  waveshaper: { Body: WaveshaperDevice, useEditorStore: useWaveshaperStore },
   // The character compressors on CompressorCore share CompressorFamilyDevice.
   glue: { Body: GlueDevice, useEditorStore: useGlueCompStore },
   opto: { Body: OptoDevice, useEditorStore: useOptoCompStore },

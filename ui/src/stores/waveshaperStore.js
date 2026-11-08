@@ -20,7 +20,11 @@ export function deduplicatePoints(pts) {
   return out
 }
 
-const useWaveshaperStore = create((set, get) => ({
+// The store body, exported so a Waveshaper DEVICE can own a private instance
+// (createStore(waveshaperStoreInitializer)): two Waveshapers on screen, docked or popped
+// out, never share curve points. The global store below only marks the popped-out
+// instance and backs the editor opener.
+export const waveshaperStoreInitializer = (set, get) => ({
   // { trackId: number, nodeId: number, storeKey: string } | null
   target: null,
 
@@ -89,6 +93,8 @@ const useWaveshaperStore = create((set, get) => ({
     // Fetch the updated points after preset change
     await get().fetchCurvePoints()
   },
-}))
+})
+
+const useWaveshaperStore = create(waveshaperStoreInitializer)
 
 export default useWaveshaperStore

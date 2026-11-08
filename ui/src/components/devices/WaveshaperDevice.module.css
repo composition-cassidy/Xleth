@@ -1,0 +1,27 @@
+@layer kit {
+  /* The curve canvas fills the well. */
+  .display {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    touch-action: none;
+  }
+
+  .display > canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  .display > canvas:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -2px;
+  }
+
+  /* The four edit flags, one per row so every label reads in full. */
+  .toggles {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+}
