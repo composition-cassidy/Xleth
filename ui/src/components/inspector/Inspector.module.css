@@ -105,32 +105,154 @@
     font-size: var(--type-11);
   }
 
-  /* Hosted legacy sections (flip, corner radius, gap, visual FX) keep their own
-   * internals until their own rebuild; this only gives them the column's padding. */
-  .hosted {
-    padding: var(--space-1) var(--space-2);
-  }
-
-  .summary {
-    display: flex;
-    flex-wrap: wrap;
-    gap: var(--space-1) var(--space-3);
-    margin: 0;
-    padding: var(--space-1) var(--space-2);
-    color: var(--ui-ink-2);
+  /* A read-only value in a row (placement, the grid gap in use, a style name). */
+  .rowValue {
+    color: var(--ui-ink);
     font-size: var(--type-11);
     font-variant-numeric: tabular-nums;
   }
 
-  .summary dt {
-    display: inline;
+  .textField {
+    box-sizing: border-box;
+    flex: 1 1 8ch;
+    min-width: 0;
+    height: 24px;
+    padding: 0 var(--space-1);
+    border: 1px solid var(--ui-boundary);
+    border-radius: 2px;
+    background: var(--ui-g0);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+  }
+
+  .textField::placeholder {
     color: var(--ui-ink-3);
   }
 
-  .summary dd {
-    display: inline;
-    margin: 0 0 0 var(--space-1);
+  .textField:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 1px;
+  }
+
+  /* ── Video flip ─────────────────────────────────────────────────────────── */
+
+  /* The state cycle: one 28x28 cell per state (glyph + number), up to 12, then Add. */
+  .flipCells {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+  }
+
+  .flipCell {
+    box-sizing: border-box;
+    display: inline-flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    width: 28px;
+    height: 32px;
+    padding: 0;
+    border: 1px solid var(--ui-boundary);
+    border-radius: 2px;
+    background: var(--ui-g2);
     color: var(--ui-ink);
+    cursor: pointer;
+  }
+
+  .flipCell > svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  .flipCell:is(:hover, :focus-visible):not(:disabled) {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  .flipCell:disabled {
+    opacity: var(--ui-mute-opacity);
+    cursor: default;
+  }
+
+  /* The start state: a bar under the number, not colour alone. */
+  .flipCell[data-start] .flipCellIndex {
+    text-decoration: underline;
+    text-decoration-thickness: 2px;
+    text-underline-offset: 2px;
+  }
+
+  .flipCellIndex {
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.1;
+  }
+
+  .pitchChip {
+    display: inline-flex;
+    align-items: center;
+    gap: 2px;
+    padding-left: var(--space-1);
+    border: 1px solid var(--ui-boundary);
+    border-radius: 4px;
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* The preview: ONE row of eight cells that always fits the column. */
+  .flipPreview {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: 2px var(--space-2) var(--space-1);
+  }
+
+  .flipPreview[data-off] {
+    opacity: var(--ui-mute-opacity);
+  }
+
+  .previewCaption {
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  .previewCells {
+    display: grid;
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+    gap: 2px;
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .previewCell {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 1px;
+    min-width: 0;
+    padding: 2px 0;
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g0);
+    color: var(--ui-ink);
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.2;
+  }
+
+  .previewCell > svg {
+    width: 14px;
+    height: 14px;
+  }
+
+  .previewNote {
+    overflow: hidden;
+    max-width: 100%;
+    white-space: nowrap;
+  }
+
+  .previewState {
+    color: var(--ui-ink-2);
   }
 
   .empty {

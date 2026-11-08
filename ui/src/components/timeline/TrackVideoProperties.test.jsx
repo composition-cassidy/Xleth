@@ -37,9 +37,8 @@ async function render(trackId) {
 }
 
 function findHoldGapCheckbox() {
-  // A kit Toggle (button[aria-pressed]) since the Inspector rebuild (Phase 3).
-  return Array.from(container.querySelectorAll('button[aria-pressed]'))
-    .find(b => b.textContent.includes('Hold last frame between notes')) ?? null
+  // A label-free kit Toggle (button[aria-pressed]) named by its row since round 2 step 17.
+  return container.querySelector('button[aria-pressed][aria-label="Hold last frame between notes"]')
 }
 
 describe('TrackVideoProperties — fullscreen hold-last-frame-between-notes checkbox', () => {

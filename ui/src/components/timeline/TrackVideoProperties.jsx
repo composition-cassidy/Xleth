@@ -1,20 +1,26 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { Button, NumberBox, SectionHeader, Toggle, THIN_SPACE } from '../../ui-kit'
+import { Button, NumberBox, SectionHeader, THIN_SPACE, formatValue, parseValue } from '../../ui-kit'
 import { timelineEvents } from '../../timelineEvents.js'
-import TrackFlipSection from './TrackFlipSection.jsx'
-import CornerRadiusControl from '../grid/CornerRadiusControl.jsx'
-import CustomGapControl from '../grid/CustomGapControl.jsx'
+import VideoFlipSection from '../inspector/VideoFlipSection.jsx'
+import RowToggle from '../inspector/RowToggle.jsx'
 import { videoFxCount } from '../devices/video/videoFxCatalog.js'
 import { openVideoDevicesFor } from '../devices/video/openVideoDevices.js'
 import { getTrackPlacement, placementBadgeLabel, setFullscreenPlacementMode } from './trackPlacement.js'
-import { HOLD_THRESHOLD_UNLIMITED, formatHoldThreshold } from './holdLastFrame.js'
+import { HOLD_THRESHOLD_UNLIMITED } from './holdLastFrame.js'
 import useTrackIdentityColors from '../inspector/useTrackIdentityColors.js'
 import styles from '../inspector/Inspector.module.css'
 
-// Hosted legacy sections (flip, corner radius, gap, visual FX, slide note, note
-// fade) keep their app.css overrides, which are scoped under .tvp-root, until
-// their own rebuild.
-const HOSTED = `${styles.hosted} tvp-root`
+const snapZero = (v) => (Math.abs(v) < 0.025 ? 0 : v)
+// Corner radius is 0..0.5 of the cell, shown as 0..100 % (as the old widget did).
+const CORNER_FMT = {
+  format: (v) => formatValue(v * 200, '%'),
+  parse: (t) => { const n = parseValue(t, '%'); return n === null ? null : n / 200 },
+}
+// Gap scale is 0..0.5, shown as 0..50 %.
+const GAP_FMT = {
+  format: (v) => formatValue(v * 100, '%'),
+  parse: (t) => { const n = parseValue(t, '%'); return n === null ? null : n / 100 },
+}
 
 const notify     = () => timelineEvents.dispatchEvent(new Event('timeline-tracks-changed'))
 const notifyGrid = () => timelineEvents.dispatchEvent(new Event('timeline-grid-changed'))
@@ -34,10 +40,11 @@ function Row({ label, children }) {
 }
 
 /**
- * A track in the Inspector: identity (name, colour, type) and every per-track
- * video property: flip cycle, hold last frame, fullscreen layer, corner
- * radius, per-track gap, visual FX, and for pattern tracks slide-note FX and
- * note fade. Same IPC calls as the old Video-tab detail view; this is where
+ * A track in the Inspector: identity (name, colour, type), placement, hold
+ * last frame, the fullscreen layer (when placed fullscreen), cell shape, video
+ * flip, and the "Video effects (N)" button that opens the Devices tab on the
+ * track's picture (every visual-effect parameter lives there now). Label /
+ * value rows, kit controls only. Same IPC calls as the old Video-tab detail view; this is where
  * that view lives now, so the arrangement and the video settings are visible
  * together.
  *
@@ -80,6 +87,31 @@ export default function TrackVideoProperties({ trackId }) {
   // Passed to the hosted sections. They call it after every IPC commit; we
   // re-fetch and broadcast so the arrangement (which mirrors these flags) follows.
   const fetchTracks = useCallback(() => { refresh(); notify() }, [refresh])
+
+  // Cell shape: one write per gesture (the old corner widget wrote on every
+  // pointer move). Same setters as before.
+  const [cornerDraft, setCornerDraft] = useState(null)
+  const [gapDraft, setGapDraft] = useState(null)
+  const commitCorner = useCallback(async (v) => {
+    try {
+      await window.xleth?.timeline?.setTrackCornerRadius(trackId, v)
+      fetchTracks()
+    } catch (err) {
+      console.error('[Arrange] setTrackCornerRadius failed:', err)
+    } finally {
+      setCornerDraft(null)
+    }
+  }, [trackId, fetchTracks])
+  const commitGap = useCallback(async (v) => {
+    try {
+      await window.xleth?.timeline?.setTrackGapScaleOverride(trackId, v)
+      fetchTracks()
+    } catch (err) {
+      console.error('[Arrange] setTrackGapScaleOverride failed:', err)
+    } finally {
+      setGapDraft(null)
+    }
+  }, [trackId, fetchTracks])
 
   const handleCommitFlip = useCallback(async (config) => {
     try {
@@ -167,6 +199,9 @@ export default function TrackVideoProperties({ trackId }) {
   const isPattern = track.type === 'Pattern'
   const visualFxCount = videoFxCount(track)
 
+  const hasGapOverride = (track.gapScaleOverride ?? -1) >= 0
+  const cornerRadius = track.cornerRadius ?? 0
+
   return (
     <div className={styles.root} data-testid="xleth-inspector-track">
       <header className={styles.head}>
@@ -177,31 +212,46 @@ export default function TrackVideoProperties({ trackId }) {
         </div>
       </header>
 
-      <dl className={styles.summary} aria-label="Track video summary">
-        <div><dt>Placement</dt><dd>{placementBadgeLabel(placement)}</dd></div>
-        <div><dt>Flip</dt><dd>{track.videoFlipConfig?.enabled ? 'On' : 'Off'}</dd></div>
-        <div><dt>Hold</dt><dd>{hold ? formatHoldThreshold(thresholdBeats) : 'Off'}</dd></div>
-        <div><dt>FX</dt><dd>{visualFxCount}</dd></div>
-      </dl>
+      <section className={styles.section} aria-label="Placement">
+        <SectionHeader>Placement</SectionHeader>
+        <Row label="Placed">
+          <span className={styles.rowValue}>{placementBadgeLabel(placement)}</span>
+        </Row>
+        {isFullscreen && (
+          <>
+            <Row label="Hold gaps">
+              <RowToggle
+                label="Hold last frame between notes"
+                on={placement.kind === 'behind'}
+                onChange={(next) => handleSetPlacementMode(next ? 'behind' : 'front')}
+                hint="Freeze this layer's last decoded frame across gaps instead of blinking out"
+              />
+            </Row>
+            <Row label="Opacity">
+              <NumberBox
+                label="Fullscreen opacity" hideLabel
+                value={Math.round(fsLayerOpacity * 100)} min={0} max={100} step={1} defaultValue={100} unit="%"
+                onCommit={(x) => commitFsOpacity(Math.round(x) / 100)}
+              />
+            </Row>
+          </>
+        )}
+      </section>
 
       <section className={styles.section} aria-label="Hold last frame">
         <SectionHeader>Hold last frame</SectionHeader>
         <Row label="Hold">
-          <Toggle size="sm" on={hold} onChange={handleToggleHold} hint="Freeze the final frame after the clip ends">
-            {hold ? 'On' : 'Off'}
-          </Toggle>
+          <RowToggle label="Hold last frame" on={hold} onChange={handleToggleHold} hint="Freeze the final frame after the clip ends" />
         </Row>
         {hold && (
           <div className={styles.group}>
-            <Row label="Duration">
-              <Toggle
-                size="sm"
+            <Row label="Until next">
+              <RowToggle
+                label="Hold until the next clip"
                 on={thresholdIsUnlimited}
                 onChange={(next) => commitThreshold(next ? HOLD_THRESHOLD_UNLIMITED : 4)}
-                hint="Hold until the next clip"
-              >
-                Until next clip
-              </Toggle>
+                hint="Hold until the next clip, however long the gap"
+              />
             </Row>
             {!thresholdIsUnlimited && (
               <Row label="Hold for">
@@ -218,45 +268,47 @@ export default function TrackVideoProperties({ trackId }) {
         )}
       </section>
 
-      {isFullscreen && (
-        <section className={styles.section} aria-label="Fullscreen layer">
-          <SectionHeader>Fullscreen layer</SectionHeader>
-          <Row label="Gaps">
-            <Toggle
-              size="sm"
-              on={placement.kind === 'behind'}
-              onChange={(next) => handleSetPlacementMode(next ? 'behind' : 'front')}
-              hint="Freeze this layer's last decoded frame across gaps instead of blinking out"
-            >
-              Hold last frame between notes
-            </Toggle>
-          </Row>
-          <Row label="Opacity">
-            <NumberBox
-              label="Fullscreen opacity" hideLabel
-              value={Math.round(fsLayerOpacity * 100)} min={0} max={100} step={1} defaultValue={100} unit="%"
-              onCommit={(x) => commitFsOpacity(Math.round(x) / 100)}
-            />
-          </Row>
-        </section>
-      )}
-
-      <section className={styles.section} aria-label="Video flip">
-        <SectionHeader>Video flip</SectionHeader>
-        <div className={HOSTED}>
-          <TrackFlipSection track={track} onCommit={handleCommitFlip} />
-        </div>
-      </section>
-
       <section className={styles.section} aria-label="Cell shape">
         <SectionHeader>Cell shape</SectionHeader>
-        <div className={HOSTED}>
-          <div className="grid-tab-track-sliders">
-            <CornerRadiusControl track={track} fetchTracks={fetchTracks} applyCornerRadiusToAll={applyCornerRadiusToAll} />
-            <CustomGapControl track={track} gapScale={gapScale} fetchTracks={fetchTracks} />
-          </div>
-        </div>
+        <Row label="Corners">
+          <NumberBox
+            label="Corner radius" hideLabel width={72}
+            value={cornerDraft ?? cornerRadius} min={0} max={0.5} step={0.005} defaultValue={0}
+            quantize={(v) => Math.round(v * 200) / 200}
+            format={CORNER_FMT.format} parse={CORNER_FMT.parse}
+            onChange={setCornerDraft}
+            onCancel={() => setCornerDraft(null)}
+            onCommit={commitCorner}
+            hint="Rounding of this track's cells: 100 % is a full circle on a square cell"
+          />
+          <Button size="sm" onClick={() => applyCornerRadiusToAll(cornerRadius)} hint="Copy this corner radius to every track">
+            Apply to all
+          </Button>
+        </Row>
+        <Row label="Own gap">
+          <RowToggle
+            label="Use this track's own gap"
+            on={hasGapOverride}
+            onChange={(next) => commitGap(next ? (gapScale ?? 0) : -1)}
+            hint="Give this track its own gap between cells instead of the grid's"
+          />
+          {hasGapOverride ? (
+            <NumberBox
+              label="Track gap" hideLabel width={72}
+              value={gapDraft ?? (track.gapScaleOverride ?? 0)} min={0} max={0.5} step={0.01} defaultValue={0}
+              quantize={(v) => Math.round(v * 100) / 100}
+              format={GAP_FMT.format} parse={GAP_FMT.parse}
+              onChange={setGapDraft}
+              onCancel={() => setGapDraft(null)}
+              onCommit={(v) => commitGap(snapZero(v))}
+            />
+          ) : (
+            <span className={styles.rowValue}>{`Grid gap ${formatValue((gapScale ?? 0) * 100, '%')}`}</span>
+          )}
+        </Row>
       </section>
+
+      <VideoFlipSection track={track} onCommit={handleCommitFlip} />
 
       <section className={styles.section} aria-label="Video effects">
         <SectionHeader>Video effects</SectionHeader>
