@@ -1067,80 +1067,16 @@ html, body, #root {
 
 /* ── Panel launchers ─────────────────────────────────────────────────── */
 
-.titlebar-launchers {
-  position: relative;
-  display: flex;
-  align-items: center;
-  gap: var(--theme-control-gap-compact);
-  margin-left: auto;
-  -webkit-app-region: no-drag;
-  z-index: 1;
-}
-
-.titlebar-launcher-btn {
-  width: var(--theme-control-height-compact);
-  min-height: var(--theme-control-height-compact);
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  padding: 0;
-  background: transparent;
-  border: none;
-  border-radius: var(--radius-sm);
-  box-shadow: none;
-  color: var(--theme-text-muted);
-  cursor: pointer;
-  -webkit-appearance: none;
-  appearance: none;
-  transition:
-    background var(--transition-fast),
-    border-color var(--transition-fast),
-    box-shadow var(--transition-fast),
-    color var(--transition-fast);
-  -webkit-app-region: no-drag;
-}
-
-.titlebar-launcher-btn[data-active="true"] {
-  color: var(--xleth-windowing-panel-color);
-  box-shadow: inset 0 calc(var(--theme-chrome-underline-thickness) * -1) 0 var(--theme-accent);
-}
-
-.titlebar-launcher-btn:hover {
-  background: var(--theme-primitive-control-hover-bg);
-  color: var(--theme-text-primary);
-}
-
-.titlebar-quick-launcher-icon {
-  width: calc(var(--theme-control-height-compact) - var(--theme-control-gap-compact));
-  height: calc(var(--theme-control-height-compact) - var(--theme-control-gap-compact));
-  object-fit: contain;
-  display: block;
-  pointer-events: none;
-}
-
-.titlebar-quick-launcher-fallback {
-  width: calc(var(--theme-control-height-compact) - var(--theme-control-gap-compact));
-  height: calc(var(--theme-control-height-compact) - var(--theme-control-gap-compact));
-  line-height: calc(var(--theme-control-height-compact) - var(--theme-control-gap-compact));
-  text-align: center;
-  font-size: var(--theme-control-value-font-compact);
-  font-weight: 600;
-  color: var(--theme-text-primary);
-  pointer-events: none;
-}
-
 /* Divider lines between the minimize / maximize / close zones. */
 /* ── Interactive titlebar elements: explicit no-drag + pointer-events so
    Electron's drag-region hit-tester never captures these as drag targets.
    Inherited pointer-events is insufficient on Windows frameless windows. ── */
 .titlebar-dropdown-panel,
 .titlebar-dropdown-item,
-.titlebar-toolbar-btn,
-.titlebar-launcher-btn {
+.titlebar-toolbar-btn {
   -webkit-app-region: no-drag;
   pointer-events: auto;
 }
-
 .gsp-dim-input,
 .gsp-link-btn {
   -webkit-app-region: no-drag;
@@ -10858,28 +10794,6 @@ html.fx-drag-active * {
   position: relative;
 }
 
-.titlebar-launcher-btn.xleth-icon-button {
-  background: transparent;
-  border: none;
-  box-shadow: none;
-}
-
-.titlebar-launcher-btn.xleth-icon-button:hover:not(:disabled) {
-  background: var(--theme-primitive-control-hover-bg);
-  border: none;
-  box-shadow: none;
-}
-
-.titlebar-launcher-btn.xleth-icon-button[data-active="true"]::after {
-  content: none;
-}
-
-.titlebar-launcher-btn.xleth-icon-button[data-active="true"] {
-  background: transparent;
-  color: var(--xleth-windowing-panel-color);
-  box-shadow: inset 0 calc(var(--theme-chrome-underline-thickness) * -1) 0 var(--theme-accent);
-}
-
 /* A dead "generic primitive" .xleth-fader/.xleth-fader__* block used to live
  * here (unused BEM-style scaffold, zero JSX consumers anywhere in the repo).
  * It's been removed: its bare `.xleth-fader` selector had the same
@@ -14256,63 +14170,11 @@ input[type="radio"] {
     var(--theme-depth-elevation-1-bottom-edge);
 }
 
-.titlebar-left,
-.titlebar-launchers {
+.titlebar-left {
   min-height: 38px;
 }
-
 .titlebar-menus {
   gap: 12px;
-}
-
-.titlebar-launchers {
-  gap: 6px;
-}
-
-.titlebar-launcher-btn.xleth-icon-button {
-  width: 34px;
-  height: 34px;
-  min-height: 34px;
-  flex-basis: 34px;
-  border: 1px solid var(--theme-primitive-control-border);
-  border-radius: var(--xleth-shell-control-radius);
-  background: var(--theme-primitive-control-bg);
-  color: var(--theme-text-muted);
-  box-shadow:
-    var(--theme-depth-hard-shadow),
-    var(--theme-depth-top-light-bevel);
-}
-
-.titlebar-launcher-btn.xleth-icon-button:hover:not(:disabled) {
-  border: 1px solid var(--theme-primitive-control-border);
-  background: var(--theme-primitive-control-hover-bg);
-  color: var(--theme-text-primary);
-  box-shadow:
-    var(--theme-depth-hard-shadow),
-    var(--theme-depth-top-light-bevel);
-}
-
-.titlebar-launcher-btn.xleth-icon-button[data-active="true"] {
-  border-color: color-mix(in srgb, var(--theme-accent) 35%, var(--theme-primitive-control-border));
-  background: var(--theme-primitive-control-active-bg);
-  color: var(--xleth-windowing-panel-color);
-  box-shadow:
-    var(--theme-depth-hard-shadow),
-    var(--theme-depth-top-light-bevel),
-    inset 0 -2px 0 var(--theme-accent);
-}
-
-.titlebar-launcher-btn svg {
-  width: 18px;
-  height: 18px;
-}
-
-.titlebar-quick-launcher-icon,
-.titlebar-quick-launcher-fallback {
-  width: 18px;
-  height: 18px;
-  line-height: 18px;
-  font-size: 10px;
 }
 
 .gsp-dim-input {
@@ -14424,61 +14286,18 @@ input[type="radio"] {
   box-shadow: none;
 }
 
-.titlebar-left,
-.titlebar-launchers {
+.titlebar-left {
   min-height: 30px;
 }
-
 .titlebar-menus {
   gap: 20px;
-}
-
-.titlebar-launchers {
-  gap: 0;
-  padding: 0;
-}
-
-.titlebar-launcher-btn.xleth-icon-button {
-  position: relative;
-  width: 24px;
-  height: 30px;
-  min-height: 30px;
-  flex: 0 0 24px;
-  padding: 0;
-  border: 0;
-  border-radius: 0;
-  background: transparent;
-  box-shadow: none;
-  color: var(--xleth-flat-text-muted);
-}
-
-.titlebar-launcher-btn.xleth-icon-button:hover:not(:disabled),
-.titlebar-launcher-btn.xleth-icon-button[data-active="true"] {
-  background: transparent;
-  border: 0;
-  box-shadow: none;
-  color: var(--xleth-flat-text-secondary);
-}
-
-.titlebar-launcher-btn.xleth-icon-button[data-active="true"] {
-  color: var(--xleth-flat-text-muted);
 }
 
 /* The launchers use the Xleth icon family (ui-kit/icons): 1.5 stroke on a 16px
    grid, so nothing overrides the stroke here. geometricPrecision stops the
    renderer snapping strokes as the dock magnifies them. */
-.titlebar-launcher-btn svg {
-  width: 13px;
-  height: 13px;
-  shape-rendering: geometricPrecision;
-}
-
 /* The dock reads as one continuous plate, so no group dividers or separator
    ticks between the launcher icons. */
-.titlebar-launcher-btn::after {
-  content: none;
-}
-
 /* ── Dock-style proximity magnification (toolbar icon cluster) ──────────
    The bar is pinned to the absolute top of the window (nothing renders above
    it — growth that way would clip off-screen), so icons scale from their TOP
@@ -14491,73 +14310,14 @@ input[type="radio"] {
    and the floating label tag. No shadows, no dividers — the plate reads as one
    continuous surface. ── */
 
-.titlebar-dock {
-  isolation: isolate;
-}
-
 /* One step above the titlebar fill so the plate reads as its own surface —
    otherwise it is the same color as the bar and the warp is only legible
    where it hangs past the bottom edge. */
-.titlebar-dock-plate {
-  position: absolute;
-  top: 0;
-  background: var(--theme-bg-elevated);
-  border-radius: 0;
-  box-shadow: none;
-  /* Flipped to `auto` by the hook while armed so the bulge keeps the pointer
-     inside the dock; the clip-path makes that hit area follow the curve. */
-  pointer-events: none;
-  -webkit-app-region: no-drag;
-  z-index: 0;
-  will-change: clip-path;
-}
-
 /* No `will-change: transform` here on purpose. Promoting each icon to its own
    compositor layer makes Chromium rasterize the SVG once at 1x and then
    bitmap-upscale it, so magnified icons come out blurry. Leaving it off lets
    the vector re-rasterize at the painted scale and stay crisp; nine small
    icons are nowhere near enough paint work to need the layer. */
-.titlebar-launcher-btn {
-  position: relative;
-  z-index: 1;
-  transform-origin: 50% 0%;
-}
-
-.titlebar-dock-tooltip {
-  position: fixed;
-  left: 0;
-  top: 0;
-  transform: translate(-50%, 0);
-  padding: 4px 8px;
-  background: var(--theme-bg-elevated);
-  border: 1px solid var(--theme-border-subtle);
-  box-shadow: none;
-  border-radius: 0;
-  color: var(--theme-toolbar-fg);
-  font-size: 11px;
-  font-weight: 600;
-  white-space: nowrap;
-  pointer-events: none;
-  opacity: 0;
-  transition: opacity 90ms ease-out;
-  z-index: 10000;
-}
-
-.titlebar-dock-tooltip[data-visible="true"] {
-  opacity: 1;
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .titlebar-launcher-btn {
-    transition: none !important;
-    transform: none !important;
-  }
-
-  .titlebar-dock-tooltip {
-    transition: none !important;
-  }
-}
-
 .xleth-sample-selector-drawer,
 .xleth-sample-selector-drawer__body {
   width: 100%;

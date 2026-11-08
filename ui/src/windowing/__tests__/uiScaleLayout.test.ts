@@ -25,7 +25,7 @@ describe('layout at a narrow CSS viewport (high UI scale)', () => {
   });
 
   it('the dock class is on the launcher strip', () => {
-    expect(read('components/TitleBar.jsx')).toMatch(/titlebar-dock \$\{styles\.dock\}/);
+    expect(read('components/TitleBar.jsx')).toMatch(/<TitleBarRegions className=\{styles\.dock\}/);
   });
 
   it('drops the detail dock tab glyphs (not the names) below 800 CSS px so the tabs fit', () => {

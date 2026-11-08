@@ -419,6 +419,12 @@ differs from the default and is neutral with an info glyph and a `data-hint`: **
 and the renderer by name when it is not WebGL. There is no "Preview = Render" badge; the Poster hint says exports are
 always full-fidelity. Below 720px the chips keep only their glyph; below 600px Edit grid and Import do too.
 
+**Top bar panel controls** (`components/TitleBarRegions.jsx`). Four region toggles (Browser, Preview, Inspector, Detail
+dock) and one **Tools** menu (Sample Sandbox F10, Quick Notation, Split Syllables, then the user's own launchers from
+Settings > Launchers), all kit controls with a `data-hint` that names the shortcut. The launchers that duplicated detail
+dock tabs (Piano Roll, Mixer, FX Graph, Sampler) and the Timeline toggle are gone; their F-keys and menu entries are
+unchanged. The dock-magnification plate and its hook were deleted with the legacy launcher CSS.
+
 ## 9. Device system (Phase 4a)
 
 Every stock effect is a **device**: one frame, one title bar, one height. Kit:

@@ -28,14 +28,19 @@ export default async ({ page, sleep }) => {
     await page.keyboard.press('Space'); await sleep(400);
     await page.keyboard.press('Escape'); await sleep(700);
   });
-  const floatWin = async (aria, name, surface, note) => step(aria, async () => {
-    await page.locator(`button[aria-label="${aria}"]`).first().click(); await sleep(1600);
+  // Round 2: the floating tools open from the top bar's Tools menu.
+  const tools = async (title) => {
+    await page.getByRole('toolbar', { name: 'Panels' }).getByRole('button', { name: 'Tools', exact: true }).click(); await sleep(250);
+    await page.getByRole('menuitemcheckbox', { name: title }).first().click(); await sleep(250);
+  };
+  const floatWin = async (title, name, surface, note) => step(title, async () => {
+    await tools(title); await sleep(1400);
     await page.mouse.move(1000, 1000); await sleep(300);
     out.push(await shot(page, name, { surface, scope: '[data-testid="xleth-floating-window-layer"]', note }));
-    await page.locator(`button[aria-label="${aria}"]`).first().click(); await sleep(700);
+    await tools(title); await sleep(700);
   });
-  await floatWin('Toggle Quick Notation', '104-quick-notation', 'panel-quicknotation', 'opened from the top-bar toggle');
-  await floatWin('Toggle Split Syllables', '105-split-syllables', 'panel-splitsyllables', 'opened from the top-bar toggle (no sample row selected)');
-  await floatWin('Toggle Sample Sandbox', '106-sample-sandbox', 'panel-sandbox', 'opened from the top-bar toggle');
+  await floatWin('Quick Notation', '104-quick-notation', 'panel-quicknotation', 'opened from the top bar Tools menu');
+  await floatWin('Split Syllables', '105-split-syllables', 'panel-splitsyllables', 'opened from the Tools menu (no sample row selected)');
+  await floatWin('Sample Sandbox', '106-sample-sandbox', 'panel-sandbox', 'opened from the Tools menu');
   return out.join('\n');
 };

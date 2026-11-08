@@ -198,8 +198,9 @@ describe('App shell grid layout contract', () => {
     const titleBar = readUiSource('components/TitleBar.jsx');
     expect(titleBar).toMatch(/<Button[^>]*titlebar-menu-trigger/s);
     expect(titleBar).toMatch(/<IconButton[^>]*label="Minimize"/s);
-    // The dock launchers are still legacy and keep their rule until their own phase.
-    expect(appCss).toMatch(/\.titlebar-launcher-btn[^{]*\{[^}]*-webkit-app-region:\s*no-drag/s);
+    // The panel toggles and the Tools menu are kit controls too, so they opt out the same way.
+    expect(appCss).not.toMatch(/titlebar-launcher/);
+    expect(readUiSource('components/TitleBarRegions.module.css')).toMatch(/\.regions\s*\{[^}]*-webkit-app-region:\s*no-drag/s);
   });
 });
 

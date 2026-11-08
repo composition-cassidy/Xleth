@@ -62,10 +62,12 @@ describe('panel and tool icons', () => {
   });
 
   it('every launcher names its panel and its F-key for the hint bar', () => {
-    const titleBar = read('components/TitleBar.jsx');
-    expect(titleBar).toContain("data-hint={`${entry.title}: show or hide the panel`}");
-    expect(titleBar).toContain('data-hint-mods={entry.fKey || undefined}');
-    // Every toolbar panel with a shortcut has a launcher, and its key is declared once in the catalog.
+    // The panel toggles and the Tools menu moved out of TitleBar.jsx in round 2.
+    const regions = read('components/TitleBarRegions.jsx');
+    expect(regions).toContain('hint={REGION_HINTS[id]}');
+    expect(regions).toContain("hintMods={shortcut || 'No shortcut'}");
+    expect(regions).toContain('const shortcut = panelShortcut(id)');
+    // Every toolbar panel with a shortcut is reachable from the top bar, and its key is declared once in the catalog.
     const withKeys = TOOLBAR_PANEL_IDS.filter((id) => 'fKey' in PANEL_CATALOG[id]);
     expect(withKeys.length).toBeGreaterThan(0);
     for (const id of withKeys) expect((PANEL_CATALOG[id] as { fKey?: string }).fKey).toMatch(/^F(5|6|7|8|9|10|11|12)$/);

@@ -11,14 +11,12 @@ import {
 } from 'lucide-react'
 import { ToastStatusText } from './Toast.jsx'
 import { usePanelRegistry } from '../windowing/registry/PanelRegistry'
-import { PANEL_CATALOG_ORDER } from '../windowing/registry/panelCatalog'
 import { LAYOUT_PRESETS } from '../windowing/managers/PresetManager'
-import { useQuickLaunchersStore } from '../stores/quickLaunchersStore.js'
 import { XlethButton, XlethIconButton } from './common/XlethButton.jsx'
 import { Button, IconButton, SourceAudioIcon, SourceVideoIcon } from '../ui-kit'
-import { useDockMagnification } from '../hooks/useDockMagnification.js'
 import { CLEANUP_PROJECT_LABEL } from './projectCleanup.js'
 import TransportBar from './TransportBar.jsx'
+import TitleBarRegions from './TitleBarRegions.jsx'
 import styles from './TitleBar.module.css'
 
 const DROPDOWN_OPEN_DELAY_MS = 40
@@ -206,80 +204,7 @@ function ViewDropdown({ onAction, onLayout }) {
   )
 }
 
-function TitleBarLauncherButton({ entry }) {
-  const panelHidden = usePanelRegistry((state) => state.panels[entry.id].hidden)
-  const Icon = entry.icon
-  const panelVisible = !panelHidden
-
-  return (
-    <XlethIconButton
-      type="button"
-      className="titlebar-launcher-btn"
-      active={panelVisible}
-      data-active={String(panelVisible)}
-      style={{ '--xleth-windowing-panel-color': `var(${entry.typeColorToken})` }}
-      onClick={() => usePanelRegistry.getState().togglePanel(entry.id)}
-      title={entry.fKey ? `${entry.title} (${entry.fKey})` : entry.title}
-      data-hint={`${entry.title}: show or hide the panel`}
-      data-hint-mods={entry.fKey || undefined}
-      aria-label={`Toggle ${entry.title}`}
-      aria-pressed={panelVisible}
-      data-dock-label={entry.title}
-    >
-      <Icon size={16} aria-hidden="true" />
-    </XlethIconButton>
-  )
-}
-
-function QuickLauncherButton({ launcher }) {
-  const iconUrl = window.xleth?.launcher?.buildIconUrl?.(launcher.iconPngPath || '')
-
-  function handleClick() {
-    window.xleth?.launcher?.spawnDetached?.(launcher.exePath)
-  }
-
-  return (
-    <XlethIconButton
-      type="button"
-      className="titlebar-launcher-btn"
-      active={false}
-      data-active="false"
-      onClick={handleClick}
-      title={launcher.label}
-      aria-label={`Launch ${launcher.label}`}
-      data-dock-label={launcher.label}
-    >
-      {iconUrl ? (
-        <img
-          src={iconUrl}
-          alt=""
-          aria-hidden="true"
-          className="titlebar-quick-launcher-icon"
-          onError={e => {
-            e.currentTarget.style.display = 'none'
-            const fb = e.currentTarget.nextSibling
-            if (fb) fb.style.display = 'block'
-          }}
-        />
-      ) : null}
-      <span
-        className="titlebar-quick-launcher-fallback"
-        style={{ display: iconUrl ? 'none' : 'block' }}
-        aria-hidden="true"
-      >
-        {(launcher.label || '?').charAt(0).toUpperCase()}
-      </span>
-    </XlethIconButton>
-  )
-}
-
 export default function TitleBar({ projectName = 'Untitled Project', onAction, activeMenuLabel = null }) {
-  const quickLaunchers = useQuickLaunchersStore((state) => state.launchers)
-  const hydrateQuickLaunchers = useQuickLaunchersStore((state) => state.hydrate)
-  const dockRef = useDockMagnification('.titlebar-launcher-btn')
-
-  useEffect(() => { hydrateQuickLaunchers() }, [hydrateQuickLaunchers])
-
   const [renderedMenu, setRenderedMenu] = useState(null)
   const [openMenu, setOpenMenu] = useState(null)
   const [dropdownState, setDropdownState] = useState('closed')
@@ -454,21 +379,7 @@ export default function TitleBar({ projectName = 'Untitled Project', onAction, a
       </div>
 
       <div className={styles.right}>
-        <div className={`titlebar-launchers titlebar-dock ${styles.dock}`} ref={dockRef}>
-          {/* Backing plate — useDockMagnification reshapes its clip-path so it
-              conforms to the magnified icons. Must stay the first child. */}
-          <div className="titlebar-dock-plate" aria-hidden="true" />
-
-          {PANEL_CATALOG_ORDER
-            // The browser has its own edge tab; Devices is a detail-dock tab
-            // with nothing to launch until Phase 4a.
-            .filter((entry) => entry.id !== 'sampleSelector' && entry.id !== 'devices')
-            .map((entry) => <TitleBarLauncherButton key={entry.id} entry={entry} />)}
-
-          {quickLaunchers.map((launcher) => (
-            <QuickLauncherButton key={launcher.id} launcher={launcher} />
-          ))}
-        </div>
+        <TitleBarRegions className={styles.dock} />
 
         <div className={styles.controls}>
           <IconButton
