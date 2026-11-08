@@ -16,8 +16,8 @@ export default async ({ page, sleep }) => {
   }
   const input = page.locator('input[aria-label="File path"]').first();
   await input.fill(dir); await sleep(300); await input.press('Enter'); await sleep(1200);
-  out.push('picker buttons: ' + await page.evaluate(() => [...document.querySelectorAll('.xleth-file-picker button')].map((b) => (b.textContent || '').trim().slice(0, 18)).filter(Boolean).slice(-6).join(' | ')));
-  const act = page.locator('.xleth-file-picker').getByRole('button', { name: /^Open Project$/ }).first();
+  out.push('picker buttons: ' + await page.evaluate(() => [...document.querySelectorAll('[role="dialog"] button')].map((b) => (b.textContent || '').trim().slice(0, 18)).filter(Boolean).slice(-6).join(' | ')));
+  const act = page.locator('[role="dialog"]').getByRole('button', { name: /^Open Project$/ }).first();
   if (await act.count()) { await act.click(); await sleep(6000); }
   out.push('dialogs: ' + await page.evaluate(() => [...document.querySelectorAll('[role="dialog"]')].map((d) => (d.innerText || '').slice(0, 100).replace(/\n/g, ' | ')).join(' || ')));
   out.push(await shot(page, '133-dialog-missing-media', { surface: 'dlg-missing-media', scope: (await page.locator('[role="dialog"]').count()) ? '[role="dialog"]' : null, live: true, note: 'File > Open Project on a copy whose video source path was broken' }));

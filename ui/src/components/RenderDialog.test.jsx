@@ -29,20 +29,23 @@ async function renderDialog(props = {}) {
   await flush()
 }
 
+// The dialog is a kit Dialog in a portal, so everything is looked up on the document.
 function buttonByText(text) {
-  return Array.from(container.querySelectorAll('button'))
+  return Array.from(document.body.querySelectorAll('button'))
     .find((button) => button.textContent.trim() === text)
 }
 
+// The destinations are the dialog's tabs.
 function destCard(name) {
-  return Array.from(container.querySelectorAll('.dest-card'))
-    .find((el) => el.querySelector('.dc-name')?.textContent.trim() === name)
+  return Array.from(document.body.querySelectorAll('[role="tab"]'))
+    .find((el) => el.textContent.trim() === name)
 }
 
+// A label / control row: the control is the row's text field or its Select trigger.
 function rowControl(labelText) {
-  const row = Array.from(container.querySelectorAll('.export-row'))
-    .find((el) => el.querySelector('label')?.textContent.trim().startsWith(labelText))
-  return row?.querySelector('select, input')
+  const row = Array.from(document.body.querySelectorAll('[data-export-row]'))
+    .find((el) => el.querySelector('[data-export-label]')?.textContent.trim().startsWith(labelText))
+  return row?.querySelector('input, [aria-haspopup="listbox"]')
 }
 
 async function click(el) {
@@ -51,15 +54,15 @@ async function click(el) {
 }
 
 function renderRangeHeader() {
-  return Array.from(container.querySelectorAll('.render-range-header'))[0]
+  return document.body.querySelector('[data-render-range-header]')
 }
 
-async function changeSelect(select, value) {
-  await act(async () => {
-    select.value = value
-    select.dispatchEvent(new Event('change', { bubbles: true }))
-  })
-  await flush()
+// Open a kit Select and choose the option with this label.
+async function changeSelect(trigger, optionLabel) {
+  await click(trigger)
+  const option = Array.from(document.body.querySelectorAll('[role="option"]'))
+    .find((o) => o.textContent.trim() === optionLabel)
+  await click(option)
 }
 
 describe('RenderDialog', () => {
@@ -107,7 +110,7 @@ describe('RenderDialog', () => {
 
   it('renders the unified header and all four destination cards', async () => {
     await renderDialog()
-    const html = container.innerHTML
+    const html = document.body.innerHTML
     expect(html).toContain('Render')
     expect(destCard('Audio')).toBeTruthy()
     expect(destCard('YouTube')).toBeTruthy()
@@ -117,19 +120,19 @@ describe('RenderDialog', () => {
 
   it('opens on the Audio destination when steered by destinationHint="audio"', async () => {
     await renderDialog({ destinationHint: 'audio', requestNonce: 1 })
-    expect(destCard('Audio').className).toContain('on')
+    expect(destCard('Audio').getAttribute('aria-selected')).toBe('true')
     expect(rowControl('Format')).toBeTruthy()
   })
 
   it('opens on a video destination (defaulting to YouTube) when steered by destinationHint="video"', async () => {
     await renderDialog({ destinationHint: 'video', requestNonce: 1 })
-    expect(destCard('YouTube').className).toContain('on')
+    expect(destCard('YouTube').getAttribute('aria-selected')).toBe('true')
   })
 
   it('starts an audio render through window.xleth.audio.exportStart', async () => {
     await renderDialog({ destinationHint: 'audio', requestNonce: 1 })
     await click(buttonByText('Browse…'))
-    await click(buttonByText('Render'))
+    await click(buttonByText('Export audio'))
 
     expect(audioExportStart).toHaveBeenCalledTimes(1)
     expect(exportStart).not.toHaveBeenCalled()
@@ -140,43 +143,44 @@ describe('RenderDialog', () => {
 
   it('renders cleaned shared render-range copy without debug range fields, collapsed by default', async () => {
     await renderDialog()
-    const html = container.innerHTML
+    const html = document.body.innerHTML
 
     expect(html).not.toContain('Start Bar (debug)')
     expect(html).not.toContain('End Bar (debug)')
-    expect(html).toContain('Render range')
-    expect(html).not.toContain('End Behavior')
-    expect(html).not.toContain('Start Processing From')
+    expect(html).toContain('Render range and tails')
+    expect(html).not.toContain('End behavior')
+    expect(html).not.toContain('Start processing from')
 
     await click(renderRangeHeader())
-    const expandedHtml = container.innerHTML
-    expect(expandedHtml).toContain('End Behavior')
-    expect(expandedHtml).toContain('Start Processing From')
+    const expandedHtml = document.body.innerHTML
+    expect(expandedHtml).toContain('End behavior')
+    expect(expandedHtml).toContain('Start processing from')
     // The coarse Auto/Software/Hardware toggle only lives in the Custom tab.
-    expect(expandedHtml).not.toContain('Hardware Encoder Only')
+    expect(expandedHtml).not.toContain('Encoder mode')
   })
 
   it('shows the Custom caption and Encoder Mode override', async () => {
     await renderDialog()
     await click(destCard('Custom'))
 
-    const html = container.innerHTML
+    const html = document.body.innerHTML
     expect(html).toContain('Custom export settings for codec, resolution, frame rate, quality, and audio.')
-    expect(html).toContain('Encoder Mode')
-    expect(html).toContain('Software Encoder')
-    expect(html).toContain('Hardware Encoder Only')
+    expect(html).toContain('Encoder mode')
+    await click(rowControl('Encoder mode'))
+    const labels = Array.from(document.body.querySelectorAll('[role="option"]')).map((o) => o.textContent.trim())
+    expect(labels).toEqual(['Auto', 'Software encoder', 'Hardware encoder only'])
   })
 
   it.each([
-    ['auto', 'auto'],
-    ['software', 'software'],
-    ['hardware', 'hardware'],
-  ])('keeps export payload videoMode value "%s" compatible', async (selectValue, expectedMode) => {
+    ['Auto', 'auto'],
+    ['Software encoder', 'software'],
+    ['Hardware encoder only', 'hardware'],
+  ])('keeps export payload videoMode "%s" compatible', async (selectValue, expectedMode) => {
     await renderDialog()
     await click(destCard('Custom'))
     await click(buttonByText('Browse…'))
-    await changeSelect(rowControl('Encoder Mode'), selectValue)
-    await click(buttonByText('Render'))
+    await changeSelect(rowControl('Encoder mode'), selectValue)
+    await click(buttonByText('Export video'))
 
     expect(exportStart).toHaveBeenCalledTimes(1)
     const cfg = exportStart.mock.calls[0][0]
@@ -188,10 +192,10 @@ describe('RenderDialog', () => {
   it('clears a stale output path when hopping between the audio and video categories', async () => {
     await renderDialog({ destinationHint: 'audio', requestNonce: 1 })
     await click(buttonByText('Browse…'))
-    expect(rowControl('Output File').value).toBe('C:\\exports\\clip.wav')
+    expect(rowControl('Output file').value).toBe('C:\\exports\\clip.wav')
 
     await click(destCard('YouTube'))
-    expect(rowControl('Output File').value).toBe('')
+    expect(rowControl('Output file').value).toBe('')
   })
 })
 
@@ -255,7 +259,7 @@ describe('RenderDialog — project canvas inheritance + fit', () => {
     await renderDialog()
     await click(destCard('Custom'))
     await click(buttonByText('Browse…'))
-    await click(buttonByText('Render'))
+    await click(buttonByText('Export video'))
 
     expect(exportStart).toHaveBeenCalledTimes(1)
     const cfg = exportStart.mock.calls[0][0]
@@ -270,15 +274,15 @@ describe('RenderDialog — project canvas inheritance + fit', () => {
     await click(destCard('Custom'))
     await click(buttonByText('Browse…'))
 
-    await changeSelect(rowControl('Resolution'), '1920x1080')
+    await changeSelect(rowControl('Resolution'), '1920 × 1080')
 
     expect(buttonByText('Crop to fill')).toBeTruthy()
-    expect(buttonByText('Render').disabled).toBe(true)
+    expect(buttonByText('Export video').disabled).toBe(true)
 
     await click(buttonByText('Crop to fill'))
-    expect(buttonByText('Render').disabled).toBe(false)
+    expect(buttonByText('Export video').disabled).toBe(false)
 
-    await click(buttonByText('Render'))
+    await click(buttonByText('Export video'))
     const cfg = exportStart.mock.calls[0][0]
     expect(cfg.width).toBe(1920)
     expect(cfg.height).toBe(1080)
@@ -288,7 +292,7 @@ describe('RenderDialog — project canvas inheritance + fit', () => {
   it('YouTube preset inherits the project frame rate and gets bars on aspect mismatch', async () => {
     await renderDialog()
     await click(buttonByText('Browse…'))
-    await click(buttonByText('Render'))
+    await click(buttonByText('Export video'))
 
     const cfg = exportStart.mock.calls[0][0]
     expect(cfg.fpsNum).toBe(24)

@@ -4,7 +4,7 @@ export default async ({ page, sleep }) => {
   const out = [];
   const esc = async () => { for (let i = 0; i < 3; i++) { await page.keyboard.press('Escape'); await sleep(150); } };
   await esc();
-  if (await page.locator('.export-dialog-backdrop').count()) { await page.locator('.export-dialog button[title="Close"]').first().click().catch(() => {}); await sleep(700); out.push('closed the Export dialog via its Close button (Escape does not close it)'); }
+  if (await page.locator('[role="dialog"]').count()) { await page.locator('[role="dialog"] button[aria-label="Close"]').first().click().catch(() => {}); await sleep(700); out.push('closed the Export dialog via its Close button (Escape does not close it)'); }
   await page.getByRole('tab', { name: /^Media/ }).first().click(); await sleep(600);
   const btn = page.locator('button[title*="MIDI"], button[aria-label*="MIDI"]').first();
   out.push('import midi buttons: ' + await page.locator('button[title*="MIDI"], button[aria-label*="MIDI"]').count());

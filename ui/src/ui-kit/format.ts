@@ -8,6 +8,11 @@
 //   ms     below 100: 1 decimal; else 0       12.5 ms  250 ms
 //   %      0 decimals                         70 %
 //   ratio  1 decimal, spaced colon            4.0 : 1  inf : 1
+//   Mbps   1 decimal                          5.0 Mbps
+//   kbps   0 decimals                         384 kbps
+//   MB     1 decimal                          9.6 MB
+//   LUFS   1 decimal                          -14.0 LUFS  (dBTP, dBFS: 1 and 0 decimals)
+//   s      below 60: 1 decimal (0 when whole); from 60 as m:ss   12.5 s   2:05
 //
 // Rounding is decided BEFORE the unit/precision switch, so a value that rounds
 // up across a boundary is shown in the next unit (999.5 Hz -> 1.00 kHz,
@@ -18,7 +23,7 @@ export const THIN_SPACE = ' ';
 export const MINUS = '−';
 const EM_DASH = '—';
 
-export type Unit = 'dB' | 'Hz' | 'ms' | '%' | 'ratio';
+export type Unit = 'dB' | 'Hz' | 'ms' | '%' | 'ratio' | 'Mbps' | 'kbps' | 'MB' | 'LUFS' | 'dBTP' | 'dBFS' | 's';
 
 export interface FormatOptions {
   /** Override the decimals the unit would use. Ignored for kHz (always 2) and `inf`. */
@@ -96,6 +101,28 @@ export function formatValue(value: number | null | undefined, unit: Unit, opts: 
       const r = roundAbs(abs, d);
       const num = `${signFor(negative, r === 0, signed)}${r.toFixed(d)}`;
       return unitless ? num : `${num} : 1`;
+    }
+    case 'Mbps':
+    case 'MB':
+    case 'LUFS':
+    case 'dBTP':
+    case 'dBFS':
+    case 'kbps': {
+      const d = decimals ?? (unit === 'kbps' || unit === 'dBFS' ? 0 : 1);
+      const r = roundAbs(abs, d);
+      return withUnit(`${signFor(negative, r === 0, signed)}${r.toFixed(d)}`, unit);
+    }
+    case 's': {
+      // A duration: seconds with a decimal under a minute, then minutes and seconds.
+      if (abs >= 59.95) {
+        const total = Math.round(abs);
+        const m = Math.floor(total / 60);
+        const sec = total - m * 60;
+        return `${signFor(negative, false, signed)}${m}:${String(sec).padStart(2, '0')}`;
+      }
+      const d = decimals ?? (Number.isInteger(roundAbs(abs, 1)) ? 0 : 1);
+      const r = roundAbs(abs, d);
+      return withUnit(`${signFor(negative, r === 0, signed)}${r.toFixed(d)}`, 's');
     }
   }
 }

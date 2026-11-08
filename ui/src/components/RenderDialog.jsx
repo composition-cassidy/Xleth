@@ -6,7 +6,8 @@ import YouTubeTab from './exportPresets/YouTubeTab.jsx'
 import DiscordTab from './exportPresets/DiscordTab.jsx'
 import CustomTab, { makeCustomDefaults } from './exportPresets/CustomTab.jsx'
 import ProgressPanel from './exportPresets/ProgressPanel.jsx'
-import ProgressBar from './ProgressBar.jsx'
+import { Button, Dialog, Progress, Tabs, TextField, formatValue } from '../ui-kit'
+import { Row, exportStyles as styles } from './exportPresets/exportKit.jsx'
 import RenderRangeSection from './RenderRangeSection.jsx'
 import { BEATS_PER_BAR } from '../constants/timeline.js'
 import { getPickerPath, openFilePicker } from './filePicker/filePickerService.js'
@@ -32,15 +33,15 @@ const NO_MEASUREMENT_SENTINEL = -200.0
 const VIDEO_DESTINATIONS = ['youtube', 'discord', 'custom']
 
 const DESTINATIONS = [
-  { id: 'audio',   name: 'Audio',   spec: 'WAV · 24-bit',      Icon: Music2 },
-  { id: 'youtube', name: 'YouTube', spec: 'MP4 · up to 4K',    Icon: PlaySquare },
-  { id: 'discord', name: 'Discord', spec: 'fits upload limit', Icon: MessageCircle },
-  { id: 'custom',  name: 'Custom',  spec: 'full control',      Icon: SlidersHorizontal },
+  { id: 'audio',   label: 'Audio',   glyph: <Music2 size={14} />, hint: 'WAV, MP3 or FLAC' },
+  { id: 'youtube', label: 'YouTube', glyph: <PlaySquare size={14} />, hint: 'MP4, up to 4K' },
+  { id: 'discord', label: 'Discord', glyph: <MessageCircle size={14} />, hint: 'Fits the upload limit' },
+  { id: 'custom',  label: 'Custom',  glyph: <SlidersHorizontal size={14} />, hint: 'Full control' },
 ]
 
-function formatLufs(v) { return v <= NO_MEASUREMENT_SENTINEL ? '—' : `${v.toFixed(1)} LUFS` }
-function formatDb(v)   { return v <= NO_MEASUREMENT_SENTINEL ? '—' : `${v.toFixed(1)} dB` }
-function formatDbtp(v) { return v <= NO_MEASUREMENT_SENTINEL ? '—' : `${v.toFixed(1)} dBTP` }
+function formatLufs(v) { return v <= NO_MEASUREMENT_SENTINEL ? '—' : formatValue(v, 'LUFS') }
+function formatDb(v)   { return v <= NO_MEASUREMENT_SENTINEL ? '—' : formatValue(v, 'dB') }
+function formatDbtp(v) { return v <= NO_MEASUREMENT_SENTINEL ? '—' : formatValue(v, 'dBTP') }
 
 function makeAudioDefaults() {
   return {
@@ -50,7 +51,7 @@ function makeAudioDefaults() {
 }
 
 // Small, self-contained progress view for the Audio destination — mirrors
-// ProgressPanel's layout/classes but carries the loudness-normalization report
+// ProgressPanel's layout but carries the loudness-normalization report
 // the video pipeline has no equivalent of.
 function AudioProgress({ phase, progress, errorMsg, normReport, activeMaxDbtp, outputPath, onCancel, onOpenFolder, onClose }) {
   const running = phase === 'running'
@@ -64,44 +65,43 @@ function AudioProgress({ phase, progress, errorMsg, normReport, activeMaxDbtp, o
   if (phase === 'error')     headline = errorMsg || 'Export failed.'
 
   return (
-    <div className="export-progress-panel">
-      <ProgressBar progress={progress} />
-      <div className={`export-progress-headline${phase === 'error' ? ' error' : ''}`}>
-        {headline}
-        {running && <span className="export-progress-pct">{Math.floor(progress * 100)}%</span>}
+    <div className={styles.progress}>
+      <Progress label="Export progress" value={progress} text={`${Math.floor(progress * 100)}\u2009%`} />
+      <div className={styles.headline} data-error={phase === 'error' || undefined}>
+        <span>{headline}</span>
       </div>
 
       {phase === 'done' && normReport && (
-        <div className="loudness-report">
-          <div className="loudness-report-row"><span>Measured</span><span>{formatLufs(normReport.measuredIntegratedLufs)}</span></div>
-          <div className="loudness-report-row"><span>Loudness gain</span><span>{formatDb(normReport.loudnessGainDb)}</span></div>
+        <div className={styles.report} role="table" aria-label="Loudness report">
+          <div className={styles.reportRow}><span>Measured</span><span>{formatLufs(normReport.measuredIntegratedLufs)}</span></div>
+          <div className={styles.reportRow}><span>Loudness gain</span><span>{formatDb(normReport.loudnessGainDb)}</span></div>
           {normReport.peakSafetyGainDb !== 0 && (
-            <div className="loudness-report-row"><span>Peak safety gain</span><span>{formatDb(normReport.peakSafetyGainDb)}</span></div>
+            <div className={styles.reportRow}><span>Peak safety gain</span><span>{formatDb(normReport.peakSafetyGainDb)}</span></div>
           )}
-          <div className="loudness-report-row"><span>Final integrated</span><span>{formatLufs(normReport.finalPredictedIntegratedLufs)}</span></div>
-          <div className="loudness-report-row">
+          <div className={styles.reportRow}><span>Final integrated</span><span>{formatLufs(normReport.finalPredictedIntegratedLufs)}</span></div>
+          <div className={styles.reportRow}>
             <span>Final true peak</span>
             <span>
               {formatDbtp(normReport.finalPredictedTruePeakDbtp)}
-              {peakMeasured && <> <span className={peakPass ? 'loudness-report-pass' : 'loudness-report-over'}>{peakPass ? 'PASS' : 'OVER'}</span></>}
+              {peakMeasured && <> <span className={styles.verdict} data-pass={peakPass || undefined} data-over={!peakPass || undefined}>{peakPass ? 'Pass' : 'Over'}</span></>}
             </span>
           </div>
         </div>
       )}
 
       {(phase === 'done' || phase === 'cancelled') && outputPath && (
-        <div className="export-progress-path">{outputPath}</div>
+        <div className={styles.outputPath}>{outputPath}</div>
       )}
 
-      <div className="export-progress-actions">
-        {running && <button className="export-btn-danger" onClick={onCancel}>Cancel</button>}
+      <div className={styles.actions}>
+        {running && <Button variant="danger" onClick={onCancel}>Cancel export</Button>}
         {(phase === 'done' || phase === 'cancelled') && (
           <>
-            <button onClick={onOpenFolder}>Open Folder</button>
-            <button className="export-btn-primary" onClick={onClose}>Close</button>
+            <Button onClick={onOpenFolder}>Open folder</Button>
+            <Button variant="primary" onClick={onClose}>Close</Button>
           </>
         )}
-        {phase === 'error' && <button className="export-btn-primary" onClick={onClose}>Close</button>}
+        {phase === 'error' && <Button variant="primary" onClick={onClose}>Close</Button>}
       </div>
     </div>
   )
@@ -498,156 +498,123 @@ export default function RenderDialog({ isOpen, onClose, destinationHint, request
     ? Number(audioSettings.customMaxDbtp)
     : PLATFORM_TARGETS[audioSettings.platformTarget]?.maxDbtp ?? 0
 
+  const idle = !running && !finished
+  const primaryLabel = destination === 'audio' ? 'Export audio' : 'Export video'
+
   return (
-    <div className="export-dialog-backdrop" onClick={() => { if (!running) onClose() }}>
-      <div className="export-dialog render-dialog" onClick={(e) => e.stopPropagation()}>
-        <div className="export-dialog-header">
-          <div>
-            <div className="render-dialog-title">Render</div>
-            <div className="render-dialog-subtitle">
-              {projectName ? `${projectName} · ` : ''}{formatDuration(durationSec)} range
-            </div>
-          </div>
-          <button
-            className="export-dialog-close"
-            onClick={onClose}
-            disabled={running}
-            title={running ? 'Cancel first' : 'Close'}
-          >×</button>
+    <Dialog
+      title="Render"
+      width="lg"
+      flush
+      dismissable={!running}
+      onClose={onClose}
+      actions={idle ? (
+        <>
+          <Button size="lg" onClick={onClose}>Close</Button>
+          <Button size="lg" variant="primary" data-autofocus="" onClick={start} disabled={exportDisabled}>{primaryLabel}</Button>
+        </>
+      ) : undefined}
+    >
+      <div className={styles.root}>
+        <div className={styles.subtitle}>
+          {projectName ? `${projectName} · ` : ''}{formatDuration(durationSec)} range
         </div>
 
-        {!running && !finished && (
-          <div className="dest-cards">
-            {DESTINATIONS.map((d) => (
-              <button
-                key={d.id}
-                type="button"
-                className={`dest-card ${destination === d.id ? 'on' : ''}`}
-                onClick={() => setDestination(d.id)}
-              >
-                <d.Icon size={18} />
-                <span><span className="dc-name">{d.name}</span><span className="dc-spec">{d.spec}</span></span>
-              </button>
-            ))}
-          </div>
+        {idle && (
+          <Tabs label="Destination" tabs={DESTINATIONS} value={destination} onChange={setDestination} />
         )}
 
-        <div className="export-dialog-body">
-          {(running || finished) ? (
-            destination === 'audio' ? (
-              <AudioProgress
-                phase={phase}
-                progress={progress}
-                errorMsg={errorMsg}
-                normReport={normReport}
-                activeMaxDbtp={activeMaxDbtp}
-                outputPath={outputPath}
-                onCancel={cancel}
-                onOpenFolder={openFolder}
-                onClose={onClose}
-              />
-            ) : (
-              <ProgressPanel
-                phase={phase}
-                renderPhase={renderPhase}
-                progress={progress}
-                currentFrame={currentFrame}
-                totalFrames={totalFrames}
-                speed={speed}
-                eta={eta}
-                errorMsg={errorMsg}
-                outputPath={outputPath}
-                fps={renderFps}
-                onCancel={cancel}
-                onOpenFile={openFile}
-                onOpenFolder={openFolder}
-                onClose={onClose}
-              />
-            )
+        {(running || finished) ? (
+          destination === 'audio' ? (
+            <AudioProgress
+              phase={phase}
+              progress={progress}
+              errorMsg={errorMsg}
+              normReport={normReport}
+              activeMaxDbtp={activeMaxDbtp}
+              outputPath={outputPath}
+              onCancel={cancel}
+              onOpenFolder={openFolder}
+              onClose={onClose}
+            />
           ) : (
-            <>
-              {destination === 'audio'   && <AudioTab   settings={audioSettings}   onChange={mergeAudio}   running={running} />}
-              {destination === 'youtube' && <YouTubeTab settings={youtubeSettings} onChange={mergeYoutube} running={running} />}
-              {destination === 'discord' && <DiscordTab settings={discordSettings} onChange={mergeDiscord} running={running} />}
-              {destination === 'custom'  && (
-                <CustomTab
-                  settings={customSettings}
-                  onChange={mergeCustom}
-                  running={running}
-                  projectCanvas={projectCanvas}
-                  presets={customPresets}
-                  onSavePreset={handleSavePreset}
-                  onLoadPreset={handleLoadPreset}
-                  onDeletePreset={handleDeletePreset}
-                  videoModeOverride={videoModeOverride}
-                  onVideoModeOverrideChange={setVideoModeOverride}
-                />
-              )}
+            <ProgressPanel
+              phase={phase}
+              renderPhase={renderPhase}
+              progress={progress}
+              currentFrame={currentFrame}
+              totalFrames={totalFrames}
+              speed={speed}
+              eta={eta}
+              errorMsg={errorMsg}
+              outputPath={outputPath}
+              fps={renderFps}
+              onCancel={cancel}
+              onOpenFile={openFile}
+              onOpenFolder={openFolder}
+              onClose={onClose}
+            />
+          )
+        ) : (
+          <>
+            {destination === 'audio'   && <AudioTab   settings={audioSettings}   onChange={mergeAudio}   running={running} />}
+            {destination === 'youtube' && <YouTubeTab settings={youtubeSettings} onChange={mergeYoutube} running={running} />}
+            {destination === 'discord' && <DiscordTab settings={discordSettings} onChange={mergeDiscord} running={running} />}
+            {destination === 'custom'  && (
+              <CustomTab
+                settings={customSettings}
+                onChange={mergeCustom}
+                running={running}
+                projectCanvas={projectCanvas}
+                presets={customPresets}
+                onSavePreset={handleSavePreset}
+                onLoadPreset={handleLoadPreset}
+                onDeletePreset={handleDeletePreset}
+                videoModeOverride={videoModeOverride}
+                onVideoModeOverrideChange={setVideoModeOverride}
+              />
+            )}
 
-              <div className="export-section-divider" />
-              <div className="export-row export-row-path">
-                <label>Output File</label>
-                <div className="export-path-group">
-                  <input
-                    type="text"
-                    value={outputPath}
-                    onChange={(e) => setOutputPath(e.target.value)}
-                    placeholder="Click Browse…"
-                    disabled={running}
-                  />
-                  <button onClick={browse} disabled={running}>Browse…</button>
+            <div className={styles.divider} />
+            <Row label="Output file">
+              <TextField
+                data-fill=""
+                data-output-path=""
+                label="Output file"
+                mono
+                value={outputPath}
+                onChange={setOutputPath}
+                placeholder="Choose a file…"
+                disabled={running}
+              />
+              <Button onClick={browse} disabled={running}>Browse…</Button>
+            </Row>
+
+            <RenderRangeSection disabled={running}>
+              {destination === 'audio' && import.meta.env.DEV && (
+                <div className={styles.grid} role="group" aria-label="Debug range override">
+                  <Row label="Start bar (debug)">
+                    <TextField
+                      label="Start bar (debug)" type="number" min={1} step={1} value={String(startBar)}
+                      onChange={setStartBar} disabled={running}
+                    />
+                  </Row>
+                  <Row label="End bar (debug)">
+                    <TextField
+                      label="End bar (debug)" type="number" min={0} step={1} value={String(endBar)}
+                      onChange={setEndBar} disabled={running} placeholder="0 = auto"
+                    />
+                  </Row>
                 </div>
-              </div>
+              )}
+            </RenderRangeSection>
 
-              <RenderRangeSection disabled={running}>
-                {destination === 'audio' && import.meta.env.DEV && (
-                  <div className="tail-advanced-fields" aria-label="Debug range override">
-                    <div className="export-row tail-compact-row">
-                      <label htmlFor="render-start-bar-debug">Start Bar (debug)</label>
-                      <input
-                        id="render-start-bar-debug"
-                        type="number"
-                        min={1}
-                        step={1}
-                        value={startBar}
-                        onChange={(e) => setStartBar(e.target.value)}
-                        disabled={running}
-                      />
-                    </div>
-                    <div className="export-row tail-compact-row">
-                      <label htmlFor="render-end-bar-debug">End Bar (debug)</label>
-                      <input
-                        id="render-end-bar-debug"
-                        type="number"
-                        min={0}
-                        step={1}
-                        value={endBar}
-                        onChange={(e) => setEndBar(e.target.value)}
-                        disabled={running}
-                        placeholder="0 = auto"
-                      />
-                    </div>
-                  </div>
-                )}
-              </RenderRangeSection>
-            </>
-          )}
-        </div>
-
-        {!running && !finished && (
-          <div className="export-dialog-footer with-chips">
-            <div className="export-footer-chips">
-              {chips.map((c, i) => (
-                <span key={c + i} className={`export-chip${i === 0 ? ' acc' : ''}`}>{c}</span>
-              ))}
+            <div className={styles.summary} aria-label="What will be rendered">
+              {chips.map((c, i) => <span key={c + i}>{c}</span>)}
             </div>
-            <div className="export-footer-btns">
-              <button onClick={onClose}>Close</button>
-              <button className="export-btn-primary" onClick={start} disabled={exportDisabled}>Render</button>
-            </div>
-          </div>
+          </>
         )}
       </div>
-    </div>
+    </Dialog>
   )
 }

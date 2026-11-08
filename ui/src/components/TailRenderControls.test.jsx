@@ -34,26 +34,28 @@ describe('TailRenderControls', () => {
     container.remove()
   })
 
-  it('uses user-facing End Behavior copy while preserving tail mode values', () => {
-    const html = renderHtml(<TailRenderControls />)
-    expect(html).toContain('End Behavior')
-    expect(html).not.toContain('Tail mode')
-    expect(html).toContain('value="tailClamp"')
-    expect(html).toContain('Let audio fade out')
-    expect(html).toContain('value="hardCut"')
-    expect(html).toContain('Cut exactly at end')
-    expect(html).toContain('value="wrap"')
-    expect(html).toContain('Loop-safe wrap')
+  it('uses user-facing End behavior copy and offers the three tail modes', async () => {
+    const root = createRoot(container)
+    await act(async () => { root.render(<TailRenderControls />) })
+    expect(container.innerHTML).toContain('End behavior')
+    expect(container.innerHTML).not.toContain('Tail mode')
+    // The selected mode is shown; the other two are in the Select's list.
+    expect(container.innerHTML).toContain('Let audio fade out')
+    const trigger = container.querySelector('[aria-label="End behavior"]')
+    await act(async () => { trigger.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+    const labels = Array.from(document.body.querySelectorAll('[role="option"]')).map((o) => o.textContent.trim())
+    expect(labels).toEqual(['Let audio fade out', 'Cut exactly at end', 'Loop-safe wrap'])
+    await act(async () => root.unmount())
   })
 
   it('shows the fade-out helper and compact tail limits only for tailClamp', () => {
     const html = renderHtml(<TailRenderControls />)
     expect(html).toContain('After the region ends, existing reverb, delay, and effect tails continue until they fade below the limit.')
     expect(html).toContain('Tail fade settings')
-    expect(html).toContain('Tail threshold (dBFS)')
-    expect(html).toContain('value="-60"')
-    expect(html).toContain('Tail max (seconds)')
-    expect(html).toContain('value="10"')
+    expect(html).toContain('Tail threshold')
+    expect(html).toContain('aria-valuenow="-60"')
+    expect(html).toContain('Tail max')
+    expect(html).toContain('aria-valuenow="10"')
   })
 
   it('hides tail threshold and max controls for hardCut', () => {
@@ -63,8 +65,8 @@ describe('TailRenderControls', () => {
     })
     const html = renderHtml(<TailRenderControls />)
     expect(html).toContain('Export stops at the region end. Effect tails are cut off.')
-    expect(html).not.toContain('Tail threshold (dBFS)')
-    expect(html).not.toContain('Tail max (seconds)')
+    expect(html).not.toContain('Tail threshold')
+    expect(html).not.toContain('Tail max')
   })
 
   it('hides tail threshold and max controls for wrap', () => {
@@ -74,18 +76,22 @@ describe('TailRenderControls', () => {
     })
     const html = renderHtml(<TailRenderControls />)
     expect(html).toContain('Effect tails are folded back into the start of the region for seamless loop exports.')
-    expect(html).not.toContain('Tail threshold (dBFS)')
-    expect(html).not.toContain('Tail max (seconds)')
+    expect(html).not.toContain('Tail threshold')
+    expect(html).not.toContain('Tail max')
   })
 
-  it('uses Start Processing From copy and disables the reserved normalized origin value', () => {
-    const html = renderHtml(<TailRenderControls />)
-    expect(html).toContain('Start Processing From')
-    expect(html).not.toContain('Render origin')
-    expect(html).toContain('value="absolute"')
-    expect(html).toContain('Project start')
-    expect(html).toMatch(/<option value="normalized"[^>]*disabled/)
-    expect(html).toContain('Region start')
+  it('uses Start processing from copy and disables the reserved normalized origin value', async () => {
+    const root = createRoot(container)
+    await act(async () => { root.render(<TailRenderControls />) })
+    expect(container.innerHTML).toContain('Start processing from')
+    expect(container.innerHTML).not.toContain('Render origin')
+    expect(container.innerHTML).toContain('Project start')
+    const trigger = container.querySelector('[aria-label="Start processing from"]')
+    await act(async () => { trigger.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
+    const region = Array.from(document.body.querySelectorAll('[role="option"]')).find((o) => o.textContent.includes('Region start'))
+    expect(region).toBeTruthy()
+    expect(region.disabled || region.getAttribute('aria-disabled') === 'true').toBe(true)
+    await act(async () => root.unmount())
   })
 
   it('clamps and sanitizes threshold/cap values', () => {

@@ -10,13 +10,13 @@ export default async ({ page, sleep }) => {
 
   await step('export audio', async () => {
     await page.keyboard.press('Control+e'); await sleep(1500);
-    out.push('export dialog visible: ' + (await page.locator('.export-dialog').first().isVisible().catch(() => false)));
-    out.push(await shot(page, '130-dialog-export-audio', { surface: 'dlg-export', scope: '.export-dialog', live: true }));
+    out.push('export dialog visible: ' + (await page.locator('[role="dialog"]').first().isVisible().catch(() => false)));
+    out.push(await shot(page, '130-dialog-export-audio', { surface: 'dlg-export', scope: '[role="dialog"]', live: true }));
     for (const [tab, id] of [['YouTube', '131-dialog-export-video-youtube'], ['Discord', '131b-dialog-export-video-discord'], ['Custom', '131c-dialog-export-video-custom']]) {
       await step(tab, async () => {
-        await page.locator('.export-dialog').getByRole('tab', { name: new RegExp(tab, 'i') }).or(page.locator('.export-dialog').getByRole('button', { name: new RegExp('^' + tab, 'i') })).first().click({ timeout: 3000 });
+        await page.locator('[role="dialog"]').getByRole('tab', { name: new RegExp(tab, 'i') }).or(page.locator('[role="dialog"]').getByRole('button', { name: new RegExp('^' + tab, 'i') })).first().click({ timeout: 3000 });
         await sleep(900);
-        out.push(await shot(page, id, { surface: 'dlg-export', scope: '.export-dialog', live: true, note: tab + ' destination' }));
+        out.push(await shot(page, id, { surface: 'dlg-export', scope: '[role="dialog"]', live: true, note: tab + ' destination' }));
       });
     }
     await esc(); await sleep(500);

@@ -1,8 +1,30 @@
 import React from 'react'
-import InfoTip from '../InfoTip.jsx'
+import { NumberBox } from '../../ui-kit'
 import { PLATFORM_TARGETS } from '../../constants/loudnessTargets.js'
+import { ExportSelect, Row, exportStyles as styles } from './exportKit.jsx'
 
-const LOUDNESS_HELP = 'Static gain only — no limiter. Protects against codec clipping on upload.'
+const LOUDNESS_HELP = 'Static gain only, no limiter. Protects against codec clipping on upload.'
+
+const FORMAT_OPTIONS = [
+  { value: 'wav', label: 'WAV' },
+  { value: 'mp3', label: 'MP3' },
+  { value: 'flac', label: 'FLAC' },
+]
+const RATE_OPTIONS = [
+  { value: 44100, label: '44100 Hz' },
+  { value: 48000, label: '48000 Hz' },
+]
+const DEPTH_OPTIONS = [
+  { value: 16, label: '16-bit PCM' },
+  { value: 24, label: '24-bit PCM' },
+  { value: 32, label: '32-bit float' },
+]
+const MP3_OPTIONS = [128, 192, 256, 320].map((v) => ({ value: v, label: `${v} kbps` }))
+const FLAC_OPTIONS = Array.from({ length: 9 }, (_, i) => ({
+  value: i,
+  label: `Level ${i}${i === 0 ? ' (fastest)' : i === 8 ? ' (smallest)' : ''}`,
+}))
+const TARGET_OPTIONS = Object.entries(PLATFORM_TARGETS).map(([key, t]) => ({ value: key, label: t.label }))
 
 /**
  * Audio destination pane — drives the C++ AudioExporter via the xleth.audio
@@ -18,103 +40,64 @@ export default function AudioTab({
   const { format, sampleRate, bitDepth, mp3Bitrate, flacLevel, platformTarget, customTargetLufs, customMaxDbtp } = settings
 
   return (
-    <div className="export-tab-panel">
-      <div className="export-field-grid">
-        <div className="export-row export-field">
-          <label>Format</label>
-          <select value={format} onChange={(e) => onChange({ format: e.target.value })} disabled={running}>
-            <option value="wav">WAV</option>
-            <option value="mp3">MP3</option>
-            <option value="flac">FLAC</option>
-          </select>
-        </div>
+    <div className={styles.panel}>
+      <div className={styles.grid}>
+        <Row label="Format">
+          <ExportSelect label="Format" value={format} options={FORMAT_OPTIONS} disabled={running} onChange={(v) => onChange({ format: v })} />
+        </Row>
 
-        <div className="export-row export-field">
-          <label>Sample Rate</label>
-          <select value={sampleRate} onChange={(e) => onChange({ sampleRate: Number(e.target.value) })} disabled={running}>
-            <option value={44100}>44100 Hz</option>
-            <option value={48000}>48000 Hz</option>
-          </select>
-        </div>
+        <Row label="Sample rate">
+          <ExportSelect label="Sample rate" value={sampleRate} options={RATE_OPTIONS} disabled={running} onChange={(v) => onChange({ sampleRate: Number(v) })} />
+        </Row>
 
         {format === 'wav' && (
-          <div className="export-row export-field">
-            <label>Bit Depth</label>
-            <select value={bitDepth} onChange={(e) => onChange({ bitDepth: Number(e.target.value) })} disabled={running}>
-              <option value={16}>16-bit PCM</option>
-              <option value={24}>24-bit PCM</option>
-              <option value={32}>32-bit Float</option>
-            </select>
-          </div>
+          <Row label="Bit depth">
+            <ExportSelect label="Bit depth" value={bitDepth} options={DEPTH_OPTIONS} disabled={running} onChange={(v) => onChange({ bitDepth: Number(v) })} />
+          </Row>
         )}
 
         {format === 'mp3' && (
-          <div className="export-row export-field">
-            <label>Bitrate</label>
-            <select value={mp3Bitrate} onChange={(e) => onChange({ mp3Bitrate: Number(e.target.value) })} disabled={running}>
-              <option value={128}>128 kbps</option>
-              <option value={192}>192 kbps</option>
-              <option value={256}>256 kbps</option>
-              <option value={320}>320 kbps</option>
-            </select>
-          </div>
+          <Row label="Bitrate">
+            <ExportSelect label="Bitrate" value={mp3Bitrate} options={MP3_OPTIONS} disabled={running} onChange={(v) => onChange({ mp3Bitrate: Number(v) })} />
+          </Row>
         )}
 
         {format === 'flac' && (
-          <div className="export-row export-field">
-            <label>Compression</label>
-            <select value={flacLevel} onChange={(e) => onChange({ flacLevel: Number(e.target.value) })} disabled={running}>
-              {Array.from({ length: 9 }, (_, i) => (
-                <option key={i} value={i}>Level {i}{i === 0 ? ' (fastest)' : i === 8 ? ' (smallest)' : ''}</option>
-              ))}
-            </select>
-          </div>
+          <Row label="Compression">
+            <ExportSelect label="Compression" value={flacLevel} options={FLAC_OPTIONS} disabled={running} onChange={(v) => onChange({ flacLevel: Number(v) })} />
+          </Row>
         )}
       </div>
 
-      <div className="export-section-divider" />
-      <div className="loudness-normalization-controls">
-        <div className="export-row">
-          <label>Loudness Normalization <InfoTip text={LOUDNESS_HELP} /></label>
-          <select
-            value={platformTarget}
-            onChange={(e) => onChange({ platformTarget: e.target.value })}
-            disabled={running}
-          >
-            {Object.entries(PLATFORM_TARGETS).map(([key, t]) => (
-              <option key={key} value={key}>{t.label}</option>
-            ))}
-          </select>
+      <div className={styles.divider} />
+      <Row label="Loudness normalization" note={LOUDNESS_HELP}>
+        <ExportSelect
+          label="Loudness normalization"
+          value={platformTarget}
+          options={TARGET_OPTIONS}
+          disabled={running}
+          onChange={(v) => onChange({ platformTarget: v })}
+        />
+      </Row>
+
+      {platformTarget === 'custom' && (
+        <div className={styles.grid} role="group" aria-label="Custom loudness target">
+          <Row label="Target">
+            <NumberBox
+              label="Target loudness" hideLabel width={96} min={-40} max={0} step={0.5} unit="LUFS"
+              defaultValue={-14} disabled={running} value={Number(customTargetLufs)}
+              onCommit={(v) => onChange({ customTargetLufs: v })}
+            />
+          </Row>
+          <Row label="Ceiling">
+            <NumberBox
+              label="True-peak ceiling" hideLabel width={96} min={-12} max={0} step={0.1} unit="dBTP"
+              defaultValue={-1} disabled={running} value={Number(customMaxDbtp)}
+              onCommit={(v) => onChange({ customMaxDbtp: v })}
+            />
+          </Row>
         </div>
-
-        {platformTarget === 'custom' && (
-          <div className="tail-advanced-fields" aria-label="Custom loudness target">
-            <div className="export-row tail-compact-row">
-              <label htmlFor="loudness-target-lufs">Target LUFS</label>
-              <input
-                id="loudness-target-lufs"
-                type="number"
-                step={0.5}
-                value={customTargetLufs}
-                disabled={running}
-                onChange={(e) => onChange({ customTargetLufs: e.target.value })}
-              />
-            </div>
-            <div className="export-row tail-compact-row">
-              <label htmlFor="loudness-max-dbtp">Ceiling (dBTP)</label>
-              <input
-                id="loudness-max-dbtp"
-                type="number"
-                step={0.1}
-                max={0}
-                value={customMaxDbtp}
-                disabled={running}
-                onChange={(e) => onChange({ customMaxDbtp: e.target.value })}
-              />
-            </div>
-          </div>
-        )}
-      </div>
+      )}
     </div>
   )
 }

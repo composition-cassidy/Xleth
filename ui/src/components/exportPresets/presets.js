@@ -1,3 +1,4 @@
+import { formatValue } from '../../ui-kit/format'
 // Pure functions + constants for the YouTube / Discord / Custom export presets.
 // No React imports — safe to use from anywhere.
 
@@ -75,11 +76,11 @@ export function estimateDiscordFileBytes(videoBitrate, durationSeconds) {
 
 // ── Formatting helpers ───────────────────────────────────────────────────────
 export function formatBitrateMbps(bps) {
-  return (bps / 1_000_000).toFixed(1) + ' Mbps'
+  return formatValue(bps / 1_000_000, 'Mbps')
 }
 
 export function formatBytesMB(bytes) {
-  return (bytes / 1_000_000).toFixed(1) + ' MB'
+  return formatValue(bytes / 1_000_000, 'MB')
 }
 
 export function formatDuration(secs) {

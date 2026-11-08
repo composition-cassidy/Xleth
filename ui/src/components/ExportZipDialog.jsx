@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
-import ProgressBar from './ProgressBar.jsx'
-import { Button, Dialog } from '../ui-kit'
+import { Button, Dialog, Progress } from '../ui-kit'
 import styles from './ExportZipDialog.module.css'
 import { getPickerPath, openFilePicker } from './filePicker/filePickerService.js'
 
@@ -165,7 +164,7 @@ export default function ExportZipDialog({ isOpen, onClose }) {
 
       {(running || finished) && (
         <div className={styles.progress} role="status">
-          <ProgressBar progress={phase === 'preparing' ? null : percent / 100} />
+          <Progress label="ZIP export progress" value={phase === 'preparing' ? null : percent / 100} />
           <div className={styles.progressLabel}>
             {phase === 'preparing' && 'Saving project…'}
             {phase === 'running' && archPhase === 'archiving' && `Archiving… ${percent}%`}

@@ -1,5 +1,7 @@
 import React, { useEffect, useState } from 'react'
-import { ChevronRight } from 'lucide-react'
+import { ChevronDown, ChevronRight } from 'lucide-react'
+import { Button } from '../ui-kit'
+import { exportStyles as styles } from './exportPresets/exportKit.jsx'
 import TailRenderControls from './TailRenderControls.jsx'
 import useLoopRegionStore from '../stores/loopRegionStore.js'
 
@@ -39,20 +41,22 @@ export default function RenderRangeSection({ disabled = false, children }) {
   useEffect(() => { fetchLoopRegion() }, [fetchLoopRegion])
 
   return (
-    <div className="render-range-section">
-      <button
-        type="button"
-        className="render-range-header"
-        onClick={() => setCollapsed((c) => !c)}
-        aria-expanded={!collapsed}
-      >
-        <ChevronRight size={12} className={`render-range-chevron ${!collapsed ? 'expanded' : ''}`} />
-        <span className="render-range-title">Render range &amp; tails</span>
-        {collapsed && <span className="render-range-summary">{summarizeLoopRegion(loopRegion)}</span>}
-      </button>
+    <div className={styles.range}>
+      <div className={styles.rangeHeader}>
+        <Button
+          variant="ghost"
+          aria-expanded={!collapsed}
+          glyph={collapsed ? <ChevronRight /> : <ChevronDown />}
+          onClick={() => setCollapsed((c) => !c)}
+          data-render-range-header=""
+        >
+          Render range and tails
+        </Button>
+        {collapsed && <span className={styles.rangeSummary}>{summarizeLoopRegion(loopRegion)}</span>}
+      </div>
 
       {!collapsed && (
-        <div className="render-range-body">
+        <div className={styles.rangeBody}>
           <TailRenderControls disabled={disabled} />
           {children}
         </div>
