@@ -1,0 +1,406 @@
+/* Sampler (round 2, step 11). Neutral surfaces only; colour is the slot identity
+ * (tab stripe, waveform), value fills, selection and the parameter-signal ring.
+ * Height budget at the default dock (1080p): 28 header + 305 body + 28 audition. */
+@layer kit {
+  .root {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 100%;
+    min-height: 0;
+    background: var(--ui-g1);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Header row: slot tabs | patch | views ─────────────────────────────── */
+  .header {
+    box-sizing: border-box;
+    display: flex;
+    flex: none;
+    align-items: stretch;
+    min-width: 0;
+    height: var(--panel-header-h);
+    background: var(--ui-g2);
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .views {
+    flex: none;
+    height: calc(var(--panel-header-h) - 1px);
+    border-bottom: 0;
+    border-left: 1px solid var(--ui-g4);
+  }
+
+  .slotStrip {
+    display: flex;
+    flex: 1 1 auto;
+    align-items: stretch;
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+  }
+
+  .slotStrip[data-drop] {
+    outline: 1px dashed var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  .slotTab {
+    position: relative;
+    box-sizing: border-box;
+    display: inline-flex;
+    flex: 0 1 auto;
+    align-items: center;
+    gap: var(--space-1);
+    min-width: 64px;
+    max-width: 176px;
+    padding: 0 var(--space-2);
+    border-right: 1px solid var(--ui-g4);
+    color: var(--ui-ink-2);
+    font-weight: var(--weight-medium);
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+    outline: none;
+  }
+
+  /* Identity stripe: the slot's colour, the same one the waveform is drawn in. */
+  .slotTab::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 2px;
+    background: var(--slot-color);
+  }
+
+  .slotTab:hover {
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+  }
+
+  .slotTab[data-selected] {
+    background: var(--ui-g1);
+    color: var(--ui-ink);
+    font-weight: var(--weight-semibold);
+  }
+
+  .slotTab[data-selected]::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px;
+    height: 2px;
+    background: var(--ui-ink);
+  }
+
+  .slotTab:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -2px;
+  }
+
+  .slotTab[data-drop] {
+    outline: 1px dashed var(--ui-select);
+    outline-offset: -2px;
+  }
+
+  .slotTab[data-silent] .slotName,
+  .slotTab[data-silent] .slotIndex {
+    opacity: var(--ui-mute-opacity);
+  }
+
+  .slotIndex {
+    flex: none;
+    color: var(--ui-ink-2);
+  }
+
+  .slotName {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .slotSilent {
+    flex: none;
+    width: 12px;
+    height: 12px;
+    color: var(--ui-ink-2);
+  }
+
+  .slotAdd {
+    flex: none;
+    align-self: center;
+    margin: 0 var(--space-1);
+  }
+
+  .slotCount {
+    flex: none;
+    align-self: center;
+    padding-right: var(--space-2);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  .textInput {
+    box-sizing: border-box;
+    min-width: 0;
+    height: var(--ctl-h-sm);
+    padding: 0 var(--space-1);
+    border: 1px solid var(--ui-select);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g0);
+    color: var(--ui-ink);
+    font: inherit;
+    outline: none;
+  }
+
+  .slotTab .textInput {
+    width: 112px;
+    height: 20px;
+  }
+
+  .patch {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 2px;
+    padding: 0 var(--space-2);
+    border-left: 1px solid var(--ui-g4);
+  }
+
+  .patchSelect {
+    width: 148px;
+  }
+
+  .patchName {
+    width: 148px;
+  }
+
+  .patchStatus {
+    padding-left: var(--space-1);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  /* ── Body ─────────────────────────────────────────────────────────────── */
+  .body {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .main {
+    display: grid;
+    flex: 1 1 auto;
+    grid-template-columns: minmax(0, 1fr) 240px;
+    min-height: 0;
+  }
+
+  .left {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+    min-height: 0;
+    padding: var(--space-1);
+  }
+
+  /* The recessed hero well, on neutral g0. */
+  .well {
+    box-sizing: border-box;
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    min-height: 72px;
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g0);
+  }
+
+  .wellHead {
+    box-sizing: border-box;
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+    height: 26px;
+    padding: 0 2px 0 var(--space-2);
+    border-bottom: 1px solid var(--ui-g4);
+    background: var(--ui-g2);
+    white-space: nowrap;
+  }
+
+  .swatch {
+    flex: none;
+    width: 8px;
+    height: 8px;
+    background: var(--slot-color);
+  }
+
+  .wellName {
+    flex: 0 1 auto;
+    min-width: 48px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-weight: var(--weight-medium);
+  }
+
+  .wellMeta,
+  .zoomReadout,
+  .caption {
+    flex: none;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  .zoomReadout {
+    min-width: 44px;
+    padding: 0 var(--space-1);
+    text-align: right;
+  }
+
+  .flags,
+  .wellTools {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .flag {
+    min-width: var(--hit-min);
+    padding: 0;
+    justify-content: center;
+    font-weight: var(--weight-semibold);
+  }
+
+  .solo[data-on="true"] {
+    border-color: var(--ui-solo);
+    background: var(--ui-solo);
+    color: var(--ui-g1);
+  }
+
+  .spacer {
+    flex: 1 1 auto;
+  }
+
+  /* The canvas sizes itself from this box (ResizeObserver) and is taken out of
+   * flow, so it can never push the box it measures. */
+  .canvasHost {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .canvasHost > canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    display: block;
+  }
+
+  /* One row of section strips, in signal order. */
+  .strips {
+    box-sizing: border-box;
+    display: flex;
+    flex: none;
+    align-items: stretch;
+    min-width: 0;
+    border: 1px solid var(--ui-g4);
+    border-left: 0;
+    background: var(--ui-g1);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+  }
+
+  .knobRow {
+    display: flex;
+    align-items: flex-start;
+    gap: 0;
+  }
+
+  .loopBody {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .loopBody[data-inactive] {
+    opacity: var(--ui-mute-opacity);
+  }
+
+  .loopSide {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-1);
+  }
+
+  /* ── Right column (240px): this slot's pitch, level, prep, process ─────── */
+  .side {
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    border-left: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
+    scrollbar-width: thin;
+  }
+
+  .sideSection {
+    flex: none;
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .side .sideStrip {
+    width: 100%;
+    border-left: 0;
+  }
+
+  .side .sideStrip > div:last-child {
+    align-items: stretch;
+    padding: var(--space-1) var(--space-2);
+  }
+
+  .grid2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: var(--space-1);
+  }
+
+  .fill {
+    width: 100%;
+    justify-content: center;
+  }
+
+  .prepRow {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .prepAlgo {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  /* ── Views other than Main ────────────────────────────────────────────── */
+  .scrollView {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow: auto;
+  }
+}

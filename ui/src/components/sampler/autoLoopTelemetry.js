@@ -31,3 +31,17 @@ export function applyRecordFor(res, regionId, now = Date.now()) {
     crossfadeSamples: Math.round(res.crossfadeSamples),
   }
 }
+
+// One line for the Loop strip's Auto hint, from the fields the engine's
+// AutoLoopResult already carries. Missing fields are skipped, never invented.
+export function autoLoopSummary(res) {
+  if (!res) return ''
+  const parts = []
+  if (Number.isFinite(res.periodMultiple) && res.periodMultiple > 0) parts.push(`${res.periodMultiple} periods long`)
+  if (Number.isFinite(res.spansKept) && Number.isFinite(res.spansConsidered)) {
+    parts.push(`${res.spansKept} of ${res.spansConsidered} candidate spans kept`)
+  }
+  if (Number.isFinite(res.spanDriftCents)) parts.push(`pitch drift ${Math.abs(res.spanDriftCents).toFixed(1)} ct`)
+  if (Number.isFinite(res.crossfadeSamples)) parts.push(`crossfade ${Math.round(res.crossfadeSamples)} samples`)
+  return parts.join(', ')
+}

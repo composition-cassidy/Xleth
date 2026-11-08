@@ -1,19 +1,19 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { Plus } from 'lucide-react'
+import { Plus, VolumeX } from 'lucide-react'
+import { IconButton, hintAttrs } from '../../ui-kit'
+import { slotColorVar } from './samplerFormat.js'
+import styles from './Sampler.module.css'
 
 // ── SlotTabs ────────────────────────────────────────────────────────────────
-// The sampler's 8 sample slots as a TAB STRIP, per art/new sampler design.png.
+// The sampler's sample slots (layers) as the left part of the panel's 28px header.
+// Selecting a tab binds the waveform, trim, loop, prep, process and pitch controls
+// to that layer. Each tab carries the slot's identity colour as a 2px top stripe:
+// the same colour the waveform is drawn in.
 //
-// This replaces the old SlotList, which rendered all 8 slots as a vertical
-// table of ~58px rows — 8 layers came to ~490px of a 545px content area, so a
-// full slot list pushed the waveform and everything under it off the bottom of
-// a panel that is deliberately `resizable: false`. A strip costs one row
-// whatever the slot count, which is what makes the rest of the layout fit.
-//
-// Selecting a tab binds the waveform / trim / loop / prep / mangle editor to
-// that layer. Per-slot tuning and level move to the SlotInspector beside the
-// waveform, where they are shown for the SELECTED slot only rather than all
-// eight at once.
+// Gestures: click selects · double-click or F2 renames · drop an audio file on a
+// tab to swap that layer's audio · drop on the strip background (or "+") to add a
+// layer. A silent layer (muted, or not soloed while another is) dims and shows a
+// mute glyph, so the state never rests on colour alone.
 
 export const MAX_SLOTS = 8
 
@@ -23,9 +23,8 @@ const dragHasFiles = (e) =>
   Array.from(e.dataTransfer?.types || []).includes('Files')
 
 // Extension gate for OS drops. The picker dialog applies its own filter, so
-// this only has to cover what can arrive by drag. Kept permissive — the engine
-// loader reports a real error for anything it cannot decode, which is a better
-// message than a silent refusal to accept the drop.
+// this only has to cover what can arrive by drag. Kept permissive: the engine
+// loader reports a real error for anything it cannot decode.
 const AUDIO_EXT = /\.(wav|wave|aif|aiff|aifc|flac|mp3|ogg|opus|m4a|aac|wma)$/i
 
 export function firstAudioPathFrom(dataTransfer) {
@@ -39,8 +38,12 @@ export function firstAudioPathFrom(dataTransfer) {
   return null
 }
 
+export function slotDisplayName(slot, index) {
+  return slot?.name || (index === 0 ? 'Region sample' : `Slot ${index + 1}`)
+}
+
 function SlotTab({
-  slot, index, selected, audible, busy,
+  slot, index, selected, audible, busy, renameSignal,
   onSelect, onRename, onDropAudio,
 }) {
   const [editing, setEditing] = useState(false)
@@ -49,7 +52,7 @@ function SlotTab({
   const inputRef = useRef(null)
 
   const fallbackName = index === 0 ? 'Region sample' : `Slot ${index + 1}`
-  const name = slot?.name || fallbackName
+  const name = slotDisplayName(slot, index)
 
   useEffect(() => {
     if (editing) {
@@ -63,6 +66,11 @@ function SlotTab({
     setEditing(true)
   }, [slot])
 
+  // "Rename" from the slot menu targets the selected tab.
+  useEffect(() => {
+    if (renameSignal && selected) beginRename()
+  }, [renameSignal])
+
   const finishRename = useCallback((accept) => {
     setEditing(false)
     if (!accept) return
@@ -73,14 +81,14 @@ function SlotTab({
     onRename(index, next)
   }, [draft, index, onRename, slot])
 
+  const path = slot?.audioFilePath || ''
   return (
     <div
-      className={[
-        'slot-tab',
-        selected ? 'is-selected' : '',
-        audible ? '' : 'is-silent',
-        dropping ? 'is-drop-target' : '',
-      ].filter(Boolean).join(' ')}
+      className={styles.slotTab}
+      style={{ '--slot-color': slotColorVar(index) }}
+      data-selected={selected || undefined}
+      data-silent={audible ? undefined : 'true'}
+      data-drop={dropping || undefined}
       onPointerDown={() => { if (!editing) onSelect(index) }}
       onDoubleClick={(e) => { e.preventDefault(); beginRename() }}
       onDragOver={(e) => {
@@ -95,24 +103,29 @@ function SlotTab({
         e.preventDefault()
         e.stopPropagation()
         setDropping(false)
-        const path = firstAudioPathFrom(e.dataTransfer)
-        if (path) onDropAudio(index, path)
+        const p = firstAudioPathFrom(e.dataTransfer)
+        if (p) onDropAudio(index, p)
       }}
       role="tab"
       aria-selected={selected}
+      aria-label={`Slot ${index + 1}: ${name}${audible ? '' : ' (silent)'}`}
       tabIndex={selected ? 0 : -1}
       onKeyDown={(e) => {
         if (e.key === 'F2') { e.preventDefault(); beginRename() }
       }}
-      title={editing ? undefined : `${name}${slot?.audioFilePath ? `\n${slot.audioFilePath}` : ''}\nDouble-click or F2 to rename · drop an audio file to load`}
+      {...hintAttrs({
+        hint: editing ? undefined : `Slot ${index + 1}: ${name}${path ? ` (${path})` : ''}`,
+        hintMods: 'Double-click or F2: rename · Drop an audio file: replace this slot',
+      })}
     >
-      <span className="slot-tab-index">{index + 1}</span>
+      <span className={styles.slotIndex}>{index + 1}</span>
       {editing ? (
         <input
           ref={inputRef}
-          className="slot-tab-rename"
+          className={styles.textInput}
           value={draft}
           placeholder={fallbackName}
+          aria-label={`Slot ${index + 1} name`}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={() => finishRename(true)}
           onKeyDown={(e) => {
@@ -123,9 +136,9 @@ function SlotTab({
           onPointerDown={(e) => e.stopPropagation()}
         />
       ) : (
-        <span className="slot-tab-name">{name}</span>
+        <span className={styles.slotName}>{name}</span>
       )}
-      {!audible && <span className="slot-tab-silent" aria-label="silent" />}
+      {audible ? null : <VolumeX className={styles.slotSilent} size={12} aria-hidden="true" />}
     </div>
   )
 }
@@ -138,6 +151,7 @@ export default function SlotTabs({
   onAddSlotFromPath,
   onDropSlotAudio,
   onRenameSlot,
+  renameSignal = 0,
   busy,
 }) {
   const [stripDropping, setStripDropping] = useState(false)
@@ -147,11 +161,12 @@ export default function SlotTabs({
 
   return (
     <div
-      className={`slot-tabs${stripDropping ? ' is-drop-target' : ''}`}
+      className={styles.slotStrip}
+      data-drop={stripDropping || undefined}
       role="tablist"
       aria-label="Sample slots"
       // A drop on the strip BACKGROUND (not on a tab) adds a new layer rather
-      // than replacing one — the same distinction the "+" button makes.
+      // than replacing one: the same distinction the "+" button makes.
       onDragOver={(e) => {
         if (!dragHasFiles(e) || !canAdd) return
         e.preventDefault()
@@ -163,8 +178,8 @@ export default function SlotTabs({
         if (!dragHasFiles(e) || !canAdd) return
         e.preventDefault()
         setStripDropping(false)
-        const path = firstAudioPathFrom(e.dataTransfer)
-        if (path) onAddSlotFromPath(path)
+        const p = firstAudioPathFrom(e.dataTransfer)
+        if (p) onAddSlotFromPath(p)
       }}
     >
       {slots.map((slot, i) => (
@@ -173,27 +188,28 @@ export default function SlotTabs({
           slot={slot}
           index={i}
           selected={i === selectedSlot}
-          // A slot is audible unless muted, or unless something else is solo'd.
+          // A slot is audible unless muted, or unless something else is soloed.
           audible={anySolo ? !!slot?.solo : !slot?.mute}
           busy={busy}
+          renameSignal={renameSignal}
           onSelect={onSelectSlot}
           onRename={onRenameSlot}
           onDropAudio={onDropSlotAudio}
         />
       ))}
-      <button
-        type="button"
-        className="slot-tab-add"
+      <IconButton
+        size="sm"
+        className={styles.slotAdd}
+        label="Add a sample slot"
         onClick={onAddSlot}
         disabled={!canAdd}
-        title={canAdd
-          ? 'Add a sample layer — or drop an audio file here'
+        hint={canAdd
+          ? 'Add a sample slot (a layer). Or drop an audio file on this strip.'
           : `All ${MAX_SLOTS} slots are in use`}
-        aria-label="Add a sample layer"
       >
-        <Plus size={13} />
-      </button>
-      <span className="slot-tabs-count">{count}/{MAX_SLOTS}</span>
+        <Plus aria-hidden="true" />
+      </IconButton>
+      <span className={styles.slotCount} data-hint="Slots in use">{count}/{MAX_SLOTS}</span>
     </div>
   )
 }

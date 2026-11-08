@@ -38,7 +38,7 @@ function parseEngineModeIds() {
 
 // Pull `{ v: 12, l: 'Even' },` pairs out of the MANGLE_GROUPS literal.
 function parseUiModes() {
-  const src = readUiSource('components/sampler/SamplerPanelContent.jsx')
+  const src = readUiSource('components/sampler/mangleModes.js')
   const body = src.match(/const MANGLE_GROUPS = \[([\s\S]*?)\n\]/)?.[1]
   expect(body, 'MANGLE_GROUPS should be parseable').toBeTruthy()
 
@@ -73,7 +73,7 @@ describe('MANGLE mode catalogue', () => {
   })
 
   it('renders Off as its own option outside the groups', () => {
-    const src = readUiSource('components/sampler/SamplerPanelContent.jsx')
+    const src = readUiSource('components/sampler/mangleModes.js') + readUiSource('components/sampler/LegacyPlaybackView.jsx')
     expect(src).toContain('const MANGLE_OFF = 0')
     expect(engineIds.get('Off')).toBe(0)
     expect(src).toMatch(/<option value=\{MANGLE_OFF\}>\{offLabel\}<\/option>/)
@@ -117,7 +117,7 @@ describe('MANGLE mode catalogue', () => {
   it('marks the FILTER group as the one with a bipolar Amount', () => {
     // A there is a cutoff sweep AROUND a key-tracked base, so its neutral is
     // the midpoint, not the minimum. Everything else treats 0 as off.
-    const src = readUiSource('components/sampler/SamplerPanelContent.jsx')
+    const src = readUiSource('components/sampler/mangleModes.js')
     const fn = src.match(/const mangleAmountIsBipolar = \(v\) =>([^\n]*)/)?.[1]
     expect(fn).toBeTruthy()
     expect(fn).toContain(String(engineIds.get('Lpf')))
@@ -126,7 +126,8 @@ describe('MANGLE mode catalogue', () => {
 })
 
 describe('MANGLE chain panel section', () => {
-  const src = readUiSource('components/sampler/SamplerPanelContent.jsx')
+  const src = ['SamplerPanelContent.jsx', 'LegacyPlaybackView.jsx', 'mangleModes.js']
+    .map((f) => readUiSource(`components/sampler/${f}`)).join('\n')
 
   it('renders a mode dropdown plus AMOUNT and MIX knobs per instance', () => {
     expect(src).toContain('sampler-range-card--mangle')
@@ -191,7 +192,7 @@ describe('MANGLE chain panel section', () => {
     // The card carries the accent only when an instance has a real mode, is not
     // bypassed, and mixes in — exactly makeRuntime's gate — and only if ANY
     // instance in the chain is live.
-    const gate = src.match(/const mangleInstanceActive = \(mi\) =>([\s\S]*?)\n  const mangleOn/)?.[1] ?? ''
+    const gate = src.match(/const mangleInstanceActive = \(mi\) =>([\s\S]*?)\n\n/)?.[1] ?? ''
     expect(gate).toContain('MANGLE_OFF')
     expect(gate).toContain('bypass')
     expect(gate).toContain('mix')
@@ -199,8 +200,11 @@ describe('MANGLE chain panel section', () => {
   })
 
   it('never calls tokenValue() at module scope', () => {
-    const beforeComponent = src.slice(0, src.indexOf('export default function'))
-    expect(beforeComponent).not.toContain('tokenValue(')
+    for (const f of ['SamplerPanelContent.jsx', 'LegacyPlaybackView.jsx', 'mangleModes.js']) {
+      const one = readUiSource(`components/sampler/${f}`)
+      const beforeComponent = one.slice(0, Math.max(0, one.indexOf('export default function')))
+      expect(beforeComponent).not.toContain('tokenValue(')
+    }
   })
 })
 

@@ -113,7 +113,6 @@ export function useModRing(mod: ControlMod | null | undefined, axis: 'x' | 'y') 
     document.addEventListener('keydown', escRef.current, true);
     setDragging(true);
     return true;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [stop, axis]);
 
   const move = useCallback((e: ReactPointerEvent<HTMLElement>): boolean => {
@@ -127,7 +126,6 @@ export function useModRing(mod: ControlMod | null | undefined, axis: 'x' | 'y') 
       modRef.current?.onRingPreview?.(next);
     }
     return true;
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [axis]);
 
   const end = useCallback((): boolean => {

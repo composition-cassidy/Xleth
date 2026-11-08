@@ -1,17 +1,15 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Save, Trash2 } from 'lucide-react'
+import { IconButton, Select } from '../../ui-kit'
 import { listSamplerPatches, deleteSamplerPatch } from './samplerPatch.js'
+import styles from './Sampler.module.css'
 
 // ── PatchBar ────────────────────────────────────────────────────────────────
-// Save / load named sampler patches from the panel's tab bar.
+// Save / load named sampler patches from the panel header. A patch is settings
+// only (tuning, trim, loop, prep, mangle, voicing, arpeggiator, modulation): the
+// loaded audio is kept. Loading is one engine command, so one Ctrl+Z.
 //
-// A native <select> on purpose: the sampler is a floating window, and the panel
-// layer has its own stacking context — a portaled menu here has to be mounted
-// into the panel's own shell to come out above it. The OS renders a native
-// select's popup outside the page entirely, so it has no such problem, and the
-// panel's other dropdowns (PREP algorithm, MANGLE mode) are already native.
-//
-// The value encodes both roots: "user:my-patch" / "factory:tight-one-shot",
+// The option value encodes both roots, "user:my-patch" / "factory:tight-one-shot",
 // because a user patch and a factory one can share a slug.
 
 export default function PatchBar({ onSave, onLoad, disabled }) {
@@ -74,16 +72,22 @@ export default function PatchBar({ onSave, onLoad, disabled }) {
     }
   }, [selected, refresh, flash])
 
-  const hasAny = patches.factory.length > 0 || patches.user.length > 0
+  const options = useMemo(() => [
+    ...patches.user.map((p) => ({ value: `user:${p.slug}`, label: p.name, group: 'Mine' })),
+    ...patches.factory.map((p) => ({ value: `factory:${p.slug}`, label: p.name, group: 'Factory' })),
+  ], [patches])
+  const hasAny = options.length > 0
+  const isUser = selected.startsWith('user:')
 
   return (
-    <div className="sampler-patch-bar">
+    <div className={styles.patch}>
       {naming ? (
         <input
           ref={inputRef}
-          className="sampler-patch-name"
+          className={`${styles.textInput} ${styles.patchName}`}
           value={draft}
           placeholder="Patch name"
+          aria-label="Patch name"
           maxLength={80}
           onChange={(e) => setDraft(e.target.value)}
           onBlur={commitSave}
@@ -94,51 +98,39 @@ export default function PatchBar({ onSave, onLoad, disabled }) {
           }}
         />
       ) : (
-        <>
-          <select
-            className="sampler-select sampler-patch-select"
-            value={selected}
-            disabled={disabled || !hasAny}
-            onChange={(e) => handleSelect(e.target.value)}
-            title={hasAny
-              ? 'Load a saved patch — settings only, your loaded samples are kept'
-              : 'No patches saved yet'}
-          >
-            <option value="">{hasAny ? 'Patch…' : 'No patches'}</option>
-            {patches.user.length > 0 && (
-              <optgroup label="Mine">
-                {patches.user.map((p) => (
-                  <option key={`user:${p.slug}`} value={`user:${p.slug}`}>{p.name}</option>
-                ))}
-              </optgroup>
-            )}
-            {patches.factory.length > 0 && (
-              <optgroup label="Factory">
-                {patches.factory.map((p) => (
-                  <option key={`factory:${p.slug}`} value={`factory:${p.slug}`}>{p.name}</option>
-                ))}
-              </optgroup>
-            )}
-          </select>
-          <button
-            type="button"
-            className="sampler-patch-btn"
-            onClick={() => { setDraft(''); setNaming(true) }}
-            disabled={disabled}
-            title="Save these settings as a named patch — tuning, trim, loop, prep, mangle, voicing, arp and modulation (not the audio)"
-            aria-label="Save patch"
-          ><Save size={12} /></button>
-          <button
-            type="button"
-            className="sampler-patch-btn sampler-patch-btn--danger"
-            onClick={handleDelete}
-            disabled={disabled || !selected.startsWith('user:')}
-            title={selected.startsWith('user:') ? 'Delete this patch' : 'Select one of your own patches to delete it'}
-            aria-label="Delete patch"
-          ><Trash2 size={12} /></button>
-        </>
+        <Select
+          size="sm"
+          className={styles.patchSelect}
+          ariaLabel="Sampler patch"
+          value={selected}
+          options={options}
+          placeholder={hasAny ? 'Patch' : 'No patches'}
+          disabled={disabled || !hasAny}
+          onChange={handleSelect}
+          hint={hasAny
+            ? 'Load a saved patch: settings only, the loaded samples are kept. One Ctrl+Z undoes it.'
+            : 'No patches saved yet'}
+        />
       )}
-      {status && <span className="sampler-patch-status">{status}</span>}
+      <IconButton
+        size="sm"
+        label="Save patch"
+        onClick={() => { setDraft(''); setNaming(true) }}
+        disabled={disabled || naming}
+        hint="Save these settings as a named patch: tuning, trim, loop, prep, mangle, voicing, arpeggiator and modulation (not the audio)"
+      >
+        <Save aria-hidden="true" />
+      </IconButton>
+      <IconButton
+        size="sm"
+        label="Delete patch"
+        onClick={handleDelete}
+        disabled={disabled || !isUser}
+        hint={isUser ? 'Delete this patch file' : 'Select one of your own patches to delete it'}
+      >
+        <Trash2 aria-hidden="true" />
+      </IconButton>
+      {status ? <span className={styles.patchStatus} role="status">{status}</span> : null}
     </div>
   )
 }

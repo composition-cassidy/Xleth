@@ -51,6 +51,6 @@ const NOTE_NAMES = ['C', 'C#', 'D', 'D#', 'E', 'F', 'F#', 'G', 'G#', 'A', 'A#', 
 
 export function noteName(midi) {
   const n = Math.round(Number(midi) || 0)
-  // MIDI 60 is C4 here, matching RootNotePicker and the piano roll's labels.
+  // MIDI 60 is C4 here, matching the piano roll's labels.
   return `${NOTE_NAMES[((n % 12) + 12) % 12]}${Math.floor(n / 12) - 1}`
 }

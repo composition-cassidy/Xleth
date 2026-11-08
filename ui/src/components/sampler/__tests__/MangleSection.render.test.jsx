@@ -129,6 +129,9 @@ async function mount(slots = [makeSlot()]) {
   })
   // Let the async fetchAll() settle into state.
   await act(async () => { await Promise.resolve(); await Promise.resolve() })
+  // The Mangle chain lives in the Playback view.
+  const playbackTab = [...container.querySelectorAll('[role="tab"]')].find((t) => t.textContent.trim() === 'Playback')
+  await act(async () => { playbackTab.click() })
   return container
 }
 

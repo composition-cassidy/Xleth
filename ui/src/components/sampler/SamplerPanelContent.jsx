@@ -1,195 +1,42 @@
-import { useEffect, useLayoutEffect, useState, useCallback, useRef } from 'react'
+import { useEffect, useState, useCallback, useRef } from 'react'
 import { timelineEvents } from '../../timelineEvents.js'
-import RootNotePicker from './RootNotePicker.jsx'
-import SamplerWaveform from './SamplerWaveform.jsx'
+import { Tabs } from '../../ui-kit'
 import SlotTabs, { MAX_SLOTS } from './SlotTabs.jsx'
-import { SlotActions, SlotMinis } from './SlotInspector.jsx'
 import AuditionBar from './AuditionBar.jsx'
 import PatchBar from './PatchBar.jsx'
-import PreviewRoutingControl from './PreviewRoutingControl.jsx'
-import Knob from './Knob.jsx'
+import SamplerMainView from './SamplerMainView.jsx'
+import LegacyPlaybackView from './LegacyPlaybackView.jsx'
 import { noteForCode, clampOctaveShift } from './auditionKeymap.js'
 import { copySlotSettings, buildSlotPaste, hasSlotClipboard } from './slotClipboard.js'
 import {
   buildPatchState, saveSamplerPatch, loadSamplerPatch,
   mergePatchSlots, patchRegionSettings,
 } from './samplerPatch.js'
+import { MANGLE_OFF, MANGLE_MAX } from './mangleModes.js'
 import SamplerModTray from './modulation/SamplerModTray.jsx'
-import { useModTarget } from './modulation/useModTarget.js'
-import { TARGET_SLOT_MANGLE_AMOUNT, TARGET_SLOT_MANGLE_MIX } from './modulation/modTargets.js'
 import useSamplerModulationStore from '../../stores/samplerModulationStore.js'
-import { tokenValue } from '../../theming/tokenValue.ts'
-import { nudgeEventFor, applyRecordFor } from './autoLoopTelemetry.js'
-import { usePanelRegistry } from '../../windowing/registry/PanelRegistry'
-import { PANEL_CATALOG } from '../../windowing/registry/panelCatalog'
-import { MIN_PANEL_HEIGHT } from '../../windowing/managers/ResizeManager'
+import { nudgeEventFor, applyRecordFor, autoLoopSummary } from './autoLoopTelemetry.js'
+import styles from './Sampler.module.css'
 
-const WAVE_WIDTH = 800
-const WAVE_HEIGHT = 158
-
-// Main <-> Playback tab transition timing. The outgoing pane fades/slides out
-// over TAB_ANIM_EXIT_MS while the incoming pane fades/slides in over
-// TAB_ANIM_ENTER_MS (the two overlap — a crossfade, not a hard cut); the
-// floating window's own resize is given a touch longer so it settles just
-// after the content does. Same ease-out-quint the rest of the windowing
-// system's own motion uses (xleth-sample-selector-drawer, xleth-windowing-shell).
-const TAB_ANIM_EXIT_MS = 200
-const TAB_ANIM_ENTER_MS = 240
-const TAB_ANIM_RESIZE_MS = 260
-const TAB_ANIM_EASE = 'cubic-bezier(0.16, 1, 0.3, 1)'
-
-const ARP_DIRS = ['up', 'down', 'updown', 'sticky']
-const ARP_DIR_TITLES = { up: 'Up', down: 'Down', updown: 'Up + Down', sticky: 'Sticky' }
-const ARP_DIR_ICONS = {
-  up:     <path d="M7,11 L7,4 M4,7 L7,4 L10,7" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>,
-  down:   <path d="M7,4 L7,11 M4,8 L7,11 L10,8" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>,
-  updown: <path d="M7,2 L7,13 M4,5 L7,2 L10,5 M4,10 L7,13 L10,10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>,
-  sticky: <path d="M4,3 L7,1 L10,3 M7,1 L7,7 M4,12 L7,14 L10,12 M7,14 L7,8 M5,7.5 L9,7.5" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round"/>,
-}
-
-// PREP algorithms. Values are engine StretchMethod ids — the same five the
-// timeline's clip stretch uses. Ordered by how often they are the right answer,
-// not by id.
-const PREP_ALGOS = [
-  { v: 2, l: 'Rubber Band' },
-  { v: 3, l: 'WSOLA' },
-  { v: 1, l: 'TD-PSOLA' },
-  { v: 5, l: 'WORLD' },
-  { v: 4, l: 'Phase Vocoder' },
-]
-
-// SampleLoopMode: 0 = Forward, 1 = PingPong, 2 = Reverse.
-const LOOP_MODES = [
-  { v: 0, l: 'FWD' },
-  { v: 1, l: 'P-P' },
-  { v: 2, l: 'REV' },
-]
-
-// ── MANGLE ────────────────────────────────────────────────────────────────
-// Per-note, per-slot warp FX. Ids MUST match xleth::mangle::Mode in
-// engine/src/audio/MangleDsp.h — they are persisted in the project file, so
-// the enum is append-only and this list mirrors it 1:1.
+// ── Sampler ─────────────────────────────────────────────────────────────────
+// The per-region sampler every pattern track's notes play through. One 28px
+// header (slot tabs | patch | views), one body, one audition bar. The views
+// share one height, so switching never resizes the panel and nothing animates.
 //
-// Mode 0 (Off) is the bypass and lives outside the groups so it is always the
-// first option, whatever the group order.
-const MANGLE_OFF = 0
-// Chain cap — MUST match xleth::mangle::kMaxInstances in engine/src/audio/MangleDsp.h.
-const MANGLE_MAX = 4
-const MANGLE_GROUPS = [
-  {
-    label: 'Alt',
-    modes: [
-      { v: 1,  l: 'Sync' },
-      { v: 2,  l: 'Bend +' },
-      { v: 3,  l: 'Bend −' },
-      { v: 4,  l: 'Bend +/−' },
-      { v: 5,  l: 'PWM' },
-      { v: 6,  l: 'Asym +' },
-      { v: 7,  l: 'Asym −' },
-      { v: 8,  l: 'Asym +/−' },
-      { v: 9,  l: 'Flip' },
-      { v: 10, l: 'Mirror' },
-      { v: 11, l: 'Quantize' },
-      { v: 12, l: 'Even' },
-      { v: 13, l: 'Odd' },
-    ],
-  },
-  {
-    label: 'Filter',
-    modes: [
-      { v: 14, l: 'LPF' },
-      { v: 15, l: 'HPF' },
-      { v: 16, l: 'BPF' },
-      { v: 17, l: 'Notch' },
-    ],
-  },
-  {
-    label: 'Distortion',
-    modes: [
-      { v: 18, l: 'Tube' },
-      { v: 19, l: 'Soft Clip' },
-      { v: 20, l: 'Hard Clip' },
-      { v: 21, l: 'Diode 1' },
-      { v: 22, l: 'Diode 2' },
-      { v: 23, l: 'Linear Fold' },
-      { v: 24, l: 'Sine Fold' },
-      { v: 25, l: 'Zero-Square' },
-      { v: 26, l: 'Asym' },
-      { v: 27, l: 'Rectify' },
-      { v: 28, l: 'Sine Shaper' },
-      { v: 29, l: 'Stomp Box' },
-      { v: 30, l: 'Tape Sat.' },
-      { v: 31, l: 'Soft Sat.' },
-    ],
-  },
-  {
-    label: 'Modulation',
-    modes: [
-      { v: 32, l: 'FM' },
-      { v: 33, l: 'PD' },
-      { v: 34, l: 'AM' },
-      { v: 35, l: 'RM' },
-    ],
-  },
+// Data flow (unchanged): `slots` mirrors the engine's slot list; `settings` holds
+// the SELECTED slot's per-sample fields plus the region-level fields. Every drag
+// previews locally and commits once on release through updateSamplerSettings
+// (one SetSamplerSettingsCommand, one Ctrl+Z).
+
+const VIEW_TABS = [
+  { id: 'main', label: 'Main', hint: 'Waveform, trim, loop, amp envelope, pitch, prep and process for the selected slot' },
+  { id: 'playback', label: 'Playback', hint: 'Voicing, glide, arpeggiator and per-note effects' },
 ]
 
-// One-line hints, keyed by mode id. The ALT and MODULATION groups in
-// particular are not self-describing from their names alone.
-const MANGLE_HINTS = {
-  1: 'Oscillator hard sync — the read head snaps back once per note cycle',
-  2: 'Read phase bent toward the start of the sample',
-  3: 'Read phase bent toward the end of the sample',
-  4: 'Read phase bent outward from the midpoint',
-  5: 'Read head advances then stalls each cycle — hollow, square-like',
-  6: 'Each note period skewed fast-then-slow',
-  7: 'Each note period skewed slow-then-fast',
-  8: 'Skew direction alternates every cycle',
-  9: 'Read direction reverses partway through each cycle',
-  10: 'Read head ping-pongs inside a local window',
-  11: 'Bit-depth reduction, 16 bits down to 1',
-  12: 'Comb against a half-period-delayed copy — even harmonics',
-  13: 'Comb against an inverted half-period copy — odd harmonics',
-  14: 'Low pass, cutoff key-tracked and swept by Amount',
-  15: 'High pass, cutoff key-tracked and swept by Amount',
-  16: 'Band pass, centre key-tracked and swept by Amount',
-  17: 'Notch, centre key-tracked and swept by Amount',
-  27: 'Amount blends half-wave to full-wave rectification',
-  32: 'Sine at the note frequency modulates read speed — vibrato to growl',
-  33: 'Casio-style per-cycle phase kink',
-  34: 'Unipolar tremolo at audio rate',
-  35: 'Bipolar ring modulation at the note frequency',
-}
-
-// Modes that bend the READ HEAD rather than shape the sample — mirrors
-// xleth::mangle::isPositionMode. The engine resolves every warp in a chain
-// before any shaper (a bent head re-reads the source buffer, so it cannot take
-// a shaped sample as its input), which the chain hint below has to reflect
-// rather than promise a left-to-right flow the audio does not follow.
-const MANGLE_WARP_MODES = new Set([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 32, 33])
-
-const mangleModeLabel = (v) => {
-  if (!v) return 'Off'
-  for (const g of MANGLE_GROUPS) {
-    const hit = g.modes.find((m) => m.v === v)
-    if (hit) return hit.l
-  }
-  return 'Off'
-}
-
-// The FILTER group sweeps cutoff AROUND a key-tracked base, so its Amount
-// midpoint (not its minimum) is the neutral setting. Every other group treats
-// Amount 0 as "off", which is worth telling the user rather than making them
-// discover it by ear.
-const mangleAmountIsBipolar = (v) => v >= 14 && v <= 17
-
-// PREP is bypassed at unity stretch and zero shift — mirrors the engine's
+// PREP is bypassed at unity stretch and zero shift: mirrors the engine's
 // SampleSlot::prepIsBypassed(), which is what decides whether a bake runs.
 const prepIsBypassed = (s) =>
   Math.abs((s.prepStretch ?? 1) - 1) < 1e-6 && Math.abs(s.prepShiftCents ?? 0) < 1e-6
-
-const TDIVS = ['1/1', '1/2', '1/4', '1/8', '1/16', '1/32', '1/64']
-const TDIV_VALUES = { '1/1': 1, '1/2': 2, '1/4': 4, '1/8': 8, '1/16': 16, '1/32': 32, '1/64': 64 }
-const TDIV_LABELS = { 1: '1/1', 2: '1/2', 4: '1/4', 8: '1/8', 16: '1/16', 32: '1/32', 64: '1/64' }
 
 // Voice count is clamped to the engine's [1, 32] polyphony window.
 const clampVoiceCount = (v) => {
@@ -198,8 +45,8 @@ const clampVoiceCount = (v) => {
   return Math.max(1, Math.min(32, n))
 }
 
-// The amp/pitch envelopes and three drawable LFOs are gone — ENV 1 is the amp
-// envelope and every other envelope/LFO is a modulation source in the tray.
+// The amp/pitch envelopes and three drawable LFOs are gone: ENV 1 is the amp
+// envelope and every other envelope/LFO is a modulation source.
 const emptySettings = {
   rootNote: 60,
   loopEnabled: false, loopStart: 0, loopEnd: 0,
@@ -217,252 +64,17 @@ const emptySettings = {
   arpFreeTimeMs: 125, arpGate: 0.8, arpRange: 1, arpDirection: 0,
 }
 
-// ── Layout primitives styled per mock ─────────────────────────────────────
-const SAMPLER_KNOB_APPEARANCE = {
-  tickStyle: 'none',
-  glyph: 'rotary-arrow',
-  accentGlow: false,
-}
-
-// `modTarget` is the OPT-IN modulation registration. Every sampler knob routes
-// through here, but only the ones that pass a registration become drop targets;
-// the rest get `mod = null` and are the plain Knob they have always been.
-function SamplerKnob({ modTarget, ...props }) {
-  const mod = useModTarget(modTarget, { value: props.value, min: props.min, max: props.max })
-  return <Knob {...SAMPLER_KNOB_APPEARANCE} {...props} mod={mod} />
-}
-
-function Tabs({ tabs, active, onSelect, sm }) {
-  return (
-    <div className={`sampler-tabs${sm ? ' sampler-tabs--sm' : ''}`}>
-      {tabs.map((t) => (
-        <button
-          type="button"
-          key={t.id}
-          onClick={() => onSelect(t.id)}
-          className={`sampler-tab${active === t.id ? ' is-active' : ''}`}
-        >
-          {t.label}
-        </button>
-      ))}
-    </div>
-  )
-}
-
-function Seg({ opts, val, set, sm }) {
-  return (
-    <div className={`sampler-seg${sm ? ' sampler-seg--sm' : ''}`}>
-      {opts.map((o) => (
-        <button
-          type="button"
-          key={o.v}
-          onClick={() => set(o.v)}
-          className={`sampler-seg-option${val === o.v ? ' is-active' : ''}`}
-        >
-          {o.l}
-        </button>
-      ))}
-    </div>
-  )
-}
-
-function Chk({ val, set, label }) {
-  return (
-    <label className="sampler-check">
-      <input
-        type="checkbox"
-        checked={!!val}
-        onChange={(e) => set(e.target.checked)}
-      />
-      <span>{label}</span>
-    </label>
-  )
-}
-
-function Sel({ val, set, opts }) {
-  return (
-    <select
-      value={val}
-      onChange={(e) => set(e.target.value)}
-      className="sampler-select"
-    >
-      {opts.map((o) => <option key={o} value={o}>{o}</option>)}
-    </select>
-  )
-}
-
-// Select over {v, l} pairs (Sel above is string-only, and PREP's options carry
-// numeric engine ids that must survive the round trip).
-function SelKV({ val, set, opts }) {
-  return (
-    <select
-      value={String(val)}
-      onChange={(e) => set(Number(e.target.value))}
-      className="sampler-select"
-    >
-      {opts.map((o) => <option key={o.v} value={o.v}>{o.l}</option>)}
-    </select>
-  )
-}
-
-// Select over grouped {label, modes:[{v,l}]} — MANGLE's four families are what
-// make a 36-entry list navigable, so the grouping is structural, not decor.
-function SelGrouped({ val, set, groups, offLabel, className }) {
-  return (
-    <select
-      value={String(val)}
-      onChange={(e) => set(Number(e.target.value))}
-      className={className || 'sampler-select'}
-    >
-      <option value={MANGLE_OFF}>{offLabel}</option>
-      {groups.map((g) => (
-        <optgroup key={g.label} label={g.label}>
-          {g.modes.map((o) => <option key={o.v} value={o.v}>{o.l}</option>)}
-        </optgroup>
-      ))}
-    </select>
-  )
-}
-
-function SectionLabel({ children }) {
-  return (
-    <div className="sampler-section-label">{children}</div>
-  )
-}
-
-function formatDuration(seconds) {
-  if (!Number.isFinite(seconds) || seconds < 0) return '0:00.000'
-  const minutes = Math.floor(seconds / 60)
-  return `${minutes}:${(seconds - minutes * 60).toFixed(3).padStart(6, '0')}`
-}
-
-function ProcessButton({ label, active, onClick, children }) {
-  return (
-    <button type="button" className={`sampler-process-button${active ? ' is-active' : ''}`} onClick={onClick}>
-      {children}
-      <span>{label}</span>
-    </button>
-  )
-}
-
-// ── Main ──────────────────────────────────────────────────────────────────
 export default function SamplerPanelContent({ regionId, onClose }) {
   const [tab, setTab] = useState('main')
-  const [region, setRegion] = useState(null)
+  const [, setRegion] = useState(null)
   const [audioInfo, setAudioInfo] = useState(null)
-  // Project tempo — the modulation rack needs it to display BPM-synced times.
+  // Project tempo: the modulation editors show BPM-synced times with it.
   const [bpm, setBpm] = useState(140)
   const [settings, setSettings] = useState(emptySettings)
   const settingsRef = useRef(settings)
   settingsRef.current = settings
-
-  // ── Tab switch: exit, then swap+resize, then enter ───────────────────────
-  // Strictly sequential — the outgoing pane finishes leaving before the
-  // incoming one is even mounted, so they never overlap or cross paths, and
-  // the panel stays at its CURRENT size for the whole exit (a tab is only
-  // ever shown at its own full size, never squeezed by the other tab's
-  // window). `tab` itself only flips once the exit has finished, which is
-  // also the moment the auto-shrink effect below fires and the entrance
-  // animation starts — so the resize and the entrance play together, right
-  // after the old content is gone. Reversed pairs: leaving MAIN moves down +
-  // fades (entering MAIN is its mirror, up + fade-in); leaving PLAYBACK
-  // slides out left + fades (entering PLAYBACK is its mirror, in from the
-  // left) — so Playback -> Main plays as the exact reverse of Main -> Playback.
-  const [tabAnimPhase, setTabAnimPhase] = useState('idle') // 'idle' | 'exiting' | 'entering'
-  const pendingTabRef = useRef(null)
-  const exitTimerRef = useRef(null)
-  const enterTimerRef = useRef(null)
-
-  useEffect(() => () => {
-    clearTimeout(exitTimerRef.current)
-    clearTimeout(enterTimerRef.current)
-  }, [])
-
-  const handleSelectTab = (nextTab) => {
-    if (pendingTabRef.current === nextTab) return
-    if (nextTab === tab) {
-      if (tabAnimPhase === 'idle') return
-      // Clicked back to the tab still on screen — abort the outgoing switch.
-      clearTimeout(exitTimerRef.current)
-      clearTimeout(enterTimerRef.current)
-      pendingTabRef.current = null
-      setTabAnimPhase('idle')
-      return
-    }
-    pendingTabRef.current = nextTab
-    setTabAnimPhase('exiting')
-    clearTimeout(exitTimerRef.current)
-    exitTimerRef.current = setTimeout(() => {
-      setTab(nextTab)
-      pendingTabRef.current = null
-      setTabAnimPhase('entering')
-      clearTimeout(enterTimerRef.current)
-      enterTimerRef.current = setTimeout(() => setTabAnimPhase('idle'), TAB_ANIM_ENTER_MS)
-    }, TAB_ANIM_EXIT_MS)
-  }
-
-  // ── Size the window to the active tab ────────────────────────────────────
-  // MAIN is the tall tab (slots + waveform + prep/process/trim/loop/mangle,
-  // which scrolls); PLAYBACK is short and fits its content exactly, so a
-  // window sized for main leaves a wall of empty space under it. Each tab
-  // therefore has ONE height, derived rather than remembered:
-  //   main     -> the catalog's default height, the panel's full size
-  //   playback -> chrome + the measured content, clamped to that same ceiling
-  //
-  // Derived, not remembered, because the sampler is `resizable: false` — there
-  // is no user-chosen size to preserve — and because panel layout is persisted:
-  // a remembered "restore to" height lives in a ref that dies with the panel, so
-  // quitting while on playback used to bake the short height in and leave MAIN
-  // permanently squashed. Recomputing from the catalog every time is self-healing.
-  //
-  // useLayoutEffect, NOT useEffect + requestAnimationFrame: it runs after the DOM
-  // commit (so scrollHeight is already valid, no rAF needed) and, critically, it
-  // survives StrictMode. The old rAF version never ran at all — StrictMode's
-  // setup/cleanup/setup double-invoke cancelled the frame in the cleanup, and the
-  // second setup early-returned on a `prevTabRef` it had already advanced. There
-  // is no prevTab guard here at all: the body is idempotent, and
-  // resizeFloatingPanel already no-ops when the geometry is unchanged.
-  const scrollRef = useRef(null)
-  const panelContentRef = useRef(null)
-  const resizeAnimTimerRef = useRef(null)
-
-  useLayoutEffect(() => {
-    const registry = usePanelRegistry.getState()
-    const panel = registry.panels.sampler
-    const contentEl = panelContentRef.current
-    const scrollEl = scrollRef.current
-    if (!panel || panel.mode !== 'floating' || !contentEl || !scrollEl) return
-
-    const frameEl = scrollEl.closest('.xleth-panel-frame[data-panel-id="sampler"]')
-    if (!frameEl) return
-
-    const fullHeight = PANEL_CATALOG.sampler.defaultFloating.height
-    let target = fullHeight
-    if (tab === 'playback') {
-      // Chrome (titlebar + tabbar) is height-independent, so this stays correct
-      // whatever size the window happens to be mid-transition.
-      const chromeHeight = frameEl.clientHeight - scrollEl.clientHeight
-      target = Math.min(fullHeight, Math.max(
-        MIN_PANEL_HEIGHT,
-        Math.round(chromeHeight + contentEl.scrollHeight),
-      ))
-    }
-    if (target === panel.floating.height) return
-
-    // The transition is set on the DOM node directly rather than through React
-    // style props so it stays out of PanelFrame's render path and can't leak
-    // into an interactive drag. Flush it to the browser BEFORE changing the
-    // height — both land in one style recalc otherwise, and the transition can
-    // be dropped because the before-change style had none.
-    frameEl.style.transition = `height ${TAB_ANIM_RESIZE_MS}ms ${TAB_ANIM_EASE}`
-    void frameEl.offsetHeight
-    clearTimeout(resizeAnimTimerRef.current)
-    resizeAnimTimerRef.current = setTimeout(() => { frameEl.style.transition = '' }, TAB_ANIM_RESIZE_MS + 30)
-
-    registry.resizeFloatingPanel('sampler', panel.floating.x, panel.floating.y, panel.floating.width, target)
-  }, [tab])
-
-  useEffect(() => () => clearTimeout(resizeAnimTimerRef.current), [])
+  // Bumped by the slot menu's "Rename"; the selected tab opens its name field.
+  const [renameSignal, setRenameSignal] = useState(0)
 
   // ── Sample slots ──────────────────────────────────────────────────────────
   // `slots` mirrors the engine's slot list. Mini-control drags mutate it
@@ -1104,6 +716,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
   }, [commit, setFields])
 
   const [autoBusy, setAutoBusy] = useState(false)
+  const [autoResult, setAutoResult] = useState(null)
 
   // AUTO loop: snap a period-aligned, formant-stable loop inside the current
   // trim selection (whole sample if untrimmed). The engine writes the loop
@@ -1125,8 +738,10 @@ export default function SamplerPanelContent({ regionId, onClose }) {
         regionId, selStart, selEnd, selectedSlotRef.current)
       if (!res || !res.valid) {
         console.warn('[AUTO] no loop found:', res?.reason || 'unavailable')
+        setAutoResult({ ok: false, text: `no loop found (${res?.reason || 'unavailable'})` })
         return
       }
+      setAutoResult({ ok: true, text: autoLoopSummary(res) })
       // The engine already wrote + rebuilt the samplers; mirror into local state.
       setFields({
         loopEnabled: true, crossfadeEnabled: true,
@@ -1161,725 +776,109 @@ export default function SamplerPanelContent({ regionId, onClose }) {
 
   const numSamples = audioInfo?.numSamples || 0
   const sampleRate = audioInfo?.originalSampleRate || 48000
-  // Flat parity: generic (non-modulation) knobs follow the app's flat teal
-  // accent, matching the rest of the flat chrome. Per-modulation env/LFO knobs
-  // keep their distinct color-coding via envColor below.
-  const accentPanel = tokenValue('--xleth-flat-accent') || tokenValue('--theme-panel-mixer')
-  const muted = 'var(--theme-text-muted)'
-  const text = 'var(--theme-text)'
-  const card = 'var(--theme-bg-elevated)'
-  const border = 'var(--theme-border-subtle)'
-  const lblStyle = { fontSize: 9, color: muted, textTransform: 'uppercase', letterSpacing: '0.06em' }
-  const sourceName = (audioInfo?.audioFilePath || '').split(/[\\/]/).pop() || ''
+  const sourcePath = audioInfo?.audioFilePath || ''
+  const sourceName = sourcePath.split(/[\\/]/).pop() || ''
   const sourceDuration = audioInfo?.duration ?? (sampleRate > 0 ? numSamples / sampleRate : 0)
-
   const prepBypassed = prepIsBypassed(settings)
-  // The chain as edited, always ≥1 row: an empty committed chain shows one
-  // virtual Off instance that materialises the moment it is given a mode.
-  const mangleChain = (Array.isArray(settings.mangleChain) && settings.mangleChain.length)
-    ? settings.mangleChain
-    : [{ mode: MANGLE_OFF, amount: 0, mix: 1, bypass: false }]
-  // An instance runs only when it has a real mode, is not bypassed, and mixes
-  // in — the same gate MangleDsp.h makeRuntime applies. The card carries the
-  // accent when ANY instance in the chain is live.
-  const mangleInstanceActive = (mi) =>
-    (mi?.mode ?? 0) !== MANGLE_OFF && !mi?.bypass && (mi?.mix ?? 1) > 0
-  const mangleOn = mangleChain.some(mangleInstanceActive)
-
-  // The slot the editor is bound to. The panel's live per-slot edits live in
-  // `settings`, so the inspector reads the fetched slot for tuning/level and
-  // `settings` for everything the waveform editor touches.
-  const selectedSlotData = slots[selectedSlot] || {}
-  // `clipboardTick` is not read — it is the dependency that re-evaluates this
+  // `clipboardTick` is not read: it is the dependency that re-evaluates this
   // after a copy, because the clipboard itself is module state.
   const canPaste = hasSlotClipboard() || clipboardTick < 0
 
-  // ── Sample-index knob feel ────────────────────────────────────────────────
-  // SMP Start / Length / Loop Start / Loop End are indices into a buffer that
-  // is routinely hundreds of thousands of samples long, and Knob's default
-  // 180px of travel covers the WHOLE min→max sweep — so a pixel was worth
-  // ~1300 samples and placing a loop point by drag was not possible.
-  //
-  // The range stays absolute (so the readout means what it says and type-in is
-  // not silently clamped by the zoom); what scales is the TRAVEL. Stretching
-  // dragRange by numSamples/viewLen makes 180px of drag move exactly one
-  // visible window, so zooming in buys drag precision at the same rate it buys
-  // visual precision, and the knob and the waveform agree about what "fine"
-  // means.
+  // Sample-index knob travel: 180 px of drag moves exactly one visible window of
+  // the waveform, so zooming in buys drag precision at the same rate it buys
+  // visual precision.
   const waveViewLen = waveView.len > 0 ? waveView.len : numSamples
   const sampleDragRange = (numSamples > 0 && waveViewLen > 0)
     ? Math.round(180 * (numSamples / waveViewLen))
     : 180
 
-  const zoomLabel = (() => {
-    if (numSamples <= 0) return ''
-    if (waveViewLen >= numSamples) return 'full'
-    const secs = waveViewLen / (sampleRate || 48000)
-    return secs >= 1 ? `${secs.toFixed(2)}s` : `${Math.round(secs * 1000)}ms`
-  })()
-
-  const renderSample = () => (
-    <div className="sampler-page sampler-page--sample">
-      {/* Slots as a TAB STRIP, not a table. See SlotTabs.jsx for why: eight
-          rows of six live minis was ~490px of a 545px content area, which is
-          what pushed the waveform and everything under it below the fold in a
-          panel that is deliberately fixed-size. */}
-      <SlotTabs
-        slots={slots}
-        selectedSlot={selectedSlot}
-        onSelectSlot={setSelectedSlot}
-        onAddSlot={() => addSlot()}
-        onAddSlotFromPath={(path) => addSlot(path)}
-        onDropSlotAudio={(i, path) => swapSlot(i, path)}
-        onRenameSlot={renameSlot}
-        busy={slotBusy}
-      />
-
-      <SlotActions
-        slot={selectedSlotData}
-        slotIndex={selectedSlot}
-        slotCount={slots.length}
-        maxSlots={MAX_SLOTS}
-        busy={slotBusy}
-        canPaste={canPaste}
-        onToggleMute={() => toggleSlotFlag(selectedSlot, 'mute')}
-        onToggleSolo={() => toggleSlotFlag(selectedSlot, 'solo')}
-        onSwap={() => swapSlot(selectedSlot)}
-        onDuplicate={() => duplicateSlot(selectedSlot)}
-        onCopySettings={copySlot}
-        onPasteSettings={pasteSlot}
-        onRemove={() => removeSlot(selectedSlot)}
-      />
-
-      {/* Waveform left, PREP + PROCESS + the selected slot's minis stacked in a
-          column beside it — the mockup's arrangement. They used to be three
-          full-width cards stacked UNDER the waveform, which is most of why the
-          main tab did not fit its own window. */}
-      <div className="sampler-work-row">
-        <section className="sampler-waveform-block">
-          <div className="sampler-waveform-meta">
-            <span className="sampler-waveform-name" title={sourceName}>{sourceName}</span>
-            <span>{(sampleRate / 1000).toFixed(sampleRate % 1000 === 0 ? 0 : 1)}kHz &middot; {formatDuration(sourceDuration)}</span>
-            <span className="sampler-waveform-tools">
-              <button
-                type="button"
-                className={`sampler-wave-tool${snapZero ? ' is-active' : ''}`}
-                onClick={() => setSnapZero((v) => !v)}
-                title={snapZero
-                  ? 'Trim and loop handles snap to the nearest zero crossing on release (hold Alt while dragging to place one exactly)'
-                  : 'Zero-crossing snap is off — loop ends may click'}
-                aria-pressed={snapZero}
-              >SNAP</button>
-              <button
-                type="button"
-                className="sampler-wave-tool"
-                onClick={() => waveView.api?.zoomToSelection?.()}
-                disabled={numSamples === 0}
-                title="Zoom to the trim selection"
-              >SEL</button>
-              <button
-                type="button"
-                className="sampler-wave-tool"
-                onClick={() => waveView.api?.zoomToFit?.()}
-                disabled={!waveView.api?.zoomed}
-                title="Zoom out to the whole sample (or double-click the waveform)"
-              >FIT</button>
-              <span className="sampler-wave-zoom" title="Visible span of the sample">
-                {zoomLabel}
-              </span>
-            </span>
-          </div>
-          <div className="sampler-waveform-well">
-            <SamplerWaveform
-              regionId={regionId}
-              slotIndex={selectedSlot}
-              numSamples={numSamples}
-              loopEnabled={settings.loopEnabled}
-              loopStart={settings.loopStart}
-              loopEnd={settings.loopEnd || numSamples}
-              onCommitLoopPoints={commitLoopPoints}
-              smpStart={settings.smpStart}
-              smpLength={settings.smpLength}
-              declickMs={settings.declickMs}
-              fadeInMs={settings.fadeInMs}
-              fadeOutMs={settings.fadeOutMs}
-              crossfadeSamples={settings.crossfadeSamples}
-              sampleRate={sampleRate}
-              onCommitSmpPoints={commitSmpPoints}
-              width={WAVE_WIDTH}
-              height={WAVE_HEIGHT}
-              responsive
-              snapZero={snapZero}
-              onViewChange={onWaveViewChange}
-              playPosition={playPosition}
-            />
-          </div>
-        </section>
-
-        <aside className="sampler-work-side">
-          {/* Tuning + level for the SELECTED layer only. */}
-          <SlotMinis
-            slot={selectedSlotData}
-            slotIndex={selectedSlot}
-            onPreviewField={previewSlotField}
-            onCommitField={commitSlotField}
-            disabled={slotBusy}
-          />
-
-          {/* PREP sits between the raw file and everything below it: the bake it
-              produces is the buffer trim, loop, fades and the waveform all work
-              against. */}
-          <section className={`sampler-range-card sampler-range-card--prep${prepBypassed ? ' is-bypassed' : ''}`}>
-            <header>
-              <i /><span>Prep</span>
-              {prepBusy && <span className="sampler-prep-busy">baking&hellip;</span>}
-              <button
-                type="button"
-                onClick={() => commitPrep({ prepStretch: 1, prepShiftCents: 0 })}
-                disabled={prepBypassed}
-                title="Return to unity stretch and zero shift — the slot plays its raw sample with no bake"
-              >
-                Reset
-              </button>
-            </header>
-            <div className="sampler-prep-body">
-              <label className="sampler-prep-algo">
-                <span>Algorithm</span>
-                <SelKV
-                  val={settings.prepAlgorithm}
-                  set={(v) => commitPrep({ prepAlgorithm: v })}
-                  opts={PREP_ALGOS}
-                />
-              </label>
-              <SamplerKnob
-                label="Stretch"
-                value={settings.prepStretch * 100}
-                min={25} max={400} defaultValue={100}
-                size={38}
-                color={accentPanel}
-                formatValue={(v) => `${Math.round(v)}%`}
-                onLiveChange={(v) => setField('prepStretch', Math.round(v) / 100)}
-                onCommit={(v) => commitPrep({ prepStretch: Math.round(v) / 100 })}
-              />
-              <SamplerKnob
-                label="Shift"
-                value={settings.prepShiftCents}
-                min={-2400} max={2400} defaultValue={0}
-                size={38}
-                color={accentPanel}
-                formatValue={(v) => `${v > 0 ? '+' : ''}${Math.round(v)}c`}
-                onLiveChange={(v) => setField('prepShiftCents', Math.round(v))}
-                onCommit={(v) => commitPrep({ prepShiftCents: Math.round(v) })}
-              />
-            </div>
-          </section>
-
-          {/* PROCESS applies destructively to the baked buffer. */}
-          <section className="sampler-card sampler-process-card">
-            <SectionLabel>Process (applies immediately)</SectionLabel>
-            <div className="sampler-process-row">
-              <ProcessButton label="Remove DC Offset" active={!!settings.dcOffsetRemoved} onClick={() => commitField('dcOffsetRemoved', !settings.dcOffsetRemoved)}><span aria-hidden>-</span></ProcessButton>
-              <ProcessButton label="Normalize" active={!!settings.normalized} onClick={() => commitField('normalized', !settings.normalized)}><span aria-hidden>~</span></ProcessButton>
-              <ProcessButton label="Reverse Polarity" active={!!settings.polarityReversed} onClick={() => commitField('polarityReversed', !settings.polarityReversed)}><span aria-hidden>+/-</span></ProcessButton>
-              <ProcessButton label="Reverse" active={!!settings.reversed} onClick={() => commitField('reversed', !settings.reversed)}><span aria-hidden>&lt;&gt;</span></ProcessButton>
-            </div>
-          </section>
-        </aside>
-      </div>
-
-      <div className="sampler-identity-row">
-        <section className="sampler-card sampler-mode-card">
-          <SectionLabel>Mode</SectionLabel>
-          <Seg
-            opts={[{ v: false, l: 'One-shot' }, { v: true, l: 'Sustained' }]}
-            val={!!settings.crossfadeEnabled}
-            set={(value) => commitField('crossfadeEnabled', value)}
-          />
-        </section>
-
-        <section className="sampler-range-card sampler-range-card--trim">
-          <header><i /><span>Trim</span></header>
-          <div className="sampler-range-knobs sampler-range-knobs--trim">
-            <SamplerKnob
-              label="SMP Start"
-              value={settings.smpStart}
-              min={0}
-              max={Math.max(0, numSamples - 1)}
-              defaultValue={0}
-              size={42}
-              dragRange={sampleDragRange}
-              color={accentPanel}
-              onLiveChange={(v) => setField('smpStart', Math.round(v))}
-              onCommit={(v) => commit({ smpStart: Math.round(v) })}
-            />
-            <SamplerKnob
-              label="Length"
-              value={settings.smpLength === 0 ? numSamples : settings.smpLength}
-              min={0}
-              max={numSamples}
-              defaultValue={numSamples}
-              size={42}
-              dragRange={sampleDragRange}
-              color={accentPanel}
-              formatValue={(v) => {
-                const r = Math.round(v)
-                return (numSamples === 0 || r >= numSamples) ? 'FULL' : String(r)
-              }}
-              onLiveChange={(v) => {
-                const len = Math.round(v)
-                setField('smpLength', len >= numSamples ? 0 : len)
-              }}
-              onCommit={(v) => {
-                const len = Math.round(v)
-                commit({ smpLength: len >= numSamples ? 0 : len })
-              }}
-            />
-            <SamplerKnob
-              label="In"
-              value={settings.fadeInMs}
-              min={0} max={5000} defaultValue={0}
-              size={42}
-              color={accentPanel}
-              formatValue={(v) => `${Math.round(v)}ms`}
-              onLiveChange={(v) => setField('fadeInMs', Math.round(v))}
-              onCommit={(v) => commit({ fadeInMs: Math.round(v) })}
-            />
-            <SamplerKnob
-              label="Out"
-              value={settings.fadeOutMs}
-              min={0} max={5000} defaultValue={0}
-              size={42}
-              color={accentPanel}
-              formatValue={(v) => `${Math.round(v)}ms`}
-              onLiveChange={(v) => setField('fadeOutMs', Math.round(v))}
-              onCommit={(v) => commit({ fadeOutMs: Math.round(v) })}
-            />
-            <SamplerKnob
-              label="Declick"
-              value={settings.declickMs}
-              min={0} max={10} step={0.1} defaultValue={1.5}
-              size={42}
-              color={accentPanel}
-              formatValue={(v) => `${v.toFixed(1)}ms`}
-              onLiveChange={(v) => setField('declickMs', Math.round(v * 10) / 10)}
-              onCommit={(v) => commit({ declickMs: Math.round(v * 10) / 10 })}
-            />
-          </div>
-        </section>
-
-        <section className={`sampler-range-card sampler-range-card--loop${settings.loopEnabled ? '' : ' is-disabled'}`}>
-          <header>
-            <i /><span>Loop</span>
-            <button
-              type="button"
-              className="sampler-auto-loop"
-              onClick={runAutoLoop}
-              disabled={autoBusy || numSamples === 0}
-              title="Auto-loop: snap a period-aligned, formant-stable loop inside the trim selection (whole sample if untrimmed)"
-            >
-              {autoBusy ? '…' : 'AUTO'}
-            </button>
-            <button type="button" className={settings.loopEnabled ? 'is-active' : ''} onClick={() => commitField('loopEnabled', !settings.loopEnabled)}>
-              {settings.loopEnabled ? 'On' : 'Off'}
-            </button>
-          </header>
-          <div className="sampler-range-knobs sampler-range-knobs--loop">
-            <SamplerKnob
-              label="XFade"
-              value={settings.crossfadeSamples}
-              min={0} max={5000} defaultValue={0}
-              size={36}
-              color="var(--sampler-loop)"
-              formatValue={(v) => `${Math.round(v)}`}
-              onLiveChange={(v) => setField('crossfadeSamples', Math.round(v))}
-              onCommit={(v) => commit({ crossfadeSamples: Math.round(v) })}
-            />
-            <SamplerKnob
-              label="Loop Start"
-              value={settings.loopStart}
-              min={0}
-              max={Math.max(0, numSamples - 1)}
-              defaultValue={0}
-              size={36}
-              dragRange={sampleDragRange}
-              color="var(--sampler-loop)"
-              onLiveChange={(v) => setField('loopStart', Math.round(v))}
-              onCommit={(v) => commit({ loopStart: Math.round(v) })}
-            />
-            <SamplerKnob
-              label="Loop End"
-              value={settings.loopEnd === 0 ? numSamples : settings.loopEnd}
-              min={0}
-              max={numSamples}
-              defaultValue={numSamples}
-              size={36}
-              dragRange={sampleDragRange}
-              color="var(--sampler-loop)"
-              formatValue={(v) => {
-                const r = Math.round(v)
-                return (numSamples === 0 || r >= numSamples) ? 'END' : String(r)
-              }}
-              onLiveChange={(v) => {
-                const end = Math.round(v)
-                setField('loopEnd', end >= numSamples ? 0 : end)
-              }}
-              onCommit={(v) => {
-                const end = Math.round(v)
-                commit({ loopEnd: end >= numSamples ? 0 : end })
-              }}
-            />
-          </div>
-          <div className="sampler-loop-mode-row">
-            <Seg
-              sm
-              opts={LOOP_MODES}
-              val={settings.loopMode ?? 0}
-              set={(v) => commitField('loopMode', v)}
-            />
-            <Chk
-              val={settings.exitLoopOnRelease}
-              set={(v) => commitField('exitLoopOnRelease', v)}
-              label="Exit on release"
-            />
-          </div>
-        </section>
-      </div>
-
-      {/* MANGLE sits last in the playback chain and is the only stage that is
-          per NOTE rather than per slot-render: every sounding note gets its own
-          effect instance before the voices sum. Placed after trim/loop because
-          that is the order the audio actually travels. */}
-      <section className={`sampler-range-card sampler-range-card--mangle${mangleOn ? '' : ' is-bypassed'}`}>
-        <header>
-          <i /><span>Mangle</span>
-          {mangleOn && <span className="sampler-mangle-tag">per note</span>}
-          {mangleChain.length < MANGLE_MAX && (
-            <button
-              type="button" className="sampler-mangle-add"
-              aria-label="Add another MANGLE to the chain"
-              title="Add another MANGLE to the chain"
-              onClick={addMangleInstance}
-            >+</button>
-          )}
-        </header>
-        <div className="sampler-mangle-body">
-          {/* One row per instance. The chain is an ordered stack — the output of
-              instance N feeds N+1 — so reorder is audible. Each row: reorder /
-              MODE / AMOUNT / MIX / bypass / remove; a "+" appends another. */}
-          {mangleChain.map((inst, i) => {
-            const instMode = inst.mode ?? 0
-            const instActive = mangleInstanceActive(inst)
-            const knobColor = instActive ? accentPanel : muted
-            return (
-              <div
-                key={i}
-                className={`sampler-mangle-inst${inst.bypass ? ' is-bypassed' : ''}${instActive ? ' is-active' : ''}`}
-              >
-                <div className="sampler-mangle-order">
-                  <button
-                    type="button" className="sampler-mangle-move"
-                    disabled={i === 0} aria-label="Move earlier in the chain"
-                    title="Move earlier in the chain"
-                    onClick={() => moveMangleInstance(i, -1)}
-                  >&uarr;</button>
-                  <button
-                    type="button" className="sampler-mangle-move"
-                    disabled={i === mangleChain.length - 1} aria-label="Move later in the chain"
-                    title="Move later in the chain"
-                    onClick={() => moveMangleInstance(i, 1)}
-                  >&darr;</button>
-                </div>
-                <label className="sampler-prep-algo sampler-mangle-mode">
-                  <span>Mode</span>
-                  <SelGrouped
-                    val={instMode}
-                    set={(v) => commitChainField(i, 'mode', v)}
-                    groups={MANGLE_GROUPS}
-                    offLabel="Off"
-                  />
-                </label>
-                <SamplerKnob
-                  label="Amount"
-                  modTarget={{ target: TARGET_SLOT_MANGLE_AMOUNT, index: selectedSlot, stage: i, scale: 0.01 }}
-                  value={(inst.amount ?? 0) * 100}
-                  min={0} max={100}
-                  defaultValue={mangleAmountIsBipolar(instMode) ? 50 : 0}
-                  size={42}
-                  color={knobColor}
-                  formatValue={(v) => `${Math.round(v)}%`}
-                  onLiveChange={(v) => previewChainField(i, 'amount', Math.round(v) / 100)}
-                  onCommit={(v) => commitChainField(i, 'amount', Math.round(v) / 100)}
-                />
-                <SamplerKnob
-                  label="Mix"
-                  modTarget={{ target: TARGET_SLOT_MANGLE_MIX, index: selectedSlot, stage: i, scale: 0.01 }}
-                  value={(inst.mix ?? 1) * 100}
-                  min={0} max={100} defaultValue={100}
-                  size={42}
-                  color={knobColor}
-                  formatValue={(v) => `${Math.round(v)}%`}
-                  onLiveChange={(v) => previewChainField(i, 'mix', Math.round(v) / 100)}
-                  onCommit={(v) => commitChainField(i, 'mix', Math.round(v) / 100)}
-                />
-                <div className="sampler-mangle-inst-actions">
-                  <button
-                    type="button"
-                    className={`sampler-mangle-bypass${inst.bypass ? '' : ' is-on'}`}
-                    aria-pressed={!inst.bypass}
-                    title={inst.bypass ? 'Bypassed — click to enable this instance'
-                                       : 'Bypass this instance (skipped, at no cost)'}
-                    onClick={() => commitChainField(i, 'bypass', !inst.bypass)}
-                  >
-                    {inst.bypass ? 'byp' : 'on'}
-                  </button>
-                  <button
-                    type="button" className="sampler-mangle-remove"
-                    aria-label="Remove this instance" title="Remove this instance"
-                    onClick={() => removeMangleInstance(i)}
-                  >&times;</button>
-                </div>
-              </div>
-            )
-          })}
-          <span className="sampler-prep-note sampler-mangle-note">
-            {(() => {
-              const live = mangleChain.filter(mangleInstanceActive)
-              if (live.length === 0) return 'Bypassed — stream passed through untouched'
-              // One instance: show its specific hint. A chain: show the ordered
-              // stack so the audible left-to-right signal flow is explicit.
-              if (live.length === 1) {
-                return MANGLE_HINTS[live[0].mode]
-                  || `${mangleModeLabel(live[0].mode)} — Amount drives, Mix blends`
-              }
-              // Show the order the AUDIO travels, not the row order: warps
-              // resolve first (they re-read the source, so they cannot be fed a
-              // shaped sample), then the shapers. Order stays audible inside
-              // each group, which is what the reorder arrows move.
-              const warps   = live.filter((mi) => MANGLE_WARP_MODES.has(mi.mode))
-              const shapers = live.filter((mi) => !MANGLE_WARP_MODES.has(mi.mode))
-              const flow = [...warps, ...shapers].map((mi) => mangleModeLabel(mi.mode)).join(' → ')
-              const note = (warps.length > 0 && shapers.length > 0)
-                ? ' — per-note chain; warps resolve before shapers'
-                : ' — per-note chain, order is audible'
-              return `${flow}${note}`
-            })()}
-          </span>
-        </div>
-      </section>
-
-    </div>
-  )
-
-  const renderPlayback = () => {
-    const arpDirIdx = Math.max(0, Math.min(3, settings.arpDirection ?? 0))
-    const arpDirId = ARP_DIRS[arpDirIdx]
-    return (
-      <div className="sampler-page sampler-page--playback">
-        <div className="sampler-playback-grid sampler-voice-panel">
-          {/* Root note lives on the playback tab (moved off the main tab): it
-              picks the pitch a note plays the sample at, alongside voicing. */}
-          <div className="sampler-module sampler-root-module">
-            <SectionLabel>Root Note</SectionLabel>
-            <RootNotePicker value={settings.rootNote} onChange={(midi) => commitField('rootNote', midi)} />
-          </div>
-
-          {/* Voice — poly count / mono / legato / portamento */}
-          <div className="sampler-module sampler-voice-module">
-            <SectionLabel>Voice</SectionLabel>
-            <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap', rowGap: 6 }}>
-              <Seg
-                opts={[{ v: 'mono', l: 'Mono' }, { v: 'poly', l: 'Poly' }]}
-                val={settings.monoEnabled ? 'mono' : 'poly'}
-                set={(v) => commitField('monoEnabled', v === 'mono')}
-              />
-              {/* POLY carries an editable voice count; MONO is a single voice. */}
-              <label style={{ display: 'flex', alignItems: 'center', gap: 4, ...lblStyle,
-                opacity: settings.monoEnabled ? 0.35 : 1,
-                pointerEvents: settings.monoEnabled ? 'none' : undefined }}>
-                Voices
-                <input
-                  type="number" min={1} max={32}
-                  className="sampler-voice-count"
-                  value={settings.voiceCount}
-                  onChange={(e) => setField('voiceCount', clampVoiceCount(e.target.value))}
-                  onBlur={(e) => commit({ voiceCount: clampVoiceCount(e.target.value) })}
-                  onKeyDown={(e) => { if (e.key === 'Enter') e.currentTarget.blur() }}
-                />
-              </label>
-            </div>
-            <div style={{ marginTop: 8 }}>
-              <Chk val={settings.legatoEnabled} set={(v) => commitField('legatoEnabled', v)} label="Legato" />
-            </div>
-            <div style={{ display: 'flex', alignItems: 'flex-end', gap: 12, marginTop: 8, flexWrap: 'wrap', rowGap: 8 }}>
-              <SamplerKnob
-                value={settings.portamentoTimeMs}
-                min={0} max={2000} defaultValue={0}
-                size={44}
-                color={settings.portamentoTimeMs > 0 ? accentPanel : 'var(--theme-text-muted)'}
-                label="Porta"
-                formatValue={(v) => `${Math.round(v)}ms`}
-                onLiveChange={(v) => {
-                  const ms = Math.round(v)
-                  setFields({ portamentoTimeMs: ms, portamentoEnabled: ms > 0 })
-                }}
-                onCommit={(v) => {
-                  const ms = Math.round(v)
-                  commit({ portamentoTimeMs: ms, portamentoEnabled: ms > 0 })
-                }}
-              />
-              <div style={{ display: 'flex', flexDirection: 'column', gap: 4 }}>
-                <span style={lblStyle}>Glide</span>
-                <Seg
-                  sm
-                  opts={[{ v: 0, l: 'Always' }, { v: 1, l: 'Scaled' }]}
-                  val={settings.portamentoMode ?? 0}
-                  set={(v) => commitField('portamentoMode', v)}
-                />
-              </div>
-              <SamplerKnob
-                label="Curve"
-                value={settings.portamentoCurve ?? 0}
-                min={-1} max={1} defaultValue={0}
-                size={28} dragRange={120} capStyle="soft-disk"
-                color="var(--theme-accent)"
-                formatValue={(v) => v.toFixed(2)}
-                onLiveChange={(v) => setField('portamentoCurve', Number(v.toFixed(3)))}
-                onCommit={(v) => commit({ portamentoCurve: Number(v.toFixed(3)) })}
-              />
-            </div>
-          </div>
-
-          {/* Arpeggiator */}
-          <div className="sampler-module sampler-arp-module">
-            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
-              <span style={{ fontSize: 10, fontWeight: 700, color: text, textTransform: 'uppercase', letterSpacing: '0.1em' }}>
-                Arpeggiator
-              </span>
-              <input
-                type="checkbox"
-                checked={settings.arpEnabled}
-                onChange={(e) => commitField('arpEnabled', e.target.checked)}
-                style={{ accentColor: 'var(--theme-accent)', cursor: 'pointer' }}
-              />
-            </div>
-            <div className={settings.arpEnabled ? 'sampler-arp-controls' : 'sampler-arp-controls sampler-dimmed'}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ ...lblStyle, width: 62 }}>Range</span>
-                <Seg
-                  sm
-                  opts={[1, 2, 3, 4].map((n) => ({ v: n, l: `${n} Oct` }))}
-                  val={settings.arpRange}
-                  set={(v) => commitField('arpRange', v)}
-                />
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                <span style={{ ...lblStyle, width: 62 }}>Direction</span>
-                <div style={{ display: 'flex', gap: 2 }}>
-                  {ARP_DIRS.map((id, idx) => {
-                    const active = arpDirId === id
-                    return (
-                      <div
-                        key={id}
-                        onClick={() => commitField('arpDirection', idx)}
-                        title={ARP_DIR_TITLES[id]}
-                        style={{
-                          width: 28, height: 26,
-                          display: 'flex', alignItems: 'center', justifyContent: 'center',
-                          background: active ? 'var(--theme-accent)' : card,
-                          color: active ? 'var(--theme-text-on-accent)' : muted,
-                          border: `1px solid ${active ? 'var(--theme-accent)' : border}`,
-                          borderRadius: 3,
-                          cursor: 'pointer',
-                        }}
-                      >
-                        <svg width={14} height={15} viewBox="0 0 14 15">{ARP_DIR_ICONS[id]}</svg>
-                      </div>
-                    )
-                  })}
-                </div>
-              </div>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
-                <span style={{ ...lblStyle, width: 62 }}>Time</span>
-                {settings.arpTempoSync ? (
-                  <Sel
-                    val={TDIV_LABELS[settings.arpDivision] || '1/8'}
-                    set={(v) => commitField('arpDivision', TDIV_VALUES[v])}
-                    opts={TDIVS}
-                  />
-                ) : (
-                  <SamplerKnob
-                    value={settings.arpFreeTimeMs}
-                    min={10} max={2000} defaultValue={125}
-                    size={28}
-                    capStyle='soft-disk'
-                    color={accentPanel}
-                    formatValue={(v) => `${Math.round(v)}ms`}
-                    onLiveChange={(v) => setField('arpFreeTimeMs', Math.round(v))}
-                    onCommit={(v) => commit({ arpFreeTimeMs: Math.round(v) })}
-                  />
-                )}
-                <Chk val={settings.arpTempoSync} set={(v) => commitField('arpTempoSync', v)} label="Tempo Sync" />
-                <SamplerKnob
-                  label="Gate"
-                  value={settings.arpGate * 100}
-                  min={1} max={100} defaultValue={80}
-                  size={28}
-                  capStyle='soft-disk'
-                  color={accentPanel}
-                  formatValue={(v) => `${Math.round(v)}%`}
-                  onLiveChange={(v) => setField('arpGate', Math.round(v) / 100)}
-                  onCommit={(v) => commit({ arpGate: Math.round(v) / 100 })}
-                />
-              </div>
-            </div>
-          </div>
-        </div>
-        {/* Auditioning routes through a track's effect rack so the keyboard
-            preview sounds like the sample does in the arrangement. Moved here
-            off the main tab: it is a per-session monitoring choice, not part of
-            editing a sample, and on the main tab it was a full-width card
-            sitting between the waveform and the controls that actually get
-            used. */}
-        <section className="sampler-card sampler-preview-routing-card">
-          <SectionLabel>Preview monitoring</SectionLabel>
-          <PreviewRoutingControl regionId={regionId} />
-        </section>
-
-        {/* The legacy Envelope / Pitch-Envelope / Vol-Pan-Pitch LFO cards used to
-            live here. They are gone — ENV 1 is the amp envelope and every other
-            envelope/LFO is a modulation source in the pull-out tray. */}
-      </div>
-    )
+  const mainActions = {
+    setField, setFields, commit, commitField, commitPrep, commitLoopPoints, commitSmpPoints,
+    previewSlotField, commitSlotField, toggleSlotFlag, runAutoLoop,
+    slot: {
+      swap: () => swapSlot(selectedSlot),
+      duplicate: () => duplicateSlot(selectedSlot),
+      copy: copySlot,
+      paste: pasteSlot,
+      rename: () => setRenameSignal((n) => n + 1),
+      remove: () => removeSlot(selectedSlot),
+    },
   }
 
   return (
-    <div className="sampler-panel-body">
-      <div className="sampler-panel-tabbar">
-        <div className="sampler-panel-tabs">
-          <Tabs
-            tabs={[{ id: 'main', label: 'main' }, { id: 'playback', label: 'playback' }]}
-            active={tab}
-            onSelect={handleSelectTab}
-          />
-        </div>
+    <div className={styles.root} data-sampler-view={tab}>
+      <div className={styles.header}>
+        <SlotTabs
+          slots={slots}
+          selectedSlot={selectedSlot}
+          onSelectSlot={setSelectedSlot}
+          onAddSlot={() => addSlot()}
+          onAddSlotFromPath={(path) => addSlot(path)}
+          onDropSlotAudio={(i, path) => swapSlot(i, path)}
+          onRenameSlot={renameSlot}
+          renameSignal={renameSignal}
+          busy={slotBusy}
+        />
         <PatchBar onSave={savePatch} onLoad={loadPatch} disabled={regionId == null} />
+        <Tabs
+          className={styles.views}
+          label="Sampler views"
+          tabs={VIEW_TABS}
+          value={tab}
+          onChange={setTab}
+        />
       </div>
-      <div className="sampler-panel-scroll" ref={scrollRef}>
-        <div
-          className={`sampler-panel-content${
-            tabAnimPhase === 'exiting' ? ` sampler-tab-pane--exit-${tab}`
-              : tabAnimPhase === 'entering' ? ` sampler-tab-pane--enter-${tab}`
-                : ''
-          }`}
-          ref={panelContentRef}
-        >
-          {tab === 'main' && renderSample()}
-          {tab === 'playback' && renderPlayback()}
-        </div>
+
+      <div className={styles.body}>
+        {tab === 'main' && (
+          <SamplerMainView
+            regionId={regionId}
+            slots={slots}
+            slotIndex={selectedSlot}
+            maxSlots={MAX_SLOTS}
+            settings={settings}
+            numSamples={numSamples}
+            sampleRate={sampleRate}
+            sourceName={sourceName}
+            sourcePath={sourcePath}
+            sourceDuration={sourceDuration}
+            slotBusy={slotBusy}
+            canPaste={canPaste}
+            prepBusy={prepBusy}
+            prepBypassed={prepBypassed}
+            autoBusy={autoBusy}
+            autoResult={autoResult}
+            playPosition={playPosition}
+            snapZero={snapZero}
+            onSnapZero={setSnapZero}
+            waveView={waveView}
+            onWaveViewChange={onWaveViewChange}
+            sampleDragRange={sampleDragRange}
+            actions={mainActions}
+          />
+        )}
+        {tab === 'playback' && (
+          <div className={styles.scrollView}>
+            <LegacyPlaybackView
+              regionId={regionId}
+              settings={settings}
+              selectedSlot={selectedSlot}
+              setField={setField}
+              setFields={setFields}
+              commit={commit}
+              commitField={commitField}
+              commitChainField={commitChainField}
+              previewChainField={previewChainField}
+              addMangleInstance={addMangleInstance}
+              moveMangleInstance={moveMangleInstance}
+              removeMangleInstance={removeMangleInstance}
+            />
+          </div>
+        )}
       </div>
-      {/* Outside the scroll container on purpose: the audition keyboard applies
-          to both tabs and is the panel's only "is this thing making a sound"
-          affordance, so it must not be something you can scroll away from. */}
+
+      {/* The audition keyboard applies to every view and is the panel's only
+          "is this thing making a sound" affordance, so it is always shown. */}
       <AuditionBar
         octaveShift={octaveShift}
         onOctaveShift={(n) => setOctaveShift(clampOctaveShift(n))}
@@ -1891,8 +890,6 @@ export default function SamplerPanelContent({ regionId, onClose }) {
         disabled={regionId == null}
       />
 
-      {/* Modulation lives in a pull-out tray on the window's right edge instead
-          of a tab, so an ENV/LFO sits beside the knobs it drives. */}
       <SamplerModTray regionId={regionId} bpm={bpm} />
     </div>
   )
