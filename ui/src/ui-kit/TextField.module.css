@@ -1,0 +1,43 @@
+/* TextField: a single-line text input (28px). Flat well, neutral outline; the focus ring is the 1px selection
+ * outline. `mono` is for code-like values only (notation, paths, hex). */
+@layer kit {
+  .field {
+    box-sizing: border-box;
+    height: var(--ctl-h-md);
+    min-width: 0;
+    padding: 0 var(--space-2);
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g0);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    font-weight: var(--weight-regular);
+    line-height: 1;
+    font-variant-numeric: tabular-nums;
+    -webkit-app-region: no-drag;
+  }
+
+  .field[data-size="sm"] { height: var(--ctl-h-sm); }
+  .field[data-size="lg"] { height: var(--ctl-h-lg); }
+  .field[data-mono] { font-family: var(--ui-font-mono); }
+
+  .field::placeholder {
+    color: var(--ui-ink-3);
+    opacity: 1;
+  }
+
+  .field:hover:not(:disabled) { background: var(--ui-g1); }
+
+  .field:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 0;
+  }
+
+  .field[aria-invalid="true"] { border-color: var(--ui-clip); }
+
+  .field:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+}

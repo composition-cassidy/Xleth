@@ -1,0 +1,121 @@
+/* Audio diagnostics (Settings > Audio): a read-out of the realtime audio telemetry. Every tone is also a word
+ * ("Healthy", "Warning", "Overrunning"), so colour is never the only signal. */
+@layer kit {
+.root {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.capture {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-2);
+}
+
+.captureControls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.label {
+  font-size: var(--type-12);
+  font-weight: var(--weight-medium);
+  color: var(--ui-ink);
+}
+
+.captureStatus {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  font-size: var(--type-11);
+  line-height: 1.5;
+  color: var(--ui-ink-2);
+  overflow-wrap: anywhere;
+}
+
+.captureStatus[data-status="exported"] { color: var(--ui-signal-events); }
+.captureStatus[data-status="failed"] { color: var(--theme-semantic-danger-text, var(--ui-rec-text)); }
+
+.grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: var(--space-3);
+}
+
+.group {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
+  min-width: 0;
+  padding: var(--space-2) var(--space-3);
+  border: 1px solid var(--ui-g4);
+  border-radius: var(--ui-radius-1);
+  background: var(--ui-g0);
+}
+
+.group[data-wide] { grid-column: 1 / -1; }
+
+.title {
+  font-size: var(--type-13);
+  font-weight: var(--weight-semibold);
+  color: var(--ui-ink);
+}
+
+.kv {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2px var(--space-3);
+  font-size: var(--type-11);
+  font-variant-numeric: tabular-nums;
+}
+
+.kv span,
+.lines span {
+  color: var(--ui-ink-2);
+}
+
+.kv strong,
+.lines strong {
+  font-weight: var(--weight-medium);
+  color: var(--ui-ink);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+
+.lines {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: var(--type-11);
+}
+
+.lines > div {
+  display: flex;
+  justify-content: space-between;
+  gap: var(--space-3);
+}
+
+.status {
+  font-size: var(--type-12);
+  font-weight: var(--weight-semibold);
+}
+
+.status[data-tone="ok"] { color: var(--ui-signal-events); }
+.status[data-tone="warn"],
+.status[data-tone="bad"] { color: var(--theme-semantic-danger-text, var(--ui-rec-text)); }
+
+.note {
+  font-size: var(--type-11);
+  line-height: 1.5;
+  color: var(--ui-ink-2);
+}
+
+.error {
+  font-size: var(--type-11);
+  color: var(--theme-semantic-danger-text, var(--ui-rec-text));
+}
+}

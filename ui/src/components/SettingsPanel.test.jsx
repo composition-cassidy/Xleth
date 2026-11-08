@@ -16,8 +16,8 @@ describe('SettingsPanel consolidated shell', () => {
   it('renders the responsive category shell without a standalone Theme Editor category', () => {
     const html = renderToStaticMarkup(<SettingsPanel onClose={() => {}} />)
 
-    expect(html).toContain('settings-panel-shell')
-    expect(html).toContain('settings-panel-categories')
+    expect(html).toContain('role="dialog"')
+    expect(html).toContain('aria-label="Settings pages"')
     expect(html).not.toContain('Theme Editor')
     expect(SETTINGS_CATEGORIES.every(category => !('icon' in category))).toBe(true)
     expect(SETTINGS_CATEGORIES.map(category => category.id)).toEqual([
@@ -48,18 +48,20 @@ describe('SettingsPanel consolidated shell', () => {
     }
   })
 
-  it('renders the tab strip and only the active tab categories in the sub-nav', () => {
+  it('renders one nav with both scope groups and marks the open page', () => {
     const projectHtml = renderToStaticMarkup(<SettingsPanel initialCategory="project" onClose={() => {}} />)
 
-    expect(projectHtml).toContain('settings-panel-tabs')
     expect(projectHtml).toContain('data-settings-tab="project"')
-    expect(projectHtml).toContain('Clip FX')
-    // An Application-tab page must not appear in the Project tab's sub-nav.
-    expect(projectHtml).not.toContain('>Plugins<')
+    expect(projectHtml).toContain('aria-labelledby="settings-group-project"')
+    expect(projectHtml).toContain('aria-labelledby="settings-group-application"')
+    expect(projectHtml).toContain('>Clip FX<')
+    expect(projectHtml).toContain('>Plugins<')
+    // Exactly one page is marked as the current one.
+    expect(projectHtml.match(/aria-current="page"/g)).toHaveLength(1)
 
     const appHtml = renderToStaticMarkup(<SettingsPanel initialCategory="plugins" onClose={() => {}} />)
     expect(appHtml).toContain('data-settings-tab="application"')
-    expect(appHtml).toContain('>Plugins<')
+    expect(appHtml).toContain('data-settings-category="plugins"')
   })
 
   it('lands merged Transport and Advanced deep links on the Project page', () => {
@@ -74,14 +76,14 @@ describe('SettingsPanel consolidated shell', () => {
   it('renders project settings with themed select triggers instead of native selects', () => {
     const html = renderToStaticMarkup(<SettingsPanel onClose={() => {}} />)
 
-    expect(html).toContain('Global Clip Processing')
-    expect(html).toContain('New Project Default')
-    expect(html).toContain('Formant Preservation')
+    expect(html).toContain('Global clip processing')
+    expect(html).toContain('New project default')
+    expect(html).toContain('Formant preservation')
     expect(html).toContain('Autosave')
     // Absorbed from the old standalone Transport and Advanced pages.
     expect(html).toContain('Spacebar behavior')
-    expect(html).toContain('Filename Format')
-    expect(html).toContain('xleth-select-trigger')
+    expect(html).toContain('Filename format')
+    expect(html).toContain('aria-haspopup="listbox"')
     expect(html).not.toContain('<select')
   })
 
@@ -90,7 +92,7 @@ describe('SettingsPanel consolidated shell', () => {
       ['clipfx', 'Swirl with Vibrato'],
       ['audio', 'Performance report'],
       ['plugins', 'VST3 Browser'],
-      ['graphics', 'Video encode/decode'],
+      ['graphics', 'Video encode and decode'],
       ['appearance', 'UI scale'],
       ['shortcuts', 'Panel Toggles'],
       ['logs', 'Session Log'],
@@ -113,7 +115,7 @@ describe('SettingsPanel consolidated shell', () => {
     )
 
     expect(html).toContain('data-settings-category="plugins"')
-    expect(html).toContain('VST3 Plugin Library')
+    expect(html).toContain('VST3 plugin library')
     expect(html).toContain('vst-browser--embedded')
     expect(html).toContain('Scan Plugins')
     expect(html).toContain('Add Path')
@@ -134,7 +136,10 @@ describe('SettingsPanel consolidated shell', () => {
       expect(container.querySelector('#settings-appearance-accent')).not.toBeNull()
       const brightness = container.querySelector('#settings-appearance-brightness')
       expect(brightness).not.toBeNull()
-      expect(brightness.getAttribute('type')).toBe('range')
+      // A kit NumberBox: a slider you drag or type into.
+      expect(brightness.getAttribute('role')).toBe('slider')
+      expect(brightness.getAttribute('aria-valuemin')).toBe('0')
+      expect(brightness.getAttribute('aria-valuemax')).toBe('100')
     } finally {
       await act(async () => root.unmount())
       container.remove()
@@ -153,17 +158,16 @@ describe('SettingsPanel consolidated shell', () => {
 
       const scale = container.querySelector('#settings-ui-scale')
       expect(scale).not.toBeNull()
-      expect(scale.getAttribute('type')).toBe('range')
-      expect(scale.getAttribute('min')).toBe('100')
-      expect(scale.getAttribute('max')).toBe('200')
-      expect(scale.getAttribute('step')).toBe('10')
+      expect(scale.getAttribute('role')).toBe('slider')
+      expect(scale.getAttribute('aria-valuemin')).toBe('100')
+      expect(scale.getAttribute('aria-valuemax')).toBe('200')
 
       expect(container.querySelector('#settings-appearance-saturation')).not.toBeNull()
       expect(container.textContent).toContain('Tint')
       expect(container.textContent).not.toContain('Backdrop')
       expect(container.textContent).not.toContain('backdrop')
       // The Floor-preserving minimum for text contrast.
-      expect(container.querySelector('#settings-appearance-contrast').getAttribute('min')).toBe('80')
+      expect(container.querySelector('#settings-appearance-contrast').getAttribute('aria-valuemin')).toBe('80')
     } finally {
       await act(async () => root.unmount())
       container.remove()
@@ -251,7 +255,7 @@ describe('SettingsPanel consolidated shell', () => {
       try {
         const box = container.querySelector('#settings-purge-on-close')
         expect(box).not.toBeNull()
-        expect(box.checked).toBe(false)
+        expect(box.getAttribute('aria-pressed')).toBe('false')
         expect(container.textContent).toContain('Delete regenerable files when closing a project')
       } finally { await unmount() }
     })
@@ -265,7 +269,7 @@ describe('SettingsPanel consolidated shell', () => {
         proxy: { getCodec: vi.fn().mockResolvedValue(null) },
       })
       try {
-        expect(container.querySelector('#settings-purge-on-close').checked).toBe(true)
+        expect(container.querySelector('#settings-purge-on-close').getAttribute('aria-pressed')).toBe('true')
       } finally { await unmount() }
     })
 
@@ -283,7 +287,7 @@ describe('SettingsPanel consolidated shell', () => {
         await act(async () => { box.click() })
         expect(set).toHaveBeenCalledWith('purgeRegenerableOnClose', true)
         expect(setPurgeOnClose).toHaveBeenCalledWith(true)
-        expect(container.querySelector('#settings-purge-on-close').checked).toBe(true)
+        expect(container.querySelector('#settings-purge-on-close').getAttribute('aria-pressed')).toBe('true')
         expect(container.textContent).not.toContain('Could not apply this setting')
 
         await act(async () => { container.querySelector('#settings-purge-on-close').click() })

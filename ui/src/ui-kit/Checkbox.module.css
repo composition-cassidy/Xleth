@@ -1,0 +1,69 @@
+/* Checkbox: a real <input type=checkbox> with a flat 14px box. On = the inverted ink chip with a check
+ * glyph, so state is never colour alone. The whole row (24px tall) is the hit area. */
+@layer kit {
+  .row {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: var(--hit-min);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    font-weight: var(--weight-regular);
+    cursor: pointer;
+    user-select: none;
+  }
+
+  .row[data-disabled] {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+
+  .box {
+    appearance: none;
+    flex: 0 0 auto;
+    box-sizing: border-box;
+    width: 14px;
+    height: 14px;
+    margin: 0;
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g0);
+    cursor: inherit;
+    display: inline-grid;
+    place-items: center;
+  }
+
+  .box:checked {
+    border-color: var(--ui-on);
+    background: var(--ui-on);
+  }
+
+  .box:checked::after {
+    content: "";
+    width: 3px;
+    height: 7px;
+    margin-top: -2px;
+    border: solid var(--ui-on-fg);
+    border-width: 0 2px 2px 0;
+    transform: rotate(45deg);
+  }
+
+  .box:indeterminate {
+    border-color: var(--ui-on);
+    background: var(--ui-on);
+  }
+
+  .box:indeterminate::after {
+    content: "";
+    width: 8px;
+    height: 2px;
+    background: var(--ui-on-fg);
+  }
+
+  .box:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 1px;
+  }
+}

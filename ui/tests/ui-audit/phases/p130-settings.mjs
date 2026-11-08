@@ -9,8 +9,7 @@ export default async ({ page, sleep }) => {
   await page.getByRole('button', { name: 'Settings', exact: true }).first().click(); await sleep(1500);
   const mark = () => page.evaluate(() => {
     document.querySelectorAll('[data-audit-settings]').forEach((e) => e.removeAttribute('data-audit-settings'));
-    const t = [...document.querySelectorAll('button,[role=tab]')].find((x) => /^Application$/.test((x.textContent || '').trim()));
-    let r = t; while (r && (r.getBoundingClientRect().width < 700 || r.getBoundingClientRect().height < 400)) r = r.parentElement;
+    const r = document.querySelector('[role="dialog"][aria-labelledby="settings-panel-title"]');
     if (r) { r.setAttribute('data-audit-settings', '1'); const b = r.getBoundingClientRect(); return { cls: String(r.className).slice(0, 40), w: Math.round(b.width), h: Math.round(b.height) }; }
     return null;
   });
@@ -19,7 +18,7 @@ export default async ({ page, sleep }) => {
   let lastTab = null;
   for (const [tab, sec, id] of sections) {
     await step(id, async () => {
-      if (tab !== lastTab) { await page.getByRole('button', { name: tab, exact: true }).or(page.getByRole('tab', { name: tab, exact: true })).first().click({ timeout: 4000 }); lastTab = tab; await sleep(500); }
+      lastTab = tab;   // round 2 step 20: one nav lists both scope groups, so there is no tab to click first
       await page.getByRole('button', { name: sec, exact: true }).or(page.getByRole('tab', { name: sec, exact: true })).first().click({ timeout: 4000 }); await sleep(1100);
       await mark(); await page.mouse.move(960, 1040);
       out.push(await shot(page, id, { surface: id.includes('shortcuts') ? 'settings-shortcuts' : 'settings-' + sec.toLowerCase().replace(/ /g, '').replace('general', 'project'), scope: '[data-audit-settings]', live: sec === 'Audio' }));

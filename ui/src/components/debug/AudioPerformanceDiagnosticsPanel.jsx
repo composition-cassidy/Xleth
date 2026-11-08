@@ -1,6 +1,7 @@
 import React from 'react'
 import { useEffect, useRef, useState } from 'react'
-import XlethSelect from '../common/XlethSelect.jsx'
+import { Button, Select } from '../../ui-kit'
+import styles from './AudioDiagnostics.module.css'
 
 const POLL_MS = 500
 const CAPTURE_DURATION_OPTIONS = [
@@ -62,18 +63,18 @@ export function RsHqRiskDiagnostics({ data }) {
   const isRisk = level === 'warning' || level === 'overrunning'
 
   return (
-    <section className="audio-perf-diag-group">
-      <div className="audio-perf-diag-title">RS HQ Realtime Risk</div>
-      <div className={`audio-perf-diag-status audio-perf-diag-status--${rsHqTone(level)}`}>
+    <section className={styles.group}>
+      <div className={styles.title}>RS HQ realtime risk</div>
+      <div className={styles.status} data-tone={rsHqTone(level)}>
         {level === 'overrunning' ? 'Overrunning' : level === 'warning' ? 'Warning' : 'Healthy'}
       </div>
-      <div className="audio-perf-diag-kv">
+      <div className={styles.kv}>
         <span>Active HQ</span><strong>{activeCount}</strong>
         <span>Reasons</span><strong>{listLabel(reasons)}</strong>
         <span>Action</span><strong>{listLabel(actions)}</strong>
       </div>
       {isRisk && (
-        <div className="audio-perf-diag-note">
+        <div className={styles.note}>
           RS HQ is expensive in realtime. Use a larger buffer, reduce HQ instances, or reserve HQ for export.
         </div>
       )}
@@ -193,42 +194,37 @@ export default function AudioPerformanceDiagnosticsPanel() {
   }
 
   return (
-    <div className="audio-perf-diag">
-      <section className="audio-perf-diag-capture">
-        <div className="audio-perf-diag-capture-controls">
-          <label className="settings-panel-label" htmlFor="audio-perf-capture-seconds">
+    <div className={styles.root}>
+      <section className={styles.capture}>
+        <div className={styles.captureControls}>
+          <label className={styles.label} htmlFor="audio-perf-capture-seconds">
             Performance report
           </label>
-          <XlethSelect
+          <Select
             id="audio-perf-capture-seconds"
-            className="settings-panel-select"
             value={captureSeconds}
             options={CAPTURE_DURATION_OPTIONS}
             onChange={nextValue => setCaptureSeconds(Number(nextValue))}
             disabled={captureState.status === 'capturing'}
             ariaLabel="Performance report capture duration"
           />
-          <button
-            type="button"
-            className="settings-panel-button"
+          <Button
             onClick={captureReport}
             disabled={captureState.status === 'capturing'}
           >
             {captureState.status === 'capturing'
               ? `Capturing ${captureSeconds}s...`
-              : `Capture ${captureSeconds}s Performance Report`}
-          </button>
+              : `Capture ${captureSeconds}s performance report`}
+          </Button>
         </div>
-        <div
-          className={`audio-perf-diag-capture-status audio-perf-diag-capture-status--${captureState.status}`}
-        >
+        <div className={styles.captureStatus} data-status={captureState.status}>
           {captureState.status === 'idle' && 'Idle'}
           {captureState.status === 'capturing' && captureState.message}
           {captureState.status === 'exported' && (
             <>
               {captureState.message}
               {captureState.coverageQuality && (
-                <strong className={`audio-perf-diag-status audio-perf-diag-status--${coverageTone(captureState.coverageQuality)}`}>
+                <strong className={styles.status} data-tone={coverageTone(captureState.coverageQuality)}>
                   Coverage {captureState.coverageQuality}
                 </strong>
               )}
@@ -238,10 +234,10 @@ export default function AudioPerformanceDiagnosticsPanel() {
           {captureState.status === 'failed' && `Failed: ${captureState.message}`}
         </div>
       </section>
-      <div className="audio-perf-diag-grid">
-        <section className="audio-perf-diag-group">
-          <div className="audio-perf-diag-title">Latency / PDC</div>
-          <div className="audio-perf-diag-kv">
+      <div className={styles.grid}>
+        <section className={styles.group}>
+          <div className={styles.title}>Latency and PDC</div>
+          <div className={styles.kv}>
             <span>Max track</span><strong>{formatSamples(data.maxAudibleTrackLatencySamples)}</strong>
             <span>Master</span><strong>{formatSamples(data.masterInsertLatencySamples)}</strong>
             <span>Device out</span><strong>{formatSamples(data.audioDeviceOutputLatencySamples)}</strong>
@@ -249,12 +245,12 @@ export default function AudioPerformanceDiagnosticsPanel() {
           </div>
         </section>
 
-        <section className="audio-perf-diag-group">
-          <div className="audio-perf-diag-title">Realtime CPU</div>
-          <div className={`audio-perf-diag-status audio-perf-diag-status--${health.tone}`}>
+        <section className={styles.group}>
+          <div className={styles.title}>Realtime CPU</div>
+          <div className={styles.status} data-tone={health.tone}>
             {health.label}
           </div>
-          <div className="audio-perf-diag-kv">
+          <div className={styles.kv}>
             <span>Deadline</span><strong>{formatUs(data.callbackDeadlineUs)}</strong>
             <span>Callback p95</span><strong>{formatUs(data.callbackP95Us)}</strong>
             <span>Callback p99</span><strong>{formatUs(data.callbackP99Us)}</strong>
@@ -268,9 +264,9 @@ export default function AudioPerformanceDiagnosticsPanel() {
 
         <RsHqRiskDiagnostics data={data} />
 
-        <section className="audio-perf-diag-group audio-perf-diag-group--wide">
-          <div className="audio-perf-diag-title">Worst Effects</div>
-          <div className="audio-perf-diag-lines">
+        <section className={styles.group} data-wide>
+          <div className={styles.title}>Worst effects</div>
+          <div className={styles.lines}>
             <div><span>Effect max</span><strong>{scopeLabel(worstEffectMax)}</strong></div>
             <div><span>Effect p99</span><strong>{scopeLabel(worstEffectP99)}</strong></div>
             <div><span>Chain max</span><strong>{scopeLabel(worstChainMax)}</strong></div>
@@ -285,7 +281,7 @@ export default function AudioPerformanceDiagnosticsPanel() {
           </div>
         </section>
       </div>
-      {error && <div className="settings-panel-hint" style={{ color: '#e08a3a' }}>Audio telemetry unavailable: {error}</div>}
+      {error && <div className={styles.error}>Audio telemetry unavailable: {error}</div>}
     </div>
   )
 }

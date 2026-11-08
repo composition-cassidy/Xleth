@@ -1,0 +1,52 @@
+/* Progress: a 6px rail with a value-colour fill and a printed readout. Indeterminate shows a static hatch
+ * (and a sliding segment only when motion is allowed): the text always says what is happening. */
+@layer kit {
+  .wrap {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    color: var(--ui-ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .rail {
+    position: relative;
+    flex: 1 1 auto;
+    height: 6px;
+    min-width: 48px;
+    overflow: hidden;
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g0);
+  }
+
+  .fill {
+    position: absolute;
+    inset: 0 auto 0 0;
+    width: calc(var(--progress, 0) * 100%);
+    background: var(--ui-value);
+  }
+
+  .rail[data-indeterminate] .fill {
+    width: 30%;
+    background: var(--ui-value);
+    opacity: 0.6;
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .rail[data-indeterminate] .fill { animation: slide 1.2s linear infinite; }
+  }
+
+  @keyframes slide {
+    from { transform: translateX(-100%); }
+    to { transform: translateX(333%); }
+  }
+
+  .text {
+    flex: 0 0 auto;
+    white-space: nowrap;
+  }
+}

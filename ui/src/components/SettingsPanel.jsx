@@ -1,12 +1,18 @@
 import React, { useCallback, useContext, useEffect, useMemo, useRef, useState } from 'react'
-import { Film, Image as ImageIcon, RefreshCw, X } from 'lucide-react'
+import { Check, RefreshCw, X } from 'lucide-react'
 import {
   GLOBAL_STRETCH_METHOD_OPTIONS,
   sanitizeGlobalStretchMethod,
 } from '../constants/globalStretchMethods.js'
 import AudioPerformanceDiagnosticsPanel from './debug/AudioPerformanceDiagnosticsPanel.jsx'
-import XlethSelect from './common/XlethSelect.jsx'
 import VstBrowser from './mixer/VstBrowser.jsx'
+import {
+  SettingsHint,
+  SettingsRow,
+  SettingsSection,
+  SettingsValue,
+  settingsStyles,
+} from './settings/settingsKit.jsx'
 import ShortcutsSection from './settings/ShortcutsSection.jsx'
 import LogsSection from './settings/LogsSection.jsx'
 import { ThemeContext } from '../theming/runtime/ThemeProvider'
@@ -28,7 +34,7 @@ import {
 } from '../theming/runtime/appearanceTheme'
 import ChromeReadouts from '../theming/editor/ChromeReadouts'
 import { ThemeEditorContent } from '../theming/editor/ThemeEditor'
-import { Button } from '../ui-kit'
+import { Button, IconButton, MINUS, NumberBox, Select, TextField, Toggle, formatValue } from '../ui-kit'
 import {
   UI_SCALE_DEFAULT,
   UI_SCALE_MAX,
@@ -199,33 +205,21 @@ function snapshotPreviewDiag() {
   }
 }
 
-function SettingsSection({ title, children, index = 0, className = '' }) {
-  return (
-    <section
-      className={`settings-panel-section ${className}`.trim()}
-      style={{ '--settings-card-index': index }}
-    >
-      <div className="settings-panel-section-title">{title}</div>
-      {children}
-    </section>
-  )
-}
+// Two-decimal readout with a true minus (DESIGN.md section 6).
+const fmt2 = (v) => v.toFixed(2).replace('-', MINUS)
 
-function SettingsRow({ label, htmlFor, description, children }) {
+// An on / off setting. The word says the state as well as the chip, so colour is never the only signal.
+function OnOff({ id, label, on, onChange }) {
   return (
-    <div className="settings-panel-row">
-      <div className="settings-panel-row-copy">
-        {htmlFor ? (
-          <label className="settings-panel-label" htmlFor={htmlFor}>{label}</label>
-        ) : (
-          <div className="settings-panel-label">{label}</div>
-        )}
-        {description && <div className="settings-panel-field-copy">{description}</div>}
-      </div>
-      <div className="settings-panel-control">
-        {children}
-      </div>
-    </div>
+    <Toggle
+      id={id}
+      aria-label={label}
+      on={!!on}
+      onChange={onChange}
+      glyph={<Check size={12} />}
+    >
+      {on ? 'On' : 'Off'}
+    </Toggle>
   )
 }
 
@@ -786,32 +780,33 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
     if (appearancePersistTimerRef.current) clearTimeout(appearancePersistTimerRef.current)
   }, [])
 
-  function handleAccentChange(event) {
-    const next = normalizeAccentHex(event.target.value)
+  // Each handler takes the control's value (the kit NumberBox hands over a number, the colour input its hex).
+  function handleAccentChange(value) {
+    const next = normalizeAccentHex(value)
     setAccentColor(next)
     applyAppearance(next, brightness, appearanceOptions())
   }
 
-  function handleBrightnessChange(event) {
-    const next = Math.min(100, Math.max(0, Number(event.target.value)))
+  function handleBrightnessChange(value) {
+    const next = Math.min(100, Math.max(0, Number(value)))
     setBrightness(next)
     applyAppearance(accentColor, next, appearanceOptions())
   }
 
-  function handleChromeHueChange(event) {
-    const next = Math.min(359, Math.max(0, Number(event.target.value)))
+  function handleChromeHueChange(value) {
+    const next = Math.min(359, Math.max(0, Number(value)))
     setChromeHue(next)
     applyAppearance(accentColor, brightness, appearanceOptions({ hue: next }))
   }
 
-  function handleChromeSaturationChange(event) {
-    const next = Math.min(APPEARANCE_TINT_MAX, Math.max(0, Number(event.target.value)))
+  function handleChromeSaturationChange(value) {
+    const next = Math.min(APPEARANCE_TINT_MAX, Math.max(0, Number(value)))
     setChromeSaturation(next)
     applyAppearance(accentColor, brightness, appearanceOptions({ saturation: next }))
   }
 
-  function handleTextContrastChange(event) {
-    const next = Math.min(APPEARANCE_CONTRAST_MAX, Math.max(APPEARANCE_CONTRAST_MIN, Number(event.target.value)))
+  function handleTextContrastChange(value) {
+    const next = Math.min(APPEARANCE_CONTRAST_MAX, Math.max(APPEARANCE_CONTRAST_MIN, Number(value)))
     setTextContrast(next)
     applyAppearance(accentColor, brightness, appearanceOptions({ contrast: next }))
   }
@@ -896,109 +891,98 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
 
   const renderProject = () => (
     <>
-      <SettingsSection title="Clip Processing" index={0}>
+      <SettingsSection title="Clip processing">
         <SettingsRow
-          label="Global Clip Processing"
+          label="Global clip processing"
           htmlFor="settings-project-stretch-method"
           description="Applies to this project."
         >
-          <XlethSelect
+          <Select
             id="settings-project-stretch-method"
             value={projectStretchMethod ?? ''}
             options={stretchOptions}
             onChange={nextValue => applyProjectStretchMethod(Number(nextValue))}
             disabled={projectStretchMethod == null}
-            ariaLabel="Global Clip Processing"
-            className="settings-panel-select settings-panel-select--stretch-method"
+            ariaLabel="Global clip processing"
           />
         </SettingsRow>
         {projectStretchMethod === 5 && (
-          <div className="settings-panel-hint settings-panel-hint--inline">
+          <SettingsHint>
             Best for speech and vocal samples. Processes offline - parameter changes apply after a short analysis step.
-          </div>
+          </SettingsHint>
         )}
         <SettingsRow
-          label="New Project Default"
+          label="New project default"
           htmlFor="settings-default-stretch-method"
           description="Used only for newly created blank projects."
         >
-          <XlethSelect
+          <Select
             id="settings-default-stretch-method"
             value={defaultStretchMethod ?? ''}
             options={defaultStretchOptions}
             onChange={nextValue => applyDefaultStretchMethod(Number(nextValue))}
             disabled={defaultStretchMethod == null}
-            ariaLabel="New Project Default"
-            className="settings-panel-select settings-panel-select--stretch-method"
+            ariaLabel="New project default"
           />
         </SettingsRow>
         {defaultStretchMethod === 5 && (
-          <div className="settings-panel-hint settings-panel-hint--inline">
+          <SettingsHint>
             Best for speech and vocal samples. Processes offline - parameter changes apply after a short analysis step.
-          </div>
+          </SettingsHint>
         )}
         <SettingsRow
-          label="Formant Preservation"
+          label="Formant preservation"
           htmlFor="settings-formant-preserve"
           description="Preserves vocal character during global clip processing when supported."
         >
-          <input
-            id="settings-formant-preserve"
-            type="checkbox"
-            className="settings-panel-checkbox"
-            checked={formantPreserve}
-            onChange={e => applyFormant(e.target.checked)}
-          />
+          <OnOff id="settings-formant-preserve" label="Formant preservation" on={formantPreserve} onChange={applyFormant} />
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title="Playback" index={1}>
+      <SettingsSection title="Playback">
         <SettingsRow
           label="Spacebar behavior"
           htmlFor="settings-spacebar-mode"
-          description="Play/Pause holds position when stopped. Play/Stop returns to where playback started."
+          description="Play / Pause holds position when stopped. Play / Stop returns to where playback started."
         >
-          <XlethSelect
+          <Select
             id="settings-spacebar-mode"
             value={spacebarMode}
             options={SPACEBAR_OPTIONS}
             onChange={applySpacebarMode}
             ariaLabel="Spacebar behavior"
-            className="settings-panel-select"
           />
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title="Project Safety" index={2}>
+      <SettingsSection title="Project safety">
         <SettingsRow
           label="Autosave"
           htmlFor="settings-autosave-interval"
           description="Automatically save recovery points while editing this project."
         >
-          <XlethSelect
+          <Select
             id="settings-autosave-interval"
             value={autosaveInterval}
             options={AUTOSAVE_OPTIONS}
             onChange={nextValue => applyAutosaveInterval(Number(nextValue))}
             ariaLabel="Autosave"
-            className="settings-panel-select"
           />
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title="Export Naming" index={3}>
+      <SettingsSection title="Export naming">
         <SettingsRow
-          label="Filename Format"
+          label="Filename format"
           htmlFor="settings-filename-format"
-          description="Controls generated sample/export names without changing project editing state."
+          description="Controls generated sample and export names without changing project editing state."
         >
-          <XlethSelect
+          <Select
             id="settings-filename-format"
             value={namingFormat}
             options={NAMING_FORMAT_OPTIONS}
             onChange={applyNamingFormat}
-            ariaLabel="Filename Format"
-            className="settings-panel-select"
+            ariaLabel="Filename format"
           />
         </SettingsRow>
       </SettingsSection>
@@ -1014,132 +998,118 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
 
     return (
       <>
-        <SettingsSection title="Swirl with Vibrato" index={0}>
+        <SettingsSection title="Swirl with Vibrato">
           <SettingsRow
             label="Swirl with Vibrato"
             htmlFor="settings-clipfx-swirl-enabled"
             description="Include Swirl when applying defaults to the project. On a clip, Swirl only moves while that clip's Vibrato is on."
           >
-            <input
+            <OnOff
               id="settings-clipfx-swirl-enabled"
-              type="checkbox"
-              className="settings-panel-checkbox"
-              checked={d.swirlEnabled}
-              onChange={e => applyClipVideoFxDefault({ swirlEnabled: e.target.checked })}
+              label="Swirl with Vibrato"
+              on={d.swirlEnabled}
+              onChange={next => applyClipVideoFxDefault({ swirlEnabled: next })}
             />
           </SettingsRow>
           <SettingsRow
             label="Swirl"
-            htmlFor="settings-clipfx-swirl-amount"
             description="Rotation the Vibrato LFO drives. Negative swirls the other way."
           >
-            <div className="settings-panel-range-row">
-              <input
-                id="settings-clipfx-swirl-amount"
-                type="range"
-                min="-1"
-                max="1"
-                step="0.01"
-                className="settings-panel-range"
-                value={d.swirlAmount}
-                onChange={e => applyClipVideoFxDefault({ swirlAmount: Number(e.target.value) })}
-                aria-label="Default Swirl amount"
-              />
-              <span className="settings-panel-range-value">{d.swirlAmount.toFixed(2)}</span>
-            </div>
+            <NumberBox
+              id="settings-clipfx-swirl-amount"
+              label="Default Swirl amount"
+              hideLabel
+              width={88}
+              min={-1}
+              max={1}
+              step={0.01}
+              bipolar
+              centre={0}
+              defaultValue={0}
+              format={fmt2}
+              value={d.swirlAmount}
+              onCommit={v => applyClipVideoFxDefault({ swirlAmount: v })}
+            />
           </SettingsRow>
         </SettingsSection>
 
-        <SettingsSection title="Wave with Scratch" index={1}>
+        <SettingsSection title="Wave with Scratch">
           <SettingsRow
             label="Wave with Scratch"
             htmlFor="settings-clipfx-wave-enabled"
             description="Include Wave when applying defaults to the project. On a clip, Wave only moves while that clip's Scratch is on."
           >
-            <input
+            <OnOff
               id="settings-clipfx-wave-enabled"
-              type="checkbox"
-              className="settings-panel-checkbox"
-              checked={d.waveEnabled}
-              onChange={e => applyClipVideoFxDefault({ waveEnabled: e.target.checked })}
+              label="Wave with Scratch"
+              on={d.waveEnabled}
+              onChange={next => applyClipVideoFxDefault({ waveEnabled: next })}
+            />
+          </SettingsRow>
+          <SettingsRow label="Wave" description="Displacement the Scratch curve drives.">
+            <NumberBox
+              id="settings-clipfx-wave-amount"
+              label="Default Wave amount"
+              hideLabel
+              width={88}
+              min={-1}
+              max={1}
+              step={0.01}
+              bipolar
+              centre={0}
+              defaultValue={0}
+              format={fmt2}
+              value={d.waveAmount}
+              onCommit={v => applyClipVideoFxDefault({ waveAmount: v })}
+            />
+          </SettingsRow>
+          <SettingsRow label="Frequency" description="Ripples across the frame.">
+            <NumberBox
+              id="settings-clipfx-wave-frequency"
+              label="Default Wave frequency"
+              hideLabel
+              width={88}
+              min={0.25}
+              max={64}
+              step={0.25}
+              defaultValue={0.25}
+              format={v => `${v.toFixed(2)}×`}
+              value={d.waveFrequency}
+              onCommit={v => applyClipVideoFxDefault({ waveFrequency: v })}
+            />
+          </SettingsRow>
+          <SettingsRow label="Smear" description="Trails the displaced pixels along the wave.">
+            <NumberBox
+              id="settings-clipfx-smear-amount"
+              label="Default Smear amount"
+              hideLabel
+              width={88}
+              min={-1}
+              max={1}
+              step={0.01}
+              bipolar
+              centre={0}
+              defaultValue={0}
+              format={fmt2}
+              value={d.smearAmount}
+              onCommit={v => applyClipVideoFxDefault({ smearAmount: v })}
             />
           </SettingsRow>
           <SettingsRow
-            label="Wave"
-            htmlFor="settings-clipfx-wave-amount"
-            description="Displacement the Scratch curve drives."
-          >
-            <div className="settings-panel-range-row">
-              <input
-                id="settings-clipfx-wave-amount"
-                type="range"
-                min="-1"
-                max="1"
-                step="0.01"
-                className="settings-panel-range"
-                value={d.waveAmount}
-                onChange={e => applyClipVideoFxDefault({ waveAmount: Number(e.target.value) })}
-                aria-label="Default Wave amount"
-              />
-              <span className="settings-panel-range-value">{d.waveAmount.toFixed(2)}</span>
-            </div>
-          </SettingsRow>
-          <SettingsRow
-            label="Freq"
-            htmlFor="settings-clipfx-wave-frequency"
-            description="Ripples across the frame."
-          >
-            <div className="settings-panel-range-row">
-              <input
-                id="settings-clipfx-wave-frequency"
-                type="range"
-                min="0.25"
-                max="64"
-                step="0.25"
-                className="settings-panel-range"
-                value={d.waveFrequency}
-                onChange={e => applyClipVideoFxDefault({ waveFrequency: Number(e.target.value) })}
-                aria-label="Default Wave frequency"
-              />
-              <span className="settings-panel-range-value">{d.waveFrequency.toFixed(2)}x</span>
-            </div>
-          </SettingsRow>
-          <SettingsRow
-            label="Smear"
-            htmlFor="settings-clipfx-smear-amount"
-            description="Trails the displaced pixels along the wave."
-          >
-            <div className="settings-panel-range-row">
-              <input
-                id="settings-clipfx-smear-amount"
-                type="range"
-                min="-1"
-                max="1"
-                step="0.01"
-                className="settings-panel-range"
-                value={d.smearAmount}
-                onChange={e => applyClipVideoFxDefault({ smearAmount: Number(e.target.value) })}
-                aria-label="Default Smear amount"
-              />
-              <span className="settings-panel-range-value">{d.smearAmount.toFixed(2)}</span>
-            </div>
-          </SettingsRow>
-          <SettingsRow
-            label="Reverse Wave with Scratch"
+            label="Reverse wave with Scratch"
             htmlFor="settings-clipfx-reverse-wave"
             description="Flips the wave direction while the Scratch curve runs backwards."
           >
-            <input
+            <OnOff
               id="settings-clipfx-reverse-wave"
-              type="checkbox"
-              className="settings-panel-checkbox"
-              checked={d.reverseWaveWithScratch}
-              onChange={e => applyClipVideoFxDefault({ reverseWaveWithScratch: e.target.checked })}
+              label="Reverse wave with Scratch"
+              on={d.reverseWaveWithScratch}
+              onChange={next => applyClipVideoFxDefault({ reverseWaveWithScratch: next })}
             />
           </SettingsRow>
         </SettingsSection>
 
-        <SettingsSection title="Apply to Project" index={2}>
+        <SettingsSection title="Apply to project">
           <SettingsRow
             label="Apply to video clips without it on"
             description={
@@ -1150,21 +1120,19 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
                   : `${clipFxCandidates.length} of ${videoClipCount} video clip(s) would change. Clips that already have it on are left alone.`
             }
           >
-            <button
-              type="button"
-              className="settings-panel-button"
+            <Button
               onClick={applyClipVideoFxToProject}
               disabled={nothingEnabled || clipFxStatus.state === 'applying' || clipFxCandidates.length === 0}
             >
-              {clipFxStatus.state === 'applying' ? 'Applying...' : 'Apply to Project'}
-            </button>
+              {clipFxStatus.state === 'applying' ? 'Applying…' : 'Apply to project'}
+            </Button>
           </SettingsRow>
           {clipFxStatus.message && (
-            <div className="settings-panel-hint settings-panel-hint--inline">{clipFxStatus.message}</div>
+            <SettingsHint tone={clipFxStatus.state === 'error' ? 'warning' : 'default'}>{clipFxStatus.message}</SettingsHint>
           )}
-          <div className="settings-panel-hint settings-panel-hint--inline">
-            These values also seed a clip&apos;s Swirl/Wave the first time you switch it on from the clip menu.
-          </div>
+          <SettingsHint>
+            These values also seed a clip&apos;s Swirl and Wave the first time you switch it on from the clip menu.
+          </SettingsHint>
         </SettingsSection>
       </>
     )
@@ -1172,48 +1140,42 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
 
   const renderAudio = () => (
     <>
-      <SettingsSection title="Output Device" index={0}>
+      <SettingsSection title="Output device">
         <SettingsRow
           label="Output device"
           htmlFor="settings-audio-output-device"
           description="The audio driver and device Xleth plays through."
         >
-          <div className="settings-panel-inline-row">
-            <XlethSelect
-              id="settings-audio-output-device"
-              value={audioSelectedDevice}
-              options={audioDeviceOptions}
-              onChange={applyAudioDeviceChange}
-              ariaLabel="Audio output device"
-              className="settings-panel-select"
-            />
-            <button
-              type="button"
-              className="settings-panel-button settings-panel-button--icon"
-              onClick={applyAudioRescan}
-              disabled={audioRescanning}
-              title="Rescan for connected audio devices"
-            >
-              <RefreshCw size={14} aria-hidden="true" className={audioRescanning ? 'settings-panel-spin' : ''} />
-              <span>{audioRescanning ? 'Rescanning...' : 'Rescan'}</span>
-            </button>
-          </div>
+          <Select
+            id="settings-audio-output-device"
+            value={audioSelectedDevice}
+            options={audioDeviceOptions}
+            onChange={applyAudioDeviceChange}
+            ariaLabel="Audio output device"
+          />
+          <Button
+            onClick={applyAudioRescan}
+            disabled={audioRescanning}
+            hint="Rescan for connected audio devices"
+            glyph={<RefreshCw size={14} aria-hidden="true" className={audioRescanning ? settingsStyles.spin : ''} />}
+          >
+            {audioRescanning ? 'Rescanning…' : 'Rescan'}
+          </Button>
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title="Buffer & Latency" index={1}>
+      <SettingsSection title="Buffer and latency">
         <SettingsRow
           label="Buffer size"
           htmlFor="settings-audio-buffer-size"
           description="Trade latency for playback stability. Lower is snappier but more prone to crackle."
         >
-          <XlethSelect
+          <Select
             id="settings-audio-buffer-size"
             value={audioBufferSize ?? ''}
             options={audioBufferSizeOptions}
             onChange={applyAudioBufferSize}
             ariaLabel="Buffer size"
-            className="settings-panel-select"
           />
         </SettingsRow>
         <SettingsRow
@@ -1221,332 +1183,295 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
           htmlFor="settings-audio-sample-rate"
           description="The device's operating sample rate."
         >
-          <XlethSelect
+          <Select
             id="settings-audio-sample-rate"
             value={audioSampleRate ?? ''}
             options={audioSampleRateOptions}
             onChange={applyAudioSampleRate}
             ariaLabel="Sample rate"
-            className="settings-panel-select"
           />
         </SettingsRow>
         <SettingsRow label="Output latency">
-          <span className="settings-panel-value">
-            {typeof audioLiveLatencyMs === 'number' ? `${audioLiveLatencyMs.toFixed(1)} ms` : '—'}
-          </span>
+          <SettingsValue>
+            {typeof audioLiveLatencyMs === 'number' ? formatValue(audioLiveLatencyMs, 'ms') : '—'}
+          </SettingsValue>
         </SettingsRow>
       </SettingsSection>
 
-      <SettingsSection title="Audio Diagnostics" index={2} className="settings-panel-section--wide">
+      <SettingsSection title="Audio diagnostics" wide>
         <AudioPerformanceDiagnosticsPanel />
       </SettingsSection>
     </>
   )
 
   const renderPlugins = () => (
-    <SettingsSection title="VST3 Plugin Library" index={0} className="settings-panel-section--vst-browser">
+    <SettingsSection title="VST3 plugin library" wide>
       <VstBrowser embedded />
     </SettingsSection>
   )
 
   const renderGraphics = () => (
     <>
-      <SettingsSection title="Graphics Adapter" index={0}>
+      <SettingsSection title="Graphics adapter">
         <SettingsRow label="Graphics adapter">
-          <span
-            className={`settings-panel-value settings-panel-value--${gpuSummaryTone()}`}
+          <SettingsValue
+            tone={gpuSummaryTone()}
             data-gpu-state={gpuStatus.state}
             data-hw-encoder-state={hwEncoderStatus.state}
           >
             {gpuSummaryText()}
-          </span>
+          </SettingsValue>
         </SettingsRow>
         {gpuStatus.adapters.length > 0 && (
-          <ul className="settings-panel-hint settings-panel-list">
+          <ul className={settingsStyles.list}>
             {gpuStatus.adapters.map((a, i) => (
               <li key={i}>{formatAdapterLine(a)}</li>
             ))}
           </ul>
         )}
-        <div className="settings-panel-hint">
-          Confirm Xleth detects your graphics adapter correctly. NVIDIA, AMD, and Intel adapters are supported for hardware video encode/decode. If no hardware video encoder is found, Xleth uses software video encode/decode.
-        </div>
+        <SettingsHint>
+          Confirm Xleth detects your graphics adapter correctly. NVIDIA, AMD, and Intel adapters are supported for hardware video encode and decode. If no hardware video encoder is found, Xleth uses software video encode and decode.
+        </SettingsHint>
       </SettingsSection>
 
-      <SettingsSection title="Video Pipeline" index={1}>
+      <SettingsSection title="Video pipeline">
         <SettingsRow
-          label="Video encode/decode"
+          label="Video encode and decode"
           htmlFor="settings-video-mode"
           description="Auto uses hardware acceleration if available, falling back to software."
         >
-          <XlethSelect
+          <Select
             id="settings-video-mode"
             value={videoMode}
             options={VIDEO_MODE_OPTIONS}
             onChange={applyVideoMode}
-            ariaLabel="Video encode/decode"
-            className="settings-panel-select"
+            ariaLabel="Video encode and decode"
           />
         </SettingsRow>
-        <div className="settings-panel-hint">
-          Software always uses CPU-based encode/decode. Hardware only uses GPU acceleration and fails loudly if unavailable. Display compositing always uses OpenGL regardless of this setting.
-        </div>
+        <SettingsHint>
+          Software always uses CPU-based encode and decode. Hardware only uses GPU acceleration and fails loudly if unavailable. Display compositing always uses OpenGL regardless of this setting.
+        </SettingsHint>
       </SettingsSection>
 
-      <SettingsSection title="Preview Proxies" index={2}>
+      <SettingsSection title="Preview proxies">
         <SettingsRow
           label="Proxy codec"
           htmlFor="settings-proxy-codec"
           description="Format of the small preview copies Xleth makes of your video sources."
         >
-          <XlethSelect
+          <Select
             id="settings-proxy-codec"
             value={proxyCodec}
             options={PROXY_CODEC_OPTIONS}
             onChange={applyProxyCodec}
             ariaLabel="Proxy codec"
-            className="settings-panel-select"
           />
         </SettingsRow>
-        <div className="settings-panel-hint">
+        <SettingsHint>
           H.264 proxies take about a tenth of the disk space. All-intra proxies seek instantly but are 10 to 20 times larger. The choice applies to new proxies. When H.264 is selected, opening a project converts its older all-intra proxies in the background.
-        </div>
+        </SettingsHint>
         {proxyCodecState && proxyCodecState.requested === 'h264' && !proxyCodecState.h264Available && (
-          <div className="settings-panel-hint settings-panel-hint--warning">
+          <SettingsHint tone="warning">
             No H.264 encoder is available on this system (Windows N editions need the Media Feature Pack), so new proxies use all-intra.
-          </div>
+          </SettingsHint>
         )}
       </SettingsSection>
 
-      <SettingsSection title="Regenerable Files" index={3}>
+      <SettingsSection title="Regenerable files">
         <SettingsRow
           label="Delete regenerable files when closing a project"
           htmlFor="settings-purge-on-close"
           description="Removes preview proxies, thumbnails and waveform caches when you close or switch projects, or quit."
         >
-          <input
+          <OnOff
             id="settings-purge-on-close"
-            type="checkbox"
-            className="settings-panel-checkbox"
-            checked={purgeOnClose}
-            onChange={e => applyPurgeOnClose(e.target.checked)}
+            label="Delete regenerable files when closing a project"
+            on={purgeOnClose}
+            onChange={applyPurgeOnClose}
           />
         </SettingsRow>
-        <div className="settings-panel-hint">
+        <SettingsHint>
           Saves disk space between sessions. Your source media and project file are never touched. Xleth rebuilds
           whatever the project needs in the background the next time you open it — you can keep working meanwhile,
           and the first playback may be slower until the previews are back. Previews whose source media is offline
           are kept, because they cannot be rebuilt. File &gt; Clean up project removes leftovers on demand.
-        </div>
-        {purgeOnCloseError && (
-          <div className="settings-panel-hint settings-panel-hint--warning">
-            {purgeOnCloseError}
-          </div>
-        )}
+        </SettingsHint>
+        {purgeOnCloseError && <SettingsHint tone="warning">{purgeOnCloseError}</SettingsHint>}
       </SettingsSection>
 
-      <SettingsSection title="Visual Preview Diagnostics" index={4}>
+      <SettingsSection title="Visual preview diagnostics">
         <SettingsRow
           label="Visual preview diagnostic"
           description="Saves a plain-text report of the main preview and grid pipeline."
         >
-          <button
-            type="button"
-            className="settings-panel-button"
-            onClick={exportVisualPreviewDiagnostic}
-            disabled={diagState.status === 'working'}
-          >
-            {diagState.status === 'working' ? 'Exporting...' : 'Export Visual Preview Diagnostic Log...'}
-          </button>
+          <Button onClick={exportVisualPreviewDiagnostic} disabled={diagState.status === 'working'}>
+            {diagState.status === 'working' ? 'Exporting…' : 'Export diagnostic log…'}
+          </Button>
         </SettingsRow>
-        <div className="settings-panel-hint">
-          Send this file to support if the main preview is blank, black, or frozen. The Sample Selector preview and imported-video popup use a different code path.
-        </div>
+        <SettingsHint>
+          Send this file to support if the main preview is blank, black, or frozen. The sample selector preview and imported-video popup use a different code path.
+        </SettingsHint>
         {diagState.status === 'ok' && (
-          <div className="settings-panel-hint settings-panel-hint--success">
-            {diagState.message} {diagState.path}
-          </div>
+          <SettingsHint tone="success">{diagState.message} {diagState.path}</SettingsHint>
         )}
         {diagState.status === 'error' && (
-          <div className="settings-panel-hint settings-panel-hint--warning">
-            Export failed: {diagState.message}
-          </div>
+          <SettingsHint tone="warning">Export failed: {diagState.message}</SettingsHint>
         )}
       </SettingsSection>
     </>
   )
 
-  const renderAppearance = () => {
-    return (
-      <>
-        <SettingsSection title="Theme" index={0}>
-          <SettingsRow
-            label="Accent color"
-            htmlFor="settings-appearance-accent"
-            description="Highlights, active controls, and selection across the app."
-          >
-            <div className="settings-panel-color-row">
-              <input
-                id="settings-appearance-accent"
-                type="color"
-                className="settings-panel-color-input"
-                value={accentColor}
-                onChange={handleAccentChange}
-                aria-label="Accent color"
-              />
-              <span className="settings-panel-range-value">{accentColor.toUpperCase()}</span>
-            </div>
-          </SettingsRow>
-          <SettingsRow
-            label="Brightness"
-            htmlFor="settings-appearance-brightness"
-            description="Lowest is near-black with light text; highest is light grey with dark text."
-          >
-            <div className="settings-panel-range-row">
-              <input
-                id="settings-appearance-brightness"
-                type="range"
-                min="0"
-                max="100"
-                step="1"
-                className="settings-panel-range"
-                value={brightness}
-                onChange={handleBrightnessChange}
-                aria-label="Brightness"
-              />
-              <span className="settings-panel-range-value">{brightness}%</span>
-            </div>
-          </SettingsRow>
-          <SettingsRow
-            label="Tint hue"
-            htmlFor="settings-appearance-hue"
-            description="Direction of the colour cast on panels, text, and borders. No effect while Tint is 0 %."
-          >
-            <div className="settings-panel-range-row">
-              <input
-                id="settings-appearance-hue"
-                type="range"
-                min="0"
-                max="359"
-                step="1"
-                className="settings-panel-range settings-panel-range--hue"
-                value={chromeHue}
-                onChange={handleChromeHueChange}
-                aria-label="Tint hue"
-              />
-              <span className="settings-panel-range-value">{chromeHue}&deg;</span>
-            </div>
-          </SettingsRow>
-          <SettingsRow
-            label="Tint"
-            htmlFor="settings-appearance-saturation"
-            description="How strongly the hue reads. 0 % is neutral grey, which is what picture colour on the Preview is judged against; 100 % is the most cast that still reads as neutral. Past it the chrome is tinted."
-          >
-            <div className="settings-panel-range-row">
-              <input
-                id="settings-appearance-saturation"
-                type="range"
-                min="0"
-                max={APPEARANCE_TINT_MAX}
-                step="5"
-                className="settings-panel-range settings-panel-range--saturation"
-                // Track previews the chosen hue so the control shows what it does.
-                style={{
-                  '--range-track-image': `linear-gradient(to right, hsl(${chromeHue} 0% 45%), hsl(${chromeHue} 12% 45%) ${Math.round(10000 / APPEARANCE_TINT_MAX) / 100}%, hsl(${chromeHue} 60% 45%))`,
-                }}
-                value={chromeSaturation}
-                onChange={handleChromeSaturationChange}
-                aria-label="Tint"
-              />
-              <span className="settings-panel-range-value">{chromeSaturation}%</span>
-            </div>
-          </SettingsRow>
-          <SettingsRow
-            label="Text contrast"
-            htmlFor="settings-appearance-contrast"
-            description="Separation between text and its background. Body text stays above the WCAG AA floor at every setting."
-          >
-            <div className="settings-panel-range-row">
-              <input
-                id="settings-appearance-contrast"
-                type="range"
-                min={APPEARANCE_CONTRAST_MIN}
-                max={APPEARANCE_CONTRAST_MAX}
-                step="5"
-                className="settings-panel-range"
-                value={textContrast}
-                onChange={handleTextContrastChange}
-                aria-label="Text contrast"
-              />
-              <span className="settings-panel-range-value">{textContrast}%</span>
-            </div>
-          </SettingsRow>
-          <ChromeReadouts
-            values={themeContext?.resolved?.values ?? {}}
-            onNeutralize={() => {
-              setChromeSaturation(0)
-              applyAppearance(accentColor, brightness, appearanceOptions({ saturation: 0 }))
-            }}
+  const renderAppearance = () => (
+    <>
+      <SettingsSection title="Theme">
+        <SettingsRow
+          label="Accent color"
+          htmlFor="settings-appearance-accent"
+          description="Highlights, active controls, and selection across the app."
+        >
+          <input
+            id="settings-appearance-accent"
+            type="color"
+            className={settingsStyles.color}
+            value={accentColor}
+            onChange={e => handleAccentChange(e.target.value)}
+            aria-label="Accent color"
           />
-        </SettingsSection>
+          <span className={settingsStyles.mono}>{accentColor.toUpperCase()}</span>
+        </SettingsRow>
+        <SettingsRow
+          label="Brightness"
+          description="Lowest is near-black with light text; highest is light grey with dark text."
+        >
+          <NumberBox
+            id="settings-appearance-brightness"
+            label="Brightness"
+            hideLabel
+            width={88}
+            min={0}
+            max={100}
+            step={1}
+            unit="%"
+            defaultValue={DEFAULT_APPEARANCE_DARKNESS}
+            quantize={Math.round}
+            value={brightness}
+            onChange={handleBrightnessChange}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Tint hue"
+          description="Direction of the colour cast on panels, text, and borders. No effect while Tint is 0 %."
+        >
+          <NumberBox
+            id="settings-appearance-hue"
+            label="Tint hue"
+            hideLabel
+            width={88}
+            min={0}
+            max={359}
+            step={1}
+            format={v => `${Math.round(v)}°`}
+            defaultValue={DEFAULT_APPEARANCE_HUE}
+            quantize={Math.round}
+            value={chromeHue}
+            onChange={handleChromeHueChange}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Tint"
+          description="How strongly the hue reads. 0 % is neutral grey, which is what picture colour on the Preview is judged against; 100 % is the most cast that still reads as neutral. Past it the chrome is tinted."
+        >
+          <NumberBox
+            id="settings-appearance-saturation"
+            label="Tint"
+            hideLabel
+            width={88}
+            min={0}
+            max={APPEARANCE_TINT_MAX}
+            step={5}
+            unit="%"
+            defaultValue={DEFAULT_APPEARANCE_SATURATION}
+            quantize={v => Math.round(v / 5) * 5}
+            value={chromeSaturation}
+            onChange={handleChromeSaturationChange}
+          />
+        </SettingsRow>
+        <SettingsRow
+          label="Text contrast"
+          description="Separation between text and its background. Body text stays above the WCAG AA floor at every setting."
+        >
+          <NumberBox
+            id="settings-appearance-contrast"
+            label="Text contrast"
+            hideLabel
+            width={88}
+            min={APPEARANCE_CONTRAST_MIN}
+            max={APPEARANCE_CONTRAST_MAX}
+            step={5}
+            unit="%"
+            defaultValue={DEFAULT_APPEARANCE_CONTRAST}
+            quantize={v => Math.round(v / 5) * 5}
+            value={textContrast}
+            onChange={handleTextContrastChange}
+          />
+        </SettingsRow>
+        <ChromeReadouts
+          values={themeContext?.resolved?.values ?? {}}
+          onNeutralize={() => {
+            setChromeSaturation(0)
+            applyAppearance(accentColor, brightness, appearanceOptions({ saturation: 0 }))
+          }}
+        />
+      </SettingsSection>
 
-        {themeContext && (
-          <SettingsSection title="Theme editor" index={1}>
-            <SettingsRow
-              label="Edit themes"
-              description="Pick a shipped or saved theme, adjust the surface ramp and accent, or set every token by hand. Apply makes it the active theme; Save as New Theme keeps a copy."
-            >
-              <Button
-                aria-expanded={themeEditorOpen}
-                aria-controls="settings-theme-editor"
-                onClick={() => setThemeEditorOpen((open) => !open)}
-              >
-                {themeEditorOpen ? 'Close editor' : 'Open editor'}
-              </Button>
-            </SettingsRow>
-            {themeEditorOpen && (
-              <div id="settings-theme-editor" data-theme-editor-host>
-                <ThemeEditorContent embedded onRequestClose={() => setThemeEditorOpen(false)} />
-              </div>
-            )}
-          </SettingsSection>
-        )}
-
-        <SettingsSection title="Interface scale" index={2}>
+      {themeContext && (
+        <SettingsSection title="Theme editor">
           <SettingsRow
-            label="UI scale"
-            htmlFor="settings-ui-scale"
-            description="Scales the whole interface, text and controls together (100 % to 200 %). The Zoom In, Zoom Out and Reset Zoom commands and their shortcuts move this same value."
+            label="Edit themes"
+            description="Pick a shipped or saved theme, adjust the surface ramp and accent, or set every token by hand. Apply makes it the active theme; Save as new theme keeps a copy."
           >
-            <div className="settings-panel-range-row">
-              <input
-                id="settings-ui-scale"
-                type="range"
-                min={UI_SCALE_MIN}
-                max={UI_SCALE_MAX}
-                step={UI_SCALE_STEP}
-                className="settings-panel-range"
-                value={uiScalePercent}
-                onChange={(event) => setUiScalePercent(Number(event.target.value))}
-                aria-label="UI scale"
-                aria-valuetext={`UI scale, ${uiScalePercent} percent`}
-              />
-              <span className="settings-panel-range-value">{uiScalePercent}%</span>
-              <button
-                type="button"
-                className="settings-panel-button"
-                onClick={() => setUiScalePercent(UI_SCALE_DEFAULT)}
-                disabled={uiScalePercent === UI_SCALE_DEFAULT}
-              >
-                Reset
-              </button>
-            </div>
+            <Button
+              aria-expanded={themeEditorOpen}
+              aria-controls="settings-theme-editor"
+              onClick={() => setThemeEditorOpen((open) => !open)}
+            >
+              {themeEditorOpen ? 'Close editor' : 'Open editor'}
+            </Button>
           </SettingsRow>
+          {themeEditorOpen && (
+            <div id="settings-theme-editor" data-theme-editor-host className={settingsStyles.themeEditorHost}>
+              <ThemeEditorContent embedded onRequestClose={() => setThemeEditorOpen(false)} />
+            </div>
+          )}
         </SettingsSection>
+      )}
 
-      </>
-    )
-  }
+      <SettingsSection title="Interface scale">
+        <SettingsRow
+          label="UI scale"
+          description="Scales the whole interface, text and controls together (100 % to 200 %). The Zoom In, Zoom Out and Reset Zoom commands and their shortcuts move this same value."
+        >
+          <NumberBox
+            id="settings-ui-scale"
+            label="UI scale"
+            hideLabel
+            width={88}
+            min={UI_SCALE_MIN}
+            max={UI_SCALE_MAX}
+            step={UI_SCALE_STEP}
+            unit="%"
+            defaultValue={UI_SCALE_DEFAULT}
+            quantize={v => Math.round(v / UI_SCALE_STEP) * UI_SCALE_STEP}
+            value={uiScalePercent}
+            onCommit={setUiScalePercent}
+          />
+          <Button onClick={() => setUiScalePercent(UI_SCALE_DEFAULT)} disabled={uiScalePercent === UI_SCALE_DEFAULT}>
+            Reset
+          </Button>
+        </SettingsRow>
+      </SettingsSection>
+    </>
+  )
 
   const renderLaunchers = () => {
     function basename(p) {
@@ -1612,122 +1537,69 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
     }
 
     return (
-      <SettingsSection title="Quick Launchers" index={0}>
-        {launchers.length === 0 && (
-          <div className="settings-panel-hint">No quick launchers configured.</div>
+      <SettingsSection title="Quick launchers">
+        {launchers.length === 0 && pendingLauncher == null && (
+          <SettingsHint>No quick launchers configured.</SettingsHint>
         )}
 
         {launchers.map((launcher) =>
           editingId === launcher.id ? (
-            <div key={launcher.id} className="settings-quick-launcher-edit-row">
-              <input
-                className="settings-panel-text-input"
+            <div key={launcher.id} className={settingsStyles.launcherEdit}>
+              <TextField
+                label="Launcher label"
                 value={editDraft.label}
                 placeholder="Label"
-                onChange={e => setEditDraft(d => ({ ...d, label: e.target.value }))}
+                onChange={label => setEditDraft(d => ({ ...d, label }))}
               />
-              <button
-                type="button"
-                className="settings-panel-button settings-panel-button--icon"
-                onClick={browseExeForEdit}
-                title={editDraft.exePath || 'Choose EXE...'}
-              >
-                <span>{editDraft.exePath ? basename(editDraft.exePath) : 'Choose EXE...'}</span>
-              </button>
-              <button
-                type="button"
-                className="settings-panel-button settings-panel-button--icon"
-                onClick={browsePngForEdit}
-                title={editDraft.iconPngPath || 'Choose PNG...'}
-              >
-                <span>{editDraft.iconPngPath ? basename(editDraft.iconPngPath) : 'Choose PNG...'}</span>
-              </button>
-              <button
-                type="button"
-                className="settings-panel-button"
-                onClick={confirmEdit}
-                disabled={!editDraft?.label || !editDraft?.exePath}
-              >
-                Save
-              </button>
-              <button
-                type="button"
-                className="settings-panel-button"
-                onClick={() => { setEditingId(null); setEditDraft(null) }}
-              >
-                Cancel
-              </button>
+              <Button onClick={browseExeForEdit} hint={editDraft.exePath || 'Choose EXE'}>
+                {editDraft.exePath ? basename(editDraft.exePath) : 'Choose EXE…'}
+              </Button>
+              <Button onClick={browsePngForEdit} hint={editDraft.iconPngPath || 'Choose PNG'}>
+                {editDraft.iconPngPath ? basename(editDraft.iconPngPath) : 'Choose PNG…'}
+              </Button>
+              <Button variant="primary" onClick={confirmEdit} disabled={!editDraft?.label || !editDraft?.exePath}>
+                Save launcher
+              </Button>
+              <Button onClick={() => { setEditingId(null); setEditDraft(null) }}>Cancel</Button>
             </div>
           ) : (
-            <div key={launcher.id} className="settings-quick-launcher-row">
-              <span className="settings-quick-launcher-label">{launcher.label}</span>
-              <span className="settings-quick-launcher-path" title={launcher.exePath}>{launcher.exePath}</span>
-              <button
-                type="button"
-                className="settings-panel-button"
+            <div key={launcher.id} className={settingsStyles.launcher}>
+              <span className={settingsStyles.label}>{launcher.label}</span>
+              <span className={settingsStyles.launcherPath} title={launcher.exePath}>{launcher.exePath}</span>
+              <Button
                 onClick={() => { setEditingId(launcher.id); setEditDraft({ label: launcher.label, exePath: launcher.exePath, iconPngPath: launcher.iconPngPath }) }}
               >
                 Edit
-              </button>
-              <button
-                type="button"
-                className="settings-panel-button"
-                onClick={() => removeLauncher(launcher.id)}
-              >
-                Remove
-              </button>
+              </Button>
+              <Button onClick={() => removeLauncher(launcher.id)}>Remove</Button>
             </div>
           )
         )}
 
         {pendingLauncher == null ? (
-          <button
-            type="button"
-            className="settings-panel-button settings-panel-button--icon"
-            onClick={() => setPendingLauncher({ label: '', exePath: '', iconPngPath: '' })}
-            style={{ marginTop: launchers.length > 0 ? '8px' : '0' }}
-          >
-            <span>Add Quick Launcher...</span>
-          </button>
+          <div className={settingsStyles.launcherEdit}>
+            <Button onClick={() => setPendingLauncher({ label: '', exePath: '', iconPngPath: '' })}>
+              Add quick launcher…
+            </Button>
+          </div>
         ) : (
-          <div className="settings-quick-launcher-edit-row">
-            <input
-              className="settings-panel-text-input"
+          <div className={settingsStyles.launcherEdit}>
+            <TextField
+              label="Launcher label"
               value={pendingLauncher.label}
               placeholder="Label (e.g. FL Studio)"
-              onChange={e => setPendingLauncher(p => ({ ...p, label: e.target.value }))}
+              onChange={label => setPendingLauncher(p => ({ ...p, label }))}
             />
-            <button
-              type="button"
-              className="settings-panel-button settings-panel-button--icon"
-              onClick={browseExeForPending}
-              title={pendingLauncher.exePath || 'Choose EXE...'}
-            >
-              <span>{pendingLauncher.exePath ? basename(pendingLauncher.exePath) : 'Choose EXE...'}</span>
-            </button>
-            <button
-              type="button"
-              className="settings-panel-button settings-panel-button--icon"
-              onClick={browsePngForPending}
-              title={pendingLauncher.iconPngPath || 'Choose PNG (optional)...'}
-            >
-              <span>{pendingLauncher.iconPngPath ? basename(pendingLauncher.iconPngPath) : 'Choose PNG (optional)...'}</span>
-            </button>
-            <button
-              type="button"
-              className="settings-panel-button"
-              onClick={confirmAdd}
-              disabled={!pendingLauncher.label || !pendingLauncher.exePath}
-            >
-              Add
-            </button>
-            <button
-              type="button"
-              className="settings-panel-button"
-              onClick={() => setPendingLauncher(null)}
-            >
-              Cancel
-            </button>
+            <Button onClick={browseExeForPending} hint={pendingLauncher.exePath || 'Choose EXE'}>
+              {pendingLauncher.exePath ? basename(pendingLauncher.exePath) : 'Choose EXE…'}
+            </Button>
+            <Button onClick={browsePngForPending} hint={pendingLauncher.iconPngPath || 'Choose PNG (optional)'}>
+              {pendingLauncher.iconPngPath ? basename(pendingLauncher.iconPngPath) : 'Choose PNG (optional)…'}
+            </Button>
+            <Button variant="primary" onClick={confirmAdd} disabled={!pendingLauncher.label || !pendingLauncher.exePath}>
+              Add launcher
+            </Button>
+            <Button onClick={() => setPendingLauncher(null)}>Cancel</Button>
           </div>
         )}
       </SettingsSection>
@@ -1760,87 +1632,64 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
 
   return (
     <div
-      className="settings-panel-overlay"
+      className={settingsStyles.overlay}
       onMouseDown={event => {
         if (event.target === event.currentTarget) onClose?.()
       }}
     >
       <div
-        className="settings-panel"
+        className={settingsStyles.panel}
         role="dialog"
         aria-modal="true"
         aria-labelledby="settings-panel-title"
         onMouseDown={event => event.stopPropagation()}
       >
-        <div className="settings-panel-header">
-          <div className="settings-panel-headline">
-            <div id="settings-panel-title" className="settings-panel-title">Settings</div>
-            {/* The scope, not the page. The page's own description lives on the
-                content heading below, so the two never say the same thing. */}
-            <div className="settings-panel-subtitle">{activeTabDef.summary}</div>
-          </div>
-
-          <div
-            className="settings-panel-tabs"
-            role="tablist"
-            aria-label="Settings scope"
-          >
-            {SETTINGS_TABS.map(tab => {
-              const selected = activeTab === tab.id
-              return (
-                <button
-                  key={tab.id}
-                  type="button"
-                  role="tab"
-                  id={`settings-tab-${tab.id}`}
-                  aria-selected={selected}
-                  aria-controls="settings-panel-subnav"
-                  className={`settings-panel-tab${selected ? ' settings-panel-tab--active' : ''}`}
-                  onClick={() => selectTab(tab.id)}
-                >
-                  {tab.label}
-                </button>
-              )
-            })}
-          </div>
-
-          <button className="settings-panel-close" onClick={onClose} aria-label="Close Settings">
-            <X size={15} aria-hidden="true" />
-          </button>
+        <div className={settingsStyles.header}>
+          <h2 id="settings-panel-title" className={settingsStyles.title}>Settings</h2>
+          <IconButton label="Close Settings" onClick={onClose}>
+            <X aria-hidden="true" />
+          </IconButton>
         </div>
 
-        <div className="settings-panel-shell">
-          <nav
-            className="settings-panel-categories"
-            id="settings-panel-subnav"
-            aria-label={`${activeTabDef.label} settings`}
-          >
-            {visibleCategories.map(category => {
-              const selected = activeCategory === category.id
-              return (
-                <button
-                  key={category.id}
-                  type="button"
-                  className={`settings-panel-category${selected ? ' settings-panel-category--active' : ''}`}
-                  aria-current={selected ? 'page' : undefined}
-                  onClick={() => setActiveCategory(category.id)}
-                >
-                  <span>{category.label}</span>
-                </button>
-              )
-            })}
+        <div className={settingsStyles.body}>
+          <nav className={settingsStyles.nav} id="settings-panel-subnav" aria-label="Settings pages">
+            {SETTINGS_TABS.map(tab => (
+              <div
+                key={tab.id}
+                className={settingsStyles.navGroup}
+                role="group"
+                aria-labelledby={`settings-group-${tab.id}`}
+              >
+                <div id={`settings-group-${tab.id}`} className={settingsStyles.navGroupLabel}>{tab.label}</div>
+                <div className={settingsStyles.navGroupNote}>{tab.summary}</div>
+                {SETTINGS_CATEGORIES.filter(category => category.tab === tab.id).map(category => {
+                  const selected = activeCategory === category.id
+                  return (
+                    <button
+                      key={category.id}
+                      type="button"
+                      className={settingsStyles.navItem}
+                      aria-current={selected ? 'page' : undefined}
+                      onClick={() => setActiveCategory(category.id)}
+                    >
+                      {category.label}
+                    </button>
+                  )
+                })}
+              </div>
+            ))}
           </nav>
 
-          <div className="settings-panel-content-pane">
+          <div className={settingsStyles.content}>
             <div
               key={activeCategory}
-              className="settings-panel-content-animate"
+              className={settingsStyles.page}
               data-settings-category={activeCategory}
               data-settings-tab={activeTabDef.id}
             >
-              <div className="settings-panel-category-heading">
-                <div className="settings-panel-category-title">{activeCategoryDef.label}</div>
-                <div className="settings-panel-category-description">{activeCategoryDef.summary}</div>
+              <div className={settingsStyles.pageHead}>
+                <h2 className={settingsStyles.pageTitle}>{activeCategoryDef.label}</h2>
+                <div className={settingsStyles.pageDescription}>{activeCategoryDef.summary}</div>
               </div>
               {renderActiveCategory()}
             </div>
