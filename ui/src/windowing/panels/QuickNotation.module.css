@@ -1,0 +1,161 @@
+/* Quick Notation (round 2, step 20): a mono notation input over a highlight layer, a symbol key and the insert
+ * actions, on kit controls. Mono is for the notation itself and the symbols (code-like); everything else is the UI
+ * face. Type: 13 (notation), 12, 11. */
+@layer kit {
+  .panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-3);
+    min-height: 0;
+    overflow-y: auto;
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    color: var(--ui-ink);
+  }
+
+  /* The textarea sits over a highlight layer that must share its exact metrics, so the symbols read in colour
+     (rests dim, length marks in the value colour) while the caret and selection stay native. */
+  .notationWrap {
+    position: relative;
+    flex: 0 0 112px;
+    height: 112px;
+    background: var(--ui-g0);
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+  }
+
+  .notationWrap:focus-within {
+    outline: 1px solid var(--ui-select);
+  }
+
+  .highlight,
+  .notation {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    min-height: 0;
+    margin: 0;
+    padding: var(--space-2) var(--space-3);
+    box-sizing: border-box;
+    overflow: hidden;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    border: 0;
+    border-radius: 0;
+    background: transparent;
+    font-family: var(--ui-font-mono);
+    font-size: var(--type-13);
+    line-height: 1.6;
+    letter-spacing: 0;
+  }
+
+  .highlight {
+    color: var(--ui-ink);
+    pointer-events: none;
+  }
+
+  .highlight [data-tone="rest"] { color: var(--ui-ink-2); }
+  .highlight [data-tone="accent"] { color: var(--ui-value); font-weight: var(--weight-semibold); }
+
+  .notation {
+    display: block;
+    resize: none;
+    outline: none;
+    color: transparent;
+    caret-color: var(--ui-ink);
+  }
+
+  .notation::placeholder { color: var(--ui-ink-3); }
+
+  .status {
+    min-height: 16px;
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+
+  .legend {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .legendTitle {
+    margin: 0;
+    font-size: var(--type-13);
+    font-weight: var(--weight-semibold);
+  }
+
+  .legendList {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+    gap: 2px var(--space-2);
+    margin: 0;
+    padding: 0;
+    list-style: none;
+  }
+
+  .legendItem {
+    box-sizing: border-box;
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-2);
+    width: 100%;
+    min-height: var(--row-h);
+    padding: var(--space-1) var(--space-1);
+    border: 0;
+    border-radius: var(--ui-radius-1);
+    background: transparent;
+    color: var(--ui-ink-2);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .legendItem:hover { background: var(--ui-g3); color: var(--ui-ink); }
+
+  .legendItem:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  .symbol {
+    flex: 0 0 36px;
+    text-align: center;
+    padding: 0 var(--space-1);
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+    font-family: var(--ui-font-mono);
+    font-size: var(--type-12);
+    line-height: 20px;
+  }
+
+  .symbol[data-tone="accent"] { color: var(--ui-value); }
+  .symbol[data-tone="rest"] { color: var(--ui-ink-2); }
+
+  .legendText {
+    font-size: var(--type-11);
+    line-height: 1.5;
+  }
+
+  .legendText strong {
+    font-weight: var(--weight-semibold);
+    color: var(--ui-ink);
+  }
+
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  .actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: var(--space-2);
+  }
+}

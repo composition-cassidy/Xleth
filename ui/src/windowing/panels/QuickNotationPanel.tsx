@@ -9,6 +9,8 @@ import useTimelineFocusStore from '../../stores/timelineFocusStore.js';
 import { editCursor } from '../../services/EditCursor.js';
 import { PPQ } from '../../constants/timeline.js';
 import { timelineEvents } from '../../timelineEvents.js';
+import { Button, Checkbox, NumberBox } from '../../ui-kit';
+import styles from './QuickNotation.module.css';
 
 declare const window: Window & {
   xleth?: {
@@ -21,6 +23,27 @@ declare const window: Window & {
 
 type SamplePlacement = { syllableIndex: number; startTick: number; lengthTicks: number; audioOffsetPercent: number };
 type ChordPlacement = { pitch: number; startTick: number; lengthTicks: number };
+
+
+// The symbol key: what each symbol means, in the user's terms. Clicking one inserts it at the caret.
+type LegendItem = { symbol: string; insert: string; title: string; text: string; tone?: 'accent' | 'rest' };
+
+const SAMPLE_LEGEND: LegendItem[] = [
+  { symbol: '1', insert: '1', title: 'Sample number.', text: 'Plays as a 16th note, the default step length.' },
+  { symbol: "' #", insert: "'", title: '32nd note.', text: 'Half the default length. The two symbols are interchangeable.', tone: 'accent' },
+  { symbol: '*', insert: '*', title: '8th note.', text: 'Double the default length.', tone: 'accent' },
+  { symbol: 'x', insert: 'x', title: 'Repeated 32nd notes.', text: 'A fast roll of the preceding sample.', tone: 'accent' },
+  { symbol: '_', insert: '_', title: '16th-note rest.', text: 'Silence for one step, and the standard separator.', tone: 'rest' },
+  { symbol: '/', insert: '/', title: '32nd-note rest.', text: 'A shorter silence.', tone: 'rest' },
+];
+
+const CHORD_LEGEND: LegendItem[] = [
+  { symbol: 'Cmaj7', insert: 'Cmaj7', title: 'Chord token.', text: 'Root plus quality (maj7, min, dim7, sus4…), stacked upward from C4.' },
+  { symbol: '(b5)', insert: '(b5)', title: 'Alteration.', text: 'Replaces or adds that scale degree, for example (#9), (#11), (b13).', tone: 'accent' },
+  { symbol: '/E', insert: '/E', title: 'Slash bass.', text: 'Rotates the voicing so that note is lowest.', tone: 'accent' },
+  { symbol: '*', insert: '*', title: 'Duration.', text: 'Each * doubles the length from a 16th note.', tone: 'accent' },
+  { symbol: 'CEGB', insert: 'CEGB', title: 'Literal notes.', text: 'A letter sequence that is not a chord places those exact notes.' },
+];
 
 function QuickNotationContent({ onClose }: { onClose: () => void }) {
   const mode = useQuickNotationStore((s) => s.mode);
@@ -38,7 +61,6 @@ function QuickNotationContent({ onClose }: { onClose: () => void }) {
   const [notation, setNotation] = useState('');
   const [offsetPercent, setOffsetPercent] = useState(50);
   const [previewOn, setPreviewOn] = useState(true);
-  const [symbolKeyOpen, setSymbolKeyOpen] = useState(false);
   const [parseResult, setParseResult] = useState<{
     placements: Array<SamplePlacement | ChordPlacement>;
     errors: Array<{ token?: string; char?: string; position: number; reason: string }>;
@@ -48,16 +70,7 @@ function QuickNotationContent({ onClose }: { onClose: () => void }) {
   const clearGhostClipsRef = useRef(clearGhostClips);
   const notationRef = useRef<HTMLTextAreaElement>(null);
   const highlightRef = useRef<HTMLDivElement>(null);
-  const symbolKeyRef = useRef<HTMLDivElement>(null);
   clearGhostClipsRef.current = clearGhostClips;
-
-  useEffect(() => {
-    const closeSymbolKey = (event: PointerEvent) => {
-      if (!symbolKeyRef.current?.contains(event.target as Node)) setSymbolKeyOpen(false);
-    };
-    document.addEventListener('pointerdown', closeSymbolKey);
-    return () => document.removeEventListener('pointerdown', closeSymbolKey);
-  }, []);
 
   useEffect(() => {
     if (!notation.trim()) {
@@ -138,7 +151,6 @@ function QuickNotationContent({ onClose }: { onClose: () => void }) {
     const start = input?.selectionStart ?? notation.length;
     const end = input?.selectionEnd ?? start;
     setNotation(`${notation.slice(0, start)}${symbol}${notation.slice(end)}`);
-    setSymbolKeyOpen(false);
     requestAnimationFrame(() => {
       input?.focus();
       input?.setSelectionRange(start + symbol.length, start + symbol.length);
@@ -151,63 +163,34 @@ function QuickNotationContent({ onClose }: { onClose: () => void }) {
     highlightRef.current.scrollLeft = notationRef.current.scrollLeft;
   };
 
+  const count = parseResult.placements.length;
   const canInsert = isChordMode
-    ? patternId != null && parseResult.placements.length > 0
-    : regionId != null && focusedTrackId != null && parseResult.placements.length > 0;
+    ? patternId != null && count > 0
+    : regionId != null && focusedTrackId != null && count > 0;
+  const insertLabel = count === 0
+    ? 'Insert'
+    : isChordMode
+      ? `Insert ${count} note${count === 1 ? '' : 's'}`
+      : `Insert ${count} clip${count === 1 ? '' : 's'}`;
+  const firstError = parseResult.errors[0];
+  const legend = isChordMode ? CHORD_LEGEND : SAMPLE_LEGEND;
 
   return (
-    <div className="qn-panel">
-      <div className="qn-panel__symbol-key" ref={symbolKeyRef}>
-        <button
-          type="button"
-          className={`qn-panel__symbol-trigger${symbolKeyOpen ? ' is-open' : ''}`}
-          onClick={() => setSymbolKeyOpen((open) => !open)}
-          aria-expanded={symbolKeyOpen}
-        >
-          <span>Symbol Key</span>
-          <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" aria-hidden="true">
-            <polyline points="6,9 12,15 18,9" />
-          </svg>
-        </button>
-        {symbolKeyOpen && (
-          <div className="qn-panel__symbol-popover">
-            {isChordMode ? (
-              <>
-                <button type="button" onClick={() => insertSymbol('Cmaj7')}><b>Cmaj7</b><span><strong>Chord token</strong> - ROOT + quality (maj7, min, dim7, sus4...), stacked upward from C4.</span></button>
-                <button type="button" onClick={() => insertSymbol('(b5)')}><b className="is-accent">(b5)</b><span><strong>Alteration</strong> - replaces or adds that scale degree, e.g. (#9) (#11) (b13).</span></button>
-                <button type="button" onClick={() => insertSymbol('/E')}><b className="is-accent">/E</b><span><strong>Slash bass</strong> - rotates the voicing so that note is lowest.</span></button>
-                <button type="button" onClick={() => insertSymbol('*')}><b className="is-accent">*</b><span><strong>Duration</strong> - each * doubles the length from a 16th note.</span></button>
-                <div className="qn-panel__symbol-divider" />
-                <button type="button" onClick={() => insertSymbol('CEGB')}><b>CEGB</b><span><strong>Literal notes</strong> - a letter sequence that isn't a chord places those exact notes.</span></button>
-              </>
-            ) : (
-              <>
-                <button type="button" onClick={() => insertSymbol('1')}><b>1</b><span><strong>Sample number</strong> - plays as a 16th note, the default step length.</span></button>
-                <button type="button" onClick={() => insertSymbol("'")}><b className="is-accent">' #</b><span><strong>32nd note</strong> - half the default length. The symbols are interchangeable.</span></button>
-                <button type="button" onClick={() => insertSymbol('*')}><b className="is-accent">*</b><span><strong>8th note</strong> - double the default length.</span></button>
-                <button type="button" onClick={() => insertSymbol('x')}><b className="is-accent">x</b><span><strong>Repeated 32nd notes</strong> - a fast roll of the preceding sample.</span></button>
-                <div className="qn-panel__symbol-divider" />
-                <button type="button" onClick={() => insertSymbol('_')}><b className="is-rest">_</b><span><strong>16th-note rest</strong> - silence for one step and the standard separator.</span></button>
-                <button type="button" onClick={() => insertSymbol('/')}><b className="is-rest">/</b><span><strong>32nd-note rest</strong> - a shorter silence.</span></button>
-              </>
-            )}
-          </div>
-        )}
-      </div>
-
-      <div className="qn-panel__notation-wrap">
-        <div className="qn-panel__notation-highlight" ref={highlightRef} aria-hidden="true">
+    <div className={styles.panel}>
+      <div className={styles.notationWrap}>
+        <div className={styles.highlight} ref={highlightRef} aria-hidden="true">
           {[...notation].map((character, index) => {
-            const className = character === '_' || character === '/'
-              ? 'is-rest'
-              : "'*#xX".includes(character) ? 'is-accent' : undefined;
-            return <span className={className} key={index}>{character}</span>;
+            const tone = character === '_' || character === '/'
+              ? 'rest'
+              : "'*#xX".includes(character) ? 'accent' : undefined;
+            return <span data-tone={tone} key={index}>{character}</span>;
           })}
         </div>
         <textarea
           ref={notationRef}
-          className="qn-panel__notation"
+          className={styles.notation}
           value={notation}
+          aria-label={isChordMode ? 'Chord notation' : 'Sample notation'}
           onChange={(event) => setNotation(event.target.value)}
           onScroll={syncNotationScroll}
           placeholder={isChordMode ? 'e.g. Dmin7*** D#maj7*** Cmin7*** D#maj7***' : 'e.g. 11_11_111_1_1_11'}
@@ -216,43 +199,52 @@ function QuickNotationContent({ onClose }: { onClose: () => void }) {
         />
       </div>
 
+      <div className={styles.status} role="status">
+        {firstError
+          ? `${firstError.reason}${firstError.token || firstError.char ? ` (“${firstError.token ?? firstError.char}” at ${firstError.position + 1})` : ''}`
+          : count > 0
+            ? `${count} ${isChordMode ? 'note' : 'clip'}${count === 1 ? '' : 's'} ready`
+            : 'Type notation, or pick a symbol below.'}
+      </div>
+
       {!isChordMode && (
-        <div className="qn-panel__controls">
-          <label className="qn-panel__label" htmlFor="qn-offset">32nd Offset</label>
-          <div className="qn-panel__slider-wrap">
-            {[0, 25, 50, 75, 100].map((tick) => <i key={tick} style={{ left: `${tick}%` }} />)}
-            <input
-              id="qn-offset"
-              type="range"
-              className="qn-panel__slider"
-              min={0}
-              max={100}
-              step={1}
-              value={offsetPercent}
-              style={{ background: `linear-gradient(to right, var(--theme-accent) 0%, var(--theme-accent) ${offsetPercent}%, var(--theme-border-strong) ${offsetPercent}%, var(--theme-border-strong) 100%)` }}
-              onChange={(event) => setOffsetPercent(Number(event.target.value))}
-            />
-          </div>
-          <span className="qn-panel__slider-val">{offsetPercent}%</span>
+        <div className={styles.controls}>
+          <NumberBox
+            label="32nd offset"
+            width={96}
+            min={0}
+            max={100}
+            step={1}
+            unit="%"
+            quantize={Math.round}
+            defaultValue={50}
+            value={offsetPercent}
+            onChange={setOffsetPercent}
+            hint="32nd offset"
+            hintMods="Where inside the sample the 32nd notes start"
+          />
+          <Checkbox checked={previewOn} onChange={setPreviewOn}>Preview on the timeline</Checkbox>
         </div>
       )}
 
-      {!isChordMode && (
-      <div className="qn-panel__preview-row">
-        <label className="qn-panel__check-label">
-          <input type="checkbox" checked={previewOn} onChange={(event) => setPreviewOn(event.target.checked)} />
-          <span className="qn-panel__check-box" aria-hidden="true">
-            <svg width="9" height="9" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><polyline points="4,12 9,17 20,5" /></svg>
-          </span>
-          Preview
-        </label>
+      <div className={styles.actions}>
+        <Button onClick={handleClear}>Clear</Button>
+        <Button variant="primary" onClick={handleInsert} disabled={!canInsert}>{insertLabel}</Button>
       </div>
-      )}
+      <section className={styles.legend} aria-label="Symbol key">
+        <h3 className={styles.legendTitle}>Symbol key</h3>
+        <ul className={styles.legendList}>
+          {legend.map((item) => (
+            <li key={item.insert}>
+              <button type="button" className={styles.legendItem} onClick={() => insertSymbol(item.insert)}>
+                <code className={styles.symbol} data-tone={item.tone}>{item.symbol}</code>
+                <span className={styles.legendText}><strong>{item.title}</strong> {item.text}</span>
+              </button>
+            </li>
+          ))}
+        </ul>
+      </section>
 
-      <div className="qn-panel__actions">
-        <button className="qn-panel__btn qn-panel__btn--clear" onClick={handleClear}>Clear</button>
-        <button className="qn-panel__btn qn-panel__btn--insert" onClick={handleInsert} disabled={!canInsert}>Insert</button>
-      </div>
     </div>
   );
 }
