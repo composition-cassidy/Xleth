@@ -33,8 +33,19 @@ import {
   type LfoNodeData,
   type LfoNodePatch,
 } from './LfoEditor';
-import { Maximize, Spline, X as CloseGlyph } from 'lucide-react';
-import { IconButton, formatValue } from '../../../ui-kit';
+import { Maximize, Power, Spline, X as CloseGlyph } from 'lucide-react';
+import {
+  Icon,
+  IconButton,
+  NumberBox,
+  Select,
+  Toggle,
+  formatValue,
+  type GlyphName,
+  type SelectOption,
+} from '../../../ui-kit';
+import { DEVICE_NAMES } from '../../../components/devices/deviceNames.js';
+import nodeStyles from './GraphNode.module.css';
 import GraphMinimap from './GraphMinimap';
 import canvasStyles from './GraphCanvas.module.css';
 import './fxGraph.css';
@@ -319,6 +330,12 @@ const EMPTY_VST_PLUGINS: VstPluginMeta[] = [];
 
 const NODE_WIDTH = 148;
 const NODE_HEIGHT = 74;
+// The terminals (Track input and output) are a title bar and the port row.
+const TERMINAL_HEIGHT = 48;
+// Every in and out port sits on one row this far below the node's top (title bar 26 plus
+// half the 22px port row), so a port label, its handle and the cable's end line up whatever
+// the node's height.
+const PORT_ROW_Y = 37;
 // EVC-R3 — envelope nodes are compact by default. The expanded editor can grow
 // visually, but this estimate keeps normal graph layouts dense.
 const ENVELOPE_NODE_WIDTH = 236;
@@ -521,11 +538,11 @@ function resolveNodeText(node: GraphStateNode): ResolvedNodeText {
   };
 
   if (type === 'trackInput') {
-    return { ...base, label: 'Track Input' };
+    return { ...base, label: 'Track input' };
   }
 
   if (type === 'trackOutput') {
-    return { ...base, label: 'Track Output' };
+    return { ...base, label: 'Track output' };
   }
 
   if (type === 'effect') {
@@ -581,7 +598,7 @@ function resolveNodeText(node: GraphStateNode): ResolvedNodeText {
     return {
       ...base,
       label: envelope.label,
-      secondaryText: 'Envelope Modulator',
+      secondaryText: 'Envelope modulator',
       envelope,
     };
   }
@@ -596,7 +613,7 @@ function resolveNodeText(node: GraphStateNode): ResolvedNodeText {
     return {
       ...base,
       label: lfo.label,
-      secondaryText: 'LFO Modulator',
+      secondaryText: 'LFO modulator',
       lfo,
     };
   }
@@ -649,7 +666,7 @@ function makeVirtualAnchorNode(
     x,
     y: FALLBACK_NODE_Y,
     width: NODE_WIDTH,
-    height: NODE_HEIGHT,
+    height: TERMINAL_HEIGHT,
     graphX: x - PREVIEW_PADDING_X,
     graphY: FALLBACK_NODE_Y,
     envelopeParameterEdgeCount: 0,
@@ -747,7 +764,9 @@ function normalizePositionedNodes(nodes: GraphStateNode[], options: PreviewModel
       x: position.x + PREVIEW_PADDING_X,
       y: position.y + PREVIEW_PADDING_Y,
       width: nodeWidthForType(previewType),
-      height: nodeHeightForText(text),
+      height: previewType === 'trackInput' || previewType === 'trackOutput'
+        ? TERMINAL_HEIGHT
+        : nodeHeightForText(text),
       graphX: position.x,
       graphY: position.y,
       envelopeParameterEdgeCount: 0,
@@ -801,14 +820,14 @@ function applyLfoParameterEdgeCounts(nodes: PositionedNode[], edges: GraphStateE
 function edgeEndpoints(source: PositionedNode, target: PositionedNode) {
   return {
     sourceX: source.type === 'trackOutput' ? source.x : source.x + source.width,
-    sourceY: source.y + source.height / 2,
+    sourceY: source.y + PORT_ROW_Y,
     targetX: target.type === 'trackInput' ? target.x + target.width : target.x,
-    targetY: target.y + target.height / 2,
+    targetY: target.y + PORT_ROW_Y,
   };
 }
 
 function nodeOutPoint(node: PositionedNode) {
-  return { x: node.x + node.width, y: node.y + node.height / 2 };
+  return { x: node.x + node.width, y: node.y + PORT_ROW_Y };
 }
 
 // FXG-connect-reach — the audio "in" side anchor, mirroring edgeEndpoints'
@@ -818,7 +837,7 @@ function nodeOutPoint(node: PositionedNode) {
 function nodeInPoint(node: PositionedNode) {
   return {
     x: node.type === 'trackInput' ? node.x + node.width : node.x,
-    y: node.y + node.height / 2,
+    y: node.y + PORT_ROW_Y,
   };
 }
 
@@ -934,7 +953,7 @@ function parameterPortAnchor(node: PositionedNode, parameterId: string | null) {
   const count = ports.length;
   const index = parameterId ? ports.findIndex((port) => port.parameterId === parameterId) : -1;
   if (count === 0 || index < 0) {
-    return { x: node.x, y: node.y + node.height / 2 };
+    return { x: node.x, y: node.y + PORT_ROW_Y };
   }
   const sectionTop = node.y + NODE_HEIGHT + PARAMETER_PORT_SECTION_TOP;
   const rowsTop = sectionTop + PARAMETER_PORT_SECTION_HEADER;
@@ -1223,96 +1242,10 @@ export function computeNodeDragPosition(
   };
 }
 
-// Track Input / Track Output are routing terminals, not modules you configure,
-// so they drop the card treatment entirely and render as a jack glyph: a block
-// arrow with a return loop, pointing into the chain for the input and out of it
-// for the output. Traced from ui/in.svg and ui/out.svg. Everything paints in
-// `currentColor` so the glyph inherits the node's themed text color, and the
-// in/out word rides inside the arrowhead in the app's own font (text-anchor
-// middle keeps it centered whatever font the theme resolves to).
-function TrackIoGlyph({ direction }: { direction: 'in' | 'out' }) {
-  const isIn = direction === 'in';
-  // The source artwork's own viewBox (0 0 W 476ish) is NOT centered on the
-  // glyph's content — the return-loop swirl leaves ~94 units of dead space
-  // above the arrow and almost none below, so the visual center of the icon
-  // sits at ~59% of the box height, not 50%. Centering that box in the node
-  // (as flex alignment does) would leave the cable's actual attachment point
-  // — the arrow's tip, a fixed y=274.42 in both source files — sitting above
-  // the connection dot instead of on it. Cropping the viewBox to 406 units
-  // tall, symmetric around y=274.42, re-centers the tip without touching a
-  // single path/polygon coordinate (a viewBox crop is a pure pan, not a
-  // rescale, when only one axis's range changes).
-  return (
-    <svg
-      className="xleth-graph-state-preview__io-glyph"
-      viewBox={isIn ? '0 71.42 424.82 406' : '0 71.42 443.5 406'}
-      role="presentation"
-      aria-hidden="true"
-      focusable="false"
-    >
-      <polygon
-        fill="currentColor"
-        points={isIn
-          ? '0 230.22 202.33 221.56 195.04 117.2 391.44 274.42 207.8 440.29 207.8 340.04 0 323.18 0 230.22'
-          : '52.06 230.22 254.38 221.56 247.09 117.2 443.5 274.42 259.85 440.29 259.85 340.04 52.06 323.18 52.06 230.22'}
-      />
-      <path
-        fill="none"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeMiterlimit={10}
-        strokeWidth={18}
-        d={isIn
-          ? 'M195.72,94.07c120.75-15.18,221.83,82.66,220.08,188.94-1.65,100.28-94.59,191.35-208.74,183.63'
-          : 'M229.1,93.02C108.36,77.84,7.27,175.68,9.02,281.95c1.65,100.28,94.59,191.35,208.74,183.63'}
-      />
-      <text
-        className="xleth-graph-state-preview__io-glyph-text"
-        x={isIn ? 272 : 305}
-        y={311.07}
-        textAnchor="middle"
-        fontSize={133.01}
-      >
-        {direction}
-      </text>
-    </svg>
-  );
-}
-
-// The standard power mark (a broken ring around a vertical stem), painted in
-// currentColor so the button's own themed state drives it.
-function PowerGlyph() {
-  return (
-    <svg
-      className="xleth-graph-state-preview__power-glyph"
-      viewBox="0 0 16 16"
-      role="presentation"
-      aria-hidden="true"
-      focusable="false"
-    >
-      <path
-        fill="none"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeWidth={1.8}
-        d="M5.1 4.4a4.6 4.6 0 1 0 5.8 0"
-      />
-      <line
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeWidth={1.8}
-        x1={8}
-        y1={2.2}
-        x2={8}
-        y2={7.6}
-      />
-    </svg>
-  );
-}
-
 export function GraphStatePreviewNode({
   node,
   dragging,
+  selected = false,
   connectEnabled,
   connectParameterEnabled = false,
   connectEnvelopeParameterEnabled = false,
@@ -1344,6 +1277,8 @@ export function GraphStatePreviewNode({
 }: {
   node: PositionedNode;
   dragging: boolean;
+  // The node is the selection: a 1px --ui-select outline.
+  selected?: boolean;
   connectEnabled: boolean;
   connectParameterEnabled?: boolean;
   connectEnvelopeParameterEnabled?: boolean;
@@ -1445,20 +1380,61 @@ export function GraphStatePreviewNode({
     typeof onNodeContextMenu === 'function';
   const canDoubleClickEdit =
     node.type === 'effect' && node.editable && !node.virtual && typeof onEdit === 'function';
-  const isTrackIo = node.type === 'trackInput' || node.type === 'trackOutput';
   // The author tag in an effect node's footer: 'XLETH' for a stock effect, the
   // scanned plugin's own vendor for a third party, nothing when neither resolves.
   const vendorTag = node.type === 'effect'
     ? resolveEffectVendorTag(node.pluginId, vstPlugins)
     : null;
   const macroPercent = node.macroValue == null ? null : Math.round(node.macroValue * 100);
-  const commitMacroValue = (event: React.SyntheticEvent<HTMLInputElement>) => {
-    const nextValue = Number(event.currentTarget.value);
-    if (Number.isFinite(nextValue)) onMacroValueCommit?.(node.id, nextValue);
-  };
   const commitMacroLabel = (event: React.SyntheticEvent<HTMLInputElement>) => {
     onMacroRenameCommit?.(node.id, event.currentTarget.value);
   };
+
+  // The one name shown for an effect is the device's own (the Devices tab and its pop-out use
+  // it); a canonical default label of the other nodes is shown in sentence case.
+  const displayName = node.type === 'effect'
+    ? (DEVICE_NAMES[node.pluginId ?? ''] ?? node.label)
+    : node.label === 'Sidechain Input' ? 'Sidechain input' : node.label;
+  const glyphName: GlyphName = node.type === 'trackInput'
+    ? 'nodeInput'
+    : node.type === 'trackOutput'
+      ? 'nodeOutput'
+      : node.type === 'macro'
+        ? 'nodeMacro'
+        : node.type === 'envelope'
+          ? 'nodeEnvelope'
+          : node.type === 'lfo'
+            ? 'nodeLfo'
+            : node.type === 'sidechainInput' ? 'nodeSidechain' : 'nodeEffect';
+  const hasAudioIn = node.type !== 'trackInput' && !isControlSource && !isSidechainInput;
+  const hasOut = node.type !== 'trackOutput';
+  const outLabel = isSidechainInput ? 'Key out' : isControlSource ? 'Parameter out' : 'Audio out';
+  const outSignal = isSidechainInput ? 'sidechain' : isControlSource ? 'parameter' : 'audio';
+  const sidechainName = isSidechainInput
+    ? (() => {
+        const sid = node.sidechainSourceTrackId;
+        if (sid == null) return 'No source';
+        return sidechainSources.find((s) => s.sourceTrackId === sid)?.name ?? null;
+      })()
+    : null;
+  const sidechainOptions: SelectOption<string>[] = isSidechainInput
+    ? [
+        { value: '', label: 'No source' },
+        ...(node.sidechainSourceTrackId != null
+          && !sidechainSources.some((s) => s.sourceTrackId === node.sidechainSourceTrackId)
+          ? [{ value: String(node.sidechainSourceTrackId), label: `Track ${node.sidechainSourceTrackId} (missing)` }]
+          : []),
+        ...sidechainSources.map((source) => ({ value: String(source.sourceTrackId), label: source.name })),
+      ]
+    : [];
+  const stop = (event: React.SyntheticEvent) => event.stopPropagation();
+  // Everything under the title bar that says what the node is: its kind, or its author.
+  const metaText = isSidechainInput
+    ? (sidechainName == null
+      ? 'Source missing'
+      : sidechainName === 'No source' ? 'No source' : `Keyed by: ${sidechainName}`)
+    : node.secondaryText ?? vendorTag;
+  const shownBadges = node.badges.filter((badge) => badge !== 'Bypassed');
 
   return (
     <div
@@ -1472,16 +1448,19 @@ export function GraphStatePreviewNode({
         hoveredAudioTarget ? 'xleth-graph-state-preview__node--audio-drop-target' : '',
         connectGuidance === 'valid' ? 'xleth-graph-state-preview__node--connect-valid-target' : '',
         connectGuidance === 'invalid' ? 'xleth-graph-state-preview__node--connect-invalid-target' : '',
+        nodeStyles.node,
       ].filter(Boolean).join(' ')}
       data-node-id={node.id}
       data-node-type={node.type}
+      data-selected={selected ? 'true' : undefined}
+      data-dragging={dragging ? 'true' : undefined}
       data-bypassed={node.type === 'effect' && node.bypassed ? 'true' : undefined}
       data-parameter-drop-node={hoveredParameterPortId ? 'true' : undefined}
       data-audio-drop-node={hoveredAudioTarget ? 'true' : undefined}
       data-connect-guidance={connectGuidance ?? undefined}
       data-preview-virtual={node.virtual ? 'true' : undefined}
       role="listitem"
-      aria-label={node.label}
+      aria-label={displayName}
       aria-grabbed={onPointerDown ? dragging : undefined}
       style={style}
       onPointerDown={onPointerDown ? (event) => onPointerDown(event, node) : undefined}
@@ -1491,14 +1470,16 @@ export function GraphStatePreviewNode({
       onContextMenu={canOpenContextMenu ? (event) => onNodeContextMenu?.(event, node) : undefined}
       onDoubleClick={canDoubleClickEdit ? (event) => { event.stopPropagation(); onEdit?.(node.id); } : undefined}
     >
-      {node.type !== 'trackInput' && node.type !== 'macro' && !isEnvelope && !isLfo && !isSidechainInput && (
+      {hasAudioIn && (
         <span
-          className="xleth-graph-state-preview__handle xleth-graph-state-preview__handle--in"
+          className={`xleth-graph-state-preview__handle xleth-graph-state-preview__handle--in ${nodeStyles.handle}`}
           data-audio-port-type="audio-input"
+          data-side="in"
+          data-signal="audio"
           aria-hidden="true"
         />
       )}
-      {node.type !== 'trackOutput' && !isSidechainInput && (
+      {hasOut && !isSidechainInput && (
         interactiveOut ? (
           <span
             className={[
@@ -1507,7 +1488,10 @@ export function GraphStatePreviewNode({
               'xleth-graph-state-preview__handle--connect-source',
               isControlSource ? 'xleth-graph-state-preview__handle--control-out' : '',
               isControlSource ? 'xleth-graph-state-preview__handle--connect-parameter-source' : '',
+              nodeStyles.handle,
             ].filter(Boolean).join(' ')}
+            data-side="out"
+            data-signal={outSignal}
             data-connect-source="true"
             data-connect-source-kind={controlSourceKind ?? 'audio'}
             data-control-output={isControlSource ? 'true' : undefined}
@@ -1527,7 +1511,10 @@ export function GraphStatePreviewNode({
               'xleth-graph-state-preview__handle',
               'xleth-graph-state-preview__handle--out',
               isControlSource ? 'xleth-graph-state-preview__handle--control-out' : '',
+              nodeStyles.handle,
             ].filter(Boolean).join(' ')}
+            data-side="out"
+            data-signal={outSignal}
             data-control-output={isControlSource ? 'true' : undefined}
             data-control-port-id={isControlSource ? `${controlSourceKind}:${node.id}:controlOut` : undefined}
             data-control-port-type={isControlSource ? `${controlSourceKind}-output` : undefined}
@@ -1546,7 +1533,10 @@ export function GraphStatePreviewNode({
               'xleth-graph-state-preview__handle--out',
               'xleth-graph-state-preview__handle--connect-source',
               'xleth-graph-state-preview__handle--sidechain-out',
+              nodeStyles.handle,
             ].join(' ')}
+            data-side="out"
+            data-signal="sidechain"
             data-connect-source="true"
             data-connect-source-kind="sidechain"
             data-sidechain-output="true"
@@ -1564,7 +1554,10 @@ export function GraphStatePreviewNode({
               'xleth-graph-state-preview__handle',
               'xleth-graph-state-preview__handle--out',
               'xleth-graph-state-preview__handle--sidechain-out',
+              nodeStyles.handle,
             ].join(' ')}
+            data-side="out"
+            data-signal="sidechain"
             data-sidechain-output="true"
             data-sidechain-port-id={`sidechain:${node.id}:sidechainOut`}
             data-sidechain-port-type="sidechain-output"
@@ -1572,130 +1565,92 @@ export function GraphStatePreviewNode({
           />
         )
       )}
-      {/* Effect power toggle. Bypass is otherwise a one-way trip in graph mode: a
-          chain converted with bypassed effects renders a "Bypassed" badge with no
-          affordance to clear it. Mirrors the Mixer Chain module's bypass button. */}
-      {node.type === 'effect' && !node.virtual && typeof onToggleBypass === 'function' && (
-        <button
-          className={[
-            'xleth-graph-state-preview__node-power',
-            node.bypassed ? 'xleth-graph-state-preview__node-power--bypassed' : '',
-          ].filter(Boolean).join(' ')}
-          type="button"
-          aria-pressed={node.bypassed}
-          aria-label={node.bypassed ? `Enable ${node.label}` : `Bypass ${node.label}`}
-          title={node.bypassed ? 'Enable' : 'Bypass'}
-          // The node body is a drag handle and a double-click editor target; neither
-          // should fire when the toggle is what was hit.
-          onPointerDown={(event) => event.stopPropagation()}
-          onDoubleClick={(event) => event.stopPropagation()}
-          onClick={(event) => {
-            event.stopPropagation();
-            onToggleBypass(node.id, !node.bypassed);
-          }}
-        >
-          <PowerGlyph />
-        </button>
+
+      <div className={nodeStyles.titlebar}>
+        <Icon name={glyphName} size={16} className={nodeStyles.glyph} data-node-glyph={glyphName} />
+        {node.type === 'macro' && typeof onMacroRenameCommit === 'function' ? (
+          <input
+            className={`xleth-graph-state-preview__macro-label ${nodeStyles.renameField}`}
+            type="text"
+            aria-label={`Rename ${node.label}`}
+            defaultValue={node.label}
+            onPointerDown={stop}
+            onBlur={commitMacroLabel}
+            onKeyDown={(event) => {
+              if (event.key === 'Enter') {
+                event.currentTarget.blur();
+              } else if (event.key === 'Escape') {
+                event.currentTarget.value = node.label;
+                event.currentTarget.blur();
+              }
+            }}
+          />
+        ) : (
+          <span className={`xleth-graph-state-preview__node-title ${nodeStyles.name}`}>{displayName}</span>
+        )}
+        {node.type === 'effect' && node.bypassed && <span className={nodeStyles.off}>Off</span>}
+        {/* The activator: the effect's bypass, a power Toggle that is the inverted chip while the
+            effect runs (the device frame's own control). Absent in the read-only preview. */}
+        {node.type === 'effect' && !node.virtual && typeof onToggleBypass === 'function' && (
+          <Toggle
+            size="sm"
+            className={`xleth-graph-state-preview__node-power ${nodeStyles.activator}`}
+            on={!node.bypassed}
+            onChange={(on) => onToggleBypass(node.id, !on)}
+            aria-label={`${displayName} on`}
+            hint={node.bypassed
+              ? `${displayName} is off (bypassed). Click to turn it on.`
+              : `${displayName} is on. Click to bypass it.`}
+            glyph={<Power aria-hidden="true" />}
+            // The node body is a drag handle and a double-click editor target; neither
+            // should fire when the activator is what was hit.
+            onPointerDown={stop}
+            onDoubleClick={stop}
+          />
+        )}
+      </div>
+
+      <div className={nodeStyles.portRow}>
+        {hasAudioIn && <span className={nodeStyles.portLabel} data-side="in">Audio in</span>}
+        {hasOut && <span className={nodeStyles.portLabel} data-side="out">{outLabel}</span>}
+      </div>
+
+      {node.type !== 'trackInput' && node.type !== 'trackOutput' && (
+        <div className={nodeStyles.meta}>
+          {metaText && (
+            <span
+              className={`${nodeStyles.metaText} ${vendorTag && !node.secondaryText ? 'xleth-graph-state-preview__node-vendor' : 'xleth-graph-state-preview__node-secondary'}`}
+              title={metaText}
+            >
+              {metaText}
+            </span>
+          )}
+          {shownBadges.map((badge) => (
+            <span className={`xleth-graph-state-preview__badge ${nodeStyles.badge}`} key={badge}>
+              {badge}
+            </span>
+          ))}
+        </div>
       )}
-      {node.type === 'macro' && typeof onMacroRenameCommit === 'function' ? (
-        <input
-          className="xleth-graph-state-preview__macro-label"
-          type="text"
-          aria-label={`Rename ${node.label}`}
-          defaultValue={node.label}
-          onPointerDown={(event) => event.stopPropagation()}
-          onBlur={commitMacroLabel}
-          onKeyDown={(event) => {
-            if (event.key === 'Enter') {
-              event.currentTarget.blur();
-            } else if (event.key === 'Escape') {
-              event.currentTarget.value = node.label;
-              event.currentTarget.blur();
-            }
-          }}
-        />
-      ) : (
-        <>
-          {isTrackIo && <TrackIoGlyph direction={node.type === 'trackInput' ? 'in' : 'out'} />}
-          {/* The glyph already reads "in"/"out", so on a terminal the title is
-              kept for assistive tech and visually clipped rather than removed. */}
-          <span
-            className={[
-              'xleth-graph-state-preview__node-title',
-              isTrackIo ? 'xleth-graph-state-preview__node-title--io' : '',
-            ].filter(Boolean).join(' ')}
-          >
-            {node.label}
-          </span>
-        </>
-      )}
-      {/* FXG-SC.6D — sidechainInput secondary text uses a resolved track name from
-          sidechainSources (available in the component) rather than the raw id from the
-          model (which only knows the persisted number). Other node types render their
-          model-computed secondaryText unchanged. */}
-      {(isSidechainInput
-        ? (() => {
-            const sid = node.sidechainSourceTrackId;
-            if (sid == null) return 'No source';
-            const found = sidechainSources.find((s) => s.sourceTrackId === sid);
-            return found ? `Keyed by: ${found.name}` : 'Source missing';
-          })()
-        : node.secondaryText) && (
-        <span className="xleth-graph-state-preview__node-secondary">
-          {isSidechainInput
-            ? (() => {
-                const sid = node.sidechainSourceTrackId;
-                if (sid == null) return 'No source';
-                const found = sidechainSources.find((s) => s.sourceTrackId === sid);
-                return found ? `Keyed by: ${found.name}` : 'Source missing';
-              })()
-            : node.secondaryText}
-        </span>
-      )}
-      {/* The effect's author, sitting at the foot of the name block: 'XLETH' on a
-          stock effect, the plugin's own vendor on a third party. It takes the row
-          the echoed pluginId used to occupy, so the node's height is unchanged. */}
-      {vendorTag && (
-        <span className="xleth-graph-state-preview__node-vendor" title={vendorTag}>
-          {vendorTag}
-        </span>
-      )}
+
       {/* FXG-SC.6B — Sidechain Input source selector. Lists "No source" plus eligible
           live tracks. A persisted-but-missing source id is shown as an extra stale
           option so the saved intent stays visible. Selecting commits the source. */}
       {isSidechainInput && (
-        <span className="xleth-graph-state-preview__sidechain-source">
-          <span className="xleth-graph-state-preview__sidechain-source-label" id={`sidechain-source-label-${node.id}`}>
-            Source
-          </span>
+        <span className={nodeStyles.sourceField} onPointerDown={stop} onDoubleClick={stop}>
+          <span id={`sidechain-source-label-${node.id}`}>Source</span>
           {typeof onSetSidechainSource === 'function' ? (
-            <select
+            <Select<string>
+              size="sm"
               className="xleth-graph-state-preview__sidechain-source-select"
-              aria-labelledby={`sidechain-source-label-${node.id}`}
-              aria-label={`${node.label} source track`}
-              value={node.sidechainSourceTrackId == null ? '' : String(node.sidechainSourceTrackId)}
+              ariaLabel={`${node.label} source track`}
               data-sidechain-source-track={node.sidechainSourceTrackId == null ? '' : String(node.sidechainSourceTrackId)}
-              onPointerDown={(event) => event.stopPropagation()}
-              onChange={(event) => {
-                const raw = event.currentTarget.value;
-                onSetSidechainSource(node.id, raw === '' ? null : Number(raw));
-              }}
-            >
-              <option value="">No source</option>
-              {node.sidechainSourceTrackId != null &&
-                !sidechainSources.some((s) => s.sourceTrackId === node.sidechainSourceTrackId) && (
-                  <option value={String(node.sidechainSourceTrackId)}>
-                    {`Track ${node.sidechainSourceTrackId} (missing)`}
-                  </option>
-                )}
-              {sidechainSources.map((source) => (
-                <option key={source.sourceTrackId} value={String(source.sourceTrackId)}>
-                  {source.name}
-                </option>
-              ))}
-            </select>
+              value={node.sidechainSourceTrackId == null ? '' : String(node.sidechainSourceTrackId)}
+              options={sidechainOptions}
+              onChange={(raw) => onSetSidechainSource(node.id, raw === '' ? null : Number(raw))}
+            />
           ) : (
-            <span className="xleth-graph-state-preview__sidechain-source-static">
+            <span className={`xleth-graph-state-preview__sidechain-source-static ${nodeStyles.sourceStatic}`}>
               {/* FXG-SC.6D — resolve track name from sidechainSources; fall back to
                   "Track N (missing)" for a stale saved source id. */}
               {node.sidechainSourceTrackId == null
@@ -1730,50 +1685,37 @@ export function GraphStatePreviewNode({
           }
         />
       )}
-      {node.type === 'macro' && node.macroValue != null && (
-        <span className="xleth-graph-state-preview__macro-control">
-          <span className="xleth-graph-state-preview__macro-value">
-            {macroPercent}%
-          </span>
-          <input
+      {node.type === 'macro' && macroPercent != null && (
+        <span
+          className={`xleth-graph-state-preview__macro-control ${nodeStyles.macroControl}`}
+          onPointerDown={stop}
+          onDoubleClick={stop}
+        >
+          <NumberBox
             className="xleth-graph-state-preview__macro-slider"
-            type="range"
-            min="0"
-            max="1"
-            step="0.01"
-            defaultValue={node.macroValue}
-            aria-label={`${node.label} macro value`}
-            onPointerDown={(event) => event.stopPropagation()}
-            onPointerUp={commitMacroValue}
-            onBlur={commitMacroValue}
-            onKeyUp={(event) => {
-              if (
-                event.key === 'Enter' ||
-                event.key.startsWith('Arrow') ||
-                event.key === 'Home' ||
-                event.key === 'End'
-              ) {
-                commitMacroValue(event);
-              }
-            }}
+            label={`${node.label} macro value`}
+            hideLabel
+            width={124}
+            value={macroPercent}
+            defaultValue={0}
+            min={0}
+            max={100}
+            step={1}
+            unit="%"
+            onCommit={(next) => onMacroValueCommit?.(node.id, next / 100)}
           />
         </span>
       )}
-      {node.badges.length > 0 && (
-        <span className="xleth-graph-state-preview__badges">
-          {node.badges.map((badge) => (
-            <span className="xleth-graph-state-preview__badge" key={badge}>
-              {badge}
-            </span>
-          ))}
-        </span>
-      )}
       {node.parameterPorts.length > 0 && (
-        <span className="xleth-graph-state-preview__parameter-section">
-          <span className="xleth-graph-state-preview__parameter-section-label">
+        <span className={`xleth-graph-state-preview__parameter-section ${nodeStyles.section}`}>
+          <span className={`xleth-graph-state-preview__parameter-section-label ${nodeStyles.sectionLabel}`}>
             Parameters
           </span>
-          <span className="xleth-graph-state-preview__parameter-ports" role="list" aria-label={`${node.label} parameter inputs`}>
+          <span
+            className={`xleth-graph-state-preview__parameter-ports ${nodeStyles.ports}`}
+            role="list"
+            aria-label={`${node.label} parameter inputs`}
+          >
             {node.parameterPorts.map((port) => {
               const portId = `gpp:${node.id}:${port.parameterId}`;
               const hovered = hoveredParameterPortId === portId;
@@ -1782,6 +1724,7 @@ export function GraphStatePreviewNode({
                   className={[
                     'xleth-graph-state-preview__parameter-port',
                     hovered ? 'xleth-graph-state-preview__parameter-port--hovered' : '',
+                    nodeStyles.port,
                   ].filter(Boolean).join(' ')}
                   role="listitem"
                   key={port.parameterId}
@@ -1792,8 +1735,12 @@ export function GraphStatePreviewNode({
                   data-parameter-port-type="parameter-input"
                   data-drop-target-hovered={hovered ? 'true' : undefined}
                 >
-                  <span className="xleth-graph-state-preview__parameter-port-dot" aria-hidden="true" />
-                  <span className="xleth-graph-state-preview__parameter-port-label">
+                  <span
+                    className={`xleth-graph-state-preview__parameter-port-dot ${nodeStyles.portMark}`}
+                    data-signal="parameter"
+                    aria-hidden="true"
+                  />
+                  <span className={`xleth-graph-state-preview__parameter-port-label ${nodeStyles.portLabelText}`}>
                     {port.nameSnapshot}
                   </span>
                 </span>
@@ -1805,11 +1752,12 @@ export function GraphStatePreviewNode({
       {/* Sidechain key target port. Distinct from audio
           and parameter ports; only accepts a sidechainInput.sidechainOut drop. */}
       {node.type === 'effect' && node.sidechainTarget && (
-        <span className="xleth-graph-state-preview__sidechain-section">
+        <span className={`xleth-graph-state-preview__sidechain-section ${nodeStyles.keySection}`}>
           <span
             className={[
               'xleth-graph-state-preview__sidechain-port',
               hoveredSidechainPort ? 'xleth-graph-state-preview__sidechain-port--hovered' : '',
+              nodeStyles.port,
             ].filter(Boolean).join(' ')}
             role="listitem"
             title="Sidechain key input"
@@ -1818,8 +1766,12 @@ export function GraphStatePreviewNode({
             data-sidechain-port-type="sidechain-input"
             data-drop-target-hovered={hoveredSidechainPort ? 'true' : undefined}
           >
-            <span className="xleth-graph-state-preview__sidechain-port-dot" aria-hidden="true" />
-            <span className="xleth-graph-state-preview__sidechain-port-label">Sidechain</span>
+            <span
+              className={`xleth-graph-state-preview__sidechain-port-dot ${nodeStyles.portMark}`}
+              data-signal="sidechain"
+              aria-hidden="true"
+            />
+            <span className={`xleth-graph-state-preview__sidechain-port-label ${nodeStyles.portLabelText}`}>Sidechain key</span>
           </span>
         </span>
       )}
@@ -2658,6 +2610,8 @@ export default function GraphStatePreview({
   // Cable hover and selection. Hover is ignored while a node drags or a cable is being drawn.
   const [hoveredEdgeId, setHoveredEdgeId] = React.useState<string | null>(null);
   const [selectedEdgeId, setSelectedEdgeId] = React.useState<string | null>(null);
+  // One selection at a time: a node or a cable.
+  const [selectedNodeId, setSelectedNodeId] = React.useState<string | null>(null);
   const hoverClearTimerRef = React.useRef<number | null>(null);
   const hoverEdge = React.useCallback((edgeId: string) => {
     if (hoverClearTimerRef.current != null) {
@@ -2988,6 +2942,8 @@ export default function GraphStatePreview({
     // When Space is held the viewport pan handler takes over; let the event bubble.
     if (spaceDownRef.current) return;
 
+    setSelectedNodeId(node.id);
+    setSelectedEdgeId(null);
     event.preventDefault();
     event.stopPropagation();
     event.currentTarget.setPointerCapture?.(event.pointerId);
@@ -3051,6 +3007,7 @@ export default function GraphStatePreview({
     const isLeft   = event.button === 0;
     if (!isLeft && !isMiddle) return;
     setSelectedEdgeId(null);
+    setSelectedNodeId(null);
 
     // Left-click without Space: skip if pointer is over a node (node drag takes over).
     // Middle-click or Space+left always pans regardless of target.
@@ -3374,6 +3331,9 @@ export default function GraphStatePreview({
     ? selectedEdgeId
     : null;
   const cableGestureActive = draggingNodeId != null || connectingFromNodeId != null;
+  const activeSelectedNodeId = selectedNodeId != null && model.nodes.some((node) => node.id === selectedNodeId)
+    ? selectedNodeId
+    : null;
 
   // The minimap shows once any node lies outside the visible window.
   const graphExceedsView = React.useMemo(() => {
@@ -3520,6 +3480,7 @@ export default function GraphStatePreview({
                         // Picking a cable must not start a pan.
                         event.stopPropagation();
                         setSelectedEdgeId(edge.id);
+                        setSelectedNodeId(null);
                       }}
                     />
                   )}
@@ -3539,6 +3500,7 @@ export default function GraphStatePreview({
                   key={node.id}
                   node={node}
                   dragging={draggingNodeId === node.id}
+                  selected={node.id === activeSelectedNodeId}
                   connectEnabled={canConnect}
                   connectParameterEnabled={canConnectParameters}
                   connectEnvelopeParameterEnabled={canConnectEnvelopeParameters}

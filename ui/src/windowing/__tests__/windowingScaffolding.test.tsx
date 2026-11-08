@@ -383,9 +383,9 @@ describe('PanelFrame render paths', () => {
     expect(html).not.toContain('FX Graph Mode Active');
     expect(html).not.toContain('Graph routing is enabled for connected paths.');
     expect(html).toContain('Read-only persisted FX graph preview');
-    expect(html).toContain('Track Input');
+    expect(html).toContain('Track input');
     expect(html).toContain('Persisted EQ');
-    expect(html).toContain('Track Output');
+    expect(html).toContain('Track output');
     expect(html).not.toContain('Effect Parameters');
     expect(html).not.toContain('xleth-fx-graph-params');
     expect(html).not.toContain('>Convert Chain to FX Graph<');

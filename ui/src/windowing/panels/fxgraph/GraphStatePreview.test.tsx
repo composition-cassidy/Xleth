@@ -159,8 +159,8 @@ describe('GraphStatePreview', () => {
     );
 
     expect(html).toContain('Read-only persisted FX graph preview');
-    expect(html).toContain('Track Input');
-    expect(html).toContain('Track Output');
+    expect(html).toContain('Track input');
+    expect(html).toContain('Track output');
     expect(countAttribute(html, 'data-edge-type="audio"')).toBe(1);
     expect(html).toContain('data-read-only="true"');
     expect(countText(html, 'Persisted graphState. Linear routing is enabled for supported paths.')).toBe(1);
@@ -185,10 +185,10 @@ describe('GraphStatePreview', () => {
       />,
     );
 
-    expect(html.indexOf('Track Input')).toBeLessThan(html.indexOf('Xleth EQ'));
+    expect(html.indexOf('Track input')).toBeLessThan(html.indexOf('Xleth EQ'));
     expect(html.indexOf('Xleth EQ')).toBeLessThan(html.indexOf('Delay'));
     expect(html.indexOf('Delay')).toBeLessThan(html.indexOf('Reverb'));
-    expect(html.indexOf('Reverb')).toBeLessThan(html.indexOf('Track Output'));
+    expect(html.indexOf('Reverb')).toBeLessThan(html.indexOf('Track output'));
     expect(countAttribute(html, 'data-edge-type="audio"')).toBe(4);
     expect(countAttribute(html, 'data-node-type="trackOutput"')).toBe(1);
     expect(html).toContain('data-preview-scroll-stage="true"');
@@ -255,7 +255,7 @@ describe('GraphStatePreview', () => {
     );
 
     expect(html).toContain('Delay');
-    expect(html).toContain('Bypassed');
+    expect(html).toContain('>Off<');
   });
 
   it('offers a power toggle on effect nodes when bypass editing is enabled', () => {
@@ -272,11 +272,13 @@ describe('GraphStatePreview', () => {
 
     // A bypassed node must carry the affordance that clears the state — the badge
     // alone left a converted chain's bypassed effects stuck off.
-    expect(html).toContain('aria-label="Enable Delay"');
+    // The activator is the device frame's: named "<device> on", pressed while the effect runs.
+    expect(html).toContain('aria-label="Delay on"');
+    expect(html).toContain('aria-pressed="false"');
     expect(html).toContain('data-bypassed="true"');
   });
 
-  it('labels the power toggle as Bypass on an active effect and omits it in read-only preview', () => {
+  it('names the activator after the device, pressed while it runs, and omits it in read-only preview', () => {
     const nodes = [
       inputNode(),
       effectNode('delay', 'Delay', 0, { x: 260, y: 0 }, { bypass: false }),
@@ -287,7 +289,8 @@ describe('GraphStatePreview', () => {
     );
     const readOnly = renderToStaticMarkup(<GraphStatePreview graphState={graphState(nodes, [])} />);
 
-    expect(editable).toContain('aria-label="Bypass Delay"');
+    expect(editable).toContain('aria-label="Delay on"');
+    expect(editable).toContain('aria-pressed="true"');
     expect(editable).not.toContain('data-bypassed="true"');
     expect(readOnly).not.toContain('xleth-graph-state-preview__node-power');
   });
@@ -373,8 +376,8 @@ describe('GraphStatePreview', () => {
     expect(html).toContain('data-node-type="macro"');
     expect(html).toContain('xleth-graph-state-preview__node--macro');
     expect(html).toContain('Energy');
-    expect(html).toContain('37%');
-    expect(html).toContain('type="range"');
+    expect(html).toContain('37\u2009%');
+    expect(html).toContain('role="slider"');
     expect(html).toContain('data-control-output="true"');
     expect(html).toContain('data-control-port-id="macro:macro-a:controlOut"');
     expect(html).toContain('data-control-port-type="macro-output"');
@@ -406,7 +409,8 @@ describe('GraphStatePreview', () => {
     });
 
     const slider = findElementByClass(element, 'xleth-graph-state-preview__macro-slider')!;
-    slider.props.onPointerUp({ currentTarget: { value: '0.75' } });
+    // The box edits in percent and commits once; the graph stores 0 to 1.
+    slider.props.onCommit(75);
     const label = findElementByClass(element, 'xleth-graph-state-preview__macro-label')!;
     label.props.onBlur({ currentTarget: { value: 'Drive' } });
 
@@ -464,8 +468,8 @@ describe('GraphStatePreview', () => {
     const html = renderToStaticMarkup(<GraphStatePreview graphState={emptyGraphState} />);
 
     expect(html).toContain('Empty FX Graph');
-    expect(html).toContain('Track Input');
-    expect(html).toContain('Track Output');
+    expect(html).toContain('Track input');
+    expect(html).toContain('Track output');
     expect(html).toContain('data-preview-scroll-stage="true"');
     expect(countAttribute(html, 'data-edge-type=')).toBe(0);
     expect(JSON.stringify(emptyGraphState)).toBe(before);
@@ -479,9 +483,9 @@ describe('GraphStatePreview', () => {
     ], []));
 
     expect(model.nodes.map((node) => node.label)).toEqual([
-      'Track Input',
+      'Track input',
       'Compressor',
-      'Track Output',
+      'Track output',
     ]);
     expect(model.nodes.every((node) => Number.isFinite(node.x) && Number.isFinite(node.y))).toBe(true);
     expect(model.nodes[0].x).toBeLessThan(model.nodes[1].x);
@@ -1023,7 +1027,7 @@ describe('GraphStatePreview', () => {
     // Edge delete is hidden until hover/focus via CSS, but the control must stay
     // in the DOM and remain a labelled, keyboard-reachable button.
     expect(html).toContain('xleth-graph-state-preview__disconnect');
-    expect(html).toContain('aria-label="Disconnect Audio cable: Track Input to Track Output"');
+    expect(html).toContain('aria-label="Disconnect Audio cable: Track input to Track output"');
   });
 
   // ── FXG.4-e/f Macro -> Parameter links ────────────────────────────────────
@@ -1691,7 +1695,7 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
     expect(html).toContain('data-node-type="envelope"');
     expect(html).toContain('xleth-graph-state-preview__node--envelope');
     expect(html).toContain('Pluck Env');
-    expect(html).toContain('Envelope Modulator');
+    expect(html).toContain('Envelope modulator');
     // The retired per-voice identity is gone.
     expect(html).not.toContain('Per-Voice Envelope');
   });
@@ -2221,7 +2225,7 @@ describe('GraphStatePreview lfo nodes', () => {
     expect(html).toContain('data-node-type="lfo"');
     expect(html).toContain('xleth-graph-state-preview__node--lfo');
     expect(html).toContain('Tremolo');
-    expect(html).toContain('LFO Modulator');
+    expect(html).toContain('LFO modulator');
   });
 
   it('renders the rate/params summary', () => {
@@ -2953,11 +2957,10 @@ describe('GraphStatePreview sidechain input (FXG-SC.6B)', () => {
     );
     expect(html).toContain('data-node-type="sidechainInput"');
     expect(html).toContain('xleth-graph-state-preview__node--sidechain-input');
-    expect(html).toContain('Sidechain Input');
+    expect(html).toContain('Sidechain input');
     expect(html).toContain('xleth-graph-state-preview__sidechain-source-select');
-    // Eligible source names appear as options; the selected source (3) is the value.
+    // The selected source (3) is the value; the other options are in the Select's popup.
     expect(html).toContain('Kick');
-    expect(html).toContain('Snare');
   });
 
   it('renders the sidechainOut output handle on the Sidechain Input node', () => {
@@ -3068,11 +3071,12 @@ describe('GraphStatePreview sidechain input (FXG-SC.6B)', () => {
       sidechainSources: SIDECHAIN_SOURCES,
       onSetSidechainSource,
     });
-    const select = findElementByAriaLabel(element, 'Sidechain Input source track');
+    const select = findElementByClass(element, 'xleth-graph-state-preview__sidechain-source-select');
     expect(select).not.toBeNull();
-    select!.props.onChange({ currentTarget: { value: '4' } });
+    expect(select!.props.ariaLabel).toBe('Sidechain Input source track');
+    select!.props.onChange('4');
     expect(onSetSidechainSource).toHaveBeenCalledWith('sc', 4);
-    select!.props.onChange({ currentTarget: { value: '' } });
+    select!.props.onChange('');
     expect(onSetSidechainSource).toHaveBeenCalledWith('sc', null);
   });
 

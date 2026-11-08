@@ -161,6 +161,51 @@ export const GLYPHS = {
       <rect x="1.5" y="5" width="10" height="8.5" />
     </>
   ),
+
+  // ── FX Graph nodes ──────────────────────────────────────────────────────
+  /** Track input: a cable running into a jack bar. */
+  nodeInput: (
+    <>
+      <path d="M1.5 8H9M6.5 5.25L9.5 8L6.5 10.75" />
+      <path d="M12.5 2.5V13.5" />
+    </>
+  ),
+  /** Track output: a jack bar with a cable leaving it. */
+  nodeOutput: (
+    <>
+      <path d="M3.5 2.5V13.5" />
+      <path d="M6.5 8H14.5M11.5 5.25L14.5 8L11.5 10.75" />
+    </>
+  ),
+  /** An effect: a device body with an in port and an out port on its edges. */
+  nodeEffect: (
+    <>
+      <rect x="3.5" y="3" width="9" height="10" />
+      <path d="M1 8H3.5M12.5 8H15M6 6.5H10" />
+    </>
+  ),
+  /** A macro: one cable in, fanning out to three parameters. */
+  nodeMacro: (
+    <>
+      <path d="M1.5 8H6" />
+      <path d="M6 8L13.5 3.5M6 8H13.5M6 8L13.5 12.5" />
+    </>
+  ),
+  /** An LFO: one cycle of its wave. */
+  nodeLfo: (
+    <path d="M1.5 8C3.25 2.5 6.25 2.5 8 8S12.75 13.5 14.5 8" />
+  ),
+  /** An envelope: attack, decay, sustain, release. */
+  nodeEnvelope: (
+    <path d="M1.5 13L5 3L8 7.5H11.5L14.5 13" />
+  ),
+  /** A sidechain input: a dashed key line into a device edge. */
+  nodeSidechain: (
+    <>
+      <rect x="8" y="3.5" width="6.5" height="9" />
+      <path d="M1.5 8H3.25M5.25 8H8" />
+    </>
+  ),
 } satisfies Record<string, ReactNode>;
 
 export type GlyphName = keyof typeof GLYPHS;

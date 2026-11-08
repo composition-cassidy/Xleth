@@ -1,0 +1,310 @@
+/* FX Graph nodes (ui/DESIGN.md sections 3, 9 and 21). Every node is a neutral card with a
+ * title bar: its type glyph, its name, and for an effect the activator. Colour belongs to the
+ * ports, which wear their signal hue and a shape of their own (audio a disc, parameter a
+ * diamond, sidechain key a ring), so a port is never told apart by colour alone. No glow, no
+ * hover lift, no shadow: selection is a 1px --ui-select outline.
+ *
+ * The cable anchors are arithmetic over fixed heights in GraphStatePreview.tsx (NODE_HEIGHT,
+ * PORT_ROW_Y, the parameter rows), so the rows here have exact heights: title bar 26 and port
+ * row 22 and meta row 26 make the 74px base; a parameter row is 18px with a 4px gap. */
+
+@layer kit {
+  .node {
+    position: absolute;
+    box-sizing: border-box;
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    align-content: start;
+    width: 148px;
+    min-height: 74px;
+    padding: 0;
+    background: var(--ui-g2);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+  }
+
+  /* The border is an overlay, so it never moves the rows the cable anchors are computed from. */
+  .node::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    pointer-events: none;
+  }
+
+  .node[data-node-type="unknown"]::after { border-style: dashed; }
+  .node[data-selected="true"]::after { border-color: var(--ui-select); }
+
+  /* While a cable is dragged out: a legal target is outlined dashed in the select colour,
+   * the target the pointer is on solid, everything else recedes. */
+  .node[data-connect-guidance="valid"]::after { border-color: var(--ui-select); border-style: dashed; }
+  .node[data-connect-guidance="invalid"] { opacity: var(--ui-mute-opacity); }
+  .node[data-audio-drop-node="true"]::after,
+  .node[data-parameter-drop-node="true"]::after { border-color: var(--ui-select); border-style: solid; }
+  .node[data-node-dragging="true"],
+  .node[data-dragging="true"] { cursor: grabbing; user-select: none; }
+
+  /* A bypassed effect: the activator shows off, "Off" follows the name, and everything under
+   * the title bar dims. Controls stay editable. */
+  .node[data-bypassed="true"] > :not(.titlebar):not(.handle) { opacity: var(--ui-mute-opacity); }
+
+  /* ── Title bar ───────────────────────────────────────────────────────── */
+
+  .titlebar {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    height: 26px;
+    padding: 0 3px 0 var(--space-1);
+    border-radius: var(--ui-radius-1) var(--ui-radius-1) 0 0;
+    background: var(--ui-g3);
+  }
+
+  .glyph { flex: none; color: var(--ui-ink-2); }
+
+  .name {
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+    color: var(--ui-ink);
+    font-size: var(--type-12);
+    font-weight: var(--weight-semibold);
+    line-height: 1;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* The macro's name is a field. */
+  .renameField {
+    min-width: 0;
+    flex: 1 1 auto;
+    height: 20px;
+    padding: 0 3px;
+    border: 1px solid transparent;
+    border-radius: var(--ui-radius-1);
+    background: transparent;
+    color: var(--ui-ink);
+    font: inherit;
+    font-size: var(--type-12);
+    font-weight: var(--weight-semibold);
+    pointer-events: auto;
+  }
+
+  .renameField:hover { border-color: var(--ui-boundary); }
+  .renameField:focus-visible { border-color: var(--ui-select); outline: none; }
+
+  .off {
+    flex: none;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  .activator { flex: none; pointer-events: auto; }
+
+  /* ── Port row, meta row ─────────────────────────────────────────────── */
+
+  .portRow {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-1);
+    height: 22px;
+    padding: 0 var(--space-2);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    line-height: 1;
+  }
+
+  .portLabel { white-space: nowrap; }
+  .portLabel[data-side="out"] { margin-left: auto; text-align: right; }
+
+  .meta {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    flex-wrap: nowrap;
+    gap: var(--space-1);
+    height: 26px;
+    padding: 0 var(--space-2);
+    overflow: hidden;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    line-height: 1;
+  }
+
+  .metaText {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .badge {
+    flex: none;
+    padding: 2px var(--space-1);
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    color: var(--ui-ink);
+    font-size: var(--type-11);
+    line-height: 1;
+  }
+
+  /* ── Handles: a disc, a diamond or a ring by signal ─────────────────── */
+
+  .handle {
+    position: absolute;
+    top: 37px;
+    box-sizing: border-box;
+    width: 10px;
+    height: 10px;
+    border: 1px solid var(--ui-g0);
+    background: var(--ui-signal-audio);
+    transform: translateY(-50%);
+  }
+
+  /* A 24px grab target around the 10px mark. */
+  .handle::after {
+    content: "";
+    position: absolute;
+    inset: -7px;
+  }
+
+  .handle[data-side="in"] { left: -5px; }
+  .handle[data-side="out"] { right: -5px; }
+
+  .handle[data-signal="audio"] { border-radius: 50%; background: var(--ui-signal-audio); }
+
+  .handle[data-signal="parameter"] {
+    width: 9px;
+    height: 9px;
+    border-radius: 0;
+    background: var(--ui-signal-parameter);
+    transform: translateY(-50%) rotate(45deg);
+  }
+
+  .handle[data-signal="sidechain"] {
+    border: 2px solid var(--ui-signal-audio);
+    border-radius: 50%;
+    background: var(--ui-g2);
+  }
+
+  .handle[data-connect-source="true"] { cursor: crosshair; pointer-events: auto; }
+  .handle[data-connect-source="true"]:hover { outline: 1px solid var(--ui-select); outline-offset: 2px; }
+
+  /* ── Parameter and sidechain port rows ──────────────────────────────── */
+
+  .section {
+    display: grid;
+    min-width: 0;
+    padding: 8px var(--space-2) 10px 12px;
+  }
+
+  .sectionLabel {
+    height: 12px;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    line-height: 12px;
+  }
+
+  .ports {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+  }
+
+  .port {
+    position: relative;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    height: 18px;
+    min-width: 0;
+    padding: 0 var(--space-1);
+    border-radius: var(--ui-radius-1);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    line-height: 1;
+    pointer-events: none;
+  }
+
+  /* The row's hit area grows into the 4px gaps, and only while a cable is being dragged
+   * (the node itself owns the pointer the rest of the time). */
+  .port::after {
+    content: "";
+    position: absolute;
+    inset: -3px 0;
+  }
+
+  [data-connecting="true"] .port { pointer-events: auto; }
+  [data-connecting-kind="macro"] .port,
+  [data-connecting-kind="envelope"] .port,
+  [data-connecting-kind="lfo"] .port,
+  [data-connecting-kind="sidechain"] .port { cursor: copy; }
+
+  /* The mark sits on the node's left edge, where the cable lands. */
+  .portMark {
+    position: absolute;
+    left: -17px;
+    width: 9px;
+    height: 9px;
+    box-sizing: border-box;
+    background: var(--ui-signal-parameter);
+    transform: rotate(45deg);
+  }
+
+  .portMark[data-signal="sidechain"] {
+    width: 10px;
+    height: 10px;
+    border: 2px solid var(--ui-signal-audio);
+    border-radius: 50%;
+    background: var(--ui-g2);
+    transform: none;
+  }
+
+  .portLabelText {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .port[data-drop-target-hovered="true"] {
+    color: var(--ui-ink);
+    outline: 1px solid var(--ui-select);
+  }
+
+  /* The key port: 3 + 18 + 9 = 30px, so its centre is 18px above the node's foot. */
+  .keySection {
+    display: grid;
+    min-width: 0;
+    padding: 3px var(--space-2) 9px 12px;
+  }
+
+  /* ── Macro value, sidechain source ──────────────────────────────────── */
+
+  .macroControl {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    height: 38px;
+    padding: 0 var(--space-2) var(--space-1);
+    pointer-events: auto;
+  }
+
+  .sourceField {
+    box-sizing: border-box;
+    display: grid;
+    gap: var(--space-1);
+    min-height: 48px;
+    padding: 0 var(--space-2) var(--space-2);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    pointer-events: auto;
+  }
+
+  .sourceStatic { color: var(--ui-ink); font-size: var(--type-12); }
+}
