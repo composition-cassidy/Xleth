@@ -54,11 +54,11 @@ export default function ModCurveCanvas({
     const ctx = c.getContext('2d')
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
-    const bg = tokenValue('--theme-sampler-envelope-bg') || tokenValue('--theme-bg-primary')
-    const gridCol = tokenValue('--theme-border-subtle')
+    const bg = tokenValue('--ui-g0') || tokenValue('--theme-bg-primary')
+    const gridCol = tokenValue('--ui-g4') || tokenValue('--theme-border-subtle')
     const resolvedColor = color?.startsWith('var(')
-      ? tokenValue(color.slice(4, -1)) || tokenValue('--theme-accent')
-      : (color || tokenValue('--theme-accent'))
+      ? tokenValue(color.slice(4, -1)) || tokenValue('--ui-signal-parameter')
+      : (color || tokenValue('--ui-signal-parameter'))
 
     ctx.fillStyle = bg
     ctx.fillRect(0, 0, width, height)
@@ -109,7 +109,7 @@ export default function ModCurveCanvas({
     }
     ctx.stroke()
 
-    const cardBg = tokenValue('--theme-bg-elevated')
+    const cardBg = tokenValue('--ui-g3') || tokenValue('--theme-bg-elevated')
     for (let i = 0; i < pts.length; i++) {
       const px = xOf(pts[i].x), py = yOf(pts[i].y)
       const sel = i === selectedIdx

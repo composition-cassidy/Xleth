@@ -3,6 +3,7 @@ import { PanelFrame } from '../components/PanelFrame';
 import SamplerPanelContent from '../../components/sampler/SamplerPanelContent.jsx';
 import { usePanelRegistry } from '../registry/PanelRegistry';
 import { usePanelProps } from '../registry/usePanelValue';
+import { EmptyState } from '../../ui-kit';
 
 interface SamplerPanelProps {
   regionId?: unknown;
@@ -22,9 +23,7 @@ export default function SamplerWindowPanel() {
       {regionId != null
         ? <SamplerPanelContent regionId={regionId} onClose={handleClose} />
         : (
-          <div style={{ flex: '1 1 auto', display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--theme-text-muted)', fontSize: 12 }}>
-            No sample selected
-          </div>
+          <EmptyState message="No sample selected. Open a pattern's sampler with Sampler settings in the Piano Roll." />
         )
       }
     </PanelFrame>

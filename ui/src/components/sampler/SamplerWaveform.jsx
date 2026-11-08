@@ -5,6 +5,8 @@ import { tokenValue } from '../../theming/tokenValue.ts'
 import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
 import { uiCanvasFont } from '../../styles/typography.js'
 import { snapToZeroCrossing } from './zeroCrossing.js'
+import { hintAttrs } from '../../ui-kit'
+import { formatTime, sampleCountText } from './samplerFormat.js'
 
 const HANDLE_HIT = 8
 
@@ -24,6 +26,30 @@ const MIN_SAMPLES_PER_PX = 1 / 4
 // view window drawn on it. Without this, being zoomed in is disorienting —
 // there is no other cue for where in the sample you are.
 const OVERVIEW_H = 14
+
+// Time ruler under the overview: ms (seconds past one second) across the visible
+// window, a labelled tick at least RULER_MIN_LABEL_PX apart.
+const RULER_H = 16
+const RULER_MIN_LABEL_PX = 72
+const RULER_STEPS_MS = [0.1, 0.2, 0.5, 1, 2, 5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 30000, 60000, 120000]
+
+// A CSS colour (#rgb, #rrggbb or rgb()/rgba()) with a new alpha, for canvas fills.
+function withAlpha(color, a) {
+  const c = String(color || '').trim()
+  let r = 0; let g = 0; let b = 0
+  if (c.startsWith('#')) {
+    let h = c.slice(1)
+    if (h.length === 3) h = h.split('').map((ch) => ch + ch).join('')
+    const n = parseInt(h.slice(0, 6), 16)
+    if (Number.isNaN(n)) return c
+    r = (n >> 16) & 255; g = (n >> 8) & 255; b = n & 255
+  } else {
+    const m = /rgba?\(([^)]+)\)/.exec(c)
+    if (!m) return c
+    ;[r, g, b] = m[1].split(/[\s,/]+/).map(Number)
+  }
+  return `rgba(${r},${g},${b},${a})`
+}
 
 // -- Peaks retry budget ------------------------------------------------------
 // Mipmap generation runs on a background thread, so a not-ready answer is
@@ -51,6 +77,8 @@ export default function SamplerWaveform({
   snapZero = true,
   onViewChange,
   playPosition = null,
+  // The slot's identity colour, as a CSS custom property NAME (resolved at draw time).
+  colorVar = '--ui-value',
 }) {
   const canvasRef = useRef(null)
   const [responsiveWidth, setResponsiveWidth] = useState(0)
@@ -70,7 +98,7 @@ export default function SamplerWaveform({
   // height of the column beside it, and a fixed-height canvas left a band of
   // dead space under the waveform for no reason.
   const height = responsive && responsiveHeight > 0 ? responsiveHeight : requestedHeight
-  const waveH = Math.max(1, height - OVERVIEW_H)
+  const waveH = Math.max(1, height - OVERVIEW_H - RULER_H)
 
   const [view, setView] = useState({ start: 0, len: 0 })
   const viewRef = useRef(view)
@@ -228,12 +256,23 @@ export default function SamplerWaveform({
     const ctx = c.getContext('2d')
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
+    // Colours: read at draw time (never at module scope). Chrome stays neutral;
+    // the waveform carries the slot's identity colour, the loop and crossfade the
+    // value colour, handles and the playhead ink.
+    const g0 = tokenValue('--ui-g0')
+    const g4 = tokenValue('--ui-g4')
+    const ink = tokenValue('--ui-ink')
+    const ink2 = tokenValue('--ui-ink-2')
+    const ink3 = tokenValue('--ui-ink-3')
+    const value = tokenValue('--ui-value')
+    const slotCol = tokenValue(colorVar) || value
+
     // Background
-    ctx.fillStyle = '#0a0a10'
+    ctx.fillStyle = g0
     ctx.fillRect(0, 0, width, height)
 
     if (!peaks) {
-      ctx.fillStyle = tokenValue('--theme-text-placeholder')
+      ctx.fillStyle = ink3
       ctx.font = uiCanvasFont('11px')
       ctx.textAlign = 'center'
       ctx.fillText(
@@ -244,12 +283,53 @@ export default function SamplerWaveform({
       return
     }
 
-    // Everything below the overview strip is the editable waveform; shift the
-    // origin down once rather than adding OVERVIEW_H at every call site.
-    ctx.save()
-    ctx.translate(0, OVERVIEW_H)
+    // ── Ruler (time across the visible window) ───────────────────────────────
+    if (numSamples > 0 && viewLen > 0 && effRate > 0) {
+      const y0 = OVERVIEW_H
+      const viewMs = (viewLen / effRate) * 1000
+      const startMs = (viewStart / effRate) * 1000
+      const pxPerMs = width / viewMs
+      let step = RULER_STEPS_MS[RULER_STEPS_MS.length - 1]
+      for (const s of RULER_STEPS_MS) { if (s * pxPerMs >= RULER_MIN_LABEL_PX) { step = s; break } }
+      const minor = step / 5
+      ctx.strokeStyle = g4
+      ctx.lineWidth = 1
+      ctx.beginPath()
+      ctx.moveTo(0, y0 + RULER_H - 0.5)
+      ctx.lineTo(width, y0 + RULER_H - 0.5)
+      ctx.stroke()
+      if (minor * pxPerMs >= 6) {
+        ctx.beginPath()
+        for (let t = Math.ceil(startMs / minor) * minor; t <= startMs + viewMs; t += minor) {
+          const x = Math.round((t - startMs) * pxPerMs) + 0.5
+          ctx.moveTo(x, y0 + RULER_H - 4)
+          ctx.lineTo(x, y0 + RULER_H)
+        }
+        ctx.stroke()
+      }
+      ctx.strokeStyle = ink3
+      ctx.fillStyle = ink2
+      ctx.font = uiCanvasFont('10px')
+      ctx.textAlign = 'left'
+      ctx.textBaseline = 'top'
+      ctx.beginPath()
+      for (let t = Math.ceil(startMs / step - 1e-9) * step; t <= startMs + viewMs; t += step) {
+        const x = Math.round((t - startMs) * pxPerMs) + 0.5
+        ctx.moveTo(x, y0 + 2)
+        ctx.lineTo(x, y0 + RULER_H)
+        const tr = Math.round(t * 1000) / 1000
+        ctx.fillText(tr < 1000 ? `${tr.toFixed(step < 1 ? 1 : 0)} ms` : formatTime(tr), x + 3, y0 + 3)
+      }
+      ctx.stroke()
+      ctx.textBaseline = 'alphabetic'
+    }
 
-    // Waveform (envelope + RMS body via shared renderer)
+    // Everything below the overview strip and the ruler is the editable
+    // waveform; shift the origin once rather than offsetting every call site.
+    ctx.save()
+    ctx.translate(0, OVERVIEW_H + RULER_H)
+
+    // Waveform (envelope + RMS body via the shared renderer), in the slot colour.
     const ds   = downsamplePeaks3(peaks, width)
     const cols = Math.floor(ds.length / 3)
     const mid  = waveH / 2
@@ -258,18 +338,19 @@ export default function SamplerWaveform({
       ctx, ds,
       0, 0, width, waveH,
       0, cols,
-      tokenValue('--theme-sampler-envelope-fill'),  // envelope fill
-      tokenValue('--theme-waveform-rms-body'),      // RMS body (brighter)
+      withAlpha(slotCol, 0.45),  // envelope
+      slotCol,                   // RMS body
     )
 
-    // Center line
-    ctx.strokeStyle = 'rgba(255,255,255,0.08)'
+    // Centre line
+    ctx.strokeStyle = g4
+    ctx.lineWidth = 1
     ctx.beginPath()
     ctx.moveTo(0, mid + 0.5)
     ctx.lineTo(width, mid + 0.5)
     ctx.stroke()
 
-    // ── Trim markers (SMP START / LENGTH) ────────────────────────────────────
+    // ── Trim (start / length), declick and fades ─────────────────────────────
     if (numSamples > 0) {
       const liveSmpStart  = smpDrag?.start ?? smpStart
       const liveSmpLength = smpDrag != null ? (smpDrag.end - smpDrag.start) : smpLength
@@ -277,65 +358,58 @@ export default function SamplerWaveform({
       const xTrimStart    = sampleToX(liveSmpStart)
       const xTrimEnd      = sampleToX(effectiveEnd)
 
-      // Dim outside-trim zones
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.45)'
+      // Outside the trim the waveform dims toward the ground.
+      ctx.fillStyle = withAlpha(g0, 0.7)
       if (xTrimStart > 0)     ctx.fillRect(0,        0, Math.min(xTrimStart, width), waveH)
       if (xTrimEnd   < width) ctx.fillRect(Math.max(0, xTrimEnd), 0, width - Math.max(0, xTrimEnd), waveH)
 
-      // Active trim region highlight
-      ctx.fillStyle = 'rgba(51, 206, 214, 0.07)'
-      ctx.fillRect(xTrimStart, 0, Math.max(0, xTrimEnd - xTrimStart), waveH)
-
-      // Declick fade overlays — widths are in samples, so they scale with zoom
-      // like everything else rather than staying a fixed pixel smear.
       const pxPerSample = viewLen > 0 ? width / viewLen : 0
-      // declickMs -> samples. The panel has always sent `declickMs`, but this
-      // component took a `declickSamples` prop nobody passed, so the overlay
-      // was frozen at its 64-sample default and never reflected the control.
+
+      // Declick: the Hann edge, in samples so it scales with zoom.
       const declickSamples = Math.max(0, (declickMs / 1000) * effRate)
       const fadeWidth = declickSamples * pxPerSample
       if (fadeWidth > 0.5) {
         const fadeInGrad = ctx.createLinearGradient(xTrimStart, 0, xTrimStart + fadeWidth, 0)
-        fadeInGrad.addColorStop(0, 'rgba(0,0,0,0.35)')
-        fadeInGrad.addColorStop(1, 'rgba(0,0,0,0)')
+        fadeInGrad.addColorStop(0, withAlpha(g0, 0.55))
+        fadeInGrad.addColorStop(1, withAlpha(g0, 0))
         ctx.fillStyle = fadeInGrad
         ctx.fillRect(xTrimStart, 0, fadeWidth, waveH)
-
         const fadeOutGrad = ctx.createLinearGradient(xTrimEnd - fadeWidth, 0, xTrimEnd, 0)
-        fadeOutGrad.addColorStop(0, 'rgba(0,0,0,0)')
-        fadeOutGrad.addColorStop(1, 'rgba(0,0,0,0.35)')
+        fadeOutGrad.addColorStop(0, withAlpha(g0, 0))
+        fadeOutGrad.addColorStop(1, withAlpha(g0, 0.55))
         ctx.fillStyle = fadeOutGrad
         ctx.fillRect(xTrimEnd - fadeWidth, 0, fadeWidth, waveH)
       }
 
-      // User fade-in overlay (teal gradient)
+      // Fades are linear gain ramps: drawn as the ramp itself, with the part of
+      // the waveform the ramp removes dimmed above it.
+      const ramp = (x0, x1, rising) => {
+        if (Math.abs(x1 - x0) < 0.5) return
+        ctx.fillStyle = withAlpha(g0, 0.5)
+        ctx.beginPath()
+        ctx.moveTo(x0, 0)
+        ctx.lineTo(x1, 0)
+        ctx.lineTo(rising ? x0 : x1, waveH)
+        ctx.closePath()
+        ctx.fill()
+        ctx.strokeStyle = ink2
+        ctx.lineWidth = 1
+        ctx.beginPath()
+        ctx.moveTo(x0, rising ? waveH : 0)
+        ctx.lineTo(x1, rising ? 0 : waveH)
+        ctx.stroke()
+      }
       if (fadeInMs > 0 && effRate > 0) {
-        const fiSamples = (fadeInMs / 1000) * effRate
-        const fiPx = Math.min(fiSamples * pxPerSample, xTrimEnd - xTrimStart)
-        if (fiPx > 0.5) {
-          const g = ctx.createLinearGradient(xTrimStart, 0, xTrimStart + fiPx, 0)
-          g.addColorStop(0, 'rgba(51,206,214,0.30)')
-          g.addColorStop(1, 'rgba(51,206,214,0)')
-          ctx.fillStyle = g
-          ctx.fillRect(xTrimStart, 0, fiPx, waveH)
-        }
+        const fiPx = Math.min((fadeInMs / 1000) * effRate * pxPerSample, xTrimEnd - xTrimStart)
+        if (fiPx > 0.5) ramp(xTrimStart, xTrimStart + fiPx, true)
       }
-
-      // User fade-out overlay (teal gradient)
       if (fadeOutMs > 0 && effRate > 0) {
-        const foSamples = (fadeOutMs / 1000) * effRate
-        const foPx = Math.min(foSamples * pxPerSample, xTrimEnd - xTrimStart)
-        if (foPx > 0.5) {
-          const g = ctx.createLinearGradient(xTrimEnd - foPx, 0, xTrimEnd, 0)
-          g.addColorStop(0, 'rgba(51,206,214,0)')
-          g.addColorStop(1, 'rgba(51,206,214,0.30)')
-          ctx.fillStyle = g
-          ctx.fillRect(xTrimEnd - foPx, 0, foPx, waveH)
-        }
+        const foPx = Math.min((fadeOutMs / 1000) * effRate * pxPerSample, xTrimEnd - xTrimStart)
+        if (foPx > 0.5) ramp(xTrimEnd - foPx, xTrimEnd, false)
       }
 
-      // Trim START / END lines
-      ctx.strokeStyle = tokenValue('--theme-sampler-trim-handle')
+      // Trim start / end lines with top caps.
+      ctx.strokeStyle = ink
       ctx.lineWidth = 2
       for (const x of [xTrimStart, xTrimEnd]) {
         if (x < -2 || x > width + 2) continue
@@ -344,27 +418,24 @@ export default function SamplerWaveform({
         ctx.lineTo(Math.round(x) + 0.5, waveH)
         ctx.stroke()
       }
-
-      // Small top-caps to identify start vs end
-      ctx.fillStyle = tokenValue('--theme-sampler-trim-handle')
+      ctx.fillStyle = ink
       for (const x of [xTrimStart, xTrimEnd]) {
         if (x < -4 || x > width + 4) continue
         ctx.fillRect(Math.round(x) - 3, 0, 7, 5)
       }
     }
 
-    // ── Loop markers ─────────────────────────────────────────────────────────
+    // ── Loop region ───────────────────────────────────────────────────────────
     if (loopEnabled && numSamples > 0) {
       const lsSamples = loopDrag?.start ?? loopStart
       const leSamples = loopDrag?.end   ?? (loopEnd || numSamples)
       const xStart = sampleToX(lsSamples)
       const xEnd   = sampleToX(leSamples)
 
-      // Translucent band
-      ctx.fillStyle = tokenValue('--theme-sampler-loop-crossfade-fill')
+      ctx.fillStyle = withAlpha(value, 0.1)
       ctx.fillRect(xStart, 0, Math.max(0, xEnd - xStart), waveH)
 
-      ctx.strokeStyle = tokenValue('--theme-label-pitch')
+      ctx.strokeStyle = value
       ctx.lineWidth = 2
       for (const x of [xStart, xEnd]) {
         if (x < -2 || x > width + 2) continue
@@ -373,11 +444,18 @@ export default function SamplerWaveform({
         ctx.lineTo(Math.round(x) + 0.5, waveH)
         ctx.stroke()
       }
+      // Loop handles: a flag at the bottom, so trim (top caps) and loop read apart.
+      ctx.fillStyle = value
+      for (const x of [xStart, xEnd]) {
+        if (x < -4 || x > width + 4) continue
+        ctx.fillRect(Math.round(x) - 3, waveH - 5, 7, 5)
+      }
 
-      // ── Crossfade zone (FL-style) ─────────────────────────────────────────
-      // Wrap is to (loopStart + N), so the first N samples of the loop are
-      // "fade-in source" only. Show the effective-loop-start at loopStart+N
-      // and an X-pattern over the fade-out region [loopEnd-N .. loopEnd].
+      // ── Crossfade, drawn as its actual shape ──────────────────────────────
+      // The engine (Sampler.cpp) crossfades over [loopEnd - N, loopEnd] with an
+      // equal-power quarter-sine: the outgoing audio by cos(p·π/2), the incoming
+      // audio, read from [loopStart, loopStart + N], by sin(p·π/2); the wrap then
+      // lands at loopStart + N. N is clamped like the engine clamps it.
       if (crossfadeSamples > 0) {
         const trimStart = smpDrag?.start ?? smpStart
         const trimEnd = (smpDrag != null ? smpDrag.end
@@ -388,20 +466,37 @@ export default function SamplerWaveform({
         xfSrc = Math.min(xfSrc, Math.max(0, trimEnd - lsSamples))
         if (xfSrc > 0) {
           const xfPx = xfSrc * (viewLen > 0 ? width / viewLen : 0)
-          const aStartX = xEnd - xfPx                     // fade-out zone start
-          const effStartX = xStart + xfPx                 // effective loop wrap point
+          const aStartX = xEnd - xfPx
+          const effStartX = xStart + xfPx
           ctx.save()
-          // Fade-out zone band + X pattern
-          ctx.fillStyle = 'rgba(255,160,60,0.14)'
+          // Where the incoming audio is read from.
+          ctx.fillStyle = withAlpha(value, 0.08)
+          ctx.fillRect(xStart, 0, xfPx, waveH)
+          // The crossfade zone and its two gain curves (top = full level).
+          ctx.fillStyle = withAlpha(value, 0.12)
           ctx.fillRect(aStartX, 0, xfPx, waveH)
-          ctx.strokeStyle = 'rgba(255,160,60,0.55)'
-          ctx.lineWidth = 1
+          const steps = Math.max(8, Math.min(96, Math.round(xfPx / 2)))
+          ctx.lineWidth = 1.5
+          ctx.strokeStyle = value
           ctx.beginPath()
-          ctx.moveTo(aStartX, 0);       ctx.lineTo(aStartX + xfPx, waveH)
-          ctx.moveTo(aStartX, waveH);   ctx.lineTo(aStartX + xfPx, 0)
+          for (let i = 0; i <= steps; i++) {
+            const p = i / steps
+            const x = aStartX + p * xfPx
+            const y = (1 - Math.cos(p * Math.PI / 2)) * waveH
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y)
+          }
           ctx.stroke()
-          // Effective wrap-point marker (dashed line at loopStart + N)
-          ctx.strokeStyle = tokenValue('--theme-sampler-trim-handle')
+          ctx.strokeStyle = ink2
+          ctx.beginPath()
+          for (let i = 0; i <= steps; i++) {
+            const p = i / steps
+            const x = aStartX + p * xfPx
+            const y = (1 - Math.sin(p * Math.PI / 2)) * waveH
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y)
+          }
+          ctx.stroke()
+          // The effective wrap point.
+          ctx.strokeStyle = value
           ctx.lineWidth = 1
           ctx.setLineDash([3, 3])
           ctx.beginPath()
@@ -421,7 +516,7 @@ export default function SamplerWaveform({
     if (playPosition != null && playPosition >= 0 && numSamples > 0) {
       const px = sampleToX(playPosition)
       if (px >= -1 && px <= width + 1) {
-        ctx.strokeStyle = tokenValue('--theme-sampler-waveform-playhead')
+        ctx.strokeStyle = ink
         ctx.lineWidth = 1
         ctx.beginPath()
         ctx.moveTo(Math.round(px) + 0.5, 0)
@@ -433,28 +528,27 @@ export default function SamplerWaveform({
     ctx.restore()
 
     // ── Overview strip ───────────────────────────────────────────────────────
-    // The whole file as a flat bar, with the view window as a bright box.
+    // The whole file as a flat bar: the trim in the slot colour, the visible
+    // window as an outlined box.
     if (numSamples > 0) {
-      ctx.fillStyle = 'rgba(255,255,255,0.05)'
+      ctx.fillStyle = withAlpha(ink, 0.05)
       ctx.fillRect(0, 0, width, OVERVIEW_H - 1)
 
-      // Trim region on the overview, so the selection is findable when zoomed
-      // somewhere else entirely.
       const tStart = (smpDrag?.start ?? smpStart) / numSamples * width
       const tLen = smpLength > 0 ? smpLength : numSamples - smpStart
       const tEnd = ((smpDrag != null ? smpDrag.end : smpStart + tLen) / numSamples) * width
-      ctx.fillStyle = 'rgba(51,206,214,0.18)'
+      ctx.fillStyle = withAlpha(slotCol, 0.35)
       ctx.fillRect(tStart, 0, Math.max(1, tEnd - tStart), OVERVIEW_H - 1)
 
       const vx = (viewStart / numSamples) * width
       const vw = Math.max(2, (viewLen / numSamples) * width)
-      ctx.fillStyle = 'rgba(255,255,255,0.14)'
+      ctx.fillStyle = withAlpha(ink, 0.12)
       ctx.fillRect(vx, 0, vw, OVERVIEW_H - 1)
-      ctx.strokeStyle = tokenValue('--theme-sampler-trim-handle')
+      ctx.strokeStyle = ink2
       ctx.lineWidth = 1
       ctx.strokeRect(Math.round(vx) + 0.5, 0.5, Math.max(2, Math.round(vw) - 1), OVERVIEW_H - 2)
 
-      ctx.strokeStyle = 'rgba(255,255,255,0.10)'
+      ctx.strokeStyle = g4
       ctx.beginPath()
       ctx.moveTo(0, OVERVIEW_H - 0.5)
       ctx.lineTo(width, OVERVIEW_H - 0.5)
@@ -465,7 +559,7 @@ export default function SamplerWaveform({
       smpStart, smpLength, declickMs, smpDrag,
       fadeInMs, fadeOutMs, effRate,
       crossfadeSamples, sampleToX, viewStart, viewLen,
-      playPosition,
+      playPosition, colorVar,
       numSamples, themeEpoch])
 
   // ── Shared helpers ──────────────────────────────────────────────────────────
@@ -728,11 +822,16 @@ export default function SamplerWaveform({
   return (
     <canvas
       ref={canvasRef}
-      style={{ cursor, display: 'block', borderRadius: 4, border: '1px solid var(--theme-sampler-key-border)' }}
+      style={{ cursor, display: 'block' }}
       onMouseDown={handleMouseDown}
       onMouseMove={handleMouseMove}
       onDoubleClick={(e) => { e.preventDefault(); zoomToFit() }}
-      title="Wheel = zoom · Shift+wheel = scroll · drag = pan · double-click = fit · Alt while dragging a handle = no zero-crossing snap"
+      {...hintAttrs({
+        hint: numSamples > 0
+          ? `Waveform: ${sampleCountText(numSamples)} (${formatTime((numSamples / effRate) * 1000)}). Drag the top caps to trim, the bottom flags to set the loop.`
+          : 'Waveform',
+        hintMods: 'Wheel: zoom · Shift+wheel: scroll · Drag: pan · Double-click: fit · Alt while dragging a handle: no zero-crossing snap',
+      })}
     />
   )
 }

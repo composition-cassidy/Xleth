@@ -9,7 +9,7 @@ import { ModKnob, ModNumberBox } from './kitMod.jsx'
 import {
   formatGainDb, formatOffset, formatPan, formatSamplePosition, formatTime, noteName,
   noteValueCodec, parseGainDb, parseNote, parseOffset, parsePan, parseSamplePosition,
-  sampleCountText, samplesToMs, slotColorVar,
+  sampleCountText, samplesToMs, slotColorVar, slotColorVarName,
 } from './samplerFormat.js'
 import { slotDisplayName } from './SlotTabs.jsx'
 import {
@@ -430,6 +430,7 @@ export default function SamplerMainView({
               snapZero={snapZero}
               onViewChange={onWaveViewChange}
               playPosition={playPosition}
+              colorVar={slotColorVarName(slotIndex)}
             />
           </div>
         </div>
