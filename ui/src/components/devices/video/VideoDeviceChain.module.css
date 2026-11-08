@@ -11,6 +11,21 @@
     border-right: 1px solid var(--ui-boundary);
   }
 
+  /* "Per note", vertical, like a folded device's name: what the group is. */
+  .groupLabel {
+    display: flex;
+    flex: 0 0 auto;
+    align-items: center;
+    height: var(--device-h);
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+    font-weight: var(--weight-medium);
+    white-space: nowrap;
+    writing-mode: vertical-rl;
+    transform: rotate(180deg);
+  }
+
   .empty {
     display: flex;
     align-items: center;

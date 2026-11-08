@@ -107,7 +107,7 @@ async function mount(tracks = emptyTracks()) {
   await act(async () => { await Promise.resolve(); await Promise.resolve() })
 }
 
-const viewportCanvas = () => document.querySelector('.zpr-viewport-canvas')
+const viewportCanvas = () => document.querySelector('[data-testid="zpr-viewport"]')
 
 // React reads clientX/clientY/button off the native event; a MouseEvent carries
 // all three and jsdom does not implement PointerEvent.
@@ -173,9 +173,9 @@ describe('ZprViewport direct manipulation', () => {
     expect(t.rotationDeg.keys).toHaveLength(0)
 
     // The derived "x" readout the inspector shows is 2.00 for a half-size window.
-    const zoomField = Array.from(document.querySelectorAll('.zpr-drag-field'))
-      .find(f => f.querySelector('.zpr-drag-field-label')?.textContent.trim() === 'Zoom')
-    expect(zoomField.querySelector('.zpr-drag-field-value').textContent).toContain('2.00')
+    const zoomField = Array.from(document.querySelectorAll('[role="slider"]'))
+      .find(f => f.getAttribute('aria-label') === 'Zoom')
+    expect(zoomField.getAttribute('aria-valuetext')).toContain('2.00')
   })
 
   it('rotating past a full turn stores more than 360 degrees', async () => {

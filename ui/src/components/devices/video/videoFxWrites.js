@@ -12,8 +12,12 @@
 // every write, so two surfaces never keep diverging copies of it.
 
 import { timelineEvents } from '../../../timelineEvents.js'
+import { NOTE_FADE_DEFAULT_SIDE } from './videoFxCatalog.js'
 
 const notify = () => timelineEvents.dispatchEvent(new Event('timeline-tracks-changed'))
+
+/** The refresh every write ends with; also used after a preset load (the preset adapter writes on its own). */
+export const notifyTracksChanged = notify
 
 function timelineFn(name) {
   const fn = window.xleth?.timeline?.[name]
@@ -123,7 +127,9 @@ export async function setNoteDeviceEnabled(track, id, enabled) {
     case 'pingPong': return setPingPong(track.id, track.pingPong, { enabled })
     case 'noteFade': {
       const nf = track.noteFade ?? {}
-      return setNoteFade(track.id, { enabled, fadeIn: nf.fadeIn, fadeOut: nf.fadeOut })
+      return setNoteFade(track.id, {
+        enabled, fadeIn: nf.fadeIn ?? NOTE_FADE_DEFAULT_SIDE, fadeOut: nf.fadeOut ?? NOTE_FADE_DEFAULT_SIDE,
+      })
     }
     default: return undefined
   }

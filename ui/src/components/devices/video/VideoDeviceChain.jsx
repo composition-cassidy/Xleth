@@ -6,6 +6,7 @@ import useTrackIdentityColors from '../../inspector/useTrackIdentityColors.js'
 import ChainHead from '../ChainHead.jsx'
 import chainStyles from '../DeviceChain.module.css'
 import VideoChainDevice from './VideoChainDevice.jsx'
+import NoteDevice from './NoteDevice.jsx'
 import useVideoTracks from './useVideoTracks.js'
 import useVideoDeviceStore from './videoDeviceStore.js'
 import {
@@ -36,12 +37,12 @@ export function visibleNoteDevices(track, shownIds = EMPTY) {
 }
 
 /** Add-menu items: the same grammar (and component) as the audio chain's picker. */
-export function buildVideoPickerItems({ track, chain, shownIds, onAddNote, onAddChain, withNotes = true }) {
+export function buildVideoPickerItems({ track, chain, shownIds, onAddNote, onAddChain }) {
   const pattern = track?.type === 'Pattern'
   const notes = NOTE_DEVICES.filter((d) => !d.patternOnly || pattern)
   const present = new Set(visibleNoteDevices(track, shownIds).map((d) => d.id))
   return [
-    ...(withNotes ? [{
+    {
       label: `Per note (${notes.length})`,
       submenu: notes.map((d) => ({
         label: d.name,
@@ -49,7 +50,7 @@ export function buildVideoPickerItems({ track, chain, shownIds, onAddNote, onAdd
         disabled: present.has(d.id),
         onClick: () => onAddNote(d.id),
       })),
-    }] : []),
+    },
     {
       label: `Chain (${CHAIN_PICKER.length})`,
       submenu: CHAIN_PICKER.map((type) => ({
@@ -150,7 +151,7 @@ export default function VideoDeviceChain() {
   }, [track, showNoteDevice])
 
   const menuItems = useMemo(
-    () => buildVideoPickerItems({ track, chain, shownIds, onAddNote, onAddChain, withNotes: false }),
+    () => buildVideoPickerItems({ track, chain, shownIds, onAddNote, onAddChain }),
     [track, chain, shownIds, onAddNote, onAddChain],
   )
 
@@ -175,11 +176,23 @@ export default function VideoDeviceChain() {
   }
 
   const order = dragOrder ?? chain.map((_, i) => i)
+  const noteDevices = visibleNoteDevices(track, shownIds)
 
   return (
     <div className={chainStyles.scroller} data-testid="xleth-video-chain" aria-label={`${name} video devices`} role="list">
       <div className={chainStyles.row} ref={rowRef}>
         <ChainHead name={name} identityColor={identityColor} />
+
+        {noteDevices.length > 0 ? (
+          <div className={styles.group} role="group" aria-label="Per note" data-testid="xleth-video-note-group">
+            <span className={styles.groupLabel} aria-hidden="true">Per note</span>
+            {noteDevices.map((d) => (
+              <div key={d.id} role="listitem" className={chainStyles.slot} data-video-note={d.id}>
+                <NoteDevice track={track} id={d.id} identityColor={identityColor} />
+              </div>
+            ))}
+          </div>
+        ) : null}
 
 
         {order.map((index, pos) => {

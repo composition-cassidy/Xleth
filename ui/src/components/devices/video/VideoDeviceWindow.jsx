@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import useTrackIdentityColors from '../../inspector/useTrackIdentityColors.js'
 import floatStyles from '../FloatingDevice.module.css'
 import VideoChainDevice from './VideoChainDevice.jsx'
+import NoteDevice from './NoteDevice.jsx'
 import useVideoTracks from './useVideoTracks.js'
 import useVideoDeviceStore from './videoDeviceStore.js'
 
@@ -38,7 +39,8 @@ export default function VideoDeviceWindow() {
 
   useEffect(() => {
     if (win && loaded && win.kind === 'chain' && !fx) closeWindow()
-  }, [win, loaded, fx, closeWindow])
+    if (win && loaded && !track) closeWindow()
+  }, [win, loaded, fx, track, closeWindow])
 
   if (!win || !track) return null
   const dragHandleProps = {
@@ -58,6 +60,16 @@ export default function VideoDeviceWindow() {
           track={track}
           fx={fx}
           index={win.key}
+          identityColor={identity[track.id]}
+          presentation="floating"
+          onClose={closeWindow}
+          dragHandleProps={dragHandleProps}
+        />
+      ) : null}
+      {win.kind === 'note' ? (
+        <NoteDevice
+          track={track}
+          id={win.key}
           identityColor={identity[track.id]}
           presentation="floating"
           onClose={closeWindow}

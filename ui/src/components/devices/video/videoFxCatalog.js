@@ -170,6 +170,9 @@ export const NOTE_DEVICES = Object.freeze([
   { id: 'slideNote', name: 'Slide note effect', field: 'slideNoteEffect', patternOnly: true },
 ])
 
+/** NoteFadeSettings::Side's field initialisers (TimelineTypes.h): an absent side falls back to these, as the legacy panel did. */
+export const NOTE_FADE_DEFAULT_SIDE = Object.freeze({ mode: 0, percent: 10, divisionDenominator: 16, ms: 60, curve: 0 })
+
 export const noteDeviceName = (id) => NOTE_DEVICES.find((d) => d.id === id)?.name ?? id
 
 /** Whether a per-note config is in use on the track (shown in the chain without being added this session). */

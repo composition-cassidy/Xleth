@@ -1,0 +1,251 @@
+@layer kit {
+  /* The Zoom/pan/rot keyframe editor: the device body (256px frame) and the
+   * popped-out window. Canvas stays canvas; these rules only lay out the DOM
+   * around the three canvases (framing viewport, keyframe lanes, segment curve). */
+
+  /* ── keyframe lanes: a DOM label gutter beside one canvas ──────────────── */
+  .timeline {
+    display: flex;
+    align-items: flex-start;
+    min-width: 0;
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g0);
+  }
+
+  .gutter {
+    flex: 0 0 72px;
+    border-right: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
+  }
+
+  .gutterRuler {
+    height: 22px;
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .gutterRow {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    height: var(--zpr-row-h, 48px);
+    padding: 0 var(--space-1);
+    border-bottom: 1px solid var(--ui-g4);
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+    white-space: nowrap;
+  }
+
+  .expand {
+    min-height: 24px;
+    padding: 0;
+    border: 0;
+    background: none;
+    color: inherit;
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .expand:is(:hover, :focus-visible) {
+    outline: none;
+    color: var(--ui-ink);
+  }
+
+  .canvasWrap {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .canvas {
+    display: block;
+    outline: none;
+    touch-action: none;
+  }
+
+  .canvas:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -1px;
+  }
+
+  /* ── framing viewport ──────────────────────────────────────────────────── */
+  .viewportWrap {
+    width: 100%;
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g0);
+  }
+
+  .viewport {
+    display: block;
+    outline: none;
+    touch-action: none;
+  }
+
+  /* ── segment curve editor ──────────────────────────────────────────────── */
+  .bezier {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .bezierCanvasWrap {
+    width: 100%;
+  }
+
+  .bezierCanvasWrap > canvas {
+    border: 1px solid var(--ui-g4);
+  }
+
+  .bezierReadout {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .textField {
+    box-sizing: border-box;
+    flex: 1 1 auto;
+    min-width: 0;
+    height: 24px;
+    padding: 0 var(--space-1);
+    border: 1px solid var(--ui-boundary);
+    border-radius: 2px;
+    background: var(--ui-g0);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .textField:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 1px;
+  }
+
+  .bezierPresets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 2px;
+  }
+
+  /* ── shared field layout ───────────────────────────────────────────────── */
+  .fieldStack {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    align-self: stretch;
+    gap: var(--space-1);
+    padding: 0 var(--space-1);
+  }
+
+  .fieldGrid {
+    display: grid;
+    grid-template-columns: repeat(2, auto);
+    gap: var(--space-1);
+  }
+
+  .caption {
+    margin: 0;
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+    line-height: 1.2;
+  }
+
+  .note {
+    margin: 0;
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+    line-height: 1.3;
+  }
+
+  .readout {
+    margin: 0;
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Glyph AND words: the seam warning never relies on colour. */
+  .warn {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+  }
+
+  .warn > svg {
+    width: 12px;
+    height: 12px;
+    color: var(--ui-clip);
+  }
+
+  /* ── device layout: viewport and lanes share the one display well ──────── */
+  .deviceWell {
+    display: flex;
+    gap: 2px;
+    height: 100%;
+    min-height: 0;
+  }
+
+  .deviceViewport {
+    flex: 0 0 172px;
+    overflow: hidden;
+  }
+
+  .deviceTimeline {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+
+  /* ── window layout: the full editor ────────────────────────────────────── */
+  .window {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    width: 100%;
+    padding: var(--space-2);
+  }
+
+  .windowHeader {
+    display: flex;
+    align-items: stretch;
+  }
+
+  .editorRow {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-2);
+  }
+
+  .viewportCol {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+  }
+
+  .tools {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  /* The record glyph: a filled dot, so "armed" is a shape as well as a fill. */
+  .recGlyph {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    background: var(--ui-rec);
+  }
+}

@@ -1,12 +1,11 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import { NumberBox, SectionHeader, Toggle, THIN_SPACE } from '../../ui-kit'
+import { Button, NumberBox, SectionHeader, Toggle, THIN_SPACE } from '../../ui-kit'
 import { timelineEvents } from '../../timelineEvents.js'
 import TrackFlipSection from './TrackFlipSection.jsx'
 import CornerRadiusControl from '../grid/CornerRadiusControl.jsx'
 import CustomGapControl from '../grid/CustomGapControl.jsx'
-import VisualFXSection from '../grid/VisualFXSection.jsx'
-import SlideNoteEffectSection from '../grid/SlideNoteEffectSection.jsx'
-import NoteFadeSection from '../grid/NoteFadeSection.jsx'
+import { videoFxCount } from '../devices/video/videoFxCatalog.js'
+import { openVideoDevicesFor } from '../devices/video/openVideoDevices.js'
 import { getTrackPlacement, placementBadgeLabel, setFullscreenPlacementMode } from './trackPlacement.js'
 import { HOLD_THRESHOLD_UNLIMITED, formatHoldThreshold } from './holdLastFrame.js'
 import useTrackIdentityColors from '../inspector/useTrackIdentityColors.js'
@@ -166,11 +165,7 @@ export default function TrackVideoProperties({ trackId }) {
 
   const hold = track.videoHoldLastFrame || false
   const isPattern = track.type === 'Pattern'
-  const visualFxCount =
-    (track.bounce?.enabled ? 1 : 0) +
-    (track.zoomPanRot?.enabled ? 1 : 0) +
-    (track.pingPong?.enabled ? 1 : 0) +
-    (track.visualEffectChain?.length ?? 0)
+  const visualFxCount = videoFxCount(track)
 
   return (
     <div className={styles.root} data-testid="xleth-inspector-track">
@@ -263,27 +258,19 @@ export default function TrackVideoProperties({ trackId }) {
         </div>
       </section>
 
-      <section className={styles.section} aria-label="Visual FX">
-        <div className={HOSTED}>
-          <VisualFXSection track={track} fetchTracks={fetchTracks} />
-        </div>
+      <section className={styles.section} aria-label="Video effects">
+        <SectionHeader>Video effects</SectionHeader>
+        <Row label="Effects">
+          <Button
+            size="sm"
+            onClick={() => openVideoDevicesFor(track.id)}
+            hint="Open this track's video effects in the Devices tab"
+            data-testid="xleth-inspector-video-fx"
+          >
+            {`Video effects (${visualFxCount})`}
+          </Button>
+        </Row>
       </section>
-
-      {isPattern && (
-        <section className={styles.section} aria-label="Slide note FX">
-          <div className={HOSTED}>
-            <SlideNoteEffectSection track={track} fetchTracks={fetchTracks} />
-          </div>
-        </section>
-      )}
-
-      {isPattern && (
-        <section className={styles.section} aria-label="Note fade">
-          <div className={HOSTED}>
-            <NoteFadeSection track={track} fetchTracks={fetchTracks} />
-          </div>
-        </section>
-      )}
     </div>
   )
 }

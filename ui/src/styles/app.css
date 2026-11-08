@@ -3953,39 +3953,9 @@ html, body, #root {
 
 /* â”€â”€ Bounce â”€â”€ */
 
-.grid-tab-dir-btn {
-  background: var(--theme-bg-secondary);
-  color: var(--theme-text-muted);
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: 3px;
-  padding: 1px 6px;
-  font-size: 11px;
-  cursor: pointer;
-  line-height: 1.3;
-}
-
-.grid-tab-dir-btn:hover {
-  background: var(--theme-bg-surface);
-  color: var(--theme-text);
-}
-
-.grid-tab-dir-btn.active {
-  background: var(--theme-accent);
-  color: var(--theme-bg-primary);
-  border-color: var(--theme-accent);
-}
-
 /* â”€â”€ Zoom/Pan/Rot â”€â”€ */
 
 /* â”€â”€ Ping-Pong Loop â”€â”€ */
-
-.grid-tab-track-slide {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-  margin-top: 8px;
-  font-size: 11px;
-}
 
 /* â”€â”€ Visual FX chain â”€â”€ */
 
@@ -4122,109 +4092,6 @@ html, body, #root {
   font-style: italic;
 }
 
-/* ── Phase 2: SlideNoteEffectSection ─────────────────────────────────────── */
-
-.grid-tab-slide-header {
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0.5px;
-  color: var(--theme-text-muted);
-  text-transform: uppercase;
-}
-
-.grid-tab-slide-type-select {
-  display: flex;
-  width: 100%;
-  min-height: 24px;
-  padding: 3px 8px;
-  font-size: 10px;
-}
-
-.grid-tab-slide-type-select:hover {
-  color: var(--theme-text);
-}
-
-.grid-tab-slide-params {
-  display: grid;
-  grid-template-columns: 60px 1fr 32px;
-  column-gap: 8px;
-  row-gap: 12px;
-  align-items: center;
-  font-size: 11px;
-  margin-top: 4px;
-}
-
-.grid-tab-slide-params label {
-  color: var(--theme-text-muted);
-  font-size: 11px;
-}
-
-.grid-tab-slide-param-select,
-.grid-tab-slide-params input[type=number] {
-  width: 100%;
-  min-width: 0;
-  font: inherit;
-  font-size: 11px;
-}
-
-.grid-tab-slide-param-select {
-  display: flex;
-  min-height: 24px;
-  padding: 3px 8px;
-}
-
-.grid-tab-slide-param-input {
-  min-height: 24px;
-  padding: 3px 8px;
-  background: var(--theme-bg-surface);
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: var(--radius-sm);
-  color: var(--theme-text);
-  box-shadow:
-    var(--theme-depth-hard-shadow),
-    var(--theme-depth-top-light-bevel);
-  color-scheme: dark;
-}
-
-.grid-tab-slide-param-input:focus {
-  outline: none;
-  border-color: var(--theme-accent);
-  background: var(--theme-bg-hover);
-}
-
-.grid-tab-slide-readout {
-  font-size: 10px;
-  font-variant-numeric: tabular-nums;
-  color: var(--theme-text-muted);
-  text-align: right;
-}
-
-/* ── NoteFadeSection ─────────────────────────────────────────────────────────
-   Reuses .grid-tab-slide-* for the header, param grid, selects and readouts so
-   the Track Video Properties overrides further down (.tvp-root .grid-tab-slide-*)
-   apply here too. Only the two things the slide panel has no equivalent for --
-   the module enable row and the Fade In / Fade Out sub-headings -- are new.
-   ────────────────────────────────────────────────────────────────────────── */
-
-.grid-tab-notefade-enable {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-top: 2px;
-  font-size: 11px;
-  color: var(--theme-text-muted);
-  cursor: pointer;
-}
-
-.grid-tab-notefade-subhead {
-  margin-top: 8px;
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--theme-text-muted);
-  opacity: 0.75;
-}
 
 /* ── Compact Grid Settings Panel (gsp-*) ────────────────────────────────────
    Replaces the old Layout + Preview sections with a two-column compact block.
@@ -4339,312 +4206,6 @@ html, body, #root {
 /* ── FPS pill (value + unit joined as one control) ── */
 
 /* ── Grid preview ── */
-
-/* ── Phase 3: VisualFX unified section ───────────────────────────────────── */
-
-.fx-section {
-  margin-top: 8px;
-}
-
-.fx-section-header-wrap {
-  position: relative;
-}
-
-.fx-section-header {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-bottom: 6px;
-}
-
-.fx-section-title {
-  font-size: 12px;
-  font-weight: 500;
-  letter-spacing: 0.5px;
-  color: var(--theme-text-muted);
-  text-transform: uppercase;
-}
-
-.fx-section-count {
-  font-size: 11px;
-  color: var(--theme-text-muted);
-}
-
-.fx-clear-all {
-  font-size: 11px;
-  color: var(--theme-text-muted);
-  background: none;
-  border: none;
-  cursor: pointer;
-  padding: 0;
-  margin-left: auto;
-}
-
-.fx-clear-all:hover {
-  color: var(--theme-text);
-}
-
-.fx-add-btn {
-  font-size: 11px;
-  padding: 3px 9px;
-  border: 0.5px solid var(--theme-accent);
-  color: var(--theme-accent);
-  background: transparent;
-  border-radius: 3px;
-  cursor: pointer;
-}
-
-.fx-add-btn:hover {
-  background: var(--theme-accent-bg-medium);
-}
-
-/* ── EffectRow ───────────────────────────────────────────────────────────── */
-
-.fx-rows {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-
-.fx-row {
-  background: var(--theme-bg-inset);
-  border-radius: 3px;
-}
-
-.fx-row-header {
-  display: flex;
-  align-items: center;
-  height: 28px;
-  padding: 0 8px;
-  gap: 5px;
-}
-
-.fx-glyph {
-  font-size: 9px;
-  color: var(--theme-accent);
-  width: 10px;
-  flex-shrink: 0;
-  line-height: 1;
-}
-
-.fx-chevron {
-  font-size: 8px;
-  color: var(--theme-text-muted);
-  cursor: pointer;
-  width: 10px;
-  flex-shrink: 0;
-  display: inline-block;
-  transition: transform 100ms;
-  user-select: none;
-  line-height: 1;
-}
-
-.fx-chevron.expanded {
-  transform: rotate(90deg);
-}
-
-.fx-chevron-ph {
-  width: 10px;
-  flex-shrink: 0;
-}
-
-.fx-checkbox {
-  width: 9px;
-  height: 9px;
-  flex-shrink: 0;
-  accent-color: var(--theme-accent);
-  cursor: pointer;
-  margin: 0;
-}
-
-.fx-name {
-  font-size: 12px;
-  color: var(--theme-text);
-  flex: 1;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.fx-name.disabled {
-  color: var(--theme-text-muted);
-}
-
-.fx-remove {
-  font-size: 11px;
-  color: var(--theme-text-subtle);
-  background: transparent;
-  border: none;
-  padding: 0 2px;
-  cursor: pointer;
-  flex-shrink: 0;
-  line-height: 1;
-}
-
-.fx-remove:hover {
-  color: var(--theme-text);
-}
-
-.fx-grip {
-  font-size: 9px;
-  color: var(--theme-text-subtle);
-  cursor: grab;
-  flex-shrink: 0;
-  user-select: none;
-  line-height: 1;
-}
-
-.fx-grip:hover {
-  color: var(--theme-text-subtle);
-}
-
-.fx-row-body {
-  padding: 4px 8px 8px 30px;
-}
-
-.fx-divider {
-  height: 0;
-  border: none;
-  border-top: 0.5px solid var(--theme-border-subtle);
-  margin: 3px 0;
-}
-
-/* ── Param grid (4.4.6) used by both effect param components ─────────────── */
-
-.fx-params-grid {
-  display: grid;
-  grid-template-columns: 60px 1fr 32px;
-  column-gap: 8px;
-  row-gap: 12px;
-  align-items: center;
-  font-size: 11px;
-}
-
-.fx-params-grid label {
-  color: var(--theme-text-muted);
-  font-size: 11px;
-}
-
-.fx-params-grid span {
-  font-size: 10px;
-  color: var(--theme-text-muted);
-  text-align: right;
-  white-space: nowrap;
-}
-
-.fx-params-grid input[type=range] {
-  width: 100%;
-  min-width: 0;
-  accent-color: var(--theme-accent);
-}
-
-.fx-params-grid input[type=number],
-.fx-param-select {
-  width: 100%;
-  min-width: 0;
-  font: inherit;
-  font-size: 11px;
-}
-
-.fx-param-select {
-  display: flex;
-  min-height: 24px;
-  padding: 3px 8px;
-}
-
-.fx-params-grid input[type=color] {
-  width: 100%;
-  min-width: 0;
-  height: 22px;
-  padding: 0;
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: 2px;
-  cursor: pointer;
-}
-
-/* ── Outline / Drop Shadow: full-width footnote under the param rows ───────── */
-/* Spans all three columns, so it must NOT be a bare grid child of one column. */
-.fx-param-note {
-  grid-column: 1 / -1;
-  margin: 0;
-  font-size: 10px;
-  line-height: 1.35;
-  color: var(--theme-text-muted);
-  opacity: 0.8;
-}
-
-
-/* Dir buttons inside fx-params-grid */
-.fx-dir-group {
-  display: flex;
-  gap: 3px;
-}
-
-/* ── Add-effect dropdown ─────────────────────────────────────────────────── */
-
-.fx-dropdown {
-  position: absolute;
-  right: 0;
-  top: calc(100% + 2px);
-  z-index: 200;
-  background: var(--theme-bg-elevated);
-  border: 0.5px solid var(--theme-border-subtle);
-  border-radius: 4px;
-  min-width: 170px;
-  padding: 4px 0;
-  box-shadow: 0 4px 12px var(--theme-overlay-medium);
-}
-
-.fx-dropdown-item {
-  font-size: 12px;
-  padding: 5px 10px;
-  cursor: pointer;
-  color: var(--theme-text);
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  user-select: none;
-}
-
-.fx-dropdown-item:not(.shown):hover {
-  background: var(--theme-focus-ring);
-}
-
-.fx-dropdown-item.shown {
-  opacity: 0.6;
-  cursor: default;
-  pointer-events: none;
-}
-
-.fx-dropdown-check {
-  font-size: 10px;
-  color: var(--theme-accent);
-}
-
-
-/* ── Phase 4 drag-and-drop ───────────────────────────────────────────────── */
-
-.fx-row-wrap {
-  display: flex;
-  flex-direction: column;
-}
-
-.fx-drop-indicator {
-  height: 2px;
-  background: var(--theme-accent);
-  border-radius: 1px;
-  margin: 0 4px;
-  flex-shrink: 0;
-}
-
-.fx-row.dragging {
-  opacity: 0.4;
-}
-
-html.fx-drag-active * {
-  cursor: grabbing !important;
-}
 
 /* Preview toolbar resolution display (VideoPreview.jsx) */
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -11267,7 +10828,6 @@ input[type="radio"] {
   background: var(--xleth-flat-well);
 }
 
-.fx-dropdown,
 .eq-band-popup,
 .track-color-popover,
 .tl-display-popover {
@@ -11283,38 +10843,6 @@ input[type="radio"] {
    color to the band's own orb color (inline style), tying the popup back to
    its band. Declared after the shared rule above so it wins the
    equal-specificity cascade against that rule's `border` shorthand. */
-
-.fx-dropdown {
-  min-width: 170px;
-  padding: 5px;
-}
-
-.fx-dropdown-item {
-  min-height: 26px;
-  padding: 5px 9px;
-  border: 1px solid transparent;
-  color: var(--xleth-flat-text-secondary);
-  font-size: 11px;
-  transition:
-    background 90ms ease-out,
-    border-color 90ms ease-out,
-    color 90ms ease-out;
-}
-
-.fx-dropdown-item:not(.shown):hover {
-  border-color: var(--xleth-flat-border-strong);
-  background: var(--xleth-flat-chrome);
-  color: var(--xleth-flat-text);
-}
-
-.fx-dropdown-item.shown {
-  color: var(--xleth-flat-text-muted);
-  opacity: 1;
-}
-
-.fx-dropdown-check {
-  color: var(--xleth-flat-accent);
-}
 
 
 .track-color-popover {
@@ -11751,7 +11279,6 @@ input[type="radio"] {
   .titlebar-dropdown-item,
   .titlebar-toolbar-btn,
   .context-menu-item,
-  .fx-dropdown-item,
   .settings-panel,
   .settings-panel-content-animate,
   .settings-panel-section,
@@ -11875,14 +11402,12 @@ input[type="radio"] {
 }
 
 .grid-tab-gap-label input,
-.fx-checkbox,
 .settings-panel-checkbox {
   accent-color: var(--xleth-flat-accent);
 }
 
 .grid-tab-gap-slider,
-.grid-tab-track-sliders input[type=range],
-.fx-params-grid input[type=range] {
+.grid-tab-track-sliders input[type=range] {
   width: 100%;
   min-width: 0;
   height: 2px;
@@ -11897,15 +11422,13 @@ input[type="radio"] {
 }
 
 .grid-tab-gap-slider::-webkit-slider-runnable-track,
-.grid-tab-track-sliders input[type=range]::-webkit-slider-runnable-track,
-.fx-params-grid input[type=range]::-webkit-slider-runnable-track {
+.grid-tab-track-sliders input[type=range]::-webkit-slider-runnable-track {
   height: 2px;
   background: var(--xleth-flat-border);
 }
 
 .grid-tab-gap-slider::-webkit-slider-thumb,
-.grid-tab-track-sliders input[type=range]::-webkit-slider-thumb,
-.fx-params-grid input[type=range]::-webkit-slider-thumb {
+.grid-tab-track-sliders input[type=range]::-webkit-slider-thumb {
   width: 11px;
   height: 11px;
   margin-top: -4.5px;
@@ -11918,15 +11441,13 @@ input[type="radio"] {
 }
 
 .grid-tab-gap-slider::-moz-range-track,
-.grid-tab-track-sliders input[type=range]::-moz-range-track,
-.fx-params-grid input[type=range]::-moz-range-track {
+.grid-tab-track-sliders input[type=range]::-moz-range-track {
   height: 2px;
   background: var(--xleth-flat-border);
 }
 
 .grid-tab-gap-slider::-moz-range-thumb,
-.grid-tab-track-sliders input[type=range]::-moz-range-thumb,
-.fx-params-grid input[type=range]::-moz-range-thumb {
+.grid-tab-track-sliders input[type=range]::-moz-range-thumb {
   width: 11px;
   height: 11px;
   border: 0;
@@ -11940,242 +11461,6 @@ input[type="radio"] {
   color: var(--xleth-flat-text-muted);
   font-size: 10px;
   font-style: italic;
-}
-
-.fx-section {
-  margin: 0;
-  padding: 10px 12px 12px;
-}
-
-.fx-section-header-wrap {
-  display: grid;
-  gap: 6px;
-  position: relative;
-}
-
-.fx-section-header {
-  display: grid;
-  grid-template-columns: auto auto minmax(0, 1fr) auto;
-  gap: 5px;
-  align-items: center;
-  margin: 0;
-}
-
-.fx-section-title {
-  color: var(--xleth-flat-text-secondary);
-  font-size: 12px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-}
-
-.fx-section-count {
-  color: var(--xleth-flat-text-muted);
-  font-size: 11px;
-}
-
-.fx-clear-all {
-  justify-self: end;
-  margin-left: 0;
-  padding: 0 4px;
-  border: 0;
-  background: transparent;
-  color: var(--xleth-flat-danger);
-  font-size: 10px;
-  text-transform: uppercase;
-}
-
-.fx-clear-all:hover,
-.fx-clear-all:focus-visible {
-  color: #d96b6b;
-  outline: 0;
-}
-
-.fx-add-btn {
-  grid-column: 4;
-  min-height: 26px;
-  padding: 3px 9px;
-  border: 1px solid var(--xleth-flat-accent);
-  border-radius: 0;
-  background: transparent;
-  color: var(--xleth-flat-accent);
-  font-family: var(--xleth-global-font-family);
-  font-size: 11px;
-  line-height: 1;
-  white-space: nowrap;
-}
-
-.fx-add-btn:hover,
-.fx-add-btn:focus-visible {
-  background: color-mix(in srgb, var(--xleth-flat-accent) 10%, transparent);
-  outline: 0;
-}
-
-.fx-section-header-wrap > .fx-dropdown {
-  position: static;
-  z-index: auto;
-  width: 100%;
-  min-width: 0;
-  max-width: 100%;
-  box-sizing: border-box;
-  margin-top: 0;
-  padding: 5px;
-  border: 1px solid var(--xleth-flat-border-strong);
-  border-radius: 0;
-  background: var(--xleth-flat-panel);
-  box-shadow: none;
-}
-
-.fx-section-header-wrap .fx-dropdown-item {
-  min-height: 26px;
-  padding: 5px 8px;
-  border: 1px solid transparent;
-  color: var(--xleth-flat-text-secondary);
-  font-size: 11px;
-}
-
-.fx-section-header-wrap .fx-dropdown-item:not(.shown):hover {
-  border-color: var(--xleth-flat-border-strong);
-  background: var(--xleth-flat-chrome);
-  color: var(--xleth-flat-text);
-}
-
-.fx-section-header-wrap .fx-dropdown-item.shown {
-  color: var(--xleth-flat-text-muted);
-  opacity: 1;
-}
-
-.fx-section-header-wrap .fx-dropdown-check {
-  color: var(--xleth-flat-accent);
-}
-
-
-.fx-rows {
-  gap: 4px;
-  margin-top: 8px;
-}
-
-.fx-row {
-  border: 1px solid var(--xleth-flat-border);
-  border-radius: 0;
-  background: var(--xleth-flat-panel);
-  box-shadow: none;
-}
-
-.fx-row.dragging {
-  opacity: 0.62;
-}
-
-.fx-row-header {
-  display: grid;
-  grid-template-columns: 10px 12px 14px minmax(0, 1fr) 18px 12px;
-  gap: 5px;
-  align-items: center;
-  height: 28px;
-  padding: 0 7px;
-}
-
-.fx-glyph {
-  width: auto;
-  color: var(--xleth-flat-accent);
-}
-
-.fx-chevron,
-.fx-chevron-ph {
-  width: auto;
-  color: var(--xleth-flat-text-muted);
-}
-
-.fx-checkbox {
-  width: 10px;
-  height: 10px;
-}
-
-.fx-name {
-  color: var(--xleth-flat-text-secondary);
-  font-size: 11px;
-  font-weight: 500;
-}
-
-.fx-name.disabled {
-  color: var(--xleth-flat-text-muted);
-}
-
-.fx-remove {
-  padding: 0;
-  color: var(--xleth-flat-text-muted);
-  font-size: 11px;
-}
-
-.fx-remove:hover,
-.fx-remove:focus-visible {
-  color: var(--xleth-flat-danger);
-  outline: 0;
-}
-
-.fx-grip {
-  color: var(--xleth-flat-text-subtle);
-}
-
-.fx-row-body {
-  padding: 7px 8px 9px;
-  border-top: 1px solid var(--xleth-flat-border);
-  background: var(--xleth-flat-well);
-}
-
-.fx-divider {
-  height: 1px;
-  margin: 2px 0;
-  border: 0;
-  background: var(--xleth-flat-border);
-}
-
-.fx-params-grid {
-  grid-template-columns: minmax(52px, 0.75fr) minmax(70px, 1fr) 34px;
-  gap: 8px;
-  font-size: 11px;
-}
-
-.fx-params-grid label {
-  min-width: 0;
-  color: var(--xleth-flat-text-muted);
-  font-size: 10px;
-}
-
-.fx-params-grid span {
-  color: var(--xleth-flat-text-secondary);
-  font-size: 10px;
-}
-
-.fx-params-grid input[type=number],
-.fx-params-grid select,
-.fx-params-grid input[type=color] {
-  min-height: 24px;
-  border: 1px solid var(--xleth-flat-border-strong);
-  border-radius: 0;
-  background: var(--xleth-flat-well);
-  color: var(--xleth-flat-text-secondary);
-  box-shadow: none;
-}
-
-.fx-dir-group {
-  display: grid;
-  grid-auto-flow: column;
-  gap: 3px;
-}
-
-.grid-tab-dir-btn {
-  min-height: 22px;
-  border: 1px solid var(--xleth-flat-border-strong);
-  border-radius: 0;
-  background: var(--xleth-flat-panel);
-  color: var(--xleth-flat-text-secondary);
-}
-
-.grid-tab-dir-btn:hover,
-.grid-tab-dir-btn.active {
-  border-color: var(--xleth-flat-accent);
-  background: var(--xleth-flat-chrome);
-  color: var(--xleth-flat-accent);
 }
 
 .grid-tab-track-sliders {
@@ -12213,31 +11498,10 @@ input[type="radio"] {
   color: var(--xleth-flat-text-secondary);
 }
 
-.fx-section {
-  padding: 11px 12px 12px;
-}
-
-.fx-section-header {
-  grid-template-columns: auto auto minmax(8px, 1fr) auto;
-  gap: 6px;
-}
-
-.fx-add-btn {
-  min-height: 30px;
-  padding: 4px 11px;
-  background: transparent;
-  box-shadow: none;
-}
-
 @media (prefers-reduced-motion: reduce) {
   .grid-tab-corner-radius-preview,
   .grid-tab-mini-btn,
-  .grid-tab-gap-slider,
-  .fx-add-btn,
-  .fx-row,
-  .fx-chevron,
-  .fx-section-header-wrap .fx-dropdown-item,
-  .grid-tab-dir-btn {
+  .grid-tab-gap-slider {
     transition: none;
   }
 }
@@ -12916,26 +12180,6 @@ input[type="radio"] {
   background: var(--xleth-flat-well);
 }
 
-/* ── Compact summary chip row (was: full-width 4-col spread) ────────────── */
-/* ── Card container (was: full-bleed strip + hairline separator) ────────── */
-/* ── One header-row pattern for every card ───────────────────────────────
-   Small-caps title on the left; count badge / actions (where present) on
-   the right. Shared verbatim by tvp-section-title (Video Flip, Hold Last
-   Frame, Fullscreen Layer, Layout) and — via the bleed-to-edge technique
-   below — by the Visual FX and Slide Note Effect headers, which live one
-   level deeper inside their own self-contained components. */
-/* Rows that used to self-pad against a full-bleed card now sit inside a
-   padded body wrapper — drop their own inset so it isn't applied twice. */
-/* Visual FX + Slide Note Effect bring their own header as the first child
-   of a component that's also their card body — bleed it back out to the
-   card edges so it reads as the same header strip as tvp-section-title. */
-.tvp-root .fx-section,
-.tvp-root .grid-tab-track-slide {
-  padding: 16px;
-  margin-top: 0;
-  gap: 10px;
-}
-
 .tvp-root .track-flip-section {
   padding: 16px;
 }
@@ -12944,50 +12188,6 @@ input[type="radio"] {
   padding: 16px;
   gap: 12px;
   border-bottom: 0;
-}
-
-.tvp-root .fx-section-header {
-  margin: -16px -16px 0;
-  padding: 12px 16px;
-  min-height: 34px;
-  background: var(--xleth-flat-section);
-  border-bottom: 1px solid var(--xleth-flat-border);
-}
-
-.tvp-root .grid-tab-slide-header {
-  margin: -16px -16px 12px;
-  padding: 0 16px;
-  min-height: 34px;
-  display: flex;
-  align-items: center;
-  background: var(--xleth-flat-section);
-  border-bottom: 1px solid var(--xleth-flat-border);
-  font-size: 10px;
-  font-weight: 600;
-  letter-spacing: 0.12em;
-}
-
-/* "+ add effect" reads as the primary action; CLEAR ALL is a quiet ghost
-   button — red stays reserved for the moment you're actually about to
-   destroy something (hover/focus), not for its resting state. */
-.tvp-root .fx-add-btn {
-  background: var(--xleth-flat-accent);
-  color: var(--xleth-flat-accent-text);
-  border-color: var(--xleth-flat-accent);
-}
-
-.tvp-root .fx-add-btn:hover,
-.tvp-root .fx-add-btn:focus-visible {
-  background: color-mix(in srgb, var(--xleth-flat-accent) 88%, var(--xleth-flat-panel));
-}
-
-.tvp-root .fx-clear-all {
-  color: var(--xleth-flat-text-muted);
-}
-
-.tvp-root .fx-clear-all:hover,
-.tvp-root .fx-clear-all:focus-visible {
-  color: var(--xleth-flat-danger);
 }
 
 /* Helper text — one contrast step up from the flat pass's default muted. */
@@ -13022,36 +12222,8 @@ input[type="radio"] {
 
 /* ── Field grammar: one consistent width for every dropdown/plain input ──
    Sliders are handled separately below (label-left row + value pill). */
-.tvp-root .track-flip-select,
-.tvp-root .grid-tab-slide-type-select {
+.tvp-root .track-flip-select {
   width: 200px;
-}
-
-.tvp-root .fx-params-grid,
-.tvp-root .grid-tab-slide-params {
-  grid-template-columns: minmax(64px, auto) minmax(0, 1fr) minmax(40px, auto);
-  column-gap: 12px;
-  row-gap: 10px;
-}
-
-/* Dropdown / plain-number fields: label takes the full row, the field
-   starts fresh below it at the shared fixed width (not stretched). */
-.tvp-root .fx-params-grid label:has(+ input[type="number"]),
-.tvp-root .fx-params-grid label:has(+ .fx-param-select),
-.tvp-root .grid-tab-slide-params label:has(+ .grid-tab-slide-param-select),
-.tvp-root .grid-tab-slide-params label:has(+ input[type="number"]) {
-  grid-column: 1 / -1;
-  padding-top: 6px;
-}
-
-.tvp-root .fx-params-grid input[type="number"],
-.tvp-root .fx-params-grid .fx-param-select,
-.tvp-root .grid-tab-slide-params .grid-tab-slide-param-select,
-.tvp-root .grid-tab-slide-params input[type="number"] {
-  grid-column: 1 / span 2;
-  justify-self: start;
-  width: 200px;
-  max-width: 100%;
 }
 
 /* ── Sliders: accent-colored fill up to the current value + bigger handle ──
@@ -13084,8 +12256,6 @@ input[type="radio"] {
 }
 
 /* ── Value-pill readouts: small monospaced chip at the row's right end ──── */
-.tvp-root .fx-params-grid span:not(:empty),
-.tvp-root .grid-tab-slide-params span:not(:empty),
 .tvp-root .grid-tab-gap-readout,
 .tvp-root .grid-tab-corner-radius-readout {
   display: inline-flex;
@@ -14484,238 +13654,8 @@ input[type="radio"] {
 
 .fxchain-ghost-hint { font-size: 10.5px; color: var(--theme-text-subtle); }
 
-/* ── Zoom/Pan/Rot keyframe timeline card (replaces the old ZprParamsView
-   slider stack) ──────────────────────────────────────────────────────────
-   Flat, zero-radius, TR-8S dark-matte tokens only — no hardcoded colors,
-   accent derives from --theme-accent via the existing --xleth-flat-* set. */
-
-.zpr-timeline-card {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding: 10px;
-  background: var(--xleth-flat-panel);
-  border: 1px solid var(--xleth-flat-border);
-  border-radius: 0;
-  box-shadow: 4px 5px 0 rgba(0, 0, 0, 0.5);
-}
-
-.zpr-timeline-header {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.zpr-timeline-header-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  flex-wrap: wrap;
-}
-
-/* Slide-variant header: no Length/On-end/Retrigger (the slide config above the
-   card owns those), just the one line that explains what the curves mean here
-   — that they are a delta over the track's own animation, not a replacement. */
-.zpr-timeline-card.is-slide {
-  box-shadow: none;
-}
-
-.zpr-slide-note {
-  font-size: 10.5px;
-  line-height: 1.45;
-  color: var(--xleth-flat-text-subtle);
-}
-
-.zpr-timeline-header-row label {
-  font-size: 10.5px;
-  color: var(--xleth-flat-text-subtle);
-  text-transform: uppercase;
-  letter-spacing: 0.04em;
-}
-
-.zpr-header-select {
-  min-width: 92px;
-}
-
-.zpr-length-resolved {
-  font-family: 'IBM Plex Mono', var(--font-mono, monospace);
-  font-size: 10.5px;
-  color: var(--xleth-flat-text-secondary);
-}
-
-.zpr-loop-warning {
-  font-size: 11px;
-  line-height: 1;
-  color: var(--theme-warning);
-  opacity: 0.75;
-  cursor: help;
-}
-
-/* ── Keyframe canvas body ─────────────────────────────────────────────── */
-
-.zpr-timeline-body {
-  display: flex;
-  border: 1px solid var(--xleth-flat-border);
-}
-
-.zpr-timeline-gutter {
-  flex: 0 0 92px;
-  display: flex;
-  flex-direction: column;
-  border-right: 1px solid var(--xleth-flat-border);
-  background: var(--xleth-flat-panel);
-}
-
-.zpr-timeline-gutter-ruler {
-  height: 22px;
-  border-bottom: 1px solid var(--xleth-flat-border);
-}
-
-.zpr-timeline-gutter-row {
-  display: flex;
-  align-items: center;
-  padding: 0 8px;
-  font-size: 10.5px;
-  color: var(--xleth-flat-text-secondary);
-  border-bottom: 1px solid var(--xleth-flat-border);
-}
-
-.zpr-timeline-gutter-row--disabled {
-  color: var(--xleth-flat-text-subtle);
-  opacity: 0.6;
-}
-
-.zpr-timeline-expand-btn {
-  background: none;
-  border: none;
-  padding: 0;
-  color: inherit;
-  font-size: 10.5px;
-  cursor: pointer;
-  text-align: left;
-}
-
-.zpr-timeline-expand-btn:hover { color: var(--theme-accent); }
-
-.zpr-timeline-canvas-wrap {
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.zpr-timeline-canvas {
-  display: block;
-  cursor: default;
-  outline: none;
-}
-
-/* ── Numeric inspector — drag-scrub fields, never sliders ────────────────── */
-
-/* ── Spatial viewport (left) + numeric inspector (right) ────────────────
-   Vegas Pan/Crop-style direct manipulation. The rect, its handles and the
-   motion path are all painted on the canvas — nothing here positions a DOM
-   overlay over the stage. */
-
-.zpr-editor-row {
-  display: flex;
-  gap: 10px;
-  align-items: flex-start;
-  flex-wrap: wrap;
-}
-
-.zpr-viewport-col {
-  flex: 1 1 320px;
-  min-width: 260px;
-  display: flex;
-  flex-direction: column;
-  gap: 5px;
-}
-
-.zpr-inspector-col {
-  flex: 0 1 210px;
-  min-width: 170px;
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.zpr-viewport-wrap {
-  width: 100%;
-  border: 1px solid var(--xleth-flat-border);
-  background: var(--xleth-flat-panel);
-}
-
-.zpr-viewport-canvas {
-  display: block;
-  touch-action: none;
-  outline: none;
-}
-
-.zpr-viewport-toolbar {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex-wrap: wrap;
-}
-
-.zpr-viewport-toggle {
-  font-family: 'IBM Plex Mono', var(--font-mono, monospace);
-  font-size: 10px;
-  color: var(--xleth-flat-text-secondary);
-  background: var(--xleth-flat-panel-alt, rgba(255, 255, 255, 0.03));
-  border: 1px solid var(--xleth-flat-border);
-  border-radius: 0;
-  padding: 2px 7px;
-  cursor: pointer;
-}
-
-.zpr-viewport-toggle:hover { border-color: var(--theme-accent); }
-
-.zpr-viewport-toggle.is-active {
-  color: var(--theme-accent);
-  border-color: var(--theme-accent);
-}
-
-.zpr-record-toggle.is-recording {
-  color: var(--theme-danger);
-  border-color: var(--theme-danger);
-  animation: zpr-record-pulse 1.2s ease-in-out infinite;
-}
-
-@keyframes zpr-record-pulse {
-  0%, 100% { opacity: 1; }
-  50% { opacity: 0.55; }
-}
-
-.zpr-viewport-hint {
-  font-size: 9.5px;
-  color: var(--xleth-flat-text-subtle);
-  letter-spacing: 0.03em;
-}
-
-.zpr-inspector-derived {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  font-family: 'IBM Plex Mono', var(--font-mono, monospace);
-  font-size: 9.5px;
-  color: var(--xleth-flat-text-subtle);
-}
-
-.zpr-numeric-inspector {
-  display: flex;
-  gap: 10px;
-  flex-wrap: wrap;
-  padding-top: 4px;
-  border-top: 1px solid var(--xleth-flat-border);
-}
-
-/* Inside the inspector column the fields stack instead of flowing wide. */
-.zpr-inspector-col .zpr-numeric-inspector {
-  flex-direction: column;
-  gap: 6px;
-  border-top: none;
-  padding-top: 0;
-}
+/* ── DragNumberField (the Sample Sandbox's drag-scrub fields; the Zoom/pan/rot
+   editor that introduced it moved to the kit in round 2 step 17) ─────────── */
 
 .zpr-drag-field {
   display: flex;
@@ -14756,75 +13696,6 @@ input[type="radio"] {
 .zpr-drag-field--readonly .zpr-drag-field-value {
   color: var(--xleth-flat-text-secondary);
   opacity: 0.8;
-}
-
-/* ── Bezier segment editor ────────────────────────────────────────────── */
-
-.zpr-bezier-editor {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
-  padding-top: 8px;
-  border-top: 1px solid var(--xleth-flat-border);
-}
-
-.zpr-bezier-canvas-wrap {
-  width: 100%;
-}
-
-.zpr-bezier-canvas {
-  display: block;
-  width: 100%;
-  cursor: default;
-  border: 1px solid var(--xleth-flat-border);
-}
-
-.zpr-bezier-readout-row {
-  display: flex;
-  align-items: center;
-  gap: 2px;
-  font-family: 'IBM Plex Mono', var(--font-mono, monospace);
-  font-size: 11px;
-  color: var(--xleth-flat-text-secondary);
-}
-
-.zpr-bezier-readout-input {
-  font-family: 'IBM Plex Mono', var(--font-mono, monospace);
-  font-size: 11px;
-  color: var(--xleth-flat-text);
-  background: var(--xleth-flat-panel-alt, rgba(255, 255, 255, 0.03));
-  border: 1px solid var(--xleth-flat-border);
-  border-radius: 0;
-  padding: 2px 4px;
-  flex: 1 1 auto;
-  min-width: 0;
-}
-
-.zpr-bezier-chip-row {
-  display: flex;
-  gap: 4px;
-  flex-wrap: wrap;
-}
-
-.zpr-bezier-chip {
-  font-size: 10px;
-  padding: 3px 8px;
-  background: var(--xleth-flat-panel-alt, rgba(255, 255, 255, 0.03));
-  border: 1px solid var(--xleth-flat-border);
-  border-radius: 0;
-  color: var(--xleth-flat-text-secondary);
-  cursor: pointer;
-}
-
-.zpr-bezier-chip:hover {
-  color: var(--xleth-flat-text);
-  border-color: var(--theme-accent);
-}
-
-.zpr-bezier-chip.is-active {
-  color: var(--theme-text-on-accent, #0D0D14);
-  background: var(--theme-accent);
-  border-color: var(--theme-accent);
 }
 
 /* ═══════════════════════════════════════════════════════════════════════════

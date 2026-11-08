@@ -3,6 +3,8 @@ import { useTokenValue } from '../../../theming/tokenValue.ts'
 import { paramTrackEase, BEZIER_PRESETS, curveMatchesPreset } from './zprCurveMath.js'
 
 import { useThemeEpoch } from '../../../theming/useThemeEpoch.js'
+import { Toggle } from '../../../ui-kit'
+import styles from './zprTimeline.module.css'
 // Inline bezier segment editor: fixed endpoints at (0,0)/(1,1), two draggable
 // control handles. x is clamped to [0,1] (required for a monotonic x->t
 // solve); y is allowed OUTSIDE the unit square so overshoot/anticipation
@@ -21,10 +23,10 @@ export default function BezierSegmentEditor({ curve, onChange, onCommit }) {
   const [textValue, setTextValue] = useState(() => formatCurve(curve))
   const [textEditing, setTextEditing] = useState(false)
 
-  const accent = useTokenValue('--theme-accent') || '#33CED6'
-  const gridColor = useTokenValue('--xleth-flat-border') || '#2A2A38'
-  const textColor = useTokenValue('--xleth-flat-text-secondary') || '#9AA0AE'
-  const panelColor = useTokenValue('--xleth-flat-panel') || '#15151C'
+  const accent = useTokenValue('--ui-value') || '#33CED6'
+  const gridColor = useTokenValue('--ui-g4') || '#3a3a3a'
+  const textColor = useTokenValue('--ui-ink-2') || '#a0a0a0'
+  const panelColor = useTokenValue('--ui-g0') || '#101010'
 
   useEffect(() => {
     if (!textEditing) setTextValue(formatCurve(curve))
@@ -197,23 +199,26 @@ export default function BezierSegmentEditor({ curve, onChange, onCommit }) {
   }, [textValue, curve, onChange, onCommit])
 
   return (
-    <div className="zpr-bezier-editor">
-      <div ref={wrapRef} className="zpr-bezier-canvas-wrap">
+    <div className={styles.bezier}>
+      <div ref={wrapRef} className={styles.bezierCanvasWrap}>
         <canvas
           ref={canvasRef}
-          className="zpr-bezier-canvas"
+          className={styles.canvas}
           style={{ width: size.w, height: size.h }}
+          aria-label="Segment curve. Drag the two handles; the typed field below is the same curve."
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
           onPointerCancel={handlePointerUp}
         />
       </div>
-      <div className="zpr-bezier-readout-row">
-        <span className="zpr-bezier-readout-label">cubic-bezier(</span>
+      <label className={styles.bezierReadout}>
+        <span className={styles.caption}>Curve</span>
         <input
           type="text"
-          className="zpr-bezier-readout-input"
+          className={styles.textField}
+          aria-label="Segment curve as cubic-bezier x1, y1, x2, y2"
+          data-hint="Type four numbers: x1, y1, x2, y2. Enter applies, Escape cancels."
           value={textEditing ? textValue : formatCurve(curve)}
           onFocus={() => { setTextEditing(true); setTextValue(formatCurve(curve)) }}
           onChange={(e) => setTextValue(e.target.value)}
@@ -223,18 +228,18 @@ export default function BezierSegmentEditor({ curve, onChange, onCommit }) {
             else if (e.key === 'Escape') setTextEditing(false)
           }}
         />
-        <span className="zpr-bezier-readout-label">)</span>
-      </div>
-      <div className="zpr-bezier-chip-row">
+      </label>
+      <div className={styles.bezierPresets} role="group" aria-label="Curve presets">
         {BEZIER_PRESETS.map((p) => (
-          <button
+          <Toggle
             key={p.name}
-            type="button"
-            className={`zpr-bezier-chip ${activePreset?.name === p.name ? 'is-active' : ''}`}
-            onClick={() => { onChange?.(p.curve.slice()); onCommit?.(p.curve.slice()) }}
+            size="sm"
+            on={activePreset?.name === p.name}
+            onChange={() => { onChange?.(p.curve.slice()); onCommit?.(p.curve.slice()) }}
+            hint={`Set this segment to ${p.name}`}
           >
             {p.name}
-          </button>
+          </Toggle>
         ))}
       </div>
     </div>

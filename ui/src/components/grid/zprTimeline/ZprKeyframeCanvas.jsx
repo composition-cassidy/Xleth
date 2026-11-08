@@ -3,6 +3,7 @@ import { tokenValue } from '../../../theming/tokenValue.ts'
 import { evaluateTrack } from './zprCurveMath.js'
 
 import { useThemeEpoch } from '../../../theming/useThemeEpoch.js'
+import styles from './zprTimeline.module.css'
 // Canvas keyframe timeline for the ZPR effect card. Modeled on
 // pianoRoll/PianoRollCanvas.jsx: a DOM label gutter beside a single canvas
 // that owns the ruler, rows, curves, keyframes and playhead — never DOM
@@ -12,7 +13,7 @@ import { useThemeEpoch } from '../../../theming/useThemeEpoch.js'
 // tokenValue() is read at draw time (inside the effect), never at module
 // scope, where it would resolve empty before ThemeProvider mounts.
 
-const ROW_H = 48
+const DEFAULT_ROW_H = 48
 const RULER_H = 22
 const DIAMOND_R = 5
 const HIT_PX = 9
@@ -24,19 +25,21 @@ const CHANNELS = [
   { key: 'rotationDeg',label: 'Rotation',group: 'rotation' },
 ]
 
+// Neutral ground from the kit ramp; the four channels are categories, so they
+// take the band palette (never a state colour); the playhead is the value colour.
 function resolvePalette() {
   return {
-    bg:        tokenValue('--xleth-flat-panel') || '#15151C',
-    rowAlt:    tokenValue('--xleth-flat-panel-alt') || 'rgba(255,255,255,0.02)',
-    border:    tokenValue('--xleth-flat-border') || '#2A2A38',
-    text:      tokenValue('--xleth-flat-text-secondary') || '#9AA0AE',
-    textDim:   tokenValue('--xleth-flat-text-subtle') || '#5A5F6B',
-    accent:    tokenValue('--theme-accent') || '#33CED6',
-    panX:      tokenValue('--theme-warning') || '#E6A23C',
-    panY:      tokenValue('--theme-success') || '#3FB27A',
-    rotation:  tokenValue('--theme-danger') || '#E6607C',
-    playhead:  tokenValue('--theme-accent') || '#33CED6',
-    selected:  '#FFFFFF',
+    bg:        tokenValue('--ui-g0') || '#101010',
+    rowAlt:    tokenValue('--ui-g1') || '#161616',
+    border:    tokenValue('--ui-g4') || '#3a3a3a',
+    text:      tokenValue('--ui-ink-2') || '#a0a0a0',
+    font:      tokenValue('--ui-font-mono') || 'monospace',
+    panX:      tokenValue('--ui-band-1') || '#4f9bd9',
+    panY:      tokenValue('--ui-band-2') || '#5fb58a',
+    zoom:      tokenValue('--ui-band-3') || '#d9a54f',
+    rotation:  tokenValue('--ui-band-4') || '#c56fb1',
+    playhead:  tokenValue('--ui-value') || '#33CED6',
+    selected:  tokenValue('--ui-ink') || '#f0f0f0',
   }
 }
 
@@ -44,7 +47,7 @@ function channelColor(pal, key) {
   if (key === 'panX') return pal.panX
   if (key === 'panY') return pal.panY
   if (key === 'rotationDeg') return pal.rotation
-  return pal.accent
+  return pal.zoom
 }
 
 // Row's own value range for vertical placement — purely visual (keyframes
@@ -77,7 +80,9 @@ export default function ZprKeyframeCanvas({
   positionExpanded,
   onTogglePositionExpanded,
   timeLabels, // [{ frac: 0..1, label: string }]
+  rowHeight = DEFAULT_ROW_H,
 }) {
+  const ROW_H = rowHeight
   const dprEpoch = useThemeEpoch() // Phase 7: re-size and redraw at the new devicePixelRatio when the UI scale changes
   const canvasRef = useRef(null)
   const wrapRef = useRef(null)
@@ -89,7 +94,7 @@ export default function ZprKeyframeCanvas({
     : [{ key: 'position', label: 'Position', group: 'position' }, ...CHANNELS.slice(2)]
 
   const rowsHeight = visibleRows.length * ROW_H
-  const totalHeight = RULER_H + rowsHeight + ROW_H // + disabled Opacity row
+  const totalHeight = RULER_H + rowsHeight
 
   useEffect(() => {
     const el = wrapRef.current
@@ -105,7 +110,7 @@ export default function ZprKeyframeCanvas({
   const timeToX = useCallback((t) => t * width, [width])
   const xToTime = useCallback((x) => Math.max(0, Math.min(1, x / width)), [width])
 
-  const rowTop = useCallback((rowIndex) => RULER_H + rowIndex * ROW_H, [])
+  const rowTop = useCallback((rowIndex) => RULER_H + rowIndex * ROW_H, [ROW_H])
 
   const valueToY = useCallback((track, rowIndex, v) => {
     const [lo, hi] = trackValueRange(track)
@@ -113,7 +118,7 @@ export default function ZprKeyframeCanvas({
     const bandH = ROW_H - 12
     const frac = hi > lo ? (v - lo) / (hi - lo) : 0.5
     return top + (1 - frac) * bandH
-  }, [rowTop])
+  }, [rowTop, ROW_H])
 
   // ── draw ─────────────────────────────────────────────────────────────
   useEffect(() => {
@@ -137,7 +142,7 @@ export default function ZprKeyframeCanvas({
     ctx.moveTo(0, RULER_H); ctx.lineTo(width, RULER_H)
     ctx.stroke()
     ctx.fillStyle = pal.text
-    ctx.font = '10px var(--font-mono, monospace)'
+    ctx.font = `10px ${pal.font}`
     ctx.textBaseline = 'middle'
     for (const tl of (timeLabels || [])) {
       const x = timeToX(tl.frac)
@@ -224,24 +229,7 @@ export default function ZprKeyframeCanvas({
           ctx.restore()
         })
       }
-
-      // row label (drawn on canvas too, in case the gutter is narrow)
-      ctx.fillStyle = pal.textDim
     })
-
-    // disabled Opacity row
-    const opTop = RULER_H + rowsHeight
-    ctx.fillStyle = pal.rowAlt
-    ctx.globalAlpha = 0.5
-    ctx.fillRect(0, opTop, width, ROW_H)
-    ctx.globalAlpha = 1
-    ctx.strokeStyle = pal.border
-    ctx.beginPath()
-    ctx.moveTo(0, opTop); ctx.lineTo(width, opTop)
-    ctx.stroke()
-    ctx.fillStyle = pal.textDim
-    ctx.font = '10px var(--font-mono, monospace)'
-    ctx.fillText('not yet animatable', 12, opTop + ROW_H / 2)
 
     // playhead
     if (Number.isFinite(scrubT)) {
@@ -257,7 +245,7 @@ export default function ZprKeyframeCanvas({
       ctx.fill()
     }
   }, [tracks, width, totalHeight, rowsHeight, visibleRows, positionExpanded,
-      scrubT, selectedKey, selectedSegment, timeLabels, timeToX, valueToY, rowTop, dprEpoch])
+      scrubT, selectedKey, selectedSegment, timeLabels, timeToX, valueToY, rowTop, dprEpoch, ROW_H])
 
   // ── hit testing ──────────────────────────────────────────────────────
   const hitTestKeyframe = useCallback((px, py) => {
@@ -379,17 +367,18 @@ export default function ZprKeyframeCanvas({
   }, [selectedKey, onKeyframeDelete, onSelectKey])
 
   return (
-    <div className="zpr-timeline-body">
-      <div className="zpr-timeline-gutter">
-        <div className="zpr-timeline-gutter-ruler" />
+    <div className={styles.timeline} style={{ '--zpr-row-h': `${ROW_H}px` }}>
+      <div className={styles.gutter}>
+        <div className={styles.gutterRuler} />
         {visibleRows.map((row) => (
-          <div key={row.key} className="zpr-timeline-gutter-row" style={{ height: ROW_H }}>
+          <div key={row.key} className={styles.gutterRow}>
             {row.key === 'position' ? (
               <button
                 type="button"
-                className="zpr-timeline-expand-btn"
+                className={styles.expand}
                 onClick={onTogglePositionExpanded}
-                title="Expand X/Y"
+                aria-expanded={positionExpanded}
+                data-hint={positionExpanded ? 'Show X and Y as one Position row' : 'Show X and Y as separate rows'}
               >
                 {positionExpanded ? '▾' : '▸'} {row.label}
               </button>
@@ -398,16 +387,15 @@ export default function ZprKeyframeCanvas({
             )}
           </div>
         ))}
-        <div className="zpr-timeline-gutter-row zpr-timeline-gutter-row--disabled" style={{ height: ROW_H }}>
-          <span>Opacity</span>
-        </div>
       </div>
-      <div ref={wrapRef} className="zpr-timeline-canvas-wrap">
+      <div ref={wrapRef} className={styles.canvasWrap}>
         <canvas
           ref={canvasRef}
-          className="zpr-timeline-canvas"
+          className={styles.canvas}
           style={{ width, height: totalHeight }}
           tabIndex={0}
+          aria-label="Zoom, pan and rotation keyframes. Double-click a row to add a keyframe at that time, drag a keyframe to move it, Delete removes the selected one."
+          data-testid="zpr-keyframe-canvas"
           onPointerDown={handlePointerDown}
           onPointerMove={handlePointerMove}
           onPointerUp={handlePointerUp}
