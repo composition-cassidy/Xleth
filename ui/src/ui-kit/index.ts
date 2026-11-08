@@ -11,6 +11,8 @@ export { dbTaperScale, linearScale, logScale, skewScale } from './valueScale';
 export type { Scale } from './valueScale';
 export { useValueDrag } from './useValueDrag';
 export type { UseValueDragOptions } from './useValueDrag';
+export { MOD_AMOUNT_PX, MOD_HINT_MODS, clampAmount, modRangeNorm, stepAmount, useModRing } from './modRing';
+export type { ControlMod } from './modRing';
 
 export { default as Knob } from './Knob';
 export type { KnobProps } from './Knob';

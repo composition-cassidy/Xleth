@@ -103,4 +103,20 @@
     cursor: default;
     pointer-events: none;
   }
+
+  /* Modulation: the routed range as a 2px band along the top edge. */
+  .mod {
+    position: absolute;
+    left: calc(var(--mod-a, 0) * 100%);
+    width: calc((var(--mod-b, 0) - var(--mod-a, 0)) * 100%);
+    top: 0;
+    height: 2px;
+    background: var(--ui-signal-parameter);
+    pointer-events: none;
+  }
+
+  .box[data-mod-highlight] {
+    outline: 1px dashed var(--ui-signal-parameter);
+    outline-offset: 1px;
+  }
 }

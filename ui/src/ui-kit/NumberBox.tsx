@@ -1,6 +1,7 @@
 import { useMemo } from 'react';
-import type { CSSProperties } from 'react';
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
 import { hintAttrs, VALUE_HINT_MODS } from './hint';
+import { MOD_HINT_MODS, modAttrs, modRangeNorm, useModRing, type ControlMod } from './modRing';
 import styles from './NumberBox.module.css';
 import { useValueDrag } from './useValueDrag';
 import { DEFAULT_NUMBERBOX_PX } from './valueDragCore';
@@ -15,6 +16,8 @@ export interface NumberBoxProps extends ValueControlProps, DataAttrs {
   hideLabel?: boolean;
   /** Field height: 'sm' 24px (default), 'md' 28px (matches IconButtons in a toolbar). */
   size?: 'sm' | 'md';
+  /** Optional modulation range (see modRing.ts): a band along the top edge. Absent = an ordinary box. */
+  mod?: ControlMod | null;
 }
 
 /**
@@ -26,7 +29,7 @@ export default function NumberBox(props: NumberBoxProps) {
   const {
     label, value, defaultValue, disabled = false, bipolar = false, centre, width = 72, hideLabel = false, size = 'sm',
     pxPerRange = DEFAULT_NUMBERBOX_PX, hint, hintMods, className, onChange, onCommit, onCancel,
-    min, max, scale, unit, formatOptions, format, parse, codec, step, stepNorm, quantize,
+    min, max, scale, unit, formatOptions, format, parse, codec, step, stepNorm, quantize, mod = null,
     ...rest
   } = props;
   const resolved = useMemo(
@@ -58,12 +61,34 @@ export default function NumberBox(props: NumberBoxProps) {
   const b = Math.max(norm, centreNorm);
   const aria = ariaNumbers(resolved.scale, shown);
 
+  // Modulated range: a 2px band along the TOP edge in the parameter-signal colour
+  // (the value keeps the bottom rule). The band itself is the amount handle.
+  const ring = useModRing(mod, 'x');
+  const routed = !!mod?.active;
+  const [modLo, modHi] = routed && mod ? modRangeNorm(resolved.scale, mod.ringLo, mod.ringHi) : [0, 0];
+  const onMark = (e: ReactPointerEvent<HTMLElement>): boolean => {
+    if (!routed) return false;
+    const r = e.currentTarget.getBoundingClientRect();
+    return r.height > 0 && e.clientY - r.top <= 6;
+  };
+  const handlers = mod ? {
+    ...drag.handlers,
+    onPointerDown: (e: ReactPointerEvent<HTMLElement>) => { if (!ring.start(e, onMark(e))) drag.handlers.onPointerDown(e); },
+    onPointerMove: (e: ReactPointerEvent<HTMLElement>) => { if (!ring.move(e)) drag.handlers.onPointerMove(e); },
+    onPointerUp: () => { if (!ring.end()) drag.handlers.onPointerUp(); },
+    onPointerCancel: () => { if (!ring.cancel()) drag.handlers.onPointerCancel(); },
+    onContextMenu: ring.onContextMenu,
+  } : drag.handlers;
+
   return (
     <div
       {...rest}
       ref={drag.ref}
       className={`${styles.box}${className ? ` ${className}` : ''}`}
-      style={{ '--box-w': `${width}px`, '--fill-a': a, '--fill-b': b } as CSSProperties}
+      style={{
+        '--box-w': `${width}px`, '--fill-a': a, '--fill-b': b,
+        ...(routed ? { '--mod-a': modLo, '--mod-b': Math.max(modHi, modLo + 0.02) } : null),
+      } as CSSProperties}
       role="slider"
       tabIndex={disabled ? -1 : 0}
       aria-label={label}
@@ -75,11 +100,16 @@ export default function NumberBox(props: NumberBoxProps) {
       aria-disabled={disabled || undefined}
       data-size={size}
       data-no-label={hideLabel || undefined}
-      data-dragging={drag.dragging}
+      aria-description={routed ? mod?.tooltip : undefined}
+      data-dragging={drag.dragging || ring.dragging}
       data-bipolar={bipolar || undefined}
       data-disabled={disabled || undefined}
-      {...hintAttrs({ hint, hintMods: hintMods ?? VALUE_HINT_MODS })}
-      {...drag.handlers}
+      {...modAttrs(mod)}
+      {...hintAttrs({
+        hint: routed && mod?.tooltip ? mod.tooltip : hint,
+        hintMods: routed ? MOD_HINT_MODS : (hintMods ?? VALUE_HINT_MODS),
+      })}
+      {...handlers}
     >
       {hideLabel ? null : <span className={styles.label}>{label}</span>}
       {drag.editing ? (
@@ -88,6 +118,7 @@ export default function NumberBox(props: NumberBoxProps) {
         <span className={styles.value}>{text}</span>
       )}
       <span className={styles.fill} aria-hidden="true" />
+      {routed ? <span className={styles.mod} aria-hidden="true" data-mod-ring="" /> : null}
     </div>
   );
 }
