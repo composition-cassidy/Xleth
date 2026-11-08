@@ -397,10 +397,94 @@
     min-width: 0;
   }
 
-  /* ── Views other than Main ────────────────────────────────────────────── */
-  .scrollView {
+  /* ── Playback view ────────────────────────────────────────────────────── */
+  .playback {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+    min-height: 0;
+    padding: var(--space-1);
+  }
+
+  .playback > .strips {
     flex: 1 1 auto;
     min-height: 0;
-    overflow: auto;
+  }
+
+  .stack {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-1);
+  }
+
+  .inline {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .arpBody {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .arpBody[data-inactive] {
+    opacity: var(--ui-mute-opacity);
+  }
+
+  .arpRate {
+    width: 72px;
+  }
+
+  .mangleBody {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+  }
+
+  .mangleRow {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .mangleIndex {
+    flex: none;
+    width: 16px;
+    color: var(--ui-ink-2);
+    text-align: center;
+  }
+
+  .mangleMode {
+    width: 136px;
+  }
+
+  .infoRow {
+    box-sizing: border-box;
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: var(--space-2);
+    min-width: 0;
+    height: var(--ctl-h-md);
+    padding: 0 var(--space-2);
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
+    white-space: nowrap;
+  }
+
+  .infoRow > .caption:first-child {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .previewSelect {
+    width: 136px;
   }
 }

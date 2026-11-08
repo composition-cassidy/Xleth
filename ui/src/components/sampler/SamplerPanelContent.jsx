@@ -5,7 +5,7 @@ import SlotTabs, { MAX_SLOTS } from './SlotTabs.jsx'
 import AuditionBar from './AuditionBar.jsx'
 import PatchBar from './PatchBar.jsx'
 import SamplerMainView from './SamplerMainView.jsx'
-import LegacyPlaybackView from './LegacyPlaybackView.jsx'
+import SamplerPlaybackView from './SamplerPlaybackView.jsx'
 import { noteForCode, clampOctaveShift } from './auditionKeymap.js'
 import { copySlotSettings, buildSlotPaste, hasSlotClipboard } from './slotClipboard.js'
 import {
@@ -858,22 +858,18 @@ export default function SamplerPanelContent({ regionId, onClose }) {
           />
         )}
         {tab === 'playback' && (
-          <div className={styles.scrollView}>
-            <LegacyPlaybackView
-              regionId={regionId}
-              settings={settings}
-              selectedSlot={selectedSlot}
-              setField={setField}
-              setFields={setFields}
-              commit={commit}
-              commitField={commitField}
-              commitChainField={commitChainField}
-              previewChainField={previewChainField}
-              addMangleInstance={addMangleInstance}
-              moveMangleInstance={moveMangleInstance}
-              removeMangleInstance={removeMangleInstance}
-            />
-          </div>
+          <SamplerPlaybackView
+            regionId={regionId}
+            settings={settings}
+            slotIndex={selectedSlot}
+            sourceDuration={sourceDuration}
+            prepBusy={prepBusy}
+            prepBypassed={prepBypassed}
+            actions={{
+              setField, setFields, commit, commitField,
+              commitChainField, previewChainField, addMangleInstance, moveMangleInstance, removeMangleInstance,
+            }}
+          />
         )}
       </div>
 

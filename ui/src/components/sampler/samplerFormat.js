@@ -160,3 +160,10 @@ export function noteValueCodec(noteValues, { allowOff = true } = {}) {
     },
   }
 }
+
+/** A unitless signed value with two decimals and a true minus ("−0.25"). */
+export function formatSigned2(v) {
+  const n = Number(v) || 0
+  const r = Number(Math.abs(n).toFixed(2))
+  return `${r === 0 ? '' : (n < 0 ? MINUS : '')}${r.toFixed(2)}`
+}

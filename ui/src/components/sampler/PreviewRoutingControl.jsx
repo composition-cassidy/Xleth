@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useState } from 'react'
 import { timelineEvents } from '../../timelineEvents.js'
 import useTimelineFocusStore from '../../stores/timelineFocusStore.js'
+import { Select } from '../../ui-kit'
+import styles from './Sampler.module.css'
 
 // ── Sampler audition routing ─────────────────────────────────────────────────
 // Picks which track's effect rack a previewed note is heard through, and shows
@@ -119,27 +121,24 @@ export default function PreviewRoutingControl({ regionId }) {
   const activeMode = PREVIEW_ROUTE_MODES.find((m) => m.value === mode)
 
   return (
-    <div className="sampler-preview-routing">
-      <label className="sampler-prep-algo">
-        <span>Preview through</span>
-        <select
-          className="sampler-select"
-          value={mode}
-          onChange={(e) => handleModeChange(Number(e.target.value))}
-          title={activeMode?.hint}
-        >
-          {PREVIEW_ROUTE_MODES.map((m) => (
-            <option key={m.value} value={m.value}>{m.label}</option>
-          ))}
-        </select>
-      </label>
+    <div className={styles.inline} data-field="previewRouting">
+      <span className={styles.caption}>Preview through</span>
+      <Select
+        size="sm"
+        className={styles.previewSelect}
+        ariaLabel="Preview through"
+        value={mode}
+        options={PREVIEW_ROUTE_MODES.map((m) => ({ value: m.value, label: m.label }))}
+        onChange={(v) => handleModeChange(Number(v))}
+        hint={activeMode?.hint}
+      />
       <span
-        className={`sampler-preview-routing-state${routeName ? '' : ' is-dry'}`}
-        title={routeName
+        className={styles.caption}
+        data-hint={routeName
           ? `Auditions through ${routeName} → Master.`
           : (mode === 0
               ? 'This sample is not on a single track (or the tracks that play it do not share one bus), so it auditions dry.'
-              : undefined)}
+              : 'Auditions dry: no track effects, no track or Master volume.')}
       >
         {routeName ? `→ ${routeName} → Master` : '→ dry'}
       </span>

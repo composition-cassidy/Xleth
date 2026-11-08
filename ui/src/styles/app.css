@@ -5556,64 +5556,6 @@ html.fx-drag-active * {
    auto-shrink effect next to it) only kicks in once the swap happens, i.e.
    after the outgoing pane is already gone. */
 
-
-
-
-.sampler-page,
-.sampler-env-body,
-.sampler-arp-controls {
-  display: flex;
-  flex-direction: column;
-  gap: 12px;
-}
-
-.sampler-playback-grid {
-  display: flex;
-  gap: 12px;
-  min-width: 0;
-}
-
-.sampler-module,
-.sampler-control-rail,
-.sampler-waveform-well,
-.sampler-graph-well {
-  border: 1px solid color-mix(in srgb, var(--sampler-accent) 28%, var(--theme-border-strong));
-  border-radius: 6px;
-  background:
-    linear-gradient(180deg, color-mix(in srgb, var(--theme-depth-elevation-2-bg) 76%, #ffffff 3%), color-mix(in srgb, var(--theme-bg-elevated) 84%, #000000 16%));
-  box-shadow:
-    var(--theme-depth-elevation-1-top-highlight),
-    inset 0 -1px 0 rgba(0, 0, 0, 0.58),
-    0 8px 20px rgba(0, 0, 0, 0.28);
-}
-
-.sampler-module {
-  min-width: 0;
-  padding: 12px;
-}
-
-.sampler-voice-module {
-  align-items: center;
-  justify-content: flex-start;
-  gap: 12px;
-}
-
-.sampler-arp-module,
-.sampler-env-module {
-  flex: 1 1 auto;
-}
-
-.sampler-section-label {
-  margin-bottom: 8px;
-  padding-bottom: 7px;
-  border-bottom: 1px solid color-mix(in srgb, var(--sampler-accent) 30%, var(--theme-border-subtle));
-  color: var(--theme-text-muted);
-  font-size: 9px;
-  font-weight: 800;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-}
-
 .sampler-seg {
   display: flex;
   overflow: hidden;
@@ -5710,26 +5652,6 @@ html.fx-drag-active * {
   box-shadow:
     inset 0 1px 0 rgba(255, 255, 255, 0.08),
     0 3px 8px rgba(0, 0, 0, 0.25);
-}
-
-.sampler-dimmed {
-  opacity: 0.38;
-  pointer-events: none;
-}
-
-@media (max-width: 760px) {
-
-  .sampler-playback-grid,
-  .sampler-env-grid {
-    flex-wrap: wrap;
-  }
-
-  .sampler-voice-module,
-  .sampler-arp-module,
-  .sampler-env-module,
-  .sampler-graph-well {
-    flex: 1 1 100%;
-  }
 }
 
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
@@ -15883,23 +15805,6 @@ input[type="radio"] {
   box-shadow: none;
 }
 
-/* ── Cards / rails / wells ─────────────────────────────────────────────────── */
-.sampler-module,
-.sampler-control-rail,
-.sampler-waveform-well,
-.sampler-graph-well {
-  border: 1px solid var(--xleth-flat-border);
-  border-radius: 0;
-  background: var(--xleth-flat-panel);
-  box-shadow: none;
-}
-
-/* ── Section label ─────────────────────────────────────────────────────────── */
-.sampler-section-label {
-  border-bottom: 1px solid var(--xleth-flat-border);
-  color: var(--xleth-flat-text-muted);
-}
-
 /* ── Segmented controls ────────────────────────────────────────────────────── */
 .sampler-seg {
   border: 1px solid var(--xleth-flat-border-strong);
@@ -15974,319 +15879,9 @@ input[type="radio"] {
   box-shadow: none;
 }
 
-.sampler-page,
-.sampler-env-body,
-.sampler-arp-controls {
-  gap: 14px;
-}
-
-.sampler-card,
-.sampler-range-card {
-  min-width: 0;
-  border: 1px solid var(--sampler-bd);
-  border-radius: 0;
-  background: var(--sampler-s2);
-  box-shadow: none;
-}
-
-.sampler-card {
-  padding: 10px;
-}
-
-.sampler-section-label {
-  margin-bottom: 8px;
-  padding: 0;
-  border: 0;
-  color: var(--sampler-t4);
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.1em;
-}
-
-.sampler-range-card {
-  display: flex;
-  flex-direction: column;
-}
-
-.sampler-range-card > header {
-  height: 24px;
-  display: flex;
-  flex: 0 0 auto;
-  align-items: center;
-  gap: 6px;
-  padding: 0 9px;
-  border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-  color: var(--sampler-t2);
-  font-size: 9px;
-  font-weight: 600;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-}
-
-.sampler-range-card > header i {
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: var(--sampler-accent);
-}
-
-.sampler-range-card > header button {
-  height: 16px;
-  margin-left: auto;
-  padding: 0 7px;
-  border: 1px solid var(--sampler-bd2);
-  border-radius: 0;
-  background: transparent;
-  color: var(--sampler-t3);
-  font-size: 8px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  cursor: pointer;
-}
-
-.sampler-range-card > header button.is-active {
-  border-color: rgba(199, 154, 74, 0.45);
-  background: rgba(199, 154, 74, 0.16);
-  color: var(--sampler-loop);
-}
-
 /* ── PREP (per-slot offline stretch / shift bake) ─────────────────────────── */
 
-.sampler-prep-algo {
-  display: flex;
-  flex-direction: column;
-  gap: 4px;
-}
-
-.sampler-prep-algo > span {
-  color: var(--sampler-t4);
-  font-size: 9px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-}
-
-.sampler-prep-note {
-  margin-left: auto;
-  color: var(--sampler-t4);
-  font-size: 9px;
-  letter-spacing: 0.04em;
-}
-
 /* ── MANGLE (per-note, per-slot warp FX) ──────────────────────────────────── */
-/* Full-width row like PREP. The accent means "this slot is mangling something"
-   — mode Off or mix 0 is the resting state and carries none, which mirrors the
-   engine's own bypass gate exactly. */
-.sampler-range-card--mangle {
-  border-color: color-mix(in srgb, var(--theme-accent) 25%, transparent);
-  background: color-mix(in srgb, var(--theme-accent) 6%, transparent);
-}
-
-.sampler-range-card--mangle.is-bypassed {
-  border-color: var(--sampler-bd);
-  background: var(--sampler-s2);
-}
-
-.sampler-range-card--mangle.is-bypassed > header i {
-  background: var(--sampler-t4);
-}
-
-/* The body is now a vertical stack: one row per chain instance, then the
-   add-another control, then the hint. */
-.sampler-mangle-body {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  padding: 8px 10px;
-}
-
-/* One instance row: reorder | mode | AMOUNT | MIX | actions. Flat and dense so
-   up to four stack without ballooning the card. */
-.sampler-mangle-inst {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-  padding: 6px 8px;
-  border: 1px solid var(--sampler-bd);
-  background: var(--sampler-s2);
-}
-
-/* An active instance carries the teal accent (meaningful state); a bypassed one
-   dims and drops it. */
-.sampler-mangle-inst.is-active {
-  border-color: color-mix(in srgb, var(--theme-accent) 30%, transparent);
-  background: color-mix(in srgb, var(--theme-accent) 7%, transparent);
-}
-.sampler-mangle-inst.is-bypassed {
-  opacity: 0.55;
-}
-
-.sampler-mangle-order {
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-}
-.sampler-mangle-move {
-  width: 18px;
-  height: 15px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--sampler-bd);
-  background: var(--sampler-s1);
-  color: var(--sampler-t3);
-  font-size: 9px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0;
-}
-.sampler-mangle-move:hover:not(:disabled) {
-  color: var(--sampler-t1);
-  border-color: color-mix(in srgb, var(--theme-accent) 40%, transparent);
-}
-.sampler-mangle-move:disabled {
-  opacity: 0.3;
-  cursor: default;
-}
-
-/* The mode list is 36 entries across four groups, so it needs more room than
-   the PREP algorithm select. */
-.sampler-mangle-mode .sampler-select {
-  min-width: 132px;
-}
-
-.sampler-mangle-inst-actions {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  margin-left: auto;
-}
-
-/* Bypass toggle: teal when the instance is ON (meaningful state), neutral when
-   bypassed. */
-.sampler-mangle-bypass {
-  min-width: 30px;
-  height: 20px;
-  border: 1px solid var(--sampler-bd);
-  background: var(--sampler-s1);
-  color: var(--sampler-t3);
-  font-size: 9px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  cursor: pointer;
-  padding: 0 6px;
-}
-.sampler-mangle-bypass.is-on {
-  color: var(--theme-accent);
-  border-color: color-mix(in srgb, var(--theme-accent) 45%, transparent);
-}
-
-.sampler-mangle-remove {
-  width: 20px;
-  height: 20px;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--sampler-bd);
-  background: var(--sampler-s1);
-  color: var(--sampler-t3);
-  font-size: 13px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0;
-}
-.sampler-mangle-remove:hover {
-  color: var(--sampler-t1);
-  border-color: color-mix(in srgb, var(--theme-accent) 40%, transparent);
-}
-
-/* The big "add another" control from the mockup. Full-width, flat, dashed so it
-   reads as an empty slot to fill. */
-.sampler-mangle-add {
-  height: 30px;
-  border: 1px dashed var(--sampler-bd);
-  background: transparent;
-  color: var(--sampler-t3);
-  font-size: 18px;
-  line-height: 1;
-  cursor: pointer;
-  padding: 0;
-}
-.sampler-mangle-add:hover {
-  color: var(--theme-accent);
-  border-color: color-mix(in srgb, var(--theme-accent) 45%, transparent);
-}
-
-/* Live state, not decor: this is the one label that tells the user MANGLE is
-   per note rather than an insert. */
-.sampler-mangle-tag {
-  margin-left: 8px;
-  color: var(--theme-accent);
-  font-size: 8px;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-}
-
-.sampler-mangle-note {
-  text-align: left;
-  line-height: 1.35;
-}
-
-/* ── Preview monitoring (audition effect routing) ── */
-.sampler-preview-routing {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  flex-wrap: wrap;
-}
-
-.sampler-preview-routing-state {
-  font-size: 11px;
-  color: var(--theme-text);
-  opacity: 0.85;
-  white-space: nowrap;
-}
-
-/* Dry is the fallback, not the goal — read it back dimmer than a real route. */
-.sampler-preview-routing-state.is-dry {
-  color: var(--theme-text-muted);
-  opacity: 0.7;
-  font-style: italic;
-}
-
-.sampler-voice-panel {
-  gap: 0;
-  border: 1px solid var(--sampler-bd);
-  background: var(--sampler-s2);
-}
-
-.sampler-voice-panel .sampler-module {
-  border: 0;
-  background: transparent;
-}
-
-.sampler-voice-module {
-  flex: 1 1 240px;
-  min-width: 220px;
-  border-right: 1px solid var(--sampler-bd) !important;
-}
-
-.sampler-voice-module .sampler-section-label {
-  align-self: stretch;
-}
-
-.sampler-arp-module {
-  flex: 1 1 260px;
-  min-width: 240px;
-  padding: 12px;
-}
-
-.sampler-module,
-.sampler-env-module,
-.sampler-lfo-module {
-  border-color: var(--sampler-bd);
-  border-radius: 0;
-  background: var(--sampler-s2);
-}
 
 .sampler-check input,
 .sampler-arp-module input[type="checkbox"],
@@ -16305,24 +15900,6 @@ input[type="radio"] {
   border-color: var(--sampler-accent);
   background: var(--sampler-accent);
   box-shadow: inset 0 0 0 3px var(--sampler-s0);
-}
-
-.sampler-arp-module [title] {
-  border-radius: 0 !important;
-}
-
-@container (max-width: 560px) {
-
-  .sampler-voice-panel {
-    flex-wrap: wrap;
-  }
-
-  .sampler-voice-module,
-  .sampler-arp-module {
-    flex: 1 1 100%;
-    border-right: 0 !important;
-  }
-
 }
 
 /* New video tab polish: flat, spacious, explicit controls. */
@@ -18892,24 +18469,6 @@ input[type="radio"] {
   cursor: not-allowed;
 }
 
-/* Voicing: the editable POLY count on the playback tab. Flat, zero-radius. */
-.sampler-voice-count {
-  width: 42px;
-  padding: 2px 4px;
-  border: 1px solid var(--xleth-flat-border);
-  border-radius: 0;
-  background: var(--xleth-flat-well);
-  color: var(--xleth-flat-text);
-  font-size: 11px;
-  text-align: center;
-  font-variant-numeric: tabular-nums;
-}
-
-.sampler-voice-count:focus {
-  outline: none;
-  border-color: var(--theme-accent);
-}
-
 /* ── Sampler modulation rack (ENV/LFO/VELO/NOTE) ──────────────────────────────
    Flat, zero-radius, tokens only. Source colours come from theme mod-color
    tokens so the palette stays theme-driven; accent appears only on meaningful
@@ -20933,21 +20492,6 @@ canvas.clipfx-graph {
 
 /* ── Sampler rework: fit the main tab in its own window ─────────────────────
    The page is a fixed-size panel, so every row here has to earn its height. */
-
-/* MANGLE's note wraps to two lines for a chain; reserving both keeps the card
-   from resizing as modes change. */
-.sampler-mangle-note { min-height: 22px; }
-
-/* The chain "+" lives in the MANGLE header now, not as a body row of its own:
-   a single button is not worth a full line in a fixed-height panel. */
-.sampler-range-card--mangle > header .sampler-mangle-add {
-  margin-left: auto;
-  width: 20px;
-  height: 16px;
-  min-height: 0;
-  padding: 0;
-  line-height: 1;
-}
 
 /* ── Pitch Shifter panel (XlethPitchShifterEffect) ────────────────────────────
    Four modes select two DIFFERENT parameter sets (Granular vs Smart/Voice vs
