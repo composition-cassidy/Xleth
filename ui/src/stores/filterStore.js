@@ -237,7 +237,11 @@ export function hasAnyModulator(slots) {
     && s.mods.some(m => Number(m?.kind ?? MOD_KIND_OFF) !== MOD_KIND_OFF))
 }
 
-const useFilterStore = create((set, get) => ({
+// The store body, exported so a Filter DEVICE can own a private instance
+// (createStore(filterStoreInitializer)): several Xleth Filters can be on screen, docked or
+// popped out, without sharing slots or the selected slot. The global store below only
+// marks the popped-out instance and backs the editor opener.
+export const filterStoreInitializer = (set, get) => ({
   // { trackId, nodeId, storeKey } or null
   target: null,
 
@@ -402,6 +406,8 @@ const useFilterStore = create((set, get) => ({
   setSelectedSlot(index) {
     set({ selectedSlotIndex: index })
   },
-}))
+})
+
+const useFilterStore = create(filterStoreInitializer)
 
 export default useFilterStore

@@ -38,6 +38,8 @@ import useTransientProcStore from '../../stores/transientProcStore.js'
 import ResonanceSuppressorDevice from './ResonanceSuppressorDevice.jsx'
 import useResonanceSuppressorStore from '../../stores/resonanceSuppressorStore.js'
 import useApexStore from '../../stores/apexStore.js'
+import FilterDevice from './FilterDevice.jsx'
+import useFilterStore from '../../stores/filterStore.js'
 
 export const DEVICE_BODIES = {
   // Width omitted: the frame fits the body's fixed-width sections (the
@@ -49,6 +51,9 @@ export const DEVICE_BODIES = {
   reverb: { Body: ReverbDevice, useEditorStore: useReverbStore },
   limiter: { Body: LimiterDevice, useEditorStore: useLimiterStore },
   xletheq: { Body: EqDevice, useEditorStore: useEqStore },
+  // The Xleth Filter owns a private store per device (slots, selection, live frame);
+  // the global useFilterStore only marks the popped-out instance.
+  xlethfilter: { Body: FilterDevice, useEditorStore: useFilterStore },
   // The character compressors on CompressorCore share CompressorFamilyDevice.
   glue: { Body: GlueDevice, useEditorStore: useGlueCompStore },
   opto: { Body: OptoDevice, useEditorStore: useOptoCompStore },
