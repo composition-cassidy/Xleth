@@ -162,3 +162,27 @@ describe('Main view wiring (one commit per gesture, same payload as before)', ()
     expect(h.lastCommit('prepStretch').payload.prepStretch).toBeGreaterThan(1)
   })
 })
+
+describe('Audition bar', () => {
+  it('shows the key range in tabular numerals and shifts it by octave', async () => {
+    await h.mount()
+    const bar = h.container.querySelector('[role="group"][aria-label="Audition"]')
+    expect(bar.textContent).toContain('C4–E6')
+    await h.key(h.slider('Key octave'), 'ArrowUp')
+    expect(bar.textContent).toContain('C5–E7')
+    expect(h.slider('Key octave').getAttribute('aria-valuetext')).toBe('Key octave, +1')
+  })
+
+  it('auditions from the computer keys at the bar velocity, and plays the root once', async () => {
+    await h.mount()
+    await h.key(h.slider('Velocity'), 'ArrowDown')
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keydown', { code: 'KeyZ', key: 'z', bubbles: true })) })
+    const on = h.calls.find((c) => c.name === 'previewNote')
+    expect(on.args[1]).toBe(60)
+    expect(on.args[2]).toBeCloseTo(101 / 127)
+    await act(async () => { window.dispatchEvent(new KeyboardEvent('keyup', { code: 'KeyZ', key: 'z', bubbles: true })) })
+    expect(h.calls.some((c) => c.name === 'previewNoteOff')).toBe(true)
+    await h.click(h.container.querySelector('[data-field="playRoot"]'))
+    expect(h.calls.filter((c) => c.name === 'previewNote').at(-1).args[1]).toBe(60)
+  })
+})

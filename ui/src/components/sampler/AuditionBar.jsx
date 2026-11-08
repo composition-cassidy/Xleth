@@ -1,17 +1,16 @@
-import { useCallback } from 'react'
+import { Play } from 'lucide-react'
+import { Button, NumberBox, hintAttrs } from '../../ui-kit'
 import { lowNoteFor, noteName, MIN_OCTAVE_SHIFT, MAX_OCTAVE_SHIFT } from './auditionKeymap.js'
+import styles from './Sampler.module.css'
 
-// ── AuditionBar ─────────────────────────────────────────────────────────────
-// Makes the panel's computer-keyboard piano VISIBLE. The bindings themselves
-// have existed all along (Z-row and Q-row, two-and-a-bit octaves), but nothing
-// on screen said so, there was no way to reach notes outside the fixed C4..E6
-// window, and velocity was hard-coded at 0.8 — so every audition was at one
-// fixed dynamic whatever the sample's velocity modulation was set up to do.
-//
-// Deliberately a thin strip, not the old MiniKeyboard: that was 80px tall and
-// ~364px wide, which is most of the vertical budget the slot-strip rewrite just
-// bought back. This is one row, and it carries the two things a keyboard
-// cannot — which keys are live, and at what velocity.
+// ── Audition bar ────────────────────────────────────────────────────────────
+// The panel's computer-keyboard piano, made visible: which keys play, the note
+// range they cover, the octave shift, the velocity every audition uses (what the
+// Velocity modulation source reads), and a one-shot play of the root note. It is
+// always shown, in every view: it is the panel's "is this making a sound" cue.
+
+const KEY_HINT = 'Z S X D C V G B H N J M and Q 2 W 3 E R 5 T 6 Y 7 U I 9 O 0 P play the sampler while this panel has focus'
+const round = (v) => Math.round(v)
 
 export default function AuditionBar({
   octaveShift,
@@ -25,68 +24,55 @@ export default function AuditionBar({
 }) {
   const low = lowNoteFor(octaveShift)
   const high = Math.min(127, low + 28)
-
-  const bump = useCallback((d) => {
-    onOctaveShift(octaveShift + d)
-  }, [octaveShift, onOctaveShift])
+  const sounding = heldCount > 0
 
   return (
-    <div className="sampler-audition-bar">
-      <span className={`sampler-audition-lamp${heldCount > 0 ? ' is-lit' : ''}`} aria-hidden />
-      <span className="sampler-audition-label">
+    <div className={styles.audition} role="group" aria-label="Audition">
+      <span
+        className={styles.auditionState}
+        data-on={sounding || undefined}
+        role="status"
+        aria-live="polite"
+        {...hintAttrs({ hint: sounding ? `${heldCount} key${heldCount > 1 ? 's' : ''} held` : 'No key held' })}
+      >
+        <span className={styles.auditionDot} aria-hidden="true" />
         Audition
       </span>
-
-      <span className="sampler-audition-hint" title="Z S X D C V G B H N J M and Q 2 W 3 E R 5 T 6 Y 7 U play the sampler while this panel has focus">
-        Z…M / Q…P
-      </span>
-
-      <span className="sampler-audition-range">
+      <span className={styles.caption} {...hintAttrs({ hint: KEY_HINT })}>Keys Z–M, Q–P</span>
+      <span className={styles.auditionRange} {...hintAttrs({ hint: 'Notes the computer keys cover at this octave shift' })}>
         {noteName(low)}–{noteName(high)}
       </span>
-
-      <div className="sampler-audition-oct" role="group" aria-label="Audition octave">
-        <button
-          type="button"
-          onClick={() => bump(-1)}
-          disabled={octaveShift <= MIN_OCTAVE_SHIFT}
-          title="Shift the audition keyboard down an octave"
-          aria-label="Octave down"
-        >−</button>
-        <span title="Octave shift applied to the computer-keyboard notes">
-          {octaveShift > 0 ? `+${octaveShift}` : octaveShift}
-        </span>
-        <button
-          type="button"
-          onClick={() => bump(1)}
-          disabled={octaveShift >= MAX_OCTAVE_SHIFT}
-          title="Shift the audition keyboard up an octave"
-          aria-label="Octave up"
-        >+</button>
-      </div>
-
-      <label className="sampler-audition-vel" title="Velocity every auditioned note is played at — what the VELO modulation source reads">
-        <span>Vel</span>
-        <input
-          type="range"
-          min={1}
-          max={127}
-          value={Math.round(velocity * 127)}
-          onChange={(e) => onVelocity(Number(e.target.value) / 127)}
-          aria-label="Audition velocity"
-        />
-        <span className="sampler-audition-vel-val">{Math.round(velocity * 127)}</span>
-      </label>
-
-      <button
-        type="button"
-        className="sampler-audition-root"
+      <NumberBox
+        label="Key octave"
+        width={116}
+        value={octaveShift}
+        min={MIN_OCTAVE_SHIFT} max={MAX_OCTAVE_SHIFT} step={1} quantize={round} defaultValue={0} bipolar
+        pxPerRange={120}
+        format={(v) => (v > 0 ? `+${v}` : (v < 0 ? `−${Math.abs(v)}` : '0'))}
+        onChange={(v) => onOctaveShift(round(v))}
+        onCommit={(v) => onOctaveShift(round(v))}
+        hint="Octave shift for the computer-keyboard notes"
+        data-field="auditionOctave"
+      />
+      <NumberBox
+        label="Velocity"
+        width={104}
+        value={Math.round(velocity * 127)}
+        min={1} max={127} step={1} quantize={round} defaultValue={102}
+        onChange={(v) => onVelocity(round(v) / 127)}
+        onCommit={(v) => onVelocity(round(v) / 127)}
+        hint="Velocity every auditioned note plays at: what the Velocity modulation source reads"
+        data-field="auditionVelocity"
+      />
+      <span className={styles.spacer} />
+      <Button
+        size="sm"
+        glyph={<Play aria-hidden="true" />}
         onClick={onPreviewRoot}
         disabled={disabled}
-        title="Play the root note once"
-      >
-        ▶ {noteName(rootNote)}
-      </button>
+        hint="Play the root note once"
+        data-field="playRoot"
+      >{`Root ${noteName(rootNote)}`}</Button>
     </div>
   )
 }
