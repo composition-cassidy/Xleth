@@ -46,6 +46,8 @@ import WaveshaperDevice from './WaveshaperDevice.jsx'
 import useWaveshaperStore from '../../stores/waveshaperStore.js'
 import AmpDevice from './AmpDevice.jsx'
 import useAmpStore from '../../stores/ampStore.js'
+import PhanjerDevice from './PhanjerDevice.jsx'
+import usePhanjerStore from '../../stores/phanjerStore.js'
 import PhaserDevice from './PhaserDevice.jsx'
 import usePhaserStore from '../../stores/phaserStore.js'
 import ChorusDevice from './ChorusDevice.jsx'
@@ -71,6 +73,7 @@ export const DEVICE_BODIES = {
   // useWaveshaperStore only marks the popped-out instance.
   waveshaper: { Body: WaveshaperDevice, useEditorStore: useWaveshaperStore },
   amp: { Body: AmpDevice, useEditorStore: useAmpStore },
+  phanjer: { Body: PhanjerDevice, useEditorStore: usePhanjerStore },
   phaser: { Body: PhaserDevice, useEditorStore: usePhaserStore },
   chorus: { Body: ChorusDevice, useEditorStore: useChorusStore },
   pitchshifter: { Body: PitchShifterDevice, useEditorStore: usePitchShifterStore },

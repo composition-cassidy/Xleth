@@ -21,13 +21,20 @@
 // guard band) are highlighted with a vertical band at the coincidence frequency,
 // after the same negative-feedback role swap the engine applies before pairing.
 //
-// Lifecycle: PhanjerPanel returns null when target is null, unmounting this
-// component; the effect cleanup cancels the pending frame and disconnects the
-// observer, so nothing runs while the panel is closed.
+// Colours: the flanger curve wears band 1 and the phaser curve band 3 of the
+// band palette (DESIGN.md 3.3.1), the same two hues as the device's sections;
+// collision zones are neutral ink, so they never read as a third side.
+//
+// Lifecycle: the device body unmounts when the device is folded, popped out or
+// removed; the effect cleanup cancels the pending frame and disconnects the
+// observer, so nothing runs then.
 
 import { useEffect, useRef } from 'react'
-import { clamp, freqToNorm } from './mixerFilterMath.js'
-import { withAlpha, readMixerCanvasTheme, syncCanvasSize, MONO_SM } from './mixerCanvasTheme.js'
+import { clamp, freqToNorm } from '../mixer/mixerFilterMath.js'
+import { withAlpha, readMixerCanvasTheme, syncCanvasSize } from '../mixer/mixerCanvasTheme.js'
+import { uiCanvasFont } from '../../styles/typography.js'
+import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
+import { readBandColor } from './bandPalette.js'
 
 import { subscribeDpr } from '../../ui-kit/dpr'
 // ── Axis + engine constants (mirror PhanjerEffect.h) ─────────────────────────
@@ -149,6 +156,7 @@ function logBump(logF, logCenter, sigma) {
 // ── Component ─────────────────────────────────────────────────────────────────
 
 export default function PhanjerResponseCanvas({ params }) {
+  const themeEpoch = useThemeEpoch()
   const canvasRef = useRef(null)
   const paramsRef = useRef(params)
   paramsRef.current = params
@@ -170,11 +178,10 @@ export default function PhanjerResponseCanvas({ params }) {
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
       const th = readMixerCanvasTheme(canvas)
-      // Per-column accents — read from the live computed style so a theme swap
-      // repaints correctly; never a hardcoded hex (never at module scope).
-      const cs = typeof getComputedStyle === 'function' ? getComputedStyle(canvas) : null
-      const flAccent = (cs?.getPropertyValue('--theme-mod-phanjer-flanger')?.trim()) || th.accent
-      const phAccent = (cs?.getPropertyValue('--theme-mod-phanjer-phaser')?.trim()) || th.text
+      // The two side colours are band tokens, read from the canvas's own computed
+      // style at draw time (never at module scope), so a theme swap repaints.
+      const flAccent = readBandColor(canvas, 0, th.accent, 4)
+      const phAccent = readBandColor(canvas, 2, th.text, 4)
 
       // ── Param → quantities ────────────────────────────────────────────────
       const fFb = Number(p.f_feedback ?? 40)
@@ -190,11 +197,11 @@ export default function PhanjerResponseCanvas({ params }) {
 
       // ── Layout ─────────────────────────────────────────────────────────────
       const PAD_X = 8
-      const LABEL_H = 11
+      const LABEL_H = 16
       const x0 = PAD_X
       const x1 = cssW - PAD_X
       const drawW = x1 - x0
-      const top = 6
+      const top = 16
       const bot = cssH - LABEL_H
       const midY = (top + bot) / 2
       const halfH = (bot - top) / 2
@@ -211,9 +218,9 @@ export default function PhanjerResponseCanvas({ params }) {
       for (const cf of collisions) {
         const cx = fToX(cf)
         const bandW = Math.max(3, drawW * (GUARD_BAND_OCT / Math.log2(AXIS_FREQ_MAX / AXIS_FREQ_MIN)))
-        ctx.fillStyle = withAlpha(th.accent, 0.16)
+        ctx.fillStyle = withAlpha(th.text, 0.12)
         ctx.fillRect(cx - bandW / 2, top, bandW, bot - top)
-        ctx.strokeStyle = withAlpha(th.accent, 0.6)
+        ctx.strokeStyle = withAlpha(th.text, 0.45)
         ctx.lineWidth = 1
         ctx.beginPath()
         ctx.moveTo(Math.round(cx) + 0.5, top)
@@ -281,21 +288,22 @@ export default function PhanjerResponseCanvas({ params }) {
       ctx.stroke()
 
       // ── Corner legend + axis labels ────────────────────────────────────────
-      ctx.font = MONO_SM
-      ctx.textBaseline = 'top'
+      ctx.font = uiCanvasFont('500 10px')
+      ctx.textBaseline = 'bottom'
       ctx.textAlign = 'left'
       ctx.fillStyle = flAccent
-      ctx.fillText('FLANGER', x0 + 2, top + 1)
+      ctx.fillText('Flanger', x0 + 2, top - 2)
       ctx.textAlign = 'right'
       ctx.fillStyle = phAccent
-      ctx.fillText('PHASER', x1 - 2, top + 1)
+      ctx.fillText('Phaser', x1 - 2, top - 2)
 
+      ctx.textBaseline = 'top'
       ctx.textAlign = 'center'
-      ctx.fillStyle = withAlpha(th.textSubtle, 0.9)
+      ctx.fillStyle = th.textSubtle
       const LABEL_FREQS = [100, 1000, 10000]
       const LABEL_TEXTS = ['100', '1k', '10k']
       for (let i = 0; i < LABEL_FREQS.length; i++) {
-        ctx.fillText(LABEL_TEXTS[i], fToX(LABEL_FREQS[i]), bot + 2)
+        ctx.fillText(LABEL_TEXTS[i], fToX(LABEL_FREQS[i]), bot + 3)
       }
     }
 
@@ -317,12 +325,14 @@ export default function PhanjerResponseCanvas({ params }) {
       if (ro) ro.disconnect()
       offDpr()
     }
-  }, [params])
+  }, [params, themeEpoch])
 
   return (
     <canvas
       ref={canvasRef}
       className="phanjer-response-canvas"
+      role="img"
+      aria-label="Phanjer response at the sweep centre: flanger comb, phaser notches and where they collide"
       style={{ display: 'block', width: '100%', height: '100%' }}
     />
   )
