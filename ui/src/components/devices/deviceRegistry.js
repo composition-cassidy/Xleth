@@ -24,10 +24,11 @@ import LimiterDevice from './LimiterDevice.jsx'
 import useLimiterStore from '../../stores/limiterStore.js'
 import EqDevice from './EqDevice.jsx'
 import useEqStore from '../../stores/eqStore.js'
-import { FetDevice, GlueDevice, OptoDevice } from './CompressorFamilyDevice.jsx'
+import { FetDevice, GlueDevice, OptoDevice, VariMuDevice } from './CompressorFamilyDevice.jsx'
 import useGlueCompStore from '../../stores/glueCompStore.js'
 import useOptoCompStore from '../../stores/optoCompStore.js'
 import useFetCompStore from '../../stores/fetCompStore.js'
+import useVariMuCompStore from '../../stores/variMuCompStore.js'
 
 export const DEVICE_BODIES = {
   // Width omitted: the frame fits the body's fixed-width sections (the
@@ -43,6 +44,7 @@ export const DEVICE_BODIES = {
   glue: { Body: GlueDevice, useEditorStore: useGlueCompStore },
   opto: { Body: OptoDevice, useEditorStore: useOptoCompStore },
   fet: { Body: FetDevice, useEditorStore: useFetCompStore },
+  varimu: { Body: VariMuDevice, useEditorStore: useVariMuCompStore },
 }
 
 export function deviceBodyFor(pluginId) {

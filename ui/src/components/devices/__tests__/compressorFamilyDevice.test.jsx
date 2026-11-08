@@ -11,9 +11,11 @@ import useMixerStore from '../../../stores/mixerStore.js'
 import useGlueCompStore from '../../../stores/glueCompStore.js'
 import useOptoCompStore from '../../../stores/optoCompStore.js'
 import useFetCompStore from '../../../stores/fetCompStore.js'
+import useVariMuCompStore from '../../../stores/variMuCompStore.js'
 import GlueCompPanel from '../../mixer/GlueCompPanel.jsx'
 import OptoCompPanel from '../../mixer/OptoCompPanel.jsx'
 import FetCompPanel from '../../mixer/FetCompPanel.jsx'
+import VariMuCompPanel from '../../mixer/VariMuCompPanel.jsx'
 import DeviceChain from '../DeviceChain.jsx'
 import { MODELS, fetAttackSeconds, fetReleaseSeconds, formatDuration } from '../compressorFamilyModels.js'
 
@@ -72,6 +74,7 @@ beforeEach(() => {
   useGlueCompStore.setState({ target: null })
   useOptoCompStore.setState({ target: null })
   useFetCompStore.setState({ target: null })
+  useVariMuCompStore.setState({ target: null })
   HTMLCanvasElement.prototype.getContext = () => null
   container = document.createElement('div')
   document.body.appendChild(container)
@@ -350,5 +353,85 @@ describe('FET comp device in the chain', () => {
     expect(useFetCompStore.getState().target).toBeNull()
     expect(readFileSync(path.resolve(__dirname, '../../mixer/FetCompPanel.jsx'), 'utf8')).not.toMatch(/PluginUIKitKnob|fetcomp-/)
     expect(readFileSync(path.resolve(__dirname, '../../../styles/app.css'), 'utf8')).not.toMatch(/\.fetcomp-/)
+  })
+})
+
+describe('Vari-mu comp device in the chain', () => {
+  const VM = { input: 4, output: -2, time_constant: 4.0000001, mode: 0 }
+  const timeText = () => q('[data-hint^="What this position means"]').textContent
+
+  it('hydrates from the engine, rounding the positions; there is no threshold and no ratio', async () => {
+    setup('varimu', VM)
+    await mountChain()
+    expect(aria('Input')).toBe('Input, +4.0 dB')
+    expect(aria('Output')).toBe('Output, −2.0 dB')
+    expect(texts('Time constant')).toEqual(['1', '2', '3', '4', '5', '6'])
+    expect(checked('Time constant')).toBe(3)
+    expect(texts('Mode')).toEqual(['Linked', 'Mid-side'])
+    expect(checked('Mode')).toBe(0)
+    expect(aria('Threshold')).toBeUndefined()
+    expect(aria('Ratio')).toBeUndefined()
+    const titles = Array.from(container.querySelectorAll('[role="heading"][aria-level="3"]')).map((h) => h.textContent)
+    expect(titles).toEqual(['Input', 'Character', 'Time', 'Output'])
+  })
+
+  it('the time constant commits positions 1 to 6 and prints the manual figures; 5 and 6 are automatic', async () => {
+    setup('varimu', VM)
+    await mountChain()
+    expect(timeText()).toContain('5 s')
+    act(() => radios('Time constant')[4].click())
+    expect(sent('time_constant')).toEqual([[3, 7, 'time_constant', 5]])
+    expect(timeText()).toContain('Auto 2 s · 10 s')
+    act(() => radios('Time constant')[5].click())
+    expect(sent('time_constant').at(-1)).toEqual([3, 7, 'time_constant', 6])
+    expect(timeText()).toContain('Auto 300 ms · 10 s · 25 s')
+    expect(timeText()).toContain('0.2 ms')
+    expect(q('[data-automation-param="time_constant"]')).toBeNull()
+  })
+
+  it('Mode is Linked | Mid-side (never Lat/Vert) and commits the engine index', async () => {
+    setup('varimu', VM)
+    await mountChain()
+    act(() => radios('Mode')[1].click())
+    expect(sent('mode')).toEqual([[3, 7, 'mode', 1]])
+    expect(container.textContent).not.toMatch(/Lat|Vert/)
+    for (const id of ['input', 'output']) expect(q(`[data-automation-param="${id}"]`), id).not.toBeNull()
+  })
+
+  it('Linked: one gain-reduction readout from slot 2', async () => {
+    setup('varimu', VM)
+    const frame = installManualFrames()
+    await mountChain()
+    await frame()
+    await frame()
+    expect(grText()).toMatch(/−3\.0 dB/)
+    expect(grText()).not.toMatch(/Mid|Side/)
+  })
+
+  it('Mid/side: mid and side readouts from slots 4 and 5', async () => {
+    setup('varimu', { ...VM, mode: 1 })
+    const frame = installManualFrames()
+    await mountChain()
+    await frame()
+    await frame()
+    expect(q('[aria-label="Gain reduction, mid and side meter"]')).not.toBeNull()
+    const t = grText()
+    expect(t).toMatch(/Mid\s*−2\.0 dB/)
+    expect(t).toMatch(/Side\s*−7\.0 dB/)
+  })
+
+  it('pop-out opens the floating window; the legacy panel and CSS are gone', async () => {
+    setup('varimu', VM)
+    act(() => root.render(<><DeviceChain /><VariMuCompPanel /></>))
+    await flush()
+    await flush()
+    act(() => q('button[aria-label="Open Vari-mu comp in a window"]').click())
+    await flush()
+    expect(useVariMuCompStore.getState().target).toEqual({ trackId: 3, nodeId: 7, storeKey: '3' })
+    expect(q('[data-testid="varimu-window"] section').getAttribute('data-presentation')).toBe('floating')
+    act(() => q('button[aria-label="Close Vari-mu comp"]').click())
+    expect(useVariMuCompStore.getState().target).toBeNull()
+    expect(readFileSync(path.resolve(__dirname, '../../mixer/VariMuCompPanel.jsx'), 'utf8')).not.toMatch(/PluginUIKitKnob|varimu-(panel|knob|gr|seg|switch|tc)/)
+    expect(readFileSync(path.resolve(__dirname, '../../../styles/app.css'), 'utf8')).not.toMatch(/\.varimu-/)
   })
 })
