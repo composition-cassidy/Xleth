@@ -6,9 +6,9 @@ import {
   feedbackToGlow,
   mixToOrbAlpha,
   widthToEllipseRx,
-} from '../ChorusOrbitVisualizer.jsx'
+} from '../ChorusOrbitCanvas.jsx'
 
-describe('ChorusOrbitVisualizer helpers', () => {
+describe('ChorusOrbitCanvas helpers', () => {
 
   describe('clampVoices', () => {
     it('rounds to nearest integer', () => {

@@ -1,8 +1,11 @@
-// ─── ChorusOrbitVisualizer.jsx ────────────────────────────────────────────────
-// Self-contained canvas visualizer for the Chorus panel.
-// All animation runs inside one requestAnimationFrame loop that starts on mount
-// and stops on unmount. No engine data is polled; visuals derive entirely from
-// the current param values via a ref so the rAF loop never needs to restart.
+// ─── ChorusOrbitCanvas.jsx ────────────────────────────────────────────────────
+// The Chorus device's display: the orbit and LFO strand, drawn from the
+// parameters that define them. Not a signal tap: nothing here reacts to audio
+// (the Flanger's Sweep view is the same kind of display).
+// All animation runs inside one requestAnimationFrame loop that starts on mount,
+// pauses while the canvas is scrolled out of view (visibleLoop.js) and stops on
+// unmount. No engine data is polled; visuals derive entirely from the current
+// param values via a ref so the rAF loop never needs to restart.
 //
 // Style: flat fills and hard-edged strokes only — no gradients, no shadow blur.
 // Every colour comes from the canvas's computed theme tokens (mixerCanvasTheme),
@@ -10,18 +13,18 @@
 // fills the stage edge-to-edge (radii are derived from the canvas's own half-
 // width/half-height rather than a fixed pixel base).
 //
-// Thread/lifecycle note:
-//   ChorusPanel returns null when chorusStore.target is null, which unmounts this
-//   component entirely. React therefore calls the useEffect cleanup, which sets
-//   cancelled = true and calls cancelAnimationFrame — zero background animation.
+// Lifecycle note:
+//   The device body unmounts when the device is folded, popped out or removed;
+//   the effect cleanup then stops the loop, so there is no background animation.
 
 import { useEffect, useRef } from 'react'
 import {
   withAlpha,
   readMixerCanvasTheme,
   syncCanvasSize,
-  MONO_SM,
-} from './mixerCanvasTheme.js'
+} from '../mixer/mixerCanvasTheme.js'
+import { uiCanvasFont } from '../../styles/typography.js'
+import { startVisibleLoop } from './visibleLoop.js'
 
 // ── Pure helpers (exported for unit tests) ───────────────────────────────────
 
@@ -79,7 +82,6 @@ export function widthToEllipseRx(orbitRy, widthPct) {
 export default function ChorusOrbitVisualizer({ params }) {
   const canvasRef = useRef(null)
   const paramsRef = useRef(params)
-  const rafRef    = useRef(0)
 
   // Keep latest params readable every frame without restarting the rAF loop.
   paramsRef.current = params
@@ -88,16 +90,13 @@ export default function ChorusOrbitVisualizer({ params }) {
     const canvas = canvasRef.current
     if (!canvas) return
 
-    let cancelled = false
     const t0 = performance.now()
 
     function draw(now) {
-      if (cancelled) return
-
       const p = paramsRef.current
       const size = syncCanvasSize(canvas, 560, 200)
       const ctx = canvas.getContext('2d', { alpha: false })
-      if (!ctx) { rafRef.current = requestAnimationFrame(draw); return }
+      if (!ctx) return
       const { cssW, cssH, dpr } = size
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
@@ -120,7 +119,7 @@ export default function ChorusOrbitVisualizer({ params }) {
       // Fill the stage edge-to-edge: margins only cover the width-indicator row
       // and the stroke width of the outermost ring.
       const marginX = 16
-      const marginY = 20
+      const marginY = 24
       const maxRy   = Math.max(10, cssH / 2 - marginY)
       const maxRx   = Math.max(10, cssW / 2 - marginX)
 
@@ -230,7 +229,7 @@ export default function ChorusOrbitVisualizer({ params }) {
       // ── Stereo width indicator ──────────────────────────────────────────────
       // A param-driven L/R node pair along the bottom edge. Spread = width.
       // Opacity = mix.
-      const indY     = cssH - marginY * 0.5
+      const indY     = cssH - 18
       const indSpan  = maxRx * 0.9
       const indLX    = cx - indSpan * widthNorm
       const indRX    = cx + indSpan * widthNorm
@@ -252,36 +251,26 @@ export default function ChorusOrbitVisualizer({ params }) {
       ctx.arc(indRX, indY, indR, 0, 2 * Math.PI)
       ctx.fill()
 
-      ctx.font = MONO_SM
+      ctx.font = uiCanvasFont('500 10px')
       ctx.textAlign = 'center'
       ctx.textBaseline = 'top'
-      ctx.fillStyle = withAlpha(th.textMuted, 0.85)
+      ctx.fillStyle = th.textMuted
       ctx.fillText('L', indLX, indY + 4)
       ctx.fillText('R', indRX, indY + 4)
 
       // Voice-count readout, top-right.
       ctx.textAlign = 'right'
-      ctx.fillStyle = withAlpha(th.textSubtle, 0.9)
-      ctx.fillText(`${voices} VOICE${voices === 1 ? '' : 'S'}`, cssW - marginX * 0.6, 6)
-
-      rafRef.current = requestAnimationFrame(draw)
+      ctx.fillStyle = th.textMuted
+      ctx.fillText(`${voices} ${voices === 1 ? 'voice' : 'voices'}`, cssW - marginX * 0.6, 6)
     }
 
-    rafRef.current = requestAnimationFrame(draw)
-
-    // Cleanup: cancelled = true stops the guard on the very next frame;
-    // cancelAnimationFrame drops the pending queued call. Both together
-    // guarantee no drawing occurs after unmount.
-    return () => {
-      cancelled = true
-      cancelAnimationFrame(rafRef.current)
-    }
+    return startVisibleLoop(canvas, draw)
   }, []) // Empty deps: all per-frame data is read through paramsRef.
 
   return (
     <canvas
       ref={canvasRef}
-      className="chorus-viz-canvas"
+      className="chorus-orbit-canvas"
       style={{ display: 'block', width: '100%', height: '100%' }}
     />
   )

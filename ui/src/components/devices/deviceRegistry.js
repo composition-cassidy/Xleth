@@ -46,6 +46,8 @@ import WaveshaperDevice from './WaveshaperDevice.jsx'
 import useWaveshaperStore from '../../stores/waveshaperStore.js'
 import AmpDevice from './AmpDevice.jsx'
 import useAmpStore from '../../stores/ampStore.js'
+import ChorusDevice from './ChorusDevice.jsx'
+import useChorusStore from '../../stores/chorusStore.js'
 import PitchShifterDevice from './PitchShifterDevice.jsx'
 import usePitchShifterStore from '../../stores/pitchShifterStore.js'
 
@@ -67,6 +69,7 @@ export const DEVICE_BODIES = {
   // useWaveshaperStore only marks the popped-out instance.
   waveshaper: { Body: WaveshaperDevice, useEditorStore: useWaveshaperStore },
   amp: { Body: AmpDevice, useEditorStore: useAmpStore },
+  chorus: { Body: ChorusDevice, useEditorStore: useChorusStore },
   pitchshifter: { Body: PitchShifterDevice, useEditorStore: usePitchShifterStore },
   // The character compressors on CompressorCore share CompressorFamilyDevice.
   glue: { Body: GlueDevice, useEditorStore: useGlueCompStore },
