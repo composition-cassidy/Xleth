@@ -1,5 +1,5 @@
 import { useMemo, useRef } from 'react';
-import type { CSSProperties, PointerEvent as ReactPointerEvent } from 'react';
+import type { CSSProperties, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from 'react';
 import { ARC_START_DEG, ARC_SWEEP_DEG, arcPath, knobGeometry } from './arc';
 import { hintAttrs, VALUE_HINT_MODS } from './hint';
 import styles from './Knob.module.css';
@@ -19,6 +19,8 @@ export interface KnobProps extends ValueControlProps, DataAttrs {
   width?: number;
   /** Optional modulation ring (see modRing.ts). Absent = an ordinary knob. */
   mod?: ControlMod | null;
+  /** Right-click, for hosts that add a menu (automation). Ignored while `mod` owns right-click. */
+  onContextMenu?: (e: ReactMouseEvent<HTMLElement>) => void;
 }
 
 /** Smallest visible sweep for a routed knob at amount 0, so "routed" never draws as nothing. */

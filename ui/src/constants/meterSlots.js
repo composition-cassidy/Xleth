@@ -20,3 +20,8 @@ export const LUFS_SHORT_TERM  = 4
 export const BAND_GR_LOW  = 2
 export const BAND_GR_MID  = 3
 export const BAND_GR_HIGH = 4
+
+// Vari-Mu comp in Mid/Side mode: the mid and side gain-reduction bars (slot 2 is the
+// linked control voltage). Matches XlethVariMuCompressorEffect.
+export const VARIMU_GR_MID  = 4
+export const VARIMU_GR_SIDE = 5
