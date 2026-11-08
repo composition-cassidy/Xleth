@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react'
-import { RotateCcw } from 'lucide-react'
+import { AlertTriangle, RotateCcw } from 'lucide-react'
 import {
   SHORTCUT_COMMANDS,
   SHORTCUT_GROUPS,
@@ -17,6 +17,9 @@ import {
   setCombo,
   subscribe as subscribeOverrides,
 } from '../../windowing/managers/shortcutOverrides.ts'
+import { Button, IconButton, TextField } from '../../ui-kit'
+import { SettingsHint, SettingsSection } from './settingsKit.jsx'
+import styles from './Shortcuts.module.css'
 
 // ─── Settings → Application → Shortcuts ──────────────────────────────────────
 //
@@ -41,6 +44,17 @@ function useOverridesVersion() {
   return version
 }
 
+/** One cap per key of a combo ("Ctrl + Shift + S" is three caps). */
+function KeyCaps({ text }) {
+  const parts = text === 'Unassigned' ? [] : text.split(' + ')
+  if (parts.length === 0) return <span className={styles.unassigned}>Unassigned</span>
+  return (
+    <span className={styles.caps}>
+      {parts.map((part, i) => <kbd key={`${part}-${i}`} className={styles.cap}>{part}</kbd>)}
+    </span>
+  )
+}
+
 function ShortcutRow({ command, listening, onStartCapture, onCancelCapture, onReset }) {
   const combo = resolveCombo(command.id)
   const overridden = hasOverride(command.id)
@@ -49,56 +63,60 @@ function ShortcutRow({ command, listening, onStartCapture, onCancelCapture, onRe
     [command.id, combo]
   )
   const editable = isEditable(command)
+  const shown = formatCombo(combo)
 
   return (
-    <div className="settings-panel-row settings-panel-shortcut-row">
-      <div className="settings-panel-row-copy">
-        <div className="settings-panel-label">{command.label}</div>
-        {command.description && (
-          <div className="settings-panel-field-copy">{command.description}</div>
-        )}
-        {conflicts.length > 0 && (
-          <div className="settings-panel-hint settings-panel-hint--warning">
+    <tr className={styles.row}>
+      <td className={styles.action}>
+        <div className={styles.actionName}>{command.label}</div>
+        {command.description && <div className={styles.actionNote}>{command.description}</div>}
+      </td>
+      <td className={styles.binding}>
+        <div className={styles.bindingCell}>
+          <button
+            type="button"
+            className={styles.keyButton}
+            data-listening={listening || undefined}
+            data-custom={overridden || undefined}
+            disabled={!editable}
+            aria-label={
+              editable
+                ? `Change shortcut for ${command.label}. Currently ${shown}.`
+                : `${command.label} shortcut is fixed at ${shown}.`
+            }
+            onClick={() => (listening ? onCancelCapture() : onStartCapture(command.id))}
+          >
+            {listening ? <span className={styles.listening}>Press a key…</span> : <KeyCaps text={shown} />}
+          </button>
+          {overridden ? <span className={styles.custom}>Custom</span> : null}
+          <IconButton
+            size="sm"
+            variant="ghost"
+            label={`Reset ${command.label} to its default shortcut`}
+            hint={overridden ? `Reset to ${formatCombo(command.defaultCombo)}` : 'Already the default'}
+            onClick={() => onReset(command.id)}
+            disabled={!overridden}
+          >
+            <RotateCcw aria-hidden="true" />
+          </IconButton>
+        </div>
+      </td>
+      <td className={styles.conflicts}>
+        {conflicts.length > 0 ? (
+          <span className={styles.conflict}>
+            <AlertTriangle size={12} aria-hidden="true" />
             Also assigned to {conflicts.map(c => c.label).join(', ')}
-          </div>
-        )}
-      </div>
-      <div className="settings-panel-control settings-panel-shortcut-control">
-        <button
-          type="button"
-          className={
-            'settings-panel-shortcut-key'
-            + (listening ? ' settings-panel-shortcut-key--listening' : '')
-            + (overridden ? ' settings-panel-shortcut-key--custom' : '')
-          }
-          disabled={!editable}
-          aria-label={
-            editable
-              ? `Change shortcut for ${command.label}. Currently ${formatCombo(combo)}.`
-              : `${command.label} shortcut is fixed at ${formatCombo(combo)}.`
-          }
-          onClick={() => (listening ? onCancelCapture() : onStartCapture(command.id))}
-        >
-          {listening ? 'Press a key…' : formatCombo(combo)}
-        </button>
-        <button
-          type="button"
-          className="settings-panel-button settings-panel-button--icon"
-          onClick={() => onReset(command.id)}
-          disabled={!overridden}
-          title={overridden ? `Reset to ${formatCombo(command.defaultCombo)}` : 'Already the default'}
-          aria-label={`Reset ${command.label} to its default shortcut`}
-        >
-          <RotateCcw size={13} aria-hidden="true" />
-        </button>
-      </div>
-    </div>
+          </span>
+        ) : null}
+      </td>
+    </tr>
   )
 }
 
-export default function ShortcutsSection({ SettingsSection }) {
+export default function ShortcutsSection() {
   const [listeningId, setListeningId] = useState(null)
   const [status, setStatus] = useState(null)
+  const [query, setQuery] = useState('')
   useOverridesVersion()
 
   // Re-read on mount: another window, or a rebind() call elsewhere in this
@@ -151,68 +169,89 @@ export default function ShortcutsSection({ SettingsSection }) {
     setStatus({ kind: 'success', text: 'All shortcuts restored to their defaults.' })
   }, [])
 
+  const q = query.trim().toLowerCase()
   const byGroup = useMemo(() => {
     const map = new Map()
     for (const command of SHORTCUT_COMMANDS) {
+      if (q) {
+        const group = SHORTCUT_GROUPS.find(g => g.id === command.group)
+        const haystack = [
+          command.label,
+          command.description || '',
+          group?.label || '',
+          formatCombo(resolveCombo(command.id)),
+        ].join(' ').toLowerCase()
+        // A listening row stays in view even when the search would hide it.
+        if (!haystack.includes(q) && command.id !== listeningId) continue
+      }
       if (!map.has(command.group)) map.set(command.group, [])
       map.get(command.group).push(command)
     }
     return map
-  }, [])
+  }, [q, listeningId])
+
+  const shownCount = Array.from(byGroup.values()).reduce((n, list) => n + list.length, 0)
 
   return (
     <>
-      {SHORTCUT_GROUPS.map((group, index) => {
+      <div className={styles.toolbar}>
+        <TextField
+          className={styles.search}
+          label="Search shortcuts"
+          type="search"
+          placeholder="Search by action or key…"
+          value={query}
+          onChange={setQuery}
+        />
+        <span className={styles.count}>{shownCount} of {SHORTCUT_COMMANDS.length} actions</span>
+        <Button onClick={handleResetAll} hint="Discards every customised key and returns to the shipped defaults">
+          Restore all shortcuts
+        </Button>
+      </div>
+      {status && <SettingsHint tone={status.kind}>{status.text}</SettingsHint>}
+
+      {SHORTCUT_GROUPS.map((group) => {
         const commands = byGroup.get(group.id) || []
         if (commands.length === 0) return null
         return (
-          <SettingsSection
-            key={group.id}
-            title={group.label}
-            index={index}
-            className="settings-panel-section--list"
-          >
-            <div className="settings-panel-hint settings-panel-hint--inline">
-              {group.description}
-            </div>
-            {commands.map(command => (
-              <ShortcutRow
-                key={command.id}
-                command={command}
-                listening={listeningId === command.id}
-                onStartCapture={setListeningId}
-                onCancelCapture={cancelCapture}
-                onReset={handleReset}
-              />
-            ))}
+          <SettingsSection key={group.id} title={group.label}>
+            <SettingsHint>{group.description}</SettingsHint>
+            <table className={styles.table} aria-label={group.label}>
+              <colgroup>
+                <col className={styles.colAction} />
+                <col className={styles.colBinding} />
+                <col className={styles.colConflicts} />
+              </colgroup>
+              <thead>
+                <tr>
+                  <th scope="col">Action</th>
+                  <th scope="col">Shortcut</th>
+                  <th scope="col">Conflicts</th>
+                </tr>
+              </thead>
+              <tbody>
+                {commands.map(command => (
+                  <ShortcutRow
+                    key={command.id}
+                    command={command}
+                    listening={listeningId === command.id}
+                    onStartCapture={setListeningId}
+                    onCancelCapture={cancelCapture}
+                    onReset={handleReset}
+                  />
+                ))}
+              </tbody>
+            </table>
           </SettingsSection>
         )
       })}
 
-      <SettingsSection title="Defaults" index={SHORTCUT_GROUPS.length}>
-        <div className="settings-panel-row">
-          <div className="settings-panel-row-copy">
-            <div className="settings-panel-label">Restore all shortcuts</div>
-            <div className="settings-panel-field-copy">
-              Discards every customised key and returns to the shipped defaults.
-            </div>
-          </div>
-          <div className="settings-panel-control">
-            <button type="button" className="settings-panel-button" onClick={handleResetAll}>
-              Reset All
-            </button>
-          </div>
-        </div>
-        {status && (
-          <div className={`settings-panel-hint settings-panel-hint--inline settings-panel-hint--${status.kind}`}>
-            {status.text}
-          </div>
-        )}
-        <div className="settings-panel-hint settings-panel-hint--inline">
-          Panel and Sample Sandbox shortcuts only fire while that panel is focused, so
-          they may reuse a key the rest of the app also uses.
-        </div>
-      </SettingsSection>
+      {shownCount === 0 && <SettingsHint>No shortcuts match this search.</SettingsHint>}
+
+      <SettingsHint>
+        Panel and Sample Sandbox shortcuts only fire while that panel is focused, so
+        they may reuse a key the rest of the app also uses.
+      </SettingsHint>
     </>
   )
 }

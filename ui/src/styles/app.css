@@ -5013,198 +5013,6 @@ html, body, #root {
   line-height: 1.45;
 }
 
-.settings-panel-title {
-  color: var(--theme-text-primary);
-  font-size: 15px;
-  font-weight: 700;
-  letter-spacing: 0.01em;
-}
-
-/* A card whose body is a LIST of like rows rather than a handful of unrelated
-   settings — the shortcut groups. Rows sit flush against their dividers
-   instead of floating in the card's usual gap, because 40-odd single-line
-   entries spaced for standalone settings read as a wall and scroll forever. */
-.settings-panel-section--list {
-  gap: 0;
-  padding-bottom: 4px;
-}
-
-.settings-panel-section--list > .settings-panel-hint {
-  margin-bottom: 4px;
-}
-
-.settings-panel-section--list > .settings-panel-row {
-  padding: 8px 0;
-}
-
-.settings-panel-section--list > .settings-panel-row + .settings-panel-row {
-  border-top: 1px solid var(--theme-border-subtle);
-}
-
-/* ── Settings: keyboard shortcut rows ─────────────────────────────────────── */
-.settings-panel-shortcut-row {
-  align-items: center;
-}
-
-/* A row carrying a description or a conflict note is taller than its key cap,
-   so it aligns from the top; a plain one-liner stays centred. */
-.settings-panel-shortcut-row:has(.settings-panel-field-copy),
-.settings-panel-shortcut-row:has(.settings-panel-hint) {
-  align-items: flex-start;
-}
-
-.settings-panel-shortcut-control {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-}
-
-/* The key itself reads as a key cap, not a dropdown: it is a value you
-   replace by pressing something, and nothing about a select conveys that. */
-.settings-panel-shortcut-key {
-  min-width: 132px;
-  padding: 6px 10px;
-  font-family: var(--font-mono, ui-monospace, 'Cascadia Mono', Consolas, monospace);
-  font-size: 12px;
-  color: var(--theme-text-primary);
-  background: var(--theme-bg-input);
-  border: 1px solid var(--theme-border-subtle);
-  border-bottom-width: 2px;
-  border-radius: var(--radius-sm);
-  cursor: pointer;
-  text-align: center;
-  transition: border-color 120ms ease, background 120ms ease, color 120ms ease;
-}
-
-.settings-panel-shortcut-key:hover:not(:disabled) {
-  border-color: var(--theme-accent);
-  background: var(--theme-bg-hover);
-}
-
-.settings-panel-shortcut-key:disabled {
-  opacity: 0.55;
-  cursor: default;
-}
-
-.settings-panel-shortcut-key--custom {
-  border-color: var(--theme-accent);
-  color: var(--theme-accent);
-}
-
-.settings-panel-shortcut-key--listening {
-  border-color: var(--theme-accent);
-  background: var(--theme-bg-hover);
-  color: var(--theme-accent);
-  animation: settings-shortcut-listening 1.1s ease-in-out infinite;
-}
-
-.settings-panel-row {
-  display: grid;
-  grid-template-columns: minmax(180px, 1fr) minmax(220px, 340px);
-  gap: 16px;
-  align-items: center;
-  min-width: 0;
-}
-
-.settings-panel-row-copy {
-  min-width: 0;
-}
-
-.settings-panel-label {
-  color: var(--theme-text);
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.settings-panel-field-copy {
-  margin-top: 3px;
-  color: var(--theme-text-muted);
-  font-size: 11px;
-  line-height: 1.4;
-}
-
-.settings-panel-control {
-  display: flex;
-  justify-content: flex-end;
-  min-width: 0;
-}
-
-.settings-panel-button {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 7px;
-  min-height: 30px;
-  padding: 6px 11px;
-  background: var(--theme-bg-surface);
-  border: 1px solid var(--theme-border-subtle);
-  border-radius: var(--radius-sm);
-  color: var(--theme-text);
-  cursor: pointer;
-  font-family: inherit;
-  font-size: 12px;
-  font-weight: 650;
-  transition: background 120ms ease-out, border-color 120ms ease-out, color 120ms ease-out;
-}
-
-.settings-panel-button--icon svg {
-  flex: 0 0 auto;
-}
-
-.settings-panel-inline-row {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  width: 100%;
-  min-width: 0;
-}
-
-.settings-panel-inline-row > .settings-panel-button {
-  flex: 0 0 auto;
-}
-
-.settings-panel-button:hover:not(:disabled) {
-  background: var(--theme-bg-hover);
-  border-color: var(--theme-accent);
-}
-
-.settings-panel-button:disabled {
-  cursor: default;
-  opacity: 0.55;
-}
-
-.settings-panel-hint {
-  color: var(--theme-text-muted);
-  font-size: 11px;
-  line-height: 1.45;
-}
-
-.settings-panel-hint--inline {
-  margin-top: -4px;
-}
-
-.settings-panel-hint--success {
-  color: var(--theme-success);
-}
-
-.settings-panel-hint--warning {
-  color: var(--theme-semantic-warning-text);
-}
-
-.settings-panel-value {
-  color: var(--theme-text);
-  font-size: 12px;
-  font-weight: 650;
-  line-height: 1.45;
-  overflow-wrap: anywhere;
-}
-
-.settings-panel-checkbox {
-  width: 16px;
-  height: 16px;
-  cursor: pointer;
-  accent-color: var(--theme-accent);
-}
 
 .xleth-button,
 .xleth-icon-button {
@@ -5414,26 +5222,13 @@ html, body, #root {
   }
 }
 
-@media (max-width: 640px) {
-
-  .settings-panel-row {
-    grid-template-columns: minmax(0, 1fr);
-    gap: 8px;
-  }
-
-  .settings-panel-control {
-    justify-content: stretch;
-  }
-}
-
 @media (prefers-reduced-motion: reduce) {
   .xleth-select-popup {
     animation-duration: 1ms;
     animation-delay: 0ms;
   }
 
-  .settings-panel-button,
-.xleth-select-trigger,
+  .xleth-select-trigger,
 .xleth-select-chevron {
     transition-duration: 1ms;
   }
@@ -8100,128 +7895,16 @@ input[type="radio"] {
   background: rgba(0, 0, 0, 0.62);
 }
 
-.settings-panel-title {
-  color: var(--xleth-flat-text);
-  font-size: 15px;
-  font-weight: 600;
-}
-
-/* A card whose body is a LIST of like rows rather than a handful of unrelated
-   settings — the shortcut groups. Rows sit flush against their dividers
-   instead of floating in the card's usual gap: 45 single-line entries spaced
-   for standalone settings read as a wall and scroll forever. */
-.settings-panel-section--list {
-  gap: 0;
-  padding-bottom: 5px;
-}
-
-.settings-panel-section--list > .settings-panel-hint {
-  margin: 3px 0 6px;
-}
-
-.settings-panel-section--list > .settings-panel-row {
-  padding: 7px 0;
-}
-
-.settings-panel-section--list > .settings-panel-row + .settings-panel-row {
-  padding-top: 7px;
-  border-top: 1px solid var(--xleth-flat-border);
-}
-
-.settings-panel-shortcut-key {
-  min-width: 124px;
-  min-height: 28px;
-  padding: 5px 10px;
-  border: 1px solid var(--xleth-flat-border-strong);
-  border-radius: 0;
-  background: var(--xleth-flat-chrome);
-  color: var(--xleth-flat-text);
-  font-size: 11px;
-}
-
-.settings-panel-shortcut-key:hover:not(:disabled) {
-  border-color: var(--xleth-flat-accent);
-  background: color-mix(in srgb, var(--xleth-flat-accent) 10%, var(--xleth-flat-chrome));
-}
-
-.settings-panel-shortcut-key--custom {
-  border-color: var(--xleth-flat-accent);
-  color: var(--xleth-flat-accent);
-}
-
-.settings-panel-shortcut-key--listening {
-  border-color: var(--xleth-flat-accent);
-  background: color-mix(in srgb, var(--xleth-flat-accent) 16%, var(--xleth-flat-chrome));
-  color: var(--xleth-flat-text);
-}
-
-.settings-panel-label {
-  color: var(--xleth-flat-text);
-  font-size: 12px;
-  font-weight: 600;
-}
-
-.settings-panel-field-copy,
-.settings-panel-hint,
-.settings-panel-value {
-  color: var(--xleth-flat-text-secondary);
-}
-
-.settings-panel-button {
-  min-height: 32px;
-  border: 1px solid var(--xleth-flat-border-strong);
-  border-radius: 0;
-  background: var(--xleth-flat-chrome);
-  box-shadow: none;
-  color: var(--xleth-flat-text-secondary);
-  font-family: var(--xleth-global-font-family);
-  font-size: 12px;
-  transition:
-    background 90ms ease-out,
-    border-color 90ms ease-out,
-    color 90ms ease-out;
-}
-
-.settings-panel-button:hover:not(:disabled) {
-  border-color: var(--xleth-flat-border-strong);
-  background: var(--xleth-flat-panel);
-  color: var(--xleth-flat-text);
-  box-shadow: none;
-}
-
-.settings-panel-button:focus-visible {
-  border-color: var(--xleth-flat-accent);
-  background: var(--xleth-flat-chrome);
-  box-shadow: none;
-  color: var(--xleth-flat-text);
-  outline: 0;
-}
-
-.settings-panel-button:disabled {
-  color: var(--xleth-flat-text-subtle);
-  opacity: 1;
-}
-
-.settings-panel-checkbox {
-  accent-color: var(--xleth-flat-accent);
-}
 
 @media (prefers-reduced-motion: reduce) {
   .titlebar-dropdown,
 .titlebar-dropdown[data-state="closing"],
 .titlebar-dropdown-item,
 .titlebar-toolbar-btn,
-.context-menu-item,
-.settings-panel-button {
+.context-menu-item {
     animation: none;
     transition: none;
   }
-}
-
-/* Flat grid track-card polish pass */
-
-.settings-panel-checkbox {
-  accent-color: var(--xleth-flat-accent);
 }
 
 /* ══════════════════════════════════════════════════════════════════════════

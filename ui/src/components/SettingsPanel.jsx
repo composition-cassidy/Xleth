@@ -1609,9 +1609,9 @@ export default function SettingsPanel({ onClose, initialCategory = 'project' }) 
   const renderActiveCategory = () => {
     switch (activeCategory) {
       case 'shortcuts':
-        return <ShortcutsSection SettingsSection={SettingsSection} />
+        return <ShortcutsSection />
       case 'logs':
-        return <LogsSection SettingsSection={SettingsSection} SettingsRow={SettingsRow} />
+        return <LogsSection />
       case 'audio':
         return renderAudio()
       case 'plugins':

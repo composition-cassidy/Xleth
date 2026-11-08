@@ -52,11 +52,11 @@ export interface ShortcutCommand {
 }
 
 export const SHORTCUT_GROUPS: ShortcutGroup[] = [
-  { id: 'file', label: 'File & Project', description: 'Project lifecycle and export.' },
-  { id: 'view', label: 'View & Layout', description: 'Zoom, workspace presets and panel cycling.' },
-  { id: 'panels', label: 'Panel Toggles', description: 'Show or hide a workspace panel.' },
-  { id: 'sandboxEdit', label: 'Sample Sandbox — Edit', description: 'Only while the Sample Sandbox panel is focused.' },
-  { id: 'sandboxView', label: 'Sample Sandbox — Navigation', description: 'Only while the Sample Sandbox panel is focused.' },
+  { id: 'file', label: 'File and project', description: 'Project lifecycle and export.' },
+  { id: 'view', label: 'View and layout', description: 'Zoom, workspace presets and panel cycling.' },
+  { id: 'panels', label: 'Panel toggles', description: 'Show or hide a workspace panel.' },
+  { id: 'sandboxEdit', label: 'Sample Sandbox: edit', description: 'Only while the Sample Sandbox panel is focused.' },
+  { id: 'sandboxView', label: 'Sample Sandbox: navigation', description: 'Only while the Sample Sandbox panel is focused.' },
 ];
 
 const FILE_COMMANDS: ShortcutCommand[] = [

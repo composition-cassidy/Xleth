@@ -94,8 +94,8 @@ describe('SettingsPanel consolidated shell', () => {
       ['plugins', 'Scan plugins'],
       ['graphics', 'Video encode and decode'],
       ['appearance', 'UI scale'],
-      ['shortcuts', 'Panel Toggles'],
-      ['logs', 'Session Log'],
+      ['shortcuts', 'Panel toggles'],
+      ['logs', 'Session log'],
     ]
 
     for (const [category, label] of expectations) {

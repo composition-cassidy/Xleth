@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useState } from 'react'
-import { FolderOpen, RefreshCw } from 'lucide-react'
+import { Check, FolderOpen, RefreshCw } from 'lucide-react'
+import { Button, IconButton, Toggle } from '../../ui-kit'
+import { SettingsHint, SettingsRow, SettingsSection, settingsStyles } from './settingsKit.jsx'
 
 // ─── Settings → Application → Logs ───────────────────────────────────────────
 //
@@ -7,6 +9,8 @@ import { FolderOpen, RefreshCw } from 'lucide-react'
 // The lines themselves never cross IPC — this panel only shows how many there
 // are and asks for exports — because shipping thousands of log entries to the
 // renderer to render a preview would cost more than capturing them does.
+// (So there is no line view and no level filter here: that needs a bridge call
+// that returns lines, which is an IPC change.)
 
 function formatClock(iso) {
   if (!iso) return '—'
@@ -17,7 +21,7 @@ function formatClock(iso) {
   }
 }
 
-export default function LogsSection({ SettingsSection, SettingsRow }) {
+export default function LogsSection() {
   const [status, setStatus] = useState(null)
   const [busy, setBusy] = useState(false)
   const [result, setResult] = useState(null)
@@ -73,118 +77,83 @@ export default function LogsSection({ SettingsSection, SettingsRow }) {
 
   if (!bridge) {
     return (
-      <SettingsSection title="Session Log" index={0}>
-        <div className="settings-panel-hint settings-panel-hint--inline">
-          Log capture is unavailable in this environment.
-        </div>
+      <SettingsSection title="Session log">
+        <SettingsHint>Log capture is unavailable in this environment.</SettingsHint>
       </SettingsSection>
     )
   }
 
+  const autoExport = !!status?.autoExport
+
   return (
     <>
-      <SettingsSection title="Session Log" index={0}>
+      <SettingsSection title="Session log">
         <SettingsRow
           label="Captured this session"
           description="Main-process and renderer console output since XLETH started."
         >
-          <div className="settings-panel-inline-row">
-            <span className="settings-panel-value">
-              {status ? `${status.lines.toLocaleString()} lines` : '—'}
-              {status?.dropped > 0 ? ` (${status.dropped.toLocaleString()} dropped)` : ''}
-            </span>
-            <button
-              type="button"
-              className="settings-panel-button settings-panel-button--icon"
-              onClick={refresh}
-              title="Refresh"
-              aria-label="Refresh captured line count"
-            >
-              <RefreshCw size={14} aria-hidden="true" />
-            </button>
-          </div>
+          <span className={settingsStyles.mono}>
+            {status ? `${status.lines.toLocaleString()} lines` : '—'}
+            {status?.dropped > 0 ? ` (${status.dropped.toLocaleString()} dropped)` : ''}
+          </span>
+          <IconButton label="Refresh captured line count" onClick={refresh}>
+            <RefreshCw aria-hidden="true" />
+          </IconButton>
         </SettingsRow>
 
         <SettingsRow label="Session started" description="Capture begins when the app launches.">
-          <span className="settings-panel-value">{formatClock(status?.sessionStart)}</span>
+          <span className={settingsStyles.mono}>{formatClock(status?.sessionStart)}</span>
         </SettingsRow>
 
         <SettingsRow
           label="Export now"
           description="Writes everything captured so far, with system and version details in the header."
         >
-          <div className="settings-panel-inline-row">
-            <button
-              type="button"
-              className="settings-panel-button"
-              onClick={() => handleExport('txt')}
-              disabled={busy}
-            >
-              Export .txt
-            </button>
-            <button
-              type="button"
-              className="settings-panel-button"
-              onClick={() => handleExport('md')}
-              disabled={busy}
-            >
-              Export .md
-            </button>
-          </div>
+          <Button onClick={() => handleExport('txt')} disabled={busy}>Export .txt</Button>
+          <Button onClick={() => handleExport('md')} disabled={busy}>Export .md</Button>
         </SettingsRow>
 
         {result && (
-          <div className={`settings-panel-hint settings-panel-hint--inline settings-panel-hint--${result.kind}`}>
-            {result.kind === 'success' ? 'Written to: ' : ''}{result.text}
+          <SettingsHint tone={result.kind}>
+            <span>{result.kind === 'success' ? 'Written to: ' : ''}<span className={settingsStyles.mono}>{result.text}</span></span>
             {result.path && (
-              <button
-                type="button"
-                className="settings-panel-button settings-panel-button--icon"
-                onClick={() => bridge.reveal?.(result.path)}
-                title="Show in folder"
-              >
-                <FolderOpen size={13} aria-hidden="true" />
-              </button>
+              <IconButton size="sm" variant="ghost" label="Show in folder" onClick={() => bridge.reveal?.(result.path)}>
+                <FolderOpen aria-hidden="true" />
+              </IconButton>
             )}
-          </div>
+          </SettingsHint>
         )}
       </SettingsSection>
 
-      <SettingsSection title="Automatic Export" index={1}>
+      <SettingsSection title="Automatic export">
         <SettingsRow
           label="Write a log file when XLETH closes"
           htmlFor="settings-logs-auto-export"
           description="Saves a report on every exit, and always on a crash even when this is off. Turning it on opens the folder the files go to."
         >
-          <input
+          <Toggle
             id="settings-logs-auto-export"
-            type="checkbox"
-            className="settings-panel-checkbox"
-            checked={!!status?.autoExport}
-            onChange={e => handleAutoExport(e.target.checked)}
-          />
+            aria-label="Write a log file when XLETH closes"
+            on={autoExport}
+            onChange={handleAutoExport}
+            glyph={<Check size={12} />}
+          >
+            {autoExport ? 'On' : 'Off'}
+          </Toggle>
         </SettingsRow>
 
         <SettingsRow
           label="Log folder"
           description="The 20 most recent reports are kept; older ones are removed automatically."
         >
-          <button
-            type="button"
-            className="settings-panel-button"
-            onClick={() => bridge.openFolder?.()}
-          >
-            Open Folder
-          </button>
+          <Button onClick={() => bridge.openFolder?.()}>Open folder</Button>
         </SettingsRow>
 
         {status?.logsDir && (
-          <div className="settings-panel-hint settings-panel-hint--inline">{status.logsDir}</div>
+          <SettingsHint><span className={settingsStyles.mono}>{status.logsDir}</span></SettingsHint>
         )}
         {status?.crash && (
-          <div className="settings-panel-hint settings-panel-hint--inline settings-panel-hint--warning">
-            A problem was recorded this session: {status.crash}
-          </div>
+          <SettingsHint tone="warning">A problem was recorded this session: {status.crash}</SettingsHint>
         )}
       </SettingsSection>
     </>
