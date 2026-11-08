@@ -5,8 +5,6 @@ import { usePanelRegistry } from '../registry/PanelRegistry';
 import PianoRoll from '../../components/pianoRoll/PianoRoll.jsx';
 import usePianoRollStore from '../../stores/usePianoRollStore.js';
 
-const NOOP = () => {};
-
 export default function PianoRollPanel() {
   const patternId = usePianoRollStore((s) => s.patternId);
   const mode = usePanelRegistry((s) => s.panels.pianoRoll.mode);
@@ -58,8 +56,6 @@ export default function PianoRollPanel() {
         onDetach={handleDetach}
         onDock={handleDock}
         floating={isFloating}
-        onTitleMouseDown={NOOP}
-        onTitleDoubleClick={handleDock}
         availablePatterns={availablePatterns}
         currentPatternId={patternId}
         onSwitchPattern={handleSwitchPattern}

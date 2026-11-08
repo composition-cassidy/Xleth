@@ -45,11 +45,19 @@ export default async ({ page, sleep }) => {
   });
 
   await step('23', async () => {
-    const sels = await page.locator(`${DOCK} select`).all();
+    // Round 2 step 12: the pattern list is the kit Select; "New pattern" is its last group.
     let done = false;
-    for (const s of sels) {
-      const opts = await s.locator('option').allTextContents();
-      if (opts.some((o) => /New Pattern/.test(o))) { await s.selectOption({ label: opts.find((o) => /New Pattern/.test(o)) }); done = true; break; }
+    const trigger = page.locator(`${DOCK} button[aria-label="Pattern"]`).first();
+    if (await trigger.count()) {
+      await trigger.click(); await sleep(300);
+      const opt = page.locator('[role="option"]', { hasText: 'New pattern' }).first();
+      if (await opt.count()) { await opt.click(); done = true; }
+    } else {
+      const sels = await page.locator(`${DOCK} select`).all();
+      for (const s of sels) {
+        const opts = await s.locator('option').allTextContents();
+        if (opts.some((o) => /New Pattern/.test(o))) { await s.selectOption({ label: opts.find((o) => /New Pattern/.test(o)) }); done = true; break; }
+      }
     }
     out.push('new pattern via select: ' + done);
     await sleep(1200); await page.mouse.move(1000, 300);

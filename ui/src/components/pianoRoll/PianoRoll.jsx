@@ -109,7 +109,7 @@ export function resetPianoRollClipboardForTest() {
 
 export default function PianoRoll({
   patternId, onClose,
-  onDetach, onDock, floating = false, onTitleMouseDown, onTitleDoubleClick,
+  onDetach, onDock, floating = false,
   availablePatterns, currentPatternId, onSwitchPattern, onNewPattern,
 }) {
   const { isVisible } = usePanelVisibility()
@@ -130,6 +130,11 @@ export default function PianoRoll({
   const [labelMode, setLabelMode] = useState('pitch')
   const [showGhosts, setShowGhosts] = useState(true)
   const [refSlotIndex, setRefSlotIndex] = useState(0)
+  // Snap granularity for draw / move / resize (snapBeatToGrid). 1/16 is what
+  // the editor always used, so nothing changes until the user picks another.
+  const [snap, setSnap] = useState('1/16')
+  const snapRef = useRef(snap)
+  snapRef.current = snap
   const [selectedNoteIds, setSelectedNoteIds] = useState(new Set())
   // pixelsPerBeat/scrollX/scrollY below are the SETTLED view state — synced
   // from the animator on a trailing ~100ms debounce, same pattern as
@@ -312,7 +317,7 @@ export default function PianoRoll({
   // paste: the piano roll has no persistent edit cursor to read instead.
   const handleOpenQuickNotation = useCallback(() => {
     if (patternId == null) return
-    const anchorBeat = snapBeatToGrid(Math.max(0, scrollXRef.current / pixelsPerBeatRef.current), {})
+    const anchorBeat = snapBeatToGrid(Math.max(0, scrollXRef.current / pixelsPerBeatRef.current), {}, snapRef.current)
     setQuickNotationContext({ mode: 'chord', patternId, cursorTick: beatsToTicks(anchorBeat) })
     usePanelRegistry.getState().openPanel('quickNotation')
   }, [patternId, setQuickNotationContext])
@@ -535,7 +540,7 @@ export default function PianoRoll({
           }
           if (!payload || payload.type !== 'xleth-notes' || !Array.isArray(payload.notes)) return
           // Paste anchor: left edge of viewport snapped to the active grid.
-          const pasteBeat = snapBeatToGrid(Math.max(0, scrollXRef.current / pixelsPerBeatRef.current), {})
+          const pasteBeat = snapBeatToGrid(Math.max(0, scrollXRef.current / pixelsPerBeatRef.current), {}, snapRef.current)
           const pasteTicks = beatsToTicks(pasteBeat)
           const newIds = new Set()
           for (const n of payload.notes) {
@@ -730,6 +735,14 @@ export default function PianoRoll({
     animator.setTarget('scrollY', value, { immediate: true })
   }, [])
 
+  // Middle-drag pan (both axes), 1:1 with the pointer like a scrollbar drag.
+  const handlePan = useCallback((nextX, nextY) => {
+    const maxX = maxScrollXRef.current
+    const maxY = Math.max(0, (PITCH_MAX - PITCH_MIN + 1) * pixelsPerSemitoneRef.current - size.h)
+    setScrollXInstant(Math.max(0, Math.min(maxX, nextX)))
+    setScrollYInstant(Math.max(0, Math.min(maxY, nextY)))
+  }, [setScrollXInstant, setScrollYInstant, size.h])
+
   // Keep the scroll clamp bound current, and clamp scrollX if content shrank
   // (instant, not eased — this is a boundary correction, not a gesture).
   useEffect(() => {
@@ -755,31 +768,7 @@ export default function PianoRoll({
 
   return (
     <div className={`piano-roll ${styles.root}`}>
-      {floating && (
-        <div
-          className="piano-roll-floating-titlebar"
-          onMouseDown={onTitleMouseDown}
-          onDoubleClick={onTitleDoubleClick}
-        >
-          <span className="piano-roll-floating-titlebar-label">
-            Piano Roll — {pattern?.name || 'Pattern'}
-          </span>
-          <div className="piano-roll-floating-titlebar-actions">
-            <button
-              className="piano-roll-floating-titlebar-btn"
-              title="Dock"
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={onDock}
-            >⤓</button>
-            <button
-              className="piano-roll-floating-titlebar-btn"
-              title="Close"
-              onMouseDown={(e) => e.stopPropagation()}
-              onClick={onClose}
-            >✕</button>
-          </div>
-        </div>
-      )}
+      <div className={styles.toolbarWrap}>
       <PianoRollToolbar
         patternName={pattern?.name || 'Pattern'}
         activeTool={activeTool} onToolChange={setActiveTool}
@@ -806,7 +795,13 @@ export default function PianoRoll({
         sampleViewAvailable={!!refSlot}
         showGhosts={showGhosts}
         onShowGhostsChange={setShowGhosts}
+        snap={snap}
+        onSnapChange={setSnap}
+        regionSlots={regionSlots}
+        refSlotIndex={refSlotIndex}
+        onRefSlotChange={setRefSlotIndex}
       />
+      </div>
       <div
         ref={containerRef}
         className={styles.body}
@@ -868,6 +863,8 @@ export default function PianoRoll({
             labelMode={labelMode}
             refSlot={refSlot}
             ghosts={ghosts}
+            snap={snap}
+            onPan={handlePan}
           />
         </div>
         <div className={styles.cell}>

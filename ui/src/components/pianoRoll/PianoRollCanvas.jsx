@@ -38,6 +38,7 @@ const ACTION = {
   MOVE_NOTES: 'move-notes',
   RESIZE_NOTE: 'resize-note',
   LASSO: 'lasso',
+  PAN: 'pan',
 }
 
 // Find the first dropped FL Studio Score (.fsc) file by name extension.
@@ -234,6 +235,7 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
   onDropFsc,
   scale = DEFAULT_SCALE,
   noteColor = null, labelMode = 'pitch', refSlot = null, ghosts = null,
+  snap = '1/16', onPan,
 }, ref) {
   const dprEpoch = useThemeEpoch() // Phase 7: re-size and redraw at the new devicePixelRatio when the UI scale changes
   const bgRef = useRef(null)
@@ -299,6 +301,10 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
   slideModeRef.current = slideMode
   const scaleRef = useRef(scale)
   scaleRef.current = scale
+  const snapRef = useRef(snap)
+  snapRef.current = snap
+  const onPanRef = useRef(onPan)
+  onPanRef.current = onPan
   // Note look (step 12.3): read by both draw paths from refs, like every other
   // draw input, so the imperative per-frame redraw never sees stale values.
   const lookRef = useRef(null)
@@ -331,7 +337,7 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
   // by the overlay at their preview position for the duration of the drag.
   function draggedNoteIds() {
     const ds = dragStateRef.current
-    if (!ds || ds.action === ACTION.LASSO) return null
+    if (!ds || ds.action === ACTION.LASSO || ds.action === ACTION.PAN) return null
     return new Set(ds.originals.keys())
   }
 
@@ -409,7 +415,7 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
 
   const pixelToTick = useCallback((localX, modifiers = {}) => {
     const beat = (localX + scrollXRef.current) / pixelsPerBeatRef.current
-    const snapped = snapBeatToGrid(Math.max(0, beat), modifiers)
+    const snapped = snapBeatToGrid(Math.max(0, beat), modifiers, snapRef.current)
     return beatsToTicks(snapped)
   }, [])
 
@@ -442,6 +448,21 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
     const sY = scrollYRef.current
 
     // Right-click = delete (FL-style), works with any tool, immediately.
+    // Middle-drag pans both axes (approved at the step 12 checkpoint). Captured
+    // like any gesture; the view moves 1:1 with the pointer, nothing is edited.
+    if (e.button === 1) {
+      e.preventDefault()
+      dragStateRef.current = {
+        action: ACTION.PAN,
+        startClientX: e.clientX, startClientY: e.clientY,
+        scrollXAtStart: sX, scrollYAtStart: sY,
+      }
+      if (containerRef.current) {
+        try { containerRef.current.setPointerCapture(e.pointerId) } catch { /* jsdom */ }
+        containerRef.current.dataset.cursor = 'move'
+      }
+      return
+    }
     if (e.button === 2) {
       e.preventDefault()
       const pos = getLocalXY(e)
@@ -632,6 +653,14 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
       return
     }
 
+    if (ds.action === ACTION.PAN) {
+      onPanRef.current?.(
+        ds.scrollXAtStart - (e.clientX - ds.startClientX),
+        ds.scrollYAtStart - (e.clientY - ds.startClientY),
+      )
+      return
+    }
+
     const modifiers = { alt: e.altKey, shift: e.shiftKey, ctrl: e.ctrlKey || e.metaKey }
 
     if (ds.action === ACTION.LASSO) {
@@ -666,7 +695,8 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
       }
       const anchorNewBeat = snapBeatToGrid(
         Math.max(0, ticksToBeats(anchorOrig.positionTicks) + deltaBeats),
-        modifiers
+        modifiers,
+        snapRef.current,
       )
       const snappedDeltaTicks = beatsToTicks(anchorNewBeat) - anchorOrig.positionTicks
 
@@ -682,7 +712,7 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
     } else if (ds.action === ACTION.RESIZE_NOTE) {
       const ppb = pixelsPerBeatRef.current
       const beatAtCursor = (localX + scrollXRef.current) / ppb
-      const snapped = snapBeatToGrid(Math.max(0, beatAtCursor), modifiers)
+      const snapped = snapBeatToGrid(Math.max(0, beatAtCursor), modifiers, snapRef.current)
       const anchorOrig = ds.originals.get(ds.anchorNoteId)
       if (!anchorOrig) return
       const newDur = Math.max(MIN_NOTE_DURATION_TICKS, beatsToTicks(snapped) - anchorOrig.positionTicks)
@@ -941,6 +971,8 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
       onPointerCancel={handlePointerCancel}
+      // Middle button: no browser autoscroll; the pan gesture owns it.
+      onMouseDown={(e) => { if (e.button === 1) e.preventDefault() }}
       onContextMenu={(e) => e.preventDefault()}
       onDrop={(e) => handleFscDropEvent(e, onDropFsc)}
       onDragOver={(e) => {

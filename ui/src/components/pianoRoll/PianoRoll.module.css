@@ -19,6 +19,85 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* ── Title and toolbar: one 32px row of kit controls ───────────────────── */
+  .toolbarWrap {
+    flex: none;
+    container-type: inline-size;
+    background: var(--ui-g2);
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .toolbar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    height: 32px;
+    padding: 0 var(--space-2);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+  }
+
+  .title {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .selectPattern { width: 136px; flex: none; }
+  .selectSample { width: 152px; flex: none; }
+  .selectSlot { width: 120px; flex: none; }
+  .selectSmall { width: 68px; flex: none; }
+  .selectRoot { width: 56px; flex: none; }
+  .selectMode { width: 132px; flex: none; }
+
+  .field {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .fieldLabel {
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+    white-space: nowrap;
+  }
+
+  .spacer {
+    flex: 1 1 auto;
+    min-width: var(--space-2);
+  }
+
+  .textInput {
+    box-sizing: border-box;
+    min-width: 0;
+    height: var(--ctl-h-sm);
+    padding: 0 var(--space-1);
+    border: 1px solid var(--ui-select);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g0);
+    color: var(--ui-ink);
+    font: inherit;
+    outline: none;
+  }
+
+  /* A narrow dock (1366 wide windows) drops the field captions first; the
+   * Selects keep their accessible names and hints. */
+  @container (max-width: 1240px) {
+    .fieldLabel { display: none; }
+    .selectPattern { width: 120px; }
+    .selectSample { width: 128px; }
+  }
+
+  /* ── Empty state (no pattern) ─────────────────────────────────────────── */
+  .empty {
+    flex: 1 1 auto;
+    padding: var(--space-2);
+    background: var(--ui-g1);
+  }
+
   /* ── Body grid ────────────────────────────────────────────────────────────
    * Columns: keys | grid | vertical scrollbar.
    * Rows: ruler | grid | horizontal scrollbar (+ zoom strip) | splitter | lane.

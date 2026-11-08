@@ -138,6 +138,22 @@ function renderCanvas(props = {}) {
 }
 
 describe('PianoRollCanvas pointer gesture lifecycle', () => {
+  it('middle-drag pans both axes 1:1 and edits nothing', () => {
+    const note = noteAt({ id: 1, positionBeats: 2, durationBeats: 2 })
+    const rect = noteScreenRect(note)
+    const onPan = vi.fn()
+    const { el, onMoveNote, onAddNote, onRemoveNote } = renderCanvas({ notes: [note], onPan, activeTool: 'pencil' })
+    const x = rect.x + rect.w / 2
+    const y = rect.y + rect.h / 2
+    act(() => { el.dispatchEvent(pointer('pointerdown', x, y, { button: 1 })) })
+    act(() => { el.dispatchEvent(pointer('pointermove', x - 30, y + 20, { button: 1 })) })
+    expect(onPan).toHaveBeenLastCalledWith(30, -20)
+    act(() => { el.dispatchEvent(pointer('pointerup', x - 30, y + 20, { button: 1 })) })
+    expect(onMoveNote).not.toHaveBeenCalled()
+    expect(onAddNote).not.toHaveBeenCalled()
+    expect(onRemoveNote).not.toHaveBeenCalled()
+  })
+
   it('moves from the first pointermove (zero drag threshold) and commits exactly once, on pointerup', () => {
     const note = noteAt({ id: 1, positionBeats: 2, durationBeats: 2 })
     const rect = noteScreenRect(note)
