@@ -1,0 +1,22 @@
+@layer kit {
+  .column {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .knobs {
+    display: flex;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 2px;
+  }
+
+  /* A band's colour on its selector segment: a glyph, so the choice is never colour alone. */
+  .swatch {
+    display: inline-block;
+    width: 8px;
+    height: 8px;
+  }
+}
