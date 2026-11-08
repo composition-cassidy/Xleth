@@ -1,9 +1,11 @@
 import { useState, useMemo, useEffect } from 'react'
-import { X, Search, FolderPlus, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react'
+import { X, FolderPlus, RefreshCw, ChevronDown, ChevronRight } from 'lucide-react'
 import useVstStore from '../../stores/vstStore.js'
 import useEffectChainStore from '../../stores/effectChainStore.js'
-import ScanProgressBar from './ScanProgressBar.jsx'
+import ScanProgressBar, { useScanProgress } from './ScanProgressBar.jsx'
 import { getPickerPath, openFilePicker } from '../filePicker/filePickerService.js'
+import { Button, IconButton, TextField } from '../../ui-kit'
+import styles from './VstBrowser.module.css'
 
 const PATHS_KEY = 'xleth.vstSearchPaths'
 
@@ -26,6 +28,7 @@ export default function VstBrowser({ embedded = false }) {
 
   const addEffect = useEffectChainStore(s => s.addEffect)
   const isOpen = embedded || browserOpen
+  const scan = useScanProgress()
 
   // Refresh lists when browser opens
   useEffect(() => {
@@ -52,7 +55,7 @@ export default function VstBrowser({ embedded = false }) {
       mode: 'openDirectory',
       title: 'Add VST3 Search Folder',
       subtitle: 'Choose a folder to scan for VST3 plugins.',
-      actionLabel: 'Add Path',
+      actionLabel: 'Add path',
       legacyPicker: () => window.xleth?.audio?.addVstSearchPath?.(),
     })
     const dir = getPickerPath(picked)
@@ -76,104 +79,112 @@ export default function VstBrowser({ embedded = false }) {
 
   if (!isOpen) return null
 
-  return (
-    <div className={`vst-browser${embedded ? ' vst-browser--embedded' : ''}`}>
-      <div className="vst-browser-header">
-        <span className="vst-browser-title">VST3 Browser</span>
-        {!embedded && (
-          <button className="vst-browser-close" onClick={closeBrowser} title="Close">
-            <X size={11} />
-          </button>
-        )}
-      </div>
+  const countText = search.trim()
+    ? `${filtered.length} of ${plugins.length} plugins`
+    : `${plugins.length} plugin${plugins.length === 1 ? '' : 's'}`
 
-      {/* Search */}
-      <div className="vst-browser-search-row">
-        <Search size={10} className="vst-browser-search-icon" />
-        <input
-          className="vst-browser-search-input"
+  return (
+    <div className={`${styles.root}`}>
+      <div className={styles.toolbar}>
+        <TextField
+          className={styles.search}
+          label="Search plugins"
+          type="search"
           placeholder="Search name or vendor…"
           value={search}
-          onChange={e => setSearch(e.target.value)}
+          onChange={setSearch}
         />
-      </div>
-
-      {/* Plugin list */}
-      <div className="vst-browser-list">
-        {filtered.length === 0 ? (
-          <div className="vst-browser-empty">
-            {plugins.length === 0
-              ? 'No plugins scanned — click Scan Plugins below'
-              : 'No results'}
-          </div>
-        ) : (
-          filtered.map(p => (
-            <div
-              key={p.id}
-              className="vst-browser-row"
-              title={`${p.name} — ${p.vendor}\n${p.filePath}`}
-              onDoubleClick={() => handleDoubleClick(p)}
-            >
-              <span className="vst-browser-row-name">{p.name}</span>
-              <span className="vst-browser-row-vendor">{p.vendor}</span>
-              <span className="vst-browser-row-format">{p.format}</span>
-            </div>
-          ))
+        <span className={styles.count}>{countText}</span>
+        <Button onClick={handleAddPath} glyph={<FolderPlus />} hint="Add a VST3 search folder">
+          Add path
+        </Button>
+        <Button variant="primary" onClick={handleScan} disabled={scan.scanning} glyph={<RefreshCw />}>
+          {scan.scanning ? 'Scanning…' : 'Scan plugins'}
+        </Button>
+        {!embedded && (
+          <IconButton label="Close plugin browser" onClick={closeBrowser}>
+            <X />
+          </IconButton>
         )}
       </div>
 
-      {/* Failed plugins */}
+      <ScanProgressBar progress={scan} />
+
+      <div className={styles.scroll}>
+        {filtered.length === 0 ? (
+          <div className={styles.empty}>
+            {plugins.length === 0
+              ? 'No plugins scanned. Choose Scan plugins to search your folders.'
+              : 'No plugins match this search.'}
+          </div>
+        ) : (
+          <table className={styles.table} aria-label="VST3 plugins">
+            <colgroup>
+              <col className={styles.colName} />
+              <col className={styles.colVendor} />
+              <col className={styles.colFormat} />
+            </colgroup>
+            <thead>
+              <tr>
+                <th scope="col">Name</th>
+                <th scope="col">Vendor</th>
+                <th scope="col">Format</th>
+              </tr>
+            </thead>
+            <tbody>
+              {filtered.map(p => (
+                <tr
+                  key={p.id}
+                  title={`${p.name} — ${p.vendor}\n${p.filePath}`}
+                  onDoubleClick={() => handleDoubleClick(p)}
+                >
+                  <td>{p.name}</td>
+                  <td className={styles.vendor}>{p.vendor}</td>
+                  <td className={styles.format}>{p.format}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        )}
+      </div>
+
       {failedPlugins.length > 0 && (
-        <div className="vst-browser-failed-section">
-          <button
-            className="vst-browser-failed-toggle"
+        <div>
+          <Button
+            variant="ghost"
+            aria-expanded={failedOpen}
+            glyph={failedOpen ? <ChevronDown /> : <ChevronRight />}
             onClick={() => setFailedOpen(v => !v)}
           >
-            {failedOpen ? <ChevronDown size={9} /> : <ChevronRight size={9} />}
-            <span>{failedPlugins.length} failed plugin{failedPlugins.length !== 1 ? 's' : ''}</span>
-          </button>
+            {failedPlugins.length} failed plugin{failedPlugins.length !== 1 ? 's' : ''}
+          </Button>
           {failedOpen && (
-            <div className="vst-browser-failed-list">
+            <ul className={styles.failedList}>
               {failedPlugins.map((f, i) => (
-                <div key={i} className="vst-browser-failed-item" title={f.filePath}>
+                <li key={i} className={styles.failedItem} title={f.filePath}>
                   {f.filePath.split(/[/\\]/).pop()}
-                </div>
+                </li>
               ))}
-            </div>
+            </ul>
           )}
         </div>
       )}
 
-      {/* Search paths */}
       {paths.length > 0 && (
-        <div className="vst-browser-paths">
-          {paths.map((p, i) => (
-            <div key={i} className="vst-browser-path-row">
-              <span className="vst-browser-path-text" title={p}>{p}</span>
-              <button
-                className="vst-browser-path-remove"
-                onClick={() => handleRemovePath(i)}
-                title="Remove path"
-              >
-                ×
-              </button>
-            </div>
-          ))}
+        <div>
+          <div className={styles.pathsHead}>Search folders</div>
+          <ul className={styles.paths}>
+            {paths.map((p, i) => (
+              <li key={i} className={styles.pathRow}>
+                <span className={styles.pathText} title={p}>{p}</span>
+                <IconButton size="sm" variant="ghost" label={`Remove ${p}`} onClick={() => handleRemovePath(i)}>
+                  <X />
+                </IconButton>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
-
-      {/* Footer */}
-      <ScanProgressBar />
-      <div className="vst-browser-footer">
-        <button className="vst-browser-btn" onClick={handleAddPath} title="Add VST3 search folder">
-          <FolderPlus size={10} />
-          <span>Add Path</span>
-        </button>
-        <button className="vst-browser-btn vst-browser-btn--primary" onClick={handleScan}>
-          <RefreshCw size={10} />
-          <span>Scan Plugins</span>
-        </button>
-      </div>
     </div>
   )
 }

@@ -91,7 +91,7 @@ describe('SettingsPanel consolidated shell', () => {
     const expectations = [
       ['clipfx', 'Swirl with Vibrato'],
       ['audio', 'Performance report'],
-      ['plugins', 'VST3 Browser'],
+      ['plugins', 'Scan plugins'],
       ['graphics', 'Video encode and decode'],
       ['appearance', 'UI scale'],
       ['shortcuts', 'Panel Toggles'],
@@ -116,9 +116,9 @@ describe('SettingsPanel consolidated shell', () => {
 
     expect(html).toContain('data-settings-category="plugins"')
     expect(html).toContain('VST3 plugin library')
-    expect(html).toContain('vst-browser--embedded')
-    expect(html).toContain('Scan Plugins')
-    expect(html).toContain('Add Path')
+    expect(html).toContain('aria-label="Search plugins"')
+    expect(html).toContain('Scan plugins')
+    expect(html).toContain('Add path')
   })
 
   it('exposes accent color and brightness controls in the Appearance category', async () => {
