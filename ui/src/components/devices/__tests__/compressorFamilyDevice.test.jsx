@@ -9,7 +9,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import useEffectChainStore from '../../../stores/effectChainStore.js'
 import useMixerStore from '../../../stores/mixerStore.js'
 import useGlueCompStore from '../../../stores/glueCompStore.js'
+import useOptoCompStore from '../../../stores/optoCompStore.js'
 import GlueCompPanel from '../../mixer/GlueCompPanel.jsx'
+import OptoCompPanel from '../../mixer/OptoCompPanel.jsx'
 import DeviceChain from '../DeviceChain.jsx'
 import { MODELS } from '../compressorFamilyModels.js'
 
@@ -66,13 +68,22 @@ beforeEach(() => {
   useEffectChainStore.setState({ chains: {}, fxModes: {} })
   useMixerStore.setState({ selectedChainKey: '3', tracks: { 3: { id: 3, name: 'Bus' } } })
   useGlueCompStore.setState({ target: null })
+  useOptoCompStore.setState({ target: null })
+  HTMLCanvasElement.prototype.getContext = () => null
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
 })
 
+const realRaf = { raf: globalThis.requestAnimationFrame, caf: globalThis.cancelAnimationFrame }
+
 afterEach(() => {
   act(() => root.unmount())
+  vi.restoreAllMocks()
+  window.requestAnimationFrame = realRaf.raf
+  window.cancelAnimationFrame = realRaf.caf
+  globalThis.requestAnimationFrame = realRaf.raf
+  globalThis.cancelAnimationFrame = realRaf.caf
   container.remove()
   document.body.innerHTML = ''
   delete window.xleth
@@ -83,6 +94,24 @@ async function mountChain() {
   await flush()
   await flush()
 }
+
+// Runs the meter poll loop by hand: rAF is a queue, performance.now jumps past the
+// 33 ms gate, and each queued frame is flushed with the engine meter promise.
+function installManualFrames() {
+  const queue = []
+  let now = 1000
+  vi.spyOn(performance, 'now').mockImplementation(() => now)
+  window.requestAnimationFrame = (cb) => { queue.push(cb); return queue.length }
+  window.cancelAnimationFrame = () => {}
+  globalThis.requestAnimationFrame = window.requestAnimationFrame
+  globalThis.cancelAnimationFrame = window.cancelAnimationFrame
+  return async () => {
+    now += 100
+    await act(async () => { queue.splice(0).forEach((cb) => cb(now)); await Promise.resolve() })
+    await act(async () => { await new Promise((r) => setTimeout(r, 0)) })
+  }
+}
+const grText = () => q('[role="group"][aria-label="Gain reduction"]').textContent
 
 describe('the model configs mirror the engine layouts', () => {
   it.each(Object.keys(ENGINE))('%s: continuous params, steps and defaults', (id) => {
@@ -174,7 +203,8 @@ describe('Glue comp device in the chain', () => {
   it('shows the gain reduction as a meter with a numeric dB readout', async () => {
     setup('glue', GLUE)
     await mountChain()
-    expect(q('[data-hint^="Gain reduction, dB"]').textContent).toMatch(/0\.0\s?dB/)
+    // A readout in dB (0.0 until the first poll lands, then the slot's reduction).
+    expect(q('[data-hint^="Gain reduction, dB"]').textContent).toMatch(/[−0-9.]+ dB/)
   })
 
   it('pop-out opens the floating window and the docked slot becomes a strip', async () => {
@@ -195,5 +225,55 @@ describe('Glue comp device in the chain', () => {
     expect(src).not.toMatch(/PluginUIKitKnob|gluecomp-/)
     const css = readFileSync(path.resolve(__dirname, '../../../styles/app.css'), 'utf8')
     expect(css).not.toMatch(/\.gluecomp-/)
+  })
+})
+
+describe('Opto comp device in the chain', () => {
+  const OPTO = { peak_reduction: 12, gain: 5.5, mode: 0.9999999 }
+
+  it('hydrates from the engine, rounding the mode; no Time section (the cell sets attack and release)', async () => {
+    setup('opto', OPTO)
+    await mountChain()
+    expect(aria('Peak reduction')).toBe('Peak reduction, 12.0 dB')
+    expect(aria('Gain')).toBe('Gain, 5.5 dB')
+    expect(texts('Mode')).toEqual(['Compress', 'Limit'])
+    expect(checked('Mode')).toBe(1)
+    const titles = Array.from(container.querySelectorAll('[role="heading"][aria-level="3"]')).map((h) => h.textContent)
+    expect(titles).toEqual(['Input', 'Character', 'Output'])
+  })
+
+  it('the Compress / Limit switch commits the engine index; knobs opt into automation', async () => {
+    setup('opto', OPTO)
+    await mountChain()
+    act(() => radios('Mode')[0].click())
+    expect(sent('mode')).toEqual([[3, 7, 'mode', 0]])
+    expect(checked('Mode')).toBe(0)
+    for (const id of ['peak_reduction', 'gain']) expect(q(`[data-automation-param="${id}"]`), id).not.toBeNull()
+    expect(q('[data-param="mode"]')).not.toBeNull()
+    expect(q('[data-automation-param="mode"]')).toBeNull()
+  })
+
+  it('the gain-reduction readout follows meter slot 2', async () => {
+    setup('opto', OPTO)
+    const frame = installManualFrames()
+    await mountChain()
+    await frame()
+    await frame()
+    expect(grText()).toMatch(/−3\.0 dB/)
+  })
+
+  it('pop-out opens the floating window; the legacy panel and CSS are gone', async () => {
+    setup('opto', OPTO)
+    act(() => root.render(<><DeviceChain /><OptoCompPanel /></>))
+    await flush()
+    await flush()
+    act(() => q('button[aria-label="Open Opto comp in a window"]').click())
+    await flush()
+    expect(useOptoCompStore.getState().target).toEqual({ trackId: 3, nodeId: 7, storeKey: '3' })
+    expect(q('[data-testid="opto-window"] section').getAttribute('data-presentation')).toBe('floating')
+    act(() => q('button[aria-label="Close Opto comp"]').click())
+    expect(useOptoCompStore.getState().target).toBeNull()
+    expect(readFileSync(path.resolve(__dirname, '../../mixer/OptoCompPanel.jsx'), 'utf8')).not.toMatch(/PluginUIKitKnob|optocomp-/)
+    expect(readFileSync(path.resolve(__dirname, '../../../styles/app.css'), 'utf8')).not.toMatch(/\.optocomp-/)
   })
 })
