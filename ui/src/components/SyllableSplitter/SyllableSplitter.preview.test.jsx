@@ -112,7 +112,7 @@ describe('SyllableSplitter preview playback', () => {
     window.xleth.audio.loadSource.mockReturnValueOnce(load.promise)
 
     const { container, root } = await renderSplitter()
-    const playButton = container.querySelector('.syllable-section-play')
+    const playButton = container.querySelector('[data-section-play]')
 
     expect(playButton.disabled).toBe(true)
     expect(window.xleth.audio.loadSource).toHaveBeenCalledTimes(1)
@@ -140,7 +140,7 @@ describe('SyllableSplitter preview playback', () => {
     const { container, root } = await renderSplitter()
     await flush()
 
-    const splitter = container.querySelector('.syllable-splitter')
+    const splitter = container.querySelector('[data-syllable-splitter]')
 
     await act(async () => {
       splitter.dispatchEvent(new KeyboardEvent('keydown', {
@@ -169,7 +169,7 @@ describe('SyllableSplitter preview playback', () => {
     await flush()
 
     const canvas = container.querySelector('canvas')
-    const splitter = container.querySelector('.syllable-splitter')
+    const splitter = container.querySelector('[data-syllable-splitter]')
 
     await act(async () => {
       canvas.dispatchEvent(new MouseEvent('mousedown', {
@@ -207,25 +207,25 @@ describe('SyllableSplitter preview playback', () => {
     window.xleth.audio.loadSource.mockClear()
     window.xleth.audio.pauseSource.mockClear()
 
-    const [firstButton, secondButton] = container.querySelectorAll('.syllable-section-play')
+    const [firstButton, secondButton] = container.querySelectorAll('[data-section-play]')
 
     await act(async () => {
       firstButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     await flush()
-    expect(container.querySelectorAll('.syllable-section-card')[0].className).toContain('playing')
+    expect(container.querySelectorAll('[data-section-card]')[0].hasAttribute('data-playing')).toBe(true)
 
     await act(async () => {
       secondButton.dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
     await flush()
-    expect(container.querySelectorAll('.syllable-section-card')[1].className).toContain('playing')
+    expect(container.querySelectorAll('[data-section-card]')[1].hasAttribute('data-playing')).toBe(true)
 
     await act(async () => {
       vi.advanceTimersByTime(100)
     })
 
-    expect(container.querySelectorAll('.syllable-section-card')[1].className).toContain('playing')
+    expect(container.querySelectorAll('[data-section-card]')[1].hasAttribute('data-playing')).toBe(true)
     expect(window.xleth.audio.loadSource).not.toHaveBeenCalled()
 
     await act(async () => { root.unmount() })

@@ -1,5 +1,7 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from 'react'
 import { Play, Square, Trash2 } from 'lucide-react'
+import { Button, IconButton, TextField } from '../../ui-kit'
+import styles from './SyllableSplitter.module.css'
 import { downsamplePeaks3, drawEnvelope } from '../../utils/waveformRenderer.js'
 import { uiCanvasFont } from '../../styles/typography.js'
 import {
@@ -734,28 +736,29 @@ export default function SyllableSplitter({
 
   return (
     <div
-      className="syllable-splitter"
+      className={styles.root}
+      data-syllable-splitter=""
       ref={containerRef}
       tabIndex={0}
       onKeyDown={onPanelKeyDown}
     >
-      <div className="syllable-splitter-waveform" ref={waveformWrapRef}>
+      <div className={styles.waveform} ref={waveformWrapRef}>
         <canvas
           ref={canvasRef}
-          className="syllable-splitter-canvas"
-          style={{ width: '100%', height: canvasStyleH, display: 'block', cursor: drag ? 'grabbing' : 'crosshair' }}
+          className={styles.canvas}
+          style={{ height: canvasStyleH, cursor: drag ? 'grabbing' : 'crosshair' }}
           onMouseDown={onCanvasMouseDown}
           onContextMenu={(e) => e.preventDefault()}
         />
         {isZoomed && (
           <div
             ref={scrollTrackRef}
-            className="syllable-splitter-scrollbar"
+            className={styles.scrollbar}
             onMouseDown={onTrackDown}
             title="Drag to scroll"
           >
             <div
-              className="syllable-splitter-scrollbar-thumb"
+              className={styles.thumb}
               style={{ left: `${thumbLeft}%`, width: `${thumbWidth}%` }}
               onMouseDown={onThumbDown}
             />
@@ -763,29 +766,35 @@ export default function SyllableSplitter({
         )}
       </div>
 
-      <div className="syllable-splitter-sections">
+      <div className={styles.sections}>
         {sections.map((s, i) => (
           <div
             key={i}
-            className={`syllable-section-card${playingIdx === i ? ' playing' : ''}${selectedMarkerIndex === i ? ' selected' : ''}`}
+            className={styles.card}
+            data-section-card=""
+            data-playing={playingIdx === i || undefined}
+            data-selected={selectedMarkerIndex === i || undefined}
             onClick={() => setSelectedMarkerIndex(i)}
           >
-            <span className={`syllable-section-num${s.label === '~' ? ' is-leading' : ''}`}>{s.label}</span>
-            <button
-              className="syllable-section-play"
+            <span className={styles.num} data-leading={s.label === '~' || undefined}>{s.label}</span>
+            <IconButton
+              size="sm"
+              label={playingIdx === i ? `Stop syllable ${s.label}` : `Play syllable ${s.label}`}
+              pressed={playingIdx === i}
+              data-section-play=""
               onClick={() => playSection(i)}
               disabled={!sourceReady || Math.max(0, s.end - s.start) <= 0.01}
-              title={!sourceReady ? 'Loading preview audio...' : (playingIdx === i ? 'Stop' : 'Play syllable')}
+              hint={!sourceReady ? 'Loading preview audio…' : (playingIdx === i ? 'Stop' : 'Play syllable')}
             >
-              {playingIdx === i ? <Square size={9} /> : <Play size={9} />}
-            </button>
-            <input
-              type="text"
-              className="syllable-section-text"
+              {playingIdx === i ? <Square /> : <Play />}
+            </IconButton>
+            <TextField
+              className={styles.text}
+              size="sm"
+              label={`Syllable ${s.label} text`}
               value={s.text}
               placeholder="(text)"
-              onChange={(e) => {
-                const v = e.target.value
+              onChange={(v) => {
                 setTexts(prev => {
                   const next = [...prev]
                   next[i] = v
@@ -798,13 +807,11 @@ export default function SyllableSplitter({
         ))}
       </div>
 
-      <div className="syllable-splitter-footer">
-        <button className="syllable-splitter-btn syllable-splitter-btn--clear" onClick={handleClearAll} disabled={markers.length === 0 && texts.every(t => !t)}>
-          <Trash2 size={12} /> Clear All
-        </button>
-        <button className="syllable-splitter-btn syllable-splitter-btn--save primary" onClick={handleSave} disabled={!dirty}>
-          Save
-        </button>
+      <div className={styles.footer}>
+        <Button glyph={<Trash2 />} onClick={handleClearAll} disabled={markers.length === 0 && texts.every(t => !t)}>
+          Clear all
+        </Button>
+        <Button variant="primary" onClick={handleSave} disabled={!dirty}>Save syllables</Button>
       </div>
     </div>
   )
