@@ -1,4 +1,13 @@
-import { formatValue, parseValue } from '../../ui-kit'
+import { THIN_SPACE, formatValue, parseValue } from '../../ui-kit'
+
+/**
+ * A number with a unit the kit does not know ("st", "ct", "×"): thin space, true
+ * minus, optional "+". Returns { format, parse } for a Knob / NumberBox.
+ */
+export const suffixFormat = (suffix, decimals = 1, signed = false) => ({
+  format: (v) => `${formatValue(v, 'dB', { unitless: true, decimals, signed })}${THIN_SPACE}${suffix}`,
+  parse: (text) => parseValue(String(text).split(suffix).join(''), 'dB'),
+})
 
 // Formatting for the few values the kit's units do not cover (a plain amount, a
 // 0..1 fraction shown as a percentage, a phase in degrees). Every one of them is
