@@ -1,6 +1,10 @@
-import React, { useRef } from 'react';
+import React, { useEffect, useRef } from 'react';
 import type { CSSProperties, KeyboardEvent, ReactNode } from 'react';
-import { ArrowDownToLine, PictureInPicture2 } from 'lucide-react';
+import { ArrowDownToLine, Maximize2, Minimize2, PictureInPicture2 } from 'lucide-react';
+import { useShellLayoutStore } from '../layout/shellLayoutStore';
+import { toggleDockFocus } from '../layout/dockFocus';
+import { formatCombo } from '../managers/shortcutCatalog';
+import { resolveCombo } from '../managers/shortcutOverrides';
 import { DockSlotProvider } from '../contexts/DockSlotContext';
 import { getRegisteredWorkAreaRect } from '../managers/DragManager';
 import { useDockRegionResizePreview } from '../managers/DockRegionResizeManager';
@@ -23,6 +27,9 @@ import styles from './DetailDock.module.css';
  * - stowed:  its pop-out window was closed; the tab brings it home.
  */
 export type DetailTabState = 'open' | 'docked' | 'popped' | 'stowed';
+
+/** How long a click on the open tab waits for a second click before collapsing the dock. */
+const DOUBLE_CLICK_MS = 250;
 
 function inDock(panel: PanelState): boolean {
   return panel.mode === 'docked' && panel.docked.region === 'bottom';
@@ -101,11 +108,36 @@ export function DetailDock({ renderPanel, sizeOverride }: DetailDockProps) {
   const committedSize = isSSR ? usePanelRegistry.getState().dockRegionSizes.bottom : reactiveSize;
   const preview = useDockRegionResizePreview('bottom');
   const stripRef = useRef<HTMLDivElement>(null);
+  const focus = useShellLayoutStore((s) => s.focus);
+  const collapseTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => () => { if (collapseTimer.current) clearTimeout(collapseTimer.current); }, []);
 
   const tabs = parseDetailDockKey(key);
   const openTab = tabs.find((tab) => tab.state === 'open') ?? null;
   const size = sizeOverride ?? preview?.size ?? committedSize;
-  const dockStyle: CSSProperties | undefined = openTab ? { height: `${size}px` } : undefined;
+  // In focus mode the dock is the column (CSS), so it carries no fixed height.
+  const focused = focus && openTab !== null;
+  const dockStyle: CSSProperties | undefined = openTab && !focused ? { height: `${size}px` } : undefined;
+
+  // The open tab's single click collapses the dock; a double-click must not,
+  // since collapsing unmounts the panel. The collapse waits out the double-click
+  // window, and the second click of a double-click cancels it.
+  const onTabClick = (tab: { id: PanelId; state: DetailTabState }, event: React.MouseEvent) => {
+    if (tab.state !== 'open') {
+      activateDetailTab(tab.id);
+      return;
+    }
+    if (collapseTimer.current) clearTimeout(collapseTimer.current);
+    if (event.detail >= 2) {
+      collapseTimer.current = null;
+      return;
+    }
+    collapseTimer.current = setTimeout(() => {
+      collapseTimer.current = null;
+      activateDetailTab(tab.id);
+    }, DOUBLE_CLICK_MS);
+  };
+  const focusCombo = formatCombo(resolveCombo('view.dockFocus'));
 
   // Roving focus across the tabs, per the ARIA tabs pattern. Arrows move focus
   // only; Enter/Space (a click) opens, so browsing never mounts heavy panels.
@@ -126,53 +158,74 @@ export function DetailDock({ renderPanel, sizeOverride }: DetailDockProps) {
       className={styles.dock}
       data-testid="xleth-detail-dock"
       data-dock-state={openTab ? 'open' : 'collapsed'}
+      data-focus={focused ? 'true' : undefined}
       aria-label="Detail dock"
       style={dockStyle}
     >
-      {openTab ? <DockRegionResizer region="bottom" currentSize={size} /> : null}
-      <div ref={stripRef} className={styles.strip} role="tablist" aria-label="Detail views">
-        {tabs.map((tab, index) => {
-          const entry = PANEL_CATALOG[tab.id];
-          const away = tab.state === 'popped' || tab.state === 'stowed';
-          const popLabel = away ? `Return ${entry.title} to the dock` : `Pop out ${entry.title}`;
-          const fKey = 'fKey' in entry && entry.fKey ? entry.fKey : null;
-          const tabHint = tab.state === 'open'
-            ? `${entry.title}: click to collapse the dock`
-            : tab.state === 'popped'
-              ? `${entry.title} is in its own window: click to bring it forward`
-              : `${entry.title}: click to open in the dock`;
-          return (
-            <div key={tab.id} className={styles.tab} data-state={tab.state} role="presentation">
-              <button
-                type="button"
-                className={styles.tabButton}
-                role="tab"
-                data-detail-tab={tab.id}
-                aria-selected={tab.state === 'open'}
-                aria-controls={tab.state === 'open' ? 'xleth-detail-dock-body' : undefined}
-                tabIndex={index === focusableIndex ? 0 : -1}
-                data-hint={tabHint}
-                data-hint-mods={fKey ? `${fKey} toggles` : undefined}
-                onClick={() => activateDetailTab(tab.id)}
-                onKeyDown={onTabKeyDown(index)}
-              >
-                <entry.icon size={14} aria-hidden="true" />
-                <span>{entry.title}</span>
-              </button>
-              <button
-                type="button"
-                className={styles.popButton}
-                aria-label={popLabel}
-                data-hint={popLabel}
-                onClick={() => togglePopOutDetailTab(tab.id)}
-              >
-                {away
-                  ? <ArrowDownToLine aria-hidden="true" strokeWidth={2} />
-                  : <PictureInPicture2 aria-hidden="true" strokeWidth={2} />}
-              </button>
-            </div>
-          );
-        })}
+      {openTab && !focused ? <DockRegionResizer region="bottom" currentSize={size} /> : null}
+      <div className={styles.stripRow}>
+        <div ref={stripRef} className={styles.strip} role="tablist" aria-label="Detail views">
+          {tabs.map((tab, index) => {
+            const entry = PANEL_CATALOG[tab.id];
+            const away = tab.state === 'popped' || tab.state === 'stowed';
+            const popLabel = away ? `Return ${entry.title} to the dock` : `Pop out ${entry.title}`;
+            const fKey = 'fKey' in entry && entry.fKey ? entry.fKey : null;
+            const tabHint = tab.state === 'open'
+              ? `${entry.title}: click to collapse the dock, double-click to ${focused ? 'restore the layout' : 'give it the whole centre column'}`
+              : tab.state === 'popped'
+                ? `${entry.title} is in its own window: click to bring it forward`
+                : `${entry.title}: click to open in the dock`;
+            return (
+              <div key={tab.id} className={styles.tab} data-state={tab.state} role="presentation">
+                <button
+                  type="button"
+                  className={styles.tabButton}
+                  role="tab"
+                  data-detail-tab={tab.id}
+                  aria-selected={tab.state === 'open'}
+                  aria-controls={tab.state === 'open' ? 'xleth-detail-dock-body' : undefined}
+                  tabIndex={index === focusableIndex ? 0 : -1}
+                  data-hint={tabHint}
+                  data-hint-mods={fKey ? `${fKey} toggles` : undefined}
+                  onClick={(event) => onTabClick(tab, event)}
+                  onDoubleClick={tab.state === 'open' ? toggleDockFocus : undefined}
+                  onKeyDown={onTabKeyDown(index)}
+                >
+                  <entry.icon size={14} aria-hidden="true" />
+                  <span>{entry.title}</span>
+                </button>
+                <button
+                  type="button"
+                  className={styles.popButton}
+                  aria-label={popLabel}
+                  data-hint={popLabel}
+                  onClick={() => togglePopOutDetailTab(tab.id)}
+                >
+                  {away
+                    ? <ArrowDownToLine aria-hidden="true" strokeWidth={2} />
+                    : <PictureInPicture2 aria-hidden="true" strokeWidth={2} />}
+                </button>
+              </div>
+            );
+          })}
+        </div>
+        {openTab ? (
+          <button
+            type="button"
+            className={styles.focusButton}
+            aria-label={focused ? 'Restore layout' : 'Focus the dock'}
+            aria-pressed={focused}
+            data-hint={focused
+              ? 'Restore the layout: bring back the Preview row and the arrangement'
+              : 'Focus the dock: give it the whole centre column, hiding the Preview row and the arrangement'}
+            data-hint-mods={`${focusCombo}, or double-click the open tab`}
+            onClick={toggleDockFocus}
+          >
+            {focused
+              ? <Minimize2 aria-hidden="true" strokeWidth={2} />
+              : <Maximize2 aria-hidden="true" strokeWidth={2} />}
+          </button>
+        ) : null}
       </div>
       {openTab ? (
         <div className={styles.body} id="xleth-detail-dock-body" role="tabpanel" aria-label={PANEL_CATALOG[openTab.id].title}>

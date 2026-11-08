@@ -18,6 +18,9 @@ import { useShellLayoutStore } from './shellLayoutStore';
  * in step with the window. Returns null until the column has been measured, in
  * which case the regions fall back to their stored sizes (first paint, tests).
  */
+// No DOM, no measurement: renderToStaticMarkup tests must not warn about layout effects.
+const useMeasureEffect = typeof window === 'undefined' ? useEffect : useLayoutEffect;
+
 export function useShellLayout(columnRef: RefObject<HTMLElement | null>): ShellLayout | null {
   const [columnH, setColumnH] = useState(0);
 

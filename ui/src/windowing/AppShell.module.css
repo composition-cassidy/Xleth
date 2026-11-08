@@ -35,7 +35,7 @@
    * either out of the layout entirely or, when peeked, a 200px sheet that floats
    * over the arrangement just below the strip. It is a floating surface, so it
    * alone carries the hard offset shadow. */
-  .topHidden {
+  .regionHidden {
     display: none;
   }
 

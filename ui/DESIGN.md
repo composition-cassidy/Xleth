@@ -403,6 +403,13 @@ height A). Regions render the result; the stored sizes are still what a drag com
 
 The Inspector scrolls inside its own region (`Inspector.module.css` `.root`).
 
+**Dock focus mode.** Double-clicking the open dock tab (a single click still collapses the dock, after a 250 ms
+double-click window), the maximize button at the right end of the tab strip, or `Ctrl+Shift+D` (`view.dockFocus`,
+rebindable in Settings > Shortcuts) gives the dock the whole centre column; the same gesture restores the previous
+layout. The top row and the arrangement are hidden (still mounted, reporting not visible); the top bar, transport and
+hint bar stay. With the dock collapsed the command opens the last-used tab first. Collapsing the dock or opening the
+sample picker ends focus mode. State lives in `layout/shellLayoutStore.ts`, not in the saved layout.
+
 ## 9. Device system (Phase 4a)
 
 Every stock effect is a **device**: one frame, one title bar, one height. Kit:

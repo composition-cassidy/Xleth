@@ -2,6 +2,7 @@ import React, { useEffect, useLayoutEffect, useRef, useState } from 'react';
 import type { CSSProperties } from 'react';
 import SamplePicker from '../../components/SamplePicker/SamplePicker.jsx';
 import { useXlethRootContext } from '../contexts/XlethRootContext.jsx';
+import { useShellLayoutStore } from '../layout/shellLayoutStore';
 import styles from './PickerSheet.module.css';
 
 /** The sheet is never shorter than this, so the picker's header, waveform and
@@ -28,6 +29,12 @@ export function PickerSheet() {
   const originRef = useRef<HTMLElement | null>(null);
   const [topHeight, setTopHeight] = useState(0);
   const open = pickerSource != null;
+
+  // The sheet covers the top of the centre column; in dock focus mode that is
+  // the dock itself, so opening a source brings the Preview row back first.
+  useEffect(() => {
+    if (open) useShellLayoutStore.getState().setFocus(false);
+  }, [open]);
 
   // Follow the top region's height (a drag on its splitter, a window resize).
   useLayoutEffect(() => {

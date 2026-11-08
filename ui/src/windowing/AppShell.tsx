@@ -23,6 +23,7 @@ import {
 } from './registry/PanelRegistry';
 import type { PanelStateMap } from './registry/PanelRegistry';
 import { useRegistryValue } from './registry/usePanelValue';
+import { detailDockKey } from './components/DetailDock';
 import { dockedPanelKey, parseDockedPanelKey } from './components/DockRegion';
 import {
   DRAWER_PANEL_IDS,
@@ -125,12 +126,18 @@ export function AppShell() {
   const layout = useShellLayout(columnRef);
   const topFolded = layout?.topMode === 'strip';
   const peek = useShellLayoutStore((s) => s.peek);
+  const focus = useShellLayoutStore((s) => s.focus);
+  const setFocus = useShellLayoutStore((s) => s.setFocus);
+  const dockOpen = useRegistryValue((state) => detailDockKey(state.panels).includes(':open'));
+  // Focus mode is the open dock; collapsing or popping out its last tab ends it.
+  useEffect(() => { if (focus && !dockOpen) setFocus(false); }, [focus, dockOpen, setFocus]);
   const topKey = useRegistryValue((state) => dockedPanelKey('top', DRAWER_PANEL_IDS, state.panels));
   const topPanelIds = parseDockedPanelKey(topKey).map((slot) => slot.activeId);
   const topClassName = [
     styles.top,
-    topFolded ? (peek ? styles.topSheet : styles.topHidden) : '',
+    focus ? styles.regionHidden : (topFolded ? (peek ? styles.topSheet : styles.regionHidden) : ''),
   ].filter(Boolean).join(' ');
+  const centerClassName = focus ? `${styles.center} ${styles.regionHidden}` : styles.center;
 
   const shellClassName = [
     'xleth-windowing-shell',
@@ -211,7 +218,7 @@ export function AppShell() {
               {/* The sample picker opens as a sheet over the top row; the
                   arrangement and detail dock below it stay mounted and live. */}
               <PickerSheet />
-              {topFolded ? <TopRowStrip panelIds={topPanelIds} /> : null}
+              {topFolded && !focus ? <TopRowStrip panelIds={topPanelIds} /> : null}
               <DockRegion
                 side="top"
                 className={topClassName}
@@ -223,7 +230,7 @@ export function AppShell() {
               {/* Mandatory: the registry never lets the center go empty. */}
               <DockRegion
                 side="center"
-                className={styles.center}
+                className={centerClassName}
                 renderPanel={renderPanel}
                 excludePanelIds={DRAWER_PANEL_IDS}
               />

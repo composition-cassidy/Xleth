@@ -8,6 +8,7 @@ import {
   setComboSync,
   subscribe as subscribeOverrides,
 } from './shortcutOverrides';
+import { toggleDockFocus } from '../layout/dockFocus';
 import { cancelDrag, getDragState } from './DragManager';
 import { cancelDockedPanelResizeIfActive } from './DockedPanelResizeManager';
 import { cancelDockRegionResizeIfActive } from './DockRegionResizeManager';
@@ -350,6 +351,10 @@ function registerDefaultBindings(): void {
   });
   registerCommand('view.presetArrange', () => {
     usePanelRegistry.getState().applyPreset('vegas-arrange');
+    return 'handled';
+  });
+  registerCommand('view.dockFocus', () => {
+    toggleDockFocus();
     return 'handled';
   });
   registerCommand('view.reopenClosed', () => {

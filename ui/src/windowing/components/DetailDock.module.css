@@ -20,10 +20,21 @@
     height: var(--space-2);
   }
 
-  .strip {
+  /* The tab strip and the focus button at its right end. The strip scrolls; the
+   * button stays put. */
+  .stripRow {
     display: flex;
     align-items: stretch;
     flex: 0 0 var(--panel-header-h);
+    height: var(--panel-header-h);
+    min-width: 0;
+    background: var(--ui-g2);
+  }
+
+  .strip {
+    display: flex;
+    align-items: stretch;
+    flex: 1 1 auto;
     height: var(--panel-header-h);
     min-width: 0;
     overflow-x: auto;
@@ -87,14 +98,44 @@
     height: var(--type-13);
   }
 
+  .focusButton {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    flex: 0 0 var(--hit-min);
+    width: var(--hit-min);
+    min-height: var(--hit-min);
+    margin: 0;
+    padding: 0;
+    border: 0;
+    border-left: 1px solid var(--ui-g4);
+    background: transparent;
+    color: var(--ui-ink-2);
+    cursor: pointer;
+  }
+
+  .focusButton svg {
+    width: var(--type-13);
+    height: var(--type-13);
+  }
+
+  /* Focus mode: the dock is the column, so it grows instead of holding a height. */
+  .dock[data-focus="true"] {
+    flex: 1 1 auto;
+    max-height: none;
+    min-height: 0;
+  }
+
   .tabButton:hover,
-  .popButton:hover {
+  .popButton:hover,
+  .focusButton:hover {
     background: var(--ui-g3);
     color: var(--ui-ink);
   }
 
   .tabButton:focus-visible,
-  .popButton:focus-visible {
+  .popButton:focus-visible,
+  .focusButton:focus-visible {
     outline: 1px solid var(--ui-select);
     outline-offset: -1px;
   }
