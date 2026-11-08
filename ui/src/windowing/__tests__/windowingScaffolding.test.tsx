@@ -249,7 +249,7 @@ describe('PanelFrame render paths', () => {
     expect(html).toContain('No track selected');
     expect(html).toContain('Select a mixer track to preview its chain');
     expect(html).toContain('Mixer Chain remains active');
-    expect(html).not.toContain('Track Input');
+    expect(html).not.toContain('Track input');
     expect(html).not.toContain('Use Graph Mode');
     expect(html).not.toContain('NodeEditor');
     expect(html).not.toContain('react-flow');
@@ -270,9 +270,10 @@ describe('PanelFrame render paths', () => {
 
     expect(html).toContain('Read-only Mixer Chain graph preview');
     expect(html).toContain('Preview only. Mixer Chain still owns routing.');
-    expect(html).toContain('Track Input');
-    expect(html).toContain('-&gt;');
-    expect(html).toContain('Track Output');
+    expect(html).toContain('Track input');
+    // The rail's connectors are drawn lines now, not a text arrow.
+    expect(html).toContain('xleth-chain-graph-preview__connector');
+    expect(html).toContain('Track output');
     expect(html).not.toContain('Read-only persisted FX graph preview');
     expect(html).not.toContain('FX Graph Mode Active');
   });
@@ -283,7 +284,7 @@ describe('PanelFrame render paths', () => {
     );
 
     expect(html).toContain('Lead Vox');
-    expect(html).toContain('Convert Chain to FX Graph');
+    expect(html).toContain('Convert chain to FX Graph');
     expect(html).toContain('This creates a read-only graphState snapshot from the current Mixer Chain.');
     expect(html).toContain('Preview only. Mixer Chain still owns routing.');
     expect(html).not.toContain('FX Graph Mode Active');
@@ -299,11 +300,11 @@ describe('PanelFrame render paths', () => {
       />,
     );
 
-    expect(html).toContain('Track Input');
+    expect(html).toContain('Track input');
     expect(html).toContain('Compressor');
-    expect(html).toContain('Track Output');
-    expect(html.indexOf('Track Input')).toBeLessThan(html.indexOf('Compressor'));
-    expect(html.indexOf('Compressor')).toBeLessThan(html.indexOf('Track Output'));
+    expect(html).toContain('Track output');
+    expect(html.indexOf('Track input')).toBeLessThan(html.indexOf('Compressor'));
+    expect(html.indexOf('Compressor')).toBeLessThan(html.indexOf('Track output'));
   });
 
   it('renders multiple chain effects in their Mixer Chain order', () => {
@@ -321,10 +322,10 @@ describe('PanelFrame render paths', () => {
       />,
     );
 
-    expect(html.indexOf('Track Input')).toBeLessThan(html.indexOf('Xleth EQ'));
-    expect(html.indexOf('Xleth EQ')).toBeLessThan(html.indexOf('Space Echo'));
+    expect(html.indexOf('Track input')).toBeLessThan(html.indexOf('Parametric EQ'));
+    expect(html.indexOf('Parametric EQ')).toBeLessThan(html.indexOf('Space Echo'));
     expect(html.indexOf('Space Echo')).toBeLessThan(html.indexOf('Reverb'));
-    expect(html.indexOf('Reverb')).toBeLessThan(html.indexOf('Track Output'));
+    expect(html.indexOf('Reverb')).toBeLessThan(html.indexOf('Track output'));
   });
 
   it('renders dormant persisted graphState in chain mode without switching ownership', () => {
@@ -388,7 +389,7 @@ describe('PanelFrame render paths', () => {
     expect(html).toContain('Track output');
     expect(html).not.toContain('Effect Parameters');
     expect(html).not.toContain('xleth-fx-graph-params');
-    expect(html).not.toContain('>Convert Chain to FX Graph<');
+    expect(html).not.toContain('>Convert chain to FX Graph<');
     expect(html).not.toContain('Compressor');
     expect(html).not.toContain('xleth-chain-graph-preview');
   });
@@ -416,10 +417,10 @@ describe('PanelFrame render paths', () => {
       />,
     );
 
-    expect(html).toContain('FX Graph Mode Active, but no graph data exists for this track.');
+    expect(html).toContain('FX Graph mode is active, but no graph data exists for this track.');
     expect(html).toContain('This can happen with legacy projects.');
-    expect(html).not.toContain('>Convert Chain to FX Graph<');
-    expect(html).not.toContain('Track Input');
+    expect(html).not.toContain('>Convert chain to FX Graph<');
+    expect(html).not.toContain('Track input');
     expect(html).not.toContain('Compressor');
     expect(html).not.toContain('xleth-chain-graph-preview');
   });
@@ -437,7 +438,7 @@ describe('PanelFrame render paths', () => {
 
     expect(html).toContain('Graph routing data is invalid and could not be loaded.');
     expect(html).toContain('Mixer Chain editing remains locked.');
-    expect(html).not.toContain('Track Input');
+    expect(html).not.toContain('Track input');
     expect(html).not.toContain('Compressor');
     expect(html).not.toContain('xleth-chain-graph-preview');
   });
@@ -455,7 +456,7 @@ describe('PanelFrame render paths', () => {
 
     expect(html).toContain('This graphState version is not supported by this build.');
     expect(html).toContain('The saved routing data is preserved but is not rendered as an active graph.');
-    expect(html).not.toContain('Track Input');
+    expect(html).not.toContain('Track input');
     expect(html).not.toContain('Compressor');
     expect(html).not.toContain('xleth-chain-graph-preview');
   });
@@ -473,8 +474,8 @@ describe('PanelFrame render paths', () => {
 
     expect(html).toContain('MASTER');
     expect(html).toContain('Master track FX stay in Mixer Chain mode in this phase.');
-    expect(html).not.toContain('Convert Chain to FX Graph');
-    expect(html).not.toContain('Track Input');
+    expect(html).not.toContain('Convert chain to FX Graph');
+    expect(html).not.toContain('Track input');
     expect(html).not.toContain('Read-only persisted FX graph preview');
   });
 
@@ -532,8 +533,8 @@ describe('PanelFrame render paths', () => {
     try {
       const html = renderToStaticMarkup(<FxGraphPanel />);
 
-      expect(html).toContain('Convert Chain to FX Graph');
-      expect(html).toContain('Track Input');
+      expect(html).toContain('Convert chain to FX Graph');
+      expect(html).toContain('Track input');
       expect(useEffectChainStore.getState().fxModes['7']).toBe('chain');
       expect(useEffectChainStore.getState().graphStates['7']).toBeUndefined();
       expectNoFxGraphSnapshotLoopErrors(errorSpy);

@@ -742,7 +742,7 @@ describe('GraphStatePreview', () => {
     expect(loadingHtml).toContain('Loading parameters...');
     expect(errorHtml).toContain('This plugin is unavailable. Parameters cannot be read.');
     expect(emptyHtml).toContain('This effect exposes no parameters.');
-    expect(listHtml).toContain('Expose Parameter');
+    expect(listHtml).toContain('Expose parameter');
     expect(listHtml).toContain('Search parameters');
     expect(listHtml).toContain('Feedback');
     expect(listHtml).not.toContain('Mix');
@@ -1314,7 +1314,7 @@ describe('GraphStatePreview', () => {
 // ---------------------------------------------------------------------------
 
 describe('GraphStatePreview node context menu', () => {
-  it('renders a plain Remove-only menu for envelope and lfo nodes (no Edit, no Expose Parameter)', () => {
+  it('renders a plain Remove-only menu for envelope and lfo nodes (no Edit, no Expose parameter)', () => {
     const envNode = buildGraphStatePreviewModel(envelopeGraph())
       .nodes.find((candidate) => candidate.id === 'env-a')!;
     const lfoNode = buildGraphStatePreviewModel(lfoGraph())
@@ -1330,7 +1330,7 @@ describe('GraphStatePreview node context menu', () => {
     for (const html of [envHtml, lfoHtml]) {
       expect(html).toContain('>Remove<');
       expect(html).not.toContain('>Edit<');
-      expect(html).not.toContain('Expose Parameter');
+      expect(html).not.toContain('Expose parameter');
     }
   });
 
@@ -1456,8 +1456,8 @@ describe('FXG.4-g ParameterEdgeMappingEditor', () => {
         onClose={vi.fn()}
       />,
     );
-    expect(html).toContain('curve-tab--active');
-    expect(html).toMatch(/curve-tab--active[^>]*>Linear/);
+    // The curve type is a kit SegmentedControl: the selected segment is aria-checked.
+    expect(html).toMatch(/aria-checked="true"[^>]*>[^<]*Linear/);
   });
 
   it('marks Bezier tab active for a bezier mapping', () => {
@@ -1473,7 +1473,7 @@ describe('FXG.4-g ParameterEdgeMappingEditor', () => {
         onClose={vi.fn()}
       />,
     );
-    expect(html).toMatch(/curve-tab--active[^>]*>Bezier/);
+    expect(html).toMatch(/aria-checked="true"[^>]*>[^<]*Bezier/);
   });
 
   it('renders the bezier SVG with control point circles for a bezier mapping', () => {
@@ -1523,9 +1523,9 @@ describe('FXG.4-g ParameterEdgeMappingEditor', () => {
       />,
     );
     expect(html).toContain('mapping-editor-preview');
-    expect(html).toContain('0%:');
-    expect(html).toContain('50%:');
-    expect(html).toContain('100%:');
+    expect(html).toContain('At 0 %:');
+    expect(html).toContain('At 50 %:');
+    expect(html).toContain('At 100 %:');
   });
 
   it('renders a close button', () => {
@@ -2462,31 +2462,29 @@ describe('EVC-R4 ParameterEdgeMappingEditor — modulation vs range', () => {
 
   it('renders Base and Depth controls for a modulation edge, and no target range', () => {
     const html = render(makeModulationEdge());
-    expect(html).toContain('aria-label="Modulation base"');
-    expect(html).toContain('aria-label="Modulation depth"');
+    expect(html).toContain('aria-label="Base"');
+    expect(html).toContain('aria-label="Depth"');
     expect(html).toContain('>Base<');
     expect(html).toContain('>Depth<');
-    expect(html).not.toContain('aria-label="Target min"');
-    expect(html).not.toContain('aria-label="Target max"');
-    expect(html).not.toContain('Output Range');
+    expect(html).not.toContain('aria-label="Min"');
+    expect(html).not.toContain('aria-label="Max"');
+    expect(html).not.toContain('Output range');
   });
 
   it('renders the target range for a range (Macro) edge, and no base/depth', () => {
     const html = render(makeParameterEdge());
-    expect(html).toContain('aria-label="Target min"');
-    expect(html).toContain('aria-label="Target max"');
-    expect(html).toContain('Output Range');
-    expect(html).not.toContain('aria-label="Modulation base"');
-    expect(html).not.toContain('aria-label="Modulation depth"');
+    expect(html).toContain('aria-label="Min"');
+    expect(html).toContain('aria-label="Max"');
+    expect(html).toContain('Output range');
+    expect(html).not.toContain('aria-label="Base"');
+    expect(html).not.toContain('aria-label="Depth"');
   });
 
-  it('gives the Depth slider a BIPOLAR -1..1 range so inversion is reachable', () => {
+  it('gives the Depth box a BIPOLAR range so inversion is reachable', () => {
     const html = render(makeModulationEdge({ depth: -0.5 }));
-    expect(html).toMatch(/aria-label="Modulation depth"[^>]*/);
-    // The depth slider/number inputs are the only ones with min="-1".
-    expect(html).toContain('min="-1"');
-    // Base stays unipolar.
-    expect(html).toMatch(/type="range" min="0" max="1"[^>]*aria-label="Modulation base"/);
+    // Depth is a bipolar kit NumberBox (-100 to 100 %, stored -1 to 1); Base stays unipolar.
+    expect(html).toMatch(/aria-label="Depth"[^>]*aria-valuemin="-100"|aria-valuemin="-100"[^>]*aria-label="Depth"/);
+    expect(html).toMatch(/aria-label="Base"[^>]*aria-valuemin="0"|aria-valuemin="0"[^>]*aria-label="Base"/);
   });
 
   it('explains the model in the editor instead of leaving two bare scales', () => {
@@ -2497,17 +2495,17 @@ describe('EVC-R4 ParameterEdgeMappingEditor — modulation vs range', () => {
   it("the preview's 0% row is the base value — idle means base, visibly", () => {
     // base 0.4, depth 0.5 -> 40% / 65% / 90%.
     const html = render(makeModulationEdge());
-    expect(html).toContain('40%');
-    expect(html).toContain('65%');
-    expect(html).toContain('90%');
+    expect(html).toContain('40\u2009%');
+    expect(html).toContain('65\u2009%');
+    expect(html).toContain('90\u2009%');
   });
 
   it('shows a negative depth sweeping downward from base', () => {
     // base 0.8, depth -0.6 -> 80% / 50% / 20%.
     const html = render(makeModulationEdge({ base: 0.8, depth: -0.6 }));
-    expect(html).toContain('80%');
-    expect(html).toContain('50%');
-    expect(html).toContain('20%');
+    expect(html).toContain('80\u2009%');
+    expect(html).toContain('50\u2009%');
+    expect(html).toContain('20\u2009%');
   });
 
   // Regression lock: the plan's design decision #4 validation found
@@ -2543,17 +2541,17 @@ describe('EVC-R4 ParameterEdgeMappingEditor — modulation vs range', () => {
       />,
     );
     expect(html).toContain('Wobble LFO');
-    expect(html).toContain('aria-label="Modulation base"');
-    expect(html).toContain('aria-label="Modulation depth"');
+    expect(html).toContain('aria-label="Base"');
+    expect(html).toContain('aria-label="Depth"');
     expect(html).toContain('>Base<');
     expect(html).toContain('>Depth<');
-    expect(html).not.toContain('aria-label="Target min"');
-    expect(html).not.toContain('aria-label="Target max"');
-    expect(html).not.toContain('Output Range');
+    expect(html).not.toContain('aria-label="Min"');
+    expect(html).not.toContain('aria-label="Max"');
+    expect(html).not.toContain('Output range');
     // Same base/depth-anchored preview math as the envelope case (80% / 50% / 20%).
-    expect(html).toContain('80%');
-    expect(html).toContain('50%');
-    expect(html).toContain('20%');
+    expect(html).toContain('80\u2009%');
+    expect(html).toContain('50\u2009%');
+    expect(html).toContain('20\u2009%');
   });
 
   // The editor's commit contract (patch shape, clamping, kind preservation) is proven at the
@@ -2835,7 +2833,7 @@ describe('FXG.5 unbounded free node placement', () => {
         onViewportChange={vi.fn()}
       />,
     );
-    const canvasMatch = html.match(/xleth-graph-state-preview__canvas"[^>]*style="([^"]*)"/);
+    const canvasMatch = html.match(/xleth-graph-state-preview__canvas[^"]*"[^>]*style="([^"]*)"/);
     expect(canvasMatch).not.toBeNull();
     const canvasStyle = canvasMatch?.[1] ?? '';
     expect(canvasStyle).toContain('transform:');

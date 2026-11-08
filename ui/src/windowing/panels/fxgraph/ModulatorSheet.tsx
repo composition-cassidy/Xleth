@@ -4,12 +4,12 @@ import { X } from 'lucide-react';
 import { Icon, IconButton, type GlyphName } from '../../../ui-kit';
 import styles from './ModulatorEditors.module.css';
 
-// The floating editor for an envelope or LFO node: a title bar (glyph, name, close) over the
-// editor's own controls. Portaled to document.body, because a floating panel's frame is a CSS
-// transform and would be the containing block of a fixed element. Escape closes it; its title
-// bar drags it. Nothing in it reaches the canvas: pointer, wheel, context-menu and
-// double-click events stop at the sheet (a portal still bubbles through the React tree to the
-// node that owns it).
+// The floating editor for an envelope, an LFO or a cable's mapping: a title bar (glyph, name,
+// close) over the editor's own controls. SheetFrame is the frame alone; ModulatorSheet portals
+// one to document.body, because a floating panel's frame is a CSS transform and would be the
+// containing block of a fixed element. Escape closes it; its title bar drags it. Nothing in it
+// reaches the canvas: pointer, wheel, context-menu and double-click events stop at the sheet (a
+// portal still bubbles through the React tree to the node that owns it).
 
 const SHEET_WIDTH = 336;
 const SHEET_EST_HEIGHT = 420;
@@ -40,21 +40,41 @@ export function placeSheet(
   return { x, y };
 }
 
-interface ModulatorSheetProps {
+// A point near the pointer, moved inside the window.
+export function clampSheetPoint(
+  point: { x: number; y: number },
+  viewport: { width: number; height: number },
+): { x: number; y: number } {
+  return {
+    x: Math.max(EDGE, Math.min(point.x, viewport.width - SHEET_WIDTH - EDGE)),
+    y: Math.max(EDGE, Math.min(point.y, viewport.height - SHEET_EST_HEIGHT)),
+  };
+}
+
+interface SheetFrameProps {
   title: string;
   glyph: GlyphName;
-  anchor: SheetAnchor | null;
+  initialPosition: { x: number; y: number };
   onClose: () => void;
   testId?: string;
+  ariaLabel?: string;
+  closeClassName?: string;
+  dataAttributes?: Record<string, string>;
   children: React.ReactNode;
 }
 
-export default function ModulatorSheet({ title, glyph, anchor, onClose, testId, children }: ModulatorSheetProps) {
-  const [pos, setPos] = React.useState(() => (
-    typeof window === 'undefined'
-      ? { x: EDGE, y: EDGE }
-      : placeSheet(anchor, { width: window.innerWidth, height: window.innerHeight })
-  ));
+export function SheetFrame({
+  title,
+  glyph,
+  initialPosition,
+  onClose,
+  testId,
+  ariaLabel,
+  closeClassName,
+  dataAttributes,
+  children,
+}: SheetFrameProps) {
+  const [pos, setPos] = React.useState(initialPosition);
   const dragRef = React.useRef<{ x: number; y: number; mx: number; my: number } | null>(null);
 
   React.useEffect(() => {
@@ -78,20 +98,20 @@ export default function ModulatorSheet({ title, glyph, anchor, onClose, testId, 
   }, [onMove]);
   React.useEffect(() => onUp, [onUp]);
 
-  if (typeof document === 'undefined') return null;
   const stop = (event: React.SyntheticEvent) => event.stopPropagation();
 
-  return createPortal(
+  return (
     <div
+      {...dataAttributes}
       className={styles.sheet}
       style={{ left: pos.x, top: pos.y }}
       role="dialog"
-      aria-label={title}
+      aria-label={ariaLabel ?? title}
       data-testid={testId}
       onPointerDown={stop}
       onPointerUp={stop}
       onWheel={stop}
-      onContextMenu={stop}
+      onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}
       onDoubleClick={stop}
       onClick={stop}
     >
@@ -106,13 +126,36 @@ export default function ModulatorSheet({ title, glyph, anchor, onClose, testId, 
         }}
       >
         <Icon name={glyph} size={16} className={styles.sheetGlyph} />
-        <span className={styles.sheetTitleText}>{title}</span>
-        <IconButton label={`Close ${title}`} size="sm" onClick={onClose}>
+        <span className={styles.sheetTitleText} title={title}>{title}</span>
+        <IconButton label={`Close ${title}`} size="sm" className={closeClassName} onClick={onClose}>
           <X size={14} strokeWidth={1.5} aria-hidden="true" />
         </IconButton>
       </div>
       <div className={styles.sheetBody}>{children}</div>
-    </div>,
+    </div>
+  );
+}
+
+interface ModulatorSheetProps {
+  title: string;
+  glyph: GlyphName;
+  anchor: SheetAnchor | null;
+  onClose: () => void;
+  testId?: string;
+  children: React.ReactNode;
+}
+
+export default function ModulatorSheet({ title, glyph, anchor, onClose, testId, children }: ModulatorSheetProps) {
+  const [initial] = React.useState(() => (
+    typeof window === 'undefined'
+      ? { x: EDGE, y: EDGE }
+      : placeSheet(anchor, { width: window.innerWidth, height: window.innerHeight })
+  ));
+  if (typeof document === 'undefined') return null;
+  return createPortal(
+    <SheetFrame title={title} glyph={glyph} initialPosition={initial} onClose={onClose} testId={testId}>
+      {children}
+    </SheetFrame>,
     document.body,
   );
 }

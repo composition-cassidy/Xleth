@@ -172,4 +172,38 @@
   }
 
   .note { color: var(--ui-ink-2); font-size: var(--type-11); }
+
+  /* ── The mapping editor's curve ────────────────────────────────────── */
+
+  .bezGrid { stroke: var(--ui-g4); stroke-width: 1; vector-effect: non-scaling-stroke; }
+
+  .bezPath {
+    fill: none;
+    stroke: var(--ui-signal-parameter);
+    stroke-width: 2;
+    stroke-linecap: round;
+  }
+
+  .bezHandleLine {
+    stroke: var(--ui-ink-3);
+    stroke-width: 1;
+    stroke-dasharray: 3 3;
+    vector-effect: non-scaling-stroke;
+  }
+
+  .bezHit { fill: transparent; cursor: grab; }
+  .bezHit:active { cursor: grabbing; }
+  .bezCp { fill: var(--ui-g0); stroke: var(--ui-signal-parameter); stroke-width: 1.5; pointer-events: none; }
+  .bezEnd { fill: var(--ui-ink-3); }
+
+  .previewRow {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1) var(--space-3);
+    color: var(--ui-ink);
+    font-size: var(--type-12);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .previewItem { display: inline-flex; gap: var(--space-1); }
 }

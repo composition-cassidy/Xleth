@@ -43,7 +43,7 @@ Cascade order, lowest to highest: `@layer reset, legacy, tokens, kit;` (declared
     always had, so the relative order of all legacy sheets is unchanged.
   - The package stylesheet `@xyflow/react/dist/style.css` is layered the same way
     (`styles/vendor-xyflow.css`).
-  - The eight component sheets (`windowing`, `fxGraph`, `fxGraphEffectPicker`, `clipControls`,
+  - The six component sheets (`windowing`, `clipControls`,
     `clipControlTuner`, `EffectModule.sidechain`, `sandbox`, `designer`) are wrapped
     in-file in `@layer legacy { … }` because components import them from JS.
   - `@fontsource/*` sheets contain only `@font-face`, which is not part of the cascade.
@@ -1017,3 +1017,63 @@ each editor store's `commitVideo`).
 2 font sizes (11, 12px); Inspector 3 (11, 12, 13px); 0 text under 10px, 0 under 4.5:1 outside the bypassed device's mute
 opacity, no letter-spaced uppercase, no native range or number input, nothing clipped at 363 or 280px. The Electron capture
 needs a current engine addon.
+
+## 21. FX Graph (round 2, step 18)
+
+**Drawn how.** DOM nodes in a CSS-transformed canvas (pan, wheel zoom), one SVG layer of cubic Bézier cables, a
+`<canvas>` minimap. A graph has a handful of nodes, so DOM nodes are right for it, and the connect logic (drop
+targets found with `elementFromPoint` and a 24px snap radius, `data-*` port attributes) depends on them.
+`GraphStatePreview.tsx` still holds the model and the interaction; its styling is in kit-layer CSS Modules
+(`GraphCanvas`, `GraphNode`, `GraphMenus`, `ModulatorEditors`, `FxGraphPanel`, `SignalLegend`), and the legacy
+`fxGraph.css` and `fxGraphEffectPicker.css` are gone. The `xleth-graph-state-preview__*` class names stay on the
+elements as structural hooks only (tests and the audit select by them); they carry no styling.
+
+**Signals and cables.** The signal-type hues (3.3), each also a stroke or a shape, so no cable or port is told apart by
+colour alone: audio is a solid cable and a disc port; parameter (a macro, LFO or envelope into an exposed parameter) a
+dashed cable and a diamond; sidechain key the audio hue, dotted and quieter (still above 3:1), and a ring. The header
+legend lists only the three types the graph carries (events and video have no cables here). The canvas is the neutral
+`g0` well with a grid in graph space (a minor cell every 24px, a major line every five, the minor lines dropping out
+below 8px on screen) that follows pan and zoom through three custom properties. A cable is hoverable and pickable
+through a wide invisible stroke; the hovered or selected cable alone shows its disconnect and edit-mapping buttons
+(20px, 24px hit area); selection (a node or a cable, one at a time) is a 1px `--ui-select` outline. A Fit button and
+the zoom, and a minimap (nodes, cables in their hues, the visible window; click or drag to move the view) that
+appears once any node lies outside the view.
+
+**Nodes.** A neutral card: a 26px title bar (the glyph from the Xleth family, the name, and on an effect the
+activator), a 22px port row naming the ports (Audio in, Audio out, Parameter out, Key out), a 26px meta row, then the
+body. The effect shows its device's name from `DEVICE_NAMES`; its activator is the device frame's own Toggle (on =
+the inverted chip while it runs; a bypassed effect also prints Off and dims its body). Double-click or Edit opens the
+effect in the same `FloatingDevice` the Devices tab pops out (the graph owns bypass, so the activator there is
+disabled). Macro: a kit NumberBox in percent through `formatValue`, committed once. Sidechain input: a kit Select.
+**Geometry rule:** every in and out port sits on one row 37px below the node top (`PORT_ROW_Y`), the terminals are
+48px tall, and a parameter row is 18px with a 4px gap; cable ends are arithmetic over those numbers, so the CSS rows
+have exact heights. Measured in the harness: every cable end lands within 0.4px of its port mark.
+
+**One picker.** `FxGraphEffectPicker` is deleted. The add menu (canvas right-click, or the empty state's Add node) is
+the Devices chain's category list built by the same `buildEffectChainMenuItems`, then a Modulators group (Macro,
+Envelope, LFO, Sidechain input). Choosing a plugin calls the same `addGraphEffectNodeForTrack`, the name resolved from
+`effectCatalog`. A graph with only its two terminals shows a structural empty state with an Add node action.
+
+**Modulators.** The envelope and LFO nodes show a recessed display (the stored AHDSR curve; the stored waveform) with a
+one-line summary and an Edit button. Edit opens a floating sheet beside the node (title bar, draggable, Escape
+closes, the hard offset shadow): the editable graph (the SVG envelope with 22px handle targets; the LFO canvas with its
+eight handles) in one display well, then NumberBoxes (times on a skewed 0 to 10 s law, Sustain in percent, the three
+curve tensions bipolar; the LFO's period on a log law 1 ms to 60 s, Phase in degrees), SegmentedControls (Sine,
+Triangle, Square; Free, Sync), a Select for the sync division and a Toggle for Include slide notes. Every box
+previews locally and commits once on release with the patch the old slider sent. **There is no moving cursor on these
+displays:** the engine publishes no running phase or level for a graph modulator, so they are drawn from the stored
+definition and redraw on an edit, a theme or a pixel-ratio change only; drawing a position would be a fabricated
+signal. The mapping editor (a cable's Base and Depth, or Min and Max; the curve; the three preview values) and the
+node menu (Edit, Bypass or Enable, Remove, Expose parameter with its search) use the same frame and tokens.
+
+**Header.** One 28px row: the track's name on its identity-colour left edge (resolved as the arrangement and the
+Devices chain resolve it), the cable legend, and an ownership chip in sentence case (the graph owning the track is the
+inverted chip; the other two are outlined and worded differently).
+
+**Audit.** `p60-fxgraph` captures the picker as the menu (73) and the two editor sheets (74a, 74b); the node menu and
+the mapping editor need a wired graph and are checked in the isolated harness. Measured on the real components in an
+isolated harness (stub `window.xleth`), panel and nodes and both editor sheets and the mapping editor open: 3 font sizes
+(11, 12, 13px), 0 text under 10px, 0 under 4.5:1, no letter-spaced uppercase, no native range or number input. The
+2026-11-07 FX Graph shots had 6 sizes (9 to 14px), 24 text nodes at 9px and 5 letter-spaced caps labels. **Owed with
+the engine:** building a sidechain route, LFO and envelope modulation still driving their targets, macro mapping,
+graph and chain consistency; the Electron capture needs a current engine addon.

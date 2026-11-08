@@ -10660,22 +10660,19 @@ input[type="radio"] {
 }
 
 .effect-chain-add-menu.context-menu::-webkit-scrollbar,
-.effect-chain-add-submenu.context-menu::-webkit-scrollbar,
-.xleth-graph-state-preview__context-menu::-webkit-scrollbar {
+.effect-chain-add-submenu.context-menu::-webkit-scrollbar {
   width: 14px;
 }
 
 .effect-chain-add-menu.context-menu::-webkit-scrollbar-thumb,
-.effect-chain-add-submenu.context-menu::-webkit-scrollbar-thumb,
-.xleth-graph-state-preview__context-menu::-webkit-scrollbar-thumb {
+.effect-chain-add-submenu.context-menu::-webkit-scrollbar-thumb {
   background: var(--xleth-flat-border-strong);
   border: 2px solid var(--xleth-flat-panel);
   border-radius: 0;
 }
 
 .effect-chain-add-menu.context-menu::-webkit-scrollbar-track,
-.effect-chain-add-submenu.context-menu::-webkit-scrollbar-track,
-.xleth-graph-state-preview__context-menu::-webkit-scrollbar-track {
+.effect-chain-add-submenu.context-menu::-webkit-scrollbar-track {
   background: var(--xleth-flat-well);
 }
 
@@ -11516,47 +11513,6 @@ input[type="radio"] {
 .xleth-panel-frame[data-panel-id="fxGraph"] .xleth-panel-body {
   background: var(--xleth-flat-bg);
 }
-
-/* ── Token remap: flip the whole FX-graph subtree to the flat palette ───────── */
-.xleth-fx-graph-panel {
-  --theme-chrome-radius-sm: 0;
-  --theme-chrome-border-radius: 0;
-  --theme-border-subtle: var(--xleth-flat-border);
-  --theme-border-strong: var(--xleth-flat-border-strong);
-  --theme-border-focus: var(--xleth-flat-accent);
-  --theme-text: var(--xleth-flat-text);
-  --theme-text-muted: var(--xleth-flat-text-secondary);
-  --theme-bg-primary: var(--xleth-flat-panel);        /* node / card surface */
-  --theme-bg-surface: var(--xleth-flat-chrome);       /* header, buttons, badges */
-  --theme-bg-elevated: var(--xleth-flat-panel);        /* control hover lift */
-  --theme-bg-hover: var(--xleth-flat-well);           /* tag / badge chips */
-  --theme-bg-interactive-hover: var(--xleth-flat-section);
-  --theme-primitive-control-bg: var(--xleth-flat-well);
-  --theme-primitive-control-hover-bg: var(--xleth-flat-section);
-  --theme-panel-node: var(--xleth-flat-text-muted);   /* neutral IO-node tint */
-  /* Flat means no bevels / drop shadows — neutralize the depth tokens. The
-     functional color-mix glows on drop targets and port hover stay (feedback). */
-  --theme-depth-elevation-1-top-highlight: none;
-  --theme-depth-elevation-3-outer-shadow: none;
-  --theme-depth-elevation-3-border: var(--xleth-flat-border);
-  --theme-depth-top-light-bevel: none;
-  --theme-depth-floating-shadow: none;
-  --theme-depth-floating-bg: var(--xleth-flat-panel);
-  background: var(--xleth-flat-main);
-}
-
-/* ── Workspace frame: solid flat well instead of the dashed tinted box ──────── */
-.xleth-fx-graph-panel__surface-inner {
-  border: 1px solid var(--xleth-flat-preview-border);
-  background: var(--xleth-flat-main);
-}
-
-/* The node canvas used to be overridden here to force a darker well than the
- * dot-grid base. windowing.css now paints it as a flat --theme-bg-inset well
- * directly, which is already the darkest neutral, so re-stating it here only
- * created a cascade-order coin flip between the two files over which backdrop
- * wins. windowing.css is the single owner.
- * ── (node canvas: see .xleth-graph-state-preview__viewport in windowing.css) ── */
 
 /* -- XLETH file picker ----------------------------------------------------- */
 

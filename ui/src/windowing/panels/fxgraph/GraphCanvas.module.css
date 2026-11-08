@@ -224,4 +224,63 @@
     border-radius: var(--ui-radius-1);
     background: var(--ui-g1);
   }
+
+  /* ── The preview's own layout ─────────────────────────────────────── */
+
+  .preview {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr);
+    gap: 0;
+    width: 100%;
+    height: 100%;
+    min-height: 260px;
+    min-width: 0;
+    align-self: stretch;
+    text-align: left;
+  }
+
+  .chrome {
+    display: grid;
+    min-width: 0;
+    margin-bottom: var(--space-1);
+  }
+
+  .notice {
+    margin: 0;
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    line-height: 1.35;
+  }
+
+  .stage {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 100%;
+  }
+
+  /* The canvas layer is an unbounded transform anchor with no size of its own; the layers
+   * inside it anchor to its (0, 0) origin, where node and cable coordinates are drawn. */
+  .canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+    transform-origin: 0 0;
+    will-change: transform;
+  }
+
+  .canvas[data-node-dragging="true"] { user-select: none; }
+
+  .edges,
+  .nodes,
+  .overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    pointer-events: none;
+  }
+
+  .edges { overflow: visible; }
 }

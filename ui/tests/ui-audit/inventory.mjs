@@ -70,8 +70,6 @@ function parseCss(text) {
 const cssFiles = {
   'app.css': path.join(SRC, 'styles/app.css'),
   'windowing.css': path.join(SRC, 'windowing/components/windowing.css'),
-  'fxGraph.css': path.join(SRC, 'windowing/panels/fxgraph/fxGraph.css'),
-  'fxGraphEffectPicker.css': path.join(SRC, 'windowing/panels/fxgraph/fxGraphEffectPicker.css'),
   'clipControls.css': path.join(SRC, 'components/timeline/clipControls.css'),
   'clipControlTuner.css': path.join(SRC, 'components/timeline/clipControlTuner/clipControlTuner.css'),
   'EffectModule.sidechain.css': path.join(SRC, 'components/mixer/EffectModule.sidechain.css'),

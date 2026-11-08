@@ -33,13 +33,14 @@ import {
   type LfoNodeData,
   type LfoNodePatch,
 } from './LfoEditor';
-import { Maximize, Power, Spline, X as CloseGlyph } from 'lucide-react';
+import { Check, Maximize, Power, Spline, X as CloseGlyph } from 'lucide-react';
 import {
   EmptyState,
   Icon,
   IconButton,
   NumberBox,
   Select,
+  SegmentedControl,
   Toggle,
   formatValue,
   type GlyphName,
@@ -47,10 +48,12 @@ import {
 } from '../../../ui-kit';
 import { DEVICE_NAMES } from '../../../components/devices/deviceNames.js';
 import nodeStyles from './GraphNode.module.css';
+import menuStyles from './GraphMenus.module.css';
 import GraphMinimap from './GraphMinimap';
+import { SheetFrame, clampSheetPoint } from './ModulatorSheet';
+import modStyles from './ModulatorEditors.module.css';
 import GraphAddMenu, { buildGraphAddMenuItems, type GraphEffectSelection } from './GraphAddMenu';
 import canvasStyles from './GraphCanvas.module.css';
-import './fxGraph.css';
 
 // FXG.4-g — Bezier mapping editor types.
 type BezierPoint = { x: number; y: number };
@@ -1784,9 +1787,44 @@ export function GraphStatePreviewNode({
   );
 }
 
-// FXG.4-g — bezier SVG canvas dimensions.
-const BEZ_W = 220;
-const BEZ_H = 110;
+// FXG.4-g — bezier SVG canvas dimensions (the sheet's 304px of body width).
+const BEZ_W = 304;
+const BEZ_H = 120;
+
+const pct = (value: number) => Math.round(value * 100);
+
+function MappingPercentBox({
+  label,
+  value,
+  min,
+  max,
+  bipolar = false,
+  defaultValue,
+  onCommit,
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  bipolar?: boolean;
+  defaultValue: number;
+  onCommit: (next: number) => void;
+}) {
+  return (
+    <NumberBox
+      label={label}
+      width={96}
+      value={pct(value)}
+      defaultValue={pct(defaultValue)}
+      min={min}
+      max={max}
+      bipolar={bipolar}
+      step={1}
+      unit="%"
+      onCommit={(next) => onCommit(next / 100)}
+    />
+  );
+}
 
 export function ParameterEdgeMappingEditor({
   edgeId,
@@ -1841,7 +1879,7 @@ export function ParameterEdgeMappingEditor({
   const preview0 = evaluateParameterMapping(edge.mapping, 0);
   const preview50 = evaluateParameterMapping(edge.mapping, 0.5);
   const preview100 = evaluateParameterMapping(edge.mapping, 1);
-  const fmtPct = (v: number | null) => v == null ? '—' : `${Math.round(v * 100)}%`;
+  const fmtPct = (v: number | null) => v == null ? '—' : formatValue(Math.round(v * 100), '%');
 
   const handleStartDrag = (which: 1 | 2) => (event: React.PointerEvent<SVGCircleElement>) => {
     event.stopPropagation();
@@ -1880,199 +1918,177 @@ export function ParameterEdgeMappingEditor({
   };
 
   return (
-    <div
-      className="xleth-graph-state-preview__mapping-editor"
-      role="dialog"
-      aria-label={`Edit mapping: ${sourceLabel} to ${targetLabel}`}
-      style={{ left: x, top: y }}
-      onPointerDown={(e) => e.stopPropagation()}
-      onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); }}
-      data-mapping-editor-id={edgeId}
+    <SheetFrame
+      title={`${sourceLabel} → ${targetLabel}`}
+      ariaLabel={`Edit mapping: ${sourceLabel} to ${targetLabel}`}
+      glyph="nodeMacro"
+      initialPosition={typeof window === 'undefined'
+        ? { x, y }
+        : clampSheetPoint({ x, y }, { width: window.innerWidth, height: window.innerHeight })}
+      onClose={onClose}
+      closeClassName="xleth-graph-state-preview__mapping-editor-close"
+      dataAttributes={{ 'data-mapping-editor-id': edgeId }}
     >
-      <div className="xleth-graph-state-preview__mapping-editor-header">
-        <span className="xleth-graph-state-preview__mapping-editor-title" title={`${sourceLabel} → ${targetLabel}`}>
-          {sourceLabel} <span aria-hidden="true">→</span> {targetLabel}
-        </span>
-        <button
-          className="xleth-graph-state-preview__mapping-editor-close"
-          type="button"
-          aria-label="Close mapping editor"
-          onClick={onClose}
-        >×</button>
-      </div>
-
-      <label className="xleth-graph-state-preview__mapping-editor-enabled">
-        <input
-          type="checkbox"
-          defaultChecked={mapping.enabled}
-          onChange={(e) => onUpdate(edgeId, { enabled: e.target.checked })}
-        />
-        Enabled
-      </label>
-
-      {/* EVC-R4 — the output section depends on the mapping kind. A modulation edge
-          (Envelope) edits Base + signed Depth; a range edge (Macro) keeps the absolute
-          Min/Max output range. There is deliberately no second, unlabelled scale on the
-          Envelope node any more: Depth is the only one. */}
-      {isModulation ? (
-        <div className="xleth-graph-state-preview__mapping-editor-section">
-          <div className="xleth-graph-state-preview__mapping-editor-section-title">Modulation</div>
-          <div className="xleth-graph-state-preview__mapping-editor-hint">
-            Value = Base + Depth × envelope. Base is the parameter&apos;s own setting; the
-            envelope only offsets it.
-          </div>
-          <div className="xleth-graph-state-preview__mapping-editor-range-row xleth-graph-state-preview__mapping-editor-range-row--modulation">
-            <span className="xleth-graph-state-preview__mapping-editor-range-label">Base</span>
-            <input
-              className="xleth-graph-state-preview__mapping-editor-range-slider"
-              type="range" min="0" max="1" step="0.01" defaultValue={mapping.base}
-              aria-label="Modulation base"
-              onPointerUp={(e) => onUpdate(edgeId, { base: parseFloat((e.target as HTMLInputElement).value) })}
-            />
-            <input
-              className="xleth-graph-state-preview__mapping-editor-range-num"
-              type="number" min="0" max="1" step="0.01" defaultValue={mapping.base}
-              aria-label="Modulation base value"
-              onBlur={(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) onUpdate(edgeId, { base: clampUnit(v) }); }}
-            />
-          </div>
-          <div className="xleth-graph-state-preview__mapping-editor-range-row xleth-graph-state-preview__mapping-editor-range-row--modulation">
-            <span className="xleth-graph-state-preview__mapping-editor-range-label">Depth</span>
-            <input
-              className="xleth-graph-state-preview__mapping-editor-range-slider"
-              type="range" min="-1" max="1" step="0.01" defaultValue={mapping.depth}
-              aria-label="Modulation depth"
-              onPointerUp={(e) => onUpdate(edgeId, { depth: parseFloat((e.target as HTMLInputElement).value) })}
-            />
-            <input
-              className="xleth-graph-state-preview__mapping-editor-range-num"
-              type="number" min="-1" max="1" step="0.01" defaultValue={mapping.depth}
-              aria-label="Modulation depth value"
-              onBlur={(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) onUpdate(edgeId, { depth: clampSignedUnit(v) }); }}
-            />
-          </div>
-        </div>
-      ) : (
-        <div className="xleth-graph-state-preview__mapping-editor-section">
-          <div className="xleth-graph-state-preview__mapping-editor-section-title">Output Range</div>
-          <div className="xleth-graph-state-preview__mapping-editor-range-row">
-            <span className="xleth-graph-state-preview__mapping-editor-range-label">Min</span>
-            <input
-              className="xleth-graph-state-preview__mapping-editor-range-slider"
-              type="range" min="0" max="1" step="0.01" defaultValue={mapping.targetMin}
-              aria-label="Target min"
-              onPointerUp={(e) => onUpdate(edgeId, { targetMin: parseFloat((e.target as HTMLInputElement).value) })}
-            />
-            <input
-              className="xleth-graph-state-preview__mapping-editor-range-num"
-              type="number" min="0" max="1" step="0.01" defaultValue={mapping.targetMin}
-              aria-label="Target min value"
-              onBlur={(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) onUpdate(edgeId, { targetMin: clampUnit(v) }); }}
-            />
-          </div>
-          <div className="xleth-graph-state-preview__mapping-editor-range-row">
-            <span className="xleth-graph-state-preview__mapping-editor-range-label">Max</span>
-            <input
-              className="xleth-graph-state-preview__mapping-editor-range-slider"
-              type="range" min="0" max="1" step="0.01" defaultValue={mapping.targetMax}
-              aria-label="Target max"
-              onPointerUp={(e) => onUpdate(edgeId, { targetMax: parseFloat((e.target as HTMLInputElement).value) })}
-            />
-            <input
-              className="xleth-graph-state-preview__mapping-editor-range-num"
-              type="number" min="0" max="1" step="0.01" defaultValue={mapping.targetMax}
-              aria-label="Target max value"
-              onBlur={(e) => { const v = parseFloat(e.target.value); if (Number.isFinite(v)) onUpdate(edgeId, { targetMax: clampUnit(v) }); }}
-            />
-          </div>
-        </div>
-      )}
-
-      <div className="xleth-graph-state-preview__mapping-editor-section">
-        <div className="xleth-graph-state-preview__mapping-editor-section-title">Curve</div>
-        <div className="xleth-graph-state-preview__mapping-editor-curve-tabs" role="group" aria-label="Curve type">
-          <button
-            className={`xleth-graph-state-preview__mapping-editor-curve-tab${!isBezier ? ' xleth-graph-state-preview__mapping-editor-curve-tab--active' : ''}`}
-            type="button"
-            aria-pressed={!isBezier}
-            onClick={() => onUpdate(edgeId, { curve: { type: 'linear' } })}
-          >Linear</button>
-          <button
-            className={`xleth-graph-state-preview__mapping-editor-curve-tab${isBezier ? ' xleth-graph-state-preview__mapping-editor-curve-tab--active' : ''}`}
-            type="button"
-            aria-pressed={isBezier}
-            onClick={() => { if (!isBezier) onUpdate(edgeId, { curve: createDefaultBezierCurve() }); }}
-          >Bezier</button>
+      <div className={`xleth-graph-state-preview__mapping-editor ${modStyles.editor}`}>
+        <div className={modStyles.row}>
+          <Toggle
+            size="sm"
+            on={mapping.enabled}
+            glyph={<Check aria-hidden="true" />}
+            onChange={(next) => onUpdate(edgeId, { enabled: next })}
+          >
+            Enabled
+          </Toggle>
         </div>
 
-        <svg
-          ref={svgRef}
-          className="xleth-graph-state-preview__mapping-editor-bezier-svg"
-          width={BEZ_W}
-          height={BEZ_H}
-          aria-label="Curve editor"
-          role="img"
-          onPointerMove={isBezier ? handleDragMove : undefined}
-          onPointerUp={isBezier ? handleDragEnd : undefined}
-          onPointerCancel={isBezier ? handleDragEnd : undefined}
+        {/* EVC-R4 — the output section depends on the mapping kind. A modulation edge
+            (Envelope, LFO) edits Base + signed Depth; a range edge (Macro) keeps the absolute
+            Min/Max output range. There is deliberately no second, unlabelled scale on the
+            source node: Depth is the only one. */}
+        {isModulation ? (
+          <section className={modStyles.section} aria-label="Modulation">
+            <div className={modStyles.sectionTitle}>Modulation</div>
+            <div className={`xleth-graph-state-preview__mapping-editor-hint ${modStyles.note}`}>
+              Value = Base + Depth × source. Base is the parameter&apos;s own setting; the
+              source only offsets it.
+            </div>
+            <div className={modStyles.grid}>
+              <MappingPercentBox
+                label="Base"
+                value={mapping.base}
+                min={0}
+                max={100}
+                defaultValue={0}
+                onCommit={(next) => onUpdate(edgeId, { base: clampUnit(next) })}
+              />
+              <MappingPercentBox
+                label="Depth"
+                value={mapping.depth}
+                min={-100}
+                max={100}
+                bipolar
+                defaultValue={1}
+                onCommit={(next) => onUpdate(edgeId, { depth: clampSignedUnit(next) })}
+              />
+            </div>
+          </section>
+        ) : (
+          <section className={modStyles.section} aria-label="Output range">
+            <div className={modStyles.sectionTitle}>Output range</div>
+            <div className={modStyles.grid}>
+              <MappingPercentBox
+                label="Min"
+                value={mapping.targetMin}
+                min={0}
+                max={100}
+                defaultValue={0}
+                onCommit={(next) => onUpdate(edgeId, { targetMin: clampUnit(next) })}
+              />
+              <MappingPercentBox
+                label="Max"
+                value={mapping.targetMax}
+                min={0}
+                max={100}
+                defaultValue={1}
+                onCommit={(next) => onUpdate(edgeId, { targetMax: clampUnit(next) })}
+              />
+            </div>
+          </section>
+        )}
+
+        <section className={modStyles.section} aria-label="Curve">
+          <div className={modStyles.sectionTitle}>Curve</div>
+          <SegmentedControl<string>
+            size="sm"
+            label="Curve type"
+            value={isBezier ? 'bezier' : 'linear'}
+            options={[
+              { value: 'linear', label: 'Linear' },
+              { value: 'bezier', label: 'Bezier' },
+            ]}
+            onChange={(kind) => {
+              if (kind === 'linear') onUpdate(edgeId, { curve: { type: 'linear' } });
+              else if (!isBezier) onUpdate(edgeId, { curve: createDefaultBezierCurve() });
+            }}
+          />
+
+          <span className={`${modStyles.display} ${modStyles.displayEditor}`}>
+            <svg
+              ref={svgRef}
+              className={`xleth-graph-state-preview__mapping-editor-bezier-svg ${modStyles.graph}`}
+              width={BEZ_W}
+              height={BEZ_H}
+              aria-label="Curve editor"
+              role="img"
+              onPointerMove={isBezier ? handleDragMove : undefined}
+              onPointerUp={isBezier ? handleDragEnd : undefined}
+              onPointerCancel={isBezier ? handleDragEnd : undefined}
+            >
+              {/* Grid */}
+              {[0.25, 0.5, 0.75].map((q) => (
+                <React.Fragment key={q}>
+                  <line x1={BEZ_W * q} y1="0" x2={BEZ_W * q} y2={BEZ_H} className={`xleth-graph-state-preview__mapping-editor-bezier-grid ${modStyles.bezGrid}`} />
+                  <line x1="0" y1={BEZ_H * q} x2={BEZ_W} y2={BEZ_H * q} className={`xleth-graph-state-preview__mapping-editor-bezier-grid ${modStyles.bezGrid}`} />
+                </React.Fragment>
+              ))}
+              {/* Curve path */}
+              <path d={bezierPathD} className={`xleth-graph-state-preview__mapping-editor-bezier-path ${modStyles.bezPath}`} />
+              {/* Control handles (bezier only) */}
+              {isBezier && displayPoints && (
+                <>
+                  <line x1="0" y1={BEZ_H} x2={cp1svgX} y2={cp1svgY} className={`xleth-graph-state-preview__mapping-editor-bezier-handle-line ${modStyles.bezHandleLine}`} />
+                  <line x1={BEZ_W} y1="0" x2={cp2svgX} y2={cp2svgY} className={`xleth-graph-state-preview__mapping-editor-bezier-handle-line ${modStyles.bezHandleLine}`} />
+                  <circle
+                    cx={cp1svgX} cy={cp1svgY} r={11}
+                    className={`xleth-graph-state-preview__mapping-editor-bezier-cp ${modStyles.bezHit}`}
+                    aria-label="Control point 1 (drag to shape curve)"
+                    onPointerDown={handleStartDrag(1)}
+                  />
+                  <circle cx={cp1svgX} cy={cp1svgY} r={4} className={modStyles.bezCp} aria-hidden="true" />
+                  <circle
+                    cx={cp2svgX} cy={cp2svgY} r={11}
+                    className={`xleth-graph-state-preview__mapping-editor-bezier-cp ${modStyles.bezHit}`}
+                    aria-label="Control point 2 (drag to shape curve)"
+                    onPointerDown={handleStartDrag(2)}
+                  />
+                  <circle cx={cp2svgX} cy={cp2svgY} r={4} className={modStyles.bezCp} aria-hidden="true" />
+                </>
+              )}
+              {/* Fixed endpoint markers */}
+              <circle cx="0" cy={BEZ_H} r={3} className={`xleth-graph-state-preview__mapping-editor-bezier-endpoint ${modStyles.bezEnd}`} />
+              <circle cx={BEZ_W} cy="0" r={3} className={`xleth-graph-state-preview__mapping-editor-bezier-endpoint ${modStyles.bezEnd}`} />
+            </svg>
+          </span>
+        </section>
+
+        {/* Resulting parameter value at three source positions. For a modulation edge the 0%
+            row IS the base value, which is the clearest possible statement of "idle = base". */}
+        <div
+          className={`xleth-graph-state-preview__mapping-editor-preview ${modStyles.previewRow}`}
+          aria-label={isModulation ? 'Modulation preview' : 'Mapping preview'}
         >
-          {/* Grid */}
-          <line x1={BEZ_W * 0.25} y1="0" x2={BEZ_W * 0.25} y2={BEZ_H} className="xleth-graph-state-preview__mapping-editor-bezier-grid" />
-          <line x1={BEZ_W * 0.5}  y1="0" x2={BEZ_W * 0.5}  y2={BEZ_H} className="xleth-graph-state-preview__mapping-editor-bezier-grid" />
-          <line x1={BEZ_W * 0.75} y1="0" x2={BEZ_W * 0.75} y2={BEZ_H} className="xleth-graph-state-preview__mapping-editor-bezier-grid" />
-          <line x1="0" y1={BEZ_H * 0.25} x2={BEZ_W} y2={BEZ_H * 0.25} className="xleth-graph-state-preview__mapping-editor-bezier-grid" />
-          <line x1="0" y1={BEZ_H * 0.5}  x2={BEZ_W} y2={BEZ_H * 0.5}  className="xleth-graph-state-preview__mapping-editor-bezier-grid" />
-          <line x1="0" y1={BEZ_H * 0.75} x2={BEZ_W} y2={BEZ_H * 0.75} className="xleth-graph-state-preview__mapping-editor-bezier-grid" />
-          {/* Curve path */}
-          <path d={bezierPathD} className="xleth-graph-state-preview__mapping-editor-bezier-path" />
-          {/* Control handles (bezier only) */}
-          {isBezier && displayPoints && (
-            <>
-              <line x1="0" y1={BEZ_H} x2={cp1svgX} y2={cp1svgY} className="xleth-graph-state-preview__mapping-editor-bezier-handle-line" />
-              <line x1={BEZ_W} y1="0" x2={cp2svgX} y2={cp2svgY} className="xleth-graph-state-preview__mapping-editor-bezier-handle-line" />
-              <circle
-                cx={cp1svgX} cy={cp1svgY} r={6}
-                className="xleth-graph-state-preview__mapping-editor-bezier-cp"
-                aria-label="Control point 1 (drag to shape curve)"
-                style={{ cursor: 'grab' }}
-                onPointerDown={handleStartDrag(1)}
-              />
-              <circle
-                cx={cp2svgX} cy={cp2svgY} r={6}
-                className="xleth-graph-state-preview__mapping-editor-bezier-cp"
-                aria-label="Control point 2 (drag to shape curve)"
-                style={{ cursor: 'grab' }}
-                onPointerDown={handleStartDrag(2)}
-              />
-            </>
-          )}
-          {/* Fixed endpoint markers */}
-          <circle cx="0" cy={BEZ_H} r={3} className="xleth-graph-state-preview__mapping-editor-bezier-endpoint" />
-          <circle cx={BEZ_W} cy="0" r={3} className="xleth-graph-state-preview__mapping-editor-bezier-endpoint" />
-        </svg>
+          {([['At 0', preview0.value], ['At 50', preview50.value], ['At 100', preview100.value]] as const).map(([label, v]) => (
+            <span className={`xleth-graph-state-preview__mapping-editor-preview-item ${modStyles.previewItem}`} key={label}>
+              <span className={`xleth-graph-state-preview__mapping-editor-preview-label ${modStyles.note}`}>{`${label} %:`}</span>
+              {fmtPct(v)}
+            </span>
+          ))}
+        </div>
       </div>
-
-      {/* Resulting parameter value at three source positions. For a modulation edge the 0%
-          row IS the base value, which is the clearest possible statement of "idle = base". */}
-      <div
-        className="xleth-graph-state-preview__mapping-editor-preview"
-        aria-label={isModulation ? 'Modulation preview' : 'Mapping preview'}
-      >
-        <span className="xleth-graph-state-preview__mapping-editor-preview-item">
-          <span className="xleth-graph-state-preview__mapping-editor-preview-label">0%:</span>
-          {fmtPct(preview0.value)}
-        </span>
-        <span className="xleth-graph-state-preview__mapping-editor-preview-item">
-          <span className="xleth-graph-state-preview__mapping-editor-preview-label">50%:</span>
-          {fmtPct(preview50.value)}
-        </span>
-        <span className="xleth-graph-state-preview__mapping-editor-preview-item">
-          <span className="xleth-graph-state-preview__mapping-editor-preview-label">100%:</span>
-          {fmtPct(preview100.value)}
-        </span>
-      </div>
-    </div>
+    </SheetFrame>
   );
+}
+
+// Keeps the menu inside the window: its top-left is where the right-click was, moved up or left
+// only as far as it needs to fit (the menu is 280px wide and at most as tall as the window).
+const NODE_MENU_WIDTH = 280;
+const NODE_MENU_EST_HEIGHT = 360;
+function menuPosition(x: number, y: number): React.CSSProperties {
+  if (typeof window === 'undefined') return { left: x, top: y };
+  return {
+    left: Math.max(8, Math.min(x, window.innerWidth - NODE_MENU_WIDTH - 8)),
+    top: Math.max(8, Math.min(y, window.innerHeight - NODE_MENU_EST_HEIGHT)),
+  };
 }
 
 export function filterExposeParameterDescriptors(
@@ -2133,16 +2149,16 @@ export function GraphParameterContextMenu({
     const laneVisible = macroAutomation?.exists ? macroAutomation.visible : false;
     return (
       <div
-        className="xleth-graph-state-preview__context-menu"
+        className={`xleth-graph-state-preview__context-menu ${menuStyles.menu}`}
         role="menu"
         aria-label={`${node.label} node menu`}
-        style={{ left: x, top: y }}
+        style={menuPosition(x, y)}
         onPointerDown={(event) => event.stopPropagation()}
         onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}
       >
-        <div className="xleth-graph-state-preview__context-title">{node.label}</div>
+        <div className={`xleth-graph-state-preview__context-title ${menuStyles.title}`}>{node.label}</div>
         <button
-          className="xleth-graph-state-preview__context-item"
+          className={`xleth-graph-state-preview__context-item ${menuStyles.item}`}
           type="button"
           role="menuitem"
           disabled={!canRemove}
@@ -2150,36 +2166,36 @@ export function GraphParameterContextMenu({
         >
           Remove
         </button>
-        <div className="xleth-graph-state-preview__context-section">
-          <div className="xleth-graph-state-preview__context-section-title">
+        <div className={`xleth-graph-state-preview__context-section ${menuStyles.section}`}>
+          <div className={`xleth-graph-state-preview__context-section-title ${menuStyles.sectionTitle}`}>
             Automation
           </div>
           <button
-            className="xleth-graph-state-preview__context-item"
+            className={`xleth-graph-state-preview__context-item ${menuStyles.item}`}
             type="button"
             role="menuitemcheckbox"
             aria-checked={laneVisible}
             disabled={!onShowAutomationLane && !onHideAutomationLane}
             onClick={laneVisible ? onHideAutomationLane : onShowAutomationLane}
           >
-            <span className="xleth-graph-state-preview__parameter-check" aria-hidden="true">
-              {laneVisible ? 'On' : ''}
+            <span className={`xleth-graph-state-preview__parameter-check ${menuStyles.check}`} aria-hidden="true">
+              {laneVisible ? <Check size={12} /> : null}
             </span>
-            <span className="xleth-graph-state-preview__parameter-name">
-              {laneVisible ? 'Hide Automation Lane' : 'Show Automation Lane'}
+            <span className={`xleth-graph-state-preview__parameter-name ${menuStyles.name}`}>
+              {laneVisible ? 'Hide automation lane' : 'Show automation lane'}
             </span>
           </button>
           <button
-            className="xleth-graph-state-preview__context-item"
+            className={`xleth-graph-state-preview__context-item ${menuStyles.item}`}
             type="button"
             role="menuitem"
             disabled={!onCreateAutomationClip}
             onClick={onCreateAutomationClip}
           >
-            Create Automation Clip
+            Create automation clip
           </button>
           {macroAutomation?.exists && (
-            <div className="xleth-graph-state-preview__context-empty">
+            <div className={`xleth-graph-state-preview__context-empty ${menuStyles.empty}`}>
               {macroAutomation.clipCount === 1
                 ? '1 automation clip'
                 : `${macroAutomation.clipCount} automation clips`}
@@ -2197,16 +2213,16 @@ export function GraphParameterContextMenu({
   if (node.type === 'envelope' || node.type === 'lfo') {
     return (
       <div
-        className="xleth-graph-state-preview__context-menu"
+        className={`xleth-graph-state-preview__context-menu ${menuStyles.menu}`}
         role="menu"
         aria-label={`${node.label} node menu`}
-        style={{ left: x, top: y }}
+        style={menuPosition(x, y)}
         onPointerDown={(event) => event.stopPropagation()}
         onContextMenu={(event) => { event.preventDefault(); event.stopPropagation(); }}
       >
-        <div className="xleth-graph-state-preview__context-title">{node.label}</div>
+        <div className={`xleth-graph-state-preview__context-title ${menuStyles.title}`}>{node.label}</div>
         <button
-          className="xleth-graph-state-preview__context-item"
+          className={`xleth-graph-state-preview__context-item ${menuStyles.item}`}
           type="button"
           role="menuitem"
           disabled={!canRemove}
@@ -2235,19 +2251,19 @@ export function GraphParameterContextMenu({
 
   return (
     <div
-      className="xleth-graph-state-preview__context-menu"
+      className={`xleth-graph-state-preview__context-menu ${menuStyles.menu}`}
       role="menu"
       aria-label={`${node.label} node menu`}
-      style={{ left: x, top: y }}
+      style={menuPosition(x, y)}
       onPointerDown={(event) => event.stopPropagation()}
       onContextMenu={(event) => {
         event.preventDefault();
         event.stopPropagation();
       }}
     >
-      <div className="xleth-graph-state-preview__context-title">{node.label}</div>
+      <div className={`xleth-graph-state-preview__context-title ${menuStyles.title}`}>{node.label}</div>
       <button
-        className="xleth-graph-state-preview__context-item"
+        className={`xleth-graph-state-preview__context-item ${menuStyles.item}`}
         type="button"
         role="menuitem"
         disabled={!canEdit || !node.editable}
@@ -2256,7 +2272,7 @@ export function GraphParameterContextMenu({
         Edit
       </button>
       <button
-        className="xleth-graph-state-preview__context-item"
+        className={`xleth-graph-state-preview__context-item ${menuStyles.item}`}
         type="button"
         role="menuitemcheckbox"
         aria-checked={node.bypassed}
@@ -2266,7 +2282,7 @@ export function GraphParameterContextMenu({
         {node.bypassed ? 'Enable' : 'Bypass'}
       </button>
       <button
-        className="xleth-graph-state-preview__context-item"
+        className={`xleth-graph-state-preview__context-item ${menuStyles.item}`}
         type="button"
         role="menuitem"
         disabled={!canRemove}
@@ -2275,13 +2291,13 @@ export function GraphParameterContextMenu({
         Remove
       </button>
 
-      <div className="xleth-graph-state-preview__context-section">
-        <div className="xleth-graph-state-preview__context-section-title">
-          Expose Parameter
+      <div className={`xleth-graph-state-preview__context-section ${menuStyles.section}`}>
+        <div className={`xleth-graph-state-preview__context-section-title ${menuStyles.sectionTitle}`}>
+          Expose parameter
         </div>
         {showSearch && (
           <input
-            className="xleth-graph-state-preview__parameter-search"
+            className={`xleth-graph-state-preview__parameter-search ${menuStyles.search}`}
             type="search"
             aria-label="Search parameters"
             placeholder="Search parameters"
@@ -2290,36 +2306,36 @@ export function GraphParameterContextMenu({
           />
         )}
         {loading && (
-          <div className="xleth-graph-state-preview__context-empty" role="status">
+          <div className={`xleth-graph-state-preview__context-empty ${menuStyles.empty}`} role="status">
             Loading parameters...
           </div>
         )}
         {!loading && result?.ok === false && (
-          <div className="xleth-graph-state-preview__context-empty" role="alert">
+          <div className={`xleth-graph-state-preview__context-empty ${menuStyles.empty}`} role="alert">
             {describeParamFailure(result.reason)}
           </div>
         )}
         {!loading && result?.ok && visibleParameterCount === 0 && search.length === 0 && (
-          <div className="xleth-graph-state-preview__context-empty">
+          <div className={`xleth-graph-state-preview__context-empty ${menuStyles.empty}`}>
             This effect exposes no parameters.
           </div>
         )}
         {!loading && result?.ok && visibleParameterCount === 0 && search.length > 0 && (
-          <div className="xleth-graph-state-preview__context-empty">
+          <div className={`xleth-graph-state-preview__context-empty ${menuStyles.empty}`}>
             No parameters match.
           </div>
         )}
         {!loading && result?.ok && visibleParameterCount > 0 && (
-          <div className="xleth-graph-state-preview__parameter-list" role="group" aria-label="Exposed Parameters">
+          <div className={`xleth-graph-state-preview__parameter-list ${menuStyles.list}`} role="group" aria-label="Exposed Parameters">
             {parameterGroups.map((group) => (
               <div
-                className="xleth-graph-state-preview__parameter-group"
+                className={`xleth-graph-state-preview__parameter-group ${menuStyles.group}`}
                 role="group"
                 aria-label={group.groupLabel ?? 'Parameters'}
                 key={group.groupLabel ?? 'parameters'}
               >
                 {group.groupLabel && (
-                  <div className="xleth-graph-state-preview__parameter-group-title">
+                  <div className={`xleth-graph-state-preview__parameter-group-title ${menuStyles.groupTitle}`}>
                     {group.groupLabel}
                   </div>
                 )}
@@ -2329,7 +2345,7 @@ export function GraphParameterContextMenu({
                   const exposed = exposedIds.has(parameter.parameterId);
                   return (
                     <button
-                      className={`xleth-graph-state-preview__parameter-item${exposed ? ' xleth-graph-state-preview__parameter-item--exposed' : ''}`}
+                      className={`xleth-graph-state-preview__parameter-item${exposed ? ' xleth-graph-state-preview__parameter-item--exposed' : ''} ${menuStyles.item}`}
                       type="button"
                       role="menuitemcheckbox"
                       aria-checked={exposed}
@@ -2341,14 +2357,14 @@ export function GraphParameterContextMenu({
                       title={parameter.name || item.label}
                       onClick={() => onToggleParameter?.(parameter)}
                     >
-                      <span className="xleth-graph-state-preview__parameter-check" aria-hidden="true">
-                        {exposed ? 'On' : ''}
+                      <span className={`xleth-graph-state-preview__parameter-check ${menuStyles.check}`} aria-hidden="true">
+                        {exposed ? <Check size={12} /> : null}
                       </span>
-                      <span className="xleth-graph-state-preview__parameter-name">
+                      <span className={`xleth-graph-state-preview__parameter-name ${menuStyles.name}`}>
                         {item.label}
                       </span>
                       {!writable && (
-                        <span className="xleth-graph-state-preview__parameter-state">
+                        <span className={`xleth-graph-state-preview__parameter-state ${menuStyles.state}`}>
                           Read-only
                         </span>
                       )}
@@ -3340,17 +3356,18 @@ export default function GraphStatePreview({
 
   return (
     <section
-      className="xleth-graph-state-preview"
+      className={`xleth-graph-state-preview ${canvasStyles.preview}`}
+      data-fx-graph-preview="true"
       aria-label={canEditViewport ? 'Persisted FX graph workspace' : 'Read-only persisted FX graph preview'}
       data-read-only="true"
       data-draggable-nodes={canDragNodes ? 'true' : undefined}
       data-workspace-active={canEditViewport ? 'true' : undefined}
     >
       {hasHeader && (
-        <div className="xleth-graph-state-preview__chrome">
+        <div className={`xleth-graph-state-preview__chrome ${canvasStyles.chrome}`}>
           <div className="xleth-graph-state-preview__header">
             {notice != null && (
-              <p className="xleth-graph-state-preview__notice">{notice}</p>
+              <p className={`xleth-graph-state-preview__notice ${canvasStyles.notice}`}>{notice}</p>
             )}
           </div>
         </div>
@@ -3370,9 +3387,9 @@ export default function GraphStatePreview({
         onContextMenu={canAddAnything ? handleCanvasContextMenu : undefined}
         onDoubleClick={canEditViewport ? handleCanvasDoubleClick : undefined}
       >
-        <div className="xleth-graph-state-preview__stage" data-preview-scroll-stage="true">
+        <div className={`xleth-graph-state-preview__stage ${canvasStyles.stage}`} data-preview-scroll-stage="true">
           <div
-            className="xleth-graph-state-preview__canvas"
+            className={`xleth-graph-state-preview__canvas ${canvasStyles.canvas}`}
             ref={canvasRef}
             style={canvasStyle}
             data-node-dragging={draggingNodeId != null ? 'true' : undefined}
@@ -3381,7 +3398,7 @@ export default function GraphStatePreview({
             data-parameter-drop-target={hoveredParameterTarget?.portId ?? undefined}
           >
             <svg
-              className="xleth-graph-state-preview__edges"
+              className={`xleth-graph-state-preview__edges ${canvasStyles.edges}`}
               role="img"
               aria-label="Static graph cables"
             >
@@ -3432,7 +3449,7 @@ export default function GraphStatePreview({
                 />
               )}
             </svg>
-            <div className="xleth-graph-state-preview__nodes" role="list">
+            <div className={`xleth-graph-state-preview__nodes ${canvasStyles.nodes}`} role="list">
               {model.nodes.map((node) => (
                 <GraphStatePreviewNode
                   key={node.id}
@@ -3475,7 +3492,7 @@ export default function GraphStatePreview({
               ))}
             </div>
             {(canDisconnect || canEditMappings) && (
-              <div className="xleth-graph-state-preview__overlay" aria-label="Graph cable controls">
+              <div className={`xleth-graph-state-preview__overlay ${canvasStyles.overlay}`} aria-label="Graph cable controls">
                 {model.edges
                   .filter((edge) => edge.type === 'audio' || edge.type === 'parameter' || edge.type === 'sidechain')
                   .map((edge) => {
