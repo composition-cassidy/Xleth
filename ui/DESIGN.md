@@ -610,9 +610,9 @@ them with `npm run baseline` on a machine with a fresh addon (see `tests/baselin
 
 `app.css` still styles about 150 live components that have not moved to the kit; the four appended passes
 (`Mockup-aligned DAW shell pass`, `Flat mockup parity pass`, `Flat menus and settings parity pass`, `Flat grid
-track-card polish pass`) style those surfaces and are not superseded. Largest consumers by rule lines: the sampler
-panel (about 1,300), the plugin-ui runtime (about 860), Settings (about 620), the sampler modulation cards
-(about 550), Amp, Filter and Phanjer panels. Dialogs not yet on the kit: Export (RenderDialog), MIDI import and
+track-card polish pass`) style those surfaces and are not superseded. Largest consumers by rule lines: the plugin-ui
+runtime (about 860), Settings (about 620), Amp, Filter and Phanjer panels. (The sampler panel and its modulation cards,
+once the largest, moved to the kit in round 2 step 11; see section 14.) Dialogs not yet on the kit: Export (RenderDialog), MIDI import and
 the Settings panel (each 650 to 1,800 lines of its own layout). `ProgressBar` and the picker sheet's controls row
 are legacy too. `UpdateBanner` is a stub that renders nothing.
 
@@ -625,3 +625,55 @@ overlay controls): the track identity stripe button (6px wide), the clip FX badg
 snapshot cue markers, Pattern-list collapse. The Theme Editor (`theming/editor/ThemeEditor.tsx`) was unmounted from Phase 6c
 until the end of Phase 8; it is mounted again in Settings > Appearance (section 3.6, `SettingsThemeEditor.test.jsx`).
 It is still built on legacy `theme-editor-*` CSS in `app.css`, not the kit.
+
+## 14. Sampler (round 2, step 11)
+
+The per-region sampler every pattern track's notes play through (`components/sampler/`, opened in the detail dock by
+**Sampler settings** in the Piano Roll). Built on the kit and `Sampler.module.css`; the legacy sampler and modulation-tray
+CSS (about 2,600 lines of `app.css`) is gone. Engine calls, ranges, defaults and undo paths are unchanged: every drag
+previews locally and commits once through `updateSamplerSettings` (one `SetSamplerSettingsCommand`).
+
+**Layout** (one height for every view, so switching never resizes the panel and nothing animates):
+
+```
+┌ slot tabs (identity stripe, silent glyph) + │ Patch ▾ Save Delete │ Main · Playback · Modulation ┐ 28
+├ waveform well: slot header (name · rate · length · Root · M S ⋯ · Snap · Zoom to trim · Fit) ┬ 240px ┤
+│ overview + ms ruler + waveform (g0, slot colour)                                            │ Pitch  │
+├ Mode │ Trim │ Loop (Auto · On) │ Amp envelope (= Env 1)                                       │ Prep   │
+│                                                                                             │ Process│
+└ Audition: held-key mark · keys · range · Key octave · Velocity ·                 Root ▶      ┘ 28
+```
+
+At the default dock (1080p: 361px frame) the Main body is 305px and nothing scrolls. Below about 1,230px of strip width the
+Amp envelope folds to its title (it is Env 1, also in Modulation); at 1366x768 the right column scrolls inside itself.
+**Playback** is Voice → Glide → Arpeggiator → Per-note effects (the selected slot's Mangle chain as 24px rows) plus a
+stretch-details and Preview-through row. **Modulation** replaced the pull-out tray (its handle sat at the window edge, off
+screen in the docked shell): routes on the left, a source strip (Env 1-6, LFO 1-6, Velocity, Note), and one editor.
+
+**Labels.** `crossfadeEnabled` is the region's **One-shot / Sustained** switch (engine `setCrossfadeMode`), never shown as a
+crossfade toggle; in One-shot the Loop strip says "Needs Sustained" because the engine only loops when it is on. Modulation
+sources and targets read in sentence case ("Env 2", "Velocity", "Slot 1 mangle 2 amount"). Sample positions read as time
+(ms, seconds past one second) with the exact sample count in the hint and type-in accepting `smp`; slot volume reads in dB
+while the drag and the value sent stay linear gain 0..2. An off section (loop, arpeggiator) says "Off" in its header instead of
+dimming, so its controls stay readable and editable.
+
+**Colour.** Chrome is neutral. A slot's identity colour is `--theme-track-palette-N` for slot N (derived, not saved): its tab
+stripe, the waveform, the overview trim. The loop band, loop handles and crossfade use `--ui-value`; handles and the playhead
+are ink. The crossfade is drawn as the engine's equal-power curves (cos out, sin in over `[loopEnd − N, loopEnd]`, the source
+band at `[loopStart, loopStart + N]`, the wrap point dashed). Fades are drawn as gain ramps. Modulation is one signal type:
+every ring, band, editor curve and the drag ghost use `--ui-signal-parameter`; which source drives what is said in words
+(route list, hint, the count on a source tab).
+
+**Modulation on kit controls.** `Knob` and `NumberBox` take an optional `mod` (`ui-kit/modRing.ts`): the routed range as an
+inner arc in the knob's own SVG or a 2px top band on the box; drag that mark or Alt+drag anywhere = amount (180 px per unit,
+Shift fine, Escape cancels, one commit on release); right-click = bipolar; `data-mod-target` makes it a drop target. Absent
+`mod` = the ordinary control. `components/sampler/kitMod.jsx` (`ModKnob`, `ModNumberBox`) binds a registration to it.
+Every drag has a typed alternative: route depth is a NumberBox in the target's own unit, and **Add route** (source + target
+Selects) makes a route without dragging. Holding a source drag over the Main or Playback tab for 400 ms opens that view.
+
+**Auto loop** keeps its single result: `autoLoopForSelection` returns one loop, not a ranked list (the candidate list was Loop
+Lab's, removed in Phase 8). The Auto button's hint carries the result fields the engine returns (periods, spans kept of
+those considered, pitch drift, crossfade); telemetry (apply, 30 s nudge) is unchanged.
+
+**Audit.** `tests/ui-audit/phases/p41-sampler-default-dock.mjs` shoots Main (31), Playback (32) and the four modulation
+sources (36-39) at the default dock height and reports any vertical scroller; p40 still shoots 30 / 35, p200 shoots 203.

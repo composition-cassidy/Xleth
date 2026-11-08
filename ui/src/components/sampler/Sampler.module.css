@@ -337,10 +337,6 @@
     gap: var(--space-2);
   }
 
-  .loopBody[data-inactive] {
-    opacity: var(--ui-mute-opacity);
-  }
-
   .loopSide {
     display: flex;
     flex-direction: column;
@@ -430,10 +426,6 @@
     display: flex;
     align-items: center;
     gap: var(--space-2);
-  }
-
-  .arpBody[data-inactive] {
-    opacity: var(--ui-mute-opacity);
   }
 
   .arpRate {

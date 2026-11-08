@@ -496,7 +496,9 @@ export default function SamplerMainView({
             data-section="loop"
             actions={(
               <>
-                {sustained ? null : <span className={styles.caption}>Needs Sustained</span>}
+                {sustained
+                  ? (settings.loopEnabled ? null : <span className={styles.caption}>Off</span>)
+                  : <span className={styles.caption}>Needs Sustained</span>}
                 <Button
                   size="sm"
                   onClick={actions.runAutoLoop}
@@ -516,7 +518,7 @@ export default function SamplerMainView({
               </>
             )}
           >
-            <div className={styles.loopBody} data-inactive={(!sustained || !settings.loopEnabled) || undefined}>
+            <div className={styles.loopBody}>
               <div className={styles.knobRow}>
                 {pos('crossfadeSamples', 'Crossfade', settings.crossfadeSamples, {
                   max: 5000,

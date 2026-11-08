@@ -181,15 +181,18 @@ export default function SamplerPlaybackView({
           title="Arpeggiator"
           data-section="arp"
           actions={(
+            <>
+            {s.arpEnabled ? null : <span className={styles.caption}>Off</span>}
             <Toggle
               size="sm" on={!!s.arpEnabled} aria-label="Arpeggiator"
               onChange={(next) => actions.commitField('arpEnabled', next)}
               hint="Arpeggiate held notes"
               data-field="arpEnabled"
             >On</Toggle>
+            </>
           )}
         >
-          <div className={styles.arpBody} data-inactive={!s.arpEnabled || undefined}>
+          <div className={styles.arpBody}>
             <div className={styles.stack}>
               <SegmentedControl
                 size="sm" label="Arpeggiator range" value={s.arpRange ?? 1} options={ARP_RANGES}
