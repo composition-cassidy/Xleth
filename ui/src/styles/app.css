@@ -14051,18 +14051,6 @@ input[type="radio"] {
   border-bottom: 1px solid var(--xleth-flat-border);
   background: var(--xleth-flat-chrome);
 }
-/* Shared preset strip for the bespoke (non-runtime-renderer) stock effect
-   panels — Delay, UniFlange, Chorus, Flanger, Phaser, Phanjer, Reverb,
-   Smart Balance, EQ, Filter, Waveshaper. */
-.fx-panel-preset-strip {
-  display: flex;
-  align-items: center;
-  padding: 4px 12px;
-  border-bottom: 1px solid var(--xleth-flat-border);
-  background: var(--xleth-flat-chrome);
-  flex-shrink: 0;
-}
-
 /* Editor surface — the one raised panel, so it carries the hard flat shadow. */
 
 /* ═════════════════════════════════════════════════════════════════════════════

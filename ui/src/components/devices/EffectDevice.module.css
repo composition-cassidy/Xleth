@@ -1,7 +1,8 @@
 @layer kit {
-  /* Body of a device whose editor has not moved onto the frame yet: what it is
-   * and how to open it. No fake controls, no placeholder display. */
-  .stub {
+  /* Body of a chain entry that is not a stock effect (a third-party plugin, a
+   * missing or crashed one): what it is doing and how to open its own window.
+   * No fake controls, no placeholder display. */
+  .external {
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;

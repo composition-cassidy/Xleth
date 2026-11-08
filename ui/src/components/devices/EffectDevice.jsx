@@ -12,12 +12,16 @@ import useAbCompare from './useAbCompare.js'
 import DevicePresetMenu, { presetMoreItems } from './DevicePresetMenu.jsx'
 import styles from './EffectDevice.module.css'
 
-const STUB_WIDTH = 200
+const EXTERNAL_WIDTH = 200
 const NO_EDITOR_STORE = () => null
 
 // One chain entry as a device. Wires the frame to the existing stores:
 // bypass -> useEffectChainStore.setBypass, delete -> removeEffect, move ->
 // moveEffect, pop-out -> the effect's editor opener (EffectEditorHost mounts it).
+//
+// Every stock effect has a body in deviceRegistry.js. An entry without one is not
+// a stock effect: a third-party plugin (its editor is a native window the app
+// cannot draw), a missing or crashed one, or one still being added.
 //
 // Props:
 //   effect        — chain entry { nodeId, pluginId, bypassed, missing, crashed, ... }
@@ -29,7 +33,7 @@ const NO_EDITOR_STORE = () => null
 //   canBypass     — false when the chain store does not own this effect (FX Graph)
 export default function EffectDevice(props) {
   const reg = deviceBodyFor(props.effect?.pluginId)
-  return reg ? <MigratedDevice {...props} reg={reg} /> : <StubDevice {...props} />
+  return reg ? <MigratedDevice {...props} reg={reg} /> : <ExternalPluginDevice {...props} />
 }
 
 function useCommonDeviceState({ effect, storeKey, canBypass = true, moveItems = [] }) {
@@ -130,7 +134,9 @@ function MigratedDevice({
   )
 }
 
-function StubDevice({
+// A chain entry that is not a stock effect. The frame is the same; the body says
+// what the plugin is doing and, for a live one, opens its own editor window.
+function ExternalPluginDevice({
   effect, storeKey, presentation = 'docked', identityColor, dragHandleProps, moveItems, onClose,
   canBypass, ...rest
 }) {
@@ -138,12 +144,10 @@ function StubDevice({
   const fetchChain = useEffectChainStore((s) => s.fetchChain)
   const removeEffect = useEffectChainStore((s) => s.removeEffect)
   const trackId = resolveTrackId(storeKey)
-  const stockOpener = EFFECT_EDITORS[effect.pluginId]
 
   const open = () => {
     if (!common.live) return
-    if (stockOpener) stockOpener(trackId, effect.nodeId, storeKey)
-    else window.xleth?.audio?.openPluginEditor?.(trackId, effect.nodeId)
+    window.xleth?.audio?.openPluginEditor?.(trackId, effect.nodeId)
   }
 
   let status
@@ -163,9 +167,7 @@ function StubDevice({
       </Button>
     )
   } else {
-    status = stockOpener
-      ? `${common.name} opens in its own window until its device arrives.`
-      : 'Plugin editor opens in its own window.'
+    status = 'Plugin editor opens in its own window.'
     action = <Button size="sm" onClick={open}>Open editor</Button>
   }
 
@@ -173,7 +175,7 @@ function StubDevice({
     <DeviceFrame
       {...rest}
       name={common.name}
-      width={STUB_WIDTH}
+      width={EXTERNAL_WIDTH}
       identityColor={identityColor}
       bypassed={!!effect.bypassed}
       onBypassChange={common.onBypassChange}
@@ -186,7 +188,7 @@ function StubDevice({
       dragHandleProps={dragHandleProps}
       data-device-plugin={effect.pluginId}
     >
-      <div className={styles.stub}>
+      <div className={styles.external}>
         <p className={styles.status}>{status}</p>
         {action}
       </div>

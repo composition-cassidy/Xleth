@@ -26,14 +26,14 @@ export const AUDIO_EFFECTS = [
   ['waveshaper', 'Waveshaper', 'Distortion', [M + 'WaveshaperPanel.jsx']],
   ['amp', 'Amp Stack', 'Distortion', [M + 'AmpPanel.jsx']],
   ['uniflange', 'UniFlange', 'Modulation', [M + 'UniFlangePanel.jsx', D + 'UniFlangeDevice.jsx', D + 'UniFlangeScope.jsx']],
-  ['chorus', 'Chorus', 'Modulation', [M + 'ChorusPanel.jsx', M + 'ChorusOrbitVisualizer.jsx']],
+  ['chorus', 'Chorus', 'Modulation', [M + 'ChorusPanel.jsx', D + 'ChorusDevice.jsx', D + 'ChorusOrbitCanvas.jsx']],
   ['flanger', 'Flanger', 'Modulation', [M + 'FlangerPanel.jsx', M + 'FlangerVisualizerCanvas.jsx', D + 'FlangerDevice.jsx', D + 'FlangerLfoCanvas.jsx']],
-  ['phaser', 'Phaser', 'Modulation', [M + 'PhaserPanel.jsx', M + 'PhaserVisualizerCanvas.jsx']],
-  ['phanjer', 'Phanjer', 'Modulation', [M + 'PhanjerPanel.jsx', M + 'PhanjerResponseCanvas.jsx']],
+  ['phaser', 'Phaser', 'Modulation', [M + 'PhaserPanel.jsx', D + 'PhaserDevice.jsx', D + 'PhaserSweepCanvas.jsx']],
+  ['phanjer', 'Phanjer', 'Modulation', [M + 'PhanjerPanel.jsx', D + 'PhanjerDevice.jsx', D + 'PhanjerResponseCanvas.jsx']],
   ['delay', 'Delay', 'Time', [M + 'DelayPanel.jsx', M + 'DelayEchoFieldVisualizer.jsx', M + 'DelayFilterCurve.jsx', D + 'DelayDevice.jsx']],
   ['reverb', 'Reverb', 'Time', [M + 'ReverbPanel.jsx', M + 'ReverbDecayFieldVisualizer.jsx', M + 'ReverbFilterCurve.jsx', D + 'ReverbDevice.jsx']],
-  ['pitchshifter', 'Pitch Shifter', 'Pitch', [M + 'PitchShifterPanel.jsx']],
-  ['smartbalance', 'Smart Balance', 'Utility', [M + 'SmartBalancePanel.jsx']],
+  ['pitchshifter', 'Pitch Shifter', 'Pitch', [M + 'PitchShifterPanel.jsx', D + 'PitchShifterDevice.jsx']],
+  ['smartbalance', 'Smart Balance', 'Utility', [M + 'SmartBalancePanel.jsx', D + 'SmartBalanceDevice.jsx', D + 'SmartBalanceCanvas.jsx', D + 'smartBalanceGeometry.js']],
 ];
 
 // ── Visual effects: components/grid/VisualFXAddDropdown.jsx (NC_ITEMS + C_ITEMS) ──
