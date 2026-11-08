@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
+import ClipPictureSection from './ClipPictureSection.jsx'
 import { X, RotateCcw, Copy, ClipboardPaste } from 'lucide-react'
 import useClipVibratoEditorStore from '../../stores/clipVibratoEditorStore.js'
 import BreakpointCurveEditor from '../common/BreakpointCurveEditor.jsx'
@@ -89,6 +90,7 @@ function ScalarSlider({ label, value, min, max, step, format, disabled, onCommit
 export default function ClipVibratoEditorPanel() {
   const target = useClipVibratoEditorStore(s => s.target)
   const clip = useClipVibratoEditorStore(s => s.clip)
+  const commitVideo = useClipVibratoEditorStore(s => s.commitVideo)
   const draftShape = useClipVibratoEditorStore(s => s.draftShape)
   const selectedIdx = useClipVibratoEditorStore(s => s.selectedIdx)
   const close = useClipVibratoEditorStore(s => s.close)
@@ -325,6 +327,8 @@ export default function ClipVibratoEditorPanel() {
           </label>
         </div>
       </div>
+
+      <ClipPictureSection kind="swirl" clip={clip} commitVideo={commitVideo} />
 
       <div className="clipfx-status">
         <span className={`clipfx-led${enabled ? ' is-on' : ''}`} />

@@ -106,6 +106,34 @@ const useClipVibratoEditorStore = create((set, get) => ({
 
   // Scalar (and shape-selection) commits take the same route the clip dropdown
   // does: merge onto the whole modulation block, one setClipModulation call.
+  // The video companion's amounts (Swirl / Wave), edited in this window since
+  // round 2 step 17: the same merge-and-write as every other control here, one
+  // setClipModulation per gesture. Turning the companion on or off stays in the
+  // Inspector, which seeds it from Settings > Clip FX.
+  async commitVideo(videoPatch) {
+    const t = get().target
+    if (!t || !videoPatch) return false
+    try {
+      const timeline = globalThis.window?.xleth?.timeline
+      if (typeof timeline?.setClipModulation !== 'function') {
+        console.error('[ClipVibrato] timeline.setClipModulation unavailable')
+        return false
+      }
+      await get().refresh()
+      const clip = get().clip
+      if (!clip) return false
+      const merged = mergeClipModulationPatch(clip, { videoPatch })
+      const updated = await timeline.setClipModulation(t.clipId, merged)
+      if (updated && updated.id === t.clipId) set({ clip: updated })
+      else await get().refresh()
+      timelineEvents.dispatchEvent(new Event('timeline-clips-changed'))
+      return true
+    } catch (err) {
+      console.error('[ClipVibrato] setClipModulation (video) error:', err)
+      return false
+    }
+  },
+
   async commitVibrato(vibratoPatch) {
     const t = get().target
     if (!t || !vibratoPatch) return false

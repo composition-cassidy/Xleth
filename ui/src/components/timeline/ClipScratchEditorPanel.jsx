@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import ClipPictureSection from './ClipPictureSection.jsx'
 import { X, RotateCcw } from 'lucide-react'
 import useClipScratchEditorStore from '../../stores/clipScratchEditorStore.js'
 import BreakpointCurveEditor from '../common/BreakpointCurveEditor.jsx'
@@ -127,6 +128,7 @@ function ScalarSlider({ label, value, min, max, step, format, disabled, onCommit
 export default function ClipScratchEditorPanel() {
   const target = useClipScratchEditorStore(s => s.target)
   const clip = useClipScratchEditorStore(s => s.clip)
+  const commitVideo = useClipScratchEditorStore(s => s.commitVideo)
   const draftCurve = useClipScratchEditorStore(s => s.draftCurve)
   const selectedIdx = useClipScratchEditorStore(s => s.selectedIdx)
   const close = useClipScratchEditorStore(s => s.close)
@@ -456,6 +458,8 @@ export default function ClipScratchEditorPanel() {
           onCommit={(x) => commitScratch({ gainCompensationDb: x })}
         />
       </div>
+
+      <ClipPictureSection kind="wave" clip={clip} commitVideo={commitVideo} />
 
       <div className="clipfx-status">
         <span className={`clipfx-led${enabled ? ' is-on' : ''}`} />
