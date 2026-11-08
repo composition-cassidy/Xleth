@@ -634,7 +634,7 @@ them with `npm run baseline` on a machine with a fresh addon (see `tests/baselin
 `app.css` still styles about 150 live components that have not moved to the kit; the four appended passes
 (`Mockup-aligned DAW shell pass`, `Flat mockup parity pass`, `Flat menus and settings parity pass`, `Flat grid
 track-card polish pass`) style those surfaces and are not superseded. Largest consumers by rule lines: the plugin-ui
-runtime (about 860), Settings (about 620), Amp, Filter and Phanjer panels. (The sampler panel and its modulation cards,
+runtime (about 860), Settings (about 620) and the Phanjer panel (Amp and Filter moved to devices in step 15). (The sampler panel and its modulation cards,
 once the largest, moved to the kit in round 2 step 11; see section 14.) Dialogs not yet on the kit: Export (RenderDialog), MIDI import and
 the Settings panel (each 650 to 1,800 lines of its own layout). `ProgressBar` and the picker sheet's controls row
 are legacy too. `UpdateBanner` is a stub that renders nothing.
@@ -851,3 +851,55 @@ Selectivity), Time, Focus, Stereo (Stereo / Mid / Side, Link: `stereo_link` had 
 Delta), Processing (Low latency / High quality, Fast / Normal / High, and the high-quality real-time warning, polled
 only while high quality is selected). There is no "range" parameter; the engine's are the ones above.
 
+## 18. Tone and distortion devices (round 2, step 15)
+
+**Xleth Filter** (`FilterDevice.jsx`, about 1,500px). Up to eight slots, each with a type, cutoff, resonance, drive, mix and up
+to six modulator lanes, all kept. The hero is the response on a log-frequency axis (`FilterResponseCanvas.jsx`): the engine's
+aggregate curve (`filterGetResponseCurve`, authoritative) with a faint guide per slot and **one draggable node per slot**.
+Sideways is cutoff; up and down is **resonance** (Q, relative to where the drag began, the full plot height being the whole
+0.5 to 30 range) for the types without gain, and the **gain** itself, absolute, for peak, shelves and tilt. The wheel sets Q,
+arrows nudge (Shift is coarser), `[` and `]` change slot, Escape puts a drag back. A drag previews at most once per frame and
+commits once on release. Sections in signal order: **Slots** (eight 24px rows: on, type, remove, add), the **response well**,
+**Filter** (type Select grouped Standard / Analog / Character, slope SegmentedControl, disabled for the types whose slope is
+fixed), **Tone** (Cutoff, the 56px hero; Resonance; Gain or Morph where the type has one), **Shape** (Drive, Mix),
+**Modulators** (the addable lane list with Add as a Select) and the **selected lane's editor** (LFO: shape, Sync / Free, division
+or rate, phase; Envelope: five knobs, the ADSR picture, slide notes; Dynamics: attack, release, cut min and max). The live
+animation loop is the editor's, in `filterLive.js`: it polls `filterGetLiveState` at about 30 Hz **only while a modulator
+exists**, pushes frames into the DOM and the canvas without React state, prints the post-modulation value under each knob a lane
+is aimed at, and draws the live curve with the parked one dashed. The editor clamped the slot type to 0..8, so the eleven analog
+and character types read as Morph; the device uses the full 0..19. **Each device owns a private store**
+(`createStore(filterStoreInitializer)`, the EQ precedent); the global `useFilterStore` only marks the popped-out instance.
+
+**Distortion** (`DistortionDevice.jsx`, about 920px). The hero is the transfer curve, output against input
+(`DistortionCurveCanvas.jsx`), drawn from the same pure math the engine's per-sample switch is ported from
+(`distortionPainter.js`, which now holds only the math). It redraws on a parameter, theme or pixel-ratio change, never per
+frame. Sections: **Mode** (all seven modes as one SegmentedControl, engine order, with Symmetry for Analog and Bits and
+Downsample for Crush beneath, dimmed outside their mode), **Drive** (the 56px hero), **Tone** (Tone and the Pre / Post filter
+position), **Output** (Mix and the real PEAK_L / PEAK_R meters). The engine has no output-level parameter, so there is none.
+Writes are the runtime layout's (`useStockEffectParams`). `distortion.json`, `DistortionCurveNode` and the Designer entry point
+are gone; `designer/__tests__/distortionMigration.test.jsx` pinned that layout and was deleted, as the Overdone and Transient
+ones were.
+
+**Waveshaper** (`WaveshaperDevice.jsx`, about 670px). The hero is the editable transfer curve on canvas
+(`WaveshaperCurveCanvas.jsx`; the maths is the pure, tested `waveshaperCurve.js`): click empty ground adds a point (to 32), drag
+moves one (local while dragging, one `wsSetCurvePoints` on release; a click that only selects writes nothing), right-click or
+Delete removes one (never below two). A dragged point stays between its neighbours. For the Floor: `[` `]` select, arrows
+nudge, and a **Point** section types the selected point's In and Out. Sections after the well: **Shape** (the preset Select,
+"Custom" shown but not pickable, and Snap zero, Lock ends, Show input, Smooth curve as Toggles), **Point**, **Input** (Pre
+gain), **Output** (Post gain, Mix). The editor's Range switch is gone (Unipolar only relabelled the axes); the engine has no
+oversampling parameter. Private store per device (`waveshaperStoreInitializer`).
+
+**Amp Stack** (`AmpDevice.jsx`, about 1,010px). **The two skins are removed**: ANALOG (screws, stripe band, jewel, hardware-cap
+knobs, a painted VU needle, a luminance-picked dark and light state) and MODERN, with the chip and `skinOverride`. The engine
+publishes no curve or spectrum for the amp, so there is **no display**; the hero is the Model switch (Blackface, Tweed, Plexi,
+Modern, Rectifier, Precision), one click and one write, so it switches while playing. Sections: **Input** (Model, Drive as the
+56px hero, Gate, Tighten), **Tone**, **Power** (Sag), **Cabinet** (the five engine strings as a Select), **Output** (Mix, Output,
+the real output-peak meter). Every value goes through `formatValue`; the 0 to 10 amounts are one-decimal numbers.
+
+**Shared.** `deviceFormat.js` holds the three formats the kit's units do not cover (a plain number, a 0..1 fraction as a
+percentage, a phase in degrees), all still `formatValue`. Writes are the editors': knobs preview per frame and commit once on
+release, every continuous knob keeps automation (`AutomatableKnob`). Measured on the real devices in an isolated harness (stub
+`window.xleth`): 256px tall, 2 distinct font sizes (11 and 12px), 0 text under 10px, 0 under 4.5:1 apart from the silenced slot
+name at the 45 % mute opacity, no letter-spaced uppercase. The 2026-11-07 shots 54 to 57 had 3 to 5 sizes, up to 32 texts under
+10px and up to 24 letter-spaced caps labels. The full audit capture (p10, shots 54 to 57 and the chain) needs the engine; the
+phase now labels these four as kit devices.

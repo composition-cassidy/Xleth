@@ -12,7 +12,7 @@ const closeTop = (page) => page.evaluate(() => {
   b.click(); return true;
 });
 async function closeAll(page, sleep) { for (let i = 0; i < 40; i++) { const r = await closeTop(page); if (r === false) return; if (r === 'nobtn') { await page.keyboard.press('Escape'); } await sleep(250); } }
-const KIT = new Set(['compressor', 'delay', 'flanger', 'uniflange', 'reverb', 'limiter', 'xletheq', 'glue', 'opto', 'fet', 'varimu', 'gloss', 'apex', 'overdone', 'transientproc', 'resonancesuppressor']);
+const KIT = new Set(['compressor', 'delay', 'flanger', 'uniflange', 'reverb', 'limiter', 'xletheq', 'glue', 'opto', 'fet', 'varimu', 'gloss', 'apex', 'overdone', 'transientproc', 'resonancesuppressor', 'xlethfilter', 'distortion', 'waveshaper', 'amp']);
 
 export default async ({ page, sleep }) => {
   const out = [];
