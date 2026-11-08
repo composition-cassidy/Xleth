@@ -30,6 +30,7 @@ import useOptoCompStore from '../../stores/optoCompStore.js'
 import useFetCompStore from '../../stores/fetCompStore.js'
 import useVariMuCompStore from '../../stores/variMuCompStore.js'
 import GlossDevice from './GlossDevice.jsx'
+import ApexDevice from './ApexDevice.jsx'
 import useApexStore from '../../stores/apexStore.js'
 
 export const DEVICE_BODIES = {
@@ -51,6 +52,9 @@ export const DEVICE_BODIES = {
   // editor store (the target's `skin` says which editor owns it) and the APEX
   // preset adapter, which captures the curves as well as the scalar params.
   gloss: { Body: GlossDevice, useEditorStore: useApexStore, presetType: 'apex' },
+  // APEX owns a private store per device (curves, band, curve undo); the global
+  // useApexStore only marks the popped-out instance, as for GLOSS.
+  apex: { Body: ApexDevice, useEditorStore: useApexStore },
 }
 
 export function deviceBodyFor(pluginId) {

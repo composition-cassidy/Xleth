@@ -261,6 +261,10 @@ describe('deriveTheme — structural contracts', () => {
       '--theme-ui-signal-events',
       '--theme-ui-signal-parameter',
       '--theme-ui-signal-video',
+      '--theme-ui-band-1',
+      '--theme-ui-band-2',
+      '--theme-ui-band-3',
+      '--theme-ui-band-4',
     ];
     for (const k of expected) expect(d[k]).toBeTruthy();
     expect(Object.keys(d).length).toBe(expected.length);

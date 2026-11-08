@@ -1,0 +1,120 @@
+@layer kit {
+  /* The body's sections sit straight in the frame's row; this wrapper only
+   * catches the curve undo keys, so it takes no box of its own. */
+  .contents {
+    display: contents;
+  }
+
+  /* Band palette (DESIGN.md 3.3.1) on the band's own controls: the value colour
+   * of the knobs under a band becomes that band's hue. Master (3) keeps it. */
+  .band[data-band="0"] { --ui-value: var(--ui-band-1); }
+  .band[data-band="1"] { --ui-value: var(--ui-band-2); }
+  .band[data-band="2"] { --ui-value: var(--ui-band-4); }
+
+  /* Curve editor and analysis side by side inside the one well. The curve box
+   * is close to square: unity is its diagonal. */
+  .split {
+    display: flex;
+    flex: 1 1 auto;
+    min-height: 0;
+  }
+
+  .curve {
+    position: relative;
+    flex: 0 0 212px;
+    min-width: 0;
+    border-right: 1px solid var(--ui-g4);
+    touch-action: none;
+  }
+
+  .analysis {
+    position: relative;
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .canvas {
+    display: block;
+    width: 100%;
+    height: 100%;
+  }
+
+  .splits {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-1);
+  }
+
+  .split1 {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .cell {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+  }
+
+  .column {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    align-self: stretch;
+    justify-content: center;
+    gap: var(--space-2);
+    padding: 0 var(--space-1);
+  }
+
+  .tools {
+    display: flex;
+    align-items: center;
+    gap: 2px;
+  }
+
+  .spacer {
+    flex: 1 1 auto;
+  }
+
+  .grid {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .row {
+    display: flex;
+    align-items: flex-start;
+    gap: 2px;
+  }
+
+  /* A band's swatch in the selector: filled while the band runs, hollow while it
+   * is muted or off, so its state never rides on colour alone. */
+  .swatch {
+    display: inline-block;
+    box-sizing: border-box;
+    width: 8px;
+    height: 8px;
+    border: 2px solid var(--ui-value);
+    background: var(--ui-value);
+  }
+
+  .swatch[data-band="3"] {
+    border-color: var(--ui-ink-3);
+    background: transparent;
+  }
+
+  .swatch[data-silenced] {
+    background: transparent;
+  }
+
+  .readout {
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+}

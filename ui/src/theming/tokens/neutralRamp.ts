@@ -54,6 +54,11 @@ export interface RampSpec {
     signalEvents: string;
     signalParameter: string;
     signalVideo: string;
+    /** Multiband band palette, low to high (DESIGN.md 3.5). */
+    band1: string;
+    band2: string;
+    band3: string;
+    band4: string;
   };
 }
 
@@ -79,6 +84,10 @@ export const RAMPS: Readonly<Record<RampName, RampSpec>> = {
       signalEvents: '#69BA7C',
       signalParameter: '#AA95E8',
       signalVideo: '#CF88C8',
+      band1: '#ED9659',
+      band2: '#B6C963',
+      band3: '#53B0DE',
+      band4: '#C494E2',
     },
   },
   // Light: ground (g0) is the darkest step, controls and headers are raised toward
@@ -104,6 +113,10 @@ export const RAMPS: Readonly<Record<RampName, RampSpec>> = {
       signalEvents: '#176F36',
       signalParameter: '#6A54A1',
       signalVideo: '#8B4986',
+      band1: '#964A00',
+      band2: '#596504',
+      band3: '#0A668A',
+      band4: '#7A4D94',
     },
   },
   // High contrast: black ground, white ink, bright boundary, and a g4 divider that
@@ -127,6 +140,10 @@ export const RAMPS: Readonly<Record<RampName, RampSpec>> = {
       signalEvents: '#6ABB7D',
       signalParameter: '#B29DF1',
       signalVideo: '#D991D2',
+      band1: '#F1995D',
+      band2: '#B6C963',
+      band3: '#5BB8E6',
+      band4: '#CC9CEA',
     },
   },
 };

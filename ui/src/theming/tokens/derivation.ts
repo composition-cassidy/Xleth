@@ -275,6 +275,10 @@ export function deriveTheme(
   put('--theme-ui-signal-events',    sem.signalEvents);
   put('--theme-ui-signal-parameter', sem.signalParameter);
   put('--theme-ui-signal-video',     sem.signalVideo);
+  put('--theme-ui-band-1',           sem.band1);
+  put('--theme-ui-band-2',           sem.band2);
+  put('--theme-ui-band-3',           sem.band3);
+  put('--theme-ui-band-4',           sem.band4);
 
   return out;
 }

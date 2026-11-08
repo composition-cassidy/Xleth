@@ -123,6 +123,29 @@ other. OKLCH hues of the state colours: **accent 200°, rec 23°, danger 21°, s
 | parameter | L.72 C.12 H295 | `#AA95E8` | 6.70 | 5.51 |
 | video | L.72 C.12 H330 | `#CF88C8` | 6.57 | 5.40 |
 
+### 3.3.1 Band palette (multiband devices)
+
+Four fixed hues, low to high, for every multiband device (`--ui-band-1..4`, catalog subsystem *ui-band*,
+`neutralRamp.ts` per ramp). The hue rises with frequency. Each is at least 30° (OKLCH) from the accent and every
+state hue and from each other, and reaches 4.5:1 on g0 to g3 (7:1 in high contrast); `themes.test.ts` asserts both
+in every shipped theme. A band's hue is reused on that band's own controls by setting `--ui-value` on their
+container, so a knob's arc wears it. The selected segment of a band selector stays the inverted ink chip; the band
+is a swatch glyph, filled while the band runs and hollow while it is muted or off.
+
+| Token | Band | OKLCH (dark) | Dark | Light | High contrast |
+|---|---|---|---|---|---|
+| `--ui-band-1` | low | L.75 C.13 H54 | `#ED9659` | `#964A00` | `#F1995D` |
+| `--ui-band-2` | low-mid | L.80 C.13 H118 | `#B6C963` | `#596504` | `#B6C963` |
+| `--ui-band-3` | high-mid | L.72 C.11 H232 | `#53B0DE` | `#0A668A` | `#5BB8E6` |
+| `--ui-band-4` | high | L.74 C.12 H312 | `#C494E2` | `#7A4D94` | `#CC9CEA` |
+
+- **Three-band devices** (APEX, Overdone) use slots 1, 2 and 4, so "High" is always the top hue
+  (`components/devices/bandPalette.js`). APEX's Master is not a band and keeps `--ui-value`.
+- **Signal hues are not excluded.** The circle has no fourth slot 30° from all seven existing hues: high-mid sits
+  23° from audio and high 17° from parameter. Bands appear only inside device bodies, signal hues only on cables,
+  ports and the FX Graph, so the two never share a surface.
+- Canvases resolve the token from their own element at draw time (`readBandColor`), never at module scope.
+
 ### 3.4 Identity palette (tracks)
 
 There is **one** identity palette: `--theme-track-palette-1..16` (catalog category *Labels*).
@@ -776,3 +799,24 @@ panel never had one. GLOSS shares the APEX store (the target's `skin` picks the 
 font sizes (11 and 12px), 0 text under 10px, 0 under 4.5:1, no letter-spaced uppercase. The 2026-11-07 editors had 4 to 6
 sizes. The full audit capture (shots 40-*, 44 to 47, 50) needs the engine; its phase p10 now labels these five as kit
 devices.
+
+## 17. Multiband and spectral dynamics (round 2, step 14)
+
+**APEX** (`ApexDevice.jsx`, about 1270px). The hero is the editor's own transfer-curve editor and analysis display,
+side by side in one well (curve 212px, close to square so unity is its diagonal). Their drawing, hit-testing and viz
+subscription are unchanged; they take a `store` prop. **Each device owns a private APEX store**
+(`createStore(apexStoreInitializer)`, the EQ precedent), so two APEX devices, docked or popped out, never share
+curves, the selected band or curve undo. The global `useApexStore` only marks the popped-out instance and GLOSS's skin.
+
+- Sections in signal order: Input (Low cut, `Off` at 0), Crossover (Low and High split, each tinted with the band
+  below / above it, with a 12 / 24 dB slope switch), Band, *{Band} band* (eight knobs, two rows), Mix (Lookahead,
+  Band mix, the reported latency).
+- **Band selector** Low / Mid / High / Master: a `SegmentedControl` with band swatches. It swaps one fixed block of
+  eight knobs retitled after the band, so the device never grows. Band also holds the state switch (On / Comp off /
+  Muted / Off), Peak / RMS detection, Solo (exclusive across L / M / H; disabled on Master) and curve undo, redo and
+  reset.
+- **Writes** are the editor's: `previewParam` (local, at most one engine write per frame) and one `commitParam` on
+  release; switches commit once. Curve edits keep the store's local undo (one entry per gesture); Ctrl+Z / Ctrl+Y act
+  while focus is inside the device and stop there. All knobs keep automation through `AutomatableKnob`.
+- Canvas captions moved to 10px, sentence case and true minus signs.
+

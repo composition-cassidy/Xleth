@@ -42,6 +42,13 @@
     --ui-signal-parameter: var(--theme-ui-signal-parameter, #AA95E8);
     --ui-signal-video: var(--theme-ui-signal-video, #CF88C8);
 
+    /* ── Multiband band palette, low to high (DESIGN.md 3.5) ─────────────── */
+    /* Every multiband device; a three-band device uses 1, 2 and 4. */
+    --ui-band-1: var(--theme-ui-band-1, #ED9659);   /* low */
+    --ui-band-2: var(--theme-ui-band-2, #B6C963);   /* low-mid (Mid on three bands) */
+    --ui-band-3: var(--theme-ui-band-3, #53B0DE);   /* high-mid */
+    --ui-band-4: var(--theme-ui-band-4, #C494E2);   /* high */
+
     /* ── Typography (DESIGN.md 4) ────────────────────────────────────────── */
     --ui-font: var(--xleth-global-font-family);
     --ui-font-mono: "IBM Plex Mono", Consolas, "Courier New", monospace;     /* timecode, bars|beats */

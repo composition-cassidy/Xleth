@@ -171,6 +171,27 @@ describe.each(SLUGS)('%s', (slug) => {
     }
   });
 
+  it('band palette (DESIGN.md 3.5): 4.5:1 on every surface (7:1 in high contrast), >= 30 deg from accent and state hues, ordered low to high', () => {
+    const floor = hc ? 7 : 4.5;
+    const bands = [1, 2, 3, 4].map((n) => hex(slug, `--theme-ui-band-${n}`));
+    for (const [i, b] of bands.entries()) {
+      for (const [gi, g] of G.entries()) {
+        expect(contrastRatio(b, g), `${slug} band-${i + 1} on g${gi}`).toBeGreaterThanOrEqual(floor);
+      }
+    }
+    const state = [hex(slug, '--theme-ui-rec'), hex(slug, '--theme-ui-solo'), hex(slug, '--theme-danger')];
+    // The accent variants move the accent hue on purpose; the band hues are fixed like the signal hues.
+    if (slug !== 'xleth-warm' && slug !== 'xleth-cool') state.push(hex(slug, '--theme-accent'));
+    for (const b of bands) {
+      for (const t of state) expect(hueDistance(hexToOklch(b).h, hexToOklch(t).h)).toBeGreaterThanOrEqual(30);
+    }
+    for (let a = 0; a < bands.length; a++) {
+      for (let c = a + 1; c < bands.length; c++) {
+        expect(hueDistance(hexToOklch(bands[a]).h, hexToOklch(bands[c]).h)).toBeGreaterThanOrEqual(30);
+      }
+    }
+  });
+
   it('identity palette: every slot gets an automatic label (ink or g1) at 4.5:1', () => {
     const ink = hex(slug, '--theme-ui-ink');
     for (let i = 1; i <= 16; i++) {

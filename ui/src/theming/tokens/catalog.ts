@@ -83,6 +83,7 @@ export const SUBSYSTEMS: ReadonlyArray<SubsystemMeta> = [
   { key: 'ui-neutral',  section: 'ui-kit', displayName: 'UI kit: neutral ramp',      category: 'Foundations' },
   { key: 'ui-semantic', section: 'ui-kit', displayName: 'UI kit: semantic colours',  category: 'Foundations' },
   { key: 'ui-signal',   section: 'ui-kit', displayName: 'UI kit: signal types',      category: 'Foundations' },
+  { key: 'ui-band',     section: 'ui-kit', displayName: 'UI kit: multiband bands',   category: 'Foundations' },
 
   // Window system
   { key: 'panel-chrome', section: '3.3', displayName: 'Panel chrome',        category: 'Window system', aliases: ['chrome-layout'] },
@@ -1050,6 +1051,12 @@ export const TOKENS: ReadonlyArray<TokenDef> = [
   derivedFormula('--theme-ui-signal-events', 'solid', 'Foundations', 'ui-signal'),
   derivedFormula('--theme-ui-signal-parameter', 'solid', 'Foundations', 'ui-signal'),
   derivedFormula('--theme-ui-signal-video', 'solid', 'Foundations', 'ui-signal'),
+
+  // ─── UI kit: multiband band palette, low to high (ui/DESIGN.md §3.5) ──
+  derivedFormula('--theme-ui-band-1', 'solid', 'Foundations', 'ui-band'),
+  derivedFormula('--theme-ui-band-2', 'solid', 'Foundations', 'ui-band'),
+  derivedFormula('--theme-ui-band-3', 'solid', 'Foundations', 'ui-band'),
+  derivedFormula('--theme-ui-band-4', 'solid', 'Foundations', 'ui-band'),
 ];
 
 // ──────────────────────────────────────────────────────────────────────────

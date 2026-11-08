@@ -15,7 +15,7 @@ export const AUDIO_EFFECTS = [
   ['fet', 'FET Comp', 'Dynamics', [M + 'FetCompPanel.jsx', D + 'CompressorFamilyDevice.jsx', D + 'compressorFamilyModels.js']],
   ['varimu', 'Vari-Mu Comp', 'Dynamics', [M + 'VariMuCompPanel.jsx', D + 'CompressorFamilyDevice.jsx', D + 'compressorFamilyModels.js']],
   ['limiter', 'Limiter', 'Dynamics', [M + 'LimiterPanel.jsx', D + 'LimiterDevice.jsx', 'plugin-ui/layouts/limiter.json']],
-  ['apex', 'APEX', 'Dynamics', [M + 'ApexPanel.jsx', M + 'ApexAnalysis.jsx', M + 'ApexCurveEditor.jsx', M + 'apexGeometry.js']],
+  ['apex', 'APEX', 'Dynamics', [M + 'ApexPanel.jsx', D + 'ApexDevice.jsx', M + 'ApexAnalysis.jsx', M + 'ApexCurveEditor.jsx', M + 'apexGeometry.js']],
   ['gloss', 'GLOSS', 'Dynamics', [M + 'GlossPanel.jsx', D + 'GlossDevice.jsx']],
   ['overdone', 'Overdone', 'Dynamics', [M + 'OTTPanel.jsx', 'plugin-ui/layouts/overdone.json']],
   ['transientproc', 'Transient Proc', 'Dynamics', [M + 'TransientProcPanel.jsx', 'plugin-ui/layouts/transient.json']],

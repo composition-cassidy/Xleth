@@ -1,9 +1,10 @@
 import React, { useCallback, useEffect, useRef, useState } from 'react'
+import { useStore } from 'zustand'
 import { tokenValue } from '../../theming/tokenValue.ts'
 import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
 import useApexStore from '../../stores/apexStore.js'
-import { BAND_NAMES } from '../../stores/apexStore.js'
-import { bandColorOr } from './apexBandColors.js'
+import { readBandColor } from '../devices/bandPalette.js'
+import { uiCanvasFont } from '../../styles/typography.js'
 import { useDynamicsVizSubscription } from '../../plugin-ui/runtime/useDynamicsVizSubscription.js'
 import { VIZ_TYPE } from '../../constants/dynamicsViz.js'
 import {
@@ -59,13 +60,13 @@ function readColors(el) {
     return inherited || tokenValue(name) || fb
   }
   return {
-    bg:       get('--theme-bg-inset', '#111318'),
-    grid:     get('--xleth-flat-border', 'rgba(255,255,255,0.10)'),
-    gridZero: get('--xleth-flat-text-muted', 'rgba(255,255,255,0.28)'),
-    unity:    get('--xleth-flat-text-muted', 'rgba(255,255,255,0.22)'),
-    accent:   get('--theme-accent', '#fe589a'),
-    text:     get('--xleth-flat-text-muted', 'rgba(255,255,255,0.55)'),
-    nodeStroke: get('--theme-bg-inset', '#111318'),
+    bg:       get('--ui-g0', '#141414'),
+    grid:     get('--ui-g4', '#3A3A3A'),
+    gridZero: get('--ui-ink-3', '#929292'),
+    unity:    get('--ui-ink-3', '#929292'),
+    accent:   get('--ui-value', '#33CED6'),
+    text:     get('--ui-ink-3', '#929292'),
+    nodeStroke: get('--ui-g0', '#141414'),
   }
 }
 
@@ -84,16 +85,21 @@ function withAlpha(color, alpha) {
   return v
 }
 
-export default function ApexCurveEditor() {
-  const band = useApexStore(s => s.selectedBand)
-  const storeCurve = useApexStore(s => s.curves[s.selectedBand])
-  const previewCurve = useApexStore(s => s.previewCurve)
-  const commitCurve = useApexStore(s => s.commitCurve)
-  const snapshotCurve = useApexStore(s => s.snapshotCurve)
+// Sentence-case band names for the canvas caption (DESIGN.md 4).
+const BAND_LABELS = ['Low', 'Mid', 'High', 'Master']
+
+// `store` is the APEX store this editor draws: a device's private instance, or
+// the global one by default.
+export default function ApexCurveEditor({ store = useApexStore, className = 'apex-curve-canvas' }) {
+  const band = useStore(store, s => s.selectedBand)
+  const storeCurve = useStore(store, s => s.curves[s.selectedBand])
+  const previewCurve = useStore(store, s => s.previewCurve)
+  const commitCurve = useStore(store, s => s.commitCurve)
+  const snapshotCurve = useStore(store, s => s.snapshotCurve)
   const themeEpoch = useThemeEpoch()
 
-  const trackId = useApexStore(s => s.target?.trackId ?? null)
-  const nodeId = useApexStore(s => s.target?.nodeId ?? null)
+  const trackId = useStore(store, s => s.target?.trackId ?? null)
+  const nodeId = useStore(store, s => s.target?.nodeId ?? null)
   const sub = useDynamicsVizSubscription(trackId, nodeId, VIZ_TYPE.APEX)
   const subRef = useRef(sub)
   subRef.current = sub
@@ -132,11 +138,10 @@ export default function ApexCurveEditor() {
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
 
     const c = readColors(canvas)
-    // The transfer curve wears the selected band's identity color (LOW red-orange
-    // / MID lime / HIGH aqua); MASTER keeps the earned theme accent. Everything
-    // drawn in "accent" below — fill, crosshair, meters, curve, nodes, dot —
-    // follows the band.
-    c.accent = bandColorOr(band, c.accent)
+    // The transfer curve wears the selected band's palette colour (DESIGN.md
+    // 3.3.1); Master is not a band and keeps the value colour. Everything drawn
+    // in "accent" below — fill, crosshair, meters, curve, nodes, dot — follows it.
+    c.accent = readBandColor(canvas, band, c.accent)
     const plot = plotOf(cssW, cssH)
     const curve = curveRef.current
 
@@ -149,7 +154,7 @@ export default function ApexCurveEditor() {
     // level-proportional and the low ticks crowd together near silence. Without
     // the priority pass the tail (-72) would win over -24 just by being last.
     ctx.lineWidth = 1
-    ctx.font = '9px system-ui, sans-serif'
+    ctx.font = uiCanvasFont('10px')
     ctx.textBaseline = 'middle'
     for (const db of CURVE_DB_TICKS) {
       const y = outDbToY(db, plot)
@@ -168,9 +173,9 @@ export default function ApexCurveEditor() {
     }
     // The box edge IS silence — the whole point of the level-proportional axis,
     // so it is labelled first and never dropped.
-    place(plot.y + plot.h - 4, '-∞', 0.75)
+    place(plot.y + plot.h - 4, '−∞', 0.75)
     for (const db of CURVE_LABEL_ORDER) {
-      place(outDbToY(db, plot), db > 0 ? `+${db}` : `${db}`)
+      place(outDbToY(db, plot), db > 0 ? `+${db}` : `−${-db}`.replace('−0', '0'))
     }
 
     // Unity reference diagonal (out == in — a straight diagonal because both
@@ -297,12 +302,13 @@ export default function ApexCurveEditor() {
     ctx.fillStyle = withAlpha(c.text, 0.9)
     ctx.textAlign = 'right'
     ctx.textBaseline = 'bottom'
-    ctx.font = '9px system-ui, sans-serif'
+    ctx.font = uiCanvasFont('10px')
+    const dbText = (v) => (v < 0 ? `−${(-v).toFixed(1)}` : v.toFixed(1))
     const label = showLevel
-      ? `${BAND_NAMES[band]} · ${lvl.db.toFixed(1)} → `
-        + `${clamp(evalCurveAt(curve, clamp(lvl.db, CURVE_MIN_DB, CURVE_MAX_DB)),
-                   CURVE_MIN_DB, CURVE_MAX_DB).toFixed(1)} dB`
-      : `${BAND_NAMES[band]} · IN→OUT dB`
+      ? `${BAND_LABELS[band]} · ${dbText(lvl.db)} → `
+        + `${dbText(clamp(evalCurveAt(curve, clamp(lvl.db, CURVE_MIN_DB, CURVE_MAX_DB)),
+                   CURVE_MIN_DB, CURVE_MAX_DB))} dB`
+      : `${BAND_LABELS[band]} · in → out, dB`
     ctx.fillText(label, plot.x + plot.w, cssH - 4)
   }, [band, plotOf])
 
@@ -340,7 +346,7 @@ export default function ApexCurveEditor() {
       const bucket = subRef.current?.ringRef?.current?.last?.() || null
       const lvl = levelRef.current
       const now = (typeof performance !== 'undefined' ? performance.now() : Date.now())
-      const b = useApexStore.getState().selectedBand
+      const b = store.getState().selectedBand
 
       let target = SILENT_DB
       if (bucket && Array.isArray(bucket.bandInDb)) {
@@ -362,7 +368,7 @@ export default function ApexCurveEditor() {
     }
     raf = requestAnimationFrame(tick)
     return () => { cancelled = true; cancelAnimationFrame(raf) }
-  }, [])
+  }, [store])
 
   // ── Hit-testing (canvas CSS-pixel coordinates) ─────────────────────────────
 
@@ -523,7 +529,7 @@ export default function ApexCurveEditor() {
   return (
     <canvas
       ref={canvasRef}
-      className="apex-curve-canvas"
+      className={className}
       title="Drag node · Double-click add · Right-click delete · Drag/wheel handle = tension · Double-click empty background clears"
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
