@@ -213,4 +213,15 @@
     cursor: pointer;
     touch-action: none;
   }
+
+  /* The empty state is a structural note in the corner of the well, not a poster. */
+  .emptyState {
+    position: absolute;
+    top: var(--space-3);
+    left: var(--space-3);
+    max-width: calc(100% - var(--space-5));
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g1);
+  }
 }

@@ -35,6 +35,7 @@ import {
 } from './LfoEditor';
 import { Maximize, Power, Spline, X as CloseGlyph } from 'lucide-react';
 import {
+  EmptyState,
   Icon,
   IconButton,
   NumberBox,
@@ -47,6 +48,7 @@ import {
 import { DEVICE_NAMES } from '../../../components/devices/deviceNames.js';
 import nodeStyles from './GraphNode.module.css';
 import GraphMinimap from './GraphMinimap';
+import GraphAddMenu, { buildGraphAddMenuItems, type GraphEffectSelection } from './GraphAddMenu';
 import canvasStyles from './GraphCanvas.module.css';
 import './fxGraph.css';
 
@@ -274,7 +276,9 @@ interface GraphStatePreviewProps {
   notice?: string | null;
   onNodePositionChange?: (nodeId: string, position: { x: number; y: number }) => void;
   onViewportChange?: (viewport: GraphStateViewport) => void;
-  onAddEffectNode?: (position?: { x: number; y: number }) => void;
+  // Choosing a plugin in the shared effect picker creates the node: the selection and, when it
+  // came from a right-click, the graph position to place it at.
+  onAddEffectNode?: (selection: GraphEffectSelection, position?: { x: number; y: number }) => void;
   onAddMacroNode?: (position?: { x: number; y: number }) => void;
   // EVC.3 — envelope node add/edit affordances (graph mode only).
   onAddEnvelopeNode?: (position?: { x: number; y: number }) => void;
@@ -339,12 +343,13 @@ const PORT_ROW_Y = 37;
 // EVC-R3 — envelope nodes are compact by default. The expanded editor can grow
 // visually, but this estimate keeps normal graph layouts dense.
 const ENVELOPE_NODE_WIDTH = 236;
-const ENVELOPE_NODE_CONTENT_HEIGHT = 112;
+// Display 56, summary 28 (two lines), Edit row 24, the gaps and the foot padding.
+const ENVELOPE_NODE_CONTENT_HEIGHT = 128;
 // LFO nodes are compact by default like Envelope. The expanded editor (shape
 // graph + preset row + rate controls) can grow visually, but this estimate
 // keeps normal graph layouts dense.
 const LFO_NODE_WIDTH = 236;
-const LFO_NODE_CONTENT_HEIGHT = 132;
+const LFO_NODE_CONTENT_HEIGHT = 114;
 const PARAMETER_PORT_ROW_HEIGHT = 18;
 const PARAMETER_PORT_SECTION_TOP = 8;
 const PARAMETER_PORT_SECTION_BOTTOM = 10;
@@ -2370,73 +2375,6 @@ export function GraphParameterContextMenu({
 // `pointer-events: auto`, so a generic menu portaled here renders but never
 // receives clicks. Modulators are a grouped section, not a hover submenu —
 // nothing to hover-target and no second positioning system to maintain.
-export interface GraphCanvasAddMenuAction {
-  key: string;
-  label: string;
-  disabled?: boolean;
-  title?: string;
-  onSelect: () => void;
-}
-
-export function GraphCanvasAddMenu({
-  x,
-  y,
-  pluginAction = null,
-  modulatorActions = [],
-}: {
-  x: number;
-  y: number;
-  pluginAction?: GraphCanvasAddMenuAction | null;
-  modulatorActions?: GraphCanvasAddMenuAction[];
-}) {
-  return (
-    <div
-      className="xleth-graph-state-preview__context-menu xleth-graph-state-preview__add-menu"
-      role="menu"
-      aria-label="Add graph node"
-      style={{ left: x, top: y }}
-      onPointerDown={(event) => event.stopPropagation()}
-      onContextMenu={(event) => {
-        event.preventDefault();
-        event.stopPropagation();
-      }}
-    >
-      {pluginAction && (
-        <button
-          className="xleth-graph-state-preview__context-item"
-          type="button"
-          role="menuitem"
-          disabled={pluginAction.disabled}
-          title={pluginAction.title}
-          onClick={pluginAction.onSelect}
-        >
-          {pluginAction.label}
-        </button>
-      )}
-      {modulatorActions.length > 0 && (
-        <div className="xleth-graph-state-preview__context-section">
-          <div className="xleth-graph-state-preview__context-section-title">
-            Add Modulator
-          </div>
-          {modulatorActions.map((action) => (
-            <button
-              className="xleth-graph-state-preview__context-item"
-              type="button"
-              role="menuitem"
-              key={action.key}
-              disabled={action.disabled}
-              title={action.title}
-              onClick={action.onSelect}
-            >
-              {action.label}
-            </button>
-          ))}
-        </div>
-      )}
-    </div>
-  );
-}
-
 export default function GraphStatePreview({
   graphState = null,
   notice = 'Persisted graphState. Linear routing is enabled for supported paths.',
@@ -2631,7 +2569,7 @@ export default function GraphStatePreview({
   React.useEffect(() => () => {
     if (hoverClearTimerRef.current != null) window.clearTimeout(hoverClearTimerRef.current);
   }, []);
-  const hasHeader = notice != null || model.empty;
+  const hasHeader = notice != null;
   const canDragNodes = typeof onNodePositionChange === 'function' || typeof onSpliceNodeIntoEdge === 'function';
   const canEditViewport = typeof onViewportChange === 'function';
   const canAddNode = typeof onAddEffectNode === 'function';
@@ -2693,34 +2631,37 @@ export default function GraphStatePreview({
     add?.(position);
   }, [addMenu?.graphPosition, closeAddMenu]);
 
-  // Outside-click / Escape close for the add menu. Mirrors the node context
-  // menu's effect below; the shared `__context-menu` class is what marks a
-  // click as "inside a menu".
-  React.useEffect(() => {
-    if (!addMenu) return undefined;
+  // The structural empty state: only the two terminals are in the graph. Its one action opens
+  // the same add menu, under the button, placing the node at the middle of the view.
+  const nothingBetweenTerminals = model.nodes.every(
+    (node) => node.type === 'trackInput' || node.type === 'trackOutput',
+  );
+  const emptyStateRef = React.useRef<HTMLDivElement | null>(null);
+  const openAddMenuFromEmptyState = React.useCallback(() => {
+    const anchor = emptyStateRef.current?.getBoundingClientRect();
+    const view = viewportRef.current?.getBoundingClientRect();
+    const z = viewport.zoom || 1;
+    const graphPosition = view
+      ? {
+          x: (view.width / 2 - viewport.x) / z - PREVIEW_PADDING_X - NODE_WIDTH / 2,
+          y: (view.height / 2 - viewport.y) / z - PREVIEW_PADDING_Y - NODE_HEIGHT / 2,
+        }
+      : { x: 0, y: 0 };
+    closeContextMenu();
+    menuOpenViewportRef.current = viewport;
+    setAddMenu({
+      x: anchor ? anchor.left + 8 : 0,
+      y: anchor ? anchor.bottom : 0,
+      graphPosition,
+    });
+  }, [closeContextMenu, viewport]);
 
-    const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target;
-      if (
-        typeof Element !== 'undefined' &&
-        target instanceof Element &&
-        target.closest('.xleth-graph-state-preview__context-menu')
-      ) {
-        return;
-      }
-      closeAddMenu();
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') closeAddMenu();
-    };
-
-    document.addEventListener('pointerdown', handlePointerDown);
-    document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.removeEventListener('pointerdown', handlePointerDown);
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [addMenu, closeAddMenu]);
+  // Choosing an effect in the shared picker adds it where the menu was opened.
+  const addEffectFromMenu = React.useCallback((selection: GraphEffectSelection) => {
+    const position = addMenu?.graphPosition;
+    closeAddMenu();
+    onAddEffectNode?.(selection, position);
+  }, [addMenu?.graphPosition, closeAddMenu, onAddEffectNode]);
 
   // Pan/zoom invalidates a menu's screen anchor (and the add menu's graph-space
   // spawn point), so either menu closes as soon as the viewport it opened under
@@ -3411,9 +3352,6 @@ export default function GraphStatePreview({
             {notice != null && (
               <p className="xleth-graph-state-preview__notice">{notice}</p>
             )}
-            {model.empty && (
-              <p className="xleth-graph-state-preview__empty-title">Empty FX Graph</p>
-            )}
           </div>
         </div>
       )}
@@ -3648,40 +3586,37 @@ export default function GraphStatePreview({
             // Same containing-block trap as the node context menu above — portal
             // past the floating panel's transformed frame so the menu's
             // clientX/clientY coordinates resolve against the viewport.
-            <GraphCanvasAddMenu
+            <GraphAddMenu
               x={addMenu.x}
               y={addMenu.y}
-              pluginAction={canAddNode ? {
-                key: 'plugin',
-                label: 'Add Plugin',
-                onSelect: () => runAddMenuAction(onAddEffectNode),
-              } : null}
-              modulatorActions={[
-                ...(canAddMacro ? [{
-                  key: 'macro',
-                  label: 'Macro',
-                  onSelect: () => runAddMenuAction(onAddMacroNode),
-                }] : []),
-                ...(canAddEnvelope ? [{
-                  key: 'envelope',
-                  label: 'Envelope',
-                  onSelect: () => runAddMenuAction(onAddEnvelopeNode),
-                }] : []),
-                ...(canAddLfo ? [{
-                  key: 'lfo',
-                  label: 'LFO',
-                  onSelect: () => runAddMenuAction(onAddLfoNode),
-                }] : []),
-                ...(canAddSidechainInput ? [{
-                  key: 'sidechainInput',
-                  label: 'Sidechain Input',
-                  disabled: hasSidechainInputNode,
-                  title: hasSidechainInputNode
-                    ? 'This graph already has a Sidechain Input node'
-                    : 'Add a Sidechain Input node',
-                  onSelect: () => runAddMenuAction(onAddSidechainInput),
-                }] : []),
-              ]}
+              onClose={closeAddMenu}
+              items={buildGraphAddMenuItems({
+                vstPlugins,
+                onAddEffect: canAddNode ? addEffectFromMenu : null,
+                modulators: [
+                  ...(canAddMacro ? [{
+                    key: 'macro',
+                    label: 'Macro',
+                    onSelect: () => runAddMenuAction(onAddMacroNode),
+                  }] : []),
+                  ...(canAddEnvelope ? [{
+                    key: 'envelope',
+                    label: 'Envelope',
+                    onSelect: () => runAddMenuAction(onAddEnvelopeNode),
+                  }] : []),
+                  ...(canAddLfo ? [{
+                    key: 'lfo',
+                    label: 'LFO',
+                    onSelect: () => runAddMenuAction(onAddLfoNode),
+                  }] : []),
+                  ...(canAddSidechainInput ? [{
+                    key: 'sidechainInput',
+                    label: 'Sidechain input',
+                    disabled: hasSidechainInputNode,
+                    onSelect: () => runAddMenuAction(onAddSidechainInput),
+                  }] : []),
+                ],
+              })}
             />,
             document.body,
           )}
@@ -3730,6 +3665,21 @@ export default function GraphStatePreview({
             <span className={canvasStyles.zoomReadout} aria-label="Zoom">
               {formatValue(viewport.zoom * 100, '%')}
             </span>
+          </div>
+        )}
+        {canAddAnything && nothingBetweenTerminals && (
+          <div
+            className={canvasStyles.emptyState}
+            ref={emptyStateRef}
+            onPointerDown={(event) => event.stopPropagation()}
+            onDoubleClick={(event) => event.stopPropagation()}
+            onContextMenu={(event) => event.stopPropagation()}
+          >
+            <EmptyState
+              message="Nothing between Track input and Track output yet."
+              actionLabel="Add node"
+              onAction={openAddMenuFromEmptyState}
+            />
           </div>
         )}
         {canEditViewport && viewSize && graphExceedsView && onViewportChange && (

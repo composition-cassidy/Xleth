@@ -2,7 +2,7 @@
 //
 // Single source of truth for the stock-effect categories and the scanned
 // VST/plugin ordering used when ADDING an effect. The Mixer Chain
-// (EffectChainPanel.jsx) and the FX Graph picker (FxGraphEffectPicker.tsx)
+// (EffectChainPanel.jsx) and the FX Graph's add menu (GraphAddMenu.tsx)
 // both consume this module so the two add flows expose the exact same
 // effects without a duplicate registry or a second plugin scanner.
 //

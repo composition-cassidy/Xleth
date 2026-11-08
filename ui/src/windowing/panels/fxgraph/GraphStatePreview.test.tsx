@@ -27,10 +27,10 @@ import { fitGraphViewport } from '../../../fxgraph/graphViewport.js';
 import {
   EnvelopeAdvancedControls,
   EnvelopeAhdsrGraph,
-  EnvelopeNumberField,
   EnvelopeEditor,
   EnvelopeNodeBody,
-  EnvelopeRangeControl,
+  EnvelopeTensionBox,
+  EnvelopeTimeBox,
   buildEnvelopeGraphModel,
   buildEnvelopePreviewPoints,
   describeEnvelopeAhdsr,
@@ -40,6 +40,7 @@ import {
   readEnvelopeNodeData,
 } from './EnvelopeEditor';
 import {
+  LfoEditor,
   LfoNodeBody,
   formatLfoParameterCount,
   readLfoNodeData,
@@ -133,6 +134,18 @@ function findElementByClass(element: React.ReactElement, className: string): Rea
     if (nested) return nested;
   }
   return null;
+}
+
+// Every element in the tree (children of function-component calls included) that matches.
+function findAll(element: React.ReactElement, predicate: (el: React.ReactElement) => boolean): React.ReactElement[] {
+  const found: React.ReactElement[] = [];
+  const visit = (node: React.ReactNode) => {
+    if (!React.isValidElement(node)) return;
+    if (predicate(node as React.ReactElement)) found.push(node as React.ReactElement);
+    React.Children.forEach((node.props as { children?: React.ReactNode }).children, visit);
+  };
+  visit(element);
+  return found;
 }
 
 function makeClosestElement(
@@ -467,7 +480,6 @@ describe('GraphStatePreview', () => {
     const before = JSON.stringify(emptyGraphState);
     const html = renderToStaticMarkup(<GraphStatePreview graphState={emptyGraphState} />);
 
-    expect(html).toContain('Empty FX Graph');
     expect(html).toContain('Track input');
     expect(html).toContain('Track output');
     expect(html).toContain('data-preview-scroll-stage="true"');
@@ -1708,8 +1720,8 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
       />,
     );
     expect(html).toContain('AHDSR');
-    expect(html).toContain('A 10 ms');
-    expect(html).toContain('S 70%');
+    expect(html).toContain('A 10.0\u2009ms');
+    expect(html).toContain('S 70\u2009%');
     expect(html).toContain('0 params');
     // EVC-R2-r3 — the Notes/Clips/Notes+Clips source pill and the Restart/Legato pill are gone.
     expect(html).not.toContain('Notes + Clips');
@@ -1721,15 +1733,15 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
     expect(html).not.toContain('Legato (mono)');
   });
 
-  it('surfaces a Slide pill only when includeSlideNotes is enabled', () => {
+  it('says so in the footer only when includeSlideNotes is enabled', () => {
     const off = renderToStaticMarkup(
       <GraphStatePreview graphState={envelopeGraph({ includeSlideNotes: false })} onUpdateEnvelope={vi.fn()} />,
     );
     const on = renderToStaticMarkup(
       <GraphStatePreview graphState={envelopeGraph({ includeSlideNotes: true })} onUpdateEnvelope={vi.fn()} />,
     );
-    expect(off).not.toContain('>Slide<');
-    expect(on).toContain('>Slide<');
+    expect(off).not.toContain('Slide notes');
+    expect(on).toContain('Slide notes');
   });
 
   it('summarizes outgoing envelope parameter connections compactly', () => {
@@ -1867,27 +1879,34 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
     expect(readOnlyHtml).not.toContain('aria-label="Attack ms"');
   });
 
-  it('expanded edit mode shows DAW-style controls and editable graph handles', () => {
+  it('the editor sheet holds the editable graph and kit controls for times, curve and trigger', () => {
     const html = renderToStaticMarkup(
-      <EnvelopeNodeBody
-        nodeId="env-a"
-        data={readEnvelopeNodeData({})}
-        onChange={vi.fn()}
-        defaultExpanded
-      />,
+      <EnvelopeEditor nodeId="env-a" data={readEnvelopeNodeData({})} onChange={vi.fn()} />,
     );
     expect(html).toContain('xleth-graph-state-preview__envelope-editor');
     expect(html).toContain('Editable AHDSR envelope graph');
     expect(html).toContain('Attack handle');
     expect(html).toContain('Sustain handle');
     expect(html).toContain('Release handle');
-    expect(html).toContain('aria-label="Attack ms slider"');
-    expect(html).toContain('aria-label="Sustain level slider"');
+    for (const section of ['Times', 'Curve', 'Trigger']) expect(html).toContain(`>${section}<`);
+    for (const label of ['Attack', 'Hold', 'Decay', 'Release', 'Sustain']) expect(html).toContain(label);
+    // No native range or number inputs: every number is a kit NumberBox.
+    expect(html).not.toContain('type="range"');
+    expect(html).not.toContain('type="number"');
     // EVC-R4 — the node-level Amount master scale was removed: modulation depth is now a
     // per-connection control on the Envelope -> Parameter edge, so there is no second
-    // "how much" slider on the node.
-    expect(html).not.toContain('aria-label="Amount slider"');
+    // "how much" control on the node.
     expect(html).not.toContain('>Amount<');
+  });
+
+  it('on the node, Edit opens the sheet and nothing of the editor is in the node itself', () => {
+    const html = renderToStaticMarkup(
+      <EnvelopeNodeBody nodeId="env-a" data={readEnvelopeNodeData({})} onChange={vi.fn()} />,
+    );
+    expect(html).toContain('Edit Envelope envelope');
+    expect(html).toContain('Envelope AHDSR graph');
+    expect(html).not.toContain('Editable AHDSR envelope graph');
+    expect(html).not.toContain('Attack handle');
   });
 
   it('read-only/no-callback mode does not expose editing controls even if expanded is requested', () => {
@@ -1912,93 +1931,48 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
 
   it('commits an Attack edit through the envelope update callback', () => {
     const onChange = vi.fn();
-    const element = EnvelopeNumberField({
-      label: 'Attack',
-      fieldKey: 'attackMs',
-      value: 10,
-      min: 0,
-      step: 1,
-      ariaLabel: 'Attack ms',
-      onChange,
-    });
-    const input = findElementByClass(element, 'xleth-graph-state-preview__envelope-input')!;
-    input.props.onBlur({ currentTarget: { value: '25' } });
+    const box = EnvelopeTimeBox({ label: 'Attack', fieldKey: 'attackMs', value: 10, onChange });
+    box.props.onCommit(25);
     expect(onChange).toHaveBeenCalledWith({ attackMs: 25 });
   });
 
-  it('slider controls commit attack, hold, decay, sustain, and release on release, not per tick', () => {
+  it('each box commits once on release with the patch the old slider sent, not per tick', () => {
     const cases = [
-      ['Attack', 'attackMs', 10, 250, 'Attack ms slider'],
-      ['Hold', 'holdMs', 0, 125, 'Hold ms slider'],
-      ['Decay', 'decayMs', 120, 300, 'Decay ms slider'],
-      ['Sustain', 'sustain', 0.7, 0.4, 'Sustain level slider'],
-      ['Release', 'releaseMs', 200, 450, 'Release ms slider'],
+      ['attackMs', 10, 250],
+      ['holdMs', 0, 125],
+      ['decayMs', 120, 300],
+      ['releaseMs', 200, 450],
     ] as const;
-    for (const [label, fieldKey, value, next, ariaLabel] of cases) {
+    for (const [fieldKey, value, next] of cases) {
       const onChange = vi.fn();
-      const element = EnvelopeRangeControl({
-        label,
-        fieldKey,
-        value,
-        min: fieldKey.endsWith('Ms') ? 0 : 0,
-        max: fieldKey.endsWith('Ms') ? undefined : 1,
-        step: fieldKey.endsWith('Ms') ? 1 : 0.01,
-        rangeMin: 0,
-        rangeMax: fieldKey.endsWith('Ms') ? 5000 : 1,
-        displayValue: String(value),
-        ariaLabel: ariaLabel.replace(' slider', ''),
-        onChange,
-      });
-      const slider = findElementByAriaLabel(element, ariaLabel)!;
-      // The slider is uncontrolled — no onChange fires per tick, so nothing is
-      // committed until the gesture ends (pointerup / blur / keyup).
-      expect(slider.props.onChange).toBeUndefined();
-      slider.props.onPointerUp({ currentTarget: { value: String(next) } });
+      const box = EnvelopeTimeBox({ label: fieldKey, fieldKey, value, onChange });
+      // A NumberBox previews locally while it drags and calls onCommit once on release; it has no
+      // per-tick write to the store at all.
+      expect(box.props.onChange).toBeUndefined();
+      box.props.onCommit(next);
       expect(onChange).toHaveBeenCalledTimes(1);
       expect(onChange).toHaveBeenCalledWith({ [fieldKey]: next });
     }
+    // Sustain is edited in percent and stored 0..1.
+    const onChange = vi.fn();
+    const editor = EnvelopeEditor({ nodeId: 'env-a', data: readEnvelopeNodeData({ sustain: 0.7 }), onChange });
+    const sustain = findAll(editor, (el) => el.props.label === 'Sustain' && typeof el.props.onCommit === 'function')[0];
+    expect(sustain.props.value).toBe(70);
+    sustain.props.onCommit(40);
+    expect(onChange).toHaveBeenCalledWith({ sustain: 0.4 });
   });
 
-  it('keeps above-range millisecond values in the numeric field while capping the slider view', () => {
+  it('keeps a stored time inside the box, capping only what is beyond the 10 s drag range', () => {
     const onChange = vi.fn();
-    const element = EnvelopeRangeControl({
-      label: 'Attack',
-      fieldKey: 'attackMs',
-      value: 9000,
-      min: 0,
-      step: 1,
-      rangeMin: 0,
-      rangeMax: 5000,
-      displayValue: '9000 ms',
-      ariaLabel: 'Attack ms',
-      onChange,
-    });
-    const slider = findElementByAriaLabel(element, 'Attack ms slider')!;
-    const input = findElementByAriaLabel(element, 'Attack ms')!;
-    expect(slider.props.defaultValue).toBe(5000);
-    expect(input.props.defaultValue).toBe(9000);
+    expect(EnvelopeTimeBox({ label: 'Attack', fieldKey: 'attackMs', value: 9000, onChange }).props.value).toBe(9000);
+    expect(EnvelopeTimeBox({ label: 'Attack', fieldKey: 'attackMs', value: 20000, onChange }).props.value).toBe(10000);
   });
 
-  it('uses an uncontrolled input and skips committing non-numeric text', () => {
-    // The input is uncontrolled (defaultValue), so React never resets the field
-    // mid-type — typing "1." is never destroyed. On blur, only a genuinely
-    // non-numeric value (NaN) is skipped so the node data is never corrupted.
-    const onChange = vi.fn();
-    const element = EnvelopeNumberField({
-      label: 'Decay',
-      fieldKey: 'decayMs',
-      value: 120,
-      ariaLabel: 'Decay ms',
-      onChange,
-    });
-    const input = findElementByClass(element, 'xleth-graph-state-preview__envelope-input')!;
-    expect(input.props.defaultValue).toBe(120);
-    expect(input.props.value).toBeUndefined();
-    input.props.onBlur({ currentTarget: { value: 'abc' } });
-    input.props.onBlur({ currentTarget: { value: '-' } });
-    expect(onChange).not.toHaveBeenCalled();
-    input.props.onBlur({ currentTarget: { value: '15.5' } });
-    expect(onChange).toHaveBeenCalledWith({ decayMs: 15.5 });
+  it('shows times and amounts the way every device does, through formatValue', () => {
+    const box = EnvelopeTimeBox({ label: 'Decay', fieldKey: 'decayMs', value: 120, onChange: vi.fn() });
+    expect(box.props.unit).toBe('ms');
+    expect(box.props.min).toBe(0);
+    expect(box.props.defaultValue).toBe(readEnvelopeNodeData({}).decayMs);
   });
 
   it('clamps Sustain through the shared normalization path', () => {
@@ -2033,34 +2007,32 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
     expect(html).not.toContain('Mono glide ms');
   });
 
-  it('renders an Include slide notes checkbox in the expanded editor', () => {
+  it('renders an Include slide notes toggle in the editor', () => {
     const html = renderToStaticMarkup(
       <EnvelopeEditor nodeId="env-a" data={readEnvelopeNodeData({})} onChange={vi.fn()} />,
     );
     expect(html).toContain('Include slide notes');
-    expect(html).toContain('aria-label="Include slide notes"');
-    expect(html).toContain('type="checkbox"');
+    expect(html).toContain('aria-pressed="false"');
+    expect(html).not.toContain('type="checkbox"');
   });
 
-  it('Include slide notes checkbox updates envelope data through the callback', () => {
+  it('Include slide notes toggle updates envelope data through the callback', () => {
     const onChange = vi.fn();
-    const element = IncludeSlideNotesControl({
+    const toggle = IncludeSlideNotesControl({
       data: readEnvelopeNodeData({ includeSlideNotes: false }),
       onChange,
     });
-    const checkbox = findElementByAriaLabel(element, 'Include slide notes')!;
-    expect(checkbox.props.checked).toBe(false);
-    checkbox.props.onChange({ currentTarget: { checked: true } });
+    expect(toggle.props.on).toBe(false);
+    toggle.props.onChange(true);
     expect(onChange).toHaveBeenCalledWith({ includeSlideNotes: true });
   });
 
-  it('reflects an enabled includeSlideNotes as a checked box', () => {
-    const element = IncludeSlideNotesControl({
+  it('reflects an enabled includeSlideNotes as an on toggle', () => {
+    const toggle = IncludeSlideNotesControl({
       data: readEnvelopeNodeData({ includeSlideNotes: true }),
       onChange: vi.fn(),
     });
-    const checkbox = findElementByAriaLabel(element, 'Include slide notes')!;
-    expect(checkbox.props.checked).toBe(true);
+    expect(toggle.props.on).toBe(true);
   });
 
   it('read-only mode (no onChange) does not expose the Include slide notes checkbox', () => {
@@ -2071,19 +2043,18 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
     expect(html).not.toContain('xleth-graph-state-preview__envelope-editor');
   });
 
-  it('advanced disclosure hides and shows tension controls', () => {
-    const collapsed = renderToStaticMarkup(
+  it('shows the three curve tensions in the editor and commits each on release', () => {
+    const html = renderToStaticMarkup(
       <EnvelopeEditor nodeId="env-a" data={readEnvelopeNodeData({})} onChange={vi.fn()} />,
     );
-    const expanded = renderToStaticMarkup(
-      <EnvelopeEditor nodeId="env-a" data={readEnvelopeNodeData({})} onChange={vi.fn()} defaultAdvancedOpen />,
-    );
-    expect(collapsed).toContain('Toggle envelope advanced controls');
-    expect(collapsed).not.toContain('Attack tension slider');
-    expect(expanded).toContain('Envelope advanced controls');
-    expect(expanded).toContain('Attack tension slider');
-    expect(expanded).toContain('Decay tension slider');
-    expect(expanded).toContain('Release tension slider');
+    expect(html).toContain('>Curve<');
+    expect(html).not.toContain('Toggle envelope advanced controls');
+    const onChange = vi.fn();
+    for (const [fieldKey, next] of [['attackTension', -0.5], ['decayTension', 0.25], ['releaseTension', 0.75]] as const) {
+      const box = EnvelopeTensionBox({ label: fieldKey, fieldKey, value: 0, onChange });
+      box.props.onCommit(next);
+      expect(onChange).toHaveBeenLastCalledWith({ [fieldKey]: next });
+    }
   });
 
   it('builds illustrative A/H/D/S/R preview points with rise, plateaus, and fall', () => {
@@ -2150,9 +2121,9 @@ describe('GraphStatePreview envelope nodes (EVC-R1)', () => {
 
   it('summarizes AHDSR purely from node data', () => {
     const summary = describeEnvelopeAhdsr(readEnvelopeNodeData({ attackMs: 5, decayMs: 60, sustain: 0.4 }));
-    expect(summary).toContain('A 5 ms');
-    expect(summary).toContain('D 60 ms');
-    expect(summary).toContain('S 40%');
+    expect(summary).toContain('A 5.0\u2009ms');
+    expect(summary).toContain('D 60.0\u2009ms');
+    expect(summary).toContain('S 40\u2009%');
   });
 
   it('still renders effect and macro nodes alongside envelope nodes', () => {
@@ -2235,7 +2206,7 @@ describe('GraphStatePreview lfo nodes', () => {
         onUpdateLfo={vi.fn()}
       />,
     );
-    expect(html).toContain('Free 80 ms');
+    expect(html).toContain('Free 80.0\u2009ms');
     expect(html).toContain('0 params');
   });
 
@@ -2390,14 +2361,9 @@ describe('GraphStatePreview lfo nodes', () => {
     expect(readOnlyHtml).not.toContain('xleth-graph-state-preview__lfo-editor');
   });
 
-  it('edit toggle: expanded edit mode shows the shape graph, presets, and rate controls', () => {
+  it('the editor sheet shows the shape graph, presets and rate controls', () => {
     const html = renderToStaticMarkup(
-      <LfoNodeBody
-        nodeId="lfo-a"
-        data={readLfoNodeData({})}
-        onChange={vi.fn()}
-        defaultExpanded
-      />,
+      <LfoEditor nodeId="lfo-a" data={readLfoNodeData({})} onChange={vi.fn()} />,
     );
     expect(html).toContain('xleth-graph-state-preview__lfo-editor');
     expect(html).toContain('Editable LFO waveform graph');
@@ -2406,6 +2372,8 @@ describe('GraphStatePreview lfo nodes', () => {
     expect(html).toContain('>Sine<');
     expect(html).toContain('>Triangle<');
     expect(html).toContain('>Square<');
+    expect(html).toContain('Phase');
+    expect(html).not.toContain('type="range"');
   });
 
   it('read-only/no-callback mode does not expose editing controls even if expanded is requested', () => {

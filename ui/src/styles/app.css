@@ -11558,25 +11558,6 @@ input[type="radio"] {
  * wins. windowing.css is the single owner.
  * ── (node canvas: see .xleth-graph-state-preview__viewport in windowing.css) ── */
 
-/* ── Add-effect picker modal ───────────────────────────────────────────────── */
-.xleth-fx-graph-effect-picker {
-  --theme-chrome-radius-sm: 0;
-  --theme-border-subtle: var(--xleth-flat-border);
-  --theme-border-strong: var(--xleth-flat-border-strong);
-  --theme-border-focus: var(--xleth-flat-accent);
-  --theme-text: var(--xleth-flat-text);
-  --theme-text-muted: var(--xleth-flat-text-secondary);
-  --theme-bg-surface: var(--xleth-flat-main);
-  --theme-bg-tertiary: var(--xleth-flat-panel);
-  --theme-bg-hover: var(--xleth-flat-panel);
-}
-.xleth-fx-graph-effect-picker__dialog {
-  border-radius: 0;
-  background: var(--xleth-flat-panel);
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.55);
-}
-
-
 /* -- XLETH file picker ----------------------------------------------------- */
 
 .xleth-file-picker-backdrop {

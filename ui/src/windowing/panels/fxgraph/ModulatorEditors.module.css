@@ -1,0 +1,175 @@
+/* The envelope and LFO modulators (ui/DESIGN.md section 21): the live display on the node, and
+ * the floating editor sheet opened by Edit. Kit controls only (NumberBox, SegmentedControl,
+ * Select, Toggle, Button) around one recessed display well. The sheet is a floating surface, so
+ * it carries the hard offset shadow; the node body never does. */
+
+@layer kit {
+  /* ── On the node: display, summary, Edit row ───────────────────────── */
+
+  .body {
+    box-sizing: border-box;
+    display: grid;
+    gap: 6px;
+    min-width: 0;
+    padding: 0 var(--space-2) var(--space-2);
+    pointer-events: auto;
+  }
+
+  .display {
+    display: block;
+    box-sizing: border-box;
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g0);
+    line-height: 0;
+  }
+
+  .displayEditor {
+    border-color: var(--ui-boundary);
+  }
+
+  .summary {
+    display: block;
+    min-width: 0;
+    min-height: 14px;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+    line-height: 14px;
+  }
+
+  .summaryTall { min-height: 28px; }
+
+  .count { font-variant-numeric: tabular-nums; white-space: nowrap; }
+
+  .footer {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    min-height: 24px;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  /* ── The envelope curve (SVG) and the LFO shape (canvas) ───────────── */
+
+  .graph { display: block; touch-action: none; }
+  .graph[data-editable="true"] { cursor: default; }
+
+  .baseline {
+    stroke: var(--ui-g4);
+    stroke-width: 1;
+    vector-effect: non-scaling-stroke;
+  }
+
+  .curve {
+    fill: none;
+    stroke: var(--ui-value);
+    stroke-width: 1.5;
+    stroke-linejoin: round;
+    stroke-linecap: round;
+  }
+
+  .handleMark {
+    fill: var(--ui-g0);
+    stroke: var(--ui-value);
+    stroke-width: 1.5;
+    pointer-events: none;
+  }
+
+  /* The draggable part: a 22px target around the 5px mark. */
+  .handleHit {
+    fill: transparent;
+    stroke: none;
+    cursor: ew-resize;
+  }
+
+  .handleHit:focus-visible { outline: none; }
+  .handleHit:focus-visible + .handleMark { stroke: var(--ui-select); stroke-width: 2.5; }
+
+  .shape { display: block; touch-action: none; }
+  .shape[data-editable="true"] { cursor: ns-resize; }
+
+  /* ── The editor sheet ───────────────────────────────────────────────── */
+
+  .sheet {
+    position: fixed;
+    z-index: var(--xleth-z-popover, 10000);
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    width: 336px;
+    max-height: calc(100vh - var(--space-3));
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-2);
+    background: var(--ui-g1);
+    box-shadow: var(--ui-shadow-float);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+  }
+
+  .sheetTitle {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    flex: none;
+    height: 28px;
+    padding: 0 2px 0 var(--space-2);
+    border-radius: var(--ui-radius-2) var(--ui-radius-2) 0 0;
+    background: var(--ui-g2);
+    cursor: grab;
+    user-select: none;
+  }
+
+  .sheetTitleText {
+    min-width: 0;
+    flex: 1 1 auto;
+    overflow: hidden;
+    font-size: var(--type-12);
+    font-weight: var(--weight-semibold);
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .sheetGlyph { flex: none; color: var(--ui-ink-2); }
+
+  .sheetBody {
+    display: grid;
+    gap: var(--space-2);
+    overflow-y: auto;
+    padding: var(--space-2);
+  }
+
+  .editor { display: grid; gap: var(--space-2); min-width: 0; }
+
+  .section { display: grid; gap: var(--space-1); min-width: 0; }
+
+  .sectionTitle {
+    height: 20px;
+    padding-bottom: 2px;
+    border-bottom: 1px solid var(--ui-g4);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    font-weight: var(--weight-medium);
+    line-height: 18px;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-1) var(--space-2);
+    min-width: 0;
+  }
+
+  .row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-1) var(--space-2);
+    min-width: 0;
+  }
+
+  .note { color: var(--ui-ink-2); font-size: var(--type-11); }
+}

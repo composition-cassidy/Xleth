@@ -29,14 +29,26 @@ export default async ({ page, sleep }) => {
   await step('macro', () => addNode('Macro', canvas.w * 0.3, canvas.h * 0.2));
   await step('lfo', () => addNode('LFO', canvas.w * 0.42, canvas.h * 0.3));
   await step('env', () => addNode('Envelope', canvas.w * 0.62, canvas.h * 0.3));
-  await step('sc', () => addNode('Sidechain Input', canvas.w * 0.15, canvas.h * 0.7));
+  await step('sc', () => addNode('Sidechain input', canvas.w * 0.15, canvas.h * 0.7));
   await page.mouse.move(1000, 250); await sleep(500);
   await step('70b', async () => out.push(await shot(page, '71-fxgraph-several-nodes', { surface: 'dock-fxgraph', scope: DOCK, note: 'macro, LFO, envelope and sidechain-input nodes added via the canvas menu' })));
   await step('picker', async () => {
     await page.mouse.click(canvas.x + canvas.w * 0.8, canvas.y + canvas.h * 0.25, { button: 'right' }); await sleep(500);
-    await page.getByRole('menuitem', { name: 'Add Plugin', exact: true }).first().click({ timeout: 4000 }); await sleep(900);
-    out.push(await shot(page, '73-fxgraph-effect-picker-open', { surface: 'fx-picker-graph', scope: '[role="dialog"], [class*="picker"]', live: true }));
+    // One picker: the graph's add menu embeds the Devices chain's list, so a category opens its submenu.
+    await page.getByRole('menuitem', { name: /^Dynamics/ }).first().hover({ timeout: 4000 }); await sleep(600);
+    out.push(await shot(page, '73-fxgraph-effect-picker-open', { surface: 'fx-picker-graph', scope: '[role="menu"]', live: true }));
     await page.keyboard.press('Escape'); await sleep(400);
+  });
+  // The envelope and LFO editors were never captured before round 2: each opens in its own sheet.
+  await step('lfo-editor', async () => {
+    await page.getByRole('button', { name: /^Edit .* LFO$/ }).first().click({ timeout: 4000 }); await sleep(700);
+    out.push(await shot(page, '74a-fxgraph-lfo-editor', { surface: 'fx-lfo-editor', scope: '[data-testid="fx-lfo-sheet"]', live: true }));
+    await page.keyboard.press('Escape'); await sleep(300);
+  });
+  await step('env-editor', async () => {
+    await page.getByRole('button', { name: /^Edit .* envelope$/ }).first().click({ timeout: 4000 }); await sleep(700);
+    out.push(await shot(page, '74b-fxgraph-envelope-editor', { surface: 'fx-envelope-editor', scope: '[data-testid="fx-envelope-sheet"]', live: true }));
+    await page.keyboard.press('Escape'); await sleep(300);
   });
   return out.join('\n');
 };

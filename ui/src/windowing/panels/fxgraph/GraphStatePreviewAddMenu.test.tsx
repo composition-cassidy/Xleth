@@ -1,19 +1,22 @@
 /**
  * @vitest-environment jsdom
  *
- * Canvas right-click "Add Plugin / Add Modulator" menu.
+ * Canvas right-click "add a node" menu.
  *
- * These run in jsdom and dispatch REAL click events rather than asserting on
- * static markup, because the bug this menu shipped with was invisible to markup
- * assertions: the menu rendered perfectly but never received clicks (it was
- * built on the app-generic `.context-menu` shell, which does not restore the
- * `pointer-events: auto` that this panel's window layers take away). A
- * render-only test passes happily against a menu nobody can click.
+ * These run in jsdom and dispatch REAL events rather than asserting on static markup, because the
+ * bug the first version of this menu shipped with was invisible to markup assertions: it rendered
+ * perfectly but never received clicks (a menu shell that does not restore the `pointer-events: auto`
+ * this panel's window layers take away). A render-only test passes happily against a menu nobody
+ * can click.
+ *
+ * Round 2 step 18.3: the menu is the Devices chain's own effect picker (the same list, built by
+ * the same function), followed by the modulators, so there is ONE picker with two entry points.
  */
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import GraphStatePreview, { type GraphStateDocument } from './GraphStatePreview';
+import { buildEffectChainMenuItems } from '../../../components/mixer/EffectChainPanel.jsx';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
 
@@ -44,14 +47,14 @@ afterEach(async () => {
   activeContainer = null;
 });
 
-async function mountPreview(props: Record<string, unknown>) {
+async function mountPreview(props: Record<string, unknown>, doc: GraphStateDocument = graphState()) {
   const container = document.createElement('div');
   document.body.appendChild(container);
   const root = createRoot(container);
   activeRoot = root;
   activeContainer = container;
   await act(async () => {
-    root.render(<GraphStatePreview graphState={graphState()} onViewportChange={vi.fn()} {...props} />);
+    root.render(<GraphStatePreview graphState={doc} onViewportChange={vi.fn()} {...props} />);
   });
   return container;
 }
@@ -64,20 +67,20 @@ async function openCanvasMenu(container: HTMLElement, at = { clientX: 300, clien
   return document.querySelector('.xleth-graph-state-preview__add-menu');
 }
 
-function menuItem(label: string) {
-  return Array.from(document.querySelectorAll<HTMLButtonElement>('.xleth-graph-state-preview__add-menu button'))
-    .find((button) => button.textContent === label);
+function items(scope = '.xleth-graph-state-preview__add-menu') {
+  return Array.from(document.querySelectorAll<HTMLElement>(`${scope} [role="menuitem"]`));
 }
 
-async function clickMenuItem(label: string) {
-  const button = menuItem(label);
-  expect(button, `expected an enabled "${label}" menu item`).toBeTruthy();
+function menuItem(label: string, scope?: string) {
+  return items(scope).find((item) => item.textContent?.trim().startsWith(label));
+}
+
+async function clickMenuItem(label: string, scope?: string) {
+  const item = menuItem(label, scope);
+  expect(item, `expected a "${label}" menu item`).toBeTruthy();
   await act(async () => {
-    // A real click is preceded by pointerdown — the same event the outside-click
-    // handler listens on. If the menu ever stops stopping propagation, this
-    // ordering is what catches it (menu closes before the click lands).
-    button!.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
-    button!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    item!.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+    item!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
   });
 }
 
@@ -90,35 +93,56 @@ const ALL_ADD_HANDLERS = () => ({
 });
 
 describe('FX Graph canvas add menu', () => {
-  it('opens on empty-canvas right-click with Add Plugin and the modulator group', async () => {
+  it('opens on empty-canvas right-click with the effect picker and the modulator group', async () => {
     const container = await mountPreview(ALL_ADD_HANDLERS());
     const menu = await openCanvasMenu(container);
 
     expect(menu).toBeTruthy();
-    expect(menuItem('Add Plugin')).toBeTruthy();
-    expect(menu!.textContent).toContain('Add Modulator');
-    for (const label of ['Macro', 'Envelope', 'LFO', 'Sidechain Input']) {
+    expect(menu!.getAttribute('role')).toBe('menu');
+    expect(menu!.textContent).toContain('Modulators');
+    for (const label of ['Macro', 'Envelope', 'LFO', 'Sidechain input']) {
       expect(menuItem(label), `missing "${label}"`).toBeTruthy();
     }
   });
 
-  it('uses this panel\'s own menu shell, not the app-generic .context-menu', async () => {
-    // Regression lock for the pointer-events bug: the generic shell renders but
-    // is unclickable inside the FX Graph panel's window layers.
+  it('is the Devices chain picker: the same categories, in the same order, from the same builder', async () => {
     const container = await mountPreview(ALL_ADD_HANDLERS());
-    const menu = await openCanvasMenu(container);
+    await openCanvasMenu(container);
 
-    expect(menu!.classList.contains('xleth-graph-state-preview__context-menu')).toBe(true);
-    expect(menu!.classList.contains('context-menu')).toBe(false);
-    expect(menu!.classList.contains('track-context-menu')).toBe(false);
+    const expected = (buildEffectChainMenuItems({
+      addEffect: () => {},
+      storeKey: null,
+      vstPlugins: [],
+    }) as { label: string }[]).map((item) => item.label);
+    const shown = items().map((item) => item.textContent!.trim());
+    expect(expected.length).toBeGreaterThan(3);
+    expect(shown.slice(0, expected.length)).toEqual(expected);
+  });
+
+  it('adds the chosen plugin at the right-click graph position, named from the shared catalog', async () => {
+    const handlers = ALL_ADD_HANDLERS();
+    const container = await mountPreview(handlers);
+    await openCanvasMenu(container, { clientX: 300, clientY: 200 });
+
+    const category = menuItem('Dynamics')!;
+    expect(category).toBeTruthy();
+    await act(async () => { category.dispatchEvent(new MouseEvent('mouseover', { bubbles: true })); });
+    await clickMenuItem('Compressor', '.effect-chain-add-submenu');
+
+    expect(handlers.onAddEffectNode).toHaveBeenCalledTimes(1);
+    // Canvas point minus the preview padding (24, 24); the canvas rect is 0,0 in jsdom.
+    expect(handlers.onAddEffectNode).toHaveBeenCalledWith(
+      { pluginId: 'compressor', displayName: 'Compressor' },
+      { x: 276, y: 176 },
+    );
+    expect(document.querySelector('.xleth-graph-state-preview__add-menu')).toBeNull();
   });
 
   it.each([
-    ['Add Plugin', 'onAddEffectNode'],
     ['Macro', 'onAddMacroNode'],
     ['Envelope', 'onAddEnvelopeNode'],
     ['LFO', 'onAddLfoNode'],
-    ['Sidechain Input', 'onAddSidechainInput'],
+    ['Sidechain input', 'onAddSidechainInput'],
   ])('clicking %s calls %s at the right-click graph position and closes the menu', async (label, handlerKey) => {
     const handlers = ALL_ADD_HANDLERS();
     const container = await mountPreview(handlers);
@@ -128,7 +152,6 @@ describe('FX Graph canvas add menu', () => {
 
     const handler = handlers[handlerKey as keyof typeof handlers];
     expect(handler).toHaveBeenCalledTimes(1);
-    // Canvas point minus the preview padding (24, 24); the canvas rect is 0,0 in jsdom.
     expect(handler).toHaveBeenCalledWith({ x: 276, y: 176 });
     expect(document.querySelector('.xleth-graph-state-preview__add-menu')).toBeNull();
   });
@@ -139,7 +162,7 @@ describe('FX Graph canvas add menu', () => {
 
     expect(menu).toBeTruthy();
     expect(menuItem('Macro')).toBeTruthy();
-    expect(menuItem('Add Plugin')).toBeUndefined();
+    expect(menuItem('Dynamics')).toBeUndefined();
     expect(menuItem('Envelope')).toBeUndefined();
     expect(menuItem('LFO')).toBeUndefined();
   });
@@ -158,32 +181,18 @@ describe('FX Graph canvas add menu', () => {
     expect(document.querySelector('.xleth-graph-state-preview__add-menu')).toBeNull();
   });
 
-  it('disables Sidechain Input when the graph already has one', async () => {
-    const container = document.createElement('div');
-    document.body.appendChild(container);
-    const root = createRoot(container);
-    activeRoot = root;
-    activeContainer = container;
+  it('disables Sidechain input when the graph already has one', async () => {
     const handlers = ALL_ADD_HANDLERS();
-    await act(async () => {
-      root.render(
-        <GraphStatePreview
-          graphState={graphState([
-            { id: 'sc-1', type: 'sidechainInput', position: { x: 0, y: 200 }, data: { sourceTrackId: 3 } },
-          ])}
-          onViewportChange={vi.fn()}
-          {...handlers}
-        />,
-      );
-    });
-    await openCanvasMenu(container);
+    await mountPreview(
+      handlers,
+      graphState([{ id: 'sc-1', type: 'sidechainInput', position: { x: 0, y: 200 }, data: { sourceTrackId: 3 } }]),
+    );
+    await openCanvasMenu(activeContainer!);
 
-    const button = Array.from(
-      document.querySelectorAll<HTMLButtonElement>('.xleth-graph-state-preview__add-menu button'),
-    ).find((b) => b.textContent === 'Sidechain Input')!;
-    expect(button.disabled).toBe(true);
+    const item = menuItem('Sidechain input')!;
+    expect(item.getAttribute('aria-disabled') === 'true' || (item as HTMLButtonElement).disabled).toBe(true);
 
-    await act(async () => { button.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    await act(async () => { item.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
     expect(handlers.onAddSidechainInput).not.toHaveBeenCalled();
   });
 
@@ -199,10 +208,32 @@ describe('FX Graph canvas add menu', () => {
 
     await openCanvasMenu(container);
     await act(async () => {
-      document.body.dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }));
+      // The kit menu closes on an outside mousedown.
+      document.body.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     });
     expect(document.querySelector('.xleth-graph-state-preview__add-menu')).toBeNull();
 
     for (const handler of Object.values(handlers)) expect(handler).not.toHaveBeenCalled();
+  });
+});
+
+describe('FX Graph empty state', () => {
+  it('shows a structural note with an Add node action when only the terminals are there', async () => {
+    const container = await mountPreview(ALL_ADD_HANDLERS());
+    expect(container.textContent).toContain('Nothing between Track input and Track output yet.');
+    const button = Array.from(container.querySelectorAll('button')).find((b) => b.textContent === 'Add node')!;
+    expect(button).toBeTruthy();
+
+    await act(async () => { button.dispatchEvent(new MouseEvent('click', { bubbles: true })); });
+    expect(document.querySelector('.xleth-graph-state-preview__add-menu')).toBeTruthy();
+    expect(menuItem('Macro')).toBeTruthy();
+  });
+
+  it('is gone once a node is in the graph, and absent when nothing can be added', async () => {
+    const withNode = await mountPreview(
+      ALL_ADD_HANDLERS(),
+      graphState([{ id: 'm', type: 'macro', position: { x: 100, y: 100 }, data: { label: 'Macro 1', normalizedValue: 0.5 } }]),
+    );
+    expect(withNode.textContent).not.toContain('Nothing between');
   });
 });

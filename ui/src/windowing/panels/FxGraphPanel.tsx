@@ -14,9 +14,7 @@ import GraphStatePreview, {
   type GraphStateDocument,
   type GraphStateViewport,
 } from './fxgraph/GraphStatePreview';
-import FxGraphEffectPicker, {
-  type FxEffectPickerSelection,
-} from './fxgraph/FxGraphEffectPicker';
+import type { GraphEffectSelection } from './fxgraph/GraphAddMenu';
 import SignalLegend from './fxgraph/SignalLegend';
 import type {
   GraphEffectParameterDescriptor,
@@ -157,7 +155,7 @@ export interface FxGraphPanelContentProps {
   onRequestGraphMode?: () => void;
   onGraphNodePositionChange?: (nodeId: string, position: { x: number; y: number }) => void;
   onGraphViewportChange?: (viewport: GraphStateViewport) => void;
-  onAddGraphEffectNode?: (position?: { x: number; y: number }) => void;
+  onAddGraphEffectNode?: (selection: GraphEffectSelection, position?: { x: number; y: number }) => void;
   onAddGraphMacroNode?: (position?: { x: number; y: number }) => void;
   // EVC.3 — envelope node add/edit (graph mode only).
   onAddGraphEnvelopeNode?: (position?: { x: number; y: number }) => void;
@@ -489,7 +487,6 @@ export function FxGraphPanelContent({
 
 export default function FxGraphPanel() {
   const [confirmOpen, setConfirmOpen] = useState(false);
-  const [pickerOpen, setPickerOpen] = useState(false);
   const [conversionError, setConversionError] = useState<string | null>(null);
   const [graphActionNotice, setGraphActionNotice] = useState<string | null>(null);
   const renderingWithoutDom = typeof document === 'undefined';
@@ -611,13 +608,7 @@ export default function FxGraphPanel() {
   useEffect(() => {
     setConversionError(null);
     setGraphActionNotice(null);
-    setPickerOpen(false);
   }, [selectedStoreKey]);
-
-  // Close the picker if this track stops being graph-owned underneath us.
-  useEffect(() => {
-    if (fxMode !== 'graph') setPickerOpen(false);
-  }, [fxMode]);
 
   const handleConfirmGraphMode = useCallback(async () => {
     setConfirmOpen(false);
@@ -646,34 +637,17 @@ export default function FxGraphPanel() {
     void setGraphStateViewport(selectedTrack.id, viewport);
   }, [fxMode, selectedTrack?.id, setGraphStateViewport]);
 
-  // FXG.3-e — the Add Effect Node button no longer drops a placeholder. It opens
-  // the picker, which lists the same stock + scanned-VST catalog the Mixer Chain
-  // exposes. Selecting an effect creates a real graph-owned effect node.
-  // The canvas "Add Plugin" context-menu item calls this same handler with the
-  // right-click's graph position; the picker resolves asynchronously, so the
-  // position is stashed in a ref and consumed once the user picks a plugin.
-  const pendingEffectPositionRef = useRef<{ x: number; y: number } | null>(null);
-  const handleOpenAddEffectPicker = useCallback((position?: { x: number; y: number }) => {
+  // FXG.3-e — choosing a plugin in the shared effect picker (the Devices chain's own list, shown
+  // in the graph's add menu) creates a real graph-owned effect node: real pluginId + displayName
+  // -> graph-owned node + graph-owned engine processor + session effectInstanceId->engineNodeId
+  // mapping. The store instantiates the engine processor first and rolls back the graphState
+  // commit on failure, so a failed add never corrupts the graph or chains.
+  const handleAddGraphEffect = useCallback(async (
+    selection: GraphEffectSelection,
+    position?: { x: number; y: number },
+  ) => {
     if (selectedTrack?.id == null || fxMode !== 'graph') return;
-    pendingEffectPositionRef.current = position ?? null;
     setGraphActionNotice(null);
-    setPickerOpen(true);
-  }, [fxMode, selectedTrack?.id]);
-
-  const handleCancelAddEffectPicker = useCallback(() => {
-    pendingEffectPositionRef.current = null;
-    setPickerOpen(false);
-  }, []);
-
-  const handleSelectGraphEffect = useCallback(async (selection: FxEffectPickerSelection) => {
-    setPickerOpen(false);
-    const position = pendingEffectPositionRef.current;
-    pendingEffectPositionRef.current = null;
-    if (selectedTrack?.id == null || fxMode !== 'graph') return;
-    // Real pluginId + displayName → graph-owned node + graph-owned engine
-    // processor + session effectInstanceId→engineNodeId mapping. The store
-    // instantiates the engine processor first and rolls back the graphState
-    // commit on failure, so a failed add never corrupts the graph or chains.
     const result = await addGraphEffectNodeForTrack(selectedTrack.id, {
       pluginId: selection.pluginId,
       displayName: selection.displayName,
@@ -1024,7 +998,7 @@ export default function FxGraphPanel() {
         onRequestGraphMode={() => setConfirmOpen(true)}
         onGraphNodePositionChange={handleGraphNodePositionChange}
         onGraphViewportChange={handleGraphViewportChange}
-        onAddGraphEffectNode={handleOpenAddEffectPicker}
+        onAddGraphEffectNode={handleAddGraphEffect}
         onAddGraphMacroNode={handleAddGraphMacroNode}
         onAddGraphEnvelopeNode={handleAddGraphEnvelopeNode}
         onUpdateGraphEnvelope={handleUpdateGraphEnvelope}
@@ -1065,13 +1039,6 @@ export default function FxGraphPanel() {
           danger={false}
           onConfirm={handleConfirmGraphMode}
           onCancel={handleCancelGraphMode}
-        />
-      )}
-      {pickerOpen && fxMode === 'graph' && selectedTrack?.id != null && (
-        <FxGraphEffectPicker
-          vstPlugins={vstPlugins}
-          onSelect={handleSelectGraphEffect}
-          onCancel={handleCancelAddEffectPicker}
         />
       )}
     </PanelFrame>
