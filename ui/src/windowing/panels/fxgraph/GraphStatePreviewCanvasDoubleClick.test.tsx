@@ -55,6 +55,14 @@ async function mountPreview(props: Record<string, unknown>) {
   return container;
 }
 
+// The preview fits the view once on open, in a requestAnimationFrame. Under a
+// loaded test run that frame can land after the double-click and add a second
+// onViewportChange call, so let it run and forget it before acting.
+async function settleFitOnOpen(spy: ReturnType<typeof vi.fn>) {
+  await act(async () => { await new Promise<void>((resolve) => requestAnimationFrame(() => resolve())); });
+  spy.mockClear();
+}
+
 async function doubleClick(target: Element, at = { clientX: 300, clientY: 200 }) {
   await act(async () => {
     target.dispatchEvent(new MouseEvent('dblclick', { bubbles: true, cancelable: true, ...at }));
@@ -66,6 +74,7 @@ describe('FX Graph canvas double-click to fit view', () => {
     const onViewportChange = vi.fn();
     const container = await mountPreview({ onViewportChange });
     const viewport = container.querySelector('.xleth-graph-state-preview__viewport')!;
+    await settleFitOnOpen(onViewportChange);
 
     await doubleClick(viewport);
 
@@ -80,6 +89,7 @@ describe('FX Graph canvas double-click to fit view', () => {
     const onViewportChange = vi.fn();
     const container = await mountPreview({ onViewportChange });
     const node = container.querySelector('[data-node-id="input"]')!;
+    await settleFitOnOpen(onViewportChange);
 
     await doubleClick(node, { clientX: 40, clientY: 40 });
 
