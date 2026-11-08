@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from 'react'
 import { PPQ, snapBeatToGrid, beatsToTicks, ticksToBeats, beatToPixel, pixelToBeat } from '../../constants/timeline.js'
-import { PITCH_MIN, PITCH_MAX, isBlackKey, pitchLabel } from './PianoRollKeyboard.jsx'
+import { PITCH_MIN, PITCH_MAX, pitchLabel, visibleRows, gridTiers } from './pianoRollGeometry.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
+import { readPianoRollPalette } from './pianoRollPalette.js'
 import { DEFAULT_SCALE, isPitchInScale, snapPitchToScale } from './scales.js'
 
 import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
@@ -26,28 +27,17 @@ function isPianoRollDebugEnabled() {
   }
 }
 
-// Canvas colors are resolved at draw time because CSS variables cannot be
-// passed directly to CanvasRenderingContext2D.
+// Canvas colours are resolved at draw time (pianoRollPalette.js); the note
+// entries below are the pre-step-3 note colours.
 function resolvePalette() {
+  const base = readPianoRollPalette()
   return {
-    bg: tokenValue('--theme-pianoroll-grid-bg') || '#111118',
-    rowWhite: tokenValue('--theme-pianoroll-key-white-bg') || '#15151C',
-    rowBlack: tokenValue('--theme-pianoroll-key-black-bg') || '#0A0A10',
-    line16: tokenValue('--theme-pianoroll-subdivision-line') || 'rgba(255,255,255,0.04)',
-    lineBeat: tokenValue('--theme-pianoroll-beat-line') || 'rgba(255,255,255,0.06)',
-    lineBar: tokenValue('--theme-pianoroll-bar-line') || 'rgba(255,255,255,0.14)',
-    octaveLine: tokenValue('--theme-border-subtle') || '#2A2A38',
-    accent: tokenValue('--theme-accent') || '#33CED6',
+    ...base,
+    accent: base.select,
     noteSlide: tokenValue('--theme-pianoroll-note-slide-fill') || '#E64FE6',
     noteLabel: tokenValue('--theme-text-on-accent') || '#0D0D14',
-    lassoFill: tokenValue('--theme-pianoroll-selection-rect') || 'rgba(51,206,214,0.18)',
-    lassoStroke: tokenValue('--theme-accent') || '#33CED6',
-    outOfScale: tokenValue('--theme-overlay-subtle') || 'rgba(0,0,0,0.25)',
-    // Past the pattern end: a flat ground (no row stripes, no step lines) and
-    // a 1px end line in secondary ink, so "where the pattern stops" is read
-    // without relying on a faint veil.
-    pastEnd: tokenValue('--ui-g0') || '#141414',
-    endLine: tokenValue('--ui-ink-2') || '#B4B4B4',
+    lassoFill: base.lasso,
+    lassoStroke: base.select,
   }
 }
 
@@ -143,128 +133,96 @@ export function cursorForIntent(intent, activeTool) {
   return 'default'
 }
 
+// Grid: row stripes (black-key rows are the darker ground), an in-scale lift
+// when a scale is set, octave lines, then three line tiers chosen by
+// gridTiers() so lines never sit closer than 6px: bars strongest, beats
+// lighter, 16th steps faintest. Past the pattern end the grid is flat ground
+// with half-strength bar lines and a 1px ink-2 end line.
+function strokeVerticals(ctx, xs, h, style) {
+  if (!xs.length) return
+  ctx.strokeStyle = style
+  ctx.lineWidth = 1
+  ctx.beginPath()
+  for (const x of xs) {
+    ctx.moveTo(x, 0)
+    ctx.lineTo(x, h)
+  }
+  ctx.stroke()
+}
+
 function drawBackground(ctx, w, h, pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY, patternLenBeats, palette, scale) {
   ctx.clearRect(0, 0, w, h)
-  ctx.fillStyle = palette.bg
+  ctx.fillStyle = palette.gridBg
   ctx.fillRect(0, 0, w, h)
 
-  // Flat horizontal row striping — every row gets a fill: white-key rows a
-  // touch lighter than black-key rows. No per-row hairlines (the stripe
-  // contrast carries the rhythm); only the octave (C) boundary draws a line.
-  for (let p = PITCH_MAX; p >= PITCH_MIN; p--) {
-    const y = (PITCH_MAX - p) * pixelsPerSemitone - scrollY
-    if (y + pixelsPerSemitone < 0 || y > h) continue
-    ctx.fillStyle = isBlackKey(p) ? palette.rowBlack : palette.rowWhite
+  const rows = visibleRows(pixelsPerSemitone, scrollY, h)
+  for (const { y, black } of rows) {
+    ctx.fillStyle = black ? palette.rowBlack : palette.rowWhite
     ctx.fillRect(0, y, w, pixelsPerSemitone)
   }
 
-  // Scale lock: dim every row outside the active scale so the playable rows
-  // read at a glance. Purely a veil over the stripes above — note drawing and
-  // grid lines still paint on top.
+  // Scale set: in-scale rows are lifted toward ink (lighter in dark themes,
+  // stronger in light ones), so the playable rows read at a glance while the
+  // black-key shading stays visible underneath.
   if (scale?.enabled) {
-    ctx.fillStyle = palette.outOfScale
-    for (let p = PITCH_MAX; p >= PITCH_MIN; p--) {
-      const y = (PITCH_MAX - p) * pixelsPerSemitone - scrollY
-      if (y + pixelsPerSemitone < 0 || y > h) continue
-      if (isPitchInScale(p, scale.root, scale.mode)) continue
-      ctx.fillRect(0, y, w, pixelsPerSemitone)
+    ctx.save()
+    ctx.globalAlpha = 0.07
+    ctx.fillStyle = palette.ink
+    for (const { pitch, y } of rows) {
+      if (isPitchInScale(pitch, scale.root, scale.mode)) ctx.fillRect(0, y, w, pixelsPerSemitone)
     }
+    ctx.restore()
   }
 
-  ctx.strokeStyle = palette.octaveLine
-  ctx.lineWidth = 1
-  ctx.beginPath()
-  for (let p = PITCH_MAX; p >= PITCH_MIN; p--) {
-    if ((p % 12) !== 0) continue
-    const y = (PITCH_MAX - p) * pixelsPerSemitone - scrollY
-    if (y < -pixelsPerSemitone || y > h) continue
-    ctx.moveTo(0, Math.round(y + pixelsPerSemitone) + 0.5)
-    ctx.lineTo(w, Math.round(y + pixelsPerSemitone) + 0.5)
+  // Octave boundary under every C.
+  ctx.fillStyle = palette.g4
+  for (const { pitch, y } of rows) {
+    if ((pitch % 12) === 0) ctx.fillRect(0, Math.round(y + pixelsPerSemitone) - 1, w, 1)
   }
-  ctx.stroke()
 
-  const startBeat = Math.floor(scrollX / pixelsPerBeat)
-  const endBeat = Math.ceil((scrollX + w) / pixelsPerBeat) + 1
-
-  // Everything past the pattern end is drawn flat below; the in-pattern grid
-  // is clipped to the end line so step and beat lines stop there.
   const endX = patternLenBeats > 0 ? patternLenBeats * pixelsPerBeat - scrollX : Infinity
   if (endX < w) {
-    ctx.fillStyle = palette.pastEnd
+    ctx.fillStyle = palette.gridBg
     ctx.fillRect(Math.max(0, endX), 0, w - Math.max(0, endX), h)
   }
-  ctx.save()
-  ctx.beginPath()
-  ctx.rect(0, 0, Math.max(0, Math.min(w, endX)), h)
-  ctx.clip()
 
-  // 1/16 subdivisions (faintest)
-  ctx.strokeStyle = palette.line16
-  ctx.lineWidth = 1
-  ctx.beginPath()
+  const tiers = gridTiers(pixelsPerBeat)
+  const startBeat = Math.max(0, Math.floor(scrollX / pixelsPerBeat))
+  const endBeat = Math.ceil((scrollX + w) / pixelsPerBeat) + 1
+  const steps = []
+  const beats = []
+  const bars = []
+  const pastBars = []
   for (let b = startBeat; b <= endBeat; b++) {
-    for (let sub = 1; sub < 4; sub++) {
-      const x = Math.round((b + sub / 4) * pixelsPerBeat - scrollX) + 0.5
-      if (x < 0 || x > w) continue
-      ctx.moveTo(x, 0)
-      ctx.lineTo(x, h)
+    const x = Math.round(b * pixelsPerBeat - scrollX) + 0.5
+    if (x < 0 || x > w) continue
+    const isBar = b % 4 === 0
+    if (isBar) {
+      if ((b / 4) % tiers.barEvery !== 0) continue
+      if (x < endX) bars.push(x)
+      else if (x > endX + 0.5) pastBars.push(x)
+    } else if (tiers.beats && x < endX) {
+      beats.push(x)
+    }
+    if (tiers.steps) {
+      for (let sub = 1; sub < 4; sub++) {
+        const sx = Math.round((b + sub / 4) * pixelsPerBeat - scrollX) + 0.5
+        if (sx >= 0 && sx <= w && sx < endX) steps.push(sx)
+      }
     }
   }
-  ctx.stroke()
-
-  // Beat lines (every quarter that isn't a bar boundary)
-  ctx.strokeStyle = palette.lineBeat
-  ctx.lineWidth = 1
-  ctx.beginPath()
-  for (let b = startBeat; b <= endBeat; b++) {
-    if (b % 4 === 0) continue
-    const x = Math.round(b * pixelsPerBeat - scrollX) + 0.5
-    if (x < 0 || x > w) continue
-    ctx.moveTo(x, 0)
-    ctx.lineTo(x, h)
-  }
-  ctx.stroke()
-
-  // Bar lines (brightest)
-  ctx.strokeStyle = palette.lineBar
-  ctx.lineWidth = 1
-  ctx.beginPath()
-  for (let b = startBeat; b <= endBeat; b++) {
-    if (b % 4 !== 0) continue
-    const x = Math.round(b * pixelsPerBeat - scrollX) + 0.5
-    if (x < 0 || x > w) continue
-    ctx.moveTo(x, 0)
-    ctx.lineTo(x, h)
-  }
-  ctx.stroke()
-
-  ctx.restore()
-
-  // Past the end: bar lines only, at half strength, so the bar rhythm carries
-  // on without reading as editable pattern time. Then the end line itself.
-  if (endX < w) {
+  strokeVerticals(ctx, steps, h, palette.lineStep)
+  strokeVerticals(ctx, beats, h, palette.lineBeat)
+  strokeVerticals(ctx, bars, h, palette.lineBar)
+  if (pastBars.length) {
     ctx.save()
     ctx.globalAlpha = 0.5
-    ctx.strokeStyle = palette.lineBar
-    ctx.lineWidth = 1
-    ctx.beginPath()
-    for (let b = startBeat; b <= endBeat; b++) {
-      if (b % 4 !== 0) continue
-      const x = Math.round(b * pixelsPerBeat - scrollX) + 0.5
-      if (x <= endX || x > w) continue
-      ctx.moveTo(x, 0)
-      ctx.lineTo(x, h)
-    }
-    ctx.stroke()
+    strokeVerticals(ctx, pastBars, h, palette.lineBar)
     ctx.restore()
-    if (endX >= 0) {
-      ctx.strokeStyle = palette.endLine
-      ctx.lineWidth = 1
-      ctx.beginPath()
-      ctx.moveTo(Math.round(endX) + 0.5, 0)
-      ctx.lineTo(Math.round(endX) + 0.5, h)
-      ctx.stroke()
-    }
+  }
+  if (endX >= 0 && endX < w) {
+    ctx.fillStyle = palette.ink2
+    ctx.fillRect(Math.round(endX), 0, 1, h)
   }
 }
 

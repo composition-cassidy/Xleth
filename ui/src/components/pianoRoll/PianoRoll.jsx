@@ -797,13 +797,14 @@ export default function PianoRoll({
         style={{ '--pr-lane-h': `${laneHeight}px` }}
       >
         <div className={`${styles.cell} ${styles.rulerCorner}`} />
-        <div className={styles.cell}>
+        <div className={`${styles.cell} ${styles.ruler}`}>
           <PianoRollRuler
             ref={rulerRef}
             pixelsPerBeatRef={pixelsPerBeatRef}
             scrollXRef={scrollXRef}
             width={canvasWidth}
-            height={24}
+            height={23}
+            patternLengthTicks={patternLengthTicks}
           />
         </div>
         <div className={`${styles.cell} ${styles.rulerCorner}`} />

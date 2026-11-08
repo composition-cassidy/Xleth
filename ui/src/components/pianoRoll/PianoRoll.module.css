@@ -67,6 +67,16 @@
     border-right: 1px solid var(--ui-g4);
   }
 
+  .keyboard {
+    position: absolute;
+    inset: 0;
+    cursor: pointer;
+  }
+
+  .ruler {
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
   /* One canvas layer filling its cell; the backing store is sized in JS. */
   .layer {
     position: absolute;

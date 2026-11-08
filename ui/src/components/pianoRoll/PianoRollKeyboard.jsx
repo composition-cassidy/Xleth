@@ -1,129 +1,172 @@
-import { forwardRef, useImperativeHandle, useLayoutEffect, useRef } from 'react'
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState } from 'react'
+import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
+import {
+  PITCH_MIN, PITCH_MAX, NUM_PITCHES, isBlackKey, pitchLabel, pitchAtY, visibleRows,
+} from './pianoRollGeometry.js'
+import { readPianoRollPalette, uiFont } from './pianoRollPalette.js'
+import styles from './PianoRoll.module.css'
 
-// MIDI pitch layout: pitch 0 = C-1. Piano rolls typically show C0..B9 (12..131).
-// We'll render a vertical keyboard that aligns with the canvas rows.
-const PITCH_MIN = 12   // C0
-const PITCH_MAX = 131  // B9
-const NUM_PITCHES = PITCH_MAX - PITCH_MIN + 1
-
-// Semitone offsets within an octave that are black keys
-const BLACK_KEY_SET = new Set([1, 3, 6, 8, 10])
-
-function isBlackKey(pitch) {
-  return BLACK_KEY_SET.has(pitch % 12)
-}
-
-function pitchLabel(pitch) {
-  const names = ['C','C#','D','D#','E','F','F#','G','G#','A','A#','B']
-  const octave = Math.floor(pitch / 12) - 1
-  return `${names[pitch % 12]}${octave}`
-}
-
-// The keyboard's vertical placement is a pure function of the per-frame
-// (pixelsPerSemitone, scrollY) that PianoRoll's view animator eases — so it is
-// driven imperatively from that animator's onTick via applyView(), NOT from
-// the settled React state. Reading the settled state left the keys locked in
-// place for the whole gesture and jumping ~100ms after it stopped, while the
-// canvas next to them scrolled smoothly.
+// The keyboard is ONE canvas (it used to be 120 inline-styled divs). Its rows
+// come from the same rowY() the grid uses, so a key always sits on its pitch's
+// row. Vertical placement is a pure function of the per-frame
+// (pixelsPerSemitone, scrollY) the view animator eases, so it redraws from
+// applyView() on every animator frame, never from settled React state.
 //
-// Every key is mounted once (120 divs) inside a single layer; scrolling is one
-// transform write on that layer per frame. Only a vertical ZOOM (a change in
-// pixelsPerSemitone, which also changes each key's height) re-lays out the
-// individual keys.
+// Keys are neutral: white keys in secondary ink, black keys in the panel grey
+// at 62 % width. Every C is labelled; the hovered key is labelled too. A pitch
+// that has notes in the pattern gets a value-colour tick in the 3px gutter at
+// the key's right edge (information, not a tint over the whole key).
+
+const BLACK_KEY_FRACTION = 0.62
+const GUTTER_PX = 3
+
+export function drawKeyboard(ctx, {
+  width, height, pixelsPerSemitone: pps, scrollY, palette, hoverPitch = null, pressedPitch = null, usedPitches = null,
+}) {
+  ctx.clearRect(0, 0, width, height)
+  ctx.fillStyle = palette.g0
+  ctx.fillRect(0, 0, width, height)
+  const keyW = Math.max(0, width - GUTTER_PX)
+  const blackW = Math.round(keyW * BLACK_KEY_FRACTION)
+  const rows = visibleRows(pps, scrollY, height)
+  const labelPx = pps >= 14 ? 11 : 10
+  const showLabels = pps >= 10
+
+  for (const { pitch, y, black } of rows) {
+    const isPressed = pressedPitch === pitch
+    const isHover = hoverPitch === pitch
+    // The white-key surface runs under every row; a black key is a shorter bar on top.
+    ctx.fillStyle = (!black && (isPressed || isHover)) ? palette.ink : palette.ink2
+    ctx.fillRect(0, y, keyW, pps)
+    if (black) {
+      ctx.fillStyle = isPressed ? palette.g4 : (isHover ? palette.g3 : palette.g1)
+      ctx.fillRect(0, y, blackW, pps)
+      // The two white keys that flank a black key meet at its centre line.
+      ctx.fillStyle = palette.g4
+      ctx.fillRect(blackW, Math.round(y + pps / 2), keyW - blackW, 1)
+    } else if (!isBlackKey(pitch - 1) && pitch > PITCH_MIN) {
+      // E|F and B|C: two white keys meet directly.
+      ctx.fillStyle = palette.g4
+      ctx.fillRect(0, Math.round(y + pps) - 1, keyW, 1)
+    }
+    if (usedPitches?.has(pitch)) {
+      ctx.fillStyle = palette.value
+      ctx.fillRect(keyW + 1, y + 1, GUTTER_PX - 1, Math.max(1, pps - 2))
+    }
+    const isC = (((pitch % 12) + 12) % 12) === 0
+    if (showLabels && (isC || isHover || isPressed)) {
+      ctx.font = uiFont(palette, labelPx, isC ? 600 : 500)
+      ctx.textBaseline = 'middle'
+      ctx.textAlign = 'right'
+      // Labels sit in the white area at the right; on ink-2 the g1 text is 8.3:1.
+      ctx.fillStyle = palette.g1
+      ctx.fillText(pitchLabel(pitch), keyW - 4, y + pps / 2 + 0.5)
+      ctx.textAlign = 'left'
+    }
+  }
+}
+
 const PianoRollKeyboard = forwardRef(function PianoRollKeyboard({
   pixelsPerSemitoneRef, scrollYRef, height,
   onPreviewNote, highlightedPitches,
 }, ref) {
-  const layerRef = useRef(null)
-  const keyElsRef = useRef([])       // index = PITCH_MAX - pitch (top to bottom)
-  const lastPpsRef = useRef(null)
+  const epoch = useThemeEpoch()
+  const wrapRef = useRef(null)
+  const canvasRef = useRef(null)
+  const [width, setWidth] = useState(53)
+  const sizeRef = useRef({ w: 53, h: height })
+  sizeRef.current = { w: width, h: height }
+  const usedRef = useRef(highlightedPitches)
+  usedRef.current = highlightedPitches
+  const hoverRef = useRef(null)
+  const pressedRef = useRef(null)
 
-  const applyView = () => {
-    const layer = layerRef.current
-    if (!layer) return
-    const pps = pixelsPerSemitoneRef?.current || 0
-    const scrollY = scrollYRef?.current || 0
+  useEffect(() => {
+    const el = wrapRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => setWidth(el.clientWidth || 53))
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
 
-    if (pps !== lastPpsRef.current) {
-      lastPpsRef.current = pps
-      const els = keyElsRef.current
-      for (let i = 0; i < els.length; i++) {
-        const el = els[i]
-        if (!el) continue
-        el.style.top = `${i * pps}px`
-        el.style.height = `${pps}px`
-      }
-      layer.style.height = `${NUM_PITCHES * pps}px`
-    }
-    layer.style.transform = `translateY(${-scrollY}px)`
+  const draw = useCallback(() => {
+    const c = canvasRef.current
+    const ctx = c?.getContext?.('2d')
+    if (!ctx) return
+    const { w, h } = sizeRef.current
+    const dpr = window.devicePixelRatio || 1
+    ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+    drawKeyboard(ctx, {
+      width: w,
+      height: h,
+      pixelsPerSemitone: pixelsPerSemitoneRef?.current || 14,
+      scrollY: scrollYRef?.current || 0,
+      palette: readPianoRollPalette(),
+      hoverPitch: hoverRef.current,
+      pressedPitch: pressedRef.current,
+      usedPitches: usedRef.current,
+    })
+  }, [pixelsPerSemitoneRef, scrollYRef])
+
+  useLayoutEffect(() => {
+    const c = canvasRef.current
+    if (!c) return
+    const dpr = window.devicePixelRatio || 1
+    c.width = Math.max(1, Math.round(width * dpr))
+    c.height = Math.max(1, Math.round(height * dpr))
+    draw()
+  }, [width, height, epoch, draw])
+
+  // A render can change the used-pitch set; redraw after every one.
+  useLayoutEffect(() => { draw() })
+
+  useImperativeHandle(ref, () => ({ applyView: draw }), [draw])
+
+  const pitchFromEvent = (e) => {
+    const rect = canvasRef.current?.getBoundingClientRect()
+    if (!rect) return null
+    return pitchAtY(e.clientY - rect.top, pixelsPerSemitoneRef?.current || 14, scrollYRef?.current || 0)
   }
 
-  useImperativeHandle(ref, () => ({ applyView }))
-
-  // Re-apply after every React render too: a render can replace key elements
-  // (highlight changes) and always resets the inline styles React owns.
-  useLayoutEffect(() => {
-    lastPpsRef.current = null // force the full re-layout, styles were just reset
-    applyView()
-  })
-
-  const keys = []
-  for (let p = PITCH_MAX; p >= PITCH_MIN; p--) {
-    const idx = PITCH_MAX - p
-    const isBlack = isBlackKey(p)
-    const isC = (p % 12) === 0
-    const highlighted = highlightedPitches?.has(p)
-    keys.push(
-      <div
-        key={p}
-        ref={(el) => { keyElsRef.current[idx] = el }}
-        className={`piano-roll-key ${isBlack ? 'black' : 'white'} ${highlighted ? 'highlighted' : ''}`}
-        style={{
-          position: 'absolute',
-          top: 0,      // real top/height are written by applyView()
-          height: 0,
-          left: 0,
-          right: 0,
-          background: isBlack
-            ? (highlighted ? '#223530' : '#161616')
-            : (highlighted ? '#bcd2c9' : '#a8a8a8'),
-          borderBottom: isBlack ? '1px solid #0d0d0d' : '1px solid rgba(0,0,0,0.18)',
-          display: 'flex',
-          alignItems: 'center',
-          justifyContent: 'flex-end',
-          paddingRight: 5,
-          fontSize: 10,
-          letterSpacing: '0.02em',
-          color: isBlack ? '#929292' : '#2a2a2a',
-          cursor: 'pointer',
-          userSelect: 'none',
-        }}
-        onMouseDown={(e) => { e.preventDefault(); onPreviewNote?.(p) }}
-      >
-        {isC ? pitchLabel(p) : ''}
-      </div>
-    )
+  const onPointerMove = (e) => {
+    const p = pitchFromEvent(e)
+    if (p !== hoverRef.current) { hoverRef.current = p; draw() }
+  }
+  const onPointerLeave = () => {
+    if (hoverRef.current != null) { hoverRef.current = null; draw() }
+  }
+  const onMouseDown = (e) => {
+    if (e.button !== 0) return
+    e.preventDefault()
+    const p = pitchFromEvent(e)
+    if (p == null) return
+    pressedRef.current = p
+    draw()
+    const release = () => {
+      window.removeEventListener('mouseup', release)
+      pressedRef.current = null
+      draw()
+    }
+    window.addEventListener('mouseup', release)
+    onPreviewNote?.(p)
   }
 
   return (
     <div
-      className="piano-roll-keyboard"
-      style={{
-        position: 'relative',
-        width: '100%',
-        height: height,
-        overflow: 'hidden',
-        background: '#0d0d0d',
-        borderRight: '1px solid #222',
-        flexShrink: 0,
-      }}
+      ref={wrapRef}
+      className={`piano-roll-keyboard ${styles.keyboard}`}
+      data-hint="Keyboard"
+      data-hint-mods="Press a key: hear the note"
     >
-      <div
-        ref={layerRef}
-        style={{ position: 'absolute', top: 0, left: 0, right: 0, willChange: 'transform' }}
-      >
-        {keys}
-      </div>
+      <canvas
+        ref={canvasRef}
+        className={styles.layer}
+        role="img"
+        aria-label="Piano keyboard"
+        onPointerMove={onPointerMove}
+        onPointerLeave={onPointerLeave}
+        onMouseDown={onMouseDown}
+      />
     </div>
   )
 })

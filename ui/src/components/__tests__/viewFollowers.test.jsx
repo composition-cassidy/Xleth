@@ -85,106 +85,88 @@ describe('loop region bar follows the animator', () => {
   })
 })
 
-describe('piano roll keyboard follows the animator', () => {
-  it('scrolls and re-lays-out its keys on an animator frame', () => {
-    const pixelsPerSemitoneRef = { current: 10 }
-    const scrollYRef = { current: 0 }
-    const ref = createRef()
-
-    const container = render(
-      <PianoRollKeyboard
-        ref={ref}
-        pixelsPerSemitoneRef={pixelsPerSemitoneRef}
-        scrollYRef={scrollYRef}
-        height={400}
-        onPreviewNote={() => {}}
-        highlightedPitches={new Set()}
-      />,
-    )
-    const layer = container.querySelector('.piano-roll-keyboard > div')
-    const keys = container.querySelectorAll('.piano-roll-key')
-    expect(layer.style.transform).toBe('translateY(0px)')
-    // Keys are laid out top-down from the highest pitch.
-    expect(keys[0].style.top).toBe('0px')
-    expect(keys[0].style.height).toBe('10px')
-    expect(keys[12].style.top).toBe('120px')
-
-    scrollYRef.current = 250
-    ref.current.applyView()
-    expect(layer.style.transform).toBe('translateY(-250px)')
-
-    // Vertical zoom changes each key's height, not just the layer offset.
-    pixelsPerSemitoneRef.current = 20
-    ref.current.applyView()
-    expect(keys[12].style.top).toBe('240px')
-    expect(keys[12].style.height).toBe('20px')
+// The keyboard and ruler are canvases (round 2, step 12): the contract is the
+// same, applyView() repaints from the animator's refs with no re-render.
+function recordingCtx() {
+  const calls = []
+  const ctx = new Proxy({ calls }, {
+    get(target, prop) {
+      if (prop in target) return target[prop]
+      return (...args) => { calls.push([prop, ...args]) }
+    },
+    set(target, prop, value) { target[prop] = value; return true },
   })
+  return ctx
+}
 
-  it('keeps the top key aligned with the canvas row for the same pitch', () => {
-    const pixelsPerSemitoneRef = { current: 12 }
-    const scrollYRef = { current: 96 }
-    const ref = createRef()
-    const container = render(
-      <PianoRollKeyboard
-        ref={ref}
-        pixelsPerSemitoneRef={pixelsPerSemitoneRef}
-        scrollYRef={scrollYRef}
-        height={300}
-        onPreviewNote={() => {}}
-        highlightedPitches={new Set()}
-      />,
-    )
-    ref.current.applyView()
-    const layer = container.querySelector('.piano-roll-keyboard > div')
-    const keys = container.querySelectorAll('.piano-roll-key')
+function withCanvasStub(fn) {
+  const ctx = recordingCtx()
+  const orig = HTMLCanvasElement.prototype.getContext
+  HTMLCanvasElement.prototype.getContext = () => ctx
+  try { return fn(ctx) } finally { HTMLCanvasElement.prototype.getContext = orig }
+}
 
-    // The canvas draws pitch p at y = (PITCH_MAX - p) * pps - scrollY; the
-    // keyboard must land on exactly the same y after its layer transform.
-    const pitch = PITCH_MAX - 20
-    const idx = PITCH_MAX - pitch
-    const canvasY = idx * pixelsPerSemitoneRef.current - scrollYRef.current
-    const keyboardY = parseFloat(keys[idx].style.top)
-      + parseFloat(layer.style.transform.match(/-?[\d.]+/)[0])
-    expect(keyboardY).toBeCloseTo(canvasY, 9)
+const texts = (ctx) => ctx.calls.filter((c) => c[0] === 'fillText').map((c) => ({ text: c[1], x: c[2], y: c[3] }))
+
+describe('piano roll keyboard follows the animator', () => {
+  it('repaints its keys on an animator frame, aligned with the grid rows', () => {
+    withCanvasStub((ctx) => {
+      const pixelsPerSemitoneRef = { current: 12 }
+      const scrollYRef = { current: (PITCH_MAX - 72) * 12 }   // C5 row at the top
+      const ref = createRef()
+      render(
+        <PianoRollKeyboard
+          ref={ref}
+          pixelsPerSemitoneRef={pixelsPerSemitoneRef}
+          scrollYRef={scrollYRef}
+          height={300}
+          onPreviewNote={() => {}}
+          highlightedPitches={new Set()}
+        />,
+      )
+      ctx.calls.length = 0
+      ref.current.applyView()
+      const c5 = texts(ctx).find((t) => t.text === 'C5')
+      // Row of C5 starts at y=0, its label sits on the row's centre.
+      expect(c5.y).toBeCloseTo(6.5, 5)
+
+      // Scroll one octave down (toward lower pitches): C4 is now the top row.
+      scrollYRef.current += 12 * 12
+      ctx.calls.length = 0
+      ref.current.applyView()
+      const labels = texts(ctx).map((t) => t.text)
+      expect(labels[0]).toBe('C4')
+      expect(labels).not.toContain('C5')
+    })
   })
 })
 
 describe('piano roll ruler follows the animator', () => {
-  it('rebuilds its tick labels on an animator frame', () => {
-    const pixelsPerBeatRef = { current: 40 }
-    const scrollXRef = { current: 0 }
-    const ref = createRef()
+  it('repaints its bar labels on an animator frame', () => {
+    withCanvasStub((ctx) => {
+      const pixelsPerBeatRef = { current: 40 }
+      const scrollXRef = { current: 0 }
+      const ref = createRef()
+      render(
+        <PianoRollRuler
+          ref={ref}
+          pixelsPerBeatRef={pixelsPerBeatRef}
+          scrollXRef={scrollXRef}
+          width={400}
+          height={23}
+        />,
+      )
+      ctx.calls.length = 0
+      ref.current.applyView()
+      expect(texts(ctx)[0].text).toBe('1')
 
-    const container = render(
-      <PianoRollRuler
-        ref={ref}
-        pixelsPerBeatRef={pixelsPerBeatRef}
-        scrollXRef={scrollXRef}
-        width={400}
-        height={24}
-        keyboardWidth={60}
-        scrollbarWidth={20}
-      />,
-    )
-    const visible = () => Array.from(container.querySelectorAll('.piano-roll-ruler-tick'))
-      .filter((el) => el.style.display !== 'none')
-
-    expect(visible()[0].textContent).toBe('1')     // bar 1 at beat 0
-    expect(visible()[0].style.left).toBe('0px')
-
-    // Scroll 4 beats (one bar) right: bar 2 is now at the left edge.
-    scrollXRef.current = 160
-    ref.current.applyView()
-    expect(visible()[0].textContent).toBe('2')
-    expect(visible()[0].style.left).toBe('0px')
-
-    // Sub-beat scroll positions land off-grid, as the canvas grid does.
-    // Spans are pooled, not re-allocated, across frames.
-    const poolSize = container.querySelectorAll('.piano-roll-ruler-tick').length
-    scrollXRef.current = 210
-    ref.current.applyView()
-    expect(container.querySelectorAll('.piano-roll-ruler-tick').length).toBe(poolSize)
-    expect(visible()[0].textContent).toBe('2.2')
-    expect(visible()[0].style.left).toBe('-10px')
+      // Scroll 4 beats (one bar) right: bar 2 is now at the left edge.
+      scrollXRef.current = 160
+      ctx.calls.length = 0
+      ref.current.applyView()
+      const first = texts(ctx)[0]
+      expect(first.text).toBe('2')
+      expect(first.x).toBeCloseTo(3.5, 5)
+    })
   })
 })

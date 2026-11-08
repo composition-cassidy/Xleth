@@ -5325,36 +5325,6 @@ html.fx-drag-active * {
 .piano-roll-scale-root { max-width: 56px; padding: 0 4px; }
 .piano-roll-scale-mode { max-width: 130px; }
 
-/* ── Ruler ─────────────────────────────────────────────────────────────── */
-.piano-roll-ruler {
-  display: flex;
-  flex-shrink: 0;
-  background: #181818;
-  border-bottom: 1px solid #222;
-}
-.piano-roll-ruler-corner {
-  flex-shrink: 0;
-  background: #181818;
-  border-right: 1px solid #222;
-}
-.piano-roll-ruler-corner:last-child { border-right: none; }
-.piano-roll-ruler-track {
-  position: relative;
-  flex-shrink: 0;
-  overflow: hidden;
-}
-.piano-roll-ruler-tick {
-  position: absolute;
-  top: 6px;
-  padding-left: 4px;
-  font-size: 10px;
-  color: #929292;
-  font-variant-numeric: tabular-nums;
-  white-space: nowrap;
-  pointer-events: none;
-}
-.piano-roll-ruler-tick.bar { color: #b4b4b4; }
-
 .timeline-toolbar-button {
   display: flex;
   align-items: center;
