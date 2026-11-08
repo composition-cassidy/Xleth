@@ -27,7 +27,7 @@ describe('Sampler header', () => {
     expect([...slots.querySelectorAll('[role="tab"]')].map((t) => t.getAttribute('aria-label')))
       .toEqual(['Slot 1: Layer 1', 'Slot 2: Second'])
     const views = h.container.querySelector('[role="tablist"][aria-label="Sampler views"]')
-    expect([...views.querySelectorAll('[role="tab"]')].map((t) => t.textContent.trim())).toEqual(['Main', 'Playback'])
+    expect([...views.querySelectorAll('[role="tab"]')].map((t) => t.textContent.trim())).toEqual(['Main', 'Playback', 'Modulation'])
     expect(h.container.querySelector('[aria-label="Sampler patch"]')).toBeTruthy()
   })
 

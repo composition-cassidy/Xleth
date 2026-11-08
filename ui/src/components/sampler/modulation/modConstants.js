@@ -93,23 +93,6 @@ export function modTimeSeconds(t, sync, bpm) {
   return noteValueBeats(t?.noteValue ?? 0, !!t?.triplet, !!t?.dotted) * 60 / useBpm
 }
 
-// ── Card catalogue ───────────────────────────────────────────────────────────
-// The rack renders these in order. `kind` picks the editor; `source` is the flat
-// index; `color` is a CSS custom property scoped on .sampler-mod-rack (see
-// app.css) so the palette stays theme-driven and swappable, never hardcoded.
-export function buildCards() {
-  const cards = []
-  for (let i = 0; i < NUM_ENVS; i++) {
-    cards.push({ id: `env${i}`, kind: 'env', source: ENV_SOURCE_0 + i, index: i, label: `ENV ${i + 1}`, color: 'var(--mod-env)' })
-  }
-  for (let i = 0; i < NUM_LFOS; i++) {
-    cards.push({ id: `lfo${i}`, kind: 'lfo', source: LFO_SOURCE_0 + i, index: i, label: `LFO ${i + 1}`, color: 'var(--mod-lfo)' })
-  }
-  cards.push({ id: 'velo', kind: 'velo', source: VELO_SOURCE, index: 0, label: 'VELO', color: 'var(--mod-velo)' })
-  cards.push({ id: 'note', kind: 'note', source: NOTE_SOURCE, index: 0, label: 'NOTE', color: 'var(--mod-note)' })
-  return cards
-}
-
 // Number of routes leaving a given source — the "in use" signal a card shows.
 export function routeCountForSource(routes, source) {
   if (!Array.isArray(routes)) return 0

@@ -1,19 +1,25 @@
 import { useState } from 'react'
+import {
+  IconButton, Knob, SegmentedControl, Select, Toggle, skewScale,
+} from '../../../ui-kit'
+import { ModKnob, ModNumberBox } from '../kitMod.jsx'
+import { formatSigned2, formatTime, noteValueCodec, parseOffset } from '../samplerFormat.js'
 import ModShapeCanvas from './ModShapeCanvas.jsx'
-import { ModKnob, Seg, Chk, NoteSelect, Field } from './ModControls.jsx'
+import { useBoxSize } from './useBoxSize.js'
 import {
   SEG_STEP, SEG_LINE, SEG_CURVE, BEHAVIORS,
-  NOTE_VALUES_NONZERO, modTimeSeconds,
+  NOTE_VALUES, modTimeSeconds,
 } from './modConstants.js'
 import {
   TARGET_SRC_RATE, TARGET_SRC_PHASE, TARGET_SRC_RISE,
   TARGET_SRC_DELAY, TARGET_SRC_SMOOTH, TARGET_SRC_AMOUNT,
 } from './modTargets.js'
+import styles from '../Sampler.module.css'
 
 // ── LFO editor ───────────────────────────────────────────────────────────────
-// Canvas point editor (STEP/LINE/CURVE segments on a snap grid) plus rate,
-// depth-shaping and behaviour controls. A drag on the canvas streams through
-// preview(); mouseup commits once. Discrete controls commit immediately.
+// The drawable shape (canvas point editor: Step / Line / Curve segments on a snap
+// grid) with rate, depth shaping and behaviour. A drag on the canvas streams
+// through preview(); release commits once. Discrete controls commit immediately.
 
 // Shape starters. Each returns a fresh `{t,v,seg,tension}[]`.
 const PRESETS = {
@@ -44,232 +50,220 @@ const PRESETS = {
   },
 }
 
-const PRESET_ICONS = {
-  sine: <path d="M1,7 Q4,1 7,7 Q10,13 13,7" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />,
-  triangle: <path d="M1,9 L5,2 L9,9 L13,2" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />,
-  saw: <path d="M2,10 L9,2 M9,2 L9,10 M11,10 L13,10" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />,
-  square: <path d="M1,9 L1,3 L7,3 L7,9 L13,9 L13,3" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />,
-  randomSteps: <path d="M1,8 L3,8 L3,4 L5,4 L5,10 L7,10 L7,5 L9,5 L9,9 L11,9 L11,3 L13,3" fill="none" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />,
-}
-const PRESET_TITLES = { sine: 'Sine', triangle: 'Triangle', saw: 'Saw', square: 'Square', randomSteps: 'Random Steps' }
+// 16px grid, 1.5px stroke, square caps: the kit icon grammar, drawn as the shape itself.
+const glyph = (d) => (
+  <svg width={16} height={16} viewBox="0 0 16 16" aria-hidden="true" focusable="false">
+    <path d={d} fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="square" strokeLinejoin="miter" />
+  </svg>
+)
+const PRESET_LIST = [
+  { id: 'sine', name: 'Sine', icon: glyph('M2,8 Q5,1 8,8 Q11,15 14,8') },
+  { id: 'triangle', name: 'Triangle', icon: glyph('M2,11 L5,4 L8,11 L11,4 L14,11') },
+  { id: 'saw', name: 'Saw', icon: glyph('M2,12 L10,4 L10,12 L14,12') },
+  { id: 'square', name: 'Square', icon: glyph('M2,11 L2,4 L8,4 L8,11 L14,11 L14,4') },
+  { id: 'randomSteps', name: 'Random steps', icon: glyph('M2,10 L4,10 L4,5 L6,5 L6,12 L8,12 L8,6 L10,6 L10,11 L12,11 L12,4 L14,4') },
+]
 
 const SEG_TOOLS = [
-  { v: SEG_STEP, l: 'Step' },
-  { v: SEG_LINE, l: 'Line' },
-  { v: SEG_CURVE, l: 'Curve' },
+  { value: SEG_STEP, label: 'Step', hint: 'The selected point holds its value until the next one' },
+  { value: SEG_LINE, label: 'Line', hint: 'A straight ramp to the next point' },
+  { value: SEG_CURVE, label: 'Curve', hint: 'A bent ramp to the next point; set the bend with Tension' },
 ]
 
-const SNAP_X_OPTS = [
-  { v: 0, l: 'Off' }, { v: 2, l: '2' }, { v: 3, l: '3' }, { v: 4, l: '4' },
-  { v: 6, l: '6' }, { v: 8, l: '8' }, { v: 12, l: '12' }, { v: 16, l: '16' }, { v: 32, l: '32' },
-]
-const SNAP_Y_OPTS = [
-  { v: 0, l: 'Off' }, { v: 2, l: '2' }, { v: 4, l: '4' }, { v: 8, l: '8' }, { v: 12, l: '12' },
-]
+const SNAP_X = [0, 2, 3, 4, 6, 8, 12, 16, 32].map((v) => ({ value: v, label: v ? String(v) : 'Off' }))
+const SNAP_Y = [0, 2, 4, 8, 12].map((v) => ({ value: v, label: v ? String(v) : 'Off' }))
 
-// Cross-modulation registrations. `source` is this LFO's own flat source index,
-// which is what a route targeting it carries in ModRoute.index. `scale` converts
-// the knob's display units to the engine's: the percent knobs drive 0..1
-// parameters, the Hz and millisecond knobs are already in engine units.
+const RATE_SCALE = skewScale(0.01, 40, 0.4)
+const RATE_CODEC = noteValueCodec(NOTE_VALUES, { allowOff: false })
+const TIME_CODEC = noteValueCodec(NOTE_VALUES)
+const formatHz = (v) => `${v < 1 ? v.toFixed(2) : v.toFixed(1)} Hz`
+const parseHz = (t) => { const n = parseOffset(String(t).replace(/hz$/i, '').trim()); return n == null ? null : n }
+const round = (v) => Math.round(v)
+
+// Cross-modulation registrations. `source` is this LFO's own flat index, which is
+// what a route targeting it carries in ModRoute.index. `scale` converts the
+// control's units to the engine's: percent controls drive 0..1 parameters.
 const srcReg = (target, source, scale = 1) => (source == null ? null : { target, index: source, stage: 0, scale })
 
-export default function LfoEditor({ lfo, color, bpm, preview, commit, source = null }) {
+export default function LfoEditor({ lfo, color, bpm, preview, commit, source = null, label = 'LFO' }) {
   const [selectedIdx, setSelectedIdx] = useState(-1)
   const [snapX, setSnapX] = useState(0)
   const [snapY, setSnapY] = useState(0)
+  const [wellRef, size] = useBoxSize()
 
   const points = Array.isArray(lfo.points) ? lfo.points : []
   const sync = !!lfo.tempoSync
   const selPoint = selectedIdx >= 0 && selectedIdx < points.length ? points[selectedIdx] : null
+  const curveSelected = !!selPoint && selPoint.seg === SEG_CURVE
 
   const setPointsLive = (pts) => preview({ points: pts })
   const setPointsFinal = (pts) => { preview({ points: pts }); commit() }
-
   const applyPreset = (id) => { setPointsFinal(PRESETS[id]()); setSelectedIdx(-1) }
-
-  // Apply a segment type / tension to the selected point.
-  const setSelSeg = (seg) => {
-    if (!selPoint) return
-    const next = points.map((p, i) => (i === selectedIdx ? { ...p, seg } : p))
-    setPointsFinal(next)
-  }
-  const setSelTensionLive = (tension) => {
-    if (!selPoint) return
-    setPointsLive(points.map((p, i) => (i === selectedIdx ? { ...p, tension } : p)))
-  }
-  const setSelTensionFinal = (tension) => {
-    if (!selPoint) return
-    setPointsFinal(points.map((p, i) => (i === selectedIdx ? { ...p, tension } : p)))
-  }
+  const withSel = (patch) => points.map((p, i) => (i === selectedIdx ? { ...p, ...patch } : p))
 
   const setTimeLive = (key, patch) => preview({ [key]: { ...lfo[key], ...patch } })
   const setTimeFinal = (key, patch) => { preview({ [key]: { ...lfo[key], ...patch } }); commit() }
 
-  // Read-out: the synced rate as ms at the project tempo.
-  const syncedRateMs = sync ? Math.round(modTimeSeconds(lfo.syncRate, true, bpm) * 1000) : null
+  const syncedRateMs = sync ? modTimeSeconds(lfo.syncRate, true, bpm) * 1000 : null
+
+  const timeKnob = (key, name, target) => (sync ? (
+    <Knob
+      key={key} label={name} codec={TIME_CODEC} defaultValue={0}
+      value={lfo[key]?.noteValue ?? 0}
+      onChange={(v) => setTimeLive(key, { noteValue: round(v) })}
+      onCommit={(v) => setTimeFinal(key, { noteValue: round(v) })}
+      hint={`${name}, as a note value at the project tempo`}
+      data-lfo-field={key}
+    />
+  ) : (
+    <ModKnob
+      key={key} label={name} unit="ms" min={0} max={10000} defaultValue={0} quantize={round}
+      modTarget={srcReg(target, source)}
+      value={lfo[key]?.ms ?? 0}
+      onChange={(v) => setTimeLive(key, { ms: round(v) })}
+      onCommit={(v) => setTimeFinal(key, { ms: round(v) })}
+      hint={key === 'rise' ? 'Rise: fades the LFO in after each note starts' : 'Delay: waits before the LFO starts'}
+      data-lfo-field={key}
+    />
+  ))
 
   return (
-    <div className="sampler-mod-editor">
-      {/* Behaviour + mono + output */}
-      <div className="sampler-mod-editor-head">
-        <Seg
-          sm
-          opts={BEHAVIORS}
-          val={lfo.behavior ?? 0}
-          set={(v) => { preview({ behavior: v }); commit() }}
+    <div className={styles.editor} data-editor="lfo">
+      <div className={styles.editorHead}>
+        <SegmentedControl
+          size="sm" label={`${label} behaviour`} value={lfo.behavior ?? 0}
+          options={BEHAVIORS.map((b) => ({ value: b.v, label: b.l, hint: b.title }))}
+          onChange={(v) => { preview({ behavior: v }); commit() }}
+          data-lfo-field="behavior"
         />
-        <Chk val={lfo.mono} set={(v) => { preview({ mono: v }); commit() }} label="Mono" title="One shared instance even in Retrig / Env" />
-        <div className="sampler-mod-head-spacer" />
-        <ModKnob
-          label="OUT"
-          modTarget={srcReg(TARGET_SRC_AMOUNT, source, 0.01)}
-          value={(lfo.outputAmount ?? 1) * 100}
-          min={0} max={100} defaultValue={100}
-          size={34} color={color}
-          formatValue={(v) => `${Math.round(v)}%`}
-          onLiveChange={(v) => preview({ outputAmount: Math.round(v) / 100 })}
-          onCommit={(v) => { preview({ outputAmount: Math.round(v) / 100 }); commit() }}
-        />
-      </div>
-
-      {/* Preset starters + segment tools */}
-      <div className="sampler-mod-toolbar">
-        <div className="sampler-mod-tool-group">
-          <span className="sampler-mod-tool-label">Shape</span>
-          {Object.keys(PRESETS).map((id) => (
-            <button
-              type="button" key={id} title={PRESET_TITLES[id]}
-              className="sampler-mod-icon-btn"
-              onClick={() => applyPreset(id)}
-            >
-              <svg width={14} height={14} viewBox="0 0 14 14">{PRESET_ICONS[id]}</svg>
-            </button>
+        <Toggle
+          size="sm" on={!!lfo.mono}
+          onChange={(v) => { preview({ mono: v }); commit() }}
+          hint="Mono: one shared instance even in Retrig and Env"
+          data-lfo-field="mono"
+        >Mono</Toggle>
+        <div className={styles.inline} role="group" aria-label="Shape presets">
+          {PRESET_LIST.map((p) => (
+            <IconButton key={p.id} size="sm" label={`${p.name} shape`} onClick={() => applyPreset(p.id)}
+              hint={`Replace the drawn shape with a ${p.name.toLowerCase()}`}>
+              {p.icon}
+            </IconButton>
           ))}
         </div>
-        <div className="sampler-mod-tool-group">
-          <span className="sampler-mod-tool-label">Segment</span>
-          <Seg
-            sm
-            opts={SEG_TOOLS}
-            val={selPoint ? (selPoint.seg ?? SEG_LINE) : -1}
-            set={setSelSeg}
-            title={selPoint ? 'Segment type for the selected point' : 'Select a point first'}
-          />
-        </div>
+        <SegmentedControl
+          size="sm" label="Segment of the selected point" value={selPoint ? (selPoint.seg ?? SEG_LINE) : -1}
+          options={SEG_TOOLS} disabled={!selPoint}
+          onChange={(seg) => { if (selPoint) setPointsFinal(withSel({ seg })) }}
+          hint={selPoint ? 'Segment type for the selected point' : 'Select a point on the shape first'}
+        />
+        <span className={styles.caption}>Snap</span>
+        <Select size="sm" className={styles.snapSelect} ariaLabel="Snap time" value={snapX} options={SNAP_X}
+          onChange={(v) => setSnapX(Number(v))} hint="Snap points in time: divisions per cycle" />
+        <Select size="sm" className={styles.snapSelect} ariaLabel="Snap value" value={snapY} options={SNAP_Y}
+          onChange={(v) => setSnapY(Number(v))} hint="Snap points in value: divisions of the range" />
+        <span className={styles.spacer} />
+        <ModNumberBox
+          label="Out" width={96} min={0} max={100} unit="%" quantize={round} defaultValue={100}
+          modTarget={srcReg(TARGET_SRC_AMOUNT, source, 0.01)}
+          value={(lfo.outputAmount ?? 1) * 100}
+          onChange={(v) => preview({ outputAmount: round(v) / 100 })}
+          onCommit={(v) => { preview({ outputAmount: round(v) / 100 }); commit() }}
+          hint="Output: scales everything this LFO drives"
+          data-lfo-field="outputAmount"
+        />
       </div>
 
-      {/* Canvas */}
-      <div className="sampler-mod-graph-well">
+      <div
+        className={styles.editorWell}
+        ref={wellRef}
+        data-hint={`${label} shape: one cycle, drawn`}
+        data-hint-mods="Double-click: add a point · Drag: move · Alt+click or right-click: delete"
+      >
         <ModShapeCanvas
           points={points}
           selectedIdx={selectedIdx}
           snapX={snapX}
           snapY={snapY}
           color={color}
-          width={460}
-          height={150}
+          width={size.width}
+          height={size.height}
           onPreview={setPointsLive}
           onCommit={setPointsFinal}
           onSelect={setSelectedIdx}
         />
       </div>
-      <div className="sampler-mod-caption-row">
-        <span className="sampler-mod-caption">Double-click to add · drag to move · alt/right-click to delete</span>
-        <div className="sampler-mod-snap">
-          <span className="sampler-mod-tool-label">Snap X</span>
-          <select className="sampler-select sampler-select--sm" value={String(snapX)} onChange={(e) => setSnapX(Number(e.target.value))}>
-            {SNAP_X_OPTS.map((o) => <option key={o.v} value={o.v}>{o.l}</option>)}
-          </select>
-          <span className="sampler-mod-tool-label">Y</span>
-          <select className="sampler-select sampler-select--sm" value={String(snapY)} onChange={(e) => setSnapY(Number(e.target.value))}>
-            {SNAP_Y_OPTS.map((o) => <option key={o.v} value={o.v}>{o.l}</option>)}
-          </select>
-        </div>
-      </div>
 
-      {/* Rate + depth shaping */}
-      <div className="sampler-mod-rate-row">
-        <div className="sampler-mod-rate-block">
-          <div className="sampler-mod-rate-head">
-            <span className="sampler-mod-tool-label">Rate</span>
-            <Seg
-              sm
-              opts={[{ v: false, l: 'Hz' }, { v: true, l: 'BPM' }]}
-              val={sync}
-              set={(v) => { preview({ tempoSync: v }); commit() }}
-            />
-          </div>
+      <div className={styles.knobRow}>
+        <div className={styles.rateBox}>
+          <SegmentedControl
+            size="sm" label={`${label} rate base`} value={sync ? 'sync' : 'hz'}
+            options={[
+              { value: 'hz', label: 'Hz', hint: 'Rate in cycles per second' },
+              { value: 'sync', label: 'Sync', hint: 'Rate as a note value at the project tempo' },
+            ]}
+            onChange={(v) => { preview({ tempoSync: v === 'sync' }); commit() }}
+            data-lfo-field="tempoSync"
+          />
           {sync ? (
-            <div className="sampler-mod-rate-sync">
-              <NoteSelect val={lfo.syncRate?.noteValue ?? 8} set={(v) => setTimeFinal('syncRate', { noteValue: v })} opts={NOTE_VALUES_NONZERO} />
-              <Chk val={lfo.syncRate?.triplet} set={(v) => setTimeFinal('syncRate', { triplet: v })} label="Trip" />
-              <Chk val={lfo.syncRate?.dotted} set={(v) => setTimeFinal('syncRate', { dotted: v })} label="Dot" />
-              {syncedRateMs != null && <span className="sampler-mod-readout">{syncedRateMs} ms</span>}
+            <div className={styles.inline}>
+              <Toggle size="sm" on={!!lfo.syncRate?.triplet} onChange={(v) => setTimeFinal('syncRate', { triplet: v })}
+                hint="Triplet: two thirds of the note value">Triplet</Toggle>
+              <Toggle size="sm" on={!!lfo.syncRate?.dotted} onChange={(v) => setTimeFinal('syncRate', { dotted: v })}
+                hint="Dotted: one and a half times the note value">Dotted</Toggle>
             </div>
-          ) : (
-            <ModKnob
-              label="Hz"
-              modTarget={srcReg(TARGET_SRC_RATE, source)}
-              value={lfo.rateHz ?? 1}
-              min={0.01} max={40} defaultValue={1} skew={0.4}
-              size={40} color={color}
-              formatValue={(v) => v < 1 ? v.toFixed(2) : v.toFixed(1)}
-              onLiveChange={(v) => preview({ rateHz: Number(v.toFixed(3)) })}
-              onCommit={(v) => { preview({ rateHz: Number(v.toFixed(3)) }); commit() }}
-            />
-          )}
+          ) : null}
         </div>
-
-        <div className="sampler-mod-knob-row">
-          {sync ? (
-            <>
-              <Field label="RISE"><NoteSelect val={lfo.rise?.noteValue ?? 0} set={(v) => setTimeFinal('rise', { noteValue: v })} /></Field>
-              <Field label="DELAY"><NoteSelect val={lfo.delay?.noteValue ?? 0} set={(v) => setTimeFinal('delay', { noteValue: v })} /></Field>
-            </>
-          ) : (
-            <>
-              <ModKnob
-                label="RISE" modTarget={srcReg(TARGET_SRC_RISE, source)}
-                value={lfo.rise?.ms ?? 0} min={0} max={10000} defaultValue={0}
-                size={40} color={color}
-                formatValue={(v) => v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${Math.round(v)}m`}
-                onLiveChange={(v) => setTimeLive('rise', { ms: Math.round(v) })}
-                onCommit={(v) => setTimeFinal('rise', { ms: Math.round(v) })}
-              />
-              <ModKnob
-                label="DELAY" modTarget={srcReg(TARGET_SRC_DELAY, source)}
-                value={lfo.delay?.ms ?? 0} min={0} max={10000} defaultValue={0}
-                size={40} color={color}
-                formatValue={(v) => v >= 1000 ? `${(v / 1000).toFixed(1)}s` : `${Math.round(v)}m`}
-                onLiveChange={(v) => setTimeLive('delay', { ms: Math.round(v) })}
-                onCommit={(v) => setTimeFinal('delay', { ms: Math.round(v) })}
-              />
-            </>
-          )}
-          <ModKnob
-            label="SMOOTH" modTarget={srcReg(TARGET_SRC_SMOOTH, source, 0.01)}
-            value={lfo.smooth ?? 0} min={0} max={100} defaultValue={0}
-            size={40} color={color}
-            formatValue={(v) => `${Math.round(v)}`}
-            onLiveChange={(v) => preview({ smooth: Math.round(v) })}
-            onCommit={(v) => { preview({ smooth: Math.round(v) }); commit() }}
+        {sync ? (
+          <Knob
+            label="Rate" codec={RATE_CODEC} defaultValue={8}
+            value={lfo.syncRate?.noteValue ?? 8}
+            onChange={(v) => setTimeLive('syncRate', { noteValue: round(v) })}
+            onCommit={(v) => setTimeFinal('syncRate', { noteValue: round(v) })}
+            hint={`One cycle per note value. At the project tempo that is ${formatTime(syncedRateMs ?? 0)}.`}
+            data-lfo-field="syncRate"
           />
+        ) : (
           <ModKnob
-            label="PHASE" modTarget={srcReg(TARGET_SRC_PHASE, source, 0.01)}
-            value={lfo.phase ?? 0} min={0} max={100} defaultValue={0}
-            size={40} color={color}
-            formatValue={(v) => `${Math.round(v)}%`}
-            onLiveChange={(v) => preview({ phase: Math.round(v) })}
-            onCommit={(v) => { preview({ phase: Math.round(v) }); commit() }}
+            label="Rate" scale={RATE_SCALE} min={0.01} max={40} defaultValue={1}
+            format={formatHz} parse={parseHz}
+            modTarget={srcReg(TARGET_SRC_RATE, source)}
+            value={lfo.rateHz ?? 1}
+            onChange={(v) => preview({ rateHz: Number(v.toFixed(3)) })}
+            onCommit={(v) => { preview({ rateHz: Number(v.toFixed(3)) }); commit() }}
+            hint="Cycles per second"
+            data-lfo-field="rateHz"
           />
-          <ModKnob
-            label="TENS" value={selPoint?.tension || 0} min={-1} max={1} defaultValue={0}
-            size={28} dragRange={120} capStyle="soft-disk" color="var(--theme-accent)"
-            formatValue={(v) => selPoint && selPoint.seg === SEG_CURVE ? v.toFixed(2) : '--'}
-            onLiveChange={(v) => selPoint && selPoint.seg === SEG_CURVE && setSelTensionLive(Number(v.toFixed(3)))}
-            onCommit={(v) => selPoint && selPoint.seg === SEG_CURVE && setSelTensionFinal(Number(v.toFixed(3)))}
-          />
-        </div>
+        )}
+        {timeKnob('rise', 'Rise', TARGET_SRC_RISE)}
+        {timeKnob('delay', 'Delay', TARGET_SRC_DELAY)}
+        <ModKnob
+          label="Smooth" unit="%" min={0} max={100} defaultValue={0} quantize={round}
+          modTarget={srcReg(TARGET_SRC_SMOOTH, source, 0.01)}
+          value={lfo.smooth ?? 0}
+          onChange={(v) => preview({ smooth: round(v) })}
+          onCommit={(v) => { preview({ smooth: round(v) }); commit() }}
+          hint="Smooth: rounds off steps and corners in the shape"
+          data-lfo-field="smooth"
+        />
+        <ModKnob
+          label="Phase" unit="%" min={0} max={100} defaultValue={0} quantize={round}
+          modTarget={srcReg(TARGET_SRC_PHASE, source, 0.01)}
+          value={lfo.phase ?? 0}
+          onChange={(v) => preview({ phase: round(v) })}
+          onCommit={(v) => { preview({ phase: round(v) }); commit() }}
+          hint="Phase: where in the cycle the LFO starts"
+          data-lfo-field="phase"
+        />
+        <Knob
+          label="Tension" min={-1} max={1} defaultValue={0} bipolar step={0.01}
+          format={(v) => (curveSelected ? formatSigned2(v) : '—')} parse={parseOffset}
+          disabled={!curveSelected}
+          value={selPoint?.tension || 0}
+          onChange={(v) => { if (curveSelected) setPointsLive(withSel({ tension: Number(v.toFixed(3)) })) }}
+          onCommit={(v) => { if (curveSelected) setPointsFinal(withSel({ tension: Number(v.toFixed(3)) })) }}
+          hint="Bend of the selected Curve segment"
+          data-lfo-field="tension"
+        />
       </div>
     </div>
   )

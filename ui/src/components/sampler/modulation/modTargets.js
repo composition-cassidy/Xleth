@@ -83,27 +83,27 @@ export function targetSpec(target) {
 //   master — index is unused
 //   src    — index is another SOURCE       (ENV_STAGE_TIME also uses `stage`)
 export const TARGET_INFO = {
-  [TARGET_SLOT_VOLUME]:        { scope: 'slot',   name: 'VOL',    unit: '',   digits: 2 },
-  [TARGET_SLOT_PAN]:           { scope: 'slot',   name: 'PAN',    unit: '',   digits: 2 },
-  [TARGET_SLOT_SEM]:           { scope: 'slot',   name: 'SEM',    unit: 'st', digits: 1 },
-  [TARGET_SLOT_FINE]:          { scope: 'slot',   name: 'FINE',   unit: 'c',  digits: 0 },
-  [TARGET_SLOT_COARSE]:        { scope: 'slot',   name: 'CRS',    unit: 'st', digits: 1 },
-  [TARGET_SLOT_MANGLE_AMOUNT]: { scope: 'slot',   name: 'AMOUNT', unit: '%',  digits: 0, pct: true },
-  [TARGET_SLOT_MANGLE_MIX]:    { scope: 'slot',   name: 'MIX',    unit: '%',  digits: 0, pct: true },
-  [TARGET_MASTER_VOLUME]:      { scope: 'master', name: 'VOLUME', unit: '',   digits: 2 },
-  [TARGET_MASTER_PAN]:         { scope: 'master', name: 'PAN',    unit: '',   digits: 2 },
-  [TARGET_SRC_RATE]:           { scope: 'src',    name: 'RATE',   unit: 'Hz', digits: 2 },
-  [TARGET_SRC_PHASE]:          { scope: 'src',    name: 'PHASE',  unit: '%',  digits: 0, pct: true },
-  [TARGET_SRC_RISE]:           { scope: 'src',    name: 'RISE',   unit: 'ms', digits: 0 },
-  [TARGET_SRC_DELAY]:          { scope: 'src',    name: 'DELAY',  unit: 'ms', digits: 0 },
-  [TARGET_SRC_SMOOTH]:         { scope: 'src',    name: 'SMOOTH', unit: '%',  digits: 0, pct: true },
-  [TARGET_SRC_AMOUNT]:         { scope: 'src',    name: 'OUT',    unit: '%',  digits: 0, pct: true },
-  [TARGET_ENV_STAGE_TIME]:     { scope: 'src',    name: 'STAGE',  unit: 'ms', digits: 0 },
+  [TARGET_SLOT_VOLUME]:        { scope: 'slot',   name: 'volume', unit: '',   digits: 2 },
+  [TARGET_SLOT_PAN]:           { scope: 'slot',   name: 'pan',    unit: '',   digits: 2 },
+  [TARGET_SLOT_SEM]:           { scope: 'slot',   name: 'semitones', unit: 'st', digits: 1 },
+  [TARGET_SLOT_FINE]:          { scope: 'slot',   name: 'fine',   unit: 'ct',  digits: 0 },
+  [TARGET_SLOT_COARSE]:        { scope: 'slot',   name: 'coarse', unit: 'st', digits: 1 },
+  [TARGET_SLOT_MANGLE_AMOUNT]: { scope: 'slot',   name: 'amount', unit: '%',  digits: 0, pct: true },
+  [TARGET_SLOT_MANGLE_MIX]:    { scope: 'slot',   name: 'mix',    unit: '%',  digits: 0, pct: true },
+  [TARGET_MASTER_VOLUME]:      { scope: 'master', name: 'volume', unit: '',   digits: 2 },
+  [TARGET_MASTER_PAN]:         { scope: 'master', name: 'pan',    unit: '',   digits: 2 },
+  [TARGET_SRC_RATE]:           { scope: 'src',    name: 'rate',   unit: 'Hz', digits: 2 },
+  [TARGET_SRC_PHASE]:          { scope: 'src',    name: 'phase',  unit: '%',  digits: 0, pct: true },
+  [TARGET_SRC_RISE]:           { scope: 'src',    name: 'rise',   unit: 'ms', digits: 0 },
+  [TARGET_SRC_DELAY]:          { scope: 'src',    name: 'delay',  unit: 'ms', digits: 0 },
+  [TARGET_SRC_SMOOTH]:         { scope: 'src',    name: 'smooth', unit: '%',  digits: 0, pct: true },
+  [TARGET_SRC_AMOUNT]:         { scope: 'src',    name: 'out',    unit: '%',  digits: 0, pct: true },
+  [TARGET_ENV_STAGE_TIME]:     { scope: 'src',    name: 'stage',  unit: 'ms', digits: 0 },
 }
 
 // Stage names for ENV_STAGE_TIME. Sustain is a LEVEL, not a time — the engine
 // rejects a route to it, so it is never a registrable target.
-export const STAGE_NAMES = ['DELAY', 'ATTACK', 'HOLD', 'DECAY', 'SUSTAIN', 'RELEASE']
+export const STAGE_NAMES = ['delay', 'attack', 'hold', 'decay', 'sustain', 'release']
 
 export function isCrossModTargetId(target) {
   return target >= TARGET_SRC_RATE && target <= TARGET_ENV_STAGE_TIME
@@ -111,10 +111,10 @@ export function isCrossModTargetId(target) {
 
 // ── Labels ───────────────────────────────────────────────────────────────────
 export function sourceLabel(source) {
-  if (source >= ENV_SOURCE_0 && source < ENV_SOURCE_0 + NUM_ENVS) return `ENV ${source - ENV_SOURCE_0 + 1}`
+  if (source >= ENV_SOURCE_0 && source < ENV_SOURCE_0 + NUM_ENVS) return `Env ${source - ENV_SOURCE_0 + 1}`
   if (source >= LFO_SOURCE_0 && source < LFO_SOURCE_0 + NUM_LFOS) return `LFO ${source - LFO_SOURCE_0 + 1}`
-  if (source === VELO_SOURCE) return 'VELO'
-  if (source === NOTE_SOURCE) return 'NOTE'
+  if (source === VELO_SOURCE) return 'Velocity'
+  if (source === NOTE_SOURCE) return 'Note'
   return '—'
 }
 
@@ -146,7 +146,7 @@ export function targetLabel(target, index = 0, stage = 0) {
   if (info.scope === 'master') return `Master ${info.name}`
   if (info.scope === 'slot') {
     if (target === TARGET_SLOT_MANGLE_AMOUNT || target === TARGET_SLOT_MANGLE_MIX)
-      return `Slot ${index + 1} MANGLE ${stage + 1} ${info.name}`
+      return `Slot ${index + 1} mangle ${stage + 1} ${info.name}`
     return `Slot ${index + 1} ${info.name}`
   }
   if (target === TARGET_ENV_STAGE_TIME)
@@ -257,19 +257,28 @@ export function modRangeInKnobUnits(reg, knobValue, amount, bipolar, knobMin, kn
 }
 
 // ── Value formatting ─────────────────────────────────────────────────────────
+// Number, thin space, unit; a true minus (ui/DESIGN.md section 6).
+const THIN = ' '
+const MINUS = '−'
+const num = (v, digits) => {
+  const t = Math.abs(v).toFixed(digits)
+  return Number(t) === 0 ? t : `${v < 0 ? MINUS : ''}${t}`
+}
+
 export function formatTargetValue(target, v) {
   const info = TARGET_INFO[target]
   if (!info) return String(v)
   const scaled = info.pct ? v * 100 : v
-  const text = scaled.toFixed(info.digits)
-  return info.unit ? `${text} ${info.unit}` : text
+  const text = num(scaled, info.digits)
+  return info.unit ? `${text}${THIN}${info.unit}` : text
 }
 
 function signed(target, v) {
   const info = TARGET_INFO[target]
   const scaled = info?.pct ? v * 100 : v
-  const sign = scaled > 0 ? '+' : ''
-  return `${sign}${scaled.toFixed(info?.digits ?? 2)}${info?.unit ? ` ${info.unit}` : ''}`
+  const digits = info?.digits ?? 2
+  const sign = Number(Math.abs(scaled).toFixed(digits)) > 0 && scaled > 0 ? '+' : ''
+  return `${sign}${num(scaled, digits)}${info?.unit ? `${THIN}${info.unit}` : ''}`
 }
 
 // How deep a route reaches, in the units the DEPTH is actually expressed in.
@@ -282,7 +291,7 @@ export function formatRouteDepth(route) {
   const spec = targetSpec(route.target)
   const depth = (route.amount || 0) * spec.span
   if (spec.law === LAW_EXPONENTIAL) {
-    const text = `${Math.abs(depth).toFixed(2)} oct`
+    const text = `${Math.abs(depth).toFixed(2)}${THIN}oct`
     if (route.bipolar) return `±${text}`
     return `${depth >= 0 ? '+' : '−'}${text}`
   }
@@ -300,4 +309,50 @@ export function routeTooltip(route, reg, knobValue) {
   const base = (Number(knobValue) || 0) * (reg.scale || 1)
   const { lo, hi } = modRange(route.target, base, route.amount, route.bipolar)
   return `${head}: ${amountText} · ${formatTargetValue(route.target, lo)} … ${formatTargetValue(route.target, hi)}`
+}
+
+// ── Every registrable target, for the keyboard "Add route" picker ───────────
+// The same registrations the controls declare, listed so a route can be made
+// without dragging (DAW Floor: every drag has an alternative). Grouped by what
+// they belong to; labels are the route list's own.
+export function routeTargetOptions({ slotIndex = 0, chainLength = 0, envPresent = [], lfoPresent = [] } = {}) {
+  const out = []
+  const push = (target, index, stage, group) => out.push({
+    key: targetKey(target, index, stage), reg: { target, index, stage }, label: targetLabel(target, index, stage), group,
+  })
+  const slot = `Slot ${slotIndex + 1}`
+  for (const t of [TARGET_SLOT_SEM, TARGET_SLOT_FINE, TARGET_SLOT_COARSE, TARGET_SLOT_VOLUME, TARGET_SLOT_PAN]) push(t, slotIndex, 0, slot)
+  for (let i = 0; i < Math.min(chainLength, MAX_MANGLE_INSTANCES); i++) {
+    push(TARGET_SLOT_MANGLE_AMOUNT, slotIndex, i, slot)
+    push(TARGET_SLOT_MANGLE_MIX, slotIndex, i, slot)
+  }
+  envPresent.forEach((present, i) => {
+    if (!present) return
+    const src = ENV_SOURCE_0 + i
+    for (let st = 0; st < STAGE_NAMES.length; st++) if (st !== STAGE_SUSTAIN) push(TARGET_ENV_STAGE_TIME, src, st, sourceLabel(src))
+    push(TARGET_SRC_AMOUNT, src, 0, sourceLabel(src))
+  })
+  lfoPresent.forEach((present, i) => {
+    if (!present) return
+    const src = LFO_SOURCE_0 + i
+    for (const t of [TARGET_SRC_RATE, TARGET_SRC_PHASE, TARGET_SRC_RISE, TARGET_SRC_DELAY, TARGET_SRC_SMOOTH, TARGET_SRC_AMOUNT]) push(t, src, 0, sourceLabel(src))
+  })
+  push(TARGET_SRC_AMOUNT, VELO_SOURCE, 0, sourceLabel(VELO_SOURCE))
+  push(TARGET_SRC_AMOUNT, NOTE_SOURCE, 0, sourceLabel(NOTE_SOURCE))
+  return out
+}
+
+// Typed depth back to a route amount (-1..+1), in the units formatRouteDepth
+// prints: the target's own unit for an additive target, octaves for an
+// exponential one. Null when the text is not a number.
+export function parseRouteDepth(route, text) {
+  const m = /[-+−]?(?:\d+\.?\d*|\.\d+)/.exec(String(text ?? '').replace('±', ''))
+  if (!m || !route) return null
+  const n = Number(m[0].replace('−', '-'))
+  if (!Number.isFinite(n)) return null
+  const spec = targetSpec(route.target)
+  const info = TARGET_INFO[route.target]
+  const span = spec.law === LAW_EXPONENTIAL ? spec.span : spec.span * (info?.pct ? 100 : 1)
+  if (!(span > 0)) return null
+  return Math.max(-1, Math.min(1, n / span))
 }

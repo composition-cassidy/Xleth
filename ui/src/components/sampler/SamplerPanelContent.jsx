@@ -6,6 +6,9 @@ import AuditionBar from './AuditionBar.jsx'
 import PatchBar from './PatchBar.jsx'
 import SamplerMainView from './SamplerMainView.jsx'
 import SamplerPlaybackView from './SamplerPlaybackView.jsx'
+import SamplerModulationView from './SamplerModulationView.jsx'
+import { ModDragGhost } from './modulation/ModDragLayer.jsx'
+import useSamplerModDragStore from '../../stores/samplerModDragStore.js'
 import { noteForCode, clampOctaveShift } from './auditionKeymap.js'
 import { copySlotSettings, buildSlotPaste, hasSlotClipboard } from './slotClipboard.js'
 import {
@@ -13,7 +16,6 @@ import {
   mergePatchSlots, patchRegionSettings,
 } from './samplerPatch.js'
 import { MANGLE_OFF, MANGLE_MAX } from './mangleModes.js'
-import SamplerModTray from './modulation/SamplerModTray.jsx'
 import useSamplerModulationStore from '../../stores/samplerModulationStore.js'
 import { nudgeEventFor, applyRecordFor, autoLoopSummary } from './autoLoopTelemetry.js'
 import styles from './Sampler.module.css'
@@ -31,7 +33,12 @@ import styles from './Sampler.module.css'
 const VIEW_TABS = [
   { id: 'main', label: 'Main', hint: 'Waveform, trim, loop, amp envelope, pitch, prep and process for the selected slot' },
   { id: 'playback', label: 'Playback', hint: 'Voicing, glide, arpeggiator and per-note effects' },
+  { id: 'modulation', label: 'Modulation', hint: 'Envelopes, LFOs, velocity and note response, and the routes they drive' },
 ]
+
+// Holding a dragged modulation source over a view tab for this long opens that
+// view, so a source can be dropped on a control that lives in another view.
+const SPRING_OPEN_MS = 400
 
 // PREP is bypassed at unity stretch and zero shift: mirrors the engine's
 // SampleSlot::prepIsBypassed(), which is what decides whether a bake runs.
@@ -75,6 +82,44 @@ export default function SamplerPanelContent({ regionId, onClose }) {
   settingsRef.current = settings
   // Bumped by the slot menu's "Rename"; the selected tab opens its name field.
   const [renameSignal, setRenameSignal] = useState(0)
+
+  // ── Modulation config ────────────────────────────────────────────────────
+  // Loaded here (it used to be the tray's job) so every view's modulation-aware
+  // control has its routes; reloaded on external sampler changes (undo / redo,
+  // project load) so the rings and the route list stay in sync.
+  const loadMod = useSamplerModulationStore((s) => s.load)
+  useEffect(() => {
+    if (regionId == null) return undefined
+    loadMod(regionId)
+    const onChanged = (e) => {
+      if (e.detail?.regionId && e.detail.regionId !== regionId) return
+      loadMod(regionId)
+    }
+    timelineEvents.addEventListener('timeline-sampler-changed', onChanged)
+    return () => timelineEvents.removeEventListener('timeline-sampler-changed', onChanged)
+  }, [regionId, loadMod])
+
+  // ── Spring-loaded view tabs ──────────────────────────────────────────────
+  const dragSource = useSamplerModDragStore((s) => s.source)
+  const dragX = useSamplerModDragStore((s) => s.x)
+  const dragY = useSamplerModDragStore((s) => s.y)
+  const springRef = useRef({ id: null, timer: 0 })
+  useEffect(() => {
+    const spring = springRef.current
+    const clear = () => { clearTimeout(spring.timer); spring.timer = 0; spring.id = null }
+    if (dragSource == null || typeof document === 'undefined' || !document.elementFromPoint) { clear(); return undefined }
+    const el = document.elementFromPoint(dragX, dragY)
+    const tabEl = el?.closest?.('[role="tablist"][aria-label="Sampler views"] [role="tab"]')
+    const id = tabEl ? VIEW_TABS.find((t) => t.label === tabEl.textContent.trim())?.id ?? null : null
+    if (id === spring.id) return undefined
+    clear()
+    if (id && id !== tab) {
+      spring.id = id
+      spring.timer = setTimeout(() => { setTab(id); spring.id = null }, SPRING_OPEN_MS)
+    }
+    return undefined
+  }, [dragSource, dragX, dragY, tab])
+  useEffect(() => () => clearTimeout(springRef.current.timer), [])
 
   // ── Sample slots ──────────────────────────────────────────────────────────
   // `slots` mirrors the engine's slot list. Mini-control drags mutate it
@@ -871,6 +916,13 @@ export default function SamplerPanelContent({ regionId, onClose }) {
             }}
           />
         )}
+        {tab === 'modulation' && (
+          <SamplerModulationView
+            slotIndex={selectedSlot}
+            chainLength={Array.isArray(settings.mangleChain) ? settings.mangleChain.length : 0}
+            bpm={bpm}
+          />
+        )}
       </div>
 
       {/* The audition keyboard applies to every view and is the panel's only
@@ -886,7 +938,7 @@ export default function SamplerPanelContent({ regionId, onClose }) {
         disabled={regionId == null}
       />
 
-      <SamplerModTray regionId={regionId} bpm={bpm} />
+      <ModDragGhost />
     </div>
   )
 }

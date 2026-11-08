@@ -487,4 +487,262 @@
   .previewSelect {
     width: 136px;
   }
+
+  /* ── Modulation view ──────────────────────────────────────────────────── */
+  .modulation {
+    display: grid;
+    flex: 1 1 auto;
+    grid-template-columns: 344px minmax(0, 1fr);
+    gap: var(--space-1);
+    min-height: 0;
+    padding: var(--space-1);
+  }
+
+  .modulation > .routes {
+    width: auto;
+    min-height: 0;
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
+  }
+
+  .modulation > .routes > div:last-child {
+    align-items: stretch;
+    justify-content: flex-start;
+    gap: var(--space-1);
+    padding: var(--space-1);
+  }
+
+  .routeList {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: 2px;
+    min-height: 0;
+    overflow-y: auto;
+    scrollbar-width: thin;
+  }
+
+  .routeRow {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 2px;
+    min-height: var(--row-h);
+  }
+
+  .routeName {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .routeSrc {
+    font-weight: var(--weight-semibold);
+  }
+
+  .routePol {
+    min-width: var(--hit-min);
+    padding: 0;
+    justify-content: center;
+  }
+
+  .routeAdd {
+    display: flex;
+    flex: none;
+    align-items: center;
+    gap: 2px;
+    padding-top: var(--space-1);
+    border-top: 1px solid var(--ui-g4);
+  }
+
+  .routeAddSrc {
+    width: 84px;
+  }
+
+  .routeAddTgt {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .modRight {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+    min-height: 0;
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
+  }
+
+  .sourceStrip {
+    box-sizing: border-box;
+    display: flex;
+    flex: none;
+    align-items: stretch;
+    height: var(--ctl-h-md);
+    padding: 0 var(--space-1);
+    border-bottom: 1px solid var(--ui-g4);
+    background: var(--ui-g2);
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: thin;
+  }
+
+  .sourceStrip > button {
+    align-self: center;
+  }
+
+  .stripGap {
+    flex: none;
+    width: 1px;
+    margin: var(--space-1) var(--space-2);
+    background: var(--ui-g4);
+  }
+
+  .sourceTabWrap {
+    position: relative;
+    display: flex;
+    flex: none;
+    align-items: center;
+  }
+
+  .sourceTab {
+    position: relative;
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    height: 100%;
+    min-width: var(--hit-min);
+    padding: 0 var(--space-2);
+    color: var(--ui-ink-2);
+    font-weight: var(--weight-medium);
+    white-space: nowrap;
+    cursor: grab;
+    user-select: none;
+    touch-action: none;
+    outline: none;
+  }
+
+  .sourceTab:hover {
+    background: var(--ui-g3);
+    color: var(--ui-ink);
+  }
+
+  .sourceTab[data-selected] {
+    background: var(--ui-g1);
+    color: var(--ui-ink);
+    font-weight: var(--weight-semibold);
+  }
+
+  .sourceTab[data-selected]::after {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: -1px;
+    height: 2px;
+    background: var(--ui-ink);
+  }
+
+  .sourceTab:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: -2px;
+  }
+
+  /* How many controls this source drives: a number, not a coloured dot. */
+  .sourceCount {
+    min-width: 14px;
+    padding: 0 3px;
+    border: 1px solid var(--ui-signal-parameter);
+    border-radius: var(--ui-radius-1);
+    color: var(--ui-ink);
+    font-size: var(--type-11);
+    line-height: 14px;
+    text-align: center;
+  }
+
+  .sourceRemove {
+    margin-right: var(--space-1);
+  }
+
+  .editor {
+    display: flex;
+    flex: 1 1 auto;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+    min-height: 0;
+    padding: var(--space-1);
+  }
+
+  .editorHead {
+    display: flex;
+    flex: none;
+    flex-wrap: nowrap;
+    align-items: center;
+    gap: var(--space-1);
+    min-width: 0;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+  }
+
+  /* The recessed g0 well every modulation canvas draws in. */
+  .editorWell {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 56px;
+    border: 1px solid var(--ui-g4);
+    background: var(--ui-g0);
+    overflow: hidden;
+  }
+
+  .editorWell > canvas {
+    position: absolute;
+    top: 0;
+    left: 0;
+  }
+
+  .curveWell {
+    max-width: 480px;
+  }
+
+  .rateBox {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    gap: var(--space-1);
+    align-self: center;
+    padding-right: var(--space-1);
+  }
+
+  .snapSelect {
+    width: 60px;
+  }
+
+  /* The source label that follows the pointer during drag-to-route: a floating
+   * surface, so it carries the hard offset shadow. */
+  .dragGhost {
+    position: fixed;
+    z-index: var(--xleth-z-popover, 10000);
+    padding: 2px var(--space-2);
+    border: 1px solid var(--ui-signal-parameter);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g2);
+    box-shadow: var(--ui-shadow-float);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    pointer-events: none;
+    transform: translate(12px, 12px);
+    white-space: nowrap;
+  }
+
+  .dragGhost[data-over] {
+    background: var(--ui-g3);
+    outline: 1px solid var(--ui-signal-parameter);
+  }
 }

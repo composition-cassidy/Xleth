@@ -1,12 +1,16 @@
 import { useState } from 'react'
+import { Button, NumberBox } from '../../../ui-kit'
+import { ModNumberBox } from '../kitMod.jsx'
+import { formatSigned2, parseOffset } from '../samplerFormat.js'
 import ModCurveCanvas from './ModCurveCanvas.jsx'
-import { ModKnob, Field } from './ModControls.jsx'
+import { useBoxSize } from './useBoxSize.js'
 import { TARGET_SRC_AMOUNT } from './modTargets.js'
+import styles from '../Sampler.module.css'
 
-// ── VELO / NOTE response-curve editor ────────────────────────────────────────
-// A compact editor for the two response curves (input 0..1 → output 0..1).
-// Empty = identity; the Linear preset clears back to it. Selected-point tension
-// bends its segment. Drag streams through preview(); mouseup commits.
+// ── Velocity / Note response curve ───────────────────────────────────────────
+// Input 0..1 → output 0..1. Empty = identity; Linear clears back to it. The
+// selected point's tension bends its segment. Drag streams through preview();
+// release commits.
 
 const PRESETS = {
   linear: () => [],   // empty = identity
@@ -15,68 +19,59 @@ const PRESETS = {
 
 export default function CurveEditor({ curve, color, preview, commit, label, source = null }) {
   const [selectedIdx, setSelectedIdx] = useState(-1)
+  const [wellRef, size] = useBoxSize({ width: 300, height: 150 })
   const points = Array.isArray(curve.points) ? curve.points : []
   const selPoint = selectedIdx >= 0 && selectedIdx < points.length ? points[selectedIdx] : null
 
   const setPointsLive = (pts) => preview({ points: pts })
   const setPointsFinal = (pts) => { preview({ points: pts }); commit() }
-
-  const setSelTensionLive = (tension) => {
-    if (!selPoint) return
-    setPointsLive(points.map((p, i) => (i === selectedIdx ? { ...p, tension } : p)))
-  }
-  const setSelTensionFinal = (tension) => {
-    if (!selPoint) return
-    setPointsFinal(points.map((p, i) => (i === selectedIdx ? { ...p, tension } : p)))
-  }
+  const withTension = (tension) => points.map((p, i) => (i === selectedIdx ? { ...p, tension } : p))
 
   return (
-    <div className="sampler-mod-editor">
-      <div className="sampler-mod-editor-head">
-        <span className="sampler-mod-tool-label">{label} response</span>
-        <div className="sampler-mod-tool-group">
-          <button type="button" className="sampler-mod-text-btn" onClick={() => { setPointsFinal(PRESETS.linear()); setSelectedIdx(-1) }}>Linear</button>
-          <button type="button" className="sampler-mod-text-btn" onClick={() => { setPointsFinal(PRESETS.invert()); setSelectedIdx(-1) }}>Invert</button>
-        </div>
-        <div className="sampler-mod-head-spacer" />
-        <ModKnob
-          label="OUT"
+    <div className={styles.editor} data-editor="curve">
+      <div className={styles.editorHead}>
+        <Button size="sm" onClick={() => { setPointsFinal(PRESETS.linear()); setSelectedIdx(-1) }}
+          hint={`${label} passes through unchanged`}>Linear</Button>
+        <Button size="sm" onClick={() => { setPointsFinal(PRESETS.invert()); setSelectedIdx(-1) }}
+          hint={`High ${label.toLowerCase()} gives a low output, and the reverse`}>Invert</Button>
+        <NumberBox
+          label="Tension" width={112} min={-1} max={1} step={0.01} defaultValue={0} bipolar
+          disabled={!selPoint}
+          format={(v) => (selPoint ? formatSigned2(v) : '—')} parse={parseOffset}
+          value={selPoint?.tension || 0}
+          onChange={(v) => { if (selPoint) setPointsLive(withTension(Number(v.toFixed(3)))) }}
+          onCommit={(v) => { if (selPoint) setPointsFinal(withTension(Number(v.toFixed(3)))) }}
+          hint="Bend of the segment after the selected point"
+          data-curve-field="tension"
+        />
+        <span className={styles.spacer} />
+        <ModNumberBox
+          label="Out" width={96} min={0} max={100} unit="%" defaultValue={100} quantize={(v) => Math.round(v)}
           modTarget={source == null ? null : { target: TARGET_SRC_AMOUNT, index: source, stage: 0, scale: 0.01 }}
           value={(curve.outputAmount ?? 1) * 100}
-          min={0} max={100} defaultValue={100}
-          size={34} color={color}
-          formatValue={(v) => `${Math.round(v)}%`}
-          onLiveChange={(v) => preview({ outputAmount: Math.round(v) / 100 })}
+          onChange={(v) => preview({ outputAmount: Math.round(v) / 100 })}
           onCommit={(v) => { preview({ outputAmount: Math.round(v) / 100 }); commit() }}
+          hint={`Output: scales everything ${label.toLowerCase()} drives`}
+          data-curve-field="outputAmount"
         />
       </div>
-
-      <div className="sampler-mod-curve-layout">
-        <div className="sampler-mod-graph-well sampler-mod-graph-well--curve">
-          <ModCurveCanvas
-            points={points}
-            selectedIdx={selectedIdx}
-            color={color}
-            width={300}
-            height={150}
-            onPreview={setPointsLive}
-            onCommit={setPointsFinal}
-            onSelect={setSelectedIdx}
-          />
-        </div>
-        <div className="sampler-mod-curve-side">
-          <Field label="TENS">
-            <ModKnob
-              value={selPoint?.tension || 0} min={-1} max={1} defaultValue={0}
-              size={34} dragRange={120} capStyle="soft-disk" color="var(--theme-accent)"
-              formatValue={(v) => selPoint ? v.toFixed(2) : '--'}
-              onLiveChange={(v) => setSelTensionLive(Number(v.toFixed(3)))}
-              onCommit={(v) => setSelTensionFinal(Number(v.toFixed(3)))}
-            />
-          </Field>
-        </div>
+      <div
+        className={`${styles.editorWell} ${styles.curveWell}`}
+        ref={wellRef}
+        data-hint={`${label} response: input across, output up`}
+        data-hint-mods="Double-click: add a point · Drag: move · Alt+click or right-click: delete"
+      >
+        <ModCurveCanvas
+          points={points}
+          selectedIdx={selectedIdx}
+          color={color}
+          width={size.width}
+          height={size.height}
+          onPreview={setPointsLive}
+          onCommit={setPointsFinal}
+          onSelect={setSelectedIdx}
+        />
       </div>
-      <span className="sampler-mod-caption">Double-click to add · drag to move · alt/right-click to delete</span>
     </div>
   )
 }

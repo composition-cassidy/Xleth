@@ -36,12 +36,13 @@ export function makeSlot(overrides = {}) {
 }
 
 export function createHarness() {
-  const h = { container: null, root: null, commits: [], modRoutes: [], modSets: [], calls: [] }
+  const h = { container: null, root: null, commits: [], modRoutes: [], modSets: [], calls: [], modBase: {} }
 
-  h.install = (initialSlots, region = {}) => {
+  h.install = (initialSlots, region = {}, modBase = {}) => {
     h.commits = []
     h.modRoutes = []
     h.modSets = []
+    h.modBase = { ...modBase }
     h.calls = []
     let slots = initialSlots.map((s) => ({ ...s }))
     let regionFlat = { crossfadeEnabled: true, ...region }
@@ -68,9 +69,11 @@ export function createHarness() {
           }
           return true
         },
-        getSamplerModulation: async () => ({ routes: h.modRoutes.map((r) => ({ ...r })) }),
+        getSamplerModulation: async () => ({ ...h.modBase, routes: h.modRoutes.map((r) => ({ ...r })) }),
         setSamplerModulation: async (_id, cfg) => {
           h.modSets.push(cfg)
+          const { routes: _r, ...rest } = cfg
+          h.modBase = { ...h.modBase, ...rest }
           h.modRoutes = (cfg.routes || []).map((r) => ({ ...r }))
           return { routeCount: h.modRoutes.length, rejectedRoutes: 0 }
         },
@@ -93,8 +96,8 @@ export function createHarness() {
     }
   }
 
-  h.mount = async (slots = [makeSlot()], region = {}) => {
-    h.install(slots, region)
+  h.mount = async (slots = [makeSlot()], region = {}, modBase = {}) => {
+    h.install(slots, region, modBase)
     h.container = document.createElement('div')
     document.body.appendChild(h.container)
     h.root = createRoot(h.container)
