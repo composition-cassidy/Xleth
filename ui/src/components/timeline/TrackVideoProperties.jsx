@@ -212,117 +212,119 @@ export default function TrackVideoProperties({ trackId }) {
         </div>
       </header>
 
-      <section className={styles.section} aria-label="Placement">
-        <SectionHeader>Placement</SectionHeader>
-        <Row label="Placed">
-          <span className={styles.rowValue}>{placementBadgeLabel(placement)}</span>
-        </Row>
-        {isFullscreen && (
-          <>
-            <Row label="Hold gaps">
-              <RowToggle
-                label="Hold last frame between notes"
-                on={placement.kind === 'behind'}
-                onChange={(next) => handleSetPlacementMode(next ? 'behind' : 'front')}
-                hint="Freeze this layer's last decoded frame across gaps instead of blinking out"
-              />
-            </Row>
-            <Row label="Opacity">
-              <NumberBox
-                label="Fullscreen opacity" hideLabel
-                value={Math.round(fsLayerOpacity * 100)} min={0} max={100} step={1} defaultValue={100} unit="%"
-                onCommit={(x) => commitFsOpacity(Math.round(x) / 100)}
-              />
-            </Row>
-          </>
-        )}
-      </section>
-
-      <section className={styles.section} aria-label="Hold last frame">
-        <SectionHeader>Hold last frame</SectionHeader>
-        <Row label="Hold">
-          <RowToggle label="Hold last frame" on={hold} onChange={handleToggleHold} hint="Freeze the final frame after the clip ends" />
-        </Row>
-        {hold && (
-          <div className={styles.group}>
-            <Row label="Until next">
-              <RowToggle
-                label="Hold until the next clip"
-                on={thresholdIsUnlimited}
-                onChange={(next) => commitThreshold(next ? HOLD_THRESHOLD_UNLIMITED : 4)}
-                hint="Hold until the next clip, however long the gap"
-              />
-            </Row>
-            {!thresholdIsUnlimited && (
-              <Row label="Hold for">
-                <NumberBox
-                  label="Hold last frame threshold" hideLabel
-                  value={thresholdBeats} min={0} max={64} step={0.25} defaultValue={4}
-                  format={(x) => `${Number(x.toFixed(2))}${THIN_SPACE}beats`} parse={parseNum}
-                  onCommit={(x) => { const beats = Math.round(x * 4) / 4; if (beats !== thresholdBeats) commitThreshold(beats) }}
-                  hint="Beats to hold before cutting"
+      <div className={styles.body}>
+        <section className={styles.section} aria-label="Placement">
+          <SectionHeader>Placement</SectionHeader>
+          <Row label="Placed">
+            <span className={styles.rowValue}>{placementBadgeLabel(placement)}</span>
+          </Row>
+          {isFullscreen && (
+            <>
+              <Row label="Hold gaps">
+                <RowToggle
+                  label="Hold last frame between notes"
+                  on={placement.kind === 'behind'}
+                  onChange={(next) => handleSetPlacementMode(next ? 'behind' : 'front')}
+                  hint="Freeze this layer's last decoded frame across gaps instead of blinking out"
                 />
               </Row>
-            )}
-          </div>
-        )}
-      </section>
-
-      <section className={styles.section} aria-label="Cell shape">
-        <SectionHeader>Cell shape</SectionHeader>
-        <Row label="Corners">
-          <NumberBox
-            label="Corner radius" hideLabel width={72}
-            value={cornerDraft ?? cornerRadius} min={0} max={0.5} step={0.005} defaultValue={0}
-            quantize={(v) => Math.round(v * 200) / 200}
-            format={CORNER_FMT.format} parse={CORNER_FMT.parse}
-            onChange={setCornerDraft}
-            onCancel={() => setCornerDraft(null)}
-            onCommit={commitCorner}
-            hint="Rounding of this track's cells: 100 % is a full circle on a square cell"
-          />
-          <Button size="sm" onClick={() => applyCornerRadiusToAll(cornerRadius)} hint="Copy this corner radius to every track">
-            Apply to all
-          </Button>
-        </Row>
-        <Row label="Own gap">
-          <RowToggle
-            label="Use this track's own gap"
-            on={hasGapOverride}
-            onChange={(next) => commitGap(next ? (gapScale ?? 0) : -1)}
-            hint="Give this track its own gap between cells instead of the grid's"
-          />
-          {hasGapOverride ? (
-            <NumberBox
-              label="Track gap" hideLabel width={72}
-              value={gapDraft ?? (track.gapScaleOverride ?? 0)} min={0} max={0.5} step={0.01} defaultValue={0}
-              quantize={(v) => Math.round(v * 100) / 100}
-              format={GAP_FMT.format} parse={GAP_FMT.parse}
-              onChange={setGapDraft}
-              onCancel={() => setGapDraft(null)}
-              onCommit={(v) => commitGap(snapZero(v))}
-            />
-          ) : (
-            <span className={styles.rowValue}>{`Grid gap ${formatValue((gapScale ?? 0) * 100, '%')}`}</span>
+              <Row label="Opacity">
+                <NumberBox
+                  label="Fullscreen opacity" hideLabel
+                  value={Math.round(fsLayerOpacity * 100)} min={0} max={100} step={1} defaultValue={100} unit="%"
+                  onCommit={(x) => commitFsOpacity(Math.round(x) / 100)}
+                />
+              </Row>
+            </>
           )}
-        </Row>
-      </section>
+        </section>
 
-      <VideoFlipSection track={track} onCommit={handleCommitFlip} />
+        <section className={styles.section} aria-label="Hold last frame">
+          <SectionHeader>Hold last frame</SectionHeader>
+          <Row label="Hold">
+            <RowToggle label="Hold last frame" on={hold} onChange={handleToggleHold} hint="Freeze the final frame after the clip ends" />
+          </Row>
+          {hold && (
+            <div className={styles.group}>
+              <Row label="Until next">
+                <RowToggle
+                  label="Hold until the next clip"
+                  on={thresholdIsUnlimited}
+                  onChange={(next) => commitThreshold(next ? HOLD_THRESHOLD_UNLIMITED : 4)}
+                  hint="Hold until the next clip, however long the gap"
+                />
+              </Row>
+              {!thresholdIsUnlimited && (
+                <Row label="Hold for">
+                  <NumberBox
+                    label="Hold last frame threshold" hideLabel
+                    value={thresholdBeats} min={0} max={64} step={0.25} defaultValue={4}
+                    format={(x) => `${Number(x.toFixed(2))}${THIN_SPACE}beats`} parse={parseNum}
+                    onCommit={(x) => { const beats = Math.round(x * 4) / 4; if (beats !== thresholdBeats) commitThreshold(beats) }}
+                    hint="Beats to hold before cutting"
+                  />
+                </Row>
+              )}
+            </div>
+          )}
+        </section>
 
-      <section className={styles.section} aria-label="Video effects">
-        <SectionHeader>Video effects</SectionHeader>
-        <Row label="Effects">
-          <Button
-            size="sm"
-            onClick={() => openVideoDevicesFor(track.id)}
-            hint="Open this track's video effects in the Devices tab"
-            data-testid="xleth-inspector-video-fx"
-          >
-            {`Video effects (${visualFxCount})`}
-          </Button>
-        </Row>
-      </section>
+        <section className={styles.section} aria-label="Cell shape">
+          <SectionHeader>Cell shape</SectionHeader>
+          <Row label="Corners">
+            <NumberBox
+              label="Corner radius" hideLabel width={72}
+              value={cornerDraft ?? cornerRadius} min={0} max={0.5} step={0.005} defaultValue={0}
+              quantize={(v) => Math.round(v * 200) / 200}
+              format={CORNER_FMT.format} parse={CORNER_FMT.parse}
+              onChange={setCornerDraft}
+              onCancel={() => setCornerDraft(null)}
+              onCommit={commitCorner}
+              hint="Rounding of this track's cells: 100 % is a full circle on a square cell"
+            />
+            <Button size="sm" onClick={() => applyCornerRadiusToAll(cornerRadius)} hint="Copy this corner radius to every track">
+              Apply to all
+            </Button>
+          </Row>
+          <Row label="Own gap">
+            <RowToggle
+              label="Use this track's own gap"
+              on={hasGapOverride}
+              onChange={(next) => commitGap(next ? (gapScale ?? 0) : -1)}
+              hint="Give this track its own gap between cells instead of the grid's"
+            />
+            {hasGapOverride ? (
+              <NumberBox
+                label="Track gap" hideLabel width={72}
+                value={gapDraft ?? (track.gapScaleOverride ?? 0)} min={0} max={0.5} step={0.01} defaultValue={0}
+                quantize={(v) => Math.round(v * 100) / 100}
+                format={GAP_FMT.format} parse={GAP_FMT.parse}
+                onChange={setGapDraft}
+                onCancel={() => setGapDraft(null)}
+                onCommit={(v) => commitGap(snapZero(v))}
+              />
+            ) : (
+              <span className={styles.rowValue}>{`Grid gap ${formatValue((gapScale ?? 0) * 100, '%')}`}</span>
+            )}
+          </Row>
+        </section>
+
+        <VideoFlipSection track={track} onCommit={handleCommitFlip} />
+
+        <section className={styles.section} aria-label="Video effects">
+          <SectionHeader>Video effects</SectionHeader>
+          <Row label="Effects">
+            <Button
+              size="sm"
+              onClick={() => openVideoDevicesFor(track.id)}
+              hint="Open this track's video effects in the Devices tab"
+              data-testid="xleth-inspector-video-fx"
+            >
+              {`Video effects (${visualFxCount})`}
+            </Button>
+          </Row>
+        </section>
+      </div>
     </div>
   )
 }

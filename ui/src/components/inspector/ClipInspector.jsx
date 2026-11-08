@@ -74,67 +74,69 @@ export default function ClipInspector({ context, actions }) {
         </div>
       </header>
 
-      <section className={styles.section} aria-label="Playback">
-        <SectionHeader>Playback</SectionHeader>
-        <Row label="Reverse">
-          <RowToggle label="Reverse" on={reversed} onChange={() => actions.reverse(clipId)} hint="Play this clip backwards" />
-        </Row>
-        <Row label="Stretch">
-          <Select
-            size="sm"
-            ariaLabel="Stretch method"
-            value={clip.stretchMethod ?? 0}
-            options={stretchOptions}
-            onChange={(m) => actions.setStretchMethod(clipId, m)}
-          />
-        </Row>
-        <Row label="Formant">
-          <RowToggle
-            label="Preserve formants"
-            on={formant}
-            onChange={(next) => actions.setFormantPreserve(clipId, next)}
-            hint="Keep formants when the clip is pitched"
-          />
-        </Row>
-      </section>
+      <div className={styles.body}>
+        <section className={styles.section} aria-label="Playback">
+          <SectionHeader>Playback</SectionHeader>
+          <Row label="Reverse">
+            <RowToggle label="Reverse" on={reversed} onChange={() => actions.reverse(clipId)} hint="Play this clip backwards" />
+          </Row>
+          <Row label="Stretch">
+            <Select
+              size="sm"
+              ariaLabel="Stretch method"
+              value={clip.stretchMethod ?? 0}
+              options={stretchOptions}
+              onChange={(m) => actions.setStretchMethod(clipId, m)}
+            />
+          </Row>
+          <Row label="Formant">
+            <RowToggle
+              label="Preserve formants"
+              on={formant}
+              onChange={(next) => actions.setFormantPreserve(clipId, next)}
+              hint="Keep formants when the clip is pitched"
+            />
+          </Row>
+        </section>
 
-      <section className={styles.section} aria-label="Modulation">
-        <SectionHeader>Modulation</SectionHeader>
-        <p className={styles.status} data-kind={status.kind}>{status.label}</p>
-        <Row label="Vibrato">
-          <RowToggle
-            label="Vibrato"
-            on={vibEnabled}
-            onChange={(next) => {
-              if (next && !v.enabled && (v.depthCents ?? 0) === 0) setVibrato({ ...VIBRATO_DEFAULTS, enabled: true })
-              else setVibrato({ enabled: next })
-            }}
-            hint="Pitch vibrato on this clip"
-          />
-          <Button size="sm" onClick={() => openClipFxEditor('vibrato', clipId)} hint="Open the vibrato editor: shape, depth, rate, phase and the Swirl picture">
-            Edit
-          </Button>
-        </Row>
-        <Row label="Scratch">
-          <RowToggle label="Scratch" on={scrEnabled} onChange={(next) => setScratch({ enabled: next })} hint="Scratch playback on this clip" />
-          <Button size="sm" onClick={() => openClipFxEditor('scratch', clipId)} hint="Open the scratch editor: curve, presets, smoothing, edges and the Wave picture">
-            Edit
-          </Button>
-        </Row>
-        {scrEnabled ? <p className={styles.hint}>{scratchCurveSummary(s)}</p> : null}
-      </section>
+        <section className={styles.section} aria-label="Modulation">
+          <SectionHeader>Modulation</SectionHeader>
+          <p className={styles.status} data-kind={status.kind}>{status.label}</p>
+          <Row label="Vibrato">
+            <RowToggle
+              label="Vibrato"
+              on={vibEnabled}
+              onChange={(next) => {
+                if (next && !v.enabled && (v.depthCents ?? 0) === 0) setVibrato({ ...VIBRATO_DEFAULTS, enabled: true })
+                else setVibrato({ enabled: next })
+              }}
+              hint="Pitch vibrato on this clip"
+            />
+            <Button size="sm" onClick={() => openClipFxEditor('vibrato', clipId)} hint="Open the vibrato editor: shape, depth, rate, phase and the Swirl picture">
+              Edit
+            </Button>
+          </Row>
+          <Row label="Scratch">
+            <RowToggle label="Scratch" on={scrEnabled} onChange={(next) => setScratch({ enabled: next })} hint="Scratch playback on this clip" />
+            <Button size="sm" onClick={() => openClipFxEditor('scratch', clipId)} hint="Open the scratch editor: curve, presets, smoothing, edges and the Wave picture">
+              Edit
+            </Button>
+          </Row>
+          {scrEnabled ? <p className={styles.hint}>{scratchCurveSummary(s)}</p> : null}
+        </section>
 
-      <section className={styles.section} aria-label="Video companion FX">
-        <SectionHeader>Video companion FX</SectionHeader>
-        <Row label="Swirl">
-          <RowToggle label="Swirl" on={swirlOn} onChange={(next) => setVideo({ vibratoSwirlEnabled: next })} hint="Swirl the picture with the vibrato. Amount: in the vibrato editor." />
-        </Row>
-        {swirlOn && !vibEnabled && <p className={styles.hint}>Activates when vibrato is on.</p>}
-        <Row label="Wave">
-          <RowToggle label="Wave" on={waveOn} onChange={(next) => setVideo({ scratchWaveEnabled: next })} hint="Ripple the picture with the scratch. Amounts: in the scratch editor." />
-        </Row>
-        {waveOn && !scrEnabled && <p className={styles.hint}>Activates when scratch is on.</p>}
-      </section>
+        <section className={styles.section} aria-label="Video companion FX">
+          <SectionHeader>Video companion FX</SectionHeader>
+          <Row label="Swirl">
+            <RowToggle label="Swirl" on={swirlOn} onChange={(next) => setVideo({ vibratoSwirlEnabled: next })} hint="Swirl the picture with the vibrato. Amount: in the vibrato editor." />
+          </Row>
+          {swirlOn && !vibEnabled && <p className={styles.hint}>Activates when vibrato is on.</p>}
+          <Row label="Wave">
+            <RowToggle label="Wave" on={waveOn} onChange={(next) => setVideo({ scratchWaveEnabled: next })} hint="Ripple the picture with the scratch. Amounts: in the scratch editor." />
+          </Row>
+          {waveOn && !scrEnabled && <p className={styles.hint}>Activates when scratch is on.</p>}
+        </section>
+      </div>
     </div>
   )
 }

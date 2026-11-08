@@ -54,11 +54,23 @@
     font-size: var(--type-11);
   }
 
+  /* The sections flow into columns at least 300px wide: one column in the usual
+   * 340px Inspector, two or three when the region is dragged wide, so a row's
+   * label and control stay together instead of a label at the left edge and an
+   * empty band across the panel. Sections never split across columns. */
+  .body {
+    flex: 0 0 auto;
+    columns: 300px 3;
+    column-gap: 0;
+    column-rule: 1px solid var(--ui-g4);
+  }
+
   .section {
     display: flex;
     flex-direction: column;
     padding-bottom: var(--space-1);
     border-bottom: 1px solid var(--ui-g4);
+    break-inside: avoid;
   }
 
   .row {
@@ -218,7 +230,7 @@
 
   .previewCells {
     display: grid;
-    grid-template-columns: repeat(8, minmax(0, 1fr));
+    grid-template-columns: repeat(8, minmax(0, 44px));
     gap: 2px;
     margin: 0;
     padding: 0;
