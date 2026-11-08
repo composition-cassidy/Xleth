@@ -57,10 +57,9 @@ describe('Main view layout', () => {
 
   it('labels crossfadeEnabled by what it does (One-shot / Sustained), never as a crossfade toggle', async () => {
     await h.mount()
-    const mode = h.container.querySelector('[data-field="crossfadeEnabled"]')
-    expect(mode.textContent).toContain('One-shot')
-    expect(mode.textContent).toContain('Sustained')
-    expect(mode.textContent.toLowerCase()).not.toContain('crossfade')
+    const labels = await h.options('crossfadeEnabled')
+    expect(labels).toEqual(['One-shot', 'Sustained'])
+    expect(h.container.querySelector('[data-field="crossfadeEnabled"]').getAttribute('aria-label')).toBe('Notes')
   })
 
   it('shows every value with its unit, and no inline font styling', async () => {
@@ -102,9 +101,7 @@ describe('Main view wiring (one commit per gesture, same payload as before)', ()
 
   it('Mode commits crossfadeEnabled', async () => {
     await h.mount()
-    const oneShot = [...h.container.querySelectorAll('[data-field="crossfadeEnabled"] button')]
-      .find((b) => b.textContent.trim() === 'One-shot')
-    await h.click(oneShot)
+    await h.choose('crossfadeEnabled', 'oneshot')
     expect(h.lastCommit('crossfadeEnabled').payload).toMatchObject({ crossfadeEnabled: false, slotIndex: 0 })
   })
 
@@ -134,10 +131,10 @@ describe('Main view wiring (one commit per gesture, same payload as before)', ()
     await h.mount()
     await h.click(h.container.querySelector('[data-field="loopEnabled"]'))
     expect(h.lastCommit('loopEnabled').payload.loopEnabled).toBe(true)
-    const pingPong = [...h.container.querySelectorAll('[data-field="loopMode"] button')].find((b) => b.textContent.trim() === 'Ping-pong')
-    await h.click(pingPong)
+    expect(await h.options('loopMode')).toEqual(['Forward', 'Ping-pong', 'Reverse'])
+    await h.choose('loopMode', 1)
     expect(h.lastCommit('loopMode').payload.loopMode).toBe(1)
-    await h.click(h.container.querySelector('[data-field="exitLoopOnRelease"]'))
+    await h.choose('exitLoopOnRelease', 'exit')
     expect(h.lastCommit('exitLoopOnRelease').payload.exitLoopOnRelease).toBe(true)
   })
 

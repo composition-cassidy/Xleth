@@ -129,6 +129,20 @@ export function createHarness() {
     await h.settle()
   }
   h.click = async (el) => { await act(async () => { el.click() }); await h.settle() }
+  // Open a kit Select (by its data-field) and choose the option with this value.
+  h.choose = async (field, value) => {
+    await act(async () => { h.container.querySelector(`[data-field="${field}"]`).click() })
+    const opt = document.querySelector(`[role="listbox"] [role="option"][data-value="${value}"]`)
+    await act(async () => { opt.click() })
+    await h.settle()
+  }
+  h.options = async (field) => {
+    const trigger = h.container.querySelector(`[data-field="${field}"]`)
+    await act(async () => { trigger.click() })
+    const labels = [...document.querySelectorAll('[role="listbox"] [role="option"]')].map((o) => o.textContent.trim())
+    await act(async () => { trigger.click() })
+    return labels
+  }
   h.lastCommit = (key) => [...h.commits].reverse().find((c) => key in c.payload)
 
   return h

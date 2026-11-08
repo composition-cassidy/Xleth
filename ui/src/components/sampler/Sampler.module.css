@@ -393,6 +393,24 @@
     min-width: 0;
   }
 
+  /* A named dropdown (FieldSelect): label left, Select right. Stacked fields line up. */
+  .field {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .fieldLabel {
+    min-width: 64px;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    white-space: nowrap;
+  }
+
+  .fieldSelect {
+    width: var(--field-w, 112px);
+  }
+
   /* ── Playback view ────────────────────────────────────────────────────── */
   .playback {
     display: flex;

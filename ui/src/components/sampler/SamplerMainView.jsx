@@ -2,8 +2,9 @@ import { useEffect, useRef, useState } from 'react'
 import { MoreHorizontal } from 'lucide-react'
 import {
   Button, DeviceSection, IconButton, Knob, Menu, MenuItem, MenuSeparator, NumberBox,
-  SegmentedControl, Select, Toggle, formatValue,
+  Select, Toggle, formatValue,
 } from '../../ui-kit'
+import FieldSelect from './FieldSelect.jsx'
 import SamplerWaveform from './SamplerWaveform.jsx'
 import { ModKnob, ModNumberBox } from './kitMod.jsx'
 import {
@@ -45,6 +46,11 @@ const LOOP_MODES = [
   { value: 0, label: 'Forward', hint: 'Loop plays start to end, then jumps back' },
   { value: 1, label: 'Ping-pong', hint: 'Loop plays forward, then backward' },
   { value: 2, label: 'Reverse', hint: 'Loop plays end to start' },
+]
+
+const RELEASE_OPTIONS = [
+  { value: 'loop', label: 'Keep looping' },
+  { value: 'exit', label: 'Exit loop' },
 ]
 
 // `crossfadeEnabled` is the sampler-level ONE-SHOT / SUSTAINED switch (engine
@@ -438,9 +444,9 @@ export default function SamplerMainView({
         {/* ── Strips, in signal order ───────────────────────────────────── */}
         <div className={styles.strips} ref={stripsRef}>
           <DeviceSection title="Mode" data-section="mode">
-            <SegmentedControl
-              size="sm"
-              label="Note mode"
+            <FieldSelect
+              label="Notes"
+              width={104}
               value={sustained ? 'sustained' : 'oneshot'}
               options={MODE_OPTIONS}
               onChange={(v) => actions.commitField('crossfadeEnabled', v === 'sustained')}
@@ -542,20 +548,22 @@ export default function SamplerMainView({
                 })}
               </div>
               <div className={styles.loopSide}>
-                <SegmentedControl
-                  size="sm"
-                  label="Loop direction"
+                <FieldSelect
+                  label="Direction"
                   value={settings.loopMode ?? 0}
                   options={LOOP_MODES}
-                  onChange={(v) => actions.commitField('loopMode', v)}
+                  onChange={(v) => actions.commitField('loopMode', Number(v))}
+                  hint="Which way the loop plays"
                   data-field="loopMode"
                 />
-                <Toggle
-                  size="sm" on={!!settings.exitLoopOnRelease}
-                  onChange={(next) => actions.commitField('exitLoopOnRelease', next)}
-                  hint="On release, finish the current loop pass and play on to the end of the trim"
+                <FieldSelect
+                  label="On release"
+                  value={settings.exitLoopOnRelease ? 'exit' : 'loop'}
+                  options={RELEASE_OPTIONS}
+                  onChange={(v) => actions.commitField('exitLoopOnRelease', v === 'exit')}
+                  hint="What a held note does when its key is released"
                   data-field="exitLoopOnRelease"
-                >Exit on release</Toggle>
+                />
               </div>
             </div>
           </DeviceSection>

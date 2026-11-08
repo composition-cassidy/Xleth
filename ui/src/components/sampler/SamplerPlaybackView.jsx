@@ -1,7 +1,8 @@
 import { ArrowDown, ArrowUp, Plus, X } from 'lucide-react'
 import {
-  DeviceSection, IconButton, Knob, NumberBox, SegmentedControl, Select, Toggle, formatValue,
+  DeviceSection, IconButton, Knob, NumberBox, Select, Toggle, formatValue,
 } from '../../ui-kit'
+import FieldSelect from './FieldSelect.jsx'
 import { ModNumberBox } from './kitMod.jsx'
 import PreviewRoutingControl from './PreviewRoutingControl.jsx'
 import { PREP_ALGOS } from './SamplerMainView.jsx'
@@ -19,12 +20,12 @@ import styles from './Sampler.module.css'
 // the stretch details and where the audition is heard.
 
 const ARP_DIRECTIONS = [
-  { value: 0, label: <ArrowUp aria-hidden="true" size={14} />, ariaLabel: 'Up', hint: 'Arpeggiate upward' },
-  { value: 1, label: <ArrowDown aria-hidden="true" size={14} />, ariaLabel: 'Down', hint: 'Arpeggiate downward' },
-  { value: 2, label: 'Up/down', hint: 'Up, then down' },
-  { value: 3, label: 'Sticky', hint: 'Sticky: holds the order notes were played in' },
+  { value: 0, label: 'Up' },
+  { value: 1, label: 'Down' },
+  { value: 2, label: 'Up and down' },
+  { value: 3, label: 'Sticky' },
 ]
-const ARP_RANGES = [1, 2, 3, 4].map((n) => ({ value: n, label: `${n} oct`, hint: `Span ${n} octave${n > 1 ? 's' : ''}` }))
+const ARP_RANGES = [1, 2, 3, 4].map((n) => ({ value: n, label: `${n} octave${n > 1 ? 's' : ''}` }))
 const ARP_DIVISIONS = [1, 2, 4, 8, 16, 32, 64].map((d) => ({ value: d, label: `1/${d}` }))
 
 const MANGLE_OPTIONS = [
@@ -117,13 +118,11 @@ export default function SamplerPlaybackView({
       <div className={styles.strips}>
         <DeviceSection title="Voice" data-section="voice">
           <div className={styles.stack}>
-            <SegmentedControl
-              size="sm" label="Voicing" value={s.monoEnabled ? 'mono' : 'poly'}
-              options={[
-                { value: 'mono', label: 'Mono', hint: 'One voice: a new note takes over the last one' },
-                { value: 'poly', label: 'Poly', hint: 'Up to Voices notes at once' },
-              ]}
+            <FieldSelect
+              label="Voicing" width={72} value={s.monoEnabled ? 'mono' : 'poly'}
+              options={[{ value: 'mono', label: 'Mono' }, { value: 'poly', label: 'Poly' }]}
               onChange={(v) => actions.commitField('monoEnabled', v === 'mono')}
+              hint="Mono: a new note takes over the last one. Poly: up to Voices notes at once."
               data-field="monoEnabled"
             />
             <NumberBox
@@ -165,13 +164,11 @@ export default function SamplerPlaybackView({
                 data-field="portamentoCurve"
               />
             </div>
-            <SegmentedControl
-              size="sm" label="Glide mode" value={s.portamentoMode ?? 0}
-              options={[
-                { value: 0, label: 'Always', hint: 'Every note glides for the full time' },
-                { value: 1, label: 'Scaled', hint: 'Glide time scales with the interval' },
-              ]}
-              onChange={(v) => actions.commitField('portamentoMode', v)}
+            <FieldSelect
+              label="Glide" width={84} value={s.portamentoMode ?? 0}
+              options={[{ value: 0, label: 'Always' }, { value: 1, label: 'Scaled' }]}
+              onChange={(v) => actions.commitField('portamentoMode', Number(v))}
+              hint="Always: every note glides for the full time. Scaled: glide time scales with the interval."
               data-field="portamentoMode"
             />
           </div>
@@ -194,14 +191,16 @@ export default function SamplerPlaybackView({
         >
           <div className={styles.arpBody}>
             <div className={styles.stack}>
-              <SegmentedControl
-                size="sm" label="Arpeggiator range" value={s.arpRange ?? 1} options={ARP_RANGES}
-                onChange={(v) => actions.commitField('arpRange', v)} data-field="arpRange"
+              <FieldSelect
+                label="Range" value={s.arpRange ?? 1} options={ARP_RANGES}
+                onChange={(v) => actions.commitField('arpRange', Number(v))} data-field="arpRange"
+                hint="How many octaves the arpeggio spans"
               />
-              <SegmentedControl
-                size="sm" label="Arpeggiator direction" value={Math.max(0, Math.min(3, s.arpDirection ?? 0))}
+              <FieldSelect
+                label="Direction" value={Math.max(0, Math.min(3, s.arpDirection ?? 0))}
                 options={ARP_DIRECTIONS}
-                onChange={(v) => actions.commitField('arpDirection', v)} data-field="arpDirection"
+                onChange={(v) => actions.commitField('arpDirection', Number(v))} data-field="arpDirection"
+                hint="Sticky holds the order the notes were played in"
               />
               <div className={styles.inline}>
                 <Toggle

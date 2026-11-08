@@ -250,8 +250,7 @@ describe('Playback strips', () => {
 
   it('voicing, glide and arpeggiator controls commit their region fields', async () => {
     await mount()
-    const mono = [...h.container.querySelectorAll('[data-field="monoEnabled"] button')].find((b) => b.textContent.trim() === 'Mono')
-    await h.click(mono)
+    await h.choose('monoEnabled', 'mono')
     expect(h.lastCommit('monoEnabled').payload.monoEnabled).toBe(true)
     await h.click(h.container.querySelector('[data-field="legatoEnabled"]'))
     expect(h.lastCommit('legatoEnabled').payload.legatoEnabled).toBe(true)
@@ -259,8 +258,7 @@ describe('Playback strips', () => {
     expect(h.lastCommit('portamentoTimeMs').payload).toMatchObject({ portamentoEnabled: true })
     await h.click(h.container.querySelector('[data-field="arpEnabled"]'))
     expect(h.lastCommit('arpEnabled').payload.arpEnabled).toBe(true)
-    const down = h.container.querySelector('[data-field="arpDirection"] button[aria-label="Down"]')
-    await h.click(down)
+    await h.choose('arpDirection', 1)
     expect(h.lastCommit('arpDirection').payload.arpDirection).toBe(1)
     await h.key(h.slider('Gate'), 'ArrowDown')
     expect(h.lastCommit('arpGate').payload.arpGate).toBeCloseTo(0.79)
