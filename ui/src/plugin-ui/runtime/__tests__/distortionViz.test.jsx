@@ -1,18 +1,12 @@
-// Tests for the Distortion transfer-curve math (distortionPainter.js) and the
-// redesigned layout JSON:
+// Tests for the Distortion transfer-curve math (distortionPainter.js):
 //   • Curve math matches XlethDistortionEffect.h's per-mode shapers exactly.
 //   • Drive squeezes the transition region toward the center ("zoom into the
 //     knee") rather than the curve simply flattening at a fixed x.
 //   • Crush produces a genuinely stepped (non-injective) curve; Analog leans
 //     off the origin's slope once symmetry > 0.
-//   • The shipped layout validates and carries the analytic curve + dimmed
-//     mode-conditional knobs.
 
 import { describe, expect, it } from 'vitest'
 
-import distortionLayout from '../../layouts/distortion.json'
-import { DISTORTION_MANIFEST } from '../../manifests/distortion.js'
-import { validate } from '../../schema/validate.js'
 import { resolveFormat } from '../formats.js'
 import {
   buildDistortionCurvePoints,
@@ -22,13 +16,6 @@ import {
   shapeSample,
 } from '../visualizers/distortionPainter.js'
 
-function collectNodes(root, out = []) {
-  if (!root) return out
-  out.push(root)
-  if (Array.isArray(root.children)) for (const c of root.children) collectNodes(c, out)
-  return out
-}
-
 // The raw shape as it lives in plugin-ui `params` (manifest param ids).
 const RAW_PARAMS = Object.freeze({
   mode: 0, drive: 12, tone: 8000, filter_pos: 1, mix: 100,
@@ -37,7 +24,7 @@ const RAW_PARAMS = Object.freeze({
 
 // buildDistortionCurvePoints/computeDistortionCoeffs/distortionCurveY consume
 // the already-normalized shape (driveDb/symmetryPct/bitsValue), same as what
-// normalizeDistortionParams() hands DistortionCurveNode every frame.
+// normalizeDistortionParams() hands the curve canvas.
 const NORM = Object.freeze(normalizeDistortionParams(RAW_PARAMS))
 const DRIVE_LIN_12DB = Math.pow(10, RAW_PARAMS.drive / 20)
 
@@ -124,32 +111,5 @@ describe('Distortion downsample format', () => {
     expect(fmt(1)).toBe('×1')
     expect(fmt(40)).toBe('×40')
     expect(fmt(12.4)).toBe('×12')
-  })
-})
-
-// ── Layout JSON ─────────────────────────────────────────────────────────────
-
-describe('Distortion layout', () => {
-  it('validates cleanly against the Distortion manifest', () => {
-    const result = validate(JSON.parse(JSON.stringify(distortionLayout)), DISTORTION_MANIFEST)
-    expect(result.ok).toBe(true)
-    expect(result.errors).toEqual([])
-    expect(collectNodes(result.doc.root).filter((n) => n._invalid)).toEqual([])
-  })
-
-  it('is a 2x4 mode grid: 7 real modes plus one reserved placeholder', () => {
-    const toggles = collectNodes(distortionLayout.root).filter((n) => n.type === 'toggle' && n.props?.param === 'mode')
-    const buttons = collectNodes(distortionLayout.root).filter((n) => n.type === 'button')
-    expect(toggles).toHaveLength(7)
-    expect(buttons).toHaveLength(1)
-  })
-
-  it('carries exactly one distortionCurve node', () => {
-    const curves = collectNodes(distortionLayout.root).filter((n) => n.type === 'distortionCurve')
-    expect(curves).toHaveLength(1)
-  })
-
-  it('preferred panel size is roughly 380x300', () => {
-    expect(distortionLayout.panel.preferredSize).toEqual({ width: 380, height: 300 })
   })
 })

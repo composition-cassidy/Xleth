@@ -17,7 +17,7 @@ export default function KnobNode({ node }) {
   const inlineStyle  = styleToCSS(style)
 
   // Optional mode-gated dimming: the schema has no visibility-expression
-  // support (checked before adding this — see distortion.json), so a knob
+  // support (checked before adding this), so a knob
   // that only applies to some discrete-param values dims itself instead of
   // disappearing. Plugins that don't set props.enabledWhen are unaffected.
   const gate = props.enabledWhen

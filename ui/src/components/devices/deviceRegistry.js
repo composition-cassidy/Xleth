@@ -40,6 +40,8 @@ import useResonanceSuppressorStore from '../../stores/resonanceSuppressorStore.j
 import useApexStore from '../../stores/apexStore.js'
 import FilterDevice from './FilterDevice.jsx'
 import useFilterStore from '../../stores/filterStore.js'
+import DistortionDevice from './DistortionDevice.jsx'
+import useDistortionStore from '../../stores/distortionStore.js'
 
 export const DEVICE_BODIES = {
   // Width omitted: the frame fits the body's fixed-width sections (the
@@ -54,6 +56,7 @@ export const DEVICE_BODIES = {
   // The Xleth Filter owns a private store per device (slots, selection, live frame);
   // the global useFilterStore only marks the popped-out instance.
   xlethfilter: { Body: FilterDevice, useEditorStore: useFilterStore },
+  distortion: { Body: DistortionDevice, useEditorStore: useDistortionStore },
   // The character compressors on CompressorCore share CompressorFamilyDevice.
   glue: { Body: GlueDevice, useEditorStore: useGlueCompStore },
   opto: { Body: OptoDevice, useEditorStore: useOptoCompStore },

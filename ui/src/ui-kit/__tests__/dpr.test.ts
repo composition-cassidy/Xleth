@@ -88,7 +88,6 @@ describe('every canvas that reads devicePixelRatio is told when it changes', () 
     'components/devices/OverdoneCrossoverCanvas.jsx',
     'components/mixer/ApexAnalysis.jsx',
     'plugin-ui/runtime/components/CompressorCurveNode.jsx',
-    'plugin-ui/runtime/components/DistortionCurveNode.jsx',
     'plugin-ui/runtime/visualizers/DynamicsVisualizerCanvas.jsx',
   ]);
   // Not canvases that live across a zoom: the helper itself, a one-shot capture, the signal module.

@@ -15,7 +15,6 @@ import VisualizerNode from './components/VisualizerNode.jsx'
 import LabelNode   from './components/LabelNode.jsx'
 import SpacerNode  from './components/SpacerNode.jsx'
 import CompressorCurveNode from './components/CompressorCurveNode.jsx'
-import DistortionCurveNode from './components/DistortionCurveNode.jsx'
 import CompressorSliderNode from './components/CompressorSliderNode.jsx'
 import CompressorHSliderNode from './components/CompressorHSliderNode.jsx'
 import CompressorDryWetNode from './components/CompressorDryWetNode.jsx'
@@ -41,7 +40,6 @@ export const COMPONENT_REGISTRY = {
   label:         LabelNode,
   spacer:        SpacerNode,
   compressorCurve:     CompressorCurveNode,
-  distortionCurve:     DistortionCurveNode,
   compressorSlider:    CompressorSliderNode,
   compressorHSlider:   CompressorHSliderNode,
   compressorDryWet:    CompressorDryWetNode,

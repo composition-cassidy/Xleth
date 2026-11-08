@@ -25,7 +25,6 @@ const PLUGIN_UI_LAYOUT_KIND = 'plugin-ui-layout'
 const SHIPPED_PLUGIN_UI_LAYOUT_FILES = {
   compressor:    runtimeResource('app', 'src', 'plugin-ui', 'layouts', 'compressor.json'),
   limiter:       runtimeResource('app', 'src', 'plugin-ui', 'layouts', 'limiter.json'),
-  distortion:    runtimeResource('app', 'src', 'plugin-ui', 'layouts', 'distortion.json'),
 }
 
 function pluginIdSafe(id) {
