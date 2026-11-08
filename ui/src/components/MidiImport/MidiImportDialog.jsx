@@ -4,6 +4,9 @@ import { gmDrumName, findMatchingTrack } from './filenameMatch.js'
 import { MODE_NEW, MODE_UPDATE } from './MidiReimportModeSelect.jsx'
 import { resolveAutoAssignment, rememberAssignments } from './assignmentMemory.js'
 import { useToast } from '../Toast.jsx'
+import { AlertTriangle, Check } from 'lucide-react'
+import { Button, Checkbox, Dialog, Progress, SegmentedControl } from '../../ui-kit'
+import styles from './MidiImport.module.css'
 import { PPQ } from '../../constants/timeline.js'
 import { getPickerPath, openFilePicker } from '../filePicker/filePickerService.js'
 
@@ -644,183 +647,151 @@ export default function MidiImportDialog({ isOpen, onClose, initialFilePath }) {
     }
   }
 
+  const importing = phase === 'importing'
+  const importLabel = enabledCount === 1 ? 'Import 1 track' : `Import ${enabledCount} tracks`
+
   return (
-    <div className="midi-dialog-backdrop">
-      <div className="midi-dialog" onClick={e => e.stopPropagation()}>
+    <Dialog
+      title="Import MIDI"
+      width="xl"
+      flush
+      fill
+      dismissable={!importing}
+      onClose={onClose}
+      actions={
+        phase === 'done' ? (
+          <Button size="lg" variant="primary" onClick={onClose}>Close</Button>
+        ) : (
+          <>
+            <Button size="lg" onClick={onClose} disabled={importing}>Cancel</Button>
+            {phase === 'preview' && (
+              <Button size="lg" variant="primary" onClick={handleImport} disabled={!canImport}>
+                {importLabel}
+              </Button>
+            )}
+            {phase === 'error' && (
+              <>
+                <Button size="lg" onClick={() => setPhase('preview')}>Back</Button>
+                <Button size="lg" variant="primary" onClick={onClose}>Close</Button>
+              </>
+            )}
+          </>
+        )
+      }
+    >
+      <div className={styles.root}>
 
-        {/* ── Header ─────────────────────────────────────────────────────── */}
-        <div className="midi-dialog-header">
-          <span>Import MIDI</span>
-          <button className="midi-dialog-close" onClick={onClose} title="Close">×</button>
-        </div>
+        {(phase === 'idle' || phase === 'parsing') && (
+          <div className={styles.status}>
+            <Progress label="Opening MIDI file" value={null} text={phase === 'idle' ? 'Opening file picker…' : 'Parsing MIDI file…'} />
+          </div>
+        )}
 
-        {/* ── Body ───────────────────────────────────────────────────────── */}
-        <div className="midi-dialog-body">
+        {importing && (
+          <div className={styles.status}>
+            <Progress label="Importing MIDI" value={null} text="Importing MIDI…" />
+            <span className={styles.statusSub}>This may take a few seconds for projects with multiple sources.</span>
+          </div>
+        )}
 
-          {(phase === 'idle' || phase === 'parsing') && (
-            <div className="midi-spinner-wrap">
-              <div className="midi-spinner" />
-              <span className="midi-spinner-label">
-                {phase === 'idle' ? 'Opening file picker…' : 'Parsing MIDI file…'}
+        {phase === 'error' && (
+          <div className={styles.status}>
+            <div className={styles.statusLine} data-tone="error" role="alert">
+              <AlertTriangle size={16} aria-hidden="true" />
+              <span>{errorMsg || 'An error occurred'}</span>
+            </div>
+          </div>
+        )}
+
+        {phase === 'done' && (
+          <div className={styles.status}>
+            <div className={styles.statusLine} data-tone="done">
+              <Check size={16} aria-hidden="true" />
+              <span>Import complete</span>
+            </div>
+          </div>
+        )}
+
+        {phase === 'preview' && summary && (
+          <>
+            {/* File + tempo info */}
+            <div className={styles.fileInfo}>
+              <span className={styles.fileName} title={filePath}>{fileName}</span>
+              <span className={styles.tempo}>
+                Source {summary.sourceTempo?.toFixed(1)} BPM
+                {projectBpm != null ? ` · Project ${projectBpm.toFixed(1)} BPM` : ''}
               </span>
             </div>
-          )}
 
-          {phase === 'importing' && (
-            <div className="midi-spinner-wrap">
-              <div className="midi-spinner" />
-              <span className="midi-spinner-label">Importing MIDI…</span>
-              <span className="midi-spinner-sub">This may take a few seconds for projects with multiple sources.</span>
+            <div className={styles.optionGroup}>
+              <Checkbox
+                checked={tempoBpmMatches ? false : tempoOverride}
+                onChange={setTempoOverride}
+                disabled={tempoBpmMatches}
+              >
+                Override project tempo to match source
+              </Checkbox>
+              {tempoBpmMatches && <span className={styles.note}>Already matches</span>}
             </div>
-          )}
 
-          {phase === 'error' && (
-            <div className="midi-status-wrap midi-status-wrap--error">
-              <span className="midi-status-icon">⚠</span>
-              <span className="midi-status-msg">{errorMsg || 'An error occurred'}</span>
-            </div>
-          )}
-
-          {phase === 'done' && (
-            <div className="midi-status-wrap midi-status-wrap--done">
-              <span className="midi-status-icon">✓</span>
-              <span className="midi-status-msg">Import complete</span>
-            </div>
-          )}
-
-          {phase === 'preview' && summary && (
-            <>
-              {/* File + tempo info */}
-              <div className="midi-file-info">
-                <span className="midi-file-name" title={filePath}>{fileName}</span>
-                <span className="midi-bpm-line">
-                  Source: {summary.sourceTempo?.toFixed(1)} BPM
-                  {projectBpm != null ? ` | Project: ${projectBpm.toFixed(1)} BPM` : ''}
-                </span>
-              </div>
-
-              <label className={`midi-tempo-override-row${tempoBpmMatches ? ' midi-tempo-override-row--inactive' : ''}`}>
-                <input
-                  type="checkbox"
-                  checked={tempoBpmMatches ? false : tempoOverride}
-                  onChange={e => setTempoOverride(e.target.checked)}
-                  disabled={tempoBpmMatches}
+            {/* Placement — Create rows only; re-import rows always keep their
+                existing block placement (see the per-row note below). */}
+            <div className={styles.options} role="group" aria-label="Import placement">
+              <div className={styles.optionGroup}>
+                <span className={styles.label}>Position</span>
+                <SegmentedControl
+                  label="Import position"
+                  options={[
+                    { value: POSITION_START, label: 'Start of timeline' },
+                    { value: POSITION_PLAYHEAD, label: 'At playhead' },
+                  ]}
+                  value={positionMode}
+                  onChange={setPositionMode}
                 />
-                <span className="midi-tempo-override-text">Override project tempo to match source</span>
-                {tempoBpmMatches && (
-                  <span className="midi-tempo-override-note">Already matches</span>
+              </div>
+              <Checkbox checked={trimLeadingSilence} onChange={setTrimLeadingSilence}>Trim leading silence</Checkbox>
+              <Checkbox checked={tileToFillProject} onChange={setTileToFillProject}>Loop pattern to fill project</Checkbox>
+            </div>
+
+            {(summary.hasMidFileTempoChanges || pitchBendTrackCount > 0 || unassignedOutputCount > 0) && (
+              <div className={styles.details} role="group" aria-label="Import details">
+                {summary.hasMidFileTempoChanges && (
+                  <span>MIDI tempo changes: first tempo only</span>
                 )}
-              </label>
-
-              {/* Placement — Create rows only; re-import rows always keep their
-                  existing block placement (see the per-row note below). */}
-              <div className="midi-placement-section" aria-label="Import placement">
-                <div className="midi-placement-position">
-                  <span className="midi-control-label">Position</span>
-                  <label className="midi-placement-radio">
-                    <input
-                      type="radio"
-                      name="midi-import-position"
-                      checked={positionMode === POSITION_START}
-                      onChange={() => setPositionMode(POSITION_START)}
-                    />
-                    Start of timeline
-                  </label>
-                  <label className="midi-placement-radio">
-                    <input
-                      type="radio"
-                      name="midi-import-position"
-                      checked={positionMode === POSITION_PLAYHEAD}
-                      onChange={() => setPositionMode(POSITION_PLAYHEAD)}
-                    />
-                    At playhead
-                  </label>
-                </div>
-                <label className="midi-checkbox-row">
-                  <input
-                    type="checkbox"
-                    checked={trimLeadingSilence}
-                    onChange={e => setTrimLeadingSilence(e.target.checked)}
-                  />
-                  Trim leading silence
-                </label>
-                <label className="midi-checkbox-row">
-                  <input
-                    type="checkbox"
-                    checked={tileToFillProject}
-                    onChange={e => setTileToFillProject(e.target.checked)}
-                  />
-                  Loop pattern to fill project
-                </label>
+                {pitchBendTrackCount > 0 && (
+                  <span>Pitch bend: skipped on {pitchBendTrackCount} track{pitchBendTrackCount === 1 ? '' : 's'}</span>
+                )}
+                {unassignedOutputCount > 0 && (
+                  <span>Unassigned outputs: {unassignedOutputCount}</span>
+                )}
               </div>
+            )}
 
-              {(summary.hasMidFileTempoChanges || pitchBendTrackCount > 0 || unassignedOutputCount > 0) && (
-                <div className="midi-import-details" aria-label="Import details">
-                  {summary.hasMidFileTempoChanges && (
-                    <span>MIDI tempo changes: first tempo only</span>
-                  )}
-                  {pitchBendTrackCount > 0 && (
-                    <span>Pitch bend: skipped on {pitchBendTrackCount} track{pitchBendTrackCount === 1 ? '' : 's'}</span>
-                  )}
-                  {unassignedOutputCount > 0 && (
-                    <span>Unassigned outputs: {unassignedOutputCount}</span>
-                  )}
-                </div>
-              )}
-
-              {/* Track list (zero-note tracks already excluded) */}
-              <div className="midi-track-list">
-                {filteredSourceTracks.map(track => (
-                  <MidiTrackRow
-                    key={track.index}
-                    track={track}
-                    parentOptions={trackOptions[track.index] ?? { enabled: true, splitByNote: !!track.isDrum }}
-                    outputOptions={resolveOutputOptionsForSourceTrack(track)}
-                    onParentChange={patch => setTrackOptions(prev => ({
-                      ...prev,
-                      [track.index]: { ...prev[track.index], ...patch },
-                    }))}
-                    onOutputChange={(outputTrackIndex, patch) => setOutputTrackOptions(prev => ({
-                      ...prev,
-                      [outputTrackIndex]: { ...prev[outputTrackIndex], ...patch },
-                    }))}
-                    sampleItems={sampleItems}
-                    reimportTargets={reimportTargets}
-                  />
-                ))}
-              </div>
-            </>
-          )}
-
-        </div>
-
-        {/* ── Footer ─────────────────────────────────────────────────────── */}
-        <div className="midi-dialog-footer">
-          {phase === 'done' ? (
-            <button className="midi-btn-primary" onClick={onClose}>Close</button>
-          ) : (
-            <>
-              <button onClick={onClose}>Cancel</button>
-              {phase === 'preview' && (
-                <button
-                  className="midi-btn-primary"
-                  onClick={handleImport}
-                  disabled={!canImport}
-                >
-                  Import
-                </button>
-              )}
-              {phase === 'error' && (
-                <>
-                  <button onClick={() => setPhase('preview')}>Back</button>
-                  <button className="midi-btn-primary" onClick={onClose}>Close</button>
-                </>
-              )}
-            </>
-          )}
-        </div>
+            {/* Track list (zero-note tracks already excluded) */}
+            <div className={styles.tracks}>
+              {filteredSourceTracks.map(track => (
+                <MidiTrackRow
+                  key={track.index}
+                  track={track}
+                  parentOptions={trackOptions[track.index] ?? { enabled: true, splitByNote: !!track.isDrum }}
+                  outputOptions={resolveOutputOptionsForSourceTrack(track)}
+                  onParentChange={patch => setTrackOptions(prev => ({
+                    ...prev,
+                    [track.index]: { ...prev[track.index], ...patch },
+                  }))}
+                  onOutputChange={(outputTrackIndex, patch) => setOutputTrackOptions(prev => ({
+                    ...prev,
+                    [outputTrackIndex]: { ...prev[outputTrackIndex], ...patch },
+                  }))}
+                  sampleItems={sampleItems}
+                  reimportTargets={reimportTargets}
+                />
+              ))}
+            </div>
+          </>
+        )}
 
       </div>
-    </div>
+    </Dialog>
   )
 }

@@ -1,5 +1,6 @@
 import React from 'react'
-import XlethSelect from '../common/XlethSelect.jsx'
+import { Select } from '../../ui-kit'
+import styles from './MidiImport.module.css'
 
 // ── Re-import target picker ───────────────────────────────────────────────────
 // One control per output row, deciding whether the row creates a fresh Pattern
@@ -14,7 +15,7 @@ import XlethSelect from '../common/XlethSelect.jsx'
 export const MODE_NEW = 'new'
 export const MODE_UPDATE = 'update'
 
-// Builds the dropdown's options. Extracted because XlethSelect renders only the
+// Builds the dropdown's options. Extracted because the Select renders only the
 // closed trigger until it is opened, so the option list is not reachable from
 // rendered markup.
 export function buildTargetOptions(targets) {
@@ -50,9 +51,9 @@ export default function MidiReimportModeSelect({
     : MODE_NEW
 
   return (
-    <label className="midi-control-group midi-reimport-mode">
-      <span className="midi-control-label">Target</span>
-      <XlethSelect
+    <div className={styles.control}>
+      <span className={styles.label}>Target</span>
+      <Select
         value={value}
         options={options}
         onChange={next => onChange(next === MODE_NEW
@@ -60,8 +61,7 @@ export default function MidiReimportModeSelect({
           : { mode: MODE_UPDATE, targetTrackId: Number(next) })}
         disabled={disabled}
         ariaLabel={ariaLabel}
-        className="midi-reimport-mode-select"
       />
-    </label>
+    </div>
   )
 }

@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react'
-import { Image, Music2, Search } from 'lucide-react'
-import XlethSelect from '../common/XlethSelect.jsx'
+import { Image, Music2 } from 'lucide-react'
+import { Select, TextField } from '../../ui-kit'
+import styles from './MidiImport.module.css'
 import { getCachedPreview, getSourceFingerprint } from './samplePreviewCache.js'
 
 function getItemKey(item) {
@@ -99,21 +100,19 @@ export default function MidiSampleRail({
   }, [compact, disabled, previews, railItems])
 
   return (
-    <div className={`midi-sample-rail-wrap${compact ? ' midi-sample-rail-wrap--compact' : ''}`}>
+    <div className={styles.railWrap}>
       {items.length > 0 && (
-        <div className="midi-sample-rail-controls">
-          <div className="midi-sample-rail-search-wrap">
-            <Search size={compact ? 11 : 12} className="midi-sample-rail-search-icon" aria-hidden="true" />
-            <input
-              type="text"
-              className="midi-sample-rail-search"
-              placeholder="Search…"
-              value={search}
-              onChange={e => setSearch(e.target.value)}
-              aria-label="Search samples"
-            />
-          </div>
-          <XlethSelect
+        <div className={styles.railControls}>
+          <TextField
+            size="sm"
+            type="search"
+            label="Search samples"
+            placeholder="Search samples…"
+            value={search}
+            onChange={setSearch}
+          />
+          <Select
+            size="sm"
             value={filterTag}
             options={[
               { value: 'all', label: 'All' },
@@ -122,12 +121,12 @@ export default function MidiSampleRail({
             ]}
             onChange={setFilterTag}
             ariaLabel="Filter samples by tag"
-            className="midi-sample-rail-filter"
           />
         </div>
       )}
       <div
-        className={`midi-sample-rail${compact ? ' midi-sample-rail--compact' : ''}`}
+        className={styles.rail}
+        data-compact={compact || undefined}
         role="listbox"
         aria-label={ariaLabel}
         aria-disabled={disabled || undefined}
@@ -145,7 +144,8 @@ export default function MidiSampleRail({
             <button
               key={key}
               type="button"
-              className={`midi-sample-tile${selected ? ' midi-sample-tile--selected' : ''}${item.isNone ? ' midi-sample-tile--none' : ''}`}
+              className={styles.tile}
+              data-sample-tile=""
               role="option"
               aria-selected={selected}
               aria-pressed={selected}
@@ -153,26 +153,24 @@ export default function MidiSampleRail({
               title={item.title || item.name}
               onClick={() => onChange?.(item.id == null ? null : item.id)}
             >
-              <span className="midi-sample-tile-preview" aria-hidden="true">
+              <span className={styles.preview} aria-hidden="true">
                 {preview ? (
                   <img src={preview} alt="" />
                 ) : (
-                  <span className="midi-sample-tile-placeholder">
-                    <MediaIcon size={compact ? 15 : 18} aria-hidden="true" />
-                  </span>
+                  <MediaIcon size={compact ? 15 : 18} aria-hidden="true" />
                 )}
               </span>
-              <span className="midi-sample-tile-copy">
-                <span className="midi-sample-tile-name">{item.name}</span>
+              <span className={styles.tileCopy}>
+                <span className={styles.tileName}>{item.name}</span>
                 {item.subLabel && (
-                  <span className="midi-sample-tile-sub">{item.subLabel}</span>
+                  <span className={styles.tileSub}>{item.subLabel}</span>
                 )}
               </span>
             </button>
           )
         })}
         {showEmpty && (
-          <span className="midi-sample-rail-empty">No matches</span>
+          <span className={styles.empty}>No matches</span>
         )}
       </div>
     </div>

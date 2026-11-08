@@ -35,7 +35,7 @@ describe('MidiTrackThumbnail', () => {
 
     renderThumb({ thumb: { startTick: 0, endTick: 9600, pitchMin: 60, pitchMax: 72, buckets } })
 
-    const rects = container.querySelectorAll('svg.midi-track-thumbnail rect')
+    const rects = container.querySelectorAll('svg[data-midi-thumbnail] rect')
     expect(rects.length).toBe(3)
   })
 
@@ -46,7 +46,7 @@ describe('MidiTrackThumbnail', () => {
 
     renderThumb({ thumb: { startTick: 0, endTick: 9600, pitchMin: 60, pitchMax: 60, buckets } })
 
-    const rects = Array.from(container.querySelectorAll('svg.midi-track-thumbnail rect'))
+    const rects = Array.from(container.querySelectorAll('svg[data-midi-thumbnail] rect'))
     const sparse = rects.find(r => Number(r.getAttribute('x')) < 11)
     const dense = rects.find(r => Number(r.getAttribute('x')) > 19)
     expect(Number(dense.getAttribute('height'))).toBeGreaterThan(Number(sparse.getAttribute('height')))

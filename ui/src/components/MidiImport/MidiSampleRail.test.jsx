@@ -37,7 +37,7 @@ describe('MidiSampleRail', () => {
     ]
 
     renderRail({ items, value: null, onChange })
-    const initialTiles = container.querySelectorAll('.midi-sample-tile')
+    const initialTiles = container.querySelectorAll('[data-sample-tile]')
     expect(initialTiles[0].getAttribute('aria-pressed')).toBe('true')
 
     act(() => {
@@ -46,7 +46,7 @@ describe('MidiSampleRail', () => {
     expect(onChange).toHaveBeenLastCalledWith(42)
 
     renderRail({ items, value: 42, onChange })
-    const selectedTiles = container.querySelectorAll('.midi-sample-tile')
+    const selectedTiles = container.querySelectorAll('[data-sample-tile]')
     expect(selectedTiles[1].getAttribute('aria-pressed')).toBe('true')
 
     act(() => {
@@ -64,7 +64,7 @@ describe('MidiSampleRail', () => {
       disabled: true,
     })
 
-    const sampleTile = container.querySelectorAll('.midi-sample-tile')[1]
+    const sampleTile = container.querySelectorAll('[data-sample-tile]')[1]
     expect(sampleTile.disabled).toBe(true)
     act(() => {
       sampleTile.dispatchEvent(new MouseEvent('click', { bubbles: true }))
@@ -98,8 +98,8 @@ describe('MidiSampleRail', () => {
     expect(getFrameAtTime).toHaveBeenCalledTimes(1)
     expect(getFrameAtTime).toHaveBeenCalledWith(1, 0.5, 144, 81)
 
-    const imgA = container.querySelector('.midi-sample-tile img')
-    const imgB = containerB.querySelector('.midi-sample-tile img')
+    const imgA = container.querySelector('[data-sample-tile] img')
+    const imgB = containerB.querySelector('[data-sample-tile] img')
     expect(imgA?.getAttribute('src')).toBe('data:image/png;base64,XYZ')
     expect(imgB?.getAttribute('src')).toBe('data:image/png;base64,XYZ')
 
@@ -148,7 +148,7 @@ describe('MidiSampleRail', () => {
     })
 
     expect(getFrameAtTime).toHaveBeenCalledTimes(2)
-    const imgB = containerB.querySelector('.midi-sample-tile img')
+    const imgB = containerB.querySelector('[data-sample-tile] img')
     expect(imgB?.getAttribute('src')).toBe('data:image/png;base64,UPDATED')
 
     act(() => { rootB.unmount() })

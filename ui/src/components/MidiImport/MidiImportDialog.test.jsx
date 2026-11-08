@@ -282,9 +282,9 @@ describe('MidiTrackRow redesigned layout', () => {
       />
     )
 
-    expect(html).toContain('midi-sample-rail')
+    expect(html).toContain('role=\"listbox\"')
     expect(html).toContain('Lead Sample')
-    expect(html).toContain('Max Length')
+    expect(html).toContain('Max length')
     expect(html).toContain('Visual only')
     expect(html).not.toContain('<select')
     expect(html).not.toContain('Pitch bend will be discarded')
@@ -338,7 +338,7 @@ describe('MidiTrackRow redesigned layout', () => {
       />
     )
     expect(melodicHtml).toContain('Transpose')
-    expect(melodicHtml).toContain('midi-transpose-stepper')
+    expect(melodicHtml).toContain('aria-label=\"Lead transpose\"')
 
     const drumHtml = renderToStaticMarkup(
       <MidiTrackRow
@@ -351,7 +351,7 @@ describe('MidiTrackRow redesigned layout', () => {
       />
     )
     expect(drumHtml).not.toContain('Transpose')
-    expect(drumHtml).not.toContain('midi-transpose-stepper')
+    expect(drumHtml).not.toContain('aria-label=\"Lead transpose\"')
   })
 
   it('never shows a transpose control on a drum sub-track row', () => {
@@ -365,7 +365,7 @@ describe('MidiTrackRow redesigned layout', () => {
       />
     )
     expect(html).not.toContain('Transpose')
-    expect(html).not.toContain('midi-transpose-stepper')
+    expect(html).not.toContain('aria-label=\"Lead transpose\"')
   })
 
   it('notes that Position/Tile are ignored on a row resolved to re-import', () => {
@@ -381,7 +381,7 @@ describe('MidiTrackRow redesigned layout', () => {
         reimportTargets={targets}
       />
     )
-    expect(html).toContain('Position / Tile ignored')
+    expect(html).toContain('Position and tiling are ignored')
 
     const createHtml = renderToStaticMarkup(
       <MidiTrackRow
@@ -394,7 +394,7 @@ describe('MidiTrackRow redesigned layout', () => {
         reimportTargets={targets}
       />
     )
-    expect(createHtml).not.toContain('Position / Tile ignored')
+    expect(createHtml).not.toContain('Position and tiling are ignored')
   })
 
   it('offers New track plus every Pattern target, disabling ambiguous ones', () => {

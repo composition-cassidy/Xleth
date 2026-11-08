@@ -1,0 +1,292 @@
+/* MIDI import (round 2, step 20.3): a kit Dialog around the file summary, the placement choices and a list of
+ * source tracks, each with a sample rail and its import controls. Type: 12 and 11 only (the title is the Dialog's
+ * 16). Tempo and note counts are tabular numerals. */
+@layer kit {
+  .root {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    min-height: 0;
+    flex: 1 1 auto;
+  }
+
+  .status {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-2);
+    padding: var(--space-5);
+    font-size: var(--type-12);
+    text-align: center;
+  }
+
+  .statusSub { font-size: var(--type-11); color: var(--ui-ink-2); }
+
+  .statusLine {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    justify-content: center;
+    font-size: var(--type-12);
+  }
+
+  .statusLine[data-tone="error"] { color: var(--theme-semantic-danger-text, var(--ui-rec-text)); }
+  .statusLine[data-tone="done"] { color: var(--ui-signal-events); }
+
+  .fileInfo {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-1) var(--space-3);
+  }
+
+  .fileName {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--type-12);
+    font-weight: var(--weight-semibold);
+  }
+
+  .tempo {
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .note {
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+
+  .options {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2) var(--space-4);
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--ui-g4);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g1);
+  }
+
+  .optionGroup {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .label {
+    font-size: var(--type-12);
+    font-weight: var(--weight-medium);
+    color: var(--ui-ink);
+  }
+
+  .details {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1) var(--space-3);
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+
+  .tracks {
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    overflow-y: auto;
+  }
+
+  .track {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    border: 1px solid var(--ui-g4);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g1);
+  }
+
+  .track[data-disabled] > :not(.trackHead) { opacity: var(--ui-mute-opacity); }
+
+  .trackHead {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2) var(--space-3);
+  }
+
+  .trackName {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: var(--weight-semibold);
+  }
+
+  .trackNotes {
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .thumbWrap { width: 100%; }
+
+  .thumb {
+    display: block;
+    width: 100%;
+    height: 20px;
+  }
+
+  .thumb rect { fill: var(--ui-value); }
+
+  .sectionLabel {
+    font-size: var(--type-11);
+    font-weight: var(--weight-medium);
+    color: var(--ui-ink-2);
+  }
+
+  .controls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2) var(--space-4);
+  }
+
+  .control {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .drumHead {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3);
+  }
+
+  .drumRows {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding-left: var(--space-3);
+    border-left: 1px solid var(--ui-g4);
+  }
+
+  .drumRow {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+
+  .drumRow[data-disabled] > :not(.drumHeadRow) { opacity: var(--ui-mute-opacity); }
+
+  .drumHeadRow {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .midiNote {
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* Sample rail */
+  .railWrap {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+  }
+
+  .railControls {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+  }
+
+  .railControls > :first-child { flex: 1 1 160px; }
+
+  .rail {
+    display: flex;
+    gap: var(--space-2);
+    overflow-x: auto;
+    padding-bottom: var(--space-1);
+  }
+
+  .tile {
+    box-sizing: border-box;
+    flex: 0 0 148px;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+    padding: var(--space-1);
+    border: 1px solid var(--ui-g4);
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-g2);
+    color: var(--ui-ink);
+    font: inherit;
+    text-align: left;
+    cursor: pointer;
+  }
+
+  .rail[data-compact] .tile { flex-basis: 100px; }
+
+  .tile:hover:not(:disabled) { background: var(--ui-g3); }
+  .tile[aria-selected="true"] { border-color: var(--ui-select); outline: 1px solid var(--ui-select); outline-offset: -2px; background: var(--ui-g3); }
+  .tile:disabled { cursor: default; opacity: 0.6; }
+
+  .tile:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 1px;
+  }
+
+  .preview {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    aspect-ratio: 16 / 9;
+    overflow: hidden;
+    background: var(--ui-g0);
+    color: var(--ui-ink-2);
+  }
+
+  .preview img { display: block; width: 100%; height: 100%; object-fit: cover; }
+
+  .tileCopy {
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .tileName {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--type-12);
+    font-weight: var(--weight-medium);
+  }
+
+  .tileSub {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+
+  .empty {
+    align-self: center;
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+}

@@ -10,9 +10,8 @@ export default async ({ page, sleep }) => {
   await input.press('Enter'); await sleep(1500);
   out.push('buttons: ' + await page.evaluate(() => [...document.querySelectorAll('[role="dialog"] button')].map((b) => (b.textContent || '').trim().slice(0, 20)).join(' | ')));
   out.push('dialog now: ' + await page.evaluate(() => [...document.querySelectorAll('[role="dialog"]')].map((e) => (e.innerText || '').slice(0, 80).replace(/\n/g, ' | ')).join(' || ')));
-  const open = page.locator('[role="dialog"]').getByRole('button', { name: /^(Open|Choose|Select|Import)/ }).last();
-  if (await open.count()) { await open.click().catch(() => {}); await sleep(2500); }
+  // The picker already accepted the file on Enter; clicking an "Import..." button here would run the import itself.
   out.push('after confirm: ' + await page.evaluate(() => [...document.querySelectorAll('[role="dialog"], [class*="midi-import"]')].map((e) => e.className.toString().slice(0, 30) + ':' + (e.innerText || '').slice(0, 80).replace(/\n/g, ' | ')).join(' || ')));
-  out.push(await shot(page, '132-dialog-midi-import', { surface: 'dlg-midi-import', scope: '.midi-dialog', live: true }));
+  out.push(await shot(page, '132-dialog-midi-import', { surface: 'dlg-midi-import', scope: '[role="dialog"]', live: true }));
   return out.join('\n');
 };
