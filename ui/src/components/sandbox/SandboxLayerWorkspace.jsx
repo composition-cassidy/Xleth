@@ -3,7 +3,9 @@ import { useState, useCallback } from 'react'
 import useSandboxStore from '../../stores/sandboxStore.js'
 import SandboxWaveformCanvas from './SandboxWaveformCanvas.jsx'
 import SandboxSpcSelectionActionBar from './SandboxSpcSelectionActionBar.jsx'
-import DragNumberField from '../grid/zprTimeline/DragNumberField.jsx'
+import { IconButton, MINUS, NumberBox, Toggle } from '../../ui-kit'
+import SandboxRenderChip from './SandboxRenderChip.jsx'
+import styles from './Sandbox.module.css'
 import { formatSamplesShort } from './sandboxFormat.js'
 
 // ── Layer rail + one editor (Phase 4 restructure) ───────────────────────────
@@ -21,18 +23,16 @@ import { formatSamplesShort } from './sandboxFormat.js'
 // paint modes have always been global-to-the-active-layer, never per-card, so
 // the second, third and fourth canvases were never editors in the first place.
 //
-// The mix controls moved into the row as drag-scrub fields. Reusing the ZPR
-// inspector's DragNumberField rather than writing a second one: it already
-// implements the drag-to-scrub / click-to-type / Shift-fine contract, its
-// styles live in the global app.css, and a panel-local copy would be a second
-// thing to keep in step. It is not moved into components/common here —
-// relocating it would touch ZPR's own imports for no benefit to this change.
+// The mix controls live in the row as kit NumberBoxes: drag to scrub, type a value, Shift for fine. Each previews
+// locally during a drag and commits once on release.
 
 const DROPPABLE_AUDIO_EXT = /\.(wav|mp3|flac|aiff?|ogg|m4a|wma|opus)$/i
 
 const RENDER_STATE_LABEL = {
   idle: 'Idle', rendering: 'Rendering…', ready: 'Ready', error: 'Render failed',
 }
+
+const pan2 = (v) => v.toFixed(2).replace('-', MINUS)
 
 function offsetMs(layer) {
   return layer.bufferSampleRate ? (layer.offsetSamples / layer.bufferSampleRate) * 1000 : 0
@@ -54,80 +54,73 @@ function LayerRow({
   layer, active, playing, onSelect, onClose, onDuplicate, onToggleMute, onToggleSolo,
   onSetMix, onAudition,
 }) {
-  // Mix edits preview locally during the drag and commit once on release —
-  // setLayerMix is a bridge round-trip plus a composite re-render schedule, so
-  // a call per pointer frame would queue a render per frame.
-  const [live, setLive] = useState(null) // { gainDb?, pan?, offsetMs? } while dragging
-
-  const gainDb = live?.gainDb ?? layer.gainDb ?? 0
-  const pan = live?.pan ?? layer.pan ?? 0
-  const offMs = live?.offsetMs ?? offsetMs(layer)
-  const commit = (patch) => { setLive(null); onSetMix(layer.id, patch) }
-
   const ready = layer.renderState === 'ready'
+  const opsLabel = `${layer.ops.length} op${layer.ops.length === 1 ? '' : 's'}`
 
   return (
     <div
-      className={`sandbox-layer-row${active ? ' active' : ''}${layer.soloed ? ' soloed' : ''}${layer.muted ? ' muted' : ''}`}
+      className={styles.layerRow}
+      data-layer-row
+      data-active={active || undefined}
+      data-muted={layer.muted || undefined}
       onClick={() => onSelect(layer.id)}
       title={layer.renderState === 'error' ? (layer.error || 'Render failed') : layer.name}
     >
-      <button
-        className={`sandbox-row-btn sandbox-row-btn--play${playing ? ' active' : ''}`}
+      <IconButton
+        size="sm"
+        label="Audition this layer alone"
+        pressed={playing}
         disabled={!ready}
+        hint="Audition this layer alone"
+        hintMods="Shift+Space plays its own render, no composite mix"
         onClick={(e) => { e.stopPropagation(); onAudition(layer.id) }}
-        title="Audition this layer alone (Shift+Space) — plays its own render, no composite mix"
-      >{playing ? <Square size={10} /> : <Play size={10} />}</button>
+      >
+        {playing ? <Square /> : <Play />}
+      </IconButton>
 
-      <span className={`sandbox-render-chip-dot sandbox-render-chip--${layer.renderState}`}
-        title={RENDER_STATE_LABEL[layer.renderState] ?? layer.renderState} />
+      <SandboxRenderChip state={layer.renderState} title={RENDER_STATE_LABEL[layer.renderState] ?? layer.renderState}>
+        {ready ? null : (RENDER_STATE_LABEL[layer.renderState] ?? layer.renderState)}
+      </SandboxRenderChip>
 
-      <span className="sandbox-layer-row-name">{layer.name}</span>
-      <span className="sandbox-layer-row-meta">
-        {layerDuration(layer)} · {layer.ops.length} op{layer.ops.length === 1 ? '' : 's'}
-      </span>
+      <span className={styles.layerName}>{layer.name}</span>
+      <span className={styles.layerMeta}>{layerDuration(layer)} · {opsLabel}</span>
 
-      <div className="sandbox-layer-row-mix" onClick={(e) => e.stopPropagation()}>
-        <button
-          className={`sandbox-mini-btn sandbox-mini-btn--mute${layer.muted ? ' active' : ''}`}
-          onClick={() => onToggleMute(layer.id)}
-          title="Mute"
-        >M</button>
-        <button
-          className={`sandbox-mini-btn sandbox-mini-btn--solo${layer.soloed ? ' active' : ''}`}
-          onClick={() => onToggleSolo(layer.id)}
-          title="Solo"
-        >S</button>
-        <DragNumberField
-          className="sandbox-drag-field" label="dB" value={gainDb} precision={1} step={0.25}
-          min={-60} max={12}
-          onLiveChange={(v) => setLive((d) => ({ ...d, gainDb: v }))}
-          onCommit={(v) => commit({ gainDb: v })}
+      <div className={styles.layerMix} onClick={(e) => e.stopPropagation()}>
+        <Toggle size="sm" on={!!layer.muted} aria-label="Mute" hint="Mute" onChange={() => onToggleMute(layer.id)}>M</Toggle>
+        <Toggle size="sm" on={!!layer.soloed} aria-label="Solo" hint="Solo" onChange={() => onToggleSolo(layer.id)}>S</Toggle>
+        <NumberBox
+          label="Layer gain" hideLabel width={72} min={-60} max={12} step={0.25} unit="dB" defaultValue={0}
+          value={layer.gainDb ?? 0}
+          onCommit={(v) => onSetMix(layer.id, { gainDb: v })}
         />
-        <DragNumberField
-          className="sandbox-drag-field" label="Pan" value={pan} precision={2} step={0.01}
-          min={-1} max={1}
-          onLiveChange={(v) => setLive((d) => ({ ...d, pan: v }))}
-          onCommit={(v) => commit({ pan: v })}
+        <NumberBox
+          label="Layer pan" caption="Pan" width={72} min={-1} max={1} step={0.01} bipolar centre={0} defaultValue={0}
+          format={pan2}
+          value={layer.pan ?? 0}
+          onCommit={(v) => onSetMix(layer.id, { pan: v })}
         />
-        <DragNumberField
-          className="sandbox-drag-field" label="ms" value={offMs} precision={0} step={1}
-          min={0} max={60000}
-          onLiveChange={(v) => setLive((d) => ({ ...d, offsetMs: v }))}
-          onCommit={(v) => commit({ offsetMs: v })}
+        <NumberBox
+          label="Layer offset" hideLabel width={72} min={0} max={60000} step={1} unit="ms" defaultValue={0}
+          quantize={Math.round}
+          value={offsetMs(layer)}
+          onCommit={(v) => onSetMix(layer.id, { offsetMs: v })}
         />
       </div>
 
-      <button
-        className="sandbox-row-btn"
+      <IconButton
+        size="sm" variant="ghost" label="Duplicate this layer"
+        hint="Duplicate this layer"
+        hintMods={`Duplicate with its ${opsLabel} and mix settings (Ctrl+D)`}
         onClick={(e) => { e.stopPropagation(); onDuplicate(layer.id) }}
-        title={`Duplicate this layer with its ${layer.ops.length} op${layer.ops.length === 1 ? '' : 's'} and mix settings (Ctrl+D)`}
-      ><Copy size={11} /></button>
-      <button
-        className="sandbox-row-btn sandbox-row-btn--close"
+      >
+        <Copy />
+      </IconButton>
+      <IconButton
+        size="sm" variant="ghost" label="Close layer" hint="Close layer"
         onClick={(e) => { e.stopPropagation(); onClose(layer.id) }}
-        title="Close layer"
-      ><X size={11} /></button>
+      >
+        <X />
+      </IconButton>
     </div>
   )
 }
@@ -206,13 +199,13 @@ export default function SandboxLayerWorkspace() {
 
   return (
     <div
-      className="sandbox-layer-workspace"
+      className={styles.workspace}
       onDragOver={handleDragOver}
       onDragLeave={handleDragLeave}
       onDrop={handleDrop}
     >
       {layers.length > 0 && (
-        <div className="sandbox-layer-rail">
+        <div className={styles.rail}>
           {layers.map((layer) => (
             <LayerRow
               key={layer.id}
@@ -228,30 +221,30 @@ export default function SandboxLayerWorkspace() {
               onAudition={toggleLayerPreview}
             />
           ))}
-          <div className="sandbox-layer-rail-hint">
-            <Plus size={11} /> Drop a sample or audio file anywhere here to add a layer
+          <div className={styles.railHint}>
+            <Plus size={12} aria-hidden="true" /> Drop a sample or audio file anywhere here to add a layer
           </div>
         </div>
       )}
 
       {/* The editor. One canvas, filling everything the rail leaves — which is
           the whole point of the restructure. */}
-      <div className="sandbox-editor-pane">
+      <div className={styles.editorPane}>
         {activeLayer ? (
           <>
             <SandboxWaveformCanvas />
             {hasSpcSelection && <SandboxSpcSelectionActionBar />}
           </>
         ) : (
-          <div className={`sandbox-drop-zone${dragOver ? ' over' : ''}`}>
-            <Plus size={20} />
+          <div className={styles.dropZone} data-over={dragOver || undefined}>
+            <Plus size={20} aria-hidden="true" />
             <span>Drag a sample or audio file here to begin</span>
-            <span className="sandbox-drop-zone-hint">
+            <span className={styles.dropHint}>
               …or right-click a marked region in the timeline and choose “Open in Sample Sandbox”
             </span>
           </div>
         )}
-        {dragOver && activeLayer && <div className="sandbox-drop-overlay">Drop to add a layer</div>}
+        {dragOver && activeLayer && <div className={styles.dropOverlay}>Drop to add a layer</div>}
       </div>
     </div>
   )

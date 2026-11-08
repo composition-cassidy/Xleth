@@ -1,4 +1,4 @@
-import { Crosshair, GripVertical, Trash2, TriangleAlert } from 'lucide-react'
+import { Crosshair, GripVertical, Redo2, Trash2, TriangleAlert, Undo2 } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import useSandboxStore, {
   RIPPLE_MODE, FADE_SHAPE, PITCH_MODE, findEnvelopeOp, clampGainEnvelopeFollower, GAIN_ENVELOPE_MODE,
@@ -11,9 +11,12 @@ import { allowedPitchClasses } from './autotuneCorrectionPreview.js'
 import { FADE_SHAPES } from './sandboxToolConstants.js'
 import { formatRange, formatSamplesShort } from './sandboxFormat.js'
 import { opSampleRange, resolveOpRange } from './sandboxOpRange.js'
+import { Button, Checkbox, IconButton, MINUS, NumberBox, Select, Toggle } from '../../ui-kit'
+import styles from './Sandbox.module.css'
 
 const RIPPLE_MODE_NAME = Object.fromEntries(Object.entries(RIPPLE_MODE).map(([k, v]) => [v, k]))
 const FADE_SHAPE_NAME = Object.fromEntries(Object.entries(FADE_SHAPE).map(([k, v]) => [v, k]))
+
 
 // ── AUTOTUNE keyboard note picker (P5-4) ─────────────────────────────────────
 // One octave, laid out like a real keyboard so "root highlighted, scale notes
@@ -25,21 +28,26 @@ const KB_WHITE_PCS = [0, 2, 4, 5, 7, 9, 11]
 // pc -> index (0-6) of the white key it sits just after, for positioning.
 const KB_BLACK_AFTER_WHITE = { 1: 0, 3: 1, 6: 3, 8: 4, 10: 5 }
 
+/** A lit key is also marked in text for assistive tech (aria-pressed) and the root carries a dot, so state is not colour alone. */
 function AutotuneKeyboard({ rootPc, activePcs, onToggle }) {
   return (
-    <div className="sandbox-autotune-keyboard" role="group" aria-label="Allowed notes">
-      <div className="sandbox-autotune-keyboard-whites">
+    <div className={styles.keyboard} role="group" aria-label="Allowed notes">
+      <div className={styles.keyboardWhites}>
         {KB_WHITE_PCS.map((pc) => (
           <button
             key={pc}
             type="button"
-            className={`sandbox-autotune-key white${activePcs.includes(pc) ? ' on' : ''}${pc === rootPc ? ' root' : ''}`}
+            className={styles.keyWhite}
+            data-on={activePcs.includes(pc) || undefined}
+            data-root={pc === rootPc || undefined}
+            aria-pressed={activePcs.includes(pc)}
+            aria-label={`${AUTOTUNE_KEY_NAME[pc]}${pc === rootPc ? ' (root)' : ''}`}
             onClick={() => onToggle(pc)}
             title={`${AUTOTUNE_KEY_NAME[pc]}${pc === rootPc ? ' (root)' : ''}`}
           />
         ))}
       </div>
-      <div className="sandbox-autotune-keyboard-blacks">
+      <div className={styles.keyboardBlacks}>
         {Object.entries(KB_BLACK_AFTER_WHITE).map(([pcStr, whiteIndex]) => {
           const pc = Number(pcStr)
           return (
@@ -47,7 +55,11 @@ function AutotuneKeyboard({ rootPc, activePcs, onToggle }) {
               key={pc}
               type="button"
               style={{ left: `${((whiteIndex + 1) / KB_WHITE_PCS.length) * 100}%` }}
-              className={`sandbox-autotune-key black${activePcs.includes(pc) ? ' on' : ''}${pc === rootPc ? ' root' : ''}`}
+              className={styles.keyBlack}
+              data-on={activePcs.includes(pc) || undefined}
+              data-root={pc === rootPc || undefined}
+              aria-pressed={activePcs.includes(pc)}
+              aria-label={`${AUTOTUNE_KEY_NAME[pc]}${pc === rootPc ? ' (root)' : ''}`}
               onClick={() => onToggle(pc)}
               title={`${AUTOTUNE_KEY_NAME[pc]}${pc === rootPc ? ' (root)' : ''}`}
             />
@@ -150,40 +162,49 @@ function describeParams(op, rate) {
   }
 }
 
-// One AUTOTUNE control. The slider is mirrored locally while dragging and
-// only COMMITTED on release (pointerup / keyboard blur), so a drag across the
-// range is one undoable edit and one re-render rather than one per tick — the
-// same contract the gain-envelope drag and the spectral-paint stroke follow.
-// The number box beside it commits on blur, for typing an exact value.
-function AutotuneSlider({ label, unit, min, max, step, value, onCommit, disabled, title }) {
-  const [local, setLocal] = useState(value)
-  const [dragging, setDragging] = useState(false)
-  // Track the committed value while NOT dragging, so undo/redo and a render
-  // that clamps the value are both reflected without fighting the drag.
-  useEffect(() => { if (!dragging) setLocal(value) }, [value, dragging])
-  const shown = dragging ? local : value
+// One numeric op parameter: a kit NumberBox (drag it or type a value). It previews locally while dragging and
+// COMMITS once on release, Enter or blur, so a drag across the range is one undoable edit and one re-render
+// rather than one per tick — the contract the gain-envelope drag and the spectral-paint stroke follow.
+function Param({ label, value, onCommit, disabled, hint, ...range }) {
   return (
-    <label className="sandbox-op-slider" title={title}>
-      {label}
-      <input
-        type="range" min={min} max={max} step={step} value={shown} disabled={disabled}
-        onChange={(e) => { setDragging(true); setLocal(Number(e.target.value)) }}
-        onPointerUp={() => { setDragging(false); if (local !== value) onCommit(local) }}
-        onBlur={() => { setDragging(false); if (local !== value) onCommit(local) }}
-      />
-      <input
-        type="number" className="sandbox-toolbar-number"
-        min={min} max={max} step={step}
-        value={shown} disabled={disabled}
-        onChange={(e) => { setDragging(true); setLocal(Number(e.target.value)) }}
-        onBlur={(e) => {
-          setDragging(false)
-          const v = Math.min(max, Math.max(min, Number(e.target.value)))
-          if (v !== value) onCommit(v)
-        }}
-      />
-      <span className="sandbox-op-slider-unit">{unit}</span>
-    </label>
+    <NumberBox
+      label={label}
+      width={64}
+      value={value}
+      disabled={disabled}
+      hint={label}
+      hintMods={hint}
+      onCommit={onCommit}
+      {...range}
+    />
+  )
+}
+
+const signed = (v, suffix = '') => `${v >= 0 ? '+' : MINUS}${Math.abs(Math.round(v * 100) / 100)}${suffix}`
+const fixed = (digits) => (v) => v.toFixed(digits).replace('-', MINUS)
+
+const PITCH_MODE_OPTIONS = [
+  { value: PITCH_MODE.preserve, label: 'Preserve length' },
+  { value: PITCH_MODE.resample, label: 'Varispeed (resample)' },
+]
+const ENVELOPE_MODE_OPTIONS = [
+  { value: 'absolute', label: '1 · Absolute' },
+  { value: 'relative', label: '2 · Relative' },
+]
+const AUTOTUNE_MODE_OPTIONS = [
+  { value: 'scale', label: 'Scale' },
+  { value: 'manual', label: 'Manual' },
+]
+const AUTOTUNE_KEY_OPTIONS = AUTOTUNE_KEY_NAME.map((n, i) => ({ value: i, label: n }))
+const AUTOTUNE_SCALE_OPTIONS = Object.entries(AUTOTUNE_SCALE_NAME).map(([v, n]) => ({ value: Number(v), label: n }))
+const FADE_SHAPE_OPTIONS = FADE_SHAPES.map(({ value, label }) => ({ value, label }))
+
+function Field({ label, children, title }) {
+  return (
+    <span className={styles.field} title={title}>
+      <span className={styles.fieldLabel}>{label}</span>
+      {children}
+    </span>
   )
 }
 
@@ -191,9 +212,9 @@ function AutotuneSlider({ label, unit, min, max, step, value, onCommit, disabled
 // op param this restructuring's spec calls out by name: envelope mode +
 // attack/release, pitch, formant, declip threshold, denoise profile, and
 // fade curves (FADE + CROSSFADE's shared shape enum). Every other op type
-// (trim/cut/paste/splice/reverse/gain) has no persistent knob — it was
-// authored by drawing/re-drawing the tool that created it, same as before
-// this restructuring, so selecting one just highlights the row.
+// (trim/cut/paste/splice/reverse) has no persistent knob — it was authored by
+// drawing/re-drawing the tool that created it, so selecting one just
+// highlights the row.
 function InlineOpParamEditor({
   op, layerId, setOpParams, hasSelection, onLearnNoiseProfile, setGainEnvelopeFollower,
   onClearSpectralPaint, refusedOps, refusalReason,
@@ -203,113 +224,86 @@ function InlineOpParamEditor({
   if (op.type === 'pitch') {
     const resample = p.mode === PITCH_MODE.resample
     return (
-      <div className="sandbox-op-params-row">
-        <label>
-          Cents
-          <input
-            type="number" step="10" className="sandbox-toolbar-number"
-            defaultValue={p.cents} key={`cents-${op.id}-${p.cents}`}
-            onBlur={(e) => setOpParams(layerId, op.id, { ...p, cents: Number(e.target.value) })}
-          />
-        </label>
-        <label title="Preserve: hold the length, rebuild the spectrum (RubberBand). Varispeed: read the waveform faster/slower, so the length moves with the pitch — the tape/turntable move.">
-          Mode
-          <select
-            className="sandbox-toolbar-select"
+      <div className={styles.params}>
+        <Param
+          label="Cents" min={-4800} max={4800} step={10} defaultValue={0} value={p.cents}
+          format={(v) => signed(v, '¢')} quantize={Math.round}
+          onCommit={(v) => setOpParams(layerId, op.id, { ...p, cents: v })}
+        />
+        <Field
+          label="Mode"
+          title="Preserve: hold the length, rebuild the spectrum (RubberBand). Varispeed: read the waveform faster or slower, so the length moves with the pitch — the tape or turntable move."
+        >
+          <Select
+            size="sm" ariaLabel="Pitch mode" options={PITCH_MODE_OPTIONS}
             value={resample ? PITCH_MODE.resample : PITCH_MODE.preserve}
-            onChange={(e) => setOpParams(layerId, op.id, { ...p, mode: Number(e.target.value) })}
-          >
-            <option value={PITCH_MODE.preserve}>Preserve length</option>
-            <option value={PITCH_MODE.resample}>Varispeed (resample)</option>
-          </select>
-        </label>
+            onChange={(mode) => setOpParams(layerId, op.id, { ...p, mode: Number(mode) })}
+          />
+        </Field>
         {/* Disabled rather than hidden in varispeed: the toggle keeps its
             value across a mode flip (PitchParams retains it deliberately), so
             hiding it would make a setting that is still there look erased. */}
-        <label
-          className={`sandbox-op-checkbox${resample ? ' disabled' : ''}`}
+        <span
           title={resample
-            ? 'Varispeed moves the formants with the pitch by definition — add a FORMANT SHIFT op to move them back'
+            ? 'Varispeed moves the formants with the pitch by definition — add a Formant shift op to move them back'
             : 'Keep the formant envelope where it started, so a big shift does not chipmunk the voice'}
         >
-          <input
-            type="checkbox" checked={!!p.formantPreserve} disabled={resample}
-            onChange={(e) => setOpParams(layerId, op.id, { ...p, formantPreserve: e.target.checked })}
-          />
-          Formant Lock
-        </label>
+          <Checkbox
+            checked={!!p.formantPreserve} disabled={resample}
+            onChange={(formantPreserve) => setOpParams(layerId, op.id, { ...p, formantPreserve })}
+          >
+            Formant lock
+          </Checkbox>
+        </span>
       </div>
     )
   }
   if (op.type === 'formantShift') {
     return (
-      <div className="sandbox-op-params-row">
-        <label>
-          Cents
-          <input
-            type="number" step="10" className="sandbox-toolbar-number"
-            defaultValue={p.cents} key={`cents-${op.id}-${p.cents}`}
-            onBlur={(e) => setOpParams(layerId, op.id, { ...p, cents: Number(e.target.value) })}
-          />
-        </label>
+      <div className={styles.params}>
+        <Param
+          label="Cents" min={-4800} max={4800} step={10} defaultValue={0} value={p.cents}
+          format={(v) => signed(v, '¢')} quantize={Math.round}
+          onCommit={(v) => setOpParams(layerId, op.id, { ...p, cents: v })}
+        />
       </div>
     )
   }
   if (op.type === 'declip') {
     return (
-      <div className="sandbox-op-params-row">
-        <label>
-          Threshold
-          <input
-            type="number" step="0.01" min="0.5" max="1" className="sandbox-toolbar-number"
-            defaultValue={p.threshold} key={`thresh-${op.id}-${p.threshold}`}
-            onBlur={(e) => setOpParams(layerId, op.id, { ...p, threshold: Number(e.target.value) })}
-          />
-        </label>
-        <label>
-          Max run (smp)
-          <input
-            type="number" step="1" min="1" className="sandbox-toolbar-number"
-            defaultValue={p.maxRunSamples} key={`run-${op.id}-${p.maxRunSamples}`}
-            onBlur={(e) => setOpParams(layerId, op.id, { ...p, maxRunSamples: Number(e.target.value) })}
-          />
-        </label>
+      <div className={styles.params}>
+        <Param
+          label="Threshold" min={0.5} max={1} step={0.01} format={fixed(2)} value={p.threshold}
+          onCommit={(v) => setOpParams(layerId, op.id, { ...p, threshold: v })}
+        />
+        <Param
+          label="Max run" min={1} max={4096} step={1} quantize={Math.round}
+          format={(v) => `${Math.round(v)} smp`} value={p.maxRunSamples}
+          onCommit={(v) => setOpParams(layerId, op.id, { ...p, maxRunSamples: v })}
+        />
       </div>
     )
   }
   if (op.type === 'denoise') {
     return (
-      <div className="sandbox-op-params-row">
-        <label>
-          Reduction (dB)
-          <input
-            type="number" step="1" min="0" max="60" className="sandbox-toolbar-number"
-            defaultValue={p.reductionDb} key={`red-${op.id}-${p.reductionDb}`}
-            onBlur={(e) => setOpParams(layerId, op.id, { ...p, reductionDb: Number(e.target.value) })}
-          />
-        </label>
-        <label>
-          Sensitivity
-          <input
-            type="number" step="0.1" min="0" max="5" className="sandbox-toolbar-number"
-            defaultValue={p.sensitivity} key={`sens-${op.id}-${p.sensitivity}`}
-            onBlur={(e) => setOpParams(layerId, op.id, { ...p, sensitivity: Number(e.target.value) })}
-          />
-        </label>
-        {/* DENOISE's "select region → Learn Noise Profile" gesture: commits
+      <div className={styles.params}>
+        <Param
+          label="Reduction" min={0} max={60} step={1} unit="dB" quantize={Math.round} value={p.reductionDb}
+          onCommit={(v) => setOpParams(layerId, op.id, { ...p, reductionDb: v })}
+        />
+        <Param
+          label="Sensitivity" min={0} max={5} step={0.1} format={fixed(1)} value={p.sensitivity}
+          onCommit={(v) => setOpParams(layerId, op.id, { ...p, sensitivity: v })}
+        />
+        {/* The "select region, then learn noise profile" gesture: commits
             whatever is currently selected as THIS op's noise region via the
             same generic setOpParams every other param edit in this file goes
             through, so it is undoable for free. */}
-        <button
-          className="sandbox-op-learn-noise"
-          disabled={!hasSelection}
-          onClick={() => onLearnNoiseProfile(layerId, op.id)}
-          title={hasSelection
-            ? 'Learn a noise profile from the current selection'
-            : 'Select a noise-only region first'}
-        >
-          Learn Noise Profile
-        </button>
+        <span title={hasSelection ? 'Learn a noise profile from the current selection' : 'Select a noise-only region first'}>
+          <Button size="sm" disabled={!hasSelection} onClick={() => onLearnNoiseProfile(layerId, op.id)}>
+            Learn noise profile
+          </Button>
+        </span>
       </div>
     )
   }
@@ -317,40 +311,31 @@ function InlineOpParamEditor({
     const follower = clampGainEnvelopeFollower(p)
     const isRelative = follower.mode === GAIN_ENVELOPE_MODE.relative
     return (
-      <div className="sandbox-op-params-row">
-        <label>
-          Mode
-          <select
-            className="sandbox-toolbar-select"
+      <div className={styles.params}>
+        <Field label="Mode" title="Mode 1: the drawn curve IS the gain. Mode 2: the drawn curve modulates the material's own detected dynamics.">
+          <Select
+            size="sm" ariaLabel="Envelope mode" options={ENVELOPE_MODE_OPTIONS}
             value={isRelative ? 'relative' : 'absolute'}
-            onChange={(e) => setGainEnvelopeFollower(layerId, {
-              ...follower, mode: e.target.value === 'relative' ? GAIN_ENVELOPE_MODE.relative : GAIN_ENVELOPE_MODE.absolute,
+            onChange={(mode) => setGainEnvelopeFollower(layerId, {
+              ...follower, mode: mode === 'relative' ? GAIN_ENVELOPE_MODE.relative : GAIN_ENVELOPE_MODE.absolute,
             })}
-            title="Mode 1: the drawn curve IS the gain. Mode 2: the drawn curve modulates the material's own detected dynamics."
-          >
-            <option value="absolute">1 · Absolute</option>
-            <option value="relative">2 · Relative</option>
-          </select>
-        </label>
-        <label title={isRelative ? undefined : 'Only used in Relative mode'}>
-          Attack (ms)
-          <input
-            type="number" step="0.5" className="sandbox-toolbar-number"
-            min={GAIN_ENVELOPE_ATTACK_MS_MIN} max={GAIN_ENVELOPE_ATTACK_MS_MAX}
-            value={follower.followerAttackMs} disabled={!isRelative}
-            onChange={(e) => setGainEnvelopeFollower(layerId, { ...follower, followerAttackMs: Number(e.target.value) })}
           />
-        </label>
-        <label title={isRelative ? undefined : 'Only used in Relative mode'}>
-          Release (ms)
-          <input
-            type="number" step="5" className="sandbox-toolbar-number"
-            min={GAIN_ENVELOPE_RELEASE_MS_MIN} max={GAIN_ENVELOPE_RELEASE_MS_MAX}
-            value={follower.followerReleaseMs} disabled={!isRelative}
-            onChange={(e) => setGainEnvelopeFollower(layerId, { ...follower, followerReleaseMs: Number(e.target.value) })}
-          />
-        </label>
-        <span className="sandbox-op-params-readout">
+        </Field>
+        <Param
+          label="Attack" unit="ms" step={0.5} disabled={!isRelative}
+          min={GAIN_ENVELOPE_ATTACK_MS_MIN} max={GAIN_ENVELOPE_ATTACK_MS_MAX}
+          value={follower.followerAttackMs}
+          hint={isRelative ? undefined : 'Only used in Relative mode'}
+          onCommit={(v) => setGainEnvelopeFollower(layerId, { ...follower, followerAttackMs: v })}
+        />
+        <Param
+          label="Release" unit="ms" step={5} disabled={!isRelative}
+          min={GAIN_ENVELOPE_RELEASE_MS_MIN} max={GAIN_ENVELOPE_RELEASE_MS_MAX}
+          value={follower.followerReleaseMs}
+          hint={isRelative ? undefined : 'Only used in Relative mode'}
+          onCommit={(v) => setGainEnvelopeFollower(layerId, { ...follower, followerReleaseMs: v })}
+        />
+        <span className={styles.readout}>
           {(p.points || []).length} breakpoint{(p.points || []).length === 1 ? '' : 's'} — drawn on the waveform (Envelope tool)
         </span>
       </div>
@@ -359,27 +344,20 @@ function InlineOpParamEditor({
   if (op.type === 'spectralPaint') {
     const dabs = p.dabs || []
     return (
-      <div className="sandbox-op-params-row">
-        <span className="sandbox-op-params-readout">
-          {dabs.length} dab{dabs.length === 1 ? '' : 's'} — painted on the spectrogram (Spectral tool, SPC view)
+      <div className={styles.params}>
+        <span className={styles.readout}>
+          {dabs.length} dab{dabs.length === 1 ? '' : 's'} — painted on the spectrogram (Paint tool, spectral view)
         </span>
-        <button
-          className="sandbox-op-learn-noise"
-          disabled={dabs.length === 0}
-          onClick={() => onClearSpectralPaint(layerId)}
-          title="Remove every painted dab, leaving this op as an empty (pass-through) mask"
-        >
-          Clear
-        </button>
+        <span title="Remove every painted dab, leaving this op as an empty (pass-through) mask">
+          <Button size="sm" disabled={dabs.length === 0} onClick={() => onClearSpectralPaint(layerId)}>Clear dabs</Button>
+        </span>
       </div>
     )
   }
   if (op.type === 'autotune') {
-    // The six controls plus scale/key. Sliders commit on RELEASE (onChange
-    // fires per drag tick in React, so the value is mirrored locally and only
-    // pushed on pointerup) — the same "one command per drag, not per
-    // mousemove" contract setGainEnvelope and the spectral-paint stroke both
-    // follow, so a drag is one undo step rather than fifty.
+    // The six controls plus scale/key. Each NumberBox previews locally and commits on release — the same
+    // "one command per drag, not per mousemove" contract setGainEnvelope and the spectral-paint stroke follow,
+    // so a drag is one undo step rather than fifty.
     //
     // Scale/key are disabled while a custom note set is active, because a
     // non-empty allowedNotes OVERRIDES them outright in the engine
@@ -391,11 +369,9 @@ function InlineOpParamEditor({
     // The picker's own "lit" set: the custom set once one exists, otherwise
     // the preset's own pitch classes — so the very first click on a key
     // seeds FROM the preset (toggle one note relative to what is already
-    // playing) rather than starting from a blank slate the user would have
-    // to rebuild note by note. Also doubles as MANUAL mode's default snap
-    // set (SandboxWaveformCanvas.jsx's drawing handlers read the same op
-    // params), so it stays live in both modes rather than being disabled
-    // alongside Jumpiness/Vibrato below.
+    // playing) rather than starting from a blank slate. Also doubles as MANUAL
+    // mode's default snap set (SandboxWaveformCanvas.jsx's drawing handlers read
+    // the same op params), so it stays live in both modes.
     const displayedPcs = custom ? notes : allowedPitchClasses(p.key, p.scale)
     const toggleNote = (pc) => {
       const base = displayedPcs.slice()
@@ -406,82 +382,66 @@ function InlineOpParamEditor({
     // SandboxOp.h), same convention CutParams/SpliceParams/GainEnvelopeParams
     // already use for their own enums.
     const isManual = p.mode === 1
-    const manualTitle = isManual ? 'Not used in Manual mode' : undefined
+    const manualHint = isManual ? 'Not used in Manual mode' : undefined
     return (
-      <div className="sandbox-op-params-row sandbox-op-params-wrap">
+      <div className={styles.params} data-wrap>
         {refusedOps > 0 && (
-          <div className="sandbox-op-refusal-banner">
-            <TriangleAlert size={12} />
+          <div className={styles.refusal}>
+            <TriangleAlert size={12} aria-hidden="true" />
             <span>{refusalReason || 'Autotune declined this input.'}</span>
           </div>
         )}
-        <label>
-          Mode
-          <select
-            className="sandbox-toolbar-select" value={isManual ? 'manual' : 'scale'}
-            onChange={(e) => set({ mode: e.target.value === 'manual' ? 1 : 0 })}
-            title="Scale: quantize to the scale/key below. Manual: draw the target pitch curve directly on the graph."
-          >
-            <option value="scale">Scale</option>
-            <option value="manual">Manual</option>
-          </select>
-        </label>
-        <label title={custom ? 'A custom note set overrides scale/key' : undefined}>
-          Key
-          <select
-            className="sandbox-toolbar-select" value={p.key} disabled={custom}
-            onChange={(e) => set({ key: Number(e.target.value) })}
-          >
-            {AUTOTUNE_KEY_NAME.map((n, i) => <option key={n} value={i}>{n}</option>)}
-          </select>
-        </label>
-        <label title={custom ? 'A custom note set overrides scale/key' : undefined}>
-          Scale
-          <select
-            className="sandbox-toolbar-select" value={p.scale} disabled={custom}
-            onChange={(e) => set({ scale: Number(e.target.value) })}
-          >
-            {Object.entries(AUTOTUNE_SCALE_NAME).map(([v, n]) => (
-              <option key={v} value={v}>{n}</option>
-            ))}
-          </select>
-        </label>
-        <AutotuneSlider label="Amount" unit="%" min={0} max={100} step={1}
+        <Field label="Mode" title="Scale: quantize to the scale and key below. Manual: draw the target pitch curve directly on the graph.">
+          <Select
+            size="sm" ariaLabel="Autotune mode" options={AUTOTUNE_MODE_OPTIONS}
+            value={isManual ? 'manual' : 'scale'}
+            onChange={(mode) => set({ mode: mode === 'manual' ? 1 : 0 })}
+          />
+        </Field>
+        <Field label="Key" title={custom ? 'A custom note set overrides scale and key' : undefined}>
+          <Select
+            size="sm" ariaLabel="Autotune key" options={AUTOTUNE_KEY_OPTIONS} value={p.key} disabled={custom}
+            onChange={(key) => set({ key: Number(key) })}
+          />
+        </Field>
+        <Field label="Scale" title={custom ? 'A custom note set overrides scale and key' : undefined}>
+          <Select
+            size="sm" ariaLabel="Autotune scale" options={AUTOTUNE_SCALE_OPTIONS} value={Number(p.scale)} disabled={custom}
+            onChange={(scale) => set({ scale: Number(scale) })}
+          />
+        </Field>
+        <Param label="Amount" unit="%" min={0} max={100} step={1} quantize={Math.round}
           value={p.correctionAmount} onCommit={(v) => set({ correctionAmount: v })} />
-        <AutotuneSlider label="Retune" unit="ms" min={0} max={AUTOTUNE_MAX_RETUNE_MS} step={1}
+        <Param label="Retune" unit="ms" min={0} max={AUTOTUNE_MAX_RETUNE_MS} step={1} quantize={Math.round}
           value={p.retuneSpeedMs} onCommit={(v) => set({ retuneSpeedMs: v })} />
-        <AutotuneSlider label="Smooth" unit="ms" min={0} max={AUTOTUNE_MAX_SMOOTHNESS_MS} step={1}
+        <Param label="Smooth" unit="ms" min={0} max={AUTOTUNE_MAX_SMOOTHNESS_MS} step={1} quantize={Math.round}
           value={p.smoothnessMs} onCommit={(v) => set({ smoothnessMs: v })} />
-        <AutotuneSlider label="Jumpiness" unit="%" min={0} max={100} step={1}
+        <Param label="Jumpiness" unit="%" min={0} max={100} step={1} quantize={Math.round}
           value={p.jumpiness} onCommit={(v) => set({ jumpiness: v })}
-          disabled={isManual} title={manualTitle} />
+          disabled={isManual} hint={manualHint} />
         {/* holdMs == the jumpiness value itself (1% = 1ms, literal per the
             spec/CorrectionCurve.cpp) — shown as its own readout rather than
-            folded into the slider's unit, so both numbers stay visible while
+            folded into the control's unit, so both numbers stay visible while
             dragging. */}
         {!isManual && (
-          <span className="sandbox-op-params-readout sandbox-op-jumpiness-ms">
+          <span className={styles.readout}>
             = {p.jumpiness}ms minimum hold before a note change is accepted
           </span>
         )}
-        <AutotuneSlider label="Vibrato" unit="%" min={0} max={100} step={1}
+        <Param label="Vibrato" unit="%" min={0} max={100} step={1} quantize={Math.round}
           value={p.preserveVibrato} onCommit={(v) => set({ preserveVibrato: v })}
-          disabled={isManual} title={manualTitle} />
+          disabled={isManual} hint={manualHint} />
         {isManual && (
-          <span className="sandbox-op-params-readout">
-            {(p.manualPoints || []).length} breakpoint{(p.manualPoints || []).length === 1 ? '' : 's'} — drawn on the pitch graph above (hold ALT to free-draw)
+          <span className={styles.readout}>
+            {(p.manualPoints || []).length} breakpoint{(p.manualPoints || []).length === 1 ? '' : 's'} — drawn on the pitch graph above (hold Alt to free-draw)
           </span>
         )}
-        <div className="sandbox-autotune-keyboard-row">
+        <div className={styles.keyboardRow}>
           <AutotuneKeyboard rootPc={p.key} activePcs={displayedPcs} onToggle={toggleNote} />
           {custom && (
-            <button
-              className="sandbox-op-learn-noise"
-              onClick={() => set({ allowedNotes: [] })}
-              title="Drop the custom note set and go back to the scale/key preset"
-            >
-              Clear notes
-            </button>
+            <span title="Drop the custom note set and go back to the scale and key preset">
+              <Button size="sm" onClick={() => set({ allowedNotes: [] })}>Clear notes</Button>
+            </span>
           )}
         </div>
       </div>
@@ -489,49 +449,34 @@ function InlineOpParamEditor({
   }
   if (op.type === 'gain') {
     return (
-      <div className="sandbox-op-params-row">
-        <label className="sandbox-op-checkbox">
-          <input
-            type="checkbox" checked={!!p.normalize}
-            onChange={(e) => setOpParams(layerId, op.id, { ...p, normalize: e.target.checked })}
-          />
+      <div className={styles.params}>
+        <Checkbox checked={!!p.normalize} onChange={(normalize) => setOpParams(layerId, op.id, { ...p, normalize })}>
           Normalize
-        </label>
+        </Checkbox>
         {p.normalize ? (
-          <label>
-            Target (dBFS)
-            <input
-              type="number" step="0.5" className="sandbox-toolbar-number"
-              defaultValue={p.targetPeakDb} key={`tgt-${op.id}-${p.targetPeakDb}`}
-              onBlur={(e) => setOpParams(layerId, op.id, { ...p, targetPeakDb: Number(e.target.value) })}
-            />
-          </label>
+          <Param
+            label="Target" min={-60} max={0} step={0.5} unit="dB" defaultValue={-1} value={p.targetPeakDb}
+            onCommit={(v) => setOpParams(layerId, op.id, { ...p, targetPeakDb: v })}
+          />
         ) : (
-          <label>
-            Gain (dB)
-            <input
-              type="number" step="0.5" className="sandbox-toolbar-number"
-              defaultValue={p.gainDb} key={`gain-${op.id}-${p.gainDb}`}
-              onBlur={(e) => setOpParams(layerId, op.id, { ...p, gainDb: Number(e.target.value) })}
-            />
-          </label>
+          <Param
+            label="Gain" min={-60} max={60} step={0.5} unit="dB" defaultValue={0} value={p.gainDb}
+            onCommit={(v) => setOpParams(layerId, op.id, { ...p, gainDb: v })}
+          />
         )}
       </div>
     )
   }
   if (op.type === 'fade' || op.type === 'crossfade') {
     return (
-      <div className="sandbox-op-params-row">
-        <label>
-          Curve
-          <select
-            className="sandbox-toolbar-select"
+      <div className={styles.params}>
+        <Field label="Curve">
+          <Select
+            size="sm" ariaLabel="Fade curve" options={FADE_SHAPE_OPTIONS}
             value={FADE_SHAPE_NAME[p.shape] ?? 'equalPower'}
-            onChange={(e) => setOpParams(layerId, op.id, { ...p, shape: FADE_SHAPE[e.target.value] })}
-          >
-            {FADE_SHAPES.map(({ value, label }) => <option key={value} value={value}>{label}</option>)}
-          </select>
-        </label>
+            onChange={(shape) => setOpParams(layerId, op.id, { ...p, shape: FADE_SHAPE[shape] })}
+          />
+        </Field>
       </div>
     )
   }
@@ -543,12 +488,17 @@ const HAS_INLINE_PARAMS = new Set([
   'autotune',
 ])
 
+/** "gainEnvelope" -> "Gain envelope" */
+const opTypeLabel = (type) => {
+  const spaced = String(type).replace(/([a-z])([A-Z])/g, '$1 $2').toLowerCase()
+  return spaced.charAt(0).toUpperCase() + spaced.slice(1)
+}
+
 function OpModule({
   op, index, layerId, selected, onSelect, onToggleBypass, onRemove, setOpParams, hasSelection,
   onLearnNoiseProfile, setGainEnvelopeFollower, onClearSpectralPaint, refusedOps, refusalReason,
   dragging, dropEdge, onDragStart, onDragOver, onDrop, onDragEnd, sampleRate, numSamples, onReveal,
 }) {
-  const dropClass = dropEdge === 'above' ? ' drop-above' : dropEdge === 'below' ? ' drop-below' : ''
   // The refusal is a per-LAYER fact (only one op type can produce it today),
   // not per-op — shown on the AUTOTUNE row specifically since that's the op
   // it's actually about. A badge on the collapsed row so "declined, not
@@ -557,52 +507,56 @@ function OpModule({
   const refused = op.type === 'autotune' && refusedOps > 0
   return (
     <div
-      className={`sandbox-op-module${op.enabled ? '' : ' bypassed'}${selected ? ' selected' : ''}${dragging ? ' dragging' : ''}${dropClass}`}
+      className={styles.op}
+      data-bypassed={!op.enabled || undefined}
+      data-selected={selected || undefined}
+      data-dragging={dragging || undefined}
+      data-drop={dropEdge || undefined}
       draggable
       onDragStart={onDragStart}
       onDragOver={onDragOver}
       onDrop={onDrop}
       onDragEnd={onDragEnd}
     >
-      <div className="sandbox-op-row" onClick={() => onSelect(op.id)}>
-        <GripVertical size={12} className="sandbox-op-grip" />
-        <span className="sandbox-op-index">{String(index + 1).padStart(2, '0')}</span>
-        <div className="sandbox-op-label">
-          <span className="sandbox-op-type">{op.type}</span>
-          <span className="sandbox-op-params">{describeParams(op, sampleRate)}</span>
+      <div className={styles.opRow} data-op-row onClick={() => onSelect(op.id)}>
+        <GripVertical size={12} className={styles.grip} aria-hidden="true" />
+        <span className={styles.opIndex}>{String(index + 1).padStart(2, '0')}</span>
+        <div className={styles.opLabel}>
+          <span className={styles.opType}>{opTypeLabel(op.type)}</span>
+          <span className={styles.opParams} data-op-params>{describeParams(op, sampleRate)}</span>
         </div>
-        {/* Phase 3: point the waveform at what this entry actually does. Only
-            offered for ops that HAVE a locatable range — see sandboxOpRange.js
-            on why a whole-buffer op shows nothing rather than framing
-            everything. */}
+        {/* Point the waveform at what this entry actually does. Only offered for ops that HAVE a locatable
+            range — see sandboxOpRange.js on why a whole-buffer op shows nothing rather than framing everything. */}
         {!!resolveOpRange(opSampleRange(op), numSamples) && (
-          <button
-            className="sandbox-op-reveal"
+          <IconButton
+            size="sm" variant="ghost" label={`Zoom to ${opTypeLabel(op.type)} range`}
+            hint="Zoom to range" hintMods="Zoom the waveform to the range this operation covers"
             onClick={(e) => { e.stopPropagation(); onReveal(op) }}
-            title="Zoom the waveform to the range this operation covers"
           >
-            <Crosshair size={11} />
-          </button>
+            <Crosshair />
+          </IconButton>
         )}
         {refused && (
-          <span className="sandbox-op-refusal-badge" title={refusalReason || 'Autotune declined this input.'}>
-            <TriangleAlert size={11} />
+          <span className={styles.refusalBadge} title={refusalReason || 'Autotune declined this input.'}>
+            <TriangleAlert size={12} aria-label="Autotune declined this input" />
           </span>
         )}
-        <button
-          className={`sandbox-op-bypass${op.enabled ? '' : ' active'}`}
-          onClick={(e) => { e.stopPropagation(); onToggleBypass(layerId, op.id, op.enabled) }}
-          title={op.enabled ? 'Bypass' : 'Enable'}
+        <Toggle
+          size="sm"
+          on={!!op.enabled}
+          aria-label={`${opTypeLabel(op.type)} ${op.enabled ? 'on' : 'bypassed'}`}
+          hint={op.enabled ? 'Bypass' : 'Enable'}
+          onClick={(e) => e.stopPropagation()}
+          onChange={() => onToggleBypass(layerId, op.id, op.enabled)}
         >
-          {op.enabled ? 'ON' : 'OFF'}
-        </button>
-        <button
-          className="sandbox-op-remove"
+          {op.enabled ? 'On' : 'Off'}
+        </Toggle>
+        <IconButton
+          size="sm" variant="ghost" label={`Remove ${opTypeLabel(op.type)}`} hint="Remove operation"
           onClick={(e) => { e.stopPropagation(); onRemove(layerId, op.id) }}
-          title="Remove operation"
         >
-          <Trash2 size={11} />
-        </button>
+          <Trash2 />
+        </IconButton>
       </div>
       {selected && HAS_INLINE_PARAMS.has(op.type) && (
         <InlineOpParamEditor
@@ -617,14 +571,13 @@ function OpModule({
   )
 }
 
-// Pure op-list rail (mockup: "OP STACK" header + ↶/↷ above ONLY the ordered
-// op rows). Adding an op moved to the EFFECT ▾ menu (SandboxMenuBar.jsx,
-// driven by sandboxEffectRegistry.js) and BAKE/SWAP IN moved to the bottom
-// transport (SandboxTransport.jsx) — this panel now only lists, reorders,
-// bypasses, removes and inline-edits whatever is already on the stack, plus
-// undo/redo for the whole sandbox (shared with SandboxStatusBar's depth
-// readout — same `history`/`undo`/`redo` store fields, just relocated here
-// per the mockup's header).
+// Pure op-list rail (the "Op stack" header + undo / redo above ONLY the ordered
+// op rows). Adding an op lives in the Effect menu (SandboxMenuBar.jsx, driven
+// by sandboxEffectRegistry.js) and Bake / Swap in in the bottom transport
+// (SandboxTransport.jsx) — this panel only lists, reorders, bypasses, removes
+// and inline-edits whatever is already on the stack, plus undo/redo for the
+// whole sandbox (shared with SandboxStatusBar's depth readout — same
+// `history`/`undo`/`redo` store fields).
 export default function SandboxStackPanel() {
   const layers = useSandboxStore((s) => s.layers)
   const activeLayerId = useSandboxStore((s) => s.activeLayerId)
@@ -716,20 +669,25 @@ export default function SandboxStackPanel() {
     ? 'Nothing to redo'
     : canRedo ? `Redo ${history.redoDescription}` : `Next redo is a ${history.redoDomain} edit (${history.redoDescription})`
 
+
   return (
-    <div className="sandbox-stack-panel">
-      <div className="sandbox-panel-header sandbox-stack-header">
-        <span>Op Stack</span>
-        <div className="sandbox-stack-undo-group">
-          <button className="sandbox-undo-btn" disabled={!canUndo} onClick={() => undo()} title={undoTitle}>↶</button>
-          <button className="sandbox-undo-btn" disabled={!canRedo} onClick={() => redo()} title={redoTitle}>↷</button>
+    <div className={styles.stack}>
+      <div className={styles.stackHeader}>
+        <h3 className={styles.stackTitle}>Op stack</h3>
+        <div className={styles.stackUndo}>
+          <IconButton size="sm" label="Undo" disabled={!canUndo} onClick={() => undo()} hint="Undo" hintMods={undoTitle}>
+            <Undo2 />
+          </IconButton>
+          <IconButton size="sm" label="Redo" disabled={!canRedo} onClick={() => redo()} hint="Redo" hintMods={redoTitle}>
+            <Redo2 />
+          </IconButton>
         </div>
-        {layer && <span className="sandbox-op-count-chip">{layer.ops.length} OP{layer.ops.length === 1 ? '' : 'S'}</span>}
+        {layer && <span className={styles.opCount}>{layer.ops.length} op{layer.ops.length === 1 ? '' : 's'}</span>}
       </div>
-      <div className="sandbox-op-list">
-        {!layer && <div className="sandbox-empty-hint">No layer selected.</div>}
+      <div className={styles.opList}>
+        {!layer && <div className={styles.empty}>No layer selected.</div>}
         {layer && layer.ops.length === 0 && (
-          <div className="sandbox-empty-hint">No operations yet — add one from EFFECT ▾.</div>
+          <div className={styles.empty}>No operations yet. Add one from the Effect menu.</div>
         )}
         {layer?.ops.map((op, index) => (
           <OpModule

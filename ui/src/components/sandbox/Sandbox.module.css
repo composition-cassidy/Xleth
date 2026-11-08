@@ -251,4 +251,321 @@
   @keyframes sandboxSpin {
     to { transform: rotate(360deg); }
   }
+
+  /* ── Op stack ───────────────────────────────────────────────────────── */
+  .stack {
+    flex: 0 0 300px;
+    display: flex;
+    flex-direction: column;
+    min-height: 0;
+    background: var(--ui-g1);
+    border-left: 1px solid var(--ui-g4);
+  }
+
+  .stackHeader {
+    flex: 0 0 auto;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    height: var(--panel-header-h);
+    padding: 0 var(--space-2) 0 var(--space-3);
+    background: var(--ui-g2);
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .stackTitle {
+    margin: 0;
+    flex: 1 1 auto;
+    font-size: var(--type-13);
+    font-weight: var(--weight-semibold);
+  }
+
+  .stackUndo { display: inline-flex; gap: 2px; }
+
+  .opCount {
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .opList {
+    flex: 1 1 auto;
+    min-height: 0;
+    overflow-y: auto;
+  }
+
+  .empty {
+    padding: var(--space-3);
+    font-size: var(--type-12);
+    color: var(--ui-ink-2);
+  }
+
+  .op {
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .op[data-selected] { background: var(--ui-g3); box-shadow: inset 2px 0 0 var(--ui-select); }
+  .op[data-dragging] { opacity: 0.5; }
+  .op[data-drop="above"] { box-shadow: inset 0 2px 0 var(--ui-select); }
+  .op[data-drop="below"] { box-shadow: inset 0 -2px 0 var(--ui-select); }
+
+  .op[data-bypassed] .opLabel { opacity: var(--ui-mute-opacity); }
+
+  .opRow {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-height: 36px;
+    padding: 0 var(--space-2);
+    cursor: pointer;
+  }
+
+  .opRow:hover { background: var(--ui-g2); }
+
+  .grip { flex: 0 0 auto; color: var(--ui-ink-3); cursor: grab; }
+
+  .opIndex {
+    flex: 0 0 auto;
+    font-family: var(--ui-font-mono);
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+
+  .opLabel {
+    flex: 1 1 auto;
+    display: flex;
+    flex-direction: column;
+    min-width: 0;
+  }
+
+  .opType {
+    font-size: var(--type-12);
+    font-weight: var(--weight-medium);
+    color: var(--ui-ink);
+  }
+
+  .opParams {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .refusalBadge {
+    display: inline-flex;
+    color: var(--theme-semantic-danger-text, var(--ui-rec-text));
+  }
+
+  .refusal {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    width: 100%;
+    font-size: var(--type-11);
+    color: var(--theme-semantic-danger-text, var(--ui-rec-text));
+  }
+
+  .params {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: var(--space-2);
+    padding: var(--space-1) var(--space-3) var(--space-2) var(--space-5);
+  }
+
+  .field {
+    display: inline-flex;
+    flex-direction: column;
+    gap: 2px;
+  }
+
+  .fieldLabel {
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+
+  .readout {
+    width: 100%;
+    font-size: var(--type-11);
+    line-height: 1.4;
+    color: var(--ui-ink-2);
+  }
+
+  .keyboardRow {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--space-2);
+    width: 100%;
+  }
+
+  .keyboard {
+    position: relative;
+    flex: 0 0 168px;
+    height: 48px;
+  }
+
+  .keyboardWhites { display: flex; height: 100%; }
+
+  .keyboardBlacks { position: absolute; inset: 0 0 auto 0; height: 30px; pointer-events: none; }
+
+  .keyWhite,
+  .keyBlack {
+    box-sizing: border-box;
+    padding: 0;
+    border: 1px solid var(--ui-boundary);
+    cursor: pointer;
+  }
+
+  .keyWhite {
+    position: relative;
+    flex: 1 1 0;
+    background: var(--ui-ink);
+    border-radius: 0 0 var(--ui-radius-1) var(--ui-radius-1);
+  }
+
+  .keyBlack {
+    position: absolute;
+    top: 0;
+    width: 14%;
+    height: 100%;
+    transform: translateX(-50%);
+    background: var(--ui-g0);
+    border-radius: 0 0 var(--ui-radius-1) var(--ui-radius-1);
+    pointer-events: auto;
+  }
+
+  .keyWhite[data-on] { background: var(--ui-value); }
+  .keyBlack[data-on] { background: var(--ui-value); border-color: var(--ui-ink); }
+
+  /* The root is marked with a dot, so it does not rely on colour. */
+  .keyWhite[data-root]::after,
+  .keyBlack[data-root]::after {
+    content: "";
+    position: absolute;
+    bottom: 3px;
+    left: 50%;
+    width: 6px;
+    height: 6px;
+    margin-left: -3px;
+    border-radius: 50%;
+    background: var(--ui-g0);
+    border: 1px solid var(--ui-ink);
+  }
+
+  .keyWhite:focus-visible,
+  .keyBlack:focus-visible {
+    outline: 1px solid var(--ui-select);
+    outline-offset: 1px;
+    z-index: 2;
+  }
+
+  /* ── Layer rail and editor pane ─────────────────────────────────────── */
+  .workspace {
+    flex: 1 1 auto;
+    min-width: 0;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+  }
+
+  .rail {
+    flex: 0 0 auto;
+    max-height: 34%;
+    overflow-y: auto;
+    border-bottom: 1px solid var(--ui-g4);
+    background: var(--ui-g1);
+  }
+
+  .layerRow {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: 36px;
+    padding: 2px var(--space-2);
+    border-bottom: 1px solid var(--ui-g4);
+    cursor: pointer;
+  }
+
+  .layerRow:hover { background: var(--ui-g2); }
+  .layerRow[data-active] { background: var(--ui-g3); box-shadow: inset 2px 0 0 var(--ui-select); }
+  .layerRow[data-muted] .layerName,
+  .layerRow[data-muted] .layerMeta { opacity: var(--ui-mute-opacity); }
+
+  .layerName {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-weight: var(--weight-medium);
+  }
+
+  .layerMeta {
+    flex: 0 0 auto;
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .layerMix {
+    flex: 0 0 auto;
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .railHint {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    padding: var(--space-1) var(--space-3);
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+
+  .editorPane {
+    position: relative;
+    flex: 1 1 auto;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    background: var(--ui-g0);
+  }
+
+  .dropZone {
+    flex: 1 1 auto;
+    margin: var(--space-3);
+    padding: var(--space-4);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-1);
+    border: 1px dashed var(--ui-boundary);
+    color: var(--ui-ink-2);
+    font-size: var(--type-12);
+    text-align: center;
+  }
+
+  .dropZone[data-over] { border-color: var(--ui-select); color: var(--ui-ink); }
+
+  .dropHint { font-size: var(--type-11); color: var(--ui-ink-2); }
+
+  /* Drop feedback while layers already exist: the empty-state drop zone is not mounted then. */
+  .dropOverlay {
+    position: absolute;
+    inset: 0;
+    z-index: 3;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    pointer-events: none;
+    background: var(--ui-scrim);
+    border: 1px dashed var(--ui-select);
+    color: var(--ui-ink);
+    font-size: var(--type-13);
+    font-weight: var(--weight-semibold);
+  }
 }

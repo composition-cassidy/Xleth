@@ -79,8 +79,8 @@ const importStackPanel = () => import('../SandboxStackPanel.jsx')
 // the one that actually says "the Duplicate button" rather than "the third
 // button in the row".
 function rowButton(host, pattern, index = 0) {
-  return [...host.querySelectorAll('.sandbox-layer-row .sandbox-row-btn')]
-    .filter((b) => pattern.test(b.getAttribute('title') || ''))[index]
+  return [...host.querySelectorAll('[data-layer-row] button')]
+    .filter((b) => pattern.test(b.getAttribute('aria-label') || ''))[index]
 }
 
 describe('layer row Duplicate button', () => {
@@ -92,12 +92,12 @@ describe('layer row Duplicate button', () => {
       duplicateLayer,
     })
 
-    const buttons = [...host.querySelectorAll('.sandbox-layer-row .sandbox-row-btn')]
-      .filter((b) => /Duplicate this layer/.test(b.getAttribute('title') || ''))
+    const buttons = [...host.querySelectorAll('[data-layer-row] button')]
+      .filter((b) => /Duplicate this layer/.test(b.getAttribute('aria-label') || ''))
     expect(buttons).toHaveLength(2)
     // The tooltip has to say what "duplicate" actually carries, or the button
     // reads as "make an empty copy".
-    expect(buttons[0].getAttribute('title')).toMatch(/Ctrl\+D/)
+    expect(buttons[0].getAttribute('data-hint-mods')).toMatch(/Ctrl\+D/)
 
     await click(buttons[1])
     expect(duplicateLayer).toHaveBeenCalledWith(2)
@@ -140,7 +140,7 @@ describe('PITCH op inline editor', () => {
       setOpParams,
     })
     // The inline editor only renders under the SELECTED module.
-    await click(ctx.host.querySelector('.sandbox-op-row'))
+    await click(ctx.host.querySelector('[data-op-row]'))
     return { ...ctx, setOpParams }
   }
 
@@ -148,15 +148,14 @@ describe('PITCH op inline editor', () => {
     const params = { cents: 0, formantPreserve: false, mode: 0 }
     const { host, setOpParams } = await mountWithPitch(params)
 
-    const select = [...host.querySelectorAll('select')]
-      .find((s) => [...s.options].some((o) => /Varispeed/i.test(o.textContent)))
-    expect(select).toBeTruthy()
-    expect([...select.options].map((o) => o.value)).toEqual(['0', '1'])
+    // The mode picker is a kit Select: a listbox trigger, and its options open in a portal.
+    const trigger = host.querySelector('[aria-label="Pitch mode"]')
+    expect(trigger).toBeTruthy()
+    await click(trigger)
+    const options = [...document.body.querySelectorAll('[role="option"]')]
+    expect(options.map((o) => o.textContent.trim())).toEqual(['Preserve length', 'Varispeed (resample)'])
 
-    await act(async () => {
-      select.value = '1'
-      select.dispatchEvent(new Event('change', { bubbles: true }))
-    })
+    await click(options.find((o) => /Varispeed/i.test(o.textContent)))
     expect(setOpParams).toHaveBeenCalledWith(1, 11, { ...params, mode: PITCH_MODE.resample })
   })
 
@@ -165,15 +164,15 @@ describe('PITCH op inline editor', () => {
     // setting that is still there look erased.
     const { host } = await mountWithPitch({ cents: 700, formantPreserve: true, mode: 1 })
 
-    const box = host.querySelector('.sandbox-op-checkbox input[type="checkbox"]')
+    const box = host.querySelector('input[type="checkbox"]')
     expect(box.disabled).toBe(true)
     expect(box.checked).toBe(true)
-    expect(host.querySelector('.sandbox-op-checkbox').className).toMatch(/disabled/)
+    expect(host.textContent).toContain('Formant lock')
   })
 
   it('states the length change on the stack row in varispeed, not just the cents', async () => {
     const { host } = await mountWithPitch({ cents: 1200, formantPreserve: false, mode: 1 })
-    const row = host.querySelector('.sandbox-op-params').textContent
+    const row = host.querySelector('[data-op-params]').textContent
     expect(row).toMatch(/varispeed/i)
     expect(row).toMatch(/2\.000 speed/)   // +1 octave = twice as fast…
     expect(row).toMatch(/0\.500 length/)  // …and half as long
@@ -181,7 +180,7 @@ describe('PITCH op inline editor', () => {
 
   it('says nothing about length in preserve mode, because there is none', async () => {
     const { host } = await mountWithPitch({ cents: 1200, formantPreserve: true, mode: 0 })
-    const row = host.querySelector('.sandbox-op-params').textContent
+    const row = host.querySelector('[data-op-params]').textContent
     expect(row).not.toMatch(/varispeed|length/i)
     expect(row).toMatch(/formant lock/)
   })
