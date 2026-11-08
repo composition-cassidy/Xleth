@@ -20,6 +20,14 @@ export default async ({ page, sleep }) => {
 
   await step('20', async () => out.push(await shot(page, '20-pianoroll-many-notes-velocity-labels-scale', { surface: 'dock-pianoroll', scope: DOCK, note: 'Pattern 8: 32 notes, melodic, scale highlight on' })));
 
+  // Round 2 step 12: the Sample view (notes print their transposition from the slot root).
+  await step('24', async () => {
+    const seg = page.locator(`${DOCK} [role="radio"]`, { hasText: 'Sample' }).first();
+    await seg.click(); await sleep(500); await page.mouse.move(1000, 300); await sleep(200);
+    out.push(await shot(page, '24-pianoroll-sample-view', { surface: 'dock-pianoroll', scope: DOCK, note: 'Pattern 8 in Sample view: semitones from the sample root' }));
+    await page.locator(`${DOCK} [role="radio"]`, { hasText: 'Pitch' }).first().click(); await sleep(300);
+  });
+
   await step('21', async () => {
     await page.locator('button[title^="Select"], button[aria-label^="Select"]').last().click().catch(() => {});
     await page.mouse.move(335, 548); await page.mouse.down(); await page.mouse.move(1750, 905, { steps: 15 }); await page.mouse.up(); await sleep(700);

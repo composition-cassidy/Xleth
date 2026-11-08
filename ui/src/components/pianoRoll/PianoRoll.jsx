@@ -9,6 +9,7 @@ import PianoRollScrollbarV from './PianoRollScrollbarV.jsx'
 import PianoRollScrollbarH from './PianoRollScrollbarH.jsx'
 import PianoRollSplitter, { readStoredLaneHeight } from './PianoRollSplitter.jsx'
 import styles from './PianoRoll.module.css'
+import usePatternContext from './usePatternContext.js'
 import { timelineEvents } from '../../timelineEvents.js'
 import { PPQ, snapBeatToGrid, beatsToTicks } from '../../constants/timeline.js'
 import { registerEditorCommand } from '../../windowing/managers/EditorCommandRegistry'
@@ -123,6 +124,12 @@ export default function PianoRoll({
   // Snap to Scale is an editor-local view setting: it constrains what the user
   // can draw, but nothing about it is stored on the pattern.
   const [scale, setScale] = useState(DEFAULT_SCALE)
+  // View settings (step 12.3), editor-local like the scale: what the note
+  // label says, whether other patterns show as ghosts, and which sampler slot
+  // the Sample view measures transposition against.
+  const [labelMode, setLabelMode] = useState('pitch')
+  const [showGhosts, setShowGhosts] = useState(true)
+  const [refSlotIndex, setRefSlotIndex] = useState(0)
   const [selectedNoteIds, setSelectedNoteIds] = useState(new Set())
   // pixelsPerBeat/scrollX/scrollY below are the SETTLED view state — synced
   // from the animator on a trailing ~100ms debounce, same pattern as
@@ -667,6 +674,10 @@ export default function PianoRoll({
   }, [handleWheel])
 
   const notes = pattern?.notes || []
+  const { noteColor, ghosts } = usePatternContext(patternId, pattern, { ghostsEnabled: showGhosts })
+  const currentRegion = regions.find((r) => r.id === pattern?.regionId) || null
+  const regionSlots = Array.isArray(currentRegion?.slots) && currentRegion.slots.length ? currentRegion.slots : []
+  const refSlot = regionSlots[Math.min(refSlotIndex, Math.max(0, regionSlots.length - 1))] || null
   const patternLengthTicks = pattern?.lengthTicks || 0
   const highlightedPitches = new Set(notes.map((n) => n.pitch))
   const canvasWidth = Math.max(0, size.w)
@@ -790,6 +801,11 @@ export default function PianoRoll({
         regions={regions}
         currentRegionId={pattern?.regionId ?? -1}
         onRegionChange={handleRegionChange}
+        labelMode={labelMode}
+        onLabelModeChange={setLabelMode}
+        sampleViewAvailable={!!refSlot}
+        showGhosts={showGhosts}
+        onShowGhostsChange={setShowGhosts}
       />
       <div
         ref={containerRef}
@@ -848,6 +864,10 @@ export default function PianoRoll({
             onPreviewNote={handlePreviewNote}
             onDropFsc={handleDropFsc}
             scale={scale}
+            noteColor={noteColor}
+            labelMode={labelMode}
+            refSlot={refSlot}
+            ghosts={ghosts}
           />
         </div>
         <div className={styles.cell}>

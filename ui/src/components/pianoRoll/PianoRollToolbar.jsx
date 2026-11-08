@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { MousePointer2, Pencil, Scissors, Eraser, ZoomIn, ZoomOut, Sliders, ExternalLink, ArrowDownToLine, Waves, Music2, Keyboard } from 'lucide-react'
 import { timelineEvents } from '../../timelineEvents.js'
 import { SCALE_MODES, ROOT_NOTES, DEFAULT_SCALE, scaleLabel } from './scales.js'
+import { SegmentedControl, Toggle } from '../../ui-kit'
 
 const TOOLS = [
   { id: 'select', icon: MousePointer2, label: 'Select (S)' },
@@ -36,6 +37,9 @@ export default function PianoRollToolbar({
   availablePatterns, currentPatternId, onSwitchPattern, onNewPattern,
   // Region selector props
   regions, currentRegionId, onRegionChange,
+  // Note view (step 12.3)
+  labelMode = 'pitch', onLabelModeChange, sampleViewAvailable = false,
+  showGhosts = true, onShowGhostsChange,
 }) {
   const hasPatternDropdown = Array.isArray(availablePatterns) && availablePatterns.length > 0
   const regionOptions = Array.isArray(regions) ? regions : []
@@ -191,6 +195,32 @@ export default function PianoRollToolbar({
             </select>
           </>
         )}
+      </div>
+      <div className="piano-roll-toolbar-group">
+        <SegmentedControl
+          size="sm"
+          label="Note labels"
+          value={labelMode}
+          onChange={(v) => onLabelModeChange?.(v)}
+          options={[
+            { value: 'pitch', label: 'Pitch', hint: 'Pitch view: notes show their note name' },
+            {
+              value: 'sample',
+              label: 'Sample',
+              disabled: !sampleViewAvailable,
+              hint: sampleViewAvailable
+                ? 'Sample view: notes show how far the sample is transposed from its root, in semitones'
+                : 'Sample view needs a sample region on this pattern',
+            },
+          ]}
+        />
+        <Toggle
+          size="sm"
+          on={showGhosts}
+          onChange={(next) => onShowGhostsChange?.(next)}
+          hint="Ghost notes: other patterns playing at the same time"
+          hintMods="Solid grey: same sample · Outline: another sample"
+        >Ghosts</Toggle>
       </div>
       <div className="piano-roll-toolbar-group">
         <button

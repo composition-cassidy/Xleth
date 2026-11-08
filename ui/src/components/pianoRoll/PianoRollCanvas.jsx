@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState, useCallback, forwardRef, useImperativeHandle } from 'react'
 import { PPQ, snapBeatToGrid, beatsToTicks, ticksToBeats, beatToPixel, pixelToBeat } from '../../constants/timeline.js'
 import { PITCH_MIN, PITCH_MAX, pitchLabel, visibleRows, gridTiers } from './pianoRollGeometry.js'
-import { tokenValue } from '../../theming/tokenValue.ts'
 import { readPianoRollPalette } from './pianoRollPalette.js'
+import { drawNotes, drawGhosts, noteStyle } from './pianoRollNotes.js'
 import { DEFAULT_SCALE, isPitchInScale, snapPitchToScale } from './scales.js'
 
 import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
@@ -27,18 +27,10 @@ function isPianoRollDebugEnabled() {
   }
 }
 
-// Canvas colours are resolved at draw time (pianoRollPalette.js); the note
-// entries below are the pre-step-3 note colours.
+// Canvas colours are resolved at draw time (pianoRollPalette.js).
 function resolvePalette() {
   const base = readPianoRollPalette()
-  return {
-    ...base,
-    accent: base.select,
-    noteSlide: tokenValue('--theme-pianoroll-note-slide-fill') || '#E64FE6',
-    noteLabel: tokenValue('--theme-text-on-accent') || '#0D0D14',
-    lassoFill: base.lasso,
-    lassoStroke: base.select,
-  }
+  return { ...base, lassoFill: base.lasso, lassoStroke: base.select }
 }
 
 const ACTION = {
@@ -226,55 +218,6 @@ function drawBackground(ctx, w, h, pixelsPerBeat, pixelsPerSemitone, scrollX, sc
   }
 }
 
-// hiddenIds: notes currently being dragged. They are skipped here and redrawn
-// by the overlay at their live preview position instead — the note itself
-// moves with the cursor rather than sitting still under a separate ghost.
-function drawNotes(ctx, w, h, notes, selectedNoteIds, pixelsPerBeat, pixelsPerSemitone, scrollX, scrollY, palette, hiddenIds) {
-  for (let i = 0; i < notes.length; i++) {
-    const note = notes[i]
-    if (hiddenIds?.has(note.id)) continue
-    const beat = ticksToBeats(note.positionTicks)
-    const durBeats = ticksToBeats(note.durationTicks)
-    const x = beat * pixelsPerBeat - scrollX
-    const wid = Math.max(2, durBeats * pixelsPerBeat)
-    const y = (PITCH_MAX - note.pitch) * pixelsPerSemitone - scrollY
-    if (x + wid < 0 || x > w || y + pixelsPerSemitone < 0 || y > h) continue
-
-    const selected = selectedNoteIds?.has(note.id)
-    const vel = Math.max(0, Math.min(1, note.velocity ?? 1.0))
-    const bodyH = pixelsPerSemitone - 2
-
-    // Flat note body: green, with velocity mapped to lightness (louder = brighter).
-    // Slide notes keep their magenta identity. No highlight/shadow bands — the
-    // 1px stroke alone gives the note its edge.
-    if (note.isSlide) {
-      ctx.fillStyle = palette.noteSlide
-      ctx.strokeStyle = palette.noteSlide
-    } else {
-      ctx.fillStyle = `hsl(128 33% ${(26 + vel * 30).toFixed(1)}%)`
-      ctx.strokeStyle = `hsl(128 38% ${(40 + vel * 28).toFixed(1)}%)`
-    }
-    ctx.fillRect(x, y + 1, wid, bodyH)
-    ctx.lineWidth = 1
-    ctx.strokeRect(x + 0.5, y + 1.5, wid - 1, bodyH - 1)
-
-    // Pitch label inside the note when there's room (mockup labels longer notes).
-    if (!note.isSlide && wid >= 22 && bodyH >= 9) {
-      ctx.fillStyle = palette.noteLabel
-      ctx.font = '500 8px -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif'
-      ctx.textBaseline = 'middle'
-      ctx.fillText(pitchLabel(note.pitch), x + 3, y + pixelsPerSemitone / 2 + 0.5)
-    }
-
-    // Selection: a crisp 1px teal outline, inset so it hugs the note edge.
-    if (selected) {
-      ctx.strokeStyle = palette.accent
-      ctx.lineWidth = 1
-      ctx.strokeRect(x + 0.5, y + 1.5, wid - 1, bodyH - 1)
-    }
-  }
-}
-
 // pixelsPerBeatRef/pixelsPerSemitoneRef/scrollXRef/scrollYRef are REF OBJECTS
 // owned by PianoRoll.jsx (not value props) — its view animator writes them
 // every frame without a re-render, exactly like TimelineCanvas's
@@ -290,6 +233,7 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
   onAddNote, onRemoveNote, onMoveNote, onMoveNotesBatch, onResizeNote, onResizeNotesBatch, onPreviewNote,
   onDropFsc,
   scale = DEFAULT_SCALE,
+  noteColor = null, labelMode = 'pitch', refSlot = null, ghosts = null,
 }, ref) {
   const dprEpoch = useThemeEpoch() // Phase 7: re-size and redraw at the new devicePixelRatio when the UI scale changes
   const bgRef = useRef(null)
@@ -355,6 +299,13 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
   slideModeRef.current = slideMode
   const scaleRef = useRef(scale)
   scaleRef.current = scale
+  // Note look (step 12.3): read by both draw paths from refs, like every other
+  // draw input, so the imperative per-frame redraw never sees stale values.
+  const lookRef = useRef(null)
+  lookRef.current = { noteColor, labelMode, refSlot, ghosts }
+  const noteStyleFor = (palette) => noteStyle({
+    color: lookRef.current.noteColor, palette, labelMode: lookRef.current.labelMode, refSlot: lookRef.current.refSlot,
+  })
 
   // Apply DPR sizing
   useEffect(() => {
@@ -401,7 +352,9 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
     const sY = scrollYRef.current
     drawBackground(bg, w, h, ppb, pps, sX, sY, lenBeats, palette, scaleRef.current)
     ct.clearRect(0, 0, w, h)
-    drawNotes(ct, w, h, notesRef.current, selectedNoteIdsRef.current, ppb, pps, sX, sY, palette, draggedNoteIds())
+    const style = noteStyleFor(palette)
+    drawGhosts(ct, w, h, lookRef.current.ghosts, ppb, pps, sX, sY, style)
+    drawNotes(ct, w, h, notesRef.current, selectedNoteIdsRef.current, ppb, pps, sX, sY, style, draggedNoteIds())
   }
 
   // Clears a "settling" drag (see handlePointerUp) the moment the `notes`
@@ -425,7 +378,7 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
   useEffect(() => {
     redraw()
   }, [notes, selectedNoteIds, width, height, patternLengthTicks, themeTick, dprEpoch,
-      scale.enabled, scale.root, scale.mode])
+      scale.enabled, scale.root, scale.mode, noteColor, labelMode, refSlot, ghosts])
 
   // Redraw all canvases when the active theme changes — tokenValue() reads
   // CSS variables at draw time, but the draw effects only rerun on prop/state
@@ -937,7 +890,7 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
             durationTicks: Math.max(MIN_NOTE_DURATION_TICKS, orig.durationTicks + deltaTicks),
           })
       }
-      drawNotes(ov, w, h, previewNotes, selectedNoteIdsRef.current, ppb, pps, sX, sY, palette)
+      drawNotes(ov, w, h, previewNotes, selectedNoteIdsRef.current, ppb, pps, sX, sY, noteStyleFor(palette))
     } else if (ds.action === ACTION.LASSO) {
       // Convert world-space lasso coords to screen-space for rendering
       const sx0 = ds.startWorldX - sX
