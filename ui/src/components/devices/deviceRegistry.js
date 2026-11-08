@@ -33,6 +33,8 @@ import GlossDevice from './GlossDevice.jsx'
 import ApexDevice from './ApexDevice.jsx'
 import OverdoneDevice from './OverdoneDevice.jsx'
 import useOverdoneStore from '../../stores/overdoneStore.js'
+import TransientProcDevice from './TransientProcDevice.jsx'
+import useTransientProcStore from '../../stores/transientProcStore.js'
 import useApexStore from '../../stores/apexStore.js'
 
 export const DEVICE_BODIES = {
@@ -58,6 +60,7 @@ export const DEVICE_BODIES = {
   // useApexStore only marks the popped-out instance, as for GLOSS.
   apex: { Body: ApexDevice, useEditorStore: useApexStore },
   overdone: { Body: OverdoneDevice, useEditorStore: useOverdoneStore },
+  transientproc: { Body: TransientProcDevice, useEditorStore: useTransientProcStore },
 }
 
 export function deviceBodyFor(pluginId) {

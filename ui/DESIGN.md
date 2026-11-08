@@ -830,3 +830,11 @@ painter's per-band level history, unchanged apart from band-palette colours, sen
 Sections: Input, Bands (Low / Mid / High gain in one row, Low and High split under them, each tinted with its band),
 Dynamics (Depth, the 56px hero knob, and Time), Output. Three gains fit one row, so there is no band selector.
 
+**Transient processor** (`TransientProcDevice.jsx`, about 650px). The display data exists (`TransientBucket`: input and
+output level, fast and slow envelopes, signed gain); the 2026-11-07 shot was empty because the transport was stopped.
+The hero's default view is the transient painter's **input against output** (`transientEnvelope`: level grid, detector
+envelopes, input and output), the second its signed gain change (`transientGainChange`). With no signal the well says
+"Play to see transients"; it never stands blank and never shows a made-up shape. Sections: Detection (Envelope / MIDI,
+Threshold, Speed), Shape (Attack, the 56px hero, Sustain), Output (Mix). Threshold and Sustain are disabled in MIDI mode,
+as before. The manifest's `dry`, `wet` and `mix_linked` do not exist in the engine and have no control.
+
