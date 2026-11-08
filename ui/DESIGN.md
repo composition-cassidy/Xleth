@@ -1077,3 +1077,61 @@ isolated harness (stub `window.xleth`), panel and nodes and both editor sheets a
 2026-11-07 FX Graph shots had 6 sizes (9 to 14px), 24 text nodes at 9px and 5 letter-spaced caps labels. **Owed with
 the engine:** building a sidechain route, LFO and envelope modulation still driving their targets, macro mapping,
 graph and chain consistency; the Electron capture needs a current engine addon.
+
+## 22. Timeline polish and its popovers (round 2, step 19)
+
+The arrangement's headers, toolbar, Patterns column, cue lane, loop bar, automation lanes, the four popovers and
+dialog it opens, and the two clip FX editors. UI only: every drag still previews locally and commits once, every
+IPC call, timeline datum and undo path is unchanged, and the lanes' drawing is unchanged (the clip canvas, the cue and
+macro lanes' DOM geometry, the curve canvases).
+
+- **Track header** (`TrackHeader`, `TrackHeaderList`): a neutral **g2 row**. Identity is a **6px stripe** down the
+  left edge (dashed on a pattern track) and an **18px colour chip** that carries the type glyph in the automatic label
+  ink and is the 24x24 button that opens the colour popover. The clips already carry the full colour, so nine saturated
+  slabs beside them are gone, and the colour still threads grid, lane, mixer and viewer. M / S / V are kit Toggles at
+  rest (solo keeps `--ui-solo`). **A muted track dims only its stripe and chip** (to `--ui-mute-opacity`): the name, the
+  track menu and the toggles stay `ink` on g2 (12.8:1), so **names and controls never drop under 4.5:1**; dimmed *clip*
+  content is the only thing allowed to. From a 56px lane the controls stack under the name. Selection is a 1px
+  `--ui-select` outline, focus a lighter row. The hover-only trash is gone (Delete Track is in the track menu). Folder
+  rows use the browser's `Disclosure` triangle (`aria-expanded`), a folder glyph, the name and the **child count in
+  tabular numerals**; the delete action shows on hover or focus. Macro and automation lane label rows share the column's
+  module. `AUTOMATION_GROUP_HEADER_HEIGHT` is 24 (the hit floor).
+- **Toolbar** (`TimelineToolbar`): one 38px row (the height `shellLayout` budgets) of kit IconButtons in a `Toolbar`.
+  Tools are named "Select tool" and so on with their key (S, P, C, D) and mouse grammar in the hint bar. **Snap is a
+  labelled Select**; the sample indicator reads **"Painting with: Pitch 1"** and is absent with no sample (a syllable
+  template gets an outlined dot); the zoom is a tabular `40 px/beat` with the unit repeated in its hint; Quick notation
+  and Quantize say why they are disabled.
+- **Patterns column** (`PatternListPanel`): 24px list rows in a listbox: a 3px identity edge, the name, the length in
+  **steps with the unit** (`32 steps`, from `lengthTicks` and `ticksToBeats`; it used to print the note count). The
+  pattern open in the Piano Roll is the selected row (`--ui-select` outline). Enter or Space opens, F2 renames.
+- **Snapshot cue lane, loop bar, macro lanes.** The cue editor is a floating surface of kit controls: Selects, a Toggle
+  for Transition, the 14 per-type parameters as NumberBoxes (same range and step, previewing locally and writing
+  **one** `setCueTransition` on release; the old slider wrote per pointer step), IconButtons, the direction compass
+  and the two-curve easing editor on tokens. The pin and the transition grips have 24px hit areas around their drawn
+  shapes. The loop bar is value-coloured while armed and grey when not, and its toggle is a 14px chip with a 24px hit
+  area (an inverted chip, `aria-pressed`, when armed). Macro lane curves wear the parameter signal hue, a looped clip is
+  dashed, selection is an outline; the curve stays an SVG polyline and the points positioned buttons.
+- **Popovers and the dialog.** The track colour popover is a kit `Menu`: Auto, the 16 swatches (24px, two rows of
+  eight, each **named in the hint bar and its accessible name**, "Slot 9: Orange", by `trackColorNames.js` from the
+  colour's OKLCH hue) and a custom colour; the display popover is a `Menu` of eight labelled SegmentedControls in
+  sentence case; the project canvas popover is Selects and width and height NumberBoxes; **Quantize** is the kit
+  `Dialog` with Start edge and End edge as SegmentedControls.
+- **Clip FX editors** (`ClipFxWindow`): Vibrato and Scratch are **non-modal** floating windows (not the modal
+  `Dialog`: the arrangement stays live under a curve you are editing). They take focus when they open and **Escape closes
+  the focused one**. Controls are kit: SegmentedControls for shape, stamp, rate mode and time mode; NumberBoxes with
+  units for depth, rate, phase, smoothing and gain; Selects; a Toggle. The curves stay one canvas each, with 10px axis
+  labels. The status line prints Active or Off with a filled or outlined square.
+
+**Measured** on the real components, the audit capture at 1920x1080 and 100 %, against the 2026-11-07 run: every touched
+surface has 0 text under 10px, 0 under 4.5:1, no letter-spaced uppercase and at most 3 font sizes. Header column 41
+texts, 2 sizes, at rest, with a track muted and another soloed, and at an 82px lane (shot 13 had 37 low-contrast nodes
+and 4 under 10px; the 17 that remain in the full-layer shot are the Inspector's disabled flip preview). Toolbar 81
+texts, 3 sizes (was 6 caps labels); Quantize 18 texts, 2 sizes (was 12 caps labels); display popover 0 under 10px (was
+8); cue editor 19 texts, 3 sizes; Vibrato 24 and Scratch 29 texts, 3 sizes (were 22 and 47 under 10px). 2,686 lines of
+`app.css` went (legacy baseline 13191 -> 10505).
+
+**Open.** Macro automation points are 20px hit areas (a geometry constant shared with the hit test). The macro lane was
+not photographed after the restyle: in this build FX Graph's Add menu did not add a Macro node, so none could be created
+in the harness. The Electron capture still lacks a current engine addon. **Owed with the engine:** header readability
+with 12+ tracks; mute, solo and arm at rest; folder collapse; snapshot cues; loop region dragging; quantize; vibrato and
+scratch editing; automation lane drawing.

@@ -27,12 +27,13 @@ export default async ({ page, sleep }) => {
     await esc();
   });
   await step('canvas', async () => {
-    const b = page.locator('button[title*="anvas" i], button[aria-label*="anvas" i]').first();
-    out.push('canvas buttons: ' + await page.locator('button[title*="anvas" i], button[aria-label*="anvas" i]').count());
-    await b.click({ timeout: 4000 }); await sleep(800);
+    // The project canvas popover is reached from the Edit grid rail: Edit grid, then the canvas button.
+    await page.getByRole('button', { name: /Edit grid/ }).first().click(); await sleep(900);
+    await page.locator('button[data-hint^="Project canvas"]').first().click({ timeout: 4000 }); await sleep(800);
     out.push('root: ' + await popRoot());
     out.push(await shot(page, '142-timeline-video-canvas-popover', { surface: 'timeline-canvas-popover', scope: '[data-audit-pop]', live: true }));
     await esc();
+    await page.getByRole('button', { name: /Edit grid/ }).first().click().catch(() => {}); await sleep(400);
   });
   await step('convert', async () => {
     await page.locator('.track-header', { hasText: 'ch1' }).first().click({ button: 'right', position: { x: 60, y: 14 } }); await sleep(600);
