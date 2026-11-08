@@ -194,8 +194,13 @@
   }
 
   /* ── Event lane gutter ─────────────────────────────────────────────────── */
+  /* The axis labels sit on the lane's own scale (VelocityLane valueToY: 5px
+   * top pad, 3px bottom pad), so "64" is level with the 64 guide. The target
+   * label sits between the 127 and 64 guides. */
   .laneGutter {
+    --pr-y64: calc(var(--pr-lane-h) - 3px - (var(--pr-lane-h) - 8px) * 0.50394);
     position: relative;
+    container-type: size;
     background: var(--ui-g2);
     border-right: 1px solid var(--ui-g4);
   }
@@ -203,7 +208,7 @@
   .laneTarget {
     position: absolute;
     left: var(--space-1);
-    top: var(--space-1);
+    top: max(12px, calc((5px + var(--pr-y64)) / 2 - 8px));
     font-size: var(--type-11);
     color: var(--ui-ink-2);
     line-height: 16px;
@@ -217,9 +222,13 @@
     line-height: 12px;
   }
 
-  .laneAxisTop { top: 22px; }
-  .laneAxisMid { top: calc(50% - 6px); }
-  .laneAxisBottom { bottom: 2px; }
+  .laneAxisTop { top: 0; }
+  .laneAxisMid { top: calc(var(--pr-y64) - 6px); }
+  .laneAxisBottom { bottom: 0; }
+
+  @container (max-height: 71px) {
+    .laneAxisMid { display: none; }
+  }
 
   .lane {
     background: var(--ui-g0);

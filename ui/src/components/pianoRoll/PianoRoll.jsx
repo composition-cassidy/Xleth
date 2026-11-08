@@ -915,6 +915,7 @@ export default function PianoRoll({
           height={laneHeight}
           onSetVelocity={handleSetVelocity}
           onSetVelocities={handleSetVelocities}
+          noteColor={noteColor}
         />
         <div className={`${styles.cell} ${styles.corner}`} />
       </div>
