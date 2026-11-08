@@ -5,6 +5,10 @@ import { DockRegion } from './components/DockRegion';
 import { SampleSelectorDrawer } from './components/SampleSelectorDrawer';
 import { PickerSheet } from './components/PickerSheet';
 import { SnapGhost } from './components/SnapGhost';
+import { TopRowStrip } from './layout/TopRowStrip';
+import { TOP_MIN_H } from './layout/shellLayout';
+import { useShellLayoutStore } from './layout/shellLayoutStore';
+import { useShellLayout } from './layout/useShellLayout';
 import { useDockRegionResizePreview } from './managers/DockRegionResizeManager';
 import {
   getRegisteredWorkAreaRect,
@@ -19,6 +23,7 @@ import {
 } from './registry/PanelRegistry';
 import type { PanelStateMap } from './registry/PanelRegistry';
 import { useRegistryValue } from './registry/usePanelValue';
+import { dockedPanelKey, parseDockedPanelKey } from './components/DockRegion';
 import {
   DRAWER_PANEL_IDS,
   WINDOW_PANEL_IDS,
@@ -114,6 +119,19 @@ export function AppShell() {
   const sampleDockSize = sampleDockResizePreview?.size ?? committedSampleDockRegionSize;
   const sampleDockExpanded = !sampleSelectorHidden;
 
+  // How the centre column's height is shared between the top row, the
+  // arrangement and the detail dock (layout/shellLayout.ts).
+  const columnRef = useRef<HTMLDivElement>(null);
+  const layout = useShellLayout(columnRef);
+  const topFolded = layout?.topMode === 'strip';
+  const peek = useShellLayoutStore((s) => s.peek);
+  const topKey = useRegistryValue((state) => dockedPanelKey('top', DRAWER_PANEL_IDS, state.panels));
+  const topPanelIds = parseDockedPanelKey(topKey).map((slot) => slot.activeId);
+  const topClassName = [
+    styles.top,
+    topFolded ? (peek ? styles.topSheet : styles.topHidden) : '',
+  ].filter(Boolean).join(' ');
+
   const shellClassName = [
     'xleth-windowing-shell',
     sampleDockExpanded ? 'sample-dock-open' : 'sample-dock-collapsed',
@@ -189,15 +207,18 @@ export function AppShell() {
             data-testid="xleth-docked-window-layer"
           >
             <DockRegion side="left" renderPanel={renderPanel} excludePanelIds={DRAWER_PANEL_IDS} />
-            <div className={`xleth-center-column ${styles.centerColumn}`}>
+            <div className={`xleth-center-column ${styles.centerColumn}`} ref={columnRef}>
               {/* The sample picker opens as a sheet over the top row; the
                   arrangement and detail dock below it stay mounted and live. */}
               <PickerSheet />
+              {topFolded ? <TopRowStrip panelIds={topPanelIds} /> : null}
               <DockRegion
                 side="top"
-                className={styles.top}
+                className={topClassName}
                 renderPanel={renderPanel}
                 excludePanelIds={DRAWER_PANEL_IDS}
+                sizeOverride={layout ? (topFolded ? TOP_MIN_H : layout.topH) : undefined}
+                lockSize={topFolded}
               />
               {/* Mandatory: the registry never lets the center go empty. */}
               <DockRegion
@@ -208,7 +229,7 @@ export function AppShell() {
               />
               {/* The bottom region is the tabbed detail dock: one panel at a
                   time under a tab strip that is always there. */}
-              <DetailDock renderPanel={renderPanel} />
+              <DetailDock renderPanel={renderPanel} sizeOverride={layout?.dockH} />
             </div>
             <DockRegion side="right" renderPanel={renderPanel} excludePanelIds={DRAWER_PANEL_IDS} />
           </div>

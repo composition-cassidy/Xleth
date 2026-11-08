@@ -380,6 +380,29 @@ tooltips are not documentation.
 └ Hint bar: hovered control + its modifiers                     ┘ 22
 ```
 
+### 8.1 Sharing the centre column (round 2)
+
+The centre column (top row, arrangement, detail dock) is split by one pure function,
+`windowing/layout/shellLayout.ts` (`computeShellLayout`, driven by `useShellLayout` from the column's measured
+height A). Regions render the result; the stored sizes are still what a drag commits to.
+
+- **Detail dock, open:** `clamp(320, 40% of A, 520)` until the user resizes it. A stored value of 304 (the old
+  default every earlier layout holds) means "never resized". A dragged size is kept and persisted.
+- **Top row (Preview + Inspector):** minimum **200px**, never squeezed. An untouched row (stored 340) leaves the arrangement
+  8 rows; a row the user resized may take space down to the arrangement's 4-row minimum.
+- **Arrangement:** minimum 4 rows = 95px chrome (toolbar 38, ruler 26, cue lane 30) + 4 x 36px.
+- **Not all three fit** (A - dock < 200 + 239): the top row folds to a **28px strip** with Preview and Inspector
+  buttons. They open the row as a 200px **sheet** over the arrangement (hard offset shadow; Esc, a press outside, or
+  the button again closes it). Folded panels stay mounted but report themselves not visible (no decoding).
+  The dock yields only if the arrangement would drop under 4 rows.
+
+| Window | A | Dock | Top row | Arrangement |
+|---|---|---|---|---|
+| 1920x1080 | 1022 | 409 | 230 | 383 (8 rows) |
+| 1366x768 | 710 | 320 | 28 strip | 362 (7 rows) |
+
+The Inspector scrolls inside its own region (`Inspector.module.css` `.root`).
+
 ## 9. Device system (Phase 4a)
 
 Every stock effect is a **device**: one frame, one title bar, one height. Kit:

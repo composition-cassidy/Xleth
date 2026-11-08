@@ -25,6 +25,14 @@ export interface DockRegionProps {
   excludePanelIds?: readonly PanelId[];
   /** Extra class for the region element (kit styling). */
   className?: string;
+  /**
+   * Edge height/width computed by the shell layout (layout/shellLayout.ts). It
+   * replaces the stored size for rendering; the stored size is still what a
+   * drag commits to. Undefined = render the stored size.
+   */
+  sizeOverride?: number;
+  /** No region resizer: the region is a fixed-size sheet, not a docked row. */
+  lockSize?: boolean;
 }
 
 const EMPTY_PANEL_IDS: readonly PanelId[] = Object.freeze([]);
@@ -277,7 +285,7 @@ export function fillSlotIndex(slots: readonly DockedSlotEntry[]): number {
   return -1;
 }
 
-export function DockRegion({ side, renderPanel, excludePanelIds = EMPTY_PANEL_IDS, className }: DockRegionProps) {
+export function DockRegion({ side, renderPanel, excludePanelIds = EMPTY_PANEL_IDS, className, sizeOverride, lockSize = false }: DockRegionProps) {
   // The center has no stored size and no resizer: it is whatever the edge
   // regions leave. Hooks still run unconditionally; for the center they read
   // an edge key and the result is ignored.
@@ -289,7 +297,7 @@ export function DockRegion({ side, renderPanel, excludePanelIds = EMPTY_PANEL_ID
   const committedSize = isSSR ? (edge ? usePanelRegistry.getState().dockRegionSizes[edge] : 0) : reactiveSize;
   const preview = useDockRegionResizePreview(edge ?? 'left');
   const splitterPreview = useDockedPanelResizePreview(side);
-  const effectiveSize = edge ? (preview?.size ?? committedSize) : 0;
+  const effectiveSize = edge ? (sizeOverride ?? preview?.size ?? committedSize) : 0;
   const docked = parseDockedPanelKey(dockedKey);
 
   if (docked.length === 0) return null;
@@ -362,7 +370,7 @@ export function DockRegion({ side, renderPanel, excludePanelIds = EMPTY_PANEL_ID
           </React.Fragment>
         )
       })}
-      {edge && fillIndex >= 0 ? <DockRegionResizer region={edge} currentSize={committedSize} /> : null}
+      {edge && fillIndex >= 0 && !lockSize ? <DockRegionResizer region={edge} currentSize={sizeOverride ?? committedSize} /> : null}
     </div>
   );
 }

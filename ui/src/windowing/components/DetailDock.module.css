@@ -7,8 +7,8 @@
     flex-direction: column;
     flex: 0 0 auto;
     min-height: var(--panel-header-h);
-    /* However tall a stored size is, the arrangement keeps 40% of the column. */
-    max-height: 60%;
+    /* Its open height comes from the shell layout (layout/shellLayout.ts), which
+     * already keeps the arrangement at 4 rows or more. */
     background: var(--ui-g1);
     border-top: 1px solid var(--ui-g4);
   }

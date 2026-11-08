@@ -88,7 +88,8 @@ export const SAMPLE_SELECTOR_DOCK_HANDLE_WIDTH = 28;
 export const MIN_DOCK_REGION_SIZES: DockRegionSizes = {
   left: 220,
   right: 220,
-  top: 100,
+  // Preview + Inspector row (ui/DESIGN.md 8.1): never squeezed below this.
+  top: 200,
   // The detail dock: 28px tab strip + a body that can still show a toolbar row
   // and some content.
   bottom: 160,

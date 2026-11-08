@@ -3,6 +3,7 @@ import type { CSSProperties, ReactNode } from 'react';
 import { PanelVisibilityProvider } from '../contexts/PanelVisibilityContext';
 import { useDockSlot } from '../contexts/DockSlotContext';
 import { PanelTabStrip } from './PanelTabStrip';
+import { isRegionHiddenByShell, useShellLayoutStore } from '../layout/shellLayoutStore';
 import { useDragOffset, useIsDragging } from '../managers/DragManager';
 import { useResizePreview } from '../managers/ResizeManager';
 import { PANEL_CATALOG, panelTypeColorVar, type PanelId } from '../registry/panelCatalog';
@@ -56,6 +57,9 @@ export function PanelFrame({
   const floatW = usePanelValue(id, (p) => p.floating.width);
   const floatH = usePanelValue(id, (p) => p.floating.height);
   const focusPanel = usePanelRegistry((s) => s.focusPanel);
+  // The shell can fold a whole region (the top row on a short window). Its panels
+  // stay mounted but must not render or decode into a box nobody can see.
+  const regionHidden = useShellLayoutStore((s) => (slot ? isRegionHiddenByShell(s, slot.region) : false));
 
   const panelRef = useRef<HTMLElement>(null);
   const dragOffset = useDragOffset(id);
@@ -101,7 +105,7 @@ export function PanelFrame({
 
   if (renderPath === 'docked') {
     return (
-      <PanelVisibilityProvider isVisible={!collapsed}>
+      <PanelVisibilityProvider isVisible={!collapsed && !regionHidden}>
         <section
           ref={panelRef}
           tabIndex={-1}

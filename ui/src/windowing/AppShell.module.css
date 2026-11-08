@@ -9,7 +9,7 @@
   }
 
   /* The column that holds the top row, the arrangement and the detail dock. It is
-   * the sample picker sheet's positioning context. */
+   * the sample picker sheet's and the folded top row's positioning context. */
   .centerColumn {
     position: relative;
   }
@@ -24,10 +24,28 @@
     background: var(--ui-g0);
   }
 
-  /* Preview + Inspector. Its height is stored and clamped like every region
-   * (MIN_DOCK_REGION_SIZES); on a short window it also never takes more than
-   * 40% of the column, so the arrangement keeps the majority. */
+  /* Preview + Inspector. Its height comes from the shell layout
+   * (layout/shellLayout.ts): never under 200px, never so tall that the
+   * arrangement loses its rows. It does not flex-shrink. */
   .top {
-    max-height: 40%;
+    flex: 0 0 auto;
+  }
+
+  /* Folded to the strip (window too short for all three regions): the row is
+   * either out of the layout entirely or, when peeked, a 200px sheet that floats
+   * over the arrangement just below the strip. It is a floating surface, so it
+   * alone carries the hard offset shadow. */
+  .topHidden {
+    display: none;
+  }
+
+  .topSheet {
+    position: absolute;
+    top: var(--panel-header-h);
+    left: 0;
+    right: 0;
+    z-index: calc(var(--xleth-z-window-dock-splitter, 35) + 1);
+    box-shadow: var(--ui-shadow-float);
+    border-bottom: 1px solid var(--ui-boundary);
   }
 }

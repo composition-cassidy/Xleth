@@ -89,9 +89,11 @@ export function togglePopOutDetailTab(id: PanelId): void {
 
 export interface DetailDockProps {
   renderPanel: (id: PanelId) => ReactNode;
+  /** Open height computed by the shell layout; replaces the stored size for rendering. */
+  sizeOverride?: number;
 }
 
-export function DetailDock({ renderPanel }: DetailDockProps) {
+export function DetailDock({ renderPanel, sizeOverride }: DetailDockProps) {
   const reactiveKey = usePanelRegistry((state) => detailDockKey(state.panels));
   const reactiveSize = usePanelRegistry((state) => state.dockRegionSizes.bottom);
   const isSSR = typeof window === 'undefined';
@@ -102,7 +104,7 @@ export function DetailDock({ renderPanel }: DetailDockProps) {
 
   const tabs = parseDetailDockKey(key);
   const openTab = tabs.find((tab) => tab.state === 'open') ?? null;
-  const size = preview?.size ?? committedSize;
+  const size = sizeOverride ?? preview?.size ?? committedSize;
   const dockStyle: CSSProperties | undefined = openTab ? { height: `${size}px` } : undefined;
 
   // Roving focus across the tabs, per the ARIA tabs pattern. Arrows move focus
@@ -127,7 +129,7 @@ export function DetailDock({ renderPanel }: DetailDockProps) {
       aria-label="Detail dock"
       style={dockStyle}
     >
-      {openTab ? <DockRegionResizer region="bottom" currentSize={committedSize} /> : null}
+      {openTab ? <DockRegionResizer region="bottom" currentSize={size} /> : null}
       <div ref={stripRef} className={styles.strip} role="tablist" aria-label="Detail views">
         {tabs.map((tab, index) => {
           const entry = PANEL_CATALOG[tab.id];
