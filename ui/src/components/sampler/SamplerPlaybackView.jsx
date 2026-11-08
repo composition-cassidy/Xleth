@@ -126,7 +126,7 @@ export default function SamplerPlaybackView({
               data-field="monoEnabled"
             />
             <NumberBox
-              label="Voices" width={112} value={s.voiceCount ?? 32}
+              label="Voices" width={140} value={s.voiceCount ?? 32}
               min={1} max={32} step={1} quantize={round} defaultValue={32} pxPerRange={160}
               disabled={!!s.monoEnabled}
               onChange={(v) => actions.setField('voiceCount', Math.round(v))}
@@ -202,7 +202,8 @@ export default function SamplerPlaybackView({
                 onChange={(v) => actions.commitField('arpDirection', Number(v))} data-field="arpDirection"
                 hint="Sticky holds the order the notes were played in"
               />
-              <div className={styles.inline}>
+              <div className={styles.field}>
+                <span className={styles.fieldLabel}>Rate</span>
                 <Toggle
                   size="sm" on={sync}
                   onChange={(next) => actions.commitField('arpTempoSync', next)}

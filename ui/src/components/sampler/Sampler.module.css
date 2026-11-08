@@ -325,23 +325,62 @@
     scrollbar-width: thin;
   }
 
+  /* The strips size their spacing to their own width (1366x768 gets the tight
+   * rhythm, 1080p and up the open one); see the @container block below. */
+  .strips {
+    container: strips / inline-size;
+  }
+
+  /* Every section grows with the row (folded ones stay a strip); a section that
+   * holds a single field keeps its own width. */
+  .strips > div:not([data-folded]) {
+    flex: 1 1 auto;
+  }
+
+  .strips > [data-section="mode"] {
+    flex: 0 0 auto;
+  }
+
+  /* Section bodies: one padding rhythm everywhere. */
+  .strips > div > div:last-child {
+    padding: var(--space-2) var(--space-3);
+  }
+
+  /* Header actions (a status word, Auto, On) never touch each other. */
+  .strips [role="heading"] > span:last-child,
+  .side [role="heading"] > span:last-child {
+    gap: var(--space-2);
+  }
+
+  /* Knobs share their section's width evenly; at least 4px apart when tight. */
   .knobRow {
     display: flex;
     align-items: flex-start;
-    gap: 0;
+    gap: var(--space-1);
+  }
+
+  .strips .knobRow {
+    align-self: stretch;
+    justify-content: space-evenly;
   }
 
   .loopBody {
     display: flex;
+    align-self: stretch;
     align-items: center;
-    gap: var(--space-2);
+    justify-content: space-evenly;
+    gap: var(--space-3);
+  }
+
+  .loopBody > .knobRow {
+    flex: 1 1 auto;
   }
 
   .loopSide {
     display: flex;
     flex-direction: column;
     align-items: flex-start;
-    gap: var(--space-1);
+    gap: var(--space-2);
   }
 
   /* ── Right column (240px): this slot's pitch, level, prep, process ─────── */
@@ -368,13 +407,19 @@
 
   .side .sideStrip > div:last-child {
     align-items: stretch;
-    padding: var(--space-1) var(--space-2);
+    padding: var(--space-1) var(--space-3);
   }
 
   .grid2 {
     display: grid;
     grid-template-columns: 1fr 1fr;
-    gap: var(--space-1);
+    gap: var(--space-1) var(--space-2);
+  }
+
+  /* Value boxes fill their cell instead of their fixed default width. */
+  .grid2 > [role="slider"] {
+    width: 100%;
+    min-width: 0;
   }
 
   .fill {
@@ -427,11 +472,24 @@
     min-height: 0;
   }
 
+  .playback > .strips > [data-section="voice"],
+  .playback > .strips > [data-section="glide"] {
+    flex-grow: 1;
+  }
+
+  .playback > .strips > [data-section="arp"] {
+    flex-grow: 1.4;
+  }
+
+  .playback > .strips > [data-section="mangle"] {
+    flex-grow: 2.2;
+  }
+
   .stack {
     display: flex;
     flex-direction: column;
-    align-items: flex-start;
-    gap: var(--space-1);
+    align-items: stretch;
+    gap: var(--space-3);
   }
 
   .inline {
@@ -443,24 +501,24 @@
   .arpBody {
     display: flex;
     align-items: center;
-    gap: var(--space-2);
+    gap: var(--space-5);
   }
 
   .arpRate {
-    width: 72px;
+    width: 64px;
   }
 
   .mangleBody {
     display: flex;
     flex-direction: column;
     align-items: stretch;
-    gap: 2px;
+    gap: var(--space-2);
   }
 
   .mangleRow {
     display: flex;
     align-items: center;
-    gap: 2px;
+    gap: var(--space-1);
   }
 
   .mangleIndex {
@@ -726,10 +784,14 @@
     display: flex;
     flex: 1 1 auto;
     flex-direction: column;
-    gap: var(--space-1);
+    gap: var(--space-2);
     min-width: 0;
     min-height: 0;
-    padding: var(--space-1);
+    padding: var(--space-2) var(--space-3);
+  }
+
+  .editor > .knobRow {
+    gap: var(--space-4);
   }
 
   .editorHead {
@@ -737,7 +799,7 @@
     flex: none;
     flex-wrap: nowrap;
     align-items: center;
-    gap: var(--space-1);
+    gap: var(--space-3);
     min-width: 0;
     overflow-x: auto;
     overflow-y: hidden;
@@ -795,5 +857,24 @@
   .dragGhost[data-over] {
     background: var(--ui-g3);
     outline: 1px solid var(--ui-signal-parameter);
+  }
+
+  /* Narrow strips (about 1366x768): tight spacing, so no section is pushed off the row. */
+  @container strips (max-width: 1150px) {
+    .strips > div > div:last-child {
+      padding: var(--space-1);
+    }
+
+    .strips .knobRow {
+      gap: 0;
+    }
+
+    .loopBody {
+      gap: var(--space-1);
+    }
+
+    .fieldLabel {
+      min-width: 0;
+    }
   }
 }
