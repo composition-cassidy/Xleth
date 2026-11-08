@@ -5,8 +5,10 @@ import PianoRollKeyboard, { PITCH_MIN, PITCH_MAX } from './PianoRollKeyboard.jsx
 import PianoRollCanvas from './PianoRollCanvas.jsx'
 import PianoRollRuler from './PianoRollRuler.jsx'
 import VelocityLane from './VelocityLane.jsx'
-import PianoRollScrollbarV, { SCROLLBAR_V_WIDTH } from './PianoRollScrollbarV.jsx'
-import PianoRollScrollbarH, { SCROLLBAR_H_HEIGHT } from './PianoRollScrollbarH.jsx'
+import PianoRollScrollbarV from './PianoRollScrollbarV.jsx'
+import PianoRollScrollbarH from './PianoRollScrollbarH.jsx'
+import PianoRollSplitter, { readStoredLaneHeight } from './PianoRollSplitter.jsx'
+import styles from './PianoRoll.module.css'
 import { timelineEvents } from '../../timelineEvents.js'
 import { PPQ, snapBeatToGrid, beatsToTicks } from '../../constants/timeline.js'
 import { registerEditorCommand } from '../../windowing/managers/EditorCommandRegistry'
@@ -74,10 +76,6 @@ export async function importFscScore({ file, patternId, xleth, notify, showToast
   return { status: 'ok', count: notes.length }
 }
 
-const KEYBOARD_WIDTH = 60
-const VELOCITY_HEIGHT = 80
-const RULER_HEIGHT = 24
-const TOOLBAR_HEIGHT = 40
 const DEFAULT_PX_PER_BEAT = 80
 const DEFAULT_PX_PER_SEMITONE = 14
 
@@ -137,8 +135,13 @@ export default function PianoRoll({
   const [pixelsPerSemitone, setPixelsPerSemitone] = useState(DEFAULT_PX_PER_SEMITONE)
   const [scrollX, setScrollX] = useState(0)
   const [scrollY, setScrollY] = useState(0)
-  const [size, setSize] = useState({ w: 800, h: 500 })
+  // Measured size of the GRID cell itself (not the panel): the keyboard, the
+  // ruler and the lane share its width/height through the CSS grid, so nothing
+  // is derived by subtracting chrome constants (the old 40px dead band).
+  const [size, setSize] = useState({ w: 800, h: 400 })
+  const [laneHeight, setLaneHeight] = useState(readStoredLaneHeight)
   const containerRef = useRef(null)
+  const gridCellRef = useRef(null)
   const selectedNoteIdsRef = useRef(selectedNoteIds)
   selectedNoteIdsRef.current = selectedNoteIds
   const previewReleasesRef = useRef(new Set())
@@ -254,9 +257,9 @@ export default function PianoRoll({
     }
   }, [patternId])
 
-  // Track container size
+  // Track the grid cell's size
   useEffect(() => {
-    const el = containerRef.current
+    const el = gridCellRef.current
     if (!el) return
     const update = () => setSize({ w: el.clientWidth, h: el.clientHeight })
     update()
@@ -268,7 +271,7 @@ export default function PianoRoll({
   // Initial scroll: center around C4 (pitch 60) — instant, not eased; this
   // is the panel settling into place, not a user gesture.
   useEffect(() => {
-    const canvasH = size.h - VELOCITY_HEIGHT - TOOLBAR_HEIGHT - RULER_HEIGHT
+    const canvasH = size.h
     const targetY = (PITCH_MAX - 60) * pixelsPerSemitone - canvasH / 2
     viewAnimatorRef.current?.setTarget('scrollY', Math.max(0, targetY), { immediate: true })
   }, [size.h, pixelsPerSemitone])
@@ -650,7 +653,7 @@ export default function PianoRoll({
       animator.setTarget('scrollX', next)
     } else {
       e.preventDefault()
-      const maxScrollY = Math.max(0, (PITCH_MAX - PITCH_MIN + 1) * pixelsPerSemitone - (size.h - VELOCITY_HEIGHT - TOOLBAR_HEIGHT - RULER_HEIGHT - SCROLLBAR_H_HEIGHT))
+      const maxScrollY = Math.max(0, (PITCH_MAX - PITCH_MIN + 1) * pixelsPerSemitone - size.h)
       const next = Math.max(0, Math.min(maxScrollY, animator.getTarget('scrollY') + e.deltaY))
       animator.setTarget('scrollY', next)
     }
@@ -666,8 +669,8 @@ export default function PianoRoll({
   const notes = pattern?.notes || []
   const patternLengthTicks = pattern?.lengthTicks || 0
   const highlightedPitches = new Set(notes.map((n) => n.pitch))
-  const canvasWidth = Math.max(0, size.w - KEYBOARD_WIDTH - SCROLLBAR_V_WIDTH)
-  const canvasHeight = Math.max(0, size.h - VELOCITY_HEIGHT - TOOLBAR_HEIGHT - RULER_HEIGHT - SCROLLBAR_H_HEIGHT)
+  const canvasWidth = Math.max(0, size.w)
+  const canvasHeight = Math.max(0, size.h)
 
   // Content bounds for scrollbar sizing
   const contentHeight = (PITCH_MAX - PITCH_MIN + 1) * pixelsPerSemitone
@@ -740,10 +743,7 @@ export default function PianoRoll({
   }, [contentHeight, canvasHeight])
 
   return (
-    <div
-      className="piano-roll"
-      style={{ display: 'flex', flexDirection: 'column', width: '100%', height: '100%', background: '#0d0d0d' }}
-    >
+    <div className={`piano-roll ${styles.root}`}>
       {floating && (
         <div
           className="piano-roll-floating-titlebar"
@@ -791,17 +791,24 @@ export default function PianoRoll({
         currentRegionId={pattern?.regionId ?? -1}
         onRegionChange={handleRegionChange}
       />
-      <div ref={containerRef} style={{ flex: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <PianoRollRuler
-          ref={rulerRef}
-          pixelsPerBeatRef={pixelsPerBeatRef}
-          scrollXRef={scrollXRef}
-          width={canvasWidth}
-          height={RULER_HEIGHT}
-          keyboardWidth={KEYBOARD_WIDTH}
-          scrollbarWidth={SCROLLBAR_V_WIDTH}
-        />
-        <div style={{ flex: 1, display: 'flex', overflow: 'hidden' }}>
+      <div
+        ref={containerRef}
+        className={styles.body}
+        style={{ '--pr-lane-h': `${laneHeight}px` }}
+      >
+        <div className={`${styles.cell} ${styles.rulerCorner}`} />
+        <div className={styles.cell}>
+          <PianoRollRuler
+            ref={rulerRef}
+            pixelsPerBeatRef={pixelsPerBeatRef}
+            scrollXRef={scrollXRef}
+            width={canvasWidth}
+            height={24}
+          />
+        </div>
+        <div className={`${styles.cell} ${styles.rulerCorner}`} />
+
+        <div className={`${styles.cell} ${styles.keys}`}>
           <PianoRollKeyboard
             ref={keyboardRef}
             pixelsPerSemitoneRef={pixelsPerSemitoneRef}
@@ -810,6 +817,8 @@ export default function PianoRoll({
             onPreviewNote={handlePreviewNote}
             highlightedPitches={highlightedPitches}
           />
+        </div>
+        <div ref={gridCellRef} className={styles.cell}>
           <PianoRollCanvas
             ref={pianoRollCanvasRef}
             patternId={patternId}
@@ -839,6 +848,8 @@ export default function PianoRoll({
             onDropFsc={handleDropFsc}
             scale={scale}
           />
+        </div>
+        <div className={styles.cell}>
           <PianoRollScrollbarV
             ref={scrollbarVRef}
             contentHeight={contentHeight}
@@ -849,8 +860,9 @@ export default function PianoRoll({
             setScrollY={setScrollYInstant}
           />
         </div>
-        <div style={{ display: 'flex' }}>
-          <div style={{ width: KEYBOARD_WIDTH, background: '#0d0d0d', borderRight: '1px solid #222', borderTop: '1px solid #222' }} />
+
+        <div className={`${styles.cell} ${styles.corner}`} />
+        <div className={styles.cell}>
           <PianoRollScrollbarH
             ref={scrollbarHRef}
             contentWidth={contentWidth}
@@ -861,28 +873,29 @@ export default function PianoRoll({
             setScrollX={setScrollXInstant}
             onZoomDelta={handleZoomDelta}
           />
-          <div style={{ width: SCROLLBAR_V_WIDTH, background: '#0d0d0d', borderTop: '1px solid #222' }} />
         </div>
-        <div style={{ display: 'flex' }}>
-          <div className="piano-roll-velocity-gutter" style={{ width: KEYBOARD_WIDTH, height: VELOCITY_HEIGHT }}>
-            <span className="piano-roll-velocity-title">VEL</span>
-            <span className="piano-roll-velocity-axis" style={{ top: 4 }}>127</span>
-            <span className="piano-roll-velocity-axis" style={{ top: '50%' }}>64</span>
-            <span className="piano-roll-velocity-axis" style={{ bottom: 3 }}>1</span>
-          </div>
-          <VelocityLane
-            ref={velocityLaneRef}
-            notes={notes}
-            selectedNoteIds={selectedNoteIds}
-            pixelsPerBeatRef={pixelsPerBeatRef}
-            scrollXRef={scrollXRef}
-            width={canvasWidth}
-            height={VELOCITY_HEIGHT}
-            onSetVelocity={handleSetVelocity}
-            onSetVelocities={handleSetVelocities}
-          />
-          <div style={{ width: SCROLLBAR_V_WIDTH, background: '#181818', borderTop: '1px solid #222' }} />
+        <div className={`${styles.cell} ${styles.corner}`} />
+
+        <PianoRollSplitter laneHeight={laneHeight} onLaneHeightChange={setLaneHeight} />
+
+        <div className={`${styles.cell} ${styles.laneGutter}`}>
+          <span className={styles.laneTarget}>Velocity</span>
+          <span className={`${styles.laneAxis} ${styles.laneAxisTop}`}>127</span>
+          <span className={`${styles.laneAxis} ${styles.laneAxisMid}`}>64</span>
+          <span className={`${styles.laneAxis} ${styles.laneAxisBottom}`}>1</span>
         </div>
+        <VelocityLane
+          ref={velocityLaneRef}
+          notes={notes}
+          selectedNoteIds={selectedNoteIds}
+          pixelsPerBeatRef={pixelsPerBeatRef}
+          scrollXRef={scrollXRef}
+          width={canvasWidth}
+          height={laneHeight}
+          onSetVelocity={handleSetVelocity}
+          onSetVelocities={handleSetVelocities}
+        />
+        <div className={`${styles.cell} ${styles.corner}`} />
       </div>
     </div>
   )

@@ -30,6 +30,7 @@ const ctxByCanvas = new WeakMap()
 const CTX_METHODS = [
   'clearRect', 'fillRect', 'strokeRect', 'beginPath', 'moveTo', 'lineTo',
   'stroke', 'setLineDash', 'save', 'restore', 'setTransform', 'fillText',
+  'rect', 'clip', 'arc', 'fill', 'closePath', 'quadraticCurveTo',
 ]
 
 function stubCtxFor(canvasEl) {
@@ -186,13 +187,13 @@ describe('PianoRollCanvas pointer gesture lifecycle', () => {
     const { el } = renderCanvas({ notes: [note], activeTool: 'select' })
 
     act(() => { el.dispatchEvent(pointer('pointermove', rect.x + rect.w / 2, rect.y + rect.h / 2)) })
-    expect(el.style.cursor).toBe('grab')
+    expect(el.dataset.cursor).toBe('grab')
 
     act(() => { el.dispatchEvent(pointer('pointermove', rect.x + rect.w - 2, rect.y + rect.h / 2)) })
-    expect(el.style.cursor).toBe('ew-resize')
+    expect(el.dataset.cursor).toBe('ew-resize')
 
     act(() => { el.dispatchEvent(pointer('pointermove', 5, 5)) })
-    expect(el.style.cursor).toBe('default')
+    expect(el.dataset.cursor).toBe('default')
   })
 
   // Regression: the pointer handlers are stable useCallbacks, so reading the

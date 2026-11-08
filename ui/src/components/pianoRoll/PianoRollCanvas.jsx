@@ -5,6 +5,7 @@ import { tokenValue } from '../../theming/tokenValue.ts'
 import { DEFAULT_SCALE, isPitchInScale, snapPitchToScale } from './scales.js'
 
 import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
+import styles from './PianoRoll.module.css'
 const RESIZE_HANDLE_PX = 6       // screen px, each side of an editable edge (acceptable range 4-8)
 const MIN_NOTE_HITBOX_PX = 6     // minimum grabbable width regardless of rendered/zoomed size
 const MIN_NOTE_DURATION_TICKS = 60
@@ -37,13 +38,16 @@ function resolvePalette() {
     lineBar: tokenValue('--theme-pianoroll-bar-line') || 'rgba(255,255,255,0.14)',
     octaveLine: tokenValue('--theme-border-subtle') || '#2A2A38',
     accent: tokenValue('--theme-accent') || '#33CED6',
-    patternOverlay: tokenValue('--theme-overlay-subtle') || 'rgba(0,0,0,0.25)',
-    patternBorder: tokenValue('--theme-snap-ghost-border') || 'rgba(51,206,214,0.4)',
     noteSlide: tokenValue('--theme-pianoroll-note-slide-fill') || '#E64FE6',
     noteLabel: tokenValue('--theme-text-on-accent') || '#0D0D14',
     lassoFill: tokenValue('--theme-pianoroll-selection-rect') || 'rgba(51,206,214,0.18)',
     lassoStroke: tokenValue('--theme-accent') || '#33CED6',
     outOfScale: tokenValue('--theme-overlay-subtle') || 'rgba(0,0,0,0.25)',
+    // Past the pattern end: a flat ground (no row stripes, no step lines) and
+    // a 1px end line in secondary ink, so "where the pattern stops" is read
+    // without relying on a faint veil.
+    pastEnd: tokenValue('--ui-g0') || '#141414',
+    endLine: tokenValue('--ui-ink-2') || '#B4B4B4',
   }
 }
 
@@ -182,6 +186,18 @@ function drawBackground(ctx, w, h, pixelsPerBeat, pixelsPerSemitone, scrollX, sc
   const startBeat = Math.floor(scrollX / pixelsPerBeat)
   const endBeat = Math.ceil((scrollX + w) / pixelsPerBeat) + 1
 
+  // Everything past the pattern end is drawn flat below; the in-pattern grid
+  // is clipped to the end line so step and beat lines stop there.
+  const endX = patternLenBeats > 0 ? patternLenBeats * pixelsPerBeat - scrollX : Infinity
+  if (endX < w) {
+    ctx.fillStyle = palette.pastEnd
+    ctx.fillRect(Math.max(0, endX), 0, w - Math.max(0, endX), h)
+  }
+  ctx.save()
+  ctx.beginPath()
+  ctx.rect(0, 0, Math.max(0, Math.min(w, endX)), h)
+  ctx.clip()
+
   // 1/16 subdivisions (faintest)
   ctx.strokeStyle = palette.line16
   ctx.lineWidth = 1
@@ -222,17 +238,31 @@ function drawBackground(ctx, w, h, pixelsPerBeat, pixelsPerSemitone, scrollX, sc
   }
   ctx.stroke()
 
-  // Pattern-length marker (dim region past pattern end) — flat, no top shadow.
-  if (patternLenBeats > 0) {
-    const endX = patternLenBeats * pixelsPerBeat - scrollX
-    if (endX < w) {
-      ctx.fillStyle = palette.patternOverlay
-      ctx.fillRect(Math.max(0, endX), 0, w - endX, h)
-      ctx.strokeStyle = palette.patternBorder
+  ctx.restore()
+
+  // Past the end: bar lines only, at half strength, so the bar rhythm carries
+  // on without reading as editable pattern time. Then the end line itself.
+  if (endX < w) {
+    ctx.save()
+    ctx.globalAlpha = 0.5
+    ctx.strokeStyle = palette.lineBar
+    ctx.lineWidth = 1
+    ctx.beginPath()
+    for (let b = startBeat; b <= endBeat; b++) {
+      if (b % 4 !== 0) continue
+      const x = Math.round(b * pixelsPerBeat - scrollX) + 0.5
+      if (x <= endX || x > w) continue
+      ctx.moveTo(x, 0)
+      ctx.lineTo(x, h)
+    }
+    ctx.stroke()
+    ctx.restore()
+    if (endX >= 0) {
+      ctx.strokeStyle = palette.endLine
       ctx.lineWidth = 1
       ctx.beginPath()
-      ctx.moveTo(endX + 0.5, 0)
-      ctx.lineTo(endX + 0.5, h)
+      ctx.moveTo(Math.round(endX) + 0.5, 0)
+      ctx.lineTo(Math.round(endX) + 0.5, h)
       ctx.stroke()
     }
   }
@@ -374,10 +404,10 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
     ;[bgRef, ctRef, ovRef].forEach((r) => {
       const c = r.current
       if (!c) return
-      c.width = width * dpr
-      c.height = height * dpr
-      c.style.width = `${width}px`
-      c.style.height = `${height}px`
+      // Backing store only: the CSS box is the cell (styles.layer), so no
+      // inline size is written.
+      c.width = Math.max(1, Math.round(width * dpr))
+      c.height = Math.max(1, Math.round(height * dpr))
       const ctx = c.getContext('2d')
       ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
     })
@@ -479,7 +509,7 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
     dragStateRef.current = dragState
     if (containerRef.current) {
       try { containerRef.current.setPointerCapture(e.pointerId) } catch { /* already captured/released */ }
-      containerRef.current.style.cursor = dragState.action === ACTION.RESIZE_NOTE ? 'ew-resize'
+      containerRef.current.dataset.cursor = dragState.action === ACTION.RESIZE_NOTE ? 'ew-resize'
         : dragState.action === ACTION.LASSO ? 'crosshair'
         : 'grabbing'
     }
@@ -680,7 +710,7 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
         scrollY: scrollYRef.current,
       })
       if (containerRef.current) {
-        containerRef.current.style.cursor = cursorForIntent(intent, activeToolRef.current)
+        containerRef.current.dataset.cursor = cursorForIntent(intent, activeToolRef.current)
       }
       if (isPianoRollDebugEnabled()) {
         hoverDebugRef.current = { localX, localY, intent }
@@ -760,7 +790,7 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
     const ds = dragStateRef.current
     if (containerRef.current) {
       try { containerRef.current.releasePointerCapture(e.pointerId) } catch { /* not captured */ }
-      containerRef.current.style.cursor = cursorForIntent('none', activeToolRef.current)
+      containerRef.current.dataset.cursor = cursorForIntent('none', activeToolRef.current)
     }
     if (!ds) return
     let committed = false
@@ -852,7 +882,7 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
   const handlePointerCancel = useCallback((e) => {
     if (containerRef.current) {
       try { containerRef.current.releasePointerCapture(e.pointerId) } catch { /* not captured */ }
-      containerRef.current.style.cursor = cursorForIntent('none', activeToolRef.current)
+      containerRef.current.dataset.cursor = cursorForIntent('none', activeToolRef.current)
     }
     if (!dragStateRef.current) return
     dragStateRef.current = null
@@ -994,15 +1024,8 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
   return (
     <div
       ref={containerRef}
-      className="piano-roll-canvas-container"
-      style={{
-        position: 'relative',
-        width,
-        height,
-        overflow: 'hidden',
-        cursor,
-        touchAction: 'none',
-      }}
+      className={`piano-roll-canvas-container ${styles.gridSurface}`}
+      data-cursor={cursor}
       onPointerDown={handlePointerDown}
       onPointerMove={handlePointerMove}
       onPointerUp={handlePointerUp}
@@ -1018,9 +1041,9 @@ const PianoRollCanvas = forwardRef(function PianoRollCanvas({
         }
       }}
     >
-      <canvas ref={bgRef} style={{ position: 'absolute', inset: 0 }} />
-      <canvas ref={ctRef} style={{ position: 'absolute', inset: 0 }} />
-      <canvas ref={ovRef} style={{ position: 'absolute', inset: 0 }} />
+      <canvas ref={bgRef} className={styles.layer} />
+      <canvas ref={ctRef} className={styles.layer} />
+      <canvas ref={ovRef} className={styles.layer} />
     </div>
   )
 })

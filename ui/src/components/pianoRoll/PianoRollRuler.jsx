@@ -14,7 +14,7 @@ import { forwardRef, useImperativeHandle, useLayoutEffect, useRef } from 'react'
 // by viewportWidth / MIN_PX_PER_BEAT, so the pool stabilises after the first
 // few frames and a frame costs a handful of style writes, no allocation.
 const PianoRollRuler = forwardRef(function PianoRollRuler({
-  pixelsPerBeatRef, scrollXRef, width, keyboardWidth, scrollbarWidth, height,
+  pixelsPerBeatRef, scrollXRef, width, height,
 }, ref) {
   const trackRef = useRef(null)
   const poolRef = useRef([])
@@ -62,9 +62,7 @@ const PianoRollRuler = forwardRef(function PianoRollRuler({
 
   return (
     <div className="piano-roll-ruler" style={{ height }}>
-      <div className="piano-roll-ruler-corner" style={{ width: keyboardWidth }} />
       <div ref={trackRef} className="piano-roll-ruler-track" style={{ width }} />
-      <div className="piano-roll-ruler-corner" style={{ width: scrollbarWidth }} />
     </div>
   )
 })

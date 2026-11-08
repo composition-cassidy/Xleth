@@ -1,0 +1,218 @@
+/* Piano Roll (round 2, step 12). Fixed regions: keyboard | grid | event lane, with a
+ * splitter between the grid and the lane. Neutral chrome; colour lives on the notes
+ * (track identity), the selection outline and the value colour. Canvas stays canvas:
+ * every cell below that draws (keys, ruler, grid, lane) is one canvas stack. */
+@layer kit {
+  .root {
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    flex: 1 1 auto;
+    width: 100%;
+    height: 100%;
+    min-width: 0;
+    min-height: 0;
+    background: var(--ui-g1);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* ── Body grid ────────────────────────────────────────────────────────────
+   * Columns: keys | grid | vertical scrollbar.
+   * Rows: ruler | grid | horizontal scrollbar (+ zoom strip) | splitter | lane.
+   * The grid row is the only flexible one, so nothing can open a dead band:
+   * the canvases are sized from the measured grid cell, never by subtraction. */
+  .body {
+    --pr-keys-w: 56px;
+    --pr-vscroll-w: 14px;
+    --pr-ruler-h: 24px;
+    --pr-hscroll-h: 14px;
+    --pr-zoom-h: 10px;
+    --pr-split-h: 4px;
+    --pr-lane-h: 80px;
+    flex: 1 1 auto;
+    min-height: 0;
+    display: grid;
+    grid-template-columns: var(--pr-keys-w) minmax(0, 1fr) var(--pr-vscroll-w);
+    grid-template-rows:
+      var(--pr-ruler-h)
+      minmax(0, 1fr)
+      calc(var(--pr-hscroll-h) + var(--pr-zoom-h))
+      var(--pr-split-h)
+      var(--pr-lane-h);
+    background: var(--ui-g0);
+    overflow: hidden;
+  }
+
+  .cell {
+    position: relative;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+  }
+
+  .corner {
+    background: var(--ui-g2);
+  }
+
+  .rulerCorner {
+    background: var(--ui-g2);
+    border-right: 1px solid var(--ui-g4);
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .keys {
+    border-right: 1px solid var(--ui-g4);
+  }
+
+  /* One canvas layer filling its cell; the backing store is sized in JS. */
+  .layer {
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    display: block;
+  }
+
+  .gridSurface {
+    position: absolute;
+    inset: 0;
+    touch-action: none;
+    cursor: default;
+  }
+
+  /* Cursor is predicted per hover by resolvePointerIntent(); written as a data
+   * attribute so the grid never carries an inline style. */
+  .gridSurface[data-cursor='crosshair'] { cursor: crosshair; }
+  .gridSurface[data-cursor='grab'] { cursor: grab; }
+  .gridSurface[data-cursor='grabbing'] { cursor: grabbing; }
+  .gridSurface[data-cursor='ew-resize'] { cursor: ew-resize; }
+  .gridSurface[data-cursor='col-resize'] { cursor: col-resize; }
+  .gridSurface[data-cursor='not-allowed'] { cursor: not-allowed; }
+  .gridSurface[data-cursor='move'] { cursor: move; }
+
+  /* ── Scrollbars ───────────────────────────────────────────────────────── */
+  .vscroll {
+    position: absolute;
+    inset: 0;
+    background: var(--ui-g1);
+    border-left: 1px solid var(--ui-g4);
+  }
+
+  .hscrollWrap {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    border-top: 1px solid var(--ui-g4);
+  }
+
+  .hscroll {
+    position: relative;
+    flex: 0 0 var(--pr-hscroll-h);
+    background: var(--ui-g1);
+  }
+
+  .thumb {
+    position: absolute;
+    border-radius: var(--ui-radius-1);
+    background: var(--ui-boundary);
+    cursor: grab;
+  }
+
+  .thumb:hover {
+    background: var(--ui-ink-3);
+  }
+
+  .thumb:active {
+    cursor: grabbing;
+    background: var(--ui-ink-2);
+  }
+
+  .vscroll .thumb {
+    left: 3px;
+    right: 3px;
+  }
+
+  .hscroll .thumb {
+    top: 3px;
+    bottom: 3px;
+  }
+
+  /* Wheel here zooms horizontally (existing binding). Drawn, so it is findable. */
+  .zoomStrip {
+    flex: 1 1 auto;
+    background: var(--ui-g2);
+    border-top: 1px solid var(--ui-g4);
+    cursor: ns-resize;
+  }
+
+  .zoomStrip:hover {
+    background: var(--ui-g3);
+  }
+
+  /* ── Splitter between grid and event lane ──────────────────────────────── */
+  .splitter {
+    grid-column: 1 / -1;
+    position: relative;
+    background: var(--ui-g2);
+    border-top: 1px solid var(--ui-g4);
+    border-bottom: 1px solid var(--ui-g4);
+    cursor: ns-resize;
+    outline: none;
+  }
+
+  /* 24px hit area around a 4px rule. */
+  .splitter::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: -10px;
+    bottom: -10px;
+    z-index: 1;
+  }
+
+  .splitter:hover,
+  .splitter[data-dragging='true'] {
+    background: var(--ui-boundary);
+  }
+
+  .splitter:focus-visible {
+    background: var(--ui-select);
+  }
+
+  /* ── Event lane gutter ─────────────────────────────────────────────────── */
+  .laneGutter {
+    position: relative;
+    background: var(--ui-g2);
+    border-right: 1px solid var(--ui-g4);
+  }
+
+  .laneTarget {
+    position: absolute;
+    left: var(--space-1);
+    top: var(--space-1);
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+    line-height: 16px;
+  }
+
+  .laneAxis {
+    position: absolute;
+    right: var(--space-1);
+    font-size: var(--type-10);
+    color: var(--ui-ink-3);
+    line-height: 12px;
+  }
+
+  .laneAxisTop { top: 22px; }
+  .laneAxisMid { top: calc(50% - 6px); }
+  .laneAxisBottom { bottom: 2px; }
+
+  .lane {
+    background: var(--ui-g0);
+    cursor: ns-resize;
+  }
+}

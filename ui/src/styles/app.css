@@ -5219,61 +5219,6 @@ html.fx-drag-active * {
   color: #d4d4d4;
 }
 
-/* Piano Roll scrollbars */
-.piano-roll-scrollbar-v {
-  position: relative;
-  background: #0d0d0d;
-  border-left: 1px solid #222;
-  cursor: default;
-  flex-shrink: 0;
-}
-
-.piano-roll-scrollbar-h-wrap {
-  display: flex;
-  flex-direction: column;
-  flex-shrink: 0;
-}
-
-.piano-roll-scrollbar-h {
-  position: relative;
-  background: #0d0d0d;
-  border-top: 1px solid #222;
-  cursor: default;
-}
-
-.piano-roll-scrollbar-thumb {
-  position: absolute;
-  left: 1px;
-  background: var(--theme-pianoroll-scrollbar-thumb);
-  border-radius: 4px;
-  cursor: grab;
-  transition: background 0.12s;
-}
-
-.piano-roll-scrollbar-thumb:hover {
-  background: var(--theme-pianoroll-scrollbar-thumb-hover);
-}
-
-.piano-roll-scrollbar-thumb:active {
-  cursor: grabbing;
-  background: var(--theme-accent);
-}
-
-.piano-roll-scrollbar-thumb-h {
-  left: auto;
-  top: 1px;
-}
-
-.piano-roll-zoom-gutter {
-  background: var(--theme-bg-inset);
-  border-top: 1px solid var(--theme-border-subtle);
-  cursor: ns-resize;
-}
-
-.piano-roll-zoom-gutter:hover {
-  background: var(--theme-bg-hover);
-}
-
 .piano-roll-toolbar {
   display: flex;
   align-items: center;
@@ -5409,31 +5354,6 @@ html.fx-drag-active * {
   pointer-events: none;
 }
 .piano-roll-ruler-tick.bar { color: #b4b4b4; }
-
-/* ── Velocity lane gutter (axis + label) ───────────────────────────────── */
-.piano-roll-velocity-gutter {
-  position: relative;
-  flex-shrink: 0;
-  background: #181818;
-  border-right: 1px solid #222;
-  border-top: 1px solid #222;
-}
-.piano-roll-velocity-title {
-  position: absolute;
-  left: 6px;
-  top: 4px;
-  font-size: 10px;
-  letter-spacing: 0.12em;
-  text-transform: uppercase;
-  color: #929292;
-}
-.piano-roll-velocity-axis {
-  position: absolute;
-  right: 5px;
-  font-size: 10px;
-  color: #929292;
-  font-variant-numeric: tabular-nums;
-}
 
 .timeline-toolbar-button {
   display: flex;

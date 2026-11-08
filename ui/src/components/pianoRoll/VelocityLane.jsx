@@ -2,6 +2,7 @@ import { useEffect, useRef, useCallback, useState, forwardRef, useImperativeHand
 import { ticksToBeats } from '../../constants/timeline.js'
 
 import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
+import styles from './PianoRoll.module.css'
 // Flat redesign palette (matches PianoRollCanvas MOCK).
 const VEL_BG = '#181818'
 const ACCENT_RGB = '0, 184, 150'
@@ -35,10 +36,8 @@ const VelocityLane = forwardRef(function VelocityLane({
     const c = canvasRef.current
     if (!c) return
     const dpr = window.devicePixelRatio || 1
-    c.width = width * dpr
-    c.height = height * dpr
-    c.style.width = `${width}px`
-    c.style.height = `${height}px`
+    c.width = Math.max(1, Math.round(width * dpr))
+    c.height = Math.max(1, Math.round(height * dpr))
     const ctx = c.getContext('2d')
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
   }, [width, height, dprEpoch])
@@ -187,19 +186,12 @@ const VelocityLane = forwardRef(function VelocityLane({
   return (
     <div
       ref={containerRef}
-      className="piano-roll-velocity-lane"
-      style={{
-        position: 'relative',
-        width,
-        height,
-        background: VEL_BG,
-        borderTop: '1px solid #222',
-        cursor: 'ns-resize',
-        flexShrink: 0,
-      }}
+      className={`${styles.cell} ${styles.lane}`}
       onMouseDown={handleMouseDown}
+      data-hint="Velocity"
+      data-hint-mods="Drag a stem: set velocity · Selected stems move together"
     >
-      <canvas ref={canvasRef} />
+      <canvas ref={canvasRef} className={styles.layer} />
     </div>
   )
 })

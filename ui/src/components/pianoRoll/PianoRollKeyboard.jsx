@@ -110,7 +110,7 @@ const PianoRollKeyboard = forwardRef(function PianoRollKeyboard({
       className="piano-roll-keyboard"
       style={{
         position: 'relative',
-        width: 60,
+        width: '100%',
         height: height,
         overflow: 'hidden',
         background: '#0d0d0d',
