@@ -568,4 +568,99 @@
     font-size: var(--type-13);
     font-weight: var(--weight-semibold);
   }
+
+  /* ── Separation strip and spectral selection bar ────────────────────── */
+  .sep {
+    flex: 0 0 auto;
+    display: flex;
+    flex-direction: column;
+    background: var(--ui-g2);
+    border-top: 1px solid var(--ui-g4);
+  }
+
+  .sepRow {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1) var(--space-2);
+    padding: var(--space-1) var(--space-2);
+  }
+
+  .sepRow + .sepRow { border-top: 1px solid var(--ui-g4); }
+
+  .sepTitle {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-1);
+    font-size: var(--type-12);
+    font-weight: var(--weight-semibold);
+  }
+
+  .sepProgress { flex: 1 1 240px; min-width: 160px; }
+
+  .sepMeta {
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .sepStatus {
+    flex: 1 1 200px;
+    min-width: 0;
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+    overflow-wrap: anywhere;
+  }
+
+  .sepError { color: var(--theme-semantic-danger-text, var(--ui-rec-text)); }
+
+  .sepDevice {
+    font-family: var(--ui-font-mono);
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+
+  .sepLicenseText {
+    flex: 1 1 280px;
+    min-width: 0;
+    font-size: var(--type-11);
+    line-height: 1.4;
+  }
+
+  .sepLink {
+    font-size: var(--type-11);
+    color: var(--ui-ink);
+    text-decoration: underline;
+  }
+
+  .sepFootnote {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1) var(--space-2);
+    padding: var(--space-1) var(--space-2);
+    border-top: 1px solid var(--ui-g4);
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
+
+  .selbar {
+    position: absolute;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 6;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1) var(--space-2);
+    padding: var(--space-1) var(--space-2);
+    background: var(--ui-g2);
+    border-top: 1px solid var(--ui-g4);
+  }
+
+  .selbarCount {
+    font-size: var(--type-11);
+    color: var(--ui-ink-2);
+  }
 }

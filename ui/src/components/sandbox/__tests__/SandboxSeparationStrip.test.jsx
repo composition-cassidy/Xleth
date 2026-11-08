@@ -201,7 +201,7 @@ describe('Sample Sandbox separation UI (SandboxMenuBar SEPARATE + SandboxSeparat
     // 40 + 60 * 3.09 = 225 s on cpu. One figure for both is how a
     // four-minute job looks like a hang.
     const { host } = track(await mount({ withMenu: false }))
-    const status = host.querySelector('.sandbox-separation-status').textContent
+    const status = host.querySelector('[data-sep-status]').textContent
     expect(status).toContain('FAST 3s on cuda')
     expect(status).toContain('BALANCED 3m 45s on cpu')
   })
@@ -229,7 +229,7 @@ describe('Sample Sandbox separation UI (SandboxMenuBar SEPARATE + SandboxSeparat
       },
     }))
 
-    const row = host.querySelector('.sandbox-separation-license')
+    const row = host.querySelector('[data-sep-license]')
     expect(row).not.toBeNull()
     expect(row.textContent).toContain(NC_TEXT)
 
@@ -237,7 +237,7 @@ describe('Sample Sandbox separation UI (SandboxMenuBar SEPARATE + SandboxSeparat
     const link = row.querySelector('a')
     expect(link.href).toContain('creativecommons.org/licenses/by-nc/4.0')
 
-    const accept = row.querySelector('.sandbox-separation-license-accept')
+    const accept = row.querySelector('[data-sep-license-accept]')
     expect(accept).not.toBeNull()
 
     const acceptLicense = vi.fn(async () => null)
@@ -253,7 +253,7 @@ describe('Sample Sandbox separation UI (SandboxMenuBar SEPARATE + SandboxSeparat
       withMenu: false,
       separationState: { licensePrompt: { modelId: 'deux', tier: 'balanced', message: NC_TEXT } },
     }))
-    expect(host.querySelector('.sandbox-status-item.error')).toBeNull()
+    expect(host.querySelector('[data-sep-error]')).toBeNull()
   })
 
   it('a tier missing its own packages does not disable the other one', async () => {
@@ -311,33 +311,33 @@ describe('Sample Sandbox separation UI (SandboxMenuBar SEPARATE + SandboxSeparat
 
   it('the advanced row is hidden until EFFECT ▾ → Advanced is pressed, then exposes DE-BLEED and ENSEMBLE', async () => {
     const { host } = track(await mount())
-    expect(host.querySelector('.sandbox-separation-advanced')).toBeNull()
+    expect(host.querySelector('[data-sep-advanced]')).toBeNull()
 
     await openEffectMenu(host)
     const openAdvanced = [...document.querySelectorAll('[role="menuitem"]')]
       .find((b) => b.textContent.includes('Advanced'))
     await act(async () => { openAdvanced.dispatchEvent(new MouseEvent('click', { bubbles: true })) })
 
-    const row = host.querySelector('.sandbox-separation-advanced')
+    const row = host.querySelector('[data-sep-advanced]')
     expect(row).not.toBeNull()
-    expect(row.textContent).toContain('DE-BLEED')
-    expect(row.textContent).toContain('ENSEMBLE')
+    expect(row.textContent).toContain('De-bleed')
+    expect(row.textContent).toContain('Ensemble')
   })
 
   it('checking ENSEMBLE defaults a pair from the two runnable tiers and can run it', async () => {
     const { host, useSeparationStore } = track(await mount({ withMenu: false }))
     await act(async () => {
-      host.querySelector('.sandbox-separation-advanced-toggle')
+      host.querySelector('[data-sep-advanced-toggle]')
         .dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    const [debleedBox, ensembleBox] = host.querySelectorAll('.sandbox-separation-checkbox input')
+    const [debleedBox, ensembleBox] = host.querySelectorAll('[data-sep-advanced] input[type="checkbox"]')
     await act(async () => { ensembleBox.click() })
 
     // FAST + BALANCED are the only two runnable candidates in this fixture.
     expect(useSeparationStore.getState().ensembleMode).toBe(true)
     expect(useSeparationStore.getState().ensemblePair).toEqual(['fast', 'balanced'])
 
-    const run = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Run')
+    const run = [...host.querySelectorAll('button')].find((b) => b.textContent === 'Run ensemble')
     expect(run).not.toBeNull()
     expect(run.disabled).toBe(false)
 
@@ -350,10 +350,10 @@ describe('Sample Sandbox separation UI (SandboxMenuBar SEPARATE + SandboxSeparat
   it('DE-BLEED is carried on an ordinary tier run (EFFECT ▾ → SEPARATE) once checked', async () => {
     const { host } = track(await mount())
     await act(async () => {
-      host.querySelector('.sandbox-separation-advanced-toggle')
+      host.querySelector('[data-sep-advanced-toggle]')
         .dispatchEvent(new MouseEvent('click', { bubbles: true }))
     })
-    const [debleedBox] = host.querySelectorAll('.sandbox-separation-checkbox input')
+    const [debleedBox] = host.querySelectorAll('[data-sep-advanced] input[type="checkbox"]')
     await act(async () => { debleedBox.click() })
 
     await openEffectMenu(host)
@@ -366,7 +366,7 @@ describe('Sample Sandbox separation UI (SandboxMenuBar SEPARATE + SandboxSeparat
   it('quotes no estimate when there is no layer to scale one from', async () => {
     // An estimate with no input is a made-up number.
     const { host } = track(await mount({ withMenu: false, layers: [], activeLayerId: null }))
-    const status = host.querySelector('.sandbox-separation-status').textContent
+    const status = host.querySelector('[data-sep-status]').textContent
     expect(status).toContain('Select a layer')
     expect(status).not.toContain('on cpu')
   })

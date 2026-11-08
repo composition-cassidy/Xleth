@@ -4,6 +4,7 @@ import { resolveView, viewSpan, isFitted } from './sandboxView.js'
 import { tokenValue } from '../../theming/tokenValue.ts'
 
 import { useThemeEpoch } from '../../theming/useThemeEpoch.js'
+import styles from './SandboxCanvas.module.css'
 // ── Overview strip ──────────────────────────────────────────────────────────
 //
 // The whole buffer at a glance, with the visible window drawn over it. Once
@@ -189,7 +190,7 @@ export default function SandboxOverviewStrip() {
   return (
     <canvas
       ref={canvasRef}
-      className="sandbox-overview-strip"
+      className={styles.overview}
       style={{ height: STRIP_H }}
       onMouseDown={handleDown}
       onMouseMove={handleHover}

@@ -3,6 +3,8 @@ import { Volume1, Volume2, VolumeX, Layers } from 'lucide-react'
 import useSandboxStore, {
   SPECTRAL_PAINT_AMOUNT_DB_MIN, SPECTRAL_PAINT_AMOUNT_DB_MAX,
 } from '../../stores/sandboxStore.js'
+import { Button, NumberBox } from '../../ui-kit'
+import styles from './Sandbox.module.css'
 
 // SPC selection action bar — mounted ONLY over the spectrogram view once a
 // rect/freehand t×f selection exists (see SandboxPanelContent). Every button
@@ -40,48 +42,42 @@ export default function SandboxSpcSelectionActionBar() {
   const shapeCount = spcSelection.shapes.length
 
   return (
-    <div className="sandbox-selection-bar sandbox-spc-selection-bar">
-      <span className="sandbox-toolstrip-hint">
+    <div className={styles.selbar} role="toolbar" aria-label="Spectral selection actions">
+      <span className={styles.selbarCount}>
         {shapeCount === 1 ? '1 region selected' : `${shapeCount} regions selected`}
       </span>
 
-      <div className="sandbox-toolbar-divider" />
+      <div className={styles.divider} />
 
-      <input
-        className="sandbox-toolbar-number"
-        type="number" step="1" min="0" max={-SPECTRAL_PAINT_AMOUNT_DB_MIN}
-        value={attenuateDb}
-        onChange={(e) => setAttenuateDb(Number(e.target.value))}
-        title="Attenuation amount, dB"
+      <NumberBox
+        label="Attenuation" width={72} min={0} max={-SPECTRAL_PAINT_AMOUNT_DB_MIN} step={1} unit="dB"
+        quantize={Math.round} defaultValue={24} value={attenuateDb} onChange={setAttenuateDb}
       />
-      <button className="sandbox-tool-btn" onClick={() => attenuateSpcSelection(activeLayerId, attenuateDb)}
-        title="Attenuate the selected time × frequency region">
-        <Volume1 size={14} /><span>Attenuate</span>
-      </button>
+      <Button glyph={<Volume1 />} onClick={() => attenuateSpcSelection(activeLayerId, attenuateDb)}
+        hint="Attenuate" hintMods="Attenuate the selected time by frequency region">
+        Attenuate
+      </Button>
 
-      <input
-        className="sandbox-toolbar-number"
-        type="number" step="1" min="0" max={SPECTRAL_PAINT_AMOUNT_DB_MAX}
-        value={boostDb}
-        onChange={(e) => setBoostDb(Number(e.target.value))}
-        title="Boost amount, dB"
+      <NumberBox
+        label="Boost" width={72} min={0} max={SPECTRAL_PAINT_AMOUNT_DB_MAX} step={1} unit="dB"
+        quantize={Math.round} defaultValue={12} value={boostDb} onChange={setBoostDb}
       />
-      <button className="sandbox-tool-btn" onClick={() => boostSpcSelection(activeLayerId, boostDb)}
-        title="Boost the selected time × frequency region">
-        <Volume2 size={14} /><span>Boost</span>
-      </button>
+      <Button glyph={<Volume2 />} onClick={() => boostSpcSelection(activeLayerId, boostDb)}
+        hint="Boost" hintMods="Boost the selected time by frequency region">
+        Boost
+      </Button>
 
-      <button className="sandbox-tool-btn" onClick={() => muteSpcSelection(activeLayerId)}
-        title="Silence the selected time × frequency region">
-        <VolumeX size={14} /><span>Mute</span>
-      </button>
+      <Button glyph={<VolumeX />} onClick={() => muteSpcSelection(activeLayerId)}
+        hint="Mute" hintMods="Silence the selected time by frequency region">
+        Mute
+      </Button>
 
-      <div className="sandbox-toolbar-divider" />
+      <div className={styles.divider} />
 
-      <button className="sandbox-tool-btn" onClick={() => copySpcSelectionToNewLayer(activeLayerId)}
-        title="Extract the selected region into a new layer, leaving this layer untouched">
-        <Layers size={14} /><span>Copy to New Layer</span>
-      </button>
+      <Button glyph={<Layers />} onClick={() => copySpcSelectionToNewLayer(activeLayerId)}
+        hint="Copy to new layer" hintMods="Extract the selected region into a new layer, leaving this layer untouched">
+        Copy to new layer
+      </Button>
     </div>
   )
 }

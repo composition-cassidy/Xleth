@@ -3,6 +3,8 @@ import { Waves, X, Info, ShieldAlert, Sliders } from 'lucide-react'
 
 import useSandboxStore from '../../stores/sandboxStore.js'
 import useSeparationStore, { SEPARATION_TERMINAL_STATES } from '../../stores/separationStore.js'
+import { Button, Checkbox, IconButton, Progress, Select } from '../../ui-kit'
+import styles from './Sandbox.module.css'
 
 // Bottom strip — tiered vocal separation (P4) progress/license/advanced UI.
 // The tier BUTTONS themselves (FAST/BALANCED/BEST) now live in
@@ -37,6 +39,9 @@ import useSeparationStore, { SEPARATION_TERMINAL_STATES } from '../../stores/sep
 //   * SO IS THE ESTIMATE. The same CPU runs FAST at 0.33x realtime and
 //     BALANCED at 3.1x plus a 40-second fixed cost. Quoting one figure for
 //     both is how a nine-minute job looks like a hang.
+
+/** "BALANCED" -> "Balanced" */
+const sentence = (v) => (v ? String(v).charAt(0).toUpperCase() + String(v).slice(1).toLowerCase() : v)
 
 export const FALLBACK_TIERS = [
   { id: 'fast', label: 'FAST', enabled: true, hint: 'MDX-Net Kim Vocal 2 — vocals + instrumental' },
@@ -255,136 +260,119 @@ export default function SandboxSeparationStrip({ advancedOpen, onToggleAdvanced 
       .filter(Boolean)
     : []
 
+  const tierOptions = ensembleCandidateTiers.map((t) => ({ value: t.id, label: sentence(t.label) }))
+
   return (
-    <div className="sandbox-separation-strip">
-      <div className="sandbox-separation-row">
-        <span className="sandbox-separation-title">
-          <Waves size={12} />
-          Separate{running && job?.tier ? ` — ${job.tier.toUpperCase()}` : ''}
+    <div className={styles.sep}>
+      <div className={styles.sepRow}>
+        <span className={styles.sepTitle}>
+          <Waves size={12} aria-hidden="true" />
+          Separate{running && job?.tier ? `: ${sentence(job.tier)}` : ''}
         </span>
 
-        <button
-          className={`sandbox-separation-advanced-toggle${advancedOpen ? ' active' : ''}`}
+        <IconButton
+          size="sm"
+          label="Advanced separation options"
+          pressed={advancedOpen}
           onClick={onToggleAdvanced}
-          title="Advanced: ENSEMBLE (average two models) and DE-BLEED (reduce cross-talk between stems)"
+          data-sep-advanced-toggle=""
+          hint="Advanced separation"
+          hintMods="Ensemble (average two models) and de-bleed (reduce cross-talk between stems)"
         >
-          <Sliders size={11} />
-        </button>
+          <Sliders />
+        </IconButton>
 
-        <div className="sandbox-toolstrip-divider" />
+        <div className={styles.divider} />
 
         {running ? (
           <>
-            <div className="sandbox-separation-progress" title={job.detail || ''}>
-              <div
-                className="sandbox-separation-progress-fill"
-                style={{ width: `${Math.round((job.progress ?? 0) * 100)}%` }}
+            <div className={styles.sepProgress} title={job.detail || ''}>
+              <Progress
+                label="Separation progress"
+                value={job.progress ?? 0}
+                text={`${PHASE_LABEL[job.phase] ?? job.phase}${job.detail ? `: ${job.detail}` : ''}`}
               />
             </div>
-            <span className="sandbox-separation-phase">
-              {PHASE_LABEL[job.phase] ?? job.phase}
-              {job.detail ? ` — ${job.detail}` : ''}
-            </span>
             {formatDuration(job.etaSeconds) && (
-              <span className="sandbox-separation-eta">
+              <span className={styles.sepMeta}>
                 {job.etaMeasured ? '' : '~'}{formatDuration(job.etaSeconds)} left
               </span>
             )}
-            <button className="sandbox-separation-cancel" onClick={() => cancel()} title="Cancel this separation">
-              <X size={11} /> Cancel
-            </button>
+            <Button size="sm" glyph={<X />} onClick={() => cancel()} hint="Cancel this separation">
+              Cancel separation
+            </Button>
           </>
         ) : (
-          <span className="sandbox-separation-status">
+          <span className={styles.sepStatus} data-sep-status="">
             {jobError
-              ? <span className="sandbox-status-item error">{jobError}</span>
+              ? <span className={styles.sepError} data-sep-error="">{jobError}</span>
               : job?.state === 'cancelled'
                 ? 'Cancelled'
                 : importState === 'done' && importedStems.length
-                  ? `Added ${importedStems.length} stem${importedStems.length === 1 ? '' : 's'} as layers: ${importedStems.map((s) => s.name).join(', ')}`
+                  ? `Added ${importedStems.length} stem${importedStems.length === 1 ? '' : 's'} as layers: ${importedStems.map((st) => st.name).join(', ')}`
                   : globalReason
                     || (estimates.length ? estimates.join('  ·  ') : 'Stems are added as new layers')}
           </span>
         )}
 
-        <div className="sandbox-toolstrip-spacer" />
+        <div className={styles.spacer} />
 
         {job?.device && (
-          <span className="sandbox-separation-device" title="Compute device the sidecar selected for this model">
+          <span className={styles.sepDevice} title="Compute device the sidecar selected for this model">
             {job.device}
           </span>
         )}
         {!running && (job || jobError) && (
-          <button className="sandbox-separation-cancel" onClick={clearJob} title="Clear this result">
-            Clear
-          </button>
+          <Button size="sm" onClick={clearJob} hint="Clear this result">Clear result</Button>
         )}
       </div>
 
       {/*
-        Advanced: ENSEMBLE and DE-BLEED. Both opt-in, both orthogonal to the
-        tier buttons above — pressing a tier still runs a single model, this
-        row is the alternate "run two and average" path plus a post-pass
-        that composes with either one.
+        Advanced: ensemble and de-bleed. Both opt-in, both orthogonal to the
+        tier entries in the Effect menu: choosing a tier still runs a single
+        model, this row is the alternate "run two and average" path plus a
+        post-pass that composes with either one.
       */}
       {advancedOpen && (
-        <div className="sandbox-separation-row sandbox-separation-advanced">
-          <label className="sandbox-separation-checkbox">
-            <input
-              type="checkbox"
-              checked={deBleed}
-              onChange={(e) => setDeBleed(e.target.checked)}
-            />
-            DE-BLEED
-          </label>
-          <span className="sandbox-separation-advanced-hint">
-            reduce cross-talk between the two stems after separation
-          </span>
+        <div className={`${styles.sepRow} ${styles.sepAdvanced}`} data-sep-advanced="">
+          <Checkbox checked={deBleed} onChange={setDeBleed}>De-bleed</Checkbox>
+          <span className={styles.sepMeta}>reduce cross-talk between the two stems after separation</span>
 
-          <div className="sandbox-toolstrip-divider" />
+          <div className={styles.divider} />
 
-          <label className="sandbox-separation-checkbox">
-            <input
-              type="checkbox"
-              checked={ensembleMode}
-              disabled={ensembleCandidateTiers.length < 2}
-              onChange={(e) => setEnsembleMode(e.target.checked)}
-            />
-            ENSEMBLE
-          </label>
+          <Checkbox
+            checked={ensembleMode}
+            disabled={ensembleCandidateTiers.length < 2}
+            onChange={setEnsembleMode}
+          >
+            Ensemble
+          </Checkbox>
 
           {ensembleMode && ensembleCandidateTiers.length >= 2 ? (
             <>
-              <select
-                className="sandbox-separation-ensemble-select"
+              <Select
+                size="sm" ariaLabel="First ensemble model" options={tierOptions}
                 value={ensemblePair?.[0] || ''}
-                onChange={(e) => setEnsemblePair([e.target.value, ensemblePair?.[1] || ''])}
-              >
-                {ensembleCandidateTiers.map((t) => (
-                  <option key={t.id} value={t.id}>{t.label}</option>
-                ))}
-              </select>
-              <span className="sandbox-separation-advanced-hint">+</span>
-              <select
-                className="sandbox-separation-ensemble-select"
+                onChange={(v) => setEnsemblePair([v, ensemblePair?.[1] || ''])}
+              />
+              <span className={styles.sepMeta}>+</span>
+              <Select
+                size="sm" ariaLabel="Second ensemble model" options={tierOptions}
                 value={ensemblePair?.[1] || ''}
-                onChange={(e) => setEnsemblePair([ensemblePair?.[0] || '', e.target.value])}
-              >
-                {ensembleCandidateTiers.map((t) => (
-                  <option key={t.id} value={t.id}>{t.label}</option>
-                ))}
-              </select>
-              <button
-                className="sandbox-separation-tier"
+                onChange={(v) => setEnsemblePair([ensemblePair?.[0] || '', v])}
+              />
+              <Button
+                size="sm"
                 disabled={!!globalReason || !ensemblePair || ensemblePair[0] === ensemblePair[1]}
                 onClick={() => separateActiveLayerEnsemble()}
-                title="Run both models and average their common stems"
+                hint="Run ensemble"
+                hintMods="Run both models and average their common stems"
               >
-                Run
-              </button>
+                Run ensemble
+              </Button>
             </>
           ) : (
-            <span className="sandbox-separation-advanced-hint">
+            <span className={styles.sepMeta}>
               {ensembleCandidateTiers.length < 2
                 ? 'needs two runnable tiers'
                 : 'average two different models’ stems, sample-aligned'}
@@ -401,12 +389,12 @@ export default function SandboxSeparationStrip({ advancedOpen, onToggleAdvanced 
         consent to something they never read.
       */}
       {licensePrompt && (
-        <div className="sandbox-separation-license">
-          <ShieldAlert size={12} />
-          <span className="sandbox-separation-license-text">{licensePrompt.message}</span>
+        <div className={styles.sepRow} data-sep-license="">
+          <ShieldAlert size={12} aria-hidden="true" />
+          <span className={styles.sepLicenseText}>{licensePrompt.message}</span>
           {licensePrompt.licenseUrl && (
             <a
-              className="sandbox-separation-linklike"
+              className={styles.sepLink}
               href={licensePrompt.licenseUrl}
               target="_blank"
               rel="noreferrer noopener"
@@ -414,20 +402,18 @@ export default function SandboxSeparationStrip({ advancedOpen, onToggleAdvanced 
               Read {licensePrompt.spdx || 'the licence'}
             </a>
           )}
-          <button className="sandbox-separation-license-accept" onClick={() => acceptLicense()}>
-            I understand — continue
-          </button>
-          <button className="sandbox-separation-cancel" onClick={declineLicense}>
-            Not now
-          </button>
+          <Button size="sm" variant="primary" data-sep-license-accept="" onClick={() => acceptLicense()}>
+            I understand, continue
+          </Button>
+          <Button size="sm" onClick={declineLicense}>Not now</Button>
         </div>
       )}
 
       {(attributions.length > 0 || pythonMissing || runtimeBroken) && (
-        <div className="sandbox-separation-footnote">
-          <Info size={10} />
+        <div className={styles.sepFootnote}>
+          <Info size={12} aria-hidden="true" />
           {runtimeBroken && !pythonMissing ? (
-            <span className="sandbox-status-item error">
+            <span className={styles.sepError} data-sep-error="">
               {status.runtimeError
                 || `The separation sidecar is missing ${missingPackages}. XLETH's bundled runtime looks incomplete — reinstalling should fix it.`}
             </span>
@@ -444,14 +430,15 @@ export default function SandboxSeparationStrip({ advancedOpen, onToggleAdvanced 
                 XLETH&rsquo;s bundled Python runtime is missing, so separation
                 cannot start. Reinstalling XLETH restores it.
               </span>
-              <button
-                className="sandbox-separation-linklike"
+              <Button
+                size="sm"
+                variant="ghost"
                 onClick={() => checkEnvironment()}
                 disabled={environmentState === 'loading'}
               >
                 {environmentState === 'loading' ? 'Checking…' : 'Check environment'}
-              </button>
-              {environment?.error && <span className="sandbox-status-item error">{environment.error}</span>}
+              </Button>
+              {environment?.error && <span className={styles.sepError} data-sep-error="">{environment.error}</span>}
             </>
           ) : (
             // These weights are licensed on condition of credit. Showing the

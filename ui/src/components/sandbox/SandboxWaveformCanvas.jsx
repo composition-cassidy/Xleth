@@ -20,6 +20,7 @@ import useSandboxStore, {
 import { computeAutotuneCorrectionCurve, allowedPitchClasses, quantizeToNearestNote } from './autotuneCorrectionPreview.js'
 
 import { subscribeDpr } from '../../ui-kit/dpr'
+import styles from './SandboxCanvas.module.css'
 // Fallback used only before the first layout measurement, and as a floor so
 // a squeezed panel never hands the canvas a degenerate (near-zero) height.
 const MIN_WAVE_HEIGHT = 160
@@ -201,8 +202,8 @@ const SPC_FREQ_MIN_HZ = 20
 const SPC_FREQ_MAX_HZ = 20000
 // Labeled gridlines. Was just [100, 1000, 10000] when the card was ~96px
 // tall — too little room for more without labels colliding. Now that the
-// active card gets real height (see .sandbox-layer-card.active
-// .sandbox-layer-card-wave in sandbox.css), fill in the octave-ish landmarks
+// active card gets real height (see the editor pane in Sandbox.module.css
+// for its height), fill in the octave-ish landmarks
 // between them.
 const SPC_GRID_HZ = [100, 200, 500, 1000, 2000, 5000, 10000]
 
@@ -1914,45 +1915,45 @@ export default function SandboxWaveformCanvas() {
   // that indexes into it and left the two describing the same axis from
   // opposite ends of the panel.
   return (
-    <div className="sandbox-waveform-area" ref={containerRef}>
+    <div className={styles.area} ref={containerRef}>
       <SandboxOverviewStrip />
-      <canvas ref={rulerCanvasRef} className="sandbox-ruler-canvas" onMouseDown={handleRulerSeek} />
+      <canvas ref={rulerCanvasRef} className={styles.ruler} onMouseDown={handleRulerSeek} />
       <div
-        className="sandbox-waveform-stack"
+        className={styles.stack}
         ref={stackRef}
         onMouseMove={handleStackHover}
         onMouseLeave={handleStackLeave}
       >
-        <canvas ref={bgCanvasRef} className="sandbox-waveform-bg" />
+        <canvas ref={bgCanvasRef} className={styles.layer} />
         <canvas
           ref={overlayCanvasRef}
-          className="sandbox-waveform-overlay"
+          className={`${styles.layer} ${styles.overlay}`}
           onMouseDown={handlePointerDown}
           onMouseMove={handleOverlayHover}
           onContextMenu={handleOverlayContextMenu}
         />
         <canvas
           ref={envCanvasRef}
-          className={`sandbox-waveform-env${envelopeEditMode ? ' editing' : ''}`}
+          className={`${styles.layer} ${styles.inert}`} data-editing={envelopeEditMode || undefined}
           onMouseDown={handleEnvDown}
           onContextMenu={handleEnvContextMenu}
         />
         <canvas
           ref={paintCanvasRef}
-          className={`sandbox-waveform-paint${paintEditMode ? ' editing' : ''}`}
+          className={`${styles.layer} ${styles.inert}`} data-editing={paintEditMode || undefined}
           onMouseDown={handlePaintDown}
         />
         <canvas
           ref={spcSelectCanvasRef}
-          className={`sandbox-waveform-spcselect${spcSelectMode ? ' editing' : ''}`}
+          className={`${styles.layer} ${styles.inert}`} data-editing={spcSelectMode || undefined}
           onMouseDown={handleSpcSelectDown}
         />
         <canvas
           ref={pitchCanvasRef}
-          className={`sandbox-waveform-pitch${autotuneOp?.params?.mode === 1 ? ' editing' : ''}`}
+          className={`${styles.layer} ${styles.inert}`} data-editing={autotuneOp?.params?.mode === 1 || undefined}
           onMouseDown={handlePitchDown}
         />
-        <canvas ref={playheadCanvasRef} className="sandbox-waveform-playhead" />
+        <canvas ref={playheadCanvasRef} className={`${styles.layer} ${styles.playhead}`} />
       </div>
       {contextAt && (
         <SandboxSelectionContextMenu at={contextAt} onClose={() => setContextAt(null)} />
