@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import ClipPictureSection from './ClipPictureSection.jsx'
-import { X, RotateCcw } from 'lucide-react'
+import { RotateCcw } from 'lucide-react'
+import { Button, IconButton, NumberBox, SegmentedControl, Select } from '../../ui-kit'
+import ClipFxWindow, { FxRow, FxSpacer, FxGrid, FxField, FxGraph, FxStatus, FxStaticChip } from './ClipFxWindow.jsx'
 import useClipScratchEditorStore from '../../stores/clipScratchEditorStore.js'
 import BreakpointCurveEditor from '../common/BreakpointCurveEditor.jsx'
 import { getTransportState, subscribe } from '../../transportStore.js'
@@ -86,44 +88,9 @@ const Y_LABELS = [
   { v: -1, text: '-1x' },
   { v: -2, text: '-2x' },
 ]
-const NOTES = [{ v: -1.6, text: 'REV', side: 'right' }]
+const NOTES = [{ v: -1.6, text: 'Reverse', side: 'right' }]
 
 const clampNum = (x, lo, hi) => (x < lo ? lo : x > hi ? hi : x)
-
-// A range input that drafts locally while dragging and commits once on release,
-// so a slider sweep is one engine write and one undo step — matching how the
-// clip dropdown's ClipSliderRow and the Vibrato editor's ScalarSlider behave.
-function ScalarSlider({ label, value, min, max, step, format, disabled, onCommit }) {
-  const [draft, setDraft] = useState(null)
-  const shown = draft ?? value
-
-  const commit = useCallback(() => {
-    setDraft((d) => {
-      if (d != null && d !== value) onCommit(d)
-      return null
-    })
-  }, [onCommit, value])
-
-  return (
-    <div className="clipfx-param">
-      <label className="clipfx-param-label">{label}</label>
-      <input
-        type="range"
-        className="clipfx-range"
-        min={min}
-        max={max}
-        step={step}
-        value={shown}
-        disabled={disabled}
-        onChange={(e) => setDraft(Number(e.target.value))}
-        onPointerUp={commit}
-        onKeyUp={commit}
-        onBlur={commit}
-      />
-      <span className="clipfx-param-value">{format(shown)}</span>
-    </div>
-  )
-}
 
 export default function ClipScratchEditorPanel() {
   const target = useClipScratchEditorStore(s => s.target)
@@ -293,85 +260,56 @@ export default function ClipScratchEditorPanel() {
     `${points.length} pts · ${modeLabel} · Edge: ${edgeLabel}${isCustom ? ' · Custom' : ''}`
 
   return (
-    <div
-      className="clipfx-window"
-      style={{ left: panelPos.x, top: panelPos.y, width: GRAPH_W + 16 }}
-      data-testid="clip-scratch-editor"
-      tabIndex={0}
+    <ClipFxWindow
+      title="Scratch"
+      subtitle={`Clip ${target.clipId} \u00b7 per clip \u00b7 rate graph`}
+      label="Scratch editor"
+      testId="clip-scratch-editor"
+      pos={panelPos}
+      width={GRAPH_W + 16}
+      onClose={close}
+      onTitlePointerDown={handleHeaderPointerDown}
     >
-      <div className="clipfx-titlebar" onPointerDown={handleHeaderPointerDown}>
-        <span className="clipfx-swatch" />
-        <span className="clipfx-title">Scratch</span>
-        <span className="clipfx-subtitle">
-          Clip {target.clipId} · Per-Clip · Rate Graph
-        </span>
-        <span className="clipfx-spacer" />
-        <button type="button" className="clipfx-close" onClick={close} title="Close">
-          <X size={12} />
-        </button>
-      </div>
-
-      <div className="clipfx-row">
-        <span className="clipfx-row-label">Stamp</span>
-        {SCRATCH_PRESET_CHIPS.map(([value, label]) => (
-          <button
-            key={value}
-            type="button"
-            className={`clipfx-chip${presetKey === value ? ' is-on' : ''}`}
-            onClick={() => stampPreset(value)}
-            title={`Stamp the ${label} curve`}
-          >
-            {label}
-          </button>
-        ))}
+      <FxRow label="Stamp">
+        <SegmentedControl
+          size="sm"
+          label="Scratch preset"
+          value={presetKey}
+          onChange={stampPreset}
+          options={SCRATCH_PRESET_CHIPS.map(([value, label]) => ({ value, label, hint: `Stamp the ${label} curve` }))}
+        />
         {isCustom && (
-          <span className="clipfx-chip is-on clipfx-chip-static" data-testid="scratch-custom-indicator">
-            Custom
-          </span>
+          <FxStaticChip testId="scratch-custom-indicator">Custom</FxStaticChip>
         )}
-        <span className="clipfx-spacer" />
-        <button
-          type="button" className="clipfx-icon-btn"
-          onClick={() => stampPreset('normal')} title="Reset to Normal"
-        >
-          <RotateCcw size={11} />
-        </button>
-      </div>
+        <FxSpacer />
+        <IconButton size="sm" label="Reset to Normal" onClick={() => stampPreset('normal')} hint="Reset to the Normal curve">
+          <RotateCcw size={14} aria-hidden="true" />
+        </IconButton>
+      </FxRow>
 
-      <div className="clipfx-row">
-        <span className="clipfx-row-label">Baby Gen</span>
-        <label className="clipfx-inline-label" htmlFor="clipfx-baby-count">Count</label>
-        <select
-          id="clipfx-baby-count"
-          className="clipfx-select"
+      <FxRow label="Baby gen" hint="Generators stamp points, then edit freely">
+        <Select
+          size="sm"
+          ariaLabel="Baby scratch count"
           value={babyCount}
-          onChange={(e) => setBabyCount(clampScratchCount(e.target.value))}
-        >
-          {[1, 2, 3, 4, 5, 6, 7, 8].map(n => <option key={n} value={n}>{n}</option>)}
-        </select>
-        <label className="clipfx-inline-label" htmlFor="clipfx-baby-len">Len</label>
-        <select
-          id="clipfx-baby-len"
-          className="clipfx-select"
+          options={[1, 2, 3, 4, 5, 6, 7, 8].map((n) => ({ value: n, label: `${n}` }))}
+          onChange={(v) => setBabyCount(clampScratchCount(v))}
+          hint="How many scratches"
+        />
+        <Select
+          size="sm"
+          ariaLabel="Baby scratch length"
           value={babyLength}
-          onChange={(e) => setBabyLength(normalizeScratchLengthBeats(e.target.value))}
-        >
-          {SCRATCH_BABY_LENGTHS.map(([length, label]) => (
-            <option key={length} value={length}>{label}</option>
-          ))}
-        </select>
-        <button
-          type="button" className="clipfx-chip"
-          onClick={() => stampPreset('babyScratch')}
-          title="Generate a baby-scratch curve from the count and length"
-        >
-          Generate →
-        </button>
-        <span className="clipfx-spacer" />
-        <span className="clipfx-row-hint">Generators stamp points — then edit freely</span>
-      </div>
+          options={SCRATCH_BABY_LENGTHS.map(([length, label]) => ({ value: length, label }))}
+          onChange={(v) => setBabyLength(normalizeScratchLengthBeats(v))}
+          hint="How long each scratch is"
+        />
+        <Button size="sm" onClick={() => stampPreset('babyScratch')} hint="Generate a baby-scratch curve from the count and length">
+          Generate
+        </Button>
+      </FxRow>
 
-      <div className="clipfx-graph-wrap">
+      <FxGraph hint={'Drag \u25c7 on a segment for tension'}>
         <BreakpointCurveEditor
           className="clipfx-graph"
           points={points}
@@ -404,68 +342,55 @@ export default function ClipScratchEditorPanel() {
           onHandleCommit={handleTensionCommit}
           onHandleReset={handleTensionReset}
         />
-        <span className="clipfx-graph-hint">Drag ◇ on a segment for tension</span>
-      </div>
+      </FxGraph>
 
-      <div className="clipfx-param-grid">
-        <div className="clipfx-param">
-          <label className="clipfx-param-label">Time Mode</label>
-          <div className="clipfx-seg" role="group" aria-label="Time mode">
-            {SCRATCH_TIME_MODES.map(([value, label]) => (
-              <button
-                key={value}
-                type="button"
-                className={`clipfx-seg-btn${timeMode === value ? ' is-on' : ''}`}
-                onClick={() => commitScratch({ timeMode: value })}
-              >{label}</button>
-            ))}
-          </div>
-          <span className="clipfx-param-value">
-            {`0 – ${xLabels[xLabels.length - 1]?.text ?? ''}`}
-          </span>
-        </div>
+      <FxGrid>
+        <FxField note={`0 \u2013 ${xLabels[xLabels.length - 1]?.text ?? ''}`}>
+          <SegmentedControl
+            size="sm"
+            label="Time mode"
+            value={timeMode}
+            onChange={(value) => commitScratch({ timeMode: value })}
+            options={SCRATCH_TIME_MODES.map(([value, label]) => ({ value, label }))}
+          />
+        </FxField>
 
-        <ScalarSlider
+        <NumberBox
           label="Smoothing"
           value={Number(smoothingMs.toFixed(1))}
           min={0} max={50} step={0.1}
-          format={(x) => `${Number(x).toFixed(1)} ms`}
+          unit="ms"
+          width={248}
           onCommit={(x) => commitScratch({ smoothingMs: x })}
+          hint="Smooths the rate between points"
         />
 
-        <div className="clipfx-param">
-          <label className="clipfx-param-label" htmlFor="clipfx-edge-mode">Edge Mode</label>
-          <select
-            id="clipfx-edge-mode"
-            className="clipfx-select"
+        <FxField note={presetKey === 'custom' ? 'Curve: Custom' : `Curve: ${presetKey}`}>
+          <Select
+            size="sm"
+            ariaLabel="Edge mode"
             value={edgeMode}
-            onChange={(e) => commitScratch({ edgeMode: e.target.value })}
-          >
-            {SCRATCH_EDGE_MODES.map(([value, label]) => (
-              <option key={value} value={value}>{label}</option>
-            ))}
-          </select>
-          <span className="clipfx-param-value">
-            {presetKey === 'custom' ? 'Curve: Custom' : `Curve: ${presetKey}`}
-          </span>
-        </div>
+            options={SCRATCH_EDGE_MODES.map(([value, label]) => ({ value, label }))}
+            onChange={(value) => commitScratch({ edgeMode: value })}
+            hint="What happens when the curve runs past the source"
+          />
+        </FxField>
 
-        <ScalarSlider
-          label="Gain Comp"
+        <NumberBox
+          label="Gain comp"
           value={Number(gainDb.toFixed(1))}
           min={SCRATCH_GAIN_COMP_MIN_DB} max={SCRATCH_GAIN_COMP_MAX_DB} step={0.5}
-          format={(x) => `${Number(x) > 0 ? '+' : ''}${Number(x).toFixed(1)} dB`}
+          unit="dB"
+          formatOptions={{ signed: true }}
+          width={248}
           onCommit={(x) => commitScratch({ gainCompensationDb: x })}
+          hint="Level compensation for the scratch"
         />
-      </div>
+      </FxGrid>
 
       <ClipPictureSection kind="wave" clip={clip} commitVideo={commitVideo} />
 
-      <div className="clipfx-status">
-        <span className={`clipfx-led${enabled ? ' is-on' : ''}`} />
-        <span>{enabled ? 'Active' : 'Off'}</span>
-        <span className="clipfx-status-right">{statusRight}</span>
-      </div>
-    </div>
+      <FxStatus enabled={enabled} right={statusRight} />
+    </ClipFxWindow>
   )
 }

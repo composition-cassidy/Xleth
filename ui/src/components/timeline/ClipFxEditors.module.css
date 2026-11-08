@@ -1,0 +1,203 @@
+/* The per-clip FX editor windows (DESIGN.md 22): Vibrato and Scratch. Floating, non-modal,
+ * kit controls on g1. The curve is one canvas (BreakpointCurveEditor) and stays canvas. */
+@layer kit {
+  .window {
+    position: fixed;
+    z-index: 200;
+    box-sizing: border-box;
+    display: flex;
+    flex-direction: column;
+    border: 1px solid var(--ui-boundary);
+    border-radius: var(--ui-radius-2);
+    background: var(--ui-g1);
+    box-shadow: var(--ui-shadow-float);
+    color: var(--ui-ink);
+    font-family: var(--ui-font);
+    font-size: var(--type-12);
+    font-variant-numeric: tabular-nums;
+    user-select: none;
+    outline: none;
+  }
+
+  .window:focus-visible {
+    border-color: var(--ui-select);
+  }
+
+  .titlebar {
+    flex: none;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    height: 32px;
+    padding: 0 var(--space-1) 0 var(--space-2);
+    border-bottom: 1px solid var(--ui-g4);
+    background: var(--ui-g2);
+    cursor: grab;
+  }
+
+  .titlebar:active {
+    cursor: grabbing;
+  }
+
+  .title {
+    font-size: var(--type-13);
+    font-weight: var(--weight-semibold);
+  }
+
+  .subtitle {
+    flex: 1 1 auto;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  .row {
+    flex: none;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    min-height: 36px;
+    padding: var(--space-1) var(--space-2);
+    border-bottom: 1px solid var(--ui-g4);
+  }
+
+  .rowLabel {
+    flex: 0 0 64px;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  .rowControls {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1);
+  }
+
+  .rowHint {
+    flex: none;
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  .chipStatic {
+    box-sizing: border-box;
+    display: inline-flex;
+    align-items: center;
+    height: var(--ctl-h-sm);
+    padding: 0 var(--space-2);
+    border: 1px solid var(--ui-ink);
+    border-radius: var(--ui-radius-1);
+    color: var(--ui-ink);
+    font-size: var(--type-12);
+  }
+
+  .grow {
+    flex: 1 1 auto;
+  }
+
+  .graphWrap {
+    position: relative;
+    flex: none;
+    padding: var(--space-1);
+    background: var(--ui-g1);
+  }
+
+  .graphWrap canvas {
+    display: block;
+    border: 1px solid var(--ui-boundary);
+    background: var(--ui-g0);
+  }
+
+  .graphHint {
+    position: absolute;
+    right: var(--space-2);
+    top: var(--space-2);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+    pointer-events: none;
+  }
+
+  /* Two columns of NumberBoxes, selects and segmented controls. */
+  .grid {
+    flex: none;
+    box-sizing: border-box;
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: var(--space-2);
+    padding: var(--space-2);
+    border-top: 1px solid var(--ui-g4);
+  }
+
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    min-width: 0;
+  }
+
+  .field > [role="radiogroup"] {
+    align-self: flex-start;
+  }
+
+  .fieldLabel {
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  .fieldNote {
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  .wide {
+    grid-column: 1 / -1;
+    flex-direction: row;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+
+  .status {
+    flex: none;
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    min-height: var(--hit-min);
+    padding: 0 var(--space-2);
+    border-top: 1px solid var(--ui-g4);
+    background: var(--ui-g2);
+    color: var(--ui-ink-2);
+    font-size: var(--type-11);
+  }
+
+  /* On is a filled square, off an outlined one: the word beside it says it too. */
+  .statusMark {
+    flex: none;
+    box-sizing: border-box;
+    width: 8px;
+    height: 8px;
+    border: 1px solid var(--ui-ink-2);
+  }
+
+  .statusMark[data-on="true"] {
+    border-color: var(--ui-value);
+    background: var(--ui-value);
+  }
+
+  .statusRight {
+    margin-left: auto;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    font-family: var(--ui-font-mono);
+  }
+}

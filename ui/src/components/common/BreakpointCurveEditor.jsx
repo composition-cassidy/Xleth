@@ -176,7 +176,7 @@ export default function BreakpointCurveEditor({
     // Axis labels and in-plot notes.
     if (labelCol && (xLabels || yLabels || notes)) {
       ctx.fillStyle = labelCol
-      ctx.font = '8px "Cascadia Mono", Consolas, monospace'
+      ctx.font = '10px "Cascadia Mono", Consolas, monospace'
       if (yLabels) {
         ctx.textAlign = 'right'
         for (const { v, text } of yLabels) ctx.fillText(text, g.left - 4, g.yOf(v) + 3)

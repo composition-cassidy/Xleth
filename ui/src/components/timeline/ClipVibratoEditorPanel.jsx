@@ -1,6 +1,8 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import ClipPictureSection from './ClipPictureSection.jsx'
-import { X, RotateCcw, Copy, ClipboardPaste } from 'lucide-react'
+import { RotateCcw, Copy, ClipboardPaste, Check } from 'lucide-react'
+import { IconButton, NumberBox, SegmentedControl, Select, Toggle, THIN_SPACE } from '../../ui-kit'
+import ClipFxWindow, { FxRow, FxSpacer, FxGrid, FxField, FxGraph, FxStatus } from './ClipFxWindow.jsx'
 import useClipVibratoEditorStore from '../../stores/clipVibratoEditorStore.js'
 import BreakpointCurveEditor from '../common/BreakpointCurveEditor.jsx'
 import {
@@ -51,41 +53,6 @@ const Y_LABELS = [{ v: 1, text: '+1' }, { v: 0, text: '0' }, { v: -1, text: '-1'
 let shapeClipboard = null
 
 const clampNum = (x, lo, hi) => (x < lo ? lo : x > hi ? hi : x)
-
-// A range input that drafts locally while dragging and commits once on release,
-// so a slider sweep is one engine write and one undo step — matching how the
-// clip dropdown's ClipSliderRow behaves.
-function ScalarSlider({ label, value, min, max, step, format, disabled, onCommit }) {
-  const [draft, setDraft] = useState(null)
-  const shown = draft ?? value
-
-  const commit = useCallback(() => {
-    setDraft((d) => {
-      if (d != null && d !== value) onCommit(d)
-      return null
-    })
-  }, [onCommit, value])
-
-  return (
-    <div className="clipfx-param">
-      <label className="clipfx-param-label">{label}</label>
-      <input
-        type="range"
-        className="clipfx-range"
-        min={min}
-        max={max}
-        step={step}
-        value={shown}
-        disabled={disabled}
-        onChange={(e) => setDraft(Number(e.target.value))}
-        onPointerUp={commit}
-        onKeyUp={commit}
-        onBlur={commit}
-      />
-      <span className="clipfx-param-value">{format(shown)}</span>
-    </div>
-  )
-}
 
 export default function ClipVibratoEditorPanel() {
   const target = useClipVibratoEditorStore(s => s.target)
@@ -182,57 +149,42 @@ export default function ClipVibratoEditorPanel() {
     ? `${points.length} pts · 1 cycle · ${rateHz.toFixed(2)} Hz · ${Math.round(depthCents)} ¢`
     : `${shapeLabel} · 1 cycle · ${rateHz.toFixed(2)} Hz · ${Math.round(depthCents)} ¢`
 
+  const syncDivision = vibrato?.syncDivision ?? 'eighth'
+  const syncLabel = (VIBRATO_SYNC_DIVISIONS.find(([v]) => v === syncDivision) ?? ['', '1/8'])[1]
+  const parseNumber = (text) => { const n = parseFloat(String(text).replace(',', '.')); return Number.isFinite(n) ? n : null }
+
   return (
-    <div
-      className="clipfx-window"
-      style={{ left: panelPos.x, top: panelPos.y, width: GRAPH_W + 16 }}
-      data-testid="clip-vibrato-editor"
-      tabIndex={0}
+    <ClipFxWindow
+      title="Vibrato"
+      subtitle={`Clip ${target.clipId} \u00b7 per clip \u00b7 ${shapeLabel}`}
+      label="Vibrato editor"
+      testId="clip-vibrato-editor"
+      pos={panelPos}
+      width={GRAPH_W + 16}
+      onClose={close}
+      onTitlePointerDown={handleHeaderPointerDown}
     >
-      <div className="clipfx-titlebar" onPointerDown={handleHeaderPointerDown}>
-        <span className="clipfx-swatch" />
-        <span className="clipfx-title">Vibrato</span>
-        <span className="clipfx-subtitle">
-          Clip {target.clipId} · Per-Clip · {shapeLabel}
-        </span>
-        <span className="clipfx-spacer" />
-        <button type="button" className="clipfx-close" onClick={close} title="Close">
-          <X size={12} />
-        </button>
-      </div>
+      <FxRow label="Shape">
+        <SegmentedControl
+          size="sm"
+          label="Vibrato shape"
+          value={shape}
+          onChange={handleSelectShape}
+          options={VIBRATO_SHAPE_CHIPS.map(([value, label]) => ({ value, label, hint: `${label} vibrato shape` }))}
+        />
+        <FxSpacer />
+        <IconButton size="sm" label="Copy shape" onClick={handleCopy} disabled={enginePoints.length < VIBRATO_MIN_POINTS} hint="Copy this shape">
+          <Copy size={14} aria-hidden="true" />
+        </IconButton>
+        <IconButton size="sm" label="Paste shape" onClick={handlePaste} disabled={!shapeClipboard} hint="Paste the copied shape">
+          <ClipboardPaste size={14} aria-hidden="true" />
+        </IconButton>
+        <IconButton size="sm" label="Reset shape" onClick={handleReset} hint="Reset the custom shape">
+          <RotateCcw size={14} aria-hidden="true" />
+        </IconButton>
+      </FxRow>
 
-      <div className="clipfx-row">
-        <span className="clipfx-row-label">Shape</span>
-        {VIBRATO_SHAPE_CHIPS.map(([value, label]) => (
-          <button
-            key={value}
-            type="button"
-            className={`clipfx-chip${shape === value ? ' is-on' : ''}`}
-            onClick={() => handleSelectShape(value)}
-            title={`${label} vibrato shape`}
-          >
-            {label}
-          </button>
-        ))}
-        <span className="clipfx-spacer" />
-        <button
-          type="button" className="clipfx-icon-btn" onClick={handleCopy}
-          disabled={enginePoints.length < VIBRATO_MIN_POINTS} title="Copy shape"
-        >
-          <Copy size={11} />
-        </button>
-        <button
-          type="button" className="clipfx-icon-btn" onClick={handlePaste}
-          disabled={!shapeClipboard} title="Paste shape"
-        >
-          <ClipboardPaste size={11} />
-        </button>
-        <button type="button" className="clipfx-icon-btn" onClick={handleReset} title="Reset shape">
-          <RotateCcw size={11} />
-        </button>
-      </div>
-
-      <div className="clipfx-graph-wrap">
+      <FxGraph hint={isCustom ? 'One cycle \u00b7 repeats at the rate' : 'Built-in shape \u00b7 pick Custom to edit'}>
         <BreakpointCurveEditor
           className="clipfx-graph"
           points={points}
@@ -252,89 +204,81 @@ export default function ClipVibratoEditorPanel() {
           onPreview={previewShape}
           onCommit={commitShape}
         />
-        <span className="clipfx-graph-hint">
-          {isCustom ? 'One cycle · repeats at rate' : 'Built-in shape — pick Custom to edit'}
-        </span>
-      </div>
+      </FxGraph>
 
-      <div className="clipfx-param-grid">
-        <ScalarSlider
+      <FxGrid>
+        <NumberBox
           label="Depth"
           value={Math.round(depthCents)}
           min={0} max={1200} step={1}
-          format={(x) => `${x} ¢`}
+          quantize={Math.round}
+          format={(x) => `${Math.round(x)}${THIN_SPACE}\u00a2`}
+          parse={parseNumber}
+          width={212}
           onCommit={(x) => commitVibrato({ depthCents: x })}
+          hint="Vibrato depth in cents"
         />
 
-        <div className="clipfx-param">
-          <label className="clipfx-param-label">Rate Mode</label>
-          <div className="clipfx-seg" role="group" aria-label="Rate mode">
-            <button
-              type="button"
-              className={`clipfx-seg-btn${!isSync ? ' is-on' : ''}`}
-              onClick={() => commitVibrato({ rateMode: 'freeHz' })}
-            >Free Hz</button>
-            <button
-              type="button"
-              className={`clipfx-seg-btn${isSync ? ' is-on' : ''}`}
-              onClick={() => commitVibrato({ rateMode: 'tempoSync' })}
-            >Sync</button>
-          </div>
-          <span className="clipfx-param-value">
-            {isSync
-              ? (VIBRATO_SYNC_DIVISIONS.find(([v]) => v === (vibrato?.syncDivision ?? 'eighth')) ?? ['', '1/8'])[1]
-              : `${rateHz.toFixed(2)} Hz`}
-          </span>
-        </div>
+        <FxField note={isSync ? `Division ${syncLabel}` : undefined}>
+          <SegmentedControl
+            size="sm"
+            label="Rate mode"
+            value={isSync ? 'tempoSync' : 'freeHz'}
+            onChange={(mode) => commitVibrato({ rateMode: mode })}
+            options={[
+              { value: 'freeHz', label: 'Free Hz', hint: 'Rate in hertz' },
+              { value: 'tempoSync', label: 'Sync', hint: 'Rate locked to the tempo' },
+            ]}
+          />
+        </FxField>
 
-        <ScalarSlider
+        <NumberBox
           label={isSync ? 'Rate (synced)' : 'Rate'}
           value={Number(rateHz.toFixed(2))}
           min={0.01} max={20} step={0.01}
+          unit="Hz"
+          formatOptions={{ decimals: 2 }}
           disabled={isSync}
-          format={(x) => `${Number(x).toFixed(2)} Hz`}
+          width={212}
           onCommit={(x) => commitVibrato({ rateHz: x })}
+          hint="Vibrato rate"
         />
 
-        <ScalarSlider
+        <NumberBox
           label="Phase"
           value={phaseDeg}
           min={0} max={360} step={1}
-          format={(x) => `${x}°`}
+          quantize={Math.round}
+          format={(x) => `${Math.round(x)}\u00b0`}
+          parse={parseNumber}
+          width={212}
           onCommit={(x) => commitVibrato({ phaseOffset: clampNum(x / 360, 0, 1) })}
+          hint="Where in the cycle the vibrato starts"
         />
 
-        <div className="clipfx-param clipfx-param-wide">
-          <label className="clipfx-param-label" htmlFor="clipfx-sync-div">Sync Division</label>
-          <select
-            id="clipfx-sync-div"
-            className="clipfx-select"
-            value={vibrato?.syncDivision ?? 'eighth'}
+        <FxField wide>
+          <Select
+            size="sm"
+            ariaLabel="Sync division"
+            value={syncDivision}
+            options={VIBRATO_SYNC_DIVISIONS.map(([value, label]) => ({ value, label }))}
             disabled={!isSync}
-            onChange={(e) => commitVibrato({ syncDivision: e.target.value })}
-          >
-            {VIBRATO_SYNC_DIVISIONS.map(([value, label]) => (
-              <option key={value} value={value}>{label}</option>
-            ))}
-          </select>
-          <label className="clipfx-check">
-            <input
-              type="checkbox"
-              checked={vibrato?.phaseResetOnClipStart !== false}
-              onChange={(e) => commitVibrato({ phaseResetOnClipStart: e.target.checked })}
-            />
-            <span>Reset phase on clip start</span>
-          </label>
-        </div>
-      </div>
+            onChange={(value) => commitVibrato({ syncDivision: value })}
+            hint="Sync division"
+          />
+          <Toggle
+            size="sm"
+            on={vibrato?.phaseResetOnClipStart !== false}
+            onChange={(next) => commitVibrato({ phaseResetOnClipStart: next })}
+            glyph={<Check size={12} aria-hidden="true" />}
+            hint="Restart the cycle at the start of each clip"
+          >Reset phase on clip start</Toggle>
+        </FxField>
+      </FxGrid>
 
       <ClipPictureSection kind="swirl" clip={clip} commitVideo={commitVideo} />
 
-      <div className="clipfx-status">
-        <span className={`clipfx-led${enabled ? ' is-on' : ''}`} />
-        <span>{enabled ? 'Active' : 'Off'}</span>
-        <span className="clipfx-status-right">{statusRight}</span>
-      </div>
-    </div>
+      <FxStatus enabled={enabled} right={statusRight} />
+    </ClipFxWindow>
   )
 }
