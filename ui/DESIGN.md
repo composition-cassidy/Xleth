@@ -475,8 +475,9 @@ strip `--device-fold-w` 28px wide. The detail dock opens at **304px** (1px borde
    `EffectEditorHost`. While popped out, the docked slot is a strip with a return button, so a
    device is never live twice.
 
-Devices whose editor has not moved to the frame yet (Phase 4b) keep the same title bar
-minus presets and A/B, and a body that opens their existing editor. No fake content.
+Every stock effect now has a device body (`DEVICE_BODIES`, 25 of 25). A chain entry that is not a stock
+effect (a third-party plugin, a missing or crashed one, one still being added) shows the same frame with a short
+status and, for a live plugin, an Open editor button for its own native window. No fake content.
 
 **Body.** Sections left to right in **signal order**, each under a `SectionHeader` strip
 (`DeviceSection`, which can fold). **One** recessed `DisplayWell` (g0) is the hero; it hosts an
@@ -903,3 +904,64 @@ release, every continuous knob keeps automation (`AutomatableKnob`). Measured on
 name at the 45 % mute opacity, no letter-spaced uppercase. The 2026-11-07 shots 54 to 57 had 3 to 5 sizes, up to 32 texts under
 10px and up to 24 letter-spaced caps labels. The full audit capture (p10, shots 54 to 57 and the chain) needs the engine; the
 phase now labels these four as kit devices.
+
+## 19. Modulation, pitch and utility devices, and the finished chain (round 2, step 16)
+
+**Chorus** (`ChorusDevice.jsx`, about 740px). The hero is the orbit and LFO display (`ChorusOrbitCanvas.jsx`, moved from the mixer
+folder, drawing unchanged): voices as orbs, delay as the orbit radius, width as the ellipse, depth as the wobble and the strand
+height, feedback as the connectors, mix as the orb alpha. It is **drawn from the parameters, not from audio**, like the Flanger's
+Sweep view. Sections: Voices (Voices in whole numbers, Delay), Modulation (Rate, Depth as the 56px hero), Feedback (0 to 25 %),
+Output (Width, Mix).
+
+**Phaser** (`PhaserDevice.jsx`, about 950px). The hero is the notch sweep on a log-frequency axis (`PhaserSweepCanvas.jsx`): L and R
+notch dips, feedback-polarity markers, and the sweep band whose two edges are draggable (clamped to the engine's `freq_low` 20 to
+2000 Hz and `freq_high` 200 to 16000 Hz with a 50 Hz gap; local while dragging, one write on release). Also a model drawn from rate,
+depth, width, stages and feedback. The edges are **also Low and High knobs on a log taper**, so the drag has a keyboard and typed
+alternative. Sections: Sweep, Modulation, Notches (Stages as a one-click 1 to 6, Feedback as the 56px bipolar hero, **Resonance** and
+**Spread**), Output. Resonance (allpass Q, 0.3 to 5) and Spread (0 to 100 %) are engine parameters the old panel never showed.
+
+**Phanjer** (`PhanjerDevice.jsx`, about 1,110px). The hero is the response canvas (`PhanjerResponseCanvas.jsx`): the flanger comb at the
+sweep-centre delay, the phaser notches at the centre stage frequencies, and where the two collide within the engine's third-of-an-octave
+guard band. It is analytic, from the parameters. **The two sides wear two band-palette hues, Flanger band 1 and Phaser band 3**, set as
+`--ui-value` on each side so its knobs, boxes and curve share the hue; collision zones are neutral ink (the accent is only 32 degrees
+from band 3). Left to right: the response, Flanger (Rate, Depth, Feedback, Mix, Delay min and max as log number boxes, tempo sync),
+Global (Mode as Linked / Smart / Wild, Global mix as the 56px hero, Chaos, the five LFO shapes) and Phaser (the same four knobs, Freq
+min and max, Stages, tempo sync). All 23 parameters keep their ranges, defaults and writes (the discrete ones as a float index) and the
+enable rules (flanger sync turns off its Rate; Linked turns off the phaser rate and sync row; Chaos only with Random). The "How it
+works" overlay is now per-control hints.
+
+**Pitch shifter** (`PitchShifterDevice.jsx`, about 390px). The engine publishes no pitch-shifter data and the old panel read none, so
+there is **no display**. The hero is Semitones (56px, bipolar, `+7.0 st`, the full 24 either way), with Cents beside it and the
+four-way mode switch above. The pitch pair is bound to `semitones` / `cents` or `clip_semitones` / `clip_cents` by mode, so the hero
+never moves. Character holds Grain size (Granular), Formant (Smart, Voice) or the Clip stretch method and Formant toggle. `mode`,
+`clip_method` and `clip_formant` are not automatable in the engine, so they are single commits and never knobs.
+
+**Smart balance** (`SmartBalanceDevice.jsx`, about 1,250px). A four-band auto-leveller: an LR4 tree at 150 Hz / 800 Hz / 4 kHz, each
+band's RMS pulled toward its target through a 6 dB soft knee (scaled by Amount and the band's own amount, 10 dB at most, gated below its
+Floor), then Preserve restores the original dynamics and Mix blends. The hero (`SmartBalanceCanvas.jsx`, geometry in
+`smartBalanceGeometry.js`) is the engine's own analysis: four band columns on a log-frequency axis against level, each with its live
+RMS, its draggable target line, its dashed gate floor, the gain being applied and the estimated landing, plus the overall level that
+Relative targets are measured from and transient pulses. The poll is the editor's, unchanged (`getEffectMeter` slots 0 to 7 and
+`smartBalanceGetDebug`, about 30 Hz). The four band tokens are band-palette hues 1 to 4. A target drag previews per frame and commits
+on release (Escape cancels); with no live level to measure from, Relative mode draws and drags nothing rather than invent a place.
+Views: Levels, Details (the old Debug overlay). Sections: Measure (Relative / Absolute, Response), Band (a selector over one block of
+Offset or Target, Band amount, Floor), Correct (Amount as the 56px hero, Preserve), Output (Mix). The old panel sent every pointer
+move; the device sends at most one write per frame and the final value on release.
+
+**Shared.** The param-driven displays (Chorus, Phaser, Smart Balance) run their loop through `visibleLoop.js`, which pauses it while
+the canvas is scrolled out of view; no data path changes. Knobs pass the engine's own NormalisableRange skew to the automation maths
+(`AutomatableKnob`'s `skew`), which the old Chorus and Phaser rate knobs had left at 1; a knob's own travel stays as it was.
+`deviceFormat.js` gains `suffixFormat` for st, ct and the formant ratio. Measured on the real devices in a docked chain, in an isolated
+harness with a stubbed `window.xleth` (the Smart Balance meter values are a stub, there only for layout): all five are **256px tall**,
+use **2 distinct font sizes (11 and 12px)**, with **0 text under 10px, 0 under 4.5:1 and no letter-spaced uppercase**. The 2026-11-07
+shots 59, 61, 62, 65 and 66 had 3 to 5 sizes (8 to 11px) and 5 to 22 letter-spaced caps labels each; the full audit capture (p10, those
+shots, the chain and the picker) needs the engine, and p10 now labels all five as kit devices.
+
+**The chain is finished.** `DEVICE_BODIES` holds all 25 stock effects (the same 25 `EFFECT_EDITORS` opens; a test pins it), so the
+"opens in its own window until its device arrives" body and the stock Open editor path are gone from `EffectDevice`. What was the stub
+is `ExternalPluginDevice`: the same frame for a chain entry that is **not** a stock effect (a third-party plugin, whose editor is a
+native window the app cannot draw, a missing or crashed one, or one still being added), with a status line and, for a live plugin,
+one Open editor button. `FloatingDevice` is the only pop-out for a stock effect. The legacy runtime is not removed: 12 device files
+and the two APEX canvases still import 17 files from `plugin-ui/runtime` (meter polling, the dynamics subscription, the painters,
+`useStockEffectParams`). The other 28 runtime files (the renderer, the node components, `PluginUIKitKnob`) are not reachable from the
+app entry and add nothing to the bundle; whether they and the Designer go is a separate decision.
