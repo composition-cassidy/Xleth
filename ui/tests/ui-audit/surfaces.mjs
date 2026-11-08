@@ -17,7 +17,7 @@ export const AUDIO_EFFECTS = [
   ['limiter', 'Limiter', 'Dynamics', [M + 'LimiterPanel.jsx', D + 'LimiterDevice.jsx', 'plugin-ui/layouts/limiter.json']],
   ['apex', 'APEX', 'Dynamics', [M + 'ApexPanel.jsx', D + 'ApexDevice.jsx', M + 'ApexAnalysis.jsx', M + 'ApexCurveEditor.jsx', M + 'apexGeometry.js']],
   ['gloss', 'GLOSS', 'Dynamics', [M + 'GlossPanel.jsx', D + 'GlossDevice.jsx']],
-  ['overdone', 'Overdone', 'Dynamics', [M + 'OTTPanel.jsx', 'plugin-ui/layouts/overdone.json']],
+  ['overdone', 'Overdone', 'Dynamics', [M + 'OTTPanel.jsx', D + 'OverdoneDevice.jsx', D + 'OverdoneCrossoverCanvas.jsx']],
   ['transientproc', 'Transient Proc', 'Dynamics', [M + 'TransientProcPanel.jsx', 'plugin-ui/layouts/transient.json']],
   ['resonancesuppressor', 'Resonance Suppressor', 'Dynamics', [M + 'ResonanceSuppressorPanel.jsx', 'plugin-ui/layouts/resonancesuppressor.json']],
   ['xletheq', 'Xleth EQ', 'EQ & Filter', [M + 'EqPanel.jsx', M + 'EqCanvas.jsx', D + 'EqDevice.jsx']],

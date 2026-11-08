@@ -820,3 +820,13 @@ curves, the selected band or curve undo. The global `useApexStore` only marks th
   while focus is inside the device and stop there. All knobs keep automation through `AutomatableKnob`.
 - Canvas captions moved to 10px, sentence case and true minus signs.
 
+**Overdone** (`OverdoneDevice.jsx`, about 880px). The hero is the crossover display (`OverdoneCrossoverCanvas.jsx`, moved
+from plugin-ui's `OverdoneCrossoverNode`): the three Linkwitz-Riley band curves in the band palette, crossovers
+draggable on it (one octave minimum gap; a drag previews per frame and commits once on release), and each band's live
+**upward and downward gain** as two bars in its region, with a `+up / −down` readout where the region is wide enough.
+The engine publishes per band the input peak, output peak and downward reduction (`MultibandBucket`); upward is read
+off the same bucket as `out − in − band gain + down`, floored at 0. The second view, History, is the multiband
+painter's per-band level history, unchanged apart from band-palette colours, sentence-case labels and true minus signs.
+Sections: Input, Bands (Low / Mid / High gain in one row, Low and High split under them, each tinted with its band),
+Dynamics (Depth, the 56px hero knob, and Time), Output. Three gains fit one row, so there is no band selector.
+

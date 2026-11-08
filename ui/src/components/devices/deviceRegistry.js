@@ -31,6 +31,8 @@ import useFetCompStore from '../../stores/fetCompStore.js'
 import useVariMuCompStore from '../../stores/variMuCompStore.js'
 import GlossDevice from './GlossDevice.jsx'
 import ApexDevice from './ApexDevice.jsx'
+import OverdoneDevice from './OverdoneDevice.jsx'
+import useOverdoneStore from '../../stores/overdoneStore.js'
 import useApexStore from '../../stores/apexStore.js'
 
 export const DEVICE_BODIES = {
@@ -55,6 +57,7 @@ export const DEVICE_BODIES = {
   // APEX owns a private store per device (curves, band, curve undo); the global
   // useApexStore only marks the popped-out instance, as for GLOSS.
   apex: { Body: ApexDevice, useEditorStore: useApexStore },
+  overdone: { Body: OverdoneDevice, useEditorStore: useOverdoneStore },
 }
 
 export function deviceBodyFor(pluginId) {

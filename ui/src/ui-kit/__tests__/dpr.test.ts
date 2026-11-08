@@ -85,6 +85,7 @@ describe('every canvas that reads devicePixelRatio is told when it changes', () 
 
   // rAF / per-frame loops: the size is recomputed from the live ratio on every frame.
   const PER_FRAME = new Set([
+    'components/devices/OverdoneCrossoverCanvas.jsx',
     'components/mixer/ApexAnalysis.jsx',
     'plugin-ui/runtime/components/CompressorCurveNode.jsx',
     'plugin-ui/runtime/components/DistortionCurveNode.jsx',
