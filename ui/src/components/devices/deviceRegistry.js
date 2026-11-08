@@ -35,6 +35,8 @@ import OverdoneDevice from './OverdoneDevice.jsx'
 import useOverdoneStore from '../../stores/overdoneStore.js'
 import TransientProcDevice from './TransientProcDevice.jsx'
 import useTransientProcStore from '../../stores/transientProcStore.js'
+import ResonanceSuppressorDevice from './ResonanceSuppressorDevice.jsx'
+import useResonanceSuppressorStore from '../../stores/resonanceSuppressorStore.js'
 import useApexStore from '../../stores/apexStore.js'
 
 export const DEVICE_BODIES = {
@@ -61,6 +63,7 @@ export const DEVICE_BODIES = {
   apex: { Body: ApexDevice, useEditorStore: useApexStore },
   overdone: { Body: OverdoneDevice, useEditorStore: useOverdoneStore },
   transientproc: { Body: TransientProcDevice, useEditorStore: useTransientProcStore },
+  resonancesuppressor: { Body: ResonanceSuppressorDevice, useEditorStore: useResonanceSuppressorStore },
 }
 
 export function deviceBodyFor(pluginId) {

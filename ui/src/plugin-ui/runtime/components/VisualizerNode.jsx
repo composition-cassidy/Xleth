@@ -7,14 +7,12 @@ import { LIMITER_SOURCE_DEFAULT_PRESET } from '../visualizers/limiterPainter.js'
 import { TRANSIENT_SOURCE_DEFAULT_PRESET } from '../visualizers/transientPainter.js'
 import { MULTIBAND_SOURCE_DEFAULT_PRESET } from '../visualizers/multibandPainter.js'
 import { RESONANCE_SOURCE_DEFAULT_PRESET } from '../visualizers/resonancePainter.js'
-import ResonanceCurveOverlay from './ResonanceCurveOverlay.jsx'
 
 // Editable overlays the runtime knows how to render on top of a viz canvas.
 // Layout-level allow-list, narrow on purpose: if you want a new editable
-// surface, add an entry here and a renderer below.
-const OVERLAY_RENDERERS = {
-  resonanceCurve: ResonanceCurveOverlay,
-}
+// surface, add an entry here and a renderer below. Empty since the Resonance
+// Suppressor's focus curve moved into its device (components/devices).
+const OVERLAY_RENDERERS = {}
 
 // Source keys this node knows how to render via the Compressor pipeline.
 // Must match the manifest allow-list (compressor.js).

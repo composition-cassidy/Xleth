@@ -19,7 +19,7 @@ export const AUDIO_EFFECTS = [
   ['gloss', 'GLOSS', 'Dynamics', [M + 'GlossPanel.jsx', D + 'GlossDevice.jsx']],
   ['overdone', 'Overdone', 'Dynamics', [M + 'OTTPanel.jsx', D + 'OverdoneDevice.jsx', D + 'OverdoneCrossoverCanvas.jsx']],
   ['transientproc', 'Transient Proc', 'Dynamics', [M + 'TransientProcPanel.jsx', D + 'TransientProcDevice.jsx']],
-  ['resonancesuppressor', 'Resonance Suppressor', 'Dynamics', [M + 'ResonanceSuppressorPanel.jsx', 'plugin-ui/layouts/resonancesuppressor.json']],
+  ['resonancesuppressor', 'Resonance Suppressor', 'Dynamics', [M + 'ResonanceSuppressorPanel.jsx', D + 'ResonanceSuppressorDevice.jsx', D + 'ResonanceCurveOverlay.jsx']],
   ['xletheq', 'Xleth EQ', 'EQ & Filter', [M + 'EqPanel.jsx', M + 'EqCanvas.jsx', D + 'EqDevice.jsx']],
   ['xlethfilter', 'Xleth Filter', 'EQ & Filter', [M + 'FilterPanel.jsx']],
   ['distortion', 'Distortion', 'Distortion', [M + 'DistortionPanel.jsx', 'plugin-ui/layouts/distortion.json']],

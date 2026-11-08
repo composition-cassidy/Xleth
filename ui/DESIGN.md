@@ -838,3 +838,16 @@ envelopes, input and output), the second its signed gain change (`transientGainC
 Threshold, Speed), Shape (Attack, the 56px hero, Sustain), Output (Mix). Threshold and Sustain are disabled in MIDI mode,
 as before. The manifest's `dry`, `wet` and `mix_linked` do not exist in the engine and have no control.
 
+**Resonance suppressor** (`ResonanceSuppressorDevice.jsx`, about 1370px). The hero is the resonance painter on a
+log-frequency axis (`resonanceCombined`: spectrum, the focus curve's detector weighting and the reduction; a second view
+shows the reduction alone) with the focus-curve handles on top. `ResonanceCurveOverlay` moved from plugin-ui into
+`components/devices` with its own module CSS: the same HP / LP and up-to-eight band handles, drag maths and keys, but it
+takes params and a writer as props, the device owns its band selection, and its keys (Escape, `[` `]`, Delete) act only
+while focus is inside the overlay, never on the window. Its docked band strip is replaced by the **Focus** section,
+built from kit controls on the overlay's own action creators: band picker, add / remove, shape, Focus (log Hz), Sens
+(dB; Protect tops out at 0) and Width (disabled for Tilt). Focus bands are detector weights, not crossover bands, so
+they wear the value colour, never the band palette. Sections: Detection (Soft / Hard, Depth hero, Sharpness,
+Selectivity), Time, Focus, Stereo (Stereo / Mid / Side, Link: `stereo_link` had no control before), Output (Mix, Trim,
+Delta), Processing (Low latency / High quality, Fast / Normal / High, and the high-quality real-time warning, polled
+only while high quality is selected). There is no "range" parameter; the engine's are the ones above.
+

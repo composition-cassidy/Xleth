@@ -1,13 +1,16 @@
-// Dynamic Focus Curve editor for the Resonance Suppressor visualizer.
+// Dynamic Focus Curve editor for the Resonance Suppressor device.
 //
 // The canvas painter owns spectrum, reduction, and weighting visuals. This
-// component only owns UI interaction: HP/LP boundary handles, active band
-// handles, and a docked selected-band editor strip below the graph.
+// component only owns interaction on top of it: the HP / LP boundary handles and
+// the active focus-band handles (an SVG of at most ten handles, never one node
+// per bin). Moved from plugin-ui's runtime when the Resonance Suppressor became a
+// device: the handles, drag maths and keys are unchanged; it takes params and a
+// writer as props, its band selection can be owned by the device (whose Focus
+// section edits the selected band), and its keys act only while focus is inside
+// the overlay instead of on the whole window.
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { usePluginUI } from '../PluginUIContext.js'
-import Fader from '../../../components/controls/Fader.jsx'
-import { quantizedFromNorm } from '../../../utils/sliderHelpers.js'
+import styles from './ResonanceCurveOverlay.module.css'
 import {
   BAND_HANDLES,
   BAND_TYPE,
@@ -27,7 +30,7 @@ import {
   computeDragParamUpdates,
   findFirstInactiveBandIndex,
   freqToX, gainToY,
-} from '../visualizers/resonanceCurveMapping.js'
+} from '../../plugin-ui/runtime/visualizers/resonanceCurveMapping.js'
 
 const FALLBACK_GRAPH_W = 640
 const FALLBACK_GRAPH_H = 260
@@ -44,13 +47,6 @@ const FREQ_LOG_SPAN = Math.log(BELL_FREQ_MAX_HZ / BELL_FREQ_MIN_HZ)
 function paramOr(params, id, fallback) {
   const v = params?.[id]
   return Number.isFinite(v) ? v : fallback
-}
-
-function isTextEditableTarget(target) {
-  if (!target || target.nodeType !== 1) return false
-  const tag = target.tagName
-  if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return true
-  return target.isContentEditable === true
 }
 
 export function formatEditorFreq(hz) {
@@ -159,14 +155,16 @@ export function createBandQAction(selectedBandIdx, value) {
   return { idx: selectedBandIdx, updates: { [ids.qId]: clampBandQ(Number(value)) } }
 }
 
-function applyParamUpdates(setParam, updates) {
+export function applyParamUpdates(setParam, updates) {
   for (const [id, value] of Object.entries(updates || {})) {
     setParam(id, value)
   }
 }
 
-export default function ResonanceCurveOverlay() {
-  const { params, setParam } = usePluginUI()
+// params / setParam: the device's parameter state and writer.
+// selectedBandIdx / onSelectBand: pass both to own the selection (the device's
+// Focus section edits the selected band); omit them and the overlay keeps its own.
+export default function ResonanceCurveOverlay({ params, setParam, selectedBandIdx: selectedProp, onSelectBand }) {
 
   const rootRef = useRef(null)
   const svgRef = useRef(null)
@@ -176,7 +174,12 @@ export default function ResonanceCurveOverlay() {
 
   const [size, setSize] = useState({ w: 0, h: 0 })
   const [activeKey, setActiveKey] = useState(null)
-  const [selectedBandIdx, setSelectedBandIdx] = useState(null)
+  const [ownSelected, setOwnSelected] = useState(null)
+  const controlled = selectedProp !== undefined
+  const selectedBandIdx = controlled ? selectedProp : ownSelected
+  const selectRef = useRef(null)
+  selectRef.current = controlled ? onSelectBand : setOwnSelected
+  const setSelectedBandIdx = useCallback((idx) => { selectRef.current?.(idx) }, [])
 
   const selectedRef = useRef(null)
   selectedRef.current = selectedBandIdx
@@ -248,37 +251,36 @@ export default function ResonanceCurveOverlay() {
     }
   }, [])
 
-  useEffect(() => {
-    function onKeyDown(e) {
-      if (isTextEditableTarget(e.target)) return
-      if (e.key === 'Escape') {
-        if (selectedRef.current != null) {
-          e.preventDefault()
-          setSelectedBandIdx(null)
-        }
-        return
-      }
-
-      const idx = selectedRef.current
-      if (idx == null) return
-      const ids = bandParamIds(idx)
-
-      if (e.key === '[' || e.key === ']') {
+  // Keys for the selected band while focus is inside the overlay (a band handle
+  // handles its own keys first). Never on the window: Delete there belongs to the
+  // timeline, and several Resonance devices can be on screen at once.
+  const onRootKeyDown = useCallback((e) => {
+    // A band handle that handled the key already prevented it.
+    if (e.defaultPrevented) return
+    if (e.key === 'Escape') {
+      if (selectedRef.current != null) {
         e.preventDefault()
-        const cur = paramOr(ctxRef.current.params, ids.qId, 1)
-        const step = e.shiftKey ? Q_KEY_FACTOR_FINE : Q_KEY_FACTOR
-        const next = e.key === ']' ? cur * step : cur / step
-        ctxRef.current.setParam(ids.qId, clampBandQ(next))
-      } else if (e.key === 'Delete' || e.key === 'Backspace') {
-        e.preventDefault()
-        ctxRef.current.setParam(ids.activeId, 0)
         setSelectedBandIdx(null)
       }
+      return
     }
 
-    window.addEventListener('keydown', onKeyDown)
-    return () => window.removeEventListener('keydown', onKeyDown)
-  }, [])
+    const idx = selectedRef.current
+    if (idx == null) return
+    const ids = bandParamIds(idx)
+
+    if (e.key === '[' || e.key === ']') {
+      e.preventDefault()
+      const cur = paramOr(ctxRef.current.params, ids.qId, 1)
+      const step = e.shiftKey ? Q_KEY_FACTOR_FINE : Q_KEY_FACTOR
+      const next = e.key === ']' ? cur * step : cur / step
+      ctxRef.current.setParam(ids.qId, clampBandQ(next))
+    } else if (e.key === 'Delete' || e.key === 'Backspace') {
+      e.preventDefault()
+      ctxRef.current.setParam(ids.activeId, 0)
+      setSelectedBandIdx(null)
+    }
+  }, [setSelectedBandIdx])
 
   const editorModel = useMemo(
     () => buildBandEditorModel(params, selectedBandIdx),
@@ -377,54 +379,6 @@ export default function ResonanceCurveOverlay() {
     }
   }, [])
 
-  const addBand = useCallback(() => {
-    const action = createAddBandAction(ctxRef.current.params)
-    if (!action) return
-    applyParamUpdates(ctxRef.current.setParam, action.updates)
-    setSelectedBandIdx(action.idx)
-  }, [])
-
-  const removeSelectedBand = useCallback(() => {
-    const action = createRemoveBandAction(ctxRef.current.params, selectedRef.current)
-    if (!action) return
-    applyParamUpdates(ctxRef.current.setParam, action.updates)
-    setSelectedBandIdx(null)
-  }, [])
-
-  const setSelectedActive = useCallback((active) => {
-    const idx = selectedRef.current
-    if (idx == null) return
-    const ids = bandParamIds(idx)
-    ctxRef.current.setParam(ids.activeId, active ? 1 : 0)
-    if (!active) setSelectedBandIdx(null)
-  }, [])
-
-  const setSelectedType = useCallback((value) => {
-    const action = createBandTypeAction(ctxRef.current.params, selectedRef.current, value)
-    if (!action) return
-    applyParamUpdates(ctxRef.current.setParam, action.updates)
-  }, [])
-
-  const setSelectedFreq = useCallback((value) => {
-    const action = createBandFreqAction(selectedRef.current, value)
-    if (!action) return
-    applyParamUpdates(ctxRef.current.setParam, action.updates)
-  }, [])
-
-  const setSelectedGain = useCallback((value) => {
-    const idx = selectedRef.current
-    const type = idx == null ? BAND_TYPE.BELL : clampBandType(ctxRef.current.params?.[bandParamIds(idx).typeId] ?? 0)
-    const action = createBandGainAction(idx, type, value)
-    if (!action) return
-    applyParamUpdates(ctxRef.current.setParam, action.updates)
-  }, [])
-
-  const setSelectedQ = useCallback((value) => {
-    const action = createBandQAction(selectedRef.current, value)
-    if (!action) return
-    applyParamUpdates(ctxRef.current.setParam, action.updates)
-  }, [])
-
   const measured = size.w >= 4 && size.h >= 4
   const w = measured ? size.w : FALLBACK_GRAPH_W
   const h = measured ? size.h : FALLBACK_GRAPH_H
@@ -440,13 +394,14 @@ export default function ResonanceCurveOverlay() {
   return (
     <div
       ref={rootRef}
-      className="pluginui-resonance-overlay"
+      className={styles.overlay}
       role="group"
-      aria-label="Resonance Suppressor focus curve editor"
+      aria-label="Focus curve editor"
+      onKeyDown={onRootKeyDown}
     >
       <svg
         ref={svgRef}
-        className="pluginui-resonance-overlay__svg"
+        className={styles.svg}
         width="100%"
         height="100%"
         viewBox={`0 0 ${w} ${h}`}
@@ -454,7 +409,7 @@ export default function ResonanceCurveOverlay() {
         onWheel={onWheel}
       >
         <rect
-          className="pluginui-resonance-overlay__bg"
+          className={styles.bg}
           x="0"
           y="0"
           width={w}
@@ -468,11 +423,11 @@ export default function ResonanceCurveOverlay() {
           y1={zeroY}
           x2={w}
           y2={zeroY}
-          className="pluginui-resonance-overlay__zero"
+          className={styles.zero}
         />
 
-        <g className={`pluginui-resonance-handle pluginui-resonance-handle--boundary${activeKey === 'hp' ? ' is-active' : ''}`}>
-          <line x1={hpX} y1={0} x2={hpX} y2={h} className="pluginui-resonance-handle__rail" />
+        <g className={`${styles.handle} ${styles.boundary}`} data-active={activeKey === 'hp' || undefined}>
+          <line x1={hpX} y1={0} x2={hpX} y2={h} className={styles.rail} />
           <rect
             data-handle="hp"
             x={hpX - boundaryHalfW}
@@ -488,15 +443,15 @@ export default function ResonanceCurveOverlay() {
             aria-valuemax={HP_MAX_HZ}
             aria-valuenow={Math.round(hpHz)}
             aria-valuetext={`${Math.round(hpHz)} Hz`}
-            className="pluginui-resonance-handle__rect"
+            className={styles.rect}
             onPointerDown={(e) => beginBoundaryDrag(e, 'hp', 'hp')}
             onKeyDown={(e) => onBoundaryKeyDown(e, 'wc_hp', HP_MIN_HZ, HP_MAX_HZ)}
           />
-          <text x={hpX} y={boundaryY - 3} textAnchor="middle" className="pluginui-resonance-handle__label">HP</text>
+          <text x={hpX} y={boundaryY - 3} textAnchor="middle" className={styles.label}>HP</text>
         </g>
 
-        <g className={`pluginui-resonance-handle pluginui-resonance-handle--boundary${activeKey === 'lp' ? ' is-active' : ''}`}>
-          <line x1={lpX} y1={0} x2={lpX} y2={h} className="pluginui-resonance-handle__rail" />
+        <g className={`${styles.handle} ${styles.boundary}`} data-active={activeKey === 'lp' || undefined}>
+          <line x1={lpX} y1={0} x2={lpX} y2={h} className={styles.rail} />
           <rect
             data-handle="lp"
             x={lpX - boundaryHalfW}
@@ -512,11 +467,11 @@ export default function ResonanceCurveOverlay() {
             aria-valuemax={LP_MAX_HZ}
             aria-valuenow={Math.round(lpHz)}
             aria-valuetext={`${Math.round(lpHz)} Hz`}
-            className="pluginui-resonance-handle__rect"
+            className={styles.rect}
             onPointerDown={(e) => beginBoundaryDrag(e, 'lp', 'lp')}
             onKeyDown={(e) => onBoundaryKeyDown(e, 'wc_lp', LP_MIN_HZ, LP_MAX_HZ)}
           />
-          <text x={lpX} y={boundaryY - 3} textAnchor="middle" className="pluginui-resonance-handle__label">LP</text>
+          <text x={lpX} y={boundaryY - 3} textAnchor="middle" className={styles.label}>LP</text>
         </g>
 
         {activeBands.map(b => (
@@ -533,16 +488,6 @@ export default function ResonanceCurveOverlay() {
         ))}
       </svg>
 
-      <ResonanceBandEditorStrip
-        model={editorModel}
-        onAddBand={addBand}
-        onRemoveBand={removeSelectedBand}
-        onToggleActive={setSelectedActive}
-        onSelectType={setSelectedType}
-        onChangeFreq={setSelectedFreq}
-        onChangeGain={setSelectedGain}
-        onChangeQ={setSelectedQ}
-      />
     </div>
   )
 }
@@ -551,13 +496,7 @@ export function BandHandle({ band, w, h, isActive, isSelected, onPointerDown, on
   const cx = freqToX(band.freq, w)
   const cy = gainToY(band.gain, h)
   const isNeutral = Math.abs(band.gain) < 0.05
-  const cls =
-    'pluginui-resonance-handle pluginui-resonance-handle--band' +
-    ` pluginui-resonance-handle--band-${band.idx}` +
-    ` pluginui-resonance-handle--type-${band.type}` +
-    (isActive ? ' is-active' : '') +
-    (isSelected ? ' is-selected' : '') +
-    (isNeutral ? ' is-neutral' : '')
+  const cls = `${styles.handle} ${styles.band}`
 
   const opt = BAND_TYPE_OPTIONS[band.type] || BAND_TYPE_OPTIONS[0]
   const aria = `${opt.label} band ${band.idx}: ${Math.round(band.freq)} Hz, ${band.gain.toFixed(1)} dB, Q ${band.q.toFixed(2)}`
@@ -569,7 +508,7 @@ export function BandHandle({ band, w, h, isActive, isSelected, onPointerDown, on
       glyph = (
         <path
           d={`M ${cx - r} ${cy} L ${cx} ${cy - r} L ${cx + r} ${cy} L ${cx + r} ${cy + r} L ${cx - r} ${cy + r} Z`}
-          className="pluginui-resonance-handle__glyph"
+          className={styles.glyph}
         />
       )
       break
@@ -577,7 +516,7 @@ export function BandHandle({ band, w, h, isActive, isSelected, onPointerDown, on
       glyph = (
         <path
           d={`M ${cx + r} ${cy} L ${cx} ${cy - r} L ${cx - r} ${cy} L ${cx - r} ${cy + r} L ${cx + r} ${cy + r} Z`}
-          className="pluginui-resonance-handle__glyph"
+          className={styles.glyph}
         />
       )
       break
@@ -585,7 +524,7 @@ export function BandHandle({ band, w, h, isActive, isSelected, onPointerDown, on
       glyph = (
         <path
           d={`M ${cx} ${cy - r} L ${cx + r} ${cy} L ${cx} ${cy + r} L ${cx - r} ${cy} Z`}
-          className="pluginui-resonance-handle__glyph"
+          className={styles.glyph}
         />
       )
       break
@@ -593,24 +532,24 @@ export function BandHandle({ band, w, h, isActive, isSelected, onPointerDown, on
       glyph = (
         <path
           d={`M ${cx - r} ${cy + r} L ${cx + r} ${cy - r} L ${cx + r} ${cy + r} L ${cx - r} ${cy + r} Z`}
-          className="pluginui-resonance-handle__glyph"
+          className={styles.glyph}
         />
       )
       break
     case BAND_TYPE.BELL:
     default:
-      glyph = <circle cx={cx} cy={cy} r={r} className="pluginui-resonance-handle__glyph" />
+      glyph = <circle cx={cx} cy={cy} r={r} className={styles.glyph} />
       break
   }
 
   return (
-    <g className={cls}>
+    <g className={cls} data-band={band.idx} data-type={band.type} data-active={isActive || undefined} data-selected={isSelected || undefined} data-neutral={isNeutral || undefined}>
       {isSelected && (
         <circle
           cx={cx}
           cy={cy}
           r={r + 6}
-          className="pluginui-resonance-handle__selection-ring"
+          className={styles.ring}
         />
       )}
       {glyph}
@@ -619,7 +558,7 @@ export function BandHandle({ band, w, h, isActive, isSelected, onPointerDown, on
         cx={cx}
         cy={cy}
         r={r + 5}
-        className="pluginui-resonance-handle__hit"
+        className={styles.hit}
         role="slider"
         tabIndex={0}
         aria-label={aria}
@@ -632,148 +571,10 @@ export function BandHandle({ band, w, h, isActive, isSelected, onPointerDown, on
         y={cy + 0.5}
         textAnchor="middle"
         dominantBaseline="middle"
-        className="pluginui-resonance-handle__label pluginui-resonance-handle__label--band"
+        className={`${styles.label} ${styles.bandLabel}`}
       >
         {band.idx}
       </text>
     </g>
-  )
-}
-
-export function ResonanceBandEditorStrip({
-  model,
-  onAddBand,
-  onRemoveBand,
-  onToggleActive,
-  onSelectType,
-  onChangeFreq,
-  onChangeGain,
-  onChangeQ,
-}) {
-  const band = model?.selectedBand || null
-  const disabled = !band
-  const type = band ? clampBandType(band.type) : BAND_TYPE.BELL
-  const gainForEditor = band ? clampEditorGainForType(type, band.gain) : 0
-  const showWidth = band && isBandWidthEditable(type)
-
-  return (
-    <div
-      className={'pluginui-resonance-band-editor' + (disabled ? ' is-empty' : '')}
-      role="region"
-      aria-label="Selected focus band editor"
-      onPointerDown={(e) => e.stopPropagation()}
-    >
-      <div className="pluginui-resonance-band-editor__identity">
-        <span
-          className={
-            'pluginui-resonance-band-token' +
-            (band ? ` pluginui-resonance-band-token--b${band.idx}` : '')
-          }
-        >
-          <span className="pluginui-resonance-band-token__dot" aria-hidden="true" />
-          <span className="pluginui-resonance-band-token__text">
-            {band ? `Band ${band.idx}` : 'Select band'}
-          </span>
-        </span>
-
-        <label className="pluginui-resonance-band-editor__active">
-          <input
-            type="checkbox"
-            checked={!!band}
-            disabled={disabled}
-            onChange={(e) => onToggleActive?.(e.target.checked)}
-          />
-          <span>Active</span>
-        </label>
-
-        <button
-          type="button"
-          className="pluginui-resonance-band-editor__button"
-          onClick={onAddBand}
-          disabled={!model?.canAddBand}
-          aria-label="Add focus band"
-        >
-          + Band
-        </button>
-
-        {band && (
-          <button
-            type="button"
-            className="pluginui-resonance-band-editor__button pluginui-resonance-band-editor__button--remove"
-            onClick={onRemoveBand}
-            aria-label={`Remove band ${band.idx}`}
-          >
-            - Band
-          </button>
-        )}
-
-        <span className="pluginui-resonance-band-editor__count">
-          {model?.activeCount ?? 0}/{NUM_BANDS}
-        </span>
-      </div>
-
-      <div
-        className={'pluginui-resonance-band-editor__controls' + (disabled ? ' is-disabled' : '')}
-        aria-disabled={disabled ? 'true' : 'false'}
-      >
-        <div className="pluginui-resonance-band-editor__type" role="radiogroup" aria-label="Band shape">
-          {BAND_TYPE_OPTIONS.map(opt => (
-            <button
-              key={opt.value}
-              type="button"
-              role="radio"
-              aria-checked={band ? type === opt.value : false}
-              className={
-                'pluginui-resonance-band-editor__type-btn' +
-                (band && type === opt.value ? ' is-selected' : '')
-              }
-              disabled={disabled}
-              title={opt.label}
-              onClick={() => onSelectType?.(opt.value)}
-            >
-              {opt.shortLabel}
-            </button>
-          ))}
-        </div>
-
-        <label className="pluginui-resonance-band-editor__control">
-          <span>Focus</span>
-          <Fader
-            orientation="horizontal" fill thickness={14}
-            value={band ? freqToEditorValue(band.freq) : freqToEditorValue(1000)}
-            min={0} max={1} defaultValue={freqToEditorValue(1000)}
-            fromNorm={quantizedFromNorm(0, 1, 0.001)}
-            onLiveChange={(v) => onChangeFreq?.(v)}
-          />
-          <output>{band ? formatEditorFreq(band.freq) : '--'}</output>
-        </label>
-
-        <label className="pluginui-resonance-band-editor__control">
-          <span>Sens</span>
-          <Fader
-            orientation="horizontal" fill thickness={14}
-            value={gainForEditor}
-            min={BELL_GAIN_MIN_DB} max={type === BAND_TYPE.BAND_REJECT ? 0 : BELL_GAIN_MAX_DB}
-            defaultValue={0}
-            fromNorm={quantizedFromNorm(BELL_GAIN_MIN_DB, type === BAND_TYPE.BAND_REJECT ? 0 : BELL_GAIN_MAX_DB, 0.1)}
-            onLiveChange={(v) => onChangeGain?.(v)}
-          />
-          <output>{band ? formatEditorGain(gainForEditor) : '--'}</output>
-        </label>
-
-        {showWidth && (
-          <label className="pluginui-resonance-band-editor__control pluginui-resonance-band-editor__control--width">
-            <span>Width</span>
-            <Fader
-              orientation="horizontal" fill thickness={14}
-              value={band.q} min={BAND_Q_MIN} max={BAND_Q_MAX} defaultValue={1}
-              fromNorm={quantizedFromNorm(BAND_Q_MIN, BAND_Q_MAX, 0.01)}
-              onLiveChange={(v) => onChangeQ?.(v)}
-            />
-            <output>{band.q.toFixed(2)}</output>
-          </label>
-        )}
-      </div>
-    </div>
   )
 }
