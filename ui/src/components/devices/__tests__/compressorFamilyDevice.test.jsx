@@ -12,10 +12,13 @@ import useGlueCompStore from '../../../stores/glueCompStore.js'
 import useOptoCompStore from '../../../stores/optoCompStore.js'
 import useFetCompStore from '../../../stores/fetCompStore.js'
 import useVariMuCompStore from '../../../stores/variMuCompStore.js'
+import useApexStore from '../../../stores/apexStore.js'
+import { PRESET_MAGIC, PRESET_VERSION } from '../../../fx-presets/fxPresetSchema.js'
 import GlueCompPanel from '../../mixer/GlueCompPanel.jsx'
 import OptoCompPanel from '../../mixer/OptoCompPanel.jsx'
 import FetCompPanel from '../../mixer/FetCompPanel.jsx'
 import VariMuCompPanel from '../../mixer/VariMuCompPanel.jsx'
+import GlossPanel from '../../mixer/GlossPanel.jsx'
 import DeviceChain from '../DeviceChain.jsx'
 import { MODELS, fetAttackSeconds, fetReleaseSeconds, formatDuration } from '../compressorFamilyModels.js'
 
@@ -54,8 +57,8 @@ const checked = (label) => radios(label).findIndex((b) => b.getAttribute('aria-c
 const sent = (id) => audio.setEffectParameter.mock.calls.filter((c) => c[2] === id)
 const asList = (obj) => JSON.stringify(Object.entries(obj).map(([id, value]) => ({ id, value })))
 
-function setup(pluginId, params) {
-  chain = [{ nodeId: 7, pluginId, position: 0, bypassed: false }]
+function setup(pluginId, params, nodeId = 7) {
+  chain = [{ nodeId, pluginId, position: 0, bypassed: false }]
   engineParams = asList(params)
   audio.getEffectChain = vi.fn(async () => JSON.stringify(chain))
 }
@@ -75,6 +78,7 @@ beforeEach(() => {
   useOptoCompStore.setState({ target: null })
   useFetCompStore.setState({ target: null })
   useVariMuCompStore.setState({ target: null })
+  useApexStore.setState({ target: null })
   HTMLCanvasElement.prototype.getContext = () => null
   container = document.createElement('div')
   document.body.appendChild(container)
@@ -433,5 +437,118 @@ describe('Vari-mu comp device in the chain', () => {
     expect(useVariMuCompStore.getState().target).toBeNull()
     expect(readFileSync(path.resolve(__dirname, '../../mixer/VariMuCompPanel.jsx'), 'utf8')).not.toMatch(/PluginUIKitKnob|varimu-(panel|knob|gr|seg|switch|tc)/)
     expect(readFileSync(path.resolve(__dirname, '../../../styles/app.css'), 'utf8')).not.toMatch(/\.varimu-/)
+  })
+})
+
+describe('GLOSS device in the chain', () => {
+  // Each test uses its own node id: the lit bank is remembered per instance.
+  let nodeId = 40
+  const BANKS = {
+    'gloss-a': { lo_pre: 1, comp_ratio: 2 },
+    'gloss-b': { lo_pre: 3, comp_ratio: 4, bandmix: 77 },
+    'gloss-c': { lo_pre: 5, comp_ratio: 6 },
+    'gloss-d': { lo_pre: 7, comp_ratio: 8 },
+  }
+  const installPresets = (over = {}) => {
+    const load = vi.fn(async (type, source, slug) => {
+      if (over.fail) throw new Error('bank file missing')
+      return { [PRESET_MAGIC]: PRESET_VERSION, effectType: type, name: slug, state: { params: BANKS[slug] } }
+    })
+    window.xleth.fxPresets = { load, list: vi.fn(async () => []) }
+    return load
+  }
+  const bankButtons = () => radios('Bank')
+  const litBank = () => bankButtons().find((b) => b.getAttribute('aria-checked') === 'true')?.textContent ?? null
+
+  it('hydrates Amount through formatValue; sections run Amount then Bank; there is no readout it was not given', async () => {
+    nodeId += 1
+    installPresets()
+    setup('gloss', { bandmix: 35 }, nodeId)
+    await mountChain()
+    expect(aria('Amount')).toBe('Amount, 35 %')
+    const titles = Array.from(container.querySelectorAll('[role="heading"][aria-level="3"]')).map((h) => h.textContent)
+    expect(titles).toEqual(['Amount', 'Bank'])
+    expect(texts('Bank')).toEqual(['A', 'B', 'C', 'D'])
+    expect(q('[aria-label*="Gain reduction"]')).toBeNull()
+    expect(q('[data-automation-param="bandmix"]')).not.toBeNull()
+  })
+
+  it('an Amount nudge commits bandmix once', async () => {
+    nodeId += 1
+    installPresets()
+    setup('gloss', { bandmix: 35 }, nodeId)
+    await mountChain()
+    act(() => { q('[role="slider"][aria-label="Amount"]').dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowUp', bubbles: true })) })
+    const calls = sent('bandmix')
+    expect(calls.length).toBeGreaterThan(0)
+    expect(calls.at(-1).slice(0, 2)).toEqual([3, nodeId])
+    expect(calls.at(-1)[3]).toBeGreaterThan(35)
+  })
+
+  it('a bank loads the factory APEX preset in one apply and never moves Amount; the lit letter is sticky', async () => {
+    nodeId += 1
+    const load = installPresets()
+    setup('gloss', { bandmix: 35 }, nodeId)
+    await mountChain()
+    expect(litBank()).toBeNull()
+    await act(async () => { bankButtons()[1].click(); await new Promise((r) => setTimeout(r, 0)) })
+    await flush()
+    expect(load).toHaveBeenCalledWith('apex', 'factory', 'gloss-b')
+    const written = audio.setEffectParameter.mock.calls.map((c) => c[2])
+    expect(written).toContain('lo_pre')
+    expect(sent('lo_pre')[0]).toEqual([3, nodeId, 'lo_pre', 3])
+    expect(litBank()).toBe('B')
+    // Remount: the choice is remembered for this instance without any derivation.
+    act(() => root.render(<div />))
+    await flush()
+    act(() => root.render(<DeviceChain />))
+    await flush()
+    await flush()
+    expect(litBank()).toBe('B')
+  })
+
+  it('with no memory the lit bank is derived from the restored engine state', async () => {
+    nodeId += 1
+    installPresets()
+    setup('gloss', { bandmix: 10, lo_pre: 5.001, comp_ratio: 6 }, nodeId)
+    await mountChain()
+    await flush()
+    await flush()
+    expect(litBank()).toBe('C')
+  })
+
+  it('a bank that fails to load says so and lights nothing', async () => {
+    nodeId += 1
+    installPresets({ fail: true })
+    setup('gloss', { bandmix: 35 }, nodeId)
+    await mountChain()
+    await act(async () => { bankButtons()[0].click(); await new Promise((r) => setTimeout(r, 0)) })
+    await flush()
+    expect(Array.from(container.querySelectorAll('[role="alert"]')).map((a) => a.textContent).join(' ')).toContain('bank file missing')
+    expect(litBank()).toBeNull()
+  })
+
+  it('pop-out goes through the APEX store with the gloss skin; an APEX target never paints here', async () => {
+    nodeId += 1
+    installPresets()
+    setup('gloss', { bandmix: 35 }, nodeId)
+    act(() => root.render(<><DeviceChain /><GlossPanel /></>))
+    await flush()
+    await flush()
+    expect(q('[data-testid="gloss-window"]')).toBeNull()
+    act(() => q('button[aria-label="Open GLOSS in a window"]').click())
+    await flush()
+    expect(useApexStore.getState().target).toEqual({ trackId: 3, nodeId, storeKey: '3', skin: 'gloss' })
+    expect(q('[data-testid="gloss-window"] section').getAttribute('data-presentation')).toBe('floating')
+    act(() => q('button[aria-label="Close GLOSS"]').click())
+    expect(useApexStore.getState().target).toBeNull()
+    act(() => { useApexStore.setState({ target: { trackId: 3, nodeId, storeKey: '3', skin: 'apex' } }) })
+    await flush()
+    expect(q('[data-testid="gloss-window"]')).toBeNull()
+  })
+
+  it('the legacy panel and CSS are gone', () => {
+    expect(readFileSync(path.resolve(__dirname, '../../mixer/GlossPanel.jsx'), 'utf8')).not.toMatch(/PluginUIKitKnob|gloss-(panel|header|body|bank|amount)/)
+    expect(readFileSync(path.resolve(__dirname, '../../../styles/app.css'), 'utf8')).not.toMatch(/\.gloss-/)
   })
 })

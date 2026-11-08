@@ -29,6 +29,8 @@ import useGlueCompStore from '../../stores/glueCompStore.js'
 import useOptoCompStore from '../../stores/optoCompStore.js'
 import useFetCompStore from '../../stores/fetCompStore.js'
 import useVariMuCompStore from '../../stores/variMuCompStore.js'
+import GlossDevice from './GlossDevice.jsx'
+import useApexStore from '../../stores/apexStore.js'
 
 export const DEVICE_BODIES = {
   // Width omitted: the frame fits the body's fixed-width sections (the
@@ -45,6 +47,10 @@ export const DEVICE_BODIES = {
   opto: { Body: OptoDevice, useEditorStore: useOptoCompStore },
   fet: { Body: FetDevice, useEditorStore: useFetCompStore },
   varimu: { Body: VariMuDevice, useEditorStore: useVariMuCompStore },
+  // GLOSS is an APEX-class processor under its own pluginId: it shares the APEX
+  // editor store (the target's `skin` says which editor owns it) and the APEX
+  // preset adapter, which captures the curves as well as the scalar params.
+  gloss: { Body: GlossDevice, useEditorStore: useApexStore, presetType: 'apex' },
 }
 
 export function deviceBodyFor(pluginId) {
