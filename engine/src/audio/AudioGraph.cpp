@@ -148,6 +148,23 @@ void AudioGraph::destroy()
 {
     stopTimer();
     pendingRebuild_.store(false);
+
+    // [PDCNotify] Unsubscribe every node before the graph lets go of them: a
+    // processor kept alive by a retired realtime view must not keep raising a
+    // signal for a graph that no longer accounts for it. (The signal is shared,
+    // so a late raise would be safe anyway - just pointless.)
+    if (graph_)
+    {
+        for (auto& [uid, gn] : nodes_)
+        {
+            juce::ignoreUnused(uid);
+            if (auto* node = graph_->getNodeForId(gn.apgNodeId))
+                if (auto* fx = dynamic_cast<XlethEffectBase*>(node->getProcessor()))
+                    fx->detachLatencyChangeSignal();
+        }
+    }
+    latencyChangeSignal_->clear();
+
     outputLatencySamples_.store(0, std::memory_order_release);
     latencyEpoch_.store(0, std::memory_order_release);
     nodes_.clear();
@@ -338,6 +355,10 @@ bool AudioGraph::removeNode(int nodeId)
                          vit->second.name.toRawUTF8(), nodeId);
     }
 #endif
+    // [PDCNotify] A removed node no longer counts toward this graph's PDC.
+    if (auto* node = graph_->getNodeForId(it->second.apgNodeId))
+        if (auto* fx = dynamic_cast<XlethEffectBase*>(node->getProcessor()))
+            fx->detachLatencyChangeSignal();
     graph_->removeNode(it->second.apgNodeId);
     nodes_.erase(it);
     adjForward_.erase(nodeId);
@@ -807,6 +828,10 @@ bool AudioGraph::removeEffect(int nodeId)
     }
 
     // Remove the node itself
+    // [PDCNotify] A removed node no longer counts toward this graph's PDC.
+    if (auto* node = graph_->getNodeForId(it->second.apgNodeId))
+        if (auto* fx = dynamic_cast<XlethEffectBase*>(node->getProcessor()))
+            fx->detachLatencyChangeSignal();
     graph_->removeNode(it->second.apgNodeId);
     nodes_.erase(it);
     adjForward_.erase(nodeId);
@@ -1892,6 +1917,15 @@ void AudioGraph::refreshLatencyDiagnostics()
     computePDC();
 }
 
+bool AudioGraph::servicePendingLatencyChange()
+{
+    if (!graph_ || !latencyChangeSignal_->isPending())
+        return false;
+
+    computePDC();   // clears the signal before it reads any node latency
+    return true;
+}
+
 // ─── Cycle detection ────────────────────────────────────────────────────────
 
 bool AudioGraph::wouldCreateCycle(int sourceNodeId, int destNodeId) const
@@ -1990,6 +2024,14 @@ void AudioGraph::computePDC()
 {
     if (!graph_) return;
 
+    // [PDCNotify] Clear BEFORE reading any node latency. A change published
+    // before this point is about to be read; one published concurrently (an
+    // effect mutated on another thread without the owner's lock) re-raises after
+    // its write, so the next service pass picks up the final value. Because
+    // every inline owner-path recompute lands here, the raise its own mutation
+    // caused is absorbed and never triggers a second recompute.
+    latencyChangeSignal_->clear();
+
     auto levels = topologicalSortWithLevels();
 
     // Reset all latencies
@@ -2029,7 +2071,16 @@ void AudioGraph::computePDC()
             {
                 auto* node = graph_->getNodeForId(nIt->second.apgNodeId);
                 if (node && node->getProcessor())
+                {
+                    // [PDCNotify] Subscribe every stock node this graph accounts
+                    // for. Done here rather than at each of the several insert
+                    // paths: every topology change ends in computePDC, so a node
+                    // is subscribed by the time its latency first counts.
+                    // Subscribe before reading, so a change after the read raises.
+                    if (auto* fx = dynamic_cast<XlethEffectBase*>(node->getProcessor()))
+                        fx->attachLatencyChangeSignal(latencyChangeSignal_);
                     nodeLat = node->getProcessor()->getLatencySamples();
+                }
             }
 
             cumLatency[uid] = maxInputLat + nodeLat;

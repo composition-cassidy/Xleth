@@ -394,6 +394,11 @@ public:
     std::uint64_t getLatencyEpoch() const;
     void refreshLatencyDiagnostics();
 
+    // [PDCNotify] See AudioGraph::servicePendingLatencyChange. Non-realtime;
+    // caller holds the owner's chains lock.
+    bool hasPendingLatencyChange() const;
+    bool servicePendingLatencyChange();
+
     int addProcessorForTesting(const std::string& pluginId,
                                std::unique_ptr<juce::AudioProcessor> proc,
                                int position);

@@ -1150,6 +1150,16 @@ void EffectChainManager::refreshLatencyDiagnostics()
         graph_->refreshLatencyDiagnostics();
 }
 
+bool EffectChainManager::hasPendingLatencyChange() const
+{
+    return graph_ != nullptr && graph_->hasPendingLatencyChange();
+}
+
+bool EffectChainManager::servicePendingLatencyChange()
+{
+    return graph_ != nullptr && graph_->servicePendingLatencyChange();
+}
+
 int EffectChainManager::addProcessorForTesting(const std::string& pluginId,
                                                std::unique_ptr<juce::AudioProcessor> proc,
                                                int position)

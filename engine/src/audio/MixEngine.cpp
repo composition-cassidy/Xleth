@@ -4214,10 +4214,15 @@ void MixEngine::startEnvelopeApplierThread()
             // Effect-chain resets posted by the audio thread (seek, stop, play
             // after an audition) — reset() cannot run in the callback.
             const int chainsReset = serviceEffectChainResets();
+            // [PDCNotify] An effect latency change that bypassed every owner
+            // path (e.g. an EQ band RPC) leaves its chain's PDC stale; recompute
+            // it here, off the audio thread. Coalesced: any number of changes
+            // between two passes cost one recompute per affected chain.
+            const int latencyRecomputed = servicePendingLatencyChanges();
             // Back off when idle so a stopped transport costs almost nothing,
             // and stay tight while modulation is actually moving.
             std::this_thread::sleep_for((written > 0 || lfoWritten > 0 || automationRebuilt > 0
-                                         || chainsReset > 0)
+                                         || chainsReset > 0 || latencyRecomputed > 0)
                                                    ? std::chrono::milliseconds(1)
                                                    : std::chrono::milliseconds(10));
         }
@@ -5339,6 +5344,42 @@ void MixEngine::refreshLatencyDiagnostics()
 
     if (masterEffectChain_)
         masterEffectChain_->refreshLatencyDiagnostics();
+}
+
+int MixEngine::servicePendingLatencyChanges()
+{
+    // [PDCNotify] NON-REALTIME (envelope applier thread, or a test). The
+    // generation gate keeps an idle pass to one atomic load: chainsMutex_ is
+    // only taken after some effect, somewhere, actually published a change.
+    const std::uint64_t generation =
+        xleth::audio::LatencyChangeSignal::generation().load(std::memory_order_acquire);
+    if (latencyChangeGenerationSeen_.exchange(generation, std::memory_order_acq_rel) == generation)
+        return 0;
+
+    int recomputed = 0;
+    {
+        std::lock_guard<std::mutex> lock(chainsMutex_);
+        for (auto& [trackId, chain] : effectChains_)
+        {
+            juce::ignoreUnused(trackId);
+            if (chain && chain->servicePendingLatencyChange())
+                ++recomputed;
+        }
+        if (masterEffectChain_ && masterEffectChain_->servicePendingLatencyChange())
+            ++recomputed;
+    }
+
+    if (recomputed > 0)
+    {
+        // Same follow-up the generic owner path (setEffectParameter) gives a
+        // latency change: the audio thread re-seeds compensation next block.
+        pendingLatencyCompensationReset_.store(true, std::memory_order_release);
+        latencyChangeServiceCount_.fetch_add(static_cast<std::uint64_t>(recomputed),
+                                             std::memory_order_relaxed);
+        std::fprintf(stderr, "[PDCNotify] recomputed PDC for %d chain(s) after a latency change "
+                             "outside the owner paths\n", recomputed);
+    }
+    return recomputed;
 }
 
 int MixEngine::addProcessorForTesting(int trackId,

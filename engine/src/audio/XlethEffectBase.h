@@ -3,6 +3,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <nlohmann/json.hpp>
 
+#include "audio/LatencyChangeSignal.h"
 #include "audio/SourceTransformCapability.h"
 
 #include <algorithm>
@@ -11,6 +12,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <unordered_map>
 
@@ -75,6 +77,52 @@ public:
     bool isBypassed()  const { return bypassed_.load(std::memory_order_relaxed); }
 
     const std::string& getPluginId() const { return pluginId_; }
+
+    // ── [PDCNotify] Latency-change notification ────────────────────────────
+    // HIDES juce::AudioProcessor::setLatencySamples, which is non-virtual. Every
+    // stock effect publishes latency with an unqualified setLatencySamples(...)
+    // call from its own member functions, so name lookup lands here first and no
+    // subclass needed editing. Same value, same JUCE publish; the only addition is
+    // that an ACTUAL change raises the owning graph's LatencyChangeSignal, so the
+    // chain's PDC is recomputed even when the change did not come through an
+    // AudioGraph owner path (see LatencyChangeSignal.h).
+    //
+    // Threads: called from non-realtime paths only (prepare/release, state
+    // restore, onParameterValueChanged, onBypassChanged, band edits) - on the
+    // RPC thread or MixEngine's applier thread. The addition is a shared_ptr
+    // atomic load plus raise() (atomics only): no lock the audio thread takes, no
+    // allocation, no logging.
+    void setLatencySamples(int newLatency)
+    {
+        const int before = juce::AudioProcessor::getLatencySamples();
+        juce::AudioProcessor::setLatencySamples(newLatency);
+        if (juce::AudioProcessor::getLatencySamples() == before)
+            return;
+
+        latencyChangeNotifyCount_.fetch_add(1, std::memory_order_relaxed);
+        if (auto signal = latencyChangeSignal_.load(std::memory_order_acquire))
+            signal->raise();
+    }
+
+    // Owner side. AudioGraph attaches its signal while it computes PDC (so every
+    // node it accounts for is subscribed) and detaches on destroy(). Idempotent.
+    void attachLatencyChangeSignal(
+        const std::shared_ptr<xleth::audio::LatencyChangeSignal>& signal)
+    {
+        if (latencyChangeSignal_.load(std::memory_order_acquire) != signal)
+            latencyChangeSignal_.store(signal, std::memory_order_release);
+    }
+
+    void detachLatencyChangeSignal()
+    {
+        latencyChangeSignal_.store(nullptr, std::memory_order_release);
+    }
+
+    // Diagnostics/tests: number of published latency CHANGES since construction.
+    std::uint64_t getLatencyChangeNotifyCount() const noexcept
+    {
+        return latencyChangeNotifyCount_.load(std::memory_order_relaxed);
+    }
 
     // ── External sidechain capability (Prompt 5A) ───────────────────────────
     // Internal truth used by the engine to decide which stock effects may have a
@@ -707,6 +755,11 @@ protected:
 
 private:
     std::atomic<bool> deferredReset_ { false };
+
+    // [PDCNotify] Owner's signal (null until an AudioGraph accounts for this
+    // node). Shared so a raise() after the graph is gone is still safe.
+    std::atomic<std::shared_ptr<xleth::audio::LatencyChangeSignal>> latencyChangeSignal_;
+    std::atomic<std::uint64_t> latencyChangeNotifyCount_ { 0 };
 
     // ── Bus construction ──────────────────────────────────────────────────────
     // All Xleth effects are stereo-in / stereo-out. When `withSidechainInput` is

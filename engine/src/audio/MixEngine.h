@@ -389,6 +389,20 @@ public:
     LatencyCompensationSnapshot getLatencyCompensationSnapshot() const;
     bool isInterTrackLatencyCompensationApplied() const;
     void refreshLatencyDiagnostics();
+
+    // [PDCNotify] Recompute PDC for every chain (tracks + master) that holds a
+    // latency change no owner path has accounted for - e.g. an EQ band switched
+    // to Spectral through Audio_EQ_SetBandParam, which mutates the effect
+    // directly. Run by the envelope applier thread each pass; costs one atomic
+    // load when nothing changed anywhere, and takes chainsMutex_ (never the
+    // audio thread's lock - it only try_locks it) only when something did.
+    // NOT for the audio thread. Returns the number of chains recomputed.
+    int servicePendingLatencyChanges();
+    std::uint64_t getLatencyChangeServiceCount() const noexcept
+    {
+        return latencyChangeServiceCount_.load(std::memory_order_relaxed);
+    }
+
     int addProcessorForTesting(int trackId,
                                const std::string& pluginId,
                                std::unique_ptr<juce::AudioProcessor> proc,
@@ -1381,6 +1395,11 @@ private:
 
     std::thread             envelopeApplierThread_;
     std::atomic<bool>       envelopeApplierRunning_{false};
+
+    // [PDCNotify] Last LatencyChangeSignal::generation() servicePendingLatencyChanges
+    // acted on, and how many chain recomputes it has performed.
+    std::atomic<std::uint64_t> latencyChangeGenerationSeen_{0};
+    std::atomic<std::uint64_t> latencyChangeServiceCount_{0};
 
     // AUDIO THREAD. Evaluate every published envelope at this block's transport
     // position and publish the mapped values. `atRest` publishes the env == 0

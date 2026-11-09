@@ -3,6 +3,7 @@
 #include <juce_audio_processors/juce_audio_processors.h>
 #include <nlohmann/json.hpp>
 
+#include "audio/LatencyChangeSignal.h"
 #include "audio/SidechainCapability.h"
 
 #include <atomic>
@@ -385,6 +386,29 @@ public:
     // This recomputes cached latency accounting without changing audio routing.
     void refreshLatencyDiagnostics();
 
+    // ── [PDCNotify] deferred latency-change service ─────────────────────────
+    // True while a node published a latency change that no computePDC() has
+    // accounted for yet (the change bypassed every owner path that recomputes
+    // inline, e.g. XlethParametricEQ::setBandParam called from an RPC).
+    bool hasPendingLatencyChange() const noexcept
+    {
+        return latencyChangeSignal_->isPending();
+    }
+
+    // Non-realtime only; the caller holds whatever lock serialises it against
+    // other graph edits (MixEngine: chainsMutex_). If a change is pending,
+    // recompute PDC - the same computePDC() every owner path ends with - and
+    // return true. A latency-only change needs no APG re-wiring: that is
+    // topology work, and off the JUCE message thread JUCE would only defer it
+    // to an async update the addon worker never pumps.
+    bool servicePendingLatencyChange();
+
+    // Diagnostics/tests: number of raise() calls the graph's signal has seen.
+    std::uint64_t getLatencyChangeRaiseCount() const noexcept
+    {
+        return latencyChangeSignal_->getRaisedCount();
+    }
+
     // Test hook for fake third-party processors. Production plugin loading
     // still goes through createEffect()/PluginRegistry.
     int addProcessorForTesting(const std::string& pluginId,
@@ -539,6 +563,11 @@ private:
     juce::MidiBuffer emptyMidi_;
     std::atomic<int> outputLatencySamples_{0};
     std::atomic<std::uint64_t> latencyEpoch_{0};
+
+    // [PDCNotify] Raised by any subscribed node's setLatencySamples; cleared at
+    // the start of every computePDC(). Never reassigned after construction.
+    const std::shared_ptr<xleth::audio::LatencyChangeSignal> latencyChangeSignal_ =
+        std::make_shared<xleth::audio::LatencyChangeSignal>();
 
     // Immutable snapshot published for the audio thread. See the RealtimeView
     // note at the top of this header. Retirement is the caller's job: MixEngine

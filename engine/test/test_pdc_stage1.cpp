@@ -978,6 +978,229 @@ static void testAudioGraphLatencyChangePropagation()
           "AudioGraph oversampling enable should trigger one PDC recompute");
 }
 
+// [PDCNotify] The dedicated EQ RPCs (Audio_EQ_SetBandParam -> setBandParam,
+// Audio_EQ_SetGlobalParam -> setParameterValue) mutate the effect DIRECTLY, not
+// through any AudioGraph owner path. Before the notification mechanism the
+// chain latency stayed stale (bridge/probe_eq_chain_pdc.js, VERDICT=CONFIRMED).
+// Now the effect raises the graph's signal and one service pass recomputes PDC.
+// Deterministic: a bare AudioGraph has no applier thread, so the test decides
+// exactly when the service runs.
+static void testAudioGraphDirectEffectLatencyChangeNotifies()
+{
+    std::cout << "[PDCNotify] Graph: direct EQ mutation raises a PDC recompute\n";
+
+    AudioGraph graph;
+    graph.init(48000.0, 512);
+
+    const int nodeId = graph.addEffect("xletheq", 0);
+    CHECK(nodeId >= 0, "[PDCNotify] graph should add XlethEQ");
+    auto* eq = dynamic_cast<XlethParametricEQ*>(graph.getEffect(nodeId));
+    CHECK(eq != nullptr, "[PDCNotify] graph effect should be XlethEQ");
+    if (eq == nullptr) return;
+
+    CHECK(eq->addBand() == 0, "[PDCNotify] EQ should add band 0");
+    graph.refreshLatencyDiagnostics();
+    CHECK(!graph.hasPendingLatencyChange(), "[PDCNotify] refresh should leave nothing pending");
+    CHECK(!graph.servicePendingLatencyChange(), "[PDCNotify] idle service should be a no-op");
+
+    auto epoch = graph.getLatencyEpoch();
+    CHECK(eq->setBandParam(0, "mode", 2.0f), "[PDCNotify] setBandParam mode=2 should succeed");
+    CHECK(eq->getReportedProcessorLatencySamples() == XlethParametricEQ::kSTFTLatency,
+          "[PDCNotify] EQ reported latency should be the STFT latency");
+    CHECK(graph.hasPendingLatencyChange(),
+          "[PDCNotify] a direct latency change must leave the graph pending");
+    CHECK(graph.getLatencyEpoch() == epoch,
+          "[PDCNotify] the notification itself must not recompute inline");
+    CHECK(graph.servicePendingLatencyChange(), "[PDCNotify] service should recompute");
+    CHECK(graph.getOutputLatencySamples() == XlethParametricEQ::kSTFTLatency,
+          "[PDCNotify] chain latency should follow Spectral ON (4096)");
+    CHECK(graph.getLatencyEpoch() == epoch + 1, "[PDCNotify] exactly one recompute for Spectral ON");
+    CHECK(!graph.servicePendingLatencyChange(), "[PDCNotify] second service must be a no-op");
+
+    epoch = graph.getLatencyEpoch();
+    CHECK(eq->setBandParam(0, "mode", 0.0f), "[PDCNotify] setBandParam mode=0 should succeed");
+    CHECK(graph.servicePendingLatencyChange(), "[PDCNotify] service should recompute Spectral OFF");
+    CHECK(graph.getOutputLatencySamples() == 0, "[PDCNotify] chain latency should drop back to 0");
+    CHECK(graph.getLatencyEpoch() == epoch + 1, "[PDCNotify] exactly one recompute for Spectral OFF");
+
+    epoch = graph.getLatencyEpoch();
+    const auto raisesBefore = graph.getLatencyChangeRaiseCount();
+    CHECK(eq->setBandParam(0, "mode", 2.0f), "[PDCNotify] burst step 1");
+    CHECK(eq->setBandParam(0, "mode", 0.0f), "[PDCNotify] burst step 2");
+    CHECK(eq->setBandParam(0, "mode", 2.0f), "[PDCNotify] burst step 3");
+    CHECK(graph.getLatencyChangeRaiseCount() == raisesBefore + 3,
+          "[PDCNotify] each actual change should raise once");
+    CHECK(graph.servicePendingLatencyChange(), "[PDCNotify] burst service should recompute");
+    CHECK(graph.getLatencyEpoch() == epoch + 1, "[PDCNotify] a burst should cost ONE recompute");
+    CHECK(graph.getOutputLatencySamples() == XlethParametricEQ::kSTFTLatency,
+          "[PDCNotify] burst should settle on the final value");
+    CHECK(eq->setBandParam(0, "mode", 0.0f), "[PDCNotify] burst reset");
+    CHECK(graph.servicePendingLatencyChange(), "[PDCNotify] burst reset recompute");
+
+    const auto raisesNeutral = graph.getLatencyChangeRaiseCount();
+    CHECK(eq->setBandParam(0, "gain", 3.0f), "[PDCNotify] neutral gain edit");
+    CHECK(eq->setBandParam(0, "mode", 0.0f), "[PDCNotify] same-value mode write");
+    CHECK(graph.getLatencyChangeRaiseCount() == raisesNeutral,
+          "[PDCNotify] latency-neutral edits must not raise");
+    CHECK(!graph.hasPendingLatencyChange(), "[PDCNotify] nothing pending after neutral edits");
+
+    epoch = graph.getLatencyEpoch();
+    CHECK(eq->setParameterValue("linphase", 1.0f), "[PDCNotify] linphase on");
+    CHECK(graph.servicePendingLatencyChange(), "[PDCNotify] linphase on should recompute");
+    CHECK(graph.getOutputLatencySamples() == kLinearPhaseLatency,
+          "[PDCNotify] chain latency should follow linear phase ON");
+    CHECK(graph.getLatencyEpoch() == epoch + 1, "[PDCNotify] one recompute for linphase ON");
+    CHECK(eq->setParameterValue("linphase", 0.0f), "[PDCNotify] linphase off");
+    CHECK(graph.servicePendingLatencyChange(), "[PDCNotify] linphase off should recompute");
+    CHECK(graph.getOutputLatencySamples() == 0, "[PDCNotify] chain latency back to 0 after linphase");
+
+    CHECK(eq->setParameterValue("oversample", 1.0f), "[PDCNotify] oversample on");
+    const int osLatency = eq->getReportedProcessorLatencySamples();
+    CHECK(osLatency > 0, "[PDCNotify] oversampling should report latency");
+    CHECK(graph.servicePendingLatencyChange(), "[PDCNotify] oversample on should recompute");
+    CHECK(graph.getOutputLatencySamples() == osLatency,
+          "[PDCNotify] chain latency should follow oversampling ON");
+    CHECK(eq->setParameterValue("oversample", 0.0f), "[PDCNotify] oversample off");
+    CHECK(graph.servicePendingLatencyChange(), "[PDCNotify] oversample off should recompute");
+    CHECK(graph.getOutputLatencySamples() == 0, "[PDCNotify] chain latency back to 0 after oversampling");
+
+    epoch = graph.getLatencyEpoch();
+    CHECK(graph.setEffectParameter(nodeId, "b0_mode", 2.0f), "[PDCNotify] generic path mode=2");
+    CHECK(graph.getOutputLatencySamples() == XlethParametricEQ::kSTFTLatency,
+          "[PDCNotify] generic path still recomputes inline");
+    CHECK(graph.getLatencyEpoch() == epoch + 1, "[PDCNotify] generic path: one recompute");
+    CHECK(!graph.hasPendingLatencyChange(),
+          "[PDCNotify] generic path must not leave a pending change behind");
+    CHECK(!graph.servicePendingLatencyChange(),
+          "[PDCNotify] generic path + service must not double-recompute");
+    CHECK(graph.getLatencyEpoch() == epoch + 1, "[PDCNotify] still exactly one recompute");
+    CHECK(graph.setEffectParameter(nodeId, "b0_mode", 0.0f), "[PDCNotify] generic path mode=0");
+
+    const int second = graph.addEffect("xletheq", 1);
+    CHECK(second >= 0, "[PDCNotify] graph should add a second EQ");
+    auto* eq2 = dynamic_cast<XlethParametricEQ*>(graph.getEffect(second));
+    CHECK(eq2 != nullptr && eq2->addBand() == 0, "[PDCNotify] second EQ band");
+    graph.refreshLatencyDiagnostics();
+    CHECK(graph.removeEffect(second), "[PDCNotify] remove second EQ");
+    // eq2 is gone with its node; the first EQ is still subscribed.
+    CHECK(eq->setBandParam(0, "mode", 2.0f), "[PDCNotify] first EQ still notifies");
+    CHECK(graph.hasPendingLatencyChange(), "[PDCNotify] surviving node still raises");
+    CHECK(graph.servicePendingLatencyChange(), "[PDCNotify] surviving node recompute");
+    CHECK(graph.getOutputLatencySamples() == XlethParametricEQ::kSTFTLatency,
+          "[PDCNotify] chain latency after removal + direct change");
+}
+
+// [PDCNotify] Same contract one level up, through MixEngine - the object the
+// bridge RPCs reach via getEffectPtr()/getMasterEffectPtr(). Not prepared, so no
+// applier thread: the test drives servicePendingLatencyChanges() itself.
+static void testMixEngineDirectEffectLatencyChangeService()
+{
+    std::cout << "[PDCNotify] MixEngine: service recomputes track + master chains\n";
+
+    // Heap, not stack: MixEngine is large enough to overflow the 1 MB main
+    // thread stack (the shared fixtures make_unique it for the same reason).
+    auto timeline = std::make_unique<Timeline>(120.0, 48000.0);
+    TrackInfo latent; latent.name = "Latent";
+    TrackInfo dry; dry.name = "Dry";
+    const int latentTrack = timeline->addTrack(latent);
+    const int dryTrack = timeline->addTrack(dry);
+
+    auto enginePtr = std::make_unique<MixEngine>();
+    MixEngine& engine = *enginePtr;
+    engine.setTimeline(timeline.get());
+    juce::ignoreUnused(dryTrack);
+
+    const int trackEq = engine.addEffect(latentTrack, "xletheq", 0);
+    const int masterEq = engine.addMasterEffect("xletheq", 0);
+    CHECK(trackEq >= 0 && masterEq >= 0, "[PDCNotify] MixEngine should accept track + master EQ");
+    auto* teq = dynamic_cast<XlethParametricEQ*>(engine.getEffectPtr(latentTrack, trackEq));
+    auto* meq = dynamic_cast<XlethParametricEQ*>(engine.getMasterEffectPtr(masterEq));
+    CHECK(teq != nullptr && meq != nullptr, "[PDCNotify] both inserts should be XlethEQ");
+    if (teq == nullptr || meq == nullptr) return;
+    CHECK(teq->addBand() == 0 && meq->addBand() == 0, "[PDCNotify] both EQs get band 0");
+    engine.refreshLatencyDiagnostics();
+    (void) engine.servicePendingLatencyChanges();   // drain setup-time generation bumps
+
+    CHECK(engine.getTrackInsertLatencySamples(latentTrack) == 0, "[PDCNotify] track starts at 0");
+    CHECK(engine.servicePendingLatencyChanges() == 0, "[PDCNotify] idle service recomputes nothing");
+
+    // Exactly the Audio_EQ_SetBandParam body: getEffectPtr -> setBandParam.
+    CHECK(teq->setBandParam(0, "mode", 2.0f), "[PDCNotify] track EQ Spectral on");
+    CHECK(engine.getTrackInsertLatencySamples(latentTrack) == 0,
+          "[PDCNotify] before the service the cached chain value is still the old one");
+    CHECK(engine.servicePendingLatencyChanges() == 1, "[PDCNotify] one chain recomputed");
+    CHECK(engine.getTrackInsertLatencySamples(latentTrack) == XlethParametricEQ::kSTFTLatency,
+          "[PDCNotify] track chain latency = 4096 after service");
+    CHECK(engine.getMaxAudibleTrackLatencySamples() == XlethParametricEQ::kSTFTLatency,
+          "[PDCNotify] mixer max audible track latency = 4096 after service");
+    CHECK(engine.servicePendingLatencyChanges() == 0, "[PDCNotify] no double recompute");
+
+    CHECK(teq->setBandParam(0, "mode", 0.0f), "[PDCNotify] track EQ Spectral off");
+    CHECK(engine.servicePendingLatencyChanges() == 1, "[PDCNotify] Spectral off recomputed");
+    CHECK(engine.getTrackInsertLatencySamples(latentTrack) == 0,
+          "[PDCNotify] track chain latency back to 0 after service");
+
+    // Master chain (trackId < 0 in the RPC) + global param path.
+    CHECK(meq->setParameterValue("linphase", 1.0f), "[PDCNotify] master EQ linphase on");
+    CHECK(engine.servicePendingLatencyChanges() == 1, "[PDCNotify] master chain recomputed");
+    CHECK(engine.getMasterInsertLatencySamples() == kLinearPhaseLatency,
+          "[PDCNotify] master insert latency follows linear phase");
+    CHECK(meq->setParameterValue("linphase", 0.0f), "[PDCNotify] master EQ linphase off");
+    CHECK(engine.servicePendingLatencyChanges() == 1, "[PDCNotify] master chain recomputed again");
+    CHECK(engine.getMasterInsertLatencySamples() == 0, "[PDCNotify] master insert back to 0");
+
+    // Both chains in one pass.
+    CHECK(teq->setBandParam(0, "mode", 2.0f) && meq->setBandParam(0, "mode", 2.0f),
+          "[PDCNotify] both EQs Spectral on");
+    CHECK(engine.servicePendingLatencyChanges() == 2, "[PDCNotify] both chains in one pass");
+    CHECK(engine.getTrackInsertLatencySamples(latentTrack) == XlethParametricEQ::kSTFTLatency
+              && engine.getMasterInsertLatencySamples() == XlethParametricEQ::kSTFTLatency,
+          "[PDCNotify] both chains report 4096");
+}
+
+// [PDCNotify] Wiring: with a prepared engine the envelope applier thread runs
+// the service by itself. No explicit call; poll the cached value.
+static void testMixEngineApplierServicesLatencyChange()
+{
+    std::cout << "[PDCNotify] MixEngine: applier thread heals a direct change unaided\n";
+
+    auto timeline = std::make_unique<Timeline>(120.0, 48000.0);   // heap: see above
+    TrackInfo latent; latent.name = "Latent";
+    const int latentTrack = timeline->addTrack(latent);
+
+    auto enginePtr = std::make_unique<MixEngine>();
+    MixEngine& engine = *enginePtr;
+    engine.setTimeline(timeline.get());
+    engine.prepare(48000.0, 512);   // starts the applier thread
+
+    const int eqNode = engine.addEffect(latentTrack, "xletheq", 0);
+    auto* eq = dynamic_cast<XlethParametricEQ*>(engine.getEffectPtr(latentTrack, eqNode));
+    CHECK(eq != nullptr, "[PDCNotify] applier test: XlethEQ insert");
+    if (eq == nullptr) return;
+    CHECK(eq->addBand() == 0, "[PDCNotify] applier test: band 0");
+    engine.refreshLatencyDiagnostics();
+
+    auto waitForLatency = [&](int expected) {
+        for (int i = 0; i < 200; ++i)   // up to ~2 s
+        {
+            if (engine.getTrackInsertLatencySamples(latentTrack) == expected)
+                return true;
+            juce::Thread::sleep(10);
+        }
+        return false;
+    };
+
+    const auto servicesBefore = engine.getLatencyChangeServiceCount();
+    CHECK(eq->setBandParam(0, "mode", 2.0f), "[PDCNotify] applier test: Spectral on");
+    CHECK(waitForLatency(XlethParametricEQ::kSTFTLatency),
+          "[PDCNotify] applier thread should bring the chain to 4096 without any refresh call");
+    CHECK(eq->setBandParam(0, "mode", 0.0f), "[PDCNotify] applier test: Spectral off");
+    CHECK(waitForLatency(0),
+          "[PDCNotify] applier thread should bring the chain back to 0 without any refresh call");
+    CHECK(engine.getLatencyChangeServiceCount() >= servicesBefore + 2,
+          "[PDCNotify] applier thread should have serviced both changes");
+}
+
 static void testAudioGraphThirdPartyLatencyRefreshPropagation()
 {
     std::cout << "[Graph] Third-party wrapper latency propagation\n";
@@ -2450,6 +2673,9 @@ int main()
     testAudioGraphLatencyEpochAndTopology();
     testAudioGraphAddEffectConsumesPassthrough();
     testAudioGraphLatencyChangePropagation();
+    testAudioGraphDirectEffectLatencyChangeNotifies();
+    testMixEngineDirectEffectLatencyChangeService();
+    testMixEngineApplierServicesLatencyChange();
     testAudioGraphThirdPartyLatencyRefreshPropagation();
     testAudioGraphThirdPartyProgramStateBypassAndEditorRoutes();
     testPdcRegressionAccounting();
