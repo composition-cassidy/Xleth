@@ -25,8 +25,21 @@
 // every removed_dB. Detector-geometry check (section 10) reads the RS detector
 // baseline through the existing XLETH_RESONANCE_SUPPRESSOR_TEST_HOOKS hook.
 //
-// Usage: xleth_rs_quality_bench [--quick] [--no-cpu] [--out-dir DIR]
-//                               [--wav label=path]...
+// v3 (residual vs clean + gates):
+//   Residual metrics compare the output with the UNPROCESSED clean signal C (signal A is C filtered by
+//   the planted bell, so an ideal suppressor's output equals C): in_window_residual_dB (ideal 0; >0 =
+//   resonance remains; <0 = over-suppression) and outside_dev_dB. removed_dB / ideal_dB is kept but is
+//   informational only (it exceeds 100 % whenever the output goes BELOW the unboosted spectrum).
+//   S5q = EQ Spectral band gain -30 dB, spec_sens 0.0, band Q 8, centre = f0 (the "fair" EQ variant).
+//   Gate table (G1..G6, fixed thresholds in the kGate* constants below) grades every subject that is
+//   registered with gated = true. ONE registration in registry() adds a subject everywhere (scan, jitter,
+//   pre-echo, E, latency, CPU, gates); a subject that is not one of the built-in kinds can supply a
+//   `factory`. --cpu-only runs just the CPU benchmark (default subjects, blocks 64/128/512).
+//
+// Usage: xleth_rs_quality_bench [--quick] [--no-cpu] [--cpu-only] [--out-dir DIR]
+//                               [--ref-subjects] [--wav label=path]...
+//   --ref-subjects registers two reference subjects (R0 pass-through, R1 oracle = exact inverse of the planted bell, built through
+//   Subject::factory) so the residual metrics and gates can be calibrated: R0 must FAIL G1/G3, R1 must PASS. Off by default (default output unchanged).
 
 // Test-only read access to the RS detector baseline (same define as
 // engine/test/test_pdc_stage1.cpp). Adds only static members; must precede the
@@ -56,10 +69,12 @@
 #include <ctime>
 #include <filesystem>
 #include <fstream>
+#include <functional>
 #include <map>
 #include <memory>
 #include <numeric>
 #include <sstream>
+#include <tuple>
 #include <string>
 #include <utility>
 #include <vector>
@@ -168,6 +183,8 @@ struct Options
 {
     bool quick  = false;
     bool noCpu  = false;
+    bool cpuOnly = false;
+    bool refSubjects = false;   // register the pass-through + oracle reference subjects (metric / gate calibration)
     std::string outBase = "bench_out";
     std::vector<std::pair<std::string, std::string>> wavs;   // label, path
 };
@@ -327,7 +344,8 @@ static Stereo makeImpulse(int n, int at)
 // Subjects + effect factory
 // ============================================================================
 
-enum class Kind { RsLL, RsHQ, Eq };
+enum class Kind { RsLL, RsHQ, Eq, Custom };
+enum class Group { Primary, Sensitive, Capability };
 
 struct Subject
 {
@@ -341,52 +359,163 @@ struct Subject
     std::string params;
     bool capability = false;       // max-depth capability variant (RS: depth 100 / Hard)
     float eqGain = -12.0f;         // EQ band gain (= signed depth, dB) when not neutral
+    // ---- v3 registration fields (everything the bench needs to know about a subject) ----
+    Group group = Group::Primary;  // Primary = default params (CPU + transparency + block size);
+                                   // Sensitive = jitter-only; Capability = scan/E/D/D2/jitter/pre-echo + gates when gated
+    float eqQ = -1.0f;             // EQ: band Q override (<0 = default 0.707)
+    bool reference = false;        // calibration subject (--ref-subjects); excluded from the "a real subject passed everything" alarm
+    bool gated = false;            // graded by the G1..G6 gate table (evaluated at THIS variant)
+    std::string jitterId;          // G4: id of the registered subject whose jitter run is the "sensitive variant" (empty = this subject)
+    std::string pairedDefault;     // id of the default-parameter subject this capability variant is paired with
+                                   // (empty = none; only paired ones enter the legacy 'capability >= default' sanity line)
+    // Optional: build a subject that is not one of the built-in kinds. Returns a prepared processor
+    // (the factory calls prepareToPlay itself). `neutral` = depth 0 / no-op config for latency + transparency runs.
+    std::function<std::unique_ptr<juce::AudioProcessor>(double sr, int maxBlock, double centreHz, bool neutral)> factory;
 };
 
-static std::vector<Subject> primarySubjects()
+// Reference processor for --ref-subjects: one RBJ peaking biquad (double TDF-II, same maths as applyRbjPeak) per channel.
+// gainDb = 0 is an exact identity (pass-through); gainDb = -12 at the planted f0 is the exact inverse of the planted +12 dB / Q8 bell.
+class RefBellProcessor : public juce::AudioProcessor
 {
-    return {
-        { "S1", "S1", "RS Low Latency",            Kind::RsLL, 0, false, -1.0f, "defaults (LL)" },
-        { "S2", "S2", "RS High Quality / Fast",    Kind::RsHQ, 0, false, -1.0f, "processing_mode=HQ, quality=Fast (N=512)" },
-        { "S3", "S3", "RS High Quality / Normal",  Kind::RsHQ, 1, false, -1.0f, "processing_mode=HQ, quality=Normal (N=1024)" },
-        { "S4", "S4", "RS High Quality / High",    Kind::RsHQ, 2, false, -1.0f, "processing_mode=HQ, quality=High (N=2048)" },
-        { "S5", "S5", "EQ Spectral (1 band)",      Kind::Eq,   0, false, -1.0f, "band0 mode=Spectral, gain(depth)=-12 dB, freq=resonance, Q/sens/sel/atk/rel default" },
-    };
+public:
+    RefBellProcessor(double sr, double f0, double gainDb)
+        : juce::AudioProcessor(BusesProperties().withInput("in", juce::AudioChannelSet::stereo()).withOutput("out", juce::AudioChannelSet::stereo()))
+    {
+        const double A = std::pow(10.0, gainDb / 40.0);
+        const double w0 = 2.0 * juce::MathConstants<double>::pi * f0 / sr;
+        const double alpha = std::sin(w0) / (2.0 * 8.0);
+        const double cw = std::cos(w0);
+        const double a0 = 1.0 + alpha / A;
+        b0_ = (1.0 + alpha * A) / a0; b1_ = (-2.0 * cw) / a0; b2_ = (1.0 - alpha * A) / a0;
+        a1_ = (-2.0 * cw) / a0;       a2_ = (1.0 - alpha / A) / a0;
+    }
+    const juce::String getName() const override { return "RefBell"; }
+    void prepareToPlay(double, int) override { z1_[0] = z1_[1] = z2_[0] = z2_[1] = 0.0; }
+    void releaseResources() override {}
+    void processBlock(juce::AudioBuffer<float>& buf, juce::MidiBuffer&) override
+    {
+        for (int c = 0; c < std::min(2, buf.getNumChannels()); ++c)
+        {
+            float* d = buf.getWritePointer(c);
+            for (int i = 0; i < buf.getNumSamples(); ++i)
+            {
+                const double in = d[i];
+                const double out = b0_ * in + z1_[c];
+                z1_[c] = b1_ * in - a1_ * out + z2_[c];
+                z2_[c] = b2_ * in - a2_ * out;
+                d[i] = static_cast<float>(out);
+            }
+        }
+    }
+    double getTailLengthSeconds() const override { return 0.0; }
+    bool acceptsMidi() const override { return false; }
+    bool producesMidi() const override { return false; }
+    juce::AudioProcessorEditor* createEditor() override { return nullptr; }
+    bool hasEditor() const override { return false; }
+    int getNumPrograms() override { return 1; }
+    int getCurrentProgram() override { return 0; }
+    void setCurrentProgram(int) override {}
+    const juce::String getProgramName(int) override { return {}; }
+    void changeProgramName(int, const juce::String&) override {}
+    void getStateInformation(juce::MemoryBlock&) override {}
+    void setStateInformation(const void*, int) override {}
+private:
+    double b0_ = 1, b1_ = 0, b2_ = 0, a1_ = 0, a2_ = 0, z1_[2] = {}, z2_[2] = {};
+};
+
+// THE subject registry. Registering a subject here adds it to every table, CSV, gate and (for Primary) the CPU run.
+// Order is preserved inside each group; groups are concatenated Primary, Sensitive, Capability.
+static const std::vector<Subject>& registry()
+{
+    static const std::vector<Subject> reg = []
+    {
+        std::vector<Subject> r;
+        auto add = [&](const char* id, const char* base, const char* label, Kind kind, Group g, const char* params) -> Subject&
+        {
+            r.emplace_back();
+            Subject& s = r.back();
+            s.id = id; s.base = base; s.label = label; s.kind = kind; s.group = g; s.params = params;
+            return s;
+        };
+
+        // -------- Primary: default parameters --------
+        add("S1", "S1", "RS Low Latency",           Kind::RsLL, Group::Primary, "defaults (LL)");
+        { auto& s = add("S2", "S2", "RS High Quality / Fast",   Kind::RsHQ, Group::Primary, "processing_mode=HQ, quality=Fast (N=512)");    s.quality = 0; }
+        { auto& s = add("S3", "S3", "RS High Quality / Normal", Kind::RsHQ, Group::Primary, "processing_mode=HQ, quality=Normal (N=1024)"); s.quality = 1; }
+        { auto& s = add("S4", "S4", "RS High Quality / High",   Kind::RsHQ, Group::Primary, "processing_mode=HQ, quality=High (N=2048)");   s.quality = 2; }
+        add("S5", "S5", "EQ Spectral (1 band)",     Kind::Eq,   Group::Primary, "band0 mode=Spectral, gain(depth)=-12 dB, freq=resonance, Q/sens/sel/atk/rel default");
+
+        // -------- Sensitive: jitter / false-trigger test only --------
+        { auto& s = add("S1s", "S1", "RS Low Latency (sensitive)", Kind::RsLL, Group::Sensitive, "depth=100, selectivity=0"); s.sensitive = true; }
+        { auto& s = add("S2s", "S2", "RS HQ Fast (sensitive)",     Kind::RsHQ, Group::Sensitive, "depth=100, selectivity=0"); s.sensitive = true; s.quality = 0; }
+        { auto& s = add("S3s", "S3", "RS HQ Normal (sensitive)",   Kind::RsHQ, Group::Sensitive, "depth=100, selectivity=0"); s.sensitive = true; s.quality = 1; }
+        { auto& s = add("S4s", "S4", "RS HQ High (sensitive)",     Kind::RsHQ, Group::Sensitive, "depth=100, selectivity=0"); s.sensitive = true; s.quality = 2; }
+        { auto& s = add("S5s", "S5", "EQ Spectral (spec_sens=1.0, as spec'd)", Kind::Eq, Group::Sensitive, "spec_sens=1.0 (EQ: HIGHER sens = HIGHER threshold)"); s.eqSens = 1.0f; }
+        { auto& s = add("S5z", "S5", "EQ Spectral (spec_sens=0.0)", Kind::Eq, Group::Sensitive, "spec_sens=0.0 (EQ: LOWEST threshold = most sensitive)"); s.eqSens = 0.0f; }
+        // Sensitive companion of S5q (G4): same as S5z but with the narrow band Q 8 of the fair variant.
+        { auto& s = add("S5qz", "S5", "EQ Spectral (spec_sens=0.0, Q=8)", Kind::Eq, Group::Sensitive, "spec_sens=0.0, band Q=8, gain -12 dB (sensitive companion of S5q)"); s.eqSens = 0.0f; s.eqQ = 8.0f; }
+
+        // -------- Capability: max-depth runs (gated) --------
+        { auto& s = add("S1c", "S1", "RS Low Latency (capability)", Kind::RsLL, Group::Capability, "depth=100, mode=Hard");
+          s.capability = true; s.gated = true; s.jitterId = "S1s"; s.pairedDefault = "S1"; }
+        { auto& s = add("S2c", "S2", "RS HQ Fast (capability)",     Kind::RsHQ, Group::Capability, "depth=100, mode=Hard");
+          s.quality = 0; s.capability = true; s.gated = true; s.jitterId = "S2s"; s.pairedDefault = "S2"; }
+        { auto& s = add("S3c", "S3", "RS HQ Normal (capability)",   Kind::RsHQ, Group::Capability, "depth=100, mode=Hard");
+          s.quality = 1; s.capability = true; s.gated = true; s.jitterId = "S3s"; s.pairedDefault = "S3"; }
+        { auto& s = add("S4c", "S4", "RS HQ High (capability)",     Kind::RsHQ, Group::Capability, "depth=100, mode=Hard");
+          s.quality = 2; s.capability = true; s.gated = true; s.jitterId = "S4s"; s.pairedDefault = "S4"; }
+        { auto& s = add("S5c", "S5", "EQ Spectral (capability)",    Kind::Eq,   Group::Capability, "band gain=-30 dB (max depth), spec_sens=0.0 (most sensitive)");
+          s.eqSens = 0.0f; s.capability = true; s.eqGain = -30.0f; s.gated = true; s.jitterId = "S5z"; s.pairedDefault = "S5"; }
+        // Fair EQ variant: a narrow (Q 8) band centred on the resonance so the band's region brackets it.
+        { auto& s = add("S5q", "S5", "EQ Spectral (fair: Q=8)",     Kind::Eq,   Group::Capability, "band gain=-30 dB, spec_sens=0.0, band Q=8, centre=f0");
+          s.eqSens = 0.0f; s.capability = true; s.eqGain = -30.0f; s.eqQ = 8.0f; s.gated = true; s.jitterId = "S5qz"; }
+
+        // -------- Reference subjects (opt-in): metric / gate calibration. Registered through Subject::factory. --------
+        if (g_opt.refSubjects)
+        {
+            { auto& s = add("R0", "R0", "Reference: pass-through", Kind::Custom, Group::Capability, "identity processor - the do-nothing floor (expected: FAIL G1 and G3)");
+              s.gated = true; s.reference = true;
+              s.factory = [](double sr, int, double f0, bool) { return std::make_unique<RefBellProcessor>(sr, f0, 0.0); }; }
+            { auto& s = add("R1", "R1", "Reference: oracle (exact inverse bell)", Kind::Custom, Group::Capability, "-12 dB / Q8 bell at f0 = exact inverse of the planted bell (expected: PASS G1/G2/G3)");
+              s.gated = true; s.reference = true;
+              s.factory = [](double sr, int, double f0, bool neutral) { return std::make_unique<RefBellProcessor>(sr, f0, neutral ? 0.0 : -12.0); }; }
+        }
+        return r;
+    }();
+    return reg;
 }
 
-static std::vector<Subject> sensitiveSubjects()
+static std::vector<Subject> subjectsOf(Group g)
 {
-    return {
-        { "S1s", "S1", "RS Low Latency (sensitive)",           Kind::RsLL, 0, true,  -1.0f, "depth=100, selectivity=0" },
-        { "S2s", "S2", "RS HQ Fast (sensitive)",               Kind::RsHQ, 0, true,  -1.0f, "depth=100, selectivity=0" },
-        { "S3s", "S3", "RS HQ Normal (sensitive)",             Kind::RsHQ, 1, true,  -1.0f, "depth=100, selectivity=0" },
-        { "S4s", "S4", "RS HQ High (sensitive)",               Kind::RsHQ, 2, true,  -1.0f, "depth=100, selectivity=0" },
-        { "S5s", "S5", "EQ Spectral (spec_sens=1.0, as spec'd)", Kind::Eq, 0, false, 1.0f, "spec_sens=1.0 (EQ: HIGHER sens = HIGHER threshold)" },
-        { "S5z", "S5", "EQ Spectral (spec_sens=0.0)",          Kind::Eq,   0, false, 0.0f,  "spec_sens=0.0 (EQ: LOWEST threshold = most sensitive)" },
-    };
+    std::vector<Subject> o;
+    for (const auto& s : registry()) if (s.group == g) o.push_back(s);
+    return o;
 }
 
-static std::vector<Subject> capabilitySubjects()
-{
-    return {
-        { "S1c", "S1", "RS Low Latency (capability)",          Kind::RsLL, 0, false, -1.0f, "depth=100, mode=Hard", true },
-        { "S2c", "S2", "RS HQ Fast (capability)",              Kind::RsHQ, 0, false, -1.0f, "depth=100, mode=Hard", true },
-        { "S3c", "S3", "RS HQ Normal (capability)",            Kind::RsHQ, 1, false, -1.0f, "depth=100, mode=Hard", true },
-        { "S4c", "S4", "RS HQ High (capability)",              Kind::RsHQ, 2, false, -1.0f, "depth=100, mode=Hard", true },
-        { "S5c", "S5", "EQ Spectral (capability)",             Kind::Eq,   0, false, 0.0f,  "band gain=-30 dB (max depth), spec_sens=0.0 (most sensitive)", true, -30.0f },
-    };
-}
+static std::vector<Subject> primarySubjects()    { return subjectsOf(Group::Primary); }
+static std::vector<Subject> sensitiveSubjects() { return subjectsOf(Group::Sensitive); }
+static std::vector<Subject> capabilitySubjects() { return subjectsOf(Group::Capability); }
 
 struct Fx
 {
     std::unique_ptr<XlethResonanceSuppressorEffect> rs;
     std::unique_ptr<XlethParametricEQ>              eq;
+    std::unique_ptr<juce::AudioProcessor>           custom;   // Subject::factory products
 
-    juce::AudioProcessor& proc() { return rs ? static_cast<juce::AudioProcessor&>(*rs) : static_cast<juce::AudioProcessor&>(*eq); }
-    int reported() const { return rs ? rs->getLatencySamples() : eq->getLatencySamples(); }
+    juce::AudioProcessor& proc()
+    {
+        if (custom) return *custom;
+        return rs ? static_cast<juce::AudioProcessor&>(*rs) : static_cast<juce::AudioProcessor&>(*eq);
+    }
+    int reported() const
+    {
+        if (custom) return custom->getLatencySamples();
+        return rs ? rs->getLatencySamples() : eq->getLatencySamples();
+    }
     // What a host sees through the juce::AudioProcessor base (setLatencySamples value).
     int published() const
     {
+        if (custom) return custom->getLatencySamples();
         return rs ? static_cast<const juce::AudioProcessor&>(*rs).getLatencySamples()
                   : eq->getReportedProcessorLatencySamples();
     }
@@ -401,7 +530,12 @@ static void need(bool ok, const char* what)
 static Fx makeFx(const Subject& s, double sr, double eqCentre, bool neutral, int maxBlock)
 {
     Fx fx;
-    if (s.kind == Kind::Eq)
+    if (s.factory)
+    {
+        fx.custom = s.factory(sr, maxBlock, eqCentre, neutral);
+        need(fx.custom != nullptr, "Subject::factory returned null");
+    }
+    else if (s.kind == Kind::Eq)
     {
         fx.eq = std::make_unique<XlethParametricEQ>();
         auto& eq = *fx.eq;
@@ -411,6 +545,7 @@ static Fx makeFx(const Subject& s, double sr, double eqCentre, bool neutral, int
         need(eq.setBandParam(0, "enabled", 1.0f), "EQ enabled");
         need(eq.setBandParam(0, "mode", 2.0f), "EQ mode");
         if (s.eqSens >= 0.0f) need(eq.setBandParam(0, "spec_sens", s.eqSens), "EQ spec_sens");
+        if (s.eqQ > 0.0f) need(eq.setBandParam(0, "q", s.eqQ), "EQ q");
         eq.prepareToPlay(sr, maxBlock);
     }
     else
@@ -498,6 +633,25 @@ static LatencyResult measureLatency(const Subject& s, double sr)
     if (!r.ok) warnf("impulse response peak too small for %s @%.0f (peak %.4f)", s.id.c_str(), sr, static_cast<double>(peak));
     g_latCache[key] = r;
     return r;
+}
+
+// G6 support: the same impulse measurement through another block schedule (prepareToPlay(maxBlock = largest block)).
+// Returns measured latency (peakIdx - impulseAt); ok = peak large enough.
+static int measureLatencyWithSchedule(const Subject& s, double sr, const std::vector<int>& sched, bool& ok)
+{
+    const int impulseAt = 4096;
+    const int total = 24576;
+    const int maxB = *std::max_element(sched.begin(), sched.end());
+    Fx fx = makeFx(s, sr, 2500.0, true, maxB);
+    const Stereo out = render(fx, makeImpulse(total, impulseAt), sched);
+    int peakIdx = -1; float peak = 0.0f;
+    for (int i = 0; i < total; ++i)
+    {
+        const float v = std::max(std::abs(out.ch[0][static_cast<size_t>(i)]), std::abs(out.ch[1][static_cast<size_t>(i)]));
+        if (v > peak) { peak = v; peakIdx = i; }
+    }
+    ok = peak > 0.05f;
+    return peakIdx - impulseAt;
 }
 
 // ----------------------------------------------------------------------------
@@ -672,12 +826,57 @@ static double rmsDiffDbfs(const Aligned& a)
     return dbAmp(std::sqrt(acc / std::max<long long>(cnt, 1)));
 }
 
-// 3. Suppression accuracy on an aligned pair (both channels, power-averaged).
-static RC suppressionAccuracy(const Aligned& a, double sr, double f0, bool useL = true, bool useR = true)
+// ----------------------------------------------------------------------------
+// v3: residual vs CLEAN. Signal A is the clean pink noise C filtered by the planted bell, so an ideal
+// suppressor's output equals C. Both figures compare the (latency-aligned) output PSD with the PSD of the
+// UNPROCESSED clean signal over the same samples, same Welch settings as removed_dB.
+//   inWindow   = mean over f0 +/- 1/6 oct of dB(PSD_out) - dB(PSD_clean)   (ideal 0; >0 resonance remains; <0 over-suppressed)
+//   outsideDev = mean over 100 Hz-12 kHz excluding f0 +/- 1/3 oct of |dB(PSD_out) - dB(PSD_clean)|
+// ----------------------------------------------------------------------------
+struct Residual { double inWindow = 0, outsideDev = 0; };
+
+static Residual residualVsClean(const std::vector<double>& pout, const std::vector<double>& pclean, double sr, double f0)
+{
+    const double binHz = sr / kWelchN;
+    const double s6 = std::pow(2.0, 1.0 / 6.0), s3 = std::pow(2.0, 1.0 / 3.0);
+    const double lo1 = f0 / s6, hi1 = f0 * s6, lo3 = f0 / s3, hi3 = f0 * s3;
+    double sw = 0, sd = 0; int nw = 0, nd = 0;
+    for (size_t k = 1; k < pout.size(); ++k)
+    {
+        const double f = static_cast<double>(k) * binHz;
+        const double d = dbPow(pout[k]) - dbPow(pclean[k]);
+        if (f >= lo1 && f <= hi1) { sw += d; ++nw; }
+        if (f >= 100.0 && f <= 12000.0 && !(f >= lo3 && f <= hi3)) { sd += std::abs(d); ++nd; }
+    }
+    Residual r;
+    r.inWindow   = nw ? sw / nw : 0.0;
+    r.outsideDev = nd ? sd / nd : 0.0;
+    return r;
+}
+
+// Welch PSD of the clean reference, cached per (tag, window, channel selection): the clean signal does not depend on f0 or subject.
+static const std::vector<double>& cleanPsd(const std::string& tag, const Stereo& clean, int begin, int end, bool useL, bool useR)
+{
+    static std::map<std::tuple<std::string, int, int, bool, bool>, std::vector<double>> cache;
+    const auto key = std::make_tuple(tag, begin, end, useL, useR);
+    auto it = cache.find(key);
+    if (it == cache.end()) it = cache.emplace(key, welchPsd(clean, begin, end, useL, useR)).first;
+    return it->second;
+}
+
+// 3. Suppression accuracy on an aligned pair (both channels, power-averaged by default) plus the v3 residual
+//    figures against `clean` (the unprocessed C, sample-aligned with a.in).
+struct Accuracy { RC rc; Residual res; };
+
+static Accuracy suppressionAccuracy(const Aligned& a, const std::string& cleanTag, const Stereo& clean, double sr, double f0,
+                                    bool useL = true, bool useR = true)
 {
     const auto pin  = welchPsd(a.in,  a.skip, a.n(), useL, useR);
     const auto pout = welchPsd(a.out, a.skip, a.n(), useL, useR);
-    return removedCollateral(pin, pout, sr, f0);
+    Accuracy r;
+    r.rc  = removedCollateral(pin, pout, sr, f0);
+    r.res = residualVsClean(pout, cleanPsd(cleanTag, clean, a.skip, a.n(), useL, useR), sr, f0);
+    return r;
 }
 
 // 5. Delta artefact energy outside f0 +/- 1/3 octave vs total input energy (dB).
@@ -1096,6 +1295,189 @@ static CpuResult cpuBench(const Subject& s, const Stereo& sig, double sr, int bl
 }
 
 // ============================================================================
+// Gates (v3)
+// ============================================================================
+//
+// Fixed acceptance criteria. DO NOT tune these to make a subject pass; they are the specification.
+// Every subject registered with gated = true is evaluated at ITS OWN variant (the capability variants S1c..S5c, S5q)
+// over the 12 scan frequencies at 48 kHz (the 44.1 kHz scan is reported informationally).
+//   G1  in_window_residual_dB >= kG1ResFloorDb  and  <= kG1ResIdealFrac * ideal_dB   at EVERY f0
+//   G2  outside_dev_dB <= kG2OutsideDevDb                                             at EVERY f0
+//   G3  resonance in the RIGHT channel only (signal E, 2500 Hz): G1 + G2 on R, and L outside_dev_dB <= kG2OutsideDevDb
+//   G4  sensitive-variant jitter (signal C): std "all" <= kG4StdAllDb AND isolated-cell fraction "all" <= kG4IsoAll
+//   G5  pre-echo with the mask engaged (D2): broadband E_out/E_in <= kG5BroadbandDb AND band E_out/E_in <= kG5BandDb
+//   G6  latency: measured == reported at both sample rates, and identical across every block schedule
+static constexpr double kG1ResFloorDb   = -1.5;
+static constexpr double kG1ResIdealFrac = 0.30;
+static constexpr double kG2OutsideDevDb = 0.5;
+static constexpr double kG4StdAllDb     = 0.6;
+static constexpr double kG4IsoAll       = 1.0e-3;
+static constexpr double kG5BroadbandDb  = 1.0;
+static constexpr double kG5BandDb       = 1.0;
+
+struct EResidual { Residual r, l; bool valid = false; };          // signal E (resonance in R only), per channel
+struct LatencyGate { bool valid = false, matchAll = true, blockInvariant = true; std::string detail; };
+
+struct BenchData
+{
+    std::vector<double> scanF0;
+    std::map<std::string, std::map<int, double>> ideal;                // "48000" -> f0 -> ideal dB
+    std::map<std::string, std::map<int, Residual>> residual;           // "S1c@48000" -> f0 -> residual
+    std::map<std::string, EResidual> right;                            // subject id -> signal E residuals (48 kHz, 2500 Hz)
+    std::map<std::string, Jitter> jitter;                              // subject id -> signal C jitter
+    std::map<std::string, PreEcho> d2;                                 // subject id -> signal D2 pre-echo
+    std::map<std::string, LatencyGate> latency;                        // subject id -> G6 evidence
+};
+
+struct GateRow
+{
+    std::string id, label;
+    int g1 = 0, g2 = 0, n = 0;                // passing f0 count at 48 kHz, out of n
+    int g1_44 = 0, g2_44 = 0, n44 = 0;        // informational: the same at 44.1 kHz
+    bool g3 = false; double g3RRes = 0, g3RDev = 0, g3LRes = 0, g3LDev = 0; bool g3valid = false;
+    bool g4 = false; double g4Std = 0, g4Iso = 0; bool g4valid = false; std::string g4Id;
+    bool g5 = false; double g5Bb = 0, g5Band = 0; bool g5valid = false;
+    bool g6 = false; std::string g6detail;
+    bool pass1() const { return n > 0 && g1 == n; }
+    bool pass2() const { return n > 0 && g2 == n; }
+    bool overall() const { return pass1() && pass2() && g3 && g4 && g5 && g6; }
+};
+
+static bool g1Cell(const Residual& r, double idealDb)
+{
+    return r.inWindow >= kG1ResFloorDb && r.inWindow <= kG1ResIdealFrac * idealDb;
+}
+static bool g2Cell(const Residual& r) { return r.outsideDev <= kG2OutsideDevDb; }
+
+static int countRates(const BenchData& d, const std::string& id, double sr, bool g1, int& total)
+{
+    int pass = 0; total = 0;
+    const auto it = d.residual.find(id + "@" + num(sr, 0));
+    if (it == d.residual.end()) return 0;
+    for (double f0 : d.scanF0)
+    {
+        const auto jt = it->second.find(static_cast<int>(f0));
+        if (jt == it->second.end()) continue;
+        ++total;
+        const double ideal = d.ideal.at(num(sr, 0)).at(static_cast<int>(f0));
+        if (g1 ? g1Cell(jt->second, ideal) : g2Cell(jt->second)) ++pass;
+    }
+    return pass;
+}
+
+// Works for ANY registered subject: everything it needs comes from the Subject record and the BenchData maps.
+static GateRow evaluateGates(const Subject& s, const BenchData& d)
+{
+    GateRow g; g.id = s.id; g.label = s.label;
+    int t = 0;
+    g.g1 = countRates(d, s.id, 48000.0, true, t);  g.n = t;
+    g.g2 = countRates(d, s.id, 48000.0, false, t);
+    g.g1_44 = countRates(d, s.id, 44100.0, true, t); g.n44 = t;
+    g.g2_44 = countRates(d, s.id, 44100.0, false, t);
+
+    // G3
+    const auto e = d.right.find(s.id);
+    if (e != d.right.end() && e->second.valid)
+    {
+        g.g3valid = true;
+        g.g3RRes = e->second.r.inWindow; g.g3RDev = e->second.r.outsideDev;
+        g.g3LRes = e->second.l.inWindow; g.g3LDev = e->second.l.outsideDev;
+        const double ideal = d.ideal.at("48000").at(2500);
+        g.g3 = g1Cell(e->second.r, ideal) && g2Cell(e->second.r) && e->second.l.outsideDev <= kG2OutsideDevDb;
+    }
+
+    // G4: jitter of the subject's registered sensitive variant (its own run when none is named)
+    g.g4Id = s.jitterId.empty() ? s.id : s.jitterId;
+    const auto j = d.jitter.find(g.g4Id);
+    if (j != d.jitter.end())
+    {
+        g.g4valid = true; g.g4Std = j->second.stdAll; g.g4Iso = j->second.isoAll;
+        g.g4 = g.g4Std <= kG4StdAllDb && g.g4Iso <= kG4IsoAll;
+    }
+
+    // G5: D2 (mask engaged), the specified E_out vs E_in columns
+    const auto p = d.d2.find(s.id);
+    if (p != d.d2.end())
+    {
+        g.g5valid = true; g.g5Bb = p->second.outVsIn; g.g5Band = p->second.bandOutVsIn;
+        g.g5 = g.g5Bb <= kG5BroadbandDb && g.g5Band <= kG5BandDb;
+    }
+
+    // G6
+    const auto l = d.latency.find(s.id);
+    if (l != d.latency.end() && l->second.valid)
+    {
+        g.g6 = l->second.matchAll && l->second.blockInvariant;
+        g.g6detail = l->second.detail;
+    }
+    else g.g6detail = "n/a";
+    return g;
+}
+
+static std::string pf(bool b) { return b ? "PASS" : "FAIL"; }
+static std::string cnt(int p, int n) { return inum(p) + "/" + inum(n); }
+
+// ============================================================================
+// CPU run (shared by the full run and --cpu-only)
+// ============================================================================
+
+struct CpuRow { std::string id, label; int block = 0; CpuResult r; double budgetNs = 0; };
+
+static std::vector<CpuRow> runCpuRows(const std::vector<Subject>& subs, const std::vector<int>& blocks, double sr, const Stereo& sig)
+{
+    std::vector<CpuRow> rows;
+    for (int block : blocks)
+        for (const auto& s : subs)
+        {
+            CpuRow row; row.id = s.id; row.label = s.label; row.block = block;
+            row.r = cpuBench(s, sig, sr, block);
+            row.budgetNs = block / sr * 1.0e9;
+            rows.push_back(row);
+            logf("      %s block %d: mean %.0f ns (%.3f %% RT)  median %.0f  p95 %.0f  p99 %.0f  max %.0f", s.id.c_str(), block,
+                 row.r.meanNs, 100.0 * row.r.meanNs / row.budgetNs, row.r.medianNs, row.r.p95Ns, row.r.p99Ns, row.r.maxNs);
+        }
+    return rows;
+}
+
+static void fillCpuTable(Table& t, const std::vector<CpuRow>& rows)
+{
+    for (const auto& c : rows)
+    {
+        const auto& r = c.r;
+        t.add({ c.id, c.label, inum(c.block), num(r.medianNs, 0), num(r.p95Ns, 0), num(r.p99Ns, 0), num(r.maxNs, 0), num(r.meanNs, 0),
+                num(100.0 * r.medianNs / c.budgetNs, 3), num(100.0 * r.p95Ns / c.budgetNs, 3), num(100.0 * r.meanNs / c.budgetNs, 3), num(100.0 * r.maxNs / c.budgetNs, 3) });
+    }
+}
+
+// Mean cost as % of real time for ONE instance and the x8-instances projection (mean * 8), at the 128-sample block.
+static Table cpuProjectionTable(const std::vector<CpuRow>& rows, const std::string& cpuModel)
+{
+    Table t;
+    t.title = "9b. CPU projection @ 128-sample block (48 kHz stereo)";
+    t.note = "CPU: " + cpuModel + ". 'mean % RT x1' = mean processBlock time / (128 / 48000 s). 'x8 instances' = mean * 8 (linear projection, "
+             "ignores cache / memory-bandwidth contention between instances). p99 is the realistic worst-case block (see table 9).";
+    t.header = { "subject", "label", "mean % RT x1", "mean % RT x8 instances", "p99 % RT x1", "p99 % RT x8 instances" };
+    for (const auto& c : rows)
+    {
+        if (c.block != 128) continue;
+        const double m = 100.0 * c.r.meanNs / c.budgetNs, p = 100.0 * c.r.p99Ns / c.budgetNs;
+        t.add({ c.id, c.label, num(m, 3), num(m * 8.0, 3), num(p, 3), num(p * 8.0, 3) });
+    }
+    return t;
+}
+
+static void logCpuProjection(const std::vector<CpuRow>& rows, const std::string& cpuModel)
+{
+    logf("CPU model: %s", cpuModel.c_str());
+    for (const auto& c : rows)
+    {
+        if (c.block != 128) continue;
+        const double m = 100.0 * c.r.meanNs / c.budgetNs;
+        logf("CPU @128 samples / 48 kHz  %-4s mean %8.3f %% RT (1 instance)  ->  %8.3f %% RT (x8 instances)", c.id.c_str(), m, m * 8.0);
+    }
+}
+
+// ============================================================================
 // main
 // ============================================================================
 
@@ -1106,6 +1488,8 @@ static bool parseArgs(int argc, char** argv)
         const std::string a = argv[i];
         if (a == "--quick") g_opt.quick = true;
         else if (a == "--no-cpu") g_opt.noCpu = true;
+        else if (a == "--cpu-only") g_opt.cpuOnly = true;
+        else if (a == "--ref-subjects") g_opt.refSubjects = true;
         else if (a == "--out-dir" && i + 1 < argc) g_opt.outBase = argv[++i];
         else if (a == "--wav" && i + 1 < argc)
         {
@@ -1116,6 +1500,7 @@ static bool parseArgs(int argc, char** argv)
         }
         else { std::printf("[RSBench] unknown argument: %s\n", a.c_str()); return false; }
     }
+    if (g_opt.cpuOnly && g_opt.noCpu) { std::printf("[RSBench] --cpu-only and --no-cpu are mutually exclusive\n"); return false; }
     return true;
 }
 
@@ -1143,6 +1528,35 @@ int main(int argc, char** argv)
     logf("CPU                 : %s", cpu.c_str());
     logf("git                 : %s   mode: %s", hash.c_str(), g_opt.quick ? "QUICK (8 s signals, reduced reps)" : "FULL");
 
+    if (g_opt.cpuOnly)
+    {
+        const double sr = 48000.0;
+        const auto defaults = primarySubjects();
+        const fs::path cpuDir = fs::path(g_opt.outBase) / (stamp + "_" + hash + "_cpuonly" + (g_opt.quick ? "_quick" : ""));
+        std::error_code ce;
+        fs::create_directories(cpuDir, ce);
+        logf("--cpu-only: CPU benchmark only (default subjects, blocks 64 / 128 / 512), %d reps x %.0f s per subject/block", cpuReps(), cpuSeconds());
+        const Stereo cpuSig = makePinkStereo(static_cast<int>((cpuSeconds() + 1.0) * sr), -20.0, 3);
+        const auto rows = runCpuRows(defaults, { 64, 128, 512 }, sr, cpuSig);
+        Table t; t.title = "9. CPU (48 kHz stereo)";
+        t.note = "Build: " + cfg + ". CPU: " + cpu + ". " + inum(cpuReps()) + " repetitions of " + num(cpuSeconds(), 0) + " s stereo pink noise (-20 dBFS), "
+                 "fresh instance per repetition, first 1 s untimed, per-block wall time of processBlock(). % RT = ns / (block / 48000 s)." + (isRelease ? "" : " **NOT A RELEASE BUILD**");
+        t.header = { "subject", "label", "block", "median ns", "p95 ns", "p99 ns", "max ns", "mean ns", "median % RT", "p95 % RT", "mean % RT", "max % RT" };
+        fillCpuTable(t, rows);
+        const Table proj = cpuProjectionTable(rows, cpu);
+        logf("---- CPU table (CPU: %s) ----", cpu.c_str());
+        logf("%-4s %6s %12s %12s %12s %10s %10s", "subj", "block", "mean ns", "p99 ns", "max ns", "mean %RT", "p99 %RT");
+        for (const auto& c : rows)
+            logf("%-4s %6d %12.0f %12.0f %12.0f %10.3f %10.3f", c.id.c_str(), c.block, c.r.meanNs, c.r.p99Ns, c.r.maxNs,
+                 100.0 * c.r.meanNs / c.budgetNs, 100.0 * c.r.p99Ns / c.budgetNs);
+        logCpuProjection(rows, cpu);
+        std::ofstream(cpuDir / "cpu.csv", std::ios::binary) << t.csv();
+        std::ofstream(cpuDir / "summary.md", std::ios::binary)
+            << "# RS bench - CPU only\n\n- Git: `" << hash << "`\n- Build: **" << cfg << "**\n- CPU: " << cpu << "\n\n" << t.markdown() << proj.markdown();
+        logf("wrote cpu.csv and summary.md to %s", cpuDir.string().c_str());
+        return g_nonFinite == 0 ? 0 : 1;
+    }
+
     const fs::path runDir = fs::path(g_opt.outBase) / (stamp + "_" + hash + (g_opt.quick ? "_quick" : ""));
     const fs::path wavDir = runDir / "wav";
     std::error_code ec;
@@ -1159,6 +1573,8 @@ int main(int argc, char** argv)
     // Subjects that get the A/B scan, delta-artefact and D/D2 runs: defaults + capability.
     std::vector<Subject> scanSubjects = primary;
     scanSubjects.insert(scanSubjects.end(), capability.begin(), capability.end());
+    for (const auto& s : sensitive)   // a gated subject registered in the Sensitive group is still scanned + graded
+        if (s.gated) scanSubjects.push_back(s);
 
     const std::vector<double> rates = { 48000.0, 44100.0 };
     const std::vector<double> scanF0 = { 100, 150, 220, 330, 500, 750, 1100, 1700, 2500, 3700, 5500, 8000 };
@@ -1183,6 +1599,49 @@ int main(int argc, char** argv)
         }
     csvTables["latency"] = tLat;
     tables.push_back(tLat);
+
+    // ---------------------------------------------------------------- v3 shared evidence for the gate table
+    BenchData bd;
+    bd.scanF0 = scanF0;
+
+    // G6: latency must also be independent of the block schedule (impulse re-measured per schedule, both rates, gated subjects).
+    {
+        struct LSched { std::string name; std::vector<int> v; };
+        const std::vector<LSched> ls = { { "64", { 64 } }, { "128", { 128 } }, { "480", { 480 } }, { "512", { 512 } }, { "1024", { 1024 } }, { "mixed", kMixedSchedule } };
+        Table t; t.title = "1b. Latency vs block size (gated subjects)";
+        t.note = "Impulse latency re-measured through each block schedule (prepareToPlay(maxBlock = largest block of the schedule), neutral config). "
+                 "G6 passes when measured == reported at both sample rates AND the value is identical across every schedule.";
+        t.header = { "subject", "sr", "reported" };
+        for (auto& x : ls) t.header.push_back(x.name);
+        t.header.push_back("invariant");
+        for (const auto& s : allSubjects)
+        {
+            if (!s.gated) continue;
+            LatencyGate lg; lg.valid = true;
+            std::string det;
+            for (double sr : rates)
+            {
+                const auto L = measureLatency(s, sr);
+                if (L.measured != L.reported) lg.matchAll = false;
+                std::vector<std::string> row = { s.id, num(sr, 0), inum(L.reported) };
+                bool inv = true;
+                for (auto& x : ls)
+                {
+                    bool ok = true;
+                    const int m = measureLatencyWithSchedule(s, sr, x.v, ok);
+                    if (!ok || m != L.measured) inv = false;
+                    row.push_back(inum(m));
+                }
+                if (!inv) lg.blockInvariant = false;
+                row.push_back(inv ? "yes" : "NO");
+                t.add(row);
+                det += (det.empty() ? "" : "; ") + num(sr, 0) + ":" + inum(L.measured) + "/" + inum(L.reported) + (inv ? "" : " BLOCK-DEPENDENT");
+            }
+            lg.detail = det;
+            bd.latency[s.id] = lg;
+        }
+        csvTables["latency_blocksize"] = t; tables.push_back(t);
+    }
 
     // ---------------------------------------------------------------- signals @48k
     const double SR = 48000.0;
@@ -1212,6 +1671,7 @@ int main(int argc, char** argv)
     // ---------------------------------------------------------------- scan (3) + delta (5) + WAV A
     logf("[3/9] resonance scan + suppression accuracy (both sample rates)");
     Table tScanCsv; tScanCsv.header = { "subject", "sr", "f0_hz", "removed_db", "collateral_db", "removed_minus_collateral_db", "ideal_db", "removed_pct_of_ideal" };
+    Table tResCsv;  tResCsv.header  = { "subject", "sr", "f0_hz", "in_window_residual_db", "outside_dev_db", "ideal_db", "g1_limit_db", "g1_pass", "g2_pass" };
     std::map<std::string, std::map<int, RC>> scanRes;       // key "S1@48000" -> f0 -> RC
     std::map<std::string, RC> r2500;                        // 48k, f0 2500
     std::map<std::string, Aligned> alignedA2500;
@@ -1233,8 +1693,12 @@ int main(int argc, char** argv)
                 Fx fx = makeFx(s, sr, f0, false, kPrepareBlock);
                 const Stereo out = renderStd(fx, sig);
                 const auto a = align(sig, out, measureLatency(s, sr).measured, sr);
-                const RC rc = suppressionAccuracy(a, sr, f0);
+                const Accuracy acc = suppressionAccuracy(a, "C@" + num(sr, 0), base, sr, f0);
+                const RC rc = acc.rc;
                 scanRes[s.id + "@" + num(sr, 0)][static_cast<int>(f0)] = rc;
+                bd.residual[s.id + "@" + num(sr, 0)][static_cast<int>(f0)] = acc.res;
+                tResCsv.add({ s.id, num(sr, 0), num(f0, 0), num(acc.res.inWindow, 4), num(acc.res.outsideDev, 4), num(ideal, 4),
+                              num(kG1ResIdealFrac * ideal, 4), g1Cell(acc.res, ideal) ? "1" : "0", g2Cell(acc.res) ? "1" : "0" });
                 tScanCsv.add({ s.id, num(sr, 0), num(f0, 0), num(rc.removed, 4), num(rc.collateral, 4), num(rc.removed - rc.collateral, 4),
                                num(ideal, 4), num(pct(rc.removed, ideal), 2) });
                 if (sr == SR && f0 == 2500.0)
@@ -1247,15 +1711,43 @@ int main(int argc, char** argv)
         logf("      scan done @%.0f Hz", sr);
     }
     csvTables["scan"] = tScanCsv;
+    csvTables["residual_scan"] = tResCsv;
+    bd.ideal = idealDb;
     for (double sr : rates)
     {
-        for (int variant = 0; variant < 3; ++variant)   // 0 = defaults, 1 = capability, 2 = removed/ideal % of all
+        // 0 = defaults, 1 = capability, 2 = removed/ideal % of all (these three are informational, not gates),
+        // 3 = residual vs clean (defaults), 4 = residual vs clean (capability / gated)
+        for (int variant = 0; variant < 5; ++variant)
         {
-            const std::vector<Subject>& subs = (variant == 0) ? primary : (variant == 1 ? capability : scanSubjects);
+            const std::vector<Subject>& subs = (variant == 0 || variant == 3) ? primary : ((variant == 1 || variant == 4) ? capability : scanSubjects);
             Table t;
+            if (variant == 3 || variant == 4)
+            {
+                t.title = std::string(variant == 3 ? "3r. " : "3rc. ") + "Residual vs clean - resonance scan @" + num(sr, 0) + " Hz (" + (variant == 3 ? "default parameters)" : "capability runs, gated)");
+                t.note = "Signal A/B = clean pink C (30 s, -20 dBFS RMS) + RBJ peak +12 dB Q 8 at f0 in both channels; the clean reference is the UNPROCESSED C (same seed and length), "
+                         "so an ideal suppressor's output equals C. Latency-aligned, Welch PSD (Hann 8192, 50 % overlap, first 2 s skipped), channels power-averaged. "
+                         "in_window = mean over f0 +/- 1/6 oct of dB(PSD_out) - dB(PSD_clean) (ideal 0; positive = resonance remains; negative = over-suppression); "
+                         "outside_dev = mean over 100 Hz-12 kHz excluding f0 +/- 1/3 oct of |dB(PSD_out) - dB(PSD_clean)|. "
+                         "Each cell: in_window / outside_dev (dB). G1 limit = 0.30 x ideal dB (gate range -1.5 .. limit); G2 limit = 0.5 dB.";
+                t.header = { "f0 Hz", "ideal dB", "G1 max" };
+                for (const auto& s : subs) t.header.push_back(s.id);
+                for (double f0 : scanF0)
+                {
+                    const double ideal = idealDb[num(sr, 0)][static_cast<int>(f0)];
+                    std::vector<std::string> row = { num(f0, 0), num(ideal, 2), num(kG1ResIdealFrac * ideal, 2) };
+                    for (const auto& s : subs)
+                    {
+                        const Residual r = bd.residual[s.id + "@" + num(sr, 0)][static_cast<int>(f0)];
+                        row.push_back(num(r.inWindow, 2) + " / " + num(r.outsideDev, 2));
+                    }
+                    t.add(row);
+                }
+                tables.push_back(t);
+                continue;
+            }
             if (variant == 0)
             {
-                t.title = "3. Suppression accuracy - resonance scan @" + num(sr, 0) + " Hz (default parameters)";
+                t.title = "3. Suppression accuracy - resonance scan @" + num(sr, 0) + " Hz (default parameters) - informational (not a gate)";
                 t.note = "Signal A/B: 30 s pink (-20 dBFS RMS) + RBJ peak +12 dB Q 8 at f0 in both channels. Welch PSD (Hann 8192, 50 % overlap, first 2 s skipped), "
                          "channels power-averaged. removed = mean dB(PSDin - PSDout) over f0 +/- 1/6 oct; collateral = mean |dB(PSDin - PSDout)| over 100 Hz-12 kHz excluding f0 +/- 1/3 oct. "
                          "ideal = analytic mean dB boost of the planted bell over the SAME removed window and bins (the yardstick). "
@@ -1263,14 +1755,15 @@ int main(int argc, char** argv)
             }
             else if (variant == 1)
             {
-                t.title = "3c. Suppression accuracy - resonance scan @" + num(sr, 0) + " Hz (capability runs)";
+                t.title = "3c. Suppression accuracy - resonance scan @" + num(sr, 0) + " Hz (capability runs) - informational (not a gate)";
                 t.note = "Same signals and metric definitions as table 3. S1c = RS LL depth 100 / Hard; S2c-S4c = RS HQ Fast/Normal/High depth 100 / Hard; "
-                         "S5c = EQ Spectral band gain -30 dB, spec_sens 0.0. Each cell: removed (removed/ideal %) / collateral / removed-collateral (dB).";
+                         "S5c = EQ Spectral band gain -30 dB, spec_sens 0.0; S5q = same with band Q 8. Each cell: removed (removed/ideal %) / collateral / removed-collateral (dB). "
+                         "removed/ideal above 100 % means the output went BELOW the unboosted spectrum, so this table cannot be a pass condition (see 3rc for the gate metric).";
             }
             else
             {
-                t.title = "3p. removed / ideal (%) - resonance scan @" + num(sr, 0) + " Hz, all subjects";
-                t.note = "removed_dB / ideal_dB x 100, f0 +/- 1/6 oct window, defaults (S1-S5) and capability (S1c-S5c) side by side. 100 % = the planted +12 dB bell fully flattened.";
+                t.title = "3p. removed / ideal (%) - resonance scan @" + num(sr, 0) + " Hz, all subjects - informational (not a gate)";
+                t.note = "removed_dB / ideal_dB x 100, f0 +/- 1/6 oct window, defaults (S1-S5) and capability (S1c-S5c, S5q) side by side. 100 % = the planted +12 dB bell fully flattened.";
             }
             t.header = { "f0 Hz", "ideal dB" };
             for (const auto& s : subs) t.header.push_back(s.id);
@@ -1317,6 +1810,7 @@ int main(int argc, char** argv)
         const Stereo out = renderStd(fx, pinkC);
         const auto a = align(pinkC, out, measureLatency(s, SR).measured, SR);
         const Jitter j = jitterMetrics(a, SR);
+        bd.jitter[s.id] = j;
         tJit.add({ s.id, s.label, s.params, num(j.stdAll, 4), num(j.isoAll, 6), num(j.stdLoc, 4), num(j.isoLoc, 6),
                    inum(j.bands) + " (" + inum(j.bandsLoc) + ")", inum(j.frames) });
     }
@@ -1355,6 +1849,7 @@ int main(int argc, char** argv)
         const Stereo out2 = renderStd(fx2, sigD2);
         const auto a2 = align(sigD2, out2, measureLatency(s, SR).measured, SR);
         const PreEcho pe2 = preEcho(a2, SR);
+        bd.d2[s.id] = pe2;
         tPre2.add({ s.id, s.label, num(pe2.outVsIn, 3), num(pe2.errVsIn, 2), num(pe2.bandOutVsIn, 3), num(pe2.bandErrVsIn, 2), inum(pe2.bursts) });
         writeWav(wavDir / ("D2_" + s.id + "_out.wav"),   a2.out, SR);
         writeWav(wavDir / ("D2_" + s.id + "_delta.wav"), deltaOf(a2), SR);
@@ -1406,19 +1901,32 @@ int main(int argc, char** argv)
     tRight.note = "Resonance planted in the RIGHT channel only (independent pink noise in each channel). removed_dB at f0 +/- 1/6 oct per channel (same definition as metric 3, single channel). "
                   "The left channel has no resonance, so its value shows what a linked / left-driven mask does to a clean channel.";
     tRight.header = { "subject", "label", "removed R (dB)", "removed L (dB)", "collateral R (dB)", "collateral L (dB)" };
+    Table tRightRes; tRightRes.title = "8b. Right-only resonance vs clean (signal E, f0 = 2500 Hz, 48 kHz) - gate G3 evidence";
+    tRightRes.note = "Same signal and render as table 8; clean reference = unprocessed C (the pink noise E was built from), latency-aligned. Metrics as in 3r, computed per channel "
+                     "(R: resonance planted; L: untouched). G3 = (R in_window within -1.5 .. 0.30 x ideal) AND (R outside_dev <= 0.5) AND (L outside_dev <= 0.5). "
+                     "ideal at 2500 Hz / 48 kHz = " + num(bd.ideal["48000"][2500], 2) + " dB. L in_window is informational.";
+    tRightRes.header = { "subject", "label", "R in_window (dB)", "R outside_dev (dB)", "L in_window (dB)", "L outside_dev (dB)", "G3" };
+    Table tRightCsv; tRightCsv.header = { "subject", "r_in_window_db", "r_outside_dev_db", "l_in_window_db", "l_outside_dev_db", "ideal_db", "g3" };
     {
         const Stereo sigE = makeResonant(pinkC, SR, 2500.0, false, true);
-        for (const auto& s : primary)
+        for (const auto& s : scanSubjects)
         {
             Fx fx = makeFx(s, SR, 2500.0, false, kPrepareBlock);
             const Stereo out = renderStd(fx, sigE);
             const auto a = align(sigE, out, measureLatency(s, SR).measured, SR);
-            const RC rR = suppressionAccuracy(a, SR, 2500.0, false, true);
-            const RC rL = suppressionAccuracy(a, SR, 2500.0, true, false);
-            tRight.add({ s.id, s.label, num(rR.removed, 2), num(rL.removed, 2), num(rR.collateral, 2), num(rL.collateral, 2) });
+            const Accuracy aR = suppressionAccuracy(a, "C@48000", pinkC, SR, 2500.0, false, true);
+            const Accuracy aL = suppressionAccuracy(a, "C@48000", pinkC, SR, 2500.0, true, false);
+            tRight.add({ s.id, s.label, num(aR.rc.removed, 2), num(aL.rc.removed, 2), num(aR.rc.collateral, 2), num(aL.rc.collateral, 2) });
+            EResidual er; er.valid = true; er.r = aR.res; er.l = aL.res;
+            bd.right[s.id] = er;
+            const double ideal = bd.ideal["48000"][2500];
+            const bool g3 = g1Cell(er.r, ideal) && g2Cell(er.r) && er.l.outsideDev <= kG2OutsideDevDb;
+            tRightRes.add({ s.id, s.label, num(er.r.inWindow, 2), num(er.r.outsideDev, 2), num(er.l.inWindow, 2), num(er.l.outsideDev, 2), pf(g3) });
+            tRightCsv.add({ s.id, num(er.r.inWindow, 4), num(er.r.outsideDev, 4), num(er.l.inWindow, 4), num(er.l.outsideDev, 4), num(ideal, 4), g3 ? "1" : "0" });
         }
     }
     csvTables["right_only"] = tRight; tables.push_back(tRight);
+    csvTables["right_only_residual"] = tRightCsv; tables.push_back(tRightRes);
 
     // ---------------------------------------------------------------- detector geometry (10)
     logf("[8b/9] detector geometry (RS HQ baseline read through the existing test hook)");
@@ -1480,6 +1988,7 @@ int main(int argc, char** argv)
     // ---------------------------------------------------------------- CPU (9)
     Table tCpu; tCpu.title = "9. CPU (48 kHz stereo)";
     tCpu.header = { "subject", "label", "block", "median ns", "p95 ns", "p99 ns", "max ns", "mean ns", "median % RT", "p95 % RT", "mean % RT", "max % RT" };
+    Table tCpuProj;
     if (g_opt.noCpu)
     {
         logf("[9/9] CPU skipped (--no-cpu)");
@@ -1495,17 +2004,13 @@ int main(int argc, char** argv)
                     "mean = amortised cost per block (the sustained CPU load); p99/max = the worst-case blocks the audio deadline actually sees. "
                     "S5 band at 2500 Hz, -12 dB. Single thread, normal priority; no isolation from other processes." + (isRelease ? "" : " **NOT A RELEASE BUILD**");
         const Stereo cpuSig = makePinkStereo(static_cast<int>((cpuSeconds() + 1.0) * SR), -20.0, 3);
-        for (int block : { 64, 128, 512 })
-            for (const auto& s : primary)
-            {
-                const auto r = cpuBench(s, cpuSig, SR, block);
-                const double budget = block / SR * 1.0e9;
-                tCpu.add({ s.id, s.label, inum(block), num(r.medianNs, 0), num(r.p95Ns, 0), num(r.p99Ns, 0), num(r.maxNs, 0), num(r.meanNs, 0),
-                           num(100.0 * r.medianNs / budget, 3), num(100.0 * r.p95Ns / budget, 3), num(100.0 * r.meanNs / budget, 3), num(100.0 * r.maxNs / budget, 3) });
-                logf("      %s block %d: mean %.0f ns (%.3f %% RT)  median %.0f  p95 %.0f  max %.0f", s.id.c_str(), block, r.meanNs, 100.0 * r.meanNs / budget, r.medianNs, r.p95Ns, r.maxNs);
-            }
+        const auto cpuRows = runCpuRows(primary, { 64, 128, 512 }, SR, cpuSig);
+        fillCpuTable(tCpu, cpuRows);
+        tCpuProj = cpuProjectionTable(cpuRows, cpu);
+        logCpuProjection(cpuRows, cpu);
     }
     csvTables["cpu"] = tCpu; tables.push_back(tCpu);
+    if (!tCpuProj.rows.empty()) { csvTables["cpu_projection"] = tCpuProj; tables.push_back(tCpuProj); }
 
     // ---------------------------------------------------------------- --wav inputs (G)
     Table tWav; tWav.title = "G. --wav inputs: depth-0 null";
@@ -1534,6 +2039,69 @@ int main(int argc, char** argv)
         }
     }
     if (!g_opt.wavs.empty()) { csvTables["wav_null"] = tWav; tables.push_back(tWav); }
+
+    // ---------------------------------------------------------------- gate table (v3)
+    std::vector<GateRow> gateRows;
+    for (const auto& s : scanSubjects) if (s.gated) gateRows.push_back(evaluateGates(s, bd));
+
+    Table tGate; tGate.title = "Gate table (capability variants, fixed thresholds)";
+    tGate.note = "Every subject registered with gated = true is graded at its own variant. G1: in-window residual vs clean within [-1.5 dB, 0.30 x ideal dB] at EVERY one of the 12 scan f0 (48 kHz; count = f0 passing). "
+                 "G2: outside deviation <= 0.5 dB at every f0 (count). G3: resonance in R only (signal E, 2500 Hz): G1 + G2 on R and L outside deviation <= 0.5 dB. "
+                 "G4: sensitive-variant jitter (signal C, subject's registered sensitive variant): std all <= 0.6 dB AND isolated-cell fraction all <= 1e-3. "
+                 "G5: pre-echo with the mask engaged (D2): broadband E_out/E_in <= +1.0 dB AND band (f0 +/- 1/3 oct) E_out/E_in <= +1.0 dB. "
+                 "G6: latency measured == reported at 48 and 44.1 kHz and unchanged across block schedules. Overall = all six pass. "
+                 "Thresholds are the constants kG1..kG5 in the tool; they are not tuned per subject.";
+    tGate.header = { "subject", "label", "G1 in-window", "G2 outside-dev", "G3 R-only", "G4 jitter", "G5 pre-echo D2", "G6 latency", "overall" };
+    Table tGateDetail; tGateDetail.title = "Gate details (raw values behind the gate table)";
+    tGateDetail.note = "G1/G2 counts also at 44.1 kHz (informational, not part of the gate). G3: R/L in-window and outside-dev (dB) at 2500 Hz. "
+                       "G4: std all (dB) / isolated all, measured on the named sensitive variant. G5: broadband / band E_out vs E_in (dB) on D2. G6: measured/reported per rate.";
+    tGateDetail.header = { "subject", "G1 @44.1k (info)", "G2 @44.1k (info)", "G3 R in-window", "G3 R outside-dev", "G3 L in-window", "G3 L outside-dev",
+                           "G4 variant", "G4 std all", "G4 isolated all", "G5 broadband", "G5 band", "G6 latency" };
+    Table tGateCsv;
+    tGateCsv.header = { "subject", "label", "g1_pass_f0", "g1_total_f0", "g1", "g2_pass_f0", "g2_total_f0", "g2", "g3_r_in_window_db", "g3_r_outside_dev_db", "g3_l_outside_dev_db", "g3",
+                        "g4_variant", "g4_std_all_db", "g4_isolated_all", "g4", "g5_broadband_db", "g5_band_db", "g5", "g6_detail", "g6", "overall",
+                        "info_g1_pass_f0_44k", "info_g2_pass_f0_44k", "info_total_f0_44k" };
+    int nOverall = 0;
+    for (size_t gi = 0; gi < gateRows.size(); ++gi)
+    {
+        const auto& g = gateRows[gi];
+        const bool isRef = [&] { for (const auto& rs : scanSubjects) if (rs.id == g.id) return rs.reference; return false; }();
+        if (g.overall() && !isRef) ++nOverall;
+        tGate.add({ g.id, g.label, pf(g.pass1()) + " " + cnt(g.g1, g.n), pf(g.pass2()) + " " + cnt(g.g2, g.n), g.g3valid ? pf(g.g3) : "FAIL (no data)",
+                    g.g4valid ? pf(g.g4) : "FAIL (no data)", g.g5valid ? pf(g.g5) : "FAIL (no data)", pf(g.g6), pf(g.overall()) });
+        tGateDetail.add({ g.id, cnt(g.g1_44, g.n44), cnt(g.g2_44, g.n44), num(g.g3RRes, 2), num(g.g3RDev, 2), num(g.g3LRes, 2), num(g.g3LDev, 2),
+                          g.g4Id, num(g.g4Std, 3), num(g.g4Iso, 6), num(g.g5Bb, 3), num(g.g5Band, 3), g.g6detail });
+        tGateCsv.add({ g.id, g.label, inum(g.g1), inum(g.n), pf(g.pass1()), inum(g.g2), inum(g.n), pf(g.pass2()), num(g.g3RRes, 4), num(g.g3RDev, 4), num(g.g3LDev, 4), pf(g.g3),
+                       g.g4Id, num(g.g4Std, 4), num(g.g4Iso, 6), pf(g.g4), num(g.g5Bb, 4), num(g.g5Band, 4), pf(g.g5), g.g6detail, pf(g.g6), pf(g.overall()),
+                       inum(g.g1_44), inum(g.g2_44), inum(g.n44) });
+    }
+    // Per-f0 breakdown at 48 kHz: "in_window / outside_dev" and the two per-cell verdicts (G1 G2).
+    Table tGateF0; tGateF0.title = "Gate details per f0 (48 kHz): in_window / outside_dev (dB), then G1 G2 verdict letters (P = pass, F = fail)";
+    tGateF0.note = "ideal and the G1 upper limit (0.30 x ideal) per f0 are in the first columns; G1 also requires in_window >= -1.5.";
+    tGateF0.header = { "f0 Hz", "ideal dB", "G1 max" };
+    for (const auto& g : gateRows) tGateF0.header.push_back(g.id);
+    for (double f0 : scanF0)
+    {
+        const double ideal = bd.ideal["48000"][static_cast<int>(f0)];
+        std::vector<std::string> row = { num(f0, 0), num(ideal, 2), num(kG1ResIdealFrac * ideal, 2) };
+        for (const auto& g : gateRows)
+        {
+            const auto it = bd.residual.find(g.id + "@48000");
+            if (it == bd.residual.end()) { row.push_back("n/a"); continue; }
+            const Residual& r = it->second.at(static_cast<int>(f0));
+            row.push_back(num(r.inWindow, 2) + " / " + num(r.outsideDev, 2) + "  " + (g1Cell(r, ideal) ? "P" : "F") + (g2Cell(r) ? "P" : "F"));
+        }
+        tGateF0.add(row);
+    }
+    csvTables["gates"] = tGateCsv;
+
+    logf("---- GATE TABLE (G1/G2 counts are f0 passing out of %zu) ----", scanF0.size());
+    for (const auto& g : gateRows)
+        logf("%-4s G1 %-4s %5s | G2 %-4s %5s | G3 %-4s | G4 %-4s | G5 %-4s | G6 %-4s | overall %s", g.id.c_str(),
+             pf(g.pass1()).c_str(), cnt(g.g1, g.n).c_str(), pf(g.pass2()).c_str(), cnt(g.g2, g.n).c_str(), pf(g.g3).c_str(), pf(g.g4).c_str(), pf(g.g5).c_str(), pf(g.g6).c_str(),
+             pf(g.overall()).c_str());
+    if (nOverall > 0)
+        warnf("%d gated subject(s) pass ALL gates - baseline expectation is that the current subjects fail most gates; investigate the metrics before trusting this", nOverall);
 
     // ---------------------------------------------------------------- sanity block
     std::ostringstream san;
@@ -1576,8 +2144,10 @@ int main(int argc, char** argv)
                 list = bad.str();
             };
             int bD = 0, cD = 0, oD = 0, bC = 0, cC = 0, oC = 0; std::string lD, lC;
+            std::vector<Subject> legacyCap;   // capability variants with a paired default subject (S1c..S5c); S5q has none
+            for (const auto& cs : capability) if (!cs.pairedDefault.empty()) legacyCap.push_back(cs);
             check(primary, bD, cD, oD, lD);
-            check(capability, bC, cC, oC, lC);
+            check(legacyCap, bC, cC, oC, lC);
             san << "- removed/ideal within 0..150 % for the " << cD << " default-parameter scan cells: **" << (bD == 0 ? "PASS" : "FAIL") << "**"
                 << (bD ? " (outside:" + lD + ")" : std::string()) << "\n";
             san << "- capability scan cells: " << cC << " total, " << oC << " above 100 % (output cut below the un-boosted spectrum), "
@@ -1589,11 +2159,15 @@ int main(int argc, char** argv)
         {
             san << "- capability removed >= default removed at the planted 2500 Hz resonance (48 kHz): ";
             bool allGe = true;
-            for (size_t i = 0; i < capability.size(); ++i)
             {
-                const double d = r2500[primary[i].id].removed, c = r2500[capability[i].id].removed;
-                if (c < d) allGe = false;
-                san << capability[i].id << " " << num(c, 2) << " vs " << primary[i].id << " " << num(d, 2) << (c >= d ? " ok" : " **LOWER**") << (i + 1 < capability.size() ? "; " : "");
+                std::vector<Subject> paired;
+                for (const auto& cs : capability) if (!cs.pairedDefault.empty()) paired.push_back(cs);
+                for (size_t i = 0; i < paired.size(); ++i)
+                {
+                    const double d = r2500[paired[i].pairedDefault].removed, c = r2500[paired[i].id].removed;
+                    if (c < d) allGe = false;
+                    san << paired[i].id << " " << num(c, 2) << " vs " << paired[i].pairedDefault << " " << num(d, 2) << (c >= d ? " ok" : " **LOWER**") << (i + 1 < paired.size() ? "; " : "");
+                }
             }
             san << " -> **" << (allGe ? "PASS" : "FAIL (see Notes)") << "**\n";
             logf("sanity: capability >= default at 2500 Hz %s", allGe ? "ok" : "FAIL");
@@ -1622,7 +2196,9 @@ int main(int argc, char** argv)
     md << "\nNote on S5s/S5z: in the EQ detector `thresh = localEnv * (1 + spec_sens * spec_sel)`, so spec_sens 1.0 is the LEAST sensitive setting. "
           "S5s runs sens 1.0 exactly as specified; S5z runs sens 0.0 (the most sensitive) so the false-trigger direction is covered.\n"
           "Capability variants S1c-S5c (max depth): RS depth 100 % / mode Hard (LL and HQ Fast/Normal/High); EQ band gain -30 dB with spec_sens 0.0 (lower = more sensitive). "
-          "They run signals A/B (full scan), C (jitter), D and D2 (pre-echo) and the delta-artefact run, in addition to the default-parameter subjects.\n\n";
+          "S5q = the fair EQ variant: band gain -30 dB, spec_sens 0.0, band Q 8, centre = f0 (S5qz = its sensitive jitter companion: sens 0.0, Q 8, gain -12 dB). "
+          "They run signals A/B (full scan), C (jitter), D and D2 (pre-echo), E and the delta-artefact run, in addition to the default-parameter subjects.\n\n";
+    md << tGate.markdown() << tGateDetail.markdown() << tGateF0.markdown();
     md << san.str();
     for (const auto& t : tables) md << t.markdown();
     std::ofstream(runDir / "summary.md", std::ios::binary) << md.str();
