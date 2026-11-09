@@ -359,6 +359,9 @@ add_library(XlethEngineCore STATIC
     src/dsp/WORLD.cpp
     # Pitch Shifter Clip mode: dry/wet lag measurement for the shifted render.
     src/dsp/DryWetAlign.cpp
+    # Shared resonance detector / gain computer / spectral renderer (resonance-suppressor
+    # rewrite stage 1, docs/RESONANCE_SUPPRESSOR_AUDIT.md s6). Not wired into any effect yet.
+    src/dsp/ResonanceCore.cpp
     src/audio/WorldStretchCache.cpp
     src/audio/SlotBakeCache.cpp
     # Sample Sandbox offline renderer. Sits here rather than in the model tier
@@ -2241,6 +2244,45 @@ target_compile_definitions(test_effect_processblock_alloc PRIVATE
 )
 
 add_test(NAME test_effect_processblock_alloc COMMAND test_effect_processblock_alloc)
+
+# ── test_resonance_core ─────────────────────────────────────────────────────
+# xleth::dsp::resonance::Core (src/dsp/ResonanceCore.*): latency = N, depth-0
+# identity / COLA at several block sizes, impulse, zero operator new in
+# process() (incl. parameter changes every block), block-size independence with
+# the detector active, reset, mono. Output prefix: [ResCore].
+add_executable(test_resonance_core
+    test/test_resonance_core.cpp
+)
+
+target_link_libraries(test_resonance_core PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_include_directories(test_resonance_core PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_compile_definitions(test_resonance_core PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+add_test(NAME test_resonance_core COMMAND test_resonance_core)
 
 # ── test_chain_effect_identity ────────────────────────────────────────────────
 # Prompt 4A: stable chain-mode effectInstanceId — creation, lookup, move, bypass,
