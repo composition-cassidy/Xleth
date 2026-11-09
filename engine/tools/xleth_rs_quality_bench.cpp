@@ -47,8 +47,10 @@
 //   (the core's detector uses a 200 ms averaging time). Signal T1 switches the +12 dB / Q 8 bell ON and OFF by 5 ms linear crossfades between the clean pink noise C and the
 //   bell-filtered noise A built from the SAME noise (the clean reference is exact), 6 events per case, on-durations D in {100, 300, 1000} ms, f0 in {500, 2500, 8000} Hz, one signal per
 //   (f0, D). Metrics (STFT 1024 Hann hop 128, in-window = f0 +/- 1/6 oct, latency-aligned, events aligned at their onsets): reaction (t50 / t90 / leak_fraction) and release behaviour
-//   (over_dB / settle_ms); gates G8a, G8b (reaction) and G9a, G9b (release) are graded for every gated subject and are part of the overall verdict. Section "T1" below has the definitions;
+//   (r_off(T) after the offset); gates G8a, G8b (reaction) and G9a, G9b (release) are graded for every gated subject and are part of the overall verdict. Section "T1" below has the definitions;
 //   calibration: R0 pass-through must FAIL G8, the oracle R1 (returns the clean reference through Planted::cleanRef, delayed by its latency) must PASS G8 and G9.
+// v6: the v5 release gates (over_dB >= -3 dB, settle <= 400 ms) were unsatisfiable by any effective suppressor with a nonzero release (the clean signal is still cut by the depth reached at the
+//   offset) and are now informational; G9a / G9b gate whether the cut is GONE: |r_off(500 ms)| <= 1.0 dB and |r_off(1000 ms)| <= 0.5 dB. tau_fit (effective release constant) is reported.
 //
 // Usage: xleth_rs_quality_bench [--quick] [--no-cpu] [--cpu-only] [--out-dir DIR]
 //                               [--ref-subjects] [--subjects ID,ID,...] [--wav label=path]...
@@ -1511,8 +1513,19 @@ static CpuResult cpuBench(const Subject& s, const Stereo& sig, double sr, int bl
 // settle_ms  = time after the offset from which |r(t)| (event-mean, 10 ms smoothing) stays <= 1 dB until the end of a 1 s horizon: time of the first frame after the last |r| > 1 dB frame
 //              (0 if it never exceeds 1 dB); "never" (-1) if it is still outside 1 dB at the end of the horizon.
 //
+// r_off(T)   = (v6) the output level relative to the clean reference T ms after the offset: per event, the in-window energies E_out and E_clean are averaged over the interval
+//              [D + T - 10 ms, D + T + 10 ms] (exact overlap weights of the 2.67 ms frame cells with the interval, so T need not fall on a frame), then the event MEANS are formed and
+//              r_off(T) = 10 log10(mean_events E_out_int / mean_events E_clean_int) (the same event-mean ratio as r(t), no extra 10 ms boxcar: the +/-10 ms interval is the smoothing).
+//              Gates (v6): G9a |r_off(500)| <= 1.0 dB, G9b |r_off(1000)| <= 0.5 dB at every (f0, D) (count of 9). A suppressor with a nonzero release is still cutting the clean noise by
+//              the depth reached at the offset, so the old over_dB / settle_ms gates measured the depth of the cut, not whether it goes away; r_off(T) at 500 / 1000 ms measures whether it went away.
+// tau_fit    = (v6, informational) effective release time constant: cut(T) = -r_off(T) sampled every 25 ms for T in [50, 500] ms (19 points) is fitted by c0 exp(-T / tau) (least squares in
+//              dB, c0 free, tau on a log grid 2 ms .. 5 s, refined); "n/a" when cut(50 ms) < 1 dB (nothing to release), ">5000" when the best fit is at the grid limit (a plateau = never releases).
+//              The window starts at 50 ms, not 0: the STFT window (+/- 10.7 ms), the +/- 10 ms interval and the 5 ms crossfade still contain on-time resonance at T < ~30 ms, so r_off(0) is
+//              typically POSITIVE even for a deep suppressor and "cut at the offset" is not measurable there (r_off(0 / 25) stay in the table as informational values).
+// over_dB, settle_ms and r_off(0 / 100 / 250) are INFORMATIONAL (v6), not gates.
+//
 // Calibration: R0 pass-through: p = 0 -> t50 never, leak 1.0, so it must FAIL G8. Oracle R1 (returns C): E_out = E_clean -> r = 0, p = 1 at the first frame with r_pass >= 1 dB, leak 0,
-// over 0, settle 0, so it must PASS G8 and G9.
+// over 0, settle 0, r_off 0, so it must PASS G8 and G9. R0 passes G9 (r_off 0: nothing is ever cut).
 
 struct TvEvent { int onset = 0, offset = 0; };
 
@@ -1528,6 +1541,13 @@ static constexpr double kTvPreSec      = 0.030;  // frames kept before the onset
 static constexpr double kTvHorizonSec  = 1.0;    // analysis after the offset (settle horizon)
 static constexpr double kTvPassMinDb   = 1.0;    // analysis guard for p(t), see above (not a gate)
 static constexpr double kTvSettleBandDb = 1.0;   // |r| band for settle_ms
+static constexpr double kTvRoffHalfMs  = 10.0;   // r_off(T): half-width of the averaging interval
+static constexpr int    kTvCurveStepMs = 25;     // r_off curve sampling for tau_fit: T = 0, 25, ... 500 ms
+static constexpr int    kTvCurveMaxMs  = 500;
+static constexpr double kTvTauMinMs    = 2.0;    // tau_fit grid
+static constexpr double kTvTauMaxMs    = 5000.0;
+static constexpr double kTvTauNaCutDb  = 1.0;    // "n/a" when the cut at the start of the fit is below this
+static constexpr int    kTvTauStartMs  = 50;     // fit window T in [50, 500] ms: earlier samples still contain on-time resonance (STFT smear), see tvAnalyse
 static const std::array<double, 3> kTvF0 = { 500.0, 2500.0, 8000.0 };
 static const std::array<int, 3>    kTvDurMs = { 100, 300, 1000 };
 
@@ -1653,7 +1673,65 @@ struct TvMetrics
     double rPassPeak = 0.0;             // dB, event-mean r_pass maximum (case-validity evidence)
     double rPeak = 0.0;                 // dB, event-mean r maximum during the on-time (what actually remains of the resonance)
     double rOff = 0.0;                  // dB, INFORMATIONAL: mean event-mean r over 0.5-1.0 s after the offset (steady-state deviation from the clean noise; separates a slow release from a permanent offset)
+    // v6: r_off(T), dB, T = 0, 25, ... 500 ms (curve) and the two gated points. rOff500 / rOff1000 are the G9a / G9b values.
+    std::vector<double> rOffCurve;      // r_off(0), r_off(25), ... r_off(500)
+    double rOff100 = 0.0, rOff250 = 0.0, rOff500 = 0.0, rOff1000 = 0.0;
+    double tauFit = -1.0;               // ms; -1 = n/a (cut(0) < 1 dB), -2 = ">5000" (no decay within the grid)
+    bool   roffOk = true;               // false if an r_off interval fell outside the analysed frame range (would be a tool bug)
 };
+
+// Exact-overlap average of the per-frame event-mean energies `x` (frame i covers [(kMin + i) hop - hop/2, ... + hop/2] ms since the onset) over [centreMs - halfMs, centreMs + halfMs].
+static bool tvIntervalMean(const std::vector<double>& x, int kMin, double centreMs, double halfMs, double sr, double& out)
+{
+    const double hopMs = 1000.0 * kTvHop / sr;
+    double acc = 0.0, ws = 0.0;
+    const double lo0 = centreMs - halfMs, hi0 = centreMs + halfMs;
+    for (size_t i = 0; i < x.size(); ++i)
+    {
+        const double tc = (kMin + static_cast<int>(i)) * hopMs;
+        const double w = std::min(tc + hopMs / 2.0, hi0) - std::max(tc - hopMs / 2.0, lo0);
+        if (w > 0.0) { acc += w * x[i]; ws += w; }
+    }
+    out = ws > 0.0 ? acc / ws : 0.0;
+    return ws >= 2.0 * halfMs * 0.999;
+}
+
+// Least-squares fit cut(T) ~ c0 exp(-T / tau) over the samples (c0 free, closed form per tau; tau on a log grid, then golden-section refinement). Returns tau in ms.
+static double tvFitTau(const std::vector<double>& cut, bool& atLimit)
+{
+    const int n = static_cast<int>(cut.size());
+    auto sse = [&](double tau) {
+        double sxx = 0.0, sxy = 0.0, syy = 0.0;
+        for (int i = 0; i < n; ++i)
+        {
+            const double e = std::exp(-static_cast<double>(i * kTvCurveStepMs) / tau), y = cut[static_cast<size_t>(i)];
+            sxx += e * e; sxy += e * y; syy += y * y;
+        }
+        return syy - (sxx > 0.0 ? sxy * sxy / sxx : 0.0);       // residual with the optimal c0
+    };
+    const int G = 400;
+    double best = kTvTauMinMs, bestE = 1.0e300; int bi = 0;
+    for (int g = 0; g <= G; ++g)
+    {
+        const double tau = kTvTauMinMs * std::pow(kTvTauMaxMs / kTvTauMinMs, static_cast<double>(g) / G);
+        const double e = sse(tau);
+        if (e < bestE) { bestE = e; best = tau; bi = g; }
+    }
+    atLimit = (bi == G);
+    if (bi > 0 && bi < G)
+    {
+        double a = kTvTauMinMs * std::pow(kTvTauMaxMs / kTvTauMinMs, static_cast<double>(bi - 1) / G);
+        double b = kTvTauMinMs * std::pow(kTvTauMaxMs / kTvTauMinMs, static_cast<double>(bi + 1) / G);
+        const double phi = 0.6180339887498949;
+        for (int it = 0; it < 60; ++it)
+        {
+            const double c = b - phi * (b - a), d = a + phi * (b - a);
+            if (sse(c) < sse(d)) b = d; else a = c;
+        }
+        best = 0.5 * (a + b);
+    }
+    return best;
+}
 
 static TvMetrics tvAnalyse(const std::vector<std::vector<double>>& eOut, const std::vector<std::vector<double>>& eClean,
                            const std::vector<std::vector<double>>& ePass, int durMs, int kMin, double sr)
@@ -1717,28 +1795,47 @@ static TvMetrics tvAnalyse(const std::vector<std::vector<double>>& eOut, const s
     if (last < 0) m.settle = 0.0;
     else if (last == lastIdx) m.settle = -1.0;
     else m.settle = tOf(last + 1) - D;
+
+    // v6: r_off(T) (event-mean energies averaged over D + T +/- 10 ms, then the dB ratio), the gated points and the tau_fit curve.
+    auto rOffAt = [&](int T) {
+        double o = 0.0, c = 0.0;
+        const bool a = tvIntervalMean(mo, kMin, D + T, kTvRoffHalfMs, sr, o);
+        const bool b = tvIntervalMean(mc, kMin, D + T, kTvRoffHalfMs, sr, c);
+        if (!a || !b) m.roffOk = false;
+        return dbPow(o) - dbPow(c);
+    };
+    for (int T = 0; T <= kTvCurveMaxMs; T += kTvCurveStepMs) m.rOffCurve.push_back(rOffAt(T));
+    m.rOff100 = rOffAt(100); m.rOff250 = rOffAt(250); m.rOff500 = rOffAt(500); m.rOff1000 = rOffAt(1000);
+    // The first samples of the curve still contain the on-time resonance (Hann window +/- 10.7 ms, interval +/- 10 ms, 5 ms crossfade: r_off(0) is typically POSITIVE even for a deep suppressor),
+    // so the fit and the "cut at the offset" test start at kTvTauStartMs.
+    std::vector<double> cut;
+    for (size_t i = 0; i < m.rOffCurve.size(); ++i)
+        if (static_cast<int>(i) * kTvCurveStepMs >= kTvTauStartMs) cut.push_back(-m.rOffCurve[i]);
+    if (cut.front() < kTvTauNaCutDb) m.tauFit = -1.0;
+    else { bool lim = false; const double tau = tvFitTau(cut, lim); m.tauFit = lim ? -2.0 : tau; }
     return m;
 }
 
 // Gate thresholds for G8 / G9 (fixed by the specification; DO NOT tune per subject).
 //   G8a  t50 <= kG8aT50Ms                         for D = 300 and D = 1000 ms at every f0 (count of 6); "never" fails
 //   G8b  leak <= kG8bLeak300 (D = 300) / kG8bLeak1000 (D = 1000) at every f0 (count of 6)
-//   G9a  over_dB >= kG9aOverDb                    at every (f0, D) (count of 9, D = 100 included)
-//   G9b  settle_ms <= kG9bSettleMs                at every (f0, D) (count of 9); "never" fails
-//   D = 100 ms: t50 and leak are informational.
+//   G9a  |r_off(500 ms)| <= kG9aRoff500Db         at every (f0, D) (count of 9, D = 100 included)     (v6; replaces the v5 over_dB gate)
+//   G9b  |r_off(1000 ms)| <= kG9bRoff1000Db       at every (f0, D) (count of 9)                       (v6; replaces the v5 settle_ms gate)
+//   D = 100 ms: t50 and leak are informational. over_dB, settle_ms, r_off(0 / 100 / 250) and tau_fit are informational (not gates).
 static constexpr double kG8aT50Ms     = 100.0;
 static constexpr double kG8bLeak300   = 0.5;
 static constexpr double kG8bLeak1000  = 0.3;
-static constexpr double kG9aOverDb    = -3.0;
-static constexpr double kG9bSettleMs  = 400.0;
+static constexpr double kG9aRoff500Db  = 1.0;
+static constexpr double kG9bRoff1000Db = 0.5;
 
 static bool g8Graded(int durMs) { return durMs == 300 || durMs == 1000; }
 static bool g8aCell(const TvMetrics& m) { return m.t50 >= 0.0 && m.t50 <= kG8aT50Ms; }
 static bool g8bCell(const TvMetrics& m, int durMs) { return m.leak <= (durMs == 300 ? kG8bLeak300 : kG8bLeak1000); }
-static bool g9aCell(const TvMetrics& m) { return m.over >= kG9aOverDb; }
-static bool g9bCell(const TvMetrics& m) { return m.settle >= 0.0 && m.settle <= kG9bSettleMs; }
+static bool g9aCell(const TvMetrics& m) { return m.roffOk && std::abs(m.rOff500) <= kG9aRoff500Db; }
+static bool g9bCell(const TvMetrics& m) { return m.roffOk && std::abs(m.rOff1000) <= kG9bRoff1000Db; }
 
 static std::string tvMs(double v, int prec = 1) { return v < 0.0 ? "never" : num(v, prec); }
+static std::string tvTau(double v) { return v == -1.0 ? "n/a" : v == -2.0 ? ">5000" : num(v, 1); }
 
 // ============================================================================
 // Gates (v3)
@@ -1757,7 +1854,7 @@ static std::string tvMs(double v, int prec = 1) { return v < 0.0 ? "never" : num
 //   G1q/G2q  shape scan, Q in {4, 8, 16} at +12 dB, f0 2500 Hz, 48 kHz (same G1/G2 cell tests, ideal recomputed per case): count out of 3
 //   G1l/G2l  shape scan, level in {+12, +18} dB at Q 8, f0 2500 Hz, 48 kHz:                                              count out of 2
 //   G7  relative CPU: mean % RT / mean % RT of S3 (RS HQ Normal, default params) measured in the SAME run <= kG7CpuRatio at block 128 AND block 64
-//   G8a/G8b/G9a/G9b  v5 time-varying resonance (signal T1, thresholds kG8* / kG9* in the T1 section above): reaction speed and release behaviour
+//   G8a/G8b/G9a/G9b  v5/v6 time-varying resonance (signal T1, thresholds kG8* / kG9* in the T1 section above): reaction speed (G8) and release, i.e. the cut is gone 500 / 1000 ms after the offset (G9)
 //   Overall = G1, G2, G1q, G2q, G1l, G2l, G3, G4, G5, G6, G7, G8a, G8b, G9a, G9b all pass (G7 is "n/a" and left out of the verdict when the CPU run is skipped).
 static constexpr double kG1ResFloorDb   = -1.5;
 static constexpr double kG1ResIdealFrac = 0.30;
@@ -1814,7 +1911,8 @@ struct GateRow
     bool g5 = false; double g5Bb = 0, g5Band = 0; bool g5valid = false;
     bool g6 = false; std::string g6detail;
     int g8a = 0, n8a = 0, g8b = 0, n8b = 0;   // v5 reaction: cases passing out of 6 (f0 x D in {300, 1000})
-    int g9a = 0, n9a = 0, g9b = 0, n9b = 0;   // v5 release:  cases passing out of 9 (f0 x D in {100, 300, 1000})
+    int g9a = 0, n9a = 0, g9b = 0, n9b = 0;   // v6 release:  cases passing out of 9 (f0 x D in {100, 300, 1000}); |r_off(500)| <= 1.0 dB / |r_off(1000)| <= 0.5 dB
+    std::string tauSummary;                   // informational: tau_fit median over the cases with a fit, "(k fitted, a n/a, p >5000)"
     bool pass8a() const { return n8a > 0 && g8a == n8a; }
     bool pass8b() const { return n8b > 0 && g8b == n8b; }
     bool pass9a() const { return n9a > 0 && g9a == n9a; }
@@ -1915,6 +2013,18 @@ static GateRow evaluateGates(const Subject& s, const BenchData& d)
                 ++g.n9a; if (g9aCell(m)) ++g.g9a;
                 ++g.n9b; if (g9bCell(m)) ++g.g9b;
             }
+        if (tv != d.tv.end())
+        {
+            std::vector<double> taus; int na = 0, plateau = 0;
+            for (const auto& kv : tv->second)
+            {
+                const double tf = kv.second.tauFit;
+                if (tf == -1.0) ++na; else if (tf == -2.0) ++plateau; else taus.push_back(tf);
+            }
+            std::sort(taus.begin(), taus.end());
+            const std::string med = taus.empty() ? "-" : num(taus[taus.size() / 2], 1);
+            g.tauSummary = med + " ms (" + inum(static_cast<int>(taus.size())) + " fitted, " + inum(na) + " n/a, " + inum(plateau) + " >5000)";
+        }
     }
 
     // G7 (relative CPU)
@@ -2789,12 +2899,15 @@ int main(int argc, char** argv)
                "STFT 1024 Hann hop 128, window f0 +/- 1/6 oct, latency-aligned output, events aligned at their onsets (frame centres at onset + k x 128), energies = event means, 10 ms boxcar. "
                "r = dB(E_out / E_clean), r_pass the same for the un-suppressed input; p = 1 - r / r_pass in [0, 1.2] during the on-time (p := 0 while r_pass < 1 dB). "
                "t50 / t90 = first time since the onset with p >= 0.5 / 0.9 (never = not reached within D = FAIL). leak = sum of positive (E_out - E_clean) / sum (E_pass - E_clean) over the event (1 = nothing suppressed). "
-               "over = per-event minimum of dB(E_out / E_clean) (20 ms smoothing) within 500 ms after the offset, averaged over events. settle = time after the offset until |r| stays <= 1 dB (never = still outside after 1 s = FAIL). "
                "r_pass peak / r peak = the largest event-mean r_pass / r during the on-time (dB). Gates: G8a t50 <= 100 ms and G8b leak <= 0.5 (D = 300) / 0.3 (D = 1000) for D = 300 and 1000 only; "
-               "G9a over >= -3.0 dB and G9b settle <= 400 ms at every case. D = 100 ms: t50 / leak are informational ('-' in the G8 columns). Verdict letters P / F.";
-    tTv.note += " 'r off' (informational, not a gate) = mean r 0.5-1.0 s after the offset: the steady-state deviation of the output from the clean noise; a subject that permanently cuts / boosts the clean "
-                "noise by more than 1 dB can never settle, so settle = never with a large |r off| is an offset, not a slow release.";
-    tTv.header = { "subject", "f0 Hz", "D ms", "r_pass peak dB", "r peak dB", "t50 ms", "t90 ms", "leak", "over dB", "settle ms", "r off dB", "G8a", "G8b", "G9a", "G9b" };
+               "G9a |r_off(500)| <= 1.0 dB and G9b |r_off(1000)| <= 0.5 dB at every case. D = 100 ms: t50 / leak are informational ('-' in the G8 columns). Verdict letters P / F. "
+               "r_off(T) = dB(E_out / E_clean), both averaged over [offset + T - 10 ms, offset + T + 10 ms] and over the events (event-mean ratio, same convention as r(t)); negative = the output is still below the clean noise. "
+               "tau_fit = informational effective release time constant: exponential fit of the cut -r_off(T) over T = 50..500 ms (every 25 ms; earlier samples still contain on-time resonance), 'n/a' when the cut at T = 50 ms is < 1 dB, '>5000' when it does not decay (plateau).";
+    tTv.note += " Columns marked (info) are informational, NOT gates: over = per-event minimum of dB(E_out / E_clean) (20 ms smoothing) within 500 ms after the offset, averaged over events (the depth of the cut reached); "
+                "settle = time after the offset until |r| stays <= 1 dB (never = still outside after 1 s); 'r off 0.5-1s' = mean r 0.5-1.0 s after the offset (steady-state deviation from the clean noise; a subject that "
+                "permanently cuts the clean noise can never settle, so settle = never with a large |r off| is an offset, not a slow release); r_off(0 / 100 / 250) = the decay curve.";
+    tTv.header = { "subject", "f0 Hz", "D ms", "r_pass peak dB", "r peak dB", "t50 ms", "t90 ms", "leak", "over dB (info)", "settle ms (info)", "r off 0.5-1s dB (info)",
+                   "r_off(0) dB (info)", "r_off(100) dB (info)", "r_off(250) dB (info)", "r_off(500) dB [G9a]", "r_off(1000) dB [G9b]", "tau_fit ms (info)", "G8a", "G8b", "G9a", "G9b" };
     {
         const double tvSr = SR;
         for (double f0 : kTvF0)
@@ -2819,6 +2932,7 @@ int main(int argc, char** argv)
                     const auto a = align(tc.sig, out, measureLatency(s, tvSr).measured, tvSr);
                     const auto eOut = tvWindowEnergy(a.out, tc.events, kMin, kMax, tvSr, f0);
                     const TvMetrics m = tvAnalyse(eOut, eClean, ePass, durMs, kMin, tvSr);
+                    if (!m.roffOk) warnf("T1: an r_off interval fell outside the analysed frames (subject %s, f0 %.0f, D %d)", s.id.c_str(), f0, durMs);
                     bd.tv[s.id][{ static_cast<int>(f0), durMs }] = m;
                     if (wavCase) writeWav(wavDir / ("T1_f2500_D300_" + s.id + "_out.wav"), a.out, tvSr);
                 }
@@ -2830,6 +2944,7 @@ int main(int argc, char** argv)
                     const TvMetrics& m = bd.tv[s.id][{ static_cast<int>(f0), durMs }];
                     const bool gr = g8Graded(durMs);
                     tTv.add({ s.id, num(f0, 0), inum(durMs), num(m.rPassPeak, 2), num(m.rPeak, 2), tvMs(m.t50), tvMs(m.t90), num(m.leak, 3), num(m.over, 2), tvMs(m.settle), num(m.rOff, 2),
+                              num(m.rOffCurve.empty() ? 0.0 : m.rOffCurve.front(), 2), num(m.rOff100, 2), num(m.rOff250, 2), num(m.rOff500, 2), num(m.rOff1000, 2), tvTau(m.tauFit),
                               gr ? pf(g8aCell(m)).substr(0, 1) : "-", gr ? pf(g8bCell(m, durMs)).substr(0, 1) : "-", pf(g9aCell(m)).substr(0, 1), pf(g9bCell(m)).substr(0, 1) });
                 }
         csvTables["time_varying"] = tTv; tables.push_back(tTv);
@@ -2840,8 +2955,9 @@ int main(int argc, char** argv)
                 for (int durMs : kTvDurMs)
                 {
                     const TvMetrics& m = bd.tv[s.id][{ static_cast<int>(f0), durMs }];
-                    logf("      T1 %-4s f0 %4.0f D %4d: t50 %6s t90 %6s leak %5.3f over %6.2f settle %6s  (r_pass peak %.2f, r peak %.2f, r off %.2f) G8a %s G8b %s G9a %s G9b %s",
-                         s.id.c_str(), f0, durMs, tvMs(m.t50).c_str(), tvMs(m.t90).c_str(), m.leak, m.over, tvMs(m.settle).c_str(), m.rPassPeak, m.rPeak, m.rOff,
+                    logf("      T1 %-4s f0 %4.0f D %4d: t50 %6s t90 %6s leak %5.3f | r_off(500) %6.2f r_off(1000) %6.2f tau_fit %6s | info: over %6.2f settle %6s r_off(0/100/250) %.2f/%.2f/%.2f r off(0.5-1s) %.2f (r_pass peak %.2f, r peak %.2f) | G8a %s G8b %s G9a %s G9b %s",
+                         s.id.c_str(), f0, durMs, tvMs(m.t50).c_str(), tvMs(m.t90).c_str(), m.leak, m.rOff500, m.rOff1000, tvTau(m.tauFit).c_str(), m.over, tvMs(m.settle).c_str(),
+                         m.rOffCurve.empty() ? 0.0 : m.rOffCurve.front(), m.rOff100, m.rOff250, m.rOff, m.rPassPeak, m.rPeak,
                          g8Graded(durMs) ? (g8aCell(m) ? "P" : "F") : "-", g8Graded(durMs) ? (g8bCell(m, durMs) ? "P" : "F") : "-", g9aCell(m) ? "P" : "F", g9bCell(m) ? "P" : "F");
                 }
         }
@@ -2940,16 +3056,19 @@ int main(int argc, char** argv)
                  "G7: mean % RT divided by S3's mean % RT in the same run <= 1.00 at block 128 AND block 64 (cell shows ratio @128 / @64; 'n/a' with --no-cpu). "
                  "G8a: time-varying resonance T1 (table 11), reaction: t50 <= 100 ms for D = 300 and 1000 ms at every f0 (count of 6; 'never' fails). "
                  "G8b: leak_fraction <= 0.5 (D = 300) / <= 0.3 (D = 1000) at every f0 (count of 6). "
-                 "G9a: release over-suppression: over_dB >= -3.0 at every (f0, D) (count of 9). G9b: settle_ms <= 400 at every (f0, D) (count of 9; 'never' fails). "
+                 "G9a: release, the cut is gone 500 ms after the offset: |r_off(500)| <= 1.0 dB at every (f0, D) (count of 9). G9b: |r_off(1000)| <= 0.5 dB at every (f0, D) (count of 9). "
+                 "(r_off(T) = dB(E_out / E_clean) in the f0 +/- 1/6 oct window averaged over offset + T +/- 10 ms; see table 11. over_dB, settle_ms, r_off(0 / 100 / 250) and tau_fit are informational, not gates.) "
                  "Overall = every column passes, G8a / G8b / G9a / G9b included (G7 left out of the verdict when n/a). "
                  "Thresholds are the constants kG1..kG9 in the tool; they are not tuned per subject.";
     tGate.header = { "subject", "label", "G1 in-window", "G2 outside-dev", "G1q Q-scan", "G2q Q-scan", "G1l level-scan", "G2l level-scan", "G3 R-only", "G4 jitter", "G5 pre-echo D2", "G6 latency", "G7 CPU vs S3",
-                     "G8a t50", "G8b leak", "G9a over", "G9b settle", "overall" };
+                     "G8a t50", "G8b leak", "G9a r_off500", "G9b r_off1000", "overall" };
     Table tGateDetail; tGateDetail.title = "Gate details (raw values behind the gate table)";
     tGateDetail.note = "G1/G2 counts also at 44.1 kHz (informational, not part of the gate). G3: R gates at 2500 Hz, L gate f0 passing out of 12 (per-f0 values in table 8c), and the 2500 Hz R/L in-window and outside-dev (dB). "
-                       "G4: std all (dB) / isolated all, measured on the named sensitive variant. G5: broadband / band E_out vs E_in (dB) on D2. G6: measured/reported per rate. G7: CPU ratio vs S3 at block 128 / 64.";
+                       "G4: std all (dB) / isolated all, measured on the named sensitive variant. G5: broadband / band E_out vs E_in (dB) on D2. G6: measured/reported per rate. G7: CPU ratio vs S3 at block 128 / 64. "
+                       "tau_fit (informational, not a gate): median over the T1 cases of the effective release time constant (exponential fit of the cut -r_off(T), T = 50..500 ms); cases with a cut < 1 dB at T = 50 ms are n/a, "
+                       "cases whose cut does not decay are '>5000'.";
     tGateDetail.header = { "subject", "G1 @44.1k (info)", "G2 @44.1k (info)", "G3 R gates", "G3 L gate (f0 of 12)", "G3 R in-window", "G3 R outside-dev", "G3 L in-window", "G3 L outside-dev",
-                           "G4 variant", "G4 std all", "G4 isolated all", "G5 broadband", "G5 band", "G6 latency", "G7 ratio @128", "G7 ratio @64" };
+                           "G4 variant", "G4 std all", "G4 isolated all", "G5 broadband", "G5 band", "G6 latency", "G7 ratio @128", "G7 ratio @64", "tau_fit median (info)" };
     Table tGateCsv;
     tGateCsv.header = { "subject", "label", "g1_pass_f0", "g1_total_f0", "g1", "g2_pass_f0", "g2_total_f0", "g2", "g3_r_in_window_db", "g3_r_outside_dev_db", "g3_l_outside_dev_db", "g3",
                         "g4_variant", "g4_std_all_db", "g4_isolated_all", "g4", "g5_broadband_db", "g5_band_db", "g5", "g6_detail", "g6", "overall",
@@ -2972,7 +3091,7 @@ int main(int argc, char** argv)
                     pf(g.overall()) + (g.g7valid ? "" : " (G7 n/a)") });
         tGateDetail.add({ g.id, cnt(g.g1_44, g.n44), cnt(g.g2_44, g.n44), pf(g.g3R), cnt(g.g3Lpass, g.g3Ln), num(g.g3RRes, 2), num(g.g3RDev, 2), num(g.g3LRes, 2), num(g.g3LDev, 2),
                           g.g4Id, num(g.g4Std, 3), num(g.g4Iso, 6), num(g.g5Bb, 3), num(g.g5Band, 3), g.g6detail,
-                          g.g7valid ? num(g.g7r128, 3) : "n/a", g.g7valid ? num(g.g7r64, 3) : "n/a" });
+                          g.g7valid ? num(g.g7r128, 3) : "n/a", g.g7valid ? num(g.g7r64, 3) : "n/a", g.tauSummary });
         tGateCsv.add({ g.id, g.label, inum(g.g1), inum(g.n), pf(g.pass1()), inum(g.g2), inum(g.n), pf(g.pass2()), num(g.g3RRes, 4), num(g.g3RDev, 4), num(g.g3LDev, 4), pf(g.g3),
                        g.g4Id, num(g.g4Std, 4), num(g.g4Iso, 6), pf(g.g4), num(g.g5Bb, 4), num(g.g5Band, 4), pf(g.g5), g.g6detail, pf(g.g6), pf(g.overall()),
                        inum(g.g1_44), inum(g.g2_44), inum(g.n44),
@@ -3004,15 +3123,19 @@ int main(int argc, char** argv)
     logf("---- GATE TABLE (G1/G2/G3-L counts are f0 passing out of %zu; q = 3 Q cases, l = 2 level cases) ----", scanF0.size());
     for (const auto& g : gateRows)
     {
-        logf("%-4s G1 %-4s %5s | G2 %-4s %5s | G1q %-4s %3s | G2q %-4s %3s | G1l %-4s %3s | G2l %-4s %3s | G3 %-4s (R %s, L %s) | G4 %-4s | G5 %-4s | G6 %-4s | G7 %s | G8a %-4s %3s | G8b %-4s %3s | G9a %-4s %3s | G9b %-4s %3s | overall %s",
+        logf("%-4s G1 %-4s %5s | G2 %-4s %5s | G1q %-4s %3s | G2q %-4s %3s | G1l %-4s %3s | G2l %-4s %3s | G3 %-4s (R %s, L %s) | G4 %-4s | G5 %-4s | G6 %-4s | G7 %s | G8a %-4s %3s | G8b %-4s %3s | G9a %-4s %3s | G9b %-4s %3s | overall %s | tau_fit(info) %s",
              g.id.c_str(), pf(g.pass1()).c_str(), cnt(g.g1, g.n).c_str(), pf(g.pass2()).c_str(), cnt(g.g2, g.n).c_str(),
              pf(g.pass1q()).c_str(), cnt(g.g1q, g.nq).c_str(), pf(g.pass2q()).c_str(), cnt(g.g2q, g.nq).c_str(),
              pf(g.pass1l()).c_str(), cnt(g.g1l, g.nl).c_str(), pf(g.pass2l()).c_str(), cnt(g.g2l, g.nl).c_str(),
              pf(g.g3).c_str(), g.g3R ? "P" : "F", cnt(g.g3Lpass, g.g3Ln).c_str(), pf(g.g4).c_str(), pf(g.g5).c_str(), pf(g.g6).c_str(),
              g.g7valid ? (pf(g.g7) + " " + num(g.g7r128, 2) + "/" + num(g.g7r64, 2)).c_str() : "n/a",
              pf(g.pass8a()).c_str(), cnt(g.g8a, g.n8a).c_str(), pf(g.pass8b()).c_str(), cnt(g.g8b, g.n8b).c_str(),
-             pf(g.pass9a()).c_str(), cnt(g.g9a, g.n9a).c_str(), pf(g.pass9b()).c_str(), cnt(g.g9b, g.n9b).c_str(), pf(g.overall()).c_str());
+             pf(g.pass9a()).c_str(), cnt(g.g9a, g.n9a).c_str(), pf(g.pass9b()).c_str(), cnt(g.g9b, g.n9b).c_str(), pf(g.overall()).c_str(), g.tauSummary.c_str());
     }
+    for (const auto& g : gateRows)
+        if (g.pass8a() && g.pass8b() && g.pass9a() && g.pass9b()
+            && ![&] { for (const auto& rs : scanSubjects) if (rs.id == g.id) return rs.reference; return false; }())
+            warnf("%s passes G8a, G8b, G9a and G9b simultaneously - check the r_off / leak / t50 values in table 11 before trusting it", g.id.c_str());
     if (nOverall > 0)
         warnf("%d gated subject(s) pass ALL gates - baseline expectation is that the current subjects fail most gates; investigate the metrics before trusting this", nOverall);
 
@@ -3026,11 +3149,11 @@ int main(int argc, char** argv)
         {
             const bool r1Ok = r1->pass1() && r1->pass2() && r1->pass1q() && r1->pass2q() && r1->pass1l() && r1->pass2l() && r1->g3 && r1->g4 && r1->g5 && r1->g6
                               && r1->pass8a() && r1->pass8b() && r1->pass9a() && r1->pass9b();
-            const bool r0Ok = !r0->pass1() && !r0->g3 && !r0->pass8a() && !r0->pass8b();
+            const bool r0Ok = !r0->pass1() && !r0->g3 && !r0->pass8a() && !r0->pass8b() && r0->pass9a() && r0->pass9b();   // v6: pass-through never cuts the clean noise -> r_off 0 -> passes G9
             calibOk = r1Ok && r0Ok;
             calibLine = std::string("oracle R1 passes G1-G6 (incl. shape scans) and G8a/G8b/G9a/G9b = ") + (r1Ok ? "yes" : "NO") + " (G3 L " + cnt(r1->g3Lpass, r1->g3Ln) + "; G8a " + cnt(r1->g8a, r1->n8a)
-                      + ", G8b " + cnt(r1->g8b, r1->n8b) + ", G9a " + cnt(r1->g9a, r1->n9a) + ", G9b " + cnt(r1->g9b, r1->n9b) + "); pass-through R0 fails G1, G3, G8a and G8b = " + (r0Ok ? "yes" : "NO")
-                      + " (G1 " + cnt(r0->g1, r0->n) + ", G3 " + pf(r0->g3) + ", L " + cnt(r0->g3Lpass, r0->g3Ln) + ", G8a " + cnt(r0->g8a, r0->n8a) + ", G8b " + cnt(r0->g8b, r0->n8b) + ")";
+                      + ", G8b " + cnt(r1->g8b, r1->n8b) + ", G9a " + cnt(r1->g9a, r1->n9a) + ", G9b " + cnt(r1->g9b, r1->n9b) + "); pass-through R0 fails G1, G3, G8a and G8b and passes G9a/G9b = " + (r0Ok ? "yes" : "NO")
+                      + " (G1 " + cnt(r0->g1, r0->n) + ", G3 " + pf(r0->g3) + ", L " + cnt(r0->g3Lpass, r0->g3Ln) + ", G8a " + cnt(r0->g8a, r0->n8a) + ", G8b " + cnt(r0->g8b, r0->n8b) + ", G9a " + cnt(r0->g9a, r0->n9a) + ", G9b " + cnt(r0->g9b, r0->n9b) + ")";
             logf("calibration: %s -> %s", calibLine.c_str(), calibOk ? "ok" : "FAIL");
             if (!calibOk) warnf("reference-subject calibration FAILED: %s", calibLine.c_str());
         }
