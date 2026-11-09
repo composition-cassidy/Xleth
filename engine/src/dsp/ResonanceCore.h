@@ -32,6 +32,7 @@ namespace xleth::dsp::resonance
 {
 
 constexpr int kMaxChannels = 2;
+constexpr int kGridBands   = 96;   // detector / gain grid: ERB-rate spaced, 20 Hz .. min(0.45 fs, 20 kHz)
 
 // Parameter block, copied by value into process() once per block. Plain data only.
 struct Params
@@ -88,6 +89,27 @@ public:
     int numBins() const noexcept { return fftSize_ / 2 + 1; }
     double sampleRate() const noexcept { return sampleRate_; }
     long long framesProcessed() const noexcept { return frames_; }
+    int numBands() const noexcept { return numBands_; }
+    float bandHz(int b) const noexcept { return bandHz_[static_cast<size_t>(b)]; }
+    // Last frame's per-band values (dB), length numBands().
+    const float* bandLevelDb(int c) const noexcept    { return ch_[c].levelDb.data(); }    // averaged level, per-octave units
+    const float* bandBaselineDb(int c) const noexcept { return ch_[c].baseDb.data(); }     // robust flank baseline
+    const float* bandReductionDb(int c) const noexcept{ return ch_[c].outDb.data(); }      // applied reduction (>= 0)
+    const float* bandSigmaDb() const noexcept         { return sigmaE_.data(); }           // std-dev of (level - baseline) on noise
+    // Detection threshold in units of sigma_E for a sensitivity (0..1): 6 sigma at 0, 4 at 0.5, 2 at 1.
+    static float thresholdSigmas(float sensitivity) noexcept
+    {
+        const float s = sensitivity < 0.0f ? 0.0f : (sensitivity > 1.0f ? 1.0f : sensitivity);
+        return 6.0f - 4.0f * s;
+    }
+    // Detector constants (exposed so the design log / tests can quote them).
+    static constexpr float kDefaultDetectorTauMs = 200.0f;   // recursive power-average time constant (default; see design log tau study)
+    // Detector averaging time constant. Structural: takes effect at the next prepare() (call it before prepare).
+    void setDetectorTimeConstantMs(float ms) noexcept { detectorTauMs_ = ms > 1.0f ? ms : 1.0f; }
+    float detectorTimeConstantMs() const noexcept { return detectorTauMs_; }
+    static constexpr float kGapOct        = 0.5f;     // flank exclusion half-width, octaves (main lobe of a Q >= 4 resonance)
+    static constexpr float kGapBins       = 2.0f;     // ... and at least this many FFT bins (analysis main lobe)
+    static constexpr float kFlankOct      = 0.75f;    // flank width beyond the exclusion, octaves
 
 private:
     struct Channel
@@ -97,14 +119,28 @@ private:
         std::vector<float> outFifo;   // H finished output samples handed out during the next hop
         std::vector<float> fftBuf;    // 2N (JUCE real-FFT layout)
         std::vector<float> binGain;   // N/2 + 1 real gains applied to this frame
+        // detector / gain computer state
+        std::vector<float> powAvg;    // N/2 + 1 recursively averaged |X|^2 (un-bias-corrected EMA)
+        std::vector<float> levelDb;   // per band
+        std::vector<float> baseDb;    // per band
+        std::vector<float> redDb;     // per band, attack/release state (dB, >= 0)
+        std::vector<float> smoothDb;  // per band, after frequency smoothing
+        std::vector<float> outDb;     // per band, after stereo link (what is applied)
+        std::vector<float> exAdjDb;   // per band, excess at auditory resolution (sub-bin correction, low f only)
     };
 
+    void buildGrid();
+    void updateSigma() noexcept;
     void processFrame(int numCh, const Params& p) noexcept;
     // Detector + gain computer: writes Channel::binGain for channels [0, numCh). Returns false when every
     // gain is exactly 1 (the multiply is then skipped).
     bool computeGains(int numCh, const Params& p) noexcept;
+    void detectChannel(Channel& ch, double biasCorr) noexcept;
+    void subBinCorrection(Channel& ch, double biasCorr) noexcept;
+    float median(const int* idx, int n, const float* values) noexcept;
 
     double sampleRate_ = 0.0;
+    float detectorTauMs_ = kDefaultDetectorTauMs;
     int fftSize_ = 0, hop_ = 0, numChannels_ = 0;
     int hopFill_ = 0;
     long long frames_ = 0;
@@ -113,6 +149,34 @@ private:
     std::vector<float> window_;      // sqrt-Hann (periodic), analysis
     std::vector<float> synthesis_;   // sqrt-Hann × 1/Σw² of its hop phase
     Channel ch_[kMaxChannels];
+
+    // ---- band grid (ERB-rate spaced), built in prepare() ----
+    int numBands_ = 0;
+    double erbLo_ = 0.0, erbStep_ = 1.0;
+    std::vector<float> bandHz_;
+    std::vector<int>   bwStart_, bwBin_;  std::vector<float> bwW_;   // band <- bins (CSR), weights include f_k
+    std::vector<int>   flStart_[2], fl_[2];                          // flank band lists per side (0 = below, 1 = above)
+    std::vector<int>   lobeLo_, lobeHi_;                             // per band: bands inside its main-lobe exclusion zone
+    std::vector<int>   binBand_;  std::vector<float> binFrac_;       // bin -> (band j, t) for G(f) interpolation
+    // ---- statistics ----
+    float emaA_ = 0.0f, emaB_ = 1.0f;     // per-frame power average: S = a S + b P
+    double emaAn_ = 1.0;                  // a^n (bias correction 1 / (1 - a^n))
+    std::vector<double> vfTime_;          // variance factor of the bias-corrected average after n frames (index n-1)
+    std::vector<float> vfBin_;            // per band: variance factor of the bin weighting
+    std::vector<float> bandX_;            // per band log2(f)
+    std::vector<float> sideX_[2];         // per band and side: mean log2(f) of the flank bands
+    int slopeLo_ = 0, slopeHi_ = 0;       // band range of the wideband tilt fit (one-sided flank extrapolation)
+    double slopeXMean_ = 0.0, slopeSxx_ = 1.0;
+    std::vector<float> sideVf_[2];        // per band and side: mean bin variance factor of the flank bands
+    std::vector<float> sideNeff_[2];      // per band and side: effective independent flank values
+    std::vector<float> sigmaE_;           // per band std-dev of excess (dB) at the current frame count
+    // ---- sub-bin (auditory-resolution) excess at low f, where the analysis kernel is wider than an ERB ----
+    int kLowMax_ = 0;                     // last bin whose ERB is narrower than the analysis kernel's ENBW
+    float kernelVar_ = 0.0f;              // second moment (bins^2) a narrowband source shows over +/-2 bins
+    std::vector<float> erbBins_;          // per bin: ERB(f_k) in bins
+    std::vector<float> binX_, binF_;      // per bin scratch: excess fraction, correction factor
+    std::vector<float> scratch_;          // median scratch
+    std::vector<float> tmpBand_;          // per band scratch
 };
 
 } // namespace xleth::dsp::resonance

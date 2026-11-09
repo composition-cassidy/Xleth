@@ -47,6 +47,12 @@
 //                               [--ref-subjects] [--subjects ID,ID,...] [--wav label=path]...
 //   --subjects runs only the listed subjects (iteration speed). Each kept subject's G4 jitter companion and S3 (the
 //   G7 CPU reference) are kept automatically. Without it every registered subject runs (default output unchanged).
+//   --core-tau MS sets the ResonanceCore detector averaging time constant for C1 / C1c / C1s and tables 10c / 10d
+//   (study runs; 0 / absent = the core's default).
+//
+// ResonanceCore (stage 1, src/dsp/ResonanceCore.*, wired into no effect) is graded through a bench-only adapter:
+//   C1 default Params (gated), C1c depth 1 / Hard (gated), C1s depth 1 / sensitivity 1 / Hard (G4 companion of both).
+//   Tables 10c / 10d read the core's detector (baseline lift by planted shape / f0; predicted vs measured noise sigma).
 //   --ref-subjects registers two reference subjects (R0 pass-through, R1 oracle = exact inverse of the planted bell on exactly the planted channels with the
 //   planted Q / level, built through Subject::factory(bell descriptor)) so the residual metrics and gates can be calibrated: R0 must FAIL G1/G3, R1 must PASS
 //   G1-G6. Off by default (default output unchanged).
@@ -58,6 +64,7 @@
 
 #include "audio/XlethEQEffect.h"
 #include "audio/XlethResonanceSuppressorEffect.h"
+#include "dsp/ResonanceCore.h"
 
 #include <juce_audio_basics/juce_audio_basics.h>
 #include <juce_audio_formats/juce_audio_formats.h>
@@ -195,6 +202,7 @@ struct Options
     bool noCpu  = false;
     bool cpuOnly = false;
     bool refSubjects = false;   // register the pass-through + oracle reference subjects (metric / gate calibration)
+    float coreTauMs = 0.0f;              // --core-tau MS: ResonanceCore detector time constant for C1/C1c/C1s and tables 10c/10d (0 = core default)
     std::vector<std::string> subjects;   // --subjects A,B,C: run only these (plus their G4 jitter companions and S3, the G7 reference); empty = all
     std::string outBase = "bench_out";
     std::vector<std::pair<std::string, std::string>> wavs;   // label, path
@@ -449,6 +457,61 @@ private:
     bool apply_[2] = { true, true };
 };
 
+// Bench adapter for xleth::dsp::resonance::Core (src/dsp/ResonanceCore.*, stage 1, wired into no effect): a thin
+// juce::AudioProcessor so the core runs through exactly the same render / latency / CPU paths as every other subject.
+// Lives in the bench only. The core sees nothing but audio and its Params block.
+class ResonanceCoreProcessor : public juce::AudioProcessor
+{
+public:
+    ResonanceCoreProcessor(const xleth::dsp::resonance::Params& p, float detectorTauMs)
+        : juce::AudioProcessor(BusesProperties().withInput("in", juce::AudioChannelSet::stereo()).withOutput("out", juce::AudioChannelSet::stereo())),
+          params_(p)
+    {
+        if (detectorTauMs > 0.0f) core_.setDetectorTimeConstantMs(detectorTauMs);
+    }
+    const juce::String getName() const override { return "ResonanceCore"; }
+    void prepareToPlay(double sr, int maxBlock) override
+    {
+        core_.prepare(sr, maxBlock, 2);
+        setLatencySamples(core_.currentLatency());
+    }
+    void releaseResources() override {}
+    void processBlock(juce::AudioBuffer<float>& buf, juce::MidiBuffer&) override
+    {
+        core_.process(buf.getArrayOfWritePointers(), buf.getNumChannels(), buf.getNumSamples(), params_);
+    }
+    double getTailLengthSeconds() const override { return 0.0; }
+    bool acceptsMidi() const override { return false; }
+    bool producesMidi() const override { return false; }
+    juce::AudioProcessorEditor* createEditor() override { return nullptr; }
+    bool hasEditor() const override { return false; }
+    int getNumPrograms() override { return 1; }
+    int getCurrentProgram() override { return 0; }
+    void setCurrentProgram(int) override {}
+    const juce::String getProgramName(int) override { return {}; }
+    void changeProgramName(int, const juce::String&) override {}
+    void getStateInformation(juce::MemoryBlock&) override {}
+    void setStateInformation(const void*, int) override {}
+private:
+    xleth::dsp::resonance::Core core_;
+    xleth::dsp::resonance::Params params_;
+};
+
+// Subject::factory for the core. The Planted descriptor is accepted (it is the factory signature every case - scan,
+// Q / level scans, right-only - calls through) but deliberately NOT passed to the core: the processor must find the
+// resonance from the audio alone (no knowledge of f0, Q, level or channel). `neutral` = depth 0.
+static std::function<std::unique_ptr<juce::AudioProcessor>(double, int, const Planted&, bool)> coreFactory(xleth::dsp::resonance::Params p)
+{
+    return [p](double sr, int maxBlock, const Planted& /*bell: intentionally unused*/, bool neutral)
+    {
+        xleth::dsp::resonance::Params q = p;
+        if (neutral) q.depth = 0.0f;
+        auto proc = std::make_unique<ResonanceCoreProcessor>(q, g_opt.coreTauMs);
+        proc->prepareToPlay(sr, maxBlock);
+        return std::unique_ptr<juce::AudioProcessor>(std::move(proc));
+    };
+}
+
 // THE subject registry. Registering a subject here adds it to every table, CSV, gate and (for Primary) the CPU run.
 // Order is preserved inside each group; groups are concatenated Primary, Sensitive, Capability.
 static const std::vector<Subject>& registry()
@@ -470,6 +533,11 @@ static const std::vector<Subject>& registry()
         { auto& s = add("S3", "S3", "RS High Quality / Normal", Kind::RsHQ, Group::Primary, "processing_mode=HQ, quality=Normal (N=1024)"); s.quality = 1; }
         { auto& s = add("S4", "S4", "RS High Quality / High",   Kind::RsHQ, Group::Primary, "processing_mode=HQ, quality=High (N=2048)");   s.quality = 2; }
         add("S5", "S5", "EQ Spectral (1 band)",     Kind::Eq,   Group::Primary, "band0 mode=Spectral, gain(depth)=-12 dB, freq=resonance, Q/sens/sel/atk/rel default");
+        // ResonanceCore stage 1 (unwired DSP class, bench adapter above). Default Params: depth 0.5, sensitivity 0.5,
+        // attack 15 ms, release 200 ms, Soft, stereo link 0. Gated at its default parameters too; G4 on C1s.
+        { auto& s = add("C1", "C1", "ResonanceCore (default)", Kind::Custom, Group::Primary,
+                        "depth 0.5; sensitivity 0.5; attack 15 ms; release 200 ms; Soft; link 0");
+          s.gated = true; s.jitterId = "C1s"; s.factory = coreFactory(xleth::dsp::resonance::Params{}); }
 
         // -------- Sensitive: jitter / false-trigger test only --------
         { auto& s = add("S1s", "S1", "RS Low Latency (sensitive)", Kind::RsLL, Group::Sensitive, "depth=100, selectivity=0"); s.sensitive = true; }
@@ -480,6 +548,10 @@ static const std::vector<Subject>& registry()
         { auto& s = add("S5z", "S5", "EQ Spectral (spec_sens=0.0)", Kind::Eq, Group::Sensitive, "spec_sens=0.0 (EQ: LOWEST threshold = most sensitive)"); s.eqSens = 0.0f; }
         // Sensitive companion of S5q (G4): same as S5z but with the narrow band Q 8 of the fair variant.
         { auto& s = add("S5qz", "S5", "EQ Spectral (spec_sens=0.0, Q=8)", Kind::Eq, Group::Sensitive, "spec_sens=0.0, band Q=8, gain -12 dB (sensitive companion of S5q)"); s.eqSens = 0.0f; s.eqQ = 8.0f; }
+        // Sensitive companion of C1 / C1c (G4): the most sensitive and deepest setting of the core.
+        { xleth::dsp::resonance::Params p; p.depth = 1.0f; p.sensitivity = 1.0f; p.hardKnee = true;
+          auto& s = add("C1s", "C1", "ResonanceCore (sensitive)", Kind::Custom, Group::Sensitive, "depth 1.0; sensitivity 1.0; Hard; other params default");
+          s.factory = coreFactory(p); }
 
         // -------- Capability: max-depth runs (gated) --------
         { auto& s = add("S1c", "S1", "RS Low Latency (capability)", Kind::RsLL, Group::Capability, "depth=100, mode=Hard");
@@ -500,6 +572,10 @@ static const std::vector<Subject>& registry()
         // G4 is graded on the same sensitive companion as S5q (S5qz): G4 asks "does the most sensitive setting of this processor produce musical noise".
         { auto& s = add("S5qd", "S5", "EQ Spectral (fair: Q=8 default sens)", Kind::Eq, Group::Capability, "band gain=-30 dB; spec_sens=DEFAULT; band Q=8; centre=f0");
           s.capability = true; s.eqGain = -30.0f; s.eqQ = 8.0f; s.gated = true; s.jitterId = "S5qz"; }
+        // ResonanceCore capability variant: depth 1.0, Hard, every other parameter at its default.
+        { xleth::dsp::resonance::Params p; p.depth = 1.0f; p.hardKnee = true;
+          auto& s = add("C1c", "C1", "ResonanceCore (capability)", Kind::Custom, Group::Capability, "depth 1.0; Hard; other params default");
+          s.capability = true; s.gated = true; s.jitterId = "C1s"; s.pairedDefault = "C1"; s.factory = coreFactory(p); }
 
         // -------- Reference subjects (opt-in): metric / gate calibration. Registered through Subject::factory. --------
         if (g_opt.refSubjects)
@@ -1665,6 +1741,7 @@ static bool parseArgs(int argc, char** argv)
         else if (a == "--cpu-only") g_opt.cpuOnly = true;
         else if (a == "--ref-subjects") g_opt.refSubjects = true;
         else if (a == "--out-dir" && i + 1 < argc) g_opt.outBase = argv[++i];
+        else if (a == "--core-tau" && i + 1 < argc) g_opt.coreTauMs = static_cast<float>(std::atof(argv[++i]));
         else if (a == "--subjects" && i + 1 < argc)
         {
             std::stringstream ss(argv[++i]);
@@ -2252,6 +2329,116 @@ int main(int argc, char** argv)
         csvTables["detector_window"] = tG2; tables.push_back(tG2);
     }
 
+    // ---------------------------------------------------------------- ResonanceCore detector statistics (10c / 10d)
+    // Informational. Read through the core's introspection API (last frame's band level / baseline / sigma), run in hop-sized
+    // blocks so every block produces exactly one frame. Detection does not depend on Params (the gain computer does).
+    {
+        namespace rc = xleth::dsp::resonance;
+        logf("[8c/9] ResonanceCore detector statistics (baseline lift on Q / level / f0 scans; noise sigma check)");
+        struct DetAcc { std::vector<double> sE, sE2, sL, sB, sR; std::vector<float> sigma; std::vector<long long> a4, a2; long long n = 0; std::vector<float> hz; };
+        auto runDet = [&](const Stereo& sig) -> DetAcc
+        {
+            rc::Core core;
+            if (g_opt.coreTauMs > 0.0f) core.setDetectorTimeConstantMs(g_opt.coreTauMs);
+            core.prepare(SR, 1024, 2);
+            const int H = core.hopSize(), B = core.numBands();
+            DetAcc d;
+            d.sE.assign(static_cast<size_t>(B), 0.0); d.sE2 = d.sE; d.sL = d.sE; d.sB = d.sE; d.sR = d.sE;
+            d.a4.assign(static_cast<size_t>(B), 0); d.a2 = d.a4;
+            for (int b = 0; b < B; ++b) d.hz.push_back(core.bandHz(b));
+            const int skipFrames = static_cast<int>(kSkipSec * SR) / H;
+            std::vector<float> l(static_cast<size_t>(H)), r(static_cast<size_t>(H));
+            float* ptrs[2] = { l.data(), r.data() };
+            rc::Params prm; prm.depth = 1.0f; prm.hardKnee = true;   // C1c settings: only the reduction column depends on them
+            for (int pos = 0, f = 0; pos + H <= sig.size(); pos += H, ++f)
+            {
+                std::memcpy(l.data(), sig.ch[0].data() + pos, sizeof(float) * static_cast<size_t>(H));
+                std::memcpy(r.data(), sig.ch[1].data() + pos, sizeof(float) * static_cast<size_t>(H));
+                core.process(ptrs, 2, H, prm);
+                if (f < skipFrames) continue;
+                const float* sg = core.bandSigmaDb();
+                for (int c = 0; c < 2; ++c)
+                {
+                    const float* L = core.bandLevelDb(c);
+                    const float* Bs = core.bandBaselineDb(c);
+                    for (int b = 0; b < B; ++b)
+                    {
+                        const double e = static_cast<double>(L[b]) - Bs[b];
+                        d.sE[static_cast<size_t>(b)] += e; d.sE2[static_cast<size_t>(b)] += e * e;
+                        d.sL[static_cast<size_t>(b)] += L[b]; d.sB[static_cast<size_t>(b)] += Bs[b];
+                        d.sR[static_cast<size_t>(b)] += core.bandReductionDb(c)[b];
+                        if (e > rc::Core::thresholdSigmas(0.5f) * sg[b]) ++d.a4[static_cast<size_t>(b)];
+                        if (e > rc::Core::thresholdSigmas(1.0f) * sg[b]) ++d.a2[static_cast<size_t>(b)];
+                    }
+                    ++d.n;
+                }
+            }
+            d.sigma.assign(core.bandSigmaDb(), core.bandSigmaDb() + B);
+            return d;
+        };
+        auto nearestBand = [](const DetAcc& d, double f) { int best = 0; for (int b = 1; b < static_cast<int>(d.hz.size()); ++b) if (std::abs(std::log2(d.hz[static_cast<size_t>(b)] / f)) < std::abs(std::log2(d.hz[static_cast<size_t>(best)] / f))) best = b; return best; };
+        const DetAcc dc = runDet(pinkC);
+        const double nn = static_cast<double>(std::max<long long>(dc.n, 1));
+
+        Table t10c; t10c.title = "10c. ResonanceCore detector - baseline lift by planted shape and f0 (48 kHz, signal A vs clean C, both channels)";
+        t10c.note = "Core Params are irrelevant here (detection is parameter-free). Means over all frames after the 2 s skip. 'band' = the grid band nearest f0. "
+                    "lift = baseline(A) - baseline(C) at that band, i.e. how far the planted resonance raises its own baseline (design target: ~0 for Q 4..16). "
+                    "'max |lift| +/-1/3 oct' = the largest |lift| over the grid bands within f0 +/- 1/3 octave. excess = level - baseline. "
+                    "threshold = 4 sigma_E (sensitivity 0.5); P = fraction of frames x channels with excess above it. reduction = mean applied band reduction with the C1c settings (depth 1, Hard).";
+        t10c.header = { "case", "f0 Hz", "band Hz", "A level", "A baseline", "A excess", "C excess", "lift A-C", "max |lift| +/-1/3 oct", "sigma_E", "threshold (4 sigma)", "P(A excess > thr)", "P(C excess > thr)", "reduction C1c (dB)" };
+        struct DetCase { std::string key; double f0, q, g; };
+        const std::vector<DetCase> dcases = { { "Q4/+12", 2500, 4, 12 }, { "Q8/+12", 2500, 8, 12 }, { "Q16/+12", 2500, 16, 12 }, { "Q8/+18", 2500, 8, 18 },
+                                              { "Q8/+12", 100, 8, 12 }, { "Q8/+12", 150, 8, 12 }, { "Q8/+12", 220, 8, 12 }, { "Q8/+12", 330, 8, 12 }, { "Q8/+12", 1100, 8, 12 }, { "Q8/+12", 8000, 8, 12 } };
+        Table t10cCsv; t10cCsv.header = { "case", "f0_hz", "band_hz", "a_level_db", "a_baseline_db", "a_excess_db", "c_excess_db", "lift_db", "max_abs_lift_db", "sigma_e_db", "thr_db", "p_a_above", "p_c_above", "reduction_c1c_db" };
+        for (const auto& cs : dcases)
+        {
+            const DetAcc da = runDet(makeResonant(pinkC, SR, cs.f0, true, true, cs.q, cs.g));
+            const double na = static_cast<double>(std::max<long long>(da.n, 1));
+            const int b = nearestBand(da, cs.f0);
+            const auto bi = static_cast<size_t>(b);
+            const double lift = (da.sB[bi] / na) - (dc.sB[bi] / nn);
+            double maxLift = 0.0;
+            const double s3 = std::pow(2.0, 1.0 / 3.0);
+            for (size_t j = 0; j < da.hz.size(); ++j)
+                if (da.hz[j] >= cs.f0 / s3 && da.hz[j] <= cs.f0 * s3) maxLift = std::max(maxLift, std::abs(da.sB[j] / na - dc.sB[j] / nn));
+            const double thr = rc::Core::thresholdSigmas(0.5f) * da.sigma[bi];
+            std::vector<std::string> row = { cs.key, num(cs.f0, 0), num(da.hz[bi], 0), num(da.sL[bi] / na, 2), num(da.sB[bi] / na, 2), num(da.sE[bi] / na, 2),
+                                             num(dc.sE[bi] / nn, 2), num(lift, 2), num(maxLift, 2), num(da.sigma[bi], 2), num(thr, 2),
+                                             num(static_cast<double>(da.a4[bi]) / na, 4), num(static_cast<double>(dc.a4[bi]) / nn, 4), num(da.sR[bi] / na, 2) };
+            t10c.add(row); t10cCsv.add(row);
+            logf("      core %-7s f0 %5.0f band %6.0f Hz: excess %.2f dB (C %.2f) lift %+.2f dB (max |lift| %.2f) sigma_E %.2f thr %.2f P %.3f red(C1c) %.2f",
+                 cs.key.c_str(), cs.f0, da.hz[bi], da.sE[bi] / na, dc.sE[bi] / nn, lift, maxLift, da.sigma[bi], thr, static_cast<double>(da.a4[bi]) / na, da.sR[bi] / na);
+        }
+        csvTables["core_detector_lift"] = t10cCsv; tables.push_back(t10c);
+
+        Table t10d; t10d.title = "10d. ResonanceCore detector - noise statistics on clean pink C (48 kHz): predicted vs measured sigma of the excess";
+        t10d.note = "sigma_E (predicted) is what the threshold is built from: the std-dev of excess = level - baseline for a noise-like input, derived from the window's frame/bin correlations, "
+                    "the recursive-average weights, the band weights and the flank median (log-Gamma statistics). 'measured' = std-dev over frames of the actual excess. "
+                    "bias = mean excess (ideal 0). P(>4 sigma) / P(>2 sigma) = measured exceedance at sensitivity 0.5 / 1.0 (Gaussian reference 3.2e-5 / 2.3e-2). Band means per region.";
+        t10d.header = { "region", "bands", "sigma_E predicted (dB)", "std(excess) measured (dB)", "measured / predicted", "bias (dB)", "P(> 4 sigma)", "P(> 2 sigma)" };
+        const std::vector<std::pair<double, double>> regions = { { 20, 200 }, { 200, 1000 }, { 1000, 5000 }, { 5000, 20001 } };
+        for (const auto& rg : regions)
+        {
+            double sp = 0, sm = 0, sb = 0, p4 = 0, p2 = 0; int nbnd = 0;
+            for (size_t j = 0; j < dc.hz.size(); ++j)
+            {
+                if (dc.hz[j] < rg.first || dc.hz[j] >= rg.second) continue;
+                const double mean = dc.sE[j] / nn;
+                sp += dc.sigma[j];
+                sm += std::sqrt(std::max(dc.sE2[j] / nn - mean * mean, 0.0));
+                sb += mean;
+                p4 += static_cast<double>(dc.a4[j]) / nn; p2 += static_cast<double>(dc.a2[j]) / nn;
+                ++nbnd;
+            }
+            if (nbnd == 0) continue;
+            t10d.add({ num(rg.first, 0) + "-" + num(std::min(rg.second, 20000.0), 0) + " Hz", inum(nbnd), num(sp / nbnd, 3), num(sm / nbnd, 3), num(sm / sp, 3),
+                       num(sb / nbnd, 3), num(p4 / nbnd, 5), num(p2 / nbnd, 4) });
+            logf("      core noise %5.0f-%5.0f Hz (%2d bands): sigma_E pred %.3f meas %.3f (x%.2f) bias %+.3f P>4s %.5f P>2s %.4f",
+                 rg.first, std::min(rg.second, 20000.0), nbnd, sp / nbnd, sm / nbnd, sm / sp, sb / nbnd, p4 / nbnd, p2 / nbnd);
+        }
+        csvTables["core_detector_noise"] = t10d; tables.push_back(t10d);
+    }
+
     // ---------------------------------------------------------------- CPU (9)
     Table tCpu; tCpu.title = "9. CPU (48 kHz stereo)";
     tCpu.header = { "subject", "label", "block", "median ns", "p95 ns", "p99 ns", "max ns", "mean ns", "median % RT", "p95 % RT", "mean % RT", "max % RT" };
@@ -2301,15 +2488,18 @@ int main(int argc, char** argv)
 
     // ---------------------------------------------------------------- --wav inputs (G)
     Table tWav; tWav.title = "G. --wav inputs: depth-0 null";
-    tWav.note = "Each file is run at its own sample rate through every subject (default config, S5 band 2500 Hz / -12 dB); aligned out and delta WAVs are in wav/. "
+    tWav.note = "Each file is run at its own sample rate through every default-parameter subject and every gated capability variant (own config, S5 band 2500 Hz / -12 dB); "
+                "aligned out and delta WAVs are in wav/. "
                 "Only metric: latency-aligned null depth at depth 0 (RS depth 0, EQ band gain 0 dB): RMS(out - in) dBFS, first min(2 s, 25 %) skipped.";
     tWav.header = { "label", "subject", "sr", "latency", "null depth 0 (dBFS)" };
+    std::vector<Subject> wavSubjects = primary;   // listening material: defaults + the gated capability variants (C1c, S1c, S3c, ...)
+    for (const auto& s : capability) if (s.gated && !s.reference) wavSubjects.push_back(s);
     for (const auto& w : g_opt.wavs)
     {
         Stereo in; double sr = 0;
         if (!readWav(w.second, in, sr)) { warnf("cannot read WAV %s", w.second.c_str()); continue; }
         logf("--wav %s: %d samples @%.0f Hz", w.first.c_str(), in.size(), sr);
-        for (const auto& s : primary)
+        for (const auto& s : wavSubjects)
         {
             const int L = measureLatency(s, sr).measured;
             {

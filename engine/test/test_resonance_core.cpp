@@ -11,6 +11,9 @@
 //                   active (default params, pink noise + a planted resonance)
 //   T7 reset        reset() mid-stream == a freshly prepared instance
 //   T8 mono         one channel processed, extra channels untouched
+//   F1-F4 detector  (stage B) pink noise not cut at the most sensitive setting; a +12 dB / Q8 resonance is cut
+//                   by >= 7 dB at f0 and nothing an octave away; right-only resonance leaves L alone at link 0 and
+//                   is mirrored at link 1; the threshold's predicted sigma_E matches the measured std on noise
 //
 // The allocation counter hooks operator new / new[] on the measuring thread only (the same approach as
 // test_effect_processblock_alloc.cpp). Output prefix: [ResCore].
@@ -372,6 +375,119 @@ void testMono()
     check(d0.rmsDb <= -120.0 && untouched, buf);
 }
 
+// Run `in` in hop-sized blocks (one frame per block) and average the applied per-band reduction per channel after `skipSec`.
+struct BandStats { std::vector<double> red[2], maxRed[2], e, e2; long long n = 0; };
+BandStats bandStats(Core& c, const Stereo& in, const Params& p, double skipSec)
+{
+    const int H = c.hopSize(), B = c.numBands();
+    BandStats s;
+    for (int ch = 0; ch < 2; ++ch) { s.red[ch].assign(static_cast<size_t>(B), 0.0); s.maxRed[ch].assign(static_cast<size_t>(B), 0.0); }
+    s.e.assign(static_cast<size_t>(B), 0.0); s.e2 = s.e;
+    std::vector<float> l(static_cast<size_t>(H)), r(static_cast<size_t>(H));
+    float* ptrs[2] = { l.data(), r.data() };
+    const int skip = static_cast<int>(skipSec * c.sampleRate()) / H;
+    for (int pos = 0, f = 0; pos + H <= in.size(); pos += H, ++f)
+    {
+        std::memcpy(l.data(), in.ch[0].data() + pos, sizeof(float) * static_cast<size_t>(H));
+        std::memcpy(r.data(), in.ch[1].data() + pos, sizeof(float) * static_cast<size_t>(H));
+        c.process(ptrs, 2, H, p);
+        if (f < skip) continue;
+        for (int ch = 0; ch < 2; ++ch)
+            for (int b = 0; b < B; ++b)
+            {
+                const double v = c.bandReductionDb(ch)[b];
+                s.red[ch][static_cast<size_t>(b)] += v;
+                s.maxRed[ch][static_cast<size_t>(b)] = std::max(s.maxRed[ch][static_cast<size_t>(b)], v);
+            }
+        for (int b = 0; b < B; ++b)
+        {
+            const double e = static_cast<double>(c.bandLevelDb(0)[b]) - c.bandBaselineDb(0)[b];
+            s.e[static_cast<size_t>(b)] += e; s.e2[static_cast<size_t>(b)] += e * e;
+        }
+        ++s.n;
+    }
+    for (int ch = 0; ch < 2; ++ch) for (auto& v : s.red[ch]) v /= std::max<long long>(s.n, 1);
+    return s;
+}
+
+int nearestBand(const Core& c, double f)
+{
+    int best = 0;
+    for (int b = 1; b < c.numBands(); ++b)
+        if (std::abs(std::log2(c.bandHz(b) / f)) < std::abs(std::log2(c.bandHz(best) / f))) best = b;
+    return best;
+}
+
+// Functional checks of the detector / gain computer (stage B). Not the bench gates; coarse guards that the design
+// properties the bench grades stay true in CI.
+void testDetectorFunction()
+{
+    const double sr = 48000.0;
+    Params cap; cap.depth = 1.0f; cap.hardKnee = true;   // the C1c settings
+
+    // F1: plain pink noise, most sensitive + deepest setting: (almost) nothing is cut.
+    {
+        Core c; c.prepare(sr, 512, 2);
+        Params sens = cap; sens.sensitivity = 1.0f;
+        const BandStats s = bandStats(c, makePink(static_cast<int>(8.0 * sr), -20.0, 61), sens, 2.0);
+        double mean = 0.0, mx = 0.0;
+        for (int ch = 0; ch < 2; ++ch)
+            for (int b = 0; b < c.numBands(); ++b)
+            {
+                if (c.bandHz(b) < 100.0) continue;
+                mean += s.red[ch][static_cast<size_t>(b)]; mx = std::max(mx, s.red[ch][static_cast<size_t>(b)]);
+            }
+        mean /= 2.0 * c.numBands();
+        char buf[200];
+        std::snprintf(buf, sizeof buf, "F1 pink noise, sensitivity 1 / depth 1 Hard: mean band reduction %.3f dB (<= 0.2), worst band mean %.3f dB (<= 1.0)", mean, mx);
+        check(mean <= 0.2 && mx <= 1.0, buf);
+    }
+    // F2: +12 dB / Q8 resonance at 2.5 kHz in both channels: cut close to the excess at f0, nothing an octave away.
+    {
+        Core c; c.prepare(sr, 512, 2);
+        const BandStats s = bandStats(c, resonantPink(sr, 8.0, 2500.0, 62), cap, 2.0);
+        const int b0 = nearestBand(c, 2500.0);
+        double far = 0.0;
+        for (int b = 0; b < c.numBands(); ++b)
+            if (c.bandHz(b) >= 100.0 && std::abs(std::log2(c.bandHz(b) / 2500.0)) > 1.0) far = std::max(far, s.red[0][static_cast<size_t>(b)]);
+        char buf[200];
+        std::snprintf(buf, sizeof buf, "F2 resonance 2.5 kHz: cut at f0 L %.2f R %.2f dB (>= 7), worst band > 1 oct away %.3f dB (<= 0.3)",
+                      s.red[0][static_cast<size_t>(b0)], s.red[1][static_cast<size_t>(b0)], far);
+        check(s.red[0][static_cast<size_t>(b0)] >= 7.0 && s.red[1][static_cast<size_t>(b0)] >= 7.0 && far <= 0.3, buf);
+    }
+    // F3: resonance in R only. Link 0: L is left alone. Link 1: L follows R.
+    for (float link : { 0.0f, 1.0f })
+    {
+        Stereo in = makePink(static_cast<int>(8.0 * sr), -20.0, 63);
+        applyPeak(in.ch[1], sr, 1100.0, 8.0, 12.0);
+        Params p = cap; p.stereoLink = link;
+        Core c; c.prepare(sr, 512, 2);
+        const BandStats s = bandStats(c, in, p, 2.0);
+        const int b0 = nearestBand(c, 1100.0);
+        const double l = s.red[0][static_cast<size_t>(b0)], r = s.red[1][static_cast<size_t>(b0)];
+        char buf[200];
+        std::snprintf(buf, sizeof buf, "F3 right-only resonance, link %.0f: cut at f0 L %.2f R %.2f dB", static_cast<double>(link), l, r);
+        check(r >= 7.0 && (link == 0.0f ? l <= 0.3 : std::abs(l - r) <= 0.05), buf);
+    }
+    // F4: the threshold's sigma_E matches the measured std-dev of the excess on noise (200 Hz .. 10 kHz bands).
+    {
+        Core c; c.prepare(sr, 512, 2);
+        const BandStats s = bandStats(c, makePink(static_cast<int>(20.0 * sr), -20.0, 64), Params{}, 2.0);
+        double ratio = 0.0; int nb = 0;
+        for (int b = 0; b < c.numBands(); ++b)
+        {
+            if (c.bandHz(b) < 200.0 || c.bandHz(b) > 10000.0) continue;
+            const double m = s.e[static_cast<size_t>(b)] / s.n;
+            const double sd = std::sqrt(std::max(s.e2[static_cast<size_t>(b)] / s.n - m * m, 0.0));
+            ratio += sd / c.bandSigmaDb()[b]; ++nb;
+        }
+        ratio /= std::max(nb, 1);
+        char buf[200];
+        std::snprintf(buf, sizeof buf, "F4 noise: measured std(excess) / predicted sigma_E = %.3f over %d bands (0.8 .. 1.25)", ratio, nb);
+        check(ratio >= 0.8 && ratio <= 1.25, buf);
+    }
+}
+
 } // namespace
 
 int main()
@@ -384,6 +500,7 @@ int main()
     testBlockSizeIndependence();
     testReset();
     testMono();
+    testDetectorFunction();
     std::printf("[ResCore] --- %d passed, %d failed ---\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
