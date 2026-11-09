@@ -44,7 +44,9 @@
 //   mean %RT / S3's mean %RT in the SAME run <= 1.0 at block 128 and 64 (gated variants get their own CPU run at those two blocks).
 //
 // Usage: xleth_rs_quality_bench [--quick] [--no-cpu] [--cpu-only] [--out-dir DIR]
-//                               [--ref-subjects] [--wav label=path]...
+//                               [--ref-subjects] [--subjects ID,ID,...] [--wav label=path]...
+//   --subjects runs only the listed subjects (iteration speed). Each kept subject's G4 jitter companion and S3 (the
+//   G7 CPU reference) are kept automatically. Without it every registered subject runs (default output unchanged).
 //   --ref-subjects registers two reference subjects (R0 pass-through, R1 oracle = exact inverse of the planted bell on exactly the planted channels with the
 //   planted Q / level, built through Subject::factory(bell descriptor)) so the residual metrics and gates can be calibrated: R0 must FAIL G1/G3, R1 must PASS
 //   G1-G6. Off by default (default output unchanged).
@@ -193,6 +195,7 @@ struct Options
     bool noCpu  = false;
     bool cpuOnly = false;
     bool refSubjects = false;   // register the pass-through + oracle reference subjects (metric / gate calibration)
+    std::vector<std::string> subjects;   // --subjects A,B,C: run only these (plus their G4 jitter companions and S3, the G7 reference); empty = all
     std::string outBase = "bench_out";
     std::vector<std::pair<std::string, std::string>> wavs;   // label, path
 };
@@ -509,6 +512,25 @@ static const std::vector<Subject>& registry()
               s.gated = true; s.reference = true;
               s.factory = [](double sr, int, const Planted& b, bool neutral)
               { return std::make_unique<RefBellProcessor>(sr, b.f0, neutral ? 0.0 : -b.gainDb, b.q, b.left, b.right); }; }
+        }
+
+        // --subjects: keep only the listed ids, the G4 jitter companion of each kept subject, and S3 (the G7 CPU
+        // reference, so the ratio stays defined). Metric definitions and thresholds are untouched; this only skips work.
+        if (!g_opt.subjects.empty())
+        {
+            std::vector<std::string> keep = g_opt.subjects;
+            for (const auto& want : g_opt.subjects)
+            {
+                bool found = false;
+                for (const auto& s : r)
+                    if (s.id == want) { found = true; if (!s.jitterId.empty()) keep.push_back(s.jitterId); }
+                if (!found) std::printf("[RSBench] WARNING: --subjects: unknown subject id '%s' (ignored)\n", want.c_str());
+            }
+            keep.push_back("S3");
+            std::vector<Subject> f;
+            for (auto& s : r)
+                if (std::find(keep.begin(), keep.end(), s.id) != keep.end()) f.push_back(std::move(s));
+            r = std::move(f);
         }
         return r;
     }();
@@ -1643,6 +1665,13 @@ static bool parseArgs(int argc, char** argv)
         else if (a == "--cpu-only") g_opt.cpuOnly = true;
         else if (a == "--ref-subjects") g_opt.refSubjects = true;
         else if (a == "--out-dir" && i + 1 < argc) g_opt.outBase = argv[++i];
+        else if (a == "--subjects" && i + 1 < argc)
+        {
+            std::stringstream ss(argv[++i]);
+            for (std::string id; std::getline(ss, id, ',');)
+                if (!id.empty()) g_opt.subjects.push_back(id);
+            if (g_opt.subjects.empty()) { std::printf("[RSBench] --subjects expects a comma-separated id list\n"); return false; }
+        }
         else if (a == "--wav" && i + 1 < argc)
         {
             const std::string v = argv[++i];
@@ -2402,19 +2431,24 @@ int main(int argc, char** argv)
     std::ostringstream san;
     san << "### Sanity checks (automatic)\n\n";
     {
-        bool llZero = (measureLatency(primary[0], 48000.0).measured == 0 && measureLatency(primary[0], 44100.0).measured == 0);
+        // Looked up by id (not by position) so a --subjects run without S1..S4 does not index past the end.
+        auto findPrimary = [&](const char* id) -> const Subject* { for (const auto& s : primary) if (s.id == id) return &s; return nullptr; };
+        const Subject* s1 = findPrimary("S1");
+        bool llZero = s1 && (measureLatency(*s1, 48000.0).measured == 0 && measureLatency(*s1, 44100.0).measured == 0);
         bool hqEq = true;
-        for (size_t i = 1; i < primary.size(); ++i)
+        for (const auto& ps : primary)
             for (double sr : rates)
             {
-                const auto L = measureLatency(primary[i], sr);
+                if (ps.id == "S1") continue;   // the zero-latency subject is checked by llZero
+                const auto L = measureLatency(ps, sr);
                 if (L.measured != L.reported || L.measured <= 0) hqEq = false;
             }
         san << "- measured latency == reported for every subject/rate: **" << (latencyAllOk ? "PASS" : "FAIL") << "**\n";
-        san << "- S1 measured latency == 0 at both rates: **" << (llZero ? "PASS" : "FAIL") << "**\n";
+        san << "- S1 measured latency == 0 at both rates: **" << (s1 ? (llZero ? "PASS" : "FAIL") : "n/a (S1 not run)") << "**\n";
         san << "- S2-S5 measured == reported and > 0: **" << (hqEq ? "PASS" : "FAIL") << "**\n";
         bool rem = true;
-        for (int i = 1; i <= 3; ++i) if (!(r2500[primary[static_cast<size_t>(i)].id].removed > 0.0)) rem = false;
+        for (const char* id : { "S2", "S3", "S4" })
+            if (findPrimary(id) && !(r2500[id].removed > 0.0)) rem = false;
         san << "- removed_dB > 0 at the planted 2500 Hz resonance for S2-S4: **" << (rem ? "PASS" : "FAIL") << "** (";
         for (const auto& s : primary) san << s.id << "=" << num(r2500[s.id].removed, 2) << (s.id == "S5" ? "" : ", ");
         san << ")\n";
@@ -2471,7 +2505,7 @@ int main(int argc, char** argv)
         san << "- non-finite values that reached a table: **" << g_nonFinite << "**\n";
         san << "- tool warnings: **" << g_warnings << "**\n\n";
         logf("sanity: latency %s | S1=0 %s | S2-S5 %s | removed>0 S2-S4 %s | nonfinite %d | warnings %d",
-             latencyAllOk ? "ok" : "FAIL", llZero ? "ok" : "FAIL", hqEq ? "ok" : "FAIL", rem ? "ok" : "FAIL", g_nonFinite, g_warnings);
+             latencyAllOk ? "ok" : "FAIL", s1 ? (llZero ? "ok" : "FAIL") : "n/a", hqEq ? "ok" : "FAIL", rem ? "ok" : "FAIL", g_nonFinite, g_warnings);
     }
 
     // ---------------------------------------------------------------- write outputs
