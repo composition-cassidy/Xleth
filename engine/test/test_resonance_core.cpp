@@ -11,6 +11,9 @@
 //                   active (default params, pink noise + a planted resonance)
 //   T7 reset        reset() mid-stream == a freshly prepared instance
 //   T8 mono         one channel processed, extra channels untouched
+//   T9 hop phase    setHopPhaseOffset (prepare-time, default 0): latency stays N, depth-0 identity at every offset, the first
+//                   frame completes after hop - offset samples, offsets are taken modulo the hop (0 / hop / negative are
+//                   bit-identical to the default), reset() == fresh, zero allocations, the detector still cuts a resonance
 //   F1-F4 detector  (stage B) pink noise not cut at the most sensitive setting; a +12 dB / Q8 resonance is cut
 //                   by >= 7 dB at f0 and nothing an octave away; right-only resonance leaves L alone at link 0 and
 //                   is mirrored at link 1; the threshold's predicted sigma_E matches the measured std on noise
@@ -394,6 +397,9 @@ void testMono()
     check(d0.rmsDb <= -120.0 && untouched, buf);
 }
 
+// T9: hop phase offset. Prepare-time option, default 0 = the historical behaviour. See Core::setHopPhaseOffset.
+void testHopPhaseOffset();   // defined after bandStats / nearestBand (it uses them)
+
 // Run `in` in hop-sized blocks (one frame per block) and average the applied per-band reduction per channel after `skipSec`.
 struct BandStats { std::vector<double> red[2], maxRed[2], e, e2; long long n = 0; };
 BandStats bandStats(Core& c, const Stereo& in, const Params& p, double skipSec)
@@ -435,6 +441,139 @@ int nearestBand(const Core& c, double f)
     for (int b = 1; b < c.numBands(); ++b)
         if (std::abs(std::log2(c.bandHz(b) / f)) < std::abs(std::log2(c.bandHz(best) / f))) best = b;
     return best;
+}
+
+void testHopPhaseOffset()
+{
+    const double sr = 48000.0;
+    const int N = 1024, H = 256;
+    const Stereo in = makePink(static_cast<int>(3.0 * sr), -20.0, 91);
+    const std::vector<int> offsets = { 1, 32, 100, 224, 255 };
+
+    // T9a latency == N and depth-0 identity (COLA) for every offset, block 64 and the mixed schedule.
+    {
+        bool latOk = true;
+        double worstRms = -300.0, worstMax = 0.0;
+        for (int off : offsets)
+            for (const std::vector<int>& sched : { std::vector<int>{ 64 }, std::vector<int>{ 1, 37, 128, 255, 511, 1024, 37 } })
+            {
+                Core c; c.setHopPhaseOffset(off); c.prepare(sr, 1024, 2);
+                latOk = latOk && c.currentLatency() == N && c.hopPhaseOffset() == off && c.hopSize() == H;
+                const Diff d = alignedDiff(in, render(c, in, sched, depth0()), c.currentLatency());
+                worstRms = std::max(worstRms, d.rmsDb); worstMax = std::max(worstMax, d.maxAbs);
+            }
+        char buf[200];
+        std::snprintf(buf, sizeof buf, "T9a hop offsets {1,32,100,224,255}: latency == N (%d) and depth-0 identity: worst rms %.1f dBFS, worst max |diff| %.2e", N, worstRms, worstMax);
+        check(latOk && worstRms <= -120.0 && worstMax <= kMaxAbsAt120, buf);
+    }
+    // T9b a unit impulse still comes out at exactly +N with unit height.
+    for (int off : { 32, 224 })
+    {
+        const int at = 3001, n = 16384;
+        Stereo imp; imp.resize(n);
+        imp.ch[0][at] = 1.0f; imp.ch[1][at] = 1.0f;
+        Core c; c.setHopPhaseOffset(off); c.prepare(sr, 512, 2);
+        const Stereo out = render(c, imp, { 512 }, depth0());
+        int peakIdx = -1; float peak = 0.0f; double rest = 0.0;
+        for (int i = 0; i < n; ++i) { const float v = std::abs(out.ch[0][static_cast<size_t>(i)]); if (v > peak) { peak = v; peakIdx = i; } }
+        for (int i = 0; i < n; ++i) if (i != peakIdx) rest = std::max(rest, static_cast<double>(std::abs(out.ch[0][static_cast<size_t>(i)])));
+        char buf[200];
+        std::snprintf(buf, sizeof buf, "T9b impulse, offset %d: peak at +%d (expect %d), height %.7f, max elsewhere %.2e", off, peakIdx - at, c.currentLatency(), static_cast<double>(peak), rest);
+        check(peakIdx - at == c.currentLatency() && std::abs(peak - 1.0f) < 1.0e-5f && rest < kMaxAbsAt120, buf);
+    }
+    // T9c the first frame completes after hop - offset input samples, the next one hop later.
+    {
+        bool ok = true;
+        std::string detail;
+        for (int off : { 1, 32, 100, 255 })
+        {
+            Core c; c.setHopPhaseOffset(off); c.prepare(sr, 512, 2);
+            std::vector<float> l(static_cast<size_t>(H), 0.0f), r(static_cast<size_t>(H), 0.0f);
+            float* p[2] = { l.data(), r.data() };
+            const Params prm;
+            c.process(p, 2, H - off - 1, prm);
+            const long long f0 = c.framesProcessed();
+            c.process(p, 2, 1, prm);
+            const long long f1 = c.framesProcessed();
+            c.process(p, 2, H - 1, prm);
+            const long long f2 = c.framesProcessed();
+            c.process(p, 2, 1, prm);
+            const long long f3 = c.framesProcessed();
+            ok = ok && f0 == 0 && f1 == 1 && f2 == 1 && f3 == 2;
+            detail += " " + std::to_string(off) + ":" + std::to_string(f0) + "/" + std::to_string(f1) + "/" + std::to_string(f2) + "/" + std::to_string(f3);
+        }
+        check(ok, "T9c first frame after hop - offset samples, next one hop later (frames at offset:before/at/+hop-1/+hop =" + detail + ")");
+    }
+    // T9d offsets are taken modulo the hop; 0 / hop / negative are the default, bit-identical (detector and gain computer active).
+    {
+        const Stereo sig = resonantPink(sr, 3.0, 2500.0, 92);
+        Params cap; cap.depth = 1.0f; cap.hardKnee = true;
+        Core def; def.prepare(sr, 512, 2);
+        const Stereo ref = render(def, sig, { 333 }, cap);
+        bool zeroSame = true;
+        for (int off : { 0, H, 2 * H, -H })
+        {
+            Core c; c.setHopPhaseOffset(off); c.prepare(sr, 512, 2);
+            zeroSame = zeroSame && c.hopPhaseOffset() == 0 && sameDiff(ref, render(c, sig, { 333 }, cap)).maxAbs == 0.0;
+        }
+        check(zeroSame, "T9d offsets 0 / hop / 2 hops / -hop are bit-identical to a core that never called setHopPhaseOffset");
+        Core a; a.setHopPhaseOffset(32); a.prepare(sr, 512, 2);
+        const Stereo r32 = render(a, sig, { 333 }, cap);
+        bool modSame = a.hopPhaseOffset() == 32;
+        for (int off : { 32 + H, 32 - H, 32 + 4 * H })
+        {
+            Core c; c.setHopPhaseOffset(off); c.prepare(sr, 512, 2);
+            modSame = modSame && c.hopPhaseOffset() == 32 && sameDiff(r32, render(c, sig, { 333 }, cap)).maxAbs == 0.0;
+        }
+        check(modSame, "T9d offset 32 == 32 + hop == 32 - hop == 32 + 4 hops (bit-identical)");
+        // block-size independence holds with an offset too.
+        Core b; b.setHopPhaseOffset(100); b.prepare(sr, 512, 2);
+        Core b2; b2.setHopPhaseOffset(100); b2.prepare(sr, 512, 2);
+        const Diff bd = sameDiff(render(b, sig, { 64 }, cap), render(b2, sig, { 1, 37, 128, 255, 511, 1024, 37 }, cap));
+        char buf[160];
+        std::snprintf(buf, sizeof buf, "T9d block-size independence with offset 100 (64 vs mixed): rms %.1f dBFS, max |diff| %.2e", bd.rmsDb, bd.maxAbs);
+        check(bd.rmsDb <= -120.0 && bd.maxAbs <= kMaxAbsAt120, buf);
+    }
+    // T9e reset() == a freshly prepared instance, with an offset.
+    {
+        const Stereo a = resonantPink(sr, 2.0, 1100.0, 93), b = resonantPink(sr, 2.0, 3700.0, 94);
+        Params p; p.depth = 1.0f; p.hardKnee = true;
+        Core c; c.setHopPhaseOffset(96); c.prepare(sr, 512, 2);
+        (void) render(c, a, { 512 }, p);
+        c.reset();
+        const Stereo afterReset = render(c, b, { 333 }, p);
+        Core fresh; fresh.setHopPhaseOffset(96); fresh.prepare(sr, 512, 2);
+        check(sameDiff(afterReset, render(fresh, b, { 333 }, p)).maxAbs == 0.0, "T9e reset() == fresh instance with offset 96 (bit-identical)");
+    }
+    // T9f zero operator new in process() with an offset: static params, swept params, cold pass.
+    {
+        Stereo sig = makePink(static_cast<int>(4.0 * sr), -20.0, 95);
+        applyPeak(sig.ch[0], sr, 2500.0, 8.0, 12.0);
+        applyPeak(sig.ch[1], sr, 2500.0, 8.0, 12.0);
+        long long total = 0;
+        for (int mode = 0; mode < 3; ++mode)
+        {
+            Core c; c.setHopPhaseOffset(96); c.prepare(sr, 1024, 2);
+            total += countAllocs(c, sig, 64, mode == 2 ? 0 : 200, 400, mode >= 1, mode == 2);
+        }
+        check(total == 0, "T9f zero operator new in process() with offset 96 (static / swept / cold, block 64): count " + std::to_string(total));
+    }
+    // T9g the detector works the same: a +12 dB / Q8 resonance at 2.5 kHz is cut by >= 7 dB at f0, within 1 dB of the offset-0 cut, nothing an octave away.
+    {
+        Params cap; cap.depth = 1.0f; cap.hardKnee = true;
+        const Stereo sig = resonantPink(sr, 8.0, 2500.0, 62);
+        Core c0; c0.prepare(sr, 512, 2);
+        Core c1; c1.setHopPhaseOffset(100); c1.prepare(sr, 512, 2);
+        const BandStats s0 = bandStats(c0, sig, cap, 2.0), s1 = bandStats(c1, sig, cap, 2.0);
+        const int b0 = nearestBand(c0, 2500.0);
+        double far = 0.0;
+        for (int b = 0; b < c1.numBands(); ++b)
+            if (c1.bandHz(b) >= 100.0 && std::abs(std::log2(c1.bandHz(b) / 2500.0)) > 1.0) far = std::max(far, s1.red[0][static_cast<size_t>(b)]);
+        const double r0 = s0.red[0][static_cast<size_t>(b0)], r1 = s1.red[0][static_cast<size_t>(b0)];
+        char buf[200];
+        std::snprintf(buf, sizeof buf, "T9g resonance 2.5 kHz with offset 100: cut at f0 %.2f dB (offset 0: %.2f; >= 7 and within 1 dB), worst band > 1 oct away %.3f dB (<= 0.3)", r1, r0, far);
+        check(r1 >= 7.0 && std::abs(r1 - r0) <= 1.0 && far <= 0.3, buf);
+    }
 }
 
 // Functional checks of the detector / gain computer (stage B). Not the bench gates; coarse guards that the design
@@ -631,6 +770,7 @@ int main()
     testBlockSizeIndependence();
     testReset();
     testMono();
+    testHopPhaseOffset();
     testDetectorFunction();
     testDynamics();
     std::printf("[ResCore] --- %d passed, %d failed ---\n", g_pass, g_fail);

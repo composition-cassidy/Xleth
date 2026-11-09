@@ -42,8 +42,8 @@
 // Realtime contract: prepare() / release() allocate and run on a non-audio thread.
 // process() and reset() never allocate, lock or log.
 //
-// Threading: a Core is NOT thread-safe and owns no thread. One instance per audio chain; prepare(), release(), setFrameTier(), setDetectorTimeConstantMs()
-// and setFastTimeConstantMs() are called on a non-audio thread while the instance is not processing (the setters are structural and take effect at the next
+// Threading: a Core is NOT thread-safe and owns no thread. One instance per audio chain; prepare(), release(), setFrameTier(), setDetectorTimeConstantMs(),
+// setFastTimeConstantMs() and setHopPhaseOffset() are called on a non-audio thread while the instance is not processing (the setters are structural and take effect at the next
 // prepare()). process(), reset() and the introspection accessors belong to the audio (processing) thread. Params is passed by value to every process() call and may
 // change freely between calls (tests T4 / T6 run with parameters swept every block, without allocation).
 
@@ -113,6 +113,13 @@ public:
     // Latency in samples for a given rate and tier (constant; independent of every Params field).
     static int latencyFor(double sampleRate, FrameTier tier = FrameTier::Normal) noexcept { return fftSizeFor(sampleRate, tier); }
     int currentLatency() const noexcept { return fftSize_; }
+
+    // Hop phase offset (structural: set before prepare(); default 0 = the historical behaviour, bit-identical). Shifts the initial frame grid by `samples` (any integer, taken modulo the hop):
+    // the hop counter starts that many samples into a hop, so the first frame completes after hop - offset input samples and then every hop. The stream behaves as if it had been preceded by
+    // `offset` zero samples: latency stays exactly N, steady-state COLA and every detector time constant are unchanged. Use: a thread that runs n instances back to back gives instance i the
+    // offset i x hop / n, so their hops (all of the FFT / detector / gain work) complete in different blocks instead of all in the same one (ResonanceCore.md, "Multi-instance bursts").
+    void setHopPhaseOffset(int samples) noexcept { hopPhaseOffset_ = samples; }
+    int hopPhaseOffset() const noexcept { return hopOffset_; }   // the applied offset, in [0, hop), valid after prepare()
 
     // In place. Channels [0, min(numChannels, prepared channels)) are processed; any others are untouched.
     // numSamples may be any value >= 0 (it is NOT limited to the prepared maxBlockSize).
@@ -229,6 +236,8 @@ private:
     int slowPeriod_ = 4, fastPeriod_ = 2;   // baseline refresh periods in frames
     int fftSize_ = 0, hop_ = 0, numChannels_ = 0;
     int hopFill_ = 0;
+    int hopPhaseOffset_ = 0;   // as set by setHopPhaseOffset()
+    int hopOffset_ = 0;        // applied at prepare(): hopPhaseOffset_ modulo the hop; reset() starts the hop counter here
     long long frames_ = 0;
 
     std::unique_ptr<juce::dsp::FFT> fft_;

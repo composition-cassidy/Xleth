@@ -23,7 +23,7 @@ for arbitrary program material.
 4. G1 resolution ceiling, and what to tell users
 5. Real-time rules: allocation and threading
 6. Running the bench against the core
-7. Measured margins
+7. Measured margins (7.1 single-seed robustness, 7.2 D1 vs the bench, 7.3 worst-case CPU, 7.4 seed protocol and tier study, 7.5 multi-instance bursts)
 
 ## 1. Architecture
 
@@ -38,6 +38,11 @@ for arbitrary program material.
 - **Latency** is exactly N samples, for every parameter value and every block size. Output is bit-identical across
   block schedules (any `numSamples >= 0` is accepted; frames are produced as the hop fills).
 - **Transform:** `juce::dsp::FFT` real, forward, per-bin gain, inverse. One FFT pair per channel per hop.
+- **Hop phase offset** (`setHopPhaseOffset()`, before `prepare()`, default 0): shifts the initial frame grid by `offset` samples (modulo the hop). The hop
+  counter starts that far into a hop, so the first frame completes after `hop - offset` input samples and then every hop; the stream behaves as if it had been
+  preceded by `offset` zero samples. Latency stays exactly N, steady-state COLA and every time constant are unchanged, and 0 / hop / any multiple of the hop
+  is bit-identical to a core that never called it. It exists for one reason: n instances run back to back in one thread complete all of a hop's FFT / detector /
+  gain work in the same block unless their phases differ; give instance i the offset `i x hop / n` (section 7.5).
 
 ### 1.2 Band grid
 
@@ -141,6 +146,7 @@ setting; the musical-noise gate G4 is graded on it).
 | `setFrameTier()` | Normal | tier | N = 512 / 1024 / 2048 (window 10.7 / 21.3 / 42.7 ms at <= 50 kHz); latency = N. Nothing is retuned per tier |
 | `setDetectorTimeConstantMs()` | 200 | ms | slow estimate |
 | `setFastTimeConstantMs()` | 40 | ms | fast estimate; 0 disables the fast path (slow only) |
+| `setHopPhaseOffset()` | 0 | samples | initial hop phase, modulo the hop; latency stays N; 0 = historical behaviour (bit-identical). Use `i x hop / n` for instance i of n in one thread (7.5) |
 
 ### 2.3 Constants (compile time)
 
@@ -234,7 +240,7 @@ visible, and the verdict reads `PASS (1 waiver)` when everything else passes. No
 - **`numSamples` is not limited to the prepared `maxBlockSize`;** the core consumes any block length by filling hops.
   `maxBlockSize` is accepted for interface symmetry and not used for sizing.
 - **Threading.** A `Core` is **not thread-safe** and owns **no thread**. One instance per audio chain. `prepare()`,
-  `release()` and the structural setters (`setFrameTier`, `setDetectorTimeConstantMs`, `setFastTimeConstantMs`) belong to a
+  `release()` and the structural setters (`setFrameTier`, `setDetectorTimeConstantMs`, `setFastTimeConstantMs`, `setHopPhaseOffset`) belong to a
   non-audio thread and must not run concurrently with `process()` (they take effect at the next `prepare()`). `process()`,
   `reset()` and the introspection accessors (`bandLevelDb`, `bandReductionDb`, `framesProcessed`, ...) belong to the
   processing thread; the accessors return pointers into state that the next `process()` rewrites.
@@ -276,7 +282,9 @@ build\engine\Release\xleth_rs_quality_bench.exe --subjects C1c --no-cpu --out-di
 | `--seed N` | shift the noise seeds of every generated signal (default 0 = the original seeds, output unchanged); no gate or metric reads it |
 | `--wav label=path` | also run a real file through the default subjects and the gated capability variants: depth-0 null and the real-material proxy table (mean / p95 cut, flicker, fraction of frames with a band cut > 6 dB; informational) |
 | `--core-tau MS` / `--core-fast MS` | study runs: slow / fast time constant of the core subjects |
+| `--seedset default\|dev\|heldout` | grade every gate once per seed of the set (default = seed 0, dev = 1..6, heldout = 101..106) and write the per-gate / per-cell seeds-passing, worst margin, median value and the **robust verdict** (a gate passes only if it passes on every seed; the G1 waiver applies per seed). The single-seed verdict is unchanged. **Tuning work uses default + dev only; heldout is reserved for the final confirmation by the person grading.** Incompatible with `--seed` (section 7.4) |
 | `--cpu-worst` | worst-case per-block CPU of C1c and S3c at blocks 64 / 128 on pink noise with a resonance toggling every 2 s; classifies C1c blocks (no frame / frame / forced baseline refresh) |
+| `--cpu-burst` | 8 stereo instances (`--burst-instances`) of C1c-N and S3c back to back per block in one thread, aligned vs staggered hop phases (`--burst-stagger preroll\|core`, `--burst-seconds`); section 7.5 |
 | `--d1-reconcile` | the core's applied cut (`bandReductionDb`) next to the bench's -r_off(T) on the 9 T1 signals |
 
 **Gates** (fixed thresholds, constants in the tool; never tune them per subject): G1 / G2 residual and outside deviation at 12
@@ -381,3 +389,79 @@ of a hop lands in the block that completes it**. A forced full baseline refresh 
 mean frame cost) are **ordinary frame blocks at random times** (not near a toggle), S3c shows the same, and the same C1c run gave a 243 us maximum on
 a repetition of the measurement and 339 us on the next: that is the scheduling and cache noise of a desktop measured with a wall clock, not a
 property of the algorithm. The bench cannot separate the two further without an isolated core.
+
+### 7.4 Seed protocol and tier study (`--seedset`)
+
+A single noise realisation can flatter a design that was tuned on it (7.1: the core was tuned on the default seed and fails G1 at 150 Hz and G8a at 500 Hz on most others).
+`--seedset` grades **every** gate once per seed of a set and reports, per gate and per cell, the seeds passing, the worst margin (value against the unchanged limit, positive =
+headroom) and the median value over the seeds. A gate counts as passed in the **robust verdict** only if it passes on every seed of the set; the named G1 waiver at 100 Hz applies per seed
+exactly as in the single-seed verdict (it is used only on the seeds where that cell actually fails). No threshold and no metric definition changed; the single-seed verdict and the default
+seed's output are bit-identical to before (a default run was compared file by file with the previous build).
+
+| set | seeds | use |
+|---|---|---|
+| `default` | 0 (the original signals) | the historical single-seed run |
+| `dev` | 1 .. 6 | tuning and every study |
+| `heldout` | 101 .. 106 | **reserved**: implemented, not run during tuning; run only for the final confirmation by the person grading |
+
+**Tuning work uses default + dev only.** No held-out result exists in this document or in any tuning note.
+
+Tier study, dev seeds 1..6, subjects C1c-F (N 512), C1c-N (1024), C1c-H (2048), S3c (RS HQ Normal, capability) and the calibration subjects, CPU run included (G7). Robust verdict:
+
+| subject | seeds with a non-FAIL single-seed verdict | robust verdict | gates not passed on every seed (seeds passing) |
+|---|---:|---|---|
+| C1c-F | 1/6 | FAIL | G3 (5/6), G8a (1/6), G9a (4/6) |
+| C1c-N | 1/6 | FAIL | G1 (1/6, waiver applied), G8a (1/6) |
+| C1c-H | 1/6 | FAIL | G8a (1/6) |
+| S3c | 0/6 | FAIL | G1, G2, G1q, G2q, G2l, G3, G7, G9a, G9b (all 0/6) |
+| R0 (pass-through) | 0/6 | FAIL (as designed) | G1, G1q, G1l, G3, G8a, G8b |
+| R1 (oracle) | 6/6 | PASS (as designed) | none |
+
+The cells the study asks about (seeds passing of 6, worst margin, median value over the seeds; dB except G8a in ms):
+
+| tier | G1 150 Hz (limit +2.07) | G1 220 Hz (limit +2.05) | G8a 500 Hz, D 300 / D 1000 (limit 100 ms) | G9a (limit 1.0 dB) | G5 broadband (limit +1.0) | G4 std (limit 0.6) | G3 |
+|---|---|---|---|---|---|---|---|
+| C1c-F | 6/6, worst +0.79 (margin +1.28), median +0.64 | 6/6, +1.27 (+0.78), +1.09 | 3/6 + 3/6, worst 109 / 144 ms, median 100 / 97 | **4/6**, worst 1.067 (500 Hz, D 1000; margin -0.07), median 0.94 | 6/6, worst -2.03 (margin +3.03), median -2.11 | 6/6, 0.246 (median 0.242) | **5/6**, L 100 Hz in-window -1.013 vs -1.0 |
+| C1c-N | **1/6**, worst +2.270 (margin -0.20), median +2.23 | 6/6, +1.05 (+1.00), +0.98 | 3/6 + 3/6, worst 112 / 144 ms, median 100 / 97 | 6/6, worst 0.944 (2500 Hz, D 300; margin +0.056), median 0.87 | 6/6, -1.54 (+2.54), -1.58 | 6/6, 0.162 (0.154) | 6/6 |
+| C1c-H | 6/6, +1.90 (+0.18), +1.78 | 6/6, +0.83 (+1.22), +0.72 | 3/6 + 3/6, worst 147 / 141 ms, median 101 / 99 | 6/6, worst 0.880 (margin +0.12), median 0.84 | 6/6, -0.59 (+1.59), -0.66 | 6/6, 0.155 (0.152) | 6/6 |
+| S3c | 0/6, -7.19 (over-suppresses), median -7.10 | 0/6, -4.61, -4.50 | 6/6, 0 ms | 0/6, worst 3.05, median 2.53 | 6/6, +0.11 (+0.89), +0.03 | 6/6, 0.599 (0.593) | 0/6 |
+
+Reading it: **no tier passes every gate on every seed.** The 500 Hz onset (G8a) fails on 5 of 6 seeds at every tier by a similar amount (worst 141 - 147 ms; each tier passes the D = 300 and the D = 1000 cell on 3 of 6 seeds): the 62 Hz-wide bell at 500 Hz is
+narrower than one analysis bin at all three frame sizes, so the onset time depends on the noise (7.1). The tier decides the rest. **High** passes everything else on every seed (G1 under the 100 Hz waiver; its 150 Hz margin is thin, +0.18 dB, and
+G9a +0.12 dB). **Normal** adds G1 at 150 Hz (fails on 5 of 6 seeds, worst +0.20 dB over the limit; 220 Hz passes everywhere); its G9a margin is +0.056 dB. **Fast** passes G1 on every seed but loses G9a on 2 of 6 seeds (500 Hz / D 1000, by up to 0.067 dB)
+and G3 on 1 of 6 (the untouched left channel is over-suppressed at 100 Hz, -1.013 dB against -1.0). Every other gate passes on every seed at every tier (G2, G1q / G2q, G1l / G2l, G4, G5, G6, G7, G8b, G9b). S3c fails G1 / G2 / G3 on every seed (it over-suppresses), G9 and G7
+(cost ratio against the default HQ Normal effect S3: median 1.008, worst 1.032); the C1c tiers pass G7 on every seed (worst ratio 0.88 / 0.82 / 0.86 for F / N / H at block 128). Everything here is deterministic to the last digit except the G7 ratios (wall-clock).
+
+Check on the tool itself: a seed-set run grades several seeds in ONE process, so every cache must be keyed by the seed. The clean-reference Welch PSD cache was not (it graded seeds 2.. against seed 1's clean noise; found by comparing a seed-set seed with a standalone `--seed`, 2.136 against 2.236 dB at C1c-N / 150 Hz) and is now. With the fix a seed inside a
+seed set and the same standalone `--seed N` run give identical files (checked for N = 2 and 6, every non-CPU CSV of the six subjects).
+
+### 7.5 Multi-instance bursts (`--cpu-burst`)
+
+All the FFT, detector and gain work of a hop lands in the block that completes it (about 72 us, 5.4 % of a 64-sample budget, 7.3). With n instances in one thread whose hop boundaries coincide, one block
+carries n times that. Measured: 8 stereo C1c-N instances back to back per block, each on its own pink noise (-20 dBFS), 3 x 60 s per case (aligned and staggered repetitions interleaved, fresh instances each,
+first second untimed, copy-in excluded), 48 kHz, Release, 13th Gen i7-13700KF, one thread at normal priority; per-block TOTAL time of the 8 instances against the budget of one block
+(1333 us at 64, 2667 us at 128). Staggered = instance i is prepared with `setHopPhaseOffset(i x 256 / 8)` (S3c, which has no such option, is staggered by feeding the instance i x 256 / 8 samples first).
+132 954 blocks per case at 64, 66 477 at 128.
+
+| subject | block | hop phases | mean us | p99 us | p99.9 us | max us | max % of budget | blocks > 25 % budget |
+|---|---:|---|---:|---:|---:|---:|---:|---:|
+| C1c-N | 64 | aligned | 143.5 | 631.0 | 733.5 | 1806.6 | 135.5 | 33 240 (25 % of blocks) |
+| C1c-N | 64 | staggered | 143.6 | 188.6 | 256.4 | 483.5 | 36.3 | 5 |
+| C1c-N | 128 | aligned | 287.2 | 662.8 | 754.5 | 1026.5 | 38.5 | 601 |
+| C1c-N | 128 | staggered | 287.6 | 368.5 | 474.0 | 3350.3 | 125.6 | 4 |
+| S3c | 64 | aligned | 177.6 | 673.7 | 853.8 | 1443.9 | 108.3 | 33 240 |
+| S3c | 64 | staggered | 177.4 | 244.0 | 320.1 | 433.2 | 32.5 | 62 |
+| S3c | 128 | aligned | 336.0 | 720.3 | 1105.9 | 1466.9 | 55.0 | 2 107 |
+| S3c | 128 | staggered | 335.8 | 433.5 | 590.5 | 675.2 | 25.3 | 1 |
+
+What it shows. The mean is identical (10.8 % of the budget at either block size, 8 instances x 1.35 %): staggering moves work, it does not remove it. In the aligned case the hop block carries all 8 frames (read from `framesProcessed()`:
+25 % of the 64-sample blocks complete 8 hops, mean 573.5 us = 43 % of the budget; at 128 every second block, 50 %), the other blocks cost 0.2 us. Staggered, every block completes 2 hops at 64 samples and 4 at 128 (a hop is 4 blocks of 64 or 2 of 128),
+mean 144 / 288 us. The stable statistics are the percentiles: p99 falls 3.3x at 64 (631 -> 189 us) and 1.8x at 128 (663 -> 369 us), p99.9 2.9x / 1.6x. The **max** column is one scheduling outlier of the desktop, not a property of the algorithm: the per-repetition
+maxima of the same case range 970 - 1807 us (aligned) against 321 - 484 us (staggered) at 64, and the staggered 128 case has one 3350 us block while its quietest repetition peaks at 560 us (an earlier run with the bench-only pre-roll stagger gave 1892 / 1443 us at 64 and 6263 / 549 us
+at 128, aligned / staggered); it must not be read as the cost of a frame. What does not depend on the outliers: an aligned 8-instance burst costs about 574 us (43 % of a 64-sample budget) by construction, a staggered one about 144 us (11 %).
+
+Decision: aligned worst blocks are 3.3x (p99) above the staggered ones at 64 samples, so the offset was added (a prepare-time integer, default 0, no change to any output). Whoever hosts several instances in one thread should
+pass `i x hop / n` to `setHopPhaseOffset()` for instance i of n.
+
+Not addressed: the baseline-refresh slice is `band + frames_ % period` (`bandLevelsAndBaseline`) and every instance counts frames from 0, so two instances that complete a hop in the same block (2 at 64 samples) also refresh the same band slice in that block.
+A per-instance slice rotation would spread that too; it was not tried (staggered p99.9 is 256 us = 19 % of the 64-sample budget for 8 instances).

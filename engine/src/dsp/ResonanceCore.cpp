@@ -106,6 +106,7 @@ void Core::prepare(double sampleRate, int /*maxBlockSize*/, int numChannels)
     sampleRate_  = sampleRate > 0.0 ? sampleRate : 48000.0;
     fftSize_     = fftSizeFor(sampleRate_, tier_);
     hop_         = fftSize_ / 4;
+    hopOffset_   = ((hopPhaseOffset_ % hop_) + hop_) % hop_;
     {
         // Baseline refresh intervals are defined in ms and converted to whole frames (N = 1024 at 48 kHz: 4 and 2 frames).
         const double hopMs = 1000.0 * hop_ / sampleRate_;
@@ -452,6 +453,7 @@ void Core::release()
         ch.fastOwns.clear(); ch.fastOwns.shrink_to_fit();
     }
     fftSize_ = hop_ = numChannels_ = hopFill_ = numBands_ = 0;
+    hopOffset_ = 0;
     frames_ = 0;
 }
 
@@ -465,7 +467,7 @@ void Core::reset() noexcept
         std::fill(ch.binGain.begin(), ch.binGain.end(), 1.0f);
         std::fill(ch.fastOwns.begin(), ch.fastOwns.end(), static_cast<unsigned char>(0));
     }
-    hopFill_ = 0;
+    hopFill_ = hopOffset_;   // 0 unless setHopPhaseOffset() was used before prepare()
     frames_ = 0;
     emaAn_ = 1.0;
     emaAnF_ = 1.0;
