@@ -1477,6 +1477,47 @@ target_compile_definitions(xleth_pdc_real_signal_tap PRIVATE
 
 target_link_options(xleth_pdc_real_signal_tap PRIVATE /STACK:33554432)
 
+# ── xleth_rs_quality_bench ───────────────────────────────────────────────────
+# Offline quality bench for the resonance suppressors (RS LL / HQ x3, EQ
+# Spectral): latency, transparency, suppression accuracy, musical-noise jitter,
+# pre-echo, block-size dependence, CPU; writes CSV + summary.md + listening WAVs
+# under bench_out/. Tool-only (not a ctest); run from the repo root with a
+# Release build. Console prefix: [RSBench]. See docs/RESONANCE_SUPPRESSOR_AUDIT.md s4.
+add_executable(xleth_rs_quality_bench
+    tools/xleth_rs_quality_bench.cpp
+)
+
+target_link_libraries(xleth_rs_quality_bench PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_include_directories(xleth_rs_quality_bench PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/src
+)
+
+target_compile_definitions(xleth_rs_quality_bench PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+    NOMINMAX
+)
+
+target_link_options(xleth_rs_quality_bench PRIVATE /STACK:33554432)
+
 # ── test_sampler ─────────────────────────────────────────────────────────────
 # Self-verification for the Sampler DSP (pitch shift, ADSR, loop, polyphony).
 # No Timeline / MixEngine — tests the Sampler class directly with synthetic

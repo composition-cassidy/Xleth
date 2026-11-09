@@ -189,3 +189,6 @@ art/
 /xleth.txt
 
 ui/tests/baseline/.output/
+
+# RS quality bench output (xleth_rs_quality_bench): CSV/summary/WAV per run
+bench_out/
