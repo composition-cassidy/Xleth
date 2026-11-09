@@ -69,6 +69,14 @@
 //   --cpu-worst: per-block timing of C1c and S3c at blocks 64 / 128 on pink noise with a resonance toggling every 2 s (informational).
 //   --d1-reconcile: the core's applied cut (bandReductionDb) next to the bench's -r_off(T) on the 9 T1 signals (informational).
 //
+// Seed protocol (after the tier study; bench only, no threshold or metric definition touched, default output bit-identical):
+//   --seedset default|dev|heldout grades EVERY gate once per seed of the set (default = seed 0, dev = 1..6, heldout = 101..106) and writes, next to the per-seed run directories,
+//   seedset_gates.csv / seedset_cells.csv / seedset_verdict.csv / summary.md: per gate and per cell the seeds passing, the worst margin (value vs the unchanged limit) and the median value
+//   over the seeds. A gate counts as passed in the "robust verdict" only if it passes on EVERY seed of the set (the named G1 waiver applies per seed exactly as in the single-seed verdict).
+//   The single-seed verdict is unchanged. TUNING WORK USES DEFAULT + DEV ONLY; the heldout set (101..106) is RESERVED: it is run only for the final confirmation by the person grading.
+//   --seedset cannot be combined with --seed (the set chooses the seeds).
+//   --cpu-burst: N instances (default 8) of C1c-N and S3c processed back to back per block in one thread on pink noise, hop phases aligned vs staggered (informational, see runCpuBurst()).
+//
 // ResonanceCore (stage 1, src/dsp/ResonanceCore.*, wired into no effect) is graded through a bench-only adapter:
 //   C1 default Params (gated), C1c depth 1 / Hard (gated), C1s depth 1 / sensitivity 1 / Hard (G4 companion of both).
 //   Tables 10c / 10d read the core's detector (baseline lift by planted shape / f0; predicted vs measured noise sigma).
@@ -229,9 +237,15 @@ struct Options
     uint64_t seed = 0;                   // --seed N: shifts the noise seeds of every generated signal (0 = the original seeds; default output unchanged)
     bool cpuWorst = false;               // --cpu-worst: worst-case per-block CPU study (C1c / S3c, blocks 64 / 128, resonance toggling every 2 s)
     bool d1Reconcile = false;            // --d1-reconcile: the core's applied cut vs the bench's r_off(T) on the 9 T1 signals (C1c)
+    std::string seedset;                 // --seedset default|dev|heldout: grade every gate per seed of the set + robust verdict (empty = single run)
+    bool cpuBurst = false;               // --cpu-burst: multi-instance per-block burst study (C1c-N / S3c, aligned vs staggered hop phases)
+    int burstInstances = 8;              // --burst-instances N
+    double burstSeconds = 60.0;          // --burst-seconds S: signal length of one burst repetition (3 repetitions, aligned / staggered interleaved)
+    std::string burstStagger = "preroll";// --burst-stagger preroll|core: how hop phases are staggered (preroll = bench-only, feeds i*hop/N silent samples first)
 };
 
 static Options g_opt;
+static int g_burstCoreHopOffset = 0;   // --cpu-burst --burst-stagger core: hop phase offset (samples) the core factory applies to the instance being built (bench only; 0 = default)
 
 // --seed N: an offset added to every noise seed (signals A-E, T1, CPU, D bursts). 0 for the default seeds, so default output is bit-identical.
 // Neither a gate nor a metric reads it.
@@ -550,6 +564,7 @@ public:
         if (g_opt.coreFastMs >= 0.0f) core_.setFastTimeConstantMs(g_opt.coreFastMs);
         core_.setFrameTier(tier);
     }
+    void setHopPhaseOffset(int samples) { core_.setHopPhaseOffset(samples); }   // before prepareToPlay (--cpu-burst --burst-stagger core)
     const juce::String getName() const override { return "ResonanceCore"; }
     void prepareToPlay(double sr, int maxBlock) override
     {
@@ -590,6 +605,7 @@ static std::function<std::unique_ptr<juce::AudioProcessor>(double, int, const Pl
         xleth::dsp::resonance::Params q = p;
         if (neutral) q.depth = 0.0f;
         auto proc = std::make_unique<ResonanceCoreProcessor>(q, g_opt.coreTauMs, tier);
+        if (g_burstCoreHopOffset != 0) proc->setHopPhaseOffset(g_burstCoreHopOffset);   // only --cpu-burst --burst-stagger core sets it
         proc->prepareToPlay(sr, maxBlock);
         return std::unique_ptr<juce::AudioProcessor>(std::move(proc));
     };
@@ -1090,7 +1106,8 @@ static Residual residualVsClean(const std::vector<double>& pout, const std::vect
 static const std::vector<double>& cleanPsd(const std::string& tag, const Stereo& clean, int begin, int end, bool useL, bool useR)
 {
     static std::map<std::tuple<std::string, int, int, bool, bool>, std::vector<double>> cache;
-    const auto key = std::make_tuple(tag, begin, end, useL, useR);
+    // The seed shift is part of the key: the clean noise depends on it, and a --seedset run grades several seeds in one process (a key without it graded seeds 2.. against seed 1's clean PSD).
+    const auto key = std::make_tuple(tag + "#seed" + std::to_string(g_opt.seed), begin, end, useL, useR);
     auto it = cache.find(key);
     if (it == cache.end()) it = cache.emplace(key, welchPsd(clean, begin, end, useL, useR)).first;
     return it->second;
@@ -2711,6 +2728,596 @@ static int runD1Reconcile(const std::string& hash, const std::string& stamp)
 }
 
 // ============================================================================
+// Seed protocol (--seedset). Informational regrading of the SAME gates; nothing here changes a threshold or a metric definition.
+// ============================================================================
+//
+// A single noise realisation can flatter a design that was tuned on it. --seedset runs the complete graded run once per seed of a set and regrades every gate cell from the
+// evidence the run already produced (BenchData), with the unchanged predicates g1Cell / g2Cell / g3LCell / g8aCell / ... and the unchanged limits. Per gate and per cell it reports
+//   seeds passing | worst margin (value vs limit, over every seed) | median value over the seeds
+// and a ROBUST verdict: a gate is passed only if it passes on EVERY seed of the set (the named G1 waiver of knownLimits() applies per seed, exactly as in the single-seed verdict).
+// Margin = distance of the value to the nearest side of its limit in the cell's own unit (positive = headroom, negative = violation); the worst cell of a gate is the one with the smallest
+// margin relative to its limit span. Sets: default = {0}, dev = {1..6} (tuning), heldout = {101..106} (RESERVED for the final confirmation by the person grading; never run during tuning).
+
+struct SeedCapture
+{
+    BenchData bd;
+    std::vector<GateRow> rows;       // one per gated subject
+    std::vector<Subject> subjects;   // the same subjects, same order
+    std::string runDir;
+};
+
+static int runGradedRun(const std::string& cfg, const std::string& cpu, bool isRelease, const std::string& hash, const std::string& stamp, SeedCapture* cap);
+
+struct SeedCell
+{
+    std::string gate, name;
+    double value = 0.0, hi = 0.0, lo = 0.0;
+    bool hasLo = false;
+    bool binary = false;   // G6: pass / fail only, no margin
+    bool pass = true;      // the unchanged predicate
+    bool waived = false;   // a failing cell waived by name (G1 at 100 Hz): counts as passed in the verdict, excluded from the margin statistics
+    double margin() const { return binary ? 0.0 : std::min(hi - value, hasLo ? value - lo : 1.0e30); }
+    double relMargin() const { const double span = hasLo ? (hi - lo) : std::abs(hi); return margin() / (span > 0.0 ? span : 1.0); }
+};
+
+static constexpr double kNeverValue = 1.0e4;   // value stored for "never reached" (G8a t50) / an unusable r_off interval
+
+static SeedCell mkCell(const char* gate, const std::string& name, double value, double hi, bool pass, bool hasLo = false, double lo = 0.0)
+{
+    SeedCell c; c.gate = gate; c.name = name; c.value = value; c.hi = hi; c.pass = pass; c.hasLo = hasLo; c.lo = lo;
+    return c;
+}
+
+static const std::vector<std::string>& seedGateOrder()
+{
+    static const std::vector<std::string> g = { "G1", "G2", "G1q", "G2q", "G1l", "G2l", "G3", "G4", "G5", "G6", "G7", "G8a", "G8b", "G9a", "G9b" };
+    return g;
+}
+
+// Every graded cell of one subject for one seed, regraded with the unchanged predicates.
+static std::vector<SeedCell> gradeCells(const Subject& s, const BenchData& d, const GateRow& g)
+{
+    std::vector<SeedCell> out;
+    const auto rs = d.residual.find(s.id + "@48000");
+    const auto idt = d.ideal.find("48000");
+    if (rs != d.residual.end() && idt != d.ideal.end())
+        for (double f0 : d.scanF0)
+        {
+            const int k = static_cast<int>(f0);
+            const auto c = rs->second.find(k);
+            const auto id = idt->second.find(k);
+            if (c == rs->second.end() || id == idt->second.end()) continue;
+            const double ideal = id->second;
+            SeedCell a = mkCell("G1", inum(k) + " Hz", c->second.inWindow, kG1ResIdealFrac * ideal, g1Cell(c->second, ideal), true, kG1ResFloorDb);
+            for (const auto& kl : knownLimits())
+                if (std::string(kl.gate) == "G1" && kl.f0 == k && std::find(kl.subjects.begin(), kl.subjects.end(), s.id) != kl.subjects.end() && !a.pass) a.waived = true;
+            out.push_back(a);
+            out.push_back(mkCell("G2", inum(k) + " Hz", c->second.outsideDev, kG2OutsideDevDb, g2Cell(c->second)));
+        }
+    const auto sh = d.shape.find(s.id);
+    if (sh != d.shape.end())
+        for (const auto& c : shapeCases())
+        {
+            const auto it = sh->second.find(c.key);
+            if (it == sh->second.end()) continue;
+            const double ideal = idealBoostDb(48000.0, 2500.0, c.q, c.gainDb);
+            if (c.inQ)     { out.push_back(mkCell("G1q", c.key, it->second.inWindow, kG1ResIdealFrac * ideal, g1Cell(it->second, ideal), true, kG1ResFloorDb)); out.push_back(mkCell("G2q", c.key, it->second.outsideDev, kG2OutsideDevDb, g2Cell(it->second))); }
+            if (c.inLevel) { out.push_back(mkCell("G1l", c.key, it->second.inWindow, kG1ResIdealFrac * ideal, g1Cell(it->second, ideal), true, kG1ResFloorDb)); out.push_back(mkCell("G2l", c.key, it->second.outsideDev, kG2OutsideDevDb, g2Cell(it->second))); }
+        }
+    const auto e = d.right.find(s.id);
+    if (e != d.right.end() && e->second.valid && idt != d.ideal.end() && idt->second.find(2500) != idt->second.end())
+    {
+        const double ideal = idt->second.at(2500);
+        out.push_back(mkCell("G3", "R 2500 Hz in-window", e->second.r.inWindow, kG1ResIdealFrac * ideal, g1Cell(e->second.r, ideal), true, kG1ResFloorDb));
+        out.push_back(mkCell("G3", "R 2500 Hz outside-dev", e->second.r.outsideDev, kG2OutsideDevDb, g2Cell(e->second.r)));
+        const auto es = d.eScan.find(s.id);
+        if (es != d.eScan.end())
+            for (double f0 : d.scanF0)
+            {
+                const auto it = es->second.find(static_cast<int>(f0));
+                if (it == es->second.end()) continue;
+                out.push_back(mkCell("G3", "L " + inum(static_cast<int>(f0)) + " Hz in-window", it->second.l.inWindow, kG3LResAbsDb, std::abs(it->second.l.inWindow) <= kG3LResAbsDb, true, -kG3LResAbsDb));
+                out.push_back(mkCell("G3", "L " + inum(static_cast<int>(f0)) + " Hz outside-dev", it->second.l.outsideDev, kG2OutsideDevDb, it->second.l.outsideDev <= kG2OutsideDevDb));
+            }
+    }
+    const auto j = d.jitter.find(g.g4Id);
+    if (j != d.jitter.end())
+    {
+        out.push_back(mkCell("G4", "std all (" + g.g4Id + ")", j->second.stdAll, kG4StdAllDb, j->second.stdAll <= kG4StdAllDb));
+        out.push_back(mkCell("G4", "isolated all (" + g.g4Id + ")", j->second.isoAll, kG4IsoAll, j->second.isoAll <= kG4IsoAll));
+    }
+    const auto p = d.d2.find(s.id);
+    if (p != d.d2.end())
+    {
+        out.push_back(mkCell("G5", "broadband", p->second.outVsIn, kG5BroadbandDb, p->second.outVsIn <= kG5BroadbandDb));
+        out.push_back(mkCell("G5", "band", p->second.bandOutVsIn, kG5BandDb, p->second.bandOutVsIn <= kG5BandDb));
+    }
+    const auto l = d.latency.find(s.id);
+    if (l != d.latency.end() && l->second.valid)
+    {
+        SeedCell c = mkCell("G6", "latency", 0.0, 0.0, l->second.matchAll && l->second.blockInvariant);
+        c.binary = true;
+        out.push_back(c);
+    }
+    const auto cr = d.cpuRatio.find(s.id);
+    if (cr != d.cpuRatio.end())
+    {
+        out.push_back(mkCell("G7", "ratio @128", cr->second.second, kG7CpuRatio, cr->second.second <= kG7CpuRatio));
+        out.push_back(mkCell("G7", "ratio @64", cr->second.first, kG7CpuRatio, cr->second.first <= kG7CpuRatio));
+    }
+    const auto tv = d.tv.find(s.id);
+    if (tv != d.tv.end())
+        for (const auto& kv : tv->second)
+        {
+            const int f0 = kv.first.first, durMs = kv.first.second;
+            const TvMetrics& m = kv.second;
+            const std::string nm = inum(f0) + " Hz D " + inum(durMs);
+            if (g8Graded(durMs))
+            {
+                out.push_back(mkCell("G8a", nm, m.t50 < 0.0 ? kNeverValue : m.t50, kG8aT50Ms, g8aCell(m)));
+                out.push_back(mkCell("G8b", nm, m.leak, durMs == 300 ? kG8bLeak300 : kG8bLeak1000, g8bCell(m, durMs)));
+            }
+            out.push_back(mkCell("G9a", nm, m.roffOk ? std::abs(m.rOff500) : kNeverValue, kG9aRoff500Db, g9aCell(m)));
+            out.push_back(mkCell("G9b", nm, m.roffOk ? std::abs(m.rOff1000) : kNeverValue, kG9bRoff1000Db, g9bCell(m)));
+        }
+    (void)g;
+    return out;
+}
+
+// Does the cell-level regrade agree with the GateRow the run itself produced? (a mismatch means the regrade drifted from evaluateGates; printed as a warning)
+static bool gateAllPass(const std::vector<SeedCell>& cells, const std::string& gate, bool* anyCells = nullptr)
+{
+    bool any = false, all = true;
+    for (const auto& c : cells) if (c.gate == gate) { any = true; if (!c.pass && !c.waived) all = false; }
+    if (anyCells) *anyCells = any;
+    return any && all;
+}
+
+static std::string fmtVal(double v)
+{
+    if (v >= 1.0e3) return "never";
+    return (std::abs(v) < 0.01 && v != 0.0) ? num(v, 6) : num(v, 3);
+}
+static std::string fmtLimit(const SeedCell& c)
+{
+    if (c.binary) return "pass";
+    return c.hasLo ? "[" + num(c.lo, 2) + " .. " + fmtVal(c.hi) + "]" : "<= " + fmtVal(c.hi);
+}
+static double medianOf(std::vector<double> v)
+{
+    if (v.empty()) return 0.0;
+    std::sort(v.begin(), v.end());
+    const size_t n = v.size();
+    if (n & 1) return v[n / 2];
+    const double a = v[n / 2 - 1], b = v[n / 2];
+    return (a >= 1.0e3 || b >= 1.0e3) ? std::max(a, b) : 0.5 * (a + b);
+}
+
+// The Table CSV writer does not quote: a comma inside a cell would shift the columns.
+static Table csvSafe(Table t)
+{
+    for (auto& h : t.header) for (char& c : h) if (c == ',') c = ';';
+    for (auto& r : t.rows) for (auto& x : r) for (char& c : x) if (c == ',') c = ';';
+    return t;
+}
+
+static int runSeedSet(const std::string& cfg, const std::string& cpu, bool isRelease, const std::string& hash, const std::string& stamp)
+{
+    std::vector<uint64_t> seeds;
+    if (g_opt.seedset == "default") seeds = { 0 };
+    else if (g_opt.seedset == "dev") seeds = { 1, 2, 3, 4, 5, 6 };
+    else seeds = { 101, 102, 103, 104, 105, 106 };
+    const bool heldout = g_opt.seedset == "heldout";
+    std::string seedList;
+    for (auto s : seeds) seedList += (seedList.empty() ? "" : ", ") + std::to_string(s);
+    logf("--seedset %s: seeds {%s}; every gate is graded per seed, the ROBUST verdict needs every gate to pass on every seed", g_opt.seedset.c_str(), seedList.c_str());
+    if (heldout) warnf("--seedset heldout: the held-out seeds (101..106) are RESERVED for the final confirmation by the person grading; tuning work uses default + dev only");
+
+    const fs::path setDir = fs::path(g_opt.outBase) / (stamp + "_" + hash + "_seedset_" + g_opt.seedset + (g_opt.quick ? "_quick" : ""));
+    std::error_code ec;
+    fs::create_directories(setDir / "runs", ec);
+    if (ec) { logf("cannot create %s", setDir.string().c_str()); return 3; }
+    logf("seed-set directory : %s (per-seed run directories under runs/)", setDir.generic_string().c_str());
+
+    const std::string savedOut = g_opt.outBase;
+    g_opt.outBase = (setDir / "runs").string();
+    std::vector<SeedCapture> caps(seeds.size());
+    int rc = 0;
+    for (size_t i = 0; i < seeds.size(); ++i)
+    {
+        g_opt.seed = seeds[i];
+        logf("=== seed-set %s: seed %llu (%zu of %zu) ===", g_opt.seedset.c_str(), static_cast<unsigned long long>(seeds[i]), i + 1, seeds.size());
+        const int r = runGradedRun(cfg, cpu, isRelease, hash, stamp, &caps[i]);
+        if (r == 3) { g_opt.outBase = savedOut; g_opt.seed = 0; return r; }
+        rc |= r;
+    }
+    g_opt.outBase = savedOut;
+    g_opt.seed = 0;
+    if (caps.empty() || caps[0].subjects.empty()) { logf("no gated subjects were graded"); return 2; }
+
+    // ---- regrade per seed / subject ----
+    struct PerSeed { uint64_t seed; std::vector<SeedCell> cells; std::string verdict; bool overallWaived; };
+    struct PerSubject { Subject subj; bool reference; std::vector<PerSeed> seeds; };
+    std::vector<PerSubject> subs;
+    int drift = 0;
+    for (size_t si = 0; si < caps[0].subjects.size(); ++si)
+    {
+        PerSubject ps; ps.subj = caps[0].subjects[si]; ps.reference = ps.subj.reference;
+        for (size_t k = 0; k < caps.size(); ++k)
+        {
+            const GateRow& g = caps[k].rows[si];
+            PerSeed p; p.seed = seeds[k]; p.cells = gradeCells(caps[k].subjects[si], caps[k].bd, g); p.verdict = g.verdict(); p.overallWaived = g.overallWaived();
+            // The regrade must reproduce every gate flag of the run itself.
+            bool any = false;
+            const bool flags[] = { g.pass1w(), g.pass2(), g.pass1q(), g.pass2q(), g.pass1l(), g.pass2l(), g.g3, g.g4, g.g5, g.g6, !g.g7valid || g.g7, g.pass8a(), g.pass8b(), g.pass9a(), g.pass9b() };
+            for (size_t gi = 0; gi < seedGateOrder().size(); ++gi)
+            {
+                const bool mine = gateAllPass(p.cells, seedGateOrder()[gi], &any);
+                const bool theirs = flags[gi];
+                const bool g7na = seedGateOrder()[gi] == "G7" && !g.g7valid;
+                if (!g7na && mine != theirs) { ++drift; warnf("seed-set regrade drift: subject %s seed %llu gate %s: regrade %s, run %s", ps.subj.id.c_str(), static_cast<unsigned long long>(p.seed), seedGateOrder()[gi].c_str(), mine ? "pass" : "fail", theirs ? "pass" : "fail"); }
+            }
+            ps.seeds.push_back(std::move(p));
+        }
+        subs.push_back(std::move(ps));
+    }
+    if (drift == 0) logf("seed-set regrade reproduces every gate flag of every per-seed run (%zu subjects x %zu seeds x %zu gates)", subs.size(), seeds.size(), seedGateOrder().size());
+
+    // ---- aggregate ----
+    struct GateAgg
+    {
+        int seedsPass = 0, seedsPassRaw = 0;
+        bool present = false, g7na = false;
+        bool hasMargin = false;
+        double worstRel = 1.0e30;
+        SeedCell worstCell; uint64_t worstSeed = 0;
+        std::vector<double> tight;      // per seed: value of that seed's tightest (non-waived, non-binary) cell
+        int waivedSeeds = 0;
+        std::vector<std::pair<uint64_t, SeedCell>> waivedCells;
+    };
+    const size_t nSeeds = seeds.size();
+
+    Table tVerdict; tVerdict.title = "Seed set " + g_opt.seedset + " - robust verdict (every gate must pass on every seed)";
+    tVerdict.note = "Seeds: {" + seedList + "}. 'seeds passing' = seeds on which the single-seed verdict (named G1 waiver applied) is not FAIL. 'robust verdict' = PASS only if every gate passes on every seed; "
+                    "'waiver used' = seeds on which the named G1 waiver at 100 Hz was needed. Thresholds and metric definitions are exactly those of the single-seed run.";
+    tVerdict.header = { "subject", "label", "seeds passing", "robust verdict", "gates failing on at least one seed", "waiver used" };
+    Table tGates; tGates.title = "Seed set " + g_opt.seedset + " - per gate: seeds passing, worst margin, median value";
+    tGates.note = "'seeds passing (waived)' applies the named G1 waiver per seed like the verdict; 'seeds passing (raw)' does not. 'worst cell' = the cell with the smallest margin relative to its limit span over every seed "
+                  "(a waived failing cell is excluded here and listed under waived). margin = distance of the value to the nearest side of its limit in the cell's unit (negative = violated). "
+                  "'median value' = median over the seeds of the value of each seed's tightest cell (dB, except G4 isolated fraction, G7 ratio, G8a ms, G8b leak; G9 is |r_off| in dB). 'never' = the onset time was never reached.";
+    tGates.header = { "subject", "gate", "seeds passing (waived)", "seeds passing (raw)", "worst cell", "worst seed", "worst value", "limit", "worst margin", "median value", "robust" };
+    Table tCells; tCells.title = "Seed set " + g_opt.seedset + " - per cell";
+    tCells.note = "One row per graded cell (G1 / G2 per f0, shape cases, G3 R + L per f0, G4 / G5 values, G6, G7 ratios, G8 / G9 per (f0, D)). min / max / median over the seeds; 'worst margin' as in the gate table.";
+    tCells.header = { "subject", "gate", "cell", "seeds passing", "worst seed", "worst value", "limit", "worst margin", "median value", "min value", "max value", "waived on seeds" };
+    Table tSeeds; tSeeds.title = "Seed set " + g_opt.seedset + " - verdict per seed";
+    tSeeds.header = { "subject", "seed", "verdict", "failing gates", "run directory" };
+    Table tFocus; tFocus.title = "Seed set " + g_opt.seedset + " - focus cells (G1 150 / 220 Hz, G8a 500 Hz) and gates G4, G5, G9a";
+    tFocus.note = "The cells the tier study asks about. Same columns as the per-cell table; G4 / G5 / G9a rows are the gate level (tightest cell per seed).";
+    tFocus.header = { "subject", "item", "seeds passing", "worst seed", "worst value", "limit", "worst margin", "median value" };
+    std::vector<std::string> robustLines;
+
+    for (const auto& ps : subs)
+    {
+        std::map<std::string, GateAgg> agg;
+        for (const auto& gate : seedGateOrder())
+        {
+            GateAgg a;
+            for (const auto& p : ps.seeds)
+            {
+                bool any = false;
+                const bool pass = gateAllPass(p.cells, gate, &any);
+                a.present = a.present || any;
+                if (pass) ++a.seedsPass;
+                bool rawPass = any;
+                const SeedCell* tight = nullptr;
+                for (const auto& c : p.cells)
+                {
+                    if (c.gate != gate) continue;
+                    if (!c.pass) rawPass = false;
+                    if (c.waived) { ++a.waivedSeeds; a.waivedCells.emplace_back(p.seed, c); continue; }
+                    if (c.binary) continue;
+                    if (!tight || c.relMargin() < tight->relMargin()) tight = &c;
+                }
+                if (rawPass) ++a.seedsPassRaw;
+                if (tight)
+                {
+                    a.tight.push_back(tight->value);
+                    if (tight->relMargin() < a.worstRel) { a.worstRel = tight->relMargin(); a.worstCell = *tight; a.worstSeed = p.seed; a.hasMargin = true; }
+                }
+            }
+            if (gate == "G7" && !a.present) a.g7na = true;
+            agg[gate] = a;
+        }
+
+        std::string failing; bool robust = true; int waiverSeeds = 0;
+        for (const auto& gate : seedGateOrder())
+        {
+            const GateAgg& a = agg[gate];
+            if (a.g7na) continue;
+            if (static_cast<size_t>(a.seedsPass) != nSeeds || !a.present) { robust = false; failing += (failing.empty() ? "" : "; ") + gate + " (" + std::to_string(a.seedsPass) + "/" + std::to_string(nSeeds) + ")"; }
+        }
+        for (const auto& p : ps.seeds) { bool w = false; for (const auto& c : p.cells) if (c.waived) w = true; if (w) ++waiverSeeds; }
+        int seedsPassing = 0;
+        for (const auto& p : ps.seeds) if (p.overallWaived) ++seedsPassing;
+        const std::string robustStr = robust ? (waiverSeeds ? "PASS (G1 100 Hz waived on " + std::to_string(waiverSeeds) + "/" + std::to_string(nSeeds) + " seeds)" : "PASS") : "FAIL";
+        tVerdict.add({ ps.subj.id, ps.subj.label, cnt(seedsPassing, static_cast<int>(nSeeds)), robustStr, failing.empty() ? "none" : failing, waiverSeeds ? cnt(waiverSeeds, static_cast<int>(nSeeds)) : "none" });
+        robustLines.push_back(ps.subj.id + ": " + robustStr + (failing.empty() ? "" : " - failing: " + failing));
+
+        for (const auto& p : ps.seeds)
+        {
+            std::string f;
+            for (const auto& gate : seedGateOrder())
+            {
+                bool any = false;
+                if (!gateAllPass(p.cells, gate, &any) && !(gate == "G7" && !any)) f += (f.empty() ? "" : "; ") + gate;
+            }
+            tSeeds.add({ ps.subj.id, std::to_string(p.seed), p.verdict, f.empty() ? "none" : f, "runs/" + fs::path(caps[&p - ps.seeds.data()].runDir).filename().string() });
+        }
+
+        for (const auto& gate : seedGateOrder())
+        {
+            const GateAgg& a = agg[gate];
+            if (a.g7na) { tGates.add({ ps.subj.id, gate, "n/a", "n/a", "-", "-", "-", "-", "-", "-", "n/a (--no-cpu)" }); continue; }
+            const bool ok = a.present && static_cast<size_t>(a.seedsPass) == nSeeds;
+            std::vector<std::string> row = { ps.subj.id, gate, cnt(a.seedsPass, static_cast<int>(nSeeds)), cnt(a.seedsPassRaw, static_cast<int>(nSeeds)) };
+            if (a.hasMargin)
+            {
+                row.push_back(a.worstCell.name); row.push_back(std::to_string(a.worstSeed)); row.push_back(fmtVal(a.worstCell.value)); row.push_back(fmtLimit(a.worstCell));
+                row.push_back(num(a.worstCell.margin(), a.worstCell.hi < 0.01 ? 6 : 3)); row.push_back(fmtVal(medianOf(a.tight)));
+            }
+            else { for (int q = 0; q < 6; ++q) row.push_back(gate == "G6" ? "-" : "no data"); }
+            row.push_back(ok ? "PASS" : "FAIL");
+            tGates.add(row);
+            if (a.waivedSeeds > 0)
+            {
+                std::vector<double> allv;
+                for (const auto& p : ps.seeds) for (const auto& c : p.cells) if (c.gate == gate && c.waived) allv.push_back(c.value);
+                tGates.add({ ps.subj.id, gate + " (waived cell)", "-", "-", a.waivedCells.front().second.name + " WAIVED on " + cnt(a.waivedSeeds, static_cast<int>(nSeeds)) + " seeds", "-",
+                             fmtVal(*std::max_element(allv.begin(), allv.end())), fmtLimit(a.waivedCells.front().second), "-", fmtVal(medianOf(allv)), "named waiver" });
+            }
+        }
+
+        // per cell
+        std::vector<std::pair<std::string, std::string>> keys;   // (gate, cell name), first-seen order
+        for (const auto& gate : seedGateOrder())
+            for (const auto& c : ps.seeds.front().cells)
+                if (c.gate == gate) keys.emplace_back(gate, c.name);
+        for (const auto& key : keys)
+        {
+            int pass = 0, waivedN = 0; std::vector<double> vals; const SeedCell* worst = nullptr; uint64_t worstSeed = 0; SeedCell first;
+            bool have = false;
+            for (const auto& p : ps.seeds)
+                for (const auto& c : p.cells)
+                {
+                    if (c.gate != key.first || c.name != key.second) continue;
+                    if (!have) { first = c; have = true; }
+                    if (c.pass || c.waived) ++pass;
+                    if (c.waived) ++waivedN;
+                    vals.push_back(c.value);
+                    if (!c.binary && (!worst || c.margin() < worst->margin())) { worst = &c; worstSeed = p.seed; }
+                }
+            if (vals.empty()) continue;
+            const double mn = *std::min_element(vals.begin(), vals.end()), mx = *std::max_element(vals.begin(), vals.end());
+            std::vector<std::string> row = { ps.subj.id, key.first, key.second, cnt(pass, static_cast<int>(nSeeds)), worst ? std::to_string(worstSeed) : "-", worst ? fmtVal(worst->value) : "-",
+                                             fmtLimit(first), worst ? num(worst->margin(), worst->hi < 0.01 ? 6 : 3) : "-", first.binary ? "-" : fmtVal(medianOf(vals)),
+                                             first.binary ? "-" : fmtVal(mn), first.binary ? "-" : fmtVal(mx), waivedN ? cnt(waivedN, static_cast<int>(nSeeds)) : "none" };
+            tCells.add(row);
+            const bool focus = (key.first == "G1" && (key.second == "150 Hz" || key.second == "220 Hz")) || (key.first == "G8a" && key.second.rfind("500 Hz", 0) == 0);
+            if (focus) tFocus.add({ ps.subj.id, key.first + " " + key.second, row[3], row[4], row[5], row[6], row[7], row[8] });
+        }
+        for (const char* gate : { "G4", "G5", "G9a" })
+        {
+            const GateAgg& a = agg[gate];
+            if (!a.hasMargin) continue;
+            tFocus.add({ ps.subj.id, std::string(gate) + " (gate; tightest cell " + a.worstCell.name + ")", cnt(a.seedsPass, static_cast<int>(nSeeds)), std::to_string(a.worstSeed), fmtVal(a.worstCell.value),
+                         fmtLimit(a.worstCell), num(a.worstCell.margin(), a.worstCell.hi < 0.01 ? 6 : 3), fmtVal(medianOf(a.tight)) });
+        }
+    }
+
+    // ---- outputs ----
+    std::ofstream(setDir / "seedset_verdict.csv", std::ios::binary) << csvSafe(tVerdict).csv();
+    std::ofstream(setDir / "seedset_gates.csv", std::ios::binary) << csvSafe(tGates).csv();
+    std::ofstream(setDir / "seedset_cells.csv", std::ios::binary) << csvSafe(tCells).csv();
+    std::ofstream(setDir / "seedset_per_seed.csv", std::ios::binary) << csvSafe(tSeeds).csv();
+    std::ofstream(setDir / "seedset_focus.csv", std::ios::binary) << csvSafe(tFocus).csv();
+    // failing cells (fail on >= 1 seed) in the summary; the full per-cell table is the CSV
+    Table tFail; tFail.title = "Seed set " + g_opt.seedset + " - cells that fail on at least one seed";
+    tFail.header = tCells.header;
+    for (const auto& r : tCells.rows)
+    {
+        const std::string& pc = r[3];
+        const auto slash = pc.find('/');
+        if (slash != std::string::npos && pc.substr(0, slash) != pc.substr(slash + 1)) tFail.add(r);
+    }
+    std::ostringstream md;
+    md << "# RS bench - seed set `" << g_opt.seedset << "` (" << (g_opt.quick ? "QUICK" : "FULL") << ")\n\n";
+    md << "- Git: `" << hash << "` (working tree may be dirty)\n- Build: **" << cfg << "**" << (isRelease ? "" : "  **<-- NOT RELEASE**") << "\n- CPU: " << cpu << "\n";
+    md << "- Seeds: {" << seedList << "} (a seed N shifts every generated noise seed by N x 1000003; seed 0 = the original signals)\n";
+    md << "- **Seed protocol:** tuning work uses the `default` and `dev` (seeds 1..6) sets only. The `heldout` set (seeds 101..106) is RESERVED: it is run only for the final confirmation by the person grading, "
+          "and no held-out result is reported by tuning work.\n";
+    md << "- Robust verdict: a gate counts as passed only if it passes on EVERY seed of the set; the named G1 waiver at 100 Hz (C1c / C1c-N / C1c-H) applies per seed exactly as in the single-seed verdict. "
+          "Thresholds and metric definitions are unchanged.\n";
+    md << "- Regrade check: " << (drift == 0 ? "the per-cell regrade reproduces every gate flag of every per-seed run" : "**" + std::to_string(drift) + " regrade mismatches (see warnings)**") << "\n";
+    md << "- Per-seed full runs (CSV, summary.md, WAVs): `runs/`\n\n";
+    md << tVerdict.markdown() << tFocus.markdown() << tGates.markdown() << tFail.markdown() << tSeeds.markdown();
+    std::ofstream(setDir / "summary.md", std::ios::binary) << md.str();
+
+    logf("---- ROBUST VERDICT, seed set %s {%s} ----", g_opt.seedset.c_str(), seedList.c_str());
+    for (const auto& l : robustLines) logf("%s", l.c_str());
+    for (const auto& r : tFocus.rows)
+        logf("focus %-6s %-44s pass %-4s worst seed %-4s value %-8s limit %-14s margin %-9s median %s", r[0].c_str(), r[1].c_str(), r[2].c_str(), r[3].c_str(), r[4].c_str(), r[5].c_str(), r[6].c_str(), r[7].c_str());
+    logf("wrote seedset_*.csv and summary.md to %s", setDir.string().c_str());
+    logf("done. non-finite=%d warnings=%d", g_nonFinite, g_warnings);
+    return (rc == 0 && g_nonFinite == 0) ? 0 : 1;
+}
+
+// ============================================================================
+// Multi-instance CPU burst study (--cpu-burst). Informational: nothing here is a gate.
+// ============================================================================
+//
+// Question: all of a hop's FFT / detector / gain work lands in the block that completes the hop (about 72 us = 5.4 % of a 64-sample budget for one C1c). N instances whose hop boundaries
+// coincide put N times that into ONE block. The study processes N stereo instances back to back per block in one thread (each on its own pink noise, -20 dBFS, no resonance), timing the whole
+// per-block loop, with
+//   aligned    every instance starts at stream position 0, so every hop boundary falls in the same block;
+//   staggered  instance i is shifted by i x hop / N samples. 'preroll' (bench only) feeds the instance i x hop / N samples first (untimed), which moves its hop boundaries relative to the block grid;
+//              'core' prepares the core with its hopPhaseOffset (the same shift, inside the core).
+// Aligned and staggered repetitions are interleaved (fresh instances each) so slow drifts of the machine hit both equally. First 1 s of each repetition is untimed. Copy-in is excluded from the timing.
+// For the core the number of instances that completed a hop in each block is read from the core's introspection (framesProcessed) and tabulated.
+
+static constexpr int kBurstReps = 3;
+
+struct BurstRun
+{
+    std::vector<double> ns;
+    std::vector<int> framesInBlock;   // core only: instances that completed a hop in the block (-1 = not available)
+    std::vector<double> repMax;
+};
+
+static void burstOne(const Subject& s, const std::vector<Stereo>& sigs, double sr, int block, bool staggered, bool coreModeRequested, int hop, int reps, BurstRun& out)
+{
+    const bool coreMode = coreModeRequested && s.id.rfind("C1", 0) == 0;   // the offset exists on the core only; any other subject is staggered by pre-roll
+    const int n = static_cast<int>(sigs.size());
+    const int warm = static_cast<int>(sr);
+    juce::MidiBuffer midi;
+    std::vector<juce::AudioBuffer<float>> work;
+    for (int i = 0; i < n; ++i) work.emplace_back(2, block);
+    for (int rep = 0; rep < reps; ++rep)
+    {
+        std::vector<Fx> fx; fx.reserve(static_cast<size_t>(n));
+        std::vector<int> pos(static_cast<size_t>(n), 0);
+        for (int i = 0; i < n; ++i)
+        {
+            const int off = staggered ? (i * hop) / n : 0;
+            g_burstCoreHopOffset = (staggered && coreMode) ? off : 0;
+            fx.push_back(makeFx(s, sr, 2500.0, false, block));
+            g_burstCoreHopOffset = 0;
+            if (staggered && !coreMode && off > 0)
+            {
+                // pre-roll: consume `off` samples of the instance's own stream in chunks of at most `block`
+                for (int done = 0; done < off;)
+                {
+                    const int k = std::min(block, off - done);
+                    for (int c = 0; c < 2; ++c) std::memcpy(work[static_cast<size_t>(i)].getWritePointer(c), sigs[static_cast<size_t>(i)].ch[c].data() + done, sizeof(float) * static_cast<size_t>(k));
+                    juce::AudioBuffer<float> view(work[static_cast<size_t>(i)].getArrayOfWritePointers(), 2, k);
+                    fx.back().proc().processBlock(view, midi);
+                    done += k;
+                }
+                pos[static_cast<size_t>(i)] = off;
+            }
+        }
+        std::vector<const ResonanceCoreProcessor*> cores(static_cast<size_t>(n), nullptr);
+        for (int i = 0; i < n; ++i) cores[static_cast<size_t>(i)] = dynamic_cast<const ResonanceCoreProcessor*>(&fx[static_cast<size_t>(i)].proc());
+        std::vector<long long> lastFrames(static_cast<size_t>(n), 0);
+        for (int i = 0; i < n; ++i) if (cores[static_cast<size_t>(i)]) lastFrames[static_cast<size_t>(i)] = cores[static_cast<size_t>(i)]->core().framesProcessed();
+        double repMax = 0.0;
+        const int total = sigs[0].size();
+        for (int b = 0;; ++b)
+        {
+            const int base = b * block;
+            if (base + block + (staggered && !coreMode ? hop : 0) > total) break;
+            for (int i = 0; i < n; ++i)
+                for (int c = 0; c < 2; ++c)
+                    std::memcpy(work[static_cast<size_t>(i)].getWritePointer(c), sigs[static_cast<size_t>(i)].ch[c].data() + pos[static_cast<size_t>(i)] + base, sizeof(float) * static_cast<size_t>(block));
+            const auto t0 = std::chrono::steady_clock::now();
+            for (int i = 0; i < n; ++i) fx[static_cast<size_t>(i)].proc().processBlock(work[static_cast<size_t>(i)], midi);
+            const auto t1 = std::chrono::steady_clock::now();
+            int nf = -1;
+            if (cores[0])
+            {
+                nf = 0;
+                for (int i = 0; i < n; ++i)
+                {
+                    const long long fr = cores[static_cast<size_t>(i)]->core().framesProcessed();
+                    if (fr != lastFrames[static_cast<size_t>(i)]) { ++nf; lastFrames[static_cast<size_t>(i)] = fr; }
+                }
+            }
+            if (base >= warm)
+            {
+                const double v = static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count());
+                out.ns.push_back(v); out.framesInBlock.push_back(nf); repMax = std::max(repMax, v);
+            }
+        }
+        out.repMax.push_back(repMax);
+    }
+}
+
+static int runCpuBurst(const std::string& cfg, const std::string& cpu, bool isRelease, const std::string& hash, const std::string& stamp)
+{
+    const double sr = 48000.0;
+    const int N = g_opt.burstInstances;
+    const bool coreMode = g_opt.burstStagger == "core";
+    if (coreMode && g_opt.burstStagger == "core") logf("--burst-stagger core: C1c-N instances are prepared with Core::setHopPhaseOffset(i x hop / N); S3c (no such option) is staggered by pre-roll");
+    std::vector<Subject> subs;
+    for (const char* id : { "C1c-N", "S3c" })
+        for (const auto& s : capabilitySubjects()) if (s.id == id) subs.push_back(s);
+    if (subs.empty()) { logf("--cpu-burst: C1c-N / S3c are not registered (check --subjects)"); return 2; }
+    const fs::path dir = fs::path(g_opt.outBase) / (stamp + "_" + hash + "_cpuburst_" + g_opt.burstStagger);
+    std::error_code ec; fs::create_directories(dir, ec);
+    if (!isRelease) warnf("*** NOT A RELEASE BUILD - CPU numbers are meaningless ***");
+    const int hop = 256;   // Normal tier at 48 kHz for both C1c-N (N = 1024) and the RS HQ Normal effect
+    logf("--cpu-burst: %d stereo instances back to back per block, one thread, own pink noise each (-20 dBFS), %d x %.0f s per case (aligned / staggered interleaved), stagger = i x %d / %d samples via '%s'",
+         N, kBurstReps, g_opt.burstSeconds, hop, N, g_opt.burstStagger.c_str());
+    std::vector<Stereo> sigs;
+    const int len = static_cast<int>(g_opt.burstSeconds * sr) + hop + 4096;
+    for (int i = 0; i < N; ++i) sigs.push_back(makePinkStereo(len, -20.0, 200 + static_cast<uint64_t>(i)));
+
+    Table t; t.title = "CPU-B1. " + std::to_string(N) + " stereo instances per block (48 kHz, pink noise): per-block TOTAL time, aligned vs staggered hop phases";
+    t.note = "Build: " + cfg + ". CPU: " + cpu + ". " + std::to_string(N) + " instances processed back to back per block in one thread; each instance has its own pink noise (-20 dBFS), no resonance; " + std::to_string(kBurstReps) + " repetitions x "
+             + num(g_opt.burstSeconds, 0) + " s pooled (fresh instances per repetition, first 1 s untimed, copy-in excluded, steady_clock). Budget = block / 48000 s (64 -> 1333.3 us, 128 -> 2666.7 us) for the WHOLE loop of "
+             + std::to_string(N) + " instances. stagger = instance i shifted by i x " + std::to_string(hop) + " / " + std::to_string(N) + " samples (mode: " + g_opt.burstStagger + "). Single thread, normal priority, no isolation from other processes.";
+    t.header = { "subject", "block", "hop phases", "blocks", "mean us", "p50 us", "p95 us", "p99 us", "p99.9 us", "max us", "mean % budget", "max % budget", "blocks > 25 % budget", "blocks > 50 % budget", "min rep max us", "max rep max us" };
+    Table tf; tf.title = "CPU-B2. C1c-N: how many instances complete a hop in a block";
+    tf.note = "Read from the core's framesProcessed() after every block. 'mean us' = mean block total for blocks with that many hop completions.";
+    tf.header = { "block", "hop phases", "instances completing a hop", "blocks", "% of blocks", "mean us", "max us" };
+    for (const auto& s : subs)
+        for (int block : { 64, 128 })
+        {
+            BurstRun aligned, stag;
+            for (int rep = 0; rep < kBurstReps; ++rep)
+            {
+                burstOne(s, sigs, sr, block, false, coreMode, hop, 1, aligned);
+                burstOne(s, sigs, sr, block, true, coreMode, hop, 1, stag);
+            }
+            for (int m = 0; m < 2; ++m)
+            {
+                const BurstRun& r = m == 0 ? aligned : stag;
+                const char* nm = m == 0 ? "aligned" : "staggered";
+                const double budgetNs = block / sr * 1.0e9;
+                const std::vector<double>& v = r.ns;
+                const double mean = std::accumulate(v.begin(), v.end(), 0.0) / static_cast<double>(std::max<size_t>(v.size(), 1));
+                const double mx = *std::max_element(v.begin(), v.end());
+                std::vector<double> a = v, b = v, c = v, d = v;
+                const double p50 = percentile(a, 0.50), p95 = percentile(b, 0.95), p99 = percentile(c, 0.99), p999 = percentile(d, 0.999);
+                long long o25 = 0, o50 = 0;
+                for (double x : v) { if (x > 0.25 * budgetNs) ++o25; if (x > 0.50 * budgetNs) ++o50; }
+                t.add({ s.id, inum(block), nm, inum(static_cast<long long>(v.size())), num(mean / 1000.0, 2), num(p50 / 1000.0, 2), num(p95 / 1000.0, 2), num(p99 / 1000.0, 2), num(p999 / 1000.0, 2), num(mx / 1000.0, 2),
+                        num(100.0 * mean / budgetNs, 3), num(100.0 * mx / budgetNs, 2), inum(o25), inum(o50),
+                        num(*std::min_element(r.repMax.begin(), r.repMax.end()) / 1000.0, 2), num(*std::max_element(r.repMax.begin(), r.repMax.end()) / 1000.0, 2) });
+                logf("      %-5s block %3d %-9s: %zu blocks  mean %.2f us  p50 %.2f  p95 %.2f  p99 %.2f  p99.9 %.2f  max %.2f us = %.2f %% of the %.1f us budget (mean %.2f %%; per-rep max %.1f .. %.1f us)",
+                     s.id.c_str(), block, nm, v.size(), mean / 1000.0, p50 / 1000.0, p95 / 1000.0, p99 / 1000.0, p999 / 1000.0, mx / 1000.0, 100.0 * mx / budgetNs, budgetNs / 1000.0, 100.0 * mean / budgetNs,
+                     *std::min_element(r.repMax.begin(), r.repMax.end()) / 1000.0, *std::max_element(r.repMax.begin(), r.repMax.end()) / 1000.0);
+                if (s.id == "C1c-N")
+                {
+                    std::map<int, std::vector<double>> by;
+                    for (size_t i = 0; i < r.ns.size(); ++i) by[r.framesInBlock[i]].push_back(r.ns[i]);
+                    for (const auto& kv : by)
+                    {
+                        const double mm = std::accumulate(kv.second.begin(), kv.second.end(), 0.0) / static_cast<double>(kv.second.size());
+                        const double xx = *std::max_element(kv.second.begin(), kv.second.end());
+                        tf.add({ inum(block), nm, inum(kv.first), inum(static_cast<long long>(kv.second.size())), num(100.0 * static_cast<double>(kv.second.size()) / static_cast<double>(v.size()), 2), num(mm / 1000.0, 2), num(xx / 1000.0, 2) });
+                        logf("        %-9s %d instance(s) complete a hop: %zu blocks (%.2f %%)  mean %.2f us  max %.2f us", nm, kv.first, kv.second.size(), 100.0 * static_cast<double>(kv.second.size()) / static_cast<double>(v.size()), mm / 1000.0, xx / 1000.0);
+                    }
+                }
+            }
+        }
+    std::ofstream(dir / "cpu_burst.csv", std::ios::binary) << t.csv();
+    std::ofstream(dir / "cpu_burst_frames.csv", std::ios::binary) << tf.csv();
+    std::ofstream(dir / "summary.md", std::ios::binary) << "# RS bench - multi-instance burst\n\n- Git: `" << hash << "`\n- Build: **" << cfg << "**\n- CPU: " << cpu << "\n\n" << t.markdown() << tf.markdown();
+    logf("wrote cpu_burst*.csv and summary.md to %s", dir.string().c_str());
+    return g_nonFinite == 0 ? 0 : 1;
+}
+
+// ============================================================================
 // main
 // ============================================================================
 
@@ -2729,6 +3336,20 @@ static bool parseArgs(int argc, char** argv)
         else if (a == "--seed" && i + 1 < argc) g_opt.seed = static_cast<uint64_t>(std::strtoull(argv[++i], nullptr, 10));
         else if (a == "--cpu-worst") g_opt.cpuWorst = true;
         else if (a == "--d1-reconcile") g_opt.d1Reconcile = true;
+        else if (a == "--cpu-burst") g_opt.cpuBurst = true;
+        else if (a == "--burst-instances" && i + 1 < argc) g_opt.burstInstances = std::max(1, std::atoi(argv[++i]));
+        else if (a == "--burst-seconds" && i + 1 < argc) g_opt.burstSeconds = std::max(2.0, std::atof(argv[++i]));
+        else if (a == "--burst-stagger" && i + 1 < argc)
+        {
+            g_opt.burstStagger = argv[++i];
+            if (g_opt.burstStagger != "preroll" && g_opt.burstStagger != "core") { std::printf("[RSBench] --burst-stagger expects preroll|core\n"); return false; }
+        }
+        else if (a == "--seedset" && i + 1 < argc)
+        {
+            g_opt.seedset = argv[++i];
+            if (g_opt.seedset != "default" && g_opt.seedset != "dev" && g_opt.seedset != "heldout")
+            { std::printf("[RSBench] --seedset expects default|dev|heldout\n"); return false; }
+        }
         else if (a == "--subjects" && i + 1 < argc)
         {
             std::stringstream ss(argv[++i]);
@@ -2746,6 +3367,9 @@ static bool parseArgs(int argc, char** argv)
         else { std::printf("[RSBench] unknown argument: %s\n", a.c_str()); return false; }
     }
     if (g_opt.cpuOnly && g_opt.noCpu) { std::printf("[RSBench] --cpu-only and --no-cpu are mutually exclusive\n"); return false; }
+    if (!g_opt.seedset.empty() && g_opt.seed != 0) { std::printf("[RSBench] --seedset and --seed are mutually exclusive (the set chooses the seeds)\n"); return false; }
+    if (!g_opt.seedset.empty() && (g_opt.cpuOnly || g_opt.cpuWorst || g_opt.d1Reconcile || g_opt.cpuBurst))
+    { std::printf("[RSBench] --seedset grades the full run; it cannot be combined with --cpu-only / --cpu-worst / --d1-reconcile / --cpu-burst\n"); return false; }
     return true;
 }
 
@@ -2809,8 +3433,16 @@ int main(int argc, char** argv)
 
     if (g_opt.cpuWorst) return runCpuWorst(cfg, cpu, isRelease, hash, stamp);
     if (g_opt.d1Reconcile) return runD1Reconcile(hash, stamp);
+    if (g_opt.cpuBurst) return runCpuBurst(cfg, cpu, isRelease, hash, stamp);
+    if (!g_opt.seedset.empty()) return runSeedSet(cfg, cpu, isRelease, hash, stamp);
+    return runGradedRun(cfg, cpu, isRelease, hash, stamp, nullptr);
+}
 
-    const fs::path runDir = fs::path(g_opt.outBase) / (stamp + "_" + hash + (g_opt.quick ? "_quick" : "") + (g_opt.seed ? "_seed" + std::to_string(g_opt.seed) : std::string()));
+// The graded run for the current g_opt.seed: every table / CSV / WAV / summary.md of a default run. `cap` (seed-set mode only) receives the evidence behind the gate table so
+// the seed-set evaluator can regrade it per cell; nothing it holds is written back, so a run with cap == nullptr is exactly the historical run.
+static int runGradedRun(const std::string& cfg, const std::string& cpu, bool isRelease, const std::string& hash, const std::string& stamp, SeedCapture* cap)
+{
+    const fs::path runDir =fs::path(g_opt.outBase) / (stamp + "_" + hash + (g_opt.quick ? "_quick" : "") + (g_opt.seed ? "_seed" + std::to_string(g_opt.seed) : std::string()));
     if (g_opt.seed) logf("noise seed shift   : --seed %llu (all generated signals); 0 = the original seeds", static_cast<unsigned long long>(g_opt.seed));
     const fs::path wavDir = runDir / "wav";
     std::error_code ec;
@@ -3598,6 +4230,14 @@ int main(int argc, char** argv)
     // ---------------------------------------------------------------- gate table (v3)
     std::vector<GateRow> gateRows;
     for (const auto& s : scanSubjects) if (s.gated) gateRows.push_back(evaluateGates(s, bd));
+    if (cap)
+    {
+        cap->bd = bd;
+        cap->rows = gateRows;
+        cap->subjects.clear();
+        for (const auto& s : scanSubjects) if (s.gated) cap->subjects.push_back(s);
+        cap->runDir = runDir.generic_string();
+    }
 
     Table tGate; tGate.title = "Gate table (capability variants, fixed thresholds)";
     tGate.note = "Every subject registered with gated = true is graded at its own variant. G1: in-window residual vs clean within [-1.5 dB, 0.30 x ideal dB] at EVERY one of the 12 scan f0 (48 kHz; count = f0 passing). "
