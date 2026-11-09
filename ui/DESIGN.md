@@ -1202,3 +1202,43 @@ state the harness does not set up (the media-row menu was taken). Split Syllable
 selected in the harness). MIDI import 132 has one 3.8:1 node: its disabled "Override project tempo" label (the 45 % disabled
 dim). Nothing was run against the engine: **owed** are a plugin scan, editing a shortcut, the full Sandbox workflow, Quick
 Notation entry, Split Syllables, an export, a MIDI import and the Welcome window on cold start.
+
+## 24. Round 2 close-out (step 21)
+
+### 24.1 Where each round 2 rule lives
+
+| Rule | Section |
+|---|---|
+| Band palette: four fixed band hues `--ui-band-1..4` (three-band devices use 1, 2, 4), checked per shipped theme | 3.3.1, 17 |
+| Dock focus mode (double-click the open tab, the maximise button, `Ctrl+Shift+D`; state in `shellLayoutStore`, not in the layout) | 8.1 |
+| Space allocation: dock `clamp(320, 40% of A, 520)`, top row minimum 200, arrangement minimum 4 rows, the folded strip and sheet when all three cannot fit | 8.1 |
+| Edit Grid rails, not rows | 8.2 |
+| Video devices: Audio / Video chain head, per-note group, evaluation-ordered chain, canvas displays ported from the engine's maths | 20 |
+| Sampler, Piano Roll, compressors, multiband, tone, modulation devices | 14, 15, 16, 17, 18, 19 |
+| FX Graph: one picker, modulator sheets, signal and port grammar | 21 |
+| Timeline polish, popovers; Settings, floating tools and dialogs | 22, 23 |
+
+### 24.2 Audit result (2026-11-07 baseline, 124 shots, against the 2026-11-09 recapture, 145 shots)
+
+Text nodes 6,643 to 6,994; below 4.5:1 181 to 69; under 10px 839 to 10; letter-spaced uppercase 653 to 21 (sums over shots). 71 of 83 surfaces meet all four targets (0 below 4.5:1, 0 under 10px, no letter-spaced uppercase, at most 4 font sizes). The report with the per-surface table and the surfaces still short is `tests/ui-audit/out/COMPARE.md`; the shots and `metrics.json` ship in `ui-audit-<date>.zip` at the repo root (git-ignored).
+
+Still short, for a follow-up (not fixed in step 21): the Inspector's flip preview (34 nodes below 4.5:1 with a clip track selected), the Glue Comp's Freq cells, the EQ ruler's letter-spaced capitals, the video devices' dimmed captions (9 nodes), the SamplePicker sheet and the Browser's sample thumbnails (legacy global classes: 9px, caps, 5 sizes), one RESET button in the View menu, and single labels in the Sandbox rail, the theme list and the MIDI import dialog.
+
+### 24.3 Stylesheets that are left
+
+`src/styles/app.css` is 5,494 lines (23,858 at the 2026-11-07 baseline), with one `:root` block; `scripts/legacy-css-baseline.json` holds the same number and may only go down. `scripts/prune-dead-css.mjs` lists (and with `--apply` deletes) rules whose class selectors match nothing in `src/`; run it after every migration. The other non-module sheets, all in the `legacy` layer:
+
+| Sheet | Lines | Used by |
+|---|---|---|
+| `windowing/components/windowing.css` | 917 | the windowing shell (AppShell, DockRegionResizer, PanelFrame, PanelTabStrip, ResizeHandles, SampleSelectorDrawer, Titlebar) |
+| `components/timeline/clipControlTuner/clipControlTuner.css` | 279 | `ClipControlTuner`, behind the dev flag `VITE_XLETH_CLIP_CONTROL_TUNER` only |
+| `components/mixer/EffectModule.sidechain.css` | 102 | `EffectModule` (the sidechain row) |
+| `styles/layers.css`, `styles/legacy.css`, `styles/vendor-xyflow.css`, `components/timeline/clipControls.css` | 15, 3, 3, 15 | the layer order, the `app.css` import, `NodeEditor` (xyflow) and `TimelineCanvas` |
+
+### 24.4 The Plugin UI Designer is parked
+
+`src/plugin-ui/designer/` (52 files, about 12,500 lines) had no entry point left: nothing in the app imported it, and its three npm scripts (`dev:designer`, `build:designer`, `start:designer`) are gone. It now lives in `ui/_parked/plugin-ui-designer/`, outside `src/` so that vite, vitest, eslint, stylelint and `check:legacy-css` never see it; `_parked/.gitignore` ignores everything but its README, so the code exists on this machine only and git history is the backup. `_parked/README.md` names the last commit that holds it and the restore commands. The plugin-ui runtime, schema, manifests, layouts and appearance stay in `src/plugin-ui/` (the devices import 17 runtime files); `schema/validationStatus.js` is the hard / soft validation classification the schema tests use. The describe blocks of four runtime tests that exercised Designer helpers went with it (`_parked/plugin-ui-designer/runtime-tests/`).
+
+### 24.5 Running the audit
+
+`node tests/ui-audit/copy-project.mjs <project> <tmp>`, `node tests/ui-audit/mk-missing.mjs`, then `node tests/ui-audit/capture.mjs <copy>`: one launch runs every phase in the order the chain header in `capture.mjs` explains (including the 1366x768 pass), then builds `INVENTORY.md` and `metrics.json`. `node tests/ui-audit/compare.mjs` writes `COMPARE.md` against `out/baseline-2026-11-07/metrics.json`. The original project is never opened. The stress test (2,000 notes, 32 metered tracks, scrolling while playing) and the engine-dependent checks are manual: see `out/MANUAL-SHOTS.md`.
