@@ -14,6 +14,7 @@
 //   F1-F4 detector  (stage B) pink noise not cut at the most sensitive setting; a +12 dB / Q8 resonance is cut
 //                   by >= 7 dB at f0 and nothing an octave away; right-only resonance leaves L alone at link 0 and
 //                   is mirrored at link 1; the threshold's predicted sigma_E matches the measured std on noise
+//   D1 dynamics     (v6) step response and release in MILLISECONDS (onset t50, time for the cut to fall <= 1 dB), at 48 and 96 kHz
 //
 // The allocation counter hooks operator new / new[] on the measuring thread only (the same approach as
 // test_effect_processblock_alloc.cpp). Output prefix: [ResCore].
@@ -488,6 +489,93 @@ void testDetectorFunction()
     }
 }
 
+// Bounds on the dynamics below (ms). Stage A: loose, set just above what the stage-B-before core measures (so the suite is
+// green and records the starting point); tightened with the dynamic-gate work.
+constexpr double kOnsetT50MaxMs     = 150.0;   // measured at stage A: 80 / 85 / 91 / 107 ms
+constexpr double kRelease1dBMaxMs   = 1000.0;  // measured at stage A: 704 / 704 / 832 / 843 ms
+
+// ---- Dynamics (v6 stage A): the detector's / gain computer's step response and release in MILLISECONDS ----------
+// A +12 dB / Q8 bell is switched ON and OFF (5 ms linear crossfades between the clean pink noise C and the bell-filtered
+// noise A of the SAME noise: x = C + g (A - C)) at hop-aligned times, 6 events, 1.2 s on, 2.5 s off. The applied reduction
+// (bandReductionDb, the gain computer's output) at the band of f0 (max over +/-1/6 oct of the band grid) is averaged over the
+// events at every frame. onset_t50 = time after the onset until the reduction first reaches 50 % of its steady value (mean
+// over the last 200 ms of the on-time); release_1dB = time after the offset until it is <= 1 dB. Both are in ms, so they
+// must not depend on N: run at 48 kHz (N = 1024) and 96 kHz (N = 2048) -- same ms, double the FFT size.
+struct DynResult { double steady = 0.0, t50 = -1.0, tRel1dB = -1.0; };
+
+DynResult measureDynamics(double sr, double f0, const Params& prm)
+{
+    DynResult out;
+    Core c; c.prepare(sr, 512, 2);
+    const int H = c.hopSize();
+    const int onFrames = static_cast<int>(std::llround(1.2 * sr / H)), offFrames = static_cast<int>(std::llround(2.5 * sr / H));
+    const int firstOnset = static_cast<int>(std::llround(3.0 * sr / H));
+    const int nEv = 6, evFrames = onFrames + offFrames, total = firstOnset + nEv * evFrames + static_cast<int>(std::llround(1.0 * sr / H));
+    const int n = total * H;
+    Stereo C = makePink(n, -20.0, 71), A = C;
+    for (int ch = 0; ch < 2; ++ch) applyPeak(A.ch[ch], sr, f0, 8.0, 12.0);
+    const int fade = static_cast<int>(std::llround(0.005 * sr));
+    std::vector<double> g(static_cast<size_t>(n), 0.0);
+    for (int e = 0; e < nEv; ++e)
+    {
+        const int on = (firstOnset + e * evFrames) * H, off = on + onFrames * H;
+        for (int i = on; i < off + fade && i < n; ++i)
+        {
+            double v = 1.0;
+            if (i < on + fade) v = std::min(v, static_cast<double>(i - on) / fade);
+            if (i >= off)      v = std::min(v, 1.0 - static_cast<double>(i - off) / fade);
+            g[static_cast<size_t>(i)] = v;
+        }
+    }
+    Stereo x = C;
+    for (int ch = 0; ch < 2; ++ch)
+        for (int i = 0; i < n; ++i)
+            x.ch[ch][static_cast<size_t>(i)] = C.ch[ch][static_cast<size_t>(i)] + static_cast<float>(g[static_cast<size_t>(i)]) * (A.ch[ch][static_cast<size_t>(i)] - C.ch[ch][static_cast<size_t>(i)]);
+
+    std::vector<int> bands;
+    for (int b = 0; b < c.numBands(); ++b)
+        if (std::abs(std::log2(c.bandHz(b) / f0)) <= 1.0 / 6.0) bands.push_back(b);
+    std::vector<double> red(static_cast<size_t>(total), 0.0);
+    std::vector<float> l(static_cast<size_t>(H)), r(static_cast<size_t>(H));
+    float* ptrs[2] = { l.data(), r.data() };
+    for (int f = 0; f < total; ++f)
+    {
+        std::memcpy(l.data(), x.ch[0].data() + static_cast<size_t>(f) * H, sizeof(float) * static_cast<size_t>(H));
+        std::memcpy(r.data(), x.ch[1].data() + static_cast<size_t>(f) * H, sizeof(float) * static_cast<size_t>(H));
+        c.process(ptrs, 2, H, prm);
+        double m = 0.0;
+        for (int b : bands) m = std::max(m, static_cast<double>(c.bandReductionDb(0)[b]));
+        red[static_cast<size_t>(f)] = m;
+    }
+    // Detection runs on the frame that contains the data: the frame whose process() call received the last hop of the
+    // window is the one analysed, so frame index f corresponds to the input up to (f + 1) H samples.
+    auto evMean = [&](int rel) { double s = 0.0; for (int e = 0; e < nEv; ++e) s += red[static_cast<size_t>(firstOnset + e * evFrames + rel)]; return s / nEv; };
+    const double hopMs = 1000.0 * H / sr;
+    const int last200 = static_cast<int>(std::llround(200.0 / hopMs));
+    double st = 0.0;
+    for (int k = onFrames - last200; k < onFrames; ++k) st += evMean(k);
+    out.steady = st / last200;
+    for (int k = 0; k < onFrames; ++k)
+        if (evMean(k) >= 0.5 * out.steady) { out.t50 = (k + 1) * hopMs; break; }       // (k + 1) hops of input have been seen
+    for (int k = onFrames; k < evFrames; ++k)
+        if (evMean(k) <= 1.0) { out.tRel1dB = (k + 1 - onFrames) * hopMs; break; }
+    return out;
+}
+
+void testDynamics()
+{
+    Params cap; cap.depth = 1.0f; cap.hardKnee = true;    // the C1c settings: attack 15 ms, release 200 ms
+    for (double sr : { 48000.0, 96000.0 })
+        for (double f0 : { 500.0, 2500.0 })
+        {
+            const DynResult d = measureDynamics(sr, f0, cap);
+            char buf[260];
+            std::snprintf(buf, sizeof buf, "D1 step response sr %.0f (N %d) f0 %.0f: steady cut %.2f dB (>= 4), onset_t50 %.1f ms (<= %.0f), release to <= 1 dB %.1f ms (<= %.0f)",
+                          sr, Core::fftSizeFor(sr), f0, d.steady, d.t50, kOnsetT50MaxMs, d.tRel1dB, kRelease1dBMaxMs);
+            check(d.steady >= 4.0 && d.t50 >= 0.0 && d.t50 <= kOnsetT50MaxMs && d.tRel1dB >= 0.0 && d.tRel1dB <= kRelease1dBMaxMs, buf);
+        }
+}
+
 } // namespace
 
 int main()
@@ -501,6 +589,7 @@ int main()
     testReset();
     testMono();
     testDetectorFunction();
+    testDynamics();
     std::printf("[ResCore] --- %d passed, %d failed ---\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }
