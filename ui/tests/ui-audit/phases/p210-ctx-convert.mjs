@@ -8,10 +8,10 @@ export default async ({ page, sleep }) => {
 
   await step('156 convert', async () => {
     const heads = page.locator('.track-header'); const n = await heads.count();
-    for (let i = 0; i < n; i++) { await heads.nth(i).click({ button: 'right', position: { x: 60, y: 14 } }); await sleep(450); if (await page.getByRole('menuitem', { name: /Convert to Pattern Track/ }).count()) break; await esc(2); }
+    for (let i = 0; i < n; i++) { await heads.nth(i).click({ button: 'right', position: { x: 60, y: 14 } }); await sleep(800); if (await page.evaluate(() => [...document.querySelectorAll('[role^=menuitem]')].some((x) => /Convert to Pattern Track/.test(x.textContent)))) break; await esc(2); await sleep(300); }
     await sleep(500);
-    const item = page.getByRole('menuitem', { name: /Convert to Pattern Track/ }).first();
-    if (!(await item.count())) { out.push('156: no "Convert to Pattern Track" item (menu: ' + (await page.evaluate(() => [...document.querySelectorAll('[role=menuitem]')].map((x) => x.textContent.trim()).join(' | '))) + ')'); await esc(); return; }
+    const item = page.locator('[role^=menuitem]', { hasText: /Convert to Pattern Track/ }).first();   // kit menu items are menuitem or menuitemcheckbox
+    if (!(await item.count())) { out.push('156: no "Convert to Pattern Track" item (menu: ' + (await page.evaluate(() => [...document.querySelectorAll('[role^=menuitem]')].map((x) => x.textContent.trim()).join(' | '))) + ')'); await esc(); return; }
     await item.click({ timeout: 3000 }); await sleep(900);
     out.push(await shot(page, '156-dialog-convert-track', { surface: 'dlg-convert', scope: '[role="dialog"]', live: true }));
     await esc();
@@ -30,9 +30,11 @@ export default async ({ page, sleep }) => {
     const DOCK = '[data-testid="xleth-detail-dock"]';
     const prTab = page.locator('[data-detail-tab="pianoRoll"]').first();
     if ((await prTab.getAttribute('aria-selected')) !== 'true') { await prTab.click(); await sleep(800); }
-    await page.locator(`${DOCK} button[title^="Sampler Settings"], ${DOCK} button[aria-label^="Sampler Settings"]`).first().click(); await sleep(1200);
+    await page.getByText('Pattern 8', { exact: false }).first().dblclick(); await sleep(1300);   // the button is disabled until a pattern with a sample region is open
+    await page.locator(`${DOCK} button[title^="Sampler settings" i], ${DOCK} button[aria-label^="Sampler settings" i]`).first().click(); await sleep(1200);
     await page.locator(`${DOCK} [role="slider"]:visible`).first().click({ button: 'right', timeout: 4000 }); await sleep(600);
-    out.push(await shot(page, '167-context-menu-sampler-knob', { surface: 'ctx-sampler-knob', scope: '[role="menu"]', live: true }));
+    if (await page.locator('[role="menu"]').count()) out.push(await shot(page, '167-context-menu-sampler-knob', { surface: 'ctx-sampler-knob', scope: '[role="menu"]', live: true }));
+    else out.push('167: right-click on a sampler knob opens no menu in this build; not photographed');
     await esc();
   });
 
@@ -42,8 +44,7 @@ export default async ({ page, sleep }) => {
       await page.getByRole('menuitemcheckbox', { name: title }).first().click(); await sleep(250);
     };
     await tools('Sample Sandbox'); await sleep(1400);
-    const cv = page.locator('[data-testid="xleth-floating-window-layer"] canvas').first();
-    const b = await cv.boundingBox();
+    const b = await page.evaluate(() => { const c = [...document.querySelectorAll('[data-testid="xleth-floating-window-layer"] canvas')].filter((e) => e.checkVisibility()).map((e) => e.getBoundingClientRect()).sort((p, q) => q.width * q.height - p.width * p.height)[0]; return c ? { x: c.x, y: c.y, width: c.width, height: c.height } : null; });   // the largest canvas is the waveform; the first is a strip
     if (!b) { out.push('169: no sandbox canvas'); return; }
     out.push('sandbox canvas ' + JSON.stringify(b));
     await page.mouse.move(b.x + b.width * 0.3, b.y + b.height * 0.5);

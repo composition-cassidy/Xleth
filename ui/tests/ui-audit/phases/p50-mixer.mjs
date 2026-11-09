@@ -36,7 +36,7 @@ export default async ({ page, sleep }) => {
     out.push('sc step 11 ok');
     await page.getByRole('option', { name: 'KICK', exact: true }).first().click(); await sleep(700);
     out.push('sc step 12 ok');
-    out.push(await shot(page, '53-compressor-sidechain-external-kick', { surface: 'device-floating', scope: '[data-testid="effect-editor-host"] > :last-child', note: 'sidechain section open, External on, source KICK' }));
+    out.push(await shot(page, '97-compressor-sidechain-external-kick', { surface: 'device-floating', scope: '[data-testid="effect-editor-host"] > :last-child', note: 'sidechain section open, External on, source KICK' }));
     await closeWins(); await sleep(500);
     out.push('sc step 13 ok');
   });
@@ -44,15 +44,15 @@ export default async ({ page, sleep }) => {
   const mt = page.locator('[data-detail-tab="mixer"]').first();
   if ((await mt.getAttribute('aria-selected')) !== 'true') { await mt.click(); await sleep(1000); }
   await page.mouse.move(1000, 250); await sleep(500);
-  await step('50', async () => out.push(await shot(page, '50-mixer-routing-sidechain', { surface: 'dock-mixer', scope: DOCK, note: 'compressor sidechain source set to KICK in base chain' })));
+  await step('50', async () => out.push(await shot(page, '94-mixer-routing-sidechain', { surface: 'dock-mixer', scope: DOCK, note: 'compressor sidechain source set to KICK in base chain' })));
   await step('51', async () => {
     await page.locator(`${DOCK} [class*="strip"]`).filter({ hasText: /^7\s*KICK/ }).first().click({ position: { x: 30, y: 14 } });
     await sleep(700);
-    out.push(await shot(page, '51-mixer-strip-selected', { surface: 'dock-mixer', scope: DOCK, note: 'KICK strip selected' }));
+    out.push(await shot(page, '95-mixer-strip-selected', { surface: 'dock-mixer', scope: DOCK, note: 'KICK strip selected' }));
   });
   await step('52', async () => {
     await page.locator('button[aria-label="Play"]').first().click(); await sleep(3500);
-    out.push(await shot(page, '52-mixer-meters-playing', { surface: 'dock-mixer', scope: DOCK, live: true, note: 'transport playing ~3.5 s' }));
+    out.push(await shot(page, '96-mixer-meters-playing', { surface: 'dock-mixer', scope: DOCK, live: true, note: 'transport playing ~3.5 s' }));
     await page.locator('button[aria-label="Stop"]').first().click(); await sleep(600);
   });
   return out.join('\n');

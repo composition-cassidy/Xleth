@@ -7,7 +7,7 @@ export default async ({ page, sleep }) => {
   await page.keyboard.up('Control'); await page.keyboard.press('Escape'); await sleep(200);
   const prTab = page.locator('[data-detail-tab="pianoRoll"]').first();
   if ((await prTab.getAttribute('aria-selected')) !== 'true') { await prTab.click(); await sleep(800); }
-  await page.locator(`${DOCK} button[title^="Sampler Settings"], ${DOCK} button[aria-label^="Sampler Settings"]`).first().click(); await sleep(1200);
+  await page.locator(`${DOCK} button[title^="Sampler settings" i], ${DOCK} button[aria-label^="Sampler settings" i]`).first().click(); await sleep(1200);
   await page.mouse.move(1000, 300);
 
   const scrollerInfo = () => page.evaluate((dock) => {

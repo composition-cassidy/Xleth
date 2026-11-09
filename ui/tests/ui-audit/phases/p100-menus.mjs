@@ -1,4 +1,4 @@
-// Menus and small dialogs: File / Edit / View menus, Unsaved changes, Export as ZIP, Clean up project, a toast, Quantize.
+// Menus and small dialogs: File / Edit / View menus, Unsaved changes, Export as ZIP, Clean up project, a toast.
 import { shot } from '../shotlib.mjs';
 export default async ({ page, sleep }) => {
   const out = [];
@@ -22,31 +22,28 @@ export default async ({ page, sleep }) => {
     await step(label, async () => {
       await menuBtn('File').click(); await sleep(500);
       await page.getByRole('menuitem', { name: new RegExp(label) }).first().click(); await sleep(1500);
+      if (!(await page.locator('[role="dialog"]').count())) { out.push(`${id}: no dialog opened (${label} had nothing to do on this project; the status text says so); not photographed, listed in MANUAL-SHOTS.md`); await esc(); return; }
       out.push(await shot(page, id, { surface, scope: '[role="dialog"]', live: true }));
       await esc(); await sleep(400);
     });
   }
-  // Unsaved changes: New Project after edits
-  await step('unsaved', async () => {
-    await menuBtn('File').click(); await sleep(500);
-    await page.getByRole('menuitem', { name: /^New Project/ }).first().click(); await sleep(1500);
-    out.push('dialogs after New Project: ' + await page.evaluate(() => [...document.querySelectorAll('[role="dialog"]')].map((d) => (d.innerText || '').slice(0, 60).replace(/\n/g, ' | ')).join(' || ')));
-    out.push(await shot(page, '134-dialog-unsaved-changes', { surface: 'dlg-unsaved', scope: '[role="dialog"]', live: true }));
-    await esc(); await sleep(500);
-  });
-  // Toast: Ctrl+S saves to the project COPY
+  // Toast: Ctrl+S saves to the project COPY. Done BEFORE the empty-project step so p105 reloads the saved state.
   await step('toast', async () => {
     await page.mouse.click(1000, 1000); await sleep(200);
     await page.keyboard.press('Control+s'); await sleep(500);
     out.push(await shot(page, '138-toast-save', { surface: 'toast', scope: '[data-testid="xleth-windowing-shell"]', live: true, note: 'Ctrl+S on the temp project copy' }));
+    await sleep(2500);
   });
-  // Quantize
-  await step('quantize', async () => {
-    await page.mouse.click(660, 592); await sleep(500);
-    const q = page.locator('button[aria-label^="Quantize"], button[title^="Quantize"]').first();
-    await q.click({ timeout: 4000 }); await sleep(900);
-    out.push(await shot(page, '139-quantize-dialog', { surface: 'timeline-quantize', scope: '[role="dialog"], .quantize-dialog, [class*="quantize"]', live: true }));
-    await esc();
+  // Unsaved changes: an edit (mute KICK), then File > New Project. Discard answers the dialog, which leaves the EMPTY project
+  // that p105 photographs (19) and then replaces by reloading the copy saved above.
+  await step('unsaved', async () => {
+    await page.locator('button[aria-label="Mute KICK"]').first().click(); await sleep(250);
+    await menuBtn('File').click(); await sleep(500);
+    await page.getByRole('menuitem', { name: /^New Project/ }).first().click(); await sleep(1500);
+    const n = await page.locator('[role="dialog"]').count();
+    out.push('dialogs after edit + New Project: ' + n + ' ' + await page.evaluate(() => [...document.querySelectorAll('[role="dialog"]')].map((d) => (d.innerText || '').slice(0, 60).replace(/\n/g, ' | ')).join(' || ')));
+    out.push(await shot(page, '134-dialog-unsaved-changes', { surface: 'dlg-unsaved', scope: n ? '[role="dialog"]' : null, live: true }));
+    if (n) { await page.getByRole('button', { name: /Don.t save|Discard/i }).first().click(); await sleep(2500); out.push('discarded: empty project follows'); }
   });
   return out.join('\n');
 };

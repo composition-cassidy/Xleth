@@ -11,7 +11,7 @@ export default async ({ page, sleep }) => {
   const prTab = page.locator('[data-detail-tab="pianoRoll"]').first();
   if ((await prTab.getAttribute('aria-selected')) !== 'true') { await prTab.click(); await sleep(900); }
   await page.getByText('Pattern 8', { exact: false }).first().dblclick(); await sleep(1400);
-  await page.locator(`${DOCK} button[title^="Sampler Settings"], ${DOCK} button[aria-label^="Sampler Settings"]`).first().click({ timeout: 8000 }); await sleep(1600);
+  await page.locator(`${DOCK} button[title^="Sampler settings" i], ${DOCK} button[aria-label^="Sampler settings" i]`).first().click({ timeout: 8000 }); await sleep(1600);
   await page.mouse.move(1000, 300); await sleep(300);
 
   const view = async (name) => {

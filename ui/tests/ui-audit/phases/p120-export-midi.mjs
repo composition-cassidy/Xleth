@@ -1,5 +1,7 @@
-// Export dialog (audio tab, then each video tab), the Xleth file picker modal and the MIDI import dialog.
+// Export dialog (audio tab, then each video tab), the Xleth file picker modal (137) and the MIDI import dialog (132).
+import path from 'node:path';
 import { shot } from '../shotlib.mjs';
+import { UI_DIR } from '../lib.mjs';
 export default async ({ page, sleep }) => {
   const out = [];
   const esc = async () => { for (let i = 0; i < 3; i++) { await page.keyboard.press('Escape'); await sleep(150); } };
@@ -28,6 +30,13 @@ export default async ({ page, sleep }) => {
     out.push(await shot(page, '137-filepicker-modal', { surface: 'filepicker', scope: '[role="dialog"]', live: true, note: 'Import MIDI opens the in-app file picker' }));
     const inputs = await page.evaluate(() => [...document.querySelectorAll('[role="dialog"] input')].map((i) => i.type + ':' + (i.placeholder || i.getAttribute('aria-label') || '') + ':' + i.value.slice(0, 40)));
     out.push('picker inputs: ' + JSON.stringify(inputs));
+    // MIDI import dialog (132): type the repo's test.mid into the picker's File path field (same step: the chain closes dialogs between phases)
+    const mid = path.resolve(UI_DIR, '..', 'test.mid');
+    const input = page.locator('input[aria-label="File path"]').first();
+    await input.fill(mid); await sleep(300);
+    await input.press('Enter'); await sleep(1800);
+    out.push('dialog now: ' + await page.evaluate(() => [...document.querySelectorAll('[role="dialog"]')].map((e) => (e.innerText || '').slice(0, 80).replace(/\n/g, ' | ')).join(' || ')));
+    out.push(await shot(page, '132-dialog-midi-import', { surface: 'dlg-midi-import', scope: '[role="dialog"]', live: true }));
   });
   return out.join('\n');
 };

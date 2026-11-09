@@ -37,6 +37,13 @@ export default async ({ page, sleep }) => {
     out.push(await shot(page, '18-timeline-toolbar', { surface: 'timeline-toolbar', clip: { x: 258, y: Math.max(0, b.y - 10), width: 1662, height: 44 }, scope: '[data-testid="xleth-docked-window-layer"] [class*="toolbar"], [data-testid="xleth-docked-window-layer"]' }));
   });
 
+  await step('18b', async () => {
+    const b = await page.locator('button[aria-label="Select tool"]').first().boundingBox();
+    await page.locator('button[aria-label="Pencil tool"]').click(); await sleep(400);
+    out.push(await shot(page, '18b-timeline-toolbar-pencil', { surface: 'timeline-toolbar', clip: { x: 258, y: Math.max(0, b.y - 10), width: 1662, height: 44 }, scope: '.timeline-toolbar' }));
+    await page.locator('button[aria-label="Select tool"]').click(); await sleep(300);
+  });
+
   // Zoom in on the clips (ctrl+wheel over the canvas)
   await step('11', async () => {
     await zoomTo(300); await sleep(900);
@@ -67,6 +74,11 @@ export default async ({ page, sleep }) => {
     await page.locator('button[aria-label*="older"]').first().click({ timeout: 5000 }); await sleep(800);
     out.push(await shot(page, '15-timeline-folder-row', { surface: 'panel-timeline', scope: '[data-testid="xleth-docked-window-layer"]', note: 'empty folder row created via toolbar (project copy)' }));
     await page.keyboard.press('Control+z'); await sleep(600);
+    if (await page.locator('.track-header', { hasText: 'Folder' }).count()) {   // Ctrl+Z did not undo it (focus): Edit > Undo does
+      await page.getByRole('button', { name: 'Edit', exact: true }).first().click(); await sleep(400);
+      await page.locator('[role^=menuitem]', { hasText: /^Undo/ }).first().click({ timeout: 3000 }).catch(() => {}); await sleep(800);
+      out.push('folder undo via Edit menu; folder rows left: ' + await page.locator('.track-header', { hasText: 'Folder' }).count());
+    }
   });
 
   await step('16', async () => {

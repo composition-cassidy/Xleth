@@ -1,4 +1,4 @@
-// Second pass at 1366x768 (100% UI scale): default layout, Timeline + Piano Roll, Mixer, Sampler.
+// Second pass at 1366x768 (100% UI scale): default layout, Timeline + Piano Roll, Mixer, Sampler (Main, Playback, Modulation), Devices, FX Graph.
 import { shot } from '../shotlib.mjs';
 export default async ({ page, sleep }) => {
   const out = [];
@@ -16,9 +16,12 @@ export default async ({ page, sleep }) => {
   await step('mixer', async () => { await openTab('mixer'); await page.mouse.move(700, 300); out.push(await shot(page, '202-lowres-mixer', { surface: 'dock-mixer', scope: DOCK })); });
   await step('sampler', async () => {
     await openTab('pianoRoll');
-    await page.locator(`${DOCK} button[title^="Sampler Settings"], ${DOCK} button[aria-label^="Sampler Settings"]`).first().click(); await sleep(1400); await page.mouse.move(700, 300);
+    await page.locator(`${DOCK} button[title^="Sampler settings" i], ${DOCK} button[aria-label^="Sampler settings" i]`).first().click(); await sleep(1400); await page.mouse.move(700, 300);
     out.push(await shot(page, '203-lowres-sampler', { surface: 'dock-sampler', scope: DOCK }));
   });
+  const samplerView = async (name) => { await page.locator('[role="tablist"][aria-label="Sampler views"] [role="tab"]').filter({ hasText: new RegExp(`^${name}$`) }).first().click(); await sleep(900); await page.mouse.move(700, 300); };
+  await step('sampler playback', async () => { await samplerView('Playback'); out.push(await shot(page, '206-lowres-sampler-playback', { surface: 'dock-sampler', scope: DOCK })); });
+  await step('sampler modulation', async () => { await samplerView('Modulation'); out.push(await shot(page, '207-lowres-sampler-modulation', { surface: 'sampler-modulation', scope: DOCK })); await samplerView('Main'); });
   await step('devices', async () => { await openTab('devices'); out.push(await shot(page, '204-lowres-devices', { surface: 'dock-devices', scope: DOCK })); });
   await step('fxgraph', async () => { await openTab('fxGraph'); out.push(await shot(page, '205-lowres-fxgraph', { surface: 'dock-fxgraph', scope: DOCK })); });
   return out.join('\n');

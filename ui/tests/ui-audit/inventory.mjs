@@ -74,7 +74,6 @@ const cssFiles = {
   'clipControlTuner.css': path.join(SRC, 'components/timeline/clipControlTuner/clipControlTuner.css'),
   'EffectModule.sidechain.css': path.join(SRC, 'components/mixer/EffectModule.sidechain.css'),
   'sandbox.css': path.join(SRC, 'components/sandbox/sandbox.css'),
-  'designer.css': path.join(SRC, 'plugin-ui/designer/styles/designer.css'),
   'vendor-xyflow.css': path.join(SRC, 'styles/vendor-xyflow.css'),
 };
 const cssRules = {};

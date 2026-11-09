@@ -4,8 +4,8 @@
 //   160/161  the snapshot cue editor, then with a line-sweep transition and the easing editor open
 //   157/158  the Vibrato and Scratch windows
 //   139  the Quantize dialog
-//   153  a macro automation lane (needs FX Graph's Add menu to add a Macro node; reported if it cannot)
-// Run after p20 on a fresh driver:  node send.mjs phases/p19-timeline-polish.mjs
+//   (153, the macro automation lane, is p61: it needs the Macro node p60 adds, and a lane under ch1 shifts every track below it)
+// Runs after p20 in the capture chain; restores the default lane height at the end.
 import { shot, auditInPage } from '../shotlib.mjs';
 
 export default async ({ page, sleep }) => {
@@ -25,6 +25,7 @@ export default async ({ page, sleep }) => {
   const sel = page.locator('[data-detail-tab][aria-selected="true"]').first();
   if (await sel.count()) { await sel.click(); await sleep(700); }
   await page.mouse.move(1000, 560);
+  const baseLane = await laneH();
 
   // 13b: header state at rest in the muted and soloed case
   await step('13b', async () => {
@@ -86,29 +87,14 @@ export default async ({ page, sleep }) => {
     out.push('lane height: ' + await laneH());
     await audit('headers at a tall lane', '.timeline-header-column');
     out.push(await shot(page, '154-timeline-lane-80-fades-handles', { surface: 'panel-timeline', scope: ROOT, note: 'Alt+wheel to a tall lane, a clip selected' }));
+    // back to the default lane height: p80 / p100 click pixels that assume it
+    for (let i = 0; i < 40; i++) {
+      const h = await laneH();
+      if (h <= baseLane + 1) break;
+      await page.keyboard.down('Alt'); await page.mouse.wheel(0, 40); await page.keyboard.up('Alt'); await sleep(200);
+    }
+    out.push('lane height restored: ' + await laneH());
   });
 
-  // 153: a macro automation lane
-  await step('153', async () => {
-    const DOCK = '[data-testid="xleth-detail-dock"]';
-    const open = page.locator('[data-detail-tab][aria-selected="true"]').first();
-    if (!(await open.count())) {
-      await page.locator('[data-detail-tab="mixer"]').first().click(); await sleep(1200);
-    }
-    await page.locator('[data-detail-tab="mixer"]').first().click(); await sleep(1000);
-    await page.locator(`${DOCK} [class*="strip"]`).filter({ hasText: /^2\s*ch1/ }).first().click({ position: { x: 30, y: 14 } }); await sleep(500);
-    await page.locator('[data-detail-tab="fxGraph"]').first().click(); await sleep(1500);
-    const c = await page.evaluate((d) => { const r = document.querySelector(d).getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height }; }, DOCK);
-    await page.mouse.click(c.x + c.w * 0.3, c.y + c.h * 0.4, { button: 'right' }); await sleep(500);
-    await page.getByRole('menuitem', { name: 'Macro', exact: true }).first().click({ timeout: 4000 }); await sleep(1000);
-    const node = page.getByText(/^Macro \d/).first();
-    if (!(await node.count())) { out.push('153: the Add menu did not add a Macro node in this build; the macro lane was not photographed'); await esc(); return; }
-    const b = await node.boundingBox();
-    await page.mouse.click(b.x + 10, b.y + 4, { button: 'right' }); await sleep(600);
-    await page.getByRole('menuitem', { name: 'Create Automation Clip' }).click(); await sleep(900);
-    await page.locator('[data-detail-tab][aria-selected="true"]').first().click(); await sleep(900);
-    await audit('macro lane layer', '.macro-automation-lanes-layer');
-    out.push(await shot(page, '153-timeline-macro-automation-lanes', { surface: 'panel-timeline', scope: ROOT, note: 'Macro 1 on ch1, Create Automation Clip' }));
-  });
   return out.join('\n');
 };

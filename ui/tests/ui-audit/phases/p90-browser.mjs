@@ -27,6 +27,15 @@ export default async ({ page, sleep }) => {
     out.push(await shot(page, '103-picker-sheet-playing', { surface: 'picker-sheet', scope: '[data-testid="picker-sheet"]', live: true, note: 'sheet open over Preview+Inspector, Space pressed inside the sheet (playing)' }));
     await page.keyboard.press('Space'); await sleep(400);
     await page.keyboard.press('Escape'); await sleep(700);
+    // Escape reaches the sheet only while focus is inside it; it stayed open (covering the Preview header) in the full chain.
+    const sheetUp = () => sheet.isVisible().catch(() => false);
+    if (await sheetUp()) {
+      await sheet.getByRole('button', { name: /^Close/ }).first().click({ timeout: 3000 }).catch(() => {});
+      await sleep(700);
+      if (await sheetUp()) await page.getByRole('button', { name: /^Close/ }).first().click({ timeout: 3000 }).catch(() => {});
+      await sleep(500);
+    }
+    out.push('picker sheet closed: ' + !(await sheetUp()));
   });
   // Round 2: the floating tools open from the top bar's Tools menu.
   const tools = async (title) => {

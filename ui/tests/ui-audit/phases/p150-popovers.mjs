@@ -1,5 +1,7 @@
 // Timeline popovers and the Convert dialog: track colour, timeline display, video canvas settings, Convert to Pattern Track.
 import { shot } from '../shotlib.mjs';
+import { OUT } from '../lib.mjs';
+const SHOTS_DEBUG = OUT + '/_debug-p150.png';
 export default async ({ page, sleep }) => {
   const out = [];
   const esc = async () => { for (let i = 0; i < 3; i++) { await page.keyboard.press('Escape'); await sleep(150); } };
@@ -28,20 +30,19 @@ export default async ({ page, sleep }) => {
   });
   await step('canvas', async () => {
     // The project canvas popover is reached from the Edit grid rail: Edit grid, then the canvas button.
-    await page.getByRole('button', { name: /Edit grid/ }).first().click(); await sleep(900);
-    await page.locator('button[data-hint^="Project canvas"]').first().click({ timeout: 4000 }); await sleep(800);
+    const canvasBtn = page.locator('button[data-hint^="Project canvas"]').first();
+    const wasOn = await canvasBtn.isVisible().catch(() => false);          // Edit grid may already be on from an earlier phase
+    if (!wasOn) { await page.getByRole('button', { name: /Edit grid/ }).first().click(); await sleep(900); }
+    try { await canvasBtn.click({ timeout: 4000 }); }
+    catch (e) {
+      out.push('canvas button not reachable; Edit grid pressed=' + await page.getByRole('button', { name: /Edit grid/ }).first().getAttribute('aria-pressed') + ', buttons with a Project hint: ' + await page.locator('button[data-hint^="Project"]').count());
+      await page.screenshot({ path: SHOTS_DEBUG }); if (!wasOn) await page.getByRole('button', { name: /Edit grid/ }).first().click().catch(() => {}); throw e;
+    }
+    await sleep(800);
     out.push('root: ' + await popRoot());
     out.push(await shot(page, '142-timeline-video-canvas-popover', { surface: 'timeline-canvas-popover', scope: '[data-audit-pop]', live: true }));
     await esc();
-    await page.getByRole('button', { name: /Edit grid/ }).first().click().catch(() => {}); await sleep(400);
-  });
-  await step('convert', async () => {
-    await page.locator('.track-header', { hasText: 'ch1' }).first().click({ button: 'right', position: { x: 60, y: 14 } }); await sleep(600);
-    await page.getByRole('menuitem', { name: /Convert to Pattern Track/ }).first().click(); await sleep(900);
-    out.push('dialogs: ' + await page.locator('[role="dialog"]').count());
-    out.push(await shot(page, '143-dialog-convert-track', { surface: 'timeline-convert', scope: '[role="dialog"]', live: true }));
-    await esc();
-    await page.getByRole('button', { name: /^Cancel/ }).first().click({ timeout: 1000 }).catch(() => {});
+    if (!wasOn) { await page.getByRole('button', { name: /Edit grid/ }).first().click().catch(() => {}); await sleep(400); }
   });
   return out.join('\n');
 };

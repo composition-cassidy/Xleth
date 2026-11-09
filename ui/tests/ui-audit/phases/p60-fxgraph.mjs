@@ -19,7 +19,9 @@ export default async ({ page, sleep }) => {
   out.push('canvas ' + JSON.stringify(canvas));
   const addNode = async (label, dx, dy) => {
     await page.mouse.click(canvas.x + dx, canvas.y + dy, { button: 'right' }); await sleep(500);
-    await page.getByRole('menuitem', { name: label, exact: true }).first().click({ timeout: 4000 }); await sleep(900);
+    // Pointer activation of the Modulators items is not delivered by the harness (focus + Enter is); see COMPARE.md "Found while capturing".
+    const it = page.getByRole('menuitem', { name: label, exact: true }).first();
+    await it.focus({ timeout: 4000 }); await page.keyboard.press('Enter'); await sleep(900);
   };
   await step('menu', async () => {
     await page.mouse.click(canvas.x + canvas.w * 0.55, canvas.y + canvas.h * 0.35, { button: 'right' }); await sleep(600);
