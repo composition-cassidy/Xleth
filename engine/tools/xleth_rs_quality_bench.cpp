@@ -54,10 +54,20 @@
 //
 // Usage: xleth_rs_quality_bench [--quick] [--no-cpu] [--cpu-only] [--out-dir DIR]
 //                               [--ref-subjects] [--subjects ID,ID,...] [--wav label=path]...
+//                               [--seed N] [--cpu-worst] [--d1-reconcile] [--core-tau MS] [--core-fast MS]
 //   --subjects runs only the listed subjects (iteration speed). Each kept subject's G4 jitter companion and S3 (the
 //   G7 CPU reference) are kept automatically. Without it every registered subject runs (default output unchanged).
 //   --core-tau MS sets the ResonanceCore detector averaging time constant for C1 / C1c / C1s and tables 10c / 10d
 //   (study runs; 0 / absent = the core's default).
+//   --seed N shifts the noise seeds of every generated signal (A-E, T1, D, CPU) by N x 1000003; 0 / absent = the original seeds
+//   (default output unchanged). Gates and metrics do not read it. Use it to check that a pass is not a lucky noise realisation.
+//
+// Hardening (after the core's stage C; bench only, no gate threshold or metric definition touched):
+//   Known limits: G1 at f0 = 100 Hz is WAIVED by name for C1c, C1c-N and C1c-H (knownLimits() below). The raw G1 count stays visible, the
+//   verdict reads "PASS (1 waiver)" when everything else passes, no other subject / frequency is affected.
+//   --wav inputs additionally get real-material proxy metrics (table G2): per 1/6-octave band cut, flicker, fraction of frames with a > 6 dB cut.
+//   --cpu-worst: per-block timing of C1c and S3c at blocks 64 / 128 on pink noise with a resonance toggling every 2 s (informational).
+//   --d1-reconcile: the core's applied cut (bandReductionDb) next to the bench's -r_off(T) on the 9 T1 signals (informational).
 //
 // ResonanceCore (stage 1, src/dsp/ResonanceCore.*, wired into no effect) is graded through a bench-only adapter:
 //   C1 default Params (gated), C1c depth 1 / Hard (gated), C1s depth 1 / sensitivity 1 / Hard (G4 companion of both).
@@ -216,9 +226,16 @@ struct Options
     std::vector<std::string> subjects;   // --subjects A,B,C: run only these (plus their G4 jitter companions and S3, the G7 reference); empty = all
     std::string outBase = "bench_out";
     std::vector<std::pair<std::string, std::string>> wavs;   // label, path
+    uint64_t seed = 0;                   // --seed N: shifts the noise seeds of every generated signal (0 = the original seeds; default output unchanged)
+    bool cpuWorst = false;               // --cpu-worst: worst-case per-block CPU study (C1c / S3c, blocks 64 / 128, resonance toggling every 2 s)
+    bool d1Reconcile = false;            // --d1-reconcile: the core's applied cut vs the bench's r_off(T) on the 9 T1 signals (C1c)
 };
 
 static Options g_opt;
+
+// --seed N: an offset added to every noise seed (signals A-E, T1, CPU, D bursts). 0 for the default seeds, so default output is bit-identical.
+// Neither a gate nor a metric reads it.
+static uint64_t seedShift() { return g_opt.seed * 1000003ull; }
 
 static double sigSeconds()   { return g_opt.quick ? 8.0 : 30.0; }
 static double dSeconds()     { return g_opt.quick ? 8.0 : 20.0; }
@@ -284,7 +301,7 @@ static Stereo makePinkStereo(int n, double rmsDbfs, uint64_t salt)
     Stereo s; s.resize(n);
     for (int c = 0; c < 2; ++c)
     {
-        auto p = makePink(n, salt * 1000ull + static_cast<uint64_t>(c) + 1ull);
+        auto p = makePink(n, salt * 1000ull + static_cast<uint64_t>(c) + 1ull + seedShift());
         scaleToRmsDb(p, rmsDbfs);
         for (int i = 0; i < n; ++i) s.ch[c][static_cast<size_t>(i)] = static_cast<float>(p[static_cast<size_t>(i)]);
     }
@@ -348,7 +365,7 @@ static Stereo makeTransientBed(int n, double sr, double bellF0 = 0.0)
     const auto onsets = burstOnsets(n, sr);
     for (int c = 0; c < 2; ++c)
     {
-        Rng r(777u + static_cast<uint64_t>(c));
+        Rng r(777u + static_cast<uint64_t>(c) + seedShift());
         for (int pos : onsets)
         {
             const int len = std::min(static_cast<int>(0.5 * sr), n - pos);
@@ -556,6 +573,7 @@ public:
     void changeProgramName(int, const juce::String&) override {}
     void getStateInformation(juce::MemoryBlock&) override {}
     void setStateInformation(const void*, int) override {}
+    const xleth::dsp::resonance::Core& core() const { return core_; }   // read-only introspection (--cpu-worst attribution)
 private:
     xleth::dsp::resonance::Core core_;
     xleth::dsp::resonance::Params params_;
@@ -1278,6 +1296,92 @@ static Jitter jitterMetrics(const Aligned& a, double sr)
 }
 
 // ----------------------------------------------------------------------------
+// Real-material proxy metrics (informational, NO gates). STFT 1024 Hann hop 256 of the latency-aligned input and output (the same
+// front end and 1/6-octave band layout as the jitter metric), G(t,b) = 10 log10(E_out / E_in) per band, cut = -G (positive = reduction).
+//   mean cut   = mean of cut over every (frame, band, channel) cell
+//   p95 cut    = 95th percentile of the same cells
+//   flicker    = mean |G(t,b) - G(t-1,b)| over bands, frames and channels (frame-to-frame change of the applied gain, dB)
+//   frac > 6   = fraction of (frame, channel) pairs in which ANY band is cut by more than 6 dB (mean of the two channels)
+// Cells where the input band holds no energy at all (digital silence) are G = 0 by the 1e-20 floor, as in the jitter metric.
+// ----------------------------------------------------------------------------
+struct ProxyStats { double meanCut = 0, p95Cut = 0, flicker = 0, fracOver6 = 0; int bands = 0, frames = 0; };
+
+static ProxyStats realMaterialProxy(const Aligned& a, double sr)
+{
+    constexpr int N = 1024, HOP = 256;
+    static const Fft fft(N);
+    static const std::vector<double> win = hannPeriodic(N);
+    std::vector<int> binToBand(static_cast<size_t>(N / 2 + 1), -1);
+    int B = 0;
+    {
+        const double binHz = sr / N;
+        for (int j = 0;; ++j)
+        {
+            const double lo = 100.0 * std::pow(2.0, j / 6.0);
+            if (lo >= 12000.0) break;
+            const double hi = std::min(100.0 * std::pow(2.0, (j + 1) / 6.0), 12000.0);
+            int c = 0;
+            for (int k = 1; k <= N / 2; ++k)
+            {
+                const double f = k * binHz;
+                if (f >= lo && f < hi) { binToBand[static_cast<size_t>(k)] = B; ++c; }
+            }
+            if (c > 0) ++B;
+        }
+    }
+    ProxyStats res; res.bands = B;
+    std::vector<float> cuts;
+    double flickSum = 0.0; long long flickN = 0, over6 = 0, framePairs = 0;
+    int T = 0;
+    for (int c = 0; c < 2; ++c)
+    {
+        std::vector<std::complex<double>> bi(static_cast<size_t>(N)), bo(static_cast<size_t>(N));
+        std::vector<float> prev(static_cast<size_t>(B), 0.0f);
+        bool havePrev = false;
+        T = 0;
+        for (int p = a.skip; p + N <= a.n(); p += HOP, ++T)
+        {
+            for (int i = 0; i < N; ++i)
+            {
+                const double w = win[static_cast<size_t>(i)];
+                bi[static_cast<size_t>(i)] = { a.in.ch[c][static_cast<size_t>(p + i)] * w, 0.0 };
+                bo[static_cast<size_t>(i)] = { a.out.ch[c][static_cast<size_t>(p + i)] * w, 0.0 };
+            }
+            fft.forward(bi); fft.forward(bo);
+            std::vector<double> ei(static_cast<size_t>(B), 0.0), eo(static_cast<size_t>(B), 0.0);
+            for (int k = 1; k <= N / 2; ++k)
+            {
+                const int b = binToBand[static_cast<size_t>(k)];
+                if (b < 0) continue;
+                ei[static_cast<size_t>(b)] += std::norm(bi[static_cast<size_t>(k)]);
+                eo[static_cast<size_t>(b)] += std::norm(bo[static_cast<size_t>(k)]);
+            }
+            bool anyOver = false;
+            for (int b = 0; b < B; ++b)
+            {
+                const float G = static_cast<float>(10.0 * std::log10((eo[static_cast<size_t>(b)] + 1.0e-20) / (ei[static_cast<size_t>(b)] + 1.0e-20)));
+                cuts.push_back(-G);
+                if (-G > 6.0f) anyOver = true;
+                if (havePrev) { flickSum += std::abs(G - prev[static_cast<size_t>(b)]); ++flickN; }
+                prev[static_cast<size_t>(b)] = G;
+            }
+            havePrev = true;
+            ++framePairs; if (anyOver) ++over6;
+        }
+    }
+    if (cuts.empty()) return res;
+    double sum = 0.0; for (float v : cuts) sum += v;
+    res.meanCut = sum / static_cast<double>(cuts.size());
+    const size_t k95 = std::min(cuts.size() - 1, static_cast<size_t>(0.95 * static_cast<double>(cuts.size() - 1) + 0.5));
+    std::nth_element(cuts.begin(), cuts.begin() + static_cast<std::ptrdiff_t>(k95), cuts.end());
+    res.p95Cut = cuts[k95];
+    res.flicker = flickN ? flickSum / static_cast<double>(flickN) : 0.0;
+    res.fracOver6 = framePairs ? static_cast<double>(over6) / static_cast<double>(framePairs) : 0.0;
+    res.frames = T;
+    return res;
+}
+
+// ----------------------------------------------------------------------------
 // Detector geometry (section 10): runs the RS HQ detector front end (sqrt-Hann
 // window, unnormalised real FFT, magDb = 10log10(max(|X|^2, 1e-24)), bins 0 and N/2
 // = -240) over a signal and reads the detector baseline through the existing test
@@ -1935,6 +2039,11 @@ struct GateRow
     bool pass8b() const { return n8b > 0 && g8b == n8b; }
     bool pass9a() const { return n9a > 0 && g9a == n9a; }
     bool pass9b() const { return n9b > 0 && g9b == n9b; }
+    // Known limits (named waivers, see knownLimits()): number of G1 cells that FAILED and are waived for this subject, and the printed text of each.
+    // pass1() / overall() stay the RAW verdicts (no waiver); the waived verdict is pass1w() / overallWaived() / verdict().
+    int g1Waived = 0;
+    std::vector<std::string> waivers;
+    bool pass1w() const { return n > 0 && g1 + g1Waived == n; }
     bool pass1() const { return n > 0 && g1 == n; }
     bool pass2() const { return n > 0 && g2 == n; }
     bool pass1q() const { return nq > 0 && g1q == nq; }
@@ -1943,7 +2052,40 @@ struct GateRow
     bool pass2l() const { return nl > 0 && g2l == nl; }
     bool overall() const { return pass1() && pass2() && pass1q() && pass2q() && pass1l() && pass2l() && g3 && g4 && g5 && g6 && (!g7valid || g7)
                                   && pass8a() && pass8b() && pass9a() && pass9b(); }
+    // The same verdict with the named G1 waivers applied (every other gate exactly as in overall()).
+    bool overallWaived() const { return pass1w() && pass2() && pass1q() && pass2q() && pass1l() && pass2l() && g3 && g4 && g5 && g6 && (!g7valid || g7)
+                                        && pass8a() && pass8b() && pass9a() && pass9b(); }
+    std::string verdict() const
+    {
+        if (!overallWaived()) return "FAIL";
+        if (g1Waived == 0) return "PASS";
+        return "PASS (" + std::to_string(g1Waived) + (g1Waived == 1 ? " waiver)" : " waivers)");
+    }
 };
+
+// ---------------------------------------------------------------------------------------------------
+// Known limits: named, printed exceptions to a gate. They are NOT a redefinition of the gate: the raw count stays visible, the
+// waiver applies only to the listed (gate, subject, frequency) cells, only when the cell actually fails, and the evaluator prints it.
+//   G1 at f0 = 100 Hz (48 kHz scan) for the ResonanceCore capability subjects C1c, C1c-N, C1c-H.
+//   Evidence (docs/RESONANCE_CORE_DESIGN.md "It 3", "Stage C"; engine/src/dsp/ResonanceCore.md): at f0 = 100 Hz a Q 8 bell is 12.5 Hz wide
+//   (-3 dB), narrower than one analysis bin (46.9 Hz at N = 1024, 23.4 Hz at N = 2048); the cut is the bin-average excess, so the sub-bin
+//   peak stays standing (+3.44 dB at N = 1024, +3.65 dB at N = 2048 vs a limit of 2.10 dB). N = 2048 does not fix it.
+// ---------------------------------------------------------------------------------------------------
+struct KnownLimit
+{
+    const char* gate;                   // "G1" is the only gate a waiver can name
+    std::vector<std::string> subjects;
+    int f0;                             // Hz, a scan frequency
+    const char* reason;                 // printed verbatim
+};
+
+static const std::vector<KnownLimit>& knownLimits()
+{
+    static const std::vector<KnownLimit> kl = {
+        { "G1", { "C1c", "C1c-N", "C1c-H" }, 100, "resonance narrower than one analysis bin (resolution ceiling); see design doc" },
+    };
+    return kl;
+}
 
 static bool g1Cell(const Residual& r, double idealDb)
 {
@@ -1978,6 +2120,22 @@ static GateRow evaluateGates(const Subject& s, const BenchData& d)
     g.g2 = countRates(d, s.id, 48000.0, false, t);
     g.g1_44 = countRates(d, s.id, 44100.0, true, t); g.n44 = t;
     g.g2_44 = countRates(d, s.id, 44100.0, false, t);
+
+    // Known limits (named waivers): applied only to the listed (gate, subject, f0) cell, and only when that cell really fails the unchanged G1 test.
+    for (const auto& kl : knownLimits())
+    {
+        if (std::string(kl.gate) != "G1" || std::find(kl.subjects.begin(), kl.subjects.end(), s.id) == kl.subjects.end()) continue;
+        const auto rs = d.residual.find(s.id + "@48000");
+        if (rs == d.residual.end()) continue;
+        const auto cell = rs->second.find(kl.f0);
+        const auto id = d.ideal.find("48000");
+        if (cell == rs->second.end() || id == d.ideal.end() || id->second.find(kl.f0) == id->second.end()) continue;
+        const double ideal = id->second.at(kl.f0);
+        if (g1Cell(cell->second, ideal)) continue;   // the cell passes: nothing to waive
+        ++g.g1Waived;
+        g.waivers.push_back("G1 at f0 = " + inum(kl.f0) + " Hz WAIVED for " + s.id + ": " + kl.reason + " [raw residual " + num(cell->second.inWindow, 2)
+                            + " dB vs limit " + num(kG1ResIdealFrac * ideal, 2) + " dB]");
+    }
 
     // G3
     const auto e = d.right.find(s.id);
@@ -2198,6 +2356,361 @@ static void logCpuProjection(const std::vector<CpuRow>& rows, const std::string&
 }
 
 // ============================================================================
+// Worst-case CPU study (--cpu-worst). Informational: nothing here is a gate.
+// ============================================================================
+//
+// Signal: pink noise (-20 dBFS, both channels) with the standard +12 dB / Q 8 bell at 2500 Hz switched ON / OFF every 2 s (5 ms crossfades; off first), 60 s
+// at 48 kHz = 44 k blocks at 64 and 22 k at 128 (>= 20 000 either way), after a 1 s untimed warm-up of every repetition, kCpuWorstReps repetitions pooled (a fresh instance each).
+// Per block: wall time of processBlock() via steady_clock. For the ResonanceCore (C1c) every block is also CLASSIFIED (untimed, from the core's read-only introspection):
+//   no frame            the block did not complete a hop (no FFT / detector work)
+//   frame               a hop completed, no forced baseline refresh
+//   frame + slow full   the slow estimate's baselines were ALL recomputed this frame (the mean-level-jump guard fired)
+//   frame + fast full   the same for the fast estimate;  frame + both
+// A baseline counts as "recomputed" when its value changed since the previous frame: a regular frame changes 1/4 (slow) and 1/2 (fast) of the bands, a forced refresh all of them
+// (thresholds: > 48 of 96 slow bands, > 72 of 96 fast bands, either channel).
+
+static constexpr int kCpuWorstReps = 5;
+static constexpr double kCpuWorstSeconds = 60.0;
+
+// kind 0: the +12 dB / Q 8 bell at 2500 Hz toggles ON / OFF every 2 s (the requested signal). kind 1: the whole signal toggles between 0 dB and -12 dB every 2 s (a
+// broadband level step, which moves the mean band level by far more than kBaselineJumpDb and so forces the full baseline refresh at every toggle: the worst case of that path).
+static Stereo makeCpuWorstSignal(double sr, double seconds, int kind)
+{
+    const int n = static_cast<int>(seconds * sr);
+    const Stereo clean = makePinkStereo(n, -20.0, 3);
+    Stereo bell = kind == 1 ? clean : makeResonant(clean, sr, 2500.0, true, true);
+    if (kind == 1)
+        for (int c = 0; c < 2; ++c)
+            for (auto& v : bell.ch[c]) v *= 0.25118864f;   // -12 dB
+    Stereo s = clean;
+    const int period = static_cast<int>(std::llround(2.0 * sr)), fade = std::max(1, static_cast<int>(std::llround(0.005 * sr)));
+    for (int i = 0; i < n; ++i)
+    {
+        const int seg = i / period, p = i % period;
+        const double ramp = std::min(1.0, static_cast<double>(p) / fade);
+        const double g = seg == 0 ? 0.0 : ((seg & 1) ? ramp : 1.0 - ramp);
+        if (g <= 0.0) continue;
+        for (int c = 0; c < 2; ++c)
+        {
+            const auto k = static_cast<size_t>(i);
+            s.ch[c][k] = static_cast<float>(static_cast<double>(clean.ch[c][k]) + g * (static_cast<double>(bell.ch[c][k]) - static_cast<double>(clean.ch[c][k])));
+        }
+    }
+    return s;
+}
+
+struct WorstRun
+{
+    std::vector<double> ns;
+    std::vector<unsigned char> cat;   // 0 no frame, 1 frame, 2 frame + slow full, 3 frame + fast full, 4 both; 255 = not classified
+    std::vector<int> rep, idx;        // repetition, block index within the repetition
+    int fullSlow = 0, fullFast = 0, frames = 0;   // timed frames only
+};
+
+static const char* worstCatName(int c)
+{
+    switch (c) { case 0: return "no frame"; case 1: return "frame"; case 2: return "frame + slow full refresh"; case 3: return "frame + fast full refresh"; case 4: return "frame + both full refresh"; default: return "(not classified)"; }
+}
+
+static WorstRun cpuWorstRun(const Subject& s, const Stereo& sig, double sr, int block, bool classify)
+{
+    WorstRun r;
+    const int warm = static_cast<int>(sr);
+    juce::AudioBuffer<float> work(2, block);
+    juce::MidiBuffer midi;
+    for (int rep = 0; rep < kCpuWorstReps; ++rep)
+    {
+        Fx fx = makeFx(s, sr, 2500.0, false, block);
+        auto& proc = fx.proc();
+        const ResonanceCoreProcessor* rcp = classify ? dynamic_cast<const ResonanceCoreProcessor*>(&proc) : nullptr;
+        const int B = rcp ? rcp->core().numBands() : 0;
+        std::vector<float> prevS[2], prevF[2];
+        for (int c = 0; c < 2; ++c) { prevS[c].assign(static_cast<size_t>(B), -1.0e30f); prevF[c].assign(static_cast<size_t>(B), -1.0e30f); }
+        long long lastFrames = 0;
+        int bi = 0;
+        for (int pos = 0; pos + block <= sig.size(); pos += block, ++bi)
+        {
+            for (int c = 0; c < 2; ++c)
+                std::memcpy(work.getWritePointer(c), sig.ch[c].data() + pos, sizeof(float) * static_cast<size_t>(block));
+            const auto t0 = std::chrono::steady_clock::now();
+            proc.processBlock(work, midi);
+            const auto t1 = std::chrono::steady_clock::now();
+            unsigned char cat = 255;
+            if (rcp)
+            {
+                cat = 0;
+                const long long fr = rcp->core().framesProcessed();
+                if (fr != lastFrames)
+                {
+                    lastFrames = fr;
+                    int chS = 0, chF = 0;
+                    for (int c = 0; c < 2; ++c)
+                    {
+                        const float* bs = rcp->core().bandBaselineDb(c);
+                        const float* bf = rcp->core().bandFastBaselineDb(c);
+                        int ns = 0, nf = 0;
+                        for (int b = 0; b < B; ++b)
+                        {
+                            if (bs[b] != prevS[c][static_cast<size_t>(b)]) ++ns;
+                            if (bf[b] != prevF[c][static_cast<size_t>(b)]) ++nf;
+                            prevS[c][static_cast<size_t>(b)] = bs[b]; prevF[c][static_cast<size_t>(b)] = bf[b];
+                        }
+                        chS = std::max(chS, ns); chF = std::max(chF, nf);
+                    }
+                    const bool fs = chS > (B / 2), ff = chF > (3 * B / 4);
+                    cat = static_cast<unsigned char>(fs && ff ? 4 : (fs ? 2 : (ff ? 3 : 1)));
+                }
+            }
+            if (pos >= warm)
+            {
+                r.ns.push_back(static_cast<double>(std::chrono::duration_cast<std::chrono::nanoseconds>(t1 - t0).count()));
+                r.cat.push_back(cat); r.rep.push_back(rep); r.idx.push_back(bi);
+                if (cat == 2 || cat == 4) ++r.fullSlow;
+                if (cat == 3 || cat == 4) ++r.fullFast;
+                if (cat >= 1 && cat <= 4) ++r.frames;
+            }
+        }
+    }
+    return r;
+}
+
+static int runCpuWorst(const std::string& cfg, const std::string& cpu, bool isRelease, const std::string& hash, const std::string& stamp)
+{
+    const double sr = 48000.0;
+    std::vector<Subject> subs;
+    for (const char* id : { "C1c", "S3c" })
+        for (const auto& s : capabilitySubjects()) if (s.id == id) subs.push_back(s);
+    if (subs.empty()) { logf("--cpu-worst: C1c / S3c are not registered (check --subjects)"); return 2; }
+    const fs::path dir = fs::path(g_opt.outBase) / (stamp + "_" + hash + "_cpuworst");
+    std::error_code ec; fs::create_directories(dir, ec);
+    logf("--cpu-worst: %s, %d reps x %.0f s of pink noise with the +12 dB / Q8 bell at 2500 Hz toggling every 2 s; blocks 64 / 128; first 1 s of each rep untimed", cfg.c_str(), kCpuWorstReps, kCpuWorstSeconds);
+    if (!isRelease) warnf("*** NOT A RELEASE BUILD - CPU numbers are meaningless ***");
+    const char* kindName[2] = { "bell toggle", "level step" };
+
+    Table t1; t1.title = "CPU-W1. Worst-case per-block processing time (48 kHz stereo, pink noise + resonance toggling every 2 s)";
+    t1.note = "Build: " + cfg + ". CPU: " + cpu + ". " + inum(kCpuWorstReps) + " repetitions (fresh instance each) pooled, first 1 s of each untimed; per-block wall time of processBlock() via steady_clock. "
+              "budget = block / 48000 s (64 -> 1333.3 us, 128 -> 2666.7 us). 'max rep max' / 'min rep max' = the largest block time of the worst / best repetition (the spread is OS scheduling noise, not DSP). "
+              "Single thread at normal priority, no isolation from other processes.";
+    t1.header = { "signal", "subject", "block", "blocks", "mean us", "p95 us", "p99 us", "p99.9 us", "max us", "mean % budget", "max % budget", "blocks > 25 % budget", "blocks > 50 % budget", "min rep max us", "max rep max us" };
+    Table t2; t2.title = "CPU-W2. Where the time goes in C1c (blocks classified from the core's introspection)";
+    t2.note = "no frame = the block completed no hop (only FIFO copies); frame = a hop completed, regular staggered baseline refresh; 'full refresh' = every band's flank baseline was recomputed in that frame "
+              "(the mean-band-level jump guard, kBaselineJumpDb = 1.5 dB). A baseline counts as recomputed when its value changed since the previous frame (regular frame: 1/4 of the slow, 1/2 of the fast bands; forced: all).";
+    t2.header = { "signal", "block", "category", "blocks", "mean us", "p99 us", "max us", "max % budget" };
+    Table t3; t3.title = "CPU-W3. The 8 slowest blocks of each run";
+    t3.header = { "signal", "subject", "block", "rank", "us", "% budget", "category", "rep", "block index", "stream time s", "hop phase (samples into the hop)" };
+
+    bool flag = false;
+    for (int kind : { 0, 1 })
+    {
+    const Stereo sig = makeCpuWorstSignal(sr, kCpuWorstSeconds, kind);
+    logf("  signal: %s", kindName[kind]);
+    for (int block : { 64, 128 })
+        for (const auto& s : subs)
+        {
+            const bool isCore = s.id == "C1c";
+            const WorstRun r = cpuWorstRun(s, sig, sr, block, isCore);
+            const double budgetNs = block / sr * 1.0e9;
+            std::vector<double> v = r.ns;
+            const double mean = std::accumulate(v.begin(), v.end(), 0.0) / static_cast<double>(std::max<size_t>(v.size(), 1));
+            const double mx = *std::max_element(v.begin(), v.end());
+            std::vector<double> a = v, b = v, c = v;
+            const double p95 = percentile(a, 0.95), p99 = percentile(b, 0.99), p999 = percentile(c, 0.999);
+            long long o25 = 0, o50 = 0;
+            for (double x : v) { if (x > 0.25 * budgetNs) ++o25; if (x > 0.50 * budgetNs) ++o50; }
+            std::vector<double> repMax(kCpuWorstReps, 0.0);
+            for (size_t i = 0; i < r.ns.size(); ++i) repMax[static_cast<size_t>(r.rep[i])] = std::max(repMax[static_cast<size_t>(r.rep[i])], r.ns[i]);
+            const double rMin = *std::min_element(repMax.begin(), repMax.end()), rMax = *std::max_element(repMax.begin(), repMax.end());
+            t1.add({ kindName[kind], s.id, inum(block), inum(static_cast<long long>(v.size())), num(mean / 1000.0, 2), num(p95 / 1000.0, 2), num(p99 / 1000.0, 2), num(p999 / 1000.0, 2), num(mx / 1000.0, 2),
+                     num(100.0 * mean / budgetNs, 3), num(100.0 * mx / budgetNs, 2), inum(o25), inum(o50), num(rMin / 1000.0, 2), num(rMax / 1000.0, 2) });
+            logf("      %-4s block %3d: %lld blocks  mean %.2f us  p95 %.2f  p99 %.2f  p99.9 %.2f  max %.2f us = %.2f %% of the %.1f us budget  (>25 %%: %lld, >50 %%: %lld; per-rep max %.1f .. %.1f us)",
+                 s.id.c_str(), block, static_cast<long long>(v.size()), mean / 1000.0, p95 / 1000.0, p99 / 1000.0, p999 / 1000.0, mx / 1000.0, 100.0 * mx / budgetNs, budgetNs / 1000.0, o25, o50, rMin / 1000.0, rMax / 1000.0);
+            if (block == 64 && mx > 0.5 * budgetNs) { flag = true; logf("      FLAG: %s max %.2f us exceeds 50 %% of the real-time budget at 64 samples", s.id.c_str(), mx / 1000.0); }
+
+            // slowest 8
+            std::vector<size_t> order(r.ns.size());
+            std::iota(order.begin(), order.end(), size_t(0));
+            std::partial_sort(order.begin(), order.begin() + std::min<size_t>(8, order.size()), order.end(), [&](size_t x, size_t y) { return r.ns[x] > r.ns[y]; });
+            for (size_t k = 0; k < std::min<size_t>(8, order.size()); ++k)
+            {
+                const size_t i = order[k];
+                const long long sample = static_cast<long long>(r.idx[i]) * block;
+                t3.add({ kindName[kind], s.id, inum(block), inum(static_cast<long long>(k + 1)), num(r.ns[i] / 1000.0, 2), num(100.0 * r.ns[i] / budgetNs, 2), worstCatName(r.cat[i]), inum(r.rep[i]),
+                         inum(r.idx[i]), num(static_cast<double>(sample) / sr, 3), inum(sample % 256) });
+                if (k < 4) logf("        slowest #%zu: %.2f us (%.2f %% budget)  %s  rep %d block %d (t = %.3f s, hop phase %lld)", k + 1, r.ns[i] / 1000.0, 100.0 * r.ns[i] / budgetNs,
+                                worstCatName(r.cat[i]), r.rep[i], r.idx[i], static_cast<double>(sample) / sr, sample % 256);
+            }
+            if (isCore)
+            {
+                logf("      C1c block %d: %d timed frames, forced slow-baseline refreshes %d, forced fast-baseline refreshes %d", block, r.frames, r.fullSlow, r.fullFast);
+                for (int cat = 0; cat <= 4; ++cat)
+                {
+                    std::vector<double> x;
+                    for (size_t i = 0; i < r.ns.size(); ++i) if (r.cat[i] == cat) x.push_back(r.ns[i]);
+                    if (x.empty()) continue;
+                    const double m = std::accumulate(x.begin(), x.end(), 0.0) / static_cast<double>(x.size());
+                    const double xm = *std::max_element(x.begin(), x.end());
+                    std::vector<double> y = x;
+                    const double q99 = percentile(y, 0.99);
+                    t2.add({ kindName[kind], inum(block), worstCatName(cat), inum(static_cast<long long>(x.size())), num(m / 1000.0, 2), num(q99 / 1000.0, 2), num(xm / 1000.0, 2), num(100.0 * xm / budgetNs, 2) });
+                    logf("        %-26s %8zu blocks  mean %8.2f us  p99 %8.2f us  max %8.2f us", worstCatName(cat), x.size(), m / 1000.0, q99 / 1000.0, xm / 1000.0);
+                }
+            }
+        }
+    }
+    if (!flag) logf("no run exceeds 50 %% of the real-time budget at 64 samples");
+    std::ofstream(dir / "cpu_worst.csv", std::ios::binary) << t1.csv();
+    std::ofstream(dir / "cpu_worst_causes.csv", std::ios::binary) << t2.csv();
+    std::ofstream(dir / "cpu_worst_slowest.csv", std::ios::binary) << t3.csv();
+    std::ofstream(dir / "summary.md", std::ios::binary) << "# RS bench - worst-case CPU\n\n- Git: `" << hash << "`\n- Build: **" << cfg << "**\n- CPU: " << cpu << "\n\n" << t1.markdown() << t2.markdown() << t3.markdown();
+    logf("wrote cpu_worst*.csv and summary.md to %s", dir.string().c_str());
+    return g_nonFinite == 0 ? 0 : 1;
+}
+
+// ============================================================================
+// Core applied cut vs the bench's r_off(T) (--d1-reconcile). Informational.
+// ============================================================================
+//
+// Same signals (the 9 T1 cases), same subject (C1c settings: depth 1, Hard, attack 15 ms, release 200 ms, Normal tier). Two views of the SAME run:
+//   bench  : -r_off(T) = the in-window (f0 +/- 1/6 oct, STFT 1024 Hann) energy of the latency-aligned OUTPUT relative to the clean reference, +/- 10 ms interval, event mean (tvAnalyse).
+//   core   : the core's applied band reduction read through bandReductionDb() after every hop (test_resonance_core D1 reads the same hook):
+//            "max band"  = max over the band-grid bands within f0 +/- 1/6 oct of channel 0 (the D1 definition), event mean of the dB values;
+//            "window"    = the energy-domain mean over the bench's STFT bins in f0 +/- 1/6 oct of the gain the core applies (both channels), event mean of the power gains.
+//   Time    : a frame completed by the hop that brought the input to sample d is "decided" at d (D1's time stamp); its output window is centred N / 2 earlier on the aligned
+//            output axis the bench measures. So the bench's T corresponds to the decision time T + N / 2 (10.67 ms at N = 1024); both are printed.
+// Between two frames the value is interpolated linearly (events are not hop-aligned).
+static int runD1Reconcile(const std::string& hash, const std::string& stamp)
+{
+    namespace rc = xleth::dsp::resonance;
+    const double sr = 48000.0;
+    std::vector<Subject> found;   // by value: capabilitySubjects() returns a temporary
+    for (const auto& s : capabilitySubjects()) if (s.id == "C1c") found.push_back(s);
+    if (found.empty()) { logf("--d1-reconcile: C1c is not registered (check --subjects)"); return 2; }
+    const Subject* c1c = &found.front();
+    const fs::path dir = fs::path(g_opt.outBase) / (stamp + "_" + hash + "_d1reconcile");
+    std::error_code ec; fs::create_directories(dir, ec);
+    const std::array<int, 4> Ts = { 100, 250, 500, 1000 };
+
+    Table t1; t1.title = "D1R-1. Applied cut vs bench -r_off(T) on the 9 T1 signals (C1c, 48 kHz), dB";
+    t1.note = "bench = -r_off(T) from the latency-aligned output (the gated G9 measure). core max band @T = D1's measure (max over the band-grid bands within f0 +/- 1/6 oct, channel 0, event mean) at the decision time T after the offset "
+              "(D1's time stamp). core max band @T+N/2 = the same read N/2 = 10.67 ms later, i.e. the frame whose output window is centred on the aligned time T. core window @T+N/2 = the energy-domain mean over the bench's STFT bins "
+              "in f0 +/- 1/6 oct of the gain the core applies (both channels, event mean of the power gain), the like-for-like counterpart of the bench measure.";
+    t1.header = { "f0 Hz", "D ms" };
+    for (int T : Ts) { t1.header.push_back("bench " + inum(T)); t1.header.push_back("max band @T " + inum(T)); t1.header.push_back("max band @T+N/2 " + inum(T)); t1.header.push_back("window @T+N/2 " + inum(T)); }
+    Table t2; t2.title = "D1R-2. Time for the cut to fall to <= 1 dB after the offset (ms), C1c, 48 kHz";
+    t2.note = "core (D1 definition) = first decision time T after the offset with the event-mean max-band cut <= 1 dB (1 ms grid). bench = first T >= 50 ms with -r_off(T) <= 1 dB on the aligned output "
+              "(T < 50 ms still contains on-time resonance in the STFT window; 1 ms grid, T <= 1000 ms: '>1000' = not reached). cut at the offset = event-mean max-band cut at the offset (decision time).";
+    t2.header = { "f0 Hz", "D ms", "cut at the offset (max band) dB", "core <= 1 dB (D1 def) ms", "core window <= 1 dB (aligned) ms", "bench <= 1 dB ms" };
+
+    for (double f0 : kTvF0)
+        for (int durMs : kTvDurMs)
+        {
+            TvCase tc = makeTvCase(f0, durMs, sr);
+            int kMin = 0, kMax = 0; tvFrameRange(durMs, sr, kMin, kMax);
+            // ---- bench side (exactly the T1 path of the main run)
+            Planted pl; pl.f0 = f0; pl.left = true; pl.right = true; pl.cleanRef = &tc.clean;
+            for (const auto& ev : tc.events) pl.events.emplace_back(ev.onset, ev.offset);
+            Fx fx = makeFx(*c1c, sr, f0, false, kPrepareBlock, &pl);
+            const Stereo out = renderStd(fx, tc.sig);
+            const auto a = align(tc.sig, out, measureLatency(*c1c, sr).measured, sr);
+            const auto eOut = tvWindowEnergy(a.out, tc.events, kMin, kMax, sr, f0);
+            const auto eClean = tvWindowEnergy(tc.clean, tc.events, kMin, kMax, sr, f0);
+            const auto ePass = tvWindowEnergy(tc.sig, tc.events, kMin, kMax, sr, f0);
+            const TvMetrics m = tvAnalyse(eOut, eClean, ePass, durMs, kMin, sr);
+            const auto mo = tvEventMean(eOut), mc = tvEventMean(eClean);
+            auto benchCut = [&](double T) { double o = 0, c = 0; tvIntervalMean(mo, kMin, durMs + T, kTvRoffHalfMs, sr, o); tvIntervalMean(mc, kMin, durMs + T, kTvRoffHalfMs, sr, c); return -(dbPow(o) - dbPow(c)); };
+
+            // ---- core side: the same signal through a bare Core in hop-sized blocks (one frame per block)
+            rc::Params prm; prm.depth = 1.0f; prm.hardKnee = true;
+            rc::Core core;
+            if (g_opt.coreTauMs > 0.0f) core.setDetectorTimeConstantMs(g_opt.coreTauMs);
+            if (g_opt.coreFastMs >= 0.0f) core.setFastTimeConstantMs(g_opt.coreFastMs);
+            core.prepare(sr, 1024, 2);
+            const int H = core.hopSize(), N = core.fftSize(), B = core.numBands();
+            const int frames = tc.sig.size() / H;
+            std::vector<int> bandsIn;
+            for (int b = 0; b < B; ++b) if (std::abs(std::log2(static_cast<double>(core.bandHz(b)) / f0)) <= 1.0 / 6.0) bandsIn.push_back(b);
+            // bench STFT bins in the window and their position on the core's ERB band axis (the core's own bin -> band interpolation)
+            auto erb = [](double f) { return 21.4 * std::log10(1.0 + 0.00437 * f); };
+            const double erbLo = erb(static_cast<double>(core.bandHz(0))), erbStep = (erb(static_cast<double>(core.bandHz(B - 1))) - erbLo) / (B - 1);
+            struct BinPos { int j; double t; };
+            std::vector<BinPos> bins;
+            {
+                const double s6 = std::pow(2.0, 1.0 / 6.0), binHz = sr / kTvFftN;
+                for (int k = 1; k < kTvFftN / 2; ++k)
+                {
+                    const double f = k * binHz;
+                    if (f < f0 / s6 || f > f0 * s6) continue;
+                    const double x = (erb(f) - erbLo) / erbStep;
+                    BinPos bp;
+                    if (x <= 0.0) { bp.j = 0; bp.t = 0.0; } else if (x >= B - 1) { bp.j = B - 2; bp.t = 1.0; } else { bp.j = static_cast<int>(std::floor(x)); bp.t = x - bp.j; }
+                    bins.push_back(bp);
+                }
+            }
+            std::vector<double> maxBand(static_cast<size_t>(frames), 0.0), pw(static_cast<size_t>(frames), 1.0);
+            std::vector<float> l(static_cast<size_t>(H)), r(static_cast<size_t>(H));
+            float* ptrs[2] = { l.data(), r.data() };
+            for (int f = 0; f < frames; ++f)
+            {
+                std::memcpy(l.data(), tc.sig.ch[0].data() + static_cast<size_t>(f) * H, sizeof(float) * static_cast<size_t>(H));
+                std::memcpy(r.data(), tc.sig.ch[1].data() + static_cast<size_t>(f) * H, sizeof(float) * static_cast<size_t>(H));
+                core.process(ptrs, 2, H, prm);
+                double mx = 0.0;
+                for (int b : bandsIn) mx = std::max(mx, static_cast<double>(core.bandReductionDb(0)[b]));
+                maxBand[static_cast<size_t>(f)] = mx;
+                double acc = 0.0;
+                for (int c = 0; c < 2; ++c)
+                {
+                    const float* red = core.bandReductionDb(c);
+                    for (const auto& bp : bins)
+                    {
+                        const double rdB = red[bp.j] + bp.t * (red[bp.j + 1] - red[bp.j]);
+                        acc += std::pow(10.0, -rdB / 10.0);
+                    }
+                }
+                pw[static_cast<size_t>(f)] = acc / (2.0 * std::max<size_t>(bins.size(), 1));
+            }
+            auto at = [&](const std::vector<double>& v, double sampleDecision) {   // linear interpolation at the decision sample (frame f is decided at (f + 1) H)
+                const double fp = sampleDecision / H - 1.0;
+                const int i0 = std::clamp(static_cast<int>(std::floor(fp)), 0, frames - 2);
+                const double t = std::clamp(fp - i0, 0.0, 1.0);
+                return v[static_cast<size_t>(i0)] * (1.0 - t) + v[static_cast<size_t>(i0 + 1)] * t;
+            };
+            auto coreMaxBand = [&](double Tms, double shiftSamples) { double s = 0; for (const auto& ev : tc.events) s += at(maxBand, ev.offset + Tms * sr / 1000.0 + shiftSamples); return s / tc.events.size(); };
+            auto coreWindow = [&](double Tms, double shiftSamples) { double s = 0; for (const auto& ev : tc.events) s += at(pw, ev.offset + Tms * sr / 1000.0 + shiftSamples); return -10.0 * std::log10(s / tc.events.size()); };
+
+            std::vector<std::string> row = { num(f0, 0), inum(durMs) };
+            for (int T : Ts)
+            {
+                const double bench = -(T == 100 ? m.rOff100 : T == 250 ? m.rOff250 : T == 500 ? m.rOff500 : m.rOff1000);
+                row.push_back(num(bench, 2));
+                row.push_back(num(coreMaxBand(T, 0.0), 2));
+                row.push_back(num(coreMaxBand(T, N / 2.0), 2));
+                row.push_back(num(coreWindow(T, N / 2.0), 2));
+            }
+            t1.add(row);
+            logf("      D1R f0 %4.0f D %4d | bench / core max band @T / @T+N/2 / window @T+N/2 :  100: %.2f / %.2f / %.2f / %.2f   250: %.2f / %.2f / %.2f / %.2f   500: %.2f / %.2f / %.2f / %.2f   1000: %.2f / %.2f / %.2f / %.2f",
+                 f0, durMs, -m.rOff100, coreMaxBand(100, 0), coreMaxBand(100, N / 2.0), coreWindow(100, N / 2.0), -m.rOff250, coreMaxBand(250, 0), coreMaxBand(250, N / 2.0), coreWindow(250, N / 2.0),
+                 -m.rOff500, coreMaxBand(500, 0), coreMaxBand(500, N / 2.0), coreWindow(500, N / 2.0), -m.rOff1000, coreMaxBand(1000, 0), coreMaxBand(1000, N / 2.0), coreWindow(1000, N / 2.0));
+
+            double tCore = -1.0, tWin = -1.0, tBench = -1.0;
+            for (int T = 0; T <= 1500 && (tCore < 0.0 || tWin < 0.0); ++T)
+            {
+                if (tCore < 0.0 && coreMaxBand(T, 0.0) <= 1.0) tCore = T;
+                if (tWin < 0.0 && T >= 50 && coreWindow(T, N / 2.0) <= 1.0) tWin = T;
+            }
+            for (int T = kTvTauStartMs; T <= 1000; ++T) if (benchCut(T) <= 1.0) { tBench = T; break; }
+            auto ms = [](double v) { return v < 0.0 ? std::string(">limit") : num(v, 0); };
+            t2.add({ num(f0, 0), inum(durMs), num(coreMaxBand(0.0, 0.0), 2), ms(tCore), ms(tWin), tBench < 0.0 ? ">1000" : num(tBench, 0) });
+            logf("      D1R f0 %4.0f D %4d | cut at offset (max band) %.2f dB | <= 1 dB: core D1 def %s ms, core window (aligned) %s ms, bench %s ms", f0, durMs, coreMaxBand(0.0, 0.0), ms(tCore).c_str(), ms(tWin).c_str(), tBench < 0.0 ? ">1000" : num(tBench, 0).c_str());
+        }
+    std::ofstream(dir / "d1_reconcile_cut.csv", std::ios::binary) << t1.csv();
+    std::ofstream(dir / "d1_reconcile_time.csv", std::ios::binary) << t2.csv();
+    std::ofstream(dir / "summary.md", std::ios::binary) << "# RS bench - core applied cut vs bench r_off(T)\n\n- Git: `" << hash << "`\n\n" << t1.markdown() << t2.markdown();
+    logf("wrote d1_reconcile_*.csv and summary.md to %s", dir.string().c_str());
+    return g_nonFinite == 0 ? 0 : 1;
+}
+
+// ============================================================================
 // main
 // ============================================================================
 
@@ -2213,6 +2726,9 @@ static bool parseArgs(int argc, char** argv)
         else if (a == "--out-dir" && i + 1 < argc) g_opt.outBase = argv[++i];
         else if (a == "--core-tau" && i + 1 < argc) g_opt.coreTauMs = static_cast<float>(std::atof(argv[++i]));
         else if (a == "--core-fast" && i + 1 < argc) g_opt.coreFastMs = static_cast<float>(std::atof(argv[++i]));
+        else if (a == "--seed" && i + 1 < argc) g_opt.seed = static_cast<uint64_t>(std::strtoull(argv[++i], nullptr, 10));
+        else if (a == "--cpu-worst") g_opt.cpuWorst = true;
+        else if (a == "--d1-reconcile") g_opt.d1Reconcile = true;
         else if (a == "--subjects" && i + 1 < argc)
         {
             std::stringstream ss(argv[++i]);
@@ -2291,7 +2807,11 @@ int main(int argc, char** argv)
         return g_nonFinite == 0 ? 0 : 1;
     }
 
-    const fs::path runDir = fs::path(g_opt.outBase) / (stamp + "_" + hash + (g_opt.quick ? "_quick" : ""));
+    if (g_opt.cpuWorst) return runCpuWorst(cfg, cpu, isRelease, hash, stamp);
+    if (g_opt.d1Reconcile) return runD1Reconcile(hash, stamp);
+
+    const fs::path runDir = fs::path(g_opt.outBase) / (stamp + "_" + hash + (g_opt.quick ? "_quick" : "") + (g_opt.seed ? "_seed" + std::to_string(g_opt.seed) : std::string()));
+    if (g_opt.seed) logf("noise seed shift   : --seed %llu (all generated signals); 0 = the original seeds", static_cast<unsigned long long>(g_opt.seed));
     const fs::path wavDir = runDir / "wav";
     std::error_code ec;
     fs::create_directories(wavDir, ec);
@@ -3037,6 +3557,14 @@ int main(int argc, char** argv)
     tWav.header = { "label", "subject", "sr", "latency", "null depth 0 (dBFS)" };
     std::vector<Subject> wavSubjects = primary;   // listening material: defaults + the gated capability variants (C1c, S1c, S3c, ...)
     for (const auto& s : capability) if (s.gated && !s.reference) wavSubjects.push_back(s);
+    Table tProxy; tProxy.title = "G2. --wav inputs: real-material proxy metrics (informational, no gates)";
+    tProxy.note = "Each file at its own sample rate through the listed subjects at their own configuration (C1 default params; C1c / C1c-H capability; S1c / S3c RS capability). "
+                  "STFT 1024 Hann hop 256 of the latency-aligned input and output (first min(2 s, 25 %) skipped), 1/6-octave bands 100 Hz-12 kHz (as the jitter metric), "
+                  "G(t,b) = 10log10(E_out / E_in) per band and cut = -G (positive = reduction). mean cut / p95 cut = mean / 95th percentile of the cut over every (frame, band, channel) cell (dB); "
+                  "flicker = mean |G(t,b) - G(t-1,b)| over bands, frames and channels (dB; the frame-to-frame change of the applied gain); "
+                  "frames > 6 dB = fraction of (frame, channel) pairs in which ANY band is cut by more than 6 dB. No threshold is attached to any of these numbers.";
+    tProxy.header = { "label", "subject", "sr", "frames", "bands", "mean cut (dB)", "p95 cut (dB)", "flicker (dB)", "frames with a band cut > 6 dB" };
+    const std::vector<std::string> proxyIds = { "C1", "C1c", "C1c-H", "S1c", "S3c" };
     for (const auto& w : g_opt.wavs)
     {
         Stereo in; double sr = 0;
@@ -3051,6 +3579,12 @@ int main(int argc, char** argv)
                 const auto a = align(in, out, L, sr);
                 writeWav(wavDir / (w.first + "_" + s.id + "_out.wav"),   a.out, sr);
                 writeWav(wavDir / (w.first + "_" + s.id + "_delta.wav"), deltaOf(a), sr);
+                if (std::find(proxyIds.begin(), proxyIds.end(), s.id) != proxyIds.end())
+                {
+                    const ProxyStats ps = realMaterialProxy(a, sr);
+                    tProxy.add({ w.first, s.id, num(sr, 0), inum(ps.frames), inum(ps.bands), num(ps.meanCut, 3), num(ps.p95Cut, 3), num(ps.flicker, 3), num(100.0 * ps.fracOver6, 2) + " %" });
+                    logf("      proxy %-6s %-6s mean cut %.3f dB  p95 %.3f dB  flicker %.3f dB  frames with a band > 6 dB: %.2f %%", w.first.c_str(), s.id.c_str(), ps.meanCut, ps.p95Cut, ps.flicker, 100.0 * ps.fracOver6);
+                }
             }
             Fx fx0 = makeFx(s, sr, 2500.0, true, kPrepareBlock);
             const Stereo out0 = renderStd(fx0, in);
@@ -3059,6 +3593,7 @@ int main(int argc, char** argv)
         }
     }
     if (!g_opt.wavs.empty()) { csvTables["wav_null"] = tWav; tables.push_back(tWav); }
+    if (!tProxy.rows.empty()) { csvTables["wav_proxy"] = tProxy; tables.push_back(tProxy); }
 
     // ---------------------------------------------------------------- gate table (v3)
     std::vector<GateRow> gateRows;
@@ -3094,7 +3629,9 @@ int main(int argc, char** argv)
                         "info_g1_pass_f0_44k", "info_g2_pass_f0_44k", "info_total_f0_44k",
                         "g1q_pass_cases", "g1q_total_cases", "g1q", "g2q_pass_cases", "g2q", "g1l_pass_cases", "g1l_total_cases", "g1l", "g2l_pass_cases", "g2l",
                         "g3_r_gates", "g3_l_pass_f0", "g3_l_total_f0", "g3_l_in_window_db", "g7_ratio_128", "g7_ratio_64", "g7",
-                        "g8a_pass_cases", "g8a_total_cases", "g8a", "g8b_pass_cases", "g8b", "g9a_pass_cases", "g9a_total_cases", "g9a", "g9b_pass_cases", "g9b" };
+                        "g8a_pass_cases", "g8a_total_cases", "g8a", "g8b_pass_cases", "g8b", "g9a_pass_cases", "g9a_total_cases", "g9a", "g9b_pass_cases", "g9b",
+                        // hardening: the columns above are RAW (g1 and overall do not apply any waiver); these state the waiver and the waived verdict.
+                        "g1_waived_cells", "known_limit", "verdict" };
     int nOverall = 0;
     for (size_t gi = 0; gi < gateRows.size(); ++gi)
     {
@@ -3103,11 +3640,12 @@ int main(int argc, char** argv)
         if (g.overall() && !isRef) ++nOverall;
         const std::string g3cell = g.g3valid ? pf(g.g3) + " (R " + (g.g3R ? "P" : "F") + ", L " + cnt(g.g3Lpass, g.g3Ln) + ")" : "FAIL (no data)";
         const std::string g7cell = g.g7valid ? pf(g.g7) + " " + num(g.g7r128, 2) + " / " + num(g.g7r64, 2) : "n/a";
-        tGate.add({ g.id, g.label, pf(g.pass1()) + " " + cnt(g.g1, g.n), pf(g.pass2()) + " " + cnt(g.g2, g.n),
+        const std::string g1cell = pf(g.pass1()) + " " + cnt(g.g1, g.n) + (g.g1Waived > 0 ? " (raw; +" + inum(g.g1Waived) + " WAIVED, known limit)" : std::string());
+        tGate.add({ g.id, g.label, g1cell, pf(g.pass2()) + " " + cnt(g.g2, g.n),
                     pf(g.pass1q()) + " " + cnt(g.g1q, g.nq), pf(g.pass2q()) + " " + cnt(g.g2q, g.nq), pf(g.pass1l()) + " " + cnt(g.g1l, g.nl), pf(g.pass2l()) + " " + cnt(g.g2l, g.nl),
                     g3cell, g.g4valid ? pf(g.g4) : "FAIL (no data)", g.g5valid ? pf(g.g5) : "FAIL (no data)", pf(g.g6), g7cell,
                     pf(g.pass8a()) + " " + cnt(g.g8a, g.n8a), pf(g.pass8b()) + " " + cnt(g.g8b, g.n8b), pf(g.pass9a()) + " " + cnt(g.g9a, g.n9a), pf(g.pass9b()) + " " + cnt(g.g9b, g.n9b),
-                    pf(g.overall()) + (g.g7valid ? "" : " (G7 n/a)") });
+                    g.verdict() + (g.g7valid ? "" : " (G7 n/a)") });
         tGateDetail.add({ g.id, cnt(g.g1_44, g.n44), cnt(g.g2_44, g.n44), pf(g.g3R), cnt(g.g3Lpass, g.g3Ln), num(g.g3RRes, 2), num(g.g3RDev, 2), num(g.g3LRes, 2), num(g.g3LDev, 2),
                           g.g4Id, num(g.g4Std, 3), num(g.g4Iso, 6), num(g.g5Bb, 3), num(g.g5Band, 3), g.g6detail,
                           g.g7valid ? num(g.g7r128, 3) : "n/a", g.g7valid ? num(g.g7r64, 3) : "n/a", g.tauSummary });
@@ -3117,7 +3655,9 @@ int main(int argc, char** argv)
                        inum(g.g1q), inum(g.nq), pf(g.pass1q()), inum(g.g2q), pf(g.pass2q()), inum(g.g1l), inum(g.nl), pf(g.pass1l()), inum(g.g2l), pf(g.pass2l()),
                        pf(g.g3R), inum(g.g3Lpass), inum(g.g3Ln), num(g.g3LRes, 4),
                        g.g7valid ? num(g.g7r128, 4) : "n/a", g.g7valid ? num(g.g7r64, 4) : "n/a", g.g7valid ? pf(g.g7) : "n/a",
-                       inum(g.g8a), inum(g.n8a), pf(g.pass8a()), inum(g.g8b), pf(g.pass8b()), inum(g.g9a), inum(g.n9a), pf(g.pass9a()), inum(g.g9b), pf(g.pass9b()) });
+                       inum(g.g8a), inum(g.n8a), pf(g.pass8a()), inum(g.g8b), pf(g.pass8b()), inum(g.g9a), inum(g.n9a), pf(g.pass9a()), inum(g.g9b), pf(g.pass9b()),
+                       inum(g.g1Waived), g.waivers.empty() ? std::string("none") : [&] { std::string w; for (const auto& x : g.waivers) w += (w.empty() ? "" : " | ") + x; for (char& ch : w) if (ch == ',') ch = ';'; return w; }(),
+                       g.verdict() + (g.g7valid ? "" : " (G7 n/a)") });
     }
     // Per-f0 breakdown at 48 kHz: "in_window / outside_dev" and the two per-cell verdicts (G1 G2).
     Table tGateF0; tGateF0.title = "Gate details per f0 (48 kHz): in_window / outside_dev (dB), then G1 G2 verdict letters (P = pass, F = fail)";
@@ -3149,8 +3689,11 @@ int main(int argc, char** argv)
              pf(g.g3).c_str(), g.g3R ? "P" : "F", cnt(g.g3Lpass, g.g3Ln).c_str(), pf(g.g4).c_str(), pf(g.g5).c_str(), pf(g.g6).c_str(),
              g.g7valid ? (pf(g.g7) + " " + num(g.g7r128, 2) + "/" + num(g.g7r64, 2)).c_str() : "n/a",
              pf(g.pass8a()).c_str(), cnt(g.g8a, g.n8a).c_str(), pf(g.pass8b()).c_str(), cnt(g.g8b, g.n8b).c_str(),
-             pf(g.pass9a()).c_str(), cnt(g.g9a, g.n9a).c_str(), pf(g.pass9b()).c_str(), cnt(g.g9b, g.n9b).c_str(), pf(g.overall()).c_str(), g.tauSummary.c_str());
+             pf(g.pass9a()).c_str(), cnt(g.g9a, g.n9a).c_str(), pf(g.pass9b()).c_str(), cnt(g.g9b, g.n9b).c_str(), g.verdict().c_str(), g.tauSummary.c_str());
     }
+    for (const auto& g : gateRows)
+        for (const auto& w : g.waivers)
+            logf("KNOWN LIMIT (waived): %s  [raw G1 stays %s]", w.c_str(), cnt(g.g1, g.n).c_str());
     for (const auto& g : gateRows)
         if (g.pass8a() && g.pass8b() && g.pass9a() && g.pass9b()
             && ![&] { for (const auto& rs : scanSubjects) if (rs.id == g.id) return rs.reference; return false; }())
@@ -3269,6 +3812,16 @@ int main(int argc, char** argv)
     md << "- Git: `" << hash << "` (working tree may be dirty)\n";
     md << "- Build configuration: **" << cfg << "**" << (isRelease ? "" : "  **<-- NOT RELEASE: CPU numbers invalid**") << "\n";
     md << "- CPU: " << cpu << "\n";
+    if (g_opt.seed) md << "- Noise seed shift: `--seed " << g_opt.seed << "` (every generated signal; 0 = the original seeds)\n";
+    for (const auto& lim : knownLimits())
+    {
+        std::string ids;
+        for (const auto& g : gateRows)
+            if (g.g1Waived > 0 && std::find(lim.subjects.begin(), lim.subjects.end(), g.id) != lim.subjects.end()) ids += (ids.empty() ? "" : ", ") + g.id;
+        if (!ids.empty())
+            md << "- **KNOWN LIMIT (waived): " << lim.gate << " at f0 = " << lim.f0 << " Hz is WAIVED for " << ids << ": " << lim.reason << ".** The raw count stays in the gate table; "
+                  "a waived subject reads `PASS (1 waiver)` when every other gate passes. No other subject or frequency is waived (section KNOWN LIMITS below).\n";
+    }
     md << "- Signals: A/B/C/E " << num(sigSeconds(), 0) << " s, D " << num(dSeconds(), 0) << " s, 48 kHz stereo; latency + scan also at 44.1 kHz. "
           "Single-render block size " << kStdBlock << "; prepareToPlay(maxBlock " << kPrepareBlock << ").\n";
     md << "- All figures are latency-aligned using the MEASURED impulse latency. Numbers only; no ranking implied.\n\n";
@@ -3281,6 +3834,22 @@ int main(int argc, char** argv)
           "S5qd = the same but spec_sens at its DEFAULT (S5q's sens 0.0 sets threshold = local mean, which over-suppresses by construction); its G4 is graded on S5qz. "
           "They run signals A/B (full scan), C (jitter), D and D2 (pre-echo), E and the delta-artefact run, in addition to the default-parameter subjects.\n\n";
     md << tGate.markdown() << tGateDetail.markdown() << tGateF0.markdown();
+    {
+        // Known limits (named waivers): printed whenever a waiver is registered for a graded subject, whether it was needed or not.
+        std::ostringstream kl;
+        bool any = false;
+        for (const auto& lim : knownLimits())
+            for (const auto& g : gateRows)
+            {
+                if (std::find(lim.subjects.begin(), lim.subjects.end(), g.id) == lim.subjects.end()) continue;
+                if (!any) { kl << "### KNOWN LIMITS (named waivers)\n\nA waiver is a printed exception for ONE gate / subject / frequency, not a change of the gate: thresholds and metrics are unchanged, "
+                                  "the raw count stays in the gate table, and the verdict reads `PASS (n waiver)` only when every other gate passes. No other subject or frequency is waived.\n\n"
+                                  "| gate | subject | f0 | raw result | status | reason |\n|---|---|---:|---|---|---|\n"; any = true; }
+                kl << "| " << lim.gate << " | " << g.id << " | " << lim.f0 << " Hz | G1 " << cnt(g.g1, g.n) << " | " << (g.g1Waived > 0 ? "**WAIVED**" : "not needed (cell passes)")
+                   << " | " << lim.reason << " |\n";
+            }
+        if (any) md << kl.str() << "\n";
+    }
     md << san.str();
     for (const auto& t : tables) md << t.markdown();
     std::ofstream(runDir / "summary.md", std::ios::binary) << md.str();
