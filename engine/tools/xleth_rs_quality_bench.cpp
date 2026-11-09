@@ -36,10 +36,18 @@
 //   pre-echo, E, latency, CPU, gates); a subject that is not one of the built-in kinds can supply a
 //   `factory`. --cpu-only runs just the CPU benchmark (default subjects, blocks 64/128/512).
 //
+// v4 (gate hardening; no production source involved):
+//   G3 now also gates the UNTOUCHED left channel of signal E (resonance in R only): |in_window| <= 1.0 dB AND outside_dev <= 0.5 dB at every one of
+//   the 12 scan f0 (signal E is run at all 12 f0; the R gates stay at 2500 Hz). S5qd = EQ Spectral band gain -30 dB, band Q 8, spec_sens at its DEFAULT
+//   (S5q's 0.0 sets threshold = local mean, i.e. over-suppresses by construction). Shape scans at f0 2500 Hz / 48 kHz vary the planted Q {4, 8, 16} at +12 dB
+//   and the level {+12, +18} dB at Q 8 (gates G1q/G2q out of 3, G1l/G2l out of 2; ideal recomputed per case; processors are not retuned). G7 = relative CPU:
+//   mean %RT / S3's mean %RT in the SAME run <= 1.0 at block 128 and 64 (gated variants get their own CPU run at those two blocks).
+//
 // Usage: xleth_rs_quality_bench [--quick] [--no-cpu] [--cpu-only] [--out-dir DIR]
 //                               [--ref-subjects] [--wav label=path]...
-//   --ref-subjects registers two reference subjects (R0 pass-through, R1 oracle = exact inverse of the planted bell, built through
-//   Subject::factory) so the residual metrics and gates can be calibrated: R0 must FAIL G1/G3, R1 must PASS. Off by default (default output unchanged).
+//   --ref-subjects registers two reference subjects (R0 pass-through, R1 oracle = exact inverse of the planted bell on exactly the planted channels with the
+//   planted Q / level, built through Subject::factory(bell descriptor)) so the residual metrics and gates can be calibrated: R0 must FAIL G1/G3, R1 must PASS
+//   G1-G6. Off by default (default output unchanged).
 
 // Test-only read access to the RS detector baseline (same define as
 // engine/test/test_pdc_stage1.cpp). Adds only static members; must precede the
@@ -283,12 +291,13 @@ static void applyRbjPeak(std::vector<float>& x, double sr, double f0, double q, 
     }
 }
 
-// Signals A/B (resonance in both channels) and E (resonance in the RIGHT only).
-static Stereo makeResonant(const Stereo& basePink, double sr, double f0, bool left, bool right)
+// Signals A/B (resonance in both channels) and E (resonance in the RIGHT only). q / gainDb default to the
+// standard planted bell (Q 8, +12 dB); the v4 shape scans vary them.
+static Stereo makeResonant(const Stereo& basePink, double sr, double f0, bool left, bool right, double q = 8.0, double gainDb = 12.0)
 {
     Stereo s = basePink;
-    if (left)  applyRbjPeak(s.ch[0], sr, f0, 8.0, 12.0);
-    if (right) applyRbjPeak(s.ch[1], sr, f0, 8.0, 12.0);
+    if (left)  applyRbjPeak(s.ch[0], sr, f0, q, gainDb);
+    if (right) applyRbjPeak(s.ch[1], sr, f0, q, gainDb);
     return s;
 }
 
@@ -347,6 +356,15 @@ static Stereo makeImpulse(int n, int at)
 enum class Kind { RsLL, RsHQ, Eq, Custom };
 enum class Group { Primary, Sensitive, Capability };
 
+// Description of the resonance planted in the signal a processor is about to be run on. Only Subject::factory
+// subjects (the --ref-subjects oracle) read it; the built-in kinds ignore it. Defaults = the standard planted
+// bell (2500 Hz, Q 8, +12 dB, both channels), which is what every non-scan run (latency, jitter, D/D2, CPU) uses.
+struct Planted
+{
+    double f0 = 2500.0, q = 8.0, gainDb = 12.0;
+    bool left = true, right = true;
+};
+
 struct Subject
 {
     std::string id;        // S1, S1s, ...
@@ -370,20 +388,23 @@ struct Subject
                                    // (empty = none; only paired ones enter the legacy 'capability >= default' sanity line)
     // Optional: build a subject that is not one of the built-in kinds. Returns a prepared processor
     // (the factory calls prepareToPlay itself). `neutral` = depth 0 / no-op config for latency + transparency runs.
-    std::function<std::unique_ptr<juce::AudioProcessor>(double sr, int maxBlock, double centreHz, bool neutral)> factory;
+    // `bell` describes the resonance planted in the signal about to be processed (centre, Q, level, channels).
+    std::function<std::unique_ptr<juce::AudioProcessor>(double sr, int maxBlock, const Planted& bell, bool neutral)> factory;
 };
 
-// Reference processor for --ref-subjects: one RBJ peaking biquad (double TDF-II, same maths as applyRbjPeak) per channel.
-// gainDb = 0 is an exact identity (pass-through); gainDb = -12 at the planted f0 is the exact inverse of the planted +12 dB / Q8 bell.
+// Reference processor for --ref-subjects: one RBJ peaking biquad (double TDF-II, same maths as applyRbjPeak) on the
+// selected channels (the others pass through bit-exactly).
+// gainDb = 0 is an exact identity (pass-through); gainDb = -G at the planted f0 / Q is the exact inverse of a planted +G dB bell.
 class RefBellProcessor : public juce::AudioProcessor
 {
 public:
-    RefBellProcessor(double sr, double f0, double gainDb)
+    RefBellProcessor(double sr, double f0, double gainDb, double q = 8.0, bool applyL = true, bool applyR = true)
         : juce::AudioProcessor(BusesProperties().withInput("in", juce::AudioChannelSet::stereo()).withOutput("out", juce::AudioChannelSet::stereo()))
     {
+        apply_[0] = applyL; apply_[1] = applyR;
         const double A = std::pow(10.0, gainDb / 40.0);
         const double w0 = 2.0 * juce::MathConstants<double>::pi * f0 / sr;
-        const double alpha = std::sin(w0) / (2.0 * 8.0);
+        const double alpha = std::sin(w0) / (2.0 * q);
         const double cw = std::cos(w0);
         const double a0 = 1.0 + alpha / A;
         b0_ = (1.0 + alpha * A) / a0; b1_ = (-2.0 * cw) / a0; b2_ = (1.0 - alpha * A) / a0;
@@ -396,6 +417,7 @@ public:
     {
         for (int c = 0; c < std::min(2, buf.getNumChannels()); ++c)
         {
+            if (!apply_[c]) continue;   // channel not touched by the oracle: bit-exact pass-through
             float* d = buf.getWritePointer(c);
             for (int i = 0; i < buf.getNumSamples(); ++i)
             {
@@ -421,6 +443,7 @@ public:
     void setStateInformation(const void*, int) override {}
 private:
     double b0_ = 1, b1_ = 0, b2_ = 0, a1_ = 0, a2_ = 0, z1_[2] = {}, z2_[2] = {};
+    bool apply_[2] = { true, true };
 };
 
 // THE subject registry. Registering a subject here adds it to every table, CSV, gate and (for Primary) the CPU run.
@@ -469,16 +492,23 @@ static const std::vector<Subject>& registry()
         // Fair EQ variant: a narrow (Q 8) band centred on the resonance so the band's region brackets it.
         { auto& s = add("S5q", "S5", "EQ Spectral (fair: Q=8)",     Kind::Eq,   Group::Capability, "band gain=-30 dB, spec_sens=0.0, band Q=8, centre=f0");
           s.eqSens = 0.0f; s.capability = true; s.eqGain = -30.0f; s.eqQ = 8.0f; s.gated = true; s.jitterId = "S5qz"; }
+        // v4 fair EQ variant #2: S5q's sensitivity 0.0 sets threshold = local mean, which over-suppresses by construction.
+        // S5qd leaves spec_sens at its DEFAULT (eqSens < 0 = parameter not touched); gain -30 dB, band Q 8, centre = f0, everything else default.
+        // G4 is graded on the same sensitive companion as S5q (S5qz): G4 asks "does the most sensitive setting of this processor produce musical noise".
+        { auto& s = add("S5qd", "S5", "EQ Spectral (fair: Q=8 default sens)", Kind::Eq, Group::Capability, "band gain=-30 dB; spec_sens=DEFAULT; band Q=8; centre=f0");
+          s.capability = true; s.eqGain = -30.0f; s.eqQ = 8.0f; s.gated = true; s.jitterId = "S5qz"; }
 
         // -------- Reference subjects (opt-in): metric / gate calibration. Registered through Subject::factory. --------
         if (g_opt.refSubjects)
         {
             { auto& s = add("R0", "R0", "Reference: pass-through", Kind::Custom, Group::Capability, "identity processor - the do-nothing floor (expected: FAIL G1 and G3)");
               s.gated = true; s.reference = true;
-              s.factory = [](double sr, int, double f0, bool) { return std::make_unique<RefBellProcessor>(sr, f0, 0.0); }; }
-            { auto& s = add("R1", "R1", "Reference: oracle (exact inverse bell)", Kind::Custom, Group::Capability, "-12 dB / Q8 bell at f0 = exact inverse of the planted bell (expected: PASS G1/G2/G3)");
+              s.factory = [](double sr, int, const Planted& b, bool) { return std::make_unique<RefBellProcessor>(sr, b.f0, 0.0, b.q, true, true); }; }
+            { auto& s = add("R1", "R1", "Reference: oracle (exact inverse of the planted bell)", Kind::Custom, Group::Capability,
+                            "inverse of the planted bell (same f0 / Q, gain = -planted gain) on exactly the planted channels (expected: PASS G1-G6)");
               s.gated = true; s.reference = true;
-              s.factory = [](double sr, int, double f0, bool neutral) { return std::make_unique<RefBellProcessor>(sr, f0, neutral ? 0.0 : -12.0); }; }
+              s.factory = [](double sr, int, const Planted& b, bool neutral)
+              { return std::make_unique<RefBellProcessor>(sr, b.f0, neutral ? 0.0 : -b.gainDb, b.q, b.left, b.right); }; }
         }
         return r;
     }();
@@ -527,12 +557,15 @@ static void need(bool ok, const char* what)
 }
 
 // neutral = depth 0 / band gain 0 dB (latency and transparency runs).
-static Fx makeFx(const Subject& s, double sr, double eqCentre, bool neutral, int maxBlock)
+// `shape` = the planted resonance of the signal about to be run (read by Subject::factory subjects only; its f0 is overridden by eqCentre).
+static Fx makeFx(const Subject& s, double sr, double eqCentre, bool neutral, int maxBlock, const Planted* shape = nullptr)
 {
     Fx fx;
     if (s.factory)
     {
-        fx.custom = s.factory(sr, maxBlock, eqCentre, neutral);
+        Planted bell = shape ? *shape : Planted{};
+        bell.f0 = eqCentre;
+        fx.custom = s.factory(sr, maxBlock, bell, neutral);
         need(fx.custom != nullptr, "Subject::factory returned null");
     }
     else if (s.kind == Kind::Eq)
@@ -774,7 +807,7 @@ static double bellMagDb(double f, double sr, double f0, double q, double gainDb)
     return 10.0 * std::log10(std::max(std::norm(hn) / std::max(std::norm(hd), 1.0e-300), 1.0e-300));
 }
 
-static double idealBoostDb(double sr, double f0)
+static double idealBoostDb(double sr, double f0, double q = 8.0, double gainDb = 12.0)
 {
     const double binHz = sr / kWelchN;
     const double s6 = std::pow(2.0, 1.0 / 6.0);
@@ -783,7 +816,7 @@ static double idealBoostDb(double sr, double f0)
     for (int k = 1; k <= kWelchN / 2; ++k)
     {
         const double f = static_cast<double>(k) * binHz;
-        if (f >= lo1 && f <= hi1) { acc += bellMagDb(f, sr, f0, 8.0, 12.0); ++n; }
+        if (f >= lo1 && f <= hi1) { acc += bellMagDb(f, sr, f0, q, gainDb); ++n; }
     }
     return n ? acc / n : 0.0;
 }
@@ -1303,10 +1336,15 @@ static CpuResult cpuBench(const Subject& s, const Stereo& sig, double sr, int bl
 // over the 12 scan frequencies at 48 kHz (the 44.1 kHz scan is reported informationally).
 //   G1  in_window_residual_dB >= kG1ResFloorDb  and  <= kG1ResIdealFrac * ideal_dB   at EVERY f0
 //   G2  outside_dev_dB <= kG2OutsideDevDb                                             at EVERY f0
-//   G3  resonance in the RIGHT channel only (signal E, 2500 Hz): G1 + G2 on R, and L outside_dev_dB <= kG2OutsideDevDb
+//   G3  resonance in the RIGHT channel only (signal E): R at 2500 Hz: G1 + G2 on R. L (untouched channel, MUST equal the clean L) at EVERY one of
+//       the 12 scan f0: in_window_residual_dB within +/- kG3LResAbsDb AND outside_dev_dB <= kG2OutsideDevDb. G3 = R gates AND L at 12/12.
 //   G4  sensitive-variant jitter (signal C): std "all" <= kG4StdAllDb AND isolated-cell fraction "all" <= kG4IsoAll
 //   G5  pre-echo with the mask engaged (D2): broadband E_out/E_in <= kG5BroadbandDb AND band E_out/E_in <= kG5BandDb
 //   G6  latency: measured == reported at both sample rates, and identical across every block schedule
+//   G1q/G2q  shape scan, Q in {4, 8, 16} at +12 dB, f0 2500 Hz, 48 kHz (same G1/G2 cell tests, ideal recomputed per case): count out of 3
+//   G1l/G2l  shape scan, level in {+12, +18} dB at Q 8, f0 2500 Hz, 48 kHz:                                              count out of 2
+//   G7  relative CPU: mean % RT / mean % RT of S3 (RS HQ Normal, default params) measured in the SAME run <= kG7CpuRatio at block 128 AND block 64
+//   Overall = G1, G2, G1q, G2q, G1l, G2l, G3, G4, G5, G6, G7 all pass (G7 is "n/a" and left out of the verdict when the CPU run is skipped).
 static constexpr double kG1ResFloorDb   = -1.5;
 static constexpr double kG1ResIdealFrac = 0.30;
 static constexpr double kG2OutsideDevDb = 0.5;
@@ -1314,8 +1352,23 @@ static constexpr double kG4StdAllDb     = 0.6;
 static constexpr double kG4IsoAll       = 1.0e-3;
 static constexpr double kG5BroadbandDb  = 1.0;
 static constexpr double kG5BandDb       = 1.0;
+static constexpr double kG3LResAbsDb    = 1.0;    // v4: L-channel in-window residual must lie within +/- this on signal E
+static constexpr double kG7CpuRatio     = 1.0;    // v4: subject mean %RT / S3 mean %RT (same run), at block 128 and 64
 
 struct EResidual { Residual r, l; bool valid = false; };          // signal E (resonance in R only), per channel
+
+// v4 shape scan (f0 = 2500 Hz, 48 kHz, planted in both channels, same seed as signal A). Q-scan = cases with inQ, level-scan = cases with inLevel.
+struct ShapeCase { const char* key; double q, gainDb; bool inQ, inLevel; };
+static const std::vector<ShapeCase>& shapeCases()
+{
+    static const std::vector<ShapeCase> c = {
+        { "Q4/+12",  4.0,  12.0, true,  false },
+        { "Q8/+12",  8.0,  12.0, true,  true  },
+        { "Q16/+12", 16.0, 12.0, true,  false },
+        { "Q8/+18",  8.0,  18.0, false, true  },
+    };
+    return c;
+}
 struct LatencyGate { bool valid = false, matchAll = true, blockInvariant = true; std::string detail; };
 
 struct BenchData
@@ -1324,6 +1377,9 @@ struct BenchData
     std::map<std::string, std::map<int, double>> ideal;                // "48000" -> f0 -> ideal dB
     std::map<std::string, std::map<int, Residual>> residual;           // "S1c@48000" -> f0 -> residual
     std::map<std::string, EResidual> right;                            // subject id -> signal E residuals (48 kHz, 2500 Hz)
+    std::map<std::string, std::map<int, EResidual>> eScan;             // subject id -> f0 -> signal E residuals (48 kHz, every scan f0)
+    std::map<std::string, std::map<std::string, Residual>> shape;      // subject id -> shape-case key -> residual (48 kHz, f0 2500 Hz, both channels)
+    std::map<std::string, std::pair<double, double>> cpuRatio;         // subject id -> (block 64, block 128) mean %RT / S3 mean %RT
     std::map<std::string, Jitter> jitter;                              // subject id -> signal C jitter
     std::map<std::string, PreEcho> d2;                                 // subject id -> signal D2 pre-echo
     std::map<std::string, LatencyGate> latency;                        // subject id -> G6 evidence
@@ -1334,13 +1390,21 @@ struct GateRow
     std::string id, label;
     int g1 = 0, g2 = 0, n = 0;                // passing f0 count at 48 kHz, out of n
     int g1_44 = 0, g2_44 = 0, n44 = 0;        // informational: the same at 44.1 kHz
+    int g1q = 0, g2q = 0, nq = 0;             // v4 shape scan, Q cases
+    int g1l = 0, g2l = 0, nl = 0;             // v4 shape scan, level cases
     bool g3 = false; double g3RRes = 0, g3RDev = 0, g3LRes = 0, g3LDev = 0; bool g3valid = false;
+    bool g3R = false; int g3Lpass = 0, g3Ln = 0;   // G3 = R gates at 2500 AND the L gate at every scan f0
+    bool g7 = false, g7valid = false; double g7r64 = 0, g7r128 = 0;
     bool g4 = false; double g4Std = 0, g4Iso = 0; bool g4valid = false; std::string g4Id;
     bool g5 = false; double g5Bb = 0, g5Band = 0; bool g5valid = false;
     bool g6 = false; std::string g6detail;
     bool pass1() const { return n > 0 && g1 == n; }
     bool pass2() const { return n > 0 && g2 == n; }
-    bool overall() const { return pass1() && pass2() && g3 && g4 && g5 && g6; }
+    bool pass1q() const { return nq > 0 && g1q == nq; }
+    bool pass2q() const { return nq > 0 && g2q == nq; }
+    bool pass1l() const { return nl > 0 && g1l == nl; }
+    bool pass2l() const { return nl > 0 && g2l == nl; }
+    bool overall() const { return pass1() && pass2() && pass1q() && pass2q() && pass1l() && pass2l() && g3 && g4 && g5 && g6 && (!g7valid || g7); }
 };
 
 static bool g1Cell(const Residual& r, double idealDb)
@@ -1348,6 +1412,8 @@ static bool g1Cell(const Residual& r, double idealDb)
     return r.inWindow >= kG1ResFloorDb && r.inWindow <= kG1ResIdealFrac * idealDb;
 }
 static bool g2Cell(const Residual& r) { return r.outsideDev <= kG2OutsideDevDb; }
+// G3, left (untouched) channel of signal E: the output must equal the clean L, in the window and outside it.
+static bool g3LCell(const Residual& r) { return std::abs(r.inWindow) <= kG3LResAbsDb && r.outsideDev <= kG2OutsideDevDb; }
 
 static int countRates(const BenchData& d, const std::string& id, double sr, bool g1, int& total)
 {
@@ -1383,7 +1449,42 @@ static GateRow evaluateGates(const Subject& s, const BenchData& d)
         g.g3RRes = e->second.r.inWindow; g.g3RDev = e->second.r.outsideDev;
         g.g3LRes = e->second.l.inWindow; g.g3LDev = e->second.l.outsideDev;
         const double ideal = d.ideal.at("48000").at(2500);
-        g.g3 = g1Cell(e->second.r, ideal) && g2Cell(e->second.r) && e->second.l.outsideDev <= kG2OutsideDevDb;
+        g.g3R = g1Cell(e->second.r, ideal) && g2Cell(e->second.r);
+        const auto es = d.eScan.find(s.id);
+        if (es != d.eScan.end())
+            for (double f0 : d.scanF0)
+            {
+                const auto it = es->second.find(static_cast<int>(f0));
+                if (it == es->second.end()) continue;
+                ++g.g3Ln;
+                if (g3LCell(it->second.l)) ++g.g3Lpass;
+            }
+        g.g3 = g.g3R && g.g3Ln > 0 && g.g3Lpass == g.g3Ln;
+    }
+
+    // v4 shape scans
+    {
+        const auto sh = d.shape.find(s.id);
+        if (sh != d.shape.end())
+            for (const auto& c : shapeCases())
+            {
+                const auto it = sh->second.find(c.key);
+                if (it == sh->second.end()) continue;
+                const double ideal = idealBoostDb(48000.0, 2500.0, c.q, c.gainDb);
+                const bool p1 = g1Cell(it->second, ideal), p2 = g2Cell(it->second);
+                if (c.inQ)     { ++g.nq; if (p1) ++g.g1q; if (p2) ++g.g2q; }
+                if (c.inLevel) { ++g.nl; if (p1) ++g.g1l; if (p2) ++g.g2l; }
+            }
+    }
+
+    // G7 (relative CPU)
+    {
+        const auto c = d.cpuRatio.find(s.id);
+        if (c != d.cpuRatio.end())
+        {
+            g.g7valid = true; g.g7r64 = c->second.first; g.g7r128 = c->second.second;
+            g.g7 = g.g7r64 <= kG7CpuRatio && g.g7r128 <= kG7CpuRatio;
+        }
     }
 
     // G4: jitter of the subject's registered sensitive variant (its own run when none is named)
@@ -1447,6 +1548,57 @@ static void fillCpuTable(Table& t, const std::vector<CpuRow>& rows)
         t.add({ c.id, c.label, inum(c.block), num(r.medianNs, 0), num(r.p95Ns, 0), num(r.p99Ns, 0), num(r.maxNs, 0), num(r.meanNs, 0),
                 num(100.0 * r.medianNs / c.budgetNs, 3), num(100.0 * r.p95Ns / c.budgetNs, 3), num(100.0 * r.meanNs / c.budgetNs, 3), num(100.0 * r.maxNs / c.budgetNs, 3) });
     }
+}
+
+// ----------------------------------------------------------------------------
+// G7: relative CPU. Mean %RT of a subject divided by the mean %RT of S3 (RS HQ Normal, default parameters) measured
+// in the SAME run at the SAME block size (the budget is identical, so the ratio of %RT equals the ratio of mean ns).
+// ----------------------------------------------------------------------------
+
+static const char* kG7RefId = "S3";
+
+static double cpuMeanNs(const std::vector<CpuRow>& rows, const std::string& id, int block)
+{
+    for (const auto& r : rows) if (r.id == id && r.block == block) return r.r.meanNs;
+    return -1.0;
+}
+
+// id -> (ratio @64, ratio @128) for every subject measured at both blocks. Empty if S3 was not measured.
+static std::map<std::string, std::pair<double, double>> cpuRatios(const std::vector<CpuRow>& rows)
+{
+    std::map<std::string, std::pair<double, double>> out;
+    const double ref64 = cpuMeanNs(rows, kG7RefId, 64), ref128 = cpuMeanNs(rows, kG7RefId, 128);
+    if (ref64 <= 0.0 || ref128 <= 0.0) return out;
+    for (const auto& r : rows)
+    {
+        const double a = cpuMeanNs(rows, r.id, 64), b = cpuMeanNs(rows, r.id, 128);
+        if (a < 0.0 || b < 0.0) continue;
+        out[r.id] = { a / ref64, b / ref128 };
+    }
+    return out;
+}
+
+static Table cpuRatioTable(const std::vector<CpuRow>& rows, const std::map<std::string, std::pair<double, double>>& ratios)
+{
+    Table t;
+    t.title = "9c. G7 relative CPU (mean % RT / S3 mean % RT, same run)";
+    t.note = "Ratio = the subject's mean processBlock time divided by S3's (RS HQ Normal, default parameters) at the same block size, measured in this run. "
+             "G7 passes when the ratio is <= 1.00 at BOTH block 128 and block 64. Informational for the existing subjects (it grades future subjects against the current "
+             "HQ Normal cost); a ratio reflects one noisy wall-clock measurement per subject, so treat 0.9-1.1 as 'about equal'.";
+    t.header = { "subject", "label", "mean % RT @64", "ratio @64", "mean % RT @128", "ratio @128", "G7" };
+    std::vector<std::string> seen;
+    for (const auto& r : rows)
+    {
+        if (std::find(seen.begin(), seen.end(), r.id) != seen.end()) continue;
+        seen.push_back(r.id);
+        const auto it = ratios.find(r.id);
+        if (it == ratios.end()) continue;
+        const double m64 = 100.0 * cpuMeanNs(rows, r.id, 64) / (64.0 / 48000.0 * 1.0e9);
+        const double m128 = 100.0 * cpuMeanNs(rows, r.id, 128) / (128.0 / 48000.0 * 1.0e9);
+        t.add({ r.id, r.label, num(m64, 3), num(it->second.first, 3), num(m128, 3), num(it->second.second, 3),
+                (it->second.first <= kG7CpuRatio && it->second.second <= kG7CpuRatio) ? "PASS" : "FAIL" });
+    }
+    return t;
 }
 
 // Mean cost as % of real time for ONE instance and the x8-instances projection (mean * 8), at the 128-sample block.
@@ -1550,9 +1702,14 @@ int main(int argc, char** argv)
             logf("%-4s %6d %12.0f %12.0f %12.0f %10.3f %10.3f", c.id.c_str(), c.block, c.r.meanNs, c.r.p99Ns, c.r.maxNs,
                  100.0 * c.r.meanNs / c.budgetNs, 100.0 * c.r.p99Ns / c.budgetNs);
         logCpuProjection(rows, cpu);
+        const auto ratios = cpuRatios(rows);
+        const Table ratioTable = cpuRatioTable(rows, ratios);
+        for (const auto& r : ratioTable.rows)
+            logf("G7 ratio vs %s (same run)  %-4s @64: %s  @128: %s  -> %s", kG7RefId, r[0].c_str(), r[3].c_str(), r[5].c_str(), r[6].c_str());
         std::ofstream(cpuDir / "cpu.csv", std::ios::binary) << t.csv();
+        std::ofstream(cpuDir / "cpu_g7_ratio.csv", std::ios::binary) << ratioTable.csv();
         std::ofstream(cpuDir / "summary.md", std::ios::binary)
-            << "# RS bench - CPU only\n\n- Git: `" << hash << "`\n- Build: **" << cfg << "**\n- CPU: " << cpu << "\n\n" << t.markdown() << proj.markdown();
+            << "# RS bench - CPU only\n\n- Git: `" << hash << "`\n- Build: **" << cfg << "**\n- CPU: " << cpu << "\n\n" << t.markdown() << proj.markdown() << ratioTable.markdown();
         logf("wrote cpu.csv and summary.md to %s", cpuDir.string().c_str());
         return g_nonFinite == 0 ? 0 : 1;
     }
@@ -1783,6 +1940,54 @@ int main(int argc, char** argv)
         }
     }
 
+    // ---------------------------------------------------------------- v4 shape scans (Q, level) at f0 = 2500 Hz / 48 kHz
+    logf("[3b/9] shape scans: Q in {4,8,16} @ +12 dB and level in {+12,+18} dB @ Q 8 (f0 2500 Hz, 48 kHz)");
+    {
+        Table tShCsv; tShCsv.header = { "subject", "case", "planted_q", "planted_gain_db", "in_window_residual_db", "outside_dev_db", "ideal_db", "g1_limit_db", "g1_pass", "g2_pass" };
+        for (const auto& c : shapeCases())
+        {
+            const Stereo sig = makeResonant(pinkC, SR, 2500.0, true, true, c.q, c.gainDb);
+            const double ideal = idealBoostDb(SR, 2500.0, c.q, c.gainDb);
+            Planted pl; pl.f0 = 2500.0; pl.q = c.q; pl.gainDb = c.gainDb; pl.left = true; pl.right = true;
+            for (const auto& s : scanSubjects)
+            {
+                Fx fx = makeFx(s, SR, 2500.0, false, kPrepareBlock, &pl);
+                const Stereo out = renderStd(fx, sig);
+                const auto a = align(sig, out, measureLatency(s, SR).measured, SR);
+                const Accuracy acc = suppressionAccuracy(a, "C@48000", pinkC, SR, 2500.0);
+                bd.shape[s.id][c.key] = acc.res;
+                tShCsv.add({ s.id, c.key, num(c.q, 1), num(c.gainDb, 1), num(acc.res.inWindow, 4), num(acc.res.outsideDev, 4), num(ideal, 4),
+                             num(kG1ResIdealFrac * ideal, 4), g1Cell(acc.res, ideal) ? "1" : "0", g2Cell(acc.res) ? "1" : "0" });
+            }
+        }
+        csvTables["shape_scan"] = tShCsv;
+        for (int pass = 0; pass < 2; ++pass)
+        {
+            Table t;
+            t.title = pass == 0 ? "3q. Shape scan - planted Q (f0 2500 Hz, +12 dB, 48 kHz) - gates G1q / G2q"
+                                : "3l. Shape scan - planted level (f0 2500 Hz, Q 8, 48 kHz) - gates G1l / G2l";
+            t.note = "Signal = the same pink C (seed of signal A) + RBJ peak (Q, level as in the case column) in both channels; clean reference = the unprocessed C; same Welch / residual definitions as 3rc. "
+                     "ideal dB is recomputed per case (mean dB boost of THIS bell over f0 +/- 1/6 oct); G1 max = 0.30 x ideal (floor -1.5); G2 limit 0.5 dB. "
+                     "Each cell: in_window / outside_dev (dB), then the G1 G2 verdict letters. The processors are NOT retuned per case (EQ band Q stays 8, RS stays depth 100 / Hard). "
+                     "The Q8/+12 case is identical to the 2500 Hz row of the main scan and appears in both tables.";
+            t.header = { "case", "ideal dB", "G1 max" };
+            for (const auto& s : scanSubjects) t.header.push_back(s.id);
+            for (const auto& c : shapeCases())
+            {
+                if (pass == 0 ? !c.inQ : !c.inLevel) continue;
+                const double ideal = idealBoostDb(SR, 2500.0, c.q, c.gainDb);
+                std::vector<std::string> row = { c.key, num(ideal, 2), num(kG1ResIdealFrac * ideal, 2) };
+                for (const auto& s : scanSubjects)
+                {
+                    const Residual& r = bd.shape[s.id][c.key];
+                    row.push_back(num(r.inWindow, 2) + " / " + num(r.outsideDev, 2) + "  " + (g1Cell(r, ideal) ? "P" : "F") + (g2Cell(r) ? "P" : "F"));
+                }
+                t.add(row);
+            }
+            tables.push_back(t);
+        }
+    }
+
     // delta artefact (5) + WAVs for A@2500
     logf("[4/9] delta artefact energy + WAVs (A@2500)");
     Table tDel; tDel.title = "5. Delta artefact energy (signal A, f0 = 2500 Hz, 48 kHz)";
@@ -1896,37 +2101,70 @@ int main(int argc, char** argv)
     csvTables["blocksize"] = tBlkCsv; tables.push_back(tBlk);
 
     // ---------------------------------------------------------------- right-only (8)
-    logf("[8/9] right-only resonance (signal E)");
+    logf("[8/9] right-only resonance (signal E, every scan f0)");
     Table tRight; tRight.title = "8. Right-only resonance (signal E, f0 = 2500 Hz, 48 kHz)";
     tRight.note = "Resonance planted in the RIGHT channel only (independent pink noise in each channel). removed_dB at f0 +/- 1/6 oct per channel (same definition as metric 3, single channel). "
                   "The left channel has no resonance, so its value shows what a linked / left-driven mask does to a clean channel.";
     tRight.header = { "subject", "label", "removed R (dB)", "removed L (dB)", "collateral R (dB)", "collateral L (dB)" };
     Table tRightRes; tRightRes.title = "8b. Right-only resonance vs clean (signal E, f0 = 2500 Hz, 48 kHz) - gate G3 evidence";
     tRightRes.note = "Same signal and render as table 8; clean reference = unprocessed C (the pink noise E was built from), latency-aligned. Metrics as in 3r, computed per channel "
-                     "(R: resonance planted; L: untouched). G3 = (R in_window within -1.5 .. 0.30 x ideal) AND (R outside_dev <= 0.5) AND (L outside_dev <= 0.5). "
-                     "ideal at 2500 Hz / 48 kHz = " + num(bd.ideal["48000"][2500], 2) + " dB. L in_window is informational.";
-    tRightRes.header = { "subject", "label", "R in_window (dB)", "R outside_dev (dB)", "L in_window (dB)", "L outside_dev (dB)", "G3" };
-    Table tRightCsv; tRightCsv.header = { "subject", "r_in_window_db", "r_outside_dev_db", "l_in_window_db", "l_outside_dev_db", "ideal_db", "g3" };
+                     "(R: resonance planted; L: untouched, so its output must equal the clean L). G3 = R gates (R in_window within -1.5 .. 0.30 x ideal AND R outside_dev <= 0.5, at 2500 Hz) "
+                     "AND the L gate at EVERY one of the 12 scan f0 (L in_window within +/- 1.0 dB AND L outside_dev <= 0.5; per-f0 table 8c). "
+                     "ideal at 2500 Hz / 48 kHz = " + num(bd.ideal["48000"][2500], 2) + " dB. The L columns here are the 2500 Hz values; 'L gate' = f0 passing out of 12.";
+    tRightRes.header = { "subject", "label", "R in_window (dB)", "R outside_dev (dB)", "L in_window (dB)", "L outside_dev (dB)", "R gates", "L gate (f0 of 12)", "G3" };
+    Table tRightCsv; tRightCsv.header = { "subject", "r_in_window_db", "r_outside_dev_db", "l_in_window_db", "l_outside_dev_db", "ideal_db", "g3", "r_gates", "l_gate_pass_f0", "l_gate_total_f0" };
+    Table tRightF0Csv; tRightF0Csv.header = { "subject", "f0_hz", "r_in_window_db", "r_outside_dev_db", "l_in_window_db", "l_outside_dev_db", "l_gate" };
+    Table tRightF0; tRightF0.title = "8c. Right-only resonance, LEFT (untouched) channel at every scan f0 (signal E, 48 kHz) - gate G3 L evidence";
+    tRightF0.note = "Signal E at each f0 (+12 dB / Q8 bell in R only; clean reference = unprocessed C). Cell: L in_window / L outside_dev (dB), then P/F = L gate verdict "
+                    "(|L in_window| <= 1.0 dB AND L outside_dev <= 0.5 dB). The L output of an ideal processor equals the clean L, so both figures are 0.";
+    tRightF0.header = { "f0 Hz" };
+    for (const auto& s : scanSubjects) tRightF0.header.push_back(s.id);
     {
-        const Stereo sigE = makeResonant(pinkC, SR, 2500.0, false, true);
+        std::map<std::string, RC> remR, remL;   // removed/collateral at 2500 Hz (table 8)
+        for (double f0 : scanF0)
+        {
+            const Stereo sigE = makeResonant(pinkC, SR, f0, false, true);
+            Planted pl; pl.f0 = f0; pl.left = false; pl.right = true;
+            for (const auto& s : scanSubjects)
+            {
+                Fx fx = makeFx(s, SR, f0, false, kPrepareBlock, &pl);
+                const Stereo out = renderStd(fx, sigE);
+                const auto a = align(sigE, out, measureLatency(s, SR).measured, SR);
+                const Accuracy aR = suppressionAccuracy(a, "C@48000", pinkC, SR, f0, false, true);
+                const Accuracy aL = suppressionAccuracy(a, "C@48000", pinkC, SR, f0, true, false);
+                EResidual er; er.valid = true; er.r = aR.res; er.l = aL.res;
+                bd.eScan[s.id][static_cast<int>(f0)] = er;
+                tRightF0Csv.add({ s.id, num(f0, 0), num(er.r.inWindow, 4), num(er.r.outsideDev, 4), num(er.l.inWindow, 4), num(er.l.outsideDev, 4), g3LCell(er.l) ? "1" : "0" });
+                if (f0 == 2500.0) { bd.right[s.id] = er; remR[s.id] = aR.rc; remL[s.id] = aL.rc; }
+            }
+        }
+        for (double f0 : scanF0)
+        {
+            std::vector<std::string> row = { num(f0, 0) };
+            for (const auto& s : scanSubjects)
+            {
+                const EResidual& er = bd.eScan[s.id][static_cast<int>(f0)];
+                row.push_back(num(er.l.inWindow, 2) + " / " + num(er.l.outsideDev, 2) + "  " + (g3LCell(er.l) ? "P" : "F"));
+            }
+            tRightF0.add(row);
+        }
+        const double ideal = bd.ideal["48000"][2500];
         for (const auto& s : scanSubjects)
         {
-            Fx fx = makeFx(s, SR, 2500.0, false, kPrepareBlock);
-            const Stereo out = renderStd(fx, sigE);
-            const auto a = align(sigE, out, measureLatency(s, SR).measured, SR);
-            const Accuracy aR = suppressionAccuracy(a, "C@48000", pinkC, SR, 2500.0, false, true);
-            const Accuracy aL = suppressionAccuracy(a, "C@48000", pinkC, SR, 2500.0, true, false);
-            tRight.add({ s.id, s.label, num(aR.rc.removed, 2), num(aL.rc.removed, 2), num(aR.rc.collateral, 2), num(aL.rc.collateral, 2) });
-            EResidual er; er.valid = true; er.r = aR.res; er.l = aL.res;
-            bd.right[s.id] = er;
-            const double ideal = bd.ideal["48000"][2500];
-            const bool g3 = g1Cell(er.r, ideal) && g2Cell(er.r) && er.l.outsideDev <= kG2OutsideDevDb;
-            tRightRes.add({ s.id, s.label, num(er.r.inWindow, 2), num(er.r.outsideDev, 2), num(er.l.inWindow, 2), num(er.l.outsideDev, 2), pf(g3) });
-            tRightCsv.add({ s.id, num(er.r.inWindow, 4), num(er.r.outsideDev, 4), num(er.l.inWindow, 4), num(er.l.outsideDev, 4), num(ideal, 4), g3 ? "1" : "0" });
+            const EResidual& er = bd.right[s.id];
+            tRight.add({ s.id, s.label, num(remR[s.id].removed, 2), num(remL[s.id].removed, 2), num(remR[s.id].collateral, 2), num(remL[s.id].collateral, 2) });
+            int lp = 0, ln = 0;
+            for (double f0 : scanF0) { ++ln; if (g3LCell(bd.eScan[s.id][static_cast<int>(f0)].l)) ++lp; }
+            const bool rGates = g1Cell(er.r, ideal) && g2Cell(er.r);
+            const bool g3 = rGates && lp == ln;
+            tRightRes.add({ s.id, s.label, num(er.r.inWindow, 2), num(er.r.outsideDev, 2), num(er.l.inWindow, 2), num(er.l.outsideDev, 2), pf(rGates), cnt(lp, ln), pf(g3) });
+            tRightCsv.add({ s.id, num(er.r.inWindow, 4), num(er.r.outsideDev, 4), num(er.l.inWindow, 4), num(er.l.outsideDev, 4), num(ideal, 4), g3 ? "1" : "0",
+                            rGates ? "1" : "0", inum(lp), inum(ln) });
         }
     }
     csvTables["right_only"] = tRight; tables.push_back(tRight);
     csvTables["right_only_residual"] = tRightCsv; tables.push_back(tRightRes);
+    csvTables["right_only_residual_scan"] = tRightF0Csv; tables.push_back(tRightF0);
 
     // ---------------------------------------------------------------- detector geometry (10)
     logf("[8b/9] detector geometry (RS HQ baseline read through the existing test hook)");
@@ -1988,7 +2226,7 @@ int main(int argc, char** argv)
     // ---------------------------------------------------------------- CPU (9)
     Table tCpu; tCpu.title = "9. CPU (48 kHz stereo)";
     tCpu.header = { "subject", "label", "block", "median ns", "p95 ns", "p99 ns", "max ns", "mean ns", "median % RT", "p95 % RT", "mean % RT", "max % RT" };
-    Table tCpuProj;
+    Table tCpuProj, tCpuRatio;
     if (g_opt.noCpu)
     {
         logf("[9/9] CPU skipped (--no-cpu)");
@@ -2008,9 +2246,29 @@ int main(int argc, char** argv)
         fillCpuTable(tCpu, cpuRows);
         tCpuProj = cpuProjectionTable(cpuRows, cpu);
         logCpuProjection(cpuRows, cpu);
+
+        // G7: the gated variants that are not default-parameter subjects (S1c..S5c, S5q, S5qd, references) get their own CPU run at
+        // blocks 64 and 128 so they can be compared with S3 in the SAME run. Table 9 / 9b stay on the five default subjects.
+        std::vector<Subject> extra;
+        for (const auto& sc : scanSubjects)
+        {
+            if (!sc.gated) continue;
+            bool isPrimary = false;
+            for (const auto& ps : primary) if (ps.id == sc.id) isPrimary = true;
+            if (!isPrimary) extra.push_back(sc);
+        }
+        logf("      G7: CPU for %zu gated variants at blocks 64 / 128 (compared with %s in this run)", extra.size(), kG7RefId);
+        auto allRows = cpuRows;
+        const auto extraRows = runCpuRows(extra, { 64, 128 }, SR, cpuSig);
+        allRows.insert(allRows.end(), extraRows.begin(), extraRows.end());
+        bd.cpuRatio = cpuRatios(allRows);
+        tCpuRatio = cpuRatioTable(allRows, bd.cpuRatio);
+        for (const auto& r : tCpuRatio.rows)
+            logf("G7 ratio vs %s (same run)  %-4s @64: %s  @128: %s  -> %s", kG7RefId, r[0].c_str(), r[3].c_str(), r[5].c_str(), r[6].c_str());
     }
     csvTables["cpu"] = tCpu; tables.push_back(tCpu);
     if (!tCpuProj.rows.empty()) { csvTables["cpu_projection"] = tCpuProj; tables.push_back(tCpuProj); }
+    if (!tCpuRatio.rows.empty()) { csvTables["cpu_g7_ratio"] = tCpuRatio; tables.push_back(tCpuRatio); }
 
     // ---------------------------------------------------------------- --wav inputs (G)
     Table tWav; tWav.title = "G. --wav inputs: depth-0 null";
@@ -2046,34 +2304,48 @@ int main(int argc, char** argv)
 
     Table tGate; tGate.title = "Gate table (capability variants, fixed thresholds)";
     tGate.note = "Every subject registered with gated = true is graded at its own variant. G1: in-window residual vs clean within [-1.5 dB, 0.30 x ideal dB] at EVERY one of the 12 scan f0 (48 kHz; count = f0 passing). "
-                 "G2: outside deviation <= 0.5 dB at every f0 (count). G3: resonance in R only (signal E, 2500 Hz): G1 + G2 on R and L outside deviation <= 0.5 dB. "
+                 "G2: outside deviation <= 0.5 dB at every f0 (count). G1q/G2q: the same two tests on the Q scan (Q 4 / 8 / 16 at +12 dB, f0 2500 Hz; count of 3 cases, ideal recomputed per case). "
+                 "G1l/G2l: the same on the level scan (+12 / +18 dB at Q 8, f0 2500 Hz; count of 2 cases). "
+                 "G3: resonance in R only (signal E): R gates at 2500 Hz (G1 + G2 on R) AND the untouched L channel at every one of the 12 scan f0 (|L in_window| <= 1.0 dB and L outside_dev <= 0.5 dB; count of 12). "
                  "G4: sensitive-variant jitter (signal C, subject's registered sensitive variant): std all <= 0.6 dB AND isolated-cell fraction all <= 1e-3. "
                  "G5: pre-echo with the mask engaged (D2): broadband E_out/E_in <= +1.0 dB AND band (f0 +/- 1/3 oct) E_out/E_in <= +1.0 dB. "
-                 "G6: latency measured == reported at 48 and 44.1 kHz and unchanged across block schedules. Overall = all six pass. "
-                 "Thresholds are the constants kG1..kG5 in the tool; they are not tuned per subject.";
-    tGate.header = { "subject", "label", "G1 in-window", "G2 outside-dev", "G3 R-only", "G4 jitter", "G5 pre-echo D2", "G6 latency", "overall" };
+                 "G6: latency measured == reported at 48 and 44.1 kHz and unchanged across block schedules. "
+                 "G7: mean % RT divided by S3's mean % RT in the same run <= 1.00 at block 128 AND block 64 (cell shows ratio @128 / @64; 'n/a' with --no-cpu). "
+                 "Overall = every column passes (G7 left out of the verdict when n/a). "
+                 "Thresholds are the constants kG1..kG7 in the tool; they are not tuned per subject.";
+    tGate.header = { "subject", "label", "G1 in-window", "G2 outside-dev", "G1q Q-scan", "G2q Q-scan", "G1l level-scan", "G2l level-scan", "G3 R-only", "G4 jitter", "G5 pre-echo D2", "G6 latency", "G7 CPU vs S3", "overall" };
     Table tGateDetail; tGateDetail.title = "Gate details (raw values behind the gate table)";
-    tGateDetail.note = "G1/G2 counts also at 44.1 kHz (informational, not part of the gate). G3: R/L in-window and outside-dev (dB) at 2500 Hz. "
-                       "G4: std all (dB) / isolated all, measured on the named sensitive variant. G5: broadband / band E_out vs E_in (dB) on D2. G6: measured/reported per rate.";
-    tGateDetail.header = { "subject", "G1 @44.1k (info)", "G2 @44.1k (info)", "G3 R in-window", "G3 R outside-dev", "G3 L in-window", "G3 L outside-dev",
-                           "G4 variant", "G4 std all", "G4 isolated all", "G5 broadband", "G5 band", "G6 latency" };
+    tGateDetail.note = "G1/G2 counts also at 44.1 kHz (informational, not part of the gate). G3: R gates at 2500 Hz, L gate f0 passing out of 12 (per-f0 values in table 8c), and the 2500 Hz R/L in-window and outside-dev (dB). "
+                       "G4: std all (dB) / isolated all, measured on the named sensitive variant. G5: broadband / band E_out vs E_in (dB) on D2. G6: measured/reported per rate. G7: CPU ratio vs S3 at block 128 / 64.";
+    tGateDetail.header = { "subject", "G1 @44.1k (info)", "G2 @44.1k (info)", "G3 R gates", "G3 L gate (f0 of 12)", "G3 R in-window", "G3 R outside-dev", "G3 L in-window", "G3 L outside-dev",
+                           "G4 variant", "G4 std all", "G4 isolated all", "G5 broadband", "G5 band", "G6 latency", "G7 ratio @128", "G7 ratio @64" };
     Table tGateCsv;
     tGateCsv.header = { "subject", "label", "g1_pass_f0", "g1_total_f0", "g1", "g2_pass_f0", "g2_total_f0", "g2", "g3_r_in_window_db", "g3_r_outside_dev_db", "g3_l_outside_dev_db", "g3",
                         "g4_variant", "g4_std_all_db", "g4_isolated_all", "g4", "g5_broadband_db", "g5_band_db", "g5", "g6_detail", "g6", "overall",
-                        "info_g1_pass_f0_44k", "info_g2_pass_f0_44k", "info_total_f0_44k" };
+                        "info_g1_pass_f0_44k", "info_g2_pass_f0_44k", "info_total_f0_44k",
+                        "g1q_pass_cases", "g1q_total_cases", "g1q", "g2q_pass_cases", "g2q", "g1l_pass_cases", "g1l_total_cases", "g1l", "g2l_pass_cases", "g2l",
+                        "g3_r_gates", "g3_l_pass_f0", "g3_l_total_f0", "g3_l_in_window_db", "g7_ratio_128", "g7_ratio_64", "g7" };
     int nOverall = 0;
     for (size_t gi = 0; gi < gateRows.size(); ++gi)
     {
         const auto& g = gateRows[gi];
         const bool isRef = [&] { for (const auto& rs : scanSubjects) if (rs.id == g.id) return rs.reference; return false; }();
         if (g.overall() && !isRef) ++nOverall;
-        tGate.add({ g.id, g.label, pf(g.pass1()) + " " + cnt(g.g1, g.n), pf(g.pass2()) + " " + cnt(g.g2, g.n), g.g3valid ? pf(g.g3) : "FAIL (no data)",
-                    g.g4valid ? pf(g.g4) : "FAIL (no data)", g.g5valid ? pf(g.g5) : "FAIL (no data)", pf(g.g6), pf(g.overall()) });
-        tGateDetail.add({ g.id, cnt(g.g1_44, g.n44), cnt(g.g2_44, g.n44), num(g.g3RRes, 2), num(g.g3RDev, 2), num(g.g3LRes, 2), num(g.g3LDev, 2),
-                          g.g4Id, num(g.g4Std, 3), num(g.g4Iso, 6), num(g.g5Bb, 3), num(g.g5Band, 3), g.g6detail });
+        const std::string g3cell = g.g3valid ? pf(g.g3) + " (R " + (g.g3R ? "P" : "F") + ", L " + cnt(g.g3Lpass, g.g3Ln) + ")" : "FAIL (no data)";
+        const std::string g7cell = g.g7valid ? pf(g.g7) + " " + num(g.g7r128, 2) + " / " + num(g.g7r64, 2) : "n/a";
+        tGate.add({ g.id, g.label, pf(g.pass1()) + " " + cnt(g.g1, g.n), pf(g.pass2()) + " " + cnt(g.g2, g.n),
+                    pf(g.pass1q()) + " " + cnt(g.g1q, g.nq), pf(g.pass2q()) + " " + cnt(g.g2q, g.nq), pf(g.pass1l()) + " " + cnt(g.g1l, g.nl), pf(g.pass2l()) + " " + cnt(g.g2l, g.nl),
+                    g3cell, g.g4valid ? pf(g.g4) : "FAIL (no data)", g.g5valid ? pf(g.g5) : "FAIL (no data)", pf(g.g6), g7cell,
+                    pf(g.overall()) + (g.g7valid ? "" : " (G7 n/a)") });
+        tGateDetail.add({ g.id, cnt(g.g1_44, g.n44), cnt(g.g2_44, g.n44), pf(g.g3R), cnt(g.g3Lpass, g.g3Ln), num(g.g3RRes, 2), num(g.g3RDev, 2), num(g.g3LRes, 2), num(g.g3LDev, 2),
+                          g.g4Id, num(g.g4Std, 3), num(g.g4Iso, 6), num(g.g5Bb, 3), num(g.g5Band, 3), g.g6detail,
+                          g.g7valid ? num(g.g7r128, 3) : "n/a", g.g7valid ? num(g.g7r64, 3) : "n/a" });
         tGateCsv.add({ g.id, g.label, inum(g.g1), inum(g.n), pf(g.pass1()), inum(g.g2), inum(g.n), pf(g.pass2()), num(g.g3RRes, 4), num(g.g3RDev, 4), num(g.g3LDev, 4), pf(g.g3),
                        g.g4Id, num(g.g4Std, 4), num(g.g4Iso, 6), pf(g.g4), num(g.g5Bb, 4), num(g.g5Band, 4), pf(g.g5), g.g6detail, pf(g.g6), pf(g.overall()),
-                       inum(g.g1_44), inum(g.g2_44), inum(g.n44) });
+                       inum(g.g1_44), inum(g.g2_44), inum(g.n44),
+                       inum(g.g1q), inum(g.nq), pf(g.pass1q()), inum(g.g2q), pf(g.pass2q()), inum(g.g1l), inum(g.nl), pf(g.pass1l()), inum(g.g2l), pf(g.pass2l()),
+                       pf(g.g3R), inum(g.g3Lpass), inum(g.g3Ln), num(g.g3LRes, 4),
+                       g.g7valid ? num(g.g7r128, 4) : "n/a", g.g7valid ? num(g.g7r64, 4) : "n/a", g.g7valid ? pf(g.g7) : "n/a" });
     }
     // Per-f0 breakdown at 48 kHz: "in_window / outside_dev" and the two per-cell verdicts (G1 G2).
     Table tGateF0; tGateF0.title = "Gate details per f0 (48 kHz): in_window / outside_dev (dB), then G1 G2 verdict letters (P = pass, F = fail)";
@@ -2095,13 +2367,36 @@ int main(int argc, char** argv)
     }
     csvTables["gates"] = tGateCsv;
 
-    logf("---- GATE TABLE (G1/G2 counts are f0 passing out of %zu) ----", scanF0.size());
+    logf("---- GATE TABLE (G1/G2/G3-L counts are f0 passing out of %zu; q = 3 Q cases, l = 2 level cases) ----", scanF0.size());
     for (const auto& g : gateRows)
-        logf("%-4s G1 %-4s %5s | G2 %-4s %5s | G3 %-4s | G4 %-4s | G5 %-4s | G6 %-4s | overall %s", g.id.c_str(),
-             pf(g.pass1()).c_str(), cnt(g.g1, g.n).c_str(), pf(g.pass2()).c_str(), cnt(g.g2, g.n).c_str(), pf(g.g3).c_str(), pf(g.g4).c_str(), pf(g.g5).c_str(), pf(g.g6).c_str(),
-             pf(g.overall()).c_str());
+    {
+        logf("%-4s G1 %-4s %5s | G2 %-4s %5s | G1q %-4s %3s | G2q %-4s %3s | G1l %-4s %3s | G2l %-4s %3s | G3 %-4s (R %s, L %s) | G4 %-4s | G5 %-4s | G6 %-4s | G7 %s | overall %s",
+             g.id.c_str(), pf(g.pass1()).c_str(), cnt(g.g1, g.n).c_str(), pf(g.pass2()).c_str(), cnt(g.g2, g.n).c_str(),
+             pf(g.pass1q()).c_str(), cnt(g.g1q, g.nq).c_str(), pf(g.pass2q()).c_str(), cnt(g.g2q, g.nq).c_str(),
+             pf(g.pass1l()).c_str(), cnt(g.g1l, g.nl).c_str(), pf(g.pass2l()).c_str(), cnt(g.g2l, g.nl).c_str(),
+             pf(g.g3).c_str(), g.g3R ? "P" : "F", cnt(g.g3Lpass, g.g3Ln).c_str(), pf(g.g4).c_str(), pf(g.g5).c_str(), pf(g.g6).c_str(),
+             g.g7valid ? (pf(g.g7) + " " + num(g.g7r128, 2) + "/" + num(g.g7r64, 2)).c_str() : "n/a", pf(g.overall()).c_str());
+    }
     if (nOverall > 0)
         warnf("%d gated subject(s) pass ALL gates - baseline expectation is that the current subjects fail most gates; investigate the metrics before trusting this", nOverall);
+
+    // Calibration verdicts (only when --ref-subjects registered R0 / R1): the oracle must pass G1-G6, the pass-through must fail G1 and G3.
+    std::string calibLine;
+    bool calibOk = true;
+    {
+        const GateRow* r0 = nullptr; const GateRow* r1 = nullptr;
+        for (const auto& g : gateRows) { if (g.id == "R0") r0 = &g; if (g.id == "R1") r1 = &g; }
+        if (r0 && r1)
+        {
+            const bool r1Ok = r1->pass1() && r1->pass2() && r1->pass1q() && r1->pass2q() && r1->pass1l() && r1->pass2l() && r1->g3 && r1->g4 && r1->g5 && r1->g6;
+            const bool r0Ok = !r0->pass1() && !r0->g3;
+            calibOk = r1Ok && r0Ok;
+            calibLine = std::string("oracle R1 passes G1-G6 (incl. shape scans) = ") + (r1Ok ? "yes" : "NO") + " (G3 L " + cnt(r1->g3Lpass, r1->g3Ln) + "); pass-through R0 fails G1 and G3 = " + (r0Ok ? "yes" : "NO")
+                      + " (G1 " + cnt(r0->g1, r0->n) + ", G3 " + pf(r0->g3) + ", L " + cnt(r0->g3Lpass, r0->g3Ln) + ")";
+            logf("calibration: %s -> %s", calibLine.c_str(), calibOk ? "ok" : "FAIL");
+            if (!calibOk) warnf("reference-subject calibration FAILED: %s", calibLine.c_str());
+        }
+    }
 
     // ---------------------------------------------------------------- sanity block
     std::ostringstream san;
@@ -2172,6 +2467,7 @@ int main(int argc, char** argv)
             san << " -> **" << (allGe ? "PASS" : "FAIL (see Notes)") << "**\n";
             logf("sanity: capability >= default at 2500 Hz %s", allGe ? "ok" : "FAIL");
         }
+        if (!calibLine.empty()) san << "- reference-subject calibration (--ref-subjects): " << calibLine << " -> **" << (calibOk ? "PASS" : "FAIL") << "**\n";
         san << "- non-finite values that reached a table: **" << g_nonFinite << "**\n";
         san << "- tool warnings: **" << g_warnings << "**\n\n";
         logf("sanity: latency %s | S1=0 %s | S2-S5 %s | removed>0 S2-S4 %s | nonfinite %d | warnings %d",
@@ -2197,6 +2493,7 @@ int main(int argc, char** argv)
           "S5s runs sens 1.0 exactly as specified; S5z runs sens 0.0 (the most sensitive) so the false-trigger direction is covered.\n"
           "Capability variants S1c-S5c (max depth): RS depth 100 % / mode Hard (LL and HQ Fast/Normal/High); EQ band gain -30 dB with spec_sens 0.0 (lower = more sensitive). "
           "S5q = the fair EQ variant: band gain -30 dB, spec_sens 0.0, band Q 8, centre = f0 (S5qz = its sensitive jitter companion: sens 0.0, Q 8, gain -12 dB). "
+          "S5qd = the same but spec_sens at its DEFAULT (S5q's sens 0.0 sets threshold = local mean, which over-suppresses by construction); its G4 is graded on S5qz. "
           "They run signals A/B (full scan), C (jitter), D and D2 (pre-echo), E and the delta-artefact run, in addition to the default-parameter subjects.\n\n";
     md << tGate.markdown() << tGateDetail.markdown() << tGateF0.markdown();
     md << san.str();
