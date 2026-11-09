@@ -16,8 +16,22 @@
 // Everything is deterministic (fixed seeds, no wall clock) except the CPU run
 // and the output-directory timestamp. Console prefix: [RSBench].
 //
+// Capability variants (max-depth runs, in addition to the default-parameter subjects):
+//   S1c RS LL depth 100 / Hard;  S2c-S4c RS HQ Fast/Normal/High depth 100 / Hard;
+//   S5c EQ Spectral band gain -30 dB (max depth), spec_sens 0.0 (most sensitive).
+//
+// Yardstick: ideal_dB = mean dB boost of the planted RBJ bell over the same
+// f0 +/- 1/6 oct Welch-bin window as removed_dB; removed/ideal % is printed next to
+// every removed_dB. Detector-geometry check (section 10) reads the RS detector
+// baseline through the existing XLETH_RESONANCE_SUPPRESSOR_TEST_HOOKS hook.
+//
 // Usage: xleth_rs_quality_bench [--quick] [--no-cpu] [--out-dir DIR]
 //                               [--wav label=path]...
+
+// Test-only read access to the RS detector baseline (same define as
+// engine/test/test_pdc_stage1.cpp). Adds only static members; must precede the
+// first include of the RS header. No production source is modified.
+#define XLETH_RESONANCE_SUPPRESSOR_TEST_HOOKS 1
 
 #include "audio/XlethEQEffect.h"
 #include "audio/XlethResonanceSuppressorEffect.h"
@@ -276,9 +290,13 @@ static std::vector<int> burstOnsets(int n, double sr)
     return o;
 }
 
-static Stereo makeTransientBed(int n, double sr)
+// bellF0 > 0 -> signal D2: the same +12 dB / Q8 bell is applied to the NOISE BED only
+// (before the bursts are added; bursts stay broadband and unfiltered).
+static Stereo makeTransientBed(int n, double sr, double bellF0 = 0.0)
 {
     Stereo s = makePinkStereo(n, -40.0, 50);
+    if (bellF0 > 0.0)
+        for (int c = 0; c < 2; ++c) applyRbjPeak(s.ch[c], sr, bellF0, 8.0, 12.0);
     const double peak = std::pow(10.0, -10.0 / 20.0) * std::sqrt(3.0);   // uniform[-1,1) has RMS 1/sqrt(3)
     const auto onsets = burstOnsets(n, sr);
     for (int c = 0; c < 2; ++c)
@@ -321,6 +339,8 @@ struct Subject
     bool sensitive = false;        // RS: depth 100 / selectivity 0
     float eqSens = -1.0f;          // EQ: spec_sens override (<0 = default)
     std::string params;
+    bool capability = false;       // max-depth capability variant (RS: depth 100 / Hard)
+    float eqGain = -12.0f;         // EQ band gain (= signed depth, dB) when not neutral
 };
 
 static std::vector<Subject> primarySubjects()
@@ -343,6 +363,17 @@ static std::vector<Subject> sensitiveSubjects()
         { "S4s", "S4", "RS HQ High (sensitive)",               Kind::RsHQ, 2, true,  -1.0f, "depth=100, selectivity=0" },
         { "S5s", "S5", "EQ Spectral (spec_sens=1.0, as spec'd)", Kind::Eq, 0, false, 1.0f, "spec_sens=1.0 (EQ: HIGHER sens = HIGHER threshold)" },
         { "S5z", "S5", "EQ Spectral (spec_sens=0.0)",          Kind::Eq,   0, false, 0.0f,  "spec_sens=0.0 (EQ: LOWEST threshold = most sensitive)" },
+    };
+}
+
+static std::vector<Subject> capabilitySubjects()
+{
+    return {
+        { "S1c", "S1", "RS Low Latency (capability)",          Kind::RsLL, 0, false, -1.0f, "depth=100, mode=Hard", true },
+        { "S2c", "S2", "RS HQ Fast (capability)",              Kind::RsHQ, 0, false, -1.0f, "depth=100, mode=Hard", true },
+        { "S3c", "S3", "RS HQ Normal (capability)",            Kind::RsHQ, 1, false, -1.0f, "depth=100, mode=Hard", true },
+        { "S4c", "S4", "RS HQ High (capability)",              Kind::RsHQ, 2, false, -1.0f, "depth=100, mode=Hard", true },
+        { "S5c", "S5", "EQ Spectral (capability)",             Kind::Eq,   0, false, 0.0f,  "band gain=-30 dB (max depth), spec_sens=0.0 (most sensitive)", true, -30.0f },
     };
 }
 
@@ -376,7 +407,7 @@ static Fx makeFx(const Subject& s, double sr, double eqCentre, bool neutral, int
         auto& eq = *fx.eq;
         need(eq.addBand() == 0, "EQ addBand");
         need(eq.setBandParam(0, "freq", static_cast<float>(eqCentre)), "EQ freq");
-        need(eq.setBandParam(0, "gain", neutral ? 0.0f : -12.0f), "EQ gain");
+        need(eq.setBandParam(0, "gain", neutral ? 0.0f : s.eqGain), "EQ gain");
         need(eq.setBandParam(0, "enabled", 1.0f), "EQ enabled");
         need(eq.setBandParam(0, "mode", 2.0f), "EQ mode");
         if (s.eqSens >= 0.0f) need(eq.setBandParam(0, "spec_sens", s.eqSens), "EQ spec_sens");
@@ -392,6 +423,11 @@ static Fx makeFx(const Subject& s, double sr, double eqCentre, bool neutral, int
         {
             need(rs.setParameterValue("depth", 100.0f), "RS depth");
             need(rs.setParameterValue("selectivity", 0.0f), "RS selectivity");
+        }
+        if (s.capability && !neutral)
+        {
+            need(rs.setParameterValue("depth", 100.0f), "RS depth 100 (capability)");
+            need(rs.setParameterValue("mode", 1.0f), "RS mode Hard (capability)");
         }
         if (neutral) need(rs.setParameterValue("depth", 0.0f), "RS depth 0");
         rs.prepareToPlay(sr, maxBlock);
@@ -565,6 +601,39 @@ static std::vector<double> welchPsd(const Stereo& s, int begin, int end, bool us
     return acc;
 }
 
+// ideal_dB: the yardstick for removed_dB. The planted RBJ bell's magnitude response
+// (dB), averaged over exactly the Welch bins removedCollateral() uses for `removed`
+// (k >= 1, f0 / 2^(1/6) <= k*sr/kWelchN <= f0 * 2^(1/6)), i.e. the same mean-of-dB.
+static double bellMagDb(double f, double sr, double f0, double q, double gainDb)
+{
+    const double A = std::pow(10.0, gainDb / 40.0);
+    const double w0 = 2.0 * juce::MathConstants<double>::pi * f0 / sr;
+    const double alpha = std::sin(w0) / (2.0 * q);
+    const double cw = std::cos(w0);
+    const double a0 = 1.0 + alpha / A;
+    const double b0 = (1.0 + alpha * A) / a0, b1 = (-2.0 * cw) / a0, b2 = (1.0 - alpha * A) / a0;
+    const double a1 = (-2.0 * cw) / a0, a2 = (1.0 - alpha / A) / a0;
+    const double w = 2.0 * juce::MathConstants<double>::pi * f / sr;
+    const std::complex<double> z1 = std::polar(1.0, -w), z2 = std::polar(1.0, -2.0 * w);
+    const std::complex<double> hn = b0 + b1 * z1 + b2 * z2;
+    const std::complex<double> hd = 1.0 + a1 * z1 + a2 * z2;
+    return 10.0 * std::log10(std::max(std::norm(hn) / std::max(std::norm(hd), 1.0e-300), 1.0e-300));
+}
+
+static double idealBoostDb(double sr, double f0)
+{
+    const double binHz = sr / kWelchN;
+    const double s6 = std::pow(2.0, 1.0 / 6.0);
+    const double lo1 = f0 / s6, hi1 = f0 * s6;
+    double acc = 0; int n = 0;
+    for (int k = 1; k <= kWelchN / 2; ++k)
+    {
+        const double f = static_cast<double>(k) * binHz;
+        if (f >= lo1 && f <= hi1) { acc += bellMagDb(f, sr, f0, 8.0, 12.0); ++n; }
+    }
+    return n ? acc / n : 0.0;
+}
+
 struct RC { double removed = 0, collateral = 0; };
 
 static RC removedCollateral(const std::vector<double>& pin, const std::vector<double>& pout, double sr, double f0)
@@ -638,27 +707,52 @@ static double deltaArtefactDb(const Aligned& a, double sr, double f0)
 //    errVsIn  = 10log10(E_(out-in) / E_in)       (supplementary: error energy, exposes smear
 //                                                 that a plain energy ratio can hide)
 //    Each is averaged over bursts in dB.
-struct PreEcho { double outVsIn = 0, errVsIn = 0; int bursts = 0; };
+//    bandOutVsIn / bandErrVsIn: the same two ratios restricted to f0 +/- 1/3 octave
+//    (rectangular 20 ms window, zero-padded to 2048, Parseval band sum over FFT bins).
+struct PreEcho { double outVsIn = 0, errVsIn = 0, bandOutVsIn = 0, bandErrVsIn = 0; int bursts = 0; };
 
-static PreEcho preEcho(const Aligned& a, double sr)
+static PreEcho preEcho(const Aligned& a, double sr, double bandF0 = 2500.0)
 {
+    constexpr int PN = 2048;
+    static const Fft fft(PN);
     const int w = static_cast<int>(std::llround(0.020 * sr));
+    const double s3 = std::pow(2.0, 1.0 / 3.0);
+    const double bLo = bandF0 / s3, bHi = bandF0 * s3;
     const auto onsets = burstOnsets(a.n(), sr);
-    double s1 = 0, s2 = 0; int cnt = 0;
+    double s1 = 0, s2 = 0, b1 = 0, b2 = 0; int cnt = 0;
+    std::vector<std::complex<double>> xi(PN), xo(PN), xe(PN);
     for (int pos : onsets)
     {
         if (pos - w < 0 || pos > a.n()) continue;
-        double ei = 0, eo = 0, ee = 0;
+        double ei = 0, eo = 0, ee = 0, bi = 0, bo = 0, be = 0;
         for (int c = 0; c < 2; ++c)
+        {
+            std::fill(xi.begin(), xi.end(), std::complex<double>(0.0, 0.0));
+            std::fill(xo.begin(), xo.end(), std::complex<double>(0.0, 0.0));
+            std::fill(xe.begin(), xe.end(), std::complex<double>(0.0, 0.0));
             for (int i = pos - w; i < pos; ++i)
             {
                 const double x = a.in.ch[c][static_cast<size_t>(i)], y = a.out.ch[c][static_cast<size_t>(i)];
                 ei += x * x; eo += y * y; ee += (y - x) * (y - x);
+                const size_t j = static_cast<size_t>(i - (pos - w));
+                xi[j] = x; xo[j] = y; xe[j] = y - x;
             }
-        s1 += dbPow(eo) - dbPow(ei); s2 += dbPow(ee) - dbPow(ei); ++cnt;
+            fft.forward(xi); fft.forward(xo); fft.forward(xe);
+            for (int k = 1; k < PN / 2; ++k)
+            {
+                const double f = static_cast<double>(k) * sr / PN;
+                if (f < bLo || f > bHi) continue;
+                bi += std::norm(xi[static_cast<size_t>(k)]);
+                bo += std::norm(xo[static_cast<size_t>(k)]);
+                be += std::norm(xe[static_cast<size_t>(k)]);
+            }
+        }
+        s1 += dbPow(eo) - dbPow(ei); s2 += dbPow(ee) - dbPow(ei);
+        b1 += dbPow(bo) - dbPow(bi); b2 += dbPow(be) - dbPow(bi);
+        ++cnt;
     }
     PreEcho r; r.bursts = cnt;
-    if (cnt) { r.outVsIn = s1 / cnt; r.errVsIn = s2 / cnt; }
+    if (cnt) { r.outVsIn = s1 / cnt; r.errVsIn = s2 / cnt; r.bandOutVsIn = b1 / cnt; r.bandErrVsIn = b2 / cnt; }
     return r;
 }
 
@@ -768,6 +862,70 @@ static Jitter jitterMetrics(const Aligned& a, double sr)
     }
     if (nCh) { res.stdAll /= nCh; res.stdLoc /= nCh; res.isoAll /= nCh; res.isoLoc /= nCh; }
     return res;
+}
+
+// ----------------------------------------------------------------------------
+// Detector geometry (section 10): runs the RS HQ detector front end (sqrt-Hann
+// window, unnormalised real FFT, magDb = 10log10(max(|X|^2, 1e-24)), bins 0 and N/2
+// = -240) over a signal and reads the detector baseline through the existing test
+// hook XlethResonanceSuppressorEffect::computeDetectorBaselinesForTest. Statistics at
+// bin k0 are the mean over all frames (hop N/4) and both channels, after the 2 s skip.
+// ----------------------------------------------------------------------------
+
+struct GeomStats
+{
+    double mag = 0, base = 0, excess = 0, pTrig = 0, maxRefPrefixDiff = 0, maxOwnVsHookDiff = 0;
+    long long frames = 0;
+};
+
+static GeomStats detectorGeometry(const Stereo& sig, int N, int k0, int gap, double offsetDb, int skipSamples)
+{
+    const int hop = N / 4;
+    const Fft fft(N);
+    std::vector<double> win(static_cast<size_t>(N));
+    for (int i = 0; i < N; ++i)
+        win[static_cast<size_t>(i)] = std::sqrt(std::max(0.5 - 0.5 * std::cos(2.0 * juce::MathConstants<double>::pi * i / N), 0.0));
+    std::vector<std::complex<double>> buf(static_cast<size_t>(N));
+    std::vector<float> magDb(static_cast<size_t>(N / 2 + 1));
+    GeomStats g;
+    long long trig = 0;
+    for (int c = 0; c < 2; ++c)
+        for (int p = skipSamples; p + N <= sig.size(); p += hop)
+        {
+            for (int i = 0; i < N; ++i)
+                buf[static_cast<size_t>(i)] = { sig.ch[c][static_cast<size_t>(p + i)] * win[static_cast<size_t>(i)], 0.0 };
+            fft.forward(buf);
+            magDb[0] = -240.0f;
+            magDb[static_cast<size_t>(N / 2)] = -240.0f;
+            for (int k = 1; k < N / 2; ++k)
+            {
+                const float magSq = std::max(static_cast<float>(std::norm(buf[static_cast<size_t>(k)])), 1.0e-24f);
+                magDb[static_cast<size_t>(k)] = 10.0f * std::log10(magSq);
+            }
+            const auto r = XlethResonanceSuppressorEffect::computeDetectorBaselinesForTest(magDb, gap);
+            const double m = magDb[static_cast<size_t>(k0)];
+            const double b = r.prefix[static_cast<size_t>(k0)];
+            g.mag += m; g.base += b; g.excess += m - b;
+            if (m - b > offsetDb) ++trig;
+            g.maxRefPrefixDiff = std::max(g.maxRefPrefixDiff, std::abs(static_cast<double>(r.reference[static_cast<size_t>(k0)]) - b));
+            // Independent re-derivation of the baseline geometry (radius = clamp(k/6+4, 6, 48); window excludes |j-k0| <= gap)
+            // from the source, to confirm the radius/window numbers printed in the geometry table match what the hook computed.
+            {
+                const int rad = std::clamp(k0 / 6 + 4, 6, 48);
+                const int lo = std::max(1, k0 - rad), hi = std::min(N / 2 - 1, k0 + rad);
+                double sum = 0; int cnt = 0;
+                for (int j = lo; j <= hi; ++j)
+                    if (std::abs(j - k0) > gap) { sum += magDb[static_cast<size_t>(j)]; ++cnt; }
+                if (cnt) g.maxOwnVsHookDiff = std::max(g.maxOwnVsHookDiff, std::abs(sum / cnt - b));
+            }
+            ++g.frames;
+        }
+    if (g.frames)
+    {
+        g.mag /= g.frames; g.base /= g.frames; g.excess /= g.frames;
+        g.pTrig = static_cast<double>(trig) / g.frames;
+    }
+    return g;
 }
 
 // ============================================================================
@@ -994,8 +1152,13 @@ int main(int argc, char** argv)
 
     const auto primary   = primarySubjects();
     const auto sensitive = sensitiveSubjects();
+    const auto capability = capabilitySubjects();
     std::vector<Subject> allSubjects = primary;
     allSubjects.insert(allSubjects.end(), sensitive.begin(), sensitive.end());
+    allSubjects.insert(allSubjects.end(), capability.begin(), capability.end());
+    // Subjects that get the A/B scan, delta-artefact and D/D2 runs: defaults + capability.
+    std::vector<Subject> scanSubjects = primary;
+    scanSubjects.insert(scanSubjects.end(), capability.begin(), capability.end());
 
     const std::vector<double> rates = { 48000.0, 44100.0 };
     const std::vector<double> scanF0 = { 100, 150, 220, 330, 500, 750, 1100, 1700, 2500, 3700, 5500, 8000 };
@@ -1048,10 +1211,15 @@ int main(int argc, char** argv)
 
     // ---------------------------------------------------------------- scan (3) + delta (5) + WAV A
     logf("[3/9] resonance scan + suppression accuracy (both sample rates)");
-    Table tScanCsv; tScanCsv.header = { "subject", "sr", "f0_hz", "removed_db", "collateral_db", "removed_minus_collateral_db" };
+    Table tScanCsv; tScanCsv.header = { "subject", "sr", "f0_hz", "removed_db", "collateral_db", "removed_minus_collateral_db", "ideal_db", "removed_pct_of_ideal" };
     std::map<std::string, std::map<int, RC>> scanRes;       // key "S1@48000" -> f0 -> RC
     std::map<std::string, RC> r2500;                        // 48k, f0 2500
     std::map<std::string, Aligned> alignedA2500;
+    std::map<std::string, std::map<int, double>> idealDb;   // key "48000" -> f0 -> ideal dB
+    auto pct = [](double removed, double ideal) { return ideal > 1.0e-9 ? 100.0 * removed / ideal : 0.0; };
+    for (double sr : rates)
+        for (double f0 : scanF0)
+            idealDb[num(sr, 0)][static_cast<int>(f0)] = idealBoostDb(sr, f0);
     for (double sr : rates)
     {
         const int n = static_cast<int>(sigSeconds() * sr);
@@ -1059,14 +1227,16 @@ int main(int argc, char** argv)
         for (double f0 : scanF0)
         {
             const Stereo sig = makeResonant(base, sr, f0, true, true);
-            for (const auto& s : primary)
+            const double ideal = idealDb[num(sr, 0)][static_cast<int>(f0)];
+            for (const auto& s : scanSubjects)
             {
                 Fx fx = makeFx(s, sr, f0, false, kPrepareBlock);
                 const Stereo out = renderStd(fx, sig);
                 const auto a = align(sig, out, measureLatency(s, sr).measured, sr);
                 const RC rc = suppressionAccuracy(a, sr, f0);
                 scanRes[s.id + "@" + num(sr, 0)][static_cast<int>(f0)] = rc;
-                tScanCsv.add({ s.id, num(sr, 0), num(f0, 0), num(rc.removed, 4), num(rc.collateral, 4), num(rc.removed - rc.collateral, 4) });
+                tScanCsv.add({ s.id, num(sr, 0), num(f0, 0), num(rc.removed, 4), num(rc.collateral, 4), num(rc.removed - rc.collateral, 4),
+                               num(ideal, 4), num(pct(rc.removed, ideal), 2) });
                 if (sr == SR && f0 == 2500.0)
                 {
                     r2500[s.id] = rc;
@@ -1079,31 +1249,53 @@ int main(int argc, char** argv)
     csvTables["scan"] = tScanCsv;
     for (double sr : rates)
     {
-        Table t; t.title = "3. Suppression accuracy - resonance scan @" + num(sr, 0) + " Hz";
-        t.note = "Signal A/B: 30 s pink (-20 dBFS RMS) + RBJ peak +12 dB Q 8 at f0 in both channels. Welch PSD (Hann 8192, 50 % overlap, first 2 s skipped), "
-                 "channels power-averaged. removed = mean dB(PSDin - PSDout) over f0 +/- 1/6 oct; collateral = mean |dB(PSDin - PSDout)| over 100 Hz-12 kHz excluding f0 +/- 1/3 oct. "
-                 "Each cell: removed / collateral / removed-collateral (dB). S5's band centre = f0.";
-        t.header = { "f0 Hz" };
-        for (const auto& s : primary) t.header.push_back(s.id);
-        for (double f0 : scanF0)
+        for (int variant = 0; variant < 3; ++variant)   // 0 = defaults, 1 = capability, 2 = removed/ideal % of all
         {
-            std::vector<std::string> row = { num(f0, 0) };
-            for (const auto& s : primary)
+            const std::vector<Subject>& subs = (variant == 0) ? primary : (variant == 1 ? capability : scanSubjects);
+            Table t;
+            if (variant == 0)
             {
-                const RC rc = scanRes[s.id + "@" + num(sr, 0)][static_cast<int>(f0)];
-                row.push_back(num(rc.removed, 2) + " / " + num(rc.collateral, 2) + " / " + num(rc.removed - rc.collateral, 2));
+                t.title = "3. Suppression accuracy - resonance scan @" + num(sr, 0) + " Hz (default parameters)";
+                t.note = "Signal A/B: 30 s pink (-20 dBFS RMS) + RBJ peak +12 dB Q 8 at f0 in both channels. Welch PSD (Hann 8192, 50 % overlap, first 2 s skipped), "
+                         "channels power-averaged. removed = mean dB(PSDin - PSDout) over f0 +/- 1/6 oct; collateral = mean |dB(PSDin - PSDout)| over 100 Hz-12 kHz excluding f0 +/- 1/3 oct. "
+                         "ideal = analytic mean dB boost of the planted bell over the SAME removed window and bins (the yardstick). "
+                         "Each cell: removed (removed/ideal %) / collateral / removed-collateral (dB). S5's band centre = f0.";
             }
-            t.add(row);
+            else if (variant == 1)
+            {
+                t.title = "3c. Suppression accuracy - resonance scan @" + num(sr, 0) + " Hz (capability runs)";
+                t.note = "Same signals and metric definitions as table 3. S1c = RS LL depth 100 / Hard; S2c-S4c = RS HQ Fast/Normal/High depth 100 / Hard; "
+                         "S5c = EQ Spectral band gain -30 dB, spec_sens 0.0. Each cell: removed (removed/ideal %) / collateral / removed-collateral (dB).";
+            }
+            else
+            {
+                t.title = "3p. removed / ideal (%) - resonance scan @" + num(sr, 0) + " Hz, all subjects";
+                t.note = "removed_dB / ideal_dB x 100, f0 +/- 1/6 oct window, defaults (S1-S5) and capability (S1c-S5c) side by side. 100 % = the planted +12 dB bell fully flattened.";
+            }
+            t.header = { "f0 Hz", "ideal dB" };
+            for (const auto& s : subs) t.header.push_back(s.id);
+            for (double f0 : scanF0)
+            {
+                const double ideal = idealDb[num(sr, 0)][static_cast<int>(f0)];
+                std::vector<std::string> row = { num(f0, 0), num(ideal, 2) };
+                for (const auto& s : subs)
+                {
+                    const RC rc = scanRes[s.id + "@" + num(sr, 0)][static_cast<int>(f0)];
+                    if (variant == 2) row.push_back(num(pct(rc.removed, ideal), 1) + " %");
+                    else row.push_back(num(rc.removed, 2) + " (" + num(pct(rc.removed, ideal), 0) + " %) / " + num(rc.collateral, 2) + " / " + num(rc.removed - rc.collateral, 2));
+                }
+                t.add(row);
+            }
+            tables.push_back(t);
         }
-        tables.push_back(t);
     }
 
     // delta artefact (5) + WAVs for A@2500
     logf("[4/9] delta artefact energy + WAVs (A@2500)");
     Table tDel; tDel.title = "5. Delta artefact energy (signal A, f0 = 2500 Hz, 48 kHz)";
-    tDel.note = "Energy of (in_aligned - out_aligned) OUTSIDE f0 +/- 1/3 octave, relative to total input energy, in dB (Welch PSD sums, first 2 s skipped).";
+    tDel.note = "Energy of (in_aligned - out_aligned) OUTSIDE f0 +/- 1/3 octave, relative to total input energy, in dB (Welch PSD sums, first 2 s skipped). S1c-S5c = capability runs.";
     tDel.header = { "subject", "label", "delta energy outside band vs input (dB)" };
-    for (const auto& s : primary)
+    for (const auto& s : scanSubjects)
     {
         const auto& a = alignedA2500[s.id];
         tDel.add({ s.id, s.label, num(deltaArtefactDb(a, SR, 2500.0), 2) });
@@ -1132,22 +1324,43 @@ int main(int argc, char** argv)
 
     // ---------------------------------------------------------------- pre-echo (6)
     logf("[6/9] pre-echo (signal D) + WAVs");
-    Table tPre; tPre.title = "6. Pre-echo (signal D, 48 kHz)";
-    tPre.note = "-40 dBFS pink bed + noise bursts (-10 dBFS RMS at onset, 80 ms exp. decay time constant) every 500 ms. For each onset: 10log10(E_out/E_in) of the 20 ms BEFORE the onset "
-                "(aligned, both channels), mean over bursts (dB). Column 1 (the specified metric) = 10log10(E_out/E_in): >0 = more energy before the onset in the output than in the input. "
-                "Column 2 (supplementary) = 10log10(E_(out-in)/E_in): energy of the difference signal in that window relative to the input there.";
-    tPre.header = { "subject", "label", "pre-onset E_out vs E_in (dB)", "pre-onset E_(out-in) vs E_in (dB)", "bursts" };
-    for (const auto& s : primary)
+    const Stereo sigD2 = makeTransientBed(nD, SR, 2500.0);
+    writeWav(wavDir / "D2_in.wav", sigD2, SR);
+    const std::string preNote =
+        "-40 dBFS pink bed + noise bursts (-10 dBFS RMS at onset, 80 ms exp. decay time constant) every 500 ms. For each onset the 20 ms BEFORE the onset "
+        "(aligned, both channels) is measured, mean over bursts (dB). 'broadband' columns: first = 10log10(E_out/E_in) (the specified metric; >0 = more energy before "
+        "the onset in the output than in the input), second (supplementary) = 10log10(E_(out-in)/E_in), the difference signal relative to the input there. "
+        "'band' columns: the same two ratios restricted to f0 +/- 1/3 octave (f0 = 2500 Hz; rectangular 20 ms window zero-padded to 2048, Parseval band sum). "
+        "S1c-S5c = capability runs.";
+    const std::vector<std::string> preHeader = { "subject", "label", "broadband E_out vs E_in (dB)", "broadband E_(out-in) vs E_in (dB)",
+                                                 "band E_out vs E_in (dB)", "band E_(out-in) vs E_in (dB)", "bursts" };
+    Table tPre; tPre.title = "6. Pre-echo (signal D, 48 kHz) - MASK NOT ENGAGED (no resonance in the signal)";
+    tPre.note = preNote;
+    tPre.header = preHeader;
+    Table tPre2; tPre2.title = "6b. Pre-echo (signal D2, 48 kHz) - mask engaged (+12 dB / Q8 bell at 2500 Hz on the noise bed)";
+    tPre2.note = "Signal D2 = signal D with the +12 dB / Q8 RBJ bell at 2500 Hz applied to the noise bed (bursts stay broadband and unfiltered), so the suppressor's mask is "
+                 "active at 2500 Hz before every onset. " + preNote;
+    tPre2.header = preHeader;
+    for (const auto& s : scanSubjects)
     {
         Fx fx = makeFx(s, SR, 2500.0, false, kPrepareBlock);
         const Stereo out = renderStd(fx, sigD);
         const auto a = align(sigD, out, measureLatency(s, SR).measured, SR);
         const PreEcho pe = preEcho(a, SR);
-        tPre.add({ s.id, s.label, num(pe.outVsIn, 3), num(pe.errVsIn, 2), inum(pe.bursts) });
+        tPre.add({ s.id, s.label, num(pe.outVsIn, 3), num(pe.errVsIn, 2), num(pe.bandOutVsIn, 3), num(pe.bandErrVsIn, 2), inum(pe.bursts) });
         writeWav(wavDir / ("D_" + s.id + "_out.wav"),   a.out, SR);
         writeWav(wavDir / ("D_" + s.id + "_delta.wav"), deltaOf(a), SR);
+
+        Fx fx2 = makeFx(s, SR, 2500.0, false, kPrepareBlock);
+        const Stereo out2 = renderStd(fx2, sigD2);
+        const auto a2 = align(sigD2, out2, measureLatency(s, SR).measured, SR);
+        const PreEcho pe2 = preEcho(a2, SR);
+        tPre2.add({ s.id, s.label, num(pe2.outVsIn, 3), num(pe2.errVsIn, 2), num(pe2.bandOutVsIn, 3), num(pe2.bandErrVsIn, 2), inum(pe2.bursts) });
+        writeWav(wavDir / ("D2_" + s.id + "_out.wav"),   a2.out, SR);
+        writeWav(wavDir / ("D2_" + s.id + "_delta.wav"), deltaOf(a2), SR);
     }
     csvTables["preecho"] = tPre; tables.push_back(tPre);
+    csvTables["preecho_d2"] = tPre2; tables.push_back(tPre2);
 
     // ---------------------------------------------------------------- block size (7)
     logf("[7/9] block-size dependence (signal A@2500)");
@@ -1206,6 +1419,63 @@ int main(int argc, char** argv)
         }
     }
     csvTables["right_only"] = tRight; tables.push_back(tRight);
+
+    // ---------------------------------------------------------------- detector geometry (10)
+    logf("[8b/9] detector geometry (RS HQ baseline read through the existing test hook)");
+    {
+        const double f0 = 2500.0;
+        const int gap = 3;            // default sharpness 50 % -> centerGap = 1 + lround(0.5 * 4) = 3
+        const double offsetDb = 9.0;  // default selectivity 50 % -> thresholdOffset = 2 + 0.5 * 14 = 9 dB
+        Table tG1; tG1.title = "10a. Detector geometry - levels at the resonance peak bin (signal A vs signal C, f0 = 2500 Hz, 48 kHz)";
+        tG1.note = "RS HQ detector front end replicated (sqrt-Hann window, unnormalised real FFT, magDb = 10log10|X|^2) and the BASELINE read through "
+                   "XlethResonanceSuppressorEffect::computeDetectorBaselinesForTest (existing hook, enabled by defining XLETH_RESONANCE_SUPPRESSOR_TEST_HOOKS in this tool only). "
+                   "Statistics are means over all frames (hop N/4, first 2 s skipped) and both channels at the peak bin k0 = round(f0 N / sr). "
+                   "excess = magDb(k0) - baseline(k0), BEFORE the selectivity offset (default 9 dB at selectivity 50 %); 'excess - offset' is what drives salience. "
+                   "Signal C = the same pink noise WITHOUT the resonance (the null reference). baseline lift = baseline(A) - baseline(C): how far the resonance's own skirts raise the baseline. "
+                   "bell boost = the planted bell's dB gain at the centre of bin k0. P = fraction of frames with excess > offset (detector would start to act).";
+        tG1.header = { "quality", "N", "k0", "bell boost at k0", "A mag", "A baseline", "A excess", "A excess - offset", "C mag", "C baseline", "C excess",
+                       "baseline lift A-C", "net excess A-C", "P(A excess>offset)", "P(C excess>offset)" };
+        Table tG2; tG2.title = "10b. Detector geometry - baseline window (default sharpness: gap +/-3 bins, selectivity offset 9 dB)";
+        tG2.note = "radius = clamp(k0/6 + 4, 6, 48) bins (WolaProcessor::detectorRadiusForBin), window = [k0 - radius, k0 + radius] minus |j - k0| <= gap. "
+                   "'bell bins' = bins in the baseline window (gap excluded) where the planted bell still boosts the spectrum by >= 1 dB. "
+                   "'bell -3 dB width' = f0/Q = 312.5 Hz. 'own vs hook' = max |independently recomputed baseline - hook baseline| over all frames (dB; float prefix-sum error), "
+                   "'ref vs prefix' = max |hook slow reference - hook prefix result| (dB).";
+        tG2.header = { "quality", "N", "bin Hz", "radius (bins)", "radius (Hz)", "window Hz", "gap (bins / Hz)", "bins used", "bell bins (>=1 dB)", "bell bins %", "bell -3 dB width (bins)",
+                       "own vs hook", "ref vs prefix" };
+        const char* qn[3] = { "HQ Fast", "HQ Normal", "HQ High" };
+        const int Ns[3] = { 512, 1024, 2048 };
+        const int skipS = static_cast<int>(kSkipSec * SR);
+        for (int qi = 0; qi < 3; ++qi)
+        {
+            const int N = Ns[qi];
+            const double binHz = SR / N;
+            const int k0 = static_cast<int>(std::lround(f0 / binHz));
+            const auto gA = detectorGeometry(sigA2500, N, k0, gap, offsetDb, skipS);
+            const auto gC = detectorGeometry(pinkC,    N, k0, gap, offsetDb, skipS);
+            const double bellK0 = bellMagDb(k0 * binHz, SR, f0, 8.0, 12.0);
+            tG1.add({ qn[qi], inum(N), inum(k0), num(bellK0, 2), num(gA.mag, 2), num(gA.base, 2), num(gA.excess, 2), num(gA.excess - offsetDb, 2),
+                      num(gC.mag, 2), num(gC.base, 2), num(gC.excess, 2), num(gA.base - gC.base, 2), num(gA.excess - gC.excess, 2),
+                      num(gA.pTrig, 3), num(gC.pTrig, 3) });
+
+            const int rad = std::clamp(k0 / 6 + 4, 6, 48);
+            const int lo = std::max(1, k0 - rad), hi = std::min(N / 2 - 1, k0 + rad);
+            int used = 0, bell = 0;
+            for (int j = lo; j <= hi; ++j)
+            {
+                if (std::abs(j - k0) <= gap) continue;
+                ++used;
+                if (bellMagDb(j * binHz, SR, f0, 8.0, 12.0) >= 1.0) ++bell;
+            }
+            tG2.add({ qn[qi], inum(N), num(binHz, 2), inum(rad), num(rad * binHz, 0), num(lo * binHz, 0) + " - " + num(hi * binHz, 0),
+                      inum(gap) + " / " + num(gap * binHz, 0), inum(used), inum(bell), num(100.0 * bell / std::max(used, 1), 1) + " %",
+                      num((f0 / 8.0) / binHz, 1), num(std::max(gA.maxOwnVsHookDiff, gC.maxOwnVsHookDiff), 4),
+                      num(std::max(gA.maxRefPrefixDiff, gC.maxRefPrefixDiff), 4) });
+            logf("      %s N=%d k0=%d radius=%d bins (%.0f Hz): A mag %.2f baseline %.2f excess %.2f | C baseline %.2f | lift %.2f dB",
+                 qn[qi], N, k0, rad, rad * binHz, gA.mag, gA.base, gA.excess, gC.base, gA.base - gC.base);
+        }
+        csvTables["detector_levels"] = tG1; tables.push_back(tG1);
+        csvTables["detector_window"] = tG2; tables.push_back(tG2);
+    }
 
     // ---------------------------------------------------------------- CPU (9)
     Table tCpu; tCpu.title = "9. CPU (48 kHz stereo)";
@@ -1285,6 +1555,49 @@ int main(int argc, char** argv)
         san << "- removed_dB > 0 at the planted 2500 Hz resonance for S2-S4: **" << (rem ? "PASS" : "FAIL") << "** (";
         for (const auto& s : primary) san << s.id << "=" << num(r2500[s.id].removed, 2) << (s.id == "S5" ? "" : ", ");
         san << ")\n";
+
+        // removed/ideal must lie in 0..~150 % wherever it is defined. Default-parameter subjects are held to it;
+        // capability subjects are counted separately (max depth may legitimately cut BELOW the un-boosted spectrum,
+        // i.e. > 100 %, because removed_dB is measured against the input, not against the un-planted noise).
+        {
+            auto check = [&](const std::vector<Subject>& subs, int& nBad, int& nCells, int& nOver100, std::string& list)
+            {
+                std::ostringstream bad;
+                for (double sr : rates)
+                    for (double f0 : scanF0)
+                        for (const auto& s : subs)
+                        {
+                            const double ideal = idealDb[num(sr, 0)][static_cast<int>(f0)];
+                            const double p = pct(scanRes[s.id + "@" + num(sr, 0)][static_cast<int>(f0)].removed, ideal);
+                            ++nCells;
+                            if (p > 100.0) ++nOver100;
+                            if (p < 0.0 || p > 150.0) { ++nBad; bad << " " << s.id << "@" << num(sr, 0) << "/" << num(f0, 0) << "=" << num(p, 1) << "%"; }
+                        }
+                list = bad.str();
+            };
+            int bD = 0, cD = 0, oD = 0, bC = 0, cC = 0, oC = 0; std::string lD, lC;
+            check(primary, bD, cD, oD, lD);
+            check(capability, bC, cC, oC, lC);
+            san << "- removed/ideal within 0..150 % for the " << cD << " default-parameter scan cells: **" << (bD == 0 ? "PASS" : "FAIL") << "**"
+                << (bD ? " (outside:" + lD + ")" : std::string()) << "\n";
+            san << "- capability scan cells: " << cC << " total, " << oC << " above 100 % (output cut below the un-boosted spectrum), "
+                << bC << " outside 0..150 % - informational, not a failure: max-depth runs are expected to over-suppress.\n";
+            logf("sanity: default removed/ideal in 0..150%% %s (%d outside of %d); capability %d/%d cells >100%%, %d outside 0..150%%",
+                 bD == 0 ? "ok" : "FAIL", bD, cD, oC, cC, bC);
+        }
+        // capability runs should remove at least as much as the matching default run at the planted frequency.
+        {
+            san << "- capability removed >= default removed at the planted 2500 Hz resonance (48 kHz): ";
+            bool allGe = true;
+            for (size_t i = 0; i < capability.size(); ++i)
+            {
+                const double d = r2500[primary[i].id].removed, c = r2500[capability[i].id].removed;
+                if (c < d) allGe = false;
+                san << capability[i].id << " " << num(c, 2) << " vs " << primary[i].id << " " << num(d, 2) << (c >= d ? " ok" : " **LOWER**") << (i + 1 < capability.size() ? "; " : "");
+            }
+            san << " -> **" << (allGe ? "PASS" : "FAIL (see Notes)") << "**\n";
+            logf("sanity: capability >= default at 2500 Hz %s", allGe ? "ok" : "FAIL");
+        }
         san << "- non-finite values that reached a table: **" << g_nonFinite << "**\n";
         san << "- tool warnings: **" << g_warnings << "**\n\n";
         logf("sanity: latency %s | S1=0 %s | S2-S5 %s | removed>0 S2-S4 %s | nonfinite %d | warnings %d",
@@ -1307,7 +1620,9 @@ int main(int argc, char** argv)
     md << "### Subjects\n\n| id | label | params |\n|---|---|---|\n";
     for (const auto& s : allSubjects) md << "| " << s.id << " | " << s.label << " | " << s.params << " |\n";
     md << "\nNote on S5s/S5z: in the EQ detector `thresh = localEnv * (1 + spec_sens * spec_sel)`, so spec_sens 1.0 is the LEAST sensitive setting. "
-          "S5s runs sens 1.0 exactly as specified; S5z runs sens 0.0 (the most sensitive) so the false-trigger direction is covered.\n\n";
+          "S5s runs sens 1.0 exactly as specified; S5z runs sens 0.0 (the most sensitive) so the false-trigger direction is covered.\n"
+          "Capability variants S1c-S5c (max depth): RS depth 100 % / mode Hard (LL and HQ Fast/Normal/High); EQ band gain -30 dB with spec_sens 0.0 (lower = more sensitive). "
+          "They run signals A/B (full scan), C (jitter), D and D2 (pre-echo) and the delta-artefact run, in addition to the default-parameter subjects.\n\n";
     md << san.str();
     for (const auto& t : tables) md << t.markdown();
     std::ofstream(runDir / "summary.md", std::ios::binary) << md.str();
