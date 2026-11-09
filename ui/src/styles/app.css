@@ -42,6 +42,72 @@
   --xleth-z-titlebar: 100;
   --xleth-z-titlebar-dropdown: 101;
   --xleth-windowing-drawer-top-offset: 0px;
+
+  /* â”€â”€ Fader primitive (shared) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+ * ui/src/components/controls/Fader.jsx â€” the vertical/horizontal sibling to
+ * Knob.jsx, used directly by both the mixer's VolumeFader.jsx and MasterStrip.
+ * Its own surface/border/groove/fill tokens, monochromatic off the teal
+ * accent, never text tokens (the old hand-rolled mixer fader painted its fill
+ * and thumb in placeholder/subtle TEXT grey, which read as washed-out â€” see
+ * SLIDER_FEEL_SPEC.md Â§3.4). Flat, zero border-radius, no gradients/glow. */
+  --fader-accent: var(--theme-accent);
+  --fader-cap-bg: var(--theme-bg-tertiary);
+  --fader-cap-bg-hover: color-mix(in srgb, var(--fader-accent) 10%, var(--theme-bg-tertiary));
+  --fader-cap-bg-active: color-mix(in srgb, var(--fader-accent) 32%, var(--theme-bg-tertiary));
+  --fader-cap-border: var(--theme-border-strong);
+  --fader-cap-border-active: var(--fader-accent);
+  --fader-groove-bg: var(--theme-bg-inset);
+  --fader-groove-border: var(--theme-border-subtle);
+  --fader-fill: var(--fader-accent);
+  --fader-detent: color-mix(in srgb, var(--fader-accent) 70%, #ffffff);
+
+  /* â”€â”€ EQ Theme Variables â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
+
+  /* Accent */
+  --xleth-eq-accent:             var(--xleth-global-accent, var(--theme-accent));
+
+  /* Channel routing tints (flat redesign) — a monochromatic derivation of
+     the live EQ accent hue via color-mix(), so every tint tracks theme
+     changes instead of being pinned to a fixed hex. Stereo is the accent
+     itself; the rest are lighter/darker mixes of that same color. */
+  --xleth-eq-ch-stereo:          var(--xleth-eq-accent);
+  --xleth-eq-ch-left:            color-mix(in srgb, var(--xleth-eq-accent) 65%, white 35%);
+  --xleth-eq-ch-right:           color-mix(in srgb, var(--xleth-eq-accent) 78%, black 22%);
+  --xleth-eq-ch-mid:             color-mix(in srgb, var(--xleth-eq-accent) 40%, white 60%);
+  --xleth-eq-ch-side:            color-mix(in srgb, var(--xleth-eq-accent) 88%, black 12%);
+
+  /* These are layout/timing primitives. Not user-theme tokens. */
+  /* Typography */
+  --xleth-global-font-family: "Neuzeit Grotesk", "Inter", "Noto Sans", "Segoe UI", system-ui, sans-serif;
+
+  /* Radius */
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
+
+  /* Transitions */
+  --transition-fast: 0.1s ease;
+
+  /* Flat mockup parity pass */
+  --xleth-shell-control-radius: 0;
+  --xleth-flat-bg: var(--theme-bg-primary);
+  --xleth-flat-well: var(--theme-bg-inset);
+  --xleth-flat-main: var(--theme-bg-primary);
+  --xleth-flat-chrome: var(--theme-bg-surface);
+  --xleth-flat-panel: var(--theme-bg-elevated);
+  --xleth-flat-tab: var(--theme-bg-secondary);
+  --xleth-flat-section: var(--theme-bg-tertiary);
+  --xleth-flat-border: var(--theme-border-subtle);
+  --xleth-flat-border-strong: var(--theme-border-strong);
+  --xleth-flat-preview-border: var(--theme-border-subtle);
+  --xleth-flat-text: var(--theme-text);
+  --xleth-flat-text-secondary: var(--theme-text-muted);
+  --xleth-flat-text-muted: var(--ui-ink-3);
+  --xleth-flat-text-subtle: var(--theme-text-placeholder);
+  --xleth-flat-empty-text: var(--theme-text-placeholder);
+  --xleth-flat-accent: var(--theme-accent);
+  --xleth-flat-accent-text: var(--theme-text-on-accent);
+  --xleth-flat-danger: var(--theme-danger);
 }
 
 /* ── Reset ────────────────────────────────────────────────────────────────── */
@@ -339,13 +405,6 @@ html, body, #root {
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Center Area (Video + Timeline stack)
    â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
-
-.center-area {
-  display: flex;
-  flex-direction: column;
-  height: 100%;
-  overflow: hidden;
-}
 
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Left Panel
@@ -1887,50 +1946,6 @@ html, body, #root {
    Center Tabs (Timeline / Piano Roll)
    â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
-.center-tab {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  padding: 0 14px;
-  background: none;
-  border: none;
-  border-bottom: 2px solid transparent;
-  color: var(--theme-text-subtle);
-  font-family: inherit;
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.03em;
-  cursor: pointer;
-  transition: color var(--transition-fast), border-color var(--transition-fast),
-              background var(--transition-fast), box-shadow var(--transition-fast);
-  height: 100%;
-}
-
-.center-tab:hover {
-  color: var(--theme-text-muted);
-  background: var(--theme-bg-hover);
-  box-shadow: var(--theme-depth-elevation-1-top-highlight);
-}
-
-.center-tab.active {
-  color: var(--theme-accent);
-  border-bottom-color: var(--theme-accent);
-  background: var(--theme-depth-pressed-bg);
-  box-shadow: var(--theme-depth-pressed-inner-shadow);
-}
-
-.center-tab:disabled {
-  color: var(--text-disabled, #4a4a55);
-  cursor: default;
-}
-
-.center-area-body {
-  flex: 1;
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-}
-
 /* â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•
    Utilities
    â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
@@ -2001,26 +2016,6 @@ html, body, #root {
   background: transparent;
   color: var(--mx-t1);
   box-shadow: none;
-}
-
-/* â”€â”€ Fader primitive (shared) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
- * ui/src/components/controls/Fader.jsx â€” the vertical/horizontal sibling to
- * Knob.jsx, used directly by both the mixer's VolumeFader.jsx and MasterStrip.
- * Its own surface/border/groove/fill tokens, monochromatic off the teal
- * accent, never text tokens (the old hand-rolled mixer fader painted its fill
- * and thumb in placeholder/subtle TEXT grey, which read as washed-out â€” see
- * SLIDER_FEEL_SPEC.md Â§3.4). Flat, zero border-radius, no gradients/glow. */
-:root {
-  --fader-accent: var(--theme-accent);
-  --fader-cap-bg: var(--theme-bg-tertiary);
-  --fader-cap-bg-hover: color-mix(in srgb, var(--fader-accent) 10%, var(--theme-bg-tertiary));
-  --fader-cap-bg-active: color-mix(in srgb, var(--fader-accent) 32%, var(--theme-bg-tertiary));
-  --fader-cap-border: var(--theme-border-strong);
-  --fader-cap-border-active: var(--fader-accent);
-  --fader-groove-bg: var(--theme-bg-inset);
-  --fader-groove-border: var(--theme-border-subtle);
-  --fader-fill: var(--fader-accent);
-  --fader-detent: color-mix(in srgb, var(--fader-accent) 70%, #ffffff);
 }
 
 .xleth-fader-wrap {
@@ -2854,25 +2849,6 @@ html, body, #root {
   background: color-mix(in srgb, var(--theme-danger) 22%, var(--theme-bg-elevated));
 }
 
-/* â”€â”€ EQ Theme Variables â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
-
-:root {
-
-  /* Accent */
-  --xleth-eq-accent:             var(--xleth-global-accent, var(--theme-accent));
-
-  /* Channel routing tints (flat redesign) — a monochromatic derivation of
-     the live EQ accent hue via color-mix(), so every tint tracks theme
-     changes instead of being pinned to a fixed hex. Stereo is the accent
-     itself; the rest are lighter/darker mixes of that same color. */
-  --xleth-eq-ch-stereo:          var(--xleth-eq-accent);
-  --xleth-eq-ch-left:            color-mix(in srgb, var(--xleth-eq-accent) 65%, white 35%);
-  --xleth-eq-ch-right:           color-mix(in srgb, var(--xleth-eq-accent) 78%, black 22%);
-  --xleth-eq-ch-mid:             color-mix(in srgb, var(--xleth-eq-accent) 40%, white 60%);
-  --xleth-eq-ch-side:            color-mix(in srgb, var(--xleth-eq-accent) 88%, black 12%);
-
-}
-
 /* â”€â”€ EQ-D: floating band popup â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
 /* â”€â”€ Node Editor â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
@@ -3363,11 +3339,6 @@ html, body, #root {
    Toasts â€” top-right stack, auto-dismiss except errors (click to dismiss)
    â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â•â• */
 
-@keyframes toast-status-fade-in {
-  from { opacity: 0; }
-  to   { opacity: 1; }
-}
-
 .custom-preset-row {
   display: flex;
   gap: 6px;
@@ -3506,20 +3477,6 @@ html, body, #root {
 }
 
 /* â”€â”€ Structural constants (migrated from theme.css) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
-/* These are layout/timing primitives. Not user-theme tokens.                 */
-
-:root {
-  /* Typography */
-  --xleth-global-font-family: "Neuzeit Grotesk", "Inter", "Noto Sans", "Segoe UI", system-ui, sans-serif;
-
-  /* Radius */
-  --radius-sm: 4px;
-  --radius-md: 6px;
-  --radius-lg: 8px;
-
-  /* Transitions */
-  --transition-fast: 0.1s ease;
-}
 
 /* â”€â”€ Reset â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€ */
 
@@ -4363,14 +4320,6 @@ input[type="radio"] {
 
 /* ── Compact utility-panel density ───────────────────────────────────────── */
 
-.grid-tab {
-  padding: var(--theme-panel-padding-compact);
-}
-
-.grid-tab {
-  gap: var(--theme-panel-gap-compact);
-}
-
 .tab-placeholder-header {
   margin-bottom: var(--theme-empty-margin-compact);
 }
@@ -4398,29 +4347,6 @@ input[type="radio"] {
 }
 .titlebar-menus {
   gap: 12px;
-}
-
-/* Flat mockup parity pass */
-:root {
-  --xleth-shell-control-radius: 0;
-  --xleth-flat-bg: var(--theme-bg-primary);
-  --xleth-flat-well: var(--theme-bg-inset);
-  --xleth-flat-main: var(--theme-bg-primary);
-  --xleth-flat-chrome: var(--theme-bg-surface);
-  --xleth-flat-panel: var(--theme-bg-elevated);
-  --xleth-flat-tab: var(--theme-bg-secondary);
-  --xleth-flat-section: var(--theme-bg-tertiary);
-  --xleth-flat-border: var(--theme-border-subtle);
-  --xleth-flat-border-strong: var(--theme-border-strong);
-  --xleth-flat-preview-border: var(--theme-border-subtle);
-  --xleth-flat-text: var(--theme-text);
-  --xleth-flat-text-secondary: var(--theme-text-muted);
-  --xleth-flat-text-muted: var(--ui-ink-3);
-  --xleth-flat-text-subtle: var(--theme-text-placeholder);
-  --xleth-flat-empty-text: var(--theme-text-placeholder);
-  --xleth-flat-accent: var(--theme-accent);
-  --xleth-flat-accent-text: var(--theme-text-on-accent);
-  --xleth-flat-danger: var(--theme-danger);
 }
 
 .app,
@@ -4573,8 +4499,7 @@ input[type="radio"] {
   box-shadow: none;
 }
 
-.tab-section-label,
-.xleth-panel-header__title {
+.tab-section-label {
   color: var(--xleth-flat-text-muted);
   font-size: 10px;
   font-weight: 600;
@@ -4798,16 +4723,11 @@ input[type="radio"] {
   background: var(--xleth-flat-well);
 }
 
-.eq-band-popup {
-  background: rgba(0, 0, 0, 0.62);
-}
-
 @media (prefers-reduced-motion: reduce) {
   .titlebar-dropdown,
 .titlebar-dropdown[data-state="closing"],
 .titlebar-dropdown-item,
-.titlebar-toolbar-btn,
-.context-menu-item {
+.titlebar-toolbar-btn {
     animation: none;
     transition: none;
   }
