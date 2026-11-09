@@ -43,6 +43,13 @@
 //   and the level {+12, +18} dB at Q 8 (gates G1q/G2q out of 3, G1l/G2l out of 2; ideal recomputed per case; processors are not retuned). G7 = relative CPU:
 //   mean %RT / S3's mean %RT in the SAME run <= 1.0 at block 128 and 64 (gated variants get their own CPU run at those two blocks).
 //
+// v5 (time-varying resonance; no production source involved): every planted resonance in v1-v4 is STATIC, so the bench rewards long detector averaging
+//   (the core's detector uses a 200 ms averaging time). Signal T1 switches the +12 dB / Q 8 bell ON and OFF by 5 ms linear crossfades between the clean pink noise C and the
+//   bell-filtered noise A built from the SAME noise (the clean reference is exact), 6 events per case, on-durations D in {100, 300, 1000} ms, f0 in {500, 2500, 8000} Hz, one signal per
+//   (f0, D). Metrics (STFT 1024 Hann hop 128, in-window = f0 +/- 1/6 oct, latency-aligned, events aligned at their onsets): reaction (t50 / t90 / leak_fraction) and release behaviour
+//   (over_dB / settle_ms); gates G8a, G8b (reaction) and G9a, G9b (release) are graded for every gated subject and are part of the overall verdict. Section "T1" below has the definitions;
+//   calibration: R0 pass-through must FAIL G8, the oracle R1 (returns the clean reference through Planted::cleanRef, delayed by its latency) must PASS G8 and G9.
+//
 // Usage: xleth_rs_quality_bench [--quick] [--no-cpu] [--cpu-only] [--out-dir DIR]
 //                               [--ref-subjects] [--subjects ID,ID,...] [--wav label=path]...
 //   --subjects runs only the listed subjects (iteration speed). Each kept subject's G4 jitter companion and S3 (the
@@ -374,6 +381,11 @@ struct Planted
 {
     double f0 = 2500.0, q = 8.0, gainDb = 12.0;
     bool left = true, right = true;
+    // v5, time-varying case T1 - ORACLE ONLY (the --ref-subjects R1 factory reads these two; the core, the RS / EQ built-in kinds and R0 never look at them):
+    //   cleanRef = the unprocessed clean noise the signal was built from (valid for the duration of the factory call; the oracle copies it),
+    //   events   = the switching schedule {onset, offset} in samples (offset = start of the fade-out; the signal has the bell fully on between onset + fade and offset).
+    const Stereo* cleanRef = nullptr;
+    std::vector<std::pair<int, int>> events;
 };
 
 struct Subject
@@ -455,6 +467,53 @@ public:
 private:
     double b0_ = 1, b1_ = 0, b2_ = 0, a1_ = 0, a2_ = 0, z1_[2] = {}, z2_[2] = {};
     bool apply_[2] = { true, true };
+};
+
+// Oracle for the time-varying signal T1 (--ref-subjects R1 when Planted::cleanRef is set): ignores its input and returns the clean reference, delayed by
+// `latency` samples (R1 has latency 0, so the delay is the identity; the parameter keeps the "delayed by its latency" contract explicit and testable).
+// On T1 this is what an ideal instantaneous suppressor outputs: the input with the bell removed exactly when it is on, the input itself when it is off.
+class RefCleanProcessor : public juce::AudioProcessor
+{
+public:
+    RefCleanProcessor(const Stereo& clean, int latency)
+        : juce::AudioProcessor(BusesProperties().withInput("in", juce::AudioChannelSet::stereo()).withOutput("out", juce::AudioChannelSet::stereo())),
+          clean_(clean), latency_(latency)
+    {
+        setLatencySamples(latency_);
+    }
+    const juce::String getName() const override { return "RefClean"; }
+    void prepareToPlay(double, int) override { pos_ = 0; }
+    void releaseResources() override {}
+    void processBlock(juce::AudioBuffer<float>& buf, juce::MidiBuffer&) override
+    {
+        const int n = buf.getNumSamples();
+        for (int c = 0; c < std::min(2, buf.getNumChannels()); ++c)
+        {
+            float* d = buf.getWritePointer(c);
+            for (int i = 0; i < n; ++i)
+            {
+                const int src = pos_ + i - latency_;
+                d[i] = (src >= 0 && src < clean_.size()) ? clean_.ch[c][static_cast<size_t>(src)] : 0.0f;
+            }
+        }
+        pos_ += n;
+    }
+    double getTailLengthSeconds() const override { return 0.0; }
+    bool acceptsMidi() const override { return false; }
+    bool producesMidi() const override { return false; }
+    juce::AudioProcessorEditor* createEditor() override { return nullptr; }
+    bool hasEditor() const override { return false; }
+    int getNumPrograms() override { return 1; }
+    int getCurrentProgram() override { return 0; }
+    void setCurrentProgram(int) override {}
+    const juce::String getProgramName(int) override { return {}; }
+    void changeProgramName(int, const juce::String&) override {}
+    void getStateInformation(juce::MemoryBlock&) override {}
+    void setStateInformation(const void*, int) override {}
+private:
+    Stereo clean_;
+    int latency_ = 0;
+    int pos_ = 0;
 };
 
 // Bench adapter for xleth::dsp::resonance::Core (src/dsp/ResonanceCore.*, stage 1, wired into no effect): a thin
@@ -586,8 +645,12 @@ static const std::vector<Subject>& registry()
             { auto& s = add("R1", "R1", "Reference: oracle (exact inverse of the planted bell)", Kind::Custom, Group::Capability,
                             "inverse of the planted bell (same f0 / Q, gain = -planted gain) on exactly the planted channels (expected: PASS G1-G6)");
               s.gated = true; s.reference = true;
-              s.factory = [](double sr, int, const Planted& b, bool neutral)
-              { return std::make_unique<RefBellProcessor>(sr, b.f0, neutral ? 0.0 : -b.gainDb, b.q, b.left, b.right); }; }
+              s.factory = [](double sr, int, const Planted& b, bool neutral) -> std::unique_ptr<juce::AudioProcessor>
+              {
+                  // T1 (time-varying): the oracle returns the clean reference (latency 0 = identical to the neutral RefBellProcessor used for the latency measurement).
+                  if (b.cleanRef != nullptr && !neutral) return std::make_unique<RefCleanProcessor>(*b.cleanRef, 0);
+                  return std::make_unique<RefBellProcessor>(sr, b.f0, neutral ? 0.0 : -b.gainDb, b.q, b.left, b.right);
+              }; }
         }
 
         // --subjects: keep only the listed ids, the G4 jitter companion of each kept subject, and S3 (the G7 CPU
@@ -1426,6 +1489,258 @@ static CpuResult cpuBench(const Subject& s, const Stereo& sig, double sr, int bl
 }
 
 // ============================================================================
+// T1: time-varying resonance (v5)
+// ============================================================================
+//
+// Signal. Per case (f0, D): clean pink noise C (-20 dBFS RMS, both channels, same generator and seed family as signal A: makePinkStereo(n, -20, 1)) and A = C filtered by the standard planted
+// bell (RBJ peak +12 dB, Q 8, f0) in both channels. x = C + g(t) (A - C), g = 5 ms linear crossfades: up over [onset, onset + 5 ms], 1 until offset, down over [offset, offset + 5 ms]; offset = onset + D.
+// 6 events, first onset at 2.0 s, off time between events >= 1.5 s (stretched so the nominal 14 s is filled when D is short). The nominal length is 14 s; D = 1000 ms cannot fit 6 events with
+// >= 1.5 s gaps after a 2 s start-up (2 + 5 x 2.5 + 1 = 15.5 s) so the signal is extended to last offset + 1.3 s (16.8 s) in that case. The clean reference is C itself.
+//
+// Frames. STFT 1024 Hann (periodic), hop 128 (2.67 ms), laid out PER EVENT with frame centres at onset + k x 128 so every event has the same sub-sample phase and the events average
+// coherently. E(k) = in-window energy (sum |X|^2 over the bins inside f0 +/- 1/6 octave), mean of the two channels. E_out is taken on the latency-aligned output (aligned with the input),
+// E_pass on the input itself (= the un-suppressed resonance, what the R0 pass-through returns), E_clean on C. t = k x 128 / sr is the time since the onset.
+//
+// r(t)       = 10 log10( mean_events E_out / mean_events E_clean ) after smoothing both energy curves with a 10 ms boxcar (fractional edge weights); r_pass(t) the same with E_pass.
+//              (ratio of event means, not mean of per-frame ratios: the in-window bin count is small - 2 bins at 500 Hz - so single-frame ratios are noise.)
+// p(t)       = 1 - r(t) / r_pass(t), clipped to [0, 1.2], for 0 <= t <= D. Frames with r_pass < kTvPassMinDb (the resonance is not yet visible to the STFT, e.g. the first frames of the
+//              Hann window straddling the onset) are given p = 0, so a near-zero denominator cannot create a spurious early crossing.
+// t50 / t90  = first t in [0, D] with p >= 0.5 / 0.9. "never" (stored as -1) = not reached within the event; it is a FAILURE for G8a, not a missing value.
+// leak       = sum_{0<=t<=D} max(0, E_out - E_clean) / sum_{0<=t<=D} (E_pass - E_clean) on the event-mean energies (1 = nothing suppressed, 0 = perfect).
+// over_dB    = per event: min over 0 <= t - D <= 500 ms of 10 log10(E_out / E_clean) (both smoothed 20 ms, this event only), then the mean over events.
+// settle_ms  = time after the offset from which |r(t)| (event-mean, 10 ms smoothing) stays <= 1 dB until the end of a 1 s horizon: time of the first frame after the last |r| > 1 dB frame
+//              (0 if it never exceeds 1 dB); "never" (-1) if it is still outside 1 dB at the end of the horizon.
+//
+// Calibration: R0 pass-through: p = 0 -> t50 never, leak 1.0, so it must FAIL G8. Oracle R1 (returns C): E_out = E_clean -> r = 0, p = 1 at the first frame with r_pass >= 1 dB, leak 0,
+// over 0, settle 0, so it must PASS G8 and G9.
+
+struct TvEvent { int onset = 0, offset = 0; };
+
+static constexpr int    kTvFftN        = 1024;
+static constexpr int    kTvHop         = 128;
+static constexpr int    kTvEvents      = 6;
+static constexpr double kTvNominalSec  = 14.0;
+static constexpr double kTvFirstOnset  = 2.0;
+static constexpr double kTvMinGapSec   = 1.5;
+static constexpr double kTvTailSec     = 1.3;    // after the last offset: 1 s settle horizon + frame half-width + room for the largest subject latency
+static constexpr double kTvFadeSec     = 0.005;
+static constexpr double kTvPreSec      = 0.030;  // frames kept before the onset (smoothing support + the pre-onset level)
+static constexpr double kTvHorizonSec  = 1.0;    // analysis after the offset (settle horizon)
+static constexpr double kTvPassMinDb   = 1.0;    // analysis guard for p(t), see above (not a gate)
+static constexpr double kTvSettleBandDb = 1.0;   // |r| band for settle_ms
+static const std::array<double, 3> kTvF0 = { 500.0, 2500.0, 8000.0 };
+static const std::array<int, 3>    kTvDurMs = { 100, 300, 1000 };
+
+struct TvCase
+{
+    double f0 = 0.0;
+    int durMs = 0;
+    std::vector<TvEvent> events;
+    Stereo clean, sig;
+};
+
+static TvCase makeTvCase(double f0, int durMs, double sr)
+{
+    TvCase c; c.f0 = f0; c.durMs = durMs;
+    const double D = durMs * 1.0e-3;
+    const double gap = std::max(kTvMinGapSec, (kTvNominalSec - kTvTailSec - kTvFirstOnset - kTvEvents * D) / (kTvEvents - 1));
+    for (int e = 0; e < kTvEvents; ++e)
+    {
+        TvEvent ev;
+        ev.onset  = static_cast<int>(std::llround((kTvFirstOnset + e * (D + gap)) * sr));
+        ev.offset = ev.onset + static_cast<int>(std::llround(D * sr));
+        c.events.push_back(ev);
+    }
+    const int n = std::max(static_cast<int>(std::llround(kTvNominalSec * sr)),
+                           c.events.back().offset + static_cast<int>(std::llround(kTvTailSec * sr)));
+    c.clean = makePinkStereo(n, -20.0, 1);
+    const Stereo A = makeResonant(c.clean, sr, f0, true, true);
+    const int fade = static_cast<int>(std::llround(kTvFadeSec * sr));
+    std::vector<double> g(static_cast<size_t>(n), 0.0);
+    for (const auto& ev : c.events)
+        for (int i = ev.onset; i < ev.offset + fade && i < n; ++i)
+        {
+            double v = 1.0;
+            if (i < ev.onset + fade)  v = std::min(v, static_cast<double>(i - ev.onset) / fade);
+            if (i >= ev.offset)       v = std::min(v, 1.0 - static_cast<double>(i - ev.offset) / fade);
+            g[static_cast<size_t>(i)] = v;
+        }
+    c.sig = c.clean;
+    for (int ch = 0; ch < 2; ++ch)
+        for (int i = 0; i < n; ++i)
+        {
+            const auto k = static_cast<size_t>(i);
+            c.sig.ch[ch][k] = static_cast<float>(static_cast<double>(c.clean.ch[ch][k]) + g[k] * (static_cast<double>(A.ch[ch][k]) - static_cast<double>(c.clean.ch[ch][k])));
+        }
+    return c;
+}
+
+// Frame range (relative to each onset) shared by every curve of a case: k in [kMin, kMax], frame centre = onset + k x hop.
+static void tvFrameRange(int durMs, double sr, int& kMin, int& kMax)
+{
+    kMin = -static_cast<int>(std::ceil(kTvPreSec * sr / kTvHop));
+    kMax = static_cast<int>(std::ceil((durMs * 1.0e-3 + kTvHorizonSec + 0.020) * sr / kTvHop));
+}
+
+// In-window energy per event and frame (mean of both channels). `s` must share its time axis with the event schedule (aligned output, input or clean).
+static std::vector<std::vector<double>> tvWindowEnergy(const Stereo& s, const std::vector<TvEvent>& ev, int kMin, int kMax, double sr, double f0)
+{
+    static const Fft fft(kTvFftN);
+    static const std::vector<double> win = hannPeriodic(kTvFftN);
+    const double s6 = std::pow(2.0, 1.0 / 6.0), binHz = sr / kTvFftN;
+    std::vector<int> bins;
+    for (int k = 1; k < kTvFftN / 2; ++k)
+    {
+        const double f = k * binHz;
+        if (f >= f0 / s6 && f <= f0 * s6) bins.push_back(k);
+    }
+    std::vector<std::vector<double>> out(ev.size(), std::vector<double>(static_cast<size_t>(kMax - kMin + 1), 0.0));
+    std::vector<std::complex<double>> buf(static_cast<size_t>(kTvFftN));
+    int outOfRange = 0;
+    for (size_t e = 0; e < ev.size(); ++e)
+        for (int k = kMin; k <= kMax; ++k)
+        {
+            const int start = ev[e].onset + k * kTvHop - kTvFftN / 2;
+            if (start < 0 || start + kTvFftN > s.size()) { ++outOfRange; continue; }
+            double acc = 0.0;
+            for (int c = 0; c < 2; ++c)
+            {
+                for (int i = 0; i < kTvFftN; ++i)
+                    buf[static_cast<size_t>(i)] = { s.ch[c][static_cast<size_t>(start + i)] * win[static_cast<size_t>(i)], 0.0 };
+                fft.forward(buf);
+                for (int b : bins) acc += std::norm(buf[static_cast<size_t>(b)]);
+            }
+            out[e][static_cast<size_t>(k - kMin)] = acc / 2.0;
+        }
+    if (outOfRange > 0) warnf("T1: %d analysis frames fell outside the signal (f0 %.0f): the output is shorter than the schedule needs", outOfRange, f0);
+    return out;
+}
+
+// Boxcar of `widthFrames` frames (fractional: the edge frame gets a partial weight) centred on each frame; the window shrinks at the ends.
+static std::vector<double> tvSmooth(const std::vector<double>& x, double widthFrames)
+{
+    const int m = static_cast<int>(std::ceil(widthFrames / 2.0 + 0.5));
+    std::vector<double> o(x.size(), 0.0);
+    for (int i = 0; i < static_cast<int>(x.size()); ++i)
+    {
+        double acc = 0.0, ws = 0.0;
+        for (int j = -m; j <= m; ++j)
+        {
+            const int idx = i + j;
+            if (idx < 0 || idx >= static_cast<int>(x.size())) continue;
+            const double w = std::clamp(widthFrames / 2.0 - std::abs(j) + 0.5, 0.0, 1.0);
+            acc += w * x[static_cast<size_t>(idx)]; ws += w;
+        }
+        o[static_cast<size_t>(i)] = ws > 0.0 ? acc / ws : 0.0;
+    }
+    return o;
+}
+
+static std::vector<double> tvEventMean(const std::vector<std::vector<double>>& e)
+{
+    std::vector<double> m(e.empty() ? 0 : e[0].size(), 0.0);
+    for (const auto& v : e) for (size_t i = 0; i < m.size(); ++i) m[i] += v[i];
+    for (double& x : m) x /= std::max<size_t>(e.size(), 1);
+    return m;
+}
+
+struct TvMetrics
+{
+    double t50 = -1.0, t90 = -1.0;      // ms since the onset; -1 = "never" (within the event)
+    double leak = 1.0;
+    double over = 0.0;                  // dB
+    double settle = -1.0;               // ms since the offset; -1 = "never" (within the horizon)
+    double rPassPeak = 0.0;             // dB, event-mean r_pass maximum (case-validity evidence)
+    double rPeak = 0.0;                 // dB, event-mean r maximum during the on-time (what actually remains of the resonance)
+    double rOff = 0.0;                  // dB, INFORMATIONAL: mean event-mean r over 0.5-1.0 s after the offset (steady-state deviation from the clean noise; separates a slow release from a permanent offset)
+};
+
+static TvMetrics tvAnalyse(const std::vector<std::vector<double>>& eOut, const std::vector<std::vector<double>>& eClean,
+                           const std::vector<std::vector<double>>& ePass, int durMs, int kMin, double sr)
+{
+    TvMetrics m;
+    const double hopMs = 1000.0 * kTvHop / sr;
+    const double w10 = 10.0 / hopMs, w20 = 20.0 / hopMs;
+    const auto mo = tvEventMean(eOut), mc = tvEventMean(eClean), mp = tvEventMean(ePass);
+    const auto so = tvSmooth(mo, w10), sc = tvSmooth(mc, w10), sp = tvSmooth(mp, w10);
+    const int nK = static_cast<int>(mo.size());
+    auto tOf = [&](int i) { return (kMin + i) * 1000.0 * kTvHop / sr; };    // ms since onset
+    const double D = static_cast<double>(durMs);
+    bool got50 = false, got90 = false;
+    double sumLeak = 0.0, sumPass = 0.0;
+    m.rPassPeak = -300.0; m.rPeak = -300.0;
+    for (int i = 0; i < nK; ++i)
+    {
+        const double t = tOf(i);
+        const double r = dbPow(so[static_cast<size_t>(i)]) - dbPow(sc[static_cast<size_t>(i)]);
+        const double rp = dbPow(sp[static_cast<size_t>(i)]) - dbPow(sc[static_cast<size_t>(i)]);
+        m.rPassPeak = std::max(m.rPassPeak, rp);
+        if (t < 0.0 || t > D + 1.0e-9) continue;
+        m.rPeak = std::max(m.rPeak, r);
+        const double p = rp < kTvPassMinDb ? 0.0 : std::clamp(1.0 - r / rp, 0.0, 1.2);
+        if (!got50 && p >= 0.5) { m.t50 = t; got50 = true; }
+        if (!got90 && p >= 0.9) { m.t90 = t; got90 = true; }
+        sumLeak += std::max(0.0, mo[static_cast<size_t>(i)] - mc[static_cast<size_t>(i)]);
+        sumPass += mp[static_cast<size_t>(i)] - mc[static_cast<size_t>(i)];
+    }
+    m.leak = sumPass > 0.0 ? sumLeak / sumPass : 1.0;
+
+    // over_dB: per event (smoothed 20 ms), min over 0..500 ms after the offset, mean over events.
+    double acc = 0.0; int ne = 0;
+    for (size_t e = 0; e < eOut.size(); ++e)
+    {
+        const auto o20 = tvSmooth(eOut[e], w20), c20 = tvSmooth(eClean[e], w20);
+        double mn = 1.0e9;
+        for (int i = 0; i < nK; ++i)
+        {
+            const double dt = tOf(i) - D;
+            if (dt < 0.0 || dt > 500.0) continue;
+            mn = std::min(mn, dbPow(o20[static_cast<size_t>(i)]) - dbPow(c20[static_cast<size_t>(i)]));
+        }
+        if (mn < 1.0e8) { acc += mn; ++ne; }
+    }
+    m.over = ne ? acc / ne : 0.0;
+
+    // settle_ms: |r| (event-mean, 10 ms) back inside kTvSettleBandDb and staying there to the end of the horizon.
+    int last = -1, lastIdx = -1;
+    double offAcc = 0.0; int offN = 0;
+    for (int i = 0; i < nK; ++i)
+    {
+        const double dt = tOf(i) - D;
+        if (dt < 0.0 || dt > kTvHorizonSec * 1000.0) continue;
+        lastIdx = i;
+        const double r = dbPow(so[static_cast<size_t>(i)]) - dbPow(sc[static_cast<size_t>(i)]);
+        if (std::abs(r) > kTvSettleBandDb) last = i;
+        if (dt >= 500.0) { offAcc += r; ++offN; }
+    }
+    m.rOff = offN ? offAcc / offN : 0.0;
+    if (last < 0) m.settle = 0.0;
+    else if (last == lastIdx) m.settle = -1.0;
+    else m.settle = tOf(last + 1) - D;
+    return m;
+}
+
+// Gate thresholds for G8 / G9 (fixed by the specification; DO NOT tune per subject).
+//   G8a  t50 <= kG8aT50Ms                         for D = 300 and D = 1000 ms at every f0 (count of 6); "never" fails
+//   G8b  leak <= kG8bLeak300 (D = 300) / kG8bLeak1000 (D = 1000) at every f0 (count of 6)
+//   G9a  over_dB >= kG9aOverDb                    at every (f0, D) (count of 9, D = 100 included)
+//   G9b  settle_ms <= kG9bSettleMs                at every (f0, D) (count of 9); "never" fails
+//   D = 100 ms: t50 and leak are informational.
+static constexpr double kG8aT50Ms     = 100.0;
+static constexpr double kG8bLeak300   = 0.5;
+static constexpr double kG8bLeak1000  = 0.3;
+static constexpr double kG9aOverDb    = -3.0;
+static constexpr double kG9bSettleMs  = 400.0;
+
+static bool g8Graded(int durMs) { return durMs == 300 || durMs == 1000; }
+static bool g8aCell(const TvMetrics& m) { return m.t50 >= 0.0 && m.t50 <= kG8aT50Ms; }
+static bool g8bCell(const TvMetrics& m, int durMs) { return m.leak <= (durMs == 300 ? kG8bLeak300 : kG8bLeak1000); }
+static bool g9aCell(const TvMetrics& m) { return m.over >= kG9aOverDb; }
+static bool g9bCell(const TvMetrics& m) { return m.settle >= 0.0 && m.settle <= kG9bSettleMs; }
+
+static std::string tvMs(double v, int prec = 1) { return v < 0.0 ? "never" : num(v, prec); }
+
+// ============================================================================
 // Gates (v3)
 // ============================================================================
 //
@@ -1442,7 +1757,8 @@ static CpuResult cpuBench(const Subject& s, const Stereo& sig, double sr, int bl
 //   G1q/G2q  shape scan, Q in {4, 8, 16} at +12 dB, f0 2500 Hz, 48 kHz (same G1/G2 cell tests, ideal recomputed per case): count out of 3
 //   G1l/G2l  shape scan, level in {+12, +18} dB at Q 8, f0 2500 Hz, 48 kHz:                                              count out of 2
 //   G7  relative CPU: mean % RT / mean % RT of S3 (RS HQ Normal, default params) measured in the SAME run <= kG7CpuRatio at block 128 AND block 64
-//   Overall = G1, G2, G1q, G2q, G1l, G2l, G3, G4, G5, G6, G7 all pass (G7 is "n/a" and left out of the verdict when the CPU run is skipped).
+//   G8a/G8b/G9a/G9b  v5 time-varying resonance (signal T1, thresholds kG8* / kG9* in the T1 section above): reaction speed and release behaviour
+//   Overall = G1, G2, G1q, G2q, G1l, G2l, G3, G4, G5, G6, G7, G8a, G8b, G9a, G9b all pass (G7 is "n/a" and left out of the verdict when the CPU run is skipped).
 static constexpr double kG1ResFloorDb   = -1.5;
 static constexpr double kG1ResIdealFrac = 0.30;
 static constexpr double kG2OutsideDevDb = 0.5;
@@ -1481,6 +1797,7 @@ struct BenchData
     std::map<std::string, Jitter> jitter;                              // subject id -> signal C jitter
     std::map<std::string, PreEcho> d2;                                 // subject id -> signal D2 pre-echo
     std::map<std::string, LatencyGate> latency;                        // subject id -> G6 evidence
+    std::map<std::string, std::map<std::pair<int, int>, TvMetrics>> tv;   // v5: subject id -> (f0 Hz, D ms) -> T1 metrics (48 kHz)
 };
 
 struct GateRow
@@ -1496,13 +1813,20 @@ struct GateRow
     bool g4 = false; double g4Std = 0, g4Iso = 0; bool g4valid = false; std::string g4Id;
     bool g5 = false; double g5Bb = 0, g5Band = 0; bool g5valid = false;
     bool g6 = false; std::string g6detail;
+    int g8a = 0, n8a = 0, g8b = 0, n8b = 0;   // v5 reaction: cases passing out of 6 (f0 x D in {300, 1000})
+    int g9a = 0, n9a = 0, g9b = 0, n9b = 0;   // v5 release:  cases passing out of 9 (f0 x D in {100, 300, 1000})
+    bool pass8a() const { return n8a > 0 && g8a == n8a; }
+    bool pass8b() const { return n8b > 0 && g8b == n8b; }
+    bool pass9a() const { return n9a > 0 && g9a == n9a; }
+    bool pass9b() const { return n9b > 0 && g9b == n9b; }
     bool pass1() const { return n > 0 && g1 == n; }
     bool pass2() const { return n > 0 && g2 == n; }
     bool pass1q() const { return nq > 0 && g1q == nq; }
     bool pass2q() const { return nq > 0 && g2q == nq; }
     bool pass1l() const { return nl > 0 && g1l == nl; }
     bool pass2l() const { return nl > 0 && g2l == nl; }
-    bool overall() const { return pass1() && pass2() && pass1q() && pass2q() && pass1l() && pass2l() && g3 && g4 && g5 && g6 && (!g7valid || g7); }
+    bool overall() const { return pass1() && pass2() && pass1q() && pass2q() && pass1l() && pass2l() && g3 && g4 && g5 && g6 && (!g7valid || g7)
+                                  && pass8a() && pass8b() && pass9a() && pass9b(); }
 };
 
 static bool g1Cell(const Residual& r, double idealDb)
@@ -1572,6 +1896,24 @@ static GateRow evaluateGates(const Subject& s, const BenchData& d)
                 const bool p1 = g1Cell(it->second, ideal), p2 = g2Cell(it->second);
                 if (c.inQ)     { ++g.nq; if (p1) ++g.g1q; if (p2) ++g.g2q; }
                 if (c.inLevel) { ++g.nl; if (p1) ++g.g1l; if (p2) ++g.g2l; }
+            }
+    }
+
+    // v5 time-varying (T1): G8a / G8b on D in {300, 1000} (6 cases), G9a / G9b on every case (9)
+    {
+        const auto tv = d.tv.find(s.id);
+        if (tv != d.tv.end())
+            for (const auto& kv : tv->second)
+            {
+                const int durMs = kv.first.second;
+                const TvMetrics& m = kv.second;
+                if (g8Graded(durMs))
+                {
+                    ++g.n8a; if (g8aCell(m)) ++g.g8a;
+                    ++g.n8b; if (g8bCell(m, durMs)) ++g.g8b;
+                }
+                ++g.n9a; if (g9aCell(m)) ++g.g9a;
+                ++g.n9b; if (g9bCell(m)) ++g.g9b;
             }
     }
 
@@ -2439,6 +2781,72 @@ int main(int argc, char** argv)
         csvTables["core_detector_noise"] = t10d; tables.push_back(t10d);
     }
 
+    // ---------------------------------------------------------------- time-varying resonance T1 (v5): reaction + release
+    logf("[8d/9] time-varying resonance T1 (f0 {500, 2500, 8000} Hz x D {100, 300, 1000} ms, %d events each, 5 ms crossfades)", kTvEvents);
+    Table tTv; tTv.title = "11. Time-varying resonance (signal T1, 48 kHz) - reaction (G8a / G8b) and release (G9a / G9b)";
+    tTv.note = "Pink noise -20 dBFS RMS (seed of signal A); the +12 dB / Q 8 bell at f0 is switched ON and OFF by 5 ms linear crossfades between the clean noise C and the bell-filtered noise A built from the same noise "
+               "(the clean reference is exact), 6 events per case, on-duration D, >= 1.5 s off between events, first onset at 2 s (D = 1000 ms: 16.8 s signal instead of 14 s, see the T1 comment in the tool). "
+               "STFT 1024 Hann hop 128, window f0 +/- 1/6 oct, latency-aligned output, events aligned at their onsets (frame centres at onset + k x 128), energies = event means, 10 ms boxcar. "
+               "r = dB(E_out / E_clean), r_pass the same for the un-suppressed input; p = 1 - r / r_pass in [0, 1.2] during the on-time (p := 0 while r_pass < 1 dB). "
+               "t50 / t90 = first time since the onset with p >= 0.5 / 0.9 (never = not reached within D = FAIL). leak = sum of positive (E_out - E_clean) / sum (E_pass - E_clean) over the event (1 = nothing suppressed). "
+               "over = per-event minimum of dB(E_out / E_clean) (20 ms smoothing) within 500 ms after the offset, averaged over events. settle = time after the offset until |r| stays <= 1 dB (never = still outside after 1 s = FAIL). "
+               "r_pass peak / r peak = the largest event-mean r_pass / r during the on-time (dB). Gates: G8a t50 <= 100 ms and G8b leak <= 0.5 (D = 300) / 0.3 (D = 1000) for D = 300 and 1000 only; "
+               "G9a over >= -3.0 dB and G9b settle <= 400 ms at every case. D = 100 ms: t50 / leak are informational ('-' in the G8 columns). Verdict letters P / F.";
+    tTv.note += " 'r off' (informational, not a gate) = mean r 0.5-1.0 s after the offset: the steady-state deviation of the output from the clean noise; a subject that permanently cuts / boosts the clean "
+                "noise by more than 1 dB can never settle, so settle = never with a large |r off| is an offset, not a slow release.";
+    tTv.header = { "subject", "f0 Hz", "D ms", "r_pass peak dB", "r peak dB", "t50 ms", "t90 ms", "leak", "over dB", "settle ms", "r off dB", "G8a", "G8b", "G9a", "G9b" };
+    {
+        const double tvSr = SR;
+        for (double f0 : kTvF0)
+            for (int durMs : kTvDurMs)
+            {
+                TvCase tc = makeTvCase(f0, durMs, tvSr);
+                int kMin = 0, kMax = 0; tvFrameRange(durMs, tvSr, kMin, kMax);
+                const auto eClean = tvWindowEnergy(tc.clean, tc.events, kMin, kMax, tvSr, f0);
+                const auto ePass  = tvWindowEnergy(tc.sig,   tc.events, kMin, kMax, tvSr, f0);
+                Planted pl; pl.f0 = f0; pl.left = true; pl.right = true; pl.cleanRef = &tc.clean;
+                for (const auto& ev : tc.events) pl.events.emplace_back(ev.onset, ev.offset);
+                const bool wavCase = (f0 == 2500.0 && durMs == 300);
+                if (wavCase)
+                {
+                    writeWav(wavDir / "T1_f2500_D300_in.wav", tc.sig, tvSr);
+                    writeWav(wavDir / "T1_f2500_D300_clean.wav", tc.clean, tvSr);
+                }
+                for (const auto& s : scanSubjects)
+                {
+                    Fx fx = makeFx(s, tvSr, f0, false, kPrepareBlock, &pl);
+                    const Stereo out = renderStd(fx, tc.sig);
+                    const auto a = align(tc.sig, out, measureLatency(s, tvSr).measured, tvSr);
+                    const auto eOut = tvWindowEnergy(a.out, tc.events, kMin, kMax, tvSr, f0);
+                    const TvMetrics m = tvAnalyse(eOut, eClean, ePass, durMs, kMin, tvSr);
+                    bd.tv[s.id][{ static_cast<int>(f0), durMs }] = m;
+                    if (wavCase) writeWav(wavDir / ("T1_f2500_D300_" + s.id + "_out.wav"), a.out, tvSr);
+                }
+            }
+        for (const auto& s : scanSubjects)
+            for (double f0 : kTvF0)
+                for (int durMs : kTvDurMs)
+                {
+                    const TvMetrics& m = bd.tv[s.id][{ static_cast<int>(f0), durMs }];
+                    const bool gr = g8Graded(durMs);
+                    tTv.add({ s.id, num(f0, 0), inum(durMs), num(m.rPassPeak, 2), num(m.rPeak, 2), tvMs(m.t50), tvMs(m.t90), num(m.leak, 3), num(m.over, 2), tvMs(m.settle), num(m.rOff, 2),
+                              gr ? pf(g8aCell(m)).substr(0, 1) : "-", gr ? pf(g8bCell(m, durMs)).substr(0, 1) : "-", pf(g9aCell(m)).substr(0, 1), pf(g9bCell(m)).substr(0, 1) });
+                }
+        csvTables["time_varying"] = tTv; tables.push_back(tTv);
+        for (const auto& s : scanSubjects)
+        {
+            if (!s.gated) continue;
+            for (double f0 : kTvF0)
+                for (int durMs : kTvDurMs)
+                {
+                    const TvMetrics& m = bd.tv[s.id][{ static_cast<int>(f0), durMs }];
+                    logf("      T1 %-4s f0 %4.0f D %4d: t50 %6s t90 %6s leak %5.3f over %6.2f settle %6s  (r_pass peak %.2f, r peak %.2f, r off %.2f) G8a %s G8b %s G9a %s G9b %s",
+                         s.id.c_str(), f0, durMs, tvMs(m.t50).c_str(), tvMs(m.t90).c_str(), m.leak, m.over, tvMs(m.settle).c_str(), m.rPassPeak, m.rPeak, m.rOff,
+                         g8Graded(durMs) ? (g8aCell(m) ? "P" : "F") : "-", g8Graded(durMs) ? (g8bCell(m, durMs) ? "P" : "F") : "-", g9aCell(m) ? "P" : "F", g9bCell(m) ? "P" : "F");
+                }
+        }
+    }
+
     // ---------------------------------------------------------------- CPU (9)
     Table tCpu; tCpu.title = "9. CPU (48 kHz stereo)";
     tCpu.header = { "subject", "label", "block", "median ns", "p95 ns", "p99 ns", "max ns", "mean ns", "median % RT", "p95 % RT", "mean % RT", "max % RT" };
@@ -2530,9 +2938,13 @@ int main(int argc, char** argv)
                  "G5: pre-echo with the mask engaged (D2): broadband E_out/E_in <= +1.0 dB AND band (f0 +/- 1/3 oct) E_out/E_in <= +1.0 dB. "
                  "G6: latency measured == reported at 48 and 44.1 kHz and unchanged across block schedules. "
                  "G7: mean % RT divided by S3's mean % RT in the same run <= 1.00 at block 128 AND block 64 (cell shows ratio @128 / @64; 'n/a' with --no-cpu). "
-                 "Overall = every column passes (G7 left out of the verdict when n/a). "
-                 "Thresholds are the constants kG1..kG7 in the tool; they are not tuned per subject.";
-    tGate.header = { "subject", "label", "G1 in-window", "G2 outside-dev", "G1q Q-scan", "G2q Q-scan", "G1l level-scan", "G2l level-scan", "G3 R-only", "G4 jitter", "G5 pre-echo D2", "G6 latency", "G7 CPU vs S3", "overall" };
+                 "G8a: time-varying resonance T1 (table 11), reaction: t50 <= 100 ms for D = 300 and 1000 ms at every f0 (count of 6; 'never' fails). "
+                 "G8b: leak_fraction <= 0.5 (D = 300) / <= 0.3 (D = 1000) at every f0 (count of 6). "
+                 "G9a: release over-suppression: over_dB >= -3.0 at every (f0, D) (count of 9). G9b: settle_ms <= 400 at every (f0, D) (count of 9; 'never' fails). "
+                 "Overall = every column passes, G8a / G8b / G9a / G9b included (G7 left out of the verdict when n/a). "
+                 "Thresholds are the constants kG1..kG9 in the tool; they are not tuned per subject.";
+    tGate.header = { "subject", "label", "G1 in-window", "G2 outside-dev", "G1q Q-scan", "G2q Q-scan", "G1l level-scan", "G2l level-scan", "G3 R-only", "G4 jitter", "G5 pre-echo D2", "G6 latency", "G7 CPU vs S3",
+                     "G8a t50", "G8b leak", "G9a over", "G9b settle", "overall" };
     Table tGateDetail; tGateDetail.title = "Gate details (raw values behind the gate table)";
     tGateDetail.note = "G1/G2 counts also at 44.1 kHz (informational, not part of the gate). G3: R gates at 2500 Hz, L gate f0 passing out of 12 (per-f0 values in table 8c), and the 2500 Hz R/L in-window and outside-dev (dB). "
                        "G4: std all (dB) / isolated all, measured on the named sensitive variant. G5: broadband / band E_out vs E_in (dB) on D2. G6: measured/reported per rate. G7: CPU ratio vs S3 at block 128 / 64.";
@@ -2543,7 +2955,8 @@ int main(int argc, char** argv)
                         "g4_variant", "g4_std_all_db", "g4_isolated_all", "g4", "g5_broadband_db", "g5_band_db", "g5", "g6_detail", "g6", "overall",
                         "info_g1_pass_f0_44k", "info_g2_pass_f0_44k", "info_total_f0_44k",
                         "g1q_pass_cases", "g1q_total_cases", "g1q", "g2q_pass_cases", "g2q", "g1l_pass_cases", "g1l_total_cases", "g1l", "g2l_pass_cases", "g2l",
-                        "g3_r_gates", "g3_l_pass_f0", "g3_l_total_f0", "g3_l_in_window_db", "g7_ratio_128", "g7_ratio_64", "g7" };
+                        "g3_r_gates", "g3_l_pass_f0", "g3_l_total_f0", "g3_l_in_window_db", "g7_ratio_128", "g7_ratio_64", "g7",
+                        "g8a_pass_cases", "g8a_total_cases", "g8a", "g8b_pass_cases", "g8b", "g9a_pass_cases", "g9a_total_cases", "g9a", "g9b_pass_cases", "g9b" };
     int nOverall = 0;
     for (size_t gi = 0; gi < gateRows.size(); ++gi)
     {
@@ -2555,6 +2968,7 @@ int main(int argc, char** argv)
         tGate.add({ g.id, g.label, pf(g.pass1()) + " " + cnt(g.g1, g.n), pf(g.pass2()) + " " + cnt(g.g2, g.n),
                     pf(g.pass1q()) + " " + cnt(g.g1q, g.nq), pf(g.pass2q()) + " " + cnt(g.g2q, g.nq), pf(g.pass1l()) + " " + cnt(g.g1l, g.nl), pf(g.pass2l()) + " " + cnt(g.g2l, g.nl),
                     g3cell, g.g4valid ? pf(g.g4) : "FAIL (no data)", g.g5valid ? pf(g.g5) : "FAIL (no data)", pf(g.g6), g7cell,
+                    pf(g.pass8a()) + " " + cnt(g.g8a, g.n8a), pf(g.pass8b()) + " " + cnt(g.g8b, g.n8b), pf(g.pass9a()) + " " + cnt(g.g9a, g.n9a), pf(g.pass9b()) + " " + cnt(g.g9b, g.n9b),
                     pf(g.overall()) + (g.g7valid ? "" : " (G7 n/a)") });
         tGateDetail.add({ g.id, cnt(g.g1_44, g.n44), cnt(g.g2_44, g.n44), pf(g.g3R), cnt(g.g3Lpass, g.g3Ln), num(g.g3RRes, 2), num(g.g3RDev, 2), num(g.g3LRes, 2), num(g.g3LDev, 2),
                           g.g4Id, num(g.g4Std, 3), num(g.g4Iso, 6), num(g.g5Bb, 3), num(g.g5Band, 3), g.g6detail,
@@ -2564,7 +2978,8 @@ int main(int argc, char** argv)
                        inum(g.g1_44), inum(g.g2_44), inum(g.n44),
                        inum(g.g1q), inum(g.nq), pf(g.pass1q()), inum(g.g2q), pf(g.pass2q()), inum(g.g1l), inum(g.nl), pf(g.pass1l()), inum(g.g2l), pf(g.pass2l()),
                        pf(g.g3R), inum(g.g3Lpass), inum(g.g3Ln), num(g.g3LRes, 4),
-                       g.g7valid ? num(g.g7r128, 4) : "n/a", g.g7valid ? num(g.g7r64, 4) : "n/a", g.g7valid ? pf(g.g7) : "n/a" });
+                       g.g7valid ? num(g.g7r128, 4) : "n/a", g.g7valid ? num(g.g7r64, 4) : "n/a", g.g7valid ? pf(g.g7) : "n/a",
+                       inum(g.g8a), inum(g.n8a), pf(g.pass8a()), inum(g.g8b), pf(g.pass8b()), inum(g.g9a), inum(g.n9a), pf(g.pass9a()), inum(g.g9b), pf(g.pass9b()) });
     }
     // Per-f0 breakdown at 48 kHz: "in_window / outside_dev" and the two per-cell verdicts (G1 G2).
     Table tGateF0; tGateF0.title = "Gate details per f0 (48 kHz): in_window / outside_dev (dB), then G1 G2 verdict letters (P = pass, F = fail)";
@@ -2589,12 +3004,14 @@ int main(int argc, char** argv)
     logf("---- GATE TABLE (G1/G2/G3-L counts are f0 passing out of %zu; q = 3 Q cases, l = 2 level cases) ----", scanF0.size());
     for (const auto& g : gateRows)
     {
-        logf("%-4s G1 %-4s %5s | G2 %-4s %5s | G1q %-4s %3s | G2q %-4s %3s | G1l %-4s %3s | G2l %-4s %3s | G3 %-4s (R %s, L %s) | G4 %-4s | G5 %-4s | G6 %-4s | G7 %s | overall %s",
+        logf("%-4s G1 %-4s %5s | G2 %-4s %5s | G1q %-4s %3s | G2q %-4s %3s | G1l %-4s %3s | G2l %-4s %3s | G3 %-4s (R %s, L %s) | G4 %-4s | G5 %-4s | G6 %-4s | G7 %s | G8a %-4s %3s | G8b %-4s %3s | G9a %-4s %3s | G9b %-4s %3s | overall %s",
              g.id.c_str(), pf(g.pass1()).c_str(), cnt(g.g1, g.n).c_str(), pf(g.pass2()).c_str(), cnt(g.g2, g.n).c_str(),
              pf(g.pass1q()).c_str(), cnt(g.g1q, g.nq).c_str(), pf(g.pass2q()).c_str(), cnt(g.g2q, g.nq).c_str(),
              pf(g.pass1l()).c_str(), cnt(g.g1l, g.nl).c_str(), pf(g.pass2l()).c_str(), cnt(g.g2l, g.nl).c_str(),
              pf(g.g3).c_str(), g.g3R ? "P" : "F", cnt(g.g3Lpass, g.g3Ln).c_str(), pf(g.g4).c_str(), pf(g.g5).c_str(), pf(g.g6).c_str(),
-             g.g7valid ? (pf(g.g7) + " " + num(g.g7r128, 2) + "/" + num(g.g7r64, 2)).c_str() : "n/a", pf(g.overall()).c_str());
+             g.g7valid ? (pf(g.g7) + " " + num(g.g7r128, 2) + "/" + num(g.g7r64, 2)).c_str() : "n/a",
+             pf(g.pass8a()).c_str(), cnt(g.g8a, g.n8a).c_str(), pf(g.pass8b()).c_str(), cnt(g.g8b, g.n8b).c_str(),
+             pf(g.pass9a()).c_str(), cnt(g.g9a, g.n9a).c_str(), pf(g.pass9b()).c_str(), cnt(g.g9b, g.n9b).c_str(), pf(g.overall()).c_str());
     }
     if (nOverall > 0)
         warnf("%d gated subject(s) pass ALL gates - baseline expectation is that the current subjects fail most gates; investigate the metrics before trusting this", nOverall);
@@ -2607,11 +3024,13 @@ int main(int argc, char** argv)
         for (const auto& g : gateRows) { if (g.id == "R0") r0 = &g; if (g.id == "R1") r1 = &g; }
         if (r0 && r1)
         {
-            const bool r1Ok = r1->pass1() && r1->pass2() && r1->pass1q() && r1->pass2q() && r1->pass1l() && r1->pass2l() && r1->g3 && r1->g4 && r1->g5 && r1->g6;
-            const bool r0Ok = !r0->pass1() && !r0->g3;
+            const bool r1Ok = r1->pass1() && r1->pass2() && r1->pass1q() && r1->pass2q() && r1->pass1l() && r1->pass2l() && r1->g3 && r1->g4 && r1->g5 && r1->g6
+                              && r1->pass8a() && r1->pass8b() && r1->pass9a() && r1->pass9b();
+            const bool r0Ok = !r0->pass1() && !r0->g3 && !r0->pass8a() && !r0->pass8b();
             calibOk = r1Ok && r0Ok;
-            calibLine = std::string("oracle R1 passes G1-G6 (incl. shape scans) = ") + (r1Ok ? "yes" : "NO") + " (G3 L " + cnt(r1->g3Lpass, r1->g3Ln) + "); pass-through R0 fails G1 and G3 = " + (r0Ok ? "yes" : "NO")
-                      + " (G1 " + cnt(r0->g1, r0->n) + ", G3 " + pf(r0->g3) + ", L " + cnt(r0->g3Lpass, r0->g3Ln) + ")";
+            calibLine = std::string("oracle R1 passes G1-G6 (incl. shape scans) and G8a/G8b/G9a/G9b = ") + (r1Ok ? "yes" : "NO") + " (G3 L " + cnt(r1->g3Lpass, r1->g3Ln) + "; G8a " + cnt(r1->g8a, r1->n8a)
+                      + ", G8b " + cnt(r1->g8b, r1->n8b) + ", G9a " + cnt(r1->g9a, r1->n9a) + ", G9b " + cnt(r1->g9b, r1->n9b) + "); pass-through R0 fails G1, G3, G8a and G8b = " + (r0Ok ? "yes" : "NO")
+                      + " (G1 " + cnt(r0->g1, r0->n) + ", G3 " + pf(r0->g3) + ", L " + cnt(r0->g3Lpass, r0->g3Ln) + ", G8a " + cnt(r0->g8a, r0->n8a) + ", G8b " + cnt(r0->g8b, r0->n8b) + ")";
             logf("calibration: %s -> %s", calibLine.c_str(), calibOk ? "ok" : "FAIL");
             if (!calibOk) warnf("reference-subject calibration FAILED: %s", calibLine.c_str());
         }
