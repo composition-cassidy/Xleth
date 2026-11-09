@@ -19,8 +19,33 @@
 //   COLA: synthesis window = sqrt-Hann × the per-hop-phase normalisation 1/Σw², the
 //         same scheme as the RS High Quality WolaProcessor.
 //
+// Detector and gain computer, in one paragraph (details and the evidence behind every constant: ResonanceCore.md next to this file):
+//   Per frame the bin powers |X_k|^2 are averaged over time twice, a SLOW average (200 ms) and a FAST one (40 ms), and weighted into 96 ERB-spaced bands.
+//   The level of a band minus a baseline interpolated from the median levels of the spectrum on both sides of it (flanks outside the band's main lobe)
+//   is the band's EXCESS in dB. Both estimates carry their own statistical sigma, derived from the averaging geometry, so every threshold is in sigma
+//   (not in dB): the false-trigger rate on noise is set by statistics. A band uses the slow estimate while the fast one agrees with it; it switches to the
+//   fast one on an onset (fast above slow by more than kSwitchUpSigmas fast sigmas) and, through a hysteresis latch, on a release (slow above fast by more
+//   than kVetoSetSigmas, latched until the two are within kVetoClearSigmas again). The excess above threshold (sensitivity) is mapped through a salience
+//   knee to a target reduction (whole excess, capped by depth), smoothed per band by attack / release, across bands by [1 2 1] / 4, optionally linked
+//   between channels, interpolated to the bins and applied as a real, zero-phase gain.
+//
+// Every time constant is in milliseconds and independent of N and of the sample rate (converted with the hop duration in prepare()); only the analysis
+// window itself (10.7 / 21.3 / 42.7 ms for the three frame tiers at <= 50 kHz) scales with N.
+//
+// Units: levels and reductions are dB, thresholds are in sigma of the excess estimate, times are ms, frequencies Hz. Latency is N samples, always.
+//
+// Known limit (a property of the analysis resolution, not a tuning issue): a resonance narrower than one analysis bin (a Q 8 bell is narrower than the 46.9 Hz bin
+// of N = 1024 at 48 kHz below roughly 370 Hz; the effect on the cut is large below ~150 Hz) is only partly reduced. The cut is the bin-average excess, so the sub-bin
+// peak stays standing: a Q 8 / +12 dB bell at 100 Hz keeps ~3.4 dB of its ~7.2 dB in-window excess, and N = 2048 does not change that. See "G1 resolution ceiling"
+// in ResonanceCore.md.
+//
 // Realtime contract: prepare() / release() allocate and run on a non-audio thread.
 // process() and reset() never allocate, lock or log.
+//
+// Threading: a Core is NOT thread-safe and owns no thread. One instance per audio chain; prepare(), release(), setFrameTier(), setDetectorTimeConstantMs()
+// and setFastTimeConstantMs() are called on a non-audio thread while the instance is not processing (the setters are structural and take effect at the next
+// prepare()). process(), reset() and the introspection accessors belong to the audio (processing) thread. Params is passed by value to every process() call and may
+// change freely between calls (tests T4 / T6 run with parameters swept every block, without allocation).
 
 #include <juce_dsp/juce_dsp.h>
 
@@ -37,12 +62,21 @@ constexpr int kGridBands   = 96;   // detector / gain grid: ERB-rate spaced, 20 
 // Parameter block, copied by value into process() once per block. Plain data only.
 struct Params
 {
-    float depth       = 0.5f;    // 0..1  maximum reduction (x 12 dB Soft, x 24 dB Hard)
-    float sensitivity = 0.5f;    // 0..1  detection threshold, in standard deviations of the averaged band level
-    float attackMs    = 15.0f;   // per-band reduction attack
-    float releaseMs   = 200.0f;  // per-band reduction release
-    bool  hardKnee    = false;   // false = Soft mapping, true = Hard mapping
-    float stereoLink  = 0.0f;    // 0..1  blend of each channel's reduction towards max(L, R)
+    // depth: 0..1. Ceiling of the reduction of one band, in dB: depth x 12 dB (Soft) or depth x 24 dB (Hard). The cut follows the excess smoothly towards the ceiling
+    //        (R = r / (1 + (r / Rmax)^p)^(1/p), p = 2 Soft, p = 6 Hard); 0 passes the audio through with the latency only (error -160 dBFS RMS).
+    float depth       = 0.5f;
+    // sensitivity: 0..1. Detection threshold in sigma of the excess estimate (the statistical std-dev of level - baseline on noise): 6 sigma at 0, 4 at 0.5, 2 at 1.
+    //        Higher = more sensitive (lower threshold). Unit: sigma, NOT dB.
+    float sensitivity = 0.5f;
+    // attackMs / releaseMs: per-band one-pole smoothing of the applied reduction, in dB, at the frame rate (clamped 0.1..1000 ms and 1..10000 ms). The release runs
+    //        from the moment the detector hands the band back (about 45 ms after the resonance stops), so a 9 dB cut at the default 200 ms is below 1 dB after
+    //        roughly 450-500 ms.
+    float attackMs    = 15.0f;
+    float releaseMs   = 200.0f;
+    // hardKnee: false = Soft (knee 3 sigma wide, ceiling 12 dB x depth, gentle ceiling), true = Hard (knee 1.5 sigma wide, 24 dB x depth, sharp ceiling).
+    bool  hardKnee    = false;
+    // stereoLink: 0..1. Blend of each channel's reduction towards max(L, R): 0 = channels independent, 1 = both channels get the larger of the two reductions.
+    float stereoLink  = 0.0f;
 
     // HOOK (not implemented in stage 1, ignored): per-grid-band focus / sensitivity weight, length numBands().
     const float* focusWeight = nullptr;
@@ -110,9 +144,11 @@ public:
         const float s = sensitivity < 0.0f ? 0.0f : (sensitivity > 1.0f ? 1.0f : sensitivity);
         return 6.0f - 4.0f * s;
     }
-    // Detector constants (exposed so the design log / tests can quote them).
-    static constexpr float kDefaultDetectorTauMs = 200.0f;   // recursive power-average time constant (default; see design log tau study)
-    // Detector averaging time constant. Structural: takes effect at the next prepare() (call it before prepare).
+    // ---- detector constants (exposed so the design notes / tests can quote them; evidence for every value: ResonanceCore.md) ----
+    // Slow estimate: recursive power average of |X_k|^2, time constant in ms. Long enough that the excess of a band has a small, predictable sigma (about 0.5 dB at 2.5 kHz),
+    // short enough to follow a held resonance. 400 ms detects sub-bin resonances more often but lingers about 2 tau after a resonance stops and lets the low-frequency
+    // clean-pink bias (+0.6 dB) become ~1 sigma. Structural: takes effect at the next prepare() (call it before prepare).
+    static constexpr float kDefaultDetectorTauMs = 200.0f;
     void setDetectorTimeConstantMs(float ms) noexcept { detectorTauMs_ = ms > 1.0f ? ms : 1.0f; }
     float detectorTimeConstantMs() const noexcept { return detectorTauMs_; }
     // Two-speed detection (v6). A second, fast power average (time constant in ms, independent of N and the sample rate) is
@@ -120,15 +156,30 @@ public:
     // with it, and the FAST estimate where the two differ by more than kSwitchUpSigmas fast-estimate standard deviations above it
     // (an onset) or, latched with hysteresis, by kVetoSetSigmas below it (a release). The threshold and knee of whichever estimate is used come from
     // that estimate's own variance. 0 disables the fast path (slow only, the stage-B behaviour). Structural: next prepare().
+    // Fast time constant, ms. 40 ms is the knee (measured, quick runs): 25 ms is noisier (larger fast sigma, more false latches; G1 10/12, G4 jitter 0.148 dB vs 0.130, G9a 7/9);
+    // 60 ms reacts too late at 500 Hz (G8a 4/6, t50 101-104 ms against the 100 ms gate).
     static constexpr float kDefaultFastTauMs  = 40.0f;
-    static constexpr float kSwitchUpSigmas    = 2.5f;   // fast above slow by more than this many fast sigmas: onset, use the fast estimate
-    static constexpr float kVetoSetSigmas     = 2.0f;   // slow above fast by more than this many fast sigmas: release, the fast estimate takes over (latched)
+    // Onset rule, in FAST sigmas: fast - slow > 2.5 -> the band uses the fast estimate (the slow average needs ~200 ms to reach a new level, the fast one ~40 ms, so a real
+    // onset opens a gap of several fast sigmas within a few frames while noise stays inside 2.5). This value comes from the first, symmetric (+-2.5) attempt; its onset side
+    // already met the reaction gate (G8a 6/6), only its release side was too late (below).
+    static constexpr float kSwitchUpSigmas    = 2.5f;
+    // Release latch, in FAST sigmas: slow - fast > 2.0 sets the latch (the fast estimate takes over), slow - fast < 0.75 clears it. The latch is asymmetric because the slow
+    // estimate falls only as 10 log10(1 + 9 e^(-t / 200 ms)) after a 10 dB resonance stops: it stays within 2.5 fast sigmas of the fast estimate while still 3-5 dB above the
+    // clean level, which a symmetric rule never hands over (G9a 6/9). Setting at 2.0 catches the release about 45 ms after the offset; clearing at 0.75 keeps the latch from
+    // chattering. Looser settings (set 1.5 / clear 0.5, or release at 0.5 sigma) release faster but fire false latches in steady state and cost G1 (see ResonanceCore.md).
+    static constexpr float kVetoSetSigmas     = 2.0f;
+    // Forced full baseline refresh: when the mean band level has moved by more than this many dB since the last full refresh (a broadband onset out of silence meets a stale
+    // baseline and would show a false excess), every band's baseline is recomputed in that frame instead of the staggered share. dB.
     static constexpr float kBaselineJumpDb     = 1.5f;
-    static constexpr float kSlowBaselineRefreshMs = 21.33f;   // baseline refresh interval of a band (slow estimate, tau 200 ms) = 4 frames at N = 1024
-    static constexpr float kFastBaselineRefreshMs = 10.67f;   // (fast estimate) = 2 frames at N = 1024; both are converted to whole frames in prepare()
-    static constexpr float kVetoClearSigmas   = 0.75f;  // ... until slow is within this many fast sigmas of fast again (hysteresis)
+    // Baseline refresh cadence, ms (converted to whole frames in prepare(): 4 / 2 frames at N = 1024). Each band's baseline (two flank medians, the dominant detector cost) is
+    // recomputed once per interval, staggered over the bands; levels are exact every frame. Defined in ms so the cadence does not change with N.
+    static constexpr float kSlowBaselineRefreshMs = 21.33f;   // slow estimate (tau 200 ms)
+    static constexpr float kFastBaselineRefreshMs = 10.67f;   // fast estimate
+    // Release latch, clear threshold (see kVetoSetSigmas): slow - fast below this many fast sigmas hands the band back to the slow estimate. Fast sigmas.
+    static constexpr float kVetoClearSigmas   = 0.75f;
     void setFastTimeConstantMs(float ms) noexcept { fastTauMs_ = ms > 0.0f ? (ms > 1.0f ? ms : 1.0f) : 0.0f; }
     float fastTimeConstantMs() const noexcept { return fastTauMs_; }
+    // Flank geometry of the baseline: the flanks start outside the resonance's main lobe and are kFlankOct wide.
     static constexpr float kGapOct        = 0.5f;     // flank exclusion half-width, octaves (main lobe of a Q >= 4 resonance)
     static constexpr float kGapBins       = 2.0f;     // ... and at least this many FFT bins (analysis main lobe)
     static constexpr float kFlankOct      = 0.75f;    // flank width beyond the exclusion, octaves
