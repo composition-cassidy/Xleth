@@ -14,7 +14,7 @@
 //                                                               │
 //                                    output ◄─ overlap-add ◄─ sqrt-Hann·1/Σw² ◄─ IFFT
 //
-//   N   = 1024 at 44.1 / 48 kHz, doubled per sample-rate octave above that (2048 at
+//   N   = 1024 at 44.1 / 48 kHz (Normal tier; Fast 512, High 2048), doubled per sample-rate octave above that (2048 at
 //         88.2 / 96 kHz) so the frame stays about 21 ms. Hop N/4.
 //   COLA: synthesis window = sqrt-Hann × the per-hop-phase normalisation 1/Σw², the
 //         same scheme as the RS High Quality WolaProcessor.
@@ -70,9 +70,14 @@ public:
     // Clears all signal state (FIFOs, overlap-add, detector, gain smoothers). RT-safe.
     void reset() noexcept;
 
-    static int fftSizeFor(double sampleRate) noexcept;
-    // Latency in samples for a given rate (constant; independent of every Params field).
-    static int latencyFor(double sampleRate) noexcept { return fftSizeFor(sampleRate); }
+    // Frame-size tier (structural: chosen before prepare(), no live switching). N = 512 / 1024 / 2048 at <= 50 kHz (window about
+    // 10.7 / 21.3 / 42.7 ms), doubled per sample-rate octave above that. Every time constant stays in ms.
+    enum class FrameTier { Fast = 0, Normal = 1, High = 2 };
+    void setFrameTier(FrameTier t) noexcept { tier_ = t; }
+    FrameTier frameTier() const noexcept { return tier_; }
+    static int fftSizeFor(double sampleRate, FrameTier tier = FrameTier::Normal) noexcept;
+    // Latency in samples for a given rate and tier (constant; independent of every Params field).
+    static int latencyFor(double sampleRate, FrameTier tier = FrameTier::Normal) noexcept { return fftSizeFor(sampleRate, tier); }
     int currentLatency() const noexcept { return fftSize_; }
 
     // In place. Channels [0, min(numChannels, prepared channels)) are processed; any others are untouched.
@@ -119,8 +124,8 @@ public:
     static constexpr float kSwitchUpSigmas    = 2.5f;   // fast above slow by more than this many fast sigmas: onset, use the fast estimate
     static constexpr float kVetoSetSigmas     = 2.0f;   // slow above fast by more than this many fast sigmas: release, the fast estimate takes over (latched)
     static constexpr float kBaselineJumpDb     = 1.5f;
-    static constexpr int   kSlowBaselinePeriod = 4;      // frames between baseline refreshes of a band (slow estimate, tau 200 ms)
-    static constexpr int   kFastBaselinePeriod = 2;      // (fast estimate)
+    static constexpr float kSlowBaselineRefreshMs = 21.33f;   // baseline refresh interval of a band (slow estimate, tau 200 ms) = 4 frames at N = 1024
+    static constexpr float kFastBaselineRefreshMs = 10.67f;   // (fast estimate) = 2 frames at N = 1024; both are converted to whole frames in prepare()
     static constexpr float kVetoClearSigmas   = 0.75f;  // ... until slow is within this many fast sigmas of fast again (hysteresis)
     void setFastTimeConstantMs(float ms) noexcept { fastTauMs_ = ms > 0.0f ? (ms > 1.0f ? ms : 1.0f) : 0.0f; }
     float fastTimeConstantMs() const noexcept { return fastTauMs_; }
@@ -169,6 +174,8 @@ private:
     double sampleRate_ = 0.0;
     float detectorTauMs_ = kDefaultDetectorTauMs;
     float fastTauMs_ = kDefaultFastTauMs;
+    FrameTier tier_ = FrameTier::Normal;
+    int slowPeriod_ = 4, fastPeriod_ = 2;   // baseline refresh periods in frames
     int fftSize_ = 0, hop_ = 0, numChannels_ = 0;
     int hopFill_ = 0;
     long long frames_ = 0;

@@ -92,20 +92,26 @@ inline float smoothstep01(float x) noexcept
 Core::Core() = default;
 Core::~Core() = default;
 
-int Core::fftSizeFor(double sampleRate) noexcept
+int Core::fftSizeFor(double sampleRate, FrameTier tier) noexcept
 {
-    // ~21 ms frame: 1024 up to 50 kHz, then doubled per sample-rate octave.
-    int n = 1024;
+    // Normal: ~21 ms frame, 1024 up to 50 kHz, then doubled per sample-rate octave. Fast / High: half / double.
+    int n = 512 << static_cast<int>(tier);
     double sr = sampleRate;
-    while (sr > 50000.0 && n < 8192) { sr *= 0.5; n *= 2; }
+    while (sr > 50000.0 && n < 16384) { sr *= 0.5; n *= 2; }
     return n;
 }
 
 void Core::prepare(double sampleRate, int /*maxBlockSize*/, int numChannels)
 {
     sampleRate_  = sampleRate > 0.0 ? sampleRate : 48000.0;
-    fftSize_     = fftSizeFor(sampleRate_);
+    fftSize_     = fftSizeFor(sampleRate_, tier_);
     hop_         = fftSize_ / 4;
+    {
+        // Baseline refresh intervals are defined in ms and converted to whole frames (N = 1024 at 48 kHz: 4 and 2 frames).
+        const double hopMs = 1000.0 * hop_ / sampleRate_;
+        slowPeriod_ = std::clamp(static_cast<int>(std::lround(kSlowBaselineRefreshMs / hopMs)), 1, 32);
+        fastPeriod_ = std::clamp(static_cast<int>(std::lround(kFastBaselineRefreshMs / hopMs)), 1, 32);
+    }
     numChannels_ = std::clamp(numChannels, 1, kMaxChannels);
 
     int order = 0;
@@ -572,7 +578,7 @@ void Core::detectChannel(Channel& ch, double biasCorr, double biasCorrFast) noex
             S[k]  = ea * S[k]  + eb * pw;
             SF[k] = fa * SF[k] + fb * pw;
         }
-        bandLevelsAndBaseline(SF, ch.levelFDb.data(), ch.baseFDb.data(), biasCorrFast, kFastBaselinePeriod, ch.refMeanF);
+        bandLevelsAndBaseline(SF, ch.levelFDb.data(), ch.baseFDb.data(), biasCorrFast, fastPeriod_, ch.refMeanF);
     }
     else
     {
@@ -582,7 +588,7 @@ void Core::detectChannel(Channel& ch, double biasCorr, double biasCorrFast) noex
             S[k] = ea * S[k] + eb * (re * re + im * im);
         }
     }
-    bandLevelsAndBaseline(S, ch.levelDb.data(), ch.baseDb.data(), biasCorr, kSlowBaselinePeriod, ch.refMeanS);
+    bandLevelsAndBaseline(S, ch.levelDb.data(), ch.baseDb.data(), biasCorr, slowPeriod_, ch.refMeanS);
 }
 
 // Band levels (dB, per octave) of the averaged bin powers S and their flank baseline.

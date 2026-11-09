@@ -525,12 +525,13 @@ private:
 class ResonanceCoreProcessor : public juce::AudioProcessor
 {
 public:
-    ResonanceCoreProcessor(const xleth::dsp::resonance::Params& p, float detectorTauMs)
+    ResonanceCoreProcessor(const xleth::dsp::resonance::Params& p, float detectorTauMs, xleth::dsp::resonance::Core::FrameTier tier = xleth::dsp::resonance::Core::FrameTier::Normal)
         : juce::AudioProcessor(BusesProperties().withInput("in", juce::AudioChannelSet::stereo()).withOutput("out", juce::AudioChannelSet::stereo())),
           params_(p)
     {
         if (detectorTauMs > 0.0f) core_.setDetectorTimeConstantMs(detectorTauMs);
         if (g_opt.coreFastMs >= 0.0f) core_.setFastTimeConstantMs(g_opt.coreFastMs);
+        core_.setFrameTier(tier);
     }
     const juce::String getName() const override { return "ResonanceCore"; }
     void prepareToPlay(double sr, int maxBlock) override
@@ -563,13 +564,14 @@ private:
 // Subject::factory for the core. The Planted descriptor is accepted (it is the factory signature every case - scan,
 // Q / level scans, right-only - calls through) but deliberately NOT passed to the core: the processor must find the
 // resonance from the audio alone (no knowledge of f0, Q, level or channel). `neutral` = depth 0.
-static std::function<std::unique_ptr<juce::AudioProcessor>(double, int, const Planted&, bool)> coreFactory(xleth::dsp::resonance::Params p)
+static std::function<std::unique_ptr<juce::AudioProcessor>(double, int, const Planted&, bool)> coreFactory(xleth::dsp::resonance::Params p,
+    xleth::dsp::resonance::Core::FrameTier tier = xleth::dsp::resonance::Core::FrameTier::Normal)
 {
-    return [p](double sr, int maxBlock, const Planted& /*bell: intentionally unused*/, bool neutral)
+    return [p, tier](double sr, int maxBlock, const Planted& /*bell: intentionally unused*/, bool neutral)
     {
         xleth::dsp::resonance::Params q = p;
         if (neutral) q.depth = 0.0f;
-        auto proc = std::make_unique<ResonanceCoreProcessor>(q, g_opt.coreTauMs);
+        auto proc = std::make_unique<ResonanceCoreProcessor>(q, g_opt.coreTauMs, tier);
         proc->prepareToPlay(sr, maxBlock);
         return std::unique_ptr<juce::AudioProcessor>(std::move(proc));
     };
@@ -615,6 +617,12 @@ static const std::vector<Subject>& registry()
         { xleth::dsp::resonance::Params p; p.depth = 1.0f; p.sensitivity = 1.0f; p.hardKnee = true;
           auto& s = add("C1s", "C1", "ResonanceCore (sensitive)", Kind::Custom, Group::Sensitive, "depth 1.0; sensitivity 1.0; Hard; other params default");
           s.factory = coreFactory(p); }
+        // Frame-size tier companions of C1s (G4 for C1c-F / C1c-H; C1c-N uses C1s, the same Normal tier).
+        { xleth::dsp::resonance::Params p; p.depth = 1.0f; p.sensitivity = 1.0f; p.hardKnee = true;
+          { auto& s = add("C1s-F", "C1", "ResonanceCore Fast N=512 (sensitive)", Kind::Custom, Group::Sensitive, "depth 1.0; sensitivity 1.0; Hard; frame tier Fast (N=512)");
+            s.factory = coreFactory(p, xleth::dsp::resonance::Core::FrameTier::Fast); }
+          { auto& s = add("C1s-H", "C1", "ResonanceCore High N=2048 (sensitive)", Kind::Custom, Group::Sensitive, "depth 1.0; sensitivity 1.0; Hard; frame tier High (N=2048)");
+            s.factory = coreFactory(p, xleth::dsp::resonance::Core::FrameTier::High); } }
 
         // -------- Capability: max-depth runs (gated) --------
         { auto& s = add("S1c", "S1", "RS Low Latency (capability)", Kind::RsLL, Group::Capability, "depth=100, mode=Hard");
@@ -639,6 +647,14 @@ static const std::vector<Subject>& registry()
         { xleth::dsp::resonance::Params p; p.depth = 1.0f; p.hardKnee = true;
           auto& s = add("C1c", "C1", "ResonanceCore (capability)", Kind::Custom, Group::Capability, "depth 1.0; Hard; other params default");
           s.capability = true; s.gated = true; s.jitterId = "C1s"; s.pairedDefault = "C1"; s.factory = coreFactory(p); }
+        // Frame-size tier experiment (capability params as C1c; N = 512 / 1024 / 2048 at 48 kHz, every time constant in ms, nothing retuned per tier).
+        { xleth::dsp::resonance::Params p; p.depth = 1.0f; p.hardKnee = true;
+          { auto& s = add("C1c-F", "C1", "ResonanceCore capability Fast N=512", Kind::Custom, Group::Capability, "C1c params; frame tier Fast (N=512)");
+            s.capability = true; s.gated = true; s.jitterId = "C1s-F"; s.factory = coreFactory(p, xleth::dsp::resonance::Core::FrameTier::Fast); }
+          { auto& s = add("C1c-N", "C1", "ResonanceCore capability Normal N=1024", Kind::Custom, Group::Capability, "C1c params; frame tier Normal (N=1024)");
+            s.capability = true; s.gated = true; s.jitterId = "C1s"; s.factory = coreFactory(p, xleth::dsp::resonance::Core::FrameTier::Normal); }
+          { auto& s = add("C1c-H", "C1", "ResonanceCore capability High N=2048", Kind::Custom, Group::Capability, "C1c params; frame tier High (N=2048)");
+            s.capability = true; s.gated = true; s.jitterId = "C1s-H"; s.factory = coreFactory(p, xleth::dsp::resonance::Core::FrameTier::High); } }
 
         // -------- Reference subjects (opt-in): metric / gate calibration. Registered through Subject::factory. --------
         if (g_opt.refSubjects)

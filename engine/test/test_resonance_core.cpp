@@ -173,6 +173,24 @@ const double kMaxAbsAt120 = 1.0e-6;   // -120 dBFS as an amplitude
 Params depth0() { Params p; p.depth = 0.0f; return p; }
 
 // ---------------------------------------------------------------------------------------------------
+void testTierSizes()
+{
+    bool ok = true;
+    for (double sr : { 44100.0, 48000.0, 96000.0 })
+    {
+        const int base = sr > 50000.0 ? 2 : 1;
+        const int want[3] = { 512 * base, 1024 * base, 2048 * base };
+        int i = 0;
+        for (Core::FrameTier t : { Core::FrameTier::Fast, Core::FrameTier::Normal, Core::FrameTier::High })
+        {
+            Core c; c.setFrameTier(t); c.prepare(sr, 512, 2);
+            ok = ok && Core::fftSizeFor(sr, t) == want[i] && Core::latencyFor(sr, t) == want[i] && c.currentLatency() == want[i] && c.hopSize() == want[i] / 4;
+            ++i;
+        }
+    }
+    check(ok, "T1 frame tiers: N = 512 / 1024 / 2048 at 44.1 / 48 kHz (x2 at 96 kHz), latency == N, hop == N/4");
+}
+
 void testLatency()
 {
     check(Core::latencyFor(44100.0) == 1024, "T1 latencyFor(44100) == 1024");
@@ -491,6 +509,8 @@ void testDetectorFunction()
 
 // Bounds on the dynamics below (ms). Stage A recorded the starting point; stage B tightened them to the two-speed detector.
 constexpr double kOnsetT50MaxMs     = 100.0;   // measured: stage A 80 / 85 / 91 / 107 ms; two-speed detector 48 / 64 / 80 / 85 ms
+constexpr double kTierOnsetMaxMs    = 120.0;   // D3, all three tiers (the window length shifts the onset by about half a window)
+constexpr double kTierReleaseMaxMs  = 800.0;
 constexpr double kRelease1dBMaxMs   = 700.0;   // measured: stage A 704 / 704 / 832 / 843 ms; two-speed detector 523 / 592 / 555 / 661 ms (a 9 dB cut at the 200 ms release needs 446 ms)
 
 // ---- Dynamics (v6 stage A): the detector's / gain computer's step response and release in MILLISECONDS ----------
@@ -502,11 +522,12 @@ constexpr double kRelease1dBMaxMs   = 700.0;   // measured: stage A 704 / 704 / 
 // must not depend on N: run at 48 kHz (N = 1024) and 96 kHz (N = 2048) -- same ms, double the FFT size.
 struct DynResult { double steady = 0.0, t50 = -1.0, tRel1dB = -1.0; };
 
-DynResult measureDynamics(double sr, double f0, const Params& prm, float fastMs = -1.0f)
+DynResult measureDynamics(double sr, double f0, const Params& prm, float fastMs = -1.0f, Core::FrameTier tier = Core::FrameTier::Normal)
 {
     DynResult out;
     Core c;
     if (fastMs >= 0.0f) c.setFastTimeConstantMs(fastMs);
+    c.setFrameTier(tier);
     c.prepare(sr, 512, 2);
     const int H = c.hopSize();
     const int onFrames = static_cast<int>(std::llround(1.2 * sr / H)), offFrames = static_cast<int>(std::llround(2.5 * sr / H));
@@ -575,6 +596,17 @@ void testDynamics()
                           sr, Core::fftSizeFor(sr), f0, d.steady, d.t50, kOnsetT50MaxMs, d.tRel1dB, kRelease1dBMaxMs);
             check(d.steady >= 4.0 && d.t50 >= 0.0 && d.t50 <= kOnsetT50MaxMs && d.tRel1dB >= 0.0 && d.tRel1dB <= kRelease1dBMaxMs, buf);
         }
+    // D3 (frame-size tiers, v6 stage C): every time constant is in ms, so the step response must not follow N. Fast (N 512), Normal
+    // (1024), High (2048) at 48 kHz; only the analysis window's own length (10.7 / 21.3 / 42.7 ms) may show.
+    for (Core::FrameTier t : { Core::FrameTier::Fast, Core::FrameTier::Normal, Core::FrameTier::High })
+        for (double f0 : { 500.0, 2500.0 })
+        {
+            const DynResult d = measureDynamics(48000.0, f0, cap, -1.0f, t);
+            char buf[260];
+            std::snprintf(buf, sizeof buf, "D3 tier N %d f0 %.0f: steady cut %.2f dB (>= 4), onset_t50 %.1f ms (<= %.0f), release to <= 1 dB %.1f ms (<= %.0f)",
+                          Core::fftSizeFor(48000.0, t), f0, d.steady, d.t50, kTierOnsetMaxMs, d.tRel1dB, kTierReleaseMaxMs);
+            check(d.steady >= 4.0 && d.t50 >= 0.0 && d.t50 <= kTierOnsetMaxMs && d.tRel1dB >= 0.0 && d.tRel1dB <= kTierReleaseMaxMs, buf);
+        }
     // D2: the fast path is what makes the difference, and it costs nothing in steady state: with it OFF (slow only) the onset
     // is slower and the release much slower; the steady cut differs by <= 0.5 dB.
     {
@@ -592,6 +624,7 @@ int main()
 {
     std::printf("[ResCore] test_resonance_core\n");
     testLatency();
+    testTierSizes();
     testIdentityAndCola();
     testImpulse();
     testAllocations();
