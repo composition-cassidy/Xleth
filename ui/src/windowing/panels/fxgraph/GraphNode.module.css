@@ -22,6 +22,10 @@
     color: var(--ui-ink);
     font-family: var(--ui-font);
     font-size: var(--type-11);
+    /* The layer the nodes live in is pointer-events: none (so it never blocks the canvas or
+     * the cables), which a node inherits; without this the card takes no drag, selection,
+     * double-click or context menu, and only controls that set `auto` themselves work. */
+    pointer-events: auto;
   }
 
   /* The border is an overlay, so it never moves the rows the cable anchors are computed from. */

@@ -8,6 +8,8 @@
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { renderToStaticMarkup } from 'react-dom/server';
+import { readFileSync } from 'node:fs';
+import { resolve } from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import GraphStatePreview, {
   buildGraphStatePreviewModel,
@@ -15,6 +17,9 @@ import GraphStatePreview, {
 } from './GraphStatePreview';
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true;
+
+// Vitest runs from ui/.
+const fxgraphPath = (name: string) => resolve(process.cwd(), 'src/windowing/panels/fxgraph', name);
 
 function doc(nodes: GraphStateDocument['nodes'], edges: GraphStateDocument['edges'] = []): GraphStateDocument {
   return {
@@ -163,5 +168,19 @@ describe('FX Graph node selection', () => {
     const viewport = container.querySelector('.xleth-graph-state-preview__viewport')!;
     await act(async () => { viewport.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0 })); });
     expect(container.querySelector('[data-node-id="fx"]')!.getAttribute('data-selected')).toBeNull();
+  });
+
+  // jsdom runs no layout and no module CSS, so the one thing that decided whether a node could
+  // be grabbed at all is checked on the stylesheet: the layer the nodes live in is
+  // pointer-events: none (it must never block the canvas or the cables), and pointer-events is
+  // inherited, so the card itself has to switch it back on. It did not, and a node took no drag,
+  // no selection, no double-click and no context menu.
+  it('switches pointer events back on for the node card inside the click-through nodes layer', () => {
+    const canvasCss = readFileSync(fxgraphPath('GraphCanvas.module.css'), 'utf8');
+    const nodeCss = readFileSync(fxgraphPath('GraphNode.module.css'), 'utf8');
+    expect(canvasCss).toMatch(/\.nodes[^{]*\{[^}]*pointer-events:\s*none/);
+    const nodeRule = nodeCss.match(/\s\.node\s*\{([^}]*)\}/);
+    expect(nodeRule).not.toBeNull();
+    expect(nodeRule![1]).toMatch(/pointer-events:\s*auto/);
   });
 });
