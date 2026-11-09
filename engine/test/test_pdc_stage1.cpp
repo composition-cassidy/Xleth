@@ -2654,6 +2654,182 @@ static void testExportAccountingAfterXlethEqLatencyChange()
           "export accounting should discard plugin-latency lead-in after EQ latency change");
 }
 
+// ── EQ Spectral off->on splice ([EQSpliceFix]) ──────────────────────────────
+// docs/RESONANCE_SUPPRESSOR_AUDIT.md 3.3 #6. The STFT stream (input ring,
+// output ring, sample counters) used to be reset only by prepare/reset, so a
+// Spectral band that was disabled and re-enabled replayed the previous
+// spectral period's audio into the new one.
+//
+// Input is a continuous 1 kHz / 0.5 sine, 48 kHz, stereo, block 480. The sine
+// period is exactly 48 samples and 480 is a multiple of it, so with `skip` = 0
+// the stale ring audio happens to be phase-aligned with the live signal and
+// the splice is invisible. `skip` advances the sine's phase at the start of
+// phase B (spectral already off, so it is not part of the measured window) to
+// make the stale audio phase-DISPLACED, which is what real material does.
+namespace eqsplice
+{
+constexpr double kSr        = 48000.0;
+constexpr int    kBlock     = 480;
+constexpr int    kBlocksA   = 100;   // 1.0 s spectral active
+constexpr int    kBlocksB   = 50;    // 0.5 s spectral disabled
+constexpr int    kBlocksC   = 20;    // 9600 samples after re-enable
+constexpr int    kWindow    = 8192;  // measured window after re-enable
+constexpr float  kAmp       = 0.5f;
+constexpr float  kFreq      = 1000.0f;
+
+struct Result
+{
+    float maxStep      = 0.0f;   // max |x[n]-x[n-1]| inside the window
+    int   maxPos       = -1;     // window index n of that max
+    float maxStepHead  = 0.0f;   // ... restricted to [1, 4096)
+    int   maxPosHead   = -1;
+    float maxStepTail  = 0.0f;   // ... restricted to [4096, 8192)
+    int   maxPosTail   = -1;
+    float boundaryStep = 0.0f;   // |first C sample - last sample before re-enable|
+    float peakAbs      = 0.0f;
+};
+
+struct Gen
+{
+    long long n = 0;
+    long long skipAt = -1;
+    long long skip = 0;
+    float at(long long i) const
+    {
+        const long long k = i + ((skipAt >= 0 && i >= skipAt) ? skip : 0);
+        // 1 kHz @ 48 kHz is exactly 48 samples per cycle; k mod 48 avoids drift.
+        return kAmp * std::sin(2.0f * juce::MathConstants<float>::pi
+            * static_cast<float>(k % 48) / 48.0f);
+    }
+};
+
+static void runBlocks(XlethParametricEQ& eq, Gen& g, int blocks, std::vector<float>* out)
+{
+    juce::MidiBuffer midi;
+    for (int b = 0; b < blocks; ++b)
+    {
+        juce::AudioBuffer<float> buf(2, kBlock);
+        for (int s = 0; s < kBlock; ++s)
+        {
+            const float v = g.at(g.n++);
+            buf.setSample(0, s, v);
+            buf.setSample(1, s, v);
+        }
+        eq.processBlock(buf, midi);
+        if (out != nullptr)
+            for (int s = 0; s < kBlock; ++s)
+                out->push_back(buf.getSample(0, s));
+    }
+}
+
+static Result measure(const std::vector<float>& c, float lastBeforeC)
+{
+    Result r;
+    r.boundaryStep = std::abs(c[0] - lastBeforeC);
+    for (int n = 0; n < kWindow; ++n)
+        r.peakAbs = std::max(r.peakAbs, std::abs(c[static_cast<std::size_t>(n)]));
+    for (int n = 1; n < kWindow; ++n)
+    {
+        const float d = std::abs(c[static_cast<std::size_t>(n)] - c[static_cast<std::size_t>(n - 1)]);
+        if (d > r.maxStep) { r.maxStep = d; r.maxPos = n; }
+        if (n < 4096) { if (d > r.maxStepHead) { r.maxStepHead = d; r.maxPosHead = n; } }
+        else          { if (d > r.maxStepTail) { r.maxStepTail = d; r.maxPosTail = n; } }
+    }
+    return r;
+}
+
+// stalePrior = true: the effect carries a full spectral period (phase A) into
+// B. false: fresh effect that has only ever seen the non-spectral phase B.
+static Result run(bool stalePrior, long long skip, float* lastBeforeCOut = nullptr)
+{
+    XlethParametricEQ eq;
+    eq.prepareToPlay(kSr, kBlock);
+    configureSpectralBand(eq);             // band 0: Spectral, enabled, depth (gain) 0 dB
+
+    Gen g;
+    g.skipAt = static_cast<long long>(kBlocksA) * kBlock;
+    g.skip   = skip;
+
+    if (stalePrior)
+    {
+        runBlocks(eq, g, kBlocksA, nullptr);                       // phase A: spectral on
+    }
+    else
+    {
+        // fresh effect: take the same timeline position without ever running
+        // the spectral stream.
+        eq.setBandParam(0, "enabled", 0.0f);
+        runBlocks(eq, g, kBlocksA, nullptr);
+    }
+
+    eq.setBandParam(0, "enabled", 0.0f);                           // phase B: spectral off
+    std::vector<float> b;
+    runBlocks(eq, g, kBlocksB, &b);
+    const float lastB = b.back();
+
+    eq.setBandParam(0, "enabled", 1.0f);                           // phase C: re-enable
+    std::vector<float> c;
+    runBlocks(eq, g, kBlocksC, &c);
+
+    if (lastBeforeCOut != nullptr) *lastBeforeCOut = lastB;
+    return measure(c, lastB);
+}
+
+static void report(const char* label, const Result& r)
+{
+    std::cout << "[EQSpliceFix] " << label
+              << ": maxStep=" << r.maxStep << " @n=" << r.maxPos
+              << " | head[1,4096) max=" << r.maxStepHead << " @n=" << r.maxPosHead
+              << " | tail[4096,8192) max=" << r.maxStepTail << " @n=" << r.maxPosTail
+              << " | boundary(lastB->C0)=" << r.boundaryStep
+              << " | peak=" << r.peakAbs << "\n";
+}
+} // namespace eqsplice
+
+static void testXlethEqSpectralReenableSplice()
+{
+    std::cout << "[EQSpliceFix] EQ Spectral off->on splice (1 kHz, 0.5, 48k, block 480)\n";
+    std::cout << "[EQSpliceFix] clean 1 kHz @0.5 max step = "
+              << 2.0f * eqsplice::kAmp * std::sin(juce::MathConstants<float>::pi * 1000.0f / 48000.0f)
+              << "\n";
+
+    struct Case { const char* name; long long skip; };
+    const Case cases[] = {
+        { "phase-aligned gap (skip 0, literal spec)", 0 },
+        { "phase-displaced gap (skip 13 samples)",    13 },
+    };
+
+    for (const auto& cs : cases)
+    {
+        const auto control = eqsplice::run(false, cs.skip);
+        const auto stale   = eqsplice::run(true,  cs.skip);
+        std::cout << "[EQSpliceFix] --- " << cs.name << " ---\n";
+        eqsplice::report("control (fresh effect)   ", control);
+        eqsplice::report("under test (prior spectral)", stale);
+
+        CHECK(std::isfinite(stale.maxStep) && std::isfinite(control.maxStep),
+              std::string("[EQSpliceFix] finite output: ") + cs.name);
+        // The re-enabled stream must behave exactly like a freshly prepared one.
+        CHECK(stale.maxStep <= control.maxStep * 1.01f + 1.0e-5f,
+              std::string("[EQSpliceFix] re-enable max step must match the fresh-effect control: ")
+                  + cs.name + " (stale " + std::to_string(stale.maxStep) + " @n="
+                  + std::to_string(stale.maxPos) + " vs control "
+                  + std::to_string(control.maxStep) + ")");
+        // The seam against the last non-spectral sample must not be worse than
+        // a fresh stream's (stale ring audio used to add to it).
+        CHECK(stale.boundaryStep <= control.boundaryStep * 1.01f + 1.0e-5f,
+              std::string("[EQSpliceFix] boundary step vs fresh control: ") + cs.name
+                  + " (stale " + std::to_string(stale.boundaryStep)
+                  + " vs control " + std::to_string(control.boundaryStep) + ")");
+        // And the restarted stream's onset must be as smooth as the sine itself
+        // (a clean 1 kHz @0.5 steps by 0.0654), not a silence->signal step.
+        CHECK(stale.maxStep <= 0.0654031f * 1.05f,
+              std::string("[EQSpliceFix] re-enabled window must have no step above the clean-sine step: ")
+                  + cs.name + " (got " + std::to_string(stale.maxStep) + " @n="
+                  + std::to_string(stale.maxPos) + ")");
+    }
+}
+
 int main()
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
@@ -2661,6 +2837,8 @@ int main()
     std::cerr.setf(std::ios::unitbuf);
 
     std::cout << "=== test_pdc_stage1 ===\n";
+
+    testXlethEqSpectralReenableSplice();
 
     testXlethEqSpectralLatency();
     testXlethEqLatencyAffectingParameterPaths();

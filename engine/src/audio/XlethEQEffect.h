@@ -74,6 +74,10 @@ public:
     // so mild protrusions are nudged rather than hard-gated.
     static constexpr float kSpecKneeDb = 6.0f;
 
+    // Fade-in on the first real output of an STFT stream restarted mid-run
+    // (Spectral band re-enabled, linear phase left). See processEffect.
+    static constexpr double kStftFadeInMs = 5.0;
+
     // ── Spectrum Analyzer constants ──────────────────────────────────────
     static constexpr int kSpecFFTOrder = 12;              // 2^12 = 4096
     static constexpr int kSpecFFTSize  = 1 << kSpecFFTOrder;
@@ -572,6 +576,8 @@ public:
             stftOutRing_[ch].assign(kSTFTRingSize, 0.0f);
         }
         resetSTFTStream();
+        stftNeedsRestart_ = false;
+        stftFadeIn_       = false;
 
         // WOLA window: sqrt of a PERIODIC Hann (denominator kSTFTSize, not
         // kSTFTSize-1 — the periodic form is the one that overlap-adds exactly).
@@ -918,6 +924,30 @@ public:
 
             if (hasSpectralBands)
             {
+                // The stream only advances while Spectral is active, so after any
+                // inactive block (band disabled, linear phase, ...) its rings and
+                // counters still hold the previous spectral period. Rewind it on
+                // the inactive -> active edge or that audio splices into the new
+                // audio (docs/RESONANCE_SUPPRESSOR_AUDIT.md 3.3 #6). Allocation-free:
+                // fills of preallocated buffers only. prepare/reset leave
+                // stftNeedsRestart_ false, so transport start and seek are unchanged.
+                if (stftNeedsRestart_)
+                {
+                    resetSTFTStream();
+                    for (int b = 0; b < count; ++b)
+                        if (bands_[b].mode == 2)
+                            std::fill(bands_[b].specBinEnv.begin(),
+                                      bands_[b].specBinEnv.end(), 1.0f);
+                    stftNeedsRestart_ = false;
+                    stftFadeIn_       = true;
+                }
+
+                // A restarted stream emits kSTFTLatency samples of silence and
+                // then the input's first sample at full level: a step. Ramp
+                // the first kStftFadeInMs of real output.
+                const std::int64_t fadeLen = std::max<std::int64_t>(
+                    1, static_cast<std::int64_t>(sr * kStftFadeInMs * 0.001));
+
                 for (int s = 0; s < numSamples; ++s)
                 {
                     const int inIdx =
@@ -934,19 +964,35 @@ public:
                         stftNextFrameStart_ += kSTFTHop;
                     }
 
+                    float fadeGain = 1.0f;
+                    if (stftFadeIn_)
+                    {
+                        const std::int64_t k = stftSamplesEmitted_ - kSTFTLatency;
+                        if (k >= fadeLen)
+                            stftFadeIn_ = false;
+                        else if (k >= 0)
+                            fadeGain = static_cast<float>(k + 1)
+                                     / static_cast<float>(fadeLen);
+                    }
+
                     const int outIdx =
                         static_cast<int>(stftSamplesEmitted_ & kSTFTRingMask);
                     for (int ch = 0; ch < numCh; ++ch)
                     {
-                        buffer.setSample(ch, s, stftOutRing_[ch][outIdx]);
+                        buffer.setSample(ch, s, stftOutRing_[ch][outIdx] * fadeGain);
                         stftOutRing_[ch][outIdx] = 0.0f;
                     }
                     ++stftSamplesEmitted_;
                 }
             }
+            else
+            {
+                stftNeedsRestart_ = true;   // stream goes stale while inactive
+            }
         }
         else
         {
+            stftNeedsRestart_ = true;       // linear phase also freezes the stream
             hasSpectralBands_.store(false, std::memory_order_relaxed); // linPhase disables spectral
             for (int b = 0; b < count; ++b)
                 if (bands_[b].mode == 2)
@@ -1101,6 +1147,8 @@ public:
         // kSTFTSize of the previous position's audio in the rings, which
         // overlap-adds into the new position as a splice.
         resetSTFTStream();
+        stftNeedsRestart_ = false;
+        stftFadeIn_       = false;
     }
 
 private:
@@ -1257,6 +1305,13 @@ private:
     std::int64_t stftSamplesWritten_ = 0;   // inputs accepted
     std::int64_t stftSamplesEmitted_ = 0;   // outputs handed back
     std::int64_t stftNextFrameStart_ = 0;   // start of the next frame to run
+
+    // Audio thread only. stftNeedsRestart_: a block has run with the STFT path
+    // inactive since the last prepare/reset, so the rings are stale and the next
+    // active block must rewind them. stftFadeIn_: ramp the first real output of
+    // a restarted stream (see processEffect).
+    bool stftNeedsRestart_ = false;
+    bool stftFadeIn_       = false;
 
     float stftWindow_[kSTFTSize]{};         // sqrt-Hann (analysis AND synthesis)
     float stftNorm_[kSTFTHop]{};            // 1/sum(w^2) per hop phase
