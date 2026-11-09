@@ -2165,9 +2165,11 @@ add_test(NAME test_effect_audio_thread_reset COMMAND test_effect_audio_thread_re
 
 # ── test_effect_processblock_alloc ──────────────────────────────────────────
 # Resonance-suppressor rewrite P0 (docs/RESONANCE_SUPPRESSOR_AUDIT.md RT10):
-# counts operator new around processBlock() for RS Low Latency, RS High
-# Quality (Normal) and EQ Spectral. RS Low Latency is a report-only
-# KNOWN-DEFECT (RT1/RT2); the other two assert zero. Output prefix: [RSBaseline].
+# counts operator new around processBlock() for RS Low Latency (static and
+# parameter-sweep cases), RS High Quality (Normal) and EQ Spectral; all assert
+# zero. Also the Low Latency null test against fixtures captured from the
+# pre-P1a implementation (test/fixtures/rs_ll, via XLETH_RS_LL_FIXTURE_DIR).
+# Output prefix: [RSLLAlloc].
 add_executable(test_effect_processblock_alloc
     test/test_effect_processblock_alloc.cpp
 )
@@ -2187,6 +2189,7 @@ target_link_libraries(test_effect_processblock_alloc PRIVATE
 )
 
 target_compile_definitions(test_effect_processblock_alloc PRIVATE
+    XLETH_RS_LL_FIXTURE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/test/fixtures/rs_ll"
     JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
     JUCE_USE_CURL=0
     JUCE_WEB_BROWSER=0

@@ -1814,11 +1814,48 @@ private:
         }
 
     private:
+        // Fixed-size transposed-direct-form-II biquad (RT-safe: no heap, no
+        // ref-counting). Replaces juce::dsp::IIR::Filter, whose coefficients are a
+        // ref-counted `Coefficients` object (heap + juce::Array buffer) that the
+        // old code re-created with makeBandPass/makePeakFilter every block (audit
+        // RT1/RT2). Coefficients come from juce::dsp::IIR::ArrayCoefficients, the
+        // same formulas the old make*() calls wrapped, and are normalised by a0
+        // exactly as Coefficients::assignImpl does, so the result is the same
+        // arithmetic; processSample mirrors IIR::Filter<float>::processSample for
+        // order 2, operation for operation. State persists across coefficient
+        // writes, as it did across the old pointer swaps.
+        struct Biquad
+        {
+            float b0 = 1.0f, b1 = 0.0f, b2 = 0.0f, a1 = 0.0f, a2 = 0.0f;
+            float s1 = 0.0f, s2 = 0.0f;
+
+            void reset() noexcept { s1 = 0.0f; s2 = 0.0f; }
+
+            void setCoefficients(const std::array<float, 6>& v) noexcept
+            {
+                const float a0 = v[3];
+                const float a0Inv = ! juce::approximatelyEqual(a0, 0.0f) ? 1.0f / a0 : 0.0f;
+                b0 = v[0] * a0Inv;
+                b1 = v[1] * a0Inv;
+                b2 = v[2] * a0Inv;
+                a1 = v[4] * a0Inv;
+                a2 = v[5] * a0Inv;
+            }
+
+            float processSample(float x) noexcept
+            {
+                const float out = (b0 * x) + s1;
+                s1 = (b1 * x) - (a1 * out) + s2;
+                s2 = (b2 * x) - (a2 * out);
+                return out;
+            }
+        };
+
         struct BandState
         {
-            juce::dsp::IIR::Filter<float> detectorNarrow;
-            juce::dsp::IIR::Filter<float> detectorWide;
-            juce::dsp::IIR::Filter<float> wetFilter;
+            Biquad detectorNarrow;
+            Biquad detectorWide;
+            Biquad wetFilter;
             float narrowEnv = 0.0f;
             float wideEnv = 0.0f;
             float reductionDb = 0.0f;
@@ -1965,10 +2002,10 @@ private:
             {
                 auto& band = channels_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i)];
                 const float freq = bandFreqs_[static_cast<std::size_t>(i)];
-                band.detectorNarrow.coefficients =
-                    juce::dsp::IIR::Coefficients<float>::makeBandPass(sampleRate_, freq, detectorQ);
-                band.detectorWide.coefficients =
-                    juce::dsp::IIR::Coefficients<float>::makeBandPass(sampleRate_, freq, contextQ);
+                band.detectorNarrow.setCoefficients(
+                    juce::dsp::IIR::ArrayCoefficients<float>::makeBandPass(sampleRate_, freq, detectorQ));
+                band.detectorWide.setCoefficients(
+                    juce::dsp::IIR::ArrayCoefficients<float>::makeBandPass(sampleRate_, freq, contextQ));
             }
         }
 
@@ -2132,9 +2169,9 @@ private:
             {
                 auto& band = channels_[static_cast<std::size_t>(channel)][static_cast<std::size_t>(i)];
                 const float cutGain = juce::Decibels::decibelsToGain(-band.reductionDb);
-                band.wetFilter.coefficients =
-                    juce::dsp::IIR::Coefficients<float>::makePeakFilter(
-                        sampleRate_, bandFreqs_[static_cast<std::size_t>(i)], filterQ, cutGain);
+                band.wetFilter.setCoefficients(
+                    juce::dsp::IIR::ArrayCoefficients<float>::makePeakFilter(
+                        sampleRate_, bandFreqs_[static_cast<std::size_t>(i)], filterQ, cutGain));
             }
 
             for (int s = 0; s < numSamples; ++s)

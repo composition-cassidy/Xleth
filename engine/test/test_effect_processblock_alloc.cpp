@@ -1,22 +1,36 @@
 // test_effect_processblock_alloc - processBlock heap-allocation guard for the
-// two spectral suppressors (Resonance Suppressor, EQ "Spectral" band).
+// two spectral suppressors (Resonance Suppressor, EQ "Spectral" band), plus the
+// Low Latency numerical-equivalence ("null") test.
 //
 // Phase P0 of the resonance-suppressor rewrite (docs/RESONANCE_SUPPRESSOR_AUDIT.md
 // section 2.5, finding RT10: "No test guards processBlock allocations"). The
 // sibling test_effect_audio_thread_reset only counts operator new around
 // resetOnAudioThread(); this one counts it around processBlock().
 //
-//   (a) RS, processing_mode = Low Latency, detector active
-//         -> KNOWN-DEFECT (audit RT1/RT2): configureDetectorFilters() calls
-//            Coefficients::makeBandPass and processChannel() calls
-//            makePeakFilter every block per channel; both return
-//            `*new Coefficients`. REPORT-ONLY: the real count is printed and the
-//            case never fails the test, because the repo has no known-failure
-//            convention for C++ tests (ctest WILL_FAIL / XFAIL are unused).
-//            Pass --strict-ll to make (a) assert zero (flip that on when P1a
-//            lands and delete the KNOWN-DEFECT label).
+//   (a) RS, processing_mode = Low Latency, detector active, static params
+//         -> asserted 0 (audit RT1/RT2, fixed in P1a: the detector band-pass and
+//            wet peak biquads are now local fixed-size TDF-II filters whose
+//            coefficients are written in place, no juce::Coefficients objects).
+//            Run at block 64 and 512 with the specified warm-up, an extended
+//            warm-up, and a COLD pass (counter armed from the very first block
+//            after prepareToPlay, so any lazy first-block allocation shows).
+//   (a2) RS Low Latency, parameter sweep: sharpness and selectivity changed
+//         before EVERY block for 200 blocks (setParameterValue from the test
+//         thread, outside the armed region, as a message-thread write would be
+//         observed by the next block)                                -> asserted 0
+//   (a3) RS Low Latency, wide sweep: sharpness, selectivity, depth, attack,
+//         release, wc_hp and wc_lp all changed before every block    -> asserted 0
 //   (b) RS, processing_mode = High Quality, quality Normal      -> asserted 0
 //   (c) EQ, one band in Spectral mode (mode 2) and enabled      -> asserted 0
+//   (d) NULL TEST: the LL output (stereo pink noise + 12 dB resonance at 2.5 kHz,
+//         48 kHz, block 64 and 512, plus a swept-parameter run at 512) is
+//         compared with fixtures captured from the pre-P1a implementation
+//         (juce::dsp::IIR::Filter + makeBandPass/makePeakFilter). Difference
+//         must be below -100 dBFS RMS. Fixtures live in
+//         engine/test/fixtures/rs_ll/ (raw float32, planar L then R) and are
+//         located through XLETH_RS_LL_FIXTURE_DIR. They can only be regenerated
+//         from a build that still contains the old implementation:
+//         `test_effect_processblock_alloc --write-ll-fixtures`.
 //
 // Protocol per case and block size (64, 512), stereo, 48 kHz: 50 warm-up
 // blocks, then 200 measured blocks with the counter armed ONLY around
@@ -32,11 +46,14 @@
 //
 // WHAT THIS DOES NOT SEE: it hooks operator new/new[] only (the same approach
 // as test_effect_audio_thread_reset). juce::HeapBlock / juce::Array storage
-// goes through std::malloc/realloc and is NOT counted, so for (a) the printed
-// number is a LOWER bound (each Coefficients also owns an Array buffer), and
-// "0" for (b)/(c) means "no operator-new traffic", not "no malloc traffic".
+// goes through std::malloc/realloc and is NOT counted, so a "0" means "no
+// operator-new traffic", not "no malloc traffic". For the LL path the malloc
+// side is covered by construction rather than by this counter: the P1a biquads
+// hold only std::array/float members, so there is no HeapBlock/Array left in
+// the LL processBlock path to allocate. (_CrtSetAllocHook would count malloc
+// but exists only in the debug CRT; this suite is built Release-only.)
 //
-// All output lines carry the [RSBaseline] prefix so they can be grepped.
+// All output lines carry the [RSLLAlloc] prefix so they can be grepped.
 
 #include "audio/XlethEQEffect.h"
 #include "audio/XlethResonanceSuppressorEffect.h"
@@ -53,7 +70,9 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <filesystem>
 #include <functional>
+#include <limits>
 #include <iostream>
 #include <new>
 #include <string>
@@ -105,7 +124,7 @@ static int g_failed = 0;
 #define CHECK(cond, msg)                                                       \
     do {                                                                       \
         if (cond) { ++g_passed; }                                              \
-        else { ++g_failed; std::cout << "[RSBaseline] FAIL: " << msg << "\n"; } \
+        else { ++g_failed; std::cout << "[RSLLAlloc] FAIL: " << msg << "\n"; } \
     } while (0)
 
 static constexpr double kSR            = 48000.0;
@@ -113,7 +132,9 @@ static constexpr int    kSpecWarmBlocks = 50;
 static constexpr int    kMeasured       = 200;
 static constexpr int    kBlockSizes[]   = { 64, 512 };
 
-static bool g_strictLL = false;
+#ifndef XLETH_RS_LL_FIXTURE_DIR
+#error "XLETH_RS_LL_FIXTURE_DIR must be defined by CMake (engine/test/fixtures/rs_ll)"
+#endif
 
 // --- Signal: stereo pink noise with a +12 dB resonance at 2.5 kHz -----------
 // Paul Kellet's economy pink filter, then an RBJ peaking biquad (+12 dB, Q 8)
@@ -159,12 +180,14 @@ struct AllocResult
     float     meterPeak = 0.0f;   // RS slot 2 (suppression meter); -1 = n/a
     bool      finite   = true;
     int       warm     = 0;
+    double    outAbsSum = 0.0;    // sum |out| over the measured blocks (sweep-took-effect check)
 };
 
 static AllocResult measure(juce::AudioProcessor& fx,
                            const juce::AudioBuffer<float>& sig,
                            int block, int warmBlocks,
-                           const std::function<float()>& meter)
+                           const std::function<float()>& meter,
+                           const std::function<void(int)>& beforeBlock = {})
 {
     AllocResult r;
     r.warm = warmBlocks;
@@ -183,6 +206,7 @@ static AllocResult measure(juce::AudioProcessor& fx,
 
     for (int i = 0; i < warmBlocks; ++i)
     {
+        if (beforeBlock) beforeBlock(i);               // e.g. parameter sweep write
         loadBlock();
         fx.processBlock(work, midi);
     }
@@ -190,6 +214,7 @@ static AllocResult measure(juce::AudioProcessor& fx,
     const long long other0 = g_otherThreadCount.load(std::memory_order_relaxed);
     for (int i = 0; i < kMeasured; ++i)
     {
+        if (beforeBlock) beforeBlock(warmBlocks + i);  // not measured (counter disarmed)
         loadBlock();                                   // not measured
         const long long c0 = g_allocCount.load(std::memory_order_relaxed);
         g_allocArmed.store(true, std::memory_order_relaxed);
@@ -203,7 +228,10 @@ static AllocResult measure(juce::AudioProcessor& fx,
         {
             const float* p = work.getReadPointer(ch);
             for (int s = 0; s < block; ++s)
+            {
                 if (!std::isfinite(p[s])) { r.finite = false; break; }
+                r.outAbsSum += std::abs(static_cast<double>(p[s]));
+            }
         }
     }
 
@@ -228,7 +256,7 @@ static int signalSamplesFor(int block)
 static void report(const char* caseId, const char* label, int block,
                    const AllocResult& r, const char* passName, const char* verdict)
 {
-    std::printf("[RSBaseline] case=%s (%s) block=%d pass=%s warm=%d measured=%d "
+    std::printf("[RSLLAlloc] case=%s (%s) block=%d pass=%s warm=%d measured=%d "
                 "allocs_total=%lld per_block_min=%lld per_block_max=%lld "
                 "per_block_mean=%.2f other_thread_allocs=%lld meter2_peak=%.3f finite=%d  %s\n",
                 caseId, label, block, passName, r.warm, kMeasured,
@@ -272,30 +300,205 @@ static void configureEqSpectral(XlethParametricEQ& eq)
     CHECK(eq.setBandParam(0, "mode", 2.0f), "EQ band mode = Spectral (2)");
 }
 
-static void runCaseRsLL(int block, const juce::AudioBuffer<float>& sig)
+// --- Deterministic per-block parameter walks (units of the parameter itself) --
+// Each value moves on every block (irrational-ish rates), so every block gets
+// new detector band-pass AND new wet peak coefficients (the latter also move on
+// their own because the per-band reduction changes, but here the Q and the band
+// layout change too).
+
+static float sweepVal(int i, float lo, float hi, float rate, float phase)
 {
-    const int passes[2] = { kSpecWarmBlocks, warmBlocksExtended(block) };
-    const char* names[2] = { "spec", "extended" };
-    for (int p = 0; p < 2; ++p)
+    const float u = 0.5f + 0.5f * std::sin(rate * static_cast<float>(i) + phase);
+    return lo + (hi - lo) * u;
+}
+
+using SweepFn = std::function<void(XlethResonanceSuppressorEffect&, int)>;
+
+static void sweepSharpnessSelectivity(XlethResonanceSuppressorEffect& fx, int i)
+{
+    fx.setParameterValue("sharpness",   sweepVal(i,  5.0f,  95.0f, 0.91f, 0.0f));
+    fx.setParameterValue("selectivity", sweepVal(i, 10.0f,  90.0f, 1.37f, 1.0f));
+}
+
+static void sweepWide(XlethResonanceSuppressorEffect& fx, int i)
+{
+    sweepSharpnessSelectivity(fx, i);
+    fx.setParameterValue("depth",   sweepVal(i,   20.0f,   100.0f, 0.53f, 2.0f));
+    fx.setParameterValue("attack",  sweepVal(i,    1.0f,    50.0f, 0.71f, 3.0f));
+    fx.setParameterValue("release", sweepVal(i,   30.0f,   600.0f, 0.43f, 4.0f));
+    fx.setParameterValue("wc_hp",   sweepVal(i,   40.0f,   600.0f, 0.61f, 5.0f));
+    fx.setParameterValue("wc_lp",   sweepVal(i, 4000.0f, 18000.0f, 0.77f, 6.0f));
+}
+
+// One LL case at one block size, three passes: the specified warm-up, an
+// extended warm-up, and COLD (counter armed from the very first block after
+// prepareToPlay, so a lazy first-block allocation cannot hide in warm-up).
+// `sweep` null = static parameters. Returns the |out| sums of the spec pass.
+static double runLlCase(const char* caseId, const char* label, int block,
+                        const juce::AudioBuffer<float>& sig, const SweepFn& sweep)
+{
+    const int passes[3] = { kSpecWarmBlocks, warmBlocksExtended(block), 0 };
+    const char* names[3] = { "spec", "extended", "cold" };
+    double specSum = 0.0;
+    for (int p = 0; p < 3; ++p)
     {
         XlethResonanceSuppressorEffect fx;
         configureRsLowLatency(fx);
         fx.prepareToPlay(kSR, block);
         CHECK(fx.getLatencySamples() == 0, "RS LL reports zero latency");
-        const AllocResult r = measure(fx, sig, block, passes[p], [&] { return fx.readMeterValue(2); });
 
-        CHECK(r.finite, "case a output finite");
+        std::function<void(int)> before;
+        if (sweep) before = [&](int i) { sweep(fx, i); };
+        const AllocResult r = measure(fx, sig, block, passes[p],
+                                      [&] { return fx.readMeterValue(2); }, before);
+        if (p == 0) specSum = r.outAbsSum;
+
+        CHECK(r.finite, "case " << caseId << " output finite");
         // The case is only meaningful if the detector actually engaged.
-        CHECK(r.meterPeak > 0.02f, "case a: detector active (RS suppression meter rose); meter=" << r.meterPeak);
+        CHECK(r.meterPeak > 0.005f, "case " << caseId << ": detector active (RS suppression meter rose); meter="
+                                            << r.meterPeak);
 
-        const bool allocated = r.total > 0;
-        const char* verdict = g_strictLL
-            ? (allocated ? "STRICT-FAIL" : "PASS (strict)")
-            : (allocated ? "KNOWN-DEFECT: RT1/RT2 confirmed (allocates per block; report-only)"
-                         : "AUDIT-REFUTED: 0 operator-new calls (RT1/RT2 not reproduced)");
-        report("a", "RS LowLatency", block, r, names[p], verdict);
-        if (g_strictLL)
-            CHECK(!allocated, "case a (--strict-ll): RS LL processBlock allocated " << r.total << " times");
+        report(caseId, label, block, r, names[p], r.total == 0 ? "PASS" : "FAIL");
+        CHECK(r.total == 0, "case " << caseId << ": RS LL processBlock allocated " << r.total
+                            << " times (block " << block << ", " << names[p] << " pass)");
+    }
+    return specSum;
+}
+
+static void runCaseRsLL(int block, const juce::AudioBuffer<float>& sig)
+{
+    const double staticSum = runLlCase("a", "RS LowLatency static", block, sig, {});
+    const double sweepSum  = runLlCase("a2", "RS LowLatency sweep sharpness+selectivity", block, sig,
+                                       sweepSharpnessSelectivity);
+    const double wideSum   = runLlCase("a3", "RS LowLatency wide sweep", block, sig, sweepWide);
+
+    // The sweeps must actually reach the DSP: same input, different output.
+    const double relA2 = std::abs(sweepSum - staticSum) / std::max(staticSum, 1.0e-9);
+    const double relA3 = std::abs(wideSum - staticSum) / std::max(staticSum, 1.0e-9);
+    std::printf("[RSLLAlloc] block=%d sweep-took-effect: |out| sum static=%.4f sweep=%.4f (rel %.4f) wide=%.4f (rel %.4f)\n",
+                block, staticSum, sweepSum, relA2, wideSum, relA3);
+    CHECK(relA2 > 1.0e-3, "case a2: sweep output differs from static output (block " << block << ")");
+    CHECK(relA3 > 1.0e-3, "case a3: wide sweep output differs from static output (block " << block << ")");
+}
+
+// --- (d) Null test against the pre-P1a implementation -------------------------
+
+static constexpr int kNullFrames = 12288;   // multiple of 64 and 512
+
+struct NullCase
+{
+    const char* name;
+    const char* file;
+    int         block;
+    bool        sweep;
+};
+
+static const NullCase kNullCases[] = {
+    { "bs64",         "rs_ll_bs64.f32",         64,  false },
+    { "bs512",        "rs_ll_bs512.f32",        512, false },
+    { "bs512_sweep",  "rs_ll_bs512_sweep.f32",  512, true  },
+};
+
+// Planar result: [L0..L(N-1), R0..R(N-1)].
+static std::vector<float> renderLlOffline(const NullCase& c, const juce::AudioBuffer<float>& sig)
+{
+    XlethResonanceSuppressorEffect fx;
+    configureRsLowLatency(fx);
+    fx.prepareToPlay(kSR, c.block);
+
+    juce::AudioBuffer<float> work(2, c.block);
+    juce::MidiBuffer midi;
+    std::vector<float> out(static_cast<std::size_t>(2 * kNullFrames));
+    for (int b = 0; b * c.block < kNullFrames; ++b)
+    {
+        if (c.sweep) sweepSharpnessSelectivity(fx, b);
+        for (int ch = 0; ch < 2; ++ch)
+            work.copyFrom(ch, 0, sig, ch, b * c.block, c.block);
+        fx.processBlock(work, midi);
+        for (int ch = 0; ch < 2; ++ch)
+            std::memcpy(out.data() + static_cast<std::size_t>(ch * kNullFrames + b * c.block),
+                        work.getReadPointer(ch), sizeof(float) * static_cast<std::size_t>(c.block));
+    }
+    return out;
+}
+
+static std::string fixturePath(const NullCase& c)
+{
+    return std::string(XLETH_RS_LL_FIXTURE_DIR) + "/" + c.file;
+}
+
+static bool readFixture(const NullCase& c, std::vector<float>& out)
+{
+    std::FILE* f = std::fopen(fixturePath(c).c_str(), "rb");
+    if (!f) return false;
+    out.assign(static_cast<std::size_t>(2 * kNullFrames), 0.0f);
+    const std::size_t got = std::fread(out.data(), sizeof(float), out.size(), f);
+    std::fclose(f);
+    return got == out.size();
+}
+
+static int writeFixtures()
+{
+    const juce::AudioBuffer<float> sig = makeSignal(kNullFrames);
+    std::filesystem::create_directories(XLETH_RS_LL_FIXTURE_DIR);
+    for (const NullCase& c : kNullCases)
+    {
+        const std::vector<float> out = renderLlOffline(c, sig);
+        std::FILE* f = std::fopen(fixturePath(c).c_str(), "wb");
+        if (!f) { std::printf("[RSLLAlloc] cannot write %s\n", fixturePath(c).c_str()); return 2; }
+        std::fwrite(out.data(), sizeof(float), out.size(), f);
+        std::fclose(f);
+        std::printf("[RSLLAlloc] wrote fixture %s (%zu bytes)\n", fixturePath(c).c_str(), out.size() * sizeof(float));
+    }
+    return 0;
+}
+
+static void runNullTests()
+{
+    const juce::AudioBuffer<float> sig = makeSignal(kNullFrames);
+    constexpr double kLimitDb = -100.0;
+    for (const NullCase& c : kNullCases)
+    {
+        std::vector<float> ref;
+        if (!readFixture(c, ref))
+        {
+            CHECK(false, "null test " << c.name << ": cannot read fixture " << fixturePath(c));
+            continue;
+        }
+        const std::vector<float> now = renderLlOffline(c, sig);
+
+        double sumSq = 0.0, maxAbs = 0.0, refSq = 0.0, supSq = 0.0;
+        for (int ch = 0; ch < 2; ++ch)
+            for (int s = 0; s < kNullFrames; ++s)
+            {
+                const std::size_t i = static_cast<std::size_t>(ch * kNullFrames + s);
+                const double d = static_cast<double>(now[i]) - static_cast<double>(ref[i]);
+                sumSq += d * d;
+                maxAbs = std::max(maxAbs, std::abs(d));
+                refSq += static_cast<double>(ref[i]) * ref[i];
+                const double suppressed = static_cast<double>(sig.getSample(ch, s)) - static_cast<double>(ref[i]);
+                supSq += suppressed * suppressed;
+            }
+        const double n = static_cast<double>(2 * kNullFrames);
+        const double diffRms = std::sqrt(sumSq / n);
+        const double refRms  = std::sqrt(refSq / n);
+        const double supRms  = std::sqrt(supSq / n);
+        const double diffDb  = diffRms > 0.0 ? 20.0 * std::log10(diffRms) : -std::numeric_limits<double>::infinity();
+        const double refDb   = 20.0 * std::log10(std::max(refRms, 1.0e-12));
+        const double supDb   = 20.0 * std::log10(std::max(supRms, 1.0e-12));
+
+        std::printf("[RSLLAlloc] null %-12s block=%d frames=%d  diff_rms=%.3e (%s dBFS)  max_abs_diff=%.3e  "
+                    "ref_rms=%.2f dBFS  suppression_delta_rms(in-ref)=%.2f dBFS  limit=%.0f dBFS\n",
+                    c.name, c.block, kNullFrames, diffRms,
+                    diffRms > 0.0 ? (std::to_string(diffDb)).c_str() : "-inf (bit-identical)",
+                    maxAbs, refDb, supDb, kLimitDb);
+
+        CHECK(refRms > 1.0e-4, "null " << c.name << ": reference fixture is not silent");
+        // The null is only meaningful if the suppressor actually changed the signal
+        // by far more than the tolerance.
+        CHECK(supDb > kLimitDb + 40.0, "null " << c.name << ": suppressor changed the signal (delta " << supDb << " dBFS)");
+        CHECK(diffRms < std::pow(10.0, kLimitDb / 20.0),
+              "null " << c.name << ": diff " << diffDb << " dBFS is not below " << kLimitDb << " dBFS");
     }
 }
 
@@ -349,7 +552,7 @@ static void counterNegativeControl()
     const long long seen = g_allocCount.load();
     delete p;
     delete[] q;
-    std::printf("[RSBaseline] negative control: 2 deliberate allocations -> counter saw %lld\n", seen);
+    std::printf("[RSLLAlloc] negative control: 2 deliberate allocations -> counter saw %lld\n", seen);
     CHECK(seen == 2, "operator-new counter negative control (expected 2, saw " << seen << ")");
 }
 
@@ -358,11 +561,11 @@ int main(int argc, char** argv)
     juce::ScopedJuceInitialiser_GUI juceInit;
     t_isMeasuringThread = true;   // this thread stands in for the audio thread
     for (int i = 1; i < argc; ++i)
-        if (std::strcmp(argv[i], "--strict-ll") == 0) g_strictLL = true;
+        if (std::strcmp(argv[i], "--write-ll-fixtures") == 0)
+            return writeFixtures();   // only meaningful on a build that still has the pre-P1a LL code
 
-    std::cout << "[RSBaseline] === test_effect_processblock_alloc ("
-              << (g_strictLL ? "strict-ll" : "default: case a is report-only KNOWN-DEFECT") << ") ===\n";
-    std::cout << "[RSBaseline] counts operator new/new[] only; juce::HeapBlock/Array (malloc) is NOT counted\n";
+    std::cout << "[RSLLAlloc] === test_effect_processblock_alloc ===\n";
+    std::cout << "[RSLLAlloc] counts operator new/new[] only; juce::HeapBlock/Array (malloc) is NOT counted\n";
 
     counterNegativeControl();
 
@@ -374,7 +577,9 @@ int main(int argc, char** argv)
         runCaseEqSpectral(block, sig);
     }
 
-    std::cout << "[RSBaseline] --- " << g_passed << " passed, " << g_failed << " failed ---\n";
-    if (g_failed == 0) { std::cout << "[RSBaseline] ALL TESTS PASSED\n"; return 0; }
+    runNullTests();
+
+    std::cout << "[RSLLAlloc] --- " << g_passed << " passed, " << g_failed << " failed ---\n";
+    if (g_failed == 0) { std::cout << "[RSLLAlloc] ALL TESTS PASSED\n"; return 0; }
     return 1;
 }
