@@ -2830,6 +2830,134 @@ static void testXlethEqSpectralReenableSplice()
     }
 }
 
+// ── EQ bypass -> un-bypass stale STFT state ([EQBypassFix]) ──────────────────
+// A fully bypassed XlethEffectBase never reaches processEffect (the base class
+// only advances smoothers), so the EQ's inactive->active edge detection from
+// eae4ab1 cannot see a bypass. Un-bypassing used to resume on the rings and
+// per-bin envelopes of the last spectral period.
+//
+// Phase A: 1 s of the 1 kHz sine, Spectral band at -12 dB active, so the per-bin
+// envelopes build up a non-trivial state. Phase B: bypass for 0.5 s on a
+// phase-displaced signal (skip 13 samples). Phase C: un-bypass.
+//
+// Control: a FRESH effect with the same settings, in the same bypassed steady
+// state (setBypassed(true) + reset() snaps the bypass crossfade to fully dry,
+// exactly where phase B leaves the tested effect) and with no STFT history,
+// fed the identical phase C input. The un-bypass crossfade is part of the
+// output on both sides, so a literally un-bypassed control would differ by it.
+namespace eqbypass
+{
+constexpr int kBlocksA = 100;
+constexpr int kBlocksB = 50;
+constexpr int kBlocksC = 35;       // 16800 samples >= kWindow
+constexpr int kWindow  = 16384;
+
+static void setup(XlethParametricEQ& eq)
+{
+    eq.prepareToPlay(eqsplice::kSr, eqsplice::kBlock);
+    configureSpectralBand(eq);
+    CHECK(eq.setBandParam(0, "gain", -12.0f), "[EQBypassFix] spectral depth -12 dB should be settable");
+    // prepareToPlay seeds the band smoothers from the parameter values, so
+    // prepare again now that the band is configured: no 20 ms gain ramp from
+    // the defaults leaks into the comparison.
+    eq.prepareToPlay(eqsplice::kSr, eqsplice::kBlock);
+}
+
+static eqsplice::Gen makeGen()
+{
+    eqsplice::Gen g;
+    g.skipAt = static_cast<long long>(kBlocksA) * eqsplice::kBlock;
+    g.skip   = 13;
+    return g;
+}
+
+struct Outcome
+{
+    std::vector<float> c;          // phase C output (channel 0)
+    float lastBlockAPeak = 0.0f;   // peak of the final phase A block
+};
+
+static Outcome runTested()
+{
+    XlethParametricEQ eq;
+    setup(eq);
+    auto g = makeGen();
+
+    Outcome o;
+    std::vector<float> a;
+    eqsplice::runBlocks(eq, g, kBlocksA, &a);                 // phase A: Spectral active
+    for (std::size_t i = a.size() - static_cast<std::size_t>(eqsplice::kBlock); i < a.size(); ++i)
+        o.lastBlockAPeak = std::max(o.lastBlockAPeak, std::abs(a[i]));
+
+    eq.setBypassed(true);                                      // what AudioGraph::setBypass calls
+    eqsplice::runBlocks(eq, g, kBlocksB, nullptr);             // phase B: bypassed, displaced signal
+    eq.setBypassed(false);                                     // phase C: un-bypass
+    eqsplice::runBlocks(eq, g, kBlocksC, &o.c);
+    return o;
+}
+
+static Outcome runFresh()
+{
+    XlethParametricEQ eq;
+    setup(eq);
+    auto g = makeGen();
+    g.n = static_cast<long long>(kBlocksA + kBlocksB) * eqsplice::kBlock;   // phase C input only
+
+    eq.setBypassed(true);
+    eq.reset();                  // bypass crossfade snapped fully dry, STFT stream pristine
+    eq.setBypassed(false);
+
+    Outcome o;
+    eqsplice::runBlocks(eq, g, kBlocksC, &o.c);
+    return o;
+}
+} // namespace eqbypass
+
+static void testXlethEqBypassUnbypassStaleStft()
+{
+    std::cout << "[EQBypassFix] EQ bypass->un-bypass (Spectral -12 dB, 1 kHz @0.5, 48k, block 480, skip 13)\n";
+
+    const auto tested = eqbypass::runTested();
+    const auto fresh  = eqbypass::runFresh();
+
+    CHECK(tested.c.size() >= static_cast<std::size_t>(eqbypass::kWindow)
+              && fresh.c.size() >= static_cast<std::size_t>(eqbypass::kWindow),
+          "[EQBypassFix] both runs must produce the comparison window");
+
+    float maxDiff = 0.0f;
+    int   maxPos  = -1;
+    float freshPeak = 0.0f;
+    float testedPeak = 0.0f;
+    for (int n = 0; n < eqbypass::kWindow; ++n)
+    {
+        const float t = tested.c[static_cast<std::size_t>(n)];
+        const float f = fresh.c[static_cast<std::size_t>(n)];
+        testedPeak = std::max(testedPeak, std::abs(t));
+        freshPeak  = std::max(freshPeak,  std::abs(f));
+        const float d = std::abs(t - f);
+        if (d > maxDiff) { maxDiff = d; maxPos = n; }
+    }
+
+    std::cout << "[EQBypassFix] last phase-A block peak = " << tested.lastBlockAPeak
+              << " (input amp " << eqsplice::kAmp << ")\n";
+    std::cout << "[EQBypassFix] first " << eqbypass::kWindow
+              << " samples after un-bypass: max |tested - fresh| = " << maxDiff
+              << " @n=" << maxPos
+              << " | tested peak=" << testedPeak << " fresh peak=" << freshPeak << "\n";
+
+    CHECK(std::isfinite(maxDiff), "[EQBypassFix] finite output");
+    CHECK(freshPeak > 0.01f,
+          "[EQBypassFix] the control must actually emit audio in the window (else the comparison is vacuous)");
+    // Phase A must have built a non-trivial state: the -12 dB Spectral cut has
+    // to be biting on the sine, otherwise a stale-envelope bug cannot show.
+    CHECK(tested.lastBlockAPeak < eqsplice::kAmp * 0.9f,
+          std::string("[EQBypassFix] phase A must leave non-trivial per-bin envelopes (last-block peak ")
+              + std::to_string(tested.lastBlockAPeak) + ")");
+    CHECK(maxDiff <= 1.0e-6f,
+          std::string("[EQBypassFix] un-bypass must match a fresh effect: max diff ")
+              + std::to_string(maxDiff) + " @n=" + std::to_string(maxPos));
+}
+
 int main()
 {
     juce::ScopedJuceInitialiser_GUI juceInit;
@@ -2839,6 +2967,7 @@ int main()
     std::cout << "=== test_pdc_stage1 ===\n";
 
     testXlethEqSpectralReenableSplice();
+    testXlethEqBypassUnbypassStaleStft();
 
     testXlethEqSpectralLatency();
     testXlethEqLatencyAffectingParameterPaths();

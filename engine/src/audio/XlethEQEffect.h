@@ -578,6 +578,7 @@ public:
         resetSTFTStream();
         stftNeedsRestart_ = false;
         stftFadeIn_       = false;
+        pendingStreamReset_.store(false, std::memory_order_relaxed);
 
         // WOLA window: sqrt of a PERIODIC Hann (denominator kSTFTSize, not
         // kSTFTSize-1 — the periodic form is the one that overlap-adds exactly).
@@ -692,6 +693,12 @@ public:
         const int numCh      = std::min(buffer.getNumChannels(), 2);
         const int count      = bandCount_.load(std::memory_order_relaxed);
         const double sr      = sampleRate_.load(std::memory_order_relaxed);
+
+        // Un-bypass: the stream froze while the base class skipped us. Take the
+        // request here, on the audio thread, and let the restart logic below
+        // rewind it (or the inactive branch re-arm it) like any other re-entry.
+        if (pendingStreamReset_.exchange(false, std::memory_order_acq_rel))
+            stftNeedsRestart_ = true;
 
         // ── Read global mode state ──────────────────────────────────────────
         // Read before the per-band latch below: linear phase folds every band's
@@ -1149,9 +1156,25 @@ public:
         resetSTFTStream();
         stftNeedsRestart_ = false;
         stftFadeIn_       = false;
+        // The stream is pristine now; a pending un-bypass restart is redundant
+        // (and would add a fade-in a plain reset does not have).
+        pendingStreamReset_.store(false, std::memory_order_relaxed);
     }
 
 private:
+    // Called from setBypassed() on the RPC / applier thread, NOT the audio
+    // thread, so it only raises a flag: the rings and per-bin envelopes are
+    // audio-thread state and are rewound by processEffect (see
+    // pendingStreamReset_). Only the un-bypass edge matters. While bypassed the
+    // base class does not call processEffect (after the 5 ms crossfade), so the
+    // stream freezes and goes stale; raising it on the bypass edge as well would
+    // rewind the stream mid-crossfade and drop the wet side out of the fade.
+    void onBypassChanged(bool bypassed) override
+    {
+        if (!bypassed)
+            pendingStreamReset_.store(true, std::memory_order_release);
+    }
+
     void onParameterValueChanged(const std::string& paramId, float /*value*/) override
     {
         if (isLatencyAffectingParameterId(paramId))
@@ -1312,6 +1335,13 @@ private:
     // a restarted stream (see processEffect).
     bool stftNeedsRestart_ = false;
     bool stftFadeIn_       = false;
+
+    // Set by onBypassChanged(false) (non-audio thread), consumed with an
+    // exchange at the top of processEffect, which folds it into
+    // stftNeedsRestart_ so the SAME rewind + envelope reset + fade-in runs.
+    // A bypassed effect never reaches processEffect, so the "inactive last
+    // block" edge detection cannot see a bypass.
+    std::atomic<bool> pendingStreamReset_{false};
 
     float stftWindow_[kSTFTSize]{};         // sqrt-Hann (analysis AND synthesis)
     float stftNorm_[kSTFTHop]{};            // 1/sum(w^2) per hop phase
