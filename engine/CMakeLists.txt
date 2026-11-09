@@ -2163,6 +2163,41 @@ target_compile_definitions(test_effect_audio_thread_reset PRIVATE
 
 add_test(NAME test_effect_audio_thread_reset COMMAND test_effect_audio_thread_reset)
 
+# ── test_effect_processblock_alloc ──────────────────────────────────────────
+# Resonance-suppressor rewrite P0 (docs/RESONANCE_SUPPRESSOR_AUDIT.md RT10):
+# counts operator new around processBlock() for RS Low Latency, RS High
+# Quality (Normal) and EQ Spectral. RS Low Latency is a report-only
+# KNOWN-DEFECT (RT1/RT2); the other two assert zero. Output prefix: [RSBaseline].
+add_executable(test_effect_processblock_alloc
+    test/test_effect_processblock_alloc.cpp
+)
+
+target_link_libraries(test_effect_processblock_alloc PRIVATE
+    XlethEngineCore
+    XlethEngineModel
+    juce::juce_core
+    juce::juce_audio_basics
+    juce::juce_audio_formats
+    juce::juce_audio_processors
+    juce::juce_dsp
+    juce::juce_events
+    juce::juce_gui_basics
+    juce::juce_recommended_config_flags
+    juce::juce_recommended_warning_flags
+)
+
+target_compile_definitions(test_effect_processblock_alloc PRIVATE
+    JUCE_GLOBAL_MODULE_SETTINGS_INCLUDED=1
+    JUCE_USE_CURL=0
+    JUCE_WEB_BROWSER=0
+    JUCE_MODAL_LOOPS_PERMITTED=1
+    JUCE_DIRECTSOUND=0
+    JUCE_USE_WINDOWS_MEDIA_FORMAT=0
+    JUCE_STANDALONE_APPLICATION=1
+)
+
+add_test(NAME test_effect_processblock_alloc COMMAND test_effect_processblock_alloc)
+
 # ── test_chain_effect_identity ────────────────────────────────────────────────
 # Prompt 4A: stable chain-mode effectInstanceId — creation, lookup, move, bypass,
 # parameter edit, save/load across APG uid remap, old-project generation,
