@@ -212,6 +212,7 @@ struct Options
     bool cpuOnly = false;
     bool refSubjects = false;   // register the pass-through + oracle reference subjects (metric / gate calibration)
     float coreTauMs = 0.0f;              // --core-tau MS: ResonanceCore detector time constant for C1/C1c/C1s and tables 10c/10d (0 = core default)
+    float coreFastMs = -1.0f;            // --core-fast MS: fast-path time constant of the ResonanceCore (0 = fast path off, <0 = core default)
     std::vector<std::string> subjects;   // --subjects A,B,C: run only these (plus their G4 jitter companions and S3, the G7 reference); empty = all
     std::string outBase = "bench_out";
     std::vector<std::pair<std::string, std::string>> wavs;   // label, path
@@ -529,6 +530,7 @@ public:
           params_(p)
     {
         if (detectorTauMs > 0.0f) core_.setDetectorTimeConstantMs(detectorTauMs);
+        if (g_opt.coreFastMs >= 0.0f) core_.setFastTimeConstantMs(g_opt.coreFastMs);
     }
     const juce::String getName() const override { return "ResonanceCore"; }
     void prepareToPlay(double sr, int maxBlock) override
@@ -2194,6 +2196,7 @@ static bool parseArgs(int argc, char** argv)
         else if (a == "--ref-subjects") g_opt.refSubjects = true;
         else if (a == "--out-dir" && i + 1 < argc) g_opt.outBase = argv[++i];
         else if (a == "--core-tau" && i + 1 < argc) g_opt.coreTauMs = static_cast<float>(std::atof(argv[++i]));
+        else if (a == "--core-fast" && i + 1 < argc) g_opt.coreFastMs = static_cast<float>(std::atof(argv[++i]));
         else if (a == "--subjects" && i + 1 < argc)
         {
             std::stringstream ss(argv[++i]);

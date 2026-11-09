@@ -27,6 +27,18 @@
 //     correlation and bin correlation of THIS window, the recursive-average weights (including the
 //     start-up count), the band's bin weights, and the medians' variance with their line weights
 //     (log-Gamma statistics: std of 10log10 of a Gamma(M) mean = 10/ln10 * sqrt(trigamma(M))).
+// Two-speed detection (v6, dynamic gates G8 / G9)
+//   * A second power average with a short time constant (kDefaultFastTauMs = 40 ms, in ms: independent of N / the rate) runs next to
+//     the slow one (200 ms). It has its own band levels, flank baseline and sigma_E (same geometry formulas, its own variance table), so
+//     every threshold is derived from the variance of the estimate that is used.
+//   * Per band the SLOW estimate (precise, smooth) is used while the fast one is statistically consistent with it. Onset: fast above
+//     slow by more than kSwitchUpSigmas fast sigmas -> the fast estimate is used. Release: slow above fast by more than kVetoSetSigmas
+//     fast sigmas -> a latch hands the band to the fast estimate until slow is within kVetoClearSigmas fast sigmas of fast again. The
+//     latch is what keeps the slow (200 ms) average from holding the cut after the resonance is gone; the knee / threshold / depth cap
+//     then run on the estimate in charge, and the per-band release (the user's constant) starts at once.
+//   * Cost control: a band's flank baseline (per-band medians, the dominant detector cost) is refreshed every 4th (slow) / 2nd (fast)
+//     frame, staggered over the bands, and on every frame where the mean band level has moved by > kBaselineJumpDb (a broadband
+//     onset must not meet a stale baseline). Levels are exact every frame.
 // Gain computer
 //   * excess E = level - baseline. Salience u = (E - T) / sigma_E; knee K = smoothstep(u / kappa)
 //     (kappa = 3 sigma Soft, 1.5 sigma Hard), then the max K over each band's main-lobe zone (the zone the
@@ -134,8 +146,12 @@ void Core::prepare(double sampleRate, int /*maxBlockSize*/, int numChannels)
         ch.fftBuf.assign(static_cast<size_t>(fftSize_) * 2, 0.0f);
         ch.binGain.assign(static_cast<size_t>(nb), 1.0f);
         ch.powAvg.assign(static_cast<size_t>(nb), 0.0f);
+        ch.powAvgF.assign(static_cast<size_t>(nb), 0.0f);
         ch.levelDb.assign(B, 0.0f);
         ch.baseDb.assign(B, 0.0f);
+        ch.levelFDb.assign(B, 0.0f);
+        ch.baseFDb.assign(B, 0.0f);
+        ch.fastOwns.assign(B, 0);
         ch.redDb.assign(B, 0.0f);
         ch.smoothDb.assign(B, 0.0f);
         ch.outDb.assign(B, 0.0f);
@@ -144,8 +160,10 @@ void Core::prepare(double sampleRate, int /*maxBlockSize*/, int numChannels)
     binX_.assign(static_cast<size_t>(nb), 0.0f);
     binF_.assign(static_cast<size_t>(nb), 1.0f);
     sigmaE_.assign(B, 0.0f);
+    sigmaEF_.assign(B, 0.0f);
     scratch_.assign(B, 0.0f);
     tmpBand_.assign(B, 0.0f);
+    estBand_.assign(B, 0.0f);
     reset();
 }
 
@@ -178,13 +196,15 @@ void Core::buildGrid()
     }
 
     // --- recursive average: S = a S + b P per frame; variance factor after n frames (bias-corrected weights) ---
+    // Time constants are defined in ms and converted with the hop duration (frame rate), so they do not depend on N or the rate.
     const double frameRate = sr / H;
-    const double a = std::exp(-1.0 / (static_cast<double>(detectorTauMs_) * 1.0e-3 * frameRate));
-    emaA_ = static_cast<float>(a);
-    emaB_ = static_cast<float>(-std::expm1(-1.0 / (static_cast<double>(detectorTauMs_) * 1.0e-3 * frameRate)));
-    const int nMax = std::clamp(static_cast<int>(std::ceil(std::log(1.0e-4) / std::log(a))), 1, 4096);
-    vfTime_.assign(static_cast<size_t>(nMax), 1.0);
+    auto buildAverage = [&](double tauMs, float& eA, float& eB, std::vector<double>& vfOut)
     {
+        const double a = std::exp(-1.0 / (tauMs * 1.0e-3 * frameRate));
+        eA = static_cast<float>(a);
+        eB = static_cast<float>(-std::expm1(-1.0 / (tauMs * 1.0e-3 * frameRate)));
+        const int nMax = std::clamp(static_cast<int>(std::ceil(std::log(1.0e-4) / std::log(a))), 1, 4096);
+        vfOut.assign(static_cast<size_t>(nMax), 1.0);
         std::vector<double> w(static_cast<size_t>(nMax));
         for (int n = 1; n <= nMax; ++n)
         {
@@ -196,9 +216,12 @@ void Core::buildGrid()
                 vf += w[static_cast<size_t>(i)] * w[static_cast<size_t>(i)];
                 for (int L = 1; L < 4 && i + L < n; ++L) vf += 2.0 * rhoTime[L] * w[static_cast<size_t>(i)] * w[static_cast<size_t>(i + L)];
             }
-            vfTime_[static_cast<size_t>(n - 1)] = vf;
+            vfOut[static_cast<size_t>(n - 1)] = vf;
         }
-    }
+    };
+    buildAverage(static_cast<double>(detectorTauMs_), emaA_, emaB_, vfTime_);
+    if (fastTauMs_ > 0.0f) buildAverage(static_cast<double>(fastTauMs_), emaAF_, emaBF_, vfTimeF_);
+    else { emaAF_ = 0.0f; emaBF_ = 1.0f; vfTimeF_.assign(1, 1.0); }
 
     // --- band centres, uniform on the ERB-rate axis ---
     const double fLo = 20.0, fHi = std::min(0.45 * sr, 20000.0);
@@ -378,8 +401,14 @@ void Core::buildGrid()
 // sigma_E per band for the current number of averaged frames.
 void Core::updateSigma() noexcept
 {
-    const auto nMax = static_cast<long long>(vfTime_.size());
-    const double vt = vfTime_[static_cast<size_t>(std::clamp<long long>(frames_ + 1, 1, nMax) - 1)];
+    updateSigmaFor(vfTime_, frames_, sigmaE_);
+    if (fastTauMs_ > 0.0f) updateSigmaFor(vfTimeF_, frames_, sigmaEF_);
+}
+
+void Core::updateSigmaFor(const std::vector<double>& vfTime, long long frames, std::vector<float>& sigmaOut) noexcept
+{
+    const auto nMax = static_cast<long long>(vfTime.size());
+    const double vt = vfTime[static_cast<size_t>(std::clamp<long long>(frames + 1, 1, nMax) - 1)];
     const double halfPi = 0.5 * juce::MathConstants<double>::pi;
     for (int b = 0; b < numBands_; ++b)
     {
@@ -400,7 +429,7 @@ void Core::updateSigma() noexcept
             const double sv = levelSigmaDb(vt * sideVf_[s][bi]);
             varBase += w[s] * w[s] * halfPi * sv * sv / sideNeff_[s][bi];
         }
-        sigmaE_[static_cast<size_t>(b)] = static_cast<float>(std::sqrt(sL * sL + varBase));
+        sigmaOut[static_cast<size_t>(b)] = static_cast<float>(std::sqrt(sL * sL + varBase));
     }
 }
 
@@ -411,9 +440,10 @@ void Core::release()
     synthesis_.clear(); synthesis_.shrink_to_fit();
     for (auto& ch : ch_)
     {
-        for (auto* v : { &ch.inFifo, &ch.outAcc, &ch.outFifo, &ch.fftBuf, &ch.binGain, &ch.powAvg,
-                         &ch.levelDb, &ch.baseDb, &ch.redDb, &ch.smoothDb, &ch.outDb, &ch.exAdjDb })
+        for (auto* v : { &ch.inFifo, &ch.outAcc, &ch.outFifo, &ch.fftBuf, &ch.binGain, &ch.powAvg, &ch.powAvgF,
+                         &ch.levelDb, &ch.baseDb, &ch.levelFDb, &ch.baseFDb, &ch.redDb, &ch.smoothDb, &ch.outDb, &ch.exAdjDb })
         { v->clear(); v->shrink_to_fit(); }
+        ch.fastOwns.clear(); ch.fastOwns.shrink_to_fit();
     }
     fftSize_ = hop_ = numChannels_ = hopFill_ = numBands_ = 0;
     frames_ = 0;
@@ -423,14 +453,16 @@ void Core::reset() noexcept
 {
     for (auto& ch : ch_)
     {
-        for (auto* v : { &ch.inFifo, &ch.outAcc, &ch.outFifo, &ch.fftBuf, &ch.powAvg,
-                         &ch.levelDb, &ch.baseDb, &ch.redDb, &ch.smoothDb, &ch.outDb, &ch.exAdjDb })
+        for (auto* v : { &ch.inFifo, &ch.outAcc, &ch.outFifo, &ch.fftBuf, &ch.powAvg, &ch.powAvgF,
+                         &ch.levelDb, &ch.baseDb, &ch.levelFDb, &ch.baseFDb, &ch.redDb, &ch.smoothDb, &ch.outDb, &ch.exAdjDb })
             std::fill(v->begin(), v->end(), 0.0f);
         std::fill(ch.binGain.begin(), ch.binGain.end(), 1.0f);
+        std::fill(ch.fastOwns.begin(), ch.fastOwns.end(), static_cast<unsigned char>(0));
     }
     hopFill_ = 0;
     frames_ = 0;
     emaAn_ = 1.0;
+    emaAnF_ = 1.0;
 }
 
 void Core::process(float* const* channels, int numChannels, int numSamples, const Params& p) noexcept
@@ -524,19 +556,38 @@ float Core::median(const int* idx, int n, const float* values) noexcept
     return 0.5f * (lo + hi);
 }
 
-void Core::detectChannel(Channel& ch, double biasCorr) noexcept
+void Core::detectChannel(Channel& ch, double biasCorr, double biasCorrFast) noexcept
 {
     const int nb = fftSize_ / 2 + 1;
     const float* X = ch.fftBuf.data();
     float* S = ch.powAvg.data();
     const float ea = emaA_, eb = emaB_;
-    for (int k = 0; k < nb; ++k)
+    if (fastTauMs_ > 0.0f)
     {
-        const float re = X[2 * k], im = X[2 * k + 1];
-        S[k] = ea * S[k] + eb * (re * re + im * im);
+        float* SF = ch.powAvgF.data();
+        const float fa = emaAF_, fb = emaBF_;
+        for (int k = 0; k < nb; ++k)
+        {
+            const float re = X[2 * k], im = X[2 * k + 1], pw = re * re + im * im;
+            S[k]  = ea * S[k]  + eb * pw;
+            SF[k] = fa * SF[k] + fb * pw;
+        }
+        bandLevelsAndBaseline(SF, ch.levelFDb.data(), ch.baseFDb.data(), biasCorrFast, kFastBaselinePeriod, ch.refMeanF);
     }
+    else
+    {
+        for (int k = 0; k < nb; ++k)
+        {
+            const float re = X[2 * k], im = X[2 * k + 1];
+            S[k] = ea * S[k] + eb * (re * re + im * im);
+        }
+    }
+    bandLevelsAndBaseline(S, ch.levelDb.data(), ch.baseDb.data(), biasCorr, kSlowBaselinePeriod, ch.refMeanS);
+}
 
-    float* L = ch.levelDb.data();
+// Band levels (dB, per octave) of the averaged bin powers S and their flank baseline.
+void Core::bandLevelsAndBaseline(const float* S, float* L, float* base, double biasCorr, int refreshPeriod, float& refMean) noexcept
+{
     for (int band = 0; band < numBands_; ++band)
     {
         double acc = 0.0;
@@ -561,9 +612,14 @@ void Core::detectChannel(Channel& ch, double biasCorr) noexcept
     // Baseline = the straight line (dB over log2 f) through the two flank medians, evaluated at the band. Exact for
     // any locally linear tilt even when the flanks sit at different distances (at low f the bin-limited exclusion is
     // asymmetric). One-sided bands: the flank median carried along the wideband tilt.
-    float* base = ch.baseDb.data();
+    float meanL = 0.0f;
+    for (int b = 0; b < numBands_; ++b) meanL += L[b];
+    meanL /= static_cast<float>(numBands_);
+    const bool all = frames_ < refreshPeriod || std::abs(meanL - refMean) > kBaselineJumpDb;
+    if (all) refMean = meanL;
     for (int band = 0; band < numBands_; ++band)
     {
+        if (!all && ((band + static_cast<int>(frames_ % refreshPeriod)) % refreshPeriod) != 0) continue;   // keep the last refresh
         const auto bi = static_cast<size_t>(band);
         float m[2] = { 0.0f, 0.0f }; bool has[2] = { false, false };
         for (int s = 0; s < 2; ++s)
@@ -666,32 +722,67 @@ bool Core::computeGains(int numCh, const Params& p) noexcept
     // ---- detector ----
     emaAn_ *= static_cast<double>(emaA_);
     const double biasCorr = 1.0 / std::max(1.0 - emaAn_, 1.0e-12);
-    if (frames_ < static_cast<long long>(vfTime_.size())) updateSigma();   // frozen once the average is in steady state
+    const bool fastOn = fastTauMs_ > 0.0f;
+    double biasCorrFast = 1.0;
+    if (fastOn)
+    {
+        emaAnF_ *= static_cast<double>(emaAF_);
+        biasCorrFast = 1.0 / std::max(1.0 - emaAnF_, 1.0e-12);
+    }
+    // Both variance tables are indexed by the frame count; sigma is frozen once the longer (slow) one is in steady state.
+    if (frames_ < static_cast<long long>(vfTime_.size())) updateSigma();
 
     const int B = numBands_;
     for (int c = 0; c < numCh; ++c)
     {
         auto& ch = ch_[c];
-        detectChannel(ch, biasCorr);
+        detectChannel(ch, biasCorr, biasCorrFast);
         subBinCorrection(ch, biasCorr);
         const float* L = ch.levelDb.data();
         const float* base = ch.baseDb.data();
+        const float* LF = ch.levelFDb.data();
+        const float* baseF = ch.baseFDb.data();
         const float* adj = ch.exAdjDb.data();
         float* r = ch.redDb.data();
+        // Estimate per band: the SLOW excess while the fast one is statistically consistent with it, the FAST excess where
+        // the fast one is above it by kSwitchUpSigmas fast sigmas (onset) or, latched with hysteresis, below it by kVetoSetSigmas (release). The
+        // threshold and the knee use the sigma of the estimate that is used, so the false-trigger rate stays set by statistics.
         // Salience knee per band, then gated over each band's main-lobe zone: once a resonance is confidently
         // detected anywhere in the zone, every band of the zone is reduced by ITS OWN excess (the resonance's
         // shoulders and, at low f, the analysis window's leakage of it into the neighbouring bins).
         float* kb = tmpBand_.data();
+        float* est = estBand_.data();
         for (int b = 0; b < B; ++b)
         {
-            const float sig = sigmaE_[static_cast<size_t>(b)];
-            const float e = L[b] - base[b];
+            const auto bi = static_cast<size_t>(b);
+            const float es = L[b] - base[b];
+            float e = es, sig = sigmaE_[bi];
+            est[b] = adj[b];   // excess at auditory resolution (== level - baseline above ~300 Hz)
+            if (fastOn)
+            {
+                const float ef = LF[b] - baseF[b], sf = sigmaEF_[bi];
+                unsigned char& own = ch.fastOwns[bi];
+                bool useFast = false;
+                if (ef - es > kSwitchUpSigmas * sf) { own = 0; useFast = true; }          // onset
+                else
+                {
+                    const float d = es - ef;                                               // release: latched with hysteresis
+                    if (own != 0) { if (d < kVetoClearSigmas * sf) own = 0; }
+                    else if (d > kVetoSetSigmas * sf) own = 1;
+                    useFast = own != 0;
+                }
+                if (useFast)
+                {
+                    e = ef; sig = sf;
+                    est[b] = ef + std::max(adj[b] - es, 0.0f);   // keep the sub-bin (low-f) depth correction of the slow path
+                }
+            }
             const float thr = z * sig;
             kb[b] = e > thr ? smoothstep01((e - thr) / (kappa * sig)) : 0.0f;
         }
         for (int b = 0; b < B; ++b)
         {
-            const float e = adj[b];   // excess at auditory resolution (== level - baseline above ~300 Hz)
+            const float e = est[b];
             float target = 0.0f;
             float k = 0.0f;
             if (e > 0.0f && rMax > 0.0f)

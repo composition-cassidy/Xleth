@@ -489,10 +489,9 @@ void testDetectorFunction()
     }
 }
 
-// Bounds on the dynamics below (ms). Stage A: loose, set just above what the stage-B-before core measures (so the suite is
-// green and records the starting point); tightened with the dynamic-gate work.
-constexpr double kOnsetT50MaxMs     = 150.0;   // measured at stage A: 80 / 85 / 91 / 107 ms
-constexpr double kRelease1dBMaxMs   = 1000.0;  // measured at stage A: 704 / 704 / 832 / 843 ms
+// Bounds on the dynamics below (ms). Stage A recorded the starting point; stage B tightened them to the two-speed detector.
+constexpr double kOnsetT50MaxMs     = 100.0;   // measured: stage A 80 / 85 / 91 / 107 ms; two-speed detector 48 / 64 / 80 / 85 ms
+constexpr double kRelease1dBMaxMs   = 700.0;   // measured: stage A 704 / 704 / 832 / 843 ms; two-speed detector 523 / 592 / 555 / 661 ms (a 9 dB cut at the 200 ms release needs 446 ms)
 
 // ---- Dynamics (v6 stage A): the detector's / gain computer's step response and release in MILLISECONDS ----------
 // A +12 dB / Q8 bell is switched ON and OFF (5 ms linear crossfades between the clean pink noise C and the bell-filtered
@@ -503,10 +502,12 @@ constexpr double kRelease1dBMaxMs   = 1000.0;  // measured at stage A: 704 / 704
 // must not depend on N: run at 48 kHz (N = 1024) and 96 kHz (N = 2048) -- same ms, double the FFT size.
 struct DynResult { double steady = 0.0, t50 = -1.0, tRel1dB = -1.0; };
 
-DynResult measureDynamics(double sr, double f0, const Params& prm)
+DynResult measureDynamics(double sr, double f0, const Params& prm, float fastMs = -1.0f)
 {
     DynResult out;
-    Core c; c.prepare(sr, 512, 2);
+    Core c;
+    if (fastMs >= 0.0f) c.setFastTimeConstantMs(fastMs);
+    c.prepare(sr, 512, 2);
     const int H = c.hopSize();
     const int onFrames = static_cast<int>(std::llround(1.2 * sr / H)), offFrames = static_cast<int>(std::llround(2.5 * sr / H));
     const int firstOnset = static_cast<int>(std::llround(3.0 * sr / H));
@@ -574,6 +575,15 @@ void testDynamics()
                           sr, Core::fftSizeFor(sr), f0, d.steady, d.t50, kOnsetT50MaxMs, d.tRel1dB, kRelease1dBMaxMs);
             check(d.steady >= 4.0 && d.t50 >= 0.0 && d.t50 <= kOnsetT50MaxMs && d.tRel1dB >= 0.0 && d.tRel1dB <= kRelease1dBMaxMs, buf);
         }
+    // D2: the fast path is what makes the difference, and it costs nothing in steady state: with it OFF (slow only) the onset
+    // is slower and the release much slower; the steady cut differs by <= 0.5 dB.
+    {
+        const DynResult on = measureDynamics(48000.0, 2500.0, cap), off = measureDynamics(48000.0, 2500.0, cap, 0.0f);
+        char buf[260];
+        std::snprintf(buf, sizeof buf, "D2 two-speed vs slow-only (48 kHz, 2500 Hz): steady cut %.2f vs %.2f dB (<= 0.5 apart), onset_t50 %.1f vs %.1f ms (faster), release to <= 1 dB %.1f vs %.1f ms (>= 150 ms faster)",
+                      on.steady, off.steady, on.t50, off.t50, on.tRel1dB, off.tRel1dB);
+        check(std::abs(on.steady - off.steady) <= 0.5 && on.t50 < off.t50 && on.tRel1dB + 150.0 <= off.tRel1dB, buf);
+    }
 }
 
 } // namespace

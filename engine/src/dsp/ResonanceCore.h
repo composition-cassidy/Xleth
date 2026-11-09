@@ -96,6 +96,9 @@ public:
     const float* bandBaselineDb(int c) const noexcept { return ch_[c].baseDb.data(); }     // robust flank baseline
     const float* bandReductionDb(int c) const noexcept{ return ch_[c].outDb.data(); }      // applied reduction (>= 0)
     const float* bandSigmaDb() const noexcept         { return sigmaE_.data(); }           // std-dev of (level - baseline) on noise
+    const float* bandSigmaFastDb() const noexcept     { return sigmaEF_.data(); }          // the same for the fast estimate
+    const float* bandFastLevelDb(int c) const noexcept    { return ch_[c].levelFDb.data(); }
+    const float* bandFastBaselineDb(int c) const noexcept { return ch_[c].baseFDb.data(); }
     // Detection threshold in units of sigma_E for a sensitivity (0..1): 6 sigma at 0, 4 at 0.5, 2 at 1.
     static float thresholdSigmas(float sensitivity) noexcept
     {
@@ -107,6 +110,20 @@ public:
     // Detector averaging time constant. Structural: takes effect at the next prepare() (call it before prepare).
     void setDetectorTimeConstantMs(float ms) noexcept { detectorTauMs_ = ms > 1.0f ? ms : 1.0f; }
     float detectorTimeConstantMs() const noexcept { return detectorTauMs_; }
+    // Two-speed detection (v6). A second, fast power average (time constant in ms, independent of N and the sample rate) is
+    // kept next to the slow one. Per band the detector uses the SLOW estimate while the fast one is statistically consistent
+    // with it, and the FAST estimate where the two differ by more than kSwitchUpSigmas fast-estimate standard deviations above it
+    // (an onset) or, latched with hysteresis, by kVetoSetSigmas below it (a release). The threshold and knee of whichever estimate is used come from
+    // that estimate's own variance. 0 disables the fast path (slow only, the stage-B behaviour). Structural: next prepare().
+    static constexpr float kDefaultFastTauMs  = 40.0f;
+    static constexpr float kSwitchUpSigmas    = 2.5f;   // fast above slow by more than this many fast sigmas: onset, use the fast estimate
+    static constexpr float kVetoSetSigmas     = 2.0f;   // slow above fast by more than this many fast sigmas: release, the fast estimate takes over (latched)
+    static constexpr float kBaselineJumpDb     = 1.5f;
+    static constexpr int   kSlowBaselinePeriod = 4;      // frames between baseline refreshes of a band (slow estimate, tau 200 ms)
+    static constexpr int   kFastBaselinePeriod = 2;      // (fast estimate)
+    static constexpr float kVetoClearSigmas   = 0.75f;  // ... until slow is within this many fast sigmas of fast again (hysteresis)
+    void setFastTimeConstantMs(float ms) noexcept { fastTauMs_ = ms > 0.0f ? (ms > 1.0f ? ms : 1.0f) : 0.0f; }
+    float fastTimeConstantMs() const noexcept { return fastTauMs_; }
     static constexpr float kGapOct        = 0.5f;     // flank exclusion half-width, octaves (main lobe of a Q >= 4 resonance)
     static constexpr float kGapBins       = 2.0f;     // ... and at least this many FFT bins (analysis main lobe)
     static constexpr float kFlankOct      = 0.75f;    // flank width beyond the exclusion, octaves
@@ -121,8 +138,13 @@ private:
         std::vector<float> binGain;   // N/2 + 1 real gains applied to this frame
         // detector / gain computer state
         std::vector<float> powAvg;    // N/2 + 1 recursively averaged |X|^2 (un-bias-corrected EMA)
+        std::vector<float> powAvgF;   // the same with the fast time constant
         std::vector<float> levelDb;   // per band
         std::vector<float> baseDb;    // per band
+        std::vector<float> levelFDb;  // per band, fast estimate
+        std::vector<float> baseFDb;   // per band, fast estimate
+        float refMeanS = 0.0f, refMeanF = 0.0f;   // mean band level at the last full baseline refresh (slow / fast)
+        std::vector<unsigned char> fastOwns;   // per band: 1 = the fast estimate is in charge (release latch)
         std::vector<float> redDb;     // per band, attack/release state (dB, >= 0)
         std::vector<float> smoothDb;  // per band, after frequency smoothing
         std::vector<float> outDb;     // per band, after stereo link (what is applied)
@@ -131,16 +153,22 @@ private:
 
     void buildGrid();
     void updateSigma() noexcept;
+    void updateSigmaFor(const std::vector<double>& vfTime, long long frames, std::vector<float>& sigmaOut) noexcept;
     void processFrame(int numCh, const Params& p) noexcept;
     // Detector + gain computer: writes Channel::binGain for channels [0, numCh). Returns false when every
     // gain is exactly 1 (the multiply is then skipped).
     bool computeGains(int numCh, const Params& p) noexcept;
-    void detectChannel(Channel& ch, double biasCorr) noexcept;
+    void detectChannel(Channel& ch, double biasCorr, double biasCorrFast) noexcept;
+    // refreshPeriod: each band's flank baseline (the median-heavy part) is recomputed every refreshPeriod-th frame, staggered over the
+    // bands; levels are exact every frame. Every baseline is recomputed on the first frames and whenever the mean band level has moved
+    // by more than kBaselineJumpDb since the last full refresh (a broadband onset: the stale baseline would show false excess).
+    void bandLevelsAndBaseline(const float* S, float* L, float* base, double biasCorr, int refreshPeriod, float& refMean) noexcept;
     void subBinCorrection(Channel& ch, double biasCorr) noexcept;
     float median(const int* idx, int n, const float* values) noexcept;
 
     double sampleRate_ = 0.0;
     float detectorTauMs_ = kDefaultDetectorTauMs;
+    float fastTauMs_ = kDefaultFastTauMs;
     int fftSize_ = 0, hop_ = 0, numChannels_ = 0;
     int hopFill_ = 0;
     long long frames_ = 0;
@@ -162,6 +190,9 @@ private:
     float emaA_ = 0.0f, emaB_ = 1.0f;     // per-frame power average: S = a S + b P
     double emaAn_ = 1.0;                  // a^n (bias correction 1 / (1 - a^n))
     std::vector<double> vfTime_;          // variance factor of the bias-corrected average after n frames (index n-1)
+    float emaAF_ = 0.0f, emaBF_ = 1.0f;   // the same for the fast average
+    double emaAnF_ = 1.0;
+    std::vector<double> vfTimeF_;
     std::vector<float> vfBin_;            // per band: variance factor of the bin weighting
     std::vector<float> bandX_;            // per band log2(f)
     std::vector<float> sideX_[2];         // per band and side: mean log2(f) of the flank bands
@@ -170,6 +201,7 @@ private:
     std::vector<float> sideVf_[2];        // per band and side: mean bin variance factor of the flank bands
     std::vector<float> sideNeff_[2];      // per band and side: effective independent flank values
     std::vector<float> sigmaE_;           // per band std-dev of excess (dB) at the current frame count
+    std::vector<float> sigmaEF_;          // the same for the fast estimate
     // ---- sub-bin (auditory-resolution) excess at low f, where the analysis kernel is wider than an ERB ----
     int kLowMax_ = 0;                     // last bin whose ERB is narrower than the analysis kernel's ENBW
     float kernelVar_ = 0.0f;              // second moment (bins^2) a narrowband source shows over +/-2 bins
@@ -177,6 +209,7 @@ private:
     std::vector<float> binX_, binF_;      // per bin scratch: excess fraction, correction factor
     std::vector<float> scratch_;          // median scratch
     std::vector<float> tmpBand_;          // per band scratch
+    std::vector<float> estBand_;          // per band: the excess estimate (dB) the gain computer reduces by
 };
 
 } // namespace xleth::dsp::resonance
