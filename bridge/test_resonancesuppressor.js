@@ -5,7 +5,7 @@
 // Verifies:
 // - effect instantiation through the native addon
 // - all parameters are exposed, including processing_mode
-// - new instances default to Low Latency
+// - new instances default to Low Latency (and to the Classic High Quality engine)
 // - set/get round-trips work for every parameter
 // - HQ-only quality/viz paths still work
 // - save/load preserves representative values
@@ -118,7 +118,7 @@ function stripProcessingModeFromStateBlob(base64State) {
   };
 }
 
-// All 55 params: [id, testValue, tolerance]
+// All 56 params: [id, testValue, tolerance]
 const PARAMS = [
   ['depth',           75,     0.5],
   ['sharpness',       30,     0.5],
@@ -183,6 +183,8 @@ const PARAMS = [
   ['wc_b8_freq',      12000,  100.0],
   ['wc_b8_gain',      -2.5,   0.1],
   ['wc_b8_q',         2.0,    0.05],
+
+  ['hq_engine',       1,      0.01],
 ];
 
 const PROJ_DIR = path.join(os.tmpdir(), '_xleth_rs_test');
@@ -214,7 +216,7 @@ const PROJECT_JSON = path.join(PROJ_DIR, 'project.json');
   const params = getParams(nodeId);
   ok(Array.isArray(params), 'params is an array');
   if (!Array.isArray(params)) process.exit(1);
-  eq(params.length, 55, 'param count == 55');
+  eq(params.length, 56, 'param count == 56');
 
   const paramIds = new Set(params.map((p) => p.id ?? p.paramId ?? p.name));
   for (const [id] of PARAMS) ok(paramIds.has(id), `param "${id}" present`);
@@ -223,6 +225,10 @@ const PROJECT_JSON = path.join(PROJ_DIR, 'project.json');
   ok(!!processingModeParam, 'processing_mode param is exposed');
   ok(Math.abs(paramValue(processingModeParam) - 0) <= 0.01,
      `new instance defaults to Low Latency (got ${paramValue(processingModeParam)})`);
+  const hqEngineParam = findParam(params, 'hq_engine');
+  ok(!!hqEngineParam, 'hq_engine param is exposed');
+  ok(Math.abs(paramValue(hqEngineParam) - 0) <= 0.01,
+     `new instance defaults to the Classic HQ engine (got ${paramValue(hqEngineParam)})`);
 
   console.log('\n[ parameter set/get round-trip ]');
   for (const [id, testVal] of PARAMS) {
