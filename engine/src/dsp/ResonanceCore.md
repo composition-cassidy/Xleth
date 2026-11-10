@@ -7,7 +7,10 @@ spectrum (a ringing room mode, a whistle, a harsh formant), and attenuates exact
 real zero-phase gain applied through a weighted overlap-add (WOLA) transform. It has no `juce::AudioProcessor` or
 APVTS dependency: it is driven with raw channel pointers and a plain parameter struct, so it can be unit-tested and
 benchmarked without an engine. As of this document it is **not wired into any effect**; the existing
-`XlethResonanceSuppressorEffect` and the EQ spectral band are separate implementations.
+`XlethResonanceSuppressorEffect` and the EQ spectral band are separate implementations. Section 8 is the surface the
+Resonance Suppressor's High Quality mode needs (band grid and weight curve, sharpness, mono / Mid / Side operation, a
+visualization tap, meters, parameter-change safety, the instance hop-phase helper) and how the effect maps its
+parameters onto the core.
 
 This file describes what the code does, why each constant has its value, what was tried and rejected, and where the
 core is known to be limited. Numbers quoted here were measured with `engine/tools/xleth_rs_quality_bench.cpp` and
@@ -24,6 +27,7 @@ for arbitrary program material.
 5. Real-time rules: allocation and threading
 6. Running the bench against the core
 7. Measured margins (7.1 single-seed robustness, 7.2 D1 vs the bench, 7.3 worst-case CPU, 7.4 seed protocol and tier study, 7.5 multi-instance bursts)
+8. Resonance Suppressor integration surface (8.1 grid and weight curve, 8.2 sharpness, 8.3 channels and Mid / Side, 8.4 visualization tap, 8.5 meters, 8.6 parameter changes, 8.7 instance hop phases, 8.8 RS parameter mapping, 8.9 what the core still cannot do)
 
 ## 1. Architecture
 
@@ -107,8 +111,9 @@ slow-only core by <= 0.5 dB (unit test D2: 9.32 dB against 9.32 dB at 2.5 kHz).
 4. **Sub-bin depth correction** (below about 300 Hz at N = 1024, where an ERB is narrower than the analysis kernel): the
    *depth* of the cut, not the detection decision, uses the excess an auditory filter centred on the peak would see.
 5. **Depth cap:** R = r / (1 + (r / Rmax)^p)^(1/p), Rmax = depth x 12 dB (Soft, p = 2) or depth x 24 dB (Hard, p = 6).
-6. **Per-band attack / release** in dB at the frame rate (one-pole), then **[1 2 1] / 4** smoothing across bands,
-   then the **stereo link** (each channel blends towards max(L, R) by `stereoLink`).
+6. **Per-band attack / release** in dB at the frame rate (one-pole), then **[1 2 1] / 4** smoothing across bands
+   (at the default `sharpness` 0.5; section 8.2), then the **stereo link** (each channel blends towards max(L, R) by
+   `stereoLink`), then the optional **weight curve** (section 8.1).
 7. **G(f):** the band curve in dB is interpolated linearly on the ERB axis to every bin and applied as a real,
    zero-phase gain. If every gain is exactly 1 the multiply is skipped.
 
@@ -133,7 +138,8 @@ impulse failed the unit test T3 with a height of 0.83). Levels are exact in ever
 | `releaseMs` | 1 - 10000 | ms | per-band release of the applied reduction (default 200) |
 | `hardKnee` | bool | - | false: Soft (knee 3 sigma, ceiling 12 dB x depth, p = 2); true: Hard (knee 1.5 sigma, 24 dB x depth, p = 6) |
 | `stereoLink` | 0 - 1 | - | 0 = independent channels, 1 = both channels take max(L, R) of the reductions |
-| `focusWeight` | pointer | - | **hook, ignored**: per-band focus weight |
+| `sharpness` | 0 - 1 | - | narrowness of the applied cut (cross-band smoothing): 0.5 (default) = [1 2 1] / 4, the historical behaviour; 1 = none (narrowest); 0 = [1 2 1]^4 / 256 (broadest). Section 8.2 |
+| `weightCurve` | pointer | - | nullptr (default) = flat 1. Else `numBands()` floats in [0, 2.5] on the band grid; scales the applied reduction with the RS weighting semantics (w <= 1: w x R; w > 1: deeper up to the depth ceiling). Section 8.1 |
 
 The bench subjects use: **C1** = defaults (depth 0.5, Soft), **C1c** = depth 1, Hard, everything else default (the
 "capability" setting every gate is graded at), **C1s** = depth 1, sensitivity 1, Hard (the most sensitive and deepest
@@ -146,7 +152,8 @@ setting; the musical-noise gate G4 is graded on it).
 | `setFrameTier()` | Normal | tier | N = 512 / 1024 / 2048 (window 10.7 / 21.3 / 42.7 ms at <= 50 kHz); latency = N. Nothing is retuned per tier |
 | `setDetectorTimeConstantMs()` | 200 | ms | slow estimate |
 | `setFastTimeConstantMs()` | 40 | ms | fast estimate; 0 disables the fast path (slow only) |
-| `setHopPhaseOffset()` | 0 | samples | initial hop phase, modulo the hop; latency stays N; 0 = historical behaviour (bit-identical). Use `i x hop / n` for instance i of n in one thread (7.5) |
+| `setHopPhaseOffset()` | 0 | samples | initial hop phase, modulo the hop; latency stays N; 0 = historical behaviour (bit-identical). Use `Core::hopPhaseOffsetForInstance(i, hop)` for instance i in one thread (7.5, 8.7) |
+| `setVizSink()` | nullptr | - | visualization tap (not structural: may be set between `process()` calls on the processing thread). Section 8.4 |
 
 ### 2.3 Constants (compile time)
 
@@ -244,8 +251,14 @@ visible, and the verdict reads `PASS (1 waiver)` when everything else passes. No
   non-audio thread and must not run concurrently with `process()` (they take effect at the next `prepare()`). `process()`,
   `reset()` and the introspection accessors (`bandLevelDb`, `bandReductionDb`, `framesProcessed`, ...) belong to the
   processing thread; the accessors return pointers into state that the next `process()` rewrites.
-- **Parameters** (`Params`) are copied by value into every `process()` call; change them freely between calls.
-  `focusWeight` is ignored; if it is ever used, the pointed-to array must outlive the call.
+- **Parameters** (`Params`) are copied by value into every `process()` call; change them freely between calls
+  (unit test P1 changes every one of them before every block, section 8.6). `weightCurve` is a pointer: the array
+  (`numBands()` floats) is read during that `process()` call only and must stay valid and unchanged for its duration.
+- **Visualization sink** (`setVizSink()`): called synchronously from inside `process()`, once per hop and channel, on
+  the processing thread; it must not block, lock, allocate, log or call back into the core (section 8.4). Set or clear it
+  between `process()` calls (or while not processing); the core never owns it.
+- **Meters** (`lastMaxReductionDb()`) are lock-free relaxed atomics, written once per hop: the only accessor that may be
+  read from any thread.
 - **`reset()`** clears all signal state (FIFOs, overlap-add, both power averages, baselines, latches, reduction
   smoothers) without touching the allocations; it is real-time safe and equals a freshly prepared instance (test T7).
   After `reset()` the detector re-enters its start-up (bias-corrected) phase.
@@ -461,7 +474,231 @@ maxima of the same case range 970 - 1807 us (aligned) against 321 - 484 us (stag
 at 128, aligned / staggered); it must not be read as the cost of a frame. What does not depend on the outliers: an aligned 8-instance burst costs about 574 us (43 % of a 64-sample budget) by construction, a staggered one about 144 us (11 %).
 
 Decision: aligned worst blocks are 3.3x (p99) above the staggered ones at 64 samples, so the offset was added (a prepare-time integer, default 0, no change to any output). Whoever hosts several instances in one thread should
-pass `i x hop / n` to `setHopPhaseOffset()` for instance i of n.
+pass `i x hop / n` to `setHopPhaseOffset()` for instance i of n, or, when n is not known in advance, `Core::hopPhaseOffsetForInstance(i, hop)` (section 8.7).
 
 Not addressed: the baseline-refresh slice is `band + frames_ % period` (`bandLevelsAndBaseline`) and every instance counts frames from 0, so two instances that complete a hop in the same block (2 at 64 samples) also refresh the same band slice in that block.
 A per-instance slice rotation would spread that too; it was not tried (staggered p99.9 is 256 us = 19 % of the 64-sample budget for 8 instances).
+
+## 8. Resonance Suppressor integration surface
+
+What the standalone Resonance Suppressor's High Quality mode needs from the core, and how the effect should use it. Every addition
+has a default that leaves the output bit-identical to the core before it (unit tests W1, S2, V2; the bench comparison in 8.10).
+The core is still unwired; nothing here changes the effect. Unit tests W0-W4, S1-S2, M1-M4, V1-V4, E1, P1, H1-H3 in
+`test_resonance_core` (numbers below are from that run, 48 kHz, Normal tier).
+
+### 8.1 Band grid and weight curve
+
+- **Grid.** `numBands()` = 96 (`kGridBands`), `bandCentreHz(i)` = the centres, uniform on the ERB-rate axis from 20 Hz to
+  min(0.45 fs, 20 kHz) (19 845 Hz at 44.1 kHz, 20 kHz at 48 / 96 kHz; test W0). The grid depends on the sample rate only, not
+  on the frame tier, so a curve built for a rate is valid at every tier. Valid after `prepare()`.
+- **`Params::weightCurve`**: nullptr (default) = flat 1, the historical behaviour (the loop is skipped). Otherwise `numBands()`
+  floats; each is clamped to [0, `kMaxWeight` = 2.5], NaN and negative values read as 0. With R = the band's applied reduction
+  after attack / release, sharpness and the stereo link, and Rmax = depth x 12 dB (Soft) / x 24 dB (Hard):
+
+  | weight w | applied reduction |
+  |---|---|
+  | w <= 1 | w x R (0 = the band is never cut) |
+  | w > 1 | min(w x R, max(Rmax, R)) (deeper, up to the depth ceiling; never below R, which may exceed a just-lowered ceiling while it releases) |
+
+  This is the RS weighting (`targetDb = clamp(reduction(salience) x weight, 0, maxReductionDb)`, per bin): a weight scales the cut
+  of what was detected; it never creates a detection (test W4: a flat 2.5 on plain pink noise gives a mean band cut of 0.001 dB).
+- **Why it is applied after the smoothers.** For a constant curve it is the same as the RS's "weight the target, then smooth": a
+  positive factor commutes with the per-band one-pole (w x target > w x state exactly when target > state) and with the max(L, R)
+  of the link; only the clamp at the ceiling sits after the smoothers instead of before them. Applying it last also makes weight 0
+  exact: before the cross-band smoothing, the [1 2 1] / 4 and the main-lobe gating would carry a neighbour's cut into a zero-weight band.
+- **Resolution.** The RS weights every bin; the core weights 96 bands and builds G(f) by linear interpolation between band centres
+  (ERB axis). A zero-weight band is untouched at its centre and everywhere between two zero-weight bands; the transition to a weighted
+  neighbour spans one band spacing (about 0.41 ERB: ~55 Hz at 1 kHz, ~12 Hz at 50 Hz).
+- **Tests.** W1: a curve of 1.0 everywhere is bit-identical to nullptr. W2: frame by frame against an unweighted twin core (C1, link
+  0.5, weights {0, 0.3, 1, 1.7, 2.5, 4 -> 2.5, -1 -> 0, NaN -> 0} repeated over the bands): 0 of 216 000 band values differ from the
+  table above; 40 940 deeper than unweighted, 8 556 at the 6 dB ceiling, 15 290 cuts > 1 dB zeroed. W3: weight 0 on the 14 bands within
+  +-1/2 octave of a planted 2.5 kHz resonance: the largest cut in those bands over every frame and both channels is exactly 0 dB (the
+  unweighted core cuts 9.26 dB at f0), and every weight-1 band equals the unweighted core exactly. W4 (C1, ceiling 6 dB): flat 1 / 1.5 /
+  2.5 give a mean cut at f0 of 4.97 / 6.00 / 6.00 dB, never above 6.000 dB.
+- **How the effect builds it.** Evaluate its existing `weightingForFrequency(bandCentreHz(i))` for i = 0 .. 95 into a member
+  `float[96]` whenever the weighting settings change (the same dirty check it has now), and pass the pointer every block. **The RS
+  default curve is not flat** (0 below 40 Hz, a ramp from 40 to 80 Hz, a ramp down from 16 kHz towards Nyquist), so the effect always
+  passes its curve; nullptr is not the RS default.
+
+### 8.2 Sharpness
+
+`Params::sharpness` (0..1, default 0.5) sets how narrow the applied cut is, through the cross-band smoothing of the band reduction
+curve (after attack / release, before the link and the weight curve):
+
+| sharpness s | kernel |
+|---|---|
+| 0.5 < s <= 1 | [a, 1 - 2a, a] with a = 0.5 (1 - s): 0.25 at 0.5, 0 (no smoothing) at 1 |
+| s = 0.5 (default) | [0.25, 0.5, 0.25] = [1 2 1] / 4, exactly the historical expression (a = 0.25f and 1 - 2a = 0.5f are exact in float, so the default computes the very same operations) |
+| 0 <= s < 0.5 | the [1 2 1] / 4 result blended towards three further [1 2 1] / 4 passes by t = 2 (0.5 - s); at 0 the kernel is [1 2 1]^4 / 256 (9 bands) |
+
+NaN reads as 0.5, values outside 0..1 clamp (test S2, bit-identical). Detection is not affected: only the reduction curve that comes
+out of it. Measured (S1, C1c, Q 8 / +12 dB planted bell, mean cut over 6 s; width = span where the cut is >= 3 dB, crossings
+interpolated on log2 f):
+
+| f0 | sharpness 0 | 0.5 (default) | 1 |
+|---|---|---|---|
+| 1 kHz | 0.492 oct (343 Hz), peak 7.04 dB | 0.424 oct (295 Hz), peak 8.72 dB | 0.395 oct (275 Hz), peak 9.76 dB |
+| 2.5 kHz | 0.443 oct (770 Hz), peak 7.41 dB | 0.384 oct (667 Hz), peak 9.31 dB | 0.355 oct (617 Hz), peak 10.71 dB |
+
+Strictly monotonic at both frequencies. Broader smoothing also lowers the peak (the cut is spread, not added), so sharpness 0 is gentler
+as well as wider. The narrow end is bounded by the main-lobe gating (1.5): the shoulders of a detected resonance are cut by their own
+excess at every sharpness, which is why 1 is only ~7 % narrower than 0.5.
+
+**Not the RS HQ meaning.** In the RS HQ engine "sharpness" changes the detector, not the cut: the centre gap excluded from the
+local-mean baseline (1 + round(4 s) bins) and the salience slope (0.055 + 0.085 s); higher = a given peak reads as MORE salient. In the
+RS Low Latency engine it is the peak-filter Q (0.8 + 10 s), i.e. a narrowness, which is what the core implements. The core's detector
+threshold is statistical (sigma), so the HQ detector-shape side effect has no counterpart.
+
+### 8.3 Channels, and how the effect implements Mid / Side
+
+- `prepare(sr, block, numChannels)` with 1 or 2 channels. `process(channels, n, ...)` processes min(n, prepared) channels; the others are
+  untouched. Channels are independent except for `stereoLink` (and the shared frame count / sigma tables, which depend only on time).
+  M1: a 1-channel core is bit-identical to channel 0 of a 2-channel core at link 0, and a 2-channel core run with n = 1 is bit-identical
+  to the 1-channel core (channel 1 untouched).
+- The detector is level-independent (thresholds in sigma, depth relative to the excess), so feeding (L + R) / 2 or (L - R) / 2 instead
+  of L or R changes nothing about detection.
+- **Recipe** (what the RS HQ path does with its WolaProcessor, `processHighQualityMidMode` / `SideMode`):
+
+  | RS stereo_mode | input | core prepared | what the effect feeds | output |
+  |---|---|---|---|---|
+  | Stereo | stereo | 2 ch | L, R; `stereoLink = stereo_link / 100` | L', R' |
+  | Mid | stereo | 2 ch (or 1) | M = (L + R) / 2 as channel 0, process(n = 1); S from the effect's dry delay of exactly `currentLatency()` samples | L' = M' + S_d, R' = M' - S_d |
+  | Side | stereo | 2 ch (or 1) | S = (L - R) / 2 as channel 0, process(n = 1); M from the dry delay | L' = M_d + S', R' = M_d - S' |
+  | Stereo / Mid | mono | 1 ch | the channel | as is |
+  | Side | mono | 1 ch | nothing to process (the RS feeds zeros to keep its state warm and outputs the delayed dry) | delayed dry |
+
+  Call `reset()` on every stereo_mode change (as the RS does): channel 0's detector state belongs to whatever was fed before.
+  `stereoLink` has no effect with one channel. An "M + S" mode (both components processed independently) is the two components as the
+  two channels with link 0 (M4: bit-identical to two 1-channel cores).
+- Tests. M2: both wrappers reconstruct the latency-aligned input at depth 0 (Mid -159.4 dBFS RMS, Side -165.1 dBFS, max |diff|
+  8.9e-8). M3 (C1c; M carries a 1.5 kHz resonance, S a 4 kHz one): Mid mode cuts 9.27 dB at 1.5 kHz and 0.000 dB at 4 kHz; Side mode
+  9.26 dB at 4 kHz and 0.000 dB at 1.5 kHz.
+
+### 8.4 Visualization tap
+
+`setVizSink(VizSink*)`; nullptr (default) = off, costing one pointer test per hop. With a sink set, after the gains of a frame are
+final (after the weight curve, i.e. exactly what G(f) is built from), the core fills its member `VizFrame` once per processed channel
+(channel 0, then 1) and calls `sink->onResonanceFrame(frame)` synchronously, on the processing thread, inside `process()`. The frame is
+valid only during the call; the sink copies what it needs and must not block, lock, allocate, log or call back into the core. No
+allocation, no lock, no logging in the core (V3: zero `operator new` with a sink, cold pass, parameters swept every block).
+
+Frame layout (POD, trivially copyable, 1 176 bytes, 8-byte aligned; static_asserts in the unit test):
+
+| offset | field | type | meaning |
+|---:|---|---|---|
+| 0 | `hopIndex` | int64 | 0-based frame index (== `framesProcessed()` before the frame); both channels of a hop share it. The frame's input ends `hopSize x (hopIndex + 1) - hopPhaseOffset()` samples into the stream |
+| 8 | `channel` | int32 | 0 or 1 (Mid / Side: whatever the caller fed as that channel) |
+| 12 | `numBands` | int32 | `numBands()` (96) |
+| 16 | `hopSize` | int32 | samples per hop |
+| 20 | `maxReductionDb` | float | max of `reductionDb` (== `lastMaxReductionDb(channel)`) |
+| 24 | `levelDb[96]` | float | the detector's input level per band: the 40 ms fast estimate (the 200 ms slow one when the fast path is off), dB, per-octave units (pink noise is flat). **Not dBFS**: a constant offset that depends on N separates it from any calibrated scale; differences are exact dB |
+| 408 | `baselineDb[96]` | float | that estimate's flank baseline (levelDb - baselineDb = the excess the detector thresholds) |
+| 792 | `reductionDb[96]` | float | the applied reduction, dB >= 0, after every stage |
+
+Rate: one frame per hop per channel, `sr / hop` per second (187.5 at 48 kHz Normal; 375 Fast, 93.75 High). V1 (2 s stereo, block 100):
+750 frames per channel == `framesProcessed()`, hop indices consecutive, channels in order, every array equal to the core's own
+`bandFastLevelDb` / `bandFastBaselineDb` / `bandReductionDb` at that moment; mono: 750 frames on channel 0 only. V2: the output with a
+sink is bit-identical to the output without. V4 (cost, 3 s stereo at block 64, 9 interleaved repetitions): null / no-op-sink paired time
+ratio median 1.005, the no-op sink's own overhead -0.5 % (inside the noise). Against the build before this change the null-sink path is
+the whole bench (8.10).
+
+**How the effect fills its `ResonanceBucket`** (128 log-frequency buckets per channel per hop): precompute (outside the audio thread) a
+bucket -> band interpolation on log f (96 bands < 128 buckets, so interpolate rather than max-pool, or some buckets stay empty);
+`spectrum` = (levelDb + a display offset the effect calibrates once + 120) / 120 clamped to 0..1; `reduction` = reductionDb / 24;
+`weighting` from its own curve; `activity` = mean of the 12 largest band reductions / 24; `sampleClock` = hopIndex x hop (+ the hop phase
+offset if used), `bucketSamples` = hop; `sampleRate`, `fftSize`, `qualityIndex`, `stereoMode`, `maxReductionDb` (the ceiling) from what it
+already knows. Push into its existing `DynamicsVizCollector` from inside the sink (the collector's `push` is the effect's existing
+audio-thread call). The display changes character: the RS showed the instantaneous per-bin magnitude of one frame (white noise flat);
+`levelDb` is the 40 ms average in per-octave units (pink flat, smoother).
+
+### 8.5 Meters
+
+`lastMaxReductionDb(channel)`: the largest applied band reduction (dB) of the last completed frame, after every stage (exactly the
+maximum of `bandReductionDb(channel)` / `VizFrame::reductionDb`). Channel 0 / 1 per channel; -1 (default) the maximum over the channels
+that frame processed (a channel that was not processed reads 0). Written once per hop with relaxed atomic stores (lock-free,
+`std::atomic<float>::is_always_lock_free` is asserted); readable from any thread; 0 after `prepare()` / `reset()`. E1: equal to the band
+maximum per channel and combined after every hop of a 4 s run, 0 at start and after reset, channel 1 reads 0 on a mono run. The RS's meter
+value 2 ("gain reduction activity": the top-12 average / 24 with a ballistic) is the effect's to derive (from the meter or the viz frame).
+
+### 8.6 Parameter changes
+
+What the core smooths, and what the caller provides:
+
+| parameter | where it acts | time behaviour |
+|---|---|---|
+| `depth`, `sensitivity`, `hardKnee` | the target reduction (threshold, knee, ceiling) | through the per-band attack / release: a change glides at `attackMs` / `releaseMs` |
+| `attackMs`, `releaseMs` | the one-pole coefficients | the next frame |
+| `sharpness`, `stereoLink`, `weightCurve` | after the attack / release smoothers | a step at the next frame |
+
+Every parameter is read once per frame, from the `process()` call that completes the hop; a value that does not reach a frame boundary is
+never seen. Every change of the gain curve is a change between two frames, and every output sample is the sum of N / H = 4 overlapping
+frames, each shaped by the sqrt-Hann synthesis window (zero at both ends): a step in G(f) between frames becomes a crossfade over the
+window, never a sample discontinuity. P1 checks it: stereo, 6 s, pink -26 dBFS with a planted +12 dB / Q 8 bell at 1.2 kHz, a 2.5 kHz tone
+(0.08) in both channels and a 700 Hz tone (0.05) in R; before EVERY block, depth, sensitivity, sharpness and stereoLink each jump to a random
+extreme (0 or 1) and weightCurve to nullptr / all 0 / all 2.5 (Hard). Bound: the largest sample step |y[n] - y[n-1]| and second difference of the
+stressed output (after latency + 0.5 s) <= 1.25 x the largest of four steady runs (all-low, all-high, C1c, all-high flat).
+
+| block | max step | steady | ratio | max 2nd diff | steady | ratio | non-finite | allocations |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 64 | 0.1015 | 0.1049 | 0.968 | 0.1309 | 0.1328 | 0.986 | 0 | 0 |
+| 100 | 0.0972 | 0.1049 | 0.927 | 0.1304 | 0.1328 | 0.982 | 0 | 0 |
+
+So no internal smoothing was added (none was needed, and the steady state is untouched). The caller does not have to smooth anything for
+click safety; the RS's existing parameter smoothers (20 ms) may stay for slower glides (a weight node dragged by the user changes the curve at the
+hop rate otherwise). The caller must pass finite values for `depth`, `sensitivity`, `stereoLink`, `attackMs`, `releaseMs` (APVTS values always
+are); `sharpness` (NaN = 0.5) and the weights (NaN = 0) are sanitised by the core.
+
+### 8.7 Instance hop phases
+
+`static int Core::hopPhaseOffsetForInstance(int instanceIndex, int hop)`: the base-2 van der Corput sequence (bit reversal of the index around
+the binary point) times the hop, floored: 0, hop/2, hop/4, 3 hop/4, hop/8, 5 hop/8, 3 hop/8, 7 hop/8, hop/16, ... Every prefix of n instances is
+as evenly spread as a dyadic grid allows, so instances can be added later without re-spacing the existing ones (the offset is structural: it
+takes effect at `prepare()`). 0 for an index <= 0 or a hop <= 1; always in [0, hop). H1: {0, 128, 64, 192, 32, 160, 96, 224} at hop 256, doubled at
+512. H2: indices 0 .. 255 at hop 256 are a permutation of 0 .. 255. H3: 8 real instances (48 kHz, Normal, hop 256) with these offsets, 64-sample
+blocks: every block completes exactly 2 frames over the 8 instances (1 500 of 1 500 blocks; never more than 2); the all-zero control completes 8 frames
+in every 4th block (375 blocks) and 0 in the others.
+
+### 8.8 RS parameter mapping (the effect's job)
+
+| RS parameter | core |
+|---|---|
+| `depth` (0..100 %, 50) | `depth = depth / 100` (same ceilings: 12 dB Soft, 24 dB Hard) |
+| `selectivity` (0..100 %, 50) | `sensitivity = 1 - selectivity / 100` (RS: higher selectivity = higher threshold; core: higher sensitivity = lower threshold). The RS threshold is 2 + 14 x sel dB over a single-frame local mean, the core's 6 - 4 x sens sigma of a calibrated excess: same direction and the same midpoint, not the same numbers |
+| `sharpness` (0..100 %, 50) | `sharpness = sharpness / 100` (8.2: narrowness of the cut, the LL meaning) |
+| `mode` Soft / Hard | `hardKnee` |
+| `attack` (1..200 ms), `release` (10..2000 ms) | `attackMs`, `releaseMs` (same coefficient formula, 1 - exp(-hop / tau)) |
+| `stereo_link` (0..100 %, **100**) | `stereoLink = stereo_link / 100` (the core's default is 0) |
+| weighting (`wc_hp`, `wc_lp`, `wc_b1..8_*`) | `weightCurve` = `weightingForFrequency(bandCentreHz(i))`, always passed (8.1) |
+| `stereo_mode` | 8.3 |
+| `quality` Fast / Normal / High | `setFrameTier()` + `prepare()` (structural) |
+| `mix`, `trim`, `delta`, dry delay (= `currentLatency()`), bypass, `processing_mode` (the LL engine) | stay in the effect |
+| viz overlay, meters | 8.4, 8.5 |
+
+### 8.9 What the core still cannot do for the RS
+
+- **Live frame-tier switching** (changing `quality` while playing): structural, `prepare()` only; the next phase.
+- **The RS HQ detector semantics** of selectivity and sharpness (dB above a raw local mean, centre gap, salience slope): the core's detector is
+  statistical; presets will not sound the same. Only direction and midpoint correspond (8.8).
+- **Per-bin weighting**: the weight is sampled at the 96 band centres (8.1); weighting features narrower than a band spacing (below ~100 Hz the
+  spacing is a third of an octave or more) are smoothed.
+- **Viz**: no instantaneous per-bin spectrum; `levelDb` is uncalibrated (a constant display offset is the effect's) and on 96 bands, not 128 buckets.
+- **RS meter "activity" and detector activity** (`blockDetectorActivity_`): not computed by the core (the `regionOutput()` hook is still a stub); the effect
+  derives what it shows from `lastMaxReductionDb()` or the viz frames.
+- **NaN in depth / sensitivity / link / attack / release** is not sanitised (8.6).
+- **Sub-frame parameter timing**: parameters apply per hop (5.3 ms at 48 kHz Normal), from the block that completes it.
+- Out of scope here and unchanged: the named G1 waiver at 100 Hz and the seed-dependent G1 150 Hz / G8a 500 Hz shortfalls (7.1, 7.4).
+
+### 8.10 Defaults are bit-identical (how it was checked)
+
+- **Unit tests.** The 73 checks that existed before print byte-identical text (every measured number) from the old and the new
+  `test_resonance_core` binary; the new build passes 101 / 0. W1 (curve of 1.0 == nullptr), S2 (sharpness clamping), V2 (sink == no sink) are bit-exact.
+- **Bench.** The pre-change bench binary was frozen as a copy, the new one built, and both run with `--subjects C1,C1c,C1c-F,C1c-N,C1c-H,S3c,R0,R1
+  --ref-subjects --no-cpu` (CPU off so that every file is deterministic), on the default seed and on `--seedset dev`. Every non-CPU file was compared byte by
+  byte: default seed 89 files (20 CSV, 68 WAV, summary.md), dev 540 files (125 CSV, 408 WAV, 7 summaries): all identical except the run-directory names
+  embedded in the summaries and in `seedset_per_seed.csv` (output folder and timestamp). Gate counts are therefore unchanged; C1c-N, default seed:
+  `PASS (1 waiver)` (G1 11/12 raw + the 100 Hz waiver, every other gate passes, G7 n/a); dev seeds: robust FAIL, 1/6 seeds passing, G1 1/6 (150 Hz worst
+  +2.270 against +2.074) and G8a 1/6 (500 Hz / D 1000 worst 144 ms), every other gate 6/6 - before and after alike.
+- **Cost of the defaults (null sink, nullptr curve, sharpness 0.5).** `--cpu-only --subjects C1`, old and new binary alternated twice (pre, post, pre, post),
+  mean per-block time of C1 (48 kHz stereo): block 64: 17.59 / 17.87 us before, 17.75 / 17.62 us after; block 128: 35.32 / 35.88 before, 35.39 / 35.29 after;
+  block 512: 142.5 / 142.8 before, 142.0 / 140.8 after. Within the run-to-run spread (about 1 %); the extra per-hop work of the defaults is the meter's
+  max over 96 bands per channel and one pointer test.
