@@ -41,7 +41,7 @@
 //     onset must not meet a stale baseline). Levels are exact every frame.
 // Gain computer
 //   * excess E = level - baseline. Salience u = (E - T) / sigma_E; knee K = smoothstep(u / kappa)
-//     (kappa = 3 sigma Soft, 1.5 sigma Hard), then the max K over each band's main-lobe zone (the zone the
+//     (kappa = 3 sigma Soft, 1.5 sigma Hard; 1 / 0.5 fast sigma while the fast estimate is in charge), then the max K over each band's main-lobe zone (the zone the
 //     baseline excludes): a confidently detected resonance takes its shoulders (and at low f the window's
 //     leakage of it) with it. Target reduction = K x E: the WHOLE excess, i.e. towards the baseline, not
 //     "excess minus threshold" (that would leave the threshold standing as a residual).
@@ -1106,6 +1106,7 @@ bool Core::computeGains(Engine& e, int numCh, const Params& p, bool publish) noe
     const bool  hard  = p.hardKnee;
     const float z     = thresholdSigmas(p.sensitivity);     // threshold in sigma_E: 6 (sens 0) .. 4 (default) .. 2 (sens 1)
     const float kappa = hard ? 1.5f : 3.0f;                 // knee width in sigma_E
+    const float kappaFast = hard ? kFastKneeSigmasHard : kFastKneeSigmasSoft;   // knee width while the fast estimate is in charge
     const float rMax  = depth * (hard ? 24.0f : 12.0f);
     const double frameRate = sampleRate_ / e.H;
     const float aAtt  = xleth::dsp::onePoleStep(std::clamp(p.attackMs, 0.1f, 1000.0f) * 1.0e-3, frameRate);
@@ -1156,7 +1157,7 @@ bool Core::computeGains(Engine& e, int numCh, const Params& p, bool publish) noe
         {
             const auto bi = static_cast<size_t>(b);
             const float es = L[b] - base[b];
-            float ex = es, sig = e.sigmaE[bi];
+            float ex = es, sig = e.sigmaE[bi], kap = kappa;
             est[b] = adj[b];   // excess at auditory resolution (== level - baseline above ~300 Hz)
             if (fastOn)
             {
@@ -1173,12 +1174,12 @@ bool Core::computeGains(Engine& e, int numCh, const Params& p, bool publish) noe
                 }
                 if (useFast)
                 {
-                    ex = ef; sig = sf;
+                    ex = ef; sig = sf; kap = kappaFast;
                     est[b] = ef + std::max(adj[b] - es, 0.0f);   // keep the sub-bin (low-f) depth correction of the slow path
                 }
             }
             const float thr = z * sig;
-            kb[b] = ex > thr ? smoothstep01((ex - thr) / (kappa * sig)) : 0.0f;
+            kb[b] = ex > thr ? smoothstep01((ex - thr) / (kap * sig)) : 0.0f;
         }
         for (int b = 0; b < B; ++b)
         {

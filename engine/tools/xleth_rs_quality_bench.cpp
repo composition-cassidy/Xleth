@@ -4151,7 +4151,7 @@ static Stereo coreRaw(CoreT& core, int tier, const RParams& p, const Stereo& in,
 struct TapState
 {
     int N = 0;
-    float z = 4.0f, kappa = 1.5f;
+    float z = 4.0f, kappa = 1.5f, kappaF = 0.5f;   // knee widths (sigma of the estimate in charge): slow / fast, replicating ResonanceCore
     std::vector<int> lobeLo, lobeHi;
     std::vector<unsigned char> own[2];
     // per frame, per channel, per band (filled by update())
@@ -4160,6 +4160,7 @@ struct TapState
     void init(int n, const RParams& p)
     {
         N = n; z = RCore::thresholdSigmas(p.sensitivity); kappa = p.hardKnee ? 1.5f : 3.0f;
+        kappaF = p.hardKnee ? RCore::kFastKneeSigmasHard : RCore::kFastKneeSigmasSoft;
         lobeZones(N, lobeLo, lobeHi);
         own[0].assign(kB, 0); own[1].assign(kB, 0);
     }
@@ -4188,7 +4189,7 @@ struct TapState
                 es[ch][b] = s; ef[ch][b] = f; fast[ch][b] = useFast;
                 ex[ch][b] = useFast ? f : s; sig[ch][b] = useFast ? sf : sS[b];
                 thr[ch][b] = z * sig[ch][b];
-                const float u = (ex[ch][b] - thr[ch][b]) / (kappa * sig[ch][b]);
+                const float u = (ex[ch][b] - thr[ch][b]) / ((useFast ? kappaF : kappa) * sig[ch][b]);
                 knee[ch][b] = ex[ch][b] > thr[ch][b] ? (u >= 1.0f ? 1.0f : u * u * (3.0f - 2.0f * u)) : 0.0f;
                 red[ch][b] = R[b];
             }

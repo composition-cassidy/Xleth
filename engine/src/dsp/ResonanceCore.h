@@ -275,10 +275,17 @@ public:
     // Fast time constant, ms. 40 ms is the knee (measured, quick runs): 25 ms is noisier (larger fast sigma, more false latches; G1 10/12, G4 jitter 0.148 dB vs 0.130, G9a 7/9);
     // 60 ms reacts too late at 500 Hz (G8a 4/6, t50 101-104 ms against the 100 ms gate).
     static constexpr float kDefaultFastTauMs  = 40.0f;
-    // Onset rule, in FAST sigmas: fast - slow > 2.5 -> the band uses the fast estimate (the slow average needs ~200 ms to reach a new level, the fast one ~40 ms, so a real
-    // onset opens a gap of several fast sigmas within a few frames while noise stays inside 2.5). This value comes from the first, symmetric (+-2.5) attempt; its onset side
-    // already met the reaction gate (G8a 6/6), only its release side was too late (below).
-    static constexpr float kSwitchUpSigmas    = 2.5f;
+    // Onset rule, in FAST sigmas: fast - slow > 2.0 -> the band uses the fast estimate (the slow average needs ~200 ms to reach a new level, the fast one ~40 ms, so a real
+    // onset opens a gap of several fast sigmas within a few frames). History: 2.5 came from the first, symmetric (+-2.5) attempt and met G8a on the default noise only; at
+    // 500 Hz the fast estimate's sigma is 1.2 / 1.5 / 1.9 dB (F / N / H), the onset gap of a +12 dB / Q 8 bell peaks at ~3.3 dB at N, so 2.5 sigma (3.8 dB) fired in only
+    // 24 - 40 % of the rise frames and the 200 ms slow average stayed in charge (G8a 500 Hz failed on 3 - 4 of 6 dev seeds; docs/RS_LOWFREQ_DIAGNOSIS.md, H5). 1.5 sigma
+    // (the diagnosis' prototype) hands clean noise to the fast estimate too often: unit test F1 (pink noise, sensitivity 1) mean cut 0.243 dB against its 0.2 dB bound.
+    // 2.0 sigma keeps F1 at 0.116 dB (ResonanceCore.md 1.4).
+    static constexpr float kSwitchUpSigmas    = 2.0f;
+    // Knee width while the FAST estimate is in charge (onset or release latch), in fast sigmas: Hard 0.5, Soft 1.0 (one third of the steady knee, 1.5 / 3 sigma, in both
+    // modes). The fast estimate's sigma is 2 - 3x the slow one's, so the steady knee width would leave an onset at a fraction of its depth until the slow average caught up.
+    static constexpr float kFastKneeSigmasHard = 0.5f;
+    static constexpr float kFastKneeSigmasSoft = 1.0f;
     // Release latch, in FAST sigmas: slow - fast > 2.0 sets the latch (the fast estimate takes over), slow - fast < 0.75 clears it. The latch is asymmetric because the slow
     // estimate falls only as 10 log10(1 + 9 e^(-t / 200 ms)) after a 10 dB resonance stops: it stays within 2.5 fast sigmas of the fast estimate while still 3-5 dB above the
     // clean level, which a symmetric rule never hands over (G9a 6/9). Setting at 2.0 catches the release about 45 ms after the offset; clearing at 0.75 keeps the latch from

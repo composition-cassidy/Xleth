@@ -1413,7 +1413,8 @@ uint64_t hashStereo(const Stereo& s)
     return h;
 }
 
-// T-A: fixed-tier output == the build before live switching (hashes recorded with the frozen pre-change core, commit 85df03d).
+// T-A: fixed-tier output fixture. Recorded with the frozen pre-switching core (85df03d) and reproduced by the live-switching core; RE-RECORDED for the onset change
+// (kSwitchUpSigmas 2.5 -> 2.0, fast-path knee 0.5 / 1.0 sigma; [RSCore] a2), which changes the output wherever the fast estimate takes a band. Any later change must reproduce these.
 void testFixedTierBitIdentity()
 {
     const double sr = 48000.0;
@@ -1430,23 +1431,23 @@ void testFixedTierBitIdentity()
     const std::vector<int> sched = { 1, 37, 128, 255, 511, 1024, 37 };
     struct Case { Core::FrameTier tier; const Params* p; int offset; const char* name; uint64_t expect; };
     const Case cases[] = {
-        { Core::FrameTier::Fast,   &def,     0,  "Fast default",            0x25060c2a75b9517dull },
-        { Core::FrameTier::Normal, &def,     0,  "Normal default",          0x39940e6a2cb57df4ull },
-        { Core::FrameTier::High,   &def,     0,  "High default",            0x6b365dec02bb5948ull },
-        { Core::FrameTier::Fast,   &wBroad,  0,  "Fast weighted broad",     0x98cfaed9e7402b07ull },
-        { Core::FrameTier::Normal, &wBroad,  0,  "Normal weighted broad",   0x9a1368aa4f7fc583ull },
-        { Core::FrameTier::High,   &wBroad,  0,  "High weighted broad",     0xa3f972865f34ceabull },
-        { Core::FrameTier::Fast,   &wNarrow, 0,  "Fast weighted narrow",    0x23153f24807bad95ull },
-        { Core::FrameTier::Normal, &wNarrow, 0,  "Normal weighted narrow",  0xb5703881c6b22543ull },
-        { Core::FrameTier::High,   &wNarrow, 0,  "High weighted narrow",    0x169d9e20ae264714ull },
-        { Core::FrameTier::Normal, &def,     96, "Normal default offset 96",0x1009686e0622dc46ull },
+        { Core::FrameTier::Fast,   &def,     0,  "Fast default",            0xd2c72d957f1bf693ull },
+        { Core::FrameTier::Normal, &def,     0,  "Normal default",          0xf7e86bbef12342abull },
+        { Core::FrameTier::High,   &def,     0,  "High default",            0xa1fe11a43a9a59acull },
+        { Core::FrameTier::Fast,   &wBroad,  0,  "Fast weighted broad",     0xd254c893bac94ce9ull },
+        { Core::FrameTier::Normal, &wBroad,  0,  "Normal weighted broad",   0x3a8149a829d6f9e3ull },
+        { Core::FrameTier::High,   &wBroad,  0,  "High weighted broad",     0x313eba91054bc0c9ull },
+        { Core::FrameTier::Fast,   &wNarrow, 0,  "Fast weighted narrow",    0xc905ff8b8079204dull },
+        { Core::FrameTier::Normal, &wNarrow, 0,  "Normal weighted narrow",  0xc7faf31bfcd6b37bull },
+        { Core::FrameTier::High,   &wNarrow, 0,  "High weighted narrow",    0xe429dd0d5f813ac8ull },
+        { Core::FrameTier::Normal, &def,     96, "Normal default offset 96",0x3b5bf663c77a2878ull },
     };
     for (const Case& k : cases)
     {
         Core c; c.setFrameTier(k.tier); c.setHopPhaseOffset(k.offset); c.prepare(sr, 1024, 2);
         const uint64_t h = hashStereo(render(c, in, sched, *k.p));
         char buf[200];
-        std::snprintf(buf, sizeof buf, "T-A fixed tier bit-identical to the pre-switching build: %s hash 0x%016llx (expect 0x%016llx)",
+        std::snprintf(buf, sizeof buf, "T-A fixed tier output == the recorded fixture: %s hash 0x%016llx (expect 0x%016llx)",
                       k.name, static_cast<unsigned long long>(h), static_cast<unsigned long long>(k.expect));
         check(h == k.expect, buf);
     }
