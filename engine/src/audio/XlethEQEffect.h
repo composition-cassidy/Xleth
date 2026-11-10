@@ -187,6 +187,9 @@ public:
                 bandCount_.store(count, std::memory_order_relaxed);
                 for (int i = 0; i < count && i < kMaxBands; ++i)
                     requestBandClear(i);
+                // [EQCore] the audio thread adopts the restored Spectral
+                // structure at once (no fade) with this edit's snapshot.
+                pendingRestoreSnap_.store(true, std::memory_order_relaxed);
             }
             refreshLatencySamples();
         }
@@ -326,6 +329,32 @@ public:
     int getCoreInstanceIndex() const noexcept { return coreInstanceIndex_; }
     // Read-only view of the core (atomics: any thread; the rest: audio thread).
     const xleth::dsp::resonance::Core& getCoreForTest() const noexcept { return core_; }
+    // The weight curve the Core path passes (numBands() floats on the core's
+    // grid; the union of the Spectral regions) and the band owning each grid
+    // band (-1 = none). Audio thread / between blocks.
+    const float* getCoreWeightCurveForTest() const noexcept { return coreWeights_.data(); }
+    const int* getCoreRegionOwnerForTest() const noexcept { return coreOwner_.data(); }
+    // Completed structural transitions (fade-out / switch / fade-in); any thread.
+    std::uint64_t getStructureSwitchCount() const noexcept
+    {
+        return structureSwitchCount_.load(std::memory_order_relaxed);
+    }
+    // The renderer the Spectral bands use right now (0 none, 1 Legacy, 2 Core)
+    // and the Core's channel mode (ChannelMode). Audio thread / between blocks.
+    int getActiveSpectralRendererForTest() const noexcept { return specActive_.kind; }
+    int getActiveCoreChannelModeForTest() const noexcept { return specActive_.chan; }
+    // Status for the UI (any thread): the enabled Spectral bands ask for
+    // different channel routings, which one core cannot honour (it runs
+    // Stereo); and the bands whose gain is > 0 (upward), which the core cannot
+    // render (they are inert on the Core engine). Both describe the last block.
+    bool isSpectralCoreChannelConflict() const noexcept { return coreChannelConflict_.load(std::memory_order_relaxed); }
+    std::uint32_t getSpectralCoreUpwardBandMask() const noexcept { return coreUpwardMask_.load(std::memory_order_relaxed); }
+    // Bench / tests only (not saved, not automatable; set while not processing):
+    // the Core's stereo link (default 1, see kCoreDefaultStereoLink) and an
+    // open weight curve (nullptr: every grid band weight 1, the parity setting
+    // against the bare core).
+    void setSpectralCoreStereoLinkForBench(float link) noexcept { coreStereoLink_ = std::clamp(link, 0.0f, 1.0f); }
+    void setSpectralCoreFlatWeightsForBench(bool flat) noexcept { coreFlatWeights_ = flat; }
 
     // Tests only. The snapshot the LAST processed block used (read it on the
     // processing thread between blocks), and how many blocks took a fresh
@@ -565,7 +594,10 @@ public:
     int getLatencySamples() const
     {
         int lat = 0;
-        if (hasSpectralBands_.load(std::memory_order_relaxed)) lat += kSTFTLatency;
+        // Spectral: kSTFTLatency for Legacy, Core::latencyFor(sr, requested
+        // tier) for the Core (computed by the parameter path, at the request).
+        if (hasSpectralBands_.load(std::memory_order_relaxed))
+            lat += spectralLatencyStatus_.load(std::memory_order_relaxed);
         if (linPhaseActive_.load(std::memory_order_relaxed)) lat += firLength_ / 2;
         const int currentOSFactor = currentOSFactor_.load(std::memory_order_relaxed);
         if (currentOSFactor > 0)
@@ -826,6 +858,19 @@ public:
         pendingBandClear_.store(0u, std::memory_order_relaxed);
         deferredBandClear_ = 0u;
 
+        // [EQCore] Start on the structure the parameters ask for, without a fade.
+        structFadeLen_ = std::max(1, static_cast<int>(std::lround(sampleRate * (kStructureFadeMs * 0.001))));
+        pendingRestoreSnap_.store(false, std::memory_order_relaxed);
+        deferredRestoreSnap_ = false;
+        restoreSnapPending_ = false;
+        {
+            bool anySpectral = false;
+            if (snap_.linPhase <= 0.5f)
+                for (int b = 0; b < snap_.count; ++b)
+                    if (static_cast<int>(snap_.band[b].mode) == 2 && snap_.band[b].enabled > 0.5f) { anySpectral = true; break; }
+            adoptSpecStructure(targetSpecStructure(anySpectral, snap_, snap_.count, 2), false);
+        }
+
         refreshLatencySamples();
     }
 
@@ -878,7 +923,36 @@ public:
             for (int b = 0; b < count; ++b)
                 if (bands_[b].mode == 2 && bands_[b].enabled) { anySpectral = true; break; }
         }
-        const int currentOSFactor = anySpectral ? 0 : osRaw;
+
+        // ── [EQCore] Spectral structure ─────────────────────────────────────
+        // Which renderer the Spectral bands use (None / Legacy / Core, and the
+        // Core's channel mode). Edges between None and Legacy are adopted at
+        // once and the Legacy path handles them exactly as before (its own
+        // restart + 5 ms fade-in); every edge that involves the Core is a
+        // structural transition: 5 ms output fade-out, switch at a block
+        // boundary (target reset), 5 ms INPUT fade-in.
+        lastNumCh_ = numCh;
+        const int spectralQuality = std::clamp(static_cast<int>(P.spectralQuality), 0, kNumSpectralQualities - 1);
+        const SpecStructure specTarget = targetSpecStructure(anySpectral, P, count, numCh);
+        if (restoreSnapPending_)
+        {
+            // A state restore is a fresh start (as the RS does): adopt the
+            // restored structure at once, without a fade. Legacy-only edges
+            // touch nothing (bit-identical to the restore before [EQCore]).
+            restoreSnapPending_ = false;
+            adoptSpecStructure(specTarget, false);
+        }
+        const bool baseUsesOurDry = beginStructureBlock(specTarget);
+        applyInputFadeIn(buffer, numCh, numSamples);
+        if (baseUsesOurDry && !blockBypassDryIsCore_ && liveDry_.getNumSamples() >= numSamples)
+            for (int ch = 0; ch < numCh; ++ch)
+                liveDry_.copyFrom(ch, 0, buffer, ch, 0, numSamples);
+
+        // Oversampling follows the ACTIVE structure: with Legacy-only edges this
+        // is exactly `anySpectral` (adopted at once); around the Core it switches
+        // at the structural boundary, where the output is silent.
+        const bool spectralActive = specActive_.kind != kSpecKindNone;
+        const int currentOSFactor = spectralActive ? 0 : osRaw;
 
         // Effective sample rate for coefficient computation
         const double effectiveSR = sr * static_cast<double>(1 << currentOSFactor);
@@ -1056,8 +1130,17 @@ public:
             specPreWriteIdx_.store(wi, std::memory_order_release);
         }
 
+        // ── [EQCore] Spectral bands on the shared resonance core ───────────────
+        if (specActive_.kind == kSpecKindCore)
+        {
+            processCoreBlock(buffer, numCh, numSamples, P, count, spectralQuality,
+                             specTarget.kind == kSpecKindCore);
+            if (!specPreEnabled_.load(std::memory_order_relaxed))
+                specPreEnabled_.store(true, std::memory_order_release);
+            stftNeedsRestart_ = true;   // the Legacy stream does not advance meanwhile
+        }
         // ── STFT Spectral Dynamics (skipped when linPhase) ────────────────────
-        if (!linPhaseActive)
+        else if (!linPhaseActive)
         {
             bool hasSpectralBands = false;
             for (int b = 0; b < count; ++b)
@@ -1068,6 +1151,12 @@ public:
                 else
                     bandGR_[b].store(0.0f, std::memory_order_relaxed);  // don't strand the meter
             }
+            // [EQCore] The Legacy stream runs only while Legacy is the active
+            // structure (always the case without the Core: Legacy-only edges are
+            // adopted at once). Before a pending switch onto the Core it must not
+            // start.
+            if (specActive_.kind != kSpecKindLegacy)
+                hasSpectralBands = false;
 
             // Auto-enable pre-EQ spectrum when any Spectral band is active.
             // Do NOT auto-disable; user may want pre-spectrum with other modes too.
@@ -1263,6 +1352,10 @@ public:
             }
         }
 
+        // [EQCore] Output fade-out of a pending structural change (and the switch
+        // when it completes); decides the next block's bypass-dry source.
+        finishStructureBlock(buffer, numCh, numSamples, specTarget);
+
         // ── Post-EQ spectrum tap (after all filtering) ──────────────────────
         {
             const float* L = buffer.getReadPointer(0);
@@ -1310,6 +1403,42 @@ public:
         // The stream is pristine now; a pending un-bypass restart is redundant
         // (and would add a fade-in a plain reset does not have).
         pendingStreamReset_.store(false, std::memory_order_relaxed);
+
+        // [EQCore] A reset is a fresh start: a structural change still fading
+        // is completed at once, and the Core (if it is the structure) restarts
+        // from cleared state on the requested tier. RT-safe (Core::reset).
+        takeParamSnapshot();
+        bool anySpectral = false;
+        if (snap_.linPhase <= 0.5f)
+            for (int b = 0; b < snap_.count; ++b)
+                if (static_cast<int>(snap_.band[b].mode) == 2 && snap_.band[b].enabled > 0.5f) { anySpectral = true; break; }
+        restoreSnapPending_ = false;
+        adoptSpecStructure(targetSpecStructure(anySpectral, snap_, snap_.count, lastNumCh_), false);
+    }
+
+protected:
+    // [EQCore] While the Core is the active structure (and while a structural
+    // transition runs, so a bypassed output never steps) the bypassed output is
+    // this effect's own dry: the core's aligned dryOut, so the latency stays
+    // the Core's through bypass (constant PDC; legacy keeps its latency through
+    // bypass too) and an un-bypass is the base class's 5 ms crossfade between
+    // two signals on the same timeline. Legacy / no Spectral band: false (the
+    // base class's live-input bypass, exactly as before). Read by the base at
+    // the START of a block, so it is computed for the NEXT block.
+    bool usesLatencyAlignedBypassDry() const override
+    {
+        return alignedBypass_;
+    }
+
+    bool copyLatencyAlignedBypassDry(juce::AudioBuffer<float>& dest, int numSamples) override
+    {
+        const auto& src = blockBypassDryIsCore_ ? coreDry_ : liveDry_;
+        const int channels = std::min({ dest.getNumChannels(), src.getNumChannels(), 2 });
+        if (channels <= 0 || src.getNumSamples() < numSamples || dest.getNumSamples() < numSamples)
+            return false;
+        for (int ch = 0; ch < channels; ++ch)
+            dest.copyFrom(ch, 0, src, ch, 0, numSamples);
+        return true;
     }
 
 private:
@@ -1421,6 +1550,8 @@ private:
             readParamsInto(snapWork_);
             if (pendingBandClear_.load(std::memory_order_relaxed) != 0u)
                 deferredBandClear_ |= pendingBandClear_.exchange(0u, std::memory_order_acq_rel);
+            if (pendingRestoreSnap_.load(std::memory_order_relaxed))
+                deferredRestoreSnap_ = pendingRestoreSnap_.exchange(false, std::memory_order_acq_rel) || deferredRestoreSnap_;
             std::atomic_thread_fence(std::memory_order_acquire);
             accepted = !snapshotSeqCheck_ || editSeq_.load(std::memory_order_relaxed) == s1;
         }
@@ -1433,6 +1564,11 @@ private:
 
         snap_ = snapWork_;
         ++snapshotsAccepted_;
+        if (deferredRestoreSnap_)
+        {
+            restoreSnapPending_ = true;
+            deferredRestoreSnap_ = false;
+        }
         if (deferredBandClear_ != 0u)
         {
             for (int b = 0; b < kMaxBands; ++b)
@@ -1440,6 +1576,511 @@ private:
                     bands_[b].clearState();
             deferredBandClear_ = 0u;
         }
+    }
+
+    // ── [EQCore] Spectral structure (audio thread) ──────────────────────────
+    // kind: which renderer the Spectral bands use. chan: the Core's channel
+    // mode (ChannelMode value), only meaningful for the Core.
+    static constexpr int kSpecKindNone   = 0;   // no active Spectral band (or linear phase)
+    static constexpr int kSpecKindLegacy = 1;   // the 4096 STFT path
+    static constexpr int kSpecKindCore   = 2;   // xleth::dsp::resonance::Core
+    static constexpr double kStructureFadeMs = 5.0;
+    // The Core's default stereo link: 1 = both channels get the larger of the
+    // two channels' cuts. The Legacy path applies ONE mask (detected on L) to
+    // both channels; link 1 keeps that "one mask, image preserved" behaviour
+    // while detecting on both channels. Not a parameter (yet): see
+    // setSpectralCoreStereoLinkForBench.
+    static constexpr float kCoreDefaultStereoLink = 1.0f;
+    // Hard knee: the core's depth ceiling is 24 dB x depth; a band's |gain| (dB)
+    // maps onto it (deeper bands clamp at 24 dB).
+    static constexpr float kCoreMaxDepthDb = 24.0f;
+
+    struct SpecStructure
+    {
+        int kind = kSpecKindNone;
+        int chan = 0;
+    };
+
+    static bool sameSpecStructure(const SpecStructure& a, const SpecStructure& b) noexcept
+    {
+        if (a.kind != b.kind) return false;
+        return a.kind != kSpecKindCore || a.chan == b.chan;
+    }
+
+    // None <-> Legacy (and Legacy <-> Legacy): the Legacy path's own semantics,
+    // adopted at once (bit-identical to the EQ before the core).
+    static bool isLegacyOnlyEdge(const SpecStructure& a, const SpecStructure& b) noexcept
+    {
+        return a.kind != kSpecKindCore && b.kind != kSpecKindCore;
+    }
+
+    // The Core's channel mode: the routing all enabled Spectral bands share.
+    // ONE core instance processes one channel configuration, so bands that ask
+    // for different routings cannot all be honoured: the Core then runs Stereo
+    // (both channels, the Legacy semantics) and reports the conflict
+    // (isSpectralCoreChannelConflict). Mono input folds to Stereo, as every
+    // routing does.
+    int spectralCoreChannelMode(const ParamSnapshot& P, int count, int numCh, bool& conflict) const noexcept
+    {
+        conflict = false;
+        int mode = -1;
+        for (int b = 0; b < count; ++b)
+        {
+            // From the snapshot (prepare / reset run before any block latched
+            // bands_[b].mode / enabled); the same conversions as the latch.
+            if (static_cast<int>(P.band[b].mode) != 2 || !(P.band[b].enabled > 0.5f)) continue;
+            int c = static_cast<int>(P.band[b].channel);
+            if (c < 0 || c >= kNumChannelModes) c = 0;
+            if (mode < 0) mode = c;
+            else if (mode != c) conflict = true;
+        }
+        if (mode < 0 || conflict || numCh < 2)
+            return static_cast<int>(ChannelMode::Stereo);
+        return mode;
+    }
+
+    SpecStructure targetSpecStructure(bool anySpectral, const ParamSnapshot& P, int count, int numCh) noexcept
+    {
+        SpecStructure s;
+        if (!anySpectral)
+            return s;
+        const int engine = std::clamp(static_cast<int>(P.spectralEngine), 0, 1);
+        if (engine != kSpectralEngineCore)
+        {
+            s.kind = kSpecKindLegacy;
+            return s;
+        }
+        bool conflict = false;
+        s.kind = kSpecKindCore;
+        s.chan = spectralCoreChannelMode(P, count, numCh, conflict);
+        coreChannelConflict_.store(conflict, std::memory_order_relaxed);
+        return s;
+    }
+
+    // Start of a block. Returns whether the base class takes this block's
+    // bypass dry from us (alignedBypass_ as it read it). Legacy-only edges are
+    // adopted at once; an edge involving the Core starts the output fade-out,
+    // but only in a block whose bypass dry the base took from us (otherwise
+    // alignedBypass_ becomes true at the end of this block and the fade starts
+    // with the next one, so a bypassed output fades instead of stepping).
+    bool beginStructureBlock(const SpecStructure& target) noexcept
+    {
+        const bool baseUsesOurDry = alignedBypass_;
+        blockBypassDryIsCore_ = specActive_.kind == kSpecKindCore;
+        if (structFadingOut_)
+        {
+            specTargetStructure_ = target;   // adopted when the fade-out completes
+        }
+        else if (!sameSpecStructure(target, specActive_))
+        {
+            if (isLegacyOnlyEdge(specActive_, target))
+            {
+                specActive_ = target;
+                specTargetStructure_ = target;
+            }
+            else if (baseUsesOurDry)
+            {
+                specTargetStructure_ = target;
+                structFadingOut_ = true;
+                structFadePos_ = 0;
+            }
+        }
+        return baseUsesOurDry;
+    }
+
+    // Fades the INPUT in after a structural switch: the target renderer was
+    // reset, so its history is silence; ramping what enters it (and the dry it
+    // aligns) makes its output start as a 5 ms ramp after its latency instead of
+    // a step. A no-op outside a transition.
+    void applyInputFadeIn(juce::AudioBuffer<float>& buffer, int channels, int numSamples) noexcept
+    {
+        if (inputFadePos_ >= structFadeLen_ || channels <= 0)
+            return;
+        const float inv = 1.0f / static_cast<float>(structFadeLen_);
+        int pos = inputFadePos_;
+        for (int s = 0; s < numSamples && pos < structFadeLen_; ++s, ++pos)
+        {
+            const float r = static_cast<float>(pos + 1) * inv;
+            for (int ch = 0; ch < channels; ++ch)
+                buffer.getWritePointer(ch)[s] *= r;
+        }
+        inputFadePos_ = pos;
+    }
+
+    // Fade-out gain (1 -> 0 over 5 ms) of a pending structural change on the
+    // output and on this block's bypass dry; the target is adopted at the block
+    // boundary where the gain reached 0 (the rest of that block is silence).
+    // Then alignedBypass_ for the NEXT block (the base reads it before
+    // processEffect).
+    void finishStructureBlock(juce::AudioBuffer<float>& buffer, int channels, int numSamples,
+                              const SpecStructure& target) noexcept
+    {
+        if (structFadingOut_)
+        {
+            auto& bypassDry = blockBypassDryIsCore_ ? coreDry_ : liveDry_;
+            const bool scaleBypassDry = bypassDry.getNumSamples() >= numSamples;
+            const int bypassChannels = std::min(channels, bypassDry.getNumChannels());
+            const float inv = 1.0f / static_cast<float>(structFadeLen_);
+            int pos = structFadePos_;
+            for (int s = 0; s < numSamples; ++s)
+            {
+                const float g = pos < structFadeLen_ ? 1.0f - static_cast<float>(pos + 1) * inv : 0.0f;
+                if (pos < structFadeLen_) ++pos;
+                for (int ch = 0; ch < channels; ++ch)
+                    buffer.getWritePointer(ch)[s] *= g;
+                if (scaleBypassDry)
+                    for (int ch = 0; ch < bypassChannels; ++ch)
+                        bypassDry.getWritePointer(ch)[s] *= g;
+            }
+            structFadePos_ = pos;
+            if (structFadePos_ >= structFadeLen_)
+                adoptSpecStructure(specTargetStructure_, true);
+        }
+
+        alignedBypass_ = specActive_.kind == kSpecKindCore
+                      || structFadingOut_
+                      || inputFadePos_ < structFadeLen_
+                      || (!sameSpecStructure(target, specActive_) && !isLegacyOnlyEdge(specActive_, target));
+    }
+
+    // Makes `s` the active structure. Resets the renderer it selects when it
+    // comes from somewhere else: the Core restarts from cleared state on the
+    // requested tier; the Legacy stream is rewound (fresh, no own fade-in: the
+    // input fade-in, or a restore's fresh start, provides the onset) when it
+    // takes over from the Core. RT-safe: every engine was built in prepare.
+    // Also used by prepare / reset / state restore (fadeIn = false).
+    void adoptSpecStructure(const SpecStructure& s, bool fadeIn) noexcept
+    {
+        const SpecStructure prev = specActive_;
+        specActive_ = s;
+        specTargetStructure_ = s;
+        structFadingOut_ = false;
+        structFadePos_ = 0;
+        inputFadePos_ = fadeIn ? 0 : structFadeLen_;
+
+        if (s.kind == kSpecKindCore)
+        {
+            resetCoreOnTier(std::clamp(static_cast<int>(snap_.spectralQuality), 0, kNumSpectralQualities - 1));
+            coreRegionsValid_ = false;
+        }
+        else if (s.kind == kSpecKindLegacy && prev.kind == kSpecKindCore)
+        {
+            resetSTFTStream();
+            for (int b = 0; b < kMaxBands; ++b)
+                std::fill(bands_[b].specBinEnv.begin(), bands_[b].specBinEnv.end(), 1.0f);
+            stftNeedsRestart_ = false;
+            stftFadeIn_ = false;
+        }
+
+        alignedBypass_ = s.kind == kSpecKindCore || fadeIn;
+        if (fadeIn)
+            structureSwitchCount_.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    // Puts the core on `quality`'s tier with cleared state, without a tier
+    // crossfade: a pending request is adopted by a zero-length process() and the
+    // transition it starts is completed at once by reset() (ResonanceCore.md
+    // 9.7). The same recipe as the Resonance Suppressor.
+    void resetCoreOnTier(int quality) noexcept
+    {
+        coreRequestedQuality_ = quality;
+        if (core_.sampleRate() <= 0.0)
+            return;
+        if (static_cast<int>(core_.targetFrameTier()) != std::clamp(quality, 0, kNumSpectralQualities - 1))
+        {
+            core_.requestTier(tierForQuality(quality));
+            float* none[1] = { coreDryMono_.empty() ? nullptr : coreDryMono_.data() };
+            if (none[0] != nullptr)
+                core_.process(none, 1, 0, xleth::dsp::resonance::Params{});
+        }
+        core_.reset();
+    }
+
+    // Legacy threshold (local envelope x (1 + spec_sens x spec_sel)) in dB, and
+    // its mapping onto the core's sensitivity (sigma threshold 6 - 4 s): the
+    // same direction (lower threshold = more sensitive) with the Legacy default
+    // (0.5, 5: 10.9 dB) on the core default 0.5 EXACTLY, 0 dB on 1 (most
+    // sensitive), twice the default (21.8 dB) and above on 0.
+    static float coreSensitivityFor(float specSens, float specSel) noexcept
+    {
+        const float thrDb = 20.0f * std::log10(std::max(1.0f + specSens * specSel, 1.0e-6f));
+        const float defDb = 20.0f * std::log10(1.0f + 0.5f * 5.0f);
+        return std::clamp(1.0f - thrDb / (2.0f * defDb), 0.0f, 1.0f);
+    }
+
+    // The regions: every enabled Spectral band with a cut (gain < 0) is one
+    // region of ONE weight curve on the core's band grid. A region is the
+    // band's own bell (the Legacy influence zone: an RBJ bell at the band's
+    // freq / Q and |gain| dB, normalised to 1 at its centre), scaled by
+    // min(|gain|, 24) / D, where D is the deepest region's min(|gain|, 24); the
+    // core's depth is D / 24 (Hard). The union is the maximum over regions.
+    // Recomputed only when a region's (smoothed) freq / Q / gain moves by more
+    // than the Legacy weight cache's thresholds or the set of regions changes
+    // (pre-sized std::arrays: no allocation). The detector settings the core
+    // shares between regions (sensitivity, attack, release) come from the
+    // DOMINANT region: the deepest cut, the lowest band index on a tie.
+    void refreshCoreRegions(const ParamSnapshot& P, int count) noexcept
+    {
+        std::uint32_t mask = 0;
+        bool changed = !coreRegionsValid_;
+        for (int b = 0; b < count; ++b)
+        {
+            if (bands_[b].mode != 2 || !bands_[b].enabled) continue;
+            mask |= 1u << b;
+            const auto& bs = bands_[b];
+            const float f = std::max(bs.freqSmooth.getCurrentValue(), 20.0f);
+            const float q = std::max(bs.qSmooth.getCurrentValue(), 0.1f);
+            const float g = bs.gainSmooth.getCurrentValue();
+            auto& key = coreRegionKey_[b];
+            const bool wasRegion = (coreRegionMask_ & (1u << b)) != 0u;
+            if (!wasRegion
+                || std::abs(f - key.freq) > key.freq * 0.001f
+                || std::abs(q - key.q) > 0.001f
+                || std::abs(g - key.gain) > 0.01f)
+            {
+                key.freq = f; key.q = q; key.gain = g;
+                changed = true;
+            }
+        }
+        if (mask != coreRegionMask_) changed = true;
+        coreRegionMask_ = mask;
+
+        float depthDb = 0.0f;
+        int dominant = -1;
+        std::uint32_t upward = 0;
+        for (int b = 0; b < count; ++b)
+        {
+            if ((mask & (1u << b)) == 0u) continue;
+            const float g = coreRegionKey_[b].gain;
+            if (g < 0.0f)
+            {
+                const float d = std::min(-g, kCoreMaxDepthDb);
+                if (d > depthDb) { depthDb = d; dominant = b; }
+            }
+            else if (g > 0.0f)
+            {
+                upward |= 1u << b;
+            }
+        }
+        coreUpwardMask_.store(upward, std::memory_order_relaxed);
+
+        coreDepthDb_ = depthDb;
+        if (dominant >= 0)
+        {
+            const auto& bp = P.band[dominant];
+            coreSensitivity_ = coreSensitivityFor(bp.specSens, bp.specSel);
+            coreAttackMs_ = bp.specAttack;
+            coreReleaseMs_ = bp.specRelease;
+        }
+
+        if (!changed)
+            return;
+
+        // Per region: its bell's coefficients (computeCoefficients is pure
+        // arithmetic + std::cos / sin / pow on scalars; no allocation).
+        struct Bell { float b0, b1, b2, a1, a2, shapeDb, scale; bool on; };
+        Bell bells[kMaxBands];
+        for (int b = 0; b < kMaxBands; ++b)
+        {
+            bells[b].on = false;
+            if (b >= count || (mask & (1u << b)) == 0u || depthDb <= 0.0f) continue;
+            const auto& key = coreRegionKey_[b];
+            if (key.gain >= 0.0f) continue;   // upward / inert: not expressible by the core (cuts only)
+            const float shapeDb = std::max(std::abs(key.gain), 1.0f);
+            BandState tmp;
+            computeCoefficients(tmp, BandType::Bell, key.freq, shapeDb, key.q, sampleRate_.load(std::memory_order_relaxed));
+            bells[b] = { tmp.b0, tmp.b1, tmp.b2, tmp.a1, tmp.a2, shapeDb,
+                         std::min(-key.gain, kCoreMaxDepthDb) / depthDb, true };
+        }
+
+        const int bands = std::min(core_.numBands(), xleth::dsp::resonance::kGridBands);
+        for (int k = 0; k < bands; ++k)
+        {
+            const float cw = coreGridCosW_[static_cast<std::size_t>(k)], sw = coreGridSinW_[static_cast<std::size_t>(k)];
+            const float c2 = coreGridCos2W_[static_cast<std::size_t>(k)], s2 = coreGridSin2W_[static_cast<std::size_t>(k)];
+            float w = 0.0f;
+            int owner = -1;
+            for (int b = 0; b < kMaxBands; ++b)
+            {
+                if (!bells[b].on) continue;
+                const Bell& h = bells[b];
+                const float nRe = h.b0 + h.b1 * cw + h.b2 * c2;
+                const float nIm =      - h.b1 * sw - h.b2 * s2;
+                const float dRe = 1.0f + h.a1 * cw + h.a2 * c2;
+                const float dIm =      - h.a1 * sw - h.a2 * s2;
+                const float dMagSq = dRe * dRe + dIm * dIm;
+                const float magSq = dMagSq > 1.0e-30f ? (nRe * nRe + nIm * nIm) / dMagSq : 1.0f;
+                const float shape = std::clamp(10.0f * std::log10(std::max(magSq, 1.0e-30f)) / h.shapeDb, 0.0f, 1.0f);
+                const float wb = shape * h.scale;
+                if (wb > w) { w = wb; owner = b; }
+            }
+            coreWeights_[static_cast<std::size_t>(k)] = w;
+            coreOwner_[static_cast<std::size_t>(k)] = owner;
+        }
+        coreRegionsValid_ = true;
+    }
+
+    xleth::dsp::resonance::Params makeCoreParams() const noexcept
+    {
+        xleth::dsp::resonance::Params p;
+        p.depth       = std::clamp(coreDepthDb_ / kCoreMaxDepthDb, 0.0f, 1.0f);
+        p.hardKnee    = true;
+        p.sensitivity = coreSensitivity_;
+        p.attackMs    = coreAttackMs_;
+        p.releaseMs   = coreReleaseMs_;
+        p.stereoLink  = coreStereoLink_;
+        p.weightCurve = coreFlatWeights_ ? nullptr : coreWeights_.data();
+        return p;
+    }
+
+    // The Spectral bands through the core, in place on `buffer` (in the Legacy
+    // path's position: before the biquad cascade). Fills coreDry_ (the input on
+    // the wet output's exact timeline: the bypass dry while the Core runs).
+    // Audio thread: no allocation, lock or log.
+    void processCoreBlock(juce::AudioBuffer<float>& buffer, int numCh, int numSamples,
+                          const ParamSnapshot& P, int count, int quality, bool targetIsCore) noexcept
+    {
+        const int cap = coreDry_.getNumSamples();
+        if (core_.sampleRate() <= 0.0 || numCh <= 0 || numSamples > cap
+            || static_cast<int>(coreAuxIn_.size()) < numSamples)
+        {
+            // Not prepared, or a block larger than prepared (hosts never do
+            // this; the base class's own dry buffer has the same limit).
+            buffer.clear();
+            coreDry_.clear();
+            return;
+        }
+
+        // Quality on the Core is a live tier request, never a reprepare / reset.
+        if (quality != coreRequestedQuality_)
+        {
+            core_.requestTier(tierForQuality(quality));
+            coreRequestedQuality_ = quality;
+        }
+
+        // While fading OUT towards another structure the regions and shared
+        // settings stay what they were (the band that is going away keeps
+        // its cut until the output is silent).
+        if (targetIsCore || !coreRegionsValid_)
+            refreshCoreRegions(P, count);
+        const xleth::dsp::resonance::Params params = makeCoreParams();
+
+        float* outL = buffer.getWritePointer(0);
+        float* outR = numCh > 1 ? buffer.getWritePointer(1) : nullptr;
+        float* dryL = coreDry_.getWritePointer(0);
+        float* dryR = coreDry_.getWritePointer(1);
+        float* comp = coreComp_.data();
+        float* aux = coreAuxIn_.data();
+        float* auxOut = coreAuxOut_.data();
+        float* dryMono = coreDryMono_.data();
+        const int mode = numCh > 1 ? specActive_.chan : static_cast<int>(ChannelMode::Stereo);
+
+        const bool timeCore = isRealtimeTimingEnabled();
+        const std::uint64_t coreStartNs = timeCore ? realtimeNowNs() : 0;
+
+        int processed = 1;
+        switch (static_cast<ChannelMode>(mode))
+        {
+        case ChannelMode::Left:
+        case ChannelMode::Right:
+        {
+            // One channel through the core (channel 0), the other delay-only
+            // through the aux channel on the dry timeline: bit-identical, just
+            // delayed (ResonanceCore.md 9.2).
+            float* proc  = mode == static_cast<int>(ChannelMode::Left) ? outL : outR;
+            float* other = mode == static_cast<int>(ChannelMode::Left) ? outR : outL;
+            float* procDry  = mode == static_cast<int>(ChannelMode::Left) ? dryL : dryR;
+            float* otherDry = mode == static_cast<int>(ChannelMode::Left) ? dryR : dryL;
+            std::copy(other, other + numSamples, aux);
+            float* ch[1] = { proc };
+            float* dry[1] = { procDry };
+            core_.process(ch, 1, numSamples, params, dry, aux, auxOut);
+            std::copy(auxOut, auxOut + numSamples, other);
+            std::copy(auxOut, auxOut + numSamples, otherDry);
+            break;
+        }
+        case ChannelMode::Mid:
+        {
+            // M as the core's channel 0, S delay-only: L' = M' + S_d, R' = M' - S_d.
+            for (int s = 0; s < numSamples; ++s)
+            {
+                comp[s] = 0.5f * (outL[s] + outR[s]);
+                aux[s]  = 0.5f * (outL[s] - outR[s]);
+            }
+            float* ch[1] = { comp };
+            float* dry[1] = { dryMono };
+            core_.process(ch, 1, numSamples, params, dry, aux, auxOut);
+            for (int s = 0; s < numSamples; ++s)
+            {
+                const float side = auxOut[s];
+                outL[s] = comp[s] + side;
+                outR[s] = comp[s] - side;
+                dryL[s] = dryMono[s] + side;
+                dryR[s] = dryMono[s] - side;
+            }
+            break;
+        }
+        case ChannelMode::Side:
+        {
+            // S as the core's channel 0, M delay-only: L' = M_d + S', R' = M_d - S'.
+            for (int s = 0; s < numSamples; ++s)
+            {
+                comp[s] = 0.5f * (outL[s] - outR[s]);
+                aux[s]  = 0.5f * (outL[s] + outR[s]);
+            }
+            float* ch[1] = { comp };
+            float* dry[1] = { dryMono };
+            core_.process(ch, 1, numSamples, params, dry, aux, auxOut);
+            for (int s = 0; s < numSamples; ++s)
+            {
+                const float mid = auxOut[s];
+                outL[s] = mid + comp[s];
+                outR[s] = mid - comp[s];
+                dryL[s] = mid + dryMono[s];
+                dryR[s] = mid - dryMono[s];
+            }
+            break;
+        }
+        case ChannelMode::Stereo:
+        default:
+            if (numCh > 1)
+            {
+                float* ch[2] = { outL, outR };
+                float* dry[2] = { dryL, dryR };
+                core_.process(ch, 2, numSamples, params, dry);
+                processed = 2;
+            }
+            else
+            {
+                float* ch[1] = { outL };
+                float* dry[1] = { dryL };
+                core_.process(ch, 1, numSamples, params, dry);
+            }
+            break;
+        }
+
+        if (timeCore)
+            recordRealtimeSection("eq_core", realtimeNowNs() - coreStartNs);
+
+        // Per-band GR meter (eqGetBandGR): unchanged schema and scale, signed dB,
+        // negative = cut. A band shows the deepest applied cut over the grid
+        // bands its region owns (the core's last frame, every processed channel).
+        // Upward (gain > 0) and inert bands read 0 on the Core (cuts only).
+        float deepest[kMaxBands] = {};
+        const int bandsN = std::min(core_.numBands(), xleth::dsp::resonance::kGridBands);
+        for (int c = 0; c < processed; ++c)
+        {
+            const float* red = core_.bandReductionDb(c);
+            for (int k = 0; k < bandsN; ++k)
+            {
+                const int o = coreOwner_[static_cast<std::size_t>(k)];
+                if (o >= 0 && red[k] > deepest[o]) deepest[o] = red[k];
+            }
+        }
+        for (int b = 0; b < count; ++b)
+            if (bands_[b].mode == 2)
+                bandGR_[b].store(bands_[b].enabled && deepest[b] > 0.0f ? -deepest[b] : 0.0f,
+                                 std::memory_order_relaxed);
     }
 
     // ── Per-band state ───────────────────────────────────────────────────────
@@ -1635,6 +2276,37 @@ private:
     int  coreRequestedQuality_ = kDefaultSpectralQuality;
     int  coreInstanceIndex_ = -1;
     inline static std::atomic<int> sCoreInstanceCounter_ { 0 };
+
+    // [EQCore] regions (audio thread): the cached shape per band, the region
+    // set, the core's depth and the shared detector settings of the dominant
+    // region (Legacy defaults until a region exists).
+    struct RegionKey { float freq = 1000.0f, q = 0.707f, gain = 0.0f; };
+    RegionKey coreRegionKey_[kMaxBands];
+    std::uint32_t coreRegionMask_ = 0;
+    float coreDepthDb_ = 0.0f;
+    float coreSensitivity_ = 0.5f;
+    float coreAttackMs_ = 10.0f;
+    float coreReleaseMs_ = 100.0f;
+    float coreStereoLink_ = kCoreDefaultStereoLink;   // bench / tests override (before processing)
+    bool  coreFlatWeights_ = false;                   // bench / tests: no weight curve (all bands 1)
+    std::atomic<bool> coreChannelConflict_ { false };      // routed Spectral bands disagree (Core runs Stereo)
+    std::atomic<std::uint32_t> coreUpwardMask_ { 0 };      // bands with gain > 0 (the Core cannot boost)
+
+    // [EQCore] structure (audio thread unless noted)
+    SpecStructure specActive_;
+    SpecStructure specTargetStructure_;
+    bool structFadingOut_ = false;
+    int  structFadePos_ = 0;
+    int  structFadeLen_ = 1;
+    int  inputFadePos_ = 1;
+    bool alignedBypass_ = false;          // the value the base reads at the next block start
+    bool blockBypassDryIsCore_ = false;   // this block's bypass dry source (latched)
+    int  lastNumCh_ = 2;
+    bool restoreSnapPending_ = false;
+    bool deferredRestoreSnap_ = false;
+    std::atomic<bool> pendingRestoreSnap_ { false };            // set inside a restore edit
+    std::atomic<std::uint64_t> structureSwitchCount_ { 0 };     // completed fade-out/switch/fade-in (any thread reads)
+    std::atomic<int> spectralLatencyStatus_ { kSTFTLatency };   // parameter path: Legacy 4096 / Core latencyFor
 
     float stftWindow_[kSTFTSize]{};         // sqrt-Hann (analysis AND synthesis)
     float stftNorm_[kSTFTHop]{};            // 1/sum(w^2) per hop phase
@@ -2528,6 +3200,18 @@ private:
             }
         }
 
+        // [EQCore] The Spectral latency of the REQUESTED renderer: Legacy 4096,
+        // Core Core::latencyFor(sr, tier). Published at the request; the audio
+        // reaches it after the structural fade-out (engine / band changes) or
+        // after the core's hold + crossfade (quality changes): the latency
+        // window of ResonanceCore.md "Using the core in the Param EQ".
+        const bool core = static_cast<int>(readGlobalParam("spectral_engine",
+                              static_cast<float>(kSpectralEngineLegacy))) == kSpectralEngineCore;
+        const double sr = sampleRate_.load(std::memory_order_relaxed);
+        spectralLatencyStatus_.store(core
+            ? xleth::dsp::resonance::Core::latencyFor(sr > 0.0 ? sr : 44100.0, tierForQuality(readSpectralQualityParam()))
+            : kSTFTLatency, std::memory_order_relaxed);
+
         linPhaseActive_.store(linPhase, std::memory_order_relaxed);
         hasSpectralBands_.store(anySpectral, std::memory_order_relaxed);
         currentOSFactor_.store(anySpectral ? 0 : osRaw, std::memory_order_relaxed);
@@ -2542,6 +3226,8 @@ private:
     {
         return paramId == "linphase"
             || paramId == "oversample"
+            || paramId == "spectral_engine"
+            || paramId == "spectral_quality"
             || paramId.find("_enabled") != std::string::npos
             || paramId.find("_mode") != std::string::npos;
     }
