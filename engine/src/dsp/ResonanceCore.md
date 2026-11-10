@@ -25,7 +25,7 @@ for arbitrary program material.
 1. Architecture
 2. Tunables
 3. Rejected approaches
-4. G1 resolution ceiling, and what to tell users
+4. Low frequencies: what limits the cut, the per-bin path, and what to tell users
 5. Real-time rules: allocation and threading
 6. Running the bench against the core
 7. Measured margins (7.1 single-seed robustness, 7.2 D1 vs the bench, 7.3 worst-case CPU, 7.4 seed protocol and tier study, 7.5 multi-instance bursts)
@@ -96,12 +96,14 @@ worse, the end of one. The fast estimate follows within a few frames but is nois
 | situation | rule | threshold | why |
 |---|---|---|---|
 | **steady** | use the slow estimate | - | smallest sigma, so the lowest false-trigger rate and the least jitter |
-| **onset** | fast - slow > `kSwitchUpSigmas` fast sigmas: use the fast estimate | **2.5** | a new resonance lifts the fast level well before the slow one; noise stays inside 2.5 sigma |
+| **onset** | fast - slow > `kSwitchUpSigmas` fast sigmas: use the fast estimate | **2.0** | a new resonance lifts the fast level well before the slow one. 2.5 (the first value) fired in only 24 - 40 % of the rise frames of a 500 Hz bell (its fast sigma is 1.2 / 1.5 / 1.9 dB at F / N / H), so the slow average stayed in charge and G8a 500 Hz failed on 3 - 4 of 6 dev seeds; 1.5 regressed unit test F1 (clean pink, sensitivity 1: mean cut 0.243 dB against 0.2). 2.0: G8a 500 Hz 6/6 dev seeds at N / H, F1 0.116 dB |
 | **release latch, set** | slow - fast > `kVetoSetSigmas` fast sigmas: latch the band to the fast estimate | **2.0** | after the resonance stops, the slow estimate falls only as 10 log10(1 + 9 e^(-t / 200 ms)); it is still 3-5 dB above the clean level while already inside 2.5 fast sigmas of the fast estimate, so a symmetric +-2.5 rule never hands over (G9a 6/9). 2.0 sets the latch about 45 ms after the offset (one 5.3 ms hop, the 21 ms window, and the 40 ms average having to fall by 2 fast sigmas, about 2.1 dB; measured at 2.5 kHz) |
 | **release latch, clear** | slow - fast < `kVetoClearSigmas` fast sigmas: back to the slow estimate | **0.75** | hysteresis; the latch must not chatter while the slow estimate converges back |
 
 The threshold, the knee width and the depth cap all run on the estimate that is in charge, with that estimate's own
-sigma. While a band is latched, the cut follows the fast excess (which falls to 0 within a few frames) and the
+sigma. While the fast estimate is in charge the knee is narrower: `kFastKneeSigmasHard` / `kFastKneeSigmasSoft` = 0.5 / 1.0 fast
+sigma (one third of the steady 1.5 / 3 sigma); with the steady width an onset reached only part of its depth until the slow average
+caught up. While a band is latched, the cut follows the fast excess (which falls to 0 within a few frames) and the
 per-band release (`releaseMs`, default 200 ms) runs from the cut the band had: a 9.3 dB cut decays below 1 dB about
 (500 - 45) ms later (9.3 dB x e^(-455 / 200) = 0.95 dB), i.e. the release the user asked for, not the detector's lag.
 In steady state the false-latch rate is about 2 % per band-frame, lasting a few frames, and the steady cut differs from the
@@ -115,14 +117,17 @@ slow-only core by <= 0.5 dB (unit test D2: 9.32 dB against 9.32 dB at 2.5 kHz).
    window's leakage of it into neighbouring bins).
 3. **Target** = K x E: the **whole excess**, i.e. towards the baseline, not "excess minus threshold" (which would leave
    the threshold standing as a residual).
-4. **Sub-bin depth correction** (below about 300 Hz at N = 1024, where an ERB is narrower than the analysis kernel): the
-   *depth* of the cut, not the detection decision, uses the excess an auditory filter centred on the peak would see.
+4. **Sub-bin depth correction** (legacy rule: where an ERB is narrower than the analysis kernel): the *depth* of the cut, not the
+   detection decision, uses the excess an auditory filter centred on the peak would see. Since the low-frequency per-bin path
+   (section 4) it is applied only to bands at or above the split's guard (band 15, ~270 Hz at 48 kHz); below that the per-bin path
+   carries the sub-bin depth.
 5. **Depth cap:** R = r / (1 + (r / Rmax)^p)^(1/p), Rmax = depth x 12 dB (Soft, p = 2) or depth x 24 dB (Hard, p = 6).
 6. **Per-band attack / release** in dB at the frame rate (one-pole), then **[1 2 1] / 4** smoothing across bands
    (at the default `sharpness` 0.5; section 8.2), then the **stereo link** (each channel blends towards max(L, R) by
    `stereoLink`), then the optional **weight curve** (section 8.1).
 7. **G(f):** the band curve in dB is interpolated linearly on the ERB axis to every bin and applied as a real,
-   zero-phase gain. If every gain is exactly 1 the multiply is skipped.
+   zero-phase gain; below `kLowSplitHz` (400 Hz) each bin takes the larger of that and the per-bin path's cut (section 4). If every
+   gain is exactly 1 the multiply is skipped.
 
 ### 1.6 Cost control
 
@@ -162,6 +167,7 @@ setting; the musical-noise gate G4 is graded on it).
 | `setFrameTier()` | Normal | tier | the tier `prepare()` starts on: N = 512 / 1024 / 2048 (window 10.7 / 21.3 / 42.7 ms at <= 50 kHz); latency = N. Nothing is retuned per tier |
 | `requestTier()` | - | tier | **live**, any thread: switch the tier while processing (section 9). Not structural |
 | `setKeepDetectorStateOnTierSwitch()` | true | bool | study option: false starts the new tier from reset state on a switch (9.4) |
+| `setLowFreqBinPath()` | true | bool | reference option: false removes the low-frequency per-bin path and restores the legacy sub-bin correction everywhere, bit-identical to the core before the path (section 4) |
 | `setDetectorTimeConstantMs()` | 200 | ms | slow estimate |
 | `setFastTimeConstantMs()` | 40 | ms | fast estimate; 0 disables the fast path (slow only) |
 | `setHopPhaseOffset()` | 0 | samples | initial hop phase, modulo the hop; latency stays N; 0 = historical behaviour (bit-identical). Use `Core::hopPhaseOffsetForInstance(i, hop)` for instance i in one thread (7.5, 8.7). Kept as a fraction of the hop across tier switches (9.5) |
@@ -171,7 +177,11 @@ setting; the musical-noise gate G4 is graded on it).
 
 | constant | value | unit | role |
 |---|---|---|---|
-| `kSwitchUpSigmas` | 2.5 | fast sigma | onset: fast - slow above this uses the fast estimate |
+| `kSwitchUpSigmas` | 2.0 | fast sigma | onset: fast - slow above this uses the fast estimate (1.4) |
+| `kFastKneeSigmasHard` / `kFastKneeSigmasSoft` | 0.5 / 1.0 | fast sigma | knee width while the fast estimate is in charge |
+| `kLowSplitHz` | 400 | Hz | bins below it get the low-frequency per-bin path (section 4), every tier and sample rate |
+| `kLowSplitGuardBands` | 6 | bands | the band path drops the sub-bin correction only this many bands below the split, so every bin >= 400 Hz stays bit-identical |
+| `kLfDeltaSteps` / `kLfDepthSteps` / `kLfTaps` | 32 / 24 / 6 | - | notch table: offset 1/32 bin, depth 0 .. 24 dB in 1 dB, cut on floor(p) - 2 .. + 3 |
 | `kVetoSetSigmas` | 2.0 | fast sigma | release latch: slow - fast above this latches the fast estimate |
 | `kVetoClearSigmas` | 0.75 | fast sigma | release latch: clears below this |
 | `kBaselineJumpDb` | 1.5 | dB | mean-band-level jump that forces a full baseline refresh |
@@ -200,55 +210,93 @@ G8a 4/6, G9a 1/9, G1 11/12, G4 std 0.129 dB.
 
 **Kept: 1c**, the two-speed detector with the release latch set at 2.0 / clear at 0.75 fast sigma and fast tau 40 ms:
 G8a 6/6, G9a 9/9, G1 11/12 (the missing one is 100 Hz, section 4), G4 std 0.130 (quick) / 0.156 (full), steady state
-untouched. Two earlier, separate failed attempts at the 100 Hz case (main-lobe-gated reduction; auditory-resolution
-target) are in section 4.
+untouched. Two earlier attempts at the 100 Hz case kept their place in the core: main-lobe-gated reduction (5.43 -> 4.84 dB at tau 100 ms)
+and the auditory-resolution depth target (-> 2.92 dB at tau 200 ms; it fixed 150 / 220 / 330 Hz but not 100 Hz). Neither touched the
+gain path, which section 4 now shows was the limit.
 
-## 4. G1 resolution ceiling, and what to tell users
+## 4. Low frequencies: what limits the cut, the per-bin path, and what to tell users
 
-**Fact.** On the bench's default noise, G1 passes at 11 of the 12 scan frequencies. At **f0 = 100 Hz it fails**: the in-window
-residual of a +12 dB / Q 8 bell is +3.1 to +3.6 dB over seven noise realisations (+3.45 dB on the default one) against a limit of
-2.10 dB (the bell's mean boost over the gate window is 7.23 dB, so about half of it is removed). The same ceiling holds at
-N = 2048 (+3.65 dB on the default noise). **150 Hz is also at the edge** (section 7: it fails on 5 of 6 other noise
-realisations by 0.1 - 0.2 dB); the waiver does not cover it.
+**What the evidence says** (`--lowfreq-diag`, docs/RS_LOWFREQ_DIAGNOSIS.md, seeds 0..6). A +12 dB / Q 8 bell at 100 Hz is 12.5 Hz wide,
+narrower than one analysis bin at every tier (93.8 / 46.9 / 23.4 Hz). That is **not** a resolution ceiling at Normal and High: cut-only
+per-bin gains through the same WOLA transform (the `ls` oracle) pass the 100 Hz cell (N 1.10, H 0.41 dB against 2.10), and pre-compensating
+the window kernel does **not** need gains above 1. The core missed the cell for two reasons of its own: (1) its gain path - 96 ERB bands, then
+[1 2 1] / 4, then linear interpolation to the bins - cannot represent a 12.5 Hz notch at 100 Hz (even a perfect detector through it leaves
+2.5 - 3.2 dB); (2) the depth was the window-averaged excess, about half the peak in dB. At Fast the transform IS the limit (the `ls` oracle
+fails, 2.42 dB): Fast's earlier pass of the 100 Hz cell came from cutting ~7 dB across 44 - 205 Hz, which G2 does not see (it starts at 100 Hz).
 
-**Cause.** A Q 8 bell at 100 Hz is 12.5 Hz wide at -3 dB. An FFT bin is 46.9 Hz at N = 1024 and 23.4 Hz at N = 2048, so
-the resonance is narrower than one analysis bin. The detector sees the **bin-average** excess (about 4.7 dB at N = 1024:
-barely above the 5.1 dB threshold, detected in 43 % of frames at tau 100 ms, 82 % at 200 ms), and the cut is that
-average, so the sub-bin peak stays standing. At N = 2048 the resonance is resolved better (bin excess 6.34 dB, detected)
-but the mean cut is still 5.86 dB against an in-window peak of about 8.6 dB, for the same reason. The WOLA renderer
-adds to this: its response is the per-bin gains convolved (in amplitude) with the sine-window power kernel (bin offsets 0 /
-+-1 / +-2 weigh 1 / 0.111 / 0.004), so a notch narrower than about two bins cannot reach full depth.
+**The per-bin path (below `kLowSplitHz` = 400 Hz, every tier and sample rate).** It replaces the old ERB-vs-ENBW coverage rule (which gave
+281 / 750 / 23 Hz at N / F / H) with a fixed frequency. 400 Hz: a Q 8 bell is narrower than one Normal-tier bin below ~370 Hz; the band path
+already meets G1 at 500 Hz on every tier; and the G8a onset cell (500 Hz) stays entirely on the band path. Per frame and channel:
 
-**What was tried (two strikes, then stopped):**
+1. **Peaks** of the slow bin excess fraction x_k (level over the interpolated flank baseline) below the split. Per peak: mass m (sum of x over
+   +/- 2 bins), position p (the excess centroid mapped through a line-source centroid table of that tier's window, which removes the
+   truncation bias next to DC), width w (the peak bin's share of the mass against the share of a width-w source at that offset: robust to a
+   resonance's long tails, which made the old second-moment width read ~1 bin for a 0.2-bin-wide bell).
+2. **Depth** D = 10 log10(1 + m / max(ERB(p), w)): the excess an auditory filter centred on the peak would see - the core's existing
+   auditory-resolution definition, now evaluated at the peak itself.
+3. **Detection, dynamics, routing**: target K x D, K = the gated knee of the band nearest p (the band path's own detection state and knee),
+   the depth ceiling per bin (Soft / Hard shape), per-bin attack / release, the stereo link, the weight curve interpolated to the bin (a
+   weight of 0 below 40 Hz still means no cut: unit test LF2). Sharpness, a band-curve smoothing, does not apply.
+4. **Rendering**: the cut on bins floor(p) - 2 .. + 3 is read (bilinear) from a table solved in `prepare()` for each tier: the cut-only,
+   minimum-norm (sum of dB^2) per-bin cut whose WOLA response at p is exactly -D (33 offsets x 25 depths x 6 taps; Lagrange + Lambert-W
+   Newton, bisection on the multiplier). No solve, no allocation in `process()`. Combined with the band curve by **max() per bin**.
+5. **Band path below the split**: the sub-bin depth correction is dropped for bands more than `kLowSplitGuardBands` = 6 below the split
+   (below ~250 Hz) - the per-bin path now carries the sub-bin depth where it can be rendered, and the correction's +-1-bin spreading was
+   what built Fast's plateau. Detection, gating, smoothing and the correction above the guard are unchanged, so **every bin at or above
+   400 Hz is bit-identical** to the core without the path (unit test LF1: every frame, every tier, four parameter sets incl. sharpness 0 /
+   1, weights, link). `setLowFreqBinPath(false)` reproduces the a2 output fixtures bit for bit (T-A).
+6. **Published values** (`bandReductionDb`, the viz tap, the meters) below the split = max(band curve, per-bin path at the band centre),
+   the latter weighted with the band's own weight, so the weight semantics (W2) and meter == max band (E1) hold exactly. `binGains(c)`
+   gives the exact applied per-bin gains.
+7. **Tier switching**: per-bin attack / release state is remapped to the new tier's bins (interpolated to a finer, max over the covered
+   bins to a coarser grid); everything is preallocated for all three tiers. LF5: the largest cut in 70 - 140 Hz stays >= 1.95 dB through
+   every ordered switch (a steady 100 Hz bell; it dips from ~7 dB while the new tier's detector settles). Memory: 90.6 KB of tables per
+   instance (three tiers); LF4: zero `operator new` / `delete` with LF content and 20 tier switches.
 
-1. *Main-lobe-gated reduction* (which bands are cut), averaging tau 100 ms: 100 Hz residual 5.43 -> 4.84 dB.
-2. *Auditory-resolution target* (how deep the cut is, below ~300 Hz): 4.84 -> 4.25 dB at tau 100 ms and 2.92 dB at tau 200 ms (the
-   default); it fixed 150 / 220 / 330 Hz but not 100 Hz.
-3. Longer averaging (tau 400 ms): detection saturates, the residual converges to ~3.5 dB. Not a detection problem.
-4. N = 2048 (High tier): +3.65 dB. Not fixed.
-5. N = 512 (Fast tier) *passes* (+0.96 dB), but not by resolving the resonance: its 94 Hz bin cuts a +-47 Hz neighbourhood,
-   i.e. it over-suppresses around the resonance. It fails G8a 500 Hz / D 300 (t50 104 ms) and G9a 500 Hz / D 1000 (-1.08 dB),
-   so it is not a fix.
+Tried and rejected (one tuning iteration): full depth D wherever the band is detected (the diagnosis' P1 gated it this way). It passes the
+100 Hz cell on the default seed (N 1.61, H 1.33) but lets noise peaks in a detected band take their full depth: unit test F1 (clean pink,
+sensitivity 1) worst low band 1.085 dB against its 1.0 dB bound, and G3 at Fast. The knee is why the path stops short at 100 Hz: a narrow
+low-frequency resonance sits only ~1 sigma above the threshold, so the gated knee averages 0.56 (N) / 0.59 (H) there.
 
-**Not attempted:** renderer-kernel pre-compensation (sharpening the gain curve before the WOLA kernel smooths it, which
-needs gains above 1 on the neighbouring bins or a constrained solve), and a gate change (grade the window against the
-auditory resolution at low frequency). Either would be a separate piece of work.
+**Results** (C1c-*, dev seeds 1..6, robust verdict; `RSC-*0` and `EQS-*` identical; held-out seeds not run):
 
-**Waiver.** The bench evaluator has a named exception: G1 at 100 Hz is waived for C1c, C1c-N and C1c-H, printed as
-"resonance narrower than one analysis bin (resolution ceiling); see design doc", the raw G1 count (11/12) stays
-visible, and the verdict reads `PASS (1 waiver)` when everything else passes. No other subject or frequency is waived.
+| cell (limit) | before (a2) | after (a1) |
+|---|---|---|
+| G1 100 Hz N (2.10) | 0/6, worst 3.51 | 0/6, worst 2.79, median 2.52 |
+| G1 100 Hz H (2.10) | 0/6, worst 3.75 | 1/6, worst 2.56, median 2.32 |
+| G1 150 Hz N (2.07) | 1/6, worst 2.20 | **6/6**, worst 1.30 |
+| G1 150 Hz H (2.07) | 6/6, worst 1.88 | 6/6, worst 0.58 |
+| G1 100 / 150 Hz F | 6/6 (0.93 / 0.71) | 6/6 (-0.15 / -0.56) |
+| G3 F, L 100 Hz in-window (+-1.0) | 4/6, worst -1.074 | 3/6, worst -1.144 |
+| C1c-N / C1c-H robust verdict | FAIL (G1 150) / PASS (waiver) | **PASS (waiver)** / PASS (waiver, 100 Hz passes raw on 1/6) |
 
-**User guidance (for the effect that will wrap this core).**
+f0 scan 85 - 125 Hz (mean over seeds 0..6): every N / H position improves (e.g. N 93.75 Hz 3.96 -> 2.89, H 117 Hz 2.42 -> 0.97; H passes
+111 - 125 Hz on 7/7); the High tier's grid-position swing shrinks from 2.4 - 4.5 to 1.0 - 3.0 dB; on-bin centres remain the hardest. Q 4 at
+100 Hz now passes N / H (1.21 / 1.41 against 2.83); Q 16 does not (3.51 / 3.45 against 1.42; before 3.76 / 3.84).
 
-- Below roughly 150 Hz, a resonance narrower than the analysis bin (a Q of about 8 or more at 100 Hz) is **only partly
-  reduced**. On the bench's +12 dB / Q 8 bell the core removes about 50 % of the bell's in-window boost at 100 Hz, about
-  65 - 70 % at 150 Hz and 85 - 95 % from 220 Hz upward (residuals of 3.5 / 1.9 - 2.3 / 0.5 - 1.2 dB).
-- For a single fixed low-frequency mode, a conventional parametric EQ notch at that frequency is the right tool; this
-  core targets resonances that move, appear and disappear, and sit above that range.
-- The Fast tier (N = 512) removes more at 100 Hz only by also cutting a wider neighbourhood. It is a trade-off, not a
-  more accurate detector.
-- Do not describe the 100 Hz behaviour as a bug that a tier or a sensitivity setting will fix: sensitivity changes
-  what is detected, not how narrow a cut the renderer can make.
+**Low-frequency collateral (G2lo, report-only).** Fast's cut below 100 Hz with the resonance at 100 Hz: 6.4 dB before, 5.8 dB after (dev
+median). It remains because at Fast the only bin holding a 100 Hz resonance is 93.75 Hz wide: any cut of that bin spans ~47 - 140 Hz through
+the kernel. Normal 2.2 dB, High 0.6 dB, unchanged. Above 100 Hz (100 - 400 Hz outside +-1 octave) every tier stays <= 0.16 dB except Fast.
+
+**Bass notes (T-bass, report-only).** At the capability setting (depth 1, Hard) a clean bass sine is cut 19 - 23 dB before and after this
+change (steady notes within +-1.3 dB of before). Decaying 808-style notes come out **1.3 - 2.7 dB quieter** than before (worst High 55 Hz:
+-16.6 -> -19.3 dB; Normal 82 Hz -16.6 -> -18.5 dB). Real material (vocal ad-lib, hat loop, C1c settings) loses 0.04 - 0.2 dB more on average below 400 Hz at N / H (up to
+0.6 dB in single third-octaves) and up to 1.6 dB in 160 - 320 Hz at Fast.
+
+**The bench waiver** still names G1 100 Hz for C1c / C1c-N / C1c-H / RSC-N / RSC-H / RSC-N0 / RSC-H0 with its old reason text (no gate or
+waiver was changed). The reason text is now known to be wrong; see the proposed wording in docs/RS_LOWFREQ_DIAGNOSIS.md and the a1 report.
+
+**User guidance (for the effects that wrap this core).**
+
+- Below ~150 Hz a resonance narrower than the analysis kernel (Q ~8 or more at 100 Hz) is **still only partly reduced** at Normal and High:
+  on the bench's +12 dB / Q 8 bell about 65 % of the in-window boost at 100 Hz (residual ~2.3 - 2.8 dB), ~80 - 95 % at 150 Hz.
+- Sensitivity does move it: at Normal, sensitivity 1.0 took 100 Hz from 3.37 to 2.20 dB before this change (via the knee). The limit is the
+  detector's confidence at low frequencies (the knee), not the renderer.
+- The Fast tier removes more at 100 Hz only by also cutting a whole 94 Hz-wide bin's neighbourhood; it is a trade-off, not a more accurate
+  detector.
+- Bass notes are resonances to this detector: at deep settings a sustained or decaying bass note is cut by up to the depth ceiling. Use the
+  focus / weight curve (the RS default curve is 0 below 40 Hz) or a lower depth on bass-heavy material.
+- For a single fixed low-frequency mode a parametric EQ notch remains the precise tool.
 
 ## 5. Real-time rules: allocation and threading
 
@@ -841,7 +889,9 @@ therefore:
   frequency to a finer grid, a triangular average over the old bins within +-r of the new bin to a coarser grid (r = 2 or 4), so a peak
   between two new bins is shared, not dropped;
 - converts the frame count through time (round(frames x H_old / H_new); it indexes the sigma tables and the baseline stagger), recomputes
-  sigma for it, and forces a full baseline refresh on the first new frame (the levels are recomputed from the remapped averages every frame).
+  sigma for it, and forces a full baseline refresh on the first new frame (the levels are recomputed from the remapped averages every frame);
+- remaps the low-frequency per-bin path's attack / release state and linked output (dB per bin, section 4) to the new bins: linear
+  interpolation onto a finer grid, the maximum over the covered bins onto a coarser one (unit test LF5).
 
 Measured (T-C, C1c, pink noise with a steady +12 dB / Q 8 bell, switch after 4 s, published cut = max applied band reduction within
 +-1/6 octave of f0, channel 0, sampled every 64 samples; "fresh" = a core of the new tier that processed the whole signal). Acceptance: the
@@ -1199,6 +1249,21 @@ hammers whole-band tuples (`setBandParams`), single parameters, band modes, add 
 while the audio thread processes 200 000 blocks of 64: 0 torn snapshots, 0 allocations, finite, bounded; with the sequence check disabled the
 same checker sees ~2 400 torn snapshots in 60 000 blocks (negative control).
 
+**Several writers (case h2) and the latency refresh (`latencyRefreshMutex_`).** In the app the EQ has more than one non-audio writer at a
+time: the RPC thread (the Node addon worker) and MixEngine's applier thread (FX Graph envelope / LFO modulation through
+`setParameterValue`, which holds only `chainsMutex_`; the EQ RPC handlers release `chainsMutex_` before calling the EQ), and the two are not
+serialised against each other. Multi-parameter edits were already serialised by the `EditScope` mutex. The latency refresh was not:
+`refreshLatencySamples()` reads the parameters, computes the latency and publishes it, and a refresh that read the parameters BEFORE
+another writer's latency-affecting change could publish AFTER that writer's own refresh, leaving a stale latency (a lost update). It is
+now serialised by `latencyRefreshMutex_`, held across read-compute-publish, taken only by non-audio writers (never by the audio thread), so
+the last refresh to run always sees every write before it. Tests (`test_effect_processblock_alloc`): **case h2**, 3 writer threads running
+the whole mutation mix (tuples, single parameters, modes, enabled, channel, add / remove, restores, `spectral_engine` / `spectral_quality`, the
+applier's `setParameterValue` path) against the audio thread for 200 000 blocks of 64: 0 torn snapshots, 0 allocations, finite, bounded,
+latency correct at 200 quiescent points (negative control with the sequence check off: torn > 0); **case h2-lat**, writers issuing only
+latency-affecting writes, started together each round and checked after every round: before the mutex 415 of 20 000 rounds left a stale
+latency, after it 0 (detector negative control: an automation-handle write without a refresh is seen as stale). No handler, audio-thread or
+DSP change (d75b109).
+
 ### 11.3 What prepare builds, memory
 
 `prepareEffect` (not processing) builds the Legacy path as before and, unconditionally, one `Core` with all three tiers (`setFrameTier` from
@@ -1393,5 +1458,5 @@ default is a product decision for the UI phase; nothing was retuned.
 - No user setting gives a flat (whole-range) region: regions are bells, as in Legacy.
 - Bypassed while Legacy and switched to Core while still bypassed: the switch happens after the un-bypass (a bypassed Legacy EQ is not
   processed), with the structural fade; PDC already moved at the request.
-- The 96-band grid limits a region's resolution (about 55 Hz at 1 kHz, a third of an octave below 100 Hz) and the core's sub-bin ceiling
-  (section 4) applies.
+- The 96-band grid limits a region's resolution (about 55 Hz at 1 kHz, a third of an octave below 100 Hz); below 400 Hz the core's
+  per-bin path still reduces a sub-bin resonance only partly (section 4).
