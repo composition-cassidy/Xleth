@@ -16,6 +16,10 @@ export const GAIN_REDUCTION   = 2
 export const LUFS_MOMENTARY   = 3
 export const LUFS_SHORT_TERM  = 4
 
+// Resonance Suppressor, New engine only (0 otherwise): the largest applied band cut, in dB
+// (slot 2 stays the mean of the largest cuts / 24 dB for both engines)
+export const MAX_BAND_CUT_DB = 3
+
 // Multiband: OTT / Overdone
 export const BAND_GR_LOW  = 2
 export const BAND_GR_MID  = 3

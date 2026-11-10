@@ -23,7 +23,7 @@ const ENGINE = [
 ]
 const PARAMS = {
   depth: 60, sharpness: 40, selectivity: 55, attack: 12, release: 300, mix: 100, trim: -1.5, stereo_link: 80,
-  delta: 0, processing_mode: 0, quality: 1, stereo_mode: 0, mode: 0, wc_hp: 80, wc_lp: 16000,
+  delta: 0, processing_mode: 0, hq_engine: 0, quality: 1, stereo_mode: 0, mode: 0, wc_hp: 80, wc_lp: 16000,
   wc_b1_active: 1, wc_b1_freq: 250, wc_b1_gain: 0, wc_b1_type: 0, wc_b1_q: 1,
   wc_b2_active: 1, wc_b2_freq: 800, wc_b2_gain: 3, wc_b2_type: 0, wc_b2_q: 1.5,
   wc_b3_active: 0, wc_b4_active: 0, wc_b5_active: 0, wc_b6_active: 0, wc_b7_active: 0, wc_b8_active: 0,
@@ -55,6 +55,7 @@ beforeEach(() => {
     getEffectParameters: vi.fn(async () => engineParams),
     setEffectParameter: vi.fn(),
     getEffectMeter: vi.fn(async () => []),
+    getEffectLatency: vi.fn(async () => JSON.stringify({ ok: true, latencySamples: 0, latencyMs: 0 })),
     setEffectBypass: vi.fn(async () => true),
     getAudioPerformanceTelemetry: vi.fn(async () => ({ realtimeRsHqRiskLevel: 'warning' })),
   }
@@ -161,6 +162,76 @@ describe('Resonance suppressor device in the chain', () => {
     await flush()
     expect(audio.getAudioPerformanceTelemetry).toHaveBeenCalled()
     expect(q('[data-device-plugin] p[role="alert"]').textContent).toMatch(/high quality can overrun/i)
+  })
+
+  it('the engine selector shows only in high quality, defaults to Classic, and one pick is one engine write', async () => {
+    await mount()
+    expect(radios('Engine')).toHaveLength(0)
+    act(() => root.unmount())
+    root = createRoot(container)
+    setup({ processing_mode: 1 })
+    await mount()
+    const engine = radios('Engine')
+    expect(engine.map((r) => r.textContent)).toEqual(['Classic', 'New'])
+    expect(engine.map((r) => r.getAttribute('aria-checked'))).toEqual(['true', 'false'])
+    act(() => engine[1].click())
+    expect(sent('hq_engine')).toEqual([[3, 7, 'hq_engine', 1]])
+    expect(radios('Engine').map((r) => r.getAttribute('aria-checked'))).toEqual(['false', 'true'])
+    expect(q('[role="radiogroup"][aria-label="Engine"]').getAttribute('data-hint')).toMatch(/Presets do not sound identical across engines/)
+  })
+
+  it('the latency label is what the engine reports, read again when the engine or the quality changes', async () => {
+    const reported = { ok: true, latencySamples: 1024, latencyMs: 21.333 }
+    audio.getEffectLatency.mockImplementation(async () => JSON.stringify(reported))
+    setup({ processing_mode: 1 })
+    await mount()
+    expect(audio.getEffectLatency).toHaveBeenCalledWith(3, 7)
+    const label = () => q('[data-hint^="Latency this instance adds"]')?.textContent
+    expect(label()).toMatch(/^21[.,]3.*ms.*latency$/)
+    const before = audio.getEffectLatency.mock.calls.length
+    Object.assign(reported, { latencySamples: 2048, latencyMs: 42.667 })
+    act(() => radios('Engine')[1].click())
+    await flush()
+    expect(audio.getEffectLatency.mock.calls.length).toBeGreaterThan(before)
+    expect(label()).toMatch(/^42[.,]7.*ms.*latency$/)
+    const afterEngine = audio.getEffectLatency.mock.calls.length
+    Object.assign(reported, { latencySamples: 512, latencyMs: 10.667 })
+    act(() => radios('Quality')[0].click())
+    await flush()
+    expect(audio.getEffectLatency.mock.calls.length).toBeGreaterThan(afterEngine)
+    expect(label()).toMatch(/^10[.,]7.*ms.*latency$/)
+    Object.assign(reported, { latencySamples: 0, latencyMs: 0 })
+    act(() => radios('Latency mode')[0].click())
+    await flush()
+    expect(label()).toBe('No latency')
+  })
+
+  it('Sharpness and Selectivity tooltips follow the engine; Classic keeps its text', async () => {
+    const hint = (label) => slider(label).closest('[data-hint]').getAttribute('data-hint')
+    setup({ processing_mode: 1, hq_engine: 0 })
+    await mount()
+    expect(hint('Sharpness')).toBe('How narrow a peak must be to count as a resonance')
+    expect(hint('Selectivity')).toBe('How far a peak must stand out from its neighbours')
+    act(() => radios('Engine')[1].click())
+    expect(hint('Sharpness')).toBe('Narrows the cut around each resonance')
+    expect(hint('Selectivity')).toBe("How far a peak must stand above the spectrum's baseline to be cut. Higher = fewer, more targeted cuts")
+    act(() => radios('Latency mode')[0].click())
+    expect(hint('Sharpness')).toBe('How narrow a peak must be to count as a resonance')
+  })
+
+  it('the reduction readout reads meter slot 3 (largest cut, dB) with the New engine and slot 2 (x 24 dB) with Classic', async () => {
+    audio.getEffectMeter.mockImplementation(async () => JSON.stringify([0.1, 0.1, 0.25, 7.5, 0, 0, 0, 0]))
+    const readout = () => q('[data-hint="Average of the largest cuts"], [data-hint="Largest cut"]')
+    const settle = async () => { await act(async () => { await new Promise((r) => setTimeout(r, 150)) }) }
+    setup({ processing_mode: 1, hq_engine: 0 })
+    await mount()
+    await settle()
+    expect(readout().getAttribute('data-hint')).toBe('Average of the largest cuts')
+    expect(readout().textContent).toMatch(/^Reduction −6[.,]0.*dB$/)
+    act(() => radios('Engine')[1].click())
+    await settle()
+    expect(readout().getAttribute('data-hint')).toBe('Largest cut')
+    expect(readout().textContent).toMatch(/^Reduction −7[.,]5.*dB$/)
   })
 
   it('pop-out opens the same device in a window; the legacy panel, its layout and its CSS are gone', async () => {

@@ -1,13 +1,14 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Plus, Minus } from 'lucide-react'
 import {
-  DeviceSection, DisplayWell, IconButton, SegmentedControl, Select, Toggle, logScale,
+  DeviceSection, DisplayWell, IconButton, SegmentedControl, Select, Toggle, formatValue, logScale,
 } from '../../ui-kit'
 import DynamicsVisualizerCanvas from '../../plugin-ui/runtime/visualizers/DynamicsVisualizerCanvas.jsx'
 import {
   BAND_Q_MAX, BAND_Q_MIN, BAND_TYPE, BAND_TYPE_OPTIONS, BELL_FREQ_MAX_HZ, BELL_FREQ_MIN_HZ,
   BELL_GAIN_MAX_DB, BELL_GAIN_MIN_DB, NUM_BANDS, bandParamIds,
 } from '../../plugin-ui/runtime/visualizers/resonanceCurveMapping.js'
+import { useEffectMeterPolling, useMeterBus } from '../../plugin-ui/runtime/useEffectMeterPolling.js'
 import AutomatableKnob from './AutomatableKnob.jsx'
 import ResonanceCurveOverlay, {
   applyParamUpdates, buildBandEditorModel, createAddBandAction, createBandFreqAction, createBandGainAction,
@@ -46,7 +47,7 @@ const P = {
   trim: { min: -12, max: 12, def: 0 },
   stereo_link: { min: 0, max: 100, def: 100 },
 }
-const SWITCH_DEFAULTS = { delta: 0, processing_mode: 0, quality: 1, stereo_mode: 0, mode: 0, wc_hp: 80, wc_lp: 16000 }
+const SWITCH_DEFAULTS = { delta: 0, processing_mode: 0, hq_engine: 0, quality: 1, stereo_mode: 0, mode: 0, wc_hp: 80, wc_lp: 16000 }
 const BAND_DEFAULTS = {
   1: { active: 1, freq: 250 }, 2: { active: 1, freq: 800 }, 3: { active: 1, freq: 2500 }, 4: { active: 1, freq: 8000 },
   5: { active: 0, freq: 500 }, 6: { active: 0, freq: 1500 }, 7: { active: 0, freq: 4000 }, 8: { active: 0, freq: 10000 },
@@ -82,6 +83,28 @@ const QUALITY_OPTIONS = [
   { value: 1, label: 'Normal' },
   { value: 2, label: 'High' },
 ]
+// The high-quality analysis engine (hq_engine; read only while processing_mode is
+// High quality). Classic stays the default.
+const ENGINE_OPTIONS = [
+  { value: 0, label: 'Classic' },
+  { value: 1, label: 'New' },
+]
+const ENGINE_HINT = 'Classic is the original analysis, New the newer engine. Presets do not sound identical across engines.'
+// Sharpness and Selectivity act differently in the two engines, so their tooltips follow the engine.
+const SHARPNESS_HINT = {
+  classic: 'How narrow a peak must be to count as a resonance',
+  new: 'Narrows the cut around each resonance',
+}
+const SELECTIVITY_HINT = {
+  classic: 'How far a peak must stand out from its neighbours',
+  new: "How far a peak must stand above the spectrum's baseline to be cut. Higher = fewer, more targeted cuts",
+}
+// Reduction readout: the New engine's meter slot 3 is the largest band cut in dB; Classic keeps
+// slot 2 (GAIN_REDUCTION), the mean of the largest cuts as a fraction of 24 dB.
+const REDUCTION_METER = {
+  classic: { slot: 'GAIN_REDUCTION', scale: 24, hint: 'Average of the largest cuts' },
+  new: { slot: 'MAX_BAND_CUT_DB', scale: 1, hint: 'Largest cut' },
+}
 // Sentence-case shape names (the engine's "Band Reject" is "Protect" in the UI).
 const SHAPE_OPTIONS = BAND_TYPE_OPTIONS.map((o) => ({ value: o.value, label: o.label.charAt(0) + o.label.slice(1).toLowerCase() }))
 const FOCUS_SCALE = logScale(BELL_FREQ_MIN_HZ, BELL_FREQ_MAX_HZ)
@@ -134,6 +157,32 @@ function useHqRisk(enabled) {
   return atRisk
 }
 
+// The latency the engine reports for this instance (audio.getEffectLatency), read again
+// whenever a setting that moves it changes. Never a table of per-quality numbers.
+function useReportedLatency(target, key) {
+  const [latency, setLatency] = useState(null)
+  useEffect(() => {
+    if (!target || typeof window.xleth?.audio?.getEffectLatency !== 'function') return undefined
+    let cancelled = false
+    ;(async () => {
+      try {
+        const raw = await window.xleth.audio.getEffectLatency(target.trackId, target.nodeId)
+        const obj = typeof raw === 'string' ? JSON.parse(raw) : raw
+        if (!cancelled && obj && obj.ok) setLatency(obj)
+      } catch { /* a readout only */ }
+    })()
+    return () => { cancelled = true }
+  }, [target, key])
+  return latency
+}
+
+function latencyText(latency) {
+  if (!latency) return ''
+  const ms = Number(latency.latencyMs)
+  if (Number.isFinite(ms) && ms > 0) return `${formatValue(ms, 'ms')} latency`
+  return Number(latency.latencySamples) > 0 ? `${latency.latencySamples} samples latency` : 'No latency'
+}
+
 export default function ResonanceSuppressorDevice({ target, registerApplied, deviceKey }) {
   const { params, preview, commit, syncParamsFromPreset } = useDeviceParams('resonancesuppressor', DEFAULTS, target)
   const view = useDeviceUiStore((s) => s.views[deviceKey] ?? 'combined')
@@ -151,6 +200,21 @@ export default function ResonanceSuppressorDevice({ target, registerApplied, dev
   const v = (id) => (Number.isFinite(params[id]) ? params[id] : DEFAULTS[id])
   const hq = Math.round(v('processing_mode')) === 1
   const atRisk = useHqRisk(hq)
+  const newEngine = hq && Math.round(v('hq_engine')) === 1
+  const latency = useReportedLatency(target, `${Math.round(v('processing_mode'))}/${Math.round(v('hq_engine'))}/${Math.round(v('quality'))}`)
+
+  // Reduction readout: written straight to the DOM from the meter poll, as the other devices' meters are.
+  const meterBus = useMeterBus()
+  useEffectMeterPolling(target, meterBus)
+  const reductionRef = useRef(null)
+  const meter = newEngine ? REDUCTION_METER.new : REDUCTION_METER.classic
+  useEffect(() => {
+    meterBus.register('device-reduction', meter.slot, (raw) => {
+      const db = Math.abs(Number(raw) || 0) * meter.scale
+      if (reductionRef.current) reductionRef.current.textContent = `Reduction ${formatValue(db >= 0.05 ? -db : 0, 'dB')}`
+    })
+    return () => meterBus.unregister('device-reduction')
+  }, [meterBus, meter])
 
   const model = useMemo(() => buildBandEditorModel(params, selected), [params, selected])
   const band = model.selectedBand
@@ -244,8 +308,8 @@ export default function ResonanceSuppressorDevice({ target, registerApplied, dev
         {seg('mode', 'Suppression mode', MODE_OPTIONS)}
         <div className={styles.row}>
           {knob('depth', 'Depth', '%', { size: 52, width: 72, hint: 'How much each resonance is pulled down' })}
-          {knob('sharpness', 'Sharpness', '%', { width: 68, hint: 'How narrow a peak must be to count as a resonance' })}
-          {knob('selectivity', 'Selectivity', '%', { width: 72, hint: 'How far a peak must stand out from its neighbours' })}
+          {knob('sharpness', 'Sharpness', '%', { width: 68, hint: newEngine ? SHARPNESS_HINT.new : SHARPNESS_HINT.classic })}
+          {knob('selectivity', 'Selectivity', '%', { width: 72, hint: newEngine ? SELECTIVITY_HINT.new : SELECTIVITY_HINT.classic })}
         </div>
       </DeviceSection>
 
@@ -345,7 +409,10 @@ export default function ResonanceSuppressorDevice({ target, registerApplied, dev
       <DeviceSection title="Processing" width={176}>
         <div className={styles.column}>
           {seg('processing_mode', 'Latency mode', LATENCY_OPTIONS)}
+          {hq ? seg('hq_engine', 'Engine', ENGINE_OPTIONS, { hint: ENGINE_HINT }) : null}
           {seg('quality', 'Quality', QUALITY_OPTIONS)}
+          <span ref={reductionRef} className={styles.readout} data-hint={meter.hint}>Reduction {formatValue(0, 'dB')}</span>
+          {latency ? <span className={styles.readout} data-hint="Latency this instance adds, as reported by the engine">{latencyText(latency)}</span> : null}
           {atRisk ? (
             <p className={styles.warning} role="alert">Warning: high quality can overrun real-time playback at small buffers or with several high-quality instances.</p>
           ) : null}

@@ -35,6 +35,14 @@
     min-width: 0;
   }
 
+  .readout {
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+  }
+
   .warning {
     margin: 0;
     color: var(--ui-ink);
