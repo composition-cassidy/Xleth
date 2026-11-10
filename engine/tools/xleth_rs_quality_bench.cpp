@@ -611,6 +611,39 @@ static std::function<std::unique_ptr<juce::AudioProcessor>(double, int, const Pl
     };
 }
 
+// Subject::factory for the Resonance Suppressor running its NEW High Quality engine (hq_engine = New, i.e. the
+// ResonanceCore inside the effect: parameter mapping, RS default focus curve, stereo link, aligned-dry output stage).
+// Capability settings: depth 100 %, Hard, every other parameter at the RS default (selectivity 50 %, stereo link 100 %,
+// focus curve 0 below 40 Hz / ramp to 80 Hz / ramp down above 16 kHz). `sensitive` = selectivity 0 (core sensitivity 1).
+// The instance index is pinned to 0 so the hop phase is the core's historical grid, as for C1c-*.
+// `coreDefaults` (diagnostic RSC-N0): stereo link 0 and the focus curve opened to wc_hp 20 Hz / wc_lp 20 kHz (every weight on the
+// core's grid is then exactly 1, which the core treats bit-identically to no curve), i.e. the C1c settings through the effect.
+static void need(bool ok, const char* what);
+
+static std::function<std::unique_ptr<juce::AudioProcessor>(double, int, const Planted&, bool)> rsNewEngineFactory(int quality,
+    bool sensitive, bool coreDefaults = false)
+{
+    return [quality, sensitive, coreDefaults](double sr, int maxBlock, const Planted& /*bell: intentionally unused*/, bool neutral)
+    {
+        auto fx = std::make_unique<XlethResonanceSuppressorEffect>();
+        fx->setCoreInstanceIndex(0);
+        need(fx->setParameterValue("processing_mode", 1.0f), "RSC processing_mode HQ");
+        need(fx->setParameterValue("hq_engine", 1.0f), "RSC hq_engine New");
+        need(fx->setParameterValue("quality", static_cast<float>(quality)), "RSC quality");
+        need(fx->setParameterValue("mode", 1.0f), "RSC mode Hard");
+        need(fx->setParameterValue("depth", neutral ? 0.0f : 100.0f), "RSC depth");
+        if (sensitive && !neutral) need(fx->setParameterValue("selectivity", 0.0f), "RSC selectivity 0 (sensitive)");
+        if (coreDefaults)
+        {
+            need(fx->setParameterValue("stereo_link", 0.0f), "RSC-N0 stereo_link 0");
+            need(fx->setParameterValue("wc_hp", 20.0f), "RSC-N0 wc_hp 20 Hz");
+            need(fx->setParameterValue("wc_lp", 20000.0f), "RSC-N0 wc_lp 20 kHz");
+        }
+        fx->prepareToPlay(sr, maxBlock);
+        return std::unique_ptr<juce::AudioProcessor>(std::move(fx));
+    };
+}
+
 // THE subject registry. Registering a subject here adds it to every table, CSV, gate and (for Primary) the CPU run.
 // Order is preserved inside each group; groups are concatenated Primary, Sensitive, Capability.
 static const std::vector<Subject>& registry()
@@ -657,6 +690,13 @@ static const std::vector<Subject>& registry()
             s.factory = coreFactory(p, xleth::dsp::resonance::Core::FrameTier::Fast); }
           { auto& s = add("C1s-H", "C1", "ResonanceCore High N=2048 (sensitive)", Kind::Custom, Group::Sensitive, "depth 1.0; sensitivity 1.0; Hard; frame tier High (N=2048)");
             s.factory = coreFactory(p, xleth::dsp::resonance::Core::FrameTier::High); } }
+        // G4 companions of RSC-F / RSC-N / RSC-H: the RS New engine at its most sensitive and deepest (selectivity 0 = core sensitivity 1).
+        { auto& s = add("RSCs-F", "RSC", "RS New engine Fast (sensitive)",   Kind::Custom, Group::Sensitive, "RS hq_engine=New, quality Fast, depth 100, Hard, selectivity 0");
+          s.factory = rsNewEngineFactory(0, true); }
+        { auto& s = add("RSCs-N", "RSC", "RS New engine Normal (sensitive)", Kind::Custom, Group::Sensitive, "RS hq_engine=New, quality Normal, depth 100, Hard, selectivity 0");
+          s.factory = rsNewEngineFactory(1, true); }
+        { auto& s = add("RSCs-H", "RSC", "RS New engine High (sensitive)",   Kind::Custom, Group::Sensitive, "RS hq_engine=New, quality High, depth 100, Hard, selectivity 0");
+          s.factory = rsNewEngineFactory(2, true); }
 
         // -------- Capability: max-depth runs (gated) --------
         { auto& s = add("S1c", "S1", "RS Low Latency (capability)", Kind::RsLL, Group::Capability, "depth=100, mode=Hard");
@@ -689,6 +729,20 @@ static const std::vector<Subject>& registry()
             s.capability = true; s.gated = true; s.jitterId = "C1s"; s.factory = coreFactory(p, xleth::dsp::resonance::Core::FrameTier::Normal); }
           { auto& s = add("C1c-H", "C1", "ResonanceCore capability High N=2048", Kind::Custom, Group::Capability, "C1c params; frame tier High (N=2048)");
             s.capability = true; s.gated = true; s.jitterId = "C1s-H"; s.factory = coreFactory(p, xleth::dsp::resonance::Core::FrameTier::High); } }
+        // The Resonance Suppressor with its New High Quality engine (the ResonanceCore wired into the effect), at the capability
+        // settings next to C1c-F / -N / -H: depth 100 %, Hard, every other RS parameter at its default. The differences to C1c-* are the
+        // effect's, not the core's: the RS default focus curve, the parameter mapping and stereo link 100 % (C1c-*: flat curve, link 0).
+        { auto& s = add("RSC-F", "RSC", "RS New engine capability Fast",   Kind::Custom, Group::Capability, "RS hq_engine=New, quality Fast, depth 100, Hard, other params default");
+          s.capability = true; s.gated = true; s.jitterId = "RSCs-F"; s.factory = rsNewEngineFactory(0, false); }
+        { auto& s = add("RSC-N", "RSC", "RS New engine capability Normal", Kind::Custom, Group::Capability, "RS hq_engine=New, quality Normal, depth 100, Hard, other params default");
+          s.capability = true; s.gated = true; s.jitterId = "RSCs-N"; s.factory = rsNewEngineFactory(1, false); }
+        { auto& s = add("RSC-H", "RSC", "RS New engine capability High",   Kind::Custom, Group::Capability, "RS hq_engine=New, quality High, depth 100, Hard, other params default");
+          s.capability = true; s.gated = true; s.jitterId = "RSCs-H"; s.factory = rsNewEngineFactory(2, false); }
+        // Diagnostic: RSC-N with the C1c settings (stereo link 0, focus curve open to 20 Hz - 20 kHz). Separates the effect's
+        // defaults (curve, link) from the effect layer itself when RSC-N is compared with C1c-N.
+        { auto& s = add("RSC-N0", "RSC", "RS New engine Normal, link 0 + open curve (diagnostic)", Kind::Custom, Group::Capability,
+                        "RS hq_engine=New, quality Normal, depth 100, Hard, stereo_link 0, wc_hp 20, wc_lp 20000");
+          s.capability = true; s.gated = true; s.jitterId = "RSCs-N"; s.factory = rsNewEngineFactory(1, false, true); }
 
         // -------- Reference subjects (opt-in): metric / gate calibration. Registered through Subject::factory. --------
         if (g_opt.refSubjects)

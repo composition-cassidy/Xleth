@@ -22,6 +22,23 @@
 //         release, wc_hp and wc_lp all changed before every block    -> asserted 0
 //   (b) RS, processing_mode = High Quality, quality Normal      -> asserted 0
 //   (c) EQ, one band in Spectral mode (mode 2) and enabled      -> asserted 0
+//   (e) RS, processing_mode = High Quality, hq_engine = New (ResonanceCore),
+//         quality Normal, depth / sharpness / selectivity / attack / release /
+//         stereo_link / wc_hp / wc_lp / mode swept before EVERY block ->
+//         asserted 0 (spec, extended and cold passes, blocks 64 and 512).
+//   (e2) the same plus structural changes from the test thread (quality every
+//         37 blocks, stereo_mode every 53, hq_engine / processing_mode every
+//         71 and 97): tier switches and fade / reset / fade-in transitions,
+//         with the visualization tap ON (bucket resampling + collector push)
+//         -> asserted 0.
+//   (f) STRESS: a second thread changes quality, hq_engine, processing_mode and
+//         stereo_mode at random while this thread processes 200,000 blocks of
+//         64 samples: no allocation on the processing thread, no NaN, output
+//         bounded.
+//   (g) MEMORY (informational + reported): operator-new bytes of
+//         prepareToPlay for one RS instance (both HQ engines, 48 kHz stereo,
+//         block 512) and for a bare ResonanceCore, plus the process private
+//         bytes delta of 16 prepared instances.
 //   (d) NULL TEST: the LL output (stereo pink noise + 12 dB resonance at 2.5 kHz,
 //         48 kHz, block 64 and 512, plus a swept-parameter run at 512) is
 //         compared with fixtures captured from the pre-P1a implementation
@@ -64,6 +81,7 @@
 #include <juce_gui_basics/juce_gui_basics.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <cstdint>
@@ -75,8 +93,15 @@
 #include <limits>
 #include <iostream>
 #include <new>
+#include <random>
 #include <string>
+#include <thread>
 #include <vector>
+
+#define NOMINMAX
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <psapi.h>
 
 // --- Counting allocator -----------------------------------------------------
 // Armed only around the call under test. malloc/free so it never recurses.
@@ -93,22 +118,28 @@ namespace {
 std::atomic<bool>      g_allocArmed { false };
 std::atomic<long long> g_allocCount { 0 };        // measuring thread only
 std::atomic<long long> g_otherThreadCount { 0 };  // any other thread, informational
+std::atomic<long long> g_allocBytes { 0 };        // measuring thread only, bytes (case g)
 thread_local bool      t_isMeasuringThread = false;
 
-inline void countAlloc() noexcept
+inline void countAlloc(std::size_t n) noexcept
 {
     if (g_allocArmed.load(std::memory_order_relaxed))
     {
-        if (t_isMeasuringThread) g_allocCount.fetch_add(1, std::memory_order_relaxed);
-        else                     g_otherThreadCount.fetch_add(1, std::memory_order_relaxed);
+        if (t_isMeasuringThread)
+        {
+            g_allocCount.fetch_add(1, std::memory_order_relaxed);
+            g_allocBytes.fetch_add(static_cast<long long>(n), std::memory_order_relaxed);
+        }
+        else
+            g_otherThreadCount.fetch_add(1, std::memory_order_relaxed);
     }
 }
 } // namespace
 
-void* operator new(std::size_t n)                 { countAlloc(); void* p = std::malloc(n ? n : 1); if (!p) std::abort(); return p; }
-void* operator new[](std::size_t n)               { countAlloc(); void* p = std::malloc(n ? n : 1); if (!p) std::abort(); return p; }
-void* operator new(std::size_t n, const std::nothrow_t&) noexcept   { countAlloc(); return std::malloc(n ? n : 1); }
-void* operator new[](std::size_t n, const std::nothrow_t&) noexcept { countAlloc(); return std::malloc(n ? n : 1); }
+void* operator new(std::size_t n)                 { countAlloc(n); void* p = std::malloc(n ? n : 1); if (!p) std::abort(); return p; }
+void* operator new[](std::size_t n)               { countAlloc(n); void* p = std::malloc(n ? n : 1); if (!p) std::abort(); return p; }
+void* operator new(std::size_t n, const std::nothrow_t&) noexcept   { countAlloc(n); return std::malloc(n ? n : 1); }
+void* operator new[](std::size_t n, const std::nothrow_t&) noexcept { countAlloc(n); return std::malloc(n ? n : 1); }
 void  operator delete(void* p) noexcept                    { std::free(p); }
 void  operator delete[](void* p) noexcept                  { std::free(p); }
 void  operator delete(void* p, std::size_t) noexcept       { std::free(p); }
@@ -285,6 +316,19 @@ static void configureRsHighQualityNormal(XlethResonanceSuppressorEffect& fx)
     fx.setParameterValue("depth", 100.0f);
     fx.setParameterValue("sharpness", 70.0f);
     fx.setParameterValue("selectivity", 35.0f);
+    fx.setParameterValue("mix", 100.0f);
+}
+
+static void configureRsHighQualityNew(XlethResonanceSuppressorEffect& fx)
+{
+    fx.setCoreInstanceIndex(0);
+    CHECK(fx.setParameterValue("processing_mode", 1.0f), "RS processing_mode High Quality settable");
+    CHECK(fx.setParameterValue("hq_engine", 1.0f), "RS hq_engine New settable");
+    CHECK(fx.setParameterValue("quality", 1.0f), "RS quality Normal settable");
+    fx.setParameterValue("depth", 100.0f);
+    fx.setParameterValue("sharpness", 70.0f);
+    fx.setParameterValue("selectivity", 35.0f);
+    fx.setParameterValue("mode", 1.0f);
     fx.setParameterValue("mix", 100.0f);
 }
 
@@ -521,6 +565,194 @@ static void runCaseRsHQ(int block, const juce::AudioBuffer<float>& sig)
     }
 }
 
+// (e) / (e2): the New HQ engine with every continuous parameter swept before
+// every block; e2 adds structural changes (tier requests, fades, resets).
+static void sweepCore(XlethResonanceSuppressorEffect& fx, int i)
+{
+    sweepWide(fx, i);
+    fx.setParameterValue("stereo_link", sweepVal(i, 0.0f, 100.0f, 0.37f, 7.0f));
+    fx.setParameterValue("mode", (i % 5) < 2 ? 1.0f : 0.0f);
+}
+
+static void sweepCoreStructural(XlethResonanceSuppressorEffect& fx, int i)
+{
+    sweepCore(fx, i);
+    if (i % 37 == 0) fx.setParameterValue("quality", static_cast<float>((i / 37) % 3));
+    if (i % 53 == 0) fx.setParameterValue("stereo_mode", static_cast<float>((i / 53) % 3));
+    if (i % 71 == 0) fx.setParameterValue("hq_engine", static_cast<float>((i / 71) % 2 == 0 ? 1 : 0));
+    if (i % 97 == 0) fx.setParameterValue("processing_mode", (i / 97) % 2 == 0 ? 1.0f : 0.0f);
+}
+
+static void runCaseRsNew(int block, const juce::AudioBuffer<float>& sig)
+{
+    struct Variant { const char* id; const char* label; SweepFn sweep; };
+    const Variant variants[2] = {
+        { "e",  "RS HQ New engine, parameters swept every block", sweepCore },
+        { "e2", "RS HQ New engine, sweeps + structural changes",   sweepCoreStructural },
+    };
+    const int passes[3] = { kSpecWarmBlocks, warmBlocksExtended(block), 0 };
+    const char* names[3] = { "spec", "extended", "cold" };
+    for (const auto& v : variants)
+    {
+        for (int p = 0; p < 3; ++p)
+        {
+            XlethResonanceSuppressorEffect fx;
+            configureRsHighQualityNew(fx);
+            fx.prepareToPlay(kSR, block);
+            const bool viz = std::strcmp(v.id, "e2") == 0;
+            if (viz) fx.setVisualizationEnabled(true);   // collector built here, before measuring
+            CHECK(fx.getLatencySamples() == 1024, "RS New Normal reports 1024 latency; got " << fx.getLatencySamples());
+            const auto sweep = v.sweep;
+            const AllocResult r = measure(fx, sig, block, passes[p],
+                                          [&] { return fx.readMeterValue(2); },
+                                          [&](int i) { sweep(fx, i); });
+            CHECK(r.finite, "case " << v.id << " output finite");
+            CHECK(r.meterPeak > 0.005f, "case " << v.id << ": New engine suppression meter rose; meter=" << r.meterPeak);
+            report(v.id, v.label, block, r, names[p], r.total == 0 ? "PASS" : "FAIL");
+            CHECK(r.total == 0, "case " << v.id << ": RS New processBlock allocated " << r.total
+                                << " times (block " << block << ", " << names[p] << " pass)");
+            if (viz)
+            {
+                std::vector<std::uint8_t> drained(sizeof(xleth::viz::ResonanceBucket) * 64);
+                const std::size_t bytes = fx.drainVizFrames(drained.data(), drained.size());
+                std::printf("[RSLLAlloc] case=e2 block=%d pass=%s structural transitions=%llu tier switches=%lld viz bytes drained=%zu\n",
+                            block, names[p], static_cast<unsigned long long>(fx.getStructureSwitchCount()),
+                            fx.getCoreForTest().tierSwitchCount(), bytes);
+                CHECK(bytes > 0, "case e2: the viz tap produced buckets");
+            }
+        }
+    }
+}
+
+// (f) A "message thread" changes the structure at random while this thread
+// processes 200,000 blocks. Only the processing thread's allocations count.
+static void runStressRsStructure()
+{
+    constexpr int kBlock = 64;
+    constexpr long long kBlocks = 200000;
+    const juce::AudioBuffer<float> sig = makeSignal(kBlock * 4096);
+
+    XlethResonanceSuppressorEffect fx;
+    configureRsHighQualityNew(fx);
+    fx.prepareToPlay(kSR, kBlock);
+
+    float inPeak = 0.0f;
+    for (int ch = 0; ch < 2; ++ch)
+        for (int s = 0; s < sig.getNumSamples(); ++s)
+            inPeak = std::max(inPeak, std::abs(sig.getSample(ch, s)));
+
+    std::atomic<bool> stop { false };
+    std::atomic<long long> changes { 0 };
+    std::thread requester([&] {
+        std::mt19937 rng(0x5EEDu);
+        std::uniform_int_distribution<int> which(0, 3), q(0, 2), two(0, 1), st(0, 2), pause(0, 400);
+        while (!stop.load(std::memory_order_relaxed))
+        {
+            switch (which(rng))
+            {
+                case 0: fx.setParameterValue("quality", static_cast<float>(q(rng))); break;
+                case 1: fx.setParameterValue("hq_engine", static_cast<float>(two(rng))); break;
+                case 2: fx.setParameterValue("processing_mode", static_cast<float>(two(rng))); break;
+                default: fx.setParameterValue("stereo_mode", static_cast<float>(st(rng))); break;
+            }
+            changes.fetch_add(1, std::memory_order_relaxed);
+            std::this_thread::sleep_for(std::chrono::microseconds(pause(rng)));
+        }
+    });
+
+    juce::AudioBuffer<float> work(2, kBlock);
+    juce::MidiBuffer midi;
+    long long allocs = 0;
+    bool finite = true;
+    float outPeak = 0.0f;
+    const int sigBlocks = sig.getNumSamples() / kBlock;
+    for (long long b = 0; b < kBlocks; ++b)
+    {
+        const int pos = static_cast<int>(b % sigBlocks) * kBlock;
+        for (int ch = 0; ch < 2; ++ch)
+            work.copyFrom(ch, 0, sig, ch, pos, kBlock);
+        const long long c0 = g_allocCount.load(std::memory_order_relaxed);
+        g_allocArmed.store(true, std::memory_order_relaxed);
+        fx.processBlock(work, midi);
+        g_allocArmed.store(false, std::memory_order_relaxed);
+        allocs += g_allocCount.load(std::memory_order_relaxed) - c0;
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            const float* d = work.getReadPointer(ch);
+            for (int s = 0; s < kBlock; ++s)
+            {
+                if (!std::isfinite(d[s])) finite = false;
+                else outPeak = std::max(outPeak, std::abs(d[s]));
+            }
+        }
+    }
+    stop.store(true);
+    requester.join();
+
+    std::printf("[RSLLAlloc] case=f (RS structure stress) blocks=%lld block=%d requests=%lld structural transitions=%llu "
+                "tier switches=%lld allocs=%lld finite=%d out_peak=%.4f in_peak=%.4f  %s\n",
+                kBlocks, kBlock, changes.load(), static_cast<unsigned long long>(fx.getStructureSwitchCount()),
+                fx.getCoreForTest().tierSwitchCount(), allocs, finite ? 1 : 0, outPeak, inPeak,
+                (allocs == 0 && finite && outPeak <= 4.0f * inPeak) ? "PASS" : "FAIL");
+    CHECK(changes.load() > 1000, "case f: the requester made changes (" << changes.load() << ")");
+    CHECK(fx.getStructureSwitchCount() > 100, "case f: structural transitions happened");
+    CHECK(allocs == 0, "case f: processBlock allocated " << allocs << " times under concurrent structure changes");
+    CHECK(finite, "case f: output finite");
+    CHECK(outPeak <= 4.0f * inPeak, "case f: output bounded (peak " << outPeak << " vs input " << inPeak << ")");
+}
+
+// (g) Memory per instance (both HQ engines are prepared up front).
+static std::size_t privateBytes()
+{
+    PROCESS_MEMORY_COUNTERS_EX pmc {};
+    if (GetProcessMemoryInfo(GetCurrentProcess(), reinterpret_cast<PROCESS_MEMORY_COUNTERS*>(&pmc), sizeof(pmc)))
+        return pmc.PrivateUsage;
+    return 0;
+}
+
+static void runMemoryReport()
+{
+    auto bytesOf = [](const std::function<void()>& fn) {
+        const long long b0 = g_allocBytes.load();
+        g_allocArmed.store(true);
+        fn();
+        g_allocArmed.store(false);
+        return g_allocBytes.load() - b0;
+    };
+
+    long long rsBytes = 0, coreBytes = 0, classicOnlyEstimate = 0;
+    {
+        auto fx = std::make_unique<XlethResonanceSuppressorEffect>();
+        configureRsHighQualityNew(*fx);
+        rsBytes = bytesOf([&] { fx->prepareToPlay(kSR, 512); });
+    }
+    {
+        auto core = std::make_unique<xleth::dsp::resonance::Core>();
+        coreBytes = bytesOf([&] { core->prepare(kSR, 512, 2); });
+    }
+    classicOnlyEstimate = rsBytes - coreBytes;
+
+    constexpr int kInstances = 16;
+    std::vector<std::unique_ptr<XlethResonanceSuppressorEffect>> many;
+    many.reserve(kInstances);
+    const std::size_t pb0 = privateBytes();
+    for (int i = 0; i < kInstances; ++i)
+    {
+        many.push_back(std::make_unique<XlethResonanceSuppressorEffect>());
+        configureRsHighQualityNew(*many.back());
+        many.back()->prepareToPlay(kSR, 512);
+    }
+    const std::size_t pb1 = privateBytes();
+    const double perInstanceMb = pb1 > pb0 ? static_cast<double>(pb1 - pb0) / kInstances / (1024.0 * 1024.0) : 0.0;
+
+    std::printf("[RSLLAlloc] memory (48 kHz stereo, block 512): RS prepareToPlay operator-new bytes %.3f MB "
+                "(ResonanceCore %.3f MB, rest = 3 WolaProcessors + buffers %.3f MB); private bytes per prepared "
+                "instance (16 instances) %.3f MB\n",
+                rsBytes / (1024.0 * 1024.0), coreBytes / (1024.0 * 1024.0), classicOnlyEstimate / (1024.0 * 1024.0),
+                perInstanceMb);
+    CHECK(rsBytes > 0 && coreBytes > 0, "case g: byte counter saw the prepare allocations");
+}
+
 static void runCaseEqSpectral(int block, const juce::AudioBuffer<float>& sig)
 {
     const int passes[2] = { kSpecWarmBlocks, warmBlocksExtended(block) };
@@ -574,8 +806,12 @@ int main(int argc, char** argv)
         const juce::AudioBuffer<float> sig = makeSignal(signalSamplesFor(block));
         runCaseRsLL(block, sig);
         runCaseRsHQ(block, sig);
+        runCaseRsNew(block, sig);
         runCaseEqSpectral(block, sig);
     }
+
+    runStressRsStructure();
+    runMemoryReport();
 
     runNullTests();
 

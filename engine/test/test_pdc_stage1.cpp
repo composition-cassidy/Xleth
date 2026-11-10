@@ -1090,6 +1090,76 @@ static void testAudioGraphDirectEffectLatencyChangeNotifies()
           "[PDCNotify] chain latency after removal + direct change");
 }
 
+// [RSCore] Resonance Suppressor hq_engine = New: chain PDC follows a quality
+// change and an engine change through the generic path (inline recompute) and
+// through a direct effect mutation (LatencyChangeSignal -> service), and stays
+// put across bypass / mix 0 (the New engine's latency is constant).
+static void testResonanceSuppressorNewEngineChainPdc()
+{
+    std::cout << "[RSCore] chain PDC follows RS quality / engine changes\n";
+    using Core = xleth::dsp::resonance::Core;
+
+    for (double sr : { 48000.0, 96000.0 })
+    {
+        AudioGraph graph;
+        graph.init(sr, 512);
+        const int nodeId = graph.addEffect("resonancesuppressor", 0);
+        CHECK(nodeId >= 0, "[RSCore] graph should add the Resonance Suppressor");
+        auto* rs = dynamic_cast<XlethResonanceSuppressorEffect*>(graph.getEffect(nodeId));
+        CHECK(rs != nullptr, "[RSCore] graph effect should be the Resonance Suppressor");
+        if (rs == nullptr) return;
+        auto lat = [&](int q) { return Core::latencyFor(sr, static_cast<Core::FrameTier>(q)); };
+        const int classicNormal = 1024;   // WolaProcessor: N at every rate
+
+        CHECK(graph.setEffectParameter(nodeId, "processing_mode", 1.0f), "[RSCore] generic path processing_mode HQ");
+        CHECK(graph.getOutputLatencySamples() == classicNormal, "[RSCore] Classic HQ Normal chain latency");
+
+        auto epoch = graph.getLatencyEpoch();
+        CHECK(graph.setEffectParameter(nodeId, "hq_engine", 1.0f), "[RSCore] generic path hq_engine New");
+        CHECK(graph.getOutputLatencySamples() == lat(1), "[RSCore] chain latency follows the engine change");
+        CHECK(graph.getLatencyEpoch() == epoch + (lat(1) != classicNormal ? 1u : 0u),
+              "[RSCore] an engine change recomputes PDC exactly when the latency changes");
+
+        for (int q : { 2, 0, 1 })
+        {
+            epoch = graph.getLatencyEpoch();
+            CHECK(graph.setEffectParameter(nodeId, "quality", static_cast<float>(q)), "[RSCore] generic path quality");
+            CHECK(graph.getOutputLatencySamples() == lat(q), "[RSCore] chain latency follows the New-engine quality change");
+            CHECK(graph.getLatencyEpoch() == epoch + 1, "[RSCore] one recompute per quality change");
+            CHECK(!graph.hasPendingLatencyChange(), "[RSCore] generic path leaves nothing pending");
+        }
+
+        epoch = graph.getLatencyEpoch();
+        CHECK(graph.setBypass(nodeId, true), "[RSCore] bypass on");
+        CHECK(graph.setEffectParameter(nodeId, "mix", 0.0f), "[RSCore] mix 0");
+        CHECK(graph.getOutputLatencySamples() == lat(1) && graph.getLatencyEpoch() == epoch,
+              "[RSCore] bypass and mix 0 do not retarget PDC on the New engine");
+        CHECK(graph.setEffectParameter(nodeId, "mix", 100.0f), "[RSCore] mix back");
+        CHECK(graph.setBypass(nodeId, false), "[RSCore] bypass off");
+        CHECK(graph.getLatencyEpoch() == epoch, "[RSCore] still no recompute after bypass / mix restored");
+
+        // Direct mutation (the RPC path that bypasses the graph): pending + service.
+        epoch = graph.getLatencyEpoch();
+        CHECK(rs->setParameterValue("quality", 2.0f), "[RSCore] direct quality change");
+        CHECK(graph.hasPendingLatencyChange(), "[RSCore] direct change leaves the graph pending");
+        CHECK(graph.servicePendingLatencyChange(), "[RSCore] service recomputes");
+        CHECK(graph.getOutputLatencySamples() == lat(2) && graph.getLatencyEpoch() == epoch + 1,
+              "[RSCore] chain latency follows a direct quality change");
+
+        epoch = graph.getLatencyEpoch();
+        CHECK(rs->setParameterValue("hq_engine", 0.0f), "[RSCore] direct engine change back to Classic");
+        if (lat(2) != 2048)
+        {
+            CHECK(graph.servicePendingLatencyChange(), "[RSCore] service recomputes the engine change");
+            CHECK(graph.getLatencyEpoch() == epoch + 1, "[RSCore] one recompute for the engine change");
+        }
+        CHECK(graph.getOutputLatencySamples() == 2048, "[RSCore] Classic High chain latency after the engine change");
+        std::cout << "[RSCore] sr " << sr << ": New Fast/Normal/High " << lat(0) << "/" << lat(1) << "/" << lat(2)
+                  << ", final chain latency " << graph.getOutputLatencySamples() << "\n";
+        graph.destroy();
+    }
+}
+
 // [PDCNotify] Same contract one level up, through MixEngine - the object the
 // bridge RPCs reach via getEffectPtr()/getMasterEffectPtr(). Not prepared, so no
 // applier thread: the test drives servicePendingLatencyChanges() itself.
@@ -2981,6 +3051,7 @@ int main()
     testAudioGraphAddEffectConsumesPassthrough();
     testAudioGraphLatencyChangePropagation();
     testAudioGraphDirectEffectLatencyChangeNotifies();
+    testResonanceSuppressorNewEngineChainPdc();
     testMixEngineDirectEffectLatencyChangeService();
     testMixEngineApplierServicesLatencyChange();
     testAudioGraphThirdPartyLatencyRefreshPropagation();

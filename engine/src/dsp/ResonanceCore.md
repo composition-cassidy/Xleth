@@ -6,8 +6,8 @@ A self-contained spectral resonance suppressor core: it finds narrow spectral pe
 spectrum (a ringing room mode, a whistle, a harsh formant), and attenuates exactly those bands, per channel, with a
 real zero-phase gain applied through a weighted overlap-add (WOLA) transform. It has no `juce::AudioProcessor` or
 APVTS dependency: it is driven with raw channel pointers and a plain parameter struct, so it can be unit-tested and
-benchmarked without an engine. As of this document it is **not wired into any effect**; the existing
-`XlethResonanceSuppressorEffect` and the EQ spectral band are separate implementations. Section 8 is the surface the
+benchmarked without an engine. It is wired, opt-in, into the Resonance Suppressor's High Quality mode as
+`hq_engine` = New (section 10; the default stays the Classic `WolaProcessor`); the EQ spectral band is a separate implementation. Section 8 is the surface the
 Resonance Suppressor's High Quality mode needs (band grid and weight curve, sharpness, mono / Mid / Side operation, a
 visualization tap, meters, parameter-change safety, the instance hop-phase helper) and how the effect maps its
 parameters onto the core. Section 9 is live frame-tier switching (Fast / Normal / High while processing, from any thread, without
@@ -30,6 +30,7 @@ for arbitrary program material.
 7. Measured margins (7.1 single-seed robustness, 7.2 D1 vs the bench, 7.3 worst-case CPU, 7.4 seed protocol and tier study, 7.5 multi-instance bursts)
 8. Resonance Suppressor integration surface (8.1 grid and weight curve, 8.2 sharpness, 8.3 channels and Mid / Side, 8.4 visualization tap, 8.5 meters, 8.6 parameter changes, 8.7 instance hop phases, 8.8 RS parameter mapping, 8.9 what the core still cannot do)
 9. Live frame-tier switching, aligned dry, parameter hardening (9.1 structure, 9.2 the transition contract, 9.3 what the effect must do, 9.4 detector state across a switch, 9.5 hop phase across tiers, 9.6 parameter hardening, 9.7 API summary, 9.8 bit-identity and CPU checks, 9.9 limitations)
+10. Using the core in the Resonance Suppressor (10.1 selection and old states, 10.2 what prepare builds, memory, 10.3 structural transitions, 10.4 quality and the latency window, 10.5 mapping / curve / stereo / output stage, 10.6 hop phase, 10.7 viz / meters / telemetry, 10.8 bench subjects RSC-*)
 
 ## 1. Architecture
 
@@ -993,3 +994,176 @@ next to the new one, interleaved per repetition), which the bench cannot do as i
 - **Non-finite input audio** is not sanitised (it would propagate through the averages like before); the effect's input stage owns that.
 - An **isolated impulse after seconds of digital silence** is cut by 0.2 - 0.4 % by a steady Fast or Normal core, switched or not (seen in T-B with
   default parameters); a detector property, not part of the switch.
+
+## 10. Using the core in the Resonance Suppressor
+
+The core is wired into `XlethResonanceSuppressorEffect` (`engine/src/audio/XlethResonanceSuppressorEffect.h`) as an **opt-in** High
+Quality engine next to the legacy `WolaProcessor` ("Classic"). Tests: `[RSCore]` groups in `test_effects`, `test_pdc_stage1` and
+`test_effect_processblock_alloc` (cases e, e2, f, g); bench subjects RSC-F / RSC-N / RSC-H (section 10.8). Numbers below are from those
+runs at 48 kHz unless stated.
+
+### 10.1 Selection, defaults, old states
+
+- Parameter `hq_engine` (choice `Classic` = 0, `New` = 1), **default Classic**, appended last to the APVTS layout (no existing parameter
+  index moves). It is read only when `processing_mode` = High Quality; Low Latency (the IIR engine) is unchanged.
+- A state without `hq_engine` restores as **Classic**: `setStateInformation` inserts `hq_engine = 0` (APVTS would otherwise keep the
+  instance's current value for a missing parameter), next to the existing `processing_mode` insertion (missing = High Quality). Test: an
+  old blob restored into an instance set to New reads Classic and renders bit-identically to a legacy instance with the same parameters,
+  also when it is restored while the instance is running New.
+- Classic is bit-identical to the pre-integration effect in steady state: every pre-existing check in `test_effects` (1472),
+  `test_pdc_stage1` (754) and `test_effect_processblock_alloc` (167, LL null fixtures included) prints the same numbers, and the bench
+  subjects S1-S4 and S1c-S4c (`--no-cpu`) write 83 files byte-identical to the pre-change binary (only summary.md's run-directory line
+  differs). What changed for Classic is the TRANSITION behaviour (10.3): a `processing_mode` change used to reset both engines instantly on
+  the message thread; it is now a fade (test_effects' mode-switch steps 0.187 -> 0.043 and 0.180 -> 0.046).
+
+### 10.2 What prepare builds (nothing is built later)
+
+`prepareEffect` (message thread, not processing) builds every engine the structure can select: one `WolaProcessor` per quality, a dry
+delay sized for the longest Classic latency (`setDelay` re-targets it without reallocating), and one `Core` with all three frame tiers
+(`setFrameTier` from `quality`, `setHopPhaseOffset` from the instance index, `setVizSink`, `prepare(sr, block, 2)`), plus the core's dry,
+Mid / Side and aux buffers, the 96-entry weight curve and the viz resampling tables. **No engine, quality, mode or stereo-mode change
+allocates, frees, reconstructs, prepares or resets anything on the message thread** (audit RT3 is gone for Classic too: its quality
+change used to re-prepare the `WolaProcessor` in `onParameterValueChanged`).
+
+Memory per instance (48 kHz stereo, block 512, case g): `operator new` bytes of `prepareToPlay` 0.869 MB, of which the core is 0.468 MB
+(three tiers + the 4096-sample rings) and the three `WolaProcessor`s + buffers 0.401 MB; process private bytes per prepared instance
+(16 instances) 1.02 MB. Below the 1.5 MB budget, so the core is prepared unconditionally. If it ever has to shrink, lazy allocation
+would mean preparing the core on the message thread when `hq_engine` first becomes New and publishing it to the audio thread through an
+atomic pointer (allocation off the audio thread, but a New request before that completes would have to keep the previous engine running).
+
+### 10.3 Structural transitions (engine, processing mode, stereo mode, Classic quality)
+
+The audio thread reads the requested structure from the APVTS atomics at every block start (so automation reaches it too) and compares
+it with the structure it runs: `processing_mode`; for High Quality also `hq_engine` and `stereo_mode`; for Classic also `quality`. On a
+difference:
+
+1. **Fade-out**: the output is multiplied by a linear ramp 1 -> 0 over 5 ms (240 samples at 48 kHz), the bypass dry with it.
+2. **Switch**, at the block boundary where the ramp reached 0 (the rest of that block is silence): the target engine is reset (Classic:
+   the `WolaProcessor` of that quality, the dry delay set to its latency; New: `Core::reset()` directly onto the requested tier, see
+   10.4; Low Latency: `reset()`).
+3. **Fade-in of the INPUT**: the target engine's history is silence, so its output would start with a step one latency later. Ramping
+   what enters it (and the dry it mixes with) 0 -> 1 over 5 ms makes the output start as a 5 ms ramp after the target's latency.
+
+So the dip is fade-out + target latency + fade-in. Measured on DC at depth 0: **32.6 ms** for any change landing on a Normal-tier High
+Quality engine (5 + 21.3 + 5 ms, plus one block of 100 samples when the request is seen in a block whose bypass dry the base class did
+not take from the effect, below), **11.2 ms** for a change to Low Latency (5 + 0 + 5 ms + block). At High (2048) it is 5 + 42.7 + 5 = about 53 ms (computed, not measured).
+Steps: the largest sample step of every transition (Classic <-> New, New <-> Low Latency, Stereo -> Mid -> Side -> Stereo on New) is
+<= 1.0x the larger of the input's own largest step and the steady outputs' (pink + bell and a 1 kHz sine). On a lone resonant sine the
+output swells towards the input level after the switch: the target engine starts from reset state, so a held resonance is unsuppressed
+until its detector engages again (the same reason the core holds its old tier through a tier switch, 9.2). No comb: across Low Latency
+<-> New (0 <-> 1024 samples) at depth 0 / mix 50 % on white noise, the share of a 128-sample window's output energy carried by the
+second delay is <= 2.6 % (negative control, the two delays summed: 63 %). A state restore and `reset()` adopt the structure at once,
+without a fade, from cleared state (as before).
+
+The base class reads `usesLatencyAlignedBypassDry()` before `processEffect`, so the effect computes it for the next block: true while
+the New engine is active and while a transition runs, and the dry it hands out is latched per block (the core's dry for New, the live
+input otherwise, both with the transition gain). A change seen in a block whose bypass dry the base did not take from the effect waits
+one block, so a bypassed or bypass-crossfading output fades with the wet instead of stepping.
+
+### 10.4 Quality on the New engine, and the latency window
+
+A quality change on the New engine is a tier request, never a prepare or reset: the audio thread calls `requestTier()` when the
+`quality` parameter differs from its last request, and the core holds the old tier until the new one's overlap-add is complete, then
+crossfades (9.2). Measured adoption -> core on the new latency at block 64: 26.7 ms Normal -> High, 13.3 ms High -> Fast, 18.7 ms
+Fast -> Normal, 32 ms Normal -> High (from a later point in the hop). Entering the New engine from another structure resets the core
+directly onto the requested tier (a zero-length `process()` adopts the pending request, `reset()` completes the transition it started).
+
+**Latency publication and its window.** Every change that alters latency (`processing_mode`, `hq_engine`, `quality`, and for Classic /
+Low Latency `mix` / `delta` / bypass) publishes the new latency **on the message thread at the request** (`onParameterValueChanged` /
+`onBypassChanged` -> `setLatencySamples`, `Core::latencyFor(sr, tier)` for New), which raises the chain's `LatencyChangeSignal` (generic
+path: inline recompute; direct path: the applier's service). The audio output reaches that latency later: after the 5 ms fade-out of a
+structural change (the output is silent around the switch, so the PDC retarget is masked), or after the core's hold + crossfade for a
+New-engine quality change, **at most 3 hops of the new tier + 5 ms: about 37 ms at 48 kHz going to High** (32 + 5). During that window
+the chain is compensated for the new latency while the core still outputs the old one. Latency is never published from the audio thread.
+Automation writes the parameter atomics without `onParameterValueChanged`, so an automated quality / engine change moves the audio but
+not the PDC (the existing contract of the base class).
+
+### 10.5 Mapping, weight curve, stereo modes, output stage
+
+- Parameters per 8.8, from the raw APVTS values each block (finite-checked, clamped): `depth / 100`, `sensitivity = 1 - selectivity /
+  100`, `sharpness / 100` (the core's narrowness meaning, not the Classic detector shape), `hardKnee` from Soft / Hard, `attackMs`,
+  `releaseMs`, `stereoLink = stereo_link / 100` (the RS default 100 % is passed through).
+- Weight curve: the effect's `weightingForFrequency` (one static definition both engines use) evaluated at the 96 `bandCentreHz` into a
+  member array, only when `wc_hp`, `wc_lp` or a focus node changes, and always passed (the RS default curve is not flat: 0 below 40 Hz,
+  ramp to 80 Hz, ramp down above 16 kHz; test: every band below 40 Hz is 0, every band 200 Hz - 12 kHz is 1, the top bands ~0.42).
+- Stereo: core channels 0 / 1. Mid / Side: the effect matrixes, processes the selected component as channel 0 and passes the other
+  through `auxIn` / `auxOut`; the dry is recombined the same way. Mid mode with a pure-side input and Side mode with a pure-mid input
+  reproduce the input bit-identically one latency later at depth 0 and at depth 100; on general material the untouched component differs
+  only by the float rounding of the M +- S recombination (1.5e-8). Mono Side feeds zeros and passes the input through aux.
+- Output stage: mix / trim / delta against the core's `dryOut` (no own delay line). Mix 0 (the dry-only shortcut) and bypass output that
+  dry, so the latency stays the tier's: bypass and mix 0 never retarget PDC (test: 0 latency notifications; an impulse comes out once, at
+  +1024, bypassed and at mix 0). Cost: the core keeps running while bypassed or at mix 0 (CPU as when active; the detector stays warm).
+
+### 10.6 Hop phase
+
+Each instance gets `Core::hopPhaseOffsetForInstance(index, hop)` with `index` from a static atomic counter assigned at its first
+`prepareToPlay` (`setCoreInstanceIndex()` pins it; tests and the bench pin 0, the core's historical grid). With the van der Corput
+offsets, 8 Normal instances at 48 kHz complete **at most 2 frame boundaries in any 64-sample block** (8 x 64 / 256; 8.7 H3, 9.5 T-H),
+instead of all 8 in every 4th block.
+
+### 10.7 Visualization, meters, telemetry
+
+- Viz: an always-attached `VizSink` resamples each frame (96 bands) to the existing schema-v3 `ResonanceBucket` (128 buckets on
+  20 Hz x 1000^(i/127), linear on log f between band centres) and pushes it into the effect's `DynamicsVizCollector` when visualization
+  is on. `spectrum` is the core's **40 ms averaged** per-octave level (pink noise flat), calibrated once per tier by -10 log10(N / 2) -
+  10 log10(1 kHz): white noise of RMS r reads 20 log10 r dBFS in the 1 kHz bucket at every tier (-19.0 / -18.5 / -19.0 dB for -18.75 dBFS).
+  The Classic display is the instantaneous per-bin magnitude of one frame, uncalibrated (about 10 log10(N / 2) dB hotter) and max-pooled.
+  `reduction` = cut / 24, `weighting` = the focus curve at the bucket centre, `activity` = top-12 mean / 24, `sampleClock` = hopIndex x
+  hop, `fftSize` / `qualityIndex` = the tier in use. One bucket per hop and channel, as Classic.
+- Meters: slot 2 keeps its Classic meaning (mean of the 12 largest band cuts / 24, peak with a 0.92-per-block decay), from the frames;
+  slot 3 (new, New engine only) = `lastMaxReductionDb()` in dB.
+- Telemetry: realtime section `rs_core` for the New engine next to Classic's `rs_wola`.
+- Nothing on the audio thread allocates, locks or logs (case e: parameters swept every block; e2: plus structural changes and the viz tap
+  on; f: 200 000 blocks of 64 with a second thread changing quality / engine / mode / stereo mode at random, ~1 300-1 500 requests,
+  ~400 transitions, ~90 tier switches: 0 allocations, finite, peak 0.34 for an input peak of 0.36).
+
+### 10.8 Bench subjects RSC-F / RSC-N / RSC-H
+
+The effect with `hq_engine` = New at the capability settings (depth 100 %, Hard, every other RS parameter at its default), G4 companions
+RSCs-F / -N / -H (selectivity 0). They differ from C1c-* by the effect's layer only: the RS default focus curve (C1c: flat), the parameter
+mapping (sensitivity 1 - 0.5 = 0.5, the core default) and stereo link 100 % (C1c: 0). The named G1 waiver (section 4) is NOT extended to
+them (no gate or waiver was changed), so their raw G1 100 Hz cell counts.
+
+Default seed (`--subjects RSC-F,RSC-N,RSC-H,C1c-F,C1c-N,C1c-H`, CPU on), RSC-N against C1c-N:
+
+| gate | C1c-N | RSC-N | why they differ |
+|---|---|---|---|
+| G1 in-window | 11/12 raw, the 100 Hz cell WAIVED -> pass | FAIL 11/12 (100 Hz: 2.34 dB vs limit 2.10) | the same sub-bin cell (section 4); the waiver names C1c / C1c-N / C1c-H only and was not extended. RSC-N's residual is LOWER everywhere below 1 kHz (100 Hz 2.34 vs 3.45 dB, 150 Hz 1.02 vs 1.94) because stereo link 100 % applies max(L, R) of two noisy detectors |
+| G2 outside-dev | 12/12 | 12/12 | |
+| G1q / G2q / G1l / G2l | 3/3, 3/3, 2/2, 2/2 | same | |
+| G3 R-only | PASS (L 12/12, L in-window -0.00 dB) | **FAIL (L 0/12, L in-window -6.78 dB)** | stereo link 100 % (the RS default): the untouched L channel receives R's cut. Expected and by design of the RS default; G3 assumes independent channels |
+| G4 jitter | PASS (C1s: std 0.156, isolated 3.9e-5) | PASS (RSCs-N: std 0.199, isolated 5.1e-5) | the companion runs with link 100 % (max of two detectors) |
+| G5 pre-echo | PASS (-1.475 / -3.180 dB) | PASS (-0.708 / -3.562 dB) | link 100 % |
+| G6 latency | 1024 / 1024 at 48 and 44.1 kHz | same | |
+| G7 CPU vs S3 | PASS 0.85 / 0.81 | **FAIL 1.00 / 0.99** (second run 1.01 / 1.01) | the effect layer (per-sample mix / trim / delta with string-keyed smoothers, the input copy and peaks, about 50 APVTS reads per block, the structure check, the always-on viz sink). S3 carries the same layer around the Classic engine, so in the effect the New engine costs what Classic costs (core ~= WolaProcessor at Normal) |
+| G8a / G8b | 6/6, 6/6 | 6/6, 6/6 (faster: t50 at 500 Hz / 1000 ms 85 vs 96 ms, lower leak) | link 100 % |
+| G9a r_off500 | 9/9 | **FAIL 7/9** (500 Hz / 1000 ms -1.25 dB, 2500 Hz / 1000 ms -1.17 dB vs limit 1.0; C1c-N -0.95 / -0.94) | link 100 %: the max of two decaying reductions stays above 1 dB slightly longer |
+| G9b r_off1000 | 9/9 | 9/9 | |
+| overall | PASS (1 waiver) | FAIL (G1 unwaived, G3, G7, G9a) | |
+
+The focus curve is not a factor here: every scan f0 (100 Hz - 8 kHz) and every T1 f0 sits where the RS default curve is exactly 1. The
+parameter mapping is not a factor either (selectivity 50 % -> sensitivity 0.5, the core default). **Diagnostic RSC-N0** (the same
+effect with stereo link 0 and the curve opened to 20 Hz - 20 kHz, i.e. the C1c settings through the effect) reproduces C1c-N exactly
+on every DSP gate: identical per-f0 G1 / G2 values, G3 PASS 12/12, G5 -1.475 / -3.180, G9a 9/9 with identical r_off, tau_fit 228.4 ms;
+only G7 differs (1.01 / 1.01 vs 0.83 / 0.76 in the same run). So the wiring is exact, every quality difference of RSC-N comes from the
+RS default stereo link, and the CPU difference is the effect layer.
+
+RSC-F / RSC-H on the default seed: RSC-F G1 12/12, G3 FAIL (link), G7 1.08 / 1.06, G9a 7/9; RSC-H G1 11/12 (100 Hz unwaived), G3 FAIL
+(link), G7 1.04 / 1.03, G9a 8/9.
+
+Dev seeds 1..6 (`--seedset dev --no-cpu`; the held-out seeds were not run). Robust verdicts (a gate passes only if it passes on every
+seed; the named waiver applies to C1c-N / C1c-H only):
+
+| subject | seeds passing | gates failing on at least one seed |
+|---|---:|---|
+| C1c-N | 1/6 | G1 1/6 (150 Hz worst +2.270 vs 2.074; 100 Hz waived 6/6), G8a 1/6 (500 Hz / D 1000 worst 144 ms) |
+| RSC-N | 0/6 | G1 1/6 (100 Hz, unwaived: worst 2.422 vs 2.096, median 2.146), G3 0/6 (L in-window -6.9 dB, link), G9a 3/6 (2500 Hz / D 300 worst 1.143 vs 1.0) |
+| RSC-N0 | 0/6 | G1 0/6 (100 Hz unwaived 3.326 median; 150 Hz identical to C1c-N), G8a 1/6 (identical to C1c-N: 144 ms) |
+| RSC-F | 0/6 | G3 0/6, G9a 0/6 (500 Hz / D 1000 median 1.090) |
+| RSC-H | 0/6 | G1 0/6 (100 Hz unwaived), G3 0/6, G9a 5/6 |
+
+RSC-N0 equals C1c-N on every gate value of every seed, so the dev picture says the same as the default seed: the integration is exact,
+and RSC-N's differences are the RS default stereo link of 100 %. That link trades: it FIXES C1c-N's two seed-dependent weaknesses (G1
+150 Hz 6/6 with worst +1.212, G8a 500 Hz 6/6 with worst 93 ms, both with margin) and costs G3 (by definition: a one-channel resonance is
+cut on both channels) and G9a (the release is slightly deeper / longer at 500 ms: worst 1.143 dB). Whether the RS should keep 100 % as
+the default for the New engine is a product decision for the UI phase; nothing was retuned here.
