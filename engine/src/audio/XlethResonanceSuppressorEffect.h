@@ -287,6 +287,9 @@ public:
     // Read-only view of the New engine (tests / bench introspection; the
     // atomics in it are any-thread, the rest belongs to the audio thread).
     const xleth::dsp::resonance::Core& getCoreForTest() const noexcept { return core_; }
+    // The weight curve the New engine passes to the core (numBands() floats on
+    // the core's band grid; valid after the first New-engine block).
+    const float* getCoreWeightCurveForTest() const noexcept { return coreWeights_.data(); }
 
     void processEffect(juce::AudioBuffer<float>& buffer, juce::MidiBuffer& /*midi*/) override
     {
@@ -367,10 +370,13 @@ public:
                 for (int ch = 0; ch < processedChannels; ++ch)
                     buffer.copyFrom(ch, 0, liveDry_, ch, 0, numSamples);
             }
+            else if (newEngineActive)
+            {
+                processNewEngineBlock(buffer, processedChannels, numSamples,
+                                      settings, dryOnlyTarget, gainReductionActivity);
+            }
             else if (active_.mode == 1)
             {
-                // Classic High Quality (and, until the New engine's processing
-                // lands, the New selection too).
                 auto& wola = activeWola();
                 if (!wola.isPrepared())
                 {
@@ -480,6 +486,9 @@ public:
         writeMeterValue(0, peakL);
         writeMeterValue(1, peakR);
         writeMeterValue(2, gainReductionActivity);
+        // Slot 3 (New engine only, 0 otherwise): the core's largest applied band
+        // reduction of the last frame, dB (Core::lastMaxReductionDb).
+        writeMeterValue(3, newEngineActive && activeIsNewEngine() ? core_.lastMaxReductionDb() : 0.0f);
 
 #if defined(XLETH_DEBUG) && defined(XLETH_RESONANCE_SUPPRESSOR_AUDIO_LOG)
         if (rsLogThis)
@@ -578,7 +587,42 @@ private:
         XlethResonanceSuppressorEffect& owner;
     };
 
-    void onCoreVizFrame(const xleth::dsp::resonance::VizFrame& /*frame*/) noexcept {}
+    // Per core frame (audio thread, inside core_.process): the Classic meter-2
+    // quantity, mean of the 12 largest band reductions / 24, max over the block.
+    void onCoreVizFrame(const xleth::dsp::resonance::VizFrame& frame) noexcept
+    {
+        const int bands = std::clamp(frame.numBands, 0, xleth::dsp::resonance::kGridBands);
+
+        std::array<float, 12> top {};
+        for (int b = 0; b < bands; ++b)
+        {
+            const float v = frame.reductionDb[b];
+            if (!(v > top.back()))
+                continue;
+            top.back() = v;
+            for (int i = static_cast<int>(top.size()) - 1; i > 0; --i)
+            {
+                if (top[static_cast<std::size_t>(i)] <= top[static_cast<std::size_t>(i - 1)])
+                    break;
+                std::swap(top[static_cast<std::size_t>(i)], top[static_cast<std::size_t>(i - 1)]);
+            }
+        }
+        float topSum = 0.0f;
+        int topCount = 0;
+        for (float v : top)
+        {
+            if (v <= 0.0f)
+                break;
+            topSum += v;
+            ++topCount;
+        }
+        float activity = topCount > 0
+            ? std::clamp(topSum / static_cast<float>(topCount) / 24.0f, 0.0f, 1.0f)
+            : 0.0f;
+        if (!std::isfinite(activity))
+            activity = 0.0f;
+        coreBlockActivity_ = std::max(coreBlockActivity_, activity);
+    }
 
     static bool sameStructure(const Structure& a, const Structure& b) noexcept
     {
@@ -881,6 +925,8 @@ private:
     void resetCoreOnTier(int quality) noexcept
     {
         coreRequestedQuality_ = quality;
+        coreBlockActivity_ = 0.0f;
+        coreMeterActivity_ = 0.0f;
         if (core_.sampleRate() <= 0.0)
             return;
         if (static_cast<int>(core_.targetFrameTier()) != std::clamp(quality, 0, 2))
@@ -2536,6 +2582,198 @@ private:
         std::array<std::array<BandState, kNumBands>, 2> channels_ {};
     };
 
+    // ── New engine processing (audio thread) ────────────────────────────────
+
+    static float finiteOr(float v, float fallback) noexcept
+    {
+        return std::isfinite(v) ? v : fallback;
+    }
+
+    // ResonanceCore.md 8.8: the RS parameters in the core's units. Finite values
+    // only (the core sanitises again at intake). Raw APVTS values, exactly what
+    // the Classic engine reads per block; the core needs no smoothing for click
+    // safety (8.6).
+    xleth::dsp::resonance::Params makeCoreParams(const ProcessorSettings& settings) const noexcept
+    {
+        xleth::dsp::resonance::Params p;
+        p.depth       = std::clamp(finiteOr(settings.depth, 0.5f), 0.0f, 1.0f);
+        p.sensitivity = std::clamp(1.0f - finiteOr(settings.selectivity, 0.5f), 0.0f, 1.0f);
+        p.sharpness   = std::clamp(finiteOr(settings.sharpness, 0.5f), 0.0f, 1.0f);
+        p.hardKnee    = settings.hardMode;
+        p.attackMs    = finiteOr(settings.attackMs, 15.0f);
+        p.releaseMs   = finiteOr(settings.releaseMs, 200.0f);
+        p.stereoLink  = std::clamp(finiteOr(settings.stereoLink, 1.0f), 0.0f, 1.0f);
+        p.weightCurve = coreWeights_.data();
+        return p;
+    }
+
+    // The focus curve on the core's band grid (and on the 128 viz buckets),
+    // evaluated with the same weightingForFrequency the Classic engine uses per
+    // bin. Only when a weighting setting changed (pre-sized arrays: no
+    // allocation). The RS default curve is NOT flat (0 below 40 Hz, ramp to
+    // 80 Hz, ramp down above 16 kHz), so the curve is always passed.
+    void refreshCoreWeights(const ProcessorSettings& settings) noexcept
+    {
+        if (coreWeightsValid_ && WolaProcessor::weightingSettingsEqual(settings, coreWeightSettings_))
+            return;
+
+        const int bands = std::min(core_.numBands(), static_cast<int>(coreWeights_.size()));
+        for (int b = 0; b < bands; ++b)
+            coreWeights_[static_cast<std::size_t>(b)] =
+                WolaProcessor::weightingForFrequencyImpl(settings, sampleRate_, core_.bandCentreHz(b));
+
+        coreWeightSettings_ = settings;
+        coreWeightsValid_ = true;
+    }
+
+    void processNewEngineBlock(juce::AudioBuffer<float>& buffer,
+                               int processedChannels,
+                               int numSamples,
+                               const ProcessorSettings& settings,
+                               bool dryOnlyTarget,
+                               float& gainReductionActivity) noexcept
+    {
+        const int cap = coreDry_.getNumSamples();
+        if (core_.sampleRate() <= 0.0 || numSamples > cap
+            || static_cast<int>(coreAuxIn_.size()) < numSamples
+            || static_cast<int>(msComponent_.size()) < numSamples)
+        {
+            // Not prepared, or a block larger than prepared (hosts never do this;
+            // the base class's own dry buffer has the same limit).
+            buffer.clear();
+            coreDry_.clear();
+            return;
+        }
+
+        wetStateCleared_ = false;
+        activeEngine_ = ProcessingEngine::HighQuality;
+
+        // Quality on the New engine is a live tier request, never a reprepare.
+        const int quality = readQualityForPrepare();
+        if (quality != coreRequestedQuality_)
+        {
+            core_.requestTier(tierForQuality(quality));
+            coreRequestedQuality_ = quality;
+        }
+
+        refreshCoreWeights(settings);
+        const xleth::dsp::resonance::Params params = makeCoreParams(settings);
+
+        coreVizCollector_ = vizActive_.load(std::memory_order_acquire);
+        coreVizCeilingDb_ = params.depth * (params.hardKnee ? 24.0f : 12.0f);
+        coreBlockActivity_ = 0.0f;
+
+        float* outL = buffer.getWritePointer(0);
+        float* outR = processedChannels > 1 ? buffer.getWritePointer(1) : nullptr;
+        float* dryL = coreDry_.getWritePointer(0);
+        float* dryR = coreDry_.getWritePointer(1);
+        float* comp = msComponent_.data();
+        float* aux = coreAuxIn_.data();
+        float* auxOut = coreAuxOut_.data();
+        float* dryMono = coreDryMono_.data();
+        const int stereoMode = active_.stereo;
+
+        if (processedChannels == 2 && stereoMode == 1)
+        {
+            // Mid: M processed as the core's channel 0, S delay-only through the
+            // aux channel (ResonanceCore.md 8.3 / 9.2), recombined on the dry
+            // timeline: L' = M' + S_d, R' = M' - S_d.
+            for (int s = 0; s < numSamples; ++s)
+            {
+                comp[s] = 0.5f * (outL[s] + outR[s]);
+                aux[s]  = 0.5f * (outL[s] - outR[s]);
+            }
+            float* ch[1] = { comp };
+            float* dry[1] = { dryMono };
+            core_.process(ch, 1, numSamples, params, dry, aux, auxOut);
+            for (int s = 0; s < numSamples; ++s)
+            {
+                const float side = auxOut[s];
+                outL[s] = comp[s] + side;
+                outR[s] = comp[s] - side;
+                dryL[s] = dryMono[s] + side;
+                dryR[s] = dryMono[s] - side;
+            }
+        }
+        else if (processedChannels == 2 && stereoMode == 2)
+        {
+            // Side: S processed, M delay-only: L' = M_d + S', R' = M_d - S'.
+            for (int s = 0; s < numSamples; ++s)
+            {
+                comp[s] = 0.5f * (outL[s] - outR[s]);
+                aux[s]  = 0.5f * (outL[s] + outR[s]);
+            }
+            float* ch[1] = { comp };
+            float* dry[1] = { dryMono };
+            core_.process(ch, 1, numSamples, params, dry, aux, auxOut);
+            for (int s = 0; s < numSamples; ++s)
+            {
+                const float mid = auxOut[s];
+                outL[s] = mid + comp[s];
+                outR[s] = mid - comp[s];
+                dryL[s] = mid + dryMono[s];
+                dryR[s] = mid - dryMono[s];
+            }
+        }
+        else if (processedChannels == 2)
+        {
+            float* ch[2] = { outL, outR };
+            float* dry[2] = { dryL, dryR };
+            core_.process(ch, 2, numSamples, params, dry);
+        }
+        else if (processedChannels == 1)
+        {
+            if (stereoMode == 2)
+            {
+                // Mono Side: there is no side to process. Zeros keep the detector
+                // fed (as the Classic engine does); the input passes delay-only.
+                std::fill(comp, comp + numSamples, 0.0f);
+                std::copy(outL, outL + numSamples, aux);
+                float* ch[1] = { comp };
+                float* dry[1] = { dryMono };
+                core_.process(ch, 1, numSamples, params, dry, aux, dryL);
+                std::copy(dryL, dryL + numSamples, outL);
+            }
+            else
+            {
+                float* ch[1] = { outL };
+                float* dry[1] = { dryL };
+                core_.process(ch, 1, numSamples, params, dry);
+            }
+        }
+
+        if (dryOnlyTarget)
+        {
+            // Dry-only shortcut: the aligned dry (the latency stays the tier's).
+            advanceOutputSmoothers(numSamples);
+            deltaMix_ = 0.0f;
+            for (int ch = 0; ch < processedChannels; ++ch)
+                buffer.copyFrom(ch, 0, coreDry_, ch, 0, numSamples);
+        }
+        else
+        {
+            applyOutputStage(buffer, coreDry_, processedChannels, numSamples);
+        }
+
+        gainReductionActivity = coreGainReductionActivityForMeter();
+    }
+
+    // Meter slot 2 for the New engine: the Classic definition (mean of the 12
+    // largest band reductions / 24, peak-hold with a 0.92-per-block decay), fed
+    // from the core's frames instead of the WolaProcessor's bins.
+    float coreGainReductionActivityForMeter() noexcept
+    {
+        if (coreBlockActivity_ > coreMeterActivity_)
+            coreMeterActivity_ = coreBlockActivity_;
+        else
+            coreMeterActivity_ *= 0.92f;
+
+        if (!std::isfinite(coreMeterActivity_) || coreMeterActivity_ < 1.0e-6f)
+            coreMeterActivity_ = 0.0f;
+
+        return std::clamp(coreMeterActivity_, 0.0f, 1.0f);
+    }
+
     // The Classic WolaProcessor of the active structure's quality (declared
     // here, after the WolaProcessor class, which a return type needs complete).
     WolaProcessor& activeWola() noexcept
@@ -3014,6 +3252,14 @@ private:
     std::vector<float> coreDryMono_;      // dryOut of the core's channel 0 in Mid / Side
     std::vector<float> coreAuxIn_;        // Mid / Side: the unprocessed component
     std::vector<float> coreAuxOut_;       // ... on the dryOut timeline
+    std::array<float, xleth::dsp::resonance::kGridBands> coreWeights_ {};
+    std::array<float, xleth::viz::kResonanceVizBucketCount> coreVizWeights_ {};
+    std::array<float, xleth::viz::kResonanceVizBucketCount> coreVizBucketHz_ {};
+    ProcessorSettings coreWeightSettings_;
+    xleth::viz::DynamicsVizCollector<xleth::viz::ResonanceBucket>* coreVizCollector_ = nullptr;
+    float coreVizCeilingDb_ = 0.0f;
+    float coreBlockActivity_ = 0.0f;
+    float coreMeterActivity_ = 0.0f;
     int coreRequestedQuality_ = 1;
     int coreInstanceIndex_ = -1;
     bool coreWeightsValid_ = false;
