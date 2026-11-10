@@ -82,6 +82,13 @@
 //   The named G1 100 Hz waiver covers the same tiers as for C1c-*: RSC-N / RSC-H / RSC-N0 / RSC-H0.
 //   --cpu-burst: N instances (default 8) of C1c-N and S3c processed back to back per block in one thread on pink noise, hop phases aligned vs staggered (informational, see runCpuBurst()).
 //
+// [EQCore] Param EQ subjects (the EQ's Spectral bands on the ResonanceCore, spectral_engine = Core): one Spectral band at -24 dB (core depth 1, Hard), its
+//   spec_attack / spec_release set to the core defaults 15 / 200 ms, spec_sens / spec_sel default (core sensitivity 0.5), the weight curve opened (no curve:
+//   one band covering the whole range) and stereo link 0: EQS-F / EQS-N / EQS-H = the C1c-F / -N / -H settings through the EQ, graded on every gate against
+//   C1c-*. EQSl-F / -N / -H: the same at the EQ's default stereo link 1 (characterisation: G3 / G9a printed, not graded). EQSb-N: EQS-N with three flat
+//   (0 dB) bell bands in the EQ's biquad path behind the core (diagnostic: does the EQ's signal path change anything). G4 companions EQSs-* / EQSsl-*
+//   (spec_sens 0 = core sensitivity 1). The named G1 100 Hz waiver is NOT extended to them (no gate or waiver is changed).
+//
 // ResonanceCore (stage 1, src/dsp/ResonanceCore.*, wired into no effect) is graded through a bench-only adapter:
 //   C1 default Params (gated), C1c depth 1 / Hard (gated), C1s depth 1 / sensitivity 1 / Hard (G4 companion of both).
 //   Tables 10c / 10d read the core's detector (baseline lift by planted shape / f0; predicted vs measured noise sigma).
@@ -654,6 +661,47 @@ static std::function<std::unique_ptr<juce::AudioProcessor>(double, int, const Pl
     };
 }
 
+// Subject::factory for the Param EQ with its Spectral bands on the ResonanceCore ([EQCore], spectral_engine = Core): one Spectral band at -24 dB
+// (core depth 24 / 24 = 1, Hard knee), spec_attack 15 ms / spec_release 200 ms (the core defaults), spec_sens / spec_sel default (core sensitivity 0.5
+// exactly) - the C1c capability settings through the EQ. The weight curve is opened (setSpectralCoreFlatWeightsForBench: the band covers the whole
+// range, the core sees no curve, as C1c) and the stereo link is 0 unless `defaultLink` (the EQ's default, 1). `sensitive` = spec_sens 0 (core sensitivity 1,
+// the C1s companion). `flatBiquads` adds three 0 dB bell bands to the EQ's biquad path behind the core (diagnostic EQSb-N). `neutral` = band gain 0
+// (core depth 0). The instance index is pinned to 0 (the core's historical hop grid, as for C1c-* and RSC-*). The planted resonance is NOT passed.
+static std::function<std::unique_ptr<juce::AudioProcessor>(double, int, const Planted&, bool)> eqCoreFactory(int quality, bool sensitive,
+    bool defaultLink, bool flatBiquads = false)
+{
+    return [quality, sensitive, defaultLink, flatBiquads](double sr, int maxBlock, const Planted& /*bell: intentionally unused*/, bool neutral)
+    {
+        auto eq = std::make_unique<XlethParametricEQ>();
+        eq->setCoreInstanceIndex(0);
+        need(eq->addBand() == 0, "EQS addBand");
+        need(eq->setBandParam(0, "freq", 1000.0f), "EQS freq");
+        need(eq->setBandParam(0, "gain", neutral ? 0.0f : -24.0f), "EQS gain (depth)");
+        need(eq->setBandParam(0, "spec_attack", 15.0f), "EQS spec_attack 15 ms");
+        need(eq->setBandParam(0, "spec_release", 200.0f), "EQS spec_release 200 ms");
+        if (sensitive && !neutral) need(eq->setBandParam(0, "spec_sens", 0.0f), "EQS spec_sens 0 (sensitive)");
+        need(eq->setBandParam(0, "enabled", 1.0f), "EQS enabled");
+        need(eq->setBandParam(0, "mode", 2.0f), "EQS mode Spectral");
+        if (flatBiquads)
+        {
+            const float hz[3] = { 120.0f, 1800.0f, 7000.0f };
+            for (int b = 1; b <= 3; ++b)
+            {
+                need(eq->addBand() == b, "EQSb addBand");
+                need(eq->setBandParam(b, "freq", hz[b - 1]), "EQSb freq");
+                need(eq->setBandParam(b, "gain", 0.0f), "EQSb gain 0 dB");
+                need(eq->setBandParam(b, "q", 1.0f), "EQSb q");
+            }
+        }
+        need(eq->setParameterValue("spectral_engine", 1.0f), "EQS spectral_engine Core");
+        need(eq->setParameterValue("spectral_quality", static_cast<float>(quality)), "EQS spectral_quality");
+        eq->setSpectralCoreFlatWeightsForBench(true);
+        if (!defaultLink) eq->setSpectralCoreStereoLinkForBench(0.0f);
+        eq->prepareToPlay(sr, maxBlock);
+        return std::unique_ptr<juce::AudioProcessor>(std::move(eq));
+    };
+}
+
 // THE subject registry. Registering a subject here adds it to every table, CSV, gate and (for Primary) the CPU run.
 // Order is preserved inside each group; groups are concatenated Primary, Sensitive, Capability.
 static const std::vector<Subject>& registry()
@@ -714,6 +762,19 @@ static const std::vector<Subject>& registry()
           s.factory = rsNewEngineFactory(1, true, true); }
         { auto& s = add("RSCs0-H", "RSC", "RS New engine High, link 0 + open curve (sensitive)",   Kind::Custom, Group::Sensitive, "RS hq_engine=New, quality High, depth 100, Hard, selectivity 0, stereo_link 0, wc_hp 20, wc_lp 20000");
           s.factory = rsNewEngineFactory(2, true, true); }
+        // [EQCore] G4 companions of EQS-* (link 0) and EQSl-* (default link 1): spec_sens 0 = core sensitivity 1, depth 1, Hard (the C1s settings through the EQ).
+        { auto& s = add("EQSs-F", "EQS", "EQ Spectral on the core Fast, link 0 (sensitive)",   Kind::Custom, Group::Sensitive, "EQ spectral_engine=Core, quality Fast, band -24 dB, spec_sens 0, link 0, open curve");
+          s.factory = eqCoreFactory(0, true, false); }
+        { auto& s = add("EQSs-N", "EQS", "EQ Spectral on the core Normal, link 0 (sensitive)", Kind::Custom, Group::Sensitive, "EQ spectral_engine=Core, quality Normal, band -24 dB, spec_sens 0, link 0, open curve");
+          s.factory = eqCoreFactory(1, true, false); }
+        { auto& s = add("EQSs-H", "EQS", "EQ Spectral on the core High, link 0 (sensitive)",   Kind::Custom, Group::Sensitive, "EQ spectral_engine=Core, quality High, band -24 dB, spec_sens 0, link 0, open curve");
+          s.factory = eqCoreFactory(2, true, false); }
+        { auto& s = add("EQSsl-F", "EQS", "EQ Spectral on the core Fast, default link (sensitive)",   Kind::Custom, Group::Sensitive, "EQ spectral_engine=Core, quality Fast, band -24 dB, spec_sens 0, link 1, open curve");
+          s.factory = eqCoreFactory(0, true, true); }
+        { auto& s = add("EQSsl-N", "EQS", "EQ Spectral on the core Normal, default link (sensitive)", Kind::Custom, Group::Sensitive, "EQ spectral_engine=Core, quality Normal, band -24 dB, spec_sens 0, link 1, open curve");
+          s.factory = eqCoreFactory(1, true, true); }
+        { auto& s = add("EQSsl-H", "EQS", "EQ Spectral on the core High, default link (sensitive)",   Kind::Custom, Group::Sensitive, "EQ spectral_engine=Core, quality High, band -24 dB, spec_sens 0, link 1, open curve");
+          s.factory = eqCoreFactory(2, true, true); }
 
         // -------- Capability: max-depth runs (gated) --------
         { auto& s = add("S1c", "S1", "RS Low Latency (capability)", Kind::RsLL, Group::Capability, "depth=100, mode=Hard");
@@ -769,6 +830,30 @@ static const std::vector<Subject>& registry()
         { auto& s = add("RSC-H0", "RSC", "RS New engine High, link 0 + open curve", Kind::Custom, Group::Capability,
                         "RS hq_engine=New, quality High, depth 100, Hard, stereo_link 0, wc_hp 20, wc_lp 20000");
           s.capability = true; s.gated = true; s.jitterId = "RSCs0-H"; s.factory = rsNewEngineFactory(2, false, true); }
+        // [EQCore] The Param EQ's Spectral bands on the core: the C1c-F / -N / -H settings through the EQ (one band, open curve, link 0), graded on ALL
+        // gates against C1c-*; EQSl-* = the EQ's default stereo link 1 (characterisation: G3 / G9a printed, not graded); EQSb-N = EQS-N with three flat
+        // bell bands in the EQ's biquad path (diagnostic). The named G1 100 Hz waiver is not extended to them (no gate or waiver changed).
+        { auto& s = add("EQS-F", "EQS", "EQ Spectral on the core Fast, link 0 + open curve", Kind::Custom, Group::Capability,
+                        "EQ spectral_engine=Core, quality Fast, 1 Spectral band -24 dB, attack 15 / release 200 ms, link 0, open curve");
+          s.capability = true; s.gated = true; s.jitterId = "EQSs-F"; s.factory = eqCoreFactory(0, false, false); }
+        { auto& s = add("EQS-N", "EQS", "EQ Spectral on the core Normal, link 0 + open curve", Kind::Custom, Group::Capability,
+                        "EQ spectral_engine=Core, quality Normal, 1 Spectral band -24 dB, attack 15 / release 200 ms, link 0, open curve");
+          s.capability = true; s.gated = true; s.jitterId = "EQSs-N"; s.factory = eqCoreFactory(1, false, false); }
+        { auto& s = add("EQS-H", "EQS", "EQ Spectral on the core High, link 0 + open curve", Kind::Custom, Group::Capability,
+                        "EQ spectral_engine=Core, quality High, 1 Spectral band -24 dB, attack 15 / release 200 ms, link 0, open curve");
+          s.capability = true; s.gated = true; s.jitterId = "EQSs-H"; s.factory = eqCoreFactory(2, false, false); }
+        { auto& s = add("EQSl-F", "EQS", "EQ Spectral on the core Fast (default link 1, characterisation)", Kind::Custom, Group::Capability,
+                        "EQ spectral_engine=Core, quality Fast, 1 Spectral band -24 dB, attack 15 / release 200 ms, link 1, open curve");
+          s.capability = true; s.gated = true; s.jitterId = "EQSsl-F"; s.notGraded = { "G3", "G9a" }; s.factory = eqCoreFactory(0, false, true); }
+        { auto& s = add("EQSl-N", "EQS", "EQ Spectral on the core Normal (default link 1, characterisation)", Kind::Custom, Group::Capability,
+                        "EQ spectral_engine=Core, quality Normal, 1 Spectral band -24 dB, attack 15 / release 200 ms, link 1, open curve");
+          s.capability = true; s.gated = true; s.jitterId = "EQSsl-N"; s.notGraded = { "G3", "G9a" }; s.factory = eqCoreFactory(1, false, true); }
+        { auto& s = add("EQSl-H", "EQS", "EQ Spectral on the core High (default link 1, characterisation)", Kind::Custom, Group::Capability,
+                        "EQ spectral_engine=Core, quality High, 1 Spectral band -24 dB, attack 15 / release 200 ms, link 1, open curve");
+          s.capability = true; s.gated = true; s.jitterId = "EQSsl-H"; s.notGraded = { "G3", "G9a" }; s.factory = eqCoreFactory(2, false, true); }
+        { auto& s = add("EQSb-N", "EQS", "EQ Spectral on the core Normal + 3 flat bell bands (diagnostic)", Kind::Custom, Group::Capability,
+                        "EQS-N plus three 0 dB bell bands (120 Hz, 1.8 kHz, 7 kHz, Q 1) in the EQ's biquad path");
+          s.capability = true; s.gated = true; s.jitterId = "EQSs-N"; s.factory = eqCoreFactory(1, false, false, true); }
 
         // -------- Reference subjects (opt-in): metric / gate calibration. Registered through Subject::factory. --------
         if (g_opt.refSubjects)

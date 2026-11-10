@@ -1160,6 +1160,87 @@ static void testResonanceSuppressorNewEngineChainPdc()
     }
 }
 
+// [EQCore] Chain PDC follows the EQ's Spectral engine, quality and band
+// on / off changes: through the generic owner path (setEffectParameter) and a
+// direct mutation (the RPC path: setBandParam / setParameterValue on the
+// effect) + the pending-latency service, at 48 and 96 kHz.
+static void testEqCoreChainPdc()
+{
+    std::cout << "[EQCore] chain PDC follows EQ engine / quality / band changes\n";
+    using Core = xleth::dsp::resonance::Core;
+
+    for (double sr : { 48000.0, 96000.0 })
+    {
+        AudioGraph graph;
+        graph.init(sr, 512);
+        const int nodeId = graph.addEffect("xletheq", 0);
+        CHECK(nodeId >= 0, "[EQCore] graph should add the EQ");
+        auto* eq = dynamic_cast<XlethParametricEQ*>(graph.getEffect(nodeId));
+        CHECK(eq != nullptr, "[EQCore] graph effect should be the EQ");
+        if (eq == nullptr) return;
+        auto lat = [&](int q) { return Core::latencyFor(sr, static_cast<Core::FrameTier>(q)); };
+
+        CHECK(eq->addBand() == 0, "[EQCore] band 0");
+        CHECK(eq->setBandParam(0, "mode", 2.0f), "[EQCore] band 0 Spectral (direct)");
+        CHECK(graph.servicePendingLatencyChange(), "[EQCore] service the Spectral-on change");
+        CHECK(graph.getOutputLatencySamples() == XlethParametricEQ::kSTFTLatency, "[EQCore] Legacy Spectral chain latency 4096");
+
+        auto epoch = graph.getLatencyEpoch();
+        CHECK(graph.setEffectParameter(nodeId, "spectral_engine", 1.0f), "[EQCore] generic path spectral_engine Core");
+        CHECK(graph.getOutputLatencySamples() == lat(1), "[EQCore] chain latency follows the engine change (Core Normal)");
+        CHECK(graph.getLatencyEpoch() == epoch + 1, "[EQCore] one recompute for the engine change");
+        CHECK(!graph.hasPendingLatencyChange(), "[EQCore] generic path leaves nothing pending");
+
+        for (int q : { 2, 0, 1 })
+        {
+            epoch = graph.getLatencyEpoch();
+            CHECK(graph.setEffectParameter(nodeId, "spectral_quality", static_cast<float>(q)), "[EQCore] generic path spectral_quality");
+            CHECK(graph.getOutputLatencySamples() == lat(q), "[EQCore] chain latency follows the quality change");
+            CHECK(graph.getLatencyEpoch() == epoch + 1, "[EQCore] one recompute per quality change");
+        }
+
+        // Bypass keeps the latency (Legacy and Core alike): no recompute.
+        epoch = graph.getLatencyEpoch();
+        CHECK(graph.setBypass(nodeId, true), "[EQCore] bypass on");
+        CHECK(graph.setBypass(nodeId, false), "[EQCore] bypass off");
+        CHECK(graph.getOutputLatencySamples() == lat(1) && graph.getLatencyEpoch() == epoch,
+              "[EQCore] bypass does not retarget PDC on the Core");
+
+        // Direct mutations (the eqSetBandParam / eqSetGlobalParam RPCs): pending + service.
+        epoch = graph.getLatencyEpoch();
+        CHECK(eq->setBandParam(0, "enabled", 0.0f), "[EQCore] direct: Spectral band off");
+        CHECK(graph.hasPendingLatencyChange() && graph.servicePendingLatencyChange(), "[EQCore] service the band-off change");
+        CHECK(graph.getOutputLatencySamples() == 0 && graph.getLatencyEpoch() == epoch + 1,
+              "[EQCore] chain latency drops to 0 with the Core's Spectral band off (as Legacy)");
+        epoch = graph.getLatencyEpoch();
+        CHECK(eq->setBandParam(0, "enabled", 1.0f), "[EQCore] direct: Spectral band on");
+        CHECK(graph.servicePendingLatencyChange(), "[EQCore] service the band-on change");
+        CHECK(graph.getOutputLatencySamples() == lat(1) && graph.getLatencyEpoch() == epoch + 1,
+              "[EQCore] chain latency follows the band back on (Core Normal)");
+        epoch = graph.getLatencyEpoch();
+        CHECK(eq->setParameterValue("spectral_quality", 2.0f), "[EQCore] direct quality change");
+        CHECK(graph.servicePendingLatencyChange(), "[EQCore] service the direct quality change");
+        CHECK(graph.getOutputLatencySamples() == lat(2) && graph.getLatencyEpoch() == epoch + 1,
+              "[EQCore] chain latency follows a direct quality change");
+        epoch = graph.getLatencyEpoch();
+        CHECK(eq->setParameterValue("spectral_engine", 0.0f), "[EQCore] direct engine change back to Legacy");
+        if (lat(2) != XlethParametricEQ::kSTFTLatency)
+        {
+            CHECK(graph.servicePendingLatencyChange(), "[EQCore] service the engine change");
+            CHECK(graph.getLatencyEpoch() == epoch + 1, "[EQCore] one recompute for the engine change");
+        }
+        CHECK(graph.getOutputLatencySamples() == XlethParametricEQ::kSTFTLatency, "[EQCore] Legacy again: 4096");
+        // The Core's quality does not move a Legacy EQ's latency.
+        epoch = graph.getLatencyEpoch();
+        CHECK(graph.setEffectParameter(nodeId, "spectral_quality", 0.0f), "[EQCore] quality on Legacy");
+        CHECK(graph.getOutputLatencySamples() == XlethParametricEQ::kSTFTLatency && graph.getLatencyEpoch() == epoch,
+              "[EQCore] spectral_quality does not change a Legacy EQ's latency (no recompute)");
+        std::cout << "[EQCore] sr " << sr << ": Core Fast/Normal/High " << lat(0) << "/" << lat(1) << "/" << lat(2)
+                  << ", Legacy " << XlethParametricEQ::kSTFTLatency << ", final chain latency " << graph.getOutputLatencySamples() << "\n";
+        graph.destroy();
+    }
+}
+
 // [PDCNotify] Same contract one level up, through MixEngine - the object the
 // bridge RPCs reach via getEffectPtr()/getMasterEffectPtr(). Not prepared, so no
 // applier thread: the test drives servicePendingLatencyChanges() itself.
@@ -3052,6 +3133,7 @@ int main()
     testAudioGraphLatencyChangePropagation();
     testAudioGraphDirectEffectLatencyChangeNotifies();
     testResonanceSuppressorNewEngineChainPdc();
+    testEqCoreChainPdc();
     testMixEngineDirectEffectLatencyChangeService();
     testMixEngineApplierServicesLatencyChange();
     testAudioGraphThirdPartyLatencyRefreshPropagation();

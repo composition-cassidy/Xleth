@@ -773,6 +773,120 @@ static void runCaseEqSpectral(int block, const juce::AudioBuffer<float>& sig)
     }
 }
 
+// (i) [EQCore] The EQ's Spectral bands on the Core engine, every parameter swept
+// every block (region shapes, depths, detector settings), and i2 with the
+// structural changes on top (quality = tier switches, routing, engine, band
+// on / off, mode): 0 allocations at 64 and 512.
+static void configureEqCore(XlethParametricEQ& eq)
+{
+    eq.setCoreInstanceIndex(0);
+    for (int b = 0; b < 3; ++b) eq.addBand();
+    auto band = [&](int b, float f, float g, float q, float mode) {
+        eq.setBandParam(b, "freq", f); eq.setBandParam(b, "gain", g); eq.setBandParam(b, "q", q);
+        eq.setBandParam(b, "enabled", 1.0f); eq.setBandParam(b, "mode", mode);
+    };
+    band(0, 2500.0f, -18.0f, 4.0f, 2.0f);
+    band(1, 800.0f, -9.0f, 2.0f, 2.0f);
+    band(2, 300.0f, 3.0f, 1.0f, 0.0f);
+    eq.setParameterValue("spectral_engine", 1.0f);
+}
+
+static void sweepEqCore(XlethParametricEQ& eq, int i)
+{
+    eq.setBandParam(0, "freq", sweepVal(i, 500.0f, 8000.0f, 0.13f, 0.0f));
+    eq.setBandParam(0, "gain", sweepVal(i, -30.0f, 0.0f, 0.29f, 1.0f));
+    eq.setBandParam(0, "q", sweepVal(i, 0.5f, 8.0f, 0.17f, 2.0f));
+    eq.setBandParam(0, "spec_sens", sweepVal(i, 0.0f, 1.0f, 0.41f, 3.0f));
+    eq.setBandParam(0, "spec_sel", sweepVal(i, 1.0f, 20.0f, 0.23f, 4.0f));
+    eq.setBandParam(0, "spec_attack", sweepVal(i, 0.1f, 100.0f, 0.31f, 5.0f));
+    eq.setBandParam(0, "spec_release", sweepVal(i, 10.0f, 1000.0f, 0.19f, 6.0f));
+    eq.setBandParam(1, "gain", sweepVal(i, -24.0f, 6.0f, 0.37f, 7.0f));
+    eq.setBandParam(1, "freq", sweepVal(i, 200.0f, 3000.0f, 0.11f, 8.0f));
+}
+
+static void sweepEqCoreStructural(XlethParametricEQ& eq, int i)
+{
+    sweepEqCore(eq, i);
+    if (i % 37 == 0) eq.setParameterValue("spectral_quality", static_cast<float>((i / 37) % 3));
+    if (i % 53 == 0) { const float c = static_cast<float>((i / 53) % 5); eq.setBandParam(0, "channel", c); eq.setBandParam(1, "channel", c); }
+    if (i % 71 == 0) eq.setParameterValue("spectral_engine", (i / 71) % 3 == 2 ? 0.0f : 1.0f);
+    if (i % 97 == 0) eq.setBandParam(1, "enabled", (i / 97) % 2 == 0 ? 0.0f : 1.0f);
+    if (i % 113 == 0) eq.setBandParam(0, "mode", (i / 113) % 2 == 0 ? 0.0f : 2.0f);
+}
+
+static void runCaseEqCore(int block, const juce::AudioBuffer<float>& sig)
+{
+    struct Variant { const char* id; const char* label; void (*sweep)(XlethParametricEQ&, int); };
+    const Variant variants[2] = {
+        { "i",  "EQ Spectral on the Core, parameters swept every block", sweepEqCore },
+        { "i2", "EQ Spectral on the Core, sweeps + structural changes",  sweepEqCoreStructural },
+    };
+    const int passes[3] = { kSpecWarmBlocks, warmBlocksExtended(block), 0 };
+    const char* names[3] = { "spec", "extended", "cold" };
+    for (const auto& v : variants)
+    {
+        for (int p = 0; p < 3; ++p)
+        {
+            XlethParametricEQ eq;
+            eq.prepareToPlay(kSR, block);
+            configureEqCore(eq);
+            CHECK(eq.getLatencySamples() == 1024, "EQ Core Normal reports 1024; got " << eq.getLatencySamples());
+            const auto sweep = v.sweep;
+            const AllocResult r = measure(eq, sig, block, passes[p], {}, [&](int i) { sweep(eq, i); });
+            CHECK(r.finite, "case " << v.id << " output finite");
+            CHECK(eq.getCoreForTest().framesProcessed() > 0, "case " << v.id << ": the core actually ran");
+            report(v.id, v.label, block, r, names[p], r.total == 0 ? "PASS" : "FAIL");
+            if (std::strcmp(v.id, "i2") == 0)
+                std::printf("[RSLLAlloc] case=i2 block=%d pass=%s structural transitions=%llu tier switches=%lld\n",
+                            block, names[p], static_cast<unsigned long long>(eq.getStructureSwitchCount()),
+                            eq.getCoreForTest().tierSwitchCount());
+            CHECK(r.total == 0, "case " << v.id << ": EQ Core processBlock allocated " << r.total
+                                << " times (block " << block << ", " << names[p] << " pass)");
+        }
+    }
+}
+
+// (j) [EQCore] Memory per EQ instance: both Spectral paths are prepared up front.
+static void runMemoryReportEq()
+{
+    auto bytesOf = [](const std::function<void()>& fn) {
+        const long long b0 = g_allocBytes.load();
+        g_allocArmed.store(true);
+        fn();
+        g_allocArmed.store(false);
+        return g_allocBytes.load() - b0;
+    };
+    long long eqBytes = 0, coreBytes = 0;
+    {
+        auto eq = std::make_unique<XlethParametricEQ>();
+        eq->setCoreInstanceIndex(0);
+        eqBytes = bytesOf([&] { eq->prepareToPlay(kSR, 512); });
+        eq->releaseResources();
+    }
+    {
+        auto core = std::make_unique<xleth::dsp::resonance::Core>();
+        coreBytes = bytesOf([&] { core->prepare(kSR, 512, 2); });
+    }
+    constexpr int kInstances = 16;
+    std::vector<std::unique_ptr<XlethParametricEQ>> many;
+    many.reserve(kInstances);
+    const std::size_t pb0 = privateBytes();
+    for (int i = 0; i < kInstances; ++i)
+    {
+        many.push_back(std::make_unique<XlethParametricEQ>());
+        many.back()->prepareToPlay(kSR, 512);
+    }
+    const std::size_t pb1 = privateBytes();
+    const double perInstanceMb = pb1 > pb0 ? static_cast<double>(pb1 - pb0) / kInstances / (1024.0 * 1024.0) : 0.0;
+    std::printf("[RSLLAlloc] memory (48 kHz stereo, block 512): EQ prepareToPlay operator-new bytes %.3f MB "
+                "(ResonanceCore %.3f MB, rest = Legacy STFT + FIR + oversamplers + core buffers %.3f MB); private bytes per "
+                "prepared instance (16 instances, incl. the analysis thread's stack and the static arrays) %.3f MB; "
+                "sizeof(XlethParametricEQ) %.3f MB\n",
+                eqBytes / (1024.0 * 1024.0), coreBytes / (1024.0 * 1024.0), (eqBytes - coreBytes) / (1024.0 * 1024.0),
+                perInstanceMb, sizeof(XlethParametricEQ) / (1024.0 * 1024.0));
+    CHECK(eqBytes > 0 && coreBytes > 0, "case j: byte counter saw the prepare allocations");
+}
+
 // (h) [EQCore] EQ locking: a "RPC thread" hammers the EQ's mutations while this
 // thread processes 200,000 blocks. Self-checking parameter set: every band's
 // (freq, q, spec_sel, spec_release) is either the addBand default tuple or the
@@ -818,6 +932,8 @@ struct Result
     bool finite = true;
     float outPeak = 0.0f, inPeak = 0.0f;
     long long engineChanges = 0, qualityChanges = 0;
+    std::uint64_t switches = 0;
+    long long tierSwitches = 0;
 };
 
 // extraMutations(eq, rng, which) may add effect-specific mutations (engine / quality); it returns true if it handled `which`.
@@ -935,6 +1051,8 @@ static Result run(long long blocks, bool seqCheck, bool writerSleeps,
     r.blocks = blocks;
     r.requests = requests.load();
     r.accepted = eq.getSnapshotAcceptedCountForTest();
+    r.switches = eq.getStructureSwitchCount();
+    r.tierSwitches = eq.getCoreForTest().tierSwitchCount();
     r.kept = eq.getSnapshotKeptCountForTest();
     return r;
 }
@@ -944,14 +1062,24 @@ static void runStressEqLocking()
 {
     // Every gain the mutator writes is a cut (bells, Spectral depth, Dynamic range), so 4 x the input peak is a
     // generous bound for filter overshoot.
-    const auto r = eqstress::run(200000, true, true);
+    // [EQCore] engine and quality are mutated too (requests 12 / 13 of the mutator's 14).
+    const auto engineQuality = [](XlethParametricEQ& e, std::mt19937& rng, int which, eqstress::Result& res) {
+        if (which == 12) { e.setParameterValue("spectral_engine", static_cast<float>(rng() % 2)); ++res.engineChanges; return true; }
+        if (which == 13) { e.setParameterValue("spectral_quality", static_cast<float>(rng() % 3)); ++res.qualityChanges; return true; }
+        return false;
+    };
+    const auto r = eqstress::run(200000, true, true, engineQuality);
     const bool boundOk = r.outPeak <= 4.0f * r.inPeak;
-    std::printf("[RSLLAlloc] case=h (EQ locking stress) blocks=%lld block=64 requests=%lld snapshots accepted=%llu kept=%llu "
+    std::printf("[RSLLAlloc] case=h (EQ locking stress) blocks=%lld block=64 requests=%lld (engine %lld, quality %lld) structural transitions=%llu "
+                "tier switches=%lld snapshots accepted=%llu kept=%llu "
                 "torn=%lld bad_count=%lld allocs=%lld finite=%d out_peak=%.4f in_peak=%.4f  %s\n",
-                r.blocks, r.requests, static_cast<unsigned long long>(r.accepted), static_cast<unsigned long long>(r.kept),
+                r.blocks, r.requests, r.engineChanges, r.qualityChanges, static_cast<unsigned long long>(r.switches), r.tierSwitches,
+                static_cast<unsigned long long>(r.accepted), static_cast<unsigned long long>(r.kept),
                 r.torn, r.badCount, r.allocs, r.finite ? 1 : 0, r.outPeak, r.inPeak,
                 (r.torn == 0 && r.badCount == 0 && r.allocs == 0 && r.finite && boundOk) ? "PASS" : "FAIL");
     CHECK(r.requests > 1000, "case h: the RPC thread made mutations (" << r.requests << ")");
+    CHECK(r.engineChanges > 50 && r.qualityChanges > 50 && r.switches > 20,
+          "case h: engine / quality mutations reached the effect and caused structural transitions");
     CHECK(r.kept > 0, "case h: some blocks overlapped an edit and kept the previous snapshot (the race was exercised)");
     CHECK(r.torn == 0, "case h: torn snapshot reads: " << r.torn);
     CHECK(r.badCount == 0, "case h: snapshot band count out of range: " << r.badCount);
@@ -1002,11 +1130,13 @@ int main(int argc, char** argv)
         runCaseRsHQ(block, sig);
         runCaseRsNew(block, sig);
         runCaseEqSpectral(block, sig);
+        runCaseEqCore(block, sig);
     }
 
     runStressRsStructure();
     runStressEqLocking();
     runMemoryReport();
+    runMemoryReportEq();
 
     runNullTests();
 

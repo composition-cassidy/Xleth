@@ -7,7 +7,8 @@ spectrum (a ringing room mode, a whistle, a harsh formant), and attenuates exact
 real zero-phase gain applied through a weighted overlap-add (WOLA) transform. It has no `juce::AudioProcessor` or
 APVTS dependency: it is driven with raw channel pointers and a plain parameter struct, so it can be unit-tested and
 benchmarked without an engine. It is wired, opt-in, into the Resonance Suppressor's High Quality mode as
-`hq_engine` = New (section 10; the default stays the Classic `WolaProcessor`); the EQ spectral band is a separate implementation. Section 8 is the surface the
+`hq_engine` = New (section 10; the default stays the Classic `WolaProcessor`), and, opt-in, into the Param EQ's Spectral bands as
+`spectral_engine` = Core (section 11; the default stays the EQ's legacy 4096 STFT path). Section 8 is the surface the
 Resonance Suppressor's High Quality mode needs (band grid and weight curve, sharpness, mono / Mid / Side operation, a
 visualization tap, meters, parameter-change safety, the instance hop-phase helper) and how the effect maps its
 parameters onto the core. Section 9 is live frame-tier switching (Fast / Normal / High while processing, from any thread, without
@@ -31,6 +32,7 @@ for arbitrary program material.
 8. Resonance Suppressor integration surface (8.1 grid and weight curve, 8.2 sharpness, 8.3 channels and Mid / Side, 8.4 visualization tap, 8.5 meters, 8.6 parameter changes, 8.7 instance hop phases, 8.8 RS parameter mapping, 8.9 what the core still cannot do)
 9. Live frame-tier switching, aligned dry, parameter hardening (9.1 structure, 9.2 the transition contract, 9.3 what the effect must do, 9.4 detector state across a switch, 9.5 hop phase across tiers, 9.6 parameter hardening, 9.7 API summary, 9.8 bit-identity and CPU checks, 9.9 limitations)
 10. Using the core in the Resonance Suppressor (10.1 selection and old states, 10.2 what prepare builds, memory, 10.3 structural transitions, 10.4 quality and the latency window, 10.5 mapping / curve / stereo / output stage, 10.6 hop phase, 10.7 viz / meters / telemetry, 10.8 bench subjects RSC-*)
+11. Using the core in the Param EQ (11.1 selection and old states, 11.2 the EQ's parameter snapshot (locking), 11.3 what prepare builds, memory, 11.4 regions: one weight curve, shared vs per-region settings, 11.5 channels and routing, 11.6 structure and transitions, 11.7 quality, latency window, bypass, 11.8 hop phase / meters / display, 11.9 bench subjects EQS-*, 11.10 Legacy bit-identity, 11.11 limitations)
 
 ## 1. Architecture
 
@@ -1167,3 +1169,229 @@ and RSC-N's differences are the RS default stereo link of 100 %. That link trade
 150 Hz 6/6 with worst +1.212, G8a 500 Hz 6/6 with worst 93 ms, both with margin) and costs G3 (by definition: a one-channel resonance is
 cut on both channels) and G9a (the release is slightly deeper / longer at 500 ms: worst 1.143 dB). Whether the RS should keep 100 % as
 the default for the New engine is a product decision for the UI phase; nothing was retuned here.
+
+## 11. Using the core in the Param EQ
+
+The core is wired into `XlethParametricEQ` (`engine/src/audio/XlethEQEffect.h`) as an **opt-in** renderer for the EQ's Spectral bands
+(`mode` = 2) next to the legacy 4096-point WOLA path ("Legacy"). Tests: `[EQCore]` groups in `test_effects`, `test_pdc_stage1` and
+`test_effect_processblock_alloc` (cases h, i, i2, j); bench subjects EQS-* (11.9). Numbers below are from those runs at 48 kHz unless stated.
+
+### 11.1 Selection, defaults, old states
+
+- `spectral_engine` (0 = Legacy, **default**; 1 = Core) and `spectral_quality` (the core's tier: 0 Fast 512, 1 Normal 1024 **default**, 2 High
+  2048 at <= 50 kHz; Legacy ignores it), appended last to the APVTS layout (260 parameters, no existing index moves). Stepped floats like the
+  EQ's `linphase` / `oversample`; `getGlobalParamsAsJSON` reports both.
+- A state without them restores as **Legacy / Normal**: `setStateInformation` inserts both PARAM elements before `replaceState` (APVTS keeps
+  the instance's current value for a missing parameter). Test: an old blob restored LIVE into an instance running the Core renders
+  bit-identically to a fresh Legacy instance with that state from the restore on.
+- Legacy is bit-identical to the EQ before the core (11.10).
+
+### 11.2 Threading: the EQ's parameter snapshot (applies to the whole EQ, both engines)
+
+The EQ's RPC / applier-thread mutators used to touch audio-thread state (band `clearState()` from add / remove / restore, removeBand's
+16-parameter copy observable half-done, latency status atomics written by both threads). The EQ now reads every parameter its audio thread
+uses **once per block** into a private `ParamSnapshot` through a sequence counter: multi-parameter edits (`addBand`, `removeBand`,
+`setStateInformation`, the new `setBandParams` batch) run inside an `EditScope` (counter odd, writers serialised by a mutex the audio thread
+never takes); a copy that overlapped an edit is rejected and the block keeps the previous snapshot (wait-free: no lock, no retry). Band DSP
+state is cleared by the audio thread from a request mask published inside the same edit; a state restore's structure snap rides the same way.
+The latency status atomics are written by the parameter path only. The RPC handlers are unchanged. Stress test (case h): a second thread
+hammers whole-band tuples (`setBandParams`), single parameters, band modes, add / remove, restores, `spectral_engine` and `spectral_quality`
+while the audio thread processes 200 000 blocks of 64: 0 torn snapshots, 0 allocations, finite, bounded; with the sequence check disabled the
+same checker sees ~2 400 torn snapshots in 60 000 blocks (negative control).
+
+### 11.3 What prepare builds, memory
+
+`prepareEffect` (not processing) builds the Legacy path as before and, unconditionally, one `Core` with all three tiers (`setFrameTier` from
+`spectral_quality`, `setHopPhaseOffset` from the EQ's instance index, `prepare(sr, block, 2)`), the aligned-dry / live-dry / routed-mode / aux
+buffers for the largest block, and the e^-jw tables of the 96 grid band centres. **No engine, quality, band-mode or routing change allocates,
+frees, prepares or reconstructs anything later.** Memory (48 kHz stereo, block 512, case j): `operator new` bytes of `prepareToPlay`
+1.180 MB, of which the core is 0.468 MB and the Legacy STFT / FIR / oversamplers / core buffers 0.712 MB; private bytes per prepared instance
+(16 instances) 1.81 MB, including the EQ's own spectrum-analysis thread and `sizeof(XlethParametricEQ)` = 0.226 MB of in-object arrays.
+
+### 11.4 Regions: one weight curve, and what one core can and cannot express
+
+Every enabled Spectral band with a cut (gain < 0) is a **region** of ONE `Params::weightCurve` on the core's band grid:
+
+- **Shape**: the band's own bell, i.e. the Legacy influence zone: an RBJ bell at the band's (smoothed) freq / Q and |gain| dB (>= 1 dB),
+  evaluated at every `bandCentreHz`, in dB, normalised to 1 at its centre. Band type is ignored, as in Legacy.
+- **Depth**: D = the deepest region's min(|gain|, 24 dB); the core runs Hard knee at `depth` = D / 24. A region's curve is its bell x
+  min(|gain|, 24) / D, so a region reaches its own depth exactly where the core's cut saturates (bell x D x |gain| / D) and scales the core's
+  cut proportionally below that (Legacy's depth is proportional too: depth x bell x knee(over)).
+- **Union**: the maximum over regions (each grid band is owned by the region with the largest weight there; the owner table also feeds the
+  per-band meter).
+- **Recomputed** only when a region's smoothed freq / Q / gain moves by more than the Legacy weight cache's thresholds (0.1 % / 0.001 /
+  0.01 dB) or the region set changes; std::array storage, no allocation (during a 30 ms knob glide that is once per block).
+
+| per-band setting | on the Core | vs Legacy |
+|---|---|---|
+| freq, Q | per region (the bell) | same bell; sampled on 96 bands (spacing ~0.41 ERB) instead of 2048 bins |
+| gain < 0 (cut depth) | per region, as the weight (11.4); deeper than 24 dB clamps at 24 | Legacy went to 30 dB |
+| gain = 0 | inert region | same |
+| **gain > 0 (upward)** | **not expressible** (the core only cuts): the band is inert on the Core, `getSpectralCoreUpwardBandMask()` | Legacy boosts detected peaks |
+| enabled / mode | per band (the region set) | same |
+| overlap of two regions | union (max of the weights) | Legacy multiplied the masks (cuts added in dB) |
+| **spec_sens, spec_sel** | **shared**: core `sensitivity` = 1 - thr / (2 x thr_default), thr = 20 log10(1 + sens x sel) dB, from the **dominant** region | per band |
+| **spec_attack, spec_release** | **shared**: `attackMs` / `releaseMs` of the dominant region | per band |
+| **channel (routing)** | **shared**: one channel mode for the core (11.5) | Legacy ignores routing for Spectral bands (always both channels, detected on L) |
+| detector | one statistical detector for all regions (excess over the flank baseline, in sigma) | one bin detector per band (Â±Â½-octave local mean, threshold in dB) |
+
+**Dominant region**: the deepest cut, the lowest band index on a tie. With one Spectral band nothing is shared. With several, the shallower
+regions use the dominant one's detector settings; the per-region settings that differ are not faked.
+
+### 11.5 Channels and routing
+
+- Stereo bands: core channels 0 / 1 with `Params::stereoLink` = **1** by default (both channels get the larger cut: Legacy applied ONE mask,
+  detected on L, to both channels; link 1 keeps "one mask, image preserved" while detecting on both). Not a parameter yet
+  (`setSpectralCoreStereoLinkForBench`); the bench grades link 0 (11.9).
+- Left / Right bands: that channel is core channel 0, the other passes through `auxIn` / `auxOut`: bit-identical, delayed (test, at full
+  depth). Mid / Side: M or S is channel 0, the other component through the aux channel, recombined like the RS (pure-side / pure-mid input
+  bit-identical at depth 0; general material 1.5e-8 at full depth). Mono folds to Stereo.
+- **One core = one channel configuration.** Bands asking for different routings run Stereo and raise `isSpectralCoreChannelConflict()`.
+- Legacy: detection on L only (test: an R-only 2.5 kHz tone is cut 0.01 dB by Legacy, 8.6 dB by the Core; an L-only one 22.9 / 8.8 dB).
+
+### 11.6 Structure and transitions
+
+The audio thread selects a structure per block: None (no active Spectral band, or linear phase), Legacy, or Core + channel mode.
+**None <-> Legacy** edges keep the Legacy semantics exactly (adopted at once; Legacy's own off -> on restart + 5 ms fade-in and its
+un-bypass reset). **Every edge involving the Core** (band on / off, engine, routing, linear phase on / off) is the RS's structural
+transition: 5 ms output fade-out (and of the bypass dry), switch at the block boundary where the fade reached 0 (Core: `reset()` onto the
+requested tier; Legacy: a fresh stream), 5 ms INPUT fade-in. Oversampling follows the active structure, so it switches where the output is
+silent. A state restore adopts the restored structure at once from cleared state; `reset()` completes a running transition.
+
+Measured (`testEQCoreTransitions`, block 480; a clean 1 kHz sine at 0.5 through an inert band for steps and dips, pink noise + a +12 dB bell
+through a -24 dB band for steps; bound = the larger of the input's own largest step and the steady output's):
+
+| transition | dip (sine) | largest step / bound, sine | pink + bell |
+|---|---:|---:|---:|
+| band off -> on (None -> Core) | 26.8 ms | 1.000 | 0.853 |
+| band on -> off (Core -> None) | 5.5 ms | 1.000 | 0.885 |
+| engine Legacy -> Core | 26.8 ms | 1.000 | 0.853 |
+| engine Core -> Legacy | 90.8 ms | 1.000 | 0.878 |
+| routing Stereo -> Mid | 26.8 ms | 1.000 | 0.886 |
+| quality Normal -> High, High -> Fast (tier switch, no structure change) | 0 | 1.000 | 0.852 |
+
+(1.000 on the sine = exactly the sine's own largest step: the fades never add one.) The dip is fade-out + the target's latency + the rest
+of the block in which the fade ended (+ one block when the change was seen in a block whose bypass dry the base did not take from the EQ).
+**No stale splice**: after off -> on, a Core that ran before (and saw the signal jump 13 samples while off) is bit-identical, from the
+re-enable on, to a Core that never ran. **Un-bypass**: the Core keeps running while bypassed, the bypassed output is the core's aligned dry
+(the input delayed by exactly the latency), and after the base's 5 ms crossfade the output is bit-identical to a never-bypassed Core;
+largest step 0.0645 (the sine's own 0.0653).
+
+### 11.7 Quality, latency and its window, bypass
+
+- Latency is published **on the message thread at the request** (`onParameterValueChanged` for `spectral_engine` / `spectral_quality`, and the
+  existing band enabled / mode paths): `Core::latencyFor(sr, requested tier)` while a Spectral band is active on the Core, 4096 on Legacy, 0
+  without an active Spectral band on either engine (Legacy dropped to 0 when its band was disabled, so the Core mirrors that). It raises the
+  chain's `LatencyChangeSignal` (generic path: inline recompute; direct RPC path: the applier's service). Tests: reported == measured impulse
+  delay == `Core::latencyFor` for every tier at 48 and 96 kHz; chain PDC follows engine, quality and band on / off at 48 and 96 kHz through
+  both paths; `spectral_quality` on a Legacy EQ moves nothing.
+- **Latency window.** A quality change is `Core::requestTier()` on the audio thread (never prepare / reset): the core holds the old tier until
+  the new one's overlap-add is complete, then crossfades (9.2): the output reaches the published latency **<= 3 hops of the new tier + 5 ms
+  after the request** (about 37 ms at 48 kHz going to High). A structural change's output fades out within 5 ms (+ at most one block), so the
+  chain is compensated for the new latency while the old structure fades; after the switch the new structure's output starts after its own
+  latency, on the new compensation. Automation writes the parameter atomics without `onParameterValueChanged`: an automated engine / quality
+  change moves the audio but not the PDC (the base class's existing contract).
+- **Bypass** keeps the latency on both engines (as Legacy did). On the Core the bypassed output is the core's aligned dryOut
+  (`usesLatencyAlignedBypassDry`, computed for the next block, latched per block, faded with structural transitions), so the bypassed track
+  stays aligned. Legacy keeps the base class's live-input bypass (unaligned by 4096 while bypassed), unchanged. Cost: the core keeps running
+  while bypassed.
+- **Cost when unused: zero.** The core is processed only while it is the active structure (test: Core engine without a Spectral band, and
+  Legacy with one: 0 core frames). The per-block parameter snapshot (11.2) is the locking fix's, not the core's.
+
+### 11.8 Hop phase, meters, display
+
+- Hop phase: `Core::hopPhaseOffsetForInstance(index, hop)` with `index` from the **EQ's own** static counter (the RS keeps its own:
+  neither numbering moves; test: an EQ prepared between two RS instances leaves their indices consecutive). `setCoreInstanceIndex()` pins it
+  (tests and bench pin 0). EQ and RS instances in one thread can therefore share an offset.
+- Per-band meter (`eqGetBandGR`): schema and scale unchanged (signed dB, negative = cut); on the Core a band shows the deepest applied cut
+  over the grid bands its region owns, from the core's last frame. Upward / inert bands read 0.
+- The EQ feeds no display from the Spectral path: the pre / post spectrum taps are unchanged. What the display does NOT show on the Core (left
+  for the UI phase, not changed): a Spectral band is still drawn as its plain bell at its gain on the **Stereo** trace (`foldChannelForContext`
+  folds Spectral routing for the curve), while the Core routes it, caps it at 24 dB, renders upward bands as nothing and shares detector
+  settings.
+- Telemetry: realtime section `eq_core`.
+
+### 11.9 Bench subjects EQS-*
+
+The EQ with `spectral_engine` = Core and one Spectral band at -24 dB (core depth 1, Hard), `spec_attack` / `spec_release` 15 / 200 ms (the core
+defaults), `spec_sens` / `spec_sel` default (core sensitivity 0.5 exactly), the weight curve opened (`setSpectralCoreFlatWeightsForBench`: one
+band covering the whole range; no user setting produces a flat region, bells only) and stereo link 0: **EQS-F / EQS-N / EQS-H = the C1c-F /
+-N / -H settings through the EQ**, graded on every gate. EQSl-* = the same at the EQ's default link 1 (characterisation, G3 / G9a not graded).
+EQSb-N = EQS-N with three 0 dB bells in the EQ's biquad path (diagnostic). G4 companions EQSs-* / EQSsl-* (`spec_sens` 0 = core sensitivity
+1). The named G1 100 Hz waiver is not extended to them (no gate or waiver was changed), so their raw G1 100 Hz cell counts.
+
+Default seed (`--subjects EQS-F,EQS-N,EQS-H,EQSl-F,EQSl-N,EQSl-H,EQSb-N,C1c-F,C1c-N,C1c-H`, CPU on), EQS-N against C1c-N:
+
+| gate | C1c-N | EQS-N | why they differ |
+|---|---|---|---|
+| G1 in-window | 11/12 raw, 100 Hz WAIVED -> pass | **FAIL 11/12** (100 Hz 3.45 vs limit 2.10) | identical value (3.45 dB): the core's sub-bin ceiling (section 4). The named waiver lists C1c / C1c-N / C1c-H / RSC-* only and was not extended (no waiver changed) |
+| G2, G1q / G2q / G1l / G2l | 12/12, 3/3, 3/3, 2/2, 2/2 | same | |
+| G3 R-only | PASS (L 12/12, L in-window -0.00) | PASS, same values | link 0 |
+| G4 jitter | PASS (C1s: std 0.156, isolated 3.9e-5) | PASS (EQSs-N: 0.156, 3.9e-5) | identical |
+| G5 pre-echo | -1.475 / -3.180 dB | same | |
+| G6 latency | 1024 / 1024 at 48 and 44.1 kHz | same | |
+| G7 CPU vs S3 (<= 1.05) | PASS 0.8515 / 0.8041 | PASS 0.8619 / 0.8187 | the EQ layer around the core (+1.2 % / +1.8 %: the parameter snapshot, the dry copy, the per-band meter scan, the empty biquad pass, the spectrum taps) |
+| G8a / G8b / G9a / G9b | 6/6, 6/6, 9/9, 9/9 | same, same values (tau_fit 228.4 ms) | |
+| overall | PASS (1 waiver) | FAIL (G1 100 Hz unwaived only) | |
+
+EQS-F == C1c-F and EQS-H == C1c-H in the same way (C1c-F fails G8a 5/6 and G9a 8/9 itself; EQS-H fails only the unwaived G1 100 Hz;
+G7 EQS-F 0.9279 / 0.8826, EQS-H 0.9218 / 0.8753). **Every non-CPU CSV value of EQS-F / -N / -H equals C1c-F / -N / -H** (scan, residual scan,
+shape scan, right-only, jitter, pre-echo D / D2, delta artefact, latency, block size, time-varying): the wiring is exact. The rendered WAVs
+of EQS-H are byte-identical to C1c-H's; those of EQS-F / -N differ by at most 1 LSB of 24 bits in 0.2 - 1.7 % of the samples, because the
+EQ's `spec_attack` parameter returns 15 ms through its APVTS range (0.1 - 100) as 15.000001 ms (the release 200 ms and the gain -24 dB round
+trip exactly).
+
+EQSb-N (three 0 dB bells in the biquad path) is bit-identical to EQS-N in every CSV and WAV: a flat RBJ bell is an exact identity in the
+EQ's float DF-II-T (b = a after normalisation), so the EQ's other bands, flat, change nothing; G7 0.8800 / 0.8376 (three more biquads per
+sample).
+
+EQSl-* (the EQ's default link 1) behave like RSC-* (10.8): G3 L 0/12 (L in-window -6.78 dB: an R-only resonance is cut on both channels, by
+design of link 1) and G9a 7/9 / 7/9 / 8/9 (not graded), but G1 is LOWER below 1 kHz (100 Hz 2.22, 150 Hz 1.02 vs 3.45 / 1.94 dB: max of two
+detectors), G4 std 0.203 (EQSsl-N), G5 -1.737 / -3.563 dB, G7 0.8723 / 0.8242.
+
+Dev seeds 1..6 (`--seedset dev --no-cpu`; the held-out seeds were not run). Robust verdicts (a gate passes only if it passes on every seed;
+the named waiver applies to C1c-N / C1c-H only):
+
+| subject | seeds passing | gates failing on at least one seed |
+|---|---:|---|
+| C1c-F | 1/6 | G3 5/6, G8a 1/6, G9a 4/6 |
+| C1c-N | 1/6 | G1 1/6 (150 Hz worst 2.270 vs 2.074; 100 Hz waived 6/6), G8a 1/6 (500 Hz / D 1000 worst 144 ms) |
+| C1c-H | 1/6 | G8a 1/6 (100 Hz waived 6/6) |
+| EQS-F | 1/6 | G3 5/6, G8a 1/6, G9a 4/6 (= C1c-F) |
+| EQS-N | 0/6 | G1 0/6 (100 Hz unwaived: worst 3.564, median 3.326; 150 Hz = C1c-N), G8a 1/6 (= C1c-N) |
+| EQS-H | 0/6 | G1 0/6 (100 Hz unwaived: worst 3.776), G8a 1/6 (= C1c-H) |
+| EQSb-N | 0/6 | identical to EQS-N in every cell |
+| EQSl-F | 6/6 graded | not graded: G3 0/6, G9a 0/6 (500 Hz / D 1000 worst 1.239) |
+| EQSl-N | 5/6 graded | G1 5/6 (100 Hz unwaived, worst 2.308 vs 2.096); not graded: G3 0/6, G9a 3/6 |
+| EQSl-H | 0/6 graded | G1 0/6 (100 Hz unwaived, worst 2.794); not graded: G3 0/6, G9a 5/6 |
+
+**Every one of the 95 per-seed cells of EQS-F / -N / -H has the same values (seeds passing, worst seed, worst / median / min / max) as
+C1c-F / -N / -H**; the only differences are the waiver column (G1 100 Hz) and the G4 companion's name. So on dev seeds, as on the default
+seed, the EQ's integration is exact and every EQS-vs-C1c verdict difference is the unextended waiver. The default link 1 (EQSl-*) does what
+it did for the RS: it fixes C1c-N's two seed-dependent weaknesses (G1 150 Hz 6/6, worst 1.212; G8a 500 Hz 6/6, worst 93 ms) and lowers the
+100 Hz residual (EQSl-N median 2.021 vs 3.326 dB), and costs G3 (by definition) and G9a. Whether the EQ should keep link 1 as its Core
+default is a product decision for the UI phase; nothing was retuned.
+
+### 11.10 Legacy is bit-identical (how it was checked)
+
+- `testEQLegacyBitIdentity`: 64-bit FNV-1a of every output sample, every band's GR meter and the reported latency after every block, for five
+  default-engine scenarios (mixed Spectral cut + upward band + Left / Mid bells + Dynamic Side band at 48 kHz; 44.1 kHz with smoother ramps;
+  events: Spectral off -> on, linear phase on / off, bypass / un-bypass, mode change, state restore, remove / add, reset, oversampling;
+  mono; 96 kHz). The hashes were recorded from the pre-[EQCore] EQ; every commit reproduces them.
+- Every pre-existing check prints the same numbers (`test_effects`, `test_pdc_stage1` including [EQSpliceFix] / [EQBypassFix],
+  `test_effect_processblock_alloc`, `test_effect_audio_thread_reset`, `test_effect_chain_commands`, `test_mix`).
+- Bench S5 / S5s / S5z / S5qz / S5c / S5q / S5qd (`--no-cpu`): 62 files, byte-identical to the pre-change binary except summary.md's run
+  directory / git hash lines.
+- Bridge `probe_eq_chain_pdc.js` 14/14, `test_eq_channel_routing.js` 31/31.
+
+### 11.11 Limitations (for the UI phase)
+
+- Upward Spectral bands cannot run on the Core; routed Spectral bands that disagree run Stereo; detector settings are shared (11.4).
+- Depth is capped at 24 dB on the Core (Legacy 30).
+- The stereo link is fixed at 1 (bench override only); exposing it is a product decision (the RS default 100 % traded G3 / G9a for G1 / G8a,
+  10.8).
+- No user setting gives a flat (whole-range) region: regions are bells, as in Legacy.
+- Bypassed while Legacy and switched to Core while still bypassed: the switch happens after the un-bypass (a bypassed Legacy EQ is not
+  processed), with the structural fade; PDC already moved at the request.
+- The 96-band grid limits a region's resolution (about 55 Hz at 1 kHz, a third of an octave below 100 Hz) and the core's sub-bin ceiling
+  (section 4) applies.

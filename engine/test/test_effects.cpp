@@ -6233,6 +6233,571 @@ static void testEQCoreParamsAndState()
     }
 }
 
+// â”€â”€â”€ [EQCore] Spectral bands on the shared resonance core â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+namespace eqcoretest
+{
+using Core = xleth::dsp::resonance::Core;
+using Event = std::function<void(XlethParametricEQ&)>;
+
+static void spectralBand(XlethParametricEQ& eq, int b, float freq, float gain, float q, int channel = 0,
+                         float sens = 0.5f, float sel = 5.0f, float atk = 10.0f, float rel = 100.0f)
+{
+    eqlegacy::band(eq, b, freq, gain, q, 0, 2, channel, sens, sel, atk, rel);
+}
+
+// A prepared EQ: `setup` adds / configures bands, then the engine and quality
+// are set and the EQ is prepared again (smoothers start on their targets, the
+// structure is adopted without a fade). Instance index pinned to 0.
+static std::unique_ptr<XlethParametricEQ> make(double sr, int block, bool core, int quality,
+                                               const std::function<void(XlethParametricEQ&)>& setup)
+{
+    auto eq = std::make_unique<XlethParametricEQ>();
+    eq->setCoreInstanceIndex(0);
+    eq->prepareToPlay(sr, block);
+    setup(*eq);
+    eq->setParameterValue("spectral_engine", core ? 1.0f : 0.0f);
+    eq->setParameterValue("spectral_quality", static_cast<float>(quality));
+    eq->prepareToPlay(sr, block);
+    return eq;
+}
+
+// Renders `in` in blocks; events[i] runs before block i.
+static juce::AudioBuffer<float> render(XlethParametricEQ& eq, const juce::AudioBuffer<float>& in, int block,
+                                       const std::vector<std::pair<int, Event>>& events = {})
+{
+    juce::AudioBuffer<float> out(in.getNumChannels(), in.getNumSamples());
+    juce::MidiBuffer midi;
+    std::size_t ev = 0;
+    int blk = 0;
+    for (int pos = 0; pos < in.getNumSamples(); pos += block, ++blk)
+    {
+        while (ev < events.size() && events[ev].first == blk) { events[ev].second(eq); ++ev; }
+        const int n = std::min(block, in.getNumSamples() - pos);
+        juce::AudioBuffer<float> b(in.getNumChannels(), n);
+        for (int ch = 0; ch < in.getNumChannels(); ++ch) b.copyFrom(ch, 0, in, ch, pos, n);
+        eq.processBlock(b, midi);
+        for (int ch = 0; ch < in.getNumChannels(); ++ch) out.copyFrom(ch, pos, b, ch, 0, n);
+    }
+    return out;
+}
+
+// Independent pink noise per channel (Kellet), no bell.
+static void fillPink(juce::AudioBuffer<float>& buf, float gain, std::uint32_t seed)
+{
+    for (int ch = 0; ch < buf.getNumChannels(); ++ch)
+    {
+        std::uint32_t lcg = seed ^ static_cast<std::uint32_t>(ch * 7919 + 1);
+        float b0 = 0, b1 = 0, b2 = 0, b3 = 0, b4 = 0, b5 = 0, b6 = 0;
+        float* d = buf.getWritePointer(ch);
+        for (int s = 0; s < buf.getNumSamples(); ++s)
+        {
+            lcg = lcg * 1664525u + 1013904223u;
+            const float white = static_cast<float>((lcg >> 8) & 0x00ffffffu) / 8388608.0f - 1.0f;
+            b0 = 0.99886f * b0 + white * 0.0555179f;
+            b1 = 0.99332f * b1 + white * 0.0750759f;
+            b2 = 0.96900f * b2 + white * 0.1538520f;
+            b3 = 0.86650f * b3 + white * 0.3104856f;
+            b4 = 0.55000f * b4 + white * 0.5329522f;
+            b5 = -0.7616f * b5 - white * 0.0168980f;
+            const float pink = b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362f;
+            b6 = white * 0.115926f;
+            d[s] = pink * gain;
+        }
+    }
+}
+
+static void addSine(juce::AudioBuffer<float>& buf, int ch, double sr, double hz, float amp)
+{
+    float* d = buf.getWritePointer(ch);
+    for (int s = 0; s < buf.getNumSamples(); ++s)
+        d[s] += amp * static_cast<float>(std::sin(2.0 * juce::MathConstants<double>::pi * hz * s / sr));
+}
+
+static float maxStep(const juce::AudioBuffer<float>& b, int ch, int from, int to)
+{
+    float m = 0.0f;
+    for (int s = std::max(1, from); s < std::min(to, b.getNumSamples()); ++s)
+        m = std::max(m, std::abs(b.getSample(ch, s) - b.getSample(ch, s - 1)));
+    return m;
+}
+
+// Longest run (ms) inside [from, to) where the output's 1 ms peak stays below
+// `floor`: the dip of a transition on a steady tone.
+static double dipMs(const juce::AudioBuffer<float>& b, int ch, int from, int to, double sr, float floor)
+{
+    const int win = std::max(1, static_cast<int>(sr / 1000.0));
+    int run = 0, best = 0;
+    for (int s = from; s + win <= std::min(to, b.getNumSamples()); ++s)
+    {
+        float pk = 0.0f;
+        for (int k = 0; k < win; ++k) pk = std::max(pk, std::abs(b.getSample(ch, s + k)));
+        if (pk < floor) best = std::max(best, ++run); else run = 0;
+    }
+    return (best > 0 ? best + win - 1 : 0) * 1000.0 / sr;
+}
+
+static bool bitEqual(const juce::AudioBuffer<float>& a, const juce::AudioBuffer<float>& b, int ch, int from, int to)
+{
+    return std::memcmp(a.getReadPointer(ch) + from, b.getReadPointer(ch) + from,
+                       sizeof(float) * static_cast<std::size_t>(to - from)) == 0;
+}
+} // namespace eqcoretest
+
+static void testEQCoreLatency()
+{
+    std::cout << "  [EQCore] latency: reported == Core::latencyFor == measured impulse delay\n";
+    using namespace eqcoretest;
+    for (double sr : { 48000.0, 96000.0 })
+    {
+        for (int q = 0; q < 3; ++q)
+        {
+            const int expected = Core::latencyFor(sr, static_cast<Core::FrameTier>(q));
+            // gain 0: the band is a region of depth 0 (the core passes the audio, delayed).
+            auto eq = make(sr, 256, true, q, [](XlethParametricEQ& e) { e.addBand(); spectralBand(e, 0, 1000.0f, 0.0f, 1.0f); });
+            CHECK(eq->getLatencySamples() == expected && eq->getReportedProcessorLatencySamples() == expected,
+                  "[EQCore] Core reported latency == Core::latencyFor (sr " + std::to_string(sr) + ", q " + std::to_string(q)
+                      + "): got " + std::to_string(eq->getReportedProcessorLatencySamples()) + " expected " + std::to_string(expected));
+            juce::AudioBuffer<float> in(2, static_cast<int>(sr * 0.5));
+            in.clear();
+            const int at = 3000;
+            in.setSample(0, at, 1.0f);
+            in.setSample(1, at, -0.5f);
+            const auto out = render(*eq, in, 256);
+            float pk0 = 0.0f, pk1 = 0.0f;
+            const int i0 = rsnew::peakIndex(out, 0, &pk0), i1 = rsnew::peakIndex(out, 1, &pk1);
+            std::printf("    [EQCore] sr %.0f q %d: reported %d, impulse at +%d / +%d (height %.6f / %.6f)\n",
+                        sr, q, eq->getReportedProcessorLatencySamples(), i0 - at, i1 - at, pk0, pk1);
+            CHECK(i0 - at == expected && i1 - at == expected, "[EQCore] measured impulse delay == reported latency");
+            CHECK(std::abs(pk0 - 1.0f) < 1.0e-5f && std::abs(pk1 - 0.5f) < 1.0e-5f, "[EQCore] depth 0 passes the impulse at unit height");
+        }
+    }
+
+    // Legacy, Core without a Spectral band, Core with only a disabled band: the
+    // latencies the EQ reported before the core existed.
+    auto legacy = make(48000.0, 256, false, 1, [](XlethParametricEQ& e) { e.addBand(); spectralBand(e, 0, 1000.0f, -12.0f, 1.0f); });
+    CHECK(legacy->getReportedProcessorLatencySamples() == XlethParametricEQ::kSTFTLatency, "[EQCore] Legacy keeps kSTFTLatency");
+    auto noBand = make(48000.0, 256, true, 2, [](XlethParametricEQ& e) { e.addBand(); });
+    CHECK(noBand->getReportedProcessorLatencySamples() == 0, "[EQCore] Core engine without a Spectral band reports 0");
+    noBand->setBandParam(0, "mode", 2.0f);
+    CHECK(noBand->getReportedProcessorLatencySamples() == Core::latencyFor(48000.0, Core::FrameTier::High),
+          "[EQCore] enabling a Spectral band on the Core publishes the tier's latency at the request");
+    noBand->setBandParam(0, "enabled", 0.0f);
+    CHECK(noBand->getReportedProcessorLatencySamples() == 0, "[EQCore] a disabled Spectral band reports 0 again (as Legacy does)");
+
+    // Zero cost: the core does not run when no Spectral band is active or the engine is Legacy.
+    {
+        juce::AudioBuffer<float> in(2, 48000);
+        fillPink(in, 0.05f, 7u);
+        auto idle = make(48000.0, 256, true, 1, [](XlethParametricEQ& e) { e.addBand(); e.setBandParam(0, "gain", -6.0f); });
+        render(*idle, in, 256);
+        CHECK(idle->getCoreForTest().framesProcessed() == 0 && idle->getActiveSpectralRendererForTest() == 0,
+              "[EQCore] Core engine, no Spectral band: the core never runs (0 frames)");
+        render(*legacy, in, 256);
+        CHECK(legacy->getCoreForTest().framesProcessed() == 0 && legacy->getActiveSpectralRendererForTest() == 1,
+              "[EQCore] Legacy engine with a Spectral band: the core never runs (0 frames)");
+    }
+}
+
+// Goal (a): detection on both channels. The Legacy path detects on L only: an
+// R-only resonance is never cut (the defect, demonstrated). The Core cuts it.
+static void testEQCoreBothChannelDetection()
+{
+    std::cout << "  [EQCore] L-only / R-only resonances: Legacy L-only defect vs Core both channels\n";
+    using namespace eqcoretest;
+    constexpr double sr = 48000.0;
+    for (bool core : { false, true })
+    {
+        for (int toneCh : { 0, 1 })
+        {
+            juce::AudioBuffer<float> in(2, static_cast<int>(sr * 4));
+            fillPink(in, 0.05f, 0x51u);
+            addSine(in, toneCh, sr, 2500.0, 0.05f);
+            auto eq = make(sr, 256, core, 1, [](XlethParametricEQ& e) { e.addBand(); spectralBand(e, 0, 2500.0f, -24.0f, 2.0f); });
+            const int lat = eq->getReportedProcessorLatencySamples();
+            const auto out = render(*eq, in, 256);
+            const int from = static_cast<int>(sr * 2), to = static_cast<int>(sr * 3.8);
+            const double cutTone  = computeAlignedToneReductionDb(in, out, lat, from, to, toneCh, sr, 2500.0);
+            const double cutOther = computeAlignedToneReductionDb(in, out, lat, from, to, 1 - toneCh, sr, 2500.0);
+            std::printf("    [EQCore] %s, tone in %s: cut at 2.5 kHz %.2f dB in the tone channel, %.2f dB (pink only) in the other\n",
+                        core ? "Core  " : "Legacy", toneCh == 0 ? "L" : "R", cutTone, cutOther);
+            if (core)
+                CHECK(cutTone >= 6.0, std::string("[EQCore] Core cuts a ") + (toneCh == 0 ? "L" : "R") + "-only resonance");
+            else if (toneCh == 0)
+                CHECK(cutTone >= 6.0, "[EQCore] Legacy cuts an L-only resonance");
+            else
+                CHECK(cutTone < 1.0, "[EQCore] Legacy defect demonstrated: an R-only resonance is NOT cut (detection on L only)");
+        }
+    }
+}
+
+// Goal (b): two regions on one weight curve. Two planted resonances inside two
+// Spectral bands are both cut; a resonance at a frequency no band lists is not.
+static void testEQCoreTwoRegions()
+{
+    std::cout << "  [EQCore] two Spectral regions on one weight curve\n";
+    using namespace eqcoretest;
+    constexpr double sr = 48000.0;
+    juce::AudioBuffer<float> in(2, static_cast<int>(sr * 4));
+    fillPink(in, 0.05f, 0x77u);
+    for (int ch = 0; ch < 2; ++ch)
+    {
+        addSine(in, ch, sr, 1000.0, 0.05f);
+        addSine(in, ch, sr, 5000.0, 0.05f);
+        addSine(in, ch, sr, 2500.0, 0.05f);   // unlisted
+    }
+    auto eq = make(sr, 256, true, 1, [](XlethParametricEQ& e) {
+        e.addBand(); e.addBand();
+        spectralBand(e, 0, 1000.0f, -18.0f, 4.0f);
+        spectralBand(e, 1, 5000.0f, -12.0f, 4.0f);
+    });
+    const int lat = eq->getReportedProcessorLatencySamples();
+    const auto out = render(*eq, in, 256);
+    const int from = static_cast<int>(sr * 2), to = static_cast<int>(sr * 3.8);
+    double cut[3];
+    const double hz[3] = { 1000.0, 5000.0, 2500.0 };
+    for (int i = 0; i < 3; ++i)
+        cut[i] = 0.5 * (computeAlignedToneReductionDb(in, out, lat, from, to, 0, sr, hz[i])
+                      + computeAlignedToneReductionDb(in, out, lat, from, to, 1, sr, hz[i]));
+
+    const float* w = eq->getCoreWeightCurveForTest();
+    const int* owner = eq->getCoreRegionOwnerForTest();
+    const auto& core = eq->getCoreForTest();
+    auto weightAt = [&](double f, int* who) {
+        int best = 0;
+        for (int k = 1; k < core.numBands(); ++k)
+            if (std::abs(std::log2(core.bandCentreHz(k) / f)) < std::abs(std::log2(core.bandCentreHz(best) / f))) best = k;
+        if (who) *who = owner[best];
+        return w[best];
+    };
+    int o1 = -2, o5 = -2, o25 = -2;
+    const float w1 = weightAt(1000.0, &o1), w5 = weightAt(5000.0, &o5), w25 = weightAt(2500.0, &o25);
+    std::printf("    [EQCore] cuts: 1 kHz (band 0, -18 dB) %.2f dB, 5 kHz (band 1, -12 dB) %.2f dB, 2.5 kHz (unlisted) %.2f dB; "
+                "weights at the nearest grid band 1 kHz %.3f (owner %d), 5 kHz %.3f (owner %d), 2.5 kHz %.3f (owner %d); GR band 0 %.2f, band 1 %.2f\n",
+                cut[0], cut[1], cut[2], w1, o1, w5, o5, w25, o25, eq->getBandGR(0), eq->getBandGR(1));
+    CHECK(cut[0] >= 6.0, "[EQCore] region 1 (1 kHz) resonance cut");
+    CHECK(cut[1] >= 4.0, "[EQCore] region 2 (5 kHz) resonance cut");
+    CHECK(cut[2] < 1.0, "[EQCore] an unlisted frequency (2.5 kHz) is left alone");
+    CHECK(w1 > 0.85f && o1 == 0 && w5 > 0.55f && w5 < 0.7f && o5 == 1,
+          "[EQCore] the curve is the union: region 1 at full weight, region 2 scaled by its depth (12 / 18)");
+    CHECK(eq->getBandGR(0) < -1.0f && eq->getBandGR(1) < -1.0f, "[EQCore] each region's band meter shows its cut");
+}
+
+// Mid / Side / L / R bands on the Core: the processed component goes through
+// the core, the other through its aux channel, delay-only.
+static void testEQCoreRoutedModes()
+{
+    std::cout << "  [EQCore] L / R / Mid / Side Spectral bands on the Core\n";
+    using namespace eqcoretest;
+    constexpr double sr = 48000.0;
+    const int n = static_cast<int>(sr * 3);
+
+    // L and R: the other channel is the input, delayed, bit for bit, at full depth.
+    for (int mode : { 1, 2 })
+    {
+        juce::AudioBuffer<float> in(2, n);
+        fillPink(in, 0.05f, 0x99u);
+        addSine(in, 0, sr, 2500.0, 0.05f);
+        addSine(in, 1, sr, 2500.0, 0.05f);
+        auto eq = make(sr, 256, true, 1, [mode](XlethParametricEQ& e) { e.addBand(); spectralBand(e, 0, 2500.0f, -24.0f, 2.0f, mode); });
+        const int lat = eq->getReportedProcessorLatencySamples();
+        const auto out = render(*eq, in, 256);
+        const int proc = mode == 1 ? 0 : 1, other = 1 - proc;
+        bool exact = true;
+        for (int s = lat; s < n && exact; ++s)
+            exact = std::memcmp(out.getReadPointer(other) + s, in.getReadPointer(other) + s - lat, sizeof(float)) == 0;
+        const double cutProc = computeAlignedToneReductionDb(in, out, lat, static_cast<int>(sr * 1.5), static_cast<int>(sr * 2.8), proc, sr, 2500.0);
+        std::printf("    [EQCore] %s band: processed channel cut %.2f dB, untouched channel bit-identical (delayed %d): %d, mode %d\n",
+                    mode == 1 ? "Left " : "Right", cutProc, lat, exact ? 1 : 0, eq->getActiveCoreChannelModeForTest());
+        CHECK(eq->getActiveCoreChannelModeForTest() == mode, "[EQCore] the Core runs the band's routing");
+        CHECK(exact, "[EQCore] L / R band: the other channel is the input, delayed, bit-identical (depth 24 dB)");
+        CHECK(cutProc >= 6.0, "[EQCore] L / R band: the routed channel's resonance is cut");
+    }
+
+    // Mid / Side at depth 0 with a pure-side / pure-mid input: the untouched
+    // component (and so the whole output) is the input delayed, bit for bit.
+    for (int mode : { 3, 4 })
+    {
+        juce::AudioBuffer<float> in(2, n);
+        fillPink(in, 0.05f, 0xA5u);
+        float* l = in.getWritePointer(0);
+        float* r = in.getWritePointer(1);
+        for (int s = 0; s < n; ++s) r[s] = mode == 3 ? -l[s] : l[s];   // Mid band + pure side, Side band + pure mid
+        auto eq = make(sr, 256, true, 1, [mode](XlethParametricEQ& e) { e.addBand(); spectralBand(e, 0, 2500.0f, 0.0f, 2.0f, mode); });
+        const int lat = eq->getReportedProcessorLatencySamples();
+        const auto out = render(*eq, in, 256);
+        bool exact = true;
+        for (int ch = 0; ch < 2 && exact; ++ch)
+            for (int s = lat; s < n && exact; ++s)
+                exact = std::memcmp(out.getReadPointer(ch) + s, in.getReadPointer(ch) + s - lat, sizeof(float)) == 0;
+        std::printf("    [EQCore] %s band, depth 0, pure-%s input: output == input delayed %d, bit-identical: %d\n",
+                    mode == 3 ? "Mid " : "Side", mode == 3 ? "side" : "mid", lat, exact ? 1 : 0);
+        CHECK(exact, std::string("[EQCore] ") + (mode == 3 ? "Mid" : "Side") + " band at depth 0: the untouched component is bit-identical");
+
+        // General material: the untouched component differs only by the M +- S rounding.
+        juce::AudioBuffer<float> gen(2, n);
+        fillPink(gen, 0.05f, 0x1234u);
+        auto eq2 = make(sr, 256, true, 1, [mode](XlethParametricEQ& e) { e.addBand(); spectralBand(e, 0, 2500.0f, -24.0f, 2.0f, mode); });
+        const auto out2 = render(*eq2, gen, 256);
+        float maxErr = 0.0f;
+        for (int s = lat; s < n; ++s)
+        {
+            const float inC  = mode == 3 ? 0.5f * (gen.getSample(0, s - lat) - gen.getSample(1, s - lat))
+                                         : 0.5f * (gen.getSample(0, s - lat) + gen.getSample(1, s - lat));
+            const float outC = mode == 3 ? 0.5f * (out2.getSample(0, s) - out2.getSample(1, s))
+                                         : 0.5f * (out2.getSample(0, s) + out2.getSample(1, s));
+            maxErr = std::max(maxErr, std::abs(inC - outC));
+        }
+        std::printf("    [EQCore] %s band at depth 24 dB, general material: untouched component max error %.3g\n",
+                    mode == 3 ? "Mid " : "Side", maxErr);
+        CHECK(maxErr < 1.0e-6f, "[EQCore] routed M / S: the untouched component is the input (rounding only)");
+    }
+
+    // Bands that ask for different routings: one core cannot honour both; it runs Stereo and says so.
+    {
+        juce::AudioBuffer<float> in(2, static_cast<int>(sr * 0.2));
+        fillPink(in, 0.05f, 3u);
+        auto eq = make(sr, 256, true, 1, [](XlethParametricEQ& e) {
+            e.addBand(); e.addBand();
+            spectralBand(e, 0, 1000.0f, -12.0f, 2.0f, 1);
+            spectralBand(e, 1, 4000.0f, -12.0f, 2.0f, 3);
+        });
+        render(*eq, in, 256);
+        CHECK(eq->getActiveCoreChannelModeForTest() == 0 && eq->isSpectralCoreChannelConflict(),
+              "[EQCore] conflicting routings: the Core runs Stereo and reports the conflict");
+    }
+}
+
+// Transitions on the Core: off -> on, on -> off, Legacy <-> Core, quality,
+// routing, un-bypass. A clean 1 kHz sine and pink noise + a +12 dB bell: every
+// transition's largest step is bounded by the larger of the input's own largest
+// step and the steady output's. The stale-splice and un-bypass checks use the
+// phase-displaced sine of [EQSpliceFix] / [EQBypassFix] (13 samples skipped
+// while the Core is off / bypassed).
+static void testEQCoreTransitions()
+{
+    std::cout << "  [EQCore] transitions: steps, dips, stale splices, un-bypass\n";
+    using namespace eqcoretest;
+    constexpr double sr = 48000.0;
+    constexpr int block = 480;
+    const int n = static_cast<int>(sr * 3);
+    const int switchBlock = 150;                       // 1.5 s
+    const int at = switchBlock * block;
+
+    auto sine = [&](int skipFrom, int skip) {
+        juce::AudioBuffer<float> b(2, n);
+        for (int s = 0; s < n; ++s)
+        {
+            const int k = s + (s >= skipFrom ? skip : 0);
+            const float v = 0.5f * std::sin(2.0f * juce::MathConstants<float>::pi * static_cast<float>(k % 48) / 48.0f);
+            b.setSample(0, s, v);
+            b.setSample(1, s, v);
+        }
+        return b;
+    };
+    juce::AudioBuffer<float> pinkBell(2, n);
+    rsnew::fillPinkBell(pinkBell, sr, 2500.0f, 0.05f, 0x4242u);
+
+    struct Case
+    {
+        const char* name;
+        bool coreAtStart;
+        int startQuality;
+        bool bandOnAtStart;
+        std::vector<std::pair<int, Event>> events;
+    };
+    const auto band = [](XlethParametricEQ& e) { e.addBand(); spectralBand(e, 0, 1000.0f, -24.0f, 1.0f); };
+    std::vector<Case> cases = {
+        { "Core band off -> on (None -> Core)",   true,  1, false, { { switchBlock, [](XlethParametricEQ& e) { e.setBandParam(0, "enabled", 1.0f); } } } },
+        { "Core band on -> off (Core -> None)",   true,  1, true,  { { switchBlock, [](XlethParametricEQ& e) { e.setBandParam(0, "enabled", 0.0f); } } } },
+        { "engine Legacy -> Core",                false, 1, true,  { { switchBlock, [](XlethParametricEQ& e) { e.setParameterValue("spectral_engine", 1.0f); } } } },
+        { "engine Core -> Legacy",                true,  1, true,  { { switchBlock, [](XlethParametricEQ& e) { e.setParameterValue("spectral_engine", 0.0f); } } } },
+        { "quality Normal -> High (tier switch)", true,  1, true,  { { switchBlock, [](XlethParametricEQ& e) { e.setParameterValue("spectral_quality", 2.0f); } } } },
+        { "quality High -> Fast (tier switch)",   true,  2, true,  { { switchBlock, [](XlethParametricEQ& e) { e.setParameterValue("spectral_quality", 0.0f); } } } },
+        { "routing Stereo -> Mid",                true,  1, true,  { { switchBlock, [](XlethParametricEQ& e) { e.setBandParam(0, "channel", 3.0f); } } } },
+    };
+
+    for (const auto& c : cases)
+    {
+        for (int sig = 0; sig < 2; ++sig)
+        {
+            // Sine: an inert band (depth 0, the renderers pass the audio delayed) so
+            // splices and dips show undisturbed; pink + bell: a real -24 dB cut.
+            const auto in = sig == 0 ? sine(n, 0) : pinkBell;   // a clean sine: its own largest step is the bound
+            const float g = sig == 0 ? 0.0f : -24.0f;
+            const auto setupCase = [&](XlethParametricEQ& e) {
+                e.addBand();
+                spectralBand(e, 0, sig == 0 ? 1000.0f : 2500.0f, g, 1.0f);
+                if (!c.bandOnAtStart) e.setBandParam(0, "enabled", 0.0f);
+            };
+            auto eq = make(sr, block, c.coreAtStart, c.startQuality, setupCase);
+            auto steady = make(sr, block, c.coreAtStart, c.startQuality, setupCase);
+            const auto out = render(*eq, in, block, c.events);
+            const auto ref = render(*steady, in, block);
+            const float inStep = maxStep(in, 0, 1, n);
+            const float steadyStep = std::max(maxStep(ref, 0, at - static_cast<int>(sr), n), maxStep(out, 0, at - static_cast<int>(sr), at));
+            const float trStep = std::max(maxStep(out, 0, at, at + static_cast<int>(sr * 0.25)), maxStep(out, 1, at, at + static_cast<int>(sr * 0.25)));
+            const float bound = std::max(inStep, steadyStep);
+            const double dip = sig == 0 ? dipMs(out, 0, at - block, at + static_cast<int>(sr * 0.2), sr, 0.02f) : 0.0;
+            bool finite = true;
+            for (int s = 0; s < n && finite; ++s) finite = std::isfinite(out.getSample(0, s)) && std::isfinite(out.getSample(1, s));
+            std::printf("    [EQCore] %-40s %-9s max step %.4f (input %.4f, steady %.4f, ratio %.3f)%s, switches %llu\n",
+                        c.name, sig == 0 ? "sine" : "pink+bell", trStep, inStep, steadyStep, trStep / std::max(bound, 1.0e-9f),
+                        sig == 0 ? (std::string(", dip ") + std::to_string(dip).substr(0, 5) + " ms").c_str() : "",
+                        static_cast<unsigned long long>(eq->getStructureSwitchCount()));
+            CHECK(finite, std::string("[EQCore] transition output finite: ") + c.name);
+            CHECK(trStep <= 1.0f * bound + 1.0e-6f,
+                  std::string("[EQCore] transition step <= max(input step, steady output step): ") + c.name
+                      + (sig == 0 ? " (sine)" : " (pink+bell)"));
+        }
+    }
+
+    // Off -> on without a stale splice: a Core that ran before (phase A, then
+    // off while the signal moves 13 samples) and a Core that never ran (band
+    // off from the start) give the SAME output from the re-enable on.
+    {
+        const auto in = sine(100 * block, 13);
+        auto tested = make(sr, block, true, 1, band);
+        auto fresh  = make(sr, block, true, 1, [&](XlethParametricEQ& e) { band(e); e.setBandParam(0, "enabled", 0.0f); });
+        const auto a = render(*tested, in, block, { { 100, [](XlethParametricEQ& e) { e.setBandParam(0, "enabled", 0.0f); } },
+                                                    { 150, [](XlethParametricEQ& e) { e.setBandParam(0, "enabled", 1.0f); } } });
+        const auto b = render(*fresh, in, block, { { 150, [](XlethParametricEQ& e) { e.setBandParam(0, "enabled", 1.0f); } } });
+        const bool same = bitEqual(a, b, 0, at, n) && bitEqual(a, b, 1, at, n);
+        std::printf("    [EQCore] off -> on after a prior Core period vs a Core that never ran: identical from the re-enable on: %d\n", same ? 1 : 0);
+        CHECK(same, "[EQCore] off -> on: no stale splice (identical to a Core with no history)");
+    }
+
+    // Un-bypass: the Core keeps running while bypassed (aligned dry), so after
+    // the 5 ms crossfade the output IS the never-bypassed output, and the
+    // bypassed output is the input on the Core's timeline (constant latency).
+    {
+        const auto in = sine(100 * block, 13);
+        auto tested = make(sr, block, true, 1, band);
+        auto never  = make(sr, block, true, 1, band);
+        const std::uint64_t notify0 = tested->getLatencyChangeNotifyCount();
+        const auto a = render(*tested, in, block, { { 100, [](XlethParametricEQ& e) { e.setBypassed(true); } },
+                                                    { 150, [](XlethParametricEQ& e) { e.setBypassed(false); } } });
+        const auto b = render(*never, in, block);
+        const int lat = tested->getReportedProcessorLatencySamples();
+        const int xfade = static_cast<int>(sr * 0.005) + 1;
+        const bool after = bitEqual(a, b, 0, at + xfade, n) && bitEqual(a, b, 1, at + xfade, n);
+        bool bypassedAligned = true;
+        for (int s = 110 * block; s < 145 * block && bypassedAligned; ++s)
+            bypassedAligned = a.getSample(0, s) == in.getSample(0, s - lat);
+        // From the un-bypass on (the 13-sample skip lies inside the bypassed phase).
+        const float step = std::max(maxStep(a, 0, at, n), maxStep(a, 1, at, n));
+        const float sineStep = maxStep(sine(n, 0), 0, 1, n);
+        std::printf("    [EQCore] un-bypass: identical to never-bypassed after the crossfade: %d; bypassed output == input delayed %d: %d; "
+                    "max step %.4f (input %.4f); latency notifications %llu\n",
+                    after ? 1 : 0, lat, bypassedAligned ? 1 : 0, step, sineStep,
+                    static_cast<unsigned long long>(tested->getLatencyChangeNotifyCount() - notify0));
+        CHECK(after, "[EQCore] un-bypass: no stale state (identical to the never-bypassed Core after the crossfade)");
+        CHECK(bypassedAligned, "[EQCore] bypassed on the Core: the output is the input on the Core's timeline");
+        CHECK(step <= sineStep + 1.0e-6f, "[EQCore] un-bypass: no step beyond the input's own (clean sine step)");
+        CHECK(tested->getLatencyChangeNotifyCount() == notify0, "[EQCore] bypass keeps the Core's latency (no PDC retarget)");
+    }
+}
+
+// State: both engines round-trip bit-identically; an OLD state (no
+// spectral_engine) restored into a running Core instance renders exactly like
+// a fresh Legacy instance with that state.
+static void testEQCoreStateRender()
+{
+    std::cout << "  [EQCore] state round trips and old-state restore (rendered)\n";
+    using namespace eqcoretest;
+    constexpr double sr = 48000.0;
+    constexpr int block = 256;
+    juce::AudioBuffer<float> in(2, static_cast<int>(sr * 2));
+    rsnew::fillPinkBell(in, sr, 2500.0f, 0.05f, 0x2468u);
+    const auto setup = [](XlethParametricEQ& e) {
+        e.addBand(); e.addBand();
+        spectralBand(e, 0, 2500.0f, -18.0f, 3.0f, 0, 0.4f, 6.0f, 5.0f, 150.0f);
+        eqlegacy::band(e, 1, 400.0f, 3.0f, 1.0f, 0, 0, 3);
+    };
+
+    for (bool core : { false, true })
+    {
+        auto src = make(sr, block, core, 2, setup);
+        juce::MemoryBlock state;
+        src->getStateInformation(state);
+        const auto a = render(*src, in, block);
+
+        auto dst = std::make_unique<XlethParametricEQ>();
+        dst->setCoreInstanceIndex(0);
+        dst->prepareToPlay(sr, block);
+        dst->setStateInformation(state.getData(), static_cast<int>(state.getSize()));
+        dst->prepareToPlay(sr, block);
+        const auto b = render(*dst, in, block);
+        const bool same = rsnew::bitIdentical(a, b);
+        std::printf("    [EQCore] %s state round trip: rendered output bit-identical: %d\n", core ? "Core  " : "Legacy", same ? 1 : 0);
+        CHECK(same, std::string("[EQCore] state round trip renders bit-identically: ") + (core ? "Core" : "Legacy"));
+    }
+
+    // Old state (no spectral_engine / spectral_quality) restored LIVE into an
+    // instance running the Core with the same bands: from the restore on it is a
+    // fresh Legacy instance.
+    juce::MemoryBlock oldState;
+    {
+        auto legacySrc = make(sr, block, false, 1, setup);
+        eqcore::stateWithout(*legacySrc, { "spectral_engine", "spectral_quality" }, oldState);
+    }
+    const int restoreBlock = 200;
+    const int at = restoreBlock * block;
+    auto running = make(sr, block, true, 0, setup);
+    const auto a = render(*running, in, block, { { restoreBlock, [&](XlethParametricEQ& e) {
+        e.setStateInformation(oldState.getData(), static_cast<int>(oldState.getSize())); } } });
+
+    auto legacy = std::make_unique<XlethParametricEQ>();
+    legacy->setCoreInstanceIndex(0);
+    legacy->prepareToPlay(sr, block);
+    legacy->setStateInformation(oldState.getData(), static_cast<int>(oldState.getSize()));
+    legacy->prepareToPlay(sr, block);
+    juce::AudioBuffer<float> tail(2, in.getNumSamples() - at);
+    for (int ch = 0; ch < 2; ++ch) tail.copyFrom(ch, 0, in, ch, at, tail.getNumSamples());
+    const auto b = render(*legacy, tail, block);
+    bool same = true;
+    for (int ch = 0; ch < 2 && same; ++ch)
+        same = std::memcmp(a.getReadPointer(ch) + at, b.getReadPointer(ch), sizeof(float) * static_cast<std::size_t>(tail.getNumSamples())) == 0;
+    std::printf("    [EQCore] old state restored into a running Core instance: engine %.0f, renders == fresh Legacy instance: %d\n",
+                running->getParameterValue("spectral_engine"), same ? 1 : 0);
+    CHECK(running->getParameterValue("spectral_engine") == 0.0f, "[EQCore] the old state switches the running instance to Legacy");
+    CHECK(same, "[EQCore] an old state restored live renders bit-identically to a fresh Legacy instance");
+}
+
+// Hop phase: each EQ instance's core gets Core::hopPhaseOffsetForInstance(index,
+// hop) from the EQ's OWN instance counter (the RS's counter does not move).
+static void testEQCoreHopPhase()
+{
+    std::cout << "  [EQCore] per-instance hop phase (EQ's own instance counter)\n";
+    using Core = xleth::dsp::resonance::Core;
+    const int hop = Core::fftSizeFor(48000.0, Core::FrameTier::Normal) / 4;
+    std::string offsets;
+    bool ok = true;
+    for (int i = 0; i < 8; ++i)
+    {
+        XlethParametricEQ eq;
+        eq.setCoreInstanceIndex(i);
+        eq.prepareToPlay(48000.0, 64);
+        const int got = eq.getCoreForTest().hopPhaseOffset();
+        offsets += (i ? ", " : "") + std::to_string(got);
+        ok = ok && got == Core::hopPhaseOffsetForInstance(i, hop);
+    }
+    std::printf("    [EQCore] pinned indices 0..7 at hop %d: offsets {%s}\n", hop, offsets.c_str());
+    CHECK(ok, "[EQCore] the core's hop phase is hopPhaseOffsetForInstance(index, hop)");
+
+    XlethResonanceSuppressorEffect rsProbe;
+    rsProbe.prepareToPlay(48000.0, 64);
+    const int rsBefore = rsProbe.getCoreInstanceIndex();
+    XlethParametricEQ a, b;
+    a.prepareToPlay(48000.0, 64);
+    b.prepareToPlay(48000.0, 64);
+    XlethResonanceSuppressorEffect rsAfter;
+    rsAfter.prepareToPlay(48000.0, 64);
+    std::printf("    [EQCore] unpinned EQ indices %d, %d; RS indices around them %d, %d\n",
+                a.getCoreInstanceIndex(), b.getCoreInstanceIndex(), rsBefore, rsAfter.getCoreInstanceIndex());
+    CHECK(b.getCoreInstanceIndex() == a.getCoreInstanceIndex() + 1, "[EQCore] unpinned EQ instances take consecutive indices");
+    CHECK(rsAfter.getCoreInstanceIndex() == rsBefore + 1, "[EQCore] EQ instances do not consume the RS's instance numbering");
+}
+
 int main()
 {
     // JUCE requires a ScopedJuceInitialiser_GUI to initialise internals
@@ -6315,6 +6880,13 @@ int main()
     testLinPhaseDisablesDynamic();
     testEQLegacyBitIdentity();
     testEQCoreParamsAndState();
+    testEQCoreLatency();
+    testEQCoreBothChannelDetection();
+    testEQCoreTwoRegions();
+    testEQCoreRoutedModes();
+    testEQCoreTransitions();
+    testEQCoreStateRender();
+    testEQCoreHopPhase();
 
     std::cout << "\nResults: " << g_passed << " passed, " << g_failed << " failed\n";
     if (g_failed > 0)
