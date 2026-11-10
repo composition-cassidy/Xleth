@@ -773,6 +773,200 @@ static void runCaseEqSpectral(int block, const juce::AudioBuffer<float>& sig)
     }
 }
 
+// (h) [EQCore] EQ locking: a "RPC thread" hammers the EQ's mutations while this
+// thread processes 200,000 blocks. Self-checking parameter set: every band's
+// (freq, q, spec_sel, spec_release) is either the addBand default tuple or the
+// tuple of one id k, and is only ever written as a WHOLE (setBandParams,
+// removeBand's copy, addBand's defaults, a state restore). After every block
+// the snapshot the audio thread used is checked: a band whose four values do
+// not belong to one tuple is a torn read. Single-parameter writes (gain, mode,
+// enabled, channel, attack, dyn params) run on top to keep everything moving.
+namespace eqstress
+{
+struct Tuple { float freq, q, sel, rel; };
+static Tuple tupleFor(int k)
+{
+    return { 100.0f + 37.0f * static_cast<float>(k), 0.5f + 0.25f * static_cast<float>(k % 20),
+             1.0f + static_cast<float>(k % 19), 10.0f + 7.0f * static_cast<float>(k % 100) };
+}
+static constexpr int kIds = 400;
+
+static bool closeTo(float a, float b, float tol) { return std::abs(a - b) <= tol; }
+
+// true = the band's values form one tuple.
+static bool consistent(const XlethParametricEQ::BandParamSnapshot& b)
+{
+    if (closeTo(b.freq, 1000.0f, 0.05f))
+        return closeTo(b.q, 0.707f, 1.0e-3f) && closeTo(b.specSel, 5.0f, 1.0e-3f) && closeTo(b.specRelease, 100.0f, 1.0e-2f);
+    const float kf = (b.freq - 100.0f) / 37.0f;
+    const int k = static_cast<int>(std::lround(kf));
+    if (k < 0 || k >= kIds || std::abs(kf - static_cast<float>(k)) > 0.01f) return false;
+    const Tuple t = tupleFor(k);
+    return closeTo(b.q, t.q, 1.0e-3f) && closeTo(b.specSel, t.sel, 1.0e-3f) && closeTo(b.specRelease, t.rel, 1.0e-2f);
+}
+
+static void writeTuple(XlethParametricEQ& eq, int band, int k)
+{
+    const Tuple t = tupleFor(k);
+    eq.setBandParams(band, { { "freq", t.freq }, { "q", t.q }, { "spec_sel", t.sel }, { "spec_release", t.rel } });
+}
+
+struct Result
+{
+    long long blocks = 0, allocs = 0, torn = 0, badCount = 0, requests = 0;
+    std::uint64_t accepted = 0, kept = 0;
+    bool finite = true;
+    float outPeak = 0.0f, inPeak = 0.0f;
+    long long engineChanges = 0, qualityChanges = 0;
+};
+
+// extraMutations(eq, rng, which) may add effect-specific mutations (engine / quality); it returns true if it handled `which`.
+static Result run(long long blocks, bool seqCheck, bool writerSleeps,
+                  const std::function<bool(XlethParametricEQ&, std::mt19937&, int, Result&)>& extra = {})
+{
+    constexpr int kBlock = 64;
+    const juce::AudioBuffer<float> sig = makeSignal(kBlock * 4096);
+
+    // Restore blobs: 2, 5 and 9 bands, every band a tuple, some Spectral.
+    std::vector<juce::MemoryBlock> blobs;
+    for (int n : { 2, 5, 9 })
+    {
+        XlethParametricEQ src;
+        src.prepareToPlay(kSR, kBlock);
+        for (int b = 0; b < n; ++b)
+        {
+            src.addBand();
+            writeTuple(src, b, (n * 31 + b * 17) % kIds);
+            src.setBandParam(b, "gain", b % 2 == 0 ? -12.0f : -3.0f);
+            src.setBandParam(b, "mode", b % 3 == 0 ? 2.0f : 0.0f);
+        }
+        blobs.emplace_back();
+        src.getStateInformation(blobs.back());
+    }
+
+    XlethParametricEQ eq;
+    eq.prepareToPlay(kSR, kBlock);
+    for (int b = 0; b < 4; ++b)
+    {
+        eq.addBand();
+        writeTuple(eq, b, b * 7);
+        eq.setBandParam(b, "gain", -9.0f);
+        eq.setBandParam(b, "mode", b == 0 ? 2.0f : 0.0f);
+    }
+    eq.setSnapshotSeqCheckForTest(seqCheck);
+
+    Result r;
+    for (int ch = 0; ch < 2; ++ch)
+        for (int s = 0; s < sig.getNumSamples(); ++s)
+            r.inPeak = std::max(r.inPeak, std::abs(sig.getSample(ch, s)));
+
+    std::atomic<bool> stop { false };
+    std::atomic<long long> requests { 0 };
+    std::thread rpc([&] {
+        std::mt19937 rng(0xE0C0u);
+        std::uniform_int_distribution<int> which(0, 13), id(0, kIds - 1), pause(0, 400), mode(0, 2), chan(0, 4), two(0, 1);
+        std::uniform_real_distribution<float> gain(-24.0f, 0.0f), atk(0.1f, 100.0f);
+        while (!stop.load(std::memory_order_relaxed))
+        {
+            const int count = eq.getBandCount();
+            std::uniform_int_distribution<int> anyBand(0, std::max(0, count - 1));
+            const int b = anyBand(rng);
+            const int w = which(rng);
+            if (extra && extra(eq, rng, w, r)) {}
+            else switch (w)
+            {
+                case 0: case 1: case 2: if (count > 0) writeTuple(eq, b, id(rng)); break;
+                case 3: if (count > 0) eq.setBandParam(b, "gain", gain(rng)); break;
+                // A Dynamic band swings by dyn_range on trigger: keep it a cut so the output bound stays meaningful.
+                case 4: if (count > 0) eq.setBandParams(b, { { "mode", static_cast<float>(mode(rng)) }, { "dyn_range", -12.0f } }); break;
+                case 5: if (count > 0) eq.setBandParam(b, "enabled", static_cast<float>(two(rng))); break;
+                case 6: if (count > 0) eq.setBandParam(b, "channel", static_cast<float>(chan(rng))); break;
+                case 7: if (count > 0) eq.setBandParam(b, "spec_attack", atk(rng)); break;
+                case 8: if (count > 0) eq.setBandParam(b, "dyn_thresh", -gain(rng) - 30.0f); break;
+                case 9: if (count > 1) eq.removeBand(b); break;
+                case 10: if (count < XlethParametricEQ::kMaxBands) { const int nb = eq.addBand(); if (nb >= 0 && two(rng)) writeTuple(eq, nb, id(rng)); } break;
+                case 11: { const auto& blob = blobs[static_cast<std::size_t>(id(rng)) % blobs.size()];
+                           eq.setStateInformation(blob.getData(), static_cast<int>(blob.getSize())); } break;
+                default: if (count > 0) eq.setBandParam(b, "spec_sens", atk(rng) * 0.01f); break;
+            }
+            requests.fetch_add(1, std::memory_order_relaxed);
+            if (writerSleeps)
+            {
+                // Spin, not sleep: a Windows sleep rounds up to the timer tick (~1-15 ms) and would leave the
+                // audio thread almost alone. 0..400 us between requests.
+                const auto until = std::chrono::steady_clock::now() + std::chrono::microseconds(pause(rng));
+                while (std::chrono::steady_clock::now() < until && !stop.load(std::memory_order_relaxed)) {}
+            }
+        }
+    });
+
+    juce::AudioBuffer<float> work(2, kBlock);
+    juce::MidiBuffer midi;
+    const int sigBlocks = sig.getNumSamples() / kBlock;
+    for (long long blk = 0; blk < blocks; ++blk)
+    {
+        const int pos = static_cast<int>(blk % sigBlocks) * kBlock;
+        for (int ch = 0; ch < 2; ++ch)
+            work.copyFrom(ch, 0, sig, ch, pos, kBlock);
+        const long long c0 = g_allocCount.load(std::memory_order_relaxed);
+        g_allocArmed.store(true, std::memory_order_relaxed);
+        eq.processBlock(work, midi);
+        g_allocArmed.store(false, std::memory_order_relaxed);
+        r.allocs += g_allocCount.load(std::memory_order_relaxed) - c0;
+
+        const auto& snap = eq.getAudioParamSnapshotForTest();
+        if (snap.count < 0 || snap.count > XlethParametricEQ::kMaxBands) ++r.badCount;
+        else
+            for (int b = 0; b < snap.count; ++b)
+                if (!consistent(snap.band[b])) { ++r.torn; break; }
+
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            const float* d = work.getReadPointer(ch);
+            for (int s = 0; s < kBlock; ++s)
+            {
+                if (!std::isfinite(d[s])) r.finite = false;
+                else r.outPeak = std::max(r.outPeak, std::abs(d[s]));
+            }
+        }
+    }
+    stop.store(true);
+    rpc.join();
+    r.blocks = blocks;
+    r.requests = requests.load();
+    r.accepted = eq.getSnapshotAcceptedCountForTest();
+    r.kept = eq.getSnapshotKeptCountForTest();
+    return r;
+}
+} // namespace eqstress
+
+static void runStressEqLocking()
+{
+    // Every gain the mutator writes is a cut (bells, Spectral depth, Dynamic range), so 4 x the input peak is a
+    // generous bound for filter overshoot.
+    const auto r = eqstress::run(200000, true, true);
+    const bool boundOk = r.outPeak <= 4.0f * r.inPeak;
+    std::printf("[RSLLAlloc] case=h (EQ locking stress) blocks=%lld block=64 requests=%lld snapshots accepted=%llu kept=%llu "
+                "torn=%lld bad_count=%lld allocs=%lld finite=%d out_peak=%.4f in_peak=%.4f  %s\n",
+                r.blocks, r.requests, static_cast<unsigned long long>(r.accepted), static_cast<unsigned long long>(r.kept),
+                r.torn, r.badCount, r.allocs, r.finite ? 1 : 0, r.outPeak, r.inPeak,
+                (r.torn == 0 && r.badCount == 0 && r.allocs == 0 && r.finite && boundOk) ? "PASS" : "FAIL");
+    CHECK(r.requests > 1000, "case h: the RPC thread made mutations (" << r.requests << ")");
+    CHECK(r.kept > 0, "case h: some blocks overlapped an edit and kept the previous snapshot (the race was exercised)");
+    CHECK(r.torn == 0, "case h: torn snapshot reads: " << r.torn);
+    CHECK(r.badCount == 0, "case h: snapshot band count out of range: " << r.badCount);
+    CHECK(r.allocs == 0, "case h: EQ processBlock allocated " << r.allocs << " times under concurrent mutations");
+    CHECK(r.finite, "case h: output finite");
+    CHECK(boundOk, "case h: output bounded (peak " << r.outPeak << " vs input " << r.inPeak << ")");
+
+    // Negative control: the same hammering with the sequence check disabled (every copy accepted) and no writer
+    // pauses. The checker must see torn reads, or the zero above means nothing.
+    const auto n = eqstress::run(60000, false, false);
+    std::printf("[RSLLAlloc] case=h-neg (EQ locking stress, sequence check OFF) blocks=%lld requests=%lld torn=%lld  %s\n",
+                n.blocks, n.requests, n.torn, n.torn > 0 ? "PASS (torn reads detected)" : "FAIL (checker saw nothing)");
+    CHECK(n.torn > 0, "case h-neg: with the sequence check disabled the checker must detect torn reads (saw " << n.torn << ")");
+}
+
 // The counter must really see allocations, or every zero above is meaningless.
 static void counterNegativeControl()
 {
@@ -811,6 +1005,7 @@ int main(int argc, char** argv)
     }
 
     runStressRsStructure();
+    runStressEqLocking();
     runMemoryReport();
 
     runNullTests();

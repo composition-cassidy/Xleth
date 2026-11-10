@@ -9,8 +9,11 @@
 #include <complex>
 #include <cstdint>
 #include <cstring>
+#include <initializer_list>
+#include <mutex>
 #include <string>
 #include <thread>
+#include <utility>
 #include <vector>
 
 // ─── XlethParametricEQ ─────────────────────────────────────────────────────
@@ -34,6 +37,18 @@
 //   getResponseCurve()  — Stereo-routed |H(e^jω)| at 512 log-spaced frequencies (main thread)
 //   getChannelResponseCurves() — one such trace per routing group (St/L/R/M/S)
 //   getSpectrumData()   — Hann-windowed 2048-point FFT of recent output (main thread)
+//
+// Threading ([EQCore] locking fix). The RPC / applier threads (addBand,
+// removeBand, setBandParam(s), setParameterValue, setStateInformation) never
+// touch audio-thread state. Every parameter the audio thread uses is read ONCE
+// per block into a private snapshot (ParamSnapshot) through a sequence counter:
+// multi-parameter edits (add / remove / restore / setBandParams) run inside an
+// edit window (editSeq_ odd), and a block whose copy overlapped one keeps the
+// previous block's snapshot instead (wait-free: no lock, no retry loop on the
+// audio thread). Per-band DSP state that an edit invalidates (biquad and
+// detector state, spectral envelopes) is cleared by the audio thread itself,
+// from a request mask published inside the same edit window. The latency status
+// atomics are written by the parameter path only.
 //
 // pluginId: "xletheq"
 
@@ -77,6 +92,7 @@ public:
     // Fade-in on the first real output of an STFT stream restarted mid-run
     // (Spectral band re-enabled, linear phase left). See processEffect.
     static constexpr double kStftFadeInMs = 5.0;
+
 
     // ── Spectrum Analyzer constants ──────────────────────────────────────
     static constexpr int kSpecFFTOrder = 12;              // 2^12 = 4096
@@ -123,59 +139,73 @@ public:
         auto xml = getXmlFromBinary(data, sizeInBytes);
         if (xml && xml->hasTagName(apvts_.state.getType()))
         {
-            int count = xml->getIntAttribute("bandCount", -1);
-            apvts_.replaceState(juce::ValueTree::fromXml(*xml));
-
-            // Backward compat: old saves lack bandCount attr.
-            // Infer by scanning for bands with non-default gain (gain != 0).
-            if (count < 0)
             {
-                count = 0;
-                for (int i = 0; i < kMaxBands; ++i)
-                {
-                    auto* g = apvts_.getRawParameterValue(paramId(i, "gain"));
-                    if (g && std::abs(g->load(std::memory_order_relaxed)) > 0.001f)
-                        count = i + 1;
-                }
-            }
+                // One edit: the audio thread sees the whole restored state or
+                // the previous one, never a mix. It clears the restored bands'
+                // DSP state itself (see requestBandClear).
+                EditScope edit(*this);
 
-            bandCount_.store(count, std::memory_order_relaxed);
-            for (int i = 0; i < count && i < kMaxBands; ++i)
-                bands_[i].clearState();
+                int count = xml->getIntAttribute("bandCount", -1);
+                apvts_.replaceState(juce::ValueTree::fromXml(*xml));
+
+                // Backward compat: old saves lack bandCount attr.
+                // Infer by scanning for bands with non-default gain (gain != 0).
+                if (count < 0)
+                {
+                    count = 0;
+                    for (int i = 0; i < kMaxBands; ++i)
+                    {
+                        auto* g = apvts_.getRawParameterValue(paramId(i, "gain"));
+                        if (g && std::abs(g->load(std::memory_order_relaxed)) > 0.001f)
+                            count = i + 1;
+                    }
+                }
+
+                bandCount_.store(count, std::memory_order_relaxed);
+                for (int i = 0; i < count && i < kMaxBands; ++i)
+                    requestBandClear(i);
+            }
             refreshLatencySamples();
         }
     }
 
     // ── Band management (main thread only) ───────────────────────────────────
+    // RPC / applier threads. Each call is ONE edit for the audio thread (see the
+    // threading note at the top): it never observes a half-written band.
 
     // Add a new band with default params.  Returns band index or -1 if full.
     int addBand()
     {
-        int count = bandCount_.load(std::memory_order_relaxed);
-        if (count >= kMaxBands) return -1;
+        int count = 0;
+        {
+            EditScope edit(*this);
+            count = bandCount_.load(std::memory_order_relaxed);
+            if (count >= kMaxBands) return -1;
 
-        // Reset APVTS params to defaults for the new band
-        setParamDirect(count, "freq",    1000.0f);
-        setParamDirect(count, "gain",    0.0f);
-        setParamDirect(count, "q",       0.707f);
-        setParamDirect(count, "type",    0.0f);
-        setParamDirect(count, "enabled", 1.0f);
-        setParamDirect(count, "channel", 0.0f);   // 0 = Stereo
-        setParamDirect(count, "mode",        0.0f);
-        setParamDirect(count, "dyn_thresh", -20.0f);
-        setParamDirect(count, "dyn_ratio",   4.0f);
-        setParamDirect(count, "dyn_attack",  10.0f);
-        setParamDirect(count, "dyn_release", 100.0f);
-        setParamDirect(count, "dyn_range",   12.0f);
-        setParamDirect(count, "spec_sens",    0.5f);
-        setParamDirect(count, "spec_sel",     5.0f);
-        setParamDirect(count, "spec_attack",  10.0f);
-        setParamDirect(count, "spec_release", 100.0f);
+            // Reset APVTS params to defaults for the new band
+            setParamDirect(count, "freq",    1000.0f);
+            setParamDirect(count, "gain",    0.0f);
+            setParamDirect(count, "q",       0.707f);
+            setParamDirect(count, "type",    0.0f);
+            setParamDirect(count, "enabled", 1.0f);
+            setParamDirect(count, "channel", 0.0f);   // 0 = Stereo
+            setParamDirect(count, "mode",        0.0f);
+            setParamDirect(count, "dyn_thresh", -20.0f);
+            setParamDirect(count, "dyn_ratio",   4.0f);
+            setParamDirect(count, "dyn_attack",  10.0f);
+            setParamDirect(count, "dyn_release", 100.0f);
+            setParamDirect(count, "dyn_range",   12.0f);
+            setParamDirect(count, "spec_sens",    0.5f);
+            setParamDirect(count, "spec_sel",     5.0f);
+            setParamDirect(count, "spec_attack",  10.0f);
+            setParamDirect(count, "spec_release", 100.0f);
 
-        // Clear biquad state for the new band
-        bands_[count].clearState();
+            // Clear biquad state for the new band (on the audio thread, with
+            // the snapshot that first contains it).
+            requestBandClear(count);
 
-        bandCount_.store(count + 1, std::memory_order_relaxed);
+            bandCount_.store(count + 1, std::memory_order_relaxed);
+        }
         refreshLatencySamples();
         return count;
     }
@@ -183,18 +213,21 @@ public:
     // Remove band at index.  Swaps with last band, decrements count.
     bool removeBand(int index)
     {
-        int count = bandCount_.load(std::memory_order_relaxed);
-        if (index < 0 || index >= count) return false;
-
-        int last = count - 1;
-        if (index != last)
         {
-            // Copy last band's APVTS params to the removed slot
-            copyBandParams(last, index);
-            bands_[index].clearState();
+            EditScope edit(*this);
+            int count = bandCount_.load(std::memory_order_relaxed);
+            if (index < 0 || index >= count) return false;
+
+            int last = count - 1;
+            if (index != last)
+            {
+                // Copy last band's APVTS params to the removed slot
+                copyBandParams(last, index);
+                requestBandClear(index);
+            }
+            requestBandClear(last);
+            bandCount_.store(last, std::memory_order_relaxed);
         }
-        bands_[last].clearState();
-        bandCount_.store(last, std::memory_order_relaxed);
         refreshLatencySamples();
         return true;
     }
@@ -211,7 +244,63 @@ public:
         return ok;
     }
 
+    // Set several parameters of one band as ONE edit: the audio thread uses
+    // either all of the new values or none of them in any block (a node drag
+    // that moves freq and gain together never renders half-moved). Returns
+    // false when the band does not exist or a name is unknown (the known ones
+    // are still applied).
+    bool setBandParams(int bandIndex, std::initializer_list<std::pair<const char*, float>> params)
+    {
+        bool ok = true;
+        bool latency = false;
+        {
+            EditScope edit(*this);
+            const int count = bandCount_.load(std::memory_order_relaxed);
+            if (bandIndex < 0 || bandIndex >= count) return false;
+            for (const auto& p : params)
+            {
+                const std::string name(p.first);
+                if (!setParamDirect(bandIndex, name, p.second)) ok = false;
+                else if (isLatencyAffectingBandParam(name)) latency = true;
+            }
+        }
+        if (latency)
+            refreshLatencySamples();
+        return ok;
+    }
+
     int getBandCount() const { return bandCount_.load(std::memory_order_relaxed); }
+
+    // ── Per-block parameter snapshot (audio thread) ─────────────────────────
+    // The raw APVTS values of one band exactly as the parameters hold them
+    // (conversions happen where they are used, as before the snapshot existed).
+    struct BandParamSnapshot
+    {
+        float freq = 1000.0f, gain = 0.0f, q = 0.707f, type = 0.0f;
+        float enabled = 1.0f, channel = 0.0f, mode = 0.0f;
+        float dynThresh = -20.0f, dynRatio = 4.0f, dynAttack = 10.0f, dynRelease = 100.0f, dynRange = 12.0f;
+        float specSens = 0.5f, specSel = 5.0f, specAttack = 10.0f, specRelease = 100.0f;
+    };
+
+    // Everything processEffect reads from the parameters, for one block.
+    struct ParamSnapshot
+    {
+        int   count = 0;                  // bands in use (bandCount_)
+        float linPhase = 0.0f;
+        float oversample = 0.0f;
+        BandParamSnapshot band[kMaxBands];
+    };
+
+
+    // Tests only. The snapshot the LAST processed block used (read it on the
+    // processing thread between blocks), and how many blocks took a fresh
+    // snapshot vs kept the previous one because an edit overlapped the copy.
+    const ParamSnapshot& getAudioParamSnapshotForTest() const noexcept { return snap_; }
+    std::uint64_t getSnapshotAcceptedCountForTest() const noexcept { return snapshotsAccepted_; }
+    std::uint64_t getSnapshotKeptCountForTest() const noexcept { return snapshotsKept_; }
+    // Negative control for the stress test: false = accept every copy even if
+    // an edit overlapped it (the pre-fix behaviour, torn reads possible).
+    void setSnapshotSeqCheckForTest(bool enabled) noexcept { snapshotSeqCheck_ = enabled; }
 
     // ── Response curves (main thread) ────────────────────────────────────────
     // A band's routing decides WHICH signal it shapes, so bands with different
@@ -684,6 +773,12 @@ public:
         specThreadRunning_.store(true, std::memory_order_relaxed);
         specThread_ = std::thread([this] { analysisThreadFunc(); });
 
+        // Not processing: the first block's snapshot is the current state, and
+        // every band was cleared above, so no clear request is outstanding.
+        readParamsInto(snap_);
+        pendingBandClear_.store(0u, std::memory_order_relaxed);
+        deferredBandClear_ = 0u;
+
         refreshLatencySamples();
     }
 
@@ -691,8 +786,14 @@ public:
     {
         const int numSamples = buffer.getNumSamples();
         const int numCh      = std::min(buffer.getNumChannels(), 2);
-        const int count      = bandCount_.load(std::memory_order_relaxed);
         const double sr      = sampleRate_.load(std::memory_order_relaxed);
+
+        // Every parameter this block uses, read once, consistently (the
+        // previous block's snapshot if an edit was in progress), and the band
+        // state clears the RPC side asked for.
+        takeParamSnapshot();
+        const ParamSnapshot& P = snap_;
+        const int count = P.count;
 
         // Un-bypass: the stream froze while the base class skipped us. Take the
         // request here, on the audio thread, and let the restart logic below
@@ -702,28 +803,26 @@ public:
 
         // ── Read global mode state ──────────────────────────────────────────
         // Read before the per-band latch below: linear phase folds every band's
-        // channel routing back to Stereo.
-        const bool linPhaseActive = linPhasePtr_
-            ? (linPhasePtr_->load(std::memory_order_relaxed) > 0.5f) : false;
-        linPhaseActive_.store(linPhaseActive, std::memory_order_relaxed);
+        // channel routing back to Stereo. (The status atomics behind
+        // getLatencySamples() belong to the parameter path, not to this thread.)
+        const bool linPhaseActive = P.linPhase > 0.5f;
 
         // ── Read band modes + enabled + channel routing ─────────────────────
         bool hasDynamic = false;
         for (int b = 0; b < count; ++b)
         {
             auto& bs = bands_[b];
-            bs.mode    = bs.modePtr    ? static_cast<int>(bs.modePtr->load(std::memory_order_relaxed)) : 0;
-            bs.enabled = bs.enabledPtr ? (bs.enabledPtr->load(std::memory_order_relaxed) > 0.5f) : true;
-            bs.channel = bs.channelPtr
-                ? static_cast<int>(bs.channelPtr->load(std::memory_order_relaxed)) : 0;
+            const auto& bp = P.band[b];
+            bs.mode    = static_cast<int>(bp.mode);
+            bs.enabled = bp.enabled > 0.5f;
+            bs.channel = static_cast<int>(bp.channel);
             if (bs.channel < 0 || bs.channel >= kNumChannelModes) bs.channel = 0;
             bs.channel = foldChannelForContext(bs.channel, bs.mode, linPhaseActive, numCh);
             if (bs.mode == 1 && bs.enabled) hasDynamic = true;
         }
 
         // Read oversample factor (0=off, 1=2x, 2=4x)
-        int osRaw = oversamplePtr_
-            ? static_cast<int>(oversamplePtr_->load(std::memory_order_relaxed)) : 0;
+        int osRaw = static_cast<int>(P.oversample);
 
         // Spectral + OS mutually exclusive: spectral wins, OS bypassed
         bool anySpectral = false;
@@ -733,7 +832,6 @@ public:
                 if (bands_[b].mode == 2 && bands_[b].enabled) { anySpectral = true; break; }
         }
         const int currentOSFactor = anySpectral ? 0 : osRaw;
-        currentOSFactor_.store(currentOSFactor, std::memory_order_relaxed);
 
         // Effective sample rate for coefficient computation
         const double effectiveSR = sr * static_cast<double>(1 << currentOSFactor);
@@ -754,14 +852,14 @@ public:
                     continue;
                 }
 
-                // Attack/release coefficients from APVTS
-                float attackMs  = bs.dynAttackPtr  ? bs.dynAttackPtr->load(std::memory_order_relaxed)  : 10.0f;
-                float releaseMs = bs.dynReleasePtr ? bs.dynReleasePtr->load(std::memory_order_relaxed) : 100.0f;
+                // Attack/release coefficients from APVTS (this block's snapshot)
+                float attackMs  = P.band[b].dynAttack;
+                float releaseMs = P.band[b].dynRelease;
                 bs.dynAttackCoeff  = 1.0f - std::exp(-1.0f / (attackMs  * 0.001f * static_cast<float>(sr)));
                 bs.dynReleaseCoeff = 1.0f - std::exp(-1.0f / (releaseMs * 0.001f * static_cast<float>(sr)));
 
-                float thresh = bs.dynThreshPtr ? bs.dynThreshPtr->load(std::memory_order_relaxed) : -20.0f;
-                float ratio  = bs.dynRatioPtr  ? bs.dynRatioPtr->load(std::memory_order_relaxed)  : 4.0f;
+                float thresh = P.band[b].dynThresh;
+                float ratio  = P.band[b].dynRatio;
                 ratio = std::max(ratio, 1.0f);
 
                 // Recompute sidechain BPF from end-of-block smoothed freq/Q
@@ -838,7 +936,7 @@ public:
 
                 // Meter: signed dB the dynamic swing is currently contributing
                 // on top of the baseline gain (the knob itself, always applied).
-                float rangeDbNow = bs.dynRangePtr ? bs.dynRangePtr->load(std::memory_order_relaxed) : 12.0f;
+                float rangeDbNow = P.band[b].dynRange;
                 bandGR_[b].store(newAct * rangeDbNow, std::memory_order_relaxed);
 
 #ifdef XLETH_RT_TRACE
@@ -866,12 +964,13 @@ public:
         {
             auto& bs = bands_[b];
 
-            // Read APVTS atomics
-            float freq    = bs.freqPtr ? bs.freqPtr->load(std::memory_order_relaxed) : 1000.0f;
-            float gainDb  = bs.gainPtr ? bs.gainPtr->load(std::memory_order_relaxed) : 0.0f;
-            float q       = bs.qPtr    ? bs.qPtr->load(std::memory_order_relaxed)    : 0.707f;
-            int   type    = bs.typePtr ? static_cast<int>(bs.typePtr->load(std::memory_order_relaxed)) : 0;
-            float rangeDb = bs.dynRangePtr ? bs.dynRangePtr->load(std::memory_order_relaxed) : 12.0f;
+            // This block's parameter snapshot
+            const auto& bp = P.band[b];
+            float freq    = bp.freq;
+            float gainDb  = bp.gain;
+            float q       = bp.q;
+            int   type    = static_cast<int>(bp.type);
+            float rangeDb = bp.dynRange;
 
             // Advance smoothers to end-of-block position
             bs.freqSmooth.setTargetValue(std::max(freq, 20.0f));
@@ -922,7 +1021,6 @@ public:
                 else
                     bandGR_[b].store(0.0f, std::memory_order_relaxed);  // don't strand the meter
             }
-            hasSpectralBands_.store(hasSpectralBands, std::memory_order_relaxed);
 
             // Auto-enable pre-EQ spectrum when any Spectral band is active.
             // Do NOT auto-disable; user may want pre-spectrum with other modes too.
@@ -1000,7 +1098,6 @@ public:
         else
         {
             stftNeedsRestart_ = true;       // linear phase also freezes the stream
-            hasSpectralBands_.store(false, std::memory_order_relaxed); // linPhase disables spectral
             for (int b = 0; b < count; ++b)
                 if (bands_[b].mode == 2)
                     bandGR_[b].store(0.0f, std::memory_order_relaxed);
@@ -1181,6 +1278,112 @@ private:
             refreshLatencySamples();
     }
 
+    // ── Edits vs the audio thread's snapshot ────────────────────────────────
+    // A multi-parameter edit (non-audio threads only). Writers are serialised
+    // by editMutex_ (never taken by the audio thread); while the scope lives,
+    // editSeq_ is odd, so a snapshot copy that overlaps it is rejected by the
+    // audio thread (which keeps its previous snapshot for that block).
+    // Sequence-lock memory orders (Boehm, "Can seqlocks get along with
+    // programming language memory models?"): odd store relaxed + release fence
+    // before the data stores, even store release after them; the reader loads
+    // the counter with acquire, the data relaxed, then an acquire fence and the
+    // counter again.
+    struct EditScope
+    {
+        explicit EditScope(XlethParametricEQ& e) : eq(e), lock(e.editMutex_)
+        {
+            eq.editSeq_.store(eq.editSeq_.load(std::memory_order_relaxed) + 1u, std::memory_order_relaxed);
+            std::atomic_thread_fence(std::memory_order_release);
+        }
+        ~EditScope()
+        {
+            eq.editSeq_.store(eq.editSeq_.load(std::memory_order_relaxed) + 1u, std::memory_order_release);
+        }
+        EditScope(const EditScope&) = delete;
+        EditScope& operator=(const EditScope&) = delete;
+        XlethParametricEQ& eq;
+        std::lock_guard<std::mutex> lock;
+    };
+
+    // Inside an EditScope: the band's DSP state (biquad / detector state,
+    // spectral envelopes) is cleared by the AUDIO thread, together with the
+    // first snapshot that contains this edit. The activation meter is an
+    // atomic the UI reads, so it is zeroed here as well (as the old in-place
+    // clear did); the audio thread zeroes it again when it clears.
+    void requestBandClear(int band) noexcept
+    {
+        if (band < 0 || band >= kMaxBands) return;
+        bands_[band].dynActivation.store(0.0f, std::memory_order_relaxed);
+        pendingBandClear_.fetch_or(1u << band, std::memory_order_relaxed);
+    }
+
+    // Reads every parameter processEffect uses (relaxed atomic loads only).
+    void readParamsInto(ParamSnapshot& s) const noexcept
+    {
+        s.count = std::clamp(bandCount_.load(std::memory_order_relaxed), 0, kMaxBands);
+        s.linPhase   = linPhasePtr_   ? linPhasePtr_->load(std::memory_order_relaxed)   : 0.0f;
+        s.oversample = oversamplePtr_ ? oversamplePtr_->load(std::memory_order_relaxed) : 0.0f;
+        for (int b = 0; b < s.count; ++b)
+        {
+            const auto& bs = bands_[b];
+            auto& o = s.band[b];
+            auto rd = [](const std::atomic<float>* p, float fallback) noexcept {
+                return p ? p->load(std::memory_order_relaxed) : fallback;
+            };
+            o.freq        = rd(bs.freqPtr, 1000.0f);
+            o.gain        = rd(bs.gainPtr, 0.0f);
+            o.q           = rd(bs.qPtr, 0.707f);
+            o.type        = rd(bs.typePtr, 0.0f);
+            o.enabled     = rd(bs.enabledPtr, 1.0f);
+            o.channel     = rd(bs.channelPtr, 0.0f);
+            o.mode        = rd(bs.modePtr, 0.0f);
+            o.dynThresh   = rd(bs.dynThreshPtr, -20.0f);
+            o.dynRatio    = rd(bs.dynRatioPtr, 4.0f);
+            o.dynAttack   = rd(bs.dynAttackPtr, 10.0f);
+            o.dynRelease  = rd(bs.dynReleasePtr, 100.0f);
+            o.dynRange    = rd(bs.dynRangePtr, 12.0f);
+            o.specSens    = rd(bs.specSensPtr, 0.5f);
+            o.specSel     = rd(bs.specSelPtr, 5.0f);
+            o.specAttack  = rd(bs.specAttackPtr, 10.0f);
+            o.specRelease = rd(bs.specReleasePtr, 100.0f);
+        }
+    }
+
+    // Audio thread, once at the top of processEffect. Wait-free: one copy of
+    // the parameters, accepted only if no edit overlapped it; otherwise the
+    // previous block's snapshot stays in force for this block. The band clears
+    // requested inside an edit are applied with the first snapshot that
+    // contains that edit. No allocation, no lock, no logging.
+    void takeParamSnapshot() noexcept
+    {
+        const std::uint32_t s1 = editSeq_.load(std::memory_order_acquire);
+        bool accepted = false;
+        if ((s1 & 1u) == 0u || !snapshotSeqCheck_)
+        {
+            readParamsInto(snapWork_);
+            if (pendingBandClear_.load(std::memory_order_relaxed) != 0u)
+                deferredBandClear_ |= pendingBandClear_.exchange(0u, std::memory_order_acq_rel);
+            std::atomic_thread_fence(std::memory_order_acquire);
+            accepted = !snapshotSeqCheck_ || editSeq_.load(std::memory_order_relaxed) == s1;
+        }
+
+        if (!accepted)
+        {
+            ++snapshotsKept_;
+            return;
+        }
+
+        snap_ = snapWork_;
+        ++snapshotsAccepted_;
+        if (deferredBandClear_ != 0u)
+        {
+            for (int b = 0; b < kMaxBands; ++b)
+                if ((deferredBandClear_ & (1u << b)) != 0u)
+                    bands_[b].clearState();
+            deferredBandClear_ = 0u;
+        }
+    }
+
     // ── Per-band state ───────────────────────────────────────────────────────
     struct BandState
     {
@@ -1342,6 +1545,18 @@ private:
     // A bypassed effect never reaches processEffect, so the "inactive last
     // block" edge detection cannot see a bypass.
     std::atomic<bool> pendingStreamReset_{false};
+
+    // ── Parameter snapshot / edits ([EQCore] locking fix) ───────────────────
+    std::mutex editMutex_;                        // edit writers only (never the audio thread)
+    std::atomic<std::uint32_t> editSeq_{0};       // odd while an edit runs
+    std::atomic<std::uint32_t> pendingBandClear_{0};   // bit b: clear band b's DSP state
+    ParamSnapshot snap_;                          // audio thread: the block's parameters
+    ParamSnapshot snapWork_;                      // audio thread: copy in progress
+    std::uint32_t deferredBandClear_ = 0;         // audio thread: clears waiting for an accepted snapshot
+    std::uint64_t snapshotsAccepted_ = 0;         // audio thread (tests)
+    std::uint64_t snapshotsKept_ = 0;             // audio thread (tests)
+    bool snapshotSeqCheck_ = true;                // tests: negative control switch
+
 
     float stftWindow_[kSTFTSize]{};         // sqrt-Hann (analysis AND synthesis)
     float stftNorm_[kSTFTHop]{};            // 1/sum(w^2) per hop phase
@@ -1765,7 +1980,7 @@ private:
 
     void processSTFTFrame(std::int64_t frameStart, int numCh, double sr)
     {
-        const int count = bandCount_.load(std::memory_order_relaxed);
+        const int count = snap_.count;   // this block's snapshot (audio thread)
         const int binsN = kSTFTSize / 2;
 
         // Envelope coefficients derived from STFT frame period (hopSize / sr),
@@ -1830,10 +2045,10 @@ private:
                 // gain knob has no other meaning in this mode — hence no
                 // separate spec_depth parameter.
                 float depthDb = bs.gainSmooth.getCurrentValue();
-                float sens  = bs.specSensPtr    ? bs.specSensPtr->load(std::memory_order_relaxed)    : 0.5f;
-                float sel   = bs.specSelPtr     ? bs.specSelPtr->load(std::memory_order_relaxed)     : 5.0f;
-                float atkMs = bs.specAttackPtr  ? bs.specAttackPtr->load(std::memory_order_relaxed)  : 10.0f;
-                float relMs = bs.specReleasePtr ? bs.specReleasePtr->load(std::memory_order_relaxed) : 100.0f;
+                float sens  = snap_.band[b].specSens;
+                float sel   = snap_.band[b].specSel;
+                float atkMs = snap_.band[b].specAttack;
+                float relMs = snap_.band[b].specRelease;
 
                 const float attackCoeff  = 1.0f - std::exp(-framePeriodSec / (atkMs * 0.001f));
                 const float releaseCoeff = 1.0f - std::exp(-framePeriodSec / (relMs * 0.001f));
@@ -1981,7 +2196,7 @@ private:
     void rebuildFIR()
     {
         const int N = firLength_;
-        const int count = bandCount_.load(std::memory_order_relaxed);
+        const int count = snap_.count;   // audio thread: this block's snapshot
         const double pi   = juce::MathConstants<double>::pi;
 
         // Compute magnitude response at N uniformly-spaced frequency bins

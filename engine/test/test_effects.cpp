@@ -5973,6 +5973,162 @@ static void testLinPhaseDisablesDynamic()
 
 // ─── Entry point ─────────────────────────────────────────────────────────────
 
+// ─── [EQCore] Legacy bit-identity guard ─────────────────────────────────────
+// Every scenario below runs the EQ on its DEFAULT spectral engine (Legacy, the
+// 4096 STFT path) through the public API only, and hashes (64-bit FNV-1a over
+// the bit patterns) every output sample of both channels, every band's GR meter
+// and the reported latency after every block. The expected hashes were recorded
+// by building this very test against the EQ before the [EQCore] work (the
+// locking fix, the spectral_engine / spectral_quality parameters and the core
+// path): any change to what the default EQ outputs, meters or reports fails here.
+namespace eqlegacy
+{
+struct Hash
+{
+    std::uint64_t h = 1469598103934665603ull;
+    void bytes(const void* p, std::size_t n)
+    {
+        const auto* b = static_cast<const unsigned char*>(p);
+        for (std::size_t i = 0; i < n; ++i) { h ^= b[i]; h *= 1099511628211ull; }
+    }
+    void f(float v) { bytes(&v, sizeof v); }
+    void i(int v)   { bytes(&v, sizeof v); }
+};
+
+static const int kSchedule[] = { 1, 37, 128, 255, 511, 512, 37, 300, 64 };
+
+static void band(XlethParametricEQ& eq, int b, float freq, float gain, float q, int type,
+                 int mode, int channel, float sens = 0.5f, float sel = 5.0f,
+                 float atk = 10.0f, float rel = 100.0f)
+{
+    eq.setBandParam(b, "freq", freq);
+    eq.setBandParam(b, "gain", gain);
+    eq.setBandParam(b, "q", q);
+    eq.setBandParam(b, "type", static_cast<float>(type));
+    eq.setBandParam(b, "channel", static_cast<float>(channel));
+    eq.setBandParam(b, "spec_sens", sens);
+    eq.setBandParam(b, "spec_sel", sel);
+    eq.setBandParam(b, "spec_attack", atk);
+    eq.setBandParam(b, "spec_release", rel);
+    eq.setBandParam(b, "enabled", 1.0f);
+    eq.setBandParam(b, "mode", static_cast<float>(mode));
+}
+
+// The mixed configuration: two Spectral bands (a cut and an upward band), a
+// Left-routed bell, a Mid-routed bell, a Dynamic Side band.
+static void configureMixed(XlethParametricEQ& eq)
+{
+    while (eq.getBandCount() < 5) eq.addBand();
+    band(eq, 0, 2500.0f, -12.0f, 4.0f, 0, 2, 0);
+    band(eq, 1,  400.0f,   4.0f, 1.0f, 0, 0, 1);
+    band(eq, 2,  800.0f,   6.0f, 2.0f, 0, 2, 3, 0.8f, 4.0f, 5.0f, 300.0f);
+    band(eq, 3, 6000.0f,  -3.0f, 0.7f, 0, 0, 3);
+    band(eq, 4, 1200.0f,  -2.0f, 1.5f, 0, 1, 4);
+    eq.setBandParam(4, "dyn_thresh", -40.0f);
+}
+
+using Event = std::function<void(XlethParametricEQ&)>;
+
+static std::uint64_t run(double sr, int channels, int seconds10, const std::function<void(XlethParametricEQ&)>& setup,
+                         const std::vector<std::pair<int, Event>>& events, std::uint32_t seed, bool prepareAfterSetup)
+{
+    XlethParametricEQ eq;
+    eq.prepareToPlay(sr, 512);
+    setup(eq);
+    if (prepareAfterSetup) eq.prepareToPlay(sr, 512);
+
+    const int total = static_cast<int>(sr) * seconds10 / 10;
+    juce::AudioBuffer<float> in(channels, total);
+    rsnew::fillPinkBell(in, sr, 2500.0f, 0.05f, seed);
+    if (channels > 1)   // a right-only component so channel routing matters
+    {
+        float* r = in.getWritePointer(1);
+        for (int s = 0; s < total; ++s)
+            r[s] += 0.03f * std::sin(2.0f * juce::MathConstants<float>::pi * 1300.0f * static_cast<float>(s) / static_cast<float>(sr));
+    }
+
+    Hash h;
+    juce::MidiBuffer midi;
+    int pos = 0, blk = 0;
+    std::size_t ev = 0;
+    while (pos < total)
+    {
+        while (ev < events.size() && events[ev].first == blk) { events[ev].second(eq); ++ev; }
+        const int n = std::min(kSchedule[blk % (sizeof kSchedule / sizeof kSchedule[0])], total - pos);
+        juce::AudioBuffer<float> b(channels, n);
+        for (int ch = 0; ch < channels; ++ch) b.copyFrom(ch, 0, in, ch, pos, n);
+        eq.processBlock(b, midi);
+        for (int ch = 0; ch < channels; ++ch)
+            for (int s = 0; s < n; ++s) h.f(b.getSample(ch, s));
+        for (int k = 0; k < XlethParametricEQ::kMaxBands; ++k) h.f(eq.getBandGR(k));
+        h.i(eq.getReportedProcessorLatencySamples());
+        h.i(eq.getLatencySamples());
+        pos += n;
+        ++blk;
+    }
+    return h.h;
+}
+} // namespace eqlegacy
+
+static void testEQLegacyBitIdentity()
+{
+    std::cout << "  [EQCore] legacy (default engine) bit-identity hashes\n";
+    using namespace eqlegacy;
+
+    juce::MemoryBlock otherState;
+    {
+        XlethParametricEQ src;
+        src.prepareToPlay(48000.0, 512);
+        src.addBand(); src.addBand(); src.addBand();
+        band(src, 0, 3100.0f, -18.0f, 6.0f, 0, 2, 0, 0.3f, 8.0f);
+        band(src, 1,  150.0f,   3.0f, 0.9f, 1, 0, 0);
+        band(src, 2, 9000.0f,  -6.0f, 2.0f, 0, 0, 2);
+        src.getStateInformation(otherState);
+    }
+
+    struct Scenario { const char* name; std::uint64_t expected; std::function<std::uint64_t()> fn; };
+    const std::vector<Scenario> scenarios = {
+        { "mixed steady 48k stereo", 0x66f605bcccb4ab22ull, [] {
+              return run(48000.0, 2, 30, configureMixed, {}, 0x1234u, true); } },
+        { "single spectral band, no re-prepare (smoother ramps) 44.1k", 0x78aacd757cf00495ull, [] {
+              return run(44100.0, 2, 25, [](XlethParametricEQ& eq) { eq.addBand(); band(eq, 0, 1000.0f, -20.0f, 1.0f, 0, 2, 0, 1.0f, 5.0f); },
+                         {}, 0x77u, false); } },
+        { "mixed with events (off->on, linphase, bypass, mode, restore, remove/add, reset)", 0xbc048d2cc15b9ce4ull, [&otherState] {
+              std::vector<std::pair<int, Event>> ev = {
+                  { 60,  [](XlethParametricEQ& eq) { eq.setBandParam(0, "enabled", 0.0f); } },
+                  { 80,  [](XlethParametricEQ& eq) { eq.setBandParam(2, "enabled", 0.0f); } },
+                  { 120, [](XlethParametricEQ& eq) { eq.setBandParam(0, "enabled", 1.0f); eq.setBandParam(2, "enabled", 1.0f); } },
+                  { 170, [](XlethParametricEQ& eq) { eq.setParameterValue("linphase", 1.0f); } },
+                  { 200, [](XlethParametricEQ& eq) { eq.setParameterValue("linphase", 0.0f); } },
+                  { 240, [](XlethParametricEQ& eq) { eq.setBypassed(true); } },
+                  { 280, [](XlethParametricEQ& eq) { eq.setBypassed(false); } },
+                  { 320, [](XlethParametricEQ& eq) { eq.setBandParam(1, "mode", 1.0f); eq.setBandParam(0, "gain", 8.0f); } },
+                  { 360, [&otherState](XlethParametricEQ& eq) { eq.setStateInformation(otherState.getData(), static_cast<int>(otherState.getSize())); } },
+                  { 400, [](XlethParametricEQ& eq) { eq.removeBand(1); } },
+                  { 430, [](XlethParametricEQ& eq) { const int b = eq.addBand(); band(eq, b, 700.0f, -9.0f, 3.0f, 0, 2, 0); } },
+                  { 470, [](XlethParametricEQ& eq) { eq.reset(); } },
+                  { 500, [](XlethParametricEQ& eq) { eq.setParameterValue("oversample", 1.0f); eq.setBandParam(0, "mode", 0.0f); eq.setBandParam(2, "mode", 0.0f); } },
+                  { 540, [](XlethParametricEQ& eq) { eq.setBandParam(0, "mode", 2.0f); } },
+              };
+              return run(48000.0, 2, 60, configureMixed, ev, 0x9abcu, true); } },
+        { "mono spectral 48k", 0xdc07ae225603b341ull, [] {
+              return run(48000.0, 1, 20, [](XlethParametricEQ& eq) { eq.addBand(); band(eq, 0, 2500.0f, -15.0f, 3.0f, 0, 2, 3); },
+                         {}, 0x55u, true); } },
+        { "spectral 96k", 0x31f512480340db1bull, [] {
+              return run(96000.0, 2, 15, [](XlethParametricEQ& eq) { eq.addBand(); eq.addBand(); band(eq, 0, 2500.0f, -24.0f, 4.0f, 0, 2, 0);
+                                                                     band(eq, 1, 5000.0f, -6.0f, 8.0f, 0, 2, 2); },
+                         {}, 0x99u, true); } },
+    };
+
+    for (const auto& s : scenarios)
+    {
+        const std::uint64_t got = s.fn();
+        std::printf("    [EQCore] legacy hash %-80s 0x%016llx\n", s.name, static_cast<unsigned long long>(got));
+        CHECK(got == s.expected,
+              std::string("[EQCore] legacy EQ output / meters / latency must be bit-identical to the pre-[EQCore] EQ: ") + s.name);
+    }
+}
+
 int main()
 {
     // JUCE requires a ScopedJuceInitialiser_GUI to initialise internals
@@ -6053,6 +6209,7 @@ int main()
     testLinearPhase();
     testOversampling();
     testLinPhaseDisablesDynamic();
+    testEQLegacyBitIdentity();
 
     std::cout << "\nResults: " << g_passed << " passed, " << g_failed << " failed\n";
     if (g_failed > 0)
