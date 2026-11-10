@@ -11,6 +11,10 @@ import useEqStore from '../../../stores/eqStore.js'
 import useMixerStore from '../../../stores/mixerStore.js'
 import EqPanel from '../../mixer/EqPanel.jsx'
 import DeviceChain from '../DeviceChain.jsx'
+import {
+  CORE_CONFLICT_NOTE, CORE_DOMINANT_HINT, CORE_GAIN_HINT, CORE_UPWARD_HINT, ENGINE_HINT, LATENCY_HINT,
+  coreSharedHint, coreSharedNote,
+} from '../../mixer/eqCoreSpectral.js'
 
 globalThis.IS_REACT_ACT_ENVIRONMENT = true
 
@@ -184,5 +188,114 @@ describe('EqPanel (floating)', () => {
     expect(src).not.toMatch(/eq-panel-header|EqBandPanel|EffectPresetBar|handleSvgMouseDown/)
     const css = readFileSync(path.resolve(__dirname, '../../../styles/app.css'), 'utf8')
     expect(css).not.toMatch(/\.eq-panel|\.eqc-|\.eqbp|\.eq-graph-row/)
+  })
+})
+
+// [EQCore] The Spectral engine selector and the Core-engine band indicators.
+describe('Parametric EQ device: Spectral engine (Legacy / Core)', () => {
+  const SPECTRAL = (o) => ({
+    freq: 1000, gain: -6, q: 1, type: 0, enabled: true, mode: 2, channel: 0,
+    spec_sens: 0.5, spec_sel: 5, spec_attack: 10, spec_release: 100, ...o,
+  })
+  const radio = (group, name) => q(`[role="radiogroup"][aria-label="${group}"] [role="radio"][aria-checked="true"]`)?.textContent === name
+  const clickRadio = (group, name) => {
+    const r = Array.from(container.querySelectorAll(`[role="radiogroup"][aria-label="${group}"] [role="radio"]`)).find((b) => b.textContent === name)
+    act(() => r.click())
+  }
+
+  async function mount(bands, globals = { linphase: false, oversample: 0 }) {
+    audio.eqGetBands = vi.fn(async () => JSON.stringify(bands.map((b, i) => ({ index: i, ...b }))))
+    audio.eqGetGlobalParams = vi.fn(async () => JSON.stringify(globals))
+    audio.eqSetGlobalParam = vi.fn(async () => true)
+    audio.getEffectLatency = vi.fn(async () => JSON.stringify({ ok: true, latencySamples: 1024, latencyMs: 21.33 }))
+    act(() => root.render(<DeviceChain />))
+    await flush()
+    await flush()
+    const show = q('button[aria-label="Show Dynamics"]')
+    if (show) act(() => show.click())
+  }
+
+  it('defaults to Legacy (an engine without the new keys), no quality control; Core writes spectral_engine', async () => {
+    await mount([SPECTRAL()])
+    select(0)
+    expect(radio('Spectral engine', 'Legacy')).toBe(true)
+    expect(q('[role="radiogroup"][aria-label="Spectral quality"]')).toBeNull()
+    expect(q('[data-param="spectral_engine"]').getAttribute('data-hint')).toBe(ENGINE_HINT)
+
+    clickRadio('Spectral engine', 'Core')
+    await flush()
+    expect(audio.eqSetGlobalParam).toHaveBeenCalledWith(3, 7, 'spectral_engine', 1)
+    expect(radio('Spectral quality', 'Normal')).toBe(true)
+    clickRadio('Spectral quality', 'High')
+    await flush()
+    expect(audio.eqSetGlobalParam).toHaveBeenCalledWith(3, 7, 'spectral_quality', 2)
+  })
+
+  it('shows the engine-reported latency and re-reads it when the engine or quality changes', async () => {
+    await mount([SPECTRAL()])
+    select(0)
+    await flush()
+    const readout = Array.from(container.querySelectorAll('span[data-hint]')).find((el) => el.textContent.includes('latency'))
+    expect(readout?.getAttribute('data-hint')).toBe(LATENCY_HINT)
+    const before = audio.getEffectLatency.mock.calls.length
+    clickRadio('Spectral engine', 'Core')
+    await flush()
+    expect(audio.getEffectLatency.mock.calls.length).toBeGreaterThan(before)
+  })
+
+  it('the selector only appears on a Spectral band', async () => {
+    await mount([SPECTRAL(), { freq: 200, gain: -3, q: 1, type: 0, enabled: true, mode: 1, channel: 0 }])
+    select(1)
+    expect(q('[role="radiogroup"][aria-label="Spectral engine"]')).toBeNull()
+  })
+
+  it('Core: an upward Spectral band is dimmed with a hint; Legacy leaves it as before', async () => {
+    await mount([SPECTRAL({ gain: -6 }), SPECTRAL({ gain: 6, freq: 3000 })], { linphase: false, oversample: 0, spectral_engine: 1, spectral_quality: 1 })
+    const up = q('g[data-band="1"]')
+    expect(up.getAttribute('data-inactive')).toBe('core-upward')
+    expect(up.getAttribute('data-hint')).toBe(CORE_UPWARD_HINT)
+    expect(up.getAttribute('opacity')).toBe('0.35')
+    expect(q('g[data-band="0"]').getAttribute('data-inactive')).toBeNull()
+    select(1)
+    expect(Array.from(container.querySelectorAll('[role="note"]')).map((n) => n.textContent)).toContain(CORE_UPWARD_HINT)
+
+    clickRadio('Spectral engine', 'Legacy')
+    await flush()
+    expect(q('g[data-band="1"]').getAttribute('data-inactive')).toBeNull()
+    expect(q('g[data-band="1"]').getAttribute('opacity')).toBe('1')
+  })
+
+  it('Core: the gain knob of a Spectral band carries the 24 dB cap', async () => {
+    await mount([SPECTRAL({ gain: -30 })], { spectral_engine: 1, spectral_quality: 1 })
+    select(0)
+    expect(q('[role="slider"][aria-label="Gain"]').getAttribute('data-hint')).toBe(CORE_GAIN_HINT)
+  })
+
+  it('Core: shared detector settings are marked on the other Spectral bands, from the deepest one', async () => {
+    await mount([SPECTRAL({ gain: -6 }), SPECTRAL({ gain: -12, freq: 4000 })], { spectral_engine: 1, spectral_quality: 1 })
+    select(0)
+    expect(q('[role="slider"][aria-label="Sensitivity"]').getAttribute('data-hint')).toBe(coreSharedHint(1))
+    expect(q('[role="slider"][aria-label="Release"]').getAttribute('data-hint')).toBe(coreSharedHint(1))
+    expect(Array.from(container.querySelectorAll('[role="note"]')).map((n) => n.textContent)).toContain(coreSharedNote(1))
+    select(1)
+    expect(q('[role="slider"][aria-label="Attack"]').getAttribute('data-hint')).toBe(CORE_DOMINANT_HINT)
+    expect(container.textContent).not.toContain(coreSharedNote(1))
+  })
+
+  it('Legacy: no shared-settings marks, no cap hint', async () => {
+    await mount([SPECTRAL({ gain: -6 }), SPECTRAL({ gain: -12, freq: 4000 })])
+    select(0)
+    expect(q('[role="slider"][aria-label="Sensitivity"]').getAttribute('data-hint')).toBeNull()
+    expect(q('[role="slider"][aria-label="Gain"]').getAttribute('data-hint')).toBeNull()
+    expect(container.querySelectorAll('[role="note"]').length).toBe(0)
+  })
+
+  it('Core: Spectral bands asking for different channels show the Stereo notice', async () => {
+    await mount([SPECTRAL({ gain: -6, channel: 0 }), SPECTRAL({ gain: -6, channel: 1, freq: 4000 })], { spectral_engine: 1, spectral_quality: 1 })
+    select(0)
+    expect(Array.from(container.querySelectorAll('[role="note"]')).map((n) => n.textContent)).toContain(CORE_CONFLICT_NOTE)
+    clickRadio('Spectral engine', 'Legacy')
+    await flush()
+    expect(container.textContent).not.toContain(CORE_CONFLICT_NOTE)
   })
 })

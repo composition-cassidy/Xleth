@@ -16,6 +16,11 @@ import {
 import { computeSpectrumPaths, resetMaxHold } from '../mixer/eqSpectrumPath.js'
 import { SPEED_DECAY, RESOLUTION_BARS, loadAnalyzerSettings } from '../mixer/eqAnalyzerSettings.js'
 import { getInspectorFields, inspectorHasGR } from '../mixer/eqInspectorConfig.js'
+import {
+  CORE_CONFLICT_NOTE, CORE_DOMINANT_HINT, CORE_GAIN_HINT, CORE_UPWARD_HINT, ENGINE_HINT, LATENCY_HINT, QUALITY_HINT,
+  coreSharedHint, coreSharedNote, coreSpectralStatus, displayResponseCurves, isActiveSpectral,
+  isCoreEngine,
+} from '../mixer/eqCoreSpectral.js'
 import EqCanvas from '../mixer/EqCanvas.jsx'
 import useDeviceUiStore from './deviceUiStore.js'
 import styles from './EqDevice.module.css'
@@ -60,6 +65,45 @@ function responseToPaths(curves, dbZoom) {
 
 const channelColor = (channel) => `var(--xleth-eq-ch-${channel || 'stereo'})`
 
+// The renderer of the Spectral bands (spectral_engine; Legacy stays the default)
+// and, on Core, its analysis size (spectral_quality).
+const ENGINE_OPTIONS = [
+  { value: 0, label: 'Legacy' },
+  { value: 1, label: 'Core' },
+]
+const QUALITY_OPTIONS = [
+  { value: 0, label: 'Fast' },
+  { value: 1, label: 'Normal' },
+  { value: 2, label: 'High' },
+]
+
+// The latency the engine reports for this instance (audio.getEffectLatency), read
+// again whenever a setting that moves it changes. Never a table of per-quality
+// numbers. (The Resonance Suppressor device's readout, same call and wording.)
+function useReportedLatency(target, key) {
+  const [latency, setLatency] = useState(null)
+  useEffect(() => {
+    if (!target || typeof window.xleth?.audio?.getEffectLatency !== 'function') return undefined
+    let cancelled = false
+    ;(async () => {
+      try {
+        const raw = await window.xleth.audio.getEffectLatency(target.trackId, target.nodeId)
+        const obj = typeof raw === 'string' ? JSON.parse(raw) : raw
+        if (!cancelled && obj && obj.ok) setLatency(obj)
+      } catch { /* a readout only */ }
+    })()
+    return () => { cancelled = true }
+  }, [target, key])
+  return latency
+}
+
+function latencyText(latency) {
+  if (!latency) return ''
+  const ms = Number(latency.latencyMs)
+  if (Number.isFinite(ms) && ms > 0) return `${formatValue(ms, 'ms')} latency`
+  return Number(latency.latencySamples) > 0 ? `${latency.latencySamples} samples latency` : 'No latency'
+}
+
 // ── The display: polling, drag, add-on-curve, wheel Q, hover readout ──────
 // This is the editor's canvas controller, parameterised by a store instance
 // instead of the one global store, so several EQ devices can be on screen.
@@ -70,6 +114,7 @@ function useEqCanvasController(store) {
   const preSpectrum = useStore(store, (s) => s.preSpectrum)
   const sampleRate = useStore(store, (s) => s.sampleRate)
   const selectedBandIndex = useStore(store, (s) => s.selectedBandIndex)
+  const coreSpectral = useStore(store, (s) => isCoreEngine(s.spectralEngine))
 
   const [analyzerSettings] = useState(() => loadAnalyzerSettings())
   const [responsePaths, setResponsePaths] = useState({})
@@ -133,8 +178,13 @@ function useEqCanvasController(store) {
         const [resp, spec, gr] = await Promise.all([st.fetchResponseCurve(), st.fetchSpectrumData(), st.fetchBandGR()])
         if (!active) return
         if (resp) {
-          responseCurveRef.current = resp
-          setResponsePaths(responseToPaths(resp, store.getState().dbZoom))
+          // The engine draws every Spectral band as its plain biquad. On Core the
+          // display shows what the Core renders instead (eqCoreSpectral.js); the
+          // hover readout and click-to-add use the same trace. Legacy: untouched.
+          const now2 = store.getState()
+          const shown = displayResponseCurves(resp, now2)
+          responseCurveRef.current = shown
+          setResponsePaths(responseToPaths(shown, now2.dbZoom))
         }
         if (spec) {
           spectrumDataRef.current = spec
@@ -282,7 +332,7 @@ function useEqCanvasController(store) {
   }, [store])
 
   return {
-    svgRef, bands, dbZoom, selectedBandIndex, analyzerSettings, responsePaths, spectrumPaths,
+    svgRef, bands, dbZoom, selectedBandIndex, coreSpectral, sampleRate, analyzerSettings, responsePaths, spectrumPaths,
     preSpectrumPaths, bandGR, hoverReadout, hoveredIndex, setHoveredIndex,
     handleDragStart, handleSvgMouseDown, handleSvgMouseMove, handleSvgMouseLeave, handleWheel,
   }
@@ -373,6 +423,10 @@ export default function EqDevice({ target, registerApplied, deviceKey }) {
   const c = useEqCanvasController(store)
   const linPhase = useStore(store, (s) => s.linPhase)
   const oversample = useStore(store, (s) => s.oversample)
+  const spectralEngine = useStore(store, (s) => s.spectralEngine)
+  const spectralQuality = useStore(store, (s) => s.spectralQuality)
+  const setSpectralEngine = useStore(store, (s) => s.setSpectralEngine)
+  const setSpectralQuality = useStore(store, (s) => s.setSpectralQuality)
   const setBandParam = useStore(store, (s) => s.setBandParam)
   const setBandChannel = useStore(store, (s) => s.setBandChannel)
   const removeBand = useStore(store, (s) => s.removeBand)
@@ -409,6 +463,23 @@ export default function EqDevice({ target, registerApplied, deviceKey }) {
   const fields = band ? getInspectorFields(band.mode) : []
   const gr = band && c.bandGR ? c.bandGR[idx] : null
 
+  // [EQCore] What the Core engine does with the Spectral bands, from their parameters.
+  const core = isCoreEngine(spectralEngine)
+  const status = useMemo(() => coreSpectralStatus(c.bands), [c.bands])
+  const spectralBand = !!band && Number(band.mode) === 2
+  const activeSpectralCount = c.bands.filter(isActiveSpectral).length
+  const upwardOnCore = core && spectralBand && status.upward.includes(idx)
+  const sharedFrom = core && spectralBand && isActiveSpectral(band) && status.dominant >= 0 && status.dominant !== idx
+    ? status.dominant : -1
+  const isDominantOfMany = core && status.dominant === idx && activeSpectralCount > 1
+  const specHint = sharedFrom >= 0 ? coreSharedHint(sharedFrom) : (isDominantOfMany ? CORE_DOMINANT_HINT : undefined)
+
+  // Re-read the reported latency when anything that moves it changes.
+  const spectralSig = c.bands.map((b) => (isActiveSpectral(b) ? '1' : '0')).join('')
+  const latency = useReportedLatency(
+    target, `${spectralEngine}/${spectralQuality}/${linPhase ? 1 : 0}/${oversample}/${spectralSig}`,
+  )
+
   const bandKnobs = band ? (
     <>
       <div className={styles.knobs} style={{ '--ui-value': color }}>
@@ -421,6 +492,7 @@ export default function EqDevice({ target, registerApplied, deviceKey }) {
         <Knob
           label="Gain" value={band.gain} min={GAIN_MIN} max={GAIN_MAX} unit="dB" defaultValue={0} size={44} width={64}
           bipolar formatOptions={{ signed: true }}
+          hint={core && spectralBand ? CORE_GAIN_HINT : undefined}
           onChange={(v) => setBandParam(idx, 'gain', Math.round(v * 10) / 10)}
           onCommit={(v) => setBandParam(idx, 'gain', Math.round(v * 10) / 10)}
           data-param={`b${idx}_gain`}
@@ -450,6 +522,8 @@ export default function EqDevice({ target, registerApplied, deviceKey }) {
           <MoreHorizontal aria-hidden="true" />
         </DeviceMenu>
       </div>
+      {upwardOnCore ? <p className={styles.note} role="note">{CORE_UPWARD_HINT}</p> : null}
+      {core && spectralBand && status.conflict ? <p className={styles.note} role="note">{CORE_CONFLICT_NOTE}</p> : null}
     </>
   ) : (
     <p className={styles.empty}>
@@ -481,6 +555,8 @@ export default function EqDevice({ target, registerApplied, deviceKey }) {
             onMouseLeave={c.handleSvgMouseLeave}
             onBandDragStart={c.handleDragStart}
             onBandContextMenu={onBandContextMenu}
+            coreSpectral={c.coreSpectral}
+            sampleRate={c.sampleRate}
           />
         </div>
       </DisplayWell>
@@ -499,6 +575,21 @@ export default function EqDevice({ target, registerApplied, deviceKey }) {
           <p className={styles.empty}>Set the selected band&apos;s mode to Dynamic or Spectral.</p>
         ) : (
           <div className={styles.dyn}>
+            {spectralBand ? (
+              <div className={styles.spectral}>
+                <SegmentedControl
+                  size="sm" label="Spectral engine" value={core ? 1 : 0} options={ENGINE_OPTIONS}
+                  hint={ENGINE_HINT} data-param="spectral_engine" onChange={(x) => setSpectralEngine(x)}
+                />
+                {core ? (
+                  <SegmentedControl
+                    size="sm" label="Spectral quality" value={Math.round(spectralQuality)} options={QUALITY_OPTIONS}
+                    hint={QUALITY_HINT} data-param="spectral_quality" onChange={(x) => setSpectralQuality(x)}
+                  />
+                ) : null}
+                {latency ? <span className={styles.readout} data-hint={LATENCY_HINT}>{latencyText(latency)}</span> : null}
+              </div>
+            ) : null}
             {fields.map((f) => {
               const isSens = f.key === 'spec_sens'
               const unit = DYN_UNITS[f.key]
@@ -516,11 +607,13 @@ export default function EqDevice({ target, registerApplied, deviceKey }) {
                   bipolar={f.key === 'dyn_range'}
                   formatOptions={f.key === 'dyn_range' ? { signed: true } : undefined}
                   format={isSens ? (v) => formatValue(v * 100, '%') : (unit ? undefined : (v) => v.toFixed(f.decimals))}
+                  hint={spectralBand ? specHint : undefined}
                   onChange={(v) => setBandParam(idx, f.key, roundTo(v, f.decimals))}
                   onCommit={(v) => setBandParam(idx, f.key, roundTo(v, f.decimals))}
                 />
               )
             })}
+            {sharedFrom >= 0 ? <p className={styles.note} role="note">{coreSharedNote(sharedFrom)}</p> : null}
             {inspectorHasGR(band.mode) ? (
               <span className={styles.readout} data-hint="Gain reduction on this band now">
                 GR {formatValue(gr ?? 0, 'dB', { signed: true })}

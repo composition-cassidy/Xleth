@@ -48,6 +48,32 @@
     gap: 2px;
   }
 
+  /* Spectral engine and quality on one row, the latency under them, above a
+     Spectral band's knobs. */
+  .spectral {
+    display: flex;
+    flex: 1 0 100%;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: var(--space-1);
+  }
+
+  /* A short explanatory line (Core engine notes), quieter than a readout. Full
+     width in both the column (Band) and the wrapping row (Dynamics) layouts. */
+  .note {
+    flex: none;
+    box-sizing: border-box;
+    width: 100%;
+    margin: 0;
+    padding: 0 var(--space-1);
+    color: var(--ui-ink-2);
+    font-family: var(--ui-font);
+    font-size: var(--type-11);
+    line-height: 1.4;
+    text-align: center;
+  }
+
   .readout {
     flex: 1 0 100%;
     color: var(--ui-ink);

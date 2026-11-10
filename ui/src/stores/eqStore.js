@@ -52,6 +52,10 @@ export const eqStoreInitializer = (set, get) => ({
   // Global mode state
   linPhase: false,
   oversample: 0,      // 0=off, 1=2x, 2=4x
+  // Spectral bands' renderer: 0 = Legacy (default, every old state), 1 = Core.
+  // spectralQuality is the Core's analysis size (0 Fast, 1 Normal default, 2 High).
+  spectralEngine: 0,
+  spectralQuality: 1,
   preSpectrum: false,  // Pre-EQ spectrum display toggle
   dbZoom: 24,          // Response curve dB half-range: 6, 12, 24, or 48
   bandGR: null,        // Float32Array[16] polled at 30fps
@@ -72,14 +76,14 @@ export const eqStoreInitializer = (set, get) => ({
   },
 
   open(trackId, nodeId, storeKey) {
-    set({ target: { trackId, nodeId, storeKey }, bands: [], responseCurve: null, spectrumData: null, bandGR: null, linPhase: false, oversample: 0, preSpectrum: false, dbZoom: 24, sampleRate: 44100, selectedBandIndex: -1 })
+    set({ target: { trackId, nodeId, storeKey }, bands: [], responseCurve: null, spectrumData: null, bandGR: null, linPhase: false, oversample: 0, spectralEngine: 0, spectralQuality: 1, preSpectrum: false, dbZoom: 24, sampleRate: 44100, selectedBandIndex: -1 })
     get().fetchBands()
     get().fetchGlobalParams()
     get().fetchSampleRate()
   },
 
   close() {
-    set({ target: null, bands: [], responseCurve: null, spectrumData: null, bandGR: null, linPhase: false, oversample: 0, preSpectrum: false, dbZoom: 24, sampleRate: 44100, selectedBandIndex: -1 })
+    set({ target: null, bands: [], responseCurve: null, spectrumData: null, bandGR: null, linPhase: false, oversample: 0, spectralEngine: 0, spectralQuality: 1, preSpectrum: false, dbZoom: 24, sampleRate: 44100, selectedBandIndex: -1 })
   },
 
   async fetchBands() {
@@ -154,6 +158,21 @@ export const eqStoreInitializer = (set, get) => ({
     await window.xleth?.audio?.eqSetGlobalParam(t.trackId, t.nodeId, 'oversample', factor)
   },
 
+  // spectral_engine / spectral_quality: ordinary EQ globals (eqSetGlobalParam).
+  async setSpectralEngine(engine) {
+    const t = get().target
+    if (!t) return
+    set({ spectralEngine: engine })
+    await window.xleth?.audio?.eqSetGlobalParam(t.trackId, t.nodeId, 'spectral_engine', engine)
+  },
+
+  async setSpectralQuality(quality) {
+    const t = get().target
+    if (!t) return
+    set({ spectralQuality: quality })
+    await window.xleth?.audio?.eqSetGlobalParam(t.trackId, t.nodeId, 'spectral_quality', quality)
+  },
+
   async setPreSpectrum(enabled) {
     const t = get().target
     if (!t) return
@@ -167,7 +186,13 @@ export const eqStoreInitializer = (set, get) => ({
     try {
       const raw = await window.xleth?.audio?.eqGetGlobalParams(t.trackId, t.nodeId)
       const obj = typeof raw === 'string' ? JSON.parse(raw) : (raw || {})
-      set({ linPhase: !!obj.linphase, oversample: obj.oversample || 0 })
+      // An engine build without the [EQCore] keys reads as Legacy / Normal.
+      set({
+        linPhase: !!obj.linphase,
+        oversample: obj.oversample || 0,
+        spectralEngine: Number.isFinite(obj.spectral_engine) ? obj.spectral_engine : 0,
+        spectralQuality: Number.isFinite(obj.spectral_quality) ? obj.spectral_quality : 1,
+      })
     } catch {}
   },
 

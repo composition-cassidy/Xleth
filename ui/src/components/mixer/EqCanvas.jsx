@@ -2,6 +2,7 @@ import React, { useMemo, memo, useRef, useState, useEffect } from 'react'
 import { formatValue } from '../../ui-kit'
 import { CHANNEL_META } from '../../stores/eqStore.js'
 import { isFillableBandType, sampleBandResponseDb } from './eqBandCurve.js'
+import { CORE_UPWARD_HINT, coreBandFillDb, coreSpectralStatus, isActiveSpectral } from './eqCoreSpectral.js'
 import {
   SVG_W, SVG_H, PAD_L, PAD_T, PLOT_W, PLOT_H,
   FREQ_MIN, FREQ_MAX, RESPONSE_SIZE,
@@ -102,11 +103,13 @@ const EqGrid = memo(function EqGrid({ dbZoom, rangeDb, h, v }) {
 
 // Numbered band token: a ring in the band's channel colour with its number
 // inside (never colour alone), counter-scaled so it is a true circle.
-function BandNode({ band, index, dbZoom, isSelected, isActive, hPerPx, vPerPx, onDragStart, onContextMenu, onEnter, onLeave }) {
+// inactiveHint: the band is on but does nothing (an upward Spectral band on
+// the Core engine): dimmed like a band that is off, and the hint says why.
+function BandNode({ band, index, dbZoom, isSelected, isActive, inactiveHint, hPerPx, vPerPx, onDragStart, onContextMenu, onEnter, onLeave }) {
   const cx = freqToX(band.freq)
   const cy = dbToY_response(band.gain, dbZoom)
   const colorVar = `var(${channelColorVar(band.channel)})`
-  const opacity = band.enabled ? 1 : 0.35
+  const opacity = band.enabled && !inactiveHint ? 1 : 0.35
   const routed = band.channel && band.channel !== 'stereo'
 
   return (
@@ -114,6 +117,8 @@ function BandNode({ band, index, dbZoom, isSelected, isActive, hPerPx, vPerPx, o
       className={`${styles.node}${isSelected ? ' selected' : ''}`}
       opacity={opacity}
       data-band={index}
+      data-inactive={inactiveHint ? 'core-upward' : undefined}
+      data-hint={inactiveHint || undefined}
       onMouseDown={(e) => { e.preventDefault(); e.stopPropagation(); onDragStart(index, e) }}
       onContextMenu={(e) => { e.preventDefault(); e.stopPropagation(); onContextMenu?.(index, e) }}
       onMouseEnter={() => onEnter(index)}
@@ -151,11 +156,16 @@ function BandNode({ band, index, dbZoom, isSelected, isActive, hPerPx, vPerPx, o
   )
 }
 
+// coreSpectral: the Spectral bands run on the Core engine (spectral_engine = 1).
+// Their fills then show the Core region (capped depth, nothing for an upward
+// band) and an upward band's token is dimmed. Off (the default): every band
+// draws exactly as before.
 export default function EqCanvas({
   svgRef, bands, selectedBandIndex, dbZoom, rangeDb,
   responsePaths, spectrumPaths, preSpectrumPaths, hoverReadout,
   hoveredIndex, onHoverBand,
   onWheel, onMouseDown, onMouseMove, onMouseLeave, onBandDragStart, onBandContextMenu,
+  coreSpectral = false, sampleRate = 48000,
 }) {
   // A plain hover earns a small subtext label; the selected band's numbers live
   // in the device's Band section, large.
@@ -186,8 +196,10 @@ export default function EqCanvas({
     }
     const y0 = dbToY_response(0, dbZoom)
     return bands.map((b, i) => {
-      if (!b.enabled || !isFillableBandType(b.type)) return null
-      const resp = sampleBandResponseDb(b, sampleFreqs)
+      const core = coreSpectral && isActiveSpectral(b)
+      if (!core && (!b.enabled || !isFillableBandType(b.type))) return null
+      const resp = core ? coreBandFillDb(b, sampleFreqs, sampleRate) : sampleBandResponseDb(b, sampleFreqs)
+      if (!resp) return null
       let d = `M ${freqToX(sampleFreqs[0]).toFixed(2)} ${dbToY_response(clamp(resp[0], -dbZoom, dbZoom), dbZoom).toFixed(2)} `
       for (let k = 1; k < RESPONSE_SIZE; k++) {
         d += `L ${freqToX(sampleFreqs[k]).toFixed(2)} ${dbToY_response(clamp(resp[k], -dbZoom, dbZoom), dbZoom).toFixed(2)} `
@@ -197,7 +209,12 @@ export default function EqCanvas({
       }
       return { index: i, d, colorVar: channelColorVar(b.channel) }
     })
-  }, [bands, dbZoom])
+  }, [bands, dbZoom, coreSpectral, sampleRate])
+
+  const upward = useMemo(
+    () => (coreSpectral ? new Set(coreSpectralStatus(bands).upward) : null),
+    [bands, coreSpectral],
+  )
 
   return (
     <div className={styles.wrap} ref={wrapRef}>
@@ -245,6 +262,7 @@ export default function EqCanvas({
             key={i} band={band} index={i} dbZoom={dbZoom}
             isSelected={i === selectedBandIndex}
             isActive={i === hoveredIndex}
+            inactiveHint={upward?.has(i) ? CORE_UPWARD_HINT : null}
             hPerPx={hPerPx} vPerPx={vPerPx}
             onDragStart={onBandDragStart}
             onContextMenu={onBandContextMenu}
