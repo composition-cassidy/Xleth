@@ -75,6 +75,11 @@
 //   over the seeds. A gate counts as passed in the "robust verdict" only if it passes on EVERY seed of the set (the named G1 waiver applies per seed exactly as in the single-seed verdict).
 //   The single-seed verdict is unchanged. TUNING WORK USES DEFAULT + DEV ONLY; the heldout set (101..106) is RESERVED: it is run only for the final confirmation by the person grading.
 //   --seedset cannot be combined with --seed (the set chooses the seeds).
+//   --corr-diag (diagnostic, no gate): G1 @ 150 Hz and G8a @ 500 Hz of RSC-N / RSC-N0 / C1c-N on dev seeds 1..6 with independent AND fully correlated (R == L) noise; see runCorrDiag().
+//
+// RS New engine subjects (after the integration): RSC-F0 / RSC-N0 / RSC-H0 (stereo link 0, focus curve open 20 Hz - 20 kHz = the C1c settings through the effect) are graded on every gate
+//   against C1c-F / C1c-N / C1c-H; RSC-F / RSC-N / RSC-H (RS defaults, stereo link 100 %) are a characterisation set whose G3 / G9a are printed but not graded (Subject::notGraded).
+//   The named G1 100 Hz waiver covers the same tiers as for C1c-*: RSC-N / RSC-H / RSC-N0 / RSC-H0.
 //   --cpu-burst: N instances (default 8) of C1c-N and S3c processed back to back per block in one thread on pink noise, hop phases aligned vs staggered (informational, see runCpuBurst()).
 //
 // ResonanceCore (stage 1, src/dsp/ResonanceCore.*, wired into no effect) is graded through a bench-only adapter:
@@ -242,6 +247,8 @@ struct Options
     int burstInstances = 8;              // --burst-instances N
     double burstSeconds = 60.0;          // --burst-seconds S: signal length of one burst repetition (3 repetitions, aligned / staggered interleaved)
     std::string burstStagger = "preroll";// --burst-stagger preroll|core: how hop phases are staggered (preroll = bench-only, feeds i*hop/N silent samples first)
+    bool corrNoise = false;              // --corr-noise (diagnostic, set by --corr-diag only): both channels of every pink-noise signal use the SAME noise (R == L); default off = independent L/R, output unchanged
+    bool corrDiag = false;               // --corr-diag: G1 @ 150 Hz and G8a @ 500 Hz of RSC-N / RSC-N0 / C1c-N on dev seeds 1..6, with independent and with fully correlated L/R noise (diagnostic, no gate)
 };
 
 static Options g_opt;
@@ -315,7 +322,9 @@ static Stereo makePinkStereo(int n, double rmsDbfs, uint64_t salt)
     Stereo s; s.resize(n);
     for (int c = 0; c < 2; ++c)
     {
-        auto p = makePink(n, salt * 1000ull + static_cast<uint64_t>(c) + 1ull + seedShift());
+        // --corr-diag only: channel 1 reuses channel 0's noise (fully correlated L/R). Default: independent channels.
+        const uint64_t chSeed = g_opt.corrNoise ? 0ull : static_cast<uint64_t>(c);
+        auto p = makePink(n, salt * 1000ull + chSeed + 1ull + seedShift());
         scaleToRmsDb(p, rmsDbfs);
         for (int i = 0; i < n; ++i) s.ch[c][static_cast<size_t>(i)] = static_cast<float>(p[static_cast<size_t>(i)]);
     }
@@ -441,6 +450,7 @@ struct Subject
     bool reference = false;        // calibration subject (--ref-subjects); excluded from the "a real subject passed everything" alarm
     bool gated = false;            // graded by the G1..G6 gate table (evaluated at THIS variant)
     std::string jitterId;          // G4: id of the registered subject whose jitter run is the "sensitive variant" (empty = this subject)
+    std::vector<std::string> notGraded;   // gates ("G3", "G9a") that are PRINTED for this subject but left out of its verdict: a characterisation set (RSC-F / -N / -H run at the RS default stereo link 100 %)
     std::string pairedDefault;     // id of the default-parameter subject this capability variant is paired with
                                    // (empty = none; only paired ones enter the legacy 'capability >= default' sanity line)
     // Optional: build a subject that is not one of the built-in kinds. Returns a prepared processor
@@ -697,6 +707,13 @@ static const std::vector<Subject>& registry()
           s.factory = rsNewEngineFactory(1, true); }
         { auto& s = add("RSCs-H", "RSC", "RS New engine High (sensitive)",   Kind::Custom, Group::Sensitive, "RS hq_engine=New, quality High, depth 100, Hard, selectivity 0");
           s.factory = rsNewEngineFactory(2, true); }
+        // G4 companions of RSC-F0 / RSC-N0 / RSC-H0: the same at stereo link 0 and the focus curve opened to 20 Hz - 20 kHz (the C1s settings through the effect).
+        { auto& s = add("RSCs0-F", "RSC", "RS New engine Fast, link 0 + open curve (sensitive)",   Kind::Custom, Group::Sensitive, "RS hq_engine=New, quality Fast, depth 100, Hard, selectivity 0, stereo_link 0, wc_hp 20, wc_lp 20000");
+          s.factory = rsNewEngineFactory(0, true, true); }
+        { auto& s = add("RSCs0-N", "RSC", "RS New engine Normal, link 0 + open curve (sensitive)", Kind::Custom, Group::Sensitive, "RS hq_engine=New, quality Normal, depth 100, Hard, selectivity 0, stereo_link 0, wc_hp 20, wc_lp 20000");
+          s.factory = rsNewEngineFactory(1, true, true); }
+        { auto& s = add("RSCs0-H", "RSC", "RS New engine High, link 0 + open curve (sensitive)",   Kind::Custom, Group::Sensitive, "RS hq_engine=New, quality High, depth 100, Hard, selectivity 0, stereo_link 0, wc_hp 20, wc_lp 20000");
+          s.factory = rsNewEngineFactory(2, true, true); }
 
         // -------- Capability: max-depth runs (gated) --------
         { auto& s = add("S1c", "S1", "RS Low Latency (capability)", Kind::RsLL, Group::Capability, "depth=100, mode=Hard");
@@ -732,17 +749,26 @@ static const std::vector<Subject>& registry()
         // The Resonance Suppressor with its New High Quality engine (the ResonanceCore wired into the effect), at the capability
         // settings next to C1c-F / -N / -H: depth 100 %, Hard, every other RS parameter at its default. The differences to C1c-* are the
         // effect's, not the core's: the RS default focus curve, the parameter mapping and stereo link 100 % (C1c-*: flat curve, link 0).
-        { auto& s = add("RSC-F", "RSC", "RS New engine capability Fast",   Kind::Custom, Group::Capability, "RS hq_engine=New, quality Fast, depth 100, Hard, other params default");
-          s.capability = true; s.gated = true; s.jitterId = "RSCs-F"; s.factory = rsNewEngineFactory(0, false); }
-        { auto& s = add("RSC-N", "RSC", "RS New engine capability Normal", Kind::Custom, Group::Capability, "RS hq_engine=New, quality Normal, depth 100, Hard, other params default");
-          s.capability = true; s.gated = true; s.jitterId = "RSCs-N"; s.factory = rsNewEngineFactory(1, false); }
-        { auto& s = add("RSC-H", "RSC", "RS New engine capability High",   Kind::Custom, Group::Capability, "RS hq_engine=New, quality High, depth 100, Hard, other params default");
-          s.capability = true; s.gated = true; s.jitterId = "RSCs-H"; s.factory = rsNewEngineFactory(2, false); }
-        // Diagnostic: RSC-N with the C1c settings (stereo link 0, focus curve open to 20 Hz - 20 kHz). Separates the effect's
-        // defaults (curve, link) from the effect layer itself when RSC-N is compared with C1c-N.
-        { auto& s = add("RSC-N0", "RSC", "RS New engine Normal, link 0 + open curve (diagnostic)", Kind::Custom, Group::Capability,
+        // RSC-F / -N / -H are a CHARACTERISATION set (product defaults, stereo link 100 %): their gate rows are printed, but G3 and G9a are
+        // "link-100 characterisation, not graded" (a one-channel resonance is cut on both channels by definition; the link also lengthens the
+        // release). The graded RS New-engine subjects are RSC-F0 / RSC-N0 / RSC-H0 below (link 0, open curve = the C1c settings through the effect).
+        { auto& s = add("RSC-F", "RSC", "RS New engine capability Fast (link 100, characterisation)",   Kind::Custom, Group::Capability, "RS hq_engine=New, quality Fast, depth 100, Hard, other params default");
+          s.capability = true; s.gated = true; s.jitterId = "RSCs-F"; s.notGraded = { "G3", "G9a" }; s.factory = rsNewEngineFactory(0, false); }
+        { auto& s = add("RSC-N", "RSC", "RS New engine capability Normal (link 100, characterisation)", Kind::Custom, Group::Capability, "RS hq_engine=New, quality Normal, depth 100, Hard, other params default");
+          s.capability = true; s.gated = true; s.jitterId = "RSCs-N"; s.notGraded = { "G3", "G9a" }; s.factory = rsNewEngineFactory(1, false); }
+        { auto& s = add("RSC-H", "RSC", "RS New engine capability High (link 100, characterisation)",   Kind::Custom, Group::Capability, "RS hq_engine=New, quality High, depth 100, Hard, other params default");
+          s.capability = true; s.gated = true; s.jitterId = "RSCs-H"; s.notGraded = { "G3", "G9a" }; s.factory = rsNewEngineFactory(2, false); }
+        // Graded RS New-engine subjects: the C1c settings through the effect (stereo link 0, focus curve open to 20 Hz - 20 kHz), graded on ALL
+        // gates against C1c-F / C1c-N / C1c-H. Their G4 companions are RSCs0-F / -N / -H (the same open settings at selectivity 0).
+        { auto& s = add("RSC-F0", "RSC", "RS New engine Fast, link 0 + open curve", Kind::Custom, Group::Capability,
+                        "RS hq_engine=New, quality Fast, depth 100, Hard, stereo_link 0, wc_hp 20, wc_lp 20000");
+          s.capability = true; s.gated = true; s.jitterId = "RSCs0-F"; s.factory = rsNewEngineFactory(0, false, true); }
+        { auto& s = add("RSC-N0", "RSC", "RS New engine Normal, link 0 + open curve", Kind::Custom, Group::Capability,
                         "RS hq_engine=New, quality Normal, depth 100, Hard, stereo_link 0, wc_hp 20, wc_lp 20000");
-          s.capability = true; s.gated = true; s.jitterId = "RSCs-N"; s.factory = rsNewEngineFactory(1, false, true); }
+          s.capability = true; s.gated = true; s.jitterId = "RSCs0-N"; s.factory = rsNewEngineFactory(1, false, true); }
+        { auto& s = add("RSC-H0", "RSC", "RS New engine High, link 0 + open curve", Kind::Custom, Group::Capability,
+                        "RS hq_engine=New, quality High, depth 100, Hard, stereo_link 0, wc_hp 20, wc_lp 20000");
+          s.capability = true; s.gated = true; s.jitterId = "RSCs0-H"; s.factory = rsNewEngineFactory(2, false, true); }
 
         // -------- Reference subjects (opt-in): metric / gate calibration. Registered through Subject::factory. --------
         if (g_opt.refSubjects)
@@ -1161,7 +1187,7 @@ static const std::vector<double>& cleanPsd(const std::string& tag, const Stereo&
 {
     static std::map<std::tuple<std::string, int, int, bool, bool>, std::vector<double>> cache;
     // The seed shift is part of the key: the clean noise depends on it, and a --seedset run grades several seeds in one process (a key without it graded seeds 2.. against seed 1's clean PSD).
-    const auto key = std::make_tuple(tag + "#seed" + std::to_string(g_opt.seed), begin, end, useL, useR);
+    const auto key = std::make_tuple(tag + "#seed" + std::to_string(g_opt.seed) + (g_opt.corrNoise ? "#corr" : ""), begin, end, useL, useR);
     auto it = cache.find(key);
     if (it == cache.end()) it = cache.emplace(key, welchPsd(clean, begin, end, useL, useR)).first;
     return it->second;
@@ -2121,16 +2147,29 @@ struct GateRow
     bool pass2q() const { return nq > 0 && g2q == nq; }
     bool pass1l() const { return nl > 0 && g1l == nl; }
     bool pass2l() const { return nl > 0 && g2l == nl; }
-    bool overall() const { return pass1() && pass2() && pass1q() && pass2q() && pass1l() && pass2l() && g3 && g4 && g5 && g6 && (!g7valid || g7)
-                                  && pass8a() && pass8b() && pass9a() && pass9b(); }
+    // Characterisation subjects (Subject::notGraded): these gates are printed but do not enter the verdict. Empty for every graded subject.
+    std::vector<std::string> notGraded;
+    bool ungraded(const char* gate) const { return std::find(notGraded.begin(), notGraded.end(), std::string(gate)) != notGraded.end(); }
+    bool g3ok() const { return ungraded("G3") || g3; }
+    bool g9aok() const { return ungraded("G9a") || pass9a(); }
+    bool overall() const { return pass1() && pass2() && pass1q() && pass2q() && pass1l() && pass2l() && g3ok() && g4 && g5 && g6 && (!g7valid || g7)
+                                  && pass8a() && pass8b() && g9aok() && pass9b(); }
     // The same verdict with the named G1 waivers applied (every other gate exactly as in overall()).
-    bool overallWaived() const { return pass1w() && pass2() && pass1q() && pass2q() && pass1l() && pass2l() && g3 && g4 && g5 && g6 && (!g7valid || g7)
-                                        && pass8a() && pass8b() && pass9a() && pass9b(); }
+    bool overallWaived() const { return pass1w() && pass2() && pass1q() && pass2q() && pass1l() && pass2l() && g3ok() && g4 && g5 && g6 && (!g7valid || g7)
+                                        && pass8a() && pass8b() && g9aok() && pass9b(); }
     std::string verdict() const
     {
-        if (!overallWaived()) return "FAIL";
-        if (g1Waived == 0) return "PASS";
-        return "PASS (" + std::to_string(g1Waived) + (g1Waived == 1 ? " waiver)" : " waivers)");
+        std::string v;
+        if (!overallWaived()) v = "FAIL";
+        else if (g1Waived == 0) v = "PASS";
+        else v = "PASS (" + std::to_string(g1Waived) + (g1Waived == 1 ? " waiver)" : " waivers)");
+        if (!notGraded.empty())
+        {
+            std::string list;
+            for (const auto& x : notGraded) list += (list.empty() ? "" : ", ") + x;
+            v += " [link-100 characterisation: " + list + " not graded]";
+        }
+        return v;
     }
 };
 
@@ -2153,7 +2192,9 @@ struct KnownLimit
 static const std::vector<KnownLimit>& knownLimits()
 {
     static const std::vector<KnownLimit> kl = {
-        { "G1", { "C1c", "C1c-N", "C1c-H" }, 100, "resonance narrower than one analysis bin (resolution ceiling); see design doc" },
+        // The RSC-* subjects (the same core through the effect) carry the waiver exactly as their C1c-* counterparts: the Normal and High tiers
+        // (RSC-N / RSC-H and the open-curve variants RSC-N0 / RSC-H0). C1c-F is not named, so RSC-F / RSC-F0 are not either.
+        { "G1", { "C1c", "C1c-N", "C1c-H", "RSC-N", "RSC-H", "RSC-N0", "RSC-H0" }, 100, "resonance narrower than one analysis bin (resolution ceiling); see design doc" },
     };
     return kl;
 }
@@ -2185,7 +2226,7 @@ static int countRates(const BenchData& d, const std::string& id, double sr, bool
 // Works for ANY registered subject: everything it needs comes from the Subject record and the BenchData maps.
 static GateRow evaluateGates(const Subject& s, const BenchData& d)
 {
-    GateRow g; g.id = s.id; g.label = s.label;
+    GateRow g; g.id = s.id; g.label = s.label; g.notGraded = s.notGraded;
     int t = 0;
     g.g1 = countRates(d, s.id, 48000.0, true, t);  g.n = t;
     g.g2 = countRates(d, s.id, 48000.0, false, t);
@@ -2378,7 +2419,7 @@ static std::map<std::string, std::pair<double, double>> cpuRatios(const std::vec
 static Table cpuRatioTable(const std::vector<CpuRow>& rows, const std::map<std::string, std::pair<double, double>>& ratios)
 {
     Table t;
-    t.title = "9c. G7 relative CPU (mean % RT / S3 mean % RT, same run)";
+    t.title = "9c. G7 relative CPU (mean % RT / S3 mean % RT, same run; ratios to 4 decimals, G7 compares the unrounded values with <= 1.0)";
     t.note = "Ratio = the subject's mean processBlock time divided by S3's (RS HQ Normal, default parameters) at the same block size, measured in this run. "
              "G7 passes when the ratio is <= 1.00 at BOTH block 128 and block 64. Informational for the existing subjects (it grades future subjects against the current "
              "HQ Normal cost); a ratio reflects one noisy wall-clock measurement per subject, so treat 0.9-1.1 as 'about equal'.";
@@ -2392,7 +2433,7 @@ static Table cpuRatioTable(const std::vector<CpuRow>& rows, const std::map<std::
         if (it == ratios.end()) continue;
         const double m64 = 100.0 * cpuMeanNs(rows, r.id, 64) / (64.0 / 48000.0 * 1.0e9);
         const double m128 = 100.0 * cpuMeanNs(rows, r.id, 128) / (128.0 / 48000.0 * 1.0e9);
-        t.add({ r.id, r.label, num(m64, 3), num(it->second.first, 3), num(m128, 3), num(it->second.second, 3),
+        t.add({ r.id, r.label, num(m64, 3), num(it->second.first, 4), num(m128, 3), num(it->second.second, 4),
                 (it->second.first <= kG7CpuRatio && it->second.second <= kG7CpuRatio) ? "PASS" : "FAIL" });
     }
     return t;
@@ -3045,9 +3086,10 @@ static int runSeedSet(const std::string& cfg, const std::string& cpu, bool isRel
     tCells.header = { "subject", "gate", "cell", "seeds passing", "worst seed", "worst value", "limit", "worst margin", "median value", "min value", "max value", "waived on seeds" };
     Table tSeeds; tSeeds.title = "Seed set " + g_opt.seedset + " - verdict per seed";
     tSeeds.header = { "subject", "seed", "verdict", "failing gates", "run directory" };
-    Table tFocus; tFocus.title = "Seed set " + g_opt.seedset + " - focus cells (G1 150 / 220 Hz, G8a 500 Hz) and gates G4, G5, G9a";
-    tFocus.note = "The cells the tier study asks about. Same columns as the per-cell table; G4 / G5 / G9a rows are the gate level (tightest cell per seed).";
-    tFocus.header = { "subject", "item", "seeds passing", "worst seed", "worst value", "limit", "worst margin", "median value" };
+    Table tFocus; tFocus.title = "Seed set " + g_opt.seedset + " - focus cells (G1 100 / 150 / 220 Hz, G8a 500 Hz) and gates G4, G5, G9a";
+    tFocus.note = "The cells the tier study asks about. Same columns as the per-cell table; G4 / G5 / G9a rows are the gate level (tightest cell per seed). "
+                  "G1 100 Hz: 'worst value' is the RAW residual (dB); 'seeds passing' counts the named waiver (for the subjects that carry it), 'waived on seeds' says on how many seeds it was needed.";
+    tFocus.header = { "subject", "item", "seeds passing", "worst seed", "worst value", "limit", "worst margin", "median value", "waived on seeds" };
     std::vector<std::string> robustLines;
 
     for (const auto& ps : subs)
@@ -3083,19 +3125,35 @@ static int runSeedSet(const std::string& cfg, const std::string& cpu, bool isRel
             agg[gate] = a;
         }
 
+        // Characterisation subjects: Subject::notGraded gates are tabulated (seeds passing, worst cell, ...) but are not part of the robust verdict.
+        auto isUngraded = [&](const std::string& gate) { return std::find(ps.subj.notGraded.begin(), ps.subj.notGraded.end(), gate) != ps.subj.notGraded.end(); };
         std::string failing; bool robust = true; int waiverSeeds = 0;
+        std::string notGradedFailing;   // not-graded gates that did not pass on every seed (information only)
         for (const auto& gate : seedGateOrder())
         {
             const GateAgg& a = agg[gate];
             if (a.g7na) continue;
-            if (static_cast<size_t>(a.seedsPass) != nSeeds || !a.present) { robust = false; failing += (failing.empty() ? "" : "; ") + gate + " (" + std::to_string(a.seedsPass) + "/" + std::to_string(nSeeds) + ")"; }
+            if (static_cast<size_t>(a.seedsPass) != nSeeds || !a.present)
+            {
+                const std::string txt = gate + " (" + std::to_string(a.seedsPass) + "/" + std::to_string(nSeeds) + ")";
+                if (isUngraded(gate)) { notGradedFailing += (notGradedFailing.empty() ? "" : "; ") + txt; continue; }
+                robust = false; failing += (failing.empty() ? "" : "; ") + txt;
+            }
         }
         for (const auto& p : ps.seeds) { bool w = false; for (const auto& c : p.cells) if (c.waived) w = true; if (w) ++waiverSeeds; }
         int seedsPassing = 0;
         for (const auto& p : ps.seeds) if (p.overallWaived) ++seedsPassing;
-        const std::string robustStr = robust ? (waiverSeeds ? "PASS (G1 100 Hz waived on " + std::to_string(waiverSeeds) + "/" + std::to_string(nSeeds) + " seeds)" : "PASS") : "FAIL";
-        tVerdict.add({ ps.subj.id, ps.subj.label, cnt(seedsPassing, static_cast<int>(nSeeds)), robustStr, failing.empty() ? "none" : failing, waiverSeeds ? cnt(waiverSeeds, static_cast<int>(nSeeds)) : "none" });
-        robustLines.push_back(ps.subj.id + ": " + robustStr + (failing.empty() ? "" : " - failing: " + failing));
+        std::string robustStr = robust ? (waiverSeeds ? "PASS (G1 100 Hz waived on " + std::to_string(waiverSeeds) + "/" + std::to_string(nSeeds) + " seeds)" : "PASS") : "FAIL";
+        if (!ps.subj.notGraded.empty())
+        {
+            std::string list;
+            for (const auto& x : ps.subj.notGraded) list += (list.empty() ? "" : ", ") + x;
+            robustStr += " [link-100 characterisation: " + list + " not graded]";
+        }
+        const std::string failingTxt = (failing.empty() ? std::string("none") : failing)
+                                       + (notGradedFailing.empty() ? std::string() : " | not graded (characterisation): " + notGradedFailing);
+        tVerdict.add({ ps.subj.id, ps.subj.label, cnt(seedsPassing, static_cast<int>(nSeeds)), robustStr, failingTxt, waiverSeeds ? cnt(waiverSeeds, static_cast<int>(nSeeds)) : "none" });
+        robustLines.push_back(ps.subj.id + ": " + robustStr + (failing.empty() ? "" : " - failing: " + failing) + (notGradedFailing.empty() ? "" : " - not graded, would fail: " + notGradedFailing));
 
         for (const auto& p : ps.seeds)
         {
@@ -3103,7 +3161,7 @@ static int runSeedSet(const std::string& cfg, const std::string& cpu, bool isRel
             for (const auto& gate : seedGateOrder())
             {
                 bool any = false;
-                if (!gateAllPass(p.cells, gate, &any) && !(gate == "G7" && !any)) f += (f.empty() ? "" : "; ") + gate;
+                if (!gateAllPass(p.cells, gate, &any) && !(gate == "G7" && !any)) f += (f.empty() ? "" : "; ") + gate + (isUngraded(gate) ? " (not graded)" : "");
             }
             tSeeds.add({ ps.subj.id, std::to_string(p.seed), p.verdict, f.empty() ? "none" : f, "runs/" + fs::path(caps[&p - ps.seeds.data()].runDir).filename().string() });
         }
@@ -3113,6 +3171,7 @@ static int runSeedSet(const std::string& cfg, const std::string& cpu, bool isRel
             const GateAgg& a = agg[gate];
             if (a.g7na) { tGates.add({ ps.subj.id, gate, "n/a", "n/a", "-", "-", "-", "-", "-", "-", "n/a (--no-cpu)" }); continue; }
             const bool ok = a.present && static_cast<size_t>(a.seedsPass) == nSeeds;
+            const std::string robustCell = isUngraded(gate) ? std::string("link-100 characterisation, not graded (") + (ok ? "would PASS" : "would FAIL") + ")" : std::string(ok ? "PASS" : "FAIL");
             std::vector<std::string> row = { ps.subj.id, gate, cnt(a.seedsPass, static_cast<int>(nSeeds)), cnt(a.seedsPassRaw, static_cast<int>(nSeeds)) };
             if (a.hasMargin)
             {
@@ -3120,7 +3179,7 @@ static int runSeedSet(const std::string& cfg, const std::string& cpu, bool isRel
                 row.push_back(num(a.worstCell.margin(), a.worstCell.hi < 0.01 ? 6 : 3)); row.push_back(fmtVal(medianOf(a.tight)));
             }
             else { for (int q = 0; q < 6; ++q) row.push_back(gate == "G6" ? "-" : "no data"); }
-            row.push_back(ok ? "PASS" : "FAIL");
+            row.push_back(robustCell);
             tGates.add(row);
             if (a.waivedSeeds > 0)
             {
@@ -3156,15 +3215,15 @@ static int runSeedSet(const std::string& cfg, const std::string& cpu, bool isRel
                                              fmtLimit(first), worst ? num(worst->margin(), worst->hi < 0.01 ? 6 : 3) : "-", first.binary ? "-" : fmtVal(medianOf(vals)),
                                              first.binary ? "-" : fmtVal(mn), first.binary ? "-" : fmtVal(mx), waivedN ? cnt(waivedN, static_cast<int>(nSeeds)) : "none" };
             tCells.add(row);
-            const bool focus = (key.first == "G1" && (key.second == "150 Hz" || key.second == "220 Hz")) || (key.first == "G8a" && key.second.rfind("500 Hz", 0) == 0);
-            if (focus) tFocus.add({ ps.subj.id, key.first + " " + key.second, row[3], row[4], row[5], row[6], row[7], row[8] });
+            const bool focus = (key.first == "G1" && (key.second == "100 Hz" || key.second == "150 Hz" || key.second == "220 Hz")) || (key.first == "G8a" && key.second.rfind("500 Hz", 0) == 0);
+            if (focus) tFocus.add({ ps.subj.id, key.first + " " + key.second, row[3], row[4], row[5], row[6], row[7], row[8], row[11] });
         }
         for (const char* gate : { "G4", "G5", "G9a" })
         {
             const GateAgg& a = agg[gate];
             if (!a.hasMargin) continue;
             tFocus.add({ ps.subj.id, std::string(gate) + " (gate; tightest cell " + a.worstCell.name + ")", cnt(a.seedsPass, static_cast<int>(nSeeds)), std::to_string(a.worstSeed), fmtVal(a.worstCell.value),
-                         fmtLimit(a.worstCell), num(a.worstCell.margin(), a.worstCell.hi < 0.01 ? 6 : 3), fmtVal(medianOf(a.tight)) });
+                         fmtLimit(a.worstCell), num(a.worstCell.margin(), a.worstCell.hi < 0.01 ? 6 : 3), fmtVal(medianOf(a.tight)), "-" });
         }
     }
 
@@ -3189,7 +3248,8 @@ static int runSeedSet(const std::string& cfg, const std::string& cpu, bool isRel
     md << "- Seeds: {" << seedList << "} (a seed N shifts every generated noise seed by N x 1000003; seed 0 = the original signals)\n";
     md << "- **Seed protocol:** tuning work uses the `default` and `dev` (seeds 1..6) sets only. The `heldout` set (seeds 101..106) is RESERVED: it is run only for the final confirmation by the person grading, "
           "and no held-out result is reported by tuning work.\n";
-    md << "- Robust verdict: a gate counts as passed only if it passes on EVERY seed of the set; the named G1 waiver at 100 Hz (C1c / C1c-N / C1c-H) applies per seed exactly as in the single-seed verdict. "
+    md << "- Robust verdict: a gate counts as passed only if it passes on EVERY seed of the set; the named G1 waiver at 100 Hz (C1c / C1c-N / C1c-H and RSC-N / RSC-H / RSC-N0 / RSC-H0) applies per seed exactly as in the single-seed verdict. "
+          "RSC-F / RSC-N / RSC-H (stereo link 100 %) are a characterisation set: their G3 and G9a rows are printed but not graded. "
           "Thresholds and metric definitions are unchanged.\n";
     md << "- Regrade check: " << (drift == 0 ? "the per-cell regrade reproduces every gate flag of every per-seed run" : "**" + std::to_string(drift) + " regrade mismatches (see warnings)**") << "\n";
     md << "- Per-seed full runs (CSV, summary.md, WAVs): `runs/`\n\n";
@@ -3199,7 +3259,7 @@ static int runSeedSet(const std::string& cfg, const std::string& cpu, bool isRel
     logf("---- ROBUST VERDICT, seed set %s {%s} ----", g_opt.seedset.c_str(), seedList.c_str());
     for (const auto& l : robustLines) logf("%s", l.c_str());
     for (const auto& r : tFocus.rows)
-        logf("focus %-6s %-44s pass %-4s worst seed %-4s value %-8s limit %-14s margin %-9s median %s", r[0].c_str(), r[1].c_str(), r[2].c_str(), r[3].c_str(), r[4].c_str(), r[5].c_str(), r[6].c_str(), r[7].c_str());
+        logf("focus %-7s %-44s pass %-4s worst seed %-4s value %-8s limit %-14s margin %-9s median %-8s waived %s", r[0].c_str(), r[1].c_str(), r[2].c_str(), r[3].c_str(), r[4].c_str(), r[5].c_str(), r[6].c_str(), r[7].c_str(), r[8].c_str());
     logf("wrote seedset_*.csv and summary.md to %s", setDir.string().c_str());
     logf("done. non-finite=%d warnings=%d", g_nonFinite, g_warnings);
     return (rc == 0 && g_nonFinite == 0) ? 0 : 1;
@@ -3375,6 +3435,125 @@ static int runCpuBurst(const std::string& cfg, const std::string& cpu, bool isRe
 // main
 // ============================================================================
 
+// ============================================================================
+// Correlated-noise diagnostic (--corr-diag). NOT a gate, NOT a verdict: no threshold or metric definition is touched.
+// ============================================================================
+//
+// Question: with the RS default stereo link 100 %, RSC-N cuts on max(L, R) of two detectors. On independent L/R noise that is the max of two independent estimates,
+// which raises sensitivity and so may be the reason G1 @ 150 Hz and G8a @ 500 Hz look better than for the link-0 core (C1c-N / RSC-N0) on the dev seeds. With FULLY
+// CORRELATED L/R noise (the same noise in both channels, the planted bell in both) the two detectors see identical input, so max(L, R) = L and the link cannot add anything.
+// If RSC-N's advantage over RSC-N0 / C1c-N survives there, it is not the independent-noise effect.
+// Cells: G1 @ 150 Hz (scan signal A at f0 = 150 Hz, in-window residual vs clean, limit 0.30 x ideal) and G8a @ 500 Hz (T1 f0 = 500 Hz, D = 300 and 1000 ms, t50 vs 100 ms).
+// Subjects: RSC-N (link 100), RSC-N0 (link 0, open curve), C1c-N (the core). Normal tier. Dev seeds 1..6. Both noise conditions are run in the same process
+// (the cleanPsd cache and the signal generators key on the condition). Everything else (metrics, alignment, processors) is exactly the graded run's.
+
+static int runCorrDiag(const std::string& cfg, const std::string& cpu, bool isRelease, const std::string& hash, const std::string& stamp)
+{
+    const fs::path dir = fs::path(g_opt.outBase) / (stamp + "_" + hash + "_corrdiag" + (g_opt.quick ? "_quick" : ""));
+    std::error_code ec;
+    fs::create_directories(dir, ec);
+    if (ec) { logf("cannot create %s", dir.string().c_str()); return 3; }
+    const double SR = 48000.0;
+    const std::vector<uint64_t> seeds = { 1, 2, 3, 4, 5, 6 };
+    const std::vector<std::string> ids = { "RSC-N", "RSC-N0", "C1c-N" };
+    std::vector<Subject> subs;
+    for (const auto& id : ids)
+    {
+        bool found = false;
+        for (const auto& s : capabilitySubjects()) if (s.id == id) { subs.push_back(s); found = true; }
+        if (!found) { logf("subject %s is not registered", id.c_str()); return 3; }
+    }
+    logf("--corr-diag: G1 @ 150 Hz and G8a @ 500 Hz (D 300 / 1000) of %s / %s / %s, dev seeds 1..6, independent vs fully correlated L/R noise", ids[0].c_str(), ids[1].c_str(), ids[2].c_str());
+
+    struct Res { double g1 = 0; double t50[2] = { 0, 0 }; };
+    std::map<std::tuple<int, uint64_t, std::string>, Res> res;   // (corr, seed, subject)
+    const int nA = static_cast<int>(sigSeconds() * SR);
+    const double ideal150 = idealBoostDb(SR, 150.0), limit150 = kG1ResIdealFrac * ideal150;
+    const std::array<int, 2> durs = { 300, 1000 };
+    for (int corr = 0; corr < 2; ++corr)
+        for (uint64_t seed : seeds)
+        {
+            g_opt.corrNoise = corr != 0;
+            g_opt.seed = seed;
+            logf("=== corr-diag: %s noise, seed %llu ===", corr ? "CORRELATED" : "independent", static_cast<unsigned long long>(seed));
+            const Stereo base = makePinkStereo(nA, -20.0, 1);
+            const Stereo sig = makeResonant(base, SR, 150.0, true, true);
+            for (const auto& s : subs)
+            {
+                Fx fx = makeFx(s, SR, 150.0, false, kPrepareBlock);
+                const Stereo out = renderStd(fx, sig);
+                const auto a = align(sig, out, measureLatency(s, SR).measured, SR);
+                res[{ corr, seed, s.id }].g1 = suppressionAccuracy(a, "C@48000", base, SR, 150.0).res.inWindow;
+            }
+            for (size_t di = 0; di < durs.size(); ++di)
+            {
+                const int durMs = durs[di];
+                TvCase tc = makeTvCase(500.0, durMs, SR);
+                int kMin = 0, kMax = 0; tvFrameRange(durMs, SR, kMin, kMax);
+                const auto eClean = tvWindowEnergy(tc.clean, tc.events, kMin, kMax, SR, 500.0);
+                const auto ePass  = tvWindowEnergy(tc.sig,   tc.events, kMin, kMax, SR, 500.0);
+                Planted pl; pl.f0 = 500.0; pl.left = true; pl.right = true; pl.cleanRef = &tc.clean;
+                for (const auto& ev : tc.events) pl.events.emplace_back(ev.onset, ev.offset);
+                for (const auto& s : subs)
+                {
+                    Fx fx = makeFx(s, SR, 500.0, false, kPrepareBlock, &pl);
+                    const Stereo out = renderStd(fx, tc.sig);
+                    const auto a = align(tc.sig, out, measureLatency(s, SR).measured, SR);
+                    const auto eOut = tvWindowEnergy(a.out, tc.events, kMin, kMax, SR, 500.0);
+                    const TvMetrics m = tvAnalyse(eOut, eClean, ePass, durMs, kMin, SR);
+                    res[{ corr, seed, s.id }].t50[di] = m.t50 < 0.0 ? kNeverValue : m.t50;
+                }
+            }
+        }
+    g_opt.corrNoise = false;
+    g_opt.seed = 0;
+
+    Table t; t.title = "Correlated-noise diagnostic: G1 @ 150 Hz and G8a @ 500 Hz, Normal tier, dev seeds 1..6";
+    t.note = "G1 @ 150 Hz: in-window residual vs clean (dB; gate limit " + num(limit150, 3) + " dB = 0.30 x ideal " + num(ideal150, 3) + "; lower = more of the resonance removed). G8a @ 500 Hz: t50 (ms; gate limit "
+             + num(kG8aT50Ms, 0) + " ms; 'never' = " + num(kNeverValue, 0) + ") for D = 300 and 1000 ms. 'independent' = the graded run's noise; 'correlated' = the same noise in L and R. "
+             "RSC-N = stereo link 100 % (product default), RSC-N0 = link 0 + open curve, C1c-N = the core directly. Diagnostic only: nothing here is a gate.";
+    t.header = { "noise", "seed", "subject", "G1 150 Hz (dB)", "G1 pass", "G8a 500 Hz D300 t50 (ms)", "G8a D300 pass", "G8a 500 Hz D1000 t50 (ms)", "G8a D1000 pass" };
+    for (int corr = 0; corr < 2; ++corr)
+        for (uint64_t seed : seeds)
+            for (const auto& s : subs)
+            {
+                const Res& r = res[{ corr, seed, s.id }];
+                const bool p1 = r.g1 >= kG1ResFloorDb && r.g1 <= limit150;
+                t.add({ corr ? "correlated" : "independent", std::to_string(seed), s.id, num(r.g1, 3), p1 ? "P" : "F",
+                        fmtVal(r.t50[0]), r.t50[0] <= kG8aT50Ms ? "P" : "F", fmtVal(r.t50[1]), r.t50[1] <= kG8aT50Ms ? "P" : "F" });
+            }
+    // Aggregates per (noise, subject): mean / worst G1 and t50, seeds passing.
+    Table agg; agg.title = "Aggregate over the 6 dev seeds";
+    agg.header = { "noise", "subject", "G1 150 Hz mean (dB)", "G1 worst (dB)", "G1 seeds passing", "t50 D300 mean (ms)", "t50 D300 worst (ms)", "G8a D300 seeds passing",
+                   "t50 D1000 mean (ms)", "t50 D1000 worst (ms)", "G8a D1000 seeds passing" };
+    for (int corr = 0; corr < 2; ++corr)
+        for (const auto& s : subs)
+        {
+            double g1s = 0, g1w = -1e9, a3 = 0, w3 = -1e9, a10 = 0, w10 = -1e9; int p1 = 0, p3 = 0, p10 = 0;
+            for (uint64_t seed : seeds)
+            {
+                const Res& r = res[{ corr, seed, s.id }];
+                g1s += r.g1; g1w = std::max(g1w, r.g1); a3 += r.t50[0]; w3 = std::max(w3, r.t50[0]); a10 += r.t50[1]; w10 = std::max(w10, r.t50[1]);
+                if (r.g1 >= kG1ResFloorDb && r.g1 <= limit150) ++p1;
+                if (r.t50[0] <= kG8aT50Ms) ++p3;
+                if (r.t50[1] <= kG8aT50Ms) ++p10;
+            }
+            const double n = static_cast<double>(seeds.size());
+            agg.add({ corr ? "correlated" : "independent", s.id, num(g1s / n, 3), num(g1w, 3), cnt(p1, 6), fmtVal(a3 / n), fmtVal(w3), cnt(p3, 6), fmtVal(a10 / n), fmtVal(w10), cnt(p10, 6) });
+        }
+    std::ofstream(dir / "corr_diag.csv", std::ios::binary) << csvSafe(t).csv();
+    std::ofstream(dir / "corr_diag_aggregate.csv", std::ios::binary) << csvSafe(agg).csv();
+    std::ofstream(dir / "summary.md", std::ios::binary)
+        << "# RS bench - correlated-noise diagnostic (--corr-diag)\n\n- Git: `" << hash << "`\n- Build: **" << cfg << "**" << (isRelease ? "" : "  **<-- NOT RELEASE**") << "\n- CPU: " << cpu << "\n\n"
+        << agg.markdown() << t.markdown();
+    logf("---- corr-diag aggregate (G1 limit %.3f dB, G8a limit %.0f ms) ----", limit150, kG8aT50Ms);
+    for (const auto& r : agg.rows)
+        logf("%-11s %-7s | G1 150 Hz mean %7s worst %7s pass %s | G8a D300 t50 mean %7s worst %7s pass %s | D1000 mean %7s worst %7s pass %s",
+             r[0].c_str(), r[1].c_str(), r[2].c_str(), r[3].c_str(), r[4].c_str(), r[5].c_str(), r[6].c_str(), r[7].c_str(), r[8].c_str(), r[9].c_str(), r[10].c_str());
+    logf("wrote corr_diag.csv, corr_diag_aggregate.csv and summary.md to %s", dir.string().c_str());
+    return g_nonFinite == 0 ? 0 : 1;
+}
+
 static bool parseArgs(int argc, char** argv)
 {
     for (int i = 1; i < argc; ++i)
@@ -3391,6 +3570,7 @@ static bool parseArgs(int argc, char** argv)
         else if (a == "--cpu-worst") g_opt.cpuWorst = true;
         else if (a == "--d1-reconcile") g_opt.d1Reconcile = true;
         else if (a == "--cpu-burst") g_opt.cpuBurst = true;
+        else if (a == "--corr-diag") g_opt.corrDiag = true;
         else if (a == "--burst-instances" && i + 1 < argc) g_opt.burstInstances = std::max(1, std::atoi(argv[++i]));
         else if (a == "--burst-seconds" && i + 1 < argc) g_opt.burstSeconds = std::max(2.0, std::atof(argv[++i]));
         else if (a == "--burst-stagger" && i + 1 < argc)
@@ -3422,6 +3602,8 @@ static bool parseArgs(int argc, char** argv)
     }
     if (g_opt.cpuOnly && g_opt.noCpu) { std::printf("[RSBench] --cpu-only and --no-cpu are mutually exclusive\n"); return false; }
     if (!g_opt.seedset.empty() && g_opt.seed != 0) { std::printf("[RSBench] --seedset and --seed are mutually exclusive (the set chooses the seeds)\n"); return false; }
+    if (g_opt.corrDiag && (!g_opt.seedset.empty() || g_opt.seed != 0 || g_opt.cpuOnly || g_opt.cpuWorst || g_opt.d1Reconcile || g_opt.cpuBurst))
+    { std::printf("[RSBench] --corr-diag chooses its own seeds (dev 1..6) and cannot be combined with --seedset / --seed / --cpu-only / --cpu-worst / --d1-reconcile / --cpu-burst\n"); return false; }
     if (!g_opt.seedset.empty() && (g_opt.cpuOnly || g_opt.cpuWorst || g_opt.d1Reconcile || g_opt.cpuBurst))
     { std::printf("[RSBench] --seedset grades the full run; it cannot be combined with --cpu-only / --cpu-worst / --d1-reconcile / --cpu-burst\n"); return false; }
     return true;
@@ -3488,6 +3670,7 @@ int main(int argc, char** argv)
     if (g_opt.cpuWorst) return runCpuWorst(cfg, cpu, isRelease, hash, stamp);
     if (g_opt.d1Reconcile) return runD1Reconcile(hash, stamp);
     if (g_opt.cpuBurst) return runCpuBurst(cfg, cpu, isRelease, hash, stamp);
+    if (g_opt.corrDiag) return runCorrDiag(cfg, cpu, isRelease, hash, stamp);
     if (!g_opt.seedset.empty()) return runSeedSet(cfg, cpu, isRelease, hash, stamp);
     return runGradedRun(cfg, cpu, isRelease, hash, stamp, nullptr);
 }
@@ -4301,7 +4484,8 @@ static int runGradedRun(const std::string& cfg, const std::string& cpu, bool isR
                  "G4: sensitive-variant jitter (signal C, subject's registered sensitive variant): std all <= 0.6 dB AND isolated-cell fraction all <= 1e-3. "
                  "G5: pre-echo with the mask engaged (D2): broadband E_out/E_in <= +1.0 dB AND band (f0 +/- 1/3 oct) E_out/E_in <= +1.0 dB. "
                  "G6: latency measured == reported at 48 and 44.1 kHz and unchanged across block schedules. "
-                 "G7: mean % RT divided by S3's mean % RT in the same run <= 1.00 at block 128 AND block 64 (cell shows ratio @128 / @64; 'n/a' with --no-cpu). "
+                 "G7: mean % RT divided by S3's mean % RT in the same run <= 1.00 at block 128 AND block 64 (kG7CpuRatio; the UNROUNDED ratios are compared, strictly, with no tolerance; cell shows ratio @128 / @64 to 4 decimals; 'n/a' with --no-cpu). "
+                 "Subjects marked 'link-100 characterisation' (RSC-F / RSC-N / RSC-H, RS default stereo link 100 %) print G3 and G9a but those two gates are not graded for them; RSC-F0 / RSC-N0 / RSC-H0 (link 0, open curve) are graded on every gate. "
                  "G8a: time-varying resonance T1 (table 11), reaction: t50 <= 100 ms for D = 300 and 1000 ms at every f0 (count of 6; 'never' fails). "
                  "G8b: leak_fraction <= 0.5 (D = 300) / <= 0.3 (D = 1000) at every f0 (count of 6). "
                  "G9a: release, the cut is gone 500 ms after the offset: |r_off(500)| <= 1.0 dB at every (f0, D) (count of 9). G9b: |r_off(1000)| <= 0.5 dB at every (f0, D) (count of 9). "
@@ -4332,17 +4516,20 @@ static int runGradedRun(const std::string& cfg, const std::string& cpu, bool isR
         const auto& g = gateRows[gi];
         const bool isRef = [&] { for (const auto& rs : scanSubjects) if (rs.id == g.id) return rs.reference; return false; }();
         if (g.overall() && !isRef) ++nOverall;
-        const std::string g3cell = g.g3valid ? pf(g.g3) + " (R " + (g.g3R ? "P" : "F") + ", L " + cnt(g.g3Lpass, g.g3Ln) + ")" : "FAIL (no data)";
-        const std::string g7cell = g.g7valid ? pf(g.g7) + " " + num(g.g7r128, 2) + " / " + num(g.g7r64, 2) : "n/a";
+        const char* kCharTag = " [link-100 characterisation, not graded]";
+        const std::string g3cell = (g.g3valid ? pf(g.g3) + " (R " + (g.g3R ? "P" : "F") + ", L " + cnt(g.g3Lpass, g.g3Ln) + ")" : "FAIL (no data)") + (g.ungraded("G3") ? kCharTag : "");
+        const std::string g9acell = pf(g.pass9a()) + " " + cnt(g.g9a, g.n9a) + (g.ungraded("G9a") ? kCharTag : "");
+        // G7 is shown with 4 decimals: the gate compares the UNROUNDED ratio with 1.0 (no tolerance), so a cell that reads "1.00" at two decimals can be 1.003 (FAIL) or 0.996 (PASS).
+        const std::string g7cell = g.g7valid ? pf(g.g7) + " " + num(g.g7r128, 4) + " / " + num(g.g7r64, 4) : "n/a";
         const std::string g1cell = pf(g.pass1()) + " " + cnt(g.g1, g.n) + (g.g1Waived > 0 ? " (raw; +" + inum(g.g1Waived) + " WAIVED, known limit)" : std::string());
         tGate.add({ g.id, g.label, g1cell, pf(g.pass2()) + " " + cnt(g.g2, g.n),
                     pf(g.pass1q()) + " " + cnt(g.g1q, g.nq), pf(g.pass2q()) + " " + cnt(g.g2q, g.nq), pf(g.pass1l()) + " " + cnt(g.g1l, g.nl), pf(g.pass2l()) + " " + cnt(g.g2l, g.nl),
                     g3cell, g.g4valid ? pf(g.g4) : "FAIL (no data)", g.g5valid ? pf(g.g5) : "FAIL (no data)", pf(g.g6), g7cell,
-                    pf(g.pass8a()) + " " + cnt(g.g8a, g.n8a), pf(g.pass8b()) + " " + cnt(g.g8b, g.n8b), pf(g.pass9a()) + " " + cnt(g.g9a, g.n9a), pf(g.pass9b()) + " " + cnt(g.g9b, g.n9b),
+                    pf(g.pass8a()) + " " + cnt(g.g8a, g.n8a), pf(g.pass8b()) + " " + cnt(g.g8b, g.n8b), g9acell, pf(g.pass9b()) + " " + cnt(g.g9b, g.n9b),
                     g.verdict() + (g.g7valid ? "" : " (G7 n/a)") });
         tGateDetail.add({ g.id, cnt(g.g1_44, g.n44), cnt(g.g2_44, g.n44), pf(g.g3R), cnt(g.g3Lpass, g.g3Ln), num(g.g3RRes, 2), num(g.g3RDev, 2), num(g.g3LRes, 2), num(g.g3LDev, 2),
                           g.g4Id, num(g.g4Std, 3), num(g.g4Iso, 6), num(g.g5Bb, 3), num(g.g5Band, 3), g.g6detail,
-                          g.g7valid ? num(g.g7r128, 3) : "n/a", g.g7valid ? num(g.g7r64, 3) : "n/a", g.tauSummary });
+                          g.g7valid ? num(g.g7r128, 4) : "n/a", g.g7valid ? num(g.g7r64, 4) : "n/a", g.tauSummary });
         tGateCsv.add({ g.id, g.label, inum(g.g1), inum(g.n), pf(g.pass1()), inum(g.g2), inum(g.n), pf(g.pass2()), num(g.g3RRes, 4), num(g.g3RDev, 4), num(g.g3LDev, 4), pf(g.g3),
                        g.g4Id, num(g.g4Std, 4), num(g.g4Iso, 6), pf(g.g4), num(g.g5Bb, 4), num(g.g5Band, 4), pf(g.g5), g.g6detail, pf(g.g6), pf(g.overall()),
                        inum(g.g1_44), inum(g.g2_44), inum(g.n44),
@@ -4380,14 +4567,57 @@ static int runGradedRun(const std::string& cfg, const std::string& cpu, bool isR
              g.id.c_str(), pf(g.pass1()).c_str(), cnt(g.g1, g.n).c_str(), pf(g.pass2()).c_str(), cnt(g.g2, g.n).c_str(),
              pf(g.pass1q()).c_str(), cnt(g.g1q, g.nq).c_str(), pf(g.pass2q()).c_str(), cnt(g.g2q, g.nq).c_str(),
              pf(g.pass1l()).c_str(), cnt(g.g1l, g.nl).c_str(), pf(g.pass2l()).c_str(), cnt(g.g2l, g.nl).c_str(),
-             pf(g.g3).c_str(), g.g3R ? "P" : "F", cnt(g.g3Lpass, g.g3Ln).c_str(), pf(g.g4).c_str(), pf(g.g5).c_str(), pf(g.g6).c_str(),
-             g.g7valid ? (pf(g.g7) + " " + num(g.g7r128, 2) + "/" + num(g.g7r64, 2)).c_str() : "n/a",
+             (pf(g.g3) + (g.ungraded("G3") ? "*" : "")).c_str(), g.g3R ? "P" : "F", cnt(g.g3Lpass, g.g3Ln).c_str(), pf(g.g4).c_str(), pf(g.g5).c_str(), pf(g.g6).c_str(),
+             g.g7valid ? (pf(g.g7) + " " + num(g.g7r128, 4) + "/" + num(g.g7r64, 4)).c_str() : "n/a",
              pf(g.pass8a()).c_str(), cnt(g.g8a, g.n8a).c_str(), pf(g.pass8b()).c_str(), cnt(g.g8b, g.n8b).c_str(),
-             pf(g.pass9a()).c_str(), cnt(g.g9a, g.n9a).c_str(), pf(g.pass9b()).c_str(), cnt(g.g9b, g.n9b).c_str(), g.verdict().c_str(), g.tauSummary.c_str());
+             (pf(g.pass9a()) + (g.ungraded("G9a") ? "*" : "")).c_str(), cnt(g.g9a, g.n9a).c_str(), pf(g.pass9b()).c_str(), cnt(g.g9b, g.n9b).c_str(), g.verdict().c_str(), g.tauSummary.c_str());
     }
+    for (const auto& g : gateRows)
+        if (!g.notGraded.empty())
+        {
+            logf("* %s: link-100 characterisation, not graded: G3 and G9a are printed for this subject but left out of its verdict (RS default stereo link 100 %%: a one-channel resonance is cut on both channels by definition; the link lengthens the release). Graded counterpart: %sF0/N0/H0 against C1c-F/N/H.", g.id.c_str(), "RSC-");
+            break;
+        }
     for (const auto& g : gateRows)
         for (const auto& w : g.waivers)
             logf("KNOWN LIMIT (waived): %s  [raw G1 stays %s]", w.c_str(), cnt(g.g1, g.n).c_str());
+
+    // G7 definition, verbatim from the constants above (nothing is changed, this only prints what is graded).
+    logf("G7 definition: ratio = subject mean processBlock ns / %s mean ns, same run, same block size; PASS iff ratio(@128) <= %.4f AND ratio(@64) <= %.4f (kG7CpuRatio, strict comparison of the UNROUNDED ratios, no tolerance). Cells print @128 / @64 to 4 decimals.",
+         kG7RefId, kG7CpuRatio, kG7CpuRatio);
+
+    // RSC-* vs C1c-* at the named G1 cell (100 Hz): raw residual next to the C1c value and the waiver status. Printed only for pairs that were both run.
+    std::string rsc100Md;
+    {
+        struct Pair { const char* rsc; const char* c1c; };
+        const Pair pairs[] = { { "RSC-F", "C1c-F" }, { "RSC-F0", "C1c-F" }, { "RSC-N", "C1c-N" }, { "RSC-N0", "C1c-N" }, { "RSC-H", "C1c-H" }, { "RSC-H0", "C1c-H" } };
+        auto cellOf = [&](const char* id, double& raw, bool& waived, bool& inList) -> bool
+        {
+            const auto it = bd.residual.find(std::string(id) + "@48000");
+            const auto ideal = bd.ideal.find("48000");
+            if (it == bd.residual.end() || ideal == bd.ideal.end() || it->second.find(100) == it->second.end()) return false;
+            raw = it->second.at(100).inWindow;
+            const bool pass = g1Cell(it->second.at(100), ideal->second.at(100));
+            inList = false;
+            for (const auto& kl : knownLimits())
+                if (std::string(kl.gate) == "G1" && kl.f0 == 100 && std::find(kl.subjects.begin(), kl.subjects.end(), std::string(id)) != kl.subjects.end()) inList = true;
+            waived = !pass && inList;
+            return true;
+        };
+        auto status = [](bool pass, bool waived, bool inList) { return pass ? std::string("passes (no waiver needed)") : waived ? std::string("FAILS raw, WAIVED (named limit)") : inList ? std::string("?") : std::string("FAILS raw, NOT waived (not named)"); };
+        const double limit100 = bd.ideal.count("48000") && bd.ideal["48000"].count(100) ? kG1ResIdealFrac * bd.ideal["48000"][100] : 0.0;
+        bool any = false;
+        for (const auto& p : pairs)
+        {
+            double rr = 0, cr = 0; bool rw = false, cw = false, rl = false, cl = false;
+            if (!cellOf(p.rsc, rr, rw, rl) || !cellOf(p.c1c, cr, cw, cl)) continue;
+            if (!any) { rsc100Md = "### G1 at 100 Hz: RSC-* vs C1c-* (raw in-window residual, dB; limit " + num(limit100, 2) + ")\n\n| subject | raw residual | status | C1c counterpart | raw residual | status |\n|---|---:|---|---|---:|---|\n"; any = true; }
+            const bool rp = rr >= kG1ResFloorDb && rr <= limit100, cp = cr >= kG1ResFloorDb && cr <= limit100;
+            logf("G1 @100 Hz  %-7s raw %6.3f dB (limit %.3f): %-34s | %-6s raw %6.3f dB: %s", p.rsc, rr, limit100, status(rp, rw, rl).c_str(), p.c1c, cr, status(cp, cw, cl).c_str());
+            rsc100Md += std::string("| ") + p.rsc + " | " + num(rr, 3) + " | " + status(rp, rw, rl) + " | " + p.c1c + " | " + num(cr, 3) + " | " + status(cp, cw, cl) + " |\n";
+        }
+        if (any) rsc100Md += "\n";
+    }
     for (const auto& g : gateRows)
         if (g.pass8a() && g.pass8b() && g.pass9a() && g.pass9b()
             && ![&] { for (const auto& rs : scanSubjects) if (rs.id == g.id) return rs.reference; return false; }())
@@ -4527,7 +4757,7 @@ static int runGradedRun(const std::string& cfg, const std::string& cpu, bool isR
           "S5q = the fair EQ variant: band gain -30 dB, spec_sens 0.0, band Q 8, centre = f0 (S5qz = its sensitive jitter companion: sens 0.0, Q 8, gain -12 dB). "
           "S5qd = the same but spec_sens at its DEFAULT (S5q's sens 0.0 sets threshold = local mean, which over-suppresses by construction); its G4 is graded on S5qz. "
           "They run signals A/B (full scan), C (jitter), D and D2 (pre-echo), E and the delta-artefact run, in addition to the default-parameter subjects.\n\n";
-    md << tGate.markdown() << tGateDetail.markdown() << tGateF0.markdown();
+    md << tGate.markdown() << tGateDetail.markdown() << tGateF0.markdown() << rsc100Md;
     {
         // Known limits (named waivers): printed whenever a waiver is registered for a graded subject, whether it was needed or not.
         std::ostringstream kl;
