@@ -1,9 +1,11 @@
 #pragma once
 
 #include "audio/XlethEffectBase.h"
+#include "dsp/ResonanceCore.h"
 #include <juce_dsp/juce_dsp.h>
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cmath>
 #include <complex>
@@ -93,6 +95,20 @@ public:
     // (Spectral band re-enabled, linear phase left). See processEffect.
     static constexpr double kStftFadeInMs = 5.0;
 
+    // ── Spectral engine ([EQCore]) ──────────────────────────────────────────
+    // spectral_engine: which renderer the Spectral bands use.
+    //   Legacy (0, DEFAULT, every old state) = the 4096 WOLA path below
+    //   (kSTFTSize, kSTFTLatency), bit-identical to the EQ before the core.
+    //   Core   (1) = xleth::dsp::resonance::Core (dsp/ResonanceCore.h): both
+    //   channels detected, every Spectral band one region of ONE weight curve,
+    //   quality = the core's frame tier. Contract: ResonanceCore.md, "Using the
+    //   core in the Param EQ".
+    // spectral_quality: the core's tier, Fast 512 / Normal 1024 (DEFAULT) /
+    // High 2048 at <= 50 kHz (Core::fftSizeFor); ignored by Legacy.
+    static constexpr int kSpectralEngineLegacy = 0;
+    static constexpr int kSpectralEngineCore   = 1;
+    static constexpr int kNumSpectralQualities = 3;
+    static constexpr int kDefaultSpectralQuality = 1;   // Normal
 
     // ── Spectrum Analyzer constants ──────────────────────────────────────
     static constexpr int kSpecFFTOrder = 12;              // 2^12 = 4096
@@ -139,6 +155,13 @@ public:
         auto xml = getXmlFromBinary(data, sizeInBytes);
         if (xml && xml->hasTagName(apvts_.state.getType()))
         {
+            // A state saved before the [EQCore] parameters existed is a Legacy
+            // state. Without these elements APVTS would KEEP the instance's
+            // current values (it does not reset a parameter that is missing from
+            // the restored tree), so insert the defaults explicitly.
+            insertMissingParam(*xml, "spectral_engine", static_cast<float>(kSpectralEngineLegacy));
+            insertMissingParam(*xml, "spectral_quality", static_cast<float>(kDefaultSpectralQuality));
+
             {
                 // One edit: the audio thread sees the whole restored state or
                 // the previous one, never a mix. It clears the restored bands'
@@ -288,9 +311,21 @@ public:
         int   count = 0;                  // bands in use (bandCount_)
         float linPhase = 0.0f;
         float oversample = 0.0f;
+        float spectralEngine = 0.0f;      // [EQCore] 0 Legacy, 1 Core
+        float spectralQuality = static_cast<float>(kDefaultSpectralQuality);
         BandParamSnapshot band[kMaxBands];
     };
 
+    // ── [EQCore] core engine introspection / pinning ─────────────────────────
+    // Instance index for the core's hop phase (Core::hopPhaseOffsetForInstance):
+    // -1 (default) = assigned from this effect's own static counter at the first
+    // prepare (the EQ numbers its instances independently of the Resonance
+    // Suppressor's counter, so neither effect's numbering moves). Tests and the
+    // bench pin it (0 = the core's historical grid). Before prepareToPlay.
+    void setCoreInstanceIndex(int index) noexcept { coreInstanceIndex_ = index; }
+    int getCoreInstanceIndex() const noexcept { return coreInstanceIndex_; }
+    // Read-only view of the core (atomics: any thread; the rest: audio thread).
+    const xleth::dsp::resonance::Core& getCoreForTest() const noexcept { return core_; }
 
     // Tests only. The snapshot the LAST processed block used (read it on the
     // processing thread between blocks), and how many blocks took a fresh
@@ -587,6 +622,10 @@ public:
             ? (linPhasePtr_->load(std::memory_order_relaxed) > 0.5f) : false;
         obj["oversample"] = oversamplePtr_
             ? static_cast<int>(oversamplePtr_->load(std::memory_order_relaxed)) : 0;
+        // [EQCore] (additive keys)
+        obj["spectral_engine"]  = static_cast<int>(readGlobalParam("spectral_engine",
+                                      static_cast<float>(kSpectralEngineLegacy)));
+        obj["spectral_quality"] = readSpectralQualityParam();
         return obj.dump();
     }
 
@@ -648,6 +687,14 @@ public:
         // Resolve global mode pointers
         linPhasePtr_   = apvts_.getRawParameterValue("linphase");
         oversamplePtr_ = apvts_.getRawParameterValue("oversample");
+        spectralEnginePtr_  = apvts_.getRawParameterValue("spectral_engine");
+        spectralQualityPtr_ = apvts_.getRawParameterValue("spectral_quality");
+
+        // [EQCore] The core engine (all three frame tiers) and its buffers are
+        // built HERE, unconditionally, next to the Legacy STFT path below: no
+        // engine, quality or band-mode change ever allocates, frees or
+        // reconstructs anything while the audio thread may run.
+        prepareCoreEngine(sampleRate, maxBlockSize);
 
         // Initialise oversamplers (pre-create both for glitch-free switching)
         os2x_ = std::make_unique<juce::dsp::Oversampling<float>>(
@@ -1240,6 +1287,13 @@ public:
         stopAnalysisThread();
         for (int i = 0; i < kMaxBands; ++i)
             bands_[i].clearState();
+        core_.release();
+        coreDry_.setSize(0, 0);
+        coreDryMono_.clear();
+        coreAuxIn_.clear();
+        coreAuxOut_.clear();
+        coreComp_.clear();
+        liveDry_.setSize(0, 0);
     }
 
     void resetEffect() override
@@ -1323,6 +1377,10 @@ private:
         s.count = std::clamp(bandCount_.load(std::memory_order_relaxed), 0, kMaxBands);
         s.linPhase   = linPhasePtr_   ? linPhasePtr_->load(std::memory_order_relaxed)   : 0.0f;
         s.oversample = oversamplePtr_ ? oversamplePtr_->load(std::memory_order_relaxed) : 0.0f;
+        s.spectralEngine  = spectralEnginePtr_  ? spectralEnginePtr_->load(std::memory_order_relaxed)
+                                                : static_cast<float>(kSpectralEngineLegacy);
+        s.spectralQuality = spectralQualityPtr_ ? spectralQualityPtr_->load(std::memory_order_relaxed)
+                                                : static_cast<float>(kDefaultSpectralQuality);
         for (int b = 0; b < s.count; ++b)
         {
             const auto& bs = bands_[b];
@@ -1557,6 +1615,26 @@ private:
     std::uint64_t snapshotsKept_ = 0;             // audio thread (tests)
     bool snapshotSeqCheck_ = true;                // tests: negative control switch
 
+    // ── [EQCore] core engine (built in prepareEffect, never later) ──────────
+    std::atomic<float>* spectralEnginePtr_  = nullptr;
+    std::atomic<float>* spectralQualityPtr_ = nullptr;
+    xleth::dsp::resonance::Core core_;
+    juce::AudioBuffer<float> coreDry_;            // aligned dry L / R (the bypass dry while Core runs)
+    juce::AudioBuffer<float> liveDry_;            // live input (bypass dry during a transition off Core)
+    std::vector<float> coreDryMono_;              // dryOut of core channel 0 (routed modes)
+    std::vector<float> coreAuxIn_;                // routed modes: the unprocessed component
+    std::vector<float> coreAuxOut_;               // ... on the dryOut timeline
+    std::vector<float> coreComp_;                 // routed modes: the processed component (M or S)
+    std::array<float, xleth::dsp::resonance::kGridBands> coreWeights_ {};   // the regions' union, core grid
+    std::array<int,   xleth::dsp::resonance::kGridBands> coreOwner_ {};     // band whose region owns grid band k (-1 none)
+    std::array<float, xleth::dsp::resonance::kGridBands> coreGridCosW_ {};
+    std::array<float, xleth::dsp::resonance::kGridBands> coreGridSinW_ {};
+    std::array<float, xleth::dsp::resonance::kGridBands> coreGridCos2W_ {};
+    std::array<float, xleth::dsp::resonance::kGridBands> coreGridSin2W_ {};
+    bool coreRegionsValid_ = false;
+    int  coreRequestedQuality_ = kDefaultSpectralQuality;
+    int  coreInstanceIndex_ = -1;
+    inline static std::atomic<int> sCoreInstanceCounter_ { 0 };
 
     float stftWindow_[kSTFTSize]{};         // sqrt-Hann (analysis AND synthesis)
     float stftNorm_[kSTFTHop]{};            // 1/sum(w^2) per hop phase
@@ -2349,6 +2427,76 @@ private:
         }
     }
 
+    // ── [EQCore] core engine preparation (message thread, not processing) ────
+
+    static xleth::dsp::resonance::Core::FrameTier tierForQuality(int quality) noexcept
+    {
+        return static_cast<xleth::dsp::resonance::Core::FrameTier>(std::clamp(quality, 0, kNumSpectralQualities - 1));
+    }
+
+    int readSpectralQualityParam() const noexcept
+    {
+        return std::clamp(static_cast<int>(readGlobalParam("spectral_quality",
+                                                           static_cast<float>(kDefaultSpectralQuality))),
+                          0, kNumSpectralQualities - 1);
+    }
+
+    // Builds everything the core path will ever touch: the core with all three
+    // frame tiers (Core::prepare), the aligned-dry / Mid-Side / aux buffers for
+    // the largest block, and the per-grid-band bin tables of the region weight
+    // curve. Hop phase: this effect's own instance counter (setCoreInstanceIndex).
+    void prepareCoreEngine(double sampleRate, int maxBlockSize)
+    {
+        using Core = xleth::dsp::resonance::Core;
+        const int quality = readSpectralQualityParam();
+        if (coreInstanceIndex_ < 0)
+            coreInstanceIndex_ = sCoreInstanceCounter_.fetch_add(1, std::memory_order_relaxed);
+
+        const auto tier = tierForQuality(quality);
+        const int hop = Core::fftSizeFor(sampleRate, tier) / 4;
+        core_.setFrameTier(tier);
+        core_.setHopPhaseOffset(Core::hopPhaseOffsetForInstance(coreInstanceIndex_, hop));
+        core_.prepare(sampleRate, std::max(1, maxBlockSize), 2);
+        coreRequestedQuality_ = quality;
+
+        const int cap = std::max(1, maxBlockSize);
+        coreDry_.setSize(2, cap, false, true, true);
+        liveDry_.setSize(2, cap, false, true, true);
+        coreDryMono_.assign(static_cast<std::size_t>(cap), 0.0f);
+        coreAuxIn_.assign(static_cast<std::size_t>(cap), 0.0f);
+        coreAuxOut_.assign(static_cast<std::size_t>(cap), 0.0f);
+        coreComp_.assign(static_cast<std::size_t>(cap), 0.0f);
+
+        // e^-jw / e^-j2w at every grid band centre (the region bells are RBJ
+        // bells evaluated there; no trig on the audio thread).
+        const int bands = std::min(core_.numBands(), xleth::dsp::resonance::kGridBands);
+        const double twoPi = 2.0 * juce::MathConstants<double>::pi;
+        for (int k = 0; k < bands; ++k)
+        {
+            const double w = twoPi * static_cast<double>(core_.bandCentreHz(k)) / sampleRate;
+            coreGridCosW_[static_cast<std::size_t>(k)]  = static_cast<float>(std::cos(w));
+            coreGridSinW_[static_cast<std::size_t>(k)]  = static_cast<float>(std::sin(w));
+            coreGridCos2W_[static_cast<std::size_t>(k)] = static_cast<float>(std::cos(2.0 * w));
+            coreGridSin2W_[static_cast<std::size_t>(k)] = static_cast<float>(std::sin(2.0 * w));
+        }
+        coreWeights_.fill(0.0f);
+        coreOwner_.fill(-1);
+        coreRegionsValid_ = false;
+    }
+
+    // A PARAM element with this id is added to `xml` (a saved APVTS state) when
+    // it has none; replaceState would otherwise keep the instance's value.
+    static void insertMissingParam(juce::XmlElement& xml, const char* id, float value)
+    {
+        for (auto* child : xml.getChildIterator())
+            if (child != nullptr && child->hasTagName("PARAM") && child->getStringAttribute("id") == id)
+                return;
+        auto el = std::make_unique<juce::XmlElement>("PARAM");
+        el->setAttribute("id", id);
+        el->setAttribute("value", juce::String(value, 1));
+        xml.addChildElement(el.release());
+    }
+
     // ── APVTS helpers ────────────────────────────────────────────────────────
 
     float readGlobalParam(const char* paramId, float fallback) const
@@ -2436,7 +2584,7 @@ private:
     static juce::AudioProcessorValueTreeState::ParameterLayout createLayout()
     {
         std::vector<std::unique_ptr<juce::RangedAudioParameter>> params;
-        params.reserve(kMaxBands * 16 + 2);
+        params.reserve(kMaxBands * 16 + 4);
 
         // Skew factors: makes midpoint of slider map to a musically useful value.
         // JUCE formula: value = start + (end-start) * exp(log(proportion)/skew)
@@ -2579,6 +2727,25 @@ private:
             "Oversample",
             juce::NormalisableRange<float>(0.0f, 2.0f, 1.0f), // 0=off, 1=2x, 2=4x
             0.0f));
+
+        // ── [EQCore] appended last: no existing parameter index moves ───────
+        // Spectral renderer. 0 = Legacy (the 4096 STFT path, DEFAULT; every
+        // state saved without this parameter restores as Legacy, see
+        // setStateInformation), 1 = Core (xleth::dsp::resonance::Core).
+        params.push_back(std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID{ "spectral_engine", 1 },
+            "Spectral Engine",
+            juce::NormalisableRange<float>(0.0f, 1.0f, 1.0f), // 0=Legacy, 1=Core
+            static_cast<float>(kSpectralEngineLegacy)));
+
+        // Core frame tier: 0 = Fast (512), 1 = Normal (1024, DEFAULT), 2 = High
+        // (2048) at <= 50 kHz, doubled per sample-rate octave above. Only the
+        // Core engine reads it (Legacy is always 4096).
+        params.push_back(std::make_unique<juce::AudioParameterFloat>(
+            juce::ParameterID{ "spectral_quality", 1 },
+            "Spectral Quality",
+            juce::NormalisableRange<float>(0.0f, 2.0f, 1.0f), // 0=Fast, 1=Normal, 2=High
+            static_cast<float>(kDefaultSpectralQuality)));
 
         return { std::make_move_iterator(params.begin()),
                  std::make_move_iterator(params.end()) };

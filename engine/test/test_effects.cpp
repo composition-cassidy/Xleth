@@ -5025,12 +5025,13 @@ static void testEQLayout()
 
     CHECK(eq.getBandCount() == 0, "EQ should start with 0 bands");
 
-    // 16 per band × 16 bands + 2 global.  Per band: freq, gain, q, type,
+    // 16 per band × 16 bands + 4 global.  Per band: freq, gain, q, type,
     // enabled, channel, mode, dyn_{thresh,ratio,attack,release,range},
     // spec_{sens,sel,attack,release}.  Spectral depth is the band's own gain
-    // knob, so there is no spec_depth parameter.
+    // knob, so there is no spec_depth parameter.  Global: linphase, oversample,
+    // then ([EQCore], appended last) spectral_engine, spectral_quality.
     const auto& params = eq.getParameters();
-    CHECK(static_cast<int>(params.size()) == 258, "EQ should have 258 APVTS params");
+    CHECK(static_cast<int>(params.size()) == 260, "EQ should have 260 APVTS params");
 }
 
 static void testEQAddRemove()
@@ -6129,6 +6130,109 @@ static void testEQLegacyBitIdentity()
     }
 }
 
+// ─── [EQCore] spectral_engine / spectral_quality: defaults, round trip, old states ──
+namespace eqcore
+{
+// The state blob of `fx` with the PARAM elements `ids` removed (= a state saved
+// before those parameters existed).
+static void stateWithout(juce::AudioProcessor& fx, std::initializer_list<const char*> ids, juce::MemoryBlock& out)
+{
+    juce::MemoryBlock state;
+    fx.getStateInformation(state);
+    auto xml = juce::AudioProcessor::getXmlFromBinary(state.getData(), static_cast<int>(state.getSize()));
+    if (xml == nullptr) return;
+    for (const char* id : ids)
+    {
+        for (auto* child = xml->getFirstChildElement(); child != nullptr; child = child->getNextElement())
+        {
+            if (child->hasTagName("PARAM") && child->getStringAttribute("id") == id)
+            {
+                xml->removeChildElement(child, true);
+                break;
+            }
+        }
+    }
+    juce::AudioProcessor::copyXmlToBinary(*xml, out);
+}
+
+static bool stateHasParam(const juce::MemoryBlock& state, const char* id)
+{
+    auto xml = juce::AudioProcessor::getXmlFromBinary(state.getData(), static_cast<int>(state.getSize()));
+    if (xml == nullptr) return false;
+    for (auto* child = xml->getFirstChildElement(); child != nullptr; child = child->getNextElement())
+        if (child->hasTagName("PARAM") && child->getStringAttribute("id") == id)
+            return true;
+    return false;
+}
+} // namespace eqcore
+
+static void testEQCoreParamsAndState()
+{
+    std::cout << "  [EQCore] spectral_engine / spectral_quality parameters and state\n";
+
+    XlethParametricEQ fresh;
+    CHECK(fresh.getParameterValue("spectral_engine") == 0.0f, "[EQCore] spectral_engine defaults to Legacy (0)");
+    CHECK(fresh.getParameterValue("spectral_quality") == 1.0f, "[EQCore] spectral_quality defaults to Normal (1)");
+    {
+        const auto& params = fresh.getParameters();
+        const int n = static_cast<int>(params.size());
+        auto idOf = [&](int i) {
+            auto* p = dynamic_cast<juce::AudioProcessorParameterWithID*>(params[static_cast<std::size_t>(i)]);
+            return p ? p->paramID : juce::String();
+        };
+        CHECK(n >= 4 && idOf(n - 4) == "linphase" && idOf(n - 3) == "oversample"
+                  && idOf(n - 2) == "spectral_engine" && idOf(n - 1) == "spectral_quality",
+              "[EQCore] the new parameters are appended last; every existing parameter keeps its index");
+        CHECK(idOf(0) == "b0_freq" && idOf(255) == "b15_spec_release", "[EQCore] band parameter indices unchanged");
+    }
+
+    // Round trip: Core / High survives getState -> setState.
+    juce::MemoryBlock coreState;
+    {
+        XlethParametricEQ src;
+        src.prepareToPlay(48000.0, 512);
+        src.addBand();
+        CHECK(src.setParameterValue("spectral_engine", 1.0f), "[EQCore] spectral_engine settable");
+        CHECK(src.setParameterValue("spectral_quality", 2.0f), "[EQCore] spectral_quality settable");
+        src.getStateInformation(coreState);
+        CHECK(eqcore::stateHasParam(coreState, "spectral_engine") && eqcore::stateHasParam(coreState, "spectral_quality"),
+              "[EQCore] a saved state carries both new parameters");
+    }
+    {
+        XlethParametricEQ dst;
+        dst.prepareToPlay(48000.0, 512);
+        dst.setStateInformation(coreState.getData(), static_cast<int>(coreState.getSize()));
+        CHECK(dst.getParameterValue("spectral_engine") == 1.0f && dst.getParameterValue("spectral_quality") == 2.0f,
+              "[EQCore] Core / High round-trips through the state");
+        const auto json = nlohmann::json::parse(dst.getGlobalParamsAsJSON());
+        CHECK(json.value("spectral_engine", -1) == 1 && json.value("spectral_quality", -1) == 2,
+              "[EQCore] getGlobalParamsAsJSON reports spectral_engine / spectral_quality");
+    }
+
+    // An old state (no spectral_engine / spectral_quality) restores as Legacy /
+    // Normal even into an instance currently set to Core / Fast (APVTS would
+    // otherwise keep the instance's values).
+    {
+        XlethParametricEQ oldSrc;
+        oldSrc.prepareToPlay(48000.0, 512);
+        oldSrc.addBand();
+        oldSrc.setBandParam(0, "mode", 2.0f);
+        juce::MemoryBlock oldState;
+        eqcore::stateWithout(oldSrc, { "spectral_engine", "spectral_quality" }, oldState);
+        CHECK(!eqcore::stateHasParam(oldState, "spectral_engine") && !eqcore::stateHasParam(oldState, "spectral_quality"),
+              "[EQCore] the synthetic old state lacks both parameters");
+
+        XlethParametricEQ dst;
+        dst.prepareToPlay(48000.0, 512);
+        dst.setParameterValue("spectral_engine", 1.0f);
+        dst.setParameterValue("spectral_quality", 0.0f);
+        dst.setStateInformation(oldState.getData(), static_cast<int>(oldState.getSize()));
+        CHECK(dst.getParameterValue("spectral_engine") == 0.0f, "[EQCore] an old state restores as Legacy (spectral_engine 0)");
+        CHECK(dst.getParameterValue("spectral_quality") == 1.0f, "[EQCore] an old state restores the default quality (Normal)");
+        CHECK(dst.getBandCount() == 1, "[EQCore] the old state's band restores");
+    }
+}
+
 int main()
 {
     // JUCE requires a ScopedJuceInitialiser_GUI to initialise internals
@@ -6210,6 +6314,7 @@ int main()
     testOversampling();
     testLinPhaseDisablesDynamic();
     testEQLegacyBitIdentity();
+    testEQCoreParamsAndState();
 
     std::cout << "\nResults: " << g_passed << " passed, " << g_failed << " failed\n";
     if (g_failed > 0)
