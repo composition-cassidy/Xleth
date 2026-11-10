@@ -273,7 +273,7 @@ public:
     static Params sanitizeParams(const Params& p) noexcept;
     // ---- detector constants (exposed so the design notes / tests can quote them; evidence for every value: ResonanceCore.md) ----
     // Slow estimate: recursive power average of |X_k|^2, time constant in ms. Long enough that the excess of a band has a small, predictable sigma (about 0.5 dB at 2.5 kHz),
-    // short enough to follow a held resonance. 400 ms detects sub-bin resonances more often but lingers about 2 tau after a resonance stops and lets the low-frequency
+    // short enough to follow a held resonance. 400 ms detects marginal (about 1 sigma) low-frequency resonances more often but lingers about 2 tau after a resonance stops and lets the low-frequency
     // clean-pink bias (+0.6 dB) become ~1 sigma. Structural: takes effect at the next prepare() (call it before prepare).
     static constexpr float kDefaultDetectorTauMs = 200.0f;
     void setDetectorTimeConstantMs(float ms) noexcept { detectorTauMs_ = ms > 1.0f ? ms : 1.0f; }

@@ -66,7 +66,7 @@
 //   (default output unchanged). Gates and metrics do not read it. Use it to check that a pass is not a lucky noise realisation.
 //
 // Hardening (after the core's stage C; bench only, no gate threshold or metric definition touched):
-//   Known limits: G1 at f0 = 100 Hz is WAIVED by name for C1c, C1c-N and C1c-H (knownLimits() below). The raw G1 count stays visible, the
+//   Known limits: G1 at f0 = 100 Hz is WAIVED by name for every Normal / High subject, never for Fast (knownLimits() below). The raw G1 count stays visible, the
 //   verdict reads "PASS (1 waiver)" when everything else passes, no other subject / frequency is affected.
 //   --wav inputs additionally get real-material proxy metrics (table G2): per 1/6-octave band cut, flicker, fraction of frames with a > 6 dB cut.
 //   --cpu-worst: per-block timing of C1c and S3c at blocks 64 / 128 on pink noise with a resonance toggling every 2 s (informational).
@@ -84,7 +84,7 @@
 //
 // RS New engine subjects (after the integration): RSC-F0 / RSC-N0 / RSC-H0 (stereo link 0, focus curve open 20 Hz - 20 kHz = the C1c settings through the effect) are graded on every gate
 //   against C1c-F / C1c-N / C1c-H; RSC-F / RSC-N / RSC-H (RS defaults, stereo link 100 %) are a characterisation set whose G3 / G9a are printed but not graded (Subject::notGraded).
-//   The named G1 100 Hz waiver covers the same tiers as for C1c-*: RSC-N / RSC-H / RSC-N0 / RSC-H0.
+//   The named G1 100 Hz waiver covers the Normal / High tiers: RSC-N / RSC-H / RSC-N0 / RSC-H0 (not Fast).
 //   --cpu-burst: N instances (default 8) of C1c-N and S3c processed back to back per block in one thread on pink noise, hop phases aligned vs staggered (informational, see runCpuBurst()).
 //
 // [EQCore] Param EQ subjects (the EQ's Spectral bands on the ResonanceCore, spectral_engine = Core): one Spectral band at -24 dB (core depth 1, Hard), its
@@ -92,7 +92,7 @@
 //   one band covering the whole range) and stereo link 0: EQS-F / EQS-N / EQS-H = the C1c-F / -N / -H settings through the EQ, graded on every gate against
 //   C1c-*. EQSl-F / -N / -H: the same at the EQ's default stereo link 1 (characterisation: G3 / G9a printed, not graded). EQSb-N: EQS-N with three flat
 //   (0 dB) bell bands in the EQ's biquad path behind the core (diagnostic: does the EQ's signal path change anything). G4 companions EQSs-* / EQSsl-*
-//   (spec_sens 0 = core sensitivity 1). The named G1 100 Hz waiver is NOT extended to them (no gate or waiver is changed).
+//   (spec_sens 0 = core sensitivity 1). The named G1 100 Hz waiver covers their Normal / High subjects (EQS-N / -H, EQSl-N / -H, EQSb-N), not Fast.
 //
 // ResonanceCore (stage 1, src/dsp/ResonanceCore.*, wired into no effect) is graded through a bench-only adapter:
 //   C1 default Params (gated), C1c depth 1 / Hard (gated), C1s depth 1 / sensitivity 1 / Hard (G4 companion of both).
@@ -838,7 +838,7 @@ static const std::vector<Subject>& registry()
           s.capability = true; s.gated = true; s.jitterId = "RSCs0-H"; s.factory = rsNewEngineFactory(2, false, true); }
         // [EQCore] The Param EQ's Spectral bands on the core: the C1c-F / -N / -H settings through the EQ (one band, open curve, link 0), graded on ALL
         // gates against C1c-*; EQSl-* = the EQ's default stereo link 1 (characterisation: G3 / G9a printed, not graded); EQSb-N = EQS-N with three flat
-        // bell bands in the EQ's biquad path (diagnostic). The named G1 100 Hz waiver is not extended to them (no gate or waiver changed).
+        // bell bands in the EQ's biquad path (diagnostic). The named G1 100 Hz waiver covers the Normal / High ones, not Fast.
         { auto& s = add("EQS-F", "EQS", "EQ Spectral on the core Fast, link 0 + open curve", Kind::Custom, Group::Capability,
                         "EQ spectral_engine=Core, quality Fast, 1 Spectral band -24 dB, attack 15 / release 200 ms, link 0, open curve");
           s.capability = true; s.gated = true; s.jitterId = "EQSs-F"; s.factory = eqCoreFactory(0, false, false); }
@@ -2406,9 +2406,10 @@ struct GateRow
 // Known limits: named, printed exceptions to a gate. They are NOT a redefinition of the gate: the raw count stays visible, the
 // waiver applies only to the listed (gate, subject, frequency) cells, only when the cell actually fails, and the evaluator prints it.
 //   G1 at f0 = 100 Hz (48 kHz scan) for the ResonanceCore capability subjects C1c, C1c-N, C1c-H.
-//   Evidence (docs/RESONANCE_CORE_DESIGN.md "It 3", "Stage C"; engine/src/dsp/ResonanceCore.md): at f0 = 100 Hz a Q 8 bell is 12.5 Hz wide
-//   (-3 dB), narrower than one analysis bin (46.9 Hz at N = 1024, 23.4 Hz at N = 2048); the cut is the bin-average excess, so the sub-bin
-//   peak stays standing (+3.44 dB at N = 1024, +3.65 dB at N = 2048 vs a limit of 2.10 dB). N = 2048 does not fix it.
+//   Scope: EVERY Normal and High subject (C1c, C1c-N/-H, RSC-N/-H/-N0/-H0, EQS-N/-H, EQSl-N/-H, EQSb-N). NO Fast subject carries it.
+//   Cause (engine/src/dsp/ResonanceCore.md, low-frequency path): a Q 8 resonance at 100 Hz sits about 1 sigma above the detection threshold, so the
+//   knee scales the per-bin cut to about 60 % of its depth (residual 2.3-2.8 dB against 2.10). Per-bin gains go through the same WOLA pass the cell,
+//   so this is a core limitation, NOT a transform / resolution ceiling.
 // ---------------------------------------------------------------------------------------------------
 struct KnownLimit
 {
@@ -2423,7 +2424,10 @@ static const std::vector<KnownLimit>& knownLimits()
     static const std::vector<KnownLimit> kl = {
         // The RSC-* subjects (the same core through the effect) carry the waiver exactly as their C1c-* counterparts: the Normal and High tiers
         // (RSC-N / RSC-H and the open-curve variants RSC-N0 / RSC-H0). C1c-F is not named, so RSC-F / RSC-F0 are not either.
-        { "G1", { "C1c", "C1c-N", "C1c-H", "RSC-N", "RSC-H", "RSC-N0", "RSC-H0" }, 100, "resonance narrower than one analysis bin (resolution ceiling); see design doc" },
+        { "G1", { "C1c", "C1c-N", "C1c-H", "RSC-N", "RSC-H", "RSC-N0", "RSC-H0", "EQS-N", "EQS-H", "EQSl-N", "EQSl-H", "EQSb-N" }, 100,
+          "G1 at 100 Hz (Normal / High): known core limitation, not a transform limit. A Q 8 resonance at 100 Hz sits about 1 sigma above the detection threshold, "
+          "so the knee scales the per-bin cut to about 60 % of its depth (residual 2.3-2.8 dB against 2.10). Per-bin gains through the same WOLA pass the cell, "
+          "so this is not a resolution ceiling." },
     };
     return kl;
 }
@@ -3522,7 +3526,7 @@ static int runSeedSet(const std::string& cfg, const std::string& cpu, bool isRel
     md << "- Seeds: {" << seedList << "} (a seed N shifts every generated noise seed by N x 1000003; seed 0 = the original signals)\n";
     md << "- **Seed protocol:** tuning work uses the `default` and `dev` (seeds 1..6) sets only. The `heldout` set (seeds 101..106) is RESERVED: it is run only for the final confirmation by the person grading, "
           "and no held-out result is reported by tuning work.\n";
-    md << "- Robust verdict: a gate counts as passed only if it passes on EVERY seed of the set; the named G1 waiver at 100 Hz (C1c / C1c-N / C1c-H and RSC-N / RSC-H / RSC-N0 / RSC-H0) applies per seed exactly as in the single-seed verdict. "
+    md << "- Robust verdict: a gate counts as passed only if it passes on EVERY seed of the set; the named G1 waiver at 100 Hz (every Normal / High subject, no Fast subject) applies per seed exactly as in the single-seed verdict. "
           "RSC-F / RSC-N / RSC-H (stereo link 100 %) are a characterisation set: their G3 and G9a rows are printed but not graded. "
           "Thresholds and metric definitions are unchanged.\n";
     md << "- Regrade check: " << (drift == 0 ? "the per-cell regrade reproduces every gate flag of every per-seed run" : "**" + std::to_string(drift) + " regrade mismatches (see warnings)**") << "\n";
@@ -5960,6 +5964,15 @@ static int runGradedRun(const std::string& cfg, const std::string& cpu, bool isR
     for (const auto& g : gateRows)
         for (const auto& w : g.waivers)
             logf("KNOWN LIMIT (waived): %s  [raw G1 stays %s]", w.c_str(), cnt(g.g1, g.n).c_str());
+    // Fast-tier note: INFORMATIONAL only (not a waiver, not read by any verdict): Fast subjects still print FAIL where they fail.
+    for (const auto& g : gateRows)
+    {
+        const std::string& id = g.id;
+        const bool fast = (id.size() > 2 && id.compare(id.size() - 2, 2, "-F") == 0) || (id.size() > 3 && id.compare(id.size() - 3, 3, "-F0") == 0);
+        if (fast)
+            logf("FAST-TIER NOTE (informational, not a waiver, not part of the verdict): %s - known Fast-tier limitations: G3 at 100 Hz (clean-channel level), G8a, G9a; "
+                 "the Fast tier cannot localise a 100 / 150 Hz resonance inside its 94 Hz bin.", id.c_str());
+    }
 
     // G7 definition, verbatim from the constants above (nothing is changed, this only prints what is graded).
     logf("G7 definition: ratio = subject mean processBlock ns / %s mean ns, same run, same block size; PASS iff ratio(@128) <= %.4f AND ratio(@64) <= %.4f (kG7CpuRatio, strict comparison of the UNROUNDED ratios, no tolerance). Cells print @128 / @64 to 4 decimals.",

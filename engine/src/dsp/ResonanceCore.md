@@ -206,7 +206,7 @@ G8a 4/6, G9a 1/9, G1 11/12, G4 std 0.129 dB.
 | 1d | **Latch 1.5 / 0.5** | 6/6 | 9/9 (worst 0.80 dB) | 10/12 | 0.135 | false latches at low frequency: 150 Hz residual 2.13 dB, 220 Hz +0.2 dB |
 | 1e | **Fast tau 25 ms** (with the 2.0 / 0.75 latch) | 6/6 | 7/9 | 10/12 | 0.148 | noisier fast estimate (larger sigma_f): more false latches, fails G9a |
 | 1e | **Fast tau 60 ms** (same latch) | 4/6 | 9/9 | 11/12 | 0.129 | reacts too late at 500 Hz: t50 101 - 104 ms against the 100 ms gate |
-| - | Detector tau 400 ms (slow only) | - | - | 9/12 | 0.086 | detects sub-bin resonances more often, but the clean-pink low-frequency bias (+0.6 dB) becomes ~1 sigma (false-trigger rate 2 % per band-frame) and the cut lingers ~2 tau after a resonance stops. It also does not pass G1 at 100 Hz (residual converges to ~3.5 dB) |
+| - | Detector tau 400 ms (slow only) | - | - | 9/12 | 0.086 | detects marginal (about 1 sigma) low-frequency resonances more often, but the clean-pink low-frequency bias (+0.6 dB) becomes ~1 sigma (false-trigger rate 2 % per band-frame) and the cut lingers ~2 tau after a resonance stops. It also does not pass G1 at 100 Hz (residual converges to ~3.5 dB) |
 
 **Kept: 1c**, the two-speed detector with the release latch set at 2.0 / clear at 0.75 fast sigma and fast tau 40 ms:
 G8a 6/6, G9a 9/9, G1 11/12 (the missing one is 100 Hz, section 4), G4 std 0.130 (quick) / 0.156 (full), steady state
@@ -1459,4 +1459,4 @@ default is a product decision for the UI phase; nothing was retuned.
 - Bypassed while Legacy and switched to Core while still bypassed: the switch happens after the un-bypass (a bypassed Legacy EQ is not
   processed), with the structural fade; PDC already moved at the request.
 - The 96-band grid limits a region's resolution (about 55 Hz at 1 kHz, a third of an octave below 100 Hz); below 400 Hz the core's
-  per-bin path still reduces a sub-bin resonance only partly (section 4).
+  per-bin path still reduces a marginal (about 1 sigma) low-frequency resonance only partly, because the knee scales the cut (section 4).
