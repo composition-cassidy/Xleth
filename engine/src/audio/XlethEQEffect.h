@@ -623,8 +623,18 @@ public:
         return AudioProcessor::getLatencySamples();
     }
 
+    // Non-audio threads only (every caller is a parameter / band / state writer
+    // or prepare). The EQ has more than one such writer at a time: the RPC
+    // thread and MixEngine's applier thread (FX Graph envelope / LFO modulation
+    // through setParameterValue) are not serialised against each other. Without
+    // this lock, a refresh that read the parameters BEFORE another writer's
+    // latency-affecting change could publish AFTER that writer's own refresh
+    // and leave a stale latency in place (lost update; test case h2-lat). Held
+    // across read-compute-publish, so the last refresh to run always reads
+    // every write that preceded it. Never taken by the audio thread.
     bool refreshLatencySamples()
     {
+        std::lock_guard<std::mutex> lock(latencyRefreshMutex_);
         refreshLatencyStateFromParameters();
         const int newLat = getLatencySamples();
         if (newLat == AudioProcessor::getLatencySamples())
@@ -2247,6 +2257,7 @@ private:
 
     // ── Parameter snapshot / edits ([EQCore] locking fix) ───────────────────
     std::mutex editMutex_;                        // edit writers only (never the audio thread)
+    std::mutex latencyRefreshMutex_;              // refreshLatencySamples writers only (never the audio thread)
     std::atomic<std::uint32_t> editSeq_{0};       // odd while an edit runs
     std::atomic<std::uint32_t> pendingBandClear_{0};   // bit b: clear band b's DSP state
     ParamSnapshot snap_;                          // audio thread: the block's parameters

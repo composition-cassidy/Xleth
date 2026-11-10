@@ -1095,6 +1095,342 @@ static void runStressEqLocking()
     CHECK(n.torn > 0, "case h-neg: with the sequence check disabled the checker must detect torn reads (saw " << n.torn << ")");
 }
 
+// (h2) [EQCore] EQ locking with SEVERAL concurrent writers. Case h has ONE mutating thread; in the app the EQ's
+// parameters are written by (1) the RPC thread (the Node addon worker's single JS thread: eqAddBand / eqRemoveBand /
+// eqSetBandParam / eqSetGlobalParam / generic setEffectParam / state restores from presets, chain library, undo /
+// redo, project load), (2) MixEngine's applier thread (FX Graph envelope / LFO modulation through
+// AudioGraph::setGraphEffectParameterNormalized -> setParameterValue, under chainsMutex_ only; the EQ RPC handlers
+// release chainsMutex_ before they call the EQ, so (1) and (2) are NOT serialised against each other), and (3) the
+// audio thread itself (automation stores the raw parameter atomics, never through these entry points). Here three
+// writer threads run the whole mutation mix concurrently with the audio thread (this thread) over 200,000 blocks,
+// with the same tuple checker as case h. In addition, every 1000 blocks the writers park and the published
+// latency is checked against the parameters (a refresh that read the parameters before another writer's change
+// but published after that writer's own refresh leaves a stale latency: a lost update between writers).
+namespace eqstress
+{
+static std::vector<juce::MemoryBlock> makeRestoreBlobs(int block)
+{
+    std::vector<juce::MemoryBlock> blobs;
+    for (int n : { 2, 5, 9 })
+    {
+        XlethParametricEQ src;
+        src.prepareToPlay(kSR, block);
+        for (int b = 0; b < n; ++b)
+        {
+            src.addBand();
+            writeTuple(src, b, (n * 31 + b * 17) % kIds);
+            src.setBandParam(b, "gain", b % 2 == 0 ? -12.0f : -3.0f);
+            src.setBandParam(b, "mode", b % 3 == 0 ? 2.0f : 0.0f);
+        }
+        if (n == 5) src.setParameterValue("spectral_engine", 1.0f);   // restores flip the engine too
+        blobs.emplace_back();
+        src.getStateInformation(blobs.back());
+    }
+    return blobs;
+}
+
+struct WriterStats
+{
+    long long requests = 0, engine = 0, quality = 0, restores = 0, adds = 0, removes = 0, applierWrites = 0;
+};
+
+// One mutation of the mix. Tuple parameters (freq, q, spec_sel, spec_release) are only ever written as a whole.
+static void mutateOnce(XlethParametricEQ& eq, std::mt19937& rng, const std::vector<juce::MemoryBlock>& blobs, WriterStats& st)
+{
+    std::uniform_int_distribution<int> which(0, 15), id(0, kIds - 1), mode(0, 2), chan(0, 4), two(0, 1), q3(0, 2);
+    std::uniform_real_distribution<float> gain(-24.0f, 0.0f), atk(0.1f, 100.0f);
+    const int count = eq.getBandCount();
+    std::uniform_int_distribution<int> anyBand(0, std::max(0, count - 1));
+    const int b = anyBand(rng);
+    switch (which(rng))
+    {
+        case 0: case 1: case 2: if (count > 0) writeTuple(eq, b, id(rng)); break;
+        case 3: if (count > 0) eq.setBandParam(b, "gain", gain(rng)); break;
+        case 4: if (count > 0) eq.setBandParams(b, { { "mode", static_cast<float>(mode(rng)) }, { "dyn_range", -12.0f } }); break;
+        case 5: if (count > 0) eq.setBandParam(b, "enabled", static_cast<float>(two(rng))); break;
+        case 6: if (count > 0) eq.setBandParam(b, "channel", static_cast<float>(chan(rng))); break;
+        case 7: if (count > 0) eq.setBandParam(b, "spec_attack", atk(rng)); break;
+        case 8: if (count > 0) eq.setBandParam(b, "dyn_thresh", -gain(rng) - 30.0f); break;
+        case 9: if (count > 1 && eq.removeBand(b)) ++st.removes; break;
+        case 10: if (count < XlethParametricEQ::kMaxBands)
+                 { const int nb = eq.addBand(); if (nb >= 0) { ++st.adds; if (two(rng)) writeTuple(eq, nb, id(rng)); } } break;
+        case 11: { const auto& blob = blobs[static_cast<std::size_t>(id(rng)) % blobs.size()];
+                   eq.setStateInformation(blob.getData(), static_cast<int>(blob.getSize())); ++st.restores; } break;
+        case 12: eq.setParameterValue("spectral_engine", static_cast<float>(two(rng))); ++st.engine; break;
+        case 13: eq.setParameterValue("spectral_quality", static_cast<float>(q3(rng))); ++st.quality; break;
+        // The applier's path: AudioGraph::setGraphEffectParameterNormalized -> setParameterValue (with
+        // onParameterValueChanged), on a band parameter that moves the latency. Mode is Bell / Spectral only here
+        // (a Dynamic band keeps addBand's +12 dB range unless case 4 set it, and would break the output bound).
+        case 14: if (count > 0)
+                 {
+                     const bool enabledParam = two(rng) != 0;
+                     eq.setParameterValue("b" + std::to_string(b) + (enabledParam ? "_enabled" : "_mode"),
+                                          static_cast<float>(enabledParam ? two(rng) : 2 * two(rng)));
+                     ++st.applierWrites;
+                 } break;
+        default: if (count > 0) eq.setBandParam(b, "spec_sens", atk(rng) * 0.01f); break;
+    }
+    ++st.requests;
+}
+
+struct MultiResult
+{
+    long long blocks = 0, allocs = 0, torn = 0, badCount = 0;
+    std::uint64_t accepted = 0, kept = 0, switches = 0;
+    long long tierSwitches = 0;
+    bool finite = true;
+    float outPeak = 0.0f, inPeak = 0.0f;
+    WriterStats total;
+    std::vector<WriterStats> perWriter;
+    long long latencyChecks = 0, staleStatus = 0, staleReported = 0;
+};
+
+static MultiResult runMulti(long long blocks, int writers, bool seqCheck, bool latencyChecks)
+{
+    constexpr int kBlock = 64;
+    constexpr long long kCheckEvery = 1000;
+    const juce::AudioBuffer<float> sig = makeSignal(kBlock * 4096);
+    const std::vector<juce::MemoryBlock> blobs = makeRestoreBlobs(kBlock);
+
+    XlethParametricEQ eq;
+    eq.prepareToPlay(kSR, kBlock);
+    for (int b = 0; b < 4; ++b)
+    {
+        eq.addBand();
+        writeTuple(eq, b, b * 7);
+        eq.setBandParam(b, "gain", -9.0f);
+        eq.setBandParam(b, "mode", b == 0 ? 2.0f : 0.0f);
+    }
+    eq.setSnapshotSeqCheckForTest(seqCheck);
+
+    MultiResult r;
+    r.perWriter.resize(static_cast<std::size_t>(writers));
+    for (int ch = 0; ch < 2; ++ch)
+        for (int s = 0; s < sig.getNumSamples(); ++s)
+            r.inPeak = std::max(r.inPeak, std::abs(sig.getSample(ch, s)));
+
+    std::atomic<bool> stop { false }, pause { false };
+    std::atomic<int> parked { 0 };
+    std::vector<std::thread> threads;
+    for (int w = 0; w < writers; ++w)
+    {
+        threads.emplace_back([&, w] {
+            std::mt19937 rng(0xE0C0u + 7919u * static_cast<unsigned>(w + 1));
+            std::uniform_int_distribution<int> pauseUs(0, 200);
+            WriterStats& st = r.perWriter[static_cast<std::size_t>(w)];
+            while (!stop.load(std::memory_order_relaxed))
+            {
+                if (pause.load(std::memory_order_acquire))
+                {
+                    parked.fetch_add(1, std::memory_order_acq_rel);
+                    while (pause.load(std::memory_order_acquire) && !stop.load(std::memory_order_relaxed)) {}
+                    parked.fetch_sub(1, std::memory_order_acq_rel);
+                    continue;
+                }
+                mutateOnce(eq, rng, blobs, st);
+                if (seqCheck)
+                {
+                    // Spin (a Windows sleep rounds up to the timer tick). 0..200 us between requests.
+                    const auto until = std::chrono::steady_clock::now() + std::chrono::microseconds(pauseUs(rng));
+                    while (std::chrono::steady_clock::now() < until && !stop.load(std::memory_order_relaxed)) {}
+                }
+            }
+        });
+    }
+
+    juce::AudioBuffer<float> work(2, kBlock);
+    juce::MidiBuffer midi;
+    const int sigBlocks = sig.getNumSamples() / kBlock;
+    for (long long blk = 0; blk < blocks; ++blk)
+    {
+        const int pos = static_cast<int>(blk % sigBlocks) * kBlock;
+        for (int ch = 0; ch < 2; ++ch)
+            work.copyFrom(ch, 0, sig, ch, pos, kBlock);
+        const long long c0 = g_allocCount.load(std::memory_order_relaxed);
+        g_allocArmed.store(true, std::memory_order_relaxed);
+        eq.processBlock(work, midi);
+        g_allocArmed.store(false, std::memory_order_relaxed);
+        r.allocs += g_allocCount.load(std::memory_order_relaxed) - c0;
+
+        const auto& snap = eq.getAudioParamSnapshotForTest();
+        if (snap.count < 0 || snap.count > XlethParametricEQ::kMaxBands) ++r.badCount;
+        else
+            for (int b = 0; b < snap.count; ++b)
+                if (!consistent(snap.band[b])) { ++r.torn; break; }
+
+        for (int ch = 0; ch < 2; ++ch)
+        {
+            const float* d = work.getReadPointer(ch);
+            for (int s = 0; s < kBlock; ++s)
+            {
+                if (!std::isfinite(d[s])) r.finite = false;
+                else r.outPeak = std::max(r.outPeak, std::abs(d[s]));
+            }
+        }
+
+        if (latencyChecks && (blk + 1) % kCheckEvery == 0)
+        {
+            // Quiescent point: every writer parked, so the latency the EQ publishes must be the one its
+            // parameters give. A refresh here changes nothing unless an earlier refresh was lost / stale.
+            pause.store(true, std::memory_order_release);
+            while (parked.load(std::memory_order_acquire) < writers) {}
+            const int statusBefore = eq.getLatencySamples();
+            const int reportedBefore = eq.getReportedProcessorLatencySamples();
+            eq.refreshLatencySamples();
+            if (eq.getLatencySamples() != statusBefore) ++r.staleStatus;
+            if (eq.getReportedProcessorLatencySamples() != reportedBefore) ++r.staleReported;
+            ++r.latencyChecks;
+            pause.store(false, std::memory_order_release);
+        }
+    }
+    stop.store(true);
+    for (auto& t : threads) t.join();
+    r.blocks = blocks;
+    for (const auto& st : r.perWriter)
+    {
+        r.total.requests += st.requests; r.total.engine += st.engine; r.total.quality += st.quality;
+        r.total.restores += st.restores; r.total.adds += st.adds; r.total.removes += st.removes;
+        r.total.applierWrites += st.applierWrites;
+    }
+    r.accepted = eq.getSnapshotAcceptedCountForTest();
+    r.kept = eq.getSnapshotKeptCountForTest();
+    r.switches = eq.getStructureSwitchCount();
+    r.tierSwitches = eq.getCoreForTest().tierSwitchCount();
+    return r;
+}
+// Lost-update hunt for the latency publish: no audio, the writers start each round together and issue ONLY
+// latency-affecting writes (band enabled / mode, engine, quality, linear phase, oversampling) through the RPC and
+// applier entry points, then the latency is checked at the round's end. injectStale (detector negative control):
+// after the writers finish, flip linear phase through the automation handle (the raw atomic, no refresh),
+// which leaves the published latency stale by construction.
+struct LatencyRaceResult { long long rounds = 0, writes = 0, staleStatus = 0, staleReported = 0; };
+
+static LatencyRaceResult runLatencyRace(int rounds, int writers, bool injectStale)
+{
+    XlethParametricEQ eq;
+    eq.prepareToPlay(kSR, 64);
+    for (int b = 0; b < 4; ++b)
+    {
+        eq.addBand();
+        eq.setBandParam(b, "gain", -9.0f);
+        eq.setBandParam(b, "mode", 2.0f);
+    }
+    std::atomic<float>* linPhaseRaw = nullptr;
+    juce::RangedAudioParameter* linPhaseParam = nullptr;
+    eq.resolveAutomationParameter("linphase", linPhaseRaw, linPhaseParam);
+
+    LatencyRaceResult r;
+    std::atomic<int> go { 0 }, done { 0 };
+    std::atomic<bool> stop { false };
+    std::atomic<long long> writes { 0 };
+    std::vector<std::thread> threads;
+    for (int w = 0; w < writers; ++w)
+    {
+        threads.emplace_back([&, w] {
+            std::mt19937 rng(0x1A7Eu + 104729u * static_cast<unsigned>(w + 1));
+            std::uniform_int_distribution<int> which(0, 5), band(0, 3), two(0, 1), q3(0, 2);
+            int seen = 0;
+            while (true)
+            {
+                int g;
+                while ((g = go.load(std::memory_order_acquire)) == seen && !stop.load(std::memory_order_relaxed)) {}
+                if (stop.load(std::memory_order_relaxed)) break;
+                seen = g;
+                for (int i = 0; i < 6; ++i)
+                {
+                    const int b = band(rng);
+                    switch (which(rng))
+                    {
+                        case 0: eq.setBandParam(b, "enabled", static_cast<float>(two(rng))); break;
+                        case 1: eq.setBandParam(b, "mode", static_cast<float>(2 * two(rng))); break;
+                        case 2: eq.setParameterValue("b" + std::to_string(b) + "_enabled", static_cast<float>(two(rng))); break;
+                        case 3: eq.setParameterValue("spectral_engine", static_cast<float>(two(rng))); break;
+                        case 4: eq.setParameterValue("spectral_quality", static_cast<float>(q3(rng))); break;
+                        default: eq.setParameterValue(two(rng) ? "linphase" : "oversample", static_cast<float>(two(rng))); break;
+                    }
+                    writes.fetch_add(1, std::memory_order_relaxed);
+                }
+                done.fetch_add(1, std::memory_order_acq_rel);
+            }
+        });
+    }
+    for (int round = 1; round <= rounds; ++round)
+    {
+        go.store(round, std::memory_order_release);
+        while (done.load(std::memory_order_acquire) < round * writers) {}
+        if (injectStale && linPhaseRaw)
+            linPhaseRaw->store(linPhaseRaw->load(std::memory_order_relaxed) > 0.5f ? 0.0f : 1.0f, std::memory_order_relaxed);
+        const int statusBefore = eq.getLatencySamples();
+        const int reportedBefore = eq.getReportedProcessorLatencySamples();
+        eq.refreshLatencySamples();
+        if (eq.getLatencySamples() != statusBefore) ++r.staleStatus;
+        if (eq.getReportedProcessorLatencySamples() != reportedBefore) ++r.staleReported;
+        ++r.rounds;
+    }
+    stop.store(true);
+    for (auto& t : threads) t.join();
+    r.writes = writes.load();
+    return r;
+}
+} // namespace eqstress
+
+static void runStressEqLockingMultiWriter()
+{
+    constexpr int kWriters = 3;
+    const auto r = eqstress::runMulti(200000, kWriters, true, true);
+    const bool boundOk = r.outPeak <= 4.0f * r.inPeak;
+    std::printf("[EQCore] case=h2 (EQ locking, %d concurrent writers) blocks=%lld block=64 requests=%lld "
+                "(engine %lld, quality %lld, restores %lld, adds %lld, removes %lld, applier-path %lld) "
+                "structural transitions=%llu tier switches=%lld snapshots accepted=%llu kept=%llu "
+                "torn=%lld bad_count=%lld allocs=%lld finite=%d out_peak=%.4f in_peak=%.4f "
+                "latency checks=%lld stale_status=%lld stale_reported=%lld  %s\n",
+                kWriters, r.blocks, r.total.requests, r.total.engine, r.total.quality, r.total.restores, r.total.adds,
+                r.total.removes, r.total.applierWrites, static_cast<unsigned long long>(r.switches), r.tierSwitches,
+                static_cast<unsigned long long>(r.accepted), static_cast<unsigned long long>(r.kept),
+                r.torn, r.badCount, r.allocs, r.finite ? 1 : 0, r.outPeak, r.inPeak,
+                r.latencyChecks, r.staleStatus, r.staleReported,
+                (r.torn == 0 && r.badCount == 0 && r.allocs == 0 && r.finite && boundOk
+                 && r.staleStatus == 0 && r.staleReported == 0) ? "PASS" : "FAIL");
+    for (std::size_t w = 0; w < r.perWriter.size(); ++w)
+        std::printf("[EQCore]   writer %zu: requests=%lld restores=%lld adds=%lld removes=%lld engine=%lld quality=%lld\n",
+                    w, r.perWriter[w].requests, r.perWriter[w].restores, r.perWriter[w].adds, r.perWriter[w].removes,
+                    r.perWriter[w].engine, r.perWriter[w].quality);
+    bool everyWriterRan = true;
+    for (const auto& st : r.perWriter) everyWriterRan = everyWriterRan && st.requests > 1000 && st.restores > 10;
+    CHECK(everyWriterRan, "case h2: every writer thread made mutations, including restores");
+    CHECK(r.total.engine > 50 && r.total.quality > 50 && r.switches > 20,
+          "case h2: engine / quality mutations reached the effect and caused structural transitions");
+    CHECK(r.kept > 0, "case h2: some blocks overlapped an edit and kept the previous snapshot (the race was exercised)");
+    CHECK(r.torn == 0, "case h2: torn snapshot reads: " << r.torn);
+    CHECK(r.badCount == 0, "case h2: snapshot band count out of range: " << r.badCount);
+    CHECK(r.allocs == 0, "case h2: EQ processBlock allocated " << r.allocs << " times under concurrent mutations");
+    CHECK(r.finite, "case h2: output finite");
+    CHECK(boundOk, "case h2: output bounded (peak " << r.outPeak << " vs input " << r.inPeak << ")");
+    CHECK(r.latencyChecks >= 199, "case h2: latency consistency checked at quiescent points (" << r.latencyChecks << ")");
+    CHECK(r.staleStatus == 0, "case h2: the latency status was stale at a quiescent point " << r.staleStatus << " times (lost update between writers)");
+    CHECK(r.staleReported == 0, "case h2: the reported processor latency was stale at a quiescent point " << r.staleReported << " times");
+
+    // Negative control: the same writers with the sequence check disabled (every copy accepted) and no writer
+    // pauses. The checker must see torn reads, or the zero above means nothing.
+    const auto n = eqstress::runMulti(60000, kWriters, false, false);
+    std::printf("[EQCore] case=h2-neg (%d writers, sequence check OFF) blocks=%lld requests=%lld torn=%lld  %s\n",
+                kWriters, n.blocks, n.total.requests, n.torn, n.torn > 0 ? "PASS (torn reads detected)" : "FAIL (checker saw nothing)");
+    CHECK(n.torn > 0, "case h2-neg: with the sequence check disabled the checker must detect torn reads (saw " << n.torn << ")");
+
+    // Latency publish under writer contention, and its detector's negative control.
+    const auto lr = eqstress::runLatencyRace(20000, kWriters, false);
+    std::printf("[EQCore] case=h2-lat (%d writers, latency-affecting writes only) rounds=%lld writes=%lld "
+                "stale_status=%lld stale_reported=%lld  %s\n",
+                kWriters, lr.rounds, lr.writes, lr.staleStatus, lr.staleReported,
+                (lr.staleStatus == 0 && lr.staleReported == 0) ? "PASS" : "FAIL");
+    CHECK(lr.staleStatus == 0 && lr.staleReported == 0,
+          "case h2-lat: latency stale after concurrent writers (status " << lr.staleStatus << ", reported " << lr.staleReported << ")");
+    const auto ln = eqstress::runLatencyRace(500, kWriters, true);
+    std::printf("[EQCore] case=h2-lat-neg (automation-handle write, no refresh) rounds=%lld stale_status=%lld  %s\n",
+                ln.rounds, ln.staleStatus, ln.staleStatus > 0 ? "PASS (stale latency detected)" : "FAIL (detector saw nothing)");
+    CHECK(ln.staleStatus > 0, "case h2-lat-neg: the latency detector must see an unrefreshed latency-affecting write");
+}
+
 // The counter must really see allocations, or every zero above is meaningless.
 static void counterNegativeControl()
 {
@@ -1135,6 +1471,7 @@ int main(int argc, char** argv)
 
     runStressRsStructure();
     runStressEqLocking();
+    runStressEqLockingMultiWriter();
     runMemoryReport();
     runMemoryReportEq();
 
