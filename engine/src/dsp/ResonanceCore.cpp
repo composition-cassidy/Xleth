@@ -55,6 +55,27 @@
 //   * Visualization tap / meters: after the weight curve, once per hop (emitViz, lastMaxReductionDb).
 //   * G(f): the band curve (dB) is interpolated linearly on the ERB axis to every bin and applied as a
 //     real, zero-phase gain.
+// Low-frequency per-bin path (below kLowSplitHz, every tier; ResonanceCore.md section 4)
+//   * Why: a resonance narrower than the analysis kernel cannot be carried by the band curve (96 ERB bands, [1 2 1] / 4, linear
+//     interpolation to the bins): even a perfect detector leaves 2.5 - 3.2 dB of a Q 8 bell at 100 Hz. The transform itself can
+//     (cut-only per-bin gains through the same WOLA pass): docs/RS_LOWFREQ_DIAGNOSIS.md.
+//   * Peaks: local maxima of the slow bin excess fraction x_k below the split. Per peak: mass m (sum of x over +/- 2 bins), position
+//     p (the excess centroid mapped through the line-source centroid table, which removes the window-truncation bias next to DC),
+//     width w (the peak bin's share of the mass against the share a source of width w would give at that offset: robust to the
+//     long tails of a resonance, which the second moment is not).
+//   * Depth D = 10 log10(1 + m / max(ERB(p), w)): the excess an auditory filter centred on the peak would see (the band path's
+//     auditory-resolution definition, now at the peak itself).
+//   * Detection and dynamics are the band path's: target depth = K x D with K the gated knee of the band nearest p, the depth
+//     ceiling per bin, per-bin attack / release, the stereo link, the weight curve (interpolated to the bin). Sharpness (a band-curve
+//     smoothing) does not apply.
+//   * Rendering: the cut vector on bins floor(p) - 2 .. + 3 comes from a table solved in prepare() for this tier's window: the
+//     cut-only, minimum-norm (sum of dB^2) per-bin cut whose renderer response at p is exactly -D (offset 0 .. 1 in 1/32 bin,
+//     D 0 .. 24 dB in 1 dB; bilinear). Combined with the band curve by max() per bin.
+//   * Band path below the split: the sub-bin depth correction is no longer applied to bands more than kLowSplitGuardBands below
+//     the split (the per-bin path carries the sub-bin depth where it can be rendered); detection, gating and smoothing unchanged.
+//     Every bin at or above the split is bit-identical to the core without the path (setLowFreqBinPath(false)).
+//   * Published per-band values (bandReductionDb, the viz tap, the meters) below the split = max(band curve, per-bin path at the
+//     band centre), the latter weighted with the band's own weight (so the weight-curve semantics hold per band exactly).
 // Live tier switching (ResonanceCore.md section 9)
 //   * One Engine per tier, all built in prepare(); the input ring is shared and is every engine's analysis FIFO (a frame ending at stream
 //     position e reads ring[e - N, e)), so an engine that starts mid-stream already has its history. A frame grid is (e + offset) % H == 0
@@ -110,6 +131,17 @@ inline float sane(float v, float def, float lo, float hi) noexcept
 {
     return finiteF(v) ? std::clamp(v, lo, hi) : def;
 }
+
+// RS weighting semantics for one value (sanitised weight): w <= 1 scales, w > 1 deepens up to max(ceiling, value). Monotone in v.
+inline float applyWeight(float w, float v, float rMax) noexcept
+{
+    return w <= 1.0f ? w * v : std::min(w * v, std::max(rMax, v));
+}
+inline float sanitiseWeight(float wr) noexcept
+{
+    return !finiteF(wr) ? 1.0f : (wr > 0.0f ? (wr < kMaxWeight ? wr : kMaxWeight) : 0.0f);
+}
+inline double erbHzOf(double f) { return 24.7 * (4.37 * f / 1000.0 + 1.0); }
 } // namespace
 
 Core::Core() = default;
@@ -179,6 +211,12 @@ void Core::prepare(double sampleRate, int /*maxBlockSize*/, int numChannels)
     scratch_.assign(B, 0.0f);
     tmpBand_.assign(B, 0.0f);
     estBand_.assign(B, 0.0f);
+    kGate_.assign(B, 0.0f);
+    int lfMax = 1;
+    for (const auto& e : eng_) lfMax = std::max(lfMax, e.lfBins);
+    lfX_.assign(static_cast<size_t>(lfMax) + 3, 0.0f);
+    lfTgt_.assign(static_cast<size_t>(lfMax) + 3, 0.0f);
+    lfW_.assign(static_cast<size_t>(lfMax) + 3, 1.0f);
     fadeLen_ = std::max(1, static_cast<int>(std::lround(sampleRate_ * kTierCrossfadeMs * 1.0e-3)));
     switches_.store(0, std::memory_order_relaxed);
     prepared_ = true;
@@ -440,6 +478,15 @@ void Core::buildEngine(Engine& e, FrameTier tier)
         e.kernelVar = static_cast<float>(varSum / cnt);
     }
 
+    // --- low-frequency per-bin path: geometry and the prepare()-time tables (built for every tier; the switch only selects which is read) ---
+    {
+        e.lfBins = std::clamp(static_cast<int>(std::ceil(static_cast<double>(kLowSplitHz) / binHz - 1.0e-9)), 1, nb - 3);
+        e.lfBandSplit = B;
+        for (int b = 0; b < B; ++b) if (bandHz_[static_cast<size_t>(b)] >= kLowSplitHz) { e.lfBandSplit = b; break; }
+        e.lfBandLo = std::max(0, e.lfBandSplit - kLowSplitGuardBands);
+        buildLowFreqTables(e);
+    }
+
     // --- bin -> band interpolation (ERB axis) for G(f) ---
     e.binBand.assign(static_cast<size_t>(nb), 0);
     e.binFrac.assign(static_cast<size_t>(nb), 0.0f);
@@ -474,9 +521,159 @@ void Core::buildEngine(Engine& e, FrameTier tier)
         ch.smoothDb.assign(Bs, 0.0f);
         ch.outDb.assign(Bs, 0.0f);
         ch.exAdjDb.assign(Bs, 0.0f);
+        ch.lfRed.assign(static_cast<size_t>(e.lfBins), 0.0f);
+        ch.lfOut.assign(static_cast<size_t>(e.lfBins), 0.0f);
     }
     e.sigmaE.assign(Bs, 0.0f);
     e.sigmaEF.assign(Bs, 0.0f);
+}
+
+// Low-frequency tables of one tier (prepare(), non-audio thread). All indexed in bins of THIS tier's window.
+//   lfTable: for a narrow source at p = floor(p) + d (d = i / kLfDeltaSteps) and a depth D (j dB), the cut (dB) on bins floor(p) - 2 .. + 3 that minimises the sum of
+//            the squared cuts subject to the renderer's response at p being exactly -D: sum_k g_k K(p - k) = 10^(-D / 20) sum_k K(p - k), g = 10^(-c / 20), c >= 0
+//            (K = |W(d)|^2 / |W(0)|^2 of the sqrt-Hann window: the WOLA renderer's response to a stationary component is the kernel-weighted mean of the gains, in
+//            amplitude). Lagrange: c_k = W0(gamma a K_k) / a (a = ln 10 / 20), gamma by bisection. Cut-only by construction, no gain above 1.
+//   lfLineC / lfLineShare: the excess pattern a source at k0 + d (d in [-0.5, 0.5]) leaves in the peak finder's window [max(1, k0 - 2), k0 + 2] (rows k0 = 1, 2, >= 3):
+//            its centroid, and the share of the window's excess in bin k0 for a rectangular source of width w (lfWidths).
+void Core::buildLowFreqTables(Engine& e)
+{
+    const int N = e.N;
+    const std::vector<float>& win = e.window;
+    // Kernel K(d), d in [0, kSpan] bins at 1/64 bin (phasor recurrence; linear interpolation in between).
+    constexpr int kRes = 64, kSpan = 10;
+    std::vector<double> kt(static_cast<size_t>(kSpan * kRes + 2), 0.0);
+    double w0 = 0.0;
+    for (int n = 0; n < N; ++n) w0 += win[static_cast<size_t>(n)];
+    for (int i = 0; i < kSpan * kRes + 2; ++i)
+    {
+        const double d = static_cast<double>(i) / kRes;
+        const double ph = -2.0 * juce::MathConstants<double>::pi * d / N;
+        const double cr = std::cos(ph), ci = std::sin(ph);
+        double zr = 1.0, zi = 0.0, re = 0.0, im = 0.0;
+        for (int n = 0; n < N; ++n)
+        {
+            re += win[static_cast<size_t>(n)] * zr; im += win[static_cast<size_t>(n)] * zi;
+            const double t = zr * cr - zi * ci; zi = zr * ci + zi * cr; zr = t;
+        }
+        kt[static_cast<size_t>(i)] = (re * re + im * im) / (w0 * w0);
+    }
+    auto K = [&](double d)
+    {
+        d = std::abs(d) * kRes;
+        if (d >= kSpan * kRes) return 0.0;
+        const int i = static_cast<int>(d);
+        const double t = d - i;
+        return kt[static_cast<size_t>(i)] + t * (kt[static_cast<size_t>(i) + 1] - kt[static_cast<size_t>(i)]);
+    };
+
+    // ---- minimum-norm notch table ----
+    const double a = std::log(10.0) / 20.0;
+    e.lfTable.assign(static_cast<size_t>((kLfDeltaSteps + 1) * (kLfDepthSteps + 1) * kLfTaps), 0.0f);
+    for (int id = 0; id <= kLfDeltaSteps; ++id)
+    {
+        const double d = static_cast<double>(id) / kLfDeltaSteps;
+        double kj[kLfTaps], kin = 0.0, ksum = 0.0;
+        for (int t = 0; t < kLfTaps; ++t) { kj[t] = K(d - (t - 2)); kin += kj[t]; }
+        for (int j = -9; j <= 9; ++j) ksum += K(d - j);
+        const double kout = ksum - kin;
+        for (int iD = 1; iD <= kLfDepthSteps; ++iD)
+        {
+            const double D = kLfDepthMaxDb * iD / kLfDepthSteps;
+            const double target = std::max(std::pow(10.0, -D / 20.0) * ksum - kout, 1.0e-9);
+            double c[kLfTaps];
+            auto solve = [&](double gamma)   // c_t = (gamma / a) K_t e^(-a c_t), Newton; returns sum g_t K_t
+            {
+                double s = 0.0;
+                for (int t = 0; t < kLfTaps; ++t)
+                {
+                    double x = 0.0;
+                    for (int it = 0; it < 40; ++it)
+                    {
+                        const double ex = std::exp(-a * x);
+                        const double f = x - gamma / a * kj[t] * ex, fp = 1.0 + gamma * kj[t] * ex;
+                        const double nx = std::max(x - f / fp, 0.0);
+                        if (std::abs(nx - x) < 1.0e-10) { x = nx; break; }
+                        x = nx;
+                    }
+                    c[t] = x;
+                    s += std::exp(-a * x) * kj[t];
+                }
+                return s;
+            };
+            double lo = 0.0, hi = 1.0;
+            while (solve(hi) > target && hi < 1.0e12) hi *= 2.0;
+            for (int it = 0; it < 50; ++it)
+            {
+                const double mid = 0.5 * (lo + hi);
+                if (solve(mid) > target) lo = mid; else hi = mid;
+            }
+            solve(hi);
+            float* dst = e.lfTable.data() + (static_cast<size_t>(id) * (kLfDepthSteps + 1) + static_cast<size_t>(iD)) * kLfTaps;
+            for (int t = 0; t < kLfTaps; ++t) dst[t] = static_cast<float>(c[t]);
+        }
+    }
+
+    // ---- line-source moment tables (peak finder geometry) ----
+    e.lfWidths.assign(static_cast<size_t>(kLfWidthSteps) + 1, 0.0f);
+    for (int l = 1; l <= kLfWidthSteps; ++l) e.lfWidths[static_cast<size_t>(l)] = static_cast<float>(0.05 * std::pow(8.0 / 0.05, static_cast<double>(l - 1) / (kLfWidthSteps - 1)));
+    e.lfLineC.assign(static_cast<size_t>(3 * (kLfLineSteps + 1)), 0.0f);
+    e.lfLineShare.assign(static_cast<size_t>(3 * (kLfLineSteps + 1) * (kLfWidthSteps + 1)), 0.0f);
+    for (int kk = 1; kk <= 3; ++kk)
+    {
+        const int j0 = std::max(1, kk - 2), j1 = kk + 2;
+        for (int il = 0; il <= kLfLineSteps; ++il)
+        {
+            const double p = kk - 0.5 + static_cast<double>(il) / kLfLineSteps;
+            double m = 0.0, c = 0.0;
+            for (int j = j0; j <= j1; ++j) { const double x = K(j - p); m += x; c += j * x; }
+            e.lfLineC[static_cast<size_t>((kk - 1) * (kLfLineSteps + 1) + il)] = static_cast<float>(c / m - kk);
+            for (int l = 0; l <= kLfWidthSteps; ++l)
+            {
+                const double w = e.lfWidths[static_cast<size_t>(l)];
+                double xs[5] = {}, ms = 0.0;
+                for (int j = j0; j <= j1; ++j)
+                {
+                    double v = 0.0;
+                    if (w <= 0.0) v = K(j - p);
+                    else { constexpr int kPts = 32; for (int q = 0; q < kPts; ++q) v += K(j - (p - 0.5 * w + w * (q + 0.5) / kPts)); v /= kPts; }
+                    xs[j - j0] = v; ms += v;
+                }
+                e.lfLineShare[static_cast<size_t>(((kk - 1) * (kLfLineSteps + 1) + il) * (kLfWidthSteps + 1) + l)] = static_cast<float>(xs[kk - j0] / ms);
+            }
+        }
+    }
+}
+
+size_t Core::lowFreqTableBytes() const noexcept
+{
+    size_t n = 0;
+    for (const auto& e : eng_) n += e.lfTable.size() + e.lfLineC.size() + e.lfLineShare.size() + e.lfWidths.size();
+    return n * sizeof(float);
+}
+
+// The per-bin LF state of `from` on the bins of `to` (dB values, no scaling): linear interpolation in frequency onto a finer grid, the maximum over the
+// covered source bins onto a coarser one (a notch between two coarse bins is kept, not averaged away).
+void Core::remapLowFreq(const Engine& from, const Engine& to, const float* src, float* dst) noexcept
+{
+    const int nF = from.lfBins;
+    for (int k = 0; k < to.lfBins; ++k)
+    {
+        float v = 0.0f;
+        if (to.N >= from.N)
+        {
+            const int r = to.N / from.N;
+            const int k0 = k / r;
+            const float t = static_cast<float>(k - k0 * r) / static_cast<float>(r);
+            const float a0 = k0 < nF ? src[k0] : 0.0f, a1 = k0 + 1 < nF ? src[k0 + 1] : 0.0f;
+            v = a0 + t * (a1 - a0);
+        }
+        else
+        {
+            const int r = from.N / to.N;
+            for (int j = k * r - (r - 1); j <= k * r + (r - 1); ++j) if (j >= 0 && j < nF) v = std::max(v, src[j]);
+        }
+        dst[k] = v;
+    }
 }
 
 // sigma_E per band for the engine's current number of averaged frames.
@@ -520,7 +717,7 @@ void Core::release()
     {
         e.fft.reset();
         for (auto* v : { &e.window, &e.synthesis, &e.bwW, &e.vfBin, &e.binFrac, &e.sideX[0], &e.sideX[1], &e.sideVf[0], &e.sideVf[1],
-                         &e.sideNeff[0], &e.sideNeff[1], &e.sigmaE, &e.sigmaEF, &e.erbBins })
+                         &e.sideNeff[0], &e.sideNeff[1], &e.sigmaE, &e.sigmaEF, &e.erbBins, &e.lfTable, &e.lfLineC, &e.lfLineShare, &e.lfWidths })
         { v->clear(); v->shrink_to_fit(); }
         for (auto* v : { &e.bwStart, &e.bwBin, &e.flStart[0], &e.flStart[1], &e.fl[0], &e.fl[1], &e.lobeLo, &e.lobeHi, &e.binBand })
         { v->clear(); v->shrink_to_fit(); }
@@ -529,17 +726,18 @@ void Core::release()
         for (auto& ch : e.ch)
         {
             for (auto* v : { &ch.outAcc, &ch.outFifo, &ch.fftBuf, &ch.binGain, &ch.powAvg, &ch.powAvgF,
-                             &ch.levelDb, &ch.baseDb, &ch.levelFDb, &ch.baseFDb, &ch.redDb, &ch.smoothDb, &ch.outDb, &ch.exAdjDb })
+                             &ch.levelDb, &ch.baseDb, &ch.levelFDb, &ch.baseFDb, &ch.redDb, &ch.smoothDb, &ch.outDb, &ch.exAdjDb, &ch.lfRed, &ch.lfOut })
             { v->clear(); v->shrink_to_fit(); }
             ch.fastOwns.clear(); ch.fastOwns.shrink_to_fit();
         }
         e.N = e.H = 0;
         e.hopOffset = 0;
         e.frames = 0;
+        e.lfBins = e.lfBandSplit = e.lfBandLo = 0;
     }
     for (auto& r : ring_) { r.clear(); r.shrink_to_fit(); }
     auxRing_.clear(); auxRing_.shrink_to_fit();
-    for (auto* v : { &binX_, &binF_, &scratch_, &tmpBand_, &estBand_, &bandHz_, &bandX_ }) { v->clear(); v->shrink_to_fit(); }
+    for (auto* v : { &binX_, &binF_, &scratch_, &tmpBand_, &estBand_, &bandHz_, &bandX_, &kGate_, &lfX_, &lfTgt_, &lfW_ }) { v->clear(); v->shrink_to_fit(); }
     prepared_ = false;
     trans_ = Transition{};
     numChannels_ = numBands_ = 0;
@@ -555,7 +753,7 @@ void Core::resetEngine(Engine& e) noexcept
     for (auto& ch : e.ch)
     {
         for (auto* v : { &ch.outAcc, &ch.outFifo, &ch.fftBuf, &ch.powAvg, &ch.powAvgF,
-                         &ch.levelDb, &ch.baseDb, &ch.levelFDb, &ch.baseFDb, &ch.redDb, &ch.smoothDb, &ch.outDb, &ch.exAdjDb })
+                         &ch.levelDb, &ch.baseDb, &ch.levelFDb, &ch.baseFDb, &ch.redDb, &ch.smoothDb, &ch.outDb, &ch.exAdjDb, &ch.lfRed, &ch.lfOut })
             std::fill(v->begin(), v->end(), 0.0f);
         std::fill(ch.binGain.begin(), ch.binGain.end(), 1.0f);
         std::fill(ch.fastOwns.begin(), ch.fastOwns.end(), static_cast<unsigned char>(0));
@@ -802,6 +1000,8 @@ void Core::transferState(const Engine& from, Engine& to, int nCh) noexcept
         std::memcpy(d.baseFDb.data(), s.baseFDb.data(), bytes);
         std::memcpy(d.exAdjDb.data(), s.exAdjDb.data(), bytes);
         std::memcpy(d.fastOwns.data(), s.fastOwns.data(), static_cast<size_t>(numBands_));
+        remapLowFreq(from, to, s.lfRed.data(), d.lfRed.data());
+        remapLowFreq(from, to, s.lfOut.data(), d.lfOut.data());
         d.refMeanS = s.refMeanS;
         d.refMeanF = s.refMeanF;
     }
@@ -1084,7 +1284,8 @@ void Core::subBinCorrection(const Engine& e, Channel& ch, double biasCorr) noexc
         for (int j = std::max(1, k0 - 1); j <= std::min(kMax, k0 + 1); ++j) F[j] = std::max(F[j], f);
     }
     const float fTop = static_cast<float>(kMax * binHz);
-    for (int b = 0; b < B && bandHz_[static_cast<size_t>(b)] < fTop; ++b)
+    // With the low-frequency per-bin path the bands well below the split keep their plain excess (the per-bin path renders the sub-bin depth there).
+    for (int b = lfPath_ ? e.lfBandLo : 0; b < B && bandHz_[static_cast<size_t>(b)] < fTop; ++b)
     {
         if (!(adj[b] > 0.0f)) continue;
         const float pos = bandHz_[static_cast<size_t>(b)] / static_cast<float>(binHz);
@@ -1096,6 +1297,102 @@ void Core::subBinCorrection(const Engine& e, Channel& ch, double biasCorr) noexc
         if (fb <= 1.0f) continue;
         const float xb = std::pow(10.0f, adj[b] * 0.1f) - 1.0f;
         adj[b] = 10.0f * std::log10(1.0f + xb * fb);
+    }
+}
+
+// Per-bin target (dB) of the low-frequency path for one channel, into lfTgt_[0, lfBins). Reads the slow average and baseline of `ch` and the gated knee of the
+// current channel's bands (kGate_). See the design notes at the top of this file.
+void Core::lowFreqTargets(const Engine& e, const Channel& ch, double biasCorr, float rMax, bool hard) noexcept
+{
+    const int nL = e.lfBins;
+    float* tgt = lfTgt_.data();
+    std::fill(tgt, tgt + nL, 0.0f);
+    if (!(rMax > 0.0f) || nL < 2) return;
+    const int nb = e.N / 2 + 1;
+    const int kTop = std::min(nL + 2, nb - 1);
+    const double binHz = sampleRate_ / e.N;
+    const float* S = ch.powAvg.data();
+    const float* base = ch.baseDb.data();
+    float* x = lfX_.data();
+    x[0] = 0.0f;
+    for (int k = 1; k <= kTop; ++k)
+    {
+        const int j = e.binBand[static_cast<size_t>(k)];
+        const float t = e.binFrac[static_cast<size_t>(k)];
+        const float bk = base[j] + t * (base[j + 1] - base[j]);
+        const double lev = 10.0 * std::log10(static_cast<double>(S[k]) * k * binHz * biasCorr + 1.0e-30);
+        x[k] = std::max(static_cast<float>(std::pow(10.0, (lev - bk) * 0.1)) - 1.0f, 0.0f);
+    }
+    const int nRow = kLfLineSteps + 1, nW = kLfWidthSteps + 1;
+    for (int k0 = 1; k0 < nL; ++k0)
+    {
+        if (!(x[k0] > 0.0f) || x[k0] < x[k0 - 1] || x[k0] < x[k0 + 1]) continue;
+        const int j0 = std::max(1, k0 - 2), j1 = k0 + 2;
+        float m = 0.0f, c = 0.0f;
+        for (int j = j0; j <= j1; ++j) { m += x[j]; c += static_cast<float>(j) * x[j]; }
+        c = c / m - static_cast<float>(k0);
+        // Position: invert the (increasing) line-source centroid of this window geometry.
+        const int kk = std::min(k0, 3) - 1;
+        const float* lc = e.lfLineC.data() + static_cast<size_t>(kk) * nRow;
+        float d;
+        if (c <= lc[0]) d = -0.5f;
+        else if (c >= lc[nRow - 1]) d = 0.5f;
+        else
+        {
+            int lo = 0, hi = nRow - 1;
+            while (hi - lo > 1) { const int mid = (lo + hi) / 2; if (lc[mid] <= c) lo = mid; else hi = mid; }
+            const float t = (c - lc[lo]) / std::max(lc[hi] - lc[lo], 1.0e-12f);
+            d = -0.5f + (static_cast<float>(lo) + t) / static_cast<float>(kLfLineSteps);
+        }
+        const float pBin = static_cast<float>(k0) + d;
+        // Width: the peak bin's share of the window's excess against the share of a width-w source at this offset (decreasing in w).
+        const int il = std::clamp(static_cast<int>(std::lround((d + 0.5f) * kLfLineSteps)), 0, kLfLineSteps);
+        const float* sh = e.lfLineShare.data() + (static_cast<size_t>(kk) * nRow + static_cast<size_t>(il)) * nW;
+        const float share = x[k0] / m;
+        float wEff;
+        if (share >= sh[0]) wEff = 0.0f;
+        else if (share <= sh[nW - 1]) wEff = e.lfWidths[static_cast<size_t>(nW - 1)];
+        else
+        {
+            int l = 0;
+            while (l + 1 < nW && sh[l + 1] > share) ++l;
+            const float t = (sh[l] - share) / std::max(sh[l] - sh[l + 1], 1.0e-12f);
+            wEff = e.lfWidths[static_cast<size_t>(l)] + t * (e.lfWidths[static_cast<size_t>(l) + 1] - e.lfWidths[static_cast<size_t>(l)]);
+        }
+        const double fP = pBin * binHz;
+        const float wAud = static_cast<float>(erbHzOf(fP) / binHz);
+        const float D = 10.0f * std::log10(1.0f + m / std::max(wAud, wEff));
+        // Detection state and knee: the gated knee K of the band nearest the peak (ERB axis); the per-bin depth is K x D, exactly as the band path's target is
+        // K x E. (Tried: full D wherever K > 0, as the diagnosis' P1 prototype gated it. It deepens the 100 Hz cut but lets noise peaks in a detected band take
+        // their full depth: unit test F1, clean pink at sensitivity 1, worst low band 1.085 dB against its 1.0 dB bound. Rejected.)
+        const double xb = (erbRate(fP) - erbLo_) / erbStep_;
+        const int band = std::clamp(static_cast<int>(std::lround(xb)), 0, numBands_ - 1);
+        const float kg = kGate_[static_cast<size_t>(band)];
+        if (!(kg > 0.0f)) continue;
+        const float Dt = std::clamp(kg * D, 0.0f, kLfDepthMaxDb);
+        // Table lookup (bilinear in offset and depth), then the depth ceiling per bin (the band path's soft cap).
+        const int kb = static_cast<int>(std::floor(pBin));
+        const float off = (pBin - static_cast<float>(kb)) * kLfDeltaSteps;
+        const int i0 = std::clamp(static_cast<int>(off), 0, kLfDeltaSteps - 1);
+        const float ti = std::clamp(off - static_cast<float>(i0), 0.0f, 1.0f);
+        const float dd = Dt * (kLfDepthSteps / kLfDepthMaxDb);
+        const int d0 = std::clamp(static_cast<int>(dd), 0, kLfDepthSteps - 1);
+        const float td = std::clamp(dd - static_cast<float>(d0), 0.0f, 1.0f);
+        const float* r00 = e.lfTable.data() + (static_cast<size_t>(i0) * (kLfDepthSteps + 1) + static_cast<size_t>(d0)) * kLfTaps;
+        const float* r01 = r00 + kLfTaps;
+        const float* r10 = r00 + static_cast<size_t>(kLfDepthSteps + 1) * kLfTaps;
+        const float* r11 = r10 + kLfTaps;
+        for (int t = 0; t < kLfTaps; ++t)
+        {
+            const int k = kb - 2 + t;
+            if (k < 1 || k >= nL) continue;
+            const float a0 = r00[t] + td * (r01[t] - r00[t]), a1 = r10[t] + td * (r11[t] - r10[t]);
+            const float raw = a0 + ti * (a1 - a0);
+            if (!(raw > 0.0f)) continue;
+            const float xr = raw / rMax;
+            const float cut = hard ? raw / std::pow(1.0f + (xr * xr) * (xr * xr) * (xr * xr), 1.0f / 6.0f) : raw / std::sqrt(1.0f + xr * xr);
+            tgt[k] = std::max(tgt[k], cut);
+        }
     }
 }
 
@@ -1188,6 +1485,7 @@ bool Core::computeGains(Engine& e, int numCh, const Params& p, bool publish) noe
             float k = 0.0f;
             if (ev > 0.0f && rMax > 0.0f)
                 for (int j = e.lobeLo[static_cast<size_t>(b)]; j <= e.lobeHi[static_cast<size_t>(b)]; ++j) k = std::max(k, kb[j]);
+            kGate_[static_cast<size_t>(b)] = k;   // the band's detection state, read by the low-frequency per-bin path below
             if (k > 0.0f)
             {
                 const float raw = k * ev;
@@ -1220,6 +1518,19 @@ bool Core::computeGains(Engine& e, int numCh, const Params& p, bool publish) noe
             pass(sm, wa); pass(wa, wb); pass(wb, wa);
             for (int b = 0; b < B; ++b) sm[b] += broaden * (wa[b] - sm[b]);
         }
+        if (lfPath_)
+        {
+            // Low-frequency per-bin path: per-bin targets, then the per-bin attack / release state.
+            lowFreqTargets(e, ch, biasCorr, rMax, hard);
+            const float* tg = lfTgt_.data();
+            float* lr = ch.lfRed.data();
+            for (int k = 0; k < e.lfBins; ++k)
+            {
+                float v = lr[k];
+                v += (tg[k] > v ? aAtt : aRel) * (tg[k] - v);
+                lr[k] = v < 1.0e-7f ? 0.0f : v;
+            }
+        }
     }
     e.forceRefresh = false;
 
@@ -1232,6 +1543,15 @@ bool Core::computeGains(Engine& e, int numCh, const Params& p, bool publish) noe
         const float* other = e.ch[1 - c].smoothDb.data();
         for (int b = 0; b < B; ++b) out[b] = own[b] + link * (std::max(own[b], other[b]) - own[b]);
     }
+    if (lfPath_)
+        for (int c = 0; c < numCh; ++c)
+        {
+            const float* own = e.ch[c].lfRed.data();
+            float* out = e.ch[c].lfOut.data();
+            if (numCh < 2 || link <= 0.0f) { std::memcpy(out, own, sizeof(float) * static_cast<size_t>(e.lfBins)); continue; }
+            const float* other = e.ch[1 - c].lfRed.data();
+            for (int k = 0; k < e.lfBins; ++k) out[k] = own[k] + link * (std::max(own[k], other[k]) - own[k]);
+        }
 
     // ---- weight curve (RS weighting semantics): w <= 1 scales the reduction, w > 1 deepens it up to the depth ceiling, never beyond (and never
     //      below the unweighted value, which may exceed a just-lowered ceiling while it releases). nullptr = flat 1: the loop is skipped.
@@ -1244,10 +1564,62 @@ bool Core::computeGains(Engine& e, int numCh, const Params& p, bool publish) noe
             float* out = e.ch[c].outDb.data();
             for (int b = 0; b < B; ++b)
             {
-                const float wr = wc[b];
-                const float w = !finiteF(wr) ? 1.0f : (wr > 0.0f ? (wr < kMaxWeight ? wr : kMaxWeight) : 0.0f);
-                const float v = out[b];
-                out[b] = w <= 1.0f ? w * v : std::min(w * v, std::max(rMax, v));
+                out[b] = applyWeight(sanitiseWeight(wc[b]), out[b], rMax);
+            }
+        }
+    }
+
+    // ---- G(f): band curve -> bins, real zero-phase gain; below the split the per-bin path by max() ----
+    bool any = false;
+    const int nb = e.N / 2 + 1;
+    const int nL = lfPath_ ? e.lfBins : 0;
+    if (nL > 0)
+    {
+        // Per-bin weights: the sanitised band weights interpolated on the ERB axis (the band -> bin rule of the gains). Flat 1 without a curve.
+        float* wk = lfW_.data();
+        for (int k = 0; k < nL; ++k)
+        {
+            if (p.weightCurve == nullptr) { wk[k] = 1.0f; continue; }
+            const int j = e.binBand[static_cast<size_t>(k)];
+            const float t = e.binFrac[static_cast<size_t>(k)];
+            const float w0 = sanitiseWeight(p.weightCurve[j]), w1 = sanitiseWeight(p.weightCurve[j + 1]);
+            wk[k] = w0 + t * (w1 - w0);
+        }
+    }
+    for (int c = 0; c < numCh; ++c)
+    {
+        const float* out = e.ch[c].outDb.data();
+        const float* lf = e.ch[c].lfOut.data();
+        float* g = e.ch[c].binGain.data();
+        for (int k = 0; k < nb; ++k)
+        {
+            const int j = e.binBand[static_cast<size_t>(k)];
+            const float t = e.binFrac[static_cast<size_t>(k)];
+            float rdB = out[j] + t * (out[j + 1] - out[j]);
+            if (k < nL) rdB = std::max(rdB, applyWeight(lfW_[static_cast<size_t>(k)], lf[k], rMax));
+            if (rdB > 1.0e-6f) { g[k] = std::exp(-rdB * kLn10Over20); any = true; }
+            else g[k] = 1.0f;
+        }
+    }
+
+    // ---- published per-band values below the split: max(band curve, per-bin path at the band centre), weighted with the band's own weight ----
+    if (nL > 0)
+    {
+        const double binHz = sampleRate_ / e.N;
+        for (int c = 0; c < numCh; ++c)
+        {
+            const float* lf = e.ch[c].lfOut.data();
+            float* out = e.ch[c].outDb.data();
+            for (int b = 0; b < e.lfBandSplit; ++b)
+            {
+                const double q = bandHz_[static_cast<size_t>(b)] / binHz;
+                const int k = static_cast<int>(q);
+                const float t = static_cast<float>(q - k);
+                const float v0 = (k >= 1 && k < nL) ? lf[k] : 0.0f, v1 = (k + 1 >= 1 && k + 1 < nL) ? lf[k + 1] : 0.0f;
+                const float v = v0 + t * (v1 - v0);
+                if (!(v > 0.0f)) continue;
+                const float w = p.weightCurve != nullptr ? sanitiseWeight(p.weightCurve[b]) : 1.0f;
+                out[b] = std::max(out[b], applyWeight(w, v, rMax));
             }
         }
     }
@@ -1268,23 +1640,6 @@ bool Core::computeGains(Engine& e, int numCh, const Params& p, bool publish) noe
             all = std::max(all, m);
         }
         meterAll_.store(all, std::memory_order_relaxed);
-    }
-
-    // ---- G(f): band curve -> bins, real zero-phase gain ----
-    bool any = false;
-    const int nb = e.N / 2 + 1;
-    for (int c = 0; c < numCh; ++c)
-    {
-        const float* out = e.ch[c].outDb.data();
-        float* g = e.ch[c].binGain.data();
-        for (int k = 0; k < nb; ++k)
-        {
-            const int j = e.binBand[static_cast<size_t>(k)];
-            const float t = e.binFrac[static_cast<size_t>(k)];
-            const float rdB = out[j] + t * (out[j + 1] - out[j]);
-            if (rdB > 1.0e-6f) { g[k] = std::exp(-rdB * kLn10Over20); any = true; }
-            else g[k] = 1.0f;
-        }
     }
     return any;
 }

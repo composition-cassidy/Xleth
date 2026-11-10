@@ -35,10 +35,12 @@
 //
 // Units: levels and reductions are dB, thresholds are in sigma of the excess estimate, times are ms, frequencies Hz. Latency is N samples of the tier in use.
 //
-// Known limit (a property of the analysis resolution, not a tuning issue): a resonance narrower than one analysis bin (a Q 8 bell is narrower than the 46.9 Hz bin
-// of N = 1024 at 48 kHz below roughly 370 Hz; the effect on the cut is large below ~150 Hz) is only partly reduced. The cut is the bin-average excess, so the sub-bin
-// peak stays standing: a Q 8 / +12 dB bell at 100 Hz keeps ~3.4 dB of its ~7.2 dB in-window excess, and N = 2048 does not change that. See "G1 resolution ceiling"
-// in ResonanceCore.md.
+// Low frequencies (below kLowSplitHz = 400 Hz, every tier): a resonance narrower than the analysis kernel cannot be represented by the 96-band gain curve ([1 2 1] / 4
+// smoothing and linear interpolation to the bins cannot carry a 12.5 Hz notch at 100 Hz), so below the split a PER-BIN path runs next to the band path: each sub-bin peak
+// (position, mass, width from the bin excess) gets a cut vector looked up from a table solved in prepare() against that tier's window (cut-only, minimum-norm notch whose
+// renderer response at the peak equals the excess an auditory filter centred on it would see), scaled by the band path's detection state and knee, attack / release,
+// depth ceiling, stereo link and weight curve, and combined with the band curve by max() per bin. Above the split every bin gain is bit-identical to the core without
+// it (setLowFreqBinPath(false)). The Fast tier (94 Hz bins) still cannot localise a 100 / 150 Hz resonance: its cut spans a whole bin. ResonanceCore.md section 4.
 //
 // Live frame-tier switching (ResonanceCore.md section 9). prepare() builds one complete engine per tier (FFT object, windows, bin <-> band maps, statistics tables,
 // per-channel overlap-add and detector state) and one input ring per channel that every engine reads its frames from. requestTier() (any thread) stores the wish
@@ -186,6 +188,10 @@ public:
     // Study option (structural, before prepare(); default true): on a tier switch the new tier starts from the old tier's detector / gain state (remapped power
     // averages, per-band reductions and latches, bias-correction and sigma counters). false = the new tier starts from reset state (the measured alternative, 9.4).
     void setKeepDetectorStateOnTierSwitch(bool keep) noexcept { keepState_ = keep; }
+    // Study / reference option (structural, before prepare(); default true): the low-frequency per-bin path below kLowSplitHz. false = no per-bin path and the band path
+    // keeps the legacy sub-bin depth correction everywhere: bit-identical to the core before the path existed (the reference the bit-identity tests compare against).
+    void setLowFreqBinPath(bool on) noexcept { lfPath_ = on; }
+    bool lowFreqBinPath() const noexcept { return lfPath_; }
 
     // Hop phase offset (structural: set before prepare(); default 0 = the historical behaviour, bit-identical). Shifts the initial frame grid by `samples` (any integer, taken modulo the hop):
     // the hop counter starts that many samples into a hop, so the first frame completes after hop - offset input samples and then every hop. The stream behaves as if it had been preceded by
@@ -247,7 +253,12 @@ public:
     // Last frame's per-band values (dB), length numBands().
     const float* bandLevelDb(int c) const noexcept    { return eng_[active_].ch[c].levelDb.data(); }    // averaged level, per-octave units
     const float* bandBaselineDb(int c) const noexcept { return eng_[active_].ch[c].baseDb.data(); }     // robust flank baseline
-    const float* bandReductionDb(int c) const noexcept{ return eng_[active_].ch[c].outDb.data(); }      // applied reduction (>= 0)
+    const float* bandReductionDb(int c) const noexcept{ return eng_[active_].ch[c].outDb.data(); }      // applied reduction (>= 0); below the split = max(band, per-bin path)
+    // Last frame's per-bin real gains (linear, numBins() entries): exactly what multiplied the spectrum (band curve and per-bin path combined).
+    const float* binGains(int c) const noexcept       { return eng_[active_].ch[c].binGain.data(); }
+    int lowFreqBins() const noexcept                   { return eng_[active_].lfBins; }               // bins [1, lowFreqBins()) are below kLowSplitHz
+    // Bytes the low-frequency path's prepare()-time tables hold (all three tiers): notch table + line-source moment tables.
+    size_t lowFreqTableBytes() const noexcept;
     const float* bandSigmaDb() const noexcept         { return eng_[active_].sigmaE.data(); }           // std-dev of (level - baseline) on noise
     const float* bandSigmaFastDb() const noexcept     { return eng_[active_].sigmaEF.data(); }          // the same for the fast estimate
     const float* bandFastLevelDb(int c) const noexcept    { return eng_[active_].ch[c].levelFDb.data(); }
@@ -306,6 +317,20 @@ public:
     static constexpr float kGapOct        = 0.5f;     // flank exclusion half-width, octaves (main lobe of a Q >= 4 resonance)
     static constexpr float kGapBins       = 2.0f;     // ... and at least this many FFT bins (analysis main lobe)
     static constexpr float kFlankOct      = 0.75f;    // flank width beyond the exclusion, octaves
+    // Low-frequency per-bin path (ResonanceCore.md section 4).
+    //   kLowSplitHz: bins below it get the per-bin path (every tier, every sample rate; Hz, not an ERB-vs-kernel rule). 400 Hz: a Q 8 bell is narrower than one bin of the
+    //     Normal tier below ~370 Hz, the band path already meets G1 at 500 Hz on every tier, and the G8a onset cell (500 Hz) stays entirely on the band path.
+    //   kLowSplitGuardBands: the band path's own change below the split (no sub-bin depth correction: the per-bin path now carries the sub-bin depth) is limited to bands
+    //     more than this many bands below the first band at / above the split, so the cross-band smoothing (reach <= 4 bands at sharpness 0) and the band -> bin
+    //     interpolation leave every bin at / above the split bit-identical.
+    static constexpr float kLowSplitHz        = 400.0f;
+    static constexpr int   kLowSplitGuardBands = 6;
+    static constexpr int   kLfDeltaSteps = 32;        // notch table: sub-bin offset of the peak in [0, 1], 33 rows
+    static constexpr int   kLfDepthSteps = 24;        // notch table: depth 0 .. kLfDepthMaxDb in 1 dB steps, 25 columns
+    static constexpr float kLfDepthMaxDb = 24.0f;     // the deepest ceiling (Hard, depth 1)
+    static constexpr int   kLfTaps       = 6;         // notch table: cut on bins floor(p) - 2 .. floor(p) + 3
+    static constexpr int   kLfLineSteps  = 32;        // line-source moment tables: peak offset -0.5 .. +0.5 bin, 33 rows
+    static constexpr int   kLfWidthSteps = 24;        // line-source share table: source widths 0 .. 8 bins, 25 columns
 
 private:
     struct Channel
@@ -327,6 +352,9 @@ private:
         std::vector<float> smoothDb;  // per band, after frequency smoothing
         std::vector<float> outDb;     // per band, after stereo link (what is applied)
         std::vector<float> exAdjDb;   // per band, excess at auditory resolution (sub-bin correction, low f only)
+        // low-frequency per-bin path (bins [0, lfBins) of this engine)
+        std::vector<float> lfRed;     // per bin, attack / release state of the per-bin cut (dB, >= 0)
+        std::vector<float> lfOut;     // per bin, after the stereo link (dB), before the weight curve
     };
 
     // Everything that depends on the frame size N: one per tier, all built in prepare().
@@ -357,6 +385,14 @@ private:
         int kLowMax = 0;                      // last bin whose ERB is narrower than the analysis kernel's ENBW
         float kernelVar = 0.0f;               // second moment (bins^2) a narrowband source shows over +/-2 bins
         std::vector<float> erbBins;           // per bin: ERB(f_k) in bins
+        // low-frequency per-bin path (all built in prepare(); see kLowSplitHz)
+        int lfBins = 0;                       // bins [1, lfBins) lie below kLowSplitHz
+        int lfBandSplit = 0;                  // first band whose centre is >= kLowSplitHz (bands below it are folded with the per-bin path for publishing)
+        int lfBandLo = 0;                     // bands below this one run without the sub-bin depth correction (lfBandSplit - kLowSplitGuardBands)
+        std::vector<float> lfTable;           // [(kLfDeltaSteps + 1) x (kLfDepthSteps + 1) x kLfTaps] cut (dB) on bins floor(p) - 2 .. + 3
+        std::vector<float> lfLineC;           // [3 x (kLfLineSteps + 1)] line source at k0 + d: excess centroid - k0 (window truncated at bin 1 for k0 = 1, 2)
+        std::vector<float> lfLineShare;       // [3 x (kLfLineSteps + 1) x (kLfWidthSteps + 1)] share of the window's excess in bin k0 for a source of width w bins
+        std::vector<float> lfWidths;          // [kLfWidthSteps + 1] source widths of the share table, bins
         // running state
         double emaAn = 1.0, emaAnF = 1.0;     // a^n (bias correction 1 / (1 - a^n)), slow / fast
         long long frames = 0;                 // detector frame count of this engine (sigma tables, baseline stagger)
@@ -389,6 +425,10 @@ private:
     // by more than kBaselineJumpDb since the last full refresh (a broadband onset: the stale baseline would show false excess).
     void bandLevelsAndBaseline(const Engine& e, const float* S, float* L, float* base, double biasCorr, int refreshPeriod, float& refMean) noexcept;
     void subBinCorrection(const Engine& e, Channel& ch, double biasCorr) noexcept;
+    void buildLowFreqTables(Engine& e);
+    // Per-bin target of one channel's low-frequency path (dB, written to lfTgt_[0, lfBins)), from the slow bin excess and the band path's gated knee (kGate_).
+    void lowFreqTargets(const Engine& e, const Channel& ch, double biasCorr, float rMax, bool hard) noexcept;
+    static void remapLowFreq(const Engine& from, const Engine& to, const float* src, float* dst) noexcept;
     float median(const int* idx, int n, const float* values) noexcept;
     // Tier switching (audio thread).
     void adoptPendingTier(int numCh, const Params& p) noexcept;
@@ -406,6 +446,7 @@ private:
     float fastTauMs_ = kDefaultFastTauMs;
     bool prepared_ = false;
     bool keepState_ = true;
+    bool lfPath_ = true;               // low-frequency per-bin path (structural, setLowFreqBinPath)
     int numChannels_ = 0;
     int hopPhaseOffset_ = 0;           // as set by setHopPhaseOffset()
     int hopOffset0_ = 0, hop0_ = 1;    // the applied offset at prepare() and the prepare-time tier's hop: the stored fraction hopOffset0_ / hop0_
@@ -440,6 +481,8 @@ private:
     std::vector<float> scratch_;          // median scratch
     std::vector<float> tmpBand_;          // per band scratch
     std::vector<float> estBand_;          // per band: the excess estimate (dB) the gain computer reduces by
+    std::vector<float> kGate_;            // per band: the gated knee of the current channel (0 when the band's estimate is <= 0), read by the per-bin path
+    std::vector<float> lfX_, lfTgt_, lfW_;   // per low-frequency bin: excess fraction, per-bin target (dB), interpolated weight
     // ---- visualization tap and meters ----
     VizSink* vizSink_ = nullptr;
     VizFrame vizFrame_;                   // filled in place once per hop and channel while a sink is set

@@ -38,6 +38,8 @@
 //                   new latency, wet + dryOut never combs at depth 0 (negative control: a dry that follows latencyFor(new) from the request)
 //   T-M Mid/Side    a mono core on M with S as the delay-only aux channel reconstructs L / R on the stereo dry timeline through every switch
 //   T-C continuity  detector state kept across a switch: the cut stays up and is within 1.5 dB of a fresh core of the new tier within 150 ms
+//   LF1-LF6 low f   the low-frequency per-bin path: bin gains at / above the split bit-identical to the path-off core every frame; weight 0 below 40 Hz never cuts;
+//                   it deepens a 100 Hz cut; zero allocation with LF content and tier switches; the LF cut survives a tier switch; table memory
 //   T-D stress      a second thread requests random tiers (every 1-50 ms, and bursts) during 200 000 random-size blocks: no NaN, bounded, zero
 //                   allocations (armed counter and a thread-id counter), every adoption matches a request
 //
@@ -1444,10 +1446,11 @@ void testFixedTierBitIdentity()
     };
     for (const Case& k : cases)
     {
-        Core c; c.setFrameTier(k.tier); c.setHopPhaseOffset(k.offset); c.prepare(sr, 1024, 2);
+        // The fixture is the core WITHOUT the low-frequency per-bin path ([RSCore] a1): setLowFreqBinPath(false) must reproduce it bit for bit.
+        Core c; c.setFrameTier(k.tier); c.setHopPhaseOffset(k.offset); c.setLowFreqBinPath(false); c.prepare(sr, 1024, 2);
         const uint64_t h = hashStereo(render(c, in, sched, *k.p));
         char buf[200];
-        std::snprintf(buf, sizeof buf, "T-A fixed tier output == the recorded fixture: %s hash 0x%016llx (expect 0x%016llx)",
+        std::snprintf(buf, sizeof buf, "T-A fixed tier output, low-frequency path off == the recorded a2 fixture: %s hash 0x%016llx (expect 0x%016llx)",
                       k.name, static_cast<unsigned long long>(h), static_cast<unsigned long long>(k.expect));
         check(h == k.expect, buf);
     }
@@ -1455,6 +1458,205 @@ void testFixedTierBitIdentity()
 
 const Core::FrameTier kTiers[3] = { Core::FrameTier::Fast, Core::FrameTier::Normal, Core::FrameTier::High };
 const char* tierName(Core::FrameTier t) { return t == Core::FrameTier::Fast ? "Fast" : (t == Core::FrameTier::Normal ? "Normal" : "High"); }
+
+// ===================================================================================================
+// Low-frequency per-bin path (ResonanceCore.md section 4): LF1 .. LF6.
+
+// Pink noise with narrow low-frequency resonances (100 / 150 / 330 Hz in both channels, 62 Hz in R only), a 1 kHz bell in L only and a 55 Hz bass tone in L.
+Stereo lowFreqSignal(double sr, double seconds, uint64_t seed)
+{
+    Stereo s = makePink(static_cast<int>(seconds * sr), -20.0, seed);
+    for (int c = 0; c < 2; ++c) for (double f0 : { 100.0, 150.0, 330.0 }) applyPeak(s.ch[c], sr, f0, 8.0, 12.0);
+    applyPeak(s.ch[1], sr, 62.0, 12.0, 12.0);
+    applyPeak(s.ch[0], sr, 1000.0, 8.0, 12.0);
+    for (int i = 0; i < s.size(); ++i) s.ch[0][static_cast<size_t>(i)] += static_cast<float>(0.03 * std::sin(2.0 * juce::MathConstants<double>::pi * 55.0 * i / sr));
+    return s;
+}
+
+// The RS default focus curve on the core's grid: 0 below 40 Hz, linear ramp to 1 at 80 Hz, 1 above.
+std::vector<float> rsLikeCurve(const Core& c)
+{
+    std::vector<float> w(static_cast<size_t>(c.numBands()));
+    for (int b = 0; b < c.numBands(); ++b)
+    {
+        const double f = c.bandCentreHz(b);
+        w[static_cast<size_t>(b)] = static_cast<float>(f < 40.0 ? 0.0 : (f < 80.0 ? (f - 40.0) / 40.0 : 1.0));
+    }
+    return w;
+}
+
+void testLowFreqPath()
+{
+    const double sr = 48000.0;
+    const Stereo in = lowFreqSignal(sr, 6.0, 301);
+    const int B = xleth::dsp::resonance::kGridBands;
+    std::vector<float> w(static_cast<size_t>(B));
+    const float pat[5] = { 0.0f, 0.3f, 1.0f, 1.7f, 2.5f };
+    for (int b = 0; b < B; ++b) w[static_cast<size_t>(b)] = pat[b % 5];
+    Params def;
+    Params cap; cap.depth = 1.0f; cap.hardKnee = true;
+    Params broad = cap; broad.sensitivity = 0.7f; broad.sharpness = 0.0f; broad.stereoLink = 0.5f; broad.weightCurve = w.data();
+    Params narrow = broad; narrow.hardKnee = false; narrow.sharpness = 1.0f; narrow.attackMs = 3.0f; narrow.releaseMs = 80.0f;
+    struct PC { const Params* p; const char* name; };
+    const PC pcs[] = { { &def, "default" }, { &cap, "C1c" }, { &broad, "weighted, sharpness 0, link 0.5" }, { &narrow, "weighted, Soft, sharpness 1, link 0.5" } };
+
+    // LF1: every bin gain at / above the split is bit-identical to the core without the path, every frame (both channels, every tier, four parameter sets);
+    //      below the split the path is active (gains differ in some frames) and the band path's own change is confined to the guarded bands.
+    for (Core::FrameTier t : kTiers)
+        for (const PC& pc : pcs)
+        {
+            Core on, off; on.setFrameTier(t); off.setFrameTier(t); off.setLowFreqBinPath(false);
+            on.prepare(sr, 1024, 2); off.prepare(sr, 1024, 2);
+            const int H = on.hopSize(), nb = on.numBins(), nL = on.lowFreqBins();
+            std::vector<float> l1(static_cast<size_t>(H)), r1 = l1, l2 = l1, r2 = l1;
+            float* p1[2] = { l1.data(), r1.data() };
+            float* p2[2] = { l2.data(), r2.data() };
+            long long above = 0, below = 0, frames = 0;
+            for (int pos = 0; pos + H <= in.size(); pos += H)
+            {
+                std::memcpy(l1.data(), in.ch[0].data() + pos, sizeof(float) * static_cast<size_t>(H)); l2 = l1;
+                std::memcpy(r1.data(), in.ch[1].data() + pos, sizeof(float) * static_cast<size_t>(H)); r2 = r1;
+                on.process(p1, 2, H, *pc.p);
+                off.process(p2, 2, H, *pc.p);
+                for (int ch = 0; ch < 2; ++ch)
+                {
+                    if (std::memcmp(on.binGains(ch) + nL, off.binGains(ch) + nL, sizeof(float) * static_cast<size_t>(nb - nL)) != 0) ++above;
+                    if (std::memcmp(on.binGains(ch), off.binGains(ch), sizeof(float) * static_cast<size_t>(nL)) != 0) ++below;
+                }
+                ++frames;
+            }
+            char buf[260];
+            std::snprintf(buf, sizeof buf, "LF1 %s %s: bin gains at / above the split (bins >= %d, %.1f Hz) bit-identical to the path-off core in every frame (%lld differing channel-frames of %lld); "
+                          "below it the path acts in %lld channel-frames", tierName(t), pc.name, nL, nL * sr / on.fftSize(), above, 2 * frames, below);
+            check(above == 0 && below > 0, buf);
+        }
+
+    // LF2: weight 0 below 40 Hz (the RS default curve) means no cut on any bin below 40 Hz, every frame, with resonances at 30 and 50 Hz; the 50 Hz one is cut.
+    {
+        Stereo x = makePink(static_cast<int>(6.0 * sr), -20.0, 302);
+        for (int c = 0; c < 2; ++c) { applyPeak(x.ch[c], sr, 30.0, 8.0, 15.0); applyPeak(x.ch[c], sr, 50.0, 8.0, 15.0); }
+        for (Core::FrameTier t : kTiers)
+        {
+            Core c; c.setFrameTier(t); c.prepare(sr, 1024, 2);
+            const std::vector<float> curve = rsLikeCurve(c);
+            Params p = cap; p.weightCurve = curve.data();
+            const int H = c.hopSize();
+            const double binHz = sr / c.fftSize();
+            std::vector<float> l(static_cast<size_t>(H)), r = l;
+            float* ptr[2] = { l.data(), r.data() };
+            long long cutBelow40 = 0; double maxCut50 = 0.0;
+            for (int pos = 0; pos + H <= x.size(); pos += H)
+            {
+                std::memcpy(l.data(), x.ch[0].data() + pos, sizeof(float) * static_cast<size_t>(H));
+                std::memcpy(r.data(), x.ch[1].data() + pos, sizeof(float) * static_cast<size_t>(H));
+                c.process(ptr, 2, H, p);
+                for (int ch = 0; ch < 2; ++ch)
+                    for (int k = 0; k < c.numBins(); ++k)
+                    {
+                        const double f = k * binHz;
+                        if (f < 40.0 && c.binGains(ch)[k] != 1.0f) ++cutBelow40;
+                        if (f >= 44.0 && f <= 60.0) maxCut50 = std::max(maxCut50, -20.0 * std::log10(static_cast<double>(c.binGains(ch)[k])));
+                    }
+            }
+            char buf[220];
+            std::snprintf(buf, sizeof buf, "LF2 %s: weight 0 below 40 Hz -> no bin below 40 Hz is ever cut (%lld cut bin-frames); a 50 Hz resonance (weight ~0.25) is still cut, max %.2f dB",
+                          tierName(t), cutBelow40, maxCut50);
+            const bool hasBin50 = std::ceil(44.0 / binHz) * binHz <= 60.0;   // Fast has no bin between 44 and 60 Hz
+            check(cutBelow40 == 0 && (!hasBin50 || maxCut50 > 0.0), buf);
+        }
+    }
+
+    // LF3: a +12 dB / Q 8 bell at 100 Hz (C1c, Normal and High): the applied cut at the bin nearest 100 Hz is deeper with the path than without (mean over frames
+    //      after 2 s), i.e. the path does what it is for. (The bench's G1 grades the output; this only guards the mechanism.)
+    for (Core::FrameTier t : { Core::FrameTier::Normal, Core::FrameTier::High })
+    {
+        const Stereo x = resonantPink(sr, 6.0, 100.0, 303);
+        Core on, off; on.setFrameTier(t); off.setFrameTier(t); off.setLowFreqBinPath(false);
+        on.prepare(sr, 1024, 2); off.prepare(sr, 1024, 2);
+        const int H = on.hopSize(), k100 = static_cast<int>(std::lround(100.0 * on.fftSize() / sr));
+        std::vector<float> l1(static_cast<size_t>(H)), r1 = l1, l2 = l1, r2 = l1;
+        float* p1[2] = { l1.data(), r1.data() };
+        float* p2[2] = { l2.data(), r2.data() };
+        double sOn = 0.0, sOff = 0.0; long long n = 0;
+        for (int pos = 0; pos + H <= x.size(); pos += H)
+        {
+            std::memcpy(l1.data(), x.ch[0].data() + pos, sizeof(float) * static_cast<size_t>(H)); l2 = l1;
+            std::memcpy(r1.data(), x.ch[1].data() + pos, sizeof(float) * static_cast<size_t>(H)); r2 = r1;
+            on.process(p1, 2, H, cap); off.process(p2, 2, H, cap);
+            if (pos < static_cast<int>(2.0 * sr)) continue;
+            sOn += -20.0 * std::log10(static_cast<double>(on.binGains(0)[k100])); sOff += -20.0 * std::log10(static_cast<double>(off.binGains(0)[k100])); ++n;
+        }
+        char buf[200];
+        std::snprintf(buf, sizeof buf, "LF3 %s 100 Hz / Q 8 bell: mean applied cut at bin %d with the path %.2f dB, without %.2f dB (deeper)", tierName(t), k100, sOn / n, sOff / n);
+        check(sOn > sOff + 1.0, buf);
+    }
+
+    // LF4: zero operator new / delete with low-frequency content: 3000 blocks of 64, cold, parameters swept every block, a tier switch every 150 blocks, viz-free.
+    {
+        Core c; c.prepare(sr, 1024, 2);
+        std::vector<float> l(64), r(64);
+        float* ptr[2] = { l.data(), r.data() };
+        t_isMeasuringThread = true;
+        g_allocCount.store(0); g_freeCount.store(0); g_allocArmed.store(true);
+        int pos = 0;
+        for (int b = 0; b < 3000; ++b)
+        {
+            if (pos + 64 > in.size()) pos = 0;
+            std::memcpy(l.data(), in.ch[0].data() + pos, sizeof(float) * 64); std::memcpy(r.data(), in.ch[1].data() + pos, sizeof(float) * 64); pos += 64;
+            Params p = cap;
+            p.depth = 0.5f + 0.5f * std::sin(0.37f * static_cast<float>(b)); p.sensitivity = 0.5f + 0.5f * std::sin(0.53f * static_cast<float>(b));
+            p.stereoLink = 0.5f + 0.5f * std::sin(0.29f * static_cast<float>(b)); p.hardKnee = (b % 3) == 0;
+            if (b % 150 == 0) c.requestTier(kTiers[(b / 150) % 3]);
+            c.process(ptr, 2, 64, p);
+        }
+        g_allocArmed.store(false);
+        t_isMeasuringThread = false;
+        check(g_allocCount.load() == 0 && g_freeCount.load() == 0 && c.tierSwitchCount() > 10,
+              "LF4 zero operator new / delete in process() with low-frequency resonances, params swept, " + std::to_string(c.tierSwitchCount()) + " tier switches (new "
+              + std::to_string(g_allocCount.load()) + ", delete " + std::to_string(g_freeCount.load()) + ")");
+    }
+
+    // LF5: the low-frequency cut survives a tier switch: steady 100 Hz bell (C1c), switch after 4 s; the largest applied cut over 70 .. 140 Hz (channel 0, read
+    //      every 64 samples from binGains) never falls below 1 dB from the adoption to 150 ms after it, every ordered pair.
+    {
+        const Stereo x = resonantPink(sr, 5.0, 100.0, 304);
+        bool ok = true; std::string detail;
+        for (Core::FrameTier from : kTiers)
+            for (Core::FrameTier to : kTiers)
+            {
+                if (from == to) continue;
+                Core c; c.setFrameTier(from); c.prepare(sr, 1024, 2);
+                std::vector<float> l(64), r(64);
+                float* ptr[2] = { l.data(), r.data() };
+                double minCut = 1.0e9;
+                const int at = static_cast<int>(4.0 * sr), until = at + static_cast<int>(0.150 * sr);
+                for (int pos = 0; pos + 64 <= x.size() && pos < until; pos += 64)
+                {
+                    if (pos == at) c.requestTier(to);
+                    std::memcpy(l.data(), x.ch[0].data() + pos, sizeof(float) * 64); std::memcpy(r.data(), x.ch[1].data() + pos, sizeof(float) * 64);
+                    c.process(ptr, 2, 64, cap);
+                    if (pos < at) continue;
+                    const double binHz = sr / c.fftSize();
+                    double mx = 0.0;
+                    for (int k = 0; k < c.numBins(); ++k) if (k * binHz >= 70.0 && k * binHz <= 140.0) mx = std::max(mx, -20.0 * std::log10(static_cast<double>(c.binGains(0)[k])));
+                    minCut = std::min(minCut, mx);
+                }
+                char b[64]; std::snprintf(b, sizeof b, " %s->%s %.2f", tierName(from), tierName(to), minCut);
+                detail += b;
+                ok = ok && minCut >= 1.0;
+            }
+        check(ok, "LF5 low-frequency cut kept across a tier switch (min over 0 .. 150 ms of the largest cut in 70 .. 140 Hz, dB):" + detail);
+    }
+
+    // LF6: table memory (all three tiers, prepare()-time only).
+    {
+        Core c; c.prepare(sr, 512, 2);
+        std::printf("[ResCore] INFO LF6 low-frequency tables: %zu bytes per instance (three tiers); bins below the split: Fast %d, Normal %d, High %d\n", c.lowFreqTableBytes(),
+                    [&] { Core f; f.setFrameTier(Core::FrameTier::Fast); f.prepare(sr, 512, 2); return f.lowFreqBins() - 1; }(), c.lowFreqBins() - 1,
+                    [&] { Core h; h.setFrameTier(Core::FrameTier::High); h.prepare(sr, 512, 2); return h.lowFreqBins() - 1; }());
+        check(c.lowFreqTableBytes() > 0 && c.lowFreqTableBytes() < 200 * 1024, "LF6 low-frequency table memory " + std::to_string(c.lowFreqTableBytes()) + " bytes (< 200 KiB)");
+    }
+}
 inline uint64_t lcgNext(uint64_t s) { return s * 6364136223846793005ull + 1442695040888963407ull; }
 
 Stereo makeWhite(int n, double rmsDb, uint64_t seed)
@@ -2146,7 +2348,7 @@ int main(int argc, char** argv)
         const G groups[] = { { "testFixedTierBitIdentity", testFixedTierBitIdentity }, { "testParamHardening", testParamHardening },
                              { "testHopPhaseAcrossSwitch", testHopPhaseAcrossSwitch }, { "testTierSwitchAllocations", testTierSwitchAllocations },
                              { "testTierSwitchTransitions", testTierSwitchTransitions }, { "testMidSideAcrossSwitch", testMidSideAcrossSwitch }, { "testTierSwitchContinuity", testTierSwitchContinuity },
-                             { "testTierSwitchStress", testTierSwitchStress } };
+                             { "testTierSwitchStress", testTierSwitchStress }, { "testLowFreqPath", testLowFreqPath } };
         for (const G& g : groups) if (std::string(g.name).find(only) != std::string::npos) g.fn();
         std::printf("[ResCore] --- %d passed, %d failed ---\n", g_pass, g_fail);
         return g_fail == 0 ? 0 : 1;
@@ -2177,6 +2379,7 @@ int main(int argc, char** argv)
     testMidSideAcrossSwitch();
     testTierSwitchContinuity();
     testTierSwitchStress();
+    testLowFreqPath();
     std::printf("[ResCore] --- %d passed, %d failed ---\n", g_pass, g_fail);
     return g_fail == 0 ? 0 : 1;
 }

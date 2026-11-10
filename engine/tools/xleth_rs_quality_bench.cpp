@@ -4122,6 +4122,8 @@ static Stereo wolaRaw(const Stereo& in, int N, const std::function<const std::ve
 
 // Optional private taps (a diagnostic copy of the core may offer them; the production Core does not).
 template <class C> concept HasPrivateTaps = requires(const C& c) { c.lfdEst(0); c.lfdTarget(0); c.lfdRedPre(0); };
+// The per-bin gains the core actually applied (band curve AND the low-frequency per-bin path). A core without the accessor is read through its band curve.
+template <class C> concept HasBinGains = requires(const C& c) { c.binGains(0); c.lowFreqBins(); };
 
 // Runs a core on `in` in blocks of one hop (every process() call ends on a frame) and calls onFrame(core, frameEnd) after each frame. Raw output (latency N).
 template <class CoreT>
@@ -4292,6 +4294,7 @@ static Stereo runCoreCell(int tier, const RParams& p, const Stereo& sig, double 
             for (int k = 0; k <= N / 2; ++k)
             {
                 if (k * binHz > 3.0 * f0 + 4.0 * binHz) { g[static_cast<size_t>(k)] = 1.0; continue; }
+                if constexpr (HasBinGains<CoreT>) { g[static_cast<size_t>(k)] = static_cast<double>(c.binGains(ch)[k]); continue; }
                 const double cut = std::max(0.0, G.bandToBinDb(R, k * binHz));
                 g[static_cast<size_t>(k)] = cut > 1.0e-6 ? std::pow(10.0, -cut / 20.0) : 1.0;
             }
@@ -4524,16 +4527,22 @@ static int runLowFreqDiagT(const std::string& cfg, const std::string& cpu, bool 
         Table t; t.title = "Geometry per tier: bins, kernel, sub-bin correction coverage, grid density at the bell";
         t.note = "bell BW = f0 / Q (Q 8). 'bands / bell BW' = bell -3 dB width / local band spacing of the 96-band ERB grid. 'sub-bin covers' = the core's kLowMax bin "
                  "(ERB(f_k) < ENBW): the auditory-resolution depth correction runs only up to there. lobe zone = the main-lobe gating zone of the band nearest f0.";
-        t.header = { "tier", "N", "bin Hz", "ENBW Hz", "sub-bin covers up to (Hz)", "f0", "bell BW Hz", "bins / bell BW", "band spacing Hz", "bands / bell BW", "lobe zone (bands)", "lobe zone Hz" };
+        t.header = { "tier", "N", "bin Hz", "ENBW Hz", "legacy sub-bin rule covers up to (Hz)", "per-bin path bins (Hz)", "f0", "bell BW Hz", "bins / bell BW", "band spacing Hz", "bands / bell BW", "lobe zone (bands)", "lobe zone Hz" };
         for (int tier = 0; tier < 3; ++tier)
         {
             const int N = tierN(tier); const double binHz = kSR / N;
+            std::string lfCov = "-";
+            if constexpr (HasBinGains<CoreT>)
+            {
+                auto pc = std::make_unique<CoreT>(); pc->setFrameTier(static_cast<typename CoreT::FrameTier>(tier)); pc->prepare(kSR, 512, 2);
+                lfCov = "1.." + inum(pc->lowFreqBins() - 1) + " (<= " + num((pc->lowFreqBins() - 1) * binHz, 1) + ")";
+            }
             std::vector<int> lo, hi; lobeZones(N, lo, hi);
             for (double f0 : { 100.0, 150.0, 220.0, 500.0 })
             {
                 const int b = grid().nearest(f0);
                 const double sp = grid().hz[static_cast<size_t>(b) + 1] - grid().hz[static_cast<size_t>(b)];
-                t.add({ tierName(tier), inum(N), num(binHz, 2), num(enbwBins(N) * binHz, 1), num(kLowMaxFor(N) * binHz, 1), num(f0, 0), num(f0 / 8.0, 2),
+                t.add({ tierName(tier), inum(N), num(binHz, 2), num(enbwBins(N) * binHz, 1), num(kLowMaxFor(N) * binHz, 1), lfCov, num(f0, 0), num(f0 / 8.0, 2),
                         num(f0 / 8.0 / binHz, 2), num(sp, 2), num(f0 / 8.0 / sp, 2), inum(hi[static_cast<size_t>(b)] - lo[static_cast<size_t>(b)] + 1),
                         num(grid().hz[static_cast<size_t>(lo[static_cast<size_t>(b)])], 0) + "-" + num(grid().hz[static_cast<size_t>(hi[static_cast<size_t>(b)])], 0) });
             }
@@ -4653,11 +4662,13 @@ static int runLowFreqDiagT(const std::string& cfg, const std::string& cpu, bool 
                     t.add({ inum(b), num(grid().hz[static_cast<size_t>(b)], 1), c(0), c(1), c(3), c(4), c(5), c(7), c(9), c(10), c(12), c(14), c(16), c(17), c(18), c(19), c(20) });
                 }
                 md << t.markdown();
-                Table tb; tb.title = "Per-bin applied cut vs ideal, tier " + std::string(tierName(tier)) + ", f0 " + num(f0, 0) + " Hz (mean over seeds 0..6)";
-                tb.note = "ideal = bell at the bin centre; binavg ideal = what a perfect bin-power detector reads (inverse of the bin-average excess); cut = the core's band curve mapped to the bin (mean dB / power-effective).";
-                tb.header = { "bin", "Hz", "ideal", "binavg ideal", "cut mean", "cut pow" };
+                Table tb; tb.title = "Per-bin applied cut vs ideal and vs the ls oracle, tier " + std::string(tierName(tier)) + ", f0 " + num(f0, 0) + " Hz (mean over seeds 0..6)";
+                tb.note = std::string("ideal = bell at the bin centre; binavg ideal = what a perfect bin-power detector reads (inverse of the bin-average excess); ls = the cut-only per-bin gains optimised through the window kernel (the oracle of table H1); ")
+                          + (HasBinGains<CoreT> ? "cut = the per-bin cut the core APPLIED (binGains: band curve and the low-frequency per-bin path)" : "cut = the core's band curve mapped to the bin") + " (mean dB / power-effective).";
+                tb.header = { "bin", "Hz", "ideal", "binavg ideal", "ls", "cut mean", "cut pow" };
+                const auto gLs = gainsLs(tierN(tier), f0, 8.0, 12.0, 1.0);
                 for (const auto& [k, s] : avgBin[{ tier, f0 }])
-                    tb.add({ inum(k), num(k * kSR / tierN(tier), 1), num(s[0] / nS, 2), num(s[1] / nS, 2), num(s[2] / nS, 2), num(s[3] / nS, 2) });
+                    tb.add({ inum(k), num(k * kSR / tierN(tier), 1), num(s[0] / nS, 2), num(s[1] / nS, 2), num(-20.0 * std::log10(gLs[static_cast<size_t>(k)]), 2), num(s[2] / nS, 2), num(s[3] / nS, 2) });
                 md << tb.markdown();
                 Table tm; tm.title = "Renderer-model residual from the core's applied gains vs measured residual per Welch bin, tier " + std::string(tierName(tier)) + ", f0 " + num(f0, 0) + " Hz (mean over seeds 0..6)";
                 tm.note = "model = bell + 10 log10 of the time-averaged |G_eff|^2 the core's per-frame bin gains give through the window kernel; measured = dB(out) - dB(clean) of the core's output.";
